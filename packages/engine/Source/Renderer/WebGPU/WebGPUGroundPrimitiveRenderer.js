@@ -159,6 +159,24 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
   }
   return u.pickColor;
 }
+
+// AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+// CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW variant. Same VS + sky-discard
+// as the color path; the pipeline disables color writes (writeMask=0) and
+// enables stencil-write so the only side-effect is marking stencil=0xff
+// on every classified-surface pixel the volume covers. The composite
+// (`WebGPUInvertClassification.classifiedPipeline` /
+// `unclassifiedPipeline`) reads those bits to gate which tile pixels
+// get the invert tint.
+@fragment fn dsStencilFS(i: CO) -> @location(0) vec4<f32> {
+  let screenUV = i.pos.xy / u.viewport.zw;
+  let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
+  let surfaceDepth = unpackDepth(packed);
+  if (surfaceDepth == 0.0) {
+    discard;
+  }
+  return vec4<f32>(0.0);
+}
 `;
 
   const mod = device.createShaderModule({ label: "GroundPrimitive", code });
@@ -251,9 +269,46 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
     },
   };
 
+  // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
+  // Color writes disabled (writeMask=0); the pipeline runs solely to mark
+  // the invert FBO's stencil with 0xff on classified pixels. The
+  // stencilReference value is set per-draw via
+  // `applyPerEncoderState({ stencilTest: { reference: 0xff } })`.
+  const depthSampleStencilDescriptor = {
+    name: `GroundPrimitive depthSampleStencil [${format}/${depthFormat}]`,
+    layout: depthSampleLayout,
+    vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "dsStencilFS",
+      targets: [{ format, writeMask: 0 }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+      stencilFront: {
+        compare: "always",
+        failOp: "keep",
+        depthFailOp: "keep",
+        passOp: "replace",
+      },
+      stencilBack: {
+        compare: "always",
+        failOp: "keep",
+        depthFailOp: "keep",
+        passOp: "replace",
+      },
+      stencilReadMask: 0xff,
+      stencilWriteMask: 0xff,
+    },
+  };
+
   return {
     depthSampleColorDescriptor,
     depthSamplePickDescriptor,
+    depthSampleStencilDescriptor,
     bgl,
     depthSampleBgl,
   };
@@ -306,7 +361,11 @@ function tryResolveGroundPrimitivePipelines(
   resources,
   cache,
 ) {
-  if (cache.depthSampleColorPipeline && cache.depthSamplePickPipeline) {
+  if (
+    cache.depthSampleColorPipeline &&
+    cache.depthSamplePickPipeline &&
+    cache.depthSampleStencilPipeline
+  ) {
     return true;
   }
 
@@ -317,9 +376,13 @@ function tryResolveGroundPrimitivePipelines(
     const dsPickSync = pipelineCache.getPipelineSync(
       resources.depthSamplePickDescriptor,
     );
-    if (dsColorSync && dsPickSync) {
+    const dsStencilSync = pipelineCache.getPipelineSync(
+      resources.depthSampleStencilDescriptor,
+    );
+    if (dsColorSync && dsPickSync && dsStencilSync) {
       cache.depthSampleColorPipeline = dsColorSync;
       cache.depthSamplePickPipeline = dsPickSync;
+      cache.depthSampleStencilPipeline = dsStencilSync;
       cache.pipelineRequestPending = false;
       return true;
     }
@@ -328,10 +391,12 @@ function tryResolveGroundPrimitivePipelines(
       Promise.all([
         pipelineCache.getPipeline(resources.depthSampleColorDescriptor),
         pipelineCache.getPipeline(resources.depthSamplePickDescriptor),
+        pipelineCache.getPipeline(resources.depthSampleStencilDescriptor),
       ])
-        .then(([dsColor, dsPick]) => {
+        .then(([dsColor, dsPick, dsStencil]) => {
           cache.depthSampleColorPipeline = dsColor;
           cache.depthSamplePickPipeline = dsPick;
+          cache.depthSampleStencilPipeline = dsStencil;
           cache.pipelineRequestPending = false;
         })
         .catch(() => {
@@ -350,6 +415,9 @@ function tryResolveGroundPrimitivePipelines(
   );
   cache.depthSamplePickPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.depthSamplePickDescriptor),
+  );
+  cache.depthSampleStencilPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.depthSampleStencilDescriptor),
   );
   return true;
 }
@@ -756,6 +824,36 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     attachPickToColorCommand(depthSampleColorCommand, cache.pickCommand);
   }
 
+  // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+  // emit a CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW command alongside the
+  // color command for primitives that classify 3D Tiles. WebGPUSceneRenderer3DTilePasses
+  // dispatches pass 7 inside the invert FBO before the regular CLASSIFICATION
+  // pass; this command writes stencil=0xff on every classified-surface pixel
+  // the volume covers so the stencil-gated composite can distinguish
+  // classified vs unclassified regions. TERRAIN_CLASSIFICATION-only
+  // primitives don't participate in invert classification, so we skip
+  // emission when groundPass === 3.
+  let ignoreShowCommand = null;
+  if (groundPass === 6) {
+    ignoreShowCommand = new WebGPUDrawCommand({
+      pipeline: cache.depthSampleStencilPipeline,
+      bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
+      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
+      vertexBuffers: [cache.vertexGPUBuffer],
+      indexBuffer: cache.indexGPUBuffer || undefined,
+      indexCount: cache.indexCount || 0,
+      indexFormat: cache.indexFormat || "uint16",
+      vertexCount: cache.vertexCount || 0,
+      pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
+      owner: primitive,
+      // Stencil reference 0xff — `applyPerEncoderState` reads
+      // `stencilTest.reference` and calls `passEncoder.setStencilReference`
+      // before the draw. Combined with the pipeline's `passOp: replace`,
+      // every rasterized fragment marks stencil=0xff.
+      renderState: { stencilTest: { reference: 0xff } },
+    });
+  }
+
   return {
     colorPipeline: cache.depthSampleColorPipeline,
     pickPipeline: cache.depthSamplePickPipeline,
@@ -768,6 +866,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     stencilCommand: null,
     colorCommand: depthSampleColorCommand,
     pickCommand: cache.pickCommand,
+    ignoreShowCommand,
   };
 }
 

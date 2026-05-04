@@ -915,68 +915,76 @@ backend today.
 
 ---
 
-### NEW-INVERT-CLASS-STENCIL-CLASSIFIER — restore per-pixel classified-region masking for invert classification
+### ~~NEW-INVERT-CLASS-STENCIL-CLASSIFIER~~ — RESOLVED (Batch 141)
 
-**What:** WebGL's invert-classification flow uses three classification
-passes:
+**Resolution:** All four depth-sample classifier renderers now emit a
+dedicated IGNORE_SHOW stencil-write command alongside the color command
+when classifying 3D Tiles. The stencil-gated composite branch in
+`WebGPUInvertClassification` (which already existed but was unreachable
+because no command ever wrote stencil) now activates whenever the
+IGNORE_SHOW pass dispatches with > 0 commands, so classified regions
+stop receiving the invert tint and only unclassified pixels are
+modulated by `highlightColor` — matching WebGL behavior.
 
-1. `CESIUM_3D_TILE_CLASSIFICATION` — color writes through stencil-volume
-   to the scene framebuffer (regular classification).
-2. `CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW` — same volume rasterization
-   but writes only stencil bits (color disabled), marking which pixels
-   were touched by classification primitives. Runs against the invert
-   FBO's depth-stencil so the composite can read the marks.
-3. The composite then has two stencil-gated draws: stencil != 0 emits
-   raw tile color (classified region — visible through the tint),
-   stencil == 0 emits `tileColor * highlightColor` (unclassified
-   region — gets the invert tint).
+**What landed:**
 
-After ADR-2026-04-28 (depth-sample classifier), WebGPU's classifier
-renderers (`WebGPUGroundPrimitiveRenderer`, `WebGPUVector3DTilePrimitiveRenderer`,
-`WebGPUVector3DTilePolylineRenderer`, `WebGPUVector3DTileClampedPolylinesRenderer`)
-collapse the three passes into one and only handle CLASSIFICATION (no
-IGNORE_SHOW). They have no stencil-write pipeline variant.
+- `WebGPUGroundPrimitiveRenderer.js`, `WebGPUGroundPolylineRenderer.js`,
+  `WebGPUVector3DTilePrimitiveRenderer.js`, and
+  `WebGPUVector3DTileClampedPolylinesRenderer.js` each gained:
+  - A new `stencilFS` / `dsStencilFS` WGSL entry that mirrors the color
+    FS (sky-discard + plane-test where applicable) but does NOT discard
+    on per-feature `show` — that's the whole point of the IGNORE_SHOW
+    pass: mark the volume regardless of `feature.show`.
+  - A new pipeline descriptor (`stencilDescriptor` /
+    `depthSampleStencilDescriptor`) with the existing color target
+    format but `writeMask: 0` to disable color writes; depth-stencil
+    state adds `compare: always`, `passOp: replace`,
+    `stencilReadMask: 0xff`, `stencilWriteMask: 0xff` on both
+    `stencilFront` and `stencilBack`.
+  - A new pipeline cache slot routed through the central
+    `WebGPURenderPipelineCache` alongside the existing color/pick
+    pipelines.
+  - An `ignoreShowCommand(s)` field on the renderer's return shape, only
+    populated when `groundPass === 6` (3D-Tile classification). The
+    `renderState.stencilTest.reference = 0xff` is forwarded through
+    `applyPerEncoderState` so `passEncoder.setStencilReference(0xff)`
+    fires before each stencil-write draw.
+- The four dispatch sites
+  (`Scene/GroundPrimitive.js:879`, `Scene/GroundPolylinePrimitive.js:836`,
+  `Scene/Vector3DTilePrimitive.js:334`,
+  `Scene/Vector3DTileClampedPolylines.js:210`) push the
+  `ignoreShowCommand(s)` onto `commandList` only when
+  `frameState.invertClassification` is true.
+- The pre-existing dispatcher in
+  `WebGPUSceneRenderer3DTilePasses.ts:316-355` already routed
+  `Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW` into the invert FBO
+  and flipped `invertHasStencilData = true` once `ignoreShowCount > 0`.
+  With Batch 141's commands present, that count is now non-zero and
+  `_invertClassStencilReady` flips on, activating the stencil-gated
+  composite path (Batch 40 had already wired the composite pipelines
+  but they were unreachable).
+- Removed the obsolete one-time warning from
+  `WebGPUSceneRenderer._runInvertClassificationComposite` and dropped
+  the now-unused `oneTimeWarning` import.
 
-**Effect on user-facing behavior:** When `scene.invertClassification.enabled`
-is true on WebGPU, the composite always falls through to the
-single-pass tint path — every tile pixel receives `highlightColor *`
-modulation. For scenes WITHOUT classification primitives this matches
-WebGL exactly (the common case). For scenes WITH classification
-primitives, the masked region distinction is lost — classified pixels
-also get tinted (visible regression). Surfaced as a one-time warning
-from `WebGPUSceneRenderer._runInvertClassificationComposite`.
+**Same-cycle depth + RTE compatibility (verified during scope):**
 
-**Why deferred:** Restoring the IGNORE_SHOW stencil-mark pass means:
+- The stencil-write VS reuses the existing color VS, which already does
+  RTE-emulated 64-bit precision. No change to RTE math.
+- Globe depth (`context._globeDepthView`) is published BEFORE the
+  IGNORE_SHOW pass runs (publication site
+  `WebGPUSceneRendererFrustumLoop.ts:251` runs after the globe pass; the
+  `onAfterTileMainPass` hook re-publishes after the tile main pass at
+  `WebGPUSceneRenderer3DTilePasses.ts:288`, before IGNORE_SHOW
+  dispatches at line 320). The stencil-write FS samples that
+  same-cycle globe depth, identical to the color FS.
+- Pick commands run in the regular CLASSIFICATION pass against the scene
+  FB, completely independent of IGNORE_SHOW. The IGNORE_SHOW pass writes
+  only stencil bits to the invert FBO's depth-stencil texture; it never
+  touches pick FBO, scene color, or globe depth. Same-cycle pick is
+  unaffected.
 
-1. Each classifier renderer (4 files) emits a SECOND command per
-   primitive with `pass = CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`.
-2. A new "stencil-write" pipeline variant on each classifier:
-   color-write disabled, depth-write disabled, stencil-test
-   `compare: always`, `passOp: replace`, `stencilWriteMask: 0xff`,
-   `stencilReference: 0xff` (or any non-zero).
-3. `RenderStateToPipelineVariant.ts` already supports all these
-   stencil fields, so no infrastructure work — just per-classifier
-   wiring.
-
-Estimated ~150 LOC across the 4 classifier renderers + plumbing in
-the IGNORE_SHOW pass redirect (`WebGPUSceneRenderer3DTilePasses.ts`)
-to also flip `invertHasStencilData = true` based on the actual command
-count. Practical follow-up; not architecturally novel since the
-stencil-gated composite pipelines (`unclassifiedPipeline` /
-`classifiedPipeline`) already exist in `WebGPUInvertClassification.ts`.
-
-**Prerequisites:** None — depth-sample classifier already shipped, and
-the composite is already prepared to consume stencil data.
-
-**Estimated effort:** 1-2 sessions.
-
-**Impact:** Closes A.2 from AUDIT_2026_05_02. Makes invert
-classification per-pixel-correct for scenes with classification
-primitives (currently intermittent regression vs WebGL).
-
-**Trace:** AUDIT_2026_05_02.md A.2; honest-flag fix in
-`WebGPUSceneRenderer3DTilePasses.ts:310-340` and one-time-warning in
-`WebGPUSceneRenderer.ts:1490-1510`.
+**Closing batch:** Batch 141.
 
 ---
 

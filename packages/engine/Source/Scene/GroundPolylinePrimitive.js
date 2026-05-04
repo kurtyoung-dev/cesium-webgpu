@@ -838,6 +838,18 @@ function updateAndQueueCommands(
     const result = fr.createCommands(groundPolylinePrimitive, frameState);
     if (result && result.colorCommand) {
       frameState.commandList.push(result.colorCommand);
+      // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+      // push IGNORE_SHOW stencil-write command when invert classification
+      // is on. Renderer only emits this for 3D-Tile classification (not
+      // TERRAIN-only or morph mode); when invert is off the
+      // CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW pass doesn't run, so
+      // skipping the push avoids an unused command-list entry.
+      if (
+        result.ignoreShowCommand &&
+        frameState.invertClassification
+      ) {
+        frameState.commandList.push(result.ignoreShowCommand);
+      }
     }
     // Always return — never fall through to the WebGL queue when fr
     // is registered, because the WebGL commands lack shaderProgram.

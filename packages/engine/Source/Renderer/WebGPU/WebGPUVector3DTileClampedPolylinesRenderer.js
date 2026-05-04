@@ -292,6 +292,19 @@ fn pickFS(in: VOut) -> @location(0) vec4<f32> {
   }
   return in.pickCol;
 }
+
+// AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+// IGNORE_SHOW variant. Same volume rasterization + plane-test as fsMain;
+// deliberately does NOT respect feature.show. Color writes disabled at the
+// pipeline (writeMask=0), the only side-effect is stencil=0xff via
+// stencil-write state.
+@fragment
+fn stencilFS(in: VOut) -> @location(0) vec4<f32> {
+  if (!classifyFragment(in)) {
+    discard;
+  }
+  return vec4<f32>(0.0);
+}
 `;
 
   const mod = getClampedPolylineShaderCache(device).getOrCreate(
@@ -402,7 +415,45 @@ fn pickFS(in: VOut) -> @location(0) vec4<f32> {
     },
   };
 
-  return { colorDescriptor, pickDescriptor, sharedBgl, depthSampleBgl };
+  // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
+  const stencilDescriptor = {
+    name: `Vector3DTileClampedPolylines stencil [${format}/${depthFormat}]`,
+    layout,
+    vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "stencilFS",
+      targets: [{ format, writeMask: 0 }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "front" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "always",
+      stencilFront: {
+        compare: "always",
+        failOp: "keep",
+        depthFailOp: "keep",
+        passOp: "replace",
+      },
+      stencilBack: {
+        compare: "always",
+        failOp: "keep",
+        depthFailOp: "keep",
+        passOp: "replace",
+      },
+      stencilReadMask: 0xff,
+      stencilWriteMask: 0xff,
+    },
+  };
+
+  return {
+    colorDescriptor,
+    pickDescriptor,
+    stencilDescriptor,
+    sharedBgl,
+    depthSampleBgl,
+  };
 }
 
 function descriptorToGPU(d) {
@@ -428,7 +479,7 @@ function descriptorToGPU(d) {
 }
 
 function tryResolvePipelines(device, pipelineCache, resources, cache) {
-  if (cache.colorPipeline && cache.pickPipeline) {
+  if (cache.colorPipeline && cache.pickPipeline && cache.stencilPipeline) {
     return true;
   }
   if (pipelineCache) {
@@ -466,6 +517,25 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
           });
       }
     }
+    if (!cache.stencilPipeline) {
+      const stencilSync = pipelineCache.getPipelineSync(
+        resources.stencilDescriptor,
+      );
+      if (stencilSync) {
+        cache.stencilPipeline = stencilSync;
+      } else if (!cache.stencilRequestPending) {
+        cache.stencilRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.stencilDescriptor)
+          .then((p) => {
+            cache.stencilPipeline = p;
+            cache.stencilRequestPending = false;
+          })
+          .catch(() => {
+            cache.stencilRequestPending = false;
+          });
+      }
+    }
     return !!cache.colorPipeline;
   }
   if (!cache.colorPipeline) {
@@ -476,6 +546,11 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
   if (!cache.pickPipeline) {
     cache.pickPipeline = device.createRenderPipeline(
       descriptorToGPU(resources.pickDescriptor),
+    );
+  }
+  if (!cache.stencilPipeline) {
+    cache.stencilPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.stencilDescriptor),
     );
   }
   return true;
@@ -788,6 +863,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
     cache.pickPipeline = undefined;
+    cache.stencilPipeline = undefined;
     cache.sharedBindGroup = undefined;
     cache.depthSampleBindGroup = undefined;
   }
@@ -802,6 +878,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     cache._pipelineFormatGeneration = sceneGen;
     cache.colorRequestPending = false;
     cache.pickRequestPending = false;
+    cache.stencilRequestPending = false;
   }
   if (
     !tryResolvePipelines(
@@ -874,7 +951,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   const globeDepthView = context._globeDepthView ?? null;
   const depthSourceView = packedTranslucentView ?? globeDepthView;
   if (!depthSourceView) {
-    return { colorCommands: [], pickCommands: [] };
+    return { colorCommands: [], pickCommands: [], ignoreShowCommands: [] };
   }
   if (!defined(cache.depthSampleSampler)) {
     cache.depthSampleSampler = device.createSampler({
@@ -948,6 +1025,17 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   ) {
     passes.push(PASS_CESIUM_3D_TILE_CLASSIFICATION);
   }
+  // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+  // IGNORE_SHOW stencil-write commands. Only emitted for primitives that
+  // classify 3D Tiles (TYPE_3DTILE or BOTH); TERRAIN-only doesn't
+  // participate in invert classification. The pass is hard-coded to 7
+  // (CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW); a TERRAIN-classifying
+  // primitive that's also marked BOTH still gets one IGNORE_SHOW command
+  // (the 3D Tile half), no separate TERRAIN_CLASSIFICATION_IGNORE_SHOW.
+  const ignoreShowCommands = [];
+  const emitsThreeDTileClassification =
+    classType === CLASSIFICATION_TYPE_3DTILE ||
+    classType === CLASSIFICATION_TYPE_BOTH;
   for (let i = 0; i < passes.length; i++) {
     const passEnum = passes[i];
     colorCommands.push(
@@ -968,8 +1056,18 @@ function createWebGPUVector3DTileClampedPolylineCommands(
       );
     }
   }
+  if (emitsThreeDTileClassification && defined(cache.stencilPipeline)) {
+    ignoreShowCommands.push(
+      new WebGPUDrawCommand({
+        ...sharedDrawArgs,
+        pipeline: cache.stencilPipeline,
+        pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
+        renderState: { stencilTest: { reference: 0xff } },
+      }),
+    );
+  }
 
-  return { colorCommands, pickCommands };
+  return { colorCommands, pickCommands, ignoreShowCommands };
 }
 
 function destroyWebGPUVector3DTileClampedPolylineResources(primitive) {

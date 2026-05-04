@@ -319,32 +319,23 @@ export function execute3DTilePasses(
           ignoreShowPass.setScissorRect(0, 0, host._width, host._height);
           runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW);
           context.endCurrentRenderPass?.();
-          // AUDIT_2026_05_02 A.2 — be honest about whether stencil
-          // bits were actually written. Two preconditions must hold:
-          //
-          //   (1) IGNORE_SHOW commands actually existed for this
-          //       frustum (count > 0). Pre-fix this was assumed.
-          //
-          //   (2) Those commands' pipelines write stencil. Post-
-          //       ADR-2026-04-28 the depth-sample classifier
-          //       architecture (see `WebGPUGroundPrimitiveRenderer.js`,
-          //       `WebGPUVector3DTilePrimitiveRenderer.js`, etc.)
-          //       collapses three classifier passes into one and
-          //       no longer emits stencil-write commands. So even
-          //       if classifier renderers DID emit IGNORE_SHOW
-          //       commands today (they don't), the redirected pass
-          //       wouldn't actually mark the stencil buffer.
-          //
-          // Net effect: this flag stays false on WebGPU until a
-          // stencil-write classifier variant lands
-          // (NEW-INVERT-CLASS-STENCIL-CLASSIFIER, DEFERRED_WORK).
-          // The composite then takes the single-pass-tint fallback,
-          // which matches WebGL's "no classification primitives"
-          // case — every tile pixel gets tinted by `highlightColor`.
-          // For scenes that DO have classification primitives, the
-          // per-pixel mask is missing, so classified regions also
-          // get tinted (visible regression vs WebGL — surfaced via
-          // the one-time warning below).
+          // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER —
+          // resolved). All four depth-sample classifier renderers now
+          // emit dedicated IGNORE_SHOW stencil-write commands for 3D-Tile
+          // classification:
+          //   - `WebGPUGroundPrimitiveRenderer.js`
+          //   - `WebGPUGroundPolylineRenderer.js`
+          //   - `WebGPUVector3DTilePrimitiveRenderer.js`
+          //   - `WebGPUVector3DTileClampedPolylinesRenderer.js`
+          // Each pushes a `pass = 7` stencil-write command alongside its
+          // color command (gated on `frameState.invertClassification` at
+          // each renderer's dispatch site). The stencil-write pipeline has
+          // `writeMask: 0` on the color target and `passOp: replace` with
+          // `stencilReference: 0xff` so every classified-surface pixel the
+          // volume covers marks the invert FBO's stencil. The composite
+          // (`WebGPUInvertClassification.classifiedPipeline` /
+          // `unclassifiedPipeline`) then reads those bits to gate which
+          // tile pixels get the invert tint.
           const ignoreShowCount =
             frustumCommands.indices[
               Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW

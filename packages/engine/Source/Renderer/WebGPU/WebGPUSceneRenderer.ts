@@ -33,7 +33,6 @@
 
 import Pass from "../../Renderer/Pass.js";
 import mergeSort from "../../Core/mergeSort.js";
-import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import {
   backToFront as _commandSorterBackToFront,
   backToFrontSplats as _commandSorterBackToFrontSplats,
@@ -1488,25 +1487,16 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // AUDIT_2026_05_02 A.2 — surface the architectural limitation once
-    // per session. ADR-2026-04-28's depth-sample classifier collapses
-    // the IGNORE_SHOW stencil-mark pass into the regular CLASSIFICATION
-    // pass and no longer writes stencil. Without per-pixel
-    // classified/unclassified discrimination, the composite tints every
-    // tile pixel with `highlightColor` — correct for scenes without
-    // classification primitives, but visually wrong for scenes WITH
-    // classification primitives (those regions also get tinted).
-    // Restoring the stencil mark requires a stencil-write classifier
-    // pipeline variant (NEW-INVERT-CLASS-STENCIL-CLASSIFIER, deferred).
-    if (!this._invertClassStencilReady) {
-      oneTimeWarning(
-        "webgpu-invert-classification-stencil",
-        "WebGPU InvertClassification: depth-sample classifier (ADR-2026-04-28) " +
-          "does not write stencil bits, so the composite cannot distinguish " +
-          "classified vs unclassified regions. Every tile pixel gets tinted by " +
-          "`invertClassificationColor`. Tracked as NEW-INVERT-CLASS-STENCIL-CLASSIFIER.",
-      );
-    }
+    // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER —
+    // resolved). Each classifier renderer (Ground primitive, ground polyline,
+    // Vector3DTile primitive, Vector3DTile clamped polylines) now emits a
+    // dedicated IGNORE_SHOW stencil-write command alongside its color
+    // command for 3D-Tile classification. The dispatcher in
+    // `WebGPUSceneRenderer3DTilePasses.ts` runs those commands inside the
+    // invert FBO and flips `invertHasStencilData = true` once the
+    // CLASSIFICATION_IGNORE_SHOW pass ran with > 0 commands, which makes
+    // the stencil-gated composite branch in `runInvertCompositeFromTracker`
+    // active. The previous "every-pixel-tinted" warning is now obsolete.
 
     // End the current scene pass so the MSAA color attachment resolves
     // into the single-sample resolve view. Both the stencil-gated path

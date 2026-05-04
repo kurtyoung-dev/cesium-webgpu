@@ -881,6 +881,20 @@ function updateAndQueueCommands(
         frameState.commandList.push(result.stencilCommand);
       }
       frameState.commandList.push(result.colorCommand);
+      // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+      // push the IGNORE_SHOW stencil-write command when invert classification
+      // is enabled this frame. The renderer only emits this for 3D Tile
+      // classification (not TERRAIN-only); when invert is off the WebGPU
+      // scene-renderer's classification dispatcher won't enter the
+      // CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW pass, so the command is
+      // a no-op anyway, but skipping the push avoids an unused command-
+      // list entry.
+      if (
+        result.ignoreShowCommand &&
+        frameState.invertClassification
+      ) {
+        frameState.commandList.push(result.ignoreShowCommand);
+      }
       return;
     }
     // If WebGPU commands couldn't be created (no geometry data yet),

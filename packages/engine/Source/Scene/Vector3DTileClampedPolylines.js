@@ -217,6 +217,19 @@ class Vector3DTileClampedPolylines {
           for (let i = 0; i < colorCommands.length; i++) {
             frameState.commandList.push(colorCommands[i]);
           }
+          // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+          // push IGNORE_SHOW stencil-write commands when invert
+          // classification is on so the stencil-gated composite can
+          // distinguish classified vs unclassified tile pixels.
+          if (
+            frameState.invertClassification &&
+            defined(result?.ignoreShowCommands)
+          ) {
+            const ignoreShowCommands = result.ignoreShowCommands;
+            for (let i = 0; i < ignoreShowCommands.length; i++) {
+              frameState.commandList.push(ignoreShowCommands[i]);
+            }
+          }
         }
         if (passes.pick && defined(result?.pickCommands)) {
           const pickCommands = result.pickCommands;

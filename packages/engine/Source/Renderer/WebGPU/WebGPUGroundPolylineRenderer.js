@@ -825,6 +825,18 @@ fn applyMaterial(
   return u.pickColor;
 }
 
+// AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+// IGNORE_SHOW variant. Same plane-test as the color/pick FSes; color
+// writes disabled by the pipeline (writeMask=0), the only side-effect
+// is stencil=0xff via stencil-write state.
+@fragment fn stencilFS(in: VS_OUT) -> @location(0) vec4<f32> {
+  let r = classifyFragment(in);
+  if (!r.passed) {
+    discard;
+  }
+  return vec4<f32>(0.0);
+}
+
 // ── Morph scene-mode pipeline ────────────────────────────────────
 //
 // During scene-mode transitions (3D ↔ Columbus View ↔ 2D) the polyline
@@ -1101,6 +1113,38 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     },
   };
 
+  // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
+  const stencilDescriptor = {
+    name: `GroundPolyline stencil [${format}/${depthFormat}]`,
+    layout: pipelineLayout,
+    vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "stencilFS",
+      targets: [{ format, writeMask: 0 }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "always",
+      stencilFront: {
+        compare: "always",
+        failOp: "keep",
+        depthFailOp: "keep",
+        passOp: "replace",
+      },
+      stencilBack: {
+        compare: "always",
+        failOp: "keep",
+        depthFailOp: "keep",
+        passOp: "replace",
+      },
+      stencilReadMask: 0xff,
+      stencilWriteMask: 0xff,
+    },
+  };
+
   // Morph pipeline — uses the same UBO and pipeline layout, but
   // different VS / FS entry points and front-face culling (matches the
   // WebGL `_renderStateMorph` which has `face: CullFace.FRONT` because
@@ -1165,6 +1209,7 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
   return {
     colorDescriptor,
     pickDescriptor,
+    stencilDescriptor,
     morphColorDescriptor,
     morphPickDescriptor,
     bgl,
@@ -1199,6 +1244,7 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
   if (
     cache.colorPipeline &&
     cache.pickPipeline &&
+    cache.stencilPipeline &&
     cache.morphColorPipeline &&
     cache.morphPickPipeline
   ) {
@@ -1208,15 +1254,25 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
   if (pipelineCache) {
     const colorSync = pipelineCache.getPipelineSync(resources.colorDescriptor);
     const pickSync = pipelineCache.getPipelineSync(resources.pickDescriptor);
+    const stencilSync = pipelineCache.getPipelineSync(
+      resources.stencilDescriptor,
+    );
     const morphColorSync = pipelineCache.getPipelineSync(
       resources.morphColorDescriptor,
     );
     const morphPickSync = pipelineCache.getPipelineSync(
       resources.morphPickDescriptor,
     );
-    if (colorSync && pickSync && morphColorSync && morphPickSync) {
+    if (
+      colorSync &&
+      pickSync &&
+      stencilSync &&
+      morphColorSync &&
+      morphPickSync
+    ) {
       cache.colorPipeline = colorSync;
       cache.pickPipeline = pickSync;
+      cache.stencilPipeline = stencilSync;
       cache.morphColorPipeline = morphColorSync;
       cache.morphPickPipeline = morphPickSync;
       cache.pipelineRequestPending = false;
@@ -1227,12 +1283,14 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
       Promise.all([
         pipelineCache.getPipeline(resources.colorDescriptor),
         pipelineCache.getPipeline(resources.pickDescriptor),
+        pipelineCache.getPipeline(resources.stencilDescriptor),
         pipelineCache.getPipeline(resources.morphColorDescriptor),
         pipelineCache.getPipeline(resources.morphPickDescriptor),
       ])
-        .then(([color, pick, morphColor, morphPick]) => {
+        .then(([color, pick, stencil, morphColor, morphPick]) => {
           cache.colorPipeline = color;
           cache.pickPipeline = pick;
+          cache.stencilPipeline = stencil;
           cache.morphColorPipeline = morphColor;
           cache.morphPickPipeline = morphPick;
           cache.pipelineRequestPending = false;
@@ -1249,6 +1307,9 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
   );
   cache.pickPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.pickDescriptor),
+  );
+  cache.stencilPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.stencilDescriptor),
   );
   cache.morphColorPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.morphColorDescriptor),
@@ -2741,10 +2802,38 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     attachPickToColorCommand(colorCommand, cache.pickCommand);
   }
 
+  // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
+  // emit IGNORE_SHOW stencil-write command alongside the color command for
+  // primitives that classify 3D Tiles. Morph mode shares the existing
+  // morph pipelines (no separate morph stencil variant — invert
+  // classification doesn't run during scene-mode morphs anyway). The
+  // stencil pipeline only exists for the main (non-morph) classifier.
+  let ignoreShowCommand = null;
+  if (groundPass === 6 && !isMorphing && defined(cache.stencilPipeline)) {
+    ignoreShowCommand = new WebGPUDrawCommand({
+      pipeline: cache.stencilPipeline,
+      bindGroups: [
+        cache.bindGroup,
+        cache.depthSampleBindGroup,
+        cache.materialBindGroup,
+      ],
+      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup, undefined],
+      vertexBuffers: [cache.vertexGPUBuffer],
+      indexBuffer: cache.indexGPUBuffer || undefined,
+      indexCount: cache.indexCount || 0,
+      indexFormat: cache.indexFormat || "uint16",
+      vertexCount: cache.vertexCount || 0,
+      pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
+      owner: primitive,
+      renderState: { stencilTest: { reference: 0xff } },
+    });
+  }
+
   return {
     stencilCommand: null,
     colorCommand,
     pickCommand: cache.pickCommand,
+    ignoreShowCommand,
   };
 }
 
