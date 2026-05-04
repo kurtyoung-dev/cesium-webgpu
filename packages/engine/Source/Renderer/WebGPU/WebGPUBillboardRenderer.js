@@ -60,6 +60,43 @@ const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 
 /**
+ * Batch 139 (3rd-pass audit fix) — encode the
+ * `disableDepthTestDistance` per-instance attribute so the WGSL
+ * sentinel check works. WebGL's convention (mirrored at
+ * `BillboardCollection.js:1798-1799`):
+ *
+ *   - `Number.POSITIVE_INFINITY` → -1.0 (always-disable sentinel; the
+ *     shader's `< 0` check fires).
+ *   - finite numbers → unchanged (the shader squares + compares to
+ *     squared eye distance).
+ *   - other (undefined, NaN, non-number) → 0.0 (no per-instance
+ *     override; falls back to frame-wide minimum in the shader).
+ *
+ * Pre-Batch-139 the JS pack collapsed Infinity to 0.0, which made the
+ * shader's sentinel branch dead code — the disable-depth-distance
+ * "always disable" mode never fired on WebGPU.
+ */
+function encodeDisableDepthTestDistance(value) {
+  if (typeof value !== "number") {
+    return 0.0;
+  }
+  if (value === Number.POSITIVE_INFINITY) {
+    return -1.0;
+  }
+  // 4th-pass audit fix — guard against `NaN`, `-Infinity`, and
+  // negative finite values. WebGL squares the input in the shader so
+  // sign is dropped (negative distances become positive squared
+  // distances), but WebGPU stores raw and uses `<0` as the always-
+  // disable sentinel. Treating negatives as 0 (no override) matches
+  // the WebGL behavior on sane inputs (distance is always >= 0) and
+  // avoids accidentally tripping the sentinel on bad data.
+  if (isFinite(value) && value > 0.0) {
+    return value;
+  }
+  return 0.0;
+}
+
+/**
  * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
  * into the (near, nearValue, far, farValue) layout the WGSL helper
  * `czm_nearFarScalar` expects. Returns the same layout the WebGL
@@ -187,8 +224,9 @@ function buildInstanceData(collection) {
     //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
     //   z: distanceDisplayCondition.near^2 (squared meters; 0 if unset)
     //   w: distanceDisplayCondition.far^2 (squared meters; +Inf if unset)
-    const d = bb._disableDepthTestDistance;
-    instanceData[offset + 24] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 24] = encodeDisableDepthTestDistance(
+      bb._disableDepthTestDistance,
+    );
     instanceData[offset + 25] = bb._splitDirection ?? 0.0;
     // AUDIT_2026_05_02 A.14 (Batch 135) — pack the squared near/far
     // distance display window. WGSL gate compares squared eye distance
@@ -330,8 +368,9 @@ function buildPickInstanceData(collection, context) {
     // DepthDistance threshold should still pick the billboard above
     // terrain; a pixel outside the split-cutoff or distance window
     // should not pick a billboard it can't see).
-    const d = bb._disableDepthTestDistance;
-    instanceData[offset + 24] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 24] = encodeDisableDepthTestDistance(
+      bb._disableDepthTestDistance,
+    );
     instanceData[offset + 25] = bb._splitDirection ?? 0.0;
     const ddc = bb._distanceDisplayCondition;
     if (ddc) {
@@ -1050,14 +1089,14 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     });
   }
 
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) \u2014 globe depth view + sampler.
-  // Pulls from `context._globeDepthView` (published by the scene
-  // renderer's frustum loop after the globe pass). Falls back to a
-  // 1\u00d71 placeholder when the globe didn't render this frame, which
-  // makes the bind group always valid; the VS just gets a depth=0
-  // sample that `getGlobeDepth` interprets as "off-globe / skip the
-  // occlusion test."
-  const globeDepthView = context._globeDepthView ?? null;
+  // Batch 138 / Batch 139 (VS_THREE_POINT_DEPTH_CHECK) \u2014 globe depth
+  // view + sampler. Pulls the underlying texture from
+  // `context._globeDepthTexture` (published by the scene renderer's
+  // frustum loop) and creates the view ourselves so cache identity is
+  // stable. The scene renderer's `_globeDepthView` is a fresh view
+  // every frame; comparing by texture identity avoids per-frame bind
+  // group rebuilds. Falls back to a 1\u00d71 placeholder when the globe
+  // didn't render this frame.
   if (!defined(cache.globeDepthPlaceholder)) {
     cache.globeDepthPlaceholder = device.createTexture({
       label: "Billboard globe-depth placeholder 1x1",
@@ -1078,8 +1117,14 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
       magFilter: "nearest",
     });
   }
+  const globeDepthTexture = context._globeDepthTexture ?? null;
+  if (cache.globeDepthCachedTexture !== globeDepthTexture) {
+    cache.globeDepthCachedTexture = globeDepthTexture;
+    cache.globeDepthCachedView =
+      globeDepthTexture !== null ? globeDepthTexture.createView() : null;
+  }
   const effectiveGlobeDepthView =
-    globeDepthView ?? cache.globeDepthPlaceholderView;
+    cache.globeDepthCachedView ?? cache.globeDepthPlaceholderView;
   if (cache.lastGlobeDepthView !== effectiveGlobeDepthView) {
     cache.lastGlobeDepthView = effectiveGlobeDepthView;
     cache.bindGroup = undefined;

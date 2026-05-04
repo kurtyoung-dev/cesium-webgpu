@@ -374,6 +374,13 @@ export class WebGPUContext extends GraphicsContext {
   // detection stage in Model FS) have a single, stable place to read
   // it from. `null` when globe depth wasn't computed this frame.
   public _globeDepthView: GPUTextureView | null = null;
+  // Batch 139 (NEW-LABEL-SDF-BIND-GROUP-CACHING) — published
+  // alongside `_globeDepthView` so collection renderers can compare
+  // by underlying texture identity (stable across frames; only
+  // rotates on viewport resize). The view object itself is fresh
+  // every frame, so view-identity comparison rebuilds bind groups
+  // unnecessarily. `null` when globe depth wasn't computed this frame.
+  public _globeDepthTexture: GPUTexture | null = null;
   // Migration Session 2 — packed translucent depth view from
   // `WebGPUTranslucentTileClassification.executePackDepth`. Published
   // each frame after the pack-depth pipeline runs IF translucent depth

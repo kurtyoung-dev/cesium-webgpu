@@ -114,8 +114,9 @@ fn czm_unpackDepth(packedDepth: vec4<f32>) -> f32 {
   );
 }
 
-fn getGlobeDepth(positionEC: vec3<f32>) -> f32 {
-  let clipPos = camera.mvpRelativeToEye * vec4<f32>(positionEC, 1.0);
+// Batch 139 — see BillboardCollection.wgsl for the full helper
+// design (NDC-z return + addScreenSpaceOffsetClip companion).
+fn getGlobeNdcDepth(clipPos: vec4<f32>) -> f32 {
   if (clipPos.w <= 0.0) {
     return 0.0;
   }
@@ -125,14 +126,40 @@ fn getGlobeDepth(positionEC: vec3<f32>) -> f32 {
     return 0.0;
   }
   let packed = textureSampleLevel(globeDepthTex, globeDepthSampler, uv, 0.0);
-  let depth = czm_unpackDepth(packed);
-  if (depth == 0.0) {
-    return 0.0;
+  return czm_unpackDepth(packed);
+}
+
+// Batch 139 (4th-pass audit fix) — see BillboardCollection.wgsl for
+// the full WebGL-parity math note. `originScale` removes the
+// spurious negation that the 3rd-pass version introduced.
+fn addScreenSpaceOffsetClip(
+  anchorClip: vec4<f32>,
+  direction: vec2<f32>,
+  origin: vec2<f32>,
+  size: vec2<f32>,
+  pixelOffset: vec2<f32>,
+  rotation: f32,
+  pixelToClip: vec2<f32>,
+) -> vec4<f32> {
+  let halfSize = size * 0.5;
+  var halfSizeOffset = halfSize * (direction * 2.0 - 1.0);
+  let originTranslate = origin * abs(halfSize);
+  // 4th-pass audit fix — only halfSizeOffset rotates; originTranslate
+  // and pixelOffset stay un-rotated, matching WebGL
+  // `BillboardCollectionVS.glsl:73-84`.
+  if (abs(rotation) > 0.001) {
+    let cosR = cos(rotation);
+    let sinR = sin(rotation);
+    halfSizeOffset = vec2<f32>(
+      halfSizeOffset.x * cosR - halfSizeOffset.y * sinR,
+      halfSizeOffset.x * sinR + halfSizeOffset.y * cosR,
+    );
   }
-  // Batch 138 fix — WebGPU NDC z is [0, 1], not WebGL's [-1, 1].
-  // depth is already NDC z; clip-z = NDC_z * w. See
-  // BillboardCollection.wgsl `getGlobeDepth` for the full comment block.
-  return depth * clipPos.w;
+  let totalOffset = halfSizeOffset + originTranslate + pixelOffset;
+  var clipPos = anchorClip;
+  clipPos.x = clipPos.x + totalOffset.x * pixelToClip.x * clipPos.w;
+  clipPos.y = clipPos.y + totalOffset.y * pixelToClip.y * clipPos.w;
+  return clipPos;
 }
 
 const QUAD_OFFSETS = array<vec2<f32>, 6>(
@@ -238,43 +265,107 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  // DP-H42 — same logic as BillboardCollection.wgsl.
-  var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
-  if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
-    disableDepthSq =
+  // DP-H42 — same logic as BillboardCollection.wgsl. Batch 139
+  // (4th-pass audit) — raw-sentinel pattern.
+  let disableRawDP = input.perInstanceFlags.x;
+  if (disableRawDP < 0.0) {
+    clipPos.z = clipPos.w;
+  } else if (disableRawDP != 0.0) {
+    let disableDepthSqDP = disableRawDP * disableRawDP;
+    if (camDistSq < disableDepthSqDP) {
+      clipPos.z = clipPos.w;
+    }
+  } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+    let frameMinSqDP =
       camera.minimumDisableDepthTestDistance *
       camera.minimumDisableDepthTestDistance;
-  }
-  if (disableDepthSq != 0.0) {
-    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
+    if (camDistSq < frameMinSqDP) {
       clipPos.z = clipPos.w;
     }
   }
   //>>endif
 
   //>>ifdef VS_THREE_POINT_DEPTH_CHECK
-  // Batch 138 — three-point depth check for clamp-to-ground labels.
-  // Mirror of BillboardCollection.wgsl; first-cut uses anchor-only
-  // sampling. See `BillboardCollection.wgsl` for the full design note
-  // about extracting `addScreenSpaceOffset` for proper 3-point
-  // sampling. Critical for KML/GeoJSON labels with
-  // `heightReference: CLAMP_TO_GROUND` to hide behind hills.
+  // Batch 138 + Batch 139 — full three-point depth check for clamp-to-
+  // ground labels. Mirrors BillboardCollection.wgsl. Critical for
+  // KML/GeoJSON labels with `heightReference: CLAMP_TO_GROUND` to hide
+  // behind hills.
   let threshSqLabel =
     camera.threePointDepthTestDistance *
     camera.threePointDepthTestDistance;
-  let enableDepthCheckLabel = input.threePointAttribs.z;
+  // Batch 139 (NEW-VS-THREE-POINT-DISABLE-DEPTH-INTERACTION) — same
+  // disable-depth-distance escape hatch as Billboard. Raw-value
+  // sentinel check BEFORE squaring (the original draft squared first
+  // and the `< 0` check could never fire).
+  var enableDepthCheckLabel = input.threePointAttribs.z;
+  let disableRawLabel = input.perInstanceFlags.x;
+  if (disableRawLabel < 0.0) {
+    enableDepthCheckLabel = 0.0;
+  } else if (disableRawLabel != 0.0) {
+    let disableDepthSqLabel = disableRawLabel * disableRawLabel;
+    if (camDistSq < disableDepthSqLabel) {
+      enableDepthCheckLabel = 0.0;
+    }
+  } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+    let frameMinSqLabel =
+      camera.minimumDisableDepthTestDistance *
+      camera.minimumDisableDepthTestDistance;
+    if (camDistSq < frameMinSqLabel) {
+      enableDepthCheckLabel = 0.0;
+    }
+  }
   if (
     threshSqLabel > 0.0 &&
     camDistSq < threshSqLabel &&
     enableDepthCheckLabel > 0.5
   ) {
-    let depthsilon = 10.0;
-    let globeDepth1 = getGlobeDepth(positionRTE);
-    // Batch 138 fix — WebGPU clip z: label OCCLUDED when clip z >
-    // terrain clip z + bias. See BillboardCollection.wgsl for the
-    // full comment about the [-1,1] → [0,1] convention flip.
-    if (globeDepth1 != 0.0 && clipPos.z > globeDepth1 + depthsilon) {
-      clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    let depthOriginLabel = input.threePointAttribs.xy;
+    let anchorClipLabel = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
+    let labelSize3PD =
+      vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
+    let ndcBias = 0.0001;
+
+    // Sample-point directions: BL / TL / TR. depthOrigin is the
+    // label-side anchor (LEFT/CENTER/RIGHT × TOP/CENTER/BOTTOM).
+    let pClip1 = addScreenSpaceOffsetClip(
+      anchorClipLabel,
+      vec2<f32>(0.0, 0.0),
+      depthOriginLabel,
+      labelSize3PD,
+      effectivePixelOffset,
+      rotation,
+      pixelToClip,
+    );
+    let depth1 = getGlobeNdcDepth(pClip1);
+    let labelNdcZ1 = pClip1.z / pClip1.w;
+    if (depth1 != 0.0 && labelNdcZ1 > depth1 + ndcBias) {
+      let pClip2 = addScreenSpaceOffsetClip(
+        anchorClipLabel,
+        vec2<f32>(0.0, 1.0),
+        depthOriginLabel,
+        labelSize3PD,
+        effectivePixelOffset,
+        rotation,
+        pixelToClip,
+      );
+      let depth2 = getGlobeNdcDepth(pClip2);
+      let labelNdcZ2 = pClip2.z / pClip2.w;
+      if (depth2 != 0.0 && labelNdcZ2 > depth2 + ndcBias) {
+        let pClip3 = addScreenSpaceOffsetClip(
+          anchorClipLabel,
+          vec2<f32>(1.0, 1.0),
+          depthOriginLabel,
+          labelSize3PD,
+          effectivePixelOffset,
+          rotation,
+          pixelToClip,
+        );
+        let depth3 = getGlobeNdcDepth(pClip3);
+        let labelNdcZ3 = pClip3.z / pClip3.w;
+        if (depth3 != 0.0 && labelNdcZ3 > depth3 + ndcBias) {
+          clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+      }
     }
   }
   //>>endif

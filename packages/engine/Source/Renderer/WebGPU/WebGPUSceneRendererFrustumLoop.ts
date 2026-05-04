@@ -239,6 +239,15 @@ export function executeFrustumLoop(
         // hierarchy. View is recreated each frame because the
         // underlying texture can change on resize.
         const packedDepth = host._globeDepth.globeDepthTexture;
+        // Batch 139 (NEW-LABEL-SDF-BIND-GROUP-CACHING) — also publish
+        // the underlying texture so collection renderers can compare
+        // by texture identity instead of view object identity. The
+        // view object is recreated every frame here, so any consumer
+        // tracking the view alone rebuilds bind groups every frame on
+        // globe scenes; tracking the texture lets the cache stay
+        // stable when the texture itself isn't rotating (most
+        // frames — only on viewport resize does it actually change).
+        context._globeDepthTexture = packedDepth ?? null;
         context._globeDepthView = packedDepth ? packedDepth.createView() : null;
       }
     }

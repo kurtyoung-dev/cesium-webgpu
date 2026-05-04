@@ -57,6 +57,25 @@ const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
 
 /**
+ * Batch 139 (3rd-pass audit fix) — see WebGPUBillboardRenderer for
+ * the full comment block. Mirrors WebGL's
+ * `BillboardCollection.js:1798-1799` Infinity → -1 sentinel encode so
+ * the WGSL shader's `< 0` "always disable" branch fires correctly.
+ */
+function encodeDisableDepthTestDistance(value) {
+  if (typeof value !== "number") {
+    return 0.0;
+  }
+  if (value === Number.POSITIVE_INFINITY) {
+    return -1.0;
+  }
+  if (isFinite(value) && value > 0.0) {
+    return value;
+  }
+  return 0.0;
+}
+
+/**
  * AUDIT_2026_05_02 A.14 (Batch 137) — pack a CesiumJS NearFarScalar
  * into 4 contiguous floats, mirroring `WebGPUBillboardRenderer.packNearFarScalar`.
  * Identity-NFS written when `scalar` is undefined so the WGSL gate
@@ -203,8 +222,9 @@ function buildSDFInstanceData(collection, labelCollection) {
     //   y: splitDirection
     //   z: distanceDisplayCondition.near^2 (Batch 137)
     //   w: distanceDisplayCondition.far^2 (Batch 137)
-    const d = bb._disableDepthTestDistance;
-    instanceData[offset + 32] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 32] = encodeDisableDepthTestDistance(
+      bb._disableDepthTestDistance,
+    );
     instanceData[offset + 33] = bb._splitDirection ?? 0.0;
     const ddc = bb._distanceDisplayCondition;
     if (ddc) {
@@ -840,20 +860,54 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       magFilter: "nearest",
     });
   }
+  // Batch 139 (NEW-LABEL-SDF-BIND-GROUP-CACHING fix) — track by
+  // underlying texture identity, not view object. The scene renderer
+  // creates a fresh `GPUTextureView` every frame from a stable
+  // `GPUTexture`, so view-object identity comparison rebuilds bind
+  // groups every frame on globe scenes. Texture identity is stable
+  // across frames (only changes on viewport resize). When the texture
+  // rotates we re-create the view; otherwise we reuse our cached
+  // view + bind group.
+  const globeDepthTexture = context._globeDepthTexture ?? null;
+  if (cache.globeDepthCachedTexture !== globeDepthTexture) {
+    cache.globeDepthCachedTexture = globeDepthTexture;
+    cache.globeDepthCachedView =
+      globeDepthTexture !== null ? globeDepthTexture.createView() : null;
+  }
   const globeDepthView =
-    context._globeDepthView ?? cache.globeDepthPlaceholderView;
+    cache.globeDepthCachedView ?? cache.globeDepthPlaceholderView;
 
-  // Bind group — recreate each frame to pick up atlas changes
-  cache.sdfBindGroup = device.createBindGroup({
-    layout: cache.sdfBindGroupLayout,
-    entries: [
-      { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
-      { binding: 1, resource: atlasTextureView },
-      { binding: 2, resource: atlasSampler },
-      { binding: 3, resource: globeDepthView },
-      { binding: 4, resource: cache.globeDepthSampler },
-    ],
-  });
+  // NEW-LABEL-SDF-BIND-GROUP-CACHING (Batch 139) — gate the bind
+  // group rebuild on whether ANY of the bound resources actually
+  // changed since last frame. Pre-Batch-139 the bind group was
+  // unconditionally recreated every frame, paying the
+  // `createBindGroup` cost for every Sandcastle frame even when the
+  // atlas, globe depth view, and uniform buffer were all stable.
+  // With texture-identity tracking above, even globe scenes hit a
+  // stable cache after the first frame.
+  const uniformBuffer = cache.uniformBuffer.buffer;
+  const sdfBindGroupNeedsRebuild =
+    !defined(cache.sdfBindGroup) ||
+    cache.sdfBindGroupAtlasView !== atlasTextureView ||
+    cache.sdfBindGroupAtlasSampler !== atlasSampler ||
+    cache.sdfBindGroupGlobeDepthView !== globeDepthView ||
+    cache.sdfBindGroupUniformBuffer !== uniformBuffer;
+  if (sdfBindGroupNeedsRebuild) {
+    cache.sdfBindGroup = device.createBindGroup({
+      layout: cache.sdfBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuffer } },
+        { binding: 1, resource: atlasTextureView },
+        { binding: 2, resource: atlasSampler },
+        { binding: 3, resource: globeDepthView },
+        { binding: 4, resource: cache.globeDepthSampler },
+      ],
+    });
+    cache.sdfBindGroupAtlasView = atlasTextureView;
+    cache.sdfBindGroupAtlasSampler = atlasSampler;
+    cache.sdfBindGroupGlobeDepthView = globeDepthView;
+    cache.sdfBindGroupUniformBuffer = uniformBuffer;
+  }
 
   // Build SDF instance data
   const { instanceData, visibleCount } = buildSDFInstanceData(

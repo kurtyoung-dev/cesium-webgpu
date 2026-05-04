@@ -191,14 +191,23 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
-  if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
-    disableDepthSq =
+  // Batch 139 (4th-pass audit) — raw-sentinel pattern. Pick path
+  // mirrors the color path's DISABLE_DEPTH_DISTANCE behavior so a
+  // billboard with `disableDepthTestDistance = Infinity` (raw -1 in
+  // the buffer) is correctly pickable above terrain.
+  let disableRawDPick = input.perInstanceFlags.x;
+  if (disableRawDPick < 0.0) {
+    clipPos.z = clipPos.w;
+  } else if (disableRawDPick != 0.0) {
+    let disableDepthSqDPick = disableRawDPick * disableRawDPick;
+    if (camDistSq < disableDepthSqDPick) {
+      clipPos.z = clipPos.w;
+    }
+  } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+    let frameMinSqDPick =
       camera.minimumDisableDepthTestDistance *
       camera.minimumDisableDepthTestDistance;
-  }
-  if (disableDepthSq != 0.0) {
-    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
+    if (camDistSq < frameMinSqDPick) {
       clipPos.z = clipPos.w;
     }
   }

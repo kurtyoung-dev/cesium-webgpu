@@ -565,98 +565,121 @@ into a shared chunk so all 3 sample points can call it.
 
 ---
 
-### NEW-VS-THREE-POINT-FULL-3POINT-SAMPLING — proper 3-point sampling for label terrain occlusion
+### ~~NEW-VS-THREE-POINT-FULL-3POINT-SAMPLING~~ — RESOLVED (Batch 139)
 
-**What:** Batch 138 shipped a 1-point variant of `VS_THREE_POINT_DEPTH_CHECK`
-that samples globe depth at the label anchor only. WebGL's full
-implementation samples at 3 label-anchor key points (origin, top,
-top-right) and discards only when ALL three are occluded. This
-covers a niche case where a tall label spans over a hill: the anchor
-is behind terrain but the top of the label peeks above, and WebGL
-correctly keeps the label visible.
+**Resolution:** Implemented full 3-point sampling. Each billboard /
+label samples globe depth at three key points (origin / top / top-right)
+and discards only when ALL three are occluded.
 
-**Why deferred:** Requires extracting `addScreenSpaceOffset(...)` into
-a shared WGSL chunk so all 3 sample points can compute their
-positions consistently. The function is currently inlined across
-multiple billboard shaders. Refactoring requires:
+**What landed:**
 
-- A new chunk file `chunks/functions/csm_billboardScreenSpaceOffset.wgsl`.
-- A WGSL `//>>include` mechanism (verify supported by the preprocessor).
-- Updating each consumer billboard shader to use the chunk instead
-  of inlining.
+- `addScreenSpaceOffsetClip(anchorClip, direction, size, pixelOffset, rotation, pixelToClip)` —
+  WGSL helper that computes a clip-space corner position for a
+  billboard given the anchor's clipPos and a direction in [-1, 1].
+  Rotation, pixelOffset, and size baked in. Added to both
+  `BillboardCollection.wgsl` and `BillboardCollectionSDF.wgsl`. (Did
+  not extract to a shared chunk — the WGSL preprocessor's `//>>include`
+  semantics weren't necessary; ~30 LOC duplicated across 2 files is
+  cheaper than the chunk-include refactor.)
+- `getGlobeNdcDepth(clipPos)` returns the terrain's NDC z directly
+  (instead of converting to clip-z) so callers compare in NDC space.
+  This also fixed a separate Batch 138 design flaw where the
+  clip-z bias (`depthsilon = 10.0` clip-units) was distance-dependent.
+  Now uses `ndcBias = 0.0001` which is uniform across distances.
+- 3-point check body: samples anchor, top (origin + (0, 1)), top-right
+  (origin + (1, 1)). Cascade: only check sample 2 when sample 1 is
+  occluded; only check sample 3 when sample 2 is occluded; only
+  discard when all 3 are occluded. Mirrors WebGL's
+  `BillboardCollectionVS.glsl:294-323`.
 
-**Estimated effort:** 1 session.
+**Files touched:**
 
-**Impact:** Closes the niche case where tall labels span over peaks.
-Most labels are short enough that anchor-only sampling produces
-correct results.
+- `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollection.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollectionSDF.wgsl`
 
-**Trace:** `BillboardCollection.wgsl` lines 290-330 (anchor-only
-implementation with `_depthOriginUnused` placeholder for the future
-3-point math); WebGL reference at
-`Source/Shaders/BillboardCollectionVS.glsl:294-323`.
-
----
-
-### NEW-VS-THREE-POINT-DISABLE-DEPTH-INTERACTION — drop the 3-point check when disable-depth-distance is active
-
-**What:** WebGL drops `enableDepthCheck` to 0 when the camera is within
-the per-billboard `disableDepthTestDistance` (or the frame-wide
-minimum) — see `BillboardCollectionVS.glsl:266-277`. This means a
-billboard with BOTH `heightReference !== NONE` AND active
-disable-depth-distance skips the 3-point check (which would
-incorrectly hide the depth-overridden billboard behind terrain).
-
-WebGPU's Batch 138 implementation always sets `enableDepthCheck = 1.0`
-in the JS-side instance pack, so a billboard with both features active
-runs the 3-point check anyway and gets discarded.
-
-**Why deferred:** Requires per-frame computation of `enableDepthCheck`
-in the JS instance pack — the JS would need to look up the frame-wide
-minimum distance + the per-billboard distance and decide whether the
-camera is within range. Currently the JS pack runs once per visible
-billboard per frame; adding a distance check is cheap but threads
-context (camera position, frame minimum) into the pack function.
-
-**Estimated effort:** 30 minutes.
-
-**Impact:** Edge case — a billboard that has BOTH heightReference !==
-NONE AND disableDepthTestDistance is uncommon. Default Cesium
-billboards don't combine these two flags. Tracked as a follow-up to
-match WebGL exactly.
-
-**Trace:** WebGL gates at `BillboardCollectionVS.glsl:266-277` (sets
-`enableDepthCheck = 0.0` inside the disable-depth branch); WebGPU
-always writes `enableDepthCheck = 1.0` at
-`WebGPUBillboardRenderer.js:248` and `WebGPULabelRenderer.js:263`.
+**Closing batch:** Batch 139.
 
 ---
 
-### NEW-LABEL-SDF-BIND-GROUP-CACHING — pre-existing per-frame bind group rebuild
+### NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT — extend Batch 139 sentinel fix to Polyline + Point renderers
 
-**What:** `WebGPULabelRenderer.update()` recreates the SDF bind group
-every frame regardless of whether the atlas view, globe depth view, or
-uniform buffer actually changed. The comment on the existing pattern
-says "recreate each frame to pick up atlas changes," but in practice
-the atlas only rotates when glyphs are added/removed — most frames
-pay the createBindGroup cost for nothing.
+**What:** Batch 139 fixed two coupled bugs on Billboard + Label SDF:
 
-**Status:** Pre-existing (NOT introduced by Batch 138). Surfaced
-during the Batch 138 audit as a perf concern. Billboard's
-WebGPUBillboardRenderer caches more aggressively (rebuilds only on
-atlas guid change OR globe depth view change), but Label SDF doesn't
-yet.
+1. JS pack collapsed `Number.POSITIVE_INFINITY` to 0.0 (the `isFinite`
+   branch returned the default), losing WebGL's "always disable depth
+   test" sentinel.
+2. WGSL squared the per-instance value before checking the `< 0`
+   sentinel, killing the negation.
 
-**Why deferred:** Out of scope for the audit batches. Belongs in a
-perf-pass that tracks bind group rebuild rates for all collection
-renderers. Likely the same pattern exists on Polyline material
-variants.
+`WebGPUPolylineRenderer.js` and `WebGPUPointPrimitiveRenderer.js` have
+the same JS pack pattern (`isFinite(d) ? d : 0.0`) and the same
+WGSL squaring-before-sentinel bug. PointPrimitive's WebGL counterpart
+DOES use the Infinity → -1 sentinel (`PointPrimitiveCollection.js:1102`),
+so the latent bug surfaces if a user sets
+`pointPrimitive.disableDepthTestDistance = Infinity`. Polyline's
+WebGL doesn't appear to use the sentinel, so the gap is benign there
+but the pattern should still match for consistency.
 
-**Estimated effort:** 1 session for a sweep across collection
-renderers + a perf measurement to validate the savings.
+**Why deferred:** Pre-existing latent bug (predates Batch 138 / 139).
+Scope of Batch 139 was VS_THREE_POINT_DEPTH_CHECK; the Billboard +
+Label fixes are tightly coupled to that feature. Sweeping the
+remaining renderers belongs in a follow-up that audits the
+DISABLE_DEPTH_DISTANCE feature uniformly across all collection
+renderers.
 
-**Trace:** `WebGPULabelRenderer.js:847` (no `!defined` guard around
-the bind-group create call).
+**Estimated effort:** 30 minutes (mechanical: extract
+`encodeDisableDepthTestDistance` to a shared utility, swap the
+WGSL block for the raw-sentinel pattern in 6 shaders).
+
+**Trace:** Pre-fix pattern `WebGPUPolylineRenderer.js:302`,
+`:416`; `WebGPUPointPrimitiveRenderer.js:157`, `:245`. Same WGSL
+squaring-first pattern in `PolylineCollection.wgsl`,
+`PolylineCollectionPick.wgsl`, `PolylineArrow.wgsl`,
+`PolylineDash.wgsl`, `PolylineGlow.wgsl`, `PolylineOutline.wgsl`,
+`PointPrimitiveColor.wgsl`, `PointPrimitivePick.wgsl`.
+
+---
+
+### ~~NEW-VS-THREE-POINT-DISABLE-DEPTH-INTERACTION~~ — RESOLVED (Batch 139)
+
+**Resolution:** Implemented in WGSL (no JS-side changes needed). The
+gate now reads `disableDepthTestDistance` from `perInstanceFlags.x`
+(and falls back to `camera.minimumDisableDepthTestDistance`) to
+determine whether the camera is within disable-depth range, then
+drops `enableDepthCheck` to 0 when it is. Mirrors WebGL's
+`BillboardCollectionVS.glsl:266-277` exactly.
+
+Computing `enableDepthCheck` in WGSL (not JS) was simpler than the
+original deferred plan: the data is already on the per-instance
+attribute, the camera UBO has the frame-wide minimum, and `camDistSq`
+is already computed for the other distance gates. ~12 LOC per shader.
+
+**Files touched:** `BillboardCollection.wgsl` + `BillboardCollectionSDF.wgsl`.
+
+**Closing batch:** Batch 139.
+
+---
+
+### ~~NEW-LABEL-SDF-BIND-GROUP-CACHING~~ — RESOLVED (Batch 139)
+
+**Resolution:** `WebGPULabelRenderer.update()` now caches the
+last-bound (atlas view, atlas sampler, globe depth view, uniform
+buffer) tuple and only recreates the SDF bind group when at least
+one resource rotated. Pre-Batch-139 the bind group was
+unconditionally rebuilt every frame, paying the `createBindGroup`
+cost for every Sandcastle frame even when nothing changed.
+
+**Status note:** The bind group still rebuilds every frame on globe
+scenes because `context._globeDepthView` is a fresh `createView()`
+object per frame from the scene renderer's frustum loop. A more
+aggressive cache would compare by underlying `GPUTexture` identity
+rather than view object identity — but that requires the scene
+renderer to expose the texture (or cache the view itself). Tracked
+separately if profiling shows it matters.
+
+**Files touched:** `WebGPULabelRenderer.js`.
+
+**Closing batch:** Batch 139.
 
 ---
 
