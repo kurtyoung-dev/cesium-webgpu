@@ -1,10 +1,53 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** May 1, 2026 (Batches 127-153 — three large-file decomposition arcs landed)
+**Last Updated:** May 4, 2026 (Batches 154-159 — audit-doc sync + B.8 articulations + B.9 prevVP + A.4/A.9 progress)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
 **Overall Progress:** ~93% of full WebGL feature parity. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
 
 **Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
+
+---
+
+## Recent Progress (2026-05-04 — Batches 154-159: audit-driven correctness fixes + doc sync)
+
+Six batches closing review findings + advancing two BREAKING audit items + closing a long-running doc-drift problem.
+
+### Batch 152/153 review fixes (Batch 154, commit `c2b2c06457`)
+
+- (HIGH) `WebGPUModelRenderer.js`: `runtimeNode.transformToRoot` → `runtimeNode.computedTransform` at the per-runtime-node loop. Original Batch 152 used `transformToRoot` alone, which excludes the node's own transform — wrong for any rig with a non-identity local transform (the entire point of articulations). `computedTransform` (= `transformToRoot × transform`, initialized in `ModelRuntimeNode.initialize()` and kept current by `ModelMatrixUpdateStage`) is what WebGL's `updateRuntimeNode` forwards to its draw command. Helper renamed `isIdentityTransformToRoot` → `isIdentityMatrix4`.
+- (LOW) `UniformState.js`: `_previousViewProjection` and `_previousViewProjectionRelativeToEye` initialized as `Matrix4.clone(Matrix4.IDENTITY)` instead of `new Matrix4()` (which is zero-matrix). Closes the dead-else `if (prevVP)` truthy-object pattern across all DP-H41 sites — first-frame UBO packs now contain identity instead of zeros.
+
+### Audit doc comprehensive sync (Batch 155, commit `569aef0914`)
+
+Originally planned as B.5 KHR-aniso + B.4 KHR-bindgroup-split + C.10 smoke-test pixel check, but exploration found B.5/C.10 already shipped (commits `487ef6478a` / `ba80c6e948`) and B.4 is ~150 LOC instead of the audit's ~40 LOC estimate. Pivoted to comprehensive doc sync: 14 RESOLVED-BUT-DOC-STALE entries marked with commit refs (B.5, A.12, B.16-B.20, C.1, C.3-C.5, C.7-C.12). Plus a clarity refactor in `WebGPUPostProcessPipeline.execute()`: `singlePassStages` array push moved AFTER the TAA `.execute()` call so push order matches GPU command stream order. No behavior change — TAA always ran in linear/HDR pre-tonemap; the misleading inline comment was the source of the confusion.
+
+### A.4 progressive narrow-gate: GroundPrimitive (Batch 156, commit `60208eb4e5`)
+
+`PrimitivePipeline.js:175-208` already produces `position2DHigh/Low` alongside the 3D set in non-3D scene modes. The 2D set is encoded into the same coord system as the active `uniformState.view × projection` and `camera.positionWC`. `WebGPUGroundPrimitiveRenderer.ensureVertexBuffer` now selects `position2DHigh/Low` in non-3D modes; `cache.positionSourceKey` rebuilds the buffer when scene mode flips. **No shader changes needed.** Gate narrowed from "all non-3D modes" → "MORPHING only". SCENE3D + SCENE2D + COLUMBUS_VIEW now all render correct GroundPrimitive classification volumes on WebGPU.
+
+### Batch 155/156 review fixes (Batch 157, commit `3bdeb65437`)
+
+- (MED, 155) Misleading post-process inline comment claimed a behavior change that did not occur. Comment rewritten: "purely clarity fix; no GPU command stream change."
+- (HIGH, 156) `_needs2DShader` derived appearance silently bypassed in WebGPU non-3D modes. Textured GroundPrimitives + batched-classification primitives in 2D / CV would draw at the right position with broken texture coords. Now gated: `isNon3D && needs2DShader` falls through to silent-skip alongside MORPHING.
+- (MED, 156) `destroyWebGPUGroundPrimitiveResources` leaked `vertexGPUBuffer` + `indexGPUBuffer` on primitive eviction. Pre-existing leak; both buffers added to the destroy chain.
+- (LOW, 156) Defensive `?? position3DHigh` fallback masked the silent-failure mode the original Batch 150 gate prevented. Removed; `defined()` guard now silently skips with debug warning when 2D positions are unexpectedly absent.
+
+### A.9 doc-sync + Vector3DTile* clarification (Batch 158, commit `8ba472d6aa`)
+
+A.9 IBL ("split-sum approximation in name only") was already RESOLVED in Batch 130 (commit `0b4fac4b65`). `ModelPBRComplete.wgsl:441-442` binds `iblDiffuseTexture` (irradiance) + `iblSpecularTexture` (radiance) cubemaps; FS at 2128-2160 samples both via split-sum. Audit doc marked RESOLVED. The 9-coefficient SH fast-path filed as `NEW-IBL-SH-FAST-PATH` perf optimization (~30 LOC).
+
+`Vector3DTile*` clarification: verified the three Vector3DTile primitive classes only carry RTC-relative 3D positions; WebGL's path doesn't check scene mode either. Our silent-skip gate is BETTER than upstream WebGL behavior. Lifting it would be a regression unless paired with CPU- or shader-side projection of the RTC-relative positions (~80 LOC × 3 renderers).
+
+### C.6 ORPHANED tag + Tier-list refresh (Batch 159, commit `bc4f3a5fc9`)
+
+`FEATURE_INVENTORY.md` updated SCAFFORDED → ORPHANED for `WebGPUVideoTextureManager`. Audit Tier-list refreshed: Tiers 2 + 3 now both empty; Tier 4 narrowed to genuinely-remaining significant work; Tier 5 narrowed to one entry (C.2 orphan dispatcher decision).
+
+### Cumulative impact
+
+- ~20 audit-doc entries closed across the six batches (mostly stale-but-shipped-since-Batch-130 work that the doc never caught up with).
+- Two new BREAKING fixes (B.8 corrected to use `computedTransform`; B.9 first-frame init to identity matrix).
+- One BREAKING progressive narrow (A.4 SCENE2D + COLUMBUS_VIEW on `WebGPUGroundPrimitiveRenderer`).
+- Three follow-up DEFERRED_WORK entries created (`NEW-IBL-SH-FAST-PATH`, `NEW-DRILLPICK-ASYNC`, `NEW-MODEL-NODE-TRANSFORMS-PREV`).
 
 ---
 
