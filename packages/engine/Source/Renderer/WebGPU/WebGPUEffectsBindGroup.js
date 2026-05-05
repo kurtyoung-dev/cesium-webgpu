@@ -5,7 +5,7 @@
  * used by lit/flat primitive shaders and the globe terrain shader.
  *
  * Bind group layout (18 bindings):
- *   0: EffectsUniforms       (uniform buffer, 336 bytes)
+ *   0: EffectsUniforms       (uniform buffer, 480 bytes)
  *   1: Shadow depth          (texture_depth_2d)
  *   2: Shadow sampler        (sampler_comparison)
  *   3: Clipping texture      (texture_2d<f32>, rgba32float)
@@ -54,6 +54,7 @@
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import { getShadowMapResources } from "./WebGPUShadowMapRenderer.js";
 import {
   computeClipPlaneDPrimes,
@@ -142,8 +143,43 @@ import {
 //     well within f32 precision after the `fragWC - lightWC` subtract).
 //     Holding the absolute vector lets the receive math stay agnostic
 //     to which camera frame the cast was done in.
-const EFFECTS_UNIFORM_SIZE = 336;
+// 336 → 480 bytes (Batch 160, AUDIT_2026_05_02 A.6 NEW-MODEL-CLIPPING-POLYGONS):
+// appended polygon-clipping atlas control + per-extent UV remap so the model FS
+// can sample `clippingPolygonTex` at the correct atlas slot for the fragment's
+// containing extent, instead of the prior whole-globe lon/lat mapping that
+// produced garbage SDF samples for typical small polygons.
+//   offset 336 — `clippingPolygonControl: vec4<f32>` —
+//     x = extentsCount (number of merged-extent groups in the SDF atlas;
+//         polygons with overlapping spherical bounding rectangles get
+//         coalesced into one group on the CPU, see
+//         `ClippingPolygonCollection.getExtents`),
+//     y = atlas inverse dimension (`1.0 / dim` where
+//         `dim = ceil(log2(extentsCount))` for extentsCount > 2 and
+//         `dim = extentsCount` for ≤ 2 — matches `czm_clipPolygons.glsl`
+//         atlas grid layout, precomputed here so the shader avoids a
+//         per-fragment `log2`),
+//     z = inverse flag (1.0 = `ClippingPolygonCollection.inverse=true`
+//         → fragments OUTSIDE every polygon are clipped, used by AEC
+//         "show only inside" demos; 0.0 = default cutout — fragments
+//         INSIDE any polygon are clipped — matches the
+//         non-`#ifdef CLIPPING_INVERSE` branch of `czm_clipPolygons`),
+//     w = reserved.
+//   offset 352 — `clippingPolygonExtents: array<vec4<f32>, 8>` (128 bytes) —
+//     Each vec4 packs `(south, west, latitudeRangeInverse, longitudeRangeInverse)`
+//     for one merged-extent group (one atlas slot). Sourced from
+//     `ClippingPolygonCollection._extentsFloat32View` (CPU-packed by
+//     `packPolygonsAsFloats` in the same vec4 layout). The shader iterates
+//     active groups, picks the first whose padded extent contains the
+//     fragment's `(lat, lon)`, then samples the SDF at the group's atlas
+//     slot. Capped at 8 groups — a typical BIM cutaway needs 1–4. If a
+//     scene exceeds 8, the JS side warns once and silently drops the
+//     overflow groups (their fragments just won't get clipped).
+const EFFECTS_UNIFORM_SIZE = 480;
 const EFFECTS_UNIFORM_FLOATS = EFFECTS_UNIFORM_SIZE / 4;
+// Polygon clipping atlas control + per-extent remap (Batch 160).
+const CLIPPING_POLYGON_CONTROL_OFFSET = 84; // 336 bytes / 4
+const CLIPPING_POLYGON_EXTENTS_OFFSET = 88; // 352 bytes / 4
+const CLIPPING_POLYGON_EXTENTS_MAX = 8;
 // Offset (in floats) of the atmosphereLutControl vec4 in the UBO data
 // array. `createEffectsBindGroup` / the globe surface renderer writes
 // into this slot when it has LUT resources to share.
@@ -983,6 +1019,41 @@ function createEffectsBindGroup(device, frameState, options) {
   // shadowMap / clippingPlanes — see ESLint no-use-before-define fix)
   if (defined(clippingPolygons) && clippingPolygons.length > 0) {
     dv.setUint32(23 * 4, clippingPolygons.length, true);
+
+    // Batch 160 — atlas control + per-extent UV remap so
+    // `modelClipByPolygon` (and the equivalent globe-side helper)
+    // sample the SDF at the correct atlas slot. The CPU-side
+    // `_extentsFloat32View` already packs `(south, west, invLatRange,
+    // invLonRange)` per merged-extent group; copy up to
+    // `CLIPPING_POLYGON_EXTENTS_MAX` groups.
+    const extentsView = clippingPolygons._extentsFloat32View;
+    const extentsCount = clippingPolygons._extentsCount ?? 0;
+    if (defined(extentsView) && extentsCount > 0) {
+      const usedCount = Math.min(extentsCount, CLIPPING_POLYGON_EXTENTS_MAX);
+      // Atlas grid math mirrors `czm_clipPolygons.glsl`:
+      //   dim = (extentsCount > 2) ? ceil(log2(extentsCount)) : extentsCount
+      // Precompute `1/dim` so the shader skips per-fragment log2.
+      const dim = usedCount > 2 ? Math.ceil(Math.log2(usedCount)) : usedCount;
+      ud[CLIPPING_POLYGON_CONTROL_OFFSET] = usedCount;
+      ud[CLIPPING_POLYGON_CONTROL_OFFSET + 1] = 1.0 / dim;
+      ud[CLIPPING_POLYGON_CONTROL_OFFSET + 2] = clippingPolygons.inverse
+        ? 1.0
+        : 0.0;
+      // ud[+3] reserved.
+      // Each merged-extent group is 4 floats in `_extentsFloat32View`,
+      // packed contiguously in extentsList order. The polygon FS picks
+      // the first group whose padded extent contains the fragment.
+      const floatCount = usedCount * 4;
+      for (let i = 0; i < floatCount; i++) {
+        ud[CLIPPING_POLYGON_EXTENTS_OFFSET + i] = extentsView[i];
+      }
+      if (extentsCount > CLIPPING_POLYGON_EXTENTS_MAX) {
+        oneTimeWarning(
+          "WebGPUClippingPolygons.maxExtents",
+          `[WebGPU] ClippingPolygonCollection produced ${extentsCount} merged-extent groups; the WGSL UBO supports up to ${CLIPPING_POLYGON_EXTENTS_MAX}. Overflow groups (${extentsCount - CLIPPING_POLYGON_EXTENTS_MAX}) will not clip.`,
+        );
+      }
+    }
   }
 
   if (hasClipping) {
