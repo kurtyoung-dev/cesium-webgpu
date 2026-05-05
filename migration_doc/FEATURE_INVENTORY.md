@@ -456,7 +456,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUTextureAtlas — packed atlas backing billboard/label rendering (SHIPPED)
 - WebGPUTextureUtilities — shared format-conversion + view helpers (SHIPPED)
 - WebGPUMipmapGenerator — compute-shader mipmap generator for arbitrary 2D textures (SHIPPED)
-- WebGPUVideoTextureManager — VideoFrame-backed external textures for video imagery (SCAFFOLDED)
+- WebGPUVideoTextureManager — VideoFrame-backed external textures for video imagery (ORPHANED — never instantiated; CesiumJS routes video imagery through `WebGPUImageUpload.copyExternalImageToTexture` per-frame instead. Audit C.6, Batch 159)
 - WebGPUImageUpload — async image-bitmap → texture upload queue (SHIPPED)
 - WebGPUVertexArrayFacade — VAO-shaped wrapper exposing upstream-VertexArray semantics (SHIPPED)
 - WebGPUSampler / FramebufferManager / MultisampleFramebuffer — resource lifetime wrappers (SHIPPED)
