@@ -52,11 +52,15 @@ struct MaterialUniforms {
 @group(2) @binding(0) var textureSampler: sampler;
 @group(2) @binding(1) var colorTexture: texture_2d<f32>;
 
-// ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
-// Must match the 272-byte layout in WebGPUEffectsBindGroup.js. The
-// primitive shader doesn't consume atmosphereLutControl (no fog path
-// here) but the struct size must match what the UBO provides so
-// trailing field offsets (csmControl) line up correctly.
+// ─── Effects bind group (shadow receive + clipping + atmosphere + CSM
+// + point-light cube depth) ───
+// Layout MUST match the 480-byte UBO in WebGPUEffectsBindGroup.js. The
+// primitive shader doesn't consume every field (no clipping-polygon
+// path, no inline-edge stage, no CSM-only `pointLightControl` etc.) but
+// the struct must extend through every field this shader DOES read so
+// trailing offsets are correct. We stop at `pointLightPositionWC`
+// (offset 336) — the polygon-clipping array tail (Batch 160) isn't used
+// here.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -74,6 +78,19 @@ struct EffectsUniforms {
     atmosphereLutControl: vec4<f32>,
     // CSM control: .x = csmEnabled flag. See ShadowReceiveCSM.wgsl.
     csmControl: vec4<f32>,
+    // edgeControl + edgeViewport: padding only — primitives don't
+    // run the inline edge stage, but the trailing fields after them
+    // (`pointLightControl`, `pointLightPositionWC`) need their byte
+    // offsets to match the UBO.
+    edgeControl: vec4<f32>,
+    edgeViewport: vec4<f32>,
+    // Batch 161 — B.12 point-light cube-shadow receive.
+    // .x = enabled flag; .y = farPlane; .z = nearPlane; .w = depthBias.
+    // See `samplePointShadow` below; mirrors `ModelPBRComplete.wgsl`.
+    pointLightControl: vec4<f32>,
+    // .xyz = world-space light position; .w = pcfRadius (cube-face texels;
+    // 0 = hard sample).
+    pointLightPositionWC: vec4<f32>,
 }
 
 // CSM cascade parameters (bindings 10/11). Layout matches
@@ -108,6 +125,12 @@ struct CSMParams {
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
 @group(3) @binding(10) var<uniform> csmParams: CSMParams;
 @group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
+// Batch 161 — B.12 point-light cube depth. 6-face depth32float populated
+// by `_renderPointLightCubeCastPasses`. Sampled below when
+// `effects.pointLightControl.x > 0.5`. Reuses `shadowCompSampler`
+// (binding 2) for the comparison sample. Placeholder is a 1×1×6 cube
+// cleared to 1.0 so the off-path costs only one uniform compare.
+@group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -238,6 +261,74 @@ fn computeShadowFactorCSM(
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
+// Batch 161 — B.12 point-light cube-shadow receive. Mirrors
+// `samplePointShadow` in `ModelPBRComplete.wgsl`: dominant-axis
+// perspective-Z + scaleBias remap → comparison sample against a
+// 6-face cube depth target. fragWC is reconstructed at the call site
+// from `eyePosition` + the FP32 camera position; precision is fine
+// because the cube radius is bounded by `farPlane` (sub-radius scale).
+fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
+    let lightWC = effects.pointLightPositionWC.xyz;
+    let direction = fragWC - lightWC;
+    let absDir = abs(direction);
+    let axisDist = max(absDir.x, max(absDir.y, absDir.z));
+    let nearPlane = effects.pointLightControl.z;
+    let farPlane = effects.pointLightControl.y;
+    let depthBias = effects.pointLightControl.w;
+    if (axisDist >= farPlane) { return 1.0; }
+    let depthRange = farPlane - nearPlane;
+    let zNdcWebGpu =
+        farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
+    let zAttached = zNdcWebGpu * 0.5 + 0.5;
+    let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
+    let pcfRadius = effects.pointLightPositionWC.w;
+    if (pcfRadius <= 0.0) {
+        return textureSampleCompareLevel(
+            pointLightCubeDepth, shadowCompSampler, direction, refDepth,
+        );
+    }
+    var minorA: vec3<f32>;
+    var minorB: vec3<f32>;
+    if (absDir.x >= absDir.y && absDir.x >= absDir.z) {
+        minorA = vec3<f32>(0.0, 1.0, 0.0);
+        minorB = vec3<f32>(0.0, 0.0, 1.0);
+    } else if (absDir.y >= absDir.z) {
+        minorA = vec3<f32>(1.0, 0.0, 0.0);
+        minorB = vec3<f32>(0.0, 0.0, 1.0);
+    } else {
+        minorA = vec3<f32>(1.0, 0.0, 0.0);
+        minorB = vec3<f32>(0.0, 1.0, 0.0);
+    }
+    let texelStep = 1.0 / max(effects.shadowMapSize.x, 1.0);
+    let offset = pcfRadius * texelStep;
+    var sum = textureSampleCompareLevel(
+        pointLightCubeDepth, shadowCompSampler, direction, refDepth,
+    );
+    sum = sum + textureSampleCompareLevel(
+        pointLightCubeDepth, shadowCompSampler,
+        direction + minorA * offset, refDepth,
+    );
+    sum = sum + textureSampleCompareLevel(
+        pointLightCubeDepth, shadowCompSampler,
+        direction - minorA * offset, refDepth,
+    );
+    sum = sum + textureSampleCompareLevel(
+        pointLightCubeDepth, shadowCompSampler,
+        direction + minorB * offset, refDepth,
+    );
+    sum = sum + textureSampleCompareLevel(
+        pointLightCubeDepth, shadowCompSampler,
+        direction - minorB * offset, refDepth,
+    );
+    return sum * 0.2;
+}
+
+fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+    if (effects.shadowDarkness >= 1.0) { return 1.0; }
+    let visibility = samplePointShadow(fragWC);
+    return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
 fn computeShadowFactor(eyePos: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
 
@@ -329,7 +420,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // space (both transformed by normalMatrix / camera), so nDotL is
     // frame-invariant for the slope-bias calc.
     var shadowFactor: f32;
-    if (effects.csmControl.x > 0.5) {
+    // Batch 161 — point-light cube shadows take precedence over CSM /
+    // single-shadow-map paths. Only one shadow map is active at a time
+    // in Cesium, so this only matters during transitions; checking
+    // pointLightControl first matches the Model FS gate order.
+    if (effects.pointLightControl.x > 0.5) {
+        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let fragWC = cameraWC + input.eyePosition;
+        shadowFactor = computeShadowFactorPointLight(fragWC);
+    } else if (effects.csmControl.x > 0.5) {
         let viewDepth = abs(input.eyePosition.z);
         shadowFactor = computeShadowFactorCSM(
             input.eyePosition,
