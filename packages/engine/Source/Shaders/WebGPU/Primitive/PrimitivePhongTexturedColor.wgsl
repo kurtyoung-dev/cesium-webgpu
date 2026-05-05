@@ -2,6 +2,11 @@
 // Blinn-Phong lighting + texture sampling + per-instance color + shadow + clipping
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
 // Vertex: posHigh(3) + posLow(3) + normal(3) + uv(2) + color(4) = 15 floats = 60 bytes
+//
+// Batch 165 - B.12 chunk usage. Point-light cube shadow path calls
+// `csm_samplePointShadow` from the chunk file; WebGPUPrimitiveShaders.js
+// detects the marker below and prepends the chunk's WGSL at load time.
+// @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
@@ -261,71 +266,27 @@ fn computeShadowFactorCSM(
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// Batch 161 — B.12 point-light cube-shadow receive. Mirrors
-// `samplePointShadow` in `ModelPBRComplete.wgsl`: dominant-axis
-// perspective-Z + scaleBias remap → comparison sample against a
-// 6-face cube depth target. fragWC is reconstructed at the call site
-// from `eyePosition` + the FP32 camera position; precision is fine
-// because the cube radius is bounded by `farPlane` (sub-radius scale).
-fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
-    let lightWC = effects.pointLightPositionWC.xyz;
-    let direction = fragWC - lightWC;
-    let absDir = abs(direction);
-    let axisDist = max(absDir.x, max(absDir.y, absDir.z));
-    let nearPlane = effects.pointLightControl.z;
-    let farPlane = effects.pointLightControl.y;
-    let depthBias = effects.pointLightControl.w;
-    if (axisDist >= farPlane) { return 1.0; }
-    let depthRange = farPlane - nearPlane;
-    let zNdcWebGpu =
-        farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
-    let zAttached = zNdcWebGpu * 0.5 + 0.5;
-    let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
-    let pcfRadius = effects.pointLightPositionWC.w;
-    if (pcfRadius <= 0.0) {
-        return textureSampleCompareLevel(
-            pointLightCubeDepth, shadowCompSampler, direction, refDepth,
-        );
-    }
-    var minorA: vec3<f32>;
-    var minorB: vec3<f32>;
-    if (absDir.x >= absDir.y && absDir.x >= absDir.z) {
-        minorA = vec3<f32>(0.0, 1.0, 0.0);
-        minorB = vec3<f32>(0.0, 0.0, 1.0);
-    } else if (absDir.y >= absDir.z) {
-        minorA = vec3<f32>(1.0, 0.0, 0.0);
-        minorB = vec3<f32>(0.0, 0.0, 1.0);
-    } else {
-        minorA = vec3<f32>(1.0, 0.0, 0.0);
-        minorB = vec3<f32>(0.0, 1.0, 0.0);
-    }
-    let texelStep = 1.0 / max(effects.shadowMapSize.x, 1.0);
-    let offset = pcfRadius * texelStep;
-    var sum = textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler, direction, refDepth,
-    );
-    sum = sum + textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler,
-        direction + minorA * offset, refDepth,
-    );
-    sum = sum + textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler,
-        direction - minorA * offset, refDepth,
-    );
-    sum = sum + textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler,
-        direction + minorB * offset, refDepth,
-    );
-    sum = sum + textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler,
-        direction - minorB * offset, refDepth,
-    );
-    return sum * 0.2;
-}
-
+// Batch 165 — B.12 chunk-based point-light receive. The Batch 161
+// inline `samplePointShadow` has been replaced by a call to the
+// reusable `csm_samplePointShadow` chunk function (declared above by
+// the chunk-injection pass; see WebGPUPrimitiveShaders.js
+// `injectChunks`). Same algorithm — dominant-axis perspective-Z +
+// scaleBias remap + optional 5-tap cross PCF — but now amortized
+// across every primitive lit shader that opts in via the
+// `// @chunk csm_samplePointShadow` marker.
 fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
-    let visibility = samplePointShadow(fragWC);
+    let visibility = csm_samplePointShadow(
+        pointLightCubeDepth,
+        shadowCompSampler,
+        fragWC,
+        effects.pointLightPositionWC.xyz,
+        effects.pointLightControl.z,
+        effects.pointLightControl.y,
+        effects.pointLightControl.w,
+        effects.pointLightPositionWC.w,
+        effects.shadowMapSize.x,
+    );
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 

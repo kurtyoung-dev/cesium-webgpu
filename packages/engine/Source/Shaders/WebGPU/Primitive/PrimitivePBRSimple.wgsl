@@ -9,6 +9,11 @@
 // (light-driven) radiance through `computeShadowFactorCSM` when
 // `effects.csmControl.x > 0.5`; ambient stays unshadowed per PBR
 // convention.
+//
+// Batch 165 - B.12 chunk usage. Point-light path calls
+// `csm_samplePointShadow` from chunks/functions; the marker below tells
+// WebGPUPrimitiveShaders.js to prepend the chunk's WGSL at load time.
+// @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
@@ -222,72 +227,23 @@ fn computeShadowFactorCSM(
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// Batch 161 — B.12 point-light cube-shadow receive. Same algorithm as
-// `samplePointShadow` in `ModelPBRComplete.wgsl` and
-// `PrimitivePhongTexturedColor.wgsl`: dominant-axis perspective-Z +
-// scaleBias remap → comparison sample. Future amortization across
-// the 22+ primitive shaders should extract this into a chunk file
-// and load via the WGSL preprocessor (deferred — current pattern is
-// inline-from-Model, matching the CSM helpers above).
-fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
-    let lightWC = effects.pointLightPositionWC.xyz;
-    let direction = fragWC - lightWC;
-    let absDir = abs(direction);
-    let axisDist = max(absDir.x, max(absDir.y, absDir.z));
-    let nearPlane = effects.pointLightControl.z;
-    let farPlane = effects.pointLightControl.y;
-    let depthBias = effects.pointLightControl.w;
-    if (axisDist >= farPlane) { return 1.0; }
-    let depthRange = farPlane - nearPlane;
-    let zNdcWebGpu =
-        farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
-    let zAttached = zNdcWebGpu * 0.5 + 0.5;
-    let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
-    let pcfRadius = effects.pointLightPositionWC.w;
-    if (pcfRadius <= 0.0) {
-        return textureSampleCompareLevel(
-            pointLightCubeDepth, shadowCompSampler, direction, refDepth,
-        );
-    }
-    var minorA: vec3<f32>;
-    var minorB: vec3<f32>;
-    if (absDir.x >= absDir.y && absDir.x >= absDir.z) {
-        minorA = vec3<f32>(0.0, 1.0, 0.0);
-        minorB = vec3<f32>(0.0, 0.0, 1.0);
-    } else if (absDir.y >= absDir.z) {
-        minorA = vec3<f32>(1.0, 0.0, 0.0);
-        minorB = vec3<f32>(0.0, 0.0, 1.0);
-    } else {
-        minorA = vec3<f32>(1.0, 0.0, 0.0);
-        minorB = vec3<f32>(0.0, 1.0, 0.0);
-    }
-    let texelStep = 1.0 / max(effects.shadowMapSize.x, 1.0);
-    let offset = pcfRadius * texelStep;
-    var sum = textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler, direction, refDepth,
-    );
-    sum = sum + textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler,
-        direction + minorA * offset, refDepth,
-    );
-    sum = sum + textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler,
-        direction - minorA * offset, refDepth,
-    );
-    sum = sum + textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler,
-        direction + minorB * offset, refDepth,
-    );
-    sum = sum + textureSampleCompareLevel(
-        pointLightCubeDepth, shadowCompSampler,
-        direction - minorB * offset, refDepth,
-    );
-    return sum * 0.2;
-}
-
+// Batch 165 — B.12 chunk-based point-light receive. The Batch 161
+// inline implementation has been replaced by a call to the reusable
+// `csm_samplePointShadow` chunk function. See PrimitivePhongTexturedColor
+// for the same pattern.
 fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
-    let visibility = samplePointShadow(fragWC);
+    let visibility = csm_samplePointShadow(
+        pointLightCubeDepth,
+        shadowCompSampler,
+        fragWC,
+        effects.pointLightPositionWC.xyz,
+        effects.pointLightControl.z,
+        effects.pointLightControl.y,
+        effects.pointLightControl.w,
+        effects.pointLightPositionWC.w,
+        effects.shadowMapSize.x,
+    );
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 

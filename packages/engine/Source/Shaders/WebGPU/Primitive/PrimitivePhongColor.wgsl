@@ -2,6 +2,11 @@
 // Per-vertex color + Blinn-Phong lighting + shadow receive + clipping planes
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
 //
+// Batch 165 - B.12 chunk usage. Point-light cube shadow path calls
+// csm_samplePointShadow from chunks/functions; the marker below tells
+// WebGPUPrimitiveShaders.js to prepend the chunk's WGSL at load time.
+// @chunk csm_samplePointShadow
+//
 // Two vertex layouts — selected at pipeline-build time via the
 // `COMPRESSED_VERTICES` define (DP-H19-SHADER-DECODE):
 //   default : posHigh(3) + posLow(3) + normal(3)  + color(4) = 13 floats
@@ -55,11 +60,14 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
+// ─── Effects bind group (shadow receive + clipping + atmosphere + CSM
+// + point-light cube depth) ───
 // PhongColor has no texture group, so the effects group lands at
 // @group(2) (one slot earlier than PhongTexturedColor's @group(3)).
-// Struct layout MUST match the 272-byte EffectsUniforms in
-// WebGPUEffectsBindGroup.js.
+// Layout MUST match the 480-byte UBO in WebGPUEffectsBindGroup.js.
+// Struct extends through `pointLightPositionWC` (offset 336) to expose
+// the Batch 161/165 point-light fields; polygon-clipping array tail
+// (Batch 160, offset 352+) isn't used by primitives.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -79,6 +87,16 @@ struct EffectsUniforms {
     atmosphereLutControl: vec4<f32>,
     // CSM control: .x = csmEnabled flag. See ShadowReceiveCSM.wgsl.
     csmControl: vec4<f32>,
+    // Padding — primitives don't run the inline edge stage but the
+    // trailing point-light fields need their byte offsets to match.
+    edgeControl: vec4<f32>,
+    edgeViewport: vec4<f32>,
+    // Batch 165 - B.12 point-light cube-shadow receive control.
+    // .x = enabled flag; .y = farPlane; .z = nearPlane; .w = depthBias.
+    pointLightControl: vec4<f32>,
+    // .xyz = world-space light position; .w = pcfRadius (cube-face texels;
+    // 0 = hard sample).
+    pointLightPositionWC: vec4<f32>,
 }
 
 // CSM cascade parameters (bindings 10/11). Layout matches
@@ -113,6 +131,10 @@ struct CSMParams {
 @group(2) @binding(9) var atmosphereLutSampler: sampler;
 @group(2) @binding(10) var<uniform> csmParams: CSMParams;
 @group(2) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
+// Batch 165 - B.12 point-light cube depth target (placeholder 1×1×6
+// cube cleared to 1.0 when point-light shadows are off; gated by
+// effects.pointLightControl.x > 0.5).
+@group(2) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -264,6 +286,26 @@ fn computeShadowFactorCSM(
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
+// Batch 165 - B.12 chunk-based point-light receive. Calls
+// csm_samplePointShadow (prepended at load by WebGPUPrimitiveShaders.js
+// via the @chunk marker). fragWC reconstructed at the call site as
+// cameraWC + eyePosition.
+fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+    if (effects.shadowDarkness >= 1.0) { return 1.0; }
+    let visibility = csm_samplePointShadow(
+        pointLightCubeDepth,
+        shadowCompSampler,
+        fragWC,
+        effects.pointLightPositionWC.xyz,
+        effects.pointLightControl.z,
+        effects.pointLightControl.y,
+        effects.pointLightControl.w,
+        effects.pointLightPositionWC.w,
+        effects.shadowMapSize.x,
+    );
+    return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
 fn computeShadowFactor(eyePos: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
 
@@ -348,8 +390,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // the eye-space convention puts in-front points at negative z.
     // `input.eyePosition` is the RTE-precise camera-relative vector;
     // feed it straight into the RTE-aware cascade VPs.
+    // Batch 165 - B.12 point-light cube shadows take precedence over
+    // CSM / single-shadow-map paths (only one shadow map is active at
+    // a time; matches Model FS gate order).
     var shadowFactor: f32;
-    if (effects.csmControl.x > 0.5) {
+    if (effects.pointLightControl.x > 0.5) {
+        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let fragWC = cameraWC + input.eyePosition;
+        shadowFactor = computeShadowFactorPointLight(fragWC);
+    } else if (effects.csmControl.x > 0.5) {
         let viewDepth = abs(input.eyePosition.z);
         shadowFactor = computeShadowFactorCSM(
             input.eyePosition,

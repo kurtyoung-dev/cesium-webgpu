@@ -89,6 +89,31 @@ import PrimitivePickMatLit from "../../Shaders/WebGPU/Primitive/PrimitivePickMat
 import PrimitivePBRSimple from "../../Shaders/WebGPU/Primitive/PrimitivePBRSimple.js";
 import PrimitivePBRTextured from "../../Shaders/WebGPU/Primitive/PrimitivePBRTextured.js";
 
+// Batch 165 — B.12 chunk extraction. Point-light cube depth comparison
+// is now a reusable WGSL function in `chunks/functions/csm_samplePointShadow`,
+// imported here and spliced into shaders that include the
+// `// @chunk csm_samplePointShadow` marker. Lets us add point-light cube
+// shadows to the remaining 20+ primitive lit shaders without copying
+// ~80 LOC of dominant-axis perspective-Z + 5-tap PCF math each time.
+import csm_samplePointShadow from "../../Shaders/WebGPU/chunks/functions/csm_samplePointShadow.js";
+
+// Splice chunks into a shader source if it carries the corresponding
+// marker comment. WGSL doesn't have an `@include` directive of its own;
+// this is the lightest-weight equivalent — markers stay benign comments
+// when the chunk isn't injected (e.g., during isolated-shader testing),
+// so the shader file remains a valid WGSL source on disk.
+const POINT_SHADOW_MARKER = "// @chunk csm_samplePointShadow";
+function injectChunks(src) {
+  if (typeof src !== "string") {
+    return src;
+  }
+  let out = src;
+  if (out.includes(POINT_SHADOW_MARKER)) {
+    out = `${csm_samplePointShadow}\n${out}`;
+  }
+  return out;
+}
+
 // =========================================================================
 // Shader Cache — populated synchronously from static imports
 // =========================================================================
@@ -185,8 +210,17 @@ function getShaderSource(key) {
       `[WebGPUPrimitiveShaders] Unknown shader key: "${key}". Available: ${Object.keys(_shaderCache).join(", ")}`,
     );
   }
-  return source;
+  // Batch 165 — splice in chunks if the shader includes a marker
+  // comment. Cached so repeated calls don't re-allocate; safe because
+  // shader source strings are immutable once imported. Map (not WeakMap)
+  // because keys are strings (primitives don't support WeakMap).
+  if (!_chunkInjectedCache.has(source)) {
+    _chunkInjectedCache.set(source, injectChunks(source));
+  }
+  return _chunkInjectedCache.get(source);
 }
+
+const _chunkInjectedCache = new Map();
 
 /**
  * Returns true if the shader cache has been populated.
