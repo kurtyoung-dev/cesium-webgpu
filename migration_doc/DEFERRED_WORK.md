@@ -304,6 +304,36 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
+### NEW-MODEL-CLIPPING-POLYGONS — `model.clippingPolygons` is unbound on WebGPU
+
+**What:** `model.clippingPlanes` now produces correct cutaways on WebGPU (commit `ebdc3548c3`, AUDIT_2026_05_02 A.6 partial-fix). The matching `model.clippingPolygons` SDF binding was never wired into the model material BGL — `clippingPolygonsLengthsAndExtents` / `clippingPolygonsTexture` slots don't exist in `EffectsUniforms`, and `ModelClippingPolygonsPipelineStage`'s WGSL counterpart is absent. Setting `model.clippingPolygons = ...` on WebGPU is a silent no-op.
+
+**Scope:** Add SDF texture + length-and-extents UBO field to `EffectsUniforms`; bind through Effects BGL; port `ModelClippingPolygonsStageFS.glsl` to a WGSL inline branch (signed-distance per-polygon test → discard on union/intersection rule, mirrors `modelClipByPlanes`). ~120 LOC.
+
+**Why deferred:** Polygons need the SDF texture upload pipeline that's currently only used by the globe surface renderer. The existing `modelClipByPlanes` was reachable in ~80 LOC because the texture + UBO were already plumbed; polygons require both new bind slots and a new SDF upload path, putting them in a separate batch.
+
+---
+
+### NEW-MODEL-WGSL-CUSTOM-SHADER — WGSL `CustomShader` API parallel to GLSL `CustomShaderPipelineStage`
+
+**What:** `model.customShader` on WebGPU now emits a one-time warning (Batch 133, commit `a403131590`, AUDIT_2026_05_02 A.7 partial-fix). Long-term the user-facing `CustomShader` API needs to accept WGSL chunks and inject them into the Model PBR pipeline, matching the GLSL fragment/vertex injection points.
+
+**Scope:** WGSL chunk-injection mechanism in `WebGPUModelPipelineCache`; entry-point pre-processor that swaps user-supplied `vertexMain`/`fragmentMain` chunks; `CustomShaderMode` switch (REPLACE_MATERIAL / MODIFY_MATERIAL); user-uniform → bind-group plumbing; `varying` → `@location` parity. ~200 LOC, multi-session.
+
+**Why deferred:** Requires a chunk-injection layer that doesn't exist yet, plus a user-uniform-to-WGSL-bind-group adapter (the GLSL path uses `automatic_uniforms` introspection that has no WebGPU equivalent). The warning closes the silent-swallow surface so users can detect the gap.
+
+---
+
+### NEW-POSTPROCESS-USER-WGSL — accept `wgslFragmentShader` on user `PostProcessStage`
+
+**What:** User-added stages on `scene.postProcessStages.add(...)` now emit a one-time warning (Batch 133, commit `a403131590`, AUDIT_2026_05_02 A.13 partial-fix). Long-term the `PostProcessStage` constructor needs a `wgslFragmentShader` option so users can author custom WebGPU stages without a GLSL → WGSL transpile.
+
+**Scope:** Per-stage WGSL pipeline factory; wire user-supplied `wgslFragmentShader` + uniforms map → `WebGPUPostProcessPipeline._userStages[]`; insertion point between built-in stages; resize/destroy lifecycle. ~150 LOC.
+
+**Why deferred:** Needs a generic per-stage pipeline factory that can accept arbitrary uniform layouts at runtime. The warning closes the silent-swallow surface so users can detect the gap.
+
+---
+
 ### NEW-CLASSIFIER-2D-CV-MORPH — proper 2D / Columbus View / Morphing support for classifier renderers
 
 **What:** WebGL classification primitives correctly render in
