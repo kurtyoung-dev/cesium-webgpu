@@ -159,6 +159,10 @@ struct Uniforms {
   viewportSize: vec2<f32>,
   pointSizeMultiplier: f32,
   _pad2: f32,
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
+  // tail. Layout-only invariant today; consumed by future per-particle
+  // motion-vector pass for animated point clouds.
+  prevViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -219,6 +223,10 @@ struct Uniforms {
   viewportSize: vec2<f32>,
   pointSizeMultiplier: f32,
   _pad2: f32,
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
+  // tail. Layout-only invariant today; consumed by future per-particle
+  // motion-vector pass for animated point clouds.
+  prevViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -563,7 +571,10 @@ function packUniforms(
   uniformState: CesiumUniformState,
   modelMatrix: Matrix4 | CesiumMatrix4,
 ): Float32Array {
-  const data = new Float32Array(28);
+  // AUDIT_2026_05_02 B.9 (Batch 153) — bumped from 28 → 44 floats (176
+  // bytes) to fit the trailing `prevViewProjection: mat4x4<f32>` (16
+  // floats). UBO is allocated at 256 bytes; comfortably fits.
+  const data = new Float32Array(44);
   const view = uniformState.view;
   const projection = uniformState.projection;
 
@@ -605,6 +616,34 @@ function packUniforms(
   data[25] = canvas.height;
   data[26] = 1.0; // pointSizeMultiplier
   data[27] = 0; // pad
+
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
+  // 28..43. UniformState swaps `_previousViewProjection := viewProjection`
+  // at the END of `update()` AFTER returning the prior frame's value, so
+  // on frame N this slot holds frame N-1's VP. First frame falls through
+  // to identity.
+  const prevVP = (uniformState as { previousViewProjection?: Matrix4 })
+    .previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 28);
+  } else {
+    data[28] = 1;
+    data[29] = 0;
+    data[30] = 0;
+    data[31] = 0;
+    data[32] = 0;
+    data[33] = 1;
+    data[34] = 0;
+    data[35] = 0;
+    data[36] = 0;
+    data[37] = 0;
+    data[38] = 1;
+    data[39] = 0;
+    data[40] = 0;
+    data[41] = 0;
+    data[42] = 0;
+    data[43] = 1;
+  }
   return data;
 }
 

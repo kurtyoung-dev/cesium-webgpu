@@ -102,6 +102,10 @@ struct U {
   color: vec4<f32>,
   pickColor: vec4<f32>,
   viewport: vec4<f32>,
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
+  // tail. Layout-only invariant today; consumed by future motion-vector
+  // pass for ground classifiers.
+  prevViewProjection: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 
@@ -475,6 +479,33 @@ function packUniforms(data, frameState, modelMatrix, color, pickColor) {
   data[33] = 0.0;
   data[34] = ctx?.drawingBufferWidth || 1;
   data[35] = ctx?.drawingBufferHeight || 1;
+
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
+  // 36..51. UniformState swaps `_previousViewProjection := viewProjection`
+  // at the END of `update()` AFTER returning the prior frame's value, so
+  // on frame N this slot holds frame N-1's VP. First frame falls through
+  // to identity.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 36);
+  } else {
+    data[36] = 1;
+    data[37] = 0;
+    data[38] = 0;
+    data[39] = 0;
+    data[40] = 0;
+    data[41] = 1;
+    data[42] = 0;
+    data[43] = 0;
+    data[44] = 0;
+    data[45] = 0;
+    data[46] = 1;
+    data[47] = 0;
+    data[48] = 0;
+    data[49] = 0;
+    data[50] = 0;
+    data[51] = 1;
+  }
 }
 
 /**

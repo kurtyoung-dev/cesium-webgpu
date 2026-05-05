@@ -99,6 +99,10 @@ struct Uniforms {
   // Always written by JS-side packing but only consumed by the
   // fragmentPickMain entry point.
   pickColor: vec4<f32>,
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
+  // tail. Layout-only invariant today; consumed by future per-cell
+  // motion-vector pass for animated voxel volumes.
+  prevViewProjection: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -659,7 +663,7 @@ function updateWebGPUVoxelPrimitive(
   );
   const pickColor = pickId?.color;
 
-  // UBO layout (160 bytes = 40 floats):
+  // UBO layout (224 bytes = 56 floats):
   //   [ 0..15] mvpRelativeToEye        (mat4)
   //   [16..19] encodedCameraHigh + pad
   //   [20..23] encodedCameraLow  + pad
@@ -667,7 +671,8 @@ function updateWebGPUVoxelPrimitive(
   //   [28..31] maxBounds + maxSteps
   //   [32..35] cameraPositionEC + densityThreshold
   //   [36..39] pickColor               (C-R9-VOXEL-PICK, Batch 53)
-  const data = new Float32Array(40);
+  //   [40..55] prevViewProjection      (B.9, Batch 153 — DP-H41)
+  const data = new Float32Array(56);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -704,6 +709,34 @@ function updateWebGPUVoxelPrimitive(
     data[37] = 0;
     data[38] = 0;
     data[39] = 0;
+  }
+
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
+  // 40..55 (byte offset 160). UniformState swaps `_previousViewProjection
+  // := viewProjection` at the END of `update()` AFTER returning the prior
+  // frame's value, so on frame N this slot holds frame N-1's VP. First
+  // frame falls through to identity.
+  const prevVP = (us as { previousViewProjection?: Matrix4 })
+    .previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 40);
+  } else {
+    data[40] = 1;
+    data[41] = 0;
+    data[42] = 0;
+    data[43] = 0;
+    data[44] = 0;
+    data[45] = 1;
+    data[46] = 0;
+    data[47] = 0;
+    data[48] = 0;
+    data[49] = 0;
+    data[50] = 1;
+    data[51] = 0;
+    data[52] = 0;
+    data[53] = 0;
+    data[54] = 0;
+    data[55] = 1;
   }
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

@@ -88,7 +88,11 @@ function getClampedPolylineShaderCache(device) {
   return cache;
 }
 
-const UNIFORM_BUFFER_SIZE = 320;
+// AUDIT_2026_05_02 B.9 (Batch 153) — bumped from 320 → 384 to fit the
+// trailing `prevViewProjection: mat4x4<f32>` (64 bytes) added per the
+// DP-H41 invariant. Layout: 272 bytes used + 64 bytes prevVP + 48 bytes
+// trailing reserved = 384.
+const UNIFORM_BUFFER_SIZE = 384;
 const BYTES_PER_BATCH_COLOR = 16;
 const INITIAL_BATCH_BUFFER_FEATURES = 64;
 
@@ -115,6 +119,10 @@ struct U {
   minMaxHeights: vec2<f32>,
   pixelRatio: f32,
   _pad: f32,
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
+  // tail. Layout-only invariant today; consumed by future motion-vector
+  // pass for clamped-polyline classifiers.
+  prevViewProjection: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
@@ -611,6 +619,30 @@ function packUniforms(data, frameState, primitive) {
   data[65] = mmh?.y ?? 0.0;
   data[66] = uniformState.pixelRatio ?? 1.0;
   data[67] = 0.0;
+
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at
+  // floats 68..83 (272 bytes used → mat4 starts at 16-aligned offset).
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 68);
+  } else {
+    data[68] = 1;
+    data[69] = 0;
+    data[70] = 0;
+    data[71] = 0;
+    data[72] = 0;
+    data[73] = 1;
+    data[74] = 0;
+    data[75] = 0;
+    data[76] = 0;
+    data[77] = 0;
+    data[78] = 1;
+    data[79] = 0;
+    data[80] = 0;
+    data[81] = 0;
+    data[82] = 0;
+    data[83] = 1;
+  }
 }
 
 function ensureVertexBuffer(cache, primitive, device) {

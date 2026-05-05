@@ -85,6 +85,10 @@ struct Uniforms {
   // per-splat feature ID today), so one pickColor per primitive is
   // correct. UBO grows 176 → 192 bytes.
   pickColor: vec4<f32>,
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
+  // tail. Layout-only invariant today; consumed by future per-splat
+  // motion-vector pass for animated splat clouds. UBO grows 192 → 256.
+  prevViewProjection: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -528,8 +532,10 @@ function updateWebGPUGaussianSplats(
   if (!cache.initialized) {
     // C-R9 (Batch 31) — UBO grew 176 → 192 bytes to include pickColor
     // (floats 44-47 at offset 176).
+    // AUDIT_2026_05_02 B.9 (Batch 153) — UBO grew 192 → 256 bytes to
+    // include prev viewProjection (floats 48-63 at offset 192).
     cache.uniformBuffer = device.createBuffer({
-      size: 192,
+      size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     resources = buildSplatPipelineResources(device, canvasFormat);
@@ -671,6 +677,24 @@ function updateWebGPUGaussianSplats(
     pickData[3] = pickColor.alpha ?? 0;
     device.queue.writeBuffer(cache.uniformBuffer!, 176, pickData);
   }
+
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at byte
+  // offset 192 (float 48). UniformState swaps `_previousViewProjection`
+  // at the END of `update()` AFTER returning the prior frame's value, so
+  // on frame N this slot holds frame N-1's VP. First frame falls through
+  // to identity.
+  const prevVPData = new Float32Array(16);
+  const prevVP = (us as { previousViewProjection?: Matrix4 })
+    .previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, prevVPData, 0);
+  } else {
+    prevVPData[0] = 1;
+    prevVPData[5] = 1;
+    prevVPData[10] = 1;
+    prevVPData[15] = 1;
+  }
+  device.queue.writeBuffer(cache.uniformBuffer!, 192, prevVPData);
 
   if (!cache.command) {
     const cmd = new WebGPUDrawCommand({

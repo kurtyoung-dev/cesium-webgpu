@@ -241,6 +241,10 @@ struct U {
   materialParam1: vec4<f32>,
   materialParam2: vec4<f32>,
   _pad: vec4<f32>,
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
+  // tail. Layout-only invariant today; consumed by future motion-vector
+  // pass for ground-clamped polylines.
+  prevViewProjection: mat4x4<f32>,
 };
 
 // Per-instance batch-table data. WebGL polylines look up their
@@ -1469,6 +1473,34 @@ function packUniforms(
   data[109] = 0.0;
   data[110] = 0.0;
   data[111] = 0.0;
+
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
+  // 112..127. UBO size 512 bytes = 128 floats; mat4 fits exactly at the
+  // tail. UniformState swaps `_previousViewProjection := viewProjection`
+  // at the END of `update()` AFTER returning the prior frame's value, so
+  // on frame N this slot holds frame N-1's VP. First frame falls through
+  // to identity.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 112);
+  } else {
+    data[112] = 1;
+    data[113] = 0;
+    data[114] = 0;
+    data[115] = 0;
+    data[116] = 0;
+    data[117] = 1;
+    data[118] = 0;
+    data[119] = 0;
+    data[120] = 0;
+    data[121] = 0;
+    data[122] = 1;
+    data[123] = 0;
+    data[124] = 0;
+    data[125] = 0;
+    data[126] = 0;
+    data[127] = 1;
+  }
 
   // Per-instance batch-table data lives in a storage buffer (group 0
   // binding 1) now, not the UBO. The caller writes that buffer

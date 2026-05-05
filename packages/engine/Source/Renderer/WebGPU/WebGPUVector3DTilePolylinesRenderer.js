@@ -89,6 +89,10 @@ struct U {
   _pad0: f32,
   _pad1: f32,
   _pad2: f32,
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
+  // tail. Layout-only invariant today; consumed by future motion-vector
+  // pass for Vector3DTile classifiers.
+  prevViewProjection: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
@@ -424,6 +428,30 @@ function packUniforms(data, frameState, primitive) {
   data[35] = ctx?.drawingBufferHeight || 1;
 
   data[36] = uniformState.pixelRatio ?? 1.0;
+
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
+  // 40..55 (16-byte-aligned past the f32 + 3×_pad scalar block).
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 40);
+  } else {
+    data[40] = 1;
+    data[41] = 0;
+    data[42] = 0;
+    data[43] = 0;
+    data[44] = 0;
+    data[45] = 1;
+    data[46] = 0;
+    data[47] = 0;
+    data[48] = 0;
+    data[49] = 0;
+    data[50] = 1;
+    data[51] = 0;
+    data[52] = 0;
+    data[53] = 0;
+    data[54] = 0;
+    data[55] = 1;
+  }
 }
 
 function ensureVertexBuffer(cache, primitive, device) {

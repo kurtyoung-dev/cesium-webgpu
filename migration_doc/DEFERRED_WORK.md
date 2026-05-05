@@ -304,6 +304,22 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
+### NEW-ADVANCED-MOTION-VECTORS — per-particle / per-cell / per-feature motion vectors for advanced primitives + classifiers
+
+**What:** Batch 153 closed AUDIT_2026_05_02 B.9 by adding `prevViewProjection: mat4x4<f32>` at the tail of the UBO struct for 8 inline-WGSL renderers (the 5 ground/Vector3DTile classifiers + PointCloud + GaussianSplat + Voxel) per the DP-H41 invariant. The field is a layout-only invariant today; the corresponding per-renderer velocity pass that emits to the rg16float velocity texture is the follow-on work.
+
+**Scope per family:**
+
+- **Vector3DTile classifiers** (Primitive, Polylines, ClampedPolylines): per-feature prev-position storage buffer; velocity entry point that reads `batchId` and looks up prev/curr position; FS emits `(currClip - prevClip).xy / w`. ~80 LOC × 3.
+- **GroundPrimitive / GroundPolyline**: per-instance prev-position; same pattern as Polyline collection (Batch 148). ~80 LOC × 2.
+- **PointCloud**: per-particle prev-position storage buffer (parallel to the existing per-particle position SSBO). LOD variant needs prev `instanceData` mirror. ~120 LOC.
+- **GaussianSplat**: per-splat prev-position. Sort order changes frame-to-frame so prev-buffer indexing must follow the current sort permutation, not a stable per-splat ID. ~150 LOC.
+- **Voxel**: per-cell prev grid (or screen-space approximation). Voxel volumes are typically static; per-cell motion is rare. May reduce to camera-only fallback for v1. ~100 LOC if per-cell, ~30 LOC if screen-space approximation.
+
+**Why deferred:** Each family has distinct architectural questions (sort-order indexing for splats, classifier-batch-ID plumbing for Vector3DTile, voxel scope decision). 1-2 sessions per family.
+
+---
+
 ### NEW-MODEL-NODE-TRANSFORMS-PREV — per-runtime-node prev-frame modelMatrix for TAA velocity on articulated rigs
 
 **What:** Batch 152 closed AUDIT_2026_05_02 B.8 by threading `nodeModelMatrix = sceneGraphMatrix × runtimeNode.transformToRoot` through the per-primitive camera + material UBOs. The TAA velocity path still uses the model-level `cache.prevModelMatrix`, which is correct for static articulations (set once, then locked) but produces ghosting under TAA when articulation animations modify `runtimeNode.transform` per-frame.
