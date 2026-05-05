@@ -162,6 +162,35 @@ const scratchNormal = new Matrix4();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
+// AUDIT_2026_05_02 B.8 (Batch 152) — per-runtime-node modelMatrix scratch
+// for `modelMatrix * runtimeNode.transformToRoot`. Reused per node per frame.
+const scratchNodeModelMatrix = new Matrix4();
+
+// AUDIT_2026_05_02 B.8 — cheap "is identity" check used to skip per-node
+// camera resource allocation when the node has no parent-chain transform
+// (the common case for single-node models). Inlined comparison avoids the
+// O(16) `Matrix4.equalsEpsilon` and the closure cost of an exact-equals path
+// when called per-node per-frame.
+function isIdentityTransformToRoot(m) {
+  return (
+    m[0] === 1 &&
+    m[5] === 1 &&
+    m[10] === 1 &&
+    m[15] === 1 &&
+    m[1] === 0 &&
+    m[2] === 0 &&
+    m[3] === 0 &&
+    m[4] === 0 &&
+    m[6] === 0 &&
+    m[7] === 0 &&
+    m[8] === 0 &&
+    m[9] === 0 &&
+    m[11] === 0 &&
+    m[12] === 0 &&
+    m[13] === 0 &&
+    m[14] === 0
+  );
+}
 
 // ─── Camera Uniform Packing ─────────────────────────────────────────────────
 
@@ -1777,9 +1806,53 @@ function updateWebGPUModel(model, frameState) {
       continue;
     }
 
+    // AUDIT_2026_05_02 B.8 (Batch 152, NEW-MODEL-NODE-TRANSFORMS) — apply
+    // per-runtime-node transformToRoot to the model matrix so multi-node
+    // hierarchies and AGI_articulations / non-skinned animated rigs render
+    // at their correct world position. Mirrors WebGL's
+    // `ModelMatrixUpdateStage.updateDrawCommand` which sets each draw
+    // command's modelMatrix to `sceneGraphMatrix × transformToRoot`.
+    //
+    // Skinning compatibility: `runtimeNode.computedJointMatrices` (Batch 130
+    // TAA velocity input) is built with `inverseNodeWorldTransform` baked
+    // in (`ModelRuntimeNode.js:283-298`); the cancellation only works when
+    // the per-primitive modelMatrix carries the matching `transformToRoot`,
+    // so this fix is also a correctness fix for skinned rigs whose skin
+    // root has a non-identity parent chain.
+    const transformToRoot = runtimeNode.transformToRoot;
+    const transformIsIdentity =
+      !defined(transformToRoot) || isIdentityTransformToRoot(transformToRoot);
+    const nodeModelMatrix = transformIsIdentity
+      ? modelMatrix
+      : Matrix4.multiplyTransformation(
+          modelMatrix,
+          transformToRoot,
+          scratchNodeModelMatrix,
+        );
+
     // Extract skinning data for this node (shared, renderer-agnostic)
     const skinData = extractSkinData(runtimeNode);
     const hasSkinning = defined(skinData);
+
+    // AUDIT_2026_05_02 B.8 (Batch 152) — allocate the per-node cache slot
+    // unconditionally for any node with non-identity transformToRoot, so
+    // the camera buffer + bind group below can be lazily attached to it
+    // even when the node has neither skinning nor instancing. Skinning /
+    // instancing branches further down extend the same nodeCache shape.
+    if (!transformIsIdentity && !defined(cache.nodes[nodeIdx])) {
+      cache.nodes[nodeIdx] = {
+        jointBuffer: null,
+        jointBufferSize: 0,
+        skinningBG: null,
+        packedJointMatrices: null,
+        prevJointBuffer: null,
+        prevPackedJointMatrices: null,
+        // Per-node camera resources (Batch 152, NEW-MODEL-NODE-TRANSFORMS).
+        cameraBuffer: null,
+        cameraData: null,
+        cameraBG: null,
+      };
+    }
 
     // Per-node skinning: create/update joint matrices GPU buffer
     if (hasSkinning) {
@@ -1867,6 +1940,42 @@ function updateWebGPUModel(model, frameState) {
         instanceCount = instRes.instanceCount;
         instanceBuffer = instRes.storageBuffer;
       }
+    }
+
+    // AUDIT_2026_05_02 B.8 (Batch 152) — per-node camera UBO + bind group.
+    // The model-level cache.cameraBG was packed at line ~1681 with the
+    // model-level modelMatrix; deeper nodes need their own mvpRTE +
+    // encodedCameraPositionMC + normalMatrix (all model-matrix-dependent
+    // fields in `packCameraUniforms`). Lazy-allocate a dedicated buffer +
+    // bind group on the per-node cache and re-pack each frame so
+    // articulation animation re-projects the rig correctly.
+    let nodeCameraBG = cache.cameraBG;
+    if (!transformIsIdentity) {
+      const nc = cache.nodes[nodeIdx];
+      if (!defined(nc.cameraBuffer)) {
+        nc.cameraBuffer = WebGPUBuffer.createUniformBuffer(
+          device,
+          CAMERA_UNIFORM_SIZE,
+          `Model camera node[${nodeIdx}]`,
+        );
+        nc.cameraData = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
+        nc.cameraBG = device.createBindGroup({
+          label: `Model camera BG node[${nodeIdx}]`,
+          layout: pipelineCache.cameraBGL,
+          entries: [
+            { binding: 0, resource: { buffer: nc.cameraBuffer.buffer } },
+          ],
+        });
+      }
+      packCameraUniforms(nc.cameraData, frameState, nodeModelMatrix);
+      device.queue.writeBuffer(
+        nc.cameraBuffer.buffer,
+        0,
+        nc.cameraData.buffer,
+        0,
+        CAMERA_UNIFORM_SIZE,
+      );
+      nodeCameraBG = nc.cameraBG;
     }
 
     // Process each primitive on this node
@@ -2047,9 +2156,14 @@ function updateWebGPUModel(model, frameState) {
 
       // Update material uniforms (includes skinning + morph flags +
       // pick color slot + TAA per-model motion + tile-batch passClass).
+      // AUDIT_2026_05_02 B.8 (Batch 152) — passes the per-runtime-node
+      // modelMatrix (`modelMatrix * runtimeNode.transformToRoot`) so the
+      // FS world-space reconstructions (`material.modelMatrix * input.rteMC`
+      // — see ModelPBRComplete.wgsl:1600/2016/2029/2072/2233) compose with
+      // the correct parent-chain transform for articulated rigs.
       packMaterialUniforms(
         primCache.materialData,
-        modelMatrix,
+        nodeModelMatrix,
         matInfo,
         primHasSkinning,
         primHasMorphTargets,
@@ -2240,7 +2354,7 @@ function updateWebGPUModel(model, frameState) {
       const webgpuCmdArgs = {
         pipeline: activePipeline,
         bindGroups: [
-          cache.cameraBG, // group 0
+          nodeCameraBG, // group 0 — per-runtime-node when transformToRoot != I (B.8)
           mergedMaterialBG, // group 1 (material + light + textures + featureId)
           mergedInstanceBG, // group 2 (skinning + morph + instancing)
           cache.effectsBG, // group 3 (was group 7)
@@ -2334,7 +2448,7 @@ function updateWebGPUModel(model, frameState) {
         const pickCmd = new WebGPUDrawCommand({
           pipeline: primCache.pickPipeline,
           bindGroups: [
-            cache.cameraBG,
+            nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
             mergedMaterialBG,
             mergedInstanceBG,
             cache.effectsBG,
@@ -2389,7 +2503,7 @@ function updateWebGPUModel(model, frameState) {
         const velocityCmd = new WebGPUDrawCommand({
           pipeline: primCache.velocityPipeline,
           bindGroups: [
-            cache.cameraBG,
+            nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
             mergedMaterialBG,
             mergedInstanceBG,
             cache.effectsBG,
@@ -2540,7 +2654,7 @@ function updateWebGPUModel(model, frameState) {
         const translucentCmd = new WebGPUDrawCommand({
           pipeline: primCache.translucentPipeline,
           bindGroups: [
-            cache.cameraBG,
+            nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
             mergedMaterialBGTranslucent,
             mergedInstanceBG,
             cache.effectsBG,
@@ -2851,6 +2965,10 @@ function destroyWebGPUModelResources(model) {
     }
     if (defined(nc.prevJointBuffer)) {
       nc.prevJointBuffer.destroy();
+    }
+    // AUDIT_2026_05_02 B.8 (Batch 152) — release per-node camera buffer.
+    if (defined(nc.cameraBuffer)) {
+      nc.cameraBuffer.destroy();
     }
     destroyInstancingResources(nc);
   }

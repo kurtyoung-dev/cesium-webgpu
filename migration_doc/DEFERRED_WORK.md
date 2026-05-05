@@ -304,6 +304,36 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
+### NEW-MODEL-NODE-TRANSFORMS-PREV — per-runtime-node prev-frame modelMatrix for TAA velocity on articulated rigs
+
+**What:** Batch 152 closed AUDIT_2026_05_02 B.8 by threading `nodeModelMatrix = sceneGraphMatrix × runtimeNode.transformToRoot` through the per-primitive camera + material UBOs. The TAA velocity path still uses the model-level `cache.prevModelMatrix`, which is correct for static articulations (set once, then locked) but produces ghosting under TAA when articulation animations modify `runtimeNode.transform` per-frame.
+
+**Scope:**
+
+- Add `prevModelMatrix` to the per-node cache slot (`cache.nodes[nodeIdx]`).
+- Capture per-node prev modelMatrix in the same lifecycle as the existing `prevPackedJointMatrices` swap (Batch 130 pattern): `prevModelMatrix.set(currentModelMatrix)` BEFORE updating to the new frame's `nodeModelMatrix`.
+- Pass per-node `nc.prevModelMatrix` to `packMaterialUniforms` instead of `cache.prevModelMatrix` for the velocity input.
+- ~30 LOC.
+
+**Why deferred:** Visible only under TAA + animated articulations, which is a narrow-but-real intersection (e.g., satellite solar-panel deploy animations under TAA). Static articulations and most articulated assets don't trigger it.
+
+---
+
+### NEW-DRILLPICK-ASYNC — `Scene.drillPick` returns stale prior-frame results on WebGPU
+
+**What:** `Scene.drillPick` is documented to drill through stacked features by calling `pick()` synchronously, hiding the topmost feature with `setShow(false)`, and re-picking. On WebGPU, `WebGPUPickFramebuffer.end()` returns the PREVIOUS frame's pixels (async readback is the architecture), so every iteration sees the same starting state and the drill loop returns garbage. Commit `6ab47593fe` (Batch ~149) added a debug-build `oneTimeWarning` so users see the limitation; the real fix needs an async API.
+
+**Scope:**
+
+- New `Scene.drillPickAsync(...)` API that awaits each pick before mutating show state
+- OR force `device.queue.onSubmittedWorkDone()` between iterations on the synchronous path (slow but compatible)
+- Update upstream-derived call sites (`Picking.drillPick`) to prefer async on WebGPU
+- ~50 LOC
+
+**Why deferred:** Async drillPick changes a public API surface — needs a deprecation path for the sync version and likely a renderer-agnostic `drillPickAsync` shape that WebGL implements as a thin Promise.resolve wrapper.
+
+---
+
 ### NEW-MODEL-CLIPPING-POLYGONS — `model.clippingPolygons` is unbound on WebGPU
 
 **What:** `model.clippingPlanes` now produces correct cutaways on WebGPU (commit `ebdc3548c3`, AUDIT_2026_05_02 A.6 partial-fix). The matching `model.clippingPolygons` SDF binding was never wired into the model material BGL — `clippingPolygonsLengthsAndExtents` / `clippingPolygonsTexture` slots don't exist in `EffectsUniforms`, and `ModelClippingPolygonsPipelineStage`'s WGSL counterpart is absent. Setting `model.clippingPolygons = ...` on WebGPU is a silent no-op.
