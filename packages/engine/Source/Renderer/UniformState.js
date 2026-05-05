@@ -131,7 +131,16 @@ class UniformState {
     this._viewProjectionRelativeToEye = new Matrix4();
 
     // TAA: previous frame's view-projection for reprojection.
-    this._previousViewProjection = new Matrix4();
+    // AUDIT_2026_05_02 B.9 follow-up (Batch 154) — initialize as IDENTITY
+    // not zero. Many WebGPU renderers pack `previousViewProjection` into
+    // the camera UBO with the pattern `if (prevVP) { Matrix4.pack(...) }
+    // else { /* identity fallback */ }`. Since `Matrix4` is always a
+    // truthy object reference, the else branch is unreachable; the
+    // initial zero-matrix value would propagate into the UBO on frame 0
+    // and produce broken motion vectors when downstream consumers land.
+    // Initializing as identity makes the first-frame value safe and
+    // makes the now-dead `else` fallback a redundant-but-correct mirror.
+    this._previousViewProjection = Matrix4.clone(Matrix4.IDENTITY);
 
     // TAA RTE motion vectors: previous frame's camera position (world-space)
     // and previous frame's view-projection-relative-to-eye. Used by the TAA
@@ -149,7 +158,11 @@ class UniformState {
     //
     // where cameraDelta = currentCameraWC - previousCameraWC.
     this._previousCameraPosition = new Cartesian3();
-    this._previousViewProjectionRelativeToEye = new Matrix4();
+    // AUDIT_2026_05_02 B.9 follow-up (Batch 154) — same first-frame
+    // safety as `_previousViewProjection` above: initialize as IDENTITY
+    // so first-frame UBO packs land at a meaningful value if any
+    // consumer races the first `UniformState.update()` call.
+    this._previousViewProjectionRelativeToEye = Matrix4.clone(Matrix4.IDENTITY);
 
     this._inverseViewProjectionDirty = true;
     this._inverseViewProjection = new Matrix4();

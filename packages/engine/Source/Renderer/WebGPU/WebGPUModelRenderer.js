@@ -162,8 +162,13 @@ const scratchNormal = new Matrix4();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
-// AUDIT_2026_05_02 B.8 (Batch 152) — per-runtime-node modelMatrix scratch
-// for `modelMatrix * runtimeNode.transformToRoot`. Reused per node per frame.
+// AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — per-runtime-node
+// modelMatrix scratch for `modelMatrix * runtimeNode.computedTransform`.
+// Reused per node per frame. Originally cited `transformToRoot` here, which
+// is wrong: per `ModelRuntimeNode.js:19` `transformToRoot` excludes the
+// node's own transform. WebGL's `ModelMatrixUpdateStage.updateRuntimeNode`
+// (`ModelMatrixUpdateStage.js:82-86`) multiplies in `runtimeNode.transform`
+// before consuming, equivalent to using `runtimeNode.computedTransform`.
 const scratchNodeModelMatrix = new Matrix4();
 
 // AUDIT_2026_05_02 B.8 — cheap "is identity" check used to skip per-node
@@ -171,7 +176,7 @@ const scratchNodeModelMatrix = new Matrix4();
 // (the common case for single-node models). Inlined comparison avoids the
 // O(16) `Matrix4.equalsEpsilon` and the closure cost of an exact-equals path
 // when called per-node per-frame.
-function isIdentityTransformToRoot(m) {
+function isIdentityMatrix4(m) {
   return (
     m[0] === 1 &&
     m[5] === 1 &&
@@ -1806,27 +1811,36 @@ function updateWebGPUModel(model, frameState) {
       continue;
     }
 
-    // AUDIT_2026_05_02 B.8 (Batch 152, NEW-MODEL-NODE-TRANSFORMS) — apply
-    // per-runtime-node transformToRoot to the model matrix so multi-node
-    // hierarchies and AGI_articulations / non-skinned animated rigs render
-    // at their correct world position. Mirrors WebGL's
-    // `ModelMatrixUpdateStage.updateDrawCommand` which sets each draw
-    // command's modelMatrix to `sceneGraphMatrix × transformToRoot`.
+    // AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — apply per-
+    // runtime-node `computedTransform = transformToRoot × transform` to
+    // the model matrix so multi-node hierarchies and AGI_articulations /
+    // non-skinned animated rigs render at their correct world position.
+    // Mirrors WebGL's `ModelMatrixUpdateStage.updateRuntimeNode` which
+    // multiplies `runtimeNode.transform` into the inherited
+    // `transformToRoot` BEFORE forwarding to `updateDrawCommand`; the
+    // result it forwards is `transformToRoot × transform`, exactly what
+    // `runtimeNode.computedTransform` returns (`ModelRuntimeNode.js:252-258`).
+    //
+    // Original Batch 152 used `runtimeNode.transformToRoot` directly,
+    // which excludes the node's own transform — wrong for any rig with a
+    // non-identity local transform (the entire point of articulations).
     //
     // Skinning compatibility: `runtimeNode.computedJointMatrices` (Batch 130
-    // TAA velocity input) is built with `inverseNodeWorldTransform` baked
-    // in (`ModelRuntimeNode.js:283-298`); the cancellation only works when
-    // the per-primitive modelMatrix carries the matching `transformToRoot`,
-    // so this fix is also a correctness fix for skinned rigs whose skin
-    // root has a non-identity parent chain.
-    const transformToRoot = runtimeNode.transformToRoot;
+    // TAA velocity input) is built with `inverseNodeWorldTransform =
+    // inverse(transformToRoot × transform)` baked in
+    // (`ModelRuntimeNode.js:283-298`); the cancellation only works when
+    // the per-primitive modelMatrix carries the matching
+    // `(transformToRoot × transform) = computedTransform`, so this fix is
+    // also a correctness fix for skinned rigs whose skin root has any
+    // non-identity local OR ancestor transform.
+    const computedTransform = runtimeNode.computedTransform;
     const transformIsIdentity =
-      !defined(transformToRoot) || isIdentityTransformToRoot(transformToRoot);
+      !defined(computedTransform) || isIdentityMatrix4(computedTransform);
     const nodeModelMatrix = transformIsIdentity
       ? modelMatrix
       : Matrix4.multiplyTransformation(
           modelMatrix,
-          transformToRoot,
+          computedTransform,
           scratchNodeModelMatrix,
         );
 
@@ -1834,11 +1848,12 @@ function updateWebGPUModel(model, frameState) {
     const skinData = extractSkinData(runtimeNode);
     const hasSkinning = defined(skinData);
 
-    // AUDIT_2026_05_02 B.8 (Batch 152) — allocate the per-node cache slot
-    // unconditionally for any node with non-identity transformToRoot, so
-    // the camera buffer + bind group below can be lazily attached to it
-    // even when the node has neither skinning nor instancing. Skinning /
-    // instancing branches further down extend the same nodeCache shape.
+    // AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — allocate the
+    // per-node cache slot unconditionally for any node with non-identity
+    // computedTransform, so the camera buffer + bind group below can be
+    // lazily attached to it even when the node has neither skinning nor
+    // instancing. Skinning / instancing branches further down extend the
+    // same nodeCache shape.
     if (!transformIsIdentity && !defined(cache.nodes[nodeIdx])) {
       cache.nodes[nodeIdx] = {
         jointBuffer: null,
@@ -2156,11 +2171,12 @@ function updateWebGPUModel(model, frameState) {
 
       // Update material uniforms (includes skinning + morph flags +
       // pick color slot + TAA per-model motion + tile-batch passClass).
-      // AUDIT_2026_05_02 B.8 (Batch 152) — passes the per-runtime-node
-      // modelMatrix (`modelMatrix * runtimeNode.transformToRoot`) so the
+      // AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — passes the
+      // per-runtime-node modelMatrix (`modelMatrix * runtimeNode.computedTransform`,
+      // where `computedTransform = transformToRoot × transform`) so the
       // FS world-space reconstructions (`material.modelMatrix * input.rteMC`
       // — see ModelPBRComplete.wgsl:1600/2016/2029/2072/2233) compose with
-      // the correct parent-chain transform for articulated rigs.
+      // the correct parent-chain + local transform for articulated rigs.
       packMaterialUniforms(
         primCache.materialData,
         nodeModelMatrix,
@@ -2354,7 +2370,7 @@ function updateWebGPUModel(model, frameState) {
       const webgpuCmdArgs = {
         pipeline: activePipeline,
         bindGroups: [
-          nodeCameraBG, // group 0 — per-runtime-node when transformToRoot != I (B.8)
+          nodeCameraBG, // group 0 — per-runtime-node when computedTransform != I (B.8)
           mergedMaterialBG, // group 1 (material + light + textures + featureId)
           mergedInstanceBG, // group 2 (skinning + morph + instancing)
           cache.effectsBG, // group 3 (was group 7)
