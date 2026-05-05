@@ -5,12 +5,18 @@
  * Manages a chain of fullscreen post-processing effects. Each stage reads
  * from a source texture and writes to a destination texture (ping-pong pattern).
  *
- * Pipeline execution order (matching CesiumJS WebGL PostProcessStageCollection):
+ * Pipeline execution order:
  * 1. Ambient Occlusion (complex multi-pass effect)
- * 2. Bloom (complex multi-pass effect)
- * 3. Tonemapping / HDR (single-pass, mode-selectable operator)
- * 4. Custom stages (user-added via addCustomStage)
- * 5. FXAA (single-pass anti-aliasing, always last)
+ * 2. Bloom + GodRays (complex multi-pass effects)
+ * 3. Depth of Field (complex multi-pass effect, depth-gated)
+ * 3.5 AutoExposure (compute, feeds Tonemap exposure uniform)
+ * 4. TAA (Audit B.16, Batch 155 — runs in linear/HDR domain BEFORE
+ *    Tonemap so neighborhood-clamp + history-blend math operates in
+ *    linear color space)
+ * 5. Tonemapping / HDR (single-pass, mode-selectable operator)
+ * 6. ColorGrading (single-pass LUT)
+ * 7. Custom stages (user-added via addCustomStage)
+ * 8. FXAA (single-pass anti-aliasing, always last)
  *
  * Architecture:
  * - Two ping-pong textures (A, B) alternate as source/destination
@@ -884,17 +890,15 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       }
     }
 
-    // 4. Tonemapping + ColorGrading + Custom stages + FXAA (single-pass chain)
-    const singlePassStages: CompiledStage[] = [];
-    if (this._tonemapStage?.enabled) singlePassStages.push(this._tonemapStage);
-    if (this._colorGradingStage?.enabled) {
-      // Phase 4 — runs after tonemap (so it sees SDR) and before custom
-      // stages + FXAA (so the AA pass smooths any contrast-boosted edges).
-      singlePassStages.push(this._colorGradingStage);
-    }
-    // TAA runs after ColorGrading as a complex effect (manages its own
-    // history textures). It replaces the current view with the resolved
-    // TAA output before the custom stages and FXAA.
+    // AUDIT_2026_05_02 B.16 (Batch 155) — TAA moved to BEFORE Tonemap
+    // + ColorGrading. Previously TAA accumulated SDR samples (post-
+    // tonemap), losing linear-domain precision and causing the
+    // history-clamp neighborhood test to operate on a non-linear color
+    // space where bright pixels are compressed. Running in linear/HDR
+    // domain keeps blend math accurate for both HDR and SDR scenes;
+    // SDR pre-tonemap pixels are still in 0..1 and behave identically
+    // to the previous order, while HDR pre-tonemap pixels (>1.0) keep
+    // their full range for neighborhood comparisons.
     if (this._taaEffect?.enabled) {
       // TAA Slice 2d (Batch 104) — pass the per-pixel motion-vector
       // view through. When the SceneRenderer hasn't run a velocity
@@ -908,6 +912,15 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         this._sampler!,
         motionView ?? null,
       );
+    }
+
+    // 4. Tonemapping + ColorGrading + Custom stages + FXAA (single-pass chain)
+    const singlePassStages: CompiledStage[] = [];
+    if (this._tonemapStage?.enabled) singlePassStages.push(this._tonemapStage);
+    if (this._colorGradingStage?.enabled) {
+      // Phase 4 — runs after tonemap (so it sees SDR) and before custom
+      // stages + FXAA (so the AA pass smooths any contrast-boosted edges).
+      singlePassStages.push(this._colorGradingStage);
     }
 
     for (const s of this._customStages) {

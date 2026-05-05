@@ -1286,22 +1286,9 @@ modulated by `highlightColor` — matching WebGL behavior.
 
 ---
 
-### NEW-KHR-ANISO-TANGENT
+### ~~NEW-KHR-ANISO-TANGENT~~ — RESOLVED (commit `487ef6478a`)
 
-**What:** KHR_materials_anisotropy currently approximates the
-anisotropic GGX lobe by stretching the GGX D-term along a view-relative
-direction (`viewRight = cross(N, V)`). The spec defines the streak
-along the per-fragment tangent direction, which requires the glTF
-TANGENT attribute to flow through to the FS.
-
-**Why deferred:** TANGENT is already declared as a vertex attribute on
-the model pipeline layout but the FS-side `tangentEC` field has gaps
-in coverage (some pipelines elide it). Plumbing it to the anisotropy
-branch is one session; the visual delta is brushed-metal materials
-correctly streaking along the asset's authored tangent.
-
-**Trace:** `ModelPBRComplete.wgsl` line 1474 ("...full per-tangent BRDF
-lands in a follow-up").
+`ModelPBRComplete.wgsl:1815-1845` now uses `input.tangentEC` (with a `tanLenSq > 1.0e-6` guard against zero-length tangent on primitives without an authored TANGENT attribute) instead of the view-relative `cross(N, V)` approximation. `aniDir = aniT * cos(aniRotation) + aniB * sin(aniRotation)` where `aniT/aniB` are the normalized tangent and bitangent; the GGX D-term roughness is then stretched along that direction. View-relative basis kept as a fallback for non-tangent-authored materials. Brushed-metal materials with authored anisotropic UVs now streak along the per-fragment tangent direction matching the glTF spec.
 
 ---
 
