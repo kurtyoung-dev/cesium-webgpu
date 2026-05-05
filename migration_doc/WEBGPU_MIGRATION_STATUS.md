@@ -1,10 +1,57 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** May 4, 2026 (Batches 154-159 — audit-doc sync + B.8 articulations + B.9 prevVP + A.4/A.9 progress)
+**Last Updated:** May 5, 2026 (Batches 160-162 — A.6 polygons / B.12 point-light primitives / A.9 SH fast-path doc-sync)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
 **Overall Progress:** ~93% of full WebGL feature parity. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
 
 **Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
+
+---
+
+## Recent Progress (2026-05-05 — Batches 160-162: high-payoff feature trio)
+
+Three batches closing genuinely-open Tier 4 work plus a doc-drift sync.
+
+### Batch 160 — A.6 NEW-MODEL-CLIPPING-POLYGONS atlas-aware port (commit `8c72e4865a`)
+
+`model.clippingPolygons` was wired through to the effects bind group in earlier work (commit `ebdc3548c3`) but the FS used a whole-globe lon/lat → atlas UV mapping that produced garbage SDF samples for typical small polygons (BIM cutaway scenarios) and hardcoded the inverse-clip direction. Batch 160 ports the WebGL VS+FS pipeline (`ModelClippingPolygonsStageVS.glsl` + `Builtin/Functions/clipPolygons.glsl`) into a single FS function, `modelClipByPolygon`, in `ModelPBRComplete.wgsl`:
+
+- EffectsUniforms grew 336 → 480 bytes by adding `clippingPolygonControl: vec4<f32>` (extentsCount, invDim, inverseFlag) and `clippingPolygonExtents: array<vec4<f32>, 8>` (south, west, invLatRange, invLonRange).
+- `WebGPUEffectsBindGroup.js` packs the new fields from `_extentsFloat32View` and `_extentsCount`, precomputes `1/dim` (atlas grid), and forwards `clippingPolygons.inverse`. Warns once when extentsCount > 8.
+- Per-region rectUv selection (with the same 0.01 boundary threshold the GLSL VS uses) → atlas slot lookup → SDF sample → discard.
+- `czm_fastApproximateAtan2` ported to WGSL so (lat, lon) match byte-for-byte with the CPU-packed extents (`packPolygonsAsFloats` uses the same Drobot atan curve).
+- Inverse flag respected: default discards inside polygons (cutout); `inverse = true` discards outside (AEC "show only inside" demos).
+
+### Batch 161 — B.12 point-light cube shadows on two primitive lit shaders (commit `4280e026a9`)
+
+`ModelPBRComplete.wgsl` has had point-light cube shadows for several batches; primitive lit shaders did not. Batch 161 lifts the receive path to two of the most-used primitive shaders:
+
+- `PrimitivePhongTexturedColor.wgsl` and `PrimitivePBRSimple.wgsl` extend their `EffectsUniforms` struct from 272 → 336 bytes, adding `edgeControl` + `edgeViewport` as padding (primitives don't run the inline edge stage), `pointLightControl: vec4<f32>` (enabled flag, near/far, depthBias) and `pointLightPositionWC: vec4<f32>` (world light position + pcfRadius).
+- `@group(3 or 2) @binding(17)` declares `pointLightCubeDepth: texture_depth_cube`. Off-path is the 1×1×6 placeholder cleared to 1.0 — the `pointLightControl.x > 0.5` gate skips the sample.
+- `samplePointShadow` + `computeShadowFactorPointLight` inlined from the Model FS. 5-tap cross PCF when `pointLightPositionWC.w > 0` (cube-face texel radius); hard sample otherwise.
+- Shadow-gate order: point-light first, CSM second, 2D shadow map last — matches Model FS so transitions stay coherent.
+- fragWC reconstructed at the call site as `cameraWC + eyePosition` where `cameraWC = encodedCameraHigh + encodedCameraLow` (same pattern atmosphere LUT uses on these shaders).
+
+Remaining 20+ primitive lit shaders await chunk-extraction of `samplePointShadow` for amortization.
+
+### Batch 162 — A.9 NEW-IBL-SH-FAST-PATH audit-doc sync
+
+The 9-coefficient SH fast-path was filed as a follow-up perf optimization in earlier audit-doc work, with the cubemap split-sum closure tracked separately. Batch 162's re-audit walked the actual code path and found the SH shortcut was ALREADY shipped in Batch 130 alongside the cubemap work — the deferred entry was stale-by-construction. Code path verified end-to-end:
+
+- WGSL UBO `SHUniforms` at `@group(1) @binding(36)` ships 9 vec4 coefficients + a control vec4.
+- WGSL `evalSphericalHarmonics(N)` does the 9-coefficient evaluation in 6 mads, mirroring `Builtin/Functions/sphericalHarmonics.glsl` byte-for-byte.
+- WGSL FS gate at `ModelPBRComplete.wgsl:2275-2279` short-circuits to SH when `sh.control.w > 0.5`, otherwise samples the irradiance cubemap.
+- JS `WebGPUIBLPipeline.ts:319-348` (`packSphericalHarmonics`) packs 9 coefficients with `data[39] = 1.0` (control.w active).
+- JS `WebGPUImageBasedLighting.ts:189-208` calls `packSphericalHarmonics` whenever `ibl.sphericalHarmonicCoefficients` is set.
+- JS `WebGPUModelRenderer.js:1273-1313` (`buildModelIBLEntries`) binds `_webgpuSHBuffer` at slot 36 (or `defaultSHBuffer` with control.w = 0).
+
+`DEFERRED_WORK.md` and `AUDIT_2026_05_02.md` updated to reflect closure.
+
+### Cumulative impact (Batches 160-162)
+
+- Two BREAKING/PARTIAL audit items closed (A.6 model clipping polygons; B.12 point-light primitives partial).
+- One stale DEFERRED entry retired (NEW-IBL-SH-FAST-PATH).
+- Tier 4 narrowed by two entries.
 
 ---
 

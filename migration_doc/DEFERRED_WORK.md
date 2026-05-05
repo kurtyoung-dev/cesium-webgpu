@@ -335,19 +335,18 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
-### NEW-IBL-SH-FAST-PATH — 9-coefficient spherical harmonics shortcut for diffuse IBL
+### ~~NEW-IBL-SH-FAST-PATH — 9-coefficient spherical harmonics shortcut for diffuse IBL~~ — RESOLVED (Batch 130 commit `0b4fac4b65`; doc sync Batch 162)
 
-**What:** Batch 130 (`0b4fac4b65`) closed AUDIT_2026_05_02 A.9 by binding `iblDiffuseTexture` (irradiance cubemap) and `iblSpecularTexture` (radiance cubemap) on the model material BGL and sampling both in `ModelPBRComplete.wgsl:2128-2160`. The diffuse IBL term currently uses a cubemap fetch (`textureSample(iblDiffuseTexture, iblSampler, N)`). When the asset publishes 9 spherical-harmonics coefficients, we can short-circuit to `evalSH(N, coeffs)` (~6 mad ops) and skip the cubemap fetch entirely — saves one texture sample per fragment for the diffuse half.
+**Resolution:** The SH fast-path was actually shipped end-to-end in Batch 130 alongside the cubemap split-sum work, not just the cubemap half. Re-audit (Batch 162) confirmed every piece is in place:
 
-**Scope:**
+- WGSL UBO `SHUniforms` at `@group(1) @binding(36)` carries 9 `vec4<f32>` coefficients + a `control: vec4<f32>` slot (`ModelPBRComplete.wgsl:444-461`).
+- WGSL `evalSphericalHarmonics(N)` at `ModelPBRComplete.wgsl:847-858` does the 9-coefficient evaluation in 6 mads. Mirrors `Builtin/Functions/sphericalHarmonics.glsl` byte-for-byte (coefficient pre-multiplication by `Y_lm` basis constants is done at generation time on both backends, so the shader-side evaluation is the same form).
+- WGSL FS gate at `ModelPBRComplete.wgsl:2275-2279` short-circuits to `evalSphericalHarmonics(N)` when `sh.control.w > 0.5`, falling back to the cubemap sample otherwise.
+- JS `WebGPUIBLPipeline.ts:319-348` (`packSphericalHarmonics`) packs 9 coefficients with `data[39] = 1.0` (control.w active).
+- JS `WebGPUImageBasedLighting.ts:189-208` (`update`) calls `packSphericalHarmonics` whenever `ibl.sphericalHarmonicCoefficients` is set, exposing the buffer via `ibl._webgpuSHBuffer`.
+- JS `WebGPUModelRenderer.js:1273-1313` (`buildModelIBLEntries`) binds `_webgpuSHBuffer` at slot 36 (or `pipelineCache.defaultSHBuffer` with control.w=0 when SH isn't published).
 
-- Add `sphericalHarmonics: array<vec4<f32>, 9>` UBO field at `@group(1) @binding(36)` (the BGL slot already exists per Batch 130 wiring; just need to populate + read).
-- Add a `FLAG_HAS_IBL_SH` material flag.
-- Pack 9 coefficients per scene from `ImageBasedLighting._sphericalHarmonicCoefficients` into the UBO.
-- In FS: `if (hasFlag(flags, FLAG_HAS_IBL_SH)) { irradiance = evalSH(N, sh); } else { irradiance = textureSample(iblDiffuseTexture, ...); }`
-- ~30 LOC.
-
-**Why deferred:** Cubemap path works correctly today; SH is a perf optimization (saves one cubemap fetch per fragment but doesn't change image quality). Defer until perf profiling identifies the diffuse cubemap fetch as a hotspot.
+The deferred entry's "scope" predates the Batch 130 commit and was never reconciled — it described a slightly different design (a `FLAG_HAS_IBL_SH` material flag) that the actual implementation supersedes with the cleaner `sh.control.w` gate (no flag plumbing needed).
 
 ---
 
