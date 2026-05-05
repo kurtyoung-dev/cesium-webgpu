@@ -60,6 +60,8 @@
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
+import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -849,6 +851,27 @@ function createWebGPUVector3DTileClampedPolylineCommands(
 ) {
   const context = frameState.context;
   const device = context.device;
+
+  // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
+  // ClampedPolylines reads a 7-attribute interleaved vertex stream
+  // tied to 3D ECEF positions and ellipsoid normals; 2D / Columbus
+  // View support requires a parallel per-mode attribute set (mirroring
+  // GroundPolyline's Batch 116/117 pattern). 3D Tiles vector tile
+  // content is typically only viewed in 3D mode in production, so
+  // silently skipping emission here matches user-expected behavior.
+  // Tracked as a follow-up in DEFERRED_WORK.md.
+  if (frameState?.mode !== SceneMode.SCENE3D) {
+    //>>includeStart('debug', pragmas.debug);
+    oneTimeWarning(
+      "WebGPUVector3DTileClampedPolylines.sceneMode",
+      "Vector3DTileClampedPolylines on WebGPU is currently only correct in " +
+        "SceneMode.SCENE3D. Non-3D scene modes (2D, Columbus View, Morphing) " +
+        "are silently skipped. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH " +
+        "in DEFERRED_WORK.md.",
+    );
+    //>>includeEnd('debug');
+    return { colorCommands: [], pickCommands: [], ignoreShowCommands: [] };
+  }
 
   if (!defined(primitive._webgpuCache)) {
     primitive._webgpuCache = {};

@@ -37,6 +37,8 @@
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
+import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -482,6 +484,45 @@ function packUniforms(data, frameState, modelMatrix, color, pickColor) {
 function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const context = frameState.context;
   const device = context.device;
+
+  // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
+  // GroundPrimitive's depth-sample classifier reads `position3DHigh` /
+  // `position3DLow` (3D ECEF) attributes only — the SceneMode 2D /
+  // Columbus View / Morphing positions (`position2DHigh` /
+  // `position2DLow`, plus per-mode projection matrices) are NOT yet
+  // wired. In non-3D modes, the 3D-encoded positions get projected
+  // through `uniformState.projection` (which is the 2D / CV /
+  // morph-blended projection matrix), producing visually-incorrect
+  // classification volumes that wander or disappear depending on the
+  // mode. Mirroring the conservative "skip emission silently" pattern
+  // (avoids garbage on screen) until proper 2D/CV/morph support
+  // lands. Tracked as a follow-up in DEFERRED_WORK.md.
+  // Note: WebGPUGroundPolylineRenderer ALREADY handles all scene
+  // modes correctly via separate 2D attribute slots and a dedicated
+  // morph pipeline (Batches 116/117 era), so the gate doesn't apply
+  // there.
+  if (frameState?.mode !== SceneMode.SCENE3D) {
+    //>>includeStart('debug', pragmas.debug);
+    oneTimeWarning(
+      "WebGPUGroundPrimitive.sceneMode",
+      "GroundPrimitive on WebGPU is currently only correct in SceneMode.SCENE3D. " +
+        "Non-3D scene modes (2D, Columbus View, Morphing) are silently skipped " +
+        "to avoid rendering classification volumes at incorrect positions. " +
+        "Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH in DEFERRED_WORK.md.",
+    );
+    //>>includeEnd('debug');
+    return {
+      colorPipeline: null,
+      pickPipeline: null,
+      bindGroup: null,
+      stencilCommand: null,
+      colorCommand: null,
+      pickCommand: null,
+      colorCommands: [],
+      pickCommands: [],
+      ignoreShowCommand: null,
+    };
+  }
 
   if (!defined(primitive._webgpuCache)) {
     primitive._webgpuCache = {};

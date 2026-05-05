@@ -47,6 +47,8 @@
 import defined from "../../Core/defined.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
+import SceneMode from "../../Scene/SceneMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
@@ -651,6 +653,24 @@ function uploadPickColors(cache, primitive, device) {
 function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
   const context = frameState.context;
   const device = context.device;
+
+  // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
+  // Same rationale as the other Vector3DTile classifier renderers:
+  // 3D-positions-only VS, 2D / Columbus View / Morphing positions
+  // not yet wired. 3D Tiles content is typically only viewed in 3D
+  // mode in production, so silent skip matches user expectation.
+  if (frameState?.mode !== SceneMode.SCENE3D) {
+    //>>includeStart('debug', pragmas.debug);
+    oneTimeWarning(
+      "WebGPUVector3DTilePolylines.sceneMode",
+      "Vector3DTilePolylines on WebGPU is currently only correct in " +
+        "SceneMode.SCENE3D. Non-3D scene modes (2D, Columbus View, Morphing) " +
+        "are silently skipped. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH " +
+        "in DEFERRED_WORK.md.",
+    );
+    //>>includeEnd('debug');
+    return { colorCommands: [], pickCommands: [] };
+  }
 
   if (!defined(primitive._webgpuCache)) {
     primitive._webgpuCache = {};

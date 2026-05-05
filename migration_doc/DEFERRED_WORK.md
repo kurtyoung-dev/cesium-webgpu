@@ -304,6 +304,66 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
+### NEW-CLASSIFIER-2D-CV-MORPH — proper 2D / Columbus View / Morphing support for classifier renderers
+
+**What:** WebGL classification primitives correctly render in
+SceneMode.SCENE2D, COLUMBUS_VIEW, and MORPHING. WebGPU's classifier
+renderers consume only 3D ECEF position attributes
+(`position3DHigh` / `position3DLow` for GroundPrimitive,
+RTC-relative-to-`_center` for Vector3DTile* renderers, ellipsoid-
+normal-encoded shadow volumes for ClampedPolylines), so projecting
+those 3D positions through the 2D / CV / morph projection matrix
+produces wandering or invisible classification volumes.
+
+**Current behavior (Batch 150 conservative gate):** Each affected
+classifier silently skips emission when `frameState.mode !== SceneMode.SCENE3D`,
+producing nothing on screen rather than visually-incorrect volumes.
+A debug-build `oneTimeWarning` flags the limitation. The four
+affected renderers are:
+
+- `WebGPUGroundPrimitiveRenderer` (GroundPrimitive)
+- `WebGPUVector3DTilePrimitiveRenderer` (vector tile polygons)
+- `WebGPUVector3DTileClampedPolylinesRenderer` (vector tile clamped polylines)
+- `WebGPUVector3DTilePolylinesRenderer` (non-clamped vector tile polylines)
+
+`WebGPUGroundPolylineRenderer` is NOT affected — Batches 116/117 era
+shipped its full 2D + Columbus View + Morphing pipeline (parallel
+2D attribute slots at locations 8-13, dedicated morph pipeline,
+sceneMode flag in uniforms). The proper fix below should mirror its
+pattern.
+
+**Why deferred:** Each affected renderer needs:
+
+1. **Vertex buffer** extended with 2D/CV position attributes
+   (`position2DHigh` / `position2DLow` from the geometry's `_webgpuGeometryData`).
+2. **Pipeline layout** extended with new attribute slots.
+3. **Per-renderer WGSL VS** branched on a sceneMode uniform: 3D
+   path uses 3D positions + RTE camera; 2D / CV path uses 2D
+   positions + 2D / CV view-projection; MORPHING blends between
+   them by `czm_morphTime`.
+4. **JS pack** writes scene-mode flag into the per-frame uniform
+   buffer.
+5. (Optional) Separate morph pipeline if morph-mode WGSL diverges
+   significantly from the steady-state branch (the GroundPolyline
+   renderer does this).
+
+For 3D Tiles content (Vector3DTile* renderers), 2D / CV use is rare
+in production — the full 3D Tiles tileset architecture is 3D-
+oriented. Lower-priority unless a user explicitly reports a need.
+
+For GroundPrimitive (which IS commonly used in 2D scenes for UI
+overlay shapes), a proper fix matches WebGL behavior and unblocks
+data-vis use cases.
+
+**Estimated effort:** 2-3 sessions per renderer (~80 LOC each).
+GroundPolyline's existing implementation is the reference template.
+
+**Trace:** AUDIT_2026_05_02.md A.4; Batch 150 conservative gate;
+`WebGPUGroundPolylineRenderer.js` (locations 8-13 + morph pipeline)
+as the reference implementation.
+
+---
+
 ### ~~NEW-COLLECTIONS-MOTION-VECTORS~~ — Collections sweep RESOLVED (Batches 143/144/148); advanced primitives remain
 
 **Status:** All four Collections renderers (Billboard, Label,

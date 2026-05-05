@@ -39,6 +39,8 @@
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
+import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -723,6 +725,28 @@ function uploadPickColors(cache, primitive, device) {
 function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   const context = frameState.context;
   const device = context.device;
+
+  // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
+  // Vector3DTilePrimitive reads RTC-relative `position` attributes
+  // tied to the tileset's encoded `_center` (3D ECEF). The 2D /
+  // Columbus View projections aren't wired through to the VS, so
+  // non-3D modes would project the 3D-encoded positions through the
+  // 2D / CV projection matrix and produce wandering classification
+  // volumes. 3D Tiles content is typically only viewed in 3D mode in
+  // production, so silently skipping emission here matches
+  // user-expected behavior. Tracked as a follow-up in DEFERRED_WORK.md.
+  if (frameState?.mode !== SceneMode.SCENE3D) {
+    //>>includeStart('debug', pragmas.debug);
+    oneTimeWarning(
+      "WebGPUVector3DTilePrimitive.sceneMode",
+      "Vector3DTilePrimitive on WebGPU is currently only correct in " +
+        "SceneMode.SCENE3D. Non-3D scene modes (2D, Columbus View, Morphing) " +
+        "are silently skipped. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH " +
+        "in DEFERRED_WORK.md.",
+    );
+    //>>includeEnd('debug');
+    return { colorCommands: [], pickCommands: [], ignoreShowCommands: [] };
+  }
 
   if (!defined(primitive._webgpuCache)) {
     primitive._webgpuCache = {};
