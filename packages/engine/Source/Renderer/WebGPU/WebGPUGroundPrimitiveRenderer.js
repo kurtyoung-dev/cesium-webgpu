@@ -55,10 +55,17 @@ import {
   ensurePickId,
 } from "./WebGPUPickCommandHelpers.js";
 
-const UNIFORM_BUFFER_SIZE = 256;
+// Batch 164 — UBO 256 → 384 bytes to carry separate `mvRTE` + `proj`
+// matrices + a `morphFlags` vec4 for the SCENE3D ↔ SCENE2D morph
+// pipeline. The morph VS uses these alongside `mvpRTE` to project both
+// the 3D ECEF and 2D-projected position attributes through the
+// morph-state view, then blends in EC space by `morphFlags.x`
+// (morphTime). Pre-Batch-164 the renderer silently skipped MORPHING.
+const UNIFORM_BUFFER_SIZE = 384;
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
+const scratchProjection = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
 
 /**
@@ -102,10 +109,23 @@ struct U {
   color: vec4<f32>,
   pickColor: vec4<f32>,
   viewport: vec4<f32>,
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
-  // tail. Layout-only invariant today; consumed by future motion-vector
-  // pass for ground classifiers.
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at
+  // floats 36..51. Layout-only invariant today; consumed by future
+  // motion-vector pass for ground classifiers.
   prevViewProjection: mat4x4<f32>,
+  // Batch 164 — A.4 NEW-CLASSIFIER-2D-CV-MORPH morph fields. Populated
+  // unconditionally so the WGSL struct size matches the 384-byte UBO,
+  // but morphFlags.x (morphTime) is only read by the morph VS.
+  // The non-morph VS (colorVS) keeps using mvpRTE alone. mvRTE and
+  // proj are the morph-state matrices, separate because the morph
+  // blend happens in EC space and re-projects with proj after lerp.
+  mvRTE: mat4x4<f32>,
+  proj: mat4x4<f32>,
+  // .x = morphTime (1.0 = full SCENE3D, 0.0 = full SCENE2D / Columbus
+  //      View, fractional during MORPHING). Outside MORPHING the
+  //      morph VS isn't dispatched so this slot is don't-care.
+  // .yzw = reserved.
+  morphFlags: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 
@@ -182,6 +202,39 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
   }
   return vec4<f32>(0.0);
 }
+
+// Batch 164 -- A.4 NEW-CLASSIFIER-2D-CV-MORPH morph pipeline. Mirrors
+// the WebGL appearance3DMorph flow -- consumes BOTH the 3D ECEF and
+// 2D-projected position attribute sets and blends EC-space positions
+// by morphFlags.x (morphTime). The 2D positions ride at locations
+// 2/3 with the same stride layout as the 3D pair; the JS side
+// interleaves 12 bytes per attribute pair into a 24-byte vertex
+// stream that the buffer layout decodes into pH/pL/pH2D/pL2D.
+//
+// Coordinate convention: the 2D positions follow Cesium's projected
+// frame where the X-axis is the projection's altitude and (Y, Z) are
+// the planar pair -- matching WebGPUGroundPolylineRenderer.vsMorph,
+// hence the .zxy swizzle on the 2D pair before feeding it to the
+// shared translateRelativeToEye math. Without the swizzle the
+// 2D-projected lat/lon land in the wrong axes and the volume floats
+// off the projected surface during the morph.
+@vertex fn morphColorVS(
+  @location(0) pH: vec3<f32>, @location(1) pL: vec3<f32>,
+  @location(2) pH2D: vec3<f32>, @location(3) pL2D: vec3<f32>,
+) -> CO {
+  var o: CO;
+  let morphTime = u.morphFlags.x;
+  let rte3D = (pH - u.camH) + (pL - u.camL);
+  let rte2D = (pH2D.zxy - u.camH) + (pL2D.zxy - u.camL);
+  let posEc3D = (u.mvRTE * vec4<f32>(rte3D, 1.0)).xyz;
+  let posEc2D = (u.mvRTE * vec4<f32>(rte2D, 1.0)).xyz;
+  // Blend EC positions by morphTime, then project. Matches WebGL
+  // appearance3DMorph and WebGPUGroundPolylineRenderer.vsMorph.
+  let posEc = mix(posEc2D, posEc3D, morphTime);
+  o.pos = csm_depthClamp(u.proj * vec4<f32>(posEc, 1.0));
+  o.col = u.color;
+  return o;
+}
 `;
 
   const mod = device.createShaderModule({ label: "GroundPrimitive", code });
@@ -212,6 +265,29 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
       attributes: [
         { shaderLocation: 0, offset: 0, format: "float32x3" },
         { shaderLocation: 1, offset: 12, format: "float32x3" },
+      ],
+    },
+  ];
+
+  // Batch 164 — A.4 morph layout: two simultaneous vertex buffers, each
+  // with a (high, low) RTE pair. Buffer 0 carries 3D ECEF positions
+  // (locations 0/1 — same as the non-morph pipeline so the JS side
+  // reuses the same `position3DHigh/Low` interleave). Buffer 1 carries
+  // the projected 2D positions (locations 2/3). Only used during
+  // SCENE_MODE.MORPHING; the non-morph pipelines bind a single buffer.
+  const morphVertexBuffers = [
+    {
+      arrayStride: 24,
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: "float32x3" },
+        { shaderLocation: 1, offset: 12, format: "float32x3" },
+      ],
+    },
+    {
+      arrayStride: 24,
+      attributes: [
+        { shaderLocation: 2, offset: 0, format: "float32x3" },
+        { shaderLocation: 3, offset: 12, format: "float32x3" },
       ],
     },
   ];
@@ -310,10 +386,77 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
     },
   };
 
+  // Batch 164 — A.4 NEW-CLASSIFIER-2D-CV-MORPH morph color pipeline.
+  // Two-buffer vertex layout (3D + 2D position pairs); same fragment
+  // shader as the non-morph color path — the morph blend lives in the
+  // VS so the FS just samples globe depth and emits per-instance color.
+  // Color targets, blend, depth-stencil, and the pipeline layout all
+  // mirror `depthSampleColorDescriptor` so the cache key only differs
+  // by `vertex.entryPoint` + `vertex.buffers`.
+  const morphColorDescriptor = {
+    name: `GroundPrimitive morphColor [${format}/${depthFormat}]`,
+    layout: depthSampleLayout,
+    vertex: {
+      module: mod,
+      entryPoint: "morphColorVS",
+      buffers: morphVertexBuffers,
+    },
+    fragment: {
+      module: mod,
+      entryPoint: "dsColorFS",
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  const morphPickDescriptor = {
+    name: `GroundPrimitive morphPick [${format}/${depthFormat}]`,
+    layout: depthSampleLayout,
+    vertex: {
+      module: mod,
+      entryPoint: "morphColorVS",
+      buffers: morphVertexBuffers,
+    },
+    fragment: {
+      module: mod,
+      entryPoint: "dsPickFS",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
   return {
     depthSampleColorDescriptor,
     depthSamplePickDescriptor,
     depthSampleStencilDescriptor,
+    morphColorDescriptor,
+    morphPickDescriptor,
     bgl,
     depthSampleBgl,
   };
@@ -427,6 +570,63 @@ function tryResolveGroundPrimitivePipelines(
   return true;
 }
 
+/**
+ * Batch 164 — A.4 morph pipelines, resolved lazily on the first
+ * MORPHING frame so non-morphing scenes don't pay the cache hit.
+ * Mirrors `tryResolveGroundPrimitivePipelines` for the morph
+ * descriptor pair.
+ * @private
+ */
+function tryResolveGroundPrimitiveMorphPipelines(
+  device,
+  pipelineCache,
+  resources,
+  cache,
+) {
+  if (cache.morphColorPipeline && cache.morphPickPipeline) {
+    return true;
+  }
+
+  if (pipelineCache) {
+    const morphColorSync = pipelineCache.getPipelineSync(
+      resources.morphColorDescriptor,
+    );
+    const morphPickSync = pipelineCache.getPipelineSync(
+      resources.morphPickDescriptor,
+    );
+    if (morphColorSync && morphPickSync) {
+      cache.morphColorPipeline = morphColorSync;
+      cache.morphPickPipeline = morphPickSync;
+      cache.morphPipelineRequestPending = false;
+      return true;
+    }
+    if (!cache.morphPipelineRequestPending) {
+      cache.morphPipelineRequestPending = true;
+      Promise.all([
+        pipelineCache.getPipeline(resources.morphColorDescriptor),
+        pipelineCache.getPipeline(resources.morphPickDescriptor),
+      ])
+        .then(([morphColor, morphPick]) => {
+          cache.morphColorPipeline = morphColor;
+          cache.morphPickPipeline = morphPick;
+          cache.morphPipelineRequestPending = false;
+        })
+        .catch(() => {
+          cache.morphPipelineRequestPending = false;
+        });
+    }
+    return false;
+  }
+
+  cache.morphColorPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.morphColorDescriptor),
+  );
+  cache.morphPickPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.morphPickDescriptor),
+  );
+  return true;
+}
+
 function packUniforms(data, frameState, modelMatrix, color, pickColor) {
   const uniformState = frameState.context.uniformState;
   // Use uniformState.view/projection for 2D/Columbus View support
@@ -506,6 +706,38 @@ function packUniforms(data, frameState, modelMatrix, color, pickColor) {
     data[50] = 0;
     data[51] = 1;
   }
+
+  // Batch 164 — A.4 NEW-CLASSIFIER-2D-CV-MORPH morph fields.
+  //
+  // floats 52..67 — `mvRTE` — model-view RTE (translation zeroed).
+  //   Read by `morphColorVS` to project both the 3D and 2D
+  //   position attributes through the morph-state view (then blends
+  //   in EC space). For the non-morph paths this slot is don't-care
+  //   because `colorVS` only reads `mvpRTE`.
+  //
+  // floats 68..83 — `proj` — projection matrix.
+  //   Final projection after the EC-space morph blend.
+  //
+  // floats 84..87 — `morphFlags` — .x = morphTime
+  //   (1.0 = full SCENE3D, 0.0 = full SCENE2D / Columbus View,
+  //   fractional during MORPHING).
+  Matrix4.clone(scratchModelView, scratchMVRTE);
+  scratchMVRTE[12] = 0.0;
+  scratchMVRTE[13] = 0.0;
+  scratchMVRTE[14] = 0.0;
+  Matrix4.pack(scratchMVRTE, data, 52);
+  Matrix4.clone(uniformState.projection, scratchProjection);
+  Matrix4.pack(scratchProjection, data, 68);
+  // SceneMode 3D = 1.0, MORPHING = frameState.morphTime ∈ [0, 1]
+  // (1.0 = full 3D, 0.0 = full 2D), SCENE2D / COLUMBUS_VIEW = 0.0.
+  // `morphTime` is canonical on `frameState` (FrameState.js:98 init,
+  // updated by `Scene.morphComplete*` listeners); `uniformState`
+  // doesn't carry it directly. Non-morph scenes leave this stale,
+  // which is fine — only `morphColorVS` reads it.
+  data[84] = frameState?.morphTime ?? 0.0;
+  data[85] = 0.0;
+  data[86] = 0.0;
+  data[87] = 0.0;
 }
 
 /**
@@ -517,46 +749,44 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const device = context.device;
 
   // AUDIT_2026_05_02 A.4 (Batch 150 conservative gate, narrowed in
-  // Batch 156, narrowed further in Batch 157) — SCENE2D + COLUMBUS_VIEW
-  // use the per-vertex `position2DHigh/Low` attributes that
-  // `PrimitivePipeline.js:175-208` produces alongside the 3D positions.
-  // With both encoded into the same coordinate space as the active
-  // `uniformState.view * projection` and `camera.positionWC`, the
-  // existing RTE math at `colorVS` lines 121-130 produces correct
-  // classification volumes — see the geometry-attribute selection in
-  // `ensureVertexBuffer` below.
+  // Batch 156, narrowed further in Batch 157, MORPHING lifted in
+  // Batch 164) — SCENE2D + COLUMBUS_VIEW use the per-vertex
+  // `position2DHigh/Low` attributes that `PrimitivePipeline.js:175-208`
+  // produces alongside the 3D positions. With both encoded into the
+  // same coordinate space as the active `uniformState.view * projection`
+  // and `camera.positionWC`, the existing RTE math at `colorVS`
+  // produces correct classification volumes. MORPHING now routes
+  // through the dedicated `morphColorVS` (Batch 164) which consumes
+  // BOTH attribute sets and blends EC-space positions by
+  // `uniformState.morphTime`.
   //
-  // Two cases still gate to silent-skip:
+  // One case still gates to silent-skip:
   //
-  // 1. MORPHING — lerping volumes between 3D ECEF and 2D projected
-  //    coordinates needs both attribute sets bound at the same time +
-  //    an in-shader `mix(rte3D, rte2D, morphTime)` (the pattern
-  //    `WebGPUGroundPolylineRenderer` uses for its morph pipeline).
+  //   `_needs2DShader` primitives in any non-3D mode — primitives
+  //   with `_hasPlanarExtentsAttributes` or `_hasSphericalExtentsAttribute`
+  //   require WebGL's `derivedCommands.appearance2D` shader for the
+  //   planar/spherical extents math (`GroundPrimitive.js:813-818`).
+  //   The WebGPU renderer doesn't have a WGSL `appearance2D`
+  //   equivalent yet, so the position-only swap from Batch 156 would
+  //   produce correct geometry but broken texture coords — silent
+  //   skip until the appearance2D WGSL pipeline lands. Common with
+  //   textured GroundPrimitives (Image / Stripe / Grid material) and
+  //   batched-classification primitives.
   //
-  // 2. `_needs2DShader` primitives in any non-3D mode — primitives
-  //    with `_hasPlanarExtentsAttributes` or `_hasSphericalExtentsAttribute`
-  //    require WebGL's `derivedCommands.appearance2D` shader for the
-  //    planar/spherical extents math (`GroundPrimitive.js:813-818`).
-  //    The WebGPU renderer doesn't have a WGSL `appearance2D`
-  //    equivalent yet, so the position-only swap from Batch 156 would
-  //    produce correct geometry but broken texture coords — silent
-  //    skip until the appearance2D WGSL pipeline lands. Common with
-  //    textured GroundPrimitives (Image / Stripe / Grid material) and
-  //    batched-classification primitives.
-  //
-  // Both gates are tracked as the remainder of A.4 /
-  // NEW-CLASSIFIER-2D-CV-MORPH in DEFERRED_WORK.
+  // Tracked as the remainder of A.4 / NEW-CLASSIFIER-2D-CV-MORPH in
+  // DEFERRED_WORK.
   const sceneMode = frameState?.mode;
   const isNon3D = sceneMode !== SceneMode.SCENE3D;
+  const isMorphing = sceneMode === SceneMode.MORPHING;
   const needs2DShader = primitive?._primitive?._needs2DShader === true;
-  if (sceneMode === SceneMode.MORPHING || (isNon3D && needs2DShader)) {
+  if (isNon3D && needs2DShader) {
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
-      "WebGPUGroundPrimitive.morphOrNeeds2DShader",
-      "GroundPrimitive on WebGPU silently skips during MORPHING and for " +
-        "primitives requiring `_needs2DShader` (planar/spherical extents) in " +
-        "non-3D scene modes. SCENE2D + COLUMBUS_VIEW + SCENE3D render " +
-        "correctly otherwise. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH.",
+      "WebGPUGroundPrimitive.needs2DShader",
+      "GroundPrimitive on WebGPU silently skips primitives requiring " +
+        "`_needs2DShader` (planar/spherical extents) in non-3D scene modes. " +
+        "SCENE2D + COLUMBUS_VIEW + MORPHING + SCENE3D render correctly " +
+        "otherwise. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH.",
     );
     //>>includeEnd('debug');
     return {
@@ -612,6 +842,29 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // pipelines. Subsequent frames pick up the cached objects synchronously.
   if (
     !tryResolveGroundPrimitivePipelines(
+      device,
+      context.webgpuPipelineCache ?? null,
+      cache._pipelineResources,
+      cache,
+    )
+  ) {
+    return {
+      stencilPipeline: null,
+      colorPipeline: null,
+      pickPipeline: null,
+      bindGroup: cache.bindGroup ?? null,
+      stencilCommand: null,
+      colorCommand: null,
+      pickCommand: null,
+    };
+  }
+
+  // Batch 164 — A.4 morph pipelines, resolved lazily on the first
+  // MORPHING frame and cached thereafter. Same first-frame skip
+  // contract as the non-morph resolver above.
+  if (
+    isMorphing &&
+    !tryResolveGroundPrimitiveMorphPipelines(
       device,
       context.webgpuPipelineCache ?? null,
       cache._pipelineResources,
@@ -721,20 +974,62 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // Batch 150 originally added the conservative gate to prevent).
   // The `defined(...)` guard below catches this and returns null
   // commands so the primitive silently skips that frame instead.
-  const useNon3DPositions = frameState?.mode !== SceneMode.SCENE3D;
+  // Batch 164 — three position-source modes:
+  //   "3D"    : SCENE3D — bind only `position3DHigh/Low` (loc 0/1).
+  //   "2D"    : SCENE2D / COLUMBUS_VIEW — bind only `position2DHigh/Low`
+  //             (loc 0/1, swapped at the source-attribute level so the
+  //             non-morph pipeline keeps reading from loc 0/1).
+  //   "MORPH" : SCENE_MORPHING — bind BOTH 3D (loc 0/1) AND 2D (loc 2/3)
+  //             so the morph VS can blend EC-space positions by
+  //             `morphFlags.x` (uniformState.morphTime).
+  const useNon3DPositions = isNon3D;
   const posHighAttr = useNon3DPositions
     ? geomData?.attributes?.position2DHigh
     : geomData?.attributes?.position3DHigh;
   const posLowAttr = useNon3DPositions
     ? geomData?.attributes?.position2DLow
     : geomData?.attributes?.position3DLow;
+  // For MORPHING we need BOTH attribute sets — the primary `posHigh/LowAttr`
+  // is the 3D side (loc 0/1), and we additionally consume 2D attributes
+  // for the second vertex buffer.
+  const morphPosHigh = isMorphing
+    ? geomData?.attributes?.position3DHigh
+    : posHighAttr;
+  const morphPosLow = isMorphing
+    ? geomData?.attributes?.position3DLow
+    : posLowAttr;
+  const morphPos2DHigh = isMorphing
+    ? geomData?.attributes?.position2DHigh
+    : undefined;
+  const morphPos2DLow = isMorphing
+    ? geomData?.attributes?.position2DLow
+    : undefined;
+  // Validation: morph requires both attribute sets; non-morph requires
+  // exactly the active set. If either is missing we silent-skip the
+  // frame rather than dispatch a half-bound pipeline.
+  const primaryHigh = isMorphing ? morphPosHigh : posHighAttr;
+  const primaryLow = isMorphing ? morphPosLow : posLowAttr;
+  const morphAttrsValid =
+    !isMorphing ||
+    (defined(morphPos2DHigh?.values) &&
+      defined(morphPos2DLow?.values) &&
+      morphPos2DHigh.values.length === morphPos2DLow.values.length &&
+      morphPos2DHigh.values.length === primaryHigh?.values?.length);
   if (
-    !defined(posHighAttr?.values) ||
-    !defined(posLowAttr?.values) ||
-    posHighAttr.values.length !== posLowAttr.values.length
+    !defined(primaryHigh?.values) ||
+    !defined(primaryLow?.values) ||
+    primaryHigh.values.length !== primaryLow.values.length ||
+    !morphAttrsValid
   ) {
     //>>includeStart('debug', pragmas.debug);
-    if (useNon3DPositions) {
+    if (isMorphing) {
+      oneTimeWarning(
+        "WebGPUGroundPrimitive.missingMorphAttributes",
+        "GroundPrimitive during MORPHING is missing one of `position3DHigh/Low` " +
+          "or `position2DHigh/Low` (or the two pairs have mismatched lengths). " +
+          "Silently skipping this frame. Tracked under A.4 / NEW-CLASSIFIER-2D-CV-MORPH.",
+      );
+    } else if (useNon3DPositions) {
       oneTimeWarning(
         "WebGPUGroundPrimitive.missing2DAttributes",
         "GroundPrimitive in non-3D scene mode has no `position2DHigh/Low` " +
@@ -754,33 +1049,38 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     };
   }
 
-  // Create vertex buffer once. Interleaves posHigh + posLow into a
-  // single 24-byte/vertex stream matching the pipeline's vertex layout
-  // (location 0 = posHigh vec3, location 1 = posLow vec3).
+  // Create vertex buffer(s). Single 24-byte/vertex stream for non-morph
+  // modes; two parallel 24-byte streams for MORPHING (3D + 2D).
   //
   // AUDIT_2026_05_02 A.4 (Batch 156) — when the scene mode toggles
-  // between 3D and 2D/CV (e.g. user calls `scene.morphTo2D()` and the
-  // morph completes), the cached vertex buffer was built from the
-  // wrong attribute set. Track which set fed the cache and rebuild
-  // when the mode flips. Stable across frames within the same mode.
-  const positionSourceKey = useNon3DPositions ? "2D" : "3D";
+  // between 3D and 2D/CV (e.g. `scene.morphTo2D()` completes), the
+  // cached vertex buffer was built from the wrong attribute set.
+  // Track which key fed the cache and rebuild on flip. Batch 164
+  // extends this to a third "MORPH" key with a parallel 2D buffer.
+  const positionSourceKey = isMorphing
+    ? "MORPH"
+    : useNon3DPositions
+      ? "2D"
+      : "3D";
   if (cache.positionSourceKey !== positionSourceKey) {
     cache.vertexGPUBuffer?.destroy();
     cache.vertexGPUBuffer = undefined;
+    cache.vertexGPUBuffer2D?.destroy();
+    cache.vertexGPUBuffer2D = undefined;
     cache.positionSourceKey = positionSourceKey;
   }
   if (!defined(cache.vertexGPUBuffer)) {
-    const numVerts = posHighAttr.values.length / 3;
+    const numVerts = primaryHigh.values.length / 3;
     const interleaved = new Float32Array(numVerts * 6);
     for (let v = 0; v < numVerts; v++) {
       const dst = v * 6;
       const src = v * 3;
-      interleaved[dst] = posHighAttr.values[src];
-      interleaved[dst + 1] = posHighAttr.values[src + 1];
-      interleaved[dst + 2] = posHighAttr.values[src + 2];
-      interleaved[dst + 3] = posLowAttr.values[src];
-      interleaved[dst + 4] = posLowAttr.values[src + 1];
-      interleaved[dst + 5] = posLowAttr.values[src + 2];
+      interleaved[dst] = primaryHigh.values[src];
+      interleaved[dst + 1] = primaryHigh.values[src + 1];
+      interleaved[dst + 2] = primaryHigh.values[src + 2];
+      interleaved[dst + 3] = primaryLow.values[src];
+      interleaved[dst + 4] = primaryLow.values[src + 1];
+      interleaved[dst + 5] = primaryLow.values[src + 2];
     }
     // `WebGPUBuffer.createVertexBuffer(device, data, label)` writes the
     // data on its own; we don't follow up with a separate
@@ -794,6 +1094,28 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       `GroundPrimitive VB ${positionSourceKey}`,
     );
     cache.vertexCount = numVerts;
+  }
+  // Batch 164 — second vertex buffer for the morph pipeline. Same
+  // 24-byte stride / interleave as the primary; lives at slot 1 in
+  // the morph descriptor's `morphVertexBuffers`.
+  if (isMorphing && !defined(cache.vertexGPUBuffer2D)) {
+    const numVerts = morphPos2DHigh.values.length / 3;
+    const interleaved = new Float32Array(numVerts * 6);
+    for (let v = 0; v < numVerts; v++) {
+      const dst = v * 6;
+      const src = v * 3;
+      interleaved[dst] = morphPos2DHigh.values[src];
+      interleaved[dst + 1] = morphPos2DHigh.values[src + 1];
+      interleaved[dst + 2] = morphPos2DHigh.values[src + 2];
+      interleaved[dst + 3] = morphPos2DLow.values[src];
+      interleaved[dst + 4] = morphPos2DLow.values[src + 1];
+      interleaved[dst + 5] = morphPos2DLow.values[src + 2];
+    }
+    cache.vertexGPUBuffer2D = WebGPUBuffer.createVertexBuffer(
+      device,
+      interleaved,
+      "GroundPrimitive VB MORPH-2D",
+    );
   }
 
   // Create index buffer if indexed geometry. Auto-detect uint16 vs
@@ -943,10 +1265,23 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // `attachPickToColorCommand` so the dispatcher's pick-pass swap
   // routes correctly. For BOTH (groundPasses.length === 2), this emits
   // two color and two pick commands per primitive.
+  // Batch 164 — pipeline + vertex-buffer set picked by scene mode.
+  // MORPHING uses the morph pair (consume both 3D + 2D streams,
+  // blend EC-space positions in the VS by morphTime); non-morph
+  // modes use the standard depth-sample pair (single stream).
+  const activeColorPipeline = isMorphing
+    ? cache.morphColorPipeline
+    : cache.depthSampleColorPipeline;
+  const activePickPipeline = isMorphing
+    ? cache.morphPickPipeline
+    : cache.depthSamplePickPipeline;
+  const activeVertexBuffers = isMorphing
+    ? [cache.vertexGPUBuffer, cache.vertexGPUBuffer2D]
+    : [cache.vertexGPUBuffer];
   const sharedDrawArgs = {
     bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
     bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
-    vertexBuffers: [cache.vertexGPUBuffer],
+    vertexBuffers: activeVertexBuffers,
     indexBuffer: cache.indexGPUBuffer || undefined,
     indexCount: cache.indexCount || 0,
     indexFormat: cache.indexFormat || "uint16",
@@ -960,13 +1295,13 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     const passEnum = groundPasses[p];
     const colorCmd = new WebGPUDrawCommand({
       ...sharedDrawArgs,
-      pipeline: cache.depthSampleColorPipeline,
+      pipeline: activeColorPipeline,
       pass: passEnum,
     });
     if (defined(pickColor)) {
       const pickCmd = new WebGPUDrawCommand({
         ...sharedDrawArgs,
-        pipeline: cache.depthSamplePickPipeline,
+        pipeline: activePickPipeline,
         pass: passEnum,
         pickOnly: true,
       });
@@ -990,7 +1325,16 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // primitives don't participate in invert classification — only emit
   // when 3D Tile classification is active (BOTH or CESIUM_3D_TILE).
   let ignoreShowCommand = null;
-  if (groundPasses.includes(6)) {
+  // Batch 164 — skip the IGNORE_SHOW stencil-write during MORPHING.
+  // The stencil pipeline binds the single-VB layout (loc 0/1 only),
+  // but `sharedDrawArgs.vertexBuffers` carries two streams during
+  // morph — WebGPU validates that bound buffer count matches the
+  // pipeline's `vertex.buffers` length, so re-using it would fail.
+  // Invert classification is a niche path; missing the IGNORE_SHOW
+  // stencil mark for the brief morph window is acceptable. Closing
+  // this gap fully would need a `morphStencilDescriptor` mirror
+  // (cheap follow-up).
+  if (groundPasses.includes(6) && !isMorphing) {
     ignoreShowCommand = new WebGPUDrawCommand({
       ...sharedDrawArgs,
       pipeline: cache.depthSampleStencilPipeline,
@@ -1047,6 +1391,8 @@ function destroyWebGPUGroundPrimitiveResources(primitive) {
   // amplified by Batch 156's mode-flip rebuild because the buffer is
   // now actively allocated multiple times per primitive.
   cache.vertexGPUBuffer?.destroy();
+  // Batch 164 — release the morph-side 2D vertex buffer if present.
+  cache.vertexGPUBuffer2D?.destroy();
   cache.indexGPUBuffer?.destroy();
   // C-R9 (Batch 31 / refactored Batch 59) — release the pick ID slot
   // back to the registry.
