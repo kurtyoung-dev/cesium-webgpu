@@ -335,6 +335,22 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
+### NEW-IBL-SH-FAST-PATH — 9-coefficient spherical harmonics shortcut for diffuse IBL
+
+**What:** Batch 130 (`0b4fac4b65`) closed AUDIT_2026_05_02 A.9 by binding `iblDiffuseTexture` (irradiance cubemap) and `iblSpecularTexture` (radiance cubemap) on the model material BGL and sampling both in `ModelPBRComplete.wgsl:2128-2160`. The diffuse IBL term currently uses a cubemap fetch (`textureSample(iblDiffuseTexture, iblSampler, N)`). When the asset publishes 9 spherical-harmonics coefficients, we can short-circuit to `evalSH(N, coeffs)` (~6 mad ops) and skip the cubemap fetch entirely — saves one texture sample per fragment for the diffuse half.
+
+**Scope:**
+
+- Add `sphericalHarmonics: array<vec4<f32>, 9>` UBO field at `@group(1) @binding(36)` (the BGL slot already exists per Batch 130 wiring; just need to populate + read).
+- Add a `FLAG_HAS_IBL_SH` material flag.
+- Pack 9 coefficients per scene from `ImageBasedLighting._sphericalHarmonicCoefficients` into the UBO.
+- In FS: `if (hasFlag(flags, FLAG_HAS_IBL_SH)) { irradiance = evalSH(N, sh); } else { irradiance = textureSample(iblDiffuseTexture, ...); }`
+- ~30 LOC.
+
+**Why deferred:** Cubemap path works correctly today; SH is a perf optimization (saves one cubemap fetch per fragment but doesn't change image quality). Defer until perf profiling identifies the diffuse cubemap fetch as a hotspot.
+
+---
+
 ### NEW-DRILLPICK-ASYNC — `Scene.drillPick` returns stale prior-frame results on WebGPU
 
 **What:** `Scene.drillPick` is documented to drill through stacked features by calling `pick()` synchronously, hiding the topmost feature with `setShow(false)`, and re-picking. On WebGPU, `WebGPUPickFramebuffer.end()` returns the PREVIOUS frame's pixels (async readback is the architecture), so every iteration sees the same starting state and the drill loop returns garbage. Commit `6ab47593fe` (Batch ~149) added a debug-build `oneTimeWarning` so users see the limitation; the real fix needs an async API.
@@ -398,10 +414,12 @@ produces wandering or invisible classification volumes.
 
 The four originally-affected renderers, current state:
 
-- ~~`WebGPUGroundPrimitiveRenderer`~~ — SCENE2D + CV ✓ (Batch 156); MORPHING gated.
-- `WebGPUVector3DTilePrimitiveRenderer` — all non-3D modes still gated.
-- `WebGPUVector3DTileClampedPolylinesRenderer` — all non-3D modes still gated.
-- `WebGPUVector3DTilePolylinesRenderer` — all non-3D modes still gated.
+- ~~`WebGPUGroundPrimitiveRenderer`~~ — SCENE2D + CV ✓ (Batch 156); MORPHING + `_needs2DShader` primitives gated (Batch 157).
+- `WebGPUVector3DTilePrimitiveRenderer` — all non-3D modes still gated; gate matches WebGL upstream behavior (no 2D position attribute path on this primitive type).
+- `WebGPUVector3DTileClampedPolylinesRenderer` — same as above.
+- `WebGPUVector3DTilePolylinesRenderer` — same as above.
+
+**`Vector3DTile*` clarification (Batch 158):** Verified across the three Vector3DTile primitive classes that they only carry RTC-relative 3D positions (`_positions` Float32Array tied to `_center`) — no `position2DHigh/Low` attribute pairs. WebGL's path doesn't check scene mode either; it produces wandering volumes in 2D / CV silently. Our gate is BETTER than upstream for these renderers. Lifting it would be a regression unless paired with CPU- or shader-side projection of the RTC-relative positions, which is real ~80 LOC work per renderer. 3D-Tiles content is typically only viewed in SCENE3D in production, so this is low priority.
 
 `WebGPUGroundPolylineRenderer` is NOT affected — Batches 116/117 era
 shipped its full 2D + Columbus View + Morphing pipeline (parallel
