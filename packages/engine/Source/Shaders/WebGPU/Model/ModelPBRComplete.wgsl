@@ -1638,10 +1638,22 @@ fn modelClipByPolygon(positionWC: vec3<f32>) -> bool {
       break;
     }
   }
-  if (bestRegion < 0) { return false; }
+  // Batch 163 — fragments outside any region's bounding rectangle
+  // must respect the inverse flag. The default (cutout) treats them as
+  // "outside polygon" → keep them; inverse mode treats them as
+  // "outside polygon" → discard them. This matches the GLSL
+  // `czm_clipPolygons` early-return path which does
+  // `#ifdef CLIPPING_INVERSE discard; #endif return;` when
+  // `regionIndex < 0` or `rectUv` is outside [0,1]. Batch 160's
+  // implementation returned `false` unconditionally, leaking the
+  // entire scene-outside-the-polygon region in inverse mode (AEC
+  // "show only inside" demos rendered everything).
+  let inverseFlagEarly = effects.clippingPolygonControl.z;
+  let invertedDiscardOutside = inverseFlagEarly >= 0.5;
+  if (bestRegion < 0) { return invertedDiscardOutside; }
   if (bestRectUv.x <= 0.0 || bestRectUv.y <= 0.0 ||
       bestRectUv.x >= 1.0 || bestRectUv.y >= 1.0) {
-    return false;
+    return invertedDiscardOutside;
   }
 
   // Atlas slot math — mirrors `czm_clipPolygons`:

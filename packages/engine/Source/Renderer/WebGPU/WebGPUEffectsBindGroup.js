@@ -1030,10 +1030,19 @@ function createEffectsBindGroup(device, frameState, options) {
     const extentsCount = clippingPolygons._extentsCount ?? 0;
     if (defined(extentsView) && extentsCount > 0) {
       const usedCount = Math.min(extentsCount, CLIPPING_POLYGON_EXTENTS_MAX);
-      // Atlas grid math mirrors `czm_clipPolygons.glsl`:
+      // Atlas grid math MUST mirror `PolygonSignedDistance.wgsl:53-56`
+      // — the SDF compute pass writes its atlas using the FULL
       //   dim = (extentsCount > 2) ? ceil(log2(extentsCount)) : extentsCount
+      // formula, NOT the capped count. Batch 163 fixes a Batch 160 bug
+      // where `dim` was derived from `usedCount`: in scenes with > 8
+      // merged-extent groups the SDF compute writes (say) a 4×4 atlas
+      // but we'd publish `invDim = 1/3`, sampling the wrong slots for
+      // every region. The UBO array is still capped at
+      // `CLIPPING_POLYGON_EXTENTS_MAX`, so regions ≥ 8 simply don't
+      // clip — but regions 0..7 now sample at the correct slot.
       // Precompute `1/dim` so the shader skips per-fragment log2.
-      const dim = usedCount > 2 ? Math.ceil(Math.log2(usedCount)) : usedCount;
+      const dim =
+        extentsCount > 2 ? Math.ceil(Math.log2(extentsCount)) : extentsCount;
       ud[CLIPPING_POLYGON_CONTROL_OFFSET] = usedCount;
       ud[CLIPPING_POLYGON_CONTROL_OFFSET + 1] = 1.0 / dim;
       ud[CLIPPING_POLYGON_CONTROL_OFFSET + 2] = clippingPolygons.inverse
