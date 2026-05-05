@@ -391,21 +391,22 @@ normal-encoded shadow volumes for ClampedPolylines), so projecting
 those 3D positions through the 2D / CV / morph projection matrix
 produces wandering or invisible classification volumes.
 
-**Current behavior (Batch 150 conservative gate):** Each affected
-classifier silently skips emission when `frameState.mode !== SceneMode.SCENE3D`,
-producing nothing on screen rather than visually-incorrect volumes.
-A debug-build `oneTimeWarning` flags the limitation. The four
-affected renderers are:
+**Current behavior (Batches 150 + 156 progressive narrowing):**
 
-- `WebGPUGroundPrimitiveRenderer` (GroundPrimitive)
-- `WebGPUVector3DTilePrimitiveRenderer` (vector tile polygons)
-- `WebGPUVector3DTileClampedPolylinesRenderer` (vector tile clamped polylines)
-- `WebGPUVector3DTilePolylinesRenderer` (non-clamped vector tile polylines)
+- Batch 150 silently skipped emission when `frameState.mode !== SceneMode.SCENE3D` for all four renderers.
+- Batch 156 narrowed `WebGPUGroundPrimitiveRenderer` to MORPHING-only: it now correctly renders in SCENE2D + COLUMBUS_VIEW by selecting the per-vertex `position2DHigh/Low` attributes that `PrimitivePipeline.js:175-208` produces alongside the 3D positions, and rebuilding the vertex buffer when the scene mode flips (cached via `cache.positionSourceKey`). MORPHING still gates because lerping volumes between 3D ECEF and 2D projected coords needs a different in-shader pattern.
+
+The four originally-affected renderers, current state:
+
+- ~~`WebGPUGroundPrimitiveRenderer`~~ — SCENE2D + CV ✓ (Batch 156); MORPHING gated.
+- `WebGPUVector3DTilePrimitiveRenderer` — all non-3D modes still gated.
+- `WebGPUVector3DTileClampedPolylinesRenderer` — all non-3D modes still gated.
+- `WebGPUVector3DTilePolylinesRenderer` — all non-3D modes still gated.
 
 `WebGPUGroundPolylineRenderer` is NOT affected — Batches 116/117 era
 shipped its full 2D + Columbus View + Morphing pipeline (parallel
 2D attribute slots at locations 8-13, dedicated morph pipeline,
-sceneMode flag in uniforms). The proper fix below should mirror its
+sceneMode flag in uniforms). The MORPHING fix below should mirror its
 pattern.
 
 **Why deferred:** Each affected renderer needs:

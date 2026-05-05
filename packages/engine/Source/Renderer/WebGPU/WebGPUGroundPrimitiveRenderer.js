@@ -516,30 +516,30 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const context = frameState.context;
   const device = context.device;
 
-  // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
-  // GroundPrimitive's depth-sample classifier reads `position3DHigh` /
-  // `position3DLow` (3D ECEF) attributes only — the SceneMode 2D /
-  // Columbus View / Morphing positions (`position2DHigh` /
-  // `position2DLow`, plus per-mode projection matrices) are NOT yet
-  // wired. In non-3D modes, the 3D-encoded positions get projected
-  // through `uniformState.projection` (which is the 2D / CV /
-  // morph-blended projection matrix), producing visually-incorrect
-  // classification volumes that wander or disappear depending on the
-  // mode. Mirroring the conservative "skip emission silently" pattern
-  // (avoids garbage on screen) until proper 2D/CV/morph support
-  // lands. Tracked as a follow-up in DEFERRED_WORK.md.
-  // Note: WebGPUGroundPolylineRenderer ALREADY handles all scene
-  // modes correctly via separate 2D attribute slots and a dedicated
-  // morph pipeline (Batches 116/117 era), so the gate doesn't apply
-  // there.
-  if (frameState?.mode !== SceneMode.SCENE3D) {
+  // AUDIT_2026_05_02 A.4 (Batch 150 conservative gate, narrowed in
+  // Batch 156) — SCENE2D + COLUMBUS_VIEW now use the per-vertex
+  // `position2DHigh/Low` attributes that `PrimitivePipeline.js:175-208`
+  // produces alongside the 3D positions. With both encoded into the
+  // same coordinate space as the active `uniformState.view *
+  // projection` (the 2D / CV view-projection in those modes) and
+  // `camera.positionWC` (which CesiumJS auto-adjusts to the active
+  // scene mode), the existing RTE math at `colorVS` lines 121-130
+  // produces correct classification volumes without any shader
+  // changes — see the geometry-attribute selection in
+  // `ensureVertexBuffer` below.
+  //
+  // MORPHING remains gated: lerping volumes between 3D ECEF and 2D
+  // projected coordinates needs both attribute sets bound at the same
+  // time + an in-shader `mix(rte3D, rte2D, morphTime)` (the pattern
+  // `WebGPUGroundPolylineRenderer` uses for its morph pipeline). That
+  // is tracked separately as the remainder of NEW-CLASSIFIER-2D-CV-MORPH.
+  if (frameState?.mode === SceneMode.MORPHING) {
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
-      "WebGPUGroundPrimitive.sceneMode",
-      "GroundPrimitive on WebGPU is currently only correct in SceneMode.SCENE3D. " +
-        "Non-3D scene modes (2D, Columbus View, Morphing) are silently skipped " +
-        "to avoid rendering classification volumes at incorrect positions. " +
-        "Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH in DEFERRED_WORK.md.",
+      "WebGPUGroundPrimitive.morphing",
+      "GroundPrimitive on WebGPU still silently skips during MORPHING " +
+        "(scene-mode transition). SCENE2D + COLUMBUS_VIEW + SCENE3D all render " +
+        "correctly. Tracked as the morph half of A.4 / NEW-CLASSIFIER-2D-CV-MORPH.",
     );
     //>>includeEnd('debug');
     return {
@@ -687,8 +687,24 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     };
   }
   const geomData = geomDataArray[0];
-  const posHighAttr = geomData?.attributes?.position3DHigh;
-  const posLowAttr = geomData?.attributes?.position3DLow;
+  // AUDIT_2026_05_02 A.4 (Batch 156) — pick the position-attribute set
+  // that matches the active scene mode. `PrimitivePipeline.js:175-208`
+  // produces BOTH `position3DHigh/Low` (always) AND `position2DHigh/Low`
+  // (only when scene mode is non-3D). In SCENE3D the 2D set is absent;
+  // in SCENE2D / COLUMBUS_VIEW the 2D set is the one whose coordinate
+  // system matches `uniformState.view × projection` and
+  // `camera.positionWC` (CesiumJS adjusts the camera position to the
+  // active scene mode), so RTE math composes correctly without shader
+  // changes.
+  const useNon3DPositions = frameState?.mode !== SceneMode.SCENE3D;
+  const posHighAttr = useNon3DPositions
+    ? (geomData?.attributes?.position2DHigh ??
+      geomData?.attributes?.position3DHigh)
+    : geomData?.attributes?.position3DHigh;
+  const posLowAttr = useNon3DPositions
+    ? (geomData?.attributes?.position2DLow ??
+      geomData?.attributes?.position3DLow)
+    : geomData?.attributes?.position3DLow;
   if (
     !defined(posHighAttr?.values) ||
     !defined(posLowAttr?.values) ||
@@ -706,6 +722,18 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // Create vertex buffer once. Interleaves posHigh + posLow into a
   // single 24-byte/vertex stream matching the pipeline's vertex layout
   // (location 0 = posHigh vec3, location 1 = posLow vec3).
+  //
+  // AUDIT_2026_05_02 A.4 (Batch 156) — when the scene mode toggles
+  // between 3D and 2D/CV (e.g. user calls `scene.morphTo2D()` and the
+  // morph completes), the cached vertex buffer was built from the
+  // wrong attribute set. Track which set fed the cache and rebuild
+  // when the mode flips. Stable across frames within the same mode.
+  const positionSourceKey = useNon3DPositions ? "2D" : "3D";
+  if (cache.positionSourceKey !== positionSourceKey) {
+    cache.vertexGPUBuffer?.destroy();
+    cache.vertexGPUBuffer = undefined;
+    cache.positionSourceKey = positionSourceKey;
+  }
   if (!defined(cache.vertexGPUBuffer)) {
     const numVerts = posHighAttr.values.length / 3;
     const interleaved = new Float32Array(numVerts * 6);
@@ -728,7 +756,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.vertexGPUBuffer = WebGPUBuffer.createVertexBuffer(
       device,
       interleaved,
-      "GroundPrimitive VB",
+      `GroundPrimitive VB ${positionSourceKey}`,
     );
     cache.vertexCount = numVerts;
   }
