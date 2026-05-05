@@ -517,29 +517,46 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const device = context.device;
 
   // AUDIT_2026_05_02 A.4 (Batch 150 conservative gate, narrowed in
-  // Batch 156) — SCENE2D + COLUMBUS_VIEW now use the per-vertex
-  // `position2DHigh/Low` attributes that `PrimitivePipeline.js:175-208`
-  // produces alongside the 3D positions. With both encoded into the
-  // same coordinate space as the active `uniformState.view *
-  // projection` (the 2D / CV view-projection in those modes) and
-  // `camera.positionWC` (which CesiumJS auto-adjusts to the active
-  // scene mode), the existing RTE math at `colorVS` lines 121-130
-  // produces correct classification volumes without any shader
-  // changes — see the geometry-attribute selection in
+  // Batch 156, narrowed further in Batch 157) — SCENE2D + COLUMBUS_VIEW
+  // use the per-vertex `position2DHigh/Low` attributes that
+  // `PrimitivePipeline.js:175-208` produces alongside the 3D positions.
+  // With both encoded into the same coordinate space as the active
+  // `uniformState.view * projection` and `camera.positionWC`, the
+  // existing RTE math at `colorVS` lines 121-130 produces correct
+  // classification volumes — see the geometry-attribute selection in
   // `ensureVertexBuffer` below.
   //
-  // MORPHING remains gated: lerping volumes between 3D ECEF and 2D
-  // projected coordinates needs both attribute sets bound at the same
-  // time + an in-shader `mix(rte3D, rte2D, morphTime)` (the pattern
-  // `WebGPUGroundPolylineRenderer` uses for its morph pipeline). That
-  // is tracked separately as the remainder of NEW-CLASSIFIER-2D-CV-MORPH.
-  if (frameState?.mode === SceneMode.MORPHING) {
+  // Two cases still gate to silent-skip:
+  //
+  // 1. MORPHING — lerping volumes between 3D ECEF and 2D projected
+  //    coordinates needs both attribute sets bound at the same time +
+  //    an in-shader `mix(rte3D, rte2D, morphTime)` (the pattern
+  //    `WebGPUGroundPolylineRenderer` uses for its morph pipeline).
+  //
+  // 2. `_needs2DShader` primitives in any non-3D mode — primitives
+  //    with `_hasPlanarExtentsAttributes` or `_hasSphericalExtentsAttribute`
+  //    require WebGL's `derivedCommands.appearance2D` shader for the
+  //    planar/spherical extents math (`GroundPrimitive.js:813-818`).
+  //    The WebGPU renderer doesn't have a WGSL `appearance2D`
+  //    equivalent yet, so the position-only swap from Batch 156 would
+  //    produce correct geometry but broken texture coords — silent
+  //    skip until the appearance2D WGSL pipeline lands. Common with
+  //    textured GroundPrimitives (Image / Stripe / Grid material) and
+  //    batched-classification primitives.
+  //
+  // Both gates are tracked as the remainder of A.4 /
+  // NEW-CLASSIFIER-2D-CV-MORPH in DEFERRED_WORK.
+  const sceneMode = frameState?.mode;
+  const isNon3D = sceneMode !== SceneMode.SCENE3D;
+  const needs2DShader = primitive?._primitive?._needs2DShader === true;
+  if (sceneMode === SceneMode.MORPHING || (isNon3D && needs2DShader)) {
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
-      "WebGPUGroundPrimitive.morphing",
-      "GroundPrimitive on WebGPU still silently skips during MORPHING " +
-        "(scene-mode transition). SCENE2D + COLUMBUS_VIEW + SCENE3D all render " +
-        "correctly. Tracked as the morph half of A.4 / NEW-CLASSIFIER-2D-CV-MORPH.",
+      "WebGPUGroundPrimitive.morphOrNeeds2DShader",
+      "GroundPrimitive on WebGPU silently skips during MORPHING and for " +
+        "primitives requiring `_needs2DShader` (planar/spherical extents) in " +
+        "non-3D scene modes. SCENE2D + COLUMBUS_VIEW + SCENE3D render " +
+        "correctly otherwise. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH.",
     );
     //>>includeEnd('debug');
     return {
@@ -687,29 +704,47 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     };
   }
   const geomData = geomDataArray[0];
-  // AUDIT_2026_05_02 A.4 (Batch 156) — pick the position-attribute set
-  // that matches the active scene mode. `PrimitivePipeline.js:175-208`
-  // produces BOTH `position3DHigh/Low` (always) AND `position2DHigh/Low`
-  // (only when scene mode is non-3D). In SCENE3D the 2D set is absent;
-  // in SCENE2D / COLUMBUS_VIEW the 2D set is the one whose coordinate
-  // system matches `uniformState.view × projection` and
-  // `camera.positionWC` (CesiumJS adjusts the camera position to the
-  // active scene mode), so RTE math composes correctly without shader
-  // changes.
+  // AUDIT_2026_05_02 A.4 (Batch 156, hardened in Batch 157) — pick the
+  // position-attribute set that matches the active scene mode.
+  // `PrimitivePipeline.js:175-208` produces BOTH `position3DHigh/Low`
+  // (always) AND `position2DHigh/Low` (only when scene mode is non-3D).
+  // In SCENE3D the 2D set is absent; in SCENE2D / COLUMBUS_VIEW the 2D
+  // set is the one whose coordinate system matches
+  // `uniformState.view × projection` and `camera.positionWC` (CesiumJS
+  // adjusts the camera position to the active scene mode), so RTE
+  // math composes correctly without shader changes.
+  //
+  // Strict — no `?? position3DHigh` fallback in non-3D modes. A
+  // primitive that lacks `position2DHigh/Low` while running in
+  // SCENE2D / CV would project 3D ECEF coords through the 2D VP
+  // matrix and draw garbage volumes (the exact failure mode that
+  // Batch 150 originally added the conservative gate to prevent).
+  // The `defined(...)` guard below catches this and returns null
+  // commands so the primitive silently skips that frame instead.
   const useNon3DPositions = frameState?.mode !== SceneMode.SCENE3D;
   const posHighAttr = useNon3DPositions
-    ? (geomData?.attributes?.position2DHigh ??
-      geomData?.attributes?.position3DHigh)
+    ? geomData?.attributes?.position2DHigh
     : geomData?.attributes?.position3DHigh;
   const posLowAttr = useNon3DPositions
-    ? (geomData?.attributes?.position2DLow ??
-      geomData?.attributes?.position3DLow)
+    ? geomData?.attributes?.position2DLow
     : geomData?.attributes?.position3DLow;
   if (
     !defined(posHighAttr?.values) ||
     !defined(posLowAttr?.values) ||
     posHighAttr.values.length !== posLowAttr.values.length
   ) {
+    //>>includeStart('debug', pragmas.debug);
+    if (useNon3DPositions) {
+      oneTimeWarning(
+        "WebGPUGroundPrimitive.missing2DAttributes",
+        "GroundPrimitive in non-3D scene mode has no `position2DHigh/Low` " +
+          "attribute pair on its geometry — typically because the asset was " +
+          "created with `scene3DOnly: true` or pre-projected positions. " +
+          "Silently skipping this frame to avoid drawing 3D ECEF coords " +
+          "through the 2D view-projection matrix.",
+      );
+    }
+    //>>includeEnd('debug');
     return {
       stencilPipeline: cache.stencilPipeline,
       colorPipeline: cache.colorPipeline,
@@ -1004,6 +1039,15 @@ function destroyWebGPUGroundPrimitiveResources(primitive) {
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();
   }
+  // AUDIT_2026_05_02 A.4 (Batch 157 review fix) — release the geometry
+  // GPU buffers. Previously leaked on primitive eviction; the per-frame
+  // mode-flip path at line 768 already destroys+rebuilds the vertex
+  // buffer correctly, but the once-per-lifetime destroy path missed
+  // both the vertex buffer and the index buffer. Pre-existing leak;
+  // amplified by Batch 156's mode-flip rebuild because the buffer is
+  // now actively allocated multiple times per primitive.
+  cache.vertexGPUBuffer?.destroy();
+  cache.indexGPUBuffer?.destroy();
   // C-R9 (Batch 31 / refactored Batch 59) — release the pick ID slot
   // back to the registry.
   destroyPickIds(primitive);

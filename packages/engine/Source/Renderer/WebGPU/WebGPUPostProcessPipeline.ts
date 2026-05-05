@@ -890,15 +890,18 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       }
     }
 
-    // AUDIT_2026_05_02 B.16 (Batch 155) — TAA moved to BEFORE Tonemap
-    // + ColorGrading. Previously TAA accumulated SDR samples (post-
-    // tonemap), losing linear-domain precision and causing the
-    // history-clamp neighborhood test to operate on a non-linear color
-    // space where bright pixels are compressed. Running in linear/HDR
-    // domain keeps blend math accurate for both HDR and SDR scenes;
-    // SDR pre-tonemap pixels are still in 0..1 and behave identically
-    // to the previous order, while HDR pre-tonemap pixels (>1.0) keep
-    // their full range for neighborhood comparisons.
+    // AUDIT_2026_05_02 B.16 (Batch 155 clarity refactor; Batch 157
+    // comment correction) — push order of `singlePassStages` now
+    // matches GPU command stream order. The actual execution order
+    // was ALREADY correct in the prior code: `_taaEffect.execute()`
+    // records GPU commands immediately at the call site below, while
+    // the `singlePassStages` loop (tonemap → colorGrading → custom →
+    // fxaa) doesn't run until further down. So TAA always operated
+    // on the pre-tonemap, linear/HDR `currentView` regardless of
+    // where the array pushes happened. This refactor is purely a
+    // clarity fix — moving the tonemap/colorGrading pushes AFTER the
+    // TAA call makes the JS read order match the GPU command order.
+    // No GPU command stream change.
     if (this._taaEffect?.enabled) {
       // TAA Slice 2d (Batch 104) — pass the per-pixel motion-vector
       // view through. When the SceneRenderer hasn't run a velocity
