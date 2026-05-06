@@ -37,6 +37,18 @@ interface GaussianSplatCache {
   pipeline: GPURenderPipeline | null;
   oitPipeline: GPURenderPipeline | null;
   pickPipeline: GPURenderPipeline | null;
+  // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant of the
+  // color pipeline. Same layout / vertex / fragment / blend; only the
+  // depthStencil block flips `depthWriteEnabled: true`. Populated on
+  // the splat WebGPUDrawCommand as `classificationDepthPipeline` so the
+  // dispatcher can swap to it when `depthForTranslucentClassification`
+  // is set (Cesium3DTile.update flips that flag for splat-pass commands
+  // alongside translucent commands). Splats can then participate as
+  // classifier targets — clipping volumes, draped classifiers, etc.
+  // pick the splat surface depth instead of the geometry behind it.
+  // Without this variant the splat alpha-blend would let classifiers
+  // pass through to the next-deepest opaque surface.
+  depthWritePipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
   quadVertexBuffer: GPUBuffer | null;
@@ -376,6 +388,10 @@ interface SplatPipelineResources {
   colorDescriptor: WebGPURenderPipelineDescriptor;
   oitDescriptor: WebGPURenderPipelineDescriptor | null;
   pickDescriptor: WebGPURenderPipelineDescriptor;
+  // NEW-GS-CLASSIFICATION-DEPTH (Batch 176). Same as colorDescriptor
+  // but with `depthWriteEnabled: true`. Routed through the central
+  // pipeline cache the same way the color descriptor is.
+  depthWriteDescriptor: WebGPURenderPipelineDescriptor;
 }
 
 /**
@@ -477,6 +493,24 @@ function buildSplatPipelineResources(
       forceDepthWriteEnabled: false,
     });
 
+  // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant of the
+  // color pipeline. Same module / layout / vertex / fragment / blend as
+  // the color pipeline; the only delta is `depthWriteEnabled: true` so
+  // the splat surface populates the scene-FB depth attachment when this
+  // variant is bound. The splat command's `classificationDepthPipeline`
+  // points here; `WebGPUDrawCommand.execute` swaps to it when
+  // `depthForTranslucentClassification` is set on the command (mirrors
+  // Batch 79's translucent-classification mechanism for Models).
+  const depthWriteDescriptor: WebGPURenderPipelineDescriptor = {
+    ...colorDescriptor,
+    name: "GaussianSplat depth-write pipeline",
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+    },
+  };
+
   return {
     shaderModule: sm,
     oitShaderModule,
@@ -485,6 +519,7 @@ function buildSplatPipelineResources(
     colorDescriptor,
     oitDescriptor,
     pickDescriptor,
+    depthWriteDescriptor,
   };
 }
 
@@ -534,10 +569,18 @@ function tryResolveSplatPipelines(
     const oitSync = resources.oitDescriptor
       ? pipelineCache.getPipelineSync(resources.oitDescriptor)
       : null;
+    // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — resolve the depth-write
+    // variant alongside color/pick. Cache miss is non-fatal: the color
+    // path still works without it; only the classification-depth swap
+    // becomes a no-op until the variant lands.
+    const depthWriteSync = pipelineCache.getPipelineSync(
+      resources.depthWriteDescriptor,
+    );
     if (colorSync && pickSync) {
       cache.pipeline = colorSync;
       cache.pickPipeline = pickSync;
       cache.oitPipeline = oitSync ?? null;
+      cache.depthWritePipeline = depthWriteSync ?? null;
       cache.pipelineRequestPending = false;
       return true;
     }
@@ -550,6 +593,17 @@ function tryResolveSplatPipelines(
         pipelineCache.getPipeline(resources.pickDescriptor).then((p) => {
           cache.pickPipeline = p;
         }),
+        pipelineCache
+          .getPipeline(resources.depthWriteDescriptor)
+          .then((p) => {
+            cache.depthWritePipeline = p;
+          })
+          .catch(() => {
+            // Depth-write variant failure is non-fatal — the color path
+            // still works without it; classification-depth swap becomes
+            // a no-op (matches pre-Batch-176 behavior).
+            cache.depthWritePipeline = null;
+          }),
       ];
       if (resources.oitDescriptor) {
         work.push(
@@ -582,6 +636,10 @@ function tryResolveSplatPipelines(
   cache.pickPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.pickDescriptor),
   );
+  // NEW-GS-CLASSIFICATION-DEPTH (Batch 176).
+  cache.depthWritePipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.depthWriteDescriptor),
+  );
   if (resources.oitDescriptor) {
     try {
       cache.oitPipeline = device.createRenderPipeline(
@@ -612,6 +670,9 @@ function updateWebGPUGaussianSplats(
       pipeline: null,
       oitPipeline: null,
       pickPipeline: null,
+      // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — populated alongside
+      // the color pipeline by `tryResolveSplatPipelines`.
+      depthWritePipeline: null,
       shaderModule: null,
       bindGroup: null,
       quadVertexBuffer: null,
@@ -883,6 +944,16 @@ function updateWebGPUGaussianSplats(
       pass: Pass.GAUSSIAN_SPLATS,
       owner:
         primitive as unknown as import("./WebGPUDrawCommand.js").WebGPUCommandOwner,
+      // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant
+      // for translucent-classification swap. Cesium3DTile.update flips
+      // `depthForTranslucentClassification` for splat-pass commands so
+      // the dispatcher swaps to this variant (writes depth to the
+      // scene-FB) when a classifier needs to clip against the splat
+      // surface. Without the variant, splats stay alpha-blended without
+      // depth-write and classifiers pass through to whatever lies
+      // behind. May be null when the central pipeline cache hasn't
+      // resolved the variant yet — the dispatcher tolerates that.
+      classificationDepthPipeline: cache.depthWritePipeline ?? undefined,
     });
     // GS-WSR: attach OIT pipeline variant for weighted-sum rendering
     if (cache.oitPipeline) {
@@ -891,6 +962,16 @@ function updateWebGPUGaussianSplats(
     // Store shader code for dynamic OIT variant creation via scene renderer
     cmd._shaderCode = SPLAT_WGSL;
     cache.command = cmd;
+  } else if (
+    cache.depthWritePipeline &&
+    !cache.command.classificationDepthPipeline
+  ) {
+    // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — central-pipeline-cache
+    // resolution races the command construction. If the depth-write
+    // variant landed AFTER the command was first built (a frame later
+    // than the color pipeline), patch it on so the dispatcher can swap
+    // when needed. Cheap reference write; runs at most once per cache.
+    cache.command.classificationDepthPipeline = cache.depthWritePipeline;
   }
 
   // C-R9 (Batch 31) — pick command. Same VS + splat buffer as the color

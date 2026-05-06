@@ -53,19 +53,17 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 **Parent finding (PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30):** `RenderStateToPipelineVariant.ts` foundation + 7 consumer renderers landed in Batches 30/35-37/39. Four named gaps remain.
 
-### C-R1-CLASSIFICATION
+### ~~C-R1-CLASSIFICATION~~ — RESOLVED via architectural retirement (Migration Session 5, Batch 85; doc sync Batch 176)
 
-**What:** Classification primitives (ClassificationPrimitive, GroundPolylinePrimitive) need their multi-pass renderState (stencil-depth pass, color pass, pick pass) routed through pipeline variants. Each pass uses distinct stencil/colorMask/depthFunc so WebGPU has to materialize three pipelines and dispatch in order.
+**Original framing:** Classification primitives (ClassificationPrimitive, GroundPolylinePrimitive) need their multi-pass renderState (stencil-depth pass, color pass, pick pass) routed through pipeline variants. Each pass uses distinct stencil/colorMask/depthFunc so WebGPU has to materialize three pipelines and dispatch in order. The audit anticipated needing a new `WebGPUClassificationPrimitiveRenderer` alongside the existing `WebGPUGroundPrimitiveRenderer`.
 
-**Why deferred:** WebGPU classification dispatch is a single-pipeline path; splitting into the WebGL-style 3-pass walk requires per-pass pipeline variant work plus renderer-level ordering change. Touches `WebGPUGroundPrimitiveRenderer.js` plus a new `WebGPUClassificationPrimitiveRenderer` that doesn't exist yet.
+**Resolution:** The 3-pass stencil-depth technique was **intentionally retired** during Migration Session 5 (Batch 85, ~2026-04-22). The technique is now compiled-but-dormant scaffolding in `WebGPUGroundPrimitiveRenderer.js` lines 7-26 (documents the migration) and lines 97-102 (confirms: "the legacy stencil VS/FS, color VS/FS... were removed alongside their pipeline descriptors. The depth-sample dsColor/dsPick path is now the only classification path"). The replacement `dsColor`/`dsPick` pipelines sample the globe-depth texture (via the effects bind group at `@group(3) @binding(15)`) and discard fragments that don't have a classifiable surface — single-pass, no stencil dance, simpler architecturally.
 
-**Prerequisites:** None - foundation in place since Batch 30. `selectCommandVariant` (Batch 29) is the dispatch hook.
+`WebGPUGroundPrimitiveRenderer.js` covers BOTH `ClassificationPrimitive` and `GroundPrimitive` via the depth-sample classifier; no separate `WebGPUClassificationPrimitiveRenderer` was needed (the audit's anticipated split didn't materialize). `Vector3DTilePrimitive` / `Vector3DTilePolylines` / `Vector3DTileClampedPolylines` follow the same depth-sample pattern in their own renderers.
 
-**Estimated effort:** 1 dedicated session.
+**Doc-sync note:** This entry stayed flagged as "open" through Batches 85-175 because the doc reconciliation lagged the architectural pivot. Batch 176 audit confirmed the retirement and updated the entry. No code change required.
 
-**Impact:** 3D Tiles classification on WebGPU may bleed through tile boundaries when the stencil-depth pass doesn't run. Single-pass mode currently approximates the visible surface only.
-
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30.
+**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30 (original framing); Migration Session 5 / Batch 85 (architectural pivot); Batch 176 (doc reconciliation).
 
 ### ~~C-R1-COLLECTIONS-PER-ENCODER~~ — RESOLVED (audit 2026-05-02)
 
@@ -81,9 +79,38 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 **Re-audit finding (Batch 175):** Pre-Batch-175 the entry framed `depthWriteEnabled: !isBlend` at `WebGPUGlobeSurfacePipelines.ts:321` as "ignoring upstream depthMask." Code inspection of `GlobeTranslucencyState.js:720-741` and `GlobeSurfaceTileProvider.js:364-382` shows the upstream provider ALWAYS pairs `depthMask = false` with `blending = ALPHA_BLEND` — the WebGPU heuristic `!isBlend` thus produces the byte-correct depth-write state for every globe translucency variant. **No depthMask gap to close** until the provider's pattern changes; if it does, the same derivation pattern Batch 99 used for cullFace can be added.
 
-**Genuine remaining gap (rescoped):** `GlobeTranslucencyState.js:720-727` sets `colorMask = { red: false, green: false, blue: false, alpha: false }` for the depth-only back-face-only pass (depth pre-pass for translucent globe rendering). The WebGPU globe renderer doesn't currently emit this auxiliary depth-only pass — the entire globe-translucency multi-pass technique (depth-only back-face → translucent back-face → translucent front-face) isn't yet implemented. Filed as `NEW-GLOBE-TRANSLUCENCY-MULTI-PASS` for the dedicated work; ~200 LOC, MED visible payoff (translucent globe inside-out shows minor depth artifacts in the current single-pass blend approximation).
+**Genuine remaining gap (rescoped):** `GlobeTranslucencyState.js:720-727` sets `colorMask = { red: false, green: false, blue: false, alpha: false }` for the depth-only back-face-only pass (depth pre-pass for translucent globe rendering). The WebGPU globe renderer doesn't currently emit this auxiliary depth-only pass — the entire globe-translucency multi-pass technique (depth-only back-face → translucent back-face → translucent front-face) isn't yet implemented. Filed as `NEW-GLOBE-TRANSLUCENCY-MULTI-PASS` for the dedicated work.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30; Batch 99 cullFace; Batch 175 re-audit + rescope.
+**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30; Batch 99 cullFace; Batch 175 re-audit + rescope; Batch 176 deeper inspection of existing scaffolding.
+
+---
+
+### NEW-GLOBE-TRANSLUCENCY-MULTI-PASS — depth-only pre-pass + cull-separated translucent back/front passes for translucent globe rendering
+
+**What:** When `scene.globe.translucency.enabled === true`, the upstream WebGL backend renders the globe in 3 passes per the technique in `GlobeTranslucencyState.js`:
+
+1. **Depth-only back-face pre-pass** — `cullFace: FRONT`, `depthMask: true`, `colorMask: { red: false, green: false, blue: false, alpha: false }`, no blend. Populates depth buffer with the FAR side of the globe.
+2. **Translucent back-face** — `cullFace: FRONT`, `depthMask: false`, `blending: ALPHA_BLEND`. Renders far-side surface with depth-test against the populated depth.
+3. **Translucent front-face** — `cullFace: BACK`, `depthMask: false`, `blending: ALPHA_BLEND`. Renders near-side surface, blending over the back-face contribution.
+
+The WebGPU path currently emits a single command with `cullMode: "none"` and the standard alpha-blend pipeline — that conflates back-face and front-face into one unordered draw, producing inside-out artifacts when the camera looks through the globe.
+
+**Existing partial scaffolding (Batch 176 inspection finding):** `WebGPUGlobeTranslucencyState.ts` defines 9 derived command types (OPAQUE_FRONT_FACE, DEPTH_ONLY_BACK_FACE, TRANSLUCENT_BACK_FACE, etc.) and `WebGPUSceneRenderer.executeBatchTranslucent` iterates them, mutating `cmd._blendEnabled` / `_depthWriteEnabled` / `_cullMode` between executions. **This is non-functional for WebGPU**: pipelines bake blend / cull / depth-write at creation, so mutating those fields on the command after the pipeline is bound has no effect. The existing scaffolding is forward-looking infrastructure that requires per-derived-type pre-built pipeline variants to actually work.
+
+**Scope (full implementation):**
+
+1. Extend `getDerivedCommandState` in `WebGPUGlobeTranslucencyState.ts` to emit `cullMode: GPUCullMode` (string) instead of `cullFront`/`cullBack` booleans (~15 LOC).
+2. Add a parameterized derived-pipeline-variant builder in `WebGPUGlobeSurfacePipelines.ts` that takes the derived state tuple and produces a `WebGPURenderPipelineDescriptor` with the matching `cullMode` / blend / `depthWriteEnabled` / colorMask. Cache key extends with derived-type suffix (~80 LOC).
+3. Pre-build all 9 derived variants at globe-renderer init (or lazily on first translucent frame) (~30 LOC).
+4. Attach derived pipelines to commands as `_derivedPipelines: Map<derivedType, GPURenderPipeline>` (~15 LOC).
+5. Rewrite `executeBatchTranslucent` to swap to the matching pre-built pipeline per derived type, instead of mutating per-command state fields (~40 LOC).
+6. (Optional follow-up) Wire `MANUAL_DEPTH_TEST` variants for the multi-frustum overlap case.
+
+**Estimated effort:** ~180-240 LOC, multi-file. Best as a focused single-batch deliverable since it touches 4 files and requires careful ordering of pipeline pre-builds vs renderer init.
+
+**Why deferred:** The buggy-existing-scaffolding makes this a more careful refactor than a from-scratch implementation — touching `WebGPUGlobeTranslucencyState.ts`, `WebGPUSceneRenderer.executeBatchTranslucent`, `WebGPUGlobeSurfacePipelines.ts`, and the globe renderer's command emission. Worth its own batch with focused testing on translucent-globe demo content.
+
+**Impact:** Translucent globe rendering shows inside-out artifacts when the camera looks through the planet (camera at orbit looking at antipodal surface, or camera underground looking through the globe). MED visible payoff — the artifact is real but the use case is niche.
 
 ### ~~C-R1-PRIMITIVE-DERIVED~~ EFFECTIVELY RESOLVED (audit 2026-05-02)
 

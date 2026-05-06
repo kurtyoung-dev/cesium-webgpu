@@ -1080,7 +1080,18 @@ class Cesium3DTile {
 
     for (let i = commandStart; i < commandEnd; ++i) {
       const command = commandList[i];
-      const translucent = command.pass === Pass.TRANSLUCENT;
+      // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — Gaussian Splat tile
+      // commands ride `Pass.GAUSSIAN_SPLATS` rather than `Pass.TRANSLUCENT`,
+      // but they're alpha-blended just like translucent tiles and have
+      // the same classification problem: without forcing depth-write,
+      // a classifier can't clip against the splat surface. Treat
+      // splat-pass commands the same way translucent commands are
+      // treated here — the splat renderer ships a `classificationDepthPipeline`
+      // variant that `WebGPUDrawCommand.execute` swaps in when this
+      // flag is set. Pass.GAUSSIAN_SPLATS = 11 (see Pass.js).
+      const translucent =
+        command.pass === Pass.TRANSLUCENT ||
+        command.pass === Pass.GAUSSIAN_SPLATS;
       command.depthForTranslucentClassification = translucent;
     }
 

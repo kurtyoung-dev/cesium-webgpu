@@ -1091,6 +1091,15 @@ interface CesiumAnyDrawCommand {
   instanceCount?: number;
   _blendEnabled?: boolean;
   _oitPipeline?: GPURenderPipeline;
+  // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) + NEW-GS-CLASSIFICATION-DEPTH
+  // (Batch 176) — depth-write variant of the color pipeline. The
+  // dispatcher (`WebGPUDrawCommand.execute`) swaps to it when
+  // `depthForTranslucentClassification` is set on the command (flipped
+  // by `Cesium3DTile.update` for translucent + Gaussian-Splat passes).
+  // Lets the classifier sample the splat / translucent surface depth
+  // instead of the geometry behind it.
+  depthForTranslucentClassification?: boolean;
+  classificationDepthPipeline?: GPURenderPipeline;
   clone?(): CesiumAnyDrawCommand;
   // Derived command override flags
   _depthOnly?: boolean;

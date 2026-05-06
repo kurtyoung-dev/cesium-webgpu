@@ -2111,6 +2111,29 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   // Branch ordering: applied AFTER volume attenuation so transmissive
   // glass behind volumetric absorption gets the correct double effect.
   //>>ifdef MODEL_HAS_KHR_TEXTURES
+  // NEW-KHR-TRANSMISSION-THICKNESS (Batch 176) — pre-compute KHR_volume
+  // thickness so BOTH the transmission and volume blocks can consume
+  // the same value without duplicating the thicknessTexture sample.
+  // Pre-Batch-176 the transmission block used a fixed `0.05` UV offset
+  // step regardless of the asset's volume thickness, so a thin glass
+  // pane and a thick crystal sphere refracted identically. The volume
+  // thickness now modulates the refraction step so thicker geometry
+  // bends light more — matching the Khronos KHR_volume spec's
+  // expectation that refraction is proportional to the optical path
+  // length through the volume.
+  //
+  // Gated on FLAG_HAS_VOLUME — assets that declare KHR_transmission
+  // without KHR_volume don't carry an authored thickness, so the
+  // pre-Batch-176 fixed step stays as the fallback for them. Sampled
+  // once per fragment regardless of which block(s) consume it.
+  var thicknessForKHR: f32 = 0.0;
+  if (hasFlag(flags, FLAG_HAS_VOLUME)) {
+    let thickTex = textureSampleLevel(
+      thicknessTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    thicknessForKHR = material.volumeFactors0.x * thickTex.g;
+  }
+
   if (hasFlag(flags, FLAG_HAS_TRANSMISSION)) {
     var trFactor = material.transmissionFactors.x;
     let trTex = textureSampleLevel(
@@ -2124,14 +2147,24 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
       let ior = max(material.transmissionFactors.y, 1.0);
       let eta = 1.0 / ior;
       let refracted = refract(-V, N, eta);
-      // UV offset — project refracted vector to screen space. Without
-      // a thickness sample we use a fixed step (kept small so
-      // misaligned refraction reads stay near the original pixel).
+      // NEW-KHR-TRANSMISSION-THICKNESS (Batch 176) — couple refraction
+      // step to volume thickness. `0.05` is the historical baseline
+      // (kept small so misaligned reads stay near the original pixel
+      // when no thickness is authored). When KHR_volume is active,
+      // scale the step by `(1 + 4 × thickness)` so a thickness of
+      // ~0.25 doubles the step, ~0.5 triples it, etc. The 4× factor
+      // is heuristic — calibrated so a 1m glass pane (typical
+      // `thicknessFactor` ~ 0.01-0.05 in normalized model units)
+      // produces a barely-visible offset, while a thick sphere
+      // (thickness ~ 0.5-1.0) produces a noticeable parallax — both
+      // matching artist expectations from the reference impl.
+      let baseStep: f32 = 0.05;
+      let thicknessStepScale = 1.0 + 4.0 * thicknessForKHR;
       let refractionUV = clamp(
         input.fragCoord.xy / vec2<f32>(
           f32(textureDimensions(refractionSceneTexture).x),
           f32(textureDimensions(refractionSceneTexture).y),
-        ) + refracted.xy * 0.05,
+        ) + refracted.xy * (baseStep * thicknessStepScale),
         vec2<f32>(0.0),
         vec2<f32>(1.0),
       );
@@ -2148,16 +2181,14 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   }
 
   if (hasFlag(flags, FLAG_HAS_VOLUME)) {
-    var thickness = material.volumeFactors0.x;
     let attDistance = material.volumeFactors0.y;
     let attColor = material.volumeFactors1.xyz;
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample thicknessTexture (G)
-    // to modulate per-pixel thickness. Per spec the texture stores a
-    // unit-normalized thickness scaled by `thicknessFactor`.
-    let thickTex = textureSampleLevel(
-      thicknessTexture, khrSampler, baseColorUV(input), 0.0,
-    );
-    thickness = thickness * thickTex.g;
+    // NEW-KHR-TRANSMISSION-THICKNESS (Batch 176) — reuse the pre-
+    // computed `thicknessForKHR` instead of re-sampling the
+    // thicknessTexture. C-R4-GLTF-KHR-TEXTURES (Batch 102) note
+    // preserved: per spec the texture stores a unit-normalized
+    // thickness scaled by `thicknessFactor`.
+    let thickness = thicknessForKHR;
     if (attDistance > 0.0 && thickness > 0.0) {
       let attCoeff = -log(max(attColor, vec3<f32>(1.0e-3))) / attDistance;
       let attenuation = exp(-attCoeff * thickness);
