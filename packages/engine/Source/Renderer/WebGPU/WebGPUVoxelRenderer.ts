@@ -72,6 +72,15 @@ interface VoxelCache {
   pipelineRequestPending: boolean;
   colorDescriptor: WebGPURenderPipelineDescriptor | null;
   pickDescriptor: WebGPURenderPipelineDescriptor | null;
+
+  // Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS (Voxel). No prev VB
+  // needed (cube geometry is static); only the modelMatrix in the UBO
+  // suffices for screen-space velocity emission. Pipeline reuses the
+  // color BGL + pipeline layout — same uniform binding, just a
+  // different pair of entry points.
+  velocityPipeline: GPURenderPipeline | null;
+  velocityDescriptor: WebGPURenderPipelineDescriptor | null;
+  velocityPipelineRequestPending: boolean;
 }
 
 const VOXEL_WGSL = `
@@ -103,6 +112,10 @@ struct Uniforms {
   // tail. Layout-only invariant today; consumed by future per-cell
   // motion-vector pass for animated voxel volumes.
   prevViewProjection: mat4x4<f32>,
+  // Batch 173 — full model matrix (no translation zeroing) so the
+  // velocity VS can lift model-space cube vertices to world space
+  // before applying prevViewProjection. UBO grows 224 → 288 bytes.
+  modelMatrix: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -211,6 +224,65 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Ray traversed the whole AABB with no density hit; nothing to pick.
   discard;
   return vec4<f32>(0.0);
+}
+
+// Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
+// voxel volumes. Screen-space approximation: emit per-fragment
+// (currNdc - prevNdc) for the bounding-box surface vertex, which
+// captures the camera-induced screen-space displacement of the
+// volume's surface. For STATIC volumes (typical case — voxel volumes
+// rarely animate per-cell), this gives correct TAA reprojection at
+// the volume's screen pixels.
+//
+// What this DOESN'T capture (deferred follow-up):
+//   - Per-cell motion of voxels animated by a compute pass (rare —
+//     would need a per-cell prev grid texture or a prev modelMatrix).
+//   - Animated modelMatrix between frames (the prev clip uses the
+//     CURRENT modelMatrix; if modelMatrix is rigidly animated, the
+//     velocity captures camera-motion only, not the per-frame model
+//     transform delta). Voxel volumes rarely have animated
+//     modelMatrix — typically locked at primitive construction.
+//
+// Falls back to camera-only TAA reprojection cleanly when both above
+// are static (the dominant case).
+struct VelocityVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currCenterClip: vec4<f32>,
+  @location(1) prevCenterClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMain(input: VertexInput) -> VelocityVertexOutput {
+  var output: VelocityVertexOutput;
+  // Current-frame clip via RTE (matches vertexMain).
+  let posRTE = (input.positionHigh - u.encodedCameraHigh)
+             + (input.positionLow - u.encodedCameraLow);
+  let currClip = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
+  // Previous-frame clip via prevVP × modelMatrix × modelPos. Voxel
+  // cube vertices are static (unit cube [-h, h]^3), so the curr and
+  // prev model-space positions are the SAME — we just project them
+  // through the prev frame's full VP. For static modelMatrix the
+  // delta is purely camera-motion-induced, which is exactly what TAA
+  // reprojection wants.
+  let modelPos = vec4<f32>(input.positionHigh + input.positionLow, 1.0);
+  let prevWorldPos = u.modelMatrix * modelPos;
+  let prevClip = u.prevViewProjection * prevWorldPos;
+  output.position = currClip;
+  output.currCenterClip = currClip;
+  output.prevCenterClip = prevClip;
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+  let curW = input.currCenterClip.w;
+  let prevW = input.prevCenterClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currCenterClip.xy / curW;
+  let prevNdc = input.prevCenterClip.xy / prevW;
+  return curNdc - prevNdc;
 }
 `;
 
@@ -440,6 +512,10 @@ function updateWebGPUVoxelPrimitive(
       pipelineRequestPending: false,
       colorDescriptor: null,
       pickDescriptor: null,
+      // Batch 173 - velocity slots (lazy, allocated when TAA is on).
+      velocityPipeline: null,
+      velocityDescriptor: null,
+      velocityPipelineRequestPending: false,
     } as VoxelCache;
   }
 
@@ -466,14 +542,26 @@ function updateWebGPUVoxelPrimitive(
     cache.pickPipeline = null;
     cache.colorDescriptor = null;
     cache.pickDescriptor = null;
+    cache.pipelineRequestPending = false;
+    cache.command = null;
+    cache.pickCommand = null;
+    // Batch 173 - velocity pipeline references the same shader module
+    // built against the now-invalid format; force rebuild.
+    cache.velocityPipeline = null;
+    cache.velocityDescriptor = null;
+    cache.velocityPipelineRequestPending = false;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
   }
 
   if (!cache.initialized) {
+    // Batch 173 - UBO grew 256 → 320 bytes to include the model matrix
+    // (floats 56-71 at byte offset 224). Used by the velocity VS to
+    // lift model-space cube vertices to world space before applying
+    // prevViewProjection. Comfortably fits with 32 spare bytes.
     cache.uniformBuffer = device.createBuffer({
-      size: 256,
+      size: 320,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     cache.sampler = device.createSampler({
@@ -590,6 +678,31 @@ function updateWebGPUVoxelPrimitive(
       },
     };
 
+    // Batch 173 - velocity descriptor. Same layout / vertex stage as
+    // color (the box geometry is unchanged); different VS entry point
+    // that computes curr + prev clip, and FS entry emitting
+    // (currNdc - prevNdc) to rg16float.
+    cache.velocityDescriptor = {
+      name: "Voxel velocity pipeline",
+      layout: pipelineLayout,
+      vertex: {
+        module: shaderModule,
+        entryPoint: "vertexVelocityMain",
+        buffers: vertexBuffers,
+      },
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fragmentVelocityMain",
+        targets: [{ format: "rg16float" as GPUTextureFormat }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "front" },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: false,
+        depthCompare: "less-equal",
+      },
+    };
+
     cache.bindGroup = device.createBindGroup({
       layout: bgl,
       entries: [
@@ -672,7 +785,8 @@ function updateWebGPUVoxelPrimitive(
   //   [32..35] cameraPositionEC + densityThreshold
   //   [36..39] pickColor               (C-R9-VOXEL-PICK, Batch 53)
   //   [40..55] prevViewProjection      (B.9, Batch 153 — DP-H41)
-  const data = new Float32Array(56);
+  //   [56..71] modelMatrix              (Batch 173 — B.10 voxel velocity)
+  const data = new Float32Array(72);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -738,6 +852,13 @@ function updateWebGPUVoxelPrimitive(
     data[54] = 0;
     data[55] = 1;
   }
+
+  // Batch 173 - model matrix at floats 56..71 (byte offset 224). Used
+  // by the velocity VS to lift model-space cube vertices to world
+  // space before applying prevViewProjection. CPU passes the
+  // primitive's modelMatrix directly (no translation zeroing — the
+  // velocity path needs the full transform, not the RTE-zeroed one).
+  Matrix4.pack(modelMatrix, data, 56);
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
   if (!cache.command) {
@@ -750,6 +871,12 @@ function updateWebGPUVoxelPrimitive(
       pass: Pass.VOXELS,
     });
   }
+
+  // Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS attach. Voxel
+  // geometry is the static unit cube — no prev VB needed. The velocity
+  // VS reuses the same vertex buffer + bind group; only the entry
+  // point changes. Same lifecycle as the other advanced renderers.
+  attachVoxelVelocityCommand(device, context, frameState, cache);
 
   commandList.push(cache.command);
 
@@ -775,6 +902,89 @@ function updateWebGPUVoxelPrimitive(
       cache.command as CesiumAnyDrawCommand,
       cache.pickCommand,
     );
+  }
+}
+
+/**
+ * Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity attach for
+ * voxel volumes. Builds the velocity pipeline lazily, attaches a
+ * `velocityCommand` to `cache.command`. The TAA pass walks the
+ * command list for `cmd.velocityCommand` and dispatches it into the
+ * rg16float velocity texture.
+ *
+ * Voxel geometry is a static unit cube — no prev vertex buffer
+ * needed. The velocity is purely camera-induced (curr clip vs prev
+ * clip via prevViewProjection × modelMatrix × modelPos), captured
+ * at the bounding-box surface. For typical static voxel volumes
+ * this gives correct TAA reprojection. For animated modelMatrix or
+ * per-cell motion (rare), a deeper rework would be needed.
+ *
+ * Skips when TAA is off — keeps the off-path zero-cost.
+ * @private
+ */
+function attachVoxelVelocityCommand(
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  cache: VoxelCache,
+): void {
+  const taaEnabledThisFrame =
+    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
+    true;
+  if (!taaEnabledThisFrame) {
+    if (cache.command) {
+      (cache.command as { velocityCommand?: unknown }).velocityCommand =
+        undefined;
+    }
+    return;
+  }
+  if (!cache.velocityDescriptor || !cache.command || !cache.bindGroup) {
+    return;
+  }
+
+  // Lazy velocity pipeline resolution.
+  if (!cache.velocityPipeline && !cache.velocityPipelineRequestPending) {
+    const ctxAny = context as unknown as {
+      webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+    };
+    const pipelineCache = ctxAny.webgpuPipelineCache ?? null;
+    if (pipelineCache) {
+      const sync = pipelineCache.getPipelineSync(cache.velocityDescriptor);
+      if (sync) {
+        cache.velocityPipeline = sync;
+      } else {
+        cache.velocityPipelineRequestPending = true;
+        pipelineCache
+          .getPipeline(cache.velocityDescriptor)
+          .then((p) => {
+            cache.velocityPipeline = p;
+            cache.velocityPipelineRequestPending = false;
+          })
+          .catch(() => {
+            cache.velocityPipelineRequestPending = false;
+          });
+      }
+    } else {
+      // Fallback synchronous creation when no central cache.
+      cache.velocityPipeline = device.createRenderPipeline(
+        toGPUDescriptor(cache.velocityDescriptor),
+      );
+    }
+  }
+
+  if (cache.velocityPipeline && cache.vertexBuffer && cache.indexBuffer) {
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      new WebGPUDrawCommand({
+        pipeline: cache.velocityPipeline,
+        bindGroups: [cache.bindGroup],
+        vertexBuffers: [cache.vertexBuffer],
+        indexBuffer: cache.indexBuffer,
+        indexCount: 36,
+        pass: Pass.VOXELS,
+      });
+  } else {
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      undefined;
   }
 }
 
