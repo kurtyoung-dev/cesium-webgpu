@@ -26,6 +26,7 @@ import {
   selectPipeline as selectPipelineHelper,
   selectDebugFragmentPipeline as selectDebugFragmentPipelineHelper,
   selectDepthOnlyBackFacePipeline as selectDepthOnlyBackFacePipelineHelper,
+  selectTranslucentBackFacePipeline as selectTranslucentBackFacePipelineHelper,
 } from "./WebGPUGlobeSurfacePipelines.js";
 import {
   getTileKey as getTileKeyHelper,
@@ -496,8 +497,18 @@ export class WebGPUGlobeSurfaceRenderer {
     const providerCullEnabled =
       (tileProvider as unknown as { backFaceCulling?: boolean })
         .backFaceCulling !== false;
-    const disableCulling =
-      !providerCullEnabled || cameraUnderground || globeTranslucent;
+    // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 182) — split the
+    // disable-culling decision. Underground / provider-disabled-culling
+    // still want cullMode: "none" (single-pass both-faces). But
+    // globeTranslucent now wants the 3-pass technique:
+    //   1. Depth-only back-face (Batch 177, cullMode: "front")
+    //   2. Translucent back-face (NEW Batch 182, cullMode: "front", blend ALPHA)
+    //   3. Translucent front-face (existing, but now cullMode: "back" via
+    //      `disableCulling: false`, instead of cullMode: "none").
+    // Camera-underground takes precedence over translucent — if both
+    // are true, use single-pass both-faces (the user's primary intent
+    // is "see through the globe").
+    const disableCulling = !providerCullEnabled || cameraUnderground;
 
     for (let pass = 0; pass < passCount; pass++) {
       const isSubsequentPass = pass > 0;
@@ -899,6 +910,47 @@ export class WebGPUGlobeSurfaceRenderer {
         // (first-frame asynchrony). The translucent commands continue
         // to render without the pre-pass — a one-frame degraded
         // artifact instead of a permanent black tile.
+
+        // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 182) — translucent
+        // back-face command. Emitted AFTER the depth-only pre-pass and
+        // BEFORE the regular translucent front-face command (pushed at
+        // line ~916 below). Sequence per tile when globeTranslucent:
+        //   1. Depth-only back-face (Batch 177) — populates depth
+        //   2. Translucent back-face (NEW Batch 182) — blends FAR side
+        //   3. Translucent front-face (existing) — blends NEAR side over
+        // The existing front-face command's cullMode flipped from
+        // "none" to "back" via the disableCulling decision split above.
+        const translucentBackPipeline = selectTranslucentBackFacePipelineHelper(
+          this,
+          gpuResources.isQuantized,
+          gpuResources.hasNormals,
+          gpuResources.hasWebMercatorT,
+          gpuResources.strideBytes,
+          useClipDistances,
+          gpuResources.hasGeodeticSurfaceNormals,
+        );
+        if (translucentBackPipeline) {
+          commands.push({
+            pipeline: translucentBackPipeline,
+            bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+            vertexBuffer: gpuResources.vertexBuffer,
+            indexBuffer: drawIndexBuffer,
+            indexCount: drawIndexCount,
+            indexFormat: drawIndexFormat,
+            boundingVolume:
+              (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
+              surfaceTile.boundingSphere3D,
+            isSubsequentPass: false,
+            isQuantized: gpuResources.isQuantized,
+            shadowCastTerrainUB: gpuResources.shadowCastUB,
+            hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
+            strideBytes: gpuResources.strideBytes,
+          });
+        }
+        // Same async-fallback semantics as the depth-only command:
+        // null pipeline → skip this command for one frame. The other
+        // two commands continue to render; the missing back-face
+        // contribution is invisible after the first frame.
       }
 
       commands.push({

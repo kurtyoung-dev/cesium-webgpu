@@ -94,28 +94,26 @@ export function buildPipelineDescriptor(
   hasGeodeticSurfaceNormals: boolean = false,
   disableCulling: boolean = false,
   // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only back-face
-  // pre-pass variant for translucent globe rendering. When `true`:
-  //   - cullMode: "front" (back faces only — populates depth from FAR
-  //     side of the globe before the translucent passes blend the near
-  //     side over it)
-  //   - depthWriteEnabled: true (writes depth — the whole point)
-  //   - colorWriteMask: 0 (no color output; the fragment stage is
-  //     retained so the existing module compiles unchanged, but its
-  //     output is masked to nothing)
-  //   - blend: undefined (irrelevant when nothing is written to color)
-  //
-  // The caller dispatches this command BEFORE the imagery-layer
-  // translucent commands; the resulting depth attachment lets the
-  // single-pass alpha blend (which still uses cullMode: "none" today)
-  // composite correctly against the far-side surface. Without this
-  // pre-pass, looking through the globe at antipodal terrain produces
-  // inside-out z-fight artifacts.
-  //
-  // Full multi-pass cull-separated technique (depth-only BF →
-  // translucent BF cullMode=front → translucent FF cullMode=back) is
-  // a follow-up; this single-pre-pass variant resolves the worst
-  // visible artifact at minimal architectural cost.
+  // pre-pass variant for translucent globe rendering.
   depthOnlyBackFace: boolean = false,
+  // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 182) — translucent back-face
+  // variant. Sits between the depth-only pre-pass (Batch 177) and the
+  // standard translucent front-face command, completing the 3-pass
+  // technique. When `true`:
+  //   - cullMode: "front" (back faces only — blend FAR side first)
+  //   - blend: ALPHA (forced regardless of `isBlend` input)
+  //   - depthWriteEnabled: false (depth was already written by the
+  //     pre-pass; this pass tests against it but doesn't overwrite)
+  //   - colorWriteMask: 0xf (full color output)
+  //
+  // The caller dispatches this AFTER the depth-only back-face pre-pass
+  // and BEFORE the translucent front-face command. The depth pre-pass
+  // populates depth with the back-face surface; this pass blends the
+  // back-face color over the cleared FB; the front-face command blends
+  // its color over the back-face contribution. Final composite: correct
+  // front-to-back ordering through the translucent planet instead of
+  // the unsorted single-pass alpha blend used pre-Batch-182.
+  translucentBackFace: boolean = false,
 ): WebGPURenderPipelineDescriptor {
   let vertexBuffers: GPUVertexBufferLayout[];
   let entryPoint: string;
@@ -311,20 +309,46 @@ export function buildPipelineDescriptor(
     }
   }
 
-  // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only back-face
-  // pre-pass overrides the cullMode / depthWriteEnabled / colorWriteMask
-  // state to populate scene-FB depth from the far side of the globe.
-  // Front-face culling, depth-write enabled, color writes masked off.
-  // Label suffix `_DOB` (depth-only back-face) is keyed into the cache
-  // so the variant doesn't collide with other variants of the same
-  // (quantized × normals × stride) tuple.
+  // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batches 177 + 182) — variant
+  // overrides for the 3-pass globe-translucency technique:
+  //   - depthOnlyBackFace (Batch 177): cullMode=front, color masked,
+  //     depth-write enabled. Populates depth from FAR side.
+  //   - translucentBackFace (Batch 182): cullMode=front, ALPHA blend,
+  //     depth-write disabled. Blends FAR-side color first.
+  //   - default (translucent FF or opaque): cullMode from disableCulling
+  //     toggle.
+  // Cache key suffixes (`_DOB`, `_TBF`) keep the three variants distinct.
   const dobLabel = depthOnlyBackFace ? ", depthOnlyBackFace" : "";
-  const cullMode: GPUCullMode = depthOnlyBackFace
-    ? "front"
-    : disableCulling
-      ? "none"
-      : "back";
-  const depthWriteEnabled = depthOnlyBackFace ? true : !isBlend;
+  const tbfLabel = translucentBackFace ? ", translucentBackFace" : "";
+  const cullMode: GPUCullMode =
+    depthOnlyBackFace || translucentBackFace
+      ? "front"
+      : disableCulling
+        ? "none"
+        : "back";
+  const depthWriteEnabled = depthOnlyBackFace
+    ? true
+    : translucentBackFace
+      ? false
+      : !isBlend;
+  // Force ALPHA blend for translucent back-face regardless of `isBlend`
+  // input; the variant is by-definition translucent.
+  const effectiveBlend = depthOnlyBackFace
+    ? undefined
+    : translucentBackFace
+      ? {
+          color: {
+            srcFactor: "src-alpha" as GPUBlendFactor,
+            dstFactor: "one-minus-src-alpha" as GPUBlendFactor,
+            operation: "add" as GPUBlendOperation,
+          },
+          alpha: {
+            srcFactor: "one" as GPUBlendFactor,
+            dstFactor: "one-minus-src-alpha" as GPUBlendFactor,
+            operation: "add" as GPUBlendOperation,
+          },
+        }
+      : blendState;
   // Mask all color writes when running the depth-only pre-pass. The
   // fragment stage is retained (rather than omitted) so the same module
   // compiles unchanged; its output is masked to nothing at the target
@@ -333,7 +357,7 @@ export function buildPipelineDescriptor(
   const colorWriteMask: GPUColorWriteFlags = depthOnlyBackFace ? 0 : 0xf;
 
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${tbfLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,
@@ -346,7 +370,7 @@ export function buildPipelineDescriptor(
       targets: [
         {
           format: host._canvasFormat,
-          blend: depthOnlyBackFace ? undefined : blendState,
+          blend: effectiveBlend,
           writeMask: colorWriteMask,
         },
       ],
@@ -514,6 +538,70 @@ export function selectPipeline(
 }
 
 /**
+ * NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 182) — select the translucent
+ * back-face pipeline variant. Sits between the depth-only back-face
+ * pre-pass (Batch 177) and the regular translucent front-face command,
+ * completing the 3-pass globe-translucency technique:
+ *
+ *   1. Depth-only back-face: writes depth from FAR side of the globe
+ *      (Batch 177's `selectDepthOnlyBackFacePipeline`).
+ *   2. Translucent back-face (this variant): blends the FAR-side surface
+ *      color over the cleared FB. cullMode: "front", blend: ALPHA,
+ *      depthWriteEnabled: false.
+ *   3. Translucent front-face: blends the NEAR-side surface over the
+ *      back-face contribution. Uses the existing `selectPipeline` with
+ *      `disableCulling=false` (cullMode: "back" front-face only) and
+ *      `isBlend=true`.
+ *
+ * This produces correct front-to-back compositing through the planet
+ * instead of the unsorted single-pass alpha blend (cullMode: "none")
+ * used pre-Batch-182 for translucent globe rendering.
+ *
+ * Returns null while the pipeline is materializing in the central
+ * cache. Caller skips the translucent-back-face command for this
+ * tile this frame; the regular translucent + depth-only commands
+ * still emit, so the visible artifact is "missing back-face
+ * contribution for one frame" rather than a black tile.
+ */
+export function selectTranslucentBackFacePipeline(
+  host: PipelineHost,
+  isQuantized: boolean,
+  hasNormals: boolean,
+  hasWebMercatorT: boolean,
+  strideBytes: number,
+  useClipDistances: boolean = false,
+  hasGeodeticSurfaceNormals: boolean = false,
+): GPURenderPipeline | null {
+  const cdSuffix = useClipDistances ? "_CD" : "";
+  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  // `isBlend=true` forces the ALPHA blend state; `_TBF` (translucent
+  // back-face) suffix distinguishes from the standard blend variant
+  // which cullMode: "back" (front-face). _TBF means cullMode: "front"
+  // (back-face) with the same alpha blend.
+  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}B_${strideBytes}${cdSuffix}_TBF|${defines.toString(16)}`;
+  let entry = host._pipelineCache.get(cacheKey);
+  if (!entry) {
+    const descriptor = buildPipelineDescriptor(
+      host,
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      true, // isBlend — translucent back-face uses ALPHA blend
+      strideBytes,
+      DebugFragmentMode.NONE,
+      useClipDistances,
+      hasGeodeticSurfaceNormals,
+      false, // disableCulling — overridden by translucentBackFace below
+      false, // depthOnlyBackFace
+      true, // translucentBackFace — sets cullMode: "front" + blend ALPHA
+    );
+    entry = { descriptor, pipeline: null, pending: false };
+    host._pipelineCache.set(cacheKey, entry);
+  }
+  return resolveGlobePipelineEntry(host, entry);
+}
+
+/**
  * NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — select the depth-only
  * back-face pre-pass pipeline variant.
  *
@@ -573,6 +661,7 @@ export function selectDepthOnlyBackFacePipeline(
       hasGeodeticSurfaceNormals,
       false, // disableCulling — depth-only forces cullMode: "front"
       true, // depthOnlyBackFace
+      false, // translucentBackFace
     );
     entry = { descriptor, pipeline: null, pending: false };
     host._pipelineCache.set(cacheKey, entry);
