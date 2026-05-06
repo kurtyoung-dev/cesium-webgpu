@@ -235,6 +235,63 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
   o.col = u.color;
   return o;
 }
+
+// NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — velocity entry
+// points for TAA. GroundPrimitive volumes have static per-feature
+// geometry, so velocity is camera-only: project the SAME world-space
+// position (high+low encoded position) through both the current vpRTE
+// (matching colorVS) and the previous full VP, emit (currNdc - prevNdc)
+// to the rg16float velocity texture. Mirrors the Voxel pattern (Batch
+// 173) and the Vector3DTile classifier sweep (Batches 178-179).
+//
+// Coverage parity: the velocity VS uses the SAME csm_depthClamp + mvpRTE
+// math as colorVS so the rasterized fragment positions match exactly —
+// no half-pixel offsets in the emitted velocity vectors. The VS DOES
+// NOT replicate the morphColorVS path; velocity emission is suppressed
+// during MORPHING by the JS-side gating in createWebGPUGroundPrimitiveCommands
+// (TAA during scene-mode morph is rare; the camera-only fallback in
+// the velocity-pass is correct for static-geometry transitions).
+struct VelocityCO {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) currClip: vec4<f32>,
+  @location(1) prevClip: vec4<f32>,
+};
+
+@vertex fn vsVelocity(
+  @location(0) pH: vec3<f32>, @location(1) pL: vec3<f32>,
+) -> VelocityCO {
+  // Current frame: identical to colorVS so the velocity-pass
+  // rasterization matches the color pass fragment-for-fragment.
+  let rte = (pH - u.camH) + (pL - u.camL);
+  let curClip = csm_depthClamp(u.mvpRTE * vec4<f32>(rte, 1.0));
+  // Previous frame: project the world-space position (high + low,
+  // simple sum is fine here because pH/pL are SOA-encoded high/low
+  // bits of an absolute world position — adding them recovers the
+  // original world coordinates) through prev VP. The csm_depthClamp
+  // is intentionally NOT applied to prev — the clamp affects clip-z,
+  // and velocity derives from clip-x/y/w; the omission is benign and
+  // saves the helper call on the prev path.
+  let worldPos = pH + pL;
+  let prClip = u.prevViewProjection * vec4<f32>(worldPos, 1.0);
+  var o: VelocityCO;
+  o.pos = curClip;
+  o.currClip = curClip;
+  o.prevClip = prClip;
+  return o;
+}
+
+@fragment fn fsVelocity(i: VelocityCO) -> @location(0) vec2<f32> {
+  let curW = i.currClip.w;
+  let prevW = i.prevClip.w;
+  // Behind-near-plane fragments contribute zero velocity — TAA will
+  // treat the pixel as static and reuse history without reprojection.
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = i.currClip.xy / curW;
+  let prevNdc = i.prevClip.xy / prevW;
+  return curNdc - prevNdc;
+}
 `;
 
   const mod = device.createShaderModule({ label: "GroundPrimitive", code });
@@ -451,12 +508,36 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
     },
   };
 
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — velocity
+  // pipeline. Same pipeline layout (depth-sample BGL pair) as the color
+  // pipeline so bind groups are reused; single rg16float color target,
+  // no blend, depth read-only. Only the non-morph variant is built —
+  // velocity emission is suppressed during MORPHING by the JS-side
+  // gating (TAA during scene-mode morph is rare).
+  const velocityDescriptor = {
+    name: `GroundPrimitive velocity [${depthFormat}]`,
+    layout: depthSampleLayout,
+    vertex: { module: mod, entryPoint: "vsVelocity", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "fsVelocity",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
   return {
     depthSampleColorDescriptor,
     depthSamplePickDescriptor,
     depthSampleStencilDescriptor,
     morphColorDescriptor,
     morphPickDescriptor,
+    velocityDescriptor,
     bgl,
     depthSampleBgl,
   };
@@ -527,10 +608,18 @@ function tryResolveGroundPrimitivePipelines(
     const dsStencilSync = pipelineCache.getPipelineSync(
       resources.depthSampleStencilDescriptor,
     );
+    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — velocity
+    // pipeline resolved alongside color/pick/stencil. Cache miss is
+    // non-fatal: color path continues to render correctly without it;
+    // velocity-pass dispatch becomes a no-op until the variant lands.
+    const dsVelocitySync = pipelineCache.getPipelineSync(
+      resources.velocityDescriptor,
+    );
     if (dsColorSync && dsPickSync && dsStencilSync) {
       cache.depthSampleColorPipeline = dsColorSync;
       cache.depthSamplePickPipeline = dsPickSync;
       cache.depthSampleStencilPipeline = dsStencilSync;
+      cache.velocityPipeline = dsVelocitySync ?? null;
       cache.pipelineRequestPending = false;
       return true;
     }
@@ -540,11 +629,13 @@ function tryResolveGroundPrimitivePipelines(
         pipelineCache.getPipeline(resources.depthSampleColorDescriptor),
         pipelineCache.getPipeline(resources.depthSamplePickDescriptor),
         pipelineCache.getPipeline(resources.depthSampleStencilDescriptor),
+        pipelineCache.getPipeline(resources.velocityDescriptor),
       ])
-        .then(([dsColor, dsPick, dsStencil]) => {
+        .then(([dsColor, dsPick, dsStencil, dsVelocity]) => {
           cache.depthSampleColorPipeline = dsColor;
           cache.depthSamplePickPipeline = dsPick;
           cache.depthSampleStencilPipeline = dsStencil;
+          cache.velocityPipeline = dsVelocity;
           cache.pipelineRequestPending = false;
         })
         .catch(() => {
@@ -566,6 +657,10 @@ function tryResolveGroundPrimitivePipelines(
   );
   cache.depthSampleStencilPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.depthSampleStencilDescriptor),
+  );
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — fallback path.
+  cache.velocityPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.velocityDescriptor),
   );
   return true;
 }
@@ -837,6 +932,11 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.depthSampleStencilPipeline = undefined;
     cache.morphColorPipeline = undefined;
     cache.morphPickPipeline = undefined;
+    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — clear the
+    // velocity pipeline alongside the others on format change. Mirrors
+    // the Batch 176 audit fix on splats and the Batch 179 fix on
+    // Vector3DTile{Polylines,ClampedPolylines}.
+    cache.velocityPipeline = undefined;
     // Bind groups reference the old BGL which is now stale.
     cache.bindGroup = undefined;
     cache.depthSampleBindGroup = undefined;
@@ -1312,6 +1412,24 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     owner: primitive,
     renderState: classificationRS,
   };
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — derive
+  // velocity command alongside the FIRST color command per primitive
+  // when TAA is on AND not in MORPHING (the velocity VS uses the
+  // single-stream layout; morph would need its own velocity variant
+  // matching the two-stream layout — deferred behind real demand for
+  // TAA-during-morph). Per-feature animation isn't possible for static
+  // ground classification volumes anyway, so one velocity command per
+  // primitive is sufficient.
+  const taaEnabled = frameState?.taaEnabled === true;
+  const emitVelocity =
+    taaEnabled && !isMorphing && defined(cache.velocityPipeline);
+  // The velocity VS only consumes locations 0/1 (the 3D high/low
+  // position pair), matching the single-stream non-morph layout. When
+  // morph is active sharedDrawArgs.vertexBuffers carries two streams,
+  // which would mismatch the velocity pipeline's single-buffer
+  // expectation — thus the !isMorphing gate above.
+  const velocityVertexBuffers = isMorphing ? null : [cache.vertexGPUBuffer];
+
   const colorCommands = [];
   const pickCommands = [];
   for (let p = 0; p < groundPasses.length; p++) {
@@ -1321,6 +1439,15 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       pipeline: activeColorPipeline,
       pass: passEnum,
     });
+    if (emitVelocity && p === 0) {
+      colorCmd.velocityCommand = new WebGPUDrawCommand({
+        ...sharedDrawArgs,
+        // Velocity uses the single-stream vertex buffer layout.
+        vertexBuffers: velocityVertexBuffers,
+        pipeline: cache.velocityPipeline,
+        pass: passEnum,
+      });
+    }
     if (defined(pickColor)) {
       const pickCmd = new WebGPUDrawCommand({
         ...sharedDrawArgs,

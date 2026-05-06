@@ -329,9 +329,9 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
-### NEW-ADVANCED-MOTION-VECTORS — per-particle / per-cell / per-feature motion vectors for advanced primitives + classifiers
+### NEW-ADVANCED-MOTION-VECTORS — per-particle / per-cell / per-feature motion vectors for advanced primitives + classifiers — MOSTLY RESOLVED (Batches 168-180); GroundPolyline pending
 
-**What:** Batch 153 closed AUDIT_2026_05_02 B.9 by adding `prevViewProjection: mat4x4<f32>` at the tail of the UBO struct for 8 inline-WGSL renderers (the 5 ground/Vector3DTile classifiers + PointCloud + GaussianSplat + Voxel) per the DP-H41 invariant. Batches 168-173 closed the advanced-primitives half of the follow-up; classifiers remain.
+**What:** Batch 153 closed AUDIT_2026_05_02 B.9 by adding `prevViewProjection: mat4x4<f32>` at the tail of the UBO struct for 8 inline-WGSL renderers (the 5 ground/Vector3DTile classifiers + PointCloud + GaussianSplat + Voxel) per the DP-H41 invariant. Batches 168-180 progressively closed the per-renderer velocity emission for both the advanced-primitive and classifier halves; only `WebGPUGroundPolylineRenderer` remains.
 
 **Resolution per family:**
 
@@ -339,13 +339,16 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 - ~~**CloudCollection**~~ — SHIPPED (Batch 170). Per-cloud prev-position attribute.
 - ~~**GaussianSplat**~~ — SHIPPED (Batch 171 initial; Batch 172 review fixes — UBO 256→320 + modelMatrix at byte offset 256 + full elliptical footprint). Per-splat prev-position follows current sort permutation.
 - ~~**Voxel**~~ — SHIPPED (Batch 173, CLOSES B.10 advanced family). Static-cube screen-space approximation; correct for the dominant case (static voxel volumes).
+- ~~**Vector3DTilePrimitive**~~ — SHIPPED (Batch 178). Camera-only velocity using `prevViewProjection`; vsVelocity replicates the color VS RTC math; one velocity command per primitive (first ground pass only).
+- ~~**Vector3DTilePolylines**~~ — SHIPPED (Batch 179). UBO grew by 16 bytes (`centerWC: vec3<f32>` + 1-pad at floats 56-59) so velocity VS reconstructs world-space positions. Polyline screen-space miter extrusion replicated in vsVelocity for coverage parity.
+- ~~**Vector3DTileClampedPolylines**~~ — SHIPPED (Batch 179). UBO `centerWC` at floats 84-87 (within existing 384-byte capacity). Volume extrusion replicated in vsVelocity; un-extruded world position used for prev-VP projection (the width-miter offset is screen-space, not world-space). Visibility approximation: fsVelocity does NOT replicate the color FS plane-test classification; sky regions emit "extra" velocity that's harmless because TAA reprojects sky → sky.
+- ~~**GroundPrimitive**~~ — SHIPPED (Batch 180). Camera-only velocity matches colorVS exactly (same `csm_depthClamp + mvpRTE` math). Velocity emission gated on `taaEnabled && !isMorphing && defined(velocityPipeline)` — MORPHING uses the two-stream layout that the velocity VS doesn't match.
 
-**Remaining (deferred — classifiers):**
+**Remaining (deferred):**
 
-- **Vector3DTile classifiers** (Primitive, Polylines, ClampedPolylines): per-feature prev-position storage buffer; velocity entry point that reads `batchId` and looks up prev/curr position; FS emits `(currClip - prevClip).xy / w`. ~80 LOC × 3.
-- **GroundPrimitive / GroundPolyline**: per-instance prev-position; same pattern as Polyline collection (Batch 148). ~80 LOC × 2.
+- **GroundPolyline**: `WebGPUGroundPolylineRenderer.vsMain` does ~150 LOC of polyline volume extrusion (multi-attribute input, plane-based extrusion direction, bottom-vertex stretching for far views). For coverage parity the velocity VS must duplicate that math — substantially more surgery than the other classifiers. Best as its own focused batch when prioritized. ~120 LOC of duplicated WGSL + descriptor + resolution + emission. Camera-only fallback is correct for the dominant case (static polyline volumes); the missing per-renderer velocity only matters for animated polylines under TAA.
 
-**Why deferred (classifiers):** Per-feature animation is rare in production tilesets (classification volumes are typically static), so the camera-only TAA fallback is correct for the dominant case. Classifier-batch-ID plumbing for Vector3DTile is the architectural question; 1-2 sessions per family when prioritized.
+**Why deferred (GroundPolyline only):** The volume extrusion math is large enough that mechanical duplication adds non-trivial maintenance surface. A future `extrudePolylineVolume(in: VS_IN) → vec4<f32>` helper extracted from vsMain could be shared between vsMain and vsVelocity; that refactor is the right vehicle for landing the velocity variant.
 
 ---
 
