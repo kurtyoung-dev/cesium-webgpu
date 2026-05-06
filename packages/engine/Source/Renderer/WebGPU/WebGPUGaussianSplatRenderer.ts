@@ -53,6 +53,24 @@ interface GaussianSplatCache {
   // the existing fall-through-to-null semantics. Only the color + pick
   // pipelines route through the cache.
   pipelineRequestPending: boolean;
+
+  // Batch 171 - B.10 NEW-ADVANCED-MOTION-VECTORS (GaussianSplat).
+  // Same lifecycle as PointCloud Batch 168/169 + Cloud Batch 170:
+  //   - `splatData` tracks THIS frame's typed-array splat upload.
+  //   - `prevSplatData` is promoted from `splatData` AFTER the
+  //     velocity dispatch (PointPrimitive Batch 148 pattern).
+  //   - `prevSplatBuffer` is the GPU mirror of prev positions.
+  //   - `velocityPipeline` resolves through the central pipeline cache.
+  // Static splat clouds have prev=curr → velocity=0 (camera-only TAA
+  // fallback handles motion). For animated splats (rare; the loader
+  // typically locks splat data at content load), per-splat velocity
+  // is captured via the parallel buffer.
+  splatData: ArrayBufferView | null;
+  prevSplatData: ArrayBufferView | null;
+  prevSplatBuffer: GPUBuffer | null;
+  velocityPipeline: GPURenderPipeline | null;
+  velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
+  velocityPipelineRequestPending: boolean;
 }
 
 const SPLAT_WGSL = `
@@ -168,6 +186,82 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let alpha = min(0.99, input.color.a * exp(power));
   if (alpha < 1.0/255.0) { discard; }
   return u.pickColor;
+}
+
+// Batch 171 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
+// animated Gaussian splat clouds. Mirrors PointCloud Batch 168/169 +
+// CloudCollection Batch 170 patterns.
+//
+// On the deferred entry's "sort-order indexing" wrinkle: this renderer
+// uploads splat data once per revision (the splat buffer is typed-array
+// content from the loader) — there is NO per-frame sort/compaction at
+// this layer that would shuffle indices, so the prev buffer can use the
+// stable splat ID (= buffer index) directly. If a future GPU-sort pass
+// is wired in this renderer, the prev buffer would need a parallel
+// permutation lookup; until then index identity holds.
+struct VelocityVertexInput {
+  @location(0) quadVertex: vec2<f32>,
+  @location(1) positionHigh: vec3<f32>,
+  @location(2) positionLow: vec3<f32>,
+  @location(3) covA: vec3<f32>,
+  @location(4) covB: vec3<f32>,
+  @location(5) colorAndAlpha: vec4<f32>,
+  // Slot 1: prev-frame instance data — only positions are read.
+  @location(6) prevPositionHigh: vec3<f32>,
+  @location(7) prevPositionLow: vec3<f32>,
+};
+
+struct VelocityVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currCenterClip: vec4<f32>,
+  @location(1) prevCenterClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
+  var output: VelocityVertexOutput;
+  // Current-frame center clip via RTE (matches vertexMain for the
+  // quad center; we don't need the full elliptical projection — the
+  // velocity is a per-fragment screen-space delta of the SPLAT
+  // CENTER, computed at the rasterized footprint pixels).
+  let posRTE = (input.positionHigh - u.encodedCameraHigh)
+             + (input.positionLow - u.encodedCameraLow);
+  let currCenterClip = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
+  // Previous-frame center clip via prevVP × prevWorldPos. Splat
+  // positions are world-space (Cesium GaussianSplat content has
+  // modelMatrix=identity by default; for non-identity, the modelMatrix
+  // is folded into the precomputed world positions at content load).
+  let prevWorldPos = vec4<f32>(
+    input.prevPositionHigh + input.prevPositionLow, 1.0,
+  );
+  let prevCenterClip = u.prevViewProjection * prevWorldPos;
+  // Rasterize a 2-pixel-radius quad around the splat center. We can't
+  // easily reuse the elliptical footprint expansion (it depends on the
+  // covariance matrix); a coarse 2px square covers the dominant region
+  // each frame. Velocity precision under TAA only needs the screen-
+  // space displacement direction, not perfect footprint matching.
+  let radiusPx = 2.0;
+  let pixOff = input.quadVertex * radiusPx;
+  let ndcOff = pixOff / u.viewportSize * 2.0 * currCenterClip.w;
+  var fp = currCenterClip;
+  fp.x = fp.x + ndcOff.x;
+  fp.y = fp.y + ndcOff.y;
+  output.position = fp;
+  output.currCenterClip = currCenterClip;
+  output.prevCenterClip = prevCenterClip;
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+  let curW = input.currCenterClip.w;
+  let prevW = input.prevCenterClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currCenterClip.xy / curW;
+  let prevNdc = input.prevCenterClip.xy / prevW;
+  return curNdc - prevNdc;
 }
 `;
 
@@ -489,6 +583,13 @@ function updateWebGPUGaussianSplats(
       lastRevision: -1,
       pipelineLayout: null,
       pipelineRequestPending: false,
+      // Batch 171 - velocity slots (lazy, allocated when TAA is on).
+      splatData: null,
+      prevSplatData: null,
+      prevSplatBuffer: null,
+      velocityPipeline: null,
+      velocityPipelineDescriptor: null,
+      velocityPipelineRequestPending: false,
     } as GaussianSplatCache;
   }
 
@@ -515,6 +616,23 @@ function updateWebGPUGaussianSplats(
         _pipelineResources?: SplatPipelineResources;
       }
     )._pipelineResources = undefined;
+    // Batch 171 - same pre-existing pattern as Ground{Primitive,Polyline}
+    // and PointCloud: cached pipeline objects + draw commands hold
+    // pointers to old-format pipelines after the resources reset; the
+    // resolver early-returns on the truthy slot check and leaves stale-
+    // format pipelines bound. WebGPU then rejects the next draw because
+    // the bound pipeline's color target format doesn't match the active
+    // attachment. Clear them all so the resolver re-runs against the
+    // new format.
+    cache.pipeline = null;
+    cache.oitPipeline = null;
+    cache.pickPipeline = null;
+    cache.pipelineRequestPending = false;
+    cache.command = null;
+    cache.pickCommand = null;
+    cache.velocityPipeline = null;
+    cache.velocityPipelineDescriptor = null;
+    cache.velocityPipelineRequestPending = false;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
@@ -595,6 +713,10 @@ function updateWebGPUGaussianSplats(
     cache.splatCount = revision;
     cache.lastRevision = revision;
     cache.command = null;
+    // Batch 171 - track THIS frame's splat data so the velocity helper
+    // can promote it to `prevSplatData` AFTER its dispatch. Reference
+    // to the same typed array — the loader owns the storage.
+    cache.splatData = splatData;
   }
 
   if (cache.splatCount === 0) {
@@ -741,7 +863,251 @@ function updateWebGPUGaussianSplats(
     );
   }
 
+  // Batch 171 - B.10 NEW-ADVANCED-MOTION-VECTORS attach. Maintain a
+  // one-frame-lagged prev mirror of the splat buffer.
+  attachSplatVelocityCommand(device, context, frameState, cache);
+
   commandList.push(cache.command);
+}
+
+/**
+ * Batch 171 - upload prev splat positions, build (or fetch) the
+ * velocity pipeline, attach `velocityCommand` to the cache's color
+ * command. Mirrors PointCloud Batch 168/169 + Cloud Batch 170.
+ *
+ * Falls into the GPU self-copy branch on:
+ *   1. First frame ever — `prevSplatData` is null. Velocity = 0
+ *      (no continuous "previous" exists).
+ *   2. Splat-count change across revisions — prev byteLength
+ *      mismatches the required size; emit velocity = 0 for the
+ *      transition (no continuous index correspondence).
+ *
+ * @private
+ */
+function attachSplatVelocityCommand(
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  cache: GaussianSplatCache,
+): void {
+  const taaEnabledThisFrame =
+    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
+    true;
+  if (!taaEnabledThisFrame && !cache.prevSplatBuffer) {
+    if (cache.command) {
+      (cache.command as { velocityCommand?: unknown }).velocityCommand =
+        undefined;
+    }
+    return;
+  }
+  if (!cache.splatBuffer || cache.splatCount === 0) {
+    return;
+  }
+
+  const requiredBytes = cache.splatCount * 64;
+  if (!cache.prevSplatBuffer || cache.prevSplatBuffer.size < requiredBytes) {
+    if (cache.prevSplatBuffer) {
+      cache.prevSplatBuffer.destroy();
+    }
+    cache.prevSplatBuffer = device.createBuffer({
+      label: "GaussianSplat prev splats",
+      size: requiredBytes,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  const prevSrc = cache.prevSplatData;
+  if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+    device.queue.writeBuffer(
+      cache.prevSplatBuffer,
+      0,
+      prevSrc.buffer,
+      prevSrc.byteOffset,
+      requiredBytes,
+    );
+  } else {
+    const encoder = device.createCommandEncoder({
+      label: "GaussianSplat prev seed",
+    });
+    encoder.copyBufferToBuffer(
+      cache.splatBuffer,
+      0,
+      cache.prevSplatBuffer,
+      0,
+      requiredBytes,
+    );
+    device.queue.submit([encoder.finish()]);
+  }
+
+  // Lazy velocity pipeline build. Reuses the color BGL since the
+  // velocity VS reads from the same uniform buffer.
+  if (
+    !cache.velocityPipelineDescriptor &&
+    cache.shaderModule &&
+    cache.pipelineLayout
+  ) {
+    cache.velocityPipelineDescriptor = {
+      name: "GaussianSplat velocity pipeline",
+      layout: cache.pipelineLayout,
+      vertex: {
+        module: cache.shaderModule,
+        entryPoint: "vertexVelocityMain",
+        buffers: [
+          {
+            arrayStride: 8,
+            stepMode: "vertex" as GPUVertexStepMode,
+            attributes: [
+              {
+                shaderLocation: 0,
+                offset: 0,
+                format: "float32x2" as GPUVertexFormat,
+              },
+            ],
+          },
+          {
+            // Curr instance buffer (same 64-byte stride as the color
+            // pipeline; velocity VS reads locations 1-5).
+            arrayStride: 64,
+            stepMode: "instance" as GPUVertexStepMode,
+            attributes: [
+              {
+                shaderLocation: 1,
+                offset: 0,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 2,
+                offset: 12,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 3,
+                offset: 24,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 4,
+                offset: 36,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 5,
+                offset: 48,
+                format: "float32x4" as GPUVertexFormat,
+              },
+            ],
+          },
+          {
+            // Prev splat buffer — same 64-byte stride; only positions
+            // (locations 6/7) are read by the velocity VS.
+            arrayStride: 64,
+            stepMode: "instance" as GPUVertexStepMode,
+            attributes: [
+              {
+                shaderLocation: 6,
+                offset: 0,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 7,
+                offset: 12,
+                format: "float32x3" as GPUVertexFormat,
+              },
+            ],
+          },
+        ],
+      },
+      fragment: {
+        module: cache.shaderModule,
+        entryPoint: "fragmentVelocityMain",
+        targets: [{ format: "rg16float" as GPUTextureFormat }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: false,
+        depthCompare: "less-equal",
+      },
+    };
+  }
+  if (
+    !cache.velocityPipeline &&
+    cache.velocityPipelineDescriptor &&
+    !cache.velocityPipelineRequestPending
+  ) {
+    const ctxAny = context as unknown as {
+      webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+    };
+    const pipelineCache = ctxAny.webgpuPipelineCache ?? null;
+    if (pipelineCache) {
+      const sync = pipelineCache.getPipelineSync(
+        cache.velocityPipelineDescriptor,
+      );
+      if (sync) {
+        cache.velocityPipeline = sync;
+      } else {
+        cache.velocityPipelineRequestPending = true;
+        pipelineCache
+          .getPipeline(cache.velocityPipelineDescriptor)
+          .then((p) => {
+            cache.velocityPipeline = p;
+            cache.velocityPipelineRequestPending = false;
+          })
+          .catch(() => {
+            cache.velocityPipelineRequestPending = false;
+          });
+      }
+    } else {
+      const desc = cache.velocityPipelineDescriptor;
+      cache.velocityPipeline = device.createRenderPipeline({
+        label: desc.name,
+        layout: desc.layout ?? "auto",
+        vertex: {
+          module: desc.vertex.module,
+          entryPoint: desc.vertex.entryPoint,
+          buffers: desc.vertex.buffers,
+        },
+        fragment: desc.fragment
+          ? {
+              module: desc.fragment.module,
+              entryPoint: desc.fragment.entryPoint,
+              targets: desc.fragment.targets,
+            }
+          : undefined,
+        primitive: desc.primitive,
+        depthStencil: desc.depthStencil,
+      });
+    }
+  }
+
+  if (
+    cache.command &&
+    cache.velocityPipeline &&
+    cache.prevSplatBuffer &&
+    cache.quadVertexBuffer &&
+    cache.splatBuffer
+  ) {
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      new WebGPUDrawCommand({
+        pipeline: cache.velocityPipeline,
+        bindGroups: [cache.bindGroup],
+        vertexBuffers: [
+          cache.quadVertexBuffer,
+          cache.splatBuffer,
+          cache.prevSplatBuffer,
+        ],
+        vertexCount: 6,
+        instanceCount: cache.splatCount,
+        pass: Pass.GAUSSIAN_SPLATS,
+      });
+  } else if (cache.command) {
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      undefined;
+  }
+
+  if (cache.splatData) {
+    cache.prevSplatData = cache.splatData;
+  }
 }
 
 function destroyWebGPUGaussianSplatResources(
@@ -754,6 +1120,8 @@ function destroyWebGPUGaussianSplatResources(
   cache.uniformBuffer?.destroy();
   cache.quadVertexBuffer?.destroy();
   cache.splatBuffer?.destroy();
+  // Batch 171 - release the velocity-path GPU buffer.
+  cache.prevSplatBuffer?.destroy();
 
   // C-R9 (Batch 31 / refactored Batch 59) — release pick ID.
   destroyPickIds(primitive as unknown as SinglePickIdCache);
