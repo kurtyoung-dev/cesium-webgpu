@@ -143,10 +143,23 @@ interface PointCloudCache {
   // upload, retained one-frame-lagged. NULL when no animated point cloud
   // has been seen on this device yet (TAA off-path stays cheap).
   prevInstanceBuffer: GPUBuffer | null;
-  // CPU-side mirror of the LAST frame's instance data, so this frame's
-  // velocity pass can upload prev positions before overwriting curr.
-  // Not present on the first frame; falls through to current data which
-  // emits a zero-velocity (correct, since no prev frame existed).
+  // CPU-side reference to THIS frame's instance data — the
+  // interleaved Float32Array `buildInstanceBuffer` produced. Set on
+  // every revision-change rebuild. Per-frame the velocity helper uses
+  // this as the source for "what becomes prev next frame" (it does
+  // NOT upload from this directly — the GPU `instanceBuffer` already
+  // carries it).
+  instanceData: Float32Array | null;
+  // CPU-side reference to the PREVIOUS frame's instance data. On the
+  // first frame this is null; the velocity helper seeds it from
+  // `instanceData` so velocity = 0 at startup. After every successful
+  // velocity dispatch, the helper assigns `prevInstanceData =
+  // instanceData` so next frame's prev tracks the PREVIOUS frame's
+  // data (PointPrimitive Batch 148 pattern). For the typical static
+  // 3D-Tiles point cloud both refs point at the same Float32Array so
+  // velocity stays zero; for animated content where each frame
+  // re-runs `buildInstanceBuffer`, this captures the actual per-frame
+  // delta.
   prevInstanceData: Float32Array | null;
   // Lazy velocity pipeline. Builds the first frame TAA is on; cached
   // thereafter. Cleared on format invalidation.
@@ -881,6 +894,7 @@ function updateWebGPUPointCloud(
       lodActive: false,
       // Batch 168 - velocity pipeline + prev-instance buffer (lazy).
       prevInstanceBuffer: null,
+      instanceData: null,
       prevInstanceData: null,
       velocityPipelineEntry: null,
     } as PointCloudCache;
@@ -910,6 +924,20 @@ function updateWebGPUPointCloud(
     // Batch 168 - velocity pipeline references the same shader module
     // built against the now-invalid format; force rebuild.
     cache.velocityPipelineEntry = null;
+    // Batch 169 - the cached draw commands hold a pointer to the
+    // OLD pipeline. After the resolver re-runs against the new
+    // format the pipeline pointer changes; the command must be
+    // re-built so its `pipeline` field points at the live object.
+    // Pre-Batch-169 the command survived a format change and would
+    // be submitted with the stale pipeline reference (WebGPU then
+    // rejects the draw because the pipeline's color target format
+    // doesn't match the active attachment). Not user-visible because
+    // HDR isn't toggled at runtime, but matches the Ground{Primitive,
+    // Polyline} fix that landed pre-Batch-166.
+    cache.command = null;
+    cache.lodCommand = null;
+    cache.lodPipeline = null;
+    cache.lodPipelineEntry = null;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
@@ -993,14 +1021,18 @@ function updateWebGPUPointCloud(
     cache.lodPositionsX = result.worldX;
     cache.lodPositionsY = result.worldY;
     cache.lodPositionsZ = result.worldZ;
-    // Batch 168 - on revision change the prev-instance mirror is now
-    // stale. Seed it with the new data so the velocity pass on this
-    // frame emits 0 (correct: there's no continuous correspondence
-    // between an OLD point at index i and a NEW point at index i after
-    // a revision rebuild). Subsequent animated mutations would re-build
-    // the buffer (advancing revision) and re-seed velocity to 0; the
-    // typical static-content case never hits this path twice.
-    cache.prevInstanceData = result.instanceData;
+    // Batch 169 - track THIS frame's instance data. The velocity helper
+    // promotes this to `prevInstanceData` AFTER its dispatch so next
+    // frame's prev tracks the previous frame's data (PointPrimitive
+    // Batch 148 pattern). Do NOT clobber `prevInstanceData` here on
+    // revision change — that would force velocity=0 every revision
+    // and miss per-frame animation deltas. The size-mismatch case
+    // (point count changed across revision) is handled by the
+    // byteLength check in attachPointCloudVelocityCommand: when prev
+    // is shorter/longer than curr, the GPU self-copy fallback fires
+    // and emits velocity=0 for the discontinuity (correct — no
+    // continuous index correspondence between OLD and NEW points).
+    cache.instanceData = result.instanceData;
     cache.command = null;
     cache.lodCommand = null;
     cache.lodStorageBindGroup = null;
@@ -1119,14 +1151,28 @@ function attachPointCloudVelocityCommand(
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
   }
-  // Upload prev frame's data. `cache.prevInstanceData` is captured at
-  // each `buildInstanceBuffer` rebuild AND is the same Float32Array
-  // referenced by `cache.instanceBuffer` (CPU mirror). For static
-  // point clouds prev == curr per-frame so velocity stays zero —
-  // exactly what the TAA pass wants for camera-only motion. For an
-  // animated re-build, the revision-change path re-seeds prev to the
-  // new data so the discontinuity emits zero velocity rather than a
-  // garbage delta.
+  // Upload prev frame's data. `cache.prevInstanceData` tracks the
+  // PREVIOUS frame's data (set at the END of this function on the
+  // last call). For animated content this captures the actual
+  // per-frame delta; for static content prev and curr point at the
+  // same Float32Array so velocity stays zero (the camera-only TAA
+  // path picks up the camera motion).
+  //
+  // Two ways to fall into the GPU self-copy fallback below:
+  //   1. First frame ever — `prevInstanceData` is null because no
+  //      previous frame has run. Seed by copying curr → prev so this
+  //      frame emits velocity = 0 (correct: no continuous "previous"
+  //      exists). The post-dispatch promotion at the end of this
+  //      function then captures THIS frame's data as prev for next
+  //      frame's real delta.
+  //   2. Revision-change point-count mismatch (animated content where
+  //      the application bumps the cloud's point count between
+  //      frames). The prev buffer carried last frame's smaller/larger
+  //      data; falling through to the self-copy emits velocity = 0 for
+  //      this transition (correct: there's no continuous index
+  //      correspondence between OLD and NEW points at the same i).
+  //      Subsequent frames at the new count restore the per-frame
+  //      delta capture.
   const prevSrc = cache.prevInstanceData;
   if (prevSrc && prevSrc.byteLength >= requiredBytes) {
     device.queue.writeBuffer(
@@ -1137,9 +1183,10 @@ function attachPointCloudVelocityCommand(
       requiredBytes,
     );
   } else {
-    // No CPU mirror yet (shouldn't happen post-Batch-168, but a
-    // defensive GPU self-copy keeps the pipeline correct in case the
-    // build path missed a populator). Velocity = 0 on the seed frame.
+    // First-frame seed OR revision-change point-count mismatch.
+    // Either way the correct emission is velocity = 0 for this frame;
+    // GPU self-copy ensures the prev buffer holds matching bytes so
+    // the velocity VS reads (curr, curr) → 0 instead of garbage.
     const encoder = device.createCommandEncoder({
       label: "PointCloud prev seed",
     });
@@ -1198,6 +1245,16 @@ function attachPointCloudVelocityCommand(
   } else if (cache.command) {
     (cache.command as { velocityCommand?: unknown }).velocityCommand =
       undefined;
+  }
+  // Batch 169 - promote THIS frame's `instanceData` to next frame's
+  // `prevInstanceData` AFTER the velocity command has been built (and
+  // therefore captured a stable reference to the prev buffer's
+  // contents). For static content `cache.instanceData` is the same
+  // Float32Array as before — assignment is a no-op. For animated
+  // content where the application re-runs `buildInstanceBuffer` each
+  // frame, this rolls the per-frame delta forward correctly.
+  if (cache.instanceData) {
+    cache.prevInstanceData = cache.instanceData;
   }
   // Suppress unused-parameter warning for `canvasFormat` — kept for
   // signature parity with the surrounding pipeline-builder helpers.
