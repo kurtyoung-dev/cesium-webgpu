@@ -65,6 +65,24 @@ interface CloudCache {
   // request is in flight so we don't re-issue it every frame.
   pipelineRequestPending: boolean;
   pipelineDescriptor: WebGPURenderPipelineDescriptor | null;
+
+  // Batch 170 - B.10 NEW-ADVANCED-MOTION-VECTORS (CloudCollection).
+  // Same lifecycle as PointCloud Batch 168/169:
+  //   - `instanceData` tracks THIS frame's interleaved Float32Array.
+  //   - `prevInstanceData` is promoted from `instanceData` AFTER the
+  //     velocity dispatch (PointPrimitive Batch 148 pattern).
+  //   - `prevInstanceBuffer` is the GPU mirror of prev positions.
+  //   - `velocityPipelineDescriptor` + `velocityPipeline` resolve via
+  //     the central pipeline cache.
+  // Static cloud collections have prev=curr → velocity=0 (camera-only
+  // TAA fallback handles motion). Animated clouds (per-frame position
+  // updates by the application) get real per-cloud velocity.
+  instanceData: Float32Array | null;
+  prevInstanceData: Float32Array | null;
+  prevInstanceBuffer: GPUBuffer | null;
+  velocityPipeline: GPURenderPipeline | null;
+  velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
+  velocityPipelineRequestPending: boolean;
 }
 
 const CLOUD_WGSL = /* wgsl */ `
@@ -77,6 +95,10 @@ struct CameraUniforms {
   viewportSize: vec2<f32>,
   time: f32,
   _pad2: f32,
+  // Batch 170 - DP-H41 prev viewProjection at the tail. CloudCollection
+  // positions are in world space (no modelMatrix), so the velocity VS
+  // can apply prevVP directly to the prev instance position.
+  prevViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -124,6 +146,65 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let cloudColor = input.vColor.rgb * input.vBrightness;
   if (cloudAlpha < 0.01) { discard; }
   return vec4<f32>(cloudColor, cloudAlpha);
+}
+
+// Batch 170 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
+// animated cloud collections. Mirrors PointCloud's pattern: rasterize
+// the cloud quad at the CURRENT-frame position so the velocity texture
+// covers the same pixels the color pass touched, then emit per-fragment
+// (currNdc - prevNdc). Cloud positions are world-space (no modelMatrix),
+// so the prev clip computation is just prevVP × prevWorldPos.
+struct VelocityVertexInput {
+  @location(0) quadPos: vec2<f32>,
+  @location(1) positionHigh: vec3<f32>,
+  @location(2) positionLow: vec3<f32>,
+  @location(3) scaleAndBrightness: vec4<f32>,
+  @location(4) color: vec4<f32>,
+  // Slot 1: prev-frame instance data — only positions matter (locs 5/6).
+  @location(5) prevPositionHigh: vec3<f32>,
+  @location(6) prevPositionLow: vec3<f32>,
+};
+
+struct VelocityVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currCenterClip: vec4<f32>,
+  @location(1) prevCenterClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
+  var output: VelocityVertexOutput;
+  // Current-frame center clip via RTE.
+  let posRTE = (input.positionHigh - camera.encodedCameraHigh)
+             + (input.positionLow - camera.encodedCameraLow);
+  let currCenterClip = camera.modelViewProjectionRTE * vec4<f32>(posRTE, 1.0);
+  // Previous-frame center clip via full prev VP × world position.
+  let prevWorldPos = vec4<f32>(
+    input.prevPositionHigh + input.prevPositionLow, 1.0,
+  );
+  let prevCenterClip = camera.prevViewProjection * prevWorldPos;
+  // Rasterize quad at the current center.
+  let offset = vec2<f32>(
+    input.quadPos.x * input.scaleAndBrightness.x / camera.viewportSize.x * 2.0,
+    input.quadPos.y * input.scaleAndBrightness.y / camera.viewportSize.y * 2.0
+  );
+  output.position =
+    currCenterClip + vec4<f32>(offset * currCenterClip.w, 0.0, 0.0);
+  output.currCenterClip = currCenterClip;
+  output.prevCenterClip = prevCenterClip;
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+  let curW = input.currCenterClip.w;
+  let prevW = input.prevCenterClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currCenterClip.xy / curW;
+  let prevNdc = input.prevCenterClip.xy / prevW;
+  return curNdc - prevNdc;
 }
 `;
 
@@ -178,13 +259,14 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
 function buildInstanceBuffer(
   device: GPUDevice,
   collection: CesiumObjectWithWebGPUCache,
-): { buffer: GPUBuffer; count: number } {
+): { buffer: GPUBuffer; count: number; instanceData: Float32Array } {
   const clouds = collection._clouds || [];
   const count = clouds.length || collection.length || 0;
   if (count === 0) {
     return {
       buffer: device.createBuffer({ size: 48, usage: GPUBufferUsage.VERTEX }),
       count: 0,
+      instanceData: new Float32Array(0),
     };
   }
   // Per instance: posHigh(12) + posLow(12) + scaleAndBrightness(16) + color(16) = 56 bytes
@@ -237,7 +319,9 @@ function buildInstanceBuffer(
   // Return visibleCount (clouds with show:true) as the instance count.
   // The buffer itself is still sized for the full collection slot count
   // so the next frame's rewrite doesn't have to reallocate on toggle.
-  return { buffer, count: visibleCount };
+  // Batch 170 - hand the interleaved data back so the velocity helper
+  // can keep a CPU-side prev mirror.
+  return { buffer, count: visibleCount, instanceData: data };
 }
 
 /**
@@ -343,6 +427,13 @@ function updateWebGPUCloudCollection(
       lastCloudCount: -1,
       pipelineRequestPending: false,
       pipelineDescriptor: null,
+      // Batch 170 - velocity slots (lazy, allocated when TAA is on).
+      instanceData: null,
+      prevInstanceData: null,
+      prevInstanceBuffer: null,
+      velocityPipeline: null,
+      velocityPipelineDescriptor: null,
+      velocityPipelineRequestPending: false,
     } as CloudCache;
   }
 
@@ -374,6 +465,13 @@ function updateWebGPUCloudCollection(
     cache.initialized = false;
     cache.command = null;
     cache.pipelineDescriptor = null;
+    cache.pipeline = null;
+    cache.pipelineRequestPending = false;
+    // Batch 170 - velocity pipeline references the same shader module
+    // built against the now-invalid format; force rebuild.
+    cache.velocityPipeline = null;
+    cache.velocityPipelineDescriptor = null;
+    cache.velocityPipelineRequestPending = false;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
@@ -532,6 +630,12 @@ function updateWebGPUCloudCollection(
     cache.instanceCount = result.count;
     cache.lastCloudCount = cloudCount;
     cache.command = null;
+    // Batch 170 - track THIS frame's instance data so the velocity
+    // helper can promote it to `prevInstanceData` AFTER its dispatch.
+    // Same lifecycle as PointCloud Batch 168/169 — see the long doc
+    // comment on the `attachCloudVelocityCommand` helper for the
+    // first-frame-seed and revision-change-mismatch cases.
+    cache.instanceData = result.instanceData;
   }
 
   if (cache.instanceCount === 0) {
@@ -554,7 +658,10 @@ function updateWebGPUCloudCollection(
   scratchMVRTE[14] = 0;
   const mvp = m4Values(Matrix4.multiply(proj, scratchMVRTE, scratchMVP));
 
-  const data = new Float32Array(28);
+  // Batch 170 - bumped from 28 → 44 floats (176 bytes) to fit the
+  // trailing `prevViewProjection: mat4x4<f32>` (16 floats). UBO is
+  // allocated at 256 bytes; comfortably fits with 80 spare.
+  const data = new Float32Array(44);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -575,6 +682,34 @@ function updateWebGPUCloudCollection(
   data[25] = canvas.height;
   data[26] = frameState.frameNumber * 0.016; // approximate time for animation
   data[27] = 0;
+
+  // Batch 170 - DP-H41 prev viewProjection at floats 28..43.
+  // UniformState swaps `_previousViewProjection := viewProjection` at
+  // the END of `update()` AFTER returning the prior frame's value, so
+  // on frame N this slot holds frame N-1's VP. First frame falls
+  // through to identity.
+  const prevVP = (us as { previousViewProjection?: Matrix4 })
+    .previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 28);
+  } else {
+    data[28] = 1;
+    data[29] = 0;
+    data[30] = 0;
+    data[31] = 0;
+    data[32] = 0;
+    data[33] = 1;
+    data[34] = 0;
+    data[35] = 0;
+    data[36] = 0;
+    data[37] = 0;
+    data[38] = 1;
+    data[39] = 0;
+    data[40] = 0;
+    data[41] = 0;
+    data[42] = 0;
+    data[43] = 1;
+  }
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
   if (!cache.command) {
@@ -597,7 +732,262 @@ function updateWebGPUCloudCollection(
     collection as unknown as { _rs?: unknown }
   )._rs;
 
+  // Batch 170 - B.10 NEW-ADVANCED-MOTION-VECTORS attach. Maintain a
+  // one-frame-lagged prev mirror of the instance buffer so the
+  // velocity VS reads (current, previous) position pairs.
+  attachCloudVelocityCommand(device, context, frameState, cache);
+
   commandList.push(cache.command);
+}
+
+/**
+ * Batch 170 - upload prev positions, build (or fetch) the velocity
+ * pipeline, attach `velocityCommand` to the cache's color command. The
+ * TAA pass walks the command list for `cmd.velocityCommand` and
+ * dispatches it into the rg16float velocity texture. Mirrors PointCloud
+ * Batch 168/169.
+ *
+ * Skips entirely when TAA is off and no prev buffer has been allocated
+ * yet — keeps the off-path zero-cost.
+ *
+ * Two ways to fall into the GPU self-copy fallback below:
+ *   1. First frame ever — `prevInstanceData` is null. Seed by copying
+ *      curr → prev so this frame emits velocity = 0; the post-dispatch
+ *      promotion at the end of this function then captures THIS
+ *      frame's data as prev for next frame's real delta.
+ *   2. Cloud-count change — animated cloud collection adds or removes
+ *      clouds across frames. The prev buffer carried last frame's
+ *      smaller/larger data; falling through to the self-copy emits
+ *      velocity = 0 for this transition (correct: no continuous index
+ *      correspondence between OLD and NEW clouds at the same i).
+ *      Subsequent frames at the new count restore real delta capture.
+ *
+ * @private
+ */
+function attachCloudVelocityCommand(
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  cache: CloudCache,
+): void {
+  const taaEnabledThisFrame =
+    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
+    true;
+  if (!taaEnabledThisFrame && !cache.prevInstanceBuffer) {
+    if (cache.command) {
+      (cache.command as { velocityCommand?: unknown }).velocityCommand =
+        undefined;
+    }
+    return;
+  }
+  if (!cache.instanceBuffer || cache.instanceCount === 0) {
+    return;
+  }
+
+  const requiredBytes = cache.instanceCount * 56;
+  if (
+    !cache.prevInstanceBuffer ||
+    cache.prevInstanceBuffer.size < requiredBytes
+  ) {
+    if (cache.prevInstanceBuffer) {
+      cache.prevInstanceBuffer.destroy();
+    }
+    cache.prevInstanceBuffer = device.createBuffer({
+      label: "Cloud prev instances",
+      size: requiredBytes,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  const prevSrc = cache.prevInstanceData;
+  if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+    device.queue.writeBuffer(
+      cache.prevInstanceBuffer,
+      0,
+      prevSrc.buffer,
+      prevSrc.byteOffset,
+      requiredBytes,
+    );
+  } else {
+    const encoder = device.createCommandEncoder({
+      label: "Cloud prev seed",
+    });
+    encoder.copyBufferToBuffer(
+      cache.instanceBuffer,
+      0,
+      cache.prevInstanceBuffer,
+      0,
+      requiredBytes,
+    );
+    device.queue.submit([encoder.finish()]);
+  }
+
+  // Lazy velocity pipeline build. Reuses the same color BGL since the
+  // velocity VS reads from the same uniform buffer (camera struct
+  // includes prevViewProjection now).
+  if (!cache.velocityPipelineDescriptor && cache.shaderModule) {
+    // The velocity pipeline shares the color pipeline's layout (BGL).
+    // Pull it from the existing color descriptor for layout consistency.
+    const layout = cache.pipelineDescriptor?.layout;
+    if (layout) {
+      cache.velocityPipelineDescriptor = {
+        name: "CloudCollection velocity pipeline",
+        layout,
+        vertex: {
+          module: cache.shaderModule,
+          entryPoint: "vertexVelocityMain",
+          buffers: [
+            {
+              arrayStride: 8,
+              stepMode: "vertex" as GPUVertexStepMode,
+              attributes: [
+                {
+                  shaderLocation: 0,
+                  offset: 0,
+                  format: "float32x2" as GPUVertexFormat,
+                },
+              ],
+            },
+            {
+              arrayStride: 56,
+              stepMode: "instance" as GPUVertexStepMode,
+              attributes: [
+                {
+                  shaderLocation: 1,
+                  offset: 0,
+                  format: "float32x3" as GPUVertexFormat,
+                },
+                {
+                  shaderLocation: 2,
+                  offset: 12,
+                  format: "float32x3" as GPUVertexFormat,
+                },
+                {
+                  shaderLocation: 3,
+                  offset: 24,
+                  format: "float32x4" as GPUVertexFormat,
+                },
+                {
+                  shaderLocation: 4,
+                  offset: 40,
+                  format: "float32x4" as GPUVertexFormat,
+                },
+              ],
+            },
+            {
+              // Prev-position stream (positions only — locs 5/6 of
+              // the same 56-byte stride; color/scale at offset 24+
+              // are ignored by the velocity VS).
+              arrayStride: 56,
+              stepMode: "instance" as GPUVertexStepMode,
+              attributes: [
+                {
+                  shaderLocation: 5,
+                  offset: 0,
+                  format: "float32x3" as GPUVertexFormat,
+                },
+                {
+                  shaderLocation: 6,
+                  offset: 12,
+                  format: "float32x3" as GPUVertexFormat,
+                },
+              ],
+            },
+          ],
+        },
+        fragment: {
+          module: cache.shaderModule,
+          entryPoint: "fragmentVelocityMain",
+          targets: [{ format: "rg16float" as GPUTextureFormat }],
+        },
+        primitive: { topology: "triangle-list", cullMode: "none" },
+        depthStencil: {
+          format: "depth24plus-stencil8",
+          depthWriteEnabled: false,
+          depthCompare: "less-equal",
+        },
+      };
+    }
+  }
+  if (
+    !cache.velocityPipeline &&
+    cache.velocityPipelineDescriptor &&
+    !cache.velocityPipelineRequestPending
+  ) {
+    const ctxAny = context as unknown as {
+      webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+    };
+    const pipelineCache = ctxAny.webgpuPipelineCache ?? null;
+    if (pipelineCache) {
+      const sync = pipelineCache.getPipelineSync(
+        cache.velocityPipelineDescriptor,
+      );
+      if (sync) {
+        cache.velocityPipeline = sync;
+      } else {
+        cache.velocityPipelineRequestPending = true;
+        pipelineCache
+          .getPipeline(cache.velocityPipelineDescriptor)
+          .then((p) => {
+            cache.velocityPipeline = p;
+            cache.velocityPipelineRequestPending = false;
+          })
+          .catch(() => {
+            cache.velocityPipelineRequestPending = false;
+          });
+      }
+    } else {
+      // Fallback synchronous creation when no central cache.
+      const desc = cache.velocityPipelineDescriptor;
+      cache.velocityPipeline = device.createRenderPipeline({
+        label: desc.name,
+        layout: desc.layout ?? "auto",
+        vertex: {
+          module: desc.vertex.module,
+          entryPoint: desc.vertex.entryPoint,
+          buffers: desc.vertex.buffers,
+        },
+        fragment: desc.fragment
+          ? {
+              module: desc.fragment.module,
+              entryPoint: desc.fragment.entryPoint,
+              targets: desc.fragment.targets,
+            }
+          : undefined,
+        primitive: desc.primitive,
+        depthStencil: desc.depthStencil,
+      });
+    }
+  }
+
+  if (
+    cache.command &&
+    cache.velocityPipeline &&
+    cache.prevInstanceBuffer &&
+    cache.quadVertexBuffer
+  ) {
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      new WebGPUDrawCommand({
+        pipeline: cache.velocityPipeline,
+        bindGroups: [cache.bindGroup],
+        vertexBuffers: [
+          cache.quadVertexBuffer,
+          cache.instanceBuffer,
+          cache.prevInstanceBuffer,
+        ],
+        vertexCount: 6,
+        instanceCount: cache.instanceCount,
+        pass: Pass.TRANSLUCENT,
+      });
+  } else if (cache.command) {
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      undefined;
+  }
+
+  // Promote `instanceData` → `prevInstanceData` for next frame.
+  if (cache.instanceData) {
+    cache.prevInstanceData = cache.instanceData;
+  }
 }
 
 function destroyWebGPUCloudResources(
@@ -611,6 +1001,8 @@ function destroyWebGPUCloudResources(
   cache.instanceBuffer?.destroy();
   cache.uniformBuffer?.destroy();
   cache.noiseTexture?.destroy();
+  // Batch 170 - release the velocity-path GPU buffer.
+  cache.prevInstanceBuffer?.destroy();
   collection._webgpuCache = undefined;
 }
 
