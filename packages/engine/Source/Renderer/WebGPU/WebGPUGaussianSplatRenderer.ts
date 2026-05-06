@@ -728,6 +728,14 @@ function updateWebGPUGaussianSplats(
     cache.pipeline = null;
     cache.oitPipeline = null;
     cache.pickPipeline = null;
+    // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — Batch 179 follow-up.
+    // Audit found this slot was missed in the format-invalidation
+    // sweep: stale depth-write pipeline retains the OLD presentation
+    // format, and `WebGPUDrawCommand.execute`'s classification swap
+    // would fail validation against the active attachment. Clears
+    // alongside the other pipelines so the resolver re-runs against
+    // the new format.
+    cache.depthWritePipeline = null;
     cache.pipelineRequestPending = false;
     cache.command = null;
     cache.pickCommand = null;

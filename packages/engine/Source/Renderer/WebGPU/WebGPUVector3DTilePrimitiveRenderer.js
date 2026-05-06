@@ -933,6 +933,13 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     cache.colorRequestPending = false;
     cache.pickRequestPending = false;
     cache.stencilRequestPending = false;
+    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 178) — Batch 179
+    // cleanup. Init parity with the other pending flags. Defensive
+    // falsy-check at line ~522 made the missing init non-fatal, but
+    // the symmetry matters when format-invalidation re-runs this block
+    // and stale `velocityRequestPending = true` would block the next
+    // resolve attempt.
+    cache.velocityRequestPending = false;
   }
 
   if (

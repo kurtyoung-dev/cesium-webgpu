@@ -90,9 +90,21 @@ struct U {
   _pad1: f32,
   _pad2: f32,
   // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
-  // tail. Layout-only invariant today; consumed by future motion-vector
-  // pass for Vector3DTile classifiers.
+  // tail. NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — now
+  // consumed by vsVelocity for camera-only motion vectors under TAA.
   prevViewProjection: mat4x4<f32>,
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — primitive
+  // center in world coordinates. The vertex curr is RTC-relative to
+  // this center (modifiedView already pre-multiplies the center into
+  // its translation column for the color VS). The velocity VS needs
+  // absolute world positions to project through prevViewProjection,
+  // so it does worldPos = centerWC + curr. Single-precision is
+  // sufficient because the velocity output is a screen-space delta;
+  // any high-bits-low-bits split across centerH/centerL would only
+  // matter if we needed to express positions at planet-scale precision
+  // (we don't — the screen delta is bounded by viewport).
+  centerWC: vec3<f32>,
+  _padCenter: f32,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
@@ -219,6 +231,96 @@ fn pickFS(i: VOut) -> @location(0) vec4<f32> {
   }
   return i.pickCol;
 }
+
+// NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — velocity entry
+// points for TAA. Vector3DTilePolylines have static per-feature
+// geometry (the tileset content doesn't animate), so velocity is
+// camera-only: project the SAME world-space position through both the
+// current and previous VPs and emit (currNdc - prevNdc). The polyline
+// extrusion math (getOffset) is intentionally NOT replicated in the
+// velocity VS — the velocity texture only needs a per-pixel screen-
+// delta, and rasterizing from the same extruded vertices via the same
+// vsMain-style transformation produces matching coverage. We just
+// need both clip positions for the same fragment.
+//
+// Approach: use the full extrusion math from vsMain for the current
+// clip (so coverage matches the color pass exactly), then compute the
+// previous clip for the SAME extruded vertex via prevViewProjection.
+// Since the extrusion is a screen-space offset added to the projected
+// position, the previous frame's extrusion would have been at a
+// different screen-space offset (camera-distance-dependent). For
+// camera-only motion this approximation is correct: the geometry's
+// world-space position is identical, only the projection differs.
+struct VelocityVOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) currClip: vec4<f32>,
+  @location(1) prevClip: vec4<f32>,
+};
+
+@vertex
+fn vsVelocity(
+  @location(0) prev: vec3<f32>,
+  @location(1) curr: vec3<f32>,
+  @location(2) next: vec3<f32>,
+  @location(3) expandAndWidth: vec2<f32>,
+  @location(4) batchId: f32,
+) -> VelocityVOut {
+  // Replicate the color VS extrusion exactly so the velocity-pass
+  // rasterization covers the same fragments the color pass produced
+  // — no spurious half-pixel velocity offsets at the polyline edges.
+  let expandDir = expandAndWidth.x;
+  let width = abs(expandAndWidth.y) + 0.5;
+  let usePrev = expandAndWidth.y < 0.0;
+
+  let pEC = u.modifiedView * vec4<f32>(curr, 1.0);
+  let prevEC = u.modifiedView * vec4<f32>(prev, 1.0);
+  let nextEC = u.modifiedView * vec4<f32>(next, 1.0);
+
+  let halfVP = u.viewport.zw * 0.5;
+  let offsetPx = getOffset(pEC, prevEC, nextEC, expandDir, width, usePrev, halfVP);
+
+  let pClip = u.projection * pEC;
+  let offsetNDC = offsetPx / halfVP;
+  let curClip = vec4<f32>(
+    pClip.xy + offsetNDC * pClip.w,
+    pClip.z,
+    pClip.w,
+  );
+
+  // Previous-frame clip for the SAME extruded vertex's world position.
+  // World position = primitive's centerWC + RTC-relative curr (the
+  // extrusion offset is in screen-space, so it doesn't translate to
+  // world-space — using the un-extruded world position here is the
+  // closest physical approximation for camera-only motion). The
+  // velocity-pass rasterization uses curClip for coverage, so the
+  // emitted velocity is the per-fragment NDC delta between the
+  // extruded current position and the un-extruded previous projection.
+  // This is acceptable because the extrusion offset is small (line
+  // width pixels) and TAA samples at sub-pixel resolution anyway.
+  let worldPos = u.centerWC + curr;
+  let prClip = u.prevViewProjection * vec4<f32>(worldPos, 1.0);
+
+  var output: VelocityVOut;
+  output.pos = curClip;
+  output.currClip = curClip;
+  output.prevClip = prClip;
+  // batchId unused by velocity but kept in input layout to match the
+  // shared vertex buffer format.
+  let _bi = batchId;
+  return output;
+}
+
+@fragment
+fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
+  let curW = i.currClip.w;
+  let prevW = i.prevClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = i.currClip.xy / curW;
+  let prevNdc = i.prevClip.xy / prevW;
+  return curNdc - prevNdc;
+}
 `;
 
   const mod = getPolylineShaderCache(device).getOrCreate(
@@ -316,7 +418,38 @@ fn pickFS(i: VOut) -> @location(0) vec4<f32> {
     },
   };
 
-  return { colorDescriptor, pickDescriptor, sharedBgl };
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — velocity
+  // pipeline descriptor. Same VS extrusion math as the color pipeline
+  // (so the velocity-pass rasterization covers the SAME fragments the
+  // color pass produced), single rg16float color target, no blend,
+  // depth read-only. Same shared BGL — no extra storage needed; the
+  // per-vertex prev clip is computed from `centerWC + curr` projected
+  // through `prevViewProjection`.
+  const velocityDescriptor = {
+    name: `Vector3DTilePolylines velocity [${depthFormat}]`,
+    layout,
+    vertex: { module: mod, entryPoint: "vsVelocity", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "fsVelocity",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+      // Match color pipeline's depth bias so velocity-pass coverage
+      // tracks the color pass at oblique-angle line edges. Without
+      // matching bias the velocity pass would clip slightly differently
+      // than the color pass (off-by-one-pixel velocity contribution
+      // along polyline edges, which TAA would propagate as edge ghost).
+      depthBias: -5,
+      depthBiasSlopeScale: -5,
+    },
+  };
+
+  return { colorDescriptor, pickDescriptor, velocityDescriptor, sharedBgl };
 }
 
 function descriptorToGPU(d) {
@@ -380,6 +513,30 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
           });
       }
     }
+    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — velocity
+    // pipeline. Cache miss is non-fatal: the color pass continues to
+    // render correctly without it; only the velocity-pass dispatch
+    // becomes a no-op until the variant lands. Same pattern as
+    // Vector3DTilePrimitive (Batch 178).
+    if (!cache.velocityPipeline) {
+      const velSync = pipelineCache.getPipelineSync(
+        resources.velocityDescriptor,
+      );
+      if (velSync) {
+        cache.velocityPipeline = velSync;
+      } else if (!cache.velocityRequestPending) {
+        cache.velocityRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.velocityDescriptor)
+          .then((p) => {
+            cache.velocityPipeline = p;
+            cache.velocityRequestPending = false;
+          })
+          .catch(() => {
+            cache.velocityRequestPending = false;
+          });
+      }
+    }
     return !!cache.colorPipeline;
   }
   if (!cache.colorPipeline) {
@@ -390,6 +547,12 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
   if (!cache.pickPipeline) {
     cache.pickPipeline = device.createRenderPipeline(
       descriptorToGPU(resources.pickDescriptor),
+    );
+  }
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — fallback path.
+  if (!cache.velocityPipeline) {
+    cache.velocityPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.velocityDescriptor),
     );
   }
   return true;
@@ -452,6 +615,17 @@ function packUniforms(data, frameState, primitive) {
     data[54] = 0;
     data[55] = 1;
   }
+
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — primitive
+  // center in world coordinates at floats 56..58 (vec3 + 1 pad).
+  // Consumed by `vsVelocity` to reconstruct world-space positions
+  // (`worldPos = centerWC + curr`) for projection through
+  // `prevViewProjection`.
+  const center = primitive._center ?? Cartesian3.ZERO;
+  data[56] = center.x;
+  data[57] = center.y;
+  data[58] = center.z;
+  data[59] = 0.0;
 }
 
 function ensureVertexBuffer(cache, primitive, device) {
@@ -713,6 +887,11 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
     cache.pickPipeline = undefined;
+    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — clear the
+    // velocity pipeline alongside color/pick on format change so the
+    // resolver re-runs against the new presentation format. Mirrors
+    // the Batch 176 audit fix that surfaced the same gap on splats.
+    cache.velocityPipeline = undefined;
     cache.sharedBindGroup = undefined;
   }
   if (!defined(cache._pipelineResources)) {
@@ -726,6 +905,10 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
     cache._pipelineFormatGeneration = sceneGen;
     cache.colorRequestPending = false;
     cache.pickRequestPending = false;
+    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — pending-
+    // flag init parity with the existing flags (caught as an audit
+    // observation on Batch 178; applying preemptively here).
+    cache.velocityRequestPending = false;
   }
   if (
     !tryResolvePipelines(
@@ -807,6 +990,27 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
     pass: 9 /* Pass.TRANSLUCENT */,
     owner: primitive,
   });
+
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — derive
+  // velocity command alongside the color command when TAA is on.
+  // Same pattern as Vector3DTilePrimitive (Batch 178) and Voxel
+  // (Batch 173): the velocity pass walks the command list for
+  // `cmd.velocityCommand` and dispatches into the rg16float render
+  // pass sharing scene depth read-only. Skipped when TAA is off —
+  // static scenes pay nothing.
+  if (frameState?.taaEnabled === true && defined(cache.velocityPipeline)) {
+    colorCmd.velocityCommand = new WebGPUDrawCommand({
+      pipeline: cache.velocityPipeline,
+      bindGroups: [cache.sharedBindGroup],
+      vertexBuffers: [cache.vertexGPUBuffer],
+      indexBuffer: cache.indexGPUBuffer,
+      indexFormat: cache.indexFormat,
+      indexCount: cache.indexCount || 0,
+      vertexCount: 0,
+      pass: 9 /* Pass.TRANSLUCENT */,
+      owner: primitive,
+    });
+  }
 
   const pickCommands = [];
   if (defined(cache.pickPipeline)) {
