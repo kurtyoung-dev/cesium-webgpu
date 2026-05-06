@@ -7,6 +7,11 @@
 // CSM Slice 2d — receives cascaded shadows through the primitive
 // effects bind group at `@group(2)` (no texture group between material
 // and effects). Mirrors PrimitiveMatColorLit.
+//
+// Batch 166 - B.12 chunk usage. Point-light cube shadow path calls
+// csm_samplePointShadow from chunks/functions; the marker below tells
+// WebGPUPrimitiveShaders.js to prepend the chunk's WGSL at load time.
+// @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
@@ -63,6 +68,11 @@ struct EffectsUniforms {
     clipPlaneEqHW: array<vec4<f32>, 8>,
     atmosphereLutControl: vec4<f32>,
     csmControl: vec4<f32>,
+    // Batch 166 - extends struct through pointLightPositionWC for B.12.
+    edgeControl: vec4<f32>,
+    edgeViewport: vec4<f32>,
+    pointLightControl: vec4<f32>,
+    pointLightPositionWC: vec4<f32>,
 }
 
 struct CSMParams {
@@ -81,6 +91,8 @@ struct CSMParams {
 @group(2) @binding(2) var shadowCompSampler: sampler_comparison;
 @group(2) @binding(10) var<uniform> csmParams: CSMParams;
 @group(2) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
+// Batch 166 - B.12 point-light cube depth.
+@group(2) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -155,6 +167,23 @@ fn sampleCascadeShadow(
     return s0;
 }
 
+// Batch 166 - B.12 chunk-based point-light receive.
+fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+    if (effects.shadowDarkness >= 1.0) { return 1.0; }
+    let visibility = csm_samplePointShadow(
+        pointLightCubeDepth,
+        shadowCompSampler,
+        fragWC,
+        effects.pointLightPositionWC.xyz,
+        effects.pointLightControl.z,
+        effects.pointLightControl.y,
+        effects.pointLightControl.w,
+        effects.pointLightPositionWC.w,
+        effects.shadowMapSize.x,
+    );
+    return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
 fn computeShadowFactorCSM(
     eyePos: vec3<f32>,
     viewDepth: f32,
@@ -207,8 +236,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let NdotH = max(dot(normal, halfDir), 0.0);
     let specular = pow(NdotH, 32.0) * 0.15;
 
+    // Batch 166 - point-light cube shadows take precedence over CSM.
     var direct = diffuse + specular;
-    if (effects.csmControl.x > 0.5) {
+    if (effects.pointLightControl.x > 0.5) {
+        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let fragWC = cameraWC + input.eyePosition;
+        direct = direct * computeShadowFactorPointLight(fragWC);
+    } else if (effects.csmControl.x > 0.5) {
         let viewDepth = abs(input.viewPosition.z);
         direct = direct * computeShadowFactorCSM(
             input.eyePosition, viewDepth, normal, lightDir,
