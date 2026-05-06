@@ -39,7 +39,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { getEffectsBindGroupLayout } from "./WebGPUEffectsBindGroup.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 162) — per-device shader-module cache so
@@ -64,17 +64,222 @@ const ALPHA_MASK = 1;
 const ALPHA_BLEND = 2;
 
 /**
+ * Batch 174 — B.4 KHR materialBGL split. Declarative manifest of the
+ * KHR-extension bindings on group 1 (slots 12-25). Each entry pairs a
+ * group-1 binding number with the `ShaderDefine` bit that gates whether
+ * the binding lands in the BGL / shader source / texture-entries array.
+ *
+ * Today every KHR binding shares a single coarse gate
+ * (`ShaderDefine.MODEL_HAS_KHR_TEXTURES`), giving two variants:
+ *   - basic (materialDefines = 0): bindings 12-25 stripped, 10 sampled
+ *     textures total, fits the WebGPU spec floor
+ *     `maxSampledTexturesPerShaderStage = 16`.
+ *   - full (materialDefines includes MODEL_HAS_KHR_TEXTURES): all 23
+ *     sampled textures, requires opting up
+ *     `maxSampledTexturesPerShaderStage` past the spec floor.
+ *
+ * The manifest is the contract: future KHR extensions add new bindings
+ * AND a new gate define (`MODEL_HAS_KHR_TRANSMISSION_VOLUMETRIC`, etc.)
+ * — the BGL builder, the texture-entries builder, the pipeline cache
+ * key, and the WGSL ifdef preprocessor all consume the same gate bit.
+ * That's the scalable axis: the device may opt up its sampled-texture
+ * limit (Chromium currently allows 64; future devices may go higher);
+ * the renderer builds whichever subset of KHR extensions a primitive
+ * actually uses, capped against `device.limits.maxSampledTexturesPerShaderStage`.
+ *
+ * Once the WGSL ifdefs are split per-extension (follow-up to Batch 174),
+ * the renderer can compute `materialDefines` as the OR of only the
+ * extension bits the primitive's material flags activate, and the BGL
+ * builder will produce a minimal layout that fits a 16-texture device
+ * even if the asset uses ONE KHR extension. The current "basic / full"
+ * binary is a stepping-stone to that fully granular state.
+ *
+ * Entry shape:
+ *   { binding, type: "texture" | "sampler", viewDimension?, gateDefine }
+ *
+ * @private
+ */
+const KHR_BINDING_MANIFEST = Object.freeze([
+  { binding: 12, type: "texture", gateDefine: 1 << 9 },
+  { binding: 13, type: "texture", gateDefine: 1 << 9 },
+  { binding: 14, type: "texture", gateDefine: 1 << 9 },
+  { binding: 15, type: "texture", gateDefine: 1 << 9 },
+  { binding: 16, type: "texture", gateDefine: 1 << 9 },
+  { binding: 17, type: "texture", gateDefine: 1 << 9 },
+  { binding: 18, type: "texture", gateDefine: 1 << 9 },
+  { binding: 19, type: "texture", gateDefine: 1 << 9 },
+  { binding: 20, type: "texture", gateDefine: 1 << 9 },
+  { binding: 21, type: "texture", gateDefine: 1 << 9 },
+  { binding: 22, type: "texture", gateDefine: 1 << 9 },
+  { binding: 23, type: "sampler", gateDefine: 1 << 9 },
+  { binding: 24, type: "texture", gateDefine: 1 << 9 },
+  { binding: 25, type: "texture", gateDefine: 1 << 9 },
+]);
+
+/**
+ * Bitmask of all ShaderDefine bits referenced by the KHR manifest. The
+ * pipeline cache uses this to mask `materialDefines` down to just the
+ * model-material-relevant bits — other ShaderDefine bits (e.g.
+ * `SPLIT_ENABLED`, `GEODETIC_NORMAL`) live on different shader sources
+ * and don't influence model BGL/pipeline construction.
+ *
+ * Computed at module load by OR-ing every `gateDefine` in the manifest;
+ * future KHR additions automatically extend the mask without touching
+ * any consumer.
+ *
+ * @private
+ */
+const MATERIAL_DEFINE_MASK = (() => {
+  let m = 0;
+  for (let i = 0; i < KHR_BINDING_MANIFEST.length; i++) {
+    m |= KHR_BINDING_MANIFEST[i].gateDefine;
+  }
+  return m;
+})();
+
+/**
  * Computes a cache key from pipeline configuration.
+ *
+ * Bit layout:
+ *   bits 0-1   : alphaMode (0=OPAQUE, 1=MASK, 2=BLEND)
+ *   bit  2     : doubleSided
+ *   bits 3+    : materialDefines bitmask (shifted left 3). Currently
+ *                only `ShaderDefine.MODEL_HAS_KHR_TEXTURES` (1<<9) is
+ *                consumed, but the cache scales to any future
+ *                model-material define bit added to the manifest.
+ *
  * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
  * @param {boolean} doubleSided - true = no backface culling
+ * @param {number} materialDefines - bitmask of model-material ShaderDefine bits
  * @returns {number}
+ * @private
  */
-function computeKey(alphaMode, doubleSided) {
-  return alphaMode | (doubleSided ? 4 : 0);
+function computeKey(alphaMode, doubleSided, materialDefines) {
+  const md = (materialDefines >>> 0) & MATERIAL_DEFINE_MASK;
+  return (alphaMode | (doubleSided ? 4 : 0) | (md << 3)) >>> 0;
 }
 
 /**
- * Creates the four bind group layouts shared by all Model pipelines.
+ * Builds the group-1 (material + textures + feature) BGL for a given
+ * variant mask. Iterates the KHR_BINDING_MANIFEST and includes only
+ * entries whose `gateDefine` is set in `materialDefines`. The fixed
+ * non-KHR portion (UBOs at 0-1, PBR textures+samplers at 2-11,
+ * featureId block at 26-32, IBL block at 33-36) is always included.
+ *
+ * Validates the assembled layout against the device's
+ * `maxSampledTexturesPerShaderStage` limit and throws with a clear
+ * diagnostic when a variant exceeds it. This is what makes the
+ * BGL split scale "from spec floor (16) to the device's opted-up
+ * ceiling": adding more KHR bindings (or letting more variants build)
+ * is safe — the assertion fires loudly the moment a build would exceed
+ * the device limit, instead of silently producing a validation error
+ * at pipeline-creation time.
+ *
+ * @param {GPUDevice} device
+ * @param {number} materialDefines - bitmask of ShaderDefine bits
+ *   gating which KHR bindings to include. `0` produces the basic
+ *   layout (10 sampled textures, fits the spec floor of 16).
+ * @returns {GPUBindGroupLayout}
+ * @private
+ */
+function buildMaterialBGL(device, materialDefines) {
+  const entries = [
+    // 0-1: Material + Light UBOs (always)
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    uniformBuffer(1, Stage.FRAGMENT),
+    // 2-11: Five PBR texture + sampler pairs (always)
+    texture(2, Stage.FRAGMENT),
+    sampler(3, Stage.FRAGMENT),
+    texture(4, Stage.FRAGMENT),
+    sampler(5, Stage.FRAGMENT),
+    texture(6, Stage.FRAGMENT),
+    sampler(7, Stage.FRAGMENT),
+    texture(8, Stage.FRAGMENT),
+    sampler(9, Stage.FRAGMENT),
+    texture(10, Stage.FRAGMENT),
+    sampler(11, Stage.FRAGMENT),
+  ];
+
+  // 12-25: KHR bindings — manifest-driven. Entries whose `gateDefine`
+  // is set in `materialDefines` are included; the rest are stripped
+  // and the matching shader source ifdefs strip the WGSL declarations
+  // + sampling sites at preprocess time so the binding numbers stay
+  // consistent across the layout, the shader, and the bind-group
+  // entries[] array.
+  for (let i = 0; i < KHR_BINDING_MANIFEST.length; i++) {
+    const m = KHR_BINDING_MANIFEST[i];
+    if ((materialDefines & m.gateDefine) === 0) {
+      continue;
+    }
+    if (m.type === "texture") {
+      entries.push(
+        texture(
+          m.binding,
+          Stage.FRAGMENT,
+          m.viewDimension ? { viewDimension: m.viewDimension } : undefined,
+        ),
+      );
+    } else if (m.type === "sampler") {
+      entries.push(sampler(m.binding, Stage.FRAGMENT));
+    }
+  }
+
+  // 26-32: feature ID + batch + per-feature pick (always)
+  entries.push(
+    texture(26, Stage.FRAGMENT), // featureId
+    sampler(27, Stage.FRAGMENT),
+    texture(28, Stage.FRAGMENT), // batch
+    sampler(29, Stage.FRAGMENT),
+    uniformBuffer(30, Stage.FRAGMENT), // featureId UBO
+    texture(31, Stage.FRAGMENT), // featurePick
+    sampler(32, Stage.FRAGMENT),
+  );
+
+  // 33-36: IBL cubemaps + SH UBO (always). The
+  // WebGPUImageBasedLighting pipeline produces irradiance + radiance
+  // cubemaps from the source environment map; SH at binding 36
+  // optionally short-circuits the irradiance sample in favor of cheap
+  // analytic evaluation.
+  entries.push(
+    texture(33, Stage.FRAGMENT, { viewDimension: "cube" }),
+    texture(34, Stage.FRAGMENT, { viewDimension: "cube" }),
+    sampler(35, Stage.FRAGMENT),
+    uniformBuffer(36, Stage.FRAGMENT),
+  );
+
+  // ── Capability check ──
+  // Count sampled textures in the assembled layout and compare against
+  // the device's reported limit. Fires LOUDLY (a permanent error log
+  // + thrown Error) if a build would exceed — that's how a future
+  // KHR extension addition that pushes the variant past the device
+  // ceiling becomes visible immediately instead of as an opaque
+  // pipeline validation error.
+  let sampledTextureCount = 0;
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].texture) {
+      sampledTextureCount++;
+    }
+  }
+  const limit = device.limits?.maxSampledTexturesPerShaderStage ?? 16;
+  if (sampledTextureCount > limit) {
+    const variantHex = `0x${(materialDefines >>> 0).toString(16)}`;
+    const msg =
+      `[WebGPU:Model:BGL] materialBGL variant ${variantHex} requires ` +
+      `${sampledTextureCount} sampled textures but the device only supports ` +
+      `${limit}. Either drop a KHR extension from the primitive, opt the ` +
+      `device up to a higher maxSampledTexturesPerShaderStage limit, or ` +
+      `split the variant into a smaller subset.`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+
+  const variantHex = `0x${(materialDefines >>> 0).toString(16)}`;
+  const label = `Model Material+Textures+Feature BGL [defines=${variantHex} sampled=${sampledTextureCount}]`;
+  return makeBindGroupLayout(device, label, entries);
+}
+
+/**
+ * Builds the four bind group layouts shared by all Model pipelines.
  *
  * **NEW-BG-CONSOLIDATION (2026-04-30, Batch 122):** Consolidated from 8
  * logical groups to 4 physical groups so the Model PBR pipeline fits
@@ -82,93 +287,39 @@ function computeKey(alphaMode, doubleSided) {
  * across Chromium configs in April 2026 — verified via
  * `Tools/visual-regression/probe-adapter-limits.mjs`).
  *
+ * **Batch 174 (B.4 KHR materialBGL split):** the materialBGL is now
+ * built per-variant on demand — `materialBGL` here is just the
+ * "default" full-KHR variant cached for callers that don't care about
+ * the variant axis. Per-primitive variants live in
+ * `_materialBGLCache` keyed by `materialDefines: number`.
+ *
  * Layout:
  *   Group 0 — CAMERA (1 binding, V+F)
- *   Group 1 — MATERIAL+TEXTURES+FEATURE (33 bindings, mostly fragment)
- *     0-1   : material UBO + light UBO       (was old group 1)
- *     2-25  : 24 PBR/KHR textures + samplers (was old group 2 +2 offset)
- *     26-32 : featureId / batch / featurePick (was old group 6 +26)
- *   Group 2 — INSTANCE (4 bindings, all VERTEX)
- *     0 : joint matrices storage  (was old group 3 binding 0)
- *     1 : morph deltas storage    (was old group 4 binding 0)
- *     2 : morph weights UBO       (was old group 4 binding 1)
- *     3 : instance transforms     (was old group 5 binding 0)
+ *   Group 1 — MATERIAL+TEXTURES+FEATURE (per-variant, 23-37 bindings)
+ *     0-1   : material UBO + light UBO
+ *     2-11  : 5 PBR texture+sampler pairs
+ *     12-25 : KHR textures + sampler (gated per-variant via manifest)
+ *     26-32 : featureId / batch / featurePick
+ *     33-36 : IBL cubemaps + SH UBO
+ *   Group 2 — INSTANCE (7 bindings, all VERTEX)
+ *     0 : joint matrices storage
+ *     1 : morph deltas storage
+ *     2 : morph weights UBO
+ *     3 : instance transforms
+ *     4 : PREV joint matrices (TAA velocity)
+ *     5 : PREV morph weights (TAA velocity)
+ *     6 : PREV instance transforms (TAA velocity)
  *   Group 3 — EFFECTS (shared with globe + primitive)
  *     Layout owned by `WebGPUEffectsBindGroup.getEffectsBindGroupLayout`.
  *
  * @param {GPUDevice} device
- * @returns {{ cameraBGL, materialBGL, instanceBGL }}
+ * @returns {{ cameraBGL, instanceBGL }}
  */
 function createBindGroupLayouts(device) {
   // ── Group 0: CAMERA ── per-frame, shared across all models.
   const cameraBGL = makeBindGroupLayout(device, "Model Camera BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
-
-  // ── Group 1: MATERIAL + TEXTURES + FEATURE ──
-  // 33 entries. Uses maxSampledTexturesPerShaderStage opt-in (default
-  // 16, opted up to 48 in WebGPUContext.requestDevice).
-  const materialBGL = makeBindGroupLayout(
-    device,
-    "Model Material+Textures+Feature BGL",
-    [
-      // 0-1: Material + Light UBOs
-      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-      uniformBuffer(1, Stage.FRAGMENT),
-      // 2-11: Five PBR texture + sampler pairs (baseColor, normal,
-      // metallic-roughness, emissive, occlusion).
-      texture(2, Stage.FRAGMENT),
-      sampler(3, Stage.FRAGMENT),
-      texture(4, Stage.FRAGMENT),
-      sampler(5, Stage.FRAGMENT),
-      texture(6, Stage.FRAGMENT),
-      sampler(7, Stage.FRAGMENT),
-      texture(8, Stage.FRAGMENT),
-      sampler(9, Stage.FRAGMENT),
-      texture(10, Stage.FRAGMENT),
-      sampler(11, Stage.FRAGMENT),
-      // 12-22: 11 KHR-extension textures (clearcoat, specularColor,
-      // anisotropy, iridescence, sheenColor, thickness, clearcoat
-      // roughness, clearcoat normal, sheen roughness, specular factor,
-      // iridescence thickness).
-      texture(12, Stage.FRAGMENT),
-      texture(13, Stage.FRAGMENT),
-      texture(14, Stage.FRAGMENT),
-      texture(15, Stage.FRAGMENT),
-      texture(16, Stage.FRAGMENT),
-      texture(17, Stage.FRAGMENT),
-      texture(18, Stage.FRAGMENT),
-      texture(19, Stage.FRAGMENT),
-      texture(20, Stage.FRAGMENT),
-      texture(21, Stage.FRAGMENT),
-      texture(22, Stage.FRAGMENT),
-      // 23: shared KHR sampler.
-      sampler(23, Stage.FRAGMENT),
-      // 24-25: transmission texture + refraction scene texture
-      // (Batch 105 KHR_materials_transmission).
-      texture(24, Stage.FRAGMENT),
-      texture(25, Stage.FRAGMENT),
-      // 26-32: feature ID + batch + per-feature pick (was old group 6).
-      texture(26, Stage.FRAGMENT), // featureId
-      sampler(27, Stage.FRAGMENT),
-      texture(28, Stage.FRAGMENT), // batch
-      sampler(29, Stage.FRAGMENT),
-      uniformBuffer(30, Stage.FRAGMENT), // featureId UBO
-      texture(31, Stage.FRAGMENT), // featurePick
-      sampler(32, Stage.FRAGMENT),
-      // Audit A.9 (Batch 130) — IBL cubemap bindings. The
-      // WebGPUImageBasedLighting pipeline already produces irradiance +
-      // radiance cubemaps from the source environment map; this BGL
-      // exposes them so the FS can replace the hardcoded vec3(0.2)
-      // ambient with proper split-sum sampling. SH coefficients
-      // (binding 36) optionally short-circuit the irradiance cubemap
-      // sample in favor of cheap analytic evaluation.
-      texture(33, Stage.FRAGMENT, { viewDimension: "cube" }), // iblDiffuseTexture (irradiance)
-      texture(34, Stage.FRAGMENT, { viewDimension: "cube" }), // iblSpecularTexture (radiance)
-      sampler(35, Stage.FRAGMENT), // iblSampler
-      uniformBuffer(36, Stage.FRAGMENT), // sphericalHarmonics UBO
-    ],
-  );
 
   // ── Group 2: INSTANCE ── per-instance vertex stage data.
   // Audit A.5 (Batch 130) — binding 4 carries the PREVIOUS frame's
@@ -200,7 +351,6 @@ function createBindGroupLayouts(device) {
 
   return {
     cameraBGL,
-    materialBGL,
     instanceBGL,
   };
 }
@@ -646,34 +796,51 @@ class WebGPUModelPipelineCache {
     // Create shared bind group layouts (NEW-BG-CONSOLIDATION, 4 groups).
     const bgls = createBindGroupLayouts(device);
     this._cameraBGL = bgls.cameraBGL;
-    this._materialBGL = bgls.materialBGL; // merged: material+textures+featureId
     this._instanceBGL = bgls.instanceBGL; // merged: skinning+morph+instancing
     // Effects BGL (group 3) — shared with globe + primitive via
     // `getEffectsBindGroupLayout` factory.
     this._effectsBGL = getEffectsBindGroupLayout(device);
 
-    // Pipeline layout — 4 bind groups. Was 8 prior to NEW-BG-CONSOLIDATION;
-    // the spec-mandated `maxBindGroups: 4` requires the consolidation.
-    this._pipelineLayout = device.createPipelineLayout({
-      label: "Model PBR PipelineLayout",
-      bindGroupLayouts: [
-        this._cameraBGL, // group 0
-        this._materialBGL, // group 1 (merged material + textures + feature)
-        this._instanceBGL, // group 2 (merged skinning + morph + instance)
-        this._effectsBGL, // group 3 (shared with globe)
-      ],
-    });
+    // Batch 174 — B.4 KHR materialBGL split. Per-variant caches keyed
+    // by `materialDefines: number` (a bitmask of ShaderDefine bits
+    // gating which KHR bindings are present). A primitive's effective
+    // variant = OR of the gate defines for the KHR extensions its
+    // material flags activate (today coarse: all-or-nothing on
+    // `MODEL_HAS_KHR_TEXTURES`; tomorrow per-extension granular).
+    //
+    // The maps are populated lazily from `getOrCreateMaterialBGL` /
+    // `getOrCreatePipelineLayout` so a scene with only basic-variant
+    // models never builds the full layout, and a scene with only
+    // full-variant models never builds the basic layout. Maps live for
+    // the lifetime of the cache (= one Model). Pipelines themselves
+    // (color / pick / depth-write / velocity / classification) cache
+    // independently, keyed on the same `materialDefines` plus
+    // alphaMode / doubleSided.
+    this._materialBGLCache = new Map();
+    this._pipelineLayoutCache = new Map();
+    this._shaderModuleCache = new Map();
 
-    // C-R7-SHADER-MODULE-DEDUP (Batch 162) — fetch from the per-device
-    // cache so multiple `Model` instances on the same device share a
-    // single compiled `GPUShaderModule`. The pipeline cache (this class)
-    // stays per-Model because format/alphaMode/doubleSided variants are
-    // per-instance; only the WGSL compilation is amortized.
-    this._shaderModule = getModelShaderModuleCache(device).getOrCreate(
-      ShaderSourceId.MODEL_PBR_COMPLETE,
-      ModelPBRCompleteWGSL,
-      0,
-      "Model PBR ShaderModule",
+    // Eagerly build the basic variant (materialDefines = 0). Most
+    // scenes have at least one non-KHR primitive and the basic layout
+    // doubles as a `materialBGL_basic` accessor for renderer code that
+    // wants to peek at the layout without going through the variant
+    // API.
+    this._materialBGL_basic = this._getOrCreateMaterialBGL(0);
+    this._pipelineLayout_basic = this._getOrCreatePipelineLayout(0);
+    this._shaderModule_basic = this._getOrCreateShaderModule(0);
+
+    // Eagerly build the full-KHR variant too — this is the historical
+    // default before the split, and exposed via the `materialBGL`
+    // getter for compatibility with callers that don't yet pass a
+    // variant key.
+    this._materialBGL = this._getOrCreateMaterialBGL(
+      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+    );
+    this._pipelineLayout = this._getOrCreatePipelineLayout(
+      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+    );
+    this._shaderModule = this._getOrCreateShaderModule(
+      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
     );
 
     // Create default 1x1 textures for missing material textures
@@ -898,6 +1065,132 @@ class WebGPUModelPipelineCache {
   }
 
   /**
+   * Batch 174 — Normalize a caller-supplied `materialDefines` value
+   * down to just the model-material gating bits this cache understands.
+   * Defends against callers passing other ShaderDefine bits (e.g. a
+   * primitive-pipeline-level `SPLIT_ENABLED` or `GEODETIC_NORMAL`)
+   * that would inflate the cache key without affecting the layout.
+   *
+   * @param {number} materialDefines
+   * @returns {number}
+   * @private
+   */
+  _normalizeMaterialDefines(materialDefines) {
+    return ((materialDefines | 0) & MATERIAL_DEFINE_MASK) >>> 0;
+  }
+
+  /**
+   * Batch 174 — Lazy per-variant materialBGL builder. Keyed by the
+   * normalized `materialDefines` mask so each unique combination of
+   * KHR-extension gates produces exactly one BGL per device.
+   *
+   * Public API: callers (renderer + bind-group construction) should
+   * use `getOrCreateMaterialBGL` and `getOrCreatePipelineLayout`
+   * rather than the legacy `materialBGL` / `pipelineLayout` getters,
+   * which are retained for backward compatibility and now delegate
+   * through the per-variant cache.
+   *
+   * @param {number} materialDefines
+   * @returns {GPUBindGroupLayout}
+   * @private
+   */
+  _getOrCreateMaterialBGL(materialDefines) {
+    const key = this._normalizeMaterialDefines(materialDefines);
+    let layout = this._materialBGLCache.get(key);
+    if (layout) {
+      return layout;
+    }
+    layout = buildMaterialBGL(this._device, key);
+    this._materialBGLCache.set(key, layout);
+    return layout;
+  }
+
+  /**
+   * Batch 174 — Lazy per-variant pipeline-layout builder. Composes the
+   * (camera, materialBGL[variant], instance, effects) tuple into a
+   * `GPUPipelineLayout` and caches by `materialDefines`.
+   *
+   * @param {number} materialDefines
+   * @returns {GPUPipelineLayout}
+   * @private
+   */
+  _getOrCreatePipelineLayout(materialDefines) {
+    const key = this._normalizeMaterialDefines(materialDefines);
+    let layout = this._pipelineLayoutCache.get(key);
+    if (layout) {
+      return layout;
+    }
+    const variantHex = `0x${key.toString(16)}`;
+    layout = this._device.createPipelineLayout({
+      label: `Model PBR PipelineLayout [defines=${variantHex}]`,
+      bindGroupLayouts: [
+        this._cameraBGL, // group 0
+        this._getOrCreateMaterialBGL(key), // group 1 (per-variant)
+        this._instanceBGL, // group 2
+        this._effectsBGL, // group 3
+      ],
+    });
+    this._pipelineLayoutCache.set(key, layout);
+    return layout;
+  }
+
+  /**
+   * Batch 174 — Lazy per-variant shader-module fetcher. Routes through
+   * the per-device shader-module cache (Batch 162's
+   * `WebGPUShaderModuleCache`) so two `Model` instances with the same
+   * `materialDefines` share one compiled `GPUShaderModule`. The
+   * preprocessor strips the WGSL declarations + sampling sites whose
+   * gate define isn't set in `materialDefines`, so the binary itself
+   * differs per variant.
+   *
+   * @param {number} materialDefines
+   * @returns {GPUShaderModule}
+   * @private
+   */
+  _getOrCreateShaderModule(materialDefines) {
+    const key = this._normalizeMaterialDefines(materialDefines);
+    let module = this._shaderModuleCache.get(key);
+    if (module) {
+      return module;
+    }
+    const variantHex = `0x${key.toString(16)}`;
+    module = getModelShaderModuleCache(this._device).getOrCreate(
+      ShaderSourceId.MODEL_PBR_COMPLETE,
+      ModelPBRCompleteWGSL,
+      key,
+      `Model PBR ShaderModule [defines=${variantHex}]`,
+    );
+    this._shaderModuleCache.set(key, module);
+    return module;
+  }
+
+  /**
+   * Public accessor for the per-variant materialBGL. Renderer call
+   * sites should pass the primitive's normalized `materialDefines`
+   * (computed from its material flags). The eagerly-built basic
+   * (`materialDefines = 0`) and full (`materialDefines =
+   * MODEL_HAS_KHR_TEXTURES`) variants are returned without an
+   * additional Map lookup; arbitrary subsets are built on demand.
+   *
+   * @param {number} materialDefines
+   * @returns {GPUBindGroupLayout}
+   */
+  getOrCreateMaterialBGL(materialDefines) {
+    return this._getOrCreateMaterialBGL(materialDefines);
+  }
+
+  /**
+   * Public accessor for the per-variant pipeline layout. See
+   * {@link WebGPUModelPipelineCache#getOrCreateMaterialBGL}.
+   *
+   * @param {number} materialDefines
+   * @returns {GPUPipelineLayout}
+   */
+  getOrCreatePipelineLayout(materialDefines) {
+    return this._getOrCreatePipelineLayout(materialDefines);
+  }
+
+  /**
    * Batch 110 — invalidate cached pipelines when the scene pipeline
    * format generation has changed (HDR toggle, MSAA toggle). Updates
    * `_presentationFormat` to the new scene-pipeline format so newly
@@ -937,10 +1230,18 @@ class WebGPUModelPipelineCache {
    * Gets or creates a pipeline for the given material configuration.
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0] Batch 174 — bitmask of
+   *   ShaderDefine bits gating which KHR bindings the variant uses.
+   *   `0` builds the basic variant (no KHR textures, fits the WebGPU
+   *   spec floor); `MODEL_HAS_KHR_TEXTURES` builds the historical full
+   *   variant (all KHR bindings present). Future per-extension subsets
+   *   build a minimal layout on demand. The renderer computes this
+   *   from the primitive's material flags.
    * @returns {GPURenderPipeline}
    */
-  getPipeline(alphaMode, doubleSided) {
-    const key = computeKey(alphaMode, doubleSided);
+  getPipeline(alphaMode, doubleSided, materialDefines) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = computeKey(alphaMode, doubleSided, md);
     let pipeline = this._pipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -948,8 +1249,8 @@ class WebGPUModelPipelineCache {
 
     pipeline = createPipeline(
       this._device,
-      this._shaderModule,
-      this._pipelineLayout,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
       this._presentationFormat,
       this._depthFormat,
       alphaMode,
@@ -972,10 +1273,13 @@ class WebGPUModelPipelineCache {
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0] Batch 174 — see
+   *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
-  getDepthWritePipeline(alphaMode, doubleSided) {
-    const key = computeKey(alphaMode, doubleSided);
+  getDepthWritePipeline(alphaMode, doubleSided, materialDefines) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = computeKey(alphaMode, doubleSided, md);
     let pipeline = this._depthWritePipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -983,8 +1287,8 @@ class WebGPUModelPipelineCache {
 
     pipeline = createPipeline(
       this._device,
-      this._shaderModule,
-      this._pipelineLayout,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
       this._presentationFormat,
       this._depthFormat,
       alphaMode,
@@ -1004,15 +1308,18 @@ class WebGPUModelPipelineCache {
    * IDs).
    *
    * Keyed identically to `getPipeline` so a primitive's color and pick
-   * pipelines share the same `(alphaMode, doubleSided)` identity. The
-   * pick pipeline is only built once per identity per device.
+   * pipelines share the same `(alphaMode, doubleSided, materialDefines)`
+   * identity. The pick pipeline is only built once per identity per device.
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0] Batch 174 — see
+   *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
-  getPickPipeline(alphaMode, doubleSided) {
-    const key = computeKey(alphaMode, doubleSided);
+  getPickPipeline(alphaMode, doubleSided, materialDefines) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = computeKey(alphaMode, doubleSided, md);
     let pipeline = this._pickPipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -1020,8 +1327,8 @@ class WebGPUModelPipelineCache {
 
     pipeline = createPickPipeline(
       this._device,
-      this._shaderModule,
-      this._pipelineLayout,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
       this._presentationFormat,
       this._depthFormat,
       alphaMode,
@@ -1042,18 +1349,21 @@ class WebGPUModelPipelineCache {
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0] Batch 174 — see
+   *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
-  getVelocityPipeline(alphaMode, doubleSided) {
-    const key = computeKey(alphaMode, doubleSided);
+  getVelocityPipeline(alphaMode, doubleSided, materialDefines) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = computeKey(alphaMode, doubleSided, md);
     let pipeline = this._velocityPipelines.get(key);
     if (pipeline) {
       return pipeline;
     }
     pipeline = createVelocityPipeline(
       this._device,
-      this._shaderModule,
-      this._pipelineLayout,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
       this._depthFormat,
       alphaMode,
       doubleSided,
@@ -1078,18 +1388,21 @@ class WebGPUModelPipelineCache {
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0] Batch 174 — see
+   *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
-  getClassificationPipeline(alphaMode, doubleSided) {
-    const key = computeKey(alphaMode, doubleSided);
+  getClassificationPipeline(alphaMode, doubleSided, materialDefines) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = computeKey(alphaMode, doubleSided, md);
     let pipeline = this._classificationPipelines.get(key);
     if (pipeline) {
       return pipeline;
     }
     pipeline = createClassificationPipeline(
       this._device,
-      this._shaderModule,
-      this._pipelineLayout,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
       this._presentationFormat,
       this._depthFormat,
       alphaMode,
@@ -1107,6 +1420,26 @@ class WebGPUModelPipelineCache {
   /** @returns {GPUBindGroupLayout} */
   get materialBGL() {
     return this._materialBGL;
+  }
+
+  /**
+   * Batch 174 — B.4 KHR materialBGL split. Basic variant (no KHR
+   * textures) for materials without any KHR-extension bit set. Pairs
+   * with `pipelineLayout_basic` and the no-KHR shader module.
+   * @returns {GPUBindGroupLayout}
+   */
+  get materialBGL_basic() {
+    return this._materialBGL_basic;
+  }
+
+  /** @returns {GPUPipelineLayout} basic pipeline layout (uses materialBGL_basic) */
+  get pipelineLayout_basic() {
+    return this._pipelineLayout_basic;
+  }
+
+  /** @returns {GPUShaderModule} basic shader module (no KHR sections) */
+  get shaderModule_basic() {
+    return this._shaderModule_basic;
   }
 
   /** @returns {GPUTexture} 1×1 white (255,255,255,255) */

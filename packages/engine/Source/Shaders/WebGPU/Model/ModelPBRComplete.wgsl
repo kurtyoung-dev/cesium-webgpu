@@ -328,6 +328,15 @@ struct LightUniforms {
 // extension's HAS_* flag so the placeholder is never sampled in
 // production. See WebGPUModelPipelineCache `materialBGL` for the
 // rationale on the shared sampler.
+//
+// Batch 174 (B.4) — Wrapped in `//>>ifdef MODEL_HAS_KHR_TEXTURES` so
+// the basic shader variant strips these 14 bindings (12 textures +
+// sampler + 2 transmission). Total sampled-texture count drops 23 →
+// 10, fitting within the WebGPU spec floor `maxSampledTexturesPerShaderStage = 16`
+// for materials without any KHR extension. The renderer pairs the
+// stripped shader with `materialBGL_basic` + the basic pipeline
+// layout (see `WebGPUModelPipelineCache.materialBGL_basic`).
+//>>ifdef MODEL_HAS_KHR_TEXTURES
 @group(1) @binding(12) var clearcoatTexture: texture_2d<f32>;
 @group(1) @binding(13) var specularColorTexture: texture_2d<f32>;
 @group(1) @binding(14) var anisotropyTexture: texture_2d<f32>;
@@ -351,6 +360,7 @@ struct LightUniforms {
 // FLAG_HAS_TRANSMISSION so the placeholder content is unused).
 @group(1) @binding(24) var transmissionTexture: texture_2d<f32>;
 @group(1) @binding(25) var refractionSceneTexture: texture_2d<f32>;
+//>>endif
 
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
 @group(2) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
@@ -1864,6 +1874,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   // https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_specular
   // says metallic surfaces ignore the color factor and still use
   // baseColor for F0; only the dielectric F0 component is recolored.
+  //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_SPECULAR_EXT)) {
     var sf = material.specularExtFactors.x;
     var sc = material.specularExtFactors.yzw;
@@ -1883,6 +1894,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     let dielectricF0 = vec3<f32>(0.04) * sc * sf;
     F0 = mix(dielectricF0, baseColor.rgb, metallic);
   }
+  //>>endif
 
   // C-R4-GLTF-KHR slice 5 — KHR_materials_iridescence (factor-level
   // approximation). Full thin-film interference requires per-wavelength
@@ -1892,6 +1904,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   // a hue-shift approximation: blend baseColor toward an HSV-rotated
   // companion driven by `iridescenceFactor` and view angle. Visually
   // imperfect but structurally honest about which extension is firing.
+  //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_IRIDESCENCE)) {
     var irFactor = material.iridescenceFactors.x;
     let irIor = material.iridescenceFactors.y;
@@ -1920,6 +1933,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     );
     F0 = mix(F0, F0 * irTint, irFactor);
   }
+  //>>endif
 
   // ── Cook-Torrance BRDF ────────────────────────────────────────────────────
   let V = normalize(-input.positionEC);
@@ -1946,6 +1960,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   // strength is positive, along the up axis when negative. Visually
   // produces the streak shape brushed-metal assets expect; full per-
   // tangent BRDF lands in a follow-up once tangents are plumbed.
+  //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_ANISOTROPY)) {
     var aniStrength = material.anisotropyFactors.x;
     var aniRotation = material.anisotropyFactors.y;
@@ -1993,12 +2008,14 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     direct = direct + (aniBRDF - specBRDF) * light.sunColor *
                        light.sunIntensity * NdotL * aniStrength;
   }
+  //>>endif
 
   // C-R4-GLTF-KHR slice 2 — KHR_materials_clearcoat. Add a second GGX
   // specular lobe over the base contribution. Clearcoat fresnel uses a
   // fixed F0 = 0.04 (air-coat interface). The base material is
   // attenuated by (1 - F_clearcoat) so high-glance angles bias toward
   // the coat color rather than double-bouncing.
+  //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_CLEARCOAT)) {
     var ccFactor = material.clearcoatFactors.x;
     var ccRough = clamp(material.clearcoatFactors.y, 0.04, 1.0);
@@ -2037,11 +2054,13 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     direct = direct * (vec3<f32>(1.0) - F_cc) +
              ccBRDF * light.sunColor * light.sunIntensity * NdotL_cc;
   }
+  //>>endif
 
   // C-R4-GLTF-KHR slice 6 — KHR_materials_sheen. Charlie BRDF lobe
   // approximated with the Estevez/Kulla Charlie distribution. Energy-
   // additive on top of the base contribution; emulates fabric/velvet
   // retroreflection at grazing angles.
+  //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_SHEEN)) {
     var sheenColor = material.sheenFactors.xyz;
     var sheenRough = clamp(material.sheenFactors.w, 0.07, 1.0);
@@ -2068,6 +2087,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     direct = direct + sheenColor * sheenBRDF * light.sunColor *
                        light.sunIntensity * NdotL;
   }
+  //>>endif
 
   // C-R4-GLTF-KHR slice 7 — KHR_materials_volume. Beer-Lambert
   // attenuation on the diffuse contribution as a stand-in for the
@@ -2090,6 +2110,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   //
   // Branch ordering: applied AFTER volume attenuation so transmissive
   // glass behind volumetric absorption gets the correct double effect.
+  //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_TRANSMISSION)) {
     var trFactor = material.transmissionFactors.x;
     let trTex = textureSampleLevel(
@@ -2143,6 +2164,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
       direct = direct * attenuation;
     }
   }
+  //>>endif
 
   // C-R10-POINT-LIGHT-RECEIVE — when a point-light shadow map is bound,
   // route through cube sampling. Checked BEFORE the CSM gate (only one

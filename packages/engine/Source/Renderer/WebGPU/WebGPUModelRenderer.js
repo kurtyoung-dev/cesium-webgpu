@@ -57,6 +57,7 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
 import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
+import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import {
   attachPickToColorCommand,
   destroyPickIds,
@@ -152,6 +153,61 @@ const LIGHT_UNIFORM_SIZE = 720;
 const FLAG_HAS_SKINNING = 8192;
 // materialFlags bit for instancing (bit 15 = 32768)
 const FLAG_HAS_INSTANCING = 32768;
+
+// Batch 174 — B.4 KHR materialBGL split. Aggregate mask of all
+// KHR-extension bits the FS gates on. Mirrors the FLAG_HAS_*
+// constants in ModelPBRComplete.wgsl (bits 19-25). When the
+// material's flags AND this mask is zero, the renderer routes
+// through the basic shader/BGL/pipeline-layout variant — bindings
+// 12-25 of the materialBGL are stripped, dropping the sampled-
+// texture count from 23 to 10 so the pipeline fits within the
+// WebGPU spec floor `maxSampledTexturesPerShaderStage = 16`.
+//
+// **Scalability note:** today this is a coarse OR — any KHR bit set
+// routes through the full variant. The architecture (manifest-driven
+// BGL builder + per-variant pipeline cache + per-variant shader-module
+// cache, all keyed on `materialDefines: number`) supports per-extension
+// granular splits without further refactoring. When the WGSL ifdefs
+// are split per-extension (follow-up to Batch 174), this helper can
+// return a granular `materialDefines` like
+// `MODEL_HAS_KHR_SPECULAR | MODEL_HAS_KHR_CLEARCOAT` — the cache will
+// build a minimal layout for that exact subset that fits a 16-texture
+// device even if the asset uses some KHR extensions.
+const FLAG_HAS_KHR_MASK =
+  524288 | // FLAG_HAS_CLEARCOAT (bit 19)
+  1048576 | // FLAG_HAS_SPECULAR_EXT (bit 20)
+  2097152 | // FLAG_HAS_ANISOTROPY (bit 21)
+  4194304 | // FLAG_HAS_IRIDESCENCE (bit 22)
+  8388608 | // FLAG_HAS_SHEEN (bit 23)
+  16777216 | // FLAG_HAS_VOLUME (bit 24)
+  33554432; // FLAG_HAS_TRANSMISSION (bit 25)
+
+/**
+ * Batch 174 — Computes the `materialDefines` bitmask for a primitive
+ * given its material flags. The pipeline cache + BGL builder + shader-
+ * module cache all key on this value.
+ *
+ * Today the result is binary: `0` (basic, no KHR — fits the 16-sampled-
+ * texture spec floor) or `MODEL_HAS_KHR_TEXTURES` (full, all KHR
+ * bindings present — needs the device to opt up
+ * `maxSampledTexturesPerShaderStage` past the spec floor).
+ *
+ * Future: when the WGSL ifdefs are split per-KHR-extension and a new
+ * `MODEL_HAS_KHR_SPECULAR` / `MODEL_HAS_KHR_CLEARCOAT` / etc. set of
+ * `ShaderDefine` bits is added, this function returns the exact OR of
+ * the bits the primitive's flags activate, and the cache builds a
+ * minimal layout fitting within `device.limits.maxSampledTexturesPerShaderStage`.
+ *
+ * @private
+ * @param {number} materialFlags
+ * @returns {number}
+ */
+function computeMaterialDefines(materialFlags) {
+  if ((materialFlags & FLAG_HAS_KHR_MASK) !== 0) {
+    return ShaderDefine.MODEL_HAS_KHR_TEXTURES;
+  }
+  return 0;
+}
 
 // ─── Scratch Variables ───────────────────────────────────────────────────────
 
@@ -1074,9 +1130,19 @@ function ensurePrimitiveCache(
   }
 
   // Pipeline (varies by alpha mode and double-sided)
+  // Batch 174 — B.4 select the materialDefines bitmask based on the
+  // primitive's material flags. Track the value on primCache so
+  // subsequent pipeline lookups (pick, velocity, classification,
+  // depth-write) stay consistent across passes for this primitive.
+  // This same value is also used to filter the texture-entries array
+  // and select the matching per-variant materialBGL when building
+  // the merged group 1 bind group below.
+  const materialDefines = computeMaterialDefines(matInfo.materialFlags);
+  primCache.materialDefines = materialDefines;
   primCache.pipeline = pipelineCache.getPipeline(
     matInfo.alphaMode,
     matInfo.isDoubleSided,
+    materialDefines,
   );
 
   // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — for translucent BLEND
@@ -1093,6 +1159,7 @@ function ensurePrimitiveCache(
     primCache.depthWritePipeline = pipelineCache.getDepthWritePipeline(
       matInfo.alphaMode,
       matInfo.isDoubleSided,
+      materialDefines,
     );
   }
 
@@ -1153,11 +1220,19 @@ function ensurePrimitiveCache(
     occlusion: occlusionSampler || defSampler,
     def: defSampler,
   };
-  // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries (24
-  // bindings 2-25) on the primCache. The full merged group 1 bind
-  // group is built per-frame at the draw command emission site; this
-  // is just the cached texture portion.
-  primCache.textureEntries = getModelTextureEntries(primCache, null);
+  // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries on the
+  // primCache. The full merged group 1 bind group is built per-frame
+  // at the draw command emission site; this is just the cached
+  // texture portion.
+  // Batch 174 — entries are now filtered by `primCache.materialDefines`:
+  // basic variant emits bindings 2-11 only; full variant emits 2-25.
+  // The matching per-variant `materialBGL` is selected at bind-group
+  // construction time via `pipelineCache.getOrCreateMaterialBGL(materialDefines)`.
+  primCache.textureEntries = getModelTextureEntries(
+    primCache,
+    null,
+    materialDefines,
+  );
   primCache.refractionViewBound = null;
 
   cache.primitives[primKey] = primCache;
@@ -1166,20 +1241,36 @@ function ensurePrimitiveCache(
 
 /**
  * NEW-BG-CONSOLIDATION (Batch 122) — returns the texture portion of the
- * merged group 1 bind group as an `entries[]` array (bindings 2-25).
- * Bindings 0-1 (material+light UBOs) and 26-32 (featureId) are spliced
- * in at the renderer's per-frame draw-command emission site.
+ * merged group 1 bind group as an `entries[]` array. Bindings 0-1
+ * (material+light UBOs) and 26-32 (featureId) are spliced in at the
+ * renderer's per-frame draw-command emission site.
  *
  * Was the standalone "texture bind group" prior to NEW-BG-CONSOLIDATION;
  * binding numbers are shifted by +2 because slots 0-1 are now occupied
  * by the merged material/light UBOs.
  *
+ * Batch 174 — KHR materialBGL split. The texture entries for bindings
+ * 12-25 are gated on the variant's `materialDefines` mask: basic
+ * variant (`materialDefines = 0`) emits PBR bindings 2-11 only; full
+ * variant (`MODEL_HAS_KHR_TEXTURES` set) emits 2-25. The returned
+ * array MUST match the layout of the per-variant `materialBGL`
+ * fetched via `pipelineCache.getOrCreateMaterialBGL(materialDefines)`,
+ * or `device.createBindGroup` will reject the entry list.
+ *
  * @private
+ * @param {object} primCache
+ * @param {GPUTextureView | null} refractionView - Optional refraction
+ *   capture view from the SceneRenderer; bound at slot 25 when the
+ *   variant includes it, else falls back to the cached placeholder.
+ * @param {number} materialDefines - Variant mask (bitmask of
+ *   ShaderDefine bits). When `MODEL_HAS_KHR_TEXTURES` is set, the
+ *   KHR slots (12-25) are emitted; when clear they're omitted.
  */
-function getModelTextureEntries(primCache, refractionView) {
+function getModelTextureEntries(primCache, refractionView, materialDefines) {
   const v = primCache.textureViews;
   const s = primCache.textureSamplers;
-  return [
+  const entries = [
+    // 2-11: PBR (always, both basic and full variants)
     { binding: 2, resource: v.baseColor },
     { binding: 3, resource: s.base },
     { binding: 4, resource: v.normal },
@@ -1190,35 +1281,54 @@ function getModelTextureEntries(primCache, refractionView) {
     { binding: 9, resource: s.emissive },
     { binding: 10, resource: v.occlusion },
     { binding: 11, resource: s.occlusion },
-    { binding: 12, resource: v.clearcoat },
-    { binding: 13, resource: v.specularColor },
-    { binding: 14, resource: v.anisotropy },
-    { binding: 15, resource: v.iridescence },
-    { binding: 16, resource: v.sheenColor },
-    { binding: 17, resource: v.thickness },
-    { binding: 18, resource: v.clearcoatRoughness },
-    { binding: 19, resource: v.clearcoatNormal },
-    { binding: 20, resource: v.sheenRoughness },
-    { binding: 21, resource: v.specularFactor },
-    { binding: 22, resource: v.iridescenceThickness },
-    { binding: 23, resource: s.def },
-    { binding: 24, resource: v.transmission },
-    // Binding 25: refractionSceneTexture. When the SceneRenderer's
-    // capture pass has published a view, use it. Otherwise fall back
-    // to the cached white placeholder (the FS gates this sample on
-    // FLAG_HAS_TRANSMISSION).
-    {
-      binding: 25,
-      resource: refractionView ?? v.refractionPlaceholder,
-    },
   ];
+
+  // 12-25: KHR — gated on materialDefines. Emitted only when the
+  // matching gate define is set. Today every KHR slot shares a single
+  // gate (`MODEL_HAS_KHR_TEXTURES`); when the WGSL ifdefs are split
+  // per-extension this branching mirrors the manifest in the pipeline
+  // cache so each KHR group's slots only emit when its specific gate
+  // bit is in the variant.
+  if ((materialDefines & ShaderDefine.MODEL_HAS_KHR_TEXTURES) !== 0) {
+    entries.push(
+      { binding: 12, resource: v.clearcoat },
+      { binding: 13, resource: v.specularColor },
+      { binding: 14, resource: v.anisotropy },
+      { binding: 15, resource: v.iridescence },
+      { binding: 16, resource: v.sheenColor },
+      { binding: 17, resource: v.thickness },
+      { binding: 18, resource: v.clearcoatRoughness },
+      { binding: 19, resource: v.clearcoatNormal },
+      { binding: 20, resource: v.sheenRoughness },
+      { binding: 21, resource: v.specularFactor },
+      { binding: 22, resource: v.iridescenceThickness },
+      { binding: 23, resource: s.def },
+      { binding: 24, resource: v.transmission },
+      // Binding 25: refractionSceneTexture. When the SceneRenderer's
+      // capture pass has published a view, use it. Otherwise fall back
+      // to the cached white placeholder (the FS gates this sample on
+      // FLAG_HAS_TRANSMISSION).
+      {
+        binding: 25,
+        resource: refractionView ?? v.refractionPlaceholder,
+      },
+    );
+  }
+
+  return entries;
 }
 
 /**
  * NEW-BG-CONSOLIDATION (Batch 122) — builds the merged group 1 bind
- * group (33 entries: material UBO + light UBO + 24 texture entries +
- * 7 featureId entries). Per-frame allocation; cheap because the entry
- * objects are small and the underlying GPU resources are reused.
+ * group. Per-frame allocation; cheap because the entry objects are
+ * small and the underlying GPU resources are reused.
+ *
+ * Batch 174 (B.4 KHR materialBGL split) — the layout is now per-variant.
+ * Caller passes the primitive's `materialDefines` mask; this function
+ * fetches (or builds, on first use) the matching `GPUBindGroupLayout`
+ * via `pipelineCache.getOrCreateMaterialBGL(materialDefines)`. The
+ * `textureEntries` array MUST already be filtered to match the layout
+ * — `getModelTextureEntries` honors the same mask.
  *
  * @private
  */
@@ -1230,9 +1340,10 @@ function buildMergedMaterialBindGroup(
   textureEntries,
   featureIdEntries,
   iblEntries,
+  materialDefines,
 ) {
   return device.createBindGroup({
-    layout: pipelineCache.materialBGL,
+    layout: pipelineCache.getOrCreateMaterialBGL(materialDefines | 0),
     entries: [
       { binding: 0, resource: { buffer: materialBuffer.buffer } },
       { binding: 1, resource: { buffer: lightBuffer.buffer } },
@@ -2035,14 +2146,19 @@ function updateWebGPUModel(model, frameState) {
       // undefined-tagged for re-fetch, the existing
       // `if (!defined(primCache.X))` gates handle them.
       if (primCache._pipelineNeedsRefetch || primCache.pipeline === null) {
+        // Batch 174 — preserve the materialDefines variant across the
+        // format-change refetch.
+        const md = primCache.materialDefines | 0;
         primCache.pipeline = pipelineCache.getPipeline(
           matInfo.alphaMode,
           matInfo.isDoubleSided,
+          md,
         );
         if (matInfo.alphaMode === AlphaModes.BLEND) {
           primCache.depthWritePipeline = pipelineCache.getDepthWritePipeline(
             matInfo.alphaMode,
             matInfo.isDoubleSided,
+            md,
           );
         }
         primCache._pipelineNeedsRefetch = false;
@@ -2056,9 +2172,9 @@ function updateWebGPUModel(model, frameState) {
       // scene framebuffer reallocates the refraction texture (resize,
       // HDR toggle). Also publishes the per-frame "scene has
       // transmission" flag so the SceneRenderer's capture pass fires.
-      // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries (24
-      // bindings 2-25) instead of a standalone bind group. Rebuilt only
-      // when the refraction view changes (per-frame ref compare).
+      // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries
+      // instead of a standalone bind group. Rebuilt only when the
+      // refraction view changes (per-frame ref compare).
       if (matInfo.hasTransmission) {
         context._sceneHasTransmission = true;
         const currentRefractionView = context._refractionSceneView ?? null;
@@ -2066,13 +2182,18 @@ function updateWebGPUModel(model, frameState) {
           primCache.textureEntries = getModelTextureEntries(
             primCache,
             currentRefractionView,
+            primCache.materialDefines | 0,
           );
           primCache.refractionViewBound = currentRefractionView;
         }
       }
       // First-frame texture-entries build (no transmission).
       if (!defined(primCache.textureEntries)) {
-        primCache.textureEntries = getModelTextureEntries(primCache, null);
+        primCache.textureEntries = getModelTextureEntries(
+          primCache,
+          null,
+          primCache.materialDefines | 0,
+        );
       }
 
       // Create per-primitive material + light uniform buffers (once).
@@ -2320,6 +2441,7 @@ function updateWebGPUModel(model, frameState) {
       const modelRenderState = rpDrawCommand?._command?.renderState;
 
       // NEW-BG-CONSOLIDATION (Batch 122) — 4 merged bind groups.
+      // Batch 174 — `materialDefines` selects the per-variant materialBGL.
       const iblEntries = buildModelIBLEntries(model, pipelineCache);
       const mergedMaterialBG = buildMergedMaterialBindGroup(
         device,
@@ -2329,6 +2451,7 @@ function updateWebGPUModel(model, frameState) {
         primCache.textureEntries,
         featureIdEntries,
         iblEntries,
+        primCache.materialDefines | 0,
       );
       const mergedInstanceBG = buildMergedInstanceBindGroup(
         device,
@@ -2355,6 +2478,11 @@ function updateWebGPUModel(model, frameState) {
         ? pipelineCache.getClassificationPipeline(
             matInfo.alphaMode,
             matInfo.isDoubleSided,
+            // Batch 174 — preserve materialDefines variant for the
+            // classification pipeline so it pairs with the matching
+            // per-variant materialBGL the bind group above was
+            // constructed against.
+            primCache.materialDefines | 0,
           )
         : primCache.pipeline;
 
@@ -2459,6 +2587,10 @@ function updateWebGPUModel(model, frameState) {
           primCache.pickPipeline = pipelineCache.getPickPipeline(
             matInfo.alphaMode,
             matInfo.isDoubleSided,
+            // Batch 174 — pick pipeline must use the same per-variant
+            // pipeline layout as the color pipeline so it pairs with
+            // the same merged group-1 bind group at draw time.
+            primCache.materialDefines | 0,
           );
         }
         const pickCmd = new WebGPUDrawCommand({
@@ -2514,6 +2646,10 @@ function updateWebGPUModel(model, frameState) {
           primCache.velocityPipeline = pipelineCache.getVelocityPipeline(
             matInfo.alphaMode,
             matInfo.isDoubleSided,
+            // Batch 174 — velocity pipeline must use the same
+            // per-variant pipeline layout as the color pipeline so it
+            // pairs with the same merged group-1 bind group at draw time.
+            primCache.materialDefines | 0,
           );
         }
         const velocityCmd = new WebGPUDrawCommand({
@@ -2653,6 +2789,10 @@ function updateWebGPUModel(model, frameState) {
           primCache.translucentPipeline = pipelineCache.getPipeline(
             AlphaModes.BLEND,
             matInfo.isDoubleSided,
+            // Batch 174 — translucent dual-command pipeline shares the
+            // same per-variant materialBGL as the primary so the
+            // mergedMaterialBGTranslucent below validates against it.
+            primCache.materialDefines | 0,
           );
         }
         // NEW-BG-CONSOLIDATION (Batch 122) — translucent-class merged
@@ -2666,6 +2806,7 @@ function updateWebGPUModel(model, frameState) {
           primCache.textureEntries,
           featureIdEntries,
           iblEntries,
+          primCache.materialDefines | 0,
         );
         const translucentCmd = new WebGPUDrawCommand({
           pipeline: primCache.translucentPipeline,

@@ -171,6 +171,31 @@ export const ShaderDefine = Object.freeze({
    * — pick-through-terrain matches WebGL behavior.
    */
   VS_THREE_POINT_DEPTH_CHECK: 1 << 8,
+
+  /**
+   * Model material BGL/shader variant — KHR-extension textures + sampler
+   * (bindings 12-25 of the model material BGL). When set, the shader
+   * declares all 14 KHR texture/sampler slots and the FS samples them
+   * inside `if (hasFlag(flags, FLAG_HAS_*))` blocks; the renderer pairs
+   * this with the full (37-binding) `materialBGL` and full pipeline
+   * layout. When clear, all KHR declarations + sampling sites are
+   * stripped from the shader source — the basic shader has 23 bindings
+   * (10 sampled textures), well under the WebGPU spec floor of 16
+   * `maxSampledTexturesPerShaderStage`. The renderer pairs this with
+   * `materialBGL_basic` + the basic pipeline layout, so model
+   * rendering works on devices that only expose the spec floor (mobile
+   * WebGPU, "compatibility" featureLevel) for materials that don't use
+   * any KHR extensions.
+   *
+   * Per-primitive selection: `WebGPUModelRenderer` checks the
+   * material's `flags` for any KHR-extension bit (`FLAG_HAS_CLEARCOAT`,
+   * `FLAG_HAS_SPECULAR_EXT`, `FLAG_HAS_ANISOTROPY`, `FLAG_HAS_IRIDESCENCE`,
+   * `FLAG_HAS_SHEEN`, `FLAG_HAS_TRANSMISSION`) and routes through the
+   * full variant if any is set, else through the basic variant.
+   *
+   * Consumer: `ModelPBRComplete.wgsl`.
+   */
+  MODEL_HAS_KHR_TEXTURES: 1 << 9,
 } as const);
 
 /**
