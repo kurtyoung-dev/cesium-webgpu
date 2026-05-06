@@ -205,6 +205,60 @@ fn stencilFS(i: VOut) -> @location(0) vec4<f32> {
   }
   return vec4<f32>(0.0);
 }
+
+// NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — velocity entry
+// points for TAA. Vector3DTile classification volumes have static
+// per-feature geometry (the tileset content doesn't animate per-cell
+// or per-feature), so velocity is camera-only: project the SAME
+// world-space position through both the current and previous VPs and
+// emit (currNdc - prevNdc) to the rg16float velocity texture. Mirrors
+// the Voxel pattern (Batch 173) — same logic, different data shape.
+struct VelocityVOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) currClip: vec4<f32>,
+  @location(1) prevClip: vec4<f32>,
+};
+
+@vertex
+fn vsVelocity(
+  @location(0) position: vec3<f32>,
+  @location(1) batchId: f32,
+) -> VelocityVOut {
+  var o: VelocityVOut;
+  // Current frame: same RTE math as the color VS so the rasterizer
+  // walks identical fragments → no spurious half-pixel offsets in the
+  // emitted velocity vectors.
+  let rte = (u.centerH - u.camH) + (u.centerL - u.camL) + position;
+  let curClip = csm_depthClamp(u.vpRTE * vec4<f32>(rte, 1.0));
+  // Previous frame: rebuild the absolute world-space position
+  // (centerH + centerL + position) and project through prevVP. The
+  // prevVP includes the prev-frame translation, so this yields the
+  // exact NDC position the previous frame would have rasterized at.
+  let worldPos = u.centerH + u.centerL + position;
+  let prevClip = u.prevViewProjection * vec4<f32>(worldPos, 1.0);
+  o.pos = curClip;
+  o.currClip = curClip;
+  o.prevClip = prevClip;
+  // batchId unused in velocity but kept in the input layout so the
+  // same vertex buffer format is consumed without rebinding.
+  let _bi = batchId;
+  return o;
+}
+
+@fragment
+fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
+  let curW = i.currClip.w;
+  let prevW = i.prevClip.w;
+  // Behind-near-plane fragments contribute zero velocity — the TAA
+  // sampler will treat the pixel as static and reuse history without
+  // a reprojected sample. Better than emitting NaN-ish division.
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = i.currClip.xy / curW;
+  let prevNdc = i.prevClip.xy / prevW;
+  return curNdc - prevNdc;
+}
 `;
 
   const mod = getVectorTilePrimitiveShaderCache(device).getOrCreate(
@@ -333,10 +387,37 @@ fn stencilFS(i: VOut) -> @location(0) vec4<f32> {
     },
   };
 
+  // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — velocity
+  // pipeline descriptor. Same VS bind-group layout as the color
+  // pipeline (the FS reads only the per-vertex prevClip/currClip
+  // varyings, so no extra storage is needed); the only deltas are:
+  //   - Single rg16float color target (matches scene-FB velocity texture)
+  //   - No blend (velocity is overwrite, not accumulate)
+  //   - Depth read-only (`depthWriteEnabled: false`); the velocity pass
+  //     loads depth from the prior color pass for visibility, so
+  //     fragments behind opaque content don't emit velocity.
+  const velocityDescriptor = {
+    name: `Vector3DTilePrimitive velocity [${depthFormat}]`,
+    layout,
+    vertex: { module: mod, entryPoint: "vsVelocity", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "fsVelocity",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
   return {
     colorDescriptor,
     pickDescriptor,
     stencilDescriptor,
+    velocityDescriptor,
     sharedBgl,
     depthSampleBgl,
   };
@@ -422,6 +503,31 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
           });
       }
     }
+    // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — velocity
+    // pipeline. Cache miss is non-fatal: the color pass continues to
+    // render correctly without it; only the velocity-pass dispatch
+    // becomes a no-op until the variant lands. Resolved through the
+    // central cache so two `Vector3DTilePrimitive` primitives share
+    // the GPU pipeline.
+    if (!cache.velocityPipeline) {
+      const velSync = pipelineCache.getPipelineSync(
+        resources.velocityDescriptor,
+      );
+      if (velSync) {
+        cache.velocityPipeline = velSync;
+      } else if (!cache.velocityRequestPending) {
+        cache.velocityRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.velocityDescriptor)
+          .then((p) => {
+            cache.velocityPipeline = p;
+            cache.velocityRequestPending = false;
+          })
+          .catch(() => {
+            cache.velocityRequestPending = false;
+          });
+      }
+    }
     return !!cache.colorPipeline;
   }
   if (!cache.colorPipeline) {
@@ -437,6 +543,13 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
   if (!cache.stencilPipeline) {
     cache.stencilPipeline = device.createRenderPipeline(
       descriptorToGPU(resources.stencilDescriptor),
+    );
+  }
+  // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — fallback path
+  // (no central cache). Same rationale as the cache-driven branch above.
+  if (!cache.velocityPipeline) {
+    cache.velocityPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.velocityDescriptor),
     );
   }
   return true;
@@ -797,6 +910,13 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     cache.colorPipeline = undefined;
     cache.pickPipeline = undefined;
     cache.stencilPipeline = undefined;
+    // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — velocity
+    // pipeline targets `rg16float` (the scene-FB velocity texture
+    // format), which doesn't change with HDR / canvas-format flips —
+    // but keeping this in the invalidation set mirrors the other
+    // pipelines' lifecycle and costs nothing (the pipeline cache
+    // memoizes the descriptor → GPU pipeline mapping).
+    cache.velocityPipeline = undefined;
     cache.sharedBindGroup = undefined;
     cache.depthSampleBindGroup = undefined;
   }
@@ -1006,15 +1126,36 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       vertexCount: 0,
       owner: primitive,
     };
+    // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — derive a
+    // velocity command alongside the color command when TAA is on.
+    // Mirrors the Voxel pattern (Batch 173) and the advanced family
+    // collectively (Batches 168-173): the velocity pass walks the
+    // command list for `cmd.velocityCommand` and dispatches into the
+    // single-target rg16float render pass sharing scene depth read-only.
+    // Skip on classifier IGNORE_SHOW emission (only the primary
+    // classification passes need motion vectors; IGNORE_SHOW writes
+    // stencil-only and isn't visible content).
+    const taaEnabled = frameState?.taaEnabled === true;
+
     for (let p = 0; p < groundPasses.length; p++) {
       const passEnum = groundPasses[p];
-      colorCommands.push(
-        new WebGPUDrawCommand({
+      const colorCmd = new WebGPUDrawCommand({
+        ...sharedDrawArgs,
+        pipeline: cache.colorPipeline,
+        pass: passEnum,
+      });
+      // Attach velocity derivation to the FIRST color command for this
+      // primitive (the BOTH-pass dual-emit case already covers both
+      // ground passes; per-feature animation isn't possible for static
+      // classification volumes anyway).
+      if (taaEnabled && p === 0 && defined(cache.velocityPipeline)) {
+        colorCmd.velocityCommand = new WebGPUDrawCommand({
           ...sharedDrawArgs,
-          pipeline: cache.colorPipeline,
+          pipeline: cache.velocityPipeline,
           pass: passEnum,
-        }),
-      );
+        });
+      }
+      colorCommands.push(colorCmd);
       if (defined(cache.pickPipeline)) {
         pickCommands.push(
           new WebGPUDrawCommand({
