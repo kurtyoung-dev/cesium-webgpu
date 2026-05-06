@@ -134,6 +134,23 @@ interface PointCloudCache {
   // can re-resolve every frame until the pipeline materializes.
   lodPipelineEntry: PointCloudPipelineEntry | null;
   lodDefaultBgl: GPUBindGroupLayout | null;
+
+  // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS (PointCloud).
+  // Per-particle prev-position mirror of `instanceBuffer` so the velocity
+  // VS reads (current, previous) position pairs from two parallel
+  // 40-byte instance streams. Same lifecycle as PointPrimitive's
+  // `prevInstanceBuffer` (Batch 148): captured before the GPU instance
+  // upload, retained one-frame-lagged. NULL when no animated point cloud
+  // has been seen on this device yet (TAA off-path stays cheap).
+  prevInstanceBuffer: GPUBuffer | null;
+  // CPU-side mirror of the LAST frame's instance data, so this frame's
+  // velocity pass can upload prev positions before overwriting curr.
+  // Not present on the first frame; falls through to current data which
+  // emits a zero-velocity (correct, since no prev frame existed).
+  prevInstanceData: Float32Array | null;
+  // Lazy velocity pipeline. Builds the first frame TAA is on; cached
+  // thereafter. Cleared on format invalidation.
+  velocityPipelineEntry: PointCloudPipelineEntry | null;
 }
 
 const POINT_CLOUD_WGSL = `
@@ -160,9 +177,14 @@ struct Uniforms {
   pointSizeMultiplier: f32,
   _pad2: f32,
   // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
-  // tail. Layout-only invariant today; consumed by future per-particle
-  // motion-vector pass for animated point clouds.
+  // tail. Consumed by Batch 168's per-particle motion-vector pass.
   prevViewProjection: mat4x4<f32>,
+  // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS. Model matrix (no
+  // translation zeroing) lifts prev model-space positions to world
+  // space before applying prevVP. CPU packs pointCloud.modelMatrix
+  // directly; static for typical 3D-Tiles content (modelMatrix locked
+  // at tile-content load) so velocity stays at zero in the common case.
+  modelMatrix: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -191,6 +213,70 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (dist > 1.0) { discard; }
   let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
   return vec4<f32>(input.color, alpha);
+}
+
+// Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
+// animated point clouds. Mirrors the Batch 148 pattern from
+// PointPrimitiveColor: rasterize the point quad at the CURRENT-frame
+// position so the velocity texture covers the same pixels the color
+// pass touched, then emit per-fragment (currNdc - prevNdc).
+struct VelocityVertexInput {
+  @location(0) quadVertex: vec2<f32>,
+  @location(1) positionHigh: vec3<f32>,
+  @location(2) positionLow: vec3<f32>,
+  @location(3) colorAndSize: vec4<f32>,
+  // Slot 1: prev-frame instance data — only positions matter.
+  @location(4) prevPositionHigh: vec3<f32>,
+  @location(5) prevPositionLow: vec3<f32>,
+};
+
+struct VelocityVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currCenterClip: vec4<f32>,
+  @location(1) prevCenterClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
+  var output: VelocityVertexOutput;
+  // Current-frame center clip via RTE (matches vertexMain math).
+  let posRTE = (input.positionHigh - u.encodedCameraHigh)
+             + (input.positionLow - u.encodedCameraLow);
+  let currCenterClip = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
+  // Previous-frame center clip via full prev VP. Prev positions are in
+  // model space (same as current); lift to world space via current
+  // modelMatrix (acceptable approximation for the static-modelMatrix
+  // case which dominates 3D-Tiles point cloud content), then apply
+  // prevViewProjection to land in prev clip space.
+  let prevModelPos = vec4<f32>(
+    input.prevPositionHigh + input.prevPositionLow, 1.0,
+  );
+  let prevWorldPos = u.modelMatrix * prevModelPos;
+  let prevCenterClip = u.prevViewProjection * prevWorldPos;
+  // Rasterize quad at the current center using the existing pixel-size
+  // expansion so the velocity texture covers the same screen pixels.
+  let pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  let px = pointSize / u.viewportSize.x * currCenterClip.w;
+  let py = pointSize / u.viewportSize.y * currCenterClip.w;
+  var fp = currCenterClip;
+  fp.x = fp.x + input.quadVertex.x * px;
+  fp.y = fp.y + input.quadVertex.y * py;
+  output.position = fp;
+  output.currCenterClip = currCenterClip;
+  output.prevCenterClip = prevCenterClip;
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+  let curW = input.currCenterClip.w;
+  let prevW = input.prevCenterClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currCenterClip.xy / curW;
+  let prevNdc = input.prevCenterClip.xy / prevW;
+  return curNdc - prevNdc;
 }
 `;
 
@@ -223,10 +309,13 @@ struct Uniforms {
   viewportSize: vec2<f32>,
   pointSizeMultiplier: f32,
   _pad2: f32,
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
-  // tail. Layout-only invariant today; consumed by future per-particle
-  // motion-vector pass for animated point clouds.
+  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection.
   prevViewProjection: mat4x4<f32>,
+  // Batch 168 - matches the default-path UBO layout. LOD path doesn't
+  // emit velocity yet (deferred follow-up — needs prev SSBO mirror),
+  // but the struct must be the same size as the default to share the
+  // 256-byte UBO buffer.
+  modelMatrix: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -400,6 +489,97 @@ function buildPipelineDescriptor(
 }
 
 /**
+ * Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity pipeline.
+ * Same UBO BGL as the color path; vertex layout adds a second
+ * 40-byte instance buffer at slot 1 carrying prev-frame positions
+ * (locations 4 and 5). Outputs to rg16float matching the TAA
+ * dispatcher's velocity texture format.
+ * @private
+ */
+function buildVelocityPipelineDescriptor(
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  bgl: GPUBindGroupLayout,
+): WebGPURenderPipelineDescriptor {
+  const layout = device.createPipelineLayout({
+    label: "PointCloud velocity pipeline layout",
+    bindGroupLayouts: [bgl],
+  });
+  return {
+    name: "PointCloud velocity pipeline",
+    layout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexVelocityMain",
+      buffers: [
+        {
+          arrayStride: 8,
+          stepMode: "vertex" as GPUVertexStepMode,
+          attributes: [
+            {
+              shaderLocation: 0,
+              offset: 0,
+              format: "float32x2" as GPUVertexFormat,
+            },
+          ],
+        },
+        {
+          arrayStride: 40,
+          stepMode: "instance" as GPUVertexStepMode,
+          attributes: [
+            {
+              shaderLocation: 1,
+              offset: 0,
+              format: "float32x3" as GPUVertexFormat,
+            },
+            {
+              shaderLocation: 2,
+              offset: 12,
+              format: "float32x3" as GPUVertexFormat,
+            },
+            {
+              shaderLocation: 3,
+              offset: 24,
+              format: "float32x4" as GPUVertexFormat,
+            },
+          ],
+        },
+        {
+          // Batch 168 - prev-position stream. Same 40-byte stride; only
+          // positions are read (locations 4-5). Color/size at offset 24
+          // is ignored by `vertexVelocityMain`.
+          arrayStride: 40,
+          stepMode: "instance" as GPUVertexStepMode,
+          attributes: [
+            {
+              shaderLocation: 4,
+              offset: 0,
+              format: "float32x3" as GPUVertexFormat,
+            },
+            {
+              shaderLocation: 5,
+              offset: 12,
+              format: "float32x3" as GPUVertexFormat,
+            },
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentVelocityMain",
+      targets: [{ format: "rg16float" as GPUTextureFormat }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+}
+
+/**
  * Convert our cache-friendly descriptor back into the WebGPU descriptor
  * shape for the fallback path (no central cache available).
  * @private
@@ -485,6 +665,10 @@ function buildInstanceBuffer(
   worldX: Float32Array | null;
   worldY: Float32Array | null;
   worldZ: Float32Array | null;
+  // Batch 168 - retained interleaved instance data so the velocity
+  // path can mirror it into the prev-instance GPU buffer per frame.
+  // Same lifecycle as the GPU buffer (rebuilt on revision change).
+  instanceData: Float32Array;
 } {
   // Read point positions, colors from pointCloud._drawCommand or _parsedContent
   const parsedContent =
@@ -496,6 +680,7 @@ function buildInstanceBuffer(
       worldX: null,
       worldY: null,
       worldZ: null,
+      instanceData: new Float32Array(0),
     };
   }
 
@@ -564,17 +749,27 @@ function buildInstanceBuffer(
     usage,
   });
   device.queue.writeBuffer(buffer, 0, gpuData(data));
-  return { buffer, count: pointCount, worldX, worldY, worldZ };
+  return {
+    buffer,
+    count: pointCount,
+    worldX,
+    worldY,
+    worldZ,
+    // Batch 168 - hand the interleaved data back so the velocity path
+    // can keep a CPU-side prev mirror across the rebuild boundary.
+    instanceData: data,
+  };
 }
 
 function packUniforms(
   uniformState: CesiumUniformState,
   modelMatrix: Matrix4 | CesiumMatrix4,
 ): Float32Array {
-  // AUDIT_2026_05_02 B.9 (Batch 153) — bumped from 28 → 44 floats (176
-  // bytes) to fit the trailing `prevViewProjection: mat4x4<f32>` (16
-  // floats). UBO is allocated at 256 bytes; comfortably fits.
-  const data = new Float32Array(44);
+  // Batch 168 - bumped from 44 → 60 floats (240 bytes) to fit the
+  // trailing `modelMatrix: mat4x4<f32>` used by the velocity VS to
+  // lift prev model-space positions to world space. UBO is allocated
+  // at 256 bytes; still fits with 16 spare bytes.
+  const data = new Float32Array(60);
   const view = uniformState.view;
   const projection = uniformState.projection;
 
@@ -644,6 +839,13 @@ function packUniforms(
     data[42] = 0;
     data[43] = 1;
   }
+
+  // Batch 168 - modelMatrix at floats 44..59. The velocity VS lifts
+  // prev model-space positions to world space via this, then applies
+  // prevVP to land in prev clip space. CPU passes the Cesium
+  // `pointCloud.modelMatrix` directly (no translation zeroing - the
+  // velocity path needs the full transform, not the RTE-zeroed one).
+  Matrix4.pack(modelMatrix as Matrix4, data, 44);
   return data;
 }
 
@@ -677,6 +879,10 @@ function updateWebGPUPointCloud(
       lodUploadedRevision: -1,
       lodCommand: null,
       lodActive: false,
+      // Batch 168 - velocity pipeline + prev-instance buffer (lazy).
+      prevInstanceBuffer: null,
+      prevInstanceData: null,
+      velocityPipelineEntry: null,
     } as PointCloudCache;
   }
 
@@ -700,6 +906,10 @@ function updateWebGPUPointCloud(
   ) {
     cache.initialized = false;
     cache.pipelineEntry = null;
+    cache.pipeline = null;
+    // Batch 168 - velocity pipeline references the same shader module
+    // built against the now-invalid format; force rebuild.
+    cache.velocityPipelineEntry = null;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
@@ -783,6 +993,14 @@ function updateWebGPUPointCloud(
     cache.lodPositionsX = result.worldX;
     cache.lodPositionsY = result.worldY;
     cache.lodPositionsZ = result.worldZ;
+    // Batch 168 - on revision change the prev-instance mirror is now
+    // stale. Seed it with the new data so the velocity pass on this
+    // frame emits 0 (correct: there's no continuous correspondence
+    // between an OLD point at index i and a NEW point at index i after
+    // a revision rebuild). Subsequent animated mutations would re-build
+    // the buffer (advancing revision) and re-seed velocity to 0; the
+    // typical static-content case never hits this path twice.
+    cache.prevInstanceData = result.instanceData;
     cache.command = null;
     cache.lodCommand = null;
     cache.lodStorageBindGroup = null;
@@ -836,7 +1054,154 @@ function updateWebGPUPointCloud(
     });
   }
 
+  // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS. Maintain a
+  // one-frame-lagged mirror of the instance buffer so the velocity VS
+  // can read (current, previous) position pairs. Only allocates the
+  // GPU buffer when TAA is enabled this frame (or has ever been since
+  // boot — we keep the buffer once allocated so toggling TAA off→on
+  // doesn't lose a frame of history).
+  attachPointCloudVelocityCommand(
+    device,
+    context,
+    frameState,
+    cache,
+    canvasFormat,
+  );
+
   commandList.push(cache.command);
+}
+
+/**
+ * Batch 168 - upload prev positions, build (or fetch) the velocity
+ * pipeline, attach `velocityCommand` to the cache's color command. The
+ * TAA pass walks the command list for `cmd.velocityCommand` and
+ * dispatches it into the rg16float velocity texture. Mirrors the
+ * Billboard/Point pattern (Batches 143/148).
+ *
+ * Skips entirely when TAA is off and no prev buffer has been allocated
+ * yet — keeps the off-path zero-cost.
+ * @private
+ */
+function attachPointCloudVelocityCommand(
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  cache: PointCloudCache,
+  canvasFormat: GPUTextureFormat,
+): void {
+  // Read the TAA flag from the same source the Collection renderers use.
+  const taaEnabledThisFrame =
+    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
+    true;
+  if (!taaEnabledThisFrame && !cache.prevInstanceBuffer) {
+    if (cache.command) {
+      (cache.command as { velocityCommand?: unknown }).velocityCommand =
+        undefined;
+    }
+    return;
+  }
+  if (!cache.instanceBuffer || cache.instanceCount === 0) {
+    return;
+  }
+
+  const requiredBytes = cache.instanceCount * 40;
+  // Allocate / grow the prev buffer to match the current instance count.
+  if (
+    !cache.prevInstanceBuffer ||
+    cache.prevInstanceBuffer.size < requiredBytes
+  ) {
+    if (cache.prevInstanceBuffer) {
+      cache.prevInstanceBuffer.destroy();
+    }
+    cache.prevInstanceBuffer = device.createBuffer({
+      label: "PointCloud prev instances",
+      size: requiredBytes,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+  }
+  // Upload prev frame's data. `cache.prevInstanceData` is captured at
+  // each `buildInstanceBuffer` rebuild AND is the same Float32Array
+  // referenced by `cache.instanceBuffer` (CPU mirror). For static
+  // point clouds prev == curr per-frame so velocity stays zero —
+  // exactly what the TAA pass wants for camera-only motion. For an
+  // animated re-build, the revision-change path re-seeds prev to the
+  // new data so the discontinuity emits zero velocity rather than a
+  // garbage delta.
+  const prevSrc = cache.prevInstanceData;
+  if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+    device.queue.writeBuffer(
+      cache.prevInstanceBuffer,
+      0,
+      prevSrc.buffer,
+      prevSrc.byteOffset,
+      requiredBytes,
+    );
+  } else {
+    // No CPU mirror yet (shouldn't happen post-Batch-168, but a
+    // defensive GPU self-copy keeps the pipeline correct in case the
+    // build path missed a populator). Velocity = 0 on the seed frame.
+    const encoder = device.createCommandEncoder({
+      label: "PointCloud prev seed",
+    });
+    encoder.copyBufferToBuffer(
+      cache.instanceBuffer,
+      0,
+      cache.prevInstanceBuffer,
+      0,
+      requiredBytes,
+    );
+    device.queue.submit([encoder.finish()]);
+  }
+
+  // Lazy velocity pipeline build.
+  if (!cache.velocityPipelineEntry && cache.shaderModule && cache.defaultBgl) {
+    cache.velocityPipelineEntry = {
+      descriptor: buildVelocityPipelineDescriptor(
+        device,
+        cache.shaderModule,
+        cache.defaultBgl,
+      ),
+      pipeline: null,
+      pending: false,
+    };
+  }
+  if (cache.velocityPipelineEntry && !cache.velocityPipelineEntry.pipeline) {
+    tryResolvePointCloudPipeline(
+      device,
+      (
+        context as unknown as {
+          webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+        }
+      ).webgpuPipelineCache ?? null,
+      cache.velocityPipelineEntry,
+    );
+  }
+
+  if (
+    cache.command &&
+    cache.velocityPipelineEntry?.pipeline &&
+    cache.prevInstanceBuffer
+  ) {
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      new WebGPUDrawCommand({
+        pipeline: cache.velocityPipelineEntry.pipeline,
+        bindGroups: [cache.bindGroup],
+        vertexBuffers: [
+          cache.quadVertexBuffer,
+          cache.instanceBuffer,
+          cache.prevInstanceBuffer,
+        ],
+        vertexCount: 6,
+        instanceCount: cache.instanceCount,
+        pass: Pass.OPAQUE,
+      });
+  } else if (cache.command) {
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      undefined;
+  }
+  // Suppress unused-parameter warning for `canvasFormat` — kept for
+  // signature parity with the surrounding pipeline-builder helpers.
+  void canvasFormat;
 }
 
 /**
