@@ -164,6 +164,19 @@ interface PointCloudCache {
   // Lazy velocity pipeline. Builds the first frame TAA is on; cached
   // thereafter. Cleared on format invalidation.
   velocityPipelineEntry: PointCloudPipelineEntry | null;
+
+  // Batch 169 - B.10 NEW-ADVANCED-MOTION-VECTORS LOD path. Parallel
+  // storage buffer mirroring `instanceBuffer` with the PREVIOUS
+  // frame's interleaved data. Same 40-byte stride; only positions
+  // (floats 0-5) are read by the LOD velocity VS.
+  lodPrevInstanceBuffer: GPUBuffer | null;
+  // Lazy LOD velocity pipeline. Has its own descriptor (storageBGL
+  // includes binding 2 for prev SSBO; the regular LOD pipeline only
+  // declares bindings 0-1, so a different BGL is needed). Resolved on
+  // the first LOD-active TAA frame.
+  lodVelocityPipelineEntry: PointCloudPipelineEntry | null;
+  lodVelocityBindGroup: GPUBindGroup | null;
+  lodVelocityStorageBGL: GPUBindGroupLayout | null;
 }
 
 const POINT_CLOUD_WGSL = `
@@ -324,10 +337,9 @@ struct Uniforms {
   _pad2: f32,
   // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection.
   prevViewProjection: mat4x4<f32>,
-  // Batch 168 - matches the default-path UBO layout. LOD path doesn't
-  // emit velocity yet (deferred follow-up — needs prev SSBO mirror),
-  // but the struct must be the same size as the default to share the
-  // 256-byte UBO buffer.
+  // Batch 168 - matches the default-path UBO layout. Used by the
+  // velocity VS (Batch 169) to lift prev model-space positions to
+  // world space; the regular LOD VS doesn't read it.
   modelMatrix: mat4x4<f32>,
 };
 
@@ -337,6 +349,15 @@ struct Uniforms {
 // layout that buildInstanceBuffer writes (10 floats per point).
 @group(1) @binding(0) var<storage, read> instanceData: array<f32>;
 @group(1) @binding(1) var<storage, read> visibleIndices: array<u32>;
+// Batch 169 - B.10 NEW-ADVANCED-MOTION-VECTORS LOD variant. Parallel
+// SSBO mirroring instanceData with the PREVIOUS frame's interleaved
+// positions, indexed identically by visibleIndices[iidx]. Same
+// 10-floats-per-point layout; only floats 0-5 (posHigh, posLow) are
+// read by the velocity VS — color/size are ignored. Bound at slot 2
+// alongside the regular LOD storage; the color pipeline doesn't
+// declare this binding (WGSL only requires declared bindings, the
+// BGL for both pipelines includes the slot).
+@group(1) @binding(2) var<storage, read> prevInstanceData: array<f32>;
 
 @vertex
 fn vertexMainLOD(
@@ -383,6 +404,89 @@ fn fragmentMainLOD(input: VertexOutput) -> @location(0) vec4<f32> {
   if (dist > 1.0) { discard; }
   let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
   return vec4<f32>(input.color, alpha);
+}
+
+// Batch 169 - B.10 NEW-ADVANCED-MOTION-VECTORS LOD velocity emission.
+// Same algorithm as the default-path vertexVelocityMain/
+// fragmentVelocityMain (Batch 168) but reads (curr, prev) positions
+// from the storage buffers instanceData/prevInstanceData indexed
+// by visibleIndices[iidx]. Quad rasterized at the CURRENT-frame
+// position so the velocity texture covers the same screen pixels the
+// LOD color pass touched.
+struct VelocityVertexOutputLOD {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currCenterClip: vec4<f32>,
+  @location(1) prevCenterClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMainLOD(
+  @builtin(instance_index) iidx: u32,
+  @location(0) quadVertex: vec2<f32>,
+) -> VelocityVertexOutputLOD {
+  var output: VelocityVertexOutputLOD;
+  let actualIdx = visibleIndices[iidx];
+  let base = actualIdx * 10u;
+
+  // Current-frame center clip via RTE (matches vertexMainLOD math).
+  let positionHigh = vec3<f32>(
+    instanceData[base + 0u],
+    instanceData[base + 1u],
+    instanceData[base + 2u],
+  );
+  let positionLow = vec3<f32>(
+    instanceData[base + 3u],
+    instanceData[base + 4u],
+    instanceData[base + 5u],
+  );
+  let size = instanceData[base + 9u];
+  let posRTE = (positionHigh - u.encodedCameraHigh)
+             + (positionLow - u.encodedCameraLow);
+  let currCenterClip = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
+
+  // Previous-frame center clip via prevVP × modelMatrix × prevModelPos.
+  // Prev positions live in the parallel SSBO at the SAME source index
+  // (visibleIndices is regenerated each frame but the per-point
+  // identity is stable across the LOD compaction — point i in the
+  // base SSBO is point i in prev SSBO).
+  let prevPosHigh = vec3<f32>(
+    prevInstanceData[base + 0u],
+    prevInstanceData[base + 1u],
+    prevInstanceData[base + 2u],
+  );
+  let prevPosLow = vec3<f32>(
+    prevInstanceData[base + 3u],
+    prevInstanceData[base + 4u],
+    prevInstanceData[base + 5u],
+  );
+  let prevModelPos = vec4<f32>(prevPosHigh + prevPosLow, 1.0);
+  let prevWorldPos = u.modelMatrix * prevModelPos;
+  let prevCenterClip = u.prevViewProjection * prevWorldPos;
+
+  // Rasterize quad at the current center using the existing pixel-size
+  // expansion so the velocity texture covers the same screen pixels.
+  let pointSize = size * u.pointSizeMultiplier;
+  let px = pointSize / u.viewportSize.x * currCenterClip.w;
+  let py = pointSize / u.viewportSize.y * currCenterClip.w;
+  var fp = currCenterClip;
+  fp.x = fp.x + quadVertex.x * px;
+  fp.y = fp.y + quadVertex.y * py;
+  output.position = fp;
+  output.currCenterClip = currCenterClip;
+  output.prevCenterClip = prevCenterClip;
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMainLOD(input: VelocityVertexOutputLOD) -> @location(0) vec2<f32> {
+  let curW = input.currCenterClip.w;
+  let prevW = input.prevCenterClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currCenterClip.xy / curW;
+  let prevNdc = input.prevCenterClip.xy / prevW;
+  return curNdc - prevNdc;
 }
 `;
 
@@ -897,6 +1001,11 @@ function updateWebGPUPointCloud(
       instanceData: null,
       prevInstanceData: null,
       velocityPipelineEntry: null,
+      // Batch 169 - LOD-path velocity (parallel SSBO + LOD velocity VS).
+      lodPrevInstanceBuffer: null,
+      lodVelocityPipelineEntry: null,
+      lodVelocityBindGroup: null,
+      lodVelocityStorageBGL: null,
     } as PointCloudCache;
   }
 
@@ -938,6 +1047,13 @@ function updateWebGPUPointCloud(
     cache.lodCommand = null;
     cache.lodPipeline = null;
     cache.lodPipelineEntry = null;
+    // Batch 169 - LOD velocity pipeline targets rg16float which is
+    // format-invariant, but we rebuild it alongside the LOD color
+    // pipeline so the storageBGL and bindings stay consistent across
+    // any future format-aware fields. Cheap reset.
+    cache.lodVelocityPipelineEntry = null;
+    cache.lodVelocityBindGroup = null;
+    cache.lodVelocityStorageBGL = null;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
@@ -1037,6 +1153,13 @@ function updateWebGPUPointCloud(
     cache.lodCommand = null;
     cache.lodStorageBindGroup = null;
     cache.lodUploadedRevision = -1;
+    // Batch 169 - velocity bind group references the (now-destroyed)
+    // instance buffer; force rebuild on the next frame's velocity
+    // attach. lodPrevInstanceBuffer also references stale data; the
+    // size-allocation check inside the LOD velocity helper resizes
+    // it (the byteLength comparison in the prev-upload step then
+    // emits velocity = 0 for the seed/revision-change frame).
+    cache.lodVelocityBindGroup = null;
   }
 
   if (cache.instanceCount === 0) {
@@ -1430,7 +1553,194 @@ function _runGPULODPath(
       drawIndirectBuffer: cache.lodIndirectBuffer,
     });
   }
+
+  // Batch 169 - LOD-path velocity emission. Mirrors the default-path
+  // attach helper: maintain a parallel prev SSBO, build the velocity
+  // pipeline lazily, attach `velocityCommand` to the lodCommand. The
+  // TAA pass walks the command list for `cmd.velocityCommand` and
+  // dispatches it via drawIndirect (same indirect buffer as color).
+  attachLODPointCloudVelocityCommand(device, context, frameState, cache);
+
   commandList.push(cache.lodCommand);
+}
+
+/**
+ * Batch 169 - upload prev positions to the LOD prev SSBO, build (or
+ * fetch) the LOD velocity pipeline, attach `velocityCommand` to
+ * `cache.lodCommand`. Same `cache.instanceData` / `cache.prevInstanceData`
+ * lifecycle as the default-path helper — both share the CPU mirror and
+ * the prev-promotion happens in the default-path helper after both
+ * paths' velocity commands are wired.
+ *
+ * Skips entirely when TAA is off and no prev SSBO has been allocated
+ * yet — keeps the off-path zero-cost.
+ * @private
+ */
+function attachLODPointCloudVelocityCommand(
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  cache: PointCloudCache,
+): void {
+  const taaEnabledThisFrame =
+    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
+    true;
+  if (!taaEnabledThisFrame && !cache.lodPrevInstanceBuffer) {
+    if (cache.lodCommand) {
+      (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =
+        undefined;
+    }
+    return;
+  }
+  if (!cache.instanceBuffer || cache.instanceCount === 0) {
+    return;
+  }
+
+  const requiredBytes = cache.instanceCount * 40;
+  // Allocate / grow the LOD prev SSBO to match the current instance
+  // count. Same usage flags as the regular LOD instance buffer
+  // (STORAGE for the velocity VS to read, COPY_DST for writeBuffer).
+  if (
+    !cache.lodPrevInstanceBuffer ||
+    cache.lodPrevInstanceBuffer.size < requiredBytes
+  ) {
+    if (cache.lodPrevInstanceBuffer) {
+      cache.lodPrevInstanceBuffer.destroy();
+    }
+    cache.lodPrevInstanceBuffer = device.createBuffer({
+      label: "PointCloud LOD prev instances",
+      size: requiredBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    // Storage BG references the prev SSBO; rebuild on size change.
+    cache.lodVelocityBindGroup = null;
+  }
+
+  // Upload prev frame's data. Same cases as the default-path helper:
+  // first-frame seed OR revision-change point-count mismatch both
+  // fall through to the GPU self-copy emitting velocity = 0. Static
+  // 3D-Tiles content has prevInstanceData aliasing instanceData so
+  // velocity stays zero (camera-only TAA fallback handles motion).
+  const prevSrc = cache.prevInstanceData;
+  if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+    device.queue.writeBuffer(
+      cache.lodPrevInstanceBuffer,
+      0,
+      prevSrc.buffer,
+      prevSrc.byteOffset,
+      requiredBytes,
+    );
+  } else {
+    const encoder = device.createCommandEncoder({
+      label: "PointCloud LOD prev seed",
+    });
+    encoder.copyBufferToBuffer(
+      cache.instanceBuffer,
+      0,
+      cache.lodPrevInstanceBuffer,
+      0,
+      requiredBytes,
+    );
+    device.queue.submit([encoder.finish()]);
+  }
+
+  // Lazy LOD velocity pipeline build.
+  if (!cache.lodVelocityPipelineEntry && cache.lodDefaultBgl) {
+    const built = _buildLODVelocityPipelineDescriptor(
+      device,
+      cache.lodDefaultBgl,
+    );
+    cache.lodVelocityPipelineEntry = {
+      descriptor: built.descriptor,
+      pipeline: null,
+      pending: false,
+    };
+    cache.lodVelocityStorageBGL = built.storageBGL;
+  }
+  if (
+    cache.lodVelocityPipelineEntry &&
+    !cache.lodVelocityPipelineEntry.pipeline
+  ) {
+    tryResolvePointCloudPipeline(
+      device,
+      (
+        context as unknown as {
+          webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+        }
+      ).webgpuPipelineCache ?? null,
+      cache.lodVelocityPipelineEntry,
+    );
+  }
+
+  // Build the LOD velocity storage bind group (curr SSBO +
+  // visibleIndices + prev SSBO). Rebuilt whenever the prev buffer is
+  // re-allocated (size change) or visibleIndices ref changes — the
+  // regular `lodStorageBindGroup` rebuild trigger sets
+  // `lodVelocityBindGroup` null too via our cache lookup below.
+  // Note: `lodStorageBindGroup` already references the current
+  // visibleIndices buf, so we read the same underlying buffer ref.
+  // The regular LOD path's storage bind group invalidation is in
+  // `_runGPULODPath` (sets `cache.lodStorageBindGroup = null` when
+  // upload happens); we mirror that for the velocity BG by tying both
+  // invalidations together.
+  if (
+    !cache.lodVelocityBindGroup &&
+    cache.lodVelocityStorageBGL &&
+    cache.instanceBuffer &&
+    cache.lodPrevInstanceBuffer
+  ) {
+    // Re-derive the visibleIndices buffer from the LOD processor by
+    // reading the regular bind group's buffer slot. Simpler: pull
+    // directly from context's pointCloudLOD processor.
+    const lodProcessor = (
+      context as unknown as {
+        pointCloudLOD?: WebGPUPointCloudLODProcessorInstance | null;
+      }
+    ).pointCloudLOD as WebGPUPointCloudLODProcessorInstance | null;
+    if (lodProcessor?.visibleIndicesBuffer) {
+      cache.lodVelocityBindGroup = device.createBindGroup({
+        label: "PointCloud LOD velocity storage BG",
+        layout: cache.lodVelocityStorageBGL,
+        entries: [
+          { binding: 0, resource: { buffer: cache.instanceBuffer } },
+          {
+            binding: 1,
+            resource: { buffer: lodProcessor.visibleIndicesBuffer },
+          },
+          { binding: 2, resource: { buffer: cache.lodPrevInstanceBuffer } },
+        ],
+      });
+    }
+  }
+
+  if (
+    cache.lodCommand &&
+    cache.lodVelocityPipelineEntry?.pipeline &&
+    cache.lodVelocityBindGroup &&
+    cache.lodIndirectBuffer
+  ) {
+    (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =
+      new WebGPUDrawCommand({
+        pipeline: cache.lodVelocityPipelineEntry.pipeline,
+        bindGroups: [cache.bindGroup, cache.lodVelocityBindGroup],
+        vertexBuffers: [cache.quadVertexBuffer],
+        vertexCount: 6,
+        instanceCount: 0, // filled by drawIndirect
+        pass: Pass.OPAQUE,
+        drawIndirectBuffer: cache.lodIndirectBuffer,
+      });
+  } else if (cache.lodCommand) {
+    (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =
+      undefined;
+  }
+
+  // Promote `instanceData` → `prevInstanceData` for next frame. Same
+  // logic as the default-path helper; safe to call here even if both
+  // helpers run in the same frame (the assignment is idempotent —
+  // both paths see the same `cache.instanceData`).
+  if (cache.instanceData) {
+    cache.prevInstanceData = cache.instanceData;
+  }
 }
 
 /**
@@ -1524,6 +1834,89 @@ function _buildLODPipelineDescriptor(
     },
   };
   return { descriptor, bgl, storageBGL };
+}
+
+/**
+ * Batch 169 - B.10 LOD velocity pipeline. Three storage bindings
+ * (curr instance + visibleIndices + prev instance) instead of the
+ * regular LOD pipeline's two; emits to rg16float matching the
+ * default-path velocity descriptor (Batch 168).
+ *
+ * Storage BGL is separate from the regular LOD pipeline's storageBGL
+ * because that one only declares 2 bindings — a 3-binding BGL with a
+ * 2-binding pipeline would fail validation, so we keep them split.
+ * The uniform BGL (group 0) is shared.
+ * @private
+ */
+function _buildLODVelocityPipelineDescriptor(
+  device: GPUDevice,
+  bgl: GPUBindGroupLayout,
+): {
+  descriptor: WebGPURenderPipelineDescriptor;
+  storageBGL: GPUBindGroupLayout;
+} {
+  const moduleCache = getPointCloudShaderModuleCache(device);
+  const shaderModule = moduleCache.getOrCreate(
+    ShaderSourceId.POINT_CLOUD_LOD,
+    POINT_CLOUD_LOD_WGSL,
+    0,
+    "PointCloud LOD shader",
+  );
+  const storageBGL = device.createBindGroupLayout({
+    label: "PointCloud LOD velocity storage BGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+    ],
+  });
+  const descriptor: WebGPURenderPipelineDescriptor = {
+    name: "PointCloud LOD velocity pipeline",
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bgl, storageBGL],
+    }),
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexVelocityMainLOD",
+      buffers: [
+        {
+          arrayStride: 8,
+          stepMode: "vertex" as GPUVertexStepMode,
+          attributes: [
+            {
+              shaderLocation: 0,
+              offset: 0,
+              format: "float32x2" as GPUVertexFormat,
+            },
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentVelocityMainLOD",
+      targets: [{ format: "rg16float" as GPUTextureFormat }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+  return { descriptor, storageBGL };
 }
 
 /**
