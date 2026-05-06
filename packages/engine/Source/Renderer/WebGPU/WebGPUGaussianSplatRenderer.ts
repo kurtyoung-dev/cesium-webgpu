@@ -107,6 +107,10 @@ struct Uniforms {
   // tail. Layout-only invariant today; consumed by future per-splat
   // motion-vector pass for animated splat clouds. UBO grows 192 → 256.
   prevViewProjection: mat4x4<f32>,
+  // Batch 172 — full model matrix (no translation zeroing) so the
+  // velocity VS can lift prev model-space positions to world space
+  // before applying prevViewProjection. UBO grows 256 → 320.
+  modelMatrix: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -220,28 +224,64 @@ struct VelocityVertexOutput {
 @vertex
 fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   var output: VelocityVertexOutput;
-  // Current-frame center clip via RTE (matches vertexMain for the
-  // quad center; we don't need the full elliptical projection — the
-  // velocity is a per-fragment screen-space delta of the SPLAT
-  // CENTER, computed at the rasterized footprint pixels).
+  // Current-frame center clip via RTE (matches vertexMain).
   let posRTE = (input.positionHigh - u.encodedCameraHigh)
              + (input.positionLow - u.encodedCameraLow);
   let currCenterClip = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
-  // Previous-frame center clip via prevVP × prevWorldPos. Splat
-  // positions are world-space (Cesium GaussianSplat content has
-  // modelMatrix=identity by default; for non-identity, the modelMatrix
-  // is folded into the precomputed world positions at content load).
-  let prevWorldPos = vec4<f32>(
+  // Batch 172 — Previous-frame center clip via prevVP × modelMatrix ×
+  // prevModelPos. Splat positions in _splatData are model-space; the
+  // current-frame VS folds the modelMatrix into mvpRelativeToEye, so
+  // prev needs the explicit lift via the standalone modelMatrix
+  // (added to the UBO this batch). For typical 3D-Tiles content the
+  // modelMatrix is identity and the lift is a no-op; for custom
+  // primitives with non-identity modelMatrix this is required for
+  // correct prev-clip projection.
+  let prevModelPos = vec4<f32>(
     input.prevPositionHigh + input.prevPositionLow, 1.0,
   );
+  let prevWorldPos = u.modelMatrix * prevModelPos;
   let prevCenterClip = u.prevViewProjection * prevWorldPos;
-  // Rasterize a 2-pixel-radius quad around the splat center. We can't
-  // easily reuse the elliptical footprint expansion (it depends on the
-  // covariance matrix); a coarse 2px square covers the dominant region
-  // each frame. Velocity precision under TAA only needs the screen-
-  // space displacement direction, not perfect footprint matching.
-  let radiusPx = 2.0;
-  let pixOff = input.quadVertex * radiusPx;
+
+  // Batch 172 — Replicate the full elliptical footprint expansion from
+  // vertexMain so the velocity texture covers the SAME pixels the
+  // color pass touched (within numerical precision). Pre-Batch-172 a
+  // coarse 2-pixel square footprint left edge pixels of large splats
+  // outside the velocity texture, falling back to camera-only TAA
+  // reprojection at the splat edges of animated splats.
+  let t = u.modelViewRelativeToEye * vec4<f32>(posRTE, 1.0);
+  let J00 = u.focalX / t.z;
+  let J02 = -(u.focalX * t.x / t.z) / t.z;
+  let J11 = u.focalY / t.z;
+  let J12 = -(u.focalY * t.y / t.z) / t.z;
+  let R = mat3x3<f32>(
+    u.modelViewRelativeToEye[0].xyz,
+    u.modelViewRelativeToEye[1].xyz,
+    u.modelViewRelativeToEye[2].xyz,
+  );
+  let Sigma = mat3x3<f32>(
+    vec3<f32>(input.covA.x, input.covA.y, input.covA.z),
+    vec3<f32>(input.covA.y, input.covB.x, input.covB.y),
+    vec3<f32>(input.covA.z, input.covB.y, input.covB.z),
+  );
+  let SV = R * Sigma * transpose(R);
+  let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];
+  let d = SV[1][1]; let e = SV[2][1]; let f = SV[2][2];
+  let c00 = J00*J00*a + 2.0*J00*J02*c + J02*J02*f + 0.3;
+  let c01 = J00*J11*b + J02*J11*e + J00*J12*c + J02*J12*f;
+  let c11 = J11*J11*d + 2.0*J11*J12*e + J12*J12*f + 0.3;
+  let det = c00*c11 - c01*c01;
+  if (det <= 0.0) {
+    // Degenerate splat — emit a behind-camera zero-coverage triangle so
+    // the velocity FS never executes for this instance. Mirrors
+    // vertexMain's degenerate handling.
+    output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+    output.currCenterClip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    output.prevCenterClip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    return output;
+  }
+  let eigenMax = 0.5*(c00+c11+sqrt((c00-c11)*(c00-c11)+4.0*c01*c01));
+  let radius = ceil(3.0 * sqrt(eigenMax));
+  let pixOff = input.quadVertex * radius;
   let ndcOff = pixOff / u.viewportSize * 2.0 * currCenterClip.w;
   var fp = currCenterClip;
   fp.x = fp.x + ndcOff.x;
@@ -652,8 +692,14 @@ function updateWebGPUGaussianSplats(
     // (floats 44-47 at offset 176).
     // AUDIT_2026_05_02 B.9 (Batch 153) — UBO grew 192 → 256 bytes to
     // include prev viewProjection (floats 48-63 at offset 192).
+    // Batch 172 — UBO grew 256 → 320 bytes to include the model matrix
+    // (floats 64-79 at offset 256). Used by the velocity VS to lift
+    // prev model-space positions to world space before applying
+    // prevViewProjection. Necessary for correct velocity when
+    // `primitive.modelMatrix` is non-identity (typical 3D-Tiles
+    // GaussianSplat content has identity, but custom primitives don't).
     cache.uniformBuffer = device.createBuffer({
-      size: 256,
+      size: 320,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     resources = buildSplatPipelineResources(device, canvasFormat);
@@ -817,6 +863,15 @@ function updateWebGPUGaussianSplats(
     prevVPData[15] = 1;
   }
   device.queue.writeBuffer(cache.uniformBuffer!, 192, prevVPData);
+
+  // Batch 172 — model matrix at byte offset 256 (float 64). Used by the
+  // velocity VS to lift prev model-space positions to world space
+  // before applying prevViewProjection. CPU passes the primitive's
+  // modelMatrix directly (no translation zeroing — the prev path needs
+  // the full transform, not the RTE-zeroed one used for currVP).
+  const modelMatrixData = new Float32Array(16);
+  Matrix4.pack(mm, modelMatrixData, 0);
+  device.queue.writeBuffer(cache.uniformBuffer!, 256, modelMatrixData);
 
   if (!cache.command) {
     const cmd = new WebGPUDrawCommand({
