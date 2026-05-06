@@ -93,6 +93,29 @@ export function buildPipelineDescriptor(
   useClipDistances: boolean = false,
   hasGeodeticSurfaceNormals: boolean = false,
   disableCulling: boolean = false,
+  // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only back-face
+  // pre-pass variant for translucent globe rendering. When `true`:
+  //   - cullMode: "front" (back faces only — populates depth from FAR
+  //     side of the globe before the translucent passes blend the near
+  //     side over it)
+  //   - depthWriteEnabled: true (writes depth — the whole point)
+  //   - colorWriteMask: 0 (no color output; the fragment stage is
+  //     retained so the existing module compiles unchanged, but its
+  //     output is masked to nothing)
+  //   - blend: undefined (irrelevant when nothing is written to color)
+  //
+  // The caller dispatches this command BEFORE the imagery-layer
+  // translucent commands; the resulting depth attachment lets the
+  // single-pass alpha blend (which still uses cullMode: "none" today)
+  // composite correctly against the far-side surface. Without this
+  // pre-pass, looking through the globe at antipodal terrain produces
+  // inside-out z-fight artifacts.
+  //
+  // Full multi-pass cull-separated technique (depth-only BF →
+  // translucent BF cullMode=front → translucent FF cullMode=back) is
+  // a follow-up; this single-pre-pass variant resolves the worst
+  // visible artifact at minimal architectural cost.
+  depthOnlyBackFace: boolean = false,
 ): WebGPURenderPipelineDescriptor {
   let vertexBuffers: GPUVertexBufferLayout[];
   let entryPoint: string;
@@ -288,8 +311,29 @@ export function buildPipelineDescriptor(
     }
   }
 
+  // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only back-face
+  // pre-pass overrides the cullMode / depthWriteEnabled / colorWriteMask
+  // state to populate scene-FB depth from the far side of the globe.
+  // Front-face culling, depth-write enabled, color writes masked off.
+  // Label suffix `_DOB` (depth-only back-face) is keyed into the cache
+  // so the variant doesn't collide with other variants of the same
+  // (quantized × normals × stride) tuple.
+  const dobLabel = depthOnlyBackFace ? ", depthOnlyBackFace" : "";
+  const cullMode: GPUCullMode = depthOnlyBackFace
+    ? "front"
+    : disableCulling
+      ? "none"
+      : "back";
+  const depthWriteEnabled = depthOnlyBackFace ? true : !isBlend;
+  // Mask all color writes when running the depth-only pre-pass. The
+  // fragment stage is retained (rather than omitted) so the same module
+  // compiles unchanged; its output is masked to nothing at the target
+  // state level. WebGPU spec: `writeMask: 0` is equivalent to
+  // GPUColorWrite.NONE and validates against the canvas format.
+  const colorWriteMask: GPUColorWriteFlags = depthOnlyBackFace ? 0 : 0xf;
+
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,
@@ -302,7 +346,8 @@ export function buildPipelineDescriptor(
       targets: [
         {
           format: host._canvasFormat,
-          blend: blendState,
+          blend: depthOnlyBackFace ? undefined : blendState,
+          writeMask: colorWriteMask,
         },
       ],
     },
@@ -313,12 +358,14 @@ export function buildPipelineDescriptor(
       // both faces visible. Mirrors WebGL's selection between
       // `_renderState` (cull on) and `_disableCullingRenderState`
       // (cull off) in `GlobeSurfaceTileProviderRendering.js:1226-1231`.
-      cullMode: disableCulling ? "none" : "back",
+      // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only
+      // back-face overrides to "front" (cull front faces, draw back).
+      cullMode,
       frontFace: "ccw",
     },
     depthStencil: {
       format: "depth24plus-stencil8",
-      depthWriteEnabled: !isBlend,
+      depthWriteEnabled,
       // ALWAYS use less-equal (not less), even for the first pass.
       // Planetary-scale FP32 precision can push the globe's clip-space
       // Z up against the far plane, and the paired vertex-shader clamp
@@ -459,6 +506,73 @@ export function selectPipeline(
       useClipDistances,
       hasGeodeticSurfaceNormals,
       disableCulling,
+    );
+    entry = { descriptor, pipeline: null, pending: false };
+    host._pipelineCache.set(cacheKey, entry);
+  }
+  return resolveGlobePipelineEntry(host, entry);
+}
+
+/**
+ * NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — select the depth-only
+ * back-face pre-pass pipeline variant.
+ *
+ * Used by the globe surface renderer when `globeTranslucencyState.translucent`
+ * is true: emits one depth-only command per tile BEFORE the imagery-
+ * layer translucent commands. Populates the scene-FB depth attachment
+ * with the FAR side of the globe (cullMode: "front") so the
+ * subsequent translucent passes blend correctly against it. Without
+ * this pre-pass, looking through the planet at antipodal terrain
+ * produces inside-out z-fight artifacts in the alpha-blended single-
+ * pass technique.
+ *
+ * Cache key shares the layout / vertex / shader-define dimensions with
+ * `selectPipeline` and adds a `_DOB` suffix so it doesn't collide. The
+ * variant is independent of imagery-layer multi-pass (no `_B`/`_O`
+ * dimension because no color is written) — `isBlend = false` is hard-
+ * coded for the cache key, but the depth-only override would produce
+ * the same pipeline regardless.
+ *
+ * Doesn't take `disableCulling` because the depth-only variant always
+ * culls FRONT faces (back-face only) by definition; combining with
+ * `disableCulling: true` (cull none) would defeat the purpose.
+ *
+ * @returns null while the pipeline is materializing through the central
+ *   cache; the caller should skip the depth-only command for this
+ *   tile this frame and let the next frame (when the pipeline lands)
+ *   start emitting it. The translucent commands continue to render
+ *   without the pre-pass — a one-frame degraded artifact instead of
+ *   a permanent black tile.
+ */
+export function selectDepthOnlyBackFacePipeline(
+  host: PipelineHost,
+  isQuantized: boolean,
+  hasNormals: boolean,
+  hasWebMercatorT: boolean,
+  strideBytes: number,
+  useClipDistances: boolean = false,
+  hasGeodeticSurfaceNormals: boolean = false,
+): GPURenderPipeline | null {
+  const cdSuffix = useClipDistances ? "_CD" : "";
+  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  // Use the same cache key shape as `selectPipeline` for diagnostic
+  // readability. `isBlend=false` and `disableCulling=false` are
+  // hardcoded since the depth-only override supersedes both axes.
+  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}${cdSuffix}_DOB|${defines.toString(16)}`;
+  let entry = host._pipelineCache.get(cacheKey);
+  if (!entry) {
+    const descriptor = buildPipelineDescriptor(
+      host,
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      false, // isBlend — irrelevant for depth-only (no color writes)
+      strideBytes,
+      DebugFragmentMode.NONE,
+      useClipDistances,
+      hasGeodeticSurfaceNormals,
+      false, // disableCulling — depth-only forces cullMode: "front"
+      true, // depthOnlyBackFace
     );
     entry = { descriptor, pipeline: null, pending: false };
     host._pipelineCache.set(cacheKey, entry);

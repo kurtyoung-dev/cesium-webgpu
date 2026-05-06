@@ -25,6 +25,7 @@ import {
 import {
   selectPipeline as selectPipelineHelper,
   selectDebugFragmentPipeline as selectDebugFragmentPipelineHelper,
+  selectDepthOnlyBackFacePipeline as selectDepthOnlyBackFacePipelineHelper,
 } from "./WebGPUGlobeSurfacePipelines.js";
 import {
   getTileKey as getTileKeyHelper,
@@ -832,6 +833,72 @@ export class WebGPUGlobeSurfaceRenderer {
           );
         }
         drawIndexCount = maxIndicesInBuffer;
+      }
+
+      // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only
+      // back-face pre-pass for translucent globe rendering. Push BEFORE
+      // the regular imagery-layer command so the scene-FB depth
+      // attachment is populated with the FAR side of the globe (cullMode:
+      // "front", depthWriteEnabled: true, colorWriteMask: 0) before the
+      // single-pass alpha blend writes the near side over it. Without
+      // the pre-pass, looking through the planet at antipodal terrain
+      // produces inside-out z-fight artifacts in the alpha-blend.
+      //
+      // Gates:
+      // - `globeTranslucent` — only when the user actually requested
+      //   translucent globe rendering. Static-opaque rendering pays
+      //   nothing (no extra pipeline, no extra command).
+      // - `!isSubsequentPass` — once per tile, not once per imagery
+      //   layer pass. Imagery layers blend over each other in
+      //   subsequent passes; the depth pre-pass only needs to run for
+      //   the first one.
+      // - `!debugWireframe && debugFragmentMode === NONE` — debug
+      //   variants own the pipeline entirely; pre-pass is suppressed
+      //   so the debug visualization renders its own depth without the
+      //   pre-emptive write affecting LOD / triangulation overlay
+      //   visibility.
+      if (
+        globeTranslucent &&
+        !isSubsequentPass &&
+        !debugWireframe &&
+        debugFragmentMode === DebugFragmentMode.NONE
+      ) {
+        const depthOnlyPipeline = selectDepthOnlyBackFacePipelineHelper(
+          this,
+          gpuResources.isQuantized,
+          gpuResources.hasNormals,
+          gpuResources.hasWebMercatorT,
+          gpuResources.strideBytes,
+          useClipDistances,
+          gpuResources.hasGeodeticSurfaceNormals,
+        );
+        if (depthOnlyPipeline) {
+          // Reuse the regular tile bind groups — same pipeline layout,
+          // same vertex transforms, same UBs. The fragment stage is
+          // colorWriteMask: 0 so no fragment writes leak into the
+          // imagery / atmosphere paths; only depth is written.
+          commands.push({
+            pipeline: depthOnlyPipeline,
+            bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+            vertexBuffer: gpuResources.vertexBuffer,
+            indexBuffer: drawIndexBuffer,
+            indexCount: drawIndexCount,
+            indexFormat: drawIndexFormat,
+            boundingVolume:
+              (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
+              surfaceTile.boundingSphere3D,
+            isSubsequentPass: false,
+            isQuantized: gpuResources.isQuantized,
+            shadowCastTerrainUB: gpuResources.shadowCastUB,
+            hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
+            strideBytes: gpuResources.strideBytes,
+          });
+        }
+        // If `selectDepthOnlyBackFacePipelineHelper` returns null the
+        // central pipeline cache hasn't materialized this variant yet
+        // (first-frame asynchrony). The translucent commands continue
+        // to render without the pre-pass — a one-frame degraded
+        // artifact instead of a permanent black tile.
       }
 
       commands.push({
