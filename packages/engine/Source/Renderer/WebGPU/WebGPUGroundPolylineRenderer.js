@@ -2344,7 +2344,12 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   const cache = primitive._webgpuPolylineCache;
 
   // Batch 110 — invalidate cached pipeline resources on scene format
-  // change (HDR toggle).
+  // change (HDR toggle). Pre-Batch-166 the cached pipeline OBJECTS
+  // weren't cleared alongside `_pipelineResources` and `bgl` —
+  // the resolver's early-return left stale-format pipelines bound and
+  // WebGPU would reject the next draw at submission. Vector3DTile*
+  // renderers already had this pattern; GroundPolyline + GroundPrimitive
+  // were the outliers.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     defined(cache._pipelineResources) &&
@@ -2352,6 +2357,18 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   ) {
     cache._pipelineResources = undefined;
     cache.bgl = undefined;
+    // Clear cached pipeline objects so the resolver re-runs against
+    // the new resources / format. Includes the morph variants.
+    cache.colorPipeline = undefined;
+    cache.pickPipeline = undefined;
+    cache.stencilPipeline = undefined;
+    cache.morphColorPipeline = undefined;
+    cache.morphPickPipeline = undefined;
+    // Bind groups reference the old BGL which is now stale.
+    cache.materialBindGroup = undefined;
+    cache.depthSampleBindGroup = undefined;
+    cache.depthSampleViewRef = undefined;
+    cache.pipelineRequestPending = false;
   }
 
   if (!defined(cache._pipelineResources)) {

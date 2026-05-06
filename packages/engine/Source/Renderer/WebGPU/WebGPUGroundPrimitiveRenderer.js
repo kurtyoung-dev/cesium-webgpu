@@ -813,7 +813,15 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // descriptors and shader module are stashed on the cache so the async
   // resolver can re-poll across frames until pipelines materialize.
   // Batch 110 — invalidate cached pipeline resources on scene format
-  // change (HDR toggle).
+  // change (HDR toggle). Pre-Batch-166 the cached pipeline OBJECTS
+  // weren't cleared alongside `_pipelineResources` and `bgl` —
+  // `tryResolveGroundPrimitivePipelines` early-returned on the
+  // truthy slot check and left stale-format pipelines bound. WebGPU
+  // would then reject the draw at submission because the bound
+  // pipeline's color target format didn't match the active attachment.
+  // Vector3DTile* renderers already had this pattern (see
+  // WebGPUVector3DTilePrimitiveRenderer.js:796-801); GroundPrimitive
+  // was the outlier.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     defined(cache._pipelineResources) &&
@@ -821,6 +829,21 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   ) {
     cache._pipelineResources = undefined;
     cache.bgl = undefined;
+    // Clear cached pipeline objects so the resolvers re-run against
+    // the new resources / format. Both the standard depth-sample trio
+    // and Batch 164's morph pair need clearing.
+    cache.depthSampleColorPipeline = undefined;
+    cache.depthSamplePickPipeline = undefined;
+    cache.depthSampleStencilPipeline = undefined;
+    cache.morphColorPipeline = undefined;
+    cache.morphPickPipeline = undefined;
+    // Bind groups reference the old BGL which is now stale.
+    cache.bindGroup = undefined;
+    cache.depthSampleBindGroup = undefined;
+    cache.depthSampleViewRef = undefined;
+    // Reset pending-request flags so the resolvers can re-issue.
+    cache.pipelineRequestPending = false;
+    cache.morphPipelineRequestPending = false;
   }
 
   if (!defined(cache._pipelineResources)) {
