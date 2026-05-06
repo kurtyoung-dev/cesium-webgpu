@@ -73,19 +73,17 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 **Status:** No code change needed; entry preserved as a marker so future audits don't re-investigate.
 
-### C-R1-GLOBE-RENDERSTATE
+### C-R1-GLOBE-RENDERSTATE — RESCOPED (Batch 175 inspection — cullFace shipped Batch 99; depthMask not a real gap; colorMask is the genuine remainder)
 
-**What:** `WebGPUGlobeSurfaceRenderer.ts` builds pipeline variants from local hard-coded state instead of consuming upstream `command.renderState`. The provider sets per-tile depthMask / cullFace based on tile elevation/back-facing geometry; the WebGPU path overrides with a fixed front-face cull.
+**What:** `WebGPUGlobeSurfacePipelines.ts` builds pipeline variants from locally-derived state rather than consuming a literal upstream `command.renderState` blob. The original audit framed this as "the provider sets per-tile depthMask / cullFace, the WebGPU path overrides."
 
-**Why deferred:** Globe surface renderer has its own custom pipeline-variant builder predating `RenderStateToPipelineVariant.ts`; routing the upstream renderState through requires reconciling two distinct variant key shapes.
+**Resolution (cullFace, Batch 99):** `WebGPUGlobeSurfacePipelines.ts:316` reads `disableCulling` from the renderer's per-frame derivation (cameraUnderground OR globeTranslucent OR `tileProvider.backFaceCulling === false`) and selects between `cullMode: "none"` and `cullMode: "back"`. Mirrors WebGL's `_renderState` vs `_disableCullingRenderState` selection in `GlobeSurfaceTileProviderRendering.js:1226-1231`. The renderer path doesn't dispatch from `command.renderState` because the WebGPU globe surface renderer builds its own `WebGPUDrawCommand`s directly — the variant flags are the intentional pattern, not the WebGL command-dispatcher RS pattern.
 
-**Prerequisites:** Bundles naturally with C-R7-RENDERER-MIGRATION (route GlobeSurface through central pipeline cache).
+**Re-audit finding (Batch 175):** Pre-Batch-175 the entry framed `depthWriteEnabled: !isBlend` at `WebGPUGlobeSurfacePipelines.ts:321` as "ignoring upstream depthMask." Code inspection of `GlobeTranslucencyState.js:720-741` and `GlobeSurfaceTileProvider.js:364-382` shows the upstream provider ALWAYS pairs `depthMask = false` with `blending = ALPHA_BLEND` — the WebGPU heuristic `!isBlend` thus produces the byte-correct depth-write state for every globe translucency variant. **No depthMask gap to close** until the provider's pattern changes; if it does, the same derivation pattern Batch 99 used for cullFace can be added.
 
-**Estimated effort:** 1-2 sessions.
+**Genuine remaining gap (rescoped):** `GlobeTranslucencyState.js:720-727` sets `colorMask = { red: false, green: false, blue: false, alpha: false }` for the depth-only back-face-only pass (depth pre-pass for translucent globe rendering). The WebGPU globe renderer doesn't currently emit this auxiliary depth-only pass — the entire globe-translucency multi-pass technique (depth-only back-face → translucent back-face → translucent front-face) isn't yet implemented. Filed as `NEW-GLOBE-TRANSLUCENCY-MULTI-PASS` for the dedicated work; ~200 LOC, MED visible payoff (translucent globe inside-out shows minor depth artifacts in the current single-pass blend approximation).
 
-**Impact:** Underground / inverted tiles may render with wrong cull mode at the rim of the globe (e.g., transitioning across a steep cliff). Minor artifacting.
-
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30.
+**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30; Batch 99 cullFace; Batch 175 re-audit + rescope.
 
 ### ~~C-R1-PRIMITIVE-DERIVED~~ EFFECTIVELY RESOLVED (audit 2026-05-02)
 
@@ -306,17 +304,21 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ### NEW-ADVANCED-MOTION-VECTORS — per-particle / per-cell / per-feature motion vectors for advanced primitives + classifiers
 
-**What:** Batch 153 closed AUDIT_2026_05_02 B.9 by adding `prevViewProjection: mat4x4<f32>` at the tail of the UBO struct for 8 inline-WGSL renderers (the 5 ground/Vector3DTile classifiers + PointCloud + GaussianSplat + Voxel) per the DP-H41 invariant. The field is a layout-only invariant today; the corresponding per-renderer velocity pass that emits to the rg16float velocity texture is the follow-on work.
+**What:** Batch 153 closed AUDIT_2026_05_02 B.9 by adding `prevViewProjection: mat4x4<f32>` at the tail of the UBO struct for 8 inline-WGSL renderers (the 5 ground/Vector3DTile classifiers + PointCloud + GaussianSplat + Voxel) per the DP-H41 invariant. Batches 168-173 closed the advanced-primitives half of the follow-up; classifiers remain.
 
-**Scope per family:**
+**Resolution per family:**
+
+- ~~**PointCloud (default + LOD)**~~ — SHIPPED (Batch 168 default; Batch 169 LOD; pre-Batch-169 hardening for animated revision-change). Per-particle prev-position SSBO mirror; LOD uses `visibleIndices[iidx]` parallel SSBO indexing.
+- ~~**CloudCollection**~~ — SHIPPED (Batch 170). Per-cloud prev-position attribute.
+- ~~**GaussianSplat**~~ — SHIPPED (Batch 171 initial; Batch 172 review fixes — UBO 256→320 + modelMatrix at byte offset 256 + full elliptical footprint). Per-splat prev-position follows current sort permutation.
+- ~~**Voxel**~~ — SHIPPED (Batch 173, CLOSES B.10 advanced family). Static-cube screen-space approximation; correct for the dominant case (static voxel volumes).
+
+**Remaining (deferred — classifiers):**
 
 - **Vector3DTile classifiers** (Primitive, Polylines, ClampedPolylines): per-feature prev-position storage buffer; velocity entry point that reads `batchId` and looks up prev/curr position; FS emits `(currClip - prevClip).xy / w`. ~80 LOC × 3.
 - **GroundPrimitive / GroundPolyline**: per-instance prev-position; same pattern as Polyline collection (Batch 148). ~80 LOC × 2.
-- **PointCloud**: per-particle prev-position storage buffer (parallel to the existing per-particle position SSBO). LOD variant needs prev `instanceData` mirror. ~120 LOC.
-- **GaussianSplat**: per-splat prev-position. Sort order changes frame-to-frame so prev-buffer indexing must follow the current sort permutation, not a stable per-splat ID. ~150 LOC.
-- **Voxel**: per-cell prev grid (or screen-space approximation). Voxel volumes are typically static; per-cell motion is rare. May reduce to camera-only fallback for v1. ~100 LOC if per-cell, ~30 LOC if screen-space approximation.
 
-**Why deferred:** Each family has distinct architectural questions (sort-order indexing for splats, classifier-batch-ID plumbing for Vector3DTile, voxel scope decision). 1-2 sessions per family.
+**Why deferred (classifiers):** Per-feature animation is rare in production tilesets (classification volumes are typically static), so the camera-only TAA fallback is correct for the dominant case. Classifier-batch-ID plumbing for Vector3DTile is the architectural question; 1-2 sessions per family when prioritized.
 
 ---
 
@@ -365,13 +367,21 @@ The deferred entry's "scope" predates the Batch 130 commit and was never reconci
 
 ---
 
-### NEW-MODEL-CLIPPING-POLYGONS — `model.clippingPolygons` is unbound on WebGPU
+### ~~NEW-MODEL-CLIPPING-POLYGONS — `model.clippingPolygons` is unbound on WebGPU~~ — RESOLVED (Batch 160 atlas-aware port; Batch 163 review fixes)
 
-**What:** `model.clippingPlanes` now produces correct cutaways on WebGPU (commit `ebdc3548c3`, AUDIT_2026_05_02 A.6 partial-fix). The matching `model.clippingPolygons` SDF binding was never wired into the model material BGL — `clippingPolygonsLengthsAndExtents` / `clippingPolygonsTexture` slots don't exist in `EffectsUniforms`, and `ModelClippingPolygonsPipelineStage`'s WGSL counterpart is absent. Setting `model.clippingPolygons = ...` on WebGPU is a silent no-op.
+**Resolution:** `ModelPBRComplete.wgsl:1596-1700` defines `modelClipByPolygon(positionWC)` mirroring `czm_clipPolygons` from the globe: project worldPos to spherical (lat, lon) via `czm_fastApproximateAtan2`, iterate up to 8 merged-extent regions to find the containing one, compute the atlas slot from `dim = ceil(sqrt(extentsCount))` (Batch 163 HIGH fix: uses the FULL `extentsCount` rather than the capped 8-cap, so sampled atlas slots match the JS upload), sample `clippingPolygonTex` SDF, discard on inside/outside rule honoring the `clippingPolygonControl.z` inverse flag at all early-return paths (Batch 163 HIGH fix: pre-Batch-163 returned `false` unconditionally, leaking the entire scene-outside-the-polygon region in inverse-mode "show only inside" demos).
 
-**Scope:** Add SDF texture + length-and-extents UBO field to `EffectsUniforms`; bind through Effects BGL; port `ModelClippingPolygonsStageFS.glsl` to a WGSL inline branch (signed-distance per-polygon test → discard on union/intersection rule, mirrors `modelClipByPlanes`). ~120 LOC.
+`fragmentMain` invokes the polygon branch at line 1758-1762 after the planes branch:
 
-**Why deferred:** Polygons need the SDF texture upload pipeline that's currently only used by the globe surface renderer. The existing `modelClipByPlanes` was reachable in ~80 LOC because the texture + UBO were already plumbed; polygons require both new bind slots and a new SDF upload path, putting them in a separate batch.
+```wgsl
+if (effects.clippingPolygonCount > 0u) {
+  let worldPos = camera.cameraPositionWC
+    + (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
+  if (modelClipByPolygon(worldPos)) { discard; }
+}
+```
+
+`EffectsUniforms` carries `clippingPolygonCount: u32`, `clippingPolygonControl: vec4<f32>` (`(extentsCount, invDim, inverseFlag, _)`), and `clippingPolygonExtents[8]` regions. `WebGPUEffectsBindGroup.js` binds `clippingPolygonTex` + `clippingPolygonSampler` at the model material BGL slots. `model.clippingPolygons = ...` produces correct cutouts AND inverse-mode "show only inside" rendering on WebGPU end-to-end.
 
 ---
 

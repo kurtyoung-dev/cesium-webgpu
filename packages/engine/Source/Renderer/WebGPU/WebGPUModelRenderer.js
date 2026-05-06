@@ -1977,6 +1977,15 @@ function updateWebGPUModel(model, frameState) {
         cameraBuffer: null,
         cameraData: null,
         cameraBG: null,
+        // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — per-node previous
+        // frame's `nodeModelMatrix`. Pre-Batch-175 the velocity pack
+        // pulled `cache.prevModelMatrix` (the model-level matrix), which
+        // was correct for static articulations (set once, then locked)
+        // but produced ghosting under TAA when articulation animations
+        // mutate `runtimeNode.transform` per-frame. The per-node slot
+        // is captured at the END of each node iteration so the next
+        // frame's pack reads this frame's value as `prev`.
+        prevNodeModelMatrix: null,
       };
     }
 
@@ -1991,6 +2000,8 @@ function updateWebGPUModel(model, frameState) {
           // Audit A.5 (Batch 130) — prev-frame mirrors for TAA velocity.
           prevJointBuffer: null,
           prevPackedJointMatrices: null,
+          // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175). See above.
+          prevNodeModelMatrix: null,
         };
       }
       const nodeCache = cache.nodes[nodeIdx];
@@ -2102,6 +2113,36 @@ function updateWebGPUModel(model, frameState) {
         CAMERA_UNIFORM_SIZE,
       );
       nodeCameraBG = nc.cameraBG;
+    }
+
+    // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — resolve the per-node
+    // PREVIOUS-frame nodeModelMatrix for the velocity pack. Pre-Batch-175
+    // every primitive's pack pulled `cache.prevModelMatrix` (the model-
+    // level matrix), which was correct for static articulations (set
+    // once, then locked) but produced ghosting under TAA when articulation
+    // animations mutate `runtimeNode.transform` per-frame. Examples that
+    // hit this path: satellite solar-panel deploy animations, robot-arm
+    // articulations, AGI_articulations rigs whose nodes animate while
+    // TAA is on.
+    //
+    // For identity-transform nodes the per-node `nodeModelMatrix` equals
+    // the model-level `modelMatrix`, so `cache.prevModelMatrix` is also
+    // the correct prev — fall back to it (no per-node storage cost on
+    // the common single-node-or-static-articulation case).
+    //
+    // For non-identity nodes, read the per-node slot. First frame
+    // (`prevNodeModelMatrix === null`) initializes from this frame's
+    // `nodeModelMatrix` so velocity is exactly zero — equivalent to
+    // "no history yet", matching TAA's first-frame fallback.
+    let prevNodeModelMatrixForPack;
+    const nodeCacheForPrev = cache.nodes[nodeIdx];
+    if (transformIsIdentity || !defined(nodeCacheForPrev)) {
+      prevNodeModelMatrixForPack = cache.prevModelMatrix;
+    } else {
+      if (!defined(nodeCacheForPrev.prevNodeModelMatrix)) {
+        nodeCacheForPrev.prevNodeModelMatrix = Matrix4.clone(nodeModelMatrix);
+      }
+      prevNodeModelMatrixForPack = nodeCacheForPrev.prevNodeModelMatrix;
     }
 
     // Process each primitive on this node
@@ -2305,7 +2346,8 @@ function updateWebGPUModel(model, frameState) {
         primHasSkinning,
         primHasMorphTargets,
         pickColor,
-        cache.prevModelMatrix,
+        // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — per-node prev.
+        prevNodeModelMatrixForPack,
         motionEnabled,
         passClass,
       );
@@ -3016,6 +3058,23 @@ function updateWebGPUModel(model, frameState) {
           });
           commandList.push(edgeCmd);
         }
+      }
+    }
+
+    // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — capture THIS frame's
+    // `nodeModelMatrix` into the per-node cache slot so the NEXT frame's
+    // pack reads it as `prev`. Mirrors the model-level capture at the
+    // end of `update()`. Only fires for non-identity nodes (identity
+    // nodes share `cache.prevModelMatrix`); the slot lives on the
+    // already-allocated `cache.nodes[nodeIdx]` (Batch 152 NEW-MODEL-
+    // NODE-TRANSFORMS allocation). Clones the scratch matrix because
+    // `scratchNodeModelMatrix` is reused across nodes per frame.
+    if (!transformIsIdentity && defined(cache.nodes[nodeIdx])) {
+      const ncForPrev = cache.nodes[nodeIdx];
+      if (!defined(ncForPrev.prevNodeModelMatrix)) {
+        ncForPrev.prevNodeModelMatrix = Matrix4.clone(nodeModelMatrix);
+      } else {
+        Matrix4.clone(nodeModelMatrix, ncForPrev.prevNodeModelMatrix);
       }
     }
   }
