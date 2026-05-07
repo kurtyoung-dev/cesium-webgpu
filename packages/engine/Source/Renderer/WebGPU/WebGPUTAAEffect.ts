@@ -231,6 +231,9 @@ export function _invertMatrix4(
 /**
  * Halton sequence evaluator — low-discrepancy quasi-random sequence
  * for sub-pixel jitter offsets. Uses bases 2 and 3 (standard for TAA).
+ *
+ * Kept exported for backwards compatibility / debug visualizations;
+ * the TAA jitter path itself uses `iginJitter` (Batch 195).
  */
 export function halton(index: number, base: number): number {
   let result = 0;
@@ -242,6 +245,59 @@ export function halton(index: number, base: number): number {
     f /= base;
   }
   return result;
+}
+
+/**
+ * Batch 195 — Interleaved Gradient Noise jitter, replacing the prior
+ * Halton 2/3 sequence as the default TAA sub-pixel jitter generator.
+ *
+ * Same Jorge Jimenez IGN formula as the WGSL `csm_stochasticDither`
+ * chunk (Batch 192) — keeps the spatial + temporal noise pattern
+ * consistent across CPU-side TAA jitter and GPU-side stochastic
+ * alpha-test rendering, so future foliage / particle dither work
+ * sees the same noise distribution as the camera jitter that's
+ * accumulating it.
+ *
+ * Why blue-noise over Halton 2/3 for TAA jitter:
+ *
+ * - Halton 2/3 is low-discrepancy (well-distributed) but
+ *   temporally-correlated — samples N and N+1 land near each other
+ *   in the unit square. Adjacent-frame jitter offsets are correlated,
+ *   so TAA accumulation sees structured residual error that shows up
+ *   as mild ghosting on edges.
+ * - IGN is high-frequency / blue-noise-spectrum: adjacent samples
+ *   (across frames at the same pixel) are nearly uncorrelated.
+ *   Accumulation under temporal averaging converges faster with
+ *   less residual error — cleaner edges, less perceptible ghosting.
+ *
+ * Returns a value in [0, 1) matching Halton's range, so the caller's
+ * `(x - 0.5)` centering math at lines 622-623 still works unchanged.
+ *
+ * The seed combines a per-pixel-equivalent spatial term (the call
+ * site uses just one `index` per frame, so we pack frame index +
+ * sample axis into the IGN coords) with a frame-counter offset for
+ * temporal decorrelation across consecutive frames.
+ *
+ * @param frameIndex Frame counter; advances every render frame
+ * @param axis 0 for X jitter, 1 for Y jitter — uses different IGN
+ *   coordinates so X and Y are uncorrelated within a frame
+ * @returns jitter sample in [0, 1)
+ */
+export function ignJitter(frameIndex: number, axis: number): number {
+  // IGN(x, y) = fract(52.9829189 * fract(0.06711056 * x + 0.00583715 * y))
+  // Standard Jimenez IGN formula matching csm_stochasticDither.wgsl.
+  // We use a proper fract() helper because JS `%` is remainder, not
+  // modulo — for negative inputs it behaves differently from WGSL
+  // fract(). Inputs here are always positive but the helper keeps
+  // semantics clean if future callers pass negative seeds.
+  //
+  // Coordinate seeding: frameIndex maps to `x`; axis (0 for X jitter,
+  // 1 for Y) maps to `y`, with a per-frame golden-ratio offset added
+  // so the X/Y pair is decorrelated within a frame and across frames.
+  const fract = (v: number): number => v - Math.floor(v);
+  const x = frameIndex;
+  const y = axis * 73.0 + frameIndex * 1.6180339887;
+  return fract(52.9829189 * fract(0.06711056 * x + 0.00583715 * y));
 }
 
 export class WebGPUTAAEffect implements PostProcessEffect {
@@ -563,16 +619,26 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   }
 
   /**
-   * Compute jitter offset for the current frame using Halton(2,3).
-   * Returns offset in NDC space (apply to projection matrix columns 2,0 and 2,1).
+   * Compute jitter offset for the current frame.
+   *
+   * Batch 195 — switched from Halton 2/3 to Interleaved Gradient Noise
+   * for better temporal decorrelation under TAA accumulation. See
+   * `ignJitter` JSDoc for the rationale. Halton retained as exported
+   * helper for backwards compat / debug visualizations but no longer
+   * drives the active TAA path.
+   *
+   * Returns offset in NDC space (apply to projection matrix columns
+   * 2,0 and 2,1). The `frameIndex % 16` modulo from the Halton path
+   * is no longer needed — IGN doesn't have a pattern period; it's
+   * pseudo-random across all frame indices.
    */
   computeJitter(
     frameIndex: number,
     screenWidth: number,
     screenHeight: number,
   ): { x: number; y: number } {
-    const hx = halton((frameIndex % 16) + 1, 2);
-    const hy = halton((frameIndex % 16) + 1, 3);
+    const hx = ignJitter(frameIndex, 0);
+    const hy = ignJitter(frameIndex, 1);
     const x = ((hx - 0.5) * 2.0) / screenWidth;
     const y = ((hy - 0.5) * 2.0) / screenHeight;
     this.jitterX = (hx - 0.5) / screenWidth;

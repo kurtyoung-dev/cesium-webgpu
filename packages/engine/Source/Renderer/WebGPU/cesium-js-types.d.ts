@@ -209,7 +209,15 @@ interface CesiumRectangle {
 interface CesiumPostProcessStage {
   enabled: boolean;
   type?: number;
-  uniforms?: Record<string, number>;
+  // PostProcessStage uniforms are user-provided and structurally
+  // polymorphic: numeric scalars (`intensity`, `sigma`, `threshold`),
+  // string discriminators (`algorithm`: `"gtao" | "hbao"`), and
+  // booleans (`glowOnly`, `ambientOcclusionOnly`). Consumers narrow
+  // per-uniform via `as number ?? default` (numeric reads) or by
+  // typed string-literal checks (discriminators). Direct
+  // `Record<string, number>` would block the AO algorithm path
+  // from compiling.
+  uniforms?: Record<string, number | string | boolean | undefined>;
 }
 
 interface CesiumPostProcessStageCollection {
@@ -274,6 +282,13 @@ interface CesiumFrameStatePasses {
   depth: boolean;
   postProcess: boolean;
   offscreen: boolean;
+  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — pick variant routing.
+  // Set by Scene.pickHover() / pickPrecise() before invoking the
+  // pick render. Read by `selectCommandVariant` to choose between
+  // default / hover (Option D dither) / precise (Option C 2-pass)
+  // pick command derivations. Undefined or "default" routes to the
+  // existing pickCommand (B186 first slice).
+  pickMode?: "default" | "hover" | "precise";
 }
 
 interface CesiumFrameStateFog {
@@ -1151,7 +1166,13 @@ interface CesiumAnyDrawCommand {
   derivedCommands?: {
     logDepth?: { command?: CesiumAnyDrawCommand };
     hdr?: { command?: CesiumAnyDrawCommand };
-    picking?: { pickCommand?: CesiumAnyDrawCommand };
+    picking?: {
+      pickCommand?: CesiumAnyDrawCommand;
+      // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — second-slice pick variants.
+      pickHoverCommand?: CesiumAnyDrawCommand;
+      pickPrecisePass1Command?: CesiumAnyDrawCommand;
+      pickPrecisePass2Command?: CesiumAnyDrawCommand;
+    };
     pickingMetadata?: { pickMetadataCommand?: CesiumAnyDrawCommand };
     shadows?: { receiveCommand?: CesiumAnyDrawCommand };
     depth?: { depthOnlyCommand?: CesiumAnyDrawCommand };

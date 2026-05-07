@@ -857,18 +857,32 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
   const device = context.device;
 
   // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
-  // Same rationale as the other Vector3DTile classifier renderers:
-  // 3D-positions-only VS, 2D / Columbus View / Morphing positions
-  // not yet wired. 3D Tiles content is typically only viewed in 3D
-  // mode in production, so silent skip matches user expectation.
-  if (frameState?.mode !== SceneMode.SCENE3D) {
+  // 3D-positions-only VS; 2D / Columbus View positions are not part
+  // of the Vector3DTilePolylines geometry stream (verified Batch 158
+  // — only RTC-relative 3D positions exist, identical to upstream
+  // WebGL).
+  //
+  // **Batch 207** — MORPHING is now allowed through. During morph,
+  // the camera + view/projection matrices interpolate via
+  // `frameState.morphTime` (1.0 = full 3D ↔ 0.0 = full 2D). Our
+  // `packUniforms` reads `uniformState.view` + `uniformState.projection`
+  // which already reflect that interpolation, so feeding the existing
+  // ECEF/RTC positions through the morph-aware matrices renders the
+  // polylines in their 3D world position during the transition —
+  // they fade out of frame as the camera approaches 2D, matching
+  // the animation users expect when 3D-only tile content morphs.
+  // SCENE2D + COLUMBUS_VIEW remain gated because the 3D positions
+  // would project to wandering points (no 2D attribute path).
+  const sceneMode = frameState?.mode;
+  if (sceneMode !== SceneMode.SCENE3D && sceneMode !== SceneMode.MORPHING) {
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
       "WebGPUVector3DTilePolylines.sceneMode",
       "Vector3DTilePolylines on WebGPU is currently only correct in " +
-        "SceneMode.SCENE3D. Non-3D scene modes (2D, Columbus View, Morphing) " +
-        "are silently skipped. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH " +
-        "in DEFERRED_WORK.md.",
+        "SceneMode.SCENE3D and SceneMode.MORPHING. SCENE2D / Columbus View " +
+        "are silently skipped (no 2D position attribute path — matches " +
+        "upstream WebGL behavior for this primitive type). Tracked as " +
+        "A.4 / NEW-CLASSIFIER-2D-CV-MORPH in DEFERRED_WORK.md.",
     );
     //>>includeEnd('debug');
     return { colorCommands: [], pickCommands: [] };

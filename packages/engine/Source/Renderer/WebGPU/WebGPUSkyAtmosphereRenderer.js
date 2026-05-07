@@ -21,6 +21,23 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+
+// C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
+// SkyAtmosphere is singleton-per-scene so the dedup win per scene is
+// negligible, but the cache unifies the pattern across the full
+// renderer family and keeps device-loss handling consistent.
+const _skyAtmosphereShaderCaches = new WeakMap();
+
+function getSkyAtmosphereShaderCache(device) {
+  let cache = _skyAtmosphereShaderCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _skyAtmosphereShaderCaches.set(device, cache);
+  }
+  return cache;
+}
 
 // Uniform buffer: 256 bytes (aligned)
 const UNIFORM_BUFFER_SIZE = 256;
@@ -109,10 +126,12 @@ function generateAtmosphereGeometry(ellipsoid, scale, slices, stacks) {
  * @private
  */
 function createPipeline(device, shaderCode, format, depthFormat) {
-  const shaderModule = device.createShaderModule({
-    label: "SkyAtmosphere shader",
-    code: shaderCode,
-  });
+  const shaderModule = getSkyAtmosphereShaderCache(device).getOrCreate(
+    ShaderSourceId.SKY_ATMOSPHERE,
+    shaderCode,
+    0,
+    "SkyAtmosphere shader",
+  );
 
   const bindGroupLayout = makeBindGroupLayout(
     device,

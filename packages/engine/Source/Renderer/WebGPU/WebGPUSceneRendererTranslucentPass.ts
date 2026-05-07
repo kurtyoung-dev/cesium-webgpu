@@ -43,6 +43,14 @@ export interface TranslucentPassHost {
     commands: CesiumAnyDrawCommand[];
     count: number;
   } | null;
+  // Batch 216 — gate-controlled GPU cull for translucent commands.
+  // Returns the (possibly filtered) command array + matching count.
+  // Hot-path safe: returns the input array when the gate is off.
+  _maybeGPUCullTranslucent: (
+    commands: CesiumAnyDrawCommand[],
+    count: number,
+    config: WebGPURenderFrameConfig,
+  ) => { commands: CesiumAnyDrawCommand[]; count: number };
 }
 
 /**
@@ -59,13 +67,27 @@ export function executeTranslucentPass(
   config: WebGPURenderFrameConfig,
 ): void {
   const { scene, context, passState } = config;
-  const commands = frustumCommands.commands[Pass.TRANSLUCENT];
-  const count: number = frustumCommands.indices[Pass.TRANSLUCENT];
+  let commands = frustumCommands.commands[Pass.TRANSLUCENT];
+  let count: number = frustumCommands.indices[Pass.TRANSLUCENT];
   if (count === 0) {
     return;
   }
 
   context.uniformState?.updatePass(Pass.TRANSLUCENT);
+
+  // Batch 216 — gate-controlled translucent GPU cull. The gate
+  // (`_gpuCullActive`) is updated in the opaque pass each frame; if
+  // active, this re-tests translucent commands against the same
+  // cullingVolume and replaces the array with a filtered subset.
+  // Order is preserved (same iteration), so OIT accumulation and
+  // back-to-front alpha both stay correct. No-op when the gate is
+  // off, on pick, or when no readback is fresh yet.
+  const culled = host._maybeGPUCullTranslucent(commands, count, config);
+  if (culled.commands !== commands) {
+    commands = culled.commands;
+    count = culled.count;
+    if (count === 0) return;
+  }
 
   // OIT accumulation + composite path.
   // Full MRT OIT (McGuire & Bavoil 2013) requires 2-target pipeline variants

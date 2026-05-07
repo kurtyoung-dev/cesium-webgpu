@@ -599,6 +599,34 @@ function createPickPipeline(
   doubleSided,
 ) {
   const cullMode = doubleSided ? "none" : "back";
+  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. Translucent
+  // (BLEND) primitives must NOT write depth on the pick FBO. With
+  // depth-write ON, the first translucent fragment to draw at a given
+  // pixel writes both color and depth; later fragments (including
+  // opaque geometry visible THROUGH the translucent surface) fail
+  // `less-equal` against the translucent's z and never reach the pick
+  // FBO. Toggling depth-write OFF for BLEND (matching the existing
+  // color-pipeline pattern at line 535) keeps the OPAQUE depth as the
+  // gate — translucent fragments pass less-equal against opaque z,
+  // and opaque-behind-translucent stays pickable. Among multiple
+  // translucents at varying depths between the camera and opaque,
+  // last-drawn wins (depth-test passes for all, color overwrites).
+  //
+  // Net effect of this slice:
+  //   - Opaque geometry seen through translucent surfaces is now pickable
+  //     (the previously-blocking depth-write is gone).
+  //   - Translucent-vs-translucent stacking changes from "first-drawn
+  //     wins" to "last-drawn wins"; both are arbitrary but neither is
+  //     strictly better than the other — that's what OIT-quality
+  //     resolve is for.
+  //
+  // What this slice DOES NOT do: weighted OIT-quality accumulation +
+  // composite resolve sorting by perceptual visibility. That remains
+  // the second slice — it would let the user pick the visually-
+  // dominant feature when translucent layers blend (e.g., picking the
+  // building behind a tinted glass facade should select the building,
+  // not the glass).
+  const isBlend = alphaMode === 2;
   const label = `Model PBR pick [alpha=${alphaMode},ds=${doubleSided}]`;
   return device.createRenderPipeline({
     label,
@@ -619,8 +647,195 @@ function createPickPipeline(
     },
     depthStencil: {
       format: depthFormat,
+      depthWriteEnabled: !isBlend,
+      depthCompare: "less-equal",
+    },
+  });
+}
+
+/**
+ * C-R9-MODEL-PICK-TRANSLUCENT Option D (Batch 192) — hover-pick
+ * pipeline variant for BLEND primitives. Uses `fragmentPickHoverMain`
+ * which discards translucent fragments stochastically via Interleaved
+ * Gradient Noise (probability of survival = effective alpha). With
+ * dither doing the alpha gating, depth-write can stay ON and standard
+ * depth-test picks the closest survived fragment — same render-pass
+ * cost as default opaque pick. Stutter-free at 60fps hover frequency.
+ *
+ * @private
+ */
+function createPickHoverPipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  presentationFormat,
+  depthFormat,
+  doubleSided,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  const label = `Model PBR pick-hover [BLEND,ds=${doubleSided}]`;
+  return device.createRenderPipeline({
+    label,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentPickHoverMain",
+      targets: [{ format: presentationFormat }],
+    },
+    primitive: { topology: "triangle-list", cullMode },
+    depthStencil: {
+      format: depthFormat,
       depthWriteEnabled: true,
       depthCompare: "less-equal",
+    },
+  });
+}
+
+/**
+ * C-R9-MODEL-PICK-TRANSLUCENT Option C precise pass 1 (Batch 192).
+ * Depth pre-pass for BLEND primitives — writes depth + stencil but no
+ * color so a subsequent pass 2 (`createPickPrecisePass2Pipeline`) can
+ * identify the geometrically-closest translucent fragment per pixel.
+ *
+ * State:
+ *   - depthWriteEnabled: true   — record closest translucent depth
+ *   - depthCompare: less-equal  — standard depth test
+ *   - stencil writes ref=1 on pass — marks "this pixel had a translucent
+ *     fragment that won the depth test"
+ *   - colorWriteMask: 0         — no color output; pass 2 writes color
+ *
+ * @private
+ */
+function createPickPrecisePass1Pipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  presentationFormat,
+  depthFormat,
+  doubleSided,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  const label = `Model PBR pick-precise pass1 [BLEND,ds=${doubleSided}]`;
+  // Stencil ops only valid on depth-stencil formats. Sniff the format.
+  const hasStencil =
+    depthFormat === "depth24plus-stencil8" ||
+    depthFormat === "depth32float-stencil8";
+  const stencilState = hasStencil
+    ? {
+        stencilFront: {
+          compare: "always",
+          failOp: "keep",
+          depthFailOp: "keep",
+          passOp: "replace",
+        },
+        stencilBack: {
+          compare: "always",
+          failOp: "keep",
+          depthFailOp: "keep",
+          passOp: "replace",
+        },
+        stencilReadMask: 0xff,
+        stencilWriteMask: 0xff,
+      }
+    : {};
+  return device.createRenderPipeline({
+    label,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentPickMain",
+      // colorWriteMask: 0 → fragment output is dropped; only depth +
+      // stencil writes apply.
+      targets: [{ format: presentationFormat, writeMask: 0 }],
+    },
+    primitive: { topology: "triangle-list", cullMode },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+      ...stencilState,
+    },
+  });
+}
+
+/**
+ * C-R9-MODEL-PICK-TRANSLUCENT Option C precise pass 2 (Batch 192).
+ * Color pass for BLEND primitives — runs in the SAME render pass as
+ * pass 1 (sharing the depth + stencil attachments) and writes pickColor
+ * only on fragments where stencil==1 AND depth==current. This isolates
+ * the single closest translucent fragment per pixel for deterministic
+ * pick winner selection.
+ *
+ * State:
+ *   - depthWriteEnabled: false  — pass 1 already wrote final depth
+ *   - depthCompare: equal       — only the closest fragment passes
+ *   - stencil compare: equal w/ ref=1 — only pass-1 winners participate
+ *   - colorWriteMask: ALL       — actual pickColor output
+ *
+ * Used in conjunction with pass 1; never standalone.
+ *
+ * @private
+ */
+function createPickPrecisePass2Pipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  presentationFormat,
+  depthFormat,
+  doubleSided,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  const label = `Model PBR pick-precise pass2 [BLEND,ds=${doubleSided}]`;
+  const hasStencil =
+    depthFormat === "depth24plus-stencil8" ||
+    depthFormat === "depth32float-stencil8";
+  const stencilState = hasStencil
+    ? {
+        stencilFront: {
+          compare: "equal",
+          failOp: "keep",
+          depthFailOp: "keep",
+          passOp: "keep",
+        },
+        stencilBack: {
+          compare: "equal",
+          failOp: "keep",
+          depthFailOp: "keep",
+          passOp: "keep",
+        },
+        stencilReadMask: 0xff,
+        stencilWriteMask: 0xff,
+      }
+    : {};
+  return device.createRenderPipeline({
+    label,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentPickMain",
+      targets: [{ format: presentationFormat }],
+    },
+    primitive: { topology: "triangle-list", cullMode },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "equal",
+      ...stencilState,
     },
   });
 }
@@ -792,6 +1007,28 @@ class WebGPUModelPipelineCache {
     // models without classificationType (the common case) never
     // construct a classification pipeline.
     this._classificationPipelines = new Map();
+
+    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — second-slice pipeline
+    // slots. Built lazily; only allocated for primitives whose owning
+    // app calls `scene.pickHover` or `scene.pickPrecise`. The default
+    // `scene.pick` flow uses the existing `_pickPipelines` Map.
+    //
+    //   _pickHoverPipelines: Option D (stochastic dither alpha-test).
+    //     For BLEND alphaMode, fragmentPickHoverMain replaces the
+    //     `< 0.004` discard with IGN-dither-driven probabilistic
+    //     survival. For OPAQUE/MASK, identical to `_pickPipelines`.
+    //
+    //   _pickPrecisePass1Pipelines: Option C precise pass 1 (depth
+    //     pre-pass). For BLEND, depth-write=true, depth-compare=
+    //     less-equal, color-write=0. For OPAQUE/MASK, identical to
+    //     `_pickPipelines` (no 2-pass needed).
+    //
+    //   _pickPrecisePass2Pipelines: Option C precise pass 2 (color
+    //     pass with depth-EQUAL test). BLEND only — OPAQUE/MASK never
+    //     hit pass 2 since their precise pick is the same as default.
+    this._pickHoverPipelines = new Map();
+    this._pickPrecisePass1Pipelines = new Map();
+    this._pickPrecisePass2Pipelines = new Map();
 
     // Create shared bind group layouts (NEW-BG-CONSOLIDATION, 4 groups).
     const bgls = createBindGroupLayouts(device);
@@ -1224,6 +1461,10 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
+    // Batch 192 — second-slice pick pipelines also wipe on format change.
+    this._pickHoverPipelines.clear();
+    this._pickPrecisePass1Pipelines.clear();
+    this._pickPrecisePass2Pipelines.clear();
   }
 
   /**
@@ -1335,6 +1576,114 @@ class WebGPUModelPipelineCache {
       doubleSided,
     );
     this._pickPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover pick.
+   * For OPAQUE / MASK alpha modes this is identical to
+   * `getPickPipeline` (delegates). For BLEND, returns a variant that
+   * uses `fragmentPickHoverMain` (stochastic dither alpha-test) and
+   * `depthWriteEnabled: true` so translucent fragments compete on the
+   * standard depth-test once dither has discarded most of them.
+   *
+   * Guaranteed stutter-free at 60fps hover frequency: single-pass,
+   * same render-pass setup cost as the default pick pipeline, no MRT.
+   * Used by `Scene.pickHover()`.
+   *
+   * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0]
+   * @returns {GPURenderPipeline}
+   */
+  getPickHoverPipeline(alphaMode, doubleSided, materialDefines) {
+    if (alphaMode !== ALPHA_BLEND) {
+      // OPAQUE/MASK don't need dither — reuse the default pick pipeline.
+      return this.getPickPipeline(alphaMode, doubleSided, materialDefines);
+    }
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = computeKey(alphaMode, doubleSided, md);
+    let pipeline = this._pickHoverPipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    pipeline = createPickHoverPipeline(
+      this._device,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
+      this._presentationFormat,
+      this._depthFormat,
+      doubleSided,
+    );
+    this._pickHoverPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C / precise pick
+   * pass 1 (depth pre-pass). For OPAQUE / MASK alpha modes this is
+   * identical to `getPickPipeline` (delegates — single pass suffices).
+   * For BLEND, returns a variant that writes depth + stencil but no
+   * color (`colorWriteMask: 0`) so subsequent pass 2 can identify the
+   * geometrically-closest translucent fragment per pixel.
+   *
+   * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0]
+   * @returns {GPURenderPipeline}
+   */
+  getPickPrecisePass1Pipeline(alphaMode, doubleSided, materialDefines) {
+    if (alphaMode !== ALPHA_BLEND) {
+      return this.getPickPipeline(alphaMode, doubleSided, materialDefines);
+    }
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = computeKey(alphaMode, doubleSided, md);
+    let pipeline = this._pickPrecisePass1Pipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    pipeline = createPickPrecisePass1Pipeline(
+      this._device,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
+      this._presentationFormat,
+      this._depthFormat,
+      doubleSided,
+    );
+    this._pickPrecisePass1Pipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C precise pick
+   * pass 2 (color pass with depth-EQUAL test). BLEND only — for
+   * OPAQUE/MASK there's no pass 2 (single-pass pick handles them).
+   * Returns null for non-BLEND so the renderer can skip pass-2 emission.
+   *
+   * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0]
+   * @returns {GPURenderPipeline|null}
+   */
+  getPickPrecisePass2Pipeline(alphaMode, doubleSided, materialDefines) {
+    if (alphaMode !== ALPHA_BLEND) {
+      return null;
+    }
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = computeKey(alphaMode, doubleSided, md);
+    let pipeline = this._pickPrecisePass2Pipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    pipeline = createPickPrecisePass2Pipeline(
+      this._device,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
+      this._presentationFormat,
+      this._depthFormat,
+      doubleSided,
+    );
+    this._pickPrecisePass2Pipelines.set(key, pipeline);
     return pipeline;
   }
 

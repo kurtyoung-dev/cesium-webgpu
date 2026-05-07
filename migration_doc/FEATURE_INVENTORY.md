@@ -267,7 +267,7 @@ These features ship in upstream CesiumJS and are inherited by this fork. Many ha
 
 ### A.9 Picking & Selection
 
-- Picking — main pick API (pick, drillPick, pickPosition, pickFromRay, pickFromRayMostDetailed, sampleHeight, clampToHeight, drillPickFromRay)
+- Picking — main pick API (pick, drillPick, drillPickAsync, pickPosition, pickFromRay, pickFromRayMostDetailed, sampleHeight, clampToHeight, drillPickFromRay)
 - PickFramebuffer / PickDepth / PickDepthFramebuffer / PickingRayHelpers — pick framebuffer
 - PickedMetadataInfo / MetadataPicking / MetadataPickingPipelineStage — metadata pick path
 - pickModel — Model picking entry
@@ -647,7 +647,25 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - Soft point-light shadows via 5-tap PCF (Batch 63) (SHIPPED)
 - Cube depth sampling for point-light shadows (Batch 57) (SHIPPED)
 - Globe receive of point-light shadows (Batch 108) (SHIPPED)
-- C-R7-SHADER-MODULE-DEDUP wave: Model PBR (Batch 162), Vector 3D Tile family (Batch 163), BufferPrimitive family (Batch 164) (SHIPPED)
+- C-R7-SHADER-MODULE-DEDUP full sweep: Model PBR (Batch 162), Vector 3D Tile family (Batch 163), BufferPrimitive family (Batch 164), GroundPrimitive + GroundPolyline + SkyAtmosphere + EllipsoidPrimitive closure (Batch 185) (SHIPPED — every Cesium-authored WGSL renderer routes through `WebGPUShaderModuleCache.getOrCreate`)
+- NEW-ADVANCED-MOTION-VECTORS family — per-particle / per-cell / per-feature motion vectors for advanced primitives + classifiers (PointCloud Batch 168/169, CloudCollection Batch 170, GaussianSplat Batches 171-172, Voxel Batch 173, Vector3DTilePrimitive Batch 178, Vector3DTile{Polylines,ClampedPolylines} Batch 179, GroundPrimitive Batch 180, GroundPolyline Batch 183) (SHIPPED — full classifier + advanced-primitive coverage)
+- NEW-GLOBE-TRANSLUCENCY-MULTI-PASS — 3-pass technique (depth-only back-face → translucent back-face → translucent front-face) via direct command emission with cull-mode-specific pipeline variants. Cache-key suffixes `_DOB` and `_TBF` (Batches 177 + 182 + 183 underground+translucent gate fix) (SHIPPED)
+- NEW-DRILLPICK-ASYNC — `Scene.drillPickAsync(windowPosition, limit, width, height)` returns a Promise that drills through stacked features by awaiting each pick before mutating `show`. Renderer-agnostic via `pickFramebuffer.endAsync` (Batch 184) (SHIPPED)
+- NEW-MODEL-NODE-TRANSFORMS-PREV — per-runtime-node prev modelMatrix capture for TAA velocity on articulated rigs (Batch 175) (SHIPPED)
+- KHR_materials_iridescence Belcour 2017 analytical formula (Batch 181) (SHIPPED — supersedes the LUT-based design)
+- KHR_materials_transmission thickness coupling — refraction UV offset modulated by `1 + 4 × thicknessForKHR` (Batch 176) (SHIPPED)
+- C-R9-MODEL-PICK-TRANSLUCENT — full dual-path translucent pick (Batches 186 + 192). First slice: BLEND alphaMode pick with `depthWriteEnabled: false` + `baseColor.a < 0.004` discard. Second slice: `Scene.pickHoverAsync` (stochastic dither alpha-test via Jimenez IGN — guaranteed stutter-free at 60fps hover) + `Scene.pickPreciseAsync` (stencil-coordinated 2-pass — deterministic geometrically-closest translucent fragment wins). Coalesce + defer mitigations for worst-case both-fired-same-frame cost. (SHIPPED — closes deferred entry)
+- Stochastic dither alpha-test infrastructure (Batch 192) — `csm_stochasticDither.wgsl` chunk + `STOCHASTIC_DITHER_ALPHA` ShaderDefine bit. Currently consumed by hover pick; downstream hooks opened in voxel ray-march and TAA jitter for future amortization. (SHIPPED)
+- Stencil-coordinated multi-pipeline pick render (Batch 192) — single render pass, multi-pipeline-switch coordination via stencil ref. `STENCIL_PICK_WINNER` ShaderDefine bit. Pattern reusable for any future winner-take-all pass. Stencil reference activation fixed in Batch 194 audit. (SHIPPED)
+- TAA blue-noise jitter (Batch 195) — `ignJitter(frameIndex, axis)` replaces Halton 2/3 with Jimenez Interleaved Gradient Noise for sub-pixel jitter. Better temporal decorrelation under TAA accumulation; first downstream consumer of Batch 192's csm_stochasticDither infrastructure. (SHIPPED)
+- Voxel ray-march IGN ray-start jitter (Batch 196) — anti-aliases sample positions across pixels via fragment-stage IGN, reducing banding artifacts in volumetric renders. Compounds with TAA blue-noise jitter for temporal smoothing. Second downstream consumer of csm_stochasticDither. (SHIPPED)
+- Per-object cache device-loss recovery walk (Batch 197 closes C-R12-PER-OBJECT-CACHES) — `clearPerObjectCaches(scene)` recursively walks `scene.primitives`/`groundPrimitives` and clears `_webgpuCache` on shadowMap + postProcessStages during device-loss. Belt-and-suspenders correctness. (SHIPPED)
+- WebGPU timestamp-query auto-enable on first `Scene.pickPreciseAsync` (Batch 197 closes B192-N2) — defer mitigation now reads `performanceManager.frameTimings.totalGpuMs` and pushes precise pick to next frame when last frame >12ms. Auto-opted-in only when precise pick is actually used. (SHIPPED)
+- User-supplied WGSL post-process stages (Batches 198 + 199 + 204 close NEW-POSTPROCESS-USER-WGSL fully) — `Scene.postProcessStages.add(...)` user stages with `wgslFragmentShader: string` uniform compile + chain. **Batch 198 first slice:** single bind group (source texture + sampler + 64-byte UBO), iteration-order uniform packing. **Batch 199 audit fixes:** HDR precision via `_intermediateFormat`; auto-exposure ordering corrected. **Batch 204 second slice:** `wgslUniformSchema` for named-uniform packing with vec2/3/4 alignment; `wgslNumberOfPasses` multi-pass support with ping-pong textures and per-pass index. Future deferred: texture/sampler bindings beyond source pair, GLSL→WGSL transpiler. (SHIPPED — closes deferred entry)
+- HDR-DISPLAY canvas HDR output first slice (Batch 200) — `Scene.useHDRCanvasOutput` opt-in flag skips tonemap when set alongside `Scene.highDynamicRange`. Forward HDR-encoded scene color to canvas for OS/display gamut + tone curve handling on HDR-10 / Dolby Vision displays. Canvas configure side (rgba16float + display-p3 + extended toneMapping) deferred to a follow-up slice. (SHIPPED — first slice; **B200-D1 audit note 2026-05-07: colorGrading still runs on HDR data when tonemap skipped — produces wrong saturation/lift/gain. B200-D2: FXAA's SDR-tuned edge thresholds also misfire on HDR. Both fix in Batch 205.**)
+- FEAT-GAP-09 aerial-perspective LUT progress (Batches 201-202) — 6 more primitive LIT shaders wired (BumpMapLit, NormalMapLit, GridLit, StripeLit, CheckerLit, RimLightingLit). 12 of ~44 primitive shaders now consume the LUT; high-traffic shaders covered. (PROGRESS — incremental closure)
+- NEW-FEATURE-ID-VERTEX-ATTR — vertex-attribute feature ID + EXT_mesh_features `_FEATURE_ID_0` + `FeatureIdImplicitRange` synthesis (Batches 130 + 188) (SHIPPED — closes b3dm per-feature-pick path)
+- C-R10-GLOBE-POINT-LIGHT — globe terrain receives cube/point-light shadows via `globeSamplePointShadow` + `globeComputeShadowFactorPointLight`; matched ordering with model FS (point-light first, CSM second, 2D shadow last) (Batch 108) (SHIPPED — closed via doc-sync Batch 190)
 
 ### B.9 Debug & Diagnostics
 
@@ -725,13 +743,13 @@ Partially shipped features with known gaps. Working code exists but the feature 
 
 - ADR-2026-04-28 architecture migration in progress — depth-sampling classifier replacing stencil; multi-frustum work folded into Sessions 3+ (ADR-2026-04-28)
 - NEW-GS-CLASSIFICATION-DEPTH: Gaussian Splat translucent tiles classify against globe-depth, not splat-depth (NEW-GS-CLASSIFICATION-DEPTH)
-- C-R8-GROUND-POLYLINE-NATIVE: depth-test + per-instance color fixed Batch 116, but VS extrusion bug still produces blank polylines on terrain (C-R8-GROUND-POLYLINE-NATIVE)
+- C-R8-GROUND-POLYLINE-NATIVE: ~~RESOLVED 2026-04-30 (Batch 116 + viewport-zero VS extrusion fix); now ships full classifier velocity in Batch 183~~ (C-R8-GROUND-POLYLINE-NATIVE — moved to §B)
 - C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES: per-feature pick reserved but not written; distinct depth-source per pass not yet routed; `DEBUG_SHOW_VOLUME` mode unimplemented (C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES)
 - Volumetric tile classification multi-frustum accumulation paused (folded into Migration Session 3) (C-R8-TRANSLUCENT-MULTI-FRUSTUM)
 
 ### C.5 Picking
 
-- C-R9-MODEL-PICK-TRANSLUCENT: OIT-translucent pick forces depth-write for all alpha modes; no parallel pick-OIT pipeline (C-R9-MODEL-PICK-TRANSLUCENT)
+- ~~C-R9-MODEL-PICK-TRANSLUCENT~~: closed Batch 192 — dual-path API (`Scene.pickHoverAsync` for stutter-free 60fps hover via stochastic dither, `Scene.pickPreciseAsync` for click-pick determinism via stencil-coordinated 2-pass) supersedes the original "OIT-quality A-buffer" plan that turned out to be architecturally blocked by WebGPU primitives. (C-R9-MODEL-PICK-TRANSLUCENT — moved to §B)
 - C-R9-VOXEL-CELL-PICK: per-cell granularity unsupported (cell coords don't fit in 4-byte pickColor) (C-R9-VOXEL-CELL-PICK)
 - Picking 6.1 main scene depth-blit shader still pending (globe depth blit done) (BACKLOG-§4)
 - Pick layer filtering bitmask (6.2), octree pick acceleration (6.3) unwired (BACKLOG-§4)
@@ -761,7 +779,7 @@ Partially shipped features with known gaps. Working code exists but the feature 
 - TAA Slice 4 WebGL parity path (MRT motion + GLSL accumulate) pending (TAA-DESIGN)
 - ParityManager landed FEAT-SURVEY-07; WebGPUTAAEffect refactor to delegate `_historyIndex` still pending (FEAT-SURVEY-07)
 - FEAT-SURVEY-06 decoupled-lookback prefix-sum WGSL landed; consumer wiring (cull compaction, indirect-draw compaction) still uses legacy two-pass (FEAT-SURVEY-06)
-- FEAT-GAP-09 aerial-perspective LUT consumer in all passes — only PrimitivePhongTexturedColor done; 6 shaders remaining (FEAT-GAP-09)
+- FEAT-GAP-09 aerial-perspective LUT consumer — 12 of ~44 primitive shaders now wired (PhongTexturedColor + PhongColor + PBRSimple + PBRTextured + MatColorLit + MatImageLit + MatBumpMapLit + MatNormalMapLit + MatGridLit + MatStripeLit + MatCheckerLit + MatRimLightingLit). ~32 remaining (mostly less-common material variants — Mat{Aspect,Slope,Elev}Ramp, Mat{Aspect,Slope,Elev}Contour, Mat{Alpha,Bump,Specular,Normal,Emission}Map{Flat}, Mat{Checker,Color,Dot,Fade,Grid,Stripe,Water}Flat, MatWaterLit, etc.); pick variants intentionally excluded (fog would corrupt pickColor). Closed for high-traffic shaders; remainder rides along incremental upgrade rule. (FEAT-GAP-09)
 - WGF-1-EXPAND clip-distances only wired in globe; Primitive shaders have struct but no VS output; Models lack clipping plane support entirely (WGF-1-EXPAND)
 - WGF-1-INTERSECTION mode clipping with hardware clip distances (currently union-only) (WGF-1-INTERSECTION)
 - WGF-3-EXPAND shader-f16 only in Tonemapping; ColorGrading/FXAA/Bloom/etc. variants pending (WGF-3-EXPAND)
@@ -776,7 +794,7 @@ Partially shipped features with known gaps. Working code exists but the feature 
 
 ### C.8 Performance & Compute
 
-- C-R7-SHADER-MODULE-DEDUP: 3 low-win renderers (GroundPrimitive/SkyAtmosphere/EllipsoidPrimitive) still bypass module cache (C-R7-SHADER-MODULE-DEDUP)
+- ~~C-R7-SHADER-MODULE-DEDUP~~: closed Batch 185 — every Cesium-authored WGSL renderer now routes through `WebGPUShaderModuleCache.getOrCreate` (C-R7-SHADER-MODULE-DEDUP — moved to §B)
 - WebGPUModelRenderer + WebGPUAutoExposure don't route through central pipeline cache (`WebGPUComputePipelineCache` doesn't exist) (BACKLOG-§Recent)
 - BUILD-VAR-MEASURE: variant size measurement run incomplete (BUILD-VAR-MEASURE)
 - BUILD-VAR-RUNTIME-TEST: cross-variant browser smoke test pending (BUILD-VAR-RUNTIME-TEST)

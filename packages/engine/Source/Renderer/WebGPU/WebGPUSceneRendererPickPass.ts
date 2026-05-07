@@ -278,5 +278,33 @@ function executePickBatch(
     } else if (dispatched.execute) {
       dispatched.execute(context, passState);
     }
+
+    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C precise pick
+    // 2-pass coordination. When `pickMode === "precise"`, the dispatcher
+    // returns pass 1 (depth-only). Pass 2 (depth-EQUAL color winner)
+    // must follow within the SAME render pass so the depth + stencil
+    // attachments persist between passes. Per-primitive interleaving
+    // (prim1.pass1 → prim1.pass2 → prim2.pass1 → prim2.pass2) is the
+    // simplest correct ordering — pass 2's depth-EQUAL test compares
+    // against the depth pass 1 just wrote for THIS primitive, so a
+    // later primitive's pass 1 (closer depth) doesn't invalidate this
+    // primitive's pass 2 winner.
+    //
+    // Note: this per-primitive interleave is correct AS LONG AS pass 2
+    // runs immediately after the same primitive's pass 1. Cross-
+    // primitive ordering (which fragment ultimately writes pickColor at
+    // a given pixel) follows the standard depth-test winner — closer
+    // translucent fragment wins.
+    if (
+      scene.frameState?.passes?.pickMode === "precise" &&
+      command.derivedCommands?.picking?.pickPrecisePass2Command
+    ) {
+      const pass2 = command.derivedCommands.picking.pickPrecisePass2Command;
+      if (pass2.isWebGPUDrawCommand === true) {
+        pass2.execute(pickRenderPass, context);
+      } else if (pass2.execute) {
+        pass2.execute(context, passState);
+      }
+    }
   }
 }

@@ -81,6 +81,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.logImageryProbe() — next 4 tile updates   ║
 ║  CesiumDebug.cpuPassCost(t/f)  — CPU per-pass cost (R-7a) ║
 ║  CesiumDebug.gpuPassCost()     — GPU per-pass cost (timestamp) ║
+║  CesiumDebug.highDensityCull() — gpuCuller/HiZ/sort-keys stats ║
 ╚══════════════════════════════════════════════════════╝
       `);
     },
@@ -398,6 +399,37 @@ function installCesiumDebug(viewer) {
       };
       console.table(state);
       return state;
+    },
+
+    /**
+     * Dump high-density GPU cull / HiZ / sort-keys effectiveness
+     * (Batch 217). Shows the activation gate state, dispatch counts,
+     * and per-frame hit ratio so users can verify the threshold-gated
+     * dispatchers are actually pulling their weight on dense scenes.
+     *
+     *  - `active`: hysteresis state. True when count is keeping the
+     *    dispatcher engaged.
+     *  - `hitRatio`: fraction of input commands the GPU filter dropped.
+     *    Above ~0.2 means the dispatcher is paying for itself; near 0
+     *    means CPU cull was already tight enough.
+     *  - `dispatches`: lifetime count since context init.
+     */
+    highDensityCull() {
+      const renderer = scene._alternateSceneRenderer;
+      if (!renderer || typeof renderer.getHighDensityCullStats !== "function") {
+        console.warn(
+          "[CesiumDebug] No WebGPU scene renderer (or stats not available)",
+        );
+        return null;
+      }
+      const stats = renderer.getHighDensityCullStats();
+      console.table({
+        gpuCullerOpaque: stats.gpuCullerOpaque,
+        gpuCullerTranslucent: stats.gpuCullerTranslucent,
+        hiZ: stats.hiZ,
+        gpuSortKeys: stats.gpuSortKeys,
+      });
+      return stats;
     },
 
     /**

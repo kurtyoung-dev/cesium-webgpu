@@ -9,6 +9,11 @@
 // (light-driven) radiance through `computeShadowFactorCSM` when
 // `effects.csmControl.x > 0.5`; ambient stays unshadowed per PBR
 // convention.
+//
+// Batch 165 - B.12 chunk usage. Point-light path calls
+// `csm_samplePointShadow` from chunks/functions; the marker below tells
+// WebGPUPrimitiveShaders.js to prepend the chunk's WGSL at load time.
+// @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
@@ -54,11 +59,13 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// ─── Effects bind group (shadow receive + CSM) ───
+// ─── Effects bind group (shadow receive + CSM + point-light cube depth) ───
 // PBRSimple has no texture group, so effects lands at `@group(2)` —
-// matches PrimitivePhongColor's convention. The EffectsUniforms layout
-// mirrors the 272-byte UBO in WebGPUEffectsBindGroup.js; carries the
-// `csmControl` tail so byte offsets line up.
+// matches PrimitivePhongColor's convention. Layout MUST match the
+// 480-byte UBO in WebGPUEffectsBindGroup.js. Struct extends through
+// `pointLightPositionWC` (offset 336) to expose the Batch 161
+// point-light fields; the Batch 160 polygon-clipping array tail isn't
+// used by primitives.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -73,6 +80,14 @@ struct EffectsUniforms {
     atmosphereLutControl: vec4<f32>,
     // .x = csmEnabled flag. See ShadowReceiveCSM.wgsl.
     csmControl: vec4<f32>,
+    // edgeControl + edgeViewport are unused on the primitive path but
+    // kept as padding so the trailing point-light fields land at the
+    // correct UBO offsets.
+    edgeControl: vec4<f32>,
+    edgeViewport: vec4<f32>,
+    // Batch 161 — B.12 point-light cube-shadow receive control.
+    pointLightControl: vec4<f32>,
+    pointLightPositionWC: vec4<f32>,
 }
 
 struct CSMParams {
@@ -98,6 +113,10 @@ struct CSMParams {
 @group(2) @binding(9) var atmosphereLutSampler: sampler;
 @group(2) @binding(10) var<uniform> csmParams: CSMParams;
 @group(2) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
+// Batch 161 — B.12 point-light cube depth target (placeholder 1×1×6
+// cube cleared to 1.0 when point-light shadows are off; gated by
+// `effects.pointLightControl.x > 0.5`).
+@group(2) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 const PI: f32 = 3.14159265359;
 
@@ -208,6 +227,26 @@ fn computeShadowFactorCSM(
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
+// Batch 165 — B.12 chunk-based point-light receive. The Batch 161
+// inline implementation has been replaced by a call to the reusable
+// `csm_samplePointShadow` chunk function. See PrimitivePhongTexturedColor
+// for the same pattern.
+fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+    if (effects.shadowDarkness >= 1.0) { return 1.0; }
+    let visibility = csm_samplePointShadow(
+        pointLightCubeDepth,
+        shadowCompSampler,
+        fragWC,
+        effects.pointLightPositionWC.xyz,
+        effects.pointLightControl.z,
+        effects.pointLightControl.y,
+        effects.pointLightControl.w,
+        effects.pointLightPositionWC.w,
+        effects.shadowMapSize.x,
+    );
+    return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -254,12 +293,21 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Direct lighting contribution (modulated by shadow factor below).
     var direct = (diffuse + specular) * material.lightColor.rgb * NdotL;
 
-    // CSM Slice 2d — route direct radiance through cascaded shadow
-    // factor when CSM is active. Ambient stays unshadowed (standard
-    // PBR convention — environment irradiance isn't occluded by the
-    // sun's shadow map). `viewDepth = |worldPosition.z|` because
-    // `worldPosition` here is view-space (name is legacy).
-    if (effects.csmControl.x > 0.5) {
+    // CSM Slice 2d / Batch 161 — route direct radiance through the
+    // active shadow path when one is configured. Point-light cube
+    // shadows take precedence over CSM (only one shadow map is active
+    // at a time; checking pointLight first matches the Model FS gate
+    // order so transitions stay coherent). Ambient stays unshadowed
+    // per standard PBR convention (environment irradiance isn't
+    // occluded by the active shadow map).
+    if (effects.pointLightControl.x > 0.5) {
+        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let fragWC = cameraWC + input.eyePosition;
+        let shadowFactor = computeShadowFactorPointLight(fragWC);
+        direct = direct * shadowFactor;
+    } else if (effects.csmControl.x > 0.5) {
+        // `viewDepth = |worldPosition.z|` because `worldPosition` here
+        // is view-space (the field name is legacy).
         let viewDepth = abs(input.worldPosition.z);
         let shadowFactor = computeShadowFactorCSM(
             input.eyePosition,

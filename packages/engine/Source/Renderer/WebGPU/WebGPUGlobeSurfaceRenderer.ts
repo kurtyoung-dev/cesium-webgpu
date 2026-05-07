@@ -868,8 +868,19 @@ export class WebGPUGlobeSurfaceRenderer {
       //   so the debug visualization renders its own depth without the
       //   pre-emptive write affecting LOD / triangulation overlay
       //   visibility.
+      // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 183 fix) — the 3-pass
+      // technique is mutually exclusive with cameraUnderground. When the
+      // camera is underground, `disableCulling` above already forces
+      // cullMode: "none" on the regular color command (single-pass
+      // both-faces — the user wants to see through the globe). Letting
+      // the 3-pass fire as well would double-blend back-faces (depth-
+      // only pre-pass + translucent back-face + translucent front-face
+      // command running with cullMode: "none" instead of "back"). The
+      // `!cameraUnderground` gate keeps the underground path on the
+      // legacy single-pass behavior.
       if (
         globeTranslucent &&
+        !cameraUnderground &&
         !isSubsequentPass &&
         !debugWireframe &&
         debugFragmentMode === DebugFragmentMode.NONE

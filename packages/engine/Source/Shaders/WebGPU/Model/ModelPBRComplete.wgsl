@@ -2590,6 +2590,88 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
 // `EXT_mesh_features` / `EXT_structural_metadata` per-fragment feature
 // IDs and rerouting the pick color through the batch table. Tracked
 // separately as `C-R9-MODEL-FEATURE-PICK`.
+// C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover-pick path.
+// Stochastic dither alpha-test for translucent fragments via Interleaved
+// Gradient Noise (Jorge Jimenez). Survives with probability = effective
+// alpha; multi-frame averaging (under TAA or hover motion) converges to
+// the alpha-weighted appearance. Single-pass — no extra render passes,
+// no extra MRT targets. Translucent fragments become "opaque or
+// discarded" in the pick pass, so the standard depth-test pipeline
+// (depthWriteEnabled: true, depthCompare: less-equal) handles winner
+// selection naturally. Guaranteed stutter-free at 60fps hover frequency.
+//
+// Note: dither sample-stability is intentionally per-cursor-position
+// — moving the cursor produces different noise patterns across pixels
+// (spatial decorrelation), but a stationary cursor yields the same
+// pick result on every call (no flickering UI feedback).
+fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
+  // Jimenez IGN. Standard formula used by UE4/UE5/Frostbite for
+  // dithered transparency. The magic constants come from a low-
+  // discrepancy R2 sequence — produces blue-noise-like spectral
+  // properties from a single fract() call, no texture lookup.
+  return fract(52.9829189 * fract(0.06711056 * fragCoord.x + 0.00583715 * fragCoord.y));
+}
+
+@fragment fn fragmentPickHoverMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  let flags = material.materialFlags;
+  var baseColor = material.baseColorFactor;
+
+  if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
+    baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
+                          material.diffuseFactor_b, material.diffuseFactor_a);
+    if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
+      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+      baseColor = baseColor * tc;
+    }
+  } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
+    let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+    baseColor = baseColor * tc;
+  }
+
+  if (hasFlag(flags, FLAG_HAS_VERTEX_COLORS)) {
+    baseColor = baseColor * input.color0;
+  }
+
+  // Alpha-mask discard — same as fragmentPickMain.
+  if (hasFlag(flags, FLAG_ALPHA_MODE_MASK)) {
+    if (baseColor.a < material.alphaCutoff) { discard; }
+  }
+
+  // Stochastic dither for BLEND. Replaces the Batch 186 first-slice
+  // `< 0.004` discard. Survival probability = alpha; multi-frame
+  // averaging gives the perceptually-correct alpha-weighted pick.
+  if (hasFlag(flags, FLAG_ALPHA_MODE_BLEND)) {
+    let threshold = pickHoverDither(input.fragCoord.xy);
+    if (baseColor.a < threshold) { discard; }
+  }
+
+  // Per-feature batch-table hide + pick-color resolution — identical
+  // to fragmentPickMain. Duplicated rather than refactored into a
+  // helper because WGSL function calls can't return early via
+  // `discard`, and refactoring would obscure the discard sites.
+  let pickHasFidTex = hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE);
+  let pickHasFidAttr = hasFlag(flags, FLAG_HAS_FEATURE_ID_ATTRIBUTE);
+  if ((pickHasFidTex || pickHasFidAttr) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
+    var fidInt: i32;
+    if (pickHasFidTex) {
+      let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
+      fidInt = unpackFeatureId(fidSample, featureId.channelCount);
+    } else {
+      fidInt = i32(input.featureId0);
+    }
+    let batchColor = lookupBatchColor(fidInt);
+    if (batchColor.a < 0.004) { discard; }
+    if (featureId.featurePickEnabled > 0.5) {
+      let featurePickColor = lookupFeaturePickColor(fidInt);
+      if (featurePickColor.a > 0.004) {
+        return featurePickColor;
+      }
+    }
+  }
+
+  return material.pickColor;
+}
+
 @fragment fn fragmentPickMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
 
@@ -2618,6 +2700,19 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   // texels (e.g., foliage cutout, decals) never claim the pick.
   if (hasFlag(flags, FLAG_ALPHA_MODE_MASK)) {
     if (baseColor.a < material.alphaCutoff) { discard; }
+  }
+
+  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. BLEND
+  // primitives discard near-fully-transparent fragments so glass /
+  // water / ghost overlays don't claim the pick over opaque geometry
+  // visible through them. The 0.004 cutoff matches the per-feature
+  // batch-table hide threshold (`batchColor.a < 0.004 -> discard`)
+  // below — it filters numerical noise, not real translucent surfaces.
+  // Pairs with the BLEND pick pipeline's `depthWriteEnabled: false`
+  // change so depth-test alone picks the closest non-discarded
+  // translucent fragment.
+  if (hasFlag(flags, FLAG_ALPHA_MODE_BLEND)) {
+    if (baseColor.a < 0.004) { discard; }
   }
 
   // Per-feature batch-table hide also has to gate picking — a feature

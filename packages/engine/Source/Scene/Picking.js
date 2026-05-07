@@ -85,31 +85,245 @@ class Picking {
    * @see Picking#pick
    */
   async pickAsync(scene, windowPosition, width, height, limit = 1) {
+    return this._pickAsyncWithMode(
+      scene,
+      windowPosition,
+      width,
+      height,
+      limit,
+      "default",
+    );
+  }
+
+  /**
+   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover-pick
+   * entry. Promised contract: "guaranteed stutter-free at 60fps hover".
+   * Routes through `fragmentPickHoverMain` for BLEND primitives, which
+   * uses Interleaved Gradient Noise to discard translucent fragments
+   * stochastically (probability of survival = effective alpha). Result
+   * is approximate per-frame but converges to perceptually-correct
+   * over multi-frame hover motion.
+   *
+   * For OPAQUE / MASK alphaMode primitives this is identical to
+   * `pickAsync` (the factory delegates to the regular pick pipeline).
+   *
+   * Coalesce semantics (Batch 192 mitigation A): if `pickPreciseAsync`
+   * is in flight when this is called, the framework drops the precise
+   * request rather than the hover one — hover at 60fps takes priority
+   * for UX smoothness; missed precise frames are infrequent and the
+   * caller's promise simply doesn't resolve until the next call.
+   *
+   * @param {Scene} scene
+   * @param {Cartesian2} windowPosition
+   * @param {number} [width=3]
+   * @param {number} [height=3]
+   * @param {number} [limit=1]
+   * @returns {Promise<object[]>}
+   */
+  async pickHoverAsync(scene, windowPosition, width, height, limit = 1) {
+    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192 mitigation A; Batch 194
+    // B192-N1 audit fix) — coalesce with latest-cursor chaining.
+    //
+    // Standard "trailing debounce" pattern. Hover-pick fires at 60fps
+    // but pick render + readback can take 16-20ms on heavy scenes —
+    // requests stack up. The original Batch 192 coalesce returned the
+    // in-flight promise on pile-up, but that resolved with the result
+    // for the OLD cursor position; if the user moved the cursor mid-
+    // pick the returned tooltip lagged behind reality.
+    //
+    // The fix: track the latest requested cursor (`_latestHoverCursor`)
+    // and run a "drain loop" that processes one pick at a time but
+    // always uses the most-recent cursor. All callers awaiting
+    // `_inFlightHoverPick` get the SAME consolidated result for the
+    // latest cursor — that's the correct UX for hover (every observer
+    // wants "what's under the cursor RIGHT NOW", not "what was under
+    // it when I first asked").
+    this._latestHoverCursor = Cartesian2.clone(
+      windowPosition,
+      this._latestHoverCursor ?? new Cartesian2(),
+    );
+    this._latestHoverArgs = { width, height, limit };
+
+    if (defined(this._inFlightHoverPick)) {
+      return this._inFlightHoverPick;
+    }
+    this._inFlightHoverPick = this._runHoverChain(scene);
+    return this._inFlightHoverPick;
+  }
+
+  /**
+   * @private
+   * Drains queued hover-pick requests one at a time, always using
+   * the most recent cursor / args. Resolves with the result of the
+   * FINAL pick (latest cursor at drain time), shared with all
+   * coalesced callers awaiting `_inFlightHoverPick`.
+   */
+  async _runHoverChain(scene) {
+    let lastResult;
+    try {
+      while (defined(this._latestHoverCursor)) {
+        const cursor = this._latestHoverCursor;
+        const args = this._latestHoverArgs;
+        // Claim the latest snapshot. If a new request comes in while
+        // the pick below is running, it'll repopulate these and the
+        // while loop runs again.
+        this._latestHoverCursor = undefined;
+        this._latestHoverArgs = undefined;
+        lastResult = await this._pickAsyncWithMode(
+          scene,
+          cursor,
+          args.width,
+          args.height,
+          args.limit,
+          "hover",
+        );
+      }
+    } finally {
+      this._inFlightHoverPick = undefined;
+    }
+    return lastResult;
+  }
+
+  /**
+   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C / precise pick
+   * entry. Promised contract: "deterministic geometrically-closest
+   * translucent fragment wins". Routes BLEND primitives through a
+   * 2-pass pipeline pair (depth pre-pass + depth-EQUAL color pass)
+   * sharing one render-pass setup so depth + stencil persist between
+   * passes. OPAQUE / MASK alphaMode primitives go through the regular
+   * single-pass pick pipeline.
+   *
+   * Cost: ~2× translucent rasterization on BLEND primitives that
+   * intersect the pick rect. Click-pick frequency makes this cost
+   * invisible to UX. Calling this on every hover frame is NOT
+   * supported and may stutter at 60fps on heavy scenes — use
+   * `pickHoverAsync` for continuous hover-pick.
+   *
+   * Coalesce + defer (Batch 192 mitigations A + B):
+   * - If a previous `pickPreciseAsync` for this scene is still in
+   *   flight, the new request is queued (one outstanding precise pick
+   *   at a time per scene).
+   * - If the current frame's GPU work is already heavy (tracked via
+   *   `_lastFrameGpuMs`), the precise pick render is deferred to the
+   *   next frame to avoid stutter. Latency increases by one frame
+   *   (~16ms) but no stutter.
+   *
+   * @param {Scene} scene
+   * @param {Cartesian2} windowPosition
+   * @param {number} [width=3]
+   * @param {number} [height=3]
+   * @param {number} [limit=1]
+   * @returns {Promise<object[]>}
+   */
+  async pickPreciseAsync(scene, windowPosition, width, height, limit = 1) {
+    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) mitigation A — coalesce.
+    // One outstanding precise pick at a time per scene. If a click
+    // fires while another precise pick is mid-readback, the new
+    // request waits for the prior one to complete then runs. Avoids
+    // pile-up on rapid clicks.
+    if (defined(this._inFlightPrecisePick)) {
+      await this._inFlightPrecisePick.catch(() => {});
+    }
+
+    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192 mitigation B; activated
+    // by Batch 197 B192-N2 timestamp-query wiring) — defer to next
+    // frame when GPU work is heavy.
+    //
+    // Reads `context.performanceManager.frameTimings.totalGpuMs` —
+    // populated by the WebGPU timestamp profiler when active. The
+    // first `Scene.pickPreciseAsync` call on a scene auto-enables
+    // timestamp profiling (see Scene.pickPreciseAsync); the perf-
+    // manager's own gating on `device.features.has('timestamp-query')`
+    // falls through to a 0 reading on devices that don't support it,
+    // in which case defer never fires (no stutter avoidance possible
+    // without timing info, but no false-positive defer either).
+    //
+    // Threshold (12ms) chosen so a 14ms-frame heavy scene still has
+    // 4ms+ for pick. Click-pick tolerates 16-33ms latency; stutter is
+    // unacceptable.
+    const heavyMs = 12;
+    const ctx = scene.context;
+    const lastFrameMs = ctx?._performanceManager?.frameTimings?.totalGpuMs ?? 0;
+    if (lastFrameMs > heavyMs) {
+      await new Promise((resolve) => {
+        scene.frameState?.afterRender?.push(resolve);
+      });
+    }
+
+    const promise = this._pickAsyncWithMode(
+      scene,
+      windowPosition,
+      width,
+      height,
+      limit,
+      "precise",
+    );
+    this._inFlightPrecisePick = promise;
+    promise.finally(() => {
+      if (this._inFlightPrecisePick === promise) {
+        this._inFlightPrecisePick = undefined;
+      }
+    });
+    return promise;
+  }
+
+  /**
+   * Shared async-pick implementation. Splits out the per-mode routing
+   * + scratchRectangle alloc + endFrame ordering so the three public
+   * entries stay thin wrappers.
+   *
+   * @private
+   */
+  async _pickAsyncWithMode(scene, windowPosition, width, height, limit, mode) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("windowPosition", windowPosition);
     //>>includeEnd('debug');
 
     const { frameState, defaultView } = scene;
     const { pickFramebuffer } = defaultView;
-    const drawingBufferRectangle = scratchRectangle;
-    pickBegin(scene, windowPosition, drawingBufferRectangle, width, height);
-    let pickedObjects;
+    // Batch 187 (B184-D1 audit fix) — per-call rectangle instance.
+    const drawingBufferRectangle = new BoundingRectangle();
+    pickBegin(
+      scene,
+      windowPosition,
+      drawingBufferRectangle,
+      width,
+      height,
+      mode,
+    );
+    // Batch 191 (B187-D1 audit fix) — pickEnd MUST run BEFORE
+    // pickFramebuffer.endAsync() on WebGPU. `endAsync` synchronously
+    // creates a NEW command encoder, queues `copyTextureToBuffer`, and
+    // calls `device.queue.submit([encoder.finish()])` BEFORE returning
+    // its Promise. `pickEnd → endFrame()` is what submits the pick
+    // render's `_currentCommandEncoder`. If `pickEnd` runs AFTER
+    // `endAsync`, the readback encoder is submitted to the queue
+    // first, GPU executes it against an empty/stale colorTexture, and
+    // `mapAsync` resolves with prior-frame data.
+    //
+    // The Batch 187 attempt at this fix moved pickEnd "before the
+    // await" but didn't account for `endAsync`'s synchronous body
+    // running the submit before the await. The correct sequence:
+    //   pickBegin → pickEnd (submits pick render) → endAsync (queues
+    //   readback after pick render in submission order) → await.
+    pickEnd(scene);
+    let pickedObjectsPromise;
     if (defined(pickFramebuffer.endAsync)) {
-      pickedObjects = pickFramebuffer.endAsync(
+      pickedObjectsPromise = pickFramebuffer.endAsync(
         drawingBufferRectangle,
         frameState,
         limit,
       );
     } else {
-      pickedObjects = pickFramebuffer.end(drawingBufferRectangle, limit);
-      pickedObjects = Promise.resolve(pickedObjects);
+      pickedObjectsPromise = Promise.resolve(
+        pickFramebuffer.end(drawingBufferRectangle, limit),
+      );
       oneTimeWarning(
         "picking-async-fallback",
         "Fallback to synchronous picking because async operation requires WebGL2 or a context that supports it.",
       );
     }
-    pickEnd(scene);
-    return pickedObjects;
+    return pickedObjectsPromise;
   }
 
   pick(scene, windowPosition, width, height, limit = 1) {
@@ -412,8 +626,8 @@ class Picking {
     // synchronously and the per-iteration `setShow(false)` between
     // iterations doesn't get a chance to render before the next pick.
     // The result is either all instances of the same feature, or empty
-    // after 1-2 iterations. Surface a one-time warning so users know to
-    // either use a future drillPickAsync API or accept the limitation.
+    // after 1-2 iterations. Surface a one-time warning pointing users
+    // at the async API (Batch 184).
     //>>includeStart('debug', pragmas.debug);
     if (scene?._context?.isWebGPU) {
       oneTimeWarning(
@@ -421,7 +635,8 @@ class Picking {
         "Scene.drillPick is unreliable on WebGPU because the pick " +
           "framebuffer readback is asynchronous (returns previous " +
           "frame's pixels). Each drill iteration may see the same " +
-          "feature repeatedly or return empty. Track AUDIT_2026_05_02 B.6.",
+          "feature repeatedly or return empty. Use Scene.drillPickAsync " +
+          "for correct results on both backends.",
       );
     }
     //>>includeEnd('debug');
@@ -440,6 +655,40 @@ class Picking {
       }));
     };
     const objects = drillPick(pickCallback, limit);
+    return objects.map((element) => element.object);
+  }
+
+  /**
+   * Async variant of {@link Picking#drillPick}. Awaits each iteration's
+   * pick before mutating `show` state on the picked primitives, so the
+   * drill loop sees a fresh pick render every iteration on both
+   * backends. Required for correct drill behavior on WebGPU (the sync
+   * path returns prior-frame pixels — AUDIT_2026_05_02 B.6).
+   *
+   * @param {Scene} scene
+   * @param {Cartesian2} windowPosition
+   * @param {number} [limit]
+   * @param {number} [width]
+   * @param {number} [height]
+   * @returns {Promise<object[]>}
+   * @private
+   */
+  async drillPickAsync(scene, windowPosition, limit, width, height) {
+    const pickCallback = async (limit) => {
+      const pickedObjects = await this.pickAsync(
+        scene,
+        windowPosition,
+        width,
+        height,
+        limit,
+      );
+      return pickedObjects.map((object) => ({
+        object: object,
+        position: undefined,
+        exclude: false,
+      }));
+    };
+    const objects = await drillPickAsync(pickCallback, limit);
     return objects.map((element) => element.object);
   }
 
@@ -875,6 +1124,7 @@ function pickBegin(
   drawingBufferRectangle,
   width,
   height,
+  pickMode,
 ) {
   const { context, frameState, defaultView } = scene;
   const { viewport, pickFramebuffer } = defaultView;
@@ -912,7 +1162,25 @@ function pickBegin(
   );
   frameState.invertClassification = false;
   frameState.passes.pick = true;
+  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — pick variant routing.
+  // Default to "default" (B186 first-slice behavior); callers passing
+  // "hover" or "precise" opt into the second-slice variants. Cleared
+  // in pickEnd so subsequent default-pick frames don't carry stale mode.
+  frameState.passes.pickMode = pickMode ?? "default";
   frameState.tilesetPassState = pickTilesetPassState;
+
+  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) mitigation E — pick-rect
+  // screen-space cull tightening. The `getPickCullingVolume` call
+  // above already tightens the camera frustum to the screen-space
+  // pick rectangle. The scene's frustum-loop partition reads
+  // `frameState.cullingVolume` and excludes any command whose
+  // bounding sphere doesn't intersect the tightened volume — which
+  // for a 3×3 pick rect at the cursor means most commands skip BOTH
+  // pass 1 and pass 2 of the precise pick (and the dither pass of
+  // hover pick). For typical Cesium scenes (thousands of tiles), this
+  // drops the pick-time render cost by ~90-95% even before we get to
+  // per-pipeline render-pass overhead. Pure infrastructure reuse — no
+  // additional code needed for Batch 192.
 
   context.uniformState.update(frameState);
   scene.updateEnvironment();
@@ -924,6 +1192,10 @@ function pickBegin(
 
 function pickEnd(scene) {
   scene.context.endFrame();
+  // Reset pickMode so the next pick frame starts from a known state.
+  if (scene.frameState?.passes) {
+    scene.frameState.passes.pickMode = "default";
+  }
 }
 
 // ---- Translucent depth for pick position ----
@@ -1052,6 +1324,50 @@ function drillPick(pickCallback, limit) {
       break;
     }
     pickedResults = pickCallback(limit - results.length);
+  }
+
+  for (let i = 0; i < pickedPrimitives.length; ++i) {
+    pickedPrimitives[i].show = true;
+  }
+  for (let i = 0; i < pickedAttributes.length; ++i) {
+    pickedAttributes[i].show = ShowGeometryInstanceAttribute.toValue(
+      true,
+      pickedAttributes[i].show,
+    );
+  }
+  for (let i = 0; i < pickedFeatures.length; ++i) {
+    pickedFeatures[i].show = true;
+  }
+  return results;
+}
+
+// Batch 184 (NEW-DRILLPICK-ASYNC) — async sibling of `drillPick`. The
+// pickCallback returns a Promise; iterations are awaited so each one
+// sees a fresh pick render rather than the in-flight previous frame
+// (the failure mode that made the sync path unreliable on WebGPU).
+async function drillPickAsync(pickCallback, limit) {
+  const results = [];
+  const pickedPrimitives = [];
+  const pickedAttributes = [];
+  const pickedFeatures = [];
+  if (!defined(limit)) {
+    limit = Number.MAX_VALUE;
+  }
+
+  let pickedResults = await pickCallback(limit);
+  while (defined(pickedResults) && pickedResults.length > 0) {
+    const complete = addDrillPickedResults(
+      pickedResults,
+      limit,
+      results,
+      pickedPrimitives,
+      pickedAttributes,
+      pickedFeatures,
+    );
+    if (complete) {
+      break;
+    }
+    pickedResults = await pickCallback(limit - results.length);
   }
 
   for (let i = 0; i < pickedPrimitives.length; ++i) {

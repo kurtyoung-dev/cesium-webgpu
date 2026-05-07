@@ -4557,4 +4557,16 @@ Six new entries added to [`WebGPUShaderDefines.ts`](../packages/engine/Source/Re
 - **Pipeline cache only:** `WebGPUGlobeSurfaceRenderer` (3697 LOC — its own session because of scope; already has module cache).
 - **Blocked:** `WebGPUModelRenderer` (KHR shader-family work via C-R4-GLTF-KHR), `WebGPUAutoExposure` (compute pipeline cache infra).
 
+---
+
+## Session 60 (2026-05-06) — Batch 183 translucent-globe + camera-underground double-blend
+
+**Bug:** When both `frameState.cameraUnderground` and `frameState.globeTranslucencyState.translucent` were true, the per-tile 3-pass technique (depth-only back-face → translucent back-face → translucent front-face) emitted commands AND the regular color command ran with `cullMode: "none"` (because `disableCulling` is true via `cameraUnderground`). Result: back-faces blended twice — once via the translucent back-face command (cullFront pipeline) and once via the regular color command (cullNone pipeline). User-visible as a wrong-alpha shimmer on the far side of the globe when transitioning from underground to surface with translucency on.
+
+**Root cause:** The 3-pass emission gate at `WebGPUGlobeSurfaceRenderer.ts:871-876` checked `globeTranslucent && !isSubsequentPass && !debugWireframe && debugFragmentMode === NONE` but had no `!cameraUnderground` check. Originally the `disableCulling` decision was `!providerCullEnabled || cameraUnderground || globeTranslucent`, so when `globeTranslucent` was true the regular color command ran with `cullMode: "none"`. Batch 182 split that decision: `disableCulling` no longer includes `globeTranslucent`, and the regular color command flips to `cullMode: "back"` (front-face only) so the translucent-back-face pass can fill the far side. But the split didn't account for `cameraUnderground` taking precedence over `globeTranslucent` — when both are true, `disableCulling` is still true (from cameraUnderground), so the regular color command still runs cullMode "none", and the 3-pass commands fire on top.
+
+**Fix:** Extended the gate at `WebGPUGlobeSurfaceRenderer.ts:871-876` with `!cameraUnderground`. Camera-underground takes precedence over globeTranslucent; the underground path uses single-pass both-faces (the user's primary intent when underground is "see through the globe"), and the 3-pass technique is reserved for surface-level translucent-globe rendering where the camera is OUTSIDE the planet.
+
+**Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts:871-887`.
+
 

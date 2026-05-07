@@ -141,6 +141,23 @@ fn intersectAABB(origin: vec3<f32>, invDir: vec3<f32>,
                    min(min(tMax.x, tMax.y), tMax.z));
 }
 
+// Batch 196 — IGN-based ray-start jitter for voxel ray-march. Same
+// Jimenez IGN formula as csm_stochasticDither / fragmentPickHoverMain
+// (Batch 192) and the TAA jitter (Batch 195). Anti-aliases sample
+// positions across pixels: instead of every fragment's first sample
+// landing at the same uniform-grid \`tS\`, neighboring fragments start
+// at slightly different t-values along their rays. Reduces banding
+// artifacts in volumetric renders that would otherwise show up as
+// stair-step rings where rays cross density boundaries.
+//
+// With TAA on, TAA's own per-frame camera jitter implicitly produces
+// a different sample pattern per frame at the same world-space pixel,
+// giving temporal smoothing in addition to the spatial jitter here —
+// no frame-counter plumbing needed in the voxel UBO.
+fn voxelRayDither(fragCoord: vec2<f32>) -> f32 {
+  return fract(52.9829189 * fract(0.06711056 * fragCoord.x + 0.00583715 * fragCoord.y));
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let rayDir = normalize(input.worldPos - u.cameraPositionEC);
@@ -152,7 +169,14 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // so naga can prove the function returns on every code path. The
   // returned value is dropped by \`discard\` so the colour is irrelevant.
   if (tr.x > tr.y) { discard; return vec4<f32>(0.0); }
-  let tS = max(tr.x, 0.0);
+  // Batch 196 — jitter the ray-start within one stepSize window so
+  // adjacent fragments don't all sample at the same t-grid points.
+  // Dither output is in [0, 1); multiplied by stepSize gives a
+  // sub-step offset that anti-aliases the integration sample positions
+  // across the screen. Compounds cleanly with TAA's per-frame camera
+  // jitter for temporal smoothing under accumulation.
+  let dither = voxelRayDither(input.position.xy);
+  let tS = max(tr.x, 0.0) + dither * u.stepSize;
   let tE = tr.y;
   var accumC = vec3<f32>(0.0);
   var accumA: f32 = 0.0;

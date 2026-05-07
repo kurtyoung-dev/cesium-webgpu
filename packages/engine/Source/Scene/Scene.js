@@ -322,6 +322,24 @@ class Scene {
     // WebGL scenes don't use _alternateSceneRenderer — they run the
     // traditional executeCommand path in SceneRenderer.js. No log needed.
 
+    // B213-O2 (Batch 219 audit fix) — register HDR fallback listener
+    // so this scene's `_useHDRCanvasOutput` follows the canvas reality
+    // when the context's extended-toneMapping configure fails (e.g.,
+    // older browser) and the context demotes itself to SDR. Without
+    // this the scene believes HDR is on while the canvas is SDR,
+    // causing the post-process pipeline's skip-tonemap path to write
+    // unmapped HDR values into an SDR canvas — visibly washed out.
+    if (
+      defined(context) &&
+      typeof context.setHDRFallbackListener === "function"
+    ) {
+      context.setHDRFallbackListener((newValue) => {
+        if (this._useHDRCanvasOutput && !newValue) {
+          this._useHDRCanvasOutput = false;
+        }
+      });
+    }
+
     /**
      * The render scheduler manages layered sorting, material batching,
      * and predictive sort queries. Sits above CesiumJS's 5 existing
@@ -1619,6 +1637,21 @@ class Scene {
         snap.moon = { error: String(e?.message ?? e) };
       }
     }
+    // Batch 217 — high-density GPU cull / HiZ / sort-keys diagnostics.
+    // Pulls per-frame effectiveness counters from the WebGPU scene
+    // renderer when present. WebGL has no equivalent path; the field
+    // simply stays absent.
+    if (
+      defined(this._alternateSceneRenderer) &&
+      typeof this._alternateSceneRenderer.getHighDensityCullStats === "function"
+    ) {
+      try {
+        snap.highDensityCull =
+          this._alternateSceneRenderer.getHighDensityCullStats();
+      } catch (e) {
+        snap.highDensityCull = { error: String(e?.message ?? e) };
+      }
+    }
     return snap;
   }
 
@@ -2331,6 +2364,97 @@ class Scene {
       context.depthTexture &&
       (context.colorBufferFloat || context.colorBufferHalfFloat)
     );
+  }
+
+  /**
+   * HDR-DISPLAY (Batch 200, canvas auto-configure Batch 206) — whether
+   * the post-process pipeline should skip the SDR tonemap stage and
+   * forward HDR-encoded scene color directly to the canvas. Useful on
+   * HDR-capable displays (Apple Pro Display XDR, modern OLEDs, displays
+   * in HDR-10 / Dolby Vision mode) where the OS / display handles the
+   * gamut + tone curve, and an SDR-tonemapped frame would crush
+   * highlights into the SDR range.
+   *
+   * Requires {@link Scene#highDynamicRange} to also be true (the scene
+   * framebuffer must be rgba16float so the HDR data actually exists
+   * to forward). When either gate is off, standard tonemap runs.
+   *
+   * **Batch 206:** the WebGPU canvas is now auto-configured to match.
+   * Setting this flag to `true` reconfigures the underlying
+   * `GPUCanvasContext` with `format: 'rgba16float' + colorSpace:
+   * 'display-p3' + toneMapping: { mode: 'extended' }` so the browser
+   * forwards extended-range values to HDR-capable displays.
+   * ColorGrading and FXAA are also skipped under HDR (they assume
+   * SDR-mapped input).
+   *
+   * @type {boolean}
+   * @default false
+   * @experimental
+   */
+  get useHDRCanvasOutput() {
+    return this._useHDRCanvasOutput === true;
+  }
+
+  set useHDRCanvasOutput(value) {
+    const next = value === true;
+    if (this._useHDRCanvasOutput === next) {
+      return;
+    }
+    this._useHDRCanvasOutput = next;
+    // HDR-DISPLAY (Batch 206) — push the change to the WebGPU context so
+    // the canvas configuration matches the producer-side flag. WebGL
+    // backend has no equivalent (`GPUCanvasContext.configure` is WebGPU-
+    // only); on WebGL the flag still controls the producer-side skip
+    // pattern but cannot widen the canvas color space.
+    const ctx = this._context;
+    if (ctx && typeof ctx.setHDRCanvasOutput === "function") {
+      ctx.setHDRCanvasOutput(next);
+    }
+  }
+
+  /**
+   * Batch 215 — opt-in hint that this scene will reach the
+   * high-density command count where the WebGPU GPU-side culling /
+   * occlusion / sort-key dispatchers (Batches 209-211) activate.
+   *
+   * `'always'` triggers eager warm-up of the three compute pipelines
+   * + buffer pre-allocation at the next frame, amortizing the
+   * 5-50 ms pipeline-compile cost into a load frame instead of the
+   * first frame where the activation threshold crosses (which would
+   * otherwise produce a visible hitch).
+   *
+   * `'auto'` (default) keeps the lazy-init path — first activation
+   * crossing pays the compile cost, subsequent crossings are warm.
+   *
+   * `'never'` is reserved for a future slice that fully disables
+   * the dispatchers (currently behaves as 'auto').
+   *
+   * No-op on WebGL.
+   *
+   * @type {'auto' | 'always' | 'never'}
+   * @default 'auto'
+   * @experimental
+   */
+  get gpuCullingHint() {
+    return this._gpuCullingHint ?? "auto";
+  }
+
+  set gpuCullingHint(value) {
+    const allowed = value === "always" || value === "never" ? value : "auto";
+    if (this._gpuCullingHint === allowed) {
+      return;
+    }
+    this._gpuCullingHint = allowed;
+    if (allowed === "always") {
+      const ctx = this._context;
+      if (ctx && typeof ctx.warmUpHighDensityDispatchers === "function") {
+        ctx.warmUpHighDensityDispatchers(
+          ctx.drawingBufferWidth || 1920,
+          ctx.drawingBufferHeight || 1080,
+          16384,
+        );
+      }
+    }
   }
 
   /**
@@ -3705,6 +3829,136 @@ class Scene {
    */
   drillPick(windowPosition, limit, width, height) {
     return this._picking.drillPick(this, windowPosition, limit, width, height);
+  }
+
+  /**
+   * Asynchronous variant of {@link Scene#drillPick}. Awaits each pick
+   * render's framebuffer readback before drilling to the next layer,
+   * so on WebGPU each iteration sees a fresh pick render instead of
+   * the prior frame's stale pixels (the failure mode of the
+   * synchronous {@link Scene#drillPick} on WebGPU). On WebGL this
+   * uses the existing {@link PickFramebuffer#endAsync} sync-fence +
+   * PBO path; results match the synchronous path otherwise.
+   *
+   * @param {Cartesian2} windowPosition Window coordinates to perform picking on.
+   * @param {number} [limit] If supplied, stop drilling after collecting this many picks.
+   * @param {number} [width=3] Width of the pick rectangle.
+   * @param {number} [height=3] Height of the pick rectangle.
+   * @returns {Promise<any[]>} Array of objects, each containing 1 picked primitive (front-to-back).
+   *
+   * @exception {DeveloperError} windowPosition is undefined.
+   *
+   * @example
+   * const pickedObjects = await scene.drillPickAsync(new Cesium.Cartesian2(100.0, 200.0));
+   *
+   * @see Scene#drillPick
+   */
+  drillPickAsync(windowPosition, limit, width, height) {
+    return this._picking.drillPickAsync(
+      this,
+      windowPosition,
+      limit,
+      width,
+      height,
+    );
+  }
+
+  /**
+   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — stutter-free hover-pick.
+   *
+   * Async pick variant designed for continuous hover-pick at 60fps.
+   * Translucent (BLEND alphaMode) primitives use stochastic dither
+   * (Interleaved Gradient Noise) to discard fragments based on their
+   * effective alpha — a fragment with alpha=0.3 has a 30% chance of
+   * surviving the dither test. Result is approximate per-frame but
+   * converges to the correct alpha-weighted appearance over multi-
+   * frame hover motion.
+   *
+   * Cost: ~same as default `pickAsync` — single render pass, no extra
+   * MRT, no extra render-pass setup. Safe to fire every frame at 60fps.
+   *
+   * Use `pickPreciseAsync` for click-pick scenarios where the user
+   * wants deterministic "geometrically-closest translucent fragment
+   * wins" semantics.
+   *
+   * On WebGL or scenes without translucent geometry, this method's
+   * result is identical to `pickAsync`.
+   *
+   * @param {Cartesian2} windowPosition
+   * @param {number} [width=3] Width of the pick rectangle.
+   * @param {number} [height=3] Height of the pick rectangle.
+   * @returns {Promise<object>} The picked object, or `undefined` if
+   *   no object was picked.
+   *
+   * @example
+   * // Continuous hover-pick — won't stutter even on heavy scenes.
+   * handler.setInputAction(async (movement) => {
+   *   const picked = await scene.pickHoverAsync(movement.endPosition);
+   *   showTooltip(picked);
+   * }, ScreenSpaceEventType.MOUSE_MOVE);
+   *
+   * @see Scene#pickAsync
+   * @see Scene#pickPreciseAsync
+   */
+  pickHoverAsync(windowPosition, width, height) {
+    // Mark the scene as hover-pick-enabled so the model renderer
+    // builds the dither pipeline variant on the next update tick.
+    this._webgpuPickHoverEnabled = true;
+    return this._picking.pickHoverAsync(this, windowPosition, width, height);
+  }
+
+  /**
+   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — deterministic precise pick.
+   *
+   * Async pick variant designed for click-pick scenarios where the
+   * user expects deterministic "geometrically-closest translucent
+   * fragment wins" semantics. Translucent (BLEND alphaMode) primitives
+   * route through a 2-pass pipeline pair (depth pre-pass + depth-EQUAL
+   * color pass) sharing one render-pass setup so depth + stencil
+   * persist between passes.
+   *
+   * Cost: ~2× translucent rasterization on BLEND primitives that
+   * intersect the pick rect. Click-pick frequency makes this cost
+   * invisible to UX. Calling this on every hover frame is NOT
+   * supported and may stutter at 60fps on heavy scenes — use
+   * `pickHoverAsync` for continuous hover-pick.
+   *
+   * On WebGL or scenes without translucent geometry, this method's
+   * result is identical to `pickAsync`.
+   *
+   * @param {Cartesian2} windowPosition
+   * @param {number} [width=3] Width of the pick rectangle.
+   * @param {number} [height=3] Height of the pick rectangle.
+   * @returns {Promise<object>} The picked object.
+   *
+   * @example
+   * // Click-pick with deterministic translucent winner selection.
+   * handler.setInputAction(async (click) => {
+   *   const picked = await scene.pickPreciseAsync(click.position);
+   *   if (picked) selectFeature(picked);
+   * }, ScreenSpaceEventType.LEFT_CLICK);
+   *
+   * @see Scene#pickAsync
+   * @see Scene#pickHoverAsync
+   */
+  pickPreciseAsync(windowPosition, width, height) {
+    this._webgpuPickPreciseEnabled = true;
+    // Batch 197 (B192-N2 fix) — first pickPreciseAsync call on this
+    // scene auto-enables WebGPU timestamp profiling. The defer
+    // mitigation (Batch 192 mitigation B) reads
+    // `performanceManager.frameTimings.totalGpuMs` to decide whether
+    // to push a precise pick to the next frame. Without timestamp
+    // profiling enabled, totalGpuMs stays at 0 and defer never fires
+    // — apps that exercise precise pick on heavy scenes would still
+    // stutter. Auto-enabling on first use opts the user in to the
+    // tiny per-frame profiler cost only when they're actually using
+    // precise pick (~negligible at the cost of a few timestamp-query
+    // operations per frame on supported devices).
+    const perfMgr = this.context?._performanceManager;
+    if (perfMgr && perfMgr._config && !perfMgr._config.timestampProfiling) {
+      perfMgr._config.timestampProfiling = true;
+    }
+    return this._picking.pickPreciseAsync(this, windowPosition, width, height);
   }
 
   /**

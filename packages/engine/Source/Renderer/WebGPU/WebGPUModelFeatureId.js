@@ -88,6 +88,51 @@ function classifyFeatureId(featureId) {
 }
 
 /**
+ * NEW-FEATURE-ID-VERTEX-ATTR (Batch 188) — synthesize a per-vertex
+ * Float32Array of feature IDs for primitives that select a
+ * `FeatureIdImplicitRange`. Such primitives carry no per-vertex
+ * `_FEATURE_ID_0` accessor — instead the feature ID is `offset +
+ * floor(vertex_index / repeat)`. We materialize that as an explicit
+ * vertex-attribute buffer here so the same shader/JS path that handles
+ * `_FEATURE_ID_0` (Batch 130 audit B.2) picks it up unchanged. Returns
+ * `null` when no implicit feature ID is selected, or when the model's
+ * featureIdLabel resolves to a texture / attribute / not-found case
+ * — those paths are already handled by their respective branches.
+ *
+ * @param {Model} model
+ * @param {ModelRuntimeNode} runtimeNode
+ * @param {ModelComponents.Primitive} primitive
+ * @param {number} vertexCount
+ * @returns {Float32Array|null}
+ * @private
+ */
+function synthesizeImplicitFeatureIdData(
+  model,
+  runtimeNode,
+  primitive,
+  vertexCount,
+) {
+  if (!defined(primitive) || vertexCount <= 0) {
+    return null;
+  }
+  const selected = findSelectedFeatureId(model, runtimeNode, primitive);
+  if (!defined(selected) || !selected.isImplicit) {
+    return null;
+  }
+  const fid = selected.featureIds;
+  // FeatureIdImplicitRange exposes offset (default 0) and repeat
+  // (default 1). Per the EXT_mesh_features spec the lookup is
+  // `id = offset + floor(vertex_index / repeat)`.
+  const offset = fid.offset ?? 0;
+  const repeat = Math.max(1, fid.repeat ?? 1);
+  const data = new Float32Array(vertexCount);
+  for (let v = 0; v < vertexCount; v++) {
+    data[v] = offset + Math.floor(v / repeat);
+  }
+  return data;
+}
+
+/**
  * Computes the number of channels used by a feature ID texture.
  * Channels string is like "r", "rg", "rgb", "rgba".
  * @param {string} channels
@@ -375,11 +420,17 @@ function ensureFeatureIdResources(
   // primitive's `_FEATURE_ID_0` accessor by `extractPrimitiveGeometry`)
   // into vertex slot 8 in `createPrimitiveResources`. b3dm tilesets
   // hit this path because the loader renames `_BATCHID` to
-  // `_FEATURE_ID_0`. FeatureIdImplicitRange (no typed array, IDs
-  // synthesized from `offset + floor(vertex_index / repeat)`) is a
-  // follow-up — it needs either runtime synthesis of the buffer or
-  // additional uniform fields + an FS implicit branch.
-  if (selected.isAttribute) {
+  // `_FEATURE_ID_0`.
+  //
+  // NEW-FEATURE-ID-VERTEX-ATTR (Batch 188) — FeatureIdImplicitRange
+  // (no typed array; IDs synthesized from
+  // `offset + floor(vertex_index / repeat)`) now also lands in this
+  // bucket. `extractPrimitiveGeometry` synthesizes the typed array
+  // when an implicit feature ID is selected, so by the time we reach
+  // here `geometry.featureId0Data` is populated and the same flag
+  // applies. The FS branch is identical to the explicit-attribute
+  // path — flat-interpolated f32 lookup at slot 8.
+  if (selected.isAttribute || selected.isImplicit) {
     flags |= 0x20000; // FLAG_HAS_FEATURE_ID_ATTRIBUTE (bit 17)
   }
 
@@ -648,11 +699,13 @@ function destroyFeatureIdResources(primCache) {
 
 export {
   findSelectedFeatureId,
+  synthesizeImplicitFeatureIdData,
   ensureFeatureIdResources,
   destroyFeatureIdResources,
 };
 export default {
   findSelectedFeatureId,
+  synthesizeImplicitFeatureIdData,
   ensureFeatureIdResources,
   destroyFeatureIdResources,
 };

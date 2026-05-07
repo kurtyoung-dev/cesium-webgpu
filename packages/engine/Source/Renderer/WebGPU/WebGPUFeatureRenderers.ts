@@ -413,6 +413,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       depthTextureView: GPUTextureView,
       soa: Parameters<typeof dispatchWebGPUHiZOcclusion>[3],
       params: Parameters<typeof dispatchWebGPUHiZOcclusion>[4],
+      frameId?: number,
     ) {
       return dispatchWebGPUHiZOcclusion(
         context,
@@ -420,6 +421,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
         depthTextureView,
         soa,
         params,
+        frameId,
       );
     },
     readback: function (count: number) {

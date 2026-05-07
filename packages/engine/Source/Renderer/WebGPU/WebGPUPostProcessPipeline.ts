@@ -49,6 +49,7 @@ import {
   type DepthOfFieldConfig,
 } from "./WebGPUPostProcessEffects.js";
 import { WebGPUTAAEffect } from "./WebGPUTAAEffect.js";
+import { WebGPUUserPostProcessStage } from "./WebGPUUserPostProcessStage.js";
 // Audit A.11 (Batch 133) -- pipeline-level GodRay registration.
 import { GodRayEffect, type GodRayConfig } from "./WebGPUGodRayEffect.js";
 import {
@@ -228,6 +229,11 @@ export class WebGPUPostProcessPipeline {
   private _aoEffect: AmbientOcclusionEffect | null = null;
   private _dofEffect: DepthOfFieldEffect | null = null;
   private _taaEffect: WebGPUTAAEffect | null = null;
+  // NEW-POSTPROCESS-USER-WGSL (Batch 198) — first slice. User-supplied
+  // WGSL fragment-shader stages added via `Scene.postProcessStages.add()`.
+  // Run as a chain AFTER built-in stages but BEFORE tonemapping/FXAA
+  // so user effects operate on the post-bloom/AO/DoF HDR output.
+  private _userStages: WebGPUUserPostProcessStage[] = [];
   // Audit A.11 (Batch 133) -- GodRay (volumetric light scattering)
   // post-process. Activated through `addGodRay` + the configure-pipeline
   // sync; per-frame sun screen UV updated via
@@ -246,6 +252,14 @@ export class WebGPUPostProcessPipeline {
   // losing the user's bias.
   private _manualExposure: number = 1.0;
 
+  // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) — when the canvas is
+  // configured for HDR output (extended dynamic range), tonemapping is
+  // skipped so the swap chain receives the raw HDR signal. ColorGrading
+  // and FXAA both implicitly assume SDR-mapped input (LDR contrast curves
+  // and luminance-keyed edge detection), so they must be skipped too.
+  // Driven per-frame by `WebGPUPostProcessStageCollection.update()`.
+  private _skipSDRStagesForHDR = false;
+
   private _isDestroyed = false;
 
   /**
@@ -260,6 +274,8 @@ export class WebGPUPostProcessPipeline {
     if (this._aoEffect?.enabled) return true;
     if (this._dofEffect?.enabled) return true;
     if (this._godRayEffect?.enabled) return true;
+    // NEW-POSTPROCESS-USER-WGSL (Batch 198) — user-supplied WGSL stages.
+    if (this._userStages.some((s) => s.enabled)) return true;
     return this._customStages.some((s) => s.enabled);
   }
 
@@ -685,6 +701,74 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
+   * NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
+   * B198-D1 audit fix) — add a user-supplied WGSL post-process stage
+   * to the pipeline. The stage is appended to the `_userStages` chain
+   * and runs AFTER built-in stages (Bloom, AO, DoF, GodRay) and
+   * AFTER auto-exposure dispatch but BEFORE TAA + tonemap — same
+   * insertion point the WebGL backend uses for `scene.postProcessStages
+   * .add()` user stages.
+   *
+   * The user provides a WGSL fragment shader source (declares
+   * `fragmentMain` returning vec4 + bindings per the convention in
+   * `WebGPUUserPostProcessStage`'s module doc) and a numeric uniforms
+   * map. The stage compiles the user FS, builds a single-bind-group
+   * pipeline (source texture + sampler + 64-byte UBO), and renders
+   * fullscreen into its own intermediate texture.
+   *
+   * Batch 199 (B198-D1 audit fix) — the stage's intermediate texture
+   * now uses `_intermediateFormat` (rgba16float in HDR mode, canvas
+   * format in SDR) instead of the caller-passed `canvasFormat`. In
+   * HDR mode the prior implementation downconverted user-stage output
+   * to 8-bit, defeating HDR precision. `canvasFormat` is kept on the
+   * API surface for backwards compatibility but is no longer used for
+   * the intermediate allocation.
+   *
+   * @param device GPUDevice
+   * @param canvasFormat Canvas color format (kept for API compat; the
+   *   stage internally uses `_intermediateFormat` to preserve HDR)
+   * @param name User-friendly stage name for debugging / labels
+   * @param fragmentSource WGSL fragment shader source string
+   * @param uniformValues Numeric uniforms map (packed in iteration order)
+   */
+  addUserWGSLStage(
+    device: GPUDevice,
+    canvasFormat: GPUTextureFormat,
+    name: string,
+    fragmentSource: string,
+    uniformValues: Record<string, number | number[]>,
+    schema?: import("./WebGPUUserPostProcessStage.js").UniformSchema,
+    numberOfPasses?: number,
+  ): void {
+    const stage = new WebGPUUserPostProcessStage(
+      name,
+      fragmentSource,
+      uniformValues,
+      schema,
+      numberOfPasses,
+    );
+    // Batch 199 (B198-D1) — use _intermediateFormat (HDR-aware) so user
+    // stages preserve precision when HDR is on. `canvasFormat` param
+    // retained on the API for backwards compatibility but unused here.
+    void canvasFormat;
+    const stageFormat = this._intermediateFormat;
+    stage.initialize(device, this._width, this._height, stageFormat);
+    this._userStages.push(stage);
+  }
+
+  /**
+   * NEW-POSTPROCESS-USER-WGSL (Batch 198) — drop all user-added WGSL
+   * stages. Called by the configure step when the user collection's
+   * `_stages` array changes (add or remove a stage).
+   */
+  clearUserWGSLStages(): void {
+    for (const stage of this._userStages) {
+      stage.destroy();
+    }
+    this._userStages.length = 0;
+  }
+
+  /**
    * Add depth-of-field effect (GaussianBlur → DoF Composite).
    * Requires depth texture to function.
    */
@@ -890,6 +974,26 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       }
     }
 
+    // 3.6 NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
+    // B198-D2 audit fix — moved from step 3.4 to here). User-supplied
+    // WGSL post-process stages run AFTER auto-exposure dispatch (so
+    // auto-exposure correctly sees the post-DoF ping/pong texture as
+    // its luminance source) but BEFORE TAA + tonemap (so user stages
+    // operate on HDR-space color and TAA accumulates the user-modified
+    // frame). Matches the WebGL backend's insertion point for custom
+    // stages. Each stage chains via the standard
+    // `execute(encoder, source, depth, sampler) → newView` contract.
+    for (const stage of this._userStages) {
+      if (stage.enabled) {
+        currentView = stage.execute(
+          encoder,
+          currentView,
+          depth,
+          this._sampler!,
+        );
+      }
+    }
+
     // AUDIT_2026_05_02 B.16 (Batch 155 clarity refactor; Batch 157
     // comment correction) — push order of `singlePassStages` now
     // matches GPU command stream order. The actual execution order
@@ -920,7 +1024,16 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // 4. Tonemapping + ColorGrading + Custom stages + FXAA (single-pass chain)
     const singlePassStages: CompiledStage[] = [];
     if (this._tonemapStage?.enabled) singlePassStages.push(this._tonemapStage);
-    if (this._colorGradingStage?.enabled) {
+    // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) — when the canvas is
+    // configured for HDR output, ColorGrading and FXAA are dropped from
+    // the chain. Both stages assume SDR-mapped input: the grading curves
+    // (gamma, lift/gain/gamma) are calibrated for [0,1] and the FXAA
+    // luma derivation + edge-detection thresholds are tuned for an
+    // ~SRGB-perceptual signal. Running either on raw HDR produces
+    // washed-out colors and missed edges. The collection still flags
+    // them as `enabled` so the user-facing toggles work in SDR mode;
+    // the gate here makes the active chain HDR-correct.
+    if (this._colorGradingStage?.enabled && !this._skipSDRStagesForHDR) {
       // Phase 4 — runs after tonemap (so it sees SDR) and before custom
       // stages + FXAA (so the AA pass smooths any contrast-boosted edges).
       singlePassStages.push(this._colorGradingStage);
@@ -929,7 +1042,9 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     for (const s of this._customStages) {
       if (s.enabled) singlePassStages.push(s);
     }
-    if (this._fxaaStage?.enabled) singlePassStages.push(this._fxaaStage);
+    if (this._fxaaStage?.enabled && !this._skipSDRStagesForHDR) {
+      singlePassStages.push(this._fxaaStage);
+    }
 
     if (singlePassStages.length === 0) {
       // No single-pass stages — always copy to dest. Even if no complex
@@ -1037,6 +1152,18 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       const stage = this._customStages.find((s) => s.name === name);
       if (stage) stage.enabled = enabled;
     }
+  }
+
+  /**
+   * HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix). When set to true,
+   * `execute()` skips the ColorGrading and FXAA stages even if they are
+   * marked enabled, because both assume SDR-mapped input. Tonemap is
+   * already gated separately by the SDR-stage cache. Driven per-frame
+   * from `WebGPUPostProcessStageCollection.update()` based on the scene
+   * `useHDRCanvasOutput` + `highDynamicRange` pair.
+   */
+  setSkipSDRStagesForHDR(skip: boolean): void {
+    this._skipSDRStagesForHDR = skip;
   }
 
   /**

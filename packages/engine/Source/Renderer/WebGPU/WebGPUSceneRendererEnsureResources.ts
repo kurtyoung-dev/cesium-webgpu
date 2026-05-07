@@ -123,6 +123,18 @@ export function ensureResources(
       host._debugDepthOverlay = null;
       host._debugFrustumOverlay = null;
       host._initialized = false;
+
+      // C-R12-PER-OBJECT-CACHES (Batch 197) — extend the device-loss
+      // recovery walk to per-Model / per-Collection / per-PostProcess
+      // object caches. Subsystem-level caches (Bloom/AO/DoF/GodRays/
+      // AutoExposure/scene FB) are wired via the registry above.
+      // Per-object caches like `model._webgpuCache`,
+      // `collection._webgpuCache`, `shadowMap._webgpuCache`, etc. typically
+      // get rebuilt next frame via the owning feature renderer's destroy
+      // + recreate flow — but a model that's been removed from primitives
+      // mid-recovery would otherwise hold zombie handles to dead-device
+      // resources. Belt-and-suspenders correctness: walk the scene now.
+      clearPerObjectCaches(scene);
     });
   }
 
@@ -369,4 +381,81 @@ export function ensureResources(
   host._width = width;
   host._height = height;
   host._initialized = true;
+}
+
+/**
+ * C-R12-PER-OBJECT-CACHES (Batch 197) — clears the `_webgpuCache` slot
+ * on per-object owners reachable from the scene (primitives,
+ * collections, shadow map, post-process stages). Called from the
+ * device-invalidation event handler in `ensureResources` so any
+ * orphan-but-still-reachable caches drop their stale GPU handles
+ * during recovery.
+ *
+ * What gets cleared:
+ *
+ * - `scene.primitives` collection — recursively walked; every member
+ *   with `._webgpuCache` is cleared. Includes both leaf primitives
+ *   (Models, GroundPrimitive, etc.) and nested PrimitiveCollections.
+ * - `scene.groundPrimitives` collection (separate primitive set in
+ *   Cesium for terrain-classified primitives).
+ * - `scene.shadowMap` — single object with own `_webgpuCache`.
+ * - `scene.postProcessStages` — collection-level cache.
+ *
+ * Owner-feature-renderer destroy/recreate flows still run on the next
+ * update tick; this is defensive cleanup for the window between
+ * device-loss event and the next render frame.
+ *
+ * @private
+ */
+function clearPerObjectCaches(
+  scene:
+    | {
+        primitives?: unknown;
+        groundPrimitives?: unknown;
+        shadowMap?: unknown;
+        postProcessStages?: unknown;
+      }
+    | undefined,
+): void {
+  if (!scene) return;
+  walkAndClear(scene.primitives);
+  walkAndClear(scene.groundPrimitives);
+  // Singletons / non-collection owners.
+  clearOne(scene.shadowMap);
+  clearOne(scene.postProcessStages);
+}
+
+interface WebGPUCacheOwner {
+  _webgpuCache?: unknown;
+  length?: number;
+  get?: (i: number) => unknown;
+}
+
+function walkAndClear(node: unknown): void {
+  if (!node) return;
+  const owner = node as WebGPUCacheOwner;
+  // Leaf with its own cache — clear it.
+  clearOne(owner);
+  // Collection-shape duck-type: { length, get(i) }. Cesium
+  // PrimitiveCollection follows this shape; recurse into children.
+  if (typeof owner.length === "number" && typeof owner.get === "function") {
+    const len = owner.length;
+    for (let i = 0; i < len; i++) {
+      try {
+        walkAndClear(owner.get(i));
+      } catch {
+        // Defensive: a child throwing during cache clear shouldn't
+        // block the rest of the walk. The next render tick will
+        // re-discover and clean up via the owning FR.
+      }
+    }
+  }
+}
+
+function clearOne(node: unknown): void {
+  if (!node) return;
+  const owner = node as WebGPUCacheOwner;
+  if (owner._webgpuCache !== undefined) {
+    owner._webgpuCache = undefined;
+  }
 }

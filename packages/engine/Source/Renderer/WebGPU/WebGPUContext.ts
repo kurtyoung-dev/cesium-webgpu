@@ -294,6 +294,18 @@ export class WebGPUContext extends GraphicsContext {
   // extraction).
   public _context: GPUCanvasContext | null = null;
   public _presentationFormat: GPUTextureFormat = "bgra8unorm";
+  // HDR-DISPLAY (Batch 206) — when true, the canvas is configured with
+  // `format: 'rgba16float' + colorSpace: 'display-p3' + toneMapping:
+  // {mode: 'extended'}`. Driven by `Scene.useHDRCanvasOutput`. Toggle
+  // path clears the pipeline cache because every pipeline targeting
+  // the canvas format must be recompiled.
+  private _hdrCanvasOutput: boolean = false;
+  // B213-O2 (Batch 219 audit fix) — listener Scene.js installs so that
+  // when the context's HDR fallback chain (B206-N1) trips and demotes
+  // `_hdrCanvasOutput` from true → false, the Scene-level flag
+  // (`_useHDRCanvasOutput`) follows. Without this, the Scene reports
+  // HDR as on but the canvas is actually SDR — silently asymmetric.
+  private _hdrFallbackListener: ((newValue: boolean) => void) | null = null;
   private _depthFormat: GPUTextureFormat = "depth24plus-stencil8";
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _isDestroyed: boolean = false;
@@ -827,13 +839,12 @@ export class WebGPUContext extends GraphicsContext {
       // Get preferred format
       this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
 
-      // Configure the canvas
-      this._context.configure({
-        device: this._device,
-        format: this._presentationFormat,
-        alphaMode: "opaque",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      });
+      // Configure the canvas. HDR-DISPLAY (Batch 206) — `_hdrCanvasOutput`
+      // is false by default at init; the helper still routes through
+      // here so a follow-up `setHDRCanvasOutput(true)` and the helper
+      // share one configure path. Batch 213 (B206-N1 audit fix) routes
+      // through `_applyCanvasConfig` for browser-compat fallback.
+      this._applyCanvasConfig();
 
       // Initialize default textures
       this._initializeDefaultTextures();
@@ -891,12 +902,92 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     // AUDIT_2026_05_02 C.2 (Batch 135) — eager `void this.gpuCuller`
-    // trigger removed. `gpuCullCommands()` (defined on WebGPUSceneRenderer)
-    // has no production consumers, so the eager init burned ~256KB of
-    // SOA buffers per context permanently. The lazy getter remains, so
-    // any future caller that wires `gpuCullCommands` into the frustum
-    // loop will trigger initialization on first use. Tracked as
-    // NEW-GPU-CULLER-CONSUME-OR-DELETE in DEFERRED_WORK.
+    // trigger removed. The lazy getter remains; consumers wired in
+    // Batches 209-211 trigger initialization on first use. Eager
+    // warm-up is now opt-in via `warmUpHighDensityDispatchers()`
+    // (Batch 215) so users with known-dense scenes can amortize the
+    // pipeline-compile cost into a load frame.
+  }
+
+  /**
+   * Batch 215 — proactively initialize the three high-density GPU
+   * dispatchers (gpuCuller, HiZ occlusion, GPUSortKeys) so their
+   * compute-shader pipeline compiles + buffer allocations happen
+   * during scene load instead of the first frame where command count
+   * crosses the activation threshold. Without this warm-up the first
+   * threshold crossing hitches by 5-50 ms (compile + alloc).
+   *
+   * Triggered by `Scene.gpuCullingHint = 'always'`. The 'auto'
+   * default keeps the lazy-init paths from Batches 209-211 — only
+   * users who anticipate >10K visible commands should opt in.
+   *
+   * Fire-and-forget: each dispatcher's init is async; failures are
+   * non-fatal (lazy path still works).
+   *
+   * @param hintViewportWidth  expected canvas width for HiZ pyramid
+   *    sizing. Pass the current `drawingBufferWidth` if you have it;
+   *    HiZ resizes when the actual canvas changes.
+   * @param hintViewportHeight expected canvas height for HiZ pyramid
+   * @param hintMaxCommands    expected peak opaque command count
+   *    (sets the buffer capacity for all three dispatchers).
+   */
+  public warmUpHighDensityDispatchers(
+    hintViewportWidth: number = 1920,
+    hintViewportHeight: number = 1080,
+    hintMaxCommands: number = 16384,
+  ): void {
+    if (!this._device || this._isDestroyed) return;
+
+    // gpuCuller — touching the getter triggers the dynamic import +
+    // pipeline compile. Errors are caught inside the getter chain.
+    void this.gpuCuller;
+    // B215-N2 (Batch 219 audit fix) — warm the dedicated translucent
+    // culler too. Without this, the first activation of the
+    // translucent path still pays the 5-50 ms compile hitch even
+    // though the user opted into eager warm-up.
+    void this.gpuCullerTranslucent;
+    // Batch 220 — per-frustum opaque cullers (1..3 typical) so a
+    // multi-frustum log-depth scene doesn't hitch as later frustums
+    // first activate.
+    for (let i = 1; i < 4; i++) {
+      this.getGPUCullerForOpaqueFrustum(i);
+    }
+    // Batch 221 — per-cascade shadow cullers (4 typical CSM
+    // cascades). No-op until Phase 2 activation but the compile
+    // cost amortizes here regardless.
+    for (let i = 0; i < 4; i++) {
+      this.getGPUCullerForCascade(i);
+    }
+
+    // HiZ — call the FR init directly with the hint dimensions.
+    const hizFR = this.getFeatureRenderer(
+      FeatureRendererKey.HI_Z_OCCLUSION,
+    ) as { init?: (w: number, h: number, max: number) => boolean } | null;
+    try {
+      hizFR?.init?.(hintViewportWidth, hintViewportHeight, hintMaxCommands);
+    } catch (e) {
+      //>>includeStart('debug', pragmas.debug);
+      this.log(
+        "warn",
+        `HiZ warm-up failed (lazy path will still work on demand): ${(e as Error).message}`,
+      );
+      //>>includeEnd('debug');
+    }
+
+    // GPUSortKeys — same shape, single-arg init.
+    const sortFR = this.getFeatureRenderer(
+      FeatureRendererKey.GPU_SORT_KEYS,
+    ) as { init?: (max: number) => boolean } | null;
+    try {
+      sortFR?.init?.(hintMaxCommands);
+    } catch (e) {
+      //>>includeStart('debug', pragmas.debug);
+      this.log(
+        "warn",
+        `GPUSortKeys warm-up failed (lazy path will still work on demand): ${(e as Error).message}`,
+      );
+      //>>includeEnd('debug');
+    }
   }
 
   /**
@@ -1900,18 +1991,22 @@ export class WebGPUContext extends GraphicsContext {
    * the contract — both backends expose the same `waitForSignal` API
    * so consumers stay backend-agnostic.
    */
-  override createSync(options?: object) {
-    const opts = (options ?? {}) as {
-      device?: GPUDevice;
-      timeoutFrames?: number;
-    };
-    const device = opts.device ?? this._device;
-    if (!device) {
+  override createSync(_options?: object) {
+    // Batch 187 — pre-existing TS error fix. `WebGPUSync.create` accepts
+    // `{ context }` and reads `context._device` internally; the prior
+    // call passed `{ device, timeoutFrames }` which doesn't match
+    // `WebGPUSyncOptions`. The `device`/`timeoutFrames` fields had no
+    // consumers (verified by grep) — `options` is part of the abstract
+    // base signature and currently has no caller-provided fields, so
+    // pass `this` as the context and let WebGPUSync resolve the device.
+    if (!this._device) {
       throw new DeveloperError(
         "createSync called before WebGPU device is initialized.",
       );
     }
-    return WebGPUSync.create({ device, timeoutFrames: opts.timeoutFrames });
+    return WebGPUSync.create({
+      context: this as unknown as CesiumGraphicsContext,
+    });
   }
 
   /**
@@ -2570,14 +2665,12 @@ export class WebGPUContext extends GraphicsContext {
    */
   resize(): void {
     // Canvas resizing is handled automatically by the browser
-    // Just need to reconfigure if needed
+    // Just need to reconfigure if needed. HDR-DISPLAY (Batch 206)
+    // routes through `_applyCanvasConfig` (Batch 213 audit fix) so
+    // the HDR mode survives resize and a browser without extended
+    // toneMapping support degrades to rgba16float-only or SDR.
     if (this._context && this._device && !this._isDestroyed) {
-      this._context.configure({
-        device: this._device,
-        format: this._presentationFormat,
-        alphaMode: "opaque",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      });
+      this._applyCanvasConfig();
     }
   }
 
@@ -2917,6 +3010,25 @@ export class WebGPUContext extends GraphicsContext {
       this._gpuCuller.destroy();
       this._gpuCuller = null;
     }
+    // Batch 222 — destroy the auxiliary culler instances added in
+    // Batches 218 (translucent), 220 (per-opaque-frustum), and 221
+    // (per-cascade). Without this they leak on context destruction
+    // — at peak (1 translucent + 3 per-frustum + 4 per-cascade)
+    // that's ~4 MB of orphaned VRAM per leaked context.
+    if (this._gpuCullerTranslucent) {
+      this._gpuCullerTranslucent.destroy();
+      this._gpuCullerTranslucent = null;
+    }
+    for (const culler of this._gpuCullerByFrustum.values()) {
+      culler.destroy();
+    }
+    this._gpuCullerByFrustum.clear();
+    this._gpuCullerByFrustumInitializing.clear();
+    for (const culler of this._gpuCullerByCascade.values()) {
+      culler.destroy();
+    }
+    this._gpuCullerByCascade.clear();
+    this._gpuCullerByCascadeInitializing.clear();
     if (this._pointCloudLOD) {
       this._pointCloudLOD.destroy();
       this._pointCloudLOD = null;
@@ -3525,8 +3637,45 @@ export class WebGPUContext extends GraphicsContext {
   private _bufferMapper: WebGPUBufferMapper | null = null;
   private _performanceManager: WebGPUPerformanceManager | null = null;
   private _uniformAllocator: WebGPURingBufferAllocator | null = null;
+  // B220-O1 (Batch 225) — defensive cap on auxiliary culler
+  // allocation. Real Cesium scenes top out at 6 frustums + 4 CSM
+  // cascades; 16 is a generous safety bound. Without this cap a
+  // malformed scene that reports an unreasonable
+  // `frustumCommandsList.length` could allocate hundreds of cullers
+  // (~1 MB VRAM each). Refusing allocation beyond the cap returns
+  // null from the getter; the call site falls back to no-cull,
+  // which is correct behavior (worst case: slower draw, not broken).
+  private static readonly _MAX_AUX_CULLER_INDEX = 16;
+
   private _gpuCuller: GPUCullerInstance | null = null;
   private _gpuCullerInitializing: boolean = false;
+  // B216-N1 (Batch 218 audit fix) — separate culler instance for the
+  // translucent pass. The dispatcher reuses ONE staging buffer
+  // (`_readbackBuffer`); if opaque + translucent both
+  // `prepareReadback` against the same instance in the same encoder,
+  // the second copy clobbers the first, corrupting opaque's readback.
+  // Using a second instance gives translucent its own buffers.
+  private _gpuCullerTranslucent: GPUCullerInstance | null = null;
+  private _gpuCullerTranslucentInitializing: boolean = false;
+  // NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — per-frustum culler
+  // instances for the opaque pass. Same root cause as B216-N1: the
+  // shared `_visibilityBuffer` + `_readbackBuffer` get clobbered when
+  // multiple frustums call `prepareReadback` in the same encoder.
+  // Frustum 0 reuses `_gpuCuller` (the original instance) so existing
+  // single-frustum scenes don't pay extra VRAM. Frustums 1..N get
+  // their own instances on first use. Typical scene has 1-4 frustums
+  // → at most 3 extra instances ≈ ~1.5 MB total VRAM.
+  private _gpuCullerByFrustum: Map<number, GPUCullerInstance> = new Map();
+  private _gpuCullerByFrustumInitializing: Set<number> = new Set();
+  // NEW-SHADOW-CAST-GPU-CULL Phase 1 (Batch 221) — per-cascade
+  // culler instances for CSM shadow cast. Same B216-N1 / Batch 220
+  // pattern: each cascade needs its own staging buffer to avoid
+  // collision in the encoder. Phase 1 ships infrastructure ONLY;
+  // activation (filter dispatch in `WebGPUCSMCastPass`) is deferred
+  // pending Gribb-Hartmann plane extraction + visual verification.
+  // See `NEW-SHADOW-CAST-GPU-CULL-PHASE-2` in DEFERRED_WORK.md.
+  private _gpuCullerByCascade: Map<number, GPUCullerInstance> = new Map();
+  private _gpuCullerByCascadeInitializing: Set<number> = new Set();
   private _pointCloudLOD: WebGPUPointCloudLODProcessorInstance | null = null;
   private _pointCloudLODInitializing: boolean = false;
   private _csmRenderer: WebGPUCSMRenderer | null = null;
@@ -3882,6 +4031,13 @@ export class WebGPUContext extends GraphicsContext {
           .then(() => {
             this._gpuCuller = culler;
             this._gpuCullerInitializing = false;
+            // B219-A1 (Batch 225 audit fix) — clear on device loss
+            // so the lazy getter re-creates against the recovered
+            // device. Without this the JS instance persists with
+            // dead GPU buffer handles and next dispatch fails.
+            this.onDeviceInvalidated(() => {
+              this._gpuCuller = null;
+            });
           })
           .catch((e: unknown) => {
             console.warn(
@@ -3893,6 +4049,157 @@ export class WebGPUContext extends GraphicsContext {
       });
     }
     return this._gpuCuller;
+  }
+
+  /**
+   * NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — return the GPU
+   * culler instance for opaque-pass frustum `idx`. Frustum 0 reuses
+   * the original `gpuCuller` so single-frustum scenes don't pay
+   * extra VRAM; frustums 1..N get their own lazy-init instances so
+   * their `prepareReadback` calls in the same encoder don't clobber
+   * each other's staging buffers.
+   *
+   * Returns `null` if init is still pending or the device is gone.
+   */
+  public getGPUCullerForOpaqueFrustum(idx: number): GPUCullerInstance | null {
+    if (idx === 0) return this.gpuCuller;
+    if (!this._device || this._isDestroyed) return null;
+    // B220-O1 (Batch 225) — defensive cap. Real Cesium scenes top
+    // out at ~6 frustums (`Scene.farToNearRatio` driven; typical
+    // 1-4 with log-depth, up to 6 without). Refuse allocation
+    // beyond a sane max so a runaway value (bug or malformed
+    // input) can't burn unbounded VRAM.
+    if (idx >= WebGPUContext._MAX_AUX_CULLER_INDEX) return null;
+    if (this._gpuCullerByFrustum.has(idx)) {
+      return this._gpuCullerByFrustum.get(idx) ?? null;
+    }
+    if (this._gpuCullerByFrustumInitializing.has(idx)) return null;
+    this._gpuCullerByFrustumInitializing.add(idx);
+    import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
+      const culler = new WebGPUGPUCuller(this._device!, {
+        maxObjects: 65536,
+        label: `ctx-${this._id}-frustum-${idx}`,
+      });
+      import("../../Shaders/WebGPU/Compute/FrustumCull.js")
+        .then((mod: { default?: string | object }) => {
+          const code = mod.default || mod;
+          return culler.initialize(typeof code === "string" ? code : "");
+        })
+        .then(() => {
+          this._gpuCullerByFrustum.set(idx, culler);
+          this._gpuCullerByFrustumInitializing.delete(idx);
+          // B219-A1 (Batch 225) — clear on device loss.
+          this.onDeviceInvalidated(() => {
+            this._gpuCullerByFrustum.delete(idx);
+          });
+        })
+        .catch((e: unknown) => {
+          console.warn(
+            `[CesiumJS:webgpu:ctx-${this._id}] GPU culler frustum-${idx} init failed:`,
+            e,
+          );
+          this._gpuCullerByFrustumInitializing.delete(idx);
+        });
+    });
+    return null;
+  }
+
+  /**
+   * NEW-SHADOW-CAST-GPU-CULL Phase 1 (Batch 221) — per-cascade GPU
+   * culler instances for CSM shadow cast. Each cascade gets its own
+   * `_visibilityBuffer` + `_readbackBuffer` so the per-cascade
+   * `prepareReadback` calls don't collide in the same encoder.
+   * Lazy-init on first request per cascade index.
+   *
+   * Phase 1 ships infrastructure only — `WebGPUCSMCastPass` does NOT
+   * yet dispatch against these. Activation requires Gribb-Hartmann
+   * frustum-plane extraction from the cascade's view-projection +
+   * visual verification (correctness-critical, missed shadows are
+   * worse than missed culls). Tracked as
+   * `NEW-SHADOW-CAST-GPU-CULL-PHASE-2`.
+   */
+  public getGPUCullerForCascade(idx: number): GPUCullerInstance | null {
+    if (!this._device || this._isDestroyed) return null;
+    // B220-O1 (Batch 225) — defensive cap. CSM cascades top out
+    // at 4 in stock Cesium; the cap matches frustum cap for
+    // simplicity. See `getGPUCullerForOpaqueFrustum`.
+    if (idx < 0 || idx >= WebGPUContext._MAX_AUX_CULLER_INDEX) return null;
+    if (this._gpuCullerByCascade.has(idx)) {
+      return this._gpuCullerByCascade.get(idx) ?? null;
+    }
+    if (this._gpuCullerByCascadeInitializing.has(idx)) return null;
+    this._gpuCullerByCascadeInitializing.add(idx);
+    import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
+      const culler = new WebGPUGPUCuller(this._device!, {
+        maxObjects: 65536,
+        label: `ctx-${this._id}-cascade-${idx}`,
+      });
+      import("../../Shaders/WebGPU/Compute/FrustumCull.js")
+        .then((mod: { default?: string | object }) => {
+          const code = mod.default || mod;
+          return culler.initialize(typeof code === "string" ? code : "");
+        })
+        .then(() => {
+          this._gpuCullerByCascade.set(idx, culler);
+          this._gpuCullerByCascadeInitializing.delete(idx);
+          // B219-A1 (Batch 225) — clear on device loss.
+          this.onDeviceInvalidated(() => {
+            this._gpuCullerByCascade.delete(idx);
+          });
+        })
+        .catch((e: unknown) => {
+          console.warn(
+            `[CesiumJS:webgpu:ctx-${this._id}] GPU culler cascade-${idx} init failed:`,
+            e,
+          );
+          this._gpuCullerByCascadeInitializing.delete(idx);
+        });
+    });
+    return null;
+  }
+
+  /**
+   * B216-N1 (Batch 218 audit fix) — second GPU frustum culler used
+   * exclusively for the translucent pass. Gives translucent its own
+   * `_visibilityBuffer` + `_readbackBuffer` so its `prepareReadback`
+   * doesn't clobber the opaque pass's pending readback in the same
+   * encoder. Same lazy-init pattern as `gpuCuller`.
+   */
+  get gpuCullerTranslucent(): GPUCullerInstance | null {
+    if (
+      !this._gpuCullerTranslucent &&
+      this._device &&
+      !this._gpuCullerTranslucentInitializing
+    ) {
+      this._gpuCullerTranslucentInitializing = true;
+      import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
+        const culler = new WebGPUGPUCuller(this._device!, {
+          maxObjects: 65536,
+          label: `ctx-${this._id}-translucent`,
+        });
+        import("../../Shaders/WebGPU/Compute/FrustumCull.js")
+          .then((mod: { default?: string | object }) => {
+            const code = mod.default || mod;
+            return culler.initialize(typeof code === "string" ? code : "");
+          })
+          .then(() => {
+            this._gpuCullerTranslucent = culler;
+            this._gpuCullerTranslucentInitializing = false;
+            // B219-A1 (Batch 225) — clear on device loss.
+            this.onDeviceInvalidated(() => {
+              this._gpuCullerTranslucent = null;
+            });
+          })
+          .catch((e: unknown) => {
+            console.warn(
+              `[CesiumJS:webgpu:ctx-${this._id}] GPU culler (translucent) init failed:`,
+              e,
+            );
+            this._gpuCullerTranslucentInitializing = false;
+          });
+      });
+    }
+    return this._gpuCullerTranslucent;
   }
 
   /**
@@ -3994,14 +4301,153 @@ export class WebGPUContext extends GraphicsContext {
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _reconfigureCanvas(): void {
     if (this._context && this._device) {
-      this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-      this._context.configure({
-        device: this._device,
-        format: this._presentationFormat,
-        alphaMode: "opaque",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      });
+      // HDR-DISPLAY (Batch 206) — when HDR is on we keep the rgba16float
+      // format; otherwise re-query the browser's preferred format (which
+      // typically returns bgra8unorm on Windows / rgba8unorm on macOS).
+      if (!this._hdrCanvasOutput) {
+        this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+      }
+      // Batch 213 (B206-N1 audit fix) — fallback chain for unsupported
+      // extended toneMapping.
+      this._applyCanvasConfig();
     }
+  }
+
+  /**
+   * HDR-DISPLAY (Batch 206) — build the GPUCanvasConfiguration based
+   * on the current `_hdrCanvasOutput` flag + `_presentationFormat`.
+   * Centralizes the configure body so the three call sites (initialize,
+   * resize, _reconfigureCanvas) stay consistent.
+   *
+   * When HDR is on:
+   *   - format: `rgba16float` (stores the full HDR range)
+   *   - colorSpace: `display-p3` (wide-gamut color space; the OS /
+   *     display compositor maps to whatever the display reports)
+   *   - toneMapping: `{ mode: "extended" }` (signals to the browser
+   *     that HDR values >1.0 are intentional and should not be clipped
+   *     to SDR; gated by browser support — silently ignored on engines
+   *     that don't recognize the field)
+   */
+  private _buildCanvasConfig(): GPUCanvasConfiguration {
+    const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC;
+    if (this._hdrCanvasOutput) {
+      return {
+        device: this._device!,
+        format: "rgba16float",
+        alphaMode: "opaque",
+        usage,
+        colorSpace: "display-p3",
+        toneMapping: { mode: "extended" },
+      } as GPUCanvasConfiguration;
+    }
+    return {
+      device: this._device!,
+      format: this._presentationFormat,
+      alphaMode: "opaque",
+      usage,
+    };
+  }
+
+  /**
+   * HDR-DISPLAY (Batch 213, B206-N1 audit fix) — apply the canvas
+   * config with a fallback path when the browser rejects HDR-only
+   * fields. `toneMapping: { mode: "extended" }` and `colorSpace:
+   * "display-p3"` are Chrome 129+ additions; older Chrome / Safari /
+   * Firefox builds either throw a TypeError or fail validation. On
+   * failure we strip the HDR-only fields and retry with just
+   * `format: "rgba16float"` so HDR storage still works (the OS won't
+   * see the extended-range hint but the canvas remains rgba16float).
+   * If even the rgba16float fallback fails, we drop back to SDR.
+   */
+  private _applyCanvasConfig(): void {
+    if (!this._context || !this._device) return;
+    const cfg = this._buildCanvasConfig();
+    try {
+      this._context.configure(cfg);
+    } catch (e) {
+      if (this._hdrCanvasOutput) {
+        //>>includeStart('debug', pragmas.debug);
+        this.log(
+          "warn",
+          `HDR canvas configure failed (browser may not support extended toneMapping); retrying with rgba16float-only: ${(e as Error).message}`,
+        );
+        //>>includeEnd('debug');
+        try {
+          this._context.configure({
+            device: this._device,
+            format: "rgba16float",
+            alphaMode: "opaque",
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          });
+          return;
+        } catch (e2) {
+          //>>includeStart('debug', pragmas.debug);
+          this.log(
+            "warn",
+            `HDR rgba16float fallback also failed; dropping to SDR: ${(e2 as Error).message}`,
+          );
+          //>>includeEnd('debug');
+          this._hdrCanvasOutput = false;
+          this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+          this._context.configure(this._buildCanvasConfig());
+          // B213-O2 (Batch 219 audit fix) — notify Scene so its
+          // `_useHDRCanvasOutput` flag follows the demotion.
+          this._hdrFallbackListener?.(false);
+          return;
+        }
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * HDR-DISPLAY (Batch 206) — request an HDR-output canvas. Matches
+   * `Scene.useHDRCanvasOutput` and is invoked by the Scene setter.
+   *
+   * Switching the canvas format invalidates every pipeline that
+   * targets the canvas format (the identity-blit pipeline, debug
+   * overlays, anything using `presentationFormat`). The pipeline cache
+   * is cleared so subsequent `getOrCreatePipeline` calls rebuild
+   * against the new format on demand.
+   *
+   * No-ops if the flag is unchanged or the context is uninitialized.
+   */
+  public setHDRCanvasOutput(enabled: boolean): void {
+    if (this._hdrCanvasOutput === enabled) return;
+    this._hdrCanvasOutput = enabled;
+    this._presentationFormat = enabled
+      ? "rgba16float"
+      : navigator.gpu.getPreferredCanvasFormat();
+    if (this._context && this._device && !this._isDestroyed) {
+      // Batch 213 (B206-N1 audit fix) — fallback chain. If extended
+      // toneMapping fails, `_applyCanvasConfig` may flip
+      // `_hdrCanvasOutput` back to false; that's the correct
+      // behavior — the canvas couldn't honor the request.
+      this._applyCanvasConfig();
+      // Format-keyed cache invalidation. Identity-blit + canvas-targeted
+      // pipelines must recompile against the new format. Effects-bind-
+      // group placeholder cache also rebuilds against the new format
+      // texture on next access.
+      this._webgpuPipelineCache?.clear();
+      clearEffectsPlaceholderCacheForDevice(this._device);
+    }
+  }
+
+  /** HDR-DISPLAY (Batch 206) — current canvas-output HDR state. */
+  public get hdrCanvasOutput(): boolean {
+    return this._hdrCanvasOutput;
+  }
+
+  /**
+   * B213-O2 (Batch 219 audit fix) — register a callback fired when
+   * the HDR canvas configure fails and the context demotes itself to
+   * SDR. Scene.js installs this so its `_useHDRCanvasOutput` flag
+   * stays in sync with the canvas reality.
+   */
+  public setHDRFallbackListener(
+    listener: ((newValue: boolean) => void) | null,
+  ): void {
+    this._hdrFallbackListener = listener;
   }
 
   /**

@@ -355,10 +355,20 @@ export function buildPickPipelineDescriptor(
  * @private
  */
 export interface DrawCommandWithDerivedSlot {
-  derivedCommands?: { picking?: { pickCommand?: unknown } } & Record<
-    string,
-    unknown
-  >;
+  derivedCommands?: {
+    picking?: {
+      pickCommand?: unknown;
+      // Batch 192 — C-R9-MODEL-PICK-TRANSLUCENT second-slice variants.
+      // Both are optional; primitives that opt into hover/precise pick
+      // populate them, others leave them undefined and the dispatcher
+      // falls back to the default `pickCommand`. Materialized only
+      // when `scene.pickHover()` / `scene.pickPrecise()` is called at
+      // least once on the scene (lazy pipeline allocation).
+      pickHoverCommand?: unknown;
+      pickPrecisePass1Command?: unknown;
+      pickPrecisePass2Command?: unknown;
+    };
+  } & Record<string, unknown>;
 }
 
 /**
@@ -390,4 +400,51 @@ export function attachPickToColorCommand<TPick>(
     return;
   }
   colorCommand.derivedCommands = { picking: { pickCommand } };
+}
+
+/**
+ * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — second-slice pick variant
+ * attachment. Wires the optional hover (Option D) and precise (Option C
+ * 2-pass) pick commands onto the color command's picking slot.
+ *
+ * Renderers call this AFTER `attachPickToColorCommand` populates the
+ * default pick command. The dispatcher (`selectCommandVariant`) reads
+ * `frameState.passes.pickMode` to choose which variant fires:
+ *
+ *   - 'default' → existing pickCommand (B186 first slice)
+ *   - 'hover'   → pickHoverCommand (Option D dither, falls back to
+ *                 pickCommand if hover variant absent)
+ *   - 'precise' → pickPrecisePass1Command + pickPrecisePass2Command
+ *                 (sequenced same render pass; falls back to pickCommand
+ *                 if precise variants absent — OPAQUE/MASK case)
+ *
+ * @private
+ */
+export function attachPickVariantsToColorCommand<TPick>(
+  colorCommand: DrawCommandWithDerivedSlot,
+  variants: {
+    hoverPick?: TPick;
+    precisePass1?: TPick;
+    precisePass2?: TPick;
+  },
+): void {
+  let derived = colorCommand.derivedCommands;
+  if (!derived) {
+    derived = {};
+    colorCommand.derivedCommands = derived;
+  }
+  let picking = derived.picking;
+  if (!picking) {
+    picking = {};
+    derived.picking = picking;
+  }
+  if (variants.hoverPick !== undefined) {
+    picking.pickHoverCommand = variants.hoverPick;
+  }
+  if (variants.precisePass1 !== undefined) {
+    picking.pickPrecisePass1Command = variants.precisePass1;
+  }
+  if (variants.precisePass2 !== undefined) {
+    picking.pickPrecisePass2Command = variants.precisePass2;
+  }
 }

@@ -50,6 +50,31 @@ Edit `scenes.json`. Each scene needs a `name` and an optional `camera`:
 
 When `camera` is `null` the page's default initial view is used.
 
+### Synthetic scenes via `setup` (Batch 224)
+
+Scenes can include a `setup` field — a JS source string evaluated in the
+page context (same origin as the viewers) before the camera is positioned.
+The script receives a `params` argument from the scene's `setupParams`
+field, has access to `window.Cesium`, `window.webglViewer`, and
+`window.webgpuViewer`, and may return a Promise that resolves when async
+setup completes (e.g., procedural geometry generation).
+
+The `high-density-5k-spheres` scene is the reference example: it
+procedurally adds 5000 sphere instances around San Francisco with a
+deterministic mulberry32 RNG seed. It crosses every threshold-gated
+GPU dispatcher's activation point (gpuCuller HI=384, HiZ HI=2400) and
+opts the WebGPU viewer into eager warm-up via `Scene.gpuCullingHint =
+'always'`. Use it to verify that the threshold-gated dispatchers
+introduced in Batches 209-218 produce visually identical output to
+the unmodified WebGL pipeline:
+
+```bash
+# After starting the dev server (npm run restart), run:
+node Tools/visual-regression/capture-and-diff.mjs --scene high-density-5k-spheres --update
+# review the captured PNGs in Tools/visual-regression/output/, then promote:
+# (the --update flag above already promotes outputs to baseline/)
+```
+
 ## How it works
 
 1. Playwright opens `Apps/WebGPUTest/split-screen-comparison.html`.

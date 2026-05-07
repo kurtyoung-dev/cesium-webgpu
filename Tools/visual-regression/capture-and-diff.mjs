@@ -256,6 +256,21 @@ async function writeRGBAPng(filePath, capture) {
 }
 
 async function applyScene(page, scene, settleFrames) {
+  // Batch 224 — optional setup script that runs in the page context
+  // before the camera is positioned. Used for synthetic high-density
+  // scenes that procedurally generate test geometry. The script
+  // receives `webglViewer` + `webgpuViewer` via `window.*` and any
+  // params via the second arg.
+  if (typeof scene.setup === "string") {
+    await page.evaluate(
+      ({ src, params }) => {
+        // eslint-disable-next-line no-new-func
+        const fn = new Function("params", src);
+        return fn(params);
+      },
+      { src: scene.setup, params: scene.setupParams ?? {} },
+    );
+  }
   if (scene.camera) {
     await page.evaluate((cam) => {
       function setCam(viewer) {

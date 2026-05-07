@@ -96,6 +96,14 @@ struct CSMParams {
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
 @group(3) @binding(1) var shadowDepthTex: texture_depth_2d;
 @group(3) @binding(2) var shadowCompSampler: sampler_comparison;
+// FEAT-GAP-09 (Batch 201) — aerial-perspective LUT bindings 7/8/9.
+// Populated by WebGPUEffectsBindGroup.js when atmosphere LUT is active;
+// otherwise resolve to 1×1 placeholder textures. The shader gates all
+// LUT sampling on `effects.atmosphereLutControl.x > 0.5` so the
+// placeholder case costs only one uniform compare per fragment.
+@group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(3) @binding(9) var atmosphereLutSampler: sampler;
 @group(3) @binding(10) var<uniform> csmParams: CSMParams;
 @group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
 // Batch 165 - B.12 point-light cube depth.
@@ -295,6 +303,48 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         spec = spec * shadowFactor;
     }
 
-    let finalColor = ambientTerm + directTerm + spec;
-    return vec4<f32>(finalColor, 1.0);
+    var finalColor = vec4<f32>(ambientTerm + directTerm + spec, 1.0);
+
+    // FEAT-GAP-09 (Batch 201) — aerial-perspective fog blend. Pattern
+    // mirrors PrimitivePhongTexturedColor.wgsl. Single texture sample
+    // pair (transmittance + inscatter) replaces the per-fragment ray
+    // march. Gated on `atmosphereLutControl.x` so off-path costs one
+    // uniform compare.
+    if (effects.atmosphereLutControl.x > 0.5) {
+        let innerRadius = effects.atmosphereLutControl.y;
+        let thickness = max(1.0, effects.atmosphereLutControl.z);
+        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let viewDir = normalize(input.eyePosition);
+        let upDir = normalize(cameraWC);
+        let cosViewZenith = clamp(dot(viewDir, upDir), -1.0, 1.0);
+        let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+        let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+        let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+        let tSample = textureSampleLevel(
+            atmosphereTransmittanceLut, atmosphereLutSampler,
+            vec2<f32>(uCoord, vCoord), 0.0,
+        );
+        let iSample = textureSampleLevel(
+            atmosphereInscatterLut, atmosphereLutSampler,
+            vec2<f32>(uCoord, vCoord), 0.0,
+        );
+        let transmittance = clamp(
+            (tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0,
+        );
+        let excessAltitude = max(0.0, cameraAltitude - thickness);
+        let orbitFalloff = exp(-excessAltitude / thickness);
+        let fogWeight = clamp(iSample.a, 0.0, 1.0) * orbitFalloff;
+        finalColor = vec4<f32>(
+            mix(finalColor.rgb, iSample.rgb, fogWeight),
+            finalColor.a,
+        );
+        if (effects.atmosphereLutControl.w > 0.5) {
+            finalColor = vec4<f32>(
+                finalColor.rgb * mix(1.0, transmittance, fogWeight),
+                finalColor.a,
+            );
+        }
+    }
+
+    return finalColor;
 }

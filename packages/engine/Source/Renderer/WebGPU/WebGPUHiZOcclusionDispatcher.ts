@@ -159,10 +159,16 @@ class WebGPUHiZOcclusionDispatcher {
   private _occlusionShaderModule: GPUShaderModule | null = null;
   // Diagnostic counters.
   private _hiZBuilds = 0;
+  private _hiZBuildsSkipped = 0;
   private _occlusionDispatches = 0;
   private _successfulReadbacks = 0;
   private _failedReadbacks = 0;
   private _inFlightReadback = false;
+  // B210-D1 (Batch 213) — track which frame the pyramid was last
+  // built for. Per-frustum dispatches in the same frame share the
+  // same depth texture and can reuse the previously-built pyramid.
+  // -1 sentinel means "not built yet this session".
+  private _lastBuiltFrameId: number = -1;
   // Reused scratch arrays for per-frame UBO uploads.
   private _hiZParamsScratch = new Uint32Array(8);
   private _occlusionParamsScratch = new ArrayBuffer(OCCLUSION_PARAMS_BYTES);
@@ -575,10 +581,25 @@ class WebGPUHiZOcclusionDispatcher {
    * Encode the per-mip Hi-Z pyramid build into the given command
    * encoder. Must be called after `setDepthTexture`. No-op when
    * the dispatcher isn't allocated or shaders aren't loaded.
+   *
+   * **B210-D1 (Batch 213)** — pass `frameId` to dedupe the rebuild
+   * across multiple per-frustum dispatch calls in the same frame.
+   * The depth texture is shared across frustums so the pyramid is
+   * frame-stable; rebuilding 3× per frame for a 3-frustum scene was
+   * pure waste. Pass the same `frameId` from every call site in a
+   * given frame; the second call onward is a fast no-op that bumps
+   * `_hiZBuildsSkipped`. Pass -1 to force a rebuild (e.g., after
+   * the depth texture changes mid-frame).
    */
-  buildHiZPyramid(encoder: GPUCommandEncoder): boolean {
+  buildHiZPyramid(encoder: GPUCommandEncoder, frameId: number = -1): boolean {
     const r = this._resources;
     if (!r || !r.boundDepthTextureView || !this.shadersReady) return false;
+
+    // Dedupe within the same frame.
+    if (frameId >= 0 && this._lastBuiltFrameId === frameId) {
+      this._hiZBuildsSkipped++;
+      return true;
+    }
 
     for (let m = 0; m < r.mipLevels.length; m++) {
       const mip = r.mipLevels[m];
@@ -649,6 +670,7 @@ class WebGPUHiZOcclusionDispatcher {
       pass.end();
     }
     this._hiZBuilds++;
+    this._lastBuiltFrameId = frameId;
     return true;
   }
 
@@ -894,6 +916,9 @@ function initWebGPUHiZOcclusion(
  *   - `depthTextureView` — mip-0 view of the current frame's depth
  *   - `soa` — SOABoundingSphereLayout arrays
  *   - `params` — view-projection + screen dims + near/far
+ *   - `frameId` (optional) — pass the same frame counter from every
+ *     call site in a given frame so the pyramid build dedupes (B210-D1
+ *     fix, Batch 213). Omit to force a rebuild every call (legacy).
  */
 function dispatchWebGPUHiZOcclusion(
   context: { device: GPUDevice | null | undefined },
@@ -913,11 +938,12 @@ function dispatchWebGPUHiZOcclusion(
     nearPlane: number;
     farPlane: number;
   },
+  frameId?: number,
 ): boolean {
   const inst = _instances.get(context);
   if (!inst) return false;
   inst.setDepthTexture(depthTextureView);
-  const ok = inst.buildHiZPyramid(encoder);
+  const ok = inst.buildHiZPyramid(encoder, frameId ?? -1);
   if (!ok) return false;
   return inst.dispatchOcclusionTest(encoder, soa, params);
 }

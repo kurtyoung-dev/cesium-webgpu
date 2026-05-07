@@ -196,6 +196,54 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `ModelPBRComplete.wgsl`.
    */
   MODEL_HAS_KHR_TEXTURES: 1 << 9,
+
+  /**
+   * Stochastic / dithered alpha-test for translucent rendering
+   * (Batch 192, C-R9-MODEL-PICK-TRANSLUCENT second slice). When set,
+   * the fragment stage discards translucent fragments based on a
+   * blue-noise threshold lookup keyed by `fragCoord % 256` against the
+   * fragment's effective alpha (`baseColor.a × batchColor.a`).
+   * Probability of survival = effective alpha; multi-frame averaging
+   * converges to the true alpha-weighted appearance.
+   *
+   * Used by:
+   *   - Stochastic translucent pick (`scene.pickHover()` path) —
+   *     guaranteed stutter-free at 60fps hover frequency. Single-pass,
+   *     no extra render passes, no extra MRT targets.
+   *   - Future: foliage / particle alpha-test rendering, translucent
+   *     shadow casts (CSM cube depth), voxel ray-march acceleration.
+   *
+   * The blue noise texture lives at `@group(N) @binding(M)` per
+   * consumer — the variant doesn't dictate the binding slot, only
+   * that the FS reads the threshold and discards. Consumers wire the
+   * texture via their own bind-group layout.
+   *
+   * Consumers (Batch 192): ModelPBRComplete.wgsl pick FS variant.
+   * Future consumers: PrimitivePhongTexturedColor.wgsl (foliage),
+   * voxel ray-march, CSM cast shaders.
+   */
+  STOCHASTIC_DITHER_ALPHA: 1 << 10,
+
+  /**
+   * Stencil-based pick winner-selection (Batch 192,
+   * C-R9-MODEL-PICK-TRANSLUCENT precise path). When set, the fragment
+   * stage participates in a 2-pipeline single-render-pass coordination
+   * where:
+   *   - Pipeline 1 writes stencil = 1 + depth (closest translucent
+   *     fragment per pixel; depth-write enabled, depth-compare less).
+   *   - Pipeline 2 (same render pass) writes pickColor where stencil
+   *     == 1 AND depth == current (depth-compare equal, depth-write
+   *     disabled).
+   *
+   * Used by `scene.pickPrecise()` for deterministic "geometrically-
+   * closest translucent fragment wins" pick semantics. Pays a 2×
+   * pipeline-switch cost but reuses a single render-pass setup.
+   * Click-pick frequency makes the cost invisible to UX.
+   *
+   * Consumers (Batch 192): ModelPBRComplete.wgsl precise pick FS
+   * variant; future translucent geometry primitives.
+   */
+  STENCIL_PICK_WINNER: 1 << 11,
 } as const);
 
 /**
@@ -276,6 +324,19 @@ export const ShaderSourceId = Object.freeze({
   BUFFER_POINT_MATERIAL: 27,
   BUFFER_POLYLINE_MATERIAL: 28,
   BUFFER_POLYGON_MATERIAL: 29,
+  // C-R7-SHADER-MODULE-DEDUP — Batch 185 (2026-05-06). Final low-win
+  // remainders: GroundPrimitive + GroundPolyline classifier renderers
+  // (typically few-per-scene, but we just touched both files in
+  // Batches 180 and 183 so the ride-along has zero marginal cost),
+  // SkyAtmosphere (singleton per scene; module cache is a no-op
+  // optimization but unifies the pattern), and EllipsoidPrimitive
+  // (few-per-scene; same rationale). Closes the C-R7-SHADER-MODULE-DEDUP
+  // adoption sweep — every Cesium-authored WGSL source now resolves
+  // through `WebGPUShaderModuleCache.getOrCreate`.
+  GROUND_PRIMITIVE: 30,
+  GROUND_POLYLINE: 31,
+  SKY_ATMOSPHERE: 32,
+  ELLIPSOID_PRIMITIVE: 33,
 } as const);
 
 /**

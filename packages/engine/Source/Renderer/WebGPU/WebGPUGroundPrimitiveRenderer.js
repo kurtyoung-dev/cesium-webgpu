@@ -54,6 +54,23 @@ import {
   destroyPickIds,
   ensurePickId,
 } from "./WebGPUPickCommandHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+
+// C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
+// GroundPrimitive is typically few-per-scene, but we just touched this
+// file in Batch 180 for the velocity entry points so the ride-along is
+// free. Closes the C-R7-SHADER-MODULE-DEDUP adoption sweep.
+const _groundPrimitiveShaderCaches = new WeakMap();
+
+function getGroundPrimitiveShaderCache(device) {
+  let cache = _groundPrimitiveShaderCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _groundPrimitiveShaderCaches.set(device, cache);
+  }
+  return cache;
+}
 
 // Batch 164 — UBO 256 → 384 bytes to carry separate `mvRTE` + `proj`
 // matrices + a `morphFlags` vec4 for the SCENE3D ↔ SCENE2D morph
@@ -294,7 +311,12 @@ struct VelocityCO {
 }
 `;
 
-  const mod = device.createShaderModule({ label: "GroundPrimitive", code });
+  const mod = getGroundPrimitiveShaderCache(device).getOrCreate(
+    ShaderSourceId.GROUND_PRIMITIVE,
+    code,
+    0,
+    "GroundPrimitive",
+  );
   const bgl = makeBindGroupLayout(device, "GroundPrimitive BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);

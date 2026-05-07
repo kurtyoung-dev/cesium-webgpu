@@ -57,6 +57,22 @@ export interface PostProcessCache {
   bloomIntensity: number;
   aoIntensity: number;
   aoBias: number;
+  // NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
+  // formalization). Tracks whether `_userStages` on the pipeline has
+  // been populated from `scene.postProcessStages._stages` already this
+  // session. Set on first build, reset to `false` when the user
+  // collection's stage list empties so the configure pass re-builds.
+  _userStagesBuilt?: boolean;
+}
+
+// Narrow a polymorphic PostProcessStage uniform value to a number for
+// the dominant numeric-scalar reads (intensity, sigma, threshold, etc.).
+// Returns the default when the uniform is undefined or carries a non-
+// numeric value (the AO algorithm discriminator is the lone string-typed
+// uniform — it has its own narrowing path at the read site). The pattern
+// matches `Cesium.defaultValue(value, default)` semantics.
+function numU(v: number | string | boolean | undefined, d: number): number {
+  return typeof v === "number" ? v : d;
 }
 
 function getDefaultCache(): PostProcessCache {
@@ -130,37 +146,14 @@ function updateWebGPUPostProcessStages(
   // Cache bloom/AO uniform values for runtime update
   if (cache.bloomEnabled) {
     const bloom = collection.bloom;
-    cache.bloomThreshold = bloom?.uniforms?.brightness ?? 0.8;
+    cache.bloomThreshold = numU(bloom?.uniforms?.brightness, 0.8);
     cache.bloomIntensity = bloom?.uniforms?.glowOnly ? 1.0 : 0.5;
   }
   if (cache.ambientOcclusionEnabled) {
     const ao = collection.ambientOcclusion;
-    cache.aoIntensity = ao?.uniforms?.intensity ?? 3.0;
-    cache.aoBias = ao?.uniforms?.bias ?? 0.1;
+    cache.aoIntensity = numU(ao?.uniforms?.intensity, 3.0);
+    cache.aoBias = numU(ao?.uniforms?.bias, 0.1);
   }
-
-  // AUDIT_2026_05_02 A.13 — surface that user-added PostProcessStage
-  // instances aren't yet honored on WebGPU. We walk built-in named slots
-  // above; the user-added `_stages` array (where `scene.postProcessStages.add(...)`
-  // entries land) is currently silently dropped. Warn once per process.
-  //>>includeStart('debug', pragmas.debug);
-  const userStages = (collection as unknown as { _stages?: unknown[] })._stages;
-  if (Array.isArray(userStages)) {
-    let userStageCount = 0;
-    for (const s of userStages) {
-      if (s !== undefined && s !== null) userStageCount++;
-    }
-    if (userStageCount > 0) {
-      oneTimeWarning(
-        "WebGPUPostProcessStageCollection.userStages",
-        `${userStageCount} user-added PostProcessStage instance(s) detected on a ` +
-          "WebGPU scene. User custom GLSL stages are not yet executed on the WebGPU " +
-          "backend; only built-in named slots (fxaa, bloom, ambientOcclusion, " +
-          "depthOfField, tonemapping) are honored. Track AUDIT_2026_05_02 A.13.",
-      );
-    }
-  }
-  //>>includeEnd('debug');
 
   collection._activeStagesChanged = false;
   cache.initialized = true;
@@ -204,16 +197,48 @@ function configureWebGPUPostProcessPipeline(
   pipeline.setStageEnabled("FXAA", fxaaEnabled);
 
   // --- Tonemapping ---
-  pipeline.setStageEnabled("Tonemap", cache.tonemappingEnabled);
+  // HDR-DISPLAY (Batch 200; Batch 205 audit fix B200-D1 + D2) — skip
+  // SDR-only post-process stages when the user opts into wide-gamut
+  // HDR canvas output. On HDR-capable displays, the OS / display
+  // handles the gamut + tone curve; running tonemap / colorGrading /
+  // FXAA (all SDR-tuned) would corrupt the HDR signal:
+  //
+  // - tonemap compresses HDR → SDR (defeats the whole point)
+  // - colorGrading curves are calibrated for [0,1] SDR; HDR values >1
+  //   produce wrong saturation/lift/gain
+  // - FXAA edge-detection thresholds assume SDR; HDR highlights
+  //   over-trigger as edges
+  //
+  // Skip is opt-in via `scene.useHDRCanvasOutput = true` AND requires
+  // `scene.highDynamicRange = true` (the latter ensures the scene
+  // framebuffer is rgba16float so the HDR data actually exists to
+  // forward). Falls through to standard SDR pipeline when either
+  // gate is off — backwards-compatible by default.
+  //
+  // The per-frame skip flag lives on the pipeline (read by `execute()`'s
+  // single-pass chain assembly) so colorGrading / FXAA enabled state
+  // set programmatically elsewhere is preserved when HDR-skip toggles
+  // off — we don't permanently mutate their enabled flags.
+  const sceneAny = scene as
+    | { useHDRCanvasOutput?: boolean; highDynamicRange?: boolean }
+    | undefined;
+  const skipSDRStagesForHDR =
+    sceneAny?.useHDRCanvasOutput === true &&
+    sceneAny?.highDynamicRange === true;
+  pipeline.setSkipSDRStagesForHDR(skipSDRStagesForHDR);
+  pipeline.setStageEnabled(
+    "Tonemap",
+    cache.tonemappingEnabled && !skipSDRStagesForHDR,
+  );
   pipeline.setTonemappingMode(cache.tonemapMode);
 
   // --- Bloom: lazily initialize on first enable ---
   if (cache.bloomEnabled && !cache.bloomInitialized) {
     const bloom = collection.bloom;
     pipeline.addBloom(device, canvasFormat, {
-      threshold: bloom?.uniforms?.brightness ?? 0.8,
+      threshold: numU(bloom?.uniforms?.brightness, 0.8),
       intensity: bloom?.uniforms?.glowOnly ? 1.0 : 0.5,
-      sigma: bloom?.uniforms?.sigma ?? 3.5,
+      sigma: numU(bloom?.uniforms?.sigma, 3.5),
       glowOnly: Boolean(bloom?.uniforms?.glowOnly ?? false),
     });
     cache.bloomInitialized = true;
@@ -223,7 +248,7 @@ function configureWebGPUPostProcessPipeline(
   // Update bloom config if it changed
   if (cache.bloomEnabled && pipeline.bloomEffect) {
     const bloom = collection.bloom;
-    const newThreshold = bloom?.uniforms?.brightness ?? 0.8;
+    const newThreshold = numU(bloom?.uniforms?.brightness, 0.8);
     const newIntensity = bloom?.uniforms?.glowOnly ? 1.0 : 0.5;
     if (
       newThreshold !== cache.bloomThreshold ||
@@ -244,17 +269,19 @@ function configureWebGPUPostProcessPipeline(
     const ao = collection.ambientOcclusion;
     // AUDIT_2026_05_02 B.13 — read `algorithm` from user uniforms so
     // GTAO is reachable without monkey-patching. Falls back to "hbao"
-    // when unset for backwards compatibility.
+    // when unset for backwards compatibility. The AO algorithm
+    // discriminator is the lone string-typed uniform — narrow it to
+    // the literal union without going through `numU`.
     const rawAlgo = ao?.uniforms?.algorithm;
-    const algorithm =
+    const algorithm: "gtao" | "hbao" =
       rawAlgo === "gtao" || rawAlgo === "hbao" ? rawAlgo : "hbao";
     pipeline.addAmbientOcclusion(device, canvasFormat, {
       algorithm,
-      intensity: ao?.uniforms?.intensity ?? 3.0,
-      bias: ao?.uniforms?.bias ?? 0.1,
-      lengthCap: ao?.uniforms?.lengthCap ?? 0.26,
-      stepCount: ao?.uniforms?.stepSize ?? 4,
-      directionCount: ao?.uniforms?.directionCount ?? 4,
+      intensity: numU(ao?.uniforms?.intensity, 3.0),
+      bias: numU(ao?.uniforms?.bias, 0.1),
+      lengthCap: numU(ao?.uniforms?.lengthCap, 0.26),
+      stepCount: numU(ao?.uniforms?.stepSize, 4),
+      directionCount: numU(ao?.uniforms?.directionCount, 4),
       ambientOcclusionOnly: Boolean(
         ao?.uniforms?.ambientOcclusionOnly ?? false,
       ),
@@ -267,13 +294,105 @@ function configureWebGPUPostProcessPipeline(
   if (cache.depthOfFieldEnabled && !cache.dofInitialized) {
     const dof = collection._depthOfField;
     pipeline.addDepthOfField(device, canvasFormat, {
-      focalDistance: dof?.uniforms?.focalDistance ?? 50.0,
-      focalRange: dof?.uniforms?.delta ?? 20.0,
-      blurSigma: dof?.uniforms?.sigma ?? 4.0,
+      focalDistance: numU(dof?.uniforms?.focalDistance, 50.0),
+      focalRange: numU(dof?.uniforms?.delta, 20.0),
+      blurSigma: numU(dof?.uniforms?.sigma, 4.0),
     });
     cache.dofInitialized = true;
   }
   pipeline.setStageEnabled("DepthOfField", cache.depthOfFieldEnabled);
+
+  // NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 204
+  // second slice — named-uniform schema + multi-pass) — user-supplied
+  // WGSL stages from `scene.postProcessStages.add(...)`. Build once on
+  // first configure call and rebuild if the user clears/adds stages.
+  //
+  // Recognized stage uniforms (Batch 204):
+  //   - `wgslFragmentShader: string` — required. WGSL FS source.
+  //   - `wgslUniformSchema: UniformSchema` — optional. Named-uniform
+  //     schema mapping `{ [name]: { type, offset } }`. When present,
+  //     vec3/vec4 uniform values may be `number[]` arrays.
+  //   - `wgslNumberOfPasses: number` — optional. Default 1.
+  //   - All other uniform keys: numeric scalars (or arrays when schema
+  //     declares them as vec2/3/4) packed into the 64-byte UBO.
+  const userStages = (collection as unknown as { _stages?: unknown[] })._stages;
+  if (!cache._userStagesBuilt && Array.isArray(userStages)) {
+    let glslOnlyCount = 0;
+    for (const s of userStages) {
+      const stage = s as
+        | { name?: string; uniforms?: Record<string, unknown> }
+        | null
+        | undefined;
+      if (!stage) continue;
+      const wgsl = stage.uniforms?.wgslFragmentShader;
+      if (typeof wgsl === "string" && wgsl.length > 0) {
+        const u = stage.uniforms as Record<string, unknown>;
+        // Batch 204 — extract schema + numberOfPasses if provided.
+        const schemaRaw = u.wgslUniformSchema;
+        const schema =
+          schemaRaw && typeof schemaRaw === "object"
+            ? (schemaRaw as import("./WebGPUUserPostProcessStage.js").UniformSchema)
+            : undefined;
+        const numberOfPassesRaw = u.wgslNumberOfPasses;
+        const numberOfPasses =
+          typeof numberOfPassesRaw === "number" ? numberOfPassesRaw : undefined;
+
+        // Pack uniforms — schema-driven mode allows number[] vec
+        // values; iteration-order mode (no schema) accepts only
+        // scalars. The user stage class handles the actual packing.
+        const reservedKeys = new Set([
+          "wgslFragmentShader",
+          "wgslUniformSchema",
+          "wgslNumberOfPasses",
+        ]);
+        const userUniforms: Record<string, number | number[]> = {};
+        for (const k in u) {
+          if (reservedKeys.has(k)) continue;
+          const v = u[k];
+          if (typeof v === "number") {
+            userUniforms[k] = v;
+          } else if (
+            Array.isArray(v) &&
+            v.every((x) => typeof x === "number")
+          ) {
+            userUniforms[k] = v as number[];
+          }
+        }
+
+        pipeline.addUserWGSLStage(
+          device,
+          canvasFormat,
+          stage.name ?? "user-wgsl",
+          wgsl,
+          userUniforms,
+          schema,
+          numberOfPasses,
+        );
+      } else {
+        glslOnlyCount++;
+      }
+    }
+    cache._userStagesBuilt = true;
+    //>>includeStart('debug', pragmas.debug);
+    if (glslOnlyCount > 0) {
+      oneTimeWarning(
+        "WebGPUPostProcessStageCollection.userStagesGLSL",
+        `${glslOnlyCount} user-added PostProcessStage instance(s) without ` +
+          "a `wgslFragmentShader` uniform detected on a WebGPU scene. " +
+          "GLSL custom shaders are not transpiled on the WebGPU backend; " +
+          "supply a `wgslFragmentShader: string` uniform on each stage to " +
+          "execute custom WGSL post-process effects. Stages with " +
+          "`wgslFragmentShader` set are honored. Track NEW-POSTPROCESS-USER-WGSL.",
+      );
+    }
+    //>>includeEnd('debug');
+  } else if (
+    cache._userStagesBuilt &&
+    (!Array.isArray(userStages) || userStages.length === 0)
+  ) {
+    pipeline.clearUserWGSLStages();
+    cache._userStagesBuilt = false;
+  }
 
   // Audit A.11 (Batch 133) -- GodRay lazy init + per-frame sun UV
   // update. Config can be supplied via `scene.godRayConfig` (optional).

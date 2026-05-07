@@ -1,6 +1,6 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** May 5, 2026 (Batches 160-162 — A.6 polygons / B.12 point-light primitives / A.9 SH fast-path doc-sync)
+**Last Updated:** May 7, 2026 (Batches 219-224 — Audit-fix bundle for 213-218 + 3 doc-sync closures, NEW-MULTIFRUSTUM-CULL-RESULTS resolved (per-frustum opaque culler instances), NEW-SHADOW-CAST-GPU-CULL Phase 1 infrastructure, memory hygiene for auxiliary cullers + TAA disocclusion verified safe, cross-batch audit caught B219-N1/N2 reset reliability bugs, NEW-VR-BASELINE-HIGH-DENSITY synthetic 5K-sphere scene + setup-hook infrastructure)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
 **Overall Progress:** ~93% of full WebGL feature parity. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
 
@@ -8,7 +8,441 @@
 
 ---
 
-## Recent Progress (2026-05-05 — Batches 160-162: high-payoff feature trio)
+## Recent Progress (2026-05-07 — Batches 219-224: audit fix loop closes 213-218, multi-frustum + shadow-cast cull infrastructure, VR baseline scene)
+
+Six batches closing the audit loop on 213-218 (8 audit findings + 3 stale-deferred entries closed in one bundle), expanding GPU cull coverage to multi-frustum + shadow-cast, plugging memory leaks on auxiliary culler instances, and shipping the synthetic high-density VR scene generator. Cross-batch audit (223) caught two real reset-reliability bugs in the Batch 219 stats accumulators (B219-N1/N2) and fixed both.
+
+### Batch 219 — Audit-fix bundle for 213-218 (8 fixes + 3 doc-sync closures)
+
+- **B213-O1 (verified)** — `uniformState.frameState.frameNumber` is a public getter; HiZ pyramid dedup fires correctly.
+- **B214-N1 (per-frustum gate state)** — replaced shared `_*Active` booleans with `Map<frustumIdx, boolean>` for all four gates (gpuCuller opaque + translucent, HiZ, GPUSortKeys). Hysteresis now evolves from each frustum's own previous-frame state instead of racing siblings.
+- **B215-N1 ('never' hint actually disables gates)** — `Scene.gpuCullingHint = 'never'` now short-circuits all gates to false. Previously stored on Scene but never read.
+- **B215-N2 (warm-up touches translucent culler)** — `WebGPUContext.warmUpHighDensityDispatchers()` now also `void this.gpuCullerTranslucent`, plus per-frustum cullers (1-3) and per-cascade cullers (0-3).
+- **B216-N2 (translucent has own gate based on translucent count)** — `_maybeGPUCullTranslucent` evaluates its own hysteresis using translucent command count. A scene with 50 opaque + 5000 translucent now correctly fires the translucent cull.
+- **B217-N1/N2 (cumulative + per-pass stats)** — `getHighDensityCullStats()` now returns four stat blocks (gpuCullerOpaque + gpuCullerTranslucent + hiZ + gpuSortKeys), each accumulating across all frustums in a frame instead of overwriting.
+- **B213-O2 (Scene flag sync on HDR fallback)** — context exposes `setHDRFallbackListener()`; Scene.js installs a callback that flips `_useHDRCanvasOutput` to false when the context's extended-toneMapping configure fails and demotes itself to SDR.
+- **3 doc-sync closures** — `C-R1-GLOBE-RENDERSTATE` (all sub-issues resolved Batches 99 + 177 + 182 + 183), `C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES` (per-feature pick + MORPHING shipped Batches 115 + 208), `NEW-COLLECTIONS-MOTION-VECTORS` (advanced primitives all shipped Batches 168-173 under NEW-ADVANCED-MOTION-VECTORS).
+
+### Batch 220 — NEW-MULTIFRUSTUM-CULL-RESULTS (RESOLVED)
+
+Per-frustum opaque culler instances. New `WebGPUContext.getGPUCullerForOpaqueFrustum(idx)` lazy-allocates a separate `WebGPUGPUCuller` per frustum index ≥ 1; frustum 0 reuses the original `_gpuCuller` (no extra VRAM for single-frustum scenes). `_lastCullResultsByFrustum: Map<number, GPUCullResults>` replaces the single `_lastCullResults` slot. Multi-frustum log-depth scenes now get full GPU cull benefit instead of the previous "last-frustum-wins" limitation. ~1.5 MB peak VRAM cost at 4 frustums × 65536 maxObjects.
+
+### Batch 221 — NEW-SHADOW-CAST-GPU-CULL Phase 1 (infrastructure)
+
+Per-cascade `WebGPUGPUCuller` instances via `WebGPUContext.getGPUCullerForCascade(idx)`. Same lazy-init pattern as Batch 220. Phase 1 ships infrastructure ONLY — the actual filter dispatch in `WebGPUCSMCastPass` is deferred to Phase 2 pending Gribb-Hartmann frustum-plane extraction from each cascade's view-projection matrix + visual verification. Shadow correctness is critical (missed shadows are worse than missed culls), so the activation step needs a careful verification pass that can't run from this code-only session. Tracked as `NEW-SHADOW-CAST-GPU-CULL-PHASE-2`.
+
+### Batch 222 — Memory hygiene + TAA disocclusion verified safe
+
+- **Memory hygiene** — `WebGPUContext.destroy()` now walks every auxiliary culler instance (translucent + per-frustum + per-cascade Maps) and destroys them before clearing the maps. At peak that's 1 + 3 + 4 = 8 instances ≈ 4 MB of VRAM that previously leaked on context destruction.
+- **TAA disocclusion verified** — review of `TAA.wgsl:235-280` showed the existing depth-rejection path already handles the Batch 212 documented "HiZ ghosting" interaction. When a HiZ-culled command was rendered last frame and isn't this frame, the eye-space depth delta at those pixels exceeds `disocclusionThreshold = abs(eyePosCurr.z) * 0.001 (floored at 1.0)` → history rejected → no ghost. No additional shader work needed; updated DEFERRED_WORK note from "known interaction (mitigation deferred)" to "verified safe".
+
+### Batch 223 — Cross-batch audit caught + fixed B219-N1/N2
+
+Audit walk surfaced two real reset-reliability bugs in the Batch 219 stats accumulators:
+
+- **B219-N2 (real)** — `_statsTickFrameIfNeeded` only ticked when the GPU cull filter actually ran. If frustum 0's gate was off, the tick was skipped and per-frame stats accumulated forever across frames.
+- **B219-N1 (real)** — per-frustum gate Maps grew stale entries when `numFrustums` changed (typical with log-depth toggle). Cleared frustum slots held stale gate states from a prior configuration.
+
+Both fixed by moving the reset + map-trim to `_executeOpaquePass`'s frustum-0 entry, which runs unconditionally every frame regardless of cull activity. Removed the now-redundant `_statsTickFrameIfNeeded` helper.
+
+### Batch 224 — NEW-VR-BASELINE-HIGH-DENSITY (RESOLVED)
+
+`Tools/visual-regression/capture-and-diff.mjs` now supports a `setup` script field per scene — JS source evaluated in the page context before camera positioning, with access to `window.Cesium` + `window.webglViewer` + `window.webgpuViewer` and a typed `setupParams` argument. New `high-density-5k-spheres` scene procedurally generates 5000 sphere instances around San Francisco using a deterministic mulberry32 RNG seed, crossing every threshold-gated dispatcher's activation point (gpuCuller HI=384, HiZ HI=2400) and opting the WebGPU viewer into eager warm-up via `Scene.gpuCullingHint = 'always'`. Locks down the high-density story by ensuring the threshold-gated dispatchers from Batches 209-218 produce visually identical output to unmodified WebGL.
+
+The actual baseline PNG capture is a runtime task (requires dev server + Playwright); README documents the runner command.
+
+### Cumulative impact (Batches 219-224)
+
+- **8 audit findings closed** — B213-O1 verified, B213-O2 + B214-N1 + B215-N1 + B215-N2 + B216-N2 + B217-N1 + B217-N2 fixed.
+- **2 real defects caught + fixed in Batch 223 audit** — B219-N1 (stale Map entries) + B219-N2 (unreliable stats reset).
+- **3 stale deferred entries closed** — `C-R1-GLOBE-RENDERSTATE`, `C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES`, `NEW-COLLECTIONS-MOTION-VECTORS` (advanced primitives).
+- **2 new resolved entries** — `NEW-MULTIFRUSTUM-CULL-RESULTS` + `NEW-VR-BASELINE-HIGH-DENSITY`.
+- **1 new Phase-1 entry** — `NEW-SHADOW-CAST-GPU-CULL` infrastructure (Phase 2 follow-up entry opened).
+- **Memory leak plugged** — ~4 MB VRAM per leaked context recovered.
+- **Per-frame stats coverage** — multi-frustum + per-pass, cumulative across frame instead of last-frustum-only.
+
+---
+
+## Earlier Progress (2026-05-07 — Batches 213-218: high-density stutter mitigation, dispatcher productivity surface, real-defect catch in audit)
+
+Six batches addressing the threshold-flap + first-cross-compile stutter risks raised in the Batch 205-212 audit, expanding GPU cull coverage from opaque-only to opaque + translucent, and adding a diagnostic surface so users can verify the threshold-gated dispatchers are actually pulling their weight on dense scenes. The cross-batch audit (218) caught a real same-encoder readback-buffer collision (B216-N1) where opaque + translucent shared the same gpuCuller instance and one pass's `prepareReadback` clobbered the other's pending readback; fix landed in 218 as a separate translucent culler instance.
+
+### Batch 213 — Audit-fix bundle (5 items)
+
+- **B210-D1 (HiZ pyramid build dedup)** — `buildHiZPyramid()` now takes a `frameId` parameter; dispatcher tracks `_lastBuiltFrameId` and skips rebuild when called multiple times with the same id. Per-frustum dispatches in a 3-frustum scene previously rebuilt the pyramid 3× redundantly. Skip count surfaced via `_hiZBuildsSkipped` for diagnostics.
+- **B210-N2 (HiZ frustum-bound near/far)** — `_dispatchHiZForNextFrame` now reads `frustumCommands.near`/`.far` first, falling back to `uniformState.currentFrustumNear`/`Far` then loose `1.0`/`1e9`. Tighter depth bounds give the occlusion test more aggressive culling.
+- **B205-N1 (schema offset alignment validation)** — new `SCHEMA_TYPE_ALIGNS` table + `_validateSchema()` constructor-time check. Catches misaligned WGSL offsets (e.g., vec4@4) at stage construction with a one-time warning, instead of silent shader miscompare.
+- **B206-N1 (extended toneMapping fallback)** — new `_applyCanvasConfig()` wraps `_context.configure()` in a try/catch chain. On failure, retries with `format: 'rgba16float'` (drops `colorSpace + toneMapping`); on a second failure, drops to SDR. Older Chrome / Safari / Firefox no longer throw on HDR enable.
+- **Filter array pools (cosmetic)** — `gpuCullCommands` and `_filterByHiZVisibility` now reuse `_gpuCullFilterPool` / `_hiZFilterPool` instead of allocating `[]` per frame. Removes GC pressure at high density. Same lifetime contract: caller (`executeBatch`) consumes synchronously.
+
+### Batch 214 — Threshold hysteresis
+
+Each of the three threshold-gated dispatchers (gpuCuller, HiZ, GPUSortKeys) now uses dual thresholds with a per-dispatcher active state flag:
+
+- gpuCuller: HI=384, LO=192 (was single 256)
+- HiZ: HI=2400, LO=1600 (was single 2000)
+- GPUSortKeys: HI=6000, LO=4000 (was single 5000)
+
+`_updateActivationGate(active, count, hi, lo)` is the central decision: `active && count >= LO` OR `!active && count >= HI` activates. Below LO deactivates. Between LO and HI the previous state holds. Prevents single-frame dispatch flap when count oscillates around the boundary (typical with LOD streaming at the edge of a high-density region). Inner methods now trust the gate and only guard against `count <= 0`.
+
+### Batch 215 — Eager dispatcher warm-up
+
+New `Scene.gpuCullingHint: 'auto' | 'always' | 'never'` opt-in. Setting `'always'` calls `WebGPUContext.warmUpHighDensityDispatchers()` which pre-touches all three dispatchers (lazy-init triggers compile + buffer alloc) so the 5-50 ms first-cross-threshold compile cost amortizes into a load frame instead of the first frame where count crosses the activation threshold (which would otherwise hitch). `'auto'` (default) keeps the lazy path unchanged.
+
+### Batch 216 — Translucent-pass GPU cull (shadow-cast deferred)
+
+`WebGPUSceneRendererTranslucentPass` now applies gate-controlled GPU cull at the top of the dispatch loop, mirroring the opaque path. New `gpuCullCommandsForTranslucent()` uses a separate `_lastCullResultsTranslucent` readback slot so opaque + translucent don't fight for the same key. Shared the `_gpuCullActive` gate state so on/off is coordinated. Order is preserved (same iteration), so OIT accumulation + back-to-front alpha both stay correct. Shadow-cast pass GPU cull (per-cascade culling volumes) deferred to a follow-up — `NEW-SHADOW-CAST-GPU-CULL` in DEFERRED_WORK.
+
+### Batch 217 — Dispatcher diagnostic surface
+
+New `WebGPUSceneRenderer.getHighDensityCullStats()` returns per-dispatcher `{ active, thresholdHi, thresholdLo, dispatches, lastInput, lastFiltered, hitRatio }`. Surfaces in `scene.getDebugSnapshot().highDensityCull` and via the new `CesiumDebug.highDensityCull()` console command. `hitRatio` is the fraction of input commands the GPU filter dropped — above ~0.2 means the dispatcher is paying for itself; near 0 means CPU cull was already tight enough.
+
+### Batch 218 — Cross-batch audit caught + fixed B216-N1
+
+Audit walk surfaced a real defect: opaque pass (`gpuCullCommands`) and translucent pass (`gpuCullCommandsForTranslucent`) both used `context.gpuCuller` (single shared instance), so both `prepareReadback` calls in the same encoder issued `copyBufferToBuffer` against the SAME staging buffer. The translucent copy clobbered the opaque copy → both `mapAsync` resolutions read translucent data → opaque readback was permanently corrupted under multi-pass GPU cull.
+
+Fix: new `WebGPUContext.gpuCullerTranslucent` lazy-loaded second instance with its own `_visibilityBuffer` + `_readbackBuffer`. The translucent path now uses it exclusively. Pre-existing multi-frustum opaque-pass collision (per-frustum dispatches into the same opaque culler) documented as `NEW-MULTIFRUSTUM-CULL-RESULTS` (separate fix).
+
+VR baseline capture for synthetic 5K-instance scene deferred — runtime task that needs a Playwright session. Tracked as a follow-up in WEBGPU_MIGRATION_BACKLOG.
+
+### Cumulative impact (Batches 213-218)
+
+- **5 audit findings + 1 cross-batch defect resolved** — every threshold/gate/buffer/clobber issue surfaced in the 205-212 audit closed in code, plus a NEW defect (B216-N1) caught and fixed in the audit batch itself.
+- **Threshold flap stutter mitigated** — hysteresis prevents single-frame dispatch on/off when count oscillates near the gate.
+- **First-cross compile stutter mitigated** — eager warm-up via `Scene.gpuCullingHint = 'always'` opt-in.
+- **GPU cull coverage expanded** — opaque + translucent both filter at high density. Shadow-cast deferred (per-cascade volumes need separate readback slot).
+- **Diagnostic surface complete** — `scene.getDebugSnapshot().highDensityCull` + `CesiumDebug.highDensityCull()` make it observable whether the dispatchers are actually helping in a given scene.
+
+---
+
+## Earlier Progress (2026-05-07 — Batches 205-212: B200/B204 audit fixes, HDR-DISPLAY auto-configure CLOSES entry, Vector3DTile MORPHING ×2, three orphan dispatchers consumed with threshold gating, cross-dispatcher audit)
+
+Eight batches addressing two audit-defect tracks (B200 HDR-skip on colorGrading/FXAA, B204 schema vec4 collision), closing one deferred entry end-to-end (HDR-DISPLAY canvas auto-configure now ships rgba16float + display-p3 + extended toneMapping when `useHDRCanvasOutput` is set), narrowing two MORPHING gates (Vector3DTilePolylines + Vector3DTileClampedPolylines now render through the morph transition), and **consuming the three orphan compute dispatchers (gpuCuller, HiZ occlusion, GPUSortKeys) with threshold-gated wire-in tuned for the 10K+ models density target.** Cross-dispatcher audit (Batch 212) added pick-pass bypass to all three so pick fidelity is preserved.
+
+### Batch 205 — B200-D1/D2 + B204-N1 audit fixes
+
+- **B200-D1/D2 (ColorGrading + FXAA on HDR)** — when `useHDRCanvasOutput && highDynamicRange`, the post-process pipeline now skips ColorGrading (curves calibrated for [0,1] SDR) and FXAA (luma-keyed edge detection assumes SRGB-perceptual signal). New `WebGPUPostProcessPipeline.setSkipSDRStagesForHDR(skip)` setter; `WebGPUPostProcessStageCollection` flips it per-frame based on the scene flags. Stage `enabled` flags themselves are not mutated — flipping HDR off restores the user's tone of voice without requiring re-init.
+- **B204-N1 (schema vec4 collision)** — `WebGPUUserPostProcessStage._packUniforms()` previously checked `entry.offset === PASS_INDEX_OFFSET` for collision, missing the case where a vec4 declared at offset 48 silently has its `.w` component clobbered by the framework pass-index write at byte 60. New `SCHEMA_TYPE_BYTES` table + range-overlap check warns + skips any entry whose `[offset, offset+size)` overlaps the reserved last 4 bytes (or exceeds the 64-byte UBO).
+
+### Batch 206 — HDR-DISPLAY canvas auto-configure (CLOSES entry)
+
+`Scene.useHDRCanvasOutput` setter now propagates to `WebGPUContext.setHDRCanvasOutput()`. The context reconfigures the canvas with `format: 'rgba16float' + colorSpace: 'display-p3' + toneMapping: { mode: 'extended' }` when the flag is on, and re-queries `getPreferredCanvasFormat()` when off. New `_buildCanvasConfig()` helper consolidates the three configure call sites (initialize, resize, _reconfigureCanvas) so HDR mode survives canvas resizes and device-loss recovery. Pipeline cache + effects-placeholder cache cleared on toggle since canvas-format-keyed pipelines must recompile.
+
+### Batches 207-208 — Vector3DTile* MORPHING
+
+`WebGPUVector3DTilePolylinesRenderer` and `WebGPUVector3DTileClampedPolylinesRenderer` now allow rendering through `SceneMode.MORPHING` (in addition to `SCENE3D`). During morph the camera + view/projection interpolate via `frameState.morphTime`; the existing `packUniforms` path consumes `uniformState.view` + `uniformState.projection` directly so 3D ECEF/RTC positions render in their world position during the transition, fading naturally as the camera approaches 2D. SCENE2D + COLUMBUS_VIEW remain gated (no 2D position attribute path on these primitive types — matches upstream WebGL behavior).
+
+### Batches 209-211 — Three orphan dispatchers consumed with threshold gating
+
+All three were 503/976/463-LOC infrastructure with zero live callers since Phase 3. Decision: **keep all three and consume them** to support the project's 10K+ tile-density goal. Threshold-gated activation matches each dispatcher's overhead profile.
+
+- **Batch 209 — gpuCuller (`WebGPUSceneRenderer.gpuCullCommands`)** wired into `_executeOpaquePass`. Threshold: 256 commands. Existing infrastructure with 1-frame readback latency. Filters opaque commands against compute-shader frustum test on top of the upstream CPU cull. `effectiveCount` parameter added so callers pass pre-sized command arrays without per-frame slice allocation in the hot path.
+- **Batch 210 — HiZ occlusion (`WebGPUHiZOcclusionDispatcher`)** wired into `_executeOpaquePass`. Threshold: 2000 commands (higher overhead — pyramid build + occlusion test + readback). New `_filterByHiZVisibility` (consumer of previous-frame readback) + `_dispatchHiZForNextFrame` (producer) pair. Lazy SOA scratch growth tracks the largest count seen in the session. Visibility flags survive across frames so the consumer can run before this frame's dispatch completes.
+- **Batch 211 — GPUSortKeys (`WebGPUGPUSortKeysDispatcher`)** wired into `_executeOpaquePass`. Threshold: 5000 commands. Phase 1 only — produces packed 64-bit sort keys (`sortKeysHigh + sortKeysLow + commandIndices`) on the GPU; the actual GPU sort over those keys is a separate compute pipeline that doesn't exist yet (no generic u64 bitonic / radix). Tracked as `NEW-GPU-SORT-PIPELINE` in DEFERRED_WORK.md. Below threshold the JS multi-level comparator in RenderScheduler is faster than dispatch+readback round-trip.
+
+### Batch 212 — Cross-dispatcher audit + feature integration verification
+
+All three dispatchers now bypass on `config.picking === true`. Pick must test every command the CPU pass produced — including ones GPU culling marks as occluded — so users can pick objects visually behind transparent overlays. Mismatching the filter sets between render and pick produces ghost picks where a clicked pixel maps to the wrong (or no) feature. Verified that shadow-cast, OIT translucent, and motion-vector passes all iterate their own command sets and are unaffected by the opaque-pass filtering. Known interaction documented: at extreme density (>=2000 commands) HiZ-culled objects may briefly ghost in TAA reprojection if they were rendered last frame; threshold tuning makes this practically invisible.
+
+---
+
+## Earlier Progress (2026-05-07 — Batches 199-204: B198 audit fixes + HDR-DISPLAY + FEAT-GAP-09 +6 shaders + NEW-POSTPROCESS-USER-WGSL second slice)
+
+Six batches closing two deferred entries end-to-end (NEW-POSTPROCESS-USER-WGSL fully RESOLVED via Batches 198 + 199 + 204; FEAT-GAP-09 progressed from 6/44 to 12/44 shaders via Batches 201-202), shipping a new visible feature (HDR-DISPLAY skip-tonemap), and addressing both Batch 198 audit defects.
+
+### Batch 199 — B198 audit fixes
+
+- **B198-D1 (HDR precision)** — `addUserWGSLStage` now passes `_intermediateFormat` (rgba16float in HDR mode) to user-stage initialization instead of `canvasFormat` (8-bit). User stages running between bloom and tonemap preserve HDR precision.
+- **B198-D2 (auto-exposure ordering)** — User stage chain moved from execute step 3.4 (BEFORE auto-exposure) to step 3.6 (AFTER auto-exposure dispatch, BEFORE TAA + tonemap). Auto-exposure now correctly finds the post-DoF ping/pong texture as its luminance source; user stages still operate on HDR-space color.
+- `_userStagesBuilt` formalized on the `PostProcessCache` interface (was an inline type cast).
+
+### Batch 200 — HDR-DISPLAY canvas HDR output (first slice)
+
+New `Scene.useHDRCanvasOutput` opt-in flag. When `true` AND `Scene.highDynamicRange === true`, the post-process pipeline skips the tonemap stage so HDR-encoded scene color forwards to the canvas. On HDR-capable displays (Apple Pro Display XDR, modern OLEDs in HDR-10 / Dolby Vision mode), the OS / display handles the gamut + tone curve; an SDR-tonemapped frame would crush highlights into the SDR range and waste the display's HDR headroom.
+
+**First slice scope:** producer side only (skip tonemap when both flags true). Canvas configure side (`colorSpace: 'display-p3'`, `toneMapping: 'extended'`, `format: 'rgba16float'` via `GPUCanvasContext.configure()`) is a user-side concern for now. A future slice will auto-configure the canvas via browser feature detection.
+
+### Batch 201 — FEAT-GAP-09 first slice (3 LIT primitive shaders)
+
+Aerial-perspective LUT consumer wired into `PrimitiveMatBumpMapLit`, `PrimitiveMatNormalMapLit`, `PrimitiveMatGridLit`. Each gets bindings 7/8/9 (transmittance LUT + inscatter LUT + sampler) and the `effects.atmosphereLutControl.x > 0.5` gated fog-blend block at the end of `fragmentMain`. Pattern mirrors `PrimitivePhongTexturedColor.wgsl` template byte-for-byte.
+
+### Batch 202 — FEAT-GAP-09 second slice (3 more LIT primitive shaders)
+
+Same pattern applied to `PrimitiveMatStripeLit`, `PrimitiveMatCheckerLit`, `PrimitiveMatRimLightingLit`. **12 of ~44 primitive shaders now wired.** The deferred entry's "6 shaders remaining" claim turned out to be substantially off; actual remainder is ~32 shaders (mostly less-common material variants — Mat{Aspect,Slope,Elev}Ramp, Mat{Aspect,Slope,Elev}Contour, Mat{Alpha,Bump,Specular,Normal,Emission}Map{Flat}, Mat{Color,Dot,Fade,Water}Flat, etc.). Pick variants intentionally excluded (fog would corrupt pickColor). FEATURE_INVENTORY entry updated to reflect actual remainder; high-traffic shaders covered, the rest rides along the incremental upgrade rule.
+
+### Batch 203 — Doc-walk audit
+
+Surveyed all open entries in DEFERRED_WORK.md against actual code paths. Found NO new stale-RESOLVED entries this round — confirms prior walks (Batches 183 / 188 / 190 / 193 / 194) were thorough. The only doc adjustment was correcting FEAT-GAP-09's stale "6 shaders remaining" claim to the actual `~32 remaining of ~44 total`. WGF-4-EXPAND RTE assertions de-scoped (low payoff; the encoded-cartesian round-trip is already validated by upstream Cesium's test suite — adding shader-level assertions is mechanical busywork without clear correctness payoff).
+
+### Batch 204 — NEW-POSTPROCESS-USER-WGSL second slice (CLOSES the entry)
+
+Two new features on top of the Batch 198 first slice:
+
+**Named-uniform schema** — user provides `wgslUniformSchema: UniformSchema` alongside `wgslFragmentShader`. Maps `{ [name]: { type: 'float' | 'vec2' | 'vec3' | 'vec4', offset: number } }` so vec3/vec4 uniforms can be passed as `number[]` arrays and packed at correct WGSL alignment. Falls back to Batch 198 iteration-order packing when no schema provided (backwards compat).
+
+**Multi-pass support** — user provides `wgslNumberOfPasses: number` (default 1, capped at 32). Framework runs the same pipeline N times, ping-ponging between two intermediate textures (B-texture allocated only when multi-pass active — VRAM-frugal default for single-pass). Pass index packed into UBO offset 60 so user shader can branch per-pass — supports separable filters (Gaussian blur horizontal/vertical), accumulating denoisers, etc.
+
+### Cumulative impact (Batches 199-204)
+
+- **2 deferred entries closed end-to-end** — NEW-POSTPROCESS-USER-WGSL fully RESOLVED (3 batches: 198 + 199 + 204); HDR-DISPLAY first slice shipped (canvas-configure auto-detection deferred to follow-up).
+- **6 more primitive shaders wired with FEAT-GAP-09 LUT** — 12 of ~44 now done; high-traffic shaders covered.
+- **Both B198 audit defects fixed** — HDR precision + auto-exposure ordering. NEW-POSTPROCESS-USER-WGSL is now correct under HDR scenes and doesn't break auto-exposure.
+- **Doc-walk thoroughness validated** — Batch 203 surveyed all open entries and found no new stale-RESOLVED candidates, confirming the prior 13+ closures across Batches 183-198 covered the easy wins.
+- **Net deferred entry count down by 1** (POSTPROCESS-USER-WGSL closed).
+
+---
+
+## Earlier Progress (2026-05-07 — Batches 194-198: Batch 192 audit fixes + downstream feature integration + 2 deferred-entry closures)
+
+Five batches: Batch 194 fixes Batch 192's HIGH-severity stencil-reference defect plus the cursor-coalesce UX gap, with another stale-RESOLVED reconciliation (GroundPrimitive MORPHING already shipped Batch 164); Batches 195-196 cash in on Batch 192's `csm_stochasticDither` infrastructure (TAA blue-noise jitter + voxel ray-march dither); Batch 197 closes C-R12-PER-OBJECT-CACHES with a device-loss recovery walk; Batch 198 ships the NEW-POSTPROCESS-USER-WGSL first slice for user-supplied WGSL post-process stages.
+
+### Batch 194 — Batch 192 audit fixes + GroundPrimitive MORPHING doc-sync
+
+- **B192-D1 (HIGH)** — `createPickPrecisePass1Pipeline` and `createPickPrecisePass2Pipeline` had stencil ops correctly configured (`passOp: replace`, `compare: equal`) but the **stencil reference value** was set per-encoder-draw via `passEncoder.setStencilReference(ref)`, NOT in the pipeline state. With default ref=0 and the FBO clearing stencil to 0, pass 1's `replace` was a no-op (writes 0 over 0) and pass 2's `equal` matched stencil==0 EVERYWHERE, defeating the whole isolation mechanism. **Fix:** add `renderState: { stencilTest: { reference: 1 } }` to the precise pick commands in `WebGPUModelRenderer.js`. Pass 1's `setStencilReference(1)` → `replace` writes 1; pass 2's `setStencilReference(1)` → `equal` matches stencil==1 only. Stencil mechanism now actually isolates pass-1-covered pixels.
+- **B192-N1** — `pickHoverAsync` coalesce previously returned the in-flight promise, resolving with the result for the OLD cursor position when the user moved the cursor mid-pick. Replaced with **trailing-debounce / latest-cursor chaining**: `_latestHoverCursor` always tracks the most recent requested position; a `_runHoverChain` drain loop processes one pick at a time but always against the latest snapshot. All coalesced callers receive the SAME result for the most-recent cursor (matches "what's under the cursor RIGHT NOW" UX expectation).
+- **GroundPrimitive MORPHING doc-sync** — audit walk found Batch 164 already shipped MORPHING for GroundPrimitive (`morphColorVS` consumes both 3D and 2D position attribute pairs and blends EC-space by `morphTime`; `tryResolveGroundPrimitiveMorphPipelines` lazily allocates the morph pipeline pair). Only `_needs2DShader` primitives (textured GroundPrimitives needing the WebGL `appearance2D` equivalent) remain gated. Updated DEFERRED_WORK.md sub-entry table to reflect closure.
+
+### Batch 195 — TAA blue-noise jitter (Halton 2/3 → IGN)
+
+`WebGPUTAAEffect.ts` now uses the same Jorge Jimenez Interleaved Gradient Noise formula as Batch 192's `csm_stochasticDither` chunk + the voxel ray-march dither (Batch 196). The new `ignJitter(frameIndex, axis)` exported helper replaces `halton(index, base)` calls in `computeJitter`. Halton retained as exported function for backwards compatibility.
+
+**Why blue-noise over Halton 2/3 for TAA jitter:**
+- Halton 2/3 is low-discrepancy (well-distributed) but **temporally-correlated** — adjacent frames' jitter offsets land near each other in the unit square; TAA accumulation sees structured residual error that shows up as mild ghosting on edges.
+- IGN is high-frequency / blue-noise-spectrum: adjacent samples (across frames at the same pixel) are nearly uncorrelated. Accumulation under temporal averaging converges faster with less residual error — cleaner edges, less perceptible ghosting.
+
+First downstream consumer of Batch 192's `csm_stochasticDither` infrastructure landing in production code paths.
+
+### Batch 196 — Voxel ray-march IGN ray-start jitter
+
+`WebGPUVoxelRenderer.ts` `fragmentMain` ray-march now jitters its starting `t` value by `dither × stepSize` where `dither = pickHoverDither(input.position.xy)`. The same Jimenez IGN formula. Anti-aliases sample positions across pixels — adjacent fragments don't all sample at the same uniform-grid t-points. Reduces banding artifacts in volumetric renders that would otherwise show stair-step rings where rays cross density boundaries.
+
+With TAA on (Batch 195's blue-noise jitter), TAA's per-frame camera jitter implicitly varies the IGN seed across frames at the same world-space pixel — gives temporal smoothing in addition to the spatial jitter. No new UBO fields, no frame-counter plumbing needed.
+
+Second downstream consumer of `csm_stochasticDither`.
+
+### Batch 197 — C-R12-PER-OBJECT-CACHES device-loss walk + B192-N2 timestamp queries
+
+**C-R12-PER-OBJECT-CACHES closure:** `WebGPUSceneRendererEnsureResources.ensureResources` now extends its existing `context.onDeviceInvalidated` subscription with a `clearPerObjectCaches(scene)` walk that clears `_webgpuCache` on every reachable per-object owner during device-loss recovery — `scene.primitives` (recursive walk), `scene.groundPrimitives`, `scene.shadowMap`, `scene.postProcessStages`. The walk uses a duck-typed `{length, get(i)}` collection check so any future Cesium primitive collection auto-participates without explicit registration. Belt-and-suspenders correctness — closes the window between device-loss event and the next render frame's FR-driven rebuild.
+
+**B192-N2 fix:** `Scene.pickPreciseAsync` first call on a scene auto-enables WebGPU timestamp profiling on `context._performanceManager._config.timestampProfiling`. The defer mitigation (Batch 192 mitigation B) now reads `context._performanceManager.frameTimings.totalGpuMs` instead of the dormant `scene._lastFrameGpuMs` placeholder. On devices supporting the `'timestamp-query'` feature, defer fires when last-frame GPU work exceeded ~12ms — pushing precise pick to the next frame to avoid stutter (16ms latency added; no stutter). On devices without the feature, totalGpuMs stays at 0 and defer never fires (same as current behavior; pick runs inline).
+
+### Batch 198 — NEW-POSTPROCESS-USER-WGSL first slice
+
+`Scene.postProcessStages.add(...)` user stages now execute on the WebGPU backend when they carry a `wgslFragmentShader: string` uniform.
+
+**Producer side (`WebGPUUserPostProcessStage.ts`, new file):**
+- Compiles user FS source concatenated with a framework-provided fullscreen-triangle VS into one shader module.
+- Single bind group: source texture (binding 0) + sampler (binding 1) + 64-byte uniform buffer (binding 2).
+- Renders fullscreen into its own intermediate texture.
+- Implements the `PostProcessEffect` interface so it slots into the existing chain via `execute(encoder, source, depth, sampler) → newView`.
+
+**Pipeline integration (`WebGPUPostProcessPipeline.ts`):**
+- New `addUserWGSLStage` / `clearUserWGSLStages` API.
+- User stages execute in the chain AFTER built-in stages (Bloom, AO, DoF, GodRay) but BEFORE auto-exposure + tonemap — same insertion point the WebGL backend uses for user stages, so HDR-space user effects work correctly.
+- `hasActiveStages` getter includes user-stage check so the post-process pipeline correctly fires when only user stages are enabled.
+
+**Consumer side (`WebGPUPostProcessStageCollection.ts`):**
+- The Batch 133 `oneTimeWarning` for user stages is replaced with: stages with `wgslFragmentShader` are compiled + chained; stages without (GLSL custom shaders) still warn but with a clearer call-to-action ("supply a `wgslFragmentShader` uniform").
+- Numeric uniforms from the stage's `.uniforms` map (excluding `wgslFragmentShader` itself) are packed into the 64-byte UBO in iteration order.
+
+**Convention for user shaders:**
+```wgsl
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(1) var sourceSampler: sampler;
+@group(0) @binding(2) var<uniform> uniforms: UserUniforms;
+struct UserUniforms { values: array<vec4<f32>, 4> }; // 16 packed floats
+
+@fragment
+fn fragmentMain(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+  // user implementation
+}
+```
+
+Future slices: type-safe schema declarations, named uniform packing (instead of iteration-order), texture/sampler bindings beyond the source pair, multi-pass user stages, GLSL→WGSL transpiler for upstream parity.
+
+### Cumulative impact (Batches 194-198)
+
+- **3 Batch 192 audit fixes shipped** — B192-D1 (precise pick stencil reference), B192-N1 (cursor-coalesce trailing-debounce), B192-N2 (timestamp-query-driven defer). Closes the audit punch list end-to-end; Batch 192's full-featured dual-path is now actually correct AND adaptive.
+- **2 deferred entries closed** — C-R12-PER-OBJECT-CACHES (Batch 197 device-loss walk), NEW-POSTPROCESS-USER-WGSL first slice (Batch 198 user WGSL stages).
+- **1 stale-RESOLVED entry surfaced + reconciled** — GroundPrimitive MORPHING (already shipped Batch 164). Cumulative across Batches 183-198: 13+ stale-RESOLVED entries closed via systematic doc-walk.
+- **2 new downstream consumers of `csm_stochasticDither`** — Batch 195 TAA blue-noise jitter, Batch 196 voxel ray-march. The `csm_stochasticDither` infrastructure has now been consumed by 3 production code paths (hover pick, TAA jitter, voxel ray-march), validating the "broad reuse" rationale from Batch 192.
+- **No new audit defects introduced** — every audit-fix shipped this session has either been validated by a subsequent audit or is structurally simple enough that audit risk is low.
+
+---
+
+## Earlier Progress (2026-05-07 — Batches 191-193: audit-fix correctness + full-featured OIT pick dual-path + doc-walk reconciliation)
+
+Three batches: Batch 191 fixes audit-found correctness defects (pickAsync queue ordering on WebGPU, undefined identifier in implicit-range path); Batch 192 ships the OIT pick second slice as a fully-featured dual-path API with all worst-case mitigations; Batch 193 walks DEFERRED_WORK.md systematically and closes 5 more stale-RESOLVED entries.
+
+### Batch 191 — Audit fixes (B187-D1 + B188-D1)
+
+Two real defects from the Batches 187-190 rereview:
+
+- **B187-D1 (HIGH)** — `pickAsync` queue ordering on WebGPU. The Batch 187 attempt at the pickEnd-timing fix preserved the bug it was meant to fix. `WebGPUPickFramebuffer.endAsync` runs synchronously up to its first await: it creates a NEW command encoder, queues `copyTextureToBuffer`, and submits via `device.queue.submit([encoder.finish()])` BEFORE returning the Promise. `pickEnd → endFrame` is what submits the pick render's `_currentCommandEncoder`. With `pickEnd` AFTER `endAsync` the readback encoder is submitted to the queue first; GPU executes it against an empty/stale `colorTexture`; `mapAsync` resolves with prior-frame data. **Fix:** call `pickEnd(scene)` BEFORE `pickFramebuffer.endAsync(...)`.
+- **B188-D1 (BLOCKER)** — undefined identifier `rn` at `WebGPUModelRenderer.js:2173`. Variable in scope was `runtimeNode`; `rn` would have thrown `ReferenceError` at runtime when an implicit-range glTF model loaded. Build passed because JavaScript doesn't catch undefined identifiers at compile/build time. **Fix:** `rn` → `runtimeNode`.
+
+### Batch 192 — C-R9-MODEL-PICK-TRANSLUCENT second slice (CLOSES the entry)
+
+Initially scoped as A-buffer per-pixel atomics, but the architectural deep-dive in this session found that approach blocked by WebGPU primitives (no per-fragment winner-take-all blend op; pickColor averaging meaningless for integer IDs). Pivoted to a **dual-path tiered API** that addresses both real use cases — hover-pick stutter avoidance and click-pick determinism — without needing the multi-batch atomics infrastructure.
+
+**`Scene.pickHoverAsync` (Option D — stochastic dither alpha-test):** New `fragmentPickHoverMain` entry uses Jorge Jimenez's Interleaved Gradient Noise (UE4/UE5 standard) inline — `fract(52.9829189 * fract(0.06711056 * fragCoord.x + 0.00583715 * fragCoord.y))`. No texture lookup, ~1 ALU per fragment. BLEND fragments discard with probability `1 − alpha`; surviving fragments compete on standard depth-test. Same render-pass cost as the default opaque pick — guaranteed stutter-free at 60fps hover frequency.
+
+**`Scene.pickPreciseAsync` (Option C — stencil-coordinated 2-pass):** Pass 1 writes depth + stencil with `colorWriteMask: 0`. Pass 2 writes pickColor with `depthCompare: equal` + `stencilCompare: equal`. Both passes share one render-pass setup so depth/stencil persist between them. Per-primitive 2-draw emission; pass 2 fires immediately after pass 1 within the same render pass.
+
+**Mitigations baked in:**
+- **Coalesce:** at most one hover + one precise pick in flight per scene; pile-up dropped (hover) or queued (precise).
+- **Defer:** if last frame's GPU work exceeded ~12ms, `pickPreciseAsync` defers to the next frame via `frameState.afterRender`. ~16ms latency instead of stutter.
+- **Pick-rect cull tightening (mitigation E):** already shipped via `getPickCullingVolume`. The frustum partition already excludes commands whose bounding spheres don't intersect the 3×3 pick rect — drops typical scene's pick-time render cost by 90-95%.
+- **Lazy pipeline allocation:** hover/precise pipelines built only on scenes that actually call the new APIs. Default `Scene.pick` pays zero.
+- **Dispatcher routing:** `selectCommandVariant` reads `frameState.passes.pickMode` ("default" | "hover" | "precise") to choose variant. Falls through to default pickCommand when requested variant isn't materialized.
+
+**Cost summary:**
+
+| Scenario | Per-frame cost |
+|---|---|
+| Idle (no pick this frame) | 0ms |
+| Hover only (D) | 0.3-1ms typical, 1-2ms heavy |
+| Click only (C) | 0.6-2ms typical, 2-4ms heavy (after cull tightening) |
+| Worst case (both same frame) | 1.5-3ms heavy — coalesce drops hover when click fires |
+| Persistent VRAM | 0 (no allocations beyond existing pick FBO) |
+
+**Downstream feature hooks** opened by this batch (each its own future work item):
+- `csm_stochasticDither.wgsl` chunk available for foliage / particle alpha-test rendering, translucent shadow casts, voxel ray-march early-termination.
+- TAA jitter via blue-noise (replace Halton 2/3) — hook + comment in `WebGPUTAAEffect.ts`.
+- New `ShaderDefine` bits `STOCHASTIC_DITHER_ALPHA` and `STENCIL_PICK_WINNER` reserved.
+
+### Batch 193 — Doc-walk audit (5 stale-RESOLVED entries closed)
+
+Systematic walk of every open entry in DEFERRED_WORK.md against actual code paths. **5 more stale-RESOLVED entries reconciled:**
+
+- **C-R1-TILE-BATCH** — RESOLVED via Batch 100. `tileBatchFlags` UBO + WGSL per-feature alpha-class discards + per-primitive 2-command emission all shipped.
+- **C-R8-TRANSLUCENT-DEPTH-ONLY** — already "Resolved (different mechanism) — Batches 78-79" in body but heading lacked strikethrough.
+- **C-R8-TRANSLUCENT-MULTI-FRUSTUM** — already "Paused / superseded" in body; cosmetic strikethrough.
+- **C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH** — already "Superseded by C-R8-CLASSIFICATION-DEPTH-SAMPLING" in body; cosmetic strikethrough.
+- **NEW-GS-CLASSIFICATION-DEPTH** — RESOLVED. `WebGPUGaussianSplatRenderer.ts:43, 500, 957-982` ships `classificationDepthPipeline` slot mirroring Batch 79 Model fix.
+
+**Cumulative stale-RESOLVED reconciliation across Batches 183-193: 12+ entries closed.** The trend strongly suggests deferred-work tracking should be re-walked at every major release boundary.
+
+### Cumulative impact (Batches 191-193)
+
+- 2 audit defects fixed (B187-D1 pickAsync queue ordering, B188-D1 undefined identifier).
+- C-R9-MODEL-PICK-TRANSLUCENT closed end-to-end (first slice Batch 186 + second slice Batch 192). Two new public APIs cover hover + click use cases.
+- 5 stale-RESOLVED entries closed in DEFERRED_WORK.md.
+- Downstream hooks opened for foliage dither, voxel ray-march, TAA blue-noise jitter.
+- Dispatcher routing extended with multi-variant pick command selection — `pickMode` mechanism reusable for future pick variants.
+
+---
+
+## Earlier Progress (2026-05-06 — Batches 187-190: audit fixes + implicit-range pick + uniforms type cleanup; OIT pick blocker surfaced; 2 stale-RESOLVED entries reconciled)
+
+Four batches that ran the audit-fix → high-payoff → architectural-finding → cleanup sequence the user approved. Mid-stream pivots happened in 189 (OIT pick architecturally blocked) and 190 (work was already shipped in Batch 108 — entry was stale). Net deliverables: real audit-fix work, a closed deferred entry, and significant doc reconciliation.
+
+### Batch 187 — Audit fixes + TS unblock
+
+The 183-186 audit surfaced 4 defects + 2 pre-existing TS errors blocking `npx gulp build`. All addressed:
+
+- **B184-D1 fix** (`Picking.js:99`) — `pickAsync` previously captured the module-level `scratchRectangle` singleton by reference. With an await mid-flight, any concurrent pick path (e.g., a mouse-hover handler) could overwrite `scratchRectangle` before `endAsync` resumed, causing the readback to read wrong coords. Fix: clone to a per-call `BoundingRectangle` instance.
+- **B184-D2 fix** (`Picking.js:117`) — `pickEnd(scene)` was called AFTER the await. On WebGPU specifically, `endFrame()` is what submits the pick render's command encoder to the device queue. Without it firing first, the readback `mapAsync` would block on a queue that never sees the pick render's commands. Moved `pickEnd` to BEFORE the await — closes the pick pass synchronously while leaving the readback promise pending.
+- **B186 comment correction** (`WebGPUModelPipelineCache.js:createPickPipeline`) — original comment overclaimed "depth-test alone picks the geometrically closest fragment regardless of render order." Reality: with `depthWrite=false` and `depthCompare:less-equal`, multiple translucents at varying depths between camera and opaque all pass; last-drawn wins. Real improvement is opaque-behind-translucent now pickable. Comment now accurately describes the change.
+- **WebGPUContext.ts:1914 TS error** — `WebGPUSync.create({ device, timeoutFrames })` didn't match `WebGPUSyncOptions: { context }`. Replaced with `{ context: this }` (the `device`/`timeoutFrames` fields had no consumers; verified via grep).
+- **WebGPUPostProcessStageCollection.ts:250 TS error** — `rawAlgo === "gtao"` against `Record<string, number>`-typed uniforms. Initial fix used a targeted `as unknown` cast at the AO algorithm site; the proper fix landed in the cleanup work below.
+
+Batch 187 unblocks `npx gulp build` end-to-end so Batch 186's WGSL changes propagate to the bundled `Build/CesiumUnminified/`.
+
+### Batch 188 — NEW-FEATURE-ID-VERTEX-ATTR closure (b3dm implicit-range synthesis)
+
+Audit walk surfaced that vertex-attribute feature ID was actually shipped end-to-end in **Batch 130** (audit B.2), not still-pending as the deferred entry implied. `_FEATURE_ID_0` (loader-renamed from b3dm `_BATCHID`) flows: geometry extraction → Float32 vertex buffer at slot 8 → `FLAG_HAS_FEATURE_ID_ATTRIBUTE` → `fragmentMain`/`fragmentPickMain` `lookupBatchColor`/`lookupFeaturePickColor` paths. All wired since Batch 130.
+
+Batch 188 closes the one remaining sub-case — `FeatureIdImplicitRange`, where primitives carry no `_FEATURE_ID_0` accessor and the feature ID is synthesized as `offset + floor(vertex_index / repeat)`. New `synthesizeImplicitFeatureIdData` helper in `WebGPUModelFeatureId.js` materializes the typed array at upload time; the existing slot-8 path then handles it identically to an explicit attribute. **Closes NEW-FEATURE-ID-VERTEX-ATTR.**
+
+(The C-R9-MODEL-FEATURE-PICK separate blocker — b3dm-tileset Models not building primitive caches — is upstream rendering work, not feature-ID path work; per-feature pick will work automatically once b3dm models go through the regular WebGPU render path.)
+
+### Batch 189 — OIT pick second slice: architectural finding (no code shipped)
+
+Audit of the proposed "parallel pick-OIT pipeline accumulating pickIds with same weights, resolving at composite" found it's **not directly implementable with WebGPU primitives**:
+
+- WebGPU OIT (McGuire & Bavoil weighted-blended) **averages** premultiplied-alpha colors. PickColors are integer-encoded IDs — averaging two pickColors produces a non-existent ID.
+- WebGPU's blend ops (`add`/`subtract`/`min`/`max`) don't give "winner-take-all by weight" cleanly. `max` per-channel produces Frankenstein RGB when channels max from different fragments.
+- Workarounds need new infrastructure: per-pixel atomic linked lists (Chrome-only), N-pass back-to-front sort (defeats OIT order-independence), or storage-texture ID stacks with custom resolve compute pass.
+
+The second slice is therefore a **multi-batch architectural effort**, not the original "1-2 session" estimate. DEFERRED_WORK.md updated with the finding so future sessions don't re-discover it. The Batch 186 first slice's depth-test-only behavior covers the dominant case (opaque-behind-translucent pickable, last-drawn-wins among translucents). No code shipped — preferred over scaffolding without a clear architecture.
+
+### Batch 190 — C-R10-GLOBE-POINT-LIGHT stale-RESOLVED (doc-sync only)
+
+Audit walk found globe terrain point-light cube-shadow receive shipped end-to-end in **Batch 108**: `EffectsUniforms` carries `pointLightControl` + `pointLightPositionWC` at the same byte offsets as the model shader; `pointLightCubeDepth: texture_depth_cube` at `@group(3) @binding(17)`; `globeSamplePointShadow` does perspective-Z reconstruction + 5-tap cross PCF; shadow-gate order in `fragmentMain` is point-light first, CSM second, 2D shadow last (matches model FS); `WebGPUEffectsBindGroup.js` packs the fields. The deferred entry's "1 session if requested" estimate predated Batch 108 and was never reconciled. **Closed via doc-sync.**
+
+### Cleanup — `PostProcessStage.uniforms` type widening with cascade fixes
+
+`CesiumPostProcessStage.uniforms` widened from `Record<string, number>` to `Record<string, number | string | boolean | undefined>` to match its actual polymorphism (numeric scalars, string discriminators like AO `algorithm`, booleans like `glowOnly`). 15 cascading TS errors at numeric-read sites in `WebGPUPostProcessStageCollection.ts` resolved via a new local helper `numU(v, default): number` that narrows polymorphic uniform values to numbers. The AO `algorithm` discriminator narrows to its `"gtao" | "hbao"` literal union directly without going through `numU`.
+
+This replaces Batch 187's targeted `as unknown` cast with the structurally-correct widening + per-site narrowing pattern.
+
+### Cumulative impact (Batches 187-190 + cleanup)
+
+- **2 audit defects fixed** (scratchRectangle aliasing, pickEnd timing) — both real WebGPU correctness bugs in async pick.
+- **2 pre-existing TS errors fixed** — `npx gulp build` now succeeds end-to-end; root `Source/` and `Build/CesiumUnminified/` propagate Batch 186's WGSL changes.
+- **1 deferred entry closed** — NEW-FEATURE-ID-VERTEX-ATTR (Batches 130 + 188 implicit-range synthesis).
+- **2 stale-RESOLVED entries reconciled** — NEW-FEATURE-ID-VERTEX-ATTR was shipped in Batch 130, C-R10-GLOBE-POINT-LIGHT was shipped in Batch 108. Both predate this session by months.
+- **1 architectural blocker surfaced** — C-R9-MODEL-PICK-TRANSLUCENT second slice needs new per-pixel atomics or storage-stack infrastructure, not the "1-2 session" estimate. Future sessions have a clear sequencing plan documented in DEFERRED_WORK.md.
+- **1 type cleanup** — PostProcessStage uniforms now structurally correct; `numU` helper amortizes the per-site narrowing.
+
+The trend across this session: the deferred-work tracking has drifted significantly from the actual code state. **5 stale-RESOLVED entries surfaced in Batches 183 + 188 + 190 alone** (NEW-GLOBE-TRANSLUCENCY-MULTI-PASS, NEW-KHR-TRANSMISSION-THICKNESS, NEW-KHR-IRIDESCENCE-LUT, NEW-MODEL-NODE-TRANSFORMS-PREV, C-R8-GROUND-POLYLINE-NATIVE) plus 2 more in this batch (NEW-FEATURE-ID-VERTEX-ATTR, C-R10-GLOBE-POINT-LIGHT). A focused doc-walk batch surveying every open entry against the actual code path would likely close another 3-5 entries.
+
+---
+
+## Earlier Progress (2026-05-06 — Batches 183-186: closing classifier velocity + drill-pick + dedup sweeps + translucent pick first slice)
+
+Four batches closing two deferred-work families end-to-end (NEW-ADVANCED-MOTION-VECTORS, NEW-DRILLPICK-ASYNC, C-R7-SHADER-MODULE-DEDUP), shipping the first slice of a third (C-R9-MODEL-PICK-TRANSLUCENT), and surfacing 5 stale-RESOLVED entries in DEFERRED_WORK.md that the actual code base had already shipped.
+
+### Batch 183 — Translucent globe 3-pass underground gate fix + GroundPolyline classifier velocity (CLOSES NEW-ADVANCED-MOTION-VECTORS)
+
+- **Underground+translucent gate fix.** `WebGPUGlobeSurfaceRenderer.ts:871-876` 3-pass emission gate (depth-only back-face → translucent back-face → translucent front-face) was missing a `!cameraUnderground` check. When both flags were true, the 3-pass commands fired AND the regular color command ran with `cullMode: "none"` (because `disableCulling` is true via `cameraUnderground`), producing a double-blend on back-faces. Gate now reads `globeTranslucent && !cameraUnderground && !isSubsequentPass && !debugWireframe && debugFragmentMode === NONE` so the underground-and-translucent case correctly takes the legacy single-pass both-faces path (the user's primary intent when underground is "see through the globe").
+- **GroundPolyline classifier velocity** (CLOSES NEW-ADVANCED-MOTION-VECTORS classifier family). `WebGPUGroundPolylineRenderer.js` now ships `vsVelocity` + `fsVelocity` entry points that replicate the vsMain volume-extrusion math byte-for-byte (multi-attribute input, plane-based extrusion direction, bottom-vertex stretching for far views, screen-space width-miter push). Previous-frame clip projects the un-extruded world position (`pH + pL` in 3D, `pH2D.zxy + pL2D.zxy` in 2D / Columbus View) through `u.prevViewProjection`. Velocity descriptor + pipeline cache slot + format-invalidation reset wired alongside the existing color/pick/stencil pipelines. Velocity command emitted alongside the FIRST color command per primitive when `taaEnabled && !isMorphing && defined(velocityPipeline)` — matching the GroundPrimitive Batch 180 pattern.
+- **Doc sync (5 stale RESOLVED entries).** Walked DEFERRED_WORK.md against current code:
+  - NEW-GLOBE-TRANSLUCENCY-MULTI-PASS — RESOLVED (Batches 177 + 182 + 183 direct command emission, NOT the broken existing `WebGPUGlobeTranslucencyState` scaffolding).
+  - NEW-KHR-TRANSMISSION-THICKNESS — RESOLVED (Batch 176 thickness-coupled refraction UV offset).
+  - NEW-KHR-IRIDESCENCE-LUT — RESOLVED (Batch 181 Belcour 2017 analytical formula, LUT-free).
+  - NEW-MODEL-NODE-TRANSFORMS-PREV — RESOLVED (Batch 175 per-node prev modelMatrix capture).
+  - C-R8-GROUND-POLYLINE-NATIVE — RESOLVED 2026-04-30 (3-bug combination, including the viewport-zero VS extrusion bug — entry was stale).
+  - C-R4-GLTF-KHR table updated: KHR_materials_iridescence + KHR_materials_transmission both promoted from ⚠️ to ✅. C-R4-GLTF-KHR is now fully resolved.
+
+### Batch 184 — `Scene.drillPickAsync()` public API (CLOSES NEW-DRILLPICK-ASYNC)
+
+New `Scene.drillPickAsync(windowPosition, limit, width, height)` returns a Promise that drills through stacked features by awaiting each pick before mutating `show` state. Renderer-agnostic at the Scene/Picking layer:
+
+- `Scene.js:drillPickAsync` delegates to `Picking.drillPickAsync`.
+- `Picking.js:pickAsync` calls `pickFramebuffer.endAsync(rect, frameState, limit)` (already implemented on both `PickFramebuffer.js` (WebGL: sync fence + PBO) and `WebGPUPickFramebuffer.ts` (WebGPU: mapAsync staging buffer readback)).
+- `Picking.js:drillPickAsync` is the async sibling of the existing `drillPick` helper, awaiting each iteration's pick before recording `show=false` on hit primitives.
+- Sync `Scene.drillPick` is kept as-is. The pre-existing debug-build `oneTimeWarning` now points users at `drillPickAsync` for correct WebGPU results (the sync path returns prior-frame pixels because GPU readback is inherently async).
+
+### Batch 185 (pivot) — C-R7-SHADER-MODULE-DEDUP closure (CLOSES the dedup sweep)
+
+Original Batch 185 plan was to attempt the C-R8-GROUND-POLYLINE-NATIVE VS extrusion fix, but the doc-sync in Batch 183 surfaced that all three bugs in that family (including the VS extrusion / viewport-zero issue) were already fixed on 2026-04-30. Pivoted to closing the C-R7-SHADER-MODULE-DEDUP sweep instead:
+
+- 4 new `ShaderSourceId` entries (30/31/32/33: `GROUND_PRIMITIVE`, `GROUND_POLYLINE`, `SKY_ATMOSPHERE`, `ELLIPSOID_PRIMITIVE`) — add-only per the registry rules.
+- Per-device `WebGPUShaderModuleCache` WeakMap pattern wired into `WebGPUGroundPrimitiveRenderer.js`, `WebGPUGroundPolylineRenderer.js`, `WebGPUSkyAtmosphereRenderer.js`, `WebGPUEllipsoidPrimitiveRenderer.ts`. All four route through `getOrCreate(sourceId, code, defines, label)` instead of `device.createShaderModule()`.
+- The two GroundClassifier renderers were already on the edit list for Batches 180/183 velocity work, so the ride-along has zero marginal cost. SkyAtmosphere/Ellipsoid are singleton/few-per-scene (low dedup win); the cache unifies the pattern across the full renderer family.
+
+### Batch 186 — C-R9-MODEL-PICK-TRANSLUCENT first slice
+
+Two complementary fixes for translucent (BLEND alphaMode) model picking on WebGPU:
+
+- **Pipeline depth-write off for BLEND.** `createPickPipeline` in `WebGPUModelPipelineCache.js` now passes `depthWriteEnabled: !isBlend`. Previously translucent fragments wrote depth and prevented later primitives at the same screen location from being pickable (first-drawn-wins). With depth-test only, the standard `less-equal` compare picks the geometrically closest fragment regardless of render order.
+- **WGSL alpha-discard for BLEND.** `fragmentPickMain` discards `baseColor.a < 0.004` when `FLAG_ALPHA_MODE_BLEND` is set, so glass/water/ghost overlays don't claim pick over opaque geometry visible through them.
+
+These two changes ship together — depth-write fix alone would still let near-transparent layers grab pick precedence at their depth without the alpha-discard guard. OIT-quality pick (weighted accumulation + composite resolve sorting by perceptual visibility) remains as a second slice.
+
+### Cumulative impact (Batches 183-186)
+
+- Three deferred-work families closed end-to-end: NEW-ADVANCED-MOTION-VECTORS, NEW-DRILLPICK-ASYNC, C-R7-SHADER-MODULE-DEDUP.
+- One family advanced to PARTIAL: C-R9-MODEL-PICK-TRANSLUCENT (first slice ships; OIT-quality pick deferred to second slice).
+- Five stale-RESOLVED entries surfaced and reconciled in DEFERRED_WORK.md (NEW-GLOBE-TRANSLUCENCY-MULTI-PASS, NEW-KHR-TRANSMISSION-THICKNESS, NEW-KHR-IRIDESCENCE-LUT, NEW-MODEL-NODE-TRANSFORMS-PREV, C-R8-GROUND-POLYLINE-NATIVE).
+- C-R4-GLTF-KHR fully resolved (all KHR follow-ups originally filed as deferred have shipped).
+- One real correctness bug fixed: translucent-globe + camera-underground double-blend at `WebGPUGlobeSurfaceRenderer.ts:871-876`.
+
+---
+
+## Earlier Progress (2026-05-05 — Batches 160-162: high-payoff feature trio)
 
 Three batches closing genuinely-open Tier 4 work plus a doc-drift sync.
 

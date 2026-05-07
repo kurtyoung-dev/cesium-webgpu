@@ -31,6 +31,27 @@ import {
   ensurePickId,
   type SinglePickIdCache,
 } from "./WebGPUPickCommandHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+
+// C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
+// EllipsoidPrimitive is typically few-per-scene; the dedup win is
+// modest but the cache unifies the pattern across the renderer family.
+const _ellipsoidPrimitiveShaderCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+
+function getEllipsoidPrimitiveShaderCache(
+  device: GPUDevice,
+): WebGPUShaderModuleCache {
+  let cache = _ellipsoidPrimitiveShaderCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _ellipsoidPrimitiveShaderCaches.set(device, cache);
+  }
+  return cache;
+}
 
 interface EllipsoidCache {
   uniformBuffer: GPUBuffer | null;
@@ -243,7 +264,12 @@ function buildEllipsoidPipelineResources(
   device: GPUDevice,
   canvasFormat: GPUTextureFormat,
 ): EllipsoidPipelineResources {
-  const shaderModule = device.createShaderModule({ code: ELLIPSOID_WGSL });
+  const shaderModule = getEllipsoidPrimitiveShaderCache(device).getOrCreate(
+    ShaderSourceId.ELLIPSOID_PRIMITIVE,
+    ELLIPSOID_WGSL,
+    0,
+    "EllipsoidPrimitive",
+  );
 
   const bindGroupLayout0 = makeBindGroupLayout(
     device,

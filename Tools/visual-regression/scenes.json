@@ -1,6 +1,6 @@
 {
   "$schema": "./scenes.schema.json",
-  "description": "Visual regression scene definitions for the WebGL ↔ WebGPU split-screen comparison page. Each entry sets up a camera + flags via window.viewerSetupHelpers (defined in split-screen-comparison.html), waits a settle frame count, then captures both canvases for pixel-diff.",
+  "description": "Visual regression scene definitions for the WebGL ↔ WebGPU split-screen comparison page. Each entry sets up a camera + flags via window.viewerSetupHelpers (defined in split-screen-comparison.html), waits a settle frame count, then captures both canvases for pixel-diff. The optional `setup` field is a JS source string evaluated in the page context before the camera is positioned — used for synthetic high-density scenes (Batch 224).",
   "baseUrl": "http://localhost:8080/Apps/WebGPUTest/split-screen-comparison.html",
   "settleFrames": 30,
   "scenes": [
@@ -23,6 +23,24 @@
       "camera": {
         "destination": [-122.4, 37.7, 80000],
         "orientation": { "heading": 0, "pitch": -0.15, "roll": 0 }
+      }
+    },
+    {
+      "name": "high-density-5k-spheres",
+      "description": "Batch 224 (NEW-VR-BASELINE-HIGH-DENSITY) — procedurally generated 5K-sphere instance scene that crosses the gpuCuller activation threshold (HI=384) and HiZ threshold (HI=2400). Verifies that the threshold-gated dispatchers introduced in Batches 209-218 produce visually identical output to the unmodified WebGL pipeline. Uses Scene.gpuCullingHint = 'always' on WebGPU so the eager warm-up amortizes pipeline-compile cost into the load frame instead of the first-cross frame.",
+      "setupParams": {
+        "centerLongitude": -122.4194,
+        "centerLatitude": 37.7749,
+        "centerHeight": 50000,
+        "spreadMeters": 200000,
+        "instanceCount": 5000,
+        "sphereRadius": 1000,
+        "rngSeed": 1234567
+      },
+      "setup": "const Cesium = window.Cesium; const p = params; function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;}} const rng=mulberry32(p.rngSeed); function addInstances(viewer){if(!viewer)return; const ellipsoid=viewer.scene.globe.ellipsoid; const instances=[]; for(let i=0;i<p.instanceCount;i++){const dx=(rng()-0.5)*2*p.spreadMeters; const dy=(rng()-0.5)*2*p.spreadMeters; const dz=(rng()-0.5)*2*Math.max(1000,p.spreadMeters*0.1); const lon=p.centerLongitude+(dx/(111320*Math.cos(p.centerLatitude*Math.PI/180))); const lat=p.centerLatitude+(dy/110540); const h=p.centerHeight+dz; const center=Cesium.Cartesian3.fromDegrees(lon,lat,h); const modelMatrix=Cesium.Matrix4.multiplyByTranslation(Cesium.Transforms.eastNorthUpToFixedFrame(center),new Cesium.Cartesian3(0,0,0),new Cesium.Matrix4()); const geom=new Cesium.SphereGeometry({radius:p.sphereRadius,vertexFormat:Cesium.PerInstanceColorAppearance.VERTEX_FORMAT}); instances.push(new Cesium.GeometryInstance({geometry:geom,modelMatrix,attributes:{color:Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromHsl((i*0.0001)%1,0.7,0.5,1.0))}}));} const prim=new Cesium.Primitive({geometryInstances:instances,appearance:new Cesium.PerInstanceColorAppearance({translucent:false}),asynchronous:false}); viewer.scene.primitives.add(prim);} if(window.webgpuViewer){window.webgpuViewer.scene.gpuCullingHint='always';} addInstances(window.webglViewer); addInstances(window.webgpuViewer); return new Promise((r)=>setTimeout(r,1500));",
+      "camera": {
+        "destination": [-122.4194, 37.7749, 300000],
+        "orientation": { "heading": 0, "pitch": -0.7, "roll": 0 }
       }
     }
   ]

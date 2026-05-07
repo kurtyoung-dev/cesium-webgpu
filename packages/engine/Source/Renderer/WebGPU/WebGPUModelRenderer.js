@@ -51,6 +51,7 @@ import {
 import {
   ensureFeatureIdResources,
   destroyFeatureIdResources,
+  synthesizeImplicitFeatureIdData,
 } from "./WebGPUModelFeatureId.js";
 import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -60,6 +61,7 @@ import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import {
   attachPickToColorCommand,
+  attachPickVariantsToColorCommand,
   destroyPickIds,
   ensurePickId,
 } from "./WebGPUPickCommandHelpers.js";
@@ -2158,6 +2160,30 @@ function updateWebGPUModel(model, frameState) {
 
       // Get material from the primitive's glTF data
       const glTFPrimitive = rp.primitive || rp._primitive;
+      // NEW-FEATURE-ID-VERTEX-ATTR (Batch 188) — `FeatureIdImplicitRange`
+      // primitives have no `_FEATURE_ID_0` accessor, so
+      // `extractPrimitiveGeometry` leaves `featureId0Data` null. Synthesize
+      // the per-vertex array here (`offset + floor(v / repeat)`) when the
+      // model's selected feature ID is implicit; the existing slot-8
+      // upload path then carries it like a regular vertex attribute, and
+      // the FS lights up the same `FLAG_HAS_FEATURE_ID_ATTRIBUTE` branch.
+      // Closes the implicit-range follow-up after Batch 130's audit B.2.
+      if (!geometry.hasFeatureId0 && defined(glTFPrimitive)) {
+        // Batch 191 (B188-D1 audit fix) — was `rn` (undefined) which
+        // would have thrown ReferenceError at runtime when an
+        // implicit-range glTF model loaded. The variable in scope is
+        // `runtimeNode` from the enclosing for-loop at line ~1916.
+        const synthesized = synthesizeImplicitFeatureIdData(
+          model,
+          runtimeNode,
+          glTFPrimitive,
+          geometry.vertexCount,
+        );
+        if (defined(synthesized)) {
+          geometry.featureId0Data = synthesized;
+          geometry.hasFeatureId0 = true;
+        }
+      }
       const material = glTFPrimitive?.material;
       const matInfo = extractMaterialInfo(
         material,
@@ -2635,8 +2661,11 @@ function updateWebGPUModel(model, frameState) {
             primCache.materialDefines | 0,
           );
         }
-        const pickCmd = new WebGPUDrawCommand({
-          pipeline: primCache.pickPipeline,
+        // Shared draw args reused across all pick variants (default,
+        // hover, precise pass 1, precise pass 2). Only the pipeline
+        // differs between them; same vertex buffers, bind groups, and
+        // index buffer apply to every variant.
+        const sharedPickDrawArgs = {
           bindGroups: [
             nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
             mergedMaterialBG,
@@ -2656,8 +2685,112 @@ function updateWebGPUModel(model, frameState) {
           cull: model._cull ?? true,
           renderState: modelRenderState,
           pickOnly: true,
+        };
+        const pickCmd = new WebGPUDrawCommand({
+          ...sharedPickDrawArgs,
+          pipeline: primCache.pickPipeline,
         });
         attachPickToColorCommand(webgpuCmd, pickCmd);
+
+        // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover
+        // pick variant. Lazily build pipeline on first frame the scene
+        // requests hover-mode pick. Built unconditionally here for
+        // BLEND alphaMode so the cost is paid up-front (1 pipeline
+        // alloc); for OPAQUE/MASK the factory delegates to the regular
+        // pick pipeline so no extra alloc happens (cache hit).
+        //
+        // Scene flag `_webgpuPickHoverEnabled` is set to true the first
+        // time `Scene.pickHoverAsync` is called on the scene; once
+        // enabled it stays on for the scene's lifetime (the WGSL
+        // module cache dedupes the dither variant across all model
+        // instances on the device, so the marginal cost is the FS
+        // entry compile + per-(alphaMode, doubleSided, materialDefines)
+        // pipeline alloc).
+        const scene = frameState?.scene;
+        const wantHover = scene?._webgpuPickHoverEnabled === true;
+        if (wantHover) {
+          if (!defined(primCache.pickHoverPipeline)) {
+            primCache.pickHoverPipeline = pipelineCache.getPickHoverPipeline(
+              matInfo.alphaMode,
+              matInfo.isDoubleSided,
+              primCache.materialDefines | 0,
+            );
+          }
+          const pickHoverCmd = new WebGPUDrawCommand({
+            ...sharedPickDrawArgs,
+            pipeline: primCache.pickHoverPipeline,
+          });
+          attachPickVariantsToColorCommand(webgpuCmd, {
+            hoverPick: pickHoverCmd,
+          });
+        }
+
+        // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C precise
+        // pick variant. For OPAQUE/MASK, pass 1 IS the regular pick
+        // pipeline (factory delegates) and pass 2 is null — dispatcher
+        // handles the null fall-through by skipping pass 2. For BLEND,
+        // both passes are real with depth-only pass 1 + depth-EQUAL
+        // color pass 2, sharing the pick FBO depth attachment within
+        // a single render pass.
+        //
+        // Scene flag `_webgpuPickPreciseEnabled` set on first
+        // `Scene.pickPreciseAsync` call. The 2× translucent
+        // rasterization cost is paid only when this flag is true, and
+        // only for the precise pick path (regular `pick()` and
+        // `pickHover()` keep their own pipelines).
+        const wantPrecise = scene?._webgpuPickPreciseEnabled === true;
+        if (wantPrecise) {
+          if (!defined(primCache.pickPrecisePass1Pipeline)) {
+            primCache.pickPrecisePass1Pipeline =
+              pipelineCache.getPickPrecisePass1Pipeline(
+                matInfo.alphaMode,
+                matInfo.isDoubleSided,
+                primCache.materialDefines | 0,
+              );
+          }
+          if (
+            matInfo.alphaMode === AlphaModes.BLEND &&
+            !defined(primCache.pickPrecisePass2Pipeline)
+          ) {
+            primCache.pickPrecisePass2Pipeline =
+              pipelineCache.getPickPrecisePass2Pipeline(
+                matInfo.alphaMode,
+                matInfo.isDoubleSided,
+                primCache.materialDefines | 0,
+              );
+          }
+          // Batch 194 (B192-D1 audit fix) — both precise passes need
+          // stencilReference=1 set on the render pass encoder before
+          // their draw. Pass 1's `passOp: replace` writes 1 (replacing
+          // the cleared 0); pass 2's `compare: equal` matches stencil
+          // == 1 (only pass-1-covered pixels). Without this, the
+          // stencil mechanism is non-functional: pass 1 writes 0 (the
+          // default ref) which is identical to the FBO clear value, so
+          // pass 2 fires on every pixel rather than only pass-1
+          // winners. `applyPerEncoderState` reads `renderState.
+          // stencilTest.reference` and calls `passEncoder.
+          // setStencilReference()` when nonzero.
+          const preciseRenderState = {
+            ...modelRenderState,
+            stencilTest: { reference: 1 },
+          };
+          const precisePass1Cmd = new WebGPUDrawCommand({
+            ...sharedPickDrawArgs,
+            pipeline: primCache.pickPrecisePass1Pipeline,
+            renderState: preciseRenderState,
+          });
+          const precisePass2Cmd = defined(primCache.pickPrecisePass2Pipeline)
+            ? new WebGPUDrawCommand({
+                ...sharedPickDrawArgs,
+                pipeline: primCache.pickPrecisePass2Pipeline,
+                renderState: preciseRenderState,
+              })
+            : undefined;
+          attachPickVariantsToColorCommand(webgpuCmd, {
+            precisePass1: precisePass1Cmd,
+            precisePass2: precisePass2Cmd,
+          });
+        }
       }
 
       // TAA Slice 2e (Batch 106) — velocity command derivation. When

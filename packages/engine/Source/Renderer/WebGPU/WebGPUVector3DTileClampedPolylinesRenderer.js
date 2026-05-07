@@ -1062,16 +1062,28 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   // View support requires a parallel per-mode attribute set (mirroring
   // GroundPolyline's Batch 116/117 pattern). 3D Tiles vector tile
   // content is typically only viewed in 3D mode in production, so
-  // silently skipping emission here matches user-expected behavior.
-  // Tracked as a follow-up in DEFERRED_WORK.md.
-  if (frameState?.mode !== SceneMode.SCENE3D) {
+  // silently skipping emission for those modes matches user-expected
+  // behavior.
+  //
+  // **Batch 208** — MORPHING is now allowed through. During morph the
+  // camera + view/projection interpolate via `frameState.morphTime`
+  // (1.0 → 0.0). The renderer's `packUniforms` consumes
+  // `uniformState.view` + `uniformState.projection` directly, so
+  // routing the existing 3D ECEF positions through the morph-blended
+  // matrices renders the polylines in their 3D world position during
+  // the transition — they fade naturally as the camera approaches the
+  // 2D map. Without this, ClampedPolylines flicker out the instant
+  // morph begins. SCENE2D + COLUMBUS_VIEW remain gated (no 2D
+  // attribute path; 3D positions would project to wandering points).
+  const sceneMode = frameState?.mode;
+  if (sceneMode !== SceneMode.SCENE3D && sceneMode !== SceneMode.MORPHING) {
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
       "WebGPUVector3DTileClampedPolylines.sceneMode",
       "Vector3DTileClampedPolylines on WebGPU is currently only correct in " +
-        "SceneMode.SCENE3D. Non-3D scene modes (2D, Columbus View, Morphing) " +
-        "are silently skipped. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH " +
-        "in DEFERRED_WORK.md.",
+        "SceneMode.SCENE3D and SceneMode.MORPHING. SCENE2D / Columbus View " +
+        "are silently skipped (no 2D position attribute path). Tracked as " +
+        "A.4 / NEW-CLASSIFIER-2D-CV-MORPH in DEFERRED_WORK.md.",
     );
     //>>includeEnd('debug');
     return { colorCommands: [], pickCommands: [], ignoreShowCommands: [] };

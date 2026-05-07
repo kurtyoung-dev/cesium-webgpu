@@ -77,6 +77,15 @@
  *     the default Color path with the material's `uniforms.color` as
  *     tint — porting Cesium's full Material→GLSL pipeline to WGSL is
  *     a separate multi-week effort.
+ *   - NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — vsVelocity
+ *     replicates the vsMain volume-extrusion math byte-for-byte; prev
+ *     frame projects the un-extruded world position (pH + pL) through
+ *     u.prevViewProjection. Velocity command emitted alongside the
+ *     first color command per primitive when TAA is on and not in
+ *     MORPHING. CLOSES the NEW-ADVANCED-MOTION-VECTORS classifier
+ *     family (final entry: GroundPolyline alongside Voxel + Splat +
+ *     Vector3DTile{Polylines,ClampedPolylines,Primitives,Classifier} +
+ *     GroundPrimitive shipped earlier in the sweep).
  *
  * @private
  */
@@ -87,6 +96,8 @@ import Matrix4 from "../../Core/Matrix4.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -984,13 +995,173 @@ struct VS_OUT_MORPH {
 @fragment fn pickFSMorph(in: VS_OUT_MORPH) -> @location(0) vec4<f32> {
   return u.pickColor;
 }
+
+// NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — velocity entry
+// points for the ground-polyline classifier. CLOSES the family
+// (Vector3DTile{Polylines,ClampedPolylines,Primitives,Classifier} +
+// GroundPrimitive shipped earlier in the sweep). Replicates the vsMain
+// volume-extrusion math byte-for-byte so velocity-pass rasterization
+// covers the same fragments as the color pass.
+//
+// Previous-frame clip projects the un-extruded world position (pH + pL,
+// SoA decode of the original world coord) through u.prevViewProjection.
+// Same approximation as the other classifier velocity passes: the
+// screen-space width-miter push is camera-frame-dependent, but the
+// polyline's underlying world path is static — velocity is camera-only.
+//
+// Visibility approximation: fsVelocity does NOT replicate the
+// classifyFragment plane-test (no globe-depth read at velocity-pass
+// time). Rasterized fragments emit velocity unconditionally; this
+// over-emits across the volume's full screen coverage rather than just
+// the ground-classified band. TAA history rejection is robust to
+// over-coverage; under-coverage (history reuse on moving classification
+// targets) would be more harmful.
+//
+// Morph mode is intentionally NOT supported — velocity emission is
+// suppressed during MORPHING by the JS-side gating (TAA during scene-
+// mode morph is rare; camera-only fallback in the velocity pass is
+// correct for static-geometry transitions).
+struct VelocityVOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) currClip: vec4<f32>,
+  @location(1) prevClip: vec4<f32>,
+};
+
+@vertex fn vsVelocity(in: VS_IN) -> VelocityVOut {
+  let batchIdU = u32(in.batchId);
+  let is3D = u.flags.z > 0.5;
+
+  var positionHRTE: vec3<f32>;
+  var positionLRTE: vec3<f32>;
+  var startHi: vec3<f32>;
+  var startLo: vec3<f32>;
+  var forwardOffset: vec3<f32>;
+  var startNormal: vec3<f32>;
+  var endNormal: vec3<f32>;
+  var rightNormal: vec3<f32>;
+  var texNormX: f32;
+  var texNormY: f32;
+
+  if (is3D) {
+    positionHRTE = in.pH;
+    positionLRTE = in.pL;
+    startHi = in.startHi_fwdX.xyz;
+    startLo = in.startLo_fwdY.xyz;
+    forwardOffset = vec3<f32>(
+      in.startHi_fwdX.w,
+      in.startLo_fwdY.w,
+      in.startNormal_fwdZ.w,
+    );
+    startNormal = in.startNormal_fwdZ.xyz;
+    endNormal = in.endNormal_texNormX.xyz;
+    rightNormal = in.rightNormal_texNormY.xyz;
+    texNormX = in.endNormal_texNormX.w;
+    texNormY = in.rightNormal_texNormY.w;
+  } else {
+    positionHRTE = in.pH2D.zxy;
+    positionLRTE = in.pL2D.zxy;
+    startHi = vec3<f32>(0.0, in.startHiLo2D.x, in.startHiLo2D.y);
+    startLo = vec3<f32>(0.0, in.startHiLo2D.z, in.startHiLo2D.w);
+    forwardOffset = vec3<f32>(0.0, in.offsetAndRight2D.x, in.offsetAndRight2D.y);
+    startNormal = vec3<f32>(0.0, in.startEndNormals2D.x, in.startEndNormals2D.y);
+    endNormal = vec3<f32>(0.0, in.startEndNormals2D.z, in.startEndNormals2D.w);
+    rightNormal = vec3<f32>(0.0, in.offsetAndRight2D.z, in.offsetAndRight2D.w);
+    texNormX = in.texcoordNormalization2D.x;
+    texNormY = in.texcoordNormalization2D.y;
+  }
+
+  let ecStartRTE = translateRelativeToEye(startHi, startLo);
+  let ecStart = (u.mvRTE * vec4<f32>(ecStartRTE, 1.0)).xyz;
+  let offset = applyNormalMatrix(forwardOffset);
+  let ecEnd = ecStart + offset;
+  let forwardDirectionEC = normalize(offset);
+
+  let startPlaneNormalEC = applyNormalMatrix(startNormal);
+  let endPlaneNormalEC = applyNormalMatrix(endNormal);
+  let rightPlaneNormalEC = applyNormalMatrix(rightNormal);
+
+  let positionRTE = translateRelativeToEye(positionHRTE, positionLRTE);
+  var positionEC = (u.mvRTE * vec4<f32>(positionRTE, 1.0)).xyz;
+
+  let absStart = abs(dot(startPlaneNormalEC, positionEC) + (-dot(startPlaneNormalEC, ecStart)));
+  let absEnd = abs(dot(endPlaneNormalEC, positionEC) + (-dot(endPlaneNormalEC, ecEnd)));
+  var planeDirection = endPlaneNormalEC;
+  if (absStart < absEnd) {
+    planeDirection = startPlaneNormalEC;
+  }
+
+  let upOrDown0 = normalize(cross(rightPlaneNormalEC, planeDirection));
+  let normalEC0 = normalize(cross(planeDirection, upOrDown0));
+
+  var upOrDown = cross(forwardDirectionEC, normalEC0);
+  let yIsBottom = (texNormY > 1.0) || (texNormY < 0.0);
+  if (!yIsBottom || !is3D) {
+    upOrDown = vec3<f32>(0.0, 0.0, 0.0);
+  }
+  let bottomScale = min(u.misc.z, u.misc.w * length(positionRTE));
+  positionEC = positionEC + bottomScale * upOrDown;
+
+  let widthPixels = batchTableWidth(batchIdU);
+  var widthMeters = widthPixels * max(0.0, metersPerPixel(positionEC));
+  widthMeters = widthMeters / dot(normalEC0, rightPlaneNormalEC);
+  let normalSign = sign(texNormX);
+  let normalEC = normalEC0 * normalSign;
+  positionEC = positionEC + widthMeters * normalEC;
+
+  let curClip = csm_depthClamp(u.proj * vec4<f32>(positionEC, 1.0));
+
+  // Un-extruded world position for prev-frame projection. The polyline
+  // geometry's pH/pL are SoA-encoded high/low bits of an absolute world
+  // coord; pH + pL recovers the original. In 2D/CV the same applies to
+  // the projected pH2D/pL2D pair.
+  var worldPos = in.pH + in.pL;
+  if (!is3D) {
+    worldPos = in.pH2D.zxy + in.pL2D.zxy;
+  }
+  let prClip = u.prevViewProjection * vec4<f32>(worldPos, 1.0);
+
+  var out: VelocityVOut;
+  out.pos = curClip;
+  out.currClip = curClip;
+  out.prevClip = prClip;
+  return out;
+}
+
+@fragment fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
+  let curW = i.currClip.w;
+  let prevW = i.prevClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = i.currClip.xy / curW;
+  let prevNdc = i.prevClip.xy / prevW;
+  return curNdc - prevNdc;
+}
 `;
 
+// C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
+// GroundPolyline is typically few-per-scene, but we just touched this
+// file in Batch 183 for the velocity entry points so the ride-along is
+// free. Closes the C-R7-SHADER-MODULE-DEDUP adoption sweep alongside
+// GroundPrimitive, SkyAtmosphere, and EllipsoidPrimitive.
+const _groundPolylineShaderCaches = new WeakMap();
+
+function getGroundPolylineShaderCache(device) {
+  let cache = _groundPolylineShaderCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _groundPolylineShaderCaches.set(device, cache);
+  }
+  return cache;
+}
+
 function buildPolylinePipelineResources(device, format, depthFormat) {
-  const mod = device.createShaderModule({
-    label: "GroundPolyline",
-    code: SHADER_CODE,
-  });
+  const mod = getGroundPolylineShaderCache(device).getOrCreate(
+    ShaderSourceId.GROUND_POLYLINE,
+    SHADER_CODE,
+    0,
+    "GroundPolyline",
+  );
 
   // Group 0: uniform buffer (binding 0) + per-instance storage buffer
   // (binding 1). The instance data was previously a UBO array capped
@@ -1210,12 +1381,39 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     },
   };
 
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — velocity
+  // pipeline. Same pipeline layout as the color pipeline (UBO + storage
+  // + depth-sample + material BGLs), even though the velocity stage
+  // doesn't touch the depth-sample or material textures — keeping the
+  // layout matched lets the same bind groups satisfy validation. Single
+  // rg16float color target, no blend, depth read-only, cullMode "none"
+  // mirroring the color pipeline so coverage matches. Only the non-
+  // morph variant is built — JS gating suppresses velocity emission
+  // during MORPHING.
+  const velocityDescriptor = {
+    name: `GroundPolyline velocity [${depthFormat}]`,
+    layout: pipelineLayout,
+    vertex: { module: mod, entryPoint: "vsVelocity", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "fsVelocity",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "always",
+    },
+  };
+
   return {
     colorDescriptor,
     pickDescriptor,
     stencilDescriptor,
     morphColorDescriptor,
     morphPickDescriptor,
+    velocityDescriptor,
     bgl,
     depthSampleBgl,
     materialBgl,
@@ -1267,6 +1465,14 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
     const morphPickSync = pipelineCache.getPipelineSync(
       resources.morphPickDescriptor,
     );
+    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — resolve
+    // velocity pipeline alongside the others. Cache miss is non-fatal:
+    // color path renders correctly without velocity; velocity-pass
+    // dispatch becomes a no-op until the variant lands. Mirrors the
+    // GroundPrimitive Batch 180 pattern.
+    const velocitySync = pipelineCache.getPipelineSync(
+      resources.velocityDescriptor,
+    );
     if (
       colorSync &&
       pickSync &&
@@ -1279,6 +1485,7 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
       cache.stencilPipeline = stencilSync;
       cache.morphColorPipeline = morphColorSync;
       cache.morphPickPipeline = morphPickSync;
+      cache.velocityPipeline = velocitySync ?? null;
       cache.pipelineRequestPending = false;
       return true;
     }
@@ -1290,13 +1497,15 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
         pipelineCache.getPipeline(resources.stencilDescriptor),
         pipelineCache.getPipeline(resources.morphColorDescriptor),
         pipelineCache.getPipeline(resources.morphPickDescriptor),
+        pipelineCache.getPipeline(resources.velocityDescriptor),
       ])
-        .then(([color, pick, stencil, morphColor, morphPick]) => {
+        .then(([color, pick, stencil, morphColor, morphPick, velocity]) => {
           cache.colorPipeline = color;
           cache.pickPipeline = pick;
           cache.stencilPipeline = stencil;
           cache.morphColorPipeline = morphColor;
           cache.morphPickPipeline = morphPick;
+          cache.velocityPipeline = velocity;
           cache.pipelineRequestPending = false;
         })
         .catch(() => {
@@ -1320,6 +1529,11 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
   );
   cache.morphPickPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.morphPickDescriptor),
+  );
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — fallback path
+  // (no central pipeline cache available).
+  cache.velocityPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.velocityDescriptor),
   );
   return true;
 }
@@ -2364,6 +2578,10 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     cache.stencilPipeline = undefined;
     cache.morphColorPipeline = undefined;
     cache.morphPickPipeline = undefined;
+    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — clear the
+    // velocity pipeline alongside the others on format change. Mirrors
+    // the Batch 176/179/180 pattern across the classifier sweep.
+    cache.velocityPipeline = undefined;
     // Bind groups reference the old BGL which is now stale.
     cache.materialBindGroup = undefined;
     cache.depthSampleBindGroup = undefined;
@@ -2841,6 +3059,16 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     vertexCount: cache.vertexCount || 0,
     owner: primitive,
   };
+  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — derive
+  // velocity command alongside the FIRST color command per primitive
+  // when TAA is on AND not in MORPHING (the velocity VS uses the same
+  // single-stream layout as the non-morph color VS; morph would need
+  // its own variant). One velocity command per primitive is sufficient
+  // — the polyline's world-space path is static, so velocity is
+  // camera-only and pass-invariant. CLOSES NEW-ADVANCED-MOTION-VECTORS.
+  const taaEnabled = frameState?.taaEnabled === true;
+  const emitVelocity =
+    taaEnabled && !isMorphing && defined(cache.velocityPipeline);
   const colorCommands = [];
   const pickCommands = [];
   for (let p = 0; p < groundPasses.length; p++) {
@@ -2850,6 +3078,13 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
       pipeline: activeColorPipeline,
       pass: passEnum,
     });
+    if (emitVelocity && p === 0) {
+      colorCmd.velocityCommand = new WebGPUDrawCommand({
+        ...sharedDrawArgs,
+        pipeline: cache.velocityPipeline,
+        pass: passEnum,
+      });
+    }
     if (defined(pickColor)) {
       const pickCmd = new WebGPUDrawCommand({
         ...sharedDrawArgs,

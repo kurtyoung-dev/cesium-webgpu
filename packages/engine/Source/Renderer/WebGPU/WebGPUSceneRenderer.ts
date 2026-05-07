@@ -182,8 +182,29 @@ export function selectCommandVariant(
       ) {
         return d.pickingMetadata.pickMetadataCommand;
       }
-      if (!frameState.pickingMetadata && d?.picking?.pickCommand) {
-        return d.picking.pickCommand;
+      // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — route to hover or
+      // precise pick variant when the scene-level mode flag is set.
+      // Falls through to default pickCommand if the requested variant
+      // isn't materialized (e.g., precise pass 1 fallback for
+      // OPAQUE/MASK alphaMode where there's no separate pass 2).
+      //
+      // For 'precise' mode the dispatcher returns pass 1 here. The
+      // pick-pass executor (WebGPUSceneRendererPickPass) detects
+      // `precisePass2Command` after the dispatch and emits it as a
+      // follow-up draw within the same render pass — see
+      // `executePickPassCommand` for the 2-pass coordination.
+      const pickMode = frameState.passes.pickMode;
+      if (!frameState.pickingMetadata && d?.picking) {
+        const picking = d.picking;
+        if (pickMode === "hover" && picking.pickHoverCommand) {
+          return picking.pickHoverCommand;
+        }
+        if (pickMode === "precise" && picking.pickPrecisePass1Command) {
+          return picking.pickPrecisePass1Command;
+        }
+        if (picking.pickCommand) {
+          return picking.pickCommand;
+        }
       }
     } else if (d?.depth?.depthOnlyCommand) {
       return d.depth.depthOnlyCommand;
@@ -748,7 +769,107 @@ export class WebGPUSceneRenderer {
     commands: CesiumAnyDrawCommand[];
     count: number;
   } | null = null;
-  private _lastCullResults: GPUCullResults | null = null;
+  // NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — per-frustum readback
+  // slot for the opaque pass. Each frustum dispatches against its own
+  // culler instance and stores its readback under its own frustum
+  // index, so multi-frustum scenes (typical with log-depth) get full
+  // GPU cull benefit instead of the previous "last-frustum-wins"
+  // limitation.
+  private _lastCullResultsByFrustum: Map<number, GPUCullResults> = new Map();
+  // Batch 216 — separate readback slot for the translucent pass so
+  // its readback (keyed on the translucent command count) doesn't
+  // race / mismatch with the opaque pass's. Same 1-frame latency
+  // contract.
+  private _lastCullResultsTranslucent: GPUCullResults | null = null;
+  private _gpuCullFilterPoolTranslucent: CesiumAnyDrawCommand[] = [];
+  // Batch 213 (cosmetic) — reusable filter output array for
+  // `gpuCullCommands`. Allocating a fresh `[]` every frame at high
+  // density (10K+ commands) creates GC pressure; the consumer
+  // (`_executeOpaquePass`) reads the result synchronously and
+  // immediately, so we can hand back the same array next frame
+  // after `length = 0`. Two separate pools — gpuCuller for the
+  // frustum filter, _hiZFilterPool below for the occlusion filter —
+  // because both can be active in the same frame and the second's
+  // input is the first's output.
+  private _gpuCullFilterPool: CesiumAnyDrawCommand[] = [];
+
+  // NEW-HIZ-CONSUME (Batch 210) — HiZ occlusion threshold-gated state.
+  //
+  // Activates only when the opaque batch reaches `_hiZThreshold` (much
+  // higher than the gpuCuller threshold of 256, since HiZ pays for an
+  // additional depth-pyramid build + occlusion test). Designed for the
+  // 10K+ models density target.
+  //
+  // Pattern: each frame, if a previous-frame visibility readback is
+  // available, filter this frame's opaque commands against it. After
+  // the opaque pass writes depth, dispatch the build-pyramid + test
+  // for the NEXT frame and queue the readback. The 1-frame latency
+  // matches `gpuCullCommands` and is acceptable for dense scenes.
+  //
+  // SOA scratch is allocated lazily at first use sized to the largest
+  // count seen so far; GC churn matters when this runs every frame.
+  private static readonly HI_Z_THRESHOLD = 2000;
+  private static readonly HI_Z_THRESHOLD_HI = 2400;
+  private static readonly HI_Z_THRESHOLD_LO = 1600;
+  // B214-N1 (Batch 219) — per-frustum gate state.
+  private _hiZActiveByFrustum: Map<number, boolean> = new Map();
+  // Batch 217 — HiZ effectiveness counters.
+  private _hiZDispatchCount: number = 0;
+  private _hiZLastInput: number = 0;
+  private _hiZLastFiltered: number = 0;
+  private _hiZAllocated: boolean = false;
+  private _hiZAllocatedFor = { width: 0, height: 0, capacity: 0 };
+  private _hiZSphereSoA: {
+    centerX: Float32Array;
+    centerY: Float32Array;
+    centerZ: Float32Array;
+    radius: Float32Array;
+    capacity: number;
+  } | null = null;
+  // Last successful HiZ readback. `count` lets us only filter when
+  // this frame's opaque count matches — order shifts can mis-classify
+  // a few commands but for the dense-static-scene target the prior
+  // frame is a good predictor.
+  private _lastHiZVisibility: { flags: Uint32Array; count: number } | null =
+    null;
+  // True while a readback Promise is in flight; prevents stacking
+  // duplicate readback calls per frame.
+  private _hiZReadbackInFlight: boolean = false;
+  // Batch 213 (cosmetic) — reusable filter output for
+  // `_filterByHiZVisibility`. Same lifetime model as
+  // `_gpuCullFilterPool` above.
+  private _hiZFilterPool: CesiumAnyDrawCommand[] = [];
+
+  // NEW-GPUSORTKEYS-CONSUME (Batch 211) — threshold-gated GPU sort-key
+  // generation. Phase 1 wire-in: produces packed 64-bit sort keys
+  // (sortKeysHigh + sortKeysLow + commandIndices) on the GPU when the
+  // command count justifies the dispatch.
+  //
+  // **Phase 2 (deferred):** the actual GPU sort over the keys is a
+  // separate compute pipeline (bitonic / radix on u64) that doesn't
+  // exist yet. Until that lands, the keys are generated but the
+  // commands are still ordered by upstream JS sort. Tracked as
+  // NEW-GPU-SORT-PIPELINE in DEFERRED_WORK.md.
+  //
+  // Threshold is intentionally high (5000) — JS sort is faster than
+  // dispatch+readback round-trip below this density. SOA scratch is
+  // allocated lazily, sized to the largest count seen.
+  private static readonly GPU_SORT_KEYS_THRESHOLD = 5000;
+  private static readonly GPU_SORT_KEYS_THRESHOLD_HI = 6000;
+  private static readonly GPU_SORT_KEYS_THRESHOLD_LO = 4000;
+  // B214-N1 (Batch 219) — per-frustum gate state.
+  private _gpuSortActiveByFrustum: Map<number, boolean> = new Map();
+  private _sortKeysAllocatedFor: number = 0;
+  private _sortKeysSoA: {
+    centerX: Float32Array;
+    centerY: Float32Array;
+    centerZ: Float32Array;
+    renderLayers: Uint32Array;
+    sortPriorities: Uint32Array;
+    materialSortIds: Uint32Array;
+    capacity: number;
+  } | null = null;
+  private _sortKeysDispatches: number = 0;
 
   // C-R12 (Batch 33) — Tracks the device-invalidation unsubscribe so
   // re-calls to `_ensureResources` don't stack duplicate subscribers.
@@ -1342,7 +1463,179 @@ export class WebGPUSceneRenderer {
       return;
     }
     context.uniformState?.updatePass(Pass.OPAQUE);
-    executeBatch(commands, count, scene, context, passState);
+
+    // NEW-GPU-CULLER-CONSUME (Batch 209) + NEW-HIZ-CONSUME (Batch 210)
+    // — threshold-gated GPU culling for very large opaque batches.
+    // CPU culling already runs upstream in `Scene.updateFrameState`,
+    // but at the 10K-instance scale the GPU-side fine-grained re-test
+    // (frustum from gpuCuller, occlusion from HiZ) still cuts draw-
+    // call dispatch. The 1-frame readback latency is acceptable at
+    // high densities — visibility doesn't flip frame-to-frame fast
+    // enough for popping to be visible. Below the gpuCuller threshold
+    // (count < 256) every helper returns the input array untouched,
+    // so this path is a no-op for typical scenes.
+    //
+    // **Batch 212 audit** — pick passes (`config.picking`) skip ALL
+    // GPU cull / HiZ filtering. Pick must test every command the CPU
+    // pass produced, including ones GPU culling would mark as
+    // occluded — users can pick objects that are visually behind
+    // others (e.g., through transparent overlays). Mismatching the
+    // filter sets between render and pick produces ghost picks where
+    // a visually-clicked pixel maps to the wrong (or no) feature.
+    let activeCommands = commands as CesiumAnyDrawCommand[];
+    let activeCount = count;
+    // Batch 223 (B219-N1 + B219-N2 audit fixes) — frame-start
+    // bookkeeping that runs UNCONDITIONALLY at the top of every
+    // opaque pass. Two purposes:
+    //   1. Reset stats accumulators when frustum 0 starts a new
+    //      frame, regardless of whether the GPU cull gate fires
+    //      (the prior `_statsTickFrameIfNeeded` only ticked on
+    //      successful filter calls — frustums where the gate was
+    //      off skipped the reset and stats grew forever).
+    //   2. Detect frustum-count changes (typical when the user
+    //      toggles log-depth) and clear stale per-frustum gate
+    //      Maps. Without this the Maps grow over a session and
+    //      the cleared-frustum slots hold stale gate states.
+    if (!config.picking && this._currentFrustumIndex === 0) {
+      this._gpuCullLastInput = 0;
+      this._gpuCullLastFiltered = 0;
+      this._hiZLastInput = 0;
+      this._hiZLastFiltered = 0;
+      this._gpuCullLastTranslucentInput = 0;
+      this._gpuCullLastTranslucentFiltered = 0;
+      this._statsLastFrameId++;
+
+      const numFrustums =
+        (scene as { _view?: { frustumCommandsList?: { length?: number } } })
+          ?._view?.frustumCommandsList?.length ?? 0;
+      const trimMap = (m: Map<number, unknown>): void => {
+        for (const k of m.keys()) {
+          if (k >= numFrustums) m.delete(k);
+        }
+      };
+      trimMap(this._gpuCullActiveByFrustum);
+      trimMap(this._gpuCullTranslucentActiveByFrustum);
+      trimMap(this._hiZActiveByFrustum);
+      trimMap(this._gpuSortActiveByFrustum);
+      trimMap(this._lastCullResultsByFrustum);
+    }
+
+    // Batch 219 (B214-N1 + B215-N1) — per-frustum gate state with
+    // hysteresis. Each frustum tracks its own previous-frame state so
+    // a 3-frustum scene with (2400, 500, 800) commands no longer
+    // collapses through a single shared `_*Active` flag (which would
+    // flip T→F→F within one frame, defeating the purpose of
+    // hysteresis).
+    //
+    // `Scene.gpuCullingHint = 'never'` short-circuits all three gates
+    // to false — closes B215-N1 ("never" was previously stored but
+    // never read).
+    //
+    // Picking always bypasses (Batch 212 audit) — we don't update
+    // the gates from pick passes either, since pick framerate is on-
+    // demand and would skew hysteresis on the render path.
+    const fIdx = this._currentFrustumIndex;
+    const hint = (scene as { gpuCullingHint?: "auto" | "always" | "never" })
+      .gpuCullingHint;
+    const forceOff = hint === "never";
+
+    let gpuCullActive = false;
+    let hiZActive = false;
+    let gpuSortActive = false;
+    if (!config.picking && !forceOff) {
+      gpuCullActive = this._updateActivationGate(
+        this._gpuCullActiveByFrustum.get(fIdx) ?? false,
+        count,
+        WebGPUSceneRenderer.GPU_CULL_THRESHOLD_HI,
+        WebGPUSceneRenderer.GPU_CULL_THRESHOLD_LO,
+      );
+      hiZActive = this._updateActivationGate(
+        this._hiZActiveByFrustum.get(fIdx) ?? false,
+        count,
+        WebGPUSceneRenderer.HI_Z_THRESHOLD_HI,
+        WebGPUSceneRenderer.HI_Z_THRESHOLD_LO,
+      );
+      gpuSortActive = this._updateActivationGate(
+        this._gpuSortActiveByFrustum.get(fIdx) ?? false,
+        count,
+        WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_HI,
+        WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
+      );
+    }
+    this._gpuCullActiveByFrustum.set(fIdx, gpuCullActive);
+    this._hiZActiveByFrustum.set(fIdx, hiZActive);
+    this._gpuSortActiveByFrustum.set(fIdx, gpuSortActive);
+
+    if (gpuCullActive) {
+      const cv = (scene as { _frameState?: { cullingVolume?: unknown } })
+        ?._frameState?.cullingVolume as
+        | { planes: Array<{ x: number; y: number; z: number; w: number }> }
+        | undefined;
+      if (cv && cv.planes && cv.planes.length > 0) {
+        const culled = this.gpuCullCommands(
+          activeCommands,
+          context as WebGPUContext,
+          cv,
+          activeCount,
+        );
+        if (culled !== activeCommands) {
+          activeCommands = culled;
+          activeCount = culled.length;
+        }
+      }
+    }
+    // Apply HiZ visibility on top of the (already CPU + gpuCuller)
+    // filtered list. Per-frustum gate (Batch 219). No-op also when
+    // picking or when no readback is available yet.
+    if (hiZActive) {
+      const occluded = this._filterByHiZVisibility(activeCommands, activeCount);
+      if (occluded !== activeCommands) {
+        activeCommands = occluded;
+        activeCount = occluded.length;
+      }
+    }
+
+    executeBatch(
+      activeCommands as typeof commands,
+      activeCount,
+      scene,
+      context,
+      passState,
+    );
+
+    // After this frame's opaque pass writes depth, dispatch the
+    // build-pyramid + occlusion test for the NEXT frame using the
+    // pre-cull command list so the SOA aligns with what next frame
+    // will receive. Below threshold this is a fast no-op.
+    //
+    // **Batch 212 audit** — skip dispatch on pick passes; the pick
+    // depth target is a separate framebuffer and would feed
+    // misleading visibility into the next render frame's HiZ
+    // filtering. Pick passes also typically run on demand (mouse
+    // events) — dispatching there wastes GPU time on a buffer that
+    // never feeds a render frame.
+    // HiZ dispatch for next frame — per-frustum gate (Batch 219) so
+    // the producer side respects the same hysteresis as the consumer.
+    if (hiZActive) {
+      this._dispatchHiZForNextFrame(
+        context as WebGPUContext,
+        commands as CesiumAnyDrawCommand[],
+        count,
+        frustumCommands,
+      );
+    }
+
+    // NEW-GPUSORTKEYS-CONSUME (Batch 211, Phase 1) — generate packed
+    // sort keys on the GPU when the gate is active. The follow-up
+    // GPU sort pipeline that consumes these keys is deferred
+    // (NEW-GPU-SORT-PIPELINE in DEFERRED_WORK.md).
+    if (gpuSortActive) {
+      this._dispatchGPUSortKeys(
+        context as WebGPUContext,
+        commands as CesiumAnyDrawCommand[],
+        count,
+      );
+    }
   }
 
   // --- Translucent pass (with OIT integration) ---
@@ -2144,8 +2437,45 @@ export class WebGPUSceneRenderer {
 
   // ─── GPU Frustum Culling ───
 
+  // Batch 214 — threshold hysteresis. Each dispatcher uses two
+  // thresholds (HI / LO) and a per-dispatcher `_*Active` state flag.
+  // Activation requires count >= HI; deactivation requires count <
+  // LO. Between LO and HI the previous state holds. This prevents
+  // dispatch flap when the command count oscillates around a single
+  // threshold (typical with LOD / tile streaming at the boundary).
+  // The previous single thresholds are kept as `_THRESHOLD` aliases
+  // so external diagnostics that read them keep working.
   /** Minimum command count before GPU culling is worth the overhead */
   private static readonly GPU_CULL_THRESHOLD = 256;
+  private static readonly GPU_CULL_THRESHOLD_HI = 384;
+  private static readonly GPU_CULL_THRESHOLD_LO = 192;
+  // B214-N1 (Batch 219) — per-frustum gate state. Each frustum's
+  // hysteresis evolves from its own previous-frame state instead of
+  // racing with sibling frustums. Map keyed by frustum index. Stays
+  // small (typical 1-4 entries).
+  // B216-N2 — translucent path has its OWN gate based on translucent
+  // command count, not opaque count. A particle-heavy scene with 50
+  // opaque + 5000 translucent commands now activates translucent
+  // GPU cull instead of staying off because opaque was below HI.
+  private _gpuCullActiveByFrustum: Map<number, boolean> = new Map();
+  private _gpuCullTranslucentActiveByFrustum: Map<number, boolean> = new Map();
+  // Batch 217 — per-frame effectiveness counters. Cumulative
+  // dispatch count + last-frame totals (sum across frustums).
+  // B217-N1/N2 fix (Batch 219) — `_lastFrameInput`/`_lastFrameFiltered`
+  // accumulate across frustums within a frame so multi-frustum scenes
+  // see the cumulative cull effect, not just the last frustum's slice.
+  // `_translucentDispatchCount` separately tracks translucent path.
+  private _gpuCullDispatchCount: number = 0;
+  private _gpuCullTranslucentDispatchCount: number = 0;
+  private _gpuCullLastInput: number = 0;
+  private _gpuCullLastFiltered: number = 0;
+  private _gpuCullLastTranslucentInput: number = 0;
+  private _gpuCullLastTranslucentFiltered: number = 0;
+  // Frame counter to detect frame transitions and reset per-frame
+  // accumulators (the existing per-frustum counters need to clear
+  // when a new frame starts so multi-frustum sums don't accumulate
+  // across frames).
+  private _statsLastFrameId: number = -1;
 
   /**
    * GPU-cull an array of commands using compute shader frustum testing.
@@ -2153,9 +2483,17 @@ export class WebGPUSceneRenderer {
    * returning the original array if the culler isn't ready or count is
    * below threshold.
    *
-   * @param commands - Array of draw commands with boundingVolume
+   * @param commands - Array of draw commands with boundingVolume.
+   *    Only the first `effectiveCount` entries (or `commands.length`
+   *    if `effectiveCount` is undefined) are inspected — supports
+   *    pre-sized command arrays where the trailing slots are stale.
    * @param context - WebGPU context with gpuCuller
    * @param cullingVolume - Camera culling volume with planes[]
+   * @param effectiveCount - Optional explicit valid-prefix length.
+   *    Batch 209 added this so opaque-pass callers can pass the
+   *    pre-sized `frustumCommands.commands[OPAQUE]` array directly
+   *    with the matching `frustumCommands.indices[OPAQUE]` count, with
+   *    no per-frame slice allocation in the hot path.
    * @returns Filtered command array (may be same reference if no culling done)
    */
   gpuCullCommands(
@@ -2164,18 +2502,31 @@ export class WebGPUSceneRenderer {
     cullingVolume: {
       planes: Array<{ x: number; y: number; z: number; w: number }>;
     },
+    effectiveCount?: number,
   ): CesiumAnyDrawCommand[] {
-    if (!commands || commands.length < WebGPUSceneRenderer.GPU_CULL_THRESHOLD) {
+    const count =
+      typeof effectiveCount === "number"
+        ? effectiveCount
+        : (commands?.length ?? 0);
+    // Batch 214 — the activation gate (hysteresis) is enforced by
+    // the caller. We still guard against zero/negative counts and
+    // missing inputs but the threshold check itself moved upstream.
+    if (!commands || count <= 0) {
       return commands;
     }
 
-    const culler = context.gpuCuller;
+    // NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — pick the per-
+    // frustum culler instance so multiple frustums in the same frame
+    // don't clobber each other's staging buffers. Frustum 0 reuses
+    // the legacy `gpuCuller` (no extra VRAM for single-frustum
+    // scenes); frustums 1..N use lazy-allocated instances.
+    const fIdx = this._currentFrustumIndex;
+    const culler = context.getGPUCullerForOpaqueFrustum(fIdx);
     if (!culler || !culler.initialized) {
       return commands;
     }
 
     // Extract bounding spheres
-    const count = commands.length;
     const sphereData = new Float32Array(count * 4);
     let hasSpheres = false;
     for (let i = 0; i < count; i++) {
@@ -2215,30 +2566,629 @@ export class WebGPUSceneRenderer {
     }
 
     culler.dispatch(encoder, count, 0 /* CullMode.VISIBILITY */);
+    this._gpuCullDispatchCount++;
 
-    // Async readback — results available next frame
+    // Async readback — results available next frame, keyed per-
+    // frustum (Batch 220) so each frustum's filter consumes its own
+    // readback instead of racing the others.
     culler.prepareReadback(encoder, count);
     culler
       .readResults(count)
       .then((results: GPUCullResults) => {
-        // Cache results for next frame's filtering
-        this._lastCullResults = results;
+        this._lastCullResultsByFrustum.set(fIdx, results);
       })
       .catch(() => {});
 
-    // Use previous frame's results if available
-    const prev = this._lastCullResults;
+    // Use previous frame's results if available. Output array is
+    // pooled (Batch 213) — the call site reads `filtered.length`
+    // synchronously inside `executeBatch`, never retains the ref.
+    const prev = this._lastCullResultsByFrustum.get(fIdx);
     if (prev && prev.visibilityFlags && prev.objectCount === count) {
-      const filtered: CesiumAnyDrawCommand[] = [];
+      const filtered = this._gpuCullFilterPool;
+      filtered.length = 0;
+      const flags = prev.visibilityFlags;
       for (let i = 0; i < count; i++) {
-        if (prev.visibilityFlags[i] === 1) {
-          filtered.push(commands[i]);
-        }
+        if (flags[i] === 1) filtered.push(commands[i]);
       }
+      // B217-N1 (Batch 219) + B219-N2 (Batch 223) — accumulate across
+      // frustums in the same frame. Reset is done unconditionally at
+      // the top of `_executeOpaquePass` (frustum 0 entry) so this
+      // path no longer needs to gate on a frustum-tick check.
+      this._gpuCullLastInput += count;
+      this._gpuCullLastFiltered += filtered.length;
       return filtered;
     }
 
     return commands;
+  }
+
+  /**
+   * Batch 216 — gate-controlled translucent-pass GPU cull. Called
+   * from the extracted translucent-pass module via the host
+   * interface. Internally consults `_gpuCullActive` (the same gate
+   * that drives the opaque path's culling) so on/off behavior is
+   * coordinated. Skipped on pick.
+   *
+   * Returns the original `commands` reference when the gate is off,
+   * the cullingVolume is missing, or the dispatcher hasn't produced
+   * a readback yet.
+   */
+  _maybeGPUCullTranslucent(
+    commands: CesiumAnyDrawCommand[],
+    count: number,
+    config: WebGPURenderFrameConfig,
+  ): { commands: CesiumAnyDrawCommand[]; count: number } {
+    if (config.picking || count <= 0) {
+      return { commands, count };
+    }
+    // B216-N2 (Batch 219) — translucent gate is independent of the
+    // opaque gate. Activates based on TRANSLUCENT command count, so a
+    // particle-heavy scene with 50 opaque + 5000 translucent commands
+    // correctly fires the translucent cull even though the opaque
+    // gate stayed off. Per-frustum hysteresis (B214-N1).
+    // `Scene.gpuCullingHint = 'never'` short-circuits this gate too.
+    const hint = (
+      config.scene as { gpuCullingHint?: "auto" | "always" | "never" }
+    ).gpuCullingHint;
+    if (hint === "never") {
+      return { commands, count };
+    }
+    const fIdx = this._currentFrustumIndex;
+    const prev = this._gpuCullTranslucentActiveByFrustum.get(fIdx) ?? false;
+    const active = this._updateActivationGate(
+      prev,
+      count,
+      WebGPUSceneRenderer.GPU_CULL_THRESHOLD_HI,
+      WebGPUSceneRenderer.GPU_CULL_THRESHOLD_LO,
+    );
+    this._gpuCullTranslucentActiveByFrustum.set(fIdx, active);
+    if (!active) {
+      return { commands, count };
+    }
+    const cv = (config.scene as { _frameState?: { cullingVolume?: unknown } })
+      ?._frameState?.cullingVolume as
+      | { planes: Array<{ x: number; y: number; z: number; w: number }> }
+      | undefined;
+    if (!cv || !cv.planes || cv.planes.length === 0) {
+      return { commands, count };
+    }
+    const filtered = this.gpuCullCommandsForTranslucent(
+      commands,
+      config.context as WebGPUContext,
+      cv,
+      count,
+    );
+    if (filtered === commands) {
+      return { commands, count };
+    }
+    return { commands: filtered, count: filtered.length };
+  }
+
+  // ─── Translucent-pass GPU cull (Batch 216) ──────────────────────────────
+
+  /**
+   * Threshold-gated GPU cull for the translucent pass. Mirrors the
+   * opaque-pass `gpuCullCommands` shape but uses a separate readback
+   * slot so the two pass-specific readbacks don't fight over
+   * `_lastCullResults`. Same 1-frame latency contract.
+   *
+   * Skipped when the gate is inactive, no encoder is available, or
+   * when no cullingVolume planes were provided.
+   */
+  gpuCullCommandsForTranslucent(
+    commands: CesiumAnyDrawCommand[],
+    context: WebGPUContext,
+    cullingVolume: {
+      planes: Array<{ x: number; y: number; z: number; w: number }>;
+    },
+    effectiveCount: number,
+  ): CesiumAnyDrawCommand[] {
+    if (!commands || effectiveCount <= 0) return commands;
+
+    // B216-N1 (Batch 218 audit fix) — use the dedicated translucent
+    // culler instance so this pass's `prepareReadback` doesn't
+    // clobber the opaque pass's pending readback in the same encoder.
+    const culler = context.gpuCullerTranslucent;
+    if (!culler || !culler.initialized) return commands;
+
+    const count = effectiveCount;
+    const sphereData = new Float32Array(count * 4);
+    let hasSpheres = false;
+    for (let i = 0; i < count; i++) {
+      const bv = commands[i].boundingVolume;
+      if (bv && bv.center) {
+        const off = i * 4;
+        sphereData[off] = bv.center.x;
+        sphereData[off + 1] = bv.center.y;
+        sphereData[off + 2] = bv.center.z;
+        sphereData[off + 3] = bv.radius ?? bv.boundingSphere?.radius ?? 0;
+        hasSpheres = true;
+      }
+    }
+    if (!hasSpheres || !cullingVolume?.planes) return commands;
+
+    const planes = cullingVolume.planes;
+    const planeData = new Float32Array(24);
+    for (let i = 0; i < Math.min(planes.length, 6); i++) {
+      const p = planes[i];
+      planeData[i * 4] = p.x;
+      planeData[i * 4 + 1] = p.y;
+      planeData[i * 4 + 2] = p.z;
+      planeData[i * 4 + 3] = p.w;
+    }
+
+    culler.uploadBoundingSpheres(sphereData);
+    culler.uploadFrustumPlanes(planeData);
+
+    const encoder = context._currentCommandEncoder;
+    if (!encoder) return commands;
+
+    culler.dispatch(encoder, count, 0 /* CullMode.VISIBILITY */);
+    this._gpuCullTranslucentDispatchCount++;
+    culler.prepareReadback(encoder, count);
+    culler
+      .readResults(count)
+      .then((results: GPUCullResults) => {
+        this._lastCullResultsTranslucent = results;
+      })
+      .catch(() => {});
+
+    const prev = this._lastCullResultsTranslucent;
+    if (prev && prev.visibilityFlags && prev.objectCount === count) {
+      const filtered = this._gpuCullFilterPoolTranslucent;
+      filtered.length = 0;
+      const flags = prev.visibilityFlags;
+      for (let i = 0; i < count; i++) {
+        if (flags[i] === 1) filtered.push(commands[i]);
+      }
+      // B217-N1/N2 (Batch 219) + B219-N2 (Batch 223) — translucent
+      // stats accumulate across frustums separately from opaque.
+      // Reset moved to `_executeOpaquePass` frustum-0 entry.
+      this._gpuCullLastTranslucentInput += count;
+      this._gpuCullLastTranslucentFiltered += filtered.length;
+      return filtered;
+    }
+    return commands;
+  }
+
+  // ─── Threshold hysteresis helper (Batch 214) ───────────────────────────
+
+  /**
+   * Update an activation gate with hysteresis. Returns the new
+   * active state and stores it on the dispatcher. Call once per
+   * frame per dispatcher with the current command count.
+   *
+   *   - active && count <  LO  →  deactivate
+   *   - !active && count >= HI →  activate
+   *   - otherwise               →  hold previous state
+   *
+   * Two-threshold design prevents single-frame flap when count
+   * oscillates around the boundary (typical with LOD streaming).
+   * The dispatchers themselves stay warm in either state — only
+   * filter/dispatch decisions change with the gate.
+   */
+  private _updateActivationGate(
+    active: boolean,
+    count: number,
+    hi: number,
+    lo: number,
+  ): boolean {
+    if (active) return count >= lo;
+    return count >= hi;
+  }
+
+  // ─── HiZ occlusion (NEW-HIZ-CONSUME, Batch 210) ─────────────────────────
+
+  /**
+   * Filter opaque commands against the previous-frame HiZ visibility
+   * readback. No-op when the readback isn't available, when the count
+   * doesn't match, or when the count is below threshold. Returns the
+   * original `commands` reference unchanged in those cases.
+   */
+  private _filterByHiZVisibility(
+    commands: CesiumAnyDrawCommand[],
+    count: number,
+  ): CesiumAnyDrawCommand[] {
+    // Batch 214 — gate enforcement is upstream (`_hiZActive`).
+    if (count <= 0) return commands;
+    const prev = this._lastHiZVisibility;
+    if (!prev || prev.count !== count) return commands;
+    // Pooled output (Batch 213) — same lifetime contract as
+    // `gpuCullCommands`: caller consumes synchronously inside
+    // `executeBatch`, doesn't retain the ref across frames.
+    const flags = prev.flags;
+    const filtered = this._hiZFilterPool;
+    filtered.length = 0;
+    for (let i = 0; i < count; i++) {
+      if (flags[i] === 1) filtered.push(commands[i]);
+    }
+    // B217-N1 (Batch 219) + B219-N2 (Batch 223) — accumulate across
+    // frustums. Reset moved to `_executeOpaquePass` frustum-0 entry.
+    this._hiZLastInput += count;
+    this._hiZLastFiltered += filtered.length;
+    return filtered;
+  }
+
+  /**
+   * After the opaque pass has written depth for this frame, dispatch
+   * the HiZ pyramid build + occlusion test against the current
+   * commands. The visibility result is read back asynchronously and
+   * applied next frame via `_filterByHiZVisibility`.
+   */
+  private _dispatchHiZForNextFrame(
+    context: WebGPUContext,
+    commands: CesiumAnyDrawCommand[],
+    count: number,
+    frustumCommands?: CesiumFrustumCommands,
+  ): void {
+    // Batch 214 — gate enforcement is upstream (`_hiZActive`).
+    if (count <= 0) return;
+    if (this._hiZReadbackInFlight) return;
+
+    const fr = context.getFeatureRenderer?.(
+      FeatureRendererKey.HI_Z_OCCLUSION,
+    ) as
+      | {
+          init?: (w: number, h: number, max: number) => boolean;
+          dispatch?: (
+            encoder: GPUCommandEncoder,
+            depthView: GPUTextureView,
+            soa: {
+              centerX: Float32Array;
+              centerY: Float32Array;
+              centerZ: Float32Array;
+              radius: Float32Array;
+              count: number;
+            },
+            params: {
+              viewProjection: ArrayLike<number>;
+              screenWidth: number;
+              screenHeight: number;
+              nearPlane: number;
+              farPlane: number;
+            },
+            frameId?: number,
+          ) => boolean;
+          readback?: (count: number) => Promise<Uint32Array | null>;
+        }
+      | null
+      | undefined;
+    if (!fr || !fr.dispatch || !fr.readback) return;
+
+    const ctxAny = context as unknown as {
+      drawingBufferWidth: number;
+      drawingBufferHeight: number;
+      _currentCommandEncoder: GPUCommandEncoder | null;
+      depthOnlyTextureView: GPUTextureView | null;
+      uniformState?: {
+        viewProjection?: ArrayLike<number>;
+        currentFrustumNear?: number;
+        currentFrustumFar?: number;
+        frameState?: { frameNumber?: number };
+      };
+    };
+    const encoder = ctxAny._currentCommandEncoder;
+    const depthView = ctxAny.depthOnlyTextureView;
+    if (!encoder || !depthView) return;
+    const w = ctxAny.drawingBufferWidth || 1;
+    const h = ctxAny.drawingBufferHeight || 1;
+
+    if (
+      !this._hiZAllocated ||
+      this._hiZAllocatedFor.width !== w ||
+      this._hiZAllocatedFor.height !== h ||
+      this._hiZAllocatedFor.capacity < count
+    ) {
+      const cap = Math.max(count, this._hiZAllocatedFor.capacity);
+      const ok = fr.init?.(w, h, cap) ?? false;
+      if (!ok) return;
+      this._hiZAllocated = true;
+      this._hiZAllocatedFor = { width: w, height: h, capacity: cap };
+    }
+
+    let soa = this._hiZSphereSoA;
+    if (!soa || soa.capacity < count) {
+      const cap = Math.max(count, soa?.capacity ?? 0);
+      soa = {
+        centerX: new Float32Array(cap),
+        centerY: new Float32Array(cap),
+        centerZ: new Float32Array(cap),
+        radius: new Float32Array(cap),
+        capacity: cap,
+      };
+      this._hiZSphereSoA = soa;
+    }
+    let valid = 0;
+    for (let i = 0; i < count; i++) {
+      const bv = commands[i].boundingVolume as
+        | {
+            center?: { x: number; y: number; z: number };
+            radius?: number;
+            boundingSphere?: { radius?: number };
+          }
+        | undefined;
+      const c = bv?.center;
+      if (!c) continue;
+      soa.centerX[valid] = c.x;
+      soa.centerY[valid] = c.y;
+      soa.centerZ[valid] = c.z;
+      soa.radius[valid] = bv?.radius ?? bv?.boundingSphere?.radius ?? 0;
+      valid++;
+    }
+    if (valid === 0) return;
+
+    const us = ctxAny.uniformState;
+    const vp = us?.viewProjection;
+    if (!vp) return;
+
+    // B210-N2 (Batch 213) — prefer the per-frustum near/far that the
+    // caller forwarded from `frustumCommands` over the uniformState
+    // values, which `Scene.executeCommands` overwrites after the
+    // last frustum iteration. Tighter bounds = more aggressive
+    // occlusion test. Fallback chain: per-frustum → uniformState →
+    // loose default. The loose default still produces correct
+    // visibility (just less aggressive culling).
+    const params = {
+      viewProjection: vp,
+      screenWidth: w,
+      screenHeight: h,
+      nearPlane: frustumCommands?.near ?? us?.currentFrustumNear ?? 1.0,
+      farPlane: frustumCommands?.far ?? us?.currentFrustumFar ?? 1e9,
+    };
+
+    // B210-D1 (Batch 213) — pass the frame counter so per-frustum
+    // dispatches in the same frame share one pyramid build.
+    const frameId = us?.frameState?.frameNumber ?? -1;
+    const ok = fr.dispatch(
+      encoder,
+      depthView,
+      {
+        centerX: soa.centerX,
+        centerY: soa.centerY,
+        centerZ: soa.centerZ,
+        radius: soa.radius,
+        count: valid,
+      },
+      params,
+      frameId,
+    );
+    if (!ok) return;
+
+    this._hiZDispatchCount++;
+    this._hiZReadbackInFlight = true;
+    fr.readback(valid)
+      .then((flags: Uint32Array | null) => {
+        this._hiZReadbackInFlight = false;
+        if (flags) {
+          this._lastHiZVisibility = { flags, count: valid };
+        }
+      })
+      .catch(() => {
+        this._hiZReadbackInFlight = false;
+      });
+  }
+
+  // ─── GPU sort keys (NEW-GPUSORTKEYS-CONSUME, Batch 211) ─────────────────
+
+  /**
+   * Threshold-gated GPU sort-key generation. Dispatched after the
+   * opaque pass to overlap with rasterization. Phase 1 wire-in only —
+   * the keys are generated but no GPU sort pipeline consumes them
+   * yet (JS sort is still authoritative for command ordering).
+   *
+   * Returns true if a dispatch was issued, false otherwise (below
+   * threshold, missing FR, no encoder, no camera state).
+   */
+  private _dispatchGPUSortKeys(
+    context: WebGPUContext,
+    commands: CesiumAnyDrawCommand[],
+    count: number,
+  ): boolean {
+    // Batch 214 — gate enforcement is upstream (`_gpuSortActive`).
+    if (count <= 0) return false;
+
+    const fr = context.getFeatureRenderer?.(
+      FeatureRendererKey.GPU_SORT_KEYS,
+    ) as
+      | {
+          init?: (max: number) => boolean;
+          dispatch?: (
+            encoder: GPUCommandEncoder,
+            soa: {
+              centerX: Float32Array;
+              centerY: Float32Array;
+              centerZ: Float32Array;
+              renderLayers: Uint32Array;
+              sortPriorities: Uint32Array;
+              materialSortIds: Uint32Array;
+              count: number;
+            },
+            params: {
+              cameraPosition: { x: number; y: number; z: number };
+              sortMode: number;
+            },
+          ) => boolean;
+        }
+      | null
+      | undefined;
+    if (!fr || !fr.dispatch) return false;
+
+    const ctxAny = context as unknown as {
+      _currentCommandEncoder: GPUCommandEncoder | null;
+      uniformState?: {
+        cameraPosition?: { x: number; y: number; z: number };
+        camera?: { positionWC?: { x: number; y: number; z: number } };
+      };
+    };
+    const encoder = ctxAny._currentCommandEncoder;
+    if (!encoder) return false;
+    const camPos =
+      ctxAny.uniformState?.cameraPosition ??
+      ctxAny.uniformState?.camera?.positionWC;
+    if (!camPos) return false;
+
+    // Lazy alloc — the dispatcher's `init(maxCommands)` only needs to
+    // run once per peak count. We grow on demand to track the largest
+    // batch encountered in the session.
+    if (this._sortKeysAllocatedFor < count) {
+      const ok = fr.init?.(count) ?? false;
+      if (!ok) return false;
+      this._sortKeysAllocatedFor = count;
+    }
+
+    let soa = this._sortKeysSoA;
+    if (!soa || soa.capacity < count) {
+      const cap = Math.max(count, soa?.capacity ?? 0);
+      soa = {
+        centerX: new Float32Array(cap),
+        centerY: new Float32Array(cap),
+        centerZ: new Float32Array(cap),
+        renderLayers: new Uint32Array(cap),
+        sortPriorities: new Uint32Array(cap),
+        materialSortIds: new Uint32Array(cap),
+        capacity: cap,
+      };
+      this._sortKeysSoA = soa;
+    }
+    let valid = 0;
+    for (let i = 0; i < count; i++) {
+      const cmd = commands[i] as {
+        boundingVolume?: {
+          center?: { x: number; y: number; z: number };
+        };
+        renderLayer?: number;
+        sortPriority?: number;
+        materialId?: number;
+      };
+      const c = cmd.boundingVolume?.center;
+      if (!c) continue;
+      soa.centerX[valid] = c.x;
+      soa.centerY[valid] = c.y;
+      soa.centerZ[valid] = c.z;
+      soa.renderLayers[valid] = cmd.renderLayer ?? 0;
+      soa.sortPriorities[valid] = cmd.sortPriority ?? 0;
+      soa.materialSortIds[valid] = cmd.materialId ?? 0;
+      valid++;
+    }
+    if (valid === 0) return false;
+
+    const ok = fr.dispatch(
+      encoder,
+      {
+        centerX: soa.centerX,
+        centerY: soa.centerY,
+        centerZ: soa.centerZ,
+        renderLayers: soa.renderLayers,
+        sortPriorities: soa.sortPriorities,
+        materialSortIds: soa.materialSortIds,
+        count: valid,
+      },
+      {
+        cameraPosition: camPos,
+        sortMode: 0 /* SORT_MODE_FRONT_TO_BACK — opaque early-Z */,
+      },
+    );
+    if (ok) this._sortKeysDispatches++;
+    return ok;
+  }
+
+  // ─── High-density cull diagnostic surface (Batch 217) ──────────────────
+
+  /**
+   * Snapshot of the three threshold-gated GPU dispatchers' current
+   * state + per-frame effectiveness. Routed through
+   * `WebGPUContext.getRendererStatistics()` so it appears in
+   * `scene.getDebugSnapshot().renderer.highDensityCull`.
+   *
+   * Counters reset on context destruction; the `last*` fields
+   * reflect the most recent frame the dispatcher ran. `hitRatio` is
+   * `(input - filtered) / input` — fraction of commands the GPU
+   * filter dropped. Above 0.2 means the dispatcher is paying for
+   * itself; near 0 means the gate fired but the cull found nothing
+   * to drop (likely the CPU cull was already tight).
+   */
+  getHighDensityCullStats(): {
+    gpuCullerOpaque: {
+      activeAnyFrustum: boolean;
+      thresholdHi: number;
+      thresholdLo: number;
+      dispatches: number;
+      lastFrameInput: number;
+      lastFrameFiltered: number;
+      hitRatio: number;
+    };
+    gpuCullerTranslucent: {
+      activeAnyFrustum: boolean;
+      thresholdHi: number;
+      thresholdLo: number;
+      dispatches: number;
+      lastFrameInput: number;
+      lastFrameFiltered: number;
+      hitRatio: number;
+    };
+    hiZ: {
+      activeAnyFrustum: boolean;
+      thresholdHi: number;
+      thresholdLo: number;
+      dispatches: number;
+      buildsSkipped: number | null;
+      lastFrameInput: number;
+      lastFrameFiltered: number;
+      hitRatio: number;
+    };
+    gpuSortKeys: {
+      activeAnyFrustum: boolean;
+      thresholdHi: number;
+      thresholdLo: number;
+      dispatches: number;
+    };
+  } {
+    const ratio = (input: number, filtered: number): number =>
+      input > 0 ? (input - filtered) / input : 0;
+    const anyTrue = (m: Map<number, boolean>): boolean => {
+      for (const v of m.values()) if (v) return true;
+      return false;
+    };
+    return {
+      gpuCullerOpaque: {
+        activeAnyFrustum: anyTrue(this._gpuCullActiveByFrustum),
+        thresholdHi: WebGPUSceneRenderer.GPU_CULL_THRESHOLD_HI,
+        thresholdLo: WebGPUSceneRenderer.GPU_CULL_THRESHOLD_LO,
+        dispatches: this._gpuCullDispatchCount,
+        lastFrameInput: this._gpuCullLastInput,
+        lastFrameFiltered: this._gpuCullLastFiltered,
+        hitRatio: ratio(this._gpuCullLastInput, this._gpuCullLastFiltered),
+      },
+      gpuCullerTranslucent: {
+        activeAnyFrustum: anyTrue(this._gpuCullTranslucentActiveByFrustum),
+        thresholdHi: WebGPUSceneRenderer.GPU_CULL_THRESHOLD_HI,
+        thresholdLo: WebGPUSceneRenderer.GPU_CULL_THRESHOLD_LO,
+        dispatches: this._gpuCullTranslucentDispatchCount,
+        lastFrameInput: this._gpuCullLastTranslucentInput,
+        lastFrameFiltered: this._gpuCullLastTranslucentFiltered,
+        hitRatio: ratio(
+          this._gpuCullLastTranslucentInput,
+          this._gpuCullLastTranslucentFiltered,
+        ),
+      },
+      hiZ: {
+        activeAnyFrustum: anyTrue(this._hiZActiveByFrustum),
+        thresholdHi: WebGPUSceneRenderer.HI_Z_THRESHOLD_HI,
+        thresholdLo: WebGPUSceneRenderer.HI_Z_THRESHOLD_LO,
+        dispatches: this._hiZDispatchCount,
+        buildsSkipped:
+          null /* dispatcher-side counter, surfaced via FR getStatistics() */,
+        lastFrameInput: this._hiZLastInput,
+        lastFrameFiltered: this._hiZLastFiltered,
+        hitRatio: ratio(this._hiZLastInput, this._hiZLastFiltered),
+      },
+      gpuSortKeys: {
+        activeAnyFrustum: anyTrue(this._gpuSortActiveByFrustum),
+        thresholdHi: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_HI,
+        thresholdLo: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
+        dispatches: this._sortKeysDispatches,
+      },
+    };
   }
 
   // ─── R-7a CPU pass profiler accessors ──────────────────────────────────
