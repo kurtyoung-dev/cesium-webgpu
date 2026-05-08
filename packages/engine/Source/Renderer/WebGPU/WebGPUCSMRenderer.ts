@@ -103,6 +103,7 @@ export interface CSMCastPassHost {
   _cascadeCount: number;
   _cascades: {
     sphereRadius: number;
+    sphereCenter: Float32Array | number[];
     viewProjectionRTE: Float32Array | number[];
   }[];
   _castDispatches: number;
@@ -116,6 +117,27 @@ export interface CSMCastPassHost {
     >;
   } | null;
   enabled: boolean;
+  // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — per-cascade
+  // GPU cull state. Lazy-allocated on first dispatch with a
+  // sphere-AABB cull (correctness-safe over-include rather than
+  // tight Gribb-Hartmann; see WebGPUCSMCastPass.ts header).
+  _cascadeCullActive: boolean[];
+  _cascadeCullLastResults: Array<{
+    visibilityFlags: Uint32Array;
+    objectCount: number;
+  } | null>;
+  _cascadeCullSoA: Array<{
+    centerX: Float32Array;
+    centerY: Float32Array;
+    centerZ: Float32Array;
+    radius: Float32Array;
+    capacity: number;
+    interleaved: Float32Array;
+  } | null>;
+  _cascadeCullFilterPool: Array<unknown[]>;
+  _cascadeCullDispatches: number;
+  _cascadeCullLastInput: number[];
+  _cascadeCullLastFiltered: number[];
 }
 
 export interface CastCommandShape {
@@ -224,6 +246,33 @@ export class WebGPUCSMRenderer {
       { pipeline: GPURenderPipeline; bgl: GPUBindGroupLayout }
     >;
   } | null = null;
+
+  // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — per-cascade GPU
+  // cull state. Sized to `_cascadeCount` lazily; defaults are
+  // false / null / 0. The infrastructure landed in Batch 221
+  // (per-cascade culler instances on the context); this batch
+  // activates the dispatch + filter loop in `WebGPUCSMCastPass`.
+  public _cascadeCullActive: boolean[] = [];
+  public _cascadeCullLastResults: Array<{
+    visibilityFlags: Uint32Array;
+    objectCount: number;
+  } | null> = [];
+  public _cascadeCullSoA: Array<{
+    centerX: Float32Array;
+    centerY: Float32Array;
+    centerZ: Float32Array;
+    radius: Float32Array;
+    capacity: number;
+    // B226-N1 (Batch 230 audit fix) — interleaved (cx, cy, cz, r)
+    // upload buffer pooled alongside the SoA so per-frame
+    // dispatch doesn't allocate a fresh Float32Array. Same
+    // capacity contract as the SoA fields; resized in lockstep.
+    interleaved: Float32Array;
+  } | null> = [];
+  public _cascadeCullFilterPool: Array<unknown[]> = [];
+  public _cascadeCullDispatches: number = 0;
+  public _cascadeCullLastInput: number[] = [];
+  public _cascadeCullLastFiltered: number[] = [];
 
   // Scratch objects
   private static _scratchCenter = new Cartesian3();
@@ -561,8 +610,32 @@ export class WebGPUCSMRenderer {
     encoder: GPUCommandEncoder,
     castCommands: ReadonlyArray<unknown>,
     cameraPositionWC: CesiumCartesian3,
+    context?: {
+      getGPUCullerForCascade?: (idx: number) => unknown;
+      gpuCullingHint?: "auto" | "always" | "never";
+      _currentCommandEncoder?: GPUCommandEncoder | null;
+    },
   ): void {
-    renderCSMCastPass(this, encoder, castCommands, cameraPositionWC);
+    // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — context is
+    // optional for back-compat; when provided, the cast helper
+    // looks up per-cascade culler instances and gate-filters the
+    // cast list. When omitted (older callers), the cull path is
+    // skipped entirely and the helper falls through to the
+    // unfiltered cast loop — same behavior as Phase 1.
+    //
+    // Cast through `unknown` because the renderer keeps its
+    // context shape loose (`unknown` return) while the helper
+    // requires a tighter `GPUCullerLikeInstance | null` shape.
+    // The runtime values from `WebGPUContext.getGPUCullerForCascade`
+    // satisfy the tighter shape; TS just can't see that through
+    // the optional-getter signature here.
+    renderCSMCastPass(
+      this,
+      encoder,
+      castCommands,
+      cameraPositionWC,
+      context as Parameters<typeof renderCSMCastPass>[4],
+    );
   }
 
   /**

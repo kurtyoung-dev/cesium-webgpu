@@ -40,6 +40,19 @@ import {
 
 const SORT_KEY_PARAMS_BYTES = 32; // 8 × u32
 
+/**
+ * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — round `n` up to the
+ * next power of 2. Bitonic sort networks require a power-of-2
+ * element count; we pad with sentinel max-keys (handled in the
+ * shader) for the OOB threads.
+ */
+function nextPowerOf2(n: number): number {
+  if (n <= 1) return 1;
+  let p = 1;
+  while (p < n) p <<= 1;
+  return p;
+}
+
 interface GPUSortKeysResources {
   capacity: number;
   paramsBuffer: GPUBuffer;
@@ -55,7 +68,22 @@ interface GPUSortKeysResources {
   bindGroupLayout: GPUBindGroupLayout;
   bindGroup: GPUBindGroup;
   pipeline: GPUComputePipeline;
+  // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — bitonic-sort-over-u64
+  // pipeline operating on `sortKeysHighBuffer + sortKeysLowBuffer +
+  // commandIndicesBuffer` in place. Same buffers, separate
+  // bind-group-layout. Lazy-built on first `runBitonicSort` call.
+  sortParamsBuffer: GPUBuffer | null;
+  sortBindGroupLayout: GPUBindGroupLayout | null;
+  sortBindGroup: GPUBindGroup | null;
+  sortLocalPipeline: GPUComputePipeline | null;
+  sortMergePipeline: GPUComputePipeline | null;
+  // Readback buffer for sorted command-indices array. Mapped after
+  // `prepareIndicesReadback` + queue-submit. Same 1-frame latency
+  // contract as the cull readbacks.
+  indicesReadbackBuffer: GPUBuffer | null;
 }
+
+const SORT_BITONIC_PARAMS_BYTES = 16; // 4 × u32: elementCount, k, j, _pad
 
 /**
  * Sort mode values that match `GPUSortKeys.wgsl`'s SortKeyParams.sortMode.
@@ -67,6 +95,14 @@ class WebGPUGPUSortKeysDispatcher {
   private _device: GPUDevice;
   private _resources: GPUSortKeysResources | null = null;
   private _shaderModule: GPUShaderModule | null = null;
+  // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — bitonic sort module.
+  private _sortShaderModule: GPUShaderModule | null = null;
+  private _sortParamsScratch = new Uint32Array(4);
+  // True while a Promise from `readSortedIndices` is pending — prevents
+  // stacking duplicate readback calls per frame.
+  private _sortReadbackInFlight: boolean = false;
+  // Lifetime sort dispatch counter for diagnostics.
+  private _sortDispatches: number = 0;
   // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured on first
   // `_ensureResources` from `frameState.context.webgpuComputePipelineCache`.
   private _computePipelineCache:
@@ -97,6 +133,23 @@ class WebGPUGPUSortKeysDispatcher {
       label: "GPUSortKeys_Shader",
       code: wgsl,
     });
+  }
+
+  /**
+   * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — inject the
+   * BitonicSortU64.wgsl source. Called once at FR registration.
+   * Idempotent.
+   */
+  setSortShaderSource(wgsl: string): void {
+    if (this._sortShaderModule) return;
+    this._sortShaderModule = this._device.createShaderModule({
+      label: "GPUSortKeys_BitonicSort_Shader",
+      code: wgsl,
+    });
+  }
+
+  get sortShadersReady(): boolean {
+    return !!this._sortShaderModule;
   }
 
   get shadersReady(): boolean {
@@ -255,8 +308,240 @@ class WebGPUGPUSortKeysDispatcher {
       bindGroupLayout,
       bindGroup,
       pipeline,
+      // Sort fields are lazy-built on first `runBitonicSort` call so
+      // users that only consume the keys directly (no GPU sort) don't
+      // pay the bind-group + pipeline cost.
+      sortParamsBuffer: null,
+      sortBindGroupLayout: null,
+      sortBindGroup: null,
+      sortLocalPipeline: null,
+      sortMergePipeline: null,
+      indicesReadbackBuffer: null,
     };
     return true;
+  }
+
+  /**
+   * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — lazy-build the
+   * bitonic-sort pipelines + bind group, sized to the existing
+   * `sortKeysHighBuffer` / `sortKeysLowBuffer` / `commandIndicesBuffer`.
+   * Called from `runBitonicSort`.
+   */
+  private _ensureSortPipelines(): boolean {
+    const r = this._resources;
+    if (!r) return false;
+    if (!this._sortShaderModule) return false;
+    if (
+      r.sortLocalPipeline &&
+      r.sortMergePipeline &&
+      r.sortBindGroup &&
+      r.sortParamsBuffer &&
+      r.indicesReadbackBuffer
+    ) {
+      return true;
+    }
+
+    const device = this._device;
+    const sortParamsBuffer = device.createBuffer({
+      label: "GPUSortKeys_BitonicParams",
+      size: SORT_BITONIC_PARAMS_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    const sortBgl = makeBindGroupLayout(device, "BitonicSortU64_BGL", [
+      uniformBuffer(0, Stage.COMPUTE),
+      storageBuffer(1, Stage.COMPUTE),
+      storageBuffer(2, Stage.COMPUTE),
+      storageBuffer(3, Stage.COMPUTE),
+    ]);
+    const sortBg = device.createBindGroup({
+      label: "BitonicSortU64_BG",
+      layout: sortBgl,
+      entries: [
+        { binding: 0, resource: { buffer: sortParamsBuffer } },
+        { binding: 1, resource: { buffer: r.sortKeysHighBuffer } },
+        { binding: 2, resource: { buffer: r.sortKeysLowBuffer } },
+        { binding: 3, resource: { buffer: r.commandIndicesBuffer } },
+      ],
+    });
+
+    const sortLayout = device.createPipelineLayout({
+      bindGroupLayouts: [sortBgl],
+    });
+    const sortLocalPipeline = this._computePipelineCache
+      ? this._computePipelineCache.getOrCreateSync({
+          name: "BitonicSortU64_Local_Pipeline",
+          layout: sortLayout,
+          compute: {
+            module: this._sortShaderModule,
+            entryPoint: "localBitonicSort256",
+          },
+        })
+      : device.createComputePipeline({
+          label: "BitonicSortU64_Local_Pipeline",
+          layout: sortLayout,
+          compute: {
+            module: this._sortShaderModule,
+            entryPoint: "localBitonicSort256",
+          },
+        });
+    const sortMergePipeline = this._computePipelineCache
+      ? this._computePipelineCache.getOrCreateSync({
+          name: "BitonicSortU64_Merge_Pipeline",
+          layout: sortLayout,
+          compute: {
+            module: this._sortShaderModule,
+            entryPoint: "globalBitonicMerge",
+          },
+        })
+      : device.createComputePipeline({
+          label: "BitonicSortU64_Merge_Pipeline",
+          layout: sortLayout,
+          compute: {
+            module: this._sortShaderModule,
+            entryPoint: "globalBitonicMerge",
+          },
+        });
+
+    const indicesReadbackBuffer = device.createBuffer({
+      label: "GPUSortKeys_IndicesReadback",
+      size: r.capacity * 4,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    r.sortParamsBuffer = sortParamsBuffer;
+    r.sortBindGroupLayout = sortBgl;
+    r.sortBindGroup = sortBg;
+    r.sortLocalPipeline = sortLocalPipeline;
+    r.sortMergePipeline = sortMergePipeline;
+    r.indicesReadbackBuffer = indicesReadbackBuffer;
+    return true;
+  }
+
+  /**
+   * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — encode a full bitonic
+   * sort over the (sortKeysHigh, sortKeysLow, commandIndices) triple.
+   * Must be called AFTER `dispatch()` in the same encoder so the keys
+   * exist before the sort runs.
+   *
+   * Sort is in-place: the buffers are reordered s.t. position 0 holds
+   * the smallest key (front-to-back when keys were generated with
+   * `sortMode = 0`). `commandIndices[i]` is the original command
+   * index that now occupies sorted position `i`.
+   *
+   * Returns true if the sort was dispatched.
+   */
+  runBitonicSort(encoder: GPUCommandEncoder, count: number): boolean {
+    const r = this._resources;
+    if (!r) return false;
+    if (count <= 0 || count > r.capacity) return false;
+    if (!this._ensureSortPipelines()) return false;
+
+    // Pad count up to next power of 2 so the bitonic network has a
+    // valid (k, j) sequence. The shader handles OOB by padding with
+    // 0xFFFFFFFF keys (sort to end), so the extra threads are no-ops.
+    const paddedN = nextPowerOf2(count);
+
+    // Phase 1: local sort within workgroups (256 threads each).
+    {
+      this._sortParamsScratch[0] = paddedN;
+      this._sortParamsScratch[1] = 0;
+      this._sortParamsScratch[2] = 0;
+      this._sortParamsScratch[3] = 0;
+      this._device.queue.writeBuffer(
+        r.sortParamsBuffer!,
+        0,
+        this._sortParamsScratch.buffer,
+      );
+      const pass = encoder.beginComputePass({
+        label: "BitonicSortU64_Local",
+      });
+      pass.setPipeline(r.sortLocalPipeline!);
+      pass.setBindGroup(0, r.sortBindGroup!);
+      pass.dispatchWorkgroups(Math.ceil(paddedN / 256), 1, 1);
+      pass.end();
+    }
+
+    // Phase 2: global merge passes for k > 256. O(log²N) dispatches
+    // — at N = 65536 that's about 28 passes; cheap.
+    // B228-O1 (Batch 230 audit fix) — removed `if (j < 256 && k <= 256)
+    // continue;` from this loop. The outer loop starts at k=512 so
+    // `k <= 256` was never true; the skip was dead code.
+    for (let k = 512; k <= paddedN; k <<= 1) {
+      for (let j = k >> 1; j > 0; j >>= 1) {
+        this._sortParamsScratch[0] = paddedN;
+        this._sortParamsScratch[1] = k;
+        this._sortParamsScratch[2] = j;
+        this._sortParamsScratch[3] = 0;
+        this._device.queue.writeBuffer(
+          r.sortParamsBuffer!,
+          0,
+          this._sortParamsScratch.buffer,
+        );
+        const pass = encoder.beginComputePass({
+          label: `BitonicSortU64_Merge_k${k}_j${j}`,
+        });
+        pass.setPipeline(r.sortMergePipeline!);
+        pass.setBindGroup(0, r.sortBindGroup!);
+        pass.dispatchWorkgroups(Math.ceil(paddedN / 256), 1, 1);
+        pass.end();
+      }
+    }
+
+    this._sortDispatches++;
+    return true;
+  }
+
+  /**
+   * Encode a `copyBufferToBuffer` from the sorted command-indices
+   * buffer into the readback staging buffer. Call AFTER
+   * `runBitonicSort` and BEFORE `device.queue.submit`.
+   */
+  prepareIndicesReadback(encoder: GPUCommandEncoder, count: number): void {
+    const r = this._resources;
+    if (!r || !r.indicesReadbackBuffer) return;
+    if (count <= 0 || count > r.capacity) return;
+    encoder.copyBufferToBuffer(
+      r.commandIndicesBuffer,
+      0,
+      r.indicesReadbackBuffer,
+      0,
+      count * 4,
+    );
+  }
+
+  /**
+   * Async readback of the sorted indices array. Returns a
+   * `Uint32Array` of length `count` where each element is the
+   * original (pre-sort) command index that now occupies sorted
+   * position `i`. Returns null when a readback is already in
+   * flight (caller is expected to drop and try next frame).
+   */
+  async readSortedIndices(count: number): Promise<Uint32Array | null> {
+    const r = this._resources;
+    if (!r || !r.indicesReadbackBuffer) return null;
+    if (this._sortReadbackInFlight) return null;
+    if (count <= 0 || count > r.capacity) return null;
+    this._sortReadbackInFlight = true;
+    try {
+      await r.indicesReadbackBuffer.mapAsync(GPUMapMode.READ, 0, count * 4);
+      const range = r.indicesReadbackBuffer.getMappedRange(0, count * 4);
+      const result = new Uint32Array(new Uint32Array(range));
+      r.indicesReadbackBuffer.unmap();
+      return result;
+    } catch (e) {
+      //>>includeStart('debug', pragmas.debug);
+      console.warn(`[BitonicSortU64] readback failed: ${(e as Error).message}`);
+      //>>includeEnd('debug');
+      return null;
+    } finally {
+      this._sortReadbackInFlight = false;
+    }
+  }
+
+  /** Lifetime sort dispatch count, surfaced via diagnostic stats. */
+  get sortDispatches(): number {
+    return this._sortDispatches;
   }
 
   /**
@@ -369,10 +654,18 @@ class WebGPUGPUSortKeysDispatcher {
       r.sortKeysHighBuffer.destroy();
       r.sortKeysLowBuffer.destroy();
       r.commandIndicesBuffer.destroy();
+      // Batch 228 sort resources.
+      r.sortParamsBuffer?.destroy();
+      r.indicesReadbackBuffer?.destroy();
     } catch (_e) {
       // Defensive — double-destroy is a no-op.
     }
     this._resources = null;
+    // B228-N1 (Batch 230 audit fix) — reset the in-flight flag so a
+    // subsequent allocate() + readback chain can fire. Prior code
+    // left the flag stuck-true if destroy() ran while a readback
+    // promise was pending; the next session would never readback.
+    this._sortReadbackInFlight = false;
   }
 }
 
@@ -380,6 +673,9 @@ class WebGPUGPUSortKeysDispatcher {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import GPUSortKeysSource from "../../Shaders/WebGPU/Compute/GPUSortKeys.js";
+// Batch 228 — bitonic-sort-over-u64 source paired with the keygen.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+import BitonicSortU64Source from "../../Shaders/WebGPU/Compute/BitonicSortU64.js";
 
 const _instances = new WeakMap<object, WebGPUGPUSortKeysDispatcher>();
 
@@ -391,6 +687,7 @@ function getOrCreateDispatcher(context: {
   if (!inst) {
     inst = new WebGPUGPUSortKeysDispatcher(context.device);
     inst.setShaderSource(GPUSortKeysSource);
+    inst.setSortShaderSource(BitonicSortU64Source);
     _instances.set(context, inst);
   }
   return inst;
@@ -452,11 +749,60 @@ function destroyWebGPUGPUSortKeys(context: {
   }
 }
 
+/**
+ * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — chain the bitonic sort
+ * after `dispatchWebGPUGPUSortKeys` in the same encoder. Must be
+ * called AFTER `dispatchWebGPUGPUSortKeys` and BEFORE
+ * `device.queue.submit`.
+ */
+function runBitonicSortWebGPUGPUSortKeys(
+  context: { device: GPUDevice | null | undefined },
+  encoder: GPUCommandEncoder,
+  count: number,
+): boolean {
+  const inst = _instances.get(context);
+  if (!inst) return false;
+  return inst.runBitonicSort(encoder, count);
+}
+
+/**
+ * Schedule a copy of the sorted-indices buffer into the readback
+ * staging buffer. Called immediately after `runBitonicSort`.
+ */
+function prepareIndicesReadbackWebGPUGPUSortKeys(
+  context: { device: GPUDevice | null | undefined },
+  encoder: GPUCommandEncoder,
+  count: number,
+): void {
+  const inst = _instances.get(context);
+  if (!inst) return;
+  inst.prepareIndicesReadback(encoder, count);
+}
+
+/**
+ * Async readback of the sorted command-indices array. Returns
+ * `Uint32Array(count)` where `result[i]` is the original (pre-sort)
+ * command index that ended up in sorted position `i`. Returns null
+ * when no readback was prepared, the dispatcher isn't allocated, or
+ * a readback is already in flight.
+ */
+async function readSortedIndicesWebGPUGPUSortKeys(
+  context: { device: GPUDevice | null | undefined },
+  count: number,
+): Promise<Uint32Array | null> {
+  const inst = _instances.get(context);
+  if (!inst) return null;
+  return inst.readSortedIndices(count);
+}
+
 export {
   WebGPUGPUSortKeysDispatcher,
   SORT_KEY_PARAMS_BYTES,
   initWebGPUGPUSortKeys,
   dispatchWebGPUGPUSortKeys,
+  runBitonicSortWebGPUGPUSortKeys,
+  prepareIndicesReadbackWebGPUGPUSortKeys,
+  readSortedIndicesWebGPUGPUSortKeys,
   getWebGPUGPUSortKeysStatistics,
   destroyWebGPUGPUSortKeys,
 };

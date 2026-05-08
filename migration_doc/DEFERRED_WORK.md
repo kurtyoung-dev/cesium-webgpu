@@ -229,25 +229,74 @@ in Batch 222.
 
 ---
 
-### NEW-GPU-SORT-PIPELINE — GPU sort over packed 64-bit sort keys (Phase 2 of GPUSortKeys consumption)
+### ~~NEW-GPU-SORT-PIPELINE~~ — RESOLVED (Batch 228) — BitonicSortU64 + sort+readback chain shipped; Phase 3 consumer integration tracked below
 
-**What:** `WebGPUGPUSortKeysDispatcher` (Batch 211) generates
-`sortKeysHigh + sortKeysLow + commandIndices` storage buffers but
-no compute pipeline consumes them yet. The actual sort step needs
-to be a generic u64 sort (bitonic over (high, low) tuples or radix
-on packed u64). `PointCloudSort.wgsl` does u32 bitonic but its key
-format is single-u32, not the dual-u32 format GPUSortKeys produces.
+**Resolution:** `BitonicSortU64.wgsl` ships a generic u32×2 bitonic sort
+network. `WebGPUGPUSortKeysDispatcher` gained `runBitonicSort()`,
+`prepareIndicesReadback()`, and `readSortedIndices()` methods that
+sort the existing `(sortKeysHigh, sortKeysLow, commandIndices)`
+buffers in place and read the sorted command-indices array back.
+FR-level entry points `runBitonicSortWebGPUGPUSortKeys` /
+`prepareIndicesReadbackWebGPUGPUSortKeys` /
+`readSortedIndicesWebGPUGPUSortKeys` registered on
+`FeatureRendererKey.GPU_SORT_KEYS`. `WebGPUSceneRenderer._dispatchGPUSortKeys`
+chains the sort + readback when the FR exposes the Phase 2 entries.
+
+The bitonic network handles non-power-of-2 counts by padding with
+sentinel max-keys (handled in shader's OOB load path).
+
+**Phase 3 follow-up (separate entry):** `NEW-GPU-SORT-PIPELINE-PHASE-3`
+below. Phase 2 ships the sort + readback, but the consumer side that
+applies `_lastSortedIndices` to reorder the JS command list is NOT
+wired yet — Phase 3 work integrates with `RenderScheduler`.
+
+**Trace:** Batch 228 (`BitonicSortU64.wgsl` + `WebGPUGPUSortKeysDispatcher.runBitonicSort` + `WebGPUSceneRenderer._dispatchGPUSortKeys`).
+
+---
+
+### NEW-GPU-SORT-PIPELINE-PHASE-3 — RenderScheduler consumer integration for sorted-indices readback
+
+**What:** Phase 2 (Batch 228) ships the GPU sort pipeline + readback
+chain: keys are generated, the bitonic sort runs in place, and the
+sorted command-indices array is read back into
+`WebGPUSceneRenderer._lastSortedIndices`. **But the consumer side
+that applies the sorted order to the actual command list is NOT
+wired yet** — Phase 3 work.
+
+The `_lastSortedIndices: { indices: Uint32Array, count }` field is
+populated each frame the sort fires, but never read. The renderer
+continues using the existing JS multi-level comparator
+(`RenderScheduler.backToFront`) for ordering.
+
+**Phase 3 scope:** wire `_lastSortedIndices` into the next-frame
+opaque-command iteration. Two viable paths:
+
+(a) **CPU-side reorder.** When `_lastSortedIndices.count` matches
+    this frame's opaque count, build a sorted view of
+    `frustumCommands.commands[OPAQUE]` using `indices[i]` as the
+    permutation. Pass that sorted view to `executeBatch` instead of
+    the original. ~50 LOC. Same 1-frame latency contract as the
+    cull readbacks. Fall back to JS comparator on count mismatch.
+
+(b) **Indirect-draw integration.** Use the sorted `commandIndices`
+    buffer directly as the GPU-side draw-call ordering, paired
+    with `gpuCuller`'s `CullMode.INDIRECT` mode. Eliminates the JS
+    iteration entirely. Much bigger architectural change — every
+    primitive type would need indirect-draw variants.
 
 **Why deferred:** JS multi-level comparator in RenderScheduler is
-faster than dispatch+readback round-trip below ~50K commands; even
-above that the sort step would need to either (a) read back sorted
-indices and reorder JS arrays (still pays one round-trip), or (b)
-pair with indirect-draw so the sorted index buffer feeds the GPU
-draw directly (much bigger architectural change — every primitive's
-draw command would need indirect-draw variants).
+faster than dispatch+readback round-trip below ~50K commands. Above
+50K the sort + reorder amortize; at the 10K+ density target our
+threshold-gating (Phase 1 HI=6000) means we already dispatch at
+useful counts — Phase 3 just needs to APPLY the result. Path (a)
+is the natural follow-up.
 
 **Estimated effort:** 1-2 sessions for path (a); 5-10 sessions for
 path (b) including per-primitive indirect-draw variants.
+
+**Trace:** Batch 211 (key generation) + Batch 228 (sort + readback);
+`WebGPUSceneRenderer._lastSortedIndices` (populated, not consumed);
+`WebGPUGPUSortKeysDispatcher.readSortedIndices`.
 
 **Impact:** Activates Phase 2 of GPUSortKeys consumption. Would
 let the dispatcher pay for itself at 50K+ commands.
@@ -255,6 +304,54 @@ let the dispatcher pay for itself at 50K+ commands.
 **Trace:** Batch 211 (`WebGPUSceneRenderer.ts:_dispatchGPUSortKeys`);
 `WebGPUGPUSortKeysDispatcher.ts`; `PointCloudSort.wgsl` as a partial
 template (different key format).
+
+---
+
+### BUG-WEBGPU-CANVAS-BLACK — WebGPU canvas renders black post-Batch-225
+
+**What:** After Batches 213-225 landed in commit `2c86a7cca6`, the WebGPU canvas renders as solid black (with only Cesium UI overlays — timeline, navigation, FPS — visible via CSS). Affects:
+
+- `Apps/WebGPUTest/split-screen-comparison.html` — WebGPU pane shows blank gray (with HTML pane label visible)
+- `Apps/CesiumViewer/index.html?renderer=webgpu` — canvas shows pure black, only HTML toolbar/timeline overlays visible
+- `Tools/visual-regression/capture-and-diff.mjs` for any scene — WebGPU diff is non-zero against WebGL
+
+WebGL backend renders correctly in all of the above.
+
+**Diagnostic state (frame 182 probe):** the renderer self-reports as healthy: `_postProcess=true`, `hasActiveStages=true`, `tonemap=true`, scene framebuffer + colorTarget allocated, identity blit pipeline built, ping/pong textures present, `_skipSDRStagesForHDR=false`, `hdr=false`. Frame counter advances normally (frame 182 = 3+ seconds of rendering at 60fps). But no pixels reach the canvas swap chain.
+
+**Suspect range:** the entire batch 213-225 range. Most likely candidates given diff size + scope:
+
+- **Batch 205 / 213** — `_skipSDRStagesForHDR` flag in post-process; new `_applyCanvasConfig` wrapper around `_context.configure()` with try/catch HDR fallback chain. 198 LOC changed in `WebGPUPostProcessPipeline.ts`.
+- **Batch 206** — `_buildCanvasConfig` extracted; `_hdrCanvasOutput` field added; canvas configure path centralized.
+- **Batch 218** — `gpuCullerTranslucent` second instance + destroy walk extension.
+- **Batch 220** — per-frustum culler instance map + readback slot map.
+- **Batch 222** — `destroy()` walks aux culler maps.
+- **Batch 225** — `gpuCullingHint = 'never'` short-circuit added to lazy aux-culler getters; HDR fallback listener Set conversion.
+
+**Why deferred (user direction):** Triaged 2026-05-08 with multiple page-screenshot probes. User chose "continue forward" with batches 228-230 rather than revert / bisect now. Will return after Batches 228-230 land.
+
+**Repro:**
+
+```bash
+npm run restart
+node -e "
+const {chromium} = require('playwright');
+(async () => {
+  const b = await chromium.launch({headless: true, channel: 'msedge'});
+  const p = await (await b.newContext({viewport:{width:1280, height:720}})).newPage();
+  await p.goto('http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu', {waitUntil: 'networkidle'});
+  await p.waitForFunction(() => !!window.viewer, {timeout: 30000});
+  await p.evaluate(() => new Promise(r => { let n=0; (function tick(){if(n++>240)r();else requestAnimationFrame(tick);})();}));
+  await p.screenshot({path: 'webgpu-rendering-bug.png'});
+  await b.close();
+})();
+"
+# Inspect webgpu-rendering-bug.png — canvas is black, only UI is visible.
+```
+
+**Estimated effort:** Targeted file-revert + bisect to localize, then surgical fix. ~2-4 sessions depending on which slice is the culprit.
+
+**Trace:** Diagnostic probes saved at `Tools/visual-regression/probe-webgpu-grey.mjs` and `Tools/visual-regression/probe-cesium-viewer.mjs`. Canvas-empty page screenshots at `Tools/visual-regression/output/diag-page-screenshot.png` (default = WebGL, renders correctly) vs `output/diag-webgpu-page.png` (WebGPU, black canvas).
 
 ---
 

@@ -84,9 +84,13 @@ import {
 } from "./WebGPUHiZOcclusionDispatcher.js";
 
 // Phase 3 — GPU sort keys (packed 64-bit draw command sort keys).
+// Phase 2 (Batch 228) adds the bitonic sort + readback chain.
 import {
   initWebGPUGPUSortKeys,
   dispatchWebGPUGPUSortKeys,
+  runBitonicSortWebGPUGPUSortKeys,
+  prepareIndicesReadbackWebGPUGPUSortKeys,
+  readSortedIndicesWebGPUGPUSortKeys,
   getWebGPUGPUSortKeysStatistics,
   destroyWebGPUGPUSortKeys,
 } from "./WebGPUGPUSortKeysDispatcher.js";
@@ -350,6 +354,19 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       params: Parameters<typeof dispatchWebGPUGPUSortKeys>[3],
     ) {
       return dispatchWebGPUGPUSortKeys(context, encoder, soa, params);
+    },
+    // Batch 228 — Phase 2 sort + readback chain.
+    runBitonicSort: function (encoder: GPUCommandEncoder, count: number) {
+      return runBitonicSortWebGPUGPUSortKeys(context, encoder, count);
+    },
+    prepareIndicesReadback: function (
+      encoder: GPUCommandEncoder,
+      count: number,
+    ) {
+      prepareIndicesReadbackWebGPUGPUSortKeys(context, encoder, count);
+    },
+    readSortedIndices: function (count: number) {
+      return readSortedIndicesWebGPUGPUSortKeys(context, count);
     },
     destroy: function () {
       destroyWebGPUGPUSortKeys(context);

@@ -1,6 +1,6 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** May 7, 2026 (Batches 219-224 — Audit-fix bundle for 213-218 + 3 doc-sync closures, NEW-MULTIFRUSTUM-CULL-RESULTS resolved (per-frustum opaque culler instances), NEW-SHADOW-CAST-GPU-CULL Phase 1 infrastructure, memory hygiene for auxiliary cullers + TAA disocclusion verified safe, cross-batch audit caught B219-N1/N2 reset reliability bugs, NEW-VR-BASELINE-HIGH-DENSITY synthetic 5K-sphere scene + setup-hook infrastructure)
+**Last Updated:** May 8, 2026 (Batches 225-230 — Final audit fixes for 219-224 + setup-file extraction, NEW-SHADOW-CAST-GPU-CULL Phase 2 active (sphere-AABB cull), NEW-GPU-SORT-PIPELINE Phase 2 (BitonicSortU64 + sort+readback chain), aux-culler idle-decay reaper, Workers/ build-bloat fix (3.2GB → 16MB). One real defect tracked deferred: BUG-WEBGPU-CANVAS-BLACK — WebGPU rendering produces black canvas after Batch 213-225 changes, root cause not yet localized; user opted to continue forward.)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
 **Overall Progress:** ~93% of full WebGL feature parity. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
 
@@ -8,7 +8,69 @@
 
 ---
 
-## Recent Progress (2026-05-07 — Batches 219-224: audit fix loop closes 213-218, multi-frustum + shadow-cast cull infrastructure, VR baseline scene)
+## Recent Progress (2026-05-08 — Batches 225-230: shadow-cast Phase 2, GPU sort Phase 2, idle-decay, Workers fix; one real defect deferred)
+
+Six batches closing two deferred entries end-to-end (`NEW-SHADOW-CAST-GPU-CULL-PHASE-2`, `NEW-GPU-SORT-PIPELINE`), shipping idle-decay for auxiliary culler instances, fixing a 3.2 GB build-output bloat in `packages/engine/Build/Workers/`, and surfacing one real defect (`BUG-WEBGPU-CANVAS-BLACK`) that has been deferred per user direction.
+
+### Batch 225 — Final 219-224 audit fixes
+
+- **B219-N3** — `Scene.gpuCullingHint = 'never'` now blocks lazy aux-culler allocation in `WebGPUContext`. Previously stored on Scene but never read by the allocation path; now the lazy getters and `warmUpHighDensityDispatchers` check the hint first.
+- **B219-N4** — `setHDRFallbackListener` now uses a `Set<callback>` and returns an unsubscribe function. Multi-Scene-per-context configs (split-screen, picture-in-picture) all sync correctly when the context demotes itself from HDR. Scene records the unsub in `_hdrFallbackUnsub` and calls it in `destroy()`.
+- **Cosmetic** — `high-density-5k-spheres` setup script extracted from the inline-string in `scenes.json` to `Tools/visual-regression/scenes/high-density-5k-spheres-setup.js`. Dropped a no-op `multiplyByTranslation(zero)`. New `setupFile` field in scene definitions; README updated.
+
+### Batch 226 — NEW-SHADOW-CAST-GPU-CULL Phase 2 (CLOSES entry)
+
+Phase 2 activates the per-cascade GPU cull infrastructure shipped in Batch 221.
+
+- **Sphere-AABB cull** instead of tight Gribb-Hartmann frustum extraction. The cascade's bounding sphere produces 6 axis-aligned planes via `packCascadeCullPlanes()`. Correctness-safe over-include: cube-around-sphere is looser than the actual ortho frustum but never cuts a valid shadow caster. Tight Gribb-Hartmann remains a future tuning item for hit-ratio improvement.
+- **Per-cascade hysteresis gate** at HI=2400 / LO=1600 (matches opaque HiZ thresholds since shadow cast iterates the same command set).
+- **Per-cascade dispatch + readback slot**: `_cascadeCullActive[]`, `_cascadeCullLastResults[]`, `_cascadeCullSoA[]`, `_cascadeCullFilterPool[]` arrays sized to `_cascadeCount`.
+- **Diagnostic stats** wired through `getHighDensityCullStats().shadowCascadeCull` with per-cascade input/filtered counts.
+- 1-frame readback latency, same model as opaque + translucent paths. `'never'` hint short-circuits the entire path.
+
+### Batch 227 — DEFERRED (blocked on BUG-WEBGPU-CANVAS-BLACK)
+
+Capture infrastructure verification was attempted: rebuild + Playwright capture → diff between WebGL and WebGPU panes. Multiple capture-method iterations (`drawImage`, `toDataURL` → `Image`, element screenshot, force-render-then-readback) all produced empty / wrong captures. Direct `page.screenshot()` revealed: WebGL pane renders correctly (visible globe + imagery), **WebGPU pane renders as black canvas with only HTML UI overlays visible** — confirmed by user. The bug reproduces on the standalone `Apps/CesiumViewer/index.html?renderer=webgpu` too, so it isn't a split-screen-specific issue.
+
+Diagnostic state captured: renderer self-reports as healthy (frame counter advances, post-process active, scene framebuffer + colorTarget allocated, identity-blit pipeline built). The blit step appears to run but produces no visible canvas output. Bug is somewhere in Batches 213-225 (most likely candidates: Batch 205 + 213 post-process changes, Batch 206 canvas-configure rework, Batch 222 destroy walk).
+
+User chose "continue forward" rather than revert/bisect now. Tracked as `BUG-WEBGPU-CANVAS-BLACK` in DEFERRED_WORK.md with full repro instructions and probe scripts at `Tools/visual-regression/probe-webgpu-grey.mjs` + `probe-cesium-viewer.mjs`.
+
+### Batch 228 — NEW-GPU-SORT-PIPELINE Phase 2 (CLOSES entry)
+
+Phase 1 (Batch 211) shipped key generation. Phase 2 wires the actual GPU sort pass + JS-side readback.
+
+- **`BitonicSortU64.wgsl`** — generic u32×2 bitonic sort over `(sortKeysHigh, sortKeysLow, commandIndices)`. Tests `(aHi, aLo)` lexicographically as a u64. Two entry points: `localBitonicSort256` (full sort within 256-element workgroups) + `globalBitonicMerge` (one bitonic step for `k > 256`). Same network shape as `PointCloudSort.wgsl`; only the comparator differs (u32 → u64-via-pair).
+- **Dispatcher integration** — added `setSortShaderSource()`, `runBitonicSort(encoder, count)`, `prepareIndicesReadback(encoder, count)`, and `readSortedIndices(count)` to `WebGPUGPUSortKeysDispatcher`. `runBitonicSort` issues `O(log²N)` dispatches; the network handles non-power-of-2 N by padding with sentinel max-keys (handled in shader).
+- **FR-level entry points** — `runBitonicSortWebGPUGPUSortKeys`, `prepareIndicesReadbackWebGPUGPUSortKeys`, `readSortedIndicesWebGPUGPUSortKeys`. Registered on `FeatureRendererKey.GPU_SORT_KEYS`.
+- **Scene-renderer wire-in** — `_dispatchGPUSortKeys` now chains the sort + readback when the FR exposes the Phase 2 entries (back-compat with older registrations). The sorted indices land in `_lastSortedIndices` for next frame.
+
+**Phase 3 known limitation** — the consumer side (RenderScheduler reorder) is NOT wired yet; `_lastSortedIndices` is captured but not applied. Documented in DEFERRED_WORK as Phase 3 follow-up.
+
+### Batch 229 — Auxiliary culler idle-decay
+
+- **Touch-tracking** — every aux-culler getter (`gpuCuller`, `gpuCullerTranslucent`, `getGPUCullerForOpaqueFrustum`, `getGPUCullerForCascade`) updates a `_lastUsed*Frame` timestamp before returning.
+- **Periodic reaper** — `_reapIdleAuxCullers` runs every `IDLE_DECAY_CHECK_INTERVAL` (120) frames from `beginFrame()`. Walks the per-frustum + per-cascade Maps, destroying instances idle for ≥`IDLE_DECAY_FRAMES` (600 ≈ 10s at 60fps).
+- **Hierarchy** — sweeps per-frustum first, then per-cascade, then translucent. The main `_gpuCuller` only reaps when EVERY auxiliary is also idle (keeps the hot lazy-getter path warm).
+- **Long-session memory hygiene** — without this, a session that transitions from high-density → low-density → stays-low keeps ~8 MB VRAM allocated forever. Now reaps automatically; lazy getters reallocate on demand if usage returns.
+
+### Batch 230 — Cross-batch audit + docs sync
+
+- **B226-N1 (audit fix)** — per-cascade cull was allocating `Float32Array(totalCount * 4)` per cascade per frame for the interleaved upload. Pooled the buffer in `_cascadeCullSoA[ci].interleaved` alongside the SoA components; reused via `subarray(0, totalCount * 4)` view.
+- **B228-N1 (documented limitation)** — Phase 2 ships sort + readback but doesn't reorder. Phase 3 (RenderScheduler integration) tracked separately.
+- **Workers/ build bloat** — separate from the batch sequence but landed in this run: `bundleWorkers()` was emitting content-hashed chunks (`WebGPUContext-<hash>.js`) without cleaning the previous output. 249 copies × 12 MB = 3.2 GB of orphan WebGPUContext files. Fix: `await rimraf(workerConfig.outdir)` before each non-IIFE worker bundle write. Verified: 3.2 GB → 16 MB.
+
+### Cumulative impact (Batches 225-230)
+
+- **2 deferred entries closed end-to-end** — `NEW-SHADOW-CAST-GPU-CULL-PHASE-2` (per-cascade activation), `NEW-GPU-SORT-PIPELINE` (BitonicSortU64 + sort+readback). One follow-up Phase opened: `NEW-GPU-SORT-PIPELINE-PHASE-3` for RenderScheduler consumer integration.
+- **3 audit findings closed** — B219-N3, B219-N4, B226-N1.
+- **1 cosmetic refactor** — high-density VR scene setup extracted from inline JSON to a real JS file; runner gained `setupFile` field.
+- **1 build infra fix** — `packages/engine/Build/Workers/` no longer accumulates orphan content-hashed chunks (3.2 GB freed).
+- **1 real defect deferred** — `BUG-WEBGPU-CANVAS-BLACK`. Confirmed in standalone CesiumViewer; root cause not localized within this run; full repro + diagnostic probes in DEFERRED_WORK.
+
+---
+
+## Earlier Progress (2026-05-07 — Batches 219-224: audit fix loop closes 213-218, multi-frustum + shadow-cast cull infrastructure, VR baseline scene)
 
 Six batches closing the audit loop on 213-218 (8 audit findings + 3 stale-deferred entries closed in one bundle), expanding GPU cull coverage to multi-frustum + shadow-cast, plugging memory leaks on auxiliary culler instances, and shipping the synthetic high-density VR scene generator. Cross-batch audit (223) caught two real reset-reliability bugs in the Batch 219 stats accumulators (B219-N1/N2) and fixed both.
 

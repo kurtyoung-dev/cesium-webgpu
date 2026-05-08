@@ -300,12 +300,16 @@ export class WebGPUContext extends GraphicsContext {
   // path clears the pipeline cache because every pipeline targeting
   // the canvas format must be recompiled.
   private _hdrCanvasOutput: boolean = false;
-  // B213-O2 (Batch 219 audit fix) — listener Scene.js installs so that
-  // when the context's HDR fallback chain (B206-N1) trips and demotes
-  // `_hdrCanvasOutput` from true → false, the Scene-level flag
-  // (`_useHDRCanvasOutput`) follows. Without this, the Scene reports
-  // HDR as on but the canvas is actually SDR — silently asymmetric.
-  private _hdrFallbackListener: ((newValue: boolean) => void) | null = null;
+  // B213-O2 (Batch 219 audit fix) + B219-N4 (Batch 225 audit fix) —
+  // Scene-installed listeners called when the context's HDR fallback
+  // chain (B206-N1) trips and demotes `_hdrCanvasOutput` from true →
+  // false. Each Scene.js instance attached to this context registers
+  // its own listener so its `_useHDRCanvasOutput` flag follows the
+  // demotion. Without the Set the prior single-slot design only
+  // synced the LAST-installed scene; multi-scene-per-context
+  // configurations (split-screen, picture-in-picture) ended up with
+  // stale Scene flags on all but the last viewer.
+  private _hdrFallbackListeners: Set<(newValue: boolean) => void> = new Set();
   private _depthFormat: GPUTextureFormat = "depth24plus-stencil8";
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _isDestroyed: boolean = false;
@@ -931,12 +935,87 @@ export class WebGPUContext extends GraphicsContext {
    * @param hintMaxCommands    expected peak opaque command count
    *    (sets the buffer capacity for all three dispatchers).
    */
+  /**
+   * B219-N3 (Batch 225 audit fix) — Scene-level GPU culling hint
+   * mirror. Called by `Scene.gpuCullingHint` setter.
+   *
+   * When set to `'never'`:
+   *   - Lazy getters refuse to allocate new culler instances.
+   *   - Any existing aux-culler instances are immediately reaped
+   *     (B225-N1 audit fix, Batch 230) instead of waiting up to
+   *     10 seconds for the idle-decay sweep (Batch 229). The user
+   *     explicitly opted out — honor that immediately.
+   *
+   * Mid-render reap is safe because the next render frame's
+   * gate-update reads the hint and short-circuits to false, so the
+   * filter chain skips even if the prior frame's commands were
+   * sized to a now-destroyed buffer.
+   */
+  public setGpuCullingHint(hint: "auto" | "always" | "never"): void {
+    const prev = this._gpuCullingHint;
+    this._gpuCullingHint = hint;
+    if (hint === "never" && prev !== "never") {
+      this._reapAllAuxCullers();
+    }
+  }
+
+  /**
+   * B225-N1 (Batch 230 audit fix) — destroy every auxiliary culler
+   * instance immediately. Used by `setGpuCullingHint('never')` to
+   * honor the opt-out without waiting for idle-decay. Distinct from
+   * `_reapIdleAuxCullers` (Batch 229) which is selective by
+   * last-used age.
+   */
+  private _reapAllAuxCullers(): void {
+    for (const culler of this._gpuCullerByFrustum.values()) {
+      try {
+        culler.destroy();
+      } catch (_) {
+        /* defensive */
+      }
+    }
+    this._gpuCullerByFrustum.clear();
+    this._gpuCullerByFrustumLastUsed.clear();
+    for (const culler of this._gpuCullerByCascade.values()) {
+      try {
+        culler.destroy();
+      } catch (_) {
+        /* defensive */
+      }
+    }
+    this._gpuCullerByCascade.clear();
+    this._gpuCullerByCascadeLastUsed.clear();
+    if (this._gpuCullerTranslucent) {
+      try {
+        this._gpuCullerTranslucent.destroy();
+      } catch (_) {
+        /* defensive */
+      }
+      this._gpuCullerTranslucent = null;
+    }
+    if (this._gpuCuller) {
+      try {
+        this._gpuCuller.destroy();
+      } catch (_) {
+        /* defensive */
+      }
+      this._gpuCuller = null;
+    }
+  }
+
+  public get gpuCullingHint(): "auto" | "always" | "never" {
+    return this._gpuCullingHint;
+  }
+
   public warmUpHighDensityDispatchers(
     hintViewportWidth: number = 1920,
     hintViewportHeight: number = 1080,
     hintMaxCommands: number = 16384,
   ): void {
     if (!this._device || this._isDestroyed) return;
+    // B219-N3 — refuse warm-up when the hint forbids it. Symmetric
+    // with the lazy-getter guards so both eager + lazy paths agree.
+    if (this._gpuCullingHint === "never") return;
 
     // gpuCuller — touching the getter triggers the dynamic import +
     // pipeline compile. Errors are caught inside the getter chain.
@@ -1305,6 +1384,15 @@ export class WebGPUContext extends GraphicsContext {
     // Advance ring buffer allocator to next page
     if (this._uniformAllocator) {
       this._uniformAllocator.beginFrame();
+    }
+
+    // NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — bump internal frame
+    // counter + periodically prune idle auxiliary culler instances.
+    // The check runs every `IDLE_DECAY_CHECK_INTERVAL` frames so the
+    // walk cost amortizes to ~zero per frame.
+    this._internalFrameId++;
+    if (this._internalFrameId % WebGPUContext.IDLE_DECAY_CHECK_INTERVAL === 0) {
+      this._reapIdleAuxCullers();
     }
 
     // Create command encoder for this frame
@@ -2830,10 +2918,14 @@ export class WebGPUContext extends GraphicsContext {
           // secondary shadows). Slice 3 wires moon-light cascade pairs.
           if (i === 0) {
             const camera = scene.frameState.camera;
+            // Batch 226 — pass the context so the CSM cast helper
+            // can look up per-cascade culler instances + read the
+            // gpuCullingHint for `'never'` short-circuit.
             this._csmRenderer.renderCastPass(
               encoder,
               castCommands as ReadonlyArray<unknown>,
               camera.positionWC,
+              this,
             );
           } else {
             shadowFR.renderCastPass(
@@ -3647,6 +3739,33 @@ export class WebGPUContext extends GraphicsContext {
   // which is correct behavior (worst case: slower draw, not broken).
   private static readonly _MAX_AUX_CULLER_INDEX = 16;
 
+  // B219-N3 (Batch 225 audit fix) — Scene-level GPU culling hint
+  // mirrored on the context so lazy aux-culler getters can refuse
+  // allocation when the user set `Scene.gpuCullingHint = 'never'`.
+  // Previously 'never' was stored on Scene but never read by the
+  // allocation path; if a render frame ever hit a gate-active code
+  // path (e.g., a partial regression), the lazy getter would still
+  // burn VRAM. Closes the asymmetry — 'never' truly disables.
+  private _gpuCullingHint: "auto" | "always" | "never" = "auto";
+
+  // NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — track when each
+  // auxiliary culler instance was last used, and periodically reap
+  // cullers idle for >= IDLE_DECAY_FRAMES. The destroy() walk
+  // (Batch 222) handles context teardown, but during a long-running
+  // session that transitions from high-density → low-density and
+  // stays there, the auxiliary cullers stay allocated forever
+  // (~1 MB/instance × up to 8 = ~8 MB VRAM). The decay reaps them
+  // automatically; lazy getters reallocate on demand if usage
+  // returns. The internal frame id is bumped from `beginFrame()`
+  // so the comparison is purely against this context's lifetime.
+  private static readonly IDLE_DECAY_FRAMES = 600; // ≈10s at 60fps
+  private static readonly IDLE_DECAY_CHECK_INTERVAL = 120; // 2s
+  private _internalFrameId: number = 0;
+  private _gpuCullerLastUsed: number = 0;
+  private _gpuCullerTranslucentLastUsed: number = 0;
+  private _gpuCullerByFrustumLastUsed: Map<number, number> = new Map();
+  private _gpuCullerByCascadeLastUsed: Map<number, number> = new Map();
+
   private _gpuCuller: GPUCullerInstance | null = null;
   private _gpuCullerInitializing: boolean = false;
   // B216-N1 (Batch 218 audit fix) — separate culler instance for the
@@ -4016,7 +4135,14 @@ export class WebGPUContext extends GraphicsContext {
    * @returns The culler instance (may not be initialized yet — check .initialized)
    */
   get gpuCuller(): GPUCullerInstance | null {
-    if (!this._gpuCuller && this._device && !this._gpuCullerInitializing) {
+    // Batch 229 — touch usage timestamp for idle-decay reaper.
+    this._gpuCullerLastUsed = this._internalFrameId;
+    if (
+      !this._gpuCuller &&
+      this._device &&
+      !this._gpuCullerInitializing &&
+      this._gpuCullingHint !== "never"
+    ) {
       this._gpuCullerInitializing = true;
       import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
         const culler = new WebGPUGPUCuller(this._device!, {
@@ -4031,6 +4157,8 @@ export class WebGPUContext extends GraphicsContext {
           .then(() => {
             this._gpuCuller = culler;
             this._gpuCullerInitializing = false;
+            // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
+            this._gpuCullerLastUsed = this._internalFrameId;
             // B219-A1 (Batch 225 audit fix) — clear on device loss
             // so the lazy getter re-creates against the recovered
             // device. Without this the JS instance persists with
@@ -4064,12 +4192,16 @@ export class WebGPUContext extends GraphicsContext {
   public getGPUCullerForOpaqueFrustum(idx: number): GPUCullerInstance | null {
     if (idx === 0) return this.gpuCuller;
     if (!this._device || this._isDestroyed) return null;
+    // B219-N3 (Batch 225) — refuse allocation when hint forbids.
+    if (this._gpuCullingHint === "never") return null;
     // B220-O1 (Batch 225) — defensive cap. Real Cesium scenes top
     // out at ~6 frustums (`Scene.farToNearRatio` driven; typical
     // 1-4 with log-depth, up to 6 without). Refuse allocation
     // beyond a sane max so a runaway value (bug or malformed
     // input) can't burn unbounded VRAM.
     if (idx >= WebGPUContext._MAX_AUX_CULLER_INDEX) return null;
+    // Batch 229 — touch usage timestamp for idle-decay reaper.
+    this._gpuCullerByFrustumLastUsed.set(idx, this._internalFrameId);
     if (this._gpuCullerByFrustum.has(idx)) {
       return this._gpuCullerByFrustum.get(idx) ?? null;
     }
@@ -4088,6 +4220,13 @@ export class WebGPUContext extends GraphicsContext {
         .then(() => {
           this._gpuCullerByFrustum.set(idx, culler);
           this._gpuCullerByFrustumInitializing.delete(idx);
+          // B229-N1 (Batch 230 audit) — re-touch LastUsed on
+          // resolve so post-init reaper iterations see the slot.
+          // The first-call `set` happened at INVOKE time; if the
+          // reaper fired between invoke + resolve it would have
+          // deleted that entry, leaving the freshly-installed
+          // instance orphaned in the reap walk.
+          this._gpuCullerByFrustumLastUsed.set(idx, this._internalFrameId);
           // B219-A1 (Batch 225) — clear on device loss.
           this.onDeviceInvalidated(() => {
             this._gpuCullerByFrustum.delete(idx);
@@ -4120,10 +4259,14 @@ export class WebGPUContext extends GraphicsContext {
    */
   public getGPUCullerForCascade(idx: number): GPUCullerInstance | null {
     if (!this._device || this._isDestroyed) return null;
+    // B219-N3 (Batch 225) — refuse allocation when hint forbids.
+    if (this._gpuCullingHint === "never") return null;
     // B220-O1 (Batch 225) — defensive cap. CSM cascades top out
     // at 4 in stock Cesium; the cap matches frustum cap for
     // simplicity. See `getGPUCullerForOpaqueFrustum`.
     if (idx < 0 || idx >= WebGPUContext._MAX_AUX_CULLER_INDEX) return null;
+    // Batch 229 — touch usage timestamp for idle-decay reaper.
+    this._gpuCullerByCascadeLastUsed.set(idx, this._internalFrameId);
     if (this._gpuCullerByCascade.has(idx)) {
       return this._gpuCullerByCascade.get(idx) ?? null;
     }
@@ -4142,6 +4285,8 @@ export class WebGPUContext extends GraphicsContext {
         .then(() => {
           this._gpuCullerByCascade.set(idx, culler);
           this._gpuCullerByCascadeInitializing.delete(idx);
+          // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
+          this._gpuCullerByCascadeLastUsed.set(idx, this._internalFrameId);
           // B219-A1 (Batch 225) — clear on device loss.
           this.onDeviceInvalidated(() => {
             this._gpuCullerByCascade.delete(idx);
@@ -4166,10 +4311,13 @@ export class WebGPUContext extends GraphicsContext {
    * encoder. Same lazy-init pattern as `gpuCuller`.
    */
   get gpuCullerTranslucent(): GPUCullerInstance | null {
+    // Batch 229 — touch usage timestamp for idle-decay reaper.
+    this._gpuCullerTranslucentLastUsed = this._internalFrameId;
     if (
       !this._gpuCullerTranslucent &&
       this._device &&
-      !this._gpuCullerTranslucentInitializing
+      !this._gpuCullerTranslucentInitializing &&
+      this._gpuCullingHint !== "never"
     ) {
       this._gpuCullerTranslucentInitializing = true;
       import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
@@ -4185,6 +4333,8 @@ export class WebGPUContext extends GraphicsContext {
           .then(() => {
             this._gpuCullerTranslucent = culler;
             this._gpuCullerTranslucentInitializing = false;
+            // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
+            this._gpuCullerTranslucentLastUsed = this._internalFrameId;
             // B219-A1 (Batch 225) — clear on device loss.
             this.onDeviceInvalidated(() => {
               this._gpuCullerTranslucent = null;
@@ -4390,9 +4540,21 @@ export class WebGPUContext extends GraphicsContext {
           this._hdrCanvasOutput = false;
           this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
           this._context.configure(this._buildCanvasConfig());
-          // B213-O2 (Batch 219 audit fix) — notify Scene so its
-          // `_useHDRCanvasOutput` flag follows the demotion.
-          this._hdrFallbackListener?.(false);
+          // B213-O2 (Batch 219) + B219-N4 (Batch 225) — fan out to
+          // every listener so multi-Scene-per-context setups
+          // (split-screen, picture-in-picture) all sync.
+          for (const listener of this._hdrFallbackListeners) {
+            try {
+              listener(false);
+            } catch (e3) {
+              //>>includeStart('debug', pragmas.debug);
+              this.log(
+                "warn",
+                `HDR fallback listener threw: ${(e3 as Error).message}`,
+              );
+              //>>includeEnd('debug');
+            }
+          }
           return;
         }
       }
@@ -4439,15 +4601,124 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * B213-O2 (Batch 219 audit fix) — register a callback fired when
-   * the HDR canvas configure fails and the context demotes itself to
-   * SDR. Scene.js installs this so its `_useHDRCanvasOutput` flag
-   * stays in sync with the canvas reality.
+   * NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — destroy auxiliary
+   * culler instances idle for >= IDLE_DECAY_FRAMES. Called at
+   * IDLE_DECAY_CHECK_INTERVAL-frame intervals from `beginFrame()`.
+   *
+   * Sweep order: per-frustum (idx >= 1, since 0 reuses _gpuCuller),
+   * per-cascade, then translucent culler, then the main _gpuCuller.
+   * Each destroy nullifies the slot so the lazy getter reallocates
+   * on demand.
+   */
+  private _reapIdleAuxCullers(): void {
+    const now = this._internalFrameId;
+    const threshold = WebGPUContext.IDLE_DECAY_FRAMES;
+
+    // Per-frustum (frustum 0 is _gpuCuller, handled separately).
+    for (const [idx, lastUsed] of this._gpuCullerByFrustumLastUsed) {
+      if (now - lastUsed >= threshold) {
+        const culler = this._gpuCullerByFrustum.get(idx);
+        if (culler) {
+          try {
+            culler.destroy();
+          } catch (_) {
+            /* defensive */
+          }
+          this._gpuCullerByFrustum.delete(idx);
+        }
+        this._gpuCullerByFrustumLastUsed.delete(idx);
+      }
+    }
+
+    // Per-cascade.
+    for (const [idx, lastUsed] of this._gpuCullerByCascadeLastUsed) {
+      if (now - lastUsed >= threshold) {
+        const culler = this._gpuCullerByCascade.get(idx);
+        if (culler) {
+          try {
+            culler.destroy();
+          } catch (_) {
+            /* defensive */
+          }
+          this._gpuCullerByCascade.delete(idx);
+        }
+        this._gpuCullerByCascadeLastUsed.delete(idx);
+      }
+    }
+
+    // Translucent.
+    if (
+      this._gpuCullerTranslucent &&
+      now - this._gpuCullerTranslucentLastUsed >= threshold
+    ) {
+      try {
+        this._gpuCullerTranslucent.destroy();
+      } catch (_) {
+        /* defensive */
+      }
+      this._gpuCullerTranslucent = null;
+    }
+
+    // Main opaque culler (frustum 0). Only reap if EVERY auxiliary
+    // is also idle — otherwise we keep the cheap lazy-getter
+    // re-init path warm.
+    if (
+      this._gpuCuller &&
+      now - this._gpuCullerLastUsed >= threshold &&
+      this._gpuCullerByFrustum.size === 0 &&
+      this._gpuCullerByCascade.size === 0 &&
+      !this._gpuCullerTranslucent
+    ) {
+      try {
+        this._gpuCuller.destroy();
+      } catch (_) {
+        /* defensive */
+      }
+      this._gpuCuller = null;
+    }
+  }
+
+  /**
+   * B213-O2 (Batch 219) + B219-N4 (Batch 225) + B225-N2 audit fix
+   * (Batch 230) — register a callback fired when the HDR canvas
+   * configure fails and the context demotes itself to SDR.
+   * Scene.js installs this so its `_useHDRCanvasOutput` flag stays
+   * in sync with the canvas reality. Returns an unsubscribe
+   * function so the Scene can clean up at destruction.
+   *
+   * Multiple Scenes per Context (split-screen, picture-in-picture)
+   * each register their own listener — they all fire on demotion.
+   *
+   * **B225-N2 (Batch 230 audit fix)** — `null` is no longer a magic
+   * "clear all listeners" value. The legacy single-slot path that
+   * accepted `null` could nuke other Scenes' listeners when one
+   * Scene called it for cleanup. Callers should use the returned
+   * unsubscribe function for per-listener cleanup. To clear ALL
+   * listeners (e.g., context teardown), call
+   * `clearAllHDRFallbackListeners()` explicitly.
+   *
+   * Returns the unsubscribe function on success, or null when
+   * `listener` was nullish.
    */
   public setHDRFallbackListener(
     listener: ((newValue: boolean) => void) | null,
-  ): void {
-    this._hdrFallbackListener = listener;
+  ): (() => void) | null {
+    if (!listener) return null;
+    this._hdrFallbackListeners.add(listener);
+    return () => {
+      this._hdrFallbackListeners.delete(listener);
+    };
+  }
+
+  /**
+   * B225-N2 (Batch 230 audit fix) — explicit "clear every
+   * registered HDR fallback listener" entry point. Used at context
+   * teardown. Distinct from `setHDRFallbackListener(null)` so the
+   * intent is unambiguous and can't accidentally fire from a Scene
+   * that just wanted to remove its own listener.
+   */
+  public clearAllHDRFallbackListeners(): void {
+    this._hdrFallbackListeners.clear();
   }
 
   /**

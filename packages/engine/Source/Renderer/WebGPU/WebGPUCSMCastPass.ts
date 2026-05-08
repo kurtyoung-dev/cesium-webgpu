@@ -13,6 +13,32 @@
  * 11 host fields/methods the helper reads through `this.` are flipped
  * to `public` (with the underscore convention).
  *
+ * **NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226):** per-cascade GPU
+ * cull activation. Phase 1 (Batch 221) shipped per-cascade culler
+ * instances + memory hygiene; Phase 2 wires the actual filter into
+ * the per-cascade loop. Strategy:
+ *
+ *   - **Sphere-AABB cull (correctness-safe over-include).** For each
+ *     cascade we feed the FrustumCull shader 6 planes of the axis-
+ *     aligned cube circumscribing the cascade's bounding sphere
+ *     (`sphereCenter`, `sphereRadius`). This over-includes vs a tight
+ *     Gribb-Hartmann frustum (cube has corners that extend past the
+ *     sphere), but correctness-safe: anything kept is potentially a
+ *     valid shadow caster, and missed culls cost only overdraw, not
+ *     missing shadows. Tight Gribb-Hartmann extraction is a future
+ *     follow-up gated on visual verification.
+ *   - Per-cascade `_cascadeCullLastResults[ci]` readback slot driven
+ *     by per-cascade `WebGPUGPUCuller` instance (Batch 221).
+ *   - Per-cascade hysteresis gate (`_cascadeCullActive[ci]`) at the
+ *     same threshold as opaque HiZ (HI=2400, LO=1600) — shadow cast
+ *     iterates the same command set as opaque so the cost profile
+ *     matches.
+ *   - 1-frame readback latency (same model as opaque + translucent
+ *     paths). First frame at high density: dispatch only, no filter.
+ *     Frame 2+: filter using prior readback.
+ *   - Skipped entirely when `context.gpuCullingHint === 'never'` or
+ *     when no `getGPUCullerForCascade` getter exists (back-compat).
+ *
  * @module WebGPUCSMCastPass
  */
 
@@ -30,11 +56,109 @@ import type { CSMCastPassHost, CastCommandShape } from "./WebGPUCSMRenderer.js";
 
 const _scratchEncodedCamera = new EncodedCartesian3();
 
+// NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — hysteresis
+// thresholds for the per-cascade gate. Match opaque HiZ (Batch 214)
+// since shadow cast iterates the same command set; if HiZ activates,
+// shadow cull should too.
+const CASCADE_CULL_THRESHOLD_HI = 2400;
+const CASCADE_CULL_THRESHOLD_LO = 1600;
+
+interface GPUCullerLikeInstance {
+  initialized: boolean;
+  uploadBoundingSpheres: (s: Float32Array) => void;
+  uploadFrustumPlanes: (p: Float32Array) => void;
+  dispatch: (
+    encoder: GPUCommandEncoder,
+    objectCount: number,
+    mode?: number,
+  ) => void;
+  prepareReadback: (encoder: GPUCommandEncoder, objectCount: number) => void;
+  readResults: (objectCount: number) => Promise<{
+    visibilityFlags: Uint32Array;
+    objectCount: number;
+  }>;
+}
+
+interface CSMCastContext {
+  getGPUCullerForCascade?: (idx: number) => GPUCullerLikeInstance | null;
+  gpuCullingHint?: "auto" | "always" | "never";
+  _currentCommandEncoder?: GPUCommandEncoder | null;
+}
+
+/**
+ * Build 6 axis-aligned plane equations bounding the cube
+ * circumscribing a sphere at (cx,cy,cz) with radius R. Output
+ * format matches `FrustumCull.wgsl`'s `FrustumPlanes`: 6 × vec4
+ * where each plane is (nx, ny, nz, d) with inward-pointing normal
+ * and `dot(plane.xyz, P) + plane.w > 0` for points inside the cube.
+ *
+ * Loose vs tight Gribb-Hartmann from the cascade VP — cube extends
+ * past the sphere at corners. Correctness-safe over-include.
+ */
+function packCascadeCullPlanes(
+  out: Float32Array,
+  cx: number,
+  cy: number,
+  cz: number,
+  R: number,
+): void {
+  // +X face: inward normal (-1, 0, 0); plane passes through (cx+R, *, *).
+  // dot((-1, 0, 0), P) + (cx + R) = (cx + R) - P.x  →  inside when P.x ≤ cx + R.
+  out[0] = -1;
+  out[1] = 0;
+  out[2] = 0;
+  out[3] = cx + R;
+  // -X face: inward normal (+1, 0, 0); plane passes through (cx-R).
+  out[4] = 1;
+  out[5] = 0;
+  out[6] = 0;
+  out[7] = -(cx - R);
+  // +Y face
+  out[8] = 0;
+  out[9] = -1;
+  out[10] = 0;
+  out[11] = cy + R;
+  // -Y face
+  out[12] = 0;
+  out[13] = 1;
+  out[14] = 0;
+  out[15] = -(cy - R);
+  // +Z face
+  out[16] = 0;
+  out[17] = 0;
+  out[18] = -1;
+  out[19] = cz + R;
+  // -Z face
+  out[20] = 0;
+  out[21] = 0;
+  out[22] = 1;
+  out[23] = -(cz - R);
+}
+
+const _cascadePlanesScratch = new Float32Array(24);
+
+/**
+ * Hysteresis gate: returns the new active flag.
+ * - active && count <  LO → deactivate
+ * - !active && count >= HI → activate
+ * - otherwise hold previous state
+ */
+function updateCascadeGate(
+  active: boolean,
+  count: number,
+  hi: number,
+  lo: number,
+): boolean {
+  if (active) return count >= lo;
+  return count >= hi;
+}
+
 export function renderCSMCastPass(
   host: CSMCastPassHost,
   encoder: GPUCommandEncoder,
   castCommands: ReadonlyArray<unknown>,
   cameraPositionWC: { x: number; y: number; z: number },
+  context?: CSMCastContext,
 ): void {
   if (
     !host._device ||
@@ -46,6 +170,33 @@ export function renderCSMCastPass(
     return;
   }
   host._castDispatches++;
+
+  // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — lazy per-cascade
+  // cull-state arrays sized to `_cascadeCount`. Re-sized when
+  // `_cascadeCount` changes (rare; user toggle).
+  if (host._cascadeCullActive.length !== host._cascadeCount) {
+    host._cascadeCullActive = new Array(host._cascadeCount).fill(false);
+    host._cascadeCullLastResults = new Array(host._cascadeCount).fill(null);
+    host._cascadeCullSoA = new Array(host._cascadeCount).fill(null);
+    host._cascadeCullFilterPool = new Array(host._cascadeCount)
+      .fill(null)
+      .map((): unknown[] => []);
+    host._cascadeCullLastInput = new Array(host._cascadeCount).fill(0);
+    host._cascadeCullLastFiltered = new Array(host._cascadeCount).fill(0);
+  }
+  // Reset per-frame stats accumulators (host._castDispatches already
+  // bumped above so this is the first action of a new frame for our
+  // counters).
+  for (let i = 0; i < host._cascadeCount; i++) {
+    host._cascadeCullLastInput[i] = 0;
+    host._cascadeCullLastFiltered[i] = 0;
+  }
+
+  const cullEnabled =
+    !!context &&
+    context.gpuCullingHint !== "never" &&
+    typeof context.getGPUCullerForCascade === "function";
+  const totalCount = castCommands.length;
 
   // Lazy-allocate per-cascade cast UBOs the first time we cast.
   // The layout matches WebGPUShadowMapRenderer's existing UBO
@@ -129,6 +280,132 @@ export function renderCSMCastPass(
       CSM_CAST_UBO_SIZE,
     );
 
+    // ── Per-cascade GPU cull (Batch 226) ─────────────────────────────
+    // Update the gate, dispatch this frame, and pick the filtered
+    // cast list (using prior-frame readback) before the draw loop.
+    // No-op when `cullEnabled` is false.
+    let castIter: ReadonlyArray<unknown> = castCommands;
+    if (cullEnabled) {
+      const wasActive = host._cascadeCullActive[ci];
+      const nowActive = updateCascadeGate(
+        wasActive,
+        totalCount,
+        CASCADE_CULL_THRESHOLD_HI,
+        CASCADE_CULL_THRESHOLD_LO,
+      );
+      host._cascadeCullActive[ci] = nowActive;
+
+      if (nowActive) {
+        const culler = context!.getGPUCullerForCascade!(ci);
+        if (culler && culler.initialized) {
+          // Build / grow per-cascade SOA scratch + pooled
+          // interleaved upload buffer (B226-N1, Batch 230 audit fix).
+          let soa = host._cascadeCullSoA[ci];
+          if (!soa || soa.capacity < totalCount) {
+            const cap = Math.max(totalCount, soa?.capacity ?? 0);
+            soa = {
+              centerX: new Float32Array(cap),
+              centerY: new Float32Array(cap),
+              centerZ: new Float32Array(cap),
+              radius: new Float32Array(cap),
+              capacity: cap,
+              interleaved: new Float32Array(cap * 4),
+            };
+            host._cascadeCullSoA[ci] = soa;
+          }
+          // B226-O1 (Batch 230 audit fix) — combined SoA + interleaved
+          // fill in a single loop. The interleaved buffer is the only
+          // thing actually uploaded to the GPU; the SoA fields are kept
+          // alongside for potential future use (debug surface, sphere-
+          // sphere narrow-phase, etc.) but populated in lockstep.
+          //
+          // Bail-out: if any command lacks a bounding sphere, we abort
+          // the cull entirely (over-include via no-cull is correct;
+          // partially filled SoA would mismatch the gen and corrupt
+          // the test). The early-return mirrors Batch 226's
+          // `validSpheres === totalCount` invariant.
+          // (`cascade` is already in scope from the outer per-frustum
+          // loop at line 250.)
+          const interleaved = soa.interleaved;
+          let allValid = true;
+          for (let i = 0; i < totalCount; i++) {
+            const cmd = castCommands[i] as
+              | {
+                  boundingVolume?: {
+                    center?: { x: number; y: number; z: number };
+                    radius?: number;
+                    boundingSphere?: { radius?: number };
+                  };
+                }
+              | undefined;
+            const c = cmd?.boundingVolume?.center;
+            if (!c) {
+              allValid = false;
+              break;
+            }
+            const r =
+              cmd?.boundingVolume?.radius ??
+              cmd?.boundingVolume?.boundingSphere?.radius ??
+              0;
+            soa.centerX[i] = c.x;
+            soa.centerY[i] = c.y;
+            soa.centerZ[i] = c.z;
+            soa.radius[i] = r;
+            const off = i * 4;
+            interleaved[off] = c.x;
+            interleaved[off + 1] = c.y;
+            interleaved[off + 2] = c.z;
+            interleaved[off + 3] = r;
+          }
+
+          if (allValid) {
+            // Build the cascade's sphere-AABB cull planes.
+            const sc = cascade.sphereCenter;
+            packCascadeCullPlanes(
+              _cascadePlanesScratch,
+              sc[0] as number,
+              sc[1] as number,
+              sc[2] as number,
+              cascade.sphereRadius,
+            );
+
+            // The interleaved pool is sized to `cap * 4`; pass a
+            // SUBARRAY view so the unused tail isn't uploaded.
+            culler.uploadBoundingSpheres(
+              interleaved.subarray(0, totalCount * 4),
+            );
+            culler.uploadFrustumPlanes(_cascadePlanesScratch);
+            culler.dispatch(encoder, totalCount, 0);
+            host._cascadeCullDispatches++;
+            culler.prepareReadback(encoder, totalCount);
+            const cascadeIdx = ci;
+            culler
+              .readResults(totalCount)
+              .then((r) => {
+                host._cascadeCullLastResults[cascadeIdx] = r;
+              })
+              .catch(() => {
+                /* readback failure → leave prior result in place */
+              });
+          }
+
+          // Filter using prior-frame readback when count matches.
+          const prev = host._cascadeCullLastResults[ci];
+          if (prev && prev.visibilityFlags && prev.objectCount === totalCount) {
+            const filtered = host._cascadeCullFilterPool[ci];
+            filtered.length = 0;
+            const flags = prev.visibilityFlags;
+            for (let i = 0; i < totalCount; i++) {
+              if (flags[i] === 1) filtered.push(castCommands[i]);
+            }
+            host._cascadeCullLastInput[ci] = totalCount;
+            host._cascadeCullLastFiltered[ci] = filtered.length;
+            castIter = filtered as ReadonlyArray<unknown>;
+          }
+        }
+      }
+    }
+
     const pass = encoder.beginRenderPass({
       label: `CSM_Cascade_${ci}_CastPass`,
       colorAttachments: [],
@@ -140,7 +417,7 @@ export function renderCSMCastPass(
       },
     });
 
-    for (const rawCmd of castCommands) {
+    for (const rawCmd of castIter) {
       const cmd = rawCmd as CastCommandShape;
       if (!cmd) continue;
 

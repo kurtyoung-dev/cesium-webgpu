@@ -707,6 +707,17 @@ export async function bundleWorkers(options) {
     workerConfig.outdir = path.join(options.path, "Workers");
     workerConfig.minify = options.minify;
     workerConfig.write = options.write;
+    // Hash-orphan cleanup: esbuild's `splitting: true` mode emits
+    // content-hashed chunk filenames (e.g. `WebGPUContext-2BFCGMXC.js`).
+    // Each build with code changes produces new hashes; the old hash
+    // files are NOT removed unless we clean the outdir first. Without
+    // this cleanup, `Build/Workers/` accumulates duplicate WebGPUContext
+    // copies forever — observed at 3.2 GB / 249 copies after enough
+    // dev cycles. Skip when `options.write === false` (incremental
+    // mode keeps results in memory and the user manages outdir).
+    if (options.write !== false) {
+      await rimraf(workerConfig.outdir);
+    }
   }
 
   const incremental = options.incremental;

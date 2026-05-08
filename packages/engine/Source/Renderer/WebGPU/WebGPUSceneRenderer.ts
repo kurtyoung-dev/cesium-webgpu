@@ -639,6 +639,14 @@ export function executeBatchTranslucent(
 export class WebGPUSceneRenderer {
   private _isDestroyed: boolean = false;
 
+  // Batch 226 (NEW-SHADOW-CAST-GPU-CULL-PHASE-2 stats wire-in) —
+  // cached context reference set during `_executeOpaquePass` so
+  // diagnostic surfaces (`getHighDensityCullStats`) can read CSM
+  // renderer state without threading the context through every
+  // call. The renderer is owned by a single Scene tied to a single
+  // Context, so caching here is safe.
+  private _lastContext: WebGPUContext | null = null;
+
   // Scene-level rendering resources (lazy-initialized)
   // Public underscore: shared with the executeCommands slice extracts
   // (`WebGPUSceneRendererPassRedirect.ts`, Batch 138 — and following
@@ -870,6 +878,15 @@ export class WebGPUSceneRenderer {
     capacity: number;
   } | null = null;
   private _sortKeysDispatches: number = 0;
+  // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — sorted-indices
+  // readback state. `_lastSortedIndices` is the most-recent successful
+  // readback; consumers reorder their command list using this on the
+  // NEXT frame (1-frame latency, same model as cull readbacks).
+  // `_sortReadbackInFlight` prevents stacking duplicate readback
+  // requests when the previous frame's readback hasn't resolved yet.
+  private _sortReadbackInFlight: boolean = false;
+  private _lastSortedIndices: { indices: Uint32Array; count: number } | null =
+    null;
 
   // C-R12 (Batch 33) — Tracks the device-invalidation unsubscribe so
   // re-calls to `_ensureResources` don't stack duplicate subscribers.
@@ -1457,6 +1474,11 @@ export class WebGPUSceneRenderer {
     config: WebGPURenderFrameConfig,
   ): void {
     const { scene, context, passState } = config;
+    // Batch 226 — cache for stats diagnostics (see
+    // `_buildShadowCascadeCullStats`). Updated every frame so the
+    // diagnostic surface always reflects the current frame's
+    // context state.
+    this._lastContext = context as WebGPUContext;
     const commands = frustumCommands.commands[Pass.OPAQUE];
     const count: number = frustumCommands.indices[Pass.OPAQUE];
     if (count === 0) {
@@ -3008,6 +3030,16 @@ export class WebGPUSceneRenderer {
               sortMode: number;
             },
           ) => boolean;
+          // Batch 228 Phase 2 — sort + readback chain.
+          runBitonicSort?: (
+            encoder: GPUCommandEncoder,
+            count: number,
+          ) => boolean;
+          prepareIndicesReadback?: (
+            encoder: GPUCommandEncoder,
+            count: number,
+          ) => void;
+          readSortedIndices?: (count: number) => Promise<Uint32Array | null>;
         }
       | null
       | undefined;
@@ -3088,8 +3120,42 @@ export class WebGPUSceneRenderer {
         sortMode: 0 /* SORT_MODE_FRONT_TO_BACK — opaque early-Z */,
       },
     );
-    if (ok) this._sortKeysDispatches++;
-    return ok;
+    if (!ok) return false;
+    this._sortKeysDispatches++;
+
+    // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — chain the bitonic
+    // sort + readback. Run only when the FR exposes the Phase 2
+    // entry points (back-compat with older registrations). The
+    // readback's sorted-indices array is stored in
+    // `_lastSortedIndices` for the NEXT frame to apply (1-frame
+    // latency, same model as the cull readbacks).
+    if (
+      fr.runBitonicSort &&
+      fr.prepareIndicesReadback &&
+      fr.readSortedIndices &&
+      !this._sortReadbackInFlight
+    ) {
+      const sortOk = fr.runBitonicSort(encoder, valid);
+      if (sortOk) {
+        fr.prepareIndicesReadback(encoder, valid);
+        this._sortReadbackInFlight = true;
+        const sortedCount = valid;
+        fr.readSortedIndices(valid)
+          .then((indices: Uint32Array | null) => {
+            this._sortReadbackInFlight = false;
+            if (indices) {
+              this._lastSortedIndices = {
+                indices,
+                count: sortedCount,
+              };
+            }
+          })
+          .catch(() => {
+            this._sortReadbackInFlight = false;
+          });
+      }
+    }
+    return true;
   }
 
   // ─── High-density cull diagnostic surface (Batch 217) ──────────────────
@@ -3142,6 +3208,15 @@ export class WebGPUSceneRenderer {
       thresholdLo: number;
       dispatches: number;
     };
+    shadowCascadeCull: {
+      activeAnyCascade: boolean;
+      cascadeCount: number;
+      thresholdHi: number;
+      thresholdLo: number;
+      dispatches: number;
+      lastFrameInputPerCascade: number[];
+      lastFrameFilteredPerCascade: number[];
+    };
   } {
     const ratio = (input: number, filtered: number): number =>
       input > 0 ? (input - filtered) / input : 0;
@@ -3188,6 +3263,66 @@ export class WebGPUSceneRenderer {
         thresholdLo: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
         dispatches: this._sortKeysDispatches,
       },
+      shadowCascadeCull: this._buildShadowCascadeCullStats(),
+    };
+  }
+
+  /**
+   * NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — read the per-
+   * cascade GPU cull stats from the CSM renderer's host fields and
+   * format them for `getHighDensityCullStats()`. Returns zero/empty
+   * shape when no CSM renderer is attached (e.g., scene without
+   * `useCascadedShadowMaps`), so consumers can read the field
+   * unconditionally.
+   */
+  private _buildShadowCascadeCullStats(): {
+    activeAnyCascade: boolean;
+    cascadeCount: number;
+    thresholdHi: number;
+    thresholdLo: number;
+    dispatches: number;
+    lastFrameInputPerCascade: number[];
+    lastFrameFilteredPerCascade: number[];
+  } {
+    // Read the CSM renderer state through a duck-typed shape so we
+    // don't pull in a hard dependency on the CSM module here.
+    // `_lastContext` cached per-frame in `_executeOpaquePass`.
+    const ctx = this._lastContext as unknown as {
+      _csmRenderer?: {
+        _cascadeCount: number;
+        _cascadeCullActive: boolean[];
+        _cascadeCullDispatches: number;
+        _cascadeCullLastInput: number[];
+        _cascadeCullLastFiltered: number[];
+      } | null;
+    } | null;
+    const csm = ctx?._csmRenderer ?? null;
+    if (!csm) {
+      return {
+        activeAnyCascade: false,
+        cascadeCount: 0,
+        thresholdHi: 2400,
+        thresholdLo: 1600,
+        dispatches: 0,
+        lastFrameInputPerCascade: [],
+        lastFrameFilteredPerCascade: [],
+      };
+    }
+    let any = false;
+    for (const a of csm._cascadeCullActive) {
+      if (a) {
+        any = true;
+        break;
+      }
+    }
+    return {
+      activeAnyCascade: any,
+      cascadeCount: csm._cascadeCount,
+      thresholdHi: 2400,
+      thresholdLo: 1600,
+      dispatches: csm._cascadeCullDispatches,
+      lastFrameInputPerCascade: csm._cascadeCullLastInput.slice(),
+      lastFrameFilteredPerCascade: csm._cascadeCullLastFiltered.slice(),
     };
   }
 

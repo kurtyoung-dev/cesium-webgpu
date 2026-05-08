@@ -50,14 +50,20 @@ Edit `scenes.json`. Each scene needs a `name` and an optional `camera`:
 
 When `camera` is `null` the page's default initial view is used.
 
-### Synthetic scenes via `setup` (Batch 224)
+### Synthetic scenes via `setup` / `setupFile` (Batch 224, refactored Batch 225)
 
-Scenes can include a `setup` field — a JS source string evaluated in the
-page context (same origin as the viewers) before the camera is positioned.
-The script receives a `params` argument from the scene's `setupParams`
-field, has access to `window.Cesium`, `window.webglViewer`, and
-`window.webgpuViewer`, and may return a Promise that resolves when async
-setup completes (e.g., procedural geometry generation).
+Scenes can include a `setupFile` field — a path (relative to
+`scenes.json`) to a JS source file evaluated in the page context (same
+origin as the viewers) before the camera is positioned. Or, for
+trivial one-liners, an inline `setup` string. The script receives a
+`params` argument from the scene's `setupParams` field, has access to
+`window.Cesium`, `window.webglViewer`, and `window.webgpuViewer`, and
+may return a Promise that resolves when async setup completes (e.g.,
+procedural geometry generation).
+
+Prefer `setupFile` over `setup` for any non-trivial generator —
+inline strings are fragile (no syntax highlighting, no formatter, no
+debuggability) and bloat `scenes.json`.
 
 The `high-density-5k-spheres` scene is the reference example: it
 procedurally adds 5000 sphere instances around San Francisco with a

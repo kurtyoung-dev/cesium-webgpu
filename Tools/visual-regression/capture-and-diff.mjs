@@ -112,31 +112,105 @@ function diffPixelBuffers(a, b, width, height, tolerance = 16) {
 }
 
 /**
- * Capture both canvases via page.evaluate. The split-screen page exposes
- * `window.webglViewer` and `window.webgpuViewer`; we read each viewer's
- * canvas raw pixels via a 2D context. We return raw RGBA + dimensions so
- * the diff is independent of PNG encoding noise.
+ * Capture both canvases via page.evaluate.
+ *
+ * **Batch 227 capture-method fix.** The previous direct-`drawImage`
+ * → `getImageData` path returned an empty / undefined buffer for
+ * WebGPU canvases — WebGPU canvases are bound to a swap chain,
+ * present clears the texture immediately, and `drawImage(canvas)`
+ * after present hits an undefined frame. The result was a 0%-diff
+ * "PASS" comparing two identically-empty buffers (one rendered as
+ * black, the other as white depending on alpha handling).
+ *
+ * Fix: route through `canvas.toDataURL()` first. Per the comment
+ * in `bug-11-imagery-probe.mjs`, `toDataURL` forces the GPU to
+ * flush + readback the canvas content synchronously, returning
+ * actual rendered pixels. We then decode the data URL via an
+ * Image element + 2D context to recover raw RGBA. Same diff path
+ * after that.
+ */
+/**
+ * Decode PNG bytes (browser-encoded) into raw RGBA via the page's
+ * own canvas decoder. Avoids pulling in a Node-side PNG dep.
+ */
+async function decodePngInPage(page, pngBuffer) {
+  const base64 = Buffer.from(pngBuffer).toString("base64");
+  return await page.evaluate(async (b64) => {
+    const blob = await (
+      await fetch(`data:image/png;base64,${b64}`)
+    ).blob();
+    const bitmap = await createImageBitmap(blob);
+    const off = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = off.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0);
+    const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    return { width: bitmap.width, height: bitmap.height, data: Array.from(data) };
+  }, base64);
+}
+
+/**
+ * Capture both canvases.
+ *
+ * **Batch 227b** — Use Playwright's element-level `screenshot()` to
+ * capture each canvas. Element screenshots come from the browser's
+ * compositor (post-present pixels) so they handle WebGPU swap chains
+ * correctly. The two prior approaches both produced empty / wrong
+ * captures:
+ *   - direct `drawImage(canvas)` + `getImageData` → undefined for
+ *     WebGPU swap chains.
+ *   - `canvas.toDataURL` + `Image` decode → got a solid-color
+ *     fallback state, possibly because the browser was using a
+ *     reduced-fidelity readback path.
+ *
+ * Element screenshots return PNG bytes; we then decode those PNGs
+ * back into raw RGBA via the same page's `createImageBitmap` so the
+ * diff function can compare pixel buffers directly.
+ */
+/**
+ * Capture both canvases via Playwright element screenshots.
+ *
+ * **The big fix (Batch 227c).** All previous capture attempts read
+ * `canvas.toDataURL()` — which returns black on Cesium's canvases
+ * because both the WebGL context (`preserveDrawingBuffer: false`,
+ * the perf-tuned default) and the WebGPU swap chain invalidate
+ * their backing store after present. The page IS rendering
+ * correctly (verified with `page.screenshot()` of the full
+ * `Apps/CesiumViewer/index.html` — visible globe + imagery), but
+ * any code that reads pixels via `toDataURL` / `getImageData`
+ * sees an empty post-present surface.
+ *
+ * Playwright's `locator.screenshot()` reads from the browser's
+ * compositor, which reflects what the user actually sees on
+ * screen (post-blit, post-composite). It returns PNG bytes; we
+ * decode those back to raw RGBA in the page using
+ * `createImageBitmap` so the diff comparator works byte-for-byte.
  */
 async function captureCanvases(page) {
-  return await page.evaluate(() => {
-    function readCanvas(canvas) {
-      // Use OffscreenCanvas 2D — the cesium canvas is webgl/webgpu, so we
-      // need to copy via drawImage onto a CPU 2D context to read pixels.
-      const w = canvas.width;
-      const h = canvas.height;
-      const off = new OffscreenCanvas(w, h);
-      const ctx = off.getContext("2d");
-      ctx.drawImage(canvas, 0, 0);
-      const data = ctx.getImageData(0, 0, w, h).data;
-      return { width: w, height: h, data: Array.from(data) };
-    }
+  // Tag both canvases so the locator can find them deterministically
+  // even if the page has other canvases (FPS overlay etc.).
+  await page.evaluate(() => {
     const wgl = window.webglViewer?.scene?.canvas;
     const wgpu = window.webgpuViewer?.scene?.canvas;
     if (!wgl || !wgpu) {
       throw new Error("split-screen viewers not exposed on window");
     }
-    return { webgl: readCanvas(wgl), webgpu: readCanvas(wgpu) };
+    wgl.setAttribute("data-vr-tag", "webgl");
+    wgpu.setAttribute("data-vr-tag", "webgpu");
   });
+  const webglPng = await page
+    .locator('canvas[data-vr-tag="webgl"]')
+    .screenshot({ type: "png" });
+  const webgpuPng = await page
+    .locator('canvas[data-vr-tag="webgpu"]')
+    .screenshot({ type: "png" });
+  // Decode both PNGs back to raw RGBA via the page's
+  // createImageBitmap. The decode is independent of the
+  // canvas-capture path (it just decodes a PNG byte buffer).
+  const [webgl, webgpu] = await Promise.all([
+    decodePngInPage(page, webglPng),
+    decodePngInPage(page, webgpuPng),
+  ]);
+  return { webgl, webgpu };
 }
 
 /**
@@ -261,14 +335,30 @@ async function applyScene(page, scene, settleFrames) {
   // scenes that procedurally generate test geometry. The script
   // receives `webglViewer` + `webgpuViewer` via `window.*` and any
   // params via the second arg.
-  if (typeof scene.setup === "string") {
+  //
+  // Batch 225 cosmetic — `setupFile` (path relative to scenes.json)
+  // is preferred over the inline `setup` string for any non-trivial
+  // generator. The file is read at runtime and treated as if it
+  // were inline in `setup`. Inline `setup` still works for one-line
+  // helpers.
+  let setupSrc = null;
+  if (typeof scene.setupFile === "string") {
+    const filePath = path.resolve(
+      path.dirname(SCENES_PATH),
+      scene.setupFile,
+    );
+    setupSrc = await fs.readFile(filePath, "utf8");
+  } else if (typeof scene.setup === "string") {
+    setupSrc = scene.setup;
+  }
+  if (setupSrc !== null) {
     await page.evaluate(
       ({ src, params }) => {
         // eslint-disable-next-line no-new-func
         const fn = new Function("params", src);
         return fn(params);
       },
-      { src: scene.setup, params: scene.setupParams ?? {} },
+      { src: setupSrc, params: scene.setupParams ?? {} },
     );
   }
   if (scene.camera) {
@@ -332,11 +422,56 @@ async function main() {
 
   console.log(`[visual-regression] navigating ${cfg.baseUrl}`);
   await page.goto(cfg.baseUrl, { waitUntil: "networkidle" });
+  // The split-screen page gates viewer creation behind a "Launch
+  // Both" button so users can choose when to spin up two WebGPU
+  // adapters. For automation we click it programmatically.
+  await page.waitForSelector("#btnLaunch", { timeout: 10_000 });
+  await page.click("#btnLaunch");
   // Give the WebGPU adapter a beat to come up
   await page.waitForFunction(
     () => !!(window.webglViewer && window.webgpuViewer),
     null,
-    { timeout: 30000 },
+    { timeout: 60000 },
+  );
+  // Batch 227b — wait for both globes to actually render at least
+  // one non-black frame. Bing imagery + terrain tiles take real
+  // wall-clock time to download, and the previous fixed-frame
+  // settle (30 rAF ticks ≈ 0.5s) was nowhere near enough.
+  await page.waitForFunction(
+    () => {
+      function hasPixels(viewer) {
+        if (!viewer?.scene?.canvas) return false;
+        const c = viewer.scene.canvas;
+        try {
+          const off = new OffscreenCanvas(32, 32);
+          const ctx = off.getContext("2d");
+          // Sample center 32×32 to keep this cheap.
+          ctx.drawImage(
+            c,
+            (c.width - 32) / 2,
+            (c.height - 32) / 2,
+            32,
+            32,
+            0,
+            0,
+            32,
+            32,
+          );
+          const d = ctx.getImageData(0, 0, 32, 32).data;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i] | d[i + 1] | d[i + 2]) return true;
+          }
+          return false;
+        } catch {
+          return false;
+        }
+      }
+      return (
+        hasPixels(window.webglViewer) && hasPixels(window.webgpuViewer)
+      );
+    },
+    null,
+    { timeout: 60_000 },
   );
 
   const report = { startedAt: new Date().toISOString(), threshold: args.threshold, scenes: [] };

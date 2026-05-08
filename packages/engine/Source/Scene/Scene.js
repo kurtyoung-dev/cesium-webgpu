@@ -322,18 +322,21 @@ class Scene {
     // WebGL scenes don't use _alternateSceneRenderer — they run the
     // traditional executeCommand path in SceneRenderer.js. No log needed.
 
-    // B213-O2 (Batch 219 audit fix) — register HDR fallback listener
-    // so this scene's `_useHDRCanvasOutput` follows the canvas reality
-    // when the context's extended-toneMapping configure fails (e.g.,
-    // older browser) and the context demotes itself to SDR. Without
-    // this the scene believes HDR is on while the canvas is SDR,
-    // causing the post-process pipeline's skip-tonemap path to write
-    // unmapped HDR values into an SDR canvas — visibly washed out.
+    // B213-O2 (Batch 219) + B219-N4 (Batch 225 audit fix) — register
+    // HDR fallback listener so this scene's `_useHDRCanvasOutput`
+    // follows the canvas reality when the context's extended-
+    // toneMapping configure fails (e.g., older browser) and the
+    // context demotes itself to SDR. Each Scene attached to the
+    // context registers its own listener via the Set-based API so
+    // multi-scene-per-context configs (split-screen, PiP) all sync
+    // — the prior single-slot design only synced the last-installed
+    // scene.
+    this._hdrFallbackUnsub = null;
     if (
       defined(context) &&
       typeof context.setHDRFallbackListener === "function"
     ) {
-      context.setHDRFallbackListener((newValue) => {
+      this._hdrFallbackUnsub = context.setHDRFallbackListener((newValue) => {
         if (this._useHDRCanvasOutput && !newValue) {
           this._useHDRCanvasOutput = false;
         }
@@ -2426,8 +2429,13 @@ class Scene {
    * `'auto'` (default) keeps the lazy-init path — first activation
    * crossing pays the compile cost, subsequent crossings are warm.
    *
-   * `'never'` is reserved for a future slice that fully disables
-   * the dispatchers (currently behaves as 'auto').
+   * `'never'` (Batch 225 wire-in) — fully disables the GPU
+   * dispatchers. The opaque + translucent gates short-circuit
+   * to false (`WebGPUSceneRenderer` already reads the scene
+   * hint), AND the context's lazy-getter chain refuses to
+   * allocate new auxiliary culler instances. Existing
+   * instances are left in place to avoid an abrupt mid-render
+   * deallocation; idle-decay (Batch 229) reaps them naturally.
    *
    * No-op on WebGL.
    *
@@ -2445,8 +2453,16 @@ class Scene {
       return;
     }
     this._gpuCullingHint = allowed;
+    const ctx = this._context;
+    // Batch 225 (B219-N3 audit fix) — push the hint to the context
+    // so its lazy aux-culler getters honor 'never' too. Previously
+    // the hint was read only at the renderer's gate-update site;
+    // any code path that touched a getter directly would still
+    // burn VRAM even with 'never'.
+    if (ctx && typeof ctx.setGpuCullingHint === "function") {
+      ctx.setGpuCullingHint(allowed);
+    }
     if (allowed === "always") {
-      const ctx = this._context;
       if (ctx && typeof ctx.warmUpHighDensityDispatchers === "function") {
         ctx.warmUpHighDensityDispatchers(
           ctx.drawingBufferWidth || 1920,
@@ -4411,6 +4427,13 @@ class Scene {
    * @see Scene#isDestroyed
    */
   destroy() {
+    // Batch 225 (B219-N4 audit fix) — unsubscribe HDR fallback
+    // listener so a destroyed Scene doesn't keep a callback alive
+    // on the (potentially long-lived) shared context.
+    if (typeof this._hdrFallbackUnsub === "function") {
+      this._hdrFallbackUnsub();
+      this._hdrFallbackUnsub = null;
+    }
     this._tweens.removeAll();
     this._computeEngine = this._computeEngine && this._computeEngine.destroy();
     this._screenSpaceCameraController =
