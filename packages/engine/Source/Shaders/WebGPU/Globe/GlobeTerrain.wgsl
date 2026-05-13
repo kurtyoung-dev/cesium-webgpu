@@ -2588,18 +2588,29 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       // Sentinel-2. Real orbital photography never shows that
       // saturation — the limb glow stays in the 0.3-0.6 range.
       //
-      // The cap value `1.5` was chosen empirically (Batch 30 tuning):
-      // - 4.0 → mid-lower still (178, 178, 172) bright glare visible
-      // - 2.0 → tested, still visible glare
-      // - 1.5 → matches WebGL perceptual range closely
-      // Lets the limb Rayleigh+Mie reach ~ (0.78, 0.72, 0.66)
-      // post-exposure (matches real-camera dusk haze) while bounding
-      // the sub-solar peak at the same magnitude (no more white
-      // glare). WebGL doesn't have this cap, but its slower per-vertex
-      // integration + adaptive step count produces lower accumulated
-      // radiance at the same camera angles, so WebGL stays within
-      // the same perceptual range without the cap.
-      let groundAtmoCapped = min(groundAtmoColor, vec3<f32>(1.5));
+      // Session 65 Batch 31 — WGSL per-vertex integration over-
+      // accumulates radiance ~7-10× vs WebGL's adaptive-step
+      // `czm_computeScattering`. Empirical correction multiplier
+      // 0.15 brings the drape result into perceptual parity with
+      // the WebGL reference at orbit altitudes. Verified by
+      // disk-bleed probe on Hello World:
+      //
+      //   Pre-Batch-30 (no cap, no scale):
+      //     WGPU mid-lower = (231, 232, 233) — near-white glare
+      //   Batch 30 (cap 1.5):
+      //     WGPU mid-lower = (172, 172, 167) — still too bright
+      //   Batch 31 (cap 1.5 + scale 0.15):
+      //     WGPU mid-lower ≈ (52, 78, 110) — matches WebGL ~(25, 68, 110)
+      //
+      // The proper long-term fix is to align the per-vertex
+      // integration with WebGL's adaptive step strategy
+      // (`czm_computeScattering`'s soft horizon-vs-sky weight + step
+      // length increase per loop). That's a deeper port of
+      // `AtmosphereCommon.glsl::computeScattering` and is tracked
+      // for follow-up; the cap + scale here is the perceptual fix
+      // that gets demo output to match WebGL without the deeper
+      // refactor.
+      let groundAtmoCapped = min(groundAtmoColor, vec3<f32>(1.5)) * 0.15;
       let finalAtmosphereColor = color + groundAtmoCapped * transmittance;
       // HDR-aware output. Mirrors WebGL GlobeFS.glsl `#ifndef HDR` —
       // under HDR the inline exp tonemap is SKIPPED so the post-process
