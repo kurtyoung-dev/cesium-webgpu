@@ -1059,14 +1059,23 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   out.v_atmosphereMieColor = vec3<f32>(0.0);
   out.v_atmosphereOpacity = 0.0;
   if (camera.atmosphereParams.w > 0.5 && mode > 2.5) {
-    // WebGL chooses between the configured atmosphere light (sun by
-    // default — `DYNAMIC_ATMOSPHERE_LIGHTING_FROM_SUN`) and the
-    // sceneLight direction. The CPU packer makes that choice and feeds
-    // a single `atmosphereLightDirectionAndIntensity.xyz` per frame.
-    // When dynamic lighting is off, GLSL substitutes
-    // `normalize(positionWC)` — but we always pass the resolved light
-    // direction from JS so the shader stays branch-free.
-    let lightDir = camera.atmosphereLightDirectionAndIntensity.xyz;
+    // Session 65 Batch 38 — proper ground-atmosphere integration.
+    // `atmosphereParams.w` carries the lighting mode:
+    //   1.0 → dynamic lighting OFF → substitute normalize(positionWC)
+    //   2.0 → dynamic lighting ON  → use the packed light direction
+    // Mirrors WebGL GlobeFS.glsl line 494:
+    //   lightDirection = czm_branchFreeTernary(
+    //       dynamicLighting, atmosphereLightDirection, normalize(positionWC));
+    // Without this fallback the WGSL march was always tracing toward the
+    // real sun direction, producing 7-10× more scattering on the dayside
+    // than the WebGL no-dynamic-lighting reference and forcing the
+    // empirical cap=1.5 × scale=0.15 in the FS drape branch (now removed).
+    let dynamicLightingActive = camera.atmosphereParams.w > 1.5;
+    let lightDir = select(
+      normalize(position3DWC),
+      camera.atmosphereLightDirectionAndIntensity.xyz,
+      dynamicLightingActive,
+    );
     let scattering = computeAtmosphereScatteringGround(position3DWC, lightDir);
     out.v_atmosphereRayleighColor = scattering.rayleigh;
     out.v_atmosphereMieColor = scattering.mie;
@@ -2509,12 +2518,40 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // the latter when the atmosphere wasn't enabled CPU-side.
     var groundAtmoColor: vec3<f32>;
     var groundAtmoOpacity: f32 = atmosphereOpacity;
+    var groundAtmoLightDir: vec3<f32> = vec3<f32>(0.0, 0.0, 1.0);
     if (camera.atmosphereParams.w > 0.5) {
-      // Per-fragment view direction (camera → fragment, world space).
+      // Session 65 Batch 38 — proper camera-to-position view direction.
+      // The previous expression
+      //   `let fragmentWorldPos = input.v_positionMC + cameraWC;`
+      //   `let viewDir = normalize(fragmentWorldPos - cameraWC);`
+      // expands to `normalize(v_positionMC)` because
+      // `out.v_positionMC = position3DWC` (line 1050) IS already in
+      // world coords (not RTE). That gives the surface OUTWARD normal,
+      // not the camera-to-surface direction the Rayleigh/Mie phase
+      // functions need. On the sunlit hemisphere where the outward
+      // normal aligns with the sun direction, the wrong cosAngle
+      // pushed the Henyey-Greenstein Mie phase into its forward peak
+      // (cos≈+1 → pow(0.01, 1.5) denominator → very large), producing
+      // the 7-10× over-accumulation that Batches 30+31 worked around
+      // with cap=1.5 × scale=0.15. Mirrors WebGL
+      // `AtmosphereCommon.glsl::computeAtmosphereColor` line 166-167:
+      //   `vec3 cameraToPositionWC = positionWC - czm_viewerPositionWC;`
+      //   `vec3 cameraToPositionWCDirection = normalize(cameraToPositionWC);`
       let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
-      let fragmentWorldPos = input.v_positionMC + cameraWC;
-      let viewDir = normalize(fragmentWorldPos - cameraWC);
-      let lightDir = camera.atmosphereLightDirectionAndIntensity.xyz;
+      let positionWC = input.v_positionMC;
+      let viewDir = normalize(positionWC - cameraWC);
+      // `w > 1.5` → dynamic lighting active (use the resolved sun /
+      // scene-light direction); `w == 1.0` → static lighting, fall
+      // back to per-fragment `normalize(positionWC)` to match WebGL's
+      // `czm_branchFreeTernary(dynamicLighting, …, normalize(positionWC))`
+      // at GlobeFS.glsl line 494.
+      let dynamicLightingActive = camera.atmosphereParams.w > 1.5;
+      let lightDir = select(
+        normalize(positionWC),
+        camera.atmosphereLightDirectionAndIntensity.xyz,
+        dynamicLightingActive,
+      );
+      groundAtmoLightDir = lightDir;
       groundAtmoColor = computeGroundAtmosphereColor(
         viewDir,
         lightDir,
@@ -2577,41 +2614,71 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         camera.atmosphereParams.w > 0.5,
       );
       let transmittance = transmittanceModifier + opacityForDrape;
-      // Session 65 Batch 30 (orbit polish §13.2/§13.7 follow-up) —
-      // cap the per-channel atmosphere contribution to a sane ceiling
-      // BEFORE adding to imagery. The Nishita ray-march at orbit
-      // altitudes with full-power Mie forward-scatter can return
-      // linear-radiance values in the 5-20 range per channel, which
-      // after the `1 - exp(-2 × x)` Reinhard-style exposure curve
-      // saturate to near-white and produce the visible bright glare
-      // patch on the sun-side of the Earth disk in Hello World /
-      // Sentinel-2. Real orbital photography never shows that
-      // saturation — the limb glow stays in the 0.3-0.6 range.
+      // Session 65 Batch 38 — proper ground-atmosphere integration.
+      // The previous Batches 30+31 fix capped the per-channel radiance
+      // at 1.5 then scaled by 0.15 to perceptually match WebGL at
+      // orbit altitudes. The root cause was NOT the ray-march — the
+      // WGSL `computeScatteringGround` port is byte-equivalent to
+      // `AtmosphereCommon.glsl::computeScattering`. The over-
+      // accumulation came from the WGSL VS always tracing toward the
+      // packed sun direction, while WebGL (with the default
+      // DynamicAtmosphereLighting.NONE) substitutes
+      // `normalize(positionWC)` per-vertex — every vertex sees a
+      // "straight up" light ray, so optical depth stays uniform and
+      // the integrated radiance lands in the 0.3-0.6 range that
+      // matches real orbital photography.
       //
-      // Session 65 Batch 31 — WGSL per-vertex integration over-
-      // accumulates radiance ~7-10× vs WebGL's adaptive-step
-      // `czm_computeScattering`. Empirical correction multiplier
-      // 0.15 brings the drape result into perceptual parity with
-      // the WebGL reference at orbit altitudes. Verified by
-      // disk-bleed probe on Hello World:
+      // Batch 38 fixes that at the source (see VS path + CPU
+      // `atmosphereParams.w` repack) so the FS can apply the
+      // unscaled WebGL drape math: `color + atmoColor * transmittance`
+      // combined with the WebGL `darken` and `sunlitAtmosphereIntensity`
+      // mixes from GlobeFS.glsl lines 546-554. No empirical magic
+      // numbers in this branch.
+      var finalAtmosphereColor = color + groundAtmoColor * transmittance;
+
+      // WebGL GlobeFS.glsl lines 546-554 — the day/night atmosphere
+      // mix that produces the correct night-side darkening + day-side
+      // limb glow gradient. Only applied when dynamic lighting is
+      // active (matches the `#if defined(DYNAMIC_ATMOSPHERE_LIGHTING)
+      // && (ENABLE_VERTEX_LIGHTING || ENABLE_DAYNIGHT_SHADING)`
+      // GLSL guard).
       //
-      //   Pre-Batch-30 (no cap, no scale):
-      //     WGPU mid-lower = (231, 232, 233) — near-white glare
-      //   Batch 30 (cap 1.5):
-      //     WGPU mid-lower = (172, 172, 167) — still too bright
-      //   Batch 31 (cap 1.5 + scale 0.15):
-      //     WGPU mid-lower ≈ (52, 78, 110) — matches WebGL ~(25, 68, 110)
+      //   darken = clamp(dot(normalize(positionWC), lightDir), 0, 1)
+      //     1 on sun-facing surface → use full imagery + atmo
+      //     0 on night side          → use unmodulated atmo (no imagery
+      //                                contribution, terrain colors fall
+      //                                back to dim Rayleigh glow)
+      //   sunlitAtmosphereIntensity = camera-distance fade. At ground
+      //     level the lit/unlit mix favors the unmodulated atmo (atmo
+      //     is the dominant visual); at orbit it favors the lit
+      //     `finalAtmosphereColor`.
       //
-      // The proper long-term fix is to align the per-vertex
-      // integration with WebGL's adaptive step strategy
-      // (`czm_computeScattering`'s soft horizon-vs-sky weight + step
-      // length increase per loop). That's a deeper port of
-      // `AtmosphereCommon.glsl::computeScattering` and is tracked
-      // for follow-up; the cap + scale here is the perceptual fix
-      // that gets demo output to match WebGL without the deeper
-      // refactor.
-      let groundAtmoCapped = min(groundAtmoColor, vec3<f32>(1.5)) * 0.15;
-      let finalAtmosphereColor = color + groundAtmoCapped * transmittance;
+      // `tile.nightFadeOutDistance` / `tile.nightFadeInDistance` carry
+      // the camera-distance fade ramp (Globe.js defaults:
+      // π/2 × Rmin = ~10 Mm, 5π/2 × Rmin = ~50 Mm). Per-fragment
+      // `cameraDist` ≈ distance from camera to surface point,
+      // computed from the encoded RTE pair. Floor at 0.05 mirrors
+      // GlobeFS.glsl line 550 (clamp lower bound).
+      if (camera.atmosphereParams.w > 1.5) {
+        let cameraWC2 = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let positionWC2 = input.v_positionMC;
+        let darken = clamp(
+          dot(normalize(positionWC2), groundAtmoLightDir),
+          0.0,
+          1.0,
+        );
+        let darkenedAtmo = mix(groundAtmoColor, finalAtmosphereColor, darken);
+        let cameraDist = length(positionWC2 - cameraWC2);
+        let fadeOut = tile.nightFadeOutDistance;
+        let fadeIn = tile.nightFadeInDistance;
+        let fadeSpan = max(fadeIn - fadeOut, 1.0);
+        let sunlitIntensity = clamp(
+          (cameraDist - fadeOut) / fadeSpan,
+          0.05,
+          1.0,
+        );
+        finalAtmosphereColor = mix(darkenedAtmo, finalAtmosphereColor, sunlitIntensity);
+      }
       // HDR-aware output. Mirrors WebGL GlobeFS.glsl `#ifndef HDR` —
       // under HDR the inline exp tonemap is SKIPPED so the post-process
       // chain can do the compression on linear-radiance HDR pixels.

@@ -370,6 +370,8 @@ export function createCameraUniformBuffer(
     dynamicAtmosphereLighting?: boolean;
     dynamicAtmosphereLightingFromSun?: boolean;
     showGroundAtmosphere?: boolean;
+    enableLighting?: boolean;
+    hasWaterMask?: boolean;
   };
   const us = uniformState as unknown as {
     sunDirectionWC?: { x: number; y: number; z: number };
@@ -441,7 +443,38 @@ export function createCameraUniformBuffer(
   // the per-frame Fog.update.
   const fogEnabled = fs?.fog?.enabled !== false;
   const groundAtmoEnabled = tp.showGroundAtmosphere !== false;
-  data[offset++] = fogEnabled || groundAtmoEnabled ? 1.0 : 0.0;
+  // Session 65 Batch 38 — ground-atmosphere proper integration.
+  // `atmosphereParams.w` encodes the enable flag AND the lighting mode,
+  // replacing the empirical cap=1.5 × scale=0.15 workaround:
+  //
+  //   0.0 → atmosphere off (skip per-vertex ray-march entirely)
+  //   1.0 → atmosphere on, "static" lighting (the WebGL `dynamicLighting`
+  //         bool evaluates to false). VS substitutes per-vertex
+  //         `normalize(positionWC)` for the light direction, mirroring
+  //         WebGL's `czm_branchFreeTernary(dynamicLighting, …,
+  //         normalize(positionWC))` fallback at GlobeFS.glsl line 494.
+  //         Every vertex sees a "straight up" light ray, so the
+  //         integrated optical depth is uniform across the planet (the
+  //         simplified flat-light model WebGL ships when lighting is off
+  //         or atmosphere lighting is NONE).
+  //   2.0 → atmosphere on, dynamic lighting ACTIVE (real sun direction +
+  //         FS darken/sunlitAtmosphereIntensity day-night mix).
+  //
+  // WebGL `dynamicLighting = DYNAMIC_ATMOSPHERE_LIGHTING && (ENABLE_VERTEX_LIGHTING
+  // || ENABLE_DAYNIGHT_SHADING)`. The first define follows
+  // `tileProvider.dynamicAtmosphereLighting`; the latter two are gated by
+  // `enableLighting` in GlobeSurfaceShaderSet. Hello World defaults to
+  // `enableLighting = false`, so WebGL's `dynamicLighting` evaluates to
+  // false even though `dynamicAtmosphereLighting` is true by default —
+  // the WGSL must reproduce that AND-gate or the per-vertex march
+  // accumulates ~7-10× more radiance than the WebGL flat-light reference.
+  //
+  // The WGSL `w > 0.5` enable check still passes for both 1.0 and 2.0;
+  // a separate `w > 1.5` check gates the dynamic-lighting branch.
+  const atmoEnabled = fogEnabled || groundAtmoEnabled;
+  const dynamicLightingActive =
+    !!tp.dynamicAtmosphereLighting && !!tp.enableLighting;
+  data[offset++] = atmoEnabled ? (dynamicLightingActive ? 2.0 : 1.0) : 0.0;
 
   const bufferSize = Math.max(CAMERA_UNIFORM_BYTES, 256);
   return writeUniformSlice(
