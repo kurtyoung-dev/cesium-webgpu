@@ -32,6 +32,24 @@ export interface BloomConfig {
   intensity?: number; // Bloom glow intensity (default 0.5)
   sigma?: number; // Gaussian sigma for blur (default 3.5)
   glowOnly?: boolean; // Debug: show only the glow
+  // Session 65 Batch 22 — altitude-gated bloom (orbit polish §13.1).
+  // When `enableAltitudeGate` is true (default), per-frame bloom
+  // intensity is multiplied by an altitude factor that fades from
+  // 1.0 at sea level to 0.0 above `altitudeGateMaxMeters`. Mirrors
+  // industry convention (Frostbite GDC 2016, Karis 2013) of treating
+  // bloom as a CAMERA LENS effect — absent in vacuum-of-space cameras.
+  // Real orbital photography (ISS, Earthrise) shows essentially zero
+  // bloom on the Earth disk; matching that requires fading the effect
+  // as the camera leaves ground altitude. Set to false to disable
+  // altitude gating (matches pre-Batch-22 behavior).
+  enableAltitudeGate?: boolean;
+  // Altitude curve: bloom fully active below this height (meters),
+  // fully gated above `altitudeGateMaxMeters`. Smoothstep between.
+  // Defaults chosen so high-altitude aerial photogrammetry views
+  // (Aerometrex SF at ~500m, NYC at ~10km) keep full bloom; orbit
+  // views (>1 Earth radius) get zero bloom.
+  altitudeGateMinMeters?: number;
+  altitudeGateMaxMeters?: number;
 }
 
 export class BloomEffect implements PostProcessEffect {
@@ -78,13 +96,70 @@ export class BloomEffect implements PostProcessEffect {
 
   private _config: Required<BloomConfig>;
 
+  // Session 65 Batch 22 — base intensity captured at config time so
+  // the altitude gate multiplies AGAINST it each frame rather than
+  // permanently mutating `_config.intensity` (which would lose the
+  // user's authored value on subsequent gate updates).
+  private _baseIntensity: number = 0.5;
+  // Last value written to the composite UBO. Avoids re-writing the
+  // buffer when the gated intensity hasn't changed (e.g., camera
+  // hasn't moved).
+  private _lastGatedIntensity: number = -1.0;
+
   constructor(config: BloomConfig = {}) {
     this._config = {
       threshold: config.threshold ?? 0.8,
       intensity: config.intensity ?? 0.5,
       sigma: config.sigma ?? 3.5,
       glowOnly: config.glowOnly ?? false,
+      enableAltitudeGate: config.enableAltitudeGate ?? true,
+      altitudeGateMinMeters: config.altitudeGateMinMeters ?? 100_000.0,
+      altitudeGateMaxMeters: config.altitudeGateMaxMeters ?? 6_378_137.0,
     };
+    this._baseIntensity = this._config.intensity;
+  }
+
+  /**
+   * Session 65 Batch 22 — apply the altitude-gated intensity update.
+   * Called per-frame by the SceneRenderer with the current camera
+   * altitude in meters. Multiplies the base intensity by a smoothstep
+   * curve from 1.0 at `altitudeGateMinMeters` (or below) to 0.0 at
+   * `altitudeGateMaxMeters` (or above). Pre-Batch-22 behavior is
+   * preserved when `enableAltitudeGate` is false — the base intensity
+   * is used unchanged.
+   *
+   * @param cameraHeightMeters Camera altitude above the WGS84
+   *   ellipsoid in meters (`frameState.camera.positionCartographic.height`).
+   */
+  applyAltitudeGate(cameraHeightMeters: number): void {
+    if (!this._device || !this._compositeUniforms) return;
+    let gated = this._baseIntensity;
+    if (this._config.enableAltitudeGate) {
+      const min = this._config.altitudeGateMinMeters;
+      const max = this._config.altitudeGateMaxMeters;
+      // 1 - smoothstep(min, max, h): full intensity at h <= min,
+      // zero at h >= max, smooth blend between.
+      const t = Math.max(
+        0,
+        Math.min(1, (cameraHeightMeters - min) / Math.max(1e-6, max - min)),
+      );
+      const smooth = t * t * (3 - 2 * t);
+      gated = this._baseIntensity * (1 - smooth);
+    }
+    // Avoid redundant uploads when the gated value hasn't moved.
+    if (Math.abs(gated - this._lastGatedIntensity) < 1e-4) return;
+    this._lastGatedIntensity = gated;
+    this._config.intensity = gated;
+    this._device.queue.writeBuffer(
+      this._compositeUniforms,
+      0,
+      new Float32Array([
+        this._config.glowOnly ? 1.0 : 0.0,
+        gated,
+        0.0,
+        0.0,
+      ]) as Float32Array<ArrayBuffer>,
+    );
   }
 
   initialize(
@@ -343,9 +418,28 @@ export class BloomEffect implements PostProcessEffect {
     if (!this._device) return;
     const cfg = this._config;
     if (config.threshold !== undefined) cfg.threshold = config.threshold;
-    if (config.intensity !== undefined) cfg.intensity = config.intensity;
+    if (config.intensity !== undefined) {
+      cfg.intensity = config.intensity;
+      // Session 65 Batch 22 — capture as new base intensity so the
+      // altitude gate's per-frame multiplier uses the user's updated
+      // baseline.
+      this._baseIntensity = config.intensity;
+      this._lastGatedIntensity = -1.0; // force next applyAltitudeGate to write
+    }
     if (config.sigma !== undefined) cfg.sigma = config.sigma;
     if (config.glowOnly !== undefined) cfg.glowOnly = config.glowOnly;
+    if (config.enableAltitudeGate !== undefined) {
+      cfg.enableAltitudeGate = config.enableAltitudeGate;
+      this._lastGatedIntensity = -1.0;
+    }
+    if (config.altitudeGateMinMeters !== undefined) {
+      cfg.altitudeGateMinMeters = config.altitudeGateMinMeters;
+      this._lastGatedIntensity = -1.0;
+    }
+    if (config.altitudeGateMaxMeters !== undefined) {
+      cfg.altitudeGateMaxMeters = config.altitudeGateMaxMeters;
+      this._lastGatedIntensity = -1.0;
+    }
 
     if (this._brightUniforms) {
       this._device.queue.writeBuffer(

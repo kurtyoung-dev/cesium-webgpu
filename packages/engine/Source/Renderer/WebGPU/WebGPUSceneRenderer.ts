@@ -2188,6 +2188,25 @@ export class WebGPUSceneRenderer {
       // velocity output will populate this view via
       // `sceneFramebuffer.ensureVelocityTexture(...)`.
       const motionView = this._sceneFramebuffer?.velocityView ?? null;
+      // Session 65 Batch 22 — orbit polish §13.1. Bloom intensity
+      // fades from 1.0 at ground to 0.0 above 1 Earth radius
+      // altitude. Real orbital photography shows essentially zero
+      // bloom on the Earth disk; treating bloom as a camera-lens
+      // effect (Frostbite GDC 2016 convention) and gating by
+      // altitude matches that without disrupting ground-level
+      // bloom for cityscape / atmospheric demos. Always called
+      // per-frame; the `enableAltitudeGate` flag on `BloomConfig`
+      // controls whether the gate actually fires.
+      const bloomEffect = (
+        this._postProcess as unknown as {
+          bloomEffect?: { applyAltitudeGate?: (h: number) => void };
+        }
+      ).bloomEffect;
+      if (bloomEffect?.applyAltitudeGate) {
+        const heightMeters =
+          frameState?.camera?.positionCartographic?.height ?? 0;
+        bloomEffect.applyAltitudeGate(heightMeters);
+      }
       this._postProcess.execute(
         encoder,
         sourceView,
