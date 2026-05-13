@@ -581,25 +581,23 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   uniformData[26] = camera.positionWC.z;
   uniformData[27] = 0.0;
 
-  // sunDirectionWC — Session 65 Batch 18: respect
+  // sunDirectionWC — Session 65 Batch 18 + Batch 20: respect
   // `frameState.atmosphere.dynamicLighting` enum, mirroring upstream
   // `czm_getDynamicAtmosphereLightDirection`:
+  //   NONE        (0, default) → per-fragment `normalize(positionWC)`
+  //                     ("lit from directly above"). Handled in
+  //                     `SkyAtmosphere.wgsl` since the direction is
+  //                     per-fragment; the value packed into
+  //                     `sunDirectionWC` here is unused on the NONE
+  //                     path. We still write a defined value (the sun
+  //                     direction as a safe placeholder) so future
+  //                     WGSL changes that read it for non-NONE
+  //                     fallback paths don't blow up.
   //   SCENE_LIGHT (1) → use `uniformState.lightDirectionWC` (honors
   //                     `scene.light` overrides such as a custom
   //                     `DirectionalLight`).
   //   SUNLIGHT    (2) → use `frameState.sunDirectionWC` (force sun
   //                     regardless of `scene.light`).
-  //   NONE        (0, default) → use sun for now. The proper WebGL
-  //                     behavior is "lit from directly above" (per-
-  //                     fragment `positionWC` normalized), which
-  //                     requires a per-fragment branch in WGSL. The
-  //                     visible difference for NONE is minor (subtle
-  //                     terminator placement) — bumping NONE to the
-  //                     full per-fragment path is a separate WGSL
-  //                     change that we defer until a demo exercises
-  //                     it. WebGL's `czm_getDynamicAtmosphereLight
-  //                     Direction` lives at `Builtin/Functions/
-  //                     getDynamicAtmosphereLightDirection.glsl`.
   // 1 = DynamicAtmosphereLightingType.SCENE_LIGHT (see
   // `Source/Scene/DynamicAtmosphereLightingType.js`).
   const dynamicLighting = frameState.atmosphere?.dynamicLighting ?? 0;

@@ -394,7 +394,33 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // sample); orbital views ray-march per-fragment which is the path
   // WebGL takes too.
   let cameraHeightAboveShell = max(0.0, length(u.cameraPositionWC) - outerRadius);
+
+  // Session 65 Batch 20 — `dynamicLighting` enum at `radiiAndDynamic
+  // Atmosphere.z` (matches `DynamicAtmosphereLightingType.js`):
+  //   0 = NONE        → light direction is per-fragment `normalize
+  //                     (positionWC)` ("lit from directly above").
+  //                     Mirrors upstream
+  //                     `czm_getDynamicAtmosphereLightDirection.glsl`.
+  //   1 = SCENE_LIGHT → use the uniform direction (JS packs
+  //                     `lightDirectionWC` into `sunDirectionWC` for
+  //                     this case — see WebGPUSkyAtmosphereRenderer
+  //                     Batch 18).
+  //   2 = SUNLIGHT    → use the uniform direction (JS packs the true
+  //                     sun direction).
+  // The NONE case can't use the precomputed inscatter LUT because the
+  // LUT was baked for a single fixed light direction; per-fragment
+  // light direction needs the inline `computeScattering` ray-march.
+  let dynamicLighting = u.radiiAndDynamicAtmosphere.z;
+  let isNoneCase = dynamicLighting < 0.5;
+  var lightDirWC: vec3<f32>;
+  if (isNoneCase) {
+    lightDirWC = normalize(input.worldPosition);
+  } else {
+    lightDirWC = u.sunDirectionWC;
+  }
+
   let useLutPath =
+    !isNoneCase &&
     u.useLut > 0.5 &&
     cameraHeightAboveShell < (outerRadius - innerRadius) * 2.0;
 
@@ -414,7 +440,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       color = color + moonColor * moonScale;
     }
   } else {
-    color = computeScattering(startPoint, rayDir, rayLength, u.sunDirectionWC, innerRadius, outerRadius);
+    color = computeScattering(startPoint, rayDir, rayLength, lightDirWC, innerRadius, outerRadius);
   }
 
   // Apply HSB shift
