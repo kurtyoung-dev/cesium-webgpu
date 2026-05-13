@@ -1,6 +1,6 @@
 # Celestial & Atmospheric Systems — Design Document
 
-**Status:** Draft v3 — Session 24 v2 + 2026-04-08 decisions locked (B1-B23)
+**Status:** Draft v3 — Session 24 v2 + 2026-04-08 decisions locked (B1-B23). Status table + Phase 3 sync 2026-05-13 (Phases 0-3 SHIPPED, Phase 4 PARTIAL, Phases 5-6 pending). Orbit-rendering polish techniques added §13.
 **Scope:** Sun, Moon, atmosphere, clouds, fog, stars, volumetric fog, varying
 atmospheric density, scattering occlusion (god rays), and the lighting/visibility
 coupling between them
@@ -89,20 +89,29 @@ on a value, that section is the source of truth.
 | Sun position | ✅ Simon 1994 orbits, ICRF→fixed transform | `Core/Simon1994PlanetaryPositions.js`, `Renderer/UniformStateComputations.js` |
 | Sun rendering | ✅ Procedural disk + corona, RTE billboard | `Scene/Sun.js`, `Shaders/WebGPU/Environment/Sun.wgsl` |
 | Moon position | ✅ Simon 1994 orbits, IAU 2000 orientation | `Core/Simon1994PlanetaryPositions.js`, `Core/IauOrientationAxes.js` |
-| Moon rendering | ✅ Textured ellipsoid sphere, Lambertian | `Scene/Moon.js`, `Shaders/WebGPU/Environment/Moon.wgsl` |
-| Atmosphere (scattering) | ⚠️ Nishita per-pixel ray march, single-sun, no LUT | `Scene/SkyAtmosphere.js`, `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` |
-| Atmosphere LUT compute | ⚠️ Built but **not wired into runtime** | `Shaders/WebGPU/Compute/AtmosphereLUT.wgsl` |
+| Moon rendering | ✅ Textured ellipsoid sphere, Phong + earthshine, real moon texture, phase gating | `Scene/Moon.js`, `Shaders/WebGPU/Environment/Moon.wgsl` |
+| Atmosphere (scattering) | ✅ Nishita per-pixel ray march + LUT fast path + dual-light (sun+moon), geometric opacity, NONE-case per-fragment direction | `Scene/SkyAtmosphere.js`, `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` |
+| Atmosphere LUT compute | ✅ Wired and active (Phase 1.3a/1.3c) | `Shaders/WebGPU/Compute/AtmosphereLUT.wgsl`, `WebGPUSkyAtmosphereRenderer.js` |
 | Ground atmosphere | ✅ Integrated into terrain shader | `Shaders/WebGPU/Globe/GlobeTerrain.wgsl` |
 | Fog | ✅ Distance fog blended into terrain shader | `Scene/Fog.js`, `GlobeTerrain.wgsl` |
-| Skybox / stars | ⚠️ Cubemap renders but **always full brightness** | `Scene/SkyBox.js`, `Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js` |
+| Skybox / stars | ✅ Sky-brightness modulation + cloudCover star occlusion (Phase 1.3a) | `Scene/SkyBox.js`, `Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js`, `Shaders/WebGPU/CubeMapPanorama.wgsl` |
 | Cumulus clouds | ✅ Billboard collection, weather effects | `Scene/CloudCollection.js`, `Shaders/WebGPU/Collections/CloudCollection.js` |
-| Volumetric clouds | ❌ Does not exist | — |
+| Procedural ground clouds (ground-only, ≤4 km ceiling) | ✅ Volumetric raymarch, default off | `WebGPUProceduralCloudRenderer.ts`, `Shaders/WebGPU/Environment/ProceduralClouds.wgsl` |
+| Volumetric clouds (orbit-visible) | ❌ Not yet — Phase 6 of this doc | — |
 | Sun light | ✅ `SunLight` class, fed into PBR | `Scene/SunLight.js`, `LightTypes.ts` |
-| Moon light | ❌ Does not exist as a `Light` instance | — |
-| Star brightness modulation | ❌ Does not exist | — |
-| Moon phase / illumination | ❌ Position only, no phase calculation | — |
-| Multi-light scattering | ❌ Atmosphere LUT is single-sun | — |
-| Dual-light terrain shading | ❌ Terrain shader uses single sun direction | — |
+| Moon light | ✅ `MoonLight` class shipped Phase 2 (1.2c v2) | `Scene/MoonLight.js` |
+| Star brightness modulation | ✅ Shipped Phase 1.3a — smoothstep curve + cloudCover multiply | `WebGPUCubeMapPanoramaRenderer.js` |
+| Moon phase / illumination | ✅ Computed CPU-side, plumbed via `frameState.moonPhaseFraction`, scales atmosphere moon-LUT + moon shader's lit term | `Scene/Moon.js`, `SkyAtmosphere.wgsl` |
+| Multi-light scattering | ✅ Phase 1.3c — sun + moon dual LUTs, moon scaled by phase | `SkyAtmosphere.wgsl` (bindings 3-4, `dualLightControl` uniform) |
+| Dual-light terrain shading | ⚠️ Sun direction now correctly `lightDirectionEC` (Batch 17/18); moon contribution on terrain not yet wired | `GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceCameraUB.ts` |
+| `lightDirectionEC` parity (Globe + Model + SkyAtmosphere) | ✅ Batches 17, 18, 20 — Globe + Model packers fixed; SkyAtmosphere respects `Atmosphere.dynamicLighting` enum (NONE / SCENE_LIGHT / SUNLIGHT) | `WebGPUGlobeSurfaceCameraUB.ts`, `WebGPUModelRenderer.js`, `WebGPUSkyAtmosphereRenderer.js`, `SkyAtmosphere.wgsl` |
+| Composite WGSL fabric (globe materials) | ✅ Batch 16 — top-level `components` fallback for composites without `wgsl: {}` block | `MaterialHelpers.js`, `WebGPUGlobeMaterial.ts` |
+| Volumetric fog (froxel grid) | ❌ Phase 5 of this doc, not yet started | — |
+| Scattering occlusion / god rays | ❌ Phase 5c, not yet started | — |
+| Varying atmosphere density | ❌ Phase 5d, not yet started | — |
+| Altitude-gated bloom | ❌ Quick win, not yet wired | `WebGPUBloomEffect.ts` |
+| Orbit-limb specular attenuation | ❌ Quick win, not yet wired | `Shaders/WebGPU/Globe/GlobeTerrain.wgsl::computeEnhancedOcean` |
+| Real-time satellite cloud-map imagery | ❌ Out of doc scope — user-side via custom `ImageryProvider` | — |
 
 ### The actual scope (smaller than I feared)
 
@@ -1065,11 +1074,27 @@ work unchanged. Renderers that opt into multi-light read from
 > establishes the canonical nested home `scene.globe.atmosphericConditions`
 > + delegating shells for legacy paths.
 >
-> **Implementation status (2026-04-09):** Phase 0 ✅ and Phase 1 (the
-> "toggle scaffolding plus sun+moon sync" sub-phases originally planned
-> as Phase 1 and Phase 2 of this section) ✅. Phase 3 (atmosphere
-> multi-light and LUT activation) and Phase 4 (atmospheric conditions
-> integration) are next.
+> **Implementation status (2026-05-13 update — supersedes the
+> 2026-04-09 line):**
+>
+> - **Phase 0 ✅** (Phase 0 prep PR landed 2026-04-09)
+> - **Phase 1 ✅** (toggle scaffolding, 2026-04-09)
+> - **Phase 2 ✅** (Sun + Moon sync, 2026-04-09 — three rounds 1.2a/1.2b/1.2c v2)
+> - **Phase 3 ✅** (Phase 1.3a star modulation + 1.3c dual-light atmosphere LUT
+>   with moon-phase scaling — shipped post-2026-04-09 across multiple
+>   batches; confirmed live in `SkyAtmosphere.wgsl` `dualLightControl`
+>   uniform + bindings 3-4 moon LUTs, `CubeMapPanorama.wgsl` star
+>   modulation smoothstep)
+> - **Phase 4 ⚠️ PARTIAL** — `cloudCover` star occlusion wired in cubemap
+>   panorama; `humidity`, `airQuality`, `windSpeed`, `windDirection`
+>   declared on `AtmosphericConditions` but not yet plumbed to fog
+>   density / atmosphere mie+rayleigh coefficient scales / water
+>   displacement. Estimated 1 session to finish.
+> - **Phase 5 ❌** (froxel volumetric fog + god rays — not started)
+> - **Phase 6 ❌** (volumetric clouds — not started; THE answer to
+>   "no clouds from orbit" — see §13.5)
+>
+> See §13 for orbit-rendering quick wins added 2026-05-13.
 
 **Phase 0 — Toggle audit prep PR (1-2 sessions, shared with water doc) — ✅ COMPLETED 2026-04-09:**
 
@@ -1115,36 +1140,69 @@ This was the largest sub-phase by far. It actually landed in three rounds (1.2a,
 - ⏸ **Sun horizon falloff for `SunLight.intensity`** — deferred. Belongs more naturally in Phase 3 (atmosphere multi-light) where the LUT is the right place to tune sun intensity by altitude.
 - ⏸ **Ephemeris tests against known dates** — Jasmine specs deferred to a follow-up (Phase 1.2 was validated via `npx tsc --noEmit` only).
 
-**Phase 3 — Atmosphere multi-light + LUT activation (2-3 sessions):**
+**Phase 3 — Atmosphere multi-light + LUT activation (2-3 sessions) — ✅ COMPLETED post-2026-04-09 across multiple batches (1.3a + 1.3c):**
 
-- Wire `AtmosphereLUT.wgsl` compute shader into the atmosphere render
-  path; activate `useLUT = true` by default
-- Add `enableDualLightAtmosphere`:
-  - Per-frame compute pass builds two LUT pairs (sun, moon)
-  - Runtime fragment shader samples both
-  - Moon contribution scaled by phase fraction
-- CPU-side sky brightness estimator → `frameState.skyBrightness`
-- Star modulation: cubemap shader reads `frameState.skyBrightness` via
-  a new uniform field, multiplies sampled color by it; uses the
-  smoothstep `starModulationCurve` per **B4**
-- `enableStarBrightnessModulation` and `enableNightSkyDimming` toggles
-- Tests: visual regression on a fixed sun/moon date pair; sanity tests
-  on the LUT compute output (transmittance monotonically decreases
-  with altitude, etc.)
+- ✅ `AtmosphereLUT.wgsl` compute shader wired; `useLut` activates when
+  compute is available + camera within 2× shell thickness of outer
+  radius. Fallback inline 16-step (now 64-step) ray-march for orbit
+  cameras where LUT V-coord clamps.
+- ✅ `enableDualLightAtmosphere`:
+  - Per-frame compute pass builds two LUT pairs (sun + moon) when
+    `atmosphericConditions.lighting.enableDualLightAtmosphere` is on
+    (default ON per B14)
+  - Runtime fragment shader samples both at
+    `SkyAtmosphere.wgsl::dualLightControl.x > 0.5`
+  - Moon contribution = `sampleScatteringLut(moonInscatterLut, ...) ×
+    moonPhaseFraction × dualLightControl.z` (intensity multiplier)
+- ✅ CPU-side sky brightness estimator → `frameState.skyBrightness`
+  consumed by the cubemap panorama shader as `params.w`.
+- ✅ Star modulation:
+  `WebGPUCubeMapPanoramaRenderer.js` packs `starModulation` vec4
+  (inflection, steepness, enableFlag, cloudCover) at offset 208;
+  `CubeMapPanorama.wgsl::105-129` applies
+  `1 - smoothstep(0, 1, t)` with `t = clamp((brightness -
+  inflection) × steepness, 0, 1)` then multiplies by `(1 -
+  cloudCover)`.
+- ✅ `enableStarBrightnessModulation` toggle wired via
+  `atmosphericConditions.starModulation.enableSkyBrightness` (default
+  ON per B4).
+- ⏸ Sanity tests on LUT compute output — visual regression captured
+  in cross-backend sweep instead of dedicated Jasmine specs.
+- ⏸ NONE-case dynamic atmosphere lighting (Batch 20) — completes the
+  `czm_getDynamicAtmosphereLightDirection` parity with WebGL.
 
-**Phase 4 — Atmospheric conditions integration (1 session):**
+**Phase 4 — Atmospheric conditions integration (1 session) — ⚠️ PARTIAL (2026-05-13):**
 
-- `AtmosphericConditions.humidity` → fog density and atmosphere
-  scattering coefficients
-- `AtmosphericConditions.cloudCover` → star occlusion factor in
-  the modulation calculation
-- `AtmosphericConditions.airQuality` → rayleigh / mie coefficient
-  scale in the LUT compute shader
-- `AtmosphericConditions.windSpeed`, `windDirection` exposed to
+- ⏸ `AtmosphericConditions.humidity` → fog density and atmosphere
+  scattering coefficients **(not yet wired)**
+- ✅ `AtmosphericConditions.cloudCover` → star occlusion factor in
+  the modulation calculation (`CubeMapPanorama.wgsl::starModulation.w`,
+  multiplies final star color by `(1 - cloudCover)`)
+- ⏸ `AtmosphericConditions.airQuality` → rayleigh / mie coefficient
+  scale in the LUT compute shader **(not yet wired)**
+- ⏸ `AtmosphericConditions.windSpeed`, `windDirection` exposed to
   consumers (sky atmosphere, future water rendering, future weather
-  particles)
-- All consumers gated by their respective enable flags
-- Tests: parameter sweep visual checks
+  particles) **(declared on AtmosphericConditions but no shader
+  consumer)**
+- All consumers gated by their respective enable flags (gating
+  framework exists; consumers TBD)
+- Tests: parameter sweep visual checks (deferred until consumers ship)
+
+**Remaining work (estimated 1 session):** Plumb the three missing
+leaves (`humidity`, `airQuality`, `windSpeed`/`windDirection`) from
+`frameState.atmosphericConditions` to:
+
+- `AtmosphereLUT.wgsl` compute shader — multiply rayleigh coefficient
+  by `airQuality` and mie coefficient by `humidity * 0.5 + 1.0`
+  before the precomputed integration.
+- `SkyAtmosphere.wgsl` runtime ray-march fallback — same multipliers
+  on the analytic Rayleigh/Mie terms so LUT and fallback agree.
+- `Fog.js` density modulation — `density *= (1.0 + humidity × 0.5)`
+  so humid air produces denser distance fog.
+- Wind: exposes `vec2` uniforms on `SkyAtmosphere.wgsl` (consumed by
+  future Phase 5/6 work for cloud advection + volumetric fog motion)
+  and `frameState.atmosphericConditions.weather.wind*` for the
+  water-rendering sibling design.
 
 **Phases 1-4 land as one feature branch** per **B23**. Phase 5
 follows as a separate feature branch.
@@ -1626,3 +1684,202 @@ branch, Phase 6 (volumetric clouds, **promoted from deferred**) ships
 immediately after 5a-5d. The VisualPerformanceTargetService (§11)
 is a new feature emerging from B7, scheduled for Sprint 4 after the
 visual quality features land.*
+
+---
+
+## 13. Orbit-rendering polish (added 2026-05-13)
+
+Added after a user-reported audit comparing real orbital photography
+(ISS imagery, Earthrise from the Moon) to our WebGPU render. The
+following techniques are NOT yet in any phase plan but are concrete
+improvements with cited industry references. They slot in alongside
+the existing phase work without disrupting it.
+
+### 13.1 Altitude-gated bloom (immediate, 1-2 hours)
+
+**Problem:** real orbital photos show essentially no bloom on the
+Earth disk. WebGPU's bloom pipeline defaults (`threshold: 0.8`,
+`intensity: 0.5`) accumulate visible halo around the disk at GEO
+altitudes because the atmosphere limb + ocean specular both peak
+near 1.0 post-tonemap. Bloom is appropriate for ground-level scenes
+(headlight glare, neon, etc.) but the same effect from orbit reads
+as fake.
+
+**Industry reference:** Frostbite GDC 2016 / Karis 2013 — bloom is a
+camera lens effect; absent in vacuum-of-space cameras. AAA engines
+typically gate bloom intensity by either lens-aperture state or a
+"scene scale" parameter that corresponds to camera-to-subject distance.
+
+**Implementation:**
+
+- Read `cameraHeight` (already in `frameState.camera.positionCartographic.height`)
+  in `WebGPUBloomEffect.ts` uniform packer.
+- Apply altitude curve: `intensity *= smoothstep(EARTH_RADIUS,
+  GROUND_FLOOR, cameraHeight)` where `GROUND_FLOOR = 10_000.0` m
+  and `EARTH_RADIUS = 6_378_137.0` m. Bloom fades from 1.0 at sea
+  level to 0.0 above 1 Earth radius altitude.
+- Optional: per-stage gate (don't gate Bloom for low-altitude scenes
+  with explicit `scene.bloomIntensityOverride`).
+
+**Files:** `WebGPUBloomEffect.ts` uniform pack site.
+
+**Effort:** 30-60 min. Default off until verified on Hello World +
+3D Tiles Photogrammetry (where bloom IS appropriate at low altitude).
+
+### 13.2 Ocean specular attenuation at orbit limb (immediate, 1-2 hours)
+
+**Problem:** `GlobeTerrain.wgsl::computeEnhancedOcean` adds a
+forward-scatter specular term `pow(VdotL, 4.0) × 0.15` that's
+appropriate at ground level (sun glint on water) but at orbit
+altitude the limb-grazing rays produce a too-bright sun-side glare
+patch (visible in the Bathymetry probe at low altitude → orbit
+transition).
+
+**Industry reference:** Bruneton & Neyret 2008 ocean shading paper —
+ocean specular intensity must scale with the BRDF-relevant grazing
+angle. At orbit altitude the camera-to-water vector is near-vertical
+to the surface normal (high NdotV), which reduces the visible
+specular highlight per the Fresnel reflection coefficient. Our shader
+ignores this attenuation.
+
+**Implementation:**
+
+- Compute `cameraDistanceToSurface` from `frameState.camera
+  .positionCartographic.height`.
+- Attenuate the `scatter` term in `computeEnhancedOcean()` by
+  `1.0 - smoothstep(MIN_ATTENUATION_ALT, MAX_ATTENUATION_ALT,
+  cameraHeight)` where `MIN_ATTENUATION_ALT = 100_000.0` m and
+  `MAX_ATTENUATION_ALT = 1_000_000.0` m.
+- Same idea for the Schlick-Fresnel water reflection if the magnitude
+  proves to read too bright at orbit.
+
+**Files:** `Shaders/WebGPU/Globe/GlobeTerrain.wgsl::computeEnhancedOcean`.
+
+**Effort:** 30-60 min. Test on Hello World at varying altitudes;
+should remove ~40-60% of the bright "sun glare patch" visible in the
+lower-right of orbital views.
+
+### 13.3 Dusk-terminator verification probe (immediate, 1 hour)
+
+**Problem:** Hello World defaults to the current system clock, so the
+visible disk may be predominantly lit on most days. There's no
+canonical "verify night side dark" probe in the visual regression
+sweep.
+
+**Implementation:**
+
+- New `Tools/visual-regression/probe-dusk-terminator.mjs` that:
+  - Sets `viewer.clock.currentTime = JulianDate.fromIso8601(
+    "2026-03-20T18:00:00Z")` (vernal equinox)
+  - Positions camera at 12 Mm altitude over `(0°N, 90°E)` so the
+    terminator crosses the viewport
+  - Captures both WebGL + WebGPU; per-channel pixel diff on a
+    sample point on the unlit hemisphere
+  - Asserts the unlit-side ratio is `> 0.95` darker than the lit-side
+- Save to `Tools/visual-regression/output/dusk-*.png` for repeated
+  reference.
+
+**Files:** New probe script under `Tools/visual-regression/`.
+
+**Effort:** 30-60 min. Validates Batches 17/18 sun-direction work +
+the `nightAmbient = 0.025` floor.
+
+### 13.4 Phase 4 completion (1 session)
+
+Per §6 above — wire `humidity`, `airQuality`, `windSpeed` /
+`windDirection` consumers. Specified in §4.5.
+
+### 13.5 Phase 6 — Volumetric clouds (THE answer to "no clouds from orbit")
+
+The original §4.6 design covers this. Highlighted here because it's
+the direct answer to the user-reported "no clouds visible from
+orbit" gap. Per-locked B15 decision, ships immediately after Phase
+5a-5d. Hybrid raymarched (≤50 km) + procedural 2D (≥100 km) with
+configurable crossover. **Default OFF** for performance; users opt
+in via `scene.atmosphericConditions.clouds.enableVolumetric = true`.
+
+**Cross-references for orbit views specifically:**
+
+- The 2D procedural fallback above 100 km handles GEO views with a
+  pre-computed cloud-density texture sampled with a parallax-aware
+  projection — perceptually equivalent to the cloud-cover band
+  visible in Apollo / ISS photography without paying the raymarch
+  cost.
+- Volumetric raymarch handles fly-through transitions when the
+  camera descends from orbit through the cloud layer.
+- Cloud shadows fold into Phase 6c (volumetric cloud density modulates
+  the scattering occlusion term in the Phase 5c froxel grid).
+
+**Estimated total effort:** 3-5 sessions (Phase 5a froxel grid 1
+session + Phase 6 a/b/c/d 2-3 sessions).
+
+### 13.6 Real-time satellite cloud imagery (out of design scope, user opt-in)
+
+NOAA GOES / NASA MODIS real-time cloud composites are typically
+integrated as a **custom `ImageryProvider`** (raster tile layer)
+overlaid on the globe imagery layer stack. This isn't part of the
+celestial/atmosphere design because it's a user-content concern, not
+a renderer feature. Documented here as the canonical answer to
+"can I overlay real-time clouds on the globe?":
+
+- Build a `CloudImageryProvider` that fetches GOES / MODIS tiles
+  from a public-facing service (NOAA / NASA Worldview).
+- Add it as an extra `imagery.addImageryProvider()` layer with
+  semi-transparent alpha.
+- The existing 16-layer imagery composite handles the blend
+  correctly.
+
+No engine work needed. User-side code only.
+
+### 13.7 Camera-aperture / exposure simulation (future / optional)
+
+**Problem:** real-world cameras adjust aperture + ISO based on scene
+brightness. Our render uses fixed exposure which means orbit views
+of the bright Earth disk + dark space produce a wide dynamic range
+that bloom papers over.
+
+**Industry reference:** Reinhard et al. 2002 auto-exposure / Hejl &
+Burgess-Dawson 2010 filmic tonemap. Most AAA engines pair tonemap
+with auto-exposure based on log-luminance histogram.
+
+**Implementation sketch:** `WebGPUAutoExposureCompute.ts` (existing
+infrastructure for HDR scenes) could feed the bloom + tonemap
+pipeline with a per-frame target luminance. Already present for HDR
+path; activating it for the SDR orbit path would tighten the
+dynamic range and reduce the perceived "bloom too strong" without
+needing the altitude gate.
+
+**Effort:** 1 session — verify `WebGPUAutoExposureCompute.ts` runs
+in the orbit-view code path; gate by camera-altitude curve like §13.1.
+
+### 13.8 IBL ambient for unlit hemisphere (future / optional)
+
+**Problem:** the night side currently gets a flat `nightAmbient =
+0.025` floor (2.5% white). Real night-side photos show a subtle
+non-uniform ambient — earthshine reflected off the moon, urban light
+pollution diffused by haze, faint atmospheric airglow.
+
+**Industry reference:** Karis 2013 split-sum IBL. We already have
+`WebGPUImageBasedLighting.ts` shipping diffuse irradiance via SH L2
+for glTF model lighting. Extending the globe FS to consume the same
+IBL irradiance probe would produce a physically-grounded ambient
+floor that varies with viewing direction.
+
+**Implementation sketch:**
+
+- Add `globeAmbientIBL` uniform to globe surface bind group (3rd-band
+  SH coefficients, same struct shape as Model PBR consumer).
+- Sample the SH probe at `normalEC` for the unlit-hemisphere ambient
+  instead of the flat `0.025` floor.
+- Gate behind `atmosphericConditions.lighting.enableGroundIBLAmbient`
+  (default off until visual review).
+
+**Effort:** 1-2 sessions — straightforward extension of existing IBL
+infrastructure.
+
+---
+
+*§13 added 2026-05-13. Items 13.1-13.3 are the user's "Immediate"
+bucket. Item 13.4 is the user's "Medium" bucket and matches Phase 4
+of §6. Items 13.5 is the user's "Large" bucket and matches Phase 6
+of §6. Items 13.6-13.8 are out-of-scope or future-research grade.*

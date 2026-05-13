@@ -535,7 +535,12 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - IrradianceConvolution.wgsl — diffuse irradiance cubemap generation (SHIPPED)
 - RadiancePrefilter.wgsl — specular mipchain prefilter for IBL (SHIPPED)
 - PolygonSignedDistance.wgsl — SDF atlas for clipping polygons (SHIPPED)
-- AtmosphereLUT.wgsl — precomputed transmittance + scattering LUT (SCAFFOLDED — per-pixel ray-march fallback active)
+- AtmosphereLUT.wgsl — precomputed transmittance + scattering LUT (SHIPPED — Phase 1.3a/1.3c wired; per-pixel ray-march fallback for orbit cameras where LUT V-coord clamps)
+- Dual-light atmosphere (sun + moon scattering) — Phase 1.3c (SHIPPED) — two LUT pairs sampled at runtime, moon contribution scaled by `frameState.moonPhaseFraction × dualLightControl.z` intensity multiplier; gated on `atmosphericConditions.lighting.enableDualLightAtmosphere` (default ON per B14)
+- Sky-brightness modulation for stars — Phase 1.3a (SHIPPED) — CPU-side brightness estimate → `frameState.skyBrightness` → cubemap panorama smoothstep with `cloudCover` multiply (`CubeMapPanorama.wgsl::105-129`)
+- MoonLight class — Phase 2 1.2c v2 (SHIPPED) — `scene.light = new MoonLight()` opt-in, default `(0.85, 0.88, 1.0, 1.0)` cool tint at intensity 0.05
+- Moon phase + earthshine — Phase 2 1.2c v2 (SHIPPED) — CPU-side phase fraction from sun/moon dot product; lit hemisphere `smoothstep(0, 0.3, phase)` gated; unlit hemisphere soft blue-grey earthshine ambient (`vec3(0.4, 0.5, 0.7) × 0.08 × (1 - rawNdotL)`)
+- `czm_getDynamicAtmosphereLightDirection` parity (NONE / SCENE_LIGHT / SUNLIGHT enum) — Batch 20 (SHIPPED) — per-fragment `normalize(positionWC)` for NONE case, scene-light direction for SCENE_LIGHT, sun for SUNLIGHT
 - FrustumCull.wgsl — GPU frustum culling for >50K objects, dispatched by WebGPUGPUCuller (SCAFFOLDED — WASM/JS culling active)
 - HiZPyramid.wgsl / HiZPyramidFromDepth.wgsl — hierarchical-Z pyramid build from prev-frame depth (SCAFFOLDED)
 - OcclusionTest.wgsl — bounding-sphere vs Hi-Z occlusion test (SCAFFOLDED)

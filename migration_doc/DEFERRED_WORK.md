@@ -2749,6 +2749,67 @@ Attempted bridge enablement to confirm what still breaks. Test result: with `con
 - `WebGPUOIT.ts` and `WebGPUInvertClassification.ts` — already accept `multisample` via descriptor but their callers pin `count: 1`.
 - `copyTextureToTexture` paths that move depth out of MSAA-source framebuffers need blit-via-pipeline fallback.
 
+### NEW-ORBIT-RENDER-AUDIT-2026-05-13 — Open audit cluster (orbit-rendering polish)
+
+User-reported audit comparing real orbital photography (ISS, Earthrise from the Moon) to our WebGPU render surfaced four issues:
+
+1. **Bloom too strong at orbit** — `WebGPUBloomEffect.ts` defaults (`threshold: 0.8`, `intensity: 0.5`) accumulate visible halo around the Earth disk at orbit altitudes. Real cameras don't bloom from space.
+2. **No clouds from orbit** — `WebGPUProceduralCloudRenderer.ts` is ground-only (≤4 km ceiling, default off). `WebGPUCloudRenderer.ts` is billboard decorative particles. No satellite-style cloud-cover rendering exists.
+3. **Night-side correctness** — verified math is correct (`computeDayNightFade` sharp ×5 terminator, `nightAmbient = 0.025` floor). Needs a canonical regression probe with the terminator crossing the viewport.
+4. **Atmosphere reflectivity** — all recent fixes (geometric opacity, dual-light LUT, NONE-case dynamic-lighting, `lightDirectionEC` parity, composite WGSL fabric) confirmed shipping; the residual perceived over-brightness comes from issues #1 and #2.
+
+**Tracked as discrete work items** (see [CELESTIAL_ATMOSPHERE_DESIGN.md §13](CELESTIAL_ATMOSPHERE_DESIGN.md) for full design):
+
+#### NEW-ORBIT-BLOOM-ALTITUDE-GATE — Open (immediate, 1-2 hours)
+
+**Symptom:** Bloom halo around Earth disk visible at GEO views (Hello World, Star Burst, Sentinel-2). Real orbit photography shows essentially zero bloom on the disk.
+
+**Fix:** Add altitude-curve `intensity *= smoothstep(EARTH_RADIUS, GROUND_FLOOR, cameraHeight)` in `WebGPUBloomEffect.ts` uniform pack. Bloom fades from 1.0 at sea level to 0.0 above 1 Earth radius altitude.
+
+**Effort:** 30-60 min.
+
+#### NEW-ORBIT-OCEAN-SPECULAR-LIMB-ATTENUATION — Open (immediate, 1-2 hours)
+
+**Symptom:** `GlobeTerrain.wgsl::computeEnhancedOcean` adds forward-scatter `pow(VdotL, 4.0) × 0.15` that produces a too-bright sun-side glare patch at orbit altitudes (visible in lower-right of Hello World WebGPU render).
+
+**Fix:** Attenuate the `scatter` term by `1.0 - smoothstep(100_000, 1_000_000, cameraHeight)` so the limb-grazing specular fades out as the camera rises above ~100 km.
+
+**Effort:** 30-60 min.
+
+#### NEW-ORBIT-DUSK-TERMINATOR-PROBE — Open (immediate, 1 hour)
+
+**Goal:** Canonical regression probe with the terminator crossing the viewport. Validates `lightDirectionEC` correctness (Batches 17/18), `computeDayNightFade` math, and `nightAmbient` floor.
+
+**Implementation:** `Tools/visual-regression/probe-dusk-terminator.mjs` sets clock to vernal equinox + camera at 12 Mm over `(0°N, 90°E)`. Captures both WebGL + WebGPU; per-channel pixel-ratio assert: unlit hemisphere must be `> 95%` darker than lit hemisphere.
+
+**Effort:** 30-60 min.
+
+#### NEW-ORBIT-PHASE-4-ATMOSPHERIC-CONDITIONS-FINISH — Open (medium, 1 session)
+
+Per [CELESTIAL_ATMOSPHERE_DESIGN.md §6 Phase 4](CELESTIAL_ATMOSPHERE_DESIGN.md). `humidity` → mie coefficient + fog density; `airQuality` → rayleigh coefficient; `windSpeed`/`windDirection` → SkyAtmosphere uniforms (consumed by future Phase 5/6 + water-rendering design).
+
+**Effort:** 1 session.
+
+#### NEW-ORBIT-PHASE-6-VOLUMETRIC-CLOUDS — Open (large, 3-5 sessions including Phase 5a)
+
+**THE answer to user-reported "no clouds from orbit."** Hybrid raymarched (≤50 km) + 2D procedural (≥100 km) per locked B15. Requires Phase 5a (froxel grid) as foundation.
+
+Full design: [CELESTIAL_ATMOSPHERE_DESIGN.md §4.6 + §6 Phase 6](CELESTIAL_ATMOSPHERE_DESIGN.md). Default off (`atmosphericConditions.clouds.enableVolumetric = false`).
+
+**Effort:** 3-5 sessions (1 Phase 5a + 2-3 Phase 6).
+
+#### NEW-ORBIT-AUTO-EXPOSURE-ACTIVATION — Future (optional, 1 session)
+
+Activate `WebGPUAutoExposureCompute.ts` for the SDR orbit path. Pairs with the bloom altitude gate to tighten dynamic range at high altitude. Already shipping for HDR path; needs gate-by-altitude curve for SDR.
+
+**Effort:** 1 session.
+
+#### NEW-ORBIT-IBL-AMBIENT-NIGHT-FLOOR — Future (optional, 1-2 sessions)
+
+Replace the flat `nightAmbient = 0.025` floor with IBL diffuse irradiance sampled at the surface normal. Uses the existing `WebGPUImageBasedLighting.ts` SH L2 probe. Gated on `atmosphericConditions.lighting.enableGroundIBLAmbient` (default off until visual review).
+
+**Effort:** 1-2 sessions.
+
 ### NEW-VR-CZML-MODEL-ARTICULATIONS-INDEXCOUNT — Closed (2026-05-12, Session 65 Batch 7)
 
 **Symptom:** `CZML Model Articulations.html` triggered `Index range (first: 0, count: 18, format: Uint16) does not fit in index buffer size (20)` during draw command encoding every frame, invalidating the command buffer. Model never rendered.
