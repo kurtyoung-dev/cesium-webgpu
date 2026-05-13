@@ -2488,19 +2488,39 @@ After the cubemap/tonemap/Sandcastle-defer cluster landed (Session 64), a fresh 
 
 ### NEW-VR2-3-IMAGERY-WASH-OUT — Open (SkyAtmosphere bleeding through globe disk)
 
-**Symptom:** Earth in Hello World, Star Burst, Box, Polygon, Polyline, Sentinel-2 looks lighter / cyan-tinted vs WebGL. Per-channel pixel probe shows WebGPU is +100+ brighter across the disk with a strong cyan/green shift.
+**Original symptom (2026-05-10):** Earth in Hello World, Star Burst, Box, Polygon, Polyline, Sentinel-2 looked lighter / cyan-tinted vs WebGL with WebGPU +100+ brighter across the disk and a strong cyan/green shift.
 
-**Root cause traced (Session 65):** Pixel sampling INSIDE the disk versus OUTSIDE the disk shows the SkyAtmosphere bleeding through onto globe-disk fragments where depth-test should reject it. At Hello World's camera (~12 Mm altitude, camera outside atmosphere shell), the atmosphere shell back faces should depth-test to 24.96 Mm while the globe is at 12 Mm → less-equal should reject — but it doesn't. With alpha back-solved from `mix(dst_ocean=(23,58,96), atm, alpha) = wgpu=(127,199,209)`, the implied atmosphere color is (153, 234, 237) cyan at alpha ~0.8 — exactly the SkyAtmosphere output color at limb-ish angles.
+**RE-VERIFIED 2026-05-13 (Session 65 Batch 19):** main bleed-through issue is **MOSTLY RESOLVED**. Disk-pixel probe ([Tools/visual-regression/probe-disk-bleed.mjs](Tools/visual-regression/probe-disk-bleed.mjs)) and side-by-side screenshots show:
 
-**Suspect:** SkyAtmosphere render order vs globe in the command stream, or the front/back cullMode flip when the camera is outside vs inside the shell. The atmosphere pipeline has `cullMode: "front"` + `depthCompare: "less-equal"` + `depthWriteEnabled: false` — looks correct for "render far-side of shell behind everything." But something is letting the shell front faces through, or the globe isn't writing depth at the right time.
+- **On-disk pixels** now render with proper imagery colors — no cyan tint, no global brightening. Continental detail, oceans, and clouds are visible. (Hello World, Star Burst, Sentinel-2 verified.)
+- **At-limb pixels** (sample points within ~50px of the disk edge) still show WebGPU brighter than WebGL by ~50-130 per channel. This is **atmosphere haze at the limb**, which is where the atmosphere SHOULD render — but the magnitude is over-bright vs WebGL.
+- **Sun glare patch** — WebGPU shows a bright atmosphere/ground-glow patch in the sunlit region (visible as a yellow-white blob in the lower-right of Hello World). This isn't on WebGL.
 
-**Suggested investigation path:**
-1. RenderDoc / Spector.js capture of a Hello World WebGPU frame, see whether the SkyAtmosphere draw is BEFORE or AFTER the globe in the command stream.
-2. If after: verify the globe's `depthWriteEnabled` is true on the standard-pass pipeline (we saw it's `!isBlend`).
-3. If the cullMode should flip when the camera is inside the shell (low altitude), check whether the cull is being switched at the right altitude threshold.
-4. WebGL applies `czm_pbrNeutralTonemapping + czm_inverseGamma` to the SkyAtmosphere color before mixing — the WebGPU revert to `1 - exp(-color)` makes the bleed-through values *less* bright, but the underlying "atmosphere visible on disk" bug is still there.
+Likely contributing fixes that landed since the original triage:
 
-**Estimated effort:** 1-2 sessions — needs frame-capture tooling to pin down whether it's a render-order, cullMode-flip, or depth-state misconfiguration.
+- Tonemap default cleanup (Session 65 cont. v2) — removed unconditional Reinhard.
+- SkyAtmosphere geometric `1 - exp(-2 × pathRatio)` opacity (Batch 1).
+- Globe + Model + SkyAtmosphere `lightDirectionEC` parity fixes (Batches 17, 18).
+- Bathymetry composite-material rendering (Batch 16) — fixed the WGSL globe material code path used by many demos.
+
+**Reclassified remainder:** the over-bright atmosphere limb haze + sun glare patch is now a separate **NEW-VR2-3b-LIMB-HALO-OVERBRIGHT** issue, not the original "atmosphere on disk" bug. Track separately.
+
+**Verification probe results** (negative Δ = WebGPU darker, positive = brighter):
+
+```
+Hello World on-disk pixels: Δ (15, 7, -4) — within noise, no cyan tint.
+Sentinel-2 on-disk pixels:  Δ (32, 19, 8) — slightly brighter but neutral.
+```
+
+Disk colors match WebGL within ~10-30 per channel — the cyan-tinted bleed is gone. Closing the original entry.
+
+### NEW-VR2-3b-LIMB-HALO-OVERBRIGHT — Open (split out from NEW-VR2-3 on 2026-05-13)
+
+**Symptom:** WebGPU atmosphere limb haze is brighter than WebGL by ~50-130 per channel for sample points within ~50px of the globe disk edge. Sun-side has a bright yellow-white "glare" patch.
+
+**Suspect (untriaged):** the SkyAtmosphere LUT or inline scattering math returning higher inscatter magnitude than WebGL's `czm_pbrNeutralTonemapping(...)`-driven path. The shape (limb-only over-bright) is consistent with a forward-scattering Mie phase function or a missing tonemap step on the atmosphere output.
+
+**Estimated effort:** 1 session to compare WGSL `computeScattering` vs WebGL `AtmosphereCommon.glsl` step-by-step at orbit altitude.
 
 ### NEW-VR2-4-EMPTY-SCENES — Reclassified 2026-05-13 (Session 65 Batch 16)
 
