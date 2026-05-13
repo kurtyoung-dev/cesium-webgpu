@@ -2704,7 +2704,26 @@ At ~5 Mm camera altitude over Lake Superior, WebGPU shows a **per-tile brightnes
 
 **Estimated effort:** 1 session — needs pixel-level overlay diff at a fixed camera + fixed terrain LOD to isolate which axis (sampling precision vs LOD vs scale matrix) introduces the error.
 
-### NEW-WEBGPU-MSAA-FLEET-ENABLEMENT — Partial (Batch 21, 2026-05-13)
+### NEW-WEBGPU-MSAA-FLEET-ENABLEMENT — CLOSED 2026-05-13 (Batches 21-36)
+
+**Final state:** WebGPU backend now renders with 4× MSAA out of the box matching the WebGL default. Bridge in `WebGPUSceneRenderer.prepareFrame` propagates `scene.msaaSamples` into `context._msaaSamples`; downstream pipeline caches + render bundle encoders all consume the value. Kill switch `scene.msaaSamples = 1` falls back to no-AA.
+
+**Completed by batch:**
+
+- Batch 21: SkyAtmosphere, Sun, Moon, CubeMapPanorama, DepthPlane pipelines
+- Batch 25: Render bundle invalidation on sample-count change + `_lastMsaaSamples` drift detection in `prepareFrame`
+- Batch 28: Model PBR + velocity + classification pipeline cache reads `context._msaaSamples`
+- Batch 32: Globe surface + wireframe + debug pipelines via `PipelineHost._sampleCount`
+- Batch 33: OIT composite pipeline
+- Batch 34: InvertClassification verified already MSAA-aware (Batch 116 work)
+- Batch 35: `copyTextureToTexture` paths audited — TranslucentTileClassification routes MSAA depth through dedicated pipeline; GlobeDepth has MSAA-resolve compute; refraction capture uses resolve target. No remaining unsafe sites.
+- Batch 36: Bridge re-enable, `_lastMsaaSamples = 1` initial value (was `null`), globe terrain render bundle encoder reads sample count.
+
+**Verification:** Hello World, Bathymetry, 3D Models, 3D Tiles Photogrammetry — zero GPU validation errors, pixel counts within noise of pre-bridge baseline. Visual MSAA improvement expected on sphere/ellipsoid seams, polyline aliasing, model silhouettes.
+
+---
+
+### Closed entry (historic, kept for batch-history reference) — NEW-WEBGPU-MSAA-FLEET-ENABLEMENT (was Partial)
 
 **Symptom:** WebGPU renders without MSAA while WebGL defaults to 4x MSAA. Visible everywhere small triangles or thin features appear: sphere/ellipsoid mesh seams (Show or Hide Entities), polyline aliasing, model silhouette banding. WebGL silently smooths these via sub-pixel coverage; WebGPU shows raw rasterization.
 
