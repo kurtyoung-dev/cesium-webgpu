@@ -221,6 +221,14 @@ export class WebGPUGlobeSurfaceRenderer {
   public _placeholderView: GPUTextureView | null = null;
   // Public underscore: shared with the wireframe helpers (Batch 149).
   public _canvasFormat: GPUTextureFormat = "bgra8unorm";
+  // Session 65 Batch 32 — MSAA sample count tracked alongside format.
+  // Captured from `context._msaaSamples` on each `maybeUpdateForScene
+  // Format` call (mirrors `_canvasFormat`). Used by `PipelineHost`
+  // consumers to bake `multisample.count` into globe pipelines. The
+  // shared `_scenePipelineFormatGeneration` counter also bumps on
+  // MSAA change (see `WebGPUSceneRenderer.prepareFrame` Batch 25),
+  // triggering this renderer's pipeline cache wipe at the same point.
+  public _sampleCount: number = 1;
   // Batch 110 — track scene-pipeline format generation last applied
   // so a runtime HDR / canvas-format change clears the pipeline +
   // wireframe + debug-fragment caches and rebuilds against the new
@@ -525,6 +533,13 @@ export class WebGPUGlobeSurfaceRenderer {
           }
         ).scenePipelineFormat ?? this._canvasFormat;
       this._canvasFormat = newFormat;
+      // Session 65 Batch 32 — capture MSAA sample count alongside the
+      // canvas format. The cache wipe below ensures pipelines created
+      // before the change are dropped; new lookups pick up `_sampleCount`
+      // via `buildPipelineDescriptor → host._sampleCount`.
+      this._sampleCount =
+        (frameState.context as unknown as { _msaaSamples?: number })
+          ._msaaSamples ?? 1;
       this._pipelineCache.clear();
       this._wireframePipelineCache.clear();
       this._debugFragmentPipelineCache.clear();

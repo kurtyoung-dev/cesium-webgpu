@@ -73,6 +73,15 @@ export interface PipelineHost extends ShaderFactoryHost {
    * writes it (the renderer's outer code does the lazy capture).
    */
   readonly _centralPipelineCache: WebGPURenderPipelineCache | null;
+  /**
+   * Session 65 Batch 32 — MSAA sample count for the scene framebuffer.
+   * The renderer's outer code captures `context._msaaSamples` here so
+   * `buildPipelineDescriptor` can bake the matching `multisample.count`
+   * into each variant. Default 1 (single-sample, no MSAA) matches the
+   * pre-bridge behavior. Bumps with the bridge re-enable (Batch 21
+   * MSAA-FLEET work).
+   */
+  readonly _sampleCount?: number;
 }
 
 // ─── Render Pipelines (lazily created per actual vertex stride) ───
@@ -399,6 +408,9 @@ export function buildPipelineDescriptor(
       // cleared depth buffer (which starts at 1.0).
       depthCompare: "less-equal",
     },
+    // Session 65 Batch 32 — match scene FB sample count.
+    multisample:
+      (host._sampleCount ?? 1) > 1 ? { count: host._sampleCount! } : undefined,
   };
 }
 
