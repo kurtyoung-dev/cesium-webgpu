@@ -1599,6 +1599,31 @@ fn computeEnhancedOcean(
   let NdotV = max(dot(waterNormal, viewDir), 0.0);
   let fresnel = fresnelSchlick(NdotV, getOceanReflectivity());
 
+  // Session 65 Batch 23 — orbit-altitude limb attenuation (orbit
+  // polish §13.2). Real orbital photography shows essentially no
+  // ocean sun glint from space — the BRDF-relevant solid angle of
+  // the specular highlight subtends a small fraction of a pixel at
+  // orbit altitudes. Bruneton & Neyret 2008 derive this from the
+  // microfacet distribution: at near-vertical NdotV the visible
+  // highlight area shrinks proportional to camera distance.
+  //
+  // We approximate this with a smoothstep curve from full intensity
+  // at <= 100 km altitude (where helicopter / aerial views still
+  // show ocean glint) to zero at >= 1 Earth radius (orbit). Both
+  // the GGX specular highlight AND the subsurface-scattering rim
+  // get the same attenuation factor so the limb sun-glare patch
+  // disappears at orbit without breaking ground-level reflections.
+  let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+  let altitudeMeters = max(0.0, length(cameraWC) - 6378137.0);
+  let orbitGateMin: f32 = 100000.0;     // 100 km — start fading
+  let orbitGateMax: f32 = 6378137.0;    // 1 Earth radius — fully gated
+  let orbitGateT = clamp(
+    (altitudeMeters - orbitGateMin) / max(1.0, orbitGateMax - orbitGateMin),
+    0.0, 1.0,
+  );
+  let orbitSmooth = orbitGateT * orbitGateT * (3.0 - 2.0 * orbitGateT);
+  let orbitAttenuation = 1.0 - orbitSmooth;
+
   if (camera.enableLighting > 0.5) {
     // GGX specular for sun reflection on water
     let halfDir = normalize(viewDir + sunDirEC);
@@ -1606,11 +1631,11 @@ fn computeEnhancedOcean(
     let NdotL = max(dot(waterNormal, sunDirEC), 0.0);
     let specular = distributionGGX(NdotH, 0.08) * fresnel * NdotL;
 
-    // Sun specular highlight (bright, tight)
-    oceanColor += vec3<f32>(1.0, 0.95, 0.85) * min(specular, 8.0);
+    // Sun specular highlight (bright, tight) — orbit-attenuated.
+    oceanColor += vec3<f32>(1.0, 0.95, 0.85) * min(specular, 8.0) * orbitAttenuation;
 
-    // Subsurface scattering
-    oceanColor += computeSubsurfaceScattering(viewDir, sunDirEC, waterNormal);
+    // Subsurface scattering — orbit-attenuated.
+    oceanColor += computeSubsurfaceScattering(viewDir, sunDirEC, waterNormal) * orbitAttenuation;
   }
 
   // Environment/sky reflection blended via Fresnel
