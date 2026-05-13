@@ -99,6 +99,13 @@ export function executeGlobeDispatch(
         label: "Globe terrain bundle",
         colorFormats: [context.scenePipelineFormat],
         depthStencilFormat: context.depthFormat ?? "depth24plus-stencil8",
+        // Session 65 Batch 36 — match scene FB sample count so the
+        // bundle's recorded pipelines (which now bake their own
+        // multisample state via the Batch 32 globe surface
+        // PipelineHost._sampleCount wiring) validate against the
+        // encoder's attachment state.
+        sampleCount:
+          (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1,
       });
 
       let drawCalls = 0;

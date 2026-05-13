@@ -748,10 +748,13 @@ export class WebGPUSceneRenderer {
   // invalidation both fire when `scene.msaaSamples` changes. The
   // bridge in `prepareFrame` writes `context._msaaSamples`; that
   // value alone doesn't trigger a recreate because the framebuffer
-  // already exists at the old sample count. Mirrors `_lastHDR`
-  // semantics: null on first init (no diff), then tracks last
-  // applied value.
-  public _lastMsaaSamples: number | null = null;
+  // already exists at the old sample count.
+  // Session 65 Batch 36 — initial value `1` (not null) so the first
+  // frame after the bridge re-enable correctly detects the
+  // 1→4 transition and triggers framebuffer recreate + bundle
+  // invalidation. A null sentinel would skip the change detection
+  // on the very frame the bridge first takes effect.
+  public _lastMsaaSamples: number = 1;
   private _depthPlaneWarned: boolean = false;
 
   // ── Debug log-once guards (pragma-stripped in production) ──
@@ -948,22 +951,36 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // Session 65 Batch 21 (2026-05-13) — MSAA bridge attempted, reverted.
-    // The bridge itself works (writes `scene.msaaSamples` into
-    // `context._msaaSamples`, triggers scene-FB recreate with the new
-    // sample count), but downstream render bundles + ~10-20 cached
-    // pipelines still pin `sampleCount: 1` and fail attachment
-    // validation when MSAA flips on. Each needs MSAA-awareness wired
-    // through its caller. This batch made 4 pipelines MSAA-aware
-    // (SkyAtmosphere, Sun, Moon, CubeMapPanorama, DepthPlane) as
-    // forward-compat infrastructure — the new `multisample.count`
-    // gate is harmless when MSAA is off (`> 1 ? ... : undefined`).
-    // Re-enabling the bridge is the natural next batch once Globe
-    // terrain render bundles and the model pipeline cache get the
-    // same treatment. Tracked as `NEW-WEBGPU-MSAA-FLEET-ENABLEMENT`.
+    // Session 65 Batch 36 — MSAA bridge re-enabled after the
+    // Batches 21+25+28+32+33+34+35 sweep made the downstream
+    // pipelines MSAA-aware (SkyAtmosphere, Sun, Moon, CubeMapPanorama,
+    // DepthPlane, Globe terrain, Model PBR + velocity + classification,
+    // OIT composite, InvertClassification, TranslucentTileClassification,
+    // GlobeDepth — every path that targets the scene FB now reads
+    // `context._msaaSamples` and bakes the matching `multisample.count`
+    // into its pipeline).
     //
-    // For now `context._msaaSamples` stays at its hardcoded default
-    // of 1 and the WebGPU backend renders without antialiasing.
+    // Bridge: `scene.msaaSamples` (default 4 from `Scene.js:405`)
+    // capped at 4 and propagated into `context._msaaSamples`. Triggers
+    // - Scene FB recreate at the new sample count (Batch 25
+    //   `_lastMsaaSamples` drift detection)
+    // - Render bundle cache wipe (Batch 25 `msaaChanged` branch)
+    // - `_scenePipelineFormatGeneration` bump → every generation-keyed
+    //   pipeline cache (Globe, Model, OIT, InvertClassification, etc.)
+    //   refreshes on the next frame
+    //
+    // Kill switch: set `scene.msaaSamples = 1` to fall back to no-AA.
+    const scene = config.scene;
+    const requestedSamples = Math.max(
+      1,
+      Math.min(
+        4,
+        (scene as unknown as { msaaSamples?: number }).msaaSamples ?? 1,
+      ),
+    );
+    if (context._msaaSamples !== requestedSamples) {
+      context._msaaSamples = requestedSamples;
+    }
 
     const canvas: HTMLCanvasElement | OffscreenCanvas | undefined =
       context._canvas;
@@ -973,14 +990,11 @@ export class WebGPUSceneRenderer {
     const hdr = config.useHDR ?? false;
     const hdrChanged = this._lastHDR !== null && this._lastHDR !== hdr;
     // Session 65 Batch 25 — detect MSAA sample-count drift. When the
-    // bridge in §`prepareFrame` writes `context._msaaSamples` from
+    // bridge above writes `context._msaaSamples` from
     // `scene.msaaSamples`, the framebuffer needs recreation at the
     // new sample count AND the render bundle cache must be wiped
     // (bundles bake their pipeline's sample count at record time).
-    const requestedSamples = context._msaaSamples ?? 1;
-    const msaaChanged =
-      this._lastMsaaSamples !== null &&
-      this._lastMsaaSamples !== requestedSamples;
+    const msaaChanged = this._lastMsaaSamples !== requestedSamples;
     const needsRecreate =
       !this._initialized || needsResize || hdrChanged || msaaChanged;
     this._lastHDR = hdr;
