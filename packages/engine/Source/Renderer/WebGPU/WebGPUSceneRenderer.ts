@@ -743,6 +743,15 @@ export class WebGPUSceneRenderer {
   // recreated rgba16float scene FB).
   // Public underscore: shared with the _ensureResources slice (Batch 142).
   public _lastHDR: boolean | null = null;
+  // Session 65 Batch 25 — track previous MSAA sample count so the
+  // scene framebuffer recreate path AND the render bundle cache
+  // invalidation both fire when `scene.msaaSamples` changes. The
+  // bridge in `prepareFrame` writes `context._msaaSamples`; that
+  // value alone doesn't trigger a recreate because the framebuffer
+  // already exists at the old sample count. Mirrors `_lastHDR`
+  // semantics: null on first init (no diff), then tracks last
+  // applied value.
+  public _lastMsaaSamples: number | null = null;
   private _depthPlaneWarned: boolean = false;
 
   // ── Debug log-once guards (pragma-stripped in production) ──
@@ -963,14 +972,25 @@ export class WebGPUSceneRenderer {
     const needsResize = width !== this._width || height !== this._height;
     const hdr = config.useHDR ?? false;
     const hdrChanged = this._lastHDR !== null && this._lastHDR !== hdr;
-    const needsRecreate = !this._initialized || needsResize || hdrChanged;
+    // Session 65 Batch 25 — detect MSAA sample-count drift. When the
+    // bridge in §`prepareFrame` writes `context._msaaSamples` from
+    // `scene.msaaSamples`, the framebuffer needs recreation at the
+    // new sample count AND the render bundle cache must be wiped
+    // (bundles bake their pipeline's sample count at record time).
+    const requestedSamples = context._msaaSamples ?? 1;
+    const msaaChanged =
+      this._lastMsaaSamples !== null &&
+      this._lastMsaaSamples !== requestedSamples;
+    const needsRecreate =
+      !this._initialized || needsResize || hdrChanged || msaaChanged;
     this._lastHDR = hdr;
+    this._lastMsaaSamples = requestedSamples;
 
     if (!this._sceneFramebuffer) {
       this._sceneFramebuffer = new WebGPUSceneFramebuffer();
     }
     if (needsRecreate) {
-      const numSamples: number = context._msaaSamples ?? 1;
+      const numSamples: number = requestedSamples;
       const canvasFormat: GPUTextureFormat =
         context.presentationFormat ?? "bgra8unorm";
       this._sceneFramebuffer.update(
@@ -987,16 +1007,21 @@ export class WebGPUSceneRenderer {
     const previousSceneColorFormat = context._sceneColorFormat;
     context._sceneColorFormat =
       this._sceneFramebuffer.colorFormat ?? context._sceneColorFormat;
-    if (
+    const colorFormatChanged =
       context._sceneColorFormat !== undefined &&
-      context._sceneColorFormat !== previousSceneColorFormat
-    ) {
+      context._sceneColorFormat !== previousSceneColorFormat;
+    if (colorFormatChanged || msaaChanged) {
       context._scenePipelineFormatGeneration += 1;
       // AUDIT_2026_05_02 B.20 — every cached `GPURenderBundle` bakes its
-      // pipeline's color attachment formats. When the scene color format
-      // flips (HDR toggle, MSAA toggle), bundles that reference the old
-      // pipeline are stale and produce validation errors when replayed
-      // against the new pass encoder. Wipe the bundle cache here.
+      // pipeline's color attachment formats AND sample count. When
+      // either the scene color format flips (HDR toggle) or the MSAA
+      // sample count changes (Session 65 Batch 25), bundles that
+      // reference the old pipeline are stale and produce validation
+      // errors when replayed against the new pass encoder. Wipe the
+      // bundle cache here. The shared
+      // `_scenePipelineFormatGeneration` counter is also bumped so
+      // generation-keyed pipeline caches (model PBR, billboards,
+      // polylines, etc.) refresh on the next frame.
       context.renderBundleManager?.invalidateAll?.();
     }
   }
