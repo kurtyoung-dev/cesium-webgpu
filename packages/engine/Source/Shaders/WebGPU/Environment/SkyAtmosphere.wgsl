@@ -262,7 +262,20 @@ fn sampleScatteringLut(
   let excessAltitude = max(0.0, altitude - thickness);
   let orbitScaleHeight = max(thickness, innerRadius);
   let orbitFalloff = exp(-excessAltitude / orbitScaleHeight);
-  return s.rgb * u.intensity * orbitFalloff;
+  // Session 65 Batch 27 (NEW-VR2-3b limb halo fix) — the LUT compute
+  // shader (`AtmosphereLUT.wgsl::computeInscatter` L241-242) already
+  // multiplies the stored inscatter by `params.intensity` at bake
+  // time. The previous `* u.intensity` here applied intensity a
+  // SECOND time, producing an effective `intensity² × inscatter`
+  // (~2500× when intensity = 50) which was the root cause of the
+  // over-bright limb halo + sub-solar glare patch on orbit views
+  // (Hello World, Sentinel-2, Star Burst). Real orbital photography
+  // shows a subtle Rayleigh-dominated blue limb; matching that
+  // requires the single intensity multiplication that the LUT bake
+  // already provides. `orbitFalloff` stays as the runtime-only
+  // attenuation curve since it depends on per-frame camera altitude,
+  // not LUT-baked state.
+  return s.rgb * orbitFalloff;
 }
 
 // HSB shift for color correction
@@ -443,8 +456,24 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     color = computeScattering(startPoint, rayDir, rayLength, lightDirWC, innerRadius, outerRadius);
   }
 
-  // Apply HSB shift
-  var finalColor = color;
+  // Session 65 Batch 27 (NEW-VR2-3b limb halo fix) — match WebGL's
+  // post-scattering pipeline order:
+  //   linear scatter → czm_pbrNeutralTonemapping → czm_inverseGamma
+  //   → czm_applyHSBShift → output
+  //
+  // Pre-Batch-27 the WGSL applied `1 - exp(-x)` exposure curve INSTEAD
+  // of PBR Neutral. That curve saturates faster (Reinhard-like) and
+  // produced the over-bright sub-solar glare patch + cyan/white limb
+  // haze visible on Hello World, Sentinel-2, Star Burst. PBR Neutral
+  // has a softer shoulder + preserves saturation, matching real-camera
+  // tonemap behavior.
+  //
+  // HSB shift moved to AFTER tonemap+gamma so the shift operates on
+  // perceptual SDR values (matches WebGL ordering at
+  // SkyAtmosphereFS.glsl L41-47).
+  var finalColor = pbrNeutralTonemapSky(color);
+  // sRGB encode (czm_inverseGamma equivalent — approximate 1/2.2 gamma).
+  finalColor = pow(max(finalColor, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
   if (abs(u.hsbShift.x) > 0.001 || abs(u.hsbShift.y) > 0.001 || abs(u.hsbShift.z) > 0.001) {
     var hsb = rgbToHsb(finalColor);
     hsb.x = fract(hsb.x + u.hsbShift.x);
@@ -452,8 +481,6 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     hsb.z = clamp(hsb.z + u.hsbShift.z, 0.0, 1.0);
     finalColor = hsbToRgb(hsb);
   }
-
-  finalColor = vec3<f32>(1.0) - exp(-finalColor);
 
   // GEOMETRIC opacity gating: WebGL's SkyAtmosphereFS pulls `opacity`
   // straight from the scattering integrator (Beer-Lambert path length
