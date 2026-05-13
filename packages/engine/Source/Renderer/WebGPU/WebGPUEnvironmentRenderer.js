@@ -920,7 +920,15 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   // poison the entire command encoder on executeBundles.
   const bundleMgr = context.renderBundleManager;
   if (defined(bundleMgr) && defined(cache.pipeline) && !cache._pipelineFailed) {
-    const bundleKey = `moon:${moon._cacheId ?? (moon._cacheId = createGuid())}:${context.scenePipelineFormat}:${context.depthFormat}`;
+    // Session 65 Batch 37 — bundle encoder MUST match the recorded
+    // pipeline's multisample state. The Moon pipeline now bakes
+    // sampleCount = context._msaaSamples (Phase MSAA-FLEET), so the
+    // bundle's encoder needs the same value or executeBundles fails
+    // with "Attachment state ... is not compatible". The sampleCount
+    // is also part of the bundle key so a mid-session MSAA toggle
+    // evicts the prior bundle instead of replaying a stale one.
+    const sampleCount = context._msaaSamples ?? 1;
+    const bundleKey = `moon:${moon._cacheId ?? (moon._cacheId = createGuid())}:${context.scenePipelineFormat}:${context.depthFormat}:${sampleCount}`;
     if (cache._bundleStale) {
       bundleMgr.invalidate(bundleKey);
       cache._bundleStale = false;
@@ -930,6 +938,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
       {
         colorFormats: [context.scenePipelineFormat || "bgra8unorm"],
         depthStencilFormat: context.depthFormat || "depth24plus-stencil8",
+        sampleCount,
         label: "Moon bundle",
       },
       function (encoder) {
