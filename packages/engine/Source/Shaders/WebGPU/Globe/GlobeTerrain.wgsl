@@ -2577,7 +2577,30 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         camera.atmosphereParams.w > 0.5,
       );
       let transmittance = transmittanceModifier + opacityForDrape;
-      let finalAtmosphereColor = color + groundAtmoColor * transmittance;
+      // Session 65 Batch 30 (orbit polish §13.2/§13.7 follow-up) —
+      // cap the per-channel atmosphere contribution to a sane ceiling
+      // BEFORE adding to imagery. The Nishita ray-march at orbit
+      // altitudes with full-power Mie forward-scatter can return
+      // linear-radiance values in the 5-20 range per channel, which
+      // after the `1 - exp(-2 × x)` Reinhard-style exposure curve
+      // saturate to near-white and produce the visible bright glare
+      // patch on the sun-side of the Earth disk in Hello World /
+      // Sentinel-2. Real orbital photography never shows that
+      // saturation — the limb glow stays in the 0.3-0.6 range.
+      //
+      // The cap value `1.5` was chosen empirically (Batch 30 tuning):
+      // - 4.0 → mid-lower still (178, 178, 172) bright glare visible
+      // - 2.0 → tested, still visible glare
+      // - 1.5 → matches WebGL perceptual range closely
+      // Lets the limb Rayleigh+Mie reach ~ (0.78, 0.72, 0.66)
+      // post-exposure (matches real-camera dusk haze) while bounding
+      // the sub-solar peak at the same magnitude (no more white
+      // glare). WebGL doesn't have this cap, but its slower per-vertex
+      // integration + adaptive step count produces lower accumulated
+      // radiance at the same camera angles, so WebGL stays within
+      // the same perceptual range without the cap.
+      let groundAtmoCapped = min(groundAtmoColor, vec3<f32>(1.5));
+      let finalAtmosphereColor = color + groundAtmoCapped * transmittance;
       // HDR-aware output. Mirrors WebGL GlobeFS.glsl `#ifndef HDR` —
       // under HDR the inline exp tonemap is SKIPPED so the post-process
       // chain can do the compression on linear-radiance HDR pixels.
