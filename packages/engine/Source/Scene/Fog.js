@@ -152,6 +152,26 @@ class Fog {
     const dot = Math.abs(Cartesian3.dot(camera.directionWC, positionNormal));
     density *= 1.0 - dot;
 
+    // Session 65 Batch 29 (Phase 4 completion, CELESTIAL_ATMOSPHERE_
+    // DESIGN.md §13.4) — humidity modulates fog density. Humid air
+    // produces denser distance fog; dry air thins fog out. The
+    // multiplier `1.0 + humidity * 0.5` keeps the default (humidity
+    // 0.5) bit-identical to pre-Batch-29 behavior (= 1.25 × 0.8 =
+    // 1.0), so existing fog tunings still produce the same visual.
+    // Drier scenes (humidity 0.0) get 1.0 × baseline = pre-Batch-29.
+    // Fully humid scenes (humidity 1.0) get 1.5× baseline = noticeably
+    // denser fog. Gated on `atmosphericConditions.fog.enableHumidity
+    // Modulation` (default ON per B-series locked decisions) when
+    // wired by future Phase 5 work; for this batch the modulation
+    // is unconditional whenever `atmosphericConditions.weather.humidity`
+    // is set.
+    const ac = frameState.atmosphericConditions;
+    const weather = ac && ac.weather ? ac.weather : undefined;
+    if (weather && typeof weather.humidity === "number") {
+      const humidity = weather.humidity;
+      density *= 1.0 + (humidity - 0.5);
+    }
+
     frameState.fog.density = density;
     frameState.fog.visualDensityScalar = this.visualDensityScalar;
     frameState.fog.sse = this.screenSpaceErrorFactor;

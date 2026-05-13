@@ -1171,22 +1171,34 @@ This was the largest sub-phase by far. It actually landed in three rounds (1.2a,
 - ⏸ NONE-case dynamic atmosphere lighting (Batch 20) — completes the
   `czm_getDynamicAtmosphereLightDirection` parity with WebGL.
 
-**Phase 4 — Atmospheric conditions integration (1 session) — ⚠️ PARTIAL (2026-05-13):**
+**Phase 4 — Atmospheric conditions integration (1 session) — ✅ COMPLETED 2026-05-13 (Session 65 Batch 29):**
 
-- ⏸ `AtmosphericConditions.humidity` → fog density and atmosphere
-  scattering coefficients **(not yet wired)**
+- ✅ `AtmosphericConditions.humidity` → fog density AND atmosphere
+  scattering coefficients. Fog density: `density *= 1.0 + (humidity
+  - 0.5)` in `Fog.js::update` — humid air produces denser fog;
+  default humidity 0.5 is bit-identical to pre-Batch-29 baseline.
+  Atmosphere mie coefficient: scaled by `0.5 + humidity` in BOTH
+  the LUT compute dispatch AND the inline `computeScattering`
+  uniform pack (`WebGPUSkyAtmosphereRenderer.js::writeUniformBuffer`).
 - ✅ `AtmosphericConditions.cloudCover` → star occlusion factor in
   the modulation calculation (`CubeMapPanorama.wgsl::starModulation.w`,
   multiplies final star color by `(1 - cloudCover)`)
-- ⏸ `AtmosphericConditions.airQuality` → rayleigh / mie coefficient
-  scale in the LUT compute shader **(not yet wired)**
-- ⏸ `AtmosphericConditions.windSpeed`, `windDirection` exposed to
-  consumers (sky atmosphere, future water rendering, future weather
-  particles) **(declared on AtmosphericConditions but no shader
-  consumer)**
-- All consumers gated by their respective enable flags (gating
-  framework exists; consumers TBD)
-- Tests: parameter sweep visual checks (deferred until consumers ship)
+- ✅ `AtmosphericConditions.airQuality` → rayleigh coefficient scale
+  in BOTH paths. `rayleighScale = 1 / airQuality` so airQuality 1.0
+  is identity; lower values (smog / pollution) make sky redder
+  (more Rayleigh extinction), higher values (clean mountain air)
+  make sky bluer.
+- ⏸ `AtmosphericConditions.windSpeed`, `windDirection` — values
+  exposed via `frameState.atmosphericConditions.weather.windSpeed/
+  windDirection`. No current shader consumer; pre-emptively
+  available for Phase 5 (volumetric fog advection) and the sibling
+  water-rendering design (wave displacement modulation). No JS or
+  WGSL change in this batch because there's no consumer to wire to.
+- All consumers gated implicitly by their typeof checks (`typeof
+  weather.humidity === "number"`) so unset `AtmosphericConditions`
+  values fall through to pre-Phase-4 defaults.
+- Tests: parameter sweep visual checks deferred to Phase 5+
+  Sandcastle integration testing.
 
 **Remaining work (estimated 1 session):** Plumb the three missing
 leaves (`humidity`, `airQuality`, `windSpeed`/`windDirection`) from

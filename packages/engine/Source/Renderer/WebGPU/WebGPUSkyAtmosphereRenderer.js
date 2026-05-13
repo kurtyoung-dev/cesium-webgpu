@@ -649,16 +649,38 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   uniformData[42] = skyAtmosphere.brightnessShift || 0.0;
   uniformData[43] = useLut ? 1.0 : 0.0;
 
-  // rayleighCoefficient
-  uniformData[44] = DEFAULT_RAYLEIGH_COEFFICIENT.x;
-  uniformData[45] = DEFAULT_RAYLEIGH_COEFFICIENT.y;
-  uniformData[46] = DEFAULT_RAYLEIGH_COEFFICIENT.z;
+  // rayleighCoefficient — Session 65 Batch 29 (Phase 4 completion):
+  // applies the same `humidity` → mieScale and `airQuality` → rayleigh
+  // Scale that the LUT compute dispatch uses (lines 441-459 above), so
+  // the inline `computeScattering` path (active for orbit cameras
+  // beyond 2× shell thickness, and for any frame that misses the LUT
+  // path) produces the same atmospheric character as the LUT-cached
+  // path. Without this, the LUT path got humidity/airQuality scaling
+  // but orbit cameras (which use the inline ray-march) saw default
+  // coefficients — producing inconsistent sky color across the
+  // altitude crossover.
+  const acRT = frameState.atmosphericConditions;
+  const weatherRT = acRT && acRT.weather ? acRT.weather : undefined;
+  const humidityRT =
+    weatherRT && typeof weatherRT.humidity === "number"
+      ? weatherRT.humidity
+      : 0.5;
+  const airQualityRT =
+    weatherRT && typeof weatherRT.airQuality === "number"
+      ? weatherRT.airQuality
+      : 1.0;
+  const mieScaleRT = 0.5 + humidityRT;
+  const rayleighScaleRT = airQualityRT > 0.001 ? 1.0 / airQualityRT : 1000.0;
+
+  uniformData[44] = DEFAULT_RAYLEIGH_COEFFICIENT.x * rayleighScaleRT;
+  uniformData[45] = DEFAULT_RAYLEIGH_COEFFICIENT.y * rayleighScaleRT;
+  uniformData[46] = DEFAULT_RAYLEIGH_COEFFICIENT.z * rayleighScaleRT;
   uniformData[47] = 0.0;
 
-  // mieCoefficient
-  uniformData[48] = DEFAULT_MIE_COEFFICIENT.x;
-  uniformData[49] = DEFAULT_MIE_COEFFICIENT.y;
-  uniformData[50] = DEFAULT_MIE_COEFFICIENT.z;
+  // mieCoefficient (humidity-scaled — see comment above).
+  uniformData[48] = DEFAULT_MIE_COEFFICIENT.x * mieScaleRT;
+  uniformData[49] = DEFAULT_MIE_COEFFICIENT.y * mieScaleRT;
+  uniformData[50] = DEFAULT_MIE_COEFFICIENT.z * mieScaleRT;
   uniformData[51] = 0.0;
 
   // Tier 1 debug controls. Read from frameState (set by Scene each frame)
