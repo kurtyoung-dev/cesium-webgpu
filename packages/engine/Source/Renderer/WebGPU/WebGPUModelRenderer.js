@@ -681,8 +681,22 @@ function writeTextureTransform(data, offsetFloats, m) {
 // ─── Light Uniform Packing ───────────────────────────────────────────────────
 
 function packLightUniforms(data, frameState, model) {
+  // Session 65 Batch 18 — pack `lightDirectionEC` (the SCENE LIGHT
+  // direction) instead of `sunDirectionEC`. When the scene uses a
+  // SunLight, these are identical (see `UniformState.update` line
+  // 836-844). When the scene overrides `scene.light` with a custom
+  // `DirectionalLight` (e.g., a hillshade direction or an artist-
+  // controlled key light), only `lightDirectionEC` reflects the
+  // user-set value. Mirrors upstream PBR shaders which reference
+  // `czm_lightDirectionEC`, not `czm_sunDirectionEC`. The previous
+  // sun-direction code path caused custom-lit models to receive sun
+  // illumination regardless of `scene.light`, identical in shape to
+  // the Globe lighting bug fixed in Batch 17. Variable name kept as
+  // `sunDir` for back-compat with the WGSL uniform field — renaming
+  // is a separate refactor.
   const sunDir =
-    frameState.context?.uniformState?.sunDirectionEC || new Cartesian3(0, 0, 1);
+    frameState.context?.uniformState?.lightDirectionEC ||
+    new Cartesian3(0, 0, 1);
   data[0] = sunDir.x;
   data[1] = sunDir.y;
   data[2] = sunDir.z;

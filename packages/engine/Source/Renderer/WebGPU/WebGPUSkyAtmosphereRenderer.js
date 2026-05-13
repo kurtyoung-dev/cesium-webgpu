@@ -581,22 +581,59 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   uniformData[26] = camera.positionWC.z;
   uniformData[27] = 0.0;
 
-  // sunDirectionWC
-  const sunDir = defined(frameState.sunDirectionWC)
-    ? frameState.sunDirectionWC
-    : new Cartesian3(0, 0, 1);
+  // sunDirectionWC — Session 65 Batch 18: respect
+  // `frameState.atmosphere.dynamicLighting` enum, mirroring upstream
+  // `czm_getDynamicAtmosphereLightDirection`:
+  //   SCENE_LIGHT (1) → use `uniformState.lightDirectionWC` (honors
+  //                     `scene.light` overrides such as a custom
+  //                     `DirectionalLight`).
+  //   SUNLIGHT    (2) → use `frameState.sunDirectionWC` (force sun
+  //                     regardless of `scene.light`).
+  //   NONE        (0, default) → use sun for now. The proper WebGL
+  //                     behavior is "lit from directly above" (per-
+  //                     fragment `positionWC` normalized), which
+  //                     requires a per-fragment branch in WGSL. The
+  //                     visible difference for NONE is minor (subtle
+  //                     terminator placement) — bumping NONE to the
+  //                     full per-fragment path is a separate WGSL
+  //                     change that we defer until a demo exercises
+  //                     it. WebGL's `czm_getDynamicAtmosphereLight
+  //                     Direction` lives at `Builtin/Functions/
+  //                     getDynamicAtmosphereLightDirection.glsl`.
+  // 1 = DynamicAtmosphereLightingType.SCENE_LIGHT (see
+  // `Source/Scene/DynamicAtmosphereLightingType.js`).
+  const dynamicLighting = frameState.atmosphere?.dynamicLighting ?? 0;
+  const useSceneLight = dynamicLighting === 1;
+  const uniformState = frameState.context?.uniformState;
+  const sceneLightWC = uniformState?.lightDirectionWC;
+  const sunDir =
+    useSceneLight && defined(sceneLightWC)
+      ? sceneLightWC
+      : defined(frameState.sunDirectionWC)
+        ? frameState.sunDirectionWC
+        : new Cartesian3(0, 0, 1);
   uniformData[28] = sunDir.x;
   uniformData[29] = sunDir.y;
   uniformData[30] = sunDir.z;
   uniformData[31] = 0.0;
 
-  // radiiAndDynamicAtmosphere
+  // radiiAndDynamicAtmosphere — Session 65 Batch 18: pack the
+  // `dynamicLighting` enum into the `.z` slot (matches the WGSL
+  // struct comment "z=dynamicLighting"). The atmosphere light
+  // intensity that previously occupied this slot is already
+  // duplicated at `uniformData[39]` (the `intensity: f32` field of
+  // the WGSL struct), so removing it here doesn't lose any data the
+  // shader actually reads — `u.radiiAndDynamicAtmosphere.z` was
+  // documented as the enum slot but was never consumed by the WGSL.
+  // Forward-compatible: when the WGSL adds a per-fragment NONE
+  // branch, it can read `u.radiiAndDynamicAtmosphere.z` to make the
+  // decision without any further JS changes.
   const ellipsoid = skyAtmosphere._ellipsoid || Ellipsoid.WGS84;
   const innerRadius = Cartesian3.maximumComponent(ellipsoid.radii);
   const outerRadius = innerRadius * ATMOSPHERE_SCALE;
   uniformData[32] = innerRadius;
   uniformData[33] = outerRadius;
-  uniformData[34] = skyAtmosphere.atmosphereLightIntensity || 50.0;
+  uniformData[34] = dynamicLighting;
   uniformData[35] = 0.0;
 
   // Scale heights and anisotropy
