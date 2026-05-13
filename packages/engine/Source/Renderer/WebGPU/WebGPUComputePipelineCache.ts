@@ -50,6 +50,8 @@
  * @private
  */
 
+import type { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
+
 /**
  * Compute pipeline descriptor (cache-friendly form). Mirrors WebGPU's
  * `GPUComputePipelineDescriptor` minus the auto-layout option, which
@@ -116,6 +118,8 @@ export class WebGPUComputePipelineCache {
   private cache: Map<string, ComputePipelineCacheEntry>;
   private pendingPipelines: Map<string, Promise<GPUComputePipeline>>;
   private logPrefix: string;
+  // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2) — see render-pipeline cache for rationale.
+  private monitor: AsyncResourceMonitor | null;
 
   // Layout-identity table: maps a `GPUPipelineLayout` (or the literal
   // string "auto") to a stable integer the cache key can include. Built
@@ -139,14 +143,25 @@ export class WebGPUComputePipelineCache {
    * @param device GPUDevice for creating pipelines
    * @param contextId Owning context's id for multi-context error
    *   attribution. Optional — defaults to a generic prefix.
+   * @param monitor Optional async resource monitor for wakeup signaling.
    */
-  constructor(device: GPUDevice, contextId?: string) {
+  constructor(
+    device: GPUDevice,
+    contextId?: string,
+    monitor?: AsyncResourceMonitor | null,
+  ) {
     this.device = device;
     this.cache = new Map();
     this.pendingPipelines = new Map();
     this.logPrefix = contextId
       ? `[CesiumJS:webgpu:${contextId}:compute-pipeline-cache]`
       : `[CesiumJS:webgpu:compute-pipeline-cache]`;
+    this.monitor = monitor ?? null;
+  }
+
+  /** Phase 2 helper — see `WebGPURenderPipelineCache.setAsyncResourceMonitor`. */
+  setAsyncResourceMonitor(monitor: AsyncResourceMonitor | null): void {
+    this.monitor = monitor;
   }
 
   /**
@@ -177,9 +192,20 @@ export class WebGPUComputePipelineCache {
 
     // Create new pipeline
     this.stats.misses++;
+    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2 + audit fix) — see
+    // render-pipeline cache for ordering rationale: pendingPipelines
+    // gets set BEFORE monitor.begin so re-entrant subscribers see
+    // consistent cache state. Compute pipelines use a `compute|` key
+    // prefix so they don't collide with render-pipeline keys in
+    // monitor diagnostics if both share a base name.
     const pipelinePromise = this.createPipelineAsync(descriptor);
     this.pendingPipelines.set(key, pipelinePromise);
     this.stats.pending++;
+    const monitorToken = this.monitor?.begin({
+      kind: "compute-pipeline",
+      key: `compute|${key}`,
+      label: descriptor.name,
+    });
 
     try {
       const pipeline = await pipelinePromise;
@@ -191,7 +217,15 @@ export class WebGPUComputePipelineCache {
       });
 
       this.stats.created++;
+      if (monitorToken) {
+        this.monitor!.resolve(monitorToken);
+      }
       return pipeline;
+    } catch (error) {
+      if (monitorToken) {
+        this.monitor!.reject(monitorToken, error);
+      }
+      throw error;
     } finally {
       this.pendingPipelines.delete(key);
       this.stats.pending--;

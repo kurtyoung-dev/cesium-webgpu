@@ -82,11 +82,7 @@ struct CameraUniforms {
   encodedCameraPositionMCLow: vec3<f32>,
   _pad1: f32,
   cameraPositionWC: vec3<f32>,
-  _pad2: f32,
-  // DP-H41 (Batch 27) — previous frame's viewProjection for
-  // TAA / motion-vector reprojection. Sourced from
-  // `UniformState._previousViewProjection` (f32 mat4).
-  previousViewProjection: mat4x4<f32>,
+    previousViewProjection: mat4x4<f32>,
 };
 
 struct MaterialUniforms {
@@ -623,19 +619,33 @@ struct VertexInput {
   @location(5) joints0: vec4<u32>,
   @location(6) weights0: vec4<f32>,
   // texCoord1 -- glTF textures carry a per-texture texCoord: 0|1 flag;
-  // occlusion and clearcoat-normal commonly use UV set 1. When the
-  // primitive has no TEXCOORD_1 accessor, the renderer binds uv0 data
-  // into this slot as a safe fallback so samplers whose texCoord flag
-  // is 1 degrade to "same UV as 0" rather than failing the bind.
+  // occlusion and clearcoat-normal commonly use UV set 1. Wrapped in
+  // `//>>ifdef MODEL_HAS_TEXCOORD_1` (Session 62 NEW-VR-VERTEX-BUFFER-VARIANT)
+  // so primitives without TEXCOORD_1 don't allocate a vertex buffer
+  // slot for it — fits Edge's `maxVertexBuffers = 8` adapter cap. The
+  // FS reads of `input.texCoord1` are also wrapped, falling back to
+  // `texCoord0` when the attribute isn't bound.
+  //>>ifdef MODEL_HAS_TEXCOORD_1
   @location(7) texCoord1: vec2<f32>,
+  //>>endif
   // Audit B.2 (Batch 130) -- per-vertex feature ID (b3dm _BATCHID
   // renamed to _FEATURE_ID_0 by the loader). f32 cast for
   // varying-friendly transport; the FS converts back to u32 for the
-  // batch / pick texture lookup. Bound to a 1-element zero default
-  // when the primitive carries no _FEATURE_ID_0 accessor; the FS
-  // gates the read on FLAG_HAS_FEATURE_ID_ATTRIBUTE so the default
-  // never reaches the lookup.
+  // batch / pick texture lookup. The FS gates the read on
+  // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` so the zero default never reaches
+  // the lookup when no feature ID is present.
+  //
+  // Session 65 follow-up — variant-conditional. When the primitive has
+  // no `_FEATURE_ID_0` / `_BATCHID` accessor the pipeline omits vertex
+  // buffer slot 8 (see `createVertexBufferLayout` in
+  // `WebGPUModelPipelineCache.js`) and this declaration is stripped so
+  // the WGSL stays in sync with the bound buffer count. Most standard
+  // glTF models lack feature IDs, so this removes the eighth vertex
+  // slot from the common-case pipeline — fits Edge's 8-slot adapter
+  // cap with headroom.
+  //>>ifdef MODEL_HAS_FEATURE_ID_0
   @location(8) featureId0: f32,
+  //>>endif
 };
 
 struct VertexOutput {
@@ -646,7 +656,9 @@ struct VertexOutput {
   @location(3) color0: vec4<f32>,
   @location(4) tangentEC: vec3<f32>,
   @location(5) bitangentEC: vec3<f32>,
+  //>>ifdef MODEL_HAS_TEXCOORD_1
   @location(6) texCoord1: vec2<f32>,
+  //>>endif
   // Model-space RTE vector: `(positionMC - encodedCameraPositionMC_high)
   // + (- encodedCameraPositionMC_low)`. The fragment shader rotates it
   // into world-space RTE via `material.modelMatrix * vec4(rteMC, 0.0)`
@@ -733,7 +745,9 @@ struct VertexOutput {
   output.rteMC = rte;
   output.normalEC = normalize((camera.normalMatrix * vec4<f32>(normalMC, 0.0)).xyz);
   output.texCoord0 = input.texCoord0;
+  //>>ifdef MODEL_HAS_TEXCOORD_1
   output.texCoord1 = input.texCoord1;
+  //>>endif
   output.color0 = input.color0;
 
   // Tangent/Bitangent for normal mapping
@@ -803,7 +817,19 @@ struct VertexOutput {
   // FS as a flat-interpolated varying. The provoking-vertex's value
   // wins for the entire triangle, which matches the per-feature
   // semantics (a feature spans whole triangles, never crosses).
+  //
+  // Session 65 follow-up — variant-conditional on MODEL_HAS_FEATURE_ID_0.
+  // When the primitive has no feature ID accessor (the common case
+  // for standard glTF models without batching), slot 8 is omitted from
+  // the vertex layout and `input.featureId0` doesn't exist, so we hand
+  // the FS a zero default. The FS only reads `featureId0` when
+  // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is set in `material.materialFlags`,
+  // so the default never reaches a lookup.
+  //>>ifdef MODEL_HAS_FEATURE_ID_0
   output.featureId0 = input.featureId0;
+  //>>else
+  output.featureId0 = 0.0;
+  //>>endif
 
   return output;
 }
@@ -871,8 +897,34 @@ fn srgbToLinear(srgb: vec3<f32>) -> vec3<f32> {
   return pow(srgb, vec3<f32>(2.2));
 }
 
+// Khronos PBR Neutral tonemap — matches WebGL czm_pbrNeutralTonemapping
+// (packages/engine/Source/Shaders/Builtin/Functions/pbrNeutralTonemapping.glsl).
+// Identity for input <= 0.76; gentle peak compression with desaturation
+// preservation above. Replaces an earlier Reinhard implementation that
+// crushed mid-tones (RGB 0.5 -> 0.333) and produced visibly washed-out
+// glTF models compared to WebGL where the WebGL LightingStageFS applies
+// the Khronos curve when HDR is off.
+fn pbrNeutralTonemap(color: vec3<f32>) -> vec3<f32> {
+  let startCompression = 0.8 - 0.04;
+  let desaturation = 0.15;
+  let x = min(color.r, min(color.g, color.b));
+  let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+  var c = color - vec3<f32>(offset);
+  let peak = max(c.r, max(c.g, c.b));
+  if (peak < startCompression) { return c; }
+  let d = 1.0 - startCompression;
+  let newPeak = 1.0 - d * d / (peak + d - startCompression);
+  c = c * (newPeak / peak);
+  let g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return mix(c, vec3<f32>(newPeak), vec3<f32>(g));
+}
+
 fn tonemapAndGamma(color: vec3<f32>) -> vec3<f32> {
-  let mapped = color / (color + vec3<f32>(1.0));
+  // WebGL LightingStageFS applies tonemap + linearToSrgb only when HDR
+  // is OFF (the default). HDR is currently always-off in the active
+  // WebGPU paths, so this is unconditional here. When HDR plumbing
+  // lands, gate both the tonemap and the gamma on the HDR flag.
+  let mapped = pbrNeutralTonemap(max(color, vec3<f32>(0.0)));
   return pow(mapped, vec3<f32>(1.0 / 2.2));
 }
 
@@ -904,6 +956,13 @@ fn unpackFeatureId(channels: vec4<f32>, channelCount: i32) -> i32 {
 
 // Looks up the batch texture color for a given feature ID.
 // Handles single-line and multi-line batch texture layouts.
+//
+// Uses `textureSampleLevel(..., 0.0)` instead of `textureSample` because
+// this function is called from non-uniform control flow (the batch
+// sample depends on per-fragment featureId values). WGSL requires
+// `textureSample` to be in uniform control flow; the *Level variants
+// are exempt because they don't compute screen-space derivatives for
+// mip selection.
 fn lookupBatchColor(fid: i32) -> vec4<f32> {
   let step = featureId.textureStep;
   if (featureId.hasMultilineBatchTex != 0) {
@@ -913,11 +972,11 @@ fn lookupBatchColor(fid: i32) -> vec4<f32> {
       (floor(fidF / dim.x) + 0.5) / dim.y,
       (fidF - floor(fidF / dim.x) * dim.x + 0.5) / dim.x
     );
-    return textureSample(batchTexture, batchSampler, st);
+    return textureSampleLevel(batchTexture, batchSampler, st, 0.0);
   }
   // Single-line layout: feature ID maps to x coordinate
   let st = vec2<f32>(step.x * f32(fid) + step.y, 0.5);
-  return textureSample(batchTexture, batchSampler, st);
+  return textureSampleLevel(batchTexture, batchSampler, st, 0.0);
 }
 
 // C-R9-MODEL-FEATURE-PICK (Batch 100) — per-feature pick color lookup.
@@ -933,10 +992,10 @@ fn lookupFeaturePickColor(fid: i32) -> vec4<f32> {
       (floor(fidF / dim.x) + 0.5) / dim.y,
       (fidF - floor(fidF / dim.x) * dim.x + 0.5) / dim.x
     );
-    return textureSample(featurePickTexture, featurePickSampler, st);
+    return textureSampleLevel(featurePickTexture, featurePickSampler, st, 0.0);
   }
   let st = vec2<f32>(step.x * f32(fid) + step.y, 0.5);
-  return textureSample(featurePickTexture, featurePickSampler, st);
+  return textureSampleLevel(featurePickTexture, featurePickSampler, st, 0.0);
 }
 
 // ─── Fragment Shader ─────────────────────────────────────────────────────────
@@ -949,7 +1008,9 @@ struct FragmentInput {
   @location(3) color0: vec4<f32>,
   @location(4) tangentEC: vec3<f32>,
   @location(5) bitangentEC: vec3<f32>,
+  //>>ifdef MODEL_HAS_TEXCOORD_1
   @location(6) texCoord1: vec2<f32>,
+  //>>endif
   @location(7) rteMC: vec3<f32>,
   // TAA Slice 2c (Batch 96) — interpolated previous- and current-frame
   // clip positions used for per-model motion-vector reconstruction.
@@ -1305,6 +1366,12 @@ fn applyEdgeOverlay(
   positionEC: vec3<f32>,
   fragCoordXY: vec2<f32>,
   currentFeatureId: f32,
+  // Caller-supplied pixelStep (fwidth of linear depth). Hoisted to
+  // uniform control flow at the top of fragmentMain because WGSL
+  // requires `fwidth` to only run from uniform control flow, and
+  // applyEdgeOverlay is called from inside the FLAG_IS_UNLIT branch
+  // where the compiler can't prove the branch is uniform.
+  pixelStep: f32,
 ) -> vec4<f32> {
   // Stage gate. `edgeControl.x` is 1.0 only when the emitter wrote MRT
   // outputs this frame AND the host renderer plumbed valid views into
@@ -1326,14 +1393,10 @@ fn applyEdgeOverlay(
   }
   let screenCoord = fragCoordXY / viewport;
 
-  // Compute the depth derivative BEFORE the per-pixel `edgeIdSample.r`
-  // branch — `fwidth` requires uniform control flow within a fragment
-  // quad. The early-outs above are all on uniform values
-  // (edgeControl, viewport), so this point is reached uniformly when
-  // edges are enabled and the value is safe to use later inside
-  // non-uniform branches.
+  // pixelStep is now caller-supplied (see fn signature). The
+  // geomDepthLinearEarly value is still needed locally for the
+  // depth-delta calculation below.
   let geomDepthLinearEarly = abs(positionEC.z); // looking -Z in EC
-  let pixelStep = fwidth(geomDepthLinearEarly);
 
   let edgeColor = textureSampleLevel(edgeColorTex, edgeSampler, screenCoord, 0.0);
   let edgeIdSample = textureSampleLevel(edgeIdTex, edgeSampler, screenCoord, 0.0);
@@ -1499,8 +1562,15 @@ fn applyTextureTransform(
 }
 
 fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
+  //>>ifdef MODEL_HAS_TEXCOORD_1
   let useUV1 = (material.texCoordFlags & slotBit) != 0u;
   return select(input.texCoord0, input.texCoord1, useUV1);
+  //>>else
+  // No TEXCOORD_1 attribute on this primitive — texCoordFlags requesting
+  // UV set 1 silently degrades to texCoord0. Matches the pre-Session-62
+  // behavior that always bound a uv0 fallback into slot 7.
+  return input.texCoord0;
+  //>>endif
 }
 
 // AUDIT_2026_05_02 A.6 — port of `Shaders/Model/ModelClippingPlanesStageFS.glsl`
@@ -1683,9 +1753,8 @@ fn modelClipByPolygon(positionWC: vec3<f32>) -> bool {
     vec2<f32>(1.0),
   );
 
-  let sdfValue = textureSample(
-    clippingPolygonTex, clippingPolygonSampler, uv,
-  ).r;
+  let sdfValue = textureSampleLevel(
+    clippingPolygonTex, clippingPolygonSampler, uv, 0.0).r;
   // SDF encoding: 0.5 = on edge, < 0.5 = inside polygon, > 0.5 = outside.
   // signedDistance = (sdfValue - 0.5) * 2.0:
   //   - default (CLIPPING_INVERSE = 0): discard when signedDistance < 0
@@ -1728,6 +1797,15 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
 
 @fragment fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
+
+  // Hoist fwidth() to uniform control flow at the entry of the fragment
+  // shader. WGSL requires fwidth to be called from uniform control flow,
+  // and the edge overlay (which uses pixelStep) is invoked from the
+  // FLAG_IS_UNLIT early-out branch which the compiler can't prove is
+  // uniform across the quad. Computing it once at the top sidesteps
+  // the issue. Cost: every fragment computes pixelStep even when the
+  // edge stage is disabled — negligible (one fwidth, ~2 ALU).
+  let edgePixelStep = fwidth(abs(input.positionEC.z));
 
   // AUDIT_2026_05_02 A.6 — model clipping planes. Eye-space distance
   // test: planes are uploaded eye-space transformed (see
@@ -1772,7 +1850,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   // the comparison in the same encoding.
   var currentFeatureId: f32 = 0.0;
   if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE)) {
-    let fidSampleEarly = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
+    let fidSampleEarly = textureSampleLevel(featureIdTexture, featureIdSampler, input.texCoord0, 0.0);
     let fidIntEarly = unpackFeatureId(fidSampleEarly, featureId.channelCount);
     currentFeatureId = f32(fidIntEarly);
   } else if (hasFlag(flags, FLAG_HAS_FEATURE_ID_ATTRIBUTE)) {
@@ -1788,18 +1866,18 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
 
   // baseColor / diffuse textures are uploaded as `rgba8unorm-srgb`
   // (WebGPUModelRenderer.js createGPUTextureFromReader), so
-  // textureSample() already returns linear values. In-shader srgbToLinear
+  // textureSampleLevel(, 0.0) already returns linear values. In-shader srgbToLinear
   // (pow(x, 2.2)) would apply the decode twice and darken mid-tones.
   if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
       baseColor = baseColor * tc;
     }
   } else {
     if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
       baseColor = baseColor * tc;
     }
   }
@@ -1825,6 +1903,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
       input.positionEC,
       input.fragCoord.xy,
       currentFeatureId,
+      edgePixelStep,
     );
   }
 
@@ -1832,7 +1911,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   var N = normalize(input.normalEC);
   if (hasFlag(flags, FLAG_IS_DOUBLE_SIDED) && !input.frontFacing) { N = -N; }
   if (hasFlag(flags, FLAG_HAS_NORMAL_TEXTURE)) {
-    let nm = textureSample(normalTexture, normalSampler, normalUV(input)).rgb;
+    let nm = textureSampleLevel(normalTexture, normalSampler, normalUV(input), 0.0).rgb;
     N = perturbNormal(N, input.tangentEC, input.bitangentEC, nm, material.normalScale);
   }
 
@@ -1846,7 +1925,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     var spec = vec3<f32>(material.specularFactor_r, material.specularFactor_g, material.specularFactor_b);
     var gloss = material.glossinessFactor;
     if (hasFlag(flags, FLAG_HAS_SPECGLOSS_TEXTURE)) {
-      let sg = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input));
+      let sg = textureSampleLevel(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input), 0.0);
       spec = spec * srgbToLinear(sg.rgb);
       gloss = gloss * sg.a;
     }
@@ -1858,7 +1937,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     metallic = material.metallicFactor;
     roughness = material.roughnessFactor;
     if (hasFlag(flags, FLAG_HAS_METALLIC_ROUGHNESS_TEXTURE)) {
-      let mr = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input));
+      let mr = textureSampleLevel(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input), 0.0);
       roughness = roughness * mr.g;
       metallic = metallic * mr.b;
     }
@@ -2423,7 +2502,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   if (sh.control.w > 0.5) {
     irradiance = evalSphericalHarmonics(N);
   } else {
-    irradiance = textureSample(iblDiffuseTexture, iblSampler, N).rgb;
+    irradiance = textureSampleLevel(iblDiffuseTexture, iblSampler, N, 0.0).rgb;
   }
   let diffuseIBL = irradiance * diffuseColor * light.iblDiffuseFactor;
 
@@ -2447,7 +2526,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {
-    let ao = textureSample(occlusionTexture, occlusionSampler, occlusionUV(input)).r;
+    let ao = textureSampleLevel(occlusionTexture, occlusionSampler, occlusionUV(input), 0.0).r;
     ambient = mix(ambient, ambient * ao, material.occlusionStrength);
   }
 
@@ -2457,7 +2536,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   // full rationale on sRGB format selection.
   var emissive = material.emissiveFactor;
   if (hasFlag(flags, FLAG_HAS_EMISSIVE_TEXTURE)) {
-    let et = textureSample(emissiveTexture, emissiveSampler, emissiveUV(input)).rgb;
+    let et = textureSampleLevel(emissiveTexture, emissiveSampler, emissiveUV(input), 0.0).rgb;
     emissive = emissive * et;
   }
 
@@ -2562,6 +2641,7 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     input.positionEC,
     input.fragCoord.xy,
     currentFeatureId,
+    edgePixelStep,
   );
 
   return finalColor;
@@ -2620,11 +2700,11 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
       baseColor = baseColor * tc;
     }
   } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-    let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+    let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
     baseColor = baseColor * tc;
   }
 
@@ -2654,7 +2734,7 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   if ((pickHasFidTex || pickHasFidAttr) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
     var fidInt: i32;
     if (pickHasFidTex) {
-      let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
+      let fidSample = textureSampleLevel(featureIdTexture, featureIdSampler, input.texCoord0, 0.0);
       fidInt = unpackFeatureId(fidSample, featureId.channelCount);
     } else {
       fidInt = i32(input.featureId0);
@@ -2684,11 +2764,11 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
       baseColor = baseColor * tc;
     }
   } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-    let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+    let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
     baseColor = baseColor * tc;
   }
 
@@ -2747,7 +2827,7 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   if ((pickHasFidTex || pickHasFidAttr) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
     var fidInt: i32;
     if (pickHasFidTex) {
-      let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
+      let fidSample = textureSampleLevel(featureIdTexture, featureIdSampler, input.texCoord0, 0.0);
       fidInt = unpackFeatureId(fidSample, featureId.channelCount);
     } else {
       fidInt = i32(input.featureId0);
@@ -2804,11 +2884,11 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
       baseColor = baseColor * tc;
     }
   } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-    let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+    let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
     baseColor = baseColor * tc;
   }
   if (hasFlag(flags, FLAG_HAS_VERTEX_COLORS)) {
@@ -2840,7 +2920,11 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 // drawing buffer, identical to the fragment-coordinate space.
 @fragment fn fragmentClassificationMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let dims = textureDimensions(globeDepthTex);
-  let screenUV = input.position.xy / vec2<f32>(f32(dims.x), f32(dims.y));
+  // FragmentInput names the @builtin(position) field `fragCoord` — the
+  // earlier `input.position.xy` access didn't compile (struct member
+  // not found) and broke 41 demos that pulled this WGSL via the model
+  // pipeline (3D Tiles, photogrammetry, point cloud variants, etc.).
+  let screenUV = input.fragCoord.xy / vec2<f32>(f32(dims.x), f32(dims.y));
   let packed = textureSampleLevel(globeDepthTex, edgeSampler, screenUV, 0.0);
   let surfaceDepth = unpackEdgeDepth(packed);
   if (surfaceDepth == 0.0) {

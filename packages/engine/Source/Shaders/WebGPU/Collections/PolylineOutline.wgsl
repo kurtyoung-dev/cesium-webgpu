@@ -16,11 +16,7 @@ struct CameraUniforms {
     _pad2: vec2<f32>,
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
-    _pad3: vec2<f32>,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
-    previousViewProjection: mat4x4<f32>,
+        previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -220,12 +216,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let halfInteriorWidth = 0.5 * max(lineWidth - outWidth, 0.0) / max(lineWidth, 0.001);
 
   // Step function: 1 inside the interior band, 0 in the outline
-  var b = step(0.5 - halfInteriorWidth, st.t);
-  b *= 1.0 - step(0.5 + halfInteriorWidth, st.t);
+  var b = step(0.5 - halfInteriorWidth, st.y);
+  b *= 1.0 - step(0.5 + halfInteriorWidth, st.y);
 
   // Distance from closest interior/outline boundary for anti-aliasing
-  let d1 = abs(st.t - (0.5 - halfInteriorWidth));
-  let d2 = abs(st.t - (0.5 + halfInteriorWidth));
+  let d1 = abs(st.y - (0.5 - halfInteriorWidth));
+  let d2 = abs(st.y - (0.5 + halfInteriorWidth));
   let dist = min(d1, d2);
 
   let currentColor = mix(outColor, color, b);

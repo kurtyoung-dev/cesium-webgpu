@@ -503,7 +503,7 @@ describe("Renderer/WebGPU/WebGPUCSMRenderer", function () {
       r.computeCascadeVPs(camera, { x: -1, y: 0, z: 0 });
 
       // Cast-through access — spec needs to inspect the private buffer.
-      // eslint-disable-next-line dot-notation
+
       const data = r["_cascadeParamsData"];
 
       // cascadeSplits at floats 64..67 must match splitFar values.

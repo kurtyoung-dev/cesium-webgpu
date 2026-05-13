@@ -40,6 +40,10 @@ import {
   dispatchAtmosphereLUT as dispatchAtmosphereLUTHelper,
 } from "./WebGPUAtmosphereLUT.js";
 import type { AtmosphereLUTResources } from "./WebGPUAtmosphereLUT.js";
+import type {
+  AsyncResourceTelemetry,
+  AsyncResourceTelemetrySnapshot,
+} from "./AsyncResourceTelemetry.js";
 
 /**
  * Local interface for the context fields accessed by the performance manager.
@@ -125,6 +129,13 @@ interface PerformanceManagerContext {
    *  the compute dispatchers are wired up. Optional — present only when
    *  the compute pipeline is active. */
   _computeCommandClass?: new (...args: unknown[]) => object;
+  /**
+   * NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — async-resource telemetry
+   * surface. Optional because the proxy interface is consumed by both
+   * production WebGPUContext (always present) and test harnesses (may
+   * stub). Production callers should rely on it always being defined.
+   */
+  asyncResourceTelemetry?: AsyncResourceTelemetry | null;
 }
 
 /**
@@ -1337,6 +1348,29 @@ export class WebGPUPerformanceManager {
   }
 
   /**
+   * NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — snapshot the per-kind
+   * async-resource latency / throughput / failure stats. Returns
+   * `null` if the context didn't wire telemetry (test harnesses,
+   * stripped builds). Production callers can rely on a snapshot.
+   *
+   * Use cases for the perf manager:
+   *   - Decide when to throttle pipeline-variant generation
+   *     (e.g., `render-pipeline.p95Ms > budget` ⇒ stop warming
+   *     non-essential variants this frame).
+   *   - Defer non-critical compute dispatches when
+   *     `compute-pipeline.currentInflight` is high.
+   *   - Surface failure rates so persistent rejection (driver bug,
+   *     bad shader variant) becomes visible without manual log review.
+   */
+  getAsyncResourceStats(): AsyncResourceTelemetrySnapshot | null {
+    const telemetry = this._context.asyncResourceTelemetry;
+    if (!telemetry) {
+      return null;
+    }
+    return telemetry.snapshot();
+  }
+
+  /**
    * Get a formatted diagnostics string for debugging.
    */
   getDiagnostics(): string {
@@ -1361,7 +1395,24 @@ export class WebGPUPerformanceManager {
       `  Bundles Executed: ${this._frameTimings.bundlesExecuted}`,
       `  Indirect Draws: ${this._frameTimings.indirectDrawsBatched}`,
       `  Compute Dispatches: ${this._computeDispatches}`,
+      ...this._asyncResourceDiagnosticLines(),
     ].join("\n");
+  }
+
+  /** Async-resource section of the perf-manager diagnostics dump. */
+  private _asyncResourceDiagnosticLines(): string[] {
+    const snap = this.getAsyncResourceStats();
+    if (!snap) {
+      return [`  Async Resources: <telemetry not wired>`];
+    }
+    const a = snap.aggregate;
+    const rp = snap.perKind["render-pipeline"];
+    const cp = snap.perKind["compute-pipeline"];
+    return [
+      `  Async Resources: inflight=${a.currentInflight} peak=${a.peakInflight} resolved=${a.resolvedCount} rejected=${a.rejectedCount} mean=${a.meanMs.toFixed(1)}ms`,
+      `    Render pipelines: p50=${rp.p50Ms.toFixed(1)}ms p95=${rp.p95Ms.toFixed(1)}ms p99=${rp.p99Ms.toFixed(1)}ms (${rp.resolvedCount} resolved, ${rp.rejectedCount} rejected, peak inflight ${rp.peakInflight})`,
+      `    Compute pipelines: p50=${cp.p50Ms.toFixed(1)}ms p95=${cp.p95Ms.toFixed(1)}ms p99=${cp.p99Ms.toFixed(1)}ms (${cp.resolvedCount} resolved, ${cp.rejectedCount} rejected, peak inflight ${cp.peakInflight})`,
+    ];
   }
 
   /** @private */

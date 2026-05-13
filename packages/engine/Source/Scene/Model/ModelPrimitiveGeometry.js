@@ -219,8 +219,32 @@ function extractPrimitiveGeometry(runtimePrimitive) {
   // Extract index data — same fallback as attributes above.
   const indices = source.indices;
   if (defined(indices)) {
-    const idxData = indices.typedArray || indices.buffer;
+    let idxData = indices.typedArray || indices.buffer;
     if (defined(idxData)) {
+      // glTF allows UNSIGNED_BYTE indices (componentType 5121), and
+      // CZML Model Articulations is one of the few production assets
+      // that ships them — the hinge meshes for the cesium_air control
+      // surfaces compile down to 18 byte-indices each. WebGPU's
+      // `IndexFormat` only accepts "uint16" and "uint32"; there is no
+      // uint8 path. Upcast Uint8Array → Uint16Array at extract time so
+      // the cache build site (`primCache.indexBuffer`) sizes the GPU
+      // buffer at 2 bytes per index instead of 1. Without this, the
+      // buffer is sized for `idxData.byteLength` (== count) bytes,
+      // padded to a multiple of 4, but the draw command tags the
+      // format as uint16 and walks 2 bytes per index — overflowing
+      // the buffer on the first draw call. (Symptom pre-fix on the
+      // CZML Model Articulations demo: `Index range (first: 0,
+      // count: 18, format: Uint16) does not fit in index buffer
+      // size (20)` warning every frame, model never renders.)
+      // Session 65 Batch 7 (2026-05-12) — NEW-VR-CZML-MODEL-
+      // ARTICULATIONS-INDEXCOUNT.
+      if (idxData instanceof Uint8Array) {
+        const upcast = new Uint16Array(idxData.length);
+        for (let i = 0; i < idxData.length; i++) {
+          upcast[i] = idxData[i];
+        }
+        idxData = upcast;
+      }
       result.indexData = idxData;
       result.indexCount = idxData.length;
       result.indexType =

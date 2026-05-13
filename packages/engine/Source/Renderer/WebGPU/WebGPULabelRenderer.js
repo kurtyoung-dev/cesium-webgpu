@@ -1034,7 +1034,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     cache.sdfInstanceBuffer = WebGPUBuffer.createVertexBuffer(
       device,
       requiredSize,
-      true,
+      false,
       "Label SDF instances",
     );
   }
@@ -1058,7 +1058,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       cache.sdfPrevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
         device,
         requiredSize,
-        true,
+        false,
         "Label SDF prev instances",
       );
     }

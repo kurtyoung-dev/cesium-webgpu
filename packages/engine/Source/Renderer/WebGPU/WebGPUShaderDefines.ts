@@ -244,6 +244,84 @@ export const ShaderDefine = Object.freeze({
    * variant; future translucent geometry primitives.
    */
   STENCIL_PICK_WINNER: 1 << 11,
+
+  /**
+   * Model has TEXCOORD_1 vertex attribute (Session 62 NEW-VR-VERTEX-BUFFER-VARIANT
+   * fix). When set, `ModelPBRComplete.wgsl` declares
+   * `@location(7) texCoord1: vec2<f32>` in the FragmentInput struct AND
+   * the pipeline binds a buffer at vertex slot 7. When clear, slot 7 is
+   * absent — the WGSL preprocessor strips the location declaration and
+   * any reads of `input.texCoord1`, and the JS pipeline cache returns
+   * a layout with only 8 vertex buffer slots (positionMC, normalMC,
+   * tangentMC, texCoord0, color0, joints0, weights0, featureId0).
+   *
+   * Why: Edge's WebGPU adapter caps `maxVertexBuffers` at 8. The full
+   * model layout (positionMC, normalMC, tangentMC, texCoord0, color0,
+   * joints0, weights0, texCoord1, featureId0) is 9 slots — unable to
+   * compile on Edge. Most batched 3D Tiles + standard glTF models
+   * don't use TEXCOORD_1 (it's for KHR_materials_occlusion and
+   * clearcoat-normal); making it variant-conditional reduces the
+   * common-case layout to 8 slots, fitting the adapter limit.
+   *
+   * Per-primitive selection: `WebGPUModelRenderer` reads the
+   * primitive's TEXCOORD_1 accessor presence and sets this bit when
+   * non-null. The full pipeline cache key now includes this bit so
+   * a given model with mixed primitives (some texCoord1, some not)
+   * gets two distinct pipelines.
+   *
+   * Consumer: `ModelPBRComplete.wgsl`.
+   */
+  MODEL_HAS_TEXCOORD_1: 1 << 12,
+  /**
+   * Set when the primitive carries an actual `_FEATURE_ID_0` / `_BATCHID`
+   * attribute that the renderer needs to forward to the FS for batched
+   * tile picking or per-feature styling. When unset, the vertex layout
+   * omits slot 8 (the f32 featureId0) and the vertex shader assigns
+   * `output.featureId0 = 0.0` directly.
+   *
+   * Why variant-conditional (Session 65, Batch follow-up to NEW-VR-VERTEX-BUFFER-VARIANT):
+   * the full Model PBR layout had 9 vertex slots (position, normal,
+   * tangent, texCoord0, color, joints, weights, texCoord1, featureId0).
+   * Session 62's `MODEL_HAS_TEXCOORD_1` made slot 7 conditional,
+   * dropping the common case to 8. But primitives that ALSO carry a
+   * feature ID (every batched 3D Tiles tileset — BIM, AEC, Photogrammetry,
+   * Clipping Planes etc.) still hit 9 and refuse to compile on Edge's
+   * 8-slot adapter limit. Dropping slot 8 for primitives without a
+   * feature ID brings the most-common case (standard glTF models with
+   * no batch table) to 7 slots; primitives with feature IDs but no
+   * texCoord1 land at 8; primitives with both stay at 9 (a small
+   * sub-cluster — multi-UV models that are also batched — still needs
+   * the deeper restructure noted in DEFERRED_WORK).
+   *
+   * Per-primitive selection: `WebGPUModelRenderer` checks the loaded
+   * primitive for a `_FEATURE_ID_0` accessor (or its legacy `_BATCHID`
+   * alias) and sets this bit when present. The full pipeline cache key
+   * includes this bit so a given model with mixed primitives (some
+   * batched, some not) compiles distinct pipelines per variant.
+   *
+   * Consumer: `ModelPBRComplete.wgsl`.
+   */
+  MODEL_HAS_FEATURE_ID_0: 1 << 13,
+
+  /**
+   * Globe `czm_getMaterial` hook (Session 65 Cluster 3 — parallel WGSL
+   * fabric API). When set, `GlobeTerrain.wgsl` activates the
+   * `//>>ifdef MATERIAL_APPLY` block in its fragment shader: it builds
+   * a `czm_MaterialInput` from per-fragment values (st, normalEC,
+   * slope/height/aspect) and calls `czm_getMaterial(materialInput)` —
+   * whose body is the WGSL emitted by `MaterialHelpers.createWGSLMethodDefinition`
+   * from the fabric's `wgsl: { source, components }` declaration —
+   * then alpha-blends the result over the imagery composite.
+   *
+   * Per-tile selection: `WebGPUGlobeSurfacePipelines` sets this bit
+   * when `tileProvider.material` is non-null AND the material declares
+   * a valid `wgslShaderSource`. The pipeline cache key includes both
+   * this bit and a material-hash, so each unique `globe.material` gets
+   * its own pipeline variant.
+   *
+   * Consumer: `GlobeTerrain.wgsl` FS material composite block.
+   */
+  MATERIAL_APPLY: 1 << 14,
 } as const);
 
 /**

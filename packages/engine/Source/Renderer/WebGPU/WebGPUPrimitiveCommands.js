@@ -25,6 +25,7 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import GeometryAttribute from "../../Core/GeometryAttribute.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../Pass.js";
+import PrimitiveType from "../../Core/PrimitiveType.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUShaderModule from "./WebGPUShaderModule.js";
@@ -199,12 +200,49 @@ function ensureUncompressedAttributes(geometry) {
     hasTangent = meta.hasTangent === true;
     hasBitangent = meta.hasBitangent === true;
   } else {
-    // Fallback for geometries produced without the metadata stash.
-    // Best-effort inference: `componentsPerAttribute` tells us the
-    // per-vertex slot count; we assume `hasSt` first (matches the most
-    // common Primitive vertex format), then `hasNormal`.
-    hasNormal = componentsPerAttribute >= 1;
-    hasSt = componentsPerAttribute >= 2;
+    // Fallback for geometries produced without the metadata stash. The
+    // metadata is dropped when `Primitive` ships the compressed geometry
+    // through its background worker (`PrimitivePipeline.packCreateGeometryResults`
+    // packs `attributes` + `indices` only; `_compressedAttributesMeta`
+    // doesn't survive the postMessage round-trip), so this branch is the
+    // common case for app-level geometry, not an edge.
+    //
+    // `componentsPerAttribute` tells us the per-vertex slot count but
+    // doesn't disambiguate single-slot geometries (1 = either normal-only
+    // OR st-only). Sniff the first value's magnitude:
+    //   - `compressTextureCoordinates`: 12-bit pair packed as `xHi*4096 + yLo`,
+    //     range [0, 16777215]. Most real ST samples land > 65535.
+    //   - `octEncodeFloat`: 8-bit pair packed as `xHi*256 + yLo`,
+    //     range [0, 65535]. Always ≤ 65535.
+    // A first value > 65535 ⇒ ST. Otherwise default to normal (the
+    // historical inference). For 2-component compressedAttributes the
+    // canonical layout is [st, normal] from `GeometryPipeline.compressVertices`.
+    // Probe each slot of the first vertex. Slot values > 65535 cannot have
+    // come from `octEncodeFloat` (which packs 8-bit pairs, max 65535) and
+    // must be `compressTextureCoordinates` output (which packs 12-bit pairs,
+    // max 16777215). The 2-component canonical layout is [st, normal] but
+    // some pipelines produce [normal] only or [st] only and report
+    // componentsPerAttribute=2 due to padding — sniff per-slot to avoid
+    // mis-identifying a single-attribute geometry.
+    if (componentsPerAttribute >= 1) {
+      const probe0 = values[0];
+      const slot0IsSt = probe0 > 65535;
+      if (componentsPerAttribute >= 2) {
+        const probe1 = values[1];
+        const slot1IsSt = probe1 > 65535;
+        // Two slots — canonical case is [st, normal], but tolerate the
+        // inverted ordering some legacy paths produce by sniffing both
+        // slots' magnitudes.
+        hasSt = slot0IsSt || slot1IsSt;
+        hasNormal = !slot0IsSt || !slot1IsSt;
+      } else {
+        hasNormal = !slot0IsSt;
+        hasSt = slot0IsSt;
+      }
+    } else {
+      hasNormal = false;
+      hasSt = false;
+    }
     hasTangent = false;
     hasBitangent = false;
     if (!_decompressMissingMetaWarned) {
@@ -265,13 +303,27 @@ function ensureUncompressedAttributes(geometry) {
       outBitangent[v * 3 + 2] = scratchDecompressedBitangent.z;
     } else {
       if (hasNormal) {
-        AttributeCompression.octDecodeFloat(
-          values[slot++],
-          scratchDecompressedNormal,
-        );
-        outNormal[v * 3] = scratchDecompressedNormal.x;
-        outNormal[v * 3 + 1] = scratchDecompressedNormal.y;
-        outNormal[v * 3 + 2] = scratchDecompressedNormal.z;
+        // Some geometry pipelines drop the metadata across worker boundaries
+        // and our inference can pick the wrong attribute (st vs normal) for
+        // single-component compressed buffers — guard against the resulting
+        // out-of-range bytes so a misclassified ST value doesn't take down
+        // the entire render loop with `DeveloperError: x and y must be
+        // unsigned normalized integers between 0 and 255`. The fallback
+        // produces a default up-axis normal which is still better than
+        // killing the frame.
+        try {
+          AttributeCompression.octDecodeFloat(
+            values[slot++],
+            scratchDecompressedNormal,
+          );
+          outNormal[v * 3] = scratchDecompressedNormal.x;
+          outNormal[v * 3 + 1] = scratchDecompressedNormal.y;
+          outNormal[v * 3 + 2] = scratchDecompressedNormal.z;
+        } catch {
+          outNormal[v * 3] = 0;
+          outNormal[v * 3 + 1] = 0;
+          outNormal[v * 3 + 2] = 1;
+        }
       }
       // DP-H19-TANGENT-DECODE — standalone tangent / bitangent slots
       // are each a single packed float; decode independently.
@@ -431,6 +483,53 @@ function extractPositionData(geometry) {
   }
 
   return null;
+}
+
+/**
+ * Map a Cesium `PrimitiveType` (GL enum) to a WebGPU primitive topology
+ * string. Returns null for `TRIANGLE_FAN` (WebGPU doesn't support it —
+ * caller falls back to `triangle-list`, which is wrong but harmless for
+ * the rare TRIANGLE_FAN consumer; mainstream Cesium geometry uses
+ * triangle-list or line-list).
+ *
+ * Session 65 Batch 2 (2026-05-11): without this mapping the primitive
+ * pipeline factory hardcoded `triangle-list`, so outline geometries
+ * (`BoxOutlineGeometry`, `CylinderOutlineGeometry`, every
+ * `*OutlineGeometry.primitiveType = PrimitiveType.LINES`) rendered as
+ * triangles. The vertex buffer carried line endpoints, the index buffer
+ * carried line indices, the rasterizer interpreted them as triangle
+ * strips of garbage — visible as missing outlines on every CZML box
+ * with `outline: true`, every CZML cylinder, etc. (~12 CZML demos).
+ * @private
+ */
+function mapCesiumPrimitiveTypeToWebGPU(primitiveType) {
+  if (!defined(primitiveType)) {
+    return "triangle-list"; // default for geometries that don't set it
+  }
+  switch (primitiveType) {
+    case PrimitiveType.POINTS:
+      return "point-list";
+    case PrimitiveType.LINES:
+      return "line-list";
+    case PrimitiveType.LINE_STRIP:
+    case PrimitiveType.LINE_LOOP:
+      // WebGPU has no LINE_LOOP; closest is line-strip. CesiumJS
+      // outline geometries don't use LINE_LOOP (they wrap manually via
+      // duplicate indices), so this fallback is safe in practice.
+      return "line-strip";
+    case PrimitiveType.TRIANGLES:
+      return "triangle-list";
+    case PrimitiveType.TRIANGLE_STRIP:
+      return "triangle-strip";
+    case PrimitiveType.TRIANGLE_FAN:
+      // WebGPU doesn't support triangle-fan. The caller should ideally
+      // convert to triangle-list at geometry-extract time; without that
+      // we fall back to triangle-list which produces wrong topology but
+      // no validation error.
+      return "triangle-list";
+    default:
+      return "triangle-list";
+  }
 }
 
 /**
@@ -923,13 +1022,27 @@ function createWebGPUCommands(
   // DP-H17 — treat a twoPasses flip like a shader / translucent flip
   // so the back-face + front-face pipeline variants get rebuilt.
   const twoPassesChanged = cache.twoPasses !== twoPasses;
+  // Session 65 Batch 2 — detect topology change so outline geometries
+  // (line-list / line-strip) get their own pipeline. The cached
+  // pipeline's topology is baked at create time; we must rebuild on
+  // change.
+  const primitiveTopology = mapCesiumPrimitiveTypeToWebGPU(
+    firstGeometry.primitiveType,
+  );
+  const topologyChanged = cache.primitiveTopology !== primitiveTopology;
   const needsTexture = isTexturedShader(shaderInfo.type);
   const isLit = isPhongShader(shaderInfo.type);
   const cameraBufferSize = isLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
-  if (shaderChanged || translucentChanged || twoPassesChanged) {
+  if (
+    shaderChanged ||
+    translucentChanged ||
+    twoPassesChanged ||
+    topologyChanged
+  ) {
     cache.shaderType = shaderInfo.type;
     cache.translucent = translucent;
+    cache.primitiveTopology = primitiveTopology;
 
     // DP-H19-SHADER-DECODE (Batch 27) — always route through the
     // preprocessor so `//>>ifdef COMPRESSED_VERTICES` / `//>>else`
@@ -1024,8 +1137,13 @@ function createWebGPUCommands(
           targets: [makeFragmentTarget(canvasFormat, translucent)],
         },
         primitive: {
-          topology: "triangle-list",
-          cullMode,
+          topology: primitiveTopology,
+          // Line topologies have no concept of "front" or "back" faces,
+          // so `cullMode` must be "none" for them. The WebGPU spec
+          // permits setting it but ignores the value for non-triangle
+          // topologies; Cesium's twoPasses + cull-based depth handling
+          // is meaningless for outlines anyway.
+          cullMode: primitiveTopology.startsWith("line") ? "none" : cullMode,
           frontFace: "ccw",
         },
         depthStencil: {
@@ -1034,7 +1152,30 @@ function createWebGPUCommands(
           depthCompare: "less-equal",
         },
       });
-    cache.pipeline = makePipeline("none", "Primitive pipeline (noCull)");
+    // Session 65 Batch 3 (2026-05-11): use BACK-face culling when the
+    // appearance is closed (Box, Sphere, Ellipsoid, Cylinder — every
+    // closed convex volume). Mirrors WebGL's
+    // `Appearance.getDefaultRenderState(...)` which sets
+    // `cull: { enabled: true, face: BACK }` when `closed: true`.
+    //
+    // The previous hardcoded `cullMode: "none"` left BOTH front and
+    // back face triangles in the rasterizer. With `depthWriteEnabled =
+    // true` (opaque path) the two faces fight depth-test at triangle
+    // edges where their Z values nearly match — back-face fragments
+    // win some pixels, creating visible "see-through" gridlines along
+    // every triangulation seam. The user-reported symptom: single
+    // opaque red sphere shows lat/long grid + imagery bleeding through
+    // (Show or Hide Entities, single ellipsoid test, every closed-
+    // shape entity demo).
+    //
+    // For non-closed appearances (Polyline, polygon outline, etc.)
+    // we still pass `none` so both faces continue to render — those
+    // primitives don't have a meaningful "back" face.
+    const defaultCullMode = appearance?.closed ? "back" : "none";
+    cache.pipeline = makePipeline(
+      defaultCullMode,
+      `Primitive pipeline (cull=${defaultCullMode})`,
+    );
     // DP-H17 — closed translucent volumes need two draw calls with
     // opposite cull modes so back faces composite before front faces.
     // Build both variants up-front (they share everything except
@@ -1163,7 +1304,10 @@ function createWebGPUCommands(
             },
           ],
         },
-        primitive: { topology: "triangle-list", cullMode: "none" },
+        // Pick pipeline mirrors the main primitive's topology so
+        // outline geometry picking returns the same fragments as the
+        // visual render (line-list vs triangle-list). Same Batch 2 fix.
+        primitive: { topology: primitiveTopology, cullMode: "none" },
         depthStencil: {
           format: "depth24plus-stencil8",
           depthWriteEnabled: true,
@@ -1789,15 +1933,23 @@ function createMaterialPipelineAndCache(
   context,
   isLit,
   translucent,
+  primitiveTopology,
+  appearanceClosed,
 ) {
+  const topology = primitiveTopology ?? "triangle-list";
+  const closedClosed = appearanceClosed === true;
   if (
     cache.shaderType === shaderInfo.type &&
-    cache.translucent === translucent
+    cache.translucent === translucent &&
+    cache.primitiveTopology === topology &&
+    cache.appearanceClosed === closedClosed
   ) {
     return false;
   }
   cache.shaderType = shaderInfo.type;
   cache.translucent = translucent;
+  cache.primitiveTopology = topology;
+  cache.appearanceClosed = closedClosed;
 
   cache.shaderModule = WebGPUShaderModule.create({
     device: device,
@@ -1866,8 +2018,18 @@ function createMaterialPipelineAndCache(
       targets: [makeFragmentTarget(canvasFormat, translucent)],
     },
     primitive: {
-      topology: "triangle-list",
-      cullMode: "none",
+      topology,
+      // Session 65 Batch 3 — cull back faces for closed convex shapes
+      // (matching `Appearance.getDefaultRenderState` `closed: true`
+      // branch in WebGL). Prevents back-face z-fighting that produces
+      // visible mesh gridlines on opaque ellipsoid/sphere/cylinder
+      // entities (the user-reported gridline bug). Non-closed
+      // appearances stay with `cullMode: "none"`.
+      cullMode: topology.startsWith("line")
+        ? "none"
+        : closedClosed
+          ? "back"
+          : "none",
       frontFace: "ccw",
     },
     depthStencil: {
@@ -2032,6 +2194,16 @@ function createWebGPUMaterialCommands(
   const vertexLayout = getMaterialVertexLayout(shaderInfo.type);
   const cameraBufferSize = isLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
+  // Session 65 Batch 2 — topology-aware material pipeline. Outline
+  // geometries (PrimitiveType.LINES, etc.) need `line-list` instead of
+  // `triangle-list`. See `mapCesiumPrimitiveTypeToWebGPU` for the
+  // mapping. Without this, outlined materials in entity-emitted
+  // primitives (CZML Box outlines, ground-polylines styled as
+  // materials) rasterize garbage.
+  const matPrimitiveTopology = mapCesiumPrimitiveTypeToWebGPU(
+    firstGeom.primitiveType,
+  );
+
   const shaderChanged = createMaterialPipelineAndCache(
     cache,
     device,
@@ -2040,6 +2212,8 @@ function createWebGPUMaterialCommands(
     context,
     isLit,
     translucent,
+    matPrimitiveTopology,
+    appearance?.closed === true,
   );
 
   // Bind real material texture (from Material._imageSources) or fall back to
@@ -2101,7 +2275,9 @@ function createWebGPUMaterialCommands(
         entryPoint: "fragmentMain",
         targets: [{ format: fmt }],
       },
-      primitive: { topology: "triangle-list", cullMode: "none" },
+      // Material pick pipeline matches the visual render topology so
+      // outline-styled materials get pickable lines (Batch 2 fix).
+      primitive: { topology: matPrimitiveTopology, cullMode: "none" },
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: true,
@@ -2369,7 +2545,10 @@ function createWebGPUMaterialCommands(
 // =========================================================================
 
 // Scratch buffer for per-frame material camera uniform updates
-const scratchMaterialCameraData = new Float32Array(64);
+// 76 floats = 304 bytes for the lit/PBR camera UBO (mvpRTE+mvRTE+normalMatrix
+// +camHigh+camLow+lightDir+prevVP). Sized for the larger of the two layouts;
+// flat/material shaders fit comfortably in the same scratch.
+const scratchMaterialCameraData = new Float32Array(80);
 
 /**
  * Updates camera matrices for a material/PBR draw command each frame.

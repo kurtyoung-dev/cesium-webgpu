@@ -277,12 +277,29 @@ export function ensureResources(
   }
 
   // Depth plane
+  // The plane writes ZERO color (writeMask=0); the only reason its pipeline
+  // declares a color target at all is so the render-pass attachment-state
+  // validation passes. The Scene Framebuffer Render Pass uses the SCENE
+  // color attachment format (rgba16float / rg11b10ufloat in HDR, bgra8unorm
+  // / canvas format in SDR), NOT the canvas presentation format — so the
+  // pipeline must be rebuilt whenever the scene FB color format flips
+  // (HDR toggle at runtime). Otherwise WebGPU emits "Attachment state of
+  // [DepthPlane-Pipeline] not compatible with [Scene Framebuffer Render
+  // Pass]" every frame and the depth plane silently no-ops.
+  const desiredDepthPlaneFormat: GPUTextureFormat =
+    context.scenePipelineFormat ?? context.presentationFormat ?? "bgra8unorm";
+  if (
+    host._depthPlane &&
+    (host._depthPlane as unknown as { _colorFormat?: GPUTextureFormat })
+      ._colorFormat !== desiredDepthPlaneFormat
+  ) {
+    host._depthPlane.destroy?.();
+    host._depthPlane = null;
+  }
   if (config.useDepthPlane && !host._depthPlane) {
     host._depthPlane = new WebGPUDepthPlane();
     const depthFormat: GPUTextureFormat =
       context.depthFormat ?? "depth24plus-stencil8";
-    const canvasFormat: GPUTextureFormat =
-      context.presentationFormat ?? "bgra8unorm";
     // C-R7-RENDERER-MIGRATION (Batch 56) — route the depth-plane
     // pipeline through the central cache so split-screen / multi-canvas
     // setups dedupe identical descriptors instead of materializing
@@ -290,7 +307,7 @@ export function ensureResources(
     host._depthPlane.initialize(
       device,
       depthFormat,
-      canvasFormat,
+      desiredDepthPlaneFormat,
       context.webgpuPipelineCache ?? null,
     );
   }

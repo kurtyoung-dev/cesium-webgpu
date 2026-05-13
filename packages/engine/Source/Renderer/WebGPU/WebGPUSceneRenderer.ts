@@ -939,6 +939,21 @@ export class WebGPUSceneRenderer {
       return;
     }
 
+    // Session 65 Batch 4 (2026-05-11): `scene.msaaSamples` plumbing
+    // intentionally NOT wired — see Batch 4 entry in
+    // `migration_doc/WEBGPU_DEBUGGING_LOG.md`. Turning on MSAA broke
+    // multiple downstream pipelines (GlobeDepth depth-copy MSAA bind
+    // group, invert-classification cache mismatch, command-buffer
+    // invalidation from format-incompatible attachments). Each needs
+    // its own audit before MSAA can be flipped on. Tracked as
+    // `NEW-WEBGPU-MSAA-FLEET-ENABLEMENT` follow-up.
+    //
+    // For now `context._msaaSamples` stays at its hardcoded default
+    // of 1 and the WebGPU backend renders without antialiasing. This
+    // is the reason small per-triangle features (sphere mesh seams,
+    // single-pixel polylines, model silhouettes) show visible
+    // banding compared to the WebGL backend's 4x MSAA output.
+
     const canvas: HTMLCanvasElement | OffscreenCanvas | undefined =
       context._canvas;
     const width = canvas?.width ?? 1;

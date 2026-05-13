@@ -248,6 +248,33 @@ UniformArrayFloatVec4.prototype.set = function () {
   // does the copy without the equals check.
 
   const value = this.value;
+
+  // Pre-packed Float32Array — `czm_lightsData` (and any other automatic
+  // uniform that returns a packed buffer of vec4 components rather than an
+  // array of Cartesian4 / Color wrappers) lands here. Skip the per-element
+  // unpacking + equality check and just upload the buffer. Without this,
+  // `UniformArrayFloatVec4.set` walks `value[i]` expecting an object with
+  // `.x` or `.red` and throws `DeveloperError: Invalid vec4 value` because
+  // the elements are bare numbers. The Cesium OSM Buildings + 3D Tiles BIM
+  // sandcastles tripped this every frame on WebGL.
+  if (ArrayBuffer.isView(value)) {
+    const arraybuffer = this._value;
+    let changed = arraybuffer.length !== value.length;
+    if (!changed) {
+      for (let k = 0; k < value.length; k++) {
+        if (arraybuffer[k] !== value[k]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (changed) {
+      arraybuffer.set(value);
+      this._gl.uniform4fv(this._location, arraybuffer);
+    }
+    return;
+  }
+
   const length = value.length;
   const arraybuffer = this._value;
   let changed = false;
@@ -268,7 +295,9 @@ UniformArrayFloatVec4.prototype.set = function () {
       }
     } else {
       //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError("Invalid vec4 value.");
+      throw new DeveloperError(
+        `Invalid vec4 value at index ${i} of uniform array "${this.name}" (length ${length}). Expected Color {.red,.green,.blue,.alpha} or Cartesian4 {.x,.y,.z,.w} — got ${typeof v}${v && typeof v === "object" ? ` with keys [${Object.keys(v).slice(0, 6).join(", ")}]` : ""}.`,
+      );
       //>>includeEnd('debug');
     }
 

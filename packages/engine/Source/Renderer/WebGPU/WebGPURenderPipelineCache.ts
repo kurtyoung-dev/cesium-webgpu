@@ -10,6 +10,8 @@
  * @module WebGPURenderPipelineCache
  */
 
+import type { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
+
 /**
  * Pipeline descriptor for creating render pipelines
  */
@@ -239,6 +241,13 @@ export class WebGPURenderPipelineCache {
   private pendingPipelines: Map<string, Promise<GPURenderPipeline>>;
   private logPrefix: string;
   private maxSize: number;
+  // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2) — optional reference to
+  // the owning context's `AsyncResourceMonitor`. When set, every async
+  // pipeline creation publishes `begin/resolve/reject` events so the
+  // attached Scene wakes up exactly when the pipeline lands. When
+  // null (e.g., test harnesses that construct the cache standalone),
+  // the cache still works — just without the wakeup signal.
+  private monitor: AsyncResourceMonitor | null;
 
   // Statistics
   private stats = {
@@ -255,8 +264,14 @@ export class WebGPURenderPipelineCache {
    * @param device - GPUDevice for creating pipelines
    * @param contextId - Owning context's id for multi-context error attribution
    * @param maxSize - LRU cap (defaults to DEFAULT_MAX_SIZE)
+   * @param monitor - Optional async resource monitor for wakeup signaling
    */
-  constructor(device: GPUDevice, contextId?: string, maxSize?: number) {
+  constructor(
+    device: GPUDevice,
+    contextId?: string,
+    maxSize?: number,
+    monitor?: AsyncResourceMonitor | null,
+  ) {
     this.device = device;
     this.cache = new Map();
     this.pendingPipelines = new Map();
@@ -264,6 +279,17 @@ export class WebGPURenderPipelineCache {
       ? `[CesiumJS:webgpu:${contextId}:pipeline-cache]`
       : `[CesiumJS:webgpu:pipeline-cache]`;
     this.maxSize = maxSize ?? DEFAULT_MAX_SIZE;
+    this.monitor = monitor ?? null;
+  }
+
+  /**
+   * Phase 2 helper — wire the cache to a monitor after construction.
+   * Used when the cache outlives a transient monitor instance (it
+   * doesn't today, but device-loss recovery may swap monitors in a
+   * future phase). Idempotent.
+   */
+  setAsyncResourceMonitor(monitor: AsyncResourceMonitor | null): void {
+    this.monitor = monitor;
   }
 
   /**
@@ -337,9 +363,23 @@ export class WebGPURenderPipelineCache {
 
     // Create new pipeline
     this.stats.misses++;
+    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2 + audit fix) — set
+    // `pendingPipelines` and bump `stats.pending` BEFORE calling
+    // `monitor.begin`. `monitor.begin` synchronously fires the
+    // "started" subscriber fanout; if a subscriber re-enters
+    // `cache.getPipeline(sameDescriptor)` (unusual but defensible)
+    // they'll hit the `pendingPipelines.get(key)` path and return the
+    // existing promise instead of double-creating. Without this order
+    // the re-entrant call would miss the cache AND miss the pending
+    // map, kicking off a duplicate `createRenderPipelineAsync`.
     const pipelinePromise = this.createPipelineAsync(descriptor, variant);
     this.pendingPipelines.set(key, pipelinePromise);
     this.stats.pending++;
+    const monitorToken = this.monitor?.begin({
+      kind: "render-pipeline",
+      key,
+      label: descriptor.name,
+    });
 
     try {
       const pipeline = await pipelinePromise;
@@ -356,11 +396,93 @@ export class WebGPURenderPipelineCache {
       this.evictIfNeeded();
 
       this.stats.created++;
+      // Publish "resolved" AFTER the cache write so subscribers that
+      // synchronously call `getPipelineSync(descriptor)` from inside
+      // the wakeup handler hit the cache. The monitor's pendingCount
+      // also decrements here — Scene's `shouldRender` gate sees 0
+      // (or near-0 if other pipelines are still cooking) on the next
+      // frame and re-hibernates naturally once everything lands.
+      if (monitorToken) {
+        this.monitor!.resolve(monitorToken);
+      }
       return pipeline;
+    } catch (error) {
+      if (monitorToken) {
+        this.monitor!.reject(monitorToken, error);
+      }
+      throw error;
     } finally {
       this.pendingPipelines.delete(key);
       this.stats.pending--;
     }
+  }
+
+  /**
+   * NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 4) — speculative pre-cook.
+   * Kicks off async creation if the pipeline isn't already cached or
+   * pending. Registered with the monitor as a `background`-priority
+   * token so the scene hibernates normally while warming completes;
+   * the resolution wake-up still fires so the warmed pipeline is
+   * consumable on the next user-driven frame.
+   *
+   * Returns immediately. Callers don't need to await — the pipeline
+   * lands in the cache when ready and a subsequent `getPipelineSync`
+   * (or normal `getPipeline`) hits.
+   *
+   * Use cases:
+   *   - Camera approaching a log-depth threshold → warm the log-depth variant.
+   *   - Imagery layer added → warm the alpha-blend variants the layer needs.
+   *   - User about to enter a new frustum count → warm the secondary variant.
+   *
+   * Idempotent — calling for an already-cached or already-pending key
+   * is a no-op (the dedup is identical to `getPipeline`).
+   */
+  warm(
+    descriptor: WebGPURenderPipelineDescriptor,
+    variant?: PipelineVariant,
+  ): void {
+    const key = this.generateCacheKey(descriptor, variant);
+    if (this.cache.has(key) || this.pendingPipelines.has(key)) {
+      return;
+    }
+    // Reuse the central async-creation path so cache state, monitor
+    // events, and stats all stay consistent. The token's priority is
+    // background so Scene's `shouldRender` gate ignores this work.
+    // Same ordering note as `getPipeline` — pendingPipelines.set
+    // BEFORE monitor.begin so a re-entrant subscriber sees consistent
+    // cache state.
+    this.stats.misses++;
+    const pipelinePromise = this.createPipelineAsync(descriptor, variant);
+    this.pendingPipelines.set(key, pipelinePromise);
+    this.stats.pending++;
+    const monitorToken = this.monitor?.begin({
+      kind: "render-pipeline",
+      key,
+      label: descriptor.name,
+      priority: "background",
+    });
+
+    pipelinePromise
+      .then((pipeline) => {
+        const now = Date.now();
+        this.cache.set(key, {
+          pipeline,
+          descriptor,
+          variant: variant || {},
+          created: now,
+          lastAccessed: now,
+        });
+        this.evictIfNeeded();
+        this.stats.created++;
+        if (monitorToken) this.monitor!.resolve(monitorToken);
+      })
+      .catch((error) => {
+        if (monitorToken) this.monitor!.reject(monitorToken, error);
+      })
+      .finally(() => {
+        this.pendingPipelines.delete(key);
+        this.stats.pending--;
+      });
   }
 
   /**

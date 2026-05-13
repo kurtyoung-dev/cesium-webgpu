@@ -117,7 +117,13 @@ class TimeIntervalCollection {
    * @returns {boolean} <code>true</code> if the collection contains the specified date, <code>false</code> otherwise.
    */
   contains(julianDate) {
-    return this.includes(julianDate);
+    // `this.includes` was removed at some point but `contains` was left
+    // calling it — surfaces as `TypeError: this.includes is not a function`
+    // every frame on demos that use Entity availability tracking
+    // (Particle System.html crashed with this on WebGL). Inline the lookup
+    // via indexOf which returns ≥ 0 when the date lands inside any
+    // interval.
+    return this.indexOf(julianDate) >= 0;
   }
 
   /**

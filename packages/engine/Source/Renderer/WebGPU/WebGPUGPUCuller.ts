@@ -28,6 +28,10 @@ import {
   storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import {
+  trackComputePipelineCreation,
+  type AsyncResourceMonitor,
+} from "./AsyncResourceMonitor.js";
 
 /**
  * Culling mode determines what the compute shader writes.
@@ -51,6 +55,13 @@ export interface GPUCullerOptions {
   workgroupSize?: number;
   /** Label prefix for debug */
   label?: string;
+  /**
+   * NEW-WEBGPU-PIPELINE-READY-SIGNAL — optional async resource monitor
+   * so the direct `createComputePipelineAsync` call publishes wakeup
+   * events. When omitted (test harnesses), the renderer still works
+   * but its inflight pipeline isn't tokenized.
+   */
+  asyncResourceMonitor?: AsyncResourceMonitor | null;
 }
 
 /**
@@ -95,11 +106,14 @@ export class WebGPUGPUCuller {
 
   private _isDestroyed: boolean = false;
 
+  private _monitor: AsyncResourceMonitor | null;
+
   constructor(device: GPUDevice, options: GPUCullerOptions = {}) {
     this._device = device;
     this._maxObjects = options.maxObjects ?? 65536;
     this._workgroupSize = options.workgroupSize ?? 256;
     this._label = options.label ?? "GPUCuller";
+    this._monitor = options.asyncResourceMonitor ?? null;
   }
 
   /**
@@ -178,14 +192,19 @@ export class WebGPUGPUCuller {
     // If the subgroup variant fails to compile (driver edge cases), fall back
     // to the portable main entry point so culling still works.
     try {
-      this._pipeline = await this._device.createComputePipelineAsync({
-        label: `${this._label} Compute Pipeline (${entryPoint})`,
-        layout: pipelineLayout,
-        compute: {
-          module: shaderModule,
-          entryPoint,
+      this._pipeline = await trackComputePipelineCreation(
+        this._monitor,
+        this._device,
+        {
+          label: `${this._label} Compute Pipeline (${entryPoint})`,
+          layout: pipelineLayout,
+          compute: {
+            module: shaderModule,
+            entryPoint,
+          },
         },
-      });
+        `GPUCuller-${entryPoint}`,
+      );
     } catch (e) {
       if (useSubgroups) {
         //>>includeStart('debug', pragmas.debug);
@@ -193,14 +212,19 @@ export class WebGPUGPUCuller {
           `[WebGPUGPUCuller] Subgroup variant failed to compile, falling back to scalar main: ${e}`,
         );
         //>>includeEnd('debug');
-        this._pipeline = await this._device.createComputePipelineAsync({
-          label: `${this._label} Compute Pipeline (main fallback)`,
-          layout: pipelineLayout,
-          compute: {
-            module: shaderModule,
-            entryPoint: "main",
+        this._pipeline = await trackComputePipelineCreation(
+          this._monitor,
+          this._device,
+          {
+            label: `${this._label} Compute Pipeline (main fallback)`,
+            layout: pipelineLayout,
+            compute: {
+              module: shaderModule,
+              entryPoint: "main",
+            },
           },
-        });
+          "GPUCuller-main-fallback",
+        );
       } else {
         throw e;
       }

@@ -182,13 +182,17 @@ export class WebGPURenderTarget {
 
     // Create depth/stencil attachment if specified
     if (depthStencilFormat) {
-      // Sampleability requires single-sample depth — multisampled depth
-      // textures can't be sampled in WGSL. When MSAA is on the request
-      // is silently ignored.
-      const wantSampleable =
-        this.descriptor.depthSamplable === true && (sampleCount ?? 1) === 1;
+      const wantSampleable = this.descriptor.depthSamplable === true;
+      const isMSAA = (sampleCount ?? 1) > 1;
       let depthUsage: GPUTextureUsageFlags = GPUTextureUsage.RENDER_ATTACHMENT;
       if (wantSampleable) {
+        // Single-sample depth can be read in WGSL via `textureSample`
+        // (depth comparison) or `textureLoad` (raw depth). Multisample
+        // depth can only be read via `textureLoad` (per-sample fetch).
+        // Both paths still require `TEXTURE_BINDING` on the underlying
+        // texture so the bind group can attach it — without the bit,
+        // `GlobeDepth-DepthCopy-MSAA-BindGroup` creation fails with
+        // "usage doesn't include TextureBinding" (Session 65 Batch 4).
         depthUsage |= GPUTextureUsage.TEXTURE_BINDING;
         // Sampleable depth textures are also the source of
         // `copyTextureToTexture` in
@@ -196,7 +200,11 @@ export class WebGPURenderTarget {
         // WebGPU validation requires the source texture's usage to
         // include `COPY_SRC`; without this bit the copy emits a
         // "usage doesn't include CopySrc" validation error.
-        depthUsage |= GPUTextureUsage.COPY_SRC;
+        // (Skip COPY_SRC for MSAA — multisampled textures can't be
+        // copy sources; the copy path falls back gracefully.)
+        if (!isMSAA) {
+          depthUsage |= GPUTextureUsage.COPY_SRC;
+        }
       }
 
       const depthTexture = this.device.createTexture({

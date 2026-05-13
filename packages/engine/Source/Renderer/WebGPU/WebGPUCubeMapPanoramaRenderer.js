@@ -128,8 +128,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   modulated = modulated * (1.0 - cloudCover);
 
-  let corrected = pow(modulated, vec3<f32>(1.0 / 2.2));
-  return vec4<f32>(corrected, morphTime);
+  // Match WebGL czm_gammaCorrect (Builtin/Functions/gammaCorrect.glsl):
+  // it is a no-op when HDR is off (the default). Cubemap PNG data is
+  // sRGB-encoded; the canvas color space is sRGB; passing the sampled
+  // value straight through lands the right luminance on the display.
+  // The previous unconditional pow(color, 1/2.2) re-encoded sRGB on
+  // top of sRGB, brightening dark pixels (so star backgrounds looked
+  // like concrete) and washing out the visible portion of the cubemap.
+  // TODO: when HDR is on, decode sRGB -> linear here (pow(color, 2.2))
+  //       so the cubemap participates in the linear HDR pipeline
+  //       before the tonemap stage re-encodes for display.
+  return vec4<f32>(modulated, morphTime);
 }
 `;
 
@@ -435,8 +444,13 @@ export function updateUniforms(
   const viewRotation = uniformState.viewRotation;
   packMatrix3As4x4(viewRotation, uniformData, 16);
 
-  // Panorama transform as mat4x4 (offset 32, 16 floats)
-  let transform = IDENTITY_MATRIX3;
+  // Panorama transform as mat4x4 (offset 32, 16 floats).
+  // Parity with WebGL SkyBoxVS: when no explicit transform is supplied
+  // (the SkyBox case), fall back to `czm_temeToPseudoFixed` so star-map
+  // textures (authored in TEME / J2000 epoch) align with the current
+  // Earth orientation. Standalone CubeMapPanorama still uses its
+  // user-supplied transform (matches CubeMapPanoramaVS in WebGL).
+  let transform;
   if (defined(panoramaTransform)) {
     if (panoramaTransform.length === 16) {
       // Matrix4 — extract 3x3 rotation part
@@ -446,6 +460,8 @@ export function updateUniforms(
       // Matrix3
       transform = panoramaTransform;
     }
+  } else {
+    transform = uniformState.temeToPseudoFixedMatrix ?? IDENTITY_MATRIX3;
   }
   packMatrix3As4x4(transform, uniformData, 32);
 
@@ -457,7 +473,12 @@ export function updateUniforms(
   // forwarded from `Scene.updateFrameState()`; defaults to 1.0 (fully
   // bright sky → stars hidden) when no estimator value is available.
   uniformData[48] = uniformState.entireFrustum.y; // far
-  uniformData[49] = uniformState.morphTime;
+  // morphTime lives on frameState (czm_morphTime in WebGL also reads
+  // `uniformState.frameState.morphTime`). The previous `uniformState.morphTime`
+  // path was always undefined → NaN propagated into the alpha output, blending
+  // against an `undefined`-NaN alpha kept the destination clear color (black)
+  // and the skybox vanished even after the star-modulation default was off.
+  uniformData[49] = frameState.morphTime ?? 1.0;
   uniformData[50] = frameState.debugShowCubeMapFace | 0; // 0=all, 1..6=face
   uniformData[51] = frameState.skyBrightness ?? 1.0;
 
@@ -473,10 +494,16 @@ export function updateUniforms(
     sky && sky.starModulationCurve
       ? sky.starModulationCurve
       : { inflection: 0.3, steepness: 4.0 };
-  // Default ON: stars should dim during the day in any normal scene.
-  // Apps that want the legacy "always full brightness" behavior set
-  // `enableStarBrightnessModulation = false` on AtmosphericConditions.
-  const enableModulation = !sky || sky.enableStarBrightnessModulation !== false;
+  // Default OFF for WebGL parity — the legacy SkyBox shader (SkyBoxFS.glsl)
+  // emits the cubemap unmodulated regardless of sun position, so the night-
+  // sky stars stay visible all day. Star-brightness modulation was added in
+  // Phase 1.3b for atmospheric realism but defaulting it ON broke "I added
+  // a SkyBox and saw nothing" expectations on the WebGPU backend during
+  // daylight scenes (e.g., Hello World at noon zeroed every star). Apps
+  // that want the dimming behavior must opt in:
+  //   scene.globe.atmosphericConditions.skyAtmosphere
+  //     .enableStarBrightnessModulation = true
+  const enableModulation = !!sky && sky.enableStarBrightnessModulation === true;
   uniformData[52] = curve.inflection;
   uniformData[53] = curve.steepness;
   uniformData[54] = enableModulation ? 1.0 : 0.0;

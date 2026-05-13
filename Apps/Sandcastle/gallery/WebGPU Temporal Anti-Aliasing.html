@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Toggle WebGPU Temporal Anti-Aliasing (TAA) to compare smooth motion blur vs. aliased static rendering."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Temporal Anti-Aliasing (TAA) demo.
+
+    Demonstrates `scene.taaEnabled` — the WebGPU TAA effect that
+    accumulates jittered subpixel samples across frames, smoothing
+    edges that would otherwise show staircase aliasing. Toggling the
+    checkbox flips `scene.taaEnabled` at runtime; the renderer's
+    history-blend / motion-vector pipeline (Batches 27, 175, 195)
+    handles the rest. WebGL has no TAA equivalent at this fidelity.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>TAA enabled</td>
+            <td><input type="checkbox" data-bind="checked: taaEnabled" /></td>
+          </tr>
+          <tr>
+            <td>Status</td>
+            <td><span data-bind="text: status"></span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        // Force WebGPU — TAA is a WebGPU-only feature today.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+          taaEnabled: true,
+          terrain: Cesium.Terrain.fromWorldTerrain(),
+        });
+
+        const status =
+          viewer.scene._context?.rendererType === "webgpu"
+            ? "WebGPU active — TAA available"
+            : "WebGL active — TAA unavailable on this backend";
+
+        const viewModel = {
+          taaEnabled: true,
+          status,
+        };
+
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+
+        Cesium.knockout.getObservable(viewModel, "taaEnabled").subscribe((value) => {
+          viewer.scene.taaEnabled = Boolean(value);
+          viewer.scene.requestRender();
+        });
+
+        // A view that highlights aliasing on building edges + terrain
+        // contours where TAA's effect is most visible.
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(-73.985, 40.748, 1500),
+          orientation: {
+            heading: Cesium.Math.toRadians(20),
+            pitch: Cesium.Math.toRadians(-30),
+          },
+        });
+
+        // Add 3D Tiles New York buildings so jagged silhouettes give
+        // TAA something visible to smooth.
+        try {
+          const tileset = await Cesium.Cesium3DTileset.fromIonAssetId(75343);
+          viewer.scene.primitives.add(tileset);
+        } catch (e) {
+          // Fall back to a simple geometry if Ion is unreachable —
+          // TAA still demonstrates on terrain/imagery edges.
+          console.warn("[demo] Ion tileset unavailable, falling back:", e);
+        }
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

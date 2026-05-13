@@ -1260,8 +1260,14 @@ function makeShadersDirty(globe) {
     fragmentSources.push(globe._material.shaderSource);
     defines.push("APPLY_MATERIAL");
     globe._surface._tileProvider.materialUniformMap = globe._material._uniforms;
+    // Session 65 Cluster 3 — also expose the material itself so the
+    // WebGPU GlobeSurfaceRenderer can read `material.wgslShaderSource`
+    // and `material.uniforms` directly. WebGL only needs the uniform
+    // map because its shader source is already concatenated above.
+    globe._surface._tileProvider.material = globe._material;
   } else {
     globe._surface._tileProvider.materialUniformMap = undefined;
+    globe._surface._tileProvider.material = undefined;
   }
   fragmentSources.push(GlobeFS);
 

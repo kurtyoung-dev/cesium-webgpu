@@ -267,9 +267,15 @@ class MaterialUniformBuffer {
    */
   static _channelIndexToChar(idx) {
     const i = Math.round(idx);
-    if (i === 1) return "g";
-    if (i === 2) return "b";
-    if (i === 3) return "a";
+    if (i === 1) {
+      return "g";
+    }
+    if (i === 2) {
+      return "b";
+    }
+    if (i === 3) {
+      return "a";
+    }
     return "r";
   }
 

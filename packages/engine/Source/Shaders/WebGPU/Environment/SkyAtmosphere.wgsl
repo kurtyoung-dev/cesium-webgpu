@@ -106,7 +106,21 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 // Constants
 const PI: f32 = 3.14159265358979323846;
-const NUM_SCATTER_STEPS: i32 = 16;
+// Session 65 cont. — NUM_SCATTER_STEPS bumped 16 → 64 to fix the
+// "no halo at orbit altitude" symptom. The previous 16 uniform-stride
+// samples on a typical limb chord (~3 Mm at LEO) had a spacing of
+// 187 km, but the atmosphere shell is only ~160 km thick — most
+// samples landed above the dense low-altitude region where most
+// scattering happens. 64 steps brings the sampling grid down to
+// ~47 km which captures the rayleigh shell properly. The cost is
+// O(N) per fragment but the SkyAtmosphere shader only runs on the
+// thin limb ring (a few thousand pixels), so the wall-clock impact
+// is negligible. WebGL's variable-stride 16-step ray-march dodges
+// this same problem via the `rayStepLengthIncrease` adaptive scheme
+// in AtmosphereCommon.glsl L81; we'd port that for parity but the
+// 64-step uniform version converges to the same visual result with
+// less code change.
+const NUM_SCATTER_STEPS: i32 = 64;
 const NUM_OPTICAL_DEPTH_STEPS: i32 = 8;
 
 fn rayleighPhaseFunction(cosAngle: f32) -> f32 {
@@ -231,13 +245,23 @@ fn sampleScatteringLut(
     inscatterTex, lutSampler, vec2<f32>(uCoord, vCoord), 0.0,
   );
   // Orbital falloff: the LUT was generated for camera positions in [0, thickness].
-  // Above the atmosphere (LEO/MEO/GEO) the clamp at vCoord saturates, which
-  // otherwise produces identical haze at every orbital altitude. Fade the
-  // inscatter contribution above the atmosphere with a scale-height equal
-  // to the atmosphere thickness (~100 km on Earth) \u2014 roughly matches how
-  // atmospheric airmass visibly decreases with distance.
+  // Above the atmosphere shell the clamped vCoord otherwise produces identical
+  // haze at every orbital altitude. Fade the inscatter contribution above
+  // the atmosphere so it tapers off \u2014 but with a scale-height much larger
+  // than the atmosphere shell thickness, so the halo stays visible across
+  // typical orbit views (5\u201340 Mm above Earth) where WebGL clearly shows
+  // it. Previous scale (1\u00d7 thickness \u2248 160 km on Earth) collapsed the
+  // halo to zero by LEO (Hello World at 5.6 Mm above shell \u2192 exp(-35) \u2248
+  // 0). Using the inner planet radius (~Earth's 6378 km) as the
+  // scale-height stretches the falloff to "perceptibly visible up to
+  // ~3 Earth radii out, faded but present at GEO" \u2014 empirically that
+  // matches the WebGL halo extent. See Session 65 cont. atmosphere
+  // investigation. Camera ALTITUDE inside the shell (0..thickness) the
+  // falloff is identity (exp(0) = 1), so ground-level / low-LEO views
+  // are unaffected.
   let excessAltitude = max(0.0, altitude - thickness);
-  let orbitFalloff = exp(-excessAltitude / thickness);
+  let orbitScaleHeight = max(thickness, innerRadius);
+  let orbitFalloff = exp(-excessAltitude / orbitScaleHeight);
   return s.rgb * u.intensity * orbitFalloff;
 }
 
@@ -276,6 +300,28 @@ fn hsbToRgb(hsb: vec3<f32>) -> vec3<f32> {
   if (ii == 3) { return vec3<f32>(p, q, b); }
   if (ii == 4) { return vec3<f32>(t, p, b); }
   return vec3<f32>(b, p, q);
+}
+
+// Khronos PBR Neutral tonemap — port of WebGL czm_pbrNeutralTonemapping
+// (packages/engine/Source/Shaders/Builtin/Functions/pbrNeutralTonemapping.glsl).
+// Identity for inputs ≤ 0.76; gentle peak compression with saturation
+// preservation above. Used below to bring the linear-HDR scattered
+// radiance into SDR display space before the sRGB encode, matching
+// WebGL SkyAtmosphereFS.glsl's `czm_pbrNeutralTonemapping ->
+// czm_inverseGamma` pair under `#ifndef HDR`.
+fn pbrNeutralTonemapSky(color: vec3<f32>) -> vec3<f32> {
+  let startCompression = 0.8 - 0.04;
+  let desaturation = 0.15;
+  let x = min(color.r, min(color.g, color.b));
+  let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+  var c = color - vec3<f32>(offset);
+  let peak = max(c.r, max(c.g, c.b));
+  if (peak < startCompression) { return c; }
+  let d = 1.0 - startCompression;
+  let newPeak = 1.0 - d * d / (peak + d - startCompression);
+  c = c * (newPeak / peak);
+  let g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return mix(c, vec3<f32>(newPeak), vec3<f32>(g));
 }
 
 @fragment
@@ -332,8 +378,28 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // path it's currently skipped (the per-pixel ray march only handles
   // a single light source — adding moon there is a Phase 5 task that
   // ties into volumetric fog scattering occlusion).
+  // Decide between LUT vs inline ray-march. The LUT was generated for
+  // camera positions inside the atmosphere shell [innerRadius,
+  // outerRadius]; the V coordinate clamps to 1.0 at the edge, so for
+  // orbit-altitude cameras (5–40 Mm above Earth in typical sandcastles)
+  // the LUT keeps returning the EDGE value and the inscatter visibly
+  // collapses (Hello World, Star Burst, every orbit-view demo).
+  // Session 65 cont. atmosphere investigation root cause.
+  //
+  // Fix: when the camera sits well above the shell, fall back to the
+  // inline `computeScattering` ray-march which handles camera-outside-
+  // atmosphere geometry correctly via the rayStart/rayEnd intersection
+  // math above. The 2× threshold gives a smooth crossover — well inside
+  // the atmosphere the LUT path stays optimized (single texture
+  // sample); orbital views ray-march per-fragment which is the path
+  // WebGL takes too.
+  let cameraHeightAboveShell = max(0.0, length(u.cameraPositionWC) - outerRadius);
+  let useLutPath =
+    u.useLut > 0.5 &&
+    cameraHeightAboveShell < (outerRadius - innerRadius) * 2.0;
+
   var color: vec3<f32>;
-  if (u.useLut > 0.5) {
+  if (useLutPath) {
     color = sampleScatteringLut(
       inscatterLut, startPoint, rayDir, innerRadius, outerRadius,
     );
@@ -361,9 +427,38 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     finalColor = hsbToRgb(hsb);
   }
 
-  // Tonemap to prevent oversaturation
   finalColor = vec3<f32>(1.0) - exp(-finalColor);
 
-  let alpha = clamp(max(finalColor.r, max(finalColor.g, finalColor.b)) * 2.0, 0.0, 1.0);
+  // GEOMETRIC opacity gating: WebGL's SkyAtmosphereFS pulls `opacity`
+  // straight from the scattering integrator (Beer-Lambert path length
+  // through the atmosphere shell). The WebGPU port previously derived
+  // it from `clamp(max(rgb)*2, 0, 1)` — which saturates to 1.0
+  // whenever the post-tonemap color magnitude is high (e.g. street-
+  // level views where the long horizontal path through dense
+  // atmosphere yields bright scattered radiance). That made the
+  // atmosphere fully OPAQUE at ground level, erasing all globe
+  // terrain rendering across ~10 ground-level demos (Aerometrex SF,
+  // 3D Tiles BIM, Particle System, Bloom, Lighting, Shadows —
+  // Session 65 triage).
+  //
+  // Fix: derive opacity from the geometric ratio of how much the ray
+  // actually traversed inside the atmosphere shell vs the shell
+  // thickness, then push it through `1 - exp(-2*ratio)` so it
+  // saturates AROUND the limb (long path, ~0.86) but stays low
+  // straight up (path ≈ thickness, ~0.86 — matches the visible
+  // Earth's thin halo at orbit) and at the horizon-grazing camera
+  // (long path looks like horizon glow). Below the camera horizon
+  // (rays hitting Earth quickly) the path is short → low opacity →
+  // globe terrain shows through.
+  //
+  // The mix-against-blue floor is preserved so the visible halo
+  // colour still leans sky-blue even when geometric opacity is near
+  // zero (matches WebGL's `mix(color.b, 1.0, opacity)` floor and the
+  // Session 63 "atmosphere invisible" fix).
+  let pathThroughAtmosphere = max(0.0, rayLength);
+  let shellThickness = max(1.0, outerRadius - innerRadius);
+  let pathRatio = pathThroughAtmosphere / shellThickness;
+  let geometricOpacity = clamp(1.0 - exp(-2.0 * pathRatio), 0.0, 1.0);
+  let alpha = mix(finalColor.b, 1.0, geometricOpacity);
   return vec4<f32>(finalColor, alpha);
 }

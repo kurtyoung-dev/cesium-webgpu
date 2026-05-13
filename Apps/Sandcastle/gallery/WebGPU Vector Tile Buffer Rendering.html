@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Storage-buffer-backed vector primitive rendering. 50K points rendered through WebGPUBufferPointRenderer with single-draw GPU dispatch."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Vector Tile Buffer Rendering demo.
+
+    Demonstrates `BufferPointCollection` — the storage-buffer-backed
+    vector tile renderer that draws large point sets in a single GPU
+    dispatch instead of one draw per primitive. Drops 50K points across
+    a regular grid; on the WebGPU backend each render goes through
+    `WebGPUBufferPointRenderer` (Source/Renderer/WebGPU/), which keeps
+    all per-primitive state in one storage buffer. The traditional
+    PointPrimitiveCollection would issue ~50K vertex updates per frame;
+    this path issues one bulk write at upload then zero work per frame.
+
+    Same API works on WebGL via the legacy renderBufferPointCollection
+    fallback, so the toggle below switches backends to compare.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Backend</td>
+            <td><span data-bind="text: backend"></span></td>
+          </tr>
+          <tr>
+            <td>Point count</td>
+            <td><span data-bind="text: pointCount"></span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        // Default to WebGPU; the BufferPointCollection works on both
+        // backends — switching the renderer is a single contextOptions
+        // change.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+
+        const POINT_COUNT = 50000;
+        const collection = new Cesium.BufferPointCollection({
+          primitiveCountMax: POINT_COUNT,
+        });
+        viewer.scene.primitives.add(collection);
+
+        const material = new Cesium.BufferPointMaterial({
+          color: Cesium.Color.fromCssColorString("#ffd700"),
+        });
+
+        // Distribute points across a 200km x 200km grid centered over SF
+        // at varying altitudes so the camera sees a 3D point cloud.
+        const center = Cesium.Cartesian3.fromDegrees(-122.4194, 37.7749, 5000);
+        const point = new Cesium.BufferPoint();
+        const sideCount = Math.floor(Math.sqrt(POINT_COUNT));
+        const spreadDeg = 1.5; // ~165km at SF latitude
+        const startLon = -122.4194 - spreadDeg / 2;
+        const startLat = 37.7749 - spreadDeg / 2;
+        for (let i = 0; i < sideCount; i++) {
+          for (let j = 0; j < sideCount; j++) {
+            const lon = startLon + (spreadDeg * i) / sideCount;
+            const lat = startLat + (spreadDeg * j) / sideCount;
+            const h = 2000 + ((i * 7919 + j * 6151) % 6000);
+            collection.add(
+              {
+                position: Cesium.Cartesian3.fromDegrees(lon, lat, h),
+                material,
+              },
+              point,
+            );
+          }
+        }
+
+        const viewModel = {
+          backend: viewer.scene._context?.rendererType ?? "unknown",
+          pointCount: collection.primitiveCount,
+        };
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-122.4194, 37.7749, 200000),
+          orientation: {
+            heading: 0,
+            pitch: Cesium.Math.toRadians(-60),
+            roll: 0,
+          },
+          duration: 0,
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

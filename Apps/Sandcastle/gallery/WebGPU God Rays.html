@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Volumetric god-ray (light-shaft) post-process. Tunable density, decay, weight, exposure, sample count."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, Post Processing" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU God Rays demo.
+
+    Demonstrates `scene.godRayEnabled` + `scene.godRayConfig` — the
+    WebGPU radial-blur god-ray (volumetric light shaft) post-process
+    sampling toward the sun's screen-space position. The renderer's
+    configure pass auto-projects the sun position through the view-
+    projection each frame; the user just sets the enable flag and
+    optional config knobs.
+
+    No WebGL implementation exists for this effect.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>God Rays</td>
+            <td><input type="checkbox" data-bind="checked: enabled" /></td>
+          </tr>
+          <tr>
+            <td>Density</td>
+            <td>
+              <input
+                type="range"
+                min="0.1"
+                max="2.0"
+                step="0.01"
+                data-bind="value: density, valueUpdate: 'input'"
+              />
+              <span data-bind="text: density"></span>
+            </td>
+          </tr>
+          <tr>
+            <td>Decay</td>
+            <td>
+              <input
+                type="range"
+                min="0.5"
+                max="1.0"
+                step="0.01"
+                data-bind="value: decay, valueUpdate: 'input'"
+              />
+              <span data-bind="text: decay"></span>
+            </td>
+          </tr>
+          <tr>
+            <td>Weight</td>
+            <td>
+              <input
+                type="range"
+                min="0.0"
+                max="2.0"
+                step="0.01"
+                data-bind="value: weight, valueUpdate: 'input'"
+              />
+              <span data-bind="text: weight"></span>
+            </td>
+          </tr>
+          <tr>
+            <td>Exposure</td>
+            <td>
+              <input
+                type="range"
+                min="0.0"
+                max="1.0"
+                step="0.01"
+                data-bind="value: exposure, valueUpdate: 'input'"
+              />
+              <span data-bind="text: exposure"></span>
+            </td>
+          </tr>
+          <tr>
+            <td>Sample Count</td>
+            <td>
+              <input
+                type="range"
+                min="8"
+                max="128"
+                step="1"
+                data-bind="value: sampleCount, valueUpdate: 'input'"
+              />
+              <span data-bind="text: sampleCount"></span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        // Force WebGPU — God Rays is a WebGPU-only effect today.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+
+        const viewModel = {
+          enabled: true,
+          density: 0.96,
+          decay: 0.95,
+          weight: 0.5,
+          exposure: 0.15,
+          sampleCount: 64,
+        };
+
+        function applyConfig() {
+          viewer.scene.godRayEnabled = Boolean(viewModel.enabled);
+          viewer.scene.godRayConfig = {
+            density: Number(viewModel.density),
+            decay: Number(viewModel.decay),
+            weight: Number(viewModel.weight),
+            exposure: Number(viewModel.exposure),
+            sampleCount: Math.round(Number(viewModel.sampleCount)),
+          };
+          viewer.scene.requestRender();
+        }
+
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+        for (const name in viewModel) {
+          if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
+            Cesium.knockout.getObservable(viewModel, name).subscribe(applyConfig);
+          }
+        }
+        applyConfig();
+
+        // Position the camera so the sun is just above the horizon —
+        // god rays are most visible when the sun is near the edge of
+        // the visible region casting toward darker geometry.
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(-122.4194, 37.7749, 8000),
+          orientation: {
+            heading: Cesium.Math.toRadians(180),
+            pitch: Cesium.Math.toRadians(-15),
+          },
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

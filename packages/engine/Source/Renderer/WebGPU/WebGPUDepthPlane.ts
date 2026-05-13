@@ -243,6 +243,14 @@ export class WebGPUDepthPlane {
   // Track whether the depth plane is enabled for the current frame
   private _enabled: boolean = false;
 
+  // The fragment-output color format the pipeline was built against. Read by
+  // the SceneRenderer's resource-ensure step to detect HDR-toggle drift and
+  // rebuild the depth plane when the scene framebuffer's color format flips
+  // (BGRA8Unorm ↔ RG11B10Ufloat / Rgba16Float). A mismatch here surfaces as
+  // "Attachment state of [DepthPlane-Pipeline] not compatible with [Scene
+  // Framebuffer Render Pass]" validation warnings every frame.
+  _colorFormat: GPUTextureFormat | null = null;
+
   constructor(ellipsoidOffset: number = 0) {
     this._ellipsoidOffset = ellipsoidOffset;
   }
@@ -279,6 +287,7 @@ export class WebGPUDepthPlane {
     if (this._pipeline) return;
 
     this._device = device;
+    this._colorFormat = colorFormat;
 
     this._shaderModule = device.createShaderModule({
       label: "DepthPlane-Shader",

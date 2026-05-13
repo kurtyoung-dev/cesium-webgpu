@@ -54,6 +54,7 @@ const ATMOSPHERE_SCALE = 1.025;
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
+const scratchProjectionWebGPU = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
 
 /**
@@ -518,16 +519,47 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
 function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   const camera = frameState.camera;
 
+  // Session 65 (2026-05-11): build the projection matrix in WebGPU NDC
+  // depth range ([0, 1]) instead of reading `camera.frustum.projectionMatrix`
+  // which is cached in WebGL convention ([-1, 1]).
+  //
+  // The frustum caches its `_perspectiveMatrix` keyed only on
+  // near/far/left/right/top/bottom (see `PerspectiveOffCenterFrustum.update`).
+  // It does NOT invalidate when `Matrix4._depthRangeType` toggles, so a
+  // late `setDepthRangeType("webgpu")` returns the stale WebGL-range
+  // cached matrix. WebGL convention emits clip-space z in [-1, 1]; the
+  // WebGPU clip test rejects fragments with NDC z < 0, which silently
+  // culls roughly half the shell mesh. Outside-shell views (orbital
+  // altitudes) still render because every shell fragment sits in front
+  // of the camera (positive view-space z) and the projection naturally
+  // maps that into [0, 1]. Inside-shell views (low altitude — Aerometrex
+  // SF, Particle Fireworks, every ground-level photogrammetry demo)
+  // have shell fragments on both sides of the camera direction; the
+  // negative half gets clipped, leaving a black sky where WebGL shows
+  // blue atmosphere.
+  //
+  // We compute the WebGPU-range projection directly so the frustum
+  // cache stays clean for the WebGL path (which reads the same
+  // `camera.frustum.projectionMatrix` and depends on [-1, 1] depth).
+  Matrix4.setDepthRangeType("webgpu");
+  const off = camera.frustum.offCenterFrustum ?? camera.frustum;
+  Matrix4.computePerspectiveOffCenter(
+    off.left,
+    off.right,
+    off.bottom,
+    off.top,
+    off.near,
+    off.far,
+    scratchProjectionWebGPU,
+  );
+  Matrix4.setDepthRangeType("webgl");
+
   Matrix4.multiply(camera.viewMatrix, Matrix4.IDENTITY, scratchModelView);
   Matrix4.clone(scratchModelView, scratchMVRTE);
   scratchMVRTE[12] = 0.0;
   scratchMVRTE[13] = 0.0;
   scratchMVRTE[14] = 0.0;
-  Matrix4.multiply(
-    camera.frustum.projectionMatrix,
-    scratchMVRTE,
-    scratchMVPRTE,
-  );
+  Matrix4.multiply(scratchProjectionWebGPU, scratchMVRTE, scratchMVPRTE);
 
   // mvpRelativeToEye (16 floats at offset 0)
   Matrix4.pack(scratchMVPRTE, uniformData, 0);
@@ -822,6 +854,7 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     );
   }
   //>>includeEnd('debug');
+  return cache.command;
 }
 
 /**

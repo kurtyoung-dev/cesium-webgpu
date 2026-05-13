@@ -195,9 +195,17 @@ export function uploadImageSource(
         GPUTextureUsage.RENDER_ATTACHMENT,
     });
 
+    // Force sRGB color space on both source and destination to prevent the
+    // browser from applying a wide-gamut → sRGB conversion when the user
+    // is on a display-p3 / HDR monitor. WebGL's `pixelStorei(
+    // UNPACK_COLORSPACE_CONVERSION_WEBGL, BROWSER_DEFAULT_WEBGL)` ends up
+    // as a no-op on those setups, while WebGPU's
+    // `copyExternalImageToTexture` defaults to a "default" colorSpace
+    // mapping that may convert the source. Explicit srgb→srgb is a safe
+    // identity copy on every display.
     device.queue.copyExternalImageToTexture(
       { source: gpuSource },
-      { texture },
+      { texture, colorSpace: "srgb" },
       [width, height],
     );
 

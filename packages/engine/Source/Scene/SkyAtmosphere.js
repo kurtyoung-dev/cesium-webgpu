@@ -251,11 +251,18 @@ class SkyAtmosphere {
       FeatureRendererKey.SKY_ATMOSPHERE,
     );
     if (fr) {
-      const cmdListBefore = frameState.commandList.length;
-      fr.update(this, frameState, frameState.commandList);
-      // Return the command the FR just pushed (if any)
-      if (frameState.commandList.length > cmdListBefore) {
-        return frameState.commandList[frameState.commandList.length - 1];
+      const result = fr.update(this, frameState, frameState.commandList);
+      // The FR now returns the draw command directly (also pushed to
+      // commandList). Earlier versions inferred the command from
+      // `commandList.length` after the call — that race-conditioned with
+      // any FR that wrote to the list as a side-effect; trust the
+      // explicit return value when it's defined.
+      if (defined(result)) {
+        return result;
+      }
+      const cmdListBefore = frameState.commandList.length - 1;
+      if (cmdListBefore >= 0) {
+        return frameState.commandList[cmdListBefore];
       }
       return undefined;
     }

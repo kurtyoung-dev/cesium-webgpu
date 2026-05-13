@@ -12,6 +12,7 @@ import defined from "../../Core/defined.js";
 import DeveloperError from "../../Core/DeveloperError.js";
 import RuntimeError from "../../Core/RuntimeError.js";
 import WebGPUComputeCommand from "./WebGPUComputeCommand.js";
+import { trackComputePipelineCreation } from "./AsyncResourceMonitor.js";
 
 /**
  * Cached compute pipeline entry.
@@ -33,6 +34,13 @@ class WebGPUComputeEngine {
   private _centralCache:
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null;
+  // NEW-WEBGPU-PIPELINE-READY-SIGNAL — async resource monitor for the
+  // freeform `createPipelineAsync` factory path that bypasses the
+  // central cache. Set via the `asyncResourceMonitor` setter after
+  // construction (production sites do this in WebGPUContext).
+  private _monitor:
+    | import("./AsyncResourceMonitor.js").AsyncResourceMonitor
+    | null = null;
   private _isDestroyed: boolean;
 
   /**
@@ -79,6 +87,17 @@ class WebGPUComputeEngine {
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null {
     return this._centralCache;
+  }
+
+  /**
+   * NEW-WEBGPU-PIPELINE-READY-SIGNAL — install the monitor for the
+   * freeform `createPipelineAsync` path. Production callers wire this
+   * to `context.asyncResources` after construction.
+   */
+  set asyncResourceMonitor(
+    monitor: import("./AsyncResourceMonitor.js").AsyncResourceMonitor | null,
+  ) {
+    this._monitor = monitor;
   }
 
   /**
@@ -344,14 +363,19 @@ class WebGPUComputeEngine {
         })
       : "auto";
 
-    return this._device.createComputePipelineAsync({
-      layout: pipelineLayout,
-      compute: {
-        module: shaderModule,
-        entryPoint,
+    return trackComputePipelineCreation(
+      this._monitor,
+      this._device,
+      {
+        layout: pipelineLayout,
+        compute: {
+          module: shaderModule,
+          entryPoint,
+        },
+        label: label ?? "ComputePipeline",
       },
-      label: label ?? "ComputePipeline",
-    });
+      label ?? "ComputeEngine-freeform",
+    );
   }
 
   /**

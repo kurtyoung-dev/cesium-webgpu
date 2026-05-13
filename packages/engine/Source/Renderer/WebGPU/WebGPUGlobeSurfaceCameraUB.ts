@@ -330,6 +330,106 @@ export function createCameraUniformBuffer(
     data[offset++] = 1;
   }
 
+  // ─── Session 65 Batch 9 (Cluster 2b/5): Nishita ground atmosphere ───
+  // Pack atmosphere parameters for the per-vertex ray-march. All values
+  // default to the constants in `Source/Scene/Atmosphere.js` so the
+  // first-frame render matches WebGL out of the box. Scene-level setters
+  // (`scene.atmosphere.rayleighCoefficient = ...`) flow through to
+  // `uniformState.atmosphere*` on update; we read those when present.
+  //
+  // atmosphereLightDirectionAndIntensity (vec4): xyz = light direction WC
+  //   (sun by default — matches `DYNAMIC_ATMOSPHERE_LIGHTING_FROM_SUN`),
+  //   w = light intensity (default 10.0).
+  // GROUND atmosphere parameters live on the Globe (via tileProvider.*)
+  // rather than `scene.atmosphere.*`. The Atmosphere.html demo sets
+  // `globe.atmosphereLightIntensity = 20.0` which the Globe.update path
+  // copies onto the tileProvider. WebGL reads these via
+  // `tileProvider.atmosphereLightIntensity` etc. SkyAtmosphere uses a
+  // separate `scene.atmosphere.*` config — kept distinct so demos like
+  // Atmosphere.html can independently tune ground vs sky.
+  const tp = tileProvider as unknown as {
+    atmosphereLightIntensity?: number;
+    atmosphereRayleighCoefficient?: { x: number; y: number; z: number };
+    atmosphereMieCoefficient?: { x: number; y: number; z: number };
+    atmosphereRayleighScaleHeight?: number;
+    atmosphereMieScaleHeight?: number;
+    atmosphereMieAnisotropy?: number;
+    dynamicAtmosphereLighting?: boolean;
+    dynamicAtmosphereLightingFromSun?: boolean;
+    showGroundAtmosphere?: boolean;
+  };
+  const us = uniformState as unknown as {
+    sunDirectionWC?: { x: number; y: number; z: number };
+    lightDirectionWC?: { x: number; y: number; z: number };
+  };
+  const fs = frameState as
+    | (CesiumFrameState & {
+        fog?: { enabled?: boolean };
+      })
+    | undefined;
+  // Light direction WC: WebGL chooses between `czm_sunDirectionWC` (when
+  // `DYNAMIC_ATMOSPHERE_LIGHTING_FROM_SUN`) and `czm_lightDirectionWC`
+  // otherwise. We mirror that decision here. When dynamic lighting is
+  // off entirely, WebGL substitutes `normalize(positionWC)` in the VS;
+  // we always pass a global direction and let the VS handle the
+  // per-vertex fallback (computes nothing extra in our case since the
+  // ray-march already uses positionWC as the inner radius source).
+  const lightWC = tp.dynamicAtmosphereLightingFromSun
+    ? (us.sunDirectionWC ?? us.lightDirectionWC)
+    : (us.lightDirectionWC ?? us.sunDirectionWC);
+  data[offset++] = lightWC?.x ?? 0.0;
+  data[offset++] = lightWC?.y ?? 0.0;
+  data[offset++] = lightWC?.z ?? 1.0;
+  data[offset++] = tp.atmosphereLightIntensity ?? 10.0;
+
+  // Rayleigh coefficient + scale height. Defaults match Globe.js init
+  // (rayleighCoefficient = (5.5e-6, 13e-6, 28.4e-6), scaleHeight =
+  // 10000). Sourced from tileProvider, not scene.atmosphere.
+  const rC = tp.atmosphereRayleighCoefficient;
+  data[offset++] = rC?.x ?? 5.5e-6;
+  data[offset++] = rC?.y ?? 13.0e-6;
+  data[offset++] = rC?.z ?? 28.4e-6;
+  data[offset++] = tp.atmosphereRayleighScaleHeight ?? 10000.0;
+
+  // Mie coefficient + scale height. Defaults: mieCoefficient = (21e-6,
+  // 21e-6, 21e-6) — grey, wavelength-independent. mieScaleHeight = 3200.
+  const mC = tp.atmosphereMieCoefficient;
+  data[offset++] = mC?.x ?? 21.0e-6;
+  data[offset++] = mC?.y ?? 21.0e-6;
+  data[offset++] = mC?.z ?? 21.0e-6;
+  data[offset++] = tp.atmosphereMieScaleHeight ?? 3200.0;
+
+  // Atmosphere params: anisotropy, inner radius, outer radius, enable.
+  data[offset++] = tp.atmosphereMieAnisotropy ?? 0.9;
+  // Inner radius = max ellipsoid radius (WGS84 = 6378137). Match the
+  // value already passed via `ellipsoidRadius` so the VS ray-march and
+  // FS lookups agree on the planet size.
+  const innerRadius =
+    (
+      tileProvider as unknown as {
+        ellipsoid?: { maximumRadius?: number };
+        _ellipsoid?: { maximumRadius?: number };
+      }
+    )?.ellipsoid?.maximumRadius ??
+    (
+      tileProvider as unknown as {
+        _ellipsoid?: { maximumRadius?: number };
+      }
+    )?._ellipsoid?.maximumRadius ??
+    6378137.0;
+  data[offset++] = innerRadius;
+  // Outer radius: inner + atmosphere thickness. Atmosphere.js uses
+  // ATMOSPHERE_THICKNESS = 111e3 m — kept in sync with AtmosphereCommon.glsl.
+  data[offset++] = innerRadius + 111000.0;
+  // Enable flag: fog enabled OR ground atmosphere enabled. Either
+  // triggers the per-vertex ray-march. When both are off, the VS skips
+  // the ray-march entirely (zero per-vertex cost). `showGroundAtmosphere`
+  // is mirrored from Globe.js onto tileProvider; fog.enabled comes from
+  // the per-frame Fog.update.
+  const fogEnabled = fs?.fog?.enabled !== false;
+  const groundAtmoEnabled = tp.showGroundAtmosphere !== false;
+  data[offset++] = fogEnabled || groundAtmoEnabled ? 1.0 : 0.0;
+
   const bufferSize = Math.max(CAMERA_UNIFORM_BYTES, 256);
   return writeUniformSlice(
     device,

@@ -79,3 +79,10 @@ __pycache__/
 # throwaway test scripts — do not commit.
 /tmp/
 
+# Cross-backend visual regression sweep output. The runner regenerates
+# every PNG + the report.json on each invocation, so committing them just
+# churns the repo with binary blobs. The runner now also wipes this
+# directory at the start of every sweep so we always start from a clean
+# slate (avoids stale screenshots from older runs masking new fixes).
+/Tools/visual-regression/output/cross-backend/
+

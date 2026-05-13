@@ -1019,7 +1019,7 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
       cache.instanceBuffer = WebGPUBuffer.createVertexBuffer(
         device,
         requiredSize,
-        true, // mappedAtCreation = false, we'll writeBuffer
+        false, // mappedAtCreation = false — data uploaded via writeBuffer below
         "PointPrimitive instances",
       );
     }
@@ -1039,7 +1039,7 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
         cache.prevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
           device,
           requiredSize,
-          true,
+          false,
           "PointPrimitive prev instances",
         );
       }
@@ -1293,7 +1293,7 @@ function _pushPickCommand(
     cache.pickInstanceBuffer = WebGPUBuffer.createVertexBuffer(
       device,
       pickSize,
-      true,
+      false,
       "PointPrimitive pick instances",
     );
   }

@@ -885,6 +885,15 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
         uniformState,
       );
   if (!cmdDescs || cmdDescs.length === 0) {
+    // Empty `cmdDescs` from `createTileCommands` is the WebGPU "pipeline
+    // still cooking async" signal AND the WebGL "no commands to emit"
+    // signal. The wakeup-on-pipeline-ready path is now centralized in
+    // `WebGPURenderPipelineCache` → `AsyncResourceMonitor` →
+    // `Scene.requestRender()` (see NEW-WEBGPU-PIPELINE-READY-SIGNAL),
+    // so this branch no longer needs to push an `afterRender` callback
+    // by hand. WebGL paths fall through correctly because there is no
+    // async-pipeline class on WebGL — empty here genuinely means
+    // "nothing to draw" and re-rendering wouldn't change that.
     return;
   }
 
@@ -950,7 +959,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       // use 24 / 28 / 32 / 36 / 40 / 44 depending on hasVertexNormals /
       // hasWebMercatorT / hasGeodeticSurfaceNormals — Batch 19's
       // TileGPUResources.strideBytes already captures the right value.
-      vertexStride: cmdDesc.isQuantized ? 16 : cmdDesc.strideBytes ?? 24,
+      vertexStride: cmdDesc.isQuantized ? 16 : (cmdDesc.strideBytes ?? 24),
       execute: function (renderPass) {
         renderPass.setPipeline(this._pipeline);
         for (let i = 0; i < this._bindGroups.length; i++) {

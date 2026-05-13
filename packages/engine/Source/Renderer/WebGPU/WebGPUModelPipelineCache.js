@@ -134,6 +134,15 @@ const MATERIAL_DEFINE_MASK = (() => {
   for (let i = 0; i < KHR_BINDING_MANIFEST.length; i++) {
     m |= KHR_BINDING_MANIFEST[i].gateDefine;
   }
+  // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT — MODEL_HAS_TEXCOORD_1 also
+  // discriminates pipelines (different vertex buffer layout: 9 vs 8
+  // slots). Not a KHR-binding flag, but participates in the cache key
+  // the same way.
+  m |= ShaderDefine.MODEL_HAS_TEXCOORD_1;
+  // Session 65 — same treatment for MODEL_HAS_FEATURE_ID_0. Distinct
+  // vertex buffer layout (slot 8 present vs absent) needs its own
+  // pipeline variant.
+  m |= ShaderDefine.MODEL_HAS_FEATURE_ID_0;
   return m;
 })();
 
@@ -413,11 +422,33 @@ function _mapGLWrap(glEnum) {
 
 /**
  * Creates the vertex buffer layout descriptor.
- * 7 separate buffer slots, one per attribute.
- * Missing attributes use a 1-element instance-step buffer with defaults.
+ *
+ * Variant-aware (Session 62 NEW-VR-VERTEX-BUFFER-VARIANT + Session 65
+ * follow-up): two flags drive the slot count.
+ *
+ *   - `hasTexCoord1` — when false, slot 7 is omitted.
+ *   - `hasFeatureId0` — when false, slot 8 is omitted.
+ *
+ * Brings the common-case layout from 9 → 7 buffer slots (most glTF
+ * models lack both TEXCOORD_1 and feature IDs), fitting Edge's adapter
+ * `maxVertexBuffers = 8` cap with headroom. Both flags also drive a
+ * matching `//>>ifdef` block in `ModelPBRComplete.wgsl` so the
+ * `@location(7)` / `@location(8)` declarations are stripped when the
+ * corresponding slot isn't bound. Caller MUST pass the same flags to
+ * the shader preprocessor when fetching the shader module — the
+ * pipeline cache key includes both bits so distinct variants get
+ * distinct pipelines.
+ *
+ * Missing attributes that aren't TEXCOORD_1 / featureId0 still use a
+ * 1-element instance-step buffer with defaults — the shader's
+ * `@location(N)` declarations stay unconditional for those, and the
+ * renderer always binds something at every declared location.
+ *
+ * @param {boolean} [hasTexCoord1=true] — when false, slot 7 is omitted.
+ * @param {boolean} [hasFeatureId0=true] — when false, slot 8 is omitted.
  */
-function createVertexBufferLayout() {
-  return [
+function createVertexBufferLayout(hasTexCoord1 = true, hasFeatureId0 = true) {
+  const layout = [
     // Slot 0: positionMC (vec3<f32>) — ALWAYS present, vertex step
     {
       arrayStride: 12,
@@ -460,31 +491,40 @@ function createVertexBufferLayout() {
       stepMode: "vertex",
       attributes: [{ shaderLocation: 6, offset: 0, format: "float32x4" }],
     },
+  ];
+  if (hasTexCoord1) {
     // Slot 7: texCoord1 (vec2<f32>) — used by textures whose
     // glTF textureInfo.texCoord == 1 (occlusion + clearcoat-normal are
-    // the usual cases). May use default when the primitive has no
-    // TEXCOORD_1 accessor; `ModelPBRComplete.wgsl` picks between
-    // texCoord0 / texCoord1 per-slot via the uniform flag pushed into
-    // the material UBO, so the shader is safe against missing data.
-    {
+    // the usual cases). Variant-conditional in Session 62 — primitives
+    // without TEXCOORD_1 omit this slot entirely, fitting Edge's
+    // 8-slot adapter cap.
+    layout.push({
       arrayStride: 8,
       stepMode: "vertex",
       attributes: [{ shaderLocation: 7, offset: 0, format: "float32x2" }],
-    },
+    });
+  }
+  if (hasFeatureId0) {
     // Slot 8: featureId0 (f32) — Audit B.2 (Batch 130). Per-vertex
     // glTF `_FEATURE_ID_0` (or b3dm `_BATCHID`) cast to f32. The FS
     // reads it as a `flat`-interpolated varying and indexes the batch
     // texture / per-feature pick texture when
-    // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is set in materialFlags. Falls
-    // back to the 1-element zero default when the primitive has no
-    // feature-id attribute; the FS gates the read on the flag so the
-    // default is never consumed.
-    {
+    // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is set in materialFlags.
+    //
+    // Variant-conditional in Session 65 — primitives without a feature
+    // ID accessor (the common case for standard glTF models) omit this
+    // slot, dropping the layout to 7 slots and fitting Edge's
+    // `maxVertexBuffers = 8` cap with headroom. The shader's
+    // `//>>ifdef MODEL_HAS_FEATURE_ID_0` block strips the matching
+    // `@location(8)` declaration when this flag is unset, and the
+    // vertex shader assigns `output.featureId0 = 0.0` directly.
+    layout.push({
       arrayStride: 4,
       stepMode: "vertex",
       attributes: [{ shaderLocation: 8, offset: 0, format: "float32" }],
-    },
-  ];
+    });
+  }
+  return layout;
 }
 
 /**
@@ -507,6 +547,8 @@ function createPipeline(
   alphaMode,
   doubleSided,
   forceDepthWrite,
+  hasTexCoord1,
+  hasFeatureId0,
 ) {
   const cullMode = doubleSided ? "none" : "back";
 
@@ -543,7 +585,7 @@ function createPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(),
+      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
     },
     fragment: {
       module: shaderModule,
@@ -597,6 +639,8 @@ function createPickPipeline(
   depthFormat,
   alphaMode,
   doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. Translucent
@@ -634,7 +678,7 @@ function createPickPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(),
+      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
     },
     fragment: {
       module: shaderModule,
@@ -671,6 +715,8 @@ function createPickHoverPipeline(
   presentationFormat,
   depthFormat,
   doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-hover [BLEND,ds=${doubleSided}]`;
@@ -680,7 +726,7 @@ function createPickHoverPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(),
+      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
     },
     fragment: {
       module: shaderModule,
@@ -718,6 +764,8 @@ function createPickPrecisePass1Pipeline(
   presentationFormat,
   depthFormat,
   doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-precise pass1 [BLEND,ds=${doubleSided}]`;
@@ -749,7 +797,7 @@ function createPickPrecisePass1Pipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(),
+      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
     },
     fragment: {
       module: shaderModule,
@@ -793,6 +841,8 @@ function createPickPrecisePass2Pipeline(
   presentationFormat,
   depthFormat,
   doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-precise pass2 [BLEND,ds=${doubleSided}]`;
@@ -823,7 +873,7 @@ function createPickPrecisePass2Pipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(),
+      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
     },
     fragment: {
       module: shaderModule,
@@ -868,6 +918,8 @@ function createVelocityPipeline(
   depthFormat,
   alphaMode,
   doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR velocity [alpha=${alphaMode},ds=${doubleSided}]`;
@@ -877,7 +929,7 @@ function createVelocityPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(),
+      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
     },
     fragment: {
       module: shaderModule,
@@ -921,6 +973,8 @@ function createClassificationPipeline(
   depthFormat,
   alphaMode,
   doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model classification [alpha=${alphaMode},ds=${doubleSided}]`;
@@ -942,7 +996,7 @@ function createClassificationPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(),
+      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
     },
     fragment: {
       module: shaderModule,
@@ -1488,6 +1542,8 @@ class WebGPUModelPipelineCache {
       return pipeline;
     }
 
+    const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
+    const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
     pipeline = createPipeline(
       this._device,
       this._getOrCreateShaderModule(md),
@@ -1497,6 +1553,8 @@ class WebGPUModelPipelineCache {
       alphaMode,
       doubleSided,
       false,
+      hasTexCoord1,
+      hasFeatureId0,
     );
     this._pipelines.set(key, pipeline);
     return pipeline;
@@ -1526,6 +1584,8 @@ class WebGPUModelPipelineCache {
       return pipeline;
     }
 
+    const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
+    const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
     pipeline = createPipeline(
       this._device,
       this._getOrCreateShaderModule(md),
@@ -1535,6 +1595,8 @@ class WebGPUModelPipelineCache {
       alphaMode,
       doubleSided,
       true,
+      hasTexCoord1,
+      hasFeatureId0,
     );
     this._depthWritePipelines.set(key, pipeline);
     return pipeline;
@@ -1574,6 +1636,8 @@ class WebGPUModelPipelineCache {
       this._depthFormat,
       alphaMode,
       doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
     );
     this._pickPipelines.set(key, pipeline);
     return pipeline;
@@ -1614,6 +1678,8 @@ class WebGPUModelPipelineCache {
       this._presentationFormat,
       this._depthFormat,
       doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
     );
     this._pickHoverPipelines.set(key, pipeline);
     return pipeline;
@@ -1649,6 +1715,8 @@ class WebGPUModelPipelineCache {
       this._presentationFormat,
       this._depthFormat,
       doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
     );
     this._pickPrecisePass1Pipelines.set(key, pipeline);
     return pipeline;
@@ -1682,6 +1750,8 @@ class WebGPUModelPipelineCache {
       this._presentationFormat,
       this._depthFormat,
       doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
     );
     this._pickPrecisePass2Pipelines.set(key, pipeline);
     return pipeline;
@@ -1716,6 +1786,8 @@ class WebGPUModelPipelineCache {
       this._depthFormat,
       alphaMode,
       doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
     );
     this._velocityPipelines.set(key, pipeline);
     return pipeline;
@@ -1756,6 +1828,8 @@ class WebGPUModelPipelineCache {
       this._depthFormat,
       alphaMode,
       doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
     );
     this._classificationPipelines.set(key, pipeline);
     return pipeline;

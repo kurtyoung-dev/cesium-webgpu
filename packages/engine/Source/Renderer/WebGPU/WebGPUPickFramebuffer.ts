@@ -97,6 +97,13 @@ export class WebGPUPickFramebuffer {
   private _stagingBuffer: GPUBuffer | null = null;
   private _stagingBufferSize: number = 0;
   private _lastReadPixels: Uint8Array | null = null;
+  // True between submit-of-copyTextureToBuffer and the unmap that follows
+  // mapAsync's resolution. While true, we must not encode another copy to
+  // the same staging buffer or the queue will reject the submit with
+  // "Buffer used in submit while mapped" (the buffer transitions through
+  // mapping-pending → mapped before unmap clears it). sampleHeight in
+  // continuous CallbackProperty demos hits this every frame.
+  private _readbackInFlight: boolean = false;
 
   // Origin of the current pick rectangle within the full-viewport color
   // texture. Captured in begin() and consumed by the copyTextureToBuffer
@@ -142,7 +149,18 @@ export class WebGPUPickFramebuffer {
     }
     this._device = device;
 
-    const { width, height } = viewport;
+    const rawWidth = viewport?.width;
+    const rawHeight = viewport?.height;
+    // Defensive guard — viewport.width/height arrive undefined/NaN during
+    // teardown or if a caller passes a partially-initialized rect. Falling
+    // through with NaN propagates to bytesPerRow/bufferSize and surfaces as
+    // "createBuffer Failed to read 'size' property: Value is null".
+    const width =
+      typeof rawWidth === "number" && rawWidth > 0 ? Math.floor(rawWidth) : 1;
+    const height =
+      typeof rawHeight === "number" && rawHeight > 0
+        ? Math.floor(rawHeight)
+        : 1;
 
     BoundingRectangle.clone(
       screenSpaceRectangle,
@@ -205,6 +223,10 @@ export class WebGPUPickFramebuffer {
           usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
         this._stagingBufferSize = bufferSize;
+        // Any in-flight readback is now targeting the destroyed buffer; its
+        // .then() will hit the identity guard. Clear the flag so we don't
+        // gate the new buffer's first readback on the dead one.
+        this._readbackInFlight = false;
       }
     }
 
@@ -359,6 +381,15 @@ export class WebGPUPickFramebuffer {
     if (!device || !this._colorTexture || !this._stagingBuffer) {
       return;
     }
+    // Skip if the previous frame's mapAsync hasn't unmapped yet — the
+    // staging buffer is still mapping-pending or mapped, and submitting
+    // a copy that targets it throws "used in submit while mapped".
+    if (this._readbackInFlight) {
+      return;
+    }
+    if (!(width > 0) || !(height > 0)) {
+      return;
+    }
 
     const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
     const encoder = device.createCommandEncoder({
@@ -389,6 +420,7 @@ export class WebGPUPickFramebuffer {
     // (would otherwise throw "cannot read getMappedRange of destroyed
     // buffer" on the unmap path).
     const stagingBuffer = this._stagingBuffer!;
+    this._readbackInFlight = true;
     stagingBuffer
       .mapAsync(GPUMapMode.READ)
       .then(() => {
@@ -396,6 +428,7 @@ export class WebGPUPickFramebuffer {
           // Either the framebuffer was destroyed or the staging buffer
           // got swapped on resize. Either way, the buffer we mapped is
           // either gone or no longer canonical — skip.
+          this._readbackInFlight = false;
           return;
         }
         const mappedData = new Uint8Array(stagingBuffer.getMappedRange());
@@ -412,9 +445,11 @@ export class WebGPUPickFramebuffer {
 
         stagingBuffer.unmap();
         this._lastReadPixels = pixels;
+        this._readbackInFlight = false;
       })
       .catch(() => {
         // Readback failed, likely buffer already mapped or destroyed
+        this._readbackInFlight = false;
       });
   }
 

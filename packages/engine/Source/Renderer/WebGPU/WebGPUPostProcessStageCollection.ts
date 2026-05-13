@@ -79,7 +79,29 @@ function getDefaultCache(): PostProcessCache {
   return {
     initialized: false,
     fxaaEnabled: false,
-    tonemappingEnabled: true,
+    // Session 65 cont. fix — default to FALSE to match WebGL's
+    // `PostProcessStageCollection` (line 57: `tonemapping.enabled =
+    // false; // will be enabled if necessary in update`).
+    //
+    // Previously defaulted to true, which caused the Tonemap stage to
+    // run with Reinhard + sRGB encode on every frame on the bgra8unorm
+    // SDR pipeline. The result: globe imagery (linear 0.1, 0.2, 0.4)
+    // got tonemapped to (~0.725, 0.831, 0.902) before reaching the
+    // canvas — root cause of NEW-VR2-3 "imagery wash-out" (Session 65
+    // triage). Verified via a debug-return probe: globe shader emits
+    // (0.1, 0.2, 0.4); canvas reads back (185, 212, 230) ≈ same
+    // x/(x+0.087) Reinhard + pow(., 1/2.2) curve.
+    //
+    // Cesium's WebGL path tonemap.enabled flips to true only when
+    // `useHdr === true` (PostProcessStageCollection.update line 575).
+    // The sync layer below honors that via the `_tonemapping.enabled`
+    // read — but if the WebGL collection has never been touched
+    // (e.g., the WebGPU FR for POST_PROCESS_COLLECTION runs before
+    // PostProcessStageCollection's constructor finishes setting
+    // `_tonemapping`), the cache stays at this default. False matches
+    // SDR-by-default; HDR turns it on via the cache.tonemappingEnabled
+    // read below.
+    tonemappingEnabled: false,
     tonemapMode: TonemapMode.REINHARD,
     ambientOcclusionEnabled: false,
     bloomEnabled: false,

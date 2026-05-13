@@ -84,6 +84,13 @@ import SampledProperty from "./SampledProperty.js";
 import StripeMaterialProperty from "./StripeMaterialProperty.js";
 import StripeOrientation from "./StripeOrientation.js";
 import TimeIntervalCollectionPositionProperty from "./TimeIntervalCollectionPositionProperty.js";
+// CzmlDataSource uses `Uri` as a type sentinel for dispatch — see
+// `unwrapInterval` (`case Uri:`) and `processModel` (`processPacketData(Uri, ...)`).
+// Pre-fork upstream Cesium imported this from the `urijs` package; our
+// engine/package.json briefly dropped both the dep and the import, which
+// left every CZML packet containing a glTF model crashing with
+// `ReferenceError: Uri is not defined`. Restored 2026-05-11.
+import Uri from "urijs";
 import TimeIntervalCollectionProperty from "./TimeIntervalCollectionProperty.js";
 import VelocityOrientationProperty from "./VelocityOrientationProperty.js";
 import VelocityVectorProperty from "./VelocityVectorProperty.js";

@@ -46,6 +46,14 @@ const templateProperties = [
   "uniforms",
   "components",
   "source",
+  // Session 65 Cluster 3 — parallel WGSL fabric API. The `wgsl` field
+  // carries either `{ source: <WGSL function body> }` or
+  // `{ components: { diffuse: ..., alpha: ... } }` — same shape as the
+  // GLSL `source` / `components` pair. Consumed by
+  // `createWGSLMethodDefinition` (see below) into `material.wgslShaderSource`.
+  // The WebGPU Globe renderer reads that to assemble a per-material
+  // pipeline at draw time.
+  "wgsl",
 ];
 
 const componentProperties = [
@@ -123,6 +131,29 @@ function checkForTemplateErrors(material) {
     invalidNameError,
     true,
   );
+  // Validate `wgsl: { source, components }` parallel structure (Cluster 3).
+  const wgsl = template.wgsl;
+  if (defined(wgsl)) {
+    checkForValidProperties(
+      wgsl,
+      ["source", "components"],
+      invalidNameError,
+      true,
+    );
+    checkForValidProperties(
+      wgsl.components,
+      componentProperties,
+      invalidNameError,
+      true,
+    );
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(wgsl.source) && defined(wgsl.components)) {
+      throw new DeveloperError(
+        "fabric.wgsl: cannot have source and components in the same template.",
+      );
+    }
+    //>>includeEnd('debug');
+  }
 
   // Make sure uniforms and materials do not share any of the same names.
   const materialNames = [];
@@ -181,6 +212,110 @@ function createMethodDefinition(material) {
     }
     material.shaderSource += "return material;\n}\n";
   }
+}
+
+// Create the WGSL `czm_getMaterial` function body from the fabric's
+// `wgsl: { source, components }` field. Parallel to `createMethodDefinition`
+// but emits WGSL syntax. Stays a no-op when the fabric has no `wgsl`
+// declarations — WebGPU consumers (Globe material hook) detect the empty
+// `wgslShaderSource` and emit a clear migration-path error rather than
+// guessing at GLSL→WGSL translation.
+//
+// Output structure (matches WebGL flow):
+//
+//   fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {
+//     var material: czm_Material = czm_getDefaultMaterial(materialInput);
+//     material.diffuse = czm_gammaCorrect(<wgsl.components.diffuse>);
+//     material.alpha = <wgsl.components.alpha>;
+//     ...
+//     return material;
+//   }
+//
+// Or when `wgsl.source` is supplied, the source is appended verbatim
+// (caller is responsible for declaring `czm_getMaterial` themselves).
+//
+// Session 65 Cluster 3 — parallel WGSL fabric API.
+function createWGSLMethodDefinition(material) {
+  const wgsl = material._template.wgsl;
+  const wgslSource = wgsl?.source;
+  if (defined(wgslSource)) {
+    material.wgslShaderSource += `${wgslSource}\n`;
+    return;
+  }
+
+  // Session 65 Batch 16 — composite WGSL fabric fallback. When the
+  // fabric declares NO `wgsl: {}` block but DOES declare top-level
+  // `components` + sub-`materials`, generate the composite WGSL using
+  // the top-level `components` expressions. This works because:
+  //
+  //   (a) sub-material id replacement is now applied to
+  //       `wgslShaderSource` as well (see `replaceToken` + the
+  //       sub-material concatenation block in `createSubMaterials`),
+  //       so by the time the renderer compiles the composite, the
+  //       component expressions reference the renamed
+  //       `czm_getMaterial_N(materialInput)` function calls instead
+  //       of the raw sub-material ids;
+  //   (b) the expression syntax used in `components` is the GLSL
+  //       sub-set common with WGSL — vec arithmetic, `max`, scalar
+  //       promotion, member access. Custom fabrics that need
+  //       WGSL-specific syntax (e.g., `textureSample`) MUST still
+  //       declare an explicit `wgsl: { components | source }` block.
+  //   (c) if any sub-material lacks `wgsl: {}` declarations, the
+  //       composite will reference an undefined function and fail to
+  //       compile — surfaces a clear error in the WGSL pipeline build
+  //       rather than the previous silent black-globe outcome.
+  //
+  // This is what makes the Bathymetry demo's `ElevationColorContour`
+  // composite (sub-fuses `ElevationContour` + `ElevationRamp`) render
+  // on WebGPU instead of falling back to a black globe.
+  const topLevelComponents = material._template.components;
+  const subMaterialTemplates = material._template.materials;
+  const hasSubMaterials =
+    defined(subMaterialTemplates) &&
+    Object.keys(subMaterialTemplates).length > 0;
+  const components =
+    wgsl?.components ??
+    (hasSubMaterials && defined(topLevelComponents)
+      ? topLevelComponents
+      : undefined);
+
+  if (!defined(wgsl) && !defined(components)) {
+    // No explicit WGSL declaration and no composite path. Leave
+    // wgslShaderSource empty so the Globe material hook surfaces a
+    // clear migration-path error instead of silently producing a
+    // black globe.
+    return;
+  }
+
+  material.wgslShaderSource +=
+    "fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {\n";
+  material.wgslShaderSource +=
+    "  var material: czm_Material = czm_getDefaultMaterial(materialInput);\n";
+  if (defined(components)) {
+    const isMultiMaterial =
+      Object.keys(material._template.materials).length > 0;
+    for (const component in components) {
+      if (components.hasOwnProperty(component)) {
+        if (component === "diffuse" || component === "emission") {
+          // Sub-material fusion: when a fabric composes child materials
+          // and the diffuse/emission expression references one of them,
+          // skip the gamma-correct wrap so the child's already-corrected
+          // output isn't double-corrected. Same rule as the GLSL path.
+          const isFusion =
+            isMultiMaterial && isMaterialFused(components[component], material);
+          const componentSource = isFusion
+            ? components[component]
+            : `czm_gammaCorrect(${components[component]})`;
+          material.wgslShaderSource += `  material.${component} = ${componentSource};\n`;
+        } else if (component === "alpha") {
+          material.wgslShaderSource += `  material.alpha = ${components.alpha};\n`;
+        } else {
+          material.wgslShaderSource += `  material.${component} = ${components[component]};\n`;
+        }
+      }
+    }
+  }
+  material.wgslShaderSource += "  return material;\n}\n";
 }
 
 /**
@@ -624,6 +759,19 @@ function createSubMaterials(material, MaterialConstructor) {
       const newMethodName = `${originalMethodName}_${material._count++}`;
       replaceToken(subMaterial, originalMethodName, newMethodName);
       material.shaderSource = subMaterial.shaderSource + material.shaderSource;
+      // Session 65 Batch 16 — mirror the GLSL method-rename + prepend
+      // into the WGSL flow so composite WGSL fabrics (e.g., Bathymetry's
+      // `ElevationColorContour` fusing `ElevationContour` +
+      // `ElevationRamp`) end up with renamed `czm_getMaterial_N`
+      // functions instead of multiple definitions of the same symbol.
+      if (
+        subMaterial.wgslShaderSource &&
+        subMaterial.wgslShaderSource.length > 0
+      ) {
+        replaceTokenInWGSL(subMaterial, originalMethodName, newMethodName);
+        material.wgslShaderSource =
+          subMaterial.wgslShaderSource + (material.wgslShaderSource ?? "");
+      }
 
       // Replace each material id with an czm_getMaterial method call.
       const materialMethodCall = `${newMethodName}(materialInput)`;
@@ -632,6 +780,9 @@ function createSubMaterials(material, MaterialConstructor) {
         subMaterialId,
         materialMethodCall,
       );
+      // Mirror the id→method-call substitution in WGSL so the composite
+      // expressions reference the renamed sub-material functions.
+      replaceTokenInWGSL(material, subMaterialId, materialMethodCall);
       //>>includeStart('debug', pragmas.debug);
       if (tokensReplacedCount === 0 && strict) {
         throw new DeveloperError(
@@ -665,6 +816,34 @@ function replaceToken(material, token, newToken, excludePeriod) {
   return count;
 }
 
+// Session 65 Batch 16 — rename a token inside `wgslShaderSource` only.
+// Composite WGSL fabric (e.g., Bathymetry's `ElevationColorContour`)
+// needs the same id-substitution that GLSL gets — but ONLY for
+// sub-material ids and `czm_getMaterial` method names. Uniform names
+// must stay un-suffixed in the WGSL body because the WGSL material UBO
+// layer (`buildMaterialPrelude` / `rewriteMaterialBody` in
+// `WebGPUGlobeMaterial.ts`) keys its lookups on the unsuffixed names
+// from `material.uniforms`. The same regex shape works because both
+// shader languages share the same identifier-char rules.
+function replaceTokenInWGSL(material, token, newToken, excludePeriod) {
+  if (!material.wgslShaderSource || material.wgslShaderSource.length === 0) {
+    return;
+  }
+  excludePeriod = excludePeriod ?? true;
+  const suffixChars = "([\\w])?";
+  const prefixChars = `([\\w${excludePeriod ? "." : ""}])?`;
+  const regExp = new RegExp(prefixChars + token + suffixChars, "g");
+  material.wgslShaderSource = material.wgslShaderSource.replace(
+    regExp,
+    function ($0, $1, $2) {
+      if ($1 || $2) {
+        return $0;
+      }
+      return newToken;
+    },
+  );
+}
+
 function getNumberOfTokens(material, token, excludePeriod) {
   return replaceToken(material, token, token, excludePeriod);
 }
@@ -696,6 +875,12 @@ function initializeMaterial(options, result, MaterialConstructor) {
     : createGuid();
 
   result.shaderSource = "";
+  // Cluster 3 — parallel WGSL fabric API. `wgslShaderSource` is the
+  // WGSL equivalent of `shaderSource`, populated by
+  // `createWGSLMethodDefinition` from `fabric.wgsl: { source, components }`.
+  // Stays empty when no WGSL declarations exist — consumers detect that
+  // and report a clear error rather than guessing at translation.
+  result.wgslShaderSource = "";
   result.materials = {};
   result.uniforms = {};
   result._uniforms = {};
@@ -715,6 +900,7 @@ function initializeMaterial(options, result, MaterialConstructor) {
   checkForTemplateErrors(result);
 
   createMethodDefinition(result);
+  createWGSLMethodDefinition(result);
   createUniforms(result);
 
   // After createUniforms populates result.uniforms with default values,

@@ -89,6 +89,32 @@ struct CameraUniforms {
   // consumers should gate motion-vector output on a separate "valid
   // history" flag, not on matrix contents.
   previousViewProjection: mat4x4<f32>,
+  // ─── Session 65 Batch 9: Nishita-style ground atmosphere (Cluster 2b/5) ───
+  // Atmosphere parameters mirroring WebGL's `u_atmosphere*` automatic
+  // uniforms (defaults from `Atmosphere.js`):
+  //   xyz = light direction in WORLD coords (sun or scene light)
+  //   w   = atmosphereLightIntensity (default 10.0)
+  // The CPU packer writes either `czm_sunDirectionWC` (when
+  // `DYNAMIC_ATMOSPHERE_LIGHTING_FROM_SUN`) or `czm_lightDirectionWC`
+  // (matches the WebGL `atmosphereLightDirection` choice in GlobeVS.glsl).
+  atmosphereLightDirectionAndIntensity: vec4<f32>,
+  // xyz = Rayleigh scattering coefficients (m^-1 per channel)
+  // w   = Rayleigh scale height (meters, default 8500)
+  atmosphereRayleighCoefficientAndScale: vec4<f32>,
+  // xyz = Mie scattering coefficients (m^-1 per channel — usually grey)
+  // w   = Mie scale height (meters, default 1200)
+  atmosphereMieCoefficientAndScale: vec4<f32>,
+  // x = Mie phase anisotropy (Henyey-Greenstein g, default 0.758)
+  // y = Atmosphere inner radius (meters — typically planet's max
+  //     ellipsoid radius)
+  // z = Atmosphere outer radius (inner + ATMOSPHERE_THICKNESS where
+  //     ATMOSPHERE_THICKNESS = 111e3 m). Packed here so the WGSL doesn't
+  //     repeat the constant; CPU keeps the contract single-sourced.
+  // w = 1.0 when ground atmosphere shading is enabled, 0.0 otherwise.
+  //     The fog/atmosphere branches in the FS gate on this so disabling
+  //     atmosphere from JS (`scene.fog.enabled = false`, etc.) doesn't
+  //     leak into the per-vertex ray-march cost.
+  atmosphereParams: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -180,6 +206,20 @@ struct TileUniforms {
   //   z = brightnessShift (-1..+1, clamped)
   //   w = padding
   hsbShift: vec4<f32>,
+  // Session 65 (2026-05-11) — GroundAtmosphere drape control. WebGL has
+  // TWO delivery paths for the atmospheric color over the planet disk:
+  // the FOG branch (close to ground) and the `#else` `lightingFade`
+  // branch (far from ground). Our WGSL shader previously only wired the
+  // FOG branch, so at orbital altitudes (cam > 800 km, fog disabled) the
+  // drape was missing entirely — only the SkyAtmosphere shell at the
+  // limb was visible. This slot enables the far-from-ground drape:
+  //   x = enable flag (1.0 if showGroundAtmosphere AND fade > 0)
+  //   y = fade scalar (pre-computed CPU-side; same formula as
+  //       GlobeFS.glsl line 391 — drives the final mix factor between
+  //       imagery and atmosphere color)
+  //   z = atmosphereLightIntensity
+  //   w = reserved
+  groundAtmosphereControl: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -323,6 +363,31 @@ struct CSMParams {
 // gate skips sampling in that case.
 @group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
+// ─── Group 2 extension: Globe material slots (Session 65 Cluster 3) ───
+// Material UBO + textures live at bindings 4-8 of Group 2 (alongside
+// the water-mask + ocean-normal bindings 0-3). This keeps the total
+// bind-group count at the WebGPU spec floor of 4, which matters because
+// some implementations (e.g., Edge's adapter) report `maxBindGroups: 4`
+// exactly. Layout matches the JS-side `_bindGroupLayout2` declaration.
+//
+// When MATERIAL_APPLY is NOT set, the JS side still binds placeholder
+// resources to these slots so the pipeline layout doesn't drift between
+// material and non-material pipelines. The WGSL declarations are
+// emitted unconditionally — only the FS *uses* them when MATERIAL_APPLY
+// is set via `//>>ifdef MATERIAL_APPLY` at the call site.
+//
+// The material's `MaterialUniforms` struct definition + `materialUniforms`
+// var<uniform> binding are emitted by the JS-side prelude builder
+// (`buildMaterialPrelude` in `WebGPUGlobeMaterial.ts`) so the per-material
+// uniform shape can vary. The texture/sampler declarations are constant
+// across materials (the in-tree set never exceeds two textures).
+//>>ifdef MATERIAL_APPLY
+@group(2) @binding(5) var image: texture_2d<f32>;
+@group(2) @binding(6) var imageSampler: sampler;
+@group(2) @binding(7) var heights: texture_2d<f32>;
+@group(2) @binding(8) var heightsSampler: sampler;
+//>>endif
+
 // ─── Vertex Input / Output ───
 // DP-H25 — the `@location(2) geodeticSurfaceNormal` slot is conditionally
 // declared in all three input structs via the `GEODETIC_NORMAL` preprocessor
@@ -374,6 +439,28 @@ struct VertexOutput {
   // positionHigh + positionLow at Earth scale. Zero in non-SCENE3D modes
   // (the CSM branch is gated on SCENE3D in WebGPUContext).
   @location(5) v_positionRTE: vec3<f32>,
+  // ─── Session 65 Batch 9: per-vertex ground-atmosphere scattering ───
+  // Output of the vertex-stage Nishita ray-march. The fragment shader
+  // applies the Rayleigh and Mie phase functions per-fragment (the Mie
+  // phase varies sharply with view angle so it must be evaluated per
+  // pixel) and modulates by the global light intensity. When the
+  // atmosphere is disabled (`atmosphereParams.w < 0.5`), the vertex
+  // shader skips the ray-march entirely and these stay zero — the
+  // fragment shader gates on the same flag.
+  @location(6) v_atmosphereRayleighColor: vec3<f32>,
+  @location(7) v_atmosphereMieColor: vec3<f32>,
+  @location(8) v_atmosphereOpacity: f32,
+  // ─── Cluster 3 — per-vertex slope/height/aspect for globe materials ───
+  // Mirrors the WebGL GlobeVS outputs `v_slope` / `v_aspect` / `v_height`
+  // gated by `#ifdef APPLY_MATERIAL`. Always emitted by the WGSL VS
+  // because we don't currently dead-strip on the WGSL preprocessor for
+  // these — the cost is 3 floats per vertex and avoids needing a
+  // separate vertex shader variant per material. Consumers:
+  // ElevationRamp (.height), SlopeRamp (.slope), AspectRamp (.aspect),
+  // ElevationContour (.height), ElevationBand (.height).
+  @location(9) v_slope: f32,
+  @location(10) v_aspect: f32,
+  @location(11) v_height: f32,
 };
 
 // ─── Constants ───
@@ -523,6 +610,324 @@ fn computePlanarPosition(height: f32, textureCoordinates: vec2<f32>) -> vec3<f32
 // computation instead of producing zero-height planar positions.
 const HEIGHT_SENTINEL_UNAVAILABLE: f32 = -999999.0;
 
+// ═══════════════════════════════════════════════════════════════════════
+// czm_Material fabric API surface — Cluster 3 (parallel WGSL fabric)
+//
+// These types + helpers mirror the GLSL `czm_material`, `czm_materialInput`,
+// `czm_getDefaultMaterial`, `czm_gammaCorrect` API surface. The fabric
+// assembler in `MaterialHelpers.js::createWGSLMethodDefinition` produces
+// a `czm_getMaterial(materialInput) -> czm_Material` function which the
+// Globe pipeline cache appends to the WGSL source per-material at
+// pipeline-creation time.
+//
+// The Globe FS calls `czm_getMaterial(materialInput)` after the imagery
+// composite when `MATERIAL_APPLY` is set (the pipeline cache toggles
+// this via the WGSL preprocessor on `//>>ifdef MATERIAL_APPLY`).
+//
+// czm_MaterialInput: per-fragment scalar inputs the material samples
+//   from. Mirrors `czm_materialInput` from GlobeFS — `st`, `normalEC`,
+//   `positionToEyeEC`, `tangentToEyeMatrix`, `slope`, `height`, `aspect`,
+//   `waterMask`.
+//
+// czm_Material: per-fragment color outputs the material returns to the
+//   compositor. Mirrors `czm_material`.
+// ═══════════════════════════════════════════════════════════════════════
+
+struct czm_MaterialInput {
+  st: vec2<f32>,
+  normalEC: vec3<f32>,
+  positionToEyeEC: vec3<f32>,
+  tangentToEyeMatrix: mat3x3<f32>,
+  slope: f32,
+  height: f32,
+  aspect: f32,
+  waterMask: f32,
+};
+
+struct czm_Material {
+  diffuse: vec3<f32>,
+  specular: f32,
+  shininess: f32,
+  normal: vec3<f32>,
+  emission: vec3<f32>,
+  alpha: f32,
+};
+
+fn czm_getDefaultMaterial(input: czm_MaterialInput) -> czm_Material {
+  var m: czm_Material;
+  m.diffuse = vec3<f32>(0.0, 0.0, 0.0);
+  m.specular = 0.0;
+  m.shininess = 1.0;
+  m.normal = input.normalEC;
+  m.emission = vec3<f32>(0.0, 0.0, 0.0);
+  m.alpha = 1.0;
+  return m;
+}
+
+// Vector form for gamma-correct on a single vec3 (matches the GLSL
+// `czm_gammaCorrect` overload most material expressions use).
+fn czm_gammaCorrect(color: vec3<f32>) -> vec3<f32> {
+  // Default gamma = 2.2 (display sRGB-like decode is the inverse). The
+  // WGSL build doesn't currently honor the runtime `scene.gamma` setter,
+  // matching the WebGL path which uses the same constant via
+  // `czm_inverseGamma`'s `pow(c, 1/2.2)`.
+  return pow(max(color, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+// vec4 overload preserves alpha unchanged. Some material `source` blocks
+// call gammaCorrect on a vec4 (like the GLSL ElevationContour does);
+// matching that here keeps the WGSL ports byte-clean.
+fn czm_gammaCorrect4(color: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(czm_gammaCorrect(color.rgb), color.a);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Nishita-style ground atmosphere ray-march
+// (Session 65 Batch 9 — Cluster 2b/5 fog/atmosphere parity)
+//
+// Direct port of `computeScattering` from `Source/Shaders/AtmosphereCommon.glsl`
+// + `computeAtmosphereScattering` from `Source/Shaders/GroundAtmosphere.glsl`.
+// Runs in the vertex shader per the WebGL pattern: per-vertex accumulation
+// outputs interpolate cleanly when combined with per-fragment Rayleigh/Mie
+// phase functions in the fragment shader (interpolating *after* phase would
+// be wrong because the Mie phase is sharply forward-peaked).
+//
+// The previous WGSL fragment-side `computeAtmosphereColor` used fixed
+// (0.18, 0.38, 0.72) skyBlue scaled by 0.3 — qualitatively wrong magnitude
+// AND missing the view-direction-dependent thickness integral. That made
+// the fog color collapse to ~(0.04, 0.07, 0.10) at all view angles, which
+// in turn dragged imagery toward the same dark blue at low altitudes
+// (the Cluster 2b "dark-blue close-zoom" symptom).
+//
+// Constants match `Source/Shaders/AtmosphereCommon.glsl`:
+//   PRIMARY_STEPS_MAX = 16   ← number of primary-ray sample positions
+//   LIGHT_STEPS_MAX   =  4   ← number of light-ray sample positions per primary
+//   ATMOSPHERE_THICKNESS = 111e3 (matches GLSL — kept in CPU side packing)
+// ═══════════════════════════════════════════════════════════════════════
+
+const ATMOSPHERE_PRIMARY_STEPS_MAX: i32 = 16;
+const ATMOSPHERE_LIGHT_STEPS_MAX: i32 = 4;
+
+struct AtmosphereScattering {
+  rayleigh: vec3<f32>,
+  mie: vec3<f32>,
+  opacity: f32,
+};
+
+// Tangent approximation matching czm_approximateTanh — quintic polynomial
+// good for the |x| <= 2 range we use it in (`x` is a normalized ratio).
+fn approximateTanh(x: f32) -> f32 {
+  let x2 = x * x;
+  return clamp(
+    x * (27.0 + x2) / (27.0 + 9.0 * x2),
+    -1.0,
+    1.0,
+  );
+}
+
+// Ray-sphere intersection at sphere centered on origin, radius r.
+// Returns vec2(tStart, tStop) — tStart < tStop when intersecting,
+// vec2(0, 0) when missing (the GLSL `czm_emptyRaySegment` sentinel).
+// Callers check that `stop > start` to detect intersection.
+fn raySphereIntersectionInterval(
+  origin: vec3<f32>,
+  dir: vec3<f32>,
+  radius: f32,
+) -> vec2<f32> {
+  let b = 2.0 * dot(dir, origin);
+  let c = dot(origin, origin) - radius * radius;
+  let disc = b * b - 4.0 * c;
+  if (disc < 0.0) {
+    return vec2<f32>(0.0, 0.0);
+  }
+  let sqrtDisc = sqrt(disc);
+  return vec2<f32>((-b - sqrtDisc) * 0.5, (-b + sqrtDisc) * 0.5);
+}
+
+// Per-vertex Rayleigh/Mie/opacity accumulation. Mirrors
+// `Source/Shaders/AtmosphereCommon.glsl::computeScattering` — same
+// PRIMARY/LIGHT step counts, same soft sky/horizon split, same
+// optical-depth weighting and attenuation. Returns the *unmodulated*
+// per-color scattering — the fragment shader's `computeAtmosphereColor`
+// multiplies by the Rayleigh/Mie PHASE functions (per-fragment, view-
+// direction-dependent) and the global light intensity.
+fn computeScatteringGround(
+  rayOrigin: vec3<f32>,
+  rayDir: vec3<f32>,
+  rayLength: f32,
+  lightDirection: vec3<f32>,
+  atmosphereInnerRadius: f32,
+) -> AtmosphereScattering {
+  var out: AtmosphereScattering;
+  out.rayleigh = vec3<f32>(0.0);
+  out.mie = vec3<f32>(0.0);
+  out.opacity = 0.0;
+
+  // Outer shell = inner + thickness (kept in atmosphereParams.z so CPU
+  // controls the constant; WebGL's value is 111 km).
+  let atmosphereOuterRadius = camera.atmosphereParams.z;
+
+  // Primary ray's intersection with the outer atmosphere shell.
+  var primaryIntersect = raySphereIntersectionInterval(
+    rayOrigin, rayDir, atmosphereOuterRadius,
+  );
+  if (primaryIntersect.y <= primaryIntersect.x) {
+    // No atmosphere intersection — return zero scattering.
+    return out;
+  }
+
+  // Soft horizon-vs-sky weight. Matches GLSL: `1e-7 * stop / rayLength`
+  // → tanh blend. Close to 0 = near horizon (long path), close to 1 =
+  // near zenith (short path).
+  let xHoriz = 1e-7 * primaryIntersect.y / max(rayLength, 1.0);
+  let wStopGtLprl = 0.5 * (1.0 + approximateTanh(xHoriz));
+
+  let start0 = primaryIntersect.x;
+  primaryIntersect.x = max(primaryIntersect.x, 0.0);
+  primaryIntersect.y = min(primaryIntersect.y, rayLength);
+
+  // Inside-atmosphere weight: 1 when camera is inside the shell, 0 when
+  // outside. Drives step-count reduction (cheaper march when inside)
+  // and ramped step length.
+  let xOA = start0 - 111000.0;  // ATMOSPHERE_THICKNESS
+  let wInsideAtm = 1.0 - 0.5 * (1.0 + approximateTanh(xOA));
+  let primarySteps = ATMOSPHERE_PRIMARY_STEPS_MAX - i32(wInsideAtm * 12.0);
+  let lightSteps = ATMOSPHERE_LIGHT_STEPS_MAX - i32(wInsideAtm * 2.0);
+
+  var rayPositionLength = primaryIntersect.x;
+  let totalRayLength = primaryIntersect.y - rayPositionLength;
+  let denom = max(7.0 * wInsideAtm, f32(primarySteps));
+  var rayStepLength = max(1.0 - wInsideAtm, wStopGtLprl) * totalRayLength / denom;
+  // Step length grows over the march when inside-atmosphere — compensates
+  // for the reduced step count at low altitudes.
+  let triangleSum = f32(primarySteps * (primarySteps + 1)) * 0.5;
+  let rayStepLengthIncrease = wInsideAtm *
+    ((1.0 - wStopGtLprl) * totalRayLength / max(triangleSum, 1.0));
+
+  var rayleighAccum = vec3<f32>(0.0);
+  var mieAccum = vec3<f32>(0.0);
+  var opticalDepth = vec2<f32>(0.0);
+  let rayleighScaleHeight = camera.atmosphereRayleighCoefficientAndScale.w;
+  let mieScaleHeight = camera.atmosphereMieCoefficientAndScale.w;
+  let rayleighCoeff = camera.atmosphereRayleighCoefficientAndScale.rgb;
+  let mieCoeff = camera.atmosphereMieCoefficientAndScale.rgb;
+
+  for (var i: i32 = 0; i < ATMOSPHERE_PRIMARY_STEPS_MAX; i = i + 1) {
+    if (i >= primarySteps) { break; }
+
+    // Sample position along primary ray (note: GLSL increments
+    // `rayPositionLength` AFTER computing samplePosition with +rayStepLength,
+    // matching that subtle offset by sampling at the segment's *end*).
+    let samplePosition = rayOrigin + rayDir * (rayPositionLength + rayStepLength);
+    let sampleHeight = max(0.0, length(samplePosition) - atmosphereInnerRadius);
+
+    // Density accumulation × step length (Rayleigh.x, Mie.y).
+    let sampleDensity = vec2<f32>(
+      exp(-sampleHeight / rayleighScaleHeight) * rayStepLength,
+      exp(-sampleHeight / mieScaleHeight) * rayStepLength,
+    );
+    opticalDepth = opticalDepth + sampleDensity;
+
+    // Light ray from samplePosition to its intersection with the outer
+    // shell. We use the segment length to size each LIGHT_STEPS sub-step.
+    let lightIntersect = raySphereIntersectionInterval(
+      samplePosition, lightDirection, atmosphereOuterRadius,
+    );
+    let lightStepLength = lightIntersect.y / max(f32(lightSteps), 1.0);
+    var lightOpticalDepth = vec2<f32>(0.0);
+    var lightPositionLength: f32 = 0.0;
+    for (var j: i32 = 0; j < ATMOSPHERE_LIGHT_STEPS_MAX; j = j + 1) {
+      if (j >= lightSteps) { break; }
+      let lightPos = samplePosition + lightDirection *
+        (lightPositionLength + lightStepLength * 0.5);
+      let lightH = max(0.0, length(lightPos) - atmosphereInnerRadius);
+      lightOpticalDepth = lightOpticalDepth + vec2<f32>(
+        exp(-lightH / rayleighScaleHeight) * lightStepLength,
+        exp(-lightH / mieScaleHeight) * lightStepLength,
+      );
+      lightPositionLength = lightPositionLength + lightStepLength;
+    }
+
+    // Attenuation along both rays — Beer-Lambert with combined optical
+    // depth (Rayleigh + Mie). Each channel attenuates independently.
+    let attenuation = exp(
+      -((mieCoeff * (opticalDepth.y + lightOpticalDepth.y)) +
+        (rayleighCoeff * (opticalDepth.x + lightOpticalDepth.x))),
+    );
+
+    rayleighAccum = rayleighAccum + sampleDensity.x * attenuation;
+    mieAccum = mieAccum + sampleDensity.y * attenuation;
+
+    rayStepLength = rayStepLength + rayStepLengthIncrease;
+    rayPositionLength = rayPositionLength + rayStepLength;
+  }
+
+  out.rayleigh = rayleighCoeff * rayleighAccum;
+  out.mie = mieCoeff * mieAccum;
+  // Transmittance: how much light passes through the atmosphere on the
+  // primary ray. WebGL: `length(exp(-(Mie*tau_m + Rayleigh*tau_r)))`.
+  out.opacity = length(
+    exp(-((mieCoeff * opticalDepth.y) + (rayleighCoeff * opticalDepth.x))),
+  );
+  return out;
+}
+
+// Wraps `computeScatteringGround` for the ground-shading case. Mirrors
+// `Source/Shaders/GroundAtmosphere.glsl::computeAtmosphereScattering`:
+// `atmosphereInnerRadius` = length(positionWC). The light direction
+// optionally falls back to `normalize(positionWC)` when dynamic-lighting
+// is disabled (matches the WebGL `czm_branchFreeTernary` choice).
+fn computeAtmosphereScatteringGround(
+  positionWC: vec3<f32>,
+  lightDirection: vec3<f32>,
+) -> AtmosphereScattering {
+  let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+  let cameraToPosition = positionWC - cameraWC;
+  let rayLength = length(cameraToPosition);
+  let rayDir = select(
+    vec3<f32>(0.0, 0.0, 1.0),
+    cameraToPosition / max(rayLength, 1e-6),
+    rayLength > 1e-6,
+  );
+  let innerRadius = length(positionWC);
+  return computeScatteringGround(
+    cameraWC,
+    rayDir,
+    rayLength,
+    lightDirection,
+    innerRadius,
+  );
+}
+
+// Per-fragment phase-function combination of the per-vertex Rayleigh + Mie
+// values. Mirrors `Source/Shaders/AtmosphereCommon.glsl::computeAtmosphereColor`:
+// applies the Rayleigh phase (cos²θ) and the Mie phase (Henyey-Greenstein)
+// then scales by the global light intensity. Returns linear HDR — the
+// caller is responsible for tonemap + gamma encoding before mix.
+fn computeGroundAtmosphereColor(
+  cameraToPositionDir: vec3<f32>,
+  lightDirection: vec3<f32>,
+  rayleighColor: vec3<f32>,
+  mieColor: vec3<f32>,
+) -> vec3<f32> {
+  let cosAngle = dot(cameraToPositionDir, lightDirection);
+  let cosAngleSq = cosAngle * cosAngle;
+
+  // Phase normalization constants match the GLSL builtins
+  // (3 / (16π) for Rayleigh, 3 / (8π) for the Mie HG variant).
+  let rayleighPhase = 3.0 / (50.2654824574) * (1.0 + cosAngleSq);
+
+  let G = camera.atmosphereParams.x;  // Mie anisotropy
+  let GSq = G * G;
+  let denom = pow(max(1.0 + GSq - 2.0 * cosAngle * G, 1e-6), 1.5) * (2.0 + GSq);
+  let miePhase = 3.0 / (25.1327412287) *
+    ((1.0 - GSq) * (cosAngleSq + 1.0)) / denom;
+
+  let rayleigh = rayleighPhase * rayleighColor;
+  let mie = miePhase * mieColor;
+  return (rayleigh + mie) * camera.atmosphereLightDirectionAndIntensity.w;
+}
+
 fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
                  encodedNormal: f32, webMercatorT: f32,
                  precomputedHeight: f32,
@@ -644,6 +1049,30 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   out.v_textureCoordinates = vec3<f32>(textureCoordinates, webMercatorT);
   out.v_positionMC = position3DWC;
 
+  // ─── Session 65 Batch 9: per-vertex ground atmosphere ray-march ───
+  // Gated on `camera.atmosphereParams.w > 0.5` (set CPU-side when fog
+  // OR ground atmosphere is enabled). Inside SCENE3D only — 2D /
+  // Columbus / Morph use planar positions so the WC math doesn't apply.
+  // When skipped, the v_atmosphere* outputs stay at zero so the FS
+  // additive contribution evaluates to a no-op.
+  out.v_atmosphereRayleighColor = vec3<f32>(0.0);
+  out.v_atmosphereMieColor = vec3<f32>(0.0);
+  out.v_atmosphereOpacity = 0.0;
+  if (camera.atmosphereParams.w > 0.5 && mode > 2.5) {
+    // WebGL chooses between the configured atmosphere light (sun by
+    // default — `DYNAMIC_ATMOSPHERE_LIGHTING_FROM_SUN`) and the
+    // sceneLight direction. The CPU packer makes that choice and feeds
+    // a single `atmosphereLightDirectionAndIntensity.xyz` per frame.
+    // When dynamic lighting is off, GLSL substitutes
+    // `normalize(positionWC)` — but we always pass the resolved light
+    // direction from JS so the shader stays branch-free.
+    let lightDir = camera.atmosphereLightDirectionAndIntensity.xyz;
+    let scattering = computeAtmosphereScatteringGround(position3DWC, lightDir);
+    out.v_atmosphereRayleighColor = scattering.rayleigh;
+    out.v_atmosphereMieColor = scattering.mie;
+    out.v_atmosphereOpacity = scattering.opacity;
+  }
+
   let normalMC = octDecode(encodedNormal);
   let nm = camera.modifiedModelView;
   out.v_normalEC = normalize(vec3<f32>(
@@ -651,6 +1080,34 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     nm[0][1] * normalMC.x + nm[1][1] * normalMC.y + nm[2][1] * normalMC.z,
     nm[0][2] * normalMC.x + nm[1][2] * normalMC.y + nm[2][2] * normalMC.z
   ));
+
+  // ─── Cluster 3 — per-vertex slope/aspect/height for globe materials ───
+  // Mirrors the WebGL GlobeVS `#ifdef APPLY_MATERIAL` block (lines
+  // 272-285). Slope is the angle between the surface normal and the
+  // ellipsoid normal; aspect is the heading of the surface normal
+  // projected onto the local east/up plane; height is the terrain
+  // elevation in meters above the ellipsoid surface. Materials like
+  // ElevationRamp / SlopeRamp / AspectRamp / ElevationContour /
+  // ElevationBand sample these via `materialInput.height` etc.
+  let ellipsoidNormal = normalize(position3DWC);
+  let northPoleZ = select(
+    EARTH_RADIUS_FALLBACK,
+    camera.ellipsoidRadius,
+    camera.ellipsoidRadius > 1.0,
+  );
+  let northPolePositionMC = vec3<f32>(0.0, 0.0, northPoleZ);
+  let vectorEastMC = normalize(cross(northPolePositionMC - position3DWC, ellipsoidNormal));
+  let dotProd = abs(dot(ellipsoidNormal, normalMC));
+  out.v_slope = acos(clamp(dotProd, -1.0, 1.0));
+  let normalRejected = ellipsoidNormal * dotProd;
+  let normalProjected = normalMC - normalRejected;
+  let aspectVector = normalize(normalProjected);
+  var aspectAng = acos(clamp(dot(aspectVector, vectorEastMC), -1.0, 1.0));
+  let determ = dot(cross(vectorEastMC, aspectVector), ellipsoidNormal);
+  let TWO_PI: f32 = 6.283185307179586;
+  aspectAng = select(aspectAng, TWO_PI - aspectAng, determ < 0.0);
+  out.v_aspect = aspectAng;
+  out.v_height = resolvedHeight;
 
   // ── Far-plane clip-space Z clamp (CRITICAL for orbit altitude) ──
   // At planetary scale, FP32 rounding in `mvpRelativeToEye * rtePosition`
@@ -920,11 +1377,24 @@ struct LayerComposite {
   adjustedColor: vec3<f32>,  // post-effects, used for night-lights emission
 };
 
+// `boundsUV` is the GEOGRAPHIC tile-UV (always (u_geo, v_geo), independent
+// of the layer's `useWebMercatorT` flag). Used for the per-layer
+// `texCoordsRect` and `cutoutRectangle` bounds checks, both of which the
+// CPU packer writes in geographic tile-UV space (see
+// `createTileImagerySkeletons` in `ImageryLayerHelpers.js`, and the
+// cutout packer in `WebGPUGlobeSurfaceTileUB.ts` which divides by
+// `tile.rectangle.height` — a geographic latitude span). The legacy
+// version of this function passed only the Mercator-projected `uv` for
+// both sampling AND bounds, which silently zeroed `effectiveAlpha` on
+// every tile whose `texCoordsRect.y > 0` (= Mercator imagery covers a
+// sub-rect of a non-Mercator terrain tile), producing the wide-spread
+// "dark blue at close zoom" symptom. Session 65 Batch 8 (2026-05-12) —
+// Cluster 2 from the cross-backend sweep.
 fn applyImageryLayer(
   prevColor: vec3<f32>,
   prevAlpha: f32,
   texSample: vec4<f32>,
-  tileUV: vec2<f32>,
+  boundsUV: vec2<f32>,
   layer: ImageryLayer,
   layerMask: f32,
   fragX: f32,
@@ -949,7 +1419,7 @@ fn applyImageryLayer(
   let splitMask = applySplitMask(layer.split, fragX, splitPositionPx);
 
   // 4. cutout — drop the layer inside its cutoutRectangle.
-  let cutoutMask = applyCutoutMask(tileUV, layer.cutoutRectangle);
+  let cutoutMask = applyCutoutMask(boundsUV, layer.cutoutRectangle);
 
   // 5. brightness → contrast → hue → saturation. Matches WebGL ordering in
   // GlobeFS.glsl `sampleAndBlend` (which applies the four shifts in that
@@ -967,7 +1437,7 @@ fn applyImageryLayer(
 
   // Compose final alpha contribution: layer alpha × tex alpha × tile-coord
   // mask × day/night mix × isolate mask × split mask × cutout mask.
-  let texCoordsMask = texCoordsAlpha(tileUV, layer.texCoordsRect);
+  let texCoordsMask = texCoordsAlpha(boundsUV, layer.texCoordsRect);
   let dayNightAlphaValue = mix(dayNightAlpha.y, dayNightAlpha.x, dayFade);
   let effectiveAlpha = layerMask
                        * layer.alpha
@@ -1232,10 +1702,31 @@ fn sampleAtmosphereFogLut(
   // Orbital-falloff — atmosphere fog shouldn't apply when the camera
   // is way above the atmosphere (the sky shell handles that). Mirrors
   // the logic in SkyAtmosphere::sampleScatteringLut.
+  // Orbit falloff: same fix as SkyAtmosphere::sampleScatteringLut — use
+  // innerRadius instead of thickness as the scale-height so the ground
+  // fog stays perceptible up to ~3 planet radii. Previous thickness-
+  // scaled exp(-x/160km) collapsed to zero by LEO. Camera inside the
+  // shell (cameraAltitude < thickness) gets falloff = 1, unchanged.
   let excessAltitude = max(0.0, cameraAltitude - thickness);
-  let orbitFalloff = exp(-excessAltitude / thickness);
+  let orbitScaleHeight = max(thickness, effects.atmosphereLutControl.y);
+  let orbitFalloff = exp(-excessAltitude / orbitScaleHeight);
 
-  return vec4<f32>(iSample.rgb * orbitFalloff, transmittance);
+  // Intensity scaling (Session 65, 2026-05-11): the inscatter LUT is
+  // baked intensity-free — `SkyAtmosphere::sampleScatteringLut` multiplies
+  // by `u.intensity` at fragment time. Globe fog wants the same texel
+  // scaled by `Globe.atmosphereLightIntensity` (CPU side packs it into
+  // `tile.groundAtmosphereControl.z`, default 10.0).
+  //
+  // Previous code used a hardcoded `GROUND_INTENSITY_RESCALE = 0.2`
+  // tuned for the default-config case (sky=50, globe=10, ratio=0.2).
+  // That broke `Atmosphere.html`, which sets `globe.atmosphereLightIntensity
+  // = 20`: the rescale stayed 0.2 (assumed globe=10), the ground fog ended
+  // up half as bright as expected, and the post-tonemap mix saturated the
+  // imagery to a uniform tan. Scaling by `groundAtmosphereControl.z`
+  // directly closes the parity gap and is also the correct math for any
+  // user-customized intensity.
+  let groundIntensity = max(0.0, tile.groundAtmosphereControl.z);
+  return vec4<f32>(iSample.rgb * orbitFalloff * groundIntensity, transmittance);
 }
 
 // Enhanced atmosphere color with Rayleigh phase and Mie forward scattering
@@ -1260,6 +1751,28 @@ fn computeAtmosphereColor(
   let sunGlow = vec3<f32>(0.95, 0.65, 0.30) * miePhase * 0.05;
 
   return skyBlue * 0.3 + sunGlow;
+}
+
+// Khronos PBR Neutral tonemap — port of WebGL czm_pbrNeutralTonemapping
+// (packages/engine/Source/Shaders/Builtin/Functions/pbrNeutralTonemapping.glsl).
+// Identity for inputs ≤ 0.76; gentle peak compression with saturation
+// preservation above. Used by the FOG branch below to bring linear-HDR
+// atmosphere color into SDR display space before mixing with sRGB
+// imagery, matching WebGL GlobeFS.glsl's `czm_pbrNeutralTonemapping ->
+// czm_inverseGamma` pair under `#ifndef HDR`.
+fn pbrNeutralTonemapAtmosphere(color: vec3<f32>) -> vec3<f32> {
+  let startCompression = 0.8 - 0.04;
+  let desaturation = 0.15;
+  let x = min(color.r, min(color.g, color.b));
+  let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+  var c = color - vec3<f32>(offset);
+  let peak = max(c.r, max(c.g, c.b));
+  if (peak < startCompression) { return c; }
+  let d = 1.0 - startCompression;
+  let newPeak = 1.0 - d * d / (peak + d - startCompression);
+  c = c * (newPeak / peak);
+  let g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return mix(c, vec3<f32>(newPeak), vec3<f32>(g));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1689,7 +2202,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture0, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[0].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 0);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1699,7 +2212,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture1, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[0].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 1);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1709,7 +2222,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture2, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[1].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 2);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1719,7 +2232,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture3, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[1].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 3);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1729,7 +2242,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture4, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[2].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 4);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1739,7 +2252,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture5, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[2].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 5);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1749,7 +2262,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture6, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[3].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 6);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1759,7 +2272,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture7, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[3].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 7);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1769,7 +2282,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture8, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[4].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 8);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1779,7 +2292,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture9, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[4].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 9);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1789,7 +2302,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture10, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[5].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 10);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1799,7 +2312,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture11, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[5].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 11);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1809,7 +2322,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture12, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[6].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 12);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1819,7 +2332,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture13, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[6].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 13);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1829,7 +2342,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture14, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[7].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 14);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1839,7 +2352,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex = sampleImagery(dayTexture15, texSampler, uv, layer);
     let dna = tile.dayNightAlpha[7].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 15);
-    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -1848,6 +2361,42 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (isSubsequentPass) {
     return vec4<f32>(color, alpha);
   }
+
+  // ─── Cluster 3 — globe material composite ───
+  // Builds a `czm_MaterialInput` from per-fragment values and calls
+  // `czm_getMaterial`, which is either the per-material function appended
+  // to the source by the pipeline cache (when a globe.material is bound)
+  // or the default-material stub (when none is bound, returns
+  // diffuse=0, alpha=0 — a no-op alpha blend).
+  //
+  // The `MATERIAL_APPLY` define is set CPU-side when `globe.material` is
+  // non-null. When unset, the call site below is preprocessed out and
+  // the material composite is skipped entirely (zero cost when no
+  // material is bound).
+  //>>ifdef MATERIAL_APPLY
+  var matInput: czm_MaterialInput;
+  matInput.st = geoUV;
+  matInput.normalEC = normalize(input.v_normalEC);
+  matInput.positionToEyeEC = -input.v_positionEC;
+  // tangentToEyeMatrix: east-north-up frame at the fragment, transformed
+  // to eye space. WebGL builds it via `czm_eastNorthUpToEyeCoordinates`;
+  // we identity-substitute here because none of the in-tree globe
+  // materials consume it (BumpMap/NormalMap target Primitive surfaces,
+  // not the globe). If a future globe material needs a true tangent
+  // frame, route the east/north/up basis through additional VS outputs.
+  matInput.tangentToEyeMatrix = mat3x3<f32>(
+    vec3<f32>(1.0, 0.0, 0.0),
+    vec3<f32>(0.0, 1.0, 0.0),
+    vec3<f32>(0.0, 0.0, 1.0),
+  );
+  matInput.slope = input.v_slope;
+  matInput.height = input.v_height;
+  matInput.aspect = input.v_aspect;
+  matInput.waterMask = 0.0;  // TODO wire from water-mask texture path
+  let m = czm_getMaterial(matInput);
+  color = mix(color, m.diffuse, m.alpha);
+  alpha = max(alpha, m.alpha);
+  //>>endif
 
   // ─── Enhanced Water mask + ocean rendering ───
   if (tile.flags.x > 0.5) {
@@ -1893,10 +2442,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Rayleigh/Mie approximation — both paths use the same `fogAmount`
   // mix factor so switching between them at runtime doesn't pop.
   let fogDensity = tile.fogDensity;
-  if (fogDensity > 0.0) {
-    let fogAmount = computeFog(input.v_distance, fogDensity, tile.fogVisualDensityScalar);
-
+  let groundAtmosphereEnabled = tile.groundAtmosphereControl.x > 0.5;
+  if (fogDensity > 0.0 || groundAtmosphereEnabled) {
+    // Atmosphere color comes from the shared LUT (Rayleigh + Mie pre-
+    // integrated for the current sun direction) or the cheap analytic
+    // fallback when the compute LUT hasn't been dispatched yet. Same
+    // sampling logic for both delivery paths so switching between fog
+    // and far-from-ground drape at the 800-km fog threshold is seamless.
     var atmosphereColor: vec3<f32>;
+    var atmosphereOpacity: f32 = 0.0;
     if (effects.atmosphereLutControl.x > 0.5) {
       // Reconstruct camera world position from the RTE-encoded camera.
       // Single-precision subtract is fine here — we're feeding it into
@@ -1911,6 +2465,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       let lutLuminance = max(lut.r, max(lut.g, lut.b));
       if (lutLuminance > 0.001) {
         atmosphereColor = lut.rgb;
+        atmosphereOpacity = clamp(1.0 - lut.a, 0.0, 1.0);
       } else {
         atmosphereColor = computeAtmosphereColor(
           input.v_positionEC, normal, sunDir,
@@ -1922,11 +2477,105 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       );
     }
 
-    // Night-side fog is darker — don't brighten with atmosphere on dark side
-    let nightFogDimming = mix(0.05, 1.0, dayFade);
-    let fogColor = max(atmosphereColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
-    color = mix(color, fogColor, fogAmount);
-    // Alpha intentionally untouched — terrain stays opaque through fog.
+    // ─── Session 65 Batch 9 (Cluster 2b/5): proper per-vertex
+    // Rayleigh+Mie scattering, applied with per-fragment phase functions
+    // and PBR Neutral tonemap + inverse gamma encode. Prefers per-vertex
+    // data over the dim analytic fallback / LUT — only falls through to
+    // the latter when the atmosphere wasn't enabled CPU-side.
+    var groundAtmoColor: vec3<f32>;
+    var groundAtmoOpacity: f32 = atmosphereOpacity;
+    if (camera.atmosphereParams.w > 0.5) {
+      // Per-fragment view direction (camera → fragment, world space).
+      let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+      let fragmentWorldPos = input.v_positionMC + cameraWC;
+      let viewDir = normalize(fragmentWorldPos - cameraWC);
+      let lightDir = camera.atmosphereLightDirectionAndIntensity.xyz;
+      groundAtmoColor = computeGroundAtmosphereColor(
+        viewDir,
+        lightDir,
+        input.v_atmosphereRayleighColor,
+        input.v_atmosphereMieColor,
+      );
+      groundAtmoOpacity = input.v_atmosphereOpacity;
+    } else {
+      groundAtmoColor = atmosphereColor;
+    }
+
+    if (fogDensity > 0.0) {
+      // FOG branch — close to the ground. Mirrors GlobeFS.glsl lines
+      // 519-533: `czm_fog(distance, color, fogColor, scalar)` mixes
+      // imagery toward atmosphere color by a distance-driven scalar.
+      let fogAmount = computeFog(input.v_distance, fogDensity, tile.fogVisualDensityScalar);
+      // Daytime atmosphere darken-by-view: when dynamic lighting is on
+      // the WebGL path mixes a viewer-direction × light-direction
+      // brightness factor (`u_minimumBrightness` floor). Matches GLSL
+      // lines 522-526. Defaults to 1.0 when lighting isn't dynamic.
+      var fogColor = groundAtmoColor;
+      let nightFogDimming = mix(0.05, 1.0, dayFade);
+      fogColor = max(fogColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
+      // HDR-aware tonemap + gamma encode. Mirrors WebGL GlobeFS.glsl
+      // `#ifndef HDR` — under HDR the inline tonemap is SKIPPED so the
+      // post-process chain can compress the linear-radiance HDR pixels.
+      // `tile.groundAtmosphereControl.w` carries the HDR flag.
+      if (tile.groundAtmosphereControl.w < 0.5) {
+        fogColor = pbrNeutralTonemapAtmosphere(fogColor);
+        fogColor = pow(max(fogColor, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+      }
+      color = mix(color, fogColor, fogAmount);
+      // Alpha intentionally untouched — terrain stays opaque through fog.
+    } else if (groundAtmosphereEnabled) {
+      // Far-from-ground drape — mirrors the WebGL `#else` branch of
+      // `#if defined(GROUND_ATMOSPHERE) || defined(FOG)` in GlobeFS.glsl
+      // (lines 535-563). FOG is undefined whenever the camera is above
+      // Fog.maxHeight (default 800 km), but GROUND_ATMOSPHERE may still
+      // be enabled. Without this branch the entire atmospheric drape is
+      // missing at orbital altitudes — only the SkyAtmosphere shell at
+      // the limb shows, which is the symptom Session 65 was chasing.
+      //
+      //   transmittance = 0.5 + clamp(1 - opacity, 0, 1)  — brightens
+      //     the rim where the view ray takes a longer path through the
+      //     atmosphere (limb glow). The LUT-sampled opacity is 0 when
+      //     compute isn't available, so transmittance defaults to 1.5.
+      //   finalAtmosphereColor = imagery + atmosphereColor × transmittance
+      //   finalAtmosphereColor = 1 - exp(-exposure × finalAtmosphereColor)
+      //     — per-channel Reinhard-ish tonemap, default exposure = 1.
+      //   color = mix(imagery, finalAtmosphereColor, fade)
+      //     — fade scalar is pre-computed CPU-side; ramps from 0 at the
+      //     fog threshold up to 1 at lightingFadeInDistance (~20 Mm).
+      let transmittanceModifier: f32 = 0.5;
+      // Use the per-vertex opacity from the Nishita march when atmosphere
+      // is enabled (Session 65 Batch 9). Falls through to the LUT-sampled
+      // opacity / 0 default when atmosphere is disabled.
+      let opacityForDrape = select(
+        atmosphereOpacity,
+        clamp(1.0 - groundAtmoOpacity, 0.0, 1.0),
+        camera.atmosphereParams.w > 0.5,
+      );
+      let transmittance = transmittanceModifier + opacityForDrape;
+      let finalAtmosphereColor = color + groundAtmoColor * transmittance;
+      // HDR-aware output. Mirrors WebGL GlobeFS.glsl `#ifndef HDR` —
+      // under HDR the inline exp tonemap is SKIPPED so the post-process
+      // chain can do the compression on linear-radiance HDR pixels.
+      // Without this gate, demos that enable HDR (`Atmosphere.html` sets
+      // `scene.highDynamicRange = true`) collapse to a uniform tan
+      // because the inline `1 - exp(-2 × x)` saturates every channel
+      // before the post-process tonemap gets a chance.
+      //
+      // `tile.groundAtmosphereControl.w` carries the HDR flag CPU-side
+      // (Scene mirrors `scene._hdr` onto `frameState.useHDR`). When
+      // off, exposure = 2.0 matches the WebGL Reinhard constant from
+      // GlobeFS.glsl line 302; when on, we hand the post-process the
+      // raw linear-HDR color and let it tonemap downstream.
+      var draped: vec3<f32>;
+      if (tile.groundAtmosphereControl.w > 0.5) {
+        draped = finalAtmosphereColor;
+      } else {
+        let exposure: f32 = 2.0;
+        draped = vec3<f32>(1.0) - exp(-exposure * finalAtmosphereColor);
+      }
+      let fadeAmount = tile.groundAtmosphereControl.y;
+      color = mix(color, draped, fadeAmount);
+    }
   }
 
   // DP-H24 — Globe hue / saturation / brightness shift. Matches the

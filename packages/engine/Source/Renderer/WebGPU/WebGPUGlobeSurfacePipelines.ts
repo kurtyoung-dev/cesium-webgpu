@@ -518,6 +518,7 @@ export function selectPipeline(
   const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
   const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}${ncSuffix}|${defines.toString(16)}`;
   let entry = host._pipelineCache.get(cacheKey);
+  let entryWasJustCreated = false;
   if (!entry) {
     const descriptor = buildPipelineDescriptor(
       host,
@@ -533,8 +534,41 @@ export function selectPipeline(
     );
     entry = { descriptor, pipeline: null, pending: false };
     host._pipelineCache.set(cacheKey, entry);
+    entryWasJustCreated = true;
   }
-  return resolveGlobePipelineEntry(host, entry);
+  const pipeline = resolveGlobePipelineEntry(host, entry);
+
+  // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 4) — warm-on-suspicion.
+  // When the OPAQUE variant is requested for the first time, kick off
+  // background creation of the BLEND counterpart so a future
+  // globe-translucency toggle finds a hot pipeline. Only fires on the
+  // first request per (stride, normals, mercator, ...) combo because
+  // the cache.warm() call is no-op once the entry is cached or
+  // pending. Skip the inverse direction (BLEND → OPAQUE warm) because
+  // OPAQUE is the default state and almost always already cached by
+  // the time a BLEND request fires.
+  if (
+    entryWasJustCreated &&
+    !isBlend &&
+    !disableCulling &&
+    host._centralPipelineCache
+  ) {
+    const blendDescriptor = buildPipelineDescriptor(
+      host,
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      true, // isBlend
+      strideBytes,
+      DebugFragmentMode.NONE,
+      useClipDistances,
+      hasGeodeticSurfaceNormals,
+      disableCulling,
+    );
+    host._centralPipelineCache.warm(blendDescriptor);
+  }
+
+  return pipeline;
 }
 
 /**

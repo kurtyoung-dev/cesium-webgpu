@@ -194,7 +194,7 @@ function computeNormalizedDistances(positions) {
  */
 function groupByMaterialType(collection) {
   const polylines = collection._polylines;
-  const length = collection._polylinesLength;
+  const length = collection._polylines.length;
   const groups = new Map();
 
   for (let i = 0; i < length; i++) {
@@ -364,7 +364,7 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
  */
 function buildPickSegmentData(collection, context) {
   const polylines = collection._polylines;
-  const length = collection._polylinesLength;
+  const length = collection._polylines.length;
 
   let totalSegments = 0;
   for (let i = 0; i < length; i++) {
@@ -568,7 +568,7 @@ function computePolylineDefinesForFrame(collection, frameState) {
     defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
   }
   const polylines = collection._polylines;
-  const length = collection._polylinesLength;
+  const length = collection._polylines.length;
   // Polyline consumes 4 of the 6 distance defines (no pixelOffset, no
   // quad scale).
   const all =
@@ -1185,7 +1185,7 @@ function getOrCreatePolylineVelocityPipelineEntry(
 async function updateWebGPUPolylines(collection, frameState, commandList) {
   const context = frameState.context;
   const device = context.device;
-  const length = collection._polylinesLength;
+  const length = collection._polylines.length;
   if (length === 0) {
     return;
   }
@@ -1345,7 +1345,7 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       cache[sbKey] = WebGPUBuffer.createVertexBuffer(
         device,
         requiredSize,
-        true,
+        false,
         `Polyline ${materialType} segments`,
       );
     }
@@ -1366,7 +1366,7 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
         cache[prevSbKey] = WebGPUBuffer.createVertexBuffer(
           device,
           requiredSize,
-          true,
+          false,
           `Polyline ${materialType} prev segments`,
         );
       }
@@ -1626,7 +1626,7 @@ function _pushPolylinePickCommand(
     cache.pickSegmentBuffer = WebGPUBuffer.createVertexBuffer(
       device,
       pickSize,
-      true,
+      false,
       "Polyline pick segments",
     );
   }

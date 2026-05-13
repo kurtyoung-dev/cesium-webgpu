@@ -46,6 +46,10 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import {
+  trackComputePipelineCreation,
+  type AsyncResourceMonitor,
+} from "./AsyncResourceMonitor.js";
 
 /** Workgroup size baked into the shader. Must match `WORKGROUP_SIZE` in
  *  `DecoupledLookbackScan.wgsl`. Changing this requires a shader edit. */
@@ -63,6 +67,8 @@ export interface WebGPUDecoupledScanOptions {
   maxElements?: number;
   /** Debug label prefix. Default "DecoupledScan". */
   label?: string;
+  /** NEW-WEBGPU-PIPELINE-READY-SIGNAL — async resource monitor. */
+  asyncResourceMonitor?: AsyncResourceMonitor | null;
 }
 
 /**
@@ -87,12 +93,15 @@ export class WebGPUDecoupledScan {
 
   private _isDestroyed: boolean = false;
 
+  private _monitor: AsyncResourceMonitor | null;
+
   constructor(device: GPUDevice, options: WebGPUDecoupledScanOptions = {}) {
     this._device = device;
     this._label = options.label ?? "DecoupledScan";
     // Set the initial target capacity; the actual allocation happens in
     // `initialize()` once we know we're going to dispatch at least once.
     this._partitionsCapacity = options.maxElements ?? 65536;
+    this._monitor = options.asyncResourceMonitor ?? null;
   }
 
   /**
@@ -135,11 +144,16 @@ export class WebGPUDecoupledScan {
       bindGroupLayouts: [this._bindGroupLayout],
     });
 
-    this._pipeline = await this._device.createComputePipelineAsync({
-      label: `${this._label} Pipeline`,
-      layout: pipelineLayout,
-      compute: { module: shaderModule, entryPoint: "scan" },
-    });
+    this._pipeline = await trackComputePipelineCreation(
+      this._monitor,
+      this._device,
+      {
+        label: `${this._label} Pipeline`,
+        layout: pipelineLayout,
+        compute: { module: shaderModule, entryPoint: "scan" },
+      },
+      "DecoupledScan",
+    );
 
     this._paramsBuffer = this._device.createBuffer({
       label: `${this._label} Params`,

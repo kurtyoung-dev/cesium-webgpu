@@ -34,6 +34,8 @@ import ShaderCache from "../ShaderCache.js";
 import TextureCache from "../TextureCache.js";
 import { WebGPUShaderCache } from "./WebGPUShaderCache.js";
 import { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
+import { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
+import { AsyncResourceTelemetry } from "./AsyncResourceTelemetry.js";
 import { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 import { WebGPUBuffer } from "./WebGPUBuffer.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
@@ -344,6 +346,20 @@ export class WebGPUContext extends GraphicsContext {
   private _webgpuShaderCache: WebGPUShaderCache | null = null;
   private _webgpuPipelineCache: WebGPURenderPipelineCache | null = null;
   private _webgpuComputePipelineCache: WebGPUComputePipelineCache | null = null;
+  // NEW-WEBGPU-PIPELINE-READY-SIGNAL — Phase 1 scaffolding. Per-context
+  // registry of inflight async GPU work. Lazy-initialized via the
+  // `asyncResources` getter so contexts that never trigger async work
+  // pay zero cost. Survives device-loss (subscribers stay attached);
+  // device-loss callbacks call `reset()` to reject every inflight
+  // token in one sweep.
+  private _asyncResources: AsyncResourceMonitor | null = null;
+  // NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — perf-side aggregator that
+  // subscribes to the monitor and tracks per-kind p50/p95/p99 latency,
+  // throughput, failure rates, and peak inflight pressure. Read by the
+  // perf manager (or any consumer) to decide whether to throttle
+  // pipeline-variant generation, defer non-critical compute work, etc.
+  // Always-on; cost is one subscriber + ~1 KB resident.
+  private _asyncResourceTelemetry: AsyncResourceTelemetry | null = null;
   // Public underscore: shared with the frame-statistics extract (Batch 144).
   public _samplerCache: Map<string, GPUSampler> = new Map();
   public _bindGroupLayoutCache: Map<string, GPUBindGroupLayout> = new Map();
@@ -3640,7 +3656,15 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     const { WebGPUImageUpload } = await import("./WebGPUImageUpload.js");
-    const decoded = await WebGPUImageUpload.decodeWithOrientation(source);
+    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 5) — pass the monitor so
+    // the bitmap decode publishes a wakeup event when it lands. Without
+    // this, an environment-map decode that finishes after the scene
+    // hibernates leaves the canvas frozen with the missing texture.
+    const decoded = await WebGPUImageUpload.decodeWithOrientation(
+      source,
+      this.asyncResources,
+      "Texture from Image (async)",
+    );
 
     // After EXIF rotation the bitmap dimensions can be swapped (90°/270°), so
     // pull width/height from the decoded surface, not the original source.
@@ -4089,9 +4113,17 @@ export class WebGPUContext extends GraphicsContext {
    */
   get webgpuPipelineCache(): WebGPURenderPipelineCache | null {
     if (!this._webgpuPipelineCache && this._device) {
+      // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2) — pass the
+      // context's async monitor so every async pipeline creation
+      // publishes wakeup events. The monitor getter is lazy and
+      // returns the same instance across device-loss cycles, so
+      // wiring it in the constructor is safe — the cache is
+      // recreated on device loss and picks up the same monitor.
       this._webgpuPipelineCache = new WebGPURenderPipelineCache(
         this._device,
         this._id,
+        undefined,
+        this.asyncResources,
       );
       // C-R12 — drop the pipeline cache on device loss so the next
       // access rebuilds against the recovered device.
@@ -4121,12 +4153,69 @@ export class WebGPUContext extends GraphicsContext {
       this._webgpuComputePipelineCache = new WebGPUComputePipelineCache(
         this._device,
         this._id,
+        this.asyncResources,
       );
       this.onDeviceInvalidated(() => {
         this._webgpuComputePipelineCache = null;
       });
     }
     return this._webgpuComputePipelineCache;
+  }
+
+  /**
+   * NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 1) — async resource
+   * registry for this context. Returns the same instance for the
+   * lifetime of the context (survives device loss; only inflight
+   * tokens are reset, subscribers stay attached). Producers (the
+   * pipeline caches, image-decode helper, shader-module cache) call
+   * `monitor.begin / resolve / reject`; consumers (typically the
+   * attached Scene) call `monitor.subscribe`.
+   *
+   * See `AsyncResourceMonitor.ts` for the design rationale.
+   */
+  get asyncResources(): AsyncResourceMonitor {
+    if (!this._asyncResources) {
+      this._asyncResources = new AsyncResourceMonitor(this._id);
+      // Eagerly attach the telemetry subscriber so it doesn't miss
+      // events fired before the first `asyncResourceTelemetry` read.
+      // Lazy attachment causes a startup blind spot: the first few
+      // pipelines (which are also the slowest, because they hit cold
+      // shader-compile paths) would compile before any consumer
+      // touched the telemetry getter, leaving p50/p95 stats empty.
+      // Cost: ~1 KB resident + one subscriber callback per event.
+      this._asyncResourceTelemetry = new AsyncResourceTelemetry(
+        this._asyncResources,
+      );
+      this.onDeviceInvalidated(() => {
+        // Reset, do NOT null — Scene subscribers are still valid;
+        // only the inflight GPU work needs to be flushed so producers
+        // re-issue against the recovered device.
+        this._asyncResources?.reset("device-invalidated");
+      });
+    }
+    return this._asyncResources;
+  }
+
+  /**
+   * NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — per-context async-resource
+   * telemetry. Eagerly attached when the monitor is first created
+   * (see `asyncResources` getter) so events fired before the first
+   * read aren't lost. Survives device loss for the same reason the
+   * monitor does (subscriber stays attached; only inflight tokens
+   * are reset on `monitor.reset`).
+   *
+   * Consumers: `WebGPUPerformanceManager.getAsyncResourceStats()` for
+   * budget decisions, `CesiumDebug.asyncResources()` for live-snapshot
+   * readouts, and any future scaling logic that needs per-kind
+   * percentile data.
+   */
+  get asyncResourceTelemetry(): AsyncResourceTelemetry {
+    // Touch the monitor getter so the eager-attach path runs if it
+    // hasn't already (e.g., a consumer that touches telemetry before
+    // any other code path consumed the monitor).
+    void this.asyncResources;
+    // Cast: we know the monitor getter always populates this.
+    return this._asyncResourceTelemetry!;
   }
 
   /**
@@ -4148,6 +4237,7 @@ export class WebGPUContext extends GraphicsContext {
         const culler = new WebGPUGPUCuller(this._device!, {
           maxObjects: 65536,
           label: `ctx-${this._id}`,
+          asyncResourceMonitor: this.asyncResources,
         });
         import("../../Shaders/WebGPU/Compute/FrustumCull.js")
           .then((mod: { default?: string | object }) => {
@@ -4211,6 +4301,7 @@ export class WebGPUContext extends GraphicsContext {
       const culler = new WebGPUGPUCuller(this._device!, {
         maxObjects: 65536,
         label: `ctx-${this._id}-frustum-${idx}`,
+        asyncResourceMonitor: this.asyncResources,
       });
       import("../../Shaders/WebGPU/Compute/FrustumCull.js")
         .then((mod: { default?: string | object }) => {
@@ -4276,6 +4367,7 @@ export class WebGPUContext extends GraphicsContext {
       const culler = new WebGPUGPUCuller(this._device!, {
         maxObjects: 65536,
         label: `ctx-${this._id}-cascade-${idx}`,
+        asyncResourceMonitor: this.asyncResources,
       });
       import("../../Shaders/WebGPU/Compute/FrustumCull.js")
         .then((mod: { default?: string | object }) => {
@@ -4324,6 +4416,7 @@ export class WebGPUContext extends GraphicsContext {
         const culler = new WebGPUGPUCuller(this._device!, {
           maxObjects: 65536,
           label: `ctx-${this._id}-translucent`,
+          asyncResourceMonitor: this.asyncResources,
         });
         import("../../Shaders/WebGPU/Compute/FrustumCull.js")
           .then((mod: { default?: string | object }) => {
@@ -4379,6 +4472,7 @@ export class WebGPUContext extends GraphicsContext {
             label: `ctx-${this._id}`,
             useDecoupledScan:
               this._options.useDeterministicPointCloudLOD ?? false,
+            asyncResourceMonitor: this.asyncResources,
           });
           return proc.initialize().then(() => {
             // WebGPUPointCloudLODProcessor explicitly

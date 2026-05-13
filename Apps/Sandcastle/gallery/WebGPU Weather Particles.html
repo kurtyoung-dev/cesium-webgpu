@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="GPU-computed weather particles (rain, snow, fog, hail) on the WebGPU backend with tunable intensity and wind."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Weather Particles demo.
+
+    Demonstrates `scene.enableWeather` + `scene.weatherType` /
+    `scene.weatherIntensity` / `scene.weatherWindSpeed` /
+    `scene.weatherWindDirection` — the GPU-driven weather particle
+    system that uses compute shaders to simulate rain, snow, fog, or
+    hail as a camera-relative volumetric overlay. WebGPU-only.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Weather enabled</td>
+            <td><input type="checkbox" data-bind="checked: enabled" /></td>
+          </tr>
+          <tr>
+            <td>Type</td>
+            <td>
+              <select data-bind="value: weatherType">
+                <option value="0">Rain</option>
+                <option value="1">Snow</option>
+                <option value="2">Fog</option>
+                <option value="3">Hail</option>
+              </select>
+            </td>
+          </tr>
+          <tr>
+            <td>Intensity</td>
+            <td>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                data-bind="value: intensity, valueUpdate: 'input'"
+              />
+              <span data-bind="text: intensity"></span>
+            </td>
+          </tr>
+          <tr>
+            <td>Wind Speed</td>
+            <td>
+              <input
+                type="range"
+                min="0"
+                max="40"
+                step="0.5"
+                data-bind="value: windSpeed, valueUpdate: 'input'"
+              />
+              <span data-bind="text: windSpeed"></span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+
+        const viewModel = {
+          enabled: true,
+          weatherType: "0",
+          intensity: 0.5,
+          windSpeed: 10,
+        };
+
+        function applyWeather() {
+          const scene = viewer.scene;
+          scene.enableWeather = Boolean(viewModel.enabled);
+          scene.weatherType = parseInt(viewModel.weatherType, 10);
+          scene.weatherIntensity = Number(viewModel.intensity);
+          scene.weatherWindSpeed = Number(viewModel.windSpeed);
+          scene.requestRender();
+        }
+
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+        for (const name in viewModel) {
+          if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
+            Cesium.knockout.getObservable(viewModel, name).subscribe(applyWeather);
+          }
+        }
+        applyWeather();
+
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(-122.4, 37.78, 5000),
+          orientation: {
+            heading: Cesium.Math.toRadians(0),
+            pitch: Cesium.Math.toRadians(-20),
+          },
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

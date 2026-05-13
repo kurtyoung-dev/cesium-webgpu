@@ -116,8 +116,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   modulated = modulated * (1.0 - cloudCover);
 
-  // Gamma correction (sRGB encoding) for non-HDR output
-  let corrected = pow(modulated, vec3<f32>(1.0 / 2.2));
-
-  return vec4<f32>(corrected, morphTime);
+  // Match WebGL czm_gammaCorrect (Builtin/Functions/gammaCorrect.glsl):
+  // no-op when HDR is off (the default). Cubemap PNG data is sRGB and
+  // the canvas color space is sRGB, so the sampled value goes straight
+  // through. The previous unconditional pow(color, 1/2.2) re-encoded
+  // sRGB on top of sRGB, brightening dark pixels (star backgrounds
+  // appearing like concrete) and washing out the visible cubemap.
+  // TODO: when HDR is on, decode sRGB -> linear (pow(color, 2.2)) so
+  //       the cubemap participates in the linear HDR pipeline.
+  return vec4<f32>(modulated, morphTime);
 }

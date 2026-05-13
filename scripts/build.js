@@ -778,12 +778,18 @@ export async function glslToJavaScript(minify, minifyStateFilePath, workspace) {
 
   // collect all currently existing JS files into a set, later we will remove the ones
   // we still are using from the set, then delete any files remaining in the set.
+  // EXCLUDE `Shaders/WebGPU/**/*.js` — those are WGSL-derived mirrors managed
+  // by `wgslToJavaScript`. Without the exclusion, this function deletes them
+  // as "leftovers" because no .glsl source corresponds to them, breaking the
+  // bundle on every dev-server `glslToJavaScript` invocation triggered by a
+  // .glsl edit.
   /** @type {Record<string, boolean>} */
   const leftOverJsFiles = {};
 
   const files = await globby([
     `packages/${workspace}/Source/Shaders/**/*.js`,
     `packages/${workspace}/Source/ThirdParty/Shaders/*.js`,
+    `!packages/${workspace}/Source/Shaders/WebGPU/**/*.js`,
   ]);
   files.forEach(function (file) {
     leftOverJsFiles[path.normalize(file)] = true;

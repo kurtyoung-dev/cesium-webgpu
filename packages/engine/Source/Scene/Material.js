@@ -285,6 +285,19 @@ class Material {
     this.shaderSource = undefined;
 
     /**
+     * The WGSL shader source for this material. Populated by
+     * `createWGSLMethodDefinition` (in `MaterialHelpers.js`) when the
+     * fabric declares a `wgsl: { source, components }` block alongside
+     * its `source` / `components`. Empty string when the fabric has no
+     * WGSL declarations — WebGPU consumers (Globe material hook) emit a
+     * clear error when they're handed a material with empty
+     * `wgslShaderSource`. Session 65 Cluster 3 — parallel-WGSL fabric API.
+     * @type {string}
+     * @default ""
+     */
+    this.wgslShaderSource = "";
+
+    /**
      * Maps sub-material names to Material objects.
      * @type {object}
      * @default undefined
@@ -725,6 +738,17 @@ Material._materialCache.addMaterial(Material.ColorType, {
       diffuse: "color.rgb",
       alpha: "color.a",
     },
+    // Cluster 3 — WGSL parallel components. Uniform names resolve to
+    // members of the material uniform struct at WGSL emit time; the
+    // Globe consumer wraps the assembler output with the appropriate
+    // bind-group prelude. Texture uniforms (none here) get a paired
+    // `<name>Sampler` per the WGSL fabric convention.
+    wgsl: {
+      components: {
+        diffuse: "color.rgb",
+        alpha: "color.a",
+      },
+    },
   },
   translucent: function (material) {
     return material.uniforms.color.alpha < 1.0;
@@ -750,6 +774,14 @@ Material._materialCache.addMaterial(Material.ImageType, {
         "texture(image, fract(repeat * materialInput.st)).rgb * color.rgb",
       alpha: "texture(image, fract(repeat * materialInput.st)).a * color.a",
     },
+    wgsl: {
+      components: {
+        diffuse:
+          "textureSampleLevel(image, imageSampler, fract(repeat * materialInput.st), 0.0).rgb * color.rgb",
+        alpha:
+          "textureSampleLevel(image, imageSampler, fract(repeat * materialInput.st), 0.0).a * color.a",
+      },
+    },
   },
   translucent: function (material) {
     return material.uniforms.color.alpha < 1.0;
@@ -773,6 +805,12 @@ Material._materialCache.addMaterial(Material.DiffuseMapType, {
     components: {
       diffuse: "texture(image, fract(repeat * materialInput.st)).channels",
     },
+    wgsl: {
+      components: {
+        diffuse:
+          "textureSampleLevel(image, imageSampler, fract(repeat * materialInput.st), 0.0).channels",
+      },
+    },
   },
   translucent: false,
 });
@@ -793,6 +831,12 @@ Material._materialCache.addMaterial(Material.AlphaMapType, {
     },
     components: {
       alpha: "texture(image, fract(repeat * materialInput.st)).channel",
+    },
+    wgsl: {
+      components: {
+        alpha:
+          "textureSampleLevel(image, imageSampler, fract(repeat * materialInput.st), 0.0).channel",
+      },
     },
   },
   translucent: true,
@@ -815,6 +859,12 @@ Material._materialCache.addMaterial(Material.SpecularMapType, {
     components: {
       specular: "texture(image, fract(repeat * materialInput.st)).channel",
     },
+    wgsl: {
+      components: {
+        specular:
+          "textureSampleLevel(image, imageSampler, fract(repeat * materialInput.st), 0.0).channel",
+      },
+    },
   },
   translucent: false,
 });
@@ -835,6 +885,12 @@ Material._materialCache.addMaterial(Material.EmissionMapType, {
     },
     components: {
       emission: "texture(image, fract(repeat * materialInput.st)).channels",
+    },
+    wgsl: {
+      components: {
+        emission:
+          "textureSampleLevel(image, imageSampler, fract(repeat * materialInput.st), 0.0).channels",
+      },
     },
   },
   translucent: false,
@@ -1147,6 +1203,25 @@ Material._materialCache.addMaterial(Material.ElevationContourType, {
       width: 1.0,
     },
     source: ElevationContourMaterial,
+    // WGSL direct port. WebGPU always has derivatives so the GLSL
+    // `#if defined(GL_OES_standard_derivatives)` branch always takes
+    // the dpdx/dpdy path here. czm_pixelRatio is a constant 1.0 in the
+    // WGSL build (renderer reports it via materialInput when needed).
+    wgsl: {
+      source:
+        "fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {\n" +
+        "  var material: czm_Material = czm_getDefaultMaterial(materialInput);\n" +
+        "  let distanceToContour = materialInput.height - spacing * floor(materialInput.height / spacing);\n" +
+        "  let dxc = abs(dpdx(materialInput.height));\n" +
+        "  let dyc = abs(dpdy(materialInput.height));\n" +
+        "  let dF = max(dxc, dyc) * 1.0 * width;\n" +
+        "  let a = select(0.0, 1.0, distanceToContour < dF);\n" +
+        "  let outColor = czm_gammaCorrect4(vec4<f32>(color.rgb, a * color.a));\n" +
+        "  material.diffuse = outColor.rgb;\n" +
+        "  material.alpha = outColor.a;\n" +
+        "  return material;\n" +
+        "}\n",
+    },
   },
   translucent: false,
 });
@@ -1166,6 +1241,18 @@ Material._materialCache.addMaterial(Material.ElevationRampType, {
       maximumHeight: 10000.0,
     },
     source: ElevationRampMaterial,
+    wgsl: {
+      source:
+        "fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {\n" +
+        "  var material: czm_Material = czm_getDefaultMaterial(materialInput);\n" +
+        "  let scaledHeight = clamp((materialInput.height - minimumHeight) / max(maximumHeight - minimumHeight, 1e-6), 0.0, 1.0);\n" +
+        "  var rampColor = textureSampleLevel(image, imageSampler, vec2<f32>(scaledHeight, 0.5), 0.0);\n" +
+        "  rampColor = czm_gammaCorrect4(rampColor);\n" +
+        "  material.diffuse = rampColor.rgb;\n" +
+        "  material.alpha = rampColor.a;\n" +
+        "  return material;\n" +
+        "}\n",
+    },
   },
   translucent: false,
 });
@@ -1183,6 +1270,18 @@ Material._materialCache.addMaterial(Material.SlopeRampMaterialType, {
       image: Material.DefaultImageId,
     },
     source: SlopeRampMaterial,
+    wgsl: {
+      source:
+        "fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {\n" +
+        "  var material: czm_Material = czm_getDefaultMaterial(materialInput);\n" +
+        "  let halfPi = 1.5707963267948966;\n" +
+        "  var rampColor = textureSampleLevel(image, imageSampler, vec2<f32>(materialInput.slope / halfPi, 0.5), 0.0);\n" +
+        "  rampColor = czm_gammaCorrect4(rampColor);\n" +
+        "  material.diffuse = rampColor.rgb;\n" +
+        "  material.alpha = rampColor.a;\n" +
+        "  return material;\n" +
+        "}\n",
+    },
   },
   translucent: false,
 });
@@ -1200,6 +1299,18 @@ Material._materialCache.addMaterial(Material.AspectRampMaterialType, {
       image: Material.DefaultImageId,
     },
     source: AspectRampMaterial,
+    wgsl: {
+      source:
+        "fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {\n" +
+        "  var material: czm_Material = czm_getDefaultMaterial(materialInput);\n" +
+        "  let twoPi = 6.283185307179586;\n" +
+        "  var rampColor = textureSampleLevel(image, imageSampler, vec2<f32>(materialInput.aspect / twoPi, 0.5), 0.0);\n" +
+        "  rampColor = czm_gammaCorrect4(rampColor);\n" +
+        "  material.diffuse = rampColor.rgb;\n" +
+        "  material.alpha = rampColor.a;\n" +
+        "  return material;\n" +
+        "}\n",
+    },
   },
   translucent: false,
 });
@@ -1218,6 +1329,55 @@ Material._materialCache.addMaterial(Material.ElevationBandType, {
       colors: Material.DefaultImageId,
     },
     source: ElevationBandMaterial,
+    // WGSL port — auto-uniform `heightsDimensions` comes from texture
+    // dimensions auto-binding (paired with `heights` / `colors`). The
+    // WebGPU build always supports float textures so the `OES_texture_float`
+    // branch is the always-taken path.
+    wgsl: {
+      source:
+        "fn elevBandGetHeight(idx: i32, invTexSize: f32) -> f32 {\n" +
+        "  let uv = vec2<f32>((f32(idx) + 0.5) * invTexSize, 0.5);\n" +
+        "  return textureSampleLevel(heights, heightsSampler, uv, 0.0).x;\n" +
+        "}\n" +
+        "fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {\n" +
+        "  var material: czm_Material = czm_getDefaultMaterial(materialInput);\n" +
+        "  let height = materialInput.height;\n" +
+        "  let dims = vec2<i32>(textureDimensions(heights));\n" +
+        "  let invTexSize = 1.0 / f32(dims.x);\n" +
+        "  let minHeight = elevBandGetHeight(0, invTexSize);\n" +
+        "  let maxHeight = elevBandGetHeight(dims.x - 1, invTexSize);\n" +
+        "  if (height < minHeight || height > maxHeight) {\n" +
+        "    material.diffuse = vec3<f32>(0.0);\n" +
+        "    material.alpha = 0.0;\n" +
+        "    return material;\n" +
+        "  }\n" +
+        "  var idxBelow: i32 = 0;\n" +
+        "  var idxAbove: i32 = dims.x;\n" +
+        "  var heightBelow: f32 = minHeight;\n" +
+        "  var heightAbove: f32 = maxHeight;\n" +
+        "  for (var i: i32 = 0; i < 16; i = i + 1) {\n" +
+        "    if (idxBelow >= idxAbove - 1) { break; }\n" +
+        "    let idxMid = (idxBelow + idxAbove) / 2;\n" +
+        "    let heightTex = elevBandGetHeight(idxMid, invTexSize);\n" +
+        "    if (height > heightTex) {\n" +
+        "      idxBelow = idxMid;\n" +
+        "      heightBelow = heightTex;\n" +
+        "    } else {\n" +
+        "      idxAbove = idxMid;\n" +
+        "      heightAbove = heightTex;\n" +
+        "    }\n" +
+        "  }\n" +
+        "  let denom = heightAbove - heightBelow;\n" +
+        "  let lerper = select((height - heightBelow) / denom, 1.0, abs(denom) < 1e-9);\n" +
+        "  let colorUv = vec2<f32>(invTexSize * (f32(idxBelow) + 0.5 + lerper), 0.5);\n" +
+        "  var c = textureSampleLevel(colors, colorsSampler, colorUv, 0.0);\n" +
+        "  if (c.a > 0.0) { c = vec4<f32>(c.rgb / c.a, c.a); }\n" +
+        "  c = vec4<f32>(czm_gammaCorrect(c.rgb), c.a);\n" +
+        "  material.diffuse = c.rgb;\n" +
+        "  material.alpha = c.a;\n" +
+        "  return material;\n" +
+        "}\n",
+    },
   },
   translucent: true,
 });
@@ -1235,6 +1395,17 @@ Material._materialCache.addMaterial(Material.WaterMaskType, {
     uniforms: {
       waterColor: new Color(1.0, 1.0, 1.0, 1.0),
       landColor: new Color(0.0, 0.0, 0.0, 0.0),
+    },
+    wgsl: {
+      source:
+        "fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {\n" +
+        "  var material: czm_Material = czm_getDefaultMaterial(materialInput);\n" +
+        "  var outColor = mix(landColor, waterColor, vec4<f32>(materialInput.waterMask));\n" +
+        "  outColor = vec4<f32>(czm_gammaCorrect(outColor.rgb), outColor.a);\n" +
+        "  material.diffuse = outColor.rgb;\n" +
+        "  material.alpha = outColor.a;\n" +
+        "  return material;\n" +
+        "}\n",
     },
   },
   translucent: false,

@@ -16,6 +16,7 @@ import {
   createJsHintOptions,
   createCombinedSpecList,
   glslToJavaScript,
+  wgslToJavaScript,
   createIndexJs,
   buildCesium,
   buildEngine,
@@ -251,12 +252,27 @@ const throttle = (callback) => {
 
     const glslWatcher = chokidar.watch("packages/engine/Source/Shaders", {
       ignored: (path, stats) => {
-        return !!stats?.isFile() && !path.endsWith(".glsl");
+        // Watch BOTH .glsl and .wgsl. The original filter was .glsl-only
+        // which silently masked .wgsl edits — dev server kept serving
+        // the stale in-memory bundle even after gulp build wrote new
+        // .wgsl/.js to disk, making WebGPU shader fixes look like they
+        // weren't taking effect.
+        if (!stats?.isFile()) {
+          return false;
+        }
+        return !path.endsWith(".glsl") && !path.endsWith(".wgsl");
       },
       ignoreInitial: true,
     });
-    glslWatcher.on("all", async () => {
-      await glslToJavaScript(false, "Build/minifyShaders.state", "engine");
+    glslWatcher.on("all", async function (event, filePath) {
+      void event;
+      // Regenerate the appropriate .js mirror based on file extension.
+      // Both .glsl and .wgsl edits invalidate the same bundle caches.
+      if (filePath?.endsWith(".wgsl")) {
+        await wgslToJavaScript(false, "Build/minifyShaders.state", "engine");
+      } else {
+        await glslToJavaScript(false, "Build/minifyShaders.state", "engine");
+      }
       esmCache.clear();
       engineBundleCache.clear();
       iifeCache.clear();

@@ -131,16 +131,16 @@ function packNearFarScalar(out, offset, scalar, identity) {
   }
 }
 
-let _cachedShaderSource = null;
-async function getShaderSource() {
-  if (_cachedShaderSource) {
-    return _cachedShaderSource;
-  }
-  const response = await fetch(
-    "../../Source/Shaders/WebGPU/Collections/BillboardCollection.wgsl",
-  );
-  _cachedShaderSource = await response.text();
-  return _cachedShaderSource;
+// Shader source is bundled at build time via WebGPUCollectionShaders.js
+// (esbuild inlines the .wgsl.js mirror). The previous runtime `fetch()`
+// against a relative path resolved against the demo's HTML location, so
+// from `Apps/Sandcastle/gallery/X.html` it tried to load
+// `Apps/Sandcastle/Source/Shaders/...` which 404s — the dev server returned
+// its HTML 404 page and Naga choked on `<!DOCTYPE html>`. The cached
+// import path is sync, has no network round-trip, and works under every
+// hosting layout (sandcastle, prebuilt apps, embedded demos).
+function getShaderSource() {
+  return getCollectionShaderSource("billboardColor");
 }
 
 /**
@@ -1030,7 +1030,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
 
   // Shader source + prewarm (once per device; `prewarmBillboardShaders`
   // is idempotent so repeated collections on the same device no-op).
-  const shaderCode = await getShaderSource();
+  const shaderCode = getShaderSource();
   const pickShaderCode = getCollectionShaderSource("billboardPick");
   prewarmBillboardShaders(device, shaderCode, pickShaderCode);
 
@@ -1265,7 +1265,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     cache.instanceBuffer = WebGPUBuffer.createVertexBuffer(
       device,
       requiredSize,
-      true,
+      false,
       "Billboard instances",
     );
   }
@@ -1292,7 +1292,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
       cache.prevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
         device,
         requiredSize,
-        true,
+        false,
         "Billboard prev instances",
       );
     }
@@ -1501,7 +1501,7 @@ function _pushBillboardPickCommand(
     cache.pickInstanceBuffer = WebGPUBuffer.createVertexBuffer(
       device,
       pickSize,
-      true,
+      false,
       "Billboard pick instances",
     );
   }

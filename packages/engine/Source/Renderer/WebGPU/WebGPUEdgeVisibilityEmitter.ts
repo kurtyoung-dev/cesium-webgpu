@@ -443,10 +443,7 @@ export function extractEdgeGeometry(
 
       const ai = a * 3;
       const bi = b * 3;
-      if (
-        ai + 2 >= positionData.length ||
-        bi + 2 >= positionData.length
-      ) {
+      if (ai + 2 >= positionData.length || bi + 2 >= positionData.length) {
         continue;
       }
       const ax = positionData[ai];
@@ -530,7 +527,17 @@ export function extractEdgeGeometry(
 
 export interface EdgeEmitterCache {
   device: GPUDevice | null;
+  // The MRT (3-target) pipeline used when `scene._enableEdgeVisibility`
+  // is on and the edge MRT framebuffer is allocated. Writes color +
+  // featureId + packed-depth.
   pipeline: GPURenderPipeline | null;
+  // Single-target fallback pipeline used when the edge MRT FBO isn't
+  // allocated (the demo opts-out of edge visibility, or the FBO hasn't
+  // initialized yet). Writes only the color attachment — featureId +
+  // packed-depth outputs are discarded. Matches the WebGL behavior of
+  // executing edge commands in the regular scene FB pass when
+  // `_enableEdgeVisibility` is off. Session 65 Batch 13.
+  pipelineSingleTarget: GPURenderPipeline | null;
   cameraBGL: GPUBindGroupLayout | null;
   edgeBGL: GPUBindGroupLayout | null;
   shaderModule: GPUShaderModule | null;
@@ -542,6 +549,7 @@ export function createEdgeEmitterCache(): EdgeEmitterCache {
   return {
     device: null,
     pipeline: null,
+    pipelineSingleTarget: null,
     cameraBGL: null,
     edgeBGL: null,
     shaderModule: null,
@@ -553,6 +561,7 @@ export function createEdgeEmitterCache(): EdgeEmitterCache {
 export function destroyEdgeEmitterCache(cache: EdgeEmitterCache): void {
   cache.device = null;
   cache.pipeline = null;
+  cache.pipelineSingleTarget = null;
   cache.cameraBGL = null;
   cache.edgeBGL = null;
   cache.shaderModule = null;
@@ -566,6 +575,7 @@ export function ensureEdgeEmitterPipeline(
 ): void {
   const needsRebuild =
     !cache.pipeline ||
+    !cache.pipelineSingleTarget ||
     cache.device !== device ||
     cache.colorFormat !== colorFormat ||
     cache.sampleCount !== sampleCount;
@@ -574,6 +584,8 @@ export function ensureEdgeEmitterPipeline(
   cache.device = device;
   cache.colorFormat = colorFormat;
   cache.sampleCount = sampleCount;
+  cache.pipeline = null;
+  cache.pipelineSingleTarget = null;
 
   if (!cache.shaderModule) {
     cache.shaderModule = device.createShaderModule({
@@ -607,50 +619,84 @@ export function ensureEdgeEmitterPipeline(
     bindGroupLayouts: [cache.cameraBGL, cache.edgeBGL],
   });
 
-  const targets: GPUColorTargetState[] = [
+  // Shared vertex + primitive + depth state. Only `fragment.targets`
+  // and `label` differ between the MRT and single-target variants —
+  // the fragment shader writes to @location 0/1/2 unconditionally, but
+  // WebGPU silently drops writes to attachments that aren't present in
+  // the pipeline's color-target array.
+  const vertex: GPUVertexState = {
+    module: cache.shaderModule,
+    entryPoint: "vertexMain",
+    buffers: [
+      {
+        arrayStride: VERTEX_STRIDE_BYTES,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
+          { shaderLocation: 1, offset: 12, format: "float32" }, // edgeType
+          { shaderLocation: 2, offset: 16, format: "float32x3" }, // normalA
+          { shaderLocation: 3, offset: 28, format: "float32x3" }, // normalB
+          { shaderLocation: 4, offset: 40, format: "float32x3" }, // otherPos
+          { shaderLocation: 5, offset: 52, format: "float32" }, // edgeOffset
+          { shaderLocation: 6, offset: 56, format: "float32" }, // featureId (C-R8-EDGE-FEATURE-ID)
+        ],
+      },
+    ],
+  };
+  const primitive: GPUPrimitiveState = {
+    // C-R8-EDGE-WIDE-LINES — quad expansion lands as triangles, not
+    // native lines. WebGPU has no native wide-line support.
+    topology: "triangle-list",
+    cullMode: "none",
+  };
+  const depthStencil: GPUDepthStencilState = {
+    format: "depth24plus-stencil8",
+    depthWriteEnabled: true,
+    depthCompare: "less",
+  };
+  const multisample: GPUMultisampleState | undefined =
+    sampleCount > 1 ? { count: sampleCount } : undefined;
+
+  // MRT variant — color + featureId + packed-depth. Used when edges
+  // are redirected into `_edgeFramebuffer` by the 3D-tile pass
+  // dispatcher (`WebGPUSceneRenderer3DTilePasses.ts`).
+  const mrtTargets: GPUColorTargetState[] = [
     { format: colorFormat },
     { format: "rgba8unorm" },
     { format: "rgba8unorm" },
   ];
-
   cache.pipeline = device.createRenderPipeline({
     label: "EdgeEmitter-Pipeline",
     layout: pipelineLayout,
-    vertex: {
-      module: cache.shaderModule,
-      entryPoint: "vertexMain",
-      buffers: [
-        {
-          arrayStride: VERTEX_STRIDE_BYTES,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-            { shaderLocation: 1, offset: 12, format: "float32" }, // edgeType
-            { shaderLocation: 2, offset: 16, format: "float32x3" }, // normalA
-            { shaderLocation: 3, offset: 28, format: "float32x3" }, // normalB
-            { shaderLocation: 4, offset: 40, format: "float32x3" }, // otherPos
-            { shaderLocation: 5, offset: 52, format: "float32" }, // edgeOffset
-            { shaderLocation: 6, offset: 56, format: "float32" }, // featureId (C-R8-EDGE-FEATURE-ID)
-          ],
-        },
-      ],
-    },
+    vertex,
     fragment: {
       module: cache.shaderModule,
       entryPoint: "fragmentMain",
-      targets,
+      targets: mrtTargets,
     },
-    primitive: {
-      // C-R8-EDGE-WIDE-LINES — quad expansion lands as triangles, not
-      // native lines. WebGPU has no native wide-line support.
-      topology: "triangle-list",
-      cullMode: "none",
+    primitive,
+    depthStencil,
+    multisample,
+  });
+
+  // Single-target variant — color only. Session 65 Batch 13
+  // (NEW-VR-DEPTHPLANE-EDGEEMITTER-PIPELINE-FORMAT). Used when the
+  // edge MRT FBO isn't allocated (the scene didn't request edge
+  // visibility) so the edge commands fall back to the regular scene
+  // framebuffer pass. The fragment shader's id + depth writes get
+  // dropped silently — that matches the WebGL behavior where
+  // edge-visibility-off scenes still draw the colored edge lines.
+  cache.pipelineSingleTarget = device.createRenderPipeline({
+    label: "EdgeEmitter-Pipeline-SingleTarget",
+    layout: pipelineLayout,
+    vertex,
+    fragment: {
+      module: cache.shaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: colorFormat }],
     },
-    depthStencil: {
-      format: "depth24plus-stencil8",
-      depthWriteEnabled: true,
-      depthCompare: "less",
-    },
-    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
+    primitive,
+    depthStencil,
+    multisample,
   });
 }
 

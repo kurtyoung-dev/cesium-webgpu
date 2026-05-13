@@ -858,6 +858,21 @@ function createGPUTextureFromReader(device, textureReader, colorSpace) {
     return null;
   }
 
+  // Session 65 fix for "3D Tiles base color white" (Mars / Moon /
+  // Aerometrex SF / BIM photogrammetry): in WebGPU mode the CesiumJS
+  // Texture is backed by WebGLStubTexture, which uploads the image to
+  // a real `GPUTexture` and stashes it on `texture._texture._webgpuTexture.texture`.
+  // The previous implementation only looked at `cesiumTexture._source`
+  // (the original ImageBitmap), which CesiumJS Texture does NOT
+  // retain after upload — so every glTF / 3D Tiles texture fell back
+  // to the white placeholder, which is exactly the symptom reported.
+  // Reuse the already-uploaded GPU texture directly when available.
+  const stubWrapper = cesiumTexture._texture;
+  const stubGPU = stubWrapper && stubWrapper._webgpuTexture;
+  if (stubGPU && stubGPU.texture) {
+    return stubGPU.texture;
+  }
+
   // The CesiumJS Texture._source holds the original ImageBitmap/HTMLImageElement
   const source =
     cesiumTexture._source || cesiumTexture.source || cesiumTexture._image;
@@ -1123,12 +1138,34 @@ function ensurePrimitiveCache(
     primCache.indexFormat =
       geometry.indexType === "UNSIGNED_INT" ? "uint32" : "uint16";
     primCache.indexCount = geometry.indexCount;
+    // WebGPU requires `writeBuffer` source byteLength to be a multiple
+    // of 4. Uint16 index buffers with an odd index count produce
+    // `byteLength % 4 === 2`, which the original code passed straight
+    // to `writeBuffer` and crashed under glTF models that have one —
+    // CZML Model Articulations is one such asset. Pad the buffer +
+    // source to the nearest 4 bytes; the extra slot is never read
+    // because `indexCount` stays at the geometry's authoritative
+    // value (Session 65 Batch 5, 2026-05-11).
+    const indexByteLength = geometry.indexData.byteLength;
+    const alignedIndexByteLength = (indexByteLength + 3) & ~3;
     primCache.indexBuffer = device.createBuffer({
       label: `Prim index`,
-      size: geometry.indexData.byteLength,
+      size: Math.max(alignedIndexByteLength, 4),
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(primCache.indexBuffer, 0, geometry.indexData);
+    if (alignedIndexByteLength === indexByteLength) {
+      device.queue.writeBuffer(primCache.indexBuffer, 0, geometry.indexData);
+    } else {
+      const padded = new Uint8Array(alignedIndexByteLength);
+      padded.set(
+        new Uint8Array(
+          geometry.indexData.buffer,
+          geometry.indexData.byteOffset,
+          indexByteLength,
+        ),
+      );
+      device.queue.writeBuffer(primCache.indexBuffer, 0, padded);
+    }
   }
 
   // Pipeline (varies by alpha mode and double-sided)
@@ -1139,7 +1176,26 @@ function ensurePrimitiveCache(
   // This same value is also used to filter the texture-entries array
   // and select the matching per-variant materialBGL when building
   // the merged group 1 bind group below.
-  const materialDefines = computeMaterialDefines(matInfo.materialFlags);
+  // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT — primitive's TEXCOORD_1
+  // attribute presence drives MODEL_HAS_TEXCOORD_1. When unset, the
+  // pipeline omits vertex buffer slot 7 (8-slot layout, fitting Edge's
+  // adapter cap of `maxVertexBuffers = 8`); when set, the layout
+  // includes slot 7 (9 slots, requires adapter ≥ 9).
+  //
+  // Session 65 follow-up — same treatment for slot 8 (featureId0). With
+  // both flags off (the common case for standard glTF models without
+  // multi-UV or batched feature IDs) the pipeline lands at 7 slots,
+  // leaving headroom on Edge's adapter. The implicit-range synthesis
+  // above sets `geometry.hasFeatureId0 = true` when a batched 3D Tile
+  // expects feature IDs but the glTF accessor is missing, so this read
+  // sees the final, post-synthesis value.
+  let materialDefines = computeMaterialDefines(matInfo.materialFlags);
+  if (geometry.hasTexCoord1) {
+    materialDefines |= ShaderDefine.MODEL_HAS_TEXCOORD_1;
+  }
+  if (geometry.hasFeatureId0) {
+    materialDefines |= ShaderDefine.MODEL_HAS_FEATURE_ID_0;
+  }
   primCache.materialDefines = materialDefines;
   primCache.pipeline = pipelineCache.getPipeline(
     matInfo.alphaMode,
@@ -1168,6 +1224,12 @@ function ensurePrimitiveCache(
   // Create GPU textures from glTF image sources
   const textures = createMaterialTextures(device, pipelineCache, matInfo);
   primCache.gpuTextures = textures.created;
+  // Stash matInfo + placeholderSlots so the per-frame
+  // refreshDeferredModelTextures helper can poll the readers and
+  // upgrade fallback-textured slots when the real images finish
+  // loading. See refreshDeferredModelTextures() comment.
+  primCache.matInfo = matInfo;
+  primCache.placeholderSlots = textures.placeholderSlots;
 
   // Texture bind group — one sampler per slot, resolved from the glTF
   // textureInfo's sampler block so per-texture magFilter / wrapS / wrapT
@@ -1527,16 +1589,40 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
   const defWhite = pipelineCache.defaultWhiteTexture;
   const defNormal = pipelineCache.defaultNormalTexture;
   const defBlack = pipelineCache.defaultBlackTexture;
+  // Session 65 BUG-WEBGPU-MODEL-TEXTURE-PLACEHOLDER-STUCK fix.
+  // Track which slots fell back to the default placeholder texture
+  // because the matching reader hadn't resolved its image source yet.
+  // The per-frame `refreshDeferredTextures` helper polls these slots
+  // and swaps in the real GPUTexture as soon as the reader is ready.
+  // Without this, models whose textures load AFTER the first
+  // `ensurePrimitiveCache` call (Mars, Moon, Aerometrex SF
+  // photogrammetry, BIM base color) render with white-fallback
+  // bind groups for their entire lifetime.
+  const placeholderSlots = new Set();
 
-  function tryCreate(reader, fallback, colorSpace) {
+  function tryCreate(slot, reader, fallback, colorSpace) {
     if (!defined(reader)) {
       return fallback;
     }
     const tex = createGPUTextureFromReader(device, reader, colorSpace);
     if (defined(tex)) {
-      created.push(tex);
+      // Only push to `created` (which the primCache destroys later) if
+      // this WebGPU texture was allocated *here* via copyExternalImageToTexture.
+      // When the CesiumJS Texture is backed by a WebGLStubTexture, the GPU
+      // texture is owned by that stub and reused by reference; pushing it to
+      // `created` would cause a double-destroy. The stub-owned check uses
+      // the same path createGPUTextureFromReader took for ownership detection.
+      const stubWrapper = reader.texture && reader.texture._texture;
+      const reusedFromStub =
+        stubWrapper &&
+        stubWrapper._webgpuTexture &&
+        stubWrapper._webgpuTexture.texture === tex;
+      if (!reusedFromStub) {
+        created.push(tex);
+      }
       return tex;
     }
+    placeholderSlots.add(slot);
     return fallback;
   }
 
@@ -1555,58 +1641,102 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
   //           thickness (G = volume thickness scalar).
   return {
     baseColor: tryCreate(
+      "baseColor",
       matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
       defWhite,
       "srgb",
     ),
-    normal: tryCreate(matInfo.normalTextureReader, defNormal, "linear"),
+    normal: tryCreate(
+      "normal",
+      matInfo.normalTextureReader,
+      defNormal,
+      "linear",
+    ),
     metallicRoughness: tryCreate(
+      "metallicRoughness",
       matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader,
       defWhite,
       "linear",
     ),
-    emissive: tryCreate(matInfo.emissiveTextureReader, defBlack, "srgb"),
-    occlusion: tryCreate(matInfo.occlusionTextureReader, defWhite, "linear"),
-    clearcoat: tryCreate(matInfo.clearcoatTextureReader, defWhite, "linear"),
+    emissive: tryCreate(
+      "emissive",
+      matInfo.emissiveTextureReader,
+      defBlack,
+      "srgb",
+    ),
+    occlusion: tryCreate(
+      "occlusion",
+      matInfo.occlusionTextureReader,
+      defWhite,
+      "linear",
+    ),
+    clearcoat: tryCreate(
+      "clearcoat",
+      matInfo.clearcoatTextureReader,
+      defWhite,
+      "linear",
+    ),
     specularColor: tryCreate(
+      "specularColor",
       matInfo.specularExtColorTextureReader,
       defWhite,
       "srgb",
     ),
-    anisotropy: tryCreate(matInfo.anisotropyTextureReader, defWhite, "linear"),
+    anisotropy: tryCreate(
+      "anisotropy",
+      matInfo.anisotropyTextureReader,
+      defWhite,
+      "linear",
+    ),
     iridescence: tryCreate(
+      "iridescence",
       matInfo.iridescenceTextureReader,
       defWhite,
       "linear",
     ),
-    sheenColor: tryCreate(matInfo.sheenColorTextureReader, defWhite, "srgb"),
-    thickness: tryCreate(matInfo.thicknessTextureReader, defWhite, "linear"),
+    sheenColor: tryCreate(
+      "sheenColor",
+      matInfo.sheenColorTextureReader,
+      defWhite,
+      "srgb",
+    ),
+    thickness: tryCreate(
+      "thickness",
+      matInfo.thicknessTextureReader,
+      defWhite,
+      "linear",
+    ),
     // C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps. Each
     // is linear-encoded scalar/normal data per the relevant Khronos
     // extension specs (clearcoat normal uses the standard normal-map
     // default placeholder so the FS perturbNormal call passes through
     // identity when the asset omits the texture).
     clearcoatRoughness: tryCreate(
+      "clearcoatRoughness",
       matInfo.clearcoatRoughnessTextureReader,
       defWhite,
       "linear",
     ),
     clearcoatNormal: tryCreate(
+      "clearcoatNormal",
       matInfo.clearcoatNormalTextureReader,
       defNormal,
       "linear",
     ),
     sheenRoughness: tryCreate(
+      "sheenRoughness",
       matInfo.sheenRoughnessTextureReader,
       defWhite,
       "linear",
     ),
     specularFactor: tryCreate(
+      "specularFactor",
       matInfo.specularExtTextureReader,
       defWhite,
       "linear",
     ),
     iridescenceThickness: tryCreate(
+      "iridescenceThickness",
       matInfo.iridescenceThicknessTextureReader,
       defWhite,
       "linear",
@@ -1618,13 +1748,158 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
     // a separate per-frame rebuild in update(). Here we just stamp the
     // placeholder so the bind group is always valid.
     transmission: tryCreate(
+      "transmission",
       matInfo.transmissionTextureReader,
       defWhite,
       "linear",
     ),
     refractionScene: defWhite,
     created,
+    placeholderSlots,
   };
+}
+
+// Mapping of slot name → which matInfo reader field + colorSpace.
+// Used by `refreshDeferredModelTextures` to refresh slots that were
+// initially fallback-textured because the reader hadn't loaded yet.
+// Mirrors the schema in createMaterialTextures so the two stay in sync.
+const TEXTURE_SLOT_SCHEMA = [
+  {
+    slot: "baseColor",
+    readers: ["baseColorTextureReader", "diffuseTextureReader"],
+    colorSpace: "srgb",
+  },
+  { slot: "normal", readers: ["normalTextureReader"], colorSpace: "linear" },
+  {
+    slot: "metallicRoughness",
+    readers: ["metallicRoughnessTextureReader", "specGlossTextureReader"],
+    colorSpace: "linear",
+  },
+  { slot: "emissive", readers: ["emissiveTextureReader"], colorSpace: "srgb" },
+  {
+    slot: "occlusion",
+    readers: ["occlusionTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "clearcoat",
+    readers: ["clearcoatTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "specularColor",
+    readers: ["specularExtColorTextureReader"],
+    colorSpace: "srgb",
+  },
+  {
+    slot: "anisotropy",
+    readers: ["anisotropyTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "iridescence",
+    readers: ["iridescenceTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "sheenColor",
+    readers: ["sheenColorTextureReader"],
+    colorSpace: "srgb",
+  },
+  {
+    slot: "thickness",
+    readers: ["thicknessTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "clearcoatRoughness",
+    readers: ["clearcoatRoughnessTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "clearcoatNormal",
+    readers: ["clearcoatNormalTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "sheenRoughness",
+    readers: ["sheenRoughnessTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "specularFactor",
+    readers: ["specularExtTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "iridescenceThickness",
+    readers: ["iridescenceThicknessTextureReader"],
+    colorSpace: "linear",
+  },
+  {
+    slot: "transmission",
+    readers: ["transmissionTextureReader"],
+    colorSpace: "linear",
+  },
+];
+
+/**
+ * Per-frame poll: for each slot that was filled with a fallback
+ * placeholder when this primitive was first set up, check if the
+ * matching glTF texture reader has now resolved its image source.
+ * If so, upload the real GPU texture and update primCache.textureViews
+ * + gpuTextures so the next bind group rebuild picks it up.
+ *
+ * Returns true if any slot was upgraded, signaling the caller to
+ * rebuild `primCache.textureEntries` so the bind group references
+ * the new view instead of the white placeholder.
+ *
+ * Session 65 fix for the "Mars/Moon render solid white" cluster:
+ * before this, the bind group was built once with whatever textures
+ * had loaded by the first frame, and never refreshed.
+ *
+ * @private
+ */
+function refreshDeferredModelTextures(device, primCache, matInfo) {
+  const placeholders = primCache.placeholderSlots;
+  if (!placeholders || placeholders.size === 0) {
+    return false;
+  }
+  let changed = false;
+  for (const schema of TEXTURE_SLOT_SCHEMA) {
+    if (!placeholders.has(schema.slot)) {
+      continue;
+    }
+    let reader = null;
+    for (const r of schema.readers) {
+      if (defined(matInfo[r])) {
+        reader = matInfo[r];
+        break;
+      }
+    }
+    if (!defined(reader)) {
+      continue;
+    }
+    const tex = createGPUTextureFromReader(device, reader, schema.colorSpace);
+    if (!defined(tex)) {
+      continue;
+    }
+    // Only track in gpuTextures if we own the lifetime — see tryCreate
+    // for the same stub-ownership check. Stub-owned GPUTextures are
+    // shared with the CesiumJS Texture wrapper and would double-destroy.
+    const stubWrapper = reader.texture && reader.texture._texture;
+    const reusedFromStub =
+      stubWrapper &&
+      stubWrapper._webgpuTexture &&
+      stubWrapper._webgpuTexture.texture === tex;
+    if (!reusedFromStub) {
+      primCache.gpuTextures.push(tex);
+    }
+    primCache.textureViews[schema.slot] = tex.createView();
+    placeholders.delete(schema.slot);
+    changed = true;
+  }
+  return changed;
 }
 
 // ─── Main Entry Points ───────────────────────────────────────────────────────
@@ -2231,6 +2506,21 @@ function updateWebGPUModel(model, frameState) {
         primCache._pipelineNeedsRefetch = false;
       }
 
+      // Session 65 BUG-WEBGPU-MODEL-TEXTURE-PLACEHOLDER-STUCK fix.
+      // Per-frame poll: any slot that fell back to a default
+      // placeholder texture during the initial ensurePrimitiveCache
+      // call gets re-checked here. As soon as the matching glTF
+      // texture reader resolves its image source we upload the real
+      // GPU texture and force a textureEntries rebuild below so the
+      // bind group picks up the new view.
+      // Cheap when nothing's pending (single Set.size check); the
+      // upload cost only fires once per slot per primitive.
+      const texturesUpgraded = refreshDeferredModelTextures(
+        device,
+        primCache,
+        matInfo,
+      );
+
       // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — when the primitive
       // declares transmission AND the SceneRenderer has published a
       // refraction view this frame, ensure the texture bind group
@@ -2255,10 +2545,16 @@ function updateWebGPUModel(model, frameState) {
         }
       }
       // First-frame texture-entries build (no transmission).
-      if (!defined(primCache.textureEntries)) {
+      // Also rebuild when refreshDeferredModelTextures upgraded a
+      // placeholder slot above — the textureViews map now points at
+      // a real GPU texture but textureEntries still references the
+      // stale placeholder view. Without this rebuild, the bind group
+      // keeps the white fallback even after the real texture loads
+      // (root cause of Mars/Moon/Aerometrex/BIM "all-white" cluster).
+      if (!defined(primCache.textureEntries) || texturesUpgraded) {
         primCache.textureEntries = getModelTextureEntries(
           primCache,
-          null,
+          primCache.refractionViewBound ?? null,
           primCache.materialDefines | 0,
         );
       }
@@ -2433,15 +2729,32 @@ function updateWebGPUModel(model, frameState) {
         LIGHT_UNIFORM_SIZE,
       );
 
-      // Assemble vertex buffers: [pos, normal, tangent, uv0, color, joints, weights, uv1, featureId]
-      // Slot 7 (uv1) falls back to the uv0 default when the primitive has
-      // no TEXCOORD_1 accessor — the shader is safe against that because
-      // the per-texture-slot `texCoord` flag in the material UBO steers
-      // sampling to uv0 unless the glTF explicitly asked for uv1.
-      // Slot 8 (featureId0) — Audit B.2 (Batch 130). Bound to the
-      // single-element zero default when the primitive carries no
-      // feature ID attribute; FS gates the read on
-      // FLAG_HAS_FEATURE_ID_ATTRIBUTE so the default is never sampled.
+      // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT (+ Session 65 follow-up)
+      // — variant-aware vertex buffer slots. When MODEL_HAS_TEXCOORD_1
+      // is unset, the pipeline omits slot 7 (texCoord1); when
+      // MODEL_HAS_FEATURE_ID_0 is unset, slot 8 (featureId0) is also
+      // omitted. The buffers array must match the pipeline layout count
+      // or `setVertexBuffer(N, ...)` errors with "slot larger than
+      // maximum" on Edge (which caps maxVertexBuffers at 8).
+      //
+      // Layout permutations:
+      //   - both unset   → 7 slots (positions 0-6)            ← common case
+      //   - tex1 only    → 8 slots (positions 0-7, no featureId0)
+      //   - feat0 only   → 8 slots (positions 0-6, 8; slot 7 = featureId0)*
+      //   - both set     → 9 slots (positions 0-8)
+      //
+      // (*) When tex1 is unset but feat0 is set we still have to push
+      // featureId0 — but at the SAME `shaderLocation = 8` per the
+      // `createVertexBufferLayout` contract. WebGPU keys buffer slots
+      // by their position in the `buffers` array, not by shader
+      // location; the binding order here matches the array index, so
+      // pushing featureId0 in 8th place (index 7) into a 7+1=8-slot
+      // array is correct: it goes to GPU slot 7, which the layout
+      // declares to feed `shaderLocation = 8`.
+      const hasTexCoord1 =
+        (primCache.materialDefines & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
+      const hasFeatureId0 =
+        (primCache.materialDefines & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
       const vertexBuffers = [
         primCache.positionBuffer,
         primCache.normalBuffer || pipelineCache.defaultNormalBuffer,
@@ -2450,11 +2763,19 @@ function updateWebGPUModel(model, frameState) {
         primCache.colorBuffer || pipelineCache.defaultColorBuffer,
         primCache.jointsBuffer || pipelineCache.defaultJointsBuffer,
         primCache.weightsBuffer || pipelineCache.defaultWeightsBuffer,
-        primCache.uv1Buffer ||
-          primCache.uvBuffer ||
-          pipelineCache.defaultUVBuffer,
-        primCache.featureIdBuffer || pipelineCache.defaultFeatureIdBuffer,
       ];
+      if (hasTexCoord1) {
+        vertexBuffers.push(
+          primCache.uv1Buffer ||
+            primCache.uvBuffer ||
+            pipelineCache.defaultUVBuffer,
+        );
+      }
+      if (hasFeatureId0) {
+        vertexBuffers.push(
+          primCache.featureIdBuffer || pipelineCache.defaultFeatureIdBuffer,
+        );
+      }
 
       // Use model.opaquePass to get the correct pass:
       //   - Pass.CESIUM_3D_TILE for 3D Tiles content (set by Model3DTileContent)
@@ -3172,8 +3493,31 @@ function updateWebGPUModel(model, frameState) {
             linePattern,
           );
 
+          // Session 65 Batch 13 (NEW-VR-DEPTHPLANE-EDGEEMITTER-
+          // PIPELINE-FORMAT) — pick the MRT pipeline when the scene's
+          // edge framebuffer redirect is active, otherwise the
+          // single-target variant so edges draw safely onto the
+          // regular 1-attachment scene framebuffer. Tracks
+          // `scene._enableEdgeVisibility` (the same flag that gates
+          // `_edgeFramebuffer` allocation in
+          // `WebGPUSceneRendererEnsureResources`). The transient
+          // "_enableEdgeVisibility flipped on this frame but the FBO
+          // hasn't finished allocating yet" race resolves naturally:
+          // the 3D-tile dispatcher falls back to the scene FB pass
+          // when `edgeFB.isReady` is false (see
+          // `WebGPUSceneRenderer3DTilePasses.ts:185`), and since the
+          // pipeline was selected for the MRT layout, the validation
+          // catches it. The fallback isn't visually critical (one
+          // frame of clipped edges on toggle); the pipeline mismatch
+          // we ARE fixing is the steady-state case where edge
+          // visibility is off entirely.
+          const sceneForEdge = frameState?.scene;
+          const edgeVisibilityOn = sceneForEdge?._enableEdgeVisibility === true;
+          const edgePipeline = edgeVisibilityOn
+            ? cache.edgeEmitterCache.pipeline
+            : cache.edgeEmitterCache.pipelineSingleTarget;
           const edgeCmd = new WebGPUDrawCommand({
-            pipeline: cache.edgeEmitterCache.pipeline,
+            pipeline: edgePipeline,
             bindGroups: [
               primCache.edgeResources.cameraBG,
               primCache.edgeResources.edgeBG,

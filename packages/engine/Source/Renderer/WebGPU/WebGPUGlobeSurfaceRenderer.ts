@@ -27,7 +27,11 @@ import {
   selectDebugFragmentPipeline as selectDebugFragmentPipelineHelper,
   selectDepthOnlyBackFacePipeline as selectDepthOnlyBackFacePipelineHelper,
   selectTranslucentBackFacePipeline as selectTranslucentBackFacePipelineHelper,
+  buildPipelineDescriptor,
+  descriptorToGPU,
 } from "./WebGPUGlobeSurfacePipelines.js";
+import { ShaderDefine } from "./WebGPUShaderDefines.js";
+import { preprocess as preprocessWGSL } from "./WebGPUShaderPreprocessor.js";
 import {
   getTileKey as getTileKeyHelper,
   getOrCreateTileBuffers as getOrCreateTileBuffersHelper,
@@ -36,6 +40,15 @@ import {
 } from "./WebGPUGlobeSurfaceTileBuffers.js";
 import { createCameraUniformBuffer as createCameraUniformBufferHelper } from "./WebGPUGlobeSurfaceCameraUB.js";
 import { createTileUniformBuffer as createTileUniformBufferHelper } from "./WebGPUGlobeSurfaceTileUB.js";
+import {
+  aggregateCompositeUniforms,
+  buildMaterialPrelude,
+  rewriteMaterialBody,
+  packMaterialUBO,
+  assembleMaterialWGSLSource,
+  resolveMaterialTextureView,
+  type MaterialPipelineCacheEntry,
+} from "./WebGPUGlobeMaterial.js";
 import type { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
 import {
   CAMERA_UNIFORM_FLOATS,
@@ -176,6 +189,34 @@ export class WebGPUGlobeSurfaceRenderer {
   public _oceanNormalSampler: GPUSampler | null = null;
   private _oceanNormalMapCache: Map<string, ImageryGPUTexture> = new Map();
   public _pipelineLayout: GPUPipelineLayout | null = null;
+  // Session 65 Cluster 3 — material lives at @group(2) bindings 4-8
+  // (UBO + image texture/sampler + heights texture/sampler). The
+  // merged-group strategy keeps total bind groups at 4 so devices that
+  // report the WebGPU spec floor of `maxBindGroups: 4` (e.g., Edge on
+  // some adapters) can still use the material pipeline path. No
+  // separate material pipeline layout — the regular `_pipelineLayout`
+  // is reused with a wider Group 2 layout.
+  // Placeholder UBO bound at @group(2) @binding(4) when no material is
+  // active, so the bind group still validates against the expanded
+  // Group 2 layout. Lazy-initialized on first non-material draw.
+  private _placeholderMaterialUBO: GPUBuffer | null = null;
+  // Per-material cache. Keyed by `material.type` since (a) the WGSL
+  // source is determined by the fabric (which is associated with the
+  // type) and (b) Cesium's `MaterialCache` already deduplicates per-type.
+  // Entry holds the assembled WGSL, the shader module, the UBO + its
+  // layout, and a sub-cache of GPURenderPipelines keyed on the geometry
+  // variant (one pipeline per stride/quantized/blend/etc combination).
+  private _materialPipelineCache: Map<string, MaterialPipelineCacheEntry> =
+    new Map();
+  // Per-material texture cache. Cesium materials (e.g., ElevationRamp)
+  // generate `image` uniforms as HTMLCanvasElement on the JS side —
+  // they don't go through the imagery upload pipeline so they have no
+  // `_webgpuTexture`. Cache uploaded views by `${materialType}|${uniformName}`
+  // and re-upload only when the source identity changes.
+  private _materialTextureCache: Map<
+    string,
+    { source: unknown; view: GPUTextureView }
+  > = new Map();
   public _placeholderTexture: GPUTexture | null = null;
   public _placeholderView: GPUTextureView | null = null;
   // Public underscore: shared with the wireframe helpers (Batch 149).
@@ -224,6 +265,138 @@ export class WebGPUGlobeSurfaceRenderer {
 
   constructor() {
     this._tileUniformU32View = new Uint32Array(this._tileUniformData.buffer);
+  }
+
+  /**
+   * Get or create a material-augmented pipeline + the per-frame bind
+   * Material UBO + textures land at @group(2) bindings 4-8 alongside
+   * water/ocean. Returns `null` when the material doesn't have a
+   * usable `wgslShaderSource` (an opt-out path — caller falls back to
+   * the non-material pipeline).
+   *
+   * Cache shape: per-material-type entry holds the assembled WGSL
+   * source, the compiled shader module, the UBO buffer + layout, and a
+   * sub-cache of GPURenderPipelines keyed on the geometry variant.
+   * Switching `globe.material` types pays a one-time pipeline build per
+   * geometry variant the first time the new material renders.
+   *
+   * Cluster 3 / Step 5 (Session 65 Batch 11 — final integration).
+   * @private
+   */
+  private _getOrCreateMaterialPipeline(
+    material: {
+      type: string;
+      uniforms: Record<string, unknown>;
+      wgslShaderSource: string;
+    },
+    isQuantized: boolean,
+    hasNormals: boolean,
+    hasWebMercatorT: boolean,
+    isBlend: boolean,
+    strideBytes: number,
+    hasGeodeticSurfaceNormals: boolean,
+    disableCulling: boolean,
+  ): { pipeline: GPURenderPipeline; entry: MaterialPipelineCacheEntry } | null {
+    if (!material.wgslShaderSource || material.wgslShaderSource.length === 0) {
+      return null;
+    }
+    const device = this._device!;
+
+    // Lazy-build the per-material entry. Shader module + UBO are
+    // reused across geometry variants (one of each per material type).
+    let entry = this._materialPipelineCache.get(material.type);
+    if (!entry) {
+      const built = buildMaterialPrelude(material as never);
+      if (!built) return null;
+      const rewritten = rewriteMaterialBody(
+        material.wgslShaderSource,
+        built.uboLayout,
+        built.textureNames,
+      );
+      const fullSource = assembleMaterialWGSLSource(
+        this._shaderCode,
+        built.prelude,
+        rewritten,
+      );
+      // Preprocess with MATERIAL_APPLY set so the `//>>ifdef`-gated
+      // material call site + group(4) bindings are included.
+      const preprocessed = preprocessWGSL(
+        fullSource,
+        ShaderDefine.MATERIAL_APPLY,
+      );
+      const module = device.createShaderModule({
+        label: `Globe material module ${material.type}`,
+        code: preprocessed,
+      });
+      const ubo = device.createBuffer({
+        label: `Globe material UBO ${material.type}`,
+        size: Math.max(16, built.uboSize),
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      entry = {
+        wgslSource: fullSource,
+        shaderModule: module,
+        uboLayout: built.uboLayout,
+        uboSize: built.uboSize,
+        textureNames: built.textureNames,
+        ubo,
+        pipelines: new Map(),
+      };
+      this._materialPipelineCache.set(material.type, entry);
+    }
+
+    // Geometry variant key — same shape as the base pipeline cache key
+    // minus the debug-fragment and translucent-back-face axes (those
+    // variants don't currently route through the material path).
+    const ncSuffix = disableCulling ? "_NC" : "";
+    const defines = hasGeodeticSurfaceNormals
+      ? ShaderDefine.GEODETIC_NORMAL
+      : 0;
+    const geomKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${ncSuffix}|${defines.toString(16)}`;
+
+    let pipeline = entry.pipelines.get(geomKey);
+    if (!pipeline) {
+      // Build the base descriptor (vertex layout, depth/stencil,
+      // primitive, multisample, fragment targets) using the same
+      // factory the non-material path uses, then override the module
+      // refs + layout for material support.
+      const descriptor = buildPipelineDescriptor(
+        this,
+        isQuantized,
+        hasNormals,
+        hasWebMercatorT,
+        isBlend,
+        strideBytes,
+        DebugFragmentMode.NONE,
+        false, // useClipDistances — skipped in material path for MVP
+        hasGeodeticSurfaceNormals,
+        disableCulling,
+      );
+      descriptor.vertex.module = entry.shaderModule;
+      if (descriptor.fragment) {
+        descriptor.fragment.module = entry.shaderModule;
+      }
+      // Material path reuses the regular pipeline layout — material
+      // slots live in Group 2 alongside water-mask / ocean-normal so
+      // the total bind-group count stays at the WebGPU spec floor of 4.
+      descriptor.layout = this._pipelineLayout!;
+      const gpuDesc = descriptorToGPU(descriptor);
+      pipeline = device.createRenderPipeline(gpuDesc);
+      entry.pipelines.set(geomKey, pipeline);
+    }
+
+    // Pack the material's uniform values into the UBO + upload. The
+    // group 2 bind group (water/ocean/material) is built by the regular
+    // per-tile bind-group construction site; the entry returned here
+    // supplies `ubo` and `textureNames` for that site to consume.
+    const uboData = packMaterialUBO(
+      material as never,
+      entry.uboLayout,
+      entry.uboSize,
+    );
+    device.queue.writeBuffer(entry.ubo, 0, uboData);
+
+    return { pipeline, entry };
   }
 
   /**
@@ -611,6 +784,46 @@ export class WebGPUGlobeSurfaceRenderer {
         continue;
       }
 
+      // ─── Cluster 3 Step 5 — material pipeline override ───
+      // When `globe.material` is set (mirrored onto tileProvider.material
+      // by Globe.update), build/cache a material-augmented pipeline.
+      // The material UBO + textures are bound through Group 2 alongside
+      // water-mask / ocean-normal (merged-group strategy keeps total
+      // bind-group count at the WebGPU spec floor of 4).
+      let materialEntry: MaterialPipelineCacheEntry | null = null;
+      const tpMaterial = (
+        tileProvider as unknown as {
+          material?: {
+            type: string;
+            uniforms: Record<string, unknown>;
+            wgslShaderSource: string;
+          };
+        }
+      ).material;
+      if (
+        !isSubsequentPass &&
+        !debugWireframe &&
+        debugFragmentMode === DebugFragmentMode.NONE &&
+        tpMaterial &&
+        tpMaterial.wgslShaderSource &&
+        tpMaterial.wgslShaderSource.length > 0
+      ) {
+        const matResult = this._getOrCreateMaterialPipeline(
+          tpMaterial,
+          gpuResources.isQuantized,
+          gpuResources.hasNormals,
+          gpuResources.hasWebMercatorT,
+          isSubsequentPass,
+          gpuResources.strideBytes,
+          gpuResources.hasGeodeticSurfaceNormals,
+          disableCulling,
+        );
+        if (matResult) {
+          pipeline = matResult.pipeline;
+          materialEntry = matResult.entry;
+        }
+      }
+
       const cameraUB = createCameraUniformBufferHelper(
         this,
         device,
@@ -964,9 +1177,30 @@ export class WebGPUGlobeSurfaceRenderer {
         // contribution is invisible after the first frame.
       }
 
+      // Cluster 3 — material slots are merged into Group 2. When a
+      // material is active, rebuild bindGroup2 with the material UBO +
+      // textures included; otherwise the existing 4-binding water/ocean
+      // group is padded with placeholders to match the expanded layout.
+      let bindGroup2Final = bindGroup2;
+      if (materialEntry) {
+        bindGroup2Final = this._createWaterOceanMaterialBindGroup(
+          surfaceTile,
+          tileProvider,
+          materialEntry,
+          tpMaterial!,
+        );
+      } else {
+        bindGroup2Final = this._createWaterOceanMaterialBindGroup(
+          surfaceTile,
+          tileProvider,
+          null,
+          null,
+        );
+      }
+
       commands.push({
         pipeline,
-        bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+        bindGroups: [bindGroup0, bindGroup1, bindGroup2Final, bindGroup3],
         vertexBuffer: gpuResources.vertexBuffer,
         indexBuffer: drawIndexBuffer,
         indexCount: drawIndexCount,
@@ -1111,6 +1345,82 @@ export class WebGPUGlobeSurfaceRenderer {
     surfaceTile: CesiumGlobeSurfaceTile | null,
     tileProvider: CesiumGlobeTileProvider,
   ): GPUBindGroup {
+    return this._createWaterOceanMaterialBindGroupInner(
+      surfaceTile,
+      tileProvider,
+      null,
+      null,
+    );
+  }
+
+  // Session 65 Cluster 3 — wraps `_createWaterOceanBindGroup` to accept
+  // optional material entry + material data. When provided, fills the
+  // material UBO + texture slots (bindings 4-8); otherwise binds
+  // placeholders so the bind group still matches the layout.
+  private _createWaterOceanMaterialBindGroup(
+    surfaceTile: CesiumGlobeSurfaceTile | null,
+    tileProvider: CesiumGlobeTileProvider,
+    materialEntry: MaterialPipelineCacheEntry | null,
+    material: { uniforms: Record<string, unknown> } | null,
+  ): GPUBindGroup {
+    return this._createWaterOceanMaterialBindGroupInner(
+      surfaceTile,
+      tileProvider,
+      materialEntry,
+      material,
+    );
+  }
+
+  // Resolve a material texture-uniform to a GPUTextureView. First checks
+  // for a `_webgpuTexture.view` (the imagery upload path), then for a
+  // `_webgpuReprojectedTexture` (imagery reprojection), then falls back
+  // to uploading the raw HTMLCanvasElement / HTMLImageElement / ImageBitmap
+  // value via `uploadImageSource` (the path Cesium materials use —
+  // `Material._textures[uniformId]` is constructed lazily from canvases
+  // generated by the JS side, never routes through imagery upload).
+  // The uploaded view is cached keyed on `materialType|uniformName`
+  // and re-uploaded only when the underlying source identity changes.
+  private _resolveOrUploadMaterialTexture(
+    materialType: string,
+    uniformName: string,
+    value: unknown,
+  ): GPUTextureView | null {
+    if (!value) return null;
+    // Fast path: WebGPU view already exists on the value.
+    const existingView = resolveMaterialTextureView(value);
+    if (existingView) return existingView;
+
+    // Direct-image path: upload via `uploadImageSource`.
+    if (
+      !(value instanceof HTMLImageElement) &&
+      !(value instanceof HTMLCanvasElement) &&
+      !(value instanceof ImageBitmap)
+    ) {
+      return null;
+    }
+    const key = `${materialType}|${uniformName}`;
+    const cached = this._materialTextureCache.get(key);
+    if (cached && cached.source === value) return cached.view;
+
+    const view = uploadImageSourceHelper(
+      this,
+      value,
+      `globeMaterial_${key}`,
+      this._imageryTextureCache,
+    );
+    if (view) {
+      this._materialTextureCache.set(key, { source: value, view });
+    }
+    return view;
+  }
+
+  private _createWaterOceanMaterialBindGroupInner(
+    surfaceTile: CesiumGlobeSurfaceTile | null,
+    tileProvider: CesiumGlobeTileProvider,
+    materialEntry: MaterialPipelineCacheEntry | null,
+    material: { uniforms: Record<string, unknown> } | null,
+  ): GPUBindGroup {
+    const device = this._device!;
     let waterMaskView = this._placeholderView!;
     let normalMapView = this._placeholderView!;
 
@@ -1145,6 +1455,51 @@ export class WebGPUGlobeSurfaceRenderer {
       }
     }
 
+    // Material UBO + textures — slots 4-8. When no material is bound,
+    // the slots receive the singleton placeholder UBO + placeholder
+    // textures so the bind group still validates against the expanded
+    // Group 2 layout.
+    let matUBO: GPUBuffer;
+    let matImage = this._placeholderView!;
+    let matHeights = this._placeholderView!;
+    if (materialEntry && material) {
+      matUBO = materialEntry.ubo;
+      // Session 65 Batch 16 — pull from the aggregated composite-uniforms
+      // view so composite-fabric texture uniforms (e.g., the `image`
+      // color-ramp on Bathymetry's `ElevationRamp` sub-material, owned
+      // by `material.materials.elevationRampMaterial`, not the parent)
+      // resolve through the same lookup path as scalar uniforms in
+      // `packMaterialUBO`.
+      const uniforms = aggregateCompositeUniforms(material as never);
+      const matType = (material as unknown as { type?: string }).type ?? "?";
+      if (materialEntry.textureNames.length > 0) {
+        const v = this._resolveOrUploadMaterialTexture(
+          matType,
+          materialEntry.textureNames[0],
+          uniforms[materialEntry.textureNames[0]],
+        );
+        if (v) matImage = v;
+      }
+      if (materialEntry.textureNames.length > 1) {
+        const v = this._resolveOrUploadMaterialTexture(
+          matType,
+          materialEntry.textureNames[1],
+          uniforms[materialEntry.textureNames[1]],
+        );
+        if (v) matHeights = v;
+      }
+    } else {
+      // Lazy-init a singleton placeholder UBO (16 bytes of zeros).
+      if (!this._placeholderMaterialUBO) {
+        this._placeholderMaterialUBO = device.createBuffer({
+          label: "Globe material placeholder UBO",
+          size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+      }
+      matUBO = this._placeholderMaterialUBO;
+    }
+
     return device.createBindGroup({
       layout: this._bindGroupLayout2!,
       entries: [
@@ -1152,6 +1507,11 @@ export class WebGPUGlobeSurfaceRenderer {
         { binding: 1, resource: this._waterMaskSampler! },
         { binding: 2, resource: normalMapView },
         { binding: 3, resource: this._oceanNormalSampler! },
+        { binding: 4, resource: { buffer: matUBO } },
+        { binding: 5, resource: matImage },
+        { binding: 6, resource: this._sampler! },
+        { binding: 7, resource: matHeights },
+        { binding: 8, resource: this._sampler! },
       ],
     });
   }

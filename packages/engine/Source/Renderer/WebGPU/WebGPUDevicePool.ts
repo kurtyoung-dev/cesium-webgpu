@@ -108,6 +108,13 @@ const ADAPTIVE_LIMIT_CAPS: Readonly<Record<string, number>> = Object.freeze({
   maxUniformBuffersPerShaderStage: 24,
   maxStorageBuffersPerShaderStage: 16,
   maxSamplersPerShaderStage: 32,
+  // Model PBR pipeline currently binds 9 vertex buffer slots
+  // (positionMC, normalMC, tangentMC, texCoord0, color0, joints0,
+  // weights0, texCoord1, featureId0). Spec default is 8 — bump to 16
+  // (next adapter tier) so 31+ demos with full glTF attribute sets
+  // compile their pipeline. WebGPU spec allows up to 16.
+  maxVertexBuffers: 16,
+  maxVertexAttributes: 30,
 });
 
 /**
@@ -123,6 +130,8 @@ const SPEC_DEFAULT_LIMITS: Readonly<Record<string, number>> = Object.freeze({
   maxUniformBuffersPerShaderStage: 12,
   maxStorageBuffersPerShaderStage: 8,
   maxSamplersPerShaderStage: 16,
+  maxVertexBuffers: 8,
+  maxVertexAttributes: 16,
 });
 
 /**

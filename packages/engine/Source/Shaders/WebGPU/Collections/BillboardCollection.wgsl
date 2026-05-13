@@ -57,11 +57,7 @@ struct CameraUniforms {
   // WebGL's `czm_splitPosition` convention so the fragment compare sits
   // in the same coordinate space as `position.xy` / `gl_FragCoord.x`.
   splitPosition: f32,
-  _pad3: vec2<f32>,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
-    previousViewProjection: mat4x4<f32>,
+      previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;

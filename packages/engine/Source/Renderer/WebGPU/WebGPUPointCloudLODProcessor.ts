@@ -88,6 +88,10 @@ import {
   storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import {
+  trackComputePipelineCreation,
+  type AsyncResourceMonitor,
+} from "./AsyncResourceMonitor.js";
 import PointCloudLODShader from "../../Shaders/WebGPU/Compute/PointCloudLOD.js";
 import PointCloudLODScanCompactShader from "../../Shaders/WebGPU/Compute/PointCloudLODScanCompact.js";
 import DecoupledLookbackScanShader from "../../Shaders/WebGPU/Compute/DecoupledLookbackScan.js";
@@ -129,6 +133,8 @@ export interface PointCloudLODProcessorOptions {
    * debugging tools can tell per-context instances apart.
    */
   label?: string;
+  /** NEW-WEBGPU-PIPELINE-READY-SIGNAL — async resource monitor. */
+  asyncResourceMonitor?: AsyncResourceMonitor | null;
   /**
    * When true, compact visible points using a decoupled-lookback parallel
    * prefix scan instead of the default per-workgroup atomicAdd path.
@@ -231,10 +237,13 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
   private _initialized = false;
   private _isDestroyed = false;
 
+  private _monitor: AsyncResourceMonitor | null;
+
   constructor(device: GPUDevice, options: PointCloudLODProcessorOptions = {}) {
     this._device = device;
     this._label = options.label ?? "PointCloudLOD";
     this._useDecoupledScan = options.useDecoupledScan ?? false;
+    this._monitor = options.asyncResourceMonitor ?? null;
     this._paramsScratchU32 = new Uint32Array(
       this._paramsScratch.buffer,
       this._paramsScratch.byteOffset,
@@ -328,25 +337,35 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
 
     // Always compile the portable `computeMain` pipeline — it's our
     // guaranteed fallback if the subgroup variant errors at runtime.
-    const main = await this._device.createComputePipelineAsync({
-      label: `${this._label} Pipeline (computeMain)`,
-      layout: pipelineLayout,
-      compute: { module: shaderModule, entryPoint: "computeMain" },
-    });
+    const main = await trackComputePipelineCreation(
+      this._monitor,
+      this._device,
+      {
+        label: `${this._label} Pipeline (computeMain)`,
+        layout: pipelineLayout,
+        compute: { module: shaderModule, entryPoint: "computeMain" },
+      },
+      "PointCloudLOD-computeMain",
+    );
 
     let mainSubgroups: GPUComputePipeline | undefined;
     let preferredEntryPoint: "computeMain" | "computeMainSubgroups" =
       "computeMain";
     if (useSubgroups) {
       try {
-        mainSubgroups = await this._device.createComputePipelineAsync({
-          label: `${this._label} Pipeline (computeMainSubgroups)`,
-          layout: pipelineLayout,
-          compute: {
-            module: shaderModule,
-            entryPoint: "computeMainSubgroups",
+        mainSubgroups = await trackComputePipelineCreation(
+          this._monitor,
+          this._device,
+          {
+            label: `${this._label} Pipeline (computeMainSubgroups)`,
+            layout: pipelineLayout,
+            compute: {
+              module: shaderModule,
+              entryPoint: "computeMainSubgroups",
+            },
           },
-        });
+          "PointCloudLOD-computeMainSubgroups",
+        );
         preferredEntryPoint = "computeMainSubgroups";
       } catch (e) {
         // Some drivers advertise the feature but fail to compile the
@@ -422,22 +441,34 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
       bindGroupLayouts: [this._scanBindGroupLayout],
     });
 
-    this._scanTagPipeline = await this._device.createComputePipelineAsync({
-      label: `${this._label} Scan Pipeline (tagVisible)`,
-      layout: scanPipelineLayout,
-      compute: { module: scanCompactModule, entryPoint: "tagVisible" },
-    });
+    this._scanTagPipeline = await trackComputePipelineCreation(
+      this._monitor,
+      this._device,
+      {
+        label: `${this._label} Scan Pipeline (tagVisible)`,
+        layout: scanPipelineLayout,
+        compute: { module: scanCompactModule, entryPoint: "tagVisible" },
+      },
+      "PointCloudLOD-tagVisible",
+    );
 
-    this._scanCompactPipeline = await this._device.createComputePipelineAsync({
-      label: `${this._label} Scan Pipeline (compactScanned)`,
-      layout: scanPipelineLayout,
-      compute: { module: scanCompactModule, entryPoint: "compactScanned" },
-    });
+    this._scanCompactPipeline = await trackComputePipelineCreation(
+      this._monitor,
+      this._device,
+      {
+        label: `${this._label} Scan Pipeline (compactScanned)`,
+        layout: scanPipelineLayout,
+        compute: { module: scanCompactModule, entryPoint: "compactScanned" },
+      },
+      "PointCloudLOD-compactScanned",
+    );
 
     // DecoupledScan owns its own params UBO + partitions buffer; it only
     // needs the caller-supplied input/output storage at dispatch time.
+    // Forward the monitor so its own internal pipeline is tracked too.
     this._scanner = new WebGPUDecoupledScan(this._device, {
       label: `${this._label} Scan`,
+      asyncResourceMonitor: this._monitor,
     });
     await this._scanner.initialize(DecoupledLookbackScanShader);
   }

@@ -181,39 +181,42 @@ export class WebGPUBuffer {
   /**
    * Creates a vertex buffer.
    *
-   * @param {GPUDevice} device - The GPU device
-   * @param {ArrayBuffer | ArrayBufferView} data - Vertex data
-   * @param {string} [label] - Optional label for debugging
-   * @returns {WebGPUBuffer} The vertex buffer
+   * Two call shapes are accepted to match historical use:
+   *   createVertexBuffer(device, dataBuffer, label?)
+   *     — sizes the buffer from `dataBuffer.byteLength` and uploads.
+   *   createVertexBuffer(device, sizeBytes, mappedAtCreation?, label?)
+   *     — allocates an empty buffer of the given size; caller fills via
+   *       `device.queue.writeBuffer` later. The Billboard / Label / Point
+   *       collection renderers all use this shape (instance buffers are
+   *       allocated up-front and rewritten each frame).
    *
    * @example
    * const vertices = new Float32Array([...]);
    * const buffer = WebGPUBuffer.createVertexBuffer(device, vertices);
+   *
+   * @example
+   * const buffer = WebGPUBuffer.createVertexBuffer(device, 1024, true, "Instances");
    */
   static createVertexBuffer(
     device: GPUDevice,
-    data: ArrayBuffer | ArrayBufferView,
-    label?: string,
+    dataOrSize: ArrayBuffer | ArrayBufferView | number,
+    labelOrMappedAtCreation?: string | boolean,
+    maybeLabel?: string,
   ): WebGPUBuffer {
-    const size =
-      data instanceof ArrayBuffer ? data.byteLength : data.byteLength;
-
-    return WebGPUBuffer.create({
+    return WebGPUBuffer._createTyped(
       device,
-      size,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      data,
-      label: label ?? "VertexBuffer",
-    });
+      GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      "VertexBuffer",
+      dataOrSize,
+      labelOrMappedAtCreation,
+      maybeLabel,
+    );
   }
 
   /**
    * Creates an index buffer.
    *
-   * @param {GPUDevice} device - The GPU device
-   * @param {ArrayBuffer | ArrayBufferView} data - Index data
-   * @param {string} [label] - Optional label for debugging
-   * @returns {WebGPUBuffer} The index buffer
+   * Same overload shapes as {@link WebGPUBuffer.createVertexBuffer}.
    *
    * @example
    * const indices = new Uint16Array([...]);
@@ -221,18 +224,58 @@ export class WebGPUBuffer {
    */
   static createIndexBuffer(
     device: GPUDevice,
-    data: ArrayBuffer | ArrayBufferView,
-    label?: string,
+    dataOrSize: ArrayBuffer | ArrayBufferView | number,
+    labelOrMappedAtCreation?: string | boolean,
+    maybeLabel?: string,
   ): WebGPUBuffer {
-    const size =
-      data instanceof ArrayBuffer ? data.byteLength : data.byteLength;
+    return WebGPUBuffer._createTyped(
+      device,
+      GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      "IndexBuffer",
+      dataOrSize,
+      labelOrMappedAtCreation,
+      maybeLabel,
+    );
+  }
 
+  /** @private */
+  private static _createTyped(
+    device: GPUDevice,
+    usage: GPUBufferUsageFlags,
+    defaultLabel: string,
+    dataOrSize: ArrayBuffer | ArrayBufferView | number,
+    labelOrMappedAtCreation?: string | boolean,
+    maybeLabel?: string,
+  ): WebGPUBuffer {
+    if (typeof dataOrSize === "number") {
+      const mappedAtCreation =
+        typeof labelOrMappedAtCreation === "boolean"
+          ? labelOrMappedAtCreation
+          : false;
+      const label =
+        typeof labelOrMappedAtCreation === "string"
+          ? labelOrMappedAtCreation
+          : (maybeLabel ?? defaultLabel);
+      return WebGPUBuffer.create({
+        device,
+        size: dataOrSize,
+        usage,
+        mappedAtCreation,
+        label,
+      });
+    }
+    const data = dataOrSize;
+    const size = data.byteLength;
+    const label =
+      typeof labelOrMappedAtCreation === "string"
+        ? labelOrMappedAtCreation
+        : defaultLabel;
     return WebGPUBuffer.create({
       device,
       size,
-      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      usage,
       data,
-      label: label ?? "IndexBuffer",
+      label,
     });
   }
 

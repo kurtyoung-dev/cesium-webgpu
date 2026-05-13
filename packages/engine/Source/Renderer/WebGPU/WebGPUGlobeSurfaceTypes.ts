@@ -62,7 +62,28 @@ export interface GlobePipelineEntry {
 // pipelines (TAA, motion blur) that need to reproject the current fragment
 // into the previous frame's NDC. Consumers read it via the shared
 // `camera.previousViewProjection` slot in `CameraUniforms`.
-export const CAMERA_UNIFORM_FLOATS = 116;
+//
+// Session 65 Batch 9 (Cluster 2b/5 — fog/atmosphere parity) adds 16 more
+// floats at the tail for Nishita-style ground atmosphere ray-march in the
+// vertex shader. Layout (offsets 116–131):
+//
+//   atmosphereLightDirectionAndIntensity (vec4, offset 116-119):
+//     xyz = world-space atmosphere light direction (sun by default)
+//     w   = atmosphereLightIntensity (default 10.0 from Atmosphere.js)
+//   atmosphereRayleighCoefficientAndScale (vec4, offset 120-123):
+//     xyz = Rayleigh scattering coefficients (m^-1, RGB)
+//     w   = Rayleigh scale height (meters, default 8500)
+//   atmosphereMieCoefficientAndScale (vec4, offset 124-127):
+//     xyz = Mie scattering coefficients (m^-1, RGB)
+//     w   = Mie scale height (meters, default 1200)
+//   atmosphereParams (vec4, offset 128-131):
+//     x = Mie anisotropy (Henyey-Greenstein g, default 0.758)
+//     y = Atmosphere inner radius (meters; planet maximum ellipsoid radius)
+//     z = Atmosphere outer radius (inner + 111e3, matches AtmosphereCommon)
+//     w = Atmosphere shading enable flag (1.0 if fog or ground-atmosphere
+//         is enabled, 0.0 otherwise — gates the VS ray-march so disabling
+//         atmosphere costs nothing per-vertex).
+export const CAMERA_UNIFORM_FLOATS = 132;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):
@@ -97,10 +118,21 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //   463        _pad
 //   464 - 467  debugFields (vec4)
 //   468 - 471  hsbShift (vec4)
+//   472 - 475  groundAtmosphereControl (vec4) — Session 65 (2026-05-11):
+//                x = enable flag (1.0 if showGroundAtmosphere AND
+//                    lightingFade fade > 0 AND camera in 3D mode)
+//                y = pre-computed fade scalar (matches WebGL's
+//                    `fade = clamp((cameraDist - fadeOutDist) /
+//                    (fadeInDist - fadeOutDist), 0, 1)` from GlobeFS.glsl
+//                    line 391 — drives the no-fog GroundAtmosphere drape
+//                    that's invisible whenever fog is off because the
+//                    fog branch is the only delivery mechanism).
+//                z = atmosphereLightIntensity (default 10.0)
+//                w = reserved
 //
-// Total = 472 floats = 1888 bytes. Well under WebGPU's
+// Total = 476 floats = 1904 bytes. Well under WebGPU's
 // `maxUniformBufferBindingSize` floor (16 KiB).
-export const TILE_UNIFORM_FLOATS = 472;
+export const TILE_UNIFORM_FLOATS = 476;
 export const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Per-layer floats: vec4 translationAndScale + vec4 texCoordsRect +
@@ -130,6 +162,7 @@ export const FOG_VIS_DENSITY_OFFSET = 461;
 export const SPLIT_POSITION_OFFSET = 462;
 export const DEBUG_FIELDS_OFFSET = 464;
 export const HSB_SHIFT_OFFSET = 468;
+export const GROUND_ATMOSPHERE_CONTROL_OFFSET = 472;
 
 // Max imagery layers per tile in a single draw call (16 — WebGPU minimum
 // `maxSampledTexturesPerShaderStage`). Tiles exceeding this count multi-pass.

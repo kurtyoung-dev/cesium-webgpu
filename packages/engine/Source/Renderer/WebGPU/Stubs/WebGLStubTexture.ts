@@ -109,6 +109,17 @@ interface StubTexture {
     // decide whether to allocate a full mip chain on first upload.
     wantsMipmaps: boolean;
   };
+  // Cubemap flag — set the first time `bindTexture` sees `TEXTURE_CUBE_MAP`
+  // (or `texImage2D` sees a `TEXTURE_CUBE_MAP_POSITIVE_*` / NEGATIVE_*
+  // face target). Drives `ensureTextureAllocated` to allocate a 6-layer
+  // texture with a cube view and routes face uploads into the matching
+  // layer index. Session 65 Batch 6 (2026-05-12) — added to fix the
+  // `SpecularEnvironmentCubeMap` path (KTX2 PBR environment loading);
+  // pre-fix every cube-face upload overwrote a single 2D layer, leaving
+  // `model._imageBasedLighting._webgpuSpecularView` either undefined or
+  // wrong, which made every PBR demo with explicit IBL render very dim
+  // on WebGPU.
+  _isCubeMap?: boolean;
   // Allocated GPU resources — null until first texImage2D.
   _webgpuTexture: {
     texture: GPUTexture;
@@ -118,9 +129,29 @@ interface StubTexture {
     height: number;
     format: GPUTextureFormat;
     mipLevelCount: number;
+    // Optional — only present on cubemap allocations (set to 6) or
+    // future array-texture allocations. Defaults to 1 (2D) when absent
+    // so the existing 2D-texture call sites stay source-compatible.
+    depthOrArrayLayers?: number;
     destroy(): void;
   } | null;
   destroy?(): void;
+}
+
+// WebGL cube-face target enums, mapping to WebGPU array layer index.
+const GL_TEXTURE_CUBE_MAP_POSITIVE_X = 0x8515;
+// Each subsequent face is +1: NEGATIVE_X = 0x8516, POSITIVE_Y = 0x8517,
+// NEGATIVE_Y = 0x8518, POSITIVE_Z = 0x8519, NEGATIVE_Z = 0x851a.
+const GL_TEXTURE_CUBE_MAP_NEGATIVE_Z = 0x851a;
+
+function cubeFaceLayerForTarget(target: number): number | null {
+  if (
+    target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
+    target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z
+  ) {
+    return target - GL_TEXTURE_CUBE_MAP_POSITIVE_X;
+  }
+  return null;
 }
 
 function createPendingSamplerDesc() {
@@ -240,11 +271,13 @@ function ensureTextureAllocated(
   height: number,
   format: GPUTextureFormat,
 ): void {
+  const layers = wrapper._isCubeMap ? 6 : 1;
   if (
     wrapper._webgpuTexture &&
     wrapper._webgpuTexture.width === width &&
     wrapper._webgpuTexture.height === height &&
-    wrapper._webgpuTexture.format === format
+    wrapper._webgpuTexture.format === format &&
+    (wrapper._webgpuTexture.depthOrArrayLayers ?? 1) === layers
   ) {
     return; // Reuse
   }
@@ -259,8 +292,8 @@ function ensureTextureAllocated(
     : 1;
 
   const texture = device.createTexture({
-    label: "GLStub_Texture",
-    size: { width, height, depthOrArrayLayers: 1 },
+    label: wrapper._isCubeMap ? "GLStub_CubeMap" : "GLStub_Texture",
+    size: { width, height, depthOrArrayLayers: layers },
     format,
     mipLevelCount,
     usage:
@@ -269,7 +302,13 @@ function ensureTextureAllocated(
       GPUTextureUsage.RENDER_ATTACHMENT,
   });
 
-  const view = texture.createView({ label: "GLStub_TextureView" });
+  // Cube-view binding requires `dimension: "cube"` so the shader's
+  // `texture_cube<f32>` declarations work. The downstream IBL pipeline
+  // also reads this view for irradiance/radiance prefilter sourcing.
+  const view = texture.createView({
+    label: wrapper._isCubeMap ? "GLStub_CubeMapView" : "GLStub_TextureView",
+    dimension: wrapper._isCubeMap ? "cube" : "2d",
+  });
   const sampler = buildSampler(device, wrapper._samplerDesc);
 
   wrapper._webgpuTexture = {
@@ -280,6 +319,7 @@ function ensureTextureAllocated(
     height,
     format,
     mipLevelCount,
+    depthOrArrayLayers: layers,
     destroy() {
       texture.destroy();
     },
@@ -301,6 +341,17 @@ export function createTextureStubs(
 
     bindTexture: (target: number, texture: StubTexture | null) => {
       state.textureBindings.set(state.activeTextureUnit, { target, texture });
+      // Latch cubemap flag on the wrapper the first time we see the
+      // texture bound as `TEXTURE_CUBE_MAP`. This lets
+      // `ensureTextureAllocated` pick a 6-layer texture + cube view
+      // BEFORE the first face upload arrives (face uploads use
+      // `TEXTURE_CUBE_MAP_POSITIVE_X` etc. as the target, not the
+      // cube-map enum). Without this latch, the first face upload
+      // races the layer-count decision and creates a 1-layer 2D
+      // texture, then subsequent face uploads silently overwrite it.
+      if (texture && target === 0x8513 /* TEXTURE_CUBE_MAP */) {
+        texture._isCubeMap = true;
+      }
     },
 
     createTexture: (): StubTexture => {
@@ -441,13 +492,47 @@ export function createTextureStubs(
         format,
         type,
       );
-      ensureTextureAllocated(state.device, wrapper, width, height, gpuFormat);
+
+      // Cube face target detection. CubeMap.js binds the underlying
+      // texture as `TEXTURE_CUBE_MAP` then issues per-face uploads
+      // with the face-specific target enum (POSITIVE_X = 0x8515, etc).
+      // The face index becomes the WebGPU `origin.z` for the upload.
+      const faceLayer = cubeFaceLayerForTarget(_target);
+      if (faceLayer !== null) {
+        // Per-face upload — promote wrapper to cubemap so
+        // `ensureTextureAllocated` picks a 6-layer texture even when
+        // `bindTexture(TEXTURE_CUBE_MAP, …)` was missed (some
+        // resource-cache paths bind the face target directly).
+        wrapper._isCubeMap = true;
+      }
+
+      // Only resize the underlying GPU texture from the BASE level upload.
+      // Higher-level uploads (mip > 0) target an existing allocation; if we
+      // re-ran ensureTextureAllocated for mip=N with the level-N dimensions,
+      // we'd shrink the texture (mipLevelCount = log2(N) + 1) and destroy
+      // every other mip uploaded so far. The Cesium OSM Buildings demo hits
+      // this — its imagery layer uploads level 0 (256x256 → mipLevelCount 9)
+      // then walks levels 1..8 with their downscaled sizes. Without the
+      // guard, the level-7 upload destroys + recreates a 2x2/2-level
+      // texture, then level-8 fails with "MipLevel (8) > number of mip
+      // levels (1)".
+      if (level === 0 || !wrapper._webgpuTexture) {
+        ensureTextureAllocated(state.device, wrapper, width, height, gpuFormat);
+      }
       const tex = wrapper._webgpuTexture!;
+      // Skip uploads that target a level beyond what we allocated. WebGL
+      // would silently no-op too; without this guard the warning channel
+      // gets spammed every frame on imagery-tile-heavy scenes.
+      if (level >= tex.mipLevelCount) return;
 
       if (!pixels) {
         // Empty texImage2D (caller will upload via texSubImage2D later).
         return;
       }
+
+      // For cube-face uploads, the target layer index drives `origin.z`.
+      // For 2D uploads the origin defaults to 0.
+      const originZ = faceLayer ?? 0;
 
       if (isExternalImageSource(pixels)) {
         // HTMLImageElement / Canvas / ImageBitmap / Video / OffscreenCanvas:
@@ -462,6 +547,7 @@ export function createTextureStubs(
             {
               texture: tex.texture,
               mipLevel: level,
+              origin: { x: 0, y: 0, z: originZ },
               premultipliedAlpha: state.pixelStore.unpackPremultiplyAlpha,
             },
             { width, height, depthOrArrayLayers: 1 },
@@ -501,11 +587,34 @@ export function createTextureStubs(
         data = flipYBuffer(height, bytesPerRow, data);
       }
 
+      // WebGPU validates that the copy extent fits the destination MIP
+      // level's dimensions. Some legacy WebGL callers (notably the I3S
+      // 1×N color-ramp uploads + OSM-buildings imagery layers) pass the
+      // BASE-level dimensions even when uploading mip > 0, on the
+      // assumption the GL driver will silently clamp. Doing the same
+      // in the stub would surface as "Texture copy range touches outside
+      // of [Texture GLStub_Texture] mip level N size" warnings every
+      // frame and the upload silently no-ops. Clamp the copy extent to
+      // the actual mip-level size so the upload still lands (truncating
+      // the source data is safer than failing the whole frame).
+      let copyW = width;
+      let copyH = height;
+      if (level > 0) {
+        const mipW = Math.max(1, tex.width >> level);
+        const mipH = Math.max(1, tex.height >> level);
+        if (copyW > mipW) copyW = mipW;
+        if (copyH > mipH) copyH = mipH;
+      }
+
       state.device.queue.writeTexture(
-        { texture: tex.texture, mipLevel: level, origin: { x: 0, y: 0, z: 0 } },
+        {
+          texture: tex.texture,
+          mipLevel: level,
+          origin: { x: 0, y: 0, z: originZ },
+        },
         data,
         { bytesPerRow, rowsPerImage: height },
-        { width, height, depthOrArrayLayers: 1 },
+        { width: copyW, height: copyH, depthOrArrayLayers: 1 },
       );
     },
 
@@ -514,19 +623,105 @@ export function createTextureStubs(
       level: number,
       xoffset: number,
       yoffset: number,
-      width: number,
-      height: number,
-      _format: number,
-      _type: number,
-      pixels: ArrayBufferView | null,
+      widthOrFormat: number,
+      heightOrType: number,
+      formatOrSource: number | TexImagePixelSource,
+      typeArg?: number,
+      pixelsArg?: ArrayBufferView | null,
     ) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
       const wrapper: StubTexture | undefined = binding?.texture;
-      if (!wrapper?._webgpuTexture || !pixels || !state.device) return;
+      if (!wrapper?._webgpuTexture || !state.device) return;
       const tex = wrapper._webgpuTexture;
+
+      // Cube face index for the upload's `origin.z`. Matches the
+      // mapping in `texImage2D` above — POSITIVE_X (0x8515) is layer 0,
+      // NEGATIVE_X is 1, POSITIVE_Y is 2, etc. For non-cube uploads
+      // this stays at 0. Session 65 Batch 6 (2026-05-12) — fixes
+      // mip-level uploads on prefiltered specular cubemaps, which
+      // arrive via `texSubImage2D(POSITIVE_X, mipLevel, …)`.
+      const faceLayer = cubeFaceLayerForTarget(_target);
+      const originZ = faceLayer ?? 0;
+
+      // WebGL has TWO calling forms:
+      //   9-arg: (target, level, xoffset, yoffset, width, height, format, type, pixels)
+      //          where pixels is ArrayBufferView | null
+      //   7-arg: (target, level, xoffset, yoffset, format, type, source)
+      //          where source is HTMLImageElement / Canvas / ImageBitmap / Video
+      // The previous stub only handled the 9-arg form, so glTF model
+      // texture uploads (which use the 7-arg form with ImageBitmap)
+      // silently no-op'd. Symptom: every glTF / 3D Tiles texture
+      // rendered with the white-fallback default — the entire
+      // "Mars/Moon white sphere" + "BIM building white walls" cluster
+      // (Session 65 NEW-VR2-2). Detect the form by checking whether
+      // typeArg is a number (9-arg) or undefined (7-arg).
+      const isNineArg = typeof typeArg === "number";
+      let width: number;
+      let height: number;
+      let pixels: TexImagePixelSource | ArrayBufferView | null;
+      if (isNineArg) {
+        width = widthOrFormat;
+        height = heightOrType;
+        pixels = pixelsArg ?? null;
+      } else {
+        // 7-arg form — formatOrSource IS the source
+        const src = formatOrSource as TexImagePixelSource;
+        if (!src) return;
+        const sized = src as {
+          width?: number;
+          height?: number;
+          videoWidth?: number;
+          videoHeight?: number;
+        };
+        width = sized.width ?? sized.videoWidth ?? 0;
+        height = sized.height ?? sized.videoHeight ?? 0;
+        pixels = src;
+      }
+      if (!pixels || width <= 0 || height <= 0) return;
+
+      // Clamp to mip-level extent (see paired comment in texImage2D above —
+      // legacy GL callers pass base-level dimensions even at level > 0).
+      let copyW = width;
+      let copyH = height;
+      if (level > 0) {
+        const mipW = Math.max(1, tex.width >> level);
+        const mipH = Math.max(1, tex.height >> level);
+        if (xoffset + copyW > mipW) copyW = Math.max(0, mipW - xoffset);
+        if (yoffset + copyH > mipH) copyH = Math.max(0, mipH - yoffset);
+        if (copyW <= 0 || copyH <= 0) return;
+      }
+
+      // External image source (HTMLImageElement, ImageBitmap, etc.)
+      // → route through copyExternalImageToTexture, which handles
+      // colorspace + flipY semantics natively.
+      if (isExternalImageSource(pixels)) {
+        try {
+          state.device.queue.copyExternalImageToTexture(
+            {
+              source: pixels as ImageBitmap,
+              flipY: state.pixelStore.unpackFlipY,
+            },
+            {
+              texture: tex.texture,
+              mipLevel: level,
+              origin: { x: xoffset, y: yoffset, z: originZ },
+              premultipliedAlpha: state.pixelStore.unpackPremultiplyAlpha,
+            },
+            { width: copyW, height: copyH, depthOrArrayLayers: 1 },
+          );
+        } catch (err) {
+          logUsage(
+            "texSubImage2D",
+            `copyExternalImageToTexture failed: ${(err as Error).message}`,
+          );
+        }
+        return;
+      }
+
+      // Raw byte source — use queue.writeTexture (the original code path).
+      const view = pixels as ArrayBufferView;
       const bpt = bytesPerTexel(tex.format);
       const bytesPerRow = width * bpt;
-      const view = pixels as ArrayBufferView;
       const rawBuffer =
         view.buffer instanceof ArrayBuffer
           ? view.buffer
@@ -543,11 +738,11 @@ export function createTextureStubs(
         {
           texture: tex.texture,
           mipLevel: level,
-          origin: { x: xoffset, y: yoffset, z: 0 },
+          origin: { x: xoffset, y: yoffset, z: originZ },
         },
         data,
         { bytesPerRow, rowsPerImage: height },
-        { width, height, depthOrArrayLayers: 1 },
+        { width: copyW, height: copyH, depthOrArrayLayers: 1 },
       );
     },
 
@@ -562,10 +757,15 @@ export function createTextureStubs(
     ) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
       if (!binding?.texture?._webgpuTexture || !state.device) return;
+      // Cube-face layer for KTX2-compressed cubemaps (kiara HDR
+      // environment map in `glTF PBR Extensions.html` and other IBL-
+      // sourced demos).
+      const cubeFace = cubeFaceLayerForTarget(_target);
       state.device.queue.writeTexture(
         {
           texture: binding.texture._webgpuTexture.texture,
           mipLevel: level,
+          origin: { x: 0, y: 0, z: cubeFace ?? 0 },
         },
         data as BufferSource,
         { bytesPerRow: width * 4, rowsPerImage: height },
@@ -585,11 +785,12 @@ export function createTextureStubs(
     ) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
       if (!binding?.texture?._webgpuTexture || !state.device) return;
+      const cubeFace = cubeFaceLayerForTarget(_target);
       state.device.queue.writeTexture(
         {
           texture: binding.texture._webgpuTexture.texture,
           mipLevel: level,
-          origin: { x: xoffset, y: yoffset, z: 0 },
+          origin: { x: xoffset, y: yoffset, z: cubeFace ?? 0 },
         },
         data as BufferSource,
         { bytesPerRow: width * 4, rowsPerImage: height },

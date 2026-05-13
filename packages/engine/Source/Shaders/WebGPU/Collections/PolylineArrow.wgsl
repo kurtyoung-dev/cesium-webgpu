@@ -21,11 +21,7 @@ struct CameraUniforms {
     _pad2: vec2<f32>,
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
-    _pad3: vec2<f32>,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
-    previousViewProjection: mat4x4<f32>,
+        previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -238,38 +234,38 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let outsideColor = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
   // Arrow base position — use fwidth to scale with screen-space line length
-  let base = 1.0 - abs(fwidth(st.s)) * 10.0;
+  let base = 1.0 - abs(fwidth(st.x)) * 10.0;
 
   let center = vec2<f32>(1.0, 0.5);
 
   // Upper and lower arrow edges
-  let ptOnUpperLine = getPointOnLine(vec2<f32>(base, 1.0), center, st.s);
-  let ptOnLowerLine = getPointOnLine(vec2<f32>(base, 0.0), center, st.s);
+  let ptOnUpperLine = getPointOnLine(vec2<f32>(base, 1.0), center, st.x);
+  let ptOnLowerLine = getPointOnLine(vec2<f32>(base, 0.0), center, st.x);
 
   // Narrow body of the arrow (before the head)
   let halfWidth = 0.15;
-  var s = step(0.5 - halfWidth, st.t);
-  s *= 1.0 - step(0.5 + halfWidth, st.t);
-  s *= 1.0 - step(base, st.s);
+  var s = step(0.5 - halfWidth, st.y);
+  s *= 1.0 - step(0.5 + halfWidth, st.y);
+  s *= 1.0 - step(base, st.x);
 
   // Arrow head triangle (after the base)
-  var t = step(base, st.s);
-  t *= 1.0 - step(ptOnUpperLine, st.t);
-  t *= step(ptOnLowerLine, st.t);
+  var t = step(base, st.x);
+  t *= 1.0 - step(ptOnUpperLine, st.y);
+  t *= step(ptOnLowerLine, st.y);
 
   // Distance from closest separator for anti-aliasing
   var dist: f32;
-  if (st.s < base) {
-    let d1 = abs(st.t - (0.5 - halfWidth));
-    let d2 = abs(st.t - (0.5 + halfWidth));
+  if (st.x < base) {
+    let d1 = abs(st.y - (0.5 - halfWidth));
+    let d2 = abs(st.y - (0.5 + halfWidth));
     dist = min(d1, d2);
   } else {
     var d1 = 1e10;
-    if (st.t < 0.5 - halfWidth || st.t > 0.5 + halfWidth) {
-      d1 = abs(st.s - base);
+    if (st.y < 0.5 - halfWidth || st.y > 0.5 + halfWidth) {
+      d1 = abs(st.x - base);
     }
-    let d2 = abs(st.t - ptOnUpperLine);
-    let d3 = abs(st.t - ptOnLowerLine);
+    let d2 = abs(st.y - ptOnUpperLine);
+    let d3 = abs(st.y - ptOnLowerLine);
     dist = min(min(d1, d2), d3);
   }
 

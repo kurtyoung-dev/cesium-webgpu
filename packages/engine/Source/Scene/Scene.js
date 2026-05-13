@@ -343,6 +343,39 @@ class Scene {
       });
     }
 
+    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 1) — subscribe to the
+    // context's async resource monitor so this scene wakes itself up
+    // when an inflight WebGPU pipeline / shader / texture upload
+    // resolves after the scene has hibernated. WebGL contexts don't
+    // expose `asyncResources` (the field is undefined), so the
+    // optional chain skips the subscription entirely — WebGL paths
+    // pay zero overhead. The corresponding `pendingCount` read in the
+    // `shouldRender` gate is the defense-in-depth path that keeps
+    // frames rendering while inflight, even if the subscriber fan-out
+    // is dropped for any reason.
+    this._asyncResourceUnsub = null;
+    const asyncResources = context?.asyncResources;
+    if (
+      defined(asyncResources) &&
+      typeof asyncResources.subscribe === "function"
+    ) {
+      // Phase 6 — pass `sceneId` so the monitor can filter events
+      // scoped to other scenes' work (multi-context split-screen).
+      // For tokens without an `ownerSceneIds` set (the default — most
+      // pipelines are shared across scenes attached to the same
+      // context), every subscriber fires regardless of `sceneId`,
+      // matching the Phase 1 behavior.
+      this._asyncResourceUnsub = asyncResources.subscribe(
+        (event) => {
+          if (event.kind !== "resolved") {
+            return;
+          }
+          this.requestRender();
+        },
+        { sceneId: this._id },
+      );
+    }
+
     /**
      * The render scheduler manages layered sorting, material batching,
      * and predictive sort queries. Sits above CesiumJS's 5 existing
@@ -1462,6 +1495,17 @@ class Scene {
   }
 
   set globe(globe) {
+    // No-op when the new globe IS the current globe. `Viewer.createAsync`
+    // re-runs `CesiumWidget`'s constructor on the pre-initialized scene
+    // (passing the same `options.globe` instance), which used to land here
+    // and run `this._globe.destroy()` on the live globe before re-binding
+    // it — wiping `_surface` and crashing `updateGlobeListeners`'s call to
+    // `globe.imageryLayersUpdatedEvent` (`_surface.tileProvider`). Guarding
+    // here keeps WebGL parity intact (the WebGL path never re-assigned the
+    // same globe, so this branch was unreachable on it).
+    if (this._globe === globe) {
+      return;
+    }
     this._globe = this._globe && this._globe.destroy();
     this._globe = globe;
 
@@ -2846,6 +2890,15 @@ class Scene {
     // renderers that opt in (Globe surface today, future BufferPrimitive +
     // Model variants) read this and swap to a face-color fragment variant.
     // Capability gating happens in the renderer — Scene only forwards intent.
+    // HDR enable (Session 65, 2026-05-11) — mirrors `Scene._hdr` onto
+    // frameState so downstream WebGPU packers (globe tile UB, etc.) can
+    // gate shader behavior on `scene.highDynamicRange` without reaching
+    // back through the scene reference. The WebGPU globe terrain drape
+    // branch needs this to skip the inline exp tonemap under HDR
+    // (matches WebGL's `#ifdef HDR` path in GlobeFS.glsl, where the
+    // tonemap is replaced with a saturation boost and final compression
+    // is deferred to the post-process chain).
+    frameState.useHDR = this._hdr === true;
     frameState.debugShowTriangulation = this.debugShowTriangulation === true;
     // Globe wireframe overlay (Tier 1 debug). Forwarded to the WebGPU globe
     // surface renderer's wireframe pipeline path. WebGL renderers ignore.
@@ -3358,6 +3411,18 @@ class Scene {
       this._globeHeightDirty = true;
     }
 
+    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 1+4) — defense-in-depth
+    // poll. The subscriber path (above, in the constructor) calls
+    // `requestRender()` directly when a pipeline resolves; this read
+    // keeps frames rendering while FOREGROUND async GPU work is inflight,
+    // in case a subscriber dispatch is missed. Background-priority
+    // tokens (Phase 4 warm-on-suspicion) are excluded so speculative
+    // pre-cooking doesn't burn user-visible frames — they still wake
+    // the scene on resolution via the subscriber path. Optional chain
+    // → `0` on WebGL contexts so non-WebGPU scenes pay nothing.
+    const pendingAsyncResources =
+      this._context?.asyncResources?.pendingForegroundCount ?? 0;
+
     // Determine if should render a new frame in request render mode
     let shouldRender =
       !this.requestRenderMode ||
@@ -3365,7 +3430,8 @@ class Scene {
       cameraChanged ||
       this._logDepthBufferDirty ||
       this._hdrDirty ||
-      this.mode === SceneMode.MORPHING;
+      this.mode === SceneMode.MORPHING ||
+      pendingAsyncResources > 0;
     if (
       !shouldRender &&
       defined(this.maximumRenderTimeChange) &&
@@ -4433,6 +4499,15 @@ class Scene {
     if (typeof this._hdrFallbackUnsub === "function") {
       this._hdrFallbackUnsub();
       this._hdrFallbackUnsub = null;
+    }
+    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 1) — same teardown
+    // discipline for the async resource monitor subscriber. The
+    // monitor lives on the (potentially shared) context, so leaving
+    // a destroyed scene's subscriber attached would resurrect it on
+    // every pipeline resolution.
+    if (typeof this._asyncResourceUnsub === "function") {
+      this._asyncResourceUnsub();
+      this._asyncResourceUnsub = null;
     }
     this._tweens.removeAll();
     this._computeEngine = this._computeEngine && this._computeEngine.destroy();

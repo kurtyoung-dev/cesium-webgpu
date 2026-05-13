@@ -89,6 +89,8 @@ export class WebGPUImageUpload {
    */
   static async decodeWithOrientation(
     source: WebGPUImageSource,
+    monitor?: import("./AsyncResourceMonitor.js").AsyncResourceMonitor | null,
+    monitorLabel?: string,
   ): Promise<
     | ImageBitmap
     | HTMLCanvasElement
@@ -96,7 +98,10 @@ export class WebGPUImageUpload {
     | HTMLVideoElement
     | VideoFrame
   > {
-    // Already a bitmap or non-image surface — nothing to decode.
+    // Already a bitmap or non-image surface — nothing to decode. The
+    // monitor is intentionally NOT registered here because there's no
+    // async work to wait on; subscribers would just see a synthetic
+    // started/resolved pair with zero duration.
     if (source instanceof ImageBitmap) {
       return source;
     }
@@ -122,14 +127,43 @@ export class WebGPUImageUpload {
       return source;
     }
 
+    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 5) — register the decode
+    // with the monitor so Scene's wakeup path fires when the bitmap
+    // lands. Without this, an environment-map texture that finishes
+    // `createImageBitmap` after the scene hibernates lands silently.
+    // The monitor key includes a counter so concurrent decodes from
+    // different sources don't collide on dedup.
+    let token: import("./AsyncResourceMonitor.js").AsyncResourceToken | null =
+      null;
+    if (monitor) {
+      const id = ++WebGPUImageUpload._decodeCounter;
+      token = monitor.begin({
+        kind: "image-decode",
+        key: `image-decode|${id}`,
+        label: monitorLabel ?? "createImageBitmap",
+      });
+    }
+
     // HTMLImageElement / Blob both go through createImageBitmap with the
     // orientation hint. The "from-image" value tells the decoder to apply EXIF
     // rotation (and any embedded ICC orientation) before handing back pixels.
     const opts: ImageBitmapOptions = {
       imageOrientation: "from-image",
     };
-    return await createImageBitmap(source as ImageBitmapSource, opts);
+    try {
+      const bitmap = await createImageBitmap(source as ImageBitmapSource, opts);
+      if (token && monitor) monitor.resolve(token);
+      return bitmap;
+    } catch (error) {
+      if (token && monitor) monitor.reject(token, error);
+      throw error;
+    }
   }
+
+  // Monotonic counter for image-decode token keys. Concurrent decodes
+  // from independent call sites must not dedupe — they're separate
+  // pieces of work even when their sources hash the same.
+  private static _decodeCounter = 0;
 
   /**
    * Upload an image source into an existing `GPUTexture`, baking EXIF

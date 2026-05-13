@@ -103,6 +103,62 @@ package install. The diff function is intentionally simple — once we
 have stable baselines we can replace it with a Wasserstein/SSIM
 implementation if needed.
 
+## Cross-backend Sandcastle runner
+
+`cross-backend-sandcastle-runner.mjs` is a separate harness that runs
+each Sandcastle gallery demo TWICE — once forced to WebGL and once to
+WebGPU — and writes per-demo PNGs + a combined `report.json`. Outputs
+land in `Tools/visual-regression/output/cross-backend/` (gitignored).
+
+```bash
+# Full sweep — all 229 demos. Wipes output/cross-backend/ first.
+node Tools/visual-regression/cross-backend-sandcastle-runner.mjs
+
+# Single demo by exact filename
+node Tools/visual-regression/cross-backend-sandcastle-runner.mjs \
+  --exact "Hello World.html"
+
+# Multiple demos (group). OR-match on substring.
+node Tools/visual-regression/cross-backend-sandcastle-runner.mjs \
+  --include "Hello World,Atmosphere,Globe Materials"
+
+# Whole 3D-Tiles batch except Yemen + BIM
+node Tools/visual-regression/cross-backend-sandcastle-runner.mjs \
+  --include "3D Tiles" --exclude "Yemen,BIM"
+
+# Preview the selection without running anything
+node Tools/visual-regression/cross-backend-sandcastle-runner.mjs \
+  --include "CZML" --list
+
+# Get the full flag reference
+node Tools/visual-regression/cross-backend-sandcastle-runner.mjs --help
+```
+
+Selection flags:
+
+| Flag               | Behavior                                                   |
+| ------------------ | ---------------------------------------------------------- |
+| `--exact "X.html"` | Exact filename(s), comma-separated. Bypasses substring.    |
+| `--include "A,B"`  | Substring OR-match (repeatable). Case-insensitive.         |
+| `--exclude "X,Y"`  | Drop demos matching any substring. Applied last.           |
+| `--filter "X"`     | Single substring (legacy; same effect as `--include "X"`). |
+| `--start N`        | Skip the first N selected demos.                           |
+| `--limit N`        | Cap to N demos after slicing.                              |
+| `--list`           | Print selected demos, do not render.                       |
+| `--headed`         | Visible browser window (debugging).                        |
+| `--help` / `-h`    | Print usage and exit.                                      |
+
+**Output-dir wipe behavior**: a full sweep (no selection knob set)
+clears `output/cross-backend/*.png` + `report.json` at the start so a
+prior partial run can't leave stale screenshots. Subset runs (any
+`--exact` / `--include` / `--exclude` / `--filter` / `--start` /
+`--limit`) preserve the existing files and only overwrite the demos
+they intend to render — useful when iterating on a fix without losing
+the rest of the sweep's output.
+
+Use `analyze-cross-backend-report.mjs` to bucket the report into
+WebGPU-only regressions / both-OK / etc.
+
 ## Known caveats
 
 - The diff is sensitive to **timing**: imagery tiles may load in

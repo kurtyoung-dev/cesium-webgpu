@@ -9,8 +9,8 @@
  * The biggest single extraction in the arc (~496 LOC). Moves the
  * per-tile per-pass `TileUniforms` packer off the renderer class.
  *
- * `createTileUniformBuffer(host, …)` lays out the 472-float
- * `TileUniforms` struct (1888 bytes) against the GlobeTerrain WGSL
+ * `createTileUniformBuffer(host, …)` lays out the 476-float
+ * `TileUniforms` struct (1904 bytes) against the GlobeTerrain WGSL
  * contract:
  *
  *   - Per-imagery-layer block (16 layers × 24 floats): translationAndScale,
@@ -74,6 +74,7 @@ import {
   SPLIT_POSITION_OFFSET,
   DEBUG_FIELDS_OFFSET,
   HSB_SHIFT_OFFSET,
+  GROUND_ATMOSPHERE_CONTROL_OFFSET,
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
@@ -583,6 +584,64 @@ export function createTileUniformBuffer(
       ? tileProvider.brightnessShift
       : 0;
   data[HSB_SHIFT_OFFSET + 3] = 0;
+
+  // ─── GroundAtmosphere control (vec4) — Session 65 (2026-05-11) ───
+  // Drives the no-fog GroundAtmosphere drape path in GlobeTerrain.wgsl,
+  // matching WebGL's `#else` branch in GlobeFS.glsl that triggers when
+  // FOG is undefined but GROUND_ATMOSPHERE is defined (i.e. camera is
+  // above the fog maxHeight of 800 km). Without this, the drape is
+  // invisible at orbital altitudes — only the SkyAtmosphere limb shell
+  // renders, which is what the Hello-World screenshot was missing.
+  //
+  // Mirrors GlobeFS.glsl lines 369-391:
+  //   cameraDist  = length(camera position from globe origin) [3D only]
+  //   fadeOutDist = lightingFadeOutDistance (default π/2 × R ≈ 10 Mm)
+  //   fadeInDist  = lightingFadeInDistance  (default π   × R ≈ 20 Mm)
+  //   fade        = clamp((cameraDist - fadeOutDist) /
+  //                       (fadeInDist - fadeOutDist), 0, 1)
+  const showGroundAtmosphere =
+    (tileProvider as { showGroundAtmosphere?: boolean })
+      .showGroundAtmosphere !== false;
+  let groundAtmosphereFade = 0;
+  if (showGroundAtmosphere) {
+    const camPos = frameState.camera?.positionWC as
+      | { x: number; y: number; z: number }
+      | undefined;
+    if (camPos) {
+      const cameraDist = Math.sqrt(
+        camPos.x * camPos.x + camPos.y * camPos.y + camPos.z * camPos.z,
+      );
+      const fadeOutDist =
+        (tileProvider as { lightingFadeOutDistance?: number })
+          .lightingFadeOutDistance ?? 10000000.0;
+      const fadeInDist =
+        (tileProvider as { lightingFadeInDistance?: number })
+          .lightingFadeInDistance ?? 20000000.0;
+      const span = fadeInDist - fadeOutDist;
+      if (span > 1.0) {
+        groundAtmosphereFade = Math.max(
+          0,
+          Math.min(1, (cameraDist - fadeOutDist) / span),
+        );
+      }
+    }
+  }
+  data[GROUND_ATMOSPHERE_CONTROL_OFFSET + 0] =
+    showGroundAtmosphere && groundAtmosphereFade > 0 ? 1.0 : 0.0;
+  data[GROUND_ATMOSPHERE_CONTROL_OFFSET + 1] = groundAtmosphereFade;
+  data[GROUND_ATMOSPHERE_CONTROL_OFFSET + 2] =
+    (tileProvider as { atmosphereLightIntensity?: number })
+      .atmosphereLightIntensity ?? 10.0;
+  // .w = HDR-enabled flag. Mirrors WebGL GlobeFS.glsl `#ifdef HDR` —
+  // when on, the drape branch SKIPS the inline `1 - exp(-fExposure * x)`
+  // tonemap so the post-process chain can apply its own (the HDR
+  // framebuffer holds linear-radiance values until the final pass).
+  // Without this gate, demos like `Atmosphere.html` (which sets
+  // `scene.highDynamicRange = true` plus a 2x default light intensity)
+  // collapse to uniform tan because the inline tonemap saturates every
+  // channel before the post-process gets a chance to compress.
+  const hdrEnabled = (frameState as { useHDR?: boolean }).useHDR === true;
+  data[GROUND_ATMOSPHERE_CONTROL_OFFSET + 3] = hdrEnabled ? 1.0 : 0.0;
 
   return writeUniformSlice(
     device,

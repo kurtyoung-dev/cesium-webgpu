@@ -17,11 +17,7 @@ struct CameraUniforms {
     _pad2: vec2<f32>,
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
-    _pad3: vec2<f32>,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
-    previousViewProjection: mat4x4<f32>,
+        previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -204,13 +200,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let glowPower = material.glowPower;
   let taperPower = material.taperPower;
 
-  // Glow intensity based on distance from center (st.t = 0.5 at center)
-  let distFromCenter = abs(st.t - 0.5);
+  // Glow intensity based on distance from center (st.y = 0.5 at center)
+  let distFromCenter = abs(st.y - 0.5);
   var glow = glowPower / max(distFromCenter, 0.001) - (glowPower / 0.5);
 
   // Optional taper: reduce glow toward the end of the polyline
   if (taperPower <= 0.99999) {
-    let taperDist = 0.5 - st.s * 0.5;
+    let taperDist = 0.5 - st.x * 0.5;
     let taperFactor = taperPower / max(taperDist, 0.001) - (taperPower / 0.5);
     glow *= min(1.0, taperFactor);
   }

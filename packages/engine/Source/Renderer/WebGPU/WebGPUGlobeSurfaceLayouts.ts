@@ -111,15 +111,26 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
     ],
   );
 
-  // Group 2: Water mask + Ocean normal map (merged to stay within 4 bind groups)
+  // Group 2: Water mask + Ocean normal map + Material UBO + Material textures.
+  // Session 65 Cluster 3 — material slots merged into Group 2 to stay
+  // within the WebGPU `maxBindGroups: 4` spec floor. Bindings 4-8 carry
+  // the globe-material payload — UBO + image (texture+sampler) +
+  // heights (texture+sampler). When `globe.material` is null, bindings
+  // 4-8 receive a placeholder UBO + placeholder textures so the layout
+  // stays single-shape regardless of material state.
   host._bindGroupLayout2 = makeBindGroupLayout(
     device,
-    "Globe water mask + ocean normal layout",
+    "Globe water mask + ocean normal + material layout",
     [
       texture(0, Stage.FRAGMENT),
       sampler(1, Stage.FRAGMENT),
       texture(2, Stage.FRAGMENT),
       sampler(3, Stage.FRAGMENT),
+      uniformBuffer(4, Stage.FRAGMENT),
+      texture(5, Stage.FRAGMENT),
+      sampler(6, Stage.FRAGMENT),
+      texture(7, Stage.FRAGMENT),
+      sampler(8, Stage.FRAGMENT),
     ],
   );
 
