@@ -44,12 +44,52 @@ export interface BloomConfig {
   // altitude gating (matches pre-Batch-22 behavior).
   enableAltitudeGate?: boolean;
   // Altitude curve: bloom fully active below this height (meters),
-  // fully gated above `altitudeGateMaxMeters`. Smoothstep between.
+  // gated to `altitudeGateOrbitFloor × baseIntensity` above
+  // `altitudeGateMaxMeters`. Smoothstep between.
   // Defaults chosen so high-altitude aerial photogrammetry views
   // (Aerometrex SF at ~500m, NYC at ~10km) keep full bloom; orbit
-  // views (>1 Earth radius) get zero bloom.
+  // views (>1 Earth radius) get a subtle 15% floor — real orbital
+  // photography from ISS/Apollo shows a faint atmospheric halo
+  // (Rayleigh forward-scatter through the limb) that reads
+  // perceptually as a soft bloom. Going to 0 produces a too-sharp
+  // disk edge; the floor restores the subtle haze without the fake
+  // ground-level halo of pre-Batch-22 behavior.
   altitudeGateMinMeters?: number;
   altitudeGateMaxMeters?: number;
+  // Floor multiplier at fully-gated altitude. 0.0 = pre-Batch-22-tuning
+  // fully off; 1.0 = no gate (matches `enableAltitudeGate: false`).
+  // Default 0.15 = 15% of base intensity at orbit, giving a subtle
+  // residual halo that mirrors real-camera limb scattering.
+  altitudeGateOrbitFloor?: number;
+
+  // ─────────────────────────────────────────────────────────────────
+  // FUTURE WORK — per-layer reflective bloom (orbit polish §13.x)
+  // ─────────────────────────────────────────────────────────────────
+  // The bloom bright-pass currently runs a SINGLE luminance threshold
+  // over the composite scene color. Real-world bloom is camera-lens
+  // light bleed proportional to per-surface RADIANCE, which varies
+  // sharply by material type:
+  //   - Ocean: high specular at sun-glint angles, low diffuse →
+  //     bright tight glint that SHOULD bloom even at orbit.
+  //   - Clouds: high diffuse reflectance (albedo ~0.7-0.9) → soft
+  //     wide bloom across the cloud band.
+  //   - Land terrain: mid diffuse reflectance (~0.15-0.35) → subtle
+  //     bloom only on direct sun-facing slopes.
+  //   - Snow / ice: very high diffuse (~0.85) → strong bloom.
+  //   - Atmosphere haze (Rayleigh): wavelength-dependent → blue
+  //     channel blooms more than red (matches dusk sky reads).
+  //
+  // Implementing this requires the model + globe fragment shaders to
+  // export a separate "bloom contribution" channel (similar to how
+  // they already export velocity for TAA), feeding a multi-channel
+  // bright-pass that integrates contribution-weighted luminance per
+  // material type. The infrastructure for additional FS output
+  // channels exists (velocity texture) but per-material bloom-weight
+  // tables would be a new design.
+  //
+  // Tracked in `migration_doc/DEFERRED_WORK.md::
+  // NEW-ORBIT-PER-LAYER-REFLECTIVE-BLOOM` for the next celestial /
+  // atmosphere sprint.
 }
 
 export class BloomEffect implements PostProcessEffect {
@@ -115,6 +155,7 @@ export class BloomEffect implements PostProcessEffect {
       enableAltitudeGate: config.enableAltitudeGate ?? true,
       altitudeGateMinMeters: config.altitudeGateMinMeters ?? 100_000.0,
       altitudeGateMaxMeters: config.altitudeGateMaxMeters ?? 6_378_137.0,
+      altitudeGateOrbitFloor: config.altitudeGateOrbitFloor ?? 0.15,
     };
     this._baseIntensity = this._config.intensity;
   }
@@ -137,14 +178,21 @@ export class BloomEffect implements PostProcessEffect {
     if (this._config.enableAltitudeGate) {
       const min = this._config.altitudeGateMinMeters;
       const max = this._config.altitudeGateMaxMeters;
-      // 1 - smoothstep(min, max, h): full intensity at h <= min,
-      // zero at h >= max, smooth blend between.
+      const floor = this._config.altitudeGateOrbitFloor;
+      // smoothstep(min, max, h) blends from 0 (ground bloom) to 1
+      // (orbit bloom). Final multiplier blends from 1.0 (ground)
+      // to `floor` (orbit) — defaulting to 0.15 produces a subtle
+      // residual halo at orbit altitudes that mirrors real-camera
+      // limb scattering. Set `altitudeGateOrbitFloor: 0.0` to fully
+      // disable orbit bloom (matches pre-tuning Batch-22 behavior);
+      // set to 1.0 to disable the gate entirely.
       const t = Math.max(
         0,
         Math.min(1, (cameraHeightMeters - min) / Math.max(1e-6, max - min)),
       );
       const smooth = t * t * (3 - 2 * t);
-      gated = this._baseIntensity * (1 - smooth);
+      const altitudeMultiplier = 1 - smooth * (1 - floor);
+      gated = this._baseIntensity * altitudeMultiplier;
     }
     // Avoid redundant uploads when the gated value hasn't moved.
     if (Math.abs(gated - this._lastGatedIntensity) < 1e-4) return;
@@ -438,6 +486,10 @@ export class BloomEffect implements PostProcessEffect {
     }
     if (config.altitudeGateMaxMeters !== undefined) {
       cfg.altitudeGateMaxMeters = config.altitudeGateMaxMeters;
+      this._lastGatedIntensity = -1.0;
+    }
+    if (config.altitudeGateOrbitFloor !== undefined) {
+      cfg.altitudeGateOrbitFloor = config.altitudeGateOrbitFloor;
       this._lastGatedIntensity = -1.0;
     }
 

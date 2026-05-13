@@ -2810,6 +2810,48 @@ Replace the flat `nightAmbient = 0.025` floor with IBL diffuse irradiance sample
 
 **Effort:** 1-2 sessions.
 
+#### NEW-ORBIT-PER-LAYER-REFLECTIVE-BLOOM — Future (large, 2-3 sessions)
+
+**Motivation:** Real camera bloom is light bleed proportional to per-surface RADIANCE, which varies sharply by material type:
+
+| Surface | Reflectance | Bloom character |
+|---|---|---|
+| Ocean (specular) | low diffuse, high specular at glint angles | Bright tight glint, blooms even at orbit |
+| Clouds | albedo 0.7-0.9 (high diffuse) | Soft wide bloom across cloud band |
+| Snow / ice | albedo ~0.85 (high diffuse) | Strong bloom |
+| Land terrain | albedo ~0.15-0.35 (mid diffuse) | Subtle bloom on sun-facing slopes only |
+| Atmosphere haze (Rayleigh) | wavelength-dependent | Blue channel blooms more than red (dusk-sky read) |
+| Vegetation | albedo ~0.10-0.20 (low diffuse) | Minimal bloom |
+
+The current Batch-22 altitude-gated bloom is a uniform scene-wide multiplier. Per the user's "we want this to expand to impact different features and layers differently in the future" request, the proper implementation is per-fragment material-aware bloom contribution.
+
+**Design sketch:**
+
+1. **Add a "bloom contribution" output channel** to the model + globe fragment shaders, similar to the existing TAA velocity channel at `@location(1)`. Each material writes a single-channel f32 (or rgb if wavelength-dependent bloom matters) representing its bloom radiance contribution.
+2. **Multi-channel bright-pass** — `BloomEffect.brightPass` samples both the scene color AND the bloom-contribution texture, weighting the bright-pass threshold by the contribution factor. Materials with high contribution lower the effective threshold; low-contribution materials raise it.
+3. **Per-material contribution tables** — globe ocean shader writes high contribution at glint angles, lower elsewhere; cloud shader writes high contribution at cloud-cover pixels; terrain shader writes from albedo × NdotL × Lambertian-ish factor. Specular highlights write the full GGX-spec contribution.
+4. **Atmosphere bloom** — `SkyAtmosphere.wgsl` writes per-wavelength bloom contribution proportional to Rayleigh inscatter magnitude, producing the subtle dusk-side blue haze bloom seen in ISS limb photography.
+5. **Bloom kernel** — single fullscreen kernel weights both color magnitude AND contribution channel. Standard Gaussian blur on the weighted bright-pass output. Composite remains unchanged.
+
+**Files affected:**
+
+- `WebGPUBloomEffect.ts` — extend bright-pass to consume contribution texture
+- `Shaders/WebGPU/PostProcess/BrightPass.wgsl` — multi-channel weighted threshold
+- `Shaders/WebGPU/Globe/GlobeTerrain.wgsl::computeEnhancedOcean` + main FS — write `@location(2)` bloom contribution
+- `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` — write atmosphere bloom contribution
+- `Shaders/WebGPU/Primitive/PrimitivePBR*.wgsl` — write Model PBR bloom contribution
+- `WebGPUSceneFramebuffer.ts` — allocate a bloom-contribution texture (single channel f32 or rgba8, similar to velocity texture)
+- `WebGPUModelRenderer.js` — wire model FS to emit contribution
+
+**Compatibility:**
+
+- All existing FS shaders that don't write the new `@location(2)` get a default contribution of 1.0 (current uniform behavior) via missing-attachment fallback or a placeholder bright-pass path when the contribution texture is unallocated.
+- `BloomConfig.enablePerLayerContribution` flag (default `false` initially) so the feature ships dormant until visual review on a wide demo sweep validates the per-material contribution tunings.
+
+**Effort:** 2-3 sessions (1 session for the framebuffer + bright-pass plumbing; 1-2 sessions for per-material contribution authoring + Sandcastle visual verification across ocean / cloud / terrain / atmosphere demos).
+
+**Related:** [NEW-ORBIT-BLOOM-ALTITUDE-GATE](#new-orbit-bloom-altitude-gate--open-immediate-1-2-hours) (uniform altitude gate — this entry's per-material multiplier layers on top of the altitude gate).
+
 ### NEW-VR-CZML-MODEL-ARTICULATIONS-INDEXCOUNT — Closed (2026-05-12, Session 65 Batch 7)
 
 **Symptom:** `CZML Model Articulations.html` triggered `Index range (first: 0, count: 18, format: Uint16) does not fit in index buffer size (20)` during draw command encoding every frame, invalidating the command buffer. Model never rendered.
