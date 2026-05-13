@@ -2524,16 +2524,22 @@ After the cubemap/tonemap/Sandcastle-defer cluster landed (Session 64), a fresh 
 
 **Verification (Session 65 Batch 16):** WGSL composite compiles successfully (1536 chars, includes both sub-material functions + composite czm_getMaterial). Zero GPU validation errors. 48 draw commands execute per frame. Composite WGSL fabric is now infrastructurally functional.
 
-**Bathymetry — Remaining issue (still open):** Globe renders DARK (91% gray pixels) instead of the bathymetric color ramp WebGL shows. WGSL compiles, draw commands fire, no errors — but the visual output is desaturated. Probable causes (in order of likelihood):
+**Bathymetry — RESOLVED 2026-05-13 (Session 65 Batch 17):**
 
-1. Material UBO field offsets don't match Tint's struct alignment computation for the assembled struct (verifiable by dumping the actual `f32` values seen by the shader vs the packed `Uint8Array`).
-2. `imageSampler` (`@group(2) @binding(6)`) isn't getting `this._sampler` configured for the right filter mode — a NEAREST sampler on a 100×15 gradient texture would produce blocky banding but not pure darkness.
-3. HTMLCanvasElement texture upload via `uploadImageSourceHelper` succeeds but the resulting view doesn't match the WGSL texture binding format (e.g., sampling rgba8unorm-srgb when shader expects rgba8unorm).
-4. `czm_gammaCorrect4` is applied twice (once by sub-material WGSL, once somewhere else) double-darkening the ramp.
+Root cause was in [`WebGPUGlobeSurfaceCameraUB.ts:217`](packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts#L217) — the per-tile camera UBO was packing `uniformState.sunDirectionEC` into the `sunDirectionEC` slot, but the upstream `GlobeFS.glsl` uses `czm_lightDirectionEC` everywhere. The two are identical when the scene uses a `SunLight`, but Bathymetry overrides `scene.light` with a per-frame `DirectionalLight` (horizontal hillshade direction). The composite material's `m.diffuse` was producing correct ramp colors, but the subsequent Lambert diffuse multiplication (`color = color * diffuse`) was using the sun's `NdotL` (Pacific = nighttime/twilight) instead of the demo's custom hillshade direction → ~0.025 night-ambient multiplier collapsed every fragment to dark gray.
 
-**Next-investigation steps:** Add a temporary `output = vec4(materialUniforms.minimumHeight, materialUniforms.maximumHeight, scaledHeight, 1.0);` debug return in the assembled WGSL and verify the values reaching the shader. If correct, the bug is in the texture sample. If wrong, the bug is in the UBO layout/pack alignment.
+**Fix:** swap `uniformState.sunDirectionEC` → `uniformState.lightDirectionEC` in the camera UBO packer. The WGSL field is still named `sunDirectionEC` for back-compat with existing shader code; renaming it is a separate refactor.
 
-**Estimated effort to close remaining Bathymetry issue:** 0.5–1 session for the targeted UBO/binding diagnostic.
+**Diagnostic methodology (for future similar bugs):** add temporary debug returns at successive points in `GlobeTerrain.wgsl::fragmentMain`:
+
+1. `return vec4(1.0, 0.0, 0.0, 1.0)` after `m = czm_getMaterial(matInput)` → confirmed pipeline executes.
+2. `return vec4(m.diffuse, 1.0)` → confirmed sub-materials produce correct ramp colors.
+3. `return vec4(m.alpha, m.alpha, m.alpha, 1.0)` → confirmed alpha=1.0 in most fragments.
+4. `return vec4(color, 1.0)` after `mix(color, m.diffuse, m.alpha)` → confirmed color is correct BEFORE lighting.
+
+That narrowed the bug to the post-mix lighting block, which led to the `sunDir` vs `lightDir` discrepancy.
+
+**Verification:** WebGPU Bathymetry probe now shows 97.0% colored pixels (was 7.4%), proper blue-ocean ramp rendering with hillshade lighting visible. Hello World + Globe Materials regression-checked: no degradation.
 
 ### NEW-VR2-5-POLYLINES-ON-3DTILES-OVERSATURATION — Open
 

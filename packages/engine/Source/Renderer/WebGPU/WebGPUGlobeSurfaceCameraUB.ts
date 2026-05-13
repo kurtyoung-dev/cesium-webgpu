@@ -214,10 +214,23 @@ export function createCameraUniformBuffer(
   data[offset++] = 0;
 
   // sunDirectionEC (vec3) + enableLighting (f32)
-  const sunDir = uniformState.sunDirectionEC;
-  data[offset++] = sunDir.x;
-  data[offset++] = sunDir.y;
-  data[offset++] = sunDir.z;
+  // Session 65 Batch 17 — pack `lightDirectionEC` (the SCENE LIGHT
+  // direction) instead of `sunDirectionEC`. When the scene uses a
+  // SunLight, these are identical (see `UniformState.update` line
+  // 836-844). When the scene overrides `scene.light` with a custom
+  // `DirectionalLight` (e.g., Bathymetry's per-frame hillshade
+  // direction), only `lightDirectionEC` reflects the user-set value.
+  // Mirrors upstream `GlobeFS.glsl` which references
+  // `czm_lightDirectionEC` everywhere — using `sunDirectionEC` here
+  // produced dark output for custom-light demos because the Lambert
+  // term + day/night fade math read the wrong direction. The WGSL
+  // field is still named `sunDirectionEC` for back-compat with
+  // existing shader code; it's a misnomer but rewriting the field
+  // name is a separate refactor.
+  const lightDir = uniformState.lightDirectionEC;
+  data[offset++] = lightDir.x;
+  data[offset++] = lightDir.y;
+  data[offset++] = lightDir.z;
   data[offset++] = tileProvider.enableLighting ? 1.0 : 0.0;
 
   // scaleAndBias (mat4x4, 16 floats) — for quantized mesh decompression
