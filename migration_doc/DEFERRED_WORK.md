@@ -2704,7 +2704,7 @@ At ~5 Mm camera altitude over Lake Superior, WebGPU shows a **per-tile brightnes
 
 **Estimated effort:** 1 session — needs pixel-level overlay diff at a fixed camera + fixed terrain LOD to isolate which axis (sampling precision vs LOD vs scale matrix) introduces the error.
 
-### NEW-WEBGPU-MSAA-FLEET-ENABLEMENT — Open (2026-05-11)
+### NEW-WEBGPU-MSAA-FLEET-ENABLEMENT — Partial (Batch 21, 2026-05-13)
 
 **Symptom:** WebGPU renders without MSAA while WebGL defaults to 4x MSAA. Visible everywhere small triangles or thin features appear: sphere/ellipsoid mesh seams (Show or Hide Entities), polyline aliasing, model silhouette banding. WebGL silently smooths these via sub-pixel coverage; WebGPU shows raw rasterization.
 
@@ -2727,6 +2727,27 @@ At ~5 Mm camera altitude over Lake Superior, WebGPU shows a **per-tile brightnes
 6. Re-run cross-backend sweep — expected mean-diff drop into the 40s.
 
 **Estimated effort:** 2-3 sessions of careful pipeline-by-pipeline audit + testing.
+
+**Batch 21 partial progress (2026-05-13):**
+
+Attempted bridge enablement to confirm what still breaks. Test result: with `context._msaaSamples = scene.msaaSamples (= 4)`, Hello World fails with cascading attachment-state validation errors across multiple pipelines. Each error names a specific pipeline; fixing it surfaces the next one. After fixing 4 visible failures, the next blocker is the Globe terrain render bundle (bundles bake their pipeline at record time and can't be edited).
+
+**Pipelines made MSAA-aware in this batch** (`multisample: count > 1 ? { count } : undefined`; harmless when MSAA is off):
+
+- `WebGPUSkyAtmosphereRenderer.js` — `createPipeline(... sampleCount)` reads `context._msaaSamples` at pipeline-creation time.
+- `WebGPUEnvironmentRenderer.js` — Sun + Moon pipeline descriptors.
+- `WebGPUCubeMapPanoramaRenderer.js` — `getPipeline(device, format, sampleCount)` + cache rebuild when sample count changes; `createDrawCommand` plumbs the sample count from `context._msaaSamples`.
+- `WebGPUDepthPlane.ts` — `initialize(... sampleCount)` accepts sample count; `WebGPUSceneRendererEnsureResources.ts` passes `context._msaaSamples ?? 1`.
+
+**Bridge:** intentionally reverted in `WebGPUSceneRenderer.prepareFrame`. Comment block updated to reflect the partial progress + next blockers. Re-enable when render-bundle + remaining cached pipelines are MSAA-aware.
+
+**Remaining blockers** (next batch):
+
+- Globe terrain render bundle (`Globe terrain bundle`) — bundles need rebuilding when sample count changes; the `renderBundleManager.invalidateAll` call that fires on `_sceneColorFormat` flip already exists but doesn't fire on sample-count change. Wire the same invalidation for sample-count drift.
+- Model pipeline cache (`WebGPUModelPipelineCache.js`) — pipeline keys include format but not sample count.
+- Globe surface pipelines, billboards, polylines, labels, points, ground primitives, classification, gaussian splats, voxels — sweep each `createRenderPipeline` site.
+- `WebGPUOIT.ts` and `WebGPUInvertClassification.ts` — already accept `multisample` via descriptor but their callers pin `count: 1`.
+- `copyTextureToTexture` paths that move depth out of MSAA-source framebuffers need blit-via-pipeline fallback.
 
 ### NEW-VR-CZML-MODEL-ARTICULATIONS-INDEXCOUNT — Closed (2026-05-12, Session 65 Batch 7)
 

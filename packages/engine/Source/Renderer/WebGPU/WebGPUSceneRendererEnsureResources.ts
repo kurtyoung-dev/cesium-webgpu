@@ -309,6 +309,7 @@ export function ensureResources(
       depthFormat,
       desiredDepthPlaneFormat,
       context.webgpuPipelineCache ?? null,
+      context._msaaSamples ?? 1,
     );
   }
 

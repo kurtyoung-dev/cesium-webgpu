@@ -939,20 +939,22 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // Session 65 Batch 4 (2026-05-11): `scene.msaaSamples` plumbing
-    // intentionally NOT wired — see Batch 4 entry in
-    // `migration_doc/WEBGPU_DEBUGGING_LOG.md`. Turning on MSAA broke
-    // multiple downstream pipelines (GlobeDepth depth-copy MSAA bind
-    // group, invert-classification cache mismatch, command-buffer
-    // invalidation from format-incompatible attachments). Each needs
-    // its own audit before MSAA can be flipped on. Tracked as
-    // `NEW-WEBGPU-MSAA-FLEET-ENABLEMENT` follow-up.
+    // Session 65 Batch 21 (2026-05-13) — MSAA bridge attempted, reverted.
+    // The bridge itself works (writes `scene.msaaSamples` into
+    // `context._msaaSamples`, triggers scene-FB recreate with the new
+    // sample count), but downstream render bundles + ~10-20 cached
+    // pipelines still pin `sampleCount: 1` and fail attachment
+    // validation when MSAA flips on. Each needs MSAA-awareness wired
+    // through its caller. This batch made 4 pipelines MSAA-aware
+    // (SkyAtmosphere, Sun, Moon, CubeMapPanorama, DepthPlane) as
+    // forward-compat infrastructure — the new `multisample.count`
+    // gate is harmless when MSAA is off (`> 1 ? ... : undefined`).
+    // Re-enabling the bridge is the natural next batch once Globe
+    // terrain render bundles and the model pipeline cache get the
+    // same treatment. Tracked as `NEW-WEBGPU-MSAA-FLEET-ENABLEMENT`.
     //
     // For now `context._msaaSamples` stays at its hardcoded default
-    // of 1 and the WebGPU backend renders without antialiasing. This
-    // is the reason small per-triangle features (sphere mesh seams,
-    // single-pixel polylines, model silhouettes) show visible
-    // banding compared to the WebGL backend's 4x MSAA output.
+    // of 1 and the WebGPU backend renders without antialiasing.
 
     const canvas: HTMLCanvasElement | OffscreenCanvas | undefined =
       context._canvas;

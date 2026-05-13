@@ -153,6 +153,7 @@ let _cachedPipeline = null;
 // runtime HDR toggles invalidate it (the pipeline's fragment-output
 // format must match the recreated scene FB's color format).
 let _cachedPipelineFormat = null;
+let _cachedPipelineSampleCount = 1;
 let _cachedBindGroupLayout0 = null;
 let _cachedBindGroupLayout1 = null;
 let _cachedPipelineLayout = null;
@@ -214,16 +215,17 @@ function ensureLayouts(device) {
  * @param {GPUTextureFormat} format - Canvas preferred format
  * @returns {GPURenderPipeline}
  */
-function getPipeline(device, format) {
+function getPipeline(device, format, sampleCount) {
+  sampleCount = sampleCount ?? 1;
   // Batch 110 — re-create when the requested format changes (HDR
   // toggle flips scene FB color format between rgba16float and the
-  // canvas format). Previously the cache only checked device identity
-  // and would return a pipeline targeting the OLD format against a
-  // recreated scene FB at the new format.
+  // canvas format). Batch 21 — also re-create when the MSAA sample
+  // count changes.
   if (
     _cachedPipeline &&
     _cachedDevice === device &&
-    _cachedPipelineFormat === format
+    _cachedPipelineFormat === format &&
+    _cachedPipelineSampleCount === sampleCount
   ) {
     return _cachedPipeline;
   }
@@ -279,8 +281,11 @@ function getPipeline(device, format) {
       // before or after terrain and the result is the same.
       depthCompare: "less-equal",
     },
+    // Session 65 Batch 21 — match scene FB sample count.
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   });
   _cachedPipelineFormat = format;
+  _cachedPipelineSampleCount = sampleCount;
 
   return _cachedPipeline;
 }
@@ -541,8 +546,9 @@ export function createDrawCommand(
   indexCount,
   bindGroup0,
   bindGroup1,
+  sampleCount,
 ) {
-  const pipeline = getPipeline(device, canvasFormat);
+  const pipeline = getPipeline(device, canvasFormat, sampleCount);
 
   return new WebGPUDrawCommand({
     pipeline: pipeline,
@@ -807,6 +813,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
       state.indexCount,
       state.bindGroup0,
       state.bindGroup1,
+      context._msaaSamples ?? 1,
     );
     state._pipelineFormatGeneration = currentGen;
   }

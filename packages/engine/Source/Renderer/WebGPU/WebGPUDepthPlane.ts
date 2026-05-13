@@ -283,6 +283,7 @@ export class WebGPUDepthPlane {
     depthFormat: GPUTextureFormat,
     colorFormat: GPUTextureFormat = "bgra8unorm",
     pipelineCache?: WebGPURenderPipelineCache | null,
+    sampleCount: number = 1,
   ): void {
     if (this._pipeline) return;
 
@@ -356,6 +357,8 @@ export class WebGPUDepthPlane {
         stripIndexFormat: undefined,
         cullMode: "none",
       },
+      // Session 65 Batch 21 — match scene FB sample count.
+      multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
     };
 
     if (pipelineCache) {

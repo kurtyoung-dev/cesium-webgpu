@@ -423,6 +423,11 @@ function updateWebGPUSun(sun, frameState, commandList) {
         depthWriteEnabled: false,
         depthCompare: "less-equal",
       },
+      // Session 65 Batch 21 — match scene FB sample count.
+      multisample:
+        (context._msaaSamples ?? 1) > 1
+          ? { count: context._msaaSamples }
+          : undefined,
     };
     cache.pipelineEntry = { descriptor, pipeline: null, pending: false };
     cache.bindGroupLayout = bgl;
@@ -529,7 +534,7 @@ function createMoonBoundingCube(device) {
  * C-R7-RENDERER-MIGRATION (Batch 74).
  * @private
  */
-function buildMoonPipelineResources(device, format, depthFormat) {
+function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
   // Shader validation is handled centrally by WebGPUContext's
   // _installShaderValidation wrapper — no per-site validation needed.
   const moduleCache = getEnvShaderModuleCache(device);
@@ -599,6 +604,8 @@ function buildMoonPipelineResources(device, format, depthFormat) {
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    // Session 65 Batch 21 — match scene FB sample count.
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 
   return { descriptor, bgl };
@@ -798,7 +805,13 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   if (!defined(cache.pipelineEntry)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    const built = buildMoonPipelineResources(device, format, depthFmt);
+    const sampleCount = context._msaaSamples ?? 1;
+    const built = buildMoonPipelineResources(
+      device,
+      format,
+      depthFmt,
+      sampleCount,
+    );
     cache.pipelineEntry = {
       descriptor: built.descriptor,
       pipeline: null,

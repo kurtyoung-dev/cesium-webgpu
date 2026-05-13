@@ -126,7 +126,7 @@ function generateAtmosphereGeometry(ellipsoid, scale, slices, stacks) {
  * Creates the render pipeline for sky atmosphere.
  * @private
  */
-function createPipeline(device, shaderCode, format, depthFormat) {
+function createPipeline(device, shaderCode, format, depthFormat, sampleCount) {
   const shaderModule = getSkyAtmosphereShaderCache(device).getOrCreate(
     ShaderSourceId.SKY_ATMOSPHERE,
     shaderCode,
@@ -211,6 +211,9 @@ function createPipeline(device, shaderCode, format, depthFormat) {
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    // Session 65 Batch 21 — match scene FB sample count so MSAA-on
+    // doesn't fail attachment validation.
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   });
 
   return { pipeline, bindGroupLayout, lutBindGroupLayout };
@@ -781,7 +784,14 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
       const shaderCode = getShaderSource();
       const format = context.scenePipelineFormat || "bgra8unorm";
       const depthFmt = context.depthFormat || "depth24plus-stencil8";
-      const result = createPipeline(device, shaderCode, format, depthFmt);
+      const sampleCount = context._msaaSamples ?? 1;
+      const result = createPipeline(
+        device,
+        shaderCode,
+        format,
+        depthFmt,
+        sampleCount,
+      );
       cache.pipeline = result.pipeline;
       cache.bindGroupLayout = result.bindGroupLayout;
       cache.lutBindGroupLayout = result.lutBindGroupLayout;
