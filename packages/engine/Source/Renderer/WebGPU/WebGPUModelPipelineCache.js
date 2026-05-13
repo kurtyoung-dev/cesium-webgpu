@@ -549,6 +549,10 @@ function createPipeline(
   forceDepthWrite,
   hasTexCoord1,
   hasFeatureId0,
+  // Session 65 Batch 28 — MSAA sample count. Default 1 matches the
+  // pre-bridge behavior; when the bridge re-enables this gets the
+  // current `context._msaaSamples` value baked into the pipeline.
+  sampleCount = 1,
 ) {
   const cullMode = doubleSided ? "none" : "back";
 
@@ -606,6 +610,10 @@ function createPipeline(
       depthWriteEnabled,
       depthCompare: "less-equal",
     },
+    // Session 65 Batch 28 — multisample state matches the scene FB's
+    // sample count. Default 1 produces `undefined` (no multisample
+    // block), preserving pre-MSAA behavior.
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   });
 }
 
@@ -920,6 +928,8 @@ function createVelocityPipeline(
   doubleSided,
   hasTexCoord1,
   hasFeatureId0,
+  // Session 65 Batch 28 — MSAA sample count.
+  sampleCount = 1,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR velocity [alpha=${alphaMode},ds=${doubleSided}]`;
@@ -945,6 +955,7 @@ function createVelocityPipeline(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   });
 }
 
@@ -975,6 +986,8 @@ function createClassificationPipeline(
   doubleSided,
   hasTexCoord1,
   hasFeatureId0,
+  // Session 65 Batch 28 — MSAA sample count.
+  sampleCount = 1,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model classification [alpha=${alphaMode},ds=${doubleSided}]`;
@@ -1009,6 +1022,7 @@ function createClassificationPipeline(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   });
 }
 
@@ -1025,6 +1039,15 @@ class WebGPUModelPipelineCache {
     this._device = device;
     this._presentationFormat = presentationFormat;
     this._depthFormat = depthFormat;
+    // Session 65 Batch 28 — MSAA sample count tracked alongside format
+    // generation. When the bridge in `WebGPUSceneRenderer.prepareFrame`
+    // sets `context._msaaSamples`, the generation counter bumps (Batch
+    // 25), this cache wipes on the next `maybeUpdateForSceneFormat`,
+    // and `createPipeline` reads the new sample count to bake into the
+    // freshly-created pipelines. `_sampleCount = 1` matches the default
+    // hardcoded value of `WebGPUContext._msaaSamples` so pre-bridge
+    // behavior is unchanged.
+    this._sampleCount = 1;
     // Batch 110 — track the scene pipeline format generation last
     // applied so a runtime HDR / canvas-format change can invalidate
     // every cached pipeline (color, pick, depth-write, velocity).
@@ -1504,6 +1527,11 @@ class WebGPUModelPipelineCache {
     if (newFormat !== this._presentationFormat) {
       this._presentationFormat = newFormat;
     }
+    // Session 65 Batch 28 — read the current MSAA sample count so
+    // newly-created pipelines bake the matching multisample state.
+    // The wipe below covers the previous-generation pipelines that
+    // had the old sample count baked in.
+    this._sampleCount = context._msaaSamples ?? 1;
     // Wipe all cached pipelines so the next lookup creates fresh
     // entries against the current `_presentationFormat`. The cached
     // pipelines themselves aren't `destroy()`-ed (WebGPU has no
@@ -1555,6 +1583,7 @@ class WebGPUModelPipelineCache {
       false,
       hasTexCoord1,
       hasFeatureId0,
+      this._sampleCount,
     );
     this._pipelines.set(key, pipeline);
     return pipeline;
@@ -1597,6 +1626,7 @@ class WebGPUModelPipelineCache {
       true,
       hasTexCoord1,
       hasFeatureId0,
+      this._sampleCount,
     );
     this._depthWritePipelines.set(key, pipeline);
     return pipeline;
@@ -1788,6 +1818,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      this._sampleCount,
     );
     this._velocityPipelines.set(key, pipeline);
     return pipeline;
@@ -1830,6 +1861,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      this._sampleCount,
     );
     this._classificationPipelines.set(key, pipeline);
     return pipeline;
