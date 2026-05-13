@@ -215,7 +215,10 @@ export function ensureResources(
     host._oit = new WebGPUOIT();
   }
   if (host._oit && needsRecreate) {
-    host._oit.update(device, width, height);
+    // Session 65 Batch 33 — pass MSAA sample count so the OIT
+    // composite pipeline matches the scene FB's sample count when
+    // the bridge re-enables.
+    host._oit.update(device, width, height, context._msaaSamples ?? 1);
   }
 
   // C-R8-EDGE-FBO (Batch 44) — edge MRT framebuffer. Allocated only

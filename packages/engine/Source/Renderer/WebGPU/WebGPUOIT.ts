@@ -148,22 +148,43 @@ export class WebGPUOIT {
     };
   }
 
+  // Session 65 Batch 33 — MSAA sample count tracked alongside the
+  // viewport dimensions. When `context._msaaSamples` changes (bridge
+  // re-enable), `update()` rebuilds the composite pipeline at the new
+  // count. Default 1 = single-sample (pre-bridge behavior).
+  private _sampleCount: number = 1;
+
   /**
    * Update OIT render targets to match viewport size.
+   *
+   * @param device GPU device
+   * @param width  Viewport width in pixels
+   * @param height Viewport height in pixels
+   * @param sampleCount Scene FB MSAA sample count (defaults to 1).
+   *   The composite pipeline writes into `_sceneColorView` which is
+   *   the MSAA target when the scene FB is MSAA; the pipeline must
+   *   match that sample count or attachment validation fails.
    */
-  update(device: GPUDevice, width: number, height: number): void {
+  update(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    sampleCount: number = 1,
+  ): void {
     if (width <= 0 || height <= 0) return;
 
     const needsRecreate =
       this._device !== device ||
       this._width !== width ||
-      this._height !== height;
+      this._height !== height ||
+      this._sampleCount !== sampleCount;
 
     if (!needsRecreate) return;
 
     this._device = device;
     this._width = width;
     this._height = height;
+    this._sampleCount = sampleCount;
     this._supported = true;
 
     this._destroyTargets();
@@ -288,6 +309,13 @@ export class WebGPUOIT {
         ],
       },
       primitive: { topology: "triangle-list" },
+      // Session 65 Batch 33 — match scene FB sample count so MSAA
+      // composite output validates against the MSAA scene color
+      // attachment. Composite source textures (accumulation, revealage)
+      // remain single-sample — the multisample state only affects the
+      // pipeline's render-target compatibility.
+      multisample:
+        this._sampleCount > 1 ? { count: this._sampleCount } : undefined,
     });
   }
 
