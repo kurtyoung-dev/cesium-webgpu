@@ -2868,13 +2868,22 @@ Per [CELESTIAL_ATMOSPHERE_DESIGN.md §6 Phase 4](CELESTIAL_ATMOSPHERE_DESIGN.md)
 
 Batch 42 added the `windDirectionAndSpeed: vec4<f32>` slot to the SkyAtmosphere uniform buffer (`UNIFORM_BUFFER_SIZE` 256 → 272) and packed `frameState.atmosphericConditions.weather.{windDirection,windSpeed}` into it. No fragment shader path consumes the value yet — it's scaffolding so the Phase 5/6 bind-group layouts don't have to rebuild when those phases land.
 
-#### NEW-ORBIT-PHASE-6-VOLUMETRIC-CLOUDS — Open (large, 3-5 sessions including Phase 5a)
+#### NEW-ORBIT-PHASE-6-VOLUMETRIC-CLOUDS — Mostly shipped 2026-05-13 (Session 65 Batch 43)
 
-**THE answer to user-reported "no clouds from orbit."** Hybrid raymarched (≤50 km) + 2D procedural (≥100 km) per locked B15. Requires Phase 5a (froxel grid) as foundation.
+**Status reality check (Session 65 audit, 2026-05-13):** The "no clouds from orbit" user-reported gap is mostly already addressed. The grep audit found:
+
+- **Phase 5a-5d shipped.** `WebGPUVolumetricFogRenderer.ts` + `Compute/VolumetricFog.wgsl` ship the full froxel grid (8a), height-fog density injection (5b), Henyey-Greenstein sun + moon scattering with sun-shadow-map god rays (5c), and 3-octave value-noise varying density (5d). Wired into `WebGPUSceneRendererEnvironmentalEffects.ts` and gated on `atmosphericConditions.volumetricFog.enabled` (default FALSE per B18). The FEATURE_INVENTORY had stale `SCAFFOLDED` tags — corrected in this commit.
+- **Phase 6 main render path shipped.** The legacy-named `WebGPUProceduralCloudRenderer.ts` is in fact a full Schneider-style volumetric raymarcher: HG dual-lobe phase function, Beer-Powder lighting, 3D FBM density field with wind animation, coverage threshold + height shaping, per-step light marching for soft shadows, silver-lining edge enhancement. Was previously only reachable via `globe.showProceduralClouds`; Batch 43 wired `atmosphericConditions.clouds.enableVolumetric` to alias the same toggle so the canonical API now controls it.
+
+**Remaining Phase 6 work** (deferred to a focused future session — each is ≤1 session):
+
+- **Phase 6c — Cloud shadows in volumetric fog.** Inject a cheap approximation of cloud density extinction along the sun direction in `VolumetricFog.wgsl::lightScattering` so the fog god-ray pass sees cloud-cast shadows. Requires copying the `cloudDensity` + `fbmNoise` functions from `ProceduralClouds.wgsl` into `VolumetricFog.wgsl` and plumbing 6-8 cloud uniforms (cloudLayerBottom/Top, coverage, densityMultiplier, windDirection, windSpeed, time, enableVolumetric) from `frameState` into the fog UBO each frame. Estimated ~150 LOC WGSL + ~50 LOC TS, ~1 session including visual verification with both fog + clouds enabled.
+- **Phase 6d — Quality dial.** Expose `atmosphericConditions.clouds.volumetricQuality` as `"low" | "medium" | "high" | "auto"` and have the renderer pick `maxSteps` and `lightSteps` from it. "auto" mode reads the VisualPerformanceTargetService benchmark. Small wiring task, ~0.5 session.
+- **Phase 6b — High-altitude 2D fast-path crossfade.** Original design called for a separate cheap 2D shader at ≥100km to skip the raymarch when its detail isn't visible. The current implementation has only one path (volumetric raymarch with `maxSteps` defaulting to ~64). **May be unnecessary** — the existing renderer's maxSteps is already runtime-tunable; Phase 6d's quality dial can map "auto + high altitude" to `maxSteps = 8` for the same perf win without a separate shader. Re-evaluate after Phase 6d ships.
 
 Full design: [CELESTIAL_ATMOSPHERE_DESIGN.md §4.6 + §6 Phase 6](CELESTIAL_ATMOSPHERE_DESIGN.md). Default off (`atmosphericConditions.clouds.enableVolumetric = false`).
 
-**Effort:** 3-5 sessions (1 Phase 5a + 2-3 Phase 6).
+**Effort:** Originally estimated 3-5 sessions; revised down to 1-2 sessions (Phase 6c + 6d) given how much was already shipped.
 
 #### NEW-ORBIT-AUTO-EXPOSURE-ACTIVATION — Future (optional, 1 session)
 
