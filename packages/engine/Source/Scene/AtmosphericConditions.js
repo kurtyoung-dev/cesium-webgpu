@@ -711,14 +711,36 @@ function buildVaryingAtmosphereDensity() {
 }
 
 function buildClouds(globe) {
-  // New Phase 1 state: volumetric cloud fields.
+  // Phase 1 + Phase 6 state. The Cesium WebGPU fork ships a single
+  // Schneider-style volumetric raymarched cloud renderer
+  // (`WebGPUProceduralCloudRenderer`) — the legacy "procedural" name is
+  // historical; the kernel HAS been volumetric (HG dual-lobe + Beer-
+  // Powder lighting + 3D FBM density field + light-ray marching) since
+  // it landed. The `enableProcedural` and `enableVolumetric` toggles
+  // therefore both route to the same underlying
+  // `globe.showProceduralClouds` flag — they are aliases, not separate
+  // render paths. Future Phase 6b work may introduce a fast 2D fallback
+  // at high altitude (≥`volumetricDisableAltitude`); the existing
+  // hysteresis range fields stay so that work is non-breaking.
   const leaf = {
-    enableVolumetric: false,
     volumetricEnableAltitude: 50000,
     volumetricDisableAltitude: 100000,
   };
   Object.defineProperties(leaf, {
     enableProcedural: {
+      enumerable: true,
+      get: function () {
+        return globe.showProceduralClouds;
+      },
+      set: function (v) {
+        globe.showProceduralClouds = v;
+      },
+    },
+    // Session 65 Batch 43 (Phase 6 wiring) — alias to the same
+    // underlying renderer toggle. Pre-Batch-43 this was a plain field
+    // that did nothing; now flipping it from JS turns the actual
+    // renderer on/off and reading it reflects current state.
+    enableVolumetric: {
       enumerable: true,
       get: function () {
         return globe.showProceduralClouds;
