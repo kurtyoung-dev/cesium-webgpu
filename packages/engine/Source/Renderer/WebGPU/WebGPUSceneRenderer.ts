@@ -2241,10 +2241,25 @@ export class WebGPUSceneRenderer {
           bloomEffect?: { applyAltitudeGate?: (h: number) => void };
         }
       ).bloomEffect;
+      const heightMeters =
+        frameState?.camera?.positionCartographic?.height ?? 0;
       if (bloomEffect?.applyAltitudeGate) {
-        const heightMeters =
-          frameState?.camera?.positionCartographic?.height ?? 0;
         bloomEffect.applyAltitudeGate(heightMeters);
+      }
+      // Session 65 Batch 39 — orbit polish §13.x. Auto-exposure altitude
+      // gate paired with bloom. The compute reduction still runs (cheap)
+      // but its multiplier blends toward neutral 1.0 as the camera rises
+      // above the gate range, so the bright atmosphere limb doesn't pull
+      // exposure down and darken the visible disk at orbit. Ground-level
+      // demos (cityscape, atmospheric photography) keep full eye
+      // adaptation. Real-camera fixed-exposure parity for orbit views.
+      const autoExposure = (
+        this._postProcess as unknown as {
+          autoExposure?: { applyAltitudeGate?: (h: number) => void };
+        }
+      ).autoExposure;
+      if (autoExposure?.applyAltitudeGate) {
+        autoExposure.applyAltitudeGate(heightMeters);
       }
       this._postProcess.execute(
         encoder,

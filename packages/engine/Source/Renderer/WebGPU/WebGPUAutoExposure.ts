@@ -38,6 +38,30 @@ export interface AutoExposureConfig {
   maximumLuminance?: number;
   adaptationSeconds?: number;
   targetFps?: number;
+
+  // Session 65 Batch 39 — altitude-gated auto-exposure (orbit polish).
+  // Pairs with the bloom altitude gate (Batch 22). At ground level the
+  // adaptive multiplier from `getExposureMultiplier()` is used in full
+  // (the WebGL parity behavior); at orbit the multiplier blends toward
+  // 1.0 (no adaptation) so that the bright atmosphere limb doesn't pull
+  // exposure down and darken the visible disk. Real ISS / Apollo
+  // photography uses fixed-exposure cameras for the disk; eye adaptation
+  // is a CAMERA-LENS / RETINA effect that doesn't make sense for vacuum
+  // viewpoints. Mirrors Frostbite GDC 2016 + Karis 2013 conventions.
+  //
+  // When `enableAltitudeGate` is false (default true), the gate is a
+  // no-op and the raw multiplier from the compute reduction flows
+  // through. Set both `altitudeGateOrbitFloor: 1.0` and leave the gate
+  // on to keep the gate path warm but neutral.
+  enableAltitudeGate?: boolean;
+  altitudeGateMinMeters?: number;
+  altitudeGateMaxMeters?: number;
+  // Floor multiplier blend at fully-gated altitude:
+  //   0.0 = full adaptation at orbit (pre-Batch-39 behavior)
+  //   1.0 = pure neutral exposure at orbit (no adaptation)
+  // Default 0.75 = 75% of the way toward neutral at orbit, keeping a
+  // small adaptive influence so day/night transitions still smooth.
+  altitudeGateOrbitFloor?: number;
 }
 
 export class WebGPUAutoExposure {
@@ -63,6 +87,19 @@ export class WebGPUAutoExposure {
   private _minimumLuminance: number;
   private _maximumLuminance: number;
   private _adaptationRate: number;
+
+  // Session 65 Batch 39 — altitude gate config. Mirrors BloomEffect's
+  // pattern. Default `_altitudeBlend = 1.0` means "full adaptive
+  // multiplier"; the per-frame `applyAltitudeGate` updates it.
+  private _enableAltitudeGate: boolean;
+  private _altitudeGateMinMeters: number;
+  private _altitudeGateMaxMeters: number;
+  private _altitudeGateOrbitFloor: number;
+  // Blend toward neutral exposure (1.0 = full adaptation, 0.0 = neutral).
+  // Computed from camera altitude in `applyAltitudeGate`; consumed by
+  // `getExposureMultiplier` so the post-process pipeline picks up the
+  // gated value without additional wiring.
+  private _altitudeBlend = 1.0;
 
   private _averageLuminance = 0.5;
   // Batch 110 — ring of 3 readback buffers to avoid the "used while
@@ -101,14 +138,65 @@ export class WebGPUAutoExposure {
     const fps = config?.targetFps ?? 60;
     const seconds = config?.adaptationSeconds ?? 1.5;
     this._adaptationRate = 1.0 / (fps * seconds);
+
+    // Altitude gate defaults — see AutoExposureConfig JSDoc above.
+    this._enableAltitudeGate = config?.enableAltitudeGate ?? true;
+    this._altitudeGateMinMeters = config?.altitudeGateMinMeters ?? 100_000.0;
+    this._altitudeGateMaxMeters = config?.altitudeGateMaxMeters ?? 6_378_137.0;
+    this._altitudeGateOrbitFloor = config?.altitudeGateOrbitFloor ?? 0.75;
   }
 
   get averageLuminance(): number {
     return this._averageLuminance;
   }
 
+  /**
+   * Returns the exposure multiplier blended with the altitude gate.
+   *
+   * At ground level (altitudeBlend = 1.0) this returns the raw adaptive
+   * multiplier `1 / averageLuminance`. As the camera rises through the
+   * gate range the result blends toward 1.0 (no adaptation) by
+   * `altitudeGateOrbitFloor` × distance.
+   *
+   * @returns Effective exposure multiplier for the tonemap stage.
+   */
   getExposureMultiplier(): number {
-    return 1.0 / Math.max(this._averageLuminance, 0.001);
+    const raw = 1.0 / Math.max(this._averageLuminance, 0.001);
+    if (!this._enableAltitudeGate) return raw;
+    // Linear mix: blend=1 → raw, blend=0 → 1.0 (neutral).
+    return raw * this._altitudeBlend + 1.0 * (1.0 - this._altitudeBlend);
+  }
+
+  /**
+   * Session 65 Batch 39 — apply the per-frame altitude gate. Mirrors
+   * BloomEffect.applyAltitudeGate so the orbit polish gates pair up.
+   *
+   * Updates the internal `_altitudeBlend` weight: 1.0 at sea level
+   * (full adaptation), `1 - orbitFloor` at and above
+   * `altitudeGateMaxMeters` (mostly neutral). Smoothstep between.
+   *
+   * The actual multiplier is computed on demand by
+   * `getExposureMultiplier()` so callers don't need to re-pull values
+   * from a uniform buffer — the gate is a CPU-side blend.
+   *
+   * @param cameraHeightMeters Camera altitude above the WGS84
+   *   ellipsoid in meters (`frameState.camera.positionCartographic.height`).
+   */
+  applyAltitudeGate(cameraHeightMeters: number): void {
+    if (!this._enableAltitudeGate) {
+      this._altitudeBlend = 1.0;
+      return;
+    }
+    const min = this._altitudeGateMinMeters;
+    const max = this._altitudeGateMaxMeters;
+    const t = Math.max(
+      0,
+      Math.min(1, (cameraHeightMeters - min) / Math.max(1e-6, max - min)),
+    );
+    const smooth = t * t * (3 - 2 * t);
+    // blend = 1 at ground, (1 - orbitFloor) at orbit.
+    // With orbitFloor=0.75: blend=1 at ground, 0.25 at orbit.
+    this._altitudeBlend = 1.0 - smooth * this._altitudeGateOrbitFloor;
   }
 
   initialize(
