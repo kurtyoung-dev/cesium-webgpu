@@ -2455,7 +2455,7 @@ Bug clusters surfaced by the cross-backend Sandcastle sweep that built on Sessio
 
 After the cubemap/tonemap/Sandcastle-defer cluster landed (Session 64), a fresh 95-demo sample of the cross-backend sweep surfaced six remaining visual-bug families. Fixes for #1 (atmosphere alpha + settle-time bump) are in this session; the rest are deferred.
 
-### NEW-VR2-1-LOW-ALT-TERRAIN-LOAD — PARTIALLY FIXED 2026-05-10
+### NEW-VR2-1-LOW-ALT-TERRAIN-LOAD — FIXED 2026-05-13 (Session 65 Batch 41)
 
 **Symptom:** Ground-level demos (Aerometrex SF, 3D Tiles BIM, Bloom, Particle System, Lighting, Shadows) rendered the bottom half as a uniform gray/white plane in WebGPU — terrain tiles never reached the screen. The 3D Tiles models themselves did render.
 
@@ -2473,6 +2473,24 @@ After the cubemap/tonemap/Sandcastle-defer cluster landed (Session 64), a fresh 
 - **Proper alpha-from-scattering refactor** (instead of geometric path approximation) — the WebGL `computeAtmosphereScattering` returns `(rayleigh, mie, opacity, translucent)` where `opacity` is the Beer-Lambert extinction along the view ray. Mirror that signature in WGSL `computeScattering` / `sampleScatteringLut` so the alpha derivation matches WebGL exactly. With proper opacity, the PBR Neutral + sRGB encode parity fix (reverted this session because it pushed `max(rgb)*2` above 1.0 at ground level) can re-land safely.
 
 **Estimated effort:** 1-2 sessions for the remaining low-alt terrain bug + proper alpha refactor.
+
+#### Session 65 Batch 41 update (2026-05-13) — root cause located, two fixes shipped
+
+Two stacked root causes, both fixed in [packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts) + [packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl](packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl):
+
+1. **`computeModifiedModelView` received the wrong argument.** The helper reads `obj.center` and falls back to a plain view matrix when it's missing. The caller passed a `GlobeSurfaceTile` whose `.center` property doesn't exist — every globe tile draw fell back to the plain view path. With a plain view matrix, the WGSL line `v_positionEC = modifiedModelView × position_tile_local` produces a HUGE camera-relative position because `position_tile_local` is tile-relative (a few hundred metres at most) but the view matrix's translation column equals the negated camera position in world coords (~6.4 Mm for Earth-surface views). Every fragment ended up with `v_distance > 100 km`, so `computeFog(v_distance, density, mod)` saturated to 1.0 at every pixel and replaced imagery with a flat fog color across the entire below-horizon area. Fix: pass `mesh` (which DOES have `.center` set by `TerrainEncoding`) instead of `surfaceTile`, and rename the parameter so the same bug can't reappear via a different caller. Mirrors WebGL `GlobeSurfaceTileProviderRendering.js:1120` (`rtc = mesh.center`).
+2. **FOG branch unconditionally applied a `nightFogDimming * 0.05` factor + `fogMinimumBrightness` floor.** WebGL's equivalent darken multiplier (`GlobeFS.glsl:522-526`) is gated on `DYNAMIC_ATMOSPHERE_LIGHTING && (ENABLE_VERTEX_LIGHTING || ENABLE_DAYNIGHT_SHADING)`. For demos using the default `enableLighting = false`, WebGL leaves fog at full brightness while WebGPU was dimming it to a uniform `24/255` floor — the second factor behind the "flat color across below-horizon" symptom. Fix: gate the darken multiplier on `atmosphereParams.w > 1.5` (Batch 38 encoding for "dynamic lighting active") and remove the `fogMinimumBrightness` floor, matching WebGL exactly.
+
+Verification (`probe-empty-scenes.mjs` colored-pixel %):
+
+| Demo                         | Before | After  | WebGL  |
+| ---------------------------- | ------ | ------ | ------ |
+| Bloom.html                   | 35.9 % | 73.8 % | 69.6 % |
+| Particle System.html         |  4.6 % | 68.1 % | 71.2 % |
+| 3D Tiles Photogrammetry.html | 65.6 % | 87.0 % | 86.6 % |
+| Bathymetry.html              | 79.4 % | 90.7 % | 90.7 % |
+
+Orbit demos preserved (Sentinel-2 on-disk delta bit-perfect, Hello World mid-upper delta `(2, 0, -6)` within noise, 0 GPU validation errors across the sweep).
 
 ### NEW-VR2-2-3DTILES-BASECOLOR-WHITE — Mostly resolved 2026-05-11 (Mars + Aerometrex + BIM now textured; Moon is a separate Sandcastle-state issue)
 
