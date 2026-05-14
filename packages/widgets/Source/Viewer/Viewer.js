@@ -2058,9 +2058,40 @@ Viewer.createAsync = async function (container, options) {
   const overlay = new LoadingOverlay(containerEl);
 
   try {
-    // Use CesiumWidget.createAsync to handle Scene async creation
+    // Use CesiumWidget.createAsync to handle Scene async creation.
+    //
+    // Session 65 Batch 40 (NEW-VR2-3c-DISK-EXTENT-DRIFT) — the temp
+    // widget container MUST have non-zero layout dimensions so that
+    // the canvas it creates has the correct `clientWidth/clientHeight`
+    // when the synchronous Camera constructor in Scene reads them via
+    // `scene.drawingBufferWidth / scene.drawingBufferHeight` to set
+    // `frustum.aspectRatio` (see Camera.js:209-210). The previous
+    // `display: none` zeroed the canvas's clientWidth/Height before
+    // the canvas DOM-attach + CesiumWidget.configureCanvasSize() ran,
+    // so the WebGPU camera default-view was computed with
+    // `aspectRatio = 1.0` (1×1 buffer) instead of the actual viewport
+    // aspect. That mispositioned the WebGPU camera by ~25% closer to
+    // Earth than WebGL (12.67 Mm vs 17.19 Mm above the ellipsoid for
+    // Hello World), making the visible disk ~1.5× wider in WebGPU
+    // and producing the off-disk "atmosphere bleed" symptom flagged
+    // by the disk-bleed probe.
+    //
+    // Fix: use absolute positioning + visibility:hidden to keep the
+    // canvas off-screen but laid out with real dimensions. The
+    // LoadingOverlay above (z-index 9999) hides any flicker of the
+    // pre-init canvas. The parent container is forced to
+    // `position: relative` if it isn't already positioned so the
+    // absolute child sizes to the parent.
     const cesiumWidgetContainer = document.createElement("div");
-    cesiumWidgetContainer.style.display = "none";
+    const containerPos = window.getComputedStyle(containerEl).position;
+    let restoreContainerPos;
+    if (containerPos === "static") {
+      restoreContainerPos = containerEl.style.position;
+      containerEl.style.position = "relative";
+    }
+    cesiumWidgetContainer.style.position = "absolute";
+    cesiumWidgetContainer.style.inset = "0";
+    cesiumWidgetContainer.style.visibility = "hidden";
     containerEl.appendChild(cesiumWidgetContainer);
 
     const widget = await CesiumWidget.createAsync(
@@ -2074,8 +2105,12 @@ Viewer.createAsync = async function (container, options) {
       },
     );
 
-    // Clean up the temporary widget container
+    // Clean up the temporary widget container + restore parent
+    // position if we mutated it for the absolute-positioning trick.
     containerEl.removeChild(cesiumWidgetContainer);
+    if (restoreContainerPos !== undefined) {
+      containerEl.style.position = restoreContainerPos;
+    }
 
     // Create the Viewer with the pre-initialized scene from the widget
     const viewer = new Viewer(container, {

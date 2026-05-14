@@ -2514,40 +2514,49 @@ Sentinel-2 on-disk pixels:  Δ (32, 19, 8) — slightly brighter but neutral.
 
 Disk colors match WebGL within ~10-30 per channel — the cyan-tinted bleed is gone. Closing the original entry.
 
-### NEW-VR2-3b-LIMB-HALO-OVERBRIGHT — Open (split out from NEW-VR2-3 on 2026-05-13)
+### NEW-VR2-3b-LIMB-HALO-OVERBRIGHT — MOSTLY RESOLVED 2026-05-13 (Session 65 Batch 40)
 
-**Symptom:** WebGPU atmosphere limb haze is brighter than WebGL by ~50-130 per channel for sample points within ~50px of the globe disk edge. Sun-side has a bright yellow-white "glare" patch.
+**Original symptom:** WebGPU atmosphere limb haze brighter than WebGL by ~50-130 per channel for sample points within ~50 px of the disk edge.
 
-**2026-05-13 Session 65 Batch 38/39 update — root cause refined.** While working on ground-atmosphere proper integration (Batch 38) and auto-exposure altitude gate (Batch 39), the disk-bleed probe was re-run with a horizontal scan across y=300. The data shows the symptom is NOT a SkyAtmosphere shader bug: the entire disk + halo system is rendered **~50 px wider in WebGPU than WebGL**. WebGL's limb color `(34,72,114)` at x=225 is essentially identical to WebGPU's `(33,74,111)` at x=175 — same color, shifted 50 px outward. A cyan debug write inside the SkyAtmosphere FS confirmed the FS is NOT running on the off-disk pixels at x=200 — those pixels are covered by globe terrain that's drawn wider than WebGL renders it.
+**Resolution:** Root cause turned out to be NEW-VR2-3c-DISK-EXTENT-DRIFT (now fixed in Batch 40). Once the camera was positioned identically between backends, the limb sample points lined up and the apparent over-bright reading collapsed:
 
-Likely root causes (in order of probability):
+```text
+Hello World on-disk parity (post Batch 40):
+  center    Δ ( -20, -15, -16)  ← within noise (imagery streaming timing)
+  mid-upper Δ (   2,   0,  -6)  ← matches WebGL
+  mid-lower Δ (  56,  58,  29)  ← single-pixel transition outlier
 
-- Camera FOV or near/far plane difference between backends
-- devicePixelRatio handling drift between Cesium's WebGL `Canvas2D` measurement and the WebGPU swap-chain configuration
-- A subtle projection-matrix offset (off-center frustum on one side only)
+Sentinel-2 (post Batch 40):
+  center    Δ (   0,   0,   1)  ← exact match
+  mid-upper Δ (   1,   1,   0)  ← exact match
+  mid-lower Δ (   0,   0,   0)  ← bit-perfect
+```
 
-The earlier Beer-Lambert / camera-altitude-opacity hypotheses were ruled out by experiment (changing alpha math had no effect on the off-disk pixels because they aren't drawn by the SkyAtmosphere shader). Filed as **NEW-VR2-3c-DISK-EXTENT-DRIFT** since this is upstream of the SkyAtmosphere FS:
+**Residual:** ~25 px of disk-edge halo width difference at x=275 (left) and x=425 (right) in the horizontal scan probe — WebGPU's atmosphere shell renders a slightly wider faint haze ring. This is a sub-pixel rasterization / alpha-tail detail in the SkyAtmosphere shell, not the original "limb haze overbright" symptom. Track as a small follow-up only if visual review flags it. Estimated effort: ≤1 session.
 
-### NEW-VR2-3c-DISK-EXTENT-DRIFT — Open (filed 2026-05-13, blocks VR2-3b)
+### NEW-VR2-3c-DISK-EXTENT-DRIFT — FIXED 2026-05-13 (Session 65 Batch 40)
 
-**Symptom:** WebGPU's rasterized disk extent is ~50 px wider per side than WebGL's at the same camera position. This is what produces the "bluish bleed into space" the disk-bleed probe flags — those pixels are globe terrain, not SkyAtmosphere.
+**Symptom:** WebGPU's rasterized disk extent was ~50 px wider per side than WebGL's at the same camera position. The "bluish bleed into space" the disk-bleed probe flagged was globe terrain rasterized too wide, not SkyAtmosphere.
 
-**Investigation steps already done (Session 65 Batch 38/39 audit):**
+**Root cause:** `Viewer.createAsync` (the WebGPU async bootstrap path) created the temp `CesiumWidget` inside a hidden container with `style.display = "none"`. Hidden ancestors zero a descendant's `clientWidth / clientHeight`, so when `CesiumWidget.configureCanvasSize` ran and the `Scene` constructor invoked `new Camera(scene)`, line 209-210 of `Camera.js` read
 
-- Horizontal scan probe at y=300 confirmed identical limb colors offset by ~50px.
-- Cyan debug in SkyAtmosphere FS proved the off-disk pixels are not covered by the SkyAtmosphere geometry.
-- Both backends use the same `outerEllipsoidScale = 1.025` for atmosphere geometry and the same WGS84 ellipsoid for globe.
+```js
+this.frustum.aspectRatio = scene.drawingBufferWidth / scene.drawingBufferHeight;
+```
 
-**Investigation steps remaining:**
+against a `1×1` canvas — setting `aspectRatio = 1.0` instead of the real `1.333`. The default-view computation in `rectangleCameraPosition3D` then placed the WebGPU camera ~25% closer to Earth (`12.67 Mm` vs WebGL's `17.19 Mm`), making the rasterized disk ~1.5× wider on screen and producing all the "off-disk bleed" symptoms.
 
-- Compare `scene.canvas.clientWidth` × `devicePixelRatio` between backends (mismatch would shift disk extent).
-- Compare `camera.frustum.near / far / fov` snapshots between backends.
-- Sample the depth buffer at a "leaked" pixel — if depth < 1.0, it's rasterized terrain (not skybox).
-- If extent diff is uniform per-side (e.g., +25 px on left + +25 px on right), suspect FOV; if asymmetric, suspect frustum offset.
+**Fix (Batch 40, [packages/widgets/Source/Viewer/Viewer.js](packages/widgets/Source/Viewer/Viewer.js)):** Replaced `display: none` on the temp container with `position: absolute; inset: 0; visibility: hidden`. The temp container now takes the full layout dimensions of the outer container so the canvas inside has the right `clientWidth/clientHeight` when Camera constructs, while the `visibility: hidden` (plus the loading overlay's `z-index: 9999`) keeps the pre-init frame invisible. The parent container's `position` is temporarily set to `relative` if it was `static` so the absolute child sizes correctly, and is restored after init.
 
-**Estimated effort:** 1-2 sessions for forensics. Likely a small fix once located (a missing devicePixelRatio multiply or a frustum bias).
+**Verification:** All camera/canvas/frustum fields now match exactly between backends (`scene.drawingBufferWidth = 800`, `cameraH = 17190458 m`, `aspectRatio = 1.333`, `fovy = 0.817 rad`, etc.). Disk-bleed probe deltas collapse from `(+50, +80, +120)` at off-disk pixels to `(-3 to +3)` across all backends. See [Tools/visual-regression/probe-disk-extent-state.mjs](Tools/visual-regression/probe-disk-extent-state.mjs) for the state-comparison probe and [Tools/visual-regression/probe-disk-bleed-scan.mjs](Tools/visual-regression/probe-disk-bleed-scan.mjs) for the horizontal-row scan.
 
-**Original VR2-3b "limb haze overbright" cause may also be partly explained by this:** Once the geometry is the right size, the limb sample points line up and the over-bright reading may shrink to within noise. Re-verify VR2-3b after VR2-3c lands.
+**Forensics process** (recorded for future "WebGPU vs WebGL appears different" investigations):
+
+1. Quantified the symptom with a horizontal-row scan probe at the demo's disk row — proved the disk + halo were uniformly offset, not a shader misbehavior.
+2. Wrote a cyan debug return in the SkyAtmosphere FS — confirmed the FS was not covering the off-disk pixels, ruling out SkyAtmosphere as the cause.
+3. Probed `scene.drawingBufferWidth`, `frustum.aspectRatio`, `cameraPositionCartographic.height` etc. at the same timeout in both backends. Found camera-height mismatch with identical frustum settings — pointed to the Camera constructor reading a stale value.
+4. Time-series snapshot of `canvas.width / .height / .clientWidth / .clientHeight` revealed the WebGPU canvas was briefly `width=1 height=1 cssW=0 cssH=0` before settling at `800×600`. The `display: none` on the temp container explained the zero `clientWidth`.
+5. Fixed at the source (temp container styling) rather than working around downstream.
 
 ### NEW-VR2-4-EMPTY-SCENES — Reclassified 2026-05-13 (Session 65 Batch 16)
 
