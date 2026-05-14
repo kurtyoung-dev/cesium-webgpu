@@ -2518,9 +2518,36 @@ Disk colors match WebGL within ~10-30 per channel — the cyan-tinted bleed is g
 
 **Symptom:** WebGPU atmosphere limb haze is brighter than WebGL by ~50-130 per channel for sample points within ~50px of the globe disk edge. Sun-side has a bright yellow-white "glare" patch.
 
-**Suspect (untriaged):** the SkyAtmosphere LUT or inline scattering math returning higher inscatter magnitude than WebGL's `czm_pbrNeutralTonemapping(...)`-driven path. The shape (limb-only over-bright) is consistent with a forward-scattering Mie phase function or a missing tonemap step on the atmosphere output.
+**2026-05-13 Session 65 Batch 38/39 update — root cause refined.** While working on ground-atmosphere proper integration (Batch 38) and auto-exposure altitude gate (Batch 39), the disk-bleed probe was re-run with a horizontal scan across y=300. The data shows the symptom is NOT a SkyAtmosphere shader bug: the entire disk + halo system is rendered **~50 px wider in WebGPU than WebGL**. WebGL's limb color `(34,72,114)` at x=225 is essentially identical to WebGPU's `(33,74,111)` at x=175 — same color, shifted 50 px outward. A cyan debug write inside the SkyAtmosphere FS confirmed the FS is NOT running on the off-disk pixels at x=200 — those pixels are covered by globe terrain that's drawn wider than WebGL renders it.
 
-**Estimated effort:** 1 session to compare WGSL `computeScattering` vs WebGL `AtmosphereCommon.glsl` step-by-step at orbit altitude.
+Likely root causes (in order of probability):
+
+- Camera FOV or near/far plane difference between backends
+- devicePixelRatio handling drift between Cesium's WebGL `Canvas2D` measurement and the WebGPU swap-chain configuration
+- A subtle projection-matrix offset (off-center frustum on one side only)
+
+The earlier Beer-Lambert / camera-altitude-opacity hypotheses were ruled out by experiment (changing alpha math had no effect on the off-disk pixels because they aren't drawn by the SkyAtmosphere shader). Filed as **NEW-VR2-3c-DISK-EXTENT-DRIFT** since this is upstream of the SkyAtmosphere FS:
+
+### NEW-VR2-3c-DISK-EXTENT-DRIFT — Open (filed 2026-05-13, blocks VR2-3b)
+
+**Symptom:** WebGPU's rasterized disk extent is ~50 px wider per side than WebGL's at the same camera position. This is what produces the "bluish bleed into space" the disk-bleed probe flags — those pixels are globe terrain, not SkyAtmosphere.
+
+**Investigation steps already done (Session 65 Batch 38/39 audit):**
+
+- Horizontal scan probe at y=300 confirmed identical limb colors offset by ~50px.
+- Cyan debug in SkyAtmosphere FS proved the off-disk pixels are not covered by the SkyAtmosphere geometry.
+- Both backends use the same `outerEllipsoidScale = 1.025` for atmosphere geometry and the same WGS84 ellipsoid for globe.
+
+**Investigation steps remaining:**
+
+- Compare `scene.canvas.clientWidth` × `devicePixelRatio` between backends (mismatch would shift disk extent).
+- Compare `camera.frustum.near / far / fov` snapshots between backends.
+- Sample the depth buffer at a "leaked" pixel — if depth < 1.0, it's rasterized terrain (not skybox).
+- If extent diff is uniform per-side (e.g., +25 px on left + +25 px on right), suspect FOV; if asymmetric, suspect frustum offset.
+
+**Estimated effort:** 1-2 sessions for forensics. Likely a small fix once located (a missing devicePixelRatio multiply or a frustum bias).
+
+**Original VR2-3b "limb haze overbright" cause may also be partly explained by this:** Once the geometry is the right size, the limb sample points line up and the over-bright reading may shrink to within noise. Re-verify VR2-3b after VR2-3c lands.
 
 ### NEW-VR2-4-EMPTY-SCENES — Reclassified 2026-05-13 (Session 65 Batch 16)
 
