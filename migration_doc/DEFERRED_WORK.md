@@ -2857,11 +2857,16 @@ User-reported audit comparing real orbital photography (ISS, Earthrise from the 
 
 **Effort:** 30-60 min.
 
-#### NEW-ORBIT-PHASE-4-ATMOSPHERIC-CONDITIONS-FINISH — Open (medium, 1 session)
+#### NEW-ORBIT-PHASE-4-ATMOSPHERIC-CONDITIONS-FINISH — FIXED 2026-05-13 (Session 65 Batch 42)
 
-Per [CELESTIAL_ATMOSPHERE_DESIGN.md §6 Phase 4](CELESTIAL_ATMOSPHERE_DESIGN.md). `humidity` → mie coefficient + fog density; `airQuality` → rayleigh coefficient; `windSpeed`/`windDirection` → SkyAtmosphere uniforms (consumed by future Phase 5/6 + water-rendering design).
+Per [CELESTIAL_ATMOSPHERE_DESIGN.md §6 Phase 4](CELESTIAL_ATMOSPHERE_DESIGN.md).
 
-**Effort:** 1 session.
+- ✅ `humidity` → mie coefficient + fog density (Batch 29)
+- ✅ `cloudCover` → star occlusion factor (Batch 29)
+- ✅ `airQuality` → rayleigh coefficient (Batch 29)
+- ✅ `windSpeed` / `windDirection` → SkyAtmosphere uniforms (Batch 42 — pre-emptive scaffolding ahead of Phase 5/6 consumers)
+
+Batch 42 added the `windDirectionAndSpeed: vec4<f32>` slot to the SkyAtmosphere uniform buffer (`UNIFORM_BUFFER_SIZE` 256 → 272) and packed `frameState.atmosphericConditions.weather.{windDirection,windSpeed}` into it. No fragment shader path consumes the value yet — it's scaffolding so the Phase 5/6 bind-group layouts don't have to rebuild when those phases land.
 
 #### NEW-ORBIT-PHASE-6-VOLUMETRIC-CLOUDS — Open (large, 3-5 sessions including Phase 5a)
 
