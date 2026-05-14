@@ -49,6 +49,23 @@ struct Uniforms {
   // z = moonIntensityScale (default 0.05 — moon is much dimmer than sun)
   // w = pad
   dualLightControl: vec4<f32>,
+  // Session 65 Batch 42 — Phase 4 completion. Wind state pre-emptively
+  // plumbed for Phase 5 (volumetric fog advection), Phase 6 (cloud
+  // motion in raymarched + procedural cloud layers), and the sibling
+  // water-rendering design (wave displacement modulation).
+  //
+  // Source: `frameState.atmosphericConditions.weather.{windSpeed,
+  // windDirection}`. WindSpeed is in m/s; windDirection is a normalized
+  // 3-vector in WORLD coords (Earth-relative). Both pack into a single
+  // vec4 to keep the uniform layout compact:
+  //   xyz = windDirectionWC (normalized; defaults to (0, 0, 1))
+  //   w   = windSpeed m/s (defaults to 0 = calm)
+  //
+  // No fragment shader path consumes these yet — they are scaffolding
+  // ahead of Phase 5/6. Adding them now keeps the uniform buffer
+  // layout stable when those phases land so SkyAtmosphere bind groups
+  // don't need to be rebuilt later.
+  windDirectionAndSpeed: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;

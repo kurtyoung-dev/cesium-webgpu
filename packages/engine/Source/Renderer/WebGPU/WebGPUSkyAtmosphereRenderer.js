@@ -40,7 +40,13 @@ function getSkyAtmosphereShaderCache(device) {
 }
 
 // Uniform buffer: 256 bytes (aligned)
-const UNIFORM_BUFFER_SIZE = 256;
+// Session 65 Batch 42 — Phase 4 completion (windSpeed/windDirection):
+// bumped 256 → 272 to accommodate the `windDirectionAndSpeed: vec4<f32>`
+// field appended after `dualLightControl`. WebGPU requires uniform
+// buffer sizes to be a multiple of 16 bytes; 272 = 17 × 16 satisfies
+// that. No bind-group layout change needed (the layout's minBindingSize
+// is what matters and it sizes from this constant).
+const UNIFORM_BUFFER_SIZE = 272;
 
 // Default atmosphere parameters
 const DEFAULT_RAYLEIGH_COEFFICIENT = new Cartesian3(5.5e-6, 13.0e-6, 22.4e-6);
@@ -727,6 +733,26 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   uniformData[61] = frameState.moonPhaseFraction ?? 1.0;
   uniformData[62] = acLighting?.moonIntensity ?? 0.05;
   uniformData[63] = 0.0;
+
+  // Session 65 Batch 42 — Phase 4 completion. Wind state for Phase 5/6
+  // consumers (volumetric fog advection, cloud motion). Source is
+  // `frameState.atmosphericConditions.weather.{windDirection,windSpeed}`.
+  // `windDirection` is expected to be a normalized 3-vector in world
+  // coords; `windSpeed` is m/s.
+  //
+  // No fragment shader path consumes these yet — they're scaffolding.
+  // Default direction (0, 0, 1) + speed 0 means "calm" so any future
+  // consumer that conditionally short-circuits on `windSpeed > 0`
+  // remains backwards-compatible.
+  const acWeather =
+    frameState.atmosphericConditions && frameState.atmosphericConditions.weather
+      ? frameState.atmosphericConditions.weather
+      : undefined;
+  const windDir = acWeather?.windDirection;
+  uniformData[64] = windDir?.x ?? 0.0;
+  uniformData[65] = windDir?.y ?? 0.0;
+  uniformData[66] = windDir?.z ?? 1.0;
+  uniformData[67] = acWeather?.windSpeed ?? 0.0;
 }
 
 /**
