@@ -87,8 +87,31 @@ export function createCameraUniformBuffer(
   const mvpRTE = m4Values(uniformState.modelViewProjectionRelativeToEye);
   for (let i = 0; i < 16; i++) data[offset++] = mvpRTE[i];
 
-  // modifiedModelView (mat4x4, 16 floats)
-  const modifiedView = computeModifiedModelView(uniformState, surfaceTile);
+  // modifiedModelView (mat4x4, 16 floats).
+  //
+  // Session 65 Batch 41 (NEW-VR2-1) — pass `mesh.center` not
+  // `surfaceTile.center`. WebGL's GlobeSurfaceTileProviderRendering.js
+  // line 1120 reads `rtc = mesh.center` and feeds that to
+  // `u_modifiedModelView`. `surfaceTile.center` is NOT a property that
+  // exists on GlobeSurfaceTile — the previous call was always passing
+  // `undefined`, causing `computeModifiedModelView` to fall back to
+  // the plain view matrix.
+  //
+  // With a plain view matrix, `view × position_tile_local` produces a
+  // HUGE camera-relative position because `position_tile_local` is
+  // small (a few hundred meters at most) but the translation column
+  // of `view` is the negative camera position in world coords (~6.4 Mm
+  // for Earth surface views). The resulting `v_positionEC` magnitude
+  // crossed 100 km on every fragment in Bloom / Particle System,
+  // making `v_distance` huge and `computeFog(v_distance, density, mod)`
+  // saturate to 1.0 at every pixel — which is why fog appeared to
+  // wipe imagery to a uniform color across the entire below-horizon
+  // area regardless of the Batch 41 night-fog gating fix.
+  //
+  // The fix is one character — pass `mesh` instead of `surfaceTile`
+  // to `computeModifiedModelView`. (Renamed signature below to make
+  // it impossible to repeat the mistake.)
+  const modifiedView = computeModifiedModelView(uniformState, mesh);
   const mv = m4Values(modifiedView);
   for (let i = 0; i < 16; i++) data[offset++] = mv[i];
 
@@ -549,12 +572,34 @@ export function writeUniformSlice(
  *
  * Pure free function — no host needed.
  */
+/**
+ * Build the per-tile `modifiedModelView` matrix that the globe-terrain
+ * vertex shader uses as
+ *   `v_positionEC = modifiedModelView × position_tile_local`
+ * — equivalent to `view × (position_tile_local + mesh.center)` i.e. the
+ * eye-space position for the world point the tile-local vertex
+ * represents.
+ *
+ * Mirrors WebGL `GlobeSurfaceTileProviderRendering.js#L1120,L406-L414`
+ * which reads `rtc = mesh.center` and feeds it to `u_modifiedModelView`.
+ *
+ * Session 65 Batch 41 (NEW-VR2-1) — renamed the second argument from
+ * `surfaceTile` to `mesh` to make it impossible to repeat the bug
+ * where the caller passed a `GlobeSurfaceTile` and the function looked
+ * up `surfaceTile.center` which doesn't exist on that class — the
+ * `if (!center) return new Float64Array(view);` fallback then handed
+ * back a plain view matrix, leaving every fragment with a HUGE
+ * (>100 km) `v_positionEC` magnitude at ground-altitude camera
+ * positions. The visible symptom was Bloom.html + Particle System.html
+ * rendering as a flat uniform fog color across the entire below-
+ * horizon area (NEW-VR2-1 "still deferred" since 2026-05-10).
+ */
 export function computeModifiedModelView(
   uniformState: CesiumUniformState,
-  surfaceTile: CesiumGlobeSurfaceTile,
+  mesh: CesiumTerrainMesh | { center?: { x: number; y: number; z: number } },
 ): Float64Array {
   const view = uniformState.view;
-  const center = surfaceTile.center;
+  const center = mesh?.center;
   if (!center) return new Float64Array(view);
 
   const result = new Float64Array(16);

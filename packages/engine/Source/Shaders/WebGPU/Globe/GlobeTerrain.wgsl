@@ -2568,13 +2568,48 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       // 519-533: `czm_fog(distance, color, fogColor, scalar)` mixes
       // imagery toward atmosphere color by a distance-driven scalar.
       let fogAmount = computeFog(input.v_distance, fogDensity, tile.fogVisualDensityScalar);
-      // Daytime atmosphere darken-by-view: when dynamic lighting is on
-      // the WebGL path mixes a viewer-direction × light-direction
-      // brightness factor (`u_minimumBrightness` floor). Matches GLSL
-      // lines 522-526. Defaults to 1.0 when lighting isn't dynamic.
       var fogColor = groundAtmoColor;
-      let nightFogDimming = mix(0.05, 1.0, dayFade);
-      fogColor = max(fogColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
+      // Session 65 Batch 41 (NEW-VR2-1) — match WebGL gating for the
+      // night-fog darken factor. WebGL `GlobeFS.glsl` lines 522-526:
+      //
+      //   #if defined(DYNAMIC_ATMOSPHERE_LIGHTING) &&
+      //       (defined(ENABLE_VERTEX_LIGHTING) ||
+      //        defined(ENABLE_DAYNIGHT_SHADING))
+      //     float darken = clamp(dot(normalize(czm_viewerPositionWC),
+      //                              atmosphereLightDirection),
+      //                          u_minimumBrightness, 1.0);
+      //     fogColor *= darken;
+      //   #endif
+      //
+      // Pre-Batch-41 the WGSL applied an UNGATED
+      // `nightFogDimming = mix(0.05, 1.0, dayFade)` plus a
+      // `max(fogColor * nightFogDimming, fogMinimumBrightness)` floor.
+      // For demos with the default `enableLighting = false`
+      // (Bloom, Particle System, Lighting, Shadows at ground altitude)
+      // WebGL leaves fog at full brightness so the dim ground atmo
+      // contribution lets imagery still show through; WebGPU was
+      // dimming fog to `fogMinimumBrightness` (default 0.03), which
+      // tonemapped + gamma-encodes to ~24 sRGB and overwrote every
+      // imagery pixel with that floor at high fog density. Net effect:
+      // a flat uniform `(24, 24, 24)` grey across the entire below-
+      // horizon area, exactly the disk-bleed-probe symptom flagged
+      // under NEW-VR2-1.
+      //
+      // `camera.atmosphereParams.w > 1.5` mirrors the WebGL
+      // `dynamicLighting` bool (Batch 38 encoding: 0 off, 1 static,
+      // 2 lit). When dynamic lighting is active we apply a
+      // `clamp(dot(viewerNormalized, lightDir), minimumBrightness, 1.0)`
+      // multiplier; otherwise the fog color stays at full brightness
+      // matching the un-gated WebGL path.
+      if (camera.atmosphereParams.w > 1.5) {
+        let viewerNormalized = normalize(
+          camera.encodedCameraHigh + camera.encodedCameraLow,
+        );
+        let lightDir = camera.atmosphereLightDirectionAndIntensity.xyz;
+        let minBrightness = max(tile.fogMinimumBrightness, 0.0);
+        let darken = clamp(dot(viewerNormalized, lightDir), minBrightness, 1.0);
+        fogColor = fogColor * darken;
+      }
       // HDR-aware tonemap + gamma encode. Mirrors WebGL GlobeFS.glsl
       // `#ifndef HDR` — under HDR the inline tonemap is SKIPPED so the
       // post-process chain can compress the linear-radiance HDR pixels.
