@@ -794,6 +794,40 @@ function buildClouds(globe) {
         globe.cloudQuality = v;
       },
     },
+    // Session 65 Batch 45 — Phase 6d quality dial. Higher-level than
+    // `clouds.quality` (a raw `maxSteps` numeric): accepts the four
+    // string presets `"low" | "medium" | "high" | "auto"` that the
+    // celestial-atmosphere design specs in §6 Phase 6d.
+    //
+    //   low    — maxSteps 24,  lightSteps 3 (mobile / low-power)
+    //   medium — maxSteps 48,  lightSteps 4 (default desktop)
+    //   high   — maxSteps 96,  lightSteps 8 (power-user / cinematic)
+    //   auto   — pick by camera altitude, mirroring the Phase 6b
+    //            crossfade design. Below `volumetricEnableAltitude`
+    //            (default 50 km) use high; above
+    //            `volumetricDisableAltitude` (default 100 km) use low;
+    //            linear blend in between. The existing
+    //            volumetricEnable/DisableAltitude leaf-fields already
+    //            on this same object are reused so users can tune the
+    //            crossfade without changing the resolution.
+    //
+    // When the renderer can't resolve a preset (string is neither one
+    // of the four, e.g. user typed "ultra") it falls back to "auto" so
+    // typos degrade gracefully instead of breaking the render.
+    //
+    // The raw `clouds.quality` field is preserved as an escape hatch
+    // — when set to a non-default value (≠ 64) the renderer uses it
+    // verbatim and ignores `volumetricQuality`. This lets power users
+    // hand-tune `maxSteps` without fighting the preset enum.
+    volumetricQuality: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudVolumetricQuality;
+      },
+      set: function (v) {
+        globe.cloudVolumetricQuality = v;
+      },
+    },
   });
   return leaf;
 }

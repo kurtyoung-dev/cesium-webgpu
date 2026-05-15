@@ -105,6 +105,72 @@ function initializeCloudPipeline(
 }
 
 /**
+ * Session 65 Batch 45 — Phase 6d quality-dial resolver. Maps the
+ * `clouds.volumetricQuality` preset string to a `(maxSteps,
+ * lightSteps)` pair, with `"auto"` reading camera altitude to pick a
+ * preset on the fly (Phase 6b altitude crossfade — high quality below
+ * `volumetricEnableAltitude`, dropping to low above
+ * `volumetricDisableAltitude`).
+ *
+ * Preset table:
+ *   low    — (24, 3)  mobile / power-saving
+ *   medium — (48, 4)  default desktop
+ *   high   — (96, 8)  cinematic
+ *   auto   — altitude-driven (see below)
+ *
+ * Auto mode (Phase 6b):
+ *   altitude ≤ enableAltitude  → high
+ *   altitude ≥ disableAltitude → low
+ *   in-between                 → medium (no per-pixel blend yet; the
+ *                                 transition is a single step at the
+ *                                 midpoint, with hysteresis applied at
+ *                                 the caller scale via globe field
+ *                                 stickiness — sample-count changes
+ *                                 every frame would shimmer at the
+ *                                 transition).
+ *
+ * Escape hatch: if the user has set `globe.cloudQuality` to a
+ * non-default value (≠ 64), the resolver returns that verbatim and
+ * ignores the preset — power users tuning maxSteps by hand don't get
+ * fought by the preset enum.
+ */
+interface QualityResolverInputs {
+  preset: string | undefined;
+  rawCloudQuality: number | undefined;
+  cameraHeightMeters: number;
+  enableAltitudeMeters: number;
+  disableAltitudeMeters: number;
+}
+
+function resolveCloudQuality(inputs: QualityResolverInputs): {
+  maxSteps: number;
+  lightSteps: number;
+} {
+  // Power-user escape hatch.
+  const raw = inputs.rawCloudQuality;
+  if (typeof raw === "number" && raw !== 64) {
+    // Light steps default scales with sqrt(maxSteps / 64) so a custom
+    // value gets a sensible light-march count without an extra knob.
+    const lightSteps = Math.max(2, Math.round(6 * Math.sqrt(raw / 64)));
+    return { maxSteps: raw, lightSteps };
+  }
+  let preset = inputs.preset ?? "auto";
+  if (preset !== "low" && preset !== "medium" && preset !== "high") {
+    // Auto + unknown strings → altitude-driven resolution.
+    if (inputs.cameraHeightMeters >= inputs.disableAltitudeMeters) {
+      preset = "low";
+    } else if (inputs.cameraHeightMeters <= inputs.enableAltitudeMeters) {
+      preset = "high";
+    } else {
+      preset = "medium";
+    }
+  }
+  if (preset === "low") return { maxSteps: 24, lightSteps: 3 };
+  if (preset === "high") return { maxSteps: 96, lightSteps: 8 };
+  return { maxSteps: 48, lightSteps: 4 };
+}
+
+/**
  * Execute the procedural cloud rendering pass.
  * Called after globe rendering, before post-processing.
  */
@@ -163,9 +229,35 @@ export function executeProceduralClouds(
   data[offset++] = 6378137.0; // planetRadius
   data[offset++] = globe.cloudCoverage ?? 0.5;
 
-  // Quality params
-  data[offset++] = globe.cloudQuality ?? 64.0;
-  data[offset++] = 6.0; // lightSteps
+  // Quality params (Phase 6d/6b resolver).
+  // Reads `globe.cloudVolumetricQuality` preset string + camera
+  // altitude + the AtmosphericConditions enable/disable altitudes for
+  // auto mode. Falls back verbatim to `globe.cloudQuality` when the
+  // user has hand-tuned that field to a non-default value.
+  const atmoClouds = (
+    globe as unknown as {
+      atmosphericConditions?: {
+        clouds?: {
+          volumetricEnableAltitude?: number;
+          volumetricDisableAltitude?: number;
+        };
+      };
+    }
+  ).atmosphericConditions?.clouds;
+  const globeForQuality = globe as unknown as {
+    cloudVolumetricQuality?: string;
+    cloudQuality?: number;
+  };
+  const cameraHeightM = frameState.camera?.positionCartographic?.height ?? 0;
+  const qualityResolved = resolveCloudQuality({
+    preset: globeForQuality.cloudVolumetricQuality,
+    rawCloudQuality: globeForQuality.cloudQuality,
+    cameraHeightMeters: cameraHeightM,
+    enableAltitudeMeters: atmoClouds?.volumetricEnableAltitude ?? 50_000,
+    disableAltitudeMeters: atmoClouds?.volumetricDisableAltitude ?? 100_000,
+  });
+  data[offset++] = qualityResolved.maxSteps;
+  data[offset++] = qualityResolved.lightSteps;
   data[offset++] = globe.cloudDensity ?? 0.3;
   data[offset++] = 0.04; // absorptionCoeff
 

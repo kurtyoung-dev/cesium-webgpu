@@ -432,6 +432,21 @@ class Globe {
     this.cloudQuality = 64;
 
     /**
+     * Volumetric cloud quality preset. WebGPU only. One of
+     * `"low" | "medium" | "high" | "auto"`. Phase 6d quality dial —
+     * resolves to `(maxSteps, lightSteps)` pairs at render time:
+     * low = (24, 3), medium = (48, 4), high = (96, 8), auto picks by
+     * camera altitude (high quality below `cloudLayerBottom` km,
+     * dropping to low above ~100 km per the Phase 6b altitude
+     * crossfade design). When `cloudQuality` is set to a non-default
+     * value (anything other than 64) the renderer treats the preset
+     * as overridden and uses `cloudQuality` verbatim.
+     * @type {string}
+     * @default "auto"
+     */
+    this.cloudVolumetricQuality = "auto";
+
+    /**
      * True if primitives such as billboards, polylines, labels, etc. should be depth-tested
      * against the terrain surface, or false if such primitives should always be drawn on top
      * of terrain unless they're on the opposite side of the globe.  The disadvantage of depth
