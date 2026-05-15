@@ -2492,6 +2492,26 @@ Verification (`probe-empty-scenes.mjs` colored-pixel %):
 
 Orbit demos preserved (Sentinel-2 on-disk delta bit-perfect, Hello World mid-upper delta `(2, 0, -6)` within noise, 0 GPU validation errors across the sweep).
 
+### NEW-VR2-1b-GLOBE-MERCATOR-DISTORTION — FIXED 2026-05-15 (Session 65 Batch 46)
+
+**Symptom:** Orbit-view of the globe in WebGPU showed the well-known "stretched at poles / squished at equator" Mercator-on-sphere artefact. Greenland appeared enlarged ~3×; the equator band was visibly compressed. Visible in cross-backend sweep `Hello_World.webgpu.png`, `Star Burst`, and any orbit-altitude scene using a WebMercator imagery provider (Bing, OSM, Mapbox).
+
+**Root cause (two coupled bugs in the TileUniforms packer):**
+
+WebGPU's `WebGPUImageryReprojection` (key 28) converts Mercator imagery to a GEOGRAPHIC-projected output texture stored on `imagery._webgpuReprojectedTexture`. The CPU packer in [WebGPUGlobeSurfaceTileUB.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) was reading the unmodified `tileImagery.useWebMercatorT` flag (true for Mercator providers) AND the cached `tileImagery.textureTranslationAndScale`, which `ImageryLayer._calculateTextureTranslationAndScale` (ImageryLayer.js:376) had computed in **Mercator-native (meters)** space because that flag was true.
+
+The shader then sampled the geographic-projected texture using:
+1. `webMercT` V coordinate (linear-in-Mercator-Y) — should have been `geoUV.y` (linear-in-latitude)
+2. Mercator-native translation/scale — should have been geographic-radian translation/scale
+
+WebGL has no parallel bug because it caches BOTH a `imagery.texture` (geographic) AND `imagery.textureWebMercator` (mercator) and binds the matching one ([GlobeSurfaceTileProviderRendering.js:1470](packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js#L1470)). The WebGPU path uses a single output texture per imagery, so the packer must override both fields to keep the shader in lock-step with the bound texture.
+
+**Fix:** When `_webgpuReprojectedTexture` is present, override `useWebMercatorT` to false AND recompute `textureTranslationAndScale` in geographic space inline (equivalent to taking the `else` branch of `_calculateTextureTranslationAndScale`). Both written to the same per-layer slot in the TileUniforms layout.
+
+**Files:** [WebGPUGlobeSurfaceTileUB.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) (per-layer pack at LAYERS_OFFSET, USE_WEB_MERC_OFFSET).
+
+**Verification:** `probe-projection-fix.mjs` captures `northam` / `arctic` / `equator` orbit views on both backends. WebGPU geometry now matches WebGL across all three (no Mercator distortion, North America/Greenland properly proportioned, equator band correctly sized). Remaining cross-backend delta is atmospheric/lighting tint, not projection.
+
 ### NEW-VR2-2-3DTILES-BASECOLOR-WHITE — Mostly resolved 2026-05-11 (Mars + Aerometrex + BIM now textured; Moon is a separate Sandcastle-state issue)
 
 **Status update:** Session 65 cont. (texture stub reuse + `texSubImage2D` ImageBitmap path) plus the Session 65 Batch 1 ground atmosphere intensity scaling resolved the bulk of the white-base-color cluster. Cross-backend sweep PNGs (2026-05-11):

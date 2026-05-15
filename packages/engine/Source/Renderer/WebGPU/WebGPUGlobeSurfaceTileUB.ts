@@ -135,18 +135,61 @@ export function createTileUniformBuffer(
 
     const baseOffset = LAYERS_OFFSET + layerCount * LAYER_FLOATS;
 
-    // translationAndScale (vec4) — uses the cached value directly.
-    // When useWebMercatorT=true, the cached values are in Mercator-native
-    // space and the shader samples with webMercatorT (matching WebGL behavior).
-    const ts = tileImagery.textureTranslationAndScale;
-    if (ts) {
-      data[baseOffset + 0] = ts.x;
-      data[baseOffset + 1] = ts.y;
-      data[baseOffset + 2] = ts.z;
-      data[baseOffset + 3] = ts.w;
+    // Detect whether `WebGPUImageryReprojection` has already produced a
+    // GEOGRAPHIC output texture from a Mercator source (Batch 46). When
+    // it has, the shader's V coordinate selection and the cached
+    // translation/scale BOTH need to switch to geographic space — see
+    // the long comment near the `useWebMercatorTLayer` write below for
+    // the full rationale.
+    const reprojectedToGeographic = !!(
+      imagery as { _webgpuReprojectedTexture?: unknown }
+    )._webgpuReprojectedTexture;
+    const effectiveUseWebMercatorT =
+      tileImagery.useWebMercatorT && !reprojectedToGeographic;
+
+    // translationAndScale (vec4).
+    //
+    // The cached `tileImagery.textureTranslationAndScale` is computed by
+    // `ImageryLayer._calculateTextureTranslationAndScale`, which
+    // BRANCHES on `tileImagery.useWebMercatorT` (ImageryLayer.js:376).
+    // When that flag is true it converts BOTH the terrain rectangle AND
+    // the imagery rectangle to Mercator-native (meters) BEFORE computing
+    // scaleX/scaleY/tx/ty. The result is therefore Mercator-space, which
+    // is what WebGL needs because WebGL binds `imagery.textureWebMercator`
+    // (a Mercator-projected texture) in that case.
+    //
+    // WebGPU's reprojection produces a GEOGRAPHIC-projected output
+    // texture from the Mercator source. So when `_webgpuReprojectedTexture`
+    // is bound, the cached Mercator-space translation/scale is wrong —
+    // applying it to a geographic-V coordinate produces the well-known
+    // "stretched at poles, squished at equator" artefact.
+    //
+    // Override path: recompute translation/scale in GEOGRAPHIC space
+    // inline — equivalent to taking the `else` branch of
+    // `_calculateTextureTranslationAndScale`. Same arithmetic, but skips
+    // the `rectangleToNativeRectangle` conversion.
+    if (reprojectedToGeographic && tile.rectangle && imagery.rectangle) {
+      const tRect = tile.rectangle;
+      const iRect = imagery.rectangle;
+      const tW = tRect.width;
+      const tH = tRect.height;
+      const sx = tW / iRect.width;
+      const sy = tH / iRect.height;
+      data[baseOffset + 0] = (sx * (tRect.west - iRect.west)) / tW;
+      data[baseOffset + 1] = (sy * (tRect.south - iRect.south)) / tH;
+      data[baseOffset + 2] = sx;
+      data[baseOffset + 3] = sy;
     } else {
-      data[baseOffset + 2] = 1;
-      data[baseOffset + 3] = 1;
+      const ts = tileImagery.textureTranslationAndScale;
+      if (ts) {
+        data[baseOffset + 0] = ts.x;
+        data[baseOffset + 1] = ts.y;
+        data[baseOffset + 2] = ts.z;
+        data[baseOffset + 3] = ts.w;
+      } else {
+        data[baseOffset + 2] = 1;
+        data[baseOffset + 3] = 1;
+      }
     }
 
     // texCoordsRectangle (vec4)
@@ -290,10 +333,20 @@ export function createTileUniformBuffer(
 
     // useWebMercatorT (packed 4 layers per vec4). Bit i in the layer
     // sequence maps to component (i % 4) of vec4 (i / 4).
+    //
+    // Session 65 Batch 46 — `effectiveUseWebMercatorT` was computed
+    // above. WebGL's `GlobeSurfaceTileProviderRendering` selects
+    // between `imagery.texture` (geographic) and
+    // `imagery.textureWebMercator` (mercator) per tile (line
+    // 1470-1472), so its `useWebMercatorT` tracks the texture it
+    // actually bound. The WebGPU path uses one reprojected texture
+    // per imagery and overrides the flag (and the translation/scale)
+    // to keep the shader's `selectLayerUV` in lock-step with the
+    // bound texture's projection.
     const useWMVecIndex = layerCount >> 2;
     const useWMComp = layerCount & 3;
     data[USE_WEB_MERC_OFFSET + useWMVecIndex * 4 + useWMComp] =
-      tileImagery.useWebMercatorT ? 1.0 : 0.0;
+      effectiveUseWebMercatorT ? 1.0 : 0.0;
 
     // dayNightAlpha (packed 2 layers per vec4): pair (i*2..i*2+1) lives
     // in dayNightAlpha[i/2].xy / .zw → vec4 index = layerCount/2,
