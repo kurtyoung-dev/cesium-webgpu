@@ -5845,3 +5845,106 @@ The hot draw path in `WebGPUGlobeSurfaceRenderer.createTileDrawCommands` is one 
 - `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` — `MATERIAL_APPLY`-gated material bindings on group 4, fragment-shader call site for `czm_getMaterial`, per-vertex slope/height/aspect outputs.
 
 (Prior continuation — Steps 1-3a — modified `Material.js` + `MaterialHelpers.js` + added WGSL declarations on 12 built-in fabrics. See entries above.)
+
+## Session 65 Batches 37-43 (2026-05-13) — Camera/rasterization bugs + ground-atmo integration + Phase 4/6 wiring
+
+Consolidated entry. Bug-fix batches (37, 38, 40, 41) get their own subsection; feature-wiring batches (39, 42, 43) get a one-line summary.
+
+### Batch 37 — Moon bundle MSAA sampleCount mismatch (BUG-37)
+
+**Symptom:** After Batch 36 re-enabled the MSAA bridge across the WebGPU FLEET, 3D Tiles Photogrammetry regressed catastrophically: 81.6 % black pixels with 3 GPU validation errors:
+
+```text
+[error] [WebGPU:RenderBundle] "Moon bundle" recording failed:
+Attachment state of [RenderPipeline "Moon pipeline ..."] is not
+compatible with [RenderBundleEncoder "Moon bundle"].
+```
+
+**Root cause:** `WebGPUEnvironmentRenderer.js::updateWebGPUMoon` builds the Moon pipeline with `multisample.count = context._msaaSamples` (correctly MSAA-aware since Batch 21) but the `GPURenderBundleEncoder` was passed only `colorFormats` + `depthStencilFormat` — no `sampleCount`. Encoder defaulted to 1, mismatched the pipeline's 4 → bundle invalidated → `executeBundles` rejected the entire command buffer.
+
+**Fix:** Thread `context._msaaSamples ?? 1` through to the `BundleEncoderDescriptor` and append it to the bundle cache key so a mid-session MSAA toggle evicts the prior bundle.
+
+**Files modified:** `WebGPUEnvironmentRenderer.js` (10 LOC).
+
+**Verification:** 3D Tiles Photogrammetry WebGPU recovered: 0 GPU errors.
+
+### Batch 38 — Ground-atmosphere FS viewDir bug (BUG-38)
+
+**Symptom:** Batches 30+31 added an empirical `cap=1.5 × scale=0.15` workaround in `GlobeTerrain.wgsl`'s drape branch to suppress 7-10× over-accumulated radiance on the sun-facing side at orbit altitudes. The cap visually matched WebGL but the underlying cause was unknown.
+
+**Root cause:** The FS expression
+
+```wgsl
+let fragmentWorldPos = input.v_positionMC + cameraWC;
+let viewDir = normalize(fragmentWorldPos - cameraWC);
+```
+
+collapses to `normalize(v_positionMC)`. Since `out.v_positionMC = position3DWC` (world coords, not RTE — set in the VS at line 1050), that gives the surface OUTWARD normal, not the camera-to-surface direction the Rayleigh/Mie phase functions need. On the sunlit hemisphere where the outward normal aligns with sun direction, the wrong cosAngle pushed the Henyey-Greenstein Mie phase into its forward peak (`cos ≈ +1 → pow(0.01, 1.5)` denominator), producing the 7-10× over-accumulation the cap+scale was masking.
+
+**Fix:**
+
+1. `viewDir = normalize(positionWC - cameraWC)` mirroring `AtmosphereCommon.glsl:166-167`.
+2. Repack `atmosphereParams.w` to encode the WebGL `dynamicLighting` bool: 0 = atmo off, 1 = atmo on + static `normalize(positionWC)` lightDir, 2 = atmo on + lit. Lit branch AND-gates on `enableLighting` to mirror WebGL's `DYNAMIC_ATMOSPHERE_LIGHTING && (ENABLE_VERTEX_LIGHTING || ENABLE_DAYNIGHT_SHADING)`.
+3. Removed `cap=1.5 × scale=0.15`.
+4. Added per-fragment night-fade ramp via existing `tile.nightFadeOutDistance` / `nightFadeInDistance` slots.
+
+**Files modified:** `WebGPUGlobeSurfaceCameraUB.ts`, `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`.
+
+**Verification (disk-bleed probe deltas, Hello World):**
+
+```text
+            Before Batch 38     After Batch 38
+mid-upper   ( -5, -30, -38)     ( -1,  -6,  -6)
+center      (-56, -59, -57)     (-12, -11, -17)
+```
+
+### Batch 40 — WebGPU camera default-view canvas-sizing bug (BUG-40, NEW-VR2-3c)
+
+**Symptom:** The disk-bleed probe showed off-disk "atmosphere bleed" past the WebGPU disk edge by 50-100 px in every orbit-view demo. Initial hypotheses (SkyAtmosphere alpha tail, camera-altitude opacity) were ruled out by writing cyan in the SkyAtmosphere FS — those off-disk pixels were not covered by the SkyAtmosphere geometry at all; they were globe terrain rendered too wide. A state-comparison probe found WebGPU's camera at `cameraHeight = 12.67 Mm` vs WebGL's `17.19 Mm` despite identical frustum / FOV / aspect at probe time.
+
+**Root cause:** `Viewer.createAsync` (the WebGPU async bootstrap path) created the temp `CesiumWidget` inside a hidden container with `style.display = "none"`. Hidden ancestors zero a descendant's `clientWidth/clientHeight`, so when the synchronous Scene + Camera constructor ran inside that widget, `Camera.js:209-210` read
+
+```js
+this.frustum.aspectRatio = scene.drawingBufferWidth / scene.drawingBufferHeight;
+```
+
+against a 1 × 1 canvas and set `aspectRatio = 1.0` instead of the real `1.333`. `rectangleCameraPosition3D` then placed the WebGPU camera ~25 % closer to Earth, making the rasterized disk ~1.5× wider on screen.
+
+**Fix:** Replaced `display: none` with `position: absolute; inset: 0; visibility: hidden`. The temp container takes the full layout dimensions of the outer container so the canvas inside has the right `clientWidth/clientHeight` when Camera constructs; `visibility: hidden` plus the LoadingOverlay's `z-index: 9999` keep the pre-init frame invisible. Parent's `position` is temporarily set to `relative` if `static`, restored after init.
+
+**Files modified:** `packages/widgets/Source/Viewer/Viewer.js`.
+
+**Verification:** All 13 camera / canvas / frustum fields now bit-perfect identical between WebGL and WebGPU. Disk-bleed off-disk pixel deltas collapsed from `(+50, +80, +120)` to `(-3 .. +3)`.
+
+### Batch 41 — Globe terrain `surfaceTile.center` → `mesh.center` bug (BUG-41, NEW-VR2-1)
+
+**Symptom:** Bloom.html and Particle System.html rendered as mostly-black at ground altitude despite globe tiles being selected for render (75 tiles, `renderable=true`, `hasImagery=true`). Pixel sample:
+
+```text
+WebGL Bloom mid-canvas    (179, 173, 165) cityscape texture
+WebGPU Bloom mid-canvas   ( 24,  24,  24) uniform flat gray
+```
+
+The bit-perfect uniformity of `(24,24,24)` across every sample in the lower half was the smoking gun for a flat fill.
+
+**Two stacked root causes:**
+
+1. **`computeModifiedModelView` received the wrong argument.** Helper reads `obj.center` and falls back to plain view matrix when missing. Caller passed a `GlobeSurfaceTile` whose `.center` doesn't exist → every globe tile draw fell back to plain view. With a plain view matrix, the WGSL line `v_positionEC = modifiedModelView × position_tile_local` produces a HUGE camera-relative position because `position_tile_local` is tile-relative (~hundreds of metres) but the view matrix's translation column is the negated camera position in world coords (~6.4 Mm). Every fragment ended up with `v_distance > 100 km`, so `computeFog(v_distance, density, mod)` saturated to 1.0 at every pixel and replaced imagery with a flat fog color. **Fix:** Pass `mesh` (which DOES have `.center` set by `TerrainEncoding`) and rename the parameter so this bug can't reappear. Mirrors WebGL `GlobeSurfaceTileProviderRendering.js:1120` (`rtc = mesh.center`).
+2. **FOG branch unconditionally applied `nightFogDimming * 0.05` + `fogMinimumBrightness` floor.** WebGL's equivalent darken (`GlobeFS.glsl:522-526`) is gated on `DYNAMIC_ATMOSPHERE_LIGHTING && (ENABLE_VERTEX_LIGHTING || ENABLE_DAYNIGHT_SHADING)`. For demos using default `enableLighting = false`, WebGL leaves fog at full brightness while WebGPU was dimming to a uniform `24/255` floor. **Fix:** Gate the darken on `atmosphereParams.w > 1.5` (Batch 38 encoding for "dynamic lighting active") and remove the `fogMinimumBrightness` floor.
+
+**Files modified:** `WebGPUGlobeSurfaceCameraUB.ts`, `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`.
+
+**Verification (probe-empty-scenes colored %):**
+
+| Demo                         | Before | After  | WebGL  |
+| ---------------------------- | ------ | ------ | ------ |
+| Bloom.html                   | 35.9 % | 73.8 % | 69.6 % |
+| Particle System.html         |  4.6 % | 68.1 % | 71.2 % |
+| 3D Tiles Photogrammetry.html | 65.6 % | 87.0 % | 86.6 % |
+| Bathymetry.html              | 79.4 % | 90.7 % | 90.7 % |
+
+### Batches 39, 42, 43 — Feature wiring (no bug entries)
+
+- **Batch 39** — Auto-exposure altitude gate. Pairs with bloom altitude gate (Batch 22). Blends `1/avgLuminance` toward 1.0 (neutral) above `altitudeGateMinMeters` so bright atmosphere limb doesn't crush daylight terrain at orbit. Files: `WebGPUAutoExposure.ts`, `WebGPUSceneRenderer.ts`.
+- **Batch 42** — Phase 4 wind state on SkyAtmosphere UBO. Pre-emptive scaffolding ahead of Phase 5/6 consumers (volumetric fog advection, cloud motion). `windDirectionAndSpeed: vec4<f32>` appended; `UNIFORM_BUFFER_SIZE` 256 → 272. Files: `SkyAtmosphere.wgsl`, `WebGPUSkyAtmosphereRenderer.js`.
+- **Batch 43** — `atmosphericConditions.clouds.enableVolumetric` toggle wired. Pre-Batch-43 the flag was a plain field that did nothing; now aliases `globe.showProceduralClouds` so the canonical AtmosphericConditions API toggles the existing Schneider-style volumetric cloud raymarcher. Files: `Scene/AtmosphericConditions.js`.

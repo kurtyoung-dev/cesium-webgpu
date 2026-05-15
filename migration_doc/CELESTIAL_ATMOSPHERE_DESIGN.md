@@ -1,6 +1,6 @@
 # Celestial & Atmospheric Systems — Design Document
 
-**Status:** Draft v3 — Session 24 v2 + 2026-04-08 decisions locked (B1-B23). Status table + Phase 3 sync 2026-05-13 (Phases 0-3 SHIPPED, Phase 4 PARTIAL, Phases 5-6 pending). Orbit-rendering polish techniques added §13.
+**Status:** Draft v3 — Session 24 v2 + 2026-04-08 decisions locked (B1-B23). Status table + Phase 3 sync 2026-05-13. Phase 4 SHIPPED (Batches 29 + 42); Phase 5 a-d SHIPPED (existing `WebGPUVolumetricFogRenderer` + `Compute/VolumetricFog.wgsl`); Phase 6 main render path SHIPPED (existing `WebGPUProceduralCloudRenderer`); Phase 6 sub-items 6c (cloud shadows in fog) + 6d (quality dial) + 6b (high-altitude 2D fast path, possibly subsumed by 6d) deferred. Phase 5f (temporal reprojection polish) deferred. Orbit-rendering polish techniques added §13.
 **Scope:** Sun, Moon, atmosphere, clouds, fog, stars, volumetric fog, varying
 atmospheric density, scattering occlusion (god rays), and the lighting/visibility
 coupling between them
@@ -97,7 +97,7 @@ on a value, that section is the source of truth.
 | Skybox / stars | ✅ Sky-brightness modulation + cloudCover star occlusion (Phase 1.3a) | `Scene/SkyBox.js`, `Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js`, `Shaders/WebGPU/CubeMapPanorama.wgsl` |
 | Cumulus clouds | ✅ Billboard collection, weather effects | `Scene/CloudCollection.js`, `Shaders/WebGPU/Collections/CloudCollection.js` |
 | Procedural ground clouds (ground-only, ≤4 km ceiling) | ✅ Volumetric raymarch, default off | `WebGPUProceduralCloudRenderer.ts`, `Shaders/WebGPU/Environment/ProceduralClouds.wgsl` |
-| Volumetric clouds (orbit-visible) | ❌ Not yet — Phase 6 of this doc | — |
+| Volumetric clouds (orbit-visible) | ✅ Schneider-style HG dual-lobe + Beer-Powder volumetric raymarcher (Phase 6 main path); default off via `atmosphericConditions.clouds.enableVolumetric` (Batch 43 wiring) | `WebGPUProceduralCloudRenderer.ts`, `Shaders/WebGPU/Environment/ProceduralClouds.wgsl` |
 | Sun light | ✅ `SunLight` class, fed into PBR | `Scene/SunLight.js`, `LightTypes.ts` |
 | Moon light | ✅ `MoonLight` class shipped Phase 2 (1.2c v2) | `Scene/MoonLight.js` |
 | Star brightness modulation | ✅ Shipped Phase 1.3a — smoothstep curve + cloudCover multiply | `WebGPUCubeMapPanoramaRenderer.js` |
@@ -106,11 +106,12 @@ on a value, that section is the source of truth.
 | Dual-light terrain shading | ⚠️ Sun direction now correctly `lightDirectionEC` (Batch 17/18); moon contribution on terrain not yet wired | `GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceCameraUB.ts` |
 | `lightDirectionEC` parity (Globe + Model + SkyAtmosphere) | ✅ Batches 17, 18, 20 — Globe + Model packers fixed; SkyAtmosphere respects `Atmosphere.dynamicLighting` enum (NONE / SCENE_LIGHT / SUNLIGHT) | `WebGPUGlobeSurfaceCameraUB.ts`, `WebGPUModelRenderer.js`, `WebGPUSkyAtmosphereRenderer.js`, `SkyAtmosphere.wgsl` |
 | Composite WGSL fabric (globe materials) | ✅ Batch 16 — top-level `components` fallback for composites without `wgsl: {}` block | `MaterialHelpers.js`, `WebGPUGlobeMaterial.ts` |
-| Volumetric fog (froxel grid) | ❌ Phase 5 of this doc, not yet started | — |
-| Scattering occlusion / god rays | ❌ Phase 5c, not yet started | — |
-| Varying atmosphere density | ❌ Phase 5d, not yet started | — |
-| Altitude-gated bloom | ❌ Quick win, not yet wired | `WebGPUBloomEffect.ts` |
-| Orbit-limb specular attenuation | ❌ Quick win, not yet wired | `Shaders/WebGPU/Globe/GlobeTerrain.wgsl::computeEnhancedOcean` |
+| Volumetric fog (froxel grid) | ✅ Phase 5a SHIPPED — 3D rgba16float texture pair + 3 compute passes (density inject, light scattering, integrate) + full-screen composite; default off via `atmosphericConditions.volumetricFog.enabled` | `WebGPUVolumetricFogRenderer.ts`, `Shaders/WebGPU/Compute/VolumetricFog.wgsl`, `PostProcess/VolumetricFogComposite.wgsl` |
+| Scattering occlusion / god rays | ✅ Phase 5c SHIPPED — sun shadow-map sampling in `lightScattering` compute pass; ambient term for soft fill | `Compute/VolumetricFog.wgsl::sampleSunShadow` |
+| Varying atmosphere density | ✅ Phase 5d SHIPPED — 3-octave value-noise FBM modulation in density-injection pass, gated by `enableVaryingDensity` | `Compute/VolumetricFog.wgsl::fbm3d` |
+| Altitude-gated bloom | ✅ Batch 22 — smoothstep gate from 1.0 at sea level to `altitudeGateOrbitFloor` (default 0.15) at ≥1 Earth radius | `WebGPUBloomEffect.ts::applyAltitudeGate` |
+| Altitude-gated auto-exposure | ✅ Batch 39 — blends adaptive multiplier toward neutral 1.0 at orbit (matches Frostbite/Karis conv: adaptive exposure is a camera-lens / retina effect, absent for vacuum viewpoints) | `WebGPUAutoExposure.ts::applyAltitudeGate` |
+| Orbit-limb specular attenuation | ✅ Batch 23 — ocean GGX specular fades via `smoothstep(100km, 1ER, altitude)` to remove sun-side glare at orbit | `Shaders/WebGPU/Globe/GlobeTerrain.wgsl::computeEnhancedOcean` |
 | Real-time satellite cloud-map imagery | ❌ Out of doc scope — user-side via custom `ImageryProvider` | — |
 
 ### The actual scope (smaller than I feared)
@@ -1085,14 +1086,25 @@ work unchanged. Renderers that opt into multi-light read from
 >   batches; confirmed live in `SkyAtmosphere.wgsl` `dualLightControl`
 >   uniform + bindings 3-4 moon LUTs, `CubeMapPanorama.wgsl` star
 >   modulation smoothstep)
-> - **Phase 4 ⚠️ PARTIAL** — `cloudCover` star occlusion wired in cubemap
->   panorama; `humidity`, `airQuality`, `windSpeed`, `windDirection`
->   declared on `AtmosphericConditions` but not yet plumbed to fog
->   density / atmosphere mie+rayleigh coefficient scales / water
->   displacement. Estimated 1 session to finish.
-> - **Phase 5 ❌** (froxel volumetric fog + god rays — not started)
-> - **Phase 6 ❌** (volumetric clouds — not started; THE answer to
->   "no clouds from orbit" — see §13.5)
+> - **Phase 4 ✅ SHIPPED** — `cloudCover` → star occlusion (Batch 1.3a);
+>   `humidity` → fog density + mie coefficient scale (Batch 29);
+>   `airQuality` → rayleigh coefficient scale (Batch 29);
+>   `windDirection`/`windSpeed` → scaffolded on `SkyAtmosphere.wgsl`
+>   uniform (Batch 42) ahead of any Phase 5/6 consumer that needs
+>   advection. Phase 4 entry in DEFERRED_WORK marked FIXED 2026-05-13.
+> - **Phase 5 ✅ a-d SHIPPED** — `WebGPUVolumetricFogRenderer` +
+>   `Compute/VolumetricFog.wgsl` ship the full froxel grid (5a), height
+>   fog density (5b), HG sun + moon scattering with sun-shadow-map god
+>   rays (5c), and 3-octave value-noise varying density (5d). Wired into
+>   `WebGPUSceneRendererEnvironmentalEffects` and gated on
+>   `atmosphericConditions.volumetricFog.enabled` (default FALSE per
+>   B18). **Phase 5f** temporal reprojection polish deferred.
+> - **Phase 6 ⚠️ MAIN PATH SHIPPED** — `WebGPUProceduralCloudRenderer`
+>   is a full Schneider-style raymarcher (HG dual-lobe + Beer-Powder +
+>   3D FBM + light-march), gated on `atmosphericConditions.clouds
+>   .enableVolumetric` (Batch 43 wiring). **6c** cloud-shadows-in-fog
+>   + **6d** quality dial + **6b** high-altitude 2D fast-path
+>   (possibly subsumed by 6d's `auto` mode) deferred.
 >
 > See §13 for orbit-rendering quick wins added 2026-05-13.
 
