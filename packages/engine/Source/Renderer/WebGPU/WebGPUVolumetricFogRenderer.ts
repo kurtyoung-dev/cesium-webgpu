@@ -126,7 +126,14 @@ export type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
 // for the C-P7-RTE altitude reconstruction (cameraAltitudeRTE +
 // altitudeCurvature). See the WGSL `VolumetricFogParams` struct for
 // field layout.
-export const VOLUMETRIC_FOG_PARAMS_FLOATS = 72;
+//
+// 84 floats (336 bytes) after Session 65 Batch 44 — appended 12 floats
+// at offsets 72–83 for the Phase 6c cloud-shadow uniforms:
+//   72..75  cloudShadow      (enable, layerBottom, layerTop, coverage)
+//   76..79  cloudWindAndTime (windDir.xy, windSpeed, time)
+//   80..83  cloudDensityShape (densityMultiplier, absorption,
+//                              noiseScale, _pad)
+export const VOLUMETRIC_FOG_PARAMS_FLOATS = 84;
 export const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
 /** CompositeUniforms float count: mat4 (16) + 2 × vec4 (8) = 24 floats. */
@@ -612,6 +619,81 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[61] = varying?.noiseScale ?? 5000;
     r.paramsData[62] = varying?.noiseStrength ?? 0.3;
     r.paramsData[63] = 0.0;
+
+    // Phase 6c — Cloud-shadow uniforms (offsets 72..83). Sourced from
+    // `globe.*` cloud properties (matching what
+    // `WebGPUProceduralCloudRenderer` reads) and the
+    // `atmosphericConditions.clouds.enableVolumetric` toggle. The feature
+    // is gated to "fog is on AND clouds are on AND coverage > 0" — when
+    // any of those are false, the WGSL `sampleCloudShadow` short-circuits
+    // to 1.0 (no attenuation) so the fog scattering is unchanged from
+    // pre-Batch-44 behaviour.
+    const globeForClouds = (
+      scene as unknown as {
+        globe?: {
+          showProceduralClouds?: boolean;
+          cloudCoverage?: number;
+          cloudDensity?: number;
+          cloudLayerBottom?: number;
+          cloudLayerTop?: number;
+        };
+      }
+    ).globe;
+    const clouds = (
+      ac as unknown as { clouds?: { enableVolumetric?: boolean } } | undefined
+    )?.clouds;
+    const cloudsEnabled =
+      (clouds?.enableVolumetric === true ||
+        globeForClouds?.showProceduralClouds === true) &&
+      (globeForClouds?.cloudCoverage ?? 0) > 0;
+    const cloudShadowEnable = cloudsEnabled ? 1.0 : 0.0;
+    r.paramsData[72] = cloudShadowEnable;
+    r.paramsData[73] = globeForClouds?.cloudLayerBottom ?? 1500;
+    r.paramsData[74] = globeForClouds?.cloudLayerTop ?? 4000;
+    r.paramsData[75] = globeForClouds?.cloudCoverage ?? 0.5;
+
+    // Wind state + time for cloud animation matching ProceduralClouds'
+    // wind-drift offset. Read from `atmosphericConditions.weather` when
+    // present (Phase 4 wiring); otherwise default to calm.
+    const weather = ac?.weather as
+      | {
+          windDirection?: { x: number; y: number; z: number };
+          windSpeed?: number;
+        }
+      | undefined;
+    // Map a 3D wind direction onto the horizontal XZ plane the cloud
+    // renderer uses. If wind is purely vertical, project to (0, 0) so
+    // the noise stays static — matches ProceduralClouds' XZ-only wind.
+    const wd = weather?.windDirection;
+    const wdx = wd?.x ?? 0;
+    const wdz = wd?.z ?? 0;
+    r.paramsData[76] = wdx;
+    r.paramsData[77] = wdz;
+    r.paramsData[78] = weather?.windSpeed ?? 0;
+    // Time in seconds since scene start — used together with windSpeed
+    // to produce a drifting cloud-noise offset. The cloud renderer reads
+    // its own `time` uniform from a similar source so the cast shadows
+    // animate in sync with the visible clouds.
+    const julianTime = (
+      frameState.time as unknown as
+        | {
+            getValue?: () => { dayNumber?: number; secondsOfDay?: number };
+          }
+        | undefined
+    )?.getValue?.();
+    r.paramsData[79] =
+      (julianTime?.dayNumber ?? 0) * 86400 + (julianTime?.secondsOfDay ?? 0);
+
+    // Density shape uniforms. `densityMultiplier` mirrors the cloud
+    // render's `cloud.densityMultiplier` default (0.3 in
+    // ProceduralCloudRenderer). `absorptionCoeff` mirrors that
+    // renderer's default (0.04). `noiseScale` is 0.0003 to match the
+    // cloud render's `samplePos = worldPos * 0.0003` mapping so cast
+    // shadows track the same feature scale as the visible clouds.
+    r.paramsData[80] = globeForClouds?.cloudDensity ?? 0.3;
+    r.paramsData[81] = 0.04;
+    r.paramsData[82] = 0.0003;
+    r.paramsData[83] = 0.0;
 
     // Rebuild the scattering bind group when the shadow view changes.
     // The placeholder view is the initial state; once a real shadow map

@@ -109,6 +109,38 @@ struct VolumetricFogParams {
   // Precomputed on CPU in f64 so the quadratic term stays stable.
   //   y, z, w = pad
   altitudeCurvature: vec4<f32>,
+
+  // Phase 6c — Cloud shadows in volumetric fog (Session 65 Batch 44).
+  // Each froxel's sun in-scatter term is attenuated by a one-sample
+  // cloud-extinction approximation: project from the froxel along the
+  // sun direction to the cloud-layer mid-altitude and sample the cloud
+  // density there. Cheap (1 fbm sample per froxel × ~1.8M froxels at
+  // medium quality) and visually sufficient for fog-grid resolution.
+  //
+  // cloudShadow:
+  //   x = enableCloudShadow flag (0/1, gated on
+  //       `atmosphericConditions.clouds.enableVolumetric` + a non-zero
+  //       cloud coverage)
+  //   y = cloudLayerBottom (m above surface, default 1500)
+  //   z = cloudLayerTop    (m above surface, default 4000)
+  //   w = cloudCoverage    (0..1)
+  cloudShadow: vec4<f32>,
+  // cloudWindAndTime:
+  //   xy = wind direction in horizontal plane (XZ tangent, normalized)
+  //   z  = wind speed (m/s) — together with `time` produces a moving
+  //        offset applied before noise sampling so cloud-cast shadows
+  //        drift over time matching the cloud render.
+  //   w  = time (seconds since scene start)
+  cloudWindAndTime: vec4<f32>,
+  // cloudDensityShape:
+  //   x = densityMultiplier (matches the cloud render's density scale
+  //       so the shadow strength tracks the visible cloud thickness)
+  //   y = absorptionCoeff   (extinction per unit density × layer
+  //       thickness, ~0.04 default)
+  //   z = noiseScale        (world units → noise units; default 3e-4
+  //       so a 1 km wind offset moves the noise by ~0.3 octaves)
+  //   w = reserved
+  cloudDensityShape: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: VolumetricFogParams;
@@ -259,6 +291,95 @@ fn sampleSunShadow(worldPos: vec3<f32>) -> f32 {
   return mix(darkness, 1.0, lit);
 }
 
+// Phase 6c — sample cloud-density along the sun ray at a single point
+// to approximate cloud extinction for the volumetric fog scattering
+// term. Cheap: 1 fbm sample per froxel. Returns 1.0 (fully lit) when:
+//   - the cloud-shadow feature is off (`u.cloudShadow.x == 0`)
+//   - the froxel sits above the cloud layer (sun ray exits without
+//     hitting the layer in front of us)
+//   - sun direction is degenerate
+// Otherwise returns `exp(-density × absorption × layerThickness)`
+// which is the standard Beer-Lambert transmittance along a single
+// step through the cloud layer.
+//
+// The cloud density function mirrors `ProceduralClouds.wgsl::
+// cloudDensity` shape (wind-offset FBM × coverage threshold × height
+// shaping) so the shadows roughly track the visible cloud layer the
+// `WebGPUProceduralCloudRenderer` raymarches. It uses
+// `VolumetricFog.wgsl::valueNoise3d` rather than ProceduralClouds'
+// `valueNoise` — the noise functions differ in their hash but at fog
+// grid resolution (~160 × 90 × 128 froxels for medium quality) the
+// per-froxel cloud shape is much coarser than the screen-pixel cloud
+// render anyway, and reusing the local hash keeps the WGSL slim.
+fn sampleCloudShadow(worldPos: vec3<f32>) -> f32 {
+  let enable = u.cloudShadow.x;
+  if (enable < 0.5) {
+    return 1.0;
+  }
+
+  let cloudLayerBottom = u.cloudShadow.y;
+  let cloudLayerTop = u.cloudShadow.z;
+  let coverage = u.cloudShadow.w;
+  if (coverage <= 1e-3) {
+    return 1.0;
+  }
+
+  let sunDir = u.sunDirectionAndIntensity.xyz;
+  // Find t such that |worldPos + sunDir × t| = innerRadius + cloudLayerMid.
+  // For grazing sun angles the ray may never reach the layer in front
+  // of us — in that case `disc < 0` and we bail to fully-lit.
+  let innerRadius = u.cameraAndPlanet.w;
+  let cloudMid = innerRadius + 0.5 * (cloudLayerBottom + cloudLayerTop);
+  let b = dot(worldPos, sunDir);
+  let c = dot(worldPos, worldPos) - cloudMid * cloudMid;
+  let disc = b * b - c;
+  if (disc < 0.0) {
+    return 1.0;
+  }
+  // Take the FORWARD intersection (along sun) — `−b + sqrt(disc)` is
+  // the far root, `−b − sqrt(disc)` is the near root. We want the
+  // smaller positive `t` so the sample point is the closest cloud-layer
+  // crossing along the sun direction.
+  let sqrtD = sqrt(disc);
+  let tNear = -b - sqrtD;
+  let tFar = -b + sqrtD;
+  let t = select(tFar, tNear, tNear > 0.0);
+  if (t <= 0.0) {
+    return 1.0;
+  }
+  let samplePos = worldPos + sunDir * t;
+
+  // Wind-offset noise sample. Matches the cloud render's wind-drift so
+  // the cast shadows track the visible cloud motion.
+  let windDir2 = u.cloudWindAndTime.xy;
+  let windSpeed = u.cloudWindAndTime.z;
+  let timeS = u.cloudWindAndTime.w;
+  let windOffset = vec3<f32>(windDir2.x, 0.0, windDir2.y) * windSpeed * timeS;
+  let noiseScale = u.cloudDensityShape.z;
+  let p = (samplePos + windOffset) * noiseScale;
+
+  // Base shape via 3-octave fbm in [-1, 1] → remap to [0, 1] for the
+  // coverage threshold semantics.
+  let n = fbm3d(p) * 0.5 + 0.5;
+  // Coverage threshold same shape as ProceduralClouds.
+  var density = smoothstep(1.0 - coverage, 1.0, n);
+  density = density * u.cloudDensityShape.x;
+
+  // Height shaping: weaker shadow when sample lands above the layer
+  // top (sun ray exits cloud quickly) — gentler than the cloud render's
+  // anvil curve but cheap.
+  let altitudeAtSample = length(samplePos) - innerRadius;
+  let layerThickness = max(cloudLayerTop - cloudLayerBottom, 1.0);
+  let inLayer = step(cloudLayerBottom, altitudeAtSample) *
+                step(altitudeAtSample, cloudLayerTop);
+  density = density * inLayer;
+
+  // Beer-Lambert transmittance along the cloud-layer step.
+  let absorption = u.cloudDensityShape.y;
+  let extinction = density * absorption * layerThickness;
+  return exp(-extinction);
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Storage texture bindings — disjoint numbers per access mode + texture
 // so the WGSL module declares each only once.
@@ -382,6 +503,17 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   // depending on whether the froxel is in shadow.
   let sunShadowFactor = sampleSunShadow(worldPos);
 
+  // Phase 6c — cloud shadows in volumetric fog. Multiplies a cheap
+  // single-sample cloud extinction approximation into the existing sun
+  // shadow term so clouds cast soft shadows in the fog beneath them
+  // (visible as darkened patches in the volumetric god rays under a
+  // cloudy sky). Returns 1.0 (no attenuation) when the cloud-shadow
+  // feature is off, when the froxel is above the cloud layer, or when
+  // the sun is at a grazing angle that misses the cloud layer in
+  // front of us. See `sampleCloudShadow` for the approximation.
+  let cloudShadowFactor = sampleCloudShadow(worldPos);
+  let effectiveSunShadow = sunShadowFactor * cloudShadowFactor;
+
   // Sun contribution. The shadow factor cuts the sun term to zero
   // (or to `darkness × sunTerm`) inside terrain shadow volumes,
   // producing visible god rays where the lit and shadowed regions
@@ -390,7 +522,7 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   let sunIntensity = u.sunDirectionAndIntensity.w;
   let cosThetaSun = dot(viewDir, sunDir);
   let phaseSun = henyeyGreenstein(cosThetaSun, g);
-  let sunScatter = sunIntensity * phaseSun * sunShadowFactor;
+  let sunScatter = sunIntensity * phaseSun * effectiveSunShadow;
 
   // Moon contribution. The .w slot is already (phase × intensity), so
   // a new moon (phase=0) zeroes the moon term naturally — no extra
