@@ -21,6 +21,22 @@ const VIEWS = [
   // Equator — where geographic and Mercator V coords disagree least but
   // any vertical offset is most visible.
   { name: "equator", lon: 0, lat: 0, height: 8_000_000 },
+  // Mid-orbit view of Asia/India — exercises a different imagery tile set
+  // and verifies the fix is provider-agnostic.
+  { name: "asia", lon: 80, lat: 25, height: 12_000_000 },
+  // Southern hemisphere orbit — Australia visible plus surrounding ocean,
+  // verifies south-pole side of the reprojection.
+  { name: "southern", lon: 140, lat: -25, height: 12_000_000 },
+  // Mid-altitude view of Europe — at this altitude tile-edge seams are
+  // most visible because tile resolution is finite and bilinear bleed
+  // becomes a per-pixel artefact.
+  { name: "europe-mid", lon: 10, lat: 50, height: 4_000_000 },
+  // Low-orbit close to ground — tests imagery tile boundaries at high LOD
+  // where the user reported "borders of the imagery showing dark lines".
+  { name: "tile-edge-test", lon: -122.4, lat: 37.7, height: 500_000 },
+  // Dusk over the Pacific — exercises sun-position lighting + terminator
+  // shading to compare WebGL/WebGPU darkness handling.
+  { name: "dusk-pacific", lon: -150, lat: 20, height: 12_000_000 },
 ];
 
 async function captureFrame(rendererArg, label, cam) {
@@ -60,6 +76,11 @@ async function captureFrame(rendererArg, label, cam) {
   await page.waitForTimeout(2000);
 
   const out = path.join(OUT_DIR, `probe-projection-${label}.png`);
+  // Use page.screenshot (compositor path) — canvasElement.screenshot() in
+  // headless mode reads canvas bytes via a different path that doesn't
+  // include sRGB encoding, producing darker images even when getImageData
+  // sees the correct values. Full-page screenshot goes through the
+  // display compositor.
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
   console.log(`  saved ${out}`);

@@ -395,7 +395,31 @@ export class WebGPUPostProcessPipeline {
     targetFormat: GPUTextureFormat,
   ): void {
     const code = `
-// Identity blit — fullscreen triangle, texture sample, no processing.
+// Identity blit — fullscreen triangle, texture sample, linear→sRGB encode
+// on output (Session 65 Batch 47).
+//
+// Why the encode is here:
+//   The scene framebuffer is rgba8unorm (LINEAR). The canvas surface is
+//   bgra8unorm (also linear), and the OS compositor interprets the
+//   canvas bytes as sRGB-ENCODED values. So linear values written to
+//   the canvas display dramatically darker than intended — quantitative
+//   probe (probe-darkness-quant.mjs) measured webgpu = pow(webgl, 2.41)
+//   pre-fix, which is precisely the missing linear→sRGB encode.
+//
+//   WebGL's drawingBuffer in modern Chrome behaves AS IF it were
+//   sRGB-encoded on write (effectively wraps shader output in the
+//   linear→sRGB transform via its EXT_sRGB-style canvas backing).
+//   WebGPU has no equivalent automatic encode for bgra8unorm canvas
+//   targets, so the identity blit must apply it explicitly.
+//
+// Why not just change the canvas format to bgra8unorm-srgb?
+//   That would be the cleaner architectural fix (GPU ROP does the
+//   encode in hardware), but every render pipeline whose final color
+//   target is the canvas — including the identity blit and every
+//   user post-process stage — would need its fragment target format
+//   bumped to bgra8unorm-srgb too. That's an architectural change
+//   spanning many files; the in-shader pow keeps the canvas-format
+//   contract intact and changes one place.
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
 @group(0) @binding(1) var srcSamp: sampler;
 
@@ -413,7 +437,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 }
 
 @fragment fn fragmentMain(@location(0) uv: vec2f) -> @location(0) vec4f {
-  return textureSample(srcTex, srcSamp, uv);
+  let raw = textureSample(srcTex, srcSamp, uv);
+  // pow(c, 1/2.2) approximate linear→sRGB encode. The exact piecewise
+  // sRGB transfer function differs by < 1% in the [0, 1] range and the
+  // pow form costs one fragment-shader instruction; switching to
+  // piecewise would only matter for ColorChecker-grade validation.
+  let encoded = pow(max(raw.rgb, vec3f(0.0)), vec3f(1.0 / 2.2));
+  return vec4f(encoded, raw.a);
 }
 `;
 
