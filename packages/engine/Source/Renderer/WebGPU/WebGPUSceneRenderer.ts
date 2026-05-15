@@ -31,6 +31,7 @@
  * @private
  */
 
+import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../../Renderer/Pass.js";
 import mergeSort from "../../Core/mergeSort.js";
 import {
@@ -1300,6 +1301,15 @@ export class WebGPUSceneRenderer {
       // undefined would also work but is harder to type cleanly.
       frustumCache._near = NaN;
       frustumCache._far = NaN;
+      // Belt-and-suspenders: re-assert WebGPU depth-range type at every
+      // frustum-uniform update. Other renderers (sky atmosphere, etc.)
+      // may flip the global between iterations; doing this immediately
+      // before the projection recompute guarantees each frustum's
+      // projection matrix is consistent with the depth buffer.
+      // Without this, transitioning back from SCENE2D/CV to SCENE3D
+      // produced a half-globe split where one frustum band rendered
+      // in WebGPU range and the other in WebGL range.
+      Matrix4.setDepthRangeType("webgpu");
       uniformState.updateFrustum(frustum);
       // Restore — the frustum on the camera should stay unchanged for other systems
       frustum.near = origNear;
