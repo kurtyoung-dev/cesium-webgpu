@@ -395,31 +395,36 @@ export class WebGPUPostProcessPipeline {
     targetFormat: GPUTextureFormat,
   ): void {
     const code = `
-// Identity blit — fullscreen triangle, texture sample, linear→sRGB encode
-// on output (Session 65 Batch 47).
+// Identity blit — fullscreen triangle, texture sample, NO color
+// transform.
 //
-// Why the encode is here:
-//   The scene framebuffer is rgba8unorm (LINEAR). The canvas surface is
-//   bgra8unorm (also linear), and the OS compositor interprets the
-//   canvas bytes as sRGB-ENCODED values. So linear values written to
-//   the canvas display dramatically darker than intended — quantitative
-//   probe (probe-darkness-quant.mjs) measured webgpu = pow(webgl, 2.41)
-//   pre-fix, which is precisely the missing linear→sRGB encode.
+// Session 65 Batch 48 (revert of Batch 47): the inline pow(1/2.2)
+// encode added in Batch 47 caused double-gamma-encoding for the FOG /
+// SkyAtmosphere / SkyBox / ground-atmosphere paths, which ALREADY
+// apply pow(c, 1/2.2) inside the per-pixel shader (see e.g.
+// GlobeTerrain.wgsl FOG branch line 2619, SkyAtmosphere.wgsl line 492,
+// ModelPBRComplete.wgsl line 928). Fragments rendered through those
+// paths got encoded twice → pow(c, 1/4.84) → washed-out / desaturated
+// look reported as 'BUG-WEBGPU-CUBEMAP-DOUBLE-GAMMA'-style symptom.
 //
-//   WebGL's drawingBuffer in modern Chrome behaves AS IF it were
-//   sRGB-encoded on write (effectively wraps shader output in the
-//   linear→sRGB transform via its EXT_sRGB-style canvas backing).
-//   WebGPU has no equivalent automatic encode for bgra8unorm canvas
-//   targets, so the identity blit must apply it explicitly.
+// Fragments rendered through paths that DON'T pre-encode (raw imagery
+// at orbit altitudes outside the fog/atmosphere drape) stayed dark
+// without the blit-side encode, producing the gamma-2.4-darker
+// signature probe-darkness-quant.mjs measured pre-Batch-47.
 //
-// Why not just change the canvas format to bgra8unorm-srgb?
-//   That would be the cleaner architectural fix (GPU ROP does the
-//   encode in hardware), but every render pipeline whose final color
-//   target is the canvas — including the identity blit and every
-//   user post-process stage — would need its fragment target format
-//   bumped to bgra8unorm-srgb too. That's an architectural change
-//   spanning many files; the in-shader pow keeps the canvas-format
-//   contract intact and changes one place.
+// The proper architectural fix is one of:
+//   A. Make the canvas format bgra8unorm-srgb so the GPU ROP applies
+//      the encode in hardware on every write. Requires bumping every
+//      pipeline whose final target is the canvas (identity blit,
+//      tonemap, color grading, FXAA, custom user stages) — multi-file
+//      change.
+//   B. Audit every render path and ensure EXACTLY ONE inline encode
+//      between the imagery sampler and the canvas. Today fog/sky/PBR
+//      have encodes; imagery/atmosphere-drape do not. Pick the
+//      canonical layer (probably the final stage) and consolidate.
+//
+// Both options are bigger than Batch 47 attempted; tracking under
+// NEW-VR2-3-IMAGERY-WASH-OUT.
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
 @group(0) @binding(1) var srcSamp: sampler;
 
@@ -437,13 +442,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 }
 
 @fragment fn fragmentMain(@location(0) uv: vec2f) -> @location(0) vec4f {
-  let raw = textureSample(srcTex, srcSamp, uv);
-  // pow(c, 1/2.2) approximate linear→sRGB encode. The exact piecewise
-  // sRGB transfer function differs by < 1% in the [0, 1] range and the
-  // pow form costs one fragment-shader instruction; switching to
-  // piecewise would only matter for ColorChecker-grade validation.
-  let encoded = pow(max(raw.rgb, vec3f(0.0)), vec3f(1.0 / 2.2));
-  return vec4f(encoded, raw.a);
+  return textureSample(srcTex, srcSamp, uv);
 }
 `;
 

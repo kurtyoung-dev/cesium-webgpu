@@ -131,9 +131,14 @@ class PickDepth {
         framebuffer: this.framebuffer,
       });
 
-      const packedDepth = Cartesian4.unpack(pixels, 0, scratchPackedDepth);
-      Cartesian4.divideByScalar(packedDepth, 255.0, packedDepth);
-      return Cartesian4.dot(packedDepth, packedDepthScale);
+      // On WebGPU `context.readPixels` is a stub that returns undefined
+      // because the underlying readback is async-only. Fall through to
+      // the async path instead of crashing in Cartesian4.unpack.
+      if (defined(pixels) && pixels.length >= 4) {
+        const packedDepth = Cartesian4.unpack(pixels, 0, scratchPackedDepth);
+        Cartesian4.divideByScalar(packedDepth, 255.0, packedDepth);
+        return Cartesian4.dot(packedDepth, packedDepthScale);
+      }
     }
 
     // Async path: kick off GPU readback. Returns a Promise when async

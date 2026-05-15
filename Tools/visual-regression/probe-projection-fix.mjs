@@ -76,11 +76,6 @@ async function captureFrame(rendererArg, label, cam) {
   await page.waitForTimeout(2000);
 
   const out = path.join(OUT_DIR, `probe-projection-${label}.png`);
-  // Use page.screenshot (compositor path) — canvasElement.screenshot() in
-  // headless mode reads canvas bytes via a different path that doesn't
-  // include sRGB encoding, producing darker images even when getImageData
-  // sees the correct values. Full-page screenshot goes through the
-  // display compositor.
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
   console.log(`  saved ${out}`);
