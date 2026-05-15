@@ -46,12 +46,30 @@
  * @module WebGPUGlobeSurfaceCameraUB
  */
 
+import Cartographic from "../../Core/Cartographic.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
 import {
   CAMERA_UNIFORM_BYTES,
   multiplyMat4ColumnMajor,
 } from "./WebGPUGlobeSurfaceTypes.js";
+
+// Scratch state for the SCENE2D / COLUMBUS_VIEW / MORPHING projected
+// tile-rectangle math. Mirrors the WebGL packer's scratch instances in
+// `GlobeSurfaceTileProviderRendering.js:1139-1164`. The packer is single-
+// threaded per-frame, so reusing module-level scratch is safe and avoids
+// per-tile allocations.
+const swCarto = new Cartographic();
+const neCarto = new Cartographic();
+const swProj = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
+const neProj = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
+const projectedTileRect = { x: 0, y: 0, z: 0, w: 0 } as {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+};
+const rtc2D = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
 
 /**
  * The renderer surface the camera-UB packer reaches into.
@@ -83,6 +101,60 @@ export function createCameraUniformBuffer(
   const data = host._cameraUniformData;
   let offset = 0;
 
+  // ─── SCENE2D / COLUMBUS_VIEW / MORPHING projected-rectangle setup ───
+  // Mirrors `GlobeSurfaceTileProviderRendering.js:1139-1164` (upstream
+  // WebGL). For non-SCENE3D modes, the planar vertex path operates on
+  // PROJECTED meters, not raw radians. The `tileRectangle` uniform AND
+  // the `rtc` used by `modifiedModelView` both have to be in projected
+  // space — otherwise the vertex shader's
+  //   `lon = mix(west, east, st.x); lat = mix(south, north, yFrac);`
+  // produces values in radians ([-π, π]) which the projection × modelView
+  // matrix expects in meters (millions of units). Result: every planar
+  // vertex collapses to ~0 in clip space and the globe disappears.
+  //
+  // SceneMode constants: MORPHING=0, COLUMBUS_VIEW=1, SCENE2D=2, SCENE3D=3.
+  const sceneMode = frameState?.mode ?? 3;
+  const isPlanarMode = sceneMode !== 3; // true for MORPHING / CV / 2D
+  const useRTCShift = sceneMode === 1 || sceneMode === 2; // CV or 2D
+  const mapProjection = frameState?.mapProjection as
+    | {
+        project: (
+          c: Cartographic,
+          result?: { x: number; y: number; z: number },
+        ) => { x: number; y: number; z: number };
+      }
+    | undefined;
+  const tileRect = tile?.rectangle;
+  let usePlanarMv = false; // whether modifiedView should use rtc2D instead of ECEF center
+  if (isPlanarMode && mapProjection && tileRect) {
+    swCarto.longitude = tileRect.west;
+    swCarto.latitude = tileRect.south;
+    swCarto.height = 0;
+    neCarto.longitude = tileRect.east;
+    neCarto.latitude = tileRect.north;
+    neCarto.height = 0;
+    mapProjection.project(swCarto, swProj);
+    mapProjection.project(neCarto, neProj);
+
+    projectedTileRect.x = swProj.x;
+    projectedTileRect.y = swProj.y;
+    projectedTileRect.z = neProj.x;
+    projectedTileRect.w = neProj.y;
+
+    if (useRTCShift) {
+      // rtc.x = 0 (height axis is X in planar earth convention).
+      // rtc.y/z = projected tile center, then shift rect to be relative.
+      rtc2D.x = 0;
+      rtc2D.y = (projectedTileRect.z + projectedTileRect.x) * 0.5;
+      rtc2D.z = (projectedTileRect.w + projectedTileRect.y) * 0.5;
+      projectedTileRect.x -= rtc2D.y;
+      projectedTileRect.y -= rtc2D.z;
+      projectedTileRect.z -= rtc2D.y;
+      projectedTileRect.w -= rtc2D.z;
+      usePlanarMv = true;
+    }
+  }
+
   // mvpRelativeToEye (mat4x4, 16 floats)
   const mvpRTE = m4Values(uniformState.modelViewProjectionRelativeToEye);
   for (let i = 0; i < 16; i++) data[offset++] = mvpRTE[i];
@@ -111,7 +183,16 @@ export function createCameraUniformBuffer(
   // The fix is one character — pass `mesh` instead of `surfaceTile`
   // to `computeModifiedModelView`. (Renamed signature below to make
   // it impossible to repeat the mistake.)
-  const modifiedView = computeModifiedModelView(uniformState, mesh);
+  //
+  // SCENE2D / COLUMBUS_VIEW override: substitute the projected tile-center
+  // rtc for `mesh.center`. The ECEF center is meaningless in planar modes
+  // (it's at the surface of the WGS84 ellipsoid in 3D space, ~6.4 Mm from
+  // the projected origin) — feeding it to `setTranslation(view, view×rtc)`
+  // would translate the view to an impossible eye-space point and the
+  // planar geometry would never reach clip space. Mirrors `rtc` assignment
+  // at `GlobeSurfaceTileProviderRendering.js:1156-1163`.
+  const rtcSource = usePlanarMv ? { center: rtc2D } : mesh;
+  const modifiedView = computeModifiedModelView(uniformState, rtcSource);
   const mv = m4Values(modifiedView);
   for (let i = 0; i < 16; i++) data[offset++] = mv[i];
 
@@ -280,9 +361,18 @@ export function createCameraUniformBuffer(
   data[offset++] = 0; // reserved (future minor-axis radius)
 
   // ─── 2D / Columbus View support ───
-  // tileRectangle (vec4): west, south, east, north (radians)
+  // tileRectangle (vec4): planar modes pack the PROJECTED rectangle in
+  // meters (relative to rtc2D for SCENE2D / COLUMBUS_VIEW; absolute for
+  // MORPHING). SCENE3D packs raw radians since `computePlanarPosition`
+  // is not invoked in the 3D vertex branch. See the projected-rectangle
+  // setup near the top of this function.
   const rectangle = tile?.rectangle;
-  if (rectangle) {
+  if (isPlanarMode && mapProjection && rectangle) {
+    data[offset++] = projectedTileRect.x;
+    data[offset++] = projectedTileRect.y;
+    data[offset++] = projectedTileRect.z;
+    data[offset++] = projectedTileRect.w;
+  } else if (rectangle) {
     data[offset++] = rectangle.west;
     data[offset++] = rectangle.south;
     data[offset++] = rectangle.east;

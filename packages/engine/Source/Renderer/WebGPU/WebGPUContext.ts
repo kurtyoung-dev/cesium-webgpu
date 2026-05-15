@@ -2984,11 +2984,17 @@ export class WebGPUContext extends GraphicsContext {
     environmentState.originalFramebuffer = passState.framebuffer;
 
     const globe = scene._globe;
+    // SceneMode constants: MORPHING=0, COLUMBUS_VIEW=1, SCENE2D=2, SCENE3D=3.
+    // Mirrors upstream `Scene.js:3114-3117` — force globe-depth clear in
+    // SCENE2D regardless of `depthTestAgainstTerrain`. The 14.5-pattern
+    // bug (this used to read `=== 1` mis-labeled as SCENE2D) silently
+    // broke SCENE2D rendering and made COLUMBUS_VIEW clear globe depth
+    // unconditionally.
     environmentState.clearGlobeDepth =
       defined(globe) &&
       globe.show &&
       (!globe.depthTestAgainstTerrain ||
-        scene.mode === 1) /* SceneMode.SCENE2D */;
+        scene.mode === 2) /* SceneMode.SCENE2D */;
     environmentState.useDepthPlane =
       environmentState.clearGlobeDepth &&
       scene.mode === 3 /* SceneMode.SCENE3D */ &&
@@ -3024,9 +3030,12 @@ export class WebGPUContext extends GraphicsContext {
     environmentState.useInvertClassification =
       !picking && scene.invertClassification;
     environmentState.renderTranslucentDepthForPick = false;
+    // SceneMode.SCENE2D = 2 (mirrors `Scene.js:3131`). The 14.5-pattern
+    // bug had this as `!== 1` (which is COLUMBUS_VIEW), turning WebVR
+    // off for 2.5D and on for 2D — the opposite of the WebGL behavior.
     environmentState.useWebVR =
       scene._useWebVR &&
-      scene.mode !== 1 /* SceneMode.SCENE2D */ &&
+      scene.mode !== 2 /* SceneMode.SCENE2D */ &&
       !passes.offscreen;
 
     const clear = scene._clearColorCommand;

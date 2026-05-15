@@ -1274,6 +1274,10 @@ export class WebGPUSceneRenderer {
     // This mirrors the WebGL path which creates a clone and sets near/far on it
     const camera = scene._frameState.camera;
     const frustum = camera.frustum;
+    const frustumCache = frustum as unknown as {
+      _near?: number;
+      _far?: number;
+    };
     if (frustum && frustum.near !== undefined) {
       // Use updateFrustum with modified near/far via the scratch approach
       // Store originals, update, then the uniform state captures the projection matrix
@@ -1281,6 +1285,21 @@ export class WebGPUSceneRenderer {
       const origFar = frustum.far;
       frustum.near = near;
       frustum.far = far;
+      // Force cached projection-matrix invalidation so the recomputed
+      // projection picks up `Matrix4._depthRangeType = "webgpu"` (set by
+      // Scene init for WebGPU contexts). Without this the cache stays in
+      // the WebGL [-1, 1] clip-z form — fragments at clip_z < 0 (the
+      // near half of every frustum) get clipped by WebGPU's [0, 1] clip
+      // space. Most visible in SCENE2D where the linear ortho depth
+      // puts half the visible range in the now-clipped near half;
+      // perspective + log-depth in SCENE3D / COLUMBUS happens to push
+      // most fragments to clip_z > 0 even with the WebGL projection so
+      // those modes rendered acceptably. Set the sentinel-cached values
+      // to NaN so any equality compare against the new `frustum.near`
+      // fails and triggers a recompute. Touching the cached matrices to
+      // undefined would also work but is harder to type cleanly.
+      frustumCache._near = NaN;
+      frustumCache._far = NaN;
       uniformState.updateFrustum(frustum);
       // Restore — the frustum on the camera should stay unchanged for other systems
       frustum.near = origNear;

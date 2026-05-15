@@ -106,7 +106,7 @@ function updateWebGPUDynamicEnvironmentMap(
     !manager.enabled ||
     !manager.shouldUpdate ||
     !manager._position ||
-    mode === 3 // SceneMode.MORPHING
+    mode === 0 // SceneMode.MORPHING (mirror DynamicEnvironmentMapManager.js:268)
   ) {
     manager._shouldRegenerateShaders = false;
     return;

@@ -34,6 +34,7 @@
  * @module WebGPUSceneRendererFrustumLoop
  */
 
+import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../../Renderer/Pass.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import type { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
@@ -128,6 +129,22 @@ export function executeFrustumLoop(
   const numFrustums = frustumCommandsList.length;
   const uniformState = context.uniformState;
 
+  // Force WebGPU depth-range type for THIS frame's projection-matrix
+  // recomputes. Scene init sets the global to "webgpu" but other
+  // renderers (notably `WebGPUSkyAtmosphereRenderer`) flip it back to
+  // "webgl" after their own per-frame compute — see the comment block
+  // at WebGPUSkyAtmosphereRenderer:530-552. Without re-asserting here,
+  // every projection-matrix recompute that happens during this frustum
+  // loop emits clip-space z in [-1, 1] while WebGPU clips on [0, 1],
+  // silently rejecting roughly the near-half of every frustum. The
+  // SCENE3D perspective + log-depth path happens to keep most
+  // fragments at clip_z > 0 even with the wrong range so it rendered
+  // acceptably; SCENE2D ortho is uniformly distributed across the
+  // depth range and is the most-visible victim (entire viewport
+  // blank). `_updateFrustumUniforms` further invalidates the per-frame
+  // cached projection matrix so this fix actually takes effect.
+  Matrix4.setDepthRangeType("webgpu");
+
   // C-R8-SCENE2D-JITTER (Batch 36) — capture the initial 2D camera
   // altitude before the frustum loop so we can offset per-frustum
   // inside 2D mode. WebGL's `SceneRenderer.js:419,444-449` does this
@@ -154,10 +171,39 @@ export function executeFrustumLoop(
     // consistent across frustum boundaries.
     let near;
     let far;
-    if (scene.mode === 2 /* SceneMode.SCENE2D */) {
+    if (scene.mode === 2 /* SceneMode.SCENE2D */ && numFrustums > 1) {
+      // C-R8-SCENE2D-JITTER (Batch 36) — only apply the camera-Z compress
+      // trick when there are multiple frustums. The trick shifts
+      // `camera.position.z` per-frustum to compress each band into a
+      // narrow [1, far-near+1] range so the ortho depth buffer keeps
+      // uniform precision across frustum boundaries. With a single
+      // frustum the shift drives the camera into the planar earth
+      // (z≈1) and every tile gets clipped by the near plane — blank
+      // viewport. Mirrors `SceneRenderer.js:444-449` which also has
+      // implicit multi-frustum behavior.
       scene2DCamera.position.z = initialHeight2D - frustumCommands.near + 1.0;
       far = Math.max(1.0, frustumCommands.far - frustumCommands.near);
       near = 1.0;
+      // After shifting the camera Z, refresh the view/projection state
+      // so the tile UBs pick up the new camera position. Mirrors WebGL
+      // `SceneRenderer.js:448` (`uniformState.update(frameState)`).
+      const us = uniformState as unknown as {
+        update: (fs: typeof scene._frameState) => void;
+      };
+      us.update?.(scene._frameState);
+    } else if (scene.mode === 2 /* SceneMode.SCENE2D */) {
+      // Single-frustum SCENE2D — `frustumCommands` carries the slice
+      // of depth this band would render (e.g., 9.3 Mm → 11.4 Mm above
+      // the planar earth at default zoom), which would clip the
+      // entire earth out of the frustum. With only one frustum the
+      // band must cover the FULL visible range, so use the camera
+      // frustum's own near/far rather than the band-specific values.
+      // Mirrors WebGL's behavior in a single-band degenerate case.
+      const camFrust = scene._frameState.camera?.frustum as
+        | { near?: number; far?: number }
+        | undefined;
+      near = camFrust?.near ?? frustumCommands.near;
+      far = camFrust?.far ?? frustumCommands.far;
     } else {
       // Apply opaque near offset to avoid tearing artifacts between adjacent frustums
       // (except for the nearest frustum which uses the actual near value)
