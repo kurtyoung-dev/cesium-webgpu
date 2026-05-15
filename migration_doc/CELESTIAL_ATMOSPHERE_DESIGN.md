@@ -1,6 +1,6 @@
 # Celestial & Atmospheric Systems — Design Document
 
-**Status:** Draft v3 — Session 24 v2 + 2026-04-08 decisions locked (B1-B23). Status table + Phase 3 sync 2026-05-13. Phase 4 SHIPPED (Batches 29 + 42); Phase 5 a-d SHIPPED (existing `WebGPUVolumetricFogRenderer` + `Compute/VolumetricFog.wgsl`); Phase 6 main render path SHIPPED (existing `WebGPUProceduralCloudRenderer`); Phase 6 sub-items 6c (cloud shadows in fog) + 6d (quality dial) + 6b (high-altitude 2D fast path, possibly subsumed by 6d) deferred. Phase 5f (temporal reprojection polish) deferred. Orbit-rendering polish techniques added §13.
+**Status:** Draft v3 — Session 24 v2 + 2026-04-08 decisions locked (B1-B23). Status table + Phase 3 sync 2026-05-13. Phase 4 SHIPPED (Batches 29 + 42); Phase 5 a-d SHIPPED (existing `WebGPUVolumetricFogRenderer` + `Compute/VolumetricFog.wgsl`); Phase 6 main render path SHIPPED (existing `WebGPUProceduralCloudRenderer`); Phase 6c SHIPPED (Batch 44 — cloud-shadow extinction in volumetric fog froxel); Phase 6 sub-items 6d (quality dial) + 6b (high-altitude 2D fast path, possibly subsumed by 6d) deferred. Phase 5f (temporal reprojection polish) deferred. Orbit-rendering polish techniques added §13.
 **Scope:** Sun, Moon, atmosphere, clouds, fog, stars, volumetric fog, varying
 atmospheric density, scattering occlusion (god rays), and the lighting/visibility
 coupling between them
@@ -1099,12 +1099,15 @@ work unchanged. Renderers that opt into multi-light read from
 >   `WebGPUSceneRendererEnvironmentalEffects` and gated on
 >   `atmosphericConditions.volumetricFog.enabled` (default FALSE per
 >   B18). **Phase 5f** temporal reprojection polish deferred.
-> - **Phase 6 ⚠️ MAIN PATH SHIPPED** — `WebGPUProceduralCloudRenderer`
+> - **Phase 6 ⚠️ MAIN PATH + 6c SHIPPED** — `WebGPUProceduralCloudRenderer`
 >   is a full Schneider-style raymarcher (HG dual-lobe + Beer-Powder +
 >   3D FBM + light-march), gated on `atmosphericConditions.clouds
->   .enableVolumetric` (Batch 43 wiring). **6c** cloud-shadows-in-fog
->   + **6d** quality dial + **6b** high-altitude 2D fast-path
->   (possibly subsumed by 6d's `auto` mode) deferred.
+>   .enableVolumetric` (Batch 43 wiring). **6c** cloud shadows in
+>   volumetric fog landed in Batch 44 (cheap single-sample extinction
+>   along sun direction at cloud-layer mid-altitude, multiplies into
+>   the Phase 5c sun-shadow term). **6d** quality dial + **6b**
+>   high-altitude 2D fast-path (possibly subsumed by 6d's `auto`
+>   mode) deferred.
 >
 > See §13 for orbit-rendering quick wins added 2026-05-13.
 
