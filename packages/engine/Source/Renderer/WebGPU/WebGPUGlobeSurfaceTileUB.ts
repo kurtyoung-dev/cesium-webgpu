@@ -192,16 +192,65 @@ export function createTileUniformBuffer(
       }
     }
 
-    // texCoordsRectangle (vec4)
-    const rect = tileImagery.textureCoordinateRectangle;
-    if (rect) {
-      data[baseOffset + 4] = rect.x;
-      data[baseOffset + 5] = rect.y;
-      data[baseOffset + 6] = rect.z;
-      data[baseOffset + 7] = rect.w;
+    // texCoordsRectangle (vec4) — Batch 46 cont. (Session 65 Batch 49).
+    //
+    // `tileImagery.textureCoordinateRectangle` is computed by
+    // `createTileImagerySkeletons` (ImageryLayerHelpers.js). When the
+    // imagery provider is Mercator, that function converts BOTH the
+    // terrain rectangle and the imagery rectangles to Mercator-native
+    // coordinates (lines 231-251) BEFORE computing (minU, minV, maxU,
+    // maxV). So the cached `textureCoordinateRectangle` is in
+    // MERCATOR-Y tile-UV space for Mercator providers.
+    //
+    // The WGSL bounds-check `texCoordsAlpha(geoUV, layer.texCoordsRect)`
+    // passes the GEOGRAPHIC tile-UV. For Mercator providers without
+    // reprojection (WebGL's case) the shader has its own webMercT
+    // coordinate and the bounds check happens against Mercator-Y on
+    // both sides — consistent.
+    //
+    // After Batch 46 forces the WGSL to sample at geoUV for any tile
+    // whose reprojected texture is bound, the bounds check needs the
+    // rect ALSO in geographic-UV space. Otherwise tiles whose Mercator-Y
+    // rect doesn't exactly equal (0, 0, 1, 1) get incorrect masking:
+    // visible black gaps and per-tile-edge seams (most prominent at
+    // high latitudes where Mercator and geographic tile-UV diverge).
+    //
+    // Recomputation: take the GEOGRAPHIC intersection of the imagery
+    // tile's rectangle with the terrain tile, expressed as tile-UV
+    // fractions. U-axis is identical in both projections (Mercator-X is
+    // linear in longitude), so for fast-path correctness we only need to
+    // recompute V. For symmetry and to avoid drift if assumptions about
+    // U change, recompute the whole rect.
+    if (reprojectedToGeographic && tile.rectangle && imagery.rectangle) {
+      const tR = tile.rectangle;
+      const iR = imagery.rectangle;
+      const invW = 1.0 / tR.width;
+      const invH = 1.0 / tR.height;
+      const minU = Math.max(0, (Math.max(tR.west, iR.west) - tR.west) * invW);
+      const maxU = Math.min(1, (Math.min(tR.east, iR.east) - tR.west) * invW);
+      const minV = Math.max(
+        0,
+        (Math.max(tR.south, iR.south) - tR.south) * invH,
+      );
+      const maxV = Math.min(
+        1,
+        (Math.min(tR.north, iR.north) - tR.south) * invH,
+      );
+      data[baseOffset + 4] = minU;
+      data[baseOffset + 5] = minV;
+      data[baseOffset + 6] = maxU;
+      data[baseOffset + 7] = maxV;
     } else {
-      data[baseOffset + 6] = 1;
-      data[baseOffset + 7] = 1;
+      const rect = tileImagery.textureCoordinateRectangle;
+      if (rect) {
+        data[baseOffset + 4] = rect.x;
+        data[baseOffset + 5] = rect.y;
+        data[baseOffset + 6] = rect.z;
+        data[baseOffset + 7] = rect.w;
+      } else {
+        data[baseOffset + 6] = 1;
+        data[baseOffset + 7] = 1;
+      }
     }
 
     const layer = imagery.imageryLayer;
