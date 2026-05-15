@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Tune the AtmosphericConditions weather inputs: humidity (mie + fog density), airQuality (rayleigh), cloudCover (star occlusion), and wind state. WebGPU-only API shipped in Session 65 Batches 29 + 42."
+    />
+    <meta name="cesium-sandcastle-labels" content="Showcases, WebGPU" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Humidity</td>
+            <td>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                data-bind="value: humidity, valueUpdate: 'input'"
+              />
+            </td>
+          </tr>
+          <tr>
+            <td>Air quality</td>
+            <td>
+              <input
+                type="range"
+                min="0.3"
+                max="2"
+                step="0.05"
+                data-bind="value: airQuality, valueUpdate: 'input'"
+              />
+            </td>
+          </tr>
+          <tr>
+            <td>Cloud cover</td>
+            <td>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                data-bind="value: cloudCover, valueUpdate: 'input'"
+              />
+            </td>
+          </tr>
+          <tr>
+            <td>Wind speed (m/s)</td>
+            <td>
+              <input
+                type="range"
+                min="0"
+                max="40"
+                step="0.5"
+                data-bind="value: windSpeed, valueUpdate: 'input'"
+              />
+            </td>
+          </tr>
+          <tr>
+            <td>Wind heading (°)</td>
+            <td>
+              <input
+                type="range"
+                min="0"
+                max="360"
+                step="1"
+                data-bind="value: windHeading, valueUpdate: 'input'"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+        // Cesium WebGPU fork — AtmosphericConditions weather inputs.
+        //
+        // The canonical `scene.globe.atmosphericConditions.*` API
+        // (Phase 0, 2026-04-09) groups every weather / atmosphere /
+        // cloud / lighting toggle under one nested object. Phase 4
+        // (Batches 29 + 42) wired the .weather leaf to actual
+        // renderer state:
+        //
+        //   - humidity      → fog density × (1 + (h-0.5))
+        //                   AND atmosphere Mie coefficient × (0.5 + h)
+        //   - airQuality    → atmosphere Rayleigh coefficient × 1/airQuality
+        //                   (low = polluted/red sky; high = clean/blue)
+        //   - cloudCover    → star occlusion factor in cubemap panorama
+        //                   AND drives the volumetric cloud layer's
+        //                     coverage threshold
+        //   - windSpeed,
+        //     windDirection → SkyAtmosphere UBO scaffold for Phase 5
+        //                     fog advection / Phase 6 cloud motion
+        //
+        // The full leaf is documented in
+        //   migration_doc/CELESTIAL_ATMOSPHERE_DESIGN.md § 4.5.
+        // Runs on either backend. The `atmosphericConditions.weather.*`
+        // setters are no-ops on WebGL (the GLSL path doesn't sample the
+        // matching uniforms); on WebGPU each slider drives a real
+        // shader uniform per Phases 4 + 6. To force a backend, pass
+        // `contextOptions: { renderer: "webgpu" }` here.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          terrain: Cesium.Terrain.fromWorldTerrain(),
+          shouldAnimate: true,
+        });
+
+        const scene = viewer.scene;
+        const globe = scene.globe;
+        const ac = globe.atmosphericConditions;
+
+        // A high-altitude orbit view so the sky-atmosphere limb halo
+        // is visible — that's where humidity (Mie) and air quality
+        // (Rayleigh) shifts read clearly. Pittsburgh roughly
+        // because the default view rectangle is centered there.
+        viewer.scene.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(-80, 35, 4_500_000),
+          orientation: {
+            heading: 0,
+            pitch: Cesium.Math.toRadians(-90),
+            roll: 0,
+          },
+        });
+
+        // Enable the volumetric cloud layer so cloudCover has a
+        // visible effect (otherwise it only modulates star occlusion).
+        ac.clouds.enableVolumetric = true;
+        globe.cloudLayerBottom = 1500;
+        globe.cloudLayerTop = 4000;
+
+        const viewModel = {
+          humidity: 0.5,
+          airQuality: 1.0,
+          cloudCover: 0.4,
+          windSpeed: 5,
+          windHeading: 0,
+        };
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+
+        function syncWeather() {
+          const h = parseFloat(viewModel.humidity);
+          const aq = parseFloat(viewModel.airQuality);
+          const cc = parseFloat(viewModel.cloudCover);
+          const ws = parseFloat(viewModel.windSpeed);
+          const wh = Cesium.Math.toRadians(parseFloat(viewModel.windHeading));
+          ac.weather.humidity = h;
+          ac.weather.airQuality = aq;
+          ac.weather.cloudCover = cc;
+          ac.weather.windSpeed = ws;
+          // Direction lives on the local tangent plane: X = east, Z =
+          // north (the volumetric fog + cloud renderers project this
+          // onto the camera-local horizontal plane).
+          ac.weather.windDirection = new Cesium.Cartesian3(Math.cos(wh), 0, Math.sin(wh));
+          // Cloud cover also drives the visible cloud layer's
+          // coverage threshold so the sliders produce a perceptible
+          // shape change in addition to the star-occlusion effect.
+          globe.cloudCoverage = cc;
+        }
+
+        for (const key of Object.keys(viewModel)) {
+          Cesium.knockout.getObservable(viewModel, key).subscribe(syncWeather);
+        }
+        syncWeather();
+        //Sandcastle_End
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+        Sandcastle.finishedLoading();
+      }
+    </script>
+  </body>
+</html>
