@@ -565,13 +565,28 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   // entry, so even if some other code resets, the loop wins.
   Matrix4.setDepthRangeType("webgpu");
   const off = camera.frustum.offCenterFrustum ?? camera.frustum;
+  // Use the CURRENT multi-frustum band's near/far rather than the full
+  // camera frustum range. The sky shell is rendered inside the frustum
+  // loop on the FAR band (i === 0); subsequent globe tiles in that
+  // band write depth values normalized to that band's near/far via
+  // `_updateFrustumUniforms`. If the shell uses `camera.frustum.near/far`
+  // (the full range), the depth-comparison between sky and globe is
+  // computed against two DIFFERENT mappings of physical distance →
+  // NDC z, producing a visible dark line at the globe silhouette where
+  // the sky shell intermittently wraps in front of the globe edge.
+  // `uniformState.currentFrustum` (Cartesian2) is set per-frustum-band
+  // by `_updateFrustumUniforms → updateFrustum`. Fall back to the full
+  // frustum if unavailable (first frame).
+  const us = frameState.context?.uniformState;
+  const bandNear = us?.currentFrustum?.x ?? off.near;
+  const bandFar = us?.currentFrustum?.y ?? off.far;
   Matrix4.computePerspectiveOffCenter(
     off.left,
     off.right,
     off.bottom,
     off.top,
-    off.near,
-    off.far,
+    bandNear,
+    bandFar,
     scratchProjectionWebGPU,
   );
 
