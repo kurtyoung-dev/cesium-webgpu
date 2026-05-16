@@ -577,6 +577,12 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   // `uniformState.currentFrustum` (Cartesian2) is set per-frustum-band
   // by `_updateFrustumUniforms → updateFrustum`. Fall back to the full
   // frustum if unavailable (first frame).
+  // Use per-frustum-band near/far when available (multi-frustum scenes).
+  // For single-frustum scenes (default 3D orbit), `currentFrustum` equals
+  // the camera's own near/far, so this is a no-op. For multi-frustum
+  // scenes it keeps sky-shell depth values consistent with the per-band
+  // globe depth — relevant when depth-test ordering at the silhouette
+  // depends on matching projection ranges.
   const us = frameState.context?.uniformState;
   const bandNear = us?.currentFrustum?.x ?? off.near;
   const bandFar = us?.currentFrustum?.y ?? off.far;

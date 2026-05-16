@@ -499,36 +499,38 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     finalColor = hsbToRgb(hsb);
   }
 
-  // GEOMETRIC opacity gating: WebGL's SkyAtmosphereFS pulls `opacity`
-  // straight from the scattering integrator (Beer-Lambert path length
-  // through the atmosphere shell). The WebGPU port previously derived
-  // it from `clamp(max(rgb)*2, 0, 1)` — which saturates to 1.0
-  // whenever the post-tonemap color magnitude is high (e.g. street-
-  // level views where the long horizontal path through dense
-  // atmosphere yields bright scattered radiance). That made the
-  // atmosphere fully OPAQUE at ground level, erasing all globe
-  // terrain rendering across ~10 ground-level demos (Aerometrex SF,
-  // 3D Tiles BIM, Particle System, Bloom, Lighting, Shadows —
-  // Session 65 triage).
+  // Batch 53 — port WebGL's altitude-based opacity from
+  // SkyAtmosphereCommon.glsl:72-80. The previous WGSL "geometric path
+  // ratio" formula (`1 - exp(-2 * pathRatio)`) was tuned for ground-
+  // level views but produced opacity ≈ 0.86 even at orbital altitude
+  // (where rayLength ≈ shellThickness perpendicular through the shell),
+  // making the atmosphere shell render as a thick over-bright halo
+  // that bled into the globe disc and made the globe appear smaller
+  // and darker than in WebGL. The visible "ring" the user kept
+  // reporting was this halo.
   //
-  // Fix: derive opacity from the geometric ratio of how much the ray
-  // actually traversed inside the atmosphere shell vs the shell
-  // thickness, then push it through `1 - exp(-2*ratio)` so it
-  // saturates AROUND the limb (long path, ~0.86) but stays low
-  // straight up (path ≈ thickness, ~0.86 — matches the visible
-  // Earth's thin halo at orbit) and at the horizon-grazing camera
-  // (long path looks like horizon glow). Below the camera horizon
-  // (rays hitting Earth quickly) the path is short → low opacity →
-  // globe terrain shows through.
+  // WebGL formula: opacity decays linearly with camera altitude above
+  // the atmosphere shell — fully opaque at ground (cameraHeight ≈
+  // innerRadius), fully transparent at orbit (cameraHeight > outerRadius).
+  // Then modulated by nightAlpha so the night side fades to space.
   //
-  // The mix-against-blue floor is preserved so the visible halo
-  // colour still leans sky-blue even when geometric opacity is near
-  // zero (matches WebGL's `mix(color.b, 1.0, opacity)` floor and the
-  // Session 63 "atmosphere invisible" fix).
-  let pathThroughAtmosphere = max(0.0, rayLength);
-  let shellThickness = max(1.0, outerRadius - innerRadius);
-  let pathRatio = pathThroughAtmosphere / shellThickness;
-  let geometricOpacity = clamp(1.0 - exp(-2.0 * pathRatio), 0.0, 1.0);
-  let alpha = mix(finalColor.b, 1.0, geometricOpacity);
+  // The mix-against-blue floor is preserved so the visible halo at
+  // orbit still leans sky-blue (matches WebGL's `mix(color.b, 1.0,
+  // opacity)`).
+  let altitudeOpacity = clamp(
+    (outerRadius - cameraHeight) / max(1.0, outerRadius - innerRadius),
+    0.0,
+    1.0,
+  );
+  // nightAlpha: 1.0 on day side, 0.0 on night side. Only applied when
+  // dynamic atmosphere lighting is enabled (radiiAndDynamicAtmosphere.z != 0).
+  let isDynamic = u.radiiAndDynamicAtmosphere.z != 0.0;
+  let nightAlpha = select(
+    1.0,
+    clamp(dot(normalize(input.worldPosition), lightDirWC), 0.0, 1.0),
+    isDynamic,
+  );
+  let opacity = altitudeOpacity * pow(nightAlpha, 0.5);
+  let alpha = mix(finalColor.b, 1.0, opacity);
   return vec4<f32>(finalColor, alpha);
 }
