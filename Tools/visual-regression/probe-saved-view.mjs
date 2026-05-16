@@ -113,15 +113,43 @@ async function diffPngs(a, b) {
       if (a.w !== b.w || a.h !== b.h) return { error: "size mismatch" };
       const total = a.w * a.h;
       let mismatch = 0, sum = 0;
+      // Track per-channel mean signed delta: helps distinguish gamma
+      // (uniformly darker) from hue shifts (one channel off).
+      let sumDR = 0, sumDG = 0, sumDB = 0;
+      // Track histogram of brightness ratios — a uniform gamma off-by
+      // produces a tight cluster; mixed lighting produces a wide spread.
+      let nonBg = 0;
+      let sumRatio = 0;
       for (let i = 0; i < a.data.length; i += 4) {
-        const dr = Math.abs(a.data[i] - b.data[i]);
-        const dg = Math.abs(a.data[i + 1] - b.data[i + 1]);
-        const db = Math.abs(a.data[i + 2] - b.data[i + 2]);
+        const ra = a.data[i], ga = a.data[i + 1], ba2 = a.data[i + 2];
+        const rb = b.data[i], gb = b.data[i + 1], bb2 = b.data[i + 2];
+        const dr = Math.abs(ra - rb);
+        const dg = Math.abs(ga - gb);
+        const db = Math.abs(ba2 - bb2);
         const d = dr + dg + db;
         sum += d;
         if (d > 30) mismatch++;
+        sumDR += rb - ra; // positive means WebGL > WebGPU (WebGPU darker)
+        sumDG += gb - ga;
+        sumDB += bb2 - ba2;
+        const lumA = 0.2126 * ra + 0.7152 * ga + 0.0722 * ba2;
+        const lumB = 0.2126 * rb + 0.7152 * gb + 0.0722 * bb2;
+        if (lumA > 5 || lumB > 5) {
+          nonBg++;
+          sumRatio += (lumB + 1) / (lumA + 1); // WebGL / WebGPU brightness ratio
+        }
       }
-      return { totalPx: total, mismatchPx: mismatch, mismatchPct: (100 * mismatch / total).toFixed(2), meanDelta: (sum / total).toFixed(2) };
+      return {
+        totalPx: total,
+        mismatchPx: mismatch,
+        mismatchPct: (100 * mismatch / total).toFixed(2),
+        meanDelta: (sum / total).toFixed(2),
+        // Positive = WebGPU darker on that channel
+        meanSignedDR: (sumDR / total).toFixed(2),
+        meanSignedDG: (sumDG / total).toFixed(2),
+        meanSignedDB: (sumDB / total).toFixed(2),
+        meanBrightnessRatio: (sumRatio / Math.max(1, nonBg)).toFixed(3),
+      };
     },
     { ba, bb },
   );

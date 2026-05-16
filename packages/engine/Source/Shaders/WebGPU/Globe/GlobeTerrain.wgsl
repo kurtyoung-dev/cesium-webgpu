@@ -664,14 +664,19 @@ fn czm_getDefaultMaterial(input: czm_MaterialInput) -> czm_Material {
   return m;
 }
 
-// Vector form for gamma-correct on a single vec3 (matches the GLSL
-// `czm_gammaCorrect` overload most material expressions use).
+// Vector form for gamma-correct on a single vec3.
+// Batch 54 — match the GLSL `czm_gammaCorrect` (gammaCorrect.glsl) which
+// is GATED on `#ifdef HDR` and acts as a NO-OP in the default SDR path.
+// The pre-Batch-54 WGSL unconditionally applied `pow(c, 2.2)` (sRGB →
+// linear decode), making every globe fragment ~4.2x darker than WebGL
+// — verified via probe-saved-view.mjs (meanBrightnessRatio 4.221 on
+// default-3D between WebGL and WebGPU).
+//
+// The HDR path is not yet wired through the WGSL fragment pipeline. When
+// it lands, this should switch back to `pow(c, czm_gamma)` (decode).
+// Until then, identity matches what every published WebGL view produces.
 fn czm_gammaCorrect(color: vec3<f32>) -> vec3<f32> {
-  // Default gamma = 2.2 (display sRGB-like decode is the inverse). The
-  // WGSL build doesn't currently honor the runtime `scene.gamma` setter,
-  // matching the WebGL path which uses the same constant via
-  // `czm_inverseGamma`'s `pow(c, 1/2.2)`.
-  return pow(max(color, vec3<f32>(0.0)), vec3<f32>(2.2));
+  return color;
 }
 
 // vec4 overload preserves alpha unchanged. Some material `source` blocks
@@ -2199,10 +2204,26 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let normal = normalize(input.v_normalEC);
   let sunDir = normalize(camera.sunDirectionEC);
 
-  // Day/night fade factor: 0 = night, 1 = day
-  let dayFade = computeDayNightFade(normal, sunDir);
-  // Inverse for night-side effects
-  let nightBlend = 1.0 - dayFade;
+  // Day/night fade factor: 0 = night, 1 = day.
+  // Batch 54 — gate on `camera.enableLighting`. The WebGL GlobeFS
+  // applies day/night shading inside `#ifdef ENABLE_DAYNIGHT_SHADING`,
+  // which the JS-side pragma extractor only emits when
+  // `globe.enableLighting === true`. With the default `enableLighting
+  // = false`, WebGL skips the fade entirely and renders the globe as
+  // uniformly daylit. The WGSL was applying the fade unconditionally,
+  // making the night side ~4x darker than WebGL across every default-
+  // configured demo (measured via probe-saved-view.mjs: WebGL/WebGPU
+  // brightness ratio 4.221, mostly accounted for by the night
+  // hemisphere being shaded down).
+  var dayFade: f32;
+  var nightBlend: f32;
+  if (camera.enableLighting > 0.5) {
+    dayFade = computeDayNightFade(normal, sunDir);
+    nightBlend = 1.0 - dayFade;
+  } else {
+    dayFade = 1.0;
+    nightBlend = 0.0;
+  }
 
   // ─── Composite imagery layers ───
   // Batch 58 (C-R5): widened from 4 to 16 layer slots. Each layer block
