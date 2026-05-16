@@ -39,48 +39,85 @@ async function capture(rendererArg, scenarioLabel) {
   await page.waitForFunction(() => !!window.viewer);
 
   // Swap to WGS84 EllipsoidTerrainProvider — index 0 in default picker.
-  await page.evaluate(async () => {
+  await page.evaluate(async (label) => {
+    const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
     const blp = v.baseLayerPicker;
     const vm = blp.viewModel;
-    // Find the terrain provider model whose name contains "WGS84"
     const wgs84Tvm = vm.terrainProviderViewModels.find((t) =>
       String(t.name || "").toLowerCase().includes("wgs84"),
     );
     if (wgs84Tvm) {
       vm.selectedTerrain = wgs84Tvm;
-    } else {
-      console.log("[probe-wgs84] no WGS84 terrain VM found");
     }
-    // Let the terrain swap settle
-    for (let i = 0; i < 360; i++) {
+    // Zoom-in scenarios to force higher-LOD tiles (smaller vertex magnitudes)
+    if (label.includes("close")) {
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(-100, 40, 1000000), // 1Mm altitude
+      });
+    }
+    // Extended settle for orbit (level-0 tiles take longer to reproject)
+    const renderLoops = label.includes("orbit") ? 1200 : 360;
+    for (let i = 0; i < renderLoops; i++) {
       v.scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
-  });
+  }, scenarioLabel);
   await page.waitForTimeout(2500);
 
   const stats = await page.evaluate(() => {
     const v = window.viewer;
+    const t = v.scene._globe?._surface?._tilesToRender?.[0];
+    const tileImagery = t?.data?.imagery?.[0];
+    const ri = tileImagery?.readyImagery;
     return {
       mode: v.scene.mode,
       terrainProvider: v.terrainProvider?.constructor?.name,
       imageryLayerCount: v.scene.imageryLayers.length,
       imageryProvider: v.scene.imageryLayers.get(0)?.imageryProvider?.constructor?.name,
+      imageryProjection: v.scene.imageryLayers.get(0)?.imageryProvider?.tilingScheme?.projection?.constructor?.name,
+      terrainProjection: v.terrainProvider?.tilingScheme?.projection?.constructor?.name,
       tilesToRender: v.scene._globe?._surface?._tilesToRender?.length,
-      // Sample tile mesh info
-      sampleTile: (() => {
-        const t = v.scene._globe?._surface?._tilesToRender?.[0];
-        if (!t) return null;
-        const m = t.data?.mesh;
-        if (!m) return null;
+      sampleTileMesh: (() => {
+        if (!t?.data?.mesh) return null;
+        const m = t.data.mesh;
+        const e = m.encoding;
         return {
           ctor: m.constructor.name,
-          encoding: m.encoding?.constructor?.name,
-          hasNormals: !!m.encoding?.hasWebMercatorT,
-          quantization: m.encoding?.quantization,
-          stride: m.encoding?.stride,
+          encoding: e?.constructor?.name,
+          quantization: e?.quantization,
+          hasNormals: !!e?.hasVertexNormals,
+          hasWebMercatorT: !!e?.hasWebMercatorT,
+          hasGeodeticSurfaceNormals: !!e?.hasGeodeticSurfaceNormals,
+          stride: e?.stride,
+          centerMagnitude: m.center ? Math.hypot(m.center.x, m.center.y, m.center.z) : null,
         };
+      })(),
+      sampleTileImagery: tileImagery ? {
+        useWebMercatorT: tileImagery.useWebMercatorT,
+        hasTextureTranslationAndScale: !!tileImagery.textureTranslationAndScale,
+        hasTextureCoordinateRectangle: !!tileImagery.textureCoordinateRectangle,
+        readyImageryReady: ri ? ri.state === 8 /* ImageryState.READY */ : null,
+        hasReprojected: !!ri?._webgpuReprojectedTexture,
+        hasMercTexture: !!ri?.textureWebMercator,
+        hasNormalTexture: !!ri?.texture,
+        imageryRectIsGeographic: ri?.rectangle ? (typeof ri.rectangle.west === "number") : null,
+      } : null,
+      // ALL tiles summary: count tiles by (useWebMercatorT, hasReprojected) combos
+      allTilesSummary: (() => {
+        const tiles = v.scene._globe?._surface?._tilesToRender || [];
+        const buckets = {};
+        let withImagery = 0;
+        let withoutImagery = 0;
+        for (const tile of tiles) {
+          const ti = tile?.data?.imagery?.[0];
+          if (!ti) { withoutImagery++; continue; }
+          withImagery++;
+          const ri2 = ti.readyImagery;
+          const key = `useMercT=${ti.useWebMercatorT}|reproj=${!!ri2?._webgpuReprojectedTexture}|riReady=${ri2?.state === 8}`;
+          buckets[key] = (buckets[key] || 0) + 1;
+        }
+        return { total: tiles.length, withImagery, withoutImagery, buckets };
       })(),
     };
   });
@@ -100,9 +137,13 @@ async function capture(rendererArg, scenarioLabel) {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid`);
-  await capture("webgpu", "default-imagery");
-  console.log(`[probe-wgs84] WebGL + WGS84 ellipsoid`);
-  await capture("webgl", "default-imagery");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (orbit)`);
+  await capture("webgpu", "orbit");
+  console.log(`[probe-wgs84] WebGL + WGS84 ellipsoid (orbit)`);
+  await capture("webgl", "orbit");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (close 1Mm)`);
+  await capture("webgpu", "close");
+  console.log(`[probe-wgs84] WebGL + WGS84 ellipsoid (close 1Mm)`);
+  await capture("webgl", "close");
   console.log(`[probe-wgs84] done`);
 })();
