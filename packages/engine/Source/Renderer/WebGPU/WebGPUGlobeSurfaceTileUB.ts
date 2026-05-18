@@ -148,6 +148,20 @@ export function createTileUniformBuffer(
     const effectiveUseWebMercatorT =
       tileImagery.useWebMercatorT && !reprojectedToGeographic;
 
+    // Batch 62 — the geographic recalc below should only run when the
+    // CACHED translation/scale and texCoordsRect were originally Mercator-
+    // space, i.e., when `tileImagery.useWebMercatorT === true` at skeleton
+    // time. For polar tiles (useWebMercatorT=false from the start), the
+    // cached values are ALREADY in geographic-V tile-UV space, AND they
+    // carry the base-layer south-edge fixup that
+    // `createTileImagerySkeletons` applies at line 351-358 of
+    // ImageryLayerHelpers.js (forces `minV = 0.0` when the imagery tile is
+    // the southernmost of a base layer). Clobbering them with the inline
+    // recalc throws away that fixup and produces `minV ≈ 0.96` for tiles
+    // near the south pole — exactly the polar black-hole signature.
+    const needsGeographicRecalc =
+      reprojectedToGeographic && tileImagery.useWebMercatorT;
+
     // translationAndScale (vec4).
     //
     // The cached `tileImagery.textureTranslationAndScale` is computed by
@@ -169,7 +183,7 @@ export function createTileUniformBuffer(
     // inline — equivalent to taking the `else` branch of
     // `_calculateTextureTranslationAndScale`. Same arithmetic, but skips
     // the `rectangleToNativeRectangle` conversion.
-    if (reprojectedToGeographic && tile.rectangle && imagery.rectangle) {
+    if (needsGeographicRecalc && tile.rectangle && imagery.rectangle) {
       const tRect = tile.rectangle;
       const iRect = imagery.rectangle;
       const tW = tRect.width;
@@ -222,7 +236,7 @@ export function createTileUniformBuffer(
     // linear in longitude), so for fast-path correctness we only need to
     // recompute V. For symmetry and to avoid drift if assumptions about
     // U change, recompute the whole rect.
-    if (reprojectedToGeographic && tile.rectangle && imagery.rectangle) {
+    if (needsGeographicRecalc && tile.rectangle && imagery.rectangle) {
       const tR = tile.rectangle;
       const iR = imagery.rectangle;
       const invW = 1.0 / tR.width;

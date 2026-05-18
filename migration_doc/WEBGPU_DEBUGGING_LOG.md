@@ -6079,6 +6079,75 @@ The Batch 56 entry above claimed the brightness gap was "~4× darker" based on t
 
 ---
 
+## Batch 62 — Polar black-hole ROOT CAUSE: WebGPU recalc clobbered base-layer minV=0 fixup
+
+**Date:** 2026-05-17
+
+The hypothesis from Batch 61 (`tile.layerCount = 0` for polar tiles on WebGPU) was **wrong**. A `probe-polar-imagery-state.mjs` dump showed polar tiles on WebGPU have identical state to WebGL: skel=2, ready=2, `readyImagery.imageryLayer` defined, `_webgpuReprojectedTexture` present. `layerCount` was non-zero. The black hole was deeper in the pipeline.
+
+### Diagnostic — pixel sweep at south-pole-close
+
+`probe-polar-pixel-sweep.mjs` reads the center pixel of the canvas at each `globeFragmentDebug` mode:
+
+| mode | center pixel (RGBA) | reading |
+| --- | --- | --- |
+| `production` | `(10, 10, 15, 255)` | **near-black — the bug** |
+| `force-red` | `(255, 0, 0, 255)` | FS reaches return ✓ |
+| `alpha` (layer 0 mask) | `(0, 22, 245, 255)` | **mask=0**, geoUV.y=0.086, **rect.y=0.96** |
+| `layer-count` | `(32, 0, 0, 255)` | lc=2, layer0 mask=0, layer1 mask=0 |
+| `sample0` | `(221, 220, 226, 255)` | raw sample reads Antarctic edge-clamp ✓ |
+| `tex0-alpha` | `(255, 255, 255, 255)` | tex.a=1 ✓ |
+
+The B channel of `alpha` mode (= `tile.layers[0].texCoordsRect.y` = `minV`) was **0.96** for the polar center fragment. With `geoUV.y = 0.086`, the bottom 96 % of the tile sat below `minV` and `texCoordsAlpha` returned 0 → `effectiveAlpha = 0` → `mix(prev, adjusted, 0) = prev` (initial black).
+
+### Root cause — `WebGPUGlobeSurfaceTileUB.ts`
+
+WebGL's `createTileImagerySkeletons` ([ImageryLayerHelpers.js:351-358](../packages/engine/Source/Scene/ImageryLayerHelpers.js)) applies a **base-layer fixup**: when the imagery tile is the southernmost imagery of a base layer, it forces `minV = 0.0` so the southernmost row of the imagery clamps-to-edge across the entire polar gap. The cached `tileImagery.textureCoordinateRectangle` already carries this fixup when `useWebMercatorT === false` (geographic-V tile-UV space).
+
+Batch 49's inline geographic recalc in [WebGPUGlobeSurfaceTileUB.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) was triggered by `reprojectedToGeographic` (whether `_webgpuReprojectedTexture` exists). It recomputed `minV = max(0, (iR.south - tR.south) / tR.height)` ≈ 0.96 for high-LOD polar tiles whose imagery ancestor sits at ±85° while the tile extends to ±90° — **clobbering the base-layer fixup that the cached rect already had**.
+
+The fix: gate the recalc on `tileImagery.useWebMercatorT === true`. The recalc is only meaningful when the cached values were originally in Mercator-V space (and the WebGPU reprojection moved the bound texture to geographic-V). For polar tiles where `useWebMercatorT` was always false, the cached values are already geographic-correct, including the base-layer south-edge clamp.
+
+```typescript
+const needsGeographicRecalc =
+  reprojectedToGeographic && tileImagery.useWebMercatorT;
+```
+
+Both `translationAndScale` and `texCoordsRectangle` branches now gate on `needsGeographicRecalc` instead of `reprojectedToGeographic`.
+
+### Verification
+
+Pixel sweep after the fix:
+
+| mode | center pixel (RGBA) |
+| --- | --- |
+| `production` | `(226, 230, 242, 255)` — **Antarctic imagery** ✓ |
+| `layer-count` | `(32, 0, 255, 255)` — lc=2, **layer1 mask=255 (covers the polar center)** ✓ |
+| `post-composite-color` | `(226, 230, 242, 255)` |
+| `post-composite-alpha` | `(255, 255, 255, 255)` |
+
+`polar-multi-diff-all` regression:
+
+| view | before Batch 62 | after Batch 62 |
+| --- | --- | --- |
+| equator-mid | 0.08 % | 0.08 % |
+| midlat-mid | 1.06 % | 1.06 % |
+| southpole-close | 34 % | **16.15 %** |
+| southpole-orbit | 17 % | **15.02 %** |
+| northpole-close | 39 % | **21.55 %** |
+| northpole-orbit | 58 % | 61.69 % (camera/atmosphere — separate issue) |
+
+The polar black hole is gone. Remaining diff is dominated by per-tile gridlines from `DebugTileImageryProvider` registering against a slightly-different polar-tile-mesh tessellation and by the northpole-orbit camera-scale anomaly (the WebGPU view at lat=80°, alt=12 Mm shows the Earth filling the frame with bright atmosphere, while WebGL shows a smaller Earth disc surrounded by space — needs its own investigation in Batch 63+).
+
+### Files modified
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) — gate recalc on `useWebMercatorT === true`.
+- [Tools/visual-regression/probe-polar-imagery-state.mjs](../Tools/visual-regression/probe-polar-imagery-state.mjs) — per-skeleton state dump (proved the layerCount=0 hypothesis wrong).
+- [Tools/visual-regression/probe-polar-fs-stages.mjs](../Tools/visual-regression/probe-polar-fs-stages.mjs) — captures each FS-debug-mode screenshot at south-pole-close.
+- [Tools/visual-regression/probe-polar-pixel-sweep.mjs](../Tools/visual-regression/probe-polar-pixel-sweep.mjs) — center-pixel decode for every debug mode (the smoking gun on `rect.y = 0.96`).
+
+---
+
 ## Batch 61 — Polar black-hole diagnosis (NaN sanitize + pixel-diff probe; root cause deferred)
 
 **Date:** 2026-05-17

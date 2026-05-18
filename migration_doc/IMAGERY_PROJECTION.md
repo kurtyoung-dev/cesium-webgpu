@@ -176,6 +176,22 @@ The drape branch ALSO runs a separate fog path (`fogDensity > 0.0`) at lower alt
 
 ---
 
+## Base-layer south/north fixup (the polar black-hole gotcha)
+
+`createTileImagerySkeletons` in [ImageryLayerHelpers.js](../packages/engine/Source/Scene/ImageryLayerHelpers.js) applies a base-layer-only **edge fixup** when constructing the cached `textureCoordinateRectangle` for a tile's imagery skeleton:
+
+- Lines 263-272: when the imagery tile is the WESTERNMOST and the layer is the base layer, `maxU` clamps to `0.0` so the southwest gap is closed by clamp-to-edge.
+- Lines 316-322: same idea at the EAST edge — `maxU = 1.0`.
+- Lines 274-284, 351-358: same at NORTH and SOUTH edges. **For southernmost imagery of a base layer, `minV = 0.0` is forced** — this is what extends Mercator's ±85° coverage down to the polar tile's -90° south edge by sampler clamp-to-edge.
+
+Consequence: a polar tile's cached `textureCoordinateRectangle.y` (`minV`) is **0.0**, not the geographically-correct `(iR.south - tR.south) / tR.height ≈ 0.96`. The sampler then reads the bottommost imagery row across the polar gap, producing visually-clean (if slightly stretched) Antarctic/Arctic imagery.
+
+`textureTranslationAndScale` is computed unchanged in geographic space when `useWebMercatorT === false` (i.e., for polar tiles), so the cached values together are correct for the polar case.
+
+**WebGPU consequence:** the inline geographic recalc in [WebGPUGlobeSurfaceTileUB.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) introduced by Batch 49 must **only run when the cached values were originally Mercator-space**, i.e., when `tileImagery.useWebMercatorT === true`. For polar tiles where `useWebMercatorT === false`, the cached rect already has the base-layer fixup, and recomputing clobbers it. Batch 62 added the `needsGeographicRecalc = reprojectedToGeographic && tileImagery.useWebMercatorT` gate.
+
+---
+
 ## SceneMode-Specific Behavior
 
 The above is the SCENE3D path. In SCENE2D and COLUMBUS_VIEW, additional considerations:
