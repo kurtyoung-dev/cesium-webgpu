@@ -7,6 +7,27 @@ import {
   sampler as samplerEntry,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
+
+// Lazily-allocated mipmap generator, shared across reprojection calls
+// on the same device. Allocated on first use so contexts that never
+// reproject don't pay for it. The generator caches per-format pipelines
+// internally.
+let _reprojMipmapGenerator: WebGPUMipmapGenerator | null = null;
+let _reprojMipmapGeneratorDevice: GPUDevice | null = null;
+function ensureReprojectionMipmapGenerator(
+  device: GPUDevice,
+): WebGPUMipmapGenerator {
+  if (
+    _reprojMipmapGenerator !== null &&
+    _reprojMipmapGeneratorDevice === device
+  ) {
+    return _reprojMipmapGenerator;
+  }
+  _reprojMipmapGenerator = new WebGPUMipmapGenerator(device);
+  _reprojMipmapGeneratorDevice = device;
+  return _reprojMipmapGenerator;
+}
 
 /**
  * WebGPU imagery reprojection — converts Web Mercator imagery tiles to
@@ -61,7 +82,18 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let mercatorY = 0.5 * log((1.0 + sinLat) / (1.0 - sinLat));
   let mercatorFraction = (mercatorY - u.southMercatorY) * u.oneOverMercHeight;
   let srcV = 1.0 - mercatorFraction;
-  return textureSample(srcTexture, srcSampler, vec2<f32>(s, srcV));
+  // Batch 56 — force alpha=1.0. The source imagery texture coming from
+  // copyExternalImageToTexture on an opaque JPEG often arrives with
+  // alpha=0 in WebGPU (the alpha channel isnt populated from non-alpha
+  // source formats). Downstream globe-surface fragment shader multiplies
+  // by tex.a in its effectiveAlpha chain, so alpha=0 made every
+  // reprojected-imagery composite produce zero contribution -> black
+  // tiles. Source imagery from the Mercator providers is always opaque
+  // (Bing aerial JPEG, Esri WorldImagery JPEG, etc.), so forcing alpha=1
+  // is safe here. If/when transparent imagery providers need support,
+  // this needs to be conditional on the source format/provider.
+  let sampled = textureSample(srcTexture, srcSampler, vec2<f32>(s, srcV));
+  return vec4<f32>(sampled.rgb, 1.0);
 }
 `;
 
@@ -188,11 +220,20 @@ export function reprojectWebMercatorWebGPU(
   ]);
   device.queue.writeBuffer(cache.uniformBuffer, 0, uniformData);
 
-  // Create output texture
+  // Batch 57 — allocate output texture with full mipmap chain. The
+  // reprojected texture feeds the globe-tile sampler at orbital altitudes
+  // where one fragment can cover many texels; without mipmaps the
+  // sampler point-samples Level-0 and produces severe aliasing + a
+  // brightness drop (the alias pattern under-samples bright pixels).
+  // Mirrors the equivalent fix in WebGPUGlobeSurfaceTextures.ts
+  // (uploadImageSource). See `migration_doc/WEBGPU_DEBUGGING_LOG.md`
+  // Batch 57.
+  const mipLevelCount = Math.floor(Math.log2(Math.max(width, height))) + 1;
   const outputTexture = device.createTexture({
     label: "ReprojectWebMercator Output",
     size: { width, height },
     format: getOutputFormat(),
+    mipLevelCount,
     usage:
       GPUTextureUsage.RENDER_ATTACHMENT |
       GPUTextureUsage.TEXTURE_BINDING |
@@ -215,9 +256,14 @@ export function reprojectWebMercatorWebGPU(
     ],
   });
 
-  // Execute render pass
+  // Execute render pass — target ONLY mip level 0; the rest of the chain
+  // is filled in by `WebGPUMipmapGenerator.generateMipmapsAndSubmit`
+  // below. Without `baseMipLevel: 0, mipLevelCount: 1` the view would
+  // cover the whole chain, which the render attachment rejects.
   const outputView = outputTexture.createView({
     label: "ReprojectWebMercator OutputView",
+    baseMipLevel: 0,
+    mipLevelCount: 1,
   });
 
   const encoder = device.createCommandEncoder({
@@ -248,6 +294,17 @@ export function reprojectWebMercatorWebGPU(
   pass.end();
 
   device.queue.submit([encoder.finish()]);
+
+  // Batch 57 — fill mip levels 1..N from the freshly-rendered level 0.
+  // Lazily instantiate the generator per device; it caches per-format
+  // pipelines so repeated reprojection calls reuse the same shader.
+  if (mipLevelCount > 1) {
+    ensureReprojectionMipmapGenerator(device).generateMipmapsAndSubmit(
+      outputTexture,
+      getOutputFormat(),
+      mipLevelCount,
+    );
+  }
 
   return outputTexture;
 }

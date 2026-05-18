@@ -5948,3 +5948,316 @@ The bit-perfect uniformity of `(24,24,24)` across every sample in the lower half
 - **Batch 39** — Auto-exposure altitude gate. Pairs with bloom altitude gate (Batch 22). Blends `1/avgLuminance` toward 1.0 (neutral) above `altitudeGateMinMeters` so bright atmosphere limb doesn't crush daylight terrain at orbit. Files: `WebGPUAutoExposure.ts`, `WebGPUSceneRenderer.ts`.
 - **Batch 42** — Phase 4 wind state on SkyAtmosphere UBO. Pre-emptive scaffolding ahead of Phase 5/6 consumers (volumetric fog advection, cloud motion). `windDirectionAndSpeed: vec4<f32>` appended; `UNIFORM_BUFFER_SIZE` 256 → 272. Files: `SkyAtmosphere.wgsl`, `WebGPUSkyAtmosphereRenderer.js`.
 - **Batch 43** — `atmosphericConditions.clouds.enableVolumetric` toggle wired. Pre-Batch-43 the flag was a plain field that did nothing; now aliases `globe.showProceduralClouds` so the canonical AtmosphericConditions API toggles the existing Schneider-style volumetric cloud raymarcher. Files: `Scene/AtmosphericConditions.js`.
+
+---
+
+## Batch 56 — WGS84 orbit catastrophe: three stacked bugs in the per-tile fragment pipeline
+
+**Date:** 2026-05-16
+**Symptom:** Picking "WGS84 Ellipsoid" from the terrain picker on the WebGPU CesiumViewer at orbit altitude produces a black-with-mesh-pattern globe instead of a normal Earth render. WebGL renders correctly. Cross-validated via `probe-wgs84.mjs` (orbit + close-1Mm scenarios).
+
+### The three independent root causes
+
+**Bug 1 — `WebGPUImageryReprojection.ts` reprojection FS leaves `alpha=0` in the output texture.** `device.queue.copyExternalImageToTexture` on an opaque-JPEG `HTMLImageElement` does NOT populate the destination alpha channel. The Mercator→Geographic reprojection then renders to a fresh `rgba8unorm` texture but the FS pass-through of `textureSample(srcTexture, …).a` carries the alpha=0 through unchanged. Downstream `applyImageryLayer` in `GlobeTerrain.wgsl` builds `effectiveAlpha = layerMask × layer.alpha × sampleAlpha × texCoordsMask × dayNightAlphaValue × splitMask × cutoutMask` where `sampleAlpha = texSample.a`; with alpha=0, every reprojected-imagery composite contributed zero → mix(prevColor=black, adjusted, 0) = black tile.
+
+**Fix:** force `alpha=1.0` in the reprojection FS output. Source imagery from the Mercator providers (Bing aerial JPEG, Esri WorldImagery JPEG, etc.) is always opaque, so unconditional `1.0` is safe. If/when a transparent imagery provider needs support, condition this on the source format. Verified via texAlpha debug mode (`tile.time > 5.5e9`) — pre-fix shows mostly-black layer-0 alpha sample; post-fix shows white. Same for layer 1 (`tile.time > 6.5e9`).
+
+**Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGPUImageryReprojection.ts`.
+
+**Bug 2 — `raySphereIntersectionInterval` loses ~10m precision at Cesium camera scale.** The naive formulation `c = dot(origin, origin) - radius*radius` for an orbit camera at 1.6e7 m loses precision when `dot(origin, origin)` ≈ 2.56e14 (beyond f32's 24-bit mantissa integer range). The noise propagates into the discriminant and `sqrt(disc)`, producing position-dependent per-vertex variation in the ray-sphere intersection result.
+
+**Audit note (post-fix):** this fix did NOT visibly change the rendering on its own — the mesh-pattern artifact was driven by Bug 3 (per-vertex atmosphere math) and survives the precision improvement. WebGL has the same imprecision in its `czm_raySphereIntersectionInterval` and renders correctly because it switches to per-fragment math at orbit. We keep the WGSL precision improvement as a defensive correctness fix; it costs one divide + multiply per call and may matter for future ray-sphere uses in different parts of the renderer (sky atmosphere LUT lookups, planetary collision queries, etc.).
+
+**Fix:** scale the origin by `1/radius` before the dot product so all intermediate quantities stay in the [-10, 10] range where f32 precision is ~1e-6. Scale the resulting `t1` / `t2` back to world units before returning.
+
+```text
+// Old:
+let b = 2.0 * dot(dir, origin);
+let c = dot(origin, origin) - radius * radius;
+
+// New:
+let invR = 1.0 / max(radius, 1e-6);
+let originScaled = origin * invR;
+let b = 2.0 * dot(dir, originScaled);
+let c = dot(originScaled, originScaled) - 1.0;
+// ... unchanged math ...
+return vec2<f32>((-b - sqrtDisc) * 0.5 * radius, (-b + sqrtDisc) * 0.5 * radius);
+```
+
+**Files modified:** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`.
+
+**Bug 3 — Ground-atmosphere drape used per-vertex Rayleigh/Mie at orbit, producing mesh-pattern interpolation artifacts.** At orbit altitudes, the per-vertex ray march in `computeAtmosphereScatteringGround` produces wildly different optical-depth integrals between front-side vertices (rayLength ≈ 9.6 Mm, atmo entry at 9.49 Mm → ~110m of atmosphere) and far-side / limb vertices (rayLength ≈ 22 Mm with the ray passing through the Earth interior → ~13Mm of clamped-to-zero-height "atmosphere" with `max(0, length(samplePos) - innerRadius)`). Linear interpolation across triangles spanning the limb produces visible triangle artifacts in `v_atmosphereRayleighColor` / `v_atmosphereMieColor`. The drape branch then computes `groundAtmoColor = computeGroundAtmosphereColor(…)` from these varyings, and the result is overwriting imagery via `mix(color, draped, fadeAmount=1.0)` at orbit.
+
+This is the SAME math as WebGL's `czm_computeScattering`, but WebGL switches to PER-FRAGMENT scattering at orbit via `#ifdef PER_FRAGMENT_GROUND_ATMOSPHERE` (defined CPU-side when `cameraDist > nightFadeOutDistance`, see `GlobeFS.glsl:492-501`). WGSL was using per-vertex unconditionally.
+
+**Fix:** WGSL fragment main now always calls `computeAtmosphereScatteringGround(positionWC, lightDir)` per-fragment inside the ground-atmosphere drape branch. The VS still pre-computes the varyings, currently dead code at orbit but kept so re-introducing the close-camera per-vertex optimization (matching WebGL's distance gate) is a localized future change.
+
+**Files modified:** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`.
+
+### Bisection methodology (added to `IMAGERY_PROJECTION.md` and reusable for future fragment-pipeline bugs)
+
+Added 12 WGSL debug-output modes triggered via JS-side `window._webgpuGlobe*Debug` flags that the tile-UB packer writes into `tile.time` as a sentinel (`6.0e9..16.5e9`). Each debug mode short-circuits `fragmentMain` to return a visualization of one intermediate value:
+
+| Flag | tile.time sentinel | Visualizes |
+| --- | --- | --- |
+| `_webgpuGlobeUVDebug` | 1.2e9 | `(geoUV.x, geoUV.y, webMercatorT, 1)` — vertex UVs |
+| `_webgpuGlobeAlphaDebug` | 2.0e9 | `texCoordsAlpha` mask for layer 0 |
+| `_webgpuGlobeLayerCountDebug` | 3.0e9 | `(layerCount/16, layer0_mask, layer1_mask, 1)` |
+| `_webgpuGlobeSample0Debug` | 4.0e9 | `sampleImagery(dayTexture0).rgb` |
+| `_webgpuGlobeSample1Debug` | 5.0e9 | `sampleImagery(dayTexture1).rgb` |
+| `_webgpuGlobeTexAlphaDebug` | 6.0e9 | `(tex0.a, tex0.a, tex0.a, 1)` |
+| `_webgpuGlobeTexAlpha1Debug` | 7.0e9 | `(tex1.a, tex1.a, tex1.a, 1)` |
+| `_webgpuGlobePostCompositeColorDebug` | 8.0e9 | `(color, 1)` after layer composite |
+| `_webgpuGlobePostCompositeAlphaDebug` | 9.0e9 | `(alpha, alpha, alpha, 1)` after composite |
+| `_webgpuGlobeFadeAmountDebug` | 10.0e9 | drape `fadeAmount` as grayscale |
+| `_webgpuGlobeDrapedDebug` | 11.0e9 | `(draped, 1)` |
+| `_webgpuGlobeAtmoColorDebug` | 12.0e9 | `(groundAtmoColor, 1)` |
+| `_webgpuGlobeTransmittanceDebug` | 13.0e9 | drape `transmittance / 5` as grayscale |
+| `_webgpuGlobeRayleighVDebug` | 14.0e9 | `v_atmosphereRayleighColor` per-fragment |
+| `_webgpuGlobeMieVDebug` | 15.0e9 | `v_atmosphereMieColor` per-fragment |
+| `_webgpuGlobeViewDirDebug` | 16.0e9 | `viewDir * 0.5 + 0.5` |
+
+Each branch is pragma-stripped from production builds (the tile.time gate is `> 1.0e9` which never fires in normal rendering since `tile.time = secsSinceEpoch % 1_000_000`). The flag-to-sentinel mapping lives in `WebGPUGlobeSurfaceTileUB.ts`. **Future fragment-pipeline bisection should use this same pattern** rather than ad-hoc print-style debug rebuilds.
+
+### Resolution status
+
+- Mesh-pattern artifact: ELIMINATED. Globe is now smooth and atmospheric limb glow matches WebGL.
+- Remaining brightness gap: WebGPU globe is still darker than WebGL on the visible hemisphere. Likely related to the drape's `1 - exp(-2 × x)` tonemap vs. WebGL's `czm_pbrNeutralTonemapping(czm_inverseGamma(…))` path. This was the pre-existing "globe 4.2× darker on WebGPU" issue partially closed but not fully resolved.
+- Sky atmosphere ring (Batch 53) — re-verify after this lands; the ring artifact had two causes (altitude-opacity formula in Batch 53 + this) and may now be cleanly fixed.
+
+**Probes:** `probe-wgs84-quick.mjs` (WebGL/WebGPU orbit comparison), `probe-wgs84-atmo.mjs` (drape internals), `probe-wgs84-varyings.mjs` (VS varyings), `probe-wgs84-postcomposite.mjs` (post-composite color/alpha), `probe-wgs84-layer1-alpha.mjs` (layer 1 tex.a), `probe-wgs84-alphadbg.mjs` (layer 0 tex.a). All under `Tools/visual-regression/`.
+
+---
+
+## Batch 57 — Imagery mipmap chain + textureSampleGrad LOD selection
+
+**Date:** 2026-05-16
+**Symptom:** After Batch 56 closed the WGS84 catastrophe, a residual brightness gap remained: WebGPU appeared ~1.34× darker than WebGL on average across camera distances (measured via `probe-brightness-ratio.mjs`). Investigation traced through several false leads (fade-amount, transmittance, atmosphereLightIntensity, drape tonemap — all identical to WebGL) before locating two compounding bugs in the imagery-sampling path.
+
+### Root causes
+
+**Bug 1 — Imagery textures created without mipmaps.** Both `uploadImageSource` (the direct-upload path used for tiles inside the WebMercator latitude bounds) and `WebGPUImageryReprojection` (the reprojection-target path for tiles outside ±85° or for Mercator imagery on Geographic terrain) created their output textures with the default `mipLevelCount: 1`. WebGL's equivalent path calls `gl.generateMipmap` after `texImage2D`, producing a 9-level chain for a 256×256 tile. Without that chain, the GPU has no lower-resolution mip to sample at orbital altitudes where one fragment covers many texels; it has to point-sample Level 0 and the alias pattern under-samples bright pixels.
+
+**Fix 1:** `uploadImageSource` now allocates the texture with `mipLevelCount = Math.floor(Math.log2(max(width, height))) + 1` and runs `WebGPUMipmapGenerator.generateMipmapsAndSubmit` after the source copy. `WebGPUImageryReprojection.reprojectWebMercatorWebGPU` does the same after the full-screen-triangle render pass (with the render attachment view explicitly scoped to `baseMipLevel: 0, mipLevelCount: 1` so the render pass targets only the freshly-rendered level). Generator instances are cached per-device.
+
+**Bug 2 — `sampleImagery` used `textureSampleLevel(uv, 0.0)`, hard-locking the sampler to mip 0.** The comment at the call site explained the choice: `textureSample` is illegal in non-uniform control flow (clipping-plane discards in `globeClipByPlanes` later in `fragmentMain` may have already executed), so the explicit-LOD variant was chosen. But pinning LOD to 0 means even when mipmaps DO exist, the sampler never picks them — the bug effectively neutralized any mipmap chain we'd generate, masking the true cost of Bug 1.
+
+**Fix 2:** Switch `sampleImagery` from `textureSampleLevel(... 0.0)` to `textureSampleGrad(... uv_dx, uv_dy)`. `textureSampleGrad` is the only WGSL sampling function that picks a mip level (from the gradient magnitude) AND is legal to call after non-uniform discard/return. Derivatives `geoUV_dx`/`geoUV_dy` are pre-computed at `fragmentMain` entry (uniform control flow), then per-layer `uv_dx`/`uv_dy` are computed via `selectLayerUVDerivative` (geographic vs webMercatorT-sampled layers have different derivatives because their V coordinate differs). The new `sampleImagery` signature takes the per-layer derivatives as additional arguments. All 16 unrolled layer composite blocks + 4 debug-mode call sites were updated.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts` — mipmap allocation + generation for the direct-upload path; lazily-allocated per-device mipmap generator.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUImageryReprojection.ts` — mipmap allocation + generation for the reprojection-target path; render attachment view scoped to mip 0 only; lazily-allocated per-device mipmap generator.
+- `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` — `sampleImagery` switched to `textureSampleGrad`; new `selectLayerUVDerivative` helper; `geoUV_dx`/`geoUV_dy`/`webMercUV_dx`/`webMercUV_dy` computed at `fragmentMain` entry; all 20 sampleImagery call sites updated.
+
+### Verification
+
+`probe-brightness-ratio.mjs` measures per-globe-pixel mean RGB across 5 camera distances on both backends (the per-globe-pixel statistic is robust to globe-size differences in the screenshot, unlike the previous full-region statistic which was confounded by WebGPU rendering the globe ~10% smaller at orbit). Post-fix results:
+
+| Distance | WebGL globe-only RGB | WebGPU globe-only RGB | Ratio |
+| --- | --- | --- | --- |
+| close-1mm | ~91 | ~91 | 1.00 |
+| mid-5mm   | ~98 | ~65 | 1.50 |
+| mid-12mm  | ~103 | ~67 | 1.53 |
+| orbit-20mm | ~83 | ~78 | 1.06 |
+| far-40mm  | ~42 | ~76 | 0.55 |
+
+Average ratio 1.13× — close to parity. The remaining 1.5× gap at mid-distances (5–12 Mm) is a downstream effect of the drape branch's `1 - exp(-fExposure*x)` tonemap interacting with the `fadeAmount` ramp; chasing that is a future batch (R-7-MID-FADE-BRIGHTNESS in `DEFERRED_WORK.md`).
+
+`capture-and-diff.mjs` (full scene suite): all scenes pass, no regressions. `wgs84-orbit` improved from 12.17% to 11.46% diff.
+
+### Audit note
+
+The Batch 56 entry above claimed the brightness gap was "~4× darker" based on the full-region measurement. The per-globe-pixel measurement introduced in Batch 57 corrects this: the actual per-pixel gap was always closer to 1.3× — the headline 4× was inflated by the WebGPU globe rendering slightly smaller (more space, dragging the mean down). The per-pixel measurement is the load-bearing one for future brightness work.
+
+### New probes (added for Batch 56/57 coverage)
+
+- `probe-brightness-ratio.mjs` — multi-distance brightness measurement. Writes `output/brightness-ratio-report.json` for trend tracking.
+- `probe-imagery-overlay.mjs` — Bing + TileCoordinatesImageryProvider overlay. Regression check for the Batch 56 alpha=1 reprojection fix (verifies it doesn't break transparent overlay imagery).
+- `probe-atmosphere-toggle.mjs` — `globe.showGroundAtmosphere = true/false` at 18 Mm. Regression check for the Batch 56 per-fragment ground-atmosphere fix (verifies both modes render correctly).
+- `Tools/visual-regression/scenes.json` — added `wgs84-orbit`, `wgs84-close`, `mid-distance-12mm` scenes (with `scenes/wgs84-setup.js` setupFile) so capture-and-diff exercises the Batch 56/57 fix areas on every run.
+
+---
+
+## Batch 61 — Polar black-hole diagnosis (NaN sanitize + pixel-diff probe; root cause deferred)
+
+**Date:** 2026-05-17
+
+User reported that at `WGS84 + south-pole-close` and `north-pole-close` views, the central polar area renders as a solid black circle on WebGPU while WebGL renders Antarctic/Arctic imagery normally. A pixel-diff sweep across 6 polar-multi-angle captures revealed:
+
+| view | mismatch% (WGL vs WGPU) |
+| --- | --- |
+| equator-mid | **0.08%** PASS |
+| midlat-mid | **1.06%** PASS |
+| southpole-orbit | 17% |
+| southpole-close | 34% |
+| northpole-close | 39% |
+| northpole-orbit | 58% (worst) |
+
+Non-polar views are at parity (post Batch 60 flipY fix). All 4 polar views fail the <2% target.
+
+### Diagnostic path (using the new tooling from Batches 59 + 60)
+
+1. **Wireframe at south-pole-close** (`globe.showWireframe=true`): WebGL shows mesh extending to the pole; WebGPU shows a solid-black circle with no mesh edges. Initially looked like polar tiles weren't rasterizing.
+2. **`globeFragmentDebug("force-red")`**: rasterization IS happening — the entire view including the polar center rendered solid red. So the fragment shader DOES run for polar fragments; it just outputs black in production.
+3. **`globeFragmentDebug("sample0")`**: raw layer-0 imagery sample shows white Antarctica imagery at the polar fragments (Mercator clamp-to-edge returning the ±85° row). So the texture sampling works — produces the edge-clamped imagery.
+4. **`globeFragmentDebug("layer-count")`**: shows the polar center has BOTH `texCoordsAlpha` masks = 0. Outer ring shows `a1 = 1` (DebugTileImageryProvider's overlay), middle shows `a0 = 1` (Bing). The polar center has neither — `effectiveAlpha = layerMask × layer.alpha × sampleAlpha × texCoordsMask × … = 0`, so `color = mix(prevColor, adjusted, 0) = prevColor` (the dark initial color).
+5. **`globeFragmentDebug("post-composite-color")` + `("post-composite-alpha")`** confirm the post-composite color and alpha are 0 at the polar center.
+
+### Hypothesis (not yet conclusively proven)
+
+Polar globe tiles' `tile.layerCount` is 0 on WebGPU — i.e., their imagery hasn't loaded into the `_imageryTextureCache` yet, so the WGSL composite loop has `if (count >= 1u)` evaluate to false and skips every layer. The Bing imagery for those tiles wouldn't fully cover them anyway (lat < ±85° is outside Mercator), but the DebugTileImageryProvider tiles (Geographic, full ±90°) SHOULD be loading and adding `layer 1`. Verifying this hypothesis needs a probe that prints `tile.layerCount` per polar tile.
+
+A defensive change that did NOT visibly help but is correct: `sanitizeWebMercatorT(webMercT, geoV)` in `vertexMainWebMerc` / `vertexMainWebMercNormals` / `vertexMainQuantizedWebMerc` / `vertexMainQuantizedWebMercNormals` replaces NaN `webMercatorT` with the geographic V. `HeightmapTessellator.geodeticLatitudeToMercatorAngle(-90°)` is `-Infinity`, and Cesium's normalization `(mercY − southMercY) × oneOverMercatorHeight` produces NaN for tiles whose south edge is exactly -90°. WebGL's GLSL implementations historically treat NaN as "always in range" in `step()` so polar imagery rasterizes despite the NaN; WGSL follows strict IEEE. Sanitizing prevents the NaN from propagating, which is robust regardless of whether it's the proximate cause here.
+
+### What Batch 61 ships
+
+- `sanitizeWebMercatorT` helper in [packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) — applied to all 4 WebMercT vertex entry points.
+- [probe-polar-multi-angle.mjs](../Tools/visual-regression/probe-polar-multi-angle.mjs) — 6 views × 2 backends = 12 baseline captures.
+- [probe-polar-diff-all.mjs](../Tools/visual-regression/probe-polar-diff-all.mjs) — pixel-diffs every polar-multi pair. Drop-in regression tracker for "are we at <2% on every polar view?" Writes `output/polar-multi-diff-report.json` for trend tracking.
+- [probe-southpole-diag.mjs](../Tools/visual-regression/probe-southpole-diag.mjs) — inspects `tilesToRender` state at south-pole-close (mesh, indices, rectangle, renderable per tile).
+- [probe-polar-wireframe.mjs](../Tools/visual-regression/probe-polar-wireframe.mjs) — captures wireframe overlay at both poles for tile-mesh inspection.
+- [probe-polar-forcered.mjs](../Tools/visual-regression/probe-polar-forcered.mjs) — uses `globeFragmentDebug("force-red")` to verify rasterization.
+- [probe-polar-alpha-debug.mjs](../Tools/visual-regression/probe-polar-alpha-debug.mjs) — sweeps fragment-debug modes at the south-pole view.
+
+### Deferred to Batch 62 (or later)
+
+Root cause for `tile.layerCount = 0` at polar tiles on WebGPU. Suspected sites:
+
+- `_imageryTextureCache` lookup failing for polar tiles (texture upload didn't happen?).
+- `readyImagery` resolution stuck on polar tiles (tile-loader state machine difference).
+- `tileImagery.readyImagery.imageryLayer` filter at `WebGPUGlobeSurfaceRenderer.update` line 557-570 rejecting polar tiles.
+
+Probe to write first: dump `tile.layerCount` per polar tile on both backends and identify the divergence.
+
+---
+
+## Batch 60 — Canvas-source imagery uploaded with wrong Y orientation (`flipY`)
+
+**Date:** 2026-05-17
+
+**Symptom:** Labels on the `DebugTileImageryProvider` overlay (Batch 59) appeared upside-down on WebGPU. At equator-mid altitude where the labels are large enough to read, the L/X/Y header and `Geographic` annotations rendered at the BOTTOM of each tile cell instead of the top, with the text itself flipped 180°. Bing aerial imagery on the same view rendered correctly.
+
+**Root cause:** the WGSL globe-FS samples imagery textures at `(u, geoUV.y)` where `geoUV.y = 0` is the tile's SOUTH edge — the WebGL V=0-at-bottom convention preserved through the shared terrain mesh. For the texture to honor this, the source image's row 0 (north geographically) must end up at V=1 of the texture.
+
+The standard imagery providers route through `Resource.fetchImage({ flipY: true })`, which calls `createImageBitmap(blob, { imageOrientation: "flipY" })`. Those ImageBitmaps arrive **pre-flipped** — so `copyExternalImageToTexture` without an explicit `flipY` correctly places the source's south at the texture's V=0 row.
+
+The `TileCoordinatesImageryProvider` and our fork-added `DebugTileImageryProvider` return a raw `HTMLCanvasElement` instead. Canvases are NOT pre-flipped, so the upload places the canvas's row 0 (where `fillText` drew the labels) at texture V=0 — exactly opposite of what the FS expects. Result: labels render upside-down.
+
+**Fix:** `uploadImageSource` ([packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts)) now sets `flipY: true` in `copyExternalImageToTexture` ONLY for `HTMLCanvasElement` and `HTMLImageElement` sources. `ImageBitmap` sources stay `flipY: false` because they were already flipped at decode. Conditional rather than blanket because the earlier blanket-`flipY: true` attempt double-flipped ImageBitmaps and broke close-zoom Bing (wgs84-close went from 1% diff → 57% diff).
+
+**Verification:**
+
+- `probe-imagery-overlay.mjs`: WebGPU labels now read correctly (L:2, X:1, Y:1 upright). Bing imagery unchanged.
+- `probe-polar-multi-angle.mjs`: 12 captures (6 views × 2 backends). All WebGPU labels right-side-up at equator, mid-latitude, and polar views.
+- `capture-and-diff.mjs --scene wgs84-close`: still 1.00% (parity, no regression).
+- `capture-and-diff.mjs --scene globe-default`: still 3.34% (no regression).
+
+**Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts`.
+
+**Related deferred issue (logged separately):**
+
+The same multi-angle probe surfaced a SOUTH-POLE-MISSING-IMAGERY artifact on WebGPU: the central circular area of the south-pole-close view (within ~2° of -90° latitude) renders as solid black on WebGPU while WebGL shows imagery + tile labels normally. This is unrelated to the canvas `flipY` fix and looks like a tile-culling or degenerate-mesh issue specific to the very polar tiles. Tracked for Batch 61.
+
+---
+
+## Batch 59 — DebugTileImageryProvider + polar-stretching diagnosis (already fixed by Batch 58)
+
+**Date:** 2026-05-17
+
+The user flagged a polar-stretching artifact in WGS84 orbit screenshots — vertical/horizontal smearing in northern latitudes (Greenland, northern Canada) at ~14 Mm camera altitude. Initial bisection across all `globeFragmentDebug` modes (`sample0`, `alpha`, `post-composite-color`, `draped`, `view-dir`, `mip4`, `lod-magnitude`) showed CLEAN imagery at every stage — the streaking was no longer reproducible. Investigation concluded the artifact had already been fixed by Batch 58: the user's flagged screenshot was from a pre-Batch-58 state where `computeEnhancedOcean` REPLACED Arctic Ocean imagery with a deep-color blend AND the gate fired on every water-mask tile (not just when `showWaterEffect` was on). Polar tiles have water-mask data for the Arctic Ocean, so the pre-fix shader ran the deep-color replacement on them, producing the visible smearing pattern. The Batch 58 rewrite (additive highlights instead of replacement, gated on `showWaterEffect === true`) eliminated this as a side effect of the brightness work.
+
+What Batch 59 actually shipped:
+
+- **`DebugTileImageryProvider`** ([packages/engine/Source/Scene/DebugTileImageryProvider.js](../packages/engine/Source/Scene/DebugTileImageryProvider.js)) — fork-specific richer alternative to upstream `TileCoordinatesImageryProvider`. Per-tile labels: L/X/Y header, projection class (`Geographic` / `WebMercator` / custom), the geographic rectangle (N/W/E/S corners in degrees), and a RED border on tiles that straddle the Web Mercator ±85.0511° limit (the polar-reprojection tiles per `IMAGERY_PROJECTION.md` Path B). Exposed via `Cesium.DebugTileImageryProvider`.
+- **`CesiumDebug.tileDebugOverlay()`** ([packages/engine/Source/Scene/CesiumDebug.js](../packages/engine/Source/Scene/CesiumDebug.js)) — install/uninstall the overlay from the DevTools console without writing code. Options for `colorByLevel` (LOD-shifted border hue so adjacent levels are visually distinct), `showRectangle`, `showProjection`, `showMercatorLimit`, etc.
+- **CLAUDE.md + DEBUGGING_GUIDE.md** updated to surface the new tool.
+
+This was the original reason for the batch — and the artifact-finding investigation, even though it concluded "already fixed", produced a useful new debug provider that will be load-bearing for future imagery / tile / LOD investigations. Cross-reference for future readers: if anyone sees polar-stretching symptoms again, FIRST check whether `tileProvider.showWaterEffect` is being set unexpectedly, since the failure mode could re-emerge if the ocean-shader gate regresses.
+
+### Files modified
+
+- `packages/engine/Source/Scene/DebugTileImageryProvider.js` (new)
+- `packages/engine/index.js` (new named export)
+- `packages/engine/Source/Scene/CesiumDebug.js` (`tileDebugOverlay` method)
+- `CLAUDE.md`, `migration_doc/DEBUGGING_GUIDE.md` — added to the command/probe tables.
+
+### Probes
+
+- `probe-polar-stretch-diag.mjs` — reproduces the user's view (WGS84 + 14 Mm over NA) plain + with overlay + WebGL reference.
+- `probe-polar-bisect.mjs` — sweeps all `globeFragmentDebug` modes at the same view to isolate which FS stage produces an artifact (currently all clean).
+- `probe-polar-settle.mjs` — tests whether the artifact is settle-frame-dependent (currently no: same output at 120 / 600 / 2400 frames).
+
+---
+
+## Batch 58 — Enhanced ocean shader was replacing imagery instead of additively highlighting it
+
+**Date:** 2026-05-16
+**Symptom:** After Batches 56 and 57 closed the WGS84 catastrophe and the mipmap-chain bug, the WebGPU/WebGL brightness ratio settled at ~1.13× average per-globe-pixel with a stubborn 1.5× gap at mid-distance (5–12 Mm altitude). Probes (`probe-brightness-no-atmo.mjs`) showed the gap PERSISTED with `globe.showGroundAtmosphere = false`, so the drape branch wasn't the culprit. The atmosphere-off WebGPU render of North America at 12 Mm altitude looked uniformly dim — oceans nearly black, continents desaturated — even though the imagery composite alone (verified via `globeFragmentDebug("post-composite-color")`) produced bright continents.
+
+### Root cause
+
+The WGSL water-mask fragment branch (`computeEnhancedOcean` in `GlobeTerrain.wgsl`) **replaced** the underlying Bing aerial imagery with a deep-color blend instead of additively layering wave highlights on top of it. WebGL's equivalent (`computeWaterColor` in `GlobeFS.glsl:618`) does:
+
+```glsl
+vec3 color = imageryColor.rgb + diffuseHighlight + nonDiffuseHighlight + specular;
+```
+
+— imagery preserved, highlights added. The WGSL formulation was:
+
+```wgsl
+var oceanColor = mix(baseColor * darkening, deepColor, 0.6);
+// ... lots of GGX / Fresnel / SSS math ...
+return mix(baseColor, oceanColor, coastBlend);
+```
+
+For a pure-water fragment (`coastBlend = 1`), this returned `oceanColor = 0.4 × (baseColor × darkening) + 0.6 × deepColor`. With `darkening = 0.3` and `deepColor ≈ (0.008, 0.05, 0.15)`, a Bing-ocean pixel of `(0.3, 0.5, 0.7)` ended up as `(0.04, 0.09, 0.17)` — a **5× dimming** of the imagery. Multiplied by every visible ocean fragment, this dominated the mid-distance brightness ratio.
+
+The gate that fed the branch — `tile.flags.x = hasWaterMask ? 1.0 : 0.0` — also fired more broadly than WebGL's `SHOW_REFLECTIVE_OCEAN` define, but the dominant problem was the math itself (not the gate); fixing the math made the gate question moot for the brightness gap.
+
+### Fix
+
+Two coordinated changes:
+
+1. **Tile UB flag (`WebGPUGlobeSurfaceTileUB.ts`).** Renamed `hasWaterMask` → `showReflectiveOcean` and gated it on `tileProvider.showWaterEffect === true` to match WebGL's `SHOW_REFLECTIVE_OCEAN` define. `globe.showWaterEffect` defaults to `true`, so this doesn't change defaults but does honor user opt-out.
+2. **`computeEnhancedOcean` rewrite (`GlobeTerrain.wgsl`).** Rewrote the function to mirror WebGL's additive-highlights pattern:
+   - Compute wave-perturbed normal (only when `tile.flags.z > 0.5`, ocean-waves enabled).
+   - Compute `diffuseHighlight = waveHighlightColor × max(dot(normal, sunDir), 0) × waterMaskValue × (1 - dayFade)` — narrow wave-band tint, runs unconditionally (WebGL doesn't gate on `enableLighting`).
+   - When `enableLighting` is true, add an orbit-attenuated GGX specular sun-glint (preserved from prior implementation — useful at close zoom).
+   - Final formula: `color = baseColor + oceanContribution; color = mix(color, foamColor, foamFactor); return mix(baseColor, color, coastBlend);` — imagery preserved, highlights added.
+
+### Verification
+
+`probe-brightness-ratio.mjs` (per-globe-pixel):
+
+| Distance | Pre-Batch-58 ratio | Post-Batch-58 ratio |
+| --- | --- | --- |
+| close-1mm | 1.001 | 1.001 |
+| mid-5mm | **1.529** | **1.026** |
+| mid-12mm | **1.526** | **1.144** |
+| orbit-20mm | 1.064 | 0.889 |
+| far-40mm | 1.382 | 0.577 |
+| **average** | **1.34** | **0.93** |
+
+Mid-distance closed essentially to parity. The orbit/far end's "ratio < 1" means WebGPU is now slightly brighter than WebGL — same direction as before Batch 56 (a separate drape-tonemap question that's out of scope for Batch 58).
+
+`probe-saved-view.mjs` `caribbean-mid` scene: mismatch% dropped from ~90% to **1.89%**, brightness ratio `1.114`. Essentially pixel-perfect parity.
+
+`capture-and-diff.mjs` full scene suite: all PASS. `mid-distance-12mm` diff% dropped from 10.46% to 9.54%. `wgs84-orbit` from 11.46% to 10.41%. No regressions.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts` — `flags.x` packing gated on `showWaterEffect`.
+- `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` — `computeEnhancedOcean` rewritten.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeFragmentDebug.ts` — added `force-red` and `water-effect-trigger` debug modes used during the bisect.
+
+### Bisection methodology (added to debugging guide)
+
+The diagnostic path that found this bug demonstrates the value of the `force-red` end-of-fragment debug:
+
+1. `probe-brightness-no-atmo.mjs` confirmed the gap persisted with the drape branch off — pointing the investigation away from atmosphere.
+2. `probe-force-red` (set via `CesiumDebug.globeFragmentDebug("force-red")`) forced `(1,0,0,1)` at the FS exit. The screenshot showed bright `(255, 0, 0)` pixels — proving the canvas / display path was clean and the dimming was somewhere in the FS shading.
+3. `globeFragmentDebug("post-composite-color")` at mid-12mm showed bright continents — the imagery composite was fine.
+4. Bisecting the post-composite blocks (material / water / lighting / fog / HSB), the water-mask block was the only one that could fire by default (others gated on define / lighting / HSB-shift). Reading the function revealed the `mix(baseColor × darkening, deepColor, 0.6)` deep-color replacement vs WebGL's additive `imagery + highlights`.
+
+The `water-effect-trigger` debug (sentinel `19.0e9`, renders ocean fragments red / land green) is preserved as the standard way to verify the water gate per fragment.

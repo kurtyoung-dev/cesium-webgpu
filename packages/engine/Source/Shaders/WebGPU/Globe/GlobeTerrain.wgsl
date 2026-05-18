@@ -513,6 +513,25 @@ fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>,
 }
 
 // ─── Oct-decode normal from single float ───
+// Batch 61 — sanitize per-vertex `webMercatorT` against NaN. The
+// CPU-side formula in `HeightmapTessellator.geodeticLatitudeToMercatorAngle`
+// produces ±Infinity at latitude=±90°, and Cesium's per-tile
+// normalization (`(mercY − southMercY) × oneOverMercatorHeight`) turns
+// that into NaN for polar-spanning tiles whose south or north edge IS
+// at ±90°. WGSL's `step()` and `select()` with NaN follow strict IEEE
+// (false), which collapses the imagery `texCoordsAlpha` mask to zero
+// and produces the polar-black-hole rendering. WebGL's GLSL drivers
+// historically deviate from strict IEEE and treat NaN as "always in
+// range," so polar imagery rasterizes despite the NaN.
+//
+// We replace NaN with the geographic V (the same as the WebGL fallback
+// when `useWebMercatorT == false`). For tiles entirely within ±85° the
+// input is already a valid finite number — passed through unchanged.
+fn sanitizeWebMercatorT(webMercT: f32, geoV: f32) -> f32 {
+  // `x != x` is `true` iff `x` is NaN.
+  return select(webMercT, geoV, webMercT != webMercT);
+}
+
 fn octDecode(encoded: f32) -> vec3<f32> {
   let temp = encoded / 256.0;
   let x01 = floor(temp) / 255.0;
@@ -734,19 +753,40 @@ fn approximateTanh(x: f32) -> f32 {
 // Returns vec2(tStart, tStop) — tStart < tStop when intersecting,
 // vec2(0, 0) when missing (the GLSL `czm_emptyRaySegment` sentinel).
 // Callers check that `stop > start` to detect intersection.
+//
+// Batch 56 — precision-stable formulation: the naive
+//   `c = dot(origin, origin) - radius*radius`
+// for a Cesium-scale camera at 1.6e7 m loses ~10m of precision (1.6e7
+// squared = 2.56e14, beyond f32's 24-bit mantissa integer range).
+//
+// Defensive correctness fix only: this did NOT visibly resolve the WGS84
+// orbit catastrophe on its own (the per-vertex-vs-per-fragment ground-
+// atmosphere switch did — see fragmentMain below). WebGL has the same
+// imprecision in its `czm_raySphereIntersectionInterval` and renders
+// correctly via per-fragment scattering at orbit. We keep this fix
+// because (a) it's correct, (b) it's cheap, and (c) ray-sphere
+// intersection shows up in other render paths (sky atmosphere LUT,
+// volumetric clouds, planetary collision) where the precision loss
+// could matter independently.
+//
+// Scaling the origin by 1/radius keeps all intermediate quantities in
+// the [-10, 10] range where f32 precision is ~1e-6.
 fn raySphereIntersectionInterval(
   origin: vec3<f32>,
   dir: vec3<f32>,
   radius: f32,
 ) -> vec2<f32> {
-  let b = 2.0 * dot(dir, origin);
-  let c = dot(origin, origin) - radius * radius;
+  let invR = 1.0 / max(radius, 1e-6);
+  let originScaled = origin * invR;
+  let b = 2.0 * dot(dir, originScaled);
+  let c = dot(originScaled, originScaled) - 1.0;
   let disc = b * b - 4.0 * c;
   if (disc < 0.0) {
     return vec2<f32>(0.0, 0.0);
   }
   let sqrtDisc = sqrt(disc);
-  return vec2<f32>((-b - sqrtDisc) * 0.5, (-b + sqrtDisc) * 0.5);
+  // Scale t-values back to world units.
+  return vec2<f32>((-b - sqrtDisc) * 0.5 * radius, (-b + sqrtDisc) * 0.5 * radius);
 }
 
 // Per-vertex Rayleigh/Mie/opacity accumulation. Mirrors
@@ -1166,10 +1206,22 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 // ─── Vertex Shader: Uncompressed Terrain with WebMercatorT (no normals) ───
 // Vertex data: [u, v, webMercatorT] — webMercatorT is in .z, no normal.
+//
+// Batch 61 — `sanitizeWebMercatorT` replaces NaN values produced by
+// `HeightmapTessellator.js:325` for vertices exactly at ±90° latitude.
+// `0.5 * log((1+sin(±π/2))/(1-sin(±π/2)))` is `±Infinity` in JS; the
+// CPU formula then computes `±Infinity * (1 / mercatorHeight)` which is
+// `NaN`. WebGL's GLSL silently propagates the NaN through the per-
+// fragment `step()` mask (returning 1.0 in most drivers — non-spec
+// behavior), so the imagery still renders. WGSL is stricter: NaN
+// comparisons in `step()` return 0, which zeroes `texCoordsAlpha`,
+// which zeroes `effectiveAlpha`, which makes the imagery composite
+// contribute nothing — producing a black hole at the pole.
 @vertex
 fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
-  return processVertex(input.position3DAndHeight.xyz, tc.xy, 0.0, tc.z,
+  let safeWebMercT = sanitizeWebMercatorT(tc.z, tc.y);
+  return processVertex(input.position3DAndHeight.xyz, tc.xy, 0.0, safeWebMercT,
                        input.position3DAndHeight.w,
                        //>>ifdef GEODETIC_NORMAL
                        input.geodeticSurfaceNormal);
@@ -1183,7 +1235,8 @@ fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
 @vertex
 fn vertexMainWebMercNormals(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
-  return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.w, tc.z,
+  let safeWebMercT = sanitizeWebMercatorT(tc.z, tc.y);
+  return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.w, safeWebMercT,
                        input.position3DAndHeight.w,
                        //>>ifdef GEODETIC_NORMAL
                        input.geodeticSurfaceNormal);
@@ -1231,8 +1284,9 @@ fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
   let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
   let uv = decompressTextureCoordinates(input.compressed0.z);
   let webMercT = decompressTextureCoordinates(input.compressed0.w).x;
+  let safeWebMercT = sanitizeWebMercatorT(webMercT, uv.y);
   // 32896.0 = oct-encoded (0,0,1) up vector \u2014 prevents back-face culling
-  return processVertex(position, uv, 32896.0, webMercT,
+  return processVertex(position, uv, 32896.0, safeWebMercT,
                        decodeQuantizedHeight(zh.y),
                        //>>ifdef GEODETIC_NORMAL
                        input.geodeticSurfaceNormal);
@@ -1257,7 +1311,8 @@ fn vertexMainQuantizedWebMercNormals(
   let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
   let uv = decompressTextureCoordinates(input.compressed0.z);
   let webMercT = decompressTextureCoordinates(input.compressed0.w).x;
-  return processVertex(position, uv, input.compressed1, webMercT,
+  let safeWebMercT = sanitizeWebMercatorT(webMercT, uv.y);
+  return processVertex(position, uv, input.compressed1, safeWebMercT,
                        decodeQuantizedHeight(zh.y),
                        //>>ifdef GEODETIC_NORMAL
                        input.geodeticSurfaceNormal);
@@ -1277,18 +1332,42 @@ fn vertexMainQuantizedWebMercNormals(
 // (not UV clamping). Previous code incorrectly clamped here, causing vertical
 // stripes when texCoordsRect didn't cover the full [0,1] range.
 fn sampleImagery(tex: texture_2d<f32>, samp: sampler,
-                 baseUV: vec2<f32>, layer: ImageryLayer) -> vec4<f32> {
+                 baseUV: vec2<f32>, layer: ImageryLayer,
+                 baseUV_dx: vec2<f32>, baseUV_dy: vec2<f32>) -> vec4<f32> {
   let uv = baseUV * layer.translationAndScale.zw + layer.translationAndScale.xy;
-  // Use textureSampleLevel (explicit LOD=0) instead of textureSample
-  // because this function is called after non-uniform discard/return
-  // (clipping planes), and textureSample requires uniform control flow.
-  return textureSampleLevel(tex, samp, uv, 0.0);
+  // Batch 57 — textureSampleGrad uses the caller-provided per-fragment UV
+  // derivatives to pick the correct mip level. Required because this
+  // function is called after non-uniform discard/return (clipping planes),
+  // and `textureSample` rejects that, while `textureSampleLevel(uv, 0.0)`
+  // (the previous formulation) hard-locks the sampler to mip 0 — bypassing
+  // the mipmap chain entirely. The latter produced ~4× brightness drop at
+  // orbital altitudes where one fragment covers many texels and the
+  // alias pattern under-samples bright pixels.
+  //
+  // Derivatives are pre-computed at fragmentMain entry (uniform CF) and
+  // scaled by the per-layer `translationAndScale.zw` so each layer's
+  // gradient matches its own sampling rate.
+  let uv_dx = baseUV_dx * layer.translationAndScale.zw;
+  let uv_dy = baseUV_dy * layer.translationAndScale.zw;
+  return textureSampleGrad(tex, samp, uv, uv_dx, uv_dy);
 }
 
 // Select the correct V coordinate per layer based on useWebMercatorT flag
 fn selectLayerUV(geoUV: vec2<f32>, webMercT: f32, useWebMerc: f32) -> vec2<f32> {
   let v = select(geoUV.y, webMercT, useWebMerc > 0.5);
   return vec2<f32>(geoUV.x, v);
+}
+
+// Batch 57 — pick the derivative pair matching the layer's UV space.
+// Geographic-sampled layers use the `geoUV` derivative; webMercator-
+// sampled layers use the `webMercUV` derivative (their V is the
+// per-vertex webMercatorT, not geoUV.y, so the derivative differs).
+fn selectLayerUVDerivative(
+  geoDeriv: vec2<f32>,
+  webMercDeriv: vec2<f32>,
+  useWebMerc: f32,
+) -> vec2<f32> {
+  return select(geoDeriv, webMercDeriv, useWebMerc > 0.5);
 }
 
 // Compute texCoordsRect alpha mask — matches WebGL sampleAndBlend behavior.
@@ -1580,6 +1659,22 @@ fn computeSubsurfaceScattering(
 }
 
 // Full enhanced ocean rendering pipeline
+// Batch 58 — rewritten to match WebGL `computeWaterColor` semantics.
+// WebGL's pattern is `color = imageryColor + diffuseHighlight + ... + specular`
+// — imagery is PRESERVED and highlights are added. The previous WGSL
+// formulation `mix(baseColor * darkening, deepColor, 0.6)` REPLACED
+// imagery with a deep-color blend, dimming Bing aerial ocean by ~5×
+// at every ocean fragment and dominating the WebGPU/WebGL brightness
+// gap. See `migration_doc/WEBGPU_DEBUGGING_LOG.md` Batch 58.
+//
+// The new path:
+//   1. Sample wave normals (only at low altitude with ocean waves enabled)
+//   2. Compute diffuse + specular highlights from the active scene light
+//   3. Add highlights to the imagery base color (no replacement)
+//   4. Smooth coast transition by water-mask alpha
+//
+// At orbit / no-waves / no-lighting we contribute essentially nothing
+// — same as WebGL with default settings.
 fn computeEnhancedOcean(
   baseColor: vec3<f32>,
   positionEC: vec3<f32>,
@@ -1591,8 +1686,6 @@ fn computeEnhancedOcean(
   distance: f32,
 ) -> vec3<f32> {
   let viewDir = normalize(-positionEC);
-  let deepColor = getOceanDeepColor();
-  let darkening = getOceanDarkening();
 
   // Perturbed normal from multi-octave wave normals
   var waterNormal = normalEC;
@@ -1600,73 +1693,60 @@ fn computeEnhancedOcean(
   if (tile.flags.z > 0.5) {
     let t = tile.time;
     let waveN = sampleOceanWaveNormals(uv, t);
-    // Scale wave intensity with distance (calmer at distance)
     let waveStrength = mix(0.25, 0.05, smoothstep(10000.0, 500000.0, distance));
     waterNormal = normalize(normalEC + waveN * waveStrength);
     foamFactor = computeFoam(waveN, distance);
   }
 
-  // Deep water base color blend
-  var oceanColor = mix(baseColor * darkening, deepColor, 0.6);
+  // Wave-highlight diffuse term — matches WebGL `waveHighlightColor *
+  // czm_getLambertDiffuse(...) * mask * (1 - fade)`. Runs unconditionally
+  // (WebGL doesn't gate this on `enableLighting`) and contributes only a
+  // narrow band of color where the surface faces the light.
+  let waveHighlightColor = vec3<f32>(0.3, 0.45, 0.6);
+  let NdotL = max(dot(waterNormal, sunDirEC), 0.0);
+  // `dayFade` here mirrors the WebGL `fade` scalar — at close zoom we
+  // want full highlight, at orbit the highlight tapers off.
+  let highlightFade = 1.0 - clamp(dayFade, 0.0, 1.0);
+  let diffuseHighlight = waveHighlightColor * NdotL * waterMaskValue * highlightFade;
 
-  // Fresnel reflectivity: more reflective at grazing angles
-  let NdotV = max(dot(waterNormal, viewDir), 0.0);
-  let fresnel = fresnelSchlick(NdotV, getOceanReflectivity());
+  var oceanContribution = diffuseHighlight;
 
-  // Session 65 Batch 23 — orbit-altitude limb attenuation (orbit
-  // polish §13.2). Real orbital photography shows essentially no
-  // ocean sun glint from space — the BRDF-relevant solid angle of
-  // the specular highlight subtends a small fraction of a pixel at
-  // orbit altitudes. Bruneton & Neyret 2008 derive this from the
-  // microfacet distribution: at near-vertical NdotV the visible
-  // highlight area shrinks proportional to camera distance.
-  //
-  // We approximate this with a smoothstep curve from full intensity
-  // at <= 100 km altitude (where helicopter / aerial views still
-  // show ocean glint) to zero at >= 1 Earth radius (orbit). Both
-  // the GGX specular highlight AND the subsurface-scattering rim
-  // get the same attenuation factor so the limb sun-glare patch
-  // disappears at orbit without breaking ground-level reflections.
-  let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
-  let altitudeMeters = max(0.0, length(cameraWC) - 6378137.0);
-  let orbitGateMin: f32 = 100000.0;     // 100 km — start fading
-  let orbitGateMax: f32 = 6378137.0;    // 1 Earth radius — fully gated
-  let orbitGateT = clamp(
-    (altitudeMeters - orbitGateMin) / max(1.0, orbitGateMax - orbitGateMin),
-    0.0, 1.0,
-  );
-  let orbitSmooth = orbitGateT * orbitGateT * (3.0 - 2.0 * orbitGateT);
-  let orbitAttenuation = 1.0 - orbitSmooth;
-
+  // Specular sun-glint, only when scene lighting is enabled (matches
+  // WebGL's `czm_getSpecular(czm_lightDirectionEC, ...)`).
   if (camera.enableLighting > 0.5) {
-    // GGX specular for sun reflection on water
+    // Orbit-altitude attenuation: the specular highlight subtends < 1
+    // pixel at orbit, so fade it out smoothly above ~100 km. Without
+    // this the sun-glint patch persists as a bright limb point at orbit.
+    let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+    let altitudeMeters = max(0.0, length(cameraWC) - 6378137.0);
+    let orbitGateMin: f32 = 100000.0;
+    let orbitGateMax: f32 = 6378137.0;
+    let orbitGateT = clamp(
+      (altitudeMeters - orbitGateMin) / max(1.0, orbitGateMax - orbitGateMin),
+      0.0, 1.0,
+    );
+    let orbitSmooth = orbitGateT * orbitGateT * (3.0 - 2.0 * orbitGateT);
+    let orbitAttenuation = 1.0 - orbitSmooth;
+
     let halfDir = normalize(viewDir + sunDirEC);
     let NdotH = max(dot(waterNormal, halfDir), 0.0);
-    let NdotL = max(dot(waterNormal, sunDirEC), 0.0);
-    let specular = distributionGGX(NdotH, 0.08) * fresnel * NdotL;
-
-    // Sun specular highlight (bright, tight) — orbit-attenuated.
-    oceanColor += vec3<f32>(1.0, 0.95, 0.85) * min(specular, 8.0) * orbitAttenuation;
-
-    // Subsurface scattering — orbit-attenuated.
-    oceanColor += computeSubsurfaceScattering(viewDir, sunDirEC, waterNormal) * orbitAttenuation;
+    let specular = distributionGGX(NdotH, 0.08) * NdotL;
+    oceanContribution += vec3<f32>(1.0, 0.95, 0.85) *
+      min(specular, 8.0) * orbitAttenuation * waterMaskValue;
   }
 
-  // Environment/sky reflection blended via Fresnel
-  let skyReflection = computeAtmosphereColor(positionEC, waterNormal, sunDirEC);
-  oceanColor = mix(oceanColor, skyReflection, fresnel * 0.5);
-
-  // Foam: white overlay on steep wave crests
+  // Foam: white overlay on steep wave crests (additive on top of imagery).
   let foamColor = vec3<f32>(0.85, 0.9, 0.92);
-  oceanColor = mix(oceanColor, foamColor, foamFactor);
 
-  // Night-side ocean: darker, moonlit
-  let nightDarkening = mix(0.08, 1.0, dayFade);
-  oceanColor *= nightDarkening;
+  // Match WebGL: imagery preserved, highlights added on top, foam mixed in.
+  var color = baseColor + oceanContribution;
+  color = mix(color, foamColor, foamFactor);
 
-  // Smooth water mask transition at coastlines
+  // Smooth water mask transition at coastlines — for non-water fragments
+  // (coastBlend = 0) we return baseColor unchanged. For water (coastBlend
+  // = 1) we return imagery + highlights.
   let coastBlend = smoothstep(0.3, 0.7, waterMaskValue);
-  return mix(baseColor, oceanColor, coastBlend);
+  return mix(baseColor, color, coastBlend);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2071,6 +2151,21 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let geoUV = input.v_textureCoordinates.xy;
   let webMercT = input.v_textureCoordinates.z;
 
+  // Batch 57 — per-fragment UV derivatives computed AT FRAGMENT ENTRY
+  // while control flow is still uniform. Used by `sampleImagery` calls
+  // below via `textureSampleGrad`, which is the only WGSL sampling
+  // function that picks a mip level (via the gradient magnitude) AND
+  // is legal to call after non-uniform discard/return. The previous
+  // `textureSampleLevel(uv, 0.0)` formulation hard-locked sampling to
+  // mip 0 — the WebGPU/WebGL ~4× brightness gap at orbital altitudes
+  // was the alias pattern under-sampling bright pixels.
+  let geoUV_dx = dpdx(geoUV);
+  let geoUV_dy = dpdy(geoUV);
+  // For webMercatorT-sampled layers the V coordinate is the per-vertex
+  // varying instead of geoUV.y, so its derivative is also needed.
+  let webMercUV_dx = vec2<f32>(geoUV_dx.x, dpdx(webMercT));
+  let webMercUV_dy = vec2<f32>(geoUV_dy.x, dpdy(webMercT));
+
   // Helper: select geographic V or webMercatorT per layer.
   // Matches WebGL's u_dayTextureUseWebMercatorT. Batch 58 — packed 4 layers
   // per vec4 (`useWebMercatorTLayer[i/4][i%4]`); read all 16 here so the
@@ -2082,8 +2177,120 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // hit 90 %+ of the time and silently masquerades as the production
   // render output. Bumped to 1 e9 so a JS-side caller has to push the
   // value WAY past the natural range to opt in.)
-  if (tile.time > 1.0e9) {
+  if (tile.time > 1.0e9 && tile.time < 1.5e9) {
     return vec4<f32>(geoUV.x, geoUV.y, webMercT, 1.0);
+  }
+  // Batch 56 — texCoordsAlpha debug. Trigger via tile.time in [1.5e9, 2.5e9].
+  // Shows red = alpha mask for layer 0 (white means alpha=1, black=0),
+  // green = the V coord clamped to [0,1], blue = layer 0 rect.y (minV).
+  if (tile.time > 1.5e9 && tile.time < 2.5e9) {
+    if (u32(tile.layerCount) >= 1u) {
+      let r = tile.layers[0].texCoordsRect;
+      let alpha = texCoordsAlpha(geoUV, r);
+      return vec4<f32>(alpha, geoUV.y, r.y, 1.0);
+    }
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0); // magenta = no layer
+  }
+  // Batch 56 — layerCount debug. Trigger via tile.time in [2.5e9, 3.5e9].
+  // Red = layer count / 16. Green = layer 0 alpha. Blue = layer 1 alpha
+  // (if it exists). Each visible non-magenta tile should show layer 0
+  // OR layer 1 alpha=1 for any given V, but never both 0.
+  if (tile.time > 2.5e9 && tile.time < 3.5e9) {
+    let lc = u32(tile.layerCount);
+    let a0 = select(0.0, texCoordsAlpha(geoUV, tile.layers[0].texCoordsRect), lc >= 1u);
+    let a1 = select(0.0, texCoordsAlpha(geoUV, tile.layers[1].texCoordsRect), lc >= 2u);
+    return vec4<f32>(f32(lc) / 16.0, a0, a1, 1.0);
+  }
+  // Batch 56 — direct imagery sample debug. Trigger via tile.time in
+  // [3.5e9, 4.5e9]. Shows raw sample from layer 0 (no compositing,
+  // no alpha mask). Confirms whether the reprojected texture content
+  // itself is black or correct.
+  if (tile.time > 3.5e9 && tile.time < 4.5e9) {
+    if (u32(tile.layerCount) >= 1u) {
+      let useWMT = tile.useWebMercatorTLayer[0].x;
+      let uv = selectLayerUV(geoUV, webMercT, useWMT);
+      let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+      let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+      let tex = sampleImagery(dayTexture0, texSampler, uv, tile.layers[0], uv_dx, uv_dy);
+      return vec4<f32>(tex.rgb, 1.0);
+    }
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+  }
+  // Batch 57 — explicit mip level debug. Forces sampling at mip 4 to
+  // verify the mipmap chain exists and contains valid imagery. If the
+  // output here matches sample0 then either mipmaps aren't generated
+  // or the sampler isn't picking them. If different from sample0, the
+  // chain IS valid and the issue is LOD selection / derivative magnitude.
+  if (tile.time > 16.5e9 && tile.time < 17.5e9) {
+    if (u32(tile.layerCount) >= 1u) {
+      let useWMT = tile.useWebMercatorTLayer[0].x;
+      let uv = selectLayerUV(geoUV, webMercT, useWMT);
+      let scaledUV = uv * tile.layers[0].translationAndScale.zw +
+        tile.layers[0].translationAndScale.xy;
+      let tex = textureSampleLevel(dayTexture0, texSampler, scaledUV, 4.0);
+      return vec4<f32>(tex.rgb, 1.0);
+    }
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+  }
+  // Batch 57 — visualize derivative magnitude as grayscale.
+  // log2(max(|dx|, |dy|) * texSize) approximates the LOD value the
+  // sampler computes. Should grow with camera distance.
+  if (tile.time > 17.5e9 && tile.time < 18.5e9) {
+    if (u32(tile.layerCount) >= 1u) {
+      let useWMT = tile.useWebMercatorTLayer[0].x;
+      let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+      let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+      let scale = tile.layers[0].translationAndScale.zw;
+      let dx = uv_dx * scale;
+      let dy = uv_dy * scale;
+      let maxDeriv = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));
+      // Encode log2(maxDeriv * 256) / 10 as gray (assumes 256x256 imagery).
+      let lod = log2(max(maxDeriv * 256.0, 1e-6)) / 10.0 + 0.5;
+      return vec4<f32>(lod, lod, lod, 1.0);
+    }
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+  }
+  // Batch 56 — direct imagery sample for layer 1.
+  if (tile.time > 4.5e9 && tile.time < 5.5e9) {
+    if (u32(tile.layerCount) >= 2u) {
+      let useWMT = tile.useWebMercatorTLayer[0].y;
+      let uv = selectLayerUV(geoUV, webMercT, useWMT);
+      let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+      let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+      let tex = sampleImagery(dayTexture1, texSampler, uv, tile.layers[1], uv_dx, uv_dy);
+      return vec4<f32>(tex.rgb, 1.0);
+    }
+    return vec4<f32>(0.0, 1.0, 1.0, 1.0); // cyan = no layer 1
+  }
+  // Batch 56 — texSample.a debug. Visualize the imagery's alpha channel
+  // for layer 0. RED = layer 0's tex.a. If alpha is 0, the composite
+  // multiplier kills imagery contribution → BLACK output even with
+  // valid texCoordsMask.
+  if (tile.time > 5.5e9 && tile.time < 6.5e9) {
+    if (u32(tile.layerCount) >= 1u) {
+      let useWMT = tile.useWebMercatorTLayer[0].x;
+      let uv = selectLayerUV(geoUV, webMercT, useWMT);
+      let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+      let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+      let tex = sampleImagery(dayTexture0, texSampler, uv, tile.layers[0], uv_dx, uv_dy);
+      return vec4<f32>(tex.a, tex.a, tex.a, 1.0);
+    }
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+  }
+  // Batch 56 — tex.a for layer 1. Used to discriminate which texture
+  // upload path has alpha=0. Reprojected layers force alpha=1 (after
+  // Batch 56 fix); direct uploads via uploadImageSource for opaque JPEGs
+  // may have alpha=0.
+  if (tile.time > 6.5e9 && tile.time < 7.5e9) {
+    if (u32(tile.layerCount) >= 2u) {
+      let useWMT = tile.useWebMercatorTLayer[0].y;
+      let uv = selectLayerUV(geoUV, webMercT, useWMT);
+      let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+      let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+      let tex = sampleImagery(dayTexture1, texSampler, uv, tile.layers[1], uv_dx, uv_dy);
+      return vec4<f32>(tex.a, tex.a, tex.a, 1.0);
+    }
+    return vec4<f32>(0.0, 1.0, 1.0, 1.0); // cyan = no layer 1
   }
 
   // Compute shadow factor early — textureSampleCompare must be called
@@ -2253,8 +2460,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // useWebMercatorT packed 4-per-vec4: tile.useWebMercatorTLayer[i/4][i%4].
   if (count >= 1u) {
     let layer = tile.layers[0];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[0].x);
-    let tex = sampleImagery(dayTexture0, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[0].x;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture0, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[0].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 0);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2263,8 +2473,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 2u) {
     let layer = tile.layers[1];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[0].y);
-    let tex = sampleImagery(dayTexture1, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[0].y;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture1, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[0].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 1);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2273,8 +2486,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 3u) {
     let layer = tile.layers[2];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[0].z);
-    let tex = sampleImagery(dayTexture2, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[0].z;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture2, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[1].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 2);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2283,8 +2499,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 4u) {
     let layer = tile.layers[3];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[0].w);
-    let tex = sampleImagery(dayTexture3, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[0].w;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture3, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[1].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 3);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2293,8 +2512,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 5u) {
     let layer = tile.layers[4];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[1].x);
-    let tex = sampleImagery(dayTexture4, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[1].x;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture4, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[2].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 4);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2303,8 +2525,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 6u) {
     let layer = tile.layers[5];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[1].y);
-    let tex = sampleImagery(dayTexture5, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[1].y;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture5, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[2].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 5);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2313,8 +2538,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 7u) {
     let layer = tile.layers[6];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[1].z);
-    let tex = sampleImagery(dayTexture6, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[1].z;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture6, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[3].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 6);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2323,8 +2551,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 8u) {
     let layer = tile.layers[7];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[1].w);
-    let tex = sampleImagery(dayTexture7, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[1].w;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture7, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[3].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 7);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2333,8 +2564,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 9u) {
     let layer = tile.layers[8];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[2].x);
-    let tex = sampleImagery(dayTexture8, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[2].x;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture8, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[4].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 8);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2343,8 +2577,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 10u) {
     let layer = tile.layers[9];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[2].y);
-    let tex = sampleImagery(dayTexture9, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[2].y;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture9, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[4].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 9);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2353,8 +2590,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 11u) {
     let layer = tile.layers[10];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[2].z);
-    let tex = sampleImagery(dayTexture10, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[2].z;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture10, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[5].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 10);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2363,8 +2603,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 12u) {
     let layer = tile.layers[11];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[2].w);
-    let tex = sampleImagery(dayTexture11, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[2].w;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture11, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[5].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 11);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2373,8 +2616,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 13u) {
     let layer = tile.layers[12];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[3].x);
-    let tex = sampleImagery(dayTexture12, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[3].x;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture12, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[6].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 12);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2383,8 +2629,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 14u) {
     let layer = tile.layers[13];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[3].y);
-    let tex = sampleImagery(dayTexture13, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[3].y;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture13, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[6].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 13);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2393,8 +2642,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 15u) {
     let layer = tile.layers[14];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[3].z);
-    let tex = sampleImagery(dayTexture14, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[3].z;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture14, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[7].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 14);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
@@ -2403,13 +2655,30 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (count >= 16u) {
     let layer = tile.layers[15];
-    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[3].w);
-    let tex = sampleImagery(dayTexture15, texSampler, uv, layer);
+    let useWMT = tile.useWebMercatorTLayer[3].w;
+    let uv = selectLayerUV(geoUV, webMercT, useWMT);
+    let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
+    let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
+    let tex = sampleImagery(dayTexture15, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[7].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 15);
     let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+
+  // Batch 56 — post-composite color debug. Trigger via tile.time in
+  // [7.5e9, 8.5e9]. Returns the imagery-composited color BEFORE all
+  // material/atmosphere/HSB/fog effects. If this shows clean imagery
+  // but production shows black, the bug is in the subsequent effects.
+  if (tile.time > 7.5e9 && tile.time < 8.5e9) {
+    return vec4<f32>(color, 1.0);
+  }
+  // Batch 56 — post-composite alpha debug. Trigger via [8.5e9, 9.5e9].
+  // Returns the accumulated alpha as grayscale. If alpha is 0 here,
+  // the imagery composite produced no contribution.
+  if (tile.time > 8.5e9 && tile.time < 9.5e9) {
+    return vec4<f32>(alpha, alpha, alpha, 1.0);
   }
 
   // Subsequent passes only apply imagery — skip all effects
@@ -2532,32 +2801,22 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       );
     }
 
-    // ─── Session 65 Batch 9 (Cluster 2b/5): proper per-vertex
-    // Rayleigh+Mie scattering, applied with per-fragment phase functions
-    // and PBR Neutral tonemap + inverse gamma encode. Prefers per-vertex
-    // data over the dim analytic fallback / LUT — only falls through to
-    // the latter when the atmosphere wasn't enabled CPU-side.
+    // Batch 56 — ground atmosphere: per-fragment ray-march at orbit
+    // distances. WebGL `GlobeFS.glsl` switches between per-vertex and
+    // per-fragment scattering via `#ifdef PER_FRAGMENT_GROUND_ATMOSPHERE`
+    // (defined CPU-side when `cameraDist > nightFadeOutDistance`). At
+    // orbit the per-vertex path produces wildly different Rayleigh / Mie
+    // values across the tile mesh — short marches (~110m of atmosphere)
+    // on near-side vertices vs ~13Mm marches on far-side limb vertices,
+    // interpolated linearly across the triangle → mesh-pattern artifact
+    // overwriting imagery via `mix(color, draped, fadeAmount=1.0)`.
+    // We always do per-fragment here for parity at orbit; the per-vertex
+    // varyings remain in the VS so re-introducing the distance gate is
+    // a localized future optimization.
     var groundAtmoColor: vec3<f32>;
     var groundAtmoOpacity: f32 = atmosphereOpacity;
     var groundAtmoLightDir: vec3<f32> = vec3<f32>(0.0, 0.0, 1.0);
     if (camera.atmosphereParams.w > 0.5) {
-      // Session 65 Batch 38 — proper camera-to-position view direction.
-      // The previous expression
-      //   `let fragmentWorldPos = input.v_positionMC + cameraWC;`
-      //   `let viewDir = normalize(fragmentWorldPos - cameraWC);`
-      // expands to `normalize(v_positionMC)` because
-      // `out.v_positionMC = position3DWC` (line 1050) IS already in
-      // world coords (not RTE). That gives the surface OUTWARD normal,
-      // not the camera-to-surface direction the Rayleigh/Mie phase
-      // functions need. On the sunlit hemisphere where the outward
-      // normal aligns with the sun direction, the wrong cosAngle
-      // pushed the Henyey-Greenstein Mie phase into its forward peak
-      // (cos≈+1 → pow(0.01, 1.5) denominator → very large), producing
-      // the 7-10× over-accumulation that Batches 30+31 worked around
-      // with cap=1.5 × scale=0.15. Mirrors WebGL
-      // `AtmosphereCommon.glsl::computeAtmosphereColor` line 166-167:
-      //   `vec3 cameraToPositionWC = positionWC - czm_viewerPositionWC;`
-      //   `vec3 cameraToPositionWCDirection = normalize(cameraToPositionWC);`
       let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
       let positionWC = input.v_positionMC;
       let viewDir = normalize(positionWC - cameraWC);
@@ -2573,13 +2832,18 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         dynamicLightingActive,
       );
       groundAtmoLightDir = lightDir;
+      // Per-fragment ray march — same function the VS uses to populate
+      // the v_atmosphere* varyings, but evaluated at the fragment's
+      // exact world position so neighboring fragments produce
+      // numerically-consistent Rayleigh / Mie values.
+      let perFragScattering = computeAtmosphereScatteringGround(positionWC, lightDir);
       groundAtmoColor = computeGroundAtmosphereColor(
         viewDir,
         lightDir,
-        input.v_atmosphereRayleighColor,
-        input.v_atmosphereMieColor,
+        perFragScattering.rayleigh,
+        perFragScattering.mie,
       );
-      groundAtmoOpacity = input.v_atmosphereOpacity;
+      groundAtmoOpacity = perFragScattering.opacity;
     } else {
       groundAtmoColor = atmosphereColor;
     }
@@ -2756,6 +3020,38 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         draped = vec3<f32>(1.0) - exp(-exposure * finalAtmosphereColor);
       }
       let fadeAmount = tile.groundAtmosphereControl.y;
+      // Batch 56 — visualize per-vertex v_atmosphereRayleighColor via [13.5e9, 14.5e9].
+      if (tile.time > 13.5e9 && tile.time < 14.5e9) {
+        return vec4<f32>(input.v_atmosphereRayleighColor, 1.0);
+      }
+      // Batch 56 — visualize per-vertex v_atmosphereMieColor via [14.5e9, 15.5e9].
+      if (tile.time > 14.5e9 && tile.time < 15.5e9) {
+        return vec4<f32>(input.v_atmosphereMieColor, 1.0);
+      }
+      // Batch 56 — visualize viewDir via [15.5e9, 16.5e9]. Maps from [-1,1] to [0,1].
+      if (tile.time > 15.5e9 && tile.time < 16.5e9) {
+        let cameraWC2 = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let positionWC2 = input.v_positionMC;
+        let viewDir2 = normalize(positionWC2 - cameraWC2);
+        return vec4<f32>(viewDir2 * 0.5 + 0.5, 1.0);
+      }
+      // Batch 56 — debug: visualize fadeAmount as grayscale via [9.5e9, 10.5e9].
+      // If fadeAmount = 1 (white), the imagery is fully replaced by drape.
+      if (tile.time > 9.5e9 && tile.time < 10.5e9) {
+        return vec4<f32>(fadeAmount, fadeAmount, fadeAmount, 1.0);
+      }
+      // Batch 56 — debug: visualize draped color via [10.5e9, 11.5e9].
+      if (tile.time > 10.5e9 && tile.time < 11.5e9) {
+        return vec4<f32>(draped, 1.0);
+      }
+      // Batch 56 — debug: visualize groundAtmoColor only via [11.5e9, 12.5e9].
+      if (tile.time > 11.5e9 && tile.time < 12.5e9) {
+        return vec4<f32>(groundAtmoColor, 1.0);
+      }
+      // Batch 56 — debug: visualize transmittance via [12.5e9, 13.5e9].
+      if (tile.time > 12.5e9 && tile.time < 13.5e9) {
+        return vec4<f32>(transmittance / 5.0, transmittance / 5.0, transmittance / 5.0, 1.0);
+      }
       color = mix(color, draped, fadeAmount);
     }
   }
@@ -2771,6 +3067,35 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     hsb.y = clamp(hsb.y + hsbShift.y, 0.0, 1.0);
     hsb.z = clamp(hsb.z + hsbShift.z, 0.0, 1.0);
     color = globe_hsbToRgb(hsb);
+  }
+
+  // Batch 58 — end-of-fragment force-bright debug. Trigger via
+  // [18.5e9, 19.5e9]. Forces output to (1,0,0,1) regardless of any
+  // prior shading. If the displayed canvas pixel is dim red instead of
+  // bright red, something between FS output and display is dimming
+  // (canvas format, color space, post-process). If bright red, the
+  // dimming is in the FS shading path. (Used during Batch 58 to
+  // confirm the canvas/display path was clean before bisecting the FS.)
+  if (tile.time > 18.5e9 && tile.time < 19.5e9) {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+  }
+  // Batch 58 — water-effect-trigger debug. Trigger via [19.5e9, 20.5e9].
+  // Renders ocean fragments RED, land fragments GREEN. Verifies the
+  // `flags.x` gate is correctly identifying water vs land tiles after
+  // the Batch 58 showReflectiveOcean fix.
+  if (tile.time > 19.5e9 && tile.time < 20.5e9) {
+    if (tile.flags.x > 0.5) {
+      let wmTS = tile.waterMaskTranslationAndScale;
+      let waterUV = geoUV * wmTS.zw + wmTS.xy;
+      let waterMask = textureSampleLevel(
+        waterMaskTexture, waterMaskSampler, waterUV, 0.0,
+      ).r;
+      if (waterMask > 0.01) {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0); // red = water + reflective ocean enabled
+      }
+      return vec4<f32>(0.5, 0.5, 0.0, 1.0); // yellow = tile has water mask but fragment is land
+    }
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0); // green = no reflective ocean for this tile
   }
 
   return vec4<f32>(color, alpha);

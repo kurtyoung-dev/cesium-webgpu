@@ -35,6 +35,33 @@
  */
 
 import type { ImageryGPUTexture } from "./WebGPUGlobeSurfaceTypes.js";
+import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
+
+// Lazily-allocated mipmap generator, shared across all imagery uploads
+// (and reprojection outputs — same device, same shader, same sampler).
+// Allocated on first use to avoid paying for it when the WebGPU backend
+// isn't active. The generator caches per-format pipelines internally.
+let _mipmapGenerator: WebGPUMipmapGenerator | null = null;
+let _mipmapGeneratorDevice: GPUDevice | null = null;
+function ensureMipmapGenerator(device: GPUDevice): WebGPUMipmapGenerator {
+  if (_mipmapGenerator !== null && _mipmapGeneratorDevice === device) {
+    return _mipmapGenerator;
+  }
+  _mipmapGenerator = new WebGPUMipmapGenerator(device);
+  _mipmapGeneratorDevice = device;
+  return _mipmapGenerator;
+}
+
+// `Math.floor(Math.log2(maxDim)) + 1` mip levels — same convention as
+// the cubemap loader and WebGL's `gl.generateMipmap`. A 256×256 imagery
+// tile gets 9 mip levels (256, 128, 64, 32, 16, 8, 4, 2, 1). Without
+// mipmaps the GPU point-samples Level-0 at orbital altitudes where one
+// fragment covers many texels, producing severe aliasing AND a
+// brightness drop because the alias pattern under-samples bright
+// pixels. Batch 57 — root cause of the WebGPU/WebGL brightness gap.
+function mipLevelCountFor(width: number, height: number): number {
+  return Math.floor(Math.log2(Math.max(width, height))) + 1;
+}
 
 /**
  * The renderer surface the texture-cache helpers reach into.
@@ -157,6 +184,32 @@ export function uploadImageSource(
   try {
     let width: number, height: number;
     let gpuSource: ImageBitmap | HTMLImageElement | HTMLCanvasElement;
+    // Batch 60 — `needsFlipY` controls the `flipY` option on
+    // `copyExternalImageToTexture`. The WGSL globe-FS samples imagery
+    // textures at `(u, geoUV.y)` where `geoUV.y = 0` is the tile's SOUTH
+    // edge (the WebGL V=0=south convention preserved through the shared
+    // terrain mesh). For the texture to honor that convention, the
+    // top-of-source-image must end up at V=1 (south of image-content =
+    // north geographically).
+    //
+    // The standard Cesium imagery providers route through
+    // `Resource.fetchImage({ flipY: true })`, which decodes via
+    // `createImageBitmap(blob, { imageOrientation: "flipY" })`. Those
+    // ImageBitmaps arrive PRE-FLIPPED — `flipY: false` at upload is
+    // correct.
+    //
+    // Custom providers (notably `TileCoordinatesImageryProvider` and
+    // our fork-added `DebugTileImageryProvider`) return a raw
+    // `HTMLCanvasElement` drawn top-down without any flip. For those
+    // the upload needs `flipY: true` so the canvas's row 0 lands at the
+    // texture's V=1 row — matching what the globe FS expects. Without
+    // this, the canvas content renders upside-down (Batch 60 user-
+    // observed symptom on the `DebugTileImageryProvider` overlay).
+    //
+    // `HTMLImageElement` sources are uncommon (most providers prefer
+    // ImageBitmaps); when they appear they're typically NOT pre-flipped
+    // either, so they get the same treatment as raw canvases.
+    let needsFlipY = false;
     if (source instanceof ImageBitmap) {
       width = source.width;
       height = source.height;
@@ -175,20 +228,34 @@ export function uploadImageSource(
       width = source.naturalWidth || source.width;
       height = source.naturalHeight || source.height;
       gpuSource = source;
+      needsFlipY = true;
     } else if (source instanceof HTMLCanvasElement) {
       width = source.width;
       height = source.height;
       gpuSource = source;
+      needsFlipY = true;
     } else {
       return null;
     }
 
     if (width === 0 || height === 0) return null;
 
+    // Batch 57 — allocate with full mipmap chain. WebGL's imagery upload
+    // path calls `gl.generateMipmap` after `texImage2D`, producing 9 mip
+    // levels for a 256×256 tile. WebGPU has no equivalent so we have to
+    // build the chain explicitly via `WebGPUMipmapGenerator`. Without
+    // this the GPU point-samples Level-0 at orbital altitudes (one
+    // fragment covers many texels) which produces severe aliasing AND a
+    // brightness drop — the alias pattern under-samples bright pixels,
+    // dropping mean radiance by ~4x at 20Mm altitude relative to
+    // WebGL's properly-mipmapped sampling. See
+    // `migration_doc/WEBGPU_DEBUGGING_LOG.md` Batch 57.
+    const mipLevelCount = mipLevelCountFor(width, height);
     const texture = device.createTexture({
       label: `Globe ${cacheKey}`,
       size: [width, height],
       format: "rgba8unorm",
+      mipLevelCount,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
@@ -204,10 +271,21 @@ export function uploadImageSource(
     // mapping that may convert the source. Explicit srgb→srgb is a safe
     // identity copy on every display.
     device.queue.copyExternalImageToTexture(
-      { source: gpuSource },
+      { source: gpuSource, flipY: needsFlipY },
       { texture, colorSpace: "srgb" },
       [width, height],
     );
+
+    // Generate mipmap chain via blit pipeline. The generator runs a
+    // fullscreen-triangle render pass from mip N to mip N+1 for each
+    // level, using a linear sampler. Equivalent to gl.generateMipmap.
+    if (mipLevelCount > 1) {
+      ensureMipmapGenerator(device).generateMipmapsAndSubmit(
+        texture,
+        "rgba8unorm",
+        mipLevelCount,
+      );
+    }
 
     const view = texture.createView();
     cache.set(cacheKey, {

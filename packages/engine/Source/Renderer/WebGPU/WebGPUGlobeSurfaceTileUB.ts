@@ -79,6 +79,7 @@ import {
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
 import { writeUniformSlice } from "./WebGPUGlobeSurfaceCameraUB.js";
+import { getActiveDebugSentinel } from "./WebGPUGlobeFragmentDebug.js";
 
 /**
  * The renderer surface the tile-UB packer reaches into.
@@ -576,21 +577,33 @@ export function createTileUniformBuffer(
   // useWebMercatorTLayer[4] vec4 array also set during layer iteration.
 
   // ─── Flags (vec4) ───
+  // Batch 58 — `flags.x` controls whether the WGSL `computeEnhancedOcean`
+  // path runs for ocean fragments. WebGL gates the equivalent
+  // `computeWaterColor` on the `SHOW_REFLECTIVE_OCEAN` shader define,
+  // which is only emitted when BOTH:
+  //   1. the terrain provider supplies a water mask (`hasWaterMask`)
+  //   2. the user enabled water rendering (`globe.showWaterEffect`,
+  //      default FALSE)
+  // Previously the WGSL only checked condition 1, so every ocean
+  // fragment ran the enhanced shader (which blends 40% imagery + 60%
+  // deep color, dimming the satellite Bing aerial by ~5×). That was
+  // the dominant source of the WebGPU/WebGL brightness gap at
+  // mid/orbit distances over ocean.
   const hasWaterMask =
     !isSubsequentPass &&
     tileProvider &&
     tileProvider.hasWaterMask &&
     surfaceTile.waterMaskTexture !== undefined;
+  const showReflectiveOcean =
+    hasWaterMask && tileProvider.showWaterEffect === true;
   const enableClipping =
     tileProvider &&
     tileProvider.cartographicLimitRectangle &&
     tileProvider.cartographicLimitRectangle.width < Math.PI * 2 - 0.001;
   const showOceanWaves =
-    hasWaterMask &&
-    tileProvider.showWaterEffect &&
-    tileProvider.oceanNormalMap !== undefined;
+    showReflectiveOcean && tileProvider.oceanNormalMap !== undefined;
 
-  data[FLAGS_OFFSET + 0] = hasWaterMask ? 1.0 : 0.0;
+  data[FLAGS_OFFSET + 0] = showReflectiveOcean ? 1.0 : 0.0;
   data[FLAGS_OFFSET + 1] = enableClipping ? 1.0 : 0.0;
   data[FLAGS_OFFSET + 2] = showOceanWaves ? 1.0 : 0.0;
   data[FLAGS_OFFSET + 3] = isSubsequentPass ? 1.0 : 0.0;
@@ -623,6 +636,19 @@ export function createTileUniformBuffer(
     waveTime = secs % 1000000.0;
   }
   data[TIME_OFFSET] = waveTime;
+  //>>includeStart('debug', pragmas.debug);
+  // Batch 56 diagnostic — `CesiumDebug.globeFragmentDebug(name)` (or
+  // setting `globalThis._webgpuGlobeDebugMode` directly) writes one of
+  // the sentinel values from `GLOBE_FRAGMENT_DEBUG_MODES`. The WGSL
+  // `fragmentMain` reads `tile.time` and short-circuits to a debug
+  // visualization when it crosses 1e9. Registry lives in
+  // `WebGPUGlobeFragmentDebug.ts` — add new modes there, then add the
+  // matching WGSL branch in `GlobeTerrain.wgsl::fragmentMain`.
+  const debugSentinel = getActiveDebugSentinel();
+  if (debugSentinel !== null) {
+    data[TIME_OFFSET] = debugSentinel;
+  }
+  //>>includeEnd('debug');
   // OPEN-5 fix: fogVisualDensityScalar — matches WebGL's
   // `czm_fogVisualDensityScalar` auto-uniform (default 0.15 from
   // UniformState). Without this the fog formula is ~6.7x stronger than

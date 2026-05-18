@@ -26,6 +26,32 @@
       }
     },
     {
+      "name": "wgs84-orbit",
+      "description": "Batch 56 regression coverage — WGS84 EllipsoidTerrainProvider + default Bing aerial at orbit altitude. Before Batch 56 this rendered as black wedges with a mesh-pattern artifact (per-vertex ground atmosphere math). The scene's `setupFile` swaps both viewers to WGS84, then waits for settle. Camera at 20 Mm over North America.",
+      "setupFile": "scenes/wgs84-setup.js",
+      "camera": {
+        "destination": [-100, 40, 20000000],
+        "orientation": { "heading": 0, "pitch": -1.5707963267948966, "roll": 0 }
+      }
+    },
+    {
+      "name": "wgs84-close",
+      "description": "Batch 56 close-zoom regression coverage — WGS84 EllipsoidTerrainProvider at 1 Mm altitude (within the per-vertex regime). Verifies we didn't regress close-zoom by making ground atmosphere unconditionally per-fragment.",
+      "setupFile": "scenes/wgs84-setup.js",
+      "camera": {
+        "destination": [-100, 40, 1000000],
+        "orientation": { "heading": 0, "pitch": -1.5707963267948966, "roll": 0 }
+      }
+    },
+    {
+      "name": "mid-distance-12mm",
+      "description": "Mid-distance coverage at 12 Mm altitude — sits inside the lightingFade ramp where the per-fragment drape is most visible. Uses the default Cesium terrain provider (not WGS84). Catches drape brightness regressions that close-zoom and full-orbit probes can miss.",
+      "camera": {
+        "destination": [-100, 40, 12000000],
+        "orientation": { "heading": 0, "pitch": -1.5707963267948966, "roll": 0 }
+      }
+    },
+    {
       "name": "high-density-5k-spheres",
       "description": "Batch 224 (NEW-VR-BASELINE-HIGH-DENSITY) — procedurally generated 5K-sphere instance scene that crosses the gpuCuller activation threshold (HI=384) and HiZ threshold (HI=2400). Verifies that the threshold-gated dispatchers introduced in Batches 209-218 produce visually identical output to the unmodified WebGL pipeline. Uses Scene.gpuCullingHint = 'always' on WebGPU so the eager warm-up amortizes pipeline-compile cost into the load frame instead of the first-cross frame.",
       "setupParams": {

@@ -56,6 +56,25 @@ async function capture(rendererArg, scenarioLabel) {
         destination: C.Cartesian3.fromDegrees(-100, 40, 1000000), // 1Mm altitude
       });
     }
+    // UV-debug mode for diagnostic runs
+    if (label.includes("uvdbg")) {
+      window._webgpuGlobeUVDebug = true;
+    }
+    if (label.includes("alphadbg")) {
+      window._webgpuGlobeAlphaDebug = true;
+    }
+    if (label.includes("lcdbg")) {
+      window._webgpuGlobeLayerCountDebug = true;
+    }
+    if (label.includes("sample0dbg")) {
+      window._webgpuGlobeSample0Debug = true;
+    }
+    if (label.includes("sample1dbg")) {
+      window._webgpuGlobeSample1Debug = true;
+    }
+    if (label.includes("texalphadbg")) {
+      window._webgpuGlobeTexAlphaDebug = true;
+    }
     // Extended settle for orbit (level-0 tiles take longer to reproject)
     const renderLoops = label.includes("orbit") ? 1200 : 360;
     for (let i = 0; i < renderLoops; i++) {
@@ -109,15 +128,64 @@ async function capture(rendererArg, scenarioLabel) {
         const buckets = {};
         let withImagery = 0;
         let withoutImagery = 0;
+        // Also: capture whether readyImagery is the SAME tile's loadingImagery
+        // or whether it's a different (parent) imagery
+        let parentImageryCount = 0;
+        let selfImageryCount = 0;
         for (const tile of tiles) {
           const ti = tile?.data?.imagery?.[0];
           if (!ti) { withoutImagery++; continue; }
           withImagery++;
           const ri2 = ti.readyImagery;
-          const key = `useMercT=${ti.useWebMercatorT}|reproj=${!!ri2?._webgpuReprojectedTexture}|riReady=${ri2?.state === 8}`;
+          const li2 = ti.loadingImagery;
+          if (ri2 && li2 && ri2 !== li2) parentImageryCount++;
+          else if (ri2 === li2) selfImageryCount++;
+          const key = `useMercT=${ti.useWebMercatorT}|reproj=${!!ri2?._webgpuReprojectedTexture}|riReady=${ri2?.state === 8}|isParent=${ri2 && li2 && ri2 !== li2}`;
           buckets[key] = (buckets[key] || 0) + 1;
         }
-        return { total: tiles.length, withImagery, withoutImagery, buckets };
+        return { total: tiles.length, withImagery, withoutImagery, parentImageryCount, selfImageryCount, buckets };
+      })(),
+      // First tile's parent vs self imagery levels
+      sampleParentInfo: (() => {
+        const t = v.scene._globe?._surface?._tilesToRender?.[0];
+        const ti = t?.data?.imagery?.[0];
+        if (!ti) return null;
+        return {
+          tileLevel: t?.level,
+          tileXY: t ? `${t.x},${t.y}` : null,
+          readyLevel: ti.readyImagery?.level,
+          readyXY: ti.readyImagery ? `${ti.readyImagery.x},${ti.readyImagery.y}` : null,
+          loadingLevel: ti.loadingImagery?.level,
+          loadingXY: ti.loadingImagery ? `${ti.loadingImagery.x},${ti.loadingImagery.y}` : null,
+          loadingState: ti.loadingImagery?.state,
+          readyState: ti.readyImagery?.state,
+          // ImageryState.READY = 4 (NOT 8 - earlier check was wrong)
+          readyIsActuallyReady: ti.readyImagery?.state === 4,
+          isReadyTheParent: !!(ti.readyImagery && ti.loadingImagery && ti.readyImagery !== ti.loadingImagery),
+          // Probe reprojected texture dimensions
+          reprojWidth: ti.readyImagery?._webgpuReprojectedTexture?.width,
+          reprojHeight: ti.readyImagery?._webgpuReprojectedTexture?.height,
+          reprojFormat: ti.readyImagery?._webgpuReprojectedTexture?.format,
+          sourceWidth: ti.readyImagery?.image?.width || ti.readyImagery?.image?.naturalWidth,
+          sourceHeight: ti.readyImagery?.image?.height || ti.readyImagery?.image?.naturalHeight,
+          // ACTUAL rectangle values to verify units
+          tileRect: t?.rectangle ? `[${t.rectangle.west.toFixed(4)},${t.rectangle.south.toFixed(4)},${t.rectangle.east.toFixed(4)},${t.rectangle.north.toFixed(4)}]` : null,
+          imageryRect: ti.readyImagery?.rectangle ? `[${ti.readyImagery.rectangle.west.toFixed(4)},${ti.readyImagery.rectangle.south.toFixed(4)},${ti.readyImagery.rectangle.east.toFixed(4)},${ti.readyImagery.rectangle.north.toFixed(4)}]` : null,
+          // CACHED textureCoordinateRectangle (what WebGL uses)
+          cachedTexCoordsRect: ti.textureCoordinateRectangle ? `[${ti.textureCoordinateRectangle.x.toFixed(4)},${ti.textureCoordinateRectangle.y.toFixed(4)},${ti.textureCoordinateRectangle.z.toFixed(4)},${ti.textureCoordinateRectangle.w.toFixed(4)}]` : null,
+          cachedTranslationAndScale: ti.textureTranslationAndScale ? `[${ti.textureTranslationAndScale.x.toFixed(4)},${ti.textureTranslationAndScale.y.toFixed(4)},${ti.textureTranslationAndScale.z.toFixed(4)},${ti.textureTranslationAndScale.w.toFixed(4)}]` : null,
+          imageryCountOnTile: t?.data?.imagery?.length,
+          allImageryRects: t?.data?.imagery?.map((ti2) => {
+            const ri3 = ti2.readyImagery;
+            return {
+              rect: ri3?.rectangle ? `[${ri3.rectangle.south.toFixed(3)},${ri3.rectangle.north.toFixed(3)}]` : null,
+              texCoordsRect: ti2.textureCoordinateRectangle ? `[${ti2.textureCoordinateRectangle.y.toFixed(3)},${ti2.textureCoordinateRectangle.w.toFixed(3)}]` : null,
+              useMercT: ti2.useWebMercatorT,
+              hasReproj: !!ri3?._webgpuReprojectedTexture,
+              level: ri3?.level,
+            };
+          }),
+        };
       })(),
     };
   });
@@ -139,10 +207,24 @@ async function capture(rendererArg, scenarioLabel) {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
   console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (orbit)`);
   await capture("webgpu", "orbit");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (orbit-uvdbg)`);
+  await capture("webgpu", "orbit-uvdbg");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (orbit-alphadbg)`);
+  await capture("webgpu", "orbit-alphadbg");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (orbit-lcdbg)`);
+  await capture("webgpu", "orbit-lcdbg");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (orbit-sample0dbg)`);
+  await capture("webgpu", "orbit-sample0dbg");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (orbit-sample1dbg)`);
+  await capture("webgpu", "orbit-sample1dbg");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (orbit-texalphadbg)`);
+  await capture("webgpu", "orbit-texalphadbg");
   console.log(`[probe-wgs84] WebGL + WGS84 ellipsoid (orbit)`);
   await capture("webgl", "orbit");
   console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (close 1Mm)`);
   await capture("webgpu", "close");
+  console.log(`[probe-wgs84] WebGPU + WGS84 ellipsoid (close-uvdbg)`);
+  await capture("webgpu", "close-uvdbg");
   console.log(`[probe-wgs84] WebGL + WGS84 ellipsoid (close 1Mm)`);
   await capture("webgl", "close");
   console.log(`[probe-wgs84] done`);

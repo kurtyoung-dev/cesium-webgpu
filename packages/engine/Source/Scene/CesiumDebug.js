@@ -82,8 +82,64 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.cpuPassCost(t/f)  — CPU per-pass cost (R-7a) ║
 ║  CesiumDebug.gpuPassCost()     — GPU per-pass cost (timestamp) ║
 ║  CesiumDebug.highDensityCull() — gpuCuller/HiZ/sort-keys stats ║
+║  CesiumDebug.globeFragmentDebug(name) — visualize FS stages ║
+║  CesiumDebug.globeFragmentDebug()        — list available modes ║
 ╚══════════════════════════════════════════════════════╝
       `);
+    },
+
+    /**
+     * Override globe-tile `fragmentMain` to return a visualization of one
+     * intermediate value (UVs, texCoordsMask, per-layer alpha, drape inputs,
+     * etc.). Useful for narrowing down per-tile rendering bugs without
+     * recompiling — flip a mode, reload your scene, take a screenshot,
+     * flip another.
+     *
+     * Usage:
+     *   CesiumDebug.globeFragmentDebug()             — list modes (no-op)
+     *   CesiumDebug.globeFragmentDebug("uv")         — show vertex UVs
+     *   CesiumDebug.globeFragmentDebug("post-composite-color")
+     *                                                — show imagery before drape
+     *   CesiumDebug.globeFragmentDebug(null)         — disable
+     *
+     * Pragma-stripped from production builds (the tile-UB writer that
+     * picks up the mode lives inside `//>>includeStart('debug')`). Set
+     * mode persists across `scene.requestRender()` calls.
+     */
+    globeFragmentDebug(name) {
+      // Importing here keeps the helper out of the cold path; the registry
+      // module is tiny (~150 lines, no side effects at load) so a sync
+      // require would also be fine.
+      const registry = (globalThis.__webgpuGlobeFragmentDebugRegistry =
+        globalThis.__webgpuGlobeFragmentDebugRegistry || null);
+      if (name === undefined) {
+        // List modes. Pulled from the registry global the renderer
+        // populates at init; if the renderer hasn't run yet, fall back
+        // to a clear "no modes available" hint.
+        if (!registry || registry.length === 0) {
+          console.log(
+            "[CesiumDebug] globeFragmentDebug: registry not yet populated " +
+              "(render at least one frame first). After that, this command " +
+              "lists every available mode.",
+          );
+          return;
+        }
+        console.log("[CesiumDebug] globeFragmentDebug modes:");
+        for (const m of registry) {
+          console.log(`  ${m.name.padEnd(24)} ${m.description}`);
+        }
+        return;
+      }
+      globalThis._webgpuGlobeDebugMode = name || null;
+      if (name) {
+        console.log(
+          `[CesiumDebug] globeFragmentDebug set to '${name}'. ` +
+            `Call CesiumDebug.globeFragmentDebug(null) to clear.`,
+        );
+      } else {
+        console.log("[CesiumDebug] globeFragmentDebug cleared.");
+      }
+      scene.requestRender();
     },
 
     /**
@@ -489,6 +545,61 @@ function installCesiumDebug(viewer) {
       scene.requestRender();
       console.log(
         "[CesiumDebug] Imagery probe armed — next 4 tile updates will dump to console",
+      );
+    },
+
+    /**
+     * Install (or remove) the {@link DebugTileImageryProvider} overlay.
+     *
+     * Each visible tile gets a rich label: L/X/Y, projection class,
+     * tile rectangle (lat/lon corners in degrees), and a red border on
+     * tiles that straddle the Web Mercator ±85.0511° limit (the
+     * polar-reprojection tiles per `IMAGERY_PROJECTION.md` Path B).
+     *
+     * Usage:
+     *   CesiumDebug.tileDebugOverlay();                     // install with defaults
+     *   CesiumDebug.tileDebugOverlay({ colorByLevel: true }); // tint by LOD
+     *   CesiumDebug.tileDebugOverlay(null);                 // remove
+     *
+     * @param {object|null} [options] Constructor options forwarded to
+     *   `DebugTileImageryProvider`, or `null` to remove the overlay.
+     */
+    tileDebugOverlay(options) {
+      // Look up the previously installed overlay (if any) so we can
+      // remove + re-add it idempotently. Stash the layer reference
+      // on the scene so repeated calls don't pile up overlays.
+      const tag = "_cesiumDebugTileOverlayLayer";
+      const existing = scene[tag];
+      if (existing) {
+        scene.imageryLayers.remove(existing, true);
+        scene[tag] = undefined;
+      }
+      if (options === null) {
+        console.log("[CesiumDebug] tile-debug overlay removed");
+        scene.requestRender();
+        return;
+      }
+      // Dynamic import — the provider is in the engine package and is
+      // exposed on `window.Cesium` once the dev viewer has loaded.
+      const Ctor = (
+        globalThis.Cesium ?? globalThis.viewer?.cesiumElement?.cesium
+      )?.DebugTileImageryProvider;
+      if (!Ctor) {
+        console.warn(
+          "[CesiumDebug] DebugTileImageryProvider not found on global Cesium; " +
+            "build may not have it exported, or call this from a context " +
+            "where Cesium is loaded.",
+        );
+        return;
+      }
+      const layer = scene.imageryLayers.addImageryProvider(
+        new Ctor(options ?? {}),
+      );
+      scene[tag] = layer;
+      scene.requestRender();
+      console.log(
+        "[CesiumDebug] tile-debug overlay installed. " +
+          "Call CesiumDebug.tileDebugOverlay(null) to remove.",
       );
     },
 
