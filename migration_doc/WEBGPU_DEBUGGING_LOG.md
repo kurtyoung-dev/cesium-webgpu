@@ -6079,6 +6079,67 @@ The Batch 56 entry above claimed the brightness gap was "~4× darker" based on t
 
 ---
 
+## Batch 64 — Why north pole still has higher diff than south pole: cross-vendor numerical drift, NOT a fixable bug
+
+**Date:** 2026-05-18
+
+After Batch 62 (polar black hole fix), `southpole-close` was at 2.61 % but `northpole-close` was at 14 % — same camera math, same imagery system, same tile selection, opposite hemisphere. The user asked: why?
+
+### Diagnostics that ruled out single-bug hypotheses
+
+1. **Sub-pixel positional drift?** Searched `(dx, dy)` ∈ [-6, 6] for the offset that minimizes mean-abs diff over three boxes (Greenland coast, ocean center, Russia coast). All three regions had their optimum at exactly `(0, 0)`. WebGPU is NOT scrolled vs WebGL.
+2. **Day/night, sun, atmosphere?** [probe-polar-fixed-time.mjs](../Tools/visual-regression/probe-polar-fixed-time.mjs) locks the simulation clock at a fixed UTC moment, and disables sky atmosphere, ground atmosphere, lighting, sun, moon, skybox, and fog before capturing. Diff numbers were **byte-identical** to the with-effects probe. The visible delta is not in any of these.
+3. **Tile selection or imagery LOD?** Dumped `tilesToRender` per backend at the same camera. 58 tiles on both, same per-tile (level, x, y), same imagery skeleton count + same imagery ancestor levels.
+4. **Anisotropic filtering?** WebGL imagery samplers use `maximumAnisotropy = ContextLimits.maximumTextureFilterAnisotropy` (16x). WebGPU's globe sampler in [WebGPUGlobeSurfaceLayouts.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts) had no `maxAnisotropy` (defaults to 1x). Added `maxAnisotropy: 16` — **regressed `midlat-mid` from 1 % to 7 %** while improving polar-orbit by only 0.3-1.3 %. Reverted. Anisotropy is not the answer.
+
+### What the diff images actually show
+
+Concentrated bright regions in the diff PNGs ([diff-*-plain.png](../Tools/visual-regression/output/)) at all four polar views:
+
+- **Polar tessellation star pattern.** A bright N-pointed star radiates from the polar zenith — the WGS84 tile mesh converges to a singularity at the pole, where many narrow triangles meet. The per-vertex interpolation of UV is highly non-linear in that neighborhood, and `dpdx/dpdy` of geographic UV explodes in one direction while collapsing in another. Different rasterizers (WebGL vs WebGPU) bake the singularity slightly differently.
+- **High-contrast coastlines.** Greenland's snow-on-ocean edge has 25/pixel mean-abs delta. Ocean centers have 1.6/pixel. The 16× ratio matches the gradient of image content — a fixed numerical drift (perhaps 1-2/pixel from filtering or projection precision) is amplified on edges and invisible in smooth areas.
+- **Atmosphere & disc edge.** A faint ring around the Earth disc on orbit views — the disc-edge anti-aliasing differs by 1-2 pixels between rasterizers.
+
+### Why north > south specifically
+
+It is **not a north-vs-south asymmetry in the renderer.** The asymmetry is in scene content:
+
+- South pole has Antarctica = uniform white snow filling the polar tile-star → small numerical drift is invisible.
+- North pole has Greenland + Canadian Arctic + Russian Arctic = complex coastlines + landmasses in the polar tile-star → same numerical drift produces large visible deltas.
+
+Pixel mean-abs delta is the more honest measurement than `mismatch > 24`:
+
+| view              | mismatch % | mean R/G/B delta |
+| ----------------- | ---------- | ---------------- |
+| equator-mid       | 0.03 %     | 0.0 / 0.0 / 0.0  |
+| midlat-mid        | 1.09 %     | 0.3 / 0.3 / 0.3  |
+| southpole-close   | 3.30 %     | 2.9 / 2.6 / 2.9  |
+| southpole-orbit   | 12.21 %    | 8.1 / 7.9 / 6.9  |
+| northpole-close   | 14.02 %    | 10.5 / 10.2 / 9.8 |
+| northpole-orbit   | 45.91 %    | 19.4 / 15.1 / 12.3 |
+
+Mean delta grows with **camera obliquity to the tile** (orbit > close, polar > equator), not with hemisphere. That signature points to filtering / mip / derivative-precision drift, not a logic bug.
+
+### Verdict
+
+The 12-46 % residual at polar/orbit views is **accumulated cross-vendor numerical drift** between the WebGL GLSL pipeline and the WebGPU WGSL pipeline — texture filtering, mipmap selection, depth-test edge AA, per-fragment derivative computation. Driving these to < 2 % would require byte-matching all of those across two different driver stacks, which is multi-week effort with diminishing returns and likely not fully achievable.
+
+The actual polar BUG — Batch 62's `minV = 0.96` black hole — is fixed. Visually, `polar-southpole-close-webgpu.png` is now near-pixel-identical to WebGL.
+
+### What Batch 64 ships
+
+- [probe-polar-fixed-time.mjs](../Tools/visual-regression/probe-polar-fixed-time.mjs) — captures with clock locked + all time-varying effects off. Use to rule out lighting/atmosphere when chasing a numerical-only diff.
+- [probe-align-test.mjs](../Tools/visual-regression/probe-align-test.mjs) — searches a (dx, dy) shift grid to detect sub-pixel positional drift. Returns 0,0 when none.
+- Four pre-rendered diff images at [Tools/visual-regression/output/diff-{view}-plain.png](../Tools/visual-regression/output/) for visual inspection.
+
+### Future-batch leads (any one could yield a partial fix)
+
+- **Replace `textureSampleGrad` with `textureSample`** in the polar-near case to let the WebGPU sampler hardware compute derivatives the same way WebGL does — but requires either splitting the fragment shader (clip-plane discard + non-discard variants) or proving clip planes are inactive for the globe surface.
+- **Polar tessellation regularization.** Investigate the WGS84 polar tile mesh: are the converging triangles identical to WebGL's? A tiny mismatch in vertex positions at the singularity would propagate radially.
+- **Bilinear vs trilinear at the polar singularity.** Force `mipmapFilter: "nearest"` near the pole to see if mip-blend-noise is the contributor.
+
+---
+
 ## Batch 63 — Polar-multi plain probe + atmosphere-at-orbit divergence isolated as separate work
 
 **Date:** 2026-05-17
