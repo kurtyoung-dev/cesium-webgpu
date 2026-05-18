@@ -6079,6 +6079,46 @@ The Batch 56 entry above claimed the brightness gap was "~4× darker" based on t
 
 ---
 
+## Batch 63 — Polar-multi plain probe + atmosphere-at-orbit divergence isolated as separate work
+
+**Date:** 2026-05-17
+
+After Batch 62's polar-black-hole fix landed, ran [probe-polar-multi-plain.mjs](../Tools/visual-regression/probe-polar-multi-plain.mjs) — a copy of `polar-multi-angle` WITHOUT the `DebugTileImageryProvider` overlay — to measure imagery-only diff (the overlay added 11-23 % to every polar view because its tile-grid lines don't align perfectly between backends).
+
+Plain (no-overlay) results vs the with-overlay numbers from `probe-polar-diff-all`:
+
+| view              | with overlay | plain  | gate   |
+| ----------------- | ------------ | ------ | ------ |
+| equator-mid       | 0.08 %       | 0.03 % | PASS   |
+| midlat-mid        | 1.06 %       | 1.09 % | PASS   |
+| southpole-close   | 16.15 %      | 2.61 % | NEAR   |
+| southpole-orbit   | 15.02 %      | 13.46% | open   |
+| northpole-close   | 21.55 %      | 14.02% | open   |
+| northpole-orbit   | 61.69 %      | 38.29% | open   |
+
+The polar BLACK HOLE itself is gone (Batch 62). The plain-probe residual at northpole-orbit / southpole-orbit (~38 % / ~13 %) is a SEPARATE issue: at lat=±80°, alt=12 Mm:
+
+- Camera state is **byte-identical** on both backends (position, direction, up, fovy, aspectRatio, near, far all match — verified via `viewer.camera` inspection).
+- `skyBox.show`, `skyAtmosphere.show`, all hue/sat/brightness shifts, ground atmosphere flags — **all match**.
+- Yet WebGPU's atmosphere extends much further past the Earth disc and is more saturated; WebGL's atmosphere is a thin halo with crisp black space corners.
+- With `skyAtmosphere.show = false` AND `globe.showGroundAtmosphere = false`, WebGPU still has slightly different Earth-disc framing — the sample box (avoiding UI chrome) shows 92 % earth on WebGL vs 82 % on WebGPU.
+
+This is the **sky atmosphere shader at orbit altitudes** + a possible **secondary projection / scale difference** at altitudes > 10 Mm. Both need their own investigation:
+
+- The atmosphere extent likely traces to the per-fragment ground-atmosphere ray-march fix that landed in Batch 56 — at the close-camera (3 Mm) path the per-fragment version matches WebGL, but at orbit altitudes the scattering coefficients / phase-function blend produces a brighter result. Probable suspects: `computeAtmosphereScatteringGround` constants, the `fadeAmount` distance roll-off, or the sky-atmosphere `outerRadius` constant.
+- The Earth-disc size with atmosphere disabled hints at a projection-matrix precision issue at large camera positions (camera ~ 18 Mm from Earth center). RTE encoding splits camera into `high` + `low`; if `low` is non-zero unexpectedly, the projected size could shift.
+
+### What Batch 63 ships
+
+- [probe-polar-multi-plain.mjs](../Tools/visual-regression/probe-polar-multi-plain.mjs) — clean per-view diff without DebugTileImageryProvider noise. Use this as the gating regression number going forward; the overlay variant is for visual tile-correspondence inspection only.
+
+### Deferred to Batch 64+
+
+- Investigate sky-atmosphere brightness at orbit altitudes (the 38 % northpole-orbit residual). Probe: capture WebGL vs WebGPU at lat=80°/alt=12 Mm with sky atmosphere only, then ground atmosphere only, then both off, to isolate which contributes.
+- Investigate Earth disc size with all atmosphere disabled (~10 % size diff at orbit). Probe: dump the projection matrix elements and the post-RTE camera offset on both backends at the same view.
+
+---
+
 ## Batch 62 — Polar black-hole ROOT CAUSE: WebGPU recalc clobbered base-layer minV=0 fixup
 
 **Date:** 2026-05-17
