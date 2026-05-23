@@ -193,6 +193,7 @@ import {
   destroyWebGPUImageryReprojectionResources,
   reprojectWebMercatorWebGPU,
   reprojectImageSourceWebGPU,
+  uploadAndReprojectMercatorImage,
 } from "./WebGPUImageryReprojection.js";
 
 // ── Atmosphere ──
@@ -656,6 +657,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     destroy: destroyWebGPUImageryReprojectionResources,
     reproject: reprojectWebMercatorWebGPU,
     reprojectFromImage: reprojectImageSourceWebGPU,
+    uploadAndReproject: uploadAndReprojectMercatorImage,
   });
 
   // ── Atmosphere ──

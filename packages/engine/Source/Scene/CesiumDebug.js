@@ -67,6 +67,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.help()            — this help           ║
 ║  CesiumDebug.snapshot()        — full debug snapshot  ║
 ║  CesiumDebug.showDepth()       — depth buffer viz     ║
+║  CesiumDebug.showGBufferNormals() — G-buffer normal viz ║
 ║  CesiumDebug.hideDepth()       — restore normal       ║
 ║  CesiumDebug.showWireframe()   — globe wireframe      ║
 ║  CesiumDebug.hideWireframe()   — hide wireframe       ║
@@ -194,6 +195,40 @@ function installCesiumDebug(viewer) {
       }
       scene.requestRender();
       console.log("[CesiumDebug] Depth buffer visualization OFF");
+    },
+
+    /**
+     * Phase 8a Slice 2c (Batch 89) — visualize the G-buffer normal
+     * texture as a fullscreen overlay. Surface normals are mapped
+     * `(n + 1) * 0.5` to RGB so the standard normal-map color
+     * convention applies: +X right is red, +Y up is green, +Z toward
+     * camera is blue. Magenta pixels are sentinels (sky, depth-clear,
+     * or high-gradient samples where the producer couldn't safely
+     * reconstruct a normal).
+     *
+     * Auto-enables `scene.deferredLighting` so the G-buffer producer
+     * actually runs this frame. WebGPU-only — no-op on WebGL.
+     */
+    showGBufferNormals() {
+      clearAllOverlays();
+      scene.deferredLighting = true;
+      scene.debugShowGBufferNormals = true;
+      scene.requestRender();
+      console.log(
+        "[CesiumDebug] G-buffer normal visualization ON. Call CesiumDebug.hideGBufferNormals() to restore.",
+      );
+    },
+
+    /**
+     * Restore normal rendering from G-buffer normal viz. Leaves
+     * `scene.deferredLighting` on so consumers (SSAO/SSR) continue
+     * reading the G-buffer; call `scene.deferredLighting = false`
+     * manually to fully disable the producer.
+     */
+    hideGBufferNormals() {
+      scene.debugShowGBufferNormals = false;
+      scene.requestRender();
+      console.log("[CesiumDebug] G-buffer normal visualization OFF");
     },
 
     /**

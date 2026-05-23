@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Dual-light atmospheric scattering — the WebGPU sky atmosphere shader samples a SECOND inscatter LUT for the moon in addition to the sun, scaled by moon-phase fraction. Toggle dual-light + moon intensity to see the moon contribution at night-side viewpoints."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, Atmosphere" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Dual-Light Atmosphere demo.
+
+    Demonstrates `scene.globe.atmosphericConditions.lighting.enableDualLightAtmosphere`
+    + `.moonIntensity` — the WebGPU sky-atmosphere shader samples TWO
+    precomputed inscatter LUTs (one for the sun direction, one for the
+    moon direction baked separately per `WebGPUPerformanceManager`).
+    The moon term is scaled linearly by the moon's phase fraction
+    (0 = new moon → no contribution, 1 = full moon → maximum
+    contribution) × the `moonIntensity` knob.
+
+    No WebGL implementation exists for this effect — WebGL's sky
+    atmosphere only knows about a single light direction. Phase 1.3c
+    of the WebGPU fork added the dual-LUT bake + the
+    sampleScatteringLut moon overload.
+
+    To see the effect at its strongest, position the camera so the
+    moon is above the horizon AND the sun is below — the night-side
+    of the atmosphere picks up the moon's blue scattered glow when
+    dual-light is ON, and stays pitch-black when it's OFF.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Dual-light atmosphere</td>
+            <td>
+              <input type="checkbox" data-bind="checked: dualLightEnabled" />
+            </td>
+          </tr>
+          <tr>
+            <td>Moon intensity</td>
+            <td>
+              <input
+                type="range"
+                min="0.0"
+                max="0.3"
+                step="0.005"
+                data-bind="value: moonIntensity, valueUpdate: 'input'"
+              />
+              <span data-bind="text: moonIntensity"></span>
+            </td>
+          </tr>
+          <tr>
+            <td>Time of day (UTC hour)</td>
+            <td>
+              <input
+                type="range"
+                min="0"
+                max="24"
+                step="0.25"
+                data-bind="value: hourUtc, valueUpdate: 'input'"
+              />
+              <span data-bind="text: hourUtc"></span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        // Force WebGPU — dual-light atmospheric scattering is a
+        // WebGPU-only effect. WebGL's sky-atmosphere shader only
+        // supports a single light direction.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+
+        const scene = viewer.scene;
+        const globe = scene.globe;
+
+        // Show the sky atmosphere + globe atmospheric conditions. The
+        // moon needs to be visible for dual-light to do anything; the
+        // viewer enables sky+moon by default but we make it explicit.
+        scene.skyAtmosphere.show = true;
+        scene.moon.show = true;
+        scene.sun.show = true;
+
+        const viewModel = {
+          dualLightEnabled: true,
+          moonIntensity: 0.05,
+          hourUtc: 22, // Pre-midnight UTC over the Atlantic — moon up,
+          // sun on the opposite side of the Earth from the
+          // camera. Best demonstration of the effect.
+        };
+
+        function applyConfig() {
+          const ac = globe.atmosphericConditions;
+          ac.lighting.enableDualLightAtmosphere = Boolean(viewModel.dualLightEnabled);
+          ac.lighting.moonIntensity = Number(viewModel.moonIntensity);
+
+          // Pin the clock to a specific UTC hour on a fixed date so
+          // the moon position is reproducible. June solstice maximizes
+          // the moon's elevation at high northern latitudes — handy
+          // for European / North-American night-side views.
+          const hour = Number(viewModel.hourUtc);
+          const iso = `2026-06-21T${String(Math.floor(hour)).padStart(2, "0")}:${String(
+            Math.round((hour - Math.floor(hour)) * 60),
+          ).padStart(2, "0")}:00Z`;
+          const fixed = Cesium.JulianDate.fromIso8601(iso);
+          viewer.clock.currentTime = fixed.clone();
+          viewer.clock.startTime = fixed.clone();
+          viewer.clock.stopTime = fixed.clone();
+          viewer.clock.shouldAnimate = false;
+          viewer.clock.multiplier = 0;
+
+          scene.requestRender();
+        }
+
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+        for (const name in viewModel) {
+          if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
+            Cesium.knockout.getObservable(viewModel, name).subscribe(applyConfig);
+          }
+        }
+        applyConfig();
+
+        // High-orbit view over the European night side at 22:00 UTC —
+        // the atmosphere limb at the terminator + the night
+        // hemisphere are visible. Toggle the dual-light checkbox to
+        // see the moon's contribution on the night limb appear /
+        // disappear; slide the moon intensity to scale it.
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(20, 50, 15_000_000),
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

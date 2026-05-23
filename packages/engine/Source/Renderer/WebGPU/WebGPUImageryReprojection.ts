@@ -8,6 +8,15 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
+// Batch 67 — WGSL source-of-truth lives in
+// `packages/engine/Source/Shaders/WebGPU/ReprojectWebMercator.wgsl`. The
+// gulp build emits a `.js` wrapper that exports the WGSL as a default
+// string export. We import that here so the TS file no longer carries
+// an inline copy that could drift from the `.wgsl` (which already
+// happened pre-Batch-67 — the inline copy carried a Batch 56 alpha=1
+// fix that the `.wgsl` file lacked). See
+// `migration_doc/SHADER_PAIRS_LOCKSTEP.md`.
+import ReprojectWebMercatorWGSL from "../../Shaders/WebGPU/ReprojectWebMercator.js";
 
 // Lazily-allocated mipmap generator, shared across reprojection calls
 // on the same device. Allocated on first use so contexts that never
@@ -44,59 +53,6 @@ function ensureReprojectionMipmapGenerator(
  * @private
  */
 
-// Inline WGSL — avoids async shader loading for this critical-path utility.
-// Must stay in sync with ReprojectWebMercator.wgsl.
-const REPROJECT_WGSL = /* wgsl */ `
-struct ReprojectUniforms {
-  southLatitude: f32,
-  northLatitude: f32,
-  southMercatorY: f32,
-  oneOverMercHeight: f32,
-};
-
-@group(0) @binding(0) var<uniform> u: ReprojectUniforms;
-@group(0) @binding(1) var srcTexture: texture_2d<f32>;
-@group(0) @binding(2) var srcSampler: sampler;
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) texCoord: vec2<f32>,
-};
-
-@vertex
-fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-  var out: VertexOutput;
-  let x = f32(i32(vertexIndex & 1u) * 4 - 1);
-  let y = f32(i32(vertexIndex >> 1u) * 4 - 1);
-  out.position = vec4<f32>(x, y, 0.0, 1.0);
-  out.texCoord = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
-  return out;
-}
-
-@fragment
-fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
-  let s = in.texCoord.x;
-  let geographicFraction = 1.0 - in.texCoord.y;
-  let latitude = u.southLatitude + geographicFraction * (u.northLatitude - u.southLatitude);
-  let sinLat = sin(latitude);
-  let mercatorY = 0.5 * log((1.0 + sinLat) / (1.0 - sinLat));
-  let mercatorFraction = (mercatorY - u.southMercatorY) * u.oneOverMercHeight;
-  let srcV = 1.0 - mercatorFraction;
-  // Batch 56 — force alpha=1.0. The source imagery texture coming from
-  // copyExternalImageToTexture on an opaque JPEG often arrives with
-  // alpha=0 in WebGPU (the alpha channel isnt populated from non-alpha
-  // source formats). Downstream globe-surface fragment shader multiplies
-  // by tex.a in its effectiveAlpha chain, so alpha=0 made every
-  // reprojected-imagery composite produce zero contribution -> black
-  // tiles. Source imagery from the Mercator providers is always opaque
-  // (Bing aerial JPEG, Esri WorldImagery JPEG, etc.), so forcing alpha=1
-  // is safe here. If/when transparent imagery providers need support,
-  // this needs to be conditional on the source format/provider.
-  let sampled = textureSample(srcTexture, srcSampler, vec2<f32>(s, srcV));
-  return vec4<f32>(sampled.rgb, 1.0);
-}
-`;
-
 /** Cached pipeline + bind group layout — shared across all reprojection calls */
 interface ReprojectCache {
   pipeline: GPURenderPipeline;
@@ -128,7 +84,7 @@ function ensureCache(device: GPUDevice): ReprojectCache {
 
   const shaderModule = device.createShaderModule({
     label: "ReprojectWebMercator",
-    code: REPROJECT_WGSL,
+    code: ReprojectWebMercatorWGSL,
   });
 
   const bindGroupLayout = makeBindGroupLayout(
@@ -384,6 +340,102 @@ export function reprojectImageSourceWebGPU(
   srcTexture.destroy();
 
   return result;
+}
+
+/**
+ * Batch 65 — dual-texture upload for Mercator imagery providers.
+ *
+ * Uploads the source image to a Mercator-projection GPUTexture WITH a full
+ * mipmap chain (so it is directly bindable by the globe-tile pipeline for
+ * tiles whose `useWebMercatorT === true`), then reprojects from that texture
+ * to a Geographic-projection GPUTexture (also with full mip chain).
+ *
+ * The returned pair lets the renderer pick the projection that matches each
+ * tile's `tileImagery.useWebMercatorT` flag, exactly mirroring WebGL's
+ * `imagery.textureWebMercator` / `imagery.texture` dual-texture architecture.
+ *
+ * Both textures are owned by the caller; both must be destroyed when the
+ * imagery is evicted (or when the renderer is torn down).
+ *
+ * @returns `{ mercator, reprojected }` — both GPUTextures, with full mip
+ *          chains. `mercator` is sampleable at Mercator-V coordinates; the
+ *          reproject pass runs against it and then immediately consumes it
+ *          as input — destruction is the caller's responsibility.
+ */
+export function uploadAndReprojectMercatorImage(
+  device: GPUDevice,
+  imageSource:
+    | ImageBitmap
+    | HTMLCanvasElement
+    | HTMLImageElement
+    | OffscreenCanvas,
+  width: number,
+  height: number,
+  southLatitude: number,
+  northLatitude: number,
+): { mercator: GPUTexture; reprojected: GPUTexture } {
+  if (
+    typeof HTMLImageElement !== "undefined" &&
+    imageSource instanceof HTMLImageElement
+  ) {
+    if (!imageSource.complete || imageSource.naturalWidth === 0) {
+      throw new Error(
+        "[CesiumJS:webgpu] uploadAndReprojectMercatorImage: HTMLImageElement " +
+          "is not fully decoded. Await img.decode() or img.complete === true " +
+          "before handing the image off to the reproject pipeline.",
+      );
+    }
+  }
+
+  const mipLevelCount = Math.floor(Math.log2(Math.max(width, height))) + 1;
+
+  // Mercator source — retained as the bindable texture for any tile whose
+  // skeleton was created with `useWebMercatorT === true` (the common case
+  // for mid-latitude tiles served by Bing / Esri / other Mercator
+  // providers). Full mip chain so orbital-altitude sampling doesn't
+  // alias level 0.
+  const mercator = device.createTexture({
+    label: "ImageryMercatorSource",
+    size: { width, height },
+    format: getOutputFormat(),
+    mipLevelCount,
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.RENDER_ATTACHMENT |
+      // COPY_SRC for diagnostic readback (probe-source-mercator-compare).
+      // No runtime cost when not exercised; adds the spec-required flag
+      // for `copyTextureToBuffer` so the source pixels can be inspected.
+      GPUTextureUsage.COPY_SRC,
+  });
+
+  device.queue.copyExternalImageToTexture(
+    { source: imageSource as ImageBitmap },
+    { texture: mercator, colorSpace: "srgb" },
+    { width, height },
+  );
+
+  if (mipLevelCount > 1) {
+    ensureReprojectionMipmapGenerator(device).generateMipmapsAndSubmit(
+      mercator,
+      getOutputFormat(),
+      mipLevelCount,
+    );
+  }
+
+  // Reproject from the Mercator texture into a Geographic-projection
+  // output. `reprojectWebMercatorWebGPU` allocates the destination
+  // texture with its own mip chain.
+  const reprojected = reprojectWebMercatorWebGPU(
+    device,
+    mercator,
+    width,
+    height,
+    southLatitude,
+    northLatitude,
+  );
+
+  return { mercator, reprojected };
 }
 
 /**

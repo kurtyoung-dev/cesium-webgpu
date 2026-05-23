@@ -99,12 +99,33 @@ export function executeEnvironmentalEffects(
     if (ssrFR?.execute) {
       try {
         context.endCurrentRenderPass?.();
+        // Phase 8a Slice 5 (Batch 88) — when `scene.deferredLighting`
+        // is on AND the G-buffer producer ran this frame, wire the real
+        // normal view through to SSR. The SSR shader's `flags.x = 1.0`
+        // path then samples surface normals directly from the G-buffer
+        // (eye-space, rgba16float, already signed in [-1, 1]) instead
+        // of reconstructing them from depth via `cross(dFdy, dFdx)`.
+        // Producer-off / non-deferred scenes pass `undefined` and the
+        // shader's fallback path runs as before.
+        const sceneAny = scene as unknown as {
+          _view?: {
+            gBufferFramebuffer?: {
+              normalRoughnessTexture: GPUTextureView | null;
+            };
+          };
+        };
+        const fs = frameState as unknown as { useDeferredLighting?: boolean };
+        const gBufferNormalView =
+          fs.useDeferredLighting === true
+            ? (sceneAny._view?.gBufferFramebuffer?.normalRoughnessTexture ??
+              undefined)
+            : undefined;
         ssrFR.execute(
           context,
           frameState,
           colorView,
           depthView,
-          undefined, // normalTextureView — uses placeholder
+          gBufferNormalView,
           outputView,
           scene,
         );

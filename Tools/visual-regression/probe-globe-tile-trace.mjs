@@ -24,10 +24,11 @@ const result = await page.evaluate(() => {
   const pcache = ctx?.webgpuPipelineCache;
   const pcacheSize = pcache?.cache?.size ?? -1;
   const pcacheKeys = pcache?.cache ? Array.from(pcache.cache.keys()).slice(0, 5) : [];
-  // Get the renderer's local pipeline cache map
-  const fr = ctx?.getFeatureRenderer?.(12 /* GLOBE_SURFACE */);
-  const rendererInst = fr?._instance ?? fr;
-  // Try to access local pipeline cache
+  // The renderer's per-device instance lives in a module-scoped WeakMap
+  // inside GlobeSurfaceTileProviderRendering.js — not accessible from
+  // here. `fr` (the FR record) only carries the RendererClass
+  // constructor, not the running instance. See WEBGPU_DEBUGGING_LOG.md
+  // Batch 71 for why fr._instance was removed.
   return {
     trace,
     createTrace,

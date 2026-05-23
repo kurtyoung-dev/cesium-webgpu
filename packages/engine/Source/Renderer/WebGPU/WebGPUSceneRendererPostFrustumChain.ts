@@ -50,6 +50,12 @@ export interface PostFrustumChainHost {
   ): void;
   _renderDepthPlane(config: WebGPURenderFrameConfig): void;
   _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void;
+  // Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction.
+  // Runs after the scene render pass closes (post environmentalEffects)
+  // and before the InvertClassification composite. Gated on
+  // `frameState.useDeferredLighting`; no-op when the flag is false
+  // (default).
+  _executeGBufferProducer(config: WebGPURenderFrameConfig): void;
   _runInvertClassificationComposite(config: WebGPURenderFrameConfig): void;
   _runVelocityPass(config: WebGPURenderFrameConfig): void;
   _runPostProcessing(config: WebGPURenderFrameConfig): void;
@@ -94,6 +100,17 @@ export function executePostFrustumChain(
   // These are full-screen composite passes that run after all geometry
   // but before post-processing (tonemapping, bloom, FXAA, etc.)
   host._executeEnvironmentalEffects(config);
+
+  // Phase 8a Slice 2 (Batch 85) — G-buffer producer. Screen-space
+  // normal reconstruction from scene depth. The scene render pass has
+  // closed by this point (environmentalEffects runs full-screen
+  // composites which require the scene pass to be closed), so depth
+  // is final and readable by compute. Gated on
+  // `frameState.useDeferredLighting`; the wrapper returns immediately
+  // when the flag is false (the default). Slice 3+ wire SSAO/SSR to
+  // read from `view.gBufferFramebuffer.normalRoughnessTexture` after
+  // this dispatch completes.
+  host._executeGBufferProducer(config);
 
   // C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — post-process edge composite
   // retired. Model edges now composite inline inside Model FS via

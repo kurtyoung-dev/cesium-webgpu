@@ -265,6 +265,9 @@ interface CesiumEnvironmentState {
   useInvertClassification: boolean;
   renderTranslucentDepthForPick: boolean;
   useWebVR: boolean;
+  // Phase 8a Slice 1+2b (Batch 80 + 86) — gates the G-buffer producer
+  // and downstream consumers (SSAO/SSR/clustered lighting in Slice 4+).
+  useDeferredLighting?: boolean;
 }
 
 // ─── Globe translucency state ───────────────────────────────────────────
@@ -381,6 +384,9 @@ interface CesiumFrameState {
   useLogDepth: boolean;
   minimumTerrainHeight: number;
   invertClassification: boolean;
+  // Phase 8a (Batch 80 + 86) — gates the WebGPU G-buffer producer
+  // (`scene.deferredLighting` flag forwarded by `Scene.updateFrameState`).
+  useDeferredLighting?: boolean;
   invertClassificationColor: CesiumColor | undefined;
   sunDirectionWC: CesiumCartesian3;
   moonDirectionWC: CesiumCartesian3;
@@ -735,6 +741,7 @@ interface CesiumTileImagery {
         rectangle: CesiumRectangle | undefined;
         state: number;
         _webgpuReprojectedTexture: GPUTexture | undefined;
+        _webgpuMercatorTexture: GPUTexture | undefined;
       }
     | undefined;
   textureTranslationAndScale: CesiumCartesian4 | undefined;
@@ -829,6 +836,7 @@ interface CesiumReadyImagery {
   y?: number;
   level?: number;
   _webgpuReprojectedTexture?: GPUTexture;
+  _webgpuMercatorTexture?: GPUTexture;
   _source?: CesiumOpaqueObject;
 }
 

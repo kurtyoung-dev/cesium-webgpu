@@ -19,6 +19,11 @@ import path from "path";
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 
+// Pinned Cesium clock for cross-session reproducibility. Must match
+// probe-polar-multi-plain.mjs so the with-overlay and without-overlay
+// captures are comparable. See WEBGPU_DEBUGGING_LOG.md Batch 70.
+const FIXED_CLOCK_UTC = "2026-05-19T18:00:00Z";
+
 // 6 viewpoints × 2 altitudes covering equatorial, mid-latitude, polar,
 // and antipodal views.
 const VIEWS = [
@@ -39,13 +44,20 @@ async function capture(renderer, view) {
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, { waitUntil: "networkidle" });
   await page.waitForFunction(() => !!window.viewer);
 
-  await page.evaluate(async ({ view }) => {
+  await page.evaluate(async ({ view, clockUTC }) => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
     const vm = v.baseLayerPicker.viewModel;
     const wgs84 = vm.terrainProviderViewModels.find((t) =>
       String(t.name || "").toLowerCase().includes("wgs84"));
     if (wgs84) vm.selectedTerrain = wgs84;
+    // Pin the clock — matches probe-polar-multi-plain.mjs.
+    const fixed = C.JulianDate.fromIso8601(clockUTC);
+    v.clock.currentTime = fixed.clone();
+    v.clock.startTime = fixed.clone();
+    v.clock.stopTime = fixed.clone();
+    v.clock.shouldAnimate = false;
+    v.clock.multiplier = 0;
     if (C.DebugTileImageryProvider) {
       v.imageryLayers.addImageryProvider(new C.DebugTileImageryProvider({
         colorByLevel: true,
@@ -59,7 +71,7 @@ async function capture(renderer, view) {
       await new Promise((r) => requestAnimationFrame(r));
       if (v.scene.globe.tilesLoaded && i > 300) break;
     }
-  }, { view });
+  }, { view, clockUTC: FIXED_CLOCK_UTC });
   await page.waitForTimeout(2000);
   const out = path.join(OUT_DIR, `polar-multi-${view.name}-${renderer}.png`);
   await page.screenshot({ path: out });

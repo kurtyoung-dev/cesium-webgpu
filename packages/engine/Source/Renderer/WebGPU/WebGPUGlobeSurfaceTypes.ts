@@ -83,7 +83,33 @@ export interface GlobePipelineEntry {
 //     w = Atmosphere shading enable flag (1.0 if fog or ground-atmosphere
 //         is enabled, 0.0 otherwise — gates the VS ray-march so disabling
 //         atmosphere costs nothing per-vertex).
-export const CAMERA_UNIFORM_FLOATS = 132;
+//
+// Batch 76 — czm_lightColor support. Adds a vec4 at the tail mirroring
+// WebGL's `czm_lightColor` automatic uniform so scene-provided custom
+// light colors propagate to the globe Lambert diffuse path:
+//
+//   lightColor (vec4, offset 132-135):
+//     xyz = scene light color (matches `uniformState.lightColor`, which
+//           is `lightColorHdr` clipped so its max channel ≤ 1)
+//     w   = reserved (future: ambient color scalar or HDR multiplier)
+//
+// Batch 77 — Custom Lambert coefficients (tile-provider-driven). Mirrors
+// WebGL's `u_lambertDiffuseMultiplier` + `u_vertexShadowDarkness`
+// fragment uniforms (GlobeFS.glsl L132-133, L559). The WGSL Lambert
+// path gates on the `hasVertexNormals` flag at .z to match the WebGL
+// ENABLE_VERTEX_LIGHTING gating (which compiles only when the terrain
+// provider exposes vertex normals):
+//
+//   lighting (vec4, offset 136-139):
+//     x = lambertDiffuseMultiplier  (from tileProvider, default 0.9)
+//     y = vertexShadowDarkness      (from tileProvider, default 0.3)
+//     z = hasVertexNormals flag — when > 0.5, WGSL uses the (x, y)
+//         coefficients directly (matches WebGL); when ≤ 0.5, WGSL
+//         falls back to its existing hardcoded `NdotL × 0.88 + 0.12`
+//         aesthetic (the intentional DAYNIGHT_SHADING-analogue rewrite).
+//     w = reserved (future: `fade` scalar for exact DAYNIGHT_SHADING
+//         parity if we ever bridge that path too).
+export const CAMERA_UNIFORM_FLOATS = 140;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):

@@ -1,5 +1,100 @@
 // SkyAtmosphere.wgsl — Nishita-style atmospheric scattering for CesiumJS WebGPU
 // Renders an ellipsoid shell with Rayleigh + Mie scattering
+//
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ PAIR: WebGPU WGSL (this file, 536 lines)                             │
+// │       WebGL GLSL: Shaders/SkyAtmosphereVS.glsl (32 lines)            │
+// │                   Shaders/SkyAtmosphereFS.glsl (59 lines)            │
+// │                   Shaders/SkyAtmosphereCommon.glsl (81 lines)        │
+// │                   Shaders/Builtin/Functions/computeScattering.glsl   │
+// │                   Shaders/Builtin/Functions/computeAtmosphereColor.glsl │
+// │ Last lockstep audit: 2026-05-19, Batch 76                            │
+// └─────────────────────────────────────────────────────────────────────┘
+// Any change in this file MUST land with a matching change in the GLSL
+// counterparts. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+//
+// STRUCTURAL DIVERGENCES (cataloged for the convention ledger)
+//
+// 1. **Single file vs multi-file split.** GLSL splits the pipeline into
+//    VS + FS + Common (= czm_computeScattering + czm_computeAtmosphereColor
+//    builtins). WGSL is a single module with @vertex + @fragment + helper
+//    fns inlined; czm_* builtins (pbrNeutralTonemapping, inverseGamma,
+//    applyHSBShift, raySphereIntersect) are ported inline as
+//    `pbrNeutralTonemapSky`, `pow(x, 1/2.2)`, `rgbToHsb`/`hsbToRgb`,
+//    `raySphereIntersect`.
+//
+// 2. **Ray-march step count.** GLSL: 16 uniform-stride samples with an
+//    adaptive `rayStepLengthIncrease` curve (AtmosphereCommon.glsl L81).
+//    WGSL: 64 uniform-stride samples (no adaptive curve). The 64-step
+//    grid converges to the same visual result with less code branching;
+//    cost is negligible since SkyAtmosphere only runs on the thin limb
+//    ring. See `NUM_SCATTER_STEPS` comment at line ~125.
+//
+// 3. **Per-vertex vs per-fragment.** GLSL has #ifdef
+//    PER_FRAGMENT_ATMOSPHERE that decides between vertex-evaluated
+//    scattering (then interpolated as `v_mieColor`/`v_rayleighColor`
+//    varyings) vs per-fragment evaluation. WGSL always evaluates
+//    per-fragment — the WGSL VertexOutput carries only position and the
+//    camera-to-vertex delta. Per-vertex would re-introduce the
+//    mesh-pattern artifact at orbit altitudes (same lesson as Batch 56
+//    for ground atmosphere).
+//
+// 4. **LUT fast-path.** WGSL has a `useLut > 0.5` branch that replaces
+//    the 64-step ray march with a single inscatter LUT texture sample
+//    (LUT baked once per sun-direction change by
+//    `WebGPUPerformanceManager`). GLSL has no equivalent — WebGL2 has
+//    no compute shaders, so the LUT bake step doesn't exist on that
+//    backend. WebGL always uses the inline ray march. Documented as
+//    an intentional one-way enhancement (Phase 4).
+//
+// 5. **Dual-light scattering (sun + moon).** WGSL samples a SECOND
+//    inscatter LUT (`moonInscatterLut`) when `dualLightControl.x > 0.5`
+//    and adds the moon contribution scaled by phase × intensity. GLSL
+//    has no equivalent — single light source only. Phase 1.3c
+//    WGSL-only enhancement.
+//
+// 6. **Debug bypass output.** WGSL has Tier 1 debug at
+//    `u.debug.x > 0.5` → flat magenta. GLSL has no equivalent — debug
+//    work in WebGL uses external CesiumDebug commands rather than
+//    shader-local toggles.
+//
+// 7. **Wind state scaffolding.** WGSL carries `windDirectionAndSpeed`
+//    in the UBO ahead of Phase 5/6 (volumetric fog + cloud motion).
+//    GLSL has no equivalent — none of those phases are planned for
+//    WebGL2 backend.
+//
+// 8. **Tonemap chain order.** GLSL FS L40-48: scatter → IF !HDR
+//    czm_pbrNeutralTonemapping + czm_inverseGamma → IF COLOR_CORRECT
+//    czm_applyHSBShift. WGSL FS L491-500: ALWAYS pbrNeutralTonemapSky →
+//    ALWAYS pow(x, 1/2.2) sRGB encode → IF |hsbShift| > 0.001 then
+//    hsbToRgb(rgbToHsb()). WGSL is unconditional on the tonemap chain
+//    because HDR mode is plumbed differently on the WebGPU side (post-
+//    process pipeline handles HDR composite).
+//
+// 9. **RTE vs `czm_model` vertex transform.** GLSL VS uses
+//    `czm_model * position` (no RTE — single precision is sufficient
+//    for the atmosphere shell mesh at planet scale because the shell
+//    is centered on the planet origin). WGSL VS uses
+//    `translateRelativeToEye(positionHigh, positionLow, encodedCameraHigh,
+//    encodedCameraLow)` then `mvpRelativeToEye * positionRTE` — RTE is
+//    used uniformly across all WGSL shaders for consistency, not
+//    because the atmosphere shell needs it.
+//
+// 10. **Translucent-globe brightening.** GLSL has `#ifdef
+//     GLOBE_TRANSLUCENT` path in computeAtmosphereScattering that
+//     brightens the inside-globe view when translucency is enabled.
+//     WGSL has no equivalent — globe-translucency is not yet wired
+//     through the WebGPU pipeline (deferred, tracked in
+//     DEFERRED_WORK.md as part of multi-frustum/translucent classification).
+//
+// 11. **Ellipsoid math (uniform vs builtins).** GLSL pulls
+//     `czm_ellipsoidRadii`, `czm_ellipsoidInverseRadii`,
+//     `czm_eyeHeight`, `czm_viewerPositionWC` from automatic uniforms.
+//     WGSL pulls `radiiAndDynamicAtmosphere` (innerRadius, outerRadius,
+//     dynamicLighting, _), `cameraPositionWC` from the explicit
+//     `Uniforms` struct — innerRadius IS the ellipsoid-radius minus a
+//     distance-adjust quantity that the CPU pre-computes (no in-shader
+//     equivalent to GLSL's runtime `distanceAdjust` math).
 
 struct Uniforms {
   mvpRelativeToEye: mat4x4<f32>,

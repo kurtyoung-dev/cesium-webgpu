@@ -941,6 +941,39 @@ class Scene {
     this.invertClassification = false;
 
     /**
+     * Phase 8a (Batch 80, Slice 2 — Batch 85, Slice 2b — Batch 86) —
+     * enables the depth-prepass + normal G-buffer producer pass on the
+     * WebGPU backend. When <code>true</code>, the scene runs an extra
+     * compute pass after the main scene render that reconstructs
+     * eye-space normals from the depth buffer and writes them into
+     * <code>view.gBufferFramebuffer</code>. Future Slice 4+ rewires
+     * SSAO / SSR / clustered lighting consumers to read from this
+     * G-buffer instead of reconstructing normals themselves.
+     *
+     * No-op on the WebGL backend (the WebGPU backend gates the producer
+     * on this flag + compute-shader capability).
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.deferredLighting = false;
+
+    /**
+     * Phase 8a Slice 2c (Batch 89) — debug toggle that replaces the
+     * production post-process chain with a fullscreen blit of
+     * `view.gBufferFramebuffer.normalRoughnessTexture` as a normal-map
+     * visualization. Activated via `CesiumDebug.showGBufferNormals()`.
+     *
+     * No-op on WebGL backend. Requires
+     * {@link Scene#deferredLighting} to be enabled for the G-buffer
+     * to populate this frame.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowGBufferNormals = false;
+
+    /**
      * The highlight color of unclassified 3D Tile geometry when {@link Scene#invertClassification} is <code>true</code>.
      * <p>When the color's alpha is less than 1.0, the unclassified portions of the 3D Tiles will not blend correctly with the classified positions of the 3D Tiles.</p>
      * <p>Also, when the color's alpha is less than 1.0, the WEBGL_depth_texture and EXT_frag_depth WebGL extensions must be supported.</p>
@@ -2876,6 +2909,18 @@ class Scene {
     frameState.minimumDisableDepthTestDistance =
       this._minimumDisableDepthTestDistance;
     frameState.invertClassification = this.invertClassification;
+    // Phase 8a (Batch 86) — forward `scene.deferredLighting` to the
+    // frame-state flag the WebGPU backend reads to gate the G-buffer
+    // producer compute pass. WebGL backend ignores this; see Scene
+    // constructor docstring for the full lifecycle.
+    frameState.useDeferredLighting = this.deferredLighting === true;
+    // Phase 8a Slice 2c (Batch 89) — forward debug-overlay toggle. The
+    // overlay requires the G-buffer to be populated, which means
+    // `deferredLighting` must also be true; CesiumDebug.showGBufferNormals()
+    // sets both. If a user sets `debugShowGBufferNormals = true`
+    // directly without enabling `deferredLighting`, the overlay's
+    // fallback path clears the canvas magenta with a console hint.
+    frameState.debugShowGBufferNormals = this.debugShowGBufferNormals === true;
     frameState.useLogDepth =
       this._logDepthBuffer &&
       !(

@@ -56,7 +56,10 @@ import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
 import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
 import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
+import { dispatchGBufferNormalsFromDepth } from "./WebGPUGBufferRenderer.js";
+import type { GBufferComputeHost } from "./WebGPUGBufferRenderer.js";
 import { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
+import { WebGPUDebugGBufferOverlay } from "./WebGPUDebugGBufferOverlay.js";
 import { WebGPUDebugFrustumOverlay } from "./WebGPUDebugFrustumOverlay.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
@@ -687,6 +690,11 @@ export class WebGPUSceneRenderer {
   // Public underscore: shared with the _ensureResources slice (Batch 142).
   public _debugDepthOverlay: WebGPUDebugDepthOverlay | null = null;
   private _depthOverlayWarningLogged: boolean = false;
+  // Phase 8a Slice 2c (Batch 89) — debug overlay that visualizes the
+  // G-buffer normal texture as a fullscreen blit. Lazy-constructed on
+  // first invocation; null when `scene.debugShowGBufferNormals` is off.
+  public _debugGBufferOverlay: WebGPUDebugGBufferOverlay | null = null;
+  private _gbufferProducerWarnedNoDepth: boolean = false;
   // Tier 2 debug — frustum + command tint overlay (WebGPU equivalent of
   // `debugShowFrustums` / `debugShowCommands`). Lazy.
   // Public underscore: shared with the _ensureResources slice (Batch 142).
@@ -1840,6 +1848,132 @@ export class WebGPUSceneRenderer {
     executeEnvironmentalEffects(config);
   }
 
+  /**
+   * Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction
+   * from scene depth into `view.gBufferFramebuffer`. Gated entirely on
+   * `frameState.useDeferredLighting === true` — when the flag is its
+   * default `false`, this is a no-op and the compute pipeline is never
+   * created.
+   *
+   * Runs AFTER `_executeEnvironmentalEffects` (which has closed the
+   * scene render pass and resolved depth) and BEFORE the
+   * InvertClassification composite + post-processing — depth is final
+   * by this point, and downstream consumers (Slice 3+: SSAO, SSR,
+   * clustered lighting) can read the G-buffer freely.
+   */
+  public _executeGBufferProducer(config: WebGPURenderFrameConfig): void {
+    const frameState = config.scene.frameState as
+      | { useDeferredLighting?: boolean }
+      | undefined;
+    if (!frameState || frameState.useDeferredLighting !== true) {
+      return;
+    }
+    const context = config.context as unknown as {
+      _currentCommandEncoder: GPUCommandEncoder | null;
+      device: GPUDevice | null;
+      drawingBufferWidth: number;
+      drawingBufferHeight: number;
+      uniformState?: { inverseProjection?: ArrayLike<number> };
+      endCurrentRenderPass?: () => void;
+      resumeDefaultRenderPass?: () => void;
+    };
+    // Phase 8a Slice 2d (Batch 90) — close any render pass that's
+    // still open on the shared command encoder before we start a
+    // compute pass. WebGPU forbids `beginComputePass` while a render
+    // pass is recording on the same encoder. The post-frustum chain
+    // calls us right after `_executeEnvironmentalEffects`, which may
+    // leave the scene render pass open if it didn't enter
+    // post-process mode yet.
+    context.endCurrentRenderPass?.();
+    const encoder = context._currentCommandEncoder;
+    const device = context.device;
+    // Phase 8a Slice 2c (Batch 89) — fixed depth-source bug. Previously
+    // read `context.depthOnlyTextureView` which is a separate depth
+    // attachment unused by the scene render. The actual scene depth
+    // lives on `_sceneFramebuffer.depthSampleableView` (same source the
+    // depth-as-color debug overlay uses). With the wrong texture bound,
+    // every sample returned 0 → producer's `depth >= 0.99999` check
+    // failed (0 < 0.99999) but the unproject math produced garbage
+    // positions that all ended up at the same point, making the cross
+    // product near-zero → high-gradient sentinel branch for every
+    // pixel. Net result: G-buffer was all-sentinel, overlay showed
+    // pure magenta.
+    const depthView = this._sceneFramebuffer?.depthSampleableView ?? null;
+    if (!encoder || !device || !depthView) {
+      // Phase 8a Slice 2c (Batch 89) — surface the silent-bail case.
+      // Most common reason: MSAA is on (default 4) so the depth
+      // attachment is multisampled and `depthSampleableView` can't be
+      // bound to the producer's single-sample `texture_depth_2d`
+      // binding. Slice 2d will add a multisampled-depth code path
+      // (`texture_depth_multisampled_2d` + `textureLoad(.., 0)`); for
+      // now, users must call `scene.msaaSamples = 1` BEFORE viewer
+      // construction to enable the producer.
+      if (!this._gbufferProducerWarnedNoDepth) {
+        this._gbufferProducerWarnedNoDepth = true;
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[Phase8a] G-buffer producer skipped: scene depth not sampleable. " +
+            "Set `msaaSamples: 1` on the Viewer/Scene to enable. " +
+            "MSAA support is tracked as Slice 2d.",
+        );
+      }
+      return;
+    }
+
+    const scene = config.scene as unknown as {
+      _view?: {
+        gBufferFramebuffer?: {
+          framebuffer?: unknown;
+          normalRoughnessTexture: GPUTextureView | null;
+        };
+      };
+    };
+    const gBuffer = scene._view?.gBufferFramebuffer;
+    const outputView = gBuffer?.normalRoughnessTexture ?? null;
+    if (!outputView) return;
+
+    const invProj = context.uniformState?.inverseProjection;
+    if (!invProj) return;
+
+    const w = context.drawingBufferWidth || 1;
+    const h = context.drawingBufferHeight || 1;
+    const invProjArr =
+      invProj instanceof Float32Array ? invProj : new Float32Array(invProj);
+
+    // The dispatcher host is the `WebGPUPerformanceManager`, not the
+    // SceneRenderer — the PerfMgr owns the compute pipeline cache, the
+    // `dispatchCompute` method, and the `_context.supportsComputeShaders`
+    // capability flag. The cache slot for G-buffer resources also lives
+    // on the PerfMgr (parallel to `_atmosphereLutResources`).
+    const ctxWithPerfMgr = config.context as unknown as {
+      performanceManager?: GBufferComputeHost;
+    };
+    const perfMgr = ctxWithPerfMgr.performanceManager;
+    if (!perfMgr) return;
+
+    // Phase 8a Slice 2d (Batch 90) — pass the scene's sample count so
+    // the dispatcher picks the multisampled-depth pipeline when MSAA
+    // is on (Cesium default is 4). Read from `scene.msaaSamples`
+    // directly; this is the same value `SceneFramebuffer.update` uses
+    // to build the depth attachment, so the dispatcher's choice of
+    // pipeline matches the actual texture's sample count.
+    const depthSampleCount =
+      (config.scene as unknown as { msaaSamples?: number }).msaaSamples ?? 1;
+    dispatchGBufferNormalsFromDepth(perfMgr, encoder, device, {
+      inverseProjection: invProjArr,
+      viewportWidth: w,
+      viewportHeight: h,
+      depthView,
+      outputView,
+      depthSampleCount,
+    });
+    // Resume the scene render pass for downstream stages (invert
+    // classification composite, velocity pass, post-process). Matches
+    // the pattern used by `_executeDebugDepthOverlay` /
+    // `executeEnvironmentalEffects`.
+    context.resumeDefaultRenderPass?.();
+  }
+
   // C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — `_runEdgeComposite()` was
   // removed. The model FS inline edge stage (Batch 48) is the
   // authoritative consumer; primitive shaders don't currently emit
@@ -2200,6 +2334,19 @@ export class WebGPUSceneRenderer {
       return;
     }
 
+    // Phase 8a Slice 2c (Batch 89) — G-buffer normal visualization.
+    // Replaces the production post-process chain with a fullscreen blit
+    // of `view.gBufferFramebuffer.normalRoughnessTexture`. Requires the
+    // G-buffer to be populated; the `CesiumDebug.showGBufferNormals()`
+    // command forces `scene.deferredLighting = true` to guarantee that.
+    if (
+      (frameState as { debugShowGBufferNormals?: boolean })
+        ?.debugShowGBufferNormals === true
+    ) {
+      this._executeDebugGBufferOverlay(config);
+      return;
+    }
+
     // Tier 2 debug — frustum / command tint override. Same pattern as
     // depth-as-color: replaces the production post-process chain with a
     // single fullscreen tint pass that samples scene color + depth and
@@ -2290,6 +2437,26 @@ export class WebGPUSceneRenderer {
       if (autoExposure?.applyAltitudeGate) {
         autoExposure.applyAltitudeGate(heightMeters);
       }
+      // Phase 8a Slice 4 (Batch 87) — when the G-buffer producer ran
+      // this frame (`scene.deferredLighting === true`), forward the
+      // normal texture view so the AO effect (and Slice 5+ consumers)
+      // can read it. Null otherwise → effects fall back to depth-only
+      // reconstruction.
+      const view = (
+        config.scene as unknown as {
+          _view?: {
+            gBufferFramebuffer?: {
+              normalRoughnessTexture: GPUTextureView | null;
+            };
+          };
+        }
+      )._view;
+      const useDeferred =
+        (config.scene.frameState as { useDeferredLighting?: boolean })
+          .useDeferredLighting === true;
+      const gBufferNormalView = useDeferred
+        ? (view?.gBufferFramebuffer?.normalRoughnessTexture ?? null)
+        : null;
       this._postProcess.execute(
         encoder,
         sourceView,
@@ -2297,6 +2464,7 @@ export class WebGPUSceneRenderer {
         depthView,
         sceneColorTexture,
         motionView,
+        gBufferNormalView,
       );
     } else {
       context.log(
@@ -2369,6 +2537,75 @@ export class WebGPUSceneRenderer {
       far,
       mode,
     );
+
+    context.resumeDefaultRenderPass?.();
+  }
+
+  /**
+   * Phase 8a Slice 2c (Batch 89) — runs the {@link WebGPUDebugGBufferOverlay}
+   * in place of the production post-process chain. Samples
+   * `view.gBufferFramebuffer.normalRoughnessTexture` and blits it to the
+   * canvas as a normal-map visualization (.xyz * 0.5 + 0.5 → RGB).
+   * Magenta sentinel for sky / depth-clear / high-gradient pixels where
+   * the producer couldn't reconstruct a normal.
+   *
+   * Lazy-constructs the overlay on first invocation so production frames
+   * pay zero cost.
+   */
+  private _executeDebugGBufferOverlay(config: WebGPURenderFrameConfig): void {
+    const { context, scene } = config;
+    const device: GPUDevice | undefined = context._device;
+    if (!device) return;
+
+    context.endCurrentRenderPass?.();
+
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    const targetView: GPUTextureView | undefined = context.currentTextureView;
+    const view = (
+      scene as unknown as {
+        _view?: {
+          gBufferFramebuffer?: {
+            normalRoughnessTexture: GPUTextureView | null;
+          };
+        };
+      }
+    )._view;
+    const gBufferView =
+      view?.gBufferFramebuffer?.normalRoughnessTexture ?? null;
+
+    if (!encoder || !targetView || !gBufferView) {
+      // Without a G-buffer the overlay can't run. Clear to magenta so
+      // the user knows "you turned the toggle on but the producer
+      // didn't populate the target this frame — likely
+      // scene.deferredLighting needs to be true too."
+      if (encoder && targetView) {
+        const passEncoder = encoder.beginRenderPass({
+          label: "DebugGBufferOverlay clear (no g-buffer)",
+          colorAttachments: [
+            {
+              view: targetView,
+              loadOp: "clear",
+              storeOp: "store",
+              clearValue: { r: 0.5, g: 0, b: 0.5, a: 1 },
+            },
+          ],
+        });
+        passEncoder.end();
+      }
+      context.resumeDefaultRenderPass?.();
+      return;
+    }
+
+    if (!this._debugGBufferOverlay) {
+      this._debugGBufferOverlay = new WebGPUDebugGBufferOverlay();
+    }
+    this._debugGBufferOverlay.initialize(
+      device,
+      context._presentationFormat ?? "bgra8unorm",
+    );
+
+    this._debugGBufferOverlay.execute(encoder, gBufferView, targetView);
 
     context.resumeDefaultRenderPass?.();
   }

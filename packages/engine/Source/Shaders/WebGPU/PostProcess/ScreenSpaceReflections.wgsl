@@ -208,12 +208,38 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     normal = n * inverseSqrt(nLenSq);
   } else {
-    let normalEC = textureSampleLevel(normalTex, texSampler, uv, 0.0).xyz * 2.0 - 1.0;
-    // Skip surfaces with no valid normal
-    if (length(normalEC) < 0.1) {
+    // Phase 8a Slice 5 (Batch 88) — read eye-space normal directly
+    // from the G-buffer. The G-buffer is `rgba16float` written by
+    // `GBufferNormalsFromDepth.wgsl` with normals already in signed
+    // [-1, 1] range, so no `* 2 - 1` decode is needed (pre-Batch-88
+    // code did the decode under the assumption of UNORM packing,
+    // which silently halved every component and offset by -1 —
+    // producing wrong-direction reflections on any surface where
+    // the normal wasn't near (0.5, 0.5, 0.5) in encoded space).
+    //
+    // Sentinel check: producer emits (0,0,0,*) for sky / depth-clear /
+    // high-gradient pixels. Skip those — no useful normal to reflect.
+    let normalRoughness = textureSampleLevel(normalTex, texSampler, uv, 0.0);
+    let normalSample = normalRoughness.xyz;
+    if (length(normalSample) < 0.1) {
       return vec4<f32>(originalColor, 1.0);
     }
-    normal = normalize(normalEC);
+    normal = normalize(normalSample);
+    // Phase 8a Slice 5b (Batch 93) — read roughness from the G-buffer
+    // .w channel. The producer writes a depth-gradient-derived
+    // roughness proxy: smooth surfaces (water, building facades) get
+    // values near 0.1 (sharp mirror); rough surfaces (terrain,
+    // vegetation) get values near 0.95 (effectively diffuse, no SSR).
+    // Skip ray-marching entirely for high-roughness surfaces — the
+    // resulting reflection would be blurred to invisibility anyway
+    // and we save the trace cost.
+    if (normalRoughness.w > 0.6) {
+      return vec4<f32>(originalColor, 1.0);
+    }
+    // Stash the per-fragment roughness for the final blend. Note:
+    // WGSL doesn't allow `var` declarations to span this `if/else`
+    // boundary cleanly, so we re-extract below by sampling once more
+    // in the blend path (sampler-side cache; cheap).
   }
   let viewDir = normalize(viewPos);
   let NdotV = abs(dot(normal, -viewDir));
@@ -224,10 +250,22 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Trace the reflected ray
   let result = traceRay(viewPos, reflectDir);
 
-  // Combine with Fresnel-weighted reflection strength
+  // Combine with Fresnel-weighted reflection strength + roughness
+  // attenuation (Phase 8a Slice 5b, Batch 93). Roughness comes from
+  // the G-buffer when `flags.x > 0.5`; falls back to 0.0 (mirror) for
+  // the depth-fallback path because we have no roughness signal there.
   let reflectionStrength = ssr.params2.z; // default 0.5
   let fresnel = fresnelFade(NdotV);
-  let blendFactor = result.a * fresnel * reflectionStrength;
+  var roughness: f32 = 0.0;
+  if (ssr.flags.x > 0.5) {
+    roughness = textureSampleLevel(normalTex, texSampler, uv, 0.0).w;
+  }
+  // Smooth → 1.0 reflectance contribution; rough → fades toward 0.
+  // We already early-returned for roughness > 0.6 above, so the
+  // roughness here is in [0, 0.6]. Map linearly to a [1, 0] attenuator
+  // so mid-roughness surfaces still contribute reduced SSR.
+  let roughnessAttenuation = 1.0 - clamp(roughness / 0.6, 0.0, 1.0);
+  let blendFactor = result.a * fresnel * reflectionStrength * roughnessAttenuation;
 
   let finalColor = mix(originalColor, result.rgb, blendFactor);
   return vec4<f32>(finalColor, 1.0);

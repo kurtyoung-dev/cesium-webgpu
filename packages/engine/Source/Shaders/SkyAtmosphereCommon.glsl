@@ -1,3 +1,33 @@
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ PAIR: WebGL GLSL helpers (this file)                                 │
+// │       WebGL GLSL VS: Shaders/SkyAtmosphereVS.glsl                    │
+// │       WebGL GLSL FS: Shaders/SkyAtmosphereFS.glsl                    │
+// │       WebGPU WGSL: Shaders/WebGPU/Environment/SkyAtmosphere.wgsl     │
+// │       (single file containing @vertex + @fragment + helpers)         │
+// │ Last lockstep audit: 2026-05-19, Batch 76                            │
+// └─────────────────────────────────────────────────────────────────────┘
+// Any change in this file MUST land with a matching change in the WGSL
+// counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+//
+// Structural divergence summary (full ledger in the WGSL counterpart):
+// - This file is shared between the sky atmosphere VS and FS (under
+//   `#ifndef PER_FRAGMENT_ATMOSPHERE` it runs in VS; otherwise in FS).
+//   WGSL has no equivalent — scattering always runs in @fragment.
+// - GLSL's `distanceAdjust` math (lines 16-24) computes a runtime
+//   `atmosphereInnerRadius` from camera height. WGSL precomputes
+//   `innerRadius` on the CPU side and passes it via the uniform; the
+//   CPU-side adjust math is in WebGPUSkyAtmosphereRenderer.
+// - GLSL has a `#ifdef GLOBE_TRANSLUCENT` brightening path; WGSL has
+//   no equivalent (translucent globe not wired through WebGPU
+//   pipeline).
+// - GLSL calls `czm_raySphereIntersectionInterval` (builtin); WGSL
+//   inlines `raySphereIntersect`.
+// - GLSL calls `computeScattering` from czm_* builtin (16-step adaptive
+//   ray-march); WGSL inlines `computeScattering` with 64-step uniform-
+//   stride.
+// - GLSL ends with altitudeOpacity + nightAlpha-pow-0.5 (matches the
+//   WGSL formula at lines ~520-533).
+
 float interpolateByDistance(vec4 nearFarScalar, float distance)
 {
     float startDistance = nearFarScalar.x;

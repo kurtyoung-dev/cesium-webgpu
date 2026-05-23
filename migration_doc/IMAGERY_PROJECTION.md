@@ -80,13 +80,13 @@ The geographic terrain tile covers latitudes the Mercator imagery cannot reach. 
 - `_calculateTextureTranslationAndScale` takes the else branch (geographic-radians math).
 - `textureCoordinateRectangle` is in geographic-radians tile-UV.
 
-**WebGPU** (`WebGPUImageryReprojection.ts` + `WebGPUGlobeSurfaceTextures.ts` + `WebGPUGlobeSurfaceTileUB.ts`):
+**WebGPU** (`WebGPUImageryReprojection.ts` + `WebGPUGlobeSurfaceTextures.ts` + `WebGPUGlobeSurfaceTileUB.ts`) — **Batch 65 dual-texture model**:
 
-- When the imagery FIRST becomes ready and a Mercator→Geographic reprojection is needed, `WebGPUImageryReprojection.reprojectImageSourceWebGPU` runs synchronously (full-screen-triangle render pass). The output `GPUTexture` is stashed on `imagery._webgpuReprojectedTexture`.
-- Texture binding (`getOrCreateImageryTexture:79`): prefers `_webgpuReprojectedTexture` over the source-image upload path. The reprojected texture is geographic-projected and matches what the shader expects when sampling at geographic V.
-- `useWebMercatorTLayer[i] = 0` so the fragment uses geographic V.
-- `tileImagery.textureTranslationAndScale` cached value would be in MERCATOR-Y space (because `_calculateTextureTranslationAndScale` is invoked with `useWebMercatorT` whose definition isn't aware of the WebGPU reprojection). **Batch 46** detects `_webgpuReprojectedTexture` and recomputes translation/scale in GEOGRAPHIC space at UB-pack time, overriding the cached Mercator-space value.
-- `tileImagery.textureCoordinateRectangle` cached value similarly Mercator-Y. **Batch 49** detects `_webgpuReprojectedTexture` and recomputes the rect in GEOGRAPHIC tile-UV at UB-pack time.
+- When the imagery FIRST becomes ready AND the provider is Mercator, `ImageryLayer._reprojectTexture` calls `fr.uploadAndReproject(device, image, …)` which produces **two** `GPUTexture`s with full mip chains: `imagery._webgpuMercatorTexture` (the raw Mercator source, mirrors WebGL's `imagery.textureWebMercator`) and `imagery._webgpuReprojectedTexture` (the geographic reprojection, mirrors WebGL's `imagery.texture`). Both are uploaded eagerly — regardless of whether `needGeographicProjection` is set at the time — so the bind-group setup and the tile-UB packer (which iterate `passLayers` independently inside the renderer) see a consistent dual-texture state from frame 1.
+- Texture binding (`getOrCreateImageryTexture(host, tileImagery)` in `WebGPUGlobeSurfaceTextures.ts`): picks the variant matching the per-tile `tileImagery.useWebMercatorT` flag. Mercator-binding tiles → `_webgpuMercatorTexture`, cached under `${imagery.key}_merc`. Geographic-binding tiles → `_webgpuReprojectedTexture`, cached under `${imagery.key}`. Returns `{ view, isMercator }` so callers can keep `useWebMercatorTLayer` in lock-step with the binding decision.
+- `useWebMercatorTLayer[i] = (tileImagery.useWebMercatorT && !!imagery._webgpuMercatorTexture) ? 1 : 0` — written by `WebGPUGlobeSurfaceTileUB.ts`. Tracks what the cache will actually bind. The WGSL `selectLayerUV` then samples at `webMercatorT` for Mercator layers and `geoUV.y` for geographic layers.
+- `tileImagery.textureTranslationAndScale` and `textureCoordinateRectangle` are used **as cached** — no inline recalc. `_calculateTextureTranslationAndScale` already produces Mercator-space values when `useWebMercatorT === true` and geographic-space values when `false`, which is exactly what the matching bound texture needs. (The Batch 46 and Batch 49 inline recalcs were removed in Batch 65 because they were patching for the single-texture model that no longer exists.)
+- Geographic providers (no reprojection needed) still go through the legacy lazy-upload path in `getOrCreateImageryTexture` — `imagery.image` is uploaded on demand as a single geographic-keyed texture. `_webgpuMercatorTexture` stays undefined for these, and `useWebMercatorT` is false at skeleton time anyway, so the dual cache naturally collapses to the single geographic variant.
 
 **Resolved (Batch 56):** the orbit-WGS84 catastrophe turned out to NOT be a projection bug — the projection chain was mathematically correct (`useWebMercatorTLayer`, `translationAndScale`, `textureCoordinateRectangle` all right). Three distinct bugs in the per-tile fragment pipeline downstream of imagery sampling stacked together to produce the mesh-pattern + dark-globe rendering:
 
@@ -188,7 +188,9 @@ Consequence: a polar tile's cached `textureCoordinateRectangle.y` (`minV`) is **
 
 `textureTranslationAndScale` is computed unchanged in geographic space when `useWebMercatorT === false` (i.e., for polar tiles), so the cached values together are correct for the polar case.
 
-**WebGPU consequence:** the inline geographic recalc in [WebGPUGlobeSurfaceTileUB.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) introduced by Batch 49 must **only run when the cached values were originally Mercator-space**, i.e., when `tileImagery.useWebMercatorT === true`. For polar tiles where `useWebMercatorT === false`, the cached rect already has the base-layer fixup, and recomputing clobbers it. Batch 62 added the `needsGeographicRecalc = reprojectedToGeographic && tileImagery.useWebMercatorT` gate.
+**WebGPU consequence (pre-Batch-65):** the inline geographic recalc in [WebGPUGlobeSurfaceTileUB.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) introduced by Batch 49 had to be gated on `useWebMercatorT === true` so it wouldn't clobber the south-edge fixup. Batch 62 added that gate.
+
+**WebGPU consequence (Batch 65 onward):** the inline recalc was removed entirely along with the move to dual textures. Polar tiles (`useWebMercatorT === false`) bind `_webgpuReprojectedTexture` and use the geographic-space cached rect with the base-layer south-edge fixup intact — exactly what WebGL does for the same tiles when it binds `imagery.texture`.
 
 ---
 
@@ -206,14 +208,33 @@ The above is the SCENE3D path. In SCENE2D and COLUMBUS_VIEW, additional consider
 
 | Aspect | WebGL | WebGPU |
 | --- | --- | --- |
-| **Trigger** | `_reprojectTexture()` in `ImageryLayer.js` queues a `ComputeCommand` | Same call site, but takes the FR branch (Bug 11.1 early-return) and runs `WebGPUImageryReprojection.reprojectImageSourceWebGPU` synchronously |
-| **Geometry** | 64-row vertex grid with precomputed per-vertex `webMercatorT` | Full-screen triangle, Mercator math done per-fragment in WGSL |
+| **Trigger** | `_reprojectTexture()` in `ImageryLayer.js` queues a `ComputeCommand` (only when geographic projection is needed); raw Mercator texture is uploaded separately on imagery load | Same call site, takes the FR branch and runs `fr.uploadAndReproject` synchronously for ANY Mercator provider (Batch 65) |
+| **Geometry** | 4-vertex quad (Batch 66 — previously a 64-row vertex grid with precomputed per-vertex `webMercatorT`) | Full-screen triangle |
+| **Mercator math** | Per-fragment exact `0.5 * log((1+sin(lat))/(1-sin(lat)))` (Batch 66 — previously precomputed per-row in JS, then linearly interpolated by the rasterizer) | Per-fragment exact in WGSL |
 | **Output texture format** | RGBA8 (same as source) | `rgba8unorm` (`getOutputFormat()`) |
-| **Output orientation** | V=0 corresponds to imagery south (WebGL convention with UNPACK_FLIP_Y=true at upload) | V=0 corresponds to imagery north (`geographicFraction = 1.0 - texCoord.y`) — see Batch 55 V-orientation investigation note |
-| **Stored on imagery** | `imagery.texture` (replaces unreprojected) | `imagery._webgpuReprojectedTexture` (separate field; original `imagery.texture` may also be set for compat) |
-| **Subsequent sampling** | Shader binds `imagery.texture`, samples at geographic V | Globe surface texture-cache binds `_webgpuReprojectedTexture` preferentially; falls through to source upload otherwise |
+| **Output orientation** | V=0 corresponds to imagery south (WebGL convention with UNPACK_FLIP_Y=true at upload) | V=0 corresponds to imagery north (`geographicFraction = 1.0 - texCoord.y`); both backends produce textures that sample correctly under their respective conventions — verified end-to-end via the overlay-compositing probe |
+| **Stored on imagery** | `imagery.textureWebMercator` (Mercator source) + `imagery.texture` (geographic reprojection) | `imagery._webgpuMercatorTexture` (Mercator source) + `imagery._webgpuReprojectedTexture` (geographic reprojection) — Batch 65 dual-texture parity |
+| **Subsequent sampling** | Shader binds `imagery.textureWebMercator` or `imagery.texture` per tile based on `useWebMercatorT` | `getOrCreateImageryTexture` picks `_webgpuMercatorTexture` (cache key `${k}_merc`) or `_webgpuReprojectedTexture` (cache key `${k}`) per tile based on `useWebMercatorT` |
 
-The output orientation difference is suspicious and worth deeper investigation — WebGL's per-vertex grid implicitly defines a single canonical orientation, while the WebGPU full-screen-triangle approach defines orientation via the `geographicFraction` calculation in the FS. A mismatch between this orientation and the downstream sampling convention could explain the WGS84 catastrophe.
+### Batch 66 — WebGL reproject FS rewritten to per-fragment math
+
+The WebGL reproject had been a 64-row vertex grid for ~10 years: each row carried a precomputed `webMercatorT` attribute (the Mercator-Y fraction at that row's latitude) and the rasterizer linearly interpolated between consecutive rows to give a per-fragment `webMercatorT` for source sampling. Batch 66 replaces this with a 4-vertex quad whose FS computes the exact `0.5 * log((1+sin(lat))/(1-sin(lat)))` per fragment, mirroring `Shaders/WebGPU/ReprojectWebMercator.wgsl`.
+
+Motivation: chasing the WebGL-vs-WebGPU polar pixel mismatch (14-38% at orbit views), Batch 65's reprojected-texture-compare probe suggested the 64-row piecewise approximation might be the source. The hypothesis turned out to be wrong — the piecewise error at high latitudes is ~0.017 pixels of source-V sampling, sub-pixel, can't explain the observed 200+ RGB delta. The fix landed anyway because it's a strict improvement on its own merits:
+
+- Math is the exact closed-form, not an approximation.
+- Drops 64 `sin` + 64 `log` per-tile CPU computations + the `copyFromArrayView` stream-draw write that pushed them to the GPU.
+- Drops the per-row vertex attribute, the 128-float scratch buffer, the `TerrainProvider.getRegularGridIndices(2, 64)` index helper, and an unused `FeatureDetection` import.
+- 4 vertices instead of 128 in the VS work per imagery tile reproject.
+- Adds 4 scalar uniforms and a per-fragment sin/log; runs once per imagery tile when it first reaches `READY`. Negligible cost.
+
+The polar pixel residual remains. Its actual driver is *not* the piecewise approximation; the current hypothesis is **source-texture upload conventions**: WebGL uploads via the `Texture` constructor with `UNPACK_FLIP_Y_WEBGL=true` against an `ImageBitmap` produced by `Resource.fetchImage({ flipY: true })`, while WebGPU uses `copyExternalImageToTexture` with no flipY against the same pre-flipped ImageBitmap. The two paths *should* land equivalent texture content, but the cross-vendor implementations may store rows differently, and the reprojection then faithfully amplifies any source-side divergence. Probe in flight.
+
+Files modified in Batch 66:
+
+- `packages/engine/Source/Shaders/ReprojectWebMercatorFS.glsl` — replaced lookup-only FS with per-fragment Mercator-Y math + 4 new scalar uniforms.
+- `packages/engine/Source/Shaders/ReprojectWebMercatorVS.glsl` — dropped `webMercatorT` attribute; passes `position.xy` through as `v_textureCoordinates`.
+- `packages/engine/Source/Scene/ImageryLayerHelpers.js` — replaced 64-row grid + per-tile `webMercatorT` loop with a 4-vertex quad and 4 uniformMap entries (`u_southLatitude`, `u_northLatitude`, `u_southMercatorY`, `u_oneOverMercatorHeight`); dropped `FeatureDetection` and `TerrainProvider` imports + the `float32ArrayScratch` 128-float buffer.
 
 ---
 

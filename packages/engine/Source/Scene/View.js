@@ -11,6 +11,7 @@ import Pass from "../Renderer/Pass.js";
 import PassState from "../Renderer/PassState.js";
 import Camera from "./Camera.js";
 import EdgeFramebuffer from "./EdgeFramebuffer.js";
+import GBufferFramebuffer from "./GBufferFramebuffer.js";
 import FrustumCommands from "./FrustumCommands.js";
 import GlobeDepth from "./GlobeDepth.js";
 import GlobeTranslucencyFramebuffer from "./GlobeTranslucencyFramebuffer.js";
@@ -93,6 +94,13 @@ class View {
     this.pickDepthFramebuffer = new PickDepthFramebuffer();
     this.sceneFramebuffer = new SceneFramebuffer();
     this.edgeFramebuffer = new EdgeFramebuffer();
+    // Phase 8a Slice 1 (Batch 80) — scaffolding for the depth-prepass +
+    // normal G-buffer. Allocated unconditionally so the view always has
+    // the slot wired (Principle 7), but the underlying GPU textures are
+    // only created when `frameState.useDeferredLighting` is set true
+    // (Slice 2+). With the flag at its default `false` this carries no
+    // runtime cost. See migration_doc/PHASE_8_SHADER_STRATEGY.md.
+    this.gBufferFramebuffer = new GBufferFramebuffer();
     this.globeDepth = globeDepth;
     this.globeTranslucencyFramebuffer = new GlobeTranslucencyFramebuffer();
     this.oit = oit;
@@ -349,6 +357,8 @@ class View {
       this.sceneFramebuffer && this.sceneFramebuffer.destroy();
     this.edgeFramebuffer =
       this.edgeFramebuffer && this.edgeFramebuffer.destroy();
+    this.gBufferFramebuffer =
+      this.gBufferFramebuffer && this.gBufferFramebuffer.destroy();
     this.globeDepth = this.globeDepth && this.globeDepth.destroy();
     this.oit = this.oit && this.oit.destroy();
     this.translucentTileClassification =

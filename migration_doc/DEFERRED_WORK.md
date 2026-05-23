@@ -2718,6 +2718,29 @@ User asked to fix all 6 issues. Made meaningful infrastructure progress on #2 (t
 
 ---
 
+## NEW-VR-3 — Cross-backend tooling determinism (Batch 70, 2026-05-19)
+
+### VR3-SPLIT-SCREEN-CLOCK-SYNC
+
+**What:** `Apps/WebGPUTest/split-screen-comparison.html` runs WebGL and WebGPU viewers as independent Cesium instances. Each has its own `Clock` with default `shouldAnimate = true` and its own `Date.now()` start moment, so the two halves of the screen drift apart over the session — different sun position, different terminator placement, different atmospheric scattering as the simulation clocks tick out of sync. For a true side-by-side visual parity comparison the two viewers should share a clock state.
+
+**Why deferred:** The probe-based metric work (clock-pinning in `probe-polar-multi-plain.mjs` etc., Batch 70) doesn't depend on the split-screen page since each probe creates its own viewer with a pinned clock. The split-screen page is a developer comfort tool, not on the regression-test path.
+
+**Prerequisites:** None.
+
+**Estimated effort:** ~1 session. Two approaches:
+
+1. **Frame-by-frame snap.** Add a `requestAnimationFrame` callback in the split-screen orchestrator that does `webgpuViewer.clock.currentTime = webglViewer.clock.currentTime` (and `shouldAnimate = false` on the slave). One JulianDate copy per frame; negligible cost.
+2. **Shared Clock instance.** Construct one `Clock` and pass the same object into both viewer constructors via `clockViewModel`. Slightly more involved because viewer init currently constructs the Clock inside each instance; would need a small viewer-API extension or post-construction `viewer.clock = sharedClock` swap.
+
+Approach 1 is simpler and lower-risk.
+
+**Impact:** Visual parity in split-screen becomes a meaningful "are these two renderers producing the same scene?" comparison instead of an "are the two clocks at the same UTC?" race. Especially important when the scene includes sun-direction-dependent rendering (day/night-shading, atmosphere, water highlights, terminator).
+
+**Trace:** Batch 70 introduced clock-pinning in probes. The split-screen page wasn't updated because it's a separate concern (interactive developer tool vs. automated regression probe). See WEBGPU_DEBUGGING_LOG.md Batch 70 "Future work" section.
+
+---
+
 ## ~~BUG-F2 — ShaderBuilder crash on BENTLEY edge asset~~ FIXED (Batch 66)
 
 ### ~~F2-SHADERBUILDER-EMPTY-FUNCTION~~ FIXED 2026-04-25 (Batch 66)

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Toggle scene.deferredLighting to enable the Phase 8a G-buffer producer. SSAO + SSR consumers read surface normals from the G-buffer instead of reconstructing them from depth, yielding sharper edges at silhouettes."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, Lighting" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Deferred Lighting demo.
+
+    Demonstrates `scene.deferredLighting` (Phase 8a, Batches 80-90).
+    When enabled, the per-frame loop runs an extra compute pass that
+    reads the scene depth attachment and writes packed
+    `(normalEye.xyz, roughness)` into a dedicated G-buffer texture.
+    Downstream consumers (SSAO via Batch 87, SSR via Batch 88) then
+    read normals from the G-buffer instead of reconstructing them
+    locally from depth derivatives.
+
+    The benefit is sharper silhouette edges — the producer's
+    Slice 3 (Batch 86) adaptive forward/backward difference
+    selection produces clean normals at depth discontinuities, where
+    the consumers' own central-difference reconstruction would
+    smear across the discontinuity.
+
+    Slice 2d (Batch 90) added support for default MSAA scenes
+    (msaaSamples = 4), so this works out-of-the-box. The visible
+    difference is most noticeable with AO enabled — toggle the
+    deferred lighting checkbox and watch silhouette edges on the
+    globe horizon + 3D Tile buildings sharpen up.
+
+    No WebGL implementation exists. Deferred lighting is a
+    WebGPU-only path in this fork.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Deferred lighting</td>
+            <td>
+              <input type="checkbox" data-bind="checked: deferredEnabled" />
+              <span style="color: #aaa">(Phase 8a G-buffer)</span>
+            </td>
+          </tr>
+          <tr>
+            <td>SSAO (consumer)</td>
+            <td>
+              <input type="checkbox" data-bind="checked: ssaoEnabled" />
+              <span style="color: #aaa"
+                >(reads G-buffer normals when deferred is ON)</span
+              >
+            </td>
+          </tr>
+          <tr>
+            <td>Show G-buffer normals</td>
+            <td>
+              <input type="checkbox" data-bind="checked: showGBufferNormals" />
+              <span style="color: #aaa"
+                >(CesiumDebug overlay; replaces production post-process with the
+                normal-map visualization)</span
+              >
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        // Force WebGPU — deferred lighting is a WebGPU-only path.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+
+        const scene = viewer.scene;
+
+        const viewModel = {
+          deferredEnabled: false,
+          ssaoEnabled: true,
+          showGBufferNormals: false,
+        };
+
+        function applyConfig() {
+          scene.deferredLighting = Boolean(viewModel.deferredEnabled);
+
+          // SSAO toggle — note that pre-Phase-8a SSAO already worked
+          // by reconstructing normals from depth derivatives. With
+          // deferred lighting on, the same SSAO reads from the
+          // G-buffer for cleaner normals at silhouettes (Slice 4).
+          if (scene.postProcessStages?.ambientOcclusion) {
+            scene.postProcessStages.ambientOcclusion.enabled = Boolean(
+              viewModel.ssaoEnabled,
+            );
+          }
+
+          // Debug overlay — `CesiumDebug.showGBufferNormals()` is the
+          // canonical API. When ON, it auto-enables deferred lighting
+          // (the overlay needs the G-buffer populated). We mirror
+          // that here so the checkboxes stay coherent.
+          if (viewModel.showGBufferNormals && window.CesiumDebug) {
+            window.CesiumDebug.showGBufferNormals();
+            // Also reflect the auto-enable back in the model.
+            viewModel.deferredEnabled = true;
+            Cesium.knockout.getObservable(viewModel, "deferredEnabled").valueHasMutated();
+          } else if (window.CesiumDebug) {
+            window.CesiumDebug.hideGBufferNormals();
+          }
+
+          scene.requestRender();
+        }
+
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+        for (const name in viewModel) {
+          if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
+            Cesium.knockout.getObservable(viewModel, name).subscribe(applyConfig);
+          }
+        }
+        applyConfig();
+
+        // A close-camera coastal view — the globe horizon + ground
+        // detail produce clear silhouette edges where Slice 3's
+        // forward/backward-difference normals visibly improve over
+        // the consumer's depth-only reconstruction.
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(-122.4194, 37.7749, 150_000),
+          orientation: {
+            heading: Cesium.Math.toRadians(0),
+            pitch: Cesium.Math.toRadians(-25),
+          },
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

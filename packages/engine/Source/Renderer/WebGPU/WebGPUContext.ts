@@ -910,17 +910,38 @@ export class WebGPUContext extends GraphicsContext {
    * @private
    */
   private _warmUpPipelines(): void {
-    // Touch the globe surface FR to trigger its RendererClass instantiation.
-    // The constructor compiles the terrain shader module and creates pipeline layout.
-    const globeFR = this.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE);
-    if (globeFR?.RendererClass && !globeFR._instance) {
-      try {
-        globeFR._instance = new globeFR.RendererClass(this);
-      } catch (e) {
-        // Non-fatal — will be created lazily on first use
-      }
-    }
-
+    // Batch 71 — globe-surface warmup removed (was dead code).
+    //
+    // Previously this method did:
+    //   globeFR._instance = new globeFR.RendererClass(this);
+    //
+    // intending to pre-compile the terrain shader module + pipeline
+    // layout. But the actual render path in
+    // `GlobeSurfaceTileProviderRendering.addWebGPUDrawCommandsForTile`
+    // creates its OWN per-device renderer instance via a module-scoped
+    // `_webgpuGlobeRenderers` WeakMap and calls `.initialize(device,
+    // shaderCode, fmt)` on it. The `globeFR._instance` created here was
+    // never reached at render time, AND the constructor alone doesn't
+    // perform any GPU work (it just allocates a Float32Array scratch).
+    // So the warmup achieved nothing for globe.
+    //
+    // Two future fix paths if first-frame globe stutter becomes a
+    // priority:
+    //   (a) Move the warmup into GlobeSurfaceTileProviderRendering.js
+    //       as a top-level `warmUpGlobeRenderer(context)` helper that
+    //       populates `_webgpuGlobeRenderers` and calls `.initialize`.
+    //       WebGPUContext can then call that helper here.
+    //   (b) Have addWebGPUDrawCommandsForTile check `globeFR._instance`
+    //       first as a pre-warmed instance, falling back to the
+    //       device-keyed map for multi-context cases. Multi-context
+    //       (split-screen) would still pay first-frame on the second
+    //       device because `_instance` is a single field.
+    //
+    // Neither has been done yet — first-frame globe rendering is fast
+    // enough in practice that the stutter is below the perceptible
+    // threshold on the dev machines we've measured. Tracked in
+    // DEFERRED_WORK.md if it surfaces as a real issue.
+    //
     // AUDIT_2026_05_02 C.2 (Batch 135) — eager `void this.gpuCuller`
     // trigger removed. The lazy getter remains; consumers wired in
     // Batches 209-211 trigger initialization on first use. Eager
@@ -1738,10 +1759,19 @@ export class WebGPUContext extends GraphicsContext {
       }
 
       // Create new depth texture. TEXTURE_BINDING is added so compute
-      // shaders (Hi-Z pyramid, occlusion test) can sample the depth
-      // after the render pass stores it. Guarded so the feature is
-      // only requested when a consumer opts in (default: off).
-      const depthUsage = GPUTextureUsage.RENDER_ATTACHMENT;
+      // shaders (Hi-Z pyramid, occlusion test, G-buffer producer in
+      // Phase 8a Slice 2) can sample the depth after the render pass
+      // stores it.
+      //
+      // Batch 86 (Phase 8a Slice 2b) — flipped on unconditionally
+      // (previously the comment said "guarded by opt-in" but no opt-in
+      // logic was ever implemented; the accessor `depthOnlyTextureView`
+      // always returned null, silently disabling HiZ and the G-buffer
+      // producer). Enabling unconditionally has negligible perf cost
+      // (one extra texture-usage bit, no per-frame work) and unblocks
+      // every compute-sampled-depth consumer.
+      const depthUsage =
+        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
       this._depthTexture = this._device.createTexture({
         size: { width, height },
         format: this._depthFormat,
@@ -1750,7 +1780,13 @@ export class WebGPUContext extends GraphicsContext {
       });
 
       this._depthTextureView = this._depthTexture.createView();
-      this._depthOnlyTextureView = null;
+      // Depth-only view (aspect = "depth-only") so compute shaders can
+      // bind it as `texture_depth_2d` per the WebGPU spec. The full view
+      // above (aspect = "all") is what render-pass depth-stencil
+      // attachments expect.
+      this._depthOnlyTextureView = this._depthTexture.createView({
+        aspect: "depth-only",
+      });
     }
   }
 
@@ -3030,6 +3066,80 @@ export class WebGPUContext extends GraphicsContext {
     environmentState.useInvertClassification =
       !picking && scene.invertClassification;
     environmentState.renderTranslucentDepthForPick = false;
+
+    // Phase 8a Slice 1 (Batch 80) + Slice 2b (Batch 86) — G-buffer
+    // allocation. Mirrors the gating block in
+    // `FramebufferOrchestrator.js` which DOES NOT run on WebGPU
+    // because the WebGPU context overrides `updateAndClearFramebuffers`
+    // to return `true` (handled here, skip the rest of the orchestrator).
+    // Without this block the `useDeferredLighting` flag has no effect
+    // on the WebGPU backend — the framebuffer never allocates and the
+    // producer dispatcher early-outs because `outputView` is null.
+    // `Scene._view` is a JS module without an ambient type; structurally
+    // unpack just the slots this block needs.
+    const view = (
+      scene as unknown as {
+        _view?: {
+          viewport: { width: number; height: number };
+          gBufferFramebuffer?: {
+            update(
+              context: WebGPUContext,
+              viewport: { width: number; height: number },
+              hdr: boolean,
+              numSamples: number,
+            ): void;
+            clear(context: WebGPUContext, passState: CesiumPassState): void;
+          };
+        };
+      }
+    )._view;
+    const useDeferredLighting =
+      !picking &&
+      frameState.useDeferredLighting === true &&
+      view !== undefined &&
+      view.gBufferFramebuffer !== undefined;
+    environmentState.useDeferredLighting = useDeferredLighting;
+    if (useDeferredLighting && view?.gBufferFramebuffer) {
+      // `_hdr` and `msaaSamples` aren't in the ambient `CesiumScene`
+      // interface — structurally narrow here. Mirrors the same access
+      // pattern used in `FramebufferOrchestrator.js` (the WebGL side).
+      const sceneExt = scene as unknown as {
+        _hdr: boolean;
+        msaaSamples: number;
+      };
+      view.gBufferFramebuffer.update(
+        this,
+        view.viewport,
+        sceneExt._hdr,
+        sceneExt.msaaSamples,
+      );
+      view.gBufferFramebuffer.clear(this, passState);
+    }
+
+    // Batch 95 — drive the PostProcessStageCollection sync. The WebGL
+    // orchestrator at `FramebufferOrchestrator.js:126` calls
+    // `postProcess.update(context, useLogDepth, useHdr)` to populate the
+    // `_webgpuCache` slot (via the POST_PROCESS_COLLECTION FR). Because
+    // this override returns `true`, the orchestrator's call is skipped,
+    // and without this line `configureWebGPUPostProcessPipeline` (which
+    // runs later in `ensureResources`) sees an empty default cache and
+    // never initializes AO / Bloom / DoF. Setting AO via
+    // `scene.postProcessStages.ambientOcclusion.enabled = true` then has
+    // no visible effect — caught by `probe-slice4-verify.mjs`.
+    const ppc = scene.postProcessStages as unknown as
+      | {
+          update(
+            context: WebGPUContext,
+            useLogDepth: boolean,
+            useHdr: boolean,
+          ): void;
+        }
+      | undefined;
+    if (ppc?.update) {
+      const sceneHdr = (scene as unknown as { _hdr?: boolean })._hdr ?? false;
+      ppc.update(this, !!frameState.useLogDepth, sceneHdr);
+    }
+
     // SceneMode.SCENE2D = 2 (mirrors `Scene.js:3131`). The 14.5-pattern
     // bug had this as `!== 1` (which is COLUMBUS_VIEW), turning WebVR
     // off for 2.5D and on for 2D — the opposite of the WebGL behavior.

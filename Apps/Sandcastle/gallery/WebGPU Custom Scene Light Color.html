@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Custom scene-light color (czm_lightColor) propagates to the globe Lambert path on WebGPU. Tint the globe with a custom directional light — sunset orange, blue moon, or any color — and the Lambert diffuse picks up the tint."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, Lighting" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Custom Scene Light Color demo.
+
+    Demonstrates that `scene.light = new DirectionalLight({ color: ... })`
+    actually changes the globe's Lambert color on WebGPU. Pre-Batch-76
+    (2026-05-20) the WGSL globe shader hardcoded white for the Lambert
+    diffuse multiplier — `scene.light.color` was honored on the WebGL
+    backend but a no-op on WebGPU. Batch 76 added `camera.lightColor` to
+    the camera UBO + the multiply in the globe FS Lambert path, matching
+    WebGL's `czm_lightColor` automatic uniform.
+
+    Drag the color picker. The globe diffuse picks up the tint. Setting
+    the color to bright orange simulates a sunset light; deep blue
+    simulates moonlight or stage lighting.
+
+    The atmosphere itself is driven by `sunDirection`/`moonDirection` —
+    not by `scene.light.color` — so the sky stays its physical color
+    while the globe Lambert tints.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Light color</td>
+            <td>
+              <input type="color" data-bind="value: lightColor, valueUpdate: 'input'" />
+              <span data-bind="text: lightColor"></span>
+            </td>
+          </tr>
+          <tr>
+            <td>Intensity</td>
+            <td>
+              <input
+                type="range"
+                min="0.1"
+                max="3.0"
+                step="0.05"
+                data-bind="value: intensity, valueUpdate: 'input'"
+              />
+              <span data-bind="text: intensity"></span>
+            </td>
+          </tr>
+          <tr>
+            <td>Enable lighting</td>
+            <td>
+              <input type="checkbox" data-bind="checked: enableLighting" />
+              (Globe.enableLighting must be true for Lambert to apply)
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+
+        const scene = viewer.scene;
+        const globe = scene.globe;
+
+        const viewModel = {
+          // Default to a warm sunset orange so the effect is immediately
+          // visible — white would be indistinguishable from the
+          // baseline.
+          lightColor: "#ff8844",
+          intensity: 1.5,
+          enableLighting: true,
+        };
+
+        function hexToColor(hex) {
+          const r = parseInt(hex.slice(1, 3), 16) / 255;
+          const g = parseInt(hex.slice(3, 5), 16) / 255;
+          const b = parseInt(hex.slice(5, 7), 16) / 255;
+          return new Cesium.Color(r, g, b, 1.0);
+        }
+
+        function applyConfig() {
+          // The globe Lambert path on WebGPU multiplies the diffuse
+          // term by `camera.lightColor.rgb` (Batch 76). This is fed
+          // from `uniformState.lightColor`, which reads from
+          // `scene.light.color`. The DIRECTION component of
+          // `scene.light` is consumed by other paths (atmosphere,
+          // model PBR); the globe Lambert always uses the sun
+          // direction. So this demo focuses on COLOR tinting.
+          //
+          // Using a SunLight here so the sun direction stays correct
+          // for the camera view (clock pinned to solar noon below
+          // means the visible disc is fully day-lit).
+          const color = hexToColor(viewModel.lightColor);
+          scene.light = new Cesium.SunLight({
+            color,
+            intensity: Number(viewModel.intensity),
+          });
+          globe.enableLighting = Boolean(viewModel.enableLighting);
+          scene.requestRender();
+        }
+
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+        for (const name in viewModel) {
+          if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
+            Cesium.knockout.getObservable(viewModel, name).subscribe(applyConfig);
+          }
+        }
+        applyConfig();
+
+        // Pin the clock to solar noon UTC on 2026-06-21 (June
+        // solstice). At 12:00 UTC the sun is over the prime meridian;
+        // we position the camera there so the visible globe disc is
+        // fully day-lit and the light color tint is unambiguous.
+        const noon = Cesium.JulianDate.fromIso8601("2026-06-21T12:00:00Z");
+        viewer.clock.currentTime = noon.clone();
+        viewer.clock.startTime = noon.clone();
+        viewer.clock.stopTime = noon.clone();
+        viewer.clock.shouldAnimate = false;
+        viewer.clock.multiplier = 0;
+
+        // Position over the prime meridian at orbital altitude — the
+        // bright sunlit disc fills most of the view, making the light
+        // color tint immediately visible.
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(0, 23, 12_000_000),
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

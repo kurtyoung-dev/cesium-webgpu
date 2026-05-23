@@ -1300,16 +1300,20 @@ export class WebGPUGlobeSurfaceRenderer {
       if (!tileImagery || !tileImagery.readyImagery) continue;
 
       const imagery = tileImagery.readyImagery;
-      const view = getOrCreateImageryTextureHelper(this, imagery);
-      if (view) {
-        textureViews.push(view);
+      // Batch 65 — pass the full tileImagery so the cache can pick the
+      // Mercator or Geographic variant based on
+      // `tileImagery.useWebMercatorT` and the per-imagery dual textures.
+      const result = getOrCreateImageryTextureHelper(this, tileImagery);
+      if (result) {
+        textureViews.push(result.view);
       } else if (this._diagShouldLog()) {
         console.warn(
           `[WebGPU:GlobeTile] _getOrCreateImageryTexture returned null for imagery`,
           {
             hasImage: !!imagery?.image,
             hasTexture: !!imagery?.texture,
-            hasWebGPUTex: !!imagery?._webgpuReprojectedTexture,
+            hasMerc: !!imagery?._webgpuMercatorTexture,
+            hasReproj: !!imagery?._webgpuReprojectedTexture,
             texSource: !!(
               imagery?.texture as CesiumTextureWithSource | undefined
             )?._source,

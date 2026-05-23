@@ -72,6 +72,20 @@ class Imagery {
         this.textureWebMercator.destroy();
       }
 
+      // Batch 65 — release the WebGPU dual-texture pair. Mirrors the
+      // WebGL textureWebMercator / texture destruction above. Safe to
+      // call .destroy() on a GPUTexture even if the renderer cache
+      // still holds a view onto it; the cache entry is cleared on
+      // renderer teardown.
+      if (defined(this._webgpuReprojectedTexture)) {
+        this._webgpuReprojectedTexture.destroy();
+        this._webgpuReprojectedTexture = undefined;
+      }
+      if (defined(this._webgpuMercatorTexture)) {
+        this._webgpuMercatorTexture.destroy();
+        this._webgpuMercatorTexture = undefined;
+      }
+
       destroyObject(this);
 
       return 0;

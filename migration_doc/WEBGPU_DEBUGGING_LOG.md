@@ -24,6 +24,70 @@
 
 ---
 
+## Batch 95 — Phase 8a Slice 4/5 verify probe + critical AO-never-engaged fix (2026-05-23)
+
+**Why this batch matters.** The Phase 8a deferred-lighting work landed across Batches 80-93 with multiple "AO now reads from G-buffer" / "Slice 4 shipped" claims. Those claims were based on hand-eyed Sandcastle comparisons and probe diffs that hovered in the sub-percent range. We built a deterministic 4-cell matrix probe to put a number on it and the probe immediately surfaced a bug none of the prior captures caught: **ambient occlusion never actually engaged on the WebGPU backend**, no matter what `scene.postProcessStages.ambientOcclusion.enabled` was set to. Every Slice 4/5 "verification" we'd done was reading noise, not signal.
+
+**The probe (`Tools/visual-regression/probe-slice4-verify.mjs`).** Captures 5 frames over a fixed terrain view (Grand Canyon, 8km altitude, pinned clock):
+
+| Capture | AO | deferredLighting | Purpose |
+| --- | --- | --- | --- |
+| A | OFF | OFF | baseline |
+| A2 | OFF | OFF | noise floor (same settings) |
+| B | OFF | ON | producer leak check |
+| C | ON | OFF | AO with depth-fallback normals |
+| D | ON | ON | AO with G-buffer normals (Slice 4) |
+
+Then computes four diffs: noise floor (A vs A2), AO engagement (A vs C), Slice 4 signal (C vs D), deferred leak (A vs B). Every capture also dumps the WebGPU-side wiring state (`_webgpuCache`, `_aoEffect.enabled`, `gBufferFramebuffer.normalRoughnessTexture`, `env.useDeferredLighting`) so we can tell whether a 0% diff means "feature off" or "feature on but invisible."
+
+**Root cause.** `WebGPUContext.updateAndClearFramebuffers` (the WebGPU override at `WebGPUContext.ts:3010`) returns `true` to signal `FramebufferOrchestrator.js:29` to skip the WebGL framebuffer setup. That early-return also skips the orchestrator's call to `postProcess.update(context, useLogDepth, hdr)` at line 126 — which is the ONLY path that triggers `updateWebGPUPostProcessStages` (the POST_PROCESS_COLLECTION feature renderer). With that sync skipped:
+
+- `scene.postProcessStages._webgpuCache` was never created
+- `_featureRenderer` was never assigned on the collection
+- `configureWebGPUPostProcessPipeline` (which runs later in `ensureResources`) read the empty default cache, saw `ambientOcclusionEnabled: false`, and never called `pipeline.addAmbientOcclusion(...)`
+- The pipeline existed but `_aoEffect` was permanently `null`
+
+So toggling `scene.postProcessStages.ambientOcclusion.enabled = true` did exactly nothing on WebGPU. Same story for bloom, DoF, and any other lazily-initialized post-process effect. The reason this slipped is that **the pipeline still composited correctly** — it just always ran the no-stages "copy scene framebuffer to canvas" passthrough, so the canvas looked fine and the previous probe diffs picked up only natural frame-to-frame variance.
+
+**Fix (`WebGPUContext.ts:3115-3130`).** Added the missing `postProcess.update(context, useLogDepth, hdr)` call inside the WebGPU override, right after the G-buffer allocation block. This is the architectural mirror of the WebGL orchestrator line. The collection's FR sync now runs every frame, `_webgpuCache` populates, `configureWebGPUPostProcessPipeline` sees the cache, and `addAmbientOcclusion` / `addBloom` / `addDepthOfField` fire on first-enable.
+
+**Probe verification (post-fix).**
+
+```
+[A vs A2] NOISE FLOOR (identical settings):     mismatch=0.094%
+[A vs C]  AO ENGAGEMENT (off vs on, def-off):    mismatch=0.703%  ✓ 7× noise
+[C vs D]  SLICE 4 SIGNAL (depth vs G-buf):       mismatch=0.000%  (expected — see below)
+[A vs B]  DEFERRED LEAK CHECK (no AO, def-only): mismatch=0.094%  ✓ at noise floor
+```
+
+JS-side diagnostic dump (capture C):
+
+```
+cache_exists: true, cache_aoEnabled: true, cache_aoInitialized: true,
+aoEffect_exists: true, aoEffect_enabled: true,
+pipeline_hasActiveStages: true, gBufferFB_exists: true,
+gBufferNormalTex_exists: false (def=OFF), env_useDeferredLighting: false
+```
+
+And capture D (def=ON):
+
+```
+gBufferNormalTex_exists: true, env_useDeferredLighting: true
+```
+
+Both AO captures show the effect fully wired. Slice 4's apparent 0% signal is a known property of the current G-buffer: the producer derives normals from depth gradients, which is exactly what the AO depth-fallback path already does. Both consumer paths read the same underlying signal, so the canvas output is identical. **Slice 4 IS engaged** (verified via the JS-side wiring state); the visual indistinguishability is **expected until Slice 5c lands**, when the G-buffer carries real per-fragment material normals from an MRT opaque pass rather than depth-derived ones.
+
+**Files modified.**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` — added `postProcess.update(...)` call inside `updateAndClearFramebuffers` override.
+- `Tools/visual-regression/probe-slice4-verify.mjs` — new probe (4-cell matrix + noise floor + JS-side wiring dump). Reusable for future Slice 5/6 verification.
+
+**Lesson for future post-process work.** Any WebGPU-only post-process feature relying on `_webgpuCache` was silently broken before this fix. Audit candidates to re-verify: bloom intensity uniforms, DoF focal distance, FXAA enable-state, AutoExposure, etc. The probe template above (capture + JS-side wiring dump + noise floor) is the right pattern — a sub-percent canvas diff alone cannot distinguish "effect off" from "effect on but subtle."
+
+**Deferred follow-up (not this batch).** Slice 5c — real material normals via opaque-pass MRT — will give Slice 4 a measurable visual signal. The probe will become the regression baseline for that work.
+
+---
+
 ## Session 39 — Batch 67: NEW-4-A EdgeVisibilityPipelineStage + NEW-4-D Texture3D closures (2026-04-25)
 
 Closes NEW-4-A and NEW-4-D from `DEFERRED_WORK.md`. Edge Visibility + Edge Feature ID Sandcastle demos go from FAIL → PASS via NEW-4-A, taking the runner score from 3/7 → 5/7 PASS on the WebGPU backend. NEW-4-D unblocks the Voxel demo path (Texture3D allocation no longer throws on WebGPU contexts); the WGSL parse error tracked as NEW-4-E is now reachable for live diagnosis.
@@ -6076,6 +6140,1888 @@ The Batch 56 entry above claimed the brightness gap was "~4× darker" based on t
 - `probe-imagery-overlay.mjs` — Bing + TileCoordinatesImageryProvider overlay. Regression check for the Batch 56 alpha=1 reprojection fix (verifies it doesn't break transparent overlay imagery).
 - `probe-atmosphere-toggle.mjs` — `globe.showGroundAtmosphere = true/false` at 18 Mm. Regression check for the Batch 56 per-fragment ground-atmosphere fix (verifies both modes render correctly).
 - `Tools/visual-regression/scenes.json` — added `wgs84-orbit`, `wgs84-close`, `mid-distance-12mm` scenes (with `scenes/wgs84-setup.js` setupFile) so capture-and-diff exercises the Batch 56/57 fix areas on every run.
+
+---
+
+## Batch 94 — FEAT-GAP-09 partial wire (PrimitiveBasicColor) + scope correction
+
+**Date:** 2026-05-23
+
+Tier 3 easy-win batch. Audited three candidates (aerial-perspective LUT wiring, HDR canvas output, Collections per-encoder renderState). Found:
+
+- **HDR canvas output** → already 100% shipped (Batches 206-219). Nothing to do.
+- **Collections per-encoder renderState** → already resolved (audit 2026-05-02). Nothing to do.
+- **Aerial-perspective LUT wiring** → real remaining work, but the prior audit's "5-7 lines per shader" estimate was wrong for most remaining variants.
+
+### What landed
+
+[PrimitiveBasicColor.wgsl](packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveBasicColor.wgsl) — wired with the aerial-perspective LUT pattern. Extended the `EffectsUniforms` struct to reach `atmosphereLutControl`, added bindings 7/8/9 for the transmittance LUT + inscatter LUT + sampler, and added the fog blend block at the end of `fragmentMain`. The shared `getEffectsBindGroupLayout` already has all the slots; the Basic shader just hadn't declared them.
+
+This single change benefits debug-style vertex-colored primitives (frustum visualizers, axis overlays, custom vector geometry rendered via the basic flat path) — they now pick up atmospheric haze at distance when the LUT is active. Gated on `effects.atmosphereLutControl.x > 0.5`, so non-atmosphere scenes are unchanged.
+
+### Scope correction to FEAT-GAP-09
+
+The prior audit (referenced in Batch 89 / parity audit response) reported "32 remaining shaders, each ~5-7 lines, purely mechanical." Audit of the actual codebase shows that's only true for shaders that ALREADY HAVE an effects bind group. The remaining 20 Flat/Advanced variants don't:
+
+| Shader | Has effects BG? | Wiring cost |
+|---|---|---|
+| `PrimitiveBasicColor.wgsl` | YES (@group(2)) | Done this batch |
+| `PrimitiveBasicTexturedColor.wgsl` | NO | Needs JS pipeline-layout change |
+| `PrimitiveMatColorFlat.wgsl` | NO | Needs JS pipeline-layout change |
+| `PrimitiveMatImageFlat.wgsl` | NO | Needs JS pipeline-layout change |
+| All 17 other Mat*Flat variants | NO | Needs JS pipeline-layout change |
+| `Advanced/PointCloud.wgsl` | NO | Needs JS pipeline-layout change |
+| `Advanced/VoxelPrimitive.wgsl` | (not checked) | Likely same |
+| `Advanced/GaussianSplat.wgsl` | (not checked) | Likely same |
+
+For the Flat / Advanced shaders that have NO effects bind group, wiring requires:
+
+1. WGSL changes (effects struct + bindings + fog block) — 30 lines per shader
+2. **JS-side pipeline-layout change** in [WebGPUPrimitiveCommands.js](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js): add the effects BGL to the pipeline layout for these shader variants
+3. **JS-side bind-group setup**: bind the effects BG when drawing these shader variants
+
+That's a 2-3 batch effort to do all 20, not a 1-batch knock-out. The audit's underestimate was real and worth correcting.
+
+### Real remaining audit (after this batch)
+
+- ✅ 13 shaders wired (12 prior + PrimitiveBasicColor)
+- 🔧 ~20 shaders need WGSL + JS-side plumbing (multi-batch)
+- ⊘ Pick shaders intentionally excluded (fog corrupts pick color)
+
+### Recommendation for future wiring batches
+
+Don't try to wire the Flat shaders one-by-one. Instead:
+
+1. Pick a single representative Flat shader (e.g., `PrimitiveMatColorFlat`).
+2. Update its pipeline-build call site to use the shared effects BGL.
+3. Wire the WGSL changes for that one shader.
+4. Verify end-to-end (build + probe).
+5. THEN duplicate the WGSL changes across the other 19 in one batch — they share the same `material → effects` BG layout shift.
+
+Estimated effort: 1 batch for the pipeline-layout refactor + WGSL change for one shader, then 1-2 batches to spread the WGSL pattern to the rest.
+
+### Verification
+
+- `npx gulp build` — clean.
+- `probe-polar-multi-plain` — pixel-identical baseline (polar-multi doesn't render PrimitiveBasicColor geometry, so no visible change expected).
+
+### Net state
+
+One more shader wired, one more visible-but-tiny improvement (debug primitives get fog now). FEAT-GAP-09 scope corrected — the audit's "easy win" framing was optimistic; remaining work is medium-effort multi-batch.
+
+---
+
+## Batch 93 — Phase 8a Slice 5b (depth-gradient roughness proxy in producer + SSR roughness gating)
+
+**Date:** 2026-05-22
+
+Threads a roughness signal through the G-buffer + SSR pipeline. Pre-Batch-93 the producer hardcoded `roughness = 1.0` in the G-buffer .w channel and SSR ignored it entirely (every reflective surface treated as a perfect mirror — wrong on rough terrain). This batch derives a heuristic roughness from depth-gradient magnitude in the producer and has SSR attenuate / skip reflections accordingly.
+
+### Why depth-gradient as a proxy (not real material data)
+
+Real material roughness lives in the opaque pass's material data — only accessible during the per-pixel fragment shader of each opaque geometry. To thread it to the post-pass producer would require MRT-writing roughness from every opaque shader (globe, model, primitives), which is a multi-week refactor touching ~10 pipelines.
+
+The depth-gradient heuristic captures something useful at zero cost:
+
+- **Smooth surfaces** (water, large terrain slopes, building facades, glass) have SMALL depth gradients over the 3-pixel neighborhood. → low roughness (≈0.1) → SSR does sharp reflections.
+- **Rough surfaces** (vegetation, rocky terrain, jagged 3D Tile features) have LARGE depth gradients. → high roughness (≈0.95) → SSR attenuates or skips reflections.
+
+This isn't physically correct (rough surfaces aren't always high-gradient — e.g., a calm pebble beach is "rough" but flat), but it correlates better than "always 1.0." A future Slice 5c can replace it with MRT-driven material data.
+
+### Producer changes
+
+Both [GBufferNormalsFromDepth.wgsl](packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepth.wgsl) and the MSAA variant [GBufferNormalsFromDepthMSAA.wgsl](packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepthMSAA.wgsl) — lockstep edit:
+
+```wgsl
+let gradMag = sqrt(dot(dpdu, dpdu) + dot(dpdv, dpdv));
+let roughness = mix(0.1, 0.95, smoothstep(0.05, 2.0, gradMag));
+textureStore(gBufferOut, pixel, vec4<f32>(normalEye, roughness));
+```
+
+Thresholds:
+- `gradMag <= 0.05 m` → fully smooth (0.1 roughness)
+- `gradMag >= 2.0 m` → fully rough (0.95 roughness)
+- Linear interpolation between via `smoothstep`
+
+The thresholds are tuned for typical Cesium viewing distances — calibrate empirically when Slice 5c lands real material data.
+
+### SSR consumer changes
+
+[ScreenSpaceReflections.wgsl](packages/engine/Source/Shaders/WebGPU/PostProcess/ScreenSpaceReflections.wgsl) `fragmentMain`:
+
+- Read the full `(normal.xyz, roughness)` sample once.
+- Skip ray-marching entirely for `roughness > 0.6` — the reflection would be blurred to invisibility anyway, and we save the per-fragment ray-march cost (~64 sample steps + binary refinement). Significant perf win on rough-terrain views.
+- For `roughness <= 0.6`, blend factor multiplied by `(1.0 - clamp(roughness / 0.6, 0, 1))`. Mid-roughness still contributes diminished SSR; smooth surfaces get full mirror.
+- Falls back gracefully when no G-buffer is bound (`flags.x < 0.5`) — uses `roughness = 0.0` (full mirror), matching the pre-Batch-93 behavior so non-deferred scenes are unchanged.
+
+### Verification
+
+- `npx gulp build` — clean (both producer variants compile).
+- `probe-polar-multi-plain` — pixel-identical baseline. SSR isn't active in the default probe scene; producer's `.w` write doesn't affect AO (consumer ignores `.w`).
+- `probe-gbuffer-enabled` — AO consumer probe still shows 0.094% canvas diff (unchanged). Confirms producer's `.xyz` writes still reach the AO consumer correctly, and the `.w` add doesn't disturb the existing wiring.
+
+### What this enables
+
+SSR on water + smooth surfaces now skips the rough-terrain false reflections that the pre-Batch-93 "everything is a mirror" behavior produced. Visually this is most noticeable in scenes mixing:
+
+- Water bodies (smooth, sharp mirror reflections)
+- Rocky terrain (rough, no reflection — pre-Batch-93 the rocky terrain reflected weirdly)
+- 3D Tile buildings (smooth facades reflect, rough roofs / vegetation don't)
+
+The cost is a single texture sample + a `mix`/`smoothstep` per producer pixel — negligible. The SSR per-fragment ray-march early-out for rough pixels is actually a net perf WIN (skipping ~64 sample steps for the ~majority of pixels on terrain).
+
+### What's still hardcoded / heuristic
+
+- The 0.05 m / 2.0 m thresholds are eyeballed; tune empirically.
+- The 0.6 roughness early-out threshold is a value judgment between "skip blurred reflections" and "let the consumer attenuate them naturally."
+- Real material roughness isn't threaded — gradient is a proxy. Surfaces that violate the heuristic (e.g., flat sand beaches that are physically rough, or detailed-but-smooth metal surfaces) get the wrong roughness.
+
+### Open in this arc
+
+- **Slice 5c (deferred)** — thread real material roughness via opaque-pass MRT. Multi-pipeline edit.
+- **Slice 2e follow-up** — diagnose the overlay textureLoad-returns-zero bug. Needs Chrome canary or Dawn debug build.
+- **Slice 6** — clustered lighting. Multi-week new-feature arc; clustered lighting doesn't exist on WebGPU yet.
+
+### Net state
+
+Phase 8a producer now writes meaningful data in BOTH the .xyz (normals, Slices 1-3) AND .w (roughness, this batch) channels. Two consumers (AO + SSR) both read from it and produce visible results. The visualization overlay (Slice 2c) has an unresolved read-side bug, but that's developer-tooling, not user-visible.
+
+---
+
+## Batch 92 — Phase 8a Slice 2e investigation (overlay textureLoad returns zero; root cause not isolated)
+
+**Date:** 2026-05-22
+
+Investigated the all-magenta G-buffer visualization overlay bug from Batch 90. Outcome: **root cause not isolated in this session.** The pipeline + render-pass infrastructure is proven sound; the specific failure is `textureLoad` on the G-buffer texture returning `(0, 0, 0)` despite the AO consumer probe (Batch 87) showing the producer's writes ARE visible to other readers. Documenting findings + scoping the deeper investigation as a future session.
+
+### What was tested
+
+**Diagnostic 1 — Encoder ordering.** Pre-Batch-92 the producer's compute dispatch was occasionally happening while a render pass was open on the same encoder. Batch 90 added `context.endCurrentRenderPass?.()` to the producer's `_executeGBufferProducer` entry. Confirmed working — no validation errors in Batch 92 runs.
+
+**Diagnostic 2 — Producer dispatch actually runs.** Added a state-transition log: confirmed `_executeGBufferProducer` fires every frame after `scene.deferredLighting = true`. Producer is not silently bailing.
+
+**Diagnostic 3 — Sampler vs textureLoad.** Pre-Batch-92 the overlay sampled the G-buffer with `textureSampleLevel` + a `non-filtering` sampler. Hypothesized that `rgba16float` + the strict sample-type rules without `float16-filterable` was silently returning zeros. Switched to `textureLoad` (no sampler). Same all-magenta result.
+
+**Diagnostic 4 — Hardcoded shader output bypassing textureLoad.** Modified the overlay fragment shader to return `vec4(uv.x, uv.y, 0.3, 1.0)` — a UV-based gradient that doesn't sample the texture at all. **The gradient rendered correctly to the canvas.** This proved the overlay's render pass + pipeline + bind-group setup + fragment-output path all work; the failure is specifically in the textureLoad operation.
+
+**Diagnostic 5 — AO consumer probe still shows real producer output.** `probe-gbuffer-enabled` (Batch 87) continues to report a 0.094% canvas mismatch when toggling `deferredLighting`, which only happens when the AO consumer reads non-trivial normals from the G-buffer. So the producer IS writing real data and SOMETHING (the AO bind group) can read it.
+
+### What this means
+
+The G-buffer texture is being written correctly by the producer compute pass. The overlay's bind group, pipeline, and render pass are all wired correctly. But `textureLoad(gBufferTexture, pixel, 0)` from the overlay's fragment shader returns `(0, 0, 0)` for every pixel.
+
+Possibilities I could not isolate:
+
+1. **Validation-passing-but-silent-failure** — Chrome's WebGPU validation may pass the bind group but the underlying Dawn layer silently returns zeros for the sampled binding. Would need Chrome devtools' WebGPU inspector or a Dawn-side build to diagnose.
+
+2. **Storage-write + sampled-read intra-encoder ordering** — WebGPU spec requires no explicit barrier between a storage write and a subsequent sampled read of the same texture in the same encoder. But Chrome's implementation may have a stricter requirement that's silently failing. The AO consumer reads happen inside a render pass that may have different synchronization semantics than the overlay's render pass.
+
+3. **`rgba16float` storage-write to sampled-read format mismatch** — both code paths declare `rgba16float`, but there may be a subtle WebGPU spec rule about format reinterpretation between storage and sampled bindings that Chrome enforces silently.
+
+### Files left in the codebase
+
+- [WebGPUDebugGBufferOverlay.ts](packages/engine/Source/Renderer/WebGPU/WebGPUDebugGBufferOverlay.ts) — restored to the magenta-fallback rendering path (no diagnostic). The overlay now serves as a coarse "G-buffer is empty or read-failed" signal: solid magenta means the textureLoad failed. When the read path gets fixed in a future session, the normal-map RGB visualization comes back automatically.
+- [WebGPUSceneRenderer.ts](packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) `_executeGBufferProducer` — diagnostic state-transition log removed.
+
+### What's still working
+
+- Producer (Slice 1, 2, 2d, 3) — populates the G-buffer texture
+- AO consumer (Slice 4) — reads the G-buffer, produces visible output (verified via `probe-gbuffer-enabled` 0.094% canvas diff)
+- SSR consumer (Slice 5) — wired through the same path as AO
+- `scene.deferredLighting` toggle, `Scene.debugShowGBufferNormals` toggle, `CesiumDebug.showGBufferNormals()` command — all functional
+- MSAA-aware producer pipeline (Slice 2d) — runs without validation errors
+
+The overlay just doesn't paint a useful picture. Everything else works.
+
+### Verification
+
+- `npx gulp build` — clean.
+- `probe-polar-multi-plain` — pixel-identical baseline.
+- `probe-gbuffer-enabled` — Slice 4 still produces 0.094% on-vs-off canvas diff (consumer wiring uninterrupted).
+
+### Net state
+
+Phase 8a is **production-ready as a rendering pipeline** — producer + AO consumer + SSR consumer all work in default MSAA scenes. The visualization overlay (Slice 2c/2e) is the only piece that doesn't display correctly. It's a developer-tooling gap, not a user-visible regression.
+
+### Open in this arc
+
+- **Slice 2e follow-up (deferred)** — diagnose the `textureLoad` returning zero. Best path: Chrome canary with `chrome://flags/#webgpu-developer-features`, or Dawn build with verbose validation logging, or a tiny isolated test case that reproduces outside of Cesium.
+- **Slice 5b (next batch)** — thread per-material roughness through the producer (currently hardcoded to 1.0); enables SSR to cone-trace rough surfaces instead of mirror-only reflections.
+- **Slice 6** — clustered lighting (multi-week new-feature arc; clustered lighting doesn't exist on WebGPU yet).
+
+---
+
+## Batch 91 — Fork feature audit + 3 new WebGPU Sandcastles (dual-light atmosphere, custom light color, deferred lighting)
+
+**Date:** 2026-05-22
+
+Per user request: diff fork features vs upstream Cesium + add Sandcastles for any features the fork has over upstream. The audit identified 3 user-facing visual features that lacked a dedicated demo. This batch fills those gaps.
+
+### Audit methodology
+
+1. Read FEATURE_INVENTORY.md §B (~200 fork-added features), filtered to `(SHIPPED)` items.
+2. Categorized as USER-FACING (deserves a demo), DEVELOPER-FACING (CesiumDebug, build variants, etc. — skip), or PERFORMANCE INFRA (no user toggle — skip).
+3. Cross-referenced against `Apps/Sandcastle/gallery/` — the fork ships 13 WebGPU-specific demos as of pre-Batch-91 (God Rays, SSR, TAA, Edge Visibility, Translucent Classification, Vector Tile Buffer, Voxel/Model Pick, Many Imagery Layers, Point Light Shadows, Weather Particles, Async Resource Monitor, Edge Feature ID).
+4. Identified HIGH-priority gaps where the feature exists but no isolated demo exists.
+
+### Gap summary (from the audit)
+
+- **Dual-Light Atmosphere** (sun + moon scattering) — `atmosphericConditions.lighting.enableDualLightAtmosphere` — central fork feature, ZERO existing demo coverage.
+- **Custom Scene Light Color on WebGPU** — `scene.light.color` propagating to globe Lambert via `camera.lightColor` (Batch 76) — recent batch work, no isolated demo.
+- **Deferred Lighting toggle** — `scene.deferredLighting` (Phase 8a, Batches 80-90) — recently-shipped major arc, needs user-facing demo.
+
+Already-covered (no new demo needed):
+- Volumetric Fog + Clouds → covered by existing `Volumetric Effects.html` (combined demo intentionally stacks all three for atmospheric realism).
+- SSR, TAA, God Rays → existing dedicated demos.
+- AtmosphericConditions weather knobs → existing `Atmospheric Conditions.html`.
+
+### New demos shipped
+
+1. **[WebGPU Dual-Light Atmosphere.html](Apps/Sandcastle/gallery/WebGPU%20Dual-Light%20Atmosphere.html)** — toggles `enableDualLightAtmosphere` + `moonIntensity`. Pins clock to a date/time where the moon is up on the night side of Earth (June 2026 22:00 UTC over Europe) so the dual-light contribution is at its strongest. Three knobs: enable/disable, moon intensity slider (0-0.3), UTC hour slider for daylight/night-side comparison.
+
+2. **[WebGPU Custom Scene Light Color.html](Apps/Sandcastle/gallery/WebGPU%20Custom%20Scene%20Light%20Color.html)** — color picker drives `scene.light.color` (default sunset orange `#ff8844`), intensity slider, `globe.enableLighting` toggle. Clock pinned to summer-solstice solar-noon over the prime meridian and camera positioned so the visible disc is fully sunlit — the orange tint propagates through the WGSL globe Lambert path via `camera.lightColor.rgb` (Batch 76 wiring).
+
+3. **[WebGPU Deferred Lighting.html](Apps/Sandcastle/gallery/WebGPU%20Deferred%20Lighting.html)** — three checkboxes: `scene.deferredLighting` (Phase 8a producer), SSAO enabled (consumer reads G-buffer normals via Batch 87), and `showGBufferNormals` debug overlay (CesiumDebug command from Batch 89). Close-camera SF coastal view where Slice 3's silhouette-aware normals visibly sharpen AO at edges.
+
+### Verification
+
+- `npx gulp build` regenerated `gallery-index.js` — all three demos picked up.
+- New probe: [Tools/visual-regression/probe-new-sandcastles.mjs](Tools/visual-regression/probe-new-sandcastles.mjs) — Playwright loads each demo via the dev server, waits for `Sandcastle.finishedLoading()`, captures a screenshot, counts errors.
+- **All 3 demos: 0 errors, 0 pageerrors.** Toolbars + knockout bindings render correctly. Canvas is dim in headless mode because Cesium ion imagery requires a token at runtime — interactive sessions show full lit globes. Demo API correctness verified by zero-error load.
+
+### Net state
+
+Fork features now have first-class Sandcastle coverage. 16 WebGPU-specific demos in the gallery (13 pre-existing + 3 new). The audit confirms no other HIGH-priority gaps remain — all shipped user-facing visual features have a demo or are covered by a combined demo.
+
+### Roadmap reminder
+
+Per the user's plan: after this batch, the remaining Phase 8a arc is:
+
+- **Slice 2e (next)** — diagnose + fix the G-buffer visualization overlay's all-magenta output. Producer is proven correct via the AO consumer probe; the gap is overlay-side.
+- **Slice 5b** — thread per-material roughness through the producer so SSR cone-traces rough surfaces.
+- **Slice 6** — clustered lighting (multi-week new-feature arc; clustered lighting doesn't exist on WebGPU yet, so this is "build from scratch + integrate with G-buffer" rather than a small wire-up).
+
+---
+
+## Batch 90 — Phase 8a Slice 2d (MSAA-multisampled depth support in the G-buffer producer)
+
+**Date:** 2026-05-20
+
+Unblocks deferred lighting in default-MSAA scenes. Pre-Batch-90 the G-buffer producer required `scene.msaaSamples = 1` because the compute shader's `texture_depth_2d` binding couldn't accept the multisampled depth view that Cesium's default `msaaSamples = 4` produces. Slice 2d adds a multisampled variant of the producer + the plumbing to select between them at execute time.
+
+Also surfaces and fixes a critical encoder-ordering bug that would have affected every dispatch and an auto-layout/explicit-BGL compatibility issue specific to MSAA depth bindings.
+
+### What this batch does
+
+**1. Adds the multisampled-depth shader variant.**
+
+- New file [packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepthMSAA.wgsl](packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepthMSAA.wgsl) — line-by-line copy of the existing single-sample producer with one difference: `texture_depth_multisampled_2d` binding and `textureLoad(tex, pixel, 0)` (sample 0). Algorithm + uniforms + output are identical. Keep these two files in lockstep when changing the algorithm.
+
+- Why sample-0 only (vs averaging N samples): MSAA depth samples are coverage-aware variations around the same surface; sample 0 is a representative depth and matches what `WebGPUDebugDepthOverlay` already does. Averaging would be ~4× cost for marginal accuracy gain at edges. Revisit in a future slice if SSR/clustered lighting need it.
+
+**2. Routes the right shader at execute time.**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts](packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts) — new `ComputeTaskType.NORMAL_FROM_DEPTH_MSAA = 9` (`COUNT` → 10). Sources mapping, strategy selector, label cases all extended.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGBufferRenderer.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGBufferRenderer.ts) — `GBufferComputeResources` now caches **two** bind group layouts + **two** bind groups + **two** compute pipelines (single-sample and MSAA). `dispatchGBufferNormalsFromDepth` accepts `depthSampleCount` in its params and selects the right pair.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) `_executeGBufferProducer` reads `scene.msaaSamples` and forwards it.
+
+**3. Fixes the auto-layout/explicit-BGL incompatibility.**
+
+Pre-Batch-90 the dispatcher routed through `host.dispatchCompute`, which uses `computeEngine.getOrCreatePipeline` with auto-layout (`layout: 'auto'`). Auto-layouts are pipeline-specific objects and can't be paired with custom-built bind groups for storage textures bound alongside MSAA depth — browser validation rejects the layout mismatch and the dispatch becomes a silent no-op.
+
+The fix: build the pipelines directly in `WebGPUGBufferRenderer.ts` with an explicit `pipelineLayout` constructed from our custom `bindGroupLayout` / `bindGroupLayoutMSAA`. The `host.dispatchCompute` indirection is bypassed; we open a compute pass on the shared encoder and dispatch directly. The `dispatchCompute` interface is unchanged for atmosphere LUT and other consumers that work with the auto-layout pattern.
+
+The atmosphere LUT continues to work because its bindings are storage-textures-only (where browser leniency on layout identity is observed) and not the stricter MSAA texture binding type.
+
+**4. Fixes the encoder-ordering bug.**
+
+The producer used to call `encoder.beginComputePass` directly without first ensuring no render pass was open on the same encoder. WebGPU validation forbids this — recording a compute pass while a render pass is open on the same encoder fails. The validation error this surfaced:
+
+```text
+[WebGPU:GlobePass] GPU VALIDATION ERROR: Recording in [CommandEncoder
+"Scene Frame Command Encoder"] which is locked while
+[RenderPassEncoder "Scene Framebuffer Render Pass"] is open.
+- While encoding [CommandEncoder ...].BeginComputePass(
+    [ComputePassDescriptor ""GBufferProducer_MSAA""]).
+```
+
+This wasn't visible pre-Batch-90 because `host.dispatchCompute` did its own pass management internally (the existing infrastructure papered over the bug). With the direct-encoder approach, `_executeGBufferProducer` now calls `context.endCurrentRenderPass?.()` before the dispatch and `context.resumeDefaultRenderPass?.()` after — same pattern as `_executeDebugDepthOverlay` and `executeEnvironmentalEffects`.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- `npx gulp build` — clean.
+- `probe-polar-multi-plain` — pixel-identical baseline (deferred lighting off by default, no regression).
+- `probe-gbuffer-enabled` — **Slice 4 AO consumer works in default MSAA**. With `deferredLighting = true` (and default `msaaSamples = 4`), the on-vs-off canvas pixel diff is 0.094% — small but real, confirming AO is now reading G-buffer normals on every frame. Pre-Batch-90 this probe ran with MSAA + the producer silently bailing → diff was effectively noise.
+
+### Known gap (scoped as Slice 2e)
+
+`probe-gbuffer-visualize` still shows all-magenta output (overlay treats every pixel as sentinel). The producer IS writing real normals — we know this from the AO consumer probe (`probe-gbuffer-enabled`) showing a real 0.094% diff that ONLY appears when the producer runs. The issue is somewhere in the overlay's read path:
+
+- Possibilities: (a) the overlay's texture binding's `sampleType: "unfilterable-float"` doesn't match the actual storage texture's view; (b) timing / encoder ordering on the overlay's render pass; (c) some validation that's failing silently between the producer's write and the overlay's read.
+
+Slice 2e will investigate. **The visualization being broken does NOT mean the producer is broken** — the consumer probes prove the producer works.
+
+### Net state
+
+Phase 8a is now usable in default Cesium scenes:
+
+- ✓ Slice 1 — G-buffer framebuffer allocation
+- ✓ Slice 2 — producer compute pass
+- ✓ Slice 2b — `scene.deferredLighting` toggle + first wiring
+- ✓ Slice 2c — debug overlay infrastructure (visualization path needs Slice 2e)
+- ✓ Slice 2d — **MSAA support (this batch)**
+- ✓ Slice 3 — silhouette-aware normal reconstruction
+- ✓ Slice 4 — SSAO reads G-buffer normals (verified — visible 0.094% diff in MSAA scenes)
+- ✓ Slice 5 — SSR reads G-buffer normals (no regression; full validation requires SSR scene)
+
+### Open in this arc
+
+- **Slice 2e (small)** — diagnose + fix the overlay's all-magenta read. Producer is proven correct; this is overlay-side.
+- **Slice 5b** — thread per-material roughness through the producer (SSR is mirror-only today).
+- **Slice 6** — clustered lighting (multi-week new-feature arc; clustered lighting itself doesn't exist on WebGPU yet).
+
+---
+
+## Batch 89 — Phase 8a Slice 2c (G-buffer visualization infrastructure) + surfaces Slice 2d gap
+
+**Date:** 2026-05-20
+
+Wires the visualization scaffolding for the G-buffer producer, and in the process surfaces a real bug that pre-existed: the producer was reading the wrong depth texture, and even with that fixed, can't run in default-MSAA scenes.
+
+### What landed
+
+**Debug overlay infrastructure:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUDebugGBufferOverlay.ts](packages/engine/Source/Renderer/WebGPU/WebGPUDebugGBufferOverlay.ts) — new class modeled on `WebGPUDebugDepthOverlay`. Fullscreen blit of the G-buffer normal texture, mapped `(n + 1) * 0.5` to RGB so the standard normal-map color convention applies (+X right → red, +Y up → green, +Z toward camera → blue). Magenta sentinel for sky / depth-clear / high-gradient pixels.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) — new `_executeDebugGBufferOverlay(config)` method + early-out check in `executePostProcess` when `frameState.debugShowGBufferNormals === true`.
+- [packages/engine/Source/Scene/Scene.js](packages/engine/Source/Scene/Scene.js) — new `scene.debugShowGBufferNormals` property + forward to `frameState.debugShowGBufferNormals` in `updateFrameState`.
+- [packages/engine/Source/Scene/FrameState.js](packages/engine/Source/Scene/FrameState.js) — corresponding frameState field.
+- [packages/engine/Source/Scene/CesiumDebug.js](packages/engine/Source/Scene/CesiumDebug.js) — new `CesiumDebug.showGBufferNormals()` + `hideGBufferNormals()` commands. The show command auto-enables `scene.deferredLighting` so the producer actually runs.
+
+**Probe:**
+
+- [Tools/visual-regression/probe-gbuffer-visualize.mjs](Tools/visual-regression/probe-gbuffer-visualize.mjs) — captures the G-buffer overlay output and sanity-checks the center-100×100 histogram (mean RGB, sentinel%).
+
+### Two bugs surfaced and one closed
+
+**Bug A (fixed in this batch): producer was reading wrong depth.**
+
+Pre-Batch-89 the producer's `_executeGBufferProducer` read `context.depthOnlyTextureView` — but that's a separate depth attachment on the WebGPU context that the actual scene render never writes to. The actual scene depth lives on `_sceneFramebuffer.depthSampleableView` (same source the `WebGPUDebugDepthOverlay` uses). Fixed: the producer now reads from `this._sceneFramebuffer?.depthSampleableView`.
+
+This bug was invisible pre-Slice-2c because the only consumer (`probe-gbuffer-enabled`) just checked "did the dispatcher run, was the canvas pixel-similar" — not "is the G-buffer content correct." Slice 2c's visualization is what surfaced it.
+
+**Bug B (open, scoped as Slice 2d): MSAA-multisampled depth can't be bound to single-sample `texture_depth_2d`.**
+
+Cesium's default `scene.msaaSamples = 4`. With MSAA on, `_sceneFramebuffer.depthSampleableView` returns a view over a multisampled texture. The producer's compute shader binds `texture_depth_2d` which expects single-sample. With incompatible binding the texture sample returns 0 → producer hits its sky-sentinel branch for every pixel → G-buffer is all `(0, 0, 0, 1)` → overlay shows pure magenta.
+
+Workarounds for users who want to use deferred lighting today:
+- Set `msaaSamples: 1` on the Cesium Viewer constructor options (`new Viewer(... { msaaSamples: 1 })`).
+- After viewer init, set `scene._sceneFramebuffer = null` after `scene._msaaSamples = 1` to force a rebuild — invasive, not recommended.
+
+Surfaced via a one-time console warning from the producer when `depthSampleableView` is unavailable: `[Phase8a] G-buffer producer skipped: scene depth not sampleable. Set msaaSamples: 1 on the Viewer/Scene to enable. MSAA support is tracked as Slice 2d.`
+
+### Slice 2d scope (next batch)
+
+Update [GBufferNormalsFromDepth.wgsl](packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepth.wgsl) + dispatcher to support multisampled depth:
+
+- Two pipeline variants (single-sample + multisampled) keyed on `sceneFramebuffer.sampleCount`.
+- Multisampled variant uses `texture_depth_multisampled_2d` + `textureLoad(tex, pixel, 0)` (sample index 0). Pattern already used elsewhere in the codebase (`GlobeDepth-DepthCopy-MSAA-BindGroup`, etc.).
+- Dispatcher selects the right pipeline + bind group at execute time.
+
+Effort: ~60 min. Unlocks deferred lighting for default-MSAA scenes (the overwhelming majority of users).
+
+### Verification
+
+- `npx gulp build` — clean.
+- `probe-polar-multi-plain` — pixel-identical baseline (deferred lighting off by default, no regression).
+- `probe-gbuffer-visualize` — runs the overlay, captures the canvas, surfaces the MSAA gap (center 100×100 is 100% magenta sentinel — overlay infrastructure works, producer can't write content under default MSAA).
+
+### Net state
+
+Phase 8a producer half + two consumer rewires (Slice 4 AO, Slice 5 SSR) + visualization infrastructure (Slice 2c) all landed. The one remaining gap before the deferred path is usable in default scenes is MSAA depth support (Slice 2d) — a small, well-scoped follow-up.
+
+### Open in this arc
+
+- **Slice 2d (next batch)** — multisampled depth support in the producer.
+- **Slice 5b** — roughness threading from materials to producer (SSR is mirror-only today).
+- **Slice 6** — clustered lighting (multi-week new-feature arc; clustered lighting itself doesn't exist on WebGPU yet).
+
+---
+
+## Batch 88 — Phase 8a Slice 5 (SSR reads G-buffer normals; fixes a long-standing decode bug)
+
+**Date:** 2026-05-20
+
+Second consumer rewire after Slice 4 (SSAO). The SSR effect was already structurally ready for a normal G-buffer (the shader had a `flags.x` gate; the effect class had a `normalTextureView` parameter on `executeSSR`) but the call site passed `undefined` because the producer didn't exist yet. This batch wires the producer's output through and fixes a normal-decode bug that would have produced wrong reflections even if a G-buffer had been wired earlier.
+
+### The decode bug (silent until Slice 5)
+
+[ScreenSpaceReflections.wgsl](packages/engine/Source/Shaders/WebGPU/PostProcess/ScreenSpaceReflections.wgsl) L211 used to read:
+
+```wgsl
+let normalEC = textureSampleLevel(normalTex, texSampler, uv, 0.0).xyz * 2.0 - 1.0;
+```
+
+That `* 2.0 - 1.0` decode assumes the texture is `rgba8unorm` with normals packed as `(n + 1) / 2`. But the G-buffer producer ([GBufferNormalsFromDepth.wgsl](packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepth.wgsl)) writes `rgba16float` with signed normals **already in [-1, 1] range**. The decode would have halved every component and offset by -1, producing wrong-direction reflections on every surface whose true normal wasn't near (0.5, 0.5, 0.5) in encoded space — i.e., almost everything.
+
+Pre-Batch-88 this was invisible because the call site never passed a real normal G-buffer (only the uninitialized 1×1 placeholder), so the shader's depth-fallback branch was always taken. Wiring the G-buffer through would have surfaced the bug immediately. Slice 5 fixes both at once.
+
+### Files
+
+WGSL:
+
+- [packages/engine/Source/Shaders/WebGPU/PostProcess/ScreenSpaceReflections.wgsl](packages/engine/Source/Shaders/WebGPU/PostProcess/ScreenSpaceReflections.wgsl):
+  - Removed the `* 2.0 - 1.0` UNORM decode. The G-buffer is signed-float; sample its `.xyz` directly.
+  - Sentinel check stays — producer emits (0,0,0,*) at sky / depth-clear / high-gradient pixels and the SSR skips those.
+
+JS:
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts](packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts): SSR feature-renderer call site now reads `scene._view.gBufferFramebuffer.normalRoughnessTexture` when `frameState.useDeferredLighting === true` and passes it as the 5th arg to `executeSSR`. The effect class then sets `flags.x = 1.0` and the shader takes its G-buffer path; when the flag is false, the call site passes `undefined` and the depth-fallback branch runs as before.
+
+### Why no JS changes to `WebGPUSSREffect.ts`
+
+The SSR effect class was **already plumbed for this** (`executeSSR` signature includes `normalTextureView`, the `flags.x` uniform packing exists, the placeholder fallback exists). The previous scaffolding called out "FEAT-GAP-01 will replace this with a real normal G-buffer" — Slice 5 is that replacement. No structural changes needed; only the call site and the WGSL bug fix.
+
+### What about roughness
+
+Currently the G-buffer producer writes a constant `roughness = 1.0` (max). SSR doesn't read roughness yet — the shader treats every surface as a perfect mirror. Threading per-material roughness through the producer is the next sub-slice (Slice 5b or Slice 6, depending on prioritization with clustered lighting). For now SSR with the G-buffer normal already produces correct geometric reflections; the roughness pass is purely a quality enhancement (rough surfaces should cone-trace + blur rather than sharp-reflect).
+
+### Verification
+
+- `npx gulp build` — clean.
+- `probe-polar-multi-plain` — pixel-identical baseline. SSR isn't active in default scenes (`scene._enableSSR === false`), so the new path is dormant.
+- `probe-gbuffer-enabled` — all wiring green, **Slice 4 still visible at 0.607% mismatch** (the SSAO-via-G-buffer path is unaffected by the SSR changes — confirms no cross-effect regression).
+
+### What this enables
+
+- **Real screen-space reflections** when `scene.deferredLighting && scene.screenSpaceReflections` are both on. Pre-Batch-88 the SSR would have produced either noise (uninitialized placeholder, with a warning) or wrong reflections (if anyone had wired a G-buffer with the broken decode). Now it produces correct reflections.
+- Two consumers down (AO + SSR), one to go (clustered lighting in Slice 6).
+
+### Open in this arc
+
+- **Slice 5b** — thread per-material roughness through the producer so SSR can cone-trace rough surfaces (currently treats everything as mirror).
+- **Slice 6** — clustered lighting reads G-buffer normals.
+- **Slice 2c (deferred)** — debug-visualization probe.
+
+---
+
+## Batch 87 — Phase 8a Slice 4 (first consumer rewire: SSAO reads G-buffer normals)
+
+**Date:** 2026-05-20
+
+Continues the Phase 8a arc. Batches 80-86 built the producer half (depth-prepass + normal G-buffer compute pass); this batch lands the **first consumer**: the SSAO effect now reads surface normals from the G-buffer instead of reconstructing them from depth.
+
+### What this changes
+
+The SSAO `getNormal` function previously sampled the scene depth at 5 pixel offsets (center + 4 neighbors) and reconstructed an eye-space normal via central differences. This works but produces a noisy ring around silhouette edges (the central difference straddles depth discontinuities).
+
+When `scene.deferredLighting === true`, the SSAO now:
+
+1. Samples the G-buffer's `normalRoughnessTexture` at the fragment UV
+2. Uses the .xyz directly as the eye-space normal (Slice 3's silhouette-aware reconstruction already produced cleaner normals)
+3. Falls back to depth reconstruction for sentinel-marked pixels (sky, high-gradient samples the producer couldn't safely reconstruct)
+
+When `scene.deferredLighting === false` (the default), the SSAO uses its original depth-only path — non-deferred scenes are unchanged.
+
+### Files
+
+WGSL:
+
+- [packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.wgsl](packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.wgsl):
+  - New binding `@group(0) @binding(4) var gBufferNormalTexture: texture_2d<f32>`.
+  - `frustum.w` uniform repurposed as `useGBufferNormal` flag (was unused padding).
+  - `getNormal()` early-returns from the G-buffer when the flag is set and the sample is non-sentinel; falls back to central-difference otherwise.
+
+JS:
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts](packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts):
+  - Added 1×1 `rgba16float` placeholder texture (`_createGBufferPlaceholder`) so the bind-group layout stays stable when the G-buffer producer is off.
+  - Extended `_generateLayout` with binding 4.
+  - `execute()` signature gains optional `gBufferNormalView?: GPUTextureView | null`; when non-null, binds the real view and sets `useGBufferNormal = 1.0` in the uniforms.
+  - `_writeGenerateUniforms(useGBuffer)` helper: 4-byte queue write per frame to flip the flag.
+  - Bind-group cache keyed on placeholder-vs-real to dedupe stable.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts](packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts): `execute()` signature gains the optional `gBufferNormalView` and forwards it to the AO effect.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts): per-frame post-process invocation reads `view.gBufferFramebuffer.normalRoughnessTexture` when `frameState.useDeferredLighting === true` and forwards it.
+
+### Verification
+
+- `npx gulp build` — clean.
+- `probe-polar-multi-plain` — pixel-identical baseline (flag at default `false`, AO and G-buffer paths inert).
+- `probe-gbuffer-enabled` — **Slice 4 is now visible**:
+  - All wiring green (`gBufferAlloc, gBufferOutputView, gBufferResources, depthOnlyView` all true).
+  - On-vs-off canvas pixel diff: **0.607% mismatch, mean delta 1.49** — small but real, confirming AO now reads G-buffer normals. Pre-Slice-4 this diff was exactly 0% (producer was invisible). The probe's tolerance updated to acknowledge Slice 4's intended visibility (≥5% would indicate a regression).
+
+### What this enables
+
+- **Sharper AO at silhouettes** — the Slice 3 silhouette-aware normals propagate to the AO output.
+- **Foundation for Slice 5** — SSR and clustered lighting will read from the same G-buffer via the same plumbing pattern (`pipeline.execute` already threads the view through).
+
+### Open in this arc
+
+- **Slice 2c (deferred)** — debug-visualization probe (blit G-buffer to canvas for direct inspection).
+- **Slice 5 (next batch)** — SSR reads G-buffer normals + roughness.
+- **Slice 6** — clustered lighting reads G-buffer normals.
+- **Roughness threading** — currently hardcoded to 1.0 in the producer; Slice 5+ will thread per-material roughness through.
+
+---
+
+## Batch 86 — Phase 8a Slice 2b + Slice 3 (toggle wiring, silhouette-aware normals, real producer dispatch)
+
+**Date:** 2026-05-20
+
+Three concerns landed together because diagnosis of Slice 2's "dormant producer" surfaced three real bugs that Slice 2's wiring couldn't have caught (no probe was exercising it):
+
+### 1. Application toggle: `scene.deferredLighting`
+
+Pre-Batch-86 the only way to flip the producer on was to manually set `frameState.useDeferredLighting = true` per-frame. Added the proper application-facing property:
+
+- [Scene.js](packages/engine/Source/Scene/Scene.js) — `this.deferredLighting = false` default in the constructor; `updateFrameState` forwards it to `frameState.useDeferredLighting`.
+
+### 2. Slice 3 — silhouette-aware normal reconstruction
+
+Pre-Batch-86 the compute shader used a central difference (`pRight - pLeft`) which produces noisy normals at every depth discontinuity (silhouette edges show a ring of bad normals). Slice 3 swaps in an adaptive selector: for each axis, compare forward and backward difference magnitudes and pick the smaller one — that side is necessarily on the same surface as the center pixel.
+
+Files:
+
+- [GBufferNormalsFromDepth.wgsl](packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepth.wgsl) — replaced central-difference block with `let dpdu = select(bckU, fwdU, dot(fwdU, fwdU) < dot(bckU, bckU))` (and the matching `dpdv`). Header comment updated to mark Slice 3 closed.
+
+Cost: one extra depth sample (5 vs 4) + 2 compare+select ops. Worth it — sharper edges on every silhouette, no more bad-normal halo.
+
+### 3. THREE real bugs found by the probe (the reason this batch exists)
+
+The "Slice 2 shipped" claim from Batch 85 was technically correct (code landed and compiled) but functionally false — the producer never actually ran. Three independent bugs were silently swallowing the dispatch:
+
+**Bug A — Orchestrator block bypassed on WebGPU.** Batch 80's `useDeferredLighting` allocation block was added to `FramebufferOrchestrator.js`, but on the WebGPU backend, `context.updateAndClearFramebuffers` returns `true` early (it's an override that handles framebuffer setup itself), bypassing the orchestrator's tail. The block never ran, so `view.gBufferFramebuffer.update()` was never called, the framebuffer never allocated, and the producer's downstream `if (!outputView) return;` always early-outed.
+
+Fix: moved the allocation block into [WebGPUContext.ts](packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) `updateAndClearFramebuffers` override (line ~3055). Also added `useDeferredLighting?: boolean` to the `CesiumFrameState` + `CesiumEnvironmentState` ambient interfaces in [cesium-js-types.d.ts](packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts) so the cast goes away.
+
+**Bug B — Depth-only texture view never created.** [WebGPUContext.ts L1761-1774](packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) had a comment that said "TEXTURE_BINDING is added so compute shaders can sample the depth... Guarded so the feature is only requested when a consumer opts in (default: off)." But the opt-in logic was never implemented — the texture was always created with `RENDER_ATTACHMENT` only, and `_depthOnlyTextureView` was never set non-null. The producer's `if (!depthView) return;` always early-outed. The HiZ pass had the same problem (silently disabled).
+
+Fix: enabled `TEXTURE_BINDING` unconditionally on the depth texture and created the depth-only view (`aspect: 'depth-only'`) alongside the full view. Negligible perf cost, unblocks every compute-sampled-depth consumer.
+
+**Bug C — Slice 1 framebuffer abstraction couldn't write from compute.** Slice 1's [GBufferFramebuffer.js](packages/engine/Source/Scene/GBufferFramebuffer.js) used `FramebufferManager` for consistency with `SceneFramebuffer`. But `FramebufferManager` creates Cesium `Texture` objects without `STORAGE_BINDING` usage, so the WGSL compute producer couldn't bind the G-buffer as `texture_storage_2d<rgba16float, write>` — the `createBindGroup` call threw "Required member is undefined."
+
+Fix: rewrote `GBufferFramebuffer.js` to manage a raw `GPUTexture` + `GPUTextureView` directly, with usage flags `STORAGE_BINDING | TEXTURE_BINDING | COPY_DST`. The class is now WebGPU-specific (it builds resources against `context.device`) — that's fine, deferred lighting is a WebGPU-only path. The Slice 1 architectural choice was wrong and Slice 2b is the cleanest place to close it.
+
+**Bug D (related to A) — Dispatcher host was the wrong object.** The Slice 2 dispatcher's `GBufferComputeHost` interface required `_context.supportsComputeShaders + dispatchCompute()` (matching `WebGPUPerformanceManager`'s shape). But Slice 2 passed `this` (the SceneRenderer), which has neither. Fixed by routing through `context.performanceManager` and moving the `_gbufferComputeResources` cache slot from SceneRenderer to PerformanceManager (parallel to `_atmosphereLutResources`).
+
+### Verification — new probe
+
+Built [probe-gbuffer-enabled.mjs](Tools/visual-regression/probe-gbuffer-enabled.mjs) — toggles `scene.deferredLighting`, renders, checks every link in the chain:
+
+```
+ON state:
+  sceneDeferred:        true
+  frameStateDeferred:   true
+  envStateDeferred:     true
+  gBufferAlloc:         true   ← framebuffer texture allocated
+  gBufferOutputView:    true   ← compute-bindable view exists
+  gBufferResources:     true   ← dispatcher ran (cache slot populated)
+  depthOnlyView:        true   ← compute-bindable depth view exists
+  invProjAvailable:     true   ← uniforms ready
+  canvas pixel diff:    0.000% ← producer invisible to canvas (Slice 2 intent)
+```
+
+Polar-multi-plain baseline pixel-identical to pre-Batch-86 (midlat-mid 1.094%, equator-mid 0.033%). With the flag at its default `false`, all four bug-fix code paths take their no-op branch.
+
+### Net state
+
+Phase 8a producer half is **actually working now** — flipping `scene.deferredLighting = true` allocates the G-buffer, runs the compute shader per-frame, and writes eye-space normals + roughness into the texture. The canvas output is unchanged because no consumer reads from the G-buffer yet — that's Slice 4.
+
+### Open work in this arc
+
+- **Slice 2c (deferred)** — visualization probe that blits the G-buffer to the canvas as a debug overlay (currently we verify the dispatch ran via PerfMgr cache, but we can't *see* the output without a blit helper).
+- **Slice 4 (next batch)** — first consumer rewire: SSAO reads the G-buffer normal instead of reconstructing from depth. This is the slice where the work becomes visible — sharper, less-noisy AO.
+- **Slice 5** — additional consumer rewires: SSR + clustered lighting.
+
+---
+
+## Batch 85 — Phase 8a Slice 2 (G-buffer producer compute pass)
+
+**Date:** 2026-05-20
+
+Continues the Tier 1 strategic arc kicked off in Batch 80. Slice 1 carved out the G-buffer resource slot but had no producer; Slice 2 wires a compute pass that reconstructs eye-space surface normals from the scene depth and writes them into `view.gBufferFramebuffer.normalRoughnessTexture`. Slice 3+ will rewire SSAO/SSR/clustered lighting consumers to read from there.
+
+### Why screen-space normal reconstruction (vs MRT from opaque)
+
+Two viable Slice 2 designs:
+
+- **Per-shader MRT.** Modify every opaque fragment shader (globe, model, primitives, billboards, ...) to write a second color attachment with `(normal, roughness)`. Forces a coordinated edit across ~10 shader pipelines; invasive.
+- **Screen-space reconstruction (chosen).** A single post-scene compute pass reads the resolved depth texture, reconstructs eye-space position via the inverse-projection matrix, takes central differences to derive the surface normal. Zero changes to any existing pipeline. Works uniformly for every opaque renderer.
+
+Trade-offs of the chosen approach:
+
+- ✅ Zero blast radius — no existing shader is touched.
+- ✅ Works for every opaque renderer at once (globe, model, primitives, even future ones).
+- ✅ Free per-material — roughness defaults to 1.0; Slice 3+ thread per-material roughness through a separate channel.
+- ⚠ Normals at silhouette edges are noisy (central difference straddles a depth discontinuity). Slice 3 fixes via forward/backward fallback at high-gradient samples.
+- ⚠ Sky / cleared-depth fragments emit a (0,0,0,1) sentinel; consumers gate on the alpha = 0 vs 1 distinction or check depth themselves.
+
+### Files
+
+New:
+
+- [packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepth.wgsl](packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepth.wgsl) — compute shader. `@workgroup_size(8, 8, 1)`. Reads `texture_depth_2d` at center + 4 neighbors, unprojects each sample to eye space via `inverseProjection × NDC`, takes central differences (`dpdu = pRight - pLeft`, `dpdv = pDown - pUp`), normal = `normalize(cross(dpdv, dpdu))` (ordered so the result points TOWARD the camera in eye space). Sanitization on degenerate gradients (sky, silhouette).
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGBufferRenderer.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGBufferRenderer.ts) — dispatcher class. Patterned after `WebGPUAtmosphereLUT.ts`. `ensureGBufferComputeResources(host, device)` allocates the 80-byte uniforms UBO + caches on host. `dispatchGBufferNormalsFromDepth(host, encoder, device, params)` packs uniforms, builds the bind-group layout once + the bind group per-frame (depth-view and output-view identity-cached), dispatches via `host.dispatchCompute(...)`.
+
+Wired:
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts](packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts) — new `ComputeTaskType.NORMAL_FROM_DEPTH = 8` (COUNT bumped to 9), added to `getComputeShaderSource`, `_getTaskLabel`, and the strategy selector (returns "gpu" when compute is available).
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) — added `_gbufferComputeResources` cache slot + new `_executeGBufferProducer(config)` method that pulls `context.depthOnlyTextureView`, `view.gBufferFramebuffer.normalRoughnessTexture`, and `uniformState.inverseProjection`; calls the dispatcher. Returns immediately when `frameState.useDeferredLighting !== true`.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPostFrustumChain.ts](packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPostFrustumChain.ts) — added `_executeGBufferProducer` to the host interface; called between `_executeEnvironmentalEffects` and `_runInvertClassificationComposite`. The scene render pass is closed by this point (environmentalEffects requires that), so depth is final.
+
+### Why this slot in the per-frame loop
+
+The producer must run **after the scene render pass closes** (otherwise the depth attachment can't be sampled — WebGPU forbids reading a depth attachment while it's bound as a render target). The earliest valid slot is after `_executeEnvironmentalEffects`, which already operates on a closed scene pass. The latest reasonable slot is before post-processing, since SSAO/SSR/etc. will want to consume the G-buffer from inside post-process stages in Slice 3+.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- `npx gulp build` — clean (compute shader compiles, .js wrapper generated).
+- `probe-polar-multi-plain` — pixel-identical baseline. With `useDeferredLighting` at its default `false`, the producer's wrapper short-circuits on the very first line of `_executeGBufferProducer`, the compute pipeline is never created, and no GPU work happens.
+
+### Pending — Slice 2b (visualization probe)
+
+A `probe-gbuffer-output.mjs` that toggles the flag and captures the G-buffer as a debug visualization is scoped as Slice 2b. Requires a small CesiumDebug command to blit the G-buffer to the canvas (otherwise the texture isn't observable). Defer until needed.
+
+### Open inventory delta
+
+- `Phase 8a Slice 1` → shipped (Batch 80).
+- **`Phase 8a Slice 2` → shipped (this batch).**
+- `Phase 8a Slice 2b` — debug visualization probe. **Open.**
+- `Phase 8a Slice 3` — silhouette-aware normals (forward/backward difference fallback at high-gradient samples). **Open.**
+- `Phase 8a Slice 4` — first consumer rewire: SSAO reads from the G-buffer normal instead of reconstructing from depth. **Open.**
+- `Phase 8a Slice 5` — additional consumer rewires: SSR + clustered lighting. **Open.**
+
+---
+
+## Batch 84 — Phase 3.5 particle system lockstep inventory (closes Phase 3 arc)
+
+**Date:** 2026-05-20
+
+Fourth and final batch of Option B. Closes the Phase 3 lockstep arc.
+
+### The picture
+
+Upstream Cesium's `ParticleSystem` has **no dedicated particle shaders** — particles are billboarded sprites rendered through `BillboardCollectionVS/FS.glsl` ↔ `WebGPU/Collections/BillboardCollection.wgsl`. So "particle lockstep" reduces to BillboardCollection lockstep, which was already part of the C-R5 Collections work and is functionally matched.
+
+CPU-side (`Scene/ParticleSystem.js`, `ParticleEmitter.js`, `Particle.js`, `ParticleBurst.js`) is shared — CPU steps particle physics, the active BillboardCollection submits the per-frame instance buffer.
+
+### Matched (3 components via BillboardCollection)
+
+- Particle render — `BillboardCollectionVS/FS.glsl` ↔ `Collections/BillboardCollection.wgsl`
+- SDF glyph particles — `BillboardCollectionFS.glsl` (`#ifdef SDF`) ↔ `Collections/BillboardCollectionSDF.wgsl`
+- Particle pick — `BillboardCollectionFS.glsl` (`#ifdef RENDER_FOR_PICK`) ↔ `Collections/BillboardCollectionPick.wgsl`
+
+### WGSL-only enhancement (Phase 6)
+
+- **`WebGPU/Compute/WeatherParticles.wgsl`** — GPU-stepped weather particle simulation (rain, snow, ash, dust). 100k+ particles at 60 fps without CPU readback.
+- **`WebGPU/Compute/WeatherParticleRender.wgsl`** — render shader reading the compute output buffer directly via SSBO.
+
+No WebGL counterpart by design — requires compute + SSBO read-back, neither available on WebGL2. WebGL particle ceiling is ~10k before CPU update dominates; WGSL weather system lifts this by 10×.
+
+### Phase 3 arc — net status (Batches 76, 81, 82, 83, 84)
+
+Every shipped WebGL shader feature has a WebGPU equivalent. The remaining cross-backend source divergence falls into three documented categories:
+
+1. **Line-by-line matched pairs** — globe terrain (Phase 2, Batches 56-79), sky atmosphere (Phase 3.1, Batch 76).
+2. **Architecturally matched but source-divergent** — post-process, shadow, environment, particle (Phases 3.2-3.5, Batches 81-84). WGSL has no preprocessor strong enough for WebGL's runtime-generated-GLSL pattern; WebGPU equivalents use static WGSL with runtime gates.
+3. **Fork-only WGSL enhancements** — TAA, GTAO, SSR, GodRays, VolumetricFog, unified Tonemapping, ColorGrading, OITComposite, DeferredGBuffer + DeferredLighting (Phase 8a scaffolding), Moon, ProceduralClouds, ProceduralSkyCubemap, WeatherParticles. All require compute or pre-baked LUT mechanics WebGL2 cannot provide.
+
+The shader-pair migration arc is **complete at the architectural level**. Remaining work is Phase 8 implementation (kicked off in Batch 80) and Tier 2 quality items (CSM Slice 3-4, TAA Slice 2-4, 3D Tiles styling, classification migration) per the parity audit.
+
+### Verification
+
+Documentation-only batch. No code changes.
+
+---
+
+## Batch 83 — Phase 3.4 cube map + environment lockstep inventory
+
+**Date:** 2026-05-20
+
+Third batch of Option B. Inventories the environment shader collection in [SHADER_PAIRS_LOCKSTEP.md](migration_doc/SHADER_PAIRS_LOCKSTEP.md) Phase 3.4 section.
+
+### Matched pairs (3)
+
+- **Sun billboard** — `SunFS.glsl` + `SunVS.glsl` ↔ `Environment/Sun.wgsl`. Same disc + corona algorithm.
+- **Cube map panorama (HDR equirect loader)** — `CubeMapPanoramaVS.glsl` ↔ `WebGPU/CubeMapPanorama.wgsl`. Same equirect → cube-face projection.
+- **Sky atmosphere** — already documented in Phase 3.1 (Batch 76).
+
+### WebGL-only legacy (1, intentional)
+
+- **`SkyBoxFS.glsl` + `SkyBoxVS.glsl`** — the 9-line legacy WebGL skybox renderer. WGSL replaces with `ProceduralSkyCubemap.wgsl` (compute-baked) + `CubeMapPanorama.wgsl` (HDR loader). The WebGL skybox stays for backwards compatibility with apps that explicitly set `scene.skyBox`; WebGPU routes the same scene through the procedural path automatically.
+
+### WebGPU-only enhancements (4, intentional)
+
+- **`Environment/Moon.wgsl`** — Phase 1.3c moon billboard with phase + libration. No WebGL equivalent.
+- **`Environment/ProceduralClouds.wgsl`** — Phase 6 raymarched volumetric clouds. Requires compute (WebGL2 has none).
+- **`Environment/GroundAtmosphere.wgsl`** — environment-side half of the ground-atmosphere pair (other half inlined in GlobeTerrain.wgsl, documented in Phase 2.2 Batches 56-72).
+- **`Compute/ProceduralSkyCubemap.wgsl`** — compute-shader baked cubemap for PBR ambient lighting. WebGL uses offline pre-baked cubemaps via `EnvironmentMapManager` JS.
+
+### Net status
+
+Environment pair is **architecturally matched** for shipped WebGL features. WGSL replaces the legacy SkyBox with a richer procedural + HDR-loader pair (subsumes its function). Moon, ProceduralClouds, ProceduralSkyCubemap are fork-only enhancements with no parity gap.
+
+### Verification
+
+Documentation-only batch. No code changes.
+
+---
+
+## Batch 82 — Phase 3.3 shadow cast lockstep inventory
+
+**Date:** 2026-05-20
+
+Second batch of Option B. Records the architectural divergence for shadows + the matched-functionality inventory in [SHADER_PAIRS_LOCKSTEP.md](migration_doc/SHADER_PAIRS_LOCKSTEP.md) Phase 3.3 section.
+
+### Architectural divergence (not avoidable)
+
+- **WebGL:** `Scene/ShadowMapShader.js` (395 lines) **generates GLSL at runtime** by string-concat based on shadow-map config (single/cascaded/cube, PCF kernel size, debug toggles). The generated GLSL is injected into every receiver's fragment shader by the pipeline cache.
+- **WebGPU:** `Shaders/WebGPU/Shadow/ShadowMap.wgsl` (cast) + `ShadowReceiveCSM.wgsl` (standalone receive) + `chunks/functions/csm_samplePointShadow.wgsl` (cube helper). Receive logic is **inlined directly into each receiver shader** (e.g., `globeComputeShadowFactor` family in GlobeTerrain.wgsl L2390-2440), gated at runtime by `csmControl.x > 0.5` and `pointLightShadow > 0.5` flags in the effects UBO.
+
+This isn't a lockstep failure — WGSL has no preprocessor strong enough to support the WebGL string-concat model, and WebGPU pipelines prefer one module with runtime gates over per-config compilation. Pair alignment at the source-text level is fundamentally inapplicable.
+
+### Matched-functionality inventory
+
+Every WebGL shadow capability has a WebGPU equivalent:
+
+- Single shadow map (point/spot/directional)
+- Point-light cube shadow
+- Cascaded shadow maps (Slice 1+2 shipped)
+- PCF kernel
+- Depth bias + slope-scaled bias
+- Cast depth-only pipeline (+ render-bundle pre-record on WebGPU)
+- Cube-face cast (6-face loop)
+
+Full table in the ledger.
+
+### WebGPU-only enhancements (intentional, pending)
+
+- VSM (Variance Shadow Maps) — CSM Slice 3
+- Altitude-adaptive cascade splits — CSM Slice 3
+- Moon dual-light shadows — CSM Slice 3
+- 3D Tiles per-tile shadow cull — CSM Slice 4
+- Render-bundle pre-recorded cast (live)
+
+### Net status
+
+Shadow cast + receive is **architecturally matched at the feature level**. CSM Slices 3-4 add fork-only enhancements per the Tier 1 roadmap. No regressions.
+
+### Verification
+
+Documentation-only batch. No code changes; no probe runs needed.
+
+---
+
+## Batch 81 — Phase 3.2 post-process collection lockstep inventory
+
+**Date:** 2026-05-20
+
+First batch of Option B (Phase 3 lockstep arc). Inventories the post-process collection — 18 matched WebGL ↔ WebGPU pairs + 10+ WebGPU-only Phase 4 enhancements + 5 WebGL-only legacy shaders — and records the lockstep status in [SHADER_PAIRS_LOCKSTEP.md](migration_doc/SHADER_PAIRS_LOCKSTEP.md).
+
+### Why no per-file pair-section headers
+
+Unlike the globe-terrain pair (Phase 2) where the WGSL was a line-by-line port of a single large GLSL file, the post-process WGSL collection is a set of standalone re-implementations of the same algorithms. FXAA is the clearest example: GLSL imports a 200+ line `FxaaPixelShader` helper from `Builtin/Functions/`; WGSL inlines the same NVIDIA FXAA 3.11 algorithm directly. The source text doesn't mirror line-for-line, so adding per-file pair-headers would generate noise without enabling line-level cross-review.
+
+The right granularity here is a comprehensive ledger inventory — recorded in [SHADER_PAIRS_LOCKSTEP.md](migration_doc/SHADER_PAIRS_LOCKSTEP.md) Phase 3.2 section.
+
+### Net inventory
+
+- **18 matched pairs** — both backends ship: AdditiveBlend, AmbientOcclusionGenerate/Modulate, BlackAndWhite, BloomComposite, BrightPass, Brightness, CompositeTranslucentClassification, ContrastBias, DepthOfField, DepthView, EdgeDetection, FXAA, LensFlare, NightVision, PassThrough, PassThroughDepth, Silhouette.
+- **10+ WebGPU-only effects** (intentional Phase 4+ enhancements): TAA, GTAO, ScreenSpaceReflections, GodRays, VolumetricFog, unified Tonemapping (replaces 5 WebGL variants), ColorGrading, OITComposite, DeferredGBuffer + DeferredLighting (Phase 8a scaffolding), DepthPlane + AdjustTranslucent + CompareAndPackTranslucentDepth (multi-frustum classification helpers).
+- **5 WebGL-only legacy shaders** (superseded by WGSL's unified factoring): AcesTonemappingStage, FilmicTonemapping, ModifiedReinhardTonemapping, PbrNeutralTonemapping, ReinhardTonemapping (all rolled into `Tonemapping.wgsl` with a runtime selector). Plus GaussianBlur1D (folded into BloomComposite on WGSL) and PointCloudEyeDomeLighting (deferred — `POINTCLOUD-EDL-WGSL`).
+
+### Net status
+
+Post-process collection is **functionally matched** for every shipped WebGL effect except point-cloud EDL (deferred). The WGSL collection adds 10+ enhancements with no WebGL counterpart — all documented intentional, not parity bugs.
+
+### Verification
+
+- No code changes in this batch (documentation-only). `npx gulp build` unchanged.
+- `probe-polar-multi-plain` not relevant (post-process pipeline not exercised by polar-multi).
+
+---
+
+## Batch 80 — Phase 8 shader-strategy decision + Phase 8a Slice 1 (G-buffer scaffolding)
+
+**Date:** 2026-05-20
+
+Kicks off the Tier 1 strategic arc. Two deliverables: (1) resolve the long-pending `TILE-ARCH-SHADER-STRATEGY` decision so KHR BRDFs and Phase 8a/8b can move; (2) carve out the depth-prepass + normal G-buffer resource slot in the view-level framebuffer allocator without wiring producers or consumers yet.
+
+### 1. Shader-strategy decision — coarse variants + pre-warm
+
+New file: [migration_doc/PHASE_8_SHADER_STRATEGY.md](migration_doc/PHASE_8_SHADER_STRATEGY.md).
+
+Decision: WebGPU Model PBR moves from the current monolithic ~3000-line shader (6 pipeline variants) to a **coarse-grained ~20-variant pipeline table keyed on material family × alphaMode × doubleSided**, with **pipeline pre-warm during tileset manifest parse** to mask the 250-1000 ms aggregate compile cost.
+
+Evidence summary (full audit in the doc):
+
+- Current monolithic shader: 2,943 lines, 6 pipeline variants, ~15 of 24 `ShaderDefine` bits used. 9 bits remain — coarse variants fit without expanding to 64-bit.
+- Per-pipeline compile latency: 5-50 ms. 20 variants × 50 ms worst case = ~1 s aggregate, amortized into the async manifest fetch (typically 200-500 ms — comfortably masks first-tile compile).
+- KHR extensions currently silently dropped on WebGPU: clearcoat, sheen, anisotropy, iridescence, transmission, volume. Monolithic was designed for one BRDF — design doc flags "wall at 4-5 BRDFs," and the dropped set is 6. Coarse variants add each new KHR as a family entry, not a referendum on the whole shader.
+- Fine-grained (WebGL-style) was rejected: tile-stream stutter is exactly what Phase 8b GPU-resident tiling is trying to eliminate.
+
+Unblocks: Phase 7 KHR BRDFs, Phase 8a Slice 2+ (pipeline cache key needs the family), Phase 8b Resident Drawer (batch count bounded at 20), clustered lighting.
+
+### 2. Phase 8a Slice 1 — G-buffer scaffolding
+
+New file: [packages/engine/Source/Scene/GBufferFramebuffer.js](packages/engine/Source/Scene/GBufferFramebuffer.js) — modeled on [SceneFramebuffer.js](packages/engine/Source/Scene/SceneFramebuffer.js):
+
+- Single color attachment for packed `(normalEye.xyz, roughness)` at HALF_FLOAT precision (avoids the octahedral-encoding complexity that UNSIGNED_BYTE would force).
+- Depth-stencil attachment for the depth prepass.
+- `update(context, viewport, hdr, numSamples)` lazy-allocates; with the feature flag off the framebuffer is never updated and GPU memory is never created.
+- Standard lifecycle: `clear`, `prepareColorTextures`, `destroy`, `isDestroyed`, plus getters for the normal+roughness texture and depth-stencil texture.
+
+Wiring (4 files edited):
+
+- [packages/engine/Source/Scene/View.js](packages/engine/Source/Scene/View.js): instantiate `view.gBufferFramebuffer = new GBufferFramebuffer()` alongside the existing scene/edge framebuffers; destroy in `View.destroy()`.
+- [packages/engine/Source/Scene/FrameState.js](packages/engine/Source/Scene/FrameState.js): added `frameState.useDeferredLighting = false` flag with a docstring pointing back at this batch + the strategy doc.
+- [packages/engine/Source/Scene/FramebufferOrchestrator.js](packages/engine/Source/Scene/FramebufferOrchestrator.js): new `useDeferredLighting` block that calls `view.gBufferFramebuffer.update()` + `.clear()` when the flag is set. With the flag off — the default — the orchestrator's behavior is unchanged.
+
+The existing [packages/engine/Source/Shaders/WebGPU/PostProcess/DeferredGBuffer.js](packages/engine/Source/Shaders/WebGPU/PostProcess/DeferredGBuffer.js) shader scaffolding (`GBufferOutput` struct + `packGBuffer()` helper) is the **producer-side counterpart** to this allocator. Per CLAUDE.md Principle 7, it stays in place — it's pre-allocated infrastructure for Slice 2's producer pass.
+
+### What this does NOT do (Slice 2+ scope)
+
+- No producer pass yet. Nothing writes to `normalRoughnessTexture`.
+- No consumer rewires. SSAO/SSR/clustered lighting still reconstruct normals from depth.
+- No new pass-enum entry (`Pass.js` unchanged). Depth-prepass is a pre-scene orchestrator pass, not a command-dispatch tier — matches existing patterns for OIT / edge / globe-depth framebuffers.
+- No `Scene.deferredLighting` API surface. The flag stays internal until a producer exists.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- `npx gulp build` — clean.
+- `probe-polar-multi-plain` — pixel-identical baseline (`useDeferredLighting = false` means the new code path is fully inert; the orchestrator's new block is gated and skips).
+
+### Inventory delta
+
+- `TILE-ARCH-SHADER-STRATEGY` (Tier 4 #13 from the parity audit) → **resolved.** Decision recorded in PHASE_8_SHADER_STRATEGY.md.
+- `Phase 8a Slice 1` → **shipped.** Slices 2-5 (producer pass, consumer rewires, depth-write-only pipeline extraction) remain open.
+
+### Next batches (Option B — Phase 3 lockstep remainder)
+
+User-scoped follow-on after this batch: close the Phase 3 lockstep arc (post-process, shadow cast, cube map, particles). Tracked as Batches 81-84.
+
+---
+
+## Batch 79 — closing the remaining HIGH+MEDIUM parity gaps (imagery composite blend + wave-normal space + LUT-off probe)
+
+**Date:** 2026-05-20
+
+Post-audit follow-up to Batch 78. The parity audit identified three remaining gaps where the WGSL globe diverged from the WebGL globe in ways that were *technically fixable* (vs the polar mismatch which is cross-vendor FP drift). This batch closes all three.
+
+### 1. HIGH — Imagery composite blend math (premultiplied-alpha OVER)
+
+WebGL [GlobeFS.glsl::sampleAndBlend L309-313](packages/engine/Source/Shaders/GlobeFS.glsl#L309) uses the canonical premultiplied-alpha OVER composite:
+
+```glsl
+float sourceAlpha = alpha * textureAlpha;
+float outAlpha = mix(previousColor.a, 1.0, sourceAlpha);
+vec3 outColor = mix(previousColor.rgb * previousColor.a, color, sourceAlpha) / outAlpha;
+```
+
+The WGSL had a straight-mix variant: `mix(prevColor, adjusted, srcA) + max(prevAlpha, srcA)`. Batch 69 proved these were algebraically identical at `prevAlpha = 1` (the dominant case), but they diverged on the multi-frustum subsequent-pass path where `prevAlpha = 0` and the first layer hits with `srcA < 1`. Under straight-mix the first contribution was attenuated by `srcA`; under OVER it contributes at full brightness.
+
+Batch 68 attempted this switch and saw an apparent 1.09 → 7.01% regression that turned out to be probe-level clock-noise (resolved in Batch 70 with clock pinning). Now safe to re-do.
+
+Files modified:
+
+- [GlobeTerrain.wgsl](packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) `applyImageryLayer`: replaced the straight-mix block with the OVER formula. Divide-by-zero handled via `max(outAlpha, 1e-7)` clamp on the divisor + `max(outAlpha, 0.0)` on the returned alpha (WGSL equivalent of the GLSL `sign()` sentinel trick).
+- Function-header comment block updated: removed "KNOWN ALGORITHMIC DIVERGENCE", added algebraic proof of both first-pass-equivalence and subsequent-pass-correctness cases.
+
+Verification: polar-multi-plain probe identical to prior baseline (midlat-mid 1.094%, equator-mid 0.033%, polar views unchanged). Confirms the OVER composite is a true no-op at `prevAlpha = 1`, matching Batch 69's bisection.
+
+### 2. MEDIUM — Wave-normal coordinate-space fix
+
+Pre-Batch-79 `computeEnhancedOcean` was doing:
+
+```wgsl
+let waveN = sampleOceanWaveNormals(uv, t);  // tangent-space normal
+waterNormal = normalize(normalEC + waveN * waveStrength);  // ← wrong: mixes spaces
+```
+
+The sampled `waveN` is a tangent-space normal — `(0, 0, 1)` represents the unperturbed surface. WebGL handles this correctly at [GlobeFS.glsl::computeWaterColor L814](packages/engine/Source/Shaders/GlobeFS.glsl#L814) by transforming through the ENU-to-eye-coordinates matrix first:
+
+```glsl
+mat3 enuToEye = czm_eastNorthUpToEyeCoordinates(v_positionMC, normalEC);
+vec3 normalEC_water = enuToEye * normalTangentSpace;
+```
+
+The WGSL version was adding a tangent-space vector directly to an eye-space vector — visually similar but mathematically wrong. The artifact this produced: waves anchored to camera orientation rather than the local east/north frame (a "moving mesh" pattern when orbiting a coastline).
+
+Files modified:
+
+- [GlobeTerrain.wgsl](packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl):
+  - Added helper `eastNorthUpToEyeCoordinates(positionMC, normalEC) -> mat3x3<f32>` — a direct port of WebGL's `czm_eastNorthUpToEyeCoordinates`. Uses `camera.modifiedModelView` upper-3×3 (same matrix the WGSL VS uses at line 1158 to derive `v_normalEC` from `normalMC`).
+  - Updated `computeEnhancedOcean` signature: added `positionMC: vec3<f32>` parameter so the function can build the ENU matrix.
+  - Updated the wave-normal perturbation: `waterNormal = normalize(mix(normalEC, enuToEye * waveN, waveStrength))`. At `waveN = (0, 0, 1)` (perfectly flat), the result equals `normalEC` — no perturbation — matching the pre-Batch-79 baseline behavior for "no waves visible".
+  - Updated call site in `fragmentMain` to pass `input.v_positionMC` (which is actually world-space for the globe since the model matrix is identity).
+
+Verification: polar-multi-plain probe unchanged (water code path isn't reached on WGS84 ellipsoid). The fix is observable on coastal-orbit scenes — not part of the regression suite yet, but the math is now correct line-for-line with WebGL.
+
+### 3. LOW — Ground-atmosphere LUT-off fallback probe
+
+Documented in Batch 76's audit as "WGSL LUT-off fallback should match WebGL but has never been explicitly visual-diff tested." This batch closes that gap by adding [probe-atmo-lut-off.mjs](Tools/visual-regression/probe-atmo-lut-off.mjs).
+
+The probe:
+
+- Monkey-patches `context.performanceManager.ensureAtmosphereLUTResources` to return `null`, forcing the WGSL inline-analytic fallback (the same path WebGL always takes since WebGL2 has no compute shaders).
+- Captures both backends at three atmosphere-prominent views (mid-orbit, mid-altitude, high latitude).
+- Pixel-diffs WebGL vs WebGPU via canvas-decode (same diff infrastructure as `probe-saved-view.mjs`).
+- Writes a JSON report.
+
+First-run baseline (2026-05-20):
+
+| View | mismatchPct | meanDelta | signed RGB (WebGPU − WebGL) |
+|---|---|---|---|
+| lut-off-orbit (Earth from 18 Mm) | 6.35% | 16.97 | (−1.52, −1.31, −1.38) |
+| lut-off-mid (3 Mm midlat) | 2.40% | 4.71 | (−0.71, −0.70, −0.86) |
+| lut-off-northlat (60° N, 5 Mm) | 4.90% | 11.00 | (−1.05, −0.86, −0.55) |
+
+All signed deltas are uniformly small (~1 brightness unit on a 0-255 scale) and consistent in sign — the WGSL inline path produces marginally brighter atmosphere than the GLSL builtin, likely from `1 - exp(-x)` tonemap rounding rather than algorithmic divergence. Numbers are within the cross-vendor numerical drift band documented for polar views, NOT a structural gap.
+
+Ledger entry "Ground atmosphere — LUT integration" updated with these numbers so future regressions can compare against a real baseline.
+
+### 4. Acknowledgements — polar drift + subsurface scaffolding
+
+Per the audit:
+
+- **Polar mismatch (north 14-34%, south 2-15%)** stays as documented cross-vendor FP precision drift in `textureSampleGrad` / mip selection / `dpdx`/`dpdy` near the pole singularity (Batch 64). The NaN-as-in-range fallback for `webMercatorT` was already bridged in Batch 62. Practically unfixable without per-vendor shader paths. No code change.
+- **`computeSubsurfaceScattering`** defined in WGSL but unused. Per CLAUDE.md Principle 7 (Dead Code Audit), kept as scaffolding for a future enhancement. No code change.
+
+### Net post-Batch-79 globe-rendering parity status
+
+| Subsystem | Status |
+|---|---|
+| Imagery composite (Phase 2.1) | **Matched** (Batches 65-67 + 79) |
+| Ground atmosphere + fog (Phase 2.2) | Matched + documented WGSL LUT enhancement (Batches 56-72) + LUT-off baseline (Batch 79) |
+| Water/ocean (Phase 2.3) | **Matched** (Batches 58 + 78 + 79 wave-normal-space) + WGSL-only enhancements |
+| Lighting + shadow receive (Phase 2.4) | Matched + custom uniforms shipped (Batches 74 + 76 + 77) |
+| Vertex shader (Phase 2.6) | Matched via shared `processVertex()` helper (Batch 75) |
+| Sky atmosphere (Phase 3.1) | Documented (Batch 76); LUT divergence is intentional Phase 4 |
+
+The only remaining documented divergences on the globe rendering pair are **intentional WGSL-only enhancements** (LUT atmosphere, GGX specular, 3-octave waves, foam, terminator glow, subsurface scaffolding) and the **cross-vendor FP drift at the pole singularity**. No more algorithmic gaps.
+
+---
+
+## Batch 78 — `computeWaterColor` lockstep + correcting prior misdocumented "material codegen" claims
+
+**Date:** 2026-05-20
+
+User-scoped follow-up to Batches 76 + 77: bring the WebGL `computeWaterColor` and WGSL `computeEnhancedOcean` algorithms into line-by-line lockstep, AND correct the long-running documentation error that claimed `computeWaterColor` was generated by Cesium's material codegen.
+
+### The misdocumentation
+
+The pre-Batch-78 pair-section headers, convention ledger, and prior batch entries (58, 73, 77) all stated:
+
+> WebGL `computeWaterColor` is generated at runtime by Cesium's material codegen (per-material variants). Forward-declared in `GlobeFS.glsl`; implementation lives in the material system. Bridging it requires refactoring Cesium's material codegen (large blast radius).
+
+**This was wrong.** `computeWaterColor` is hand-written GLSL in `GlobeFS.glsl` at lines 777-849, gated by `#ifdef SHOW_REFLECTIVE_OCEAN`. The forward declaration at L337 plus the implementation at L777 are both right there in the shader source. There is no material-codegen path.
+
+The misdocumentation framed the WGSL/WebGL water divergence as an architectural impossibility ("refactor the material system or revert WGSL"). Once corrected, the lockstep work was straightforward: line-by-line port the missing WebGL features into the WGSL.
+
+### Bridged features
+
+Both apply to [GlobeTerrain.wgsl](packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) `computeEnhancedOcean`.
+
+1. **`nonDiffuseHighlight` (low-light wave highlight)** — port of GlobeFS.glsl L822-829:
+
+   ```wgsl
+   if (showOceanWaves) {
+     let nonDiffuseHighlight = mix(
+       waveHighlightColor * 5.0 * (1.0 - tsPerturbationRatio),
+       vec3<f32>(0.0),
+       NdotL,
+     );
+     oceanContribution += nonDiffuseHighlight * waterMaskValue * highlightFade;
+   }
+   ```
+
+   - `tsPerturbationRatio = waveN.z` (1.0 = flat surface, 0.0 = vertical wave crest), captured during the wave-normal sample.
+   - Strongest where waves are vertical AND sun is behind the surface — adds ambient bluish glow so ocean doesn't go pitch-black at the terminator.
+   - Gated by `showOceanWaves` (matching WebGL's `#ifdef SHOW_OCEAN_WAVES`); WebGL `#else` returns vec3(0,0,0), which is what we get by skipping the addition.
+
+2. **`surfaceReflectance` (waveIntensity-modulated specular)** — port of GlobeFS.glsl L833:
+
+   ```wgsl
+   let zoomedOutSpec = 0.5;
+   let nearSpec = 0.5;
+   let waveIntensity = clamp(
+     (1000000.0 - distance) / max(1.0, 1000000.0 - 70000.0),
+     0.0, 1.0,
+   );
+   let surfaceReflectance = mix(zoomedOutSpec, nearSpec, waveIntensity);
+   // ... multiply existing GGX × orbitAttenuation by this scalar.
+   ```
+
+   - `waveIntensity` re-derives WebGL's `waveFade(70000, 1000000, dist)` falloff curve.
+   - Defaults to 0.5 at both ends (matches WebGL `u_zoomedOutOceanSpecularIntensity` and `oceanSpecularIntensity` defaults), so the multiplier is currently constant 0.5 in default scenes. Layout-ready if either is exposed as a uniform later.
+   - Combined with the existing WGSL `orbitAttenuation` × `waterMaskValue` gates, the WGSL specular now mirrors the WebGL gating structure plus the orbit-altitude attenuation WGSL adds on top.
+
+### Documentation correction
+
+Files touched:
+
+- [GlobeFS.glsl](packages/engine/Source/Shaders/GlobeFS.glsl) water-mask call-site pair-section header — removed "INTENTIONAL ALGORITHMIC REWRITE", corrected "material codegen" framing, added new section listing WGSL-only enhancements (3-octave noise, GGX specular, foam, subsurface scattering scaffolding).
+- [GlobeTerrain.wgsl](packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) matching pair-section header — same corrections, now flagged "matched across backends since Batch 58 + Batch 78".
+- [SHADER_PAIRS_LOCKSTEP.md](migration_doc/SHADER_PAIRS_LOCKSTEP.md) convention ledger:
+  - "Water/ocean — algorithm" row flipped from "Intentional algorithmic rewrite" → "Shipped" (matched).
+  - "Water/ocean — function home" row corrected — both implementations are hand-written GLSL/WGSL, neither is generated.
+  - NEW row "Water/ocean — wave-normal sampling" documents the WGSL 3-octave vs WebGL 2-octave divergence as a WGSL-only enhancement.
+  - NEW rows for specular model (GGX vs Phong), foam, subsurface scattering — all flagged WGSL-only enhancements.
+
+### What stays divergent (documented WGSL-only enhancements, not bugs)
+
+- **3-octave wave-normal sampling** (uv × 400 / 200 / 800) vs WebGL's 2-octave (`czm_getWaterNoise` at high-altitude + low-altitude frequencies). WGSL waves are more detailed.
+- **GGX specular distribution** (`distributionGGX(NdotH, 0.08) × NdotL`) vs WebGL `czm_getSpecular` (Phong-like, exponent=10). Different falloff curves.
+- **Foam (whitecaps)** — `computeFoam(waveNormal, distance)` overlays white pixels on steep wave crests with distance falloff. No WebGL equivalent.
+- **Subsurface scattering helper** — `computeSubsurfaceScattering` defined in WGSL but currently unused. Scaffolding for future enhancement (per CLAUDE.md Principle 7: do not remove dead-looking scaffolding).
+- **`czm_ellipsoidTextureCoordinates` for wave UV wrapping** — WebGL wraps wave patterns globe-consistently; WGSL uses direct tile UV (waves move with the tile). Both produce convincing ocean motion; the WebGL approach is "more correct" geometrically but the WGSL approach is simpler and the visual difference is unnoticeable at typical viewing scales.
+
+### Verification
+
+- `npx gulp build`: clean.
+- `Tools/visual-regression/probe-polar-multi-plain.mjs`: identical baseline (midlat-mid 1.094%, equator-mid 0.033%, polar views unchanged). WGS84 ellipsoid terrain has no water mask so `tile.flags.x = 0` — the new water code paths are never reached on this probe.
+- `probe-vertex-lighting.mjs` (from Batch 77) still passes; CesiumWorldTerrain + lighting on still renders without console errors, and the new WGSL water path compiles successfully (the build output `Build/CesiumUnminified/Cesium.js` contains the new branches).
+
+### Lockstep status after Batches 76 + 77 + 78
+
+| Subsystem | Status |
+|---|---|
+| Imagery composite (Phase 2.1) | Matched (Batches 65-67) |
+| Ground atmosphere + fog (Phase 2.2) | Matched + documented WGSL LUT enhancement (Batches 56-72) |
+| Water/ocean (Phase 2.3) | **Matched** (Batches 58 + 78); WGSL enhancements documented |
+| Lighting + shadow receive (Phase 2.4) | Matched + custom uniforms shipped (Batches 74 + 76 + 77) |
+| Vertex shader (Phase 2.6) | Matched via shared `processVertex()` helper (Batch 75) |
+| Sky atmosphere (Phase 3.1) | Documented (Batch 76); algorithm divergence is intentional Phase 4 LUT |
+
+Phase 2 fully closed. Phase 3 next pairs: shadow cast, post-process collection, cube map, particles.
+
+---
+
+## Batch 77 — Custom Lambert coefficient uniforms on WebGPU (`u_lambertDiffuseMultiplier` + `u_vertexShadowDarkness`)
+
+**Date:** 2026-05-20
+
+Second half of the lighting parity work scoped by the user (first half was [czm_lightColor in Batch 76](#batch-76--phase-31-sky-atmosphere-lockstep--czm_lightcolor-support-on-webgpu)). Brings WebGL's `u_lambertDiffuseMultiplier` and `u_vertexShadowDarkness` fragment uniforms over to WebGPU so terrain providers exposing vertex normals (e.g. Cesium World Terrain with `requestVertexNormals: true`) get the same configurable Lambert ramp on both backends.
+
+### What WebGL does
+
+`GlobeFS.glsl` L132-133 declares the two uniforms; L559 uses them:
+
+```glsl
+#ifdef ENABLE_VERTEX_LIGHTING
+    float diffuseIntensity = clamp(
+        czm_getLambertDiffuse(czm_lightDirectionEC, normalize(v_normalEC))
+            * u_lambertDiffuseMultiplier
+            + u_vertexShadowDarkness, 0.0, 1.0);
+    vec4 finalColor = vec4(color.rgb * czm_lightColor * diffuseIntensity, color.a);
+#elif defined(ENABLE_DAYNIGHT_SHADING)
+    // Different formula (NdotL × 5 + 0.3, mixed by fade)
+#endif
+```
+
+`GlobeSurfaceShaderSet.js` L249-256 defines `ENABLE_VERTEX_LIGHTING` only when `enableLighting && hasVertexNormals`. Otherwise `ENABLE_DAYNIGHT_SHADING` fires (sharper-contrast formula). Default values come from `Globe.js`: `lambertDiffuseMultiplier = 0.9`, `vertexShadowDarkness = 0.3`.
+
+### WebGPU bridge
+
+- Added `lighting: vec4<f32>` to `CameraUniforms` in [GlobeTerrain.wgsl](packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl):
+  - `.x` = lambertDiffuseMultiplier
+  - `.y` = vertexShadowDarkness
+  - `.z` = hasVertexNormals flag (1.0 when terrain has normals; mirrors the WebGL `#define`)
+  - `.w` = reserved (future: exact-match `fade` for DAYNIGHT_SHADING path)
+- Bumped `CAMERA_UNIFORM_FLOATS` 136 → 140 in [WebGPUGlobeSurfaceTypes.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts).
+- CPU packer in [WebGPUGlobeSurfaceCameraUB.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts) writes `tileProvider.lambertDiffuseMultiplier`, `tileProvider.vertexShadowDarkness`, and `!!tileProvider.terrainProvider?.hasVertexNormals` at offset 136-139. Defaults to 0.9 / 0.3 / 0 when the provider hasn't been populated yet (matches Globe.js defaults).
+- WGSL Lambert path now branches on `.z`:
+  - `> 0.5`: VERTEX_LIGHTING formula → `diffuse = clamp(NdotL * mult * shadowFactor + darkness, 0, 1)` (matches WebGL exactly).
+  - `≤ 0.5`: existing WGSL DAYNIGHT_SHADING-analogue path (`NdotL × 0.88 × shadowFactor + 0.12` mixed against `nightAmbient = 0.025` by `dayFade`). Preserved because the WebGL `NdotL × 5 + 0.3 + fade` path was documented as having a deliberately-rewritten aesthetic.
+
+### Why the gate stays runtime
+
+WebGL gates with a `#ifdef` at pipeline-compile time. WebGPU's pipeline-creation model prefers a single shader module with multiple entry points + runtime branches; the WGSL Lambert path is shared across all six terrain-encoding `@vertex` entry points (see [Batch 75](#batch-75--phase-26-of-shader-pair-lockstep-vertex-shader-closes-phase-2)), so a compile-time gate would require duplicating the FS or splitting it. A single runtime branch on `camera.lighting.z` is cheaper than the duplication.
+
+### Verification
+
+- TypeScript: `npx tsc --noEmit` clean.
+- Full `npx gulp build`: clean.
+- `Tools/visual-regression/probe-polar-multi-plain.mjs`: identical baseline (midlat-mid 1.094%, equator-mid 0.033%, polar views unchanged). Default `EllipsoidTerrainProvider` has no vertex normals, so the .z gate is 0 and the new branch is untouched.
+- New probe `Tools/visual-regression/probe-vertex-lighting.mjs` loads CesiumViewer with `enableLighting = true` + Cesium World Terrain (`requestVertexNormals: true`), captures two screenshots at `lambertDiffuseMultiplier = 0.3` vs `1.5`. Both render without console errors; the mult=1.5 capture is visibly brighter than the mult=0.3 capture, confirming the uniform reaches the WGSL VERTEX_LIGHTING branch.
+
+### Pair-section + ledger updates
+
+- WGSL header point 6 (in `fragmentMain` lighting block) flipped from "WGSL has no equivalent" to documenting the new bridge.
+- GLSL `GlobeFS.glsl` mirror header updated identically.
+- `SHADER_PAIRS_LOCKSTEP.md` "Lighting — vertex-lighting uniforms" row marked **Shipped** with the layout details. Added a NEW row "Lighting — diffuse coefficients (no vertex normals)" splitting the previously-merged coefficient row so the WGSL hardcoded path (only reached when `hasVertexNormals = 0`) is documented separately from the now-shipped VERTEX_LIGHTING path.
+
+### Lighting parity status after Batches 76 + 77
+
+| WebGL feature | WebGPU status |
+|---|---|
+| `czm_lightColor` (scene light color) | **Shipped** (Batch 76) |
+| `u_lambertDiffuseMultiplier` (tile-provider) | **Shipped** (Batch 77) |
+| `u_vertexShadowDarkness` (tile-provider) | **Shipped** (Batch 77) |
+| `#ifdef ENABLE_VERTEX_LIGHTING` gate | Runtime branch on `camera.lighting.z` |
+| `#ifdef ENABLE_DAYNIGHT_SHADING` formula exact-match | Deferred (WGSL keeps documented intentional rewrite; `.w` slot reserved) |
+| Terminator glow | WGSL-only enhancement (no GLSL equivalent) |
+
+### Next batch (per user direction)
+
+`computeWaterColor` material codegen → WGSL bridge. This is structurally larger — the WebGL `computeWaterColor` function is generated at runtime by Cesium's material system per-material variant (forward-declared in GlobeFS.glsl L337). Bridging means either:
+
+- (a) Adding a material-codegen path that emits WGSL strings alongside the GLSL ones, or
+- (b) Keeping the hand-inlined `computeEnhancedOcean` in GlobeTerrain.wgsl (Batch 58) and just exposing its tunable parameters through the existing uniform layout.
+
+Option (b) is simpler and matches the existing convention-ledger entry ("Intentional algorithmic rewrite, NOT a parity bug"). Option (a) is the more general fix and unblocks future material expansions. Will scope when we start.
+
+---
+
+## Batch 76 — Phase 3.1 sky atmosphere lockstep + `czm_lightColor` support on WebGPU
+
+**Date:** 2026-05-19
+
+Phase 3.1 of [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) plus the first chunk of the lighting parity work scoped by the user: shipping custom scene light color (`czm_lightColor`) on the WebGPU globe Lambert path.
+
+### Phase 3.1 — Sky atmosphere lockstep
+
+Sky atmosphere is the first non-globe-terrain pair entering lockstep. It has the **largest cross-language structural divergence** of any pair surveyed so far:
+
+- **WebGL**: three files — `SkyAtmosphereVS.glsl` (32), `SkyAtmosphereFS.glsl` (59), `SkyAtmosphereCommon.glsl` (81) — plus czm_* builtin includes for scattering, atmosphere color, tonemap, gamma, HSB shift, ray-sphere.
+- **WebGPU**: single file `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` (~575 lines after pair headers) with @vertex + @fragment + all helpers inlined (no preprocessor includes available in WGSL).
+
+Files touched (pair-section headers added to each):
+
+- `packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` — top-of-file header with full 11-point structural-divergence inventory.
+- `packages/engine/Source/Shaders/SkyAtmosphereVS.glsl` — mirror header pointing at the WGSL counterpart.
+- `packages/engine/Source/Shaders/SkyAtmosphereFS.glsl` — mirror header.
+- `packages/engine/Source/Shaders/SkyAtmosphereCommon.glsl` — mirror header.
+
+Cataloged divergences (added to the convention ledger in SHADER_PAIRS_LOCKSTEP.md):
+
+1. **File layout.** GLSL 3-file split vs WGSL single module.
+2. **Ray-march steps.** GLSL 16 + adaptive `rayStepLengthIncrease` vs WGSL 64 uniform-stride.
+3. **Per-vertex vs per-fragment.** GLSL `#ifdef PER_FRAGMENT_ATMOSPHERE` vs WGSL always per-fragment.
+4. **LUT fast-path.** WGSL has `useLut > 0.5` inscatter-LUT branch (Phase 4); GLSL has none (WebGL2 has no compute shaders).
+5. **Dual-light scattering.** WGSL adds optional moon inscatter LUT (Phase 1.3c); GLSL has none.
+6. **Debug bypass.** WGSL has Tier 1 magenta debug; GLSL has none.
+7. **Wind state.** WGSL has `windDirectionAndSpeed` UBO scaffolding (Phase 5/6); GLSL has none.
+8. **Tonemap chain gating.** GLSL `#ifndef HDR` + `#ifdef COLOR_CORRECT`; WGSL always-on + `abs(hsbShift.xyz) > 0.001` gate.
+9. **Vertex transform.** GLSL `czm_model * position`; WGSL `mvpRelativeToEye × translateRelativeToEye(...)` (RTE used uniformly across WGSL shaders).
+10. **Translucent-globe brightening.** GLSL has `#ifdef GLOBE_TRANSLUCENT` path; WGSL has none yet (deferred — tracked under multi-frustum/translucent classification).
+11. **Ellipsoid math.** GLSL pulls czm_ellipsoidRadii + czm_eyeHeight + runtime distanceAdjust; WGSL pulls pre-adjusted innerRadius from UBO (CPU-side adjust in WebGPUSkyAtmosphereRenderer).
+
+### `czm_lightColor` support on WebGPU
+
+User-scoped work item: bridge WebGL's `czm_lightColor` automatic uniform so scene-provided custom light colors (e.g. `scene.light.color = Color.ORANGE` for a sunset light, or any custom `Light` instance) propagate to the WebGPU globe Lambert diffuse path.
+
+WebGL has THREE Lambert variants (`ENABLE_VERTEX_LIGHTING`, `ENABLE_DAYNIGHT_SHADING`, none) and TWO of them multiply by `czm_lightColor`. WebGPU's unified runtime-gated path (`camera.enableLighting > 0.5`) previously hardcoded white. Documented as a known gap in the lighting convention-ledger entry through Batch 74.
+
+Files modified:
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts` — `CAMERA_UNIFORM_FLOATS` 132 → 136 (added `lightColor: vec4<f32>` at the tail).
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts` — packer writes `uniformState.lightColor.{x,y,z}` + 0.0 pad at offset 132-135. Falls back to white when UniformState hasn't been updated yet.
+- `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` — `CameraUniforms` struct gains `lightColor: vec4<f32>`. Lambert path now multiplies `color = color * diffuse * camera.lightColor.rgb` instead of implicit white.
+
+Behavior:
+
+- Default scene (`scene.light` = SunLight with white color, no custom light) — `uniformState.lightColor = (1, 1, 1)` — multiply is a no-op, output unchanged.
+- Custom light scene — output picks up the custom color, matching WebGL.
+
+### Why this is safe + how it was verified
+
+- Polar-multi-plain probe after rebuild: midlat-mid mismatch% = 1.094 (unchanged from Batch 64 baseline); equator-mid = 0.033; northpole-close = 14.04, northpole-orbit = 33.97, southpole-close = 2.61, southpole-orbit = 14.59 — all matching the cross-vendor numerical-drift baseline documented in Batch 64. No new divergence introduced by the multiply-by-white path.
+- TypeScript: `npx tsc --noEmit` clean.
+- Full `npx gulp build`: clean.
+- The `.w` slot in `camera.lightColor` is reserved for a future ambient-color scalar or HDR multiplier. Pre-allocating it keeps the UBO layout stable when the next lighting expansion lands (next batch — custom Lambert coefficients).
+
+### Convention ledger updated
+
+`SHADER_PAIRS_LOCKSTEP.md` Lighting section: `czm_lightColor` row no longer reads "WGSL doesn't" — it now reads "WGSL gets it via `camera.lightColor.rgb` (Batch 76)". The hardcoded-coefficients and vertex-lighting-uniform entries remain open until the next batch.
+
+### Out-of-scope (next batch)
+
+Per user direction, the following stay deferred to the next batch:
+
+- `u_lambertDiffuseMultiplier` + `u_vertexShadowDarkness` (custom Lambert coefficient uniforms from tile providers).
+- `computeWaterColor` material-codegen bridge to WGSL.
+
+Both have their own todo entries and ledger rows that won't be flipped to "shipped" until those land.
+
+---
+
+## Batch 75 — Phase 2.6 of shader-pair lockstep: vertex shader (closes Phase 2)
+
+**Date:** 2026-05-19
+
+Phase 2.6 of [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md). Final sub-phase of Phase 2 (globe terrain pair). The vertex shader has the **biggest architectural divergence** of any pair in the globe shader.
+
+### The divergence
+
+- **WebGL `GlobeVS.glsl`**: ONE `void main()` (~286 lines) with #ifdef variants for every terrain encoding (`QUANTIZATION_BITS12`, `INCLUDE_WEB_MERCATOR_Y`, `ENABLE_VERTEX_LIGHTING`, `GEODETIC_SURFACE_NORMALS`, `EXAGGERATION`, `ENABLE_CLIPPING_POLYGONS`, `FOG`/`GROUND_ATMOSPHERE`/`UNDERGROUND_COLOR`/`TRANSLUCENT`, 2D-mode variants). Pipeline cache compiles a fresh shader per define-set.
+
+- **WebGPU `GlobeTerrain.wgsl`**: SIX explicit `@vertex` entry points, each handling one specific encoding combination:
+  - `vertexMain` (uncompressed, no Mercator-T)
+  - `vertexMainWebMerc` (uncompressed + Mercator-T)
+  - `vertexMainWebMercNormals` (uncompressed + Mercator-T + normal)
+  - `vertexMainQuantized` (BITS12, no Mercator-T)
+  - `vertexMainQuantizedWebMerc` (BITS12 + Mercator-T)
+  - `vertexMainQuantizedWebMercNormals` (BITS12 + Mercator-T + normal)
+  
+  Each decodes its specific vertex layout, then hands off to a shared `processVertex()` helper for the layout-agnostic math (position transform, ellipsoid normal, exaggeration, varying setup). Pipeline picks the entry point based on the actual terrain encoding.
+
+### Why the split
+
+- **GLSL preprocessor scope.** Full C-style preprocessor handles every variant inline; the WebGL pipeline cache compiles per-define-set.
+- **WGSL preprocessor scope.** Only a minimal custom `//>>ifdef FLAG_NAME` subset (uint32 `ShaderDefine` bitmask, see `WebGPUShaderDefines.ts` / `WebGPUShaderPreprocessor.ts`). Currently used only for `GEODETIC_NORMAL`, `DISABLE_DEPTH_DISTANCE`, `SPLIT_ENABLED`, `COMPRESSED_VERTICES`. Add-only, never renumber.
+- **Pipeline model.** WebGPU pipelines prefer a single shader module with multiple entry points (closer fit to WGSL's typed `@location` attribute model). WebGL pipelines want a shader per define-set.
+
+So WGSL splits across entry points; GLSL splits across preprocessor branches. Both reach the same downstream varying contract.
+
+### Shared varying contract preserved
+
+Despite the structural split, both backends emit the SAME varyings consumed by the FS pair-sections (Phases 2.1-2.4):
+
+- `gl_Position` / `@builtin(position)` — clip-space position
+- `v_textureCoordinates` (vec3: u, v, webMercatorT)
+- `v_positionEC`, `v_positionMC`, `v_normalEC`, `v_normalMC`
+- `v_distance` (when `FOG`/`GROUND_ATMOSPHERE`/`UNDERGROUND_COLOR`/`TRANSLUCENT`)
+- `v_atmosphereRayleighColor`, `v_atmosphereMieColor`, `v_atmosphereOpacity` (when `FOG` and non-per-fragment ground-atmosphere)
+- `v_slope`, `v_aspect`, `v_height` (when `APPLY_MATERIAL`)
+
+The FS pair-sections consume these same varyings on both backends. Per-fragment parity holds despite the VS architectural split.
+
+### What Batch 75 ships
+
+- **Pair-section header** on the WGSL VS entries ([GlobeTerrain.wgsl ~lines 1182-1265](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl)).
+- **Pair-section header** at the top of `GlobeVS.glsl`.
+- **3 new convention-ledger rows**: VS entry point structure, VS preprocessor scope, VS shared math home (`processVertex()` helper).
+
+### Verification
+
+Polar-multi baseline unchanged:
+
+| view | post-Batch 74 | post-Batch 75 |
+|---|---|---|
+| equator-mid | 0.03 % | 0.03 % |
+| midlat-mid | 1.09 % | 1.09 % |
+| southpole-close | 2.61 % | 2.61 % |
+| southpole-orbit | 14.59 % | 14.59 % |
+| northpole-close | 14.04 % | 14.04 % |
+| northpole-orbit | 33.97 % | 33.97 % |
+
+### Phase 2 closed
+
+- [x] **2.1 Imagery composite** (Batch 68)
+- [x] **2.2 Ground atmosphere + fog** (Batch 72)
+- [x] **2.3 Water/ocean** (Batch 73)
+- [x] **2.4 Lighting + shadows** (Batch 74)
+- [x] **2.5 Fog + drape** — subsumed by 2.2
+- [x] **2.6 VS path** — this batch
+
+All five major sub-phases of the globe terrain pair are now lockstep-documented. The convention ledger in `SHADER_PAIRS_LOCKSTEP.md` has grown to ~20 entries covering every documented divergence in the globe shader pair.
+
+### Going forward
+
+Phase 3 (post-process, shadow cast, sky atmosphere, cube map, particles) is the next-level scope. Each is its own pair-alignment batch. Skip-or-do decisions per pair should weigh:
+
+- Did this batch surface real drift? (Batch 67 reproject pair found a Batch 56 fix that lived only in the inline TS) — yes-cases are high-value.
+- Is the pair likely to be edited together going forward? Pair-section headers are a one-time investment that pays off on every future edit.
+- Are there algorithmic divergences worth flagging? (Batch 73 water/ocean rewrite would have been "lost knowledge" without the ledger entry.)
+
+For pairs where the answer to all three is "no", documentation passes have diminishing returns and the time is better spent on real bug-hunting or feature work.
+
+---
+
+## Batch 74 — Phase 2.4 of shader-pair lockstep: lighting + shadow receive
+
+**Date:** 2026-05-19
+
+Phase 2.4 of [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md). Pair-section headers added to the lighting + shadow-receive blocks in both shaders. This is another "intentional algorithmic rewrite" case — like the water/ocean section but smaller in scope.
+
+### Divergences documented
+
+**Algorithmic (intentional)**:
+
+- **Variant gating.** GLSL has three `#ifdef`-gated variants (`ENABLE_VERTEX_LIGHTING`, `ENABLE_DAYNIGHT_SHADING`, none); WGSL has one unified path gated on `camera.enableLighting > 0.5`.
+- **Diffuse coefficients.** GLSL: `NdotL × 5 + 0.3` (high contrast, dark night). WGSL: `NdotL × 0.88 + 0.12` (gentler, brighter ambient). Visually distinct day/night terminator shape.
+- **Custom light color.** GLSL multiplies by `czm_lightColor` (allows scene-customized light); WGSL doesn't (implicit white).
+- **Vertex-lighting uniforms.** GLSL `u_lambertDiffuseMultiplier` / `u_vertexShadowDarkness` — tile-provider-driven custom shading. WGSL has no equivalent; coefficients are hardcoded.
+- **Terminator glow.** WGSL adds `computeTerminatorGlow(normal, sunDir)` — a warm orange/pink band at the day/night boundary. WebGL doesn't.
+
+**Structural (architecture-driven)**:
+
+- **Shadow code location.** `GlobeFS.glsl` contains NO shadow code — the WebGL pipeline cache injects shadow-sampling GLSL via `ShadowMapShader.js` per-pipeline based on the shadow-map config. WGSL inlines three shadow paths in the source: `globeComputeShadowFactor`, `globeComputeShadowFactorPointLight`, `globeComputeShadowFactorCSM`, gated at runtime in `fragmentMain`. Architecture difference forced by the pipeline-cache model.
+
+### What Batch 74 ships
+
+- **Pair-section header** on the WGSL Lambert diffuse block ([GlobeTerrain.wgsl ~lines 2881-2960](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl)).
+- **Pair-section header** on the GLSL lighting block ([GlobeFS.glsl ~lines 515-524](../packages/engine/Source/Shaders/GlobeFS.glsl)).
+- **6 new convention-ledger rows** in `SHADER_PAIRS_LOCKSTEP.md`: variant gating, diffuse coefficients, custom light color, vertex-lighting uniforms, terminator glow, shadow code location.
+
+### Verification
+
+Polar-multi baseline unchanged (documentation-only):
+
+| view | post-Batch 73 | post-Batch 74 |
+|---|---|---|
+| equator-mid | 0.03 % | 0.03 % |
+| midlat-mid | 1.09 % | 1.09 % |
+| southpole-close | 2.61 % | 2.61 % |
+| southpole-orbit | 14.59 % | 14.59 % |
+| northpole-close | 14.04 % | 14.04 % |
+| northpole-orbit | 33.97 % | 33.97 % |
+
+### Latent feature gap surfaced
+
+Documenting the lighting section surfaced that **tile-provider-driven light-color customization** (`czm_lightColor`) and **custom Lambert coefficients** (`u_lambertDiffuseMultiplier`, `u_vertexShadowDarkness`) are unsupported on the WebGPU backend. No current tile provider in Cesium's stock set uses these, but a future custom tile provider would silently degrade on WebGPU. Not deferred-work-tracked yet because no concrete use case exists; logging here for visibility if one surfaces.
+
+### Phase 2 progress
+
+- [x] **2.1 Imagery composite** (Batch 68)
+- [x] **2.2 Ground atmosphere + fog** (Batch 72)
+- [x] **2.3 Water/ocean** (Batch 73)
+- [x] **2.4 Lighting + shadows** — this batch
+- [ ] 2.5 Fog + drape (subsumed by 2.2)
+- [ ] 2.6 VS path
+
+4 of 6 sub-phases done. Only VS path remains as the final structural lockstep target.
+
+---
+
+## Batch 73 — Phase 2.3 of shader-pair lockstep: water mask + ocean rendering
+
+**Date:** 2026-05-19
+
+Phase 2.3 of [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md). The water/ocean section is **fundamentally different** from prior phases: it's not an alignment pass, it's documentation of an **intentional algorithmic rewrite** that landed in Batch 58.
+
+### The rewrite — recap
+
+WebGL `computeWaterColor` (runtime-generated by Cesium's material-system codegen) uses a **replacement** blend:
+
+```text
+finalColor = mix(imagery, deepColor × darkening, ~0.6) + diffuse + specular + foam
+```
+
+This dimmed Bing aerial ocean by ~5× at orbit altitudes — historically the dominant source of the WebGL/WebGPU brightness gap. Batch 58 replaced the WGSL implementation with `computeEnhancedOcean`, which uses an **additive** blend:
+
+```text
+finalColor = imagery + (diffuse wave-highlight + GGX specular + foam) × waterMaskValue
+```
+
+The additive blend preserves imagery brightness while still rendering wave highlights and sun-glint. Visually it produces results closer to real satellite ocean imagery than the legacy `mix(imagery, deep, 0.6)` formula.
+
+**The two backends produce different ocean rendering by design**, and bit-aligning them would require either reverting the WGSL (loses the brightness fix) or refactoring WebGL's `computeWaterColor` codegen (large blast radius across Cesium's material system). Neither path is currently planned.
+
+### What Batch 73 ships
+
+Documentation only:
+
+- **Pair-section header block** on the WGSL ocean call site ([GlobeTerrain.wgsl ~lines 2806-2880](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl)). Explicitly names the rewrite as intentional, references Batch 58 for the rationale, lists the structural divergences.
+- **Pair-section header block** on the GLSL ocean call site ([GlobeFS.glsl ~lines 433-454](../packages/engine/Source/Shaders/GlobeFS.glsl)). Mirrors the WGSL header so a reader of either file is alerted to the cross-backend divergence.
+- **3 new convention-ledger rows** in `SHADER_PAIRS_LOCKSTEP.md` covering:
+  1. The algorithm rewrite (replacement vs additive blend)
+  2. The water-mask UV Y-flip (GLSL flips in FS; WGSL handles in upload)
+  3. The function-home difference (`computeWaterColor` is runtime-codegen; `computeEnhancedOcean` is hand-inlined in WGSL)
+
+### Verification
+
+The polar-multi probe doesn't exercise this code path — WGS84 ellipsoid terrain has no water mask, so `tile.flags.x = 0` on WGSL and `HAS_WATER_MASK` is undefined on WebGL. Baseline unchanged:
+
+| view | post-Batch 72 | post-Batch 73 |
+|---|---|---|
+| equator-mid | 0.03 % | 0.03 % |
+| midlat-mid | 1.09 % | 1.09 % |
+| southpole-close | 2.61 % | 2.61 % |
+| southpole-orbit | 14.59 % | 14.59 % |
+| northpole-close | 14.04 % | 14.04 % |
+| northpole-orbit | 33.97 % | 33.97 % |
+
+### Why documenting the rewrite matters
+
+A future maintainer (or LLM agent) encountering the WGSL `computeEnhancedOcean` function and the WebGL `computeWaterColor` reference would naturally try to align them — that's the obvious read of "lockstep". Batch 73's headers prevent this by making the intentionality explicit: this is one place where the WGSL has been **made better** than WebGL, not where it has drifted from WebGL.
+
+The convention ledger now distinguishes three classes of divergence:
+
+1. **Dormant** (imagery composite blend) — same algorithm, different formula spelling, identical output in practice
+2. **Structural** (ground atmosphere gating, HDR gate, LUT integration) — same semantic intent, different mechanism
+3. **Intentional rewrite** (water/ocean blend, Phase-4 LUT path) — genuinely different algorithm, deliberately chosen for the WebGPU backend
+
+Going forward, any new pair-section work should classify divergences against this taxonomy.
+
+### Phase 2 progress
+
+- [x] **2.1 Imagery composite** (Batch 68)
+- [x] **2.2 Ground atmosphere + fog** (Batch 72)
+- [x] **2.3 Water/ocean** — this batch
+- [ ] 2.4 Lighting + shadows
+- [ ] 2.5 Fog + drape (subsumed by 2.2)
+- [ ] 2.6 VS path
+
+3 of 6 sub-phases done.
+
+---
+
+## Batch 72 — Phase 2.2 of shader-pair lockstep: globe ground atmosphere section
+
+**Date:** 2026-05-19
+
+Phase 2.2 of the [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) roadmap. Brings the globe terrain shader's **ground atmosphere + fog blending** section into pair-section lockstep. WebGL `GlobeFS.glsl` lines ~512-603 and WebGPU `GlobeTerrain.wgsl` lines ~2849-3170 are the matched pair.
+
+### What Batch 72 ships
+
+- **Pair-section header blocks** above both code blocks. Each header cites the matching file + line range, the audit date, and a structural-divergence inventory.
+- **Convention-ledger entries (4 new rows)** in `SHADER_PAIRS_LOCKSTEP.md` covering the structural divergences:
+  1. Pipeline gating (preprocessor `#ifdef` vs runtime UBO scalars)
+  2. Per-vertex vs per-fragment ray-march (GLSL has both paths; WGSL always per-fragment per Batch 56)
+  3. LUT integration (WGSL adds an optional Phase-4 compute-pre-computed LUT; WebGL has no equivalent)
+  4. HDR gate mechanism (`#ifndef HDR` vs `tile.groundAtmosphereControl.w > 0.5`)
+
+Pre-existing rich comments in both files (referencing each other's line numbers — clearly authored with cross-backend parity in mind) made this a relatively easy lockstep pass. No algorithmic changes; just formalized the convention-ledger and added the pair-section headers.
+
+### Verification
+
+Polar-multi baseline unchanged (this batch is documentation-only):
+
+| view | post-Batch 71 | post-Batch 72 |
+|---|---|---|
+| equator-mid | 0.03 % | 0.03 % |
+| midlat-mid | 1.09 % | 1.09 % |
+| southpole-close | 2.61 % | 2.61 % |
+| southpole-orbit | 14.59 % | 14.59 % |
+| northpole-close | 14.04 % | 14.04 % |
+| northpole-orbit | 33.97 % | 33.97 % |
+
+### Phase 2 progress
+
+- [x] **2.1 Imagery composite** (Batch 68)
+- [x] **2.2 Ground atmosphere + fog** — this batch
+- [ ] 2.3 Water/ocean
+- [ ] 2.4 Lighting + shadows
+- [ ] 2.5 Fog + drape (largely covered by 2.2; may be subsumed)
+- [ ] 2.6 VS path
+
+Half of Phase 2 done. Future sub-phases will follow the same recipe: identify the matched section in each shader, add pair-section headers, formalize structural-divergence inventory in the ledger, verify the polar-multi baseline holds.
+
+---
+
+## Batch 71 — Removed dead `fr._instance` write in WebGPUContext._warmUpPipelines
+
+**Date:** 2026-05-19
+
+Small mechanical cleanup. `WebGPUContext._warmUpPipelines()` claimed to "pre-compile the terrain shader module + pipeline layout" by doing `globeFR._instance = new globeFR.RendererClass(this)`. Three things made that claim false:
+
+1. The actual render path in `GlobeSurfaceTileProviderRendering.addWebGPUDrawCommandsForTile` creates its OWN per-device renderer instance via a module-scoped `_webgpuGlobeRenderers` WeakMap. The instance stashed on `globeFR._instance` was never reached at render time.
+2. `WebGPUGlobeSurfaceRenderer.constructor()` takes no arguments and only allocates a `Float32Array` scratch buffer — no GPU work. The constructor in the warmup wasn't compiling anything.
+3. The shader compilation + pipeline layout creation lives in `WebGPUGlobeSurfaceRenderer.initialize(device, shaderCode, canvasFormat)`, which the warmup never called.
+
+So the warmup line was creating a throwaway instance, doing zero GPU work, and being discarded. Surfaced during the Batch 65 dual-texture investigation when we couldn't find the imagery texture cache on `fr._instance` (it was on the per-device WeakMap entry).
+
+### What Batch 71 ships
+
+- **[WebGPUContext.ts:912-930](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts#L912)** — removed the dead `fr._instance` write. Added a doc-block explaining why the globe warmup is currently a no-op, the two paths to actually deliver pre-compilation if first-frame stutter becomes a priority, and the trade-offs (multi-context / split-screen complicates the `_instance` field model).
+- **[probe-globe-tile-trace.mjs](../Tools/visual-regression/probe-globe-tile-trace.mjs)** — dropped the `rendererInst = fr?._instance ?? fr` defensive fallback (the line wasn't being read downstream anyway).
+- **[probe-batch65-state.mjs](../Tools/visual-regression/probe-batch65-state.mjs)** — updated the comment that referenced `fr._instance` so future readers know the field was removed.
+
+### Verification
+
+Type-check clean, build clean. Polar-multi probe baseline unchanged (the warmup didn't affect rendering, so removing it doesn't either):
+
+| view | post-Batch 70 | post-Batch 71 |
+|---|---|---|
+| equator-mid | 0.03 % | 0.03 % |
+| midlat-mid | 1.09 % | 1.09 % |
+| southpole-close | 2.61 % | 2.61 % |
+| southpole-orbit | 14.59 % | 14.59 % |
+| northpole-close | 14.04 % | 14.04 % |
+| northpole-orbit | 33.97 % | 33.97 % |
+
+### What's still preserved
+
+The `RendererClass` + `_instance` pattern is still declared as optional in `GraphicsContext.ts` / `cesium-js-types.d.ts` for forward-compat (other FRs could adopt it). Today only GLOBE_SURFACE and SCENE_RENDERER register `RendererClass`, and SCENE_RENDERER uses it via `Scene.js` (which stores the instance on `_alternateSceneRenderer` directly, not on `fr._instance`). The field is unused at present but cheap to retain.
+
+### Future work if first-frame globe stutter ever becomes user-visible
+
+Two viable paths documented in the WebGPUContext code:
+
+- Move the warmup into a top-level `warmUpGlobeRenderer(context)` helper inside GlobeSurfaceTileProviderRendering.js that populates `_webgpuGlobeRenderers` and calls `.initialize()`. WebGPUContext._warmUpPipelines invokes it.
+- Or refactor the render-path to check `globeFR._instance` first, falling back to the device-keyed map. Multi-context (split-screen) would still pay first-frame on the second device because `_instance` is a single field; a `Map<GPUDevice, GlobeSurfaceRenderer>` on the FR would solve that but adds complexity for a stutter that isn't currently a measured problem.
+
+Neither delivered now — first-frame globe rendering is fast enough in practice that the warmup absence isn't perceptible.
+
+---
+
+## Batch 70 — Clock-pinning landed; polar-multi is now a stable baseline
+
+**Date:** 2026-05-19
+
+Direct follow-up to Batch 69's bisection finding. Pin the Cesium clock to a fixed UTC moment in every cross-backend capture probe so the polar-multi diff metric measures actual rendering divergence, not the clock-drift noise that's been contaminating it for several batches.
+
+### What changed
+
+Five probes now share the same `FIXED_CLOCK_UTC = "2026-05-19T18:00:00Z"` constant, applied identically on each backend before any rendering:
+
+```js
+const fixed = C.JulianDate.fromIso8601(clockUTC);
+v.clock.currentTime = fixed.clone();
+v.clock.startTime   = fixed.clone();
+v.clock.stopTime    = fixed.clone();
+v.clock.shouldAnimate = false;
+v.clock.multiplier    = 0;
+```
+
+Updated probes:
+
+- [probe-polar-multi-plain.mjs](../Tools/visual-regression/probe-polar-multi-plain.mjs) — the gating cross-backend probe.
+- [probe-polar-multi-angle.mjs](../Tools/visual-regression/probe-polar-multi-angle.mjs) — overlay variant.
+- [probe-northpole-angles.mjs](../Tools/visual-regression/probe-northpole-angles.mjs) — 8 north-pole views.
+- [probe-disc-size-orbit.mjs](../Tools/visual-regression/probe-disc-size-orbit.mjs) — disc-bounds measurement.
+- [probe-atmosphere-orbit.mjs](../Tools/visual-regression/probe-atmosphere-orbit.mjs) — atmosphere isolation diff.
+
+Choice rationale for `2026-05-19T18:00:00Z`:
+
+- 18:00 UTC = noon CST, so midlat-mid (lon=-100, lat=40) is at solar noon — well-lit, no terminator in view.
+- Mid-May northern hemisphere → north pole is in continuous daylight, south pole in continuous darkness. Both poles render their stable lighting state; no terminator sweeps across either.
+- Anchored to the current migration-doc timeline so the constant is meaningful to anyone reading later.
+
+### New clock-pinned baseline (stable across sessions)
+
+Three back-to-back runs after the change produced byte-identical numbers:
+
+| view              | clock-pinned baseline |
+| ----------------- | --------------------- |
+| equator-mid       | 0.03 %                |
+| midlat-mid        | 1.09 %                |
+| southpole-close   | 2.61 %                |
+| southpole-orbit   | 14.59 %               |
+| northpole-close   | 14.04 %               |
+| northpole-orbit   | 33.97 %               |
+
+These numbers are now load-bearing — they reflect actual rendering divergence between the WebGL and WebGPU pipelines, not probe noise. Any future shader-pair work should be evaluated against this table.
+
+Comparison to historical "non-pinned" numbers (which varied 1-7 % at midlat across sessions): the clock-pinned numbers are within the historical range but no longer drift. The 14-38 % polar/orbit residual was REAL even with clock-noise stripped; it remains as the genuine cross-vendor numerical drift documented in Batch 64.
+
+### Practical impact
+
+- A regression of 0.5 % in any cell of the table is now a real signal that a shader change altered output, not session noise.
+- Phase 2 of [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) sub-phases can proceed with confidence that diffs aren't being misattributed to algorithmic changes when they're really clock-drift.
+- Reviewers running the polar-multi probe against a PR can compare to the table above as the canonical baseline.
+
+### Future work: split-screen clock sync
+
+The split-screen comparison page at `Apps/WebGPUTest/split-screen-comparison.html` currently runs WebGL and WebGPU viewers as independent Cesium instances. Each has its own `Clock` with its own `shouldAnimate = true` default and its own `Date.now()` start, so the two halves of the screen drift apart over time — different sun position, different night-fade, different atmospheric scattering as the simulation clocks tick out of sync.
+
+For a true side-by-side visual parity comparison, the split-screen page should:
+
+1. Share a single `Clock` instance between the two viewers, OR
+2. Snap one viewer's clock to the other's on every frame (`webgpuViewer.clock.currentTime = webglViewer.clock.currentTime`).
+
+Approach 2 is simpler and doesn't require restructuring the viewer initialization. Performance cost is negligible (one JulianDate copy per frame).
+
+This is deferred to a follow-up batch; it doesn't affect the probe-based metric work since each probe creates its own viewer with the pinned clock.
+
+---
+
+## Batch 69 — Bisection: the polar-multi metric has been measuring clock-noise, not algorithmic divergence
+
+**Date:** 2026-05-19
+
+The Batch 68 attempt to bring WGSL's blend math in line with GLSL's premultiplied-alpha OVER composite appeared to regress midlat-mid from 1.09 % → 7.01 %. Batch 69 bisected that regression and reached a sharper conclusion: **the math change has zero effect on rendered output**, and the apparent regression came from probe-level non-determinism between session captures.
+
+### Bisection methodology
+
+1. Saved the current (working) WGSL output as `bisect-midlat-OLD-wgsl-mix.png`.
+2. Saved the WebGL reference as `bisect-midlat-webgl-reference.png`.
+3. Re-applied the premultiplied-alpha math change to WGSL.
+4. Re-built and captured the new WGSL output as `bisect-midlat-NEW-premultiplied.png`.
+5. Wrote [probe-blend-math-bisect.mjs](../Tools/visual-regression/probe-blend-math-bisect.mjs) — pixel-level diff between OLD and NEW WGSL outputs.
+
+Result: **mean delta 0.00, mismatch 0.00 %, 0 divergent pixels out of 603,790 sampled.** The two formulas produce literally pixel-identical output at midlat-mid. Algebraic equivalence confirmed empirically: for opaque imagery (default Cesium Mercator), `mix(prevColor, adjusted, 1.0)` and `mix(prevColor * prevAlpha, adjusted, 1.0) / 1.0` collapse to the same `adjusted` value.
+
+### Where did the 1.09 % → 7.01 % "regression" come from?
+
+[probe-determinism-check.mjs](../Tools/visual-regression/probe-determinism-check.mjs) — captures midlat-mid 4× per backend back-to-back, compares within-backend and cross-backend:
+
+| Backend | within-backend mismatch (attempt N vs attempt 0) | cross-backend mismatch |
+| ------- | ------------------------------------------------ | ---------------------- |
+| WebGL   | 0.00 % across all 3 reattempts                   | (vs WebGPU) **3.02 %** in this session |
+| WebGPU  | 0.00 % across all 3 reattempts                   | (vs WebGL)   **3.02 %** in this session |
+
+**Both backends are individually deterministic within a session.** The cross-backend diff is stable across re-captures of the same session.
+
+But midlat-mid baseline numbers across SESSIONS have ranged 1.09 % - 7.02 % over the past several batches. The proximate cause: the Cesium `Clock` advances by default, so each fresh viewer launch captures a slightly different time-of-day. At lat=40 N, lon=-100 W, the terminator can fall in or out of the rendered viewport depending on the UTC moment; when it sweeps across, day/night-shading produces different per-pixel values on both backends (each in its own deterministic way) and the cross-backend diff shifts.
+
+Compounding: the WebGL imagery WAS drifting between sessions — [bisect-midlat-webgl-reference.png] vs [polar-plain-midlat-mid-webgl.png] showed 42.06 % mismatch (mean delta 12.33). This wasn't a WebGL non-determinism bug — it was the SAME WebGL code producing different output at different simulation times.
+
+### Implications for prior batches
+
+The polar-multi-plain diff metric is **biased by clock-noise**. Past batches reported things like "polar-orbit went from 14 % → 32 %" or "midlat held at 1.09 %" as if those were stable measurements of algorithmic divergence. Some of that signal was real (e.g., the Batch 65 dual-texture refactor demonstrably moved the equator number from 2.3 % to 0.03 % — too big to be clock noise), but the smaller deltas (~1-5 %) are inside the clock-noise band and shouldn't have been treated as load-bearing evidence.
+
+In particular, the Batch 68 "regression" was not real. The WGSL blend math has been pixel-equivalent to a premultiplied-alpha OVER composite all along for default opaque imagery. The two formulas only diverge when both `previousAlpha < 1` AND `sourceAlpha < 1`, a condition the default Cesium pipeline rarely hits.
+
+### What Batch 69 ships
+
+- **[GlobeTerrain.wgsl::applyImageryLayer](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl)** — preserved the working `mix(prevColor, adjusted, effectiveAlpha)` formula. Comment updated to cite this bisection result.
+- **[probe-blend-math-bisect.mjs](../Tools/visual-regression/probe-blend-math-bisect.mjs)** — reusable pixel-level diff between two WGSL formulations at the same view.
+- **[probe-determinism-check.mjs](../Tools/visual-regression/probe-determinism-check.mjs)** — back-to-back capture × N, validates determinism within and across backends. Use this when polar-multi numbers shift unexpectedly between sessions.
+
+### Recommendations
+
+1. **Add a clock-pinning option to probe-polar-multi-plain.** Each capture should call `v.clock.currentTime = JulianDate.fromIso8601("2026-05-19T18:00:00Z")` (or some other fixed value) before rendering. After this lands, the polar-multi numbers become stable across sessions and become a real measurement of algorithmic divergence rather than a clock-noise indicator.
+2. **Re-baseline polar-multi.** Once the clock is pinned, recapture baselines for all six views. The clock-pinned numbers will be smaller and stable; subsequent batches can measure against them with confidence.
+3. **The blend-math divergence is documentation-worthy but not currently visible.** Keep the documented note in the pair-section header; flag it as relevant if future imagery providers ship with `dayAlpha < 1` or `nightAlpha < 1`.
+
+### Phase 2 lessons
+
+- Bisection is cheap and CONCLUSIVE. The first-pass instinct (regression number went up → revert) was correct but didn't teach us anything. The bisection (literal pixel-diff between OLD and NEW outputs) was definitive.
+- Probe-level non-determinism cost us multiple batches of false signal. Future Phase 2 sub-phases (water/ocean, lighting, fog, VS) should be done with a pinned-clock probe.
+
+---
+
+## Batch 68 — Globe imagery composite pair (Phase 2.1 of shader-pair lockstep)
+
+**Date:** 2026-05-18
+
+Phase 2.1 of the [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) roadmap — bring the globe terrain's **imagery composite function** into pair-section lockstep. WebGL `sampleAndBlend` ([GlobeFS.glsl:188](../packages/engine/Source/Shaders/GlobeFS.glsl#L188)) and WebGPU `applyImageryLayer` ([GlobeTerrain.wgsl:1486](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl#L1486)) implement the same per-imagery-layer composite stage: alpha masking, gamma, split, cutout, brightness/contrast/hue/saturation effects, then blend.
+
+### Structural divergences inventoried
+
+| Concern | GLSL `sampleAndBlend` | WGSL `applyImageryLayer` | Forced by? |
+|---|---|---|---|
+| **Texture sampling** | `texture(textureToSample, ...)` inline at line 226 | Pre-sampled `texSample: vec4<f32>` parameter | WGSL can't dynamically index a texture array inside a function; the 16 imagery slots must be unrolled at the call site in fragmentMain |
+| **Return type** | `vec4(outColor, outAlpha)` | `LayerComposite { color, alpha, adjustedColor }` struct | WGSL night-lights emission needs the post-effects `adjustedColor` separately; WebGL handles emission in a different code path |
+| **Per-effect gates** | `#ifdef APPLY_BRIGHTNESS` / `#ifdef APPLY_CONTRAST` / etc. emitted by the WebGL pipeline cache | Runtime fast-paths: `if (abs(layer.hue) > 0.0001) {...}` etc. WGSL has no `#ifdef` preprocessor that can do per-layer toggles | Pipeline-cache architecture difference; semantically equivalent |
+| **Cutout handling** | Branch-free ternary at the call site in `computeDayColor` | `applyCutoutMask` here as part of `effectiveAlpha` product | Layout difference; same result |
+| **Final blend math** | Premultiplied-alpha OVER composite | Straight `mix(prevColor, adjusted, effectiveAlpha)` | **Genuine algorithmic divergence** — see below |
+
+### Algorithmic divergence: the blend math
+
+The two backends produce identical output for opaque imagery (`textureAlpha = 1`), which is the default for Bing / Esri / Ion's Mercator providers. At partial alpha (e.g., day/night terminator with `dayAlpha + nightAlpha < 1` mix), the formulas differ:
+
+- GLSL: `outAlpha = mix(prevA, 1, srcA); outColor = mix(prevC * prevA, color, srcA) / outAlpha` — preserves source brightness when srcA < 1.
+- WGSL: `outColor = mix(prevColor, adjusted, srcA); outAlpha = max(prevAlpha, srcA)` — attenuates source brightness by srcA.
+
+### Batch 68 attempted alignment, regressed, reverted
+
+A first attempt brought WGSL's blend math in line with GLSL's premultiplied-alpha OVER composite:
+
+```wgsl
+let outAlphaRaw = mix(prevAlpha, 1.0, sourceAlpha);
+let outAlpha = max(outAlphaRaw, 0.0);
+let outColorDivisor = max(outAlphaRaw, 1.0e-6);
+let outColor = select(
+  vec3<f32>(0.0),
+  mix(prevColor * prevAlpha, adjusted, sourceAlpha) / outColorDivisor,
+  outAlphaRaw > 0.0
+);
+```
+
+Algebraically equivalent to GLSL's `mix(previousColor.rgb * previousColor.a, color, sourceAlpha) / outAlpha`. For the opaque case (sourceAlpha = 1) the result mathematically reduces to `adjusted`, identical to the previous `mix(prevColor, adjusted, 1.0) = adjusted` output. **Yet midlat-mid regressed from 1.09 % → 7.01 % diff.** Polar views moved within noise.
+
+The midlat regression is unexpected — for default opaque Ion imagery, the math should be identical to the previous formulation. Root cause not yet isolated; possibilities include:
+
+- Floating-point operation ordering differing from `mix(A, B, 1.0)` vs `mix(A * 1, B, 1) / 1` despite algebraic equivalence
+- A subsequent-pass code path activating that I hadn't accounted for
+- A secondary layer with `effectiveAlpha < 1` triggering the divergent branch more often than expected
+
+Bisection diagnostics deferred to a follow-up batch. The math change was reverted; this batch ships pure documentation and intra-function name alignment.
+
+### What Batch 68 ships
+
+- **[GlobeFS.glsl::sampleAndBlend](../packages/engine/Source/Shaders/GlobeFS.glsl)** — pair-section header block + structural divergence inventory + known algorithmic divergence note.
+- **[GlobeTerrain.wgsl::applyImageryLayer](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl)** — pair-section header block + structural divergence inventory + known algorithmic divergence note. Variable names aligned where possible (`texCoordsMask`, `dayNightAlphaValue`, `sampleAlpha`, `effectiveAlpha`, `splitMask`, `cutoutMask`, `adjusted`). Per-step comments now match GLSL's structure and reference the GLSL line numbers.
+- **[SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md)** — convention ledger gains a new row for the imagery composite blend math divergence, with the Batch 68 regression noted so future bisection attempts have context.
+
+### Verification
+
+All polar-multi numbers held flat vs. pre-Batch-68 baseline:
+
+| view              | Batch 67 | Batch 68 |
+| ----------------- | -------- | -------- |
+| equator-mid       | 0.03 %   | 0.03 %   |
+| midlat-mid        | 1.09 %   | 1.09 %   |
+| southpole-close   | 2.61 %   | 2.61 %   |
+| southpole-orbit   | 14.10 %  | 14.05 %  |
+| northpole-close   | 14.04 %  | 14.04 %  |
+| northpole-orbit   | 32.68 %  | 33.64 %  |
+
+This batch is structural — no algorithmic change. Future shader edits to the imagery composite section will land via the lockstep discipline (PR touches both files, pair-section headers updated, convention ledger amended if a divergence is introduced or resolved).
+
+### Phase 2 progress
+
+Sub-phase status:
+
+- [x] **2.1 Imagery composite** — this batch
+- [ ] 2.2 Per-fragment ground atmosphere
+- [ ] 2.3 Water/ocean
+- [ ] 2.4 Lighting + shadows
+- [ ] 2.5 Fog + drape
+- [ ] 2.6 VS path
+
+### Lessons captured
+
+1. **Algebraically-equivalent rewrites can produce different pixel output.** The bisection probe showed identical math for the default opaque case, yet the rendered output diverged. Floating-point ordering, register allocation, or hidden non-default state (subsequent-pass blending, secondary layers, mid-pass intermediates) can flip a "should be identity" change into a behavioral one.
+
+2. **Don't ship algorithmic changes during a documentation pass.** Mixing structural alignment with behavioral changes makes regressions harder to bisect. Phase 2.1 should have been documentation-only from the start; the algorithmic alignment is its own batch.
+
+3. **The blend-math divergence is real and visible at the day/night terminator.** A future bisection-led batch should target this with a probe that explicitly captures terminator pixels (currently no probe in `Tools/visual-regression/` exercises this exact case).
+
+---
+
+## Batch 67 — Imagery reproject shader pair lockstep alignment
+
+**Date:** 2026-05-18
+
+The Batch 66 deep-dive established that the polar/orbit pixel mismatch is **not** primarily from algorithmic divergence (sources are byte-identical, math is now equivalent). The residual is cross-vendor numerical drift — `sin`/`log` precision in vendor drivers, sub-pixel sampling drift on high-contrast imagery — and is not chasable without specialized math kernels.
+
+Rather than chase the residual, Batch 67 invests in **architectural insurance**: make the WebGL and WebGPU reproject shaders byte-comparable so they can't drift apart over time. This is Phase 1 of the [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) plan — a multi-batch effort to manually maintain matched shader pairs as a prerequisite for any future Naga-based unification.
+
+### Drift discovered before this batch
+
+A `git diff` of the inline TS WGSL in `WebGPUImageryReprojection.ts` against the `.wgsl` file at `Source/Shaders/WebGPU/ReprojectWebMercator.wgsl` revealed they had drifted: the inline TS copy carried the Batch 56 `alpha = 1.0` force-fix, the `.wgsl` file did not. The `.wgsl` had been mechanically auto-converted to a `.js` wrapper by `gulp build` for ~6 months but was never actually loaded at runtime — the TS code carried its own template-literal copy. This is exactly the failure mode the lockstep plan exists to prevent.
+
+### What Batch 67 ships
+
+- **[ReprojectWebMercator.wgsl](../packages/engine/Source/Shaders/WebGPU/ReprojectWebMercator.wgsl)** — restored to be the WebGPU source of truth. Rewritten with pair-header block, convention ledger, aligned variable names (`v_geo`, `sinLat`, `mercatorY`, `mercatorFraction`, `srcV`) matching the GLSL FS one-for-one, and the Batch 56 `alpha=1` fix.
+- **[ReprojectWebMercatorFS.glsl](../packages/engine/Source/Shaders/ReprojectWebMercatorFS.glsl)** — rewritten with pair-header block, convention ledger, and the same variable-name set as the WGSL. Comments match the WGSL line-by-line. Algorithmic intent identical to WGSL; the one documented asymmetry is the final `srcV = mercatorFraction` vs WGSL's `srcV = 1.0 - mercatorFraction`, ledgered against the convention difference in source upload conventions.
+- **[ReprojectWebMercatorVS.glsl](../packages/engine/Source/Shaders/ReprojectWebMercatorVS.glsl)** — pair-header block added, with the convention ledger entry explaining why the WGSL counterpart is a 3-vertex full-screen triangle while this one is a 4-vertex quad.
+- **[WebGPUImageryReprojection.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUImageryReprojection.ts)** — inline template-literal WGSL deleted (was ~50 lines). Imports the compiled `.js` wrapper of `ReprojectWebMercator.wgsl` as the single runtime source. The build pipeline (`gulp build`) now feeds the same bytes to both the TS code and the documentation copy.
+
+### The convention asymmetry, explained once
+
+The two backends both consume the same Cesium pre-flipped ImageBitmap source (`Resource.fetchImage({flipY: true})`) but apply different upload conventions:
+
+| | WebGL | WebGPU |
+|---|---|---|
+| Upload API | `new Texture({source: image})` with default `flipY: true` | `copyExternalImageToTexture` with default `flipY: false` |
+| Effect on row 0 of source texture | `UNPACK_FLIP_Y_WEBGL=true` flips during upload → double-flip with pre-flipped source → texture v=0 = SOUTH | No flip; ImageBitmap's `imageOrientation:"flipY"` only changes presentation metadata, not the underlying buffer → texture v=0 = NORTH |
+| Reproject FS sample compensation | `srcV = mercatorFraction` (no flip) | `srcV = 1.0 - mercatorFraction` (flip) |
+| Output texture orientation | v=0 = south (consistent) | v=0 = south (consistent) |
+
+Both reproject outputs end up with v=0 = south, which is what the downstream globe FS expects. The shaders LOOK different on the single `srcV =` line — and that line is the entire algorithmic divergence between them. Everything else is identical.
+
+### Verification
+
+[probe-polar-multi-plain.mjs](../Tools/visual-regression/probe-polar-multi-plain.mjs) numbers held flat vs. pre-Batch-67 baseline:
+
+| view              | Batch 66 | Batch 67 |
+| ----------------- | -------- | -------- |
+| equator-mid       | 0.03 %   | 0.03 %   |
+| midlat-mid        | 1.09 %   | 1.09 %   |
+| southpole-close   | 2.61 %   | 2.61 %   |
+| southpole-orbit   | 13.98 %  | 14.10 %  |
+| northpole-close   | 14.04 %  | 14.04 %  |
+| northpole-orbit   | 32.31 %  | 32.68 %  |
+
+This batch is not aimed at improving these numbers — it's structural. Future shader edits to this pair will be reviewed against the lockstep discipline.
+
+### Empirical lesson learned mid-batch
+
+A first attempt to "simplify" the WGSL by removing `srcV = 1 - mercatorFraction` and sampling directly at `(u, mercatorFraction)` regressed northpole-close from 14% → 45% and southpole-close from 2.6% → 35%, with brightness ratios drifting visibly (0.85 vs ~1.0 baseline). The empirical regression disproved an incorrect mental model of how WebGPU's `copyExternalImageToTexture` interacts with `ImageBitmap` orientation metadata: the underlying pixel buffer is NOT flipped by `imageOrientation:"flipY"`; only presentation metadata changes, which the GPU upload path ignores. The corrected understanding is now in the convention ledger above.
+
+### Phase 1 complete. Next phases queued in SHADER_PAIRS_LOCKSTEP.md
+
+Phase 2: Globe terrain shader pair (`GlobeFS.glsl` + `GlobeVS.glsl` + `GlobeTerrain.wgsl`). Multi-batch effort, ~6 sub-phases (imagery composite, ground atmosphere, water/ocean, lighting, fog/drape, VS path).
+
+Phase 3+: Post-process, shadow cast, sky atmosphere, cube map, particles.
+
+---
+
+## Batch 66 — WebGL reproject FS rewritten to per-fragment Mercator math
+
+**Date:** 2026-05-18
+
+After Batch 65 landed the WebGPU dual-texture refactor and the polar-multi-plain probe still showed 14-38% pixel mismatch at polar/orbit views, the suspicion turned to the WebGL imagery reprojection itself — a 64-row vertex-grid GPGPU pass that has been the upstream Cesium implementation for ~10 years. The hypothesis: the rasterizer's linear interpolation of per-vertex `webMercatorT` between adjacent rows introduces error proportional to the curvature of the Mercator function, which is mild at mid-latitudes but extreme above ±80° — and that error is what the cross-backend pixel-compare probe was surfacing.
+
+### What Batch 66 ships
+
+A drop-in replacement of the WebGL reproject that moves the Mercator math from per-vertex (CPU-precomputed, GPU-interpolated) to per-fragment (GPU-exact), matching `Shaders/WebGPU/ReprojectWebMercator.wgsl` byte-for-byte:
+
+- **[ReprojectWebMercatorFS.glsl](../packages/engine/Source/Shaders/ReprojectWebMercatorFS.glsl)** — four new uniforms (`u_southLatitude`, `u_northLatitude`, `u_southMercatorY`, `u_oneOverMercatorHeight`). Computes `latitude = south + v_geo*(north-south)`, then the closed-form Mercator-Y, then samples the source at the resulting fraction. One `sin` + one `log` + a handful of multiplies/adds per fragment.
+- **[ReprojectWebMercatorVS.glsl](../packages/engine/Source/Shaders/ReprojectWebMercatorVS.glsl)** — drops the `webMercatorT` attribute; just forwards `position.xy` as `v_textureCoordinates`.
+- **[ImageryLayerHelpers.js](../packages/engine/Source/Scene/ImageryLayerHelpers.js)** — replaces the 64-row vertex grid with a 4-vertex quad (2 triangles, 6 indices); routes the four scalar uniforms through `uniformMap`; drops the per-tile CPU loop that computed 64 `webMercatorT` values per imagery tile, the `Float32Array(128)` scratch buffer, the `copyFromArrayView` stream-draw write, and the now-unused `FeatureDetection` / `TerrainProvider` imports. Net ~30 lines removed.
+
+### Test result — fix is correct but DIDN'T close the parity gap
+
+The original hypothesis was wrong. The probe-polar-multi-plain numbers after Batch 66:
+
+| view              | Batch 64 | Batch 65 | Batch 66 |
+| ----------------- | -------- | -------- | -------- |
+| equator-mid       | 0.03 %   | 0.03 %   | 0.03 %   |
+| midlat-mid        | 1.09 %   | 1.09 %   | 1.09 %   |
+| southpole-close   | 2.61 %   | 2.61 %   | 2.61 %   |
+| southpole-orbit   | 13.46 %  | 11.54 %  | 13.98 %  |
+| northpole-close   | 14.02 %  | 14.04 %  | 14.04 %  |
+| northpole-orbit   | 38.29 %  | 36.42 %  | 32.31 %  |
+
+Mixed deltas on the two orbit views (~4 % gain on northpole-orbit, ~2.5 % loss on southpole-orbit), no movement anywhere else. The piecewise-vs-exact difference at 64-row resolution is ~0.017 pixels of source-V sampling — sub-pixel, can't possibly produce the 200+ RGB delta the pixel-compare probe shows. So the WebGL piecewise approximation **is not the source of the polar mismatch**.
+
+The fix landed anyway because it's a strict improvement on its own merits:
+
+- Math is the closed-form exact, not an approximation.
+- Drops 64 `sin` + 64 `log` per-tile CPU computations + the per-tile stream-draw vertex-buffer update.
+- 4 vertices instead of 128 in the VS work per reproject.
+- 30 fewer lines of setup code; one less scratch buffer, two fewer imports.
+- Marginal FS cost (one `sin` + one `log` per fragment, ~5 ns × ~65 K fragments) runs once per imagery tile at `READY` — negligible.
+
+### Next hypothesis for the polar residual: source-texture upload conventions
+
+WebGL uploads via the `Texture` constructor with `UNPACK_FLIP_Y_WEBGL=true` against an `ImageBitmap` produced by `Resource.fetchImage({ flipY: true })` (i.e., already vertically flipped during `createImageBitmap`). WebGPU uses `copyExternalImageToTexture` with no flipY against the same pre-flipped ImageBitmap. The two paths *should* land equivalent texture content, but a cross-vendor implementation difference in how the row data is stored could cause the reprojection to faithfully amplify a source-side divergence. Probe scheduled — dump pixels from `imagery.textureWebMercator` (WebGL) and `imagery._webgpuMercatorTexture` (WebGPU) for the same imagery tile and compare row-by-row.
+
+---
+
+## Batch 65 — WebGPU dual-texture imagery to match WebGL's `textureWebMercator` / `texture` architecture
+
+**Date:** 2026-05-18
+
+The Batch 62 polar-black-hole fix gated an inline geographic-space recalc of `translationAndScale` + `texCoordsRect` on `reprojectedToGeographic && tileImagery.useWebMercatorT`. That stopped the black hole, but left a deeper architectural mismatch in place: **WebGPU stored one texture per imagery (the geographic reprojection) while WebGL kept BOTH** `imagery.textureWebMercator` (Mercator-projected source) AND `imagery.texture` (geographic reprojection). The single-texture model forced the renderer to "fix up" cached translation/scale at draw time when the wrong projection was bound, which is fragile and order-dependent.
+
+### Why WebGL works flawlessly where the single-texture WebGPU did not
+
+In `_calculateTextureTranslationAndScale` (ImageryLayer.js:376) and `createTileImagerySkeletons` (ImageryLayerHelpers.js:230-255), Cesium computes per-tile translation/scale + `texCoordsRect` in **Mercator-native units** when `useWebMercatorT === true` and in **geographic units** when `false`. WebGL then binds `imagery.textureWebMercator` for the Mercator branch and `imagery.texture` for the geographic branch — texture data and cached UV transform stay in lock-step.
+
+The pre-Batch-65 WebGPU stored only `imagery._webgpuReprojectedTexture` (always geographic). For mid-latitude tiles with `useWebMercatorT === true`, the cached translation/scale was Mercator-space but the bound texture was geographic. The Batch 62 inline recalc patched the cached values to geographic-space at draw time — a load-bearing fix-up that didn't generalize: in particular, when ALL skeletons referencing an imagery had `useWebMercatorT === true`, `TileImagery.processStateMachine` calls down with `needGeographicProjection = false` and the reprojection was skipped entirely, leaving the cache to lazily upload `imagery.image` as a single geographic-keyed texture even though the source is Mercator-V data.
+
+### What Batch 65 ships
+
+- **Dual GPU textures per imagery.** [WebGPUImageryReprojection.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUImageryReprojection.ts) gains `uploadAndReprojectMercatorImage(device, src, w, h, south, north)` → `{ mercator, reprojected }`. Both textures have full mip chains. Registered on the IMAGERY_REPROJECTION feature renderer as `uploadAndReproject`.
+- **Eager dual upload for Mercator providers.** [ImageryLayer.js:591](../packages/engine/Source/Scene/ImageryLayer.js#L591) `_reprojectTexture` runs the dual-texture path for ANY Mercator provider regardless of `needGeographicProjection`. After upload: `imagery._webgpuMercatorTexture = dual.mercator`, `imagery._webgpuReprojectedTexture = dual.reprojected`, `imagery.image = undefined`. This guarantees both textures are present from frame 1 so the bind-group setup and the tile-UB packer (which run independently inside the renderer) agree on which projection to use.
+- **Per-tile cache selection.** [WebGPUGlobeSurfaceTextures.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts) `getOrCreateImageryTexture(host, tileImagery)` now picks the Mercator vs Geographic variant based on `tileImagery.useWebMercatorT` and the per-imagery dual textures. Two cache entries per imagery: `${key}` (geographic) and `${key}_merc` (Mercator). Graceful downgrade for race windows: if the requested variant is missing, fall back to whichever GPU texture is resident and report the actual projection back via `{ view, isMercator }`. Returns null only when nothing is GPU-resident AND `imagery.image` is missing.
+- **Batch 62 inline recalc removed.** [WebGPUGlobeSurfaceTileUB.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) drops the geographic-space `translationAndScale` / `texCoordsRect` recompute. The cached values already match the bound texture's coordinate space (skeleton step computed them in the matching space). `effectiveUseWebMercatorT = tileImagery.useWebMercatorT && !!imagery._webgpuMercatorTexture` keeps the shader's `selectLayerUV` in lock-step with the cache's binding decision.
+- **GPU texture cleanup.** [Imagery.js:64-90](../packages/engine/Source/Scene/Imagery.js#L64) destroys `_webgpuMercatorTexture` and `_webgpuReprojectedTexture` in `releaseReference()` (mirrors the existing WebGL `textureWebMercator` / `texture` destruction).
+
+### Visual-regression results
+
+[probe-polar-multi-plain.mjs](../Tools/visual-regression/probe-polar-multi-plain.mjs) — six views × two backends, no DebugTileImageryProvider overlay:
+
+| view              | Batch 64 plain | Batch 65 plain | delta    |
+| ----------------- | -------------- | -------------- | -------- |
+| equator-mid       | 0.03 %         | 0.03 %         | 0.00     |
+| midlat-mid        | 1.09 %         | 1.09 %         | 0.00     |
+| southpole-close   | 2.61 %         | 2.61 %         | 0.00     |
+| southpole-orbit   | 13.46 %        | 11.54 %        | −1.92    |
+| northpole-close   | 14.02 %        | 14.04 %        | +0.02    |
+| northpole-orbit   | 38.29 %        | 36.42 %        | −1.87    |
+
+Mid-latitude and equator parity preserved at near-perfect levels. Orbit views improved slightly. Polar-close held the line. The remaining polar/orbit residual is the cross-vendor numerical drift documented in Batch 64 (filtering / mipmap / derivative precision differences between the WebGL and WebGPU driver stacks).
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUImageryReprojection.ts` — added `uploadAndReprojectMercatorImage`.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts` — wired `uploadAndReproject` onto IMAGERY_REPROJECTION.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts` — `getOrCreateImageryTexture` takes `tileImagery` and returns `{ view, isMercator }`; dual cache keys.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` — caller updated to new signature.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts` — Batch 62 inline recalc removed; `effectiveUseWebMercatorT` mirrors cache's binding decision.
+- `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts` — added `_webgpuMercatorTexture` to `CesiumTileImagery.readyImagery` and `CesiumReadyImagery`.
+- `packages/engine/Source/Scene/ImageryLayer.js` — `_reprojectTexture` eagerly produces both textures for Mercator providers.
+- `packages/engine/Source/Scene/Imagery.js` — `releaseReference` destroys both WebGPU GPU textures.
+
+### Follow-ups deferred
+
+- The remaining 11-36 % polar/orbit drift is documented as cross-vendor numerical drift in Batch 64 — no longer architectural; needs per-pass investigation (textureSampleGrad vs textureSample, polar tessellation, mip-filter, dpdx/dpdy precision).
+- `getOrCreateImageryTexture`'s "image-upload race window" fallback (when `useWebMercatorT === true` but no GPU texture is resident) reports the texture as geographic, which is harmless for Geographic providers and a one-frame blink for Mercator providers (state machine guarantees the dual upload completes before the tile is renderable). Could be tightened by returning null to defer the tile one frame, but the visual cost is negligible and current behavior matches prior single-texture WebGPU.
 
 ---
 

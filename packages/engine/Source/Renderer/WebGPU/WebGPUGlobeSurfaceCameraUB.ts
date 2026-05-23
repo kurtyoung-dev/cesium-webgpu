@@ -485,10 +485,22 @@ export function createCameraUniformBuffer(
     showGroundAtmosphere?: boolean;
     enableLighting?: boolean;
     hasWaterMask?: boolean;
+    // Batch 77 — Custom Lambert coefficient uniforms (tile-provider-driven).
+    // Default values come from Globe.js (0.9 / 0.3) and are propagated to
+    // the tile provider via Globe.beginFrame.
+    lambertDiffuseMultiplier?: number;
+    vertexShadowDarkness?: number;
+    // Surface terrain provider exposes `hasVertexNormals` — when true, the
+    // WebGL pipeline cache enables ENABLE_VERTEX_LIGHTING; the WGSL Lambert
+    // path mirrors that gate at runtime.
+    terrainProvider?: { hasVertexNormals?: boolean };
   };
   const us = uniformState as unknown as {
     sunDirectionWC?: { x: number; y: number; z: number };
     lightDirectionWC?: { x: number; y: number; z: number };
+    // Batch 76 — `czm_lightColor` mirror. UniformState computes this as
+    // `lightColorHdr` clipped so the brightest channel ≤ 1.
+    lightColor?: { x: number; y: number; z: number };
   };
   const fs = frameState as
     | (CesiumFrameState & {
@@ -588,6 +600,47 @@ export function createCameraUniformBuffer(
   const dynamicLightingActive =
     !!tp.dynamicAtmosphereLighting && !!tp.enableLighting;
   data[offset++] = atmoEnabled ? (dynamicLightingActive ? 2.0 : 1.0) : 0.0;
+
+  // ─── Batch 76: czm_lightColor (vec4, offset 132-135) ───
+  // Mirrors WebGL's `czm_lightColor` automatic uniform. UniformState
+  // computes `_lightColor` as `lightColorHdr` clipped so the brightest
+  // channel ≤ 1 (see UniformState.js:855-878). When the scene provides
+  // a custom light (`scene.light.color = Color.ORANGE`), the WGSL globe
+  // Lambert path multiplies the diffuse term by this color, matching
+  // WebGL's ENABLE_VERTEX_LIGHTING / ENABLE_DAYNIGHT_SHADING paths.
+  // Default uniform value is (1,1,1) so non-customized scenes (the
+  // overwhelming majority) are visually unchanged.
+  const lc = us.lightColor;
+  if (lc) {
+    data[offset++] = lc.x;
+    data[offset++] = lc.y;
+    data[offset++] = lc.z;
+  } else {
+    // UniformState hasn't been updated yet (extremely early frame).
+    // White preserves pre-Batch-76 behavior (multiply by 1).
+    data[offset++] = 1.0;
+    data[offset++] = 1.0;
+    data[offset++] = 1.0;
+  }
+  data[offset++] = 0.0; // .w reserved
+
+  // ─── Batch 77: lighting (vec4, offset 136-139) ───
+  // Custom Lambert coefficient uniforms (tile-provider-driven). Mirrors
+  // WebGL's `u_lambertDiffuseMultiplier` + `u_vertexShadowDarkness`
+  // fragment uniforms. The WGSL Lambert path gates on `.z`
+  // (hasVertexNormals) to match WebGL's ENABLE_VERTEX_LIGHTING gating
+  // (compile-time #ifdef in WebGL → runtime branch in WGSL).
+  //
+  // When a tile provider hasn't been populated yet (extremely early
+  // frame) we still write the Globe.js defaults so the WGSL branch is
+  // well-defined.
+  const lambertMult = tp.lambertDiffuseMultiplier;
+  const shadowDark = tp.vertexShadowDarkness;
+  data[offset++] = typeof lambertMult === "number" ? lambertMult : 0.9;
+  data[offset++] = typeof shadowDark === "number" ? shadowDark : 0.3;
+  const hasNormals = !!tp.terrainProvider?.hasVertexNormals;
+  data[offset++] = hasNormals ? 1.0 : 0.0;
+  data[offset++] = 0.0; // .w reserved
 
   const bufferSize = Math.max(CAMERA_UNIFORM_BYTES, 256);
   return writeUniformSlice(

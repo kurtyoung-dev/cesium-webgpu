@@ -438,6 +438,28 @@
           var webgpuOk = false;
 
           // ── Create WebGL viewer (synchronous) ──
+          //
+          // KNOWN ISSUE — clock drift between the two viewers.
+          // Each Cesium.Viewer constructs its own Clock (independent
+          // currentTime, shouldAnimate=true default, independent
+          // Date.now() start). Over the course of a session the two
+          // clocks tick out of sync, so the WebGL and WebGPU panes show
+          // different sun positions, different night-fade, different
+          // atmospheric scattering. For a true side-by-side parity
+          // comparison the two viewers should share clock state.
+          //
+          // Fix is tracked in migration_doc/DEFERRED_WORK.md under
+          // VR3-SPLIT-SCREEN-CLOCK-SYNC. Recommended approach: a
+          // requestAnimationFrame callback in setupCameraSync (below)
+          // that does
+          //   webgpuViewer.clock.currentTime =
+          //     webglViewer.clock.currentTime.clone();
+          //   webgpuViewer.clock.shouldAnimate = false;
+          // matching the master/slave pattern already used for camera
+          // sync. Adding this hasn't been done yet because the probe-
+          // based regression tests use their own pinned-clock
+          // viewers and don't depend on this page (see
+          // WEBGPU_DEBUGGING_LOG.md Batch 70).
           log("Creating WebGL viewer…", "info");
           var t0 = performance.now();
           try {
@@ -505,6 +527,12 @@
           }
 
           // ── Camera sync ──
+          //
+          // TODO (VR3-SPLIT-SCREEN-CLOCK-SYNC, see DEFERRED_WORK.md):
+          // pair-up clock state alongside camera state so the two
+          // viewers show the same sun/moon/atmosphere position. Today
+          // the camera is mirrored frame-by-frame but each clock ticks
+          // independently, so lighting drifts over a session.
           if (webglOk && webgpuOk) {
             setupCameraSync();
             setGeometryButtonsEnabled(true);

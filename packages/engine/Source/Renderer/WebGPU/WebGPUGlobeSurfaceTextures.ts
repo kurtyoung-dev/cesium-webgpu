@@ -81,46 +81,119 @@ export interface TextureCacheHost {
 }
 
 /**
- * Resolve a `GPUTextureView` for an imagery layer's tile. Cache hit
- * returns the existing view; cache miss either:
- *   1. Adopts a pre-uploaded `GPUTexture` from
- *      `WebGPUImageryReprojection` (fast path — no second upload), or
- *   2. Falls back to `uploadImageSource` for a fresh GPU upload.
+ * Resolve a `GPUTextureView` for an imagery layer's tile, picking the
+ * Mercator-projection or Geographic-projection variant based on the
+ * tile's per-skeleton `useWebMercatorT` flag.
  *
- * Returns null when the imagery is missing, has no usable source, or
- * the underlying upload fails.
+ * Batch 65 — dual-texture cache. Two cache entries per imagery:
+ *
+ *   - `${key}_merc` → `imagery._webgpuMercatorTexture` (set by
+ *     `ImageryLayer._reprojectTexture` on the `uploadAndReproject`
+ *     path for Mercator providers). Used when `tileImagery.useWebMercatorT
+ *     === true` — the cached `textureTranslationAndScale` and
+ *     `textureCoordinateRectangle` are in Mercator-space, so the
+ *     matching Mercator texture must be bound.
+ *
+ *   - `${key}` → `imagery._webgpuReprojectedTexture` (Geographic) OR
+ *     the result of uploading `imagery.image` directly (Geographic
+ *     providers — no reprojection runs). Used when
+ *     `tileImagery.useWebMercatorT === false`.
+ *
+ * If the requested variant doesn't exist, the function gracefully
+ * downgrades:
+ *
+ *   - Want merc, have merc → bind merc.
+ *   - Want merc, no merc, have reprojected → bind reprojected (the
+ *     caller's `effectiveUseWebMercatorT` must follow suit so the
+ *     shader samples geographic-V).
+ *   - Want geographic, have reprojected → bind reprojected.
+ *   - Want geographic, only have merc (race window before reproject
+ *     finishes) → bind merc (caller must flip
+ *     `effectiveUseWebMercatorT` so the shader samples Mercator-V).
+ *   - Nothing GPU-resident → upload `imagery.image` as the geographic
+ *     variant (legacy path for geographic providers).
+ *
+ * Returns `{ view, isMercator }` so the caller can keep
+ * `useWebMercatorTLayer` in lock-step with what was actually bound.
+ * Returns null when the imagery is missing or every fallback fails.
  */
 export function getOrCreateImageryTexture(
   host: TextureCacheHost,
-  imagery: CesiumReadyImagery | null | undefined,
-): GPUTextureView | null {
+  tileImagery: CesiumTileImagery | null | undefined,
+): { view: GPUTextureView; isMercator: boolean } | null {
+  if (!tileImagery) return null;
+  // The `CesiumTileImagery.readyImagery` inline shape omits a few
+  // fields that the standalone `CesiumReadyImagery` interface
+  // declares (key, x/y/level coords, _source). Cast to the full
+  // shape so the lookup logic can read them.
+  const imagery = tileImagery.readyImagery as CesiumReadyImagery | undefined;
   if (!imagery) return null;
 
-  const cacheKey =
+  const baseKey =
     imagery.key || `${imagery.x ?? 0}_${imagery.y ?? 0}_${imagery.level ?? 0}`;
-  const cached = host._imageryTextureCache.get(cacheKey);
-  if (cached) return cached.view;
+  const wantMercator = !!tileImagery.useWebMercatorT;
 
-  // If imagery was reprojected by WebGPUImageryReprojection, use
-  // the pre-reprojected GPUTexture directly instead of re-uploading.
+  // First-preference lookup: Mercator variant when requested.
+  if (wantMercator) {
+    const cachedMerc = host._imageryTextureCache.get(`${baseKey}_merc`);
+    if (cachedMerc) {
+      return { view: cachedMerc.view, isMercator: true };
+    }
+    if (imagery._webgpuMercatorTexture) {
+      const gpuTex = imagery._webgpuMercatorTexture;
+      const view = gpuTex.createView({ label: `imagery_merc_${baseKey}` });
+      host._imageryTextureCache.set(`${baseKey}_merc`, {
+        texture: gpuTex,
+        view,
+        sourceWidth: gpuTex.width,
+        sourceHeight: gpuTex.height,
+      });
+      return { view, isMercator: true };
+    }
+    // Fall through to geographic — adopt whatever's available so the
+    // tile renders, but flip the flag so the shader samples geographic-V
+    // instead of Mercator-V on a geographic-data texture.
+  }
+
+  // Geographic variant lookup.
+  const cachedGeo = host._imageryTextureCache.get(baseKey);
+  if (cachedGeo) return { view: cachedGeo.view, isMercator: false };
+
   if (imagery._webgpuReprojectedTexture) {
     const gpuTex = imagery._webgpuReprojectedTexture;
-    const view = gpuTex.createView({ label: `imagery_reproj_${cacheKey}` });
-    host._imageryTextureCache.set(cacheKey, {
+    const view = gpuTex.createView({ label: `imagery_reproj_${baseKey}` });
+    host._imageryTextureCache.set(baseKey, {
       texture: gpuTex,
       view,
       sourceWidth: gpuTex.width,
       sourceHeight: gpuTex.height,
     });
-    return view;
+    return { view, isMercator: false };
+  }
+
+  // Last-resort: race window where the Mercator texture exists but
+  // reprojection hasn't produced the geographic version yet. Bind
+  // mercator and report it back so the shader stays consistent.
+  if (imagery._webgpuMercatorTexture) {
+    const gpuTex = imagery._webgpuMercatorTexture;
+    const view = gpuTex.createView({ label: `imagery_merc_${baseKey}` });
+    host._imageryTextureCache.set(`${baseKey}_merc`, {
+      texture: gpuTex,
+      view,
+      sourceWidth: gpuTex.width,
+      sourceHeight: gpuTex.height,
+    });
+    return { view, isMercator: true };
   }
 
   const source = imagery.image || imagery._source;
   if (!source) {
     if (host._diagShouldLog()) {
-      console.warn(`[WebGPU:GlobeTile] No image source for ${cacheKey}`, {
+      console.warn(`[WebGPU:GlobeTile] No image source for ${baseKey}`, {
         hasImage: !!imagery.image,
         hasTexture: !!imagery.texture,
+        hasMerc: !!imagery._webgpuMercatorTexture,
+        hasReproj: !!imagery._webgpuReprojectedTexture,
         texSource: !!imagery._source,
       });
     }
@@ -129,15 +202,21 @@ export function getOrCreateImageryTexture(
 
   if (host._diagShouldLog()) {
     console.log(
-      `[WebGPU:GlobeTile] Uploading image for ${cacheKey} type=${(source as object).constructor?.name}`,
+      `[WebGPU:GlobeTile] Uploading image for ${baseKey} type=${(source as object).constructor?.name}`,
     );
   }
-  return uploadImageSource(
+  const uploaded = uploadImageSource(
     host,
     source as HTMLImageElement | HTMLCanvasElement | ImageBitmap,
-    cacheKey,
+    baseKey,
     host._imageryTextureCache,
   );
+  if (!uploaded) return null;
+  // The `imagery.image` direct-upload path runs for geographic providers
+  // (no reprojection step). The data is geographic-V, regardless of
+  // what the tile skeleton flagged — report `isMercator: false` so the
+  // shader matches.
+  return { view: uploaded, isMercator: false };
 }
 
 /**

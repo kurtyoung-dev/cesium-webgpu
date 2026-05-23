@@ -136,136 +136,55 @@ export function createTileUniformBuffer(
 
     const baseOffset = LAYERS_OFFSET + layerCount * LAYER_FLOATS;
 
-    // Detect whether `WebGPUImageryReprojection` has already produced a
-    // GEOGRAPHIC output texture from a Mercator source (Batch 46). When
-    // it has, the shader's V coordinate selection and the cached
-    // translation/scale BOTH need to switch to geographic space — see
-    // the long comment near the `useWebMercatorTLayer` write below for
-    // the full rationale.
-    const reprojectedToGeographic = !!(
-      imagery as { _webgpuReprojectedTexture?: unknown }
-    )._webgpuReprojectedTexture;
+    // Batch 65 — dual-texture cache. `WebGPUGlobeSurfaceTextures.
+    // getOrCreateImageryTexture` binds the Mercator-projection
+    // GPUTexture when `tileImagery.useWebMercatorT === true` AND
+    // `imagery._webgpuMercatorTexture` exists; otherwise it binds the
+    // Geographic-projection variant. The shader's
+    // `useWebMercatorTLayer` flag MUST track that decision so
+    // `selectLayerUV` samples the bound texture at the correct
+    // coordinate space.
+    //
+    // The cached `tileImagery.textureTranslationAndScale` and
+    // `textureCoordinateRectangle` are already in the matching
+    // coordinate space — `_calculateTextureTranslationAndScale` and
+    // `createTileImagerySkeletons` branch on `useWebMercatorT` and
+    // produce Mercator-space tile-UVs when true and geographic-space
+    // tile-UVs when false. So when we honor the bound texture's
+    // projection, the cached translation/scale and texCoordsRect line
+    // up without any inline recalc (the Batch 62 fixup is no longer
+    // needed and would have been wrong in either direction).
+    const hasMercatorTexture = !!(
+      imagery as { _webgpuMercatorTexture?: unknown }
+    )._webgpuMercatorTexture;
     const effectiveUseWebMercatorT =
-      tileImagery.useWebMercatorT && !reprojectedToGeographic;
+      tileImagery.useWebMercatorT && hasMercatorTexture;
 
-    // Batch 62 — the geographic recalc below should only run when the
-    // CACHED translation/scale and texCoordsRect were originally Mercator-
-    // space, i.e., when `tileImagery.useWebMercatorT === true` at skeleton
-    // time. For polar tiles (useWebMercatorT=false from the start), the
-    // cached values are ALREADY in geographic-V tile-UV space, AND they
-    // carry the base-layer south-edge fixup that
-    // `createTileImagerySkeletons` applies at line 351-358 of
-    // ImageryLayerHelpers.js (forces `minV = 0.0` when the imagery tile is
-    // the southernmost of a base layer). Clobbering them with the inline
-    // recalc throws away that fixup and produces `minV ≈ 0.96` for tiles
-    // near the south pole — exactly the polar black-hole signature.
-    const needsGeographicRecalc =
-      reprojectedToGeographic && tileImagery.useWebMercatorT;
-
-    // translationAndScale (vec4).
-    //
-    // The cached `tileImagery.textureTranslationAndScale` is computed by
-    // `ImageryLayer._calculateTextureTranslationAndScale`, which
-    // BRANCHES on `tileImagery.useWebMercatorT` (ImageryLayer.js:376).
-    // When that flag is true it converts BOTH the terrain rectangle AND
-    // the imagery rectangle to Mercator-native (meters) BEFORE computing
-    // scaleX/scaleY/tx/ty. The result is therefore Mercator-space, which
-    // is what WebGL needs because WebGL binds `imagery.textureWebMercator`
-    // (a Mercator-projected texture) in that case.
-    //
-    // WebGPU's reprojection produces a GEOGRAPHIC-projected output
-    // texture from the Mercator source. So when `_webgpuReprojectedTexture`
-    // is bound, the cached Mercator-space translation/scale is wrong —
-    // applying it to a geographic-V coordinate produces the well-known
-    // "stretched at poles, squished at equator" artefact.
-    //
-    // Override path: recompute translation/scale in GEOGRAPHIC space
-    // inline — equivalent to taking the `else` branch of
-    // `_calculateTextureTranslationAndScale`. Same arithmetic, but skips
-    // the `rectangleToNativeRectangle` conversion.
-    if (needsGeographicRecalc && tile.rectangle && imagery.rectangle) {
-      const tRect = tile.rectangle;
-      const iRect = imagery.rectangle;
-      const tW = tRect.width;
-      const tH = tRect.height;
-      const sx = tW / iRect.width;
-      const sy = tH / iRect.height;
-      data[baseOffset + 0] = (sx * (tRect.west - iRect.west)) / tW;
-      data[baseOffset + 1] = (sy * (tRect.south - iRect.south)) / tH;
-      data[baseOffset + 2] = sx;
-      data[baseOffset + 3] = sy;
+    // translationAndScale (vec4) — cached value, matches the bound
+    // texture's coordinate space.
+    const ts = tileImagery.textureTranslationAndScale;
+    if (ts) {
+      data[baseOffset + 0] = ts.x;
+      data[baseOffset + 1] = ts.y;
+      data[baseOffset + 2] = ts.z;
+      data[baseOffset + 3] = ts.w;
     } else {
-      const ts = tileImagery.textureTranslationAndScale;
-      if (ts) {
-        data[baseOffset + 0] = ts.x;
-        data[baseOffset + 1] = ts.y;
-        data[baseOffset + 2] = ts.z;
-        data[baseOffset + 3] = ts.w;
-      } else {
-        data[baseOffset + 2] = 1;
-        data[baseOffset + 3] = 1;
-      }
+      data[baseOffset + 2] = 1;
+      data[baseOffset + 3] = 1;
     }
 
-    // texCoordsRectangle (vec4) — Batch 46 cont. (Session 65 Batch 49).
-    //
-    // `tileImagery.textureCoordinateRectangle` is computed by
-    // `createTileImagerySkeletons` (ImageryLayerHelpers.js). When the
-    // imagery provider is Mercator, that function converts BOTH the
-    // terrain rectangle and the imagery rectangles to Mercator-native
-    // coordinates (lines 231-251) BEFORE computing (minU, minV, maxU,
-    // maxV). So the cached `textureCoordinateRectangle` is in
-    // MERCATOR-Y tile-UV space for Mercator providers.
-    //
-    // The WGSL bounds-check `texCoordsAlpha(geoUV, layer.texCoordsRect)`
-    // passes the GEOGRAPHIC tile-UV. For Mercator providers without
-    // reprojection (WebGL's case) the shader has its own webMercT
-    // coordinate and the bounds check happens against Mercator-Y on
-    // both sides — consistent.
-    //
-    // After Batch 46 forces the WGSL to sample at geoUV for any tile
-    // whose reprojected texture is bound, the bounds check needs the
-    // rect ALSO in geographic-UV space. Otherwise tiles whose Mercator-Y
-    // rect doesn't exactly equal (0, 0, 1, 1) get incorrect masking:
-    // visible black gaps and per-tile-edge seams (most prominent at
-    // high latitudes where Mercator and geographic tile-UV diverge).
-    //
-    // Recomputation: take the GEOGRAPHIC intersection of the imagery
-    // tile's rectangle with the terrain tile, expressed as tile-UV
-    // fractions. U-axis is identical in both projections (Mercator-X is
-    // linear in longitude), so for fast-path correctness we only need to
-    // recompute V. For symmetry and to avoid drift if assumptions about
-    // U change, recompute the whole rect.
-    if (needsGeographicRecalc && tile.rectangle && imagery.rectangle) {
-      const tR = tile.rectangle;
-      const iR = imagery.rectangle;
-      const invW = 1.0 / tR.width;
-      const invH = 1.0 / tR.height;
-      const minU = Math.max(0, (Math.max(tR.west, iR.west) - tR.west) * invW);
-      const maxU = Math.min(1, (Math.min(tR.east, iR.east) - tR.west) * invW);
-      const minV = Math.max(
-        0,
-        (Math.max(tR.south, iR.south) - tR.south) * invH,
-      );
-      const maxV = Math.min(
-        1,
-        (Math.min(tR.north, iR.north) - tR.south) * invH,
-      );
-      data[baseOffset + 4] = minU;
-      data[baseOffset + 5] = minV;
-      data[baseOffset + 6] = maxU;
-      data[baseOffset + 7] = maxV;
+    // texCoordsRectangle (vec4) — cached value, matches the bound
+    // texture's coordinate space (including the base-layer south-edge
+    // fixup applied by `createTileImagerySkeletons`).
+    const rect = tileImagery.textureCoordinateRectangle;
+    if (rect) {
+      data[baseOffset + 4] = rect.x;
+      data[baseOffset + 5] = rect.y;
+      data[baseOffset + 6] = rect.z;
+      data[baseOffset + 7] = rect.w;
     } else {
-      const rect = tileImagery.textureCoordinateRectangle;
-      if (rect) {
-        data[baseOffset + 4] = rect.x;
-        data[baseOffset + 5] = rect.y;
-        data[baseOffset + 6] = rect.z;
-        data[baseOffset + 7] = rect.w;
-      } else {
-        data[baseOffset + 6] = 1;
-        data[baseOffset + 7] = 1;
-      }
+      data[baseOffset + 6] = 1;
+      data[baseOffset + 7] = 1;
     }
 
     const layer = imagery.imageryLayer;
@@ -398,15 +317,15 @@ export function createTileUniformBuffer(
     // useWebMercatorT (packed 4 layers per vec4). Bit i in the layer
     // sequence maps to component (i % 4) of vec4 (i / 4).
     //
-    // Session 65 Batch 46 — `effectiveUseWebMercatorT` was computed
-    // above. WebGL's `GlobeSurfaceTileProviderRendering` selects
-    // between `imagery.texture` (geographic) and
-    // `imagery.textureWebMercator` (mercator) per tile (line
-    // 1470-1472), so its `useWebMercatorT` tracks the texture it
-    // actually bound. The WebGPU path uses one reprojected texture
-    // per imagery and overrides the flag (and the translation/scale)
-    // to keep the shader's `selectLayerUV` in lock-step with the
-    // bound texture's projection.
+    // Batch 65 — `effectiveUseWebMercatorT` mirrors what
+    // `WebGPUGlobeSurfaceTextures.getOrCreateImageryTexture` decides to
+    // bind. WebGL's GlobeSurfaceTileProviderRendering selects between
+    // `imagery.texture` (geographic) and `imagery.textureWebMercator`
+    // (mercator) per tile; WebGPU now mirrors that with
+    // `imagery._webgpuReprojectedTexture` (geographic) and
+    // `imagery._webgpuMercatorTexture` (mercator). The flag here keeps
+    // the shader's `selectLayerUV` in lock-step with the bound
+    // texture's projection.
     const useWMVecIndex = layerCount >> 2;
     const useWMComp = layerCount & 3;
     data[USE_WEB_MERC_OFFSET + useWMVecIndex * 4 + useWMComp] =

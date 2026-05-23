@@ -595,40 +595,75 @@ class ImageryLayer {
 
     needGeographicProjection = needGeographicProjection ?? true;
 
+    const isMercatorProvider = !(
+      this._imageryProvider.tilingScheme.projection instanceof
+      GeographicProjection
+    );
+
+    // Batch 65 — WebGPU dual-texture upload. When the IMAGERY_REPROJECTION
+    // feature renderer exposes `uploadAndReproject`, run the dual-texture
+    // path for ANY Mercator-provider tile regardless of whether geographic
+    // projection is currently requested by the caller. This is critical
+    // because:
+    //
+    //   1. When ALL skeletons reference this imagery with
+    //      `useWebMercatorT === true`, `TileImagery.processStateMachine`
+    //      calls down with `needGeographicProjection = false`. The legacy
+    //      path then skips reprojection AND skips any GPU upload, which
+    //      leaves the WebGPU cache to lazily upload `imagery.image` as a
+    //      geographic-keyed texture — but the data is Mercator-V, so the
+    //      shader's `useWebMercatorTLayer = 1.0` sampling (`webMercT × cached
+    //      Mercator-space translation/scale`) ends up reading from a
+    //      texture keyed against a geographic-V interpretation.
+    //
+    //   2. The bind-group setup and the tile-UB packer run independently
+    //      in the renderer and both need to agree on which texture variant
+    //      is bound. Eagerly setting `imagery._webgpuMercatorTexture` and
+    //      `imagery._webgpuReprojectedTexture` during the state machine
+    //      gives both code paths a fixed view of the imagery from frame 1.
+    //
+    // Mirrors WebGL's `imagery.textureWebMercator` / `imagery.texture`
+    // dual-texture architecture (`_createTexture` produces the Mercator
+    // texture; `_reprojectTexture` produces the geographic one).
+    const fr = context.getFeatureRenderer(
+      FeatureRendererKey.IMAGERY_REPROJECTION,
+    );
+    if (
+      isMercatorProvider &&
+      fr &&
+      typeof fr.uploadAndReproject === "function" &&
+      defined(imagery.image)
+    ) {
+      const device = context._device;
+      const image = imagery.image;
+      const dual = fr.uploadAndReproject(
+        device,
+        image,
+        image.width,
+        image.height,
+        rectangle.south,
+        rectangle.north,
+      );
+      imagery._webgpuMercatorTexture = dual.mercator;
+      imagery._webgpuReprojectedTexture = dual.reprojected;
+      // Set texture property for compatibility with existing code paths.
+      imagery.texture = texture;
+      // Both GPU textures own the pixel data — release the host-side
+      // ImageBitmap/Canvas/Img so it doesn't stay pinned.
+      imagery.image = undefined;
+      imagery.state = ImageryState.READY;
+      return;
+    }
+
     const needsReprojection =
       needGeographicProjection &&
-      !(
-        this._imageryProvider.tilingScheme.projection instanceof
-        GeographicProjection
-      ) &&
+      isMercatorProvider &&
       rectangle.width / texture.width > 1e-5;
 
     if (needsReprojection) {
-      // WebGPU path: use GPU render-to-texture reprojection via feature renderer.
-      // Runs synchronously (single render pass), no ComputeCommand needed.
-      const fr = context.getFeatureRenderer(
-        FeatureRendererKey.IMAGERY_REPROJECTION,
-      );
-      if (fr && defined(imagery.image)) {
-        const device = context._device;
-        const image = imagery.image;
-        imagery._webgpuReprojectedTexture = fr.reprojectFromImage(
-          device,
-          image,
-          image.width,
-          image.height,
-          rectangle.south,
-          rectangle.north,
-        );
-        // Set texture property for compatibility with existing code paths
-        imagery.texture = texture;
-        imagery.state = ImageryState.READY;
-        return;
-      }
-
-      // Feature renderer exists but image source not available — use texture as-is.
-      // This handles contexts where reprojection is managed by the feature renderer
-      // but the image was released before reprojection could run.
+      // FR exists but image source not available — use texture as-is.
+      // This handles contexts where reprojection is managed by the feature
+      // renderer but the image was released before reprojection could run.
       if (fr) {
         imagery.texture = texture;
         imagery.state = ImageryState.READY;

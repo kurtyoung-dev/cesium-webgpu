@@ -2,6 +2,23 @@
 // Samples depth buffer in a hemisphere around each pixel to estimate occlusion.
 // Based on the CesiumJS GLSL SSAO which uses horizon-based sampling with
 // a random rotation per pixel to reduce banding.
+//
+// Phase 8a Slice 4 (Batch 87) — when `frustum.w > 0.5` (the
+// `useGBufferNormal` flag set by the JS side when
+// `scene.deferredLighting === true`), the shader reads the surface
+// normal from the G-buffer at @binding(4) instead of reconstructing it
+// from depth via central differences. Benefits:
+//   - Silhouette edges produce clean normals (Slice 3 fix in the
+//     producer eliminates the depth-discontinuity ring that the
+//     central-difference path here used to inherit).
+//   - One less function-of-five-depth-samples per fragment in the
+//     `getNormal` path (the SSAO's `getNormal` was already doing the
+//     same screen-space reconstruction the G-buffer producer now does
+//     centrally — duplicate work).
+//   - Consistent normal across all consumers (SSR, clustered lighting
+//     in Slice 5 will read the same G-buffer).
+// When the flag is 0 (default), the shader keeps its original depth-
+// reconstruction path so non-deferred scenes are unchanged.
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -13,7 +30,7 @@ struct SSAOUniforms {
   params0: vec4<f32>,
   // x = directionCount, y = 1/width, z = 1/height, w = randomTexSize
   params1: vec4<f32>,
-  // frustum: x = near, y = far, z = unused, w = unused
+  // x = near, y = far, z = unused, w = useGBufferNormal flag (1.0 → on)
   frustum: vec4<f32>,
   // Padding for 16-byte alignment
   _pad: vec4<f32>,
@@ -23,6 +40,10 @@ struct SSAOUniforms {
 @group(0) @binding(1) var randomTexture: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: SSAOUniforms;
+// Phase 8a Slice 4 — G-buffer normal+roughness texture. Always bound
+// (a 1×1 placeholder when the producer is off) so the bind-group
+// layout stays stable across the flag's two states.
+@group(0) @binding(4) var gBufferNormalTexture: texture_2d<f32>;
 
 // Reconstructs inverse projection from viewport to simplified reconstruction
 // For WebGPU, we pass frustum params directly
@@ -43,7 +64,36 @@ fn pixelToEye(screenCoord: vec2<f32>) -> vec3<f32> {
 }
 
 fn getNormal(posEC: vec3<f32>, coord: vec2<f32>) -> vec3<f32> {
-  let texelSize = vec2<f32>(uniforms.params1.y, uniforms.params1.z);
+  // Phase 8a Slice 4 fast-path: read from G-buffer when available.
+  // `frustum.w > 0.5` means the JS-side has bound a real G-buffer view
+  // (the producer compute pass populated it this frame). The
+  // producer's silhouette-aware reconstruction (Slice 3) produces
+  // cleaner normals than the depth-only central-difference fallback
+  // below, especially at object edges.
+  //
+  // The G-buffer .xyz is eye-space normal; .w is roughness (unused
+  // here — AO doesn't care about roughness). The producer emits a
+  // (0,0,0,1) sentinel for sky/discontinuity pixels; we fall back to
+  // depth reconstruction at those.
+  if (uniforms.frustum.w > 0.5) {
+    let texelSize = vec2<f32>(uniforms.params1.y, uniforms.params1.z);
+    let uv = coord * texelSize;
+    let nSample = textureSampleLevel(
+      gBufferNormalTexture, texSampler, uv, 0.0,
+    );
+    // Sentinel check: producer emits (0,0,0,*) for sky/depth-clear and
+    // for high-gradient samples it couldn't safely reconstruct. Fall
+    // back to depth reconstruction in those cases — they're rare and
+    // the SSAO doesn't sample many of them.
+    let lenSq = dot(nSample.xyz, nSample.xyz);
+    if (lenSq > 0.01) {
+      return normalize(nSample.xyz);
+    }
+  }
+
+  // Depth-reconstruction fallback (original path). Used when the
+  // G-buffer producer is off OR when the producer emitted a sentinel
+  // at this pixel.
   let posLeft  = pixelToEye(coord + vec2<f32>(-1.0, 0.0));
   let posRight = pixelToEye(coord + vec2<f32>( 1.0, 0.0));
   let posUp    = pixelToEye(coord + vec2<f32>( 0.0, 1.0));

@@ -28,6 +28,12 @@ import PointCloudLODSource from "../../Shaders/WebGPU/Compute/PointCloudLOD.js";
 import GPUSortKeysSource from "../../Shaders/WebGPU/Compute/GPUSortKeys.js";
 import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
 import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
+// Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction
+// from scene depth; writes into `view.gBufferFramebuffer` (Slice 1).
+import GBufferNormalsFromDepthSource from "../../Shaders/WebGPU/Compute/GBufferNormalsFromDepth.js";
+// Phase 8a Slice 2d (Batch 90) — multisampled-depth variant. Selected
+// at execute time when the scene framebuffer is MSAA.
+import GBufferNormalsFromDepthMSAASource from "../../Shaders/WebGPU/Compute/GBufferNormalsFromDepthMSAA.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -150,7 +156,11 @@ export const ComputeTaskType = Object.freeze({
   HI_Z_PYRAMID: 5,
   OCCLUSION_TEST: 6,
   POLYGON_SDF: 7,
-  COUNT: 8,
+  // Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction.
+  NORMAL_FROM_DEPTH: 8,
+  // Phase 8a Slice 2d (Batch 90) — multisampled-depth variant.
+  NORMAL_FROM_DEPTH_MSAA: 9,
+  COUNT: 10,
 } as const);
 
 export type ComputeTaskTypeValue = (typeof ComputeTaskType)[keyof Omit<
@@ -290,6 +300,14 @@ export class WebGPUPerformanceManager {
   // Public underscore: shared with the atmosphere-LUT helpers (Batch 161).
   // Type now lives in `WebGPUAtmosphereLUT.ts` as `AtmosphereLUTResources`.
   public _atmosphereLutResources: AtmosphereLUTResources | null = null;
+
+  // Phase 8a Slice 2 (Batch 85) — G-buffer producer compute cache.
+  // Mirrors `_atmosphereLutResources` — same host-cached, dispatcher-
+  // managed pattern. Allocated lazily on the first dispatch when
+  // `frameState.useDeferredLighting === true`; stays null otherwise.
+  public _gbufferComputeResources:
+    | import("./WebGPUGBufferRenderer.js").GBufferComputeResources
+    | null = null;
 
   constructor(
     context: PerformanceManagerContext,
@@ -607,6 +625,10 @@ export class WebGPUPerformanceManager {
         return HiZPyramidSource;
       case ComputeTaskType.OCCLUSION_TEST:
         return OcclusionTestSource;
+      case ComputeTaskType.NORMAL_FROM_DEPTH:
+        return GBufferNormalsFromDepthSource;
+      case ComputeTaskType.NORMAL_FROM_DEPTH_MSAA:
+        return GBufferNormalsFromDepthMSAASource;
       default:
         return null;
     }
@@ -1302,6 +1324,14 @@ export class WebGPUPerformanceManager {
       case ComputeTaskType.POLYGON_SDF:
         return hasCompute ? "gpu" : "js";
 
+      case ComputeTaskType.NORMAL_FROM_DEPTH:
+      case ComputeTaskType.NORMAL_FROM_DEPTH_MSAA:
+        // Screen-space derivative pass — only meaningful with compute +
+        // depth-texture sampling. No JS / WASM fallback path; the
+        // deferred-lighting flag should already gate the producer
+        // upstream when compute is unavailable.
+        return hasCompute ? "gpu" : "js";
+
       default:
         return "js";
     }
@@ -1331,6 +1361,10 @@ export class WebGPUPerformanceManager {
         return "occlusionTest";
       case ComputeTaskType.POLYGON_SDF:
         return "polygonSDF";
+      case ComputeTaskType.NORMAL_FROM_DEPTH:
+        return "normalFromDepth";
+      case ComputeTaskType.NORMAL_FROM_DEPTH_MSAA:
+        return "normalFromDepthMSAA";
       default:
         return `compute_${taskType}`;
     }

@@ -533,6 +533,37 @@ class FrameState {
      * @private
      */
     this.edgeVisibilityRequested = false;
+
+    /**
+     * Phase 8a (Batch 80) — gates the depth-prepass + normal G-buffer
+     * scaffolding. Default false; flipped to true by `scene.deferredLighting`
+     * once the WebGPU backend supports it AND the scaffolding's downstream
+     * consumers (SSAO/SSR/deferred lighting) have been rewired to read
+     * from the G-buffer (Slice 2+).
+     *
+     * Slice 1 wires the flag through to `View.gBufferFramebuffer.update()`
+     * so the targets allocate when set; with the flag off the targets stay
+     * unallocated and the scaffolding has zero runtime cost.
+     *
+     * See `migration_doc/PHASE_8_SHADER_STRATEGY.md` and `WEBGPU_DEBUGGING_LOG.md`
+     * Batch 80 for the architectural decision and rollout plan.
+     * @type {boolean}
+     * @private
+     */
+    this.useDeferredLighting = false;
+
+    /**
+     * Phase 8a Slice 2c (Batch 89) — debug-only flag. When true, the
+     * WebGPU scene renderer replaces the production post-process chain
+     * with `WebGPUDebugGBufferOverlay`, which blits the G-buffer normal
+     * texture to the canvas as a normal-map visualization. Activated
+     * via `CesiumDebug.showGBufferNormals()` (which also flips
+     * `scene.deferredLighting = true` since the overlay requires the
+     * producer to have populated the G-buffer this frame).
+     * @type {boolean}
+     * @private
+     */
+    this.debugShowGBufferNormals = false;
   }
 }
 

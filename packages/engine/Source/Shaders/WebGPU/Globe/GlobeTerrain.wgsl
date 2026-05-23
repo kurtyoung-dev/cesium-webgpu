@@ -115,6 +115,32 @@ struct CameraUniforms {
   //     atmosphere from JS (`scene.fog.enabled = false`, etc.) doesn't
   //     leak into the per-vertex ray-march cost.
   atmosphereParams: vec4<f32>,
+  // ─── Batch 76: czm_lightColor (custom scene light color) ───
+  // Mirrors WebGL's `czm_lightColor` automatic uniform. Used by the
+  // Lambert diffuse path so scene-provided custom light colors (e.g.,
+  // setting `scene.light.color` to a warm sunset orange) propagate to
+  // the globe. Default is white (1,1,1) when no custom light is set.
+  // .w reserved for future use (e.g. ambient color scalar).
+  lightColor: vec4<f32>,
+  // ─── Batch 77: custom Lambert coefficients (tile-provider-driven) ───
+  // Mirrors WebGL's `u_lambertDiffuseMultiplier` and
+  // `u_vertexShadowDarkness` fragment uniforms (see GlobeFS.glsl L132-133,
+  // L559). When the terrain provider supplies vertex normals (e.g. STK
+  // World Terrain with normals), the WebGL ENABLE_VERTEX_LIGHTING path
+  // uses the formula
+  //   diffuse = clamp(NdotL * lambertDiffuseMultiplier + vertexShadowDarkness, 0, 1)
+  // — a direct linear ramp with no per-altitude fade.
+  //
+  //   x = lambertDiffuseMultiplier  (default 0.9 from Globe.js:170)
+  //   y = vertexShadowDarkness      (default 0.3 from Globe.js:523)
+  //   z = hasVertexNormals flag — when > 0.5, the Lambert path uses the
+  //       (x, y) coefficients directly (matches WebGL ENABLE_VERTEX_LIGHTING);
+  //       when ≤ 0.5, the Lambert path falls back to the existing WGSL
+  //       hardcoded `NdotL × 0.88 + 0.12` aesthetic that replaces
+  //       WebGL's ENABLE_DAYNIGHT_SHADING path.
+  //   w = reserved (future: WebGL `fade` scalar for DAYNIGHT_SHADING path
+  //       exact-match if we ever bridge that too).
+  lighting: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -1179,6 +1205,82 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   return out;
 }
 
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ PAIR-SECTION: Vertex Shader entry points (WGSL) ↔ GLSL               │
+// │   GLSL: Shaders/GlobeVS.glsl (single `void main()` with #ifdef       │
+// │         variants for all terrain encodings)                          │
+// │ Last lockstep audit: 2026-05-19, Batch 75                            │
+// └─────────────────────────────────────────────────────────────────────┘
+// Any change to these entry points MUST land with a matching change in
+// the GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+//
+// ARCHITECTURAL DIVERGENCE (largest in the globe shader pair)
+//
+// - WebGL `GlobeVS.glsl` is a SINGLE `void main()` (~286 lines) that
+//   handles every terrain encoding via `#ifdef` preprocessor variants:
+//     QUANTIZATION_BITS12 — quantized vertex format
+//     INCLUDE_WEB_MERCATOR_Y — per-vertex Mercator-T
+//     ENABLE_VERTEX_LIGHTING / GENERATE_POSITION_AND_NORMAL / APPLY_MATERIAL
+//       — per-vertex normal
+//     GEODETIC_SURFACE_NORMALS — separate normal attribute
+//     EXAGGERATION — vertical-exaggeration uniform path
+//     ENABLE_CLIPPING_POLYGONS — per-vertex polygon-clip extents
+//     FOG / GROUND_ATMOSPHERE / UNDERGROUND_COLOR / TRANSLUCENT
+//       — per-vertex atmosphere ray-march + distance varyings
+//     2D modes (Mercator / Geographic / Planar / Columbus / Morphing)
+//       — runtime-generated `getPosition` / `get2DYPositionFraction`
+//   The WebGL pipeline cache compiles a different shader variant per-
+//   tile based on the active defines.
+//
+// - WGSL has SIX explicit `@vertex` entry points, all routed through a
+//   single `processVertex()` helper that contains the shared math:
+//     vertexMain                       — uncompressed, no Mercator-T
+//     vertexMainWebMerc                — uncompressed + Mercator-T
+//     vertexMainWebMercNormals         — uncompressed + Mercator-T + normal
+//     vertexMainQuantized              — BITS12, no Mercator-T
+//     vertexMainQuantizedWebMerc       — BITS12 + Mercator-T
+//     vertexMainQuantizedWebMercNormals — BITS12 + Mercator-T + normal
+//   The pipeline cache selects the entry point based on terrain
+//   encoding. Each entry decodes its specific vertex layout, then hands
+//   off to `processVertex()` for the layout-agnostic math.
+//
+// - WGSL uses a CUSTOM `//>>ifdef FLAG_NAME / //>>else / //>>endif`
+//   preprocessor implemented in `WebGPUShaderPreprocessor.ts` (Batch 23)
+//   for define-bit-driven variants like `GEODETIC_NORMAL`. This is a
+//   MUCH smaller surface than GLSL's full preprocessor — it only
+//   handles boolean ifdefs against a uint32 `ShaderDefine` bitmask
+//   registered in `WebGPUShaderDefines.ts`. Define bits are stable and
+//   add-only (Batch 22 onward).
+//
+// WHY THE TWO BACKENDS SPLIT DIFFERENTLY
+//
+// - GLSL's preprocessor is rich enough to handle every variant inline,
+//   AND the WebGL pipeline cache compiles a fresh shader per
+//   define-set. Adding a new variant costs a few `#ifdef` lines and
+//   the cache picks it up automatically.
+// - WGSL doesn't have an equivalent preprocessor (the `//>>ifdef`
+//   subset is intentionally limited). And WebGPU pipeline creation
+//   wants a single shader module with multiple entry points. The
+//   6-entry split makes vertex-attribute layout an entry-point
+//   property, not a preprocessor result — which is a closer fit to
+//   WGSL's typed `@location` model.
+//
+// SHARED VARYING CONTRACT
+// Both backends produce the SAME `VertexOutput` / out-variables
+// downstream of `main()` / `processVertex()`:
+//   position (built-in clip-space)
+//   v_textureCoordinates (vec3: u, v, webMercatorT)
+//   v_positionEC, v_positionMC, v_normalEC, v_normalMC
+//   v_distance (when fog / atmosphere / underground active)
+//   v_atmosphereRayleighColor, v_atmosphereMieColor, v_atmosphereOpacity
+//     (when fog + non-per-fragment ground-atmosphere — WGSL keeps the
+//     varyings even when per-fragment atmosphere is the active path
+//     per Batch 56's decision)
+//   v_slope, v_aspect, v_height (when APPLY_MATERIAL active)
+// The downstream FS / per-fragment math (covered by Phases 2.1-2.4
+// pair-sections) consumes the same varyings on both backends, so the
+// fragment-stage parity holds despite the VS architectural split.
+//
 // ─── Vertex Shader: Uncompressed Terrain ───
 // Used when hasWebMercatorT=false. Normal (if present) is in .z component.
 // When no normals, .z = 0 (default fill from float32x2 format).
@@ -1470,6 +1572,60 @@ struct LayerComposite {
   adjustedColor: vec3<f32>,  // post-effects, used for night-lights emission
 };
 
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ PAIR-SECTION: applyImageryLayer (WGSL) ↔ sampleAndBlend (GLSL)       │
+// │   GLSL: Shaders/GlobeFS.glsl::sampleAndBlend (lines 188-334)         │
+// │ Last lockstep audit: 2026-05-20, Batch 79                            │
+// └─────────────────────────────────────────────────────────────────────┘
+// Any change to this function MUST land with a matching change in the
+// GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+//
+// STRUCTURAL DIVERGENCE (documented, not fixable in shader)
+// - GLSL samples the imagery texture INSIDE the function via
+//   `texture(textureToSample, ...)`. WGSL receives the pre-sampled
+//   `texSample` as a parameter because WGSL cannot dynamically index a
+//   texture array inside a function — the 16 imagery slots must be
+//   unrolled at the call site in `fragmentMain`. Effect is identical.
+// - GLSL returns `vec4(outColor, outAlpha)`. WGSL returns a struct
+//   `LayerComposite { color, alpha, adjustedColor }` because the
+//   downstream night-lights emission path needs the post-effects color
+//   separately. The GLSL backend handles night-lights via a different
+//   code path.
+// - GLSL gates brightness/contrast/hue/saturation behind `#ifdef
+//   APPLY_*` defines emitted by the pipeline cache based on
+//   per-layer-property usage. WGSL evaluates them all unconditionally
+//   (with a near-1.0 fast-path skip for hue and gamma), because WGSL
+//   has no `#ifdef` preprocessor and the pipeline cache is keyed on
+//   bitmask `ShaderDefine` values that don't currently include the
+//   per-effect gates. Net result: WGSL pays a few extra ops per
+//   fragment on average; visible output is identical when the
+//   per-layer property is at the default value.
+//
+// BLEND FORMULA (matched across backends since Batch 79)
+// Both backends use the premultiplied-alpha OVER composite:
+//   sourceAlpha = effectiveAlpha
+//   outAlpha    = mix(prevAlpha, 1, sourceAlpha)
+//   outColor    = mix(prevColor * prevAlpha, color, sourceAlpha) / outAlpha
+//
+// Pre-Batch-79 the WGSL used a straight `mix(prev, color, srcA)` +
+// `max(prevA, srcA)` formula. That was algebraically identical to the
+// OVER composite when `prevAlpha = 1` (Batch 69 proved this pixel-
+// equivalent at the default midlat-mid view), but diverged on
+// multi-frustum subsequent passes where the first imagery layer hits
+// with `prevAlpha = 0` and `srcA < 1`. Under straight-mix the first
+// contribution was attenuated by srcA; under OVER it contributes at
+// full brightness with `outAlpha = srcA`. Batch 68 attempted this
+// switch and saw an apparent 1.09 → 7.01% regression that turned out
+// to be probe-level clock-noise (Batch 69). With clock pinning landed
+// in Batch 70 the regression test is now reliable, so the switch is
+// applied here.
+//
+// Divide-by-zero handling differs: GLSL uses a `sign()` sentinel trick
+// (L311); WGSL clamps the divisor to a tiny epsilon. End behavior is
+// the same — when `outAlpha = 0` the divided color is unobservable
+// (multiplied by 0 in any downstream blend), and the returned alpha
+// is clamped to 0 via `max(outAlpha, 0.0)`.
+//
 // `boundsUV` is the GEOGRAPHIC tile-UV (always (u_geo, v_geo), independent
 // of the layer's `useWebMercatorT` flag). Used for the per-layer
 // `texCoordsRect` and `cutoutRectangle` bounds checks, both of which the
@@ -1495,30 +1651,53 @@ fn applyImageryLayer(
   dayNightAlpha: vec2<f32>,
   dayFade: f32,
 ) -> LayerComposite {
-  // 1. colorToAlpha — drop alpha to 0 where the texel matches the key color.
+  // texCoordsRect bounds mask. GLSL: vec2 `step()` × textureAlpha at
+  // lines 213-217 of sampleAndBlend. The mask is 0 outside the per-
+  // layer rectangle, 1 inside.
+  let texCoordsMask = texCoordsAlpha(boundsUV, layer.texCoordsRect);
+
+  // Day/night alpha. GLSL gates this on `APPLY_DAY_NIGHT_ALPHA &&
+  // ENABLE_DAYNIGHT_SHADING` defines (line 219-221). WGSL evaluates
+  // unconditionally; CPU-side packer writes (1, 1) when day/night
+  // alpha isn't enabled per layer, making the mix a no-op (always 1.0).
+  let dayNightAlphaValue = mix(dayNightAlpha.y, dayNightAlpha.x, dayFade);
+
+  // colorToAlpha key. GLSL line 230-234: `#ifdef APPLY_COLOR_TO_ALPHA`
+  // zeros alpha where (R, G, B) ≈ key color. WGSL evaluates unconditionally
+  // with a runtime sentinel (`colorToAlpha.a < 0` means disabled).
   var sampleAlpha = texSample.a;
-  // colorToAlpha.a < 0 disables (default sentinel from CPU packer).
   if (layer.colorToAlpha.a >= 0.0) {
     sampleAlpha = applyColorToAlphaKey(texSample, layer.colorToAlpha);
   }
 
-  // 2. gamma correction (WebGL applies pow before split + brightness/contrast).
+  // Gamma correction. GLSL line 236-242: `#if !defined(APPLY_GAMMA)` →
+  // `czm_gammaCorrect` (which is a no-op when HDR is off, otherwise a
+  // pow(czm_gamma) — typically 2.2). `#else` → `pow(color, oneOverGamma)`
+  // when per-layer gamma is set. WGSL gates on `abs(oneOverGamma - 1.0)
+  // > 0.0001` to skip the pow when at default. NOTE: WGSL currently
+  // does NOT apply czm_gammaCorrect when HDR is on; this is a known
+  // gap to be addressed when the HDR pipeline is finalized.
   var color = texSample.rgb;
   if (abs(layer.oneOverGamma - 1.0) > 0.0001) {
     color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(layer.oneOverGamma));
   }
 
-  // 3. split — mask the layer's contribution to one half of the screen.
+  // Split mask. GLSL line 244-254: `#ifdef APPLY_SPLIT` zeros alpha on
+  // the wrong half of the screen. WGSL evaluates unconditionally with
+  // a layer.split sentinel (0 means disabled).
   let splitMask = applySplitMask(layer.split, fragX, splitPositionPx);
 
-  // 4. cutout — drop the layer inside its cutoutRectangle.
+  // Cutout mask. GLSL handles cutout at the call site in `computeDayColor`
+  // (which is runtime-generated by the WebGL pipeline-cache for the
+  // active layer count). WGSL handles it here as part of the
+  // effectiveAlpha product because the per-tile cutoutRectangle is
+  // packed into the per-layer UBO struct.
   let cutoutMask = applyCutoutMask(boundsUV, layer.cutoutRectangle);
 
-  // 5. brightness → contrast → hue → saturation. Matches WebGL ordering in
-  // GlobeFS.glsl `sampleAndBlend` (which applies the four shifts in that
-  // exact sequence). Brightness and contrast match `adjustColor` semantics
-  // but we inline them here so the hue rotation slots between contrast and
-  // saturation (rather than at the very end as in `adjustColor`).
+  // Per-layer effects chain: brightness → contrast → hue → saturation.
+  // Matches GLSL ordering at lines 256-270 (where each is guarded by an
+  // APPLY_* define). WGSL evaluates all four unconditionally; defaults
+  // (brightness=1, contrast=1, hue=0, saturation=1) make each a no-op.
   var adjusted = color * layer.brightness;
   adjusted = (adjusted - 0.5) * layer.contrast + 0.5;
   if (abs(layer.hue) > 0.0001) {
@@ -1528,10 +1707,8 @@ fn applyImageryLayer(
   adjusted = mix(vec3<f32>(gray), adjusted, layer.saturation);
   adjusted = clamp(adjusted, vec3<f32>(0.0), vec3<f32>(1.0));
 
-  // Compose final alpha contribution: layer alpha × tex alpha × tile-coord
-  // mask × day/night mix × isolate mask × split mask × cutout mask.
-  let texCoordsMask = texCoordsAlpha(boundsUV, layer.texCoordsRect);
-  let dayNightAlphaValue = mix(dayNightAlpha.y, dayNightAlpha.x, dayFade);
+  // Effective alpha — product of all per-layer masks. GLSL: each mask
+  // is multiplied into `textureAlpha` separately; same arithmetic.
   let effectiveAlpha = layerMask
                        * layer.alpha
                        * sampleAlpha
@@ -1540,10 +1717,48 @@ fn applyImageryLayer(
                        * splitMask
                        * cutoutMask;
 
-  let outColor = mix(prevColor, adjusted, effectiveAlpha);
-  let outAlpha = max(prevAlpha, effectiveAlpha);
+  // Batch 79 — premultiplied-alpha OVER composite, matching WebGL
+  // GlobeFS.glsl::sampleAndBlend L309-313. The previous straight-mix
+  // formula was algebraically identical when `prevAlpha = 1` (the
+  // dominant case, verified pixel-equivalent in Batch 69), but diverged
+  // on multi-frustum subsequent passes where `prevAlpha = 0` and the
+  // first layer's `effectiveAlpha < 1`. Under straight-mix the first
+  // contribution gets attenuated by `effectiveAlpha`; under OVER it
+  // contributes at full brightness with `outAlpha = effectiveAlpha`.
+  //
+  // Formula:
+  //   sourceAlpha = effectiveAlpha
+  //   outAlpha    = mix(prevAlpha, 1, sourceAlpha)
+  //              = prevAlpha + (1 - prevAlpha) * sourceAlpha
+  //   outColor    = mix(prevColor * prevAlpha, adjusted, sourceAlpha)
+  //                / outAlpha
+  //
+  // Verification (prevAlpha = 1, no-op case):
+  //   outAlpha = mix(1, 1, sourceAlpha) = 1
+  //   outColor = mix(prevColor * 1, adjusted, sourceAlpha) / 1
+  //            = mix(prevColor, adjusted, effectiveAlpha)
+  //   → identical to the prior WGSL straight-mix output.
+  //
+  // Verification (prevAlpha = 0, subsequent-pass first layer):
+  //   outAlpha = mix(0, 1, sourceAlpha) = sourceAlpha
+  //   outColor = mix(0, adjusted, sourceAlpha) / sourceAlpha
+  //            = adjusted   (when sourceAlpha > 0)
+  //   → matches GLSL; the prior WGSL straight-mix would have returned
+  //     `adjusted * sourceAlpha`, attenuating the first layer.
+  //
+  // Divide-by-zero handling: WebGL uses a `sign()` sentinel trick
+  // (GlobeFS.glsl L311). WGSL just clamps the divisor to a tiny epsilon
+  // — when outAlpha is genuinely zero, the resulting color is
+  // multiplied by 0 (or skipped entirely) in any downstream blend stage,
+  // so the divided value is unobservable. The returned alpha is still
+  // clamped to 0 via `max(outAlpha, 0.0)` to handle floating-point
+  // underflow into negative.
+  let sourceAlpha = effectiveAlpha;
+  let outAlpha = mix(prevAlpha, 1.0, sourceAlpha);
+  let outAlphaSafe = max(outAlpha, 1e-7);
+  let outColor = mix(prevColor * prevAlpha, adjusted, sourceAlpha) / outAlphaSafe;
 
-  return LayerComposite(outColor, outAlpha, adjusted);
+  return LayerComposite(outColor, max(outAlpha, 0.0), adjusted);
 }
 
 // ─── Perceptual luminance ───
@@ -1612,6 +1827,43 @@ fn distributionGGX(NdotH: f32, roughness: f32) -> f32 {
   return a2 / (PI * denom * denom + 0.0001);
 }
 
+// Batch 79 — east-north-up to eye-coordinates rotation matrix.
+// Port of WebGL's `czm_eastNorthUpToEyeCoordinates`
+// (Builtin/Functions/eastNorthUpToEyeCoordinates.glsl). Builds a 3×3
+// rotation that takes a tangent-space (east, north, up) vector to
+// eye-space, where the local up is the ellipsoid surface normal.
+// Used by `computeEnhancedOcean` to transform multi-octave wave
+// normals from tangent space into eye space before perturbing the
+// surface normal — pre-Batch-79 the WGSL was adding a tangent-space
+// vector directly to an eye-space normal, which produced waves that
+// "follow the camera" instead of being anchored to the surface
+// (visible as a subtle mesh-pattern artifact on close-zoom water).
+//
+// `positionMC` is the world-space position (which equals model-space
+// for the globe since the model matrix is identity). The east tangent
+// in model space is `(-positionMC.y, positionMC.x, 0)` — the
+// z-axis cross product with the radial direction.
+fn eastNorthUpToEyeCoordinates(
+  positionMC: vec3<f32>,
+  normalEC: vec3<f32>,
+) -> mat3x3<f32> {
+  let tangentMC = normalize(vec3<f32>(-positionMC.y, positionMC.x, 0.0));
+  // Transform the MC tangent through the view 3×3 (upper-left of
+  // `modifiedModelView`) — same upper-3×3 the WGSL VS uses to compute
+  // `v_normalEC` from `normalMC` at line 1158-1162. This matches
+  // WebGL's `czm_normal3D × tangentMC` (czm_normal3D is the inverse-
+  // transpose of the view 3×3; for the globe the view matrix is a
+  // pure rotation+translation so its 3×3 IS its own inverse-transpose).
+  let nm = camera.modifiedModelView;
+  let tangentEC = normalize(vec3<f32>(
+    nm[0][0] * tangentMC.x + nm[1][0] * tangentMC.y + nm[2][0] * tangentMC.z,
+    nm[0][1] * tangentMC.x + nm[1][1] * tangentMC.y + nm[2][1] * tangentMC.z,
+    nm[0][2] * tangentMC.x + nm[1][2] * tangentMC.y + nm[2][2] * tangentMC.z,
+  ));
+  let bitangentEC = normalize(cross(normalEC, tangentEC));
+  return mat3x3<f32>(tangentEC, bitangentEC, normalEC);
+}
+
 // Sample ocean wave normals with 3 octaves for detail at multiple scales
 fn sampleOceanWaveNormals(uv: vec2<f32>, t: f32) -> vec3<f32> {
   // Large slow-moving swells
@@ -1678,6 +1930,7 @@ fn computeSubsurfaceScattering(
 fn computeEnhancedOcean(
   baseColor: vec3<f32>,
   positionEC: vec3<f32>,
+  positionMC: vec3<f32>,
   normalEC: vec3<f32>,
   sunDirEC: vec3<f32>,
   uv: vec2<f32>,
@@ -1687,15 +1940,38 @@ fn computeEnhancedOcean(
 ) -> vec3<f32> {
   let viewDir = normalize(-positionEC);
 
-  // Perturbed normal from multi-octave wave normals
+  // Perturbed normal from multi-octave wave normals. `waveN` is the
+  // sampled tangent-space normal; .z component (tsPerturbationRatio
+  // in WebGL nomenclature) is needed for the nonDiffuseHighlight below
+  // so we capture it outside the gate too.
+  //
+  // Batch 79 — properly transform `waveN` from tangent space to eye
+  // space via the ENU rotation, matching WebGL's
+  //   normalEC_water = enuToEye * normalTangentSpace
+  // pattern at GlobeFS.glsl::computeWaterColor L814. Pre-Batch-79 the
+  // WGSL was doing `normalize(normalEC + waveN * waveStrength)` —
+  // mixing a tangent-space vector into an eye-space vector without
+  // rotation. Visible difference: waves were anchored to camera
+  // orientation instead of the surface, producing a subtle "moving
+  // mesh" pattern when the camera orbited a coastline.
   var waterNormal = normalEC;
   var foamFactor: f32 = 0.0;
-  if (tile.flags.z > 0.5) {
+  var tsPerturbationRatio: f32 = 1.0; // 1.0 = flat, 0.0 = vertical wave
+  let showOceanWaves = tile.flags.z > 0.5;
+  if (showOceanWaves) {
     let t = tile.time;
     let waveN = sampleOceanWaveNormals(uv, t);
     let waveStrength = mix(0.25, 0.05, smoothstep(10000.0, 500000.0, distance));
-    waterNormal = normalize(normalEC + waveN * waveStrength);
+    let enuToEye = eastNorthUpToEyeCoordinates(positionMC, normalEC);
+    // ENU.up = normalEC, so `enuToEye * (0,0,1) = normalEC`. A purely
+    // flat wave normal (0, 0, 1) leaves `waterNormal` equal to
+    // `normalEC` — no perturbation, matching the pre-Batch-79 baseline
+    // when waveN.xy = 0. Non-zero waveN.xy now correctly tilts the
+    // normal around the local east/north tangent frame.
+    let waveNormalEC = enuToEye * waveN;
+    waterNormal = normalize(mix(normalEC, waveNormalEC, waveStrength));
     foamFactor = computeFoam(waveN, distance);
+    tsPerturbationRatio = waveN.z;
   }
 
   // Wave-highlight diffuse term — matches WebGL `waveHighlightColor *
@@ -1710,6 +1986,26 @@ fn computeEnhancedOcean(
   let diffuseHighlight = waveHighlightColor * NdotL * waterMaskValue * highlightFade;
 
   var oceanContribution = diffuseHighlight;
+
+  // Batch 78 — port WebGL's `nonDiffuseHighlight` (GlobeFS.glsl L822-829).
+  // Where waves are perturbed AND diffuse light is weak, add a low-light
+  // bluish highlight so the ocean isn't pitch-black at the terminator.
+  // Gated on SHOW_OCEAN_WAVES (= `tile.flags.z > 0.5`) — matches WebGL's
+  // `#ifdef SHOW_OCEAN_WAVES` gate; the WebGL #else branch sets it to
+  // vec3(0.0), which is what we get by leaving the var at zero.
+  //   formula: mix(waveHighlightColor × 5 × (1 - tsPerturbationRatio),
+  //                 vec3(0.0),
+  //                 diffuseIntensity)
+  // → strongest when waves are vertical (tsPerturbationRatio → 0) and
+  //   sun is behind the surface (diffuseIntensity → 0).
+  if (showOceanWaves) {
+    let nonDiffuseHighlight = mix(
+      waveHighlightColor * 5.0 * (1.0 - tsPerturbationRatio),
+      vec3<f32>(0.0),
+      NdotL,
+    );
+    oceanContribution += nonDiffuseHighlight * waterMaskValue * highlightFade;
+  }
 
   // Specular sun-glint, only when scene lighting is enabled (matches
   // WebGL's `czm_getSpecular(czm_lightDirectionEC, ...)`).
@@ -1731,8 +2027,39 @@ fn computeEnhancedOcean(
     let halfDir = normalize(viewDir + sunDirEC);
     let NdotH = max(dot(waterNormal, halfDir), 0.0);
     let specular = distributionGGX(NdotH, 0.08) * NdotL;
+
+    // Batch 78 — port WebGL's `surfaceReflectance` modulation
+    // (GlobeFS.glsl L833):
+    //   surfaceReflectance = mix(0.0,
+    //     mix(u_zoomedOutOceanSpecularIntensity, oceanSpecularIntensity=0.5,
+    //         waveIntensity),
+    //     maskValue)
+    // - When waterMaskValue → 0 (land), specular → 0.
+    // - When waveIntensity → 0 (far from surface), specular uses the
+    //   zoomed-out intensity (default 0.5, matches WebGL's
+    //   `u_zoomedOutOceanSpecularIntensity` default).
+    // - When waveIntensity → 1 (close), specular uses the full
+    //   `oceanSpecularIntensity` (0.5 — same default; the WebGL
+    //   `mix(zoomedOut, ocean, waveIntensity)` collapses to a constant
+    //   when both are 0.5, which is the case in default scenes).
+    // We re-derive `waveIntensity` here from the same distance curve
+    // WebGL's `waveFade(70000, 1000000, dist)` uses, so the
+    // modulation has the same falloff. The result multiplies the
+    // existing GGX × orbitAttenuation pipeline, preserving the WGSL
+    // specular character while picking up the WebGL water-mask + wave-
+    // intensity gates.
+    let zoomedOutSpec = 0.5;
+    let nearSpec = 0.5;
+    let waveIntensity = clamp(
+      (1000000.0 - distance) / max(1.0, 1000000.0 - 70000.0),
+      0.0,
+      1.0,
+    );
+    let surfaceReflectance = mix(zoomedOutSpec, nearSpec, waveIntensity);
+
     oceanContribution += vec3<f32>(1.0, 0.95, 0.85) *
-      min(specular, 8.0) * orbitAttenuation * waterMaskValue;
+      min(specular, 8.0) * orbitAttenuation * waterMaskValue *
+      surfaceReflectance;
   }
 
   // Foam: white overlay on steep wave crests (additive on top of imagery).
@@ -2722,6 +3049,74 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   alpha = max(alpha, m.alpha);
   //>>endif
 
+  // ┌─────────────────────────────────────────────────────────────────────┐
+  // │ PAIR-SECTION: Water mask + Ocean rendering (WGSL) ↔ GLSL             │
+  // │   GLSL call site: Shaders/GlobeFS.glsl ~lines 433-495                │
+  // │   GLSL impl:      Shaders/GlobeFS.glsl L777-849 (computeWaterColor,  │
+  // │                   gated by `#ifdef SHOW_REFLECTIVE_OCEAN`)           │
+  // │ Last lockstep audit: 2026-05-20, Batch 78                            │
+  // └─────────────────────────────────────────────────────────────────────┘
+  // Any change to this block MUST land with a matching change in the
+  // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+  //
+  // ALGORITHM (matched across backends since Batch 58 + Batch 78)
+  // Both backends use an **additive** blend:
+  //   `color = imageryColor + diffuseHighlight + nonDiffuseHighlight + specular`
+  // Imagery is preserved as the base; ocean highlights are added.
+  //
+  // Pre-Batch-58 the WGSL incorrectly used a `mix(imagery, deepColor ×
+  // darkening, 0.6)` REPLACEMENT blend, which dimmed Bing aerial ocean
+  // by ~5× at orbit altitudes — the dominant source of the historical
+  // WebGPU/WebGL brightness gap. Batch 58 rewrote the WGSL to match
+  // WebGL's additive intent. Batch 78 then closed the remaining
+  // line-by-line gaps: `nonDiffuseHighlight` (low-light wave highlight
+  // under SHOW_OCEAN_WAVES) and the waveIntensity-modulated
+  // surfaceReflectance specular pattern.
+  //
+  // CORRECTION TO PRIOR AUDIT NOTES (Batches 58 + 73 said WebGL
+  // `computeWaterColor` was generated by Cesium's material-system
+  // codegen — that was incorrect). The actual implementation is
+  // hand-written GLSL in GlobeFS.glsl, gated by `#ifdef
+  // SHOW_REFLECTIVE_OCEAN`. The "material codegen" framing leaked into
+  // both pair-section headers and the convention ledger; Batch 78
+  // corrects this so the lockstep discipline points reviewers at the
+  // right files.
+  //
+  // STRUCTURAL DIVERGENCES (separate from the now-matched algorithm)
+  //
+  // 1. **Gating**. GLSL: `#if defined(HAS_WATER_MASK) && (defined(SHOW_
+  //    REFLECTIVE_OCEAN) || defined(APPLY_MATERIAL))`. WGSL: runtime
+  //    `tile.flags.x > 0.5` (CPU-side: `showReflectiveOcean =
+  //    hasWaterMask && tileProvider.showWaterEffect === true`).
+  // 2. **Water-mask UV Y-flip**. GLSL applies
+  //    `waterMaskTextureCoordinates.y = 1.0 - .y` after the
+  //    translation/scale (line 478). WGSL doesn't — the WebGPU
+  //    `copyExternalImageToTexture` upload path already lands the
+  //    mask data row-aligned for direct sampling at `geoUV.y`.
+  // 3. **Function home**. GLSL `computeWaterColor` is hand-written in
+  //    GlobeFS.glsl L777-849 behind `#ifdef SHOW_REFLECTIVE_OCEAN`.
+  //    WGSL `computeEnhancedOcean` is hand-inlined in this shader
+  //    (lines 1861-1933). Both require manual line-by-line edits;
+  //    neither is generated.
+  // 4. **Wave-normal source**. GLSL uses `czm_getWaterNoise(
+  //    u_oceanNormalMap, textureCoordinates × oceanFrequency*, time,
+  //    0)` with TWO octaves (high-altitude + low-altitude blend) and
+  //    `czm_ellipsoidTextureCoordinates(normalMC)` for globe-consistent
+  //    wrapping. WGSL uses THREE octaves (uv × 400 / 200 / 800) with
+  //    direct tile UV sampling. Wave appearance differs in detail; both
+  //    produce convincing ocean motion. WGSL-only enhancement: 3-octave
+  //    instead of 2-octave (documented in convention ledger).
+  // 5. **Specular model**. GLSL: `czm_getSpecular` (Phong-like).
+  //    WGSL: GGX distribution (`distributionGGX`). Different specular
+  //    falloff curves; both produce sun-glint at the correct angles.
+  //    WGSL-only enhancement.
+  // 6. **Foam (whitecaps)**. WGSL has `computeFoam` overlaying white
+  //    pixels where wave normals are steep; GLSL has no equivalent.
+  //    WGSL-only enhancement.
+  // 7. **Subsurface scattering**. WGSL has `computeSubsurfaceScattering`
+  //    defined but currently unused — scaffolding for future
+  //    enhancement; GLSL has no equivalent.
+  //
   // ─── Enhanced Water mask + ocean rendering ───
   if (tile.flags.x > 0.5) {
     let wmTS = tile.waterMaskTranslationAndScale;
@@ -2730,27 +3125,170 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     if (waterMask > 0.01) {
       color = computeEnhancedOcean(
-        color, input.v_positionEC, normal, sunDir,
+        color, input.v_positionEC, input.v_positionMC, normal, sunDir,
         geoUV, waterMask, dayFade, input.v_distance
       );
     }
   }
 
+  // ┌─────────────────────────────────────────────────────────────────────┐
+  // │ PAIR-SECTION: Lighting + Shadow Receive (WGSL) ↔ GLSL                │
+  // │   GLSL: Shaders/GlobeFS.glsl ~lines 515-524 (lighting); shadows are  │
+  // │         injected by the WebGL pipeline cache via                      │
+  // │         `ShadowMapShader.js`, not present in GlobeFS.glsl source.    │
+  // │ Last lockstep audit: 2026-05-19, Batch 74                            │
+  // └─────────────────────────────────────────────────────────────────────┘
+  // Any change to this block MUST land with a matching change in the
+  // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+  //
+  // INTENTIONAL ALGORITHMIC REWRITE (Batch ~25, pre-current-batch series)
+  // Same overall intent (Lambert diffuse × light) but the coefficients
+  // are different and WGSL adds a terminator glow that WebGL lacks.
+  //
+  // - WebGL has THREE mutually-exclusive lighting variants gated by
+  //   #ifdef:
+  //     ENABLE_VERTEX_LIGHTING — diffuse with `u_lambertDiffuseMultiplier`
+  //       and `u_vertexShadowDarkness` uniforms; multiplies by
+  //       `czm_lightColor`. Used for tile-provider-driven custom
+  //       lighting.
+  //     ENABLE_DAYNIGHT_SHADING — `NdotL × 5 + 0.3` (high-contrast),
+  //       mixed with full brightness by `fade` so close-camera tiles
+  //       are flat-lit and orbit tiles get full day/night.
+  //     (neither) — pass-through, no shading.
+  //
+  // - WGSL has ONE unified path gated by `camera.enableLighting > 0.5`:
+  //     Lambert diffuse `NdotL × 0.88 + ambient(0.12)` × shadowFactor
+  //     for day; `nightAmbient = 0.025` for night; mixed by `dayFade`.
+  //     Then adds `computeTerminatorGlow(normal, sunDir)` — a warm
+  //     orange/pink contribution at the terminator that WebGL doesn't
+  //     have.
+  //
+  // STRUCTURAL DIVERGENCES
+  //
+  // 1. **Gating mechanism.** GLSL: three #ifdef variants; WGSL: single
+  //    runtime gate.
+  // 2. **Diffuse coefficients.** GLSL ENABLE_DAYNIGHT path uses
+  //    `NdotL × 5 + 0.3` (sharp transition, dark night); WGSL uses
+  //    `NdotL × 0.88 + 0.12` (gentler transition, brighter ambient).
+  //    Visually distinct day/night terminator shape between backends.
+  // 3. **Custom light color.** GLSL multiplies by `czm_lightColor`
+  //    (allows scene-provided custom light color). WGSL multiplies by
+  //    `camera.lightColor.rgb` packed from `uniformState.lightColor`
+  //    (Batch 76). Default white (1,1,1) preserves pre-Batch-76 behavior
+  //    for scenes without a custom `scene.light`.
+  // 4. **Terminator glow.** WGSL adds it (warm color band at the
+  //    day/night boundary); WebGL doesn't.
+  // 5. **Shadow receive.** GLSL does NOT contain shadow code; the
+  //    WebGL pipeline cache injects shadow-sampling GLSL via
+  //    `ShadowMapShader.js` per-pipeline based on the shadow-map
+  //    config. WGSL inlines three shadow paths directly:
+  //      `globeComputeShadowFactorPointLight` (cube-shadow point light)
+  //      `globeComputeShadowFactorCSM` (cascaded shadow maps)
+  //      `globeComputeShadowFactor` (single-map default)
+  //    gated at the top of `fragmentMain` (see lines ~2380-2420).
+  //    The architectural difference is forced by the pipeline-cache
+  //    model: WebGL injects per-config GLSL strings; WebGPU uses a
+  //    fixed shader with runtime gates.
+  // 6. **Vertex-lighting customization.** GLSL ENABLE_VERTEX_LIGHTING
+  //    path uses `u_lambertDiffuseMultiplier` and
+  //    `u_vertexShadowDarkness` uniforms for tile-provider-driven
+  //    shading. WGSL bridges these via `camera.lighting.x/y` (Batch 77),
+  //    and gates between the WebGL ENABLE_VERTEX_LIGHTING formula
+  //    (direct `NdotL × mult + darkness`) and the existing WGSL
+  //    DAYNIGHT_SHADING-analogue path via `camera.lighting.z`
+  //    (hasVertexNormals flag from `terrainProvider.hasVertexNormals`).
+  //
   // ─── Lambert diffuse lighting + shadow receive ───
   if (camera.enableLighting > 0.5) {
     let NdotL = max(dot(normal, sunDir), 0.0);
-    let ambient = 0.12;
-    // shadowFactor was pre-computed at the top of fragmentMain
-    let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
-    let nightAmbient = 0.025;
-    let diffuse = mix(nightAmbient, dayDiffuse, dayFade);
-    color = color * diffuse;
+    var diffuse: f32;
+    if (camera.lighting.z > 0.5) {
+      // Batch 77 — VERTEX_LIGHTING path: terrain has vertex normals.
+      // Direct linear ramp using tile-provider-supplied coefficients,
+      // matching WebGL GlobeFS.glsl ENABLE_VERTEX_LIGHTING (L559):
+      //   diffuse = clamp(NdotL × lambertDiffuseMultiplier
+      //                   + vertexShadowDarkness, 0, 1)
+      // WebGL has no `fade`/`dayFade` mix in this path (the night-side
+      // ambient is `vertexShadowDarkness` itself), so WGSL mirrors that.
+      // shadowFactor multiplies the Lambert term, matching the WebGL
+      // pipeline-cache-injected `ShadowMapShader.js` shadow injection.
+      let lambertTerm = NdotL * camera.lighting.x * shadowFactor;
+      diffuse = clamp(lambertTerm + camera.lighting.y, 0.0, 1.0);
+    } else {
+      // DAYNIGHT_SHADING analogue: terrain has no vertex normals.
+      // Keeps the existing WGSL aesthetic (intentional algorithmic
+      // rewrite of WebGL's `NdotL × 5 + 0.3` × `fade` path — gentler
+      // transition, brighter ambient, separate night ambient).
+      let ambient = 0.12;
+      let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
+      let nightAmbient = 0.025;
+      diffuse = mix(nightAmbient, dayDiffuse, dayFade);
+    }
+    // Batch 76 — `camera.lightColor` mirrors WebGL's `czm_lightColor`
+    // automatic uniform. Scene-provided custom light colors (e.g.
+    // `scene.light.color = Color.ORANGE`) now propagate to the globe
+    // diffuse term on WebGPU, matching GlobeFS.glsl ENABLE_VERTEX_LIGHTING
+    // and ENABLE_DAYNIGHT_SHADING which both multiply by `czm_lightColor`.
+    // Default is (1,1,1) so non-customized scenes are unchanged.
+    color = color * diffuse * camera.lightColor.rgb;
 
     // Terminator glow: warm atmosphere color right at the day-night boundary
     color += computeTerminatorGlow(normal, sunDir);
   }
 
-  // ─── Fog blending ───
+  // ┌─────────────────────────────────────────────────────────────────────┐
+  // │ PAIR-SECTION: Ground Atmosphere + Fog (WGSL) ↔ GLSL                  │
+  // │   GLSL: Shaders/GlobeFS.glsl ~lines 512-603                          │
+  // │ Last lockstep audit: 2026-05-19, Batch 72                            │
+  // └─────────────────────────────────────────────────────────────────────┘
+  // Any change to this block MUST land with a matching change in the
+  // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+  //
+  // STRUCTURAL DIVERGENCES (documented, intentional)
+  //
+  // 1. **Pipeline gating.** GLSL guards the whole block with
+  //    `#if defined(GROUND_ATMOSPHERE) || defined(FOG)`; the per-vertex
+  //    vs per-fragment scattering split with `#ifdef
+  //    PER_FRAGMENT_GROUND_ATMOSPHERE`; the day/night atmo darkening with
+  //    `#if defined(DYNAMIC_ATMOSPHERE_LIGHTING) && (ENABLE_VERTEX_LIGHTING
+  //    || ENABLE_DAYNIGHT_SHADING)`. WGSL gates everything at runtime via
+  //    UBO scalars (`tile.fogDensity > 0`, `tile.groundAtmosphereControl.x
+  //    > 0.5`, `camera.atmosphereParams.w > 1.5`). Both produce identical
+  //    output for matching state; the WGSL pays a few extra branches per
+  //    fragment that the GLSL avoids at shader-compile time.
+  //
+  // 2. **Per-vertex vs per-fragment ray-march.** GLSL switches between
+  //    `v_atmosphereRayleighColor` / `v_atmosphereMieColor` varyings and
+  //    a per-fragment `computeAtmosphereScattering` call based on the
+  //    `PER_FRAGMENT_GROUND_ATMOSPHERE` define (set CPU-side when
+  //    `cameraDist > nightFadeOutDistance` ≈ 10 Mm). WGSL **always** does
+  //    per-fragment via `computeAtmosphereScatteringGround` (Batch 56).
+  //    The per-vertex path would produce a mesh-pattern artifact at
+  //    orbit altitudes because interpolated optical depths diverge across
+  //    triangles that span the limb. The per-vertex varyings remain in
+  //    the WGSL VS for future use if the close-camera optimization needs
+  //    re-introducing.
+  //
+  // 3. **LUT integration.** WGSL adds a Phase-4 path that samples a
+  //    compute-shader-pre-computed atmosphere LUT when available
+  //    (`effects.atmosphereLutControl.x > 0.5`) and falls back to the
+  //    inline Rayleigh/Mie analytic when not. GLSL has no equivalent —
+  //    always uses the inline analytic. Output is identical when the
+  //    LUT is unavailable (placeholder path); when LUT is active the
+  //    WGSL output is physically more accurate but WebGL has no way to
+  //    match (no compute shaders in WebGL2).
+  //
+  // 4. **HDR gating.** Both backends skip the inline tonemap under HDR
+  //    so the post-process chain can do it. GLSL: `#ifndef HDR`. WGSL:
+  //    `tile.groundAtmosphereControl.w > 0.5`. Same semantics, different
+  //    gate mechanism.
+  //
+  // 5. **Exposure constant.** Both backends use exposure = 2.0 for the
+  //    `1 - exp(-exposure × finalAtmoColor)` tonemap. GLSL spells this
+  //    as `fExposure = 2.0` (global const); WGSL spells it as a local
+  //    `let exposure: f32 = 2.0;`. Same value.
+  //
+  // ─── Fog blending + ground atmosphere ───
   // Matches WebGL `czm_fog(distance, color, fogColor)` — mixes color
   // toward fogColor by the fog amount, leaves alpha alone. Upstream
   // does NOT drop alpha at high fog; a previous WGSL-only alpha drop

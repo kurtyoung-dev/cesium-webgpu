@@ -1,3 +1,37 @@
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ PAIR: WebGL GLSL FS (this file)                                       │
+// │       WebGL GLSL VS: Shaders/SkyAtmosphereVS.glsl                    │
+// │       WebGL GLSL helpers: Shaders/SkyAtmosphereCommon.glsl           │
+// │       WebGPU WGSL: Shaders/WebGPU/Environment/SkyAtmosphere.wgsl     │
+// │       (single file containing @vertex + @fragment + helpers)         │
+// │ Last lockstep audit: 2026-05-19, Batch 76                            │
+// └─────────────────────────────────────────────────────────────────────┘
+// Any change in this file MUST land with a matching change in the WGSL
+// counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+//
+// Structural divergence summary (full ledger in the WGSL counterpart):
+// - 16-step adaptive ray-march (`rayStepLengthIncrease` in
+//   AtmosphereCommon.glsl) vs WGSL's 64-step uniform-stride ray-march.
+//   Same visual result.
+// - GLSL has `#ifdef PER_FRAGMENT_ATMOSPHERE` branch that selects
+//   between vertex-interpolated colors and per-fragment evaluation.
+//   WGSL is always per-fragment.
+// - GLSL has NO LUT fast-path; WGSL has a `useLut > 0.5` branch that
+//   replaces the ray-march with a single inscatter LUT sample
+//   (WebGL2 has no compute shaders, so no LUT bake exists).
+// - GLSL has NO dual-light (sun+moon) scattering; WGSL adds moon
+//   inscatter contribution scaled by phase × intensity.
+// - GLSL has NO debug magenta bypass; WGSL has Tier 1 debug at
+//   `u.debug.x > 0.5`.
+// - Tonemap chain: GLSL gates `czm_pbrNeutralTonemapping` +
+//   `czm_inverseGamma` on `#ifndef HDR` and HSB shift on `#ifdef
+//   COLOR_CORRECT`. WGSL always applies the tonemap + sRGB encode and
+//   gates HSB shift on |hsbShift| > 0.001 (HDR is handled via the
+//   WebGPU post-process pipeline, not the sky shader).
+// - GLSL has a `#ifdef GLOBE_TRANSLUCENT` brightening path in
+//   SkyAtmosphereCommon; WGSL has none yet (translucent globe not
+//   wired through WebGPU pipeline).
+
 in vec3 v_outerPositionWC;
 
 uniform vec3 u_hsbShift;

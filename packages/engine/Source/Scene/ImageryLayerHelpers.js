@@ -2,11 +2,9 @@ import Cartesian2 from "../Core/Cartesian2.js";
 import Cartesian4 from "../Core/Cartesian4.js";
 import CesiumMath from "../Core/Math.js";
 import defined from "../Core/defined.js";
-import FeatureDetection from "../Core/FeatureDetection.js";
 import GeographicProjection from "../Core/GeographicProjection.js";
 import IndexDatatype from "../Core/IndexDatatype.js";
 import Rectangle from "../Core/Rectangle.js";
-import TerrainProvider from "../Core/TerrainProvider.js";
 import TileProviderError from "../Core/TileProviderError.js";
 import WebMercatorProjection from "../Core/WebMercatorProjection.js";
 import Buffer from "../Renderer/Buffer.js";
@@ -459,6 +457,12 @@ function requestImagery(layer, imagery) {
   doRequest();
 }
 
+// Batch 66 — uniformMap carries the four scalar uniforms the per-fragment
+// reproject FS needs. `southLatitude` / `northLatitude` are in radians;
+// `southMercatorY` / `oneOverMercatorHeight` are the precomputed
+// Mercator-Y bounds for the destination imagery tile. These replace the
+// per-row `webMercatorT` vertex buffer that the previous 64-row grid
+// reproject used.
 const uniformMap = {
   u_textureDimensions: function () {
     return this.textureDimensions;
@@ -466,14 +470,26 @@ const uniformMap = {
   u_texture: function () {
     return this.texture;
   },
+  u_southLatitude: function () {
+    return this.southLatitude;
+  },
+  u_northLatitude: function () {
+    return this.northLatitude;
+  },
+  u_southMercatorY: function () {
+    return this.southMercatorY;
+  },
+  u_oneOverMercatorHeight: function () {
+    return this.oneOverMercatorHeight;
+  },
 
   textureDimensions: new Cartesian2(),
   texture: undefined,
+  southLatitude: 0.0,
+  northLatitude: 0.0,
+  southMercatorY: 0.0,
+  oneOverMercatorHeight: 0.0,
 };
-
-const float32ArrayScratch = FeatureDetection.supportsTypedArrays()
-  ? new Float32Array(2 * 64)
-  : undefined;
 
 function reprojectToGeographic(command, context, texture, rectangle) {
   let reproject = context.cache.imageryLayer_reproject;
@@ -496,22 +512,26 @@ function reprojectToGeographic(command, context, texture, rectangle) {
       },
     };
 
-    const positions = new Float32Array(2 * 64 * 2);
-    let index = 0;
-    for (let j = 0; j < 64; ++j) {
-      const y = j / 63.0;
-      positions[index++] = 0.0;
-      positions[index++] = y;
-      positions[index++] = 1.0;
-      positions[index++] = y;
-    }
+    // Batch 66 — single quad. The previous 64-row vertex grid existed only
+    // so the rasterizer could linearly interpolate a per-row Mercator-Y
+    // value between rows; now that the FS computes Mercator-Y per
+    // fragment, four vertices is enough.
+    const positions = new Float32Array([
+      0.0,
+      0.0, // bottom-left  (south, west)
+      1.0,
+      0.0, // bottom-right (south, east)
+      0.0,
+      1.0, // top-left     (north, west)
+      1.0,
+      1.0, // top-right    (north, east)
+    ]);
 
     const reprojectAttributeIndices = {
       position: 0,
-      webMercatorT: 1,
     };
 
-    const indices = TerrainProvider.getRegularGridIndices(2, 64);
+    const indices = new Uint16Array([0, 1, 2, 2, 1, 3]);
     const indexBuffer = Buffer.createIndexBuffer({
       context: context,
       typedArray: indices,
@@ -530,15 +550,6 @@ function reprojectToGeographic(command, context, texture, rectangle) {
             usage: BufferUsage.STATIC_DRAW,
           }),
           componentsPerAttribute: 2,
-        },
-        {
-          index: reprojectAttributeIndices.webMercatorT,
-          vertexBuffer: Buffer.createVertexBuffer({
-            context: context,
-            sizeInBytes: 64 * 2 * 4,
-            usage: BufferUsage.STREAM_DRAW,
-          }),
-          componentsPerAttribute: 1,
         },
       ],
       indexBuffer: indexBuffer,
@@ -579,6 +590,11 @@ function reprojectToGeographic(command, context, texture, rectangle) {
   const northMercatorY = 0.5 * Math.log((1 + sinLatitude) / (1 - sinLatitude));
   const oneOverMercatorHeight = 1.0 / (northMercatorY - southMercatorY);
 
+  uniformMap.southLatitude = rectangle.south;
+  uniformMap.northLatitude = rectangle.north;
+  uniformMap.southMercatorY = southMercatorY;
+  uniformMap.oneOverMercatorHeight = oneOverMercatorHeight;
+
   const outputTexture = new Texture({
     context: context,
     width: width,
@@ -591,27 +607,6 @@ function reprojectToGeographic(command, context, texture, rectangle) {
   if (CesiumMath.isPowerOfTwo(width) && CesiumMath.isPowerOfTwo(height)) {
     outputTexture.generateMipmap(MipmapHint.NICEST);
   }
-
-  const south = rectangle.south;
-  const north = rectangle.north;
-
-  const webMercatorT = float32ArrayScratch;
-
-  let outputIndex = 0;
-  for (let webMercatorTIndex = 0; webMercatorTIndex < 64; ++webMercatorTIndex) {
-    const fraction = webMercatorTIndex / 63.0;
-    const latitude = CesiumMath.lerp(south, north, fraction);
-    sinLatitude = Math.sin(latitude);
-    const mercatorY = 0.5 * Math.log((1.0 + sinLatitude) / (1.0 - sinLatitude));
-    const mercatorFraction =
-      (mercatorY - southMercatorY) * oneOverMercatorHeight;
-    webMercatorT[outputIndex++] = mercatorFraction;
-    webMercatorT[outputIndex++] = mercatorFraction;
-  }
-
-  reproject.vertexArray
-    .getAttribute(1)
-    .vertexBuffer.copyFromArrayView(webMercatorT);
 
   command.shaderProgram = reproject.shaderProgram;
   command.outputTexture = outputTexture;

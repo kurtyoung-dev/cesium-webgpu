@@ -138,6 +138,28 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
       usePostProcess && postProcess.hasSelected;
   }
 
+  // Phase 8a Slice 1 (Batch 80) — depth-prepass + normal G-buffer
+  // scaffolding. Gated on `frameState.useDeferredLighting`, which
+  // defaults false. With the flag off this is a no-op; with the flag
+  // on we allocate + clear the G-buffer so Slice 2's producer pass has
+  // a target. The producer + consumer wiring lands in Slices 2/3+; this
+  // batch only carves out the resource slot. See
+  // migration_doc/PHASE_8_SHADER_STRATEGY.md.
+  const useDeferredLighting =
+    !picking &&
+    frameState.useDeferredLighting === true &&
+    view.gBufferFramebuffer !== undefined;
+  environmentState.useDeferredLighting = useDeferredLighting;
+  if (useDeferredLighting) {
+    view.gBufferFramebuffer.update(
+      context,
+      view.viewport,
+      scene._hdr,
+      scene.msaaSamples,
+    );
+    view.gBufferFramebuffer.clear(context, passState);
+  }
+
   if (environmentState.isSunVisible && scene.sunBloom && !useWebVR) {
     passState.framebuffer = scene._sunPostProcess.update(passState);
     scene._sunPostProcess.clear(context, passState, clearColor);

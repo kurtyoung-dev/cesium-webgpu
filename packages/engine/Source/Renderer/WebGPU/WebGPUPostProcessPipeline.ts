@@ -879,6 +879,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     depthView?: GPUTextureView | null,
     sourceTexture?: GPUTexture | null,
     motionView?: GPUTextureView | null,
+    // Phase 8a Slice 4 (Batch 87) — when non-null, AO (and Slice 5+:
+    // SSR + clustered lighting) reads surface normals from this
+    // G-buffer view instead of reconstructing them from depth. Caller
+    // wires this only when `scene.deferredLighting === true` AND the
+    // producer ran this frame; otherwise null/undefined keeps the
+    // depth-reconstruction fallback active.
+    gBufferNormalView?: GPUTextureView | null,
   ): void {
     // Store the scene color texture for auto-exposure dispatch.
     // When sourceTexture is provided, auto-exposure can dispatch its
@@ -913,13 +920,15 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     let currentView = sourceView;
     const depth = depthView ?? null;
 
-    // 1. Ambient Occlusion (needs depth)
+    // 1. Ambient Occlusion (needs depth; optionally reads G-buffer
+    // normal — Phase 8a Slice 4, Batch 87).
     if (this._aoEffect?.enabled && depth) {
       currentView = this._aoEffect.execute(
         encoder,
         currentView,
         depth,
         this._sampler!,
+        gBufferNormalView ?? null,
       );
     }
 

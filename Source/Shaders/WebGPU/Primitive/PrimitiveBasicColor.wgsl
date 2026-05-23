@@ -35,7 +35,11 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// ─── Effects bind group (clipping only for flat shaders — no shadow) ───
+// ─── Effects bind group (clipping + aerial-perspective LUT) ───
+// FEAT-GAP-09 (Batch 94) — struct extended to reach atmosphereLutControl.
+// The shared `getEffectsBindGroupLayout` UBO is 480+ bytes; flat shaders
+// previously truncated at ~80 bytes (clipping only). Reading past the
+// truncation is safe — the shader just sees more of the same buffer.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -47,6 +51,7 @@ struct EffectsUniforms {
     clippingPolygonCount: u32,
     clippingEdgeColor: vec4<f32>,
     clipPlaneEqHW: array<vec4<f32>, 8>,
+    atmosphereLutControl: vec4<f32>,
 }
 
 @group(2) @binding(0) var<uniform> effects: EffectsUniforms;
@@ -54,6 +59,13 @@ struct EffectsUniforms {
 @group(2) @binding(2) var shadowCompSampler: sampler_comparison;
 @group(2) @binding(3) var clippingPlaneTex: texture_2d<f32>;
 @group(2) @binding(4) var clippingPlaneSampler: sampler;
+// FEAT-GAP-09 (Batch 94) — aerial-perspective LUT bindings 7/8/9. Always
+// populated by WebGPUEffectsBindGroup; placeholder 1×1 textures when the
+// LUT is inactive. Gated by `effects.atmosphereLutControl.x > 0.5` in
+// fragmentMain so the off-path costs only one uniform compare.
+@group(2) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(2) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(2) @binding(9) var atmosphereLutSampler: sampler;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -118,5 +130,49 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    return input.color;
+    var finalColor = input.color;
+
+    // FEAT-GAP-09 (Batch 94) — Aerial-perspective fog blend. Mirrors the
+    // pattern in PrimitiveMatColorLit.wgsl L274-310. Sample the
+    // pre-integrated LUT by (cos view-zenith, camera altitude) and lerp
+    // the lit color toward inscatter by (1 - transmittance).
+    if (effects.atmosphereLutControl.x > 0.5) {
+        let innerRadius = effects.atmosphereLutControl.y;
+        let thickness = max(1.0, effects.atmosphereLutControl.z);
+        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let viewDirWS = normalize(input.eyePosition);
+        let upDir = normalize(cameraWC);
+        let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
+        let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+        let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+        let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+
+        let tSample = textureSampleLevel(
+            atmosphereTransmittanceLut, atmosphereLutSampler,
+            vec2<f32>(uCoord, vCoord), 0.0,
+        );
+        let iSample = textureSampleLevel(
+            atmosphereInscatterLut, atmosphereLutSampler,
+            vec2<f32>(uCoord, vCoord), 0.0,
+        );
+        let transmittance =
+            clamp((tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0);
+
+        let excessAltitude = max(0.0, cameraAltitude - thickness);
+        let orbitFalloff = exp(-excessAltitude / thickness);
+
+        let fogWeight = clamp(iSample.a, 0.0, 1.0) * orbitFalloff;
+        finalColor = vec4<f32>(
+            mix(finalColor.rgb, iSample.rgb, fogWeight),
+            finalColor.a,
+        );
+        if (effects.atmosphereLutControl.w > 0.5) {
+            finalColor = vec4<f32>(
+                finalColor.rgb * mix(1.0, transmittance, fogWeight),
+                finalColor.a,
+            );
+        }
+    }
+
+    return finalColor;
 }
