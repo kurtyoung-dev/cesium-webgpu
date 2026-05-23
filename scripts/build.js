@@ -771,6 +771,15 @@ const wgslShaderFiles = ["packages/engine/Source/Shaders/WebGPU/**/*.wgsl"];
  * @param {Workspace} workspace
  */
 export async function glslToJavaScript(minify, minifyStateFilePath, workspace) {
+  // Ensure the directory for the state file exists. On a fresh CI
+  // checkout `Build/` does not exist yet; the original ordering ran
+  // `wgslToJavaScript` first (which only reads this path), and the
+  // bundle steps below were what eventually created `Build/`. Now
+  // that `glslToJavaScript` runs before any bundler step (per the
+  // gulpfile `build()` order so tsc can resolve the .js shader
+  // imports), this function has to create its own parent dir or it
+  // fails with ENOENT immediately on a clean checkout.
+  await mkdirp(path.dirname(minifyStateFilePath));
   await writeFile(minifyStateFilePath, minify.toString());
   const minifyStateFileLastModified = existsSync(minifyStateFilePath)
     ? statSync(minifyStateFilePath).mtime.getTime()
