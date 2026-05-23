@@ -24,6 +24,50 @@
 
 ---
 
+## Batch 96 — FEAT-GAP-09 JS-side wiring fix: aerial LUT views never reached primitive shaders (2026-05-23)
+
+**Date:** 2026-05-23
+
+A Batch-95-style finding. Audited what's needed to wire FEAT-GAP-09's aerial-perspective LUT into the remaining 20 Flat shaders. The audit instead surfaced that **none of the existing wired primitive shaders were getting real LUT data either** — they were sampling 1×1 placeholder textures every frame because the JS-side data flow was broken at the primitive effects bind group call site.
+
+**Why this is a Batch 95 sibling.** Same shape as the AO non-engagement bug: WGSL scaffolding looks correct, JS-side architecture looks correct, but the data never crosses the JS↔GPU boundary. The aerial-LUT WGSL block at `PrimitiveBasicColor.wgsl` and every `Mat*Lit` / `Phong*` variant has been "live" since Batch 91, but the gate `effects.atmosphereLutControl.x > 0.5` always evaluated false on the primitive path — so the fog block was dead code, no visible improvement, no probe regression.
+
+**Root cause.** [`_getOrCreateSharedPrimitiveEffectsBG`](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js#L735) passed only `shadowMap`, `csm`, and `cameraInPlaneSpace` to `createEffectsBindGroup` (L794-800). It did NOT forward `atmosphereLutTransmittanceView`, `atmosphereLutInscatterView`, or `atmosphereLutPlanetRadii` — which `WebGPUGlobeSurfaceRenderer.ts:1015-1025` DOES forward correctly. `createEffectsBindGroup` defaults the unset LUT views to 1×1 placeholders AND sets `atmosphereLutControl.x = 0.0` whenever `hasAtmosphereLut` (= both views present) is false. So every primitive shader that declared the aerial-LUT bindings sampled the placeholder texture each frame and the WGSL gate evaluated false.
+
+Compounding: the fast-path on L786-792 short-circuited to the placeholder BG when neither `shadow` nor `csm` was active — so even if the LUT views had been forwarded, the slow path would have been bypassed for the common case (no shadows + no CSM + atmosphere on).
+
+**Fix.** Three changes in `_getOrCreateSharedPrimitiveEffectsBG`:
+
+1. **Read the LUT views** from `context.performanceManager.ensureAtmosphereLUTResources(device)` — mirrors the globe-renderer pattern.
+2. **Forward them + planet radii** into the `createEffectsBindGroup` call, using the SkyAtmosphere convention (WGS84 inner radius + 2.5% thickness) the LUT compute dispatcher uses by default.
+3. **Extend the cache toggle hash** to include the LUT-active bit (1=shadow, 2=CSM, 4=LUT) so the fast-path short-circuits to the placeholder BG ONLY when none of the three are active. Without this, the LUT-on/CSM-off/shadow-off case would have skipped the slow path entirely and bound the placeholder again.
+
+**Verification.** Built `probe-aerial-lut-primitive.mjs` which (a) instantiates a Mat-shader primitive in scene, (b) dumps `context._primitiveEffectsBGToggleHash` per capture, (c) bit-masks the hash to confirm the LUT bit is set.
+
+Pre-fix expected (from code reading): toggle hash = 0 (fast-path placeholder BG, no LUT bit).
+Post-fix actual:
+
+```
+diag: { ... primEffectsBG_exists: true,
+            primEffectsBG_toggleHash: 4,
+            primEffectsBG_hasLut: true, ... }
+```
+
+`toggleHash & 4 === 4` confirms `createEffectsBindGroup` was called with the LUT views, which means `atmosphereLutControl.x = 1.0` is now uploaded in the UBO and the wired shaders' WGSL fog block executes on the GPU.
+
+**Visual regression caveat.** The probe also captured an atmosphere-on vs atmosphere-off canvas diff, but it could not be used as a fog-presence signal because toggling `scene.skyAtmosphere.show` does NOT actually clear the cached LUT views — once `performanceManager.ensureAtmosphereLUTResources` allocates them they persist. A real "fog visible" smoke test would require either an Ion-tokened terrain (the probe's WGS84 fallback is too flat to show fog falloff) or a primitive-rendering Sandcastle (the Box primitive added to this probe didn't visibly render in headless mode, likely due to a separate WebGPU primitive rendering scaffolding gap). The toggle-hash proof + the JS↔GPU data-flow match against the working globe path are the strongest evidence available without that infrastructure.
+
+**Files modified.**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js#L748-L820) — read LUT views from `performanceManager`, forward to `createEffectsBindGroup`, extend cache invalidation.
+- [Tools/visual-regression/probe-aerial-lut-primitive.mjs](Tools/visual-regression/probe-aerial-lut-primitive.mjs) — new probe (toggle-hash diagnostic + atmosphere on/off canvas diff scaffolding).
+
+**Follow-up (next batch).** Now that the JS wiring is correct, the 20 remaining `Mat*Flat` / Advanced shaders are the actual `FEAT-GAP-09` continuation: bulk WGSL changes (EffectsUniforms struct + bindings 7/8/9 + fog block) per the pattern already in `PrimitiveBasicColor.wgsl`. **Important**: the prior Batch 94 scope correction claimed those Flat shaders need JS-side pipeline-layout changes too — that claim was WRONG. Audit of [`createMaterialPipelineAndCache`](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js#L2001-L2003) shows the effects BGL is pushed onto the Mat pipeline layout UNCONDITIONALLY for both Flat and Lit. Only WGSL changes are required.
+
+**Lesson.** Repeat of the Batch 95 pattern: a partially-implemented feature (WGSL bound to JS-side struct slot, but the data never gets uploaded) is the most insidious form of dead scaffolding. Pretty WGSL code + a placeholder texture + a control flag stuck at zero will silently do nothing for batches at a time. The diagnostic probe template (capture + JS-side state dump + cache hash inspection) is the right shape for catching it.
+
+---
+
 ## Batch 95 — Phase 8a Slice 4/5 verify probe + critical AO-never-engaged fix (2026-05-23)
 
 **Why this batch matters.** The Phase 8a deferred-lighting work landed across Batches 80-93 with multiple "AO now reads from G-buffer" / "Slice 4 shipped" claims. Those claims were based on hand-eyed Sandcastle comparisons and probe diffs that hovered in the sub-percent range. We built a deterministic 4-cell matrix probe to put a number on it and the probe immediately surfaced a bug none of the prior captures caught: **ambient occlusion never actually engaged on the WebGPU backend**, no matter what `scene.postProcessStages.ambientOcclusion.enabled` was set to. Every Slice 4/5 "verification" we'd done was reading noise, not signal.

@@ -759,15 +759,38 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
       }
     : undefined;
 
+  // Batch 96 (FEAT-GAP-09 fix) — read the aerial-perspective LUT views
+  // from the performance manager and forward them into the primitive
+  // effects bind group. Without this, every primitive shader that
+  // declared the aerial-LUT bindings (PrimitiveBasicColor + all
+  // Mat*Lit / Phong* variants — see SHADER_PAIRS_LOCKSTEP.md) sampled
+  // 1×1 placeholder textures every frame and `effects.atmosphereLutControl.x`
+  // stayed at 0.0, so the fog block was dead code on non-globe geometry.
+  // The globe path forwards these views from `WebGPUGlobeSurfaceRenderer.ts`
+  // (~L1015); this mirrors that wiring for primitives.
+  const perfMgr = context.performanceManager;
+  let atmosphereLutViews = null;
+  if (perfMgr && typeof perfMgr.ensureAtmosphereLUTResources === "function") {
+    const res = perfMgr.ensureAtmosphereLUTResources(device);
+    if (res && res.transmittanceView && res.inscatterView) {
+      atmosphereLutViews = {
+        transmittance: res.transmittanceView,
+        inscatter: res.inscatterView,
+      };
+    }
+  }
+  const hasAtmosphereLut = atmosphereLutViews !== null;
+
   const frameNumber = frameState.frameNumber;
   const hasShadow = defined(receiveShadowMap);
 
-  // Invalidate cache when frame ticks OR when the (shadow, csm) pair
-  // toggles. We hash the toggle pair into a small int so a cheap
+  // Invalidate cache when frame ticks OR when the (shadow, csm, LUT)
+  // triple toggles. We hash all three into a small int so a cheap
   // compare catches on/off changes within the same frame (rare —
   // frameState normally increments frameNumber every tick — but the
   // guard is nearly free).
-  const toggleHash = (hasShadow ? 1 : 0) | (hasCsm ? 2 : 0);
+  const toggleHash =
+    (hasShadow ? 1 : 0) | (hasCsm ? 2 : 0) | (hasAtmosphereLut ? 4 : 0);
   if (
     context._primitiveEffectsBGFrameNumber === frameNumber &&
     context._primitiveEffectsBGToggleHash === toggleHash &&
@@ -776,14 +799,14 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
     return context._primitiveEffectsBG;
   }
 
-  // When neither feature is active we MUST return the placeholder
-  // explicitly (not null) so callers swap stale active-state BGs back
-  // to zero-filled placeholder data on toggle-off transitions. Example:
-  // CSM toggled ON at frame N plants a real BG in cmd.bindGroups[last];
-  // CSM toggled OFF at frame N+1 must overwrite that slot — otherwise
-  // the shader reads last frame's csmControl=1.0 and samples stale
-  // cascade VPs.
-  if (!hasShadow && !hasCsm) {
+  // When none of (shadow, csm, atmosphereLut) is active we MUST return
+  // the placeholder explicitly (not null) so callers swap stale
+  // active-state BGs back to zero-filled placeholder data on toggle-off
+  // transitions. Example: CSM toggled ON at frame N plants a real BG in
+  // cmd.bindGroups[last]; CSM toggled OFF at frame N+1 must overwrite
+  // that slot — otherwise the shader reads last frame's csmControl=1.0
+  // and samples stale cascade VPs. Same logic for the LUT control.
+  if (!hasShadow && !hasCsm && !hasAtmosphereLut) {
     const placeholder = getPlaceholderEffects(device);
     context._primitiveEffectsBG = placeholder.bindGroup;
     context._primitiveEffectsBGFrameNumber = frameNumber;
@@ -797,6 +820,16 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
     // Primitives have identity modelMatrix, so world camera == plane-space
     // camera. Clipping wiring for primitives is a separate follow-up.
     cameraInPlaneSpace: context.uniformState?.cameraPosition,
+    atmosphereLutTransmittanceView: atmosphereLutViews?.transmittance,
+    atmosphereLutInscatterView: atmosphereLutViews?.inscatter,
+    // Use the SkyAtmosphere convention — WGS84 inner radius + 2.5%
+    // atmosphere thickness — matching the default the LUT compute
+    // dispatcher uses unless `SkyAtmosphere.atmosphereLightIntensity`
+    // has been customized. Mirrors the globe-renderer wiring at
+    // `WebGPUGlobeSurfaceRenderer.ts:1022-1025`.
+    atmosphereLutPlanetRadii: hasAtmosphereLut
+      ? { inner: 6378137.0, outer: 6378137.0 * 1.025 }
+      : undefined,
   });
   context._primitiveEffectsBG = fxRes.bindGroup;
   context._primitiveEffectsBGFrameNumber = frameNumber;
