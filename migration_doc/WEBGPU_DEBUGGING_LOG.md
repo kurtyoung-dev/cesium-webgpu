@@ -24,6 +24,61 @@
 
 ---
 
+## Batch 97 — FEAT-GAP-09 bulk completion: aerial LUT wired into all remaining Flat / textured primitive shaders (2026-05-23)
+
+**Date:** 2026-05-23
+
+Follow-up to Batch 96. With the JS-side data flow now correct (LUT views reach the primitive effects bind group), the remaining work was the mechanical part: spread the WGSL aerial-LUT wiring (struct + bindings + fog block + eye-position output) to the 19 `Mat*Flat` variants and the one outstanding `PrimitiveBasicTexturedColor.wgsl`.
+
+**Why bulk-mechanical.** Batch 94 estimated this at "5-7 lines per shader × ~32 shaders" and then corrected itself to "needs JS-side pipeline-layout changes per shader" — but the audit during Batch 96 showed the JS pipeline-layout already pushed the effects BGL unconditionally for every Mat shader (Flat AND Lit). So the actual scope was the original estimate after all — pure WGSL edits, no JS changes.
+
+20 shaders × ~40 lines per shader = ~800 lines of near-identical WGSL. Hand-editing each invited transcription error, so this batch ships a one-shot patcher (`Tools/wire-flat-shaders-aerial-lut.mjs`) that:
+
+1. Adds `eyePosition: vec3<f32>` to `VertexOutput` at the next free `@location` slot.
+2. Injects `output.eyePosition = <var>.xyz;` in `vertexMain` (captures the local eye-space variable name from the existing `mvpRelativeToEye * <var>` line — varies across shaders, e.g. `eyePos` vs `posRTE`).
+3. Adds the truncated `EffectsUniforms` struct (sized to reach `atmosphereLutControl` at byte offset 240) + bindings 0/7/8/9 at `@group(maxExistingGroup + 1)`. That puts effects at `@group(2)` for no-texture variants and `@group(3)` for textured variants — matching the JS-side BGL ordering.
+4. Wraps the LAST `return X;` in `fragmentMain` with the fog-blend block (`var finalColor = X; ... return finalColor;`).
+
+The patcher is idempotent — it skips files that already declare `atmosphereLutControl` — so it can be re-run as new shaders are added without churning the already-wired ones.
+
+**Shaders wired this batch.**
+
+| Group | Files | Effects group |
+|---|---|---|
+| No-texture | `PrimitiveMatColorFlat`, `MatCheckerFlat`, `MatDotFlat`, `MatElevContourFlat`, `MatFadeFlat`, `MatGridFlat`, `MatRimLightingFlat`, `MatStripeFlat` | `@group(2)` |
+| Textured | `PrimitiveMatAlphaMapFlat`, `MatAspectRampFlat`, `MatBumpMapFlat`, `MatElevBandFlat`, `MatElevRampFlat`, `MatEmissionMapFlat`, `MatImageFlat`, `MatNormalMapFlat`, `MatSlopeRampFlat`, `MatSpecularMapFlat`, `MatWaterFlat`, `PrimitiveBasicTexturedColor` | `@group(3)` |
+| Skipped | `PrimitivePickMatFlat` (pick path bypasses atmosphere) | — |
+
+**Verification.**
+
+- `npx gulp build` — clean. All 20 shaders compiled, the JS modules regenerated, and the bundles produced without WGSL parse errors.
+- `probe-slice4-verify.mjs` — re-run as a smoke test for non-shader regressions; the Grand Canyon view continues to render identically to pre-batch (canyon terrain visible, AO engagement diff in the same ~0.6% band as Batch 95).
+- WGSL inspection — spot-checked `MatCheckerFlat` (no-texture path), `MatImageFlat` (textured path), `MatWaterFlat` (complex multi-line return). All three show the eye-position output flowing into the fragment shader, the effects bind group at the correct trailing slot, and the fog block wrapping the original return expression intact.
+
+**Files modified.**
+
+- 19 `PrimitiveMat*Flat.wgsl` files + `PrimitiveBasicTexturedColor.wgsl` — bulk-wired by the patcher.
+- `Tools/wire-flat-shaders-aerial-lut.mjs` — new one-shot patcher.
+
+**What this completes.**
+
+`FEAT-GAP-09` aerial-perspective LUT integration is now end-to-end wired across the entire primitive shader surface:
+
+- ✅ Globe terrain (`GlobeTerrain.wgsl`) — pre-existing
+- ✅ Lit material variants (`Mat*Lit`, `Phong*`, `Model*`) — pre-Batches 91-94
+- ✅ Basic flat (`PrimitiveBasicColor`) — Batch 94
+- ✅ Lit material consumers actually receive real LUT data — Batch 96 (JS data flow)
+- ✅ Flat material variants + Basic textured (this batch) — Batch 97
+
+**What's NOT covered.**
+
+- `Advanced/PointCloud.wgsl`, `Advanced/VoxelPrimitive.wgsl`, `Advanced/GaussianSplat.wgsl` — the audit deferred these. Each has a different vertex output / fragment return shape and is best wired by hand when the relevant feature work touches them.
+- Pick shaders (`PrimitivePickMatFlat`, `PrimitiveBasicPickColor`, etc.) — intentionally excluded so atmospheric fog doesn't corrupt the encoded pick color.
+
+**Lesson.** A small one-shot Node script beats hand-editing 20 near-identical WGSL files. The patcher's idempotence (skip when `atmosphereLutControl` already present) lets future "add this pattern to a new shader" cases be one-line additions to the script's allow-list rather than another round of manual edits.
+
+---
+
 ## Batch 96 — FEAT-GAP-09 JS-side wiring fix: aerial LUT views never reached primitive shaders (2026-05-23)
 
 **Date:** 2026-05-23
