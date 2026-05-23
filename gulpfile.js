@@ -94,6 +94,15 @@ export async function build() {
   const sourcemap = argv.sourcemap ?? true;
   const node = argv.node ?? true;
 
+  // Convert GLSL shaders to JS modules before bundling. The
+  // generated `.js` siblings of every `.glsl` file are gitignored
+  // (build outputs), so on a fresh checkout (CI, new clone) the
+  // imports `../Shaders/BufferPointMaterialVS.js` etc. don't exist
+  // until this runs. Skipping it makes `tsc` fail with TS2307 even
+  // though the WebGPU-side WGSL conversion below is unrelated.
+  console.log("Converting GLSL shaders to JavaScript modules...");
+  await glslToJavaScript(minify, "Build/minifyShaders.state", "engine");
+
   // Convert WGSL shaders to JS modules before bundling
   console.log("Converting WGSL shaders to JavaScript modules...");
   await wgslToJavaScript(minify, "Build/minifyShaders.state", "engine");

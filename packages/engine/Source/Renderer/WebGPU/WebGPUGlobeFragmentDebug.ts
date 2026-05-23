@@ -4,8 +4,8 @@
  * `fragmentMain` and return a visualization of an intermediate value.
  *
  * The whole system is pragma-stripped from production builds: the
- * `applyDebugModeToTileTime` writer below sits inside an
- * `//>>includeStart('debug', pragmas.debug)` block in the caller, and the
+ * `applyDebugModeToTileTime` writer below sits inside a debug-pragma
+ * block in the caller (see `scripts/build.js` stripPragmaPlugin), and the
  * WGSL branches are guarded by `tile.time > 1e9` (the real `tile.time`
  * is `secsSinceEpoch % 1_000_000` so it never crosses that threshold in
  * normal rendering — the dead-code cost is one compare per pixel).

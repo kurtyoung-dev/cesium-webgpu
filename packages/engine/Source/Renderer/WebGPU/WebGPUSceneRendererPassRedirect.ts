@@ -44,7 +44,12 @@ export interface PassRedirectHost {
   _height: number;
   // Pragma-stripped log-once guard (production builds elide the field
   // declaration AND the read/write inside this module — both sides are
-  // wrapped in `//>>includeStart('debug', pragmas.debug)`).
+  // wrapped in debug pragma blocks). NOTE: do not paste the literal
+  // pragma directive text into this comment — `stripPragmaPlugin` in
+  // `scripts/build.js` matches the regex `//>>includeStart('debug', …)`
+  // anywhere in source (it has no comment-awareness), so a mention of
+  // the directive in a string or comment becomes a fake pragma start
+  // and strips everything down to the next real `//>>includeEnd`.
   _renderPassRedirectLogged: boolean;
 }
 
