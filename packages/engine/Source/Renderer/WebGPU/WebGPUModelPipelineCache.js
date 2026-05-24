@@ -39,6 +39,10 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { getEffectsBindGroupLayout } from "./WebGPUEffectsBindGroup.js";
+// Slice 5c-B Phase 1 (Batch 114) — scene-FB target helper. Used for
+// the color + classification pipelines; pick / hover / precise-pick /
+// velocity pipelines stay single-target.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
@@ -594,12 +598,17 @@ function createPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format: presentationFormat,
-          blend,
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 114) — scene-FB color target via
+      // helper. Important: this file's `presentationFormat` parameter
+      // is actually wired to `context.scenePipelineFormat` per
+      // `maybeUpdateForSceneFormat()` at L1526 — the naming is
+      // misleading but the value is the scene FB color format. So
+      // routing through the scene-FB helper is correct.
+      // Pick (createPickPipeline*, lines 642/719/768/845), velocity
+      // (L922, rg16float), and classification (line 1017 — also
+      // scene-FB → see separate conversion in same batch) are
+      // separate builders.
+      targets: makeSceneFBTargets(presentationFormat, { blend }),
     },
     primitive: {
       topology: "triangle-list",
@@ -1014,7 +1023,9 @@ function createClassificationPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentClassificationMain",
-      targets: [{ format: presentationFormat, blend }],
+      // Slice 5c-B Phase 1 (Batch 114) — scene-FB color target via
+      // helper. Classification draws translucent overlays into scene FB.
+      targets: makeSceneFBTargets(presentationFormat, { blend }),
     },
     primitive: { topology: "triangle-list", cullMode },
     depthStencil: {
