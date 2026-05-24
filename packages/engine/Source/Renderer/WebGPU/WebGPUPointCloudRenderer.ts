@@ -22,6 +22,11 @@ import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
 import type { WebGPUPointCloudLODProcessorInstance } from "./WebGPUPointCloudLODProcessor.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import {
+  getEffectsBindGroupLayout,
+  getPlaceholderEffects,
+} from "./WebGPUEffectsBindGroup.js";
+import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -540,9 +545,16 @@ function buildPipelineDescriptor(
   const bgl = makeBindGroupLayout(device, "PointCloud BGL", [
     uniformBuffer(0, Stage.VERTEX),
   ]);
+  // FEAT-GAP-09 (Batch 102) — append the shared effects BGL at slot 1
+  // so the WGSL fog block at @group(1) resolves. Shared layout
+  // cascades through to all PointCloud variants (LOD, velocity, EDL)
+  // since they reuse this descriptor's `layout` field.
+  const effectsBGL = getEffectsBindGroupLayout(device);
   const descriptor: WebGPURenderPipelineDescriptor = {
     name: `PointCloud pipeline [${format}]`,
-    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bgl, effectsBGL],
+    }),
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
@@ -618,9 +630,14 @@ function buildVelocityPipelineDescriptor(
   shaderModule: GPUShaderModule,
   bgl: GPUBindGroupLayout,
 ): WebGPURenderPipelineDescriptor {
+  // FEAT-GAP-09 (Batch 102) — match the color pipeline's 2-BGL layout
+  // (uniforms + effects). Velocity entry doesn't sample atmosphere
+  // bindings, but the layout shape must match what the WGSL module
+  // expects, so we append the effects BGL here too.
+  const effectsBGL = getEffectsBindGroupLayout(device);
   const layout = device.createPipelineLayout({
     label: "PointCloud velocity pipeline layout",
-    bindGroupLayouts: [bgl],
+    bindGroupLayouts: [bgl, effectsBGL],
   });
   return {
     name: "PointCloud velocity pipeline",
@@ -1198,15 +1215,26 @@ function updateWebGPUPointCloud(
   if (!cache.pipeline) {
     return;
   }
+  // FEAT-GAP-09 (Batch 102) — per-frame effects BG refresh. Shared
+  // helper caches per-frame and returns the placeholder when none of
+  // (shadow, csm, atmosphereLut) is active.
+  const effectsBG =
+    getOrCreateSharedAdvancedEffectsBG(frameState) ??
+    getPlaceholderEffects(device).bindGroup;
   if (!cache.command) {
     cache.command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
-      bindGroups: [cache.bindGroup],
+      bindGroups: [cache.bindGroup, effectsBG],
       vertexBuffers: [cache.quadVertexBuffer, cache.instanceBuffer],
       vertexCount: 6,
       instanceCount: cache.instanceCount,
       pass: Pass.OPAQUE,
     });
+  } else {
+    (cache.command as { bindGroups?: GPUBindGroup[] }).bindGroups = [
+      cache.bindGroup,
+      effectsBG,
+    ];
   }
 
   // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS. Maintain a
@@ -1352,10 +1380,14 @@ function attachPointCloudVelocityCommand(
     cache.velocityPipelineEntry?.pipeline &&
     cache.prevInstanceBuffer
   ) {
+    // Velocity path uses placeholder effects BG — `vertexVelocityMain`
+    // doesn't sample atmosphere, but the pipeline layout includes the
+    // effects BGL (shared with color).
+    const velocityEffectsBG = getPlaceholderEffects(device).bindGroup;
     (cache.command as { velocityCommand?: unknown }).velocityCommand =
       new WebGPUDrawCommand({
         pipeline: cache.velocityPipelineEntry.pipeline,
-        bindGroups: [cache.bindGroup],
+        bindGroups: [cache.bindGroup, velocityEffectsBG],
         vertexBuffers: [
           cache.quadVertexBuffer,
           cache.instanceBuffer,

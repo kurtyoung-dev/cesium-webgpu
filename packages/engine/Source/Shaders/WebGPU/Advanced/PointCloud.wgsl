@@ -18,6 +18,10 @@ struct VertexOutput {
   @location(0) color: vec3<f32>,
   @location(1) pointUV: vec2<f32>,
   @location(2) normal: vec3<f32>,
+  // FEAT-GAP-09 (Batch 102) — eye-space position of the point center
+  // for the aerial-perspective fog block. Per-quad-vertex spread is
+  // tiny (~point size in pixels) relative to fog scale.
+  @location(3) eyePosition: vec3<f32>,
 };
 
 struct PointCloudUniforms {
@@ -37,6 +41,30 @@ struct PointCloudUniforms {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: PointCloudUniforms;
+
+// FEAT-GAP-09 (Batch 102) — truncated EffectsUniforms (480-byte UBO,
+// truncated to reach `atmosphereLutControl` at byte offset 240 — see
+// `WebGPUEffectsBindGroup.js`) + aerial-perspective LUT bindings at
+// @group(1). PointCloud pipelines previously had a single bind group;
+// the new effects BGL is appended in `WebGPUPointCloudRenderer.ts`
+// for all 4+ draw variants (basic, LOD, velocity, lodVelocity, EDL).
+struct EffectsUniforms {
+    shadowMatrix: mat4x4<f32>,
+    shadowMapSize: vec2<f32>,
+    shadowDarkness: f32,
+    shadowSoftShadows: f32,
+    clippingPlaneCount: u32,
+    clippingUnionMode: u32,
+    clippingEdgeWidth: f32,
+    clippingPolygonCount: u32,
+    clippingEdgeColor: vec4<f32>,
+    clipPlaneEqHW: array<vec4<f32>, 8>,
+    atmosphereLutControl: vec4<f32>,
+}
+@group(1) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(1) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(1) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(1) @binding(9) var atmosphereLutSampler: sampler;
 
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -72,6 +100,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.color = input.colorAndSize.rgb;
   output.pointUV = input.quadVertex;
   output.normal = input.normalOrAttr;
+  // FEAT-GAP-09 (Batch 102) — eye-space point-center position. Use
+  // the same `eyePos` already computed above for attenuation.
+  output.eyePosition = eyePos.xyz;
 
   return output;
 }
@@ -98,5 +129,49 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     color = color * (ambient + (1.0 - ambient) * nDotL);
   }
 
-  return vec4<f32>(color, alpha);
+  var finalColor = vec4<f32>(color, alpha);
+
+  // FEAT-GAP-09 (Batch 102) — Aerial-perspective fog blend. Mirrors
+  // `PrimitiveBasicColor.wgsl::fragmentMain`. Distant point clouds
+  // (LiDAR scans, photogrammetry assets) fade toward inscatter when
+  // atmosphere is active.
+  if (effects.atmosphereLutControl.x > 0.5) {
+    let innerRadius = effects.atmosphereLutControl.y;
+    let thickness = max(1.0, effects.atmosphereLutControl.z);
+    let cameraWC = uniforms.encodedCameraHigh + uniforms.encodedCameraLow;
+    let viewDirWS = normalize(input.eyePosition);
+    let upDir = normalize(cameraWC);
+    let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
+    let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+    let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+    let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+
+    let tSample = textureSampleLevel(
+      atmosphereTransmittanceLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let iSample = textureSampleLevel(
+      atmosphereInscatterLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let transmittance =
+      clamp((tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0);
+
+    let excessAltitude = max(0.0, cameraAltitude - thickness);
+    let orbitFalloff = exp(-excessAltitude / thickness);
+
+    let fogWeight = clamp(iSample.a, 0.0, 1.0) * orbitFalloff;
+    finalColor = vec4<f32>(
+      mix(finalColor.rgb, iSample.rgb, fogWeight),
+      finalColor.a,
+    );
+    if (effects.atmosphereLutControl.w > 0.5) {
+      finalColor = vec4<f32>(
+        finalColor.rgb * mix(1.0, transmittance, fogWeight),
+        finalColor.a,
+      );
+    }
+  }
+
+  return finalColor;
 }

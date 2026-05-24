@@ -24,6 +24,76 @@
 
 ---
 
+## Batches 100-102 — FEAT-GAP-09 Advanced shader aerial-LUT completion (2026-05-24)
+
+**Date:** 2026-05-24
+
+Three back-to-back small batches that close the deferred Advanced shader scope from Batch 99. FEAT-GAP-09 is now wired end-to-end across **every** primitive shader surface in the WebGPU renderer:
+
+- ✅ Globe terrain (`GlobeTerrain.wgsl`) — pre-existing
+- ✅ Lit material variants (`Mat*Lit`, `Phong*`, `Model*`) — Batches 91-94
+- ✅ Basic flat (`PrimitiveBasicColor`) — Batch 94
+- ✅ Lit consumers actually receive real LUT data (JS data flow) — Batch 96
+- ✅ Flat material variants + Basic textured — Batch 97
+- ✅ **VoxelPrimitive — Batch 100**
+- ✅ **GaussianSplat — Batch 101**
+- ✅ **PointCloud (default + velocity) — Batch 102**
+
+### Shared pattern across the three batches
+
+Each Advanced renderer has a similar shape: one `@group(0)` BGL carrying its uniforms (and for Voxel, the 3D texture + sampler), then 3-4 draw command variants (color, pick, velocity, sometimes LOD/OIT/depth-write). The wiring is identical across all three:
+
+1. **WGSL:** add `eyePosition: vec3<f32>` at the next free `@location` in `VertexOutput`, set it from the existing eye-space position computation in `vertexMain`, add the truncated `EffectsUniforms` struct (sized to reach `atmosphereLutControl` at byte offset 240) + bindings 0/7/8/9 at `@group(1)`, wrap the fragment's last `return` with the fog block (identical body to `PrimitiveBasicColor.wgsl::fragmentMain`).
+2. **JS pipeline layout:** append `getEffectsBindGroupLayout(device)` as a second bind group layout. Cascades through every pipeline variant that shares the layout.
+3. **JS draw command:** bind two groups instead of one. The color command uses `getOrCreateSharedAdvancedEffectsBG(frameState)` (exported from `WebGPUPrimitiveCommands.js` in Batch 100) for per-frame refresh; pick + velocity bind `getPlaceholderEffects(device).bindGroup` since their fragment entries don't sample atmosphere bindings (WGSL allows unused bindings in a pipeline layout).
+
+### Batch 100 — VoxelPrimitive
+
+Three pipeline variants (color, pick, velocity) share the same `pipelineLayout`, so appending the effects BGL cascades automatically. WGSL fog samples at the splat-volume's RTE-projected eye position — accurate enough for atmospheric attenuation on distant voxel volumes (Gaussian dust clouds, volumetric weather, etc.).
+
+Exported `_getOrCreateSharedPrimitiveEffectsBG` → `getOrCreateSharedAdvancedEffectsBG` from `WebGPUPrimitiveCommands.js` for reuse across all three Advanced renderers, avoiding three independent duplicates of the per-frame caching + (shadow, csm, LUT) toggle-hash logic.
+
+### Batch 101 — GaussianSplat
+
+Same pattern. Shared `layout` cascades through 5 pipeline variants (color, pick, velocity, OIT, depth-write). The color command's per-frame BG refresh hooks in the `else` branch (already-built command path), so subsequent frames swap `bindGroups[1]` in place without rebuilding the command.
+
+Sampling eye-position at the splat-center RTE projection is fine — per-quad-vertex spread is tiny relative to fog scale.
+
+### Batch 102 — PointCloud
+
+Touches 2 of the 4 PointCloud pipeline variants:
+
+- **Default + velocity:** wired (their pipeline layout now `[bgl, effectsBGL]`, draw commands bind 2 groups). Fog active.
+- **LOD + LOD velocity:** NOT wired. They use a separate inline WGSL (`POINT_CLOUD_LOD_WGSL`) with its own pipeline layout `[bgl, storageBGL]` (storage at slot 1, not effects). The LOD path is performance-optimization for huge point clouds where per-vertex fog cost is the wrong trade-off; if needed later, the same WGSL pattern can be added to the inline LOD shader as a separate slice.
+
+EDL (`WebGPUPointCloudEyeDomeLighting.ts`) is a post-process effect, not a per-point shader — outside FEAT-GAP-09 scope.
+
+### Verification
+
+- `npx gulp build` — clean across all three batches.
+- `probe-slice4-verify.mjs` re-run after each — AO engagement stays at ~0.7% above ~0.094% noise floor; no regressions on the existing AO/SSR path.
+
+### What's deferred
+
+- **PointCloud LOD aerial fog** — same WGSL pattern inlined into `POINT_CLOUD_LOD_WGSL`. Small follow-up; deferred to keep these three batches focused on the "full primitive shader surface" framing.
+- **Slice 5c-B (full MRT material normals)** — still the only path to a measurable Slice 4 C-vs-D signal. Multi-day arc; unchanged from Batch 99's deferral.
+
+### Files modified (Batches 100-102 combined)
+
+- `packages/engine/Source/Shaders/WebGPU/Advanced/VoxelPrimitive.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Advanced/GaussianSplat.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Advanced/PointCloud.wgsl`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js` (export rename for the shared helper)
+
+### Lesson
+
+The Batch 94 "needs JS-side pipeline-layout changes per shader" claim was BOTH wrong (about Mat shaders — Batch 97 disproved) AND right (about Advanced shaders — this batch trio confirms). The shape is the same on both sides — extend the layout + extend the draw-time bindings — but the existing Mat shader infrastructure already had the effects BGL in the layout (just not in the WGSL), whereas the Advanced renderers didn't have it at all. Treat each shader family independently when estimating scope.
+
+---
+
 ## Batch 99 — DoF Sandcastle + Slice 5c-A diagonal-augmented normal producer + Advanced shader scope (2026-05-24)
 
 **Date:** 2026-05-24
