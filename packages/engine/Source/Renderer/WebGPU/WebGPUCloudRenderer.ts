@@ -23,6 +23,8 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -564,18 +566,23 @@ function updateWebGPUCloudCollection(
       fragment: {
         module: cache.shaderModule,
         entryPoint: "fragmentMain",
-        targets: [
-          {
-            format: canvasFormat,
-            blend: {
-              color: {
-                srcFactor: "src-alpha",
-                dstFactor: "one-minus-src-alpha",
-              },
-              alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+        // Slice 5c-B Phase 1 (Batch 106) — routed through
+        // `makeSceneFBTargets` so Phase 2 picks up the 2nd null slot
+        // automatically. Verbatim blend preserves the existing
+        // descriptor shape (no `operation` field) so the pipeline-cache
+        // hash for this shader stays stable across the conversion.
+        // The velocity pipeline below (line 901) targets rg16float
+        // (TAA velocity texture), NOT scene-FB, and intentionally
+        // stays single-target.
+        targets: makeSceneFBTargets(canvasFormat, {
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one-minus-src-alpha",
             },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
           },
-        ],
+        }),
       },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: {

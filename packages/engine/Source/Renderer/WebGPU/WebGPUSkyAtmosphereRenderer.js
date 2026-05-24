@@ -14,6 +14,8 @@ import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import SkyAtmosphereWGSL from "../../Shaders/WebGPU/Environment/SkyAtmosphere.js";
+// Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
   sampler,
@@ -190,23 +192,22 @@ function createPipeline(device, shaderCode, format, depthFormat, sampleCount) {
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format: format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
+      // Slice 5c-B Phase 1 (Batch 106) — scene-FB target. Standard
+      // alpha-over blend for the sky atmosphere layer.
+      targets: makeSceneFBTargets(format, {
+        blend: {
+          color: {
+            srcFactor: "src-alpha",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+          },
+          alpha: {
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
           },
         },
-      ],
+      }),
     },
     primitive: {
       topology: "triangle-list",

@@ -18,6 +18,8 @@ import MoonShaderCode from "../../Shaders/WebGPU/Environment/Moon.js";
 import { WebGPUImageUpload } from "./WebGPUImageUpload.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+// Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -399,23 +401,22 @@ function updateWebGPUSun(sun, frameState, commandList) {
       fragment: {
         module: shaderModule,
         entryPoint: "fs",
-        targets: [
-          {
-            format,
-            blend: {
-              color: {
-                srcFactor: "src-alpha",
-                dstFactor: "one",
-                operation: "add",
-              },
-              alpha: {
-                srcFactor: "one",
-                dstFactor: "one",
-                operation: "add",
-              },
+        // Slice 5c-B Phase 1 (Batch 106) — scene-FB target. Additive
+        // blend (src.a × src + 1 × dst) for the sun/moon flare layer.
+        targets: makeSceneFBTargets(format, {
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one",
+              operation: "add",
             },
           },
-        ],
+        }),
       },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: {
@@ -569,23 +570,22 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
     fragment: {
       module: mod,
       entryPoint: "fs",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "one",
-              dstFactor: "zero",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "zero",
-              operation: "add",
-            },
+      // Slice 5c-B Phase 1 (Batch 106) — scene-FB target. Overwrite
+      // blend (1 × src + 0 × dst) for the bounding-cube ray-march pass.
+      targets: makeSceneFBTargets(format, {
+        blend: {
+          color: {
+            srcFactor: "one",
+            dstFactor: "zero",
+            operation: "add",
+          },
+          alpha: {
+            srcFactor: "one",
+            dstFactor: "zero",
+            operation: "add",
           },
         },
-      ],
+      }),
     },
     // Bounding cube — cull back faces. We render the front faces of the
     // cube and the FS ray-marches inward. If the camera enters the cube
