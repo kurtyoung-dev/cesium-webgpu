@@ -394,6 +394,9 @@ struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec3<f32>,
   @location(1) pointUV: vec2<f32>,
+  // FEAT-GAP-09 (Batch 104) — point-center RTE position for the
+  // aerial-perspective fog block.
+  @location(2) worldPos: vec3<f32>,
 };
 
 struct Uniforms {
@@ -428,6 +431,28 @@ struct Uniforms {
 // declare this binding (WGSL only requires declared bindings, the
 // BGL for both pipelines includes the slot).
 @group(1) @binding(2) var<storage, read> prevInstanceData: array<f32>;
+
+// FEAT-GAP-09 (Batch 104) — effects + aerial-LUT at @group(2) (the
+// LOD pipeline already uses @group(0) for uniforms and @group(1) for
+// storage buffers, so effects appends at slot 2). Same truncated
+// EffectsUniforms shape as the default-path POINT_CLOUD_WGSL.
+struct EffectsUniforms {
+    shadowMatrix: mat4x4<f32>,
+    shadowMapSize: vec2<f32>,
+    shadowDarkness: f32,
+    shadowSoftShadows: f32,
+    clippingPlaneCount: u32,
+    clippingUnionMode: u32,
+    clippingEdgeWidth: f32,
+    clippingPolygonCount: u32,
+    clippingEdgeColor: vec4<f32>,
+    clipPlaneEqHW: array<vec4<f32>, 8>,
+    atmosphereLutControl: vec4<f32>,
+}
+@group(2) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(2) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(2) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(2) @binding(9) var atmosphereLutSampler: sampler;
 
 @vertex
 fn vertexMainLOD(
@@ -465,6 +490,8 @@ fn vertexMainLOD(
   output.position = fp;
   output.color = color;
   output.pointUV = quadVertex;
+  // FEAT-GAP-09 (Batch 104) — point-center RTE for fog block.
+  output.worldPos = posRTE;
   return output;
 }
 
@@ -473,7 +500,46 @@ fn fragmentMainLOD(input: VertexOutput) -> @location(0) vec4<f32> {
   let dist = length(input.pointUV);
   if (dist > 1.0) { discard; }
   let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
-  return vec4<f32>(input.color, alpha);
+  var finalColor = vec4<f32>(input.color, alpha);
+
+  // FEAT-GAP-09 (Batch 104) — Aerial-perspective fog blend. Same
+  // body as the default POINT_CLOUD_WGSL::fragmentMain.
+  if (effects.atmosphereLutControl.x > 0.5) {
+    let innerRadius = effects.atmosphereLutControl.y;
+    let thickness = max(1.0, effects.atmosphereLutControl.z);
+    let cameraWC = u.encodedCameraHigh + u.encodedCameraLow;
+    let viewDirWS = normalize(input.worldPos);
+    let upDir = normalize(cameraWC);
+    let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
+    let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+    let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+    let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+    let tSample = textureSampleLevel(
+      atmosphereTransmittanceLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let iSample = textureSampleLevel(
+      atmosphereInscatterLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let transmittance =
+      clamp((tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0);
+    let excessAltitude = max(0.0, cameraAltitude - thickness);
+    let orbitFalloff = exp(-excessAltitude / thickness);
+    let fogWeight = clamp(iSample.a, 0.0, 1.0) * orbitFalloff;
+    finalColor = vec4<f32>(
+      mix(finalColor.rgb, iSample.rgb, fogWeight),
+      finalColor.a,
+    );
+    if (effects.atmosphereLutControl.w > 0.5) {
+      finalColor = vec4<f32>(
+        finalColor.rgb * mix(1.0, transmittance, fogWeight),
+        finalColor.a,
+      );
+    }
+  }
+
+  return finalColor;
 }
 
 // Batch 169 - B.10 NEW-ADVANCED-MOTION-VECTORS LOD velocity emission.
@@ -1634,6 +1700,12 @@ function _runGPULODPath(
   // Emit a drawIndirect command. The scene renderer's execute path
   // recognizes `_drawIndirectBuffer` and routes through drawIndirect
   // instead of the default instanced draw.
+  // FEAT-GAP-09 (Batch 104) — per-frame effects BG refresh for LOD
+  // color command. Same helper as the default path; cached per frame
+  // so this is cheap.
+  const lodEffectsBG =
+    getOrCreateSharedAdvancedEffectsBG(frameState) ??
+    getPlaceholderEffects(device).bindGroup;
   if (!cache.lodCommand) {
     // Don't widen to `CesiumAnyDrawCommand` before the constructor —
     // the upstream ambient types `pipeline` as optional (for WebGL's
@@ -1642,13 +1714,22 @@ function _runGPULODPath(
     // the WebGPU-shape options object directly instead.
     cache.lodCommand = new WebGPUDrawCommand({
       pipeline: cache.lodPipeline,
-      bindGroups: [cache.bindGroup, cache.lodStorageBindGroup],
+      bindGroups: [cache.bindGroup, cache.lodStorageBindGroup, lodEffectsBG],
       vertexBuffers: [cache.quadVertexBuffer],
       vertexCount: 6,
       instanceCount: 0, // filled by drawIndirect
       pass: Pass.OPAQUE,
       drawIndirectBuffer: cache.lodIndirectBuffer,
     });
+  } else {
+    // FEAT-GAP-09 (Batch 104) — per-frame effects BG refresh on
+    // cached command. Slot [2] is the LOD effects slot (after uniforms
+    // at 0 and storage at 1).
+    (cache.lodCommand as { bindGroups?: GPUBindGroup[] }).bindGroups = [
+      cache.bindGroup,
+      cache.lodStorageBindGroup,
+      lodEffectsBG,
+    ];
   }
 
   // Batch 169 - LOD-path velocity emission. Mirrors the default-path
@@ -1816,10 +1897,18 @@ function attachLODPointCloudVelocityCommand(
     cache.lodVelocityBindGroup &&
     cache.lodIndirectBuffer
   ) {
+    // FEAT-GAP-09 (Batch 104) — match the LOD color pipeline's 3-BGL
+    // layout. Velocity entry doesn't sample atmosphere; placeholder is
+    // safe — WGSL allows unused bindings.
+    const lodVelocityEffectsBG = getPlaceholderEffects(device).bindGroup;
     (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =
       new WebGPUDrawCommand({
         pipeline: cache.lodVelocityPipelineEntry.pipeline,
-        bindGroups: [cache.bindGroup, cache.lodVelocityBindGroup],
+        bindGroups: [
+          cache.bindGroup,
+          cache.lodVelocityBindGroup,
+          lodVelocityEffectsBG,
+        ],
         vertexBuffers: [cache.quadVertexBuffer],
         vertexCount: 6,
         instanceCount: 0, // filled by drawIndirect
@@ -1888,10 +1977,16 @@ function _buildLODPipelineDescriptor(
       },
     ],
   });
+  // FEAT-GAP-09 (Batch 104) — append the shared effects BGL at slot 2
+  // so the WGSL fog block at @group(2) resolves. Cascades to the LOD
+  // velocity pipeline since both reuse this descriptor's layout shape
+  // (LOD velocity adds it below independently because it builds its
+  // own pipeline layout from a different storageBGL).
+  const effectsBGL = getEffectsBindGroupLayout(device);
   const descriptor: WebGPURenderPipelineDescriptor = {
     name: `PointCloud LOD Pipeline [${format}]`,
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [bgl, storageBGL],
+      bindGroupLayouts: [bgl, storageBGL, effectsBGL],
     }),
     vertex: {
       module: shaderModule,
@@ -1979,10 +2074,15 @@ function _buildLODVelocityPipelineDescriptor(
       },
     ],
   });
+  // FEAT-GAP-09 (Batch 104) — match the LOD color pipeline shape so
+  // the LOD velocity command can share bind-group cardinality with the
+  // LOD color command if needed. Velocity entries don't sample
+  // atmosphere; placeholder effects BG is bound at draw time.
+  const effectsBGL = getEffectsBindGroupLayout(device);
   const descriptor: WebGPURenderPipelineDescriptor = {
     name: "PointCloud LOD velocity pipeline",
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [bgl, storageBGL],
+      bindGroupLayouts: [bgl, storageBGL, effectsBGL],
     }),
     vertex: {
       module: shaderModule,
