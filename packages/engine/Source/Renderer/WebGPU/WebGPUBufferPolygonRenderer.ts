@@ -31,6 +31,10 @@ import { gpuData, jsModule, numericArray } from "./webgpuTypeHelpers.js";
 import BufferPolygon from "../../Scene/BufferPolygon.js";
 import BufferPolygonMaterial from "../../Scene/BufferPolygonMaterial.js";
 import BufferPolygonMaterialWGSL from "../../Shaders/WebGPU/Collections/BufferPolygonMaterial.js";
+// Slice 5c-B Phase 1 (Batch 108) — scene-FB target helper. Used only
+// for the COLOR pipeline variant; the PICK variant stays single-target
+// because it runs in its own pick-FB render pass.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 import {
   packCameraUniforms,
@@ -96,23 +100,33 @@ function buildPolygonPipeline(
   // frame instead of overwriting it — the DP-H16 fix extended to the
   // buffer-primitive polygon path (polyline / point already had blend).
   const isPick = fragmentEntryPoint === "fragmentPickMain";
-  const colorTarget: GPUColorTargetState = isPick
-    ? { format }
-    : {
-        format,
-        blend: {
-          color: {
-            srcFactor: "src-alpha",
-            dstFactor: "one-minus-src-alpha",
-            operation: "add",
-          },
-          alpha: {
-            srcFactor: "one",
-            dstFactor: "one-minus-src-alpha",
-            operation: "add",
-          },
-        },
-      };
+  // Slice 5c-B Phase 1 (Batch 108) — split the targets array build
+  // between the pick path (runs in its own pick-FB render pass — keeps
+  // a single-target descriptor) and the color path (draws into the
+  // scene-FB render pass — routes through `makeSceneFBTargets` so
+  // Phase 2 picks up the 2nd null slot automatically).
+  //
+  // Important: pick + color both use the same `format` arg
+  // (scenePipelineFormat) because the polygon shader compiles for one
+  // format — but the pick pipeline ACTUALLY runs against the pick FB
+  // texture (rgba8unorm in `WebGPUPickFramebuffer.ts:182`). The
+  // format-mismatch question is pre-existing (predates this batch);
+  // not addressing it here to keep Phase 1 byte-equivalent.
+  const colorBlend: GPUBlendState = {
+    color: {
+      srcFactor: "src-alpha",
+      dstFactor: "one-minus-src-alpha",
+      operation: "add",
+    },
+    alpha: {
+      srcFactor: "one",
+      dstFactor: "one-minus-src-alpha",
+      operation: "add",
+    },
+  };
+  const targets: Array<GPUColorTargetState | null> = isPick
+    ? [{ format }]
+    : makeSceneFBTargets(format, { blend: colorBlend });
   return device.createRenderPipeline({
     label: `BufferPolygon pipeline (${fragmentEntryPoint})`,
     layout: device.createPipelineLayout({ bindGroupLayouts: bgls }),
@@ -141,7 +155,7 @@ function buildPolygonPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: fragmentEntryPoint,
-      targets: [colorTarget],
+      targets,
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
