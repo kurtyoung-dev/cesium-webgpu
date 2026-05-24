@@ -65,6 +65,8 @@ import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+// Slice 5c-B Phase 1 (Batch 113) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -464,23 +466,10 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     fragment: {
       module: mod,
       entryPoint: "fsMain",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 113) — scene-FB color target via
+      // helper. Pick (L509), depth-only (L527, writeMask:0), and
+      // velocity (L575, rg16float) stay single-target.
+      targets: makeSceneFBTargets(format, { translucent: true }),
     },
     // Cull FRONT — see Vector3DTileClampedPolylines.js::getRenderState
     // for the rationale (volumes are wound inside-out so the VS-driven

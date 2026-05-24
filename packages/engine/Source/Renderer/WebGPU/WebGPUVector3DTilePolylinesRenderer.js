@@ -59,6 +59,8 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// Slice 5c-B Phase 1 (Batch 113) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 163) — per-device module cache.
 const _polylineShaderCaches = new WeakMap();
@@ -368,23 +370,10 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     fragment: {
       module: mod,
       entryPoint: "fsMain",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 113) — scene-FB color target via
+      // helper. Pick (L409, [{format}]) and velocity (L435, rg16float)
+      // stay single-target.
+      targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
