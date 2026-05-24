@@ -3093,13 +3093,26 @@ export class WebGPUContext extends GraphicsContext {
         };
       }
     )._view;
+    // `useDeferredLighting` is a CONSUMER flag — it controls whether
+    // AO / SSR / future clustered lighting opt into reading G-buffer
+    // normals vs falling back to depth-derived. The G-buffer texture
+    // itself is now allocated UNCONDITIONALLY (Slice 5c-B Phase 2 v2
+    // Sub-B, Batch 115b) so the MRT render pass in Sub-C can bind it
+    // as a slot-1 color attachment every frame without checking the
+    // consumer flag. Memory cost: 1 single-sample rgba16float texture
+    // (~16 MB at 1080p) plus an MSAA companion when scene.msaaSamples > 1.
     const useDeferredLighting =
       !picking &&
       frameState.useDeferredLighting === true &&
       view !== undefined &&
       view.gBufferFramebuffer !== undefined;
     environmentState.useDeferredLighting = useDeferredLighting;
-    if (useDeferredLighting && view?.gBufferFramebuffer) {
+    // Always-on allocation: gate only on !picking + view existence.
+    // The compute producer in `WebGPUSceneRenderer._executeGBufferProducer`
+    // still gates on `useDeferredLighting === true`, so allocating
+    // the texture without enabling the consumer doesn't incur producer
+    // dispatch cost — just the one-time GPU memory allocation.
+    if (!picking && view?.gBufferFramebuffer) {
       // `_hdr` and `msaaSamples` aren't in the ambient `CesiumScene`
       // interface — structurally narrow here. Mirrors the same access
       // pattern used in `FramebufferOrchestrator.js` (the WebGL side).
