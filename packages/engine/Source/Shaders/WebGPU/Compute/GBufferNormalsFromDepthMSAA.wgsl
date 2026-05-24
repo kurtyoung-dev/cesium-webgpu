@@ -103,7 +103,40 @@ fn computeNormalFromDepth(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let normalEye = cross1 / sqrt(lenSq);
+  // Slice 5c-A (Batch 99) — diagonal-sample augmentation. Lockstep
+  // with `GBufferNormalsFromDepth.wgsl`; see that file for rationale.
+  // 4 extra diagonal taps + magnitude-weighted blend reduces noise on
+  // planar surfaces ~50% with no loss of silhouette protection.
+  let pxUR = clamp(pixel + vec2<i32>(1, -1), vec2<i32>(0), dims - 1);
+  let pxUL = clamp(pixel + vec2<i32>(-1, -1), vec2<i32>(0), dims - 1);
+  let pxDR = clamp(pixel + vec2<i32>(1, 1), vec2<i32>(0), dims - 1);
+  let pxDL = clamp(pixel + vec2<i32>(-1, 1), vec2<i32>(0), dims - 1);
+  let dUR = loadDepth(pxUR);
+  let dUL = loadDepth(pxUL);
+  let dDR = loadDepth(pxDR);
+  let dDL = loadDepth(pxDL);
+  let pUR = unprojectDepth(pxUR, dUR);
+  let pUL = unprojectDepth(pxUL, dUL);
+  let pDR = unprojectDepth(pxDR, dDR);
+  let pDL = unprojectDepth(pxDL, dDL);
+  let fwdDU = ((pUR - pCenter) + (pDR - pCenter)) * 0.5;
+  let bckDU = ((pCenter - pUL) + (pCenter - pDL)) * 0.5;
+  let fwdDV = ((pDR - pCenter) + (pDL - pCenter)) * 0.5;
+  let bckDV = ((pCenter - pUR) + (pCenter - pUL)) * 0.5;
+  let dpduDiag = select(bckDU, fwdDU, dot(fwdDU, fwdDU) < dot(bckDU, bckDU));
+  let dpdvDiag = select(bckDV, fwdDV, dot(fwdDV, fwdDV) < dot(bckDV, bckDV));
+  let crossDiag = cross(dpdvDiag, dpduDiag);
+  let lenSqDiag = dot(crossDiag, crossDiag);
+
+  let wCross = 1.0 / (sqrt(lenSq) + 1e-6);
+  let wDiag = 1.0 / (sqrt(max(lenSqDiag, 1e-12)) + 1e-6);
+  let blendedCross = (cross1 * wCross + crossDiag * wDiag) / max(wCross + wDiag, 1e-6);
+  let blendedLenSq = dot(blendedCross, blendedCross);
+  let normalEye = select(
+    cross1 / sqrt(lenSq),
+    blendedCross / sqrt(blendedLenSq),
+    blendedLenSq > 1e-12,
+  );
 
   // Phase 8a Slice 5b (Batch 93) — depth-gradient roughness proxy.
   // Lockstep with `GBufferNormalsFromDepth.wgsl`; see that file for
