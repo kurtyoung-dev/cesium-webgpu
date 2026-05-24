@@ -35,6 +35,8 @@ import {
   getPlaceholderEffects,
 } from "./WebGPUEffectsBindGroup.js";
 import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
+// Slice 5c-B Phase 1 (Batch 112) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -733,18 +735,19 @@ function updateWebGPUVoxelPrimitive(
       fragment: {
         module: shaderModule,
         entryPoint: "fragmentMain",
-        targets: [
-          {
-            format: canvasFormat,
-            blend: {
-              color: {
-                srcFactor: "src-alpha",
-                dstFactor: "one-minus-src-alpha",
-              },
-              alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+        // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
+        // helper. Pick (line ~775, manually constructed with same
+        // canvasFormat) and velocity (line ~800, rg16float) pipelines
+        // stay single-target.
+        targets: makeSceneFBTargets(canvasFormat, {
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one-minus-src-alpha",
             },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
           },
-        ],
+        }),
       },
       primitive: { topology: "triangle-list", cullMode: "front" },
       depthStencil: {

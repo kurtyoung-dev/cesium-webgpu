@@ -27,6 +27,8 @@ import {
   getPlaceholderEffects,
 } from "./WebGPUEffectsBindGroup.js";
 import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
+// Slice 5c-B Phase 1 (Batch 112) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -727,15 +729,17 @@ function buildPipelineDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format,
-          blend: {
-            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
-            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-          },
+      // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
+      // helper. Verbatim blend preserves the (no-`operation`) shape.
+      // Used for BOTH default `fragmentMain` and LOD `fragmentMainLOD`
+      // color pipelines; velocity pipelines at lines ~836 + ~2107
+      // (rg16float) stay single-target.
+      targets: makeSceneFBTargets(format, {
+        blend: {
+          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
         },
-      ],
+      }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -2008,15 +2012,17 @@ function _buildLODPipelineDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMainLOD",
-      targets: [
-        {
-          format,
-          blend: {
-            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
-            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-          },
+      // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
+      // helper. Verbatim blend preserves the (no-`operation`) shape.
+      // Used for BOTH default `fragmentMain` and LOD `fragmentMainLOD`
+      // color pipelines; velocity pipelines at lines ~836 + ~2107
+      // (rg16float) stay single-target.
+      targets: makeSceneFBTargets(format, {
+        blend: {
+          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
         },
-      ],
+      }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {

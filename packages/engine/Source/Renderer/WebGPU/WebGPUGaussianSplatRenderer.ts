@@ -36,6 +36,8 @@ import {
   getPlaceholderEffects,
 } from "./WebGPUEffectsBindGroup.js";
 import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
+// Slice 5c-B Phase 1 (Batch 112) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 interface GaussianSplatCache {
   uniformBuffer: GPUBuffer | null;
@@ -504,15 +506,19 @@ function buildSplatPipelineResources(
     fragment: {
       module: sm,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format,
-          blend: {
-            color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-          },
+      // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
+      // helper. Premultiplied alpha blend preserved verbatim.
+      // Pick pipeline derived via buildPickPipelineDescriptor below
+      // (line ~570) — flagged as Phase 2 prerequisite (.map(null)
+      // null-filter needed when MRT mode flips on). OIT pipeline at
+      // line ~548 uses WebGPUOIT.OIT_TARGETS (separate render pass
+      // for weighted-sum). Velocity at line ~1267 stays single-target.
+      targets: makeSceneFBTargets(format, {
+        blend: {
+          color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
         },
-      ],
+      }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
