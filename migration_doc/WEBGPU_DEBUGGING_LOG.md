@@ -24,6 +24,137 @@
 
 ---
 
+## Batches 105-115b + 2v2-C dry-run — Slice 5c-B "always-on G-buffer + MRT" arc (2026-05-24)
+
+**Date:** 2026-05-24
+
+Long arc towards real material normals via MRT, ending with a failed dry-run of the atomic flip. Phase 1 + 2 infrastructure committed; Phase 2 atomic activation reverted pending investigation.
+
+### Goal
+
+Replace the depth-derived G-buffer normals (Slice 5c-A's diagonal-augmented compute producer, Batch 99) with **real per-fragment material normals** written directly by the globe terrain shader via Multiple Render Targets. The architectural change: every primitive pipeline that draws into the scene framebuffer must agree with the scene-FB render pass on color-attachment count (WebGPU spec requirement). Adding G-buffer normal-roughness as slot 1 means 29 renderer files need to know about the 2-target shape.
+
+Per-user direction: surgical file-by-file conversion with deep-dive per file (no patcher). Multi-batch is OK. Result: 11 sequential Phase 1 batches + 2 Phase 2 infrastructure batches + 1 failed atomic flip = the arc described below.
+
+### Phase 1 (Batches 105-114): centralized `makeSceneFBTargets` helper + 24-file conversion
+
+**Architectural foundation (Batch 105).** New module `WebGPUSceneFBTargetHelpers.ts` introduces:
+
+- `makeSceneFBTargets(format, options)` — returns 1-target array when `_mrtMode === false` (default), `[target, null]` when on. Used by every scene-FB-targeting renderer.
+- `makeSceneFBTargetsMRT(format, options)` — always 2 targets, slot 1 = `rgba16float`. Reserved for the globe shader (only pipeline that populates slot 1).
+- `setSceneFBMrtMode(boolean)` / `isSceneFBMrtMode()` — the global toggle the Phase 2 atomic batch flips.
+
+While `_mrtMode === false` (Phase 1 default), every converted renderer is byte-identical to its pre-conversion form. The helper preserves verbatim blend descriptors via the `blend` option so pipeline-cache hashes don't shift.
+
+**Files converted (24 of 29 candidates, 10 batches):**
+
+| Batch | Files | Pattern |
+| --- | --- | --- |
+| 105 | `WebGPUPrimitiveCommands.js` (canonical) | local `makeFragmentTarget` removed |
+| 106 | Cloud + Environment + SkyAtmosphere | zero-pick, straight helper swap |
+| 107 | Label + CubeMapPanorama + Weather | zero-pick |
+| 108 | BufferPolygon | canonical pick-aware split (`isPick` gate) |
+| 109 | BufferPoint + BufferPolyline | pick-aware IIFE pattern |
+| 110 | Billboard + PointPrimitive + Polyline | separate-builder color/pick |
+| 111 | Ground{Polyline,Primitive} + Ellipsoid | pick-aware + multiple variants |
+| 112 | Voxel + GaussianSplat + PointCloud (default + LOD) | Advanced trio (FEAT-GAP-09 plumbing already in place) |
+| 113 | Vector3DTile (Polylines + ClampedPolylines + Primitive) | scene-FB color only; pick + depth-only + velocity untouched |
+| 114 | ModelPipelineCache (color + classification) | the file's `presentationFormat` parameter is actually wired to `context.scenePipelineFormat` via `maybeUpdateForSceneFormat()` at line 1526 — naming is misleading but value is correct |
+
+**Audited as no-op:** `WebGPUContext.ts` and `WebGPUModelRenderer.js` have no direct `targets: [` arrays — they only read `scenePipelineFormat` for cache-invalidation tracking. Globe family (`WebGPUGlobeSurfaceRenderer.ts` + `WebGPUGlobeSurfacePipelines.ts` + `WebGPUGlobeSurfaceWireframe.ts`) is Phase 2's target — globe gets `makeSceneFBTargetsMRT` (real slot 1), not null.
+
+**Pick-pipeline finding (Batch 108).** Pick draws run in a SEPARATE 1-attachment render pass (`WebGPUSceneRendererPickPass.ts:119-128`), NOT the scene-FB render pass. Pick pipelines must STAY single-target. Files with a shared color/pick builder need an `isPick` gate; files with separate builders only convert the color builder. Discovered + documented the pre-existing format-mismatch puzzle: pick pipelines use `scenePipelineFormat` (typically `bgra8unorm`) but pick FB is `rgba8unorm` per `WebGPUPickFramebuffer.ts:182` — works today, would fail validation strictly per spec.
+
+### Phase 2 v2 (Batches 115a + 115b): MSAA + always-allocate infrastructure
+
+**First Phase 2 attempt failed (NOT committed):** Changed G-buffer `sampleCount` to match scene MSAA. Broke the compute producer because storage_2d textures cannot be multisampled per WebGPU spec. Probe showed 96% A-vs-B regression (def=true rendered black). Reverted.
+
+**Sub-batch 2v2-A (Batch 115a).** Reconciled the MSAA-storage conflict via paired textures:
+
+- `_texture` (always allocated, single-sample): producer's storage_2d write target + consumer's sampled-2d read source + render-pass `resolveTarget` when MSAA on + direct attachment when MSAA off.
+- `_textureMSAA` (only when `numSamples > 1`): render-pass color attachment (slot 1). Auto-resolves into `_texture` at end-of-pass.
+
+New getters: `renderAttachmentView`, `resolveTargetView`, `sampleCount`. Memory cost: ~16 MB single-sample at 1080p, plus ~64 MB multisampled (x4) when MSAA on.
+
+**Sub-batch 2v2-B (Batch 115b).** Removed the `useDeferredLighting` gate on G-buffer allocation in `WebGPUContext.updateAndClearFramebuffers`. G-buffer now always allocated when `!picking && view?.gBufferFramebuffer`. Producer dispatch still gates on `useDeferredLighting === true` so no extra compute work; `useDeferredLighting` becomes a CONSUMER flag (controls whether AO/SSR read G-buffer normals vs depth-derived fallback).
+
+Both sub-batches verified as behavior-preserving no-ops via `probe-slice4-verify.mjs`.
+
+### Sub-batch 2v2-C dry-run — FAILED (NOT committed, reverted)
+
+Per user's request: "let's do the dry-run plan first" before committing the atomic activation.
+
+**The 5 simultaneous changes that needed to land together:**
+
+1. `WebGPUPickCommandHelpers.ts:307-317` — filter `null` entries before mapping color targets to pick targets.
+2. `WebGPUSceneRendererPassRedirect.ts` — push 2nd color attachment (G-buffer `renderAttachmentView` + optional `resolveTargetView` for MSAA, sentinel clear `(0,0,0,1)`) when `isSceneFBMrtMode()` returns true.
+3. `WebGPUGlobeSurfacePipelines.ts:94+` — new `makeSceneFBGlobeTargets()` helper. Production color pipeline (`fragmentMain`) emits `[scene, rgba16float-writeMask-0xf]`. Debug fragment + depth-only emit `[scene, rgba16float-writeMask-0]` (slot 1 present for attachment-count match, no writes).
+4. `GlobeTerrain.wgsl` — patched by `Tools/wire-globe-mrt-normal.mjs`: added `FragOutput` struct with `@location(0) color` + `@location(1) normalRoughness`, `makeFragOutput(color, normalEC)` helper, rewrapped all 33 returns inside `fragmentMain`.
+5. `WebGPUSceneFBTargetHelpers.ts` — flipped `let _mrtMode = false` → `let _mrtMode = true`.
+
+**Result: gulp build clean, then runtime canvas BLACK** in all 4 probe matrix cells (A=AO-off/def-off, B=AO-off/def-on, C=AO-on/def-off, D=AO-on/def-on). The canyon disappears entirely.
+
+**Suspect root causes (in order of likelihood, not yet narrowed):**
+
+1. **Pipeline cache invalidation gap.** `_scenePipelineFormatGeneration` tracks format changes but doesn't bump on `_mrtMode` flip. Cached globe pipelines built pre-flip are 1-target; the new 2-attachment render pass expects 2. Same applies to every cached Phase 1 primitive pipeline. WebGPU may silently fail (no validation error in some implementations) and produce nothing.
+2. **`null` entries in `targets:` array.** WebGPU spec permits `Array<GPUColorTargetState | null>` but driver/backend support varies. The 24 Phase 1 pipelines all emit `[target, null]` post-flip. If any one fails to materialize, every primitive draw goes silent.
+3. **`getColorAttachments(...).push(...)` mutating a frozen array.** The scene FB's `colorTarget.getColorAttachments(...)` returns a structured array — `.push()` may not work as expected. Should explicitly allocate a new array.
+4. **Pipeline layout vs target count.** `host._pipelineLayout` was built without knowledge of a 2nd target. Pipeline layout doesn't strictly need to know about targets (that's the `fragment.targets` field), but worth verifying.
+5. **Compute producer race.** With Sub-B always-allocating G-buffer + MRT writes happening in scene-FB pass + compute producer running AFTER = three writers to the same texture per frame. Compute may overwrite globe MRT or race the resolve.
+6. **MSAA resolve target shape.** Even with Sub-A's careful paired-texture design, the resolve-target binding semantics may need additional sample-count attribute on the resolve target binding.
+
+### Files committed in the arc (12 pushed commits)
+
+```
+72c60d98bc Batch 115b — WebGPUContext always-allocate G-buffer
+8422da8e69 Batch 115a — GBufferFramebuffer MSAA + resolve target
+43b301ed51 Batch 114  — Model PBR pipeline cache conversion
+0c2ab92523 Batch 113  — Vector3DTile trio
+1c4805836d Batch 112  — Advanced trio (Voxel/Splat/PointCloud)
+a550e663ae Batch 111  — Ground{Polyline,Primitive} + Ellipsoid
+7a49095961 Batch 110  — Billboard + PointPrimitive + Polyline
+0e25e77f67 Batch 109  — BufferPoint + BufferPolyline (pick-aware IIFE)
+0ef6f1cb04 Batch 108  — BufferPolygon (canonical pick-aware)
+5c046fdc7f Batch 107  — Label + CubeMapPanorama + Weather
+f5f949d839 Batch 106  — Cloud + Environment + SkyAtmosphere
+a60c81e1ca Batch 105  — Helper + PrimitiveCommands canonical conversion
+```
+
+### Path forward
+
+Sub-batch 2v2-C needs deeper investigation. Recommended next moves:
+
+1. **Add a debug probe that captures `console.error` + `device.lost` + WebGPU validation logs from the headless browser.** Current probe only reads pixel data; it can't tell us which suspect cause fires.
+2. **Re-attempt 2v2-C with the debug probe.** If pipeline cache (suspect 1) is the cause, validation logs will show "pipeline target count does not match render pass attachment count". If null-target (suspect 2), driver-specific error.
+3. **Isolate one suspect at a time.** Bump `_scenePipelineFormatGeneration` on flip → tests suspect 1. Convert `null` targets to dummy `writeMask:0` targets → tests suspect 2. Explicit array allocation in render pass setup → tests suspect 3.
+4. **Consider Plan A as the architectural alternative.** Globe runs in its own 2-attachment, single-sample render pass. Rest of scene stays in existing 1-attachment MSAA pass. Avoids touching the 24 Phase 1 pipelines entirely — they keep their 1-target shape forever.
+
+### Lesson
+
+Multi-day arcs that bundle architecture-spanning changes need a debug-probe with validation logs BEFORE the atomic flip is attempted. A dry-run that only reports "canvas is black" tells us the change is wrong but not why. The 11 Phase 1 batches landed cleanly because each was provably no-op via the `_mrtMode=false` gate; the atomic flip has no such verifiable midstate. Next attempt needs WebGPU validation log capture wired into the probe.
+
+---
+
+## Batch 104 — FEAT-GAP-09 PointCloud LOD inline shader aerial-LUT (2026-05-24)
+
+**Date:** 2026-05-24
+
+Small follow-up to Batches 100-103 closing the PointCloud LOD path. The default PointCloud shader was wired in Batch 103's audit fix; this batch extends the same aerial-LUT pattern to the inline `POINT_CLOUD_LOD_WGSL` template literal in `WebGPUPointCloudRenderer.ts:392` (lines 422-477 of the .ts file).
+
+WGSL changes mirror the default path (FragOutput-equivalent shape, eye-space position, fog block) but use `@group(2)` for effects since LOD already has uniforms at `@group(0)` and storage buffers at `@group(1)`.
+
+JS changes:
+- LOD pipeline layout extended from `[bgl, storageBGL]` to `[bgl, storageBGL, effectsBGL]`
+- LOD velocity pipeline layout similarly extended (placeholder bound at draw time; velocity entry doesn't sample atmosphere)
+- LOD color draw command: 3-BG array with per-frame effects BG refresh via `getOrCreateSharedAdvancedEffectsBG`
+- LOD velocity draw command: 3-BG with placeholder effects
+
+FEAT-GAP-09 now wired across all 4 PointCloud draw variants (default + velocity + LOD + LOD velocity), completing the PointCloud aerial-fog work.
+
+Verification: gulp build clean, probe-slice4-verify no regression.
+
+---
+
 ## Batch 103 — Audit fix: Batches 100-102 modified DEAD standalone .wgsl files; port to inline WGSL constants (2026-05-24)
 
 **Date:** 2026-05-24
