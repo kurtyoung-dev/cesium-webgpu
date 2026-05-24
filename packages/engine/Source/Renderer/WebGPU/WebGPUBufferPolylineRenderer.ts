@@ -30,6 +30,8 @@ import { gpuData, jsModule, numericArray } from "./webgpuTypeHelpers.js";
 import BufferPolyline from "../../Scene/BufferPolyline.js";
 import BufferPolylineMaterial from "../../Scene/BufferPolylineMaterial.js";
 import BufferPolylineMaterialWGSL from "../../Shaders/WebGPU/Collections/BufferPolylineMaterial.js";
+// Slice 5c-B Phase 1 (Batch 109) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 import {
   packCameraUniforms,
@@ -128,22 +130,27 @@ function buildPolylinePipeline(
         },
       ],
     },
-    fragment: {
-      module: shaderModule,
-      entryPoint: fragmentEntryPoint,
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-            },
-            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-          },
+    // Slice 5c-B Phase 1 (Batch 109) — pick path stays single-target
+    // (separate pick-FB render pass); color path routes through
+    // `makeSceneFBTargets` for the Phase 2 MRT slot.
+    fragment: (() => {
+      const blend: GPUBlendState = {
+        color: {
+          srcFactor: "src-alpha",
+          dstFactor: "one-minus-src-alpha",
         },
-      ],
-    },
+        alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+      };
+      const isPick = fragmentEntryPoint === "fragmentPickMain";
+      const targets: Array<GPUColorTargetState | null> = isPick
+        ? [{ format, blend }]
+        : makeSceneFBTargets(format, { blend });
+      return {
+        module: shaderModule,
+        entryPoint: fragmentEntryPoint,
+        targets,
+      };
+    })(),
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: "depth24plus-stencil8",

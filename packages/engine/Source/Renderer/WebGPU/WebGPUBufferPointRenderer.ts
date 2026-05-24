@@ -29,6 +29,10 @@ import { gpuData } from "./webgpuTypeHelpers.js";
 import BufferPoint from "../../Scene/BufferPoint.js";
 import BufferPointMaterial from "../../Scene/BufferPointMaterial.js";
 import BufferPointMaterialWGSL from "../../Shaders/WebGPU/Collections/BufferPointMaterial.js";
+// Slice 5c-B Phase 1 (Batch 109) — scene-FB target helper. Used only
+// for the COLOR pipeline variant; the PICK variant stays single-target
+// because it runs in its own pick-FB render pass.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 import {
   packCameraUniforms,
@@ -127,22 +131,29 @@ function buildPointPipeline(
         },
       ],
     },
-    fragment: {
-      module: shaderModule,
-      entryPoint: fragmentEntryPoint,
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-            },
-            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-          },
+    // Slice 5c-B Phase 1 (Batch 109) — split the targets array by pick
+    // vs color path. Pick pipelines run in a separate pick-FB render
+    // pass (`WebGPUSceneRendererPickPass.ts`) and must stay
+    // single-target; color pipelines route through `makeSceneFBTargets`
+    // so the Phase 2 atomic flip picks up the 2nd null slot.
+    fragment: (() => {
+      const blend: GPUBlendState = {
+        color: {
+          srcFactor: "src-alpha",
+          dstFactor: "one-minus-src-alpha",
         },
-      ],
-    },
+        alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+      };
+      const isPick = fragmentEntryPoint === "fragmentPickMain";
+      const targets: Array<GPUColorTargetState | null> = isPick
+        ? [{ format, blend }]
+        : makeSceneFBTargets(format, { blend });
+      return {
+        module: shaderModule,
+        entryPoint: fragmentEntryPoint,
+        targets,
+      };
+    })(),
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: "depth24plus-stencil8",
