@@ -98,6 +98,13 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// Slice 5c-B Phase 1 (Batch 111) — scene-FB target helper. Used only
+// for color pipelines (lines ~1232 + ~1335). Pick (`[{ format }]`),
+// depth-only (`[{ format, writeMask: 0 }]`), and velocity
+// (`[{ format: "rg16float" }]`) pipelines stay single-target — they
+// each have their own render passes that don't grow to 2 attachments
+// in Phase 2.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -1229,23 +1236,22 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     fragment: {
       module: mod,
       entryPoint: "colorFS",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
+      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
+      // helper. Premultiplied alpha blend preserved verbatim.
+      targets: makeSceneFBTargets(format, {
+        blend: {
+          color: {
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+          },
+          alpha: {
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
           },
         },
-      ],
+      }),
     },
     // FS reconstructs eye-space from sampled depth; rasterization side
     // is just a coverage volume. Match GroundPrimitive renderer's
@@ -1332,23 +1338,22 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     fragment: {
       module: mod,
       entryPoint: "colorFSMorph",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
+      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
+      // helper. Premultiplied alpha blend preserved verbatim.
+      targets: makeSceneFBTargets(format, {
+        blend: {
+          color: {
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+          },
+          alpha: {
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
           },
         },
-      ],
+      }),
     },
     primitive: { topology: "triangle-list", cullMode: "front" },
     depthStencil: {

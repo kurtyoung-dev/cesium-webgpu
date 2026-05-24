@@ -20,6 +20,8 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+// Slice 5c-B Phase 1 (Batch 111) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -298,15 +300,20 @@ function buildEllipsoidPipelineResources(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format: canvasFormat,
-          blend: {
-            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
-            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-          },
+      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
+      // helper. Pick pipeline is derived later via
+      // `buildPickPipelineDescriptor` which calls
+      // `colorFragment.targets.map(...)` — that pattern will need a
+      // null-filter in Phase 2 once `mrtMode` flips on (color targets
+      // become [target, null] and pick FB has only 1 attachment).
+      // Today (mrtMode=off) the helper returns a 1-element array so
+      // the existing pick derivation works unchanged.
+      targets: makeSceneFBTargets(canvasFormat, {
+        blend: {
+          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
         },
-      ],
+      }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {

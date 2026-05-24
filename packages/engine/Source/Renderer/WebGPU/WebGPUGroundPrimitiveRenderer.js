@@ -42,6 +42,11 @@ import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+// Slice 5c-B Phase 1 (Batch 111) — scene-FB target helper. Used only
+// for color pipelines. Pick (`[{ format }]`), depth-only
+// (`[{ format, writeMask: 0 }]`), and velocity (`[{ format: "rg16float" }]`)
+// pipelines stay single-target.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -386,23 +391,10 @@ struct VelocityCO {
     fragment: {
       module: mod,
       entryPoint: "dsColorFS",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
+      // helper. Standard alpha-over blend → `translucent: true`
+      // shorthand.
+      targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -483,23 +475,10 @@ struct VelocityCO {
     fragment: {
       module: mod,
       entryPoint: "dsColorFS",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
+      // helper. Standard alpha-over blend → `translucent: true`
+      // shorthand.
+      targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
