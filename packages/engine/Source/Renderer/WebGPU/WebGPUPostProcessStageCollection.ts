@@ -119,6 +119,55 @@ function getDefaultCache(): PostProcessCache {
 }
 
 /**
+ * Batch 98 — locate the upstream DoF composite stage by name. The
+ * fork's `cache.depthOfFieldEnabled = collection._depthOfField?.enabled`
+ * read was always false because the upstream `PostProcessStageCollection`
+ * never exposed a `_depthOfField` slot — DoF is only available via
+ * `scene.postProcessStages.add(PostProcessStageLibrary.createDepthOfFieldStage())`.
+ * That helper returns a `PostProcessStageComposite` with the well-known
+ * name `czm_depth_of_field` whose own `enabled` flag controls visibility.
+ *
+ * Returns the composite stage if present, otherwise `null`. The caller
+ * uses this to drive `cache.depthOfFieldEnabled` (no separate slot
+ * needed) and to source the DoF uniforms during lazy init.
+ */
+function findDepthOfFieldStage(collection: unknown): {
+  enabled: boolean;
+  uniforms: {
+    focalDistance?: number;
+    delta?: number;
+    sigma?: number;
+    stepSize?: number;
+  };
+} | null {
+  const stages = (
+    collection as {
+      _stages?: Array<{
+        name?: string;
+        enabled?: boolean;
+        uniforms?: Record<string, unknown>;
+      }>;
+    }
+  )._stages;
+  if (!Array.isArray(stages)) return null;
+  for (const s of stages) {
+    if (!s) continue;
+    if (s.name === "czm_depth_of_field") {
+      return {
+        enabled: !!s.enabled,
+        uniforms: (s.uniforms ?? {}) as {
+          focalDistance?: number;
+          delta?: number;
+          sigma?: number;
+          stepSize?: number;
+        },
+      };
+    }
+  }
+  return null;
+}
+
+/**
  * Map CesiumJS Tonemapper enum to our WebGPU tonemapping mode.
  * CesiumJS: REINHARD=0, MODIFIED_REINHARD=1, FILMIC=2, ACES=3, PBR_NEUTRAL=4
  */
@@ -163,7 +212,10 @@ function updateWebGPUPostProcessStages(
   cache.tonemapMode = mapTonemapType(collection);
   cache.bloomEnabled = collection.bloom?.enabled ?? false;
   cache.ambientOcclusionEnabled = collection.ambientOcclusion?.enabled ?? false;
-  cache.depthOfFieldEnabled = collection._depthOfField?.enabled ?? false;
+  // Batch 98 — upstream DoF lives in `collection._stages`, not on a
+  // dedicated slot. Walk the list for the well-known composite.
+  const dofStage = findDepthOfFieldStage(collection);
+  cache.depthOfFieldEnabled = dofStage?.enabled ?? false;
 
   // Cache bloom/AO uniform values for runtime update
   if (cache.bloomEnabled) {
@@ -313,8 +365,11 @@ function configureWebGPUPostProcessPipeline(
   pipeline.setStageEnabled("AmbientOcclusion", cache.ambientOcclusionEnabled);
 
   // --- Depth of Field: lazily initialize on first enable ---
+  // Batch 98 — uniforms now come from the upstream DoF composite stage
+  // located by `findDepthOfFieldStage`, not the never-existed
+  // `collection._depthOfField` slot.
   if (cache.depthOfFieldEnabled && !cache.dofInitialized) {
-    const dof = collection._depthOfField;
+    const dof = findDepthOfFieldStage(collection);
     pipeline.addDepthOfField(device, canvasFormat, {
       focalDistance: numU(dof?.uniforms?.focalDistance, 50.0),
       focalRange: numU(dof?.uniforms?.delta, 20.0),
@@ -346,6 +401,18 @@ function configureWebGPUPostProcessPipeline(
         | null
         | undefined;
       if (!stage) continue;
+      // Batch 98 — skip the upstream DoF composite; it's intercepted
+      // and routed through `pipeline.addDepthOfField` above. Counting
+      // it as a GLSL-only stage would fire a misleading warning and
+      // suggest the user supply a WGSL shader for an effect we
+      // already handle natively.
+      if (
+        stage.name === "czm_depth_of_field" ||
+        stage.name === "czm_depth_of_field_blur" ||
+        stage.name === "czm_depth_of_field_composite"
+      ) {
+        continue;
+      }
       const wgsl = stage.uniforms?.wgslFragmentShader;
       if (typeof wgsl === "string" && wgsl.length > 0) {
         const u = stage.uniforms as Record<string, unknown>;

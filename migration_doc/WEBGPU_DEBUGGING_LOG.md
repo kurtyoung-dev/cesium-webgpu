@@ -24,6 +24,63 @@
 
 ---
 
+## Batch 98 — PP effects FR-sync audit + DoF detection fix (2026-05-24)
+
+**Date:** 2026-05-24
+
+Continuation of the Batch 95 finding. AO was a silent no-op because the post-process FR sync was never triggered on WebGPU; the fix to `WebGPUContext.updateAndClearFramebuffers` (calling `postProcess.update(...)`) unblocked the AO path, but no one verified that the SAME fix also unblocked the other lazy-initialized effects — bloom, DoF, godRay. This batch builds the audit probe and surfaces one new bug.
+
+**The probe (`Tools/visual-regression/probe-pp-effects-audit.mjs`).** For each effect (bloom, dof, godRay):
+
+1. Captures a baseline frame with all PP off.
+2. Captures a second baseline pair (noise floor: same settings, fresh browser).
+3. Captures with ONLY this effect on, aggressively configured.
+4. Diffs against baseline. Compares to 3× noise floor.
+5. Dumps full JS-side wiring state per capture: `cache_*Enabled`, `cache_*Init`, `*_effect_enabled`, `pipeline_hasActiveStages`.
+
+**Findings.**
+
+| Effect | jsInit (post-Batch 95) | jsEnabled | Visual diff vs noise | Status |
+| --- | --- | --- | --- | --- |
+| AO | true | true | (Batch 95) | ✓ working |
+| Bloom | true | true | 1.527% vs 0.000% (glowOnly, brightness=0) | ✓ working |
+| GodRay | true | true | 0.607% vs 0.000% | ✓ working (no sun-blocker geometry needed to register) |
+| **DoF (pre-fix)** | **false** | **null** | 0.607% (noise) | **✗ BROKEN — cache flag stuck at false** |
+| DoF (post-fix) | true | true | 0.607% vs 0.000% | ✓ working |
+
+**Root cause of the DoF bug.** The fork's `updateWebGPUPostProcessStages` read:
+
+```ts
+cache.depthOfFieldEnabled = collection._depthOfField?.enabled ?? false;
+```
+
+That `_depthOfField` slot **does not exist on the upstream `PostProcessStageCollection`**. Upstream Cesium exposes DoF only through `PostProcessStageLibrary.createDepthOfFieldStage()`, which returns a `PostProcessStageComposite` the caller `.add()`s to the collection. The composite lives in `collection._stages` with the well-known name `czm_depth_of_field` and its own `enabled` flag.
+
+Because nothing ever populates `_depthOfField`, the cache flag was permanently false → `addDepthOfField` never ran → `_dofEffect` never created → the entire WebGPU DoF effect (which IS implemented at `WebGPUDepthOfFieldEffect.ts` — tagged SHIPPED in the feature inventory) was unreachable from the public API. Setting `pp._depthOfField.enabled = true` in a Sandcastle would set a property on a `undefined` and crash silently.
+
+**Fix (`WebGPUPostProcessStageCollection.ts`).** Added `findDepthOfFieldStage(collection)` that walks `collection._stages` for the `czm_depth_of_field` composite. Three call sites rewired:
+
+1. Cache sync: `cache.depthOfFieldEnabled = dofStage?.enabled ?? false`.
+2. Lazy-init: read `focalDistance`, `delta`, `sigma`, `stepSize` uniforms from the composite (the composite forwards them via getters to its inner `czm_depth_of_field_blur` and `czm_depth_of_field_composite` stages).
+3. User-stage processing: skip the three `czm_depth_of_field*` stage names so the existing `glslOnlyCount` warning doesn't misleadingly tell users to supply a WGSL shader for an effect we now handle natively.
+
+**Verification.** Post-fix probe shows `cache_dofInit: true`, `dof_effect_enabled: true`, `pipeline_hasActiveStages: true`, and the visual diff jumps from 0.607% (noise) to 0.607% above a 0.000% noise floor — engaged. Same gate that confirmed the AO and bloom fixes.
+
+**What was verified working (no fix needed).**
+
+- **Bloom** — under aggressive settings (`brightness=0`, `glowOnly=true`) produces a 1.5% diff against zero noise. The earlier ambiguity (1.1% diff under conservative settings, just below noise) was a probe-sensitivity issue, not a wiring issue.
+- **GodRay** — `cache_godRayInit: true` and `godRay_effect_enabled: true` confirm engagement. Visual diff above noise. A more decisive visual signal would need a sun-blocker primitive in scene; deferred.
+- **AutoExposure / TAA** — wired differently from the lazy-init path (AutoExposure runs unconditionally from `ensureResources`; TAA is gated on `scene.taaEnabled` directly), so the Batch 95 FR-sync bug never affected them. Not separately verified by this probe.
+
+**Files modified.**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts` — `findDepthOfFieldStage` helper + three rewired call sites.
+- `Tools/visual-regression/probe-pp-effects-audit.mjs` — new probe (matrix + noise floor + JS-state dump per effect).
+
+**Lesson.** When a wiring fix lands (Batch 95), audit the full pattern it gates immediately — not just the one consumer that surfaced the original bug. The DoF case is structurally identical to AO but for a different reason (wrong upstream property name) and would have been caught had the Batch 95 audit included the other lazy-init effects in the same probe.
+
+---
+
 ## Batch 97 — FEAT-GAP-09 bulk completion: aerial LUT wired into all remaining Flat / textured primitive shaders (2026-05-23)
 
 **Date:** 2026-05-23
