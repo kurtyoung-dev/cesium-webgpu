@@ -38,6 +38,8 @@ import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+// Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -717,23 +719,10 @@ function buildPolylineColorDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 110) — scene-FB color target via
+      // helper. Standard alpha-over blend matches the helper's
+      // `translucent: true` shorthand exactly.
+      targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {

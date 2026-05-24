@@ -30,6 +30,9 @@ import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+// Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper. Used only
+// for the COLOR pipeline; pick + velocity stay single-target.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -491,23 +494,11 @@ function buildBillboardDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 110) — scene-FB color target via
+      // helper. The velocity (rg16float, line 573) and pick (line 611)
+      // pipelines are SEPARATE builders with their own render passes;
+      // they intentionally stay single-target.
+      targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {

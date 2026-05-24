@@ -35,6 +35,8 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+// Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
@@ -411,12 +413,10 @@ function buildPointColorDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format: format,
-          blend: blendState,
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 110) — scene-FB color target via
+      // helper. `blendState` is passed through verbatim (it's caller-
+      // provided so preserving the exact reference matters for cache).
+      targets: makeSceneFBTargets(format, { blend: blendState }),
     },
     primitive: {
       topology: "triangle-list",
