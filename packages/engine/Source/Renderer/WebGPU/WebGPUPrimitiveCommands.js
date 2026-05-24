@@ -2665,4 +2665,10 @@ export {
   updateWebGPUCommandUniforms,
   updateWebGPUMaterialCommandUniforms,
   updateWebGPUPickCommandUniforms,
+  // FEAT-GAP-09 (Batch 100) — exported so Advanced renderers (Voxel,
+  // GaussianSplat, PointCloud) can reuse the per-frame effects-BG
+  // resolver. Keeps the (shadow, csm, atmosphereLut) toggle hash +
+  // placeholder fallback logic centralized — no point in duplicating
+  // it once per Advanced shader renderer.
+  _getOrCreateSharedPrimitiveEffectsBG as getOrCreateSharedAdvancedEffectsBG,
 };

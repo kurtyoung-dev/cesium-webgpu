@@ -30,6 +30,11 @@ import {
 } from "./WebGPUPickCommandHelpers.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import {
+  getEffectsBindGroupLayout,
+  getPlaceholderEffects,
+} from "./WebGPUEffectsBindGroup.js";
+import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -614,8 +619,15 @@ function updateWebGPUVoxelPrimitive(
       sampler(2, Stage.FRAGMENT),
     ]);
 
+    // FEAT-GAP-09 (Batch 100) — append the shared effects bind group
+    // layout so the WGSL fog block at `@group(1)` resolves to the same
+    // 480-byte UBO + aerial-LUT textures the globe and Mat shaders use.
+    // The pipeline cache keys on the descriptor, so adding the BGL is
+    // safe — a fresh pipeline will be built once and reused.
+    const effectsBGL = getEffectsBindGroupLayout(device);
+
     const pipelineLayout = device.createPipelineLayout({
-      bindGroupLayouts: [bgl],
+      bindGroupLayouts: [bgl, effectsBGL],
     });
 
     // Shared vertex stage — color + pick run identical vertex work
@@ -885,15 +897,29 @@ function updateWebGPUVoxelPrimitive(
   Matrix4.pack(modelMatrix, data, 56);
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
+  // FEAT-GAP-09 (Batch 100) — per-frame effects BG refresh. The
+  // shared helper caches per frame and returns the placeholder when
+  // none of (shadow, csm, atmosphereLut) is active, so this is cheap
+  // and idempotent. We swap slot [1] of the cached command's bind
+  // groups so a single command instance survives multi-frame use.
+  const effectsBG =
+    getOrCreateSharedAdvancedEffectsBG(frameState) ??
+    getPlaceholderEffects(device).bindGroup;
+
   if (!cache.command) {
     cache.command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
-      bindGroups: [cache.bindGroup],
+      bindGroups: [cache.bindGroup, effectsBG],
       vertexBuffers: [cache.vertexBuffer],
       indexBuffer: cache.indexBuffer,
       indexCount: 36,
       pass: Pass.VOXELS,
     });
+  } else {
+    (cache.command as { bindGroups?: GPUBindGroup[] }).bindGroups = [
+      cache.bindGroup,
+      effectsBG,
+    ];
   }
 
   // Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS attach. Voxel
@@ -911,10 +937,16 @@ function updateWebGPUVoxelPrimitive(
   // pick passes; H-R3 (Batch 35) already added Pass.VOXELS to the pick
   // walk, so the command is reachable.
   if (pickColor) {
+    // Pick path uses the placeholder effects BG — the pick fragment
+    // entry doesn't reference `effects` / `atmosphere*`, but the
+    // pipeline layout now includes the effects BGL (shared layout
+    // with color + velocity), so we MUST bind something at slot 1.
+    // Placeholder is safe — WGSL allows unused bindings.
+    const pickEffectsBG = getPlaceholderEffects(device).bindGroup;
     if (!cache.pickCommand) {
       cache.pickCommand = new WebGPUDrawCommand({
         pipeline: cache.pickPipeline!,
-        bindGroups: [cache.bindGroup],
+        bindGroups: [cache.bindGroup, pickEffectsBG],
         vertexBuffers: [cache.vertexBuffer],
         indexBuffer: cache.indexBuffer,
         indexCount: 36,
@@ -997,10 +1029,14 @@ function attachVoxelVelocityCommand(
   }
 
   if (cache.velocityPipeline && cache.vertexBuffer && cache.indexBuffer) {
+    // Velocity path shares the color pipeline layout (effectsBGL at
+    // slot 1); placeholder BG is safe — `fragmentVelocityMain`
+    // doesn't sample atmosphere bindings.
+    const velocityEffectsBG = getPlaceholderEffects(device).bindGroup;
     (cache.command as { velocityCommand?: unknown }).velocityCommand =
       new WebGPUDrawCommand({
         pipeline: cache.velocityPipeline,
-        bindGroups: [cache.bindGroup],
+        bindGroups: [cache.bindGroup, velocityEffectsBG],
         vertexBuffers: [cache.vertexBuffer],
         indexBuffer: cache.indexBuffer,
         indexCount: 36,

@@ -12,6 +12,12 @@ struct VertexOutput {
   @location(0) worldRayOrigin: vec3<f32>,
   @location(1) worldRayDir: vec3<f32>,
   @location(2) localPos: vec3<f32>,
+  // FEAT-GAP-09 (Batch 100) — eye-space position for the aerial-
+  // perspective fog block. For ray-marched voxels we sample fog at
+  // the eye-space hit point (i.e., the surface the ray-marched
+  // accumulation effectively resolves to), approximated by the
+  // RTE-projected eye position of the back face.
+  @location(3) eyePosition: vec3<f32>,
 };
 
 struct VoxelUniforms {
@@ -36,6 +42,29 @@ struct VoxelUniforms {
 @group(0) @binding(1) var voxelTexture: texture_3d<f32>;
 @group(0) @binding(2) var voxelSampler: sampler;
 
+// FEAT-GAP-09 (Batch 100) — truncated EffectsUniforms (480-byte UBO,
+// truncated to reach `atmosphereLutControl` at byte offset 240 — see
+// `WebGPUEffectsBindGroup.js`) + aerial-perspective LUT bindings at
+// @group(1). Voxel pipelines previously had a single bind group; the
+// new effects BGL is appended in `WebGPUVoxelRenderer.ts`.
+struct EffectsUniforms {
+    shadowMatrix: mat4x4<f32>,
+    shadowMapSize: vec2<f32>,
+    shadowDarkness: f32,
+    shadowSoftShadows: f32,
+    clippingPlaneCount: u32,
+    clippingUnionMode: u32,
+    clippingEdgeWidth: f32,
+    clippingPolygonCount: u32,
+    clippingEdgeColor: vec4<f32>,
+    clipPlaneEqHW: array<vec4<f32>, 8>,
+    atmosphereLutControl: vec4<f32>,
+}
+@group(1) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(1) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(1) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(1) @binding(9) var atmosphereLutSampler: sampler;
+
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
@@ -51,6 +80,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.worldRayOrigin = uniforms.cameraPositionEC;
   output.worldRayDir = normalize(eyePos.xyz - uniforms.cameraPositionEC);
   output.localPos = posRTE;
+  // FEAT-GAP-09 (Batch 100) — eye-space position for fog block. The
+  // RTE-position dotted with the camera direction approximates the
+  // distance from camera that the fragment shader will use for fog
+  // depth attenuation. Same convention as Flat/Lit Mat shaders.
+  output.eyePosition = eyePos.xyz;
 
   return output;
 }
@@ -125,5 +159,51 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     discard;
   }
 
-  return vec4<f32>(accumColor, accumAlpha);
+  var finalColor = vec4<f32>(accumColor, accumAlpha);
+
+  // FEAT-GAP-09 (Batch 100) — Aerial-perspective fog blend. Mirrors
+  // `PrimitiveBasicColor.wgsl::fragmentMain`. Voxel-volume samples
+  // have a true "surface" only at the ray-march accumulation point,
+  // but blending the LUT-sampled fog against the accumulated color
+  // gives a plausible atmospheric falloff for distant voxel volumes
+  // (Gaussian dust clouds, volumetric weather, etc.).
+  if (effects.atmosphereLutControl.x > 0.5) {
+    let innerRadius = effects.atmosphereLutControl.y;
+    let thickness = max(1.0, effects.atmosphereLutControl.z);
+    let cameraWC = uniforms.encodedCameraHigh + uniforms.encodedCameraLow;
+    let viewDirWS = normalize(input.eyePosition);
+    let upDir = normalize(cameraWC);
+    let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
+    let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+    let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+    let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+
+    let tSample = textureSampleLevel(
+      atmosphereTransmittanceLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let iSample = textureSampleLevel(
+      atmosphereInscatterLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let transmittance =
+      clamp((tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0);
+
+    let excessAltitude = max(0.0, cameraAltitude - thickness);
+    let orbitFalloff = exp(-excessAltitude / thickness);
+
+    let fogWeight = clamp(iSample.a, 0.0, 1.0) * orbitFalloff;
+    finalColor = vec4<f32>(
+      mix(finalColor.rgb, iSample.rgb, fogWeight),
+      finalColor.a,
+    );
+    if (effects.atmosphereLutControl.w > 0.5) {
+      finalColor = vec4<f32>(
+        finalColor.rgb * mix(1.0, transmittance, fogWeight),
+        finalColor.a,
+      );
+    }
+  }
+
+  return finalColor;
 }
