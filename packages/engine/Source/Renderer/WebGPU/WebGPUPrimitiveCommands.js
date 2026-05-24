@@ -55,6 +55,16 @@ import {
   getPlaceholderEffects,
   createEffectsBindGroup,
 } from "./WebGPUEffectsBindGroup.js";
+// Slice 5c-B Phase 1 (Batch 105) — centralized scene-FB fragment-target
+// builder. Returns a 1-target array today (mrtMode default off); when
+// the Phase 2 atomic batch flips `setSceneFBMrtMode(true)`, every
+// pipeline that uses this helper automatically produces 2-target
+// arrays without per-renderer edits. The local `makeFragmentTarget`
+// below is kept as a thin wrapper around `_buildSlot0`-equivalent
+// behavior so the existing call sites can route through the helper
+// without descriptor-shape drift (and so the pipeline cache hashes
+// stay stable across the conversion).
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 // =========================================================================
 // Scratch variables for per-frame uniform updates (avoid per-frame allocations)
@@ -382,37 +392,11 @@ function ensureUncompressedAttributes(geometry) {
 // Pipeline color-target builder — opaque vs translucent blend state
 // =========================================================================
 
-/**
- * Builds a GPUColorTargetState descriptor for a render pipeline.
- * Translucent primitives get standard pre-multiplied alpha blending
- * (src = src.a, dst = 1 - src.a). Opaque primitives get no blend state
- * so the fragment overwrites the destination.
- *
- * @param {GPUTextureFormat} format
- * @param {boolean} translucent
- * @returns {GPUColorTargetState}
- * @private
- */
-function makeFragmentTarget(format, translucent) {
-  if (!translucent) {
-    return { format: format };
-  }
-  return {
-    format: format,
-    blend: {
-      color: {
-        srcFactor: "src-alpha",
-        dstFactor: "one-minus-src-alpha",
-        operation: "add",
-      },
-      alpha: {
-        srcFactor: "one",
-        dstFactor: "one-minus-src-alpha",
-        operation: "add",
-      },
-    },
-  };
-}
+// `makeFragmentTarget` helper removed in Batch 105 (Slice 5c-B Phase 1).
+// All call sites now route through `makeSceneFBTargets` from
+// `WebGPUSceneFBTargetHelpers.js` so the Phase 2 atomic batch can flip
+// the global MRT mode and every scene-FB pipeline picks up the 2nd
+// (null) target slot without per-file edits.
 
 // =========================================================================
 // Shared Position Extraction — RTE (positionHigh + positionLow)
@@ -1167,7 +1151,7 @@ function createWebGPUCommands(
         fragment: {
           module: cache.shaderModule.module,
           entryPoint: "fragmentMain",
-          targets: [makeFragmentTarget(canvasFormat, translucent)],
+          targets: makeSceneFBTargets(canvasFormat, { translucent }),
         },
         primitive: {
           topology: primitiveTopology,
@@ -2048,7 +2032,7 @@ function createMaterialPipelineAndCache(
     fragment: {
       module: cache.shaderModule.module,
       entryPoint: "fragmentMain",
-      targets: [makeFragmentTarget(canvasFormat, translucent)],
+      targets: makeSceneFBTargets(canvasFormat, { translucent }),
     },
     primitive: {
       topology,
