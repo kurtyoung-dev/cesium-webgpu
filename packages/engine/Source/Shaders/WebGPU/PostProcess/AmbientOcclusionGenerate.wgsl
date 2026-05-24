@@ -48,7 +48,14 @@ struct SSAOUniforms {
 // Reconstructs inverse projection from viewport to simplified reconstruction
 // For WebGPU, we pass frustum params directly
 fn readDepth(uv: vec2<f32>) -> f32 {
-  let raw = textureSample(depthTexture, texSampler, uv).r;
+  // `textureSampleLevel`: this function is called from the SSAO sample
+  // loop which is inside non-uniform control flow (loop bounds, sky
+  // early-exit). `textureSample` requires uniform control flow because
+  // it computes implicit derivatives across the fragment quad. Explicit
+  // level 0 avoids the derivative requirement and validates from any
+  // call site. The depth texture has a single mip; this is byte-
+  // equivalent to the implicit-LOD form.
+  let raw = textureSampleLevel(depthTexture, texSampler, uv, 0.0).r;
   // Linearize depth from [0,1] to eye-space Z
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
@@ -138,9 +145,17 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(1.0);
   }
 
-  // Fetch random rotation from tiled random texture
+  // Fetch random rotation from tiled random texture.
+  //
+  // `textureSampleLevel` (not `textureSample`): WGSL forbids `textureSample`
+  // from non-uniform control flow because it computes derivatives across
+  // the fragment quad. The sky-pixel early-exit above is non-uniform, so
+  // the validator rejects the implicit-LOD form. The random rotation
+  // texture has a single mip and we don't need derivatives — explicit
+  // level 0 is byte-equivalent and validates from any control-flow state.
   let randomUV = fract(screenCoord / randomTexSize);
-  let randomVal = textureSample(randomTexture, texSampler, randomUV).xy;
+  let randomVal =
+    textureSampleLevel(randomTexture, texSampler, randomUV, 0.0).xy;
 
   var ao = 0.0;
   let stepLen = lengthCap / f32(stepCount);
