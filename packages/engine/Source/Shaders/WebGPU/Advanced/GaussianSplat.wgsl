@@ -19,6 +19,12 @@ struct VertexOutput {
   @location(0) color: vec4<f32>,
   @location(1) conic: vec3<f32>,      // 2D conic section (inverse 2D covariance)
   @location(2) centerOffset: vec2<f32>,
+  // FEAT-GAP-09 (Batch 101) — eye-space position of the splat center
+  // for the aerial-perspective fog block. Sampled at the splat's
+  // RTE-projected center; the per-quad-vertex spread doesn't shift
+  // it enough to matter for atmospheric falloff (the splat is small
+  // relative to fog scale).
+  @location(3) eyePosition: vec3<f32>,
 };
 
 struct SplatUniforms {
@@ -34,6 +40,30 @@ struct SplatUniforms {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: SplatUniforms;
+
+// FEAT-GAP-09 (Batch 101) — truncated EffectsUniforms (480-byte UBO,
+// truncated to reach `atmosphereLutControl` at byte offset 240 — see
+// `WebGPUEffectsBindGroup.js`) + aerial-perspective LUT bindings at
+// @group(1). GaussianSplat pipelines previously had a single bind
+// group; the new effects BGL is appended in
+// `WebGPUGaussianSplatRenderer.ts`.
+struct EffectsUniforms {
+    shadowMatrix: mat4x4<f32>,
+    shadowMapSize: vec2<f32>,
+    shadowDarkness: f32,
+    shadowSoftShadows: f32,
+    clippingPlaneCount: u32,
+    clippingUnionMode: u32,
+    clippingEdgeWidth: f32,
+    clippingPolygonCount: u32,
+    clippingEdgeColor: vec4<f32>,
+    clipPlaneEqHW: array<vec4<f32>, 8>,
+    atmosphereLutControl: vec4<f32>,
+}
+@group(1) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(1) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(1) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(1) @binding(9) var atmosphereLutSampler: sampler;
 
 // Compute 2D covariance from 3D covariance + view transform
 fn computeCov2D(
@@ -102,6 +132,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.color = vec4<f32>(0.0);
     output.conic = vec3<f32>(0.0);
     output.centerOffset = vec2<f32>(0.0);
+    output.eyePosition = vec3<f32>(0.0);
     return output;
   }
 
@@ -124,6 +155,12 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.color = input.colorAndAlpha;
   output.conic = conic;
   output.centerOffset = pixelOffset;
+  // FEAT-GAP-09 (Batch 101) — eye-space center for the fog block.
+  // Per-quad-vertex spread is tiny relative to fog scale; using the
+  // splat-center eye position is accurate enough for atmospheric
+  // attenuation.
+  let eyePos = uniforms.modelViewRelativeToEye * vec4<f32>(posRTE, 1.0);
+  output.eyePosition = eyePos.xyz;
 
   return output;
 }
@@ -145,5 +182,49 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     discard;
   }
 
-  return vec4<f32>(input.color.rgb * alpha, alpha);
+  var finalColor = vec4<f32>(input.color.rgb * alpha, alpha);
+
+  // FEAT-GAP-09 (Batch 101) — Aerial-perspective fog blend. Mirrors
+  // `PrimitiveBasicColor.wgsl::fragmentMain`. Distant splat clusters
+  // (urban scans, satellite photogrammetry) will fade toward the
+  // inscatter color when atmosphere is active.
+  if (effects.atmosphereLutControl.x > 0.5) {
+    let innerRadius = effects.atmosphereLutControl.y;
+    let thickness = max(1.0, effects.atmosphereLutControl.z);
+    let cameraWC = uniforms.encodedCameraHigh + uniforms.encodedCameraLow;
+    let viewDirWS = normalize(input.eyePosition);
+    let upDir = normalize(cameraWC);
+    let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
+    let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+    let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+    let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+
+    let tSample = textureSampleLevel(
+      atmosphereTransmittanceLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let iSample = textureSampleLevel(
+      atmosphereInscatterLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let transmittance =
+      clamp((tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0);
+
+    let excessAltitude = max(0.0, cameraAltitude - thickness);
+    let orbitFalloff = exp(-excessAltitude / thickness);
+
+    let fogWeight = clamp(iSample.a, 0.0, 1.0) * orbitFalloff;
+    finalColor = vec4<f32>(
+      mix(finalColor.rgb, iSample.rgb, fogWeight),
+      finalColor.a,
+    );
+    if (effects.atmosphereLutControl.w > 0.5) {
+      finalColor = vec4<f32>(
+        finalColor.rgb * mix(1.0, transmittance, fogWeight),
+        finalColor.a,
+      );
+    }
+  }
+
+  return finalColor;
 }

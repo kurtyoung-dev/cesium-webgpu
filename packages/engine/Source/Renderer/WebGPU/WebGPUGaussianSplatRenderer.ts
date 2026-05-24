@@ -31,6 +31,11 @@ import {
   ensurePickId,
   type SinglePickIdCache,
 } from "./WebGPUPickCommandHelpers.js";
+import {
+  getEffectsBindGroupLayout,
+  getPlaceholderEffects,
+} from "./WebGPUEffectsBindGroup.js";
+import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
 
 interface GaussianSplatCache {
   uniformBuffer: GPUBuffer | null;
@@ -411,8 +416,15 @@ function buildSplatPipelineResources(
   const bgl = makeBindGroupLayout(device, "GaussianSplat BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
+  // FEAT-GAP-09 (Batch 101) — append shared effects BGL at slot 1 so
+  // the WGSL fog block at @group(1) resolves. Shared layout cascades
+  // to the pick, velocity, OIT, and depth-write pipelines too (all
+  // built with this same `layout` below).
+  const effectsBGL = getEffectsBindGroupLayout(device);
   // Instance stride: posHigh(12) + posLow(12) + covA(12) + covB(12) + color(16) = 64 bytes
-  const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+  const layout = device.createPipelineLayout({
+    bindGroupLayouts: [bgl, effectsBGL],
+  });
 
   const colorDescriptor: WebGPURenderPipelineDescriptor = {
     name: "GaussianSplat color pipeline",
@@ -942,10 +954,17 @@ function updateWebGPUGaussianSplats(
   Matrix4.pack(mm, modelMatrixData, 0);
   device.queue.writeBuffer(cache.uniformBuffer!, 256, modelMatrixData);
 
+  // FEAT-GAP-09 (Batch 101) — per-frame effects BG. Shared helper
+  // returns placeholder when none of (shadow, csm, atmosphereLut) is
+  // active, so this is cheap and idempotent.
+  const effectsBG =
+    getOrCreateSharedAdvancedEffectsBG(frameState) ??
+    getPlaceholderEffects(device).bindGroup;
+
   if (!cache.command) {
     const cmd = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
-      bindGroups: [cache.bindGroup],
+      bindGroups: [cache.bindGroup, effectsBG],
       vertexBuffers: [cache.quadVertexBuffer, cache.splatBuffer],
       vertexCount: 6,
       instanceCount: cache.splatCount,
@@ -970,7 +989,18 @@ function updateWebGPUGaussianSplats(
     // Store shader code for dynamic OIT variant creation via scene renderer
     cmd._shaderCode = SPLAT_WGSL;
     cache.command = cmd;
-  } else if (
+  } else {
+    // FEAT-GAP-09 (Batch 101) — per-frame effects BG refresh on
+    // existing command. Slot 1 in the cached bindGroups array tracks
+    // the active effects BG (or placeholder); swap it each frame so
+    // shadow / CSM / atmosphere LUT toggles flow through.
+    (cache.command as { bindGroups?: GPUBindGroup[] }).bindGroups = [
+      cache.bindGroup,
+      effectsBG,
+    ];
+  }
+  if (
+    cache.command &&
     cache.depthWritePipeline &&
     !cache.command.classificationDepthPipeline
   ) {
@@ -988,10 +1018,13 @@ function updateWebGPUGaussianSplats(
   // color command's derivedCommands so the Batch 29 dispatcher routes
   // to it on pick passes.
   if (pickColor) {
+    // Pick path uses placeholder effects BG — pipeline layout shared
+    // with color, but `fragmentPickMain` doesn't sample atmosphere.
+    const pickEffectsBG = getPlaceholderEffects(device).bindGroup;
     if (!cache.pickCommand) {
       cache.pickCommand = new WebGPUDrawCommand({
         pipeline: cache.pickPipeline!,
-        bindGroups: [cache.bindGroup],
+        bindGroups: [cache.bindGroup, pickEffectsBG],
         vertexBuffers: [cache.quadVertexBuffer, cache.splatBuffer],
         vertexCount: 6,
         instanceCount: cache.splatCount,
@@ -1231,10 +1264,14 @@ function attachSplatVelocityCommand(
     cache.quadVertexBuffer &&
     cache.splatBuffer
   ) {
+    // Velocity path shares the color pipeline layout (effectsBGL at
+    // slot 1); placeholder is safe — `vertexVelocityMain`/`fragmentVelocityMain`
+    // don't sample atmosphere bindings.
+    const velocityEffectsBG = getPlaceholderEffects(device).bindGroup;
     (cache.command as { velocityCommand?: unknown }).velocityCommand =
       new WebGPUDrawCommand({
         pipeline: cache.velocityPipeline,
-        bindGroups: [cache.bindGroup],
+        bindGroups: [cache.bindGroup, velocityEffectsBG],
         vertexBuffers: [
           cache.quadVertexBuffer,
           cache.splatBuffer,
