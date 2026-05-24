@@ -104,6 +104,10 @@ struct VertexOutput {
   @location(0) color: vec4<f32>,
   @location(1) conic: vec3<f32>,
   @location(2) centerOffset: vec2<f32>,
+  // FEAT-GAP-09 (Batch 103 audit fix) — splat-center RTE position
+  // (position relative to camera) for the aerial-perspective fog
+  // block. Per-quad-vertex spread is tiny relative to fog scale.
+  @location(3) worldPos: vec3<f32>,
 };
 struct Uniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -130,6 +134,27 @@ struct Uniforms {
   modelMatrix: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
+
+// FEAT-GAP-09 (Batch 103 audit fix; original Batch 101 modified the
+// dead standalone Advanced/GaussianSplat.wgsl). Same EffectsUniforms
+// truncation pattern as VOXEL_WGSL; aerial-LUT bindings at @group(1).
+struct EffectsUniforms {
+    shadowMatrix: mat4x4<f32>,
+    shadowMapSize: vec2<f32>,
+    shadowDarkness: f32,
+    shadowSoftShadows: f32,
+    clippingPlaneCount: u32,
+    clippingUnionMode: u32,
+    clippingEdgeWidth: f32,
+    clippingPolygonCount: u32,
+    clippingEdgeColor: vec4<f32>,
+    clipPlaneEqHW: array<vec4<f32>, 8>,
+    atmosphereLutControl: vec4<f32>,
+}
+@group(1) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(1) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(1) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(1) @binding(9) var atmosphereLutSampler: sampler;
 
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -166,7 +191,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   if (det <= 0.0) {
     output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
     output.color = vec4<f32>(0.0); output.conic = vec3<f32>(0.0);
-    output.centerOffset = vec2<f32>(0.0); return output;
+    output.centerOffset = vec2<f32>(0.0);
+    output.worldPos = vec3<f32>(0.0);
+    return output;
   }
   let invDet = 1.0 / det;
   let conic = vec3<f32>(c11*invDet, -c01*invDet, c00*invDet);
@@ -180,6 +207,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.color = input.colorAndAlpha;
   output.conic = conic;
   output.centerOffset = pixOff;
+  // FEAT-GAP-09 (Batch 103) — splat-center RTE position for fog block.
+  output.worldPos = posRTE;
   return output;
 }
 
@@ -191,7 +220,45 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (power > 0.0) { discard; }
   let alpha = min(0.99, input.color.a * exp(power));
   if (alpha < 1.0/255.0) { discard; }
-  return vec4<f32>(input.color.rgb * alpha, alpha);
+  var finalColor = vec4<f32>(input.color.rgb * alpha, alpha);
+
+  // FEAT-GAP-09 (Batch 103) — Aerial-perspective fog blend.
+  if (effects.atmosphereLutControl.x > 0.5) {
+    let innerRadius = effects.atmosphereLutControl.y;
+    let thickness = max(1.0, effects.atmosphereLutControl.z);
+    let cameraWC = u.encodedCameraHigh + u.encodedCameraLow;
+    let viewDirWS = normalize(input.worldPos);
+    let upDir = normalize(cameraWC);
+    let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
+    let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+    let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+    let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+    let tSample = textureSampleLevel(
+      atmosphereTransmittanceLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let iSample = textureSampleLevel(
+      atmosphereInscatterLut, atmosphereLutSampler,
+      vec2<f32>(uCoord, vCoord), 0.0,
+    );
+    let transmittance =
+      clamp((tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0);
+    let excessAltitude = max(0.0, cameraAltitude - thickness);
+    let orbitFalloff = exp(-excessAltitude / thickness);
+    let fogWeight = clamp(iSample.a, 0.0, 1.0) * orbitFalloff;
+    finalColor = vec4<f32>(
+      mix(finalColor.rgb, iSample.rgb, fogWeight),
+      finalColor.a,
+    );
+    if (effects.atmosphereLutControl.w > 0.5) {
+      finalColor = vec4<f32>(
+        finalColor.rgb * mix(1.0, transmittance, fogWeight),
+        finalColor.a,
+      );
+    }
+  }
+
+  return finalColor;
 }
 
 // C-R9 (Batch 31) — pick entry point. Same gaussian footprint test as

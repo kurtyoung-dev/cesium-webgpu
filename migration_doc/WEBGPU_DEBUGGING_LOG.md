@@ -24,6 +24,78 @@
 
 ---
 
+## Batch 103 — Audit fix: Batches 100-102 modified DEAD standalone .wgsl files; port to inline WGSL constants (2026-05-24)
+
+**Date:** 2026-05-24
+
+Audit finding from a systematic review of yesterday + today's commits. Batches 100, 101, 102 ALL modified the wrong source. The runtime situation was a textbook partial-implementation failure of the same shape as Batches 95, 96, 98.
+
+### The bug
+
+Each Advanced renderer was assumed to import its WGSL from a standalone `.wgsl` file:
+
+- `packages/engine/Source/Shaders/WebGPU/Advanced/VoxelPrimitive.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Advanced/GaussianSplat.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Advanced/PointCloud.wgsl`
+
+But the actual renderer source files each contain an INLINE `const … _WGSL = \`...\`` template literal at the top, and pass THAT to `device.createShaderModule({ code: _WGSL })` — bypassing the standalone files entirely:
+
+- `WebGPUVoxelRenderer.ts:91` — `const VOXEL_WGSL = …`
+- `WebGPUGaussianSplatRenderer.ts:93` — `const SPLAT_WGSL = …`
+- `WebGPUPointCloudRenderer.ts:187` — `const POINT_CLOUD_WGSL = …`
+
+`grep` confirms: nothing imports the generated `.js` modules from the `Advanced/*.wgsl` build outputs. The standalone files were build orphans — dead code from some prior refactor that never finished.
+
+### What landed (correctly) vs what was dead
+
+Batches 100-102 made three categories of change. Two of three were sound:
+
+1. **WGSL changes** (the aerial-LUT struct + bindings + fog block) — modified the standalone `.wgsl` files. **Dead — never compiled into a real GPU shader.**
+2. **Pipeline-layout changes** (append `effectsBGL` to `[bgl, …]`) — modified the renderer JS. **Live, but harmless** — WebGPU permits unused bind group layouts in a pipeline layout.
+3. **Bind-group changes** (`bindGroups: [cache.bindGroup, effectsBG]` etc.) — modified the renderer JS. **Live, but pointless** — the WGSL the GPU actually executed didn't declare any of the effects bindings, so the BG data went unused.
+
+Net runtime effect of Batches 100-102 before this fix: **zero aerial-perspective fog on Voxel / GaussianSplat / PointCloud**, despite the WEBGPU_DEBUGGING_LOG.md entries declaring otherwise.
+
+### How the bug slipped past
+
+- `npx gulp build` passed because the standalone `.wgsl` files compiled cleanly into `.js` modules — they just weren't imported.
+- The `probe-slice4-verify.mjs` smoke test passed because there are no Advanced primitives in its Grand Canyon scene — its diff is zero whether the Advanced shaders have fog or not.
+- The pre-existing Advanced shader infrastructure had two parallel copies of each shader (standalone `.wgsl` + inline `_WGSL` constant) that were content-identical when the standalone files were created but drifted as soon as the inline ones got new features (motion vectors, pick, OIT variants, etc.).
+
+### Fix
+
+Three changes, one per renderer:
+
+1. **`WebGPUVoxelRenderer.ts`** — port the aerial-LUT pattern to the inline `VOXEL_WGSL`. Uses the inline shader's existing `worldPos` (RTE-space position from vertex, equivalent to the standalone's `eyePosition`) as the view direction source for the fog block.
+2. **`WebGPUGaussianSplatRenderer.ts`** — add `@location(3) worldPos` to inline `SPLAT_WGSL`'s `VertexOutput`, set it from `posRTE` in `vertexMain` (both the success and `det <= 0` early-return branches), add struct + bindings + fog block.
+3. **`WebGPUPointCloudRenderer.ts`** — same pattern at `@location(2)` in inline `POINT_CLOUD_WGSL` (one fewer existing slot). Only the default-path WGSL gets fog; the inline `POINT_CLOUD_LOD_WGSL` is unchanged (LOD pipeline still uses `[bgl, storageBGL]` — independent from the aerial-LUT path, deferred).
+
+### Cleanup
+
+Deleted the three dead standalone files (`Advanced/VoxelPrimitive.wgsl`, `Advanced/GaussianSplat.wgsl`, `Advanced/PointCloud.wgsl`). They had no callers, drifted from the inline canonical sources, and existed only to confuse future audits the way they confused this one. The build's `wgslToJavaScript` step automatically cleaned up the orphan `.js` artifacts on the next rebuild.
+
+### Verification
+
+- `npx gulp build` — clean.
+- `probe-slice4-verify.mjs` — AO at 0.607% over 0% noise floor, no regression. (Still can't measure Advanced shader fog directly — that would need a probe scene with a Voxel / Gaussian / Point Cloud primitive in view with atmosphere active.)
+
+### Lesson
+
+When auditing one's own work, the strongest evidence is **the runtime shader source the GPU actually compiled**, not the file you edited. Search the renderer for `device.createShaderModule({ code: ... })` and trace what gets passed in. If it's an inline template literal, the standalone `.wgsl` file is dead. If it's an import from a build-output `.js`, the standalone file is live.
+
+Add to the audit checklist: when a feature is "wired" across several renderers via WGSL changes, verify the changes reach a `createShaderModule` call site, not a parallel file the runtime never references.
+
+### Files modified (Batch 103)
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts` — inline `VOXEL_WGSL` aerial-LUT port.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts` — inline `SPLAT_WGSL` aerial-LUT port.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts` — inline `POINT_CLOUD_WGSL` aerial-LUT port.
+- `packages/engine/Source/Shaders/WebGPU/Advanced/VoxelPrimitive.wgsl` — DELETED (dead).
+- `packages/engine/Source/Shaders/WebGPU/Advanced/GaussianSplat.wgsl` — DELETED (dead).
+- `packages/engine/Source/Shaders/WebGPU/Advanced/PointCloud.wgsl` — DELETED (dead).
+
+---
+
 ## Batches 100-102 — FEAT-GAP-09 Advanced shader aerial-LUT completion (2026-05-24)
 
 **Date:** 2026-05-24
