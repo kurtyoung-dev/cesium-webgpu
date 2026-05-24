@@ -14,6 +14,8 @@
  */
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+// Slice 5c-B Phase 1 (Batch 107) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import defined from "../../Core/defined.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
@@ -249,23 +251,9 @@ function getPipeline(device, format, sampleCount) {
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format: format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 107) — scene-FB target via the
+      // helper. Standard alpha-over blend (helper's `translucent` default).
+      targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: {
       topology: "triangle-list",

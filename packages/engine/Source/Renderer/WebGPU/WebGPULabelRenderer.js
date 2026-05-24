@@ -29,6 +29,8 @@ import SDFSettings from "../../Scene/SDFSettings.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
+// Slice 5c-B Phase 1 (Batch 107) — scene-FB target helper.
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 // Import SDF shader source
 import BillboardCollectionSDFWGSL from "../../Shaders/WebGPU/Collections/BillboardCollectionSDF.js";
@@ -585,23 +587,11 @@ function buildSDFDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
+      // Slice 5c-B Phase 1 (Batch 107) — scene-FB target. Standard
+      // alpha-over blend matches the helper's `translucent: true`
+      // default exactly (src-alpha / one-minus-src-alpha with explicit
+      // `operation: "add"`), so we use the shorthand.
+      targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
