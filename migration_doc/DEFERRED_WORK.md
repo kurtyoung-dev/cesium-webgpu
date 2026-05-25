@@ -3219,3 +3219,50 @@ TAA's disocclusion mask is currently velocity-based. Adding G-buffer normal comp
 
 `probe-mrt-validation.mjs` (Batch 116) covers the four-cell AO×deferred matrix with WebGPU error capture (`device.onuncapturederror` + `device.lost` + categorized `console.error`). Re-run after every MRT change to confirm no new pipeline-cache errors. For each Producer-side conversion, also add a `probe-gbuffer-slot1-content.mjs` follow-up that samples the G-buffer texture and confirms slot 1 has non-sentinel values where the converted primitive draws.
 
+---
+
+## NEW-ENV-EFFECTS-DEPTH-WIRING — Environmental effects silently skipping because `context._depthStencilView` is never assigned
+
+**Status:** Open. Surfaced during Batch 125 NPR-visibility investigation (2026-05-25).
+
+**Affected features:** `WebGPUSceneRendererEnvironmentalEffects.executeEnvironmentalEffects` and every effect it dispatches:
+
+- Procedural Clouds (`globe.showProceduralClouds`)
+- Screen-Space Reflections (`scene._enableSSR`)
+- Weather Particles (`scene._enableWeather`)
+- Volumetric Fog (`frameState.atmosphericConditions.volumetricFog.enabled`)
+- NPR Outlines (`scene._enableNPROutlines`, Batch 123)
+
+**Symptom:** None of these effects produce visible output in any test scene. All silently skip.
+
+**Root cause:** `WebGPUSceneRendererEnvironmentalEffects.ts:55-62` has:
+
+```ts
+const colorView = context._sceneColorView ?? context.currentTextureView;
+const depthView = context._depthStencilView;
+const outputView = context.currentTextureView;
+if (!colorView || !depthView || !outputView) {
+  return;
+}
+```
+
+`context._depthStencilView` is declared on `WebGPUContext.ts:387` as `public _depthStencilView: GPUTextureView | null = null;` and is **never reassigned anywhere in the renderer** (verified via repo-wide grep on 2026-05-25). The only assignments to a similarly-named field are on `WebGPUEdgeFramebuffer._depthStencilView` (different class).
+
+So `depthView` is always undefined → early return → the entire env-effects chain has been a no-op since this gate was added (commit history pending).
+
+**False-positive in Batch 122 SSR verification:** the Batch 122 commit message claimed "B vs C = 0.000% — SSR reads same G-buffer regardless of deferredLighting flag." But SSR was never actually running — both B and C cells just rendered the baseline scene without SSR contribution. The 0% diff was trivially true (same no-op output) and didn't verify the G-buffer wiring.
+
+**Secondary problem:** even if `_depthStencilView` is wired, the env effects currently write to `outputView = context.currentTextureView` (canvas swap chain). After they run, `_runPostProcessing` blits the scene FB color to the canvas, overwriting any env-effect output. So fixing the depth wiring alone isn't enough — the target chain also needs to be reordered or the env effects need to write back to scene FB color.
+
+**Tertiary problem:** scene FB depth is MSAA when `scene.msaaSamples > 1` (default 4), and `_sceneFramebuffer.depthSampleableView` is null in that case (per L1953 comment in `WebGPUSceneRenderer.ts`). So even wiring `_depthStencilView = _sceneFramebuffer.depthSampleableView` doesn't help MSAA scenes. Env effects need either a multisampled-depth path (`texture_depth_multisampled_2d` + `textureLoad(.., 0)`) or a resolve step.
+
+**Multi-batch fix outline:**
+
+1. **Wire `context._depthStencilView` to the scene FB depth view.** Single-sample case: `_sceneFramebuffer.depthSampleableView`. MSAA case: either resolve depth to a single-sample texture each frame OR teach every env-effect shader the multisampled-depth path. Easier: resolve (one extra render pass per frame, fixed cost).
+2. **Reorder env effects to AFTER post-process** so their canvas writes survive. Attempted in Batch 125 but the depth issue masked the result (env effects still skipped due to null depthView).
+3. **OR: re-route env effects to write back to scene FB color** via a ping-pong intermediate buffer. Preserves the linear-HDR pipeline through tonemap/FXAA. Heavier — needs a new intermediate scene-color texture.
+
+**Verification when fixed:** `probe-npr-outlines.mjs` with `nprNormalThreshold=-1` should produce a SOLID MAGENTA canvas over geometry (current behavior: terrain renders unchanged, NPR is invisible). `probe-ssr-consumer.mjs` should show A-vs-B (SSR off vs on) >> noise floor on a scene with reflective surfaces.
+
+**Effort:** 1-2 days. Risk: high — touches the post-process + env-effects ordering that hasn't been fully exercised since the bug landed.
+

@@ -69,12 +69,14 @@ async function capture(label, { npr, strength }) {
       v.scene.globe.enableLighting = true;
       v.scene.enableNPROutlines = npr;
       v.scene.nprEdgeStrength = strength;
-      // Diagnostic: thresholds = 0 → every fragment with a non-sentinel
-      // normal becomes an edge. If NPR is writing to a visible target,
-      // the canvas should be solid magenta over geometry, source color
-      // over sky/sentinel pixels.
-      v.scene.nprNormalThreshold = -1.0;
-      v.scene.nprDepthThreshold = -1.0;
+      // Production-ish thresholds. Until NEW-ENV-EFFECTS-DEPTH-WIRING
+      // lands the env-effects chain silently skips and the probe's
+      // A-vs-B diff is dominated by run-to-run noise. Once the
+      // depth-wiring fix is in, lower to -1.0 to force every
+      // non-sentinel pixel to edge for a maximum-visibility
+      // verification screenshot.
+      v.scene.nprNormalThreshold = 0.05;
+      v.scene.nprDepthThreshold = 0.002;
       v.scene.nprEdgeColor = new C.Color(1.0, 0.0, 1.0, 1.0); // magenta for visibility
 
       // Force the lazy FR loader to settle before rendering, otherwise
