@@ -72,6 +72,7 @@ import {
   setupSceneFramebufferRenderPass,
   buildMrtSlot1Attachment,
 } from "./WebGPUSceneRendererPassRedirect.js";
+import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
 import { resetPerFrameState } from "./WebGPUSceneRendererFrameReset.js";
 import { executeFrustumLoop } from "./WebGPUSceneRendererFrustumLoop.js";
 import { executePostFrustumChain } from "./WebGPUSceneRendererPostFrustumChain.js";
@@ -1886,22 +1887,45 @@ export class WebGPUSceneRenderer {
 
   /**
    * Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction
-   * from scene depth into `view.gBufferFramebuffer`. Gated entirely on
-   * `frameState.useDeferredLighting === true` — when the flag is its
-   * default `false`, this is a no-op and the compute pipeline is never
-   * created.
+   * from scene depth into `view.gBufferFramebuffer`.
+   *
+   * Originally gated on `frameState.useDeferredLighting === true` and
+   * ran AFTER the scene render pass, OVERWRITING any MRT writes made
+   * during the pass. With Slice 5c-B Phases 1-2 (Batches 105-119) the
+   * G-buffer is now populated by per-shader `@location(1)` emits from
+   * converted primitives (globe, ellipsoid, glTF Model). For pixels
+   * those emitters cover, the MRT writes are the source of truth.
+   *
+   * Slice 5c-B Batch 120 (NEW-GBUFFER-MRT-COMPUTE-PRODUCER-RETIRE):
+   * skip the compute producer entirely when MRT mode is on AND the
+   * G-buffer is allocated. Three implications:
+   *
+   *   - Pixels covered by an MRT-emitting pipeline (globe + ellipsoid +
+   *     Model + future B3DM/Polygon) keep their real per-fragment data.
+   *   - Pixels covered by Phase 1 placeholder pipelines (writeMask:0
+   *     on slot 1: sky, billboards, labels, points, etc.) keep the
+   *     loadOp=clear sentinel (0,0,0,1).
+   *   - The AO / SSR / contact-shadow consumers already check
+   *     `length(xyz) < 0.01` and fall back to their own depth-derived
+   *     path for sentinel pixels — no consumer change needed.
    *
    * Runs AFTER `_executeEnvironmentalEffects` (which has closed the
    * scene render pass and resolved depth) and BEFORE the
-   * InvertClassification composite + post-processing — depth is final
-   * by this point, and downstream consumers (Slice 3+: SSAO, SSR,
-   * clustered lighting) can read the G-buffer freely.
+   * InvertClassification composite + post-processing.
    */
   public _executeGBufferProducer(config: WebGPURenderFrameConfig): void {
     const frameState = config.scene.frameState as
       | { useDeferredLighting?: boolean }
       | undefined;
     if (!frameState || frameState.useDeferredLighting !== true) {
+      return;
+    }
+    // Slice 5c-B Batch 120 — skip the compute producer when MRT mode
+    // is on. Converted primitives' @location(1) emits are the source
+    // of truth; non-emitting primitives leave the loadOp=clear
+    // sentinel (0,0,0,1) and consumers fall back to depth-derived for
+    // those pixels via the existing length(xyz) < 0.01 check.
+    if (isSceneFBMrtMode()) {
       return;
     }
     const context = config.context as unknown as {
