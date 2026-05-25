@@ -1162,7 +1162,12 @@ function getGroundPolylineShaderCache(device) {
   return cache;
 }
 
-function buildPolylinePipelineResources(device, format, depthFormat) {
+function buildPolylinePipelineResources(
+  device,
+  format,
+  depthFormat,
+  sampleCount,
+) {
   const mod = getGroundPolylineShaderCache(device).getOrCreate(
     ShaderSourceId.GROUND_POLYLINE,
     SHADER_CODE,
@@ -1229,8 +1234,10 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     },
   ];
 
+  // Batch 134 — scene-FB color pipelines bake MSAA sample count.
+  const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
-    name: `GroundPolyline color [${format}/${depthFormat}]`,
+    name: `GroundPolyline color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout: pipelineLayout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -1275,6 +1282,7 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
       // chasing C-R8-GROUND-POLYLINE-NATIVE.
       depthCompare: "always",
     },
+    multisample: msState,
   };
 
   const pickDescriptor = {
@@ -1295,8 +1303,9 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
   };
 
   // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
+  // Batch 134 — also runs in the MSAA scene pass; bake sample count.
   const stencilDescriptor = {
-    name: `GroundPolyline stencil [${format}/${depthFormat}]`,
+    name: `GroundPolyline stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout: pipelineLayout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -1324,6 +1333,7 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
       stencilReadMask: 0xff,
       stencilWriteMask: 0xff,
     },
+    multisample: msState,
   };
 
   // Morph pipeline — uses the same UBO and pipeline layout, but
@@ -1332,7 +1342,7 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
   // the geometry is reverse-wound and morph wants the volume's
   // outside surface).
   const morphColorDescriptor = {
-    name: `GroundPolyline color morph [${format}/${depthFormat}]`,
+    name: `GroundPolyline color morph [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout: pipelineLayout,
     vertex: { module: mod, entryPoint: "vsMorph", buffers: vertexBuffers },
     fragment: {
@@ -1364,6 +1374,7 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
       // depth-sample classifier.
       depthCompare: "always",
     },
+    multisample: msState,
   };
 
   const morphPickDescriptor = {
@@ -2597,10 +2608,12 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   if (!defined(cache._pipelineResources)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const sampleCount = context._msaaSamples ?? 1;
     cache._pipelineResources = buildPolylinePipelineResources(
       device,
       format,
       depthFmt,
+      sampleCount,
     );
     cache.bgl = cache._pipelineResources.bgl;
     cache._pipelineFormatGeneration = sceneGen;

@@ -381,6 +381,7 @@ function buildPointColorDescriptor(
   translucent,
   bindGroupLayout,
   defines,
+  sampleCount,
 ) {
   const pipelineLayout = device.createPipelineLayout({
     label: "PointPrimitive pipeline layout",
@@ -403,7 +404,7 @@ function buildPointColorDescriptor(
     : undefined;
 
   return {
-    name: `PointPrimitive ${translucent ? "translucent" : "opaque"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
+    name: `PointPrimitive ${translucent ? "translucent" : "opaque"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -427,6 +428,8 @@ function buildPointColorDescriptor(
       depthWriteEnabled: !translucent,
       depthCompare: "less-equal",
     },
+    // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 }
 
@@ -917,6 +920,7 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
       defines,
       "PointPrimitive color shader",
     );
+    const sampleCount = context._msaaSamples ?? 1;
     pipelineEntry = {
       descriptor: buildPointColorDescriptor(
         device,
@@ -926,6 +930,7 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
         true,
         cache.bindGroupLayout,
         defines,
+        sampleCount,
       ),
       pipeline: null,
       pending: false,

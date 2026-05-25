@@ -478,13 +478,14 @@ function buildBillboardDescriptor(
   depthFormat,
   bindGroupLayout,
   defines,
+  sampleCount,
 ) {
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],
   });
 
   return {
-    name: `Billboard pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
+    name: `Billboard pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -506,6 +507,11 @@ function buildBillboardDescriptor(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    // Batch 134 — scene FB color pass is MSAA when context._msaaSamples > 1.
+    // Pre-Batch-134 this builder dropped `multisample`, defaulting to count=1
+    // and producing the same family of validation errors caught at Batches
+    // 118 (Ellipsoid) and 132 (MaterialAppearance).
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 }
 
@@ -1069,6 +1075,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
       defines,
       "Billboard shader",
     );
+    const sampleCount = context._msaaSamples ?? 1;
     const descriptor = buildBillboardDescriptor(
       device,
       shaderModule,
@@ -1076,6 +1083,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
       depthFmt,
       cache.bindGroupLayout,
       defines,
+      sampleCount,
     );
     entry = { descriptor, pipeline: null, pending: false };
     cache.pipelineEntries.set(defines, entry);

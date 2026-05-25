@@ -104,7 +104,12 @@ const scratchEncodedCamera = new EncodedCartesian3();
  * actual pipeline objects are materialized asynchronously by the cache.
  * @private
  */
-function buildGroundPipelineResources(device, format, depthFormat) {
+function buildGroundPipelineResources(
+  device,
+  format,
+  depthFormat,
+  sampleCount,
+) {
   // UBO layout (256 bytes total — `UNIFORM_BUFFER_SIZE`):
   //   floats   0-15 : mvpRTE                         (mat4x4<f32>)
   //   floats  16-19 : camH + _p0                     (vec3<f32> + pad)
@@ -384,8 +389,10 @@ struct VelocityCO {
   // path doesn't read or write the stencil bits, so the attachment's
   // stencil aspect remains untouched (other passes still read it for
   // InvertClassification etc.).
+  // Batch 134 — scene-FB color pipelines bake MSAA sample count.
+  const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const depthSampleColorDescriptor = {
-    name: `GroundPrimitive depthSampleColor [${format}/${depthFormat}]`,
+    name: `GroundPrimitive depthSampleColor [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout: depthSampleLayout,
     vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
     fragment: {
@@ -402,6 +409,7 @@ struct VelocityCO {
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    multisample: msState,
   };
 
   const depthSamplePickDescriptor = {
@@ -427,7 +435,7 @@ struct VelocityCO {
   // stencilReference value is set per-draw via
   // `applyPerEncoderState({ stencilTest: { reference: 0xff } })`.
   const depthSampleStencilDescriptor = {
-    name: `GroundPrimitive depthSampleStencil [${format}/${depthFormat}]`,
+    name: `GroundPrimitive depthSampleStencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout: depthSampleLayout,
     vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
     fragment: {
@@ -455,6 +463,8 @@ struct VelocityCO {
       stencilReadMask: 0xff,
       stencilWriteMask: 0xff,
     },
+    // Batch 134 — stencil-only pipeline still runs in the MSAA scene pass.
+    multisample: msState,
   };
 
   // Batch 164 — A.4 NEW-CLASSIFIER-2D-CV-MORPH morph color pipeline.
@@ -465,7 +475,7 @@ struct VelocityCO {
   // mirror `depthSampleColorDescriptor` so the cache key only differs
   // by `vertex.entryPoint` + `vertex.buffers`.
   const morphColorDescriptor = {
-    name: `GroundPrimitive morphColor [${format}/${depthFormat}]`,
+    name: `GroundPrimitive morphColor [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout: depthSampleLayout,
     vertex: {
       module: mod,
@@ -486,6 +496,7 @@ struct VelocityCO {
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    multisample: msState,
   };
 
   const morphPickDescriptor = {
@@ -950,10 +961,12 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   if (!defined(cache._pipelineResources)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const sampleCount = context._msaaSamples ?? 1;
     cache._pipelineResources = buildGroundPipelineResources(
       device,
       format,
       depthFmt,
+      sampleCount,
     );
     cache.bgl = cache._pipelineResources.bgl;
     cache.pipelineRequestPending = false;

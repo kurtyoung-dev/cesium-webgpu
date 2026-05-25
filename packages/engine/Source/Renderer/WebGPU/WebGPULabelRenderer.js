@@ -571,13 +571,14 @@ function buildSDFDescriptor(
   depthFormat,
   bindGroupLayout,
   defines,
+  sampleCount,
 ) {
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],
   });
 
   return {
-    name: `Label SDF pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
+    name: `Label SDF pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -599,6 +600,8 @@ function buildSDFDescriptor(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 }
 
@@ -801,6 +804,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       defines,
       "Label SDF shader",
     );
+    const sampleCount = context._msaaSamples ?? 1;
     const descriptor = buildSDFDescriptor(
       device,
       shaderModule,
@@ -808,6 +812,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       depthFmt,
       cache.sdfBindGroupLayout,
       defines,
+      sampleCount,
     );
     entry = { descriptor, pipeline: null, pending: false };
     cache.sdfPipelineEntries.set(defines, entry);

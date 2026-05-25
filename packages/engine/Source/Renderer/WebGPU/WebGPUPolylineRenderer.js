@@ -691,6 +691,7 @@ function buildPolylineColorDescriptor(
   depthFormat,
   label,
   defines,
+  sampleCount,
 ) {
   const cameraBindGroupLayout = makeBindGroupLayout(
     device,
@@ -709,7 +710,7 @@ function buildPolylineColorDescriptor(
   });
 
   const descriptor = {
-    name: `${label || "Polyline pipeline"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
+    name: `${label || "Polyline pipeline"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -730,6 +731,8 @@ function buildPolylineColorDescriptor(
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
+    // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 
   return { descriptor, cameraBindGroupLayout, materialBindGroupLayout };
@@ -1069,6 +1072,7 @@ function getOrCreatePolylinePipelineEntry(
     defines,
     label,
   );
+  const sampleCount = context._msaaSamples ?? 1;
   const built = buildPolylineColorDescriptor(
     device,
     shaderModule,
@@ -1076,6 +1080,7 @@ function getOrCreatePolylinePipelineEntry(
     depthFmt,
     label,
     defines,
+    sampleCount,
   );
 
   const entry = {
