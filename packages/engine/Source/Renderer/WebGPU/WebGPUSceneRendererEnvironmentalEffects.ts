@@ -99,14 +99,24 @@ export function executeEnvironmentalEffects(
     if (ssrFR?.execute) {
       try {
         context.endCurrentRenderPass?.();
-        // Phase 8a Slice 5 (Batch 88) — when `scene.deferredLighting`
-        // is on AND the G-buffer producer ran this frame, wire the real
-        // normal view through to SSR. The SSR shader's `flags.x = 1.0`
-        // path then samples surface normals directly from the G-buffer
-        // (eye-space, rgba16float, already signed in [-1, 1]) instead
-        // of reconstructing them from depth via `cross(dFdy, dFdx)`.
-        // Producer-off / non-deferred scenes pass `undefined` and the
-        // shader's fallback path runs as before.
+        // Slice 5c-B Batch 122 — drop the legacy `useDeferredLighting`
+        // gate. The G-buffer is now always allocated (Sub-B, Batch 115b)
+        // and populated by per-shader @location(1) emits (Batches 117-121:
+        // globe, model + B3DM, ellipsoid, Lit Mat primitives). The SSR
+        // shader's sentinel check at L224 (length(normalSample) < 0.1)
+        // skips fragments that came from non-emitting Phase 1 pipelines
+        // (sky, billboards, labels) — they used to be filled by the
+        // compute producer's depth-derived path; now they keep the
+        // load-op clear sentinel (0,0,0,1) and SSR falls back to per-
+        // fragment depth-derivative normals at those pixels via the
+        // flags.x=0 path inside the shader.
+        //
+        // Why this matters: SSR now reads REAL per-fragment material
+        // normals at globe + model + ellipsoid + Lit Mat pixels (the
+        // entire surface area you'd actually want reflections on),
+        // regardless of whether the scene has scene.deferredLighting
+        // enabled. The deferredLighting flag was a producer-era proxy
+        // for "is the G-buffer populated"; that flag is now obsolete.
         const sceneAny = scene as unknown as {
           _view?: {
             gBufferFramebuffer?: {
@@ -114,12 +124,9 @@ export function executeEnvironmentalEffects(
             };
           };
         };
-        const fs = frameState as unknown as { useDeferredLighting?: boolean };
         const gBufferNormalView =
-          fs.useDeferredLighting === true
-            ? (sceneAny._view?.gBufferFramebuffer?.normalRoughnessTexture ??
-              undefined)
-            : undefined;
+          sceneAny._view?.gBufferFramebuffer?.normalRoughnessTexture ??
+          undefined;
         ssrFR.execute(
           context,
           frameState,
