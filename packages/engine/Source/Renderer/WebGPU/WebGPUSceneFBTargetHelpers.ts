@@ -114,6 +114,20 @@ export interface SceneFBTargetOptions {
   translucent?: boolean;
   writeMask?: GPUColorWriteFlags;
   blend?: GPUBlendState;
+  /**
+   * Slice 5c-B Batch 118 — when true, the slot-1 G-buffer target uses
+   * `writeMask: 0xf` (real emit) instead of the default `writeMask: 0`
+   * (placeholder). Use this for pipelines whose shader DOES emit
+   * `@location(1) normalRoughness: vec4<f32>` via the `FragOutput`
+   * struct pattern (see GlobeTerrain.wgsl for the reference). When
+   * the shader doesn't emit @location(1) but you set this to true,
+   * WebGPU rejects pipeline creation with `GPUPipelineError: Color
+   * target has no corresponding fragment output` (the Batch 116 bisect
+   * failure mode). Default false — keeps the placeholder so the
+   * pipeline declares the slot for pass-compatibility but doesn't
+   * write to it.
+   */
+  emitsGBuffer?: boolean;
 }
 
 /**
@@ -155,7 +169,16 @@ export function makeSceneFBTargets(
   // The pipeline's target count is then 2 (matches the pass), and
   // the slot stays at whatever the attachment loaded with (the
   // (0,0,0,1) sentinel set by `buildMrtSlot1Attachment`).
-  return [slot0, { format: MRT_NORMAL_ROUGHNESS_FORMAT, writeMask: 0 }];
+  //
+  // Slice 5c-B Batch 118 — `options.emitsGBuffer = true` flips slot 1
+  // to writeMask=0xf for pipelines whose shader DOES emit @location(1)
+  // (currently only converted primitive renderers; see
+  // NEW-GBUFFER-MRT-PRIMITIVE-EMIT in DEFERRED_WORK.md for the arc).
+  const slot1WriteMask = options.emitsGBuffer ? 0xf : 0;
+  return [
+    slot0,
+    { format: MRT_NORMAL_ROUGHNESS_FORMAT, writeMask: slot1WriteMask },
+  ];
 }
 
 /**

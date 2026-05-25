@@ -153,12 +153,23 @@ fn intersectEllipsoid(
   return vec2<f32>((-b - sd) / (2.0 * a), (-b + sd) / (2.0 * a));
 }
 
+// Slice 5c-B Batch 118 — G-buffer MRT output struct for the color
+// pipeline. Slot 0 = lit color (the pre-Batch-118 single output);
+// slot 1 = eye-space normal + roughness packed into rgba16float.
+// The pick fragment entry below stays single-target — pick uses
+// its own pipeline derived via buildPickPipelineDescriptor which
+// filters the slot-1 target from the pick FB 1-attachment pass.
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  @location(1) normalRoughness: vec4<f32>,
+};
+
 @fragment
 fn fragmentMain(
   @builtin(position) fragPos: vec4<f32>,
   @location(0) eyeDirection: vec3<f32>,
   @location(1) ellipsoidCenter: vec3<f32>,
-) -> @location(0) vec4<f32> {
+) -> FragOutput {
   let rayDir = normalize(eyeDirection);
   let t = intersectEllipsoid(vec3<f32>(0.0), rayDir, ellipsoidCenter, ellipsoid.oneOverRadiiSq);
   if (t.x < 0.0 && t.y < 0.0) { discard; }
@@ -166,11 +177,22 @@ fn fragmentMain(
   if (tHit < 0.0) { tHit = t.y; }
   if (tHit < 0.0) { discard; }
   let hit = rayDir * tHit;
+  // Eye-space normal. (hit - center) * oneOverRadiiSq gives the
+  // ellipsoidal-corrected outward normal; both hit and ellipsoidCenter
+  // are already in eye-space (vertex stage projects via
+  // modelViewRelativeToEye), so n is directly the eye-space normal
+  // the G-buffer expects.
   let n = normalize((hit - ellipsoidCenter) * ellipsoid.oneOverRadiiSq);
   let lightDir = normalize(vec3<f32>(0.5, 1.0, 0.3));
   let NdotL = max(dot(n, lightDir), 0.0);
   let col = ellipsoid.color.rgb * (0.3 + 0.7 * NdotL);
-  return vec4<f32>(col, ellipsoid.color.a);
+  // 0.5 roughness placeholder — ellipsoid uniforms don't carry a
+  // material roughness yet. Update when EllipsoidUniforms grows a
+  // material slot.
+  var out: FragOutput;
+  out.color = vec4<f32>(col, ellipsoid.color.a);
+  out.normalRoughness = vec4<f32>(n, 0.5);
+  return out;
 }
 
 // C-R9 (Batch 30) — pick entry point. Same ray-ellipsoid intersection +
@@ -265,6 +287,7 @@ interface EllipsoidPipelineResources {
 function buildEllipsoidPipelineResources(
   device: GPUDevice,
   canvasFormat: GPUTextureFormat,
+  sampleCount: number = 1,
 ): EllipsoidPipelineResources {
   const shaderModule = getEllipsoidPrimitiveShaderCache(device).getOrCreate(
     ShaderSourceId.ELLIPSOID_PRIMITIVE,
@@ -300,15 +323,14 @@ function buildEllipsoidPipelineResources(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
-      // helper. Pick pipeline is derived later via
-      // `buildPickPipelineDescriptor` which calls
-      // `colorFragment.targets.map(...)` — that pattern will need a
-      // null-filter in Phase 2 once `mrtMode` flips on (color targets
-      // become [target, null] and pick FB has only 1 attachment).
-      // Today (mrtMode=off) the helper returns a 1-element array so
-      // the existing pick derivation works unchanged.
+      // Slice 5c-B Batch 118 — emit G-buffer slot 1 (eye-space normal +
+      // roughness). The shader emits `FragOutput { color, normalRoughness }`
+      // and the pipeline declares slot 1 as writable (writeMask: 0xf via
+      // `emitsGBuffer: true`). Pick pipeline is derived from this via
+      // `buildPickPipelineDescriptor` which filters out the rgba16float
+      // slot 1 so the pick FB's 1-attachment pass stays compatible.
       targets: makeSceneFBTargets(canvasFormat, {
+        emitsGBuffer: true,
         blend: {
           color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
           alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
@@ -322,6 +344,16 @@ function buildEllipsoidPipelineResources(
       // less-equal for planetary-scale precision robustness.
       depthCompare: "less-equal",
     },
+    // Slice 5c-B Batch 118 — match scene-FB MSAA sample count. Pre-fix
+    // this defaulted to sampleCount=1 against an MSAA=4 scene FB pass,
+    // tripping "Attachment state not compatible" the moment an
+    // EllipsoidPrimitive landed in a scene with default `msaaSamples=4`.
+    // The DeveloperError ("_beginDefaultRenderPass called with active
+    // render pass") that was the visible failure was downstream — once
+    // the EllipsoidPrimitive's pipeline tripped validation, the WebGPU
+    // command encoder went invalid and downstream beginRenderPass
+    // calls cascaded into the JS-side guard.
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 
   // C-R9 (Batch 30 / refactored Batch 59) — pick pipeline derived from the
@@ -644,6 +676,10 @@ function updateWebGPUEllipsoidPrimitive(
       }
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
+  // Slice 5c-B Batch 118 — read MSAA sample count so the pipeline's
+  // multisample state matches the scene FB pass it draws into.
+  const sampleCount =
+    (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
   // Batch 110 — invalidate cached pipeline resources on scene format
   // change (HDR toggle).
   const sceneGen =
@@ -673,6 +709,50 @@ function updateWebGPUEllipsoidPrimitive(
     }
   )._pipelineResources;
 
+  // Slice 5c-B Batch 118 — pre-existing bug fix. Before this:
+  // invalidating `_pipelineResources` on a scene-pipeline-format
+  // change left `cache.initialized = true`, so the init block below
+  // was SKIPPED and `resources` stayed undefined. The next call to
+  // `tryResolveEllipsoidPipelines(..., resources!, ...)` then
+  // dereferenced undefined → "Cannot read properties of undefined
+  // (reading 'colorDescriptor')" floods the console.error stream
+  // until the user dismisses the renderer-error dialog.
+  //
+  // If resources is undefined here but `cache.initialized` is true,
+  // rebuild ONLY the pipeline resources + bind groups. The GPU
+  // buffers + quad geometry can be reused — they don't depend on the
+  // scene FB format. The pipeline cache will pick up the new
+  // descriptor variants and async-create matching pipelines.
+  if (cache.initialized && !resources) {
+    resources = buildEllipsoidPipelineResources(
+      device,
+      canvasFormat,
+      sampleCount,
+    );
+    (
+      cache as EllipsoidCache & {
+        _pipelineResources?: EllipsoidPipelineResources;
+      }
+    )._pipelineResources = resources;
+    cache.shaderModule = resources.shaderModule;
+    cache.bindGroup0 = device.createBindGroup({
+      layout: resources.bindGroupLayout0,
+      entries: [{ binding: 0, resource: { buffer: cache.uniformBuffer! } }],
+    });
+    cache.bindGroup1 = device.createBindGroup({
+      layout: resources.bindGroupLayout1,
+      entries: [
+        { binding: 0, resource: { buffer: cache.ellipsoidUniformBuffer! } },
+      ],
+    });
+    // Force pipeline re-resolution: the cached pipelines were keyed on
+    // the OLD descriptor; new descriptor will cache-miss and async-
+    // create against the new scene FB format.
+    cache.pipeline = null;
+    cache.pickPipeline = null;
+    cache.pipelineRequestPending = false;
+  }
+
   // One-time initialization of CPU-side resources (buffers, BGLs, shader,
   // pipeline-layout, bind groups, and the quad geometry). The pipelines
   // themselves are resolved separately via the central cache below.
@@ -691,7 +771,11 @@ function updateWebGPUEllipsoidPrimitive(
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    resources = buildEllipsoidPipelineResources(device, canvasFormat);
+    resources = buildEllipsoidPipelineResources(
+      device,
+      canvasFormat,
+      sampleCount,
+    );
     (
       cache as EllipsoidCache & {
         _pipelineResources?: EllipsoidPipelineResources;

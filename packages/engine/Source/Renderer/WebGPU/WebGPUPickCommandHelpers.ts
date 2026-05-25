@@ -304,8 +304,22 @@ export function buildPickPipelineDescriptor(
   // Spread instead of mutating so the caller's descriptor stays untouched
   // (matters for renderers that hold the color descriptor in long-lived
   // pipeline-resources state).
-  const pickTargets: GPUColorTargetState[] = colorFragment.targets.map(
-    (target) => {
+  //
+  // Slice 5c-B Batch 118 — filter out the G-buffer slot-1 target. The
+  // pick render pass has 1 color attachment (the pick framebuffer's
+  // rgba8unorm color); converted renderers' color pipelines now declare
+  // 2 targets (scene color + G-buffer placeholder) via
+  // `makeSceneFBTargets`. Without this filter the pick pipeline would
+  // declare 2 targets against a 1-attachment pass and trip
+  // "Attachment state not compatible" at the first pick. Drop any
+  // target whose format matches the G-buffer format AND filter out
+  // explicit nulls in case a future caller passes them.
+  const pickTargets: GPUColorTargetState[] = colorFragment.targets
+    .filter(
+      (t): t is GPUColorTargetState =>
+        t !== null && t !== undefined && t.format !== "rgba16float",
+    )
+    .map((target) => {
       // Drop the `blend` slot entirely. `writeMask` defaults to ALL when not
       // specified, which is what we want for pick targets.
       const { blend: _blend, ...rest } = target;
@@ -313,8 +327,7 @@ export function buildPickPipelineDescriptor(
       // keep linters happy without an explicit unused-marker comment.
       void _blend;
       return rest;
-    },
-  );
+    });
 
   const pickFragment = {
     module: colorFragment.module,
@@ -343,7 +356,15 @@ export function buildPickPipelineDescriptor(
     fragment: pickFragment,
     primitive: colorDescriptor.primitive,
     depthStencil: pickDepthStencil,
-    multisample: colorDescriptor.multisample,
+    // Slice 5c-B Batch 118 — pick framebuffer is always single-sample
+    // (the pick FB doesn't use MSAA; pick reads back exact bytes from
+    // the rgba8unorm color attachment). Drop the color descriptor's
+    // multisample state entirely so the pick pipeline targets the
+    // single-sample pick pass even when color is MSAA. Previously the
+    // pick pipeline inherited color's multisample and would have
+    // tripped "Attachment state not compatible" at first pick attempt
+    // for any renderer using MSAA color + this helper.
+    multisample: undefined,
   };
 }
 
