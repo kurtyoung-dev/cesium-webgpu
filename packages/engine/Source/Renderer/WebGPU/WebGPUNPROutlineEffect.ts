@@ -82,23 +82,18 @@ function initializePipeline(
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "NPR outline BGL", [
     texture(0, Stage.FRAGMENT),
-    // depth texture is sampled as texture_depth_2d in the shader.
-    // The shared `texture()` helper produces a generic `texture_2d<f32>`
-    // binding which doesn't match. Build the depth binding entry
-    // manually to declare `sampleType: "depth"`.
-    {
-      binding: 1,
-      visibility: GPUShaderStage.FRAGMENT,
-      texture: { sampleType: "depth" },
-    } as unknown as GPUBindGroupLayoutEntry,
+    // Slice 5c-B Batch 128 — depth slot reverted to default
+    // `texture_2d<f32>` (filterable-float). The MSAA resolve pass
+    // outputs r16float at @location(0); the single-sample path
+    // exposes the depth-only aspect view of the depth texture which
+    // is also bindable as texture_2d<f32> with the matching sample
+    // type. The shader reads `.r` for the depth value.
+    texture(1, Stage.FRAGMENT),
     texture(2, Stage.FRAGMENT),
-    // Slice 5c-B Batch 127 — non-filtering sampler. The depth_2d
-    // binding at slot 1 requires a non-filtering OR comparison
-    // sampler (WebGPU spec: filtering samplers + depth textures are
-    // incompatible). The actual GPUSampler is nearest-magnify/
-    // nearest-minify, so declaring the BGL slot as "non-filtering"
-    // matches the runtime sampler shape.
-    sampler(3, Stage.FRAGMENT, "non-filtering"),
+    // Filtering sampler back in (Batch 127 forced non-filtering for
+    // depth-texture compatibility; Batch 128 swapped the depth slot
+    // to filterable-float so the standard sampler works again).
+    sampler(3, Stage.FRAGMENT),
     uniformBuffer(4, Stage.FRAGMENT),
   ]);
 

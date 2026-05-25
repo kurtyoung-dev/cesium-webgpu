@@ -209,27 +209,17 @@ export function ensureResources(
   // (Step 4) so single-sample is the right initial proof point.
   context._sceneColorView =
     host._sceneFramebuffer.colorTarget?.getColorTextureView?.(0) ?? null;
-  // Slice 5c-B Batch 127 — depth wiring is GATED on single-sample
-  // because `_sceneFramebuffer.depthSampleableView` returns a
-  // depth-only aspect view of the MSAA depth texture in MSAA mode.
-  // That view is still multisampled at the binding-compatibility
-  // layer — AO + DoF + future effects' BGLs declare the depth
-  // binding as single-sample (`multisampled: 0`), so binding the
-  // MSAA depth view triggers "Sample count doesn't match
-  // expectation" at draw time. MSAA depth needs a separate resolve
-  // pass (Step 5 in this batch's plan, deferred).
-  //
-  // Result: env effects + post-process depth consumers work in
-  // single-sample scenes (`scene.msaaSamples = 1`); MSAA scenes
-  // continue to skip env effects until the resolve pass lands.
+  // Slice 5c-B Batch 128 — `depthSampleableView` now returns the
+  // resolved single-sample view in BOTH single-sample mode (existing
+  // aspect view) and MSAA mode (new resolve target populated by
+  // PostFrustumChain's resolveDepthMSAA dispatch). The Batch 127 gate
+  // on `_msaaSamples === 1` is no longer needed — env effects + AO
+  // + DoF work in default MSAA=4 scenes too.
   const _ctxWithDepth = context as unknown as {
     _depthStencilView: GPUTextureView | null;
   };
-  const sampleCount = context._msaaSamples ?? 1;
   _ctxWithDepth._depthStencilView =
-    sampleCount === 1
-      ? (host._sceneFramebuffer.depthSampleableView ?? null)
-      : null;
+    host._sceneFramebuffer.depthSampleableView ?? null;
   // Batch 110 — bump the scene pipeline format generation when the
   // scene color format actually changes. Renderers caching pipelines
   // that target scene FB observe the bump and clear+rebuild their

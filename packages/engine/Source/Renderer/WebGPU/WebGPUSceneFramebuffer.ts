@@ -240,6 +240,18 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
+   * Slice 5c-B Batch 128 — dispatch the MSAA depth resolve. No-op in
+   * single-sample mode (the depth aspect view is already sampleable).
+   * Caller (SceneRenderer's post-frustum chain) invokes this after the
+   * main scene render pass closes so `depthSampleableView` returns a
+   * resolved single-sample view that env effects + AO + DoF can bind
+   * as `texture_depth_2d`.
+   */
+  resolveDepthMSAA(encoder: GPUCommandEncoder): void {
+    this._colorTarget?.resolveDepthMSAA?.(encoder);
+  }
+
+  /**
    * The GPURenderPassDescriptor for writing to this framebuffer.
    */
   get framebuffer(): GPURenderPassDescriptor | null {

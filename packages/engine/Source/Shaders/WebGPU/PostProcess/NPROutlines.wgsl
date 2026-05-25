@@ -42,7 +42,13 @@ struct NPRUniforms {
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
-@group(0) @binding(1) var depthTex: texture_depth_2d;
+// Slice 5c-B Batch 128 — depth is now provided as an r16float color
+// texture by SceneFramebuffer's depth-resolve pass (MSAA mode) or
+// directly by the depth-only-aspect view of the single-sample depth
+// texture (which is also bindable as texture_2d<f32> when sample
+// type is unfilterable-float OR filterable-float). Sample as f32
+// and read .r for the depth value.
+@group(0) @binding(1) var depthTex: texture_2d<f32>;
 @group(0) @binding(2) var normalRoughTex: texture_2d<f32>;
 @group(0) @binding(3) var texSampler: sampler;
 @group(0) @binding(4) var<uniform> uniforms: NPRUniforms;
@@ -70,14 +76,11 @@ fn sampleNormal(uv: vec2<f32>) -> vec3<f32> {
 }
 
 // Helper: sample raw depth at uv. Returns z in [0, 1] post-perspective
-// (NDC depth, NOT linear eye-space). texture_depth_2d returns f32
-// directly (no .r needed). `textureSampleLevel` with explicit `i32`
-// level — the depth-texture overload requires integer level (the f32
-// overload is for sampled-texture only). `textureSample` (implicit
-// LOD) is rejected from non-uniform control flow because the helper
-// is called from inside the sky-sentinel early-exit branch.
+// (NDC depth, NOT linear eye-space). The depth texture is bound as
+// texture_2d<f32> (r16float in MSAA, depth-aspect view in single-
+// sample) so we sample with f32 level and read .r.
 fn sampleDepth(uv: vec2<f32>) -> f32 {
-  return textureSampleLevel(depthTex, texSampler, uv, 0);
+  return textureSampleLevel(depthTex, texSampler, uv, 0.0).r;
 }
 
 @fragment

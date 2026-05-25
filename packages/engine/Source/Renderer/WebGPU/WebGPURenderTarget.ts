@@ -1,4 +1,6 @@
 /// <reference types="@webgpu/types" />
+import { dispatchDepthResolve } from "./WebGPUDepthResolveMSAA.js";
+
 /**
  * WebGPU Render Target
  *
@@ -100,6 +102,17 @@ export class WebGPURenderTarget {
 
   // Depth-only aspect view for sampling (only created when depthSamplable=true)
   private _depthSampleableView?: GPUTextureView;
+
+  // Slice 5c-B Batch 128 — MSAA depth resolve target. Allocated when
+  // sampleCount > 1 AND depthSamplable === true. Each frame a
+  // depth-only render pass samples MSAA depth (sample 0) and writes
+  // via `@builtin(frag_depth)` to this single-sample depth32float
+  // attachment, then `getDepthSampleableView()` returns the resolved
+  // view in place of the MSAA aspect view. Consumers (env effects, AO,
+  // DoF) keep their `texture_depth_2d` bindings unchanged.
+  private _msaaDepthResolveTexture: GPUTexture | null = null;
+  private _msaaDepthResolveAttachmentView: GPUTextureView | null = null;
+  private _msaaDepthResolveSampleableView: GPUTextureView | null = null;
 
   // MSAA resolve targets (if MSAA enabled)
   private resolveTargets: RenderTargetAttachment[] = [];
@@ -231,7 +244,64 @@ export class WebGPURenderTarget {
           aspect: "depth-only",
         });
       }
+
+      // Slice 5c-B Batch 128 — allocate the MSAA depth resolve target
+      // when sampleable + MSAA. The aspect view above is still
+      // multisampled (texture_depth_multisampled_2d-compatible only);
+      // env effects + AO + DoF need a real single-sample sampleable
+      // depth view. Each frame `resolveDepthMSAA(encoder)` reads
+      // sample 0 of the MSAA depth via a fullscreen FS pass and
+      // writes it to this r16float texture's @location(0). Format
+      // choice rationale: r16float is filterable-float-compatible
+      // (matches AO's existing BGL declaration); depth32float would
+      // force every consumer to switch to unfilterable-float + non-
+      // filtering samplers, much larger blast radius.
+      if (wantSampleable && isMSAA) {
+        this._msaaDepthResolveTexture = this.device.createTexture({
+          label: `${this.descriptor.name}_depth_resolve_ss`,
+          size: { width, height, depthOrArrayLayers: 1 },
+          format: "r16float",
+          usage:
+            GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+          sampleCount: 1,
+          mipLevelCount: 1,
+        });
+        this._msaaDepthResolveAttachmentView =
+          this._msaaDepthResolveTexture.createView({
+            label: `${this.descriptor.name}_depth_resolve_ss_attach`,
+          });
+        // Same view used for both attachment AND sampleable — r16float
+        // doesn't have aspects (unlike depth formats).
+        this._msaaDepthResolveSampleableView =
+          this._msaaDepthResolveAttachmentView;
+      }
     }
+  }
+
+  /**
+   * Slice 5c-B Batch 128 — dispatch the MSAA depth resolve render pass.
+   * No-op when MSAA isn't on (single-sample depth is already
+   * sampleable via the aspect view) or when the depth attachment
+   * isn't sampleable (`depthSamplable: true` not set on descriptor).
+   * Caller (SceneFramebuffer or SceneRenderer) calls this once per
+   * frame, AFTER the main scene render pass ends so depth is final.
+   *
+   * @param encoder - Main frame command encoder.
+   */
+  resolveDepthMSAA(encoder: GPUCommandEncoder): void {
+    if (
+      !this._msaaDepthResolveAttachmentView ||
+      !this._depthSampleableView ||
+      !this.depthStencilAttachment
+    ) {
+      return;
+    }
+    dispatchDepthResolve(
+      encoder,
+      this.device,
+      this._depthSampleableView,
+      this._msaaDepthResolveAttachmentView,
+    );
   }
 
   /**
@@ -380,6 +450,18 @@ export class WebGPURenderTarget {
    * @returns Sampleable depth view or undefined
    */
   getDepthSampleableView(): GPUTextureView | undefined {
+    // Slice 5c-B Batch 128 — when MSAA is on AND we've allocated a
+    // resolve target, return its single-sample sampleable view so
+    // consumers (env effects, AO, DoF, gBuffer-producer single-sample
+    // path) bind a `texture_depth_2d`-compatible view. The original
+    // aspect view on the MSAA depth texture is still multisampled and
+    // would trip "Sample count doesn't match expectation" at bind
+    // time. Caller is responsible for invoking `resolveDepthMSAA`
+    // each frame so this view is populated with the current frame's
+    // depth.
+    if (this._msaaDepthResolveSampleableView) {
+      return this._msaaDepthResolveSampleableView;
+    }
     return this._depthSampleableView;
   }
 

@@ -76,11 +76,11 @@ async function capture(label, { npr, strength }) {
       v.scene.nprNormalThreshold = 0.05;
       v.scene.nprDepthThreshold = 0.002;
       v.scene.nprEdgeColor = new C.Color(1.0, 0.0, 1.0, 1.0); // magenta
-      // Batch 127 wires _depthStencilView from
-      // _sceneFramebuffer.depthSampleableView, which is null with
-      // MSAA. Force single-sample so env effects activate. MSAA
-      // depth resolve is a separate follow-up batch.
-      v.scene.msaaSamples = 1;
+      // Batch 128 — MSAA depth resolve now populates a single-sample
+      // sampleable depth view in BOTH single-sample and MSAA modes,
+      // so probes can use the default `msaaSamples=4` and env effects
+      // still activate. (Pre-Batch-128 we had to force =1 to bypass
+      // the depth wiring gate.)
 
       // Force the lazy FR loader to settle before rendering, otherwise
       // the first ~3-5 frames skip NPR while the dynamic import is in

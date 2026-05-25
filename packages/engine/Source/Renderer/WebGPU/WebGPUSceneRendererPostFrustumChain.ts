@@ -96,6 +96,33 @@ export function executePostFrustumChain(
     host._renderDepthPlane(config);
   }
 
+  // Slice 5c-B Batch 128 — MSAA depth resolve. In single-sample mode
+  // this is a no-op (the depth aspect view is already sampleable).
+  // In MSAA mode, this dispatches a fullscreen FS pass that reads
+  // sample 0 of the multisampled depth and writes to a single-sample
+  // depth32float resolve target. `SceneFramebuffer.depthSampleableView`
+  // now returns the resolved view, so AO + DoF + env effects get a
+  // bindable `texture_depth_2d`-compatible view in both modes.
+  //
+  // Must run AFTER the scene render pass + globe-depth update
+  // (depth is committed) and BEFORE `_runPostProcessing` (consumes
+  // the resolved view for AO, DoF) AND BEFORE env effects (consume
+  // it for NPR / SSR / Procedural Clouds).
+  const _ssceneFB = host._sceneFramebuffer as unknown as {
+    resolveDepthMSAA?: (encoder: GPUCommandEncoder) => void;
+  } | null;
+  const _ssEncoder = (
+    context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
+  )._currentCommandEncoder;
+  if (_ssceneFB?.resolveDepthMSAA && _ssEncoder) {
+    // The resolve pass uses a depth-only attachment as render target.
+    // We need to end any active render pass on the main encoder
+    // BEFORE recording the resolve pass; afterwards we let the
+    // downstream chain re-open whatever pass it needs.
+    context.endCurrentRenderPass?.();
+    _ssceneFB.resolveDepthMSAA(_ssEncoder);
+  }
+
   // Slice 5c-B Batch 127 — `_executeEnvironmentalEffects` MOVED to
   // AFTER `_runPostProcessing` (~L162). Pre-Batch-127 env effects ran
   // here and wrote to `outputView = context.currentTextureView`, then
