@@ -53,6 +53,19 @@ struct TAAParams {
 // converts to UV delta via `(curNdc - prevNdc) * vec2(0.5, -0.5)` in
 // `sampleMotionTexture` below.
 @group(0) @binding(5) var motionTex: texture_2d<f32>;
+// Slice 5c-B Batch 126 — G-buffer normal-roughness (slot 1 of the
+// MRT pipeline, Batches 117-121). When the host passes a real
+// G-buffer view, the disocclusion check below adds a 3rd rejection
+// criterion: if the eye-space normal at `prevUV` diverges from the
+// normal at `uv` by more than `normalRejectThreshold`, treat the
+// history as disoccluded. Catches silhouette pixels where the
+// reprojected screen position points at a different surface (e.g. a
+// foreground object moved off a background; the AABB + depth checks
+// can miss this when the depth gap is small but the surface
+// orientation differs). When the host binds the 1×1 sentinel
+// placeholder, the check skips and the prior depth+motion gates run
+// unchanged.
+@group(0) @binding(6) var gBufferNormalTex: texture_2d<f32>;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -277,6 +290,35 @@ fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
       let disocclusionThreshold = abs(eyePosCurr.z) * 0.001;
       if (depthDelta > max(disocclusionThreshold, 1.0)) {
         return uv;
+      }
+
+      // Slice 5c-B Batch 126 — G-buffer normal divergence check.
+      // Final disocclusion gate: compare the eye-space normal at the
+      // current pixel against the normal at prevUV. If they diverge
+      // by more than ~30° (1 - dot > 0.13), the reprojected sample
+      // came from a different surface orientation — disocclude. This
+      // catches silhouette pixels where the depth gap is small but
+      // the surface tilt differs (e.g. wall-to-floor corners).
+      //
+      // Sentinel-aware: skip when either normal is the
+      // load-op-clear sentinel (length < 0.1) emitted by Phase 1
+      // non-emitting pipelines (sky / billboards / labels / lines).
+      // The motion + depth gates handle those pixels.
+      let nCenter = textureSampleLevel(
+        gBufferNormalTex, linearSampler, uv, 0.0,
+      ).xyz;
+      let nPrev = textureSampleLevel(
+        gBufferNormalTex, linearSampler, prevUV, 0.0,
+      ).xyz;
+      if (length(nCenter) >= 0.1 && length(nPrev) >= 0.1) {
+        let div = 1.0 - dot(normalize(nCenter), normalize(nPrev));
+        // Threshold ~0.13 corresponds to ~30°. Empirically catches
+        // silhouettes without false-positiving on smooth shading
+        // gradients (e.g. terrain slopes where normals change
+        // continuously but the surface IS continuous).
+        if (div > 0.13) {
+          return uv;
+        }
       }
     }
   }

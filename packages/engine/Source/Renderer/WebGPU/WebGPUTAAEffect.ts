@@ -312,6 +312,12 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   // (model velocity pass inactive); the FS branch reads `(0, 0)` and
   // falls back to the existing depth-reprojection path.
   private _motionPlaceholderView: GPUTextureView | null = null;
+  // Slice 5c-B Batch 126 — 1×1 G-buffer normal-roughness placeholder.
+  // The shader reads (0,0,0,0) as the load-op-clear sentinel and
+  // skips the normal-divergence disocclusion test. Bound when the
+  // host doesn't pass a real G-buffer view (early frames before the
+  // FB is allocated, or non-WebGPU code paths).
+  private _gBufferPlaceholderView: GPUTextureView | null = null;
   private _paramsBuffer: GPUBuffer | null = null;
   private _paramsScratch = new Float32Array(TAA_PARAMS_FLOATS);
 
@@ -399,6 +405,12 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       sampler(3, Stage.FRAGMENT),
       uniformBuffer(4, Stage.FRAGMENT),
       texture(5, Stage.FRAGMENT),
+      // Slice 5c-B Batch 126 — G-buffer normal-roughness texture for
+      // the disocclusion normal-divergence test. Bound to a 1×1
+      // sentinel placeholder when the host doesn't pass a real
+      // G-buffer view; the shader's sentinel check (length < 0.1)
+      // skips the test for those frames.
+      texture(6, Stage.FRAGMENT),
     ]);
 
     // Render pipeline
@@ -446,6 +458,26 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       { width: 1, height: 1, depthOrArrayLayers: 1 },
     );
     this._motionPlaceholderView = placeholderTex.createView();
+
+    // Slice 5c-B Batch 126 — 1×1 rgba16float G-buffer normal-roughness
+    // placeholder. Matches MRT_NORMAL_ROUGHNESS_FORMAT so the binding
+    // slot's format-compat check passes against the BGL entry. Zero-
+    // fill = (0,0,0,0) which the shader's sentinel check (length < 0.1)
+    // treats as "no real normal here, skip the divergence test".
+    const gBufferPlaceholderTex = device.createTexture({
+      label: "TAA G-Buffer Placeholder",
+      size: [1, 1, 1],
+      format: "rgba16float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // rgba16float = 4 × 16-bit floats = 8 bytes per pixel. Zero-fill.
+    device.queue.writeTexture(
+      { texture: gBufferPlaceholderTex },
+      new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0]),
+      { bytesPerRow: 8, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    this._gBufferPlaceholderView = gBufferPlaceholderTex.createView();
   }
 
   resize(width: number, height: number): void {
@@ -465,6 +497,10 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     depthView: GPUTextureView | null,
     _sampler: GPUSampler,
     motionView: GPUTextureView | null = null,
+    // Slice 5c-B Batch 126 — G-buffer normal-roughness view for the
+    // disocclusion normal-divergence test. Null falls back to the
+    // 1×1 sentinel placeholder.
+    gBufferNormalView: GPUTextureView | null = null,
   ): GPUTextureView {
     if (
       !this._device ||
@@ -540,8 +576,9 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     // velocity-aware geometry has populated a real texture; the FS
     // reads zero and routes through depth reprojection.
     const motionBindView = motionView ?? this._motionPlaceholderView;
-    if (!motionBindView) {
-      // Should never happen — placeholder is allocated at initialize().
+    const gBufferBindView = gBufferNormalView ?? this._gBufferPlaceholderView;
+    if (!motionBindView || !gBufferBindView) {
+      // Should never happen — both placeholders are allocated at initialize().
       return sourceView;
     }
     const bg = this._device.createBindGroup({
@@ -554,6 +591,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
         { binding: 3, resource: this._sampler },
         { binding: 4, resource: { buffer: this._paramsBuffer } },
         { binding: 5, resource: motionBindView },
+        { binding: 6, resource: gBufferBindView },
       ],
     });
 

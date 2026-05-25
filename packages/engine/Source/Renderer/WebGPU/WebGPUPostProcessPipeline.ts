@@ -1050,12 +1050,19 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       // pass (model velocity output disabled), `motionView` is null
       // and the TAA effect binds its 1×1 zero placeholder; the FS
       // falls through to depth reprojection for that frame.
+      //
+      // Slice 5c-B Batch 126 — also pass `gBufferNormalView` so TAA's
+      // disocclusion test can do a normal-divergence rejection at
+      // silhouette pixels. Null when the G-buffer FB isn't allocated
+      // yet (early frames); the TAA shader's sentinel check handles
+      // the placeholder transparently.
       currentView = this._taaEffect.execute(
         encoder,
         currentView,
         depth,
         this._sampler!,
         motionView ?? null,
+        gBufferNormalView ?? null,
       );
     }
 
