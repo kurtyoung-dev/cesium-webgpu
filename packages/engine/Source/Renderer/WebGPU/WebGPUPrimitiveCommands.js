@@ -1080,24 +1080,18 @@ function createWebGPUCommands(
       label: `${shaderInfo.type} Shader`,
     });
 
-    // Camera BGL — group(0): camera uniforms
+    // Camera BGL — group(0): camera uniforms.
     //
-    // Slice 5c-B Batch 121 — pre-existing bug fix surfaced by
-    // probe-litmat-mrt.mjs. Every Mat*Lit shader reads camera in the
-    // fragment stage (camera.lightDirection for the diffuse/specular
-    // eval) but `isLit` only matched isPhongShader (phong/phongTextured)
-    // — Mat*Lit pipelines were getting VERTEX-only camera visibility
-    // → "Entry point's stage (ShaderStage::Fragment) is not in the
-    // binding visibility" at pipeline build the first time a polygon
-    // with a Color Lit appearance rendered. Wasn't visible in default
-    // scenes because the default CesiumViewer has no Mat*Lit primitives.
-    const needsFragmentCamera = isLit || isMaterialLitShader(shaderInfo.type);
-    const cameraVisibility = needsFragmentCamera
-      ? GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT
-      : GPUShaderStage.VERTEX;
-
+    // Slice 5c-B Batch 124 — promoted to always VERTEX_FRAGMENT.
+    // Batch 121 conditionally added FRAGMENT for
+    // `isLit || isMaterialLitShader(shaderInfo.type)`, but Batch 124
+    // discovered that Flat shaders also read camera in fragment for
+    // the aerial-LUT fog block (FEAT-GAP-09). Rather than maintain a
+    // shader-type-list of "needs fragment camera" that grows over
+    // time, just declare VERTEX_FRAGMENT once — the visibility flag is
+    // free at runtime and protects every present + future shader.
     cache.cameraBindGroupLayout = makeBindGroupLayout(device, "Camera BGL", [
-      uniformBuffer(0, cameraVisibility),
+      uniformBuffer(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT),
     ]);
 
     // Material BGL — group(1): placeholder material uniforms
@@ -1997,10 +1991,25 @@ function createMaterialPipelineAndCache(
     label: `${shaderInfo.type} Material Shader`,
   });
 
-  // Camera BGL — group(0)
-  const matCameraVisibility = isLit ? Stage.VERTEX_FRAGMENT : Stage.VERTEX;
+  // Camera BGL — group(0).
+  //
+  // Slice 5c-B Batch 124 — bug fix surfaced by the litmat polygon probe
+  // (probe-litmat-mrt). Pre-fix: `isLit ? VERTEX_FRAGMENT : VERTEX`.
+  // The Flat material shaders (e.g. PrimitiveMatColorFlat) read
+  // `camera.encodedCameraHigh` + `camera.encodedCameraLow` in fragment
+  // for the FEAT-GAP-09 aerial-perspective fog block at L99. With the
+  // pre-fix gate, Flat pipelines built camera BGL with VERTEX-only
+  // visibility and the shader's fragment read tripped "Entry point's
+  // stage (ShaderStage::Fragment) is not in the binding visibility in
+  // the layout (ShaderStage::Vertex)" the first time a Flat material
+  // primitive rendered in a scene with the LUT active. Default scenes
+  // had the LUT placeholder off so this stayed latent.
+  //
+  // Always VERTEX_FRAGMENT — the visibility flag is free at runtime
+  // and protects against any future shader (Lit or Flat) adding a
+  // fragment-side camera read.
   cache.cameraBindGroupLayout = makeBindGroupLayout(device, "Mat Camera BGL", [
-    uniformBuffer(0, matCameraVisibility),
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
 
   // Material BGL — group(1): material uniforms from MaterialUniformBuffer
@@ -2282,11 +2291,19 @@ function createWebGPUMaterialCommands(
       label: `${shaderInfo.type} MatPick`,
     });
 
-    // Pick camera BGL — group(0)
+    // Pick camera BGL — group(0).
+    //
+    // Slice 5c-B Batch 124 — promoted to VERTEX_FRAGMENT to match the
+    // color BGL fix above. Pick shaders today only read camera in
+    // vertex, but the alpha-mask discard path in some Mat pick shaders
+    // reads material in fragment, and any future migration that
+    // shares the color shader's camera struct (e.g. position-from-eye-
+    // space for selective masking) would trip the same Vertex-only
+    // bug. Visibility flag is free at runtime.
     cache.pickCameraBindGroupLayout = makeBindGroupLayout(
       device,
       "MatPick Camera BGL",
-      [uniformBuffer(0, Stage.VERTEX)],
+      [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
     );
 
     // Pick material BGL — group(1): pickColor
