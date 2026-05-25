@@ -217,6 +217,7 @@ export function executePostFrustumChain(
   const _sceneAny = config.scene as unknown as {
     _enableSSR?: boolean;
     _enableNPROutlines?: boolean;
+    _enableContactShadows?: boolean;
     _enableWeather?: boolean;
     globe?: { showProceduralClouds?: boolean };
     _frameState?: {
@@ -226,6 +227,7 @@ export function executePostFrustumChain(
   const _anyEnvEffectEnabled =
     !!_sceneAny._enableSSR ||
     !!_sceneAny._enableNPROutlines ||
+    !!_sceneAny._enableContactShadows ||
     !!_sceneAny._enableWeather ||
     !!_sceneAny.globe?.showProceduralClouds ||
     _sceneAny._frameState?.atmosphericConditions?.volumetricFog?.enabled ===

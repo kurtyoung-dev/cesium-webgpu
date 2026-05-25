@@ -1013,6 +1013,13 @@ class Scene {
     // Off by default — hard outlines clash with the photorealistic
     // globe presentation; opt-in via `scene.enableNPROutlines = true`.
     this._enableNPROutlines = false;
+
+    // Slice 5c-B Batch 133 — screen-space contact shadows (WebGPU
+    // only). Reads G-buffer slot 1 + scene depth, marches the sun
+    // direction in eye-space and darkens fragments where a
+    // screen-space occluder is within the marched distance. Off by
+    // default — opt-in via `scene.enableContactShadows = true`.
+    this._enableContactShadows = false;
     this._enableWeather = false;
     this._weatherType = 0;
     this._weatherIntensity = 0.5;
@@ -2635,6 +2642,36 @@ class Scene {
 
   set enableNPROutlines(value) {
     this._enableNPROutlines = value;
+  }
+
+  /**
+   * When true and using the WebGPU renderer, runs a screen-space
+   * contact-shadows post-process pass that reads the G-buffer normal
+   * + scene depth, marches the sun direction in eye-space, and
+   * darkens fragments where a screen-space occluder lies within the
+   * marched distance. Cheap silhouette darkening for grounded objects
+   * (foliage bases, vehicle wheels, building bases meeting ground).
+   * Has no effect on the WebGL path.
+   *
+   * Tunable via {@link Scene#contactShadowMaxDistance},
+   * {@link Scene#contactShadowSteps},
+   * {@link Scene#contactShadowStrength},
+   * {@link Scene#contactShadowThickness}.
+   *
+   * @type {boolean}
+   * @default false
+   *
+   * @example
+   * // Enable contact shadows (WebGPU only)
+   * scene.enableContactShadows = true;
+   * scene.contactShadowStrength = 0.6;
+   */
+  get enableContactShadows() {
+    return this._enableContactShadows;
+  }
+
+  set enableContactShadows(value) {
+    this._enableContactShadows = value;
   }
 
   /**

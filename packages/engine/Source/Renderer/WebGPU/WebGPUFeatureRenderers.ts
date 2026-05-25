@@ -696,6 +696,21 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
+  // Slice 5c-B Batch 133 — Contact shadows. Opt-in via
+  // `scene.enableContactShadows`; reads G-buffer slot 1 + scene depth
+  // and marches the sun direction in eye-space, darkening fragments
+  // where a screen-space occluder lies within the marched distance.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.CONTACT_SHADOWS,
+    async () => {
+      const mod = await import("./WebGPUContactShadowsEffect.js");
+      context.registerFeatureRenderer(FeatureRendererKey.CONTACT_SHADOWS, {
+        execute: mod.executeContactShadows,
+        destroy: mod.destroyContactShadowsResources,
+      });
+    },
+  );
+
   // ── Weather (LAZY) ──
   // WeatherParticles uses compute shaders + GPU particle simulation.
   // Only loaded when scene._enableWeather flips on.

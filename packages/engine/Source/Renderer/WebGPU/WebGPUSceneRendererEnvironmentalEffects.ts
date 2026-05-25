@@ -142,6 +142,48 @@ export function executeEnvironmentalEffects(
     }
   }
 
+  // Slice 5c-B Batch 133 — Contact shadows. Runs BEFORE SSR so the
+  // reflection compositing on top includes the shadow darkening at
+  // grounded objects (foliage bases, vehicle wheels meeting road,
+  // building bases meeting terrain). Skipped when the G-buffer
+  // normal view isn't allocated yet.
+  if (
+    (scene as unknown as { _enableContactShadows?: boolean })
+      ._enableContactShadows
+  ) {
+    const csFR = context.getFeatureRenderer(FeatureRendererKey.CONTACT_SHADOWS);
+    const sceneCS = scene as unknown as {
+      _view?: {
+        gBufferFramebuffer?: {
+          normalRoughnessTexture: GPUTextureView | null;
+        };
+      };
+    };
+    const csNormalView =
+      sceneCS._view?.gBufferFramebuffer?.normalRoughnessTexture ?? null;
+    if (csFR?.execute && csNormalView) {
+      try {
+        context.endCurrentRenderPass?.();
+        csFR.execute(
+          context,
+          frameState,
+          colorView,
+          depthView,
+          csNormalView,
+          outputView,
+          scene,
+        );
+        context.resumeDefaultRenderPass?.();
+      } catch (e: unknown) {
+        context.log?.(
+          "warn",
+          `Contact shadows failed: ${(e as Error).message}`,
+        );
+        context.resumeDefaultRenderPass?.();
+      }
+    }
+  }
+
   // 2. Screen-Space Reflections — ray-marched reflections
   if (scene._enableSSR) {
     const ssrFR = context.getFeatureRenderer(

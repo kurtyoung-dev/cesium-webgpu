@@ -178,6 +178,17 @@ const FeatureRendererKey = {
   // globe default.
   NPR_OUTLINES: 47,
 
+  // ── Contact Shadows (Slice 5c-B Batch 133) ──
+  // Screen-space contact shadows. For each fragment, reads the
+  // G-buffer normal + depth, unprojects to eye-space, then ray-marches
+  // a short distance toward the sun direction sampling the depth
+  // buffer at each step. If an occluder is found, the fragment is
+  // darkened to simulate the contact shadow that a full shadow map
+  // would also produce at finer detail. Cheap silhouette darkening
+  // for grounded objects (foliage, ground vehicles, building bases).
+  // Opt-in via `scene.enableContactShadows`.
+  CONTACT_SHADOWS: 48,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -190,7 +201,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 48,
+  COUNT: 49,
 };
 
 export default Object.freeze(FeatureRendererKey);
