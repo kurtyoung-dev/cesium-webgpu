@@ -137,9 +137,25 @@ export function makeSceneFBTargets(
   if (!_mrtMode) {
     return [slot0];
   }
-  // Slot 1: declared but null. Shader doesn't write @location(1);
-  // WebGPU permits this when the render pass has 2 attachments.
-  return [slot0, null];
+  // Slot 1: non-null with writeMask=0. WebGPU's validator treats
+  // trailing `null` in a pipeline's targets array as "slot absent" —
+  // a pipeline `[scene, null]` is effectively length 1 from the
+  // pass-vs-pipeline compatibility check's perspective, so against a
+  // 2-attachment render pass the validator rejects with "attachment
+  // state not compatible" (Batch 117 discovery — original Batch 116
+  // never tripped this because the only converted renderer that
+  // actually drew on the test view was the globe, which Batch 116
+  // also wrapped with explicit 2 targets).
+  //
+  // The non-null placeholder shape `{format, writeMask: 0}` declares
+  // the target slot WITHOUT requiring the shader to emit
+  // @location(1) — writeMask=0 means "don't write" so the validator
+  // doesn't enforce the "color target has no corresponding fragment
+  // output" check that bites writeMask=0xf without the shader emit.
+  // The pipeline's target count is then 2 (matches the pass), and
+  // the slot stays at whatever the attachment loaded with (the
+  // (0,0,0,1) sentinel set by `buildMrtSlot1Attachment`).
+  return [slot0, { format: MRT_NORMAL_ROUGHNESS_FORMAT, writeMask: 0 }];
 }
 
 /**

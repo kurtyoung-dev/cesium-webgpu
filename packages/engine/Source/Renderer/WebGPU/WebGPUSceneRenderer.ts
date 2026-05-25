@@ -68,7 +68,10 @@ import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalE
 import { executeGlobeDispatch } from "./WebGPUSceneRendererGlobePass.js";
 import { executeTranslucentPass } from "./WebGPUSceneRendererTranslucentPass.js";
 import { execute3DTilePasses } from "./WebGPUSceneRenderer3DTilePasses.js";
-import { setupSceneFramebufferRenderPass } from "./WebGPUSceneRendererPassRedirect.js";
+import {
+  setupSceneFramebufferRenderPass,
+  buildMrtSlot1Attachment,
+} from "./WebGPUSceneRendererPassRedirect.js";
 import { resetPerFrameState } from "./WebGPUSceneRendererFrameReset.js";
 import { executeFrustumLoop } from "./WebGPUSceneRendererFrustumLoop.js";
 import { executePostFrustumChain } from "./WebGPUSceneRendererPostFrustumChain.js";
@@ -651,6 +654,15 @@ export class WebGPUSceneRenderer {
   // Context, so caching here is safe.
   private _lastContext: WebGPUContext | null = null;
 
+  // Slice 5c-B Batch 117 — per-frame scene reference for `_resumeScenePass`
+  // and `_clearDepthStencil` to reach into `scene._view.gBufferFramebuffer`
+  // when re-opening the scene-FB render pass with the MRT slot-1
+  // attachment. Stashed at the top of `executeCommands` (the only
+  // method that's already wired with `config.scene`) and cleared at
+  // frame end. Cheaper than threading scene through all 8+ callers of
+  // the two re-open methods.
+  public _scene: unknown = null;
+
   // Scene-level rendering resources (lazy-initialized)
   // Public underscore: shared with the executeCommands slice extracts
   // (`WebGPUSceneRendererPassRedirect.ts`, Batch 138 — and following
@@ -1062,6 +1074,12 @@ export class WebGPUSceneRenderer {
   executeCommands(config: WebGPURenderFrameConfig): void {
     const { scene, context, passState, picking } = config;
 
+    // Slice 5c-B Batch 117 — stash scene for `_resumeScenePass` and
+    // `_clearDepthStencil` so they can read `scene._view.gBufferFramebuffer`
+    // when MRT mode is on. Cleared in the picking-early-return below
+    // and at the natural end of this method.
+    this._scene = scene;
+
     // Audit C.11 (Batch 132) -- snapshot the requested viewport once
     // per frame. `passState.viewport` is the BoundingRectangle the
     // caller (Scene / pick / OIT) requested; falls back to full canvas
@@ -1109,6 +1127,10 @@ export class WebGPUSceneRenderer {
       // trigger an unnecessary capture there. Reset here to keep the
       // flag scoped to the frame that set it.
       context._sceneHasTransmission = false;
+      // Slice 5c-B Batch 117 — clear stashed scene reference on pick
+      // early-return so a regular frame that follows doesn't see a
+      // stale scene ref if it somehow skips the executeCommands entry.
+      this._scene = null;
       return;
     }
 
@@ -1351,7 +1373,7 @@ export class WebGPUSceneRenderer {
     }
     const rawColor: GPURenderPassColorAttachment[] | undefined =
       colorTarget.getColorAttachments?.();
-    const colorAttachments = rawColor?.map((a) => ({
+    let colorAttachments = rawColor?.map((a) => ({
       ...a,
       loadOp: "load" as GPULoadOp,
     }));
@@ -1366,6 +1388,13 @@ export class WebGPUSceneRenderer {
     if (!colorAttachments?.length) {
       context.resumeDefaultRenderPass?.();
       return;
+    }
+    // Slice 5c-B Batch 117 — append MRT slot-1 G-buffer attachment when
+    // MRT mode is on. loadOp="load" preserves writes accumulated in the
+    // pass that was just ended.
+    const slot1 = buildMrtSlot1Attachment(this._scene, "load");
+    if (slot1) {
+      colorAttachments = [...colorAttachments, slot1];
     }
     if (context._currentRenderPassEncoder) {
       context._currentRenderPassEncoder.end();
@@ -1430,13 +1459,20 @@ export class WebGPUSceneRenderer {
     if (colorTarget && context._currentCommandEncoder) {
       const rawColor: GPURenderPassColorAttachment[] | undefined =
         colorTarget.getColorAttachments?.();
-      const colorAttachments = rawColor?.map((a) => ({
+      let colorAttachments = rawColor?.map((a) => ({
         ...a,
         loadOp: "load" as GPULoadOp,
       }));
       const depthStencilAttachment = colorTarget.getDepthStencilAttachment?.();
 
       if (colorAttachments?.length) {
+        // Slice 5c-B Batch 117 — append MRT slot-1 G-buffer attachment
+        // (loadOp="load" preserves accumulated writes from the prior
+        // frustum's globe pass).
+        const slot1 = buildMrtSlot1Attachment(this._scene, "load");
+        if (slot1) {
+          colorAttachments = [...colorAttachments, slot1];
+        }
         context.endCurrentRenderPass?.();
         const passDesc: GPURenderPassDescriptor = {
           label: "Scene Framebuffer Render Pass",

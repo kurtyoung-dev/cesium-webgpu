@@ -2473,8 +2473,49 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
 // ═══════════════════════════════════════════════════════════════════════
 // Fragment Shader
 // ═══════════════════════════════════════════════════════════════════════
+
+// Slice 5c-B Batch 117 — G-buffer MRT output struct.
+//
+// Slot 0 (@location(0)) is the scene framebuffer color (unchanged from
+// the original 1-target shape). Slot 1 (@location(1)) is the G-buffer
+// normal-roughness texture: xyz = eye-space normal, w = roughness.
+//
+// The pipeline's slot-1 target is `{format: "rgba16float", writeMask:
+// 0xf}` whenever MRT mode is on (see WebGPUGlobeSurfacePipelines.ts).
+// Every return path in the fragment entry points below MUST go through
+// `makeFragOutput` so the slot-1 emit is consistent — declaring a
+// writable target slot without emitting the matching @location trips
+// `GPUPipelineError: Color target has no corresponding fragment output`
+// at pipeline creation time (the silent failure mode the original
+// Sub-C dry-run hit; see migration_doc/WEBGPU_DEBUGGING_LOG.md
+// Batch 116 postmortem).
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  @location(1) normalRoughness: vec4<f32>,
+};
+
+// Helper to pack the slot-1 attachment. Roughness is a 0.5 placeholder
+// until per-material roughness is piped through the globe pipeline
+// (covered by NEW-GBUFFER-MRT-PRIMITIVE-EMIT material-aware work).
+// Debug entry points pass a sentinel (0,0,0,*) when no real normal is
+// available; consumers (AO, future SSR) check `length(xyz) < 0.01` and
+// fall back to the depth-derived path for sentinel pixels.
+fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
+  var out: FragOutput;
+  out.color = color;
+  out.normalRoughness = vec4<f32>(normalEC, 0.5);
+  return out;
+}
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
+  // Slice 5c-B Batch 117 — hoisted from line 2738 so every return path
+  // (including the ~30 early debug returns at the top of this function)
+  // has a real eye-space normal to emit on slot 1. v_normalEC is always
+  // written by the vertex shader (unconditionally in vertexMain, line
+  // 1158) so the read is safe regardless of the hasNormals pipeline
+  // variant.
+  let normalEC = normalize(input.v_normalEC);
   let geoUV = input.v_textureCoordinates.xy;
   let webMercT = input.v_textureCoordinates.z;
 
@@ -2505,7 +2546,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // render output. Bumped to 1 e9 so a JS-side caller has to push the
   // value WAY past the natural range to opt in.)
   if (tile.time > 1.0e9 && tile.time < 1.5e9) {
-    return vec4<f32>(geoUV.x, geoUV.y, webMercT, 1.0);
+    return makeFragOutput(vec4<f32>(geoUV.x, geoUV.y, webMercT, 1.0), normalEC);
   }
   // Batch 56 — texCoordsAlpha debug. Trigger via tile.time in [1.5e9, 2.5e9].
   // Shows red = alpha mask for layer 0 (white means alpha=1, black=0),
@@ -2514,9 +2555,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     if (u32(tile.layerCount) >= 1u) {
       let r = tile.layers[0].texCoordsRect;
       let alpha = texCoordsAlpha(geoUV, r);
-      return vec4<f32>(alpha, geoUV.y, r.y, 1.0);
+      return makeFragOutput(vec4<f32>(alpha, geoUV.y, r.y, 1.0), normalEC);
     }
-    return vec4<f32>(1.0, 0.0, 1.0, 1.0); // magenta = no layer
+    return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC); // magenta = no layer
   }
   // Batch 56 — layerCount debug. Trigger via tile.time in [2.5e9, 3.5e9].
   // Red = layer count / 16. Green = layer 0 alpha. Blue = layer 1 alpha
@@ -2526,7 +2567,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let lc = u32(tile.layerCount);
     let a0 = select(0.0, texCoordsAlpha(geoUV, tile.layers[0].texCoordsRect), lc >= 1u);
     let a1 = select(0.0, texCoordsAlpha(geoUV, tile.layers[1].texCoordsRect), lc >= 2u);
-    return vec4<f32>(f32(lc) / 16.0, a0, a1, 1.0);
+    return makeFragOutput(vec4<f32>(f32(lc) / 16.0, a0, a1, 1.0), normalEC);
   }
   // Batch 56 — direct imagery sample debug. Trigger via tile.time in
   // [3.5e9, 4.5e9]. Shows raw sample from layer 0 (no compositing,
@@ -2539,9 +2580,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
       let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
       let tex = sampleImagery(dayTexture0, texSampler, uv, tile.layers[0], uv_dx, uv_dy);
-      return vec4<f32>(tex.rgb, 1.0);
+      return makeFragOutput(vec4<f32>(tex.rgb, 1.0), normalEC);
     }
-    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+    return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
   // Batch 57 — explicit mip level debug. Forces sampling at mip 4 to
   // verify the mipmap chain exists and contains valid imagery. If the
@@ -2555,9 +2596,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       let scaledUV = uv * tile.layers[0].translationAndScale.zw +
         tile.layers[0].translationAndScale.xy;
       let tex = textureSampleLevel(dayTexture0, texSampler, scaledUV, 4.0);
-      return vec4<f32>(tex.rgb, 1.0);
+      return makeFragOutput(vec4<f32>(tex.rgb, 1.0), normalEC);
     }
-    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+    return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
   // Batch 57 — visualize derivative magnitude as grayscale.
   // log2(max(|dx|, |dy|) * texSize) approximates the LOD value the
@@ -2573,9 +2614,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       let maxDeriv = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));
       // Encode log2(maxDeriv * 256) / 10 as gray (assumes 256x256 imagery).
       let lod = log2(max(maxDeriv * 256.0, 1e-6)) / 10.0 + 0.5;
-      return vec4<f32>(lod, lod, lod, 1.0);
+      return makeFragOutput(vec4<f32>(lod, lod, lod, 1.0), normalEC);
     }
-    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+    return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
   // Batch 56 — direct imagery sample for layer 1.
   if (tile.time > 4.5e9 && tile.time < 5.5e9) {
@@ -2585,9 +2626,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
       let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
       let tex = sampleImagery(dayTexture1, texSampler, uv, tile.layers[1], uv_dx, uv_dy);
-      return vec4<f32>(tex.rgb, 1.0);
+      return makeFragOutput(vec4<f32>(tex.rgb, 1.0), normalEC);
     }
-    return vec4<f32>(0.0, 1.0, 1.0, 1.0); // cyan = no layer 1
+    return makeFragOutput(vec4<f32>(0.0, 1.0, 1.0, 1.0), normalEC); // cyan = no layer 1
   }
   // Batch 56 — texSample.a debug. Visualize the imagery's alpha channel
   // for layer 0. RED = layer 0's tex.a. If alpha is 0, the composite
@@ -2600,9 +2641,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
       let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
       let tex = sampleImagery(dayTexture0, texSampler, uv, tile.layers[0], uv_dx, uv_dy);
-      return vec4<f32>(tex.a, tex.a, tex.a, 1.0);
+      return makeFragOutput(vec4<f32>(tex.a, tex.a, tex.a, 1.0), normalEC);
     }
-    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+    return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
   // Batch 56 — tex.a for layer 1. Used to discriminate which texture
   // upload path has alpha=0. Reprojected layers force alpha=1 (after
@@ -2615,9 +2656,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       let uv_dx = selectLayerUVDerivative(geoUV_dx, webMercUV_dx, useWMT);
       let uv_dy = selectLayerUVDerivative(geoUV_dy, webMercUV_dy, useWMT);
       let tex = sampleImagery(dayTexture1, texSampler, uv, tile.layers[1], uv_dx, uv_dy);
-      return vec4<f32>(tex.a, tex.a, tex.a, 1.0);
+      return makeFragOutput(vec4<f32>(tex.a, tex.a, tex.a, 1.0), normalEC);
     }
-    return vec4<f32>(0.0, 1.0, 1.0, 1.0); // cyan = no layer 1
+    return makeFragOutput(vec4<f32>(0.0, 1.0, 1.0, 1.0), normalEC); // cyan = no layer 1
   }
 
   // Compute shadow factor early — textureSampleCompare must be called
@@ -2680,7 +2721,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       minClipDist = min(minClipDist, dist);
     }
     if (minClipDist < effects.clippingEdgeWidth) {
-      return effects.clippingEdgeColor;
+      return makeFragOutput(effects.clippingEdgeColor, normalEC);
     }
   }
 
@@ -2707,7 +2748,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       // Scale edge width from world to SDF space (approximate)
       let sdfEdgeWidth = effects.clippingEdgeWidth * 0.001;
       if (edgeDist < sdfEdgeWidth) {
-        return effects.clippingEdgeColor;
+        return makeFragOutput(effects.clippingEdgeColor, normalEC);
       }
     }
   }
@@ -2735,7 +2776,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     alpha = 1.0;
   }
 
-  let normal = normalize(input.v_normalEC);
+  // Slice 5c-B Batch 117 — `normalEC` is hoisted to the top of the
+  // function for the G-buffer emit. Reuse it here instead of normalizing
+  // again.
+  let normal = normalEC;
   let sunDir = normalize(camera.sunDirectionEC);
 
   // Day/night fade factor: 0 = night, 1 = day.
@@ -2999,18 +3043,18 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // material/atmosphere/HSB/fog effects. If this shows clean imagery
   // but production shows black, the bug is in the subsequent effects.
   if (tile.time > 7.5e9 && tile.time < 8.5e9) {
-    return vec4<f32>(color, 1.0);
+    return makeFragOutput(vec4<f32>(color, 1.0), normalEC);
   }
   // Batch 56 — post-composite alpha debug. Trigger via [8.5e9, 9.5e9].
   // Returns the accumulated alpha as grayscale. If alpha is 0 here,
   // the imagery composite produced no contribution.
   if (tile.time > 8.5e9 && tile.time < 9.5e9) {
-    return vec4<f32>(alpha, alpha, alpha, 1.0);
+    return makeFragOutput(vec4<f32>(alpha, alpha, alpha, 1.0), normalEC);
   }
 
   // Subsequent passes only apply imagery — skip all effects
   if (isSubsequentPass) {
-    return vec4<f32>(color, alpha);
+    return makeFragOutput(vec4<f32>(color, alpha), normalEC);
   }
 
   // ─── Cluster 3 — globe material composite ───
@@ -3027,7 +3071,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   //>>ifdef MATERIAL_APPLY
   var matInput: czm_MaterialInput;
   matInput.st = geoUV;
-  matInput.normalEC = normalize(input.v_normalEC);
+  // Slice 5c-B Batch 117 — reuse the hoisted `normalEC` (line 2480ish).
+  matInput.normalEC = normalEC;
   matInput.positionToEyeEC = -input.v_positionEC;
   // tangentToEyeMatrix: east-north-up frame at the fragment, transformed
   // to eye space. WebGL builds it via `czm_eastNorthUpToEyeCoordinates`;
@@ -3560,35 +3605,35 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       let fadeAmount = tile.groundAtmosphereControl.y;
       // Batch 56 — visualize per-vertex v_atmosphereRayleighColor via [13.5e9, 14.5e9].
       if (tile.time > 13.5e9 && tile.time < 14.5e9) {
-        return vec4<f32>(input.v_atmosphereRayleighColor, 1.0);
+        return makeFragOutput(vec4<f32>(input.v_atmosphereRayleighColor, 1.0), normalEC);
       }
       // Batch 56 — visualize per-vertex v_atmosphereMieColor via [14.5e9, 15.5e9].
       if (tile.time > 14.5e9 && tile.time < 15.5e9) {
-        return vec4<f32>(input.v_atmosphereMieColor, 1.0);
+        return makeFragOutput(vec4<f32>(input.v_atmosphereMieColor, 1.0), normalEC);
       }
       // Batch 56 — visualize viewDir via [15.5e9, 16.5e9]. Maps from [-1,1] to [0,1].
       if (tile.time > 15.5e9 && tile.time < 16.5e9) {
         let cameraWC2 = camera.encodedCameraHigh + camera.encodedCameraLow;
         let positionWC2 = input.v_positionMC;
         let viewDir2 = normalize(positionWC2 - cameraWC2);
-        return vec4<f32>(viewDir2 * 0.5 + 0.5, 1.0);
+        return makeFragOutput(vec4<f32>(viewDir2 * 0.5 + 0.5, 1.0), normalEC);
       }
       // Batch 56 — debug: visualize fadeAmount as grayscale via [9.5e9, 10.5e9].
       // If fadeAmount = 1 (white), the imagery is fully replaced by drape.
       if (tile.time > 9.5e9 && tile.time < 10.5e9) {
-        return vec4<f32>(fadeAmount, fadeAmount, fadeAmount, 1.0);
+        return makeFragOutput(vec4<f32>(fadeAmount, fadeAmount, fadeAmount, 1.0), normalEC);
       }
       // Batch 56 — debug: visualize draped color via [10.5e9, 11.5e9].
       if (tile.time > 10.5e9 && tile.time < 11.5e9) {
-        return vec4<f32>(draped, 1.0);
+        return makeFragOutput(vec4<f32>(draped, 1.0), normalEC);
       }
       // Batch 56 — debug: visualize groundAtmoColor only via [11.5e9, 12.5e9].
       if (tile.time > 11.5e9 && tile.time < 12.5e9) {
-        return vec4<f32>(groundAtmoColor, 1.0);
+        return makeFragOutput(vec4<f32>(groundAtmoColor, 1.0), normalEC);
       }
       // Batch 56 — debug: visualize transmittance via [12.5e9, 13.5e9].
       if (tile.time > 12.5e9 && tile.time < 13.5e9) {
-        return vec4<f32>(transmittance / 5.0, transmittance / 5.0, transmittance / 5.0, 1.0);
+        return makeFragOutput(vec4<f32>(transmittance / 5.0, transmittance / 5.0, transmittance / 5.0, 1.0), normalEC);
       }
       color = mix(color, draped, fadeAmount);
     }
@@ -3615,7 +3660,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // dimming is in the FS shading path. (Used during Batch 58 to
   // confirm the canvas/display path was clean before bisecting the FS.)
   if (tile.time > 18.5e9 && tile.time < 19.5e9) {
-    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    return makeFragOutput(vec4<f32>(1.0, 0.0, 0.0, 1.0), normalEC);
   }
   // Batch 58 — water-effect-trigger debug. Trigger via [19.5e9, 20.5e9].
   // Renders ocean fragments RED, land fragments GREEN. Verifies the
@@ -3629,14 +3674,14 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         waterMaskTexture, waterMaskSampler, waterUV, 0.0,
       ).r;
       if (waterMask > 0.01) {
-        return vec4<f32>(1.0, 0.0, 0.0, 1.0); // red = water + reflective ocean enabled
+        return makeFragOutput(vec4<f32>(1.0, 0.0, 0.0, 1.0), normalEC); // red = water + reflective ocean enabled
       }
-      return vec4<f32>(0.5, 0.5, 0.0, 1.0); // yellow = tile has water mask but fragment is land
+      return makeFragOutput(vec4<f32>(0.5, 0.5, 0.0, 1.0), normalEC); // yellow = tile has water mask but fragment is land
     }
-    return vec4<f32>(0.0, 1.0, 0.0, 1.0); // green = no reflective ocean for this tile
+    return makeFragOutput(vec4<f32>(0.0, 1.0, 0.0, 1.0), normalEC); // green = no reflective ocean for this tile
   }
 
-  return vec4<f32>(color, alpha);
+  return makeFragOutput(vec4<f32>(color, alpha), normalEC);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

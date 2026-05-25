@@ -27,6 +27,10 @@
 
 import type { WebGPUContext } from "./WebGPUContext.js";
 import {
+  isSceneFBMrtMode,
+  MRT_NORMAL_ROUGHNESS_FORMAT,
+} from "./WebGPUSceneFBTargetHelpers.js";
+import {
   executeBatch,
   executeBatchTranslucent,
   type WebGPURenderFrameConfig,
@@ -93,11 +97,19 @@ export function executeGlobeDispatch(
       // format (rgba16float in HDR, canvas format otherwise). Using
       // `presentationFormat` here would mismatch in HDR mode and the
       // bundle would be flagged invalid.
+      //
+      // Slice 5c-B Batch 117 — when MRT mode is on, the bundle also
+      // needs slot 1 (rgba16float G-buffer normal-roughness) to match
+      // the 2-attachment scene-FB render pass that contains the
+      // bundle's globe pipelines.
+      const colorFormats: GPUTextureFormat[] = isSceneFBMrtMode()
+        ? [context.scenePipelineFormat, MRT_NORMAL_ROUGHNESS_FORMAT]
+        : [context.scenePipelineFormat];
       const bundleEncoder = (
         context._device as GPUDevice
       ).createRenderBundleEncoder({
         label: "Globe terrain bundle",
-        colorFormats: [context.scenePipelineFormat],
+        colorFormats,
         depthStencilFormat: context.depthFormat ?? "depth24plus-stencil8",
         // Session 65 Batch 36 — match scene FB sample count so the
         // bundle's recorded pipelines (which now bake their own

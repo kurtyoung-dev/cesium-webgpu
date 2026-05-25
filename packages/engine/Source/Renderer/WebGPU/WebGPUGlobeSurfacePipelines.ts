@@ -376,28 +376,35 @@ export function buildPipelineDescriptor(
     fragment: {
       module: fragmentModule,
       entryPoint: fragmentEntry,
-      // Slice 5c-B Sub-C: declare 2 targets to match the 2-attachment
-      // scene-FB render pass. Slot 1 is `null` because the globe
-      // fragment shader currently emits only `@location(0)` — the
-      // G-buffer normal-roughness emit is a separate later batch.
+      // Slice 5c-B Batch 117 — globe pipeline emits BOTH targets now
+      // that GlobeTerrain.wgsl's fragmentMain + the 3 debug variants
+      // were rewired to return `FragOutput { @location(0) color,
+      // @location(1) normalRoughness }` (see migration_doc/
+      // WEBGPU_DEBUGGING_LOG.md Batch 117). Slot 1 is the eye-space
+      // normal + roughness packed as rgba16float; consumers (AO today,
+      // SSR / clustered lighting / contact shadows next) read it via
+      // `gBufferFramebuffer.normalRoughnessTexture` and fall back to
+      // the depth-derived path when the slot-1 sample is the
+      // (0,0,0,*) sentinel emitted by debug-Tri / non-globe pixels.
       //
-      // WebGPU spec: a `null` target slot is permitted alongside live
-      // attachments — the attachment loads/clears per its descriptor
-      // but the pipeline never writes to it. Switching the slot to
-      // `{format: rgba16float, writeMask: 0xf}` while the shader still
-      // emits only @location(0) trips `GPUPipelineError: Color target
-      // has no corresponding fragment output` at pipeline creation —
-      // the entire globe pipeline fails to build and the canvas falls
-      // back to sky-only. See migration_doc/WEBGPU_DEBUGGING_LOG.md
-      // (Sub-C investigation, this batch) for the bisect that found
-      // this failure mode.
+      // Depth-only back-face variant: still 0xf on slot 1 — the
+      // `colorWriteMask=0` applies only to slot 0 (the canvas color)
+      // because the variant is "depth-only" with respect to the SCENE
+      // color, not the G-buffer. The G-buffer normal IS useful even
+      // during the depth-only pre-pass (the back-faces it draws are
+      // real geometry whose normals should populate the G-buffer for
+      // any consumer that needs them). If a follow-up needs to mask
+      // slot 1 too, gate `gbufferWriteMask` on `depthOnlyBackFace`.
       targets: [
         {
           format: host._canvasFormat,
           blend: effectiveBlend,
           writeMask: colorWriteMask,
         },
-        null,
+        {
+          format: "rgba16float" as GPUTextureFormat,
+          writeMask: 0xf,
+        },
       ],
     },
     primitive: {

@@ -163,17 +163,26 @@ export function getDebugFragmentShaderModule(
   //   normal-map shaders we modernized in WGF-5.
   const augmented = `${preprocessedBase}
 
+// Slice 5c-B Batch 117 — debug fragment variants emit FragOutput too.
+// FragOutput + makeFragOutput are defined in the production source
+// (GlobeTerrain.wgsl, which is preprocessedBase above) — these debug
+// variants are appended to that source, so the struct + helper are
+// already in scope. Slot 1 carries v_normalEC for the Lod / Normal
+// variants (which have a VertexOutput); the Tri variant only has
+// primitive_index input and emits the sentinel (0,0,0) so consumers
+// fall back to depth reconstruction at debug-Tri-rendered pixels.
 @fragment
-fn fragmentDebugTri(@builtin(primitive_index) primIndex: u32)
-    -> @location(0) vec4<f32> {
+fn fragmentDebugTri(@builtin(primitive_index) primIndex: u32) -> FragOutput {
   let r = f32((primIndex * 73u) & 255u) / 255.0;
   let g = f32((primIndex * 151u + 31u) & 255u) / 255.0;
   let b = f32((primIndex * 211u + 89u) & 255u) / 255.0;
-  return vec4<f32>(r, g, b, 1.0);
+  // No VertexOutput input so no eye-space normal available; emit
+  // sentinel for slot 1 (consumers detect via length(xyz) < 0.01).
+  return makeFragOutput(vec4<f32>(r, g, b, 1.0), vec3<f32>(0.0));
 }
 
 @fragment
-fn fragmentDebugLod(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentDebugLod(input: VertexOutput) -> FragOutput {
   // Deterministic per-level palette: 12 hues cycle through the spectrum
   // so adjacent levels are visually distinct. Levels above 11 wrap.
   let level = u32(tile.debugFields.x + 0.5) % 12u;
@@ -192,18 +201,21 @@ fn fragmentDebugLod(input: VertexOutput) -> @location(0) vec4<f32> {
     case 10u: { color = vec3<f32>(1.00, 0.00, 1.00); }
     default:  { color = vec3<f32>(1.00, 0.00, 0.50); }
   }
-  return vec4<f32>(color, 1.0);
+  return makeFragOutput(
+    vec4<f32>(color, 1.0),
+    normalize(input.v_normalEC),
+  );
 }
 
 @fragment
-fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentDebugNormal(input: VertexOutput) -> FragOutput {
   // Eye-space normal as RGB. Remap from [-1,1] to [0,1] so all components
   // are visible. Useful for verifying that vertex normals are correctly
   // interpolated and that the normal-map shaders (WGF-5) produce
   // sensible orientations. Flat-shaded tiles will show single colors
   // per primitive; smooth-shaded tiles will show gradients.
   let n = normalize(input.v_normalEC);
-  return vec4<f32>(n * 0.5 + 0.5, 1.0);
+  return makeFragOutput(vec4<f32>(n * 0.5 + 0.5, 1.0), n);
 }
 `;
 

@@ -37,6 +37,52 @@ import type { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 
 /**
+ * Slice 5c-B Batch 117 — build the MRT slot-1 (G-buffer normal-roughness)
+ * color attachment for the scene framebuffer render pass. Returns null
+ * when MRT mode is off OR when the G-buffer view isn't yet allocated.
+ * Shared between this module and the two re-open sites in
+ * `WebGPUSceneRenderer.ts` (`_resumeScenePass` and `_clearDepthStencil`)
+ * so all three pass-open paths produce the same attachment shape.
+ *
+ * @param scene - The Scene whose `_view.gBufferFramebuffer` holds the
+ *   target views. Typed as unknown because Scene is JS-side and lives
+ *   outside the .ts boundary.
+ * @param loadOp - "clear" for the initial frame open (sentinel value
+ *   loads via `clearValue`); "load" for re-opens after a sub-pass
+ *   (preserves whatever the producer + globe writes accumulated).
+ * @returns A GPURenderPassColorAttachment for slot 1, or null to
+ *   indicate the caller should leave the pass at 1 attachment.
+ */
+export function buildMrtSlot1Attachment(
+  scene: unknown,
+  loadOp: GPULoadOp,
+): GPURenderPassColorAttachment | null {
+  if (!isSceneFBMrtMode()) {
+    return null;
+  }
+  const sceneAny = scene as {
+    _view?: {
+      gBufferFramebuffer?: {
+        renderAttachmentView?: GPUTextureView | null;
+        resolveTargetView?: GPUTextureView | null;
+        sampleCount?: number;
+      };
+    };
+  };
+  const gb = sceneAny?._view?.gBufferFramebuffer;
+  if (!gb?.renderAttachmentView) {
+    return null;
+  }
+  return {
+    view: gb.renderAttachmentView,
+    loadOp,
+    storeOp: "store",
+    clearValue: { r: 0, g: 0, b: 0, a: 1 },
+    ...(gb.resolveTargetView ? { resolveTarget: gb.resolveTargetView } : {}),
+  };
+}
+
+/**
  * The SceneRenderer surface the pass-redirect helper reaches back to.
  */
 export interface PassRedirectHost {
@@ -111,48 +157,19 @@ export function setupSceneFramebufferRenderPass(
       );
     }
 
-    // SUB-C INVESTIGATION (Slice 5c-B): when MRT mode is on, append the
-    // G-buffer normal-roughness view as a 2nd color attachment. The
-    // Phase 1 converted pipelines (including globe per the same batch)
-    // already declare 2 color targets, so the pass MUST have a matching
-    // attachment count.
-    //
-    // Probe goal: capture the WebGPU validation error if any of the
-    // following fail —
-    //   - sampleCount mismatch between scene FB MSAA and G-buffer MSAA
-    //   - missing resolveTarget when MSAA is on
-    //   - frozen array push on `colorAttachments` (some renderers may
-    //     have hardened the return value as `Object.freeze`)
-    //   - format incompatibility between pipeline target[1] (rgba16float)
-    //     and the slot-1 attachment.
-    if (colorAttachments?.length && isSceneFBMrtMode()) {
-      const sceneAny = config.scene as unknown as {
-        _view?: {
-          gBufferFramebuffer?: {
-            renderAttachmentView?: GPUTextureView | null;
-            resolveTargetView?: GPUTextureView | null;
-            sampleCount?: number;
-          };
-        };
-      };
-      const gb = sceneAny?._view?.gBufferFramebuffer;
-      if (gb?.renderAttachmentView) {
-        // Build the slot-1 attachment. loadOp=clear with a sentinel
-        // (0,0,0,1) so the depth-derived consumer fallback fires for
-        // any fragment the producer doesn't overwrite (sky, edges,
-        // primitives that haven't been wired for slot-1 writes yet).
-        const slot1: GPURenderPassColorAttachment = {
-          view: gb.renderAttachmentView,
-          loadOp: "clear",
-          storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          ...(gb.resolveTargetView
-            ? { resolveTarget: gb.resolveTargetView }
-            : {}),
-        };
+    // Slice 5c-B Batch 117 — when MRT mode is on, append the G-buffer
+    // normal-roughness view as a 2nd color attachment. The MRT slot-1
+    // attachment is shared between this initial open and the two
+    // re-open sites (`_resumeScenePass` + `_clearDepthStencil`) via
+    // `buildMrtSlot1Attachment`. loadOp="clear" here because this is
+    // the FIRST open of the scene-FB pass per frame; the re-open
+    // sites pass "load" to preserve accumulated G-buffer writes.
+    if (colorAttachments?.length) {
+      const slot1 = buildMrtSlot1Attachment(config.scene, "clear");
+      if (slot1) {
         // Defensive: build a NEW array rather than mutating in place,
         // in case the producer returns a frozen one (was one of the
-        // 6 suspect causes from the postmortem).
+        // 6 suspect causes from the Batch 116 postmortem).
         colorAttachments = [...colorAttachments, slot1];
       }
     }
