@@ -206,9 +206,30 @@ export function executePostFrustumChain(
   //
   // Cost: one full-screen GPU copy per frame (~25 KB at 1280×720
   // bgra8unorm). Free when no env effect is enabled, since none of
-  // them will sample the snapshot — but we still copy unconditionally
-  // to keep the logic simple. Could be gated on
-  // `_enableSSR || _enableNPROutlines || ...` for a small win.
+  // them will sample the snapshot.
+  //
+  // Slice 5c-B Batch 131 — gate the snapshot copy on whether ANY env
+  // effect that consumes the snapshot is enabled this frame. When all
+  // five effects (SSR, NPR, Procedural Clouds, Weather, Volumetric
+  // Fog) are off — the default for the basic CesiumViewer — the copy
+  // is skipped entirely. Saves the per-frame canvas-copy bandwidth
+  // (~7 MB at 1920×1080 bgra8unorm) for the common case.
+  const _sceneAny = config.scene as unknown as {
+    _enableSSR?: boolean;
+    _enableNPROutlines?: boolean;
+    _enableWeather?: boolean;
+    globe?: { showProceduralClouds?: boolean };
+    _frameState?: {
+      atmosphericConditions?: { volumetricFog?: { enabled?: boolean } };
+    };
+  };
+  const _anyEnvEffectEnabled =
+    !!_sceneAny._enableSSR ||
+    !!_sceneAny._enableNPROutlines ||
+    !!_sceneAny._enableWeather ||
+    !!_sceneAny.globe?.showProceduralClouds ||
+    _sceneAny._frameState?.atmosphericConditions?.volumetricFog?.enabled ===
+      true;
   const _ppCtx = context as unknown as {
     _currentTextureView?: GPUTextureView | null;
     _currentCommandEncoder?: GPUCommandEncoder | null;
@@ -217,12 +238,9 @@ export function executePostFrustumChain(
     _postProcessSnapshotHeight?: number;
     getCurrentTexture?: () => GPUTexture | null;
   };
-  // The canvas swap-chain texture is what `_currentTextureView` views.
-  // We can't get it from the view directly; we go through the canvas
-  // context which holds the active swap-chain texture.
   const ppEncoder = _ppCtx._currentCommandEncoder;
   const ppSnapshot = _ppCtx._postProcessSnapshotTexture;
-  if (ppEncoder && ppSnapshot) {
+  if (_anyEnvEffectEnabled && ppEncoder && ppSnapshot) {
     // End the current render pass before issuing a copyTextureToTexture.
     context.endCurrentRenderPass?.();
     const canvasTex = (
