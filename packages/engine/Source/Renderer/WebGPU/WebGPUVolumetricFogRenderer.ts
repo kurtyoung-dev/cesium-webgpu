@@ -939,9 +939,20 @@ class WebGPUVolumetricFogRenderer {
       r.compositeBoundOutputFormat = outputFormat;
     }
 
-    const encoder = device.createCommandEncoder({
-      label: "VolumetricFog_CompositeEncoder",
-    });
+    // Slice 5c-B Batch 130 — record into the main frame encoder so the
+    // composite ordering survives. Same fix pattern as Batch 127 for
+    // NPR / SSR / ProceduralClouds. Falls back to ephemeral encoder
+    // + immediate submit when no main encoder exists (test harnesses
+    // that bypass `beginFrame`).
+    const mainEncoder = (
+      context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
+    )._currentCommandEncoder;
+    const useMain = !!mainEncoder;
+    const encoder =
+      mainEncoder ??
+      device.createCommandEncoder({
+        label: "VolumetricFog_CompositeEncoder (orphan)",
+      });
     const pass = encoder.beginRenderPass({
       label: "VolumetricFog_CompositePass",
       colorAttachments: [
@@ -956,7 +967,9 @@ class WebGPUVolumetricFogRenderer {
     pass.setBindGroup(0, r.compositeBindGroup);
     pass.draw(3);
     pass.end();
-    device.queue.submit([encoder.finish()]);
+    if (!useMain) {
+      device.queue.submit([encoder.finish()]);
+    }
   }
 
   destroy(): void {
