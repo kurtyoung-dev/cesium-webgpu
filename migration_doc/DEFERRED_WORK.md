@@ -3096,3 +3096,102 @@ fn getMaterial(input: MaterialInput) -> Material {
 
 The output of the assembler is appended to the GlobeTerrain.wgsl source before pipeline creation.
 
+---
+
+## NEW-GBUFFER-MRT-INTEGRATION — Always-on G-buffer + MRT (Slice 5c-B follow-ups)
+
+**Status:** Phase 2 v2 Sub-C minimum landed (Batch 116, 2026-05-24). MRT render pass + 2-target pipelines are live; slot 1 currently stays at sentinel `(0,0,0,1)` because no fragment shader emits `@location(1)` yet. The follow-up work is the producer side (write real data into slot 1) and the consumer side (downstream features that benefit from per-fragment material normals + the always-allocated G-buffer texture).
+
+**Architecture refresher:**
+
+- `GBufferFramebuffer.js` allocates paired single-sample + MSAA textures (`rgba16float`, packed `(normalEC.xyz, roughness)`). MSAA companion auto-resolves into the single-sample texture at end-of-pass.
+- The single-sample texture has `STORAGE_BINDING | TEXTURE_BINDING | COPY_DST | RENDER_ATTACHMENT` usage — it serves as the storage-bindable target for the legacy compute producer (`GBufferNormalsFromDepth.wgsl`) AND as the resolve target for the MRT render-pass writes (when shaders emit `@location(1)`).
+- The MSAA companion (`RENDER_ATTACHMENT` only, since multisampled textures cannot have `STORAGE_BINDING`) is the actual render-pass attachment when `scene.msaaSamples > 1`.
+- `WebGPUSceneRendererPassRedirect.ts` appends the MRT slot-1 attachment when `isSceneFBMrtMode()` returns true (currently always true post-Batch-116).
+- Consumers (AO is the only one today) read `gBufferFramebuffer.normalRoughnessTexture` — the single-sample resolved view.
+
+### Producer-side follow-ups (Batches 117+)
+
+#### NEW-GBUFFER-MRT-GLOBE-EMIT — Globe shader emits @location(1)
+
+Wire `GlobeTerrain.wgsl` to emit `(normalEC.xyz, roughness)` at `@location(1)` and flip the globe pipeline slot 1 from `null` → `{format: "rgba16float", writeMask: 0xf}`. This is the natural next batch.
+
+**Scope:**
+
+- `GlobeTerrain.wgsl` has 4 fragment entry points (`fragmentMain` + 3 debug variants). Each one ends with `return color;` (or similar). They all need to become `return FragOutput(color, normalRoughness)` where `FragOutput` is a new struct with both locations.
+- Globe `normalEC` is already computed inside `fragmentMain` for lighting; the debug variants don't compute one but can emit `(0,0,0,1)` sentinel.
+- Globe roughness today is a hardcoded value via the IBL path. For the G-buffer pack, use a constant `0.5` placeholder; refine in a follow-up when material-aware roughness lands.
+- Pipeline change: 1-line flip in `WebGPUGlobeSurfacePipelines.ts:buildPipelineDescriptor` — slot 1 goes from `null` to the rgba16float-writeMask-0xf shape. The bisect in Batch 116 already verified that this slot shape works as long as the shader emits the matching location.
+- Verification: `probe-mrt-validation.mjs` to confirm zero pipeline-cache errors after the flip. Then a normal-overlay probe to confirm slot 1 has real data instead of the sentinel clear.
+
+**Effort:** 1 batch (~half-day). Risk: shader return-rewrap mismatch (the patcher mistake from the failed Sub-C dry-run). Mitigation: edit each return path by hand, no automated patcher.
+
+#### NEW-GBUFFER-MRT-PRIMITIVE-EMIT — Lit Mat primitives emit @location(1)
+
+Same conversion as the globe but for each of the ~30 primitive renderers that produce per-fragment material normals (Lit Box/Sphere/Polygon/Wall/Corridor/Frustum + glTF Models with normal maps + 3D Tiles B3DM/I3DM/PNTS lit variants). Their pipelines already declare slot 1 as `null` via Phase 1's `makeSceneFBTargets` helper; bumping to a real write target needs:
+
+- A `FragOutput` struct in each shader (or a shared helper module).
+- Per-renderer pipeline target flip from `null` → real format.
+- The G-buffer normal should be the FINAL material normal (post-normal-map, post-anisotropy), not the geometric `v_normalEC`. This is the entire point of Slice 5c-B over the compute-from-depth producer.
+
+**Effort:** Multi-batch arc, ~1 day per cluster of related renderers. Risk: per-shader normal-extraction details (some shaders compute `czm_inverseViewRotation * worldNormal` late; others have eye-space normals already). Audit each before converting.
+
+#### NEW-GBUFFER-MRT-COMPUTE-PRODUCER-RETIRE — Decision: keep or retire `GBufferNormalsFromDepth.wgsl`?
+
+The legacy compute producer derives normals from depth via central differences. Now that MRT writes are wired:
+
+- For pixels touched by an MRT-emitting pipeline, the MRT write wins (overwrites the compute output if both fire).
+- For pixels touched ONLY by 1-target pipelines (sky, debug overlays, OIT accumulation that doesn't write through), the slot-1 attachment stays at the sentinel `(0,0,0,1)`.
+- Today the compute producer runs every frame and writes EVERY pixel (with sentinel for sky/discontinuities). After Slice 5c-B Phase 2 is complete, it's redundant for the pixels covered by MRT-emitting shaders.
+
+Two options:
+
+1. **Retire the compute producer entirely.** Cleaner but requires every primitive that needs G-buffer normals to emit @location(1). Sky/non-emitting primitives leave the sentinel value, consumers handle via the fallback path (AO already does this — `lenSq > 0.01` check before using the G-buffer normal).
+2. **Keep the compute producer as a fallback that runs BEFORE the MRT render pass.** It populates the sentinel pixels with depth-derived normals; the MRT pass then overwrites them. Doubles per-frame work for the overlap region but simplifies consumer logic (always sees a real-ish normal everywhere).
+
+Punt this decision until at least 50% of primitives are emitting @location(1) — until then, option 1 leaves too many pixels at the sentinel and option 2 is the only viable path.
+
+### Consumer-side follow-ups
+
+The G-buffer is now always allocated (Sub-B, Batch 115b) so any consumer can read `gBufferFramebuffer.normalRoughnessTexture` without checking the deferred-lighting flag. Today only AO uses it. Candidates that should:
+
+#### NEW-GBUFFER-CONSUMER-SSR — Screen-space reflections
+
+SSR's primary input is per-pixel normal + roughness. `WebGPUSSREffect.ts` currently builds its own per-pixel normal via depth derivatives (same approximation AO used to use). Switch it to read the G-buffer normal-roughness texture and pull roughness from `.w` instead of hardcoding.
+
+**Effort:** ~2 hours. Risk: SSR runs in the post-process pipeline, after the scene FB pass — the G-buffer texture is already in its resolved (single-sample) state at that point, so the bind is straightforward.
+
+#### NEW-GBUFFER-CONSUMER-CLUSTERED-LIGHTING — Forward-clustered light pass
+
+Forward-clustered lighting (currently a research-stage SCAFFOLDED feature) needs per-pixel normal for the diffuse + specular evaluation. With the G-buffer always available, the clustered pass can read it instead of re-deriving from depth (which would dramatically improve quality at silhouettes).
+
+**Effort:** Multi-day, depends on Slice 5d (clustered lighting Phase 1) landing first.
+
+#### NEW-GBUFFER-CONSUMER-CONTACT-SHADOWS — Screen-space contact shadows
+
+Sun-direction marching from a starting position + normal, sampled against the depth buffer. The starting normal comes from the G-buffer; the depth comes from the existing depth attachment. No new producer needed.
+
+**Effort:** ~1 day for a basic implementation (no PCF, no soft contact). Quality improvement on close-range geometry (foliage occlusion, ground-truth ambient occlusion for grounded objects) is significant.
+
+#### NEW-GBUFFER-CONSUMER-NPR-OUTLINES — Normal-discontinuity edges
+
+Reads the G-buffer + depth to detect edges where adjacent pixels have divergent normals (silhouettes, hard creases) and draws an outline. Cheap post-process pass; no new bind groups beyond what the depth + G-buffer textures already provide. Useful for technical / engineering / CAD-style globe presentations.
+
+**Effort:** ~half-day. Risk: visual taste — strong outlines clash with the photorealistic terrain default; needs an opt-in property on `scene`.
+
+#### NEW-GBUFFER-CONSUMER-TAA-DISOCCLUSION — TAA history reproject
+
+TAA's disocclusion mask is currently velocity-based. Adding G-buffer normal comparison (reject history pixels whose normal differs from the current frame's by more than a threshold) reduces ghosting at moving silhouettes. Small quality improvement, not a blocker.
+
+**Effort:** ~half-day in `WebGPUTAAEffect.ts`. Risk: tuning the normal-divergence threshold — too tight and you lose history at every frame; too loose and ghosting persists.
+
+### Cross-cutting concerns
+
+- **Pipeline cache invalidation:** when `setSceneFBMrtMode(false)` is called (no current trigger, but possible if a future "low-memory mode" wants to drop the G-buffer), all cached pipelines must be invalidated — they were built with 2-target descriptors and would no longer match the 1-attachment pass. `WebGPURenderPipelineCache.clear()` exists; the gate just needs to fire.
+- **Format negotiation:** `MRT_NORMAL_ROUGHNESS_FORMAT` is currently hardcoded to `rgba16float`. If a future device-tier check decides `rg16float` is enough (encode normal as oct-encoded `vec2`, drop roughness or pack into compute uniforms), update the format in `WebGPUSceneFBTargetHelpers.ts` AND match it in every emitter shader.
+- **MSAA + storage interaction:** `_textureMSAA` (the render attachment) and `_texture` (the resolve target with `STORAGE_BINDING`) are different textures. Anything that writes to the G-buffer through the storage path (the compute producer today) writes to `_texture` directly; anything that reads as a sampler reads `_texture` too. The MSAA half is only the render-pass attachment. This is fine but worth remembering when adding new producers.
+
+### Probe for this work
+
+`probe-mrt-validation.mjs` (Batch 116) covers the four-cell AO×deferred matrix with WebGPU error capture (`device.onuncapturederror` + `device.lost` + categorized `console.error`). Re-run after every MRT change to confirm no new pipeline-cache errors. For each Producer-side conversion, also add a `probe-gbuffer-slot1-content.mjs` follow-up that samples the G-buffer texture and confirms slot 1 has non-sentinel values where the converted primitive draws.
+
