@@ -390,6 +390,22 @@ export class WebGPUContext extends GraphicsContext {
   public _msaaSamples: number = 1;
   public useIndirectDrawForTiles: boolean = false;
 
+  // Slice 5c-B Batch 129 — post-process snapshot. After the post-process
+  // pipeline has blitted scene FB to canvas, a 1-pass copyTextureToTexture
+  // mirrors the canvas into this view so env effects (SSR, NPR, Clouds,
+  // Weather, Volumetric Fog) sample a POST-processed, tonemapped,
+  // display-space color source instead of the raw HDR scene FB. The
+  // env effects then composite their output BACK onto the canvas;
+  // WebGPU forbids read+write of the same texture in a single pass, so
+  // the intermediate is required.
+  //
+  // Allocated lazily by `WebGPUSceneRendererEnsureResources` when the
+  // canvas size or format changes. Width/height tracked alongside.
+  public _postProcessSnapshotTexture: GPUTexture | null = null;
+  public _postProcessSnapshotView: GPUTextureView | null = null;
+  public _postProcessSnapshotWidth: number = 0;
+  public _postProcessSnapshotHeight: number = 0;
+
   // C-R8-EDGE-FBO (Batch 44) — edge-framebuffer texture views, set by
   // `WebGPUSceneRenderer._execute3DTilePasses` after the edges pass
   // resolves its MRT attachments. Consumers (edge composite stage,

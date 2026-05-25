@@ -194,6 +194,55 @@ export function executePostFrustumChain(
   //>>includeEnd('debug');
   host._runPostProcessing(config);
 
+  // Slice 5c-B Batch 129 — snapshot the post-processed canvas into
+  // `context._postProcessSnapshotTexture` so env effects (NPR, SSR,
+  // Clouds) sample a display-space, tonemapped, FXAA'd reflection
+  // source instead of the raw HDR scene FB. The env effects then
+  // composite their output BACK onto the canvas via loadOp="load".
+  // WebGPU forbids read+write on the same texture in a single render
+  // pass; this 1-pass copyTextureToTexture is the cheapest workaround
+  // (compared to making the canvas swap chain dual-buffered or
+  // routing env effects through a separate accumulation buffer).
+  //
+  // Cost: one full-screen GPU copy per frame (~25 KB at 1280×720
+  // bgra8unorm). Free when no env effect is enabled, since none of
+  // them will sample the snapshot — but we still copy unconditionally
+  // to keep the logic simple. Could be gated on
+  // `_enableSSR || _enableNPROutlines || ...` for a small win.
+  const _ppCtx = context as unknown as {
+    _currentTextureView?: GPUTextureView | null;
+    _currentCommandEncoder?: GPUCommandEncoder | null;
+    _postProcessSnapshotTexture?: GPUTexture | null;
+    _postProcessSnapshotWidth?: number;
+    _postProcessSnapshotHeight?: number;
+    getCurrentTexture?: () => GPUTexture | null;
+  };
+  // The canvas swap-chain texture is what `_currentTextureView` views.
+  // We can't get it from the view directly; we go through the canvas
+  // context which holds the active swap-chain texture.
+  const ppEncoder = _ppCtx._currentCommandEncoder;
+  const ppSnapshot = _ppCtx._postProcessSnapshotTexture;
+  if (ppEncoder && ppSnapshot) {
+    // End the current render pass before issuing a copyTextureToTexture.
+    context.endCurrentRenderPass?.();
+    const canvasTex = (
+      context as unknown as {
+        _context?: { getCurrentTexture: () => GPUTexture };
+      }
+    )._context?.getCurrentTexture();
+    if (canvasTex) {
+      ppEncoder.copyTextureToTexture(
+        { texture: canvasTex },
+        { texture: ppSnapshot },
+        {
+          width: _ppCtx._postProcessSnapshotWidth!,
+          height: _ppCtx._postProcessSnapshotHeight!,
+          depthOrArrayLayers: 1,
+        },
+      );
+    }
+  }
+
   // Slice 5c-B Batch 127 — environmental effects (NPR outlines, SSR,
   // Procedural Clouds, Weather particles, Volumetric Fog). Runs AFTER
   // post-process so their canvas writes composite ON TOP of the

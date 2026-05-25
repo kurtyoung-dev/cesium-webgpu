@@ -220,6 +220,37 @@ export function ensureResources(
   };
   _ctxWithDepth._depthStencilView =
     host._sceneFramebuffer.depthSampleableView ?? null;
+
+  // Slice 5c-B Batch 129 — post-process snapshot texture. Allocated/
+  // reallocated when the canvas size changes. Holds a copy of the
+  // post-processed canvas content for env effects to sample as their
+  // reflection/composite SOURCE. Canvas-sized + canvas-format so the
+  // copyTextureToTexture dispatch in PostFrustumChain is layout-
+  // compatible.
+  const canvasW = (context._canvas?.width ?? 1) | 0;
+  const canvasH = (context._canvas?.height ?? 1) | 0;
+  const ppFormat = context.presentationFormat ?? "bgra8unorm";
+  const needsSnapshotRealloc =
+    !context._postProcessSnapshotTexture ||
+    context._postProcessSnapshotWidth !== canvasW ||
+    context._postProcessSnapshotHeight !== canvasH;
+  if (needsSnapshotRealloc && canvasW > 0 && canvasH > 0) {
+    context._postProcessSnapshotTexture?.destroy();
+    context._postProcessSnapshotTexture = device.createTexture({
+      label: "PostProcessSnapshot",
+      size: { width: canvasW, height: canvasH, depthOrArrayLayers: 1 },
+      format: ppFormat,
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+      sampleCount: 1,
+    });
+    context._postProcessSnapshotView =
+      context._postProcessSnapshotTexture.createView({
+        label: "PostProcessSnapshot view",
+      });
+    context._postProcessSnapshotWidth = canvasW;
+    context._postProcessSnapshotHeight = canvasH;
+  }
+
   // Batch 110 — bump the scene pipeline format generation when the
   // scene color format actually changes. Renderers caching pipelines
   // that target scene FB observe the bump and clear+rebuild their

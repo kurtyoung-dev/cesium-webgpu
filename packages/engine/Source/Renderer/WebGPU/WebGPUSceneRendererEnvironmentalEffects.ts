@@ -51,9 +51,24 @@ export function executeEnvironmentalEffects(
   const { scene, context } = config;
   const globe = scene.globe;
 
-  // Get texture views needed by all environmental effects
+  // Get texture views needed by all environmental effects.
+  //
+  // Slice 5c-B Batch 129 — `colorView` (the SOURCE that env effects
+  // sample for reflection / composite-base / cloud-blend) now comes
+  // from the post-process snapshot — a copyTextureToTexture mirror
+  // of the canvas AFTER post-process ran (PostFrustumChain). So env
+  // effects sample display-space, tonemapped, FXAA'd color, the same
+  // color the viewer sees. Pre-Batch-129 they sampled the raw HDR
+  // scene FB which produced color-space-mismatched reflections /
+  // cloud composites. Falls back to scene color view in early frames
+  // before the snapshot is allocated.
+  const ctxAny = context as unknown as {
+    _postProcessSnapshotView?: GPUTextureView | null;
+  };
   const colorView: GPUTextureView | undefined =
-    context._sceneColorView ?? context.currentTextureView;
+    ctxAny._postProcessSnapshotView ??
+    context._sceneColorView ??
+    context.currentTextureView;
   const depthView: GPUTextureView | undefined = context._depthStencilView;
   const outputView: GPUTextureView | undefined = context.currentTextureView;
 
