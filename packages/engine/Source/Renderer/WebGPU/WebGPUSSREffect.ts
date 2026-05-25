@@ -6,11 +6,24 @@
  * Activated via `scene.screenSpaceReflections = true`.
  *
  * Configuration:
- *   - scene.ssrMaxDistance: number (default 50.0)
+ *   - scene.ssrMaxDistance: number (default 200.0 — Batch 136 tuning)
  *   - scene.ssrThickness: number (default 0.5)
- *   - scene.ssrMaxSteps: number (default 64)
+ *   - scene.ssrMaxSteps: number (default 96 — Batch 136 tuning)
  *   - scene.ssrStride: number (default 2.0)
  *   - scene.ssrReflectionStrength: number 0-1 (default 0.5)
+ *
+ * Tuning notes (Batch 136):
+ *   - Pre-Batch-136 defaults were maxDistance=50m, maxSteps=64. The
+ *     50m march budget rarely reached reflectors more than a few
+ *     meters from the reflective surface — a typical aerial scene
+ *     with an object 50-200m away from a lake produced essentially
+ *     zero visible reflection signal. Bumping to 200m + 96 steps
+ *     covers the typical mid-range case (urban reflective surfaces
+ *     with buildings up to ~200m away) without a major perf hit.
+ *   - The trade is per-frame cost: 96 steps × ~1.4-4M ray-marched
+ *     pixels per HD frame is bounded by the GPU's texture-sample
+ *     throughput. SSR remains opt-in (off by default), so the cost
+ *     only applies to scenes that explicitly enable it.
  *
  * @private
  */
@@ -207,9 +220,12 @@ export function executeSSR(
   data[offset++] = 1.0 / h;
 
   // params (vec4): maxDistance, thickness, maxSteps, stride
-  data[offset++] = scene.ssrMaxDistance ?? 50.0;
+  // Batch 136 — bumped maxDistance 50→200 and maxSteps 64→96. See
+  // file header for rationale (the 50m budget was too small for
+  // typical scenes).
+  data[offset++] = scene.ssrMaxDistance ?? 200.0;
   data[offset++] = scene.ssrThickness ?? 0.5;
-  data[offset++] = scene.ssrMaxSteps ?? 64.0;
+  data[offset++] = scene.ssrMaxSteps ?? 96.0;
   data[offset++] = scene.ssrStride ?? 2.0;
 
   // params2 (vec4): fadeScreenEdge, fadeDistance, reflectionStrength, fresnelPower

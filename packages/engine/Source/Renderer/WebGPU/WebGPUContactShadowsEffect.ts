@@ -11,14 +11,27 @@
  *
  * Activated via `scene.enableContactShadows = true`. Tunables on
  * `scene`:
- *   - `contactShadowMaxDistance` (default 2.0 eye-space meters)
- *   - `contactShadowSteps` (default 12 — clamped to 32 in shader)
+ *   - `contactShadowMaxDistance` (default 4.0 eye-space meters —
+ *     Batch 136 tuning, was 2.0)
+ *   - `contactShadowSteps` (default 16 — Batch 136 tuning, was 12;
+ *     clamped to 32 in shader)
  *   - `contactShadowStrength` (default 0.5 — 0 = no darkening, 1 =
  *     fully black at occluded pixels)
- *   - `contactShadowThickness` (default 0.005 — FRACTIONAL: the
+ *   - `contactShadowThickness` (default 0.01 — FRACTIONAL: the
  *     allowed front-delta window is `thickness * |eyePosZ|`, so
- *     0.005 = 0.5% of view-space depth. Scales correctly across
- *     ground-level and orbital altitudes.)
+ *     0.01 = 1% of view-space depth. Batch 136 tuning, was 0.005.
+ *     Scales correctly across ground-level and orbital altitudes.)
+ *
+ * Tuning rationale (Batch 136):
+ *   - The original 2m march distance + 0.5% thickness was sized for
+ *     ground-level scenes (vehicle wheels meeting road, foliage
+ *     bases). At typical Cesium aerial views (300m-orbital) the 2m
+ *     budget is invisibly small on most occluders. Doubling to 4m +
+ *     1% thickness widens the visible range without producing false-
+ *     positive shadows on flat terrain (the front-delta gating still
+ *     filters self-shadow).
+ *   - Steps 12→16 covers the larger budget with the same per-step
+ *     granularity.
  *
  * Architecture notes:
  *   - Modeled on WebGPUNPROutlineEffect.ts. Same cache + init +
@@ -210,10 +223,12 @@ export function executeContactShadows(
     contactShadowStrength?: number;
     contactShadowThickness?: number;
   };
-  data[o++] = sceneAny.contactShadowMaxDistance ?? 2.0;
-  data[o++] = sceneAny.contactShadowSteps ?? 12;
+  // Batch 136 — defaults bumped: maxDistance 2→4, steps 12→16,
+  // thickness 0.005→0.01. See file header for rationale.
+  data[o++] = sceneAny.contactShadowMaxDistance ?? 4.0;
+  data[o++] = sceneAny.contactShadowSteps ?? 16;
   data[o++] = sceneAny.contactShadowStrength ?? 0.5;
-  data[o++] = sceneAny.contactShadowThickness ?? 0.005;
+  data[o++] = sceneAny.contactShadowThickness ?? 0.01;
   // texelSize
   data[o++] = 1.0 / w;
   data[o++] = 1.0 / h;
