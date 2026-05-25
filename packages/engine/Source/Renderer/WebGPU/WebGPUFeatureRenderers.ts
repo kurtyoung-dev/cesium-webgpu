@@ -682,6 +682,20 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
+  // Slice 5c-B Batch 123 — NPR outlines. Opt-in via
+  // `scene.enableNPROutlines`; reads G-buffer slot 1 + scene depth to
+  // paint silhouette + crease edges. Off by default.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.NPR_OUTLINES,
+    async () => {
+      const mod = await import("./WebGPUNPROutlineEffect.js");
+      context.registerFeatureRenderer(FeatureRendererKey.NPR_OUTLINES, {
+        execute: mod.executeNPROutlines,
+        destroy: mod.destroyNPROutlineResources,
+      });
+    },
+  );
+
   // ── Weather (LAZY) ──
   // WeatherParticles uses compute shaders + GPU particle simulation.
   // Only loaded when scene._enableWeather flips on.

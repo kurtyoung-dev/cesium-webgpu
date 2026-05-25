@@ -1007,6 +1007,12 @@ class Scene {
 
     // ── WebGPU environmental effects (opt-in) ──
     this._enableSSR = false;
+
+    // Slice 5c-B Batch 123 — NPR outline pass (WebGPU only). Reads
+    // G-buffer slot 1 + scene depth, paints silhouette / crease edges.
+    // Off by default — hard outlines clash with the photorealistic
+    // globe presentation; opt-in via `scene.enableNPROutlines = true`.
+    this._enableNPROutlines = false;
     this._enableWeather = false;
     this._weatherType = 0;
     this._weatherIntensity = 0.5;
@@ -2601,6 +2607,34 @@ class Scene {
 
   set enableSSR(value) {
     this._enableSSR = value;
+  }
+
+  /**
+   * When true and using the WebGPU renderer, an NPR (non-photorealistic
+   * rendering) outline pass paints silhouette and crease edges over the
+   * scene by reading the G-buffer normal-roughness texture + scene
+   * depth. Off by default — hard outlines clash with photorealistic
+   * globe presentations; intended for technical / engineering /
+   * CAD-style visualizations. Has no effect on the WebGL path.
+   *
+   * Tunable via {@link Scene#nprNormalThreshold},
+   * {@link Scene#nprDepthThreshold}, {@link Scene#nprEdgeStrength},
+   * {@link Scene#nprEdgeColor}.
+   *
+   * @type {boolean}
+   * @default false
+   *
+   * @example
+   * // Enable NPR outlines (WebGPU only)
+   * scene.enableNPROutlines = true;
+   * scene.nprEdgeStrength = 0.7;
+   */
+  get enableNPROutlines() {
+    return this._enableNPROutlines;
+  }
+
+  set enableNPROutlines(value) {
+    this._enableNPROutlines = value;
   }
 
   /**

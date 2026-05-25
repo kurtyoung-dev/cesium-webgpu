@@ -170,6 +170,14 @@ const FeatureRendererKey = {
   DEPTH_PLANE: 45,
   CLASSIFICATION_PRIMITIVE: 46,
 
+  // ── NPR Outlines (Slice 5c-B Batch 123) ──
+  // Cheap post-process pass that reads G-buffer normal-roughness +
+  // depth to detect silhouette / crease edges and paints them as
+  // a configurable edge color. Opt-in via `scene.enableNPROutlines`;
+  // off by default because hard outlines clash with the photorealistic
+  // globe default.
+  NPR_OUTLINES: 47,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -182,7 +190,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 47,
+  COUNT: 48,
 };
 
 export default Object.freeze(FeatureRendererKey);

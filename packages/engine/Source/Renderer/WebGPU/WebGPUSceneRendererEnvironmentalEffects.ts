@@ -91,6 +91,42 @@ export function executeEnvironmentalEffects(
     }
   }
 
+  // Slice 5c-B Batch 123 — NPR outlines. Runs BEFORE SSR so silhouette
+  // edges don't get partially eaten by reflection compositing. Reads
+  // G-buffer slot 1 + scene depth, paints edges over scene color.
+  if (
+    (scene as unknown as { _enableNPROutlines?: boolean })._enableNPROutlines
+  ) {
+    const nprFR = context.getFeatureRenderer(FeatureRendererKey.NPR_OUTLINES);
+    const sceneAny = scene as unknown as {
+      _view?: {
+        gBufferFramebuffer?: {
+          normalRoughnessTexture: GPUTextureView | null;
+        };
+      };
+    };
+    const nprNormalView =
+      sceneAny._view?.gBufferFramebuffer?.normalRoughnessTexture ?? null;
+    if (nprFR?.execute && nprNormalView) {
+      try {
+        context.endCurrentRenderPass?.();
+        nprFR.execute(
+          context,
+          frameState,
+          colorView,
+          depthView,
+          nprNormalView,
+          outputView,
+          scene,
+        );
+        context.resumeDefaultRenderPass?.();
+      } catch (e: unknown) {
+        context.log?.("warn", `NPR outlines failed: ${(e as Error).message}`);
+        context.resumeDefaultRenderPass?.();
+      }
+    }
+  }
+
   // 2. Screen-Space Reflections — ray-marched reflections
   if (scene._enableSSR) {
     const ssrFR = context.getFeatureRenderer(
