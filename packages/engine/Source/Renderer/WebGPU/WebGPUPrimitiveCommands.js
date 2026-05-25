@@ -1081,7 +1081,18 @@ function createWebGPUCommands(
     });
 
     // Camera BGL — group(0): camera uniforms
-    const cameraVisibility = isLit
+    //
+    // Slice 5c-B Batch 121 — pre-existing bug fix surfaced by
+    // probe-litmat-mrt.mjs. Every Mat*Lit shader reads camera in the
+    // fragment stage (camera.lightDirection for the diffuse/specular
+    // eval) but `isLit` only matched isPhongShader (phong/phongTextured)
+    // — Mat*Lit pipelines were getting VERTEX-only camera visibility
+    // → "Entry point's stage (ShaderStage::Fragment) is not in the
+    // binding visibility" at pipeline build the first time a polygon
+    // with a Color Lit appearance rendered. Wasn't visible in default
+    // scenes because the default CesiumViewer has no Mat*Lit primitives.
+    const needsFragmentCamera = isLit || isMaterialLitShader(shaderInfo.type);
+    const cameraVisibility = needsFragmentCamera
       ? GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT
       : GPUShaderStage.VERTEX;
 
@@ -1151,7 +1162,19 @@ function createWebGPUCommands(
         fragment: {
           module: cache.shaderModule.module,
           entryPoint: "fragmentMain",
-          targets: makeSceneFBTargets(canvasFormat, { translucent }),
+          // Slice 5c-B Batch 121 — Lit shaders (Phong + every Mat*Lit
+          // variant) now emit FragOutput { color, normalRoughness } so
+          // the pipeline declares slot 1 as writable. Flat shaders keep
+          // the placeholder slot 1 (writeMask=0) because their fragment
+          // returns @location(0) only — there's no geometric meaning to
+          // a "normal" for flat-shaded primitives. `isLit` here is the
+          // `isPhongShader` predicate (Phong + PhongTextured);
+          // `isMaterialLitShader` (every Mat*Lit) is the parallel for
+          // material-shader pipelines.
+          targets: makeSceneFBTargets(canvasFormat, {
+            translucent,
+            emitsGBuffer: isLit || isMaterialLitShader(shaderInfo.type),
+          }),
         },
         primitive: {
           topology: primitiveTopology,

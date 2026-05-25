@@ -19,7 +19,11 @@ import { WebGPUImageUpload } from "./WebGPUImageUpload.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 // Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
-import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
+import {
+  makeSceneFBTargets,
+  isSceneFBMrtMode,
+  MRT_NORMAL_ROUGHNESS_FORMAT,
+} from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -933,10 +937,23 @@ function updateWebGPUMoon(moon, frameState, commandList) {
       bundleMgr.invalidate(bundleKey);
       cache._bundleStale = false;
     }
+    // Slice 5c-B Batch 121 — bundle colorFormats must match the Moon
+    // pipeline's target count. Phase 1 conversion (Batch 106) made the
+    // Moon pipeline declare a slot-1 placeholder via makeSceneFBTargets
+    // when MRT mode is on; the bundle needs the matching format entry.
+    // Without this, the bundle's attachmentState is incompatible with
+    // the pipeline → "Attachment state not compatible" at recording.
+    // (Same fix pattern as the Globe bundle in Batch 117.)
+    const moonColorFormats = isSceneFBMrtMode()
+      ? [
+          context.scenePipelineFormat || "bgra8unorm",
+          MRT_NORMAL_ROUGHNESS_FORMAT,
+        ]
+      : [context.scenePipelineFormat || "bgra8unorm"];
     const bundle = bundleMgr.getOrCreate(
       bundleKey,
       {
-        colorFormats: [context.scenePipelineFormat || "bgra8unorm"],
+        colorFormats: moonColorFormats,
         depthStencilFormat: context.depthFormat || "depth24plus-stencil8",
         sampleCount,
         label: "Moon bundle",

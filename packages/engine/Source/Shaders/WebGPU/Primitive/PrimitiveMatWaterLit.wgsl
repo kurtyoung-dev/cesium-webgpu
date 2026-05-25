@@ -213,8 +213,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
+// Slice 5c-B Batch 121 — G-buffer MRT output struct (added by
+// Tools/batch-121-wrap-lit-shaders.mjs). Slot 0 = lit color, slot 1 =
+// eye-space normal + roughness. NormalMap / BumpMap variants emit the
+// geometric vertex normal for now; a follow-up batch can switch them
+// to their perturbed-normal variable for wider Slice 4 divergence.
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) normalRoughness: vec4<f32>,
+};
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
     // Wave phase from the per-frame camera `time` slot (frameNumber).
     // Matches upstream Water.glsl: `time = czm_frameNumber * animationSpeed`.
     let t = camera.time * material.animationSpeed;
@@ -299,5 +309,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         textureSampler,
         input.texCoord,
     ).r;
-    return vec4<f32>(finalColor, material.baseWaterColor.a * waterMask);
+    // Slice 5c-B Batch 121 — emit FragOutput. normalRoughness gets the
+    // geometric eye-space normal (vertex shader writes worldNormal as
+    // eye-space via camera.normalMatrix). Roughness 0.5 placeholder —
+    // Lit Mat shaders don't carry material roughness in their UBOs.
+    var __mrtOut: FragOutput;
+    __mrtOut.color = vec4<f32>(finalColor, material.baseWaterColor.a * waterMask);
+    __mrtOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);
+    return __mrtOut;
 }
