@@ -3128,13 +3128,23 @@ Wire `GlobeTerrain.wgsl` to emit `(normalEC.xyz, roughness)` at `@location(1)` a
 
 #### NEW-GBUFFER-MRT-PRIMITIVE-EMIT — Lit Mat primitives emit @location(1)
 
-Same conversion as the globe but for each of the ~30 primitive renderers that produce per-fragment material normals (Lit Box/Sphere/Polygon/Wall/Corridor/Frustum + glTF Models with normal maps + 3D Tiles B3DM/I3DM/PNTS lit variants). Their pipelines already declare slot 1 as `null` via Phase 1's `makeSceneFBTargets` helper; bumping to a real write target needs:
+Same conversion as the globe but for each of the ~30 primitive renderers that produce per-fragment material normals (Lit Box/Sphere/Polygon/Wall/Corridor/Frustum + glTF Models with normal maps + 3D Tiles B3DM/I3DM/PNTS lit variants). Their pipelines already declare slot 1 as a placeholder (writeMask=0) via Phase 1's `makeSceneFBTargets` helper; bumping to a real write target needs:
 
 - A `FragOutput` struct in each shader (or a shared helper module).
-- Per-renderer pipeline target flip from `null` → real format.
+- Per-renderer pipeline target flip via `emitsGBuffer: true` option.
 - The G-buffer normal should be the FINAL material normal (post-normal-map, post-anisotropy), not the geometric `v_normalEC`. This is the entire point of Slice 5c-B over the compute-from-depth producer.
 
-**Effort:** Multi-batch arc, ~1 day per cluster of related renderers. Risk: per-shader normal-extraction details (some shaders compute `czm_inverseViewRotation * worldNormal` late; others have eye-space normals already). Audit each before converting.
+**Status:** Partially shipped.
+
+- ✅ **EllipsoidPrimitive** — Batch 118. Analytical ray-traced eye-space normal at slot 1.
+- ✅ **glTF Models** (`Model.js` via `WebGPUModelPipelineCache`) — Batch 119. Post-normal-map N + real material roughness. Three return paths covered: main-lit (real N + roughness), unlit early-out (geometric normal + 0.5 placeholder), clipping edge band (geometric normal + 0.5 placeholder).
+- ✅ **3D Tiles B3DM / I3DM / TILE_GLTF** — same as glTF Models. They share the `Model.js` → `WebGPUModelPipelineCache` pipeline; Batch 119's conversion automatically covers them. Verified via `Model.js:3516` (`ModelType.TILE_B3DM`) → same `createColorPipeline` call site.
+- ⬜ **Lit Mat geometry primitives** (Box, Sphere, Polygon, Wall, Corridor, Frustum, etc.) — not yet converted. These go through `WebGPUPrimitiveCommands.js` and the `PrimitiveMatLit*.wgsl` family. The Lit Mat shaders compute a per-fragment normal in eye-space already (the lighting eval needs it); conversion is the same pattern as Model (FragOutput struct + rewrap returns + `emitsGBuffer: true`).
+- ⬜ **3D Tiles PNTS lit variants** — points don't have surface normals in a meaningful per-fragment sense; SHOULD stay at writeMask=0 placeholder.
+
+**Effort:** ~1 day per Lit Mat cluster (Box/Sphere/etc. typically share a shader family).
+
+**Risk:** per-shader normal-extraction details (some shaders compute `czm_inverseViewRotation * worldNormal` late; others have eye-space normals already). Audit each before converting.
 
 #### NEW-GBUFFER-MRT-COMPUTE-PRODUCER-RETIRE — Decision: keep or retire `GBufferNormalsFromDepth.wgsl`?
 
