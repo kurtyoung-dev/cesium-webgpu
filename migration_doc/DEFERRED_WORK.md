@@ -3177,6 +3177,8 @@ Forward-clustered lighting (currently a research-stage SCAFFOLDED feature) needs
 
 **Effort:** Multi-day, depends on Slice 5d (clustered lighting Phase 1) landing first.
 
+**Sub-batch plan:** See [SLICE_5D_PLAN_CLUSTERED_LIGHTING.md](SLICE_5D_PLAN_CLUSTERED_LIGHTING.md) (Batch 137, 2026-05-25) for the 5-sub-batch sequence: KHR_lights_punctual loader → LightCollection → cluster bounds compute → light-cluster assignment compute → Forward+ fragment consumer. Effort estimate 6-8 days total.
+
 **Reference implementation:** [toji/webgpu-clustered-shading](https://github.com/toji/webgpu-clustered-shading) — Brandon Jones's (Google WebGPU lead) canonical Forward+ on WebGPU example. Directly portable pieces:
 
 - **Cluster bounds compute shader** — assigns each cluster (typically 16×9×24 grid in view-space) an AABB. Runs once per resize, cached in a storage buffer keyed by `(viewport, frustum near/far, projection)`. Cesium-side hook: invalidate the cache when `WebGPUSceneRendererEnsureResources` bumps `_scenePipelineFormatGeneration` or when scene FB dimensions change.
