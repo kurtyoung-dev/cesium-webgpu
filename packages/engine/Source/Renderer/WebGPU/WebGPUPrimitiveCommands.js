@@ -2086,6 +2086,17 @@ function createMaterialPipelineAndCache(
       depthWriteEnabled: !translucent,
       depthCompare: "less-equal",
     },
+    // Slice 5c-B Batch 132 — match scene FB MSAA. Pre-fix this pipeline
+    // defaulted to sampleCount=1 against the default scene FB MSAA=4
+    // → "Attachment state not compatible" fires the moment any
+    // MaterialAppearance primitive (Polygon, Wall, Corridor, etc.)
+    // renders in a default scene. Same family as the Batch 118
+    // EllipsoidPrimitive MSAA bug. Pulled from `context._msaaSamples`
+    // (defaulted by SceneFramebuffer to the active scene MSAA count).
+    multisample:
+      (context._msaaSamples ?? 1) > 1
+        ? { count: context._msaaSamples }
+        : undefined,
   });
 
   return true;
