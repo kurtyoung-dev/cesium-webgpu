@@ -1795,8 +1795,37 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   return minDistance;
 }
 
-@fragment fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
+// Slice 5c-B Batch 119 — G-buffer MRT output struct for the Model
+// color pipeline. Slot 0 = lit color (the pre-Batch-119 single output);
+// slot 1 = eye-space normal + roughness packed as rgba16float.
+//
+// Model is the highest-ROI primitive for the G-buffer because its
+// per-fragment N can be post-normal-map (FLAG_HAS_NORMAL_TEXTURE
+// triggers perturbNormal at L1915) — fundamentally divergent from the
+// depth-derived approximation that the AO consumer fallback computes.
+// Roughness is also real material data (metallicRoughnessTexture .g
+// channel × material.roughnessFactor) instead of the 0.5 placeholder
+// other primitives use.
+//
+// The pick / velocity / classification entry points stay single-target.
+// They use their own pipelines (createPickPipeline*, createVelocityPipeline,
+// createClassificationPipeline) which build against the pick FB /
+// velocity FB / classification FB — NOT the scene FB — so they don't
+// need slot 1 declarations.
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  @location(1) normalRoughness: vec4<f32>,
+};
+
+@fragment fn fragmentMain(input: FragmentInput) -> FragOutput {
   let flags = material.materialFlags;
+
+  // Slice 5c-B Batch 119 — hoisted geometric normal for early-exit
+  // returns (clipping edge band, unlit path). The main lit path
+  // computes a SEPARATE `N` at L1911+ which may be post-normal-map;
+  // those returns emit that better N + the real material roughness
+  // instead of these placeholders.
+  let geomNormalEC = normalize(input.normalEC);
 
   // Hoist fwidth() to uniform control flow at the entry of the fragment
   // shader. WGSL requires fwidth to be called from uniform control flow,
@@ -1820,7 +1849,15 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     // eye-space meters since both sides of the test live in eye space.
     let edgeWidth = effects.clippingEdgeWidth;
     if (edgeWidth > 0.0 && clipDist < edgeWidth) {
-      return effects.clippingEdgeColor;
+      // Slice 5c-B Batch 119 — clipping edge: no material work has run
+      // yet (no PBR, no normal map). Emit geometric vertex normal +
+      // 0.5 roughness placeholder. The edge band is typically thin
+      // (clippingEdgeWidth ~ 1m eye-space) so consumer quality impact
+      // of the placeholder is negligible.
+      var out: FragOutput;
+      out.color = effects.clippingEdgeColor;
+      out.normalRoughness = vec4<f32>(geomNormalEC, 0.5);
+      return out;
     }
   }
 
@@ -1898,13 +1935,22 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     c = tonemapAndGamma(c);
     let a = select(1.0, baseColor.a, hasFlag(flags, FLAG_ALPHA_MODE_BLEND));
     let unlitColor = vec4<f32>(c, a);
-    return applyEdgeOverlay(
+    let unlitWithEdge = applyEdgeOverlay(
       unlitColor,
       input.positionEC,
       input.fragCoord.xy,
       currentFeatureId,
       edgePixelStep,
     );
+    // Slice 5c-B Batch 119 — unlit path: model has no shading normal
+    // by design (FLAG_IS_UNLIT skips the PBR + normal-map block).
+    // Emit the geometric vertex normal so consumers (AO, contact
+    // shadows) still get a usable normal at unlit-painted pixels;
+    // roughness 0.5 placeholder since unlit has no material spec.
+    var out: FragOutput;
+    out.color = unlitWithEdge;
+    out.normalRoughness = vec4<f32>(geomNormalEC, 0.5);
+    return out;
   }
 
   // ── Normal ────────────────────────────────────────────────────────────────
@@ -2644,7 +2690,21 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     edgePixelStep,
   );
 
-  return finalColor;
+  // Slice 5c-B Batch 119 — main lit path: emit the FULL post-normal-map
+  // eye-space normal + real material roughness. This is the wide-
+  // divergence pixel class the G-buffer was designed for:
+  //   - When FLAG_HAS_NORMAL_TEXTURE is set, `N` was perturbed by
+  //     perturbNormal() at L1915 using the tangent-space normal map.
+  //     This makes per-fragment N diverge SIGNIFICANTLY from the
+  //     depth-derived approximation the AO consumer fallback computes.
+  //   - `roughness` carries either material.roughnessFactor (metallic-
+  //     roughness path) or `clamp(1.0 - gloss, 0.04, 1.0)` (specular-
+  //     glossiness path) × the .g channel of the MR texture. Future
+  //     consumers (SSR) need this for proper specular response.
+  var out: FragOutput;
+  out.color = finalColor;
+  out.normalRoughness = vec4<f32>(N, roughness);
+  return out;
 }
 
 // C-R9-MODEL-PICK (Batch 54) — pick fragment entry. Shares the vertex

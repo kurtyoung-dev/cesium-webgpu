@@ -598,17 +598,21 @@ function createPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 114) — scene-FB color target via
-      // helper. Important: this file's `presentationFormat` parameter
-      // is actually wired to `context.scenePipelineFormat` per
-      // `maybeUpdateForSceneFormat()` at L1526 — the naming is
-      // misleading but the value is the scene FB color format. So
-      // routing through the scene-FB helper is correct.
-      // Pick (createPickPipeline*, lines 642/719/768/845), velocity
-      // (L922, rg16float), and classification (line 1017 — also
-      // scene-FB → see separate conversion in same batch) are
-      // separate builders.
-      targets: makeSceneFBTargets(presentationFormat, { blend }),
+      // Slice 5c-B Batch 119 — emit G-buffer slot 1 (eye-space normal +
+      // roughness). The shader's fragmentMain returns FragOutput from
+      // every path: main lit path emits the post-normal-map N and the
+      // real material roughness (the wide-divergence pixel class);
+      // clipping-edge + unlit early-out paths emit the geometric vertex
+      // normal + 0.5 roughness placeholder.
+      // `presentationFormat` is actually wired to
+      // `context.scenePipelineFormat` per `maybeUpdateForSceneFormat()`
+      // at L1526. Pick / velocity / classification have separate
+      // builders and stay single-target (they don't draw into the
+      // scene FB).
+      targets: makeSceneFBTargets(presentationFormat, {
+        emitsGBuffer: true,
+        blend,
+      }),
     },
     primitive: {
       topology: "triangle-list",
