@@ -135,6 +135,101 @@ Multi-day arcs that bundle architecture-spanning changes need a debug-probe with
 
 ---
 
+## Batch 116 — Sub-C root cause + working subset (Slice 5c-B Phase 2 v2 Sub-C resolved) (2026-05-24)
+
+**Date:** 2026-05-24
+
+Resolved the Sub-C dry-run failure documented above by building a WebGPU error-capture probe and bisecting the original 5-file change set down to the actual root cause.
+
+### Investigation probe
+
+`Tools/visual-regression/probe-mrt-validation.mjs` — runs the same 4-cell matrix as `probe-slice4-verify` but with three error-capture channels hooked at the page level:
+
+1. `device.onuncapturederror` — async dispatch of GPUValidationError / GPUOutOfMemoryError / GPUInternalError.
+2. `device.lost` promise — fires on driver crash or hard validation cascade.
+3. `console.error` + `pageerror` — catches Cesium-side throws and the `[CesiumJS:webgpu:*:pipeline-cache]` error format that Cesium's `pushErrorScope` wrapper emits.
+
+Per-cell summary categorizes console errors into `pipeline-cache`, `shader`, and `other` buckets so failures aren't buried under per-frame log spam.
+
+### Probe surfaced an unrelated pre-existing bug
+
+First baseline run before Sub-C re-application caught a separate WGSL compile failure that had been silently breaking AO since (likely) Phase 8a Slice 4 landed:
+
+```
+Error while parsing WGSL: :143:19 error: 'textureSample' must only be called from uniform control flow
+  let randomVal = textureSample(randomTexture, texSampler, randomUV).xy;
+:137:3 note: control flow depends on possibly non-uniform value
+  if (posEC.z > -uniforms.frustum.x * 1.1) {
+```
+
+`AmbientOcclusionGenerate.wgsl` calls `textureSample` (which needs uniform CF for derivative computation) from inside the sky-pixel early-exit branch and from `readDepth()` which is called inside the SSAO sample loop. Fix: switch both call sites to `textureSampleLevel(..., 0.0)` — depth + random textures both have a single mip; explicit-LOD form validates from any control-flow state. Shipped in commit `d91c25f4`. Net effect: `probe-slice4-verify`'s noise-floor diffs were the result of AO not running at all, not of the consumer reading the wrong normals.
+
+### Sub-C bisect
+
+With the probe live, re-applied Sub-C incrementally. Original 5-file set vs my replay:
+
+| File | Original Sub-C | My replay |
+|------|-----------|-----------|
+| `WebGPUSceneFBTargetHelpers.ts` | `_mrtMode = true` | `_mrtMode = true` ✓ |
+| `WebGPUGlobeSurfacePipelines.ts` | slot 1 = `{format: rgba16float, writeMask: 0xf}` | slot 1 = `null` |
+| `WebGPUSceneRendererPassRedirect.ts` | `colorAttachments.push(slot1)` | `colorAttachments = [...arr, slot1]` |
+| `WebGPUPickCommandHelpers.ts` | filter nulls before `.map()` | not changed |
+| `GlobeTerrain.wgsl` | patched FragOutput + 33 returns | not changed |
+
+My minimal replay (helper flip + globe `[scene, null]` + render-pass 2-attachment) produced a clean baseline: all 4 cells healthy, zero device errors. Suggested the problem wasn't in any of these three but in one of the OTHER two changes (or their interaction).
+
+Then flipped only the globe slot-1 shape from `null` → `{format: rgba16float, writeMask: 0xf}` (matching original Sub-C). Result:
+
+- Canvas pixel: `rgba(149, 139, 128)` → `rgba(44, 61, 73)` (terrain → sky)
+- Globe disappeared from rendering
+- `device.onuncapturederror`: **0 errors** (silent)
+- `console.error`: **339 events**, all variants of `[CesiumJS:webgpu:<ctx>:pipeline-cache] Failed to create pipeline "Globe terrain (...)": GPUPipelineError: Color target has no corresponding fragment output`
+
+### Root cause
+
+WebGPU validation rejects pipeline creation when the pipeline declares a color target with `writeMask != 0` (write-enabled) and the fragment shader does NOT emit `@location(n)` for that target slot. The error fires at `device.createRenderPipelineAsync()` time, NOT at draw time.
+
+Cesium's pipeline cache wraps `createRenderPipelineAsync` in `pushErrorScope('validation') → popErrorScope().then(err => context.log("error", ...))`. The error scope SWALLOWS the error before it reaches `device.onuncapturederror`. So:
+
+- `pushErrorScope`-wrapped errors → `console.error` with `[CesiumJS:webgpu:*:pipeline-cache]` prefix
+- Unwrapped errors (render-pass begin, draw-time, etc.) → `device.onuncapturederror`
+
+Any future MRT/multi-target work must surface BOTH channels. The probe now categorizes them separately.
+
+### Why "BLACK canvas" in original Sub-C but "BLUE sky" in my bisect
+
+Original Sub-C also patched `GlobeTerrain.wgsl` via the `wire-globe-mrt-normal.mjs` patcher, which rewrote 33 `return` statements. If the patcher produced any malformed WGSL (FragOutput field mismatch, unrewrapped return, etc.) the globe vertex shader may have also failed to compile — same pipeline-build failure mode plus possibly other primitives' pipelines depending on the globe's BGL chain. Combined: deeper black instead of just sky-only. Today's bisect didn't replay the shader patch so we got the cleaner "globe-only-missing" failure mode.
+
+### Working subset (Batch 116 ships)
+
+Three-file change, no shader patch:
+
+1. `WebGPUSceneFBTargetHelpers.ts` — `_mrtMode = true` (Phase 1 converted pipelines now emit 2 targets, with slot 1 = null per `makeSceneFBTargets`).
+2. `WebGPUGlobeSurfacePipelines.ts` — globe pipeline emits `[scene, null]` (declares slot 1 but doesn't write). Same fix pattern as Phase 1 helper.
+3. `WebGPUSceneRendererPassRedirect.ts` — when MRT mode is on, append G-buffer MSAA view as slot-1 color attachment (loadOp=clear sentinel, resolveTarget when MSAA on).
+
+This atomic flip has the same SHAPE as the original Sub-C but with all writable slot-1 targets replaced by `null` — the pass has a real 2nd attachment, every pipeline declares 2 slots, but nothing writes to slot 1 yet. The G-buffer slot-1 attachment loads/clears each frame and stays at the sentinel value; consumers downstream still see the depth-derived normals from the existing compute producer (Slice 2 producer continues to write the same texture via `STORAGE_BINDING` — paired single-sample/MSAA Sub-A architecture means the storage producer and the MRT render attachment co-exist).
+
+### Next batch
+
+Wire `GlobeTerrain.wgsl` to emit `@location(1) normalRoughness: vec4<f32>` and flip the globe pipeline slot-1 from `null` → `{format: "rgba16float", writeMask: 0xf}` in a single batch. After that, the MRT render pass writes are real and the slot-1 compute producer can be retired (or kept as the source for primitives that don't yet emit slot 1).
+
+### Lessons captured
+
+- **WebGPU pipeline-creation errors don't reach `device.onuncapturederror`** when wrapped in `pushErrorScope`. Any test that only listens to the device-level handler misses 100% of pipeline validation failures. The probe must capture `console.error` events filtered by Cesium's `[CesiumJS:webgpu:*:pipeline-cache]` prefix.
+- **Bisect by feature, not by file.** The original Sub-C postmortem listed 6 suspect causes but bundled them by file boundary. The actual diagnostic axis is "writable target without shader output" vs "null target padding" — bisecting along that axis (one config dimension at a time) localized the failure in one re-apply cycle.
+- **Probe-first applies to atomic flips too, not just bug reproductions.** The original "Slice 5c-B Sub-C dry-run" was an architecture-spanning flip; treating it as "apply, build, eyeball" missed the silent error class. Probe-first would have caught it on the same day.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneFBTargetHelpers.ts` — `_mrtMode` flipped from false to true.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts` — globe production-color pipeline declares 2 targets, slot 1 = null.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPassRedirect.ts` — MRT-gated 2nd attachment append when `isSceneFBMrtMode()`.
+- `Tools/visual-regression/probe-mrt-validation.mjs` — categorized error reporting (pipeline-cache / shader / other buckets).
+- `packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.wgsl` — HBAO `textureSample` → `textureSampleLevel` (separate, surfaced by the probe).
+
+---
+
 ## Batch 104 — FEAT-GAP-09 PointCloud LOD inline shader aerial-LUT (2026-05-24)
 
 **Date:** 2026-05-24

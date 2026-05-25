@@ -376,12 +376,28 @@ export function buildPipelineDescriptor(
     fragment: {
       module: fragmentModule,
       entryPoint: fragmentEntry,
+      // Slice 5c-B Sub-C: declare 2 targets to match the 2-attachment
+      // scene-FB render pass. Slot 1 is `null` because the globe
+      // fragment shader currently emits only `@location(0)` — the
+      // G-buffer normal-roughness emit is a separate later batch.
+      //
+      // WebGPU spec: a `null` target slot is permitted alongside live
+      // attachments — the attachment loads/clears per its descriptor
+      // but the pipeline never writes to it. Switching the slot to
+      // `{format: rgba16float, writeMask: 0xf}` while the shader still
+      // emits only @location(0) trips `GPUPipelineError: Color target
+      // has no corresponding fragment output` at pipeline creation —
+      // the entire globe pipeline fails to build and the canvas falls
+      // back to sky-only. See migration_doc/WEBGPU_DEBUGGING_LOG.md
+      // (Sub-C investigation, this batch) for the bisect that found
+      // this failure mode.
       targets: [
         {
           format: host._canvasFormat,
           blend: effectiveBlend,
           writeMask: colorWriteMask,
         },
+        null,
       ],
     },
     primitive: {

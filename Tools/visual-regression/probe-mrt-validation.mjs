@@ -293,7 +293,6 @@ function printCellSummary(cell) {
     console.log(`    ✗ ${cell.deviceErrors.length} device error(s):`);
     cell.deviceErrors.slice(0, 5).forEach((e, i) => {
       console.log(`      [${i}] ${e.kind}/${e.errType ?? e.reason ?? ""}`);
-      // Wrap long error messages
       const lines = (e.text ?? "").split("\n");
       lines.slice(0, 6).forEach((l) => console.log(`          ${l.trim()}`));
       if (lines.length > 6) {
@@ -306,13 +305,61 @@ function printCellSummary(cell) {
       );
     }
   }
-  if (cell.consoleErrors.length) {
-    console.log(`    ${cell.consoleErrors.length} console err/warn:`);
-    cell.consoleErrors.slice(0, 3).forEach((e, i) => {
-      console.log(
-        `      [${i}] ${e.type}: ${(e.text ?? "").split("\n")[0].slice(0, 200)}`,
-      );
-    });
+  // Pipeline-creation errors come through Cesium's pushErrorScope wrapper
+  // which logs to console.error with the prefix
+  // `[CesiumJS:webgpu:<id>:pipeline-cache]`. These are NOT caught by
+  // `device.onuncapturederror` (the scope swallows them) so the probe
+  // surfaces them explicitly. This was the failure mode that broke the
+  // original Sub-C dry-run — globe pipeline declared a writable slot 1
+  // that the shader didn't emit, and the pipeline silently failed to
+  // build, dropping the globe from the canvas.
+  const onlyErrors = cell.consoleErrors.filter(
+    (e) => e.type === "error" || e.kind === "pageerror",
+  );
+  if (onlyErrors.length) {
+    const pipelineErrs = onlyErrors.filter((e) =>
+      (e.text ?? "").includes(":pipeline-cache]"),
+    );
+    const shaderErrs = onlyErrors.filter((e) =>
+      (e.text ?? "").toLowerCase().includes("shadermodule"),
+    );
+    const otherErrs = onlyErrors.filter(
+      (e) =>
+        !(e.text ?? "").includes(":pipeline-cache]") &&
+        !(e.text ?? "").toLowerCase().includes("shadermodule"),
+    );
+    console.log(
+      `    ✗ ${onlyErrors.length} console.error events (${pipelineErrs.length} pipeline-cache, ${shaderErrs.length} shader, ${otherErrs.length} other):`,
+    );
+    // Show unique pipeline-cache failures (collapse duplicates — these
+    // fire per-tile-per-frame so 300+ is one underlying bug).
+    if (pipelineErrs.length) {
+      const seen = new Set();
+      pipelineErrs.forEach((e) => {
+        const key = (e.text ?? "").split(":").slice(2, 4).join(":");
+        if (seen.has(key)) return;
+        seen.add(key);
+        console.log(
+          `      pipeline-cache: ${(e.text ?? "").split(":").slice(2).join(":").slice(0, 220)}`,
+        );
+      });
+    }
+    if (shaderErrs.length) {
+      const seen = new Set();
+      shaderErrs.forEach((e) => {
+        const firstLine = (e.text ?? "").split("\n")[0];
+        if (seen.has(firstLine)) return;
+        seen.add(firstLine);
+        console.log(`      shader: ${firstLine.slice(0, 220)}`);
+      });
+    }
+    if (otherErrs.length) {
+      otherErrs.slice(0, 3).forEach((e) => {
+        console.log(
+          `      other: ${(e.text ?? "").split("\n")[0].slice(0, 220)}`,
+        );
+      });
+    }
   }
 }
 

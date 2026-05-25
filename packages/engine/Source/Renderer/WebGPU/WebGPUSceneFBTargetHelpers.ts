@@ -63,7 +63,12 @@
 // behavior-preserving (1-target arrays). Phase 2 flips this to true,
 // at which point every consumer of `makeSceneFBTargets` produces
 // 2-target arrays without per-file edits.
-let _mrtMode = false;
+//
+// SUB-C INVESTIGATION (Slice 5c-B, currently DEBUG): flipped to true
+// with probe-mrt-validation.mjs hooked to capture the actual WebGPU
+// validation error. DO NOT ship this flip without the matching globe
+// pipeline 2-target declaration AND render pass 2-attachment setup.
+let _mrtMode = true;
 
 /**
  * Format of the G-buffer normal-roughness texture (slot 1 in the

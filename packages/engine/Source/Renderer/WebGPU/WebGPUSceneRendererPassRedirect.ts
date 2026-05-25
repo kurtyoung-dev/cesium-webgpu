@@ -31,6 +31,7 @@
  * @module WebGPUSceneRendererPassRedirect
  */
 
+import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import type { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
@@ -84,7 +85,7 @@ export function setupSceneFramebufferRenderPass(
 
     const colorTarget = host._sceneFramebuffer.colorTarget;
     const bg = config.backgroundColor;
-    const colorAttachments = colorTarget.getColorAttachments?.([
+    let colorAttachments = colorTarget.getColorAttachments?.([
       {
         r: bg?.red ?? 0,
         g: bg?.green ?? 0,
@@ -110,6 +111,51 @@ export function setupSceneFramebufferRenderPass(
       );
     }
 
+    // SUB-C INVESTIGATION (Slice 5c-B): when MRT mode is on, append the
+    // G-buffer normal-roughness view as a 2nd color attachment. The
+    // Phase 1 converted pipelines (including globe per the same batch)
+    // already declare 2 color targets, so the pass MUST have a matching
+    // attachment count.
+    //
+    // Probe goal: capture the WebGPU validation error if any of the
+    // following fail —
+    //   - sampleCount mismatch between scene FB MSAA and G-buffer MSAA
+    //   - missing resolveTarget when MSAA is on
+    //   - frozen array push on `colorAttachments` (some renderers may
+    //     have hardened the return value as `Object.freeze`)
+    //   - format incompatibility between pipeline target[1] (rgba16float)
+    //     and the slot-1 attachment.
+    if (colorAttachments?.length && isSceneFBMrtMode()) {
+      const sceneAny = config.scene as unknown as {
+        _view?: {
+          gBufferFramebuffer?: {
+            renderAttachmentView?: GPUTextureView | null;
+            resolveTargetView?: GPUTextureView | null;
+            sampleCount?: number;
+          };
+        };
+      };
+      const gb = sceneAny?._view?.gBufferFramebuffer;
+      if (gb?.renderAttachmentView) {
+        // Build the slot-1 attachment. loadOp=clear with a sentinel
+        // (0,0,0,1) so the depth-derived consumer fallback fires for
+        // any fragment the producer doesn't overwrite (sky, edges,
+        // primitives that haven't been wired for slot-1 writes yet).
+        const slot1: GPURenderPassColorAttachment = {
+          view: gb.renderAttachmentView,
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          ...(gb.resolveTargetView
+            ? { resolveTarget: gb.resolveTargetView }
+            : {}),
+        };
+        // Defensive: build a NEW array rather than mutating in place,
+        // in case the producer returns a frozen one (was one of the
+        // 6 suspect causes from the postmortem).
+        colorAttachments = [...colorAttachments, slot1];
+      }
+    }
     if (colorAttachments?.length && context._currentCommandEncoder) {
       const passDesc: GPURenderPassDescriptor = {
         label: "Scene Framebuffer Render Pass",
