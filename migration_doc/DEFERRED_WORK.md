@@ -3167,6 +3167,20 @@ Forward-clustered lighting (currently a research-stage SCAFFOLDED feature) needs
 
 **Effort:** Multi-day, depends on Slice 5d (clustered lighting Phase 1) landing first.
 
+**Reference implementation:** [toji/webgpu-clustered-shading](https://github.com/toji/webgpu-clustered-shading) — Brandon Jones's (Google WebGPU lead) canonical Forward+ on WebGPU example. Directly portable pieces:
+
+- **Cluster bounds compute shader** — assigns each cluster (typically 16×9×24 grid in view-space) an AABB. Runs once per resize, cached in a storage buffer keyed by `(viewport, frustum near/far, projection)`. Cesium-side hook: invalidate the cache when `WebGPUSceneRendererEnsureResources` bumps `_scenePipelineFormatGeneration` or when scene FB dimensions change.
+- **Light-cluster assignment compute shader** — per-frame dispatch, one thread per cluster, walks the active-light list (KHR_lights_punctual when that lands) and emits two storage buffers: a per-cluster count + the global indirection list. Cesium-side hook: light list comes from `frameState.lights` (currently sun-only; KHR_lights_punctual would populate the array).
+- **Forward+ fragment evaluation** — fragment reads its own cluster index from `gl_FragCoord.xy` + linear depth, then iterates that cluster's lights. With G-buffer normal already in slot 1, the fragment can use `textureLoad(gBufferNormalTexture, ...)` instead of re-deriving — exactly the integration this entry tracks.
+
+**What to NOT directly port from the reference:**
+
+- The example uses a single-world-space scene with a fixed camera; Cesium needs RTE precision so cluster-bounds compute must consume eye-space inputs (or RTE-encoded world space). The `encodedCameraHigh`/`encodedCameraLow` pattern in `CameraUniforms` is the bridge.
+- The example's light culling is per-frame regardless of camera motion; Cesium's `RenderScheduler` already has per-frame dirty tracking that should gate the assignment dispatch when the camera + light positions haven't changed.
+- Toji uses a hand-rolled glTF loader; Cesium has its own (`Model.js`) — the light extraction needs to plug into Cesium's KHR_lights_punctual loader (which itself needs to be built).
+
+Both pieces (KHR_lights_punctual loader + this consumer) should land in the same Slice 5d arc — there's no point shipping clustered shading with no lights to cluster.
+
 #### NEW-GBUFFER-CONSUMER-CONTACT-SHADOWS — Screen-space contact shadows
 
 Sun-direction marching from a starting position + normal, sampled against the depth buffer. The starting normal comes from the G-buffer; the depth comes from the existing depth attachment. No new producer needed.
