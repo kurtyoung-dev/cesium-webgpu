@@ -96,10 +96,16 @@ export function executePostFrustumChain(
     host._renderDepthPlane(config);
   }
 
-  // Environmental effects: procedural clouds, SSR, weather particles
-  // These are full-screen composite passes that run after all geometry
-  // but before post-processing (tonemapping, bloom, FXAA, etc.)
-  host._executeEnvironmentalEffects(config);
+  // Slice 5c-B Batch 127 — `_executeEnvironmentalEffects` MOVED to
+  // AFTER `_runPostProcessing` (~L162). Pre-Batch-127 env effects ran
+  // here and wrote to `outputView = context.currentTextureView`, then
+  // post-process blitted the scene FB color over the canvas and
+  // stomped their output. Pre-Batch-127 the env effects chain was
+  // ALSO silently skipping due to the `_depthStencilView = null` bug
+  // (fixed in Batch 127 Step 1). With both bugs addressed, env
+  // effects run + their writes composite over the post-processed
+  // canvas via `loadOp="load"`. See PostFrustumChain Batch 127 long
+  // comment at the new call site for the full reasoning.
 
   // Phase 8a Slice 2 (Batch 85) — G-buffer producer. Screen-space
   // normal reconstruction from scene depth. The scene render pass has
@@ -160,6 +166,26 @@ export function executePostFrustumChain(
   }
   //>>includeEnd('debug');
   host._runPostProcessing(config);
+
+  // Slice 5c-B Batch 127 — environmental effects (NPR outlines, SSR,
+  // Procedural Clouds, Weather particles, Volumetric Fog). Runs AFTER
+  // post-process so their canvas writes composite ON TOP of the
+  // post-processed scene color, NOT under it. Pre-fix env effects ran
+  // before post-process and wrote to canvas; the post-process blit
+  // overwrote their contribution. Post-fix the env effects' write
+  // landed on canvas survives to the next frame's present.
+  //
+  // Color-space note: env effects sample `_sceneColorView` (raw HDR
+  // pre-postprocess) for their SOURCE reads (e.g. SSR's reflection
+  // source). Their WRITES land on the canvas which already carries
+  // the tonemapped + FXAA'd display-space scene. The mismatch is
+  // acceptable for the current use cases (NPR edges, SSR overlay,
+  // cloud composite) where the WRITE color is computed in
+  // display-space anyway (edge color is RGBA8-ish, cloud color is
+  // pre-toned). A future batch can re-route SSR's reflection
+  // compositing to also use the post-processed scene color as source
+  // for color-space consistency.
+  host._executeEnvironmentalEffects(config);
 
   // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — clear the per-frame
   // transmission signal at the END of executeCommands. The model

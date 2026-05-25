@@ -241,8 +241,20 @@ export function executeSSR(
     ],
   });
 
-  const encoder = device.createCommandEncoder({ label: "SSR" });
+  // Slice 5c-B Batch 127 — record into the MAIN frame encoder (parallel
+  // change to NPR outlines in this batch). Pre-fix: SSR created its own
+  // encoder + submitted eagerly → ran BEFORE the main encoder's
+  // post-process blit → SSR's canvas write was overwritten and
+  // invisible. Now SSR records into the main encoder AFTER
+  // _runPostProcessing's commands so the blend-on-top survives.
+  const mainEncoder = (
+    context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
+  )._currentCommandEncoder;
+  const useMain = !!mainEncoder;
+  const encoder =
+    mainEncoder ?? device.createCommandEncoder({ label: "SSR (orphan)" });
   const pass = encoder.beginRenderPass({
+    label: "SSR pass",
     colorAttachments: [
       {
         view: outputView,
@@ -255,7 +267,9 @@ export function executeSSR(
   pass.setBindGroup(0, bindGroup);
   pass.draw(3);
   pass.end();
-  device.queue.submit([encoder.finish()]);
+  if (!useMain) {
+    device.queue.submit([encoder.finish()]);
+  }
 }
 
 export function destroySSRResources(context: CesiumGraphicsContext): void {

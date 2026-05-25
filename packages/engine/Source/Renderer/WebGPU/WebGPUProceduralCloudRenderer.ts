@@ -299,9 +299,19 @@ export function executeProceduralClouds(
     ],
   });
 
-  // Render
-  const encoder = device.createCommandEncoder({ label: "ProceduralClouds" });
+  // Slice 5c-B Batch 127 — record into the main frame encoder so the
+  // composite-over-post-process ordering survives. Same fix pattern as
+  // NPR + SSR in this batch (see NPR's call site comment for the full
+  // explanation of the encoder-submission ordering issue).
+  const mainEncoder = (
+    context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
+  )._currentCommandEncoder;
+  const useMain = !!mainEncoder;
+  const encoder =
+    mainEncoder ??
+    device.createCommandEncoder({ label: "ProceduralClouds (orphan)" });
   const pass = encoder.beginRenderPass({
+    label: "ProceduralClouds pass",
     colorAttachments: [
       {
         view: outputView,
@@ -314,7 +324,9 @@ export function executeProceduralClouds(
   pass.setBindGroup(0, bindGroup);
   pass.draw(3); // full-screen triangle
   pass.end();
-  device.queue.submit([encoder.finish()]);
+  if (!useMain) {
+    device.queue.submit([encoder.finish()]);
+  }
 }
 
 export function destroyProceduralCloudResources(

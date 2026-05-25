@@ -192,6 +192,44 @@ export function ensureResources(
   const previousSceneColorFormat = context._sceneColorFormat;
   context._sceneColorFormat =
     host._sceneFramebuffer.colorFormat ?? context._sceneColorFormat;
+
+  // Slice 5c-B Batch 127 — wire scene-FB views onto context. Pre-fix:
+  // `_sceneColorView` + `_depthStencilView` were declared on
+  // WebGPUContext as `public X = null` and NEVER assigned anywhere
+  // (verified via repo-wide grep 2026-05-25). Consumers (env effects,
+  // translucent pass) read the always-null defaults and silently
+  // skipped. Same "field declared but never assigned" pattern as
+  // `_sceneColorFormat` above — both pre-dated this bug.
+  //
+  // Single-sample depth: `depthSampleableView` is the
+  // single-sample-resolved view. MSAA case: `depthSampleableView` is
+  // null and we leave `_depthStencilView` null too — env effects
+  // continue to skip with MSAA on until Step 5 (MSAA depth resolve)
+  // lands. Step 5 is gated on the env-effects target chain reorder
+  // (Step 4) so single-sample is the right initial proof point.
+  context._sceneColorView =
+    host._sceneFramebuffer.colorTarget?.getColorTextureView?.(0) ?? null;
+  // Slice 5c-B Batch 127 — depth wiring is GATED on single-sample
+  // because `_sceneFramebuffer.depthSampleableView` returns a
+  // depth-only aspect view of the MSAA depth texture in MSAA mode.
+  // That view is still multisampled at the binding-compatibility
+  // layer — AO + DoF + future effects' BGLs declare the depth
+  // binding as single-sample (`multisampled: 0`), so binding the
+  // MSAA depth view triggers "Sample count doesn't match
+  // expectation" at draw time. MSAA depth needs a separate resolve
+  // pass (Step 5 in this batch's plan, deferred).
+  //
+  // Result: env effects + post-process depth consumers work in
+  // single-sample scenes (`scene.msaaSamples = 1`); MSAA scenes
+  // continue to skip env effects until the resolve pass lands.
+  const _ctxWithDepth = context as unknown as {
+    _depthStencilView: GPUTextureView | null;
+  };
+  const sampleCount = context._msaaSamples ?? 1;
+  _ctxWithDepth._depthStencilView =
+    sampleCount === 1
+      ? (host._sceneFramebuffer.depthSampleableView ?? null)
+      : null;
   // Batch 110 — bump the scene pipeline format generation when the
   // scene color format actually changes. Renderers caching pipelines
   // that target scene FB observe the bump and clear+rebuild their

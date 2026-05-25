@@ -92,7 +92,13 @@ function initializePipeline(
       texture: { sampleType: "depth" },
     } as unknown as GPUBindGroupLayoutEntry,
     texture(2, Stage.FRAGMENT),
-    sampler(3, Stage.FRAGMENT),
+    // Slice 5c-B Batch 127 — non-filtering sampler. The depth_2d
+    // binding at slot 1 requires a non-filtering OR comparison
+    // sampler (WebGPU spec: filtering samplers + depth textures are
+    // incompatible). The actual GPUSampler is nearest-magnify/
+    // nearest-minify, so declaring the BGL slot as "non-filtering"
+    // matches the runtime sampler shape.
+    sampler(3, Stage.FRAGMENT, "non-filtering"),
     uniformBuffer(4, Stage.FRAGMENT),
   ]);
 
@@ -199,8 +205,45 @@ export function executeNPROutlines(
     ],
   });
 
-  const encoder = device.createCommandEncoder({ label: "NPR outline" });
-  const pass = encoder.beginRenderPass({
+  // Slice 5c-B Batch 127 — record into the MAIN frame command encoder
+  // instead of a separate one. Pre-fix NPR + SSR + ProceduralClouds
+  // created their own encoder and submitted eagerly via
+  // `device.queue.submit([encoder.finish()])`. The main encoder
+  // (which the SceneRenderer records scene rendering + post-process
+  // into) submits LATER at end-of-frame. GPU executes in submission
+  // order, so post-process's blit-to-canvas overwrote env effects'
+  // canvas writes. Recording into the main encoder makes ordering
+  // explicit: scene → post-process → env effects, all in one stream
+  // where later commands see prior commands' results.
+  const mainEncoder = (
+    context as unknown as {
+      _currentCommandEncoder?: GPUCommandEncoder;
+    }
+  )._currentCommandEncoder;
+  if (!mainEncoder) {
+    // No frame in flight — fall back to ephemeral encoder + immediate
+    // submit. Same semantics as pre-Batch-127 (used by render-loop
+    // unit tests that bypass beginFrame).
+    const tmp = device.createCommandEncoder({ label: "NPR outline (orphan)" });
+    const pass = tmp.beginRenderPass({
+      colorAttachments: [
+        { view: outputView, loadOp: "load", storeOp: "store" },
+      ],
+    });
+    pass.setPipeline(cache.pipeline!);
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(3);
+    pass.end();
+    device.queue.submit([tmp.finish()]);
+    return;
+  }
+  // Caller (executeEnvironmentalEffects) already called
+  // `context.endCurrentRenderPass()` before invoking us, so the main
+  // encoder is ready to accept a new render pass. We open our pass,
+  // record the draw, and end. The caller resumes the default render
+  // pass after we return.
+  const pass = mainEncoder.beginRenderPass({
+    label: "NPR outline pass",
     colorAttachments: [
       {
         view: outputView,
@@ -213,7 +256,6 @@ export function executeNPROutlines(
   pass.setBindGroup(0, bindGroup);
   pass.draw(3);
   pass.end();
-  device.queue.submit([encoder.finish()]);
 }
 
 export function destroyNPROutlineResources(

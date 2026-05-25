@@ -69,15 +69,18 @@ async function capture(label, { npr, strength }) {
       v.scene.globe.enableLighting = true;
       v.scene.enableNPROutlines = npr;
       v.scene.nprEdgeStrength = strength;
-      // Production-ish thresholds. Until NEW-ENV-EFFECTS-DEPTH-WIRING
-      // lands the env-effects chain silently skips and the probe's
-      // A-vs-B diff is dominated by run-to-run noise. Once the
-      // depth-wiring fix is in, lower to -1.0 to force every
-      // non-sentinel pixel to edge for a maximum-visibility
-      // verification screenshot.
+      // Production-ish thresholds: only paint edges at actual
+      // crease/silhouette discontinuities (not every pixel). With
+      // Batch 127 the env-effects chain works end-to-end, so the
+      // diff between cells is now real visible edge contribution.
       v.scene.nprNormalThreshold = 0.05;
       v.scene.nprDepthThreshold = 0.002;
-      v.scene.nprEdgeColor = new C.Color(1.0, 0.0, 1.0, 1.0); // magenta for visibility
+      v.scene.nprEdgeColor = new C.Color(1.0, 0.0, 1.0, 1.0); // magenta
+      // Batch 127 wires _depthStencilView from
+      // _sceneFramebuffer.depthSampleableView, which is null with
+      // MSAA. Force single-sample so env effects activate. MSAA
+      // depth resolve is a separate follow-up batch.
+      v.scene.msaaSamples = 1;
 
       // Force the lazy FR loader to settle before rendering, otherwise
       // the first ~3-5 frames skip NPR while the dynamic import is in
