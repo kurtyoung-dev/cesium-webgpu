@@ -356,12 +356,13 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         }
     }
 
-    // Slice 5c-B Batch 121 — emit FragOutput. normalRoughness gets the
-    // geometric eye-space normal (vertex shader writes worldNormal as
-    // eye-space via camera.normalMatrix). Roughness 0.5 placeholder —
-    // Lit Mat shaders don't carry material roughness in their UBOs.
-    var __mrtOut: FragOutput;
-    __mrtOut.color = finalColor;
-    __mrtOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);
-    return __mrtOut;
+    // Slice 5c-B Batch 135 — emit the bump-perturbed normal (same as
+    // the lighting eval) to G-buffer slot 1. See PrimitiveMatNormalMapLit
+    // for the full rationale; Bump and NormalMap diverge in how the
+    // perturbation is computed but the G-buffer consumer benefit is
+    // identical.
+    var mrtOut: FragOutput;
+    mrtOut.color = finalColor;
+    mrtOut.normalRoughness = vec4<f32>(perturbedNormal, 0.5);
+    return mrtOut;
 }

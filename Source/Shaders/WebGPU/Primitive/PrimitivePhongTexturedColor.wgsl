@@ -477,8 +477,8 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     // geometric eye-space normal (vertex shader writes worldNormal as
     // eye-space via camera.normalMatrix). Roughness 0.5 placeholder —
     // Lit Mat shaders don't carry material roughness in their UBOs.
-    var __mrtOut: FragOutput;
-    __mrtOut.color = finalColor;
-    __mrtOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);
-    return __mrtOut;
+    var mrtOut: FragOutput;
+    mrtOut.color = finalColor;
+    mrtOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);
+    return mrtOut;
 }
