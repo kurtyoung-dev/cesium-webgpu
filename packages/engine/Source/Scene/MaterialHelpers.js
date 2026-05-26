@@ -610,6 +610,17 @@ function createUniform(material, uniformId) {
       );
     }
     //>>includeEnd('debug');
+    // Batch 138 — also expose the channels value on material.uniforms so
+    // the WebGPU MaterialUniformBuffer (which packs it as a numeric index
+    // / vec3 of indices for runtime swizzling) can see it. Upstream WebGL
+    // bakes channels into the GLSL source via `replaceToken` and has no
+    // runtime uniform, so it ignores the extra map entry. Without this,
+    // any fabric with a `channels` uniform (NormalMap, EmissionMap,
+    // DiffuseMap) produced a WGSL struct mismatch — JS allocated only
+    // the non-channels fields (NormalMap: 16 bytes) while the WGSL
+    // declared the full struct (NormalMap: 32 bytes), triggering "buffer
+    // too small" validation errors on every draw.
+    material.uniforms[uniformId] = uniformValue;
   } else {
     // Since webgl doesn't allow texture dimension queries in glsl, create a uniform to do it.
     // Check if the shader source actually uses texture dimensions before creating the uniform.

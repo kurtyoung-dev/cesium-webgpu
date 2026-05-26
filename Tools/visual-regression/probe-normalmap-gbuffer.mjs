@@ -109,19 +109,17 @@ async function capture(label, { useNormalMap, contactShadows }) {
           }),
         }),
         appearance: new C.MaterialAppearance({
-          // Use BumpMap (16-byte UB layout that matches the existing JS
-          // allocator). The NormalMap material has a 32-byte WGSL struct
-          // but the JS allocator still writes 16 bytes — separate latent
-          // bug tracked outside Batch 135. BumpMap exercises the same
-          // perturbed-normal emit code path so the verification result
-          // is equivalent.
+          // Batch 138 — NormalMap material UB sizing fix. Pre-Batch-138
+          // this branch had to use BumpMap as a workaround because the
+          // NormalMap channels uniform wasn't propagated to material.uniforms,
+          // so MaterialUniformBuffer allocated 16 bytes instead of the
+          // 32 bytes the WGSL struct expects. Now NormalMap works directly.
           material: useNormalMap
             ? new C.Material({
                 fabric: {
-                  type: "BumpMap",
+                  type: "NormalMap",
                   uniforms: {
                     image: nmUrl,
-                    channel: "r",
                     strength: 1.0,
                     repeat: { x: 1, y: 1 },
                   },
