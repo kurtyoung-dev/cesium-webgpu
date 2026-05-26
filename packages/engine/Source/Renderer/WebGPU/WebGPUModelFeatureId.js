@@ -19,24 +19,31 @@ import ModelComponents from "../../Scene/ModelComponents.js";
 import ModelUtility from "../../Scene/Model/ModelUtility.js";
 
 // Feature uniform buffer.
-// Layout (14 floats / 56 bytes):
+// Layout (12 floats / 48 bytes — matches WGSL `FeatureIdUniforms`):
 //   0  : featuresLength (i32)
 //   1  : channelCount (i32)
 //   2  : texCoordIndex (i32)
 //   3  : hasMultilineBatchTex (i32)
 //   4-7: textureStep (vec4)
 //   8-9: textureDimensions (vec2)
-//   10 : _pad0 (carries `featurePickEnabled` from offset 10 onward
-//        per Batch 100 — see WebGPU shader's FeatureIdUniforms struct)
+//   10 : featurePickEnabled (f32, 0/1)
 //   11 : _pad1
-//   12 : featurePickEnabled (f32, 0/1)
-//   13 : _pad2
 //
-// C-R9-MODEL-FEATURE-PICK (Batch 100) extended the layout from 48 B to
-// 56 B for the per-feature pick gate. The previous fields keep their
-// offsets to preserve compatibility with the WebGL fallback that mirrors
-// this layout.
-const FEATURE_UNIFORM_SIZE = 56;
+// Batch 141 — pre-fix this was 14 floats (56 bytes) with
+// featurePickEnabled at slot 12. The WGSL struct declared
+// featurePickEnabled directly after textureDimensions (at byte 40 =
+// slot 10), not at byte 48 = slot 12. So the shader read 0 from slot
+// 10 (an unwritten pad) and the per-feature pick path NEVER
+// activated — picking on batch-table tilesets always returned
+// material.pickColor (the primitive-granularity pick id) instead of
+// the per-feature pick id.
+//
+// C-R9-MODEL-FEATURE-PICK (Batch 100) introduced the featurePickEnabled
+// field. The WGSL struct was correct at the time but the JS pack code
+// landed at slot 12 by accident — a comment in the original landed code
+// even mentions "carries featurePickEnabled from offset 10 onward" right
+// next to writing it at offset 12.
+const FEATURE_UNIFORM_SIZE = 48;
 
 /**
  * Finds the selected feature ID set for a given model primitive.
@@ -485,15 +492,16 @@ function ensureFeatureIdResources(
     uniformData[9] = batchDims.y;
   }
   // C-R9-MODEL-FEATURE-PICK (Batch 100/101) — `featurePickEnabled` flag
-  // at float offset 12. Flipped to 1.0 when a feature-pick texture has
-  // been allocated for this model. Allocation is eager when a batch
-  // table is present (any of the model's primitives could enter a pick
-  // pass at any time; the alternative — allocating on first pick pass —
-  // races against the bind group construction below since the BG would
-  // bind a placeholder texture that's wrong when pick fires). Cost is
-  // bounded: one Uint8Array of W*H*4 bytes (matches batch texture
-  // dimensions) + featuresLength pickId allocations, idempotent across
-  // re-renders.
+  // at float offset 10 (byte 40 — directly after textureDimensions per
+  // the WGSL struct). Batch 141 corrected this from the buggy offset 12.
+  // Flipped to 1.0 when a feature-pick texture has been allocated for
+  // this model. Allocation is eager when a batch table is present (any
+  // of the model's primitives could enter a pick pass at any time; the
+  // alternative — allocating on first pick pass — races against the
+  // bind group construction below since the BG would bind a placeholder
+  // texture that's wrong when pick fires). Cost is bounded: one
+  // Uint8Array of W*H*4 bytes (matches batch texture dimensions) +
+  // featuresLength pickId allocations, idempotent across re-renders.
   let featurePickTex = null;
   if (
     defined(context) &&
@@ -509,7 +517,7 @@ function ensureFeatureIdResources(
       batchTexture,
     );
   }
-  uniformData[12] = defined(featurePickTex) ? 1.0 : 0.0;
+  uniformData[10] = defined(featurePickTex) ? 1.0 : 0.0;
   // Suppress unused-var for `pickPassActive` — kept in the signature so
   // callers can still gate the allocation if it ever becomes too
   // expensive (e.g., very large batch tables).
