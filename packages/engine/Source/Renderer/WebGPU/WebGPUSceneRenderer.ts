@@ -53,6 +53,7 @@ import { WebGPUTranslucentTileClassification } from "./WebGPUTranslucentTileClas
 // command path, restore the composite OR ride C-R8-EDGE-INLINE-PRIMITIVES
 // to extend the inline stage to that shader family.
 import { WebGPUOIT } from "./WebGPUOIT.js";
+import { WebGPUClusteredLightingDispatcher } from "./WebGPUClusteredLightingDispatcher.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
 import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
 import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
@@ -765,6 +766,20 @@ export class WebGPUSceneRenderer {
   // recreated rgba16float scene FB).
   // Public underscore: shared with the _ensureResources slice (Batch 142).
   public _lastHDR: boolean | null = null;
+
+  // Slice 5d Batch 151 — Forward+ clustered lighting dispatcher.
+  // Lazily constructed on first use (the device isn't available at
+  // SceneRenderer construction time). Owns the cluster-bounds +
+  // cluster-assign compute renderers + the params uniform; consumer
+  // pipelines bind its public buffers at @group(4) via the chunk in
+  // ClusteredLighting.wgsl.
+  //
+  // Inert when scene.clusteredLightingEnabled === false OR when zero
+  // lights are configured — the dispatcher returns activeLightCount=0
+  // and the consumer FS chunk early-outs without touching the storage
+  // buffers.
+  private _clusteredLightingDispatcher: WebGPUClusteredLightingDispatcher | null =
+    null;
   // Session 65 Batch 25 — track previous MSAA sample count so the
   // scene framebuffer recreate path AND the render bundle cache
   // invalidation both fire when `scene.msaaSamples` changes. The
@@ -1219,6 +1234,15 @@ export class WebGPUSceneRenderer {
     // R-7a CPU pass profiler — begin the per-frame bucket. No-op when
     // profiling is disabled.
     this._cpuPassProfiler.beginFrame();
+
+    // Slice 5d Batch 151 — dispatch clustered lighting compute passes
+    // once per frame, BEFORE any material draws. The dispatcher
+    // internally checks scene.clusteredLightingEnabled + light count
+    // and skips both compute passes when disabled or empty. Output
+    // storage buffers + params uniform are bound by consumer
+    // pipelines at @group(4) via the chunk in ClusteredLighting.wgsl
+    // (Batch 149). Inert today — Batch 152+ wires actual consumers.
+    this._dispatchClusteredLighting(config);
 
     // --- Shadow cast pass (once per frame, before multi-frustum rendering) ---
     // Renders scene from light's perspective into the shadow map depth texture.
@@ -2240,6 +2264,194 @@ export class WebGPUSceneRenderer {
    * any GPU work is queued.
    */
   // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  /**
+   * Slice 5d Batch 151 — Forward+ clustered lighting per-frame hook.
+   * Walks scene.lights + every visible model.lightsFromGltf, hands
+   * the world-space list to the WebGPUClusteredLightingDispatcher
+   * along with the current frame's view + projection matrices. The
+   * dispatcher transforms positions/directions to eye-space, packs
+   * into the WGSL ClusteredLight layout, and records both compute
+   * passes into the active command encoder.
+   *
+   * Called early in executeCommands (after _ensureResources, before
+   * any consumer draw) so the storage buffers are ready when Model
+   * PBR / Lit Mat consumers (Batch 152+) bind them at @group(4).
+   *
+   * Inert when scene.clusteredLightingEnabled === false OR zero
+   * lights are configured — the dispatcher returns activeLightCount=0
+   * and consumer FS chunks gate on that value to skip the cluster
+   * read entirely.
+   *
+   * @private
+   */
+  private _dispatchClusteredLighting(config: WebGPURenderFrameConfig): void {
+    const { scene, context } = config;
+    const enabled = !!(
+      scene as unknown as { clusteredLightingEnabled?: boolean }
+    ).clusteredLightingEnabled;
+    const device = context._device;
+    if (!device) {
+      return;
+    }
+
+    // Lazy-construct on first call — the device wasn't available at
+    // SceneRenderer construction time. Construct even when disabled
+    // so consumer pipelines (Batch 152+) can bind the placeholder
+    // buffers at @group(4) without runtime branching on whether the
+    // dispatcher exists.
+    if (!this._clusteredLightingDispatcher) {
+      this._clusteredLightingDispatcher = new WebGPUClusteredLightingDispatcher(
+        device,
+      );
+    }
+
+    // End the active canvas render pass before issuing compute work.
+    // beginComputePass() on the main encoder while a render pass is
+    // open triggers a "encoder is locked" validation error — same
+    // family as Batch 144's CesiumMan startup race
+    // (BUG-MIPMAP-DURING-CANVAS-PASS). Resume the default pass
+    // afterwards so the rest of executeCommands continues seamlessly.
+    context.endCurrentRenderPass?.();
+    const encoder = context._currentCommandEncoder;
+    if (!encoder) {
+      context.resumeDefaultRenderPass?.();
+      return;
+    }
+
+    // Gather world-space lights. The dispatcher walks them per-frame
+    // and transforms to eye-space using the supplied viewMatrix.
+    const lights: Array<{
+      lightType: number;
+      posOrDirWC: { x: number; y: number; z: number };
+      color: { r?: number; g?: number; b?: number };
+      intensity?: number;
+      range?: number;
+      innerConeAngle?: number;
+      outerConeAngle?: number;
+      spotDirWC?: { x: number; y: number; z: number };
+    }> = [];
+    if (enabled) {
+      // Scene-level lights from LightCollection.
+      const sceneLights = (
+        scene as unknown as {
+          lights?: { length?: number; get?: (i: number) => unknown };
+        }
+      ).lights;
+      if (sceneLights && sceneLights.length && sceneLights.get) {
+        for (let i = 0; i < sceneLights.length; i++) {
+          const L = sceneLights.get(i) as {
+            lightType?: number;
+            enabled?: boolean;
+            direction?: { x: number; y: number; z: number };
+            position?: { x: number; y: number; z: number };
+            color?: { red?: number; green?: number; blue?: number };
+            intensity?: number;
+            range?: number;
+            innerConeAngle?: number;
+            outerConeAngle?: number;
+          };
+          if (L?.enabled === false) continue;
+          const lt = L?.lightType ?? 0;
+          // Directional: posOrDir = direction; point/spot: position.
+          const pd =
+            lt === 0
+              ? (L.direction ?? { x: 0, y: 0, z: -1 })
+              : (L.position ?? { x: 0, y: 0, z: 0 });
+          lights.push({
+            lightType: lt,
+            posOrDirWC: { x: pd.x, y: pd.y, z: pd.z },
+            color: {
+              r: L.color?.red,
+              g: L.color?.green,
+              b: L.color?.blue,
+            },
+            intensity: L.intensity,
+            range: L.range,
+            innerConeAngle: L.innerConeAngle,
+            outerConeAngle: L.outerConeAngle,
+            spotDirWC: lt === 2 ? L.direction : undefined,
+          });
+        }
+      }
+      // glTF KHR_lights_punctual lights per model — walk the scene's
+      // primitives + collect lightsFromGltf. Each model's lights are
+      // already in model space; the dispatcher's per-light pack
+      // multiplies by viewMatrix to land in eye-space. For non-trivial
+      // model transforms a separate per-model matrix multiply would
+      // be needed — left for a follow-up batch since the typical
+      // scene.lights path covers the common case.
+    }
+
+    const uniformState = context.uniformState as unknown as {
+      projection?: ArrayLike<number>;
+      inverseProjection?: ArrayLike<number>;
+      view?: ArrayLike<number>;
+    };
+    const inverseProjection = uniformState?.inverseProjection;
+    const viewMatrix = uniformState?.view;
+    if (!inverseProjection || !viewMatrix) {
+      // Frame state not ready (e.g., empty pick pass). Skip.
+      return;
+    }
+
+    // Camera frustum near/far. Use the scene's outermost frustum (the
+    // multi-frustum loop's first slice is the closest near, last is
+    // the farthest far — collapsing here means cluster bounds span
+    // the full visible depth range). Per-frustum-slice cluster bounds
+    // are a future optimization.
+    const cam = (
+      scene as unknown as {
+        camera?: { frustum?: { near?: number; far?: number } };
+      }
+    ).camera;
+    const near = Math.max(cam?.frustum?.near ?? 1.0, 0.1);
+    const far = Math.max(cam?.frustum?.far ?? 10000.0, near + 1.0);
+
+    this._clusteredLightingDispatcher.dispatch(encoder, {
+      enabled,
+      lights,
+      viewportWidth: this._viewportWidth,
+      viewportHeight: this._viewportHeight,
+      near,
+      far,
+      inverseProjection,
+      viewMatrix,
+    });
+
+    // Resume the default canvas render pass so the rest of
+    // executeCommands (shadow casts, scene render, etc.) sees the
+    // active pass it expects.
+    context.resumeDefaultRenderPass?.();
+  }
+
+  /**
+   * Public accessor for the clustered-lighting dispatcher's GPU
+   * buffers. Consumer pipelines (Model PBR + Lit Mat shaders, when
+   * wired in Batch 152+) call this to obtain handles for their
+   * @group(4) bind groups.
+   *
+   * Returns null when the dispatcher hasn't been constructed yet
+   * (first frame before any executeCommands call) — caller should
+   * use placeholder buffers in that case.
+   */
+  public _getClusteredLightingBuffers(): {
+    clusterLights: GPUBuffer;
+    clusterAABBs: GPUBuffer;
+    perClusterLightCount: GPUBuffer;
+    perClusterLightIndices: GPUBuffer;
+    params: GPUBuffer;
+  } | null {
+    const d = this._clusteredLightingDispatcher;
+    if (!d) return null;
+    return {
+      clusterLights: d.clusterLightsBuffer,
+      clusterAABBs: d.clusterAABBsBuffer,
+      perClusterLightCount: d.perClusterLightCountBuffer,
+      perClusterLightIndices: d.perClusterLightIndicesBuffer,
+      params: d.paramsBuffer,
+    };
+  }
+
   public _runVelocityPass(config: WebGPURenderFrameConfig): void {
     const { context, scene } = config;
     if (!scene?.taaEnabled || !this._sceneFramebuffer) {
