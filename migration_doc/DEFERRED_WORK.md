@@ -3272,7 +3272,13 @@ So `depthView` is always undefined → early return → the entire env-effects c
 
 ## NEW-GLTF-PIPELINE-SHAPE-AUDIT — Model PBR pipeline-side audit (MSAA, BGL visibility, MRT slot 1, KHR extension paths)
 
-**Status:** Items 1 / 2 / 3 / 6 VERIFIED CLEAN in Batch 143 (2026-05-26). Items 4 + 5 still open. Velocity-pipeline MSAA mismatch fixed opportunistically as a dormant-bug cleanup.
+**Status:** All 6 items now resolved.
+
+- Items 1 / 2 / 3 / 6 VERIFIED CLEAN in Batch 143 (2026-05-26).
+- Item 5 (CesiumMan startup race) FIXED in Batch 144 (`WebGLStubTexture.generateMipmap` was reusing the shared command encoder while the canvas pass was open). Probe-cesium-man-race.mjs localized the race via stack-trace capture; all 5 sample models now render with 0 device errors.
+- Item 4 (KHR extension factor probes) VERIFIED CLEAN in Batch 145 (2026-05-26). 7 synthetic test assets (clearcoat / specular / anisotropy / iridescence / sheen / volume+transmission / transmission+ior) all load + render with 0 device errors, and the JS pack offsets match the WGSL struct field offsets verified at runtime via `model._webgpuCache.primitives[].materialData` introspection. The KHR FS code paths (Batches 105-107) work end-to-end on WebGPU as of this verification.
+
+Velocity-pipeline MSAA mismatch (Item 1) fixed opportunistically in Batch 143 as a dormant-bug cleanup — Model doesn't emit velocity commands yet so it was inert, but the pipeline-shape mismatch is gone.
 
 **Batch 143 audit findings (Model PBR pipeline shape):**
 
