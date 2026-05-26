@@ -497,7 +497,9 @@ export async function createCesiumJs(variant = "dual") {
     // Batch 148 — Slice 5d step 137d cluster-assign renderer.
     `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js';\n` +
     // Batch 149 — Slice 5d step 137e cluster debug renderer.
-    `export { WebGPUClusterDebugRenderer } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js';\n`;
+    `export { WebGPUClusterDebugRenderer } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js';\n` +
+    // Batch 150 — Slice 5d per-frame dispatcher.
+    `export { WebGPUClusteredLightingDispatcher } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.js';\n`;
 
   // FORK-16: Re-export TypeScript-only WGSL preprocessor + library
   // surface that the .js glob in workspaceSourceFiles can't pick up.
@@ -1513,7 +1515,9 @@ export async function createIndexJs(workspace) {
       // Batch 148 — Slice 5d step 137d cluster-assign renderer.
       `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js';${EOL}` +
       // Batch 149 — Slice 5d step 137e cluster debug renderer.
-      `export { WebGPUClusterDebugRenderer } from './Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js';${EOL}`;
+      `export { WebGPUClusterDebugRenderer } from './Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js';${EOL}` +
+      // Batch 150 — Slice 5d per-frame dispatcher.
+      `export { WebGPUClusteredLightingDispatcher } from './Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.js';${EOL}`;
 
     // WGSL-adjacent re-exports live in a SEPARATE file (index-wgsl.js)
     // that the webgl-only variant entry barrel deliberately does NOT

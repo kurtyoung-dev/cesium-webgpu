@@ -1020,6 +1020,14 @@ class Scene {
     // screen-space occluder is within the marched distance. Off by
     // default — opt-in via `scene.enableContactShadows = true`.
     this._enableContactShadows = false;
+
+    // Slice 5d Batch 150 — Forward+ clustered lighting. When true and
+    // `scene.lights.length > 0`, the WebGPU SceneRenderer dispatches
+    // the cluster-bounds + cluster-assign compute passes each frame
+    // and binds the resulting storage buffers to consumer material
+    // pipelines (Model PBR + Lit Mat shaders). Default false — opt-in.
+    // No-op on WebGL.
+    this._clusteredLightingEnabled = false;
     this._enableWeather = false;
     this._weatherType = 0;
     this._weatherIntensity = 0.5;
@@ -2672,6 +2680,39 @@ class Scene {
 
   set enableContactShadows(value) {
     this._enableContactShadows = value;
+  }
+
+  /**
+   * Slice 5d Batch 150 — Forward+ clustered lighting (WebGPU only).
+   *
+   * When true and the scene's `scene.lights` collection (or a glTF
+   * model's `lightsFromGltf`) contains punctual lights, the renderer
+   * dispatches per-frame cluster-bounds + cluster-assign compute
+   * passes and binds the resulting storage buffers to Model PBR's
+   * fragment shader. Per-pixel additive diffuse + specular from up
+   * to 1024 scene-wide lights, with at most 256 lights overlapping
+   * any one cluster.
+   *
+   * Default false. Has no effect on the WebGL renderer.
+   *
+   * @memberof Scene.prototype
+   * @type {boolean}
+   * @default false
+   *
+   * @example
+   * scene.lights.add(new Cesium.PointLight({
+   *   position: Cesium.Cartesian3.fromDegrees(-75, 40, 100),
+   *   color: Cesium.Color.YELLOW,
+   *   range: 200,
+   * }));
+   * scene.clusteredLightingEnabled = true;
+   */
+  get clusteredLightingEnabled() {
+    return this._clusteredLightingEnabled;
+  }
+
+  set clusteredLightingEnabled(value) {
+    this._clusteredLightingEnabled = value;
   }
 
   /**
