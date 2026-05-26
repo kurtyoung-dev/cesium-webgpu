@@ -3272,7 +3272,18 @@ So `depthView` is always undefined → early return → the entire env-effects c
 
 ## NEW-GLTF-PIPELINE-SHAPE-AUDIT — Model PBR pipeline-side audit (MSAA, BGL visibility, MRT slot 1, KHR extension paths)
 
-**Status:** Deferred. Surfaced at the end of Batch 141 (2026-05-26) when the Model PBR audit completed the data-side review and called out the pipeline-side as not yet covered.
+**Status:** Items 1 / 2 / 3 / 6 VERIFIED CLEAN in Batch 143 (2026-05-26). Items 4 + 5 still open. Velocity-pipeline MSAA mismatch fixed opportunistically as a dormant-bug cleanup.
+
+**Batch 143 audit findings (Model PBR pipeline shape):**
+
+- ✅ Item 1 (MSAA): `createPipeline` (color), `createClassificationPipeline` correctly thread `sampleCount` from `context._msaaSamples` into `multisample: { count }`. Pick pipelines correctly omit `multisample` (pick FBO is single-sample). One dormant mismatch found in `createVelocityPipeline` (multisample=sampleCount while velocityTexture is sampleCount=1) and fixed in Batch 143 to align with collection renderers' velocity-pipeline pattern from Batch 134. Currently inert — Model primitives don't tag `.velocityCommand` so the velocity pass short-circuits (verified by `probe-model-taa-msaa.mjs` reporting 0/79 velocity commands on a TAA+MSAA+animated-model scene).
+- ✅ Item 2 (BGL visibility): all Model BGLs audited. Camera UBO `VERTEX_FRAGMENT` (correct — VS reads MVP, FS reads camera position). Material UBO at group 1 binding 0 also `VERTEX_FRAGMENT` (correct — VS reads modelMatrix, FS reads PBR factors). All instance-group bindings (joint matrices, morph deltas, instance transforms) correctly `VERTEX`-only. All texture + sampler bindings correctly `FRAGMENT`-only. LightUniforms `FRAGMENT`-only (correct — no VS uses light data). No mis-declarations found.
+- ✅ Item 3 (MRT slot 1): the lit color pipeline uses `makeSceneFBTargets(..., { emitsGBuffer: true })` which produces `[scene, {rgba16float, writeMask: 0xf}]`. ModelPBRComplete's FragOutput emits `@location(1) normalRoughness` from every path (lit PBR with perturbed normal at L2706, unlit early-out with geomNormalEC at L1952, clipping-edge early-out with geomNormalEC at L1859) so the shader emit matches the descriptor. Classification correctly drops `emitsGBuffer` and uses placeholder slot 1 with writeMask=0.
+- ✅ Item 6 (Pick FBO parity): 4 pick descriptor variants (`createPickPipeline`, `createPickHoverPipeline`, `createPickPrecisePass1Pipeline`, `createPickPrecisePass2Pipeline`) all correctly use single-target `[{format: presentationFormat}]` with NO `multisample` block, matching the single-sample pick FBO. The depth pre-pass variant uses `writeMask: 0` to suppress color while keeping depth/stencil writes.
+
+**Status:** Items 4 + 5 still open. Original status text below for reference.
+
+Surfaced at the end of Batch 141 (2026-05-26) when the Model PBR audit completed the data-side review and called out the pipeline-side as not yet covered.
 
 **What's already done (Batches 138-141):** Data-side of the Model PBR pipeline is byte-correct across MaterialUniforms (768 B / 192 floats), CameraUniforms, LightUniforms + per-light PunctualLight records, MorphWeightsUniforms, SHUniforms. One real bug fixed in FeatureIdUniforms (featurePickEnabled was at wrong slot, silent per-feature pick failure on batch-tabled tilesets).
 

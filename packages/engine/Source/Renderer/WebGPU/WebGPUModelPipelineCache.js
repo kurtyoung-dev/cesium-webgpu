@@ -941,9 +941,12 @@ function createVelocityPipeline(
   doubleSided,
   hasTexCoord1,
   hasFeatureId0,
-  // Session 65 Batch 28 — MSAA sample count.
+  // Session 65 Batch 28 — MSAA sample count. NO LONGER READ by this
+  // pipeline as of Batch 143; signature kept for back-compat with the
+  // pipeline-cache call site. See multisample comment below.
   sampleCount = 1,
 ) {
+  void sampleCount;
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR velocity [alpha=${alphaMode},ds=${doubleSided}]`;
   return device.createRenderPipeline({
@@ -968,7 +971,22 @@ function createVelocityPipeline(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
-    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
+    // Batch 143 — drop multisample. The velocity pass attaches the
+    // single-sample velocityTexture (per WebGPUSceneFramebuffer.ts:118)
+    // as the only color attachment, so the pipeline must also be
+    // single-sample to match. Pre-Batch-143 this baked
+    // `{count: sampleCount}` (= 4 when scene MSAA is on) which would
+    // trigger a sampleCount-mismatch validation error the moment Model
+    // started emitting velocity commands. Today it's dormant — Model
+    // primitives never tag commands with `.velocityCommand` (verified
+    // by probe-model-taa-msaa.mjs reporting 0/79 velocity commands on
+    // a TAA+MSAA+animated-model scene). When velocity emission gets
+    // wired in a future batch, the broader fix (MSAA velocity texture
+    // + resolve target, or single-sample resolved depth attachment in
+    // the velocity pass) must land alongside.
+    //
+    // Matches the collection renderers' velocity pipelines (Batch 134)
+    // which all leave multisample undefined for the same reason.
   });
 }
 
