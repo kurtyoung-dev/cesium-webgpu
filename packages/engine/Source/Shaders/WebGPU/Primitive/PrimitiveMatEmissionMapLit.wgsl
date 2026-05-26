@@ -9,7 +9,8 @@
 // effects bind group at `@group(3)` (texture group occupies @group(2)).
 // Ambient + emission stay unshadowed; only direct (diffuse + spec) is modulated.
 //
-// Batch 167 - B.12 chunk usage. @chunk csm_samplePointShadow
+// Batch 167 - B.12 chunk usage.
+// @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,

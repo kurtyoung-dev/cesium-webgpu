@@ -188,6 +188,21 @@ class MaterialUniformBuffer {
         // Matrix packed as array
         return { type: "matrix", size: value.length, isTexture: false };
       }
+      // Batch 139 — GLSL-synthetic ivec3 (the `<image>Dimensions` auto-
+      // uniform that upstream Cesium adds whenever the GLSL source
+      // references `imageDimensions` — see MaterialHelpers.createUniform
+      // sampler2D branch). WebGPU shaders query texture dimensions via
+      // textureDimensions() instead, so the WGSL struct doesn't declare
+      // a matching field. Pre-Batch-139 the ivec3 got auto-classified as
+      // a vec2 (object with x/y), padded the front of the UB by 8 bytes,
+      // and silently shifted every subsequent field's offset — channel
+      // / strength / repeat all read garbage. Treating it as a texture
+      // skips it from the packed float buffer entirely. WebGL is
+      // unaffected — it reads imageDimensions via the _uniforms function
+      // accessor, not the packed buffer.
+      if (value.type === "ivec3") {
+        return { type: "ivec3_glsl_only", size: 0, isTexture: true };
+      }
       // Object with x/y boolean fields (e.g., Fade's fadeDirection)
       if (typeof value.x === "boolean") {
         return { type: "boolVec2", size: 2, isTexture: false };

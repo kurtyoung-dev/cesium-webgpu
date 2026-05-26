@@ -905,6 +905,48 @@ function initializeMaterial(options, result, MaterialConstructor) {
     const template = clone(cachedMaterial.fabric, true);
     result._template = combine(result._template, template, true);
     translucent = cachedMaterial.translucent;
+
+    // Batch 139 — reorder uniforms to match the cached template's
+    // canonical field order. `combine()` lists user-provided keys
+    // FIRST and template-only keys LAST, which puts inherited defaults
+    // at the wrong offsets in the packed UB. WGSL structs are written
+    // in canonical fabric order (channels, strength, repeat for
+    // NormalMap), so when the JS UB's iteration order diverges from
+    // that, every field reads from the wrong memory location.
+    //
+    // For built-in materials (anything cached by addMaterial) the
+    // canonical order is the cached template's uniform key order.
+    // Reordering after combine() restores layout parity with the WGSL
+    // struct without changing any values.
+    //
+    // Anti-pattern this fixes: `new Material({ fabric: { type:
+    // "NormalMap", uniforms: { image, strength, repeat }}})` (omitting
+    // `channels`) — pre-Batch-139 the inherited channels ended up at
+    // offset 4 floats but WGSL expected it at offset 0.
+    if (defined(template.uniforms) && defined(result._template.uniforms)) {
+      const reordered = {};
+      // First: keys in canonical template order (these include both
+      // inherited defaults AND user overrides, in template order).
+      for (const key in template.uniforms) {
+        if (
+          template.uniforms.hasOwnProperty(key) &&
+          result._template.uniforms.hasOwnProperty(key)
+        ) {
+          reordered[key] = result._template.uniforms[key];
+        }
+      }
+      // Then: any keys the user added that aren't in the template
+      // (custom fabric extensions) — append at the end.
+      for (const key in result._template.uniforms) {
+        if (
+          result._template.uniforms.hasOwnProperty(key) &&
+          !reordered.hasOwnProperty(key)
+        ) {
+          reordered[key] = result._template.uniforms[key];
+        }
+      }
+      result._template.uniforms = reordered;
+    }
   }
 
   // Make sure the template has no obvious errors. More error checking happens later.

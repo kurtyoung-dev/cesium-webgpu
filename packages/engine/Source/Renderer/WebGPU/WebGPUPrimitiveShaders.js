@@ -102,13 +102,24 @@ import csm_samplePointShadow from "../../Shaders/WebGPU/chunks/functions/csm_sam
 // this is the lightest-weight equivalent — markers stay benign comments
 // when the chunk isn't injected (e.g., during isolated-shader testing),
 // so the shader file remains a valid WGSL source on disk.
-const POINT_SHADOW_MARKER = "// @chunk csm_samplePointShadow";
+// Batch 139 — was a strict `"// @chunk csm_samplePointShadow"` substring
+// match. That bricked 9 shaders that had the marker on the same line as
+// other comment text (e.g., `// Batch 167 - B.12 chunk usage. @chunk
+// csm_samplePointShadow`) — the leading `// Batch 167...` prefix meant
+// the literal "// @chunk csm_samplePointShadow" substring never appeared
+// in source, so the chunk wasn't injected and every draw of those shaders
+// produced "unresolved call target" WGSL parse errors. Switched to a
+// regex that matches `@chunk csm_samplePointShadow` regardless of
+// leading comment text. Still requires the marker to be in a comment
+// (line starts with `//` after optional whitespace) so accidental matches
+// in WGSL code or string literals can't trigger injection.
+const POINT_SHADOW_MARKER_REGEX = /^\s*\/\/.*@chunk\s+csm_samplePointShadow\b/m;
 function injectChunks(src) {
   if (typeof src !== "string") {
     return src;
   }
   let out = src;
-  if (out.includes(POINT_SHADOW_MARKER)) {
+  if (POINT_SHADOW_MARKER_REGEX.test(out)) {
     out = `${csm_samplePointShadow}\n${out}`;
   }
   return out;

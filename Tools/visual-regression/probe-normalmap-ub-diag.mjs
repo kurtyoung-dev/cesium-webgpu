@@ -61,6 +61,10 @@ const BASE = "http://localhost:8080";
               size: v.size,
             }))
           : null,
+        // Show actual byte values to check what the shader will read
+        gpuDataFloats: m._uniformBuffer?.gpuData
+          ? Array.from(new Float32Array(m._uniformBuffer.gpuData.buffer, m._uniformBuffer.gpuData.byteOffset, m._uniformBuffer.gpuData.byteLength / 4))
+          : null,
       };
     }
 

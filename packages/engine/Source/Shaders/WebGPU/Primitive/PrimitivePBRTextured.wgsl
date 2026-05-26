@@ -8,7 +8,8 @@
 // Direct radiance is modulated by `computeShadowFactorCSM` when
 // `effects.csmControl.x > 0.5`; ambient remains unshadowed.
 //
-// Batch 167 - B.12 chunk usage. @chunk csm_samplePointShadow
+// Batch 167 - B.12 chunk usage.
+// @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
