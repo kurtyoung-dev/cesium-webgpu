@@ -87,7 +87,9 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
 // The heights texture is laid out as a 1D strip (height in .x channel).
 fn getHeight(idx: i32, invTexSize: f32) -> f32 {
     let u = (f32(idx) + 0.5) * invTexSize;
-    return textureSample(heightsTexture, bandSampler, vec2<f32>(u, 0.5)).x;
+    // Batch 140 — textureSampleLevel for non-uniform-control-flow calls.
+    // See PrimitiveMatElevBandLit.wgsl for rationale.
+    return textureSampleLevel(heightsTexture, bandSampler, vec2<f32>(u, 0.5), 0.0).x;
 }
 
 @vertex
@@ -148,7 +150,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let span = heightAbove - heightBelow;
     let lerper = select((height - heightBelow) / span, 1.0, abs(span) < 1e-6);
     let colorU = invTexSize * (f32(idxBelow) + 0.5 + lerper);
-    var color = textureSample(colorsTexture, bandSampler, vec2<f32>(colorU, 0.5));
+    // Batch 140 — textureSampleLevel (see getHeight rationale above).
+    var color = textureSampleLevel(colorsTexture, bandSampler, vec2<f32>(colorU, 0.5), 0.0);
 
     // Undo the premultiplied alpha the colors texture may be baked
     // with (matches the WebGL shader's unpremul step).

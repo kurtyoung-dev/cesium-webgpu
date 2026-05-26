@@ -99,7 +99,12 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
 
 fn getHeight(idx: i32, invTexSize: f32) -> f32 {
     let u = (f32(idx) + 0.5) * invTexSize;
-    return textureSample(heightsTexture, bandSampler, vec2<f32>(u, 0.5)).x;
+    // Batch 140 — textureSampleLevel for non-uniform-control-flow calls.
+    // This helper is invoked inside a fragmentMain loop (binary search
+    // for the height band), so the uniform-control-flow constraint of
+    // `textureSample` is violated. textureSampleLevel takes an explicit
+    // LOD so it doesn't need implicit derivatives and is valid anywhere.
+    return textureSampleLevel(heightsTexture, bandSampler, vec2<f32>(u, 0.5), 0.0).x;
 }
 
 fn selectCascade(viewDepth: f32, splits: vec4<f32>) -> u32 {
@@ -254,7 +259,8 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let span = heightAbove - heightBelow;
     let lerper = select((height - heightBelow) / span, 1.0, abs(span) < 1e-6);
     let colorU = invTexSize * (f32(idxBelow) + 0.5 + lerper);
-    var bandColor = textureSample(colorsTexture, bandSampler, vec2<f32>(colorU, 0.5));
+    // Batch 140 — textureSampleLevel (see getHeight rationale above).
+    var bandColor = textureSampleLevel(colorsTexture, bandSampler, vec2<f32>(colorU, 0.5), 0.0);
     if (bandColor.a > 0.0) {
         bandColor = vec4<f32>(bandColor.rgb / bandColor.a, bandColor.a);
     }
