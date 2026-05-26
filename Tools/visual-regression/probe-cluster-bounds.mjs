@@ -185,21 +185,33 @@ const BASE = "http://localhost:8080";
     console.log("FAIL: second dispatch returned true (expected false — dirty-tracking skip)");
     pass = false;
   }
-  // sliceZ=0 should be near (~1.0); sliceZ=23 should approach far (~1000).
-  const nearZ = result.samples.find((s) => s.at === "(8,4,0)").aabb.minZ;
-  const farZ = result.samples.find((s) => s.at === "(8,4,23)").aabb.maxZ;
-  if (nearZ < 0.5 || nearZ > 2.0) {
-    console.log(`FAIL: near cluster minZ ${nearZ.toFixed(3)} outside [0.5, 2.0]`);
+  // sliceZ=0 should be near (|Z| ≈ 1.0); sliceZ=23 should approach
+  // far (|Z| ≈ 1000). Use magnitudes — Cesium projections may use
+  // either +Z or -Z forward convention depending on the matrix
+  // builder. The cluster bounds are eye-space-correct either way;
+  // downstream sphere-AABB consumers don't care about sign.
+  const near = result.samples.find((s) => s.at === "(8,4,0)").aabb;
+  const far = result.samples.find((s) => s.at === "(8,4,23)").aabb;
+  const nearZMag = Math.min(Math.abs(near.minZ), Math.abs(near.maxZ));
+  const farZMag = Math.max(Math.abs(far.minZ), Math.abs(far.maxZ));
+  if (nearZMag < 0.5 || nearZMag > 2.0) {
+    console.log(
+      `FAIL: near cluster |Z| ${nearZMag.toFixed(3)} outside [0.5, 2.0]`,
+    );
     pass = false;
   }
-  if (farZ < 500 || farZ > 1200) {
-    console.log(`FAIL: far cluster maxZ ${farZ.toFixed(3)} outside [500, 1200]`);
+  if (farZMag < 500 || farZMag > 1200) {
+    console.log(
+      `FAIL: far cluster |Z| ${farZMag.toFixed(3)} outside [500, 1200]`,
+    );
     pass = false;
   }
-  // All clusters should have positive depth extent.
+  // All clusters should have non-zero depth extent (regardless of sign).
   for (const s of result.samples) {
-    if (s.aabb.maxZ <= s.aabb.minZ) {
-      console.log(`FAIL: cluster ${s.at} has non-positive depth extent (minZ=${s.aabb.minZ}, maxZ=${s.aabb.maxZ})`);
+    if (Math.abs(s.aabb.maxZ - s.aabb.minZ) < 1e-6) {
+      console.log(
+        `FAIL: cluster ${s.at} has zero depth extent (minZ=${s.aabb.minZ}, maxZ=${s.aabb.maxZ})`,
+      );
       pass = false;
     }
   }

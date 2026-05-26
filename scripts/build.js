@@ -493,7 +493,9 @@ export async function createCesiumJs(variant = "dual") {
     // Batch 147 — Slice 5d step 3c cluster-bounds renderer. See
     // createIndexJs("engine") below for the matching engine-package
     // re-export and full rationale.
-    `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js';\n`;
+    `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js';\n` +
+    // Batch 148 — Slice 5d step 137d cluster-assign renderer.
+    `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js';\n`;
 
   // FORK-16: Re-export TypeScript-only WGSL preprocessor + library
   // surface that the .js glob in workspaceSourceFiles can't pick up.
@@ -1505,7 +1507,9 @@ export async function createIndexJs(workspace) {
       // construct + dispatch it standalone for verification. Same
       // reasoning as the LightTypes re-export above: workspace `.js`
       // glob can't pick up `.ts` files.
-      `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js';${EOL}`;
+      `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js';${EOL}` +
+      // Batch 148 — Slice 5d step 137d cluster-assign renderer.
+      `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js';${EOL}`;
 
     // WGSL-adjacent re-exports live in a SEPARATE file (index-wgsl.js)
     // that the webgl-only variant entry barrel deliberately does NOT

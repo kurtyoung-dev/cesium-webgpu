@@ -159,7 +159,12 @@ export class WebGPUClusterBoundsRenderer {
   private _cachedNear: number = -1;
   private _cachedFar: number = -1;
   // 16-float column-major projection matrix; compared element-wise.
-  private _cachedProjection: Float32Array = new Float32Array(16);
+  // Stored as f64 (number[]) not Float32Array — f32 round-trip
+  // would truncate the incoming f64 projection values, and a
+  // subsequent `cached !== input` comparison would always be true
+  // because the f32-truncated cached value never equals its f64
+  // source. Pre-Batch-148 this dirty-tracking always missed.
+  private _cachedProjection: number[] = new Array(16).fill(0);
   private _firstDispatchDone: boolean = false;
 
   constructor(device: GPUDevice) {
