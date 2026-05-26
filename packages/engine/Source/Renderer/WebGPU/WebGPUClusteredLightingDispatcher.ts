@@ -56,6 +56,10 @@ import {
   CLUSTER_MAX_LIGHTS,
   type ClusteredLightDef,
 } from "./WebGPUClusterAssignRenderer.js";
+import {
+  getClusteredLightingBGL,
+  buildClusteredLightingBindGroup,
+} from "./WebGPUClusteredLightingBGL.js";
 
 // Uniform buffer holds ClusteredParams: 2 vec4 = 32 bytes. Padded to
 // 256-byte minimum alignment.
@@ -157,6 +161,39 @@ export class WebGPUClusteredLightingDispatcher {
   }
   get paramsBuffer(): GPUBuffer {
     return this._paramsBuffer;
+  }
+
+  /**
+   * Lazy-built bind group for the clustered-lighting resources. Buffers
+   * don't change frame-to-frame (only their contents), so the bind group
+   * is built once per dispatcher and reused. Cleared if the dispatcher
+   * is destroyed.
+   *
+   * Currently unconsumed — Batch 152 originally landed Model PBR + Lit
+   * Mat consumers at `@group(4)` but the platform's `maxBindGroups: 4`
+   * ceiling forced a revert. Batch 153 will merge clustered-lighting
+   * bindings into the existing group 3 (effects) BGL; at that point
+   * this getter's bind group will be subsumed by the effects bind group
+   * builder and the helper can be retired.
+   *
+   * The BGL itself comes from `getClusteredLightingBGL(device)`
+   * (Batch 152) — same per-device cached BGL shared across every
+   * consumer pipeline (provisional group slot).
+   */
+  private _consumerBindGroup: GPUBindGroup | null = null;
+  get consumerBindGroup(): GPUBindGroup {
+    if (!this._consumerBindGroup) {
+      // Touch the BGL so it's cached for consumer pipeline layouts.
+      getClusteredLightingBGL(this._device);
+      this._consumerBindGroup = buildClusteredLightingBindGroup(this._device, {
+        clusterLights: this.clusterLightsBuffer,
+        clusterAABBs: this.clusterAABBsBuffer,
+        perClusterLightCount: this.perClusterLightCountBuffer,
+        perClusterLightIndices: this.perClusterLightIndicesBuffer,
+        params: this.paramsBuffer,
+      });
+    }
+    return this._consumerBindGroup;
   }
 
   /**

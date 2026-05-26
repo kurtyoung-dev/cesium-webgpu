@@ -2160,6 +2160,17 @@ struct FragOutput {
   let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
   var direct = (kD * diffuseColor / PI + specBRDF) * light.sunColor * light.sunIntensity * NdotL;
 
+  // Slice 5d — Forward+ clustered lighting consumer call site reserved
+  // here. Batch 152 attempted to wire `evalClusteredLights(...)` from the
+  // ClusteredLighting chunk via a new @group(4) binding, but the platform
+  // ceiling (Chromium-on-Windows caps `maxBindGroups` at 4 — verified via
+  // `Tools/visual-regression/probe-device-limits.mjs`) blocks a 5th bind
+  // group. Batch 153 will merge the clustered-lighting bindings into the
+  // existing group 3 (effects) and reinstate the additive contribution
+  // here. The dispatcher already runs per frame (Batch 151) and populates
+  // every cluster's light list — only the per-fragment consumer is
+  // currently a no-op.
+
   // C-R4-GLTF-KHR slice 4 — KHR_materials_anisotropy (factor-level).
   // Full anisotropic GGX needs the tangent-frame as a per-vertex
   // attribute (not currently passed through `FragmentInput`). For Slice

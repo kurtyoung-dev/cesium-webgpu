@@ -3179,6 +3179,8 @@ Forward-clustered lighting (currently a research-stage SCAFFOLDED feature) needs
 
 **Sub-batch plan:** See [SLICE_5D_PLAN_CLUSTERED_LIGHTING.md](SLICE_5D_PLAN_CLUSTERED_LIGHTING.md) (Batch 137, 2026-05-25) for the 5-sub-batch sequence: KHR_lights_punctual loader → LightCollection → cluster bounds compute → light-cluster assignment compute → Forward+ fragment consumer. Effort estimate 6-8 days total.
 
+**Status update (2026-05-26):** Steps 1-4 SHIPPED (Batches 134-148). Step 5 SCAFFOLDED across Batches 149-151 (FS chunk + dispatcher + SceneRenderer per-frame hook). Batch 152 attempted to wire the Model PBR consumer via a new `@group(4)` BGL but hit a platform ceiling — `Tools/visual-regression/probe-device-limits.mjs` confirmed Chromium-on-Windows caps `maxBindGroups` at 4 (both D3D12 + Vulkan backends), so the @group(4) approach is dead-on-arrival. Reverted cleanly to infrastructure-only; Batch 153 will merge the 5 clustered-lighting bindings into the existing group 3 (effects) BGL. See the Batch 152/153 entries in the slice plan for full scope + verification steps.
+
 **Reference implementation:** [toji/webgpu-clustered-shading](https://github.com/toji/webgpu-clustered-shading) — Brandon Jones's (Google WebGPU lead) canonical Forward+ on WebGPU example. Directly portable pieces:
 
 - **Cluster bounds compute shader** — assigns each cluster (typically 16×9×24 grid in view-space) an AABB. Runs once per resize, cached in a storage buffer keyed by `(viewport, frustum near/far, projection)`. Cesium-side hook: invalidate the cache when `WebGPUSceneRendererEnsureResources` bumps `_scenePipelineFormatGeneration` or when scene FB dimensions change.

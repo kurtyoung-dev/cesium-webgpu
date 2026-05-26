@@ -1,7 +1,13 @@
 # Slice 5d Plan — Forward-Clustered Lighting on WebGPU
 
-**Status:** Steps 1 + 2 SHIPPED (Batch 142, 2026-05-26). Steps 3-5
-still deferred. Update history below the sub-batch sequence.
+**Status:** Steps 1 + 2 SHIPPED (Batch 142, 2026-05-26). Steps 3 + 4
+SHIPPED (Batches 147 + 148, 2026-05-26). Step 5 SCAFFOLDED
+(Batches 149-151, 2026-05-26): FS chunk + dispatcher + per-frame
+SceneRenderer hook all live; consumer wiring blocked by a platform
+ceiling (`maxBindGroups: 4` on Chromium-on-Windows, see Batch 152
+notes). Batch 153 will close step 5 by merging the cluster bindings
+into existing group 3 (effects). Update history below the sub-batch
+sequence.
 
 **Goal:** Multi-light Forward+ on the WebGPU backend, with per-pixel
 diffuse + specular for arbitrary scene-placed lights (point + spot +
@@ -100,7 +106,27 @@ Note: `Light` (base class) is intentionally NOT re-exported under that name — 
 **Done when:** Setting `scene.lights.add(new C.PointLight(...))`
 populates `frameState.lights` each render. Still no visual change.
 
-### Batch 137c — Cluster bounds compute pass
+### Batch 137c — Cluster bounds compute pass — ✅ SHIPPED (Batch 147, 2026-05-26)
+
+**Status update (Batch 147 + 148):** Shipped as
+`WebGPUClusterBoundsRenderer.ts` + `Shaders/WebGPU/Compute/ClusterBounds.wgsl`.
+16×9×24 grid (3456 clusters), exponential depth slicing, per-renderer
+uniform buffer (96B → 256 padded) + storage buffer (~108 KiB).
+Dirty tracking on projection matrix via `_cachedProjection: number[]`
+(originally Float32Array, fixed in Batch 148 to preserve f64 input
+for proper diffs). Verified end-to-end via
+`Tools/visual-regression/probe-cluster-bounds.mjs` against a fixed
+80°×60° frustum (near=1, far=1000): all 8 NDC corners unproject to
+expected eye-space coordinates, with -Z forward convention
+(probe assertions use `Math.abs(z)` for sign-agnostic Z magnitude
+comparison).
+
+**Effort actual:** ~1 day (versus 2-day estimate). Numerics fell out
+clean once the f64 dirty-tracking bug was found.
+
+---
+
+**Original plan (preserved for reference):**
 
 **Effort:** ~2 days. Numerically tricky (RTE precision boundary,
 near-plane edge cases).
@@ -127,7 +153,25 @@ near-plane edge cases).
 verifiable via a debug overlay (extend `WebGPUDebugGBufferOverlay`
 with a cluster-color mode). Still no visual lighting change.
 
-### Batch 137d — Light-to-cluster assignment compute pass
+### Batch 137d — Light-to-cluster assignment compute pass — ✅ SHIPPED (Batch 148, 2026-05-26)
+
+**Status update (Batch 148):** Shipped as
+`WebGPUClusterAssignRenderer.ts` + `Shaders/WebGPU/Compute/ClusterAssign.wgsl`.
+One thread per cluster, sphere-AABB intersection per (cluster, light).
+Caps: `CLUSTER_MAX_LIGHTS = 1024` total, `CLUSTER_MAX_LIGHTS_PER_CLUSTER = 256`.
+Directional lights always overlap; point/spot tested by range². CPU
+pack with `ClusteredLightDef` interface (5 vec4 = 80 bytes per record),
+plus checksum-based dirty tracking. Verified end-to-end via
+`Tools/visual-regression/probe-cluster-assign.mjs`: single point light
+at known eye-space position writes its index into exactly the cluster
+cells whose AABB the light's range sphere intersects; directional-only
+case produces 3456 baseline overlaps.
+
+**Effort actual:** ~1 day (versus 1.5-day estimate).
+
+---
+
+**Original plan (preserved for reference):**
 
 **Effort:** ~1.5 days.
 
@@ -157,6 +201,84 @@ containing >0 lights".
 
 ### Batch 137e — Forward+ fragment consumer
 
+Decomposed into three sub-batches once the original `@group(4)`
+approach hit the platform's `maxBindGroups: 4` ceiling. Current state:
+infrastructure landed (149-151), consumer wiring redesigned (153
+pending), 21 Lit Mat shaders queued behind 153 (154+ pending).
+
+#### Batch 149 — FS chunk + dispatcher → SCAFFOLDED ✅
+
+Landed:
+
+- `packages/engine/Source/Shaders/WebGPU/chunks/structs/ClusteredLighting.wgsl` — declares the bindings (`clusterLights`, `clusterAABBs`, `perClusterLightCount`, `perClusterLightIndices`, `clusterParams`), `clusterIndexFor(fragCoord, viewZ)` lookup, and `evalClusteredLights(...)` (Lambert + Cook-Torrance GGX with KHR_lights_punctual smooth falloff).
+- Cluster-debug visualizer pipeline reads the FS chunk and renders each cluster's light count as a heatmap — proves end-to-end that the chunk reads the dispatcher's storage buffers correctly.
+
+#### Batch 150 — per-frame dispatcher orchestration → SCAFFOLDED ✅
+
+Landed:
+
+- `WebGPUClusteredLightingDispatcher.ts` — orchestrates bounds + assign renderers. CPU-side world→eye-space transform via view matrix. Exposes public buffers (`clusterLightsBuffer`, `clusterAABBsBuffer`, `perClusterLightCountBuffer`, `perClusterLightIndicesBuffer`, `paramsBuffer`) and a lazy `consumerBindGroup` getter.
+- `Scene._clusteredLightingEnabled` boolean + `Scene.clusteredLightingEnabled` getter/setter as the user-facing toggle.
+
+#### Batch 151 — SceneRenderer per-frame hook → SCAFFOLDED ✅
+
+Landed:
+
+- `WebGPUSceneRenderer._dispatchClusteredLighting(config)` called early in `executeCommands`. Uses `context.endCurrentRenderPass?.()` → dispatch → `context.resumeDefaultRenderPass?.()` to avoid the encoder-locked race (BUG family of Batch 144's CesiumMan startup race).
+- Walks `scene.lights` (`LightCollection` from Batch 137b), reads `inverseProjection` + `view` from `uniformState`, hands them to the dispatcher.
+- Verified end-to-end via `Tools/visual-regression/probe-clustered-per-frame.mjs`: 2 lights → 4048 cluster overlaps (3456 directional baseline + ~592 point), toggle-on/off observed, 0 device errors.
+
+#### Batch 152 — Model PBR consumer at `@group(4)` → REVERTED ❌, infrastructure-only
+
+Attempted to wire `evalClusteredLights(...)` into `ModelPBRComplete.wgsl` via a new `@group(4)` BGL. Reverted after `Tools/visual-regression/probe-device-limits.mjs` confirmed Chromium-on-Windows caps `maxBindGroups` at **4** (both D3D12 + Vulkan backends in the current dev environment) — the requested `requiredLimits: { maxBindGroups: 5 }` fails device creation entirely with `Required limit (5) is greater than the supported limit (4)`.
+
+What remains live from Batch 152 (infrastructure-only):
+
+- `WebGPUClusteredLightingBGL.ts` — `getClusteredLightingBGL(device)` + `buildClusteredLightingBindGroup(device, buffers)` helpers. Layout is correct; group number is provisional and will change when Batch 153's group-3 merge lands.
+- `WebGPUDevicePool.ts` opt-up-only `maxBindGroups` branch — falls through cleanly when the adapter exposes only 4.
+- Doc updates flagging the consumer wiring as deferred to Batch 153.
+
+What was reverted:
+
+- `WebGPUModelPipelineCache.js` — removed `getClusteredLightingBGL` import, removed group-4 entry from `_getOrCreatePipelineLayout`, removed chunk prepend from `_getOrCreateShaderModule`.
+- `WebGPUModelRenderer.js` — removed group-4 `bindGroups` entry.
+- `WebGPUSceneRenderer.ts` — removed `context._clusteredLightingBindGroup` stash (kept a `void this._clusteredLightingDispatcher.consumerBindGroup` to keep the lazy build warm).
+- `ModelPBRComplete.wgsl` — removed `evalClusteredLights(...)` call site (replaced with a deferred-to-Batch-153 marker comment).
+
+Verified clean revert via `Tools/visual-regression/probe-model-pbr-audit.mjs`: 5 PBR assets (CesiumMan, CesiumMilkTruck, GroundVehicle, BoxInstanced, BoxUnlit), **0 device errors** (was 6212-6228 errors per asset before revert).
+
+#### Batch 153 — group-3 merge + Model PBR consumer wiring → PENDING
+
+**Goal:** Fold the 5 clustered-lighting bindings (`clusterLights`, `clusterAABBs`, `perClusterLightCount`, `perClusterLightIndices`, `clusterParams`) into the existing **group 3 (effects)** BGL so consumer pipelines don't need a 5th bind group.
+
+**Scope:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js` — add 5 new entries to the effects BGL at bindings `[18..22]` (current effects bindings end at 17). Pass through the dispatcher's buffer handles via a new constructor option `clusteredLightingBuffers`. Add same 5 entries to both the construction sites (line 679 BGL builder + line 1325 bind-group factory per the Batch 152 pre-compaction note).
+- `packages/engine/Source/Shaders/WebGPU/chunks/structs/ClusteredLighting.wgsl` — remap `@group(4)` → `@group(3)`; bindings `0..4` → `18..22`. Re-label the BGL inside `WebGPUClusteredLightingBGL.ts` (or retire the helper outright if effects fully subsumes it).
+- `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` — reinstate the `evalClusteredLights(...)` additive call at the deferred-marker site after the sun-direct line (Batch 152 reverted-position).
+- `packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js` — prepend `ClusteredLightingChunk` to the Model shader source (the call from Batch 152 that was reverted), unchanged pipeline layout (group count stays at 4).
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts` — re-add `context._clusteredLightingBindGroup` stash but the bind group is now the effects bind group (already built per frame).
+
+**Verification:**
+
+- `Tools/visual-regression/probe-model-pbr-audit.mjs` continues at 0 device errors.
+- Re-run `probe-clustered-per-frame.mjs` to confirm dispatcher still functions.
+- New `probe-clustered-visible.mjs`: load a model with a known PointLight at a known position; sample the canvas pixel under the light's footprint; assert brightness > baseline (light off) by a threshold.
+
+**Risk:** The effects BGL is hot — globe, primitive, and Model all read it. Adding 5 more bindings means every consumer pipeline's BGL signature changes, forcing pipeline cache invalidation. This is a one-time cost; the runtime cost is one extra storage buffer read per FS invocation when clustered lighting is enabled (gated by `clusterParams.activeLightCount.x` so it's a uniform branch).
+
+**Effort estimate:** ~1 day. Most of the work is updating the effects BGL builder + downstream pipeline caches; the shader changes are mechanical.
+
+#### Batch 154+ — Lit Mat shaders (21 variants)
+
+Same merge applies. After Batch 153 lands and Model PBR consumes the cluster bindings via group 3 effects, repeat for each of the 21 Lit Mat shader sources. Each variant gets the same chunk prepend + `evalClusteredLights(...)` additive call.
+
+**Effort estimate:** ~0.5-1 day depending on shader uniformity.
+
+---
+
+#### Original step 137e (preserved for reference)
+
 **Effort:** ~1-2 days. The shader work is straightforward; the bind
 group plumbing through the existing pipeline cache + shader define
 system is the bulk of the time.
@@ -183,7 +305,7 @@ pipeline cache, `WebGPUEffectsBindGroup.js` (or new bind group).
 
 **Done when:** A scene with `scene.lights.add(new C.PointLight({
 position, color, intensity }))` produces visible per-pixel diffuse
-+ specular at the light's region. Sandcastle demo: a glTF model
+plus specular at the light's region. Sandcastle demo: a glTF model
 inside a "light bulb" PointLight, viewed from various angles —
 lighting wraps the model correctly.
 

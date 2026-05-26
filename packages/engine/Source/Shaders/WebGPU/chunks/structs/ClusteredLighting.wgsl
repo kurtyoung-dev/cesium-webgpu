@@ -7,12 +7,18 @@
 // 147) + ClusterAssign (Batch 148) compute passes, and evaluate the
 // per-light diffuse + specular contribution.
 //
-// # Bind group convention
+// # Bind group convention (PROVISIONAL — to be remapped in Batch 153)
 //
-// Consumer pipelines bind these resources at `@group(4)` (the
-// first slot after the existing Camera / Material / Instance /
-// Effects groups used by Model PBR). Layout matches
-// `makeClusteredLightingBGL()` in WebGPUClusteredLightingBGL.ts.
+// Originally drafted to land at `@group(4)` (the first slot after
+// the existing Camera / Material / Instance / Effects groups used
+// by Model PBR). That approach was reverted in Batch 152 after
+// `Tools/visual-regression/probe-device-limits.mjs` confirmed
+// Chromium-on-Windows caps `maxBindGroups` at 4 (both D3D12 +
+// Vulkan backends). Batch 153 will merge these 5 bindings into the
+// existing group 3 (effects) BGL; this chunk's `@group` /
+// `@binding` declarations will be re-derived from the merged
+// layout when the consumer wiring lands. Until then this chunk is
+// NOT included in any pipeline's shader source.
 //
 //   @group(4) @binding(0) clusterLights        : storage<read>
 //   @group(4) @binding(1) clusterAABBs         : storage<read>  (optional — for debug)

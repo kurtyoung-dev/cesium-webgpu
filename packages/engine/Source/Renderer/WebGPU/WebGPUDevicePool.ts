@@ -699,6 +699,15 @@ export class WebGPUDevicePool {
           (adapter.limits as unknown as Record<string, number>)[name] ??
           SPEC_DEFAULT_LIMITS[name];
         const specDefault = SPEC_DEFAULT_LIMITS[name];
+        // Batch 152 — maxBindGroups opt-up reverted. The probe environment
+        // (Chromium on Windows, both D3D12 + Vulkan backends) caps
+        // maxBindGroups at the spec default of 4. Forward+ clustered
+        // lighting's planned @group(4) addition can't land as a separate
+        // bind group on this platform; the eventual integration must
+        // merge clustered lighting bindings into one of the existing
+        // 4 groups (camera/material/instance/effects) instead. Falls
+        // through to the generic "opt up only when adapter exceeds
+        // spec default" branch below.
         if (adapterValue > specDefault) {
           requiredLimits[name] = Math.min(adapterValue, cap);
         }

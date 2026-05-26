@@ -2275,7 +2275,8 @@ export class WebGPUSceneRenderer {
    *
    * Called early in executeCommands (after _ensureResources, before
    * any consumer draw) so the storage buffers are ready when Model
-   * PBR / Lit Mat consumers (Batch 152+) bind them at @group(4).
+   * PBR / Lit Mat consumers (Batch 153+, merged into group 3 effects)
+   * read them.
    *
    * Inert when scene.clusteredLightingEnabled === false OR zero
    * lights are configured — the dispatcher returns activeLightCount=0
@@ -2296,9 +2297,9 @@ export class WebGPUSceneRenderer {
 
     // Lazy-construct on first call — the device wasn't available at
     // SceneRenderer construction time. Construct even when disabled
-    // so consumer pipelines (Batch 152+) can bind the placeholder
-    // buffers at @group(4) without runtime branching on whether the
-    // dispatcher exists.
+    // so consumer pipelines (Batch 153+, merged into group 3 effects)
+    // can bind the placeholder buffers without runtime branching on
+    // whether the dispatcher exists.
     if (!this._clusteredLightingDispatcher) {
       this._clusteredLightingDispatcher = new WebGPUClusteredLightingDispatcher(
         device,
@@ -2418,6 +2419,16 @@ export class WebGPUSceneRenderer {
       viewMatrix,
     });
 
+    // Batch 152 deferred: consumer-side bind group stash was reverted
+    // after probe-device-limits.mjs confirmed Chromium-on-Windows caps
+    // `maxBindGroups` at 4 (both D3D12 + Vulkan backends), blocking a
+    // 5th @group(4) on Model / Lit Mat pipelines. Batch 153 will merge
+    // the clustered lighting bindings into existing group 3 (effects)
+    // and reinstate a context stash for the consumer side. The
+    // dispatcher itself still runs every frame so the cluster bounds +
+    // light-list buffers stay live for the eventual consumer wiring.
+    void this._clusteredLightingDispatcher.consumerBindGroup; // keep lazy-build warm
+
     // Resume the default canvas render pass so the rest of
     // executeCommands (shadow casts, scene render, etc.) sees the
     // active pass it expects.
@@ -2427,8 +2438,8 @@ export class WebGPUSceneRenderer {
   /**
    * Public accessor for the clustered-lighting dispatcher's GPU
    * buffers. Consumer pipelines (Model PBR + Lit Mat shaders, when
-   * wired in Batch 152+) call this to obtain handles for their
-   * @group(4) bind groups.
+   * wired in Batch 153+ via group 3 effects merge) call this to obtain
+   * handles for their bind groups.
    *
    * Returns null when the dispatcher hasn't been constructed yet
    * (first frame before any executeCommands call) — caller should
