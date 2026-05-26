@@ -894,24 +894,32 @@ export function createTextureStubs(
       }
       const gen = state.mipmapGenerator;
 
-      // Reuse the active command encoder when one is open so the mipmap
-      // blits are batched into the current frame; otherwise create a
-      // standalone encoder + submit immediately.
-      if (state.currentCommandEncoder) {
-        gen.generateMipmaps(
-          tex.texture,
-          tex.format,
-          tex.mipLevelCount,
-          state.currentCommandEncoder,
-        );
-      } else {
-        const encoder = gen.generateMipmaps(
-          tex.texture,
-          tex.format,
-          tex.mipLevelCount,
-        );
-        state.device.queue.submit([encoder.finish()]);
-      }
+      // Batch 144 — ALWAYS use a standalone encoder. The pre-Batch-144
+      // path tried to reuse `state.currentCommandEncoder` "to batch the
+      // mipmap blits into the current frame", but generateMipmaps calls
+      // `encoder.beginRenderPass(...)` per mip level. When the
+      // SceneRenderer's canvas render pass is already open on the same
+      // encoder (which is true for the entire body of `scene.render()`),
+      // beginning a new render pass on that encoder is invalid and
+      // triggers:
+      //   "Recording in [CommandEncoder ...] which is locked while
+      //    [RenderPassEncoder "Scene Main Render Pass"] is open."
+      //
+      // Surfaced as the CesiumMan startup race in Batch 141 — texture
+      // loads happening mid-frame via JobScheduler trigger
+      // `gltfTextureLoader.process → Texture.generateMipmap → this
+      // stub`. The race was masked in steady state because most frames
+      // have no pending texture loads to process.
+      //
+      // The "batching" optimization saved one queue.submit per
+      // generateMipmap call, but mipmap generation is dozens of
+      // draws — the submit cost is negligible by comparison.
+      const encoder = gen.generateMipmaps(
+        tex.texture,
+        tex.format,
+        tex.mipLevelCount,
+      );
+      state.device.queue.submit([encoder.finish()]);
     },
 
     hint: () => logUsage("hint", "Not applicable in WebGPU"),
