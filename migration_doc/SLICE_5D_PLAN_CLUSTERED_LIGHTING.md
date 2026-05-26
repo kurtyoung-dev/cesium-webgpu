@@ -1,8 +1,7 @@
 # Slice 5d Plan — Forward-Clustered Lighting on WebGPU
 
-**Status:** SCOPING (Batch 137, 2026-05-25). Implementation deferred —
-this doc captures the work-unit breakdown so any future session can
-pick up the arc without re-discovering the dependencies.
+**Status:** Steps 1 + 2 SHIPPED (Batch 142, 2026-05-26). Steps 3-5
+still deferred. Update history below the sub-batch sequence.
 
 **Goal:** Multi-light Forward+ on the WebGPU backend, with per-pixel
 diffuse + specular for arbitrary scene-placed lights (point + spot +
@@ -40,7 +39,15 @@ doesn't see clustered lighting until all three land.
 
 ## Sub-batch sequence
 
-### Batch 137a — `KHR_lights_punctual` glTF loader
+### Batch 137a — `KHR_lights_punctual` glTF loader — ✅ SHIPPED (Batch 134, verified Batch 142)
+
+**Status update (Batch 142, 2026-05-26):** Already implemented during Batch 134 work; rediscovery during Slice 5d kickoff. End-to-end verified by `Tools/visual-regression/probe-khr-lights-punctual.mjs` against `Apps/SampleData/models/TestLightsPunctual/TestLightsPunctual.gltf` (3 lights × 4 node references → 4 resolved light instances with correct position/direction/cone resolution under TRS + parent matrix, 0 device errors).
+
+Implementation lives at:
+
+- `GltfLoader.js` — `materializeKhrLightsPunctual()` (extension reader + per-node walk + TRS resolution)
+- `Model.js` — `model.lightsFromGltf` getter
+- `WebGPUModelRenderer.js` — `packPunctualLights()` (consumes lightsFromGltf into the per-model light UBO)
 
 **Effort:** ~120 LOC, ~half a day. Self-contained.
 
@@ -67,7 +74,13 @@ collected but not consumed.
 - glTF spec: https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_lights_punctual
 - DEFERRED_WORK.md lines 1854-1867 (existing scoping for this).
 
-### Batch 137b — `Scene.lights` LightCollection bridge
+### Batch 137b — `Scene.lights` LightCollection bridge — ✅ SHIPPED (Batch 134, verified Batch 142)
+
+**Status update (Batch 142, 2026-05-26):** Already implemented during Batch 134 work. The `LightTypes.ts` module defines `Light` (base), `DirectionalLight`, `PointLight`, `SpotLight`, and `LightCollection`; `Scene.js` instantiates `this.lights = new LightCollection()` in the constructor and writes `frameState.lights = this.lights` in the update loop. The renderer's `packPunctualLights` already reads `frameState.lights` and merges with `model.lightsFromGltf`. Cap is `LightCollection.MAX_LIGHTS = 8` (matches the WGSL slot count).
+
+Batch 142 added the missing public-API surface — the multi-light classes were internal-only because the build's `*.js` workspace glob didn't pick up `LightTypes.ts`. Now re-exported through `packages/engine/index.js` AND injected into the auto-generated `Source/Cesium.js` barrel via `scripts/build.js::createCesiumJs`. Users can now `new Cesium.PointLight(...)` and `scene.lights.add(...)`.
+
+Note: `Light` (base class) is intentionally NOT re-exported under that name — the upstream `Scene/Light.js` already occupies the slot as an abstract type marker. Users construct concrete subclasses.
 
 **Effort:** ~80 LOC, ~half a day.
 

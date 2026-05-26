@@ -3268,3 +3268,40 @@ So `depthView` is always undefined → early return → the entire env-effects c
 
 **Effort:** 1-2 days. Risk: high — touches the post-process + env-effects ordering that hasn't been fully exercised since the bug landed.
 
+---
+
+## NEW-GLTF-PIPELINE-SHAPE-AUDIT — Model PBR pipeline-side audit (MSAA, BGL visibility, MRT slot 1, KHR extension paths)
+
+**Status:** Deferred. Surfaced at the end of Batch 141 (2026-05-26) when the Model PBR audit completed the data-side review and called out the pipeline-side as not yet covered.
+
+**What's already done (Batches 138-141):** Data-side of the Model PBR pipeline is byte-correct across MaterialUniforms (768 B / 192 floats), CameraUniforms, LightUniforms + per-light PunctualLight records, MorphWeightsUniforms, SHUniforms. One real bug fixed in FeatureIdUniforms (featurePickEnabled was at wrong slot, silent per-feature pick failure on batch-tabled tilesets).
+
+**What's NOT covered:**
+
+1. **MSAA sample-count parity across pipeline variants.** Bug Pattern A from Batch 134 (collection renderers' missing `multisample: { count }`) was found in 6 collection-renderer files. The Model PBR pipeline cache (`WebGPUModelPipelineCache.js`) builds ~20+ variants based on MODEL_HAS_* defines (FLAG_HAS_NORMAL_TEXTURE, FLAG_USE_SPECULAR_GLOSSINESS, FLAG_HAS_CLEARCOAT, FLAG_HAS_TRANSMISSION, FLAG_HAS_INSTANCING, FLAG_HAS_SKINNING, FLAG_HAS_MORPH_TARGETS, FLAG_HAS_FEATURE_ID_TEXTURE, FLAG_HAS_FEATURE_ID_ATTRIBUTE, FLAG_HAS_BATCH_TABLE, FLAG_HAS_VERTEX_COLORS, FLAG_IS_DOUBLE_SIDED, FLAG_IS_UNLIT, FLAG_ALPHA_MODE_MASK, FLAG_ALPHA_MODE_BLEND, FLAG_HAS_SPECULAR, FLAG_HAS_ANISOTROPY, FLAG_HAS_IRIDESCENCE, FLAG_HAS_SHEEN, FLAG_HAS_VOLUME). Each variant goes through its own descriptor build — verify all of them pass `multisample: sampleCount > 1 ? { count: sampleCount } : undefined` consistently. Pick + velocity variants need to be checked too (Batch 134 found Ellipsoid pick had inherited multisample state incorrectly, separate from color).
+
+2. **BGL visibility parity (Bug Pattern B from Batch 134).** Look for bind group layout entries declared `visibility: GPUShaderStage.FRAGMENT` only where the corresponding `@group(X) @binding(Y)` is also consumed by the vertex shader. The Model pipeline has 7 bind groups (camera, material, skinning, morph, instancing, feature-id, effects) and most have entries read by BOTH stages — easy place for FRAGMENT-only mis-declarations to hide.
+
+3. **MRT slot 1 G-buffer target.** Per Batches 119-121 the Model pipelines should be emitting `@location(1) normalRoughness` for the always-on G-buffer. Verify every MODEL_HAS_* variant's pipeline descriptor includes `targets[1]` with the right format (`rgba16float`) and write mask (`0xf` since Model emits the perturbed normal). The pick variant should have `writeMask: 0` for slot 1 since pick doesn't emit G-buffer. Recently Batch 132 found MaterialAppearance had a separate pipeline path that missed multisample — same risk class.
+
+4. **KHR extension factor paths in the FS.** The Batch 141 probe (`probe-model-pbr-audit.mjs`) loaded 5 generic glTF assets but none of them carry KHR_materials_clearcoat / specular / anisotropy / iridescence / sheen / volume / transmission extensions. The shader has gates on `materialFlags` for each — those code paths haven't been exercised end-to-end on WebGPU since their introduction (Batches 105-107). Need an explicit probe per extension with a representative test asset (Khronos has reference assets for each KHR_materials_* extension at github.com/KhronosGroup/glTF-Sample-Assets).
+
+5. **CesiumMan startup race.** Probe-model-pbr-audit.mjs surfaced 2 device errors loading CesiumMan ("Recording in CommandEncoder which is locked while RenderPassEncoder is open") during a tile/model concurrent-load race. Not reproducible with a simpler 600-frame steady-state probe in `probe-cesium-man-debug.mjs`. Could be:
+   - Skinning matrix upload happening via `encoder.copyBufferToBuffer` while scene pass is open (would explain the timing)
+   - Tile loader's `copyTextureToTexture` racing with the model's first frame
+   - A loader async-init that registers a per-frame callback before the renderer is fully set up
+
+   The probe needs to add finer-grained instrumentation (callstack capture on `onuncapturederror`, or a wrap of `encoder.*` methods to log who's calling while a pass is open) to localize the source.
+
+6. **Pick FBO descriptor parity.** Pick pipelines target the pick FBO (single-sample, single-target). Verify Model pick pipelines correctly drop `multisample` and `targets[1]` from their descriptors. Batch 118 found Ellipsoid's pick descriptor inherited multisample state from the parent color descriptor — Model's pick path uses a separate descriptor builder so it could have its own version of the same bug.
+
+**Probes to add:**
+
+- `probe-model-pipeline-variants.mjs` — exhaustively enumerate Model pipeline variants (Cartesian product of MODEL_HAS_* defines truncated to common combinations) and assert each pipeline creates without errors. Include MSAA on/off matrix.
+- `probe-model-khr-clearcoat.mjs` — load Khronos's `ClearCoatTest.glb` (or similar reference asset) and verify the FS clearcoat code path produces a visible specular sheen.
+- `probe-model-khr-*` — similar per-extension probes.
+
+**Effort:** Multi-batch arc. Step 1 (MSAA + BGL audit) is ~half a day per variant family. Step 4 (KHR ext probes) is ~half a day per extension if a test asset is on hand.
+
+**When to do this:** When clustered lighting (Slice 5d) lands or stalls, OR if a user reports broken rendering for a KHR_materials_* asset. Until then the existing audit (data-side correctness + 5-asset smoke) covers the most common shipping scenarios.
+

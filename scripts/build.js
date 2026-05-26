@@ -476,6 +476,21 @@ export async function createCesiumJs(variant = "dual") {
     contents += "\n";
   }
 
+  // Batch 142 — Slice 5d step 2 public API. LightTypes.ts defines the
+  // multi-light classes (PointLight / SpotLight / LightCollection /
+  // LightType) but the workspace `.js` glob doesn't pick up .ts files.
+  // Re-export explicitly so users can do `new Cesium.PointLight(...)`
+  // from the main bundle. Always-on (not variant-gated) — these
+  // classes are backend-agnostic.
+  //
+  // The base `Light` class is intentionally NOT re-exported here — the
+  // upstream `Scene/Light.js` already occupies that name and serves as
+  // an abstract type marker. Users construct concrete subclasses; they
+  // don't reference the base directly.
+  contents +=
+    `\n// Slice 5d step 2 — multi-light public API (Batch 142).\n` +
+    `export { LightCollection, PointLight, SpotLight, LightType } from '@${scope}/engine/Source/Scene/LightTypes.js';\n`;
+
   // FORK-16: Re-export TypeScript-only WGSL preprocessor + library
   // surface that the .js glob in workspaceSourceFiles can't pick up.
   // The webgpu-only and dual variants both need it; webgl-only does
@@ -1469,7 +1484,16 @@ export async function createIndexJs(workspace) {
       `export { default as RendererType, setGlobalDefaultRenderer, getGlobalDefaultRenderer, getDefaultRendererType, isWebGPUSupported, isValidRendererType } from './Source/Renderer/RendererType.js';${EOL}` +
       `export { default as ContextFactory } from './Source/Renderer/ContextFactory.js';${EOL}` +
       `export { default as GraphicsContext } from './Source/Renderer/GraphicsContext.js';${EOL}` +
-      `export { default as ContextRegistry } from './Source/Renderer/ContextRegistry.js';${EOL}`;
+      `export { default as ContextRegistry } from './Source/Renderer/ContextRegistry.js';${EOL}` +
+      // Batch 142 — Slice 5d step 2 multi-light public API.
+      // LightTypes.ts defines PointLight / SpotLight / LightCollection /
+      // LightType (the `Light` base class is intentionally NOT re-
+      // exported under that name — the upstream `Scene/Light.js`
+      // already occupies the slot as an abstract type marker). Users
+      // construct concrete subclasses (PointLight / SpotLight /
+      // DirectionalLight) via `scene.lights.add(...)`. Backend-agnostic
+      // so always included regardless of variant.
+      `export { LightCollection, PointLight, SpotLight, LightType } from './Source/Scene/LightTypes.js';${EOL}`;
 
     // WGSL-adjacent re-exports live in a SEPARATE file (index-wgsl.js)
     // that the webgl-only variant entry barrel deliberately does NOT
