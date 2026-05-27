@@ -427,6 +427,10 @@ struct VelocityCO {
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    // No `multisample` — the pick variant renders into the single-sample
+    // 1-target WebGPU pick framebuffer (matching the GroundPolyline
+    // pickDescriptor). It must NOT bind in the MSAA 2-target MRT scene
+    // pass; that's enforced at the dispatch site, not here.
   };
 
   // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
@@ -518,6 +522,8 @@ struct VelocityCO {
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    // No `multisample` — single-sample 1-target pick FBO (see
+    // depthSamplePickDescriptor).
   };
 
   // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — velocity

@@ -482,11 +482,27 @@ class ClassificationPrimitive {
     );
     if (fr?.createCommands) {
       const result = fr.createCommands(this, frameState);
-      if (result?.colorCommand) {
+      // Push ONLY color commands. The depth-sample classifier attaches its
+      // pick variant to each color command via `derivedCommands.picking`
+      // (attachPickToColorCommand) so the pick pass picks it up; the color
+      // commands are the only ones that belong in the main command list.
+      //
+      // Batch 161 — do NOT push `result.pickCommand` separately. It carries
+      // the single-target `depthSamplePick` pipeline tagged with the
+      // classification pass enum, so the classification color pass
+      // (`runPass(TERRAIN_CLASSIFICATION)`) would execute it in the MSAA
+      // 2-target MRT scene framebuffer — an attachment-state mismatch that
+      // invalidates the whole command buffer and blacks out the scene
+      // whenever a classification primitive with an allocated pick id is on
+      // screen. (GroundPrimitive.js already pushes color-only.) Prefer the
+      // `colorCommands[]` array shape so `classificationType: BOTH` emits
+      // both the TERRAIN and 3D-Tile classification commands.
+      if (Array.isArray(result?.colorCommands) && result.colorCommands.length) {
+        for (let i = 0; i < result.colorCommands.length; i++) {
+          frameState.commandList.push(result.colorCommands[i]);
+        }
+      } else if (result?.colorCommand) {
         frameState.commandList.push(result.colorCommand);
-      }
-      if (result?.pickCommand) {
-        frameState.commandList.push(result.pickCommand);
       }
     }
 

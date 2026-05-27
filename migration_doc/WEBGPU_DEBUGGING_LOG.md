@@ -9112,3 +9112,49 @@ Output PNGs read directly: fixed GroundVehicle shows more pronounced panel/rivet
 ### Probes
 
 - `Tools/visual-regression/probe-model-tangentgen.mjs` (new) — device-error + render guard on the derivative-fallback path (catches a future uniformity/compile regression). Header documents the same-backend A/B methodology for re-measuring the fix signal.
+
+---
+
+## Batch 161 — GroundPrimitive classification renders BLACK + ~hundreds of device errors in SCENE3D (catastrophic)
+
+**Bug:** 161.1
+**File(s) affected:** `packages/engine/Source/Scene/ClassificationPrimitive.js`
+
+### Symptom
+
+A flat-color `GroundPrimitive` (ground-clamped polygon) on WebGPU in SCENE3D produced a **fully black scene** + ~360 device errors/run (≈2-4 per frame):
+
+```
+Attachment state of [RenderPipeline "GroundPrimitive depthSamplePick [bgra8unorm/depth24plus-stencil8]"]
+  is not compatible with [RenderPassEncoder "Scene Framebuffer Render Pass"]
+[Invalid CommandBuffer ...] is invalid due to a previous error.
+```
+
+The whole command buffer was invalidated, so nothing rendered. Caught by the new `probe-classifier-scenemode.mjs` (SCENE3D: 2 red px / 364 errors). The byte-counting `verify-classification-fr.mjs` never caught it — it doesn't assert visual output, so a black frame "passed".
+
+### Root cause
+
+`ClassificationPrimitive.update` (WebGPU feature-renderer branch) pushed BOTH the color command **and** `result.pickCommand` onto `frameState.commandList`. The pick command carries the **single color-target** `depthSamplePick` pipeline tagged with the classification pass enum (`TERRAIN_CLASSIFICATION`). When `runPass(TERRAIN_CLASSIFICATION)` executed it in the **MSAA 2-target MRT scene framebuffer** ("Scene Framebuffer Render Pass" — color + normalRoughness), the attachment state (1 target, no MSAA vs 2 targets, 4× MSAA) was incompatible → `setPipeline` failed → command buffer invalidated → black scene.
+
+The depth-sample classifier already attaches the pick variant to each color command via `derivedCommands.picking` (`attachPickToColorCommand`), which the single-sample 1-target pick pass (`WebGPUSceneRendererPickPass`, label "Pick render pass") consumes. So the separate `pickCommand` push was both **redundant** and **harmful**. `GroundPrimitive.js` already pushed color-only — `ClassificationPrimitive.js` was the outlier.
+
+A first wrong guess was that the pick pipeline needed `multisample: msState` (the Batch 156 MSAA class). That's incorrect: GroundPolyline's working pick descriptor is single-sample 1-target, because the pick variant belongs in the single-sample pick FBO — never the scene pass. The msState attempt was reverted; the real fix is at the dispatch site.
+
+### Fix
+
+`ClassificationPrimitive.js` — push ONLY color commands (prefer the `colorCommands[]` array shape so `classificationType: BOTH` works); drop the `pickCommand` push. The pick variant rides on `derivedCommands.picking`.
+
+After: SCENE3D renders 11.7k red px vs WebGL's 11.5k (essentially identical), 0 device errors.
+
+### Still open — Bug 161.2 (separate): GroundPrimitive classification in SCENE2D / COLUMBUS_VIEW
+
+With 3D fixed, the probe surfaced a SECOND, independent bug: classification in 2D/CV throws a cascading render-pass-lifecycle error — `_beginDefaultRenderPass() called with an active render pass (label='Scene Main Render Pass')`. A prior frame's classification dispatch leaves a render pass un-ended; the next `beginFrame` then throws. **Plain 2D WebGPU (no classification) renders fine**, so it's classification-specific. The doc's "Batch 156 SCENE2D + COLUMBUS_VIEW work" claim was wrong (the 3D crash + this were masking it). Tracked as `NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS` in DEFERRED_WORK.md.
+
+### Files modified
+
+- `packages/engine/Source/Scene/ClassificationPrimitive.js` — color-only command push (+ `colorCommands[]` array shape).
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js` — comments documenting why the pick descriptors stay single-sample (no functional change).
+
+### Probes
+
+- `Tools/visual-regression/probe-classifier-scenemode.mjs` (new) — flat-color GroundPrimitive across SCENE3D/2D/CV, WebGL vs WebGPU red-pixel count + device errors. SCENE3D is the enforced regression guard for this fix; SCENE2D/CV reported as known-open (`ENFORCE_2D` flips to true once Bug 161.2 lands).

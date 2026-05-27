@@ -786,9 +786,17 @@ produces wandering or invisible classification volumes.
 - Batch 150 silently skipped emission when `frameState.mode !== SceneMode.SCENE3D` for all four renderers.
 - Batch 156 narrowed `WebGPUGroundPrimitiveRenderer` to MORPHING-only: it now correctly renders in SCENE2D + COLUMBUS_VIEW by selecting the per-vertex `position2DHigh/Low` attributes that `PrimitivePipeline.js:175-208` produces alongside the 3D positions, and rebuilding the vertex buffer when the scene mode flips (cached via `cache.positionSourceKey`). MORPHING still gates because lerping volumes between 3D ECEF and 2D projected coords needs a different in-shader pattern.
 
+> **⚠️ Batch 161 visual-probe correction:** the bullets below were written from code-reading + the byte-counting `verify-classification-fr.mjs`, which does NOT assert visual output. The new `probe-classifier-scenemode.mjs` (flat-color GroundPrimitive, WebGL vs WebGPU red-pixel count) revealed the GroundPrimitive claims were **over-stated**:
+>
+> - **SCENE3D was a catastrophic crash**, not working — `ClassificationPrimitive.update` pushed the 1-target `depthSamplePick` command into the MSAA 2-target MRT scene pass → black scene + ~360 device errors. **FIXED Batch 161** (push color-only; pick rides on `derivedCommands.picking`). SCENE3D now renders matching WebGL.
+> - **SCENE2D + COLUMBUS_VIEW do NOT work** — classification in 2D/CV throws a cascading render-pass-lifecycle error (`_beginDefaultRenderPass() called with an active render pass`). Plain 2D WebGPU renders fine, so it's classification-specific. The Batch 156 "SCENE2D + CV ✓" claim was wrong (masked by the 3D crash + a doc that trusted code-reading). Tracked as **NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS** (below).
+> - **Textured GroundPrimitives aren't implemented in ANY mode** — the renderer reads only `appearance.material.uniforms.color` (flat color); there is no UV / extents / texture-sample path even in 3D. So `_needs2DShader` was never a 2D/CV-specific gap; it's blocked on a separate larger feature, **NEW-GROUNDPRIM-TEXTURED-MATERIALS** (below).
+>
+> The bullets below are kept (struck where now-known-wrong) for history.
+
 The four originally-affected renderers, current state:
 
-- ~~`WebGPUGroundPrimitiveRenderer`~~ — SCENE2D + CV ✓ (Batch 156); MORPHING ✓ (Batch 164 — `morphColorVS` consumes both `pH/pL` (3D) and `pH2D/pL2D` (2D) attribute pairs and blends EC-space positions by `morphTime`; lazy `morphColorPipeline` + `morphPickPipeline` resolve via `tryResolveGroundPrimitiveMorphPipelines`). Only `_needs2DShader` primitives (textured GroundPrimitives with planar/spherical extents — Image / Stripe / Grid materials) remain gated in non-3D modes pending a WGSL `appearance2D` equivalent. Doc-sync Batch 194.
+- ~~`WebGPUGroundPrimitiveRenderer`~~ — SCENE3D ✓ (crash fixed Batch 161); MORPHING ✓ (Batch 164 — `morphColorVS` consumes both `pH/pL` (3D) and `pH2D/pL2D` (2D) attribute pairs and blends EC-space positions by `morphTime`). ~~SCENE2D + CV ✓ (Batch 156)~~ — **WRONG, see Batch 161 correction above: 2D/CV throw a render-pass error (NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS).** ~~Only `_needs2DShader` primitives … remain gated pending a WGSL `appearance2D` equivalent~~ — textured materials are unimplemented in all modes (NEW-GROUNDPRIM-TEXTURED-MATERIALS).
 - `WebGPUVector3DTilePrimitiveRenderer` — SCENE2D + CV still gated; MORPHING also still gated (the polygon pipeline isn't trivial to morph without 2D attributes).
 - `WebGPUVector3DTileClampedPolylinesRenderer` — SCENE2D + CV still gated; **MORPHING ✓ (Batch 208)** — relies on `uniformState.view` / `projection` interpolating during morph. SCENE2D + CV unsafe (3D positions project to wandering points without a 2D attribute path).
 - `WebGPUVector3DTilePolylinesRenderer` — SCENE2D + CV still gated; **MORPHING ✓ (Batch 207)** — same morph-aware uniformState path as ClampedPolylines.
@@ -830,6 +838,38 @@ GroundPolyline's existing implementation is the reference template.
 **Trace:** AUDIT_2026_05_02.md A.4; Batch 150 conservative gate;
 `WebGPUGroundPolylineRenderer.js` (locations 8-13 + morph pipeline)
 as the reference implementation.
+
+---
+
+### NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS — GroundPrimitive classification throws a render-pass-lifecycle error in SCENE2D / COLUMBUS_VIEW
+
+**What:** A flat-color `GroundPrimitive` (ground-clamped polygon) on WebGPU in SCENE2D or COLUMBUS_VIEW throws `DeveloperError: _beginDefaultRenderPass() called with an active render pass (label='Scene Main Render Pass')`, halting rendering (the Viewer shows the error dialog). Discovered Batch 161 by `probe-classifier-scenemode.mjs` once the SCENE3D crash (Bug 161.1) was fixed and stopped masking it.
+
+**Diagnosis so far:**
+
+- It's a **cascading** failure: the throw is in the NEXT frame's `beginFrame → _beginDefaultRenderPass`, which fires because a PRIOR frame's classification dispatch left a render pass un-ended (so `_currentRenderPassEncoder` is still set, tripping the debug guard in `WebGPUContext._beginDefaultRenderPass`). The original frame-N error that skips `endCurrentRenderPass` is the real root cause and is not yet isolated.
+- It is **classification-specific**: plain 2D WebGPU (globe, no classification primitive) renders cleanly — verified Batch 161. So the un-ended pass is opened by the GroundPrimitive / classification dispatch path in 2D mode (e.g. a pass-redirect that doesn't resume the scene pass correctly under the single-frustum 2D pass structure), not by general 2D-mode rendering.
+- Reproduced with `classificationType: TERRAIN` (so the invert / IGNORE_SHOW 3D-Tile passes 6/7 are NOT involved — the bug is in the basic TERRAIN_CLASSIFICATION path).
+
+**Scope:** Find the frame-N exception / un-ended pass in the 2D classification dispatch (likely in `WebGPUSceneRenderer3DTilePasses` pass-redirect or the GroundPrimitive depth-source handling when `frameState.mode !== SCENE3D`), and ensure every redirect resumes/ends the scene pass. Flip `ENFORCE_2D = true` in `probe-classifier-scenemode.mjs` once fixed.
+
+**Why deferred (Batch 161):** The catastrophic SCENE3D crash (Bug 161.1) was the priority and is fixed + verified. This 2D/CV bug is a separate render-pass-lifecycle issue needing its own root-cause dive; GroundPrimitive in 2D data-vis is valuable but secondary to not-crashing in the common 3D case.
+
+**Trace:** Batch 161; `probe-classifier-scenemode.mjs`; WEBGPU_DEBUGGING_LOG.md Bug 161.2; `WebGPUContext._beginDefaultRenderPass` guard.
+
+---
+
+### NEW-GROUNDPRIM-TEXTURED-MATERIALS — textured (Image / Stripe / Grid / etc.) GroundPrimitive classification on WebGPU
+
+**What:** `WebGPUGroundPrimitiveRenderer` supports **flat color only** — it reads `primitive.appearance.material.uniforms.color` and emits a single `u.color` per primitive. There is NO UV computation, planar/spherical extents handling, or texture sampling in ANY scene mode. So a `GroundPrimitive` with a textured material (Image, Stripe, Grid, Checkerboard, …) classifies as a flat untextured color on WebGPU (WebGL renders the full material).
+
+**Re-scope note (Batch 161):** This was previously mis-filed inside NEW-CLASSIFIER-2D-CV-MORPH as "`_needs2DShader` primitives gated in non-3D modes pending a WGSL `appearance2D` equivalent." That framing was wrong: textured GroundPrimitives aren't rendered in 3D either, so it's not a 2D/CV projection gap — it's a missing textured-material classification path. The `GroundPolylineRenderer`'s `applyMaterial()` (8 inline material types incl. Image texture sampling) is the reference template.
+
+**Scope:** Port the material system to the GroundPrimitive depth-sample classifier — extents attributes (`_hasPlanarExtentsAttributes` / `_hasSphericalExtentsAttribute`) → per-fragment UV, plus an `applyMaterial`-style WGSL FS dispatch. Once textured 3D works, the 2D/CV variant (WebGL's `appearance2D`) layers on top.
+
+**Why deferred:** A material-system port (~several hundred LOC of WGSL + uniform/texture plumbing), well beyond the 2D/CV/Morph scope it was hiding under. Low demand vs the flat-color path that covers most classification use.
+
+**Trace:** Batch 161 (re-scoped out of NEW-CLASSIFIER-2D-CV-MORPH); `WebGPUGroundPrimitiveRenderer.js` (`packUniforms` color-only); `WebGPUGroundPolylineRenderer.js::applyMaterial` reference.
 
 ---
 
