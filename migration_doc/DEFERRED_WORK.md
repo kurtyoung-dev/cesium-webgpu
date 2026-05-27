@@ -841,21 +841,23 @@ as the reference implementation.
 
 ---
 
-### NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS — GroundPrimitive classification throws a render-pass-lifecycle error in SCENE2D / COLUMBUS_VIEW
+### ~~NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS~~ — RESOLVED (Batch 164)
 
-**What:** A flat-color `GroundPrimitive` (ground-clamped polygon) on WebGPU in SCENE2D or COLUMBUS_VIEW throws `DeveloperError: _beginDefaultRenderPass() called with an active render pass (label='Scene Main Render Pass')`, halting rendering (the Viewer shows the error dialog). Discovered Batch 161 by `probe-classifier-scenemode.mjs` once the SCENE3D crash (Bug 161.1) was fixed and stopped masking it.
+**What:** A `GroundPrimitive` (ground-clamped polygon) on WebGPU in SCENE2D or COLUMBUS_VIEW threw `DeveloperError: _beginDefaultRenderPass() called with an active render pass (label='Scene Main Render Pass')`, halting ALL rendering (Viewer error dialog). Discovered Batch 161 by `probe-classifier-scenemode.mjs` once the SCENE3D crash (Bug 161.1) stopped masking it.
 
-**Diagnosis so far:**
+**Root cause (Batch 164):** A *cascading* failure. The diagnostic probe `probe-classifier-2d-renderpass.mjs` (wraps `scene.render()` in try/catch + captures the leaked pass label) traced the chronological origin:
 
-- It's a **cascading** failure: the throw is in the NEXT frame's `beginFrame → _beginDefaultRenderPass`, which fires because a PRIOR frame's classification dispatch left a render pass un-ended (so `_currentRenderPassEncoder` is still set, tripping the debug guard in `WebGPUContext._beginDefaultRenderPass`). The original frame-N error that skips `endCurrentRenderPass` is the real root cause and is not yet isolated.
-- It is **classification-specific**: plain 2D WebGPU (globe, no classification primitive) renders cleanly — verified Batch 161. So the un-ended pass is opened by the GroundPrimitive / classification dispatch path in 2D mode (e.g. a pass-redirect that doesn't resume the scene pass correctly under the single-frustum 2D pass structure), not by general 2D-mode rendering.
-- Reproduced with `classificationType: TERRAIN` (so the invert / IGNORE_SHOW 3D-Tile passes 6/7 are NOT involved — the bug is in the basic TERRAIN_CLASSIFICATION path).
+1. In 2D/CV the WebGPU GroundPrimitive feature renderer returns NO commands — the polygon is a `_needs2DShader` primitive (`_hasSphericalExtentsAttribute`), which is silently skipped in non-3D modes (pending appearance2D).
+2. `GroundPrimitive.update` then **fell through to the WebGL command path** (`updateAndQueueCommands` → `updateAndQueueRenderCommand`). On WebGPU that path's ShaderProgram-based commands are no-ops in 3D, but its SCENE2D/CV per-hemisphere derivation throws `TypeError: Cannot set properties of undefined (setting 'owner')` mid-frame.
+3. The throw skips the scene renderer's `endFrame`, so the scene render pass stays open → the next frame's `beginFrame → _beginDefaultRenderPass` trips the active-pass guard → cascade + halt.
 
-**Scope:** Find the frame-N exception / un-ended pass in the 2D classification dispatch (likely in `WebGPUSceneRenderer3DTilePasses` pass-redirect or the GroundPrimitive depth-source handling when `frameState.mode !== SCENE3D`), and ensure every redirect resumes/ends the scene pass. Flip `ENFORCE_2D = true` in `probe-classifier-scenemode.mjs` once fixed.
+**Fix:** `GroundPrimitive.update` now `return`s after the feature-renderer attempt whenever the FR is present (WebGPU backend) — it never falls through to the WebGL command path. When the FR returns no commands (geometry still building, or a `_needs2DShader` skip in 2D/CV) the primitive renders nothing this frame and retries next frame, instead of running WebGL code that crashes on WebGPU.
 
-**Why deferred (Batch 161):** The catastrophic SCENE3D crash (Bug 161.1) was the priority and is fixed + verified. This 2D/CV bug is a separate render-pass-lifecycle issue needing its own root-cause dive; GroundPrimitive in 2D data-vis is valuable but secondary to not-crashing in the common 3D case.
+**Verification:** `probe-classifier-2d-renderpass.mjs` — leaked pass label `null` (was "Scene Main Render Pass"), no thrown error, no cascade. `probe-classifier-scenemode.mjs` — SCENE2D/CV now **0 device errors** and ~0 red px (was 654 = the error-dialog background); SCENE3D unchanged (11.7k px). The probe now enforces 0 device errors for ALL modes.
 
-**Trace:** Batch 161; `probe-classifier-scenemode.mjs`; WEBGPU_DEBUGGING_LOG.md Bug 161.2; `WebGPUContext._beginDefaultRenderPass` guard.
+**Residual (separate gap):** `_needs2DShader` GroundPrimitives (polygons with planar/spherical extents — essentially all of them) still render NOTHING in 2D/CV, pending the WGSL appearance2D path — tracked as NEW-GROUNDPRIM-TEXTURED-MATERIALS. They no longer crash; they degrade gracefully.
+
+**Trace:** Batch 164; `GroundPrimitive.js` (no WebGL fall-through on WebGPU); `probe-classifier-2d-renderpass.mjs`; WEBGPU_DEBUGGING_LOG.md Bug 164.1.
 
 ---
 

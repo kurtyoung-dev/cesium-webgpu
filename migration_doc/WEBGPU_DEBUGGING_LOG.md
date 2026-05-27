@@ -9158,3 +9158,49 @@ With 3D fixed, the probe surfaced a SECOND, independent bug: classification in 2
 ### Probes
 
 - `Tools/visual-regression/probe-classifier-scenemode.mjs` (new) — flat-color GroundPrimitive across SCENE3D/2D/CV, WebGL vs WebGPU red-pixel count + device errors. SCENE3D is the enforced regression guard for this fix; SCENE2D/CV reported as known-open (`ENFORCE_2D` flips to true once Bug 161.2 lands).
+
+---
+
+## Batch 164 — GroundPrimitive classification crashes (render-pass cascade) in SCENE2D / COLUMBUS_VIEW (resolves Bug 161.2 / NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS)
+
+**Bug:** 164.1
+**File(s) affected:** `packages/engine/Source/Scene/GroundPrimitive.js`
+
+### Symptom
+
+A `GroundPrimitive` (ground-clamped polygon) on WebGPU in SCENE2D or COLUMBUS_VIEW threw `DeveloperError: _beginDefaultRenderPass() called with an active render pass (label='Scene Main Render Pass')` every frame, halting all rendering (the Viewer shows its error dialog). 3D was fine (after Batch 161). Surfaced by `probe-classifier-scenemode.mjs` (2D/CV reported 654 "red px" — the salmon error-dialog background, not the polygon).
+
+### Bisection
+
+The visible error is a *cascade*: it fires at the NEXT frame's `beginFrame`, masking the original. The diagnostic probe `probe-classifier-2d-renderpass.mjs` wraps `scene.render()` in try/catch, records the active render-pass label before each render, and dumps page console errors in chronological order. That revealed the true sequence:
+
+1. `[warn] GroundPrimitive ... silently skips primitives requiring _needs2DShader (planar/spherical extents) in non-3D scene modes` — the WebGPU FR returns NO commands for the polygon in 2D.
+2. `[error] TypeError: Cannot set properties of undefined (setting 'owner') at updateAndQueueRenderCommand` — the ORIGINAL throw.
+3. `[error] _beginDefaultRenderPass() called with an active render pass` — the cascade, every subsequent frame.
+
+`leaked pass label before first failing render = "Scene Main Render Pass"` confirmed a render pass was left open.
+
+### Root cause
+
+`GroundPrimitive.update`'s WebGPU branch (`if (fr && fr.createCommands)`) pushed the FR's color commands and returned — BUT when the FR produced no commands it **fell through to the WebGL command path** below (`updateAndQueueCommands` → `updateAndQueueRenderCommand`). In 2D/CV every GroundPrimitive polygon is a `_needs2DShader` primitive (`_hasSphericalExtentsAttribute`), so the FR always skips it → always falls through. The WebGL path's per-hemisphere 2D command derivation throws `Cannot set properties of undefined (setting 'owner')` on WebGPU (its ShaderProgram commands don't exist there). The mid-frame throw skips `endFrame`, leaving the scene render pass open → cascade. (3D never fell through because the FR always returns commands there, which is why Batch 161's 3D fix didn't expose this until 2D was probed.)
+
+### Fix
+
+`GroundPrimitive.update` now `return`s after the feature-renderer attempt whenever `fr` is present (WebGPU backend), regardless of whether commands were created — it never runs the WebGL command path. No-command cases (geometry still building, or a `_needs2DShader` 2D/CV skip) render nothing this frame and retry next frame.
+
+### Verification
+
+- `probe-classifier-2d-renderpass.mjs`: leaked pass label `null`, no thrown error, no cascade, no "rendering has stopped".
+- `probe-classifier-scenemode.mjs`: SCENE2D/CV `0` device errors + ~0 red px (was 654 dialog); SCENE3D unchanged (11.7k px). Probe now enforces 0 device errors for ALL modes.
+
+### Residual (separate, tracked)
+
+`_needs2DShader` GroundPrimitives still render nothing in 2D/CV pending a WGSL appearance2D path (`NEW-GROUNDPRIM-TEXTURED-MATERIALS`). They degrade gracefully now instead of crashing.
+
+### Files modified
+
+- `packages/engine/Source/Scene/GroundPrimitive.js` — WebGPU branch returns instead of falling through to the WebGL command path.
+
+### Probes
+
+- `Tools/visual-regression/probe-classifier-2d-renderpass.mjs` (new) — focused diagnostic: drives the 2D GroundPrimitive path, captures the first thrown exception + stack + leaked pass label. Reusable template for "render pass left open" cascades.

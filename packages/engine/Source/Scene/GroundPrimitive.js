@@ -910,8 +910,24 @@ function updateAndQueueCommands(
       }
       return;
     }
-    // If WebGPU commands couldn't be created (no geometry data yet),
-    // fall through to WebGL path which pushes the existing commands
+    // Batch 164 (NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS) — the WebGPU
+    // backend handles GroundPrimitive EXCLUSIVELY through the feature
+    // renderer. Return here even when no commands were created; do NOT
+    // fall through to the WebGL command path below.
+    //
+    // The WebGL path's `updateAndQueueCommands` derives ShaderProgram-based
+    // commands that are no-ops on WebGPU in 3D, but in SCENE2D /
+    // COLUMBUS_VIEW its per-hemisphere command derivation throws
+    // `TypeError: Cannot set properties of undefined (setting 'owner')`
+    // mid-frame. That throw skips the scene renderer's `endFrame`, leaving
+    // the scene render pass open, so the NEXT frame's `beginFrame` cascades
+    // with `_beginDefaultRenderPass() called with an active render pass`
+    // and the Viewer halts rendering. The FR returns no commands here when
+    // (a) geometry is still building, or (b) a `_needs2DShader` primitive is
+    // skipped in 2D/CV (planar/spherical extents — pending the WGSL
+    // appearance2D path, NEW-GROUNDPRIM-TEXTURED-MATERIALS). Both cases are
+    // "render nothing this frame and retry next frame", never "run WebGL".
+    return;
   }
 
   let boundingVolumes;

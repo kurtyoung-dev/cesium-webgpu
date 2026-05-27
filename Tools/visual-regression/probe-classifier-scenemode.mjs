@@ -14,22 +14,27 @@
 //     black scene + ~hundreds of device errors. FIXED (Batch 161): push only
 //     color commands; the pick variant is attached via
 //     `derivedCommands.picking` for the pick pass. Now renders matching WebGL.
-//   - SCENE2D / COLUMBUS_VIEW: a SEPARATE, still-open bug. Classification in
-//     2D/CV throws a cascading render-pass-lifecycle error
-//     (`_beginDefaultRenderPass() called with an active render pass`). Plain
-//     2D WebGPU (no classification) renders fine, so it's classification-
-//     specific. Tracked as NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS. The 654
-//     "red px" these modes report is the salmon error-dialog background, not
-//     the polygon.
+//   - SCENE2D / COLUMBUS_VIEW: the cascading render-pass crash
+//     (NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS — `_beginDefaultRenderPass()
+//     called with an active render pass`) is FIXED (Batch 164): on WebGPU,
+//     GroundPrimitive no longer falls through to the WebGL command path
+//     (which threw mid-frame and left the scene pass open). 2D/CV now render
+//     cleanly with 0 device errors. The polygon itself still does NOT render
+//     in 2D/CV because it's a `_needs2DShader` extents primitive — a SEPARATE
+//     gap pending the WGSL appearance2D path (NEW-GROUNDPRIM-TEXTURED-
+//     MATERIALS). So these modes report ~0 red px (nothing rendered), no
+//     longer 654 (the old error-dialog background).
 //
 // Method: drop a bright-red ground-clamped polygon over the central US,
 // then for each scene mode morph instantly (morphTo*(0)+completeMorph),
 // frame the camera over the polygon, render, count "classified" red pixels.
 //
-// PASS (regression guard for the Batch 161 fix): SCENE3D shows the polygon
-// (>= MIN_RED px) with 0 device errors. SCENE2D/CV are reported but NOT
-// failed here (known-open NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS) — flip
-// `ENFORCE_2D` to true once that bug is fixed.
+// PASS (regression guard for the Batch 161 + 164 fixes): SCENE3D shows the
+// polygon (>= MIN_RED px) with 0 device errors, and ALL modes stay at 0
+// device errors (the Batch 164 fix means 2D/CV no longer crash). SCENE2D/CV
+// red-pixel coverage is reported but NOT failed here — the polygon not
+// rendering in 2D/CV is the separate NEW-GROUNDPRIM-TEXTURED-MATERIALS gap;
+// flip `ENFORCE_2D` to true once a WGSL appearance2D path lands.
 
 import { chromium } from "playwright";
 import fs from "fs";
@@ -38,8 +43,10 @@ const PROBE_BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 const MIN_RED = 1500; // red-pixel floor: polygon clearly present
 const MODES = ["SCENE3D", "SCENE2D", "COLUMBUS_VIEW"];
-// 2D/CV are a known-open separate bug (NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS);
-// don't fail the regression guard on them until that's fixed.
+// 2D/CV polygon coverage is a known-open separate gap (the _needs2DShader
+// extents primitive needs a WGSL appearance2D path — NEW-GROUNDPRIM-TEXTURED-
+// MATERIALS). The render-pass CRASH is fixed (Batch 164); device errors ARE
+// enforced for all modes below. Don't fail on 2D/CV coverage until appearance2D.
 const ENFORCE_2D = false;
 
 async function run(renderer) {
@@ -182,10 +189,13 @@ async function run(renderer) {
     const e = wgpu.perMode[m].newErrs;
     const ok = p >= MIN_RED && e === 0;
     const enforced = m === "SCENE3D" || ENFORCE_2D;
-    const tag = ok ? "OK" : enforced ? "FAIL" : "known-open(2D-renderpass)";
+    const tag = ok ? "OK" : enforced ? "FAIL" : "known-open(textured-2D)";
     console.log(
       `  ${m.padEnd(15)} ${String(g).padStart(10)}    ${String(p).padStart(10)}    ${String(e).padStart(6)}   ${tag}`,
     );
+    // The render-pass crash (Batch 164) is fixed → device errors are
+    // enforced for ALL modes, even the known-open 2D/CV coverage gap.
+    if (e !== 0) pass = false;
     if (!ok && enforced) pass = false;
   }
   console.log(`\n  total WebGPU device errors: ${wgpu.errs.length}`);
