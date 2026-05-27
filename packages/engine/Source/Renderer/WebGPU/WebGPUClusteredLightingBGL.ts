@@ -63,6 +63,36 @@
 export const CLUSTERED_LIGHTING_EFFECTS_BINDING_BASE = 18;
 
 /**
+ * Literal token used for the `@group(N)` index in the ClusteredLighting
+ * WGSL chunk (`Shaders/WebGPU/chunks/structs/ClusteredLighting.wgsl`).
+ * The chunk can't hardcode a group number because the effects bind group
+ * lands at different group indices across pipelines: Model PBR always has
+ * it at group 3, but primitive `Mat*Lit` shaders have it at group 2 (no
+ * texture group) or group 3 (texture group occupies group 2). Each prepend
+ * site substitutes the correct index via {@link substituteClusteredLightingGroup}.
+ */
+export const CLUSTERED_LIGHTING_GROUP_TOKEN = "__CL_GROUP__";
+
+/**
+ * Substitute the `__CL_GROUP__` token in the ClusteredLighting chunk with
+ * the concrete effects-group index for the consuming pipeline, ready to
+ * prepend to the consumer's WGSL source. Batch 154 (Slice 5d).
+ *
+ * @param chunkSource The raw ClusteredLighting chunk string (the generated
+ *   `.js` export of `ClusteredLighting.wgsl`).
+ * @param effectsGroup The group index the effects BGL occupies in the
+ *   consumer's pipeline layout (3 for Model PBR; 2 or 3 for primitives).
+ */
+export function substituteClusteredLightingGroup(
+  chunkSource: string,
+  effectsGroup: number,
+): string {
+  return chunkSource
+    .split(CLUSTERED_LIGHTING_GROUP_TOKEN)
+    .join(String(effectsGroup));
+}
+
+/**
  * BGL entries for the 5 clustered-lighting bindings, ready to spread
  * into the effects BGL entry list. Bindings 18..22 — read-only storage
  * for clusterLights / clusterAABBs / perClusterLightCount /

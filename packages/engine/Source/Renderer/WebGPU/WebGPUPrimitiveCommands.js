@@ -55,6 +55,12 @@ import {
   getPlaceholderEffects,
   createEffectsBindGroup,
 } from "./WebGPUEffectsBindGroup.js";
+// Slice 5d Batch 154 — Forward+ clustered lighting FS chunk + group-token
+// substitution. Prepended to Mat*Lit shader sources so they declare the
+// cluster bindings (18-22) at whichever group their effects BGL occupies
+// (2 = no texture, 3 = textured) and gain evalClusteredLights().
+import ClusteredLightingChunk from "../../Shaders/WebGPU/chunks/structs/ClusteredLighting.js";
+import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.js";
 // Slice 5c-B Phase 1 (Batch 105) — centralized scene-FB fragment-target
 // builder. Returns a 1-target array today (mrtMode default off); when
 // the Phase 2 atomic batch flips `setSceneFBMrtMode(true)`, every
@@ -768,13 +774,28 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
   const frameNumber = frameState.frameNumber;
   const hasShadow = defined(receiveShadowMap);
 
-  // Invalidate cache when frame ticks OR when the (shadow, csm, LUT)
-  // triple toggles. We hash all three into a small int so a cheap
+  // Slice 5d Batch 154 — Forward+ clustered lighting. The SceneRenderer's
+  // _dispatchClusteredLighting hook stashes the dispatcher's buffers +
+  // a CPU-side "active this frame" flag on the context each frame. When
+  // active, the Mat*Lit fragment shaders read the cluster bindings on the
+  // (shared) effects bind group at @group(2|3) bindings 18-22, so we must
+  // build the ACTIVE effects bind group (not the cheap placeholder) and
+  // bind the dispatcher's real buffers. When inactive (toggle off OR zero
+  // lights) the placeholder fast path is preserved.
+  const clusteredBuffers = context._clusteredLightingBuffers;
+  const hasClustered =
+    context._clusteredLightingActive === true && defined(clusteredBuffers);
+
+  // Invalidate cache when frame ticks OR when the (shadow, csm, LUT,
+  // clustered) toggles. We hash all four into a small int so a cheap
   // compare catches on/off changes within the same frame (rare —
   // frameState normally increments frameNumber every tick — but the
   // guard is nearly free).
   const toggleHash =
-    (hasShadow ? 1 : 0) | (hasCsm ? 2 : 0) | (hasAtmosphereLut ? 4 : 0);
+    (hasShadow ? 1 : 0) |
+    (hasCsm ? 2 : 0) |
+    (hasAtmosphereLut ? 4 : 0) |
+    (hasClustered ? 8 : 0);
   if (
     context._primitiveEffectsBGFrameNumber === frameNumber &&
     context._primitiveEffectsBGToggleHash === toggleHash &&
@@ -783,14 +804,14 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
     return context._primitiveEffectsBG;
   }
 
-  // When none of (shadow, csm, atmosphereLut) is active we MUST return
-  // the placeholder explicitly (not null) so callers swap stale
+  // When none of (shadow, csm, atmosphereLut, clustered) is active we MUST
+  // return the placeholder explicitly (not null) so callers swap stale
   // active-state BGs back to zero-filled placeholder data on toggle-off
   // transitions. Example: CSM toggled ON at frame N plants a real BG in
   // cmd.bindGroups[last]; CSM toggled OFF at frame N+1 must overwrite
   // that slot — otherwise the shader reads last frame's csmControl=1.0
-  // and samples stale cascade VPs. Same logic for the LUT control.
-  if (!hasShadow && !hasCsm && !hasAtmosphereLut) {
+  // and samples stale cascade VPs. Same logic for the LUT + clustered control.
+  if (!hasShadow && !hasCsm && !hasAtmosphereLut && !hasClustered) {
     const placeholder = getPlaceholderEffects(device);
     context._primitiveEffectsBG = placeholder.bindGroup;
     context._primitiveEffectsBGFrameNumber = frameNumber;
@@ -814,6 +835,10 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
     atmosphereLutPlanetRadii: hasAtmosphereLut
       ? { inner: 6378137.0, outer: 6378137.0 * 1.025 }
       : undefined,
+    // Slice 5d Batch 154 — Forward+ clustered lighting buffers (bindings
+    // 18-22 on the effects BGL). Passed only when active so the no-effects
+    // placeholder fast path is preserved when clustered lighting is off.
+    clusteredLighting: hasClustered ? clusteredBuffers : undefined,
   });
   context._primitiveEffectsBG = fxRes.bindGroup;
   context._primitiveEffectsBGFrameNumber = frameNumber;
@@ -1985,9 +2010,32 @@ function createMaterialPipelineAndCache(
   cache.primitiveTopology = topology;
   cache.appearanceClosed = closedClosed;
 
+  // Slice 5d Batch 154 — prepend the Forward+ clustered lighting chunk to
+  // Mat*Lit shaders so they can additively sample scene PointLights/Spots/
+  // Directionals beyond the single sun. The chunk's `@group(__CL_GROUP__)`
+  // token is substituted to wherever the effects BGL landed for this
+  // pipeline: group 3 when a texture group occupies group 2, else group 2.
+  //
+  // Gate on the shader actually CALLING `evalClusteredLights(` (not just
+  // being a Mat*Lit) so the chunk isn't prepended as dead code to shaders
+  // that haven't been wired yet OR to pipeline variants (e.g. pick) whose
+  // bind-group layout doesn't carry the effects BGL at the expected group.
+  // As each Mat*Lit shader gains the call site, it automatically opts in.
+  let materialCode = shaderInfo.code;
+  if (
+    isMaterialLitShader(shaderInfo.type) &&
+    materialCode.includes("evalClusteredLights(")
+  ) {
+    const clGroup = shaderInfo.needsTexture ? 3 : 2;
+    const clChunk = substituteClusteredLightingGroup(
+      ClusteredLightingChunk,
+      clGroup,
+    );
+    materialCode = `${clChunk}\n${materialCode}`;
+  }
   cache.shaderModule = WebGPUShaderModule.create({
     device: device,
-    code: preprocessShaderSource(shaderInfo.code, 0),
+    code: preprocessShaderSource(materialCode, 0),
     label: `${shaderInfo.type} Material Shader`,
   });
 

@@ -2431,23 +2431,32 @@ export class WebGPUSceneRenderer {
     // effects bind group falls back to per-device placeholders (whose
     // `params.activeLightCount = 0` makes the FS chunk early-out).
     const d = this._clusteredLightingDispatcher;
-    (
-      context as unknown as {
-        _clusteredLightingBuffers?: {
-          clusterLights: GPUBuffer;
-          clusterAABBs: GPUBuffer;
-          perClusterLightCount: GPUBuffer;
-          perClusterLightIndices: GPUBuffer;
-          params: GPUBuffer;
-        };
-      }
-    )._clusteredLightingBuffers = {
+    const ctxStash = context as unknown as {
+      _clusteredLightingBuffers?: {
+        clusterLights: GPUBuffer;
+        clusterAABBs: GPUBuffer;
+        perClusterLightCount: GPUBuffer;
+        perClusterLightIndices: GPUBuffer;
+        params: GPUBuffer;
+      };
+      _clusteredLightingActive?: boolean;
+    };
+    ctxStash._clusteredLightingBuffers = {
       clusterLights: d.clusterLightsBuffer,
       clusterAABBs: d.clusterAABBsBuffer,
       perClusterLightCount: d.perClusterLightCountBuffer,
       perClusterLightIndices: d.perClusterLightIndicesBuffer,
       params: d.paramsBuffer,
     };
+    // Slice 5d Batch 154 — CPU-side "is clustered lighting contributing
+    // this frame" flag. Consumers that have a cheap no-effects fast path
+    // (the shared primitive effects bind group) gate on this so they only
+    // skip the placeholder when there are actually active lights. The
+    // Model PBR path passes the buffers unconditionally (it always builds
+    // an active effects BG anyway) and relies on params.activeLightCount=0
+    // for the FS early-out; primitives need the boolean to preserve their
+    // placeholder fast path when clustered lighting is off / empty.
+    ctxStash._clusteredLightingActive = enabled && d.lastActiveLightCount > 0;
 
     // Resume the default canvas render pass so the rest of
     // executeCommands (shadow casts, scene render, etc.) sees the

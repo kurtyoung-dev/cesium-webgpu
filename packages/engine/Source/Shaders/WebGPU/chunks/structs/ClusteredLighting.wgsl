@@ -97,11 +97,20 @@ struct ClusteredParams {
   activeLightCount: vec4<f32>,
 };
 
-@group(3) @binding(18) var<storage, read> clusterLights: array<ClusteredLight>;
-@group(3) @binding(19) var<storage, read> clusterAABBs: array<ClusteredAABB>;
-@group(3) @binding(20) var<storage, read> perClusterLightCount: array<u32>;
-@group(3) @binding(21) var<storage, read> perClusterLightIndices: array<u32>;
-@group(3) @binding(22) var<uniform> clusterParams: ClusteredParams;
+// NOTE: the group index is the literal token `__CL_GROUP__`, substituted
+// by the JS prepend site to match wherever the effects bind group landed
+// for the consuming pipeline. Model PBR always has effects at group 3;
+// primitive Mat*Lit shaders have it at group 2 (no texture group) or
+// group 3 (texture group occupies group 2). Bindings 18..22 are the
+// clustered-lighting slots on the shared effects BGL
+// (`CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES` in
+// `WebGPUClusteredLightingBGL.ts`). This file is a chunk — never compiled
+// standalone — so the non-numeric token is fine until substitution.
+@group(__CL_GROUP__) @binding(18) var<storage, read> clusterLights: array<ClusteredLight>;
+@group(__CL_GROUP__) @binding(19) var<storage, read> clusterAABBs: array<ClusteredAABB>;
+@group(__CL_GROUP__) @binding(20) var<storage, read> perClusterLightCount: array<u32>;
+@group(__CL_GROUP__) @binding(21) var<storage, read> perClusterLightIndices: array<u32>;
+@group(__CL_GROUP__) @binding(22) var<uniform> clusterParams: ClusteredParams;
 
 // Compute the cluster index for a fragment.
 //

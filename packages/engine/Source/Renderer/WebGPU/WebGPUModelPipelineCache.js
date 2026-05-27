@@ -47,6 +47,9 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { getEffectsBindGroupLayout } from "./WebGPUEffectsBindGroup.js";
+// Slice 5d Batch 154 — group-token substitution for the ClusteredLighting
+// chunk. Model PBR's effects BGL is always at group 3, so we substitute 3.
+import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.js";
 // Slice 5c-B Phase 1 (Batch 114) — scene-FB target helper. Used for
 // the color + classification pipelines; pick / hover / precise-pick /
 // velocity pipelines stay single-target.
@@ -1516,7 +1519,8 @@ class WebGPUModelPipelineCache {
     // Batch 153 to include slots 18..22) supplies either placeholder
     // buffers or the dispatcher's live buffers, and the FS chunk gates
     // its evaluation on `clusterParams.activeLightCount.x`.
-    const fullSource = `${ClusteredLightingChunk}\n${ModelPBRCompleteWGSL}`;
+    const clChunk = substituteClusteredLightingGroup(ClusteredLightingChunk, 3);
+    const fullSource = `${clChunk}\n${ModelPBRCompleteWGSL}`;
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
       fullSource,
