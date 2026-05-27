@@ -2823,7 +2823,7 @@ Approach 1 is simpler and lower-risk.
 - **High-severity findings** (`H-R*`, `H-P*`, `DP-H*`) are in `WEBGPU_MIGRATION_BACKLOG.md` rather than here. This inventory is C-R-prefixed only.
 - **Open parent findings** without named follow-ups (`C-R4`) stay in their parent review docs as deferral entries themselves. (`C-R5` was the other entry here pre-2026-04-27 and is now CLOSED — Batch 58 shipped C-R5-IMAGERY-16; no remaining follow-ups.)
 
-### NEW-VR2-7-GLOBE-MERCATOR-V-PRECISION — Reclassified 2026-05-11 (deep dive ruled out Mercator V; new lead: per-tile brightness anomaly at mid altitude)
+### NEW-VR2-7-GLOBE-MERCATOR-V-PRECISION — Mercator-V disproved (2026-05-11); per-tile brightness anomaly does NOT reproduce (Batch 163) — effectively resolved
 
 **Original symptom:** Lake Superior (~47°N) appeared subtly vertically compressed in the cross-backend Blue_Marble sweep PNGs.
 
@@ -2839,6 +2839,8 @@ The Mercator V hypothesis is **disproved**. Verified:
 Original "squishing" in the sweep PNG was likely an artifact of timing/state mismatch (camera not fully settled before capture) rather than a renderer bug.
 
 **New finding — different bug uncovered while probing:**
+
+> **Batch 163 reproduction result — does NOT reproduce.** `Tools/visual-regression/probe-vr2-tile-brightness.mjs` renders the globe (lighting on, ground-atmosphere/fog off) nadir over Lake Superior at 5 Mm in both backends, settles all imagery tile-load queues (≥60 consecutive empty-queue frames), then measures the largest brightness jump between adjacent 24px blocks over the globe disk. WebGPU's max adjacent-block jump is **99 vs WebGL's 119** (ratio 0.83 — WebGPU is *smoother*, not anomalous), and both maxima sit at the disk limb (globe-vs-space edge), not an interior tile boundary. The PNGs render North America with **uniform tile brightness on both backends** — no distinctly-brighter tile, no sharp interior boundary. The anomaly appears resolved by intervening imagery/material work. Probe kept as a regression guard (`PROBE_DARK=1` toggles the lighting-off suspect test if it ever recurs).
 
 At ~5 Mm camera altitude over Lake Superior, WebGPU shows a **per-tile brightness anomaly** — one rectangular tile renders distinctly brighter than its neighbors, with a sharp visible boundary. Pattern persists after 45+ seconds of wait time with all tile load queues empty. Tile count and LOD distribution identical to WebGL (35 tiles, levels 2/3/4). Same camera state. Yet WebGL shows uniform brightness across all tiles.
 
