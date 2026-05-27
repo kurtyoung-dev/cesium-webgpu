@@ -258,7 +258,14 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let dF = max(dxc, dyc) * material.width;
     let alpha = select(0.0, 1.0, distToContour < dF);
 
-    let finalColor = ambientTerm + directTerm + spec;
+    // Slice 5d Batch 155 — additive Forward+ clustered lighting (eye-space
+    // inputs; baseColor = contour material color; F0/roughness dielectric).
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, N, V,
+        vec3<f32>(0.04), 0.5, material.color.rgb,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
+    let finalColor = ambientTerm + directTerm + spec + clusteredContrib;
     // Slice 5c-B Batch 121 — emit FragOutput. normalRoughness gets the
     // geometric eye-space normal (vertex shader writes worldNormal as
     // eye-space via camera.normalMatrix). Roughness 0.5 placeholder —

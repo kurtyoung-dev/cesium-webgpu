@@ -259,12 +259,20 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     }
 
     let lighting = ambient + direct;
+    // Slice 5d Batch 155 — additive Forward+ clustered lighting (eye-space
+    // inputs; F0/roughness synthesized neutral dielectric for the non-PBR
+    // material path). Early-outs to zero when no clustered lights active.
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, normal, viewDir,
+        vec3<f32>(0.04), 0.5, baseColor.rgb,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
     // Slice 5c-B Batch 121 — emit FragOutput. normalRoughness gets the
     // geometric eye-space normal (vertex shader writes worldNormal as
     // eye-space via camera.normalMatrix). Roughness 0.5 placeholder —
     // Lit Mat shaders don't carry material roughness in their UBOs.
     var mrtOut: FragOutput;
-    mrtOut.color = vec4<f32>(baseColor.rgb * lighting, baseColor.a);
+    mrtOut.color = vec4<f32>(baseColor.rgb * lighting + clusteredContrib, baseColor.a);
     mrtOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);
     return mrtOut;
 }

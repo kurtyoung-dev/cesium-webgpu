@@ -261,7 +261,18 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let rimStrength = smoothstep(1.0 - material.width, 1.0, rimFactor);
     let rim = material.rimColor.rgb * rimStrength;
 
-    var finalColor = vec4<f32>(ambientTerm + directTerm + spec + rim, material.color.a);
+    // Slice 5d Batch 155 — additive Forward+ clustered lighting (eye-space
+    // inputs; F0/roughness synthesized neutral dielectric for the non-PBR
+    // material path). Early-outs to zero when no clustered lights active.
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, N, V,
+        vec3<f32>(0.04), 0.5, material.color.rgb,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
+    var finalColor = vec4<f32>(
+        ambientTerm + directTerm + spec + rim + clusteredContrib,
+        material.color.a,
+    );
 
     // FEAT-GAP-09 (Batch 202) — aerial-perspective fog blend.
     if (effects.atmosphereLutControl.x > 0.5) {

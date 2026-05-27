@@ -520,7 +520,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUImageBasedLighting — diffuse + specular IBL lookup for PBR (SHIPPED)
 - WebGPUDynamicEnvironmentMapManager — per-position dynamic env map probes (SHIPPED)
 - WebGPUBrdfLutGenerator — one-time BRDF integration LUT (compute-driven) (SHIPPED)
-- Forward+ clustered lighting — `WebGPUClusterBoundsRenderer` + `WebGPUClusterAssignRenderer` (16×9×24 grid compute passes) + `WebGPUClusteredLightingDispatcher` (per-frame orchestration) + `ClusteredLighting.wgsl` FS chunk consumed by ModelPBRComplete via group-3 effects bindings 18-22. Multi-light point/spot/directional per-pixel diffuse+specular beyond the single sun. Resolves FEAT-SURVEY-40. (SHIPPED Batch 153; Model PBR consumer live, 21 Lit Mat shaders pending Batch 154+)
+- Forward+ clustered lighting — `WebGPUClusterBoundsRenderer` + `WebGPUClusterAssignRenderer` (16×9×24 grid compute passes) + `WebGPUClusteredLightingDispatcher` (per-frame orchestration) + `ClusteredLighting.wgsl` FS chunk consumed by ModelPBRComplete (group-3 effects bindings 18-22) AND all 19 primitive `Mat*Lit` material shaders (group-2 or group-3 via the `__CL_GROUP__` token substitution, Batches 154-155). Multi-light point/spot/directional per-pixel diffuse+specular beyond the single sun. Resolves FEAT-SURVEY-40. (SHIPPED Batches 153-155; Model PBR + all Lit Mat consumers live. Remaining: Phong primitive shaders + a Sandcastle demo.)
 - WebGPUIBLPipeline — irradiance + radiance prefilter compute orchestration (SHIPPED)
 - WebGPUImageryReprojection — reprojects WMS/WMTS imagery to web-mercator at upload (SHIPPED)
 - WebGPUWeatherRenderer — weather particle system orchestrator (SCAFFOLDED)

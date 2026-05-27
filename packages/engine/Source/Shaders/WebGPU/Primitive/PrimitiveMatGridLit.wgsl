@@ -265,7 +265,15 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     }
 
     let lighting = ambient + direct;
-    var finalColor = vec4<f32>(baseColor.rgb * lighting, baseColor.a);
+    // Slice 5d Batch 155 — additive Forward+ clustered lighting (eye-space
+    // inputs; F0/roughness synthesized neutral dielectric for the non-PBR
+    // material path). Early-outs to zero when no clustered lights active.
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, normal, viewDir,
+        vec3<f32>(0.04), 0.5, baseColor.rgb,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
+    var finalColor = vec4<f32>(baseColor.rgb * lighting + clusteredContrib, baseColor.a);
 
     // FEAT-GAP-09 (Batch 201) — aerial-perspective fog blend. Pattern
     // mirrors PrimitivePhongTexturedColor.wgsl. Single texture sample

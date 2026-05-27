@@ -313,7 +313,18 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         spec = spec * shadowFactor;
     }
 
-    var finalColor = vec4<f32>(ambientTerm + directTerm + spec, 1.0);
+    // Slice 5d Batch 155 — additive Forward+ clustered lighting on the
+    // bump-perturbed eye-space normal. baseColor = textured albedo;
+    // F0/roughness synthesized neutral dielectric (no PBR material).
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, perturbedNormal, V,
+        vec3<f32>(0.04), 0.5, baseDiffuse,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
+    var finalColor = vec4<f32>(
+        ambientTerm + directTerm + spec + clusteredContrib,
+        1.0,
+    );
 
     // FEAT-GAP-09 (Batch 201) — aerial-perspective fog blend. Pattern
     // mirrors PrimitivePhongTexturedColor.wgsl. Single texture sample

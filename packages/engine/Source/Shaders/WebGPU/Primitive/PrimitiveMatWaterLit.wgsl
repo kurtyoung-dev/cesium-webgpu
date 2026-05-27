@@ -302,7 +302,15 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 
     // Blend with blendColor using fresnel
     let waterColor = mix(diffuseColor, material.blendColor.rgb, fresnel * 0.6);
-    let finalColor = waterColor + spec;
+    // Slice 5d Batch 155 — additive Forward+ clustered lighting on the
+    // wave-perturbed eye-space normal. baseColor = base water albedo;
+    // F0/roughness synthesized neutral dielectric (no PBR material).
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, perturbedNormal, V,
+        vec3<f32>(0.04), 0.5, material.baseWaterColor.rgb,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
+    let finalColor = waterColor + spec + clusteredContrib;
 
     // DP-H20 — sample the specular mask to gate water extent.
     let waterMask = textureSample(

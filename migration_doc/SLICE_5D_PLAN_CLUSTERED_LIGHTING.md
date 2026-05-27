@@ -11,8 +11,25 @@ shows a +24 mean-brightness delta over 53.8k pixels with 0 device
 errors. **A latent `perturbNormal` NaN bug** (degenerate result on
 normal-mapped primitives without TANGENT attributes — silently zeroed
 ALL lighting, not just clustered) was found + fixed as part of this
-batch. Remaining work: wire the 21 Lit Mat shaders (Batch 154+) + a
-Sandcastle demo. Update history below the sub-batch sequence.
+batch.
+
+**Batches 154-155 (2026-05-26):** Extended the consumer to all 19
+primitive `Mat*Lit` material shaders. The chunk's `@group(N)` index is
+now a `__CL_GROUP__` token substituted per-pipeline (Model PBR = 3;
+primitives = 2 when no texture group, 3 when textured) because the
+effects BGL lands at a different group across pipelines. Batch 154 =
+mechanism + ColorLit (group 2) + NormalMapLit (group 3); Batch 155 =
+the remaining 17 (Image/Checker/Grid/Stripe/Dot/Fade/RimLighting/
+AlphaMap/EmissionMap/SpecularMap/BumpMap/Water/ElevBand/ElevContour/
+ElevRamp/SlopeRamp/AspectRamp). Verified: `probe-clustered-litmat.mjs`
+(group 2 visible), `probe-clustered-matsweep.mjs` (7 non-textured lit
+materials, 0 device errors), `probe-clustered-visible.mjs` (Model PBR
+group 3, no regression). Blinn-Phong primitives have no PBR material so
+F0=0.04 / roughness=0.5 are synthesized for the evaluator.
+
+**Remaining work:** the legacy Phong primitive shaders (phong /
+phongTextured) + a Sandcastle demo. Update history below the sub-batch
+sequence.
 
 **Goal:** Multi-light Forward+ on the WebGPU backend, with per-pixel
 diffuse + specular for arbitrary scene-placed lights (point + spot +

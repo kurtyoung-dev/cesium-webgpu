@@ -261,7 +261,14 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let ez = swizzleChannel(texColor, material.channels.z);
     let emission = vec3<f32>(ex, ey, ez);
 
-    let finalColor = ambientTerm + directTerm + spec + emission;
+    // Slice 5d Batch 155 — additive Forward+ clustered lighting (eye-space
+    // inputs; baseColor = white lit base; F0/roughness neutral dielectric).
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, N, V,
+        vec3<f32>(0.04), 0.5, baseColor,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
+    let finalColor = ambientTerm + directTerm + spec + emission + clusteredContrib;
     // Slice 5c-B Batch 121 — emit FragOutput. normalRoughness gets the
     // geometric eye-space normal (vertex shader writes worldNormal as
     // eye-space via camera.normalMatrix). Roughness 0.5 placeholder —
