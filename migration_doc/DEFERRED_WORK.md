@@ -871,7 +871,34 @@ as the reference implementation.
 
 **Why deferred:** A material-system port (~several hundred LOC of WGSL + uniform/texture plumbing), well beyond the 2D/CV/Morph scope it was hiding under. Low demand vs the flat-color path that covers most classification use.
 
-**Trace:** Batch 161 (re-scoped out of NEW-CLASSIFIER-2D-CV-MORPH); `WebGPUGroundPrimitiveRenderer.js` (`packUniforms` color-only); `WebGPUGroundPolylineRenderer.js::applyMaterial` reference.
+**Batch 165 investigation (separate blocker for the 2D case):** Attempted to remove the over-broad `_needs2DShader` non-3D skip (since the renderer is flat-color-only, a flat-color polygon doesn't need appearance2D to render in 2D). The skip removal was REVERTED because a probe found the real 2D blocker is upstream of classification entirely: the WebGPU globe doesn't render at regional 2D zoom (see NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM below). With no globe surface / globe depth at regional zoom there's nothing to classify, so 2D flat-color classification can't be verified yet. The `_needs2DShader` skip now carries an accurate comment pointing at the globe blocker (not appearance2D). **Order of operations:** fix NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM first, THEN remove the skip + verify flat-color 2D classification, THEN (separately) the appearance2D textured path.
+
+**Trace:** Batch 161 (re-scoped out of NEW-CLASSIFIER-2D-CV-MORPH); Batch 165 (2D-globe blocker found); `WebGPUGroundPrimitiveRenderer.js` (`packUniforms` color-only + the `_needs2DShader` skip comment); `WebGPUGroundPolylineRenderer.js::applyMaterial` reference.
+
+---
+
+### NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM — WebGPU globe vanishes at regional 2D zoom (renders only at full-globe zoom)
+
+**What:** In `SceneMode.SCENE2D`, the WebGPU globe surface renders at full-globe zoom (camera height ~38 Mm — the world map draws, comparable pixel coverage to WebGL) but renders **nothing** at regional zoom (camera height ~2.4 Mm — fully blank where WebGL shows the regional map). Found Batch 165 while investigating why 2D GroundPrimitive classification shows nothing.
+
+**Evidence (Batch 165 ad-hoc probes, WebGL vs WebGPU, same camera + frame budget):**
+
+- Full-globe 2D (`setView` rectangle −170..170 / −80..80, camH ≈ 37.8 Mm): WebGL 263 727 non-dark px, **WebGPU 289 772** — comparable, globe renders (world map visible in the screenshot).
+- Regional 2D (`setView` to −97.5°, 41.5°, 2.4 Mm nadir): WebGL 345 759 non-dark px, **WebGPU ~0** (only UI chrome) — globe blank.
+
+Not a streaming artifact — WebGL streamed + rendered the regional view in the same frame budget; WebGPU did not. Camera/projection state is the same `setView` call that WebGL renders fine. So it's a WebGPU 2D regional **tile-selection / culling / frustum** issue, not camera framing or imagery streaming.
+
+**Why it matters:** This is the actual blocker for ALL 2D GroundPrimitive / classification rendering (no globe → no surface → no globe depth for the depth-sample classifier), and for any 2D regional-zoom viewing on WebGPU. Likely related to the 2D orthographic frustum / quadtree tile-selection path under WebGPU.
+
+**Next-investigation starting points:**
+
+1. At regional 2D zoom, log `globe._surface._tilesToRender.length` (or the rendered-tile count) on WebGPU vs WebGL — if WebGPU selects 0 tiles, it's tile selection / `QuadtreePrimitive` 2D screen-space-error or visibility culling reading a bad 2D frustum.
+2. Check the WebGPU 2D orthographic frustum (`camera.frustum` near/far/width) at 2.4 Mm vs WebGL — a degenerate or mis-scaled 2D frustum would cull every tile.
+3. Probe whether globe draw commands are emitted but culled at submission, vs never built.
+
+**Estimated effort:** 1-2 sessions — needs a rendered-tile-count + 2D-frustum-state diff at regional zoom.
+
+**Trace:** Batch 165; `WebGPUGroundPrimitiveRenderer.js` `_needs2DShader` skip comment; `probe-classifier-scenemode.mjs` (2D blank).
 
 ---
 

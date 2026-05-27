@@ -873,21 +873,25 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // BOTH attribute sets and blends EC-space positions by
   // `uniformState.morphTime`.
   //
-  // One case still gates to silent-skip:
+  // Non-3D (SCENE2D / COLUMBUS_VIEW) silent-skip for `_needs2DShader`
+  // primitives (planar/spherical extents — essentially all polygons).
   //
-  //   `_needs2DShader` primitives in any non-3D mode — primitives
-  //   with `_hasPlanarExtentsAttributes` or `_hasSphericalExtentsAttribute`
-  //   require WebGL's `derivedCommands.appearance2D` shader for the
-  //   planar/spherical extents math (`GroundPrimitive.js:813-818`).
-  //   The WebGPU renderer doesn't have a WGSL `appearance2D`
-  //   equivalent yet, so the position-only swap from Batch 156 would
-  //   produce correct geometry but broken texture coords — silent
-  //   skip until the appearance2D WGSL pipeline lands. Common with
-  //   textured GroundPrimitives (Image / Stripe / Grid material) and
-  //   batched-classification primitives.
-  //
-  // Tracked as the remainder of A.4 / NEW-CLASSIFIER-2D-CV-MORPH in
-  // DEFERRED_WORK.
+  // NOTE (Batch 165 investigation): the ORIGINAL rationale here ("needs a
+  // WGSL appearance2D for the extents→UV texture math") was inaccurate — this
+  // renderer is FLAT COLOR only (`packUniforms` reads
+  // `appearance.material.uniforms.color`; no UV / extents / texture sampling
+  // in ANY mode), so a flat-color polygon does NOT need appearance2D to
+  // render in 2D. The skip looked over-broad, so removing it was attempted.
+  // BUT a probe (`probe-classifier-scenemode.mjs` + ad-hoc 2D-globe checks)
+  // found the TRUE blocker: the WebGPU GLOBE itself does not render at
+  // REGIONAL 2D zoom (~2.4 Mm) — it renders only at full-globe 2D zoom
+  // (~38 Mm). With no globe surface + no globe depth at regional zoom, the
+  // depth-sample classifier has nothing to classify, so 2D classification
+  // can't be VERIFIED correct (Principle 8). The skip therefore STAYS until
+  // NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM is fixed; at that point remove this
+  // skip AND verify flat-color 2D classification in one batch. Genuine
+  // textured-material detail (appearance2D UVs) is a further deferred layer
+  // (NEW-GROUNDPRIM-TEXTURED-MATERIALS). See DEFERRED_WORK.md for both.
   const sceneMode = frameState?.mode;
   const isNon3D = sceneMode !== SceneMode.SCENE3D;
   const isMorphing = sceneMode === SceneMode.MORPHING;
@@ -896,10 +900,11 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
       "WebGPUGroundPrimitive.needs2DShader",
-      "GroundPrimitive on WebGPU silently skips primitives requiring " +
-        "`_needs2DShader` (planar/spherical extents) in non-3D scene modes. " +
-        "SCENE2D + COLUMBUS_VIEW + MORPHING + SCENE3D render correctly " +
-        "otherwise. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH.",
+      "GroundPrimitive on WebGPU silently skips classification in non-3D " +
+        "scene modes. Blocked on NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM (the " +
+        "WebGPU globe doesn't render at regional 2D zoom, so there's no " +
+        "surface to classify) — not on appearance2D. SCENE3D + MORPHING " +
+        "render correctly.",
     );
     //>>includeEnd('debug');
     return {
