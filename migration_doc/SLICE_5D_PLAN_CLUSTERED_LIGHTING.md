@@ -27,9 +27,34 @@ materials, 0 device errors), `probe-clustered-visible.mjs` (Model PBR
 group 3, no regression). Blinn-Phong primitives have no PBR material so
 F0=0.04 / roughness=0.5 are synthesized for the evaluator.
 
-**Remaining work:** the legacy Phong primitive shaders (phong /
-phongTextured) + a Sandcastle demo. Update history below the sub-batch
-sequence.
+**Batch 156 (2026-05-26):** Extended the consumer to the legacy Phong
+primitive shaders (phong / phongTextured) AND fixed a pre-existing
+first-site primitive MSAA black-render bug (sampleCount=1 pipelines vs
+the MSAA=4 scene FB pass — Batch 132's fix only covered the Mat* site).
+See WEBGPU_DEBUGGING_LOG Bug 156.1.
+
+**Batch 157 (2026-05-26):** Fixed `PerInstanceColorAppearance` (flat:false)
+rendering UNLIT — `selectWebGPUShader` ran on the COMPRESSED geometry
+attributes (normal oct-encoded in `compressedAttributes`) and missed the
+normal, falling back to the unlit `basic` shader. Fix: decode
+(`ensureUncompressedAttributes`) before shader selection. That exposed +
+fixed two latent phong-shader WGSL compile bugs (bare-vec4 return vs
+FragOutput; `textureSampleCompare` in non-uniform flow). The phong
+clustered consumer is now exercised end-to-end (`probe-clustered-phong.mjs`,
+delta +543). See WEBGPU_DEBUGGING_LOG Bug 157.1-157.3.
+
+**Batch 158 (2026-05-26):** Shipped the `WebGPU Clustered Lighting`
+Sandcastle gallery demo — 6 colored orbiting point lights illuminating
+glTF models (Model PBR) + a lit ground plane (matColorLit), with
+clustered-on/off + animate + light-count toggles. Verified via
+`probe-clustered-demo-scene.mjs` (replicates the demo scene: 6 active
+lights, clustered contribution delta +46 over ~56% of the frame, 0 device
+errors). WebGPU gallery demos ship without a `.jpg` thumbnail (matches the
+18 existing WebGPU demos; the build treats the thumbnail as optional).
+
+**Slice 5d is COMPLETE** — Forward+ clustered lighting consumed by Model
+PBR + all 19 primitive Mat*Lit shaders + the Phong primitive shaders, with
+a Sandcastle demo. Update history below the sub-batch sequence.
 
 **Goal:** Multi-light Forward+ on the WebGPU backend, with per-pixel
 diffuse + specular for arbitrary scene-placed lights (point + spot +
