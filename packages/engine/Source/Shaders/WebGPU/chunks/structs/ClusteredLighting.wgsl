@@ -7,24 +7,27 @@
 // 147) + ClusterAssign (Batch 148) compute passes, and evaluate the
 // per-light diffuse + specular contribution.
 //
-// # Bind group convention (PROVISIONAL — to be remapped in Batch 153)
+// # Bind group convention — group 3 (effects) bindings 18..22
 //
 // Originally drafted to land at `@group(4)` (the first slot after
 // the existing Camera / Material / Instance / Effects groups used
 // by Model PBR). That approach was reverted in Batch 152 after
 // `Tools/visual-regression/probe-device-limits.mjs` confirmed
 // Chromium-on-Windows caps `maxBindGroups` at 4 (both D3D12 +
-// Vulkan backends). Batch 153 will merge these 5 bindings into the
-// existing group 3 (effects) BGL; this chunk's `@group` /
-// `@binding` declarations will be re-derived from the merged
-// layout when the consumer wiring lands. Until then this chunk is
-// NOT included in any pipeline's shader source.
+// Vulkan backends). Batch 153 folded the 5 bindings into the
+// existing group 3 (effects) BGL at bindings 18..22:
 //
-//   @group(4) @binding(0) clusterLights        : storage<read>
-//   @group(4) @binding(1) clusterAABBs         : storage<read>  (optional — for debug)
-//   @group(4) @binding(2) perClusterLightCount : storage<read>
-//   @group(4) @binding(3) perClusterLightIndices: storage<read>
-//   @group(4) @binding(4) clusterParams        : uniform
+//   @group(3) @binding(18) clusterLights         : storage<read>
+//   @group(3) @binding(19) clusterAABBs          : storage<read>  (debug)
+//   @group(3) @binding(20) perClusterLightCount  : storage<read>
+//   @group(3) @binding(21) perClusterLightIndices: storage<read>
+//   @group(3) @binding(22) clusterParams         : uniform
+//
+// The binding numbers live in
+// `WebGPUClusteredLightingBGL.ts → CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES`
+// (consumed by `WebGPUEffectsBindGroup.js` when building the BGL +
+// the active / placeholder bind groups). The chunk-marker pattern
+// matches Batch 165's csm_samplePointShadow pattern.
 //
 // # Cluster lookup math
 //
@@ -94,11 +97,11 @@ struct ClusteredParams {
   activeLightCount: vec4<f32>,
 };
 
-@group(4) @binding(0) var<storage, read> clusterLights: array<ClusteredLight>;
-@group(4) @binding(1) var<storage, read> clusterAABBs: array<ClusteredAABB>;
-@group(4) @binding(2) var<storage, read> perClusterLightCount: array<u32>;
-@group(4) @binding(3) var<storage, read> perClusterLightIndices: array<u32>;
-@group(4) @binding(4) var<uniform> clusterParams: ClusteredParams;
+@group(3) @binding(18) var<storage, read> clusterLights: array<ClusteredLight>;
+@group(3) @binding(19) var<storage, read> clusterAABBs: array<ClusteredAABB>;
+@group(3) @binding(20) var<storage, read> perClusterLightCount: array<u32>;
+@group(3) @binding(21) var<storage, read> perClusterLightIndices: array<u32>;
+@group(3) @binding(22) var<uniform> clusterParams: ClusteredParams;
 
 // Compute the cluster index for a fragment.
 //

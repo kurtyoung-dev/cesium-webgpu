@@ -30,6 +30,14 @@
  */
 
 import ModelPBRCompleteWGSL from "../../Shaders/WebGPU/Model/ModelPBRComplete.js";
+// Slice 5d Batch 153 — Forward+ clustered lighting FS chunk. Prepended
+// to the Model PBR shader source unconditionally so the @group(3)
+// binding declarations (slots 18..22) + evalClusteredLights() function
+// are available. The bindings live on the existing effects BGL
+// (extended in Batch 153); runtime enabling is gated by
+// `clusterParams.activeLightCount.x` (zero when no lights or
+// scene.clusteredLightingEnabled === false → FS chunk early-out).
+import ClusteredLightingChunk from "../../Shaders/WebGPU/chunks/structs/ClusteredLighting.js";
 import {
   makeBindGroupLayout,
   sampler,
@@ -1501,9 +1509,17 @@ class WebGPUModelPipelineCache {
       return module;
     }
     const variantHex = `0x${key.toString(16)}`;
+    // Slice 5d Batch 153 — prepend the ClusteredLighting chunk so the
+    // Model PBR shader has @group(3) bindings 18..22 declared + the
+    // evalClusteredLights() function defined. The chunk declares the
+    // bindings unconditionally; the effects bind group (extended in
+    // Batch 153 to include slots 18..22) supplies either placeholder
+    // buffers or the dispatcher's live buffers, and the FS chunk gates
+    // its evaluation on `clusterParams.activeLightCount.x`.
+    const fullSource = `${ClusteredLightingChunk}\n${ModelPBRCompleteWGSL}`;
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
-      ModelPBRCompleteWGSL,
+      fullSource,
       key,
       `Model PBR ShaderModule [defines=${variantHex}]`,
     );

@@ -930,12 +930,33 @@ fn tonemapAndGamma(color: vec3<f32>) -> vec3<f32> {
 
 fn perturbNormal(nEC: vec3<f32>, tEC: vec3<f32>, bEC: vec3<f32>,
                  normalMap: vec3<f32>, scale: f32) -> vec3<f32> {
+  let N = normalize(nEC);
+  // Robustness guard (Slice 5d Batch 153) — a glTF primitive can carry
+  // a normal texture WITHOUT precomputed TANGENT attributes. The vertex
+  // path computes `tangentEC = normalize(normalMatrix * tangentMC)`; for
+  // an absent/zero tangent accessor that is `normalize(vec3(0))` → NaN,
+  // so the tangent/bitangent reaching this function are NaN (not zero).
+  // A NaN tangent frame collapses the returned vector to a degenerate
+  // normal, which then zeroes every `dot(N, L)` downstream — breaking
+  // the sun lighting (silently at night), CSM, point-light receive, AND
+  // the new Forward+ clustered lighting consumer. Fall back to the
+  // geometric normal (skip tangent-space perturbation) when the tangent
+  // frame is missing OR non-finite.
+  //
+  // NaN-safe: `length(NaN)` is NaN, and `NaN > 1e-4` is false, so the
+  // `!(len > 1e-4)` form catches BOTH the zero-length case (len == 0)
+  // AND the NaN case. A plain `len < 1e-4` would miss NaN entirely
+  // (`NaN < 1e-4` is also false) — the bug this guard originally had.
+  let tlen = length(tEC);
+  let blen = length(bEC);
+  if (!(tlen > 1e-4) || !(blen > 1e-4)) {
+    return N;
+  }
   var tn = normalMap * 2.0 - vec3<f32>(1.0);
   tn = vec3<f32>(tn.xy * scale, tn.z);
   tn = normalize(tn);
-  let T = normalize(tEC);
-  let B = normalize(bEC);
-  let N = normalize(nEC);
+  let T = tEC / tlen;
+  let B = bEC / blen;
   return normalize(T * tn.x + B * tn.y + N * tn.z);
 }
 
@@ -2160,16 +2181,20 @@ struct FragOutput {
   let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
   var direct = (kD * diffuseColor / PI + specBRDF) * light.sunColor * light.sunIntensity * NdotL;
 
-  // Slice 5d — Forward+ clustered lighting consumer call site reserved
-  // here. Batch 152 attempted to wire `evalClusteredLights(...)` from the
-  // ClusteredLighting chunk via a new @group(4) binding, but the platform
-  // ceiling (Chromium-on-Windows caps `maxBindGroups` at 4 — verified via
-  // `Tools/visual-regression/probe-device-limits.mjs`) blocks a 5th bind
-  // group. Batch 153 will merge the clustered-lighting bindings into the
-  // existing group 3 (effects) and reinstate the additive contribution
-  // here. The dispatcher already runs per frame (Batch 151) and populates
-  // every cluster's light list — only the per-fragment consumer is
-  // currently a no-op.
+  // Slice 5d Batch 153 — Forward+ clustered lighting additive
+  // contribution. The ClusteredLighting chunk is prepended to this
+  // shader by `WebGPUModelPipelineCache._getOrCreateShaderModule` and
+  // declares `evalClusteredLights(...)` plus the @group(3) bindings
+  // 18..22 that the effects bind group (extended in Batch 153) carries
+  // the dispatcher's per-frame cluster data on. Early-outs to vec3(0)
+  // when `clusterParams.activeLightCount.x == 0` (zero lights this
+  // frame OR scene.clusteredLightingEnabled === false), so the cost
+  // when off is one uniform compare per fragment.
+  let clusteredContrib = evalClusteredLights(
+    input.positionEC, N, V, F0, roughness, diffuseColor,
+    input.fragCoord.xy, input.positionEC.z,
+  );
+  direct = direct + clusteredContrib;
 
   // C-R4-GLTF-KHR slice 4 — KHR_materials_anisotropy (factor-level).
   // Full anisotropic GGX needs the tangent-frame as a per-vertex

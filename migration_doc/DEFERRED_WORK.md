@@ -1,4 +1,4 @@
-# Deferred Work Inventory - CesiumJS WebGPU Migration
+33110# Defe0rred Work Inventory - CesiumJS WebGPU Migration
 
 **Last Updated:** 2026-05-02 (AUDIT_2026_05_02.md cross-coupling sweep — 100+ findings across 5 clusters; this doc updated with stale-status corrections + new high-priority entries)
 
@@ -711,6 +711,16 @@ if (effects.clippingPolygonCount > 0u) {
 ```
 
 `EffectsUniforms` carries `clippingPolygonCount: u32`, `clippingPolygonControl: vec4<f32>` (`(extentsCount, invDim, inverseFlag, _)`), and `clippingPolygonExtents[8]` regions. `WebGPUEffectsBindGroup.js` binds `clippingPolygonTex` + `clippingPolygonSampler` at the model material BGL slots. `model.clippingPolygons = ...` produces correct cutouts AND inverse-mode "show only inside" rendering on WebGPU end-to-end.
+
+---
+
+### NEW-MODEL-TANGENT-GENERATION — Derive tangents for normal-mapped primitives lacking a TANGENT accessor
+
+**What:** A glTF primitive may declare a normal texture WITHOUT a `TANGENT` vertex accessor (the spec permits the renderer to derive the tangent basis). Today the WebGPU vertex path computes `tangentEC = normalize(normalMatrix * tangentMC)`, which for an absent/zero tangent attribute is `normalize(vec3(0))` → NaN. Batch 153 added a NaN-safe guard in `perturbNormal` (`ModelPBRComplete.wgsl`) that falls back to the **geometric normal** when the tangent frame is missing/non-finite — this keeps lighting correct (sun + CSM + point-light + clustered) but loses normal-map surface detail. `GroundVehicle.glb` is a known asset that hits this path.
+
+**Scope:** Generate tangents when the accessor is absent — either (a) MikkTSpace-style CPU generation at load time in the glTF loader (parity with upstream's tangent generation), or (b) screen-space derivative tangents in the WGSL FS (`dpdx`/`dpdy` of position + UV) as a cheaper approximation. Option (b) is self-contained in the shader; option (a) matches WebGL output bit-for-bit. Cross-reference the WebGL path's tangent handling for parity (Principle 5).
+
+**Why deferred:** Batch 153's geometric-normal fallback removes the correctness bug (no more NaN-zeroed lighting); restoring normal-map detail on tangent-less assets is a quality improvement, not a correctness fix. See WEBGPU_DEBUGGING_LOG.md Bug 153.1 for the full diagnosis.
 
 ---
 

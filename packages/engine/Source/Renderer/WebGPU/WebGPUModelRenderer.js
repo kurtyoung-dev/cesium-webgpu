@@ -2159,6 +2159,13 @@ function updateWebGPUModel(model, frameState) {
         : undefined,
     cameraInPlaneSpace: frameState.context.uniformState.cameraPosition,
     edges: edgesPayload,
+    // Slice 5d Batch 153 — Forward+ clustered lighting. SceneRenderer's
+    // _dispatchClusteredLighting hook stashes the dispatcher's per-
+    // frame buffers on context._clusteredLightingBuffers each frame.
+    // When omitted (e.g., scene without WebGPUSceneRenderer hooked up),
+    // the effects bind group falls back to per-device placeholders and
+    // the FS chunk early-outs via activeLightCount=0.
+    clusteredLighting: frameState.context._clusteredLightingBuffers,
   });
   cache.effectsBG = fxRes.bindGroup;
 

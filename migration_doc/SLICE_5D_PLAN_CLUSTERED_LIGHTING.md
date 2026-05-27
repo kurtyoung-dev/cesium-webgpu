@@ -1,13 +1,18 @@
 # Slice 5d Plan — Forward-Clustered Lighting on WebGPU
 
-**Status:** Steps 1 + 2 SHIPPED (Batch 142, 2026-05-26). Steps 3 + 4
-SHIPPED (Batches 147 + 148, 2026-05-26). Step 5 SCAFFOLDED
-(Batches 149-151, 2026-05-26): FS chunk + dispatcher + per-frame
-SceneRenderer hook all live; consumer wiring blocked by a platform
-ceiling (`maxBindGroups: 4` on Chromium-on-Windows, see Batch 152
-notes). Batch 153 will close step 5 by merging the cluster bindings
-into existing group 3 (effects). Update history below the sub-batch
-sequence.
+**Status:** ✅ SHIPPED end-to-end (Batch 153, 2026-05-26). Steps 1 + 2
+(Batch 142), steps 3 + 4 (Batches 147 + 148), step 5 scaffolding
+(Batches 149-151), and the Model PBR consumer (Batch 153) all landed.
+The `@group(4)` approach was blocked by the platform `maxBindGroups: 4`
+ceiling (Batch 152) and replaced by folding the 5 cluster bindings into
+the existing group 3 (effects) BGL at bindings 18..22. Verified by
+`probe-clustered-visible.mjs`: a glTF model lit by a scene PointLight
+shows a +24 mean-brightness delta over 53.8k pixels with 0 device
+errors. **A latent `perturbNormal` NaN bug** (degenerate result on
+normal-mapped primitives without TANGENT attributes — silently zeroed
+ALL lighting, not just clustered) was found + fixed as part of this
+batch. Remaining work: wire the 21 Lit Mat shaders (Batch 154+) + a
+Sandcastle demo. Update history below the sub-batch sequence.
 
 **Goal:** Multi-light Forward+ on the WebGPU backend, with per-pixel
 diffuse + specular for arbitrary scene-placed lights (point + spot +

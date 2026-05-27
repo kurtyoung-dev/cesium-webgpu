@@ -2419,15 +2419,35 @@ export class WebGPUSceneRenderer {
       viewMatrix,
     });
 
-    // Batch 152 deferred: consumer-side bind group stash was reverted
-    // after probe-device-limits.mjs confirmed Chromium-on-Windows caps
-    // `maxBindGroups` at 4 (both D3D12 + Vulkan backends), blocking a
-    // 5th @group(4) on Model / Lit Mat pipelines. Batch 153 will merge
-    // the clustered lighting bindings into existing group 3 (effects)
-    // and reinstate a context stash for the consumer side. The
-    // dispatcher itself still runs every frame so the cluster bounds +
-    // light-list buffers stay live for the eventual consumer wiring.
-    void this._clusteredLightingDispatcher.consumerBindGroup; // keep lazy-build warm
+    // Slice 5d Batch 153 — Stash the dispatcher's GPU buffers on the
+    // context so material pipelines (Model PBR + future Lit Mat
+    // shaders) can pass them to `createEffectsBindGroup` at draw time
+    // without threading the dispatcher through every render path. The
+    // buffer handles don't change frame-to-frame (only their contents),
+    // so the effects bind group cache hits on the resource-identity key
+    // and only allocates a fresh (UBO + BG) pair the first time these
+    // appear. When the dispatcher hasn't run yet OR clustered lighting
+    // is disabled, callers can omit `options.clusteredLighting` and the
+    // effects bind group falls back to per-device placeholders (whose
+    // `params.activeLightCount = 0` makes the FS chunk early-out).
+    const d = this._clusteredLightingDispatcher;
+    (
+      context as unknown as {
+        _clusteredLightingBuffers?: {
+          clusterLights: GPUBuffer;
+          clusterAABBs: GPUBuffer;
+          perClusterLightCount: GPUBuffer;
+          perClusterLightIndices: GPUBuffer;
+          params: GPUBuffer;
+        };
+      }
+    )._clusteredLightingBuffers = {
+      clusterLights: d.clusterLightsBuffer,
+      clusterAABBs: d.clusterAABBsBuffer,
+      perClusterLightCount: d.perClusterLightCountBuffer,
+      perClusterLightIndices: d.perClusterLightIndicesBuffer,
+      params: d.paramsBuffer,
+    };
 
     // Resume the default canvas render pass so the rest of
     // executeCommands (shadow casts, scene render, etc.) sees the

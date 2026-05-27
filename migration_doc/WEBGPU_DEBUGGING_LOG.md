@@ -8937,3 +8937,55 @@ The diagnostic path that found this bug demonstrates the value of the `force-red
 4. Bisecting the post-composite blocks (material / water / lighting / fog / HSB), the water-mask block was the only one that could fire by default (others gated on define / lighting / HSB-shift). Reading the function revealed the `mix(baseColor × darkening, deepColor, 0.6)` deep-color replacement vs WebGL's additive `imagery + highlights`.
 
 The `water-effect-trigger` debug (sentinel `19.0e9`, renders ocean fragments red / land green) is preserved as the standard way to verify the water gate per fragment.
+
+---
+
+## Batch 153 — `perturbNormal` returns degenerate normal on normal-mapped primitives without TANGENT attributes
+
+**Bug:** 153.1
+**File(s) affected:** `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` (`perturbNormal`)
+
+### Symptom
+
+While verifying the Forward+ clustered-lighting consumer (Batch 153), a glTF model (`GroundVehicle`) lit by a scene `PointLight` showed **zero** per-pixel contribution — `probe-clustered-visible.mjs` reported `delta = 0.00`, `0 / 120000` changed pixels, despite the dispatcher reporting `activeLightCount = 1`, the params buffer reading 1 on GPU readback, and the cluster light-list containing the light.
+
+### Bisection
+
+A staircase of WGSL diagnostics inside `evalClusteredLights` (each value `→` rendered model color):
+
+1. `return vec3(2,0,0)` gated on `activeLightCount ≥ 0.5` → **red** ⇒ chunk compiled + bound + reached.
+2. `return vec3(0,0,2)` gated on `count > 0` → **blue** ⇒ cluster lookup + per-cluster light list correct, loop body runs.
+3. `return vec3(|N.x|,|N.y|,|N.z|)` (the `N` passed from the call site) → **black** ⇒ `length(N) ≈ 0` at the call site.
+4. Call site changed to pass `geomNormalEC` (= `normalize(input.normalEC)`, pre-normal-map) + `return vec3(length(N))` → **white** ⇒ the geometric normal is a unit vector; only the post-`perturbNormal` `N` is degenerate.
+
+### Root cause
+
+`perturbNormal` did `let T = normalize(tEC); let B = normalize(bEC);`. `GroundVehicle` carries a normal texture but **no TANGENT accessor**, so the vertex shader's `tangentEC = normalize(normalMatrix * tangentMC)` is `normalize(vec3(0))` → **NaN**. The FS then formed `normalize(T*tn.x + B*tn.y + N*tn.z)` with NaN `T`/`B` → degenerate `N`. A degenerate `N` zeroes every `dot(N, L)` downstream — so it silently killed the **sun** lighting, CSM, point-light receive, AND the new clustered consumer. It only escaped notice because the default Sandcastle scenes that exercise this model are daytime + sun-dominant where IBL/ambient masks it, and the probe ran at night.
+
+### Fix
+
+Guard the tangent frame with a **NaN-safe** check and fall back to the geometric normal when the frame is missing/non-finite:
+
+```wgsl
+let N = normalize(nEC);
+let tlen = length(tEC);
+let blen = length(bEC);
+if (!(tlen > 1e-4) || !(blen > 1e-4)) { return N; }  // catches 0 AND NaN
+let T = tEC / tlen;
+let B = bEC / blen;
+return normalize(T * tn.x + B * tn.y + N * tn.z);
+```
+
+The `!(len > 1e-4)` form is deliberate: a plain `len < 1e-4` misses NaN entirely (`NaN < x` and `NaN > x` are both false), which is exactly why the first attempt at this guard (`tlen < 1e-4 || blen < 1e-4`) did not fix the symptom. After the fix the same probe reports `delta = +24`, `~53.8k` changed pixels, 0 device errors, and the model visibly brightens under the point light.
+
+### Files modified
+
+- `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` — `perturbNormal` NaN-safe tangent-frame guard.
+
+### Probes
+
+- `Tools/visual-regression/probe-clustered-visible.mjs` (new) — loads a glTF model, captures baseline (clustered off) vs a scene-`PointLight` frame (clustered on), decodes both screenshots, asserts a brightness delta + changed-pixel count over the model region. `PROBE_BASE` env var overrides the dev-server origin.
+
+### Note for future normal-mapped-model work
+
+Any model whose primitives lack TANGENT data and rely on the renderer to derive tangents will hit this path. The long-term fix is to **generate tangents** (MikkTSpace or screen-space derivative tangents) in the vertex/loader path; until then the geometric-normal fallback keeps lighting correct (just without normal-map detail) instead of producing NaN.

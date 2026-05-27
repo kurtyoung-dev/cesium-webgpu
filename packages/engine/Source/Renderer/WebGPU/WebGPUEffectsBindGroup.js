@@ -4,7 +4,7 @@
  * Creates and manages the combined shadow-receive + clipping-planes bind group
  * used by lit/flat primitive shaders and the globe terrain shader.
  *
- * Bind group layout (18 bindings):
+ * Bind group layout (23 bindings):
  *   0: EffectsUniforms       (uniform buffer, 480 bytes)
  *   1: Shadow depth          (texture_depth_2d)
  *   2: Shadow sampler        (sampler_comparison)
@@ -38,6 +38,19 @@
  *                                    valid; the shader gates on
  *                                    `pointLightControl.x > 0.5` before
  *                                    sampling — see C-R10-POINT-LIGHT-RECEIVE.)
+ *   18: clusterLights         (read-only storage — Slice 5d Forward+,
+ *                              80 B per ClusteredLight record × 1024 caps)
+ *   19: clusterAABBs          (read-only storage — eye-space AABBs from
+ *                              ClusterBounds compute pass, one per cluster)
+ *   20: perClusterLightCount  (read-only storage — u32 per cluster)
+ *   21: perClusterLightIndices (read-only storage — flat u32 index list)
+ *   22: clusterParams         (uniform — viewport + planes + activeLightCount.
+ *                              When `activeLightCount.x = 0`, the FS chunk
+ *                              early-outs and 18..21 are never sampled.)
+ *   See `WebGPUClusteredLightingBGL.ts` for the canonical declaration of
+ *   bindings 18..22 + per-device placeholder buffers used by both the
+ *   placeholder bind group AND the active bind group when no dispatcher
+ *   is running (Slice 5d Batch 153).
  *
  * When no shadow map or clipping planes are active, placeholder resources
  * are used (1×1 depth=1.0, planeCount=0) so the bind group is always
@@ -68,6 +81,14 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+// Slice 5d Batch 153 — clustered lighting bindings 18..22 fold into the
+// existing effects BGL. See `WebGPUClusteredLightingBGL.ts` for the
+// rationale (Chromium-on-Windows caps `maxBindGroups` at 4; the original
+// `@group(4)` plan didn't fit).
+import {
+  CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES,
+  getClusteredLightingPlaceholders,
+} from "./WebGPUClusteredLightingBGL.js";
 
 // 240 bytes = 60 floats: shadowMatrix(16) + shadowMapSize(2) + darkness(1)
 // + soft(1) + planeCount(1u) + unionMode(1u) + edgeWidth(1) + polyCount(1u)
@@ -362,6 +383,14 @@ function getEffectsBindGroupLayout(device) {
       sampleType: "depth",
       viewDimension: "cube",
     }),
+    // Slice 5d Batch 153 — Forward+ clustered lighting bindings.
+    // The 5 entries (bindings 18..22) come from
+    // CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES so the binding numbers
+    // + types match the WGSL chunk and the active/placeholder bind group
+    // builders below. Always present in the layout (placeholders bound
+    // when no dispatcher is running) so consumer pipelines that include
+    // the ClusteredLighting WGSL chunk validate against one shared BGL.
+    ...CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES,
   ]);
 
   return cache.bgl;
@@ -673,6 +702,14 @@ function getPlaceholderEffects(device) {
   device.queue.writeBuffer(ub, 0, data);
   cache.placeholderUniformBuffer = ub;
 
+  // Slice 5d Batch 153 — per-device clustered-lighting placeholder
+  // buffers. Bound at slots 18..22 of the placeholder BG so the BGL
+  // validates regardless of whether a SceneRenderer's dispatcher is
+  // running yet. The placeholder `params` is zero-filled, so any
+  // pipeline whose WGSL includes the ClusteredLighting chunk reads
+  // `activeLightCount = 0` and early-outs without touching slots 18..21.
+  const clusteredPH = getClusteredLightingPlaceholders(device);
+
   cache.placeholderBindGroup = device.createBindGroup({
     layout: bgl,
     entries: [
@@ -698,6 +735,15 @@ function getPlaceholderEffects(device) {
       // `pointLightControl.x` gate stays at 0 in this UB so the cube
       // sample never executes; the binding just satisfies BGL validation.
       { binding: 17, resource: cache.placeholderCubeDepthView },
+      // Slice 5d Batch 153 — clustered lighting placeholders.
+      { binding: 18, resource: { buffer: clusteredPH.clusterLights } },
+      { binding: 19, resource: { buffer: clusteredPH.clusterAABBs } },
+      { binding: 20, resource: { buffer: clusteredPH.perClusterLightCount } },
+      {
+        binding: 21,
+        resource: { buffer: clusteredPH.perClusterLightIndices },
+      },
+      { binding: 22, resource: { buffer: clusteredPH.params } },
     ],
   });
 
@@ -784,6 +830,18 @@ const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
  *   the 5-tap cross PCF kernel in `samplePointShadow`. Auto-populated
  *   from `shadowMap._softShadows ? 1.5 : 0.0` when sourced from a
  *   ShadowMap; explicit overrides allow per-call control.
+ * @param {object} [options.clusteredLighting] - Slice 5d Batch 153:
+ *   the live clustered-lighting dispatcher's GPU buffers from
+ *   `WebGPUSceneRenderer._getClusteredLightingBuffers()`. When present,
+ *   bindings 18..22 use these handles so the Forward+ FS chunk in
+ *   ModelPBRComplete (and follow-on Lit Mat shaders) reads the
+ *   per-frame cluster data. When omitted, per-device placeholders
+ *   are bound and the FS chunk early-outs via `activeLightCount = 0`.
+ * @param {GPUBuffer} [options.clusteredLighting.clusterLights]
+ * @param {GPUBuffer} [options.clusteredLighting.clusterAABBs]
+ * @param {GPUBuffer} [options.clusteredLighting.perClusterLightCount]
+ * @param {GPUBuffer} [options.clusteredLighting.perClusterLightIndices]
+ * @param {GPUBuffer} [options.clusteredLighting.params]
  * @returns {{ bindGroup: GPUBindGroup, uniformBuffer: GPUBuffer }}
  */
 function createEffectsBindGroup(device, frameState, options) {
@@ -953,6 +1011,14 @@ function createEffectsBindGroup(device, frameState, options) {
     defined(atmosphereLutTransmittanceView) &&
     defined(atmosphereLutInscatterView);
 
+  // Slice 5d Batch 153 — clustered lighting counts as an active feature
+  // when the caller has handed us live dispatcher buffers. The shared
+  // placeholder bind group binds per-device placeholder cluster buffers
+  // (whose params has `activeLightCount = 0` → FS chunk early-out); to
+  // get the dispatcher's *real* buffers at the consumer site we have to
+  // skip the early-return and build the active bind group below.
+  const hasClusteredLighting = defined(options?.clusteredLighting);
+
   // If no features are active, return the shared placeholder
   if (
     !hasShadow &&
@@ -961,7 +1027,8 @@ function createEffectsBindGroup(device, frameState, options) {
     !hasAtmosphereLut &&
     !hasCsm &&
     !hasEdges &&
-    !hasPointLight
+    !hasPointLight &&
+    !hasClusteredLighting
   ) {
     return placeholder;
   }
@@ -1266,6 +1333,27 @@ function createEffectsBindGroup(device, frameState, options) {
     (hasPointLight && pointLightConfig.cubeDepthView) ||
     pCache.placeholderCubeDepthView;
 
+  // Slice 5d Batch 153 — clustered lighting buffer handles. Active
+  // dispatcher's buffers when the SceneRenderer wires them through
+  // `options.clusteredLighting`; otherwise the per-device placeholders
+  // (whose `params` reads `activeLightCount = 0` so the consumer FS
+  // chunk early-outs). Identities participate in the resource key so
+  // a scene that toggles `clusteredLightingEnabled` on/off allocates
+  // a fresh UBO+BG pair (the new pair lives until the dispatcher
+  // buffers are destroyed).
+  const clusteredLighting = options?.clusteredLighting;
+  const clusteredPH = getClusteredLightingPlaceholders(device);
+  const bClusterLights =
+    clusteredLighting?.clusterLights ?? clusteredPH.clusterLights;
+  const bClusterAABBs =
+    clusteredLighting?.clusterAABBs ?? clusteredPH.clusterAABBs;
+  const bClusterCount =
+    clusteredLighting?.perClusterLightCount ?? clusteredPH.perClusterLightCount;
+  const bClusterIndices =
+    clusteredLighting?.perClusterLightIndices ??
+    clusteredPH.perClusterLightIndices;
+  const bClusterParams = clusteredLighting?.params ?? clusteredPH.params;
+
   // Resource identity key — uniquely names the bound resource graph.
   // Two calls with identical resource identities produce the same
   // string and therefore hit the same cache entry. Identity is a
@@ -1279,7 +1367,10 @@ function createEffectsBindGroup(device, frameState, options) {
     `${_idFor(bgCache, bCsmBuffer)}|${_idFor(bgCache, bCsmView)}|` +
     `${_idFor(bgCache, bEdgeColor)}|${_idFor(bgCache, bEdgeId)}|` +
     `${_idFor(bgCache, bEdgeDepth)}|${_idFor(bgCache, bGlobeDepth)}|` +
-    `${_idFor(bgCache, bCubeDepth)}`;
+    `${_idFor(bgCache, bCubeDepth)}|` +
+    `${_idFor(bgCache, bClusterLights)}|${_idFor(bgCache, bClusterAABBs)}|` +
+    `${_idFor(bgCache, bClusterCount)}|${_idFor(bgCache, bClusterIndices)}|` +
+    `${_idFor(bgCache, bClusterParams)}`;
 
   // Content key — encodes the per-call inputs that drive UBO bytes
   // beyond what's already implied by the bound resources. Most of the
@@ -1344,6 +1435,17 @@ function createEffectsBindGroup(device, frameState, options) {
         // so a frame that toggles point-light shadows on/off gets a
         // fresh (UBO, BG) pair.
         { binding: 17, resource: bCubeDepth },
+        // Slice 5d Batch 153 — Forward+ clustered lighting bindings.
+        // Active dispatcher's buffers when `options.clusteredLighting`
+        // is wired through (SceneRenderer's _dispatchClusteredLighting
+        // hook); per-device placeholders otherwise. Identity is part
+        // of `resKey` so toggling clustered lighting allocates a fresh
+        // (UBO, BG) pair.
+        { binding: 18, resource: { buffer: bClusterLights } },
+        { binding: 19, resource: { buffer: bClusterAABBs } },
+        { binding: 20, resource: { buffer: bClusterCount } },
+        { binding: 21, resource: { buffer: bClusterIndices } },
+        { binding: 22, resource: { buffer: bClusterParams } },
       ],
     });
     cached = { buffer: ub, bindGroup: bg };
