@@ -928,35 +928,82 @@ fn tonemapAndGamma(color: vec3<f32>) -> vec3<f32> {
   return pow(mapped, vec3<f32>(1.0 / 2.2));
 }
 
+// Raw screen-space tangent direction + UV-jacobian determinant for the
+// tangent-less normal-mapping fallback (Slice 5d Batch 159). MUST be called
+// from uniform control flow — it contains derivative built-ins (dpdx/dpdy),
+// which WGSL forbids in non-uniform control flow. `perturbNormal` is reached
+// through non-uniform branches (the double-sided `frontFacing` flip, the
+// unlit early-out), so the derivatives can't live inside it; instead this is
+// invoked once at the uniform entry of `fragmentMain` (mirroring the hoisted
+// `edgePixelStep = fwidth(...)`) and the result is passed down.
+//
+// The formula is WebGL's computeTangent() in MaterialStageFS.glsl (the
+// glTF-sample-viewer method); the orthogonalization + handedness happen in
+// `perturbNormal` so the two backends agree on the normal-map green-channel
+// sign and the WebGL↔WebGPU diff over a tangent-less asset stays tight.
+// Returns xyz = raw tangent direction (pre-orthogonalization, pre-divide),
+// w = UV-jacobian determinant (used both to finish the divide and to detect
+// degenerate UV gradients).
+fn deriveTangentRaw(posEC: vec3<f32>, uv: vec2<f32>) -> vec4<f32> {
+  let texDx = dpdx(uv);
+  let texDy = dpdy(uv);
+  let det = texDx.x * texDy.y - texDy.x * texDx.y;
+  let tRaw = texDy.y * dpdx(posEC) - texDx.y * dpdy(posEC);
+  return vec4<f32>(tRaw, det);
+}
+
 fn perturbNormal(nEC: vec3<f32>, tEC: vec3<f32>, bEC: vec3<f32>,
-                 normalMap: vec3<f32>, scale: f32) -> vec3<f32> {
+                 normalMap: vec3<f32>, scale: f32,
+                 derivedTangent: vec4<f32>) -> vec3<f32> {
   let N = normalize(nEC);
-  // Robustness guard (Slice 5d Batch 153) — a glTF primitive can carry
-  // a normal texture WITHOUT precomputed TANGENT attributes. The vertex
-  // path computes `tangentEC = normalize(normalMatrix * tangentMC)`; for
-  // an absent/zero tangent accessor that is `normalize(vec3(0))` → NaN,
-  // so the tangent/bitangent reaching this function are NaN (not zero).
-  // A NaN tangent frame collapses the returned vector to a degenerate
-  // normal, which then zeroes every `dot(N, L)` downstream — breaking
-  // the sun lighting (silently at night), CSM, point-light receive, AND
-  // the new Forward+ clustered lighting consumer. Fall back to the
-  // geometric normal (skip tangent-space perturbation) when the tangent
-  // frame is missing OR non-finite.
-  //
-  // NaN-safe: `length(NaN)` is NaN, and `NaN > 1e-4` is false, so the
-  // `!(len > 1e-4)` form catches BOTH the zero-length case (len == 0)
-  // AND the NaN case. A plain `len < 1e-4` would miss NaN entirely
-  // (`NaN < 1e-4` is also false) — the bug this guard originally had.
-  let tlen = length(tEC);
-  let blen = length(bEC);
-  if (!(tlen > 1e-4) || !(blen > 1e-4)) {
-    return N;
-  }
+
+  // Decode the tangent-space normal once — shared by whichever tangent
+  // frame we end up using below.
   var tn = normalMap * 2.0 - vec3<f32>(1.0);
   tn = vec3<f32>(tn.xy * scale, tn.z);
   tn = normalize(tn);
-  let T = tEC / tlen;
-  let B = bEC / blen;
+
+  // ── Screen-space derivative tangent frame (Slice 5d Batch 159) ──────────
+  // `derivedTangent` is the raw tangent + UV-jacobian determinant computed
+  // by `deriveTangentRaw` at the uniform entry of `fragmentMain`. This is
+  // the fallback for the case diagnosed in Batch 153: a glTF primitive can
+  // declare a normal texture WITHOUT a TANGENT vertex accessor. The vertex
+  // path then computes `tangentEC = normalize(normalMatrix * tangentMC)`
+  // over a zero tangent → `normalize(vec3(0))` → NaN, so the tEC/bEC
+  // reaching this function are NaN (not zero). Batch 153 fell back to the
+  // flat geometric normal (lighting stayed correct but lost all normal-map
+  // surface detail); this orthogonalizes the derived tangent against N and
+  // takes `B = cross(N, T)` — byte-for-byte WebGL's computeTangent path —
+  // so the detail is preserved with matching handedness. No derivatives
+  // here: they were already taken in uniform control flow upstream.
+  let det = derivedTangent.w;
+  let tRaw = derivedTangent.xyz / det;
+  let Td = normalize(tRaw - N * dot(N, tRaw));
+  let Bd = normalize(cross(N, Td));
+
+  // NaN-safe degeneracy test: `length(NaN)` is NaN and `NaN > 1e-4` is
+  // false, so `!(len > 1e-4)` catches BOTH the zero-length case (len == 0)
+  // AND the NaN case. A plain `len < 1e-4` would miss NaN (`NaN < 1e-4` is
+  // also false) — the bug the Batch 153 guard originally had.
+  let tlen = length(tEC);
+  let blen = length(bEC);
+  var T: vec3<f32>;
+  var B: vec3<f32>;
+  if (!(tlen > 1e-4) || !(blen > 1e-4)) {
+    // No usable vertex tangent — use the derived screen-space frame.
+    // Guard degenerate UV derivatives (det ≈ 0 → tRaw is non-finite): with
+    // no UV gradient there is no recoverable tangent, so keep the flat
+    // geometric normal (the Batch 153 behavior) rather than emit a NaN.
+    if (!(abs(det) > 1e-10)) {
+      return N;
+    }
+    T = Td;
+    B = Bd;
+  } else {
+    // Precomputed vertex tangent frame present + finite.
+    T = tEC / tlen;
+    B = bEC / blen;
+  }
   return normalize(T * tn.x + B * tn.y + N * tn.z);
 }
 
@@ -1857,6 +1904,20 @@ struct FragOutput {
   // edge stage is disabled — negligible (one fwidth, ~2 ALU).
   let edgePixelStep = fwidth(abs(input.positionEC.z));
 
+  // Hoist the screen-space derivative tangent to uniform control flow for
+  // the SAME reason as edgePixelStep above (Slice 5d Batch 159): the
+  // tangent-less normal-map fallback in perturbNormal needs dpdx/dpdy of
+  // position + UV, but perturbNormal is reached through non-uniform
+  // branches (the double-sided `frontFacing` normal flip, the unlit
+  // early-out), so WGSL rejects derivative built-ins inside it. Compute the
+  // raw frame here at the uniform entry and thread it down. Two UV sets:
+  // the base normal map uses `normalUV`, the (rare) clearcoat normal uses
+  // `baseColorUV` to mirror its existing sampling site. Cost is a handful
+  // of ALU per fragment even when no normal texture is bound — negligible,
+  // and unconditional evaluation is required for the uniformity guarantee.
+  let normalDerivTangent = deriveTangentRaw(input.positionEC, normalUV(input));
+  let clearcoatDerivTangent = deriveTangentRaw(input.positionEC, baseColorUV(input));
+
   // AUDIT_2026_05_02 A.6 — model clipping planes. Eye-space distance
   // test: planes are uploaded eye-space transformed (see
   // `WebGPUClippingPlaneCollection.ts:103-119`), and `input.positionEC`
@@ -1979,7 +2040,8 @@ struct FragOutput {
   if (hasFlag(flags, FLAG_IS_DOUBLE_SIDED) && !input.frontFacing) { N = -N; }
   if (hasFlag(flags, FLAG_HAS_NORMAL_TEXTURE)) {
     let nm = textureSampleLevel(normalTexture, normalSampler, normalUV(input), 0.0).rgb;
-    N = perturbNormal(N, input.tangentEC, input.bitangentEC, nm, material.normalScale);
+    N = perturbNormal(N, input.tangentEC, input.bitangentEC, nm, material.normalScale,
+                      normalDerivTangent);
   }
 
   // ── Material properties ───────────────────────────────────────────────────
@@ -2287,6 +2349,7 @@ struct FragOutput {
     let N_cc = perturbNormal(
       input.normalEC, input.tangentEC, input.bitangentEC,
       ccNormalTex.rgb, material.clearcoatFactors.z,
+      clearcoatDerivTangent,
     );
     let NdotH_cc = max(dot(N_cc, H), 0.0);
     let NdotV_cc = max(dot(N_cc, V), 0.001);

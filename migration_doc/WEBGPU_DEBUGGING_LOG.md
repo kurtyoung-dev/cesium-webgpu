@@ -9074,3 +9074,41 @@ Fixing 157.1 made the `phong` / `phongTextured` shaders compile **for the first 
 ### Note
 
 This closes the observation #1 logged in Bug 156.1. Any future appearance that resolves to `phong` / `phongTextured` (geometry with normals, no per-vertex texcoords) now renders lit + clustered. The compressed-attribute decode is the load-bearing fix; the two WGSL fixes were latent bugs the decode exposed.
+
+---
+
+## Batch 159 — Screen-space derivative tangents for tangent-less normal-mapped models (resolves NEW-MODEL-TANGENT-GENERATION)
+
+**Bug:** 159.1 (WGSL uniformity error hit during implementation)
+**File(s) affected:** `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` (`perturbNormal`, new `deriveTangentRaw`, `fragmentMain` entry)
+
+### What changed (feature, not a bug)
+
+Batch 153 made `perturbNormal` NaN-safe by falling back to the **flat geometric normal** when a glTF primitive declares a normal texture but no `TANGENT` accessor (`GroundVehicle.glb`). That kept lighting correct but discarded all normal-map surface detail (the loose end tracked as `NEW-MODEL-TANGENT-GENERATION`). Batch 159 replaces the flat fallback with a **screen-space derivative tangent frame** — WebGL's `computeTangent()` formula from `MaterialStageFS.glsl`: `tRaw = dUV.y.y·dpdx(pos) − dUV.x.y·dpdy(pos)`, orthogonalized against N, `B = cross(N, T)`. Matching WebGL's exact formula (rather than a Schüler cotangent variant) keeps tangent **handedness** — the normal-map green-channel sign — identical across backends.
+
+### Bug 159.1 — `'dpdx' must only be called from uniform control flow`
+
+**Symptom:** First implementation put the `dpdx`/`dpdy` calls directly inside `perturbNormal`. Every Model PBR pipeline failed to compile: `Error while parsing WGSL: 'dpdx' must only be called from uniform control flow ... called by 'perturbNormal' from 'fragmentMain'` — 234+ device errors, model renders black/invalid pipeline. The probe caught it immediately (probe-first paid off).
+
+**Root cause:** WGSL forbids derivative built-ins outside uniform control flow. `perturbNormal` is reached through **non-uniform** branches — the double-sided `if (... && !input.frontFacing)` normal flip and the unlit early-out both make the call site non-uniform from Tint's perspective, even though the `FLAG_HAS_NORMAL_TEXTURE` gate itself is uniform.
+
+**Fix:** Hoist the derivatives to the **uniform entry** of `fragmentMain`, exactly as the pre-existing `edgePixelStep = fwidth(abs(input.positionEC.z))` is hoisted for the same reason. New helper `deriveTangentRaw(posEC, uv) -> vec4` (xyz = raw tangent, w = UV-jacobian det) is called once at function top for the base normal UV (`normalUV`) and once for the clearcoat UV (`baseColorUV`); the results are threaded into `perturbNormal` as a precomputed `vec4`. `perturbNormal` then does only orthogonalization + frame selection — no derivatives. The Batch 153 NaN-safe degeneracy test (`!(len > 1e-4)`) is retained; a `!(abs(det) > 1e-10)` guard keeps the flat normal when UV gradients vanish.
+
+### Verification
+
+`Tools/visual-regression/probe-model-tangentgen.mjs` (new) — WebGL vs WebGPU on GroundVehicle (tangent-less) + CesiumMilkTruck (tangent-having control). After the fix: **0 device errors**, both render.
+
+The WebGL↔WebGPU mismatch is NOT a usable signal here — the backends differ globally in tonemap/exposure/IBL/MSAA, putting ~40-52% of model pixels over any per-pixel threshold regardless of the tangent change (the tangent-having MilkTruck sits at ~52%, the irreducible floor). The fix signal came from a **same-backend A/B** (fixed build vs the flat fallback temporarily restored to `return N`):
+
+- GroundVehicle (tangent-less): **10.16%** of surface pixels changed, broad-distributed → restored normal-map detail.
+- MilkTruck (tangent-having control): **1.63%** (edge/AA run-to-run noise) → vertex-tangent path untouched, no regression.
+
+Output PNGs read directly: fixed GroundVehicle shows more pronounced panel/rivet shading than the flatter baseline, framing + surface character match the WebGL ground truth.
+
+### Files modified
+
+- `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` — new `deriveTangentRaw` helper; `perturbNormal` takes a precomputed `vec4` frame instead of computing derivatives; both call sites (base normal + clearcoat) + the `fragmentMain` entry hoist updated.
+
+### Probes
+
+- `Tools/visual-regression/probe-model-tangentgen.mjs` (new) — device-error + render guard on the derivative-fallback path (catches a future uniformity/compile regression). Header documents the same-backend A/B methodology for re-measuring the fix signal.

@@ -714,13 +714,17 @@ if (effects.clippingPolygonCount > 0u) {
 
 ---
 
-### NEW-MODEL-TANGENT-GENERATION — Derive tangents for normal-mapped primitives lacking a TANGENT accessor
+### ~~NEW-MODEL-TANGENT-GENERATION~~ — RESOLVED (Batch 159) — Derive tangents for normal-mapped primitives lacking a TANGENT accessor
 
-**What:** A glTF primitive may declare a normal texture WITHOUT a `TANGENT` vertex accessor (the spec permits the renderer to derive the tangent basis). Today the WebGPU vertex path computes `tangentEC = normalize(normalMatrix * tangentMC)`, which for an absent/zero tangent attribute is `normalize(vec3(0))` → NaN. Batch 153 added a NaN-safe guard in `perturbNormal` (`ModelPBRComplete.wgsl`) that falls back to the **geometric normal** when the tangent frame is missing/non-finite — this keeps lighting correct (sun + CSM + point-light + clustered) but loses normal-map surface detail. `GroundVehicle.glb` is a known asset that hits this path.
+**Resolved (Batch 159):** Option (b) shipped — screen-space derivative tangents in the WGSL FS. `perturbNormal` (`ModelPBRComplete.wgsl`) now derives a tangent basis from the screen-space derivatives of position + normal-map UV when the vertex tangent frame is missing/non-finite, instead of falling back to the flat geometric normal. The formula matches WebGL's `computeTangent()` in `MaterialStageFS.glsl` (the glTF-sample-viewer method): `tRaw = dUV.y.y·dpdx(pos) − dUV.x.y·dpdy(pos)`, orthogonalized against N, then `B = cross(N, T)` — so the two backends agree on tangent handedness (the normal-map green-channel sign).
 
-**Scope:** Generate tangents when the accessor is absent — either (a) MikkTSpace-style CPU generation at load time in the glTF loader (parity with upstream's tangent generation), or (b) screen-space derivative tangents in the WGSL FS (`dpdx`/`dpdy` of position + UV) as a cheaper approximation. Option (b) is self-contained in the shader; option (a) matches WebGL output bit-for-bit. Cross-reference the WebGL path's tangent handling for parity (Principle 5).
+The derivative built-ins (`dpdx`/`dpdy`) are hoisted to a new helper `deriveTangentRaw(posEC, uv)` invoked at the **uniform entry** of `fragmentMain` (mirroring the existing hoisted `edgePixelStep = fwidth(...)`), then threaded down into `perturbNormal` as a precomputed `vec4` (xyz = raw tangent, w = UV-jacobian det). WGSL forbids derivatives in non-uniform control flow, and `perturbNormal` is reached through non-uniform branches (the double-sided `frontFacing` flip + the unlit early-out) — calling them inside it errors with `'dpdx' must only be called from uniform control flow` (Bug 159.1). The Batch 153 NaN-safe degeneracy test is retained, plus a det≈0 guard that keeps the flat normal when UV gradients vanish.
 
-**Why deferred:** Batch 153's geometric-normal fallback removes the correctness bug (no more NaN-zeroed lighting); restoring normal-map detail on tangent-less assets is a quality improvement, not a correctness fix. See WEBGPU_DEBUGGING_LOG.md Bug 153.1 for the full diagnosis.
+**Verification:** `Tools/visual-regression/probe-model-tangentgen.mjs` (WebGL ground-truth + GroundVehicle/MilkTruck) — 0 device errors, both render. Same-backend A/B vs the Batch 153 flat fallback: GroundVehicle (tangent-less) 10.16% of surface pixels changed (broad-distributed normal-map detail restored); MilkTruck (tangent-having control) 1.63% (edge/AA noise — vertex-tangent path untouched, no regression).
+
+**Original deferral context (Batch 153):** A glTF primitive may declare a normal texture WITHOUT a `TANGENT` vertex accessor (the spec permits the renderer to derive the basis). The WebGPU vertex path computes `tangentEC = normalize(normalMatrix * tangentMC)`, which for an absent/zero tangent attribute is `normalize(vec3(0))` → NaN; Batch 153 added the NaN-safe geometric-normal fallback in `perturbNormal` to stop the NaN from zeroing all lighting, at the cost of normal-map detail. `GroundVehicle.glb` is the canonical asset hitting this path. See WEBGPU_DEBUGGING_LOG.md Bug 153.1 + 159.1.
+
+> Option (a) — MikkTSpace-style CPU tangent generation at load time, matching WebGL bit-for-bit — remains a possible future upgrade if a tangent-less asset ever needs handedness independent of screen-space orientation, but the derivative method is the standard self-contained approach and is sufficient.
 
 ---
 
