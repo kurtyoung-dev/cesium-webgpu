@@ -2879,7 +2879,9 @@ Attempted bridge enablement to confirm what still breaks. Test result: with `con
 - `WebGPUOIT.ts` and `WebGPUInvertClassification.ts` — already accept `multisample` via descriptor but their callers pin `count: 1`.
 - `copyTextureToTexture` paths that move depth out of MSAA-source framebuffers need blit-via-pipeline fallback.
 
-### NEW-ORBIT-RENDER-AUDIT-2026-05-13 — Open audit cluster (orbit-rendering polish)
+### ~~NEW-ORBIT-RENDER-AUDIT-2026-05-13~~ — RESOLVED (all four sub-items shipped; doc-synced Batch 160)
+
+> **Status (Batch 160 doc-sync):** all four audit items are now addressed. #1 bloom + #3 dusk-terminator resolved/verified in Batch 160 (sub-entries below); #2 clouds mostly-shipped via the Phase 6 volumetric work (2026-05-13, see NEW-ORBIT-PHASE-6-VOLUMETRIC-CLOUDS below); #4 atmosphere reflectivity confirmed shipping. The discrete sub-entries are kept below for history.
 
 User-reported audit comparing real orbital photography (ISS, Earthrise from the Moon) to our WebGPU render surfaced four issues:
 
@@ -2890,29 +2892,25 @@ User-reported audit comparing real orbital photography (ISS, Earthrise from the 
 
 **Tracked as discrete work items** (see [CELESTIAL_ATMOSPHERE_DESIGN.md §13](CELESTIAL_ATMOSPHERE_DESIGN.md) for full design):
 
-#### NEW-ORBIT-BLOOM-ALTITUDE-GATE — Open (immediate, 1-2 hours)
+#### ~~NEW-ORBIT-BLOOM-ALTITUDE-GATE~~ — RESOLVED (Session 65 Batch 22; doc-synced Batch 160)
 
 **Symptom:** Bloom halo around Earth disk visible at GEO views (Hello World, Star Burst, Sentinel-2). Real orbit photography shows essentially zero bloom on the disk.
 
-**Fix:** Add altitude-curve `intensity *= smoothstep(EARTH_RADIUS, GROUND_FLOOR, cameraHeight)` in `WebGPUBloomEffect.ts` uniform pack. Bloom fades from 1.0 at sea level to 0.0 above 1 Earth radius altitude.
+**Shipped:** `WebGPUBloomEffect.ts::applyAltitudeGate(cameraHeightMeters)` multiplies the base bloom intensity by a smoothstep curve from `1.0` at `altitudeGateMinMeters` (default 100 km) to `altitudeGateOrbitFloor` (default 0.15) at `altitudeGateMaxMeters` (default 1 Earth radius = 6 378 137 m). Called per-frame from `WebGPUSceneRenderer.ts:2734-2735` with `camera.positionCartographic.height`. The 0.15 floor (rather than the originally-scoped 0.0) deliberately preserves a faint Rayleigh-limb haze that reads as real-camera bloom; set `altitudeGateOrbitFloor: 0` to fully kill orbit bloom, or `enableAltitudeGate: false` for pre-Batch-22 behavior. A paired `WebGPUAutoExposure.ts::applyAltitudeGate` (Batch 39) blends adaptive exposure toward neutral at orbit. See [CELESTIAL_ATMOSPHERE_DESIGN.md §13.1](CELESTIAL_ATMOSPHERE_DESIGN.md).
 
-**Effort:** 30-60 min.
+#### ~~NEW-ORBIT-OCEAN-SPECULAR-LIMB-ATTENUATION~~ — RESOLVED (specular gate shipped; doc-synced Batch 160)
 
-#### NEW-ORBIT-OCEAN-SPECULAR-LIMB-ATTENUATION — Open (immediate, 1-2 hours)
+**Symptom:** A too-bright sun-side ocean glare patch persisting at orbit altitudes.
 
-**Symptom:** `GlobeTerrain.wgsl::computeEnhancedOcean` adds forward-scatter `pow(VdotL, 4.0) × 0.15` that produces a too-bright sun-side glare patch at orbit altitudes (visible in lower-right of Hello World WebGPU render).
+**Shipped:** `GlobeTerrain.wgsl::computeEnhancedOcean` gates the specular sun-glint term with an orbit-altitude attenuation `orbitAttenuation = 1 - smoothstep(100 km, 1 Earth radius, cameraAltitude)` (derived from `length(encodedCameraHigh + encodedCameraLow) - 6378137`), fading the GGX glint out above ~100 km (GlobeTerrain.wgsl ~L2010-2062). Note: the entry's literal target — the `pow(VdotL, 4.0) × 0.15` term in `computeSubsurfaceScattering` — is **dead code** (no caller; flagged "present but currently unused" in GlobeFS.glsl L480 + GlobeTerrain L3161), so there was never a live glare from it; the actual visible orbit glare was the specular term, which is the one now gated.
 
-**Fix:** Attenuate the `scatter` term by `1.0 - smoothstep(100_000, 1_000_000, cameraHeight)` so the limb-grazing specular fades out as the camera rises above ~100 km.
-
-**Effort:** 30-60 min.
-
-#### NEW-ORBIT-DUSK-TERMINATOR-PROBE — Open (immediate, 1 hour)
+#### ~~NEW-ORBIT-DUSK-TERMINATOR-PROBE~~ — RESOLVED (Batch 24; rebuilt + genuinely-passing Batch 160)
 
 **Goal:** Canonical regression probe with the terminator crossing the viewport. Validates `lightDirectionEC` correctness (Batches 17/18), `computeDayNightFade` math, and `nightAmbient` floor.
 
-**Implementation:** `Tools/visual-regression/probe-dusk-terminator.mjs` sets clock to vernal equinox + camera at 12 Mm over `(0°N, 90°E)`. Captures both WebGL + WebGPU; per-channel pixel-ratio assert: unlit hemisphere must be `> 95%` darker than lit hemisphere.
+**Shipped:** `Tools/visual-regression/probe-dusk-terminator.mjs` — vernal-equinox clock (2026-03-20 12:00 UTC, sub-solar at 0°N/0°E), camera at 12 Mm over `(0°N, 90°E)` looking nadir so the terminator runs down the viewport. Direction-agnostic brighter:darker hemisphere luminance assert (> 1.3:1) + WebGPU device-error check.
 
-**Effort:** 30-60 min.
+**Batch 160 fix (the real remaining work):** the original Batch 24 probe drove the Sandcastle "Hello World" gallery page through a renderer-override shim (`new Viewer(...)` → `Viewer.createAsync(...)`). That shim never reliably captured the *async* WebGPU viewer, so the WebGPU globe rendered as **empty space** — the probe was silently never exercising WebGPU (it reported 1.12:1 on a blank frame). Rebuilt onto the canonical CesiumViewer driver (`?renderer=` + global `window.viewer` + `PROBE_BASE`), the same robust pattern the other probes use. Now both backends render the globe with a clear terminator and pass: **WebGL 1.48:1, WebGPU 1.43:1, 0 device errors** — night-side correctness genuinely verified on WebGPU.
 
 #### NEW-ORBIT-PHASE-4-ATMOSPHERIC-CONDITIONS-FINISH — FIXED 2026-05-13 (Session 65 Batch 42)
 
