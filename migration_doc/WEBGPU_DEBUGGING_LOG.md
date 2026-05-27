@@ -8989,3 +8989,52 @@ The `!(len > 1e-4)` form is deliberate: a plain `len < 1e-4` misses NaN entirely
 ### Note for future normal-mapped-model work
 
 Any model whose primitives lack TANGENT data and rely on the renderer to derive tangents will hit this path. The long-term fix is to **generate tangents** (MikkTSpace or screen-space derivative tangents) in the vertex/loader path; until then the geometric-normal fallback keeps lighting correct (just without normal-map detail) instead of producing NaN.
+
+---
+
+## Batch 156 — First-site primitive pipelines (phong / basic / textured) render BLACK under MSAA scene FB
+
+**Bug:** 156.1
+**File(s) affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js` (`makePipeline` closure in the first shader-module/pipeline site)
+
+### Symptom
+
+A `PerInstanceColorAppearance` primitive (or any geometry routed through `selectWebGPUShader` → `phong` / `phongTextured` / `basic` / `basicTextured`) renders fully BLACK with a flood of validation errors:
+
+```
+Attachment state of [RenderPipeline "Primitive pipeline (cull=back)"] is not
+compatible with [RenderPassEncoder "Scene Framebuffer Render Pass"].
+[pass] expects an attachment state of { colorTargets: [0=BGRA8Unorm, 1=RGBA16Float], sampleCount: 4 ... }
+```
+
+Surfaced while verifying Forward+ clustered lighting on the Phong primitive path (the clustered code was a red herring — the primitive never rendered at all, with clustered lighting OFF too).
+
+### Root cause
+
+The scene framebuffer render pass runs at `sampleCount: 4` (default scene MSAA). The Mat* / PBR material pipeline site (`createMaterialPipelineAndCache`) was given a `multisample: { count: context._msaaSamples }` field in Batch 132 to match. The **first** pipeline site — `makePipeline`, used for the `selectWebGPUShader`-based shaders (phong, phongTextured, basic, basicTextured) — was never given that fix, so its pipelines defaulted to `sampleCount: 1`. A sampleCount-1 pipeline is incompatible with the sampleCount-4 pass → WebGPU drops the draw → black.
+
+Batch 132's comment even predicted this class of failure ("'Attachment state not compatible' fires the moment any MaterialAppearance primitive renders") but only patched the material site.
+
+### Fix
+
+Add the same MSAA-matching `multisample` field to the first-site `makePipeline` descriptor:
+
+```javascript
+multisample:
+  (context._msaaSamples ?? 1) > 1 ? { count: context._msaaSamples } : undefined,
+```
+
+After the fix the `PerInstanceColorAppearance` box renders (probe mean brightness 0 → 420) with 0 device errors.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js` — `makePipeline` gains the MSAA `multisample` field.
+
+### Probes
+
+- `Tools/visual-regression/probe-phong-render.mjs` (new) — adds one `PerInstanceColorAppearance` box, asserts it renders non-black with 0 device errors. Guards the MSAA fix.
+
+### Related observations (NOT fixed here — separate follow-ups)
+
+1. **`PerInstanceColorAppearance` (flat:false) routes to the unlit `basic` shader, not `phong`.** The diag (`__refreshLog`) showed the box's `_webgpuShaderType` is `basic` — `selectWebGPUShader` saw `hasNormals = false` for the combined per-instance geometry. So `flat:false` (which should be lit) renders unlit on the WebGPU primitive path. Worth a dedicated investigation (geometry-attribute plumbing through `Primitive.combineGeometry` → `firstGeometry.attributes.normal`).
+2. **The `phong` / `phongTextured` WGSL shaders are a narrow path** — common lit appearances route to either Mat\* (MaterialAppearance) or `basic` (PerInstanceColorAppearance), so the Forward+ clustered-lighting consumer added to the Phong shaders (Batch 156) is correct-by-construction (identical pattern to the 19 verified Mat\*Lit shaders) but was not runtime-exercised by a probe, because constructing a primitive that resolves to `phong` is non-trivial given observation #1.

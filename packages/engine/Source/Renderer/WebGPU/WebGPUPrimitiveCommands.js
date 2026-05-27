@@ -1095,10 +1095,24 @@ function createWebGPUCommands(
     // in a follow-up wire-up step that also swaps the vertex buffer
     // packer to emit `compressedAttributes` directly.
     const shaderDefines = 0;
-    const processedCode = preprocessShaderSource(
-      shaderInfo.code,
-      shaderDefines,
-    );
+    // Slice 5d Batch 156 — prepend the Forward+ clustered lighting chunk to
+    // the lit Phong primitive shaders (phong / phongTextured), same as the
+    // Mat*Lit path in createMaterialPipelineAndCache. Gated on the shader
+    // actually calling evalClusteredLights( so the chunk only lands where
+    // it's used (not on basic / pick / flat shaders). Effects BGL is at
+    // group 3 when a texture group occupies group 2, else group 2.
+    let phongCode = shaderInfo.code;
+    if (
+      isPhongShader(shaderInfo.type) &&
+      phongCode.includes("evalClusteredLights(")
+    ) {
+      const clGroup = needsTexture ? 3 : 2;
+      phongCode = `${substituteClusteredLightingGroup(
+        ClusteredLightingChunk,
+        clGroup,
+      )}\n${phongCode}`;
+    }
+    const processedCode = preprocessShaderSource(phongCode, shaderDefines);
     cache.shaderModule = WebGPUShaderModule.create({
       device: device,
       code: processedCode,
@@ -1210,6 +1224,19 @@ function createWebGPUCommands(
           depthWriteEnabled: !translucent,
           depthCompare: "less-equal",
         },
+        // Slice 5d Batch 156 — match the scene FB MSAA sample count, same
+        // fix the material pipeline site got in Batch 132. Without it this
+        // first-site pipeline (phong / phongTextured / basic / basicTextured
+        // — i.e. PerInstanceColorAppearance + basic ColorAppearance) defaults
+        // to sampleCount=1 against the MSAA=4 scene FB pass, so WebGPU
+        // rejects it with "Attachment state not compatible with Scene
+        // Framebuffer Render Pass" and the primitive renders black. The
+        // Batch 132 fix only covered createMaterialPipelineAndCache (Mat*);
+        // this site (selectWebGPUShader-based shaders) was missed.
+        multisample:
+          (context._msaaSamples ?? 1) > 1
+            ? { count: context._msaaSamples }
+            : undefined,
       });
     // Session 65 Batch 3 (2026-05-11): use BACK-face culling when the
     // appearance is closed (Box, Sphere, Ellipsoid, Cylinder — every

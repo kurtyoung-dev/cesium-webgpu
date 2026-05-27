@@ -420,7 +420,15 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         shadowFactor = computeShadowFactor(input.eyePosition);
     }
     let lighting = ambient + (diffuse + specular) * shadowFactor;
-    var finalColor = vec4<f32>(input.color.rgb * lighting, input.color.a);
+    // Slice 5d Batch 156 — additive Forward+ clustered lighting (eye-space
+    // inputs; baseColor = per-vertex color; F0/roughness neutral dielectric
+    // — Phong has no PBR material). Early-outs when no clustered lights.
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, normal, viewDir,
+        vec3<f32>(0.04), 0.5, input.color.rgb,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
+    var finalColor = vec4<f32>(input.color.rgb * lighting + clusteredContrib, input.color.a);
 
     // FEAT-GAP-09 — Aerial-perspective fog blend. Same math as the
     // PhongTexturedColor reference (Session 34): sample the pre-integrated
