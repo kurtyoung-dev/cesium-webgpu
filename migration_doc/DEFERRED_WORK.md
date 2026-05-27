@@ -2689,9 +2689,11 @@ That narrowed the bug to the post-mix lighting block, which led to the `sunDir` 
 
 **Verification:** WebGPU Bathymetry probe now shows 97.0% colored pixels (was 7.4%), proper blue-ocean ramp rendering with hillshade lighting visible. Hello World + Globe Materials regression-checked: no degradation.
 
-### NEW-VR2-5-POLYLINES-ON-3DTILES-OVERSATURATION — Open
+### NEW-VR2-5-POLYLINES-ON-3DTILES-OVERSATURATION — Does NOT reproduce as of Batch 161 (likely resolved; probe added, pending full-load re-confirm)
 
-**Symptom:** [Polylines on 3D Tiles.html](Apps/Sandcastle/gallery/Polylines%20on%203D%20Tiles.html) on WebGPU renders polygon overlays as bright cyan/red with visible scanline patterns, polylines bleed through walls/buildings, BIM building looks bleached.
+> **Batch 161 reproduction result:** `Tools/visual-regression/probe-vr2-polylines-3dtiles.mjs` loads the BIM Power Plant tileset (ion asset 2464651) + a `clampToGround` polyline with `classificationType: CESIUM_3D_TILE` in both backends. The described artifact is **gone**: WebGPU shows NO saturated cyan/red panels and NO z-fight scanlines — saturated-cyan px 1116 (WebGL 1210), saturated-red px 4 (WebGL 204), **0 device errors**. The PNGs render equivalently (structure/pipes clean, the colorful ground patch is identical in BOTH backends → tileset content, not a WebGPU artifact). Likely fixed by intervening classification / depth-sample work (the doc predates many such batches). **Caveat:** tileset reported `ready:false` (BIM tilesets stream continuously) and the polyline coords approximated the demo — a longer-load, demo-exact re-confirm should precede a hard close. Probe kept as a regression guard (needs network + ion access).
+
+**Original symptom (2026-05-13):** [Polylines on 3D Tiles.html](Apps/Sandcastle/gallery/Polylines%20on%203D%20Tiles.html) on WebGPU renders polygon overlays as bright cyan/red with visible scanline patterns, polylines bleed through walls/buildings, BIM building looks bleached.
 
 **Side-by-side diagnostic captured 2026-05-13:**
 
