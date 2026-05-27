@@ -175,7 +175,7 @@ fn sampleShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
     for (var x: i32 = -1; x <= 1; x++) {
         for (var y: i32 = -1; y <= 1; y++) {
             let offset = vec2<f32>(f32(x), f32(y)) * texelSize;
-            shadow += textureSampleCompare(shadowDepthTex, shadowCompSampler, uv + offset, depth);
+            shadow += textureSampleCompareLevel(shadowDepthTex, shadowCompSampler, uv + offset, depth);
         }
     }
     return shadow / 9.0;
@@ -305,7 +305,7 @@ fn computeShadowFactor(eyePos: vec3<f32>) -> f32 {
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || coord.z > 1.0) {
             visibility = 1.0;
         } else {
-            visibility = textureSampleCompare(shadowDepthTex, shadowCompSampler, uv, coord.z);
+            visibility = textureSampleCompareLevel(shadowDepthTex, shadowCompSampler, uv, coord.z);
         }
     }
     return mix(effects.shadowDarkness, 1.0, visibility);
@@ -363,7 +363,13 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
             minDist = min(minDist, dist);
         }
         if (minDist < effects.clippingEdgeWidth) {
-            return effects.clippingEdgeColor;
+            // Slice 5d Batch 157 — emit a full FragOutput (latent bare-vec4
+            // type mismatch, dormant until phong routing was fixed). See
+            // PrimitivePhongColor.wgsl for the rationale.
+            var edgeOut: FragOutput;
+            edgeOut.color = effects.clippingEdgeColor;
+            edgeOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);
+            return edgeOut;
         }
     }
 

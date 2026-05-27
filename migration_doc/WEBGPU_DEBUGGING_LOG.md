@@ -9038,3 +9038,39 @@ After the fix the `PerInstanceColorAppearance` box renders (probe mean brightnes
 
 1. **`PerInstanceColorAppearance` (flat:false) routes to the unlit `basic` shader, not `phong`.** The diag (`__refreshLog`) showed the box's `_webgpuShaderType` is `basic` — `selectWebGPUShader` saw `hasNormals = false` for the combined per-instance geometry. So `flat:false` (which should be lit) renders unlit on the WebGPU primitive path. Worth a dedicated investigation (geometry-attribute plumbing through `Primitive.combineGeometry` → `firstGeometry.attributes.normal`).
 2. **The `phong` / `phongTextured` WGSL shaders are a narrow path** — common lit appearances route to either Mat\* (MaterialAppearance) or `basic` (PerInstanceColorAppearance), so the Forward+ clustered-lighting consumer added to the Phong shaders (Batch 156) is correct-by-construction (identical pattern to the 19 verified Mat\*Lit shaders) but was not runtime-exercised by a probe, because constructing a primitive that resolves to `phong` is non-trivial given observation #1.
+
+---
+
+## Batch 157 — `PerInstanceColorAppearance` (flat:false) rendered UNLIT + latent phong shader compile bugs
+
+**Bug:** 157.1 (unlit routing), 157.2 + 157.3 (latent phong WGSL compile errors)
+**File(s) affected:** `WebGPUPrimitiveCommands.js`, `PrimitivePhongColor.wgsl`, `PrimitivePhongTexturedColor.wgsl`
+
+### 157.1 — flat:false PerInstanceColorAppearance routes to the unlit `basic` shader
+
+**Symptom:** a `PerInstanceColorAppearance({ flat: false })` primitive renders flat/unlit on WebGPU (should be Blinn-Phong lit). Diagnostic showed its `_webgpuShaderType` was `basic`, not `phong`.
+
+**Root cause:** `Primitive` runs `GeometryPipeline.compressVertices` by default, which oct-encodes the normal (+ st / tangent / bitangent) into a single `compressedAttributes` slot and RTE-splits position into `position3DHigh` / `position3DLow`. The combined geometry's attribute keys are `[batchId, position3DHigh, position3DLow, position2DHigh, position2DLow, compressedAttributes]` — there is **no literal `normal` attribute**. The first-site shader selector `selectWebGPUShader(firstGeometry.attributes)` checks `attributes.normal.values`, finds none → `hasNormals = false` → falls back to the unlit `basic` shader. The material path (`createMaterialAndQueueCommands`) was unaffected because it calls `ensureUncompressedAttributes(geom)` (which oct-decodes the normal back) BEFORE its shader selection; the first site only decoded inside its per-geometry loop, which runs AFTER `selectWebGPUShader`.
+
+**Fix:** call `ensureUncompressedAttributes(firstGeometry)` immediately before `selectWebGPUShader` at the first site. The decoded `normal` attribute is then visible → `phong` is selected. (Idempotent; the per-geometry loop's later call is a no-op.)
+
+### 157.2 / 157.3 — latent phong shader WGSL compile errors (dormant until 157.1 fixed)
+
+Fixing 157.1 made the `phong` / `phongTextured` shaders compile **for the first time** (nothing had routed to them before — everything went to `basic` or the Mat\* shaders). Two latent WGSL errors surfaced:
+
+1. **`return effects.clippingEdgeColor;`** in the clipping-edge highlight path returned a bare `vec4<f32>` from a function whose signature is `-> FragOutput`. Fixed to construct a `FragOutput` (edge color in slot 0, `vec4(normalize(worldNormal), 0.5)` in the G-buffer slot 1).
+2. **`textureSampleCompare(...)` in non-uniform control flow** (inside the `sampleShadowPCF` loop + the CSM sample). WGSL forbids implicit-derivative `textureSampleCompare` outside uniform control flow. Fixed to `textureSampleCompareLevel(...)` (explicit LOD, no uniformity requirement) — the same call the Model PBR / Mat\*Lit CSM helpers already use.
+
+### Files modified
+
+- `WebGPUPrimitiveCommands.js` — `ensureUncompressedAttributes(firstGeometry)` before `selectWebGPUShader`.
+- `PrimitivePhongColor.wgsl` + `PrimitivePhongTexturedColor.wgsl` — clipping-edge `FragOutput` emit + `textureSampleCompareLevel`.
+
+### Verification (0 device errors)
+
+- `probe-clustered-phong.mjs`: a flat:false PerInstanceColorAppearance box now routes to lit `phong`, and the Forward+ clustered point light produces delta **+543** over 99% of the box region (was 0 / unlit `basic` before). This also finally exercises the Batch 156 phong clustered-lighting consumer end-to-end.
+- Regression: matsweep (7 materials), litmat (group 2, +3), Model PBR (group 3, +23) all still pass.
+
+### Note
+
+This closes the observation #1 logged in Bug 156.1. Any future appearance that resolves to `phong` / `phongTextured` (geometry with normals, no per-vertex texcoords) now renders lit + clustered. The compressed-attribute decode is the load-bearing fix; the two WGSL fixes were latent bugs the decode exposed.

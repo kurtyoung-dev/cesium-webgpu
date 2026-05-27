@@ -1056,6 +1056,18 @@ function createWebGPUCommands(
 
   // ── Shader selection ──
   const firstGeometry = geometries[0];
+  // Slice 5d Batch 157 — decode oct-encoded vertex attributes BEFORE
+  // selecting the shader. `Primitive` runs `GeometryPipeline.compressVertices`
+  // by default, which packs the normal (+ st / tangent / bitangent) into a
+  // single `compressedAttributes` slot and RTE-splits position into
+  // position3DHigh/Low. Without this decode, `selectWebGPUShader` sees no
+  // literal `normal` attribute and falls back to the UNLIT `basic` shader —
+  // so a flat:false PerInstanceColorAppearance (or any lit non-material
+  // appearance) rendered with no lighting. The per-geometry loop below
+  // already calls this, but that runs AFTER shader selection; the material
+  // path (createMaterialAndQueueCommands) decodes before its selection, so
+  // it was unaffected. ensureUncompressedAttributes is idempotent.
+  ensureUncompressedAttributes(firstGeometry);
   const shaderInfo = selectWebGPUShader(firstGeometry.attributes);
   const vertexLayout = getVertexLayoutForShader(shaderInfo.type);
 
