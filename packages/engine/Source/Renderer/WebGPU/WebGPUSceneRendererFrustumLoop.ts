@@ -225,6 +225,40 @@ export function executeFrustumLoop(
     host._updateFrustumUniforms(uniformState, near, far, scene);
     host._currentFrustumIndex = i;
 
+    // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — publish the
+    // per-slice projection so depth-sample classifiers can recover
+    // eye-space against the CORRECT slice at draw time. `_updateFrustumUniforms`
+    // just refreshed `uniformState.inverseProjection` + `.currentFrustum`
+    // for THIS slice; snapshot them onto the context (reused buffers,
+    // overwritten each slice) + mirror the slice index. The classifier
+    // bind-group resolver reads `_currentFrustumIndex` to write/bind a
+    // distinct per-slice GPU buffer (see WebGPUGroundPrimitiveRenderer).
+    {
+      const ctxFrustum = context as unknown as {
+        _currentFrustumInvProj: Float32Array | null;
+        _currentFrustumNearFar: Float32Array | null;
+        _currentFrustumIndex: number;
+      };
+      if (!ctxFrustum._currentFrustumInvProj) {
+        ctxFrustum._currentFrustumInvProj = new Float32Array(16);
+      }
+      if (!ctxFrustum._currentFrustumNearFar) {
+        ctxFrustum._currentFrustumNearFar = new Float32Array(2);
+      }
+      const invProj = uniformState.inverseProjection as
+        | { [k: number]: number }
+        | undefined;
+      if (invProj) {
+        const dst = ctxFrustum._currentFrustumInvProj;
+        for (let c = 0; c < 16; c++) {
+          dst[c] = invProj[c];
+        }
+      }
+      ctxFrustum._currentFrustumNearFar[0] = near;
+      ctxFrustum._currentFrustumNearFar[1] = far;
+      ctxFrustum._currentFrustumIndex = i;
+    }
+
     // Clear depth/stencil per frustum (but not color — color accumulates across frustums).
     //
     // EXCEPTION: when `debugShowDepthAsColor` is on, skip the inter-frustum

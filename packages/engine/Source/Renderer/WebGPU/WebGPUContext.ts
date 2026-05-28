@@ -429,6 +429,26 @@ export class WebGPUContext extends GraphicsContext {
   // every frame, so view-identity comparison rebuilds bind groups
   // unnecessarily. `null` when globe depth wasn't computed this frame.
   public _globeDepthTexture: GPUTexture | null = null;
+  // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — per-slice
+  // frustum state published by the multi-frustum loop right after
+  // `_updateFrustumUniforms` refreshes `uniformState` for the slice.
+  // Depth-sample classifiers (GroundPrimitive textured-material FS, and
+  // the GroundPolyline / Vector3DTile classifiers as they adopt the
+  // same path) recover eye-space from the sampled globe depth via
+  // `invProj`, but their per-primitive UBO is packed ONCE per frame at
+  // command-build time and so carries the WRONG slice's projection in
+  // multi-frustum scenes. These fields let a per-slice bind-group
+  // resolver bind the correct `invProj` + `(near, far)` at draw time.
+  // `_currentFrustumInvProj` is a 16-float column-major matrix (reused
+  // buffer, overwritten per slice); `_currentFrustumNearFar` is a
+  // length-2 `[near, far]`. `_currentFrustumIndex` (already published as
+  // a renderer field) selects which per-slice GPU buffer the resolver
+  // writes/binds, so distinct slices land in distinct buffers (a single
+  // shared buffer would be clobbered last-wins by `queue.writeBuffer`,
+  // which applies all writes before the command buffer executes).
+  public _currentFrustumInvProj: Float32Array | null = null;
+  public _currentFrustumNearFar: Float32Array | null = null;
+  public _currentFrustumIndex: number = 0;
   // Migration Session 2 — packed translucent depth view from
   // `WebGPUTranslucentTileClassification.executePackDepth`. Published
   // each frame after the pack-depth pipeline runs IF translucent depth

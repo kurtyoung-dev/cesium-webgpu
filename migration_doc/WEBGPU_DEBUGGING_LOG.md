@@ -9368,3 +9368,48 @@ Blocked on per-slice UBO refresh:
 ### Probes
 
 - `Tools/visual-regression/probe-classifier-textured-materials.mjs` (new) — regression guard for the Batch 171 infrastructure (0 device errors enforced; Color material coverage enforced; textured-material variance documented, not enforced until per-slice refresh).
+
+---
+
+## Batch 173 — GroundPrimitive per-slice frustum-state UBO + corrected windowToEye; textured materials still blocked on frustum-distribution
+
+**Bug:** 173.1 (per-slice infra + depth-math correction; reveals the real blocker)
+**File(s) affected:** `WebGPUSceneRendererFrustumLoop.ts`, `WebGPUContext.ts`, `WebGPUGroundPrimitiveRenderer.js`
+
+### Goal
+
+Land NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (the triage roadmap's critical path) so the textured-material depth → eye recovery uses the correct per-slice projection, unblocking Stripe / Checkerboard / Grid `GroundPrimitive` classification.
+
+### What landed
+
+- **Per-slice frustum-state publish.** `WebGPUSceneRendererFrustumLoop.ts`, right after `_updateFrustumUniforms` refreshes `uniformState` for the slice, snapshots `inverseProjection` + `currentFrustum` (near, far) + the slice index onto `context._currentFrustumInvProj` / `_currentFrustumNearFar` / `_currentFrustumIndex` (new public fields on `WebGPUContext.ts`, mirroring how `_globeDepthView` is republished per slice).
+- **Group-2 frustum-state UBO + resolver.** `WebGPUGroundPrimitiveRenderer.js` adds a `frustumStateBgl` (group 2, FRAGMENT-only `FrustumState { invProj: mat4, frustum: vec4 }`), a per-slice UBO ring keyed by `_currentFrustumIndex` (`ensureFrustumStateSlot` / `writeFrustumState`), and `resolveFrustumStateBindGroup` as a third `bindGroupResolvers` entry. CRITICAL: distinct per-slice buffers — `queue.writeBuffer` is unordered vs the encoder (all writes apply before execution, last-wins), so a single shared buffer would leave every slice reading the last slice's projection. All 5 GroundPrim pipelines (color/pick/stencil/morph/velocity) share the layout, so they all gain group 2 (bound-unused for the non-color FS, which is valid).
+- **Corrected `windowToEye`.** Batch 171 wrongly applied `reverseLogDepth` to the sampled depth, but the globe depth pass does NOT log-encode (no `csm_writeLogDepth`/`frag_depth` in `Globe/*.wgsl`) — the stored value is standard WebGPU NDC z. `windowToEye` now does the proven GroundPolyline inverse-projection (`clip = (ndc, depth, 1); eye = invProj*clip; eye/=eye.w`) using the per-slice `fstate.invProj`. The dead `reverseLogDepth` helper was removed.
+
+Verified by runtime logging that the resolver delivers the active slice's `invProj`/near/far (not the once-per-frame group-0 copy). Flat-color classification non-regressing: `probe-classifier-scenemode.mjs` SCENE3D 11725 / SCENE2D 20781 / COLUMBUS_VIEW 14574, 0 device errors.
+
+### Bug 173.1 — textured materials STILL flat: classifier draws in the wrong frustum slice
+
+The per-slice UBO was necessary but NOT sufficient — textured materials still rendered solid `evenColor`. Runtime FDIAG/GPDIAG logging localized it:
+
+- The scene has **2 frustums**: slice 0 = `near 1e8 / far 1e10` (far/empty), slice 1 = `near 0.1 / far 1e8` (the ~350 km surface).
+- The classification command draws in **slice 0** (the far one). The per-slice resolver correctly delivers slice-0's `invProj` — but reconstructing the sampled depth with slice-0's projection yields eye-z ≈ 1e9 m, so `toSW = ec − swCornerEC` is enormous, the planar `st` clamps to `[0,1]` extremes, and `applyMaterial` returns a constant (solid red).
+
+**Root cause:** the classification `WebGPUDrawCommand` has **no `boundingVolume`**, so Cesium's multi-frustum command distribution does not place it in the slice containing its surface — it falls into the farthest slice. WebGL avoids this because its classification color command carries the shadow-volume bounding sphere (frustum-distributed to the right slice) and uses per-frustum automatic uniforms for depth + reconstruction.
+
+Re-scoped as **NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION** (DEFERRED_WORK): give the command a mode-aware bounding volume (SCENE3D only, or BV-for-distribution-without-culling — a 3D-ECEF BV culled by a 2D frustum was the Batch 167 globe-2D bug) so it draws in the slice matching its surface, then the Batch 173 per-slice `invProj` reconstructs correct UV.
+
+### Decision
+
+Kept the Batch 173 infrastructure (per-slice UBO + corrected `windowToEye`) — both are genuine correctness improvements, inert for the shipping flat-color path (`dsColorFS` short-circuits at `materialType==0`, never reading group 2 / the reconstruction), and are the necessary companion to the distribution fix. Did NOT rush the bounding-volume change at the end of a long session — it interacts with culling across SCENE3D / 2D / CV and needs its own careful, probe-verified slice.
+
+### Files modified
+
+- `WebGPUSceneRendererFrustumLoop.ts` — per-slice publish of `invProj` + `(near,far)` + slice index after `_updateFrustumUniforms`.
+- `WebGPUContext.ts` — `_currentFrustumInvProj` / `_currentFrustumNearFar` / `_currentFrustumIndex` public fields.
+- `WebGPUGroundPrimitiveRenderer.js` — group-2 `frustumStateBgl` + per-slice UBO ring + `resolveFrustumStateBindGroup`; `windowToEye` reads `fstate.invProj` via standard inverse-projection; removed `reverseLogDepth`; format-change cache-invalidation clears the frustum-state buffers/bind groups.
+
+### Probes
+
+- `probe-classifier-scenemode.mjs` — flat-color regression guard (green).
+- `probe-classifier-textured-materials.mjs` — still `ENFORCE_TEXTURED = false`; flips true once NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION lands.

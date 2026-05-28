@@ -604,6 +604,26 @@ struct U {
 @group(1) @binding(0) var globeDepthTex: texture_2d<f32>;
 @group(1) @binding(1) var depthSampler: sampler;
 
+// NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — per-SLICE
+// frustum state. The group-0 u.invProj / u.frustum are packed ONCE
+// per frame at command-build time and therefore carry the WRONG slice's
+// projection in multi-frustum scenes (the depth-sample classifier draws
+// in whichever slice contains the surface, not the slice that happened
+// to be current when packUniforms ran). This group is bound per-slice at
+// draw time by a bind-group resolver that reads the renderer's published
+// context._currentFrustumInvProj / _currentFrustumNearFar, so the FS
+// recovers eye-space against the correct projection. Only invProj +
+// (near, far) are per-slice; u.invView stays in group 0 because the
+// VIEW matrix is constant across a frame's frustum slices (only the
+// projection's near/far change). The dsColorFS Color fast path never
+// reads this group (short-circuits when materialType == 0), so flat-color
+// classification is unaffected.
+struct FrustumState {
+  invProj: mat4x4<f32>,
+  frustum: vec4<f32>,   // .xy = (near, far)
+};
+@group(2) @binding(0) var<uniform> fstate: FrustumState;
+
 struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
 
 @vertex fn colorVS(@location(0) pH: vec3<f32>, @location(1) pL: vec3<f32>) -> CO {
@@ -642,38 +662,27 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
   return dot(packed, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
 }
 
-// NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — log-depth aware
-// eye-coord recovery from depth-sampled fragment. Cesium WebGPU's
-// globe-depth pass writes LOG-encoded depth via csm_writeLogDepth:
-//   stored = log2(1 + clipW) / log2(1 + far)
-// where clipW = -eye.z is the positive distance from camera. Reverse:
-//   clipW = exp2(stored * log2(1 + far)) - 1
-// Then for a centered perspective (SCENE3D), eye.x and eye.y derive
-// directly from NDC.x/.y scaled by clipW and the projection focal
-// length (invProj diagonal). This bypasses the multi-frustum invProj
-// trap (each frustum slice has its own invProj, but log depth gives a
-// unified distance-from-camera value usable across slices).
-fn reverseLogDepth(storedDepth: f32, far: f32) -> f32 {
-  let log2DepthPlusOne = storedDepth * log2(1.0 + far);
-  return exp2(log2DepthPlusOne) - 1.0;
-}
-
+// Eye-coord recovery from a depth-sampled fragment. Mirrors the PROVEN
+// GroundPolyline windowToEyeCoordinates (same depth-sample classifier
+// family) exactly: build clip-space from window XY + the sampled depth,
+// multiply by the inverse projection, perspective-divide.
+//
+// Batch 171 incorrectly applied a reverseLogDepth here -- but the globe
+// depth pass does NOT log-encode (a grep of Globe/*.wgsl finds no
+// csm_writeLogDepth/frag_depth), so the stored value IS the standard
+// WebGPU NDC z in [0, 1]. GroundPolyline confirms this: it inverse-
+// projects the raw depth with no log reversal. Batch 173 corrects the
+// math AND reads the PER-SLICE invProj from fstate (group 2) so the
+// projection matches the slice the fragment was drawn in (the once-per-
+// frame group-0 u.invProj captured the wrong slice at command-build
+// time). WebGPU NDC z is [0, 1] (no -1..1 remap); clip-y points down vs
+// eye-y up, so flip y.
 fn windowToEye(fragXY: vec2<f32>, storedDepth: f32) -> vec3<f32> {
-  let clipW = reverseLogDepth(storedDepth, u.frustum.y);
-  // NDC.xy from window XY. WebGPU NDC y is +up; window y is +down --
-  // flip. WebGPU NDC z is [0, 1] (vs WebGL [-1, 1]) but we already
-  // reversed the depth via reverseLogDepth, so the z piece is handled.
-  var ndcXY = (fragXY / u.viewport.zw) * 2.0 - 1.0;
-  ndcXY.y = -ndcXY.y;
-  // Centered-perspective assumption: P02 = P12 = 0, so invProj's [0][0]
-  // and [1][1] entries are 1/P00 and 1/P11 (focal lengths inverted).
-  // For off-center frustums (SCENE2D / Columbus View shears), an extra
-  // P02/P12 term would be needed -- deferred since the test path is
-  // SCENE3D and the planar-extents path is mostly used at small scales.
-  let eyeZ = -clipW;
-  let eyeX = ndcXY.x * clipW * u.invProj[0][0];
-  let eyeY = ndcXY.y * clipW * u.invProj[1][1];
-  return vec3<f32>(eyeX, eyeY, eyeZ);
+  var ndc = (fragXY / u.viewport.zw) * 2.0 - 1.0;
+  ndc.y = -ndc.y;
+  let clip = vec4<f32>(ndc, storedDepth, 1.0);
+  let eye = fstate.invProj * clip;
+  return eye.xyz / eye.w;
 }
 
 // UV recovery for the depth-sampled surface point. Dispatches on
@@ -843,13 +852,21 @@ fn applyMaterial(st: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
     return i.col;
   }
   // Material path: recover eye-space, compute planar UV, apply material.
-  // NOTE (Batch 171): the depth-to-eye-coord recovery is currently
-  // approximate in multi-frustum scenes -- u.frustum / u.invProj are
-  // packed once per packUniforms call (per-frame) but Cesium's WebGPU
-  // multi-frustum renderer rebinds currentFrustum PER SLICE during
-  // the draw loop. Until a per-slice UBO refresh lands, textured
-  // materials may render with off-axis UVs at certain camera distances.
-  // The flat-color Color path is unaffected (it doesn't read UV).
+  // NOTE (Batch 173): windowToEye now reads the PER-SLICE invProj from
+  // group 2 (fstate) and uses the correct standard inverse-projection
+  // (Batch 171 wrongly applied reverseLogDepth to linear NDC depth).
+  // BUT textured materials are STILL not pixel-correct in multi-frustum:
+  // the classification command has no bounding volume, so Cesium
+  // distributes it to the FARTHEST frustum slice (e.g. near=1e8/far=1e10
+  // at a 350 km nadir view) instead of the near slice that actually
+  // contains the surface (near=0.1/far=1e8). Reconstructing the sampled
+  // depth with the far slice's projection yields an eye-z in the billions
+  // -> the planar UV clamps and the material renders flat. The remaining
+  // fix is to give the classification command the shadow-volume bounding
+  // sphere so it is frustum-distributed to the slice matching its surface
+  // (tracked under NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION). The
+  // flat-color Color path is unaffected (it short-circuits above and never
+  // reads fstate / the depth → eye recovery).
   let ec = windowToEye(i.pos.xy, surfaceDepth);
   let st = surfaceUV(ec);
   let outColor = applyMaterial(st, i.col);
@@ -1005,9 +1022,21 @@ struct VelocityCO {
       samplerEntry(1, Stage.FRAGMENT, "filtering"),
     ],
   );
+  // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — group 2:
+  // per-slice frustum state (invProj + near/far). FRAGMENT-only (only the
+  // depth-sample FS reads it). Bound per-slice at draw time via the
+  // frustum-state bind-group resolver. Every GroundPrimitive pipeline
+  // (color / pick / stencil / morph / velocity) shares `depthSampleLayout`,
+  // so they all gain this third group; the pick / stencil / velocity FS
+  // don't read it but a bound-unused group is valid.
+  const frustumStateBgl = makeBindGroupLayout(
+    device,
+    "GroundPrimitive FrustumState BGL",
+    [uniformBuffer(0, Stage.FRAGMENT)],
+  );
   const depthSampleLayout = device.createPipelineLayout({
     label: "GroundPrimitive DepthSample PipelineLayout",
-    bindGroupLayouts: [bgl, depthSampleBgl],
+    bindGroupLayouts: [bgl, depthSampleBgl, frustumStateBgl],
   });
 
   const vertexBuffers = [
@@ -1220,6 +1249,7 @@ struct VelocityCO {
     velocityDescriptor,
     bgl,
     depthSampleBgl,
+    frustumStateBgl,
   };
 }
 
@@ -1706,6 +1736,15 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.bindGroup = undefined;
     cache.depthSampleBindGroup = undefined;
     cache.depthSampleViewRef = undefined;
+    // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — the
+    // frustum-state bind groups reference the old frustumStateBgl (the
+    // whole _pipelineResources is rebuilt on format change), so drop them
+    // too. The UBO buffers themselves are layout-agnostic but the bind
+    // groups must be recreated against the new BGL; clear both so the
+    // lazy `ensureFrustumStateSlot` rebuilds them.
+    cache.frustumStateUBOs = undefined;
+    cache.frustumStateBindGroups = undefined;
+    cache.frustumStateBindGroup = undefined;
     // Reset pending-request flags so the resolvers can re-issue.
     cache.pipelineRequestPending = false;
     cache.morphPipelineRequestPending = false;
@@ -2141,6 +2180,86 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     return cache.depthSampleBindGroup;
   };
 
+  // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — group-2
+  // frustum-state UBO ring + per-slice bind-group resolver.
+  //
+  // The depth → eye recovery in `windowToEye` needs the projection of the
+  // slice the fragment is drawn in, but `packUniforms` runs once per frame
+  // (command-build) and can only capture one slice. Solve it the same way
+  // the depth-source swap does: a bind-group resolver that runs per-draw.
+  //
+  // CRITICAL: distinct per-slice GPU buffers. `device.queue.writeBuffer`
+  // is NOT ordered relative to the command encoder — every write in a
+  // frame applies BEFORE the command buffer executes, last-wins. Writing
+  // one shared buffer per slice would leave every slice reading the LAST
+  // slice's projection. So slot the buffers by `_currentFrustumIndex`;
+  // each slice writes its own buffer once, the command buffer binds the
+  // matching buffer per slice. Buffers + bind groups are lazily grown.
+  if (!defined(cache.frustumStateUBOs)) {
+    cache.frustumStateUBOs = [];
+    cache.frustumStateBindGroups = [];
+    cache.frustumStateData = new Float32Array(20); // mat4(16) + vec4(4)
+  }
+  const ensureFrustumStateSlot = (idx) => {
+    let ubo = cache.frustumStateUBOs[idx];
+    if (!defined(ubo)) {
+      ubo = WebGPUBuffer.createUniformBuffer(
+        device,
+        256,
+        `GroundPrimitive FrustumState UBO slice ${idx}`,
+      );
+      cache.frustumStateUBOs[idx] = ubo;
+      cache.frustumStateBindGroups[idx] = device.createBindGroup({
+        label: `GroundPrimitive FrustumState BG slice ${idx}`,
+        layout: cache._pipelineResources.frustumStateBgl,
+        entries: [{ binding: 0, resource: { buffer: ubo.buffer } }],
+      });
+    }
+    return idx;
+  };
+  const writeFrustumState = (idx, invProj, near, far) => {
+    const data = cache.frustumStateData;
+    for (let c = 0; c < 16; c++) {
+      data[c] = invProj[c];
+    }
+    data[16] = near;
+    data[17] = far;
+    data[18] = 0.0;
+    data[19] = 0.0;
+    device.queue.writeBuffer(
+      cache.frustumStateUBOs[idx].buffer,
+      0,
+      data.buffer,
+      0,
+      80, // mat4 (64B) + vec4 (16B)
+    );
+  };
+  // Static fallback (slice 0) seeded from the once-per-frame uniformState
+  // — used only if the per-slice publish is absent (resolver returns
+  // null). Matches the pre-Batch-173 behaviour, so non-multi-frustum and
+  // first-frame paths still get a valid (if not slice-refined) projection.
+  ensureFrustumStateSlot(0);
+  {
+    const us = frameState.context.uniformState;
+    const invProj0 = us.inverseProjection;
+    const cf = us.currentFrustum;
+    if (invProj0) {
+      writeFrustumState(0, invProj0, cf?.x ?? 0.1, cf?.y ?? 1.0e8);
+    }
+    cache.frustumStateBindGroup = cache.frustumStateBindGroups[0];
+  }
+  const resolveFrustumStateBindGroup = () => {
+    const invProj = context._currentFrustumInvProj;
+    const nearFar = context._currentFrustumNearFar;
+    if (!invProj || !nearFar) {
+      return null; // fall through to the static slice-0 bind group
+    }
+    const idx = context._currentFrustumIndex | 0;
+    ensureFrustumStateSlot(idx);
+    writeFrustumState(idx, invProj, nearFar[0], nearFar[1]);
+    return cache.frustumStateBindGroups[idx];
+  };
+
   // C-R1-CLASSIFICATION (Batch 98) — forward the ClassificationPrimitive's
   // appearance render state so `applyPerEncoderState` runs the dynamic
   // stencilRef / blendConstant / scissor / viewport ops on the depth-sample
@@ -2176,8 +2295,16 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     ? [cache.vertexGPUBuffer, cache.vertexGPUBuffer2D]
     : [cache.vertexGPUBuffer];
   const sharedDrawArgs = {
-    bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
-    bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
+    bindGroups: [
+      cache.bindGroup,
+      cache.depthSampleBindGroup,
+      cache.frustumStateBindGroup,
+    ],
+    bindGroupResolvers: [
+      undefined,
+      resolveDepthSampleBindGroup,
+      resolveFrustumStateBindGroup,
+    ],
     vertexBuffers: activeVertexBuffers,
     indexBuffer: cache.indexGPUBuffer || undefined,
     indexCount: cache.indexCount || 0,
