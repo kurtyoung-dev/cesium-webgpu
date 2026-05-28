@@ -2621,11 +2621,11 @@ No engine action scheduled here; the warning correctly tells users to provide a 
 
 **Estimated effort:** 1 session — find the failing fetch, fix the relative path or add an HTTP-status check before passing bytes to the shader compiler.
 
-### NEW-VR-OUTLINES-ON-TERRAIN-WARNING — Documented limitation surfaced as warning (3 demos)
+### ~~NEW-VR-OUTLINES-ON-TERRAIN-WARNING~~ — CLOSED (Batch 175, WONTFIX — upstream parity behavior, not a WebGPU bug)
 
-**Symptom:** `[warning] Entity geometry outlines are unsupported on terrain. Outlines will be disabled.` AEC Clipping, Geometry and Appearances, Moon. **Doc'd limitation, not a bug.** Could be silenced by a feature flag if noise becomes a problem; otherwise leave.
+**Resolution (Batch 175):** Closed as WONTFIX. The warning `[warning] Entity geometry outlines are unsupported on terrain. Outlines will be disabled.` is emitted by **upstream Cesium** (`GeometryVisualizer` / outline-on-terrain is unsupported in BOTH backends) — it is correct, expected, backend-agnostic behavior, NOT a WebGPU regression. WebGL shows the identical warning + identical no-outline result, so this is full parity. Silencing it would require a feature flag that diverges from upstream for no functional gain. Leave as-is; the three affected demos (AEC Clipping, Geometry and Appearances, Moon) render correctly aside from the (intentionally) disabled terrain outlines.
 
-**Closing batch:** Triaged Session 62. All entries are open with size estimates.
+**Symptom (original):** `[warning] Entity geometry outlines are unsupported on terrain. Outlines will be disabled.` AEC Clipping, Geometry and Appearances, Moon. **Doc'd limitation, not a bug.**
 
 ---
 
@@ -2902,9 +2902,11 @@ User asked to fix all 6 issues. Made meaningful infrastructure progress on #2 (t
 
 ## NEW-VR-3 — Cross-backend tooling determinism (Batch 70, 2026-05-19)
 
-### VR3-SPLIT-SCREEN-CLOCK-SYNC
+### ~~VR3-SPLIT-SCREEN-CLOCK-SYNC~~ — RESOLVED (Batch 175) — Approach 1 (per-frame clock snap)
 
-**What:** `Apps/WebGPUTest/split-screen-comparison.html` runs WebGL and WebGPU viewers as independent Cesium instances. Each has its own `Clock` with default `shouldAnimate = true` and its own `Date.now()` start moment, so the two halves of the screen drift apart over the session — different sun position, different terminator placement, different atmospheric scattering as the simulation clocks tick out of sync. For a true side-by-side visual parity comparison the two viewers should share a clock state.
+**Resolution (Batch 175):** `Apps/WebGPUTest/split-screen-comparison.html`'s `setupCameraSync` now also runs a per-frame clock snap — WebGL is the master, the WebGPU slave gets `shouldAnimate = false` and its `clock.currentTime` is `JulianDate.clone`d from the master every frame (one clone/frame, negligible). Both panes now share sun position / terminator / atmospheric scattering, so the split-screen is a true renderer-parity comparison instead of a clock race. The KNOWN-ISSUE comment in the page was updated to record the fix. Dev-tooling only; no regression-test path touched.
+
+**What (original):** `Apps/WebGPUTest/split-screen-comparison.html` runs WebGL and WebGPU viewers as independent Cesium instances. Each has its own `Clock` with default `shouldAnimate = true` and its own `Date.now()` start moment, so the two halves of the screen drift apart over the session — different sun position, different terminator placement, different atmospheric scattering as the simulation clocks tick out of sync. For a true side-by-side visual parity comparison the two viewers should share a clock state.
 
 **Why deferred:** The probe-based metric work (clock-pinning in `probe-polar-multi-plain.mjs` etc., Batch 70) doesn't depend on the split-screen page since each probe creates its own viewer with a pinned clock. The split-screen page is a developer comfort tool, not on the regression-test path.
 

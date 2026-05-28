@@ -412,9 +412,30 @@
           syncCameraFromTo(webgpuViewer, webglViewer);
         });
 
-        document.getElementById("syncStatus").textContent = "🔗 Camera synced";
+        // VR3-SPLIT-SCREEN-CLOCK-SYNC (Batch 175) — frame-by-frame clock
+        // snap (Approach 1). Previously each viewer ran its own Clock with
+        // an independent Date.now() start + shouldAnimate=true, so the two
+        // simulation clocks drifted apart over the session — different sun
+        // position, terminator, and atmospheric scattering on each half,
+        // turning a renderer-parity comparison into a clock race. Make WebGL
+        // the master and WebGPU the slave: stop the slave's own animation
+        // and copy the master's currentTime into it every frame. One
+        // JulianDate clone per frame; negligible cost.
+        webgpuViewer.clock.shouldAnimate = false;
+        function syncClock() {
+          if (!webglViewer || !webgpuViewer) return;
+          Cesium.JulianDate.clone(
+            webglViewer.clock.currentTime,
+            webgpuViewer.clock.currentTime,
+          );
+          requestAnimationFrame(syncClock);
+        }
+        requestAnimationFrame(syncClock);
+
+        document.getElementById("syncStatus").textContent =
+          "🔗 Camera + clock synced";
         document.getElementById("syncStatus").style.color = "#5fd35f";
-        log("Camera sync established (bidirectional)", "success");
+        log("Camera + clock sync established (bidirectional)", "success");
       }
 
       // ================================================================
@@ -439,27 +460,16 @@
 
           // ── Create WebGL viewer (synchronous) ──
           //
-          // KNOWN ISSUE — clock drift between the two viewers.
-          // Each Cesium.Viewer constructs its own Clock (independent
-          // currentTime, shouldAnimate=true default, independent
-          // Date.now() start). Over the course of a session the two
-          // clocks tick out of sync, so the WebGL and WebGPU panes show
-          // different sun positions, different night-fade, different
-          // atmospheric scattering. For a true side-by-side parity
-          // comparison the two viewers should share clock state.
-          //
-          // Fix is tracked in migration_doc/DEFERRED_WORK.md under
-          // VR3-SPLIT-SCREEN-CLOCK-SYNC. Recommended approach: a
-          // requestAnimationFrame callback in setupCameraSync (below)
-          // that does
-          //   webgpuViewer.clock.currentTime =
-          //     webglViewer.clock.currentTime.clone();
-          //   webgpuViewer.clock.shouldAnimate = false;
-          // matching the master/slave pattern already used for camera
-          // sync. Adding this hasn't been done yet because the probe-
-          // based regression tests use their own pinned-clock
-          // viewers and don't depend on this page (see
-          // WEBGPU_DEBUGGING_LOG.md Batch 70).
+          // Clock drift between the two viewers is FIXED (Batch 175,
+          // VR3-SPLIT-SCREEN-CLOCK-SYNC): `setupCameraSync` (below) now
+          // also runs a per-frame clock snap — WebGL is the master, the
+          // WebGPU slave has `shouldAnimate = false` and its `currentTime`
+          // is copied from the master every frame. Both panes therefore
+          // share sun position / terminator / atmospheric scattering, so
+          // this is a true renderer-parity comparison rather than a clock
+          // race. (Probe-based regression tests are unaffected — they use
+          // their own pinned-clock viewers; see WEBGPU_DEBUGGING_LOG.md
+          // Batch 70.)
           log("Creating WebGL viewer…", "info");
           var t0 = performance.now();
           try {
