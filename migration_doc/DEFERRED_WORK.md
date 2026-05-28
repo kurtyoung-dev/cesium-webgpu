@@ -3301,9 +3301,11 @@ The output of the assembler is appended to the GlobeTerrain.wgsl source before p
 
 ---
 
-## NEW-GBUFFER-MRT-INTEGRATION — Always-on G-buffer + MRT (Slice 5c-B follow-ups)
+## NEW-GBUFFER-MRT-INTEGRATION — Always-on G-buffer + MRT (Slice 5c-B follow-ups) — PRODUCER side largely SHIPPED; consumer integration is the residual
 
-**Status:** Phase 2 v2 Sub-C minimum landed (Batch 116, 2026-05-24). MRT render pass + 2-target pipelines are live; slot 1 currently stays at sentinel `(0,0,0,1)` because no fragment shader emits `@location(1)` yet. The follow-up work is the producer side (write real data into slot 1) and the consumer side (downstream features that benefit from per-fragment material normals + the always-allocated G-buffer texture).
+**Status (doc-synced Batch 175, after the triage workflow + a slot-1-emitter grep):** The original "slot 1 currently stays at sentinel `(0,0,0,1)` because no fragment shader emits `@location(1)` yet" claim is STALE — **176 WGSL shaders now emit `@location(1)` normalRoughness**: the globe (`GlobeTerrain.wgsl` `makeFragOutput`), Model PBR (`ModelPBRComplete.wgsl` `FragOutput`, every return path — verified clean in the Batch 143 NEW-GLTF-PIPELINE-SHAPE-AUDIT Item 3), the full Primitive Lit-material family (`PrimitiveMat*Lit.wgsl`, `PhongLighting.wgsl`, `PBRMetallicRoughness.wgsl`), classification (`ShadowVolumeAppearance.wgsl`), and `FlexibleGeometry.wgsl`. So the **producer side is broadly shipped** — the G-buffer slot 1 carries real per-fragment normals + roughness across the major draw paths, not a sentinel.
+
+**Residual (the part that's genuinely open):** the *consumer* integration. AO already consumes `normalRoughnessTexture`. The remaining downstream consumers (clustered/Forward+ lighting, SSR, contact shadows, NPR, TAA normal-disocclusion) are the open follow-ups below — the clustered-lighting consumer in particular is gated on the `maxBindGroups = 4` platform ceiling (it needs another bind group the Model/globe layouts already fully use), which is the real architectural blocker, NOT the producer emit. Also note the legacy compute producer `GBufferNormalsFromDepth.wgsl` / `dispatchGBufferNormalsFromDepth` is now largely redundant given the render-pass emit, but is LEFT IN PLACE (Principle 7 — it's the fallback for draw paths that don't emit slot 1, e.g. depth-only / sentinel-normal debug returns; retiring it needs a per-path audit, tracked as a follow-up, not done here).
 
 **Architecture refresher:**
 
