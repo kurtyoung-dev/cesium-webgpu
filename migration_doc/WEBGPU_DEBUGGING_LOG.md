@@ -9309,3 +9309,62 @@ PNGs visually confirm the red classification polygon now renders over the imager
 ### Probes
 
 - `Tools/visual-regression/probe-classifier-scenemode.mjs` — `ENFORCE_2D = true` (was `false`); header rewritten to document the final resolution and probe-detection nuance (the Cesium error-dialog background registers as red pixels, so identical non-zero counts across modes is a tell for a JS error, not classification output).
+
+---
+
+## Batch 171 — GroundPrimitive textured-material dispatch infrastructure (partial NEW-GROUNDPRIM-TEXTURED-MATERIALS, blocks on NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO)
+
+**Bug:** 171.1 (infrastructure milestone; FS reaches the right pixels but UV is wrong in multi-frustum)
+**File(s) affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js` (UBO 384 → 640 bytes; new `applyMaterial` / `surfaceUV` / `windowToEye` / `reverseLogDepth` / `resolveMaterialState` / `packExtents`); `Tools/visual-regression/probe-classifier-textured-materials.mjs` (new); `migration_doc/DEFERRED_WORK.md` (updated NEW-GROUNDPRIM-TEXTURED-MATERIALS + new NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO entry)
+
+### Symptom
+
+`probe-classifier-textured-materials.mjs` (new) drops a `GroundPrimitive` with `MaterialAppearance` carrying Color / Stripe / Checkerboard / Grid materials over the central US and captures both backends. Pre-Batch-171 baseline (post-Batch-170 state): every material rendered as flat color on WebGPU — variance 4 vs WebGL's 7838 / 9230 for Stripe / Checkerboard. The polygon footprint was right, the color was the appearance's `material.uniforms.color`, but there was no UV / extents / texture-sample path at all. WebGL renders the full material via `ShadowVolumeAppearanceFS.glsl`.
+
+### Approach
+
+Mirror the WebGL `ShadowVolumeAppearanceFS` recipe: depth-sample the globe, recover eye-space position from the fragment, derive polygon-relative UV from per-instance extent attributes, dispatch to the matching material branch. The per-instance extent attrs are added by `ShadowVolumeAppearance.getPlanarTextureCoordinateAttributes` (planar — small polygons) or `getSphericalExtentGeometryInstanceAttributes` (spherical — larger polygons). Threshold is `MAX_WIDTH_FOR_PLANAR_EXTENTS` (~1°).
+
+What landed:
+
+- **UBO 384 → 640 bytes.** New tail carries `invProj` (mat4, used by `windowToEye`), `materialMeta` / `materialColor` / `materialParam0` / `materialParam1` (mirrors the GroundPolyline pattern), planar-extent eye-space frame (`swCornerEC` / `eastwardEC` / `northwardEC`), spherical-extent params (`sphericalSW.xy = (south, west)` + `invView`), `extentMode` (.x = 0 planar | 1 spherical, .yz = inverse extents or lat/lon range inverses, .w = longitudeRotation), and `frustum.xy = (near, far)`.
+- **WGSL.** `applyMaterial(st, fallback)` dispatches on `materialMeta.x` -- branches for Color / Stripe (mirrors WebGL's `coord = mix(s, t, horizontal); value = fract((coord - offset) * (repeat * 0.5))`) / Checkerboard (2D parity grid with anti-aliased seam) / Grid (cell-relative line distance with viewport-derived line width). `surfaceUV(eyeCoord)` dispatches on `extentMode.x`: planar uses `dot(eastwardEC, eyeCoord - swCornerEC) * 1/eastExtent`; spherical recovers `worldPos = invView × eyeCoord`, takes `(lat, lon) = (atan2(z, magXY), atan2(y, x))` with Cesium's `czm_fastApproximateAtan2` argument-order convention, applies `longitudeRotation` for IDL, then `(lat - south) * 1/latRange, (lon - west) * 1/lonRange`. `dsColorFS` short-circuits to `i.col` when `materialType==0` (Color fast path).
+- **JS.** `resolveMaterialState(primitive)` reads `appearance.material.uniforms` and packs `{type, color, param0, param1}` for Color / Stripe / Checkerboard / Grid; falls through with a one-time warn for unrecognized types. Critical detail: Stripe's actual shader uniform is `horizontal: bool` (default true), NOT `StripeOrientation` -- the latter is a higher-level CZML enum that the `StripeMaterialProperty` layer maps to the boolean. Read the boolean directly. `packExtents` reads SW corner / eastward / northward from `inner._batchTable.getBatchedAttribute(0, idx)` directly (the public `getGeometryInstanceAttributes(id)` requires a defined `id` that probe-style GeometryInstances don't have). For planar, eye-space transform via the existing `scratchMVRTE` (RTE form); for spherical, packs `uniformState.inverseView` instead.
+
+### Bug 171.1 — depth recovers as ~1.0 (far plane) instead of the surface's actual depth
+
+**Surfaced during UV-visualization diagnostic** (temporary `dsColorFS` returns `(depth, st.x, st.y)`). The polygon showed pure red across the full footprint: depth = 1.0 everywhere. With `extentMode.y = 1/58587` (correct 1/eastExtent for the test polygon) and `swCornerEC.z = -349km` (correct for camera at 350km altitude), the math was right — but `eyeCoord` recovered from depth=1.0 lands near the far plane, making `toSW` huge and clamping the UV.
+
+**First hypothesis (wrong):** Cesium uses log-depth (`frameState.useLogDepth = true` confirmed via runtime probe) so my `windowToEye` recipe (`clip = (ndcXY, depth, 1)`) was wrong — it should reverse-log-depth first. Added `reverseLogDepth(stored, far) = exp2(stored * log2(1+far)) - 1` mirroring `csm_writeLogDepth`'s `fragDepth = log2(1+clipW) / log2(1+far)`. Re-ran probe — still showed depth ≈ 1.0 across the polygon, with a SHARP discontinuity midway (left half darker red, right half brighter).
+
+**Actual root cause:** The Globe terrain shader does NOT use `csm_writeLogDepth` — a grep across `packages/engine/Source/Shaders/WebGPU/Globe/*.wgsl` for `csm_writeLogDepth` / `frag_depth` returns nothing. So the depth values in `_globeDepthView` are STANDARD NDC z, not log-encoded. My log-depth reversal was treating linear NDC z as log-encoded, producing junk. The pre-Batch-171 `windowToEye` (`clip = vec4(ndcXY, depth, 1)`) was actually structurally correct; the issue is elsewhere.
+
+The sharp discontinuity at the polygon midpoint pointed at the real cause: **multi-frustum per-slice projection mismatch**. WebGL's `czm_inverseProjection` and `czm_currentFrustum` are AUTOMATIC uniforms re-evaluated per draw, so the per-slice rebind takes effect transparently. In WebGPU the values are baked into the GroundPrimitive UBO at `packUniforms` time (per frame, at `Scene.update`), so the FS reverse-projects using ONE matrix while the depth values came from MULTIPLE per-slice projections. Each slice produces correct UVs for its own pixels and wrong UVs elsewhere; with a single UBO snapshot the FS sees a single matrix, so most pixels are wrong.
+
+Tracked as a separate `NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO` deferred entry with three solution strategies (secondary frustum-state UBO via bind-group resolver / dynamic UBO offsets / push constants).
+
+### What's correct vs what's wrong
+
+Working (probes confirm):
+
+- 0 device errors across all materials.
+- Polygon footprint matches WebGL exactly (litR = 1.00).
+- Color material renders correctly (no UV dependency).
+- `applyMaterial` branches reachable; resolved `materialType` and packed params are correct in the UBO (verified via runtime UBO dump).
+- `packExtents` correctly reads planar OR spherical extent attrs from the batch table.
+- `surfaceUV` math is correct given correct inputs (eastExtent / sphericalSW match expected values; the per-axis dot products would land in [0, 1] if the recovered eyeCoord were accurate).
+- All prior probes still pass: `probe-classifier-scenemode.mjs` (Batch 170) SCENE3D / SCENE2D / COLUMBUS_VIEW all OK.
+
+Blocked on per-slice UBO refresh:
+
+- Stripe / Checkerboard / Grid materials still render with low variance (45 / 45 / 19 vs WebGL's 5578 / 6340 / 2373) due to wrong eyeCoord recovery.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js` — UBO 384 → 640; new `applyMaterial` / `surfaceUV` / `windowToEye` / `reverseLogDepth` (kept in code as a tool for future use even though globe-depth isn't log-encoded — collections shaders DO use it, so the same FS recipe will need it when those depth sources land); `resolveMaterialState` for Color / Stripe / Checkerboard / Grid; `packExtents` for planar AND spherical; `packUniforms` now writes `invProj` + material slots + extent slots + `frustum.xy`.
+- `Tools/visual-regression/probe-classifier-textured-materials.mjs` (new) — probe across Color / Stripe / Checkerboard / Grid in SCENE3D with sub-1° polygon. Polygon-interior ROI + lit-pixel-only variance gives a clean signal: variance ~0 for flat color, ~7000+ for textured patterns. `ENFORCE_TEXTURED = false` until NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO lands. Header documents the depth-recovery blocker + the JS-error-dialog probe-detection nuance (carryover from Batch 170).
+- `migration_doc/DEFERRED_WORK.md` — NEW-GROUNDPRIM-TEXTURED-MATERIALS rewritten to record Batch 171 partial status; new NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO entry describing the per-slice plumbing options.
+
+### Probes
+
+- `Tools/visual-regression/probe-classifier-textured-materials.mjs` (new) — regression guard for the Batch 171 infrastructure (0 device errors enforced; Color material coverage enforced; textured-material variance documented, not enforced until per-slice refresh).

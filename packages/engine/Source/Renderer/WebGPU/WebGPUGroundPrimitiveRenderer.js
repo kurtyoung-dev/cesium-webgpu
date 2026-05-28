@@ -34,6 +34,7 @@
  *
  * @private
  */
+import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
@@ -83,12 +84,399 @@ function getGroundPrimitiveShaderCache(device) {
 // the 3D ECEF and 2D-projected position attributes through the
 // morph-state view, then blends in EC space by `morphFlags.x`
 // (morphTime). Pre-Batch-164 the renderer silently skipped MORPHING.
-const UNIFORM_BUFFER_SIZE = 384;
+//
+// Batch 171 — UBO 384 → 640 bytes to add the textured-material slots
+// (NEW-GROUNDPRIM-TEXTURED-MATERIALS). New tail carries:
+//   `invProj` — for depth → eye-coord recovery
+//   `materialMeta` / `materialColor` / `materialParam0` / `materialParam1`
+//                  — material dispatch (mirrors GroundPolyline)
+//   `swCornerEC` / `eastwardEC` / `northwardEC` — planar-extent fields
+//                  (CPU-transformed to eye space once per frame so the
+//                  FS just does plane-dot for UV recovery — no per-
+//                  fragment matrix mul)
+//   `extentMode`   — .x = 0 (planar) | 1 (spherical), .yz = inverse
+//                    extents (planar) or (latRangeInv, lonRangeInv)
+//                    (spherical), .w = longitudeRotation (spherical)
+//   `sphericalSW`  — (south, west, _, _) — spherical-extent corner
+//   `invView`      — for spherical worldCoord recovery (eye → world)
+// Threshold `ShadowVolumeAppearance.MAX_WIDTH_FOR_PLANAR_EXTENTS`
+// (~1°) decides which path a given polygon's geometry was built for;
+// the per-instance attribute set determines which fields the FS uses.
+const UNIFORM_BUFFER_SIZE = 640;
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
 const scratchProjection = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
+
+// NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — eye-space scratches
+// for the planar-extent transform in packUniforms. The world-space SW
+// corner + east/north direction vectors are read from the primitive's
+// per-instance attributes (`getGeometryInstanceAttributes`), pulled
+// out of the batch table, and transformed through `scratchMVRTE` (the
+// mode-correct view matrix with translation zeroed) into eye space.
+const scratchRTEDelta = new Cartesian3();
+const scratchSWHigh = new Cartesian3();
+const scratchSWLow = new Cartesian3();
+const scratchSWEC = new Cartesian3();
+const scratchEastWorld = new Cartesian3();
+const scratchNorthWorld = new Cartesian3();
+const scratchEastEC = new Cartesian3();
+const scratchNorthEC = new Cartesian3();
+
+/**
+ * Material-type enum mirroring `materialMeta.x` in the WGSL. Adding a
+ * material requires (a) a new entry here, (b) a matching `applyMaterial`
+ * branch in the WGSL, and (c) packing the material's parameters into
+ * `materialParam0` / `materialParam1` in `resolveMaterialState`.
+ *
+ * @private
+ */
+const GroundPrimitiveMaterialType = Object.freeze({
+  COLOR: 0,
+  STRIPE: 1,
+  CHECKERBOARD: 2,
+  GRID: 3,
+  // IMAGE = 4 (reserved — texture upload plumbing is a follow-up; falls
+  // through to COLOR until then).
+});
+
+// Track which custom material `type` strings we've already warned about
+// (avoid log spam when the same custom material rides many primitives).
+const _warnedCustomGroundMaterialTypes = new Set();
+
+/**
+ * Inspect the appearance's material and return a packed material state
+ * the WGSL `applyMaterial` consumes. Returns `{ type, color, param0,
+ * param1 }` — all four valid for any input. Unknown material types log
+ * once and fall through to the flat-color path (`type = 0`).
+ *
+ * Mirrors the GroundPolyline `resolveMaterialState` pattern; the
+ * material-types supported differ because polygon materials don't have
+ * the polyline-specific `Dash` / `Glow` / `Outline` / `Arrow` set, but
+ * DO use the polygon-relevant `Stripe` / `Checkerboard` / `Grid`.
+ *
+ * @private
+ */
+function resolveMaterialState(primitive) {
+  const fallback = {
+    type: GroundPrimitiveMaterialType.COLOR,
+    color: [1.0, 1.0, 1.0, 1.0],
+    param0: [0.0, 0.0, 0.0, 0.0],
+    param1: [0.0, 0.0, 0.0, 0.0],
+  };
+  const material = primitive?.appearance?.material;
+  if (!material) {
+    return fallback;
+  }
+  const type = material.type;
+  const uniforms = material.uniforms ?? {};
+
+  const packColor = (c, defaults) =>
+    defined(c)
+      ? [
+          c.red ?? defaults[0],
+          c.green ?? defaults[1],
+          c.blue ?? defaults[2],
+          c.alpha ?? defaults[3],
+        ]
+      : defaults;
+
+  if (type === "Stripe") {
+    // StripeMaterial uniforms (see Material.js, Material.StripeType):
+    //   horizontal (bool, default true) -- stripes run along the s axis
+    //                                       when true; along t when false
+    //   evenColor / oddColor / offset / repeat
+    // Note: `StripeOrientation` (the CZML enum) is a higher-level concept
+    // that the `StripeMaterialProperty` layer maps to the boolean
+    // `horizontal` uniform -- by the time we see the material here, the
+    // mapped boolean is on `uniforms.horizontal`. Read THAT directly.
+    const oddColor = uniforms.oddColor;
+    const isHorizontal = uniforms.horizontal !== false; // default true
+    return {
+      type: GroundPrimitiveMaterialType.STRIPE,
+      color: packColor(uniforms.evenColor, [1.0, 1.0, 1.0, 1.0]),
+      param0: [
+        uniforms.repeat ?? 5.0,
+        uniforms.offset ?? 0.0,
+        isHorizontal ? 1.0 : 0.0,
+        0.0,
+      ],
+      param1: packColor(oddColor, [0.0, 0.0, 0.0, 1.0]),
+    };
+  }
+
+  if (type === "Checkerboard") {
+    const repeat = uniforms.repeat;
+    return {
+      type: GroundPrimitiveMaterialType.CHECKERBOARD,
+      color: packColor(uniforms.lightColor, [1.0, 1.0, 1.0, 1.0]),
+      param0: [
+        repeat?.x ?? repeat?.[0] ?? 5.0,
+        repeat?.y ?? repeat?.[1] ?? 5.0,
+        0.0,
+        0.0,
+      ],
+      param1: packColor(uniforms.darkColor, [0.0, 0.0, 0.0, 1.0]),
+    };
+  }
+
+  if (type === "Grid") {
+    const lineCount = uniforms.lineCount;
+    const lineThickness = uniforms.lineThickness;
+    return {
+      type: GroundPrimitiveMaterialType.GRID,
+      color: packColor(uniforms.color, [1.0, 1.0, 1.0, 1.0]),
+      param0: [
+        uniforms.cellAlpha ?? 0.1,
+        lineCount?.x ?? lineCount?.[0] ?? 8.0,
+        lineCount?.y ?? lineCount?.[1] ?? 8.0,
+        0.0,
+      ],
+      param1: [
+        lineThickness?.x ?? lineThickness?.[0] ?? 1.0,
+        lineThickness?.y ?? lineThickness?.[1] ?? 1.0,
+        0.0,
+        0.0,
+      ],
+    };
+  }
+
+  if (type === "Color") {
+    // Explicit Color material — packs through the materialColor slot so
+    // even custom-colored ColorAppearance flows ride the texture path
+    // consistently. The dsColorFS fast path (type==0) still wins.
+    return {
+      type: GroundPrimitiveMaterialType.COLOR,
+      color: packColor(uniforms.color, [1.0, 1.0, 1.0, 1.0]),
+      param0: [0.0, 0.0, 0.0, 0.0],
+      param1: [0.0, 0.0, 0.0, 0.0],
+    };
+  }
+
+  // Unknown material type — warn once + fall through to Color so the
+  // primitive still classifies (just untextured). Image material is the
+  // intended next addition; until its texture-upload plumbing lands it
+  // also lands here.
+  //>>includeStart('debug', pragmas.debug);
+  if (defined(type) && !_warnedCustomGroundMaterialTypes.has(type)) {
+    _warnedCustomGroundMaterialTypes.add(type);
+    console.warn(
+      `[WebGPU:GroundPrimitive] material type="${type}" not natively ` +
+        "supported — falling back to flat color. " +
+        "Supported: Color, Stripe, Checkerboard, Grid. " +
+        "Image + custom materials are pending follow-up work.",
+    );
+  }
+  //>>includeEnd('debug');
+  return fallback;
+}
+
+/**
+ * Read the extent attributes from the primitive's first geometry
+ * instance and pack them into the UBO so the FS can recover surface
+ * UV from a depth-sampled fragment.
+ *
+ * Two paths, picked by the primitive's geometry (`GroundPrimitive`
+ * decides during `update` based on `MAX_WIDTH_FOR_PLANAR_EXTENTS`):
+ *
+ *   - **Planar** (small polygons, bounding rect < ~1°): per-instance
+ *     attributes `southWest_HIGH/LOW` + `eastward` + `northward`. The
+ *     un-normalized `eastward` / `northward` vectors are SW→SE and
+ *     SW→NW; their magnitudes are the east and north extents. CPU-
+ *     transformed to eye space (`mvRTE`) once per frame — FS does a
+ *     dot product per axis, no per-fragment matrix mul. Mirrors WebGL's
+ *     `ShadowVolumeAppearanceVS` lines 71-86 + `…FS` lines 63-64.
+ *
+ *   - **Spherical** (larger polygons): per-instance attributes
+ *     `sphericalExtents` (south, west, latRangeInv, lonRangeInv) +
+ *     `longitudeRotation` (IDL handling). The FS recovers the surface
+ *     world position via `invView × eyeCoord`, computes approximate
+ *     (lat, lon) from `atan2`, and applies the SW corner + range
+ *     inverses to get UV. Mirrors WebGL's `…FS` lines 54-60. `invView`
+ *     is packed once per frame from `uniformState.inverseView`.
+ *
+ * Writes `extentMode.x = 0` (planar) or `1` (spherical); the FS
+ * `surfaceUV` dispatches on it.
+ *
+ * Returns `true` if either extent path is wired, `false` if the
+ * primitive lacks both attribute sets (e.g. a non-textured
+ * GroundPrimitive that never went through `useFragmentCulling = true`).
+ *
+ * @private
+ */
+function packExtents(data, primitive, frameState) {
+  // Walk the wrapping chain: GroundPrimitive → ClassificationPrimitive
+  // → Primitive (mirrors the comment at the _webgpuGeometryData lookup
+  // site below). Lookup may fail during the first few frames before
+  // ClassificationPrimitive.update has run.
+  const inner = primitive?._primitive?._primitive;
+  if (!inner || !inner._instanceIds || inner._instanceIds.length === 0) {
+    return false;
+  }
+  // Read the extents DIRECTLY from the batch table by integer index,
+  // bypassing the public `getGeometryInstanceAttributes(id)` API which
+  // requires the GeometryInstance to have a defined `id`. The extents
+  // are per-instance attributes added by
+  // `ShadowVolumeAppearance.getPlanarTextureCoordinateAttributes`; we
+  // only care about the FIRST instance (multi-instance + per-instance
+  // materials is a follow-up). `_batchTableAttributeIndices` is the
+  // name → batch-table-index map populated when the inner Primitive's
+  // batch table is built (Primitive.js); ALL four extent attributes
+  // appear together (a planar-extent primitive has all or none).
+  const bt = inner._batchTable;
+  const indices = inner._batchTableAttributeIndices;
+  if (!bt || !indices) {
+    return false;
+  }
+
+  // Slot layout (recap):
+  //   swCornerEC   = 120..123 (planar only; 0 in spherical)
+  //   eastwardEC   = 124..127 (planar only)
+  //   northwardEC  = 128..131 (planar only)
+  //   extentMode   = 132..135 (.x = mode, .yz = inv extents, .w = lonRot)
+  //   sphericalSW  = 136..139 (.xy = (south, west); 0 in planar)
+  //   invView      = 140..155 (spherical only; identity in planar)
+
+  // Planar path: 4 attributes (southWest_HIGH/LOW + eastward + northward).
+  const swHIdx = indices.southWest_HIGH;
+  const swLIdx = indices.southWest_LOW;
+  const eastIdx = indices.eastward;
+  const northIdx = indices.northward;
+  if (
+    swHIdx !== undefined &&
+    swLIdx !== undefined &&
+    eastIdx !== undefined &&
+    northIdx !== undefined
+  ) {
+    const swH = bt.getBatchedAttribute(0, swHIdx);
+    const swL = bt.getBatchedAttribute(0, swLIdx);
+    const eastW = bt.getBatchedAttribute(0, eastIdx);
+    const northW = bt.getBatchedAttribute(0, northIdx);
+    if (!swH || !swL || !eastW || !northW) {
+      return false;
+    }
+    scratchSWHigh.x = swH.x;
+    scratchSWHigh.y = swH.y;
+    scratchSWHigh.z = swH.z;
+    scratchSWLow.x = swL.x;
+    scratchSWLow.y = swL.y;
+    scratchSWLow.z = swL.z;
+    scratchEastWorld.x = eastW.x;
+    scratchEastWorld.y = eastW.y;
+    scratchEastWorld.z = eastW.z;
+    scratchNorthWorld.x = northW.x;
+    scratchNorthWorld.y = northW.y;
+    scratchNorthWorld.z = northW.z;
+
+    // RTE delta to camera, then mvRTE to eye space. Mirrors the colorVS
+    // RTE form: rte = (pH - camH) + (pL - camL).
+    const camHigh = scratchEncodedCamera.high;
+    const camLow = scratchEncodedCamera.low;
+    scratchRTEDelta.x =
+      scratchSWHigh.x - camHigh.x + (scratchSWLow.x - camLow.x);
+    scratchRTEDelta.y =
+      scratchSWHigh.y - camHigh.y + (scratchSWLow.y - camLow.y);
+    scratchRTEDelta.z =
+      scratchSWHigh.z - camHigh.z + (scratchSWLow.z - camLow.z);
+    Matrix4.multiplyByPointAsVector(scratchMVRTE, scratchRTEDelta, scratchSWEC);
+    Matrix4.multiplyByPointAsVector(
+      scratchMVRTE,
+      scratchEastWorld,
+      scratchEastEC,
+    );
+    Matrix4.multiplyByPointAsVector(
+      scratchMVRTE,
+      scratchNorthWorld,
+      scratchNorthEC,
+    );
+
+    const eastExtent = Cartesian3.magnitude(scratchEastEC);
+    const northExtent = Cartesian3.magnitude(scratchNorthEC);
+    if (eastExtent < 1e-6 || northExtent < 1e-6) {
+      return false;
+    }
+    Cartesian3.divideByScalar(scratchEastEC, eastExtent, scratchEastEC);
+    Cartesian3.divideByScalar(scratchNorthEC, northExtent, scratchNorthEC);
+
+    data[120] = scratchSWEC.x;
+    data[121] = scratchSWEC.y;
+    data[122] = scratchSWEC.z;
+    data[123] = 0.0;
+    data[124] = scratchEastEC.x;
+    data[125] = scratchEastEC.y;
+    data[126] = scratchEastEC.z;
+    data[127] = 0.0;
+    data[128] = scratchNorthEC.x;
+    data[129] = scratchNorthEC.y;
+    data[130] = scratchNorthEC.z;
+    data[131] = 0.0;
+    // extentMode.x = 0 (planar), .y/z = inv extents.
+    data[132] = 0.0;
+    data[133] = 1.0 / eastExtent;
+    data[134] = 1.0 / northExtent;
+    data[135] = 0.0;
+    // Spherical slots zeroed.
+    data[136] = 0.0;
+    data[137] = 0.0;
+    data[138] = 0.0;
+    data[139] = 0.0;
+    for (let i = 140; i <= 155; i++) {
+      data[i] = 0.0;
+    }
+    return true;
+  }
+
+  // Spherical path: sphericalExtents (south, west, latRangeInv,
+  // lonRangeInv) + longitudeRotation. The FS recovers worldCoord from
+  // eyeCoord via invView, then takes (lat, lon) from atan2.
+  const sphIdx = indices.sphericalExtents;
+  const lonRotIdx = indices.longitudeRotation;
+  if (sphIdx === undefined) {
+    return false;
+  }
+  const sph = bt.getBatchedAttribute(0, sphIdx);
+  if (!sph) {
+    return false;
+  }
+  // The packer in ShadowVolumeAppearance writes
+  //   [south, west, latRangeInverse, longitudeRangeInverse]
+  // as a 4-component FLOAT attribute. `getBatchedAttribute` returns a
+  // Cartesian4-like object — index by .x .y .z .w in order.
+  const south = sph.x ?? sph[0];
+  const west = sph.y ?? sph[1];
+  const latInv = sph.z ?? sph[2];
+  const lonInv = sph.w ?? sph[3];
+  let longitudeRotation = 0.0;
+  if (lonRotIdx !== undefined) {
+    const lonRot = bt.getBatchedAttribute(0, lonRotIdx);
+    // `longitudeRotation` is a single-float attribute; the batch table
+    // wraps it as a scalar — accept both number and length-1 array.
+    longitudeRotation =
+      typeof lonRot === "number" ? lonRot : (lonRot?.x ?? lonRot?.[0] ?? 0.0);
+  }
+
+  // Planar slots zeroed (FS skips them when extentMode.x == 1).
+  for (let i = 120; i <= 131; i++) {
+    data[i] = 0.0;
+  }
+  // extentMode.x = 1 (spherical), .y = 1/latRange, .z = 1/lonRange,
+  // .w = longitudeRotation.
+  data[132] = 1.0;
+  data[133] = latInv;
+  data[134] = lonInv;
+  data[135] = longitudeRotation;
+  // sphericalSW.xy = (south, west).
+  data[136] = south;
+  data[137] = west;
+  data[138] = 0.0;
+  data[139] = 0.0;
+  // invView (16 floats, slots 140..155) — uniformState exposes
+  // `inverseView` for the active SceneMode. Used by the FS to recover
+  // worldCoord from eye coords for the (lat, lon) computation.
+  Matrix4.pack(frameState.context.uniformState.inverseView, data, 140);
+  return true;
+}
 
 /**
  * Build the three GroundPrimitive pipeline descriptors (stencil, color,
@@ -153,6 +541,59 @@ struct U {
   //      morph VS isn't dispatched so this slot is don't-care.
   // .yzw = reserved.
   morphFlags: vec4<f32>,
+  // NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — material dispatch.
+  //
+  // invProj — inverse projection matrix (uniformState.inverseProjection).
+  // Used by the FS to recover eye-space from window XY + sampled depth
+  // (mirrors GroundPolyline's windowToEyeCoordinates).
+  invProj: mat4x4<f32>,
+  // materialMeta.x = materialType enum:
+  //   0 = Color (default; FS returns o.col from VS — fast path, no UV)
+  //   1 = Stripe (evenColor + oddColor + repeat + offset + orientation)
+  //   2 = Checkerboard (lightColor + darkColor + repeat)
+  //   3 = Grid (color + cellAlpha + lineCount + lineThickness)
+  //   4 = Image  (uniforms.image sampled at (s,t); reserved -- texture
+  //              upload plumbing is a follow-up Tier 4)
+  // materialMeta.y/z = reserved (Image-material repeat will land here).
+  materialMeta: vec4<f32>,
+  materialColor: vec4<f32>,
+  materialParam0: vec4<f32>,
+  materialParam1: vec4<f32>,
+  // Planar-extent fields (CPU-transformed to eye space). Valid when
+  // extentMode.x == 0 (primitive built with planar extents -- bounding
+  // rect smaller than MAX_WIDTH_FOR_PLANAR_EXTENTS, ~1 degree). Zero
+  // in spherical mode.
+  //   swCornerEC.xyz   = SW corner of the polygon in eye space.
+  //   eastwardEC.xyz   = unit east direction at SW in eye space.
+  //   northwardEC.xyz  = unit north direction at SW in eye space.
+  swCornerEC: vec4<f32>,
+  eastwardEC: vec4<f32>,
+  northwardEC: vec4<f32>,
+  // extentMode.x = 0 (planar) | 1 (spherical) -- selects the FS path.
+  // extentMode.y = 1/eastExtent  (planar) | 1/latRange (spherical)
+  // extentMode.z = 1/northExtent (planar) | 1/lonRange (spherical)
+  // extentMode.w = longitudeRotation (spherical, for IDL handling)
+  //                | pad (planar)
+  extentMode: vec4<f32>,
+  // Spherical-extent fields. Valid when extentMode.x == 1.
+  //   sphericalSW.xy = (south, west) -- (lat, lon) of SW corner in
+  //     radians. UV recovery in the FS:
+  //       worldPos    = invView * vec4(eyeCoord, 1.0)
+  //       (lat, lon)  = approximateSpherical(worldPos)
+  //       lon        += extentMode.w  (longitudeRotation; IDL shift)
+  //       u           = (lon - sphericalSW.y) * extentMode.z
+  //       v           = (lat - sphericalSW.x) * extentMode.y
+  //     Mirrors WebGL's ShadowVolumeAppearanceFS SPHERICAL branch
+  //     (ShadowVolumeAppearanceFS.glsl lines 54-65).
+  sphericalSW: vec4<f32>,
+  invView: mat4x4<f32>,
+  // frustum.xy = (near, far) of the CURRENT frustum slice. Used by
+  // windowToEye to reverse log-depth back to the camera-distance value
+  // clipW = exp2(logDepth * log2(1+far)) - 1. Cesium's WebGPU pipeline
+  // turns on useLogDepth by default and the globe-depth pass writes
+  // log-encoded depth -- treating it as linear NDC z gives an eye-z
+  // pinned at the far plane (uniform "red polygon" in the diagnostic).
+  frustum: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 
@@ -201,13 +642,193 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
   return dot(packed, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
 }
 
+// NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — log-depth aware
+// eye-coord recovery from depth-sampled fragment. Cesium WebGPU's
+// globe-depth pass writes LOG-encoded depth via csm_writeLogDepth:
+//   stored = log2(1 + clipW) / log2(1 + far)
+// where clipW = -eye.z is the positive distance from camera. Reverse:
+//   clipW = exp2(stored * log2(1 + far)) - 1
+// Then for a centered perspective (SCENE3D), eye.x and eye.y derive
+// directly from NDC.x/.y scaled by clipW and the projection focal
+// length (invProj diagonal). This bypasses the multi-frustum invProj
+// trap (each frustum slice has its own invProj, but log depth gives a
+// unified distance-from-camera value usable across slices).
+fn reverseLogDepth(storedDepth: f32, far: f32) -> f32 {
+  let log2DepthPlusOne = storedDepth * log2(1.0 + far);
+  return exp2(log2DepthPlusOne) - 1.0;
+}
+
+fn windowToEye(fragXY: vec2<f32>, storedDepth: f32) -> vec3<f32> {
+  let clipW = reverseLogDepth(storedDepth, u.frustum.y);
+  // NDC.xy from window XY. WebGPU NDC y is +up; window y is +down --
+  // flip. WebGPU NDC z is [0, 1] (vs WebGL [-1, 1]) but we already
+  // reversed the depth via reverseLogDepth, so the z piece is handled.
+  var ndcXY = (fragXY / u.viewport.zw) * 2.0 - 1.0;
+  ndcXY.y = -ndcXY.y;
+  // Centered-perspective assumption: P02 = P12 = 0, so invProj's [0][0]
+  // and [1][1] entries are 1/P00 and 1/P11 (focal lengths inverted).
+  // For off-center frustums (SCENE2D / Columbus View shears), an extra
+  // P02/P12 term would be needed -- deferred since the test path is
+  // SCENE3D and the planar-extents path is mostly used at small scales.
+  let eyeZ = -clipW;
+  let eyeX = ndcXY.x * clipW * u.invProj[0][0];
+  let eyeY = ndcXY.y * clipW * u.invProj[1][1];
+  return vec3<f32>(eyeX, eyeY, eyeZ);
+}
+
+// UV recovery for the depth-sampled surface point. Dispatches on
+// extentMode.x: 0 = planar (CPU-transformed eye-space frame; dot
+// products give normalized UV), 1 = spherical (recover worldCoord via
+// invView, take approximate spherical (lat, lon), subtract SW corner +
+// scale by 1/range). Mirrors WebGL's ShadowVolumeAppearanceFS lines
+// 53-65.
+fn surfaceUV(eyeCoord: vec3<f32>) -> vec2<f32> {
+  let mode = u.extentMode.x;
+  if (mode < 0.5) {
+    // Planar path.
+    let toSW = eyeCoord - u.swCornerEC.xyz;
+    let s = dot(u.eastwardEC.xyz,  toSW) * u.extentMode.y;
+    let t = dot(u.northwardEC.xyz, toSW) * u.extentMode.z;
+    return vec2<f32>(s, t);
+  }
+  // Spherical path. Eye-space → world (ECEF) via invView. The 4th
+  // homogeneous component is 1 since eyeCoord is a position.
+  let worldH = u.invView * vec4<f32>(eyeCoord, 1.0);
+  let world = worldH.xyz / worldH.w;
+  // czm_approximateSphericalCoordinates uses Cesium's
+  // czm_fastApproximateAtan(arg1, arg2) which returns arctan(arg2/arg1)
+  // in the right quadrant -- i.e. EQUIVALENT to standard atan2(arg2,
+  // arg1) (the implementation uses opposite/adjacent ratio with
+  // adjacent=first arg, opposite=second arg). So:
+  //   Cesium lat = czm_fastApproximateAtan(magXY, z) == std atan2(z, magXY)
+  //   Cesium lon = czm_fastApproximateAtan(x,     y) == std atan2(y, x)
+  // WGSL atan2(y, x) IS std atan2. ShadowVolumeAppearance builds the
+  // packed sphericalExtents on the JS side via the same
+  // CesiumMath.fastApproximateAtan2 convention, so the FS conventions
+  // MUST match exactly -- swap and the polygon shows a wide gradient
+  // instead of a polygon-aligned texture.
+  let magXY = sqrt(world.x * world.x + world.y * world.y);
+  let latitude = atan2(world.z, magXY);
+  var longitude = atan2(world.y, world.x);
+  // IDL handling: shift longitude by longitudeRotation then wrap into
+  // (-pi, pi]. WebGL's czm_branchFreeTernary is just a sign-trick mix;
+  // the explicit conditional is fine here -- per-fragment but the
+  // branch is uniform within the polygon (longitudeRotation is a
+  // per-primitive constant).
+  longitude += u.extentMode.w;
+  let TWO_PI = 6.283185307179586;
+  let PI = 3.141592653589793;
+  if (longitude > PI) {
+    longitude -= TWO_PI;
+  }
+  let s = (longitude - u.sphericalSW.y) * u.extentMode.z;
+  let t = (latitude  - u.sphericalSW.x) * u.extentMode.y;
+  return vec2<f32>(s, t);
+}
+
+// Apply material at (s, t). materialMeta.x selects among supported
+// material types (see UBO doc above). The Color path is handled by the
+// caller (dsColorFS) — calling applyMaterial with materialType==0 still
+// returns materialColor as a safe fallback so the function is well-
+// defined for any input.
+fn applyMaterial(st: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
+  let materialType = u32(u.materialMeta.x);
+
+  if (materialType == 1u) {
+    // Stripe. Mirrors StripeMaterial.glsl:
+    //   evenColor (materialColor) -- "on" stripe
+    //   oddColor  (materialParam1) -- "off" stripe
+    //   repeat    (materialParam0.x) -- WebGL halves this: stripe pairs
+    //             span (repeat * 0.5) cycles across the polygon.
+    //   offset    (materialParam0.y) -- phase shift
+    //   horizontal (materialParam0.z) -- 1 = HORIZONTAL stripes (lines
+    //              along east, variation along t/north), 0 = VERTICAL
+    //              stripes (lines along north, variation along s/east).
+    //              WebGL: coord = mix(s, t, horizontal).
+    let repeat = u.materialParam0.x;
+    let offset = u.materialParam0.y;
+    let horizontal = u.materialParam0.z;
+    let coord = mix(st.x, st.y, horizontal);
+    let value = fract((coord - offset) * (repeat * 0.5));
+    // step + mix mirrors WebGL: 0 .. 0.5 = even, 0.5 .. 1 = odd.
+    if (value < 0.5) {
+      return u.materialColor;
+    }
+    return u.materialParam1;
+  }
+
+  if (materialType == 2u) {
+    // Checkerboard. Mirrors CheckerboardMaterial.glsl (and the
+    // condensed GroundPolyline applyMaterial Checkerboard branch):
+    //   lightColor (materialColor)
+    //   darkColor  (materialParam1)
+    //   repeat     (materialParam0.xy)
+    let repeatS = u.materialParam0.x;
+    let repeatT = u.materialParam0.y;
+    let parity = (floor(repeatS * st.x) + floor(repeatT * st.y)) % 2.0;
+    let scaledW = fract(repeatS * st.x);
+    let scaledH = fract(repeatT * st.y);
+    let dW = abs(scaledW - floor(scaledW + 0.5));
+    let dH = abs(scaledH - floor(scaledH + 0.5));
+    let aaDist = min(dW, dH);
+    let lightColor = u.materialColor;
+    let darkColor = u.materialParam1;
+    let solidColor = mix(lightColor, darkColor, parity);
+    let fade = smoothstep(0.0, 0.03, aaDist);
+    return mix(lightColor, solidColor, fade);
+  }
+
+  if (materialType == 3u) {
+    // Grid. Mirrors GridMaterial.glsl (simplified — no anisotropic AA
+    // adjustment for distance, just the in-cell line/cell blend):
+    //   color         (materialColor) -- line + cell tint
+    //   cellAlpha     (materialParam0.x)
+    //   lineCount     (materialParam0.yz)
+    //   lineThickness (materialParam1.xy) -- in pixels (approx, since
+    //                  the FS doesn't have screen-space derivatives here)
+    let cellAlpha = u.materialParam0.x;
+    let lineCountS = u.materialParam0.y;
+    let lineCountT = u.materialParam0.z;
+    let thicknessS = u.materialParam1.x;
+    let thicknessT = u.materialParam1.y;
+    // Cell-relative position (0..1 within each cell).
+    let cellS = fract(st.x * lineCountS);
+    let cellT = fract(st.y * lineCountT);
+    // Distance to nearest cell border (in cell-fraction units).
+    let dS = min(cellS, 1.0 - cellS);
+    let dT = min(cellT, 1.0 - cellT);
+    // Convert thickness from "pixels" to cell-fraction. Use 1 / (cellSize
+    // in pixels) ~= lineCount / viewportDim. Fixed 1/64 approximation
+    // works for typical zooms — exact match to WebGL requires per-pixel
+    // derivative-based thickness, deferred.
+    let cellFracPerPixelS = lineCountS / max(u.viewport.z, 1.0);
+    let cellFracPerPixelT = lineCountT / max(u.viewport.w, 1.0);
+    let lineHalfS = max(thicknessS * 0.5 * cellFracPerPixelS, 0.001);
+    let lineHalfT = max(thicknessT * 0.5 * cellFracPerPixelT, 0.001);
+    let onLine = dS < lineHalfS || dT < lineHalfT;
+    let baseColor = u.materialColor;
+    if (onLine) {
+      return baseColor;
+    }
+    // Cell interior: faint version of baseColor.
+    return vec4<f32>(baseColor.rgb, baseColor.a * cellAlpha);
+  }
+
+  // materialType == 0 (Color): caller already returned via the fast
+  // path; any unrecognized type also falls through to the fallback.
+  return fallbackColor;
+}
+
 // Depth-sample classifier. Samples the depth source (globe-depth or
 // packed-translucent-depth, swapped at draw time by the bind-group
 // resolver) at the fragment's screen-space position; discards where the
 // surface wrote no depth (sky / nothing classifiable). The volume's
-// rasterization handles lateral coverage. For the per-instance-color
-// case this is pixel-equivalent to WebGL's ShadowVolumeAppearanceFS
-// without CULL_FRAGMENTS / NORMAL_EC / TEXTURE_COORDINATES branches.
+// rasterization handles lateral coverage. Per-instance-color path is
+// pixel-equivalent to WebGL's ShadowVolumeAppearanceFS PER_INSTANCE_COLOR
+// + FLAT branch. NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) added the
+// material path: when materialMeta.x != 0, recover eye-space from
+// window+depth, compute planar UV from the per-primitive extent fields,
+// dispatch to the matching applyMaterial branch.
 @fragment fn dsColorFS(i: CO) -> @location(0) vec4<f32> {
   let screenUV = i.pos.xy / u.viewport.zw;
   let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
@@ -215,7 +836,27 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
   if (surfaceDepth == 0.0) {
     discard;
   }
-  return i.col;
+  // Fast path: per-instance / appearance flat color. No UV or material
+  // dispatch needed.
+  let materialType = u32(u.materialMeta.x);
+  if (materialType == 0u) {
+    return i.col;
+  }
+  // Material path: recover eye-space, compute planar UV, apply material.
+  // NOTE (Batch 171): the depth-to-eye-coord recovery is currently
+  // approximate in multi-frustum scenes -- u.frustum / u.invProj are
+  // packed once per packUniforms call (per-frame) but Cesium's WebGPU
+  // multi-frustum renderer rebinds currentFrustum PER SLICE during
+  // the draw loop. Until a per-slice UBO refresh lands, textured
+  // materials may render with off-axis UVs at certain camera distances.
+  // The flat-color Color path is unaffected (it doesn't read UV).
+  let ec = windowToEye(i.pos.xy, surfaceDepth);
+  let st = surfaceUV(ec);
+  let outColor = applyMaterial(st, i.col);
+  // Premultiply alpha to match WebGL ShadowVolumeAppearanceFS's
+  // out_FragColor.rgb *= out_FragColor.a (classification primitives
+  // ride on a translucent-friendly blend state).
+  return vec4<f32>(outColor.rgb * outColor.a, outColor.a);
 }
 
 @fragment fn dsPickFS(i: CO) -> @location(0) vec4<f32> {
@@ -761,7 +1402,14 @@ function tryResolveGroundPrimitiveMorphPipelines(
   return true;
 }
 
-function packUniforms(data, frameState, modelMatrix, color, pickColor) {
+function packUniforms(
+  data,
+  frameState,
+  modelMatrix,
+  color,
+  pickColor,
+  primitive,
+) {
   const uniformState = frameState.context.uniformState;
   // Use uniformState.view/projection for 2D/Columbus View support
   Matrix4.multiply(uniformState.view, modelMatrix, scratchModelView);
@@ -880,6 +1528,77 @@ function packUniforms(data, frameState, modelMatrix, color, pickColor) {
   data[85] = 0.0;
   data[86] = 0.0;
   data[87] = 0.0;
+
+  // NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — material dispatch slots.
+  //
+  // invProj (floats 88..103) — inverse projection, mode-correct
+  // (uniformState.inverseProjection is rebuilt every frame from the active
+  // SceneMode's projection). Used by `windowToEye` in the FS.
+  Matrix4.pack(uniformState.inverseProjection, data, 88);
+
+  // Resolve material state. The Color (type 0) path skips planar-extent
+  // packing because dsColorFS short-circuits to `i.col` — no UV / no
+  // dot-product / no FS-side dispatch. Stripe / Checkerboard / Grid all
+  // need the extents; pack them OR fall back to Color if the primitive
+  // lacks the planar-extent attributes (spherical path or missing).
+  const materialState = primitive ? resolveMaterialState(primitive) : null;
+  const matType = materialState?.type ?? 0;
+  if (matType !== 0 && primitive) {
+    const haveExtents = packExtents(data, primitive, frameState);
+    if (!haveExtents) {
+      // No extents at all — fall back to Color so the primitive still
+      // classifies (just as flat color). Logged once via the
+      // resolveMaterialState's custom-material path.
+      data[104] = 0.0;
+    } else {
+      data[104] = matType;
+    }
+  } else {
+    data[104] = 0.0;
+  }
+  data[105] = 0.0;
+  data[106] = 0.0;
+  data[107] = 0.0; // materialMeta.yzw
+
+  // materialColor (floats 108..111).
+  const mc = materialState?.color ?? [1.0, 1.0, 1.0, 1.0];
+  data[108] = mc[0];
+  data[109] = mc[1];
+  data[110] = mc[2];
+  data[111] = mc[3];
+  // materialParam0 (floats 112..115).
+  const mp0 = materialState?.param0 ?? [0.0, 0.0, 0.0, 0.0];
+  data[112] = mp0[0];
+  data[113] = mp0[1];
+  data[114] = mp0[2];
+  data[115] = mp0[3];
+  // materialParam1 (floats 116..119).
+  const mp1 = materialState?.param1 ?? [0.0, 0.0, 0.0, 0.0];
+  data[116] = mp1[0];
+  data[117] = mp1[1];
+  data[118] = mp1[2];
+  data[119] = mp1[3];
+
+  // Extents (floats 120..155) — packExtents wrote these if the material
+  // path is active. Zero them out otherwise so the FS dispatch reading
+  // them gets deterministic safe values (dsColorFS's fast path won't
+  // even touch them when matType==0).
+  if (matType === 0 || !primitive) {
+    for (let i = 120; i <= 155; i++) {
+      data[i] = 0.0;
+    }
+  }
+
+  // frustum.xy = (near, far) of the CURRENT frustum slice. Pulled from
+  // uniformState.currentFrustum which Cesium updates per-frustum-band
+  // during multi-frustum rendering. Used by windowToEye to reverse log
+  // depth back to linear distance-from-camera. Pack unconditionally
+  // (cheap; the dsColorFS fast path skips reading it when matType=0).
+  const cf = uniformState.currentFrustum;
+  data[156] = cf?.x ?? 0.1; // near
+  data[157] = cf?.y ?? 1.0e8; // far
+  data[158] = 0.0;
+  data[159] = 0.0;
 }
 
 /**
@@ -1082,7 +1801,14 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   });
   const pickColor = pickId?.color;
 
-  packUniforms(cache.uniformData, frameState, modelMatrix, color, pickColor);
+  packUniforms(
+    cache.uniformData,
+    frameState,
+    modelMatrix,
+    color,
+    pickColor,
+    primitive,
+  );
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,

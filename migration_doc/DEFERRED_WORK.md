@@ -863,13 +863,15 @@ as the reference implementation.
 
 ### NEW-GROUNDPRIM-TEXTURED-MATERIALS — textured (Image / Stripe / Grid / etc.) GroundPrimitive classification on WebGPU
 
-**What:** `WebGPUGroundPrimitiveRenderer` supports **flat color only** — it reads `primitive.appearance.material.uniforms.color` and emits a single `u.color` per primitive. There is NO UV computation, planar/spherical extents handling, or texture sampling in ANY scene mode. So a `GroundPrimitive` with a textured material (Image, Stripe, Grid, Checkerboard, …) classifies as a flat untextured color on WebGPU (WebGL renders the full material).
+**Status (Batch 171, partial):** Material dispatch INFRASTRUCTURE landed (~~~250 LOC across WGSL + JS). UBO extended 384 → 640 bytes carrying `invProj`, `materialMeta` / `materialColor` / `materialParam0/1`, planar-extent eye-space frame (`swCornerEC` / `eastwardEC` / `northwardEC`), spherical-extent params (`sphericalSW` + `invView`), and `frustum.xy = (near, far)`. WGSL `applyMaterial` dispatches on `materialMeta.x` with branches for Color (works), Stripe, Checkerboard, Grid (UV-correct but rendering off-axis — see blocker below). `resolveMaterialState` reads `Material.uniforms` per Cesium's API conventions (e.g. `horizontal: bool` for Stripe, not the `StripeOrientation` enum). `packExtents` reads per-instance extent attrs directly from `inner._batchTable.getBatchedAttribute(0, idx)` (bypasses the `getGeometryInstanceAttributes(id)` requirement so a GeometryInstance without an `id` works). `surfaceUV` dispatches between planar (CPU-transformed eye-space dot products) and spherical (`invView × eyeCoord` → approximate spherical with Cesium's `atan2(magXY, z)` + `atan2(x, y)` conventions). **0 device errors** across all materials in `probe-classifier-textured-materials.mjs`; Color material renders correctly.
+
+**Remaining blocker — NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (see below):** the FS recovers eye-coord from depth via `u.invProj` × clip-space, but `invProj` + `frustum` are packed once per `packUniforms` (per frame) while Cesium's WebGPU multi-frustum renderer rebinds the per-slice projection at draw time. With a single UBO value the FS reverse-projects depth using the wrong matrix in some slices, giving off-axis UVs — Stripe / Checkerboard / Grid render with variance well below WebGL (probe shows ~45 / 45 / 19 vs WebGL's 5578 / 6340 / 2373). Color path is unaffected (it doesn't read UV).
 
 **Re-scope note (Batch 161):** This was previously mis-filed inside NEW-CLASSIFIER-2D-CV-MORPH as "`_needs2DShader` primitives gated in non-3D modes pending a WGSL `appearance2D` equivalent." That framing was wrong: textured GroundPrimitives aren't rendered in 3D either, so it's not a 2D/CV projection gap — it's a missing textured-material classification path. The `GroundPolylineRenderer`'s `applyMaterial()` (8 inline material types incl. Image texture sampling) is the reference template.
 
-**Scope:** Port the material system to the GroundPrimitive depth-sample classifier — extents attributes (`_hasPlanarExtentsAttributes` / `_hasSphericalExtentsAttribute`) → per-fragment UV, plus an `applyMaterial`-style WGSL FS dispatch. Once textured 3D works, the 2D/CV variant (WebGL's `appearance2D`) layers on top.
+**Remaining scope after Batch 171:** (a) Solve NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO so the depth → eye-coord recovery is correct in all slices. (b) Add Image material support (texture upload + sampler binding — separate Group 2 BGL extension following the GroundPolyline pattern). (c) Then the 2D/CV variant (WebGL's `appearance2D`) — but the Batch 170 `.zxy` swizzle already places the polygon correctly in 2D; the textured FS just needs to land first.
 
-**Why deferred:** A material-system port (~several hundred LOC of WGSL + uniform/texture plumbing), well beyond the 2D/CV/Morph scope it was hiding under. Low demand vs the flat-color path that covers most classification use.
+**Why partial:** Hit a Cesium-wide architectural boundary (per-slice UBO refresh) that's bigger than the material dispatch itself. Landing the infrastructure now de-risks the material port; the per-slice plumbing is its own targeted slice.
 
 **2D-case progress (Batches 165 → 169):** The over-broad `_needs2DShader` non-3D skip is now **removed** (Batch 169) — the renderer is flat-color-only, so a flat-color polygon doesn't need appearance2D to render in 2D. The chain of 2D blockers peeled back as each was fixed:
 
@@ -880,7 +882,29 @@ as the reference implementation.
 
 **Order of operations (updated):** ✅ globe-2D (167) → ✅ skip removed (169) → ✅ VS-side .zxy swizzle for 2D RTE (170; resolves NEW-CLASSIFIER-GROUNDPRIM-2D-RTE) → flat-color 2D classification ships → ⬜ THEN (separately) the appearance2D textured path (this entry — NEW-GROUNDPRIM-TEXTURED-MATERIALS).
 
-**Trace:** Batch 161 (re-scoped out of NEW-CLASSIFIER-2D-CV-MORPH); Batch 165 (2D-globe blocker found); `WebGPUGroundPrimitiveRenderer.js` (`packUniforms` color-only + the `_needs2DShader` skip comment); `WebGPUGroundPolylineRenderer.js::applyMaterial` reference.
+**Trace:** Batch 161 (re-scoped out of NEW-CLASSIFIER-2D-CV-MORPH); Batch 165 (2D-globe blocker found); Batch 171 (material dispatch infrastructure landed; identified per-slice UBO blocker); `WebGPUGroundPrimitiveRenderer.js::applyMaterial` + `surfaceUV` + `packExtents`; `WebGPUGroundPolylineRenderer.js::applyMaterial` reference.
+
+---
+
+### NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO — depth → eye-coord recovery uses stale UBO frustum/invProj in multi-frustum WebGPU
+
+**What:** The GroundPrimitive depth-sample classifier FS recovers eye-space from a depth-sampled fragment via `eyeHomog = u.invProj * vec4(ndcXY, depthValue, 1)`, then computes the polygon-relative UV. This relies on `u.invProj` (and, with the Batch 171 log-depth path, `u.frustum.xy`) matching the projection that produced the depth value being read. In multi-frustum WebGPU rendering, the per-slice projection / `currentFrustum` changes per draw, but the GroundPrimitive UBO is packed ONCE per `packUniforms` (per frame, at `Scene.update` time, with whatever `uniformState.currentFrustum` was at that moment — typically the last slice of the prior frame or the camera's full frustum). The FS therefore uses the wrong matrix for slices other than the one the UBO was sampled in, producing off-axis UVs that pin the material at `clamp(0, 1)` (mostly flat-color appearance).
+
+**Symptom:** With the Batch 171 material dispatch live, Stripe / Checkerboard / Grid `GroundPrimitive`s render close to flat: variance 19-65 vs WebGL's 2300-9000. The polygon footprint matches WebGL exactly (litR = 1.00), the discard test fires correctly on sky pixels, and the materialType is correctly resolved — only the UV is broken. The flat-color Color path is unaffected because it doesn't read UV.
+
+**How this surfaces in WebGL (and why it works there):** Cesium WebGL binds `czm_inverseProjection` and `czm_currentFrustum` as AUTOMATIC uniforms re-evaluated per draw. Each frustum-slice draw therefore reads the correct per-slice matrices, and `czm_windowToEyeCoordinates` reverses cleanly. In WebGPU the corresponding values are baked into the per-primitive UBO at update time, so the per-slice rebind never reaches the FS.
+
+**Scope:** Pick ONE of these strategies and wire it through `WebGPUGroundPrimitiveRenderer` (then mirror to `WebGPUGroundPolylineRenderer` and any other classification renderer that takes the depth-sample path):
+
+1. **Secondary frustum-state UBO with a bind-group resolver.** Add a tiny `frustumUB` carrying `invProj` (mat4) + `currentFrustum` (vec2) + reserved padding. Bind it as Group 1 Binding 2 (or a new Group 3) and resolve it at draw time via the existing `bindGroupResolvers` contract (Migration Session 3) — same pattern the depth-source view swap uses. Cheapest in renderer surface area; cost is one extra small UBO + per-slice bind-group cycle.
+2. **Dynamic UBO offsets.** Allocate a 256-byte-aligned per-slice region in the main UBO and use `setBindGroup`'s dynamic offset array per draw. Avoids the extra binding; cost is per-slice UBO upload bookkeeping.
+3. **Push constants** (WebGPU API extension; not portable yet). Skip for now.
+
+Either #1 or #2 needs the per-slice `invProj` / `currentFrustum` snapshot exposed somewhere the WebGPU draw loop can reach — probably `WebGPUSceneRenderer`'s per-frustum hook, broadcasting via `context._currentFrustumProjection` or similar, mirroring how `_globeDepthView` is published per-slice.
+
+**Why deferred:** Cuts across the WebGPU multi-frustum architecture (renderer + classifier renderers + uniform plumbing). Material dispatch infrastructure (the larger work) landed first in Batch 171 to de-risk this slice; the per-slice fix is its own focused session.
+
+**Trace:** Batch 171 (identified during NEW-GROUNDPRIM-TEXTURED-MATERIALS material-path validation); `WebGPUGroundPrimitiveRenderer.js::packUniforms` (`Matrix4.pack(uniformState.inverseProjection, data, 88)` + `data[156]/157 = currentFrustum.xy` happen once per frame); `WebGPUGroundPrimitiveRenderer.js::dsColorFS` `windowToEye` consumer; `Tools/visual-regression/probe-classifier-textured-materials.mjs` regression guard.
 
 ---
 
