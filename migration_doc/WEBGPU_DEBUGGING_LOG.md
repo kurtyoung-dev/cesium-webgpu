@@ -9204,3 +9204,39 @@ The visible error is a *cascade*: it fires at the NEXT frame's `beginFrame`, mas
 ### Probes
 
 - `Tools/visual-regression/probe-classifier-2d-renderpass.mjs` (new) — focused diagnostic: drives the 2D GroundPrimitive path, captures the first thrown exception + stack + leaked pass label. Reusable template for "render pass left open" cascades.
+
+---
+
+## Batch 167 — WebGPU globe blank at regional 2D zoom (resolves NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM)
+
+**Bug:** 167.1
+**File(s) affected:** `packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js`
+
+### Symptom
+
+In SCENE2D / Columbus View, the WebGPU globe rendered at full-globe zoom (~38 Mm) but blank at regional zoom (~2.4 Mm) — where WebGL showed the regional map. Zoom-dependent.
+
+### Root cause
+
+The WebGPU globe draw command was built with `cull: true` + a **3D-ECEF bounding volume** (`boundingVolume: tileBR.boundingSphere`, `orientedBoundingBox: tileBR.boundingVolume`, both from `surfaceTile.tileBoundingRegion`, centered ~6.4 Mm from the ECEF origin). The per-command GPU frustum culler (`WebGPUSceneRenderer.ts:~3220`) tested those 3D-ECEF volumes against the **2D PROJECTED** frustum. At regional zoom the small 2D frustum is nowhere near the ECEF sphere → every tile culled → blank. At full-globe zoom the huge frustum straddles the sphere by coincidence → renders.
+
+### Fix
+
+In non-3D modes drop the 3D bounding volume + per-command cull on the globe command (`boundingVolume`/`orientedBoundingBox` undefined, `cull: false`). The `QuadtreePrimitive` already does the authoritative mode-correct visibility cull when selecting tiles to render, so the per-command cull is redundant in 2D/CV and was actively wrong. SCENE3D unchanged.
+
+### Verification
+
+`Tools/visual-regression/probe-2d-globe-render.mjs` (new): regional 2D over Lake Superior — WebGPU **250 000 px vs WebGL 233 397** (ratio 1.07, was ~0), full-globe ratio 1.45, 0 device errors. Great Lakes region visible in the PNG.
+
+### Diagnostic note
+
+The path was long because timing-sensitive intermediate DIAGs gave conflicting reads (a `selectPipeline`-null snapshot over 4 warm-up frames falsely implicated the pipeline cache — Batch 166). The decisive tests: (a) magenta-FS override → tiles produced 0 on-screen fragments at regional 2D; (b) hardcoded full-screen vertex position → STILL 0 fragments, proving the draw never executed (transform-independent) → pointed at execution-time culling, which the 3D-ECEF bounding volume confirmed.
+
+### Files modified
+
+- `packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js` — non-3D globe command drops the 3D bounding volume + per-command cull.
+
+### Probes
+
+- `Tools/visual-regression/probe-2d-globe-render.mjs` (new) — regional + full-globe 2D render guard (WebGL vs WebGPU lit-pixel ratio).
+- `Tools/visual-regression/probe-2d-zoom-globe.mjs` (Batch 166) — tile-count + frustum diff entry-point diagnostic.

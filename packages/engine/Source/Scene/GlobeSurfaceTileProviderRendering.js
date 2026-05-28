@@ -909,13 +909,35 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
 
   for (let p = 0; p < cmdDescs.length; p++) {
     const cmdDesc = cmdDescs[p];
+    // NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM (Batch 167) — in non-3D scene modes
+    // the per-command frustum cull must NOT use the tile's 3D-ECEF bounding
+    // volume. `tileBR.boundingSphere` / `.boundingVolume` live in 3D ECEF
+    // space (centered ~6.4 Mm from the origin); culling them against the
+    // 2D / Columbus PROJECTED frustum rejected EVERY tile at regional zoom
+    // (the small frustum's planes are nowhere near the ECEF sphere), so the
+    // WebGPU globe rendered blank when zoomed in — it survived only at
+    // full-globe zoom where the frustum is huge enough to straddle the sphere
+    // by coincidence. The QuadtreePrimitive already performs the
+    // authoritative, mode-correct visibility cull when it selects the tiles
+    // to render, so dropping the redundant 3D bounding volume here is safe:
+    // the tiles drawn are exactly the visible ones. SCENE3D keeps the 3D
+    // volume for its per-command cull optimization.
+    const non3D = frameState.mode !== SceneMode.SCENE3D;
     const command = {
       pass: Pass.GLOBE,
       owner: tile,
-      cull: true,
+      cull: !non3D,
       enabled: true,
-      boundingVolume: tileBR ? tileBR.boundingSphere : undefined,
-      orientedBoundingBox: tileBR ? tileBR.boundingVolume : undefined,
+      boundingVolume: non3D
+        ? undefined
+        : tileBR
+          ? tileBR.boundingSphere
+          : undefined,
+      orientedBoundingBox: non3D
+        ? undefined
+        : tileBR
+          ? tileBR.boundingVolume
+          : undefined,
       _pipeline: cmdDesc.pipeline,
       _bindGroups: cmdDesc.bindGroups,
       _vertexBuffer: cmdDesc.vertexBuffer,

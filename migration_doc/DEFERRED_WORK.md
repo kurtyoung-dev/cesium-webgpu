@@ -877,31 +877,19 @@ as the reference implementation.
 
 ---
 
-### NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM — WebGPU globe vanishes at regional 2D zoom (LOCALIZED Batch 166: `selectPipeline` returns null → tiles skipped)
+### ~~NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM~~ — RESOLVED (Batch 167) — WebGPU globe vanished at regional 2D zoom
 
-**What:** In `SceneMode.SCENE2D`, the WebGPU globe surface renders at full-globe zoom (camera height ~38 Mm — the world map draws, comparable pixel coverage to WebGL) but renders **nothing** at regional zoom (camera height ~2.4 Mm — fully blank where WebGL shows the regional map). Found Batch 165 while investigating why 2D GroundPrimitive classification shows nothing.
+**What:** In `SceneMode.SCENE2D` (and Columbus View), the WebGPU globe rendered at full-globe zoom (camera ~38 Mm) but **nothing** at regional zoom (~2.4 Mm) — fully blank where WebGL showed the regional map. Found Batch 165; resolved Batch 167.
 
-**Evidence (Batch 165 ad-hoc probes, WebGL vs WebGPU, same camera + frame budget):**
+**Root cause (Batch 167):** the globe draw command (built in `GlobeSurfaceTileProviderRendering.js`, the WebGPU branch) was created with `cull: true` and a **3D-ECEF bounding volume** — `boundingVolume: tileBR.boundingSphere`, `orientedBoundingBox: tileBR.boundingVolume`, both from `surfaceTile.tileBoundingRegion` (centered ~6.4 Mm from the origin in ECEF space). The per-command frustum cull (the GPU culler at `WebGPUSceneRenderer.ts:~3220`, which tests `command.boundingVolume.center` against the frustum planes) then ran those 3D-ECEF volumes against the **2D PROJECTED** frustum. At regional zoom the small 2D frustum's planes are nowhere near the ECEF sphere → every tile culled → blank. At full-globe zoom the frustum is huge enough to straddle the sphere by coincidence → tiles survive → renders. (This is why it was zoom-dependent.)
 
-- Full-globe 2D (`setView` rectangle −170..170 / −80..80, camH ≈ 37.8 Mm): WebGL 263 727 non-dark px, **WebGPU 289 772** — comparable, globe renders (world map visible in the screenshot).
-- Regional 2D (`setView` to −97.5°, 41.5°, 2.4 Mm nadir): WebGL 345 759 non-dark px, **WebGPU ~0** (only UI chrome) — globe blank.
+**Fix:** in non-3D scene modes, drop the 3D bounding volume + per-command cull on the globe command (`boundingVolume`/`orientedBoundingBox` = `undefined`, `cull: false`). The `QuadtreePrimitive` already performs the authoritative, mode-correct visibility cull when it selects the tiles to render, so the per-command cull is redundant in 2D/CV and was actively wrong there. SCENE3D keeps the 3D volume.
 
-Not a streaming artifact — WebGL streamed + rendered the regional view in the same frame budget; WebGPU did not. Camera/projection state is the same `setView` call that WebGL renders fine.
+**Verification:** `Tools/visual-regression/probe-2d-globe-render.mjs` (new) — regional 2D over Lake Superior, WebGL vs WebGPU non-dark-pixel count. After the fix: regional WebGPU **250 000 px vs WebGL 233 397** (ratio 1.07, was ~0), full-globe ratio 1.45, 0 device errors. PNG visually confirms the Great Lakes region renders.
 
-**Root cause LOCALIZED (Batch 166) — it is NOT tile selection, frustum, or the vertex transform; it is the pipeline cache.** Step-by-step diagnosis with `probe-2d-zoom-globe.mjs` + throwaway DIAG probes (all DIAG code reverted, not shipped):
+**Diagnostic note (for future "WebGPU renders blank" investigations):** the path here was long because intermediate timing-sensitive DIAG probes gave conflicting reads (e.g. a `selectPipeline`-returns-null snapshot over 4 warm-up frames suggested a pipeline-cache cause — a red herring). The decisive tests were (a) a magenta-FS override confirming tiles produced **0 on-screen fragments** at regional 2D, and (b) a hardcoded full-screen vertex position that STILL produced 0 fragments — proving the draw never executed (transform-independent) and pointing at execution-time culling, not selection/pipeline/transform. `probe-2d-zoom-globe.mjs` (tile-count + frustum diff) is kept as the entry-point diagnostic.
 
-1. **Tile selection is fine.** At regional 2D, `globe._surface._tilesToRender.length` = **9 on BOTH backends** (after refinement settles), with an **identical** orthographic frustum (`L=-1.2e6 R=1.2e6 T=9e5 B=-9e5 near=1 far=5e8`) and identical camera height. So the quadtree selects the same 9 tiles with the same frustum — selection/culling/frustum are NOT the bug.
-2. **The per-tile render method IS reached** for the regional 2D tiles (`WebGPUGlobeSurfaceRenderer` ~L549) and they HAVE meshes (`renderedMesh`/`mesh` both present) + GPU resources.
-3. **But `createCameraUniformBuffer` is NEVER called** for them in 2D (its dump fired 0× across many regional-2D frames, while the per-tile method dump fired 40×). So the method returns/`continue`s between the mesh check and the camera-UB build.
-4. **The skip is `if (!pipeline) continue;` at `WebGPUGlobeSurfaceRenderer.ts:~809`.** `selectPipeline` (`WebGPUGlobeSurfacePipelines.ts:520`) returns **null** ("pipeline still materializing in the central cache") for every regional-2D tile pass → every pass `continue`s → no draw command is ever built → the tiles are invisible. (The earlier "9 globeCmds" reading was the L0 root tile during pre-refinement, not the refined regional tiles.)
-
-**The open question (next session):** why does `selectPipeline`'s variant fail to materialize in 2D for the high-LOD regional tiles, when (a) the SAME tiles render in 3D, and (b) the L0 tile renders at full-globe 2D? The cache key (`WebGPUGlobeSurfacePipelines.ts:554`) is built from tile props + render state (quantized / normals / mercatorT / blend / stride / clip-distances / no-cull / geodetic) — NOT scene mode — so the key *should* match the warm 3D variant. Candidates: (i) the pipeline cache is invalidated on the 3D→2D mode switch (scene-FB format/sampleCount change, see `WebGPUGlobeSurfaceRenderer.ts:515`) and the high-LOD variants never re-materialize in 2D within the frame budget (async resolve stuck/failing — inspect `resolveGlobePipelineEntry`); or (ii) a render-state input (`useClipDistances` ~L740 / `disableCulling` ~L709) differs in 2D, producing a cold variant key that never resolves.
-
-**Next step:** instrument `selectPipeline` / `resolveGlobePipelineEntry` to log the cache key + `entry.pending`/resolve state for regional-2D tiles vs 3D, and compare the keys. If the key matches 3D but resolves null, the async resolver is stuck (fix the resolver / force a sync materialize for the globe). If the key differs, fix the differing render-state input so 2D reuses the warm variant.
-
-**Estimated effort:** 1 session now that it's localized to the pipeline cache.
-
-**Trace:** Batch 165 (found); Batch 166 (localized to `selectPipeline` null → `continue` at `WebGPUGlobeSurfaceRenderer.ts:~809`); `WebGPUGlobeSurfacePipelines.ts:520` `selectPipeline` / `resolveGlobePipelineEntry`; `Tools/visual-regression/probe-2d-zoom-globe.mjs` (rendered-tile-count + frustum diff, kept as the entry-point diagnostic).
+**Trace:** Batch 165 (found); Batch 166 (interim localization, partly mis-attributed to the pipeline cache); Batch 167 (true root cause — 3D-ECEF bounding-volume cull in 2D — + fix in `GlobeSurfaceTileProviderRendering.js`); `Tools/visual-regression/probe-2d-globe-render.mjs` (regression guard).
 
 ---
 
