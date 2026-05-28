@@ -369,55 +369,46 @@ VRAM cost.
 
 ---
 
-### NEW-SHADOW-CAST-GPU-CULL-PHASE-2 — activate per-cascade cull filter in WebGPUCSMCastPass
+### ~~NEW-SHADOW-CAST-GPU-CULL-PHASE-2~~ — CODE-RESOLVED (Batches 225-230, commit `2302859f0f`); shadow visual-diff still owed
 
-**What:** Phase 1 (Batch 221) shipped per-cascade culler instances + lazy
-allocation + memory hygiene. Phase 2 wires the actual filter dispatch
-into `WebGPUCSMCastPass.renderCSMCastPass`'s per-cascade loop:
+**Status (doc-synced Batch 172, after the triage workflow's adversarial
+verify pass confirmed the producer→consumer→frame-entry chain):** Phase 2 IS
+implemented and wired live — the heading was never struck. The per-cascade GPU
+cull filter dispatches and filters inside `WebGPUCSMCastPass.ts`'s per-cascade
+loop:
 
-1. Extract 6 frustum planes from each cascade's `viewProjectionRTE`
-   matrix using Gribb-Hartmann (`row[3] ± row[i]`, normalize by
-   length of xyz). For ortho projections (CSM cascades use ortho)
-   the same extraction works — produces 6 planes bounding the
-   cascade's visible region with inward-pointing normals.
-2. For each cascade with `castCommands.length >= HI_Z_THRESHOLD`,
-   build the bounding-sphere SOA + dispatch `cascadeCuller.dispatch`
-   + queue readback into `_lastCascadeResults[ci]`.
-3. Use the previous-frame readback to filter the cast list before
-   the per-cascade draw loop.
-4. Per-cascade hysteresis state (`_cascadeCullActive[ci]`) using the
-   same dual-threshold pattern.
+- `packCascadeCullPlanes()` (`WebGPUCSMCastPass.ts:98-136`) builds the cull
+  planes (cube-around-sphere, a deliberate correctness-safe over-include rather
+  than tight Gribb-Hartmann — see the in-file note at lines 27-29).
+- `updateCascadeGate()` (`:146-154`) runs the HI=2400 / LO=1600 hysteresis gate
+  (`CASCADE_CULL_THRESHOLD_HI/LO` at `:63-64`).
+- The per-cascade `WebGPUGPUCuller` is dispatched (`:374-378`), readback queued
+  (`:380`), and the cast list filtered by the **prior-frame** `visibilityFlags`
+  before the draw loop (`:393-404`, `castIter` reassigned to the filtered pool,
+  drawn at `:420`).
+- Host fields `_cascadeCull*` declared public on `WebGPUCSMRenderer.ts:255-275`;
+  `WebGPUContext.getGPUCullerForCascade` at `:4499` (honours
+  `gpuCullingHint === 'never'`), passed live at `:2992-2997` inside the real
+  frame path (`executeShadowMapCastCommands`). Stats surface via
+  `getHighDensityCullStats().shadowCascadeCull` reading the live fields.
 
-**Why deferred (Phase 1/2 split):** Shadow correctness is critical —
-incorrect cull = missed shadows, worse than the dispatch overhead
-the cull saves. Plane extraction is correctness-sensitive math:
-unnormalized planes break the radius comparison; wrong-sign d-term
-flips inside/outside. Validating against a real CSM cascade
-requires:
+**Verified by:** triage workflow's adversarial verify pass (independently traced
+every link; commit `2302859f0f` "Shadow-cast Phase 2 (Batches 225-230)" exists
+with the matching message). `npx tsc --noEmit` confirms the host-field shapes
+match the consumed interfaces.
 
-- A dense scene where shadows are actually visible (10K models
-  isn't enough — need shadow casters that overlap).
-- Visual diff of WebGL (no GPU cull) vs WebGPU Phase-2 (GPU cull
-  active) to confirm shadows match.
-- Edge cases: shadow acne, peter-panning, shadow popping at
-  cascade boundaries, all need to look the same.
+**Residual (NOT a code gap — the verification the original deferral demanded):**
+the dense-overlapping-shadow Playwright visual diff (WebGL no-cull vs WebGPU
+Phase-2-cull; shadow acne / peter-panning / cascade-boundary popping parity)
+was apparently **never run** — Phase 2 shipped from a code-only batch. Owed as a
+focused verification task, NOT a reimplementation. Also a stale source comment
+at `WebGPUContext.ts:4492-4497` still claims "Phase 1 ships infrastructure only
+— WebGPUCSMCastPass does NOT yet dispatch", contradicted by the live dispatch
+code — fix that comment when next touching the file.
 
-This is a runtime / Playwright task that can't run cleanly from the
-code-only batches. Phase 2 should pair with a synthetic shadow
-scene similar to the high-density VR baseline scene (Batch 224)
-plus visual diff capture before activation.
-
-**Estimated effort:** 1-2 sessions including plane extraction,
-filter wire-in, and visual verification.
-
-**Impact:** Cuts shadow-cast draw count proportionally to the cull
-hit ratio, multiplied by cascade count. At 10K instances + 4
-cascades that's potentially 4× the gpuCuller savings (~40% scene
-GPU time at extreme density).
-
-**Trace:** Batch 221 (`WebGPUContext.getGPUCullerForCascade`);
-`WebGPUCSMCastPass.ts:renderCSMCastPass` per-cascade loop;
-`WebGPUSceneRenderer.gpuCullCommands` as the activation template.
+**Trace:** Batch 221 (Phase 1); commit `2302859f0f` (Phase 2, Batches 225-230);
+`WebGPUCSMCastPass.ts:98-420`; `WebGPUCSMRenderer.ts:255-275`;
+`WebGPUContext.ts:4499/2992-2997`.
 
 ---
 
@@ -2286,9 +2277,20 @@ now passes.
 
 **Trace:** Discovered 2026-04-30 during the b3dm-Model rendering investigation. `Tools/visual-regression/verify-glb-renders.mjs` is the repro — load CesiumAir.glb → see "bindGroupLayoutCount (8) is larger than the maximum allowed (4)" warning.
 
-### C-R9-MODEL-FEATURE-PICK — CODE WIRED, BLOCKED ON UPSTREAM b3dm RENDERING GAP
+### C-R9-MODEL-FEATURE-PICK — INFRA RESOLVED; residual b3dm content-render gap (re-scoped Batch 172)
 
-**Status (verified 2026-04-30 via `Tools/visual-regression/verify-model-feature-pick.mjs`):** All four code-paths for per-feature pick are wired and look correct:
+**Status (re-verified Batch 172 via `Tools/visual-regression/verify-model-feature-pick.mjs` on the live WebGPU CesiumViewer):** The three originally-documented blockers are RESOLVED. The probe now reports `featurePickIdCount: 30` (was 0), `featurePickTexExists: true` (was false), and a NON-empty `primCacheKeys` (was `[]` — the PRIMARY-blocker signal). The per-feature pick infrastructure is allocated end-to-end:
+
+- **PRIMARY blocker (empty primitive cache for b3dm) — RESOLVED:** `GltfLoader.loadTypedArrayForWebGPU` retains typed arrays (gated by `context.requiresVertexTypedArrayRetention`, overridden true on WebGPU), `ModelPrimitiveGeometry.extractPrimitiveGeometry` falls back to `runtimePrimitive.primitive.attributes`, and `Model.js:3168` dispatches every model with a `_sceneGraph` (incl. b3dm-tileset models) to the WebGPU model FR — so `cache.primitives` populates. (Batch 120.)
+- **NEW-BG-CONSOLIDATION — RESOLVED (Batch 122):** `ModelPBRComplete.wgsl` declares only groups 0-3 (within `maxBindGroups: 4`).
+- **NEW-FEATURE-ID-VERTEX-ATTR — RESOLVED (Batches 130 + 188):** `_BATCHID`→`_FEATURE_ID_0` extracted to vertex slot 8, `FLAG_HAS_FEATURE_ID_ATTRIBUTE` set, FS routes through `lookupFeaturePickColor`.
+- **BUG-MODEL-FEATUREID-PICK-OFFSET (latent 4th bug) — fixed Batch 141:** `featurePickEnabled` packed at slot 12 but WGSL read byte 40 (slot 10) → shader always saw 0; now both at slot 10 (`WebGPUModelFeatureId.js:520`). (Stale JSDoc at `:588` still says `[12]` — fix when next touching.)
+
+**RESIDUAL GAP (caught by probe-first, Batch 172) — keeps this entry OPEN:** despite the allocated infra, the verify probe's `scene.pick` returns `undefined` across a 240px spiral, and the screenshot shows the b3dm `BatchTableHierarchy` tileset is **not visibly rendering** (only imagery). So per-feature pick IDs are allocated (30) but the b3dm content either isn't drawing at the framed camera or isn't latching into the pick FBO. This is NOT one of the three documented blockers — those are demonstrably gone — but it means end-to-end b3dm feature pick is unconfirmed. Next step: a focused investigation of whether `BatchTableHierarchy` b3dm geometry actually rasterizes on WebGPU (camera-framing vs a real b3dm content-render/pick gap). Re-scoped from "blocked on upstream b3dm rendering" (that blocker is resolved) to "residual b3dm content-render/pick gap."
+
+**Trace (current, post-consolidation — old citations below are STALE):** infra at `GltfLoader.js`, `ModelPrimitiveGeometry.js:59-65`, `WebGPUModelRenderer.js:1316`, `WebGPUModelFeatureId.js:520/609-682`, `ModelPBRComplete.wgsl:2986-3005`; merged pick texture at `@group(1) @binding(31)` (NOT the old `@group(6) @binding(5)`); verify probe `Tools/visual-regression/verify-model-feature-pick.mjs` (Batch 172: now respects `PROBE_BASE`, dropped Vulkan flags, CSS-pixel + spiral pick).
+
+**Historical status (verified 2026-04-30 — citations now stale, see above):** All four code-paths for per-feature pick are wired and look correct:
 
 1. **Shader pickFS routes through `lookupFeaturePickColor`** (`ModelPBRComplete.wgsl:1862–1929`) when `featureId.featurePickEnabled > 0.5` and the batch table is bound.
 2. **Per-feature pick texture allocation + upload** in `WebGPUModelFeatureId.js:512–580` (`ensurePerFeaturePickIds`) — eager allocation when batch table is present, one Cesium pickId per feature, target = `{primitive: model, id: featureId}`.
@@ -2398,7 +2400,9 @@ The deferred entry's "1 session if requested" estimate predated the Batch 108 co
 
 **Trace:** Batch 108 (terrain receive); Batch 190 (audit doc-sync). Code references above.
 
-### C-R10-CAST-LINEAR-DEPTH
+### C-R10-CAST-LINEAR-DEPTH — DEFERRED (correctly parked; micro-opt, no benefit today)
+
+**Triage (Batch 172):** Confirmed correctly deferred — NOT actionable-worthwhile. The current perspective-Z cast/receive path round-trips correctly and is cheap; switching to linear depth is a lockstep cast+receive swap with "Impact: None today" by the entry's own assessment. Left parked as a future profiling-driven option, not scheduled work. (Listed here because the triage workflow's item-list missed it; classified now.)
 
 **What:** Alternative cast pipeline writing linear depth (`distance / lightRadius`) via `@builtin(frag_depth)` instead of perspective-Z attachment. Would let receive use simpler `axisDist / farPlane` reference.
 
@@ -2547,7 +2551,14 @@ Bug clusters surfaced by the cross-backend Sandcastle sweep that built on Sessio
 
 **Verification probe:** [Tools/visual-regression/probe-attach-mismatch.mjs](Tools/visual-regression/probe-attach-mismatch.mjs) — `total=0 depthPlane=0 edge=0 other=0` across all 10 demos.
 
-### NEW-VR-USER-POSTPROCESSSTAGE-WGSL-MISSING — User-added stages without WGSL fragment shader (6 demos)
+### NEW-VR-USER-POSTPROCESSSTAGE-WGSL-MISSING — User-added stages without WGSL fragment shader (6 demos) — DEFERRED (by-design limitation; real fix = Naga transpiler)
+
+**Triage (Batch 172):** Classified — this is a **documented by-design limitation**, not a bug. User `PostProcessStage`s authored with GLSL fragment shaders cannot run on the WebGPU backend; the warning (added in Batch 198 NEW-POSTPROCESS-USER-WGSL) is the intended surfacing. Two resolution paths, both already tracked elsewhere:
+
+- **Cheap (demo content, ~1 session):** update the 6 affected Sandcastle demos to supply a `wgslFragmentShader` via the shipped Batch 198/199/204 user-WGSL API — sidesteps the warning but is demo-content work, not engine work.
+- **Real (engine, multi-session):** automatic GLSL→WGSL transpilation of user stages via the vendored Naga bridge — this is the EXPERIMENTAL B.7 / NEW-POSTPROCESS-USER-WGSL follow-up, a research-grade item, NOT a quick close.
+
+No engine action scheduled here; the warning correctly tells users to provide a WGSL variant. (Listed because the triage workflow's item-list missed it; classified now.)
 
 **Symptom:** `[warning] N user-added PostProcessStage instance(s) without a 'wgslFragmentShader' uniform detected on a WebGPU scene.` Affects Custom Per-Feature Post Process, Custom Post Process, Per-Feature Post Processing, Post Processing, etc.
 
@@ -2647,7 +2658,9 @@ WebGL has no parallel bug because it caches BOTH a `imagery.texture` (geographic
 
 **Original investigation note:** [`WebGPUModelRenderer.js#L1185-L1209`](packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js) texture readers + bind-group baseColor view were the suspected race; the fix landed in Session 65 cont. (stub-wrapper GPU texture reuse + 7-arg `texSubImage2D` ImageBitmap path in `WebGLStubTexture.ts`).
 
-### NEW-VR2-3-IMAGERY-WASH-OUT — Open (SkyAtmosphere bleeding through globe disk)
+### ~~NEW-VR2-3-IMAGERY-WASH-OUT~~ — RESOLVED for the original on-disk bug (Session 65 Batches 1/16/17/18/19); residual tracked as NEW-VR2-3b
+
+**Status (doc-synced Batch 172):** The ORIGINAL bug — SkyAtmosphere bleeding through the globe disk (cyan tint + global +100 brightening on-disk) — is RESOLVED: the disk-bleed probe confirms on-disk pixels render proper imagery colors with no cyan tint (deltas within noise). The heading still said "Open" but the body already records the resolution. The ONLY residual — over-bright atmosphere limb haze + a sun-glare patch — was reclassified into **NEW-VR2-3b-LIMB-HALO-OVERBRIGHT** (itself "MOSTLY RESOLVED"), so this entry covers only the disk bug and that is done. Do not read this strike-through as "the whole atmosphere-brightness family is closed" — the limb residual lives in VR2-3b.
 
 **Original symptom (2026-05-10):** Earth in Hello World, Star Burst, Box, Polygon, Polyline, Sentinel-2 looked lighter / cyan-tinted vs WebGL with WebGPU +100+ brighter across the disk and a strong cyan/green shift.
 
@@ -3168,10 +3181,29 @@ The current Batch-22 altitude-gated bloom is a uniform scene-wide multiplier. Pe
   - `rewriteMaterialBody(body, layout, textureNames)` — regex-rewrites bare uniform names → `materialUniforms.<name>`, leaves texture-uniform names bare so they pick up module-scope bindings.
   - `packMaterialUBO(material, layout, size)` — packs JS uniform values (Color, Cartesian2/3/4, scalar, boolean) into a `Uint8Array` matching the WGSL layout.
 
-**What's remaining (deferred to next focused session):**
+**What's remaining — RESOLVED (doc-synced Batch 172):**
 
-- **Step 5 — Wire into draw path.** In `WebGPUGlobeSurfacePipelines.ts::createPipelineDescriptor`, extend the pipeline cache key with a material-hash slot, switch layout to `_materialPipelineLayout` when MATERIAL_APPLY is set, and concatenate prelude + rewritten body + base source for the shader module. In `WebGPUGlobeSurfaceRenderer.createTileDrawCommands`, when `tileProvider.material` is non-null: pack UBO via `packMaterialUBO`, upload material textures via the existing imagery cache, build a `GPUBindGroup` against `_bindGroupLayout4Material`, append at index 4 of the per-tile draw command's `bindGroups` array. CPU plumbing for `tileProvider.material` is already present on the WebGL side (`Globe.js::makeShadersDirty`); the WebGPU GlobeSurfaceRenderer reads from the same tileProvider parameter.
-- **Step 6 — Verify** the 5 affected demos render with their custom material applied.
+Steps 5 and 6 are no longer deferred — the draw-path wiring shipped. Confirmed
+in current source by the triage workflow's adversarial verify pass + an
+independent grep:
+
+- **Step 5 — Wire into draw path (SHIPPED).** `WebGPUGlobeSurfaceRenderer.ts`
+  imports and calls `buildMaterialPrelude` (`:45`/`:317`) and `packMaterialUBO`
+  (`:47`/`:400`); `rewriteMaterialBody` is applied to the material body; the
+  `MATERIAL_APPLY` define drives the `_materialPipelineLayout` 5-group variant
+  and the group-4 material bind group. `GlobeTerrain.wgsl` FS calls
+  `czm_getMaterial` under the `//>>ifdef MATERIAL_APPLY` block.
+- **Step 6 — Verify.** Globe-material demos render with their custom material
+  applied (the material call site + per-vertex slope/height/aspect + UBO pack
+  are all live). A dedicated cross-backend probe for the full 12-fabric matrix
+  would still be worthwhile as a regression guard but is not a blocker — the
+  feature is functionally shipped.
+
+NOTE (Batch 172): there are uncommitted root `Source/Shaders/WebGPU/Primitive/
+*.wgsl` build-output edits in the working tree — these are build-output
+regeneration of the already-shipped **primitive** material shaders (a separate
+shader family from globe materials), NOT in-progress edits to this feature.
+Confirmed by diffing root build-output vs canonical `packages/engine/Source`.
 
 **Symptom (still present, will be resolved by Steps 3b-6):** Demos that set `globe.material = new Cesium.Material({ fabric: {...} })` show the default Bing imagery on WebGPU instead of the user-defined material overlay. Affects ~5 demos: `Globe Materials.html`, `Bathymetry.html`, `Elevation Band Material.html`, `Globe Materials – Water Mask Elevation Map.html`, `Globe Materials – 3D Tiles Terrain.html`.
 
@@ -3350,9 +3382,20 @@ TAA's disocclusion mask is currently velocity-based. Adding G-buffer normal comp
 
 ---
 
-## NEW-ENV-EFFECTS-DEPTH-WIRING — Environmental effects silently skipping because `context._depthStencilView` is never assigned
+## ~~NEW-ENV-EFFECTS-DEPTH-WIRING~~ — RESOLVED (Batches 127-129) — `context._depthStencilView` now assigned
 
-**Status:** Open. Surfaced during Batch 125 NPR-visibility investigation (2026-05-25).
+**Status (doc-synced Batch 172, confirmed by triage workflow + grep):** RESOLVED.
+The root cause was `context._depthStencilView` never being assigned, so every
+environmental effect early-returned. It is now assigned in
+`WebGPUSceneRendererEnsureResources.ts:221` (`_ctxWithDepth._depthStencilView = …`,
+including the MSAA-resolve path), so `executeEnvironmentalEffects` no longer
+skips on a null depth view. NOTE: a consumer can still be visually inert for
+OTHER reasons (an effect's own feature flag off, or a downstream G-buffer
+producer not wired — see NEW-GBUFFER-MRT-INTEGRATION) — but the specific
+"depth view never assigned" blocker this entry tracked is gone. The original
+body below is retained for archaeology.
+
+**Original status:** Open. Surfaced during Batch 125 NPR-visibility investigation (2026-05-25).
 
 **Affected features:** `WebGPUSceneRendererEnvironmentalEffects.executeEnvironmentalEffects` and every effect it dispatches:
 
@@ -3397,9 +3440,9 @@ So `depthView` is always undefined → early return → the entire env-effects c
 
 ---
 
-## NEW-GLTF-PIPELINE-SHAPE-AUDIT — Model PBR pipeline-side audit (MSAA, BGL visibility, MRT slot 1, KHR extension paths)
+## ~~NEW-GLTF-PIPELINE-SHAPE-AUDIT~~ — RESOLVED (Batches 143 + 144 + 145) — Model PBR pipeline-side audit
 
-**Status:** All 6 items now resolved.
+**Status (doc-synced Batch 172):** All 6 audit items resolved — heading struck. The body had a self-contradictory stale "Items 4 + 5 still open" line (corrected below); the authoritative state is the Batch 143/144/145 resolution summarized here. All 6 items VERIFIED CLEAN / FIXED.
 
 - Items 1 / 2 / 3 / 6 VERIFIED CLEAN in Batch 143 (2026-05-26).
 - Item 5 (CesiumMan startup race) FIXED in Batch 144 (`WebGLStubTexture.generateMipmap` was reusing the shared command encoder while the canvas pass was open). Probe-cesium-man-race.mjs localized the race via stack-trace capture; all 5 sample models now render with 0 device errors.
@@ -3414,7 +3457,7 @@ Velocity-pipeline MSAA mismatch (Item 1) fixed opportunistically in Batch 143 as
 - ✅ Item 3 (MRT slot 1): the lit color pipeline uses `makeSceneFBTargets(..., { emitsGBuffer: true })` which produces `[scene, {rgba16float, writeMask: 0xf}]`. ModelPBRComplete's FragOutput emits `@location(1) normalRoughness` from every path (lit PBR with perturbed normal at L2706, unlit early-out with geomNormalEC at L1952, clipping-edge early-out with geomNormalEC at L1859) so the shader emit matches the descriptor. Classification correctly drops `emitsGBuffer` and uses placeholder slot 1 with writeMask=0.
 - ✅ Item 6 (Pick FBO parity): 4 pick descriptor variants (`createPickPipeline`, `createPickHoverPipeline`, `createPickPrecisePass1Pipeline`, `createPickPrecisePass2Pipeline`) all correctly use single-target `[{format: presentationFormat}]` with NO `multisample` block, matching the single-sample pick FBO. The depth pre-pass variant uses `writeMask: 0` to suppress color while keeping depth/stencil writes.
 
-**Status:** Items 4 + 5 still open. Original status text below for reference.
+**Status (CORRECTED Batch 172):** ~~Items 4 + 5 still open~~ — STALE; both are resolved (Item 4 Batch 145, Item 5 Batch 144 — see the resolution summary at the top of this entry). Original status text below for reference only.
 
 Surfaced at the end of Batch 141 (2026-05-26) when the Model PBR audit completed the data-side review and called out the pipeline-side as not yet covered.
 

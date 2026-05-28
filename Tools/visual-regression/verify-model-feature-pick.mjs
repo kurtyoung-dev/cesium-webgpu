@@ -9,11 +9,11 @@
  * pick path is wired and resolving correctly.
  */
 import { chromium } from "playwright";
-const BASE = "http://localhost:8080";
+const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 (async () => {
   const browser = await chromium.launch({
     channel: "msedge", headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   page.on("console", (m) => {
@@ -83,10 +83,23 @@ const BASE = "http://localhost:8080";
     }
     walk(tileset.root);
 
-    // Center-canvas pick.
-    const w = v.canvas.width, h = v.canvas.height;
-    const cx = Math.floor(w / 2), cy = Math.floor(h / 2);
-    const picked = v.scene.pick(new C.Cartesian2(cx, cy));
+    // Center-canvas pick. scene.pick expects CSS (logical) pixels, NOT
+    // device/backing-store pixels — use clientWidth/Height (falls back to
+    // viewport 1280x720 if clientWidth is 0 in headless). Spiral outward
+    // if the exact center misses the tileset footprint.
+    const cw = v.canvas.clientWidth || 1280;
+    const ch = v.canvas.clientHeight || 720;
+    const cx = Math.floor(cw / 2), cy = Math.floor(ch / 2);
+    let picked = v.scene.pick(new C.Cartesian2(cx, cy));
+    if (!C.defined(picked)) {
+      // Spiral search — sample a grid around center to find the tileset.
+      outer: for (let r = 20; r <= 240 && !C.defined(picked); r += 20) {
+        for (const [dx, dy] of [[0, -r], [r, 0], [0, r], [-r, 0], [r, r], [-r, -r], [r, -r], [-r, r]]) {
+          const p = v.scene.pick(new C.Cartesian2(cx + dx, cy + dy));
+          if (C.defined(p)) { picked = p; break outer; }
+        }
+      }
+    }
     // Probe model cache state to verify per-feature pickIds were
     // allocated by the C-R9-MODEL-FEATURE-PICK code path even if the
     // visual pick can't latch.

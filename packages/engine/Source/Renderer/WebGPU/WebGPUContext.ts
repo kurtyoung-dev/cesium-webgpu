@@ -4489,12 +4489,16 @@ export class WebGPUContext extends GraphicsContext {
    * `prepareReadback` calls don't collide in the same encoder.
    * Lazy-init on first request per cascade index.
    *
-   * Phase 1 ships infrastructure only — `WebGPUCSMCastPass` does NOT
-   * yet dispatch against these. Activation requires Gribb-Hartmann
-   * frustum-plane extraction from the cascade's view-projection +
-   * visual verification (correctness-critical, missed shadows are
-   * worse than missed culls). Tracked as
-   * `NEW-SHADOW-CAST-GPU-CULL-PHASE-2`.
+   * Phase 1 (Batch 221) shipped the infrastructure; Phase 2 (commit
+   * `2302859f0f`, Batches 225-230) WIRED THE LIVE DISPATCH —
+   * `WebGPUCSMCastPass` now packs per-cascade cull planes
+   * (`packCascadeCullPlanes`, a correctness-safe cube-around-sphere
+   * over-include rather than tight Gribb-Hartmann), runs the hysteresis
+   * gate, dispatches this culler, and filters the cast list by the
+   * prior-frame readback. The only owed follow-up is a dense-shadow
+   * Playwright visual diff (NEW-SHADOW-CAST-GPU-CULL-PHASE-2 residual,
+   * doc-synced Batch 172). This comment previously claimed "Phase 1
+   * only / does NOT yet dispatch" — that was stale.
    */
   public getGPUCullerForCascade(idx: number): GPUCullerInstance | null {
     if (!this._device || this._isDestroyed) return null;
