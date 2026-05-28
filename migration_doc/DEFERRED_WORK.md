@@ -871,9 +871,31 @@ as the reference implementation.
 
 **Why deferred:** A material-system port (~several hundred LOC of WGSL + uniform/texture plumbing), well beyond the 2D/CV/Morph scope it was hiding under. Low demand vs the flat-color path that covers most classification use.
 
-**Batch 165 investigation (separate blocker for the 2D case):** Attempted to remove the over-broad `_needs2DShader` non-3D skip (since the renderer is flat-color-only, a flat-color polygon doesn't need appearance2D to render in 2D). The skip removal was REVERTED because a probe found the real 2D blocker is upstream of classification entirely: the WebGPU globe doesn't render at regional 2D zoom (see NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM below). With no globe surface / globe depth at regional zoom there's nothing to classify, so 2D flat-color classification can't be verified yet. The `_needs2DShader` skip now carries an accurate comment pointing at the globe blocker (not appearance2D). **Order of operations:** fix NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM first, THEN remove the skip + verify flat-color 2D classification, THEN (separately) the appearance2D textured path.
+**2D-case progress (Batches 165 → 169):** The over-broad `_needs2DShader` non-3D skip is now **removed** (Batch 169) — the renderer is flat-color-only, so a flat-color polygon doesn't need appearance2D to render in 2D. The chain of 2D blockers peeled back as each was fixed:
+
+1. (Batch 165) skip removal was first reverted because the WebGPU globe didn't render at regional 2D zoom (no surface/depth to classify).
+2. (Batch 167) that globe blocker was fixed (NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM — 3D-ECEF bounding-volume cull).
+3. (Batch 169) skip removed; tested. Globe + globe-depth now present in 2D; the classification command IS built (no `missing2DAttributes` skip) and the depth-sample discard is satisfied (ruled out by test). But the classification **volume still renders nothing** — it projects off-screen, because `packUniforms` encodes the 3D-ECEF camera into `encodedCamera` while the bound 2D attributes are PROJECTED positions, so the RTE subtraction mixes spaces → off-screen vertices. Tracked as **NEW-CLASSIFIER-GROUNDPRIM-2D-RTE** (below) — the LAST blocker for flat-color 2D classification.
+
+**Order of operations (updated):** ✅ globe-2D (167) → ✅ skip removed (169) → ⬜ fix the 2D-projected-camera RTE in `packUniforms` (NEW-CLASSIFIER-GROUNDPRIM-2D-RTE) → flat-color 2D classification renders → THEN (separately) the appearance2D textured path (this entry).
 
 **Trace:** Batch 161 (re-scoped out of NEW-CLASSIFIER-2D-CV-MORPH); Batch 165 (2D-globe blocker found); `WebGPUGroundPrimitiveRenderer.js` (`packUniforms` color-only + the `_needs2DShader` skip comment); `WebGPUGroundPolylineRenderer.js::applyMaterial` reference.
+
+---
+
+### NEW-CLASSIFIER-GROUNDPRIM-2D-RTE — GroundPrimitive classification volume projects off-screen in SCENE2D / Columbus View (2D-projected-camera RTE)
+
+**What:** With the globe rendering in 2D (Batch 167) and the `_needs2DShader` skip removed (Batch 169), a flat-color `GroundPrimitive` STILL renders nothing in SCENE2D / COLUMBUS_VIEW — the classification shadow volume projects off-screen, so no fragments reach the depth-sample FS.
+
+**Root cause (localized Batch 169):** `WebGPUGroundPrimitiveRenderer.js::packUniforms` builds the per-primitive RTE uniforms with `encodedCamera` = `EncodedCartesian3.fromCartesian(frameState.camera.positionWC)` — the **3D ECEF** camera position. In 2D/CV the renderer binds the `position2DHigh/Low` **projected** vertex attributes (Batch 156). `colorVS` then forms the relative-to-eye position as `position2D − encodedCameraECEF`, mixing two different coordinate spaces (projected meters vs ECEF metres ~6.4 Mm), so the vertices land far off-screen. The MVP (`scratchMVPRTE` from `uniformState.view`/`projection`) is mode-correct; only the camera **encoding** fed to the RTE subtraction is wrong for 2D.
+
+**Diagnosis trail (all ruled out before landing here):** the command IS built in 2D (no `missing2DAttributes` skip — geometry has the 2D pair); the depth source IS published (Batch 167 globe-depth-in-2D); the depth-sample discard is NOT the cause (removing `dsColorFS`'s `if (surfaceDepth==0) discard` changed nothing — the volume produces 0 fragments regardless); the command carries no bounding volume so it is NOT culled. Process of elimination ⇒ off-screen vertex transform ⇒ the RTE camera-space mismatch above.
+
+**Scope:** In `packUniforms`, for non-3D modes, encode the **2D-projected camera** position (project `camera.positionCartographic` through `frameState.mapProjection`, matching the `position2DHigh/Low` convention — mind the planar axis order / `.zxy` swizzle the GroundPolyline 2D path uses) into `encodedCamera`, instead of the 3D ECEF `camera.positionWC`. Analogous to the globe's `rtc2D` shift in `WebGPUGlobeSurfaceCameraUB.ts`. Then `position2D − camera2D` is a correct same-space RTE and the volume lands on screen. Verify with `probe-classifier-scenemode.mjs` (2D/CV red-pixel count should jump from ~0 to comparable with WebGL; flip `ENFORCE_2D = true`).
+
+**Why deferred:** A careful coordinate-convention change (the exact 2D camera-position convention vs the `position2DHigh/Low` attribute convention must match, including any axis swizzle) — error-prone to rush, and a wrong convention produces a subtly-misplaced render that's hard to spot. Localized precisely; ~1 focused session. The skip-removed state is harmless meanwhile (0 device errors; one off-screen draw per GroundPrimitive in 2D).
+
+**Trace:** Batch 169 (localized); `WebGPUGroundPrimitiveRenderer.js::packUniforms` (`encodedCamera` from `camera.positionWC`) + `colorVS` RTE; `WebGPUGlobeSurfaceCameraUB.ts` `rtc2D` as the 2D-projected-origin reference; `probe-classifier-scenemode.mjs` (2D/CV at ~0 red px).
 
 ---
 

@@ -873,52 +873,35 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // BOTH attribute sets and blends EC-space positions by
   // `uniformState.morphTime`.
   //
-  // Non-3D (SCENE2D / COLUMBUS_VIEW) silent-skip for `_needs2DShader`
-  // primitives (planar/spherical extents — essentially all polygons).
+  // SCENE2D / COLUMBUS_VIEW classification (Batch 169 — over-broad
+  // `_needs2DShader` skip removed; ONE remaining blocker, see below).
   //
-  // NOTE (Batch 165 investigation): the ORIGINAL rationale here ("needs a
-  // WGSL appearance2D for the extents→UV texture math") was inaccurate — this
-  // renderer is FLAT COLOR only (`packUniforms` reads
-  // `appearance.material.uniforms.color`; no UV / extents / texture sampling
-  // in ANY mode), so a flat-color polygon does NOT need appearance2D to
-  // render in 2D. The skip looked over-broad, so removing it was attempted.
-  // BUT a probe (`probe-classifier-scenemode.mjs` + ad-hoc 2D-globe checks)
-  // found the TRUE blocker: the WebGPU GLOBE itself does not render at
-  // REGIONAL 2D zoom (~2.4 Mm) — it renders only at full-globe 2D zoom
-  // (~38 Mm). With no globe surface + no globe depth at regional zoom, the
-  // depth-sample classifier has nothing to classify, so 2D classification
-  // can't be VERIFIED correct (Principle 8). The skip therefore STAYS until
-  // NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM is fixed; at that point remove this
-  // skip AND verify flat-color 2D classification in one batch. Genuine
-  // textured-material detail (appearance2D UVs) is a further deferred layer
-  // (NEW-GROUNDPRIM-TEXTURED-MATERIALS). See DEFERRED_WORK.md for both.
+  // The previous `_needs2DShader` non-3D silent-skip is removed: this renderer
+  // is FLAT COLOR only (`packUniforms` reads `appearance.material.uniforms
+  // .color`; no UV / extents / texture sampling in any mode), so a flat-color
+  // GroundPrimitive does NOT need WebGL's `appearance2D` to render in 2D, and
+  // the Batch 156 `position2DHigh/Low` path already produces 2D geometry.
+  //
+  // STATUS (verified Batch 169, NOT yet rendering): with the skip gone the
+  // command IS built in 2D (no `missing2DAttributes` skip — the geometry has
+  // the 2D attribute pair) and the depth source is published (Batch 167 fixed
+  // the globe-2D render + globe-depth publication), so the depth-sample
+  // discard is satisfied (ruled out by test: removing the `dsColorFS` discard
+  // changed nothing). The classification volume still produces ZERO on-screen
+  // fragments in 2D because it projects OFF-SCREEN: `packUniforms` encodes the
+  // 3D-ECEF camera (`camera.positionWC`) into `encodedCamera`, but the bound
+  // attributes in 2D are the `position2DHigh/Low` PROJECTED positions — so the
+  // RTE subtraction `position2D − cameraECEF` mixes coordinate spaces and the
+  // vertices land off-screen. The fix is to encode the 2D-PROJECTED camera
+  // position in `packUniforms` for non-3D modes (analogous to the globe's
+  // `rtc2D` shift), a careful coordinate-convention change tracked as
+  // NEW-CLASSIFIER-GROUNDPRIM-2D-RTE. Until then 2D classification renders
+  // nothing (harmless: 0 device errors, one off-screen draw per primitive).
+  // Genuine textured-material detail (appearance2D UVs) remains the further
+  // NEW-GROUNDPRIM-TEXTURED-MATERIALS layer.
   const sceneMode = frameState?.mode;
   const isNon3D = sceneMode !== SceneMode.SCENE3D;
   const isMorphing = sceneMode === SceneMode.MORPHING;
-  const needs2DShader = primitive?._primitive?._needs2DShader === true;
-  if (isNon3D && needs2DShader) {
-    //>>includeStart('debug', pragmas.debug);
-    oneTimeWarning(
-      "WebGPUGroundPrimitive.needs2DShader",
-      "GroundPrimitive on WebGPU silently skips classification in non-3D " +
-        "scene modes. Blocked on NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM (the " +
-        "WebGPU globe doesn't render at regional 2D zoom, so there's no " +
-        "surface to classify) — not on appearance2D. SCENE3D + MORPHING " +
-        "render correctly.",
-    );
-    //>>includeEnd('debug');
-    return {
-      colorPipeline: null,
-      pickPipeline: null,
-      bindGroup: null,
-      stencilCommand: null,
-      colorCommand: null,
-      pickCommand: null,
-      colorCommands: [],
-      pickCommands: [],
-      ignoreShowCommand: null,
-    };
-  }
 
   if (!defined(primitive._webgpuCache)) {
     primitive._webgpuCache = {};
