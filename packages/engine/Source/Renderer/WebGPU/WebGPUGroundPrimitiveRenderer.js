@@ -167,7 +167,22 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
 
 @vertex fn colorVS(@location(0) pH: vec3<f32>, @location(1) pL: vec3<f32>) -> CO {
   var o: CO;
-  let rte = (pH - u.camH) + (pL - u.camL);
+  // NEW-CLASSIFIER-GROUNDPRIM-2D-RTE (Batch 170 final) — mode-conditional
+  // .zxy swizzle. In SCENE2D / COLUMBUS_VIEW the bound attributes are
+  // position2DHigh/Low stored as (projX, projY, height) -- the natural
+  // output of mapProjection.project() in GeometryPipeline.projectTo2D.
+  // But camera.positionWC in 2D/CV is in the camera's ENU frame
+  // (altitude, projX, projY) -- the TRANSFORM_2D rotation in
+  // CameraInternals.updateMembers -- and uniformState.view is built
+  // from that ENU camera, so the VS must subtract / project in ENU space.
+  // Mirror WebGL's czm_translateRelativeToEye(pos2D.zxy, pos2DLow.zxy)
+  // pattern at PrimitiveShaderHelpers.js:291 -- swizzle the 2D positions
+  // to (height, projX, projY) before the RTE subtraction. SCENE3D
+  // (morphFlags.x == 1.0) keeps the unswizzled ECEF positions.
+  let is3D = u.morphFlags.x;
+  let pHm = mix(pH.zxy, pH, vec3<f32>(is3D));
+  let pLm = mix(pL.zxy, pL, vec3<f32>(is3D));
+  let rte = (pHm - u.camH) + (pLm - u.camL);
   // czm_depthClamp — matches WebGL ShadowVolumeAppearanceVS.glsl which
   // wraps the projection in czm_depthClamp(...). Ground primitive shadow
   // volumes bracket terrain min/max; without depth clamp the upper /
@@ -289,7 +304,13 @@ struct VelocityCO {
 ) -> VelocityCO {
   // Current frame: identical to colorVS so the velocity-pass
   // rasterization matches the color pass fragment-for-fragment.
-  let rte = (pH - u.camH) + (pL - u.camL);
+  // Mode-conditional swizzle matches colorVS (see comment there);
+  // SCENE3D keeps unswizzled ECEF, SCENE2D / CV swizzles position2D
+  // (projX, projY, height) -> (height, projX, projY) before RTE.
+  let is3D = u.morphFlags.x;
+  let pHm = mix(pH.zxy, pH, vec3<f32>(is3D));
+  let pLm = mix(pL.zxy, pL, vec3<f32>(is3D));
+  let rte = (pHm - u.camH) + (pLm - u.camL);
   let curClip = csm_depthClamp(u.mvpRTE * vec4<f32>(rte, 1.0));
   // Previous frame: project the world-space position (high + low,
   // simple sum is fine here because pH/pL are SOA-encoded high/low
@@ -298,8 +319,8 @@ struct VelocityCO {
   // is intentionally NOT applied to prev — the clamp affects clip-z,
   // and velocity derives from clip-x/y/w; the omission is benign and
   // saves the helper call on the prev path.
-  let worldPos = pH + pL;
-  let prClip = u.prevViewProjection * vec4<f32>(worldPos, 1.0);
+  let worldPosRaw = pHm + pLm;
+  let prClip = u.prevViewProjection * vec4<f32>(worldPosRaw, 1.0);
   var o: VelocityCO;
   o.pos = curClip;
   o.currClip = curClip;
@@ -751,6 +772,14 @@ function packUniforms(data, frameState, modelMatrix, color, pickColor) {
   Matrix4.multiply(uniformState.projection, scratchMVRTE, scratchMVPRTE);
   Matrix4.pack(scratchMVPRTE, data, 0);
 
+  // RTE camera encoding. `camera.positionWC` is the right source for ALL
+  // modes — in SCENE2D / COLUMBUS_VIEW the camera frame's `actualTransform`
+  // (TRANSFORM_2D) maps the local position into ENU `(altitude, projX, projY)`
+  // space, which is what the 2D view matrix consumes. The position2D
+  // attributes are stored unswizzled as `(projX, projY, height)`; the WGSL
+  // VS applies a mode-conditional `.zxy` swizzle (matching WebGL's
+  // `czm_translateRelativeToEye(...zxy, ...zxy)` convention at line 291 of
+  // PrimitiveShaderHelpers.js) so the RTE subtraction is well-formed.
   EncodedCartesian3.fromCartesian(
     frameState.camera.positionWC,
     scratchEncodedCamera,
@@ -873,32 +902,43 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // BOTH attribute sets and blends EC-space positions by
   // `uniformState.morphTime`.
   //
-  // SCENE2D / COLUMBUS_VIEW classification (Batch 169 — over-broad
-  // `_needs2DShader` skip removed; ONE remaining blocker, see below).
+  // SCENE2D / COLUMBUS_VIEW classification (Batch 170 — NEW-CLASSIFIER-
+  // GROUNDPRIM-2D-RTE RESOLVED).
   //
-  // The previous `_needs2DShader` non-3D silent-skip is removed: this renderer
-  // is FLAT COLOR only (`packUniforms` reads `appearance.material.uniforms
-  // .color`; no UV / extents / texture sampling in any mode), so a flat-color
-  // GroundPrimitive does NOT need WebGL's `appearance2D` to render in 2D, and
-  // the Batch 156 `position2DHigh/Low` path already produces 2D geometry.
+  // History:
+  //   - Batch 156 added the `position2DHigh/Low` attribute pair.
+  //   - Batch 164 added the morph VS so MORPHING blends 3D ↔ 2D in EC space.
+  //   - Batch 167 unblocked 2D by dropping the 3D-ECEF bounding-volume cull
+  //     for globe + publishing globe depth in non-3D modes.
+  //   - Batch 169 removed the over-broad `_needs2DShader` silent-skip
+  //     (this renderer is FLAT COLOR only — `packUniforms` reads
+  //     `appearance.material.uniforms.color`; no UV / extents / texture
+  //     sampling in any mode — so it does NOT need WebGL's `appearance2D`
+  //     in 2D).
+  //   - Batch 170 fixed the LAST blocker: coordinate-frame mismatch
+  //     between `position2DHigh/Low` (stored as `(projX, projY, height)`,
+  //     the natural output of `mapProjection.project()` in
+  //     `GeometryPipeline.projectTo2D`) and `camera.positionWC` (which
+  //     in SCENE2D / CV is in the camera's ENU frame
+  //     `(altitude, projX, projY)` — produced by `TRANSFORM_2D` in
+  //     `CameraInternals.updateMembers`). The RTE subtraction
+  //     `position2D − cameraENU` was mixing component orderings — across
+  //     a single Mercator extent (`±π * semimajorAxis` ≈ ±20M m) the
+  //     misalignment shoved the volume off-screen.
+  //     Fix: mirror WebGL's `czm_translateRelativeToEye(pos2D.zxy, ...)`
+  //     pattern from PrimitiveShaderHelpers.js:291. The non-morph
+  //     `colorVS` (and the `vsVelocity` clone) now apply a
+  //     mode-conditional `.zxy` swizzle to the bound positions
+  //     (gated by `morphFlags.x` — 1.0 = SCENE3D no-swizzle,
+  //     0.0 = SCENE2D / CV swizzle) so the RTE math composes in ENU
+  //     space matching the view matrix and the encoded camera. No JS
+  //     change needed; positionWC is already in the right frame.
+  //     The MORPHING path was already correct (Batch 164 morphColorVS
+  //     applies the same swizzle at .zxy).
   //
-  // STATUS (verified Batch 169, NOT yet rendering): with the skip gone the
-  // command IS built in 2D (no `missing2DAttributes` skip — the geometry has
-  // the 2D attribute pair) and the depth source is published (Batch 167 fixed
-  // the globe-2D render + globe-depth publication), so the depth-sample
-  // discard is satisfied (ruled out by test: removing the `dsColorFS` discard
-  // changed nothing). The classification volume still produces ZERO on-screen
-  // fragments in 2D because it projects OFF-SCREEN: `packUniforms` encodes the
-  // 3D-ECEF camera (`camera.positionWC`) into `encodedCamera`, but the bound
-  // attributes in 2D are the `position2DHigh/Low` PROJECTED positions — so the
-  // RTE subtraction `position2D − cameraECEF` mixes coordinate spaces and the
-  // vertices land off-screen. The fix is to encode the 2D-PROJECTED camera
-  // position in `packUniforms` for non-3D modes (analogous to the globe's
-  // `rtc2D` shift), a careful coordinate-convention change tracked as
-  // NEW-CLASSIFIER-GROUNDPRIM-2D-RTE. Until then 2D classification renders
-  // nothing (harmless: 0 device errors, one off-screen draw per primitive).
-  // Genuine textured-material detail (appearance2D UVs) remains the further
-  // NEW-GROUNDPRIM-TEXTURED-MATERIALS layer.
+  // Remaining 2D follow-up: textured-material detail (`appearance2D` UVs +
+  // extents) tracked as NEW-GROUNDPRIM-TEXTURED-MATERIALS — orthogonal to
+  // flat-color classification.
   const sceneMode = frameState?.mode;
   const isNon3D = sceneMode !== SceneMode.SCENE3D;
   const isMorphing = sceneMode === SceneMode.MORPHING;

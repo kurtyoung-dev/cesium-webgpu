@@ -16,25 +16,28 @@
 //     `derivedCommands.picking` for the pick pass. Now renders matching WebGL.
 //   - SCENE2D / COLUMBUS_VIEW: the cascading render-pass crash
 //     (NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS — `_beginDefaultRenderPass()
-//     called with an active render pass`) is FIXED (Batch 164): on WebGPU,
-//     GroundPrimitive no longer falls through to the WebGL command path
-//     (which threw mid-frame and left the scene pass open). 2D/CV now render
-//     cleanly with 0 device errors. The polygon itself still does NOT render
-//     in 2D/CV because it's a `_needs2DShader` extents primitive — a SEPARATE
-//     gap pending the WGSL appearance2D path (NEW-GROUNDPRIM-TEXTURED-
-//     MATERIALS). So these modes report ~0 red px (nothing rendered), no
-//     longer 654 (the old error-dialog background).
+//     called with an active render pass`) was FIXED in Batch 164: on
+//     WebGPU, GroundPrimitive no longer falls through to the WebGL command
+//     path (which threw mid-frame and left the scene pass open).
+//   - The over-broad `_needs2DShader` silent-skip was removed in Batch 169
+//     (flat-color GroundPrimitive does NOT need WebGL's `appearance2D` to
+//     render in 2D — it only consumes `appearance.material.uniforms.color`).
+//   - The LAST 2D blocker — RTE coordinate-frame mismatch between
+//     `position2DHigh/Low` `(projX, projY, height)` and `camera.positionWC`
+//     in ENU `(altitude, projX, projY)` — was FIXED in Batch 170 via a
+//     mode-conditional `.zxy` swizzle in `colorVS` / `vsVelocity` (matches
+//     WebGL's `czm_translateRelativeToEye(pos2D.zxy, ...)` convention at
+//     PrimitiveShaderHelpers.js:291). SCENE2D and CV now both render the
+//     classification polygon at coverage within ~6% of WebGL (Batch 170
+//     measured SCENE2D 20781 vs WebGL 20787, CV 14574 vs WebGL 15484).
 //
 // Method: drop a bright-red ground-clamped polygon over the central US,
 // then for each scene mode morph instantly (morphTo*(0)+completeMorph),
 // frame the camera over the polygon, render, count "classified" red pixels.
 //
-// PASS (regression guard for the Batch 161 + 164 fixes): SCENE3D shows the
-// polygon (>= MIN_RED px) with 0 device errors, and ALL modes stay at 0
-// device errors (the Batch 164 fix means 2D/CV no longer crash). SCENE2D/CV
-// red-pixel coverage is reported but NOT failed here — the polygon not
-// rendering in 2D/CV is the separate NEW-GROUNDPRIM-TEXTURED-MATERIALS gap;
-// flip `ENFORCE_2D` to true once a WGSL appearance2D path lands.
+// PASS (regression guard for Batches 161 + 164 + 169 + 170): ALL modes
+// render the polygon (>= MIN_RED px) with 0 device errors. SCENE2D and CV
+// coverage is now ENFORCED (Batch 170 — `ENFORCE_2D = true`).
 
 import { chromium } from "playwright";
 import fs from "fs";
@@ -43,11 +46,10 @@ const PROBE_BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 const MIN_RED = 1500; // red-pixel floor: polygon clearly present
 const MODES = ["SCENE3D", "SCENE2D", "COLUMBUS_VIEW"];
-// 2D/CV polygon coverage is a known-open separate gap (the _needs2DShader
-// extents primitive needs a WGSL appearance2D path — NEW-GROUNDPRIM-TEXTURED-
-// MATERIALS). The render-pass CRASH is fixed (Batch 164); device errors ARE
-// enforced for all modes below. Don't fail on 2D/CV coverage until appearance2D.
-const ENFORCE_2D = false;
+// 2D/CV polygon coverage is enforced as of Batch 170 (NEW-CLASSIFIER-
+// GROUNDPRIM-2D-RTE — mode-conditional .zxy swizzle in colorVS/vsVelocity
+// landed; SCENE2D and CV now match WebGL coverage within ~6%).
+const ENFORCE_2D = true;
 
 async function run(renderer) {
   const browser = await chromium.launch({

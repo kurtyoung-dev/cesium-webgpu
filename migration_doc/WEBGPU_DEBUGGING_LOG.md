@@ -9240,3 +9240,72 @@ The path was long because timing-sensitive intermediate DIAGs gave conflicting r
 
 - `Tools/visual-regression/probe-2d-globe-render.mjs` (new) — regional + full-globe 2D render guard (WebGL vs WebGPU lit-pixel ratio).
 - `Tools/visual-regression/probe-2d-zoom-globe.mjs` (Batch 166) — tile-count + frustum diff entry-point diagnostic.
+
+---
+
+## Batch 170 — GroundPrimitive classification volume rendered off-screen in SCENE2D / Columbus View (resolves NEW-CLASSIFIER-GROUNDPRIM-2D-RTE)
+
+**Bug:** 170.1
+**File(s) affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js` (`colorVS` + `vsVelocity` in the embedded WGSL string)
+
+### Symptom
+
+With the globe rendering in 2D (Batch 167) and the over-broad `_needs2DShader` silent-skip removed (Batch 169), a flat-color `GroundPrimitive` (ground-clamped polygon) on WebGPU in SCENE2D / COLUMBUS_VIEW still rendered **nothing**. The command was built, the pipeline created, the depth source published, 0 device errors — but `probe-classifier-scenemode.mjs` reported 2 red pixels (essentially blank) where WebGL had 20 787 / 15 484. SCENE3D worked (11 694 px).
+
+### Root cause
+
+Coordinate-frame mismatch between the bound `position2DHigh/Low` vertex attributes and the encoded camera fed to the RTE subtraction.
+
+- `GeometryPipeline.projectTo2D` writes `position2D = (projX, projY, height)` — the natural output of `mapProjection.project(cartographic)`, with NO swizzle. Stored as floats in that order in the buffer.
+- `camera.positionWC` in SCENE2D / COLUMBUS_VIEW is in the camera's **ENU frame** `(altitude, projX, projY)`. `CameraInternals.updateMembers:282-293` constructs this by applying `TRANSFORM_2D` to the camera's local position; the inverse mapping in the same file (`positionENU.x = positionWC.y; .y = positionWC.z; .z = positionWC.x`) makes the convention explicit. `uniformState.view` is built from that ENU camera, so the view matrix expects `(altitude, projX, projY)` input.
+- `colorVS` was forming `rte = (pH - camH) + (pL - camL)` directly. In 2D that became `(projX-altitude, projY-projX, height-projY)` — component-wise garbage. The magnitude of a Mercator extent (`±π * semimajorAxis` ≈ ±20 Mm) shoved every vertex completely off-screen, with no fragment ever reaching `dsColorFS`. The MVP (`mvpRTE` from `uniformState.view`/`projection`) was mode-correct; ONLY the RTE subtraction was wrong.
+
+### Diagnosis trail (everything else ruled out first)
+
+- Command IS built in 2D (no `missing2DAttributes` skip — geometry has the 2D attribute pair).
+- Depth source IS published in 2D (Batch 167 made the globe render + globe-depth publication work).
+- Depth-sample discard NOT the cause: temporarily removing `dsColorFS`'s `if (surfaceDepth==0) discard` changed nothing — the volume produced 0 fragments regardless.
+- Command carries no bounding volume in this path → not culled.
+- Pipeline IS created (cache.depthSampleColorPipeline truthy at the time of the probe).
+- Process of elimination → off-screen vertex transform → RTE coordinate-frame mismatch.
+
+### False start (recorded so future debugs don't repeat it)
+
+The first Batch 170 attempt encoded `mapProjection.project(camera.positionCartographic)` into `encodedCamera` for non-3D modes, intending to give the camera the same `(projX, projY, height)` frame as the bound vertices. That was the **wrong end** — the VS would then have to multiply by a view matrix that ALSO expected `(projX, projY, height)` input, but `uniformState.view` was built from the ENU camera and expects `(altitude, projX, projY)`. Reverted within the same batch. **Lesson:** when a renderer mixes coordinate conventions, identify which one is fixed (the view matrix) and adapt the other (the vertex attributes) to it, not the other way around.
+
+A second snag was unrelated to coordinate conventions: a comment inside the WGSL template literal contained backticks (`` `czm_translateRelativeToEye(...)` ``), which closed the JS template literal mid-shader. The chunk that escaped wound up as a bare JavaScript expression `(projX, projY, height)` and threw `ReferenceError: projX is not defined` at pipeline-build time. The probe surfaced this as "656 px" because the Cesium error dialog (salmon-on-pink) registered as red pixels uniformly across all three modes (a tell that the result was JS-error-dialog uniform, not classification-output). Fixed by replacing backticks in the comment with plain text.
+
+### Fix
+
+Mirror WebGL's `czm_translateRelativeToEye(pos2D.zxy, pos2DLow.zxy)` convention from `PrimitiveShaderHelpers.js:291`. The non-morph `colorVS` (and the `vsVelocity` clone) now apply a mode-conditional `.zxy` swizzle to the bound positions, gated by the existing `morphFlags.x` slot (1.0 = SCENE3D, 0.0 = SCENE2D / COLUMBUS_VIEW; MORPHING goes to `morphColorVS` instead):
+
+```wgsl
+let is3D = u.morphFlags.x;
+let pHm = mix(pH.zxy, pH, vec3<f32>(is3D));
+let pLm = mix(pL.zxy, pL, vec3<f32>(is3D));
+let rte = (pHm - u.camH) + (pLm - u.camL);
+```
+
+`mix(_, _, 1.0)` is identity, so SCENE3D keeps the unswizzled ECEF positions exactly as before (no regression). `mix(_, _, 0.0)` selects the swizzled form, so SCENE2D / CV convert `(projX, projY, height)` → `(height, projX, projY)` before the RTE subtraction — matching `camera.positionWC`'s ENU frame and the 2D view matrix.
+
+No JS-side packing change was needed; `camera.positionWC` was already in the right frame for both modes. The MORPHING path was already correct (Batch 164's `morphColorVS` applies the same `.zxy` swizzle on the 2D attribute pair at locations 2/3).
+
+### Verification
+
+`Tools/visual-regression/probe-classifier-scenemode.mjs` with `ENFORCE_2D = true`:
+
+| Mode          | WebGL red px | WebGPU red px (was)   | WebGPU errs |
+|---------------|--------------|-----------------------|-------------|
+| SCENE3D       | 11 493       | 11 694 (was 11 694)   | 0           |
+| SCENE2D       | 20 787       | **20 781 (was 2)**    | 0           |
+| COLUMBUS_VIEW | 15 484       | **14 574 (was 2)**    | 0           |
+
+PNGs visually confirm the red classification polygon now renders over the imagery globe in both 2D and CV.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js` — mode-conditional `.zxy` swizzle in `colorVS` and `vsVelocity`; status comment updated to record the resolution; redundant `_needs2DShader`/RTE narrative replaced with the Batches 156→164→167→169→170 timeline.
+
+### Probes
+
+- `Tools/visual-regression/probe-classifier-scenemode.mjs` — `ENFORCE_2D = true` (was `false`); header rewritten to document the final resolution and probe-detection nuance (the Cesium error-dialog background registers as red pixels, so identical non-zero counts across modes is a tell for a JS error, not classification output).
