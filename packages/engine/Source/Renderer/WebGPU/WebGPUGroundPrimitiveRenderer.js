@@ -2294,6 +2294,40 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const activeVertexBuffers = isMorphing
     ? [cache.vertexGPUBuffer, cache.vertexGPUBuffer2D]
     : [cache.vertexGPUBuffer];
+
+  // NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION (Batch 174) —
+  // mode-appropriate bounding volume so Cesium's multi-frustum command
+  // distribution (View.js createPotentiallyVisibleSet) assigns this
+  // classification command to the frustum slice CONTAINING its surface.
+  // Without a bounding volume, View.js falls back to the FULL camera
+  // near..far (line 291-298) and `insertIntoBin` dumps the command into
+  // every slice including the farthest/empty one — where the textured-
+  // material depth→eye reconstruction (Batch 173) yields a billions-of-
+  // metres eye-z and the UV clamps flat. Mirrors WebGL
+  // ClassificationPrimitive.updateAndQueueCommands (which reads
+  // primitive._boundingSphereWC / _boundingSphereCV).
+  //
+  // The bounding volumes live on the GroundPrimitive itself (NOT the inner
+  // base Primitive, whose `_boundingSpheres` is empty for ground prims) —
+  // `_boundingVolumes` (SCENE3D, world-space OrientedBoundingBox from the
+  // tile rectangle + terrain min/max) and `_boundingVolumes2D` (non-3D,
+  // a BoundingSphere from `fromRectangleWithHeights2D` with its center
+  // swizzled to the `(height, projX, projY)` 2D frame). Both are already
+  // in the correct space for their mode's culling volume, so neither hits
+  // the Batch 167 wrong-space trap. This is exactly what WebGL
+  // `GroundPrimitive.updateAndQueueCommands` reads (GroundPrimitive.js:933-937).
+  //
+  // Mode-aware: SCENE3D + COLUMBUS_VIEW are perspective and can be
+  // multi-frustum, so they NEED correct distribution. SCENE2D is a single
+  // orthographic frustum (distribution moot) and MORPHING is transient —
+  // both left undefined to preserve the verified Batch 170 flat-color path.
+  let classifyBoundingVolume;
+  if (sceneMode === SceneMode.SCENE3D) {
+    classifyBoundingVolume = primitive?._boundingVolumes?.[0];
+  } else if (sceneMode === SceneMode.COLUMBUS_VIEW) {
+    classifyBoundingVolume = primitive?._boundingVolumes2D?.[0];
+  }
+
   const sharedDrawArgs = {
     bindGroups: [
       cache.bindGroup,
@@ -2312,6 +2346,11 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     vertexCount: cache.vertexCount || 0,
     owner: primitive,
     renderState: classificationRS,
+    // Distribute to the correct frustum slice (Batch 174). cull only when
+    // we have a valid same-space bounding volume; undefined BV keeps the
+    // pre-Batch-174 no-cull, full-range behavior.
+    boundingVolume: classifyBoundingVolume,
+    cull: defined(classifyBoundingVolume),
   };
   // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — derive
   // velocity command alongside the FIRST color command per primitive

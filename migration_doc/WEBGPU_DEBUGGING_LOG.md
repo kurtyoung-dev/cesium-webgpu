@@ -9413,3 +9413,52 @@ Kept the Batch 173 infrastructure (per-slice UBO + corrected `windowToEye`) — 
 
 - `probe-classifier-scenemode.mjs` — flat-color regression guard (green).
 - `probe-classifier-textured-materials.mjs` — still `ENFORCE_TEXTURED = false`; flips true once NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION lands.
+
+---
+
+## Batch 174 — GroundPrimitive classification frustum-slice distribution (mode-aware bounding volume); textured materials hit the globe-depth-precision floor
+
+**Bug:** 174.1 (distribution fix; reveals the depth-precision blocker)
+**File(s) affected:** `WebGPUGroundPrimitiveRenderer.js`
+
+### Goal
+
+Land NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION (the blocker Batch 173 diagnosed): give the classification command a bounding volume so Cesium distributes it to the frustum slice containing its surface, so the Batch 173 per-slice `invProj` reconstructs correct textured-material UV.
+
+### What landed
+
+`sharedDrawArgs` now sets a mode-appropriate `boundingVolume` + `cull`:
+- SCENE3D → `primitive._boundingVolumes[0]` (world-space OrientedBoundingBox from the tile rectangle + terrain min/max).
+- COLUMBUS_VIEW → `primitive._boundingVolumes2D[0]` (projected BoundingSphere, center already swizzled to the 2D `(height, projX, projY)` frame).
+- SCENE2D / MORPHING → undefined (single ortho frustum / transient; preserves the Batch 170 flat-color path).
+
+These are exactly the volumes WebGL `GroundPrimitive.updateAndQueueCommands` reads (`GroundPrimitive.js:933-937`); both are in their mode's correct culling space, so neither hits the Batch 167 wrong-space-cull trap. Note: the volumes live on the **GroundPrimitive**, NOT the inner base `Primitive` (whose `_boundingSpheres` is empty for ground prims — a first attempt read the inner primitive and got nothing).
+
+Verified the command now distributes to slice 1 (near 0.1/far 1e8, the surface) in addition to slice 0, and flat-color classification is non-regressing (`probe-classifier-scenemode.mjs`: SCENE3D 11694 / SCENE2D 20781 / CV 14574, 0 errors).
+
+### Bug 174.1 — textured materials STILL flat: the globe-depth-precision floor
+
+With the command now in the correct slice, textured materials remained flat (variance ~60 vs WebGL ~5578). Root-caused analytically:
+
+- Slice 1 spans [0.1, 1e8] (≈100,000 km) — NOT tight. A 350 km surface there has standard hyperbolic NDC depth ≈ 0.99999971.
+- The globe depth is copied to an **RGBA8-packed (24-bit)** texture. One quantization step ≈ 6e-8 in depth.
+- Inverse-projecting that: `eye.z = -near*far / (far - depth*(far-near))`. Near depth=1.0 the denominator is tiny (≈28.6 here), and a 6e-8 depth step changes it by ≈6 → eye.z swings ≈±50-90 km on a 350 km value. That dwarfs the ≈80 km polygon, so the reconstructed planar UV jumps between quantization bands and `applyMaterial` returns near-constant.
+
+Why WebGL is fine: its globe FS gets `czm_writeLogDepth` **injected** (when `useLogDepth` is on), so the depth buffer is logarithmic — precise across the huge frustum — and `czm_windowToEyeCoordinates` reverses it (`#ifdef LOG_DEPTH`). The WebGPU globe FS (`GlobeTerrain.wgsl` `FragOutput` = color + normalRoughness, no `@builtin(frag_depth)`) writes plain hyperbolic NDC depth. Confirmed: no `czm_writeLogDepth` / `frag_depth` in `GlobeTerrain.wgsl`.
+
+Why flat-color is unaffected: it only tests depth≠0 for the sky-discard; it never reconstructs a position.
+
+Tracked as **NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION** (DEFERRED_WORK): make the WebGPU globe write log depth (emit `frag_depth = csm_writeLogDepth(...)` gated on `useLogDepth`, chunks already exist) and have the classifier reverse it — a globe-depth-pipeline change with broad blast radius (terrain clamp, pickPosition, depth tests, AO/SSR all consume globe depth), so deferred to a focused effort.
+
+### Decision
+
+Kept Batch 174 — the frustum-distribution fix is correct (matches WebGL), non-regressing, and necessary for the eventual textured-material fix (the command must be in the right slice before precise depth even matters). The textured-material arc is now: ✅ dispatch infra (171) → ✅ per-slice invProj + correct windowToEye (173) → ✅ frustum distribution (174) → ⬜ globe log-depth precision (the remaining deep blocker) → ⬜ Image material → ⬜ 2D/CV.
+
+### Files modified
+
+- `WebGPUGroundPrimitiveRenderer.js` — `sharedDrawArgs.boundingVolume` (mode-aware: `_boundingVolumes[0]` SCENE3D / `_boundingVolumes2D[0]` CV) + `cull` only when a BV is present.
+
+### Probes
+
+- `probe-classifier-scenemode.mjs` — flat-color regression guard (green; no regression from BV+cull).
+- `probe-classifier-textured-materials.mjs` — still `ENFORCE_TEXTURED = false` (blocked on globe log-depth precision).
