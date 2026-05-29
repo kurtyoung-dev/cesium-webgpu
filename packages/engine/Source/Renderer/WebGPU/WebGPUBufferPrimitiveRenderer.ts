@@ -43,6 +43,54 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT (Batch 180) — the Buffer* material
+// WGSL uses bare `#import Name;` directives. The runtime preprocessor that
+// was supposed to resolve them (`context.shaderCache.preprocessOnly`) is
+// never wired — `context.shaderCache` is the WebGL `ShaderCache` (no
+// `preprocessOnly`), the `WebGPUShaderCache` is never instantiated, AND its
+// `WGSLShaderPreprocessor` only matches the quoted `// #import "path"` form,
+// not the bare `#import Name;` form — so the directives reached the WGSL
+// compiler verbatim and `#` failed as an invalid token. Resolve them
+// deterministically by inlining the chunk source from this map, matching the
+// JS-string-interpolation pattern every other WebGPU renderer uses (e.g.
+// GroundPrimitive's `${csm_depthClamp}`). All five chunks are leaf (no
+// nested `#import`), so a single in-place pass suffices.
+import CameraUniformsChunk from "../../Shaders/WebGPU/chunks/structs/CameraUniforms.js";
+import csm_translateRelativeToEyeChunk from "../../Shaders/WebGPU/chunks/functions/csm_translateRelativeToEye.js";
+import csm_decodeRGB8Chunk from "../../Shaders/WebGPU/chunks/functions/csm_decodeRGB8.js";
+
+// The Buffer* material shaders were authored against a 1-arg log-depth
+// convention (`csm_vertexLogDepth(clipPos)` returns the varying;
+// `csm_writeLogDepth(v)` writes it). The shared chunk library has since
+// diverged to 2-arg scaled variants, and `csm_writeLogDepth.wgsl` even
+// bundles its own conflicting 1-arg `csm_vertexLogDepth` copy — inlining
+// both library chunks redeclares the symbol. Resolve these two import names
+// to the Buffer-family 1-arg definitions here instead. `csm_writeLogDepth`
+// is a deliberate no-op on WebGPU: these fragment shaders have no
+// @builtin(frag_depth) output, and the WebGPU globe writes hyperbolic NDC
+// depth (no log-depth write — see GlobeTerrain.wgsl / CLAUDE.md), so the
+// polygon must match it for consistent depth testing. Writing log depth here
+// would put the fill geometry in a different depth space than the globe.
+const CSM_VERTEX_LOG_DEPTH_1ARG = `fn csm_vertexLogDepth(clipPos: vec4<f32>) -> f32 {
+  // clipPos.w is the positive eye-space distance in clip space.
+  return log2(max(1e-6, 1.0 + clipPos.w));
+}
+`;
+const CSM_WRITE_LOG_DEPTH_NOOP = `fn csm_writeLogDepth(logDepth: f32) {
+  // No-op on WebGPU: no @builtin(frag_depth) output here, and the globe writes
+  // hyperbolic NDC depth — see GlobeTerrain.wgsl. Hyperbolic NDC depth from
+  // @builtin(position).z keeps this geometry in the same depth space.
+}
+`;
+
+const BUFFER_WGSL_CHUNKS: Record<string, string> = {
+  CameraUniforms: CameraUniformsChunk,
+  csm_translateRelativeToEye: csm_translateRelativeToEyeChunk,
+  csm_vertexLogDepth: CSM_VERTEX_LOG_DEPTH_1ARG,
+  csm_writeLogDepth: CSM_WRITE_LOG_DEPTH_NOOP,
+  csm_decodeRGB8: csm_decodeRGB8Chunk,
+};
+const _warnedUnknownImports = new Set<string>();
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 164) — single per-device cache shared
 // across all 3 BufferPrimitive renderers. Each per-device cache keys by
@@ -243,12 +291,43 @@ export function preprocessShader(
   if (processed) {
     return processed;
   }
-  const shaderCache = context.shaderCache;
-  if (shaderCache && typeof shaderCache.preprocessOnly === "function") {
-    processed = shaderCache.preprocessOnly(source, { label: name });
-  } else {
-    processed = source;
-  }
+  // NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT (Batch 180) — resolve the bare
+  // `#import Name;` directives by inlining the chunk source. This replaces
+  // the previously-dead `context.shaderCache.preprocessOnly` branch (that
+  // method never existed on the WebGL `ShaderCache` that `context.shaderCache`
+  // actually returns, so `#import` lines reached the WGSL compiler verbatim →
+  // "invalid character" on `#`). De-dupe so a chunk imported by both the VS
+  // and FS isn't emitted twice (redeclaration error); strip + warn-once on an
+  // unknown name so a stray directive can never break compilation again.
+  const emitted = new Set<string>();
+  processed = source.replace(
+    /^[ \t]*#import\s+([A-Za-z_]\w*)\s*;?[ \t]*\r?\n?/gm,
+    (_full: string, importName: string): string => {
+      const chunk = BUFFER_WGSL_CHUNKS[importName];
+      if (chunk === undefined) {
+        //>>includeStart('debug', pragmas.debug);
+        if (!_warnedUnknownImports.has(importName)) {
+          _warnedUnknownImports.add(importName);
+          console.warn(
+            `[WebGPU:BufferPrimitive] shader "${name}" has unresolved WGSL ` +
+              `#import "${importName}" (not in BUFFER_WGSL_CHUNKS) — stripped. ` +
+              `Add the chunk to the map if the shader needs it.`,
+          );
+        }
+        //>>includeEnd('debug');
+        return "";
+      }
+      if (emitted.has(importName)) {
+        return ""; // already inlined (dedupe across VS/FS import blocks)
+      }
+      emitted.add(importName);
+      return `${chunk}\n`;
+    },
+  );
+  // `context.shaderCache` is intentionally unused for import resolution — it
+  // is the WebGL `ShaderCache` (no `preprocessOnly`); kept in the signature
+  // for API stability with other callers.
+  void context;
   // Append the pick fragment entry. Done after preprocessing so the pick
   // function references the already-resolved VertexOutput struct definition.
   processed = processed + PICK_FRAGMENT_SUFFIX;

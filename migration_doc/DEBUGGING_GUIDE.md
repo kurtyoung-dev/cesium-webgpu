@@ -306,6 +306,7 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | Probe | What it covers |
 | --- | --- |
 | `probe-edge-emitter.mjs` | Edge-visibility / line-emitter |
+| `probe-bufferpolygon-vector-tile.mjs` | Modern glTF-vector (`CESIUM_mesh_vector`) BufferPolygon fill — WebGL vs WebGPU `sample-us-states` load + canvas diff + feature/geometry/error metrics |
 | `probe-czml-bytes.mjs` | CZML byte-level parsing |
 | `probe-png-bytes.mjs` | PNG byte-level decoding |
 | `probe-mars-diag.mjs` | Mars (alternate-ellipsoid) diagnostics |

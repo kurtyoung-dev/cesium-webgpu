@@ -9497,3 +9497,41 @@ Loading a modern glTF-vector tileset on WebGPU fails: `Shader "BufferPolygonMate
 
 - `verify-vector-3dtile-frs.mjs` (existing) — FR registration + device-error smoke; does NOT render real content.
 - _No 2D/CV render probe yet_ — blocked on `.vctr` test data (or a BufferPolygon fix to get a modern vector scene). Documented in DEBUGGING_GUIDE.
+
+---
+
+## Batch 180 — BufferPolygon WGSL `#import` resolved + 1-arg depth helpers + camera `.xyz` + MSAA sample count (NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT RESOLVED)
+
+### What changed
+
+Fixed the modern glTF-vector (`CESIUM_mesh_vector`) polygon path on WebGPU end-to-end. The Batch 178 "possible regression" clue was WRONG — the `#import` runtime was never functional for the Buffer* family (see Bug 180.1); Batch 108 had only fixed field-name refs in the WGSL *source*, never actually compiling it through `#import`.
+
+### Bug 180.1 — Buffer* `#import` never resolved (THREE compounding bugs)
+
+`preprocessShader` (`WebGPUBufferPrimitiveRenderer.ts`) gated import resolution on `context.shaderCache.preprocessOnly`, but `context.shaderCache` returns the WebGL `ShaderCache` (no such method) and the `WebGPUShaderCache` is never instantiated → fell through to raw source. The `WGSLShaderPreprocessor` regex also only matches the quoted `// #import "path"` form, not the bare `#import Name;` form these shaders use. So `#` reached the compiler as an invalid token.
+
+Two further mismatches were hiding behind the compile failure:
+
+- **Helper signature drift:** shaders call 1-arg `csm_vertexLogDepth(clipPos)` / 1-arg `csm_writeLogDepth(v)`; the library chunks are 2-arg, and `csm_writeLogDepth.wgsl` bundles its own conflicting 1-arg `csm_vertexLogDepth` (redeclaration when both inlined).
+- **`vec4`→`vec3`:** shaders pass `camera.encodedCameraPositionMCHigh` (the shared `CameraUniforms` field is `vec4`) into `csm_translateRelativeToEye`'s `vec3` params.
+
+**Fix:** rewrote `preprocessShader` to resolve bare `#import Name;` from a `BUFFER_WGSL_CHUNKS` name→source map (dedupe + warn-once-and-strip on unknown). The two log-depth names resolve to local Buffer-family 1-arg defs — `csm_vertexLogDepth` = `log2(max(1e-6, 1+w))`, `csm_writeLogDepth` = **no-op** (no `@builtin(frag_depth)` output here, and the WebGPU globe writes hyperbolic NDC depth, so the polygon must match it for consistent depth testing). Added `.xyz` at all 5 `csm_translateRelativeToEye` call sites (Polygon ×1, Point ×1, Polyline ×3).
+
+### Bug 180.2 — color pipelines single-sample vs MSAA-4 scene FB
+
+Once the shader compiled, the color pipelines failed with an attachment-state mismatch: `sampleCount:1` pipeline vs `sampleCount:4` scene render pass. The Buffer pipelines never set `multisample`. **Fix:** threaded `context._msaaSamples` into all 3 color pipelines (`multisample: count>1 ? {count} : undefined`); pick pipelines stay single-sample (they render into the single-sample pick FB — same convention as GroundPrimitive). Added `_msaaSamples` to the `CesiumGraphicsContext` interface.
+
+### Verified (probe-bufferpolygon-vector-tile.mjs)
+
+WebGL vs WebGPU on `Apps/SampleData/vector/sample-us-states.tileset.json`: 593 device errors → **0**; both backends load 52 features with identical `geometryByteLength` (1,548,528); WebGPU draws the fill at the correct continental-US extent. Residual ~29% pixel diff is EXPECTED and not a regression — WebGL's depth func `LESS` loses coplanar ties to the globe (z-fight "pinwheel"); WebGPU's `less-equal` wins ties → clean solid fill.
+
+### Files modified
+
+- `Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts` — `preprocessShader` rewrite + `BUFFER_WGSL_CHUNKS` map + local 1-arg depth helper defs.
+- `Renderer/WebGPU/WebGPUBufferPolygonRenderer.ts`, `WebGPUBufferPolylineRenderer.ts`, `WebGPUBufferPointRenderer.ts` — `sampleCount` param + `multisample` on color pipelines.
+- `Shaders/WebGPU/Collections/BufferPolygonMaterial.wgsl`, `BufferPointMaterial.wgsl`, `BufferPolylineMaterial.wgsl` — `.xyz` on the encoded camera args.
+- `Renderer/WebGPU/cesium-js-types.d.ts` — `_msaaSamples` on `CesiumGraphicsContext`.
+
+### Probes
+
+- `probe-bufferpolygon-vector-tile.mjs` (new) — WebGL vs WebGPU `sample-us-states` load + canvas diff + feature/geometry/error metrics.

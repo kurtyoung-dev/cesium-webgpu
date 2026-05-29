@@ -91,6 +91,7 @@ function buildPolygonPipeline(
   format: GPUTextureFormat,
   bgls: GPUBindGroupLayout[],
   fragmentEntryPoint: string = "fragmentMain",
+  sampleCount: number = 1,
 ): GPURenderPipeline {
   // Pick-path entry points emit opaque pick IDs and must NOT alpha-blend
   // (blending pick IDs produces invalid intermediate values that map to
@@ -127,9 +128,19 @@ function buildPolygonPipeline(
   const targets: Array<GPUColorTargetState | null> = isPick
     ? [{ format }]
     : makeSceneFBTargets(format, { blend: colorBlend });
+  // The color path draws into the MSAA scene framebuffer, so its pipeline
+  // sample count must match `context._msaaSamples` (4 when MSAA is on) or
+  // the render pass rejects it with an attachment-state mismatch. The pick
+  // path renders into the single-sample pick FB, so it stays at count 1 —
+  // mirroring GroundPrimitive's pick variant (no `multisample`).
+  const multisample =
+    !isPick && sampleCount > 1 ? { count: sampleCount } : undefined;
   return device.createRenderPipeline({
-    label: `BufferPolygon pipeline (${fragmentEntryPoint})`,
+    label: `BufferPolygon pipeline (${fragmentEntryPoint}, ms=${
+      multisample?.count ?? 1
+    })`,
     layout: device.createPipelineLayout({ bindGroupLayouts: bgls }),
+    multisample,
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
@@ -209,7 +220,15 @@ function initPolygonCache(
   );
 
   const bgls = makeCameraBindGroupLayout(device, false);
-  const pipeline = buildPolygonPipeline(device, shaderModule, format, bgls);
+  const sampleCount = context._msaaSamples ?? 1;
+  const pipeline = buildPolygonPipeline(
+    device,
+    shaderModule,
+    format,
+    bgls,
+    "fragmentMain",
+    sampleCount,
+  );
   const pickPipeline = buildPolygonPipeline(
     device,
     shaderModule,

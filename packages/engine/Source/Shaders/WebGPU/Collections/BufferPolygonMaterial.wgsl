@@ -40,7 +40,7 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   // RTE positioning
   let p = csm_translateRelativeToEye(
     input.positionHigh, input.positionLow,
-    camera.encodedCameraPositionMCHigh, camera.encodedCameraPositionMCLow
+    camera.encodedCameraPositionMCHigh.xyz, camera.encodedCameraPositionMCLow.xyz
   );
   let positionEC = camera.modelViewRelativeToEye * p;
   let clipPos = camera.projectionMatrix * positionEC;

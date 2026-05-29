@@ -89,10 +89,19 @@ function buildPointPipeline(
   format: GPUTextureFormat,
   bgls: GPUBindGroupLayout[],
   fragmentEntryPoint: string = "fragmentMain",
+  sampleCount: number = 1,
 ): GPURenderPipeline {
+  // Color path draws into the MSAA scene FB → sample count must match
+  // `context._msaaSamples`; pick path renders into the single-sample pick FB.
+  const isPickStage = fragmentEntryPoint === "fragmentPickMain";
+  const multisample =
+    !isPickStage && sampleCount > 1 ? { count: sampleCount } : undefined;
   return device.createRenderPipeline({
-    label: `BufferPoint pipeline (${fragmentEntryPoint})`,
+    label: `BufferPoint pipeline (${fragmentEntryPoint}, ms=${
+      multisample?.count ?? 1
+    })`,
     layout: device.createPipelineLayout({ bindGroupLayouts: bgls }),
+    multisample,
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
@@ -197,7 +206,15 @@ function initPointCache(
     "BufferPointMaterial",
   );
   const bgls = makeCameraBindGroupLayout(device, true);
-  const pipeline = buildPointPipeline(device, shaderModule, format, bgls);
+  const sampleCount = context._msaaSamples ?? 1;
+  const pipeline = buildPointPipeline(
+    device,
+    shaderModule,
+    format,
+    bgls,
+    "fragmentMain",
+    sampleCount,
+  );
   const pickPipeline = buildPointPipeline(
     device,
     shaderModule,

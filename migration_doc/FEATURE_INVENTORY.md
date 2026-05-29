@@ -493,7 +493,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUPolylineRenderer — Polyline collection with arrow/dash/glow/outline materials (SHIPPED)
 - WebGPUPointPrimitiveRenderer — PointPrimitive collection (SHIPPED)
 - WebGPUCloudRenderer — CloudCollection volumetric procedural clouds (SHIPPED)
-- WebGPUBufferPoint/Polyline/Polygon/PrimitiveRenderer — vector-tile collections via storage buffers (SHIPPED)
+- WebGPUBufferPoint/Polyline/Polygon/PrimitiveRenderer — vector-tile collections via storage buffers (SHIPPED — the Polygon/Polyline/Point WGSL `#import` resolution + 1-arg depth helpers + camera `.xyz` + MSAA sample-count were actually broken until Batch 180; modern glTF-vector `sample-us-states` now renders WebGL↔WebGPU, verified via `probe-bufferpolygon-vector-tile.mjs`)
 - WebGPUEllipsoidPrimitiveRenderer / WebGPUEllipsoidRenderer — analytic ellipsoid primitive (SHIPPED)
 - WebGPUSunRenderer / WebGPUMoon — Sun + Moon billboards (in WebGPUEnvironmentRenderer) (SHIPPED)
 - WebGPUSkyAtmosphereRenderer — sky atmosphere ray-march (SHIPPED)

@@ -509,6 +509,12 @@ interface CesiumGraphicsContext {
   readonly defaultTexture: CesiumOpaqueTexture;
   readonly stencilBuffer: boolean;
   readonly msaa: boolean;
+  /** WebGPU-only: MSAA sample count of the scene framebuffer (1, 2, or 4).
+   *  Feature-renderer pipelines that draw into the scene FB must set their
+   *  `multisample.count` to this or the render pass rejects them with an
+   *  attachment-state mismatch. `1` (or absent) on WebGL / before MSAA is
+   *  configured. */
+  readonly _msaaSamples?: number;
   readonly drawingBufferWidth: number;
   readonly drawingBufferHeight: number;
   readonly device?: GPUDevice | null;

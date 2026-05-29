@@ -64,15 +64,15 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   // RTE positioning for current, previous, and next vertices
   let pCurr = csm_translateRelativeToEye(
     input.positionHigh, input.positionLow,
-    camera.encodedCameraPositionMCHigh, camera.encodedCameraPositionMCLow
+    camera.encodedCameraPositionMCHigh.xyz, camera.encodedCameraPositionMCLow.xyz
   );
   let pPrev = csm_translateRelativeToEye(
     input.prevPositionHigh, input.prevPositionLow,
-    camera.encodedCameraPositionMCHigh, camera.encodedCameraPositionMCLow
+    camera.encodedCameraPositionMCHigh.xyz, camera.encodedCameraPositionMCLow.xyz
   );
   let pNext = csm_translateRelativeToEye(
     input.nextPositionHigh, input.nextPositionLow,
-    camera.encodedCameraPositionMCHigh, camera.encodedCameraPositionMCLow
+    camera.encodedCameraPositionMCHigh.xyz, camera.encodedCameraPositionMCLow.xyz
   );
 
   let posEC = (camera.modelViewRelativeToEye * pCurr).xyz;
