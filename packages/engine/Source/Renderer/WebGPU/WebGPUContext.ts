@@ -390,6 +390,14 @@ export class WebGPUContext extends GraphicsContext {
   public _msaaSamples: number = 1;
   public useIndirectDrawForTiles: boolean = false;
 
+  // Renderer-wide log-depth master switch (Approach A for
+  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). Default FALSE: every producer/
+  // consumer change in the log-depth epic is gated on
+  // `isWebGPULogDepthActive(context, frameState)` (= this && useLogDepth), so
+  // each slice lands inert. The final epic commit flips this default to true;
+  // it remains a one-line kill switch afterward. See WebGPULogDepth.ts.
+  public _logDepthWriteEnabled: boolean = false;
+
   // Slice 5c-B Batch 129 — post-process snapshot. After the post-process
   // pipeline has blitted scene FB to canvas, a 1-pass copyTextureToTexture
   // mirrors the canvas into this view so env effects (SSR, NPR, Clouds,

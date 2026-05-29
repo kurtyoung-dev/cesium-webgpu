@@ -515,6 +515,12 @@ interface CesiumGraphicsContext {
    *  attachment-state mismatch. `1` (or absent) on WebGL / before MSAA is
    *  configured. */
   readonly _msaaSamples?: number;
+  /** WebGPU-only: renderer-wide log-depth master switch (Approach A for
+   *  NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). Default false; flipped true in
+   *  the final epic commit. Gate producer/consumer log-depth code on
+   *  `isWebGPULogDepthActive(context, frameState)` (WebGPULogDepth.ts), not on
+   *  this directly. Absent on WebGL. */
+  readonly _logDepthWriteEnabled?: boolean;
   readonly drawingBufferWidth: number;
   readonly drawingBufferHeight: number;
   readonly device?: GPUDevice | null;

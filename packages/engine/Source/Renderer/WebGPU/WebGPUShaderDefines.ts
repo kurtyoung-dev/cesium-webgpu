@@ -322,6 +322,33 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `GlobeTerrain.wgsl` FS material composite block.
    */
   MATERIAL_APPLY: 1 << 14,
+
+  /**
+   * Renderer-wide logarithmic depth (Approach A for
+   * NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). When set, a depth-writing
+   * fragment shader emits `@builtin(frag_depth)` via
+   * `csm_writeLogDepth(depthFromNearPlusOne, oneOverLog2FarDepthFromNearPlusOne)`
+   * and its vertex stage interpolates `csm_vertexLogDepth(clipPos, near)` +
+   * applies `csm_updatePositionDepth`. Depth CONSUMERS (classifier eye-space
+   * reconstruct, pick, SSAO/SSR/DoF/TAA/etc.) reverse it via
+   * `csm_reverseLogDepth` / `csm_reverseLogDepthToEyeDistance`. This puts ALL
+   * geometry into one logarithmic depth space (matching WebGL's
+   * `#ifdef LOG_DEPTH`), eliminating the 24-bit hyperbolic-NDC precision crush
+   * that makes textured-material classification and far-distance pick imprecise.
+   *
+   * Gating (single flip point): the define is set when
+   * `isWebGPULogDepthActive(context, frameState)` is true — i.e.
+   * `context._logDepthWriteEnabled && frameState.useLogDepth`. The
+   * `_logDepthWriteEnabled` master switch defaults FALSE while the epic is
+   * being landed slice-by-slice (every producer/consumer change is inert until
+   * the flip), and is set TRUE in the final epic commit. See
+   * `WebGPULogDepth.ts`.
+   *
+   * Consumers (rolled out across the epic): GlobeTerrain.wgsl + every other
+   * depth-writing WGSL producer; the 4 depth-sample classifiers; pick;
+   * post-process eye-space reconstructors.
+   */
+  LOG_DEPTH: 1 << 15,
 } as const);
 
 /**
