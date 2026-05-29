@@ -82,6 +82,14 @@ export interface PipelineHost extends ShaderFactoryHost {
    * MSAA-FLEET work).
    */
   readonly _sampleCount?: number;
+  /**
+   * Renderer-wide log-depth master switch, mirrored from
+   * `context._logDepthWriteEnabled` by the renderer each frame. When true, the
+   * pipeline builds OR `ShaderDefine.LOG_DEPTH` into their defines (+ cache
+   * key) so the globe writes `@builtin(frag_depth)` log depth. Default
+   * false/undefined → the bit is 0 and pipelines are byte-identical.
+   */
+  readonly _logDepthEnabled?: boolean;
 }
 
 // ─── Render Pipelines (lazily created per actual vertex stride) ───
@@ -272,7 +280,9 @@ export function buildPipelineDescriptor(
   // module. Augmented variants (debug fragment / clip distances)
   // inherit the same define set so their base source stays consistent
   // with the pipeline's vertex buffer layout.
-  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
   const productionModule = getProductionShaderModuleHelper(host, defines);
   // Phase 5 WGF-1: when the hardware clip-distances variant is requested,
   // both stages must come from the augmented module — the vertex stage
@@ -550,7 +560,9 @@ export function selectPipeline(
   // their interior faces disappear at the rim.
   const cdSuffix = useClipDistances ? "_CD" : "";
   const ncSuffix = disableCulling ? "_NC" : "";
-  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
   const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}${ncSuffix}|${defines.toString(16)}`;
   let entry = host._pipelineCache.get(cacheKey);
   let entryWasJustCreated = false;
@@ -642,7 +654,9 @@ export function selectTranslucentBackFacePipeline(
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
   const cdSuffix = useClipDistances ? "_CD" : "";
-  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
   // `isBlend=true` forces the ALPHA blend state; `_TBF` (translucent
   // back-face) suffix distinguishes from the standard blend variant
   // which cullMode: "back" (front-face). _TBF means cullMode: "front"
@@ -711,7 +725,9 @@ export function selectDepthOnlyBackFacePipeline(
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
   const cdSuffix = useClipDistances ? "_CD" : "";
-  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
   // Use the same cache key shape as `selectPipeline` for diagnostic
   // readability. `isBlend=false` and `disableCulling=false` are
   // hardcoded since the depth-only override supersedes both axes.
@@ -765,7 +781,9 @@ export function selectDebugFragmentPipeline(
   if (mode === DebugFragmentMode.NONE) {
     return null;
   }
-  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
   // Probe the augmented shader module first; the probe is define-keyed
   // and the `null` cache entry short-circuits pipeline builds when the
   // device rejected the augmented source for this define-set. Passing

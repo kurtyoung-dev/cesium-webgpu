@@ -109,7 +109,11 @@ export interface GlobePipelineEntry {
 //         aesthetic (the intentional DAYNIGHT_SHADING-analogue rewrite).
 //     w = reserved (future: `fade` scalar for exact DAYNIGHT_SHADING
 //         parity if we ever bridge that path too).
-export const CAMERA_UNIFORM_FLOATS = 140;
+// 140 base floats + 4 for the log-depth tail vec4 (near, far,
+// oneOverLog2FarDepthFromNearPlusOne, reserved) — see GlobeTerrain.wgsl
+// CameraUniforms.logDepth and the renderer-wide log-depth epic (Approach A).
+// The tail carries zero until log depth activates, so the larger UB is inert.
+export const CAMERA_UNIFORM_FLOATS = 144;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):

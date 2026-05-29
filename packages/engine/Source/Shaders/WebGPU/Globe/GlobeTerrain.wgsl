@@ -141,9 +141,42 @@ struct CameraUniforms {
   //   w = reserved (future: WebGL `fade` scalar for DAYNIGHT_SHADING path
   //       exact-match if we ever bridge that too).
   lighting: vec4<f32>,
+  // ─── Renderer-wide log depth (Approach A) ───
+  //   x = frustum near, y = frustum far,
+  //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
+  //   w = reserved.
+  // Carries zero until `_logDepthWriteEnabled` flips on; the `//>>ifdef
+  // LOG_DEPTH` blocks below are the only readers. Packed by
+  // WebGPUGlobeSurfaceCameraUB. See WebGPULogDepth.ts.
+  logDepth: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth (Approach A). The globe shader is fully inline
+// (it does not use the #import chunk system), so these mirror the canonical
+// definitions in Shaders/WebGPU/chunks/functions/csm_{vertexLogDepth,
+// writeLogDepth}.wgsl — keep them in sync. near/far/factor come from
+// camera.logDepth (packed by WebGPUGlobeSurfaceCameraUB).
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  // Linear "eye distance from near, plus one" — interpolated; the FS takes log2.
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  // Clamp clip z (WebGPU NDC [0,1]) so FP rounding at huge far/near ratios
+  // can't clip a vertex before the FS writes the correct log depth.
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+// Per-fragment interpolated depthFromNearPlusOne, stashed by fragmentMain so
+// makeFragOutput (called from ~15 sites) can write frag_depth without a param.
+var<private> g_fragLogDepth: f32;
+//>>endif
 
 // ─── Tile Imagery Uniforms (Group 0, Binding 1) ───
 //
@@ -487,6 +520,10 @@ struct VertexOutput {
   @location(9) v_slope: f32,
   @location(10) v_aspect: f32,
   @location(11) v_height: f32,
+  //>>ifdef LOG_DEPTH
+  // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
+  @location(12) v_logDepth: f32,
+  //>>endif
 };
 
 // ─── Constants ───
@@ -1119,6 +1156,15 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   out.v_distance = length(out.v_positionEC);
   out.v_textureCoordinates = vec3<f32>(textureCoordinates, webMercatorT);
   out.v_positionMC = position3DWC;
+
+  //>>ifdef LOG_DEPTH
+  // Renderer-wide log depth: interpolate the linear depthFromNearPlusOne and
+  // clamp clip-z so the FS-written log depth isn't pre-empted by clipping.
+  // Computed from out.position BEFORE the clamp (the clamp only touches .z;
+  // depthFromNearPlusOne uses .w). near = camera.logDepth.x.
+  out.v_logDepth = csm_vertexLogDepth(out.position, camera.logDepth.x);
+  out.position = csm_updatePositionDepth(out.position);
+  //>>endif
 
   // ─── Session 65 Batch 9: per-vertex ground atmosphere ray-march ───
   // Gated on `camera.atmosphereParams.w > 0.5` (set CPU-side when fog
@@ -2492,6 +2538,9 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
 struct FragOutput {
   @location(0) color: vec4<f32>,
   @location(1) normalRoughness: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
 };
 
 // Helper to pack the slot-1 attachment. Roughness is a 0.5 placeholder
@@ -2504,6 +2553,13 @@ fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
   var out: FragOutput;
   out.color = color;
   out.normalRoughness = vec4<f32>(normalEC, 0.5);
+  //>>ifdef LOG_DEPTH
+  // Write logarithmic frag depth. g_fragLogDepth (the interpolated
+  // depthFromNearPlusOne) is stashed at the top of fragmentMain so every
+  // return path through makeFragOutput emits it without a parameter.
+  // factor = camera.logDepth.z (oneOverLog2FarDepthFromNearPlusOne).
+  out.depth = csm_writeLogDepth(g_fragLogDepth, camera.logDepth.z);
+  //>>endif
   return out;
 }
 
@@ -2518,6 +2574,12 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   let normalEC = normalize(input.v_normalEC);
   let geoUV = input.v_textureCoordinates.xy;
   let webMercT = input.v_textureCoordinates.z;
+
+  //>>ifdef LOG_DEPTH
+  // Stash the interpolated log-depth varying so makeFragOutput (called from
+  // ~15 return sites, including the early debug returns) can write frag_depth.
+  g_fragLogDepth = input.v_logDepth;
+  //>>endif
 
   // Batch 57 — per-fragment UV derivatives computed AT FRAGMENT ENTRY
   // while control flow is still uniform. Used by `sampleImagery` calls

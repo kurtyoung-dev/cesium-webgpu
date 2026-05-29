@@ -229,6 +229,12 @@ export class WebGPUGlobeSurfaceRenderer {
   // MSAA change (see `WebGPUSceneRenderer.prepareFrame` Batch 25),
   // triggering this renderer's pipeline cache wipe at the same point.
   public _sampleCount: number = 1;
+  // Renderer-wide log-depth master switch, mirrored from
+  // `context._logDepthWriteEnabled` each frame so `buildPipelineDescriptor`
+  // (via `host._logDepthEnabled`) can OR the `LOG_DEPTH` shader define into
+  // the globe pipeline's defines + cache key. Default false → the bit is 0 and
+  // the globe pipeline is byte-identical until the epic's final flip.
+  public _logDepthEnabled: boolean = false;
   // Batch 110 — track scene-pipeline format generation last applied
   // so a runtime HDR / canvas-format change clears the pipeline +
   // wireframe + debug-fragment caches and rebuilds against the new
@@ -544,6 +550,14 @@ export class WebGPUGlobeSurfaceRenderer {
       this._wireframePipelineCache.clear();
       this._debugFragmentPipelineCache.clear();
     }
+
+    // Mirror the log-depth master switch every frame (independent of the
+    // ctxGen guard above). The flag flips once via _logDepthWriteEnabled; the
+    // pipeline cache keys include the LOG_DEPTH define so the flip rebuilds the
+    // globe pipeline through the normal keyed-miss path.
+    this._logDepthEnabled =
+      (frameState.context as unknown as { _logDepthWriteEnabled?: boolean })
+        ._logDepthWriteEnabled ?? false;
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
