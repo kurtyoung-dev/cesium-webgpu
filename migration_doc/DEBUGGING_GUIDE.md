@@ -252,9 +252,11 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 
 | Probe | What it covers |
 | --- | --- |
-| `probe-classifier-scenemode.mjs` | **Flat-color GroundPrimitive across SCENE3D / 2D / CV, WebGL vs WebGPU** (red-pixel count + device errors). Regression guard for the Batch 161 SCENE3D crash fix (was black + ~360 device errors — `ClassificationPrimitive` pushed the 1-target `depthSamplePick` into the MRT scene pass) and the Batch 164 2D render-pass-crash fix. Enforces 0 device errors in ALL modes; `ENFORCE_2D` flips on once 2D coverage lands. |
+| `probe-classifier-scenemode.mjs` | **Flat-color GroundPrimitive across SCENE3D / 2D / CV, WebGL vs WebGPU** (red-pixel count + device errors). Regression guard for the Batch 161 SCENE3D crash fix and the Batch 164 2D render-pass-crash fix. As of **Batch 170** `ENFORCE_2D = true` — all three modes now ENFORCED (SCENE2D 20781 px / CV 14574 px vs WebGL 20787 / 15484, 0 device errors). The standing regression guard for flat-color ground classification. |
+| `probe-classifier-textured-materials.mjs` | **Textured-material GroundPrimitive** (Color / Stripe / Checkerboard / Grid) in SCENE3D, WebGL vs WebGPU. Sub-1° polygon + polygon-interior ROI + lit-pixel-only **variance** signal (flat color → variance ~0; patterned material → high variance). `ENFORCE_TEXTURED = false`: Color passes; Stripe/Checkerboard/Grid render flat (variance ~50 vs WebGL ~5500) — BLOCKED on globe depth precision (NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). NOTE: identical non-zero red-px across all modes is a tell for a JS error-dialog (salmon background), not classification output. Flip `ENFORCE_TEXTURED` once the depth-precision fix lands. |
 | `probe-classifier-2d-renderpass.mjs` | Focused diagnostic for **cascading render-pass-lifecycle errors**: drives the 2D GroundPrimitive path, captures the FIRST thrown exception + stack + the leaked render-pass label (not the masking `beginFrame` cascade). Template for `_beginDefaultRenderPass() called with an active render pass` bugs. |
 | `probe-vr2-polylines-3dtiles.mjs` | BIM Power Plant tileset (ion asset 2464651) + clampToGround classification polyline, WebGL vs WebGPU saturated-panel pixel count (NEW-VR2-5 reproduction — no longer reproduces). Needs network + ion. |
+| *Vector3DTile classifier 2D/CV (Batch 178)* | **VERIFICATION GAP — no probe exists yet.** `Vector3DTilePrimitive` 2D/CV is implemented but cannot be Playwright-verified: the repo has no classic `.vctr` sample tileset (the only producer of `Vector3DTilePrimitive` content) and its internal classes aren't bundle-exported, so no synthetic scene is stampable. The modern sample vector tilesets (`Apps/SampleData/vector/*`) route through `BufferPolygon` (a different renderer, currently broken — NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT), NOT `Vector3DTilePrimitive`. A scenemode probe + `.vctr` test data (or a BufferPolygon fix) is owed. |
 
 ### Model / glTF
 
@@ -323,8 +325,8 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | `verify-glb-renders.mjs` / `-glb-side-by-side.mjs` | glTF model rendering |
 | `verify-gp-debug-volume.mjs` / `-gp-no-polyline.mjs` / `-ground-polyline-zoom.mjs` | Ground primitives |
 | `verify-hdr-taa.mjs` / `-initial-hdr.mjs` | HDR + TAA |
-| `verify-model-feature-pick.mjs` / `-pick-webgl-control.mjs` | Picking |
-| `verify-vector-3dtile-frs.mjs` | Vector 3D Tiles feature renderer |
+| `verify-model-feature-pick.mjs` / `-pick-webgl-control.mjs` | Picking. **Updated Batch 172**: respects `PROBE_BASE`, dropped the Vulkan launch flags (broke WebGPU init on Edge here), pick in CSS pixels + spiral fallback. Confirms per-feature pick infra (30 pick IDs + texture allocated, primitive cache populated) but surfaced the residual: the b3dm `BatchTableHierarchy` tileset does NOT visibly render → `scene.pick` returns undefined (C-R9-MODEL-FEATURE-PICK re-scoped, not closed). |
+| `verify-vector-3dtile-frs.mjs` | Vector 3D Tiles feature renderer (FR registration + device-error smoke only — does NOT render real Vector3DTile content; see the Vector3DTile verification-gap note above). |
 
 ### Cross-backend / Sandcastle
 

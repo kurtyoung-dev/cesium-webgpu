@@ -1,4 +1,58 @@
-# Next Session Handoff — 2026-04-27 (Batches 72 + 73 + 74 — C-R7 paired sweep, slices 1 + 2 + 3)
+# Next Session Handoff — 2026-05-28 (Batches 167–178 — classification arc: 2D/CV + textured materials + triage)
+
+**Branch:** `main` only (local + origin in sync at `3802e45d3b`). No safety / feature / worktree branches. Working tree carries only pre-existing root `Source/Shaders/WebGPU/Primitive/*.wgsl` build-output drift (regenerated material shaders that match canonical `packages/engine/Source` — NOT in-progress work; left uncommitted intentionally).
+
+**Headline:** A ~3-day push (2026-05-26 → 05-28) on the **classification / ground-primitive arc** plus a 27-agent **triage workflow** over the whole deferred backlog. Flat-color ground classification now renders in **all scene modes**; a large slice of the backlog turned out to be stale doc-drift and was retired/corrected; and the remaining textured-material + vector-classification work was driven until it hit two genuine, now-precisely-documented architectural roadblocks.
+
+> **Batch-number caveat:** git history is **non-monotonic**. These commits are labeled Batches 167–178 and are the *newest* work (HEAD), but earlier-in-history commits used higher labels (up to ~230). When cross-referencing docs that cite "Batch 205/225/230", those are OLDER ancestors. Trust commit hashes/dates over batch numbers.
+
+## What landed (Batches 167–178, all committed + pushed)
+
+| Batch | Commit | Summary |
+|---|---|---|
+| 167 | `af72357cf0` | Fix WebGPU globe blank at regional 2D zoom (NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM) — dropped the 3D-ECEF bounding-volume cull in non-3D modes |
+| 168 | `acc471c2e9` | Docs: probes → DEBUGGING_GUIDE |
+| 169 | `c9626d31ca` | Remove GroundPrimitive `_needs2DShader` 2D skip; localize the last 2D blocker |
+| 170 | `310d365a39` | **GroundPrimitive flat-color classification renders in SCENE2D + Columbus View** (NEW-CLASSIFIER-GROUNDPRIM-2D-RTE) — mode-conditional `.zxy` swizzle in `colorVS`/`vsVelocity` matching WebGL's ENU convention. Probe-verified (SCENE2D 20781 px, CV 14574 px, 0 errors) |
+| 171 | `8f44f9f1ff` | GroundPrimitive textured-material **dispatch infrastructure** (UBO 384→640, `applyMaterial` Color/Stripe/Checkerboard/Grid, `surfaceUV` planar+spherical). Color works; textured blocked (see roadblocks) |
+| 172 | `2b730cc7cb` | **Triage workflow** (27 agents) + doc-synced **8 stale backlog entries**; re-scoped C-R9-MODEL-FEATURE-PICK after a probe-first catch |
+| 173 | `fdf1ab9fd0` | Per-slice frustum-state UBO (resolves NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO) + corrected `windowToEye` (Batch 171 wrongly used `reverseLogDepth` on linear NDC) |
+| 174 | `415067cd38` | GroundPrimitive classification **frustum-slice distribution** via mode-aware bounding volume (resolves NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION) |
+| 175 | `3a4755f5be` | Split-screen **clock sync** (VR3-SPLIT-SCREEN-CLOCK-SYNC, Playwright-verified) + closed outlines-on-terrain warning as upstream parity |
+| 176 | `a1fad7b8d2` | Docs: NEW-GBUFFER-MRT-INTEGRATION — producer side shipped (176 shaders emit `@location(1)`); residual is consumer integration |
+| 177 | `b7103d1be6` | Docs: NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — recorded that the proper fix is **renderer-wide log depth**, not globe-local |
+| 178 | `3802e45d3b` | Vector3DTilePrimitive **2D/CV classification** (NEW-CLASSIFIER-2D-CV-MORPH slice 1) — implemented, builds, 0 device errors across modes, **e2e-visual UNVERIFIED** (no `.vctr` test data); found active BufferPolygon compile bug |
+
+**Triage finding (Batch 172):** the backlog was dominated by **documentation drift** — 6 of 19 open entries were already fully implemented (verify pass confirmed each producer→consumer chain) and just needed striking. Probe-first earned its keep on C-R9-MODEL-FEATURE-PICK: the code-level verify said "resolved," but running the probe showed the b3dm tileset doesn't visibly render, so it was re-scoped (infra resolved, residual b3dm content-render gap) instead of falsely closed.
+
+## Roadblocks hit (the load-bearing findings — read before picking up this domain)
+
+1. **Textured-material ground classification → blocked on globe DEPTH PRECISION (NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION).** The arc went dispatch-infra (171) → per-slice invProj (173) → frustum distribution (174) → then hit the floor: the WebGPU globe writes **hyperbolic NDC depth** into an RGBA8 texture, so a 350 km surface in a [0.1, 1e8] frustum slice sits at depth ≈ 0.99999971 where one 24-bit quantization step ≈ ±50–90 **km** of reconstructed eye-z — far bigger than the polygon, so the UV can't be reconstructed. Flat-color is unaffected (it only tests depth≠0). **The proper fix is RENDERER-WIDE log depth** (every pipeline emits `frag_depth` log + every consumer reverses it, since all geometry shares one depth attachment and depth-tests against each other — WebGL injects `czm_writeLogDepth` everywhere). Foundational, all-or-nothing, multi-week epic. Contained alternative: a dedicated R32F globe-pass linear-eye-z target sampled only by classifiers (multi-day, diverges from WebGL).
+
+2. **Vector3DTile 2D/CV → implemented but UNVERIFIABLE here (Batch 178).** The repo has **no classic `.vctr` sample tileset** (the only producer of `Vector3DTilePrimitive` content), and its internal classes aren't bundle-exported, so no synthetic probe scene is possible. The modern sample vector tilesets use the **glTF-vector `CESIUM_mesh_vector`** format → route through `BufferPolygon`, a DIFFERENT renderer. Slice 1 is a line-for-line port of the verified Batch 170 path (builds, 0 device errors 3D/2D/CV) but is explicitly **not claimed pixel-correct** pending test data.
+
+3. **Active BufferPolygon compile bug (NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT) — RECOMMENDED NEXT.** Loading any modern glTF-vector tileset fails: `BufferPolygonMaterial.wgsl` line 6 (`#import CameraUniforms;`) reaches the WGSL compiler **unresolved** → `#` is an invalid token → the pipeline is invalid, tileset never renders. Active, on the path real vector tilesets use, and **Playwright-verifiable** (the sample tileset reproduces it). Fixing it would also unblock a modern test scene to retroactively verify Batch 178. Likely cause: `#import` resolution not applied to this shader; fix may be small or expose a larger unfinished-BufferPolygon gap.
+
+4. **GPU-sort Phase-3 consumer → deferred (perf, correctness trap).** `_lastSortedIndices` is written but never read. The consumer must map compacted-SOA indices back to raw command indices (trap: naive `commands[indices[i]]` corrupts the opaque set), handle 1-frame latency, and — because opaque early-Z makes the reorder pixel-identical when correct — needs a **counter probe** (a pixel-diff can't catch a reorder bug). Its own probe-first session.
+
+5. **C-R9-MODEL-FEATURE-PICK → re-scoped, not closed.** The 3 documented blockers ARE resolved (30 pick IDs + texture allocated, primitive cache populated) but the b3dm `BatchTableHierarchy` tileset doesn't visibly render in the probe — residual b3dm content-render/pick gap needing focused investigation.
+
+6. **BUG-WEBGPU-CANVAS-BLACK appears already resolved** — every probe this 3-day span rendered globes/imagery/polygons fine, never black (likely fixed by Session 61's AsyncResourceMonitor). Owes a formal re-verify but not a lurking showstopper.
+
+## Recommended next steps (priority order)
+
+1. **NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT** — active, verifiable, modern-vector path. Start by checking why `#import` isn't resolved for `BufferPolygonMaterial` vs the working `Collections/BillboardCollection.wgsl`.
+2. **Verify + extend Batch 178** once a vector test scene exists (BufferPolygon fix gives one); then Vector3DTilePolylines + ClampedPolylines 2D/CV slices, then MORPHING.
+3. **NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION** — schedule renderer-wide log depth as a deliberate foundational epic (also fixes pick + distance precision everywhere), OR the contained R32F-classifier-depth workaround if textured ground materials are the priority.
+4. GPU-sort Phase-3 consumer (own probe-first session); C-R9 b3dm render gap; formal BUG-WEBGPU-CANVAS-BLACK re-verify.
+
+## Doc state (synced this handoff, Batch 178)
+
+`DEFERRED_WORK.md` kept current throughout 167–178 (entries struck/re-scoped/added inline). `WEBGPU_DEBUGGING_LOG.md` has Bug entries 167.1/170.1/171.1/173.1/174.1 + the BufferPolygon finding. `FEATURE_INVENTORY.md` + `DEBUGGING_GUIDE.md` classification/probe sections synced. The archived 2026-04-27 handoff (Batches 72–74) follows below.
+
+---
+
+# (Archived) Next Session Handoff — 2026-04-27 (Batches 72 + 73 + 74 — C-R7 paired sweep, slices 1 + 2 + 3)
 
 **Branch:** `main` is the only branch (local + origin). Working tree dirty with Batch 74 changes pending commit. No safety branches, no worktree branches, no feature branches.
 

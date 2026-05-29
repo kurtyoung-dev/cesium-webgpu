@@ -9462,3 +9462,38 @@ Kept Batch 174 — the frustum-distribution fix is correct (matches WebGL), non-
 
 - `probe-classifier-scenemode.mjs` — flat-color regression guard (green; no regression from BV+cull).
 - `probe-classifier-textured-materials.mjs` — still `ENFORCE_TEXTURED = false` (blocked on globe log-depth precision).
+
+---
+
+## Batch 178 — Vector3DTilePrimitive 2D/CV classification (slice 1); found active BufferPolygon WGSL `#import` compile bug
+
+**Bug(s):** 178.1 (verification blocker — no Vector3DTile test data), 178.2 (active: BufferPolygonMaterial `#import` unresolved)
+**File(s):** `WebGPUVector3DTilePrimitiveRenderer.js`; finding in `Shaders/WebGPU/Collections/BufferPolygonMaterial.wgsl`
+
+### What changed
+
+Ported the verified Batch 170 GroundPrimitive 2D/CV approach to `WebGPUVector3DTilePrimitiveRenderer`: `ensureGeometry` builds a CPU-reprojected ENU 2D vertex buffer alongside the 3D one (world = RTC position + `_center` → `cartesianToCartographic` → `mapProjection.project` → ENU `(height, projX, projY)`, RTC to a 2D center); `packUniforms` mode-branches the encoded center; the non-3D buffer is bound; the Batch 150 "skip all non-3D" gate is narrowed to MORPHING-only. The VS math is mode-agnostic (only center/buffer/`vpRTE` differ), so no shader change.
+
+### Bug 178.1 — Vector3DTile 2D/CV is UNVERIFIABLE here (honest status, Principle 8)
+
+End-to-end Vector3DTile-CONTENT rendering in 2D/CV could not be Playwright-verified:
+- The repo has **no classic `.vctr` sample tileset** — the only producer of `Vector3DTilePrimitive` content.
+- The primitive's internal classes (`Vector3DTilePolygons`, `Cesium3DTileBatchTable`) are **not exported** in the public bundle, so a synthetic probe scene can't be stamped.
+- The modern sample vector tilesets (`Apps/SampleData/vector/sample-us-states.tileset.json` etc.) use the glTF-vector `CESIUM_mesh_vector` format → route through `BufferPolygon`, a DIFFERENT renderer (and currently broken — see 178.2).
+
+What WAS verified: builds clean; FR registers; **0 device errors across SCENE3D / SCENE2D / COLUMBUS_VIEW** mode flips; no regression. It's a line-for-line port of the verified Batch 170 path (high confidence) but explicitly NOT claimed pixel-correct; NEW-CLASSIFIER-2D-CV-MORPH stays open.
+
+### Bug 178.2 — BufferPolygonMaterial.wgsl `#import` reaches the WGSL compiler unresolved (ACTIVE; possible regression)
+
+Loading a modern glTF-vector tileset on WebGPU fails: `Shader "BufferPolygonMaterial" compilation ERROR at line 6:1: invalid character found` → `[Invalid RenderPipeline "BufferPolygon pipeline (fragmentMain)"]`. Line 6 is `#import CameraUniforms;` — the `#import` module directives are NOT being resolved before WGSL compilation, so `#` (col 1) is an invalid WGSL token. The buffer-backed vector polygon path is therefore broken on WebGPU; the tileset never reaches `ready`.
+
+**Clue for the fix:** the Batch 108 entry in this log shows `BufferPolygonMaterial.wgsl` was being COMPILED successfully then (they fixed its `camera.projection` → `camera.projectionMatrix` field refs — which means the WGSL parser was reaching those lines, i.e., `#import` WAS resolving). So this is likely a **regression** in the `#import` resolution / shader-registration path for the Buffer* collection shaders, not a never-worked gap. Compare against a currently-working `#import` consumer (`Collections/BillboardCollection.wgsl`) + check the module/preprocessor registration for the Buffer* shaders. Tracked as NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT in DEFERRED_WORK — recommended next item (active, on the path real vector tilesets use, Playwright-verifiable via the sample tileset).
+
+### Files modified
+
+- `WebGPUVector3DTilePrimitiveRenderer.js` — reprojected ENU 2D vertex buffer + 2D center in `ensureGeometry`; mode-branched center in `packUniforms`; 2D buffer bound in non-3D; gate narrowed to MORPHING-only; 2D buffer destroyed in cleanup.
+
+### Probes
+
+- `verify-vector-3dtile-frs.mjs` (existing) — FR registration + device-error smoke; does NOT render real content.
+- _No 2D/CV render probe yet_ — blocked on `.vctr` test data (or a BufferPolygon fix to get a modern vector scene). Documented in DEBUGGING_GUIDE.
