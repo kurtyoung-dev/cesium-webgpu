@@ -761,7 +761,25 @@ The derivative built-ins (`dpdx`/`dpdy`) are hoisted to a new helper `deriveTang
 
 ---
 
+### NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT — `BufferPolygonMaterial.wgsl` `#import` directives unresolved → "invalid character" compile failure (ACTIVE BUG, modern glTF-vector path)
+
+**What (found Batch 178):** Loading a modern glTF-vector tileset (`CESIUM_mesh_vector`, e.g. `Apps/SampleData/vector/sample-us-states.tileset.json`) on WebGPU fails to render its polygons: `Shader "BufferPolygonMaterial" compilation ERROR at line 6:1: invalid character found` → `[Invalid RenderPipeline "BufferPolygon pipeline (fragmentMain)"]`. Line 6 of `BufferPolygonMaterial.wgsl` is `#import CameraUniforms;` — the `#import` directives are reaching the WGSL compiler UNRESOLVED, so `#` (col 1) is an invalid WGSL token. The modern buffer-backed vector polygon path (`BufferPolygon` collection renderer) is therefore broken on WebGPU; the tileset never reaches `ready`.
+
+**Why it matters / priority:** This is an ACTIVE, REPRODUCIBLE bug on the path that REAL modern vector tilesets use (the `CESIUM_mesh_vector` glTF-vector format), and it's Playwright-verifiable (the sample tileset triggers it immediately) — unlike the classic `Vector3DTilePrimitive` 2D/CV work which lacks test data. Arguably higher priority than the legacy-path 2D/CV parity.
+
+**Likely cause + scope:** The `#import` module-resolution step (the same one that works for BillboardCollection / other collection WGSL) isn't being applied to `BufferPolygonMaterial` before compilation — either the shader isn't registered with the import-resolving preprocessor / module cache, or it's loaded via a path that bypasses `#import` resolution. Fix is likely small (register the shader source / route it through the same preprocessor the working collection shaders use) but could surface a larger gap if the whole `BufferPolygon` WebGPU path is unfinished. Verify by loading `sample-us-states.tileset.json` on WebGPU and confirming the polygons render + 0 device errors. Recommended as the next verifiable item in the vector-classification domain.
+
+**Trace:** Batch 178 (found while scoping NEW-CLASSIFIER-2D-CV-MORPH — the sample vector tilesets route through `BufferPolygon`, not `Vector3DTilePrimitive`); `BufferPolygonMaterial.wgsl:6` (`#import CameraUniforms;`); contrast working `Collections/BillboardCollection.wgsl` `#import` usage.
+
+---
+
 ### NEW-CLASSIFIER-2D-CV-MORPH — proper 2D / Columbus View / Morphing support for classifier renderers
+
+**Progress (Batch 178) — Vector3DTilePrimitive 2D + CV implemented (e2e-visual UNVERIFIED — see blocker):** `WebGPUVector3DTilePrimitiveRenderer` now builds a CPU-reprojected ENU 2D vertex buffer alongside the 3D one in `ensureGeometry` (world = RTC position + `_center` → `cartesianToCartographic` → `mapProjection.project` → ENU `(height, projX, projY)`, RTC-relative to a 2D center), mode-branches the encoded center in `packUniforms` (2D center in non-3D, with `camera.positionWC` already in the ENU frame under `TRANSFORM_2D`), binds the 2D buffer in SCENE2D/COLUMBUS_VIEW, and the Batch 150 "skip all non-3D" gate is narrowed to **MORPHING-only**. The VS math is mode-agnostic (same `(centerH-camH)+(centerL-camL)+position` form — only the center / buffer / `vpRTE` differ by mode), so NO shader change was needed. This is a direct port of the **verified** Batch 170 GroundPrimitive 2D/CV approach + `GeometryPipeline.projectTo2D`.
+
+**VERIFICATION BLOCKER (Batch 178):** end-to-end Vector3DTile-content rendering in 2D/CV could NOT be Playwright-verified — the repo has **no classic `.vctr` sample tileset** (the only thing that produces `Vector3DTilePrimitive` content), and the primitive's internal classes (`Vector3DTilePolygons`, `Cesium3DTileBatchTable`) are not exported in the public bundle, so a synthetic scene can't be stamped from a probe. The modern sample vector tilesets (`Apps/SampleData/vector/*.tileset.json`) use the **glTF-vector `CESIUM_mesh_vector`** format, which routes through `BufferPolygon` (a DIFFERENT renderer), NOT `Vector3DTilePrimitive` — and that path has its own active compile bug (see **NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT**). What WAS verified: builds clean, FR registers, **0 device errors across SCENE3D / SCENE2D / COLUMBUS_VIEW** mode flips, no regression. Given it's a line-for-line port of the verified Batch 170 path, confidence is high — but it is flagged UNVERIFIED pending a `.vctr` test scene (or fixing BufferPolygon to get a modern vector test scene). NOT marked resolved.
+
+**Remaining:** Vector3DTilePolylines + ClampedPolylines 2D/CV (same reprojection, adapted to their attribute layouts); MORPHING blend (3D↔2D EC-space interp, the GroundPrimitive `morphColorVS` pattern) for all; and the e2e visual verification once test data exists.
 
 **What:** WebGL classification primitives correctly render in
 SceneMode.SCENE2D, COLUMBUS_VIEW, and MORPHING. WebGPU's classifier

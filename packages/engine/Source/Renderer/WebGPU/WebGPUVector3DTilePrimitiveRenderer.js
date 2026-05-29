@@ -36,6 +36,8 @@
  *
  * @private
  */
+import Cartesian3 from "../../Core/Cartesian3.js";
+import Cartographic from "../../Core/Cartographic.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
@@ -79,6 +81,20 @@ const scratchEncodedCenter = new EncodedCartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
 const scratchView = new Matrix4();
 const scratchVPRTE = new Matrix4();
+
+// NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — scratches for the CPU-side
+// reprojection of RTC-relative 3D ECEF positions into the SCENE2D /
+// COLUMBUS_VIEW planar ENU frame. Unlike GroundPrimitive (which gets
+// `position2DHigh/Low` from `GeometryPipeline.projectTo2D`), Vector3DTile
+// content carries only the 3D `_positions` RTC pair, so the 2D positions
+// are derived here: world = position + _center (ECEF) → cartographic →
+// `mapProjection.project` → (projX, projY, height) → ENU `(height, projX,
+// projY)` (the `.zxy` swizzle proven in Batch 170 for the GroundPrimitive
+// 2D path; matches `camera.positionWC`'s ENU frame under `TRANSFORM_2D`).
+const scratchReprojWorld = new Cartesian3();
+const scratchReprojCarto = new Cartographic();
+const scratchReprojProj = new Cartesian3();
+const scratchCenter2D = new Cartesian3();
 
 /**
  * Build the WGSL pipeline resources (BGLs + shader module + descriptors).
@@ -544,7 +560,7 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
   return true;
 }
 
-function packUniforms(data, frameState, primitive) {
+function packUniforms(data, frameState, primitive, cache) {
   const uniformState = frameState.context.uniformState;
   Matrix4.clone(uniformState.view, scratchView);
   scratchView[12] = 0.0;
@@ -553,7 +569,19 @@ function packUniforms(data, frameState, primitive) {
   Matrix4.multiply(uniformState.projection, scratchView, scratchVPRTE);
   Matrix4.pack(scratchVPRTE, data, 0);
 
-  EncodedCartesian3.fromCartesian(primitive._center, scratchEncodedCenter);
+  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — mode-branch the encoded
+  // center. In SCENE3D the geometry's RTC positions are relative to the
+  // 3D ECEF `_center`; in SCENE2D / COLUMBUS_VIEW they're relative to the
+  // ENU 2D center (`cache.center2D`, computed in ensureGeometry). The VS
+  // math is identical — only the center / bound vertex buffer / `vpRTE`
+  // differ by mode. `vpRTE` (above) is already mode-correct
+  // (uniformState.view/projection), and the camera below stays
+  // `camera.positionWC` which under `TRANSFORM_2D` IS the ENU frame in
+  // 2D/CV (matching the reprojected ENU positions).
+  const non3D = frameState?.mode !== SceneMode.SCENE3D;
+  const centerSource =
+    non3D && defined(cache?.center2D) ? cache.center2D : primitive._center;
+  EncodedCartesian3.fromCartesian(centerSource, scratchEncodedCenter);
   data[16] = scratchEncodedCenter.high.x;
   data[17] = scratchEncodedCenter.high.y;
   data[18] = scratchEncodedCenter.high.z;
@@ -617,7 +645,7 @@ function packUniforms(data, frameState, primitive) {
   }
 }
 
-function ensureGeometry(cache, primitive, device) {
+function ensureGeometry(cache, primitive, device, frameState) {
   if (defined(cache.vertexGPUBuffer)) {
     return;
   }
@@ -652,6 +680,74 @@ function ensureGeometry(cache, primitive, device) {
     "Vector3DTilePrimitive VB",
   );
   cache.vertexCount = numVerts;
+
+  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — build the SCENE2D /
+  // COLUMBUS_VIEW vertex buffer alongside the 3D one, while `_positions`
+  // is still available (it may be released after this first build, and
+  // `ensureGeometry` early-returns once `vertexGPUBuffer` exists — so both
+  // buffers MUST be produced in this single pass). Each vertex is
+  // reprojected from its RTC-relative 3D ECEF position into the planar ENU
+  // frame, then re-expressed RTC-relative to a 2D center so the SAME
+  // mode-agnostic VS math (`(centerH-camH)+(centerL-camL)+position`) holds
+  // with the 2D center / 2D camera / mode-correct `vpRTE` packed in
+  // `packUniforms`. Skipped for `scene3DOnly` scenes (no 2D attributes
+  // needed). The reprojection mirrors `GeometryPipeline.projectTo2D` +
+  // the Batch 170 GroundPrimitive ENU `.zxy` convention.
+  const projection = frameState?.mapProjection;
+  const ellipsoid = projection?.ellipsoid;
+  if (frameState?.scene3DOnly || !projection || !ellipsoid) {
+    return;
+  }
+
+  // 2D center = ENU of the tileset center's projected coordinates.
+  // `_center` is the absolute ECEF tileset center.
+  const centerCarto = ellipsoid.cartesianToCartographic(
+    primitive._center,
+    scratchReprojCarto,
+  );
+  if (!defined(centerCarto)) {
+    return; // center at Earth's center / degenerate — skip 2D buffer
+  }
+  const centerProj = projection.project(centerCarto, scratchReprojProj);
+  // ENU frame: (height, projX, projY) = projected.(z, x, y).
+  scratchCenter2D.x = centerProj.z;
+  scratchCenter2D.y = centerProj.x;
+  scratchCenter2D.z = centerProj.y;
+  cache.center2D = Cartesian3.clone(scratchCenter2D, cache.center2D);
+
+  const interleaved2D = new Float32Array(numVerts * 4);
+  for (let v = 0; v < numVerts; v++) {
+    const src = v * 3;
+    // world = RTC position + center (absolute ECEF).
+    scratchReprojWorld.x = positions[src] + primitive._center.x;
+    scratchReprojWorld.y = positions[src + 1] + primitive._center.y;
+    scratchReprojWorld.z = positions[src + 2] + primitive._center.z;
+    const carto = ellipsoid.cartesianToCartographic(
+      scratchReprojWorld,
+      scratchReprojCarto,
+    );
+    const dst = v * 4;
+    if (!defined(carto)) {
+      // Degenerate vertex (shouldn't happen for real tile geometry);
+      // collapse to the 2D center so it contributes nothing.
+      interleaved2D[dst] = 0.0;
+      interleaved2D[dst + 1] = 0.0;
+      interleaved2D[dst + 2] = 0.0;
+      interleaved2D[dst + 3] = vertexBatchIds[v];
+      continue;
+    }
+    const proj = projection.project(carto, scratchReprojProj);
+    // ENU (height, projX, projY) then RTC-relative to the 2D center.
+    interleaved2D[dst] = proj.z - scratchCenter2D.x;
+    interleaved2D[dst + 1] = proj.x - scratchCenter2D.y;
+    interleaved2D[dst + 2] = proj.y - scratchCenter2D.z;
+    interleaved2D[dst + 3] = vertexBatchIds[v];
+  }
+  cache.vertexGPUBuffer2D = WebGPUBuffer.createVertexBuffer(
+    device,
+    interleaved2D,
+    "Vector3DTilePrimitive VB 2D",
+  );
 }
 
 function ensureIndexBuffer(cache, primitive, device) {
@@ -862,23 +958,22 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   const context = frameState.context;
   const device = context.device;
 
-  // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
-  // Vector3DTilePrimitive reads RTC-relative `position` attributes
-  // tied to the tileset's encoded `_center` (3D ECEF). The 2D /
-  // Columbus View projections aren't wired through to the VS, so
-  // non-3D modes would project the 3D-encoded positions through the
-  // 2D / CV projection matrix and produce wandering classification
-  // volumes. 3D Tiles content is typically only viewed in 3D mode in
-  // production, so silently skipping emission here matches
-  // user-expected behavior. Tracked as a follow-up in DEFERRED_WORK.md.
-  if (frameState?.mode !== SceneMode.SCENE3D) {
+  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — SCENE2D + COLUMBUS_VIEW now
+  // render via a CPU-reprojected ENU 2D vertex buffer (built in
+  // ensureGeometry) + mode-branched center packing (packUniforms); the VS
+  // math is mode-agnostic. MORPHING still returns no commands: the morph
+  // blend needs BOTH the 3D and 2D positions interpolated in EC space (the
+  // GroundPrimitive morphColorVS pattern), which is a separate slice. The
+  // original Batch 150 gate (skip ALL non-3D) is therefore narrowed to
+  // MORPHING-only.
+  const sceneMode = frameState?.mode;
+  if (sceneMode === SceneMode.MORPHING) {
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
-      "WebGPUVector3DTilePrimitive.sceneMode",
-      "Vector3DTilePrimitive on WebGPU is currently only correct in " +
-        "SceneMode.SCENE3D. Non-3D scene modes (2D, Columbus View, Morphing) " +
-        "are silently skipped. Tracked as A.4 / NEW-CLASSIFIER-2D-CV-MORPH " +
-        "in DEFERRED_WORK.md.",
+      "WebGPUVector3DTilePrimitive.morphing",
+      "Vector3DTilePrimitive on WebGPU renders in SCENE3D, SCENE2D, and " +
+        "COLUMBUS_VIEW (Batch 178). MORPHING is still skipped pending the " +
+        "3D↔2D EC-space blend — tracked as NEW-CLASSIFIER-2D-CV-MORPH.",
     );
     //>>includeEnd('debug');
     return { colorCommands: [], pickCommands: [], ignoreShowCommands: [] };
@@ -967,14 +1062,27 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   }
 
   // Vertex + index buffers from the primitive's CPU-side arrays.
-  ensureGeometry(cache, primitive, device);
+  ensureGeometry(cache, primitive, device, frameState);
   ensureIndexBuffer(cache, primitive, device);
   if (!defined(cache.vertexGPUBuffer) || !defined(cache.indexGPUBuffer)) {
     return { colorCommands: [], pickCommands: [] };
   }
+  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — in non-3D modes bind the
+  // reprojected ENU 2D vertex buffer. If the 2D buffer is missing (e.g.
+  // scene3DOnly, or a degenerate center), fall back to skipping this frame
+  // rather than drawing the 3D-ECEF positions through the 2D projection
+  // (which would produce wandering volumes — the failure mode the Batch
+  // 150 gate originally guarded against).
+  const non3D = sceneMode !== SceneMode.SCENE3D;
+  const activeVertexBuffer = non3D
+    ? cache.vertexGPUBuffer2D
+    : cache.vertexGPUBuffer;
+  if (!defined(activeVertexBuffer)) {
+    return { colorCommands: [], pickCommands: [] };
+  }
 
   // Per-frame uniform + per-batch color upload.
-  packUniforms(cache.uniformData, frameState, primitive);
+  packUniforms(cache.uniformData, frameState, primitive, cache);
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,
@@ -1114,7 +1222,9 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     const sharedDrawArgs = {
       bindGroups: [cache.sharedBindGroup, cache.depthSampleBindGroup],
       bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
-      vertexBuffers: [cache.vertexGPUBuffer],
+      // Batch 178 — 3D ECEF buffer in SCENE3D, reprojected ENU 2D buffer
+      // in SCENE2D / COLUMBUS_VIEW (NEW-CLASSIFIER-2D-CV-MORPH).
+      vertexBuffers: [activeVertexBuffer],
       indexBuffer: cache.indexGPUBuffer,
       indexFormat: cache.indexFormat,
       indexCount: count,
@@ -1194,6 +1304,10 @@ function destroyWebGPUVector3DTilePrimitiveResources(primitive) {
   }
   if (defined(cache.vertexGPUBuffer)) {
     cache.vertexGPUBuffer.destroy();
+  }
+  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — release the reprojected 2D buffer.
+  if (defined(cache.vertexGPUBuffer2D)) {
+    cache.vertexGPUBuffer2D.destroy();
   }
   if (defined(cache.indexGPUBuffer)) {
     cache.indexGPUBuffer.destroy();
