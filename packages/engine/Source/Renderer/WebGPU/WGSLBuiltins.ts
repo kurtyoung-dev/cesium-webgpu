@@ -336,24 +336,65 @@ fn csm_unpackTexture4(channels: vec4<f32>) -> u32 {
 }
 `;
 
-const csm_writeLogDepth = `
-// Log depth for multi-frustum rendering.
-// WebGPU uses 0-1 NDC depth range. Log depth gives much better precision
-// for both near and far objects at planetary scale.
+// Logarithmic depth for multi-frustum rendering (WebGPU uses a 0..1 NDC depth
+// range). CANONICAL CONTRACT — these inline copies MUST stay byte-compatible
+// with the .wgsl chunk files under Shaders/WebGPU/chunks/functions/. Slice 0 of
+// the renderer-wide log-depth epic de-bundled csm_vertexLogDepth (which used to
+// be defined inside csm_writeLogDepth here AND in its own chunk, colliding) and
+// reconciled every signature to the WebGL math.
 
-struct LogDepthUniforms {
-  oneOverLog2FarPlusOne: f32,
-  farPlane: f32,
-  _pad0: f32,
-  _pad1: f32,
-};
-
-fn csm_vertexLogDepth(clipPosition: vec4<f32>) -> f32 {
-  return log2(max(1e-6, 1.0 + clipPosition.w));
+// functions/csm_vertexLogDepth — vertex stage: returns the LINEAR
+// depthFromNearPlusOne to interpolate, + the clip-z clamp companion.
+const csm_vertexLogDepth = `
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
 }
 
-fn csm_writeLogDepth(logZ: f32, oneOverLog2FarPlusOne: f32) -> f32 {
-  return logZ * oneOverLog2FarPlusOne;
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+`;
+
+// functions/csm_writeLogDepth — fragment stage: interpolated depthFromNearPlusOne
+// -> 0..1 frag depth. Assign to a @builtin(frag_depth) struct field.
+const csm_writeLogDepth = `
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+`;
+
+// functions/csm_reverseLogDepth — reverse a 0..1 log-depth value to hyperbolic
+// NDC z, plus the high-precision eye-distance variant for classifiers.
+const csm_reverseLogDepth = `
+fn csm_reverseLogDepth(logZ: f32, near: f32, far: f32) -> f32 {
+  if (far == near) { return 0.0; }
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  let depthFromCamera = depthFromNear + near;
+  return far * (1.0 - near / depthFromCamera) / (far - near);
+}
+
+fn csm_reverseLogDepthToEyeDistance(logZ: f32, near: f32, far: f32) -> f32 {
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  return depthFromNear + near;
+}
+`;
+
+// functions/csm_readDepth — sample a log-depth texture + reverse to NDC z.
+// Imports csm_reverseLogDepth; callers must include both chunks.
+const csm_readDepth = `
+fn csm_readDepth(
+  depthTexture: texture_2d<f32>,
+  depthSampler: sampler,
+  texCoords: vec2<f32>,
+  near: f32,
+  far: f32,
+) -> f32 {
+  let rawDepth: f32 = textureSample(depthTexture, depthSampler, texCoords).r;
+  return csm_reverseLogDepth(rawDepth, near, far);
 }
 `;
 
@@ -430,7 +471,10 @@ export function createDefaultWGSLLibrary(): WGSLShaderLibrary {
   );
   library.registerCode("functions/csm_decodeRGB8", csm_decodeRGB8);
   library.registerCode("functions/csm_unpackTexture", csm_unpackTexture);
+  library.registerCode("functions/csm_vertexLogDepth", csm_vertexLogDepth);
   library.registerCode("functions/csm_writeLogDepth", csm_writeLogDepth);
+  library.registerCode("functions/csm_reverseLogDepth", csm_reverseLogDepth);
+  library.registerCode("functions/csm_readDepth", csm_readDepth);
 
   return library;
 }
@@ -458,7 +502,10 @@ export const WGSLBuiltinChunks = {
   TRANSLATE_RELATIVE_TO_EYE: "functions/csm_translateRelativeToEye",
   DECODE_RGB8: "functions/csm_decodeRGB8",
   UNPACK_TEXTURE: "functions/csm_unpackTexture",
+  VERTEX_LOG_DEPTH: "functions/csm_vertexLogDepth",
   WRITE_LOG_DEPTH: "functions/csm_writeLogDepth",
+  REVERSE_LOG_DEPTH: "functions/csm_reverseLogDepth",
+  READ_DEPTH: "functions/csm_readDepth",
 } as const;
 
 export default createDefaultWGSLLibrary;
