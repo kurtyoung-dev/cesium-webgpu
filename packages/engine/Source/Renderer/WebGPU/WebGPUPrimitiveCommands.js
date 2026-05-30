@@ -50,6 +50,8 @@ import {
   isPBRShader,
 } from "./WebGPUPrimitiveShaders.js";
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
+import { ShaderDefine } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import {
   getEffectsBindGroupLayout,
   getPlaceholderEffects,
@@ -84,14 +86,24 @@ const scratchCameraPositionMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
 // Scratch for encoding a single vertex position
 const scratchEncodedPosition = new EncodedCartesian3();
-// RTE camera uniform scratch buffers (76 floats = 304 bytes max for lit with prevVP)
+// RTE camera uniform scratch buffers (80 floats = 320 bytes max for lit with
+// prevVP + the renderer-wide log-depth tail, see LIT_CAMERA_BYTES below).
 const scratchRTEUniformData = new Float32Array(80);
 
 // Camera-only UBO sizes (no material fields)
 // DP-H41 (Batch 27) — each variant now carries previousViewProjection (mat4x4,
 // 64 bytes) at the tail for TAA / motion-vector reprojection.
 const FLAT_CAMERA_BYTES = 160; // mvpRTE(64) + camHigh(16) + camLow(16) + prevVP(64)
-const LIT_CAMERA_BYTES = 304; // mvpRTE(64) + mvRTE(64) + normalMatrix(64) + camHigh(16) + camLow(16) + lightDir(16) + prevVP(64)
+// Log-depth epic Slice 2b — lit variant gains a 16-byte logDepth vec4 tail
+// (near, far, factor, reserved) AFTER prevVP. Read only by the
+// `//>>ifdef LOG_DEPTH` blocks in PrimitivePhongColor / PrimitivePhongTexturedColor
+// (and any future lit producer). The tail is packed unconditionally by
+// writeRTEUniformsLit — it is inert until the LOG_DEPTH pipeline define is set
+// (Slice 4 flip), because no shader struct declares the tail field otherwise
+// and the extra 16 bytes are simply unread. Mat*Lit material shaders keep their
+// 304-byte CameraUniforms struct and read only the first 304 bytes of this
+// 320-byte buffer — valid WebGPU, byte-identical behavior.
+const LIT_CAMERA_BYTES = 320; // ...prevVP(64) + logDepth(16)
 const PICK_CAMERA_BYTES = 160; // same as flat
 
 // Placeholder material UBO for shaders that don't use material uniforms
@@ -628,9 +640,41 @@ function writeRTEUniformsFlat(ud, rte, uniformState) {
 }
 
 /**
+ * Writes the renderer-wide log-depth tail (vec4: near, far, factor, reserved)
+ * starting at float index `offset`. Mirrors WebGPUGlobeSurfaceCameraUB's tail.
+ * Safe to call unconditionally — it only fills previously-unread floats, so it
+ * is inert until the LOG_DEPTH pipeline define is set (Slice 4 flip) and the
+ * shader's `logDepth` field reads it. See WebGPULogDepth.ts.
+ * @private
+ */
+function writeLogDepthTail(ud, offset, uniformState) {
+  const usLog = uniformState;
+  const frustum =
+    defined(usLog) && defined(usLog.currentFrustum)
+      ? usLog.currentFrustum
+      : undefined;
+  const near = defined(frustum) ? frustum.x : 0.0;
+  const far = defined(frustum) ? frustum.y : 0.0;
+  let factor =
+    defined(usLog) &&
+    typeof usLog.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? usLog.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (!(factor > 0.0) && far > near) {
+    const log2Far = Math.log2(far - near + 1.0);
+    factor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+  }
+  ud[offset + 0] = near;
+  ud[offset + 1] = far;
+  ud[offset + 2] = factor;
+  ud[offset + 3] = 0.0; // reserved
+}
+
+/**
  * Writes RTE uniform data for a lit (Phong/PBR) shader.
  * Layout: mvpRTE(16) + mvRTE(16) + normalMatrix(16) + camHigh(4) + camLow(4)
- *       + lightDir(4) + prevVP(16) = 76 floats = 304 bytes (DP-H41, Batch 27)
+ *       + lightDir(4) + prevVP(16) + logDepth(4) = 80 floats = 320 bytes
+ *       (DP-H41 prevVP, Batch 27; logDepth tail log-depth epic Slice 2b)
  * @private
  */
 function writeRTEUniformsLit(ud, rte, uniformState) {
@@ -661,6 +705,9 @@ function writeRTEUniformsLit(ud, rte, uniformState) {
   }
   ud[59] = 0.0;
   writePreviousViewProjection(ud, 60, uniformState);
+  // Log-depth epic Slice 2b — logDepth tail at floats 76-79 (after prevVP).
+  // Inert until the LOG_DEPTH define is set on the lit pipeline.
+  writeLogDepthTail(ud, 76, uniformState);
 }
 
 /**
@@ -1031,6 +1078,9 @@ function createWebGPUCommands(
       shaderType: null,
       shaderModule: null,
       pipeline: null,
+      // Log-depth epic Slice 2b — tracks the LOG_DEPTH define state baked into
+      // the cached lit pipeline so the Slice 4 master-switch flip rebuilds it.
+      logDepthEnabled: false,
       cameraBindGroupLayout: null,
       materialBindGroupLayout: null,
       cameraBuffers: [],
@@ -1088,15 +1138,28 @@ function createWebGPUCommands(
   const isLit = isPhongShader(shaderInfo.type);
   const cameraBufferSize = isLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
+  // Log-depth epic Slice 2b — the lit Phong producers (PrimitivePhongColor /
+  // PrimitivePhongTexturedColor) gain `//>>ifdef LOG_DEPTH` blocks that emit
+  // logarithmic @builtin(frag_depth). Activate the define only for lit shaders
+  // (the only ones carrying the gated blocks + the logDepth UB tail) and only
+  // when the master switch + per-frame flag are on. Defaults FALSE, so this is
+  // inert (defines=0 → historical else-branch, byte-identical). `logDepthChanged`
+  // forces a shader-module + pipeline rebuild when the master switch flips
+  // (Slice 4), mirroring the topologyChanged invalidation guard.
+  const logDepthActive = isLit && isWebGPULogDepthActive(context, frameState);
+  const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
+
   if (
     shaderChanged ||
     translucentChanged ||
     twoPassesChanged ||
-    topologyChanged
+    topologyChanged ||
+    logDepthChanged
   ) {
     cache.shaderType = shaderInfo.type;
     cache.translucent = translucent;
     cache.primitiveTopology = primitiveTopology;
+    cache.logDepthEnabled = logDepthActive;
 
     // DP-H19-SHADER-DECODE (Batch 27) — always route through the
     // preprocessor so `//>>ifdef COMPRESSED_VERTICES` / `//>>else`
@@ -1106,7 +1169,12 @@ function createWebGPUCommands(
     // uncompressed-path shaders. The compressed opt-in flips the bit
     // in a follow-up wire-up step that also swaps the vertex buffer
     // packer to emit `compressedAttributes` directly.
-    const shaderDefines = 0;
+    //
+    // Log-depth epic Slice 2b — OR in LOG_DEPTH for lit Phong producers when
+    // active (see logDepthActive above). The preprocessor resolves the
+    // `//>>ifdef LOG_DEPTH` blocks; with the master switch off this is 0 and
+    // the else-branch (no frag_depth, no varying) is byte-identical.
+    const shaderDefines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
     // Slice 5d Batch 156 — prepend the Forward+ clustered lighting chunk to
     // the lit Phong primitive shaders (phong / phongTextured), same as the
     // Mat*Lit path in createMaterialPipelineAndCache. Gated on the shader
@@ -2294,6 +2362,10 @@ function createWebGPUMaterialCommands(
       shaderType: null,
       shaderModule: null,
       pipeline: null,
+      // Log-depth epic Slice 2b — kept in the shape for symmetry with the
+      // phong-path cache; the material path does not yet convert its Mat*Lit
+      // shaders (deferred), so it stays false here.
+      logDepthEnabled: false,
       cameraBindGroupLayout: null,
       materialBindGroupLayout: null,
       textureBindGroupLayout: null,
@@ -2700,9 +2772,12 @@ function createWebGPUMaterialCommands(
 // =========================================================================
 
 // Scratch buffer for per-frame material camera uniform updates
-// 76 floats = 304 bytes for the lit/PBR camera UBO (mvpRTE+mvRTE+normalMatrix
-// +camHigh+camLow+lightDir+prevVP). Sized for the larger of the two layouts;
-// flat/material shaders fit comfortably in the same scratch.
+// 80 floats = 320 bytes for the lit/PBR camera UBO (mvpRTE+mvRTE+normalMatrix
+// +camHigh+camLow+lightDir+prevVP + the log-depth epic Slice 2b logDepth tail;
+// writeRTEUniformsLit writes through float 79). Sized for the larger of the two
+// layouts; flat/material shaders fit comfortably in the same scratch. Mat*Lit
+// material shaders keep a 304-byte CameraUniforms struct and simply don't read
+// the trailing 16 bytes — inert until those shaders gain the LOG_DEPTH blocks.
 const scratchMaterialCameraData = new Float32Array(80);
 
 /**
