@@ -1,11 +1,36 @@
 # Phase 8 — GPU-Resident Tiles Design
 
 **Created:** 2026-04-14 (Session 29)
-**Status:** Design — not yet in execution
+**Status:** Design — Phase 8a foundation largely SHIPPED; Phase 8b (TileStoreGPU / DOD storage layer) genuinely unbuilt. See "What actually shipped" reconciliation below.
 **Supersedes portions of:** Phase 7 backlog prioritization (`WEBGPU_MIGRATION_BACKLOG.md`)
 **Purpose:** Architectural synthesis of three parallel investigations (existing feature inventory, 3D Tiles current implementation audit, 3D Tiles 2.0 spec research). Identifies the central insight, the gating architectural decision, the dependency layering, and a recommended phased roadmap that unifies rendering-quality and planet-scale-performance goals.
 
 > **Read this if:** you're starting a new session after 2026-04-14 and need the architectural frame, not just a feature list. The per-item detail is in the Phase 7 section of `WEBGPU_MIGRATION_BACKLOG.md`; this doc says how to think about it.
+
+---
+
+## 0. What Actually Shipped (reconciliation, 2026-05-30 · HEAD `88b111e49c` Batch 185)
+
+> This doc was written 2026-04-14 as forward-looking design. Several premises in §2, §3, and §4.A have since been **overtaken by shipped work** and must be read with these corrections. The architectural synthesis (the GPU-resident-tile-cache framing, the DAG, the §3.5 TileStoreGPU layout) is still durable; the specific "today's state" claims below are not.
+>
+> **Phase 8a foundation — largely SHIPPED.** The shader-variant strategy (the gating decision in §2) landed: glTF model pipelines are now keyed on a wider variant space, not a 3-bit key, and the KHR BRDFs ride real per-extension shader blocks.
+>
+> **Phase 8b GPU-resident stack — genuinely UNBUILT.** No `TileStoreGPU`, MegaBuffer mesh atlas, Resident Drawer, sharedSourceBuffer fanout, or WGSL styling compiler exists yet. §3.5 remains the live design for that work and has no successor doc — this section does NOT supersede it.
+>
+> ### Corrections to specific "today's state" claims
+>
+> - **§2 / §40 "KHR extensions silently dropped on the WebGPU path" — STALE.** `ModelPBRComplete.wgsl` now ships real BRDF blocks for `KHR_texture_transform`, `KHR_materials_clearcoat`, `_specular`, `_anisotropy`, `_iridescence`, `_sheen`, `_volume`, and `_transmission`, each gated by a `FLAG_HAS_*` material flag (`ModelPBRComplete.wgsl:63-72`, sampling sites `:2086,2119,2270,2325,2371,2437,2444`; texture transform `:1613`). These are no longer dropped on WebGPU — they were wired across the C-R4-GLTF-KHR slices.
+> - **§2 "3-bit key / at most 6 pipeline variants" — STALE.** `WebGPUModelPipelineCache.computeKey` is now `alphaMode | (doubleSided ? 4 : 0) | (materialDefines << 3)` (`WebGPUModelPipelineCache.js:181-183`), where `materialDefines` carries `MODEL_HAS_KHR_TEXTURES` (`ShaderDefine` bit 9), `MODEL_HAS_TEXCOORD_1` (bit 12), and `MODEL_HAS_FEATURE_ID_0` (bit 13), plus separate pick variants (`STOCHASTIC_DITHER_ALPHA` bit 10, `STENCIL_PICK_WINNER` bit 11). The variant axis the §2 strategy called for exists; the basic/full KHR split (`MODEL_HAS_KHR_TEXTURES`) is the coarse pipeline-family gate, with the per-extension granular split tracked as a follow-up in the `KHR_BINDING_MANIFEST` docstring (`WebGPUModelPipelineCache.js:81-116`).
+> - **§2 point 2 "`KHR_lights_punctual` isn't wired … hardcodes 1 sun + ambient" — STALE.** The model FS now carries `punctualLights: array<PunctualLight, 8>` with a `punctualLightCount`-bounded loop (`ModelPBRComplete.wgsl:290-301,2555-2587`) plus the Slice 5d Forward+ clustered-lighting path (Batches 153-158). Clustered lighting has something to cluster.
+> - **§4.A "cheap BRDFs aren't cheap until shader strategy is settled" — RESOLVED.** The strategy is settled and the BRDFs landed on it; the misleading-effort-estimate warning is now historical.
+>
+> ### Corrected bit-budget (was the basis for the §2 variant math)
+>
+> The `ShaderDefine` registry in `WebGPUShaderDefines.ts` currently has **16 allocated bits, 0-15** (`GEODETIC_NORMAL` 1<<0 … `LOG_DEPTH` 1<<15). The shader-module-cache key reserves 24 bits for the active-defines mask, so **8 define bits remain** (16-23). (Earlier drafts of the Phase-8 shader strategy quoted a different budget; this is the verified count at HEAD.)
+>
+> ### Still accurate
+>
+> The Phase 8b draw-path collapse (§3.5), the three hidden gotchas §4.B (DDGI-per-tile) and §4.C (WGSL styling compiler), the §9 tech-debt / perf / WASM inventory, and the dependency DAG in §3 are all still live. The normal G-buffer + depth-prepass foundation item (§3 Foundation, §7 missing-feature #1/#10) remains the highest-leverage unblocker.
 
 ---
 
@@ -30,6 +55,8 @@ All three are facets of the same "persistent GPU tile cache" architecture.
 ---
 
 ## 2. The One Architectural Decision That Gates ~30% of the Backlog
+
+> **STALE as of Batch 185 — see §0 reconciliation.** The 3-bit-key / 6-variant premise and the "silently dropped KHR extensions" bullet below describe the 2026-04-14 state. The variant strategy this section argues for has since SHIPPED (wider pipeline key + per-extension KHR BRDF blocks). The architectural argument is preserved here as the rationale-of-record; the "today" claims are not current.
 
 `WebGPUModelPipelineCache` caches pipelines on a **3-bit key** (`alphaMode | doubleSided<<2`) — **at most 6 pipeline variants for ALL glTF content in ALL tiles combined**. The WebGL path uses ShaderBuilder to generate per-permutation shaders (dozens of variants).
 

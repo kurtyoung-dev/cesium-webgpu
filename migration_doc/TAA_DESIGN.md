@@ -1,6 +1,6 @@
 # Temporal Anti-Aliasing (TAA) — Design Document
 
-**Status:** Slice 1 SHIPPED (Session 34). Slices 2-4 pending.
+**Status:** Slice 1 + 2a SHIPPED (Sessions 34 / 2026-04-18). Slices 2b/3/4 pending.
 **Created:** 2026-04-09
 **Last updated:** 2026-04-18 — Slice 1 shipped with depth-reprojection architecture (Option C) instead of the original MRT motion-vector plan. See "Slice 1 shipped architecture change" below.
 **Owner:** WebGPU migration
@@ -220,4 +220,4 @@ The history sample is clamped to the AABB of the current pixel's 3×3 color neig
 
 ## Spec coverage delta
 
-- `Specs/Renderer/WebGPU/WebGPUTAAEffectSpec.js` — Halton sequence values, jitter offset round-trip, packColorBlend, history texture rotation, snapshot mode jitter zero
+- `Specs/Renderer/WebGPU/WebGPUTAASkyAndTeleportSpec.js` — Halton sequence values, jitter offset round-trip, packColorBlend, history texture rotation, snapshot mode jitter zero

@@ -1116,7 +1116,7 @@ work unchanged. Renderers that opt into multi-light read from
 >   original "separate 2D fast-path shader" design because the low
 >   preset's per-frame cost is comparable.
 >
-> See §13 for orbit-rendering quick wins added 2026-05-13.
+> See §14 for orbit-rendering quick wins added 2026-05-13.
 
 **Phase 0 — Toggle audit prep PR (1-2 sessions, shared with water doc) — ✅ COMPLETED 2026-04-09:**
 
@@ -1222,21 +1222,31 @@ This was the largest sub-phase by far. It actually landed in three rounds (1.2a,
 - Tests: parameter sweep visual checks deferred to Phase 5+
   Sandcastle integration testing.
 
-**Remaining work (estimated 1 session):** Plumb the three missing
-leaves (`humidity`, `airQuality`, `windSpeed`/`windDirection`) from
-`frameState.atmosphericConditions` to:
+**Remaining work — ✅ DONE (Batch 29, 2026-05-13).** The plumbing
+described below shipped with Phase 4 itself (see the ✅ items above):
+`humidity`/`airQuality`/`windSpeed`/`windDirection` are now forwarded
+from `frameState.atmosphericConditions` to the LUT compute + runtime
+ray-march + fog density paths. The only intentionally-unconsumed
+leaves are `windSpeed`/`windDirection`, held for Phase 5/6 (volumetric
+fog advection) and the water-rendering sibling design. Historical
+to-do list preserved below for traceability:
 
-- `AtmosphereLUT.wgsl` compute shader — multiply rayleigh coefficient
+- ~~`AtmosphereLUT.wgsl` compute shader — multiply rayleigh coefficient
   by `airQuality` and mie coefficient by `humidity * 0.5 + 1.0`
-  before the precomputed integration.
-- `SkyAtmosphere.wgsl` runtime ray-march fallback — same multipliers
-  on the analytic Rayleigh/Mie terms so LUT and fallback agree.
-- `Fog.js` density modulation — `density *= (1.0 + humidity × 0.5)`
-  so humid air produces denser distance fog.
-- Wind: exposes `vec2` uniforms on `SkyAtmosphere.wgsl` (consumed by
+  before the precomputed integration.~~ Done — `airQuality`→rayleigh,
+  `humidity`→mie scaling in the LUT dispatch.
+- ~~`SkyAtmosphere.wgsl` runtime ray-march fallback — same multipliers
+  on the analytic Rayleigh/Mie terms so LUT and fallback agree.~~ Done
+  in the inline `computeScattering` uniform pack.
+- ~~`Fog.js` density modulation — `density *= (1.0 + humidity × 0.5)`
+  so humid air produces denser distance fog.~~ Done — shipped as
+  `density *= 1.0 + (humidity - 0.5)` in `Fog.js::update`.
+- ~~Wind: exposes `vec2` uniforms on `SkyAtmosphere.wgsl` (consumed by
   future Phase 5/6 work for cloud advection + volumetric fog motion)
   and `frameState.atmosphericConditions.weather.wind*` for the
-  water-rendering sibling design.
+  water-rendering sibling design.~~ Wind values are exposed on
+  `frameState.atmosphericConditions.weather.wind*`; no shader consumer
+  yet (pre-emptive for Phase 5/6).
 
 **Phases 1-4 land as one feature branch** per **B23**. Phase 5
 follows as a separate feature branch.
@@ -1721,7 +1731,7 @@ visual quality features land.*
 
 ---
 
-## 13. Orbit-rendering polish (added 2026-05-13)
+## 14. Orbit-rendering polish (added 2026-05-13)
 
 Added after a user-reported audit comparing real orbital photography
 (ISS imagery, Earthrise from the Moon) to our WebGPU render. The
@@ -1729,7 +1739,7 @@ following techniques are NOT yet in any phase plan but are concrete
 improvements with cited industry references. They slot in alongside
 the existing phase work without disrupting it.
 
-### 13.1 Altitude-gated bloom (immediate, 1-2 hours)
+### 14.1 Altitude-gated bloom (immediate, 1-2 hours)
 
 **Problem:** real orbital photos show essentially no bloom on the
 Earth disk. WebGPU's bloom pipeline defaults (`threshold: 0.8`,
@@ -1760,7 +1770,7 @@ typically gate bloom intensity by either lens-aperture state or a
 **Effort:** 30-60 min. Default off until verified on Hello World +
 3D Tiles Photogrammetry (where bloom IS appropriate at low altitude).
 
-### 13.2 Ocean specular attenuation at orbit limb (immediate, 1-2 hours)
+### 14.2 Ocean specular attenuation at orbit limb (immediate, 1-2 hours)
 
 **Problem:** `GlobeTerrain.wgsl::computeEnhancedOcean` adds a
 forward-scatter specular term `pow(VdotL, 4.0) × 0.15` that's
@@ -1793,7 +1803,7 @@ ignores this attenuation.
 should remove ~40-60% of the bright "sun glare patch" visible in the
 lower-right of orbital views.
 
-### 13.3 Dusk-terminator verification probe (immediate, 1 hour)
+### 14.3 Dusk-terminator verification probe (immediate, 1 hour)
 
 **Problem:** Hello World defaults to the current system clock, so the
 visible disk may be predominantly lit on most days. There's no
@@ -1818,12 +1828,15 @@ sweep.
 **Effort:** 30-60 min. Validates Batches 17/18 sun-direction work +
 the `nightAmbient = 0.025` floor.
 
-### 13.4 Phase 4 completion (1 session)
+### 14.4 Phase 4 completion — ✅ DONE (Batch 29, 2026-05-13)
 
 Per §6 above — wire `humidity`, `airQuality`, `windSpeed` /
-`windDirection` consumers. Specified in §4.5.
+`windDirection` consumers. Specified in §4.5. Shipped: `humidity` →
+fog density + mie scaling, `airQuality` → rayleigh scaling in both
+the LUT and runtime paths. `windSpeed`/`windDirection` are exposed on
+`frameState` but have no shader consumer yet (held for Phase 5/6).
 
-### 13.5 Phase 6 — Volumetric clouds (THE answer to "no clouds from orbit")
+### 14.5 Phase 6 — Volumetric clouds (THE answer to "no clouds from orbit")
 
 The original §4.6 design covers this. Highlighted here because it's
 the direct answer to the user-reported "no clouds visible from
@@ -1847,7 +1860,7 @@ in via `scene.atmosphericConditions.clouds.enableVolumetric = true`.
 **Estimated total effort:** 3-5 sessions (Phase 5a froxel grid 1
 session + Phase 6 a/b/c/d 2-3 sessions).
 
-### 13.6 Real-time satellite cloud imagery (out of design scope, user opt-in)
+### 14.6 Real-time satellite cloud imagery (out of design scope, user opt-in)
 
 NOAA GOES / NASA MODIS real-time cloud composites are typically
 integrated as a **custom `ImageryProvider`** (raster tile layer)
@@ -1865,7 +1878,7 @@ a renderer feature. Documented here as the canonical answer to
 
 No engine work needed. User-side code only.
 
-### 13.7 Camera-aperture / exposure simulation (future / optional)
+### 14.7 Camera-aperture / exposure simulation (future / optional)
 
 **Problem:** real-world cameras adjust aperture + ISO based on scene
 brightness. Our render uses fixed exposure which means orbit views
@@ -1884,9 +1897,9 @@ dynamic range and reduce the perceived "bloom too strong" without
 needing the altitude gate.
 
 **Effort:** 1 session — verify `WebGPUAutoExposureCompute.ts` runs
-in the orbit-view code path; gate by camera-altitude curve like §13.1.
+in the orbit-view code path; gate by camera-altitude curve like §14.1.
 
-### 13.8 IBL ambient for unlit hemisphere (future / optional)
+### 14.8 IBL ambient for unlit hemisphere (future / optional)
 
 **Problem:** the night side currently gets a flat `nightAmbient =
 0.025` floor (2.5% white). Real night-side photos show a subtle
@@ -1913,7 +1926,7 @@ infrastructure.
 
 ---
 
-*§13 added 2026-05-13. Items 13.1-13.3 are the user's "Immediate"
-bucket. Item 13.4 is the user's "Medium" bucket and matches Phase 4
-of §6. Items 13.5 is the user's "Large" bucket and matches Phase 6
-of §6. Items 13.6-13.8 are out-of-scope or future-research grade.*
+*§14 added 2026-05-13. Items 14.1-14.3 are the user's "Immediate"
+bucket. Item 14.4 is the user's "Medium" bucket and matches Phase 4
+of §6. Items 14.5 is the user's "Large" bucket and matches Phase 6
+of §6. Items 14.6-14.8 are out-of-scope or future-research grade.*

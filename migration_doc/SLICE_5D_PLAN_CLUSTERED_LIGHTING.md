@@ -249,9 +249,10 @@ containing >0 lights".
 ### Batch 137e — Forward+ fragment consumer
 
 Decomposed into three sub-batches once the original `@group(4)`
-approach hit the platform's `maxBindGroups: 4` ceiling. Current state:
-infrastructure landed (149-151), consumer wiring redesigned (153
-pending), 21 Lit Mat shaders queued behind 153 (154+ pending).
+approach hit the platform's `maxBindGroups: 4` ceiling. Final state:
+infrastructure landed (149-151), consumer wiring redesigned and shipped
+(153), and the 21 Lit Mat shaders consumed the cluster bindings
+(154-158). All SHIPPED.
 
 #### Batch 149 — FS chunk + dispatcher → SCAFFOLDED ✅
 
@@ -294,9 +295,9 @@ What was reverted:
 
 Verified clean revert via `Tools/visual-regression/probe-model-pbr-audit.mjs`: 5 PBR assets (CesiumMan, CesiumMilkTruck, GroundVehicle, BoxInstanced, BoxUnlit), **0 device errors** (was 6212-6228 errors per asset before revert).
 
-#### Batch 153 — group-3 merge + Model PBR consumer wiring → PENDING
+#### Batch 153 — group-3 merge + Model PBR consumer wiring → ✅ SHIPPED (Batch 153)
 
-**Goal:** Fold the 5 clustered-lighting bindings (`clusterLights`, `clusterAABBs`, `perClusterLightCount`, `perClusterLightIndices`, `clusterParams`) into the existing **group 3 (effects)** BGL so consumer pipelines don't need a 5th bind group.
+**Goal (achieved):** Fold the 5 clustered-lighting bindings (`clusterLights`, `clusterAABBs`, `perClusterLightCount`, `perClusterLightIndices`, `clusterParams`) into the existing **group 3 (effects)** BGL so consumer pipelines don't need a 5th bind group. Verified live: `evalClusteredLights(...)` is the additive call at `ModelPBRComplete.wgsl:2255`, reading the `@group(3)` cluster bindings declared by the prepended `ClusteredLighting.wgsl` chunk.
 
 **Scope:**
 
@@ -316,11 +317,22 @@ Verified clean revert via `Tools/visual-regression/probe-model-pbr-audit.mjs`: 5
 
 **Effort estimate:** ~1 day. Most of the work is updating the effects BGL builder + downstream pipeline caches; the shader changes are mechanical.
 
-#### Batch 154+ — Lit Mat shaders (21 variants)
+#### Batch 154+ — Lit Mat shaders (21 variants) → ✅ SHIPPED (Batches 154-158)
 
-Same merge applies. After Batch 153 lands and Model PBR consumes the cluster bindings via group 3 effects, repeat for each of the 21 Lit Mat shader sources. Each variant gets the same chunk prepend + `evalClusteredLights(...)` additive call.
+Same merge applied. After Batch 153 landed and Model PBR consumed the
+cluster bindings via group 3 effects, the merge was repeated for each of
+the 21 Lit Mat shader sources — each got the same chunk prepend +
+`evalClusteredLights(...)` additive call, with the chunk's `@group(N)`
+index resolved per-pipeline via the `__CL_GROUP__` token
+(`ClusteredLighting.wgsl:100-113`; verified consumed by all 21 sources
+under `Shaders/WebGPU/Primitive/`). Batch 154 = mechanism + ColorLit +
+NormalMapLit; Batch 155 = the remaining 17 Mat*Lit; Batch 156 = the
+legacy Phong primitives; Batch 157 = `PerInstanceColorAppearance`
+decode-before-select fix; Batch 158 = the Sandcastle gallery demo. See
+the update history at the top of this doc for the full per-batch detail.
 
-**Effort estimate:** ~0.5-1 day depending on shader uniformity.
+**Effort actual:** Batches 154-158 (the per-shader merge plus the Phong
+extension, the COMPRESSED-attribute decode fix, and the demo).
 
 ---
 

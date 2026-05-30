@@ -1,6 +1,6 @@
 # Feature Inventory — CesiumJS WebGPU Fork
 
-**Last refreshed:** 2026-05-02
+**Last refreshed:** 2026-05-07
 **Purpose:** Exhaustive catalog of every feature in the fork — upstream-inherited, fork-added, work-in-progress, and future/deferred — so that the impact of any change can be scoped against the full feature surface before landing.
 
 **Status taxonomy** (per the user's request — these are the four buckets used throughout):
@@ -412,7 +412,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - ContextRegistry — singleton tracking every live context by ID; supports split-screen + multi-view (SHIPPED)
 - RendererType enum — WEBGL / WEBGPU / WEBGPU_COMPAT / AUTO; `setGlobalDefaultRenderer` + `getDefaultRendererType` (SHIPPED)
 - setGlobalDefaultRenderer() runtime hook — variant entry barrels set backend default at module-init (SHIPPED)
-- FeatureRendererKey enum — 45 numeric slots for O(1) array-index FR lookups (SHIPPED)
+- FeatureRendererKey enum — 48 numeric slots for O(1) array-index FR lookups (highest `CONTACT_SHADOWS:48`, `COUNT:49`; 48 of these are wired via `context.registerFeatureRenderer(...)` in `WebGPUFeatureRenderers.ts`) (SHIPPED)
 - getFeatureRenderer(key) API on GraphicsContext — replaces `if (context.isWebGPU)` branching in scene code (SHIPPED)
 - WebGPUFeatureRenderers.ts — central registration entry: `registerWebGPUFeatureRenderers(context)` wires all active FRs (SHIPPED)
 - Renderable structural interface — duck-typed `update(frameState)` contract for scene-graph members (SHIPPED)
@@ -437,7 +437,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 
 - WebGPUShaderModuleCache — per-device dedupe keyed by `(sourceId, defines)` Uint32 (SHIPPED)
 - WebGPUShaderPreprocessor — pure `//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif` directive evaluator (SHIPPED)
-- WebGPUShaderDefines — `ShaderDefine` bitmask + `ShaderSourceId` registry (29 source IDs as of Batch 164) (SHIPPED)
+- WebGPUShaderDefines — `ShaderDefine` bitmask + `ShaderSourceId` registry (33 source IDs; highest `ELLIPSOID_PRIMITIVE:33`) (SHIPPED)
 - WebGPURenderPipelineCache — central LRU cache of GPU render pipelines keyed by descriptor hash (SHIPPED)
 - WebGPUComputePipelineCache — sibling cache for compute pipelines (SHIPPED)
 - AsyncResourceMonitor — per-context inflight-resource event bus that wakes the Scene's `requestRenderMode` hibernation when async pipeline / image-decode / compute-pipeline work resolves; supports `foreground` vs `background` priority (warm-on-suspicion via `cache.warm()`) and multi-context `ownerSceneIds` filtering. Closes BUG-WEBGPU-PIPELINE-ASYNC class (SHIPPED — NEW-WEBGPU-PIPELINE-READY-SIGNAL)
@@ -473,7 +473,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUFeatureFlags — `DESIRED_FEATURES` registry + `requiredFeatures` builder for `requestDevice` (SHIPPED)
 - WebGPUIndirectDrawManager — indirect-draw buffer manager for GPU-driven rendering paths (SCAFFOLDED)
 - WGSLBuiltins / WGSLShaderBuilder / WGSLShaderPreprocessor — shader source assembly + chunk inlining (SHIPPED)
-- chunks/CsmBuiltins.js — 97 WGSL helper functions ported from GLSL `czm_*` (SHIPPED)
+- chunks/CsmBuiltins.js — 96 WGSL helper functions ported from GLSL `czm_*` (one barrel `import csm_* from './functions/csm_*.js'` per helper) (SHIPPED)
 - chunks/structs — shared WGSL UBO struct chunks (CameraUniforms, EffectsUniforms, LightUniforms, LightingUniforms, ModelUniforms) (SHIPPED)
 
 ### B.3 WebGPU Feature Renderers
@@ -503,7 +503,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUShadowMapRenderer — single-source shadow map cast/receive (SHIPPED)
 - WebGPUCSMRenderer — CSM Slice 1+2a; RTE-precise per-cascade VPs + slope-scaled bias (SHIPPED)
 - WebGPUCSMCastPass — dedicated cast pass for all 7 shadow cast variants (SHIPPED)
-- WebGPUGroundPrimitiveRenderer — depth-sample classifier (post-ADR-2026-04-28). FLAT-COLOR shipped in ALL scene modes (SCENE3D + SCENE2D + Columbus View, Batch 170; MORPHING Batch 164). Textured-material dispatch infra present (Batch 171: Color/Stripe/Checkerboard/Grid + planar/spherical UV) but textured rendering is BLOCKED on globe depth precision (NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION) — only flat Color renders. (SHIPPED flat-color all-modes; textured WIP)
+- WebGPUGroundPrimitiveRenderer — depth-sample classifier (post-ADR-2026-04-28). FLAT-COLOR shipped in ALL scene modes (SCENE3D + SCENE2D + Columbus View, Batch 170; MORPHING Batch 164). **Flat textured materials (Color/Stripe/Checkerboard/Grid) + planar/spherical UV SHIPPED Batch 185** (`88b111e49c`): the `packExtents` wrapper-chain walk at `WebGPUGroundPrimitiveRenderer.js:313` fixed the actual root cause — a 1-hop-too-deep inner-`_primitive` lookup wrote `materialMeta.x = 0`, flipping `dsColorFS` to the flat-color fast path (it was NOT a globe depth-precision blocker). Verified via `probe-classifier-textured-materials` (Stripe varR 0.01→1.74, Checkerboard varR→1.43, Grid renders cells+lines, 0 device errors). Residual: far-corner reconstruction-precision degradation (`NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION`, §C.4 — Checkerboard degrades toward the far corner, Stripe clean; legitimately log-depth-gated). (SHIPPED flat textured all-modes; far-corner precision WIP)
 - WebGPUGroundPolylineRenderer — terrain-clamped polyline classifier; Arrow/Stripe/Image materials (SHIPPED)
 - WebGPUVector3DTilePrimitiveRenderer — extruded polygon classification. SCENE3D SHIPPED; SCENE2D + Columbus View implemented Batch 178 (CPU-reprojected ENU buffer, e2e-visual UNVERIFIED for lack of `.vctr` test data); MORPHING still gated. (SHIPPED 3D; 2D/CV WIP-unverified)
 - WebGPUVector3DTilePolylinesRenderer — non-clamped 3D polyline classification. SCENE3D + MORPHING shipped; SCENE2D/CV still gated (NEW-CLASSIFIER-2D-CV-MORPH). (SHIPPED 3D)
@@ -589,7 +589,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 
 ### B.6 WebGPU Subsystems
 
-- WebGPUOIT — Order-Independent Transparency; weighted-average single-pass when `dual-source-blending` available (SHIPPED)
+- WebGPUOIT — Order-Independent Transparency; weighted-average via the MRT (accumulation + revealage) composite path only. **WGF-2: dual-source-blending single-pass OIT is NOT wired** — `WebGPUOIT.ts` carries only the MRT fallback (no `blend_src` / `src1` output, no `dual-source-blending` feature request); the single-pass dual-source path is a docstring aspiration (lines 16-17), confirmed never wired (`PHASE_5_MODERN_WEBGPU_DESIGN.md`). (SHIPPED — MRT fallback only; dual-source NOT wired)
 - WebGPUGlobeDepth — packed globe-depth subsystem with copy-readback for picking (SHIPPED)
 - WebGPUEdgeFramebuffer — MRT edge target + 16-bit feature-id channel split across rgba8 (SHIPPED)
 - WebGPUEdgeVisibilityEmitter — generates per-fragment edge intensity for Model edges (SHIPPED)
@@ -766,6 +766,7 @@ Partially shipped features with known gaps. Working code exists but the feature 
 ### C.4 Classification
 
 - ADR-2026-04-28 architecture migration in progress — depth-sampling classifier replacing stencil; multi-frustum work folded into Sessions 3+ (ADR-2026-04-28)
+- NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION: flat textured GroundPrimitive materials render (Batch 185, see §B.3), but the textured classifier degrades toward the far corner — a real eye-space reconstruction-precision artifact (standard-depth `windowToEye` catastrophic cancellation near `storedDepth ≈ 0.9999997`). Stripe (1-D) hides it; Checkerboard (2-D) exposes it. Legitimately log-depth-gated — the log-depth path (precise eye distance from log-encoded depth, epic Slices 0/1/2a shipped, Batches 181/182/183) is what resolves it. Canonical detail in `WEBGPU_DEBUGGING_LOG.md`. (NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION)
 - NEW-GS-CLASSIFICATION-DEPTH: Gaussian Splat translucent tiles classify against globe-depth, not splat-depth (NEW-GS-CLASSIFICATION-DEPTH)
 - C-R8-GROUND-POLYLINE-NATIVE: ~~RESOLVED 2026-04-30 (Batch 116 + viewport-zero VS extrusion fix); now ships full classifier velocity in Batch 183~~ (C-R8-GROUND-POLYLINE-NATIVE — moved to §B)
 - C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES: per-feature pick reserved but not written; distinct depth-source per pass not yet routed; `DEBUG_SHOW_VOLUME` mode unimplemented (C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES)
@@ -804,8 +805,10 @@ Partially shipped features with known gaps. Working code exists but the feature 
 - ParityManager landed FEAT-SURVEY-07; WebGPUTAAEffect refactor to delegate `_historyIndex` still pending (FEAT-SURVEY-07)
 - FEAT-SURVEY-06 decoupled-lookback prefix-sum WGSL landed; consumer wiring (cull compaction, indirect-draw compaction) still uses legacy two-pass (FEAT-SURVEY-06)
 - FEAT-GAP-09 aerial-perspective LUT consumer — 12 of ~44 primitive shaders now wired (PhongTexturedColor + PhongColor + PBRSimple + PBRTextured + MatColorLit + MatImageLit + MatBumpMapLit + MatNormalMapLit + MatGridLit + MatStripeLit + MatCheckerLit + MatRimLightingLit). ~32 remaining (mostly less-common material variants — Mat{Aspect,Slope,Elev}Ramp, Mat{Aspect,Slope,Elev}Contour, Mat{Alpha,Bump,Specular,Normal,Emission}Map{Flat}, Mat{Checker,Color,Dot,Fade,Grid,Stripe,Water}Flat, MatWaterLit, etc.); pick variants intentionally excluded (fog would corrupt pickColor). Closed for high-traffic shaders; remainder rides along incremental upgrade rule. (FEAT-GAP-09)
+- WGF-1 hardware `clip-distances` — SHIPPED-partial (globe path live); remainder tracked as WGF-1-EXPAND below.
 - WGF-1-EXPAND clip-distances only wired in globe; Primitive shaders have struct but no VS output; Models lack clipping plane support entirely (WGF-1-EXPAND)
 - WGF-1-INTERSECTION mode clipping with hardware clip distances (currently union-only) (WGF-1-INTERSECTION)
+- WGF-3 `shader-f16` — SHIPPED-partial (Tonemapping path live); remainder tracked as WGF-3-EXPAND below.
 - WGF-3-EXPAND shader-f16 only in Tonemapping; ColorGrading/FXAA/Bloom/etc. variants pending (WGF-3-EXPAND)
 - WGF-4-EXPAND RTE assertions in 5 of 8 camera packers (Cloud/Ellipsoid/Splat/PointCloud/Voxel pending) (WGF-4-EXPAND)
 - HDR-DISPLAY canvas HDR output (skip tonemap on wide-gamut displays) pending (HDR-DISPLAY)
@@ -929,7 +932,7 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - FEAT-SURVEY-08 ESM soft shadow filter (after CSM lands) (FEAT-SURVEY-08)
 - FEAT-SURVEY-09 VSM soft shadow with light-bleed clamping (after CSM) (FEAT-SURVEY-09)
 - FEAT-SURVEY-10 PCSS soft shadow (after CSM) (FEAT-SURVEY-10)
-- ~~FEAT-SURVEY-40 clustered forward lighting (depends on KHR_lights_punctual)~~ — ✅ SHIPPED Batch 153 (Slice 5d). Moved to §B.6; Model PBR consumer live, Lit Mat shaders pending Batch 154+. (FEAT-SURVEY-40)
+- ~~FEAT-SURVEY-40 clustered forward lighting (depends on KHR_lights_punctual)~~ — ✅ SHIPPED Batch 153 (Slice 5d). Moved to §B.6; Model PBR consumer live, all 19 Lit Mat shaders shipped (Batches 154–158). Remaining: Phong primitive shaders + a Sandcastle demo. (FEAT-SURVEY-40)
 - FEAT-SURVEY-46 DDGI per-tile probe cages (FEAT-SURVEY-46)
 - FEAT-SURVEY-47 Adaptive Probe Volumes streaming SH grid (deferred — needs camera-anchored probe redesign) (FEAT-SURVEY-47)
 - FEAT-GAP-05 terrain contact shadows / SSCS (FEAT-GAP-05)

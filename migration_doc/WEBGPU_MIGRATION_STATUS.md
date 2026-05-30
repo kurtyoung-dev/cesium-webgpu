@@ -1,14 +1,30 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** May 28, 2026 (Batches 167-178 — classification arc. Flat-color GroundPrimitive now renders in ALL scene modes (SCENE3D/2D/CV); textured-material dispatch infra + per-slice frustum UBO + frustum-distribution landed but textured rendering is blocked on globe depth precision (renderer-wide log depth, a foundational epic); a 27-agent triage workflow retired/corrected 8 stale backlog entries; Vector3DTilePrimitive 2D/CV implemented but e2e-unverifiable for lack of `.vctr` test data; surfaced an active BufferPolygon WGSL `#import` compile bug on the modern glTF-vector path. See the 2026-05-28 Recent Progress section below + NEXT_SESSION_HANDOFF.md. NOTE: batch numbers are non-monotonic — these 167-178 commits are the NEWEST work despite lower labels than the 205-230 sections below; trust dates/hashes.)
+**Last Updated:** May 30, 2026 (Batches 179-185, HEAD `88b111e49c` — both 2026-05-28 architectural roadblocks closed. The BufferPolygon WGSL `#import` compile bug is RESOLVED (Batch 180, `3667945dae` — preprocessor resolves bare `#import` from `BUFFER_WGSL_CHUNKS`); flat textured-material GroundPrimitive classification (Color/Stripe/Checkerboard/Grid) now SHIPPED in ALL modes (Batch 185, `88b111e49c` — the real root cause was a 1-hop-too-deep inner-`_primitive` lookup writing `materialMeta.x=0`, **not** globe depth precision); the renderer-wide log-depth epic is IN PROGRESS (Slices 0/1/2a shipped, Batches 181/182/183, master switch defaults OFF). One genuine residual survives Batch 185: `NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION` (far-corner reconstruction precision, log-depth-gated). See the 2026-05-30 Recent Progress section below + WEBGPU_EXECUTION_ROADMAP.md. NOTE: batch numbers are non-monotonic — these 167-185 commits are the NEWEST work despite lower labels than the 205-230 sections below; trust dates/hashes.)
 
 **Prior Update:** May 13, 2026 (Session 65 Batches 37-43 — Camera/rasterization root causes fixed: VR2-3c disk-extent drift (Viewer.createAsync `display: none` → wrong frustum.aspectRatio), VR2-1 low-alt terrain load (`surfaceTile.center` → `mesh.center` parameter bug + fog night-dim WebGL parity), ground-atmosphere proper integration (FS viewDir bug, retired Batches 30-31 cap×scale workaround), Moon bundle MSAA bridge, Phase 4 atmospheric conditions closure with wind UBO scaffolding, Phase 6 `enableVolumetric` toggle wiring. Bloom / Particle System / 3D Tiles Photogrammetry / Bathymetry now within 1-5 % of WebGL pixel parity. 0 GPU validation errors across regression sweep.)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
-**Overall Progress:** ~93% of full WebGL feature parity. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
+**Overall Progress:** ~93% of full WebGL feature parity — held steady as the Batch 179-185 work closed two architectural roadblocks (BufferPolygon vector-tile render + flat textured-material GroundPrimitive classification) that had blocked the modern vector-tile and ground-classification paths. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; 48 feature renderers registered (`WebGPUFeatureRenderers.ts` has 48 `registerFeatureRenderer()` calls; `FeatureRendererKey.js` declares 49 numeric keys 0–48 + a `COUNT` sentinel); 13 of 13 render passes handled; 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
 
 **Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
 
 ---
+
+## Recent Progress (2026-05-30 — Batches 179-185: both 2026-05-28 roadblocks closed — BufferPolygon render, flat textured-material classification; log-depth epic underway)
+
+Seven batches (179-185, HEAD `88b111e49c`) that drove down the three architectural roadblocks surfaced by the 2026-05-28 push. The headline: **two of the three were closable without the foundational log-depth epic** — the textured-classifier "blocked on globe depth precision" framing in the 2026-05-28 section below turned out to be a misdiagnosis (the real cause was a wrapper-chain lookup bug). The log-depth epic is now underway as its own track and still owns the genuinely depth-gated residual.
+
+- **BufferPolygon WGSL `#import` compile bug — RESOLVED (Batch 180, `3667945dae`).** `BufferPolygonMaterial.wgsl`'s bare `#import` was reaching the WGSL compiler unresolved (`#` invalid token), breaking the modern glTF-vector `BufferPolygon` path that real sample vector tilesets use. Fixed at the preprocessor layer: bare `#import` is now resolved from `BUFFER_WGSL_CHUNKS` before the source hits the compiler. Probe-verified on `sample-us-states`: 593 device errors → 0. Closes `NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT`.
+- **Flat textured-material GroundPrimitive classification — SHIPPED in ALL modes (Batch 185, `88b111e49c`).** Color/Stripe/Checkerboard/Grid all render now. The 2026-05-28 diagnosis ("blocked on globe depth precision → renderer-wide log depth, all-or-nothing") was **wrong**: the actual root cause was a 1-hop-too-deep inner-`_primitive` lookup. The renderer is invoked with VARIABLE wrapper depth (GroundPrimitive → `._primitive` (ClassificationPrimitive) → `._primitive` (Primitive), OR directly with a ClassificationPrimitive/Primitive), but `packExtents` hard-coded `primitive._primitive._primitive`, so the per-frame ClassificationPrimitive call (1 level) walked one hop too deep → null → `return false` → `packUniforms` wrote `materialMeta.x = 0`. That zero landed LAST in the shared uniform buffer, flipping the FS to the flat-color fast path and rendering every textured material as solid `i.col`. Fix = a wrapper-chain walk in `packExtents` (`WebGPUGroundPrimitiveRenderer.js:313`) that walks until it finds the object owning `_batchTable`. Closes the `NEW-GROUNDPRIM-TEXTURED-MATERIALS` "renders flat" framing.
+- **Genuine residual that survives Batch 185 — `NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION`.** Far-corner reconstruction precision: Checkerboard degrades toward the far corner of a wide frustum slice while Stripe stays clean. This one IS legitimately log-depth-gated (it depends on reconstructing eye-z from the globe's hyperbolic-NDC depth, which the log-depth epic addresses). Currently tracked only in `WEBGPU_DEBUGGING_LOG.md`; being propagated to `DEFERRED_WORK.md` / `FEATURE_INVENTORY.md` §C.4 / backlog / roadmap.
+- **Batch 184 — Dawn/Tint uniform aliasing fix + classifier U-struct reorder.** Fixed a Dawn/Tint bug where a uniform `vec4`'s `.zw` components past byte offset 512 aliased earlier data; reordered the classifier U-struct so its fields stay within the safe range. (This + the wrapper-chain trace pinned via the `[GPDIAG]` `packUniforms` log were the diagnostic groundwork for the Batch 185 fix.)
+- **Renderer-wide log-depth epic — IN PROGRESS (Batches 181/182/183).** Reframed from the 2026-05-28 "foundational, all-or-nothing prerequisite for textured classification" into its own incremental track:
+  - **Slice 0 (Batch 181, `4063cc7fbc`)** — reconciled the `csm_*LogDepth` chunk family to one canonical WebGL-parity contract.
+  - **Slice 1 (Batch 182, `f3849b7587`)** — shared inert infrastructure: the `LOG_DEPTH` define bit, the master switch, and the lane helper. The master switch `_logDepthWriteEnabled` defaults **FALSE** — all infra is inert until flipped.
+  - **Slice 2a (Batch 183, `92fec34c16`)** — the globe producer now writes `@builtin(frag_depth)` log depth, flag-gated behind the (default-off) master switch.
+  - Remaining: consumer-reverse + per-pipeline producer wiring across all renderers, then the master-switch flip. Tracked as `NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION` (producer shipped; consumer-reverse + classifier wiring remain) and `WEBGPU_EXECUTION_ROADMAP.md`.
+
+**Roadblock status (vs the 2026-05-28 list below):** (1) textured ground materials — **CLOSED** (Batch 185 packExtents fix; was never actually depth-precision-blocked); (2) Vector3DTile 2D/CV verification — still gated on missing `.vctr` test data, but the modern `BufferPolygon` path it deferred to now renders (Batch 180); (3) BufferPolygon `#import` compile bug — **CLOSED** (Batch 180). The one new open item is the precision residual `NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION`, which the in-progress log-depth epic addresses.
 
 ## Recent Progress (2026-05-28 — Batches 167-178: classification arc — 2D/CV flat-color, textured-material infra, triage workflow; two architectural roadblocks documented)
 
@@ -1958,7 +1974,7 @@ FrameState
   +-- Matches how CesiumJS already updates frameState.camera per view
 ```
 
-**Feature Renderer Pattern** (Phase D -- 36 of 36 keys registered):
+**Feature Renderer Pattern** (Phase D -- 48 keys registered):
 ```javascript
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 const fr = context.getFeatureRenderer(FeatureRendererKey.POINT_PRIMITIVE_COLLECTION);
@@ -2155,7 +2171,9 @@ migration_doc/                             <- This documentation
 | **2D / Columbus View** | **Built (S18)** | Globe terrain shader branches on `camera.sceneMode` (MORPHING/COLUMBUS_VIEW/SCENE2D/SCENE3D). Camera UBO extended with `tileRectangle`, `southAndNorthLatitude`, `southMercatorYAndOneOverHeight`, `sceneMode`, `morphTime`, `useWebMercator`. Helper functions: `latitudeToWebMercatorFraction`, `get2DYPositionFraction`, `computePlanarPosition`. |
 | **WebGPU Compatibility mode** | Built (S17) | `renderer: "webgpu-compat"` with `featureLevel: "compatibility"` |
 
-### Feature Renderer Registration (36 of 37)
+### Feature Renderer Registration (48 registered)
+
+`WebGPUFeatureRenderers.ts` makes **48** `context.registerFeatureRenderer()` calls (verified at HEAD `88b111e49c`); `FeatureRendererKey.js` declares **49** numeric keys (`BILLBOARD_COLLECTION:0` … `CONTACT_SHADOWS:48`) plus a `COUNT:49` sentinel. The feature surface has grown well past the Session-17/18/19 snapshot below (which counted 36); the table rows are kept as historical milestones, but the authoritative current count is 48 registered.
 
 | Status | Count | Details |
 |--------|-------|---------|
@@ -2163,8 +2181,8 @@ migration_doc/                             <- This documentation
 | Registered + Scene-wired (Session 17) | +5 | FOG (via tile UB), GROUND_ATMOSPHERE (Globe.js beginFrame), SSR/WEATHER_PARTICLES/PROCEDURAL_CLOUDS (WebGPUSceneRenderer._executeEnvironmentalEffects) |
 | Registered (Session 18) | LABEL_COLLECTION (key 36) | `WebGPULabelRenderer` with SDF text path |
 | Registered (Session 19) | BufferPolygon/Polyline/Point | Replace v1.140 vector tile no-op stubs |
-| Lazy-loaded via `registerFeatureRendererLoader` | 7 | GAUSSIAN_SPLAT, POINT_CLOUD, POINT_CLOUD_EDL, VOXEL_PRIMITIVE, SCREEN_SPACE_REFLECTIONS, WEATHER_PARTICLES, PROCEDURAL_CLOUDS — dynamic import on first frame, ~290 KB shaved from default bundle |
-| NOT registered | 1 | DEFERRED_GBUFFER (key defined but never implemented) |
+| Registered (later batches, keys 37–48) | +12 to reach 48 | VOLUMETRIC_FOG, HI_Z_OCCLUSION, GPU_SORT_KEYS, POINT_CLOUD_SORT, GROUND_POLYLINE, VECTOR_3DTILE_PRIMITIVE/POLYLINE/CLAMPED_POLYLINE, DEPTH_PLANE, CLASSIFICATION_PRIMITIVE, NPR_OUTLINES, CONTACT_SHADOWS |
+| Lazy-loaded via `registerFeatureRendererLoader` (subset of the 48) | 9 | GAUSSIAN_SPLAT, POINT_CLOUD, POINT_CLOUD_EDL, VOXEL_PRIMITIVE, SCREEN_SPACE_REFLECTIONS, WEATHER_PARTICLES, PROCEDURAL_CLOUDS, NPR_OUTLINES, CONTACT_SHADOWS — the loader callback's `registerFeatureRenderer` is one of the 48 calls; dynamic import on first frame, ~290 KB shaved from default bundle |
 
 ### Sorting System (11 phases, 30+ files)
 
@@ -2671,7 +2689,7 @@ Viewer.createAsync(container, { contextOptions: { renderer: 'webgpu' } })
   │   │   │   └─ new WebGPUContext(canvas, device, adapter)
   │   │   │       ├─ _initialize() — creates default texture, sampler, depth format
   │   │   │       ├─ _warmUpPipelines() — pre-compile globe + GPU culler
-  │   │   │       ├─ registerWebGPUFeatureRenderers(context) — all 36 FRs (+ 7 lazy)
+  │   │   │       ├─ registerWebGPUFeatureRenderers(context) — 48 registerFeatureRenderer calls (9 lazy)
   │   │   │       └─ Matrix4.setDepthRangeType('webgpu') — 0-1 NDC
   │   │   └─ new Scene(options) with _preInitializedContext
   │   └─ new CesiumWidget(container, { _preInitializedScene: scene })
@@ -2686,7 +2704,7 @@ Viewer.createAsync(container, { contextOptions: { renderer: 'webgpu' } })
 
 | Engine | Architecture | Shader Strategy | Our Comparison |
 |--------|-------------|----------------|----------------|
-| **Babylon.js** | `ThinEngine` abstract -> `Engine`/`WebGPUEngine`. Zero `if(isWebGPU)` in scene code. | GLSL -> SPIRV -> WGSL transpilation | We have `GraphicsContext` abstract + Feature Renderer pattern. 36 of 36 keys registered. |
+| **Babylon.js** | `ThinEngine` abstract -> `Engine`/`WebGPUEngine`. Zero `if(isWebGPU)` in scene code. | GLSL -> SPIRV -> WGSL transpilation | We have `GraphicsContext` abstract + Feature Renderer pattern. 48 keys registered. |
 | **Three.js** | `WebGPURenderer` drop-in for `WebGLRenderer`. Node-based TSL generates both GLSL/WGSL. | TSL node graph -> both backends | We use hand-written WGSL (higher quality) + optional Slang + new naga-wasm spike. |
 | **PlayCanvas** | `GraphicsDevice` base. GPU-driven rendering with indirect draws. Ring-buffer uniforms. | GLSL + WGSL | Similar abstract base. GPU-driven infrastructure built and selectively activated. |
 
@@ -2810,9 +2828,9 @@ Viewer.createAsync(container, { contextOptions: { renderer: 'webgpu' } })
 | CsmBuiltins.js entries | 97 (91 functions + 6 structs) |
 | WebGPU renderer files | 108+ |
 | WebGPU renderer LOC | ~47,000 |
-| Feature renderer keys | 38 (36 registered + COUNT + DEFERRED_GBUFFER reserved) |
-| Feature renderers scene-wired | 36 of 36 (100%) |
-| Lazy-loaded feature renderers | 7 (Gaussian splat, point cloud, point cloud EDL, voxel, SSR, weather particles, procedural clouds) |
+| Feature renderer keys | 50 (49 numeric keys 0–48 + COUNT sentinel; `FeatureRendererKey.js`) |
+| Feature renderers registered | 48 (`registerFeatureRenderer()` calls in `WebGPUFeatureRenderers.ts`) |
+| Lazy-loaded feature renderers | 9 (Gaussian splat, point cloud, point cloud EDL, voxel, SSR, weather particles, procedural clouds, NPR outlines, contact shadows) — subset of the 48, registered inside `registerFeatureRendererLoader` callbacks |
 | Scene features with WebGPU | 30+ of 33+ (~92%) |
 | Rendering passes functional | 13 of 13 (100%) |
 | Test pages | 29 |

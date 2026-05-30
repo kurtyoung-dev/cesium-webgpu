@@ -5,6 +5,8 @@
 **Methodology:** Five parallel deep-dive agents on disjoint dimensions (FR parity, scene dispatch, RenderState translation, shader coverage, resource lifecycle) → first-hand verification of every CRITICAL/HIGH claim by direct grep + code read → documented false positives in §9
 **Reviewer posture:** The entire purpose of this fork is WebGPU/WebGL parity. Every visible rendering difference is a bug unless explicitly documented. No benefit of the doubt.
 
+> **READ ME FIRST (status banner, added 2026-05-30 / HEAD `88b111e49c` Batch 185):** The Executive summary below reflects the 2026-04-16 baseline. It is NOT current state — many of its findings have since shipped. The **per-finding status annotations** (the `FIXED` / `PARTIALLY FIXED` / `DEFERRED` lines under each `C-R*`/`H-R*`/`M-R*` heading) are authoritative for current state; the Executive summary is preserved as the original audit snapshot. This doc remains live as the **definition source for the `C-R*`/`H-R*`/`M-R*` finding IDs** (54 inbound references), not as a live to-do list.
+
 ---
 
 ## Executive summary
@@ -99,6 +101,17 @@ OIT (`WebGPUOIT.ts`) when active correctly uses MRT weighted-blended accumulatio
 ---
 
 ### C-R4. glTF model path silently drops multiple features
+**PARTIALLY FIXED (verified at HEAD `88b111e49c`, Batch 185).** The monolithic-shader approach stayed, but several of the originally-dropped features have since been added directly to `ModelPBRComplete.wgsl` via the `//>>ifdef` preprocessor + a widened material UBO — the model path is no longer the across-the-board silent-drop it was at the 2026-04-16 baseline.
+
+- **SHIPPED:**
+  - **KHR_texture_transform** — per-texture 3×3 affine transforms now in the material UBO (`ModelPBRComplete.wgsl:130-150`, gated by `textureTransformFlags`) and applied through per-texture UV resolvers (`:1550-1583`, mirroring WebGL `czm_computeTextureTransform`). The "raw `texCoord0` at lines 179, 365, …" complaint in the table below is stale — sampling now routes through `baseColorUV()`/`normalUV()`/etc.
+  - **KHR_materials_clearcoat** — `clearcoatFactors` UBO field (`:162-169`), clearcoat/clearcoat-roughness/clearcoat-normal texture bindings (`:336-345`), and a second GGX specular lobe in the BRDF (gated by `HAS_CLEARCOAT`).
+  - **Multiple UV sets (TEXCOORD_1)** — `MODEL_HAS_TEXCOORD_1`-gated `texCoord1` vertex input (`:629`), FragmentInput varying (`:660`), and VS passthrough (`:749`); `selectUV()` picks the per-texture UV set instead of always reading `texCoord0`.
+  - **Model pick** — dedicated `fragmentPickMain` entry point (`:2914`), plus `fragmentPickHoverMain` and `fragmentClassificationMain`.
+- **STILL OPEN:** model **log depth** (zero `frag_depth`/log-depth tokens in `ModelPBRComplete.wgsl` — verified; gated on the renderer-wide log-depth epic, Slices 0/1/2a shipped Batches 181/182/183, master switch defaults FALSE), **silhouette** (`model.silhouetteSize`/`silhouetteColor`), and **atmosphere/fog** on the model path. The **six orphaned `Model*Stage.wgsl` files** (`ModelColorStage`, `ModelSilhouetteStage`, `ModelSplitterStage`, `ModelAtmosphereStage`, `ModelCPUStylingStage`, `ModelPointCloudStylingStage`) still exist on disk and are still imported by nothing in the WGSL model pipeline — the **M-R13** hygiene/false-coverage concern (below) remains live.
+
+The original baseline framing and the per-feature gap table below are preserved as the 2026-04-16 record; treat the SHIPPED rows above as the current-state correction.
+
 **DEFERRED 2026-04-16 (Batch 15).** Major shader-family work: KHR_texture_transform alone touches ~10 sampling sites in `ModelPBRComplete.wgsl`; KHR_materials_clearcoat / anisotropy / specular / iridescence / sheen / volume each add their own textures + uniforms + BRDF branch. The 6 sibling WGSL files under `Shaders/WebGPU/Model/` need to be either imported by `ModelPBRComplete` via preprocessor includes (same pattern as the WebGL `*Stage` GLSL files) or folded inline. Tracked as **FOLLOW-UP C-R4-GLTF-KHR** — this is properly a multi-session workstream (per-KHR extension).
 
 **Verified.** `grep` for `ModelPBRComplete|ModelSilhouetteStage|ModelColorStage|ModelCPUStylingStage|ModelSplitterStage|ModelAtmosphereStage|ModelClippingPlanesStage|ModelClippingPolygonsStage` across `Renderer/WebGPU/` matches only `ModelPBRComplete` (in `WebGPUModelPipelineCache.js`). The six sibling WGSL stage files exist on disk in `Shaders/WebGPU/Model/` but are imported by nothing. **Orphaned dead code on disk gives a false impression of coverage.**

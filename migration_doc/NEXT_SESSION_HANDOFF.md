@@ -1,6 +1,60 @@
-# Next Session Handoff — 2026-05-28 (Batches 167–178 — classification arc: 2D/CV + textured materials + triage)
+# Next Session Handoff — 2026-05-30 (Batches 179–185 — BufferPolygon fix, log-depth epic kickoff, textured-classifier fix)
+
+**Branch:** `main` only (local + origin in sync at `88b111e49c`). No safety / feature / worktree branches. Working tree carries only pre-existing root `Source/Shaders/WebGPU/Primitive/*.wgsl` build-output drift (regenerated material shaders that match canonical `packages/engine/Source` — NOT in-progress work; left uncommitted intentionally).
+
+**Headline:** This span closed two of the three load-bearing roadblocks the prior handoff (Batches 167–178, archived below) called out, and started the renderer-wide log-depth epic the third roadblock demanded:
+
+1. **NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT — RESOLVED (Batch 180, `3667945dae`).** Modern glTF-vector tilesets now render: the WGSL preprocessor resolves the bare `#import` (e.g. `#import CameraUniforms;`) from `BUFFER_WGSL_CHUNKS` before the source reaches the compiler, so the pipeline is valid. This was the prior handoff's RECOMMENDED-NEXT #1 / roadblock #3.
+2. **Renderer-wide log-depth epic — IN PROGRESS** (the foundational fix the prior handoff's roadblock #1 demanded for textured-classifier depth precision). Slices 0/1/2a are SHIPPED (Batches 181/182/183), all flag-gated and currently **inert**: the master switch `_logDepthWriteEnabled` defaults **FALSE** (`WebGPUContext.ts:399`), so behavior is byte-identical to pre-epic until the switch flips. Slice 0 reconciled the `csm_*LogDepth` chunk family to one canonical WebGL-parity contract; Slice 1 added the shared inert infrastructure (define bit + master switch + lane helper); Slice 2a made the globe producer write `@builtin(frag_depth)` log depth under the flag.
+3. **Flat textured-material GroundPrimitive classification (Color/Stripe/Checkerboard/Grid) — SHIPPED (Batch 185, `88b111e49c`).** Stripe/Checkerboard/Grid now render their material instead of solid flat color. **The root cause was NOT depth precision** (as the prior handoff's roadblock #1 assumed) — it was a 1-hop-too-deep inner-`_primitive` lookup in `packExtents` (`WebGPUGroundPrimitiveRenderer.js:313`) that, for the 1-level per-frame `ClassificationPrimitive` call, walked past the object owning `_batchTable`, returned `false`, and let `packUniforms` write `materialMeta.x = 0` LAST into the shared uniform buffer — flipping `dsColorFS` to the flat-color fast path. The fix walks the variable-depth wrapper chain until it finds `_batchTable`.
+
+> **Batch-number caveat:** git history is **non-monotonic**. These commits are labeled Batches 179–185 and are the *newest* work (HEAD = `88b111e49c`), but earlier-in-history commits used higher labels (up to ~230). When cross-referencing docs that cite "Batch 205/225/230", those are OLDER ancestors. Trust commit hashes/dates over batch numbers.
+
+## What landed (Batches 179–185, all committed + pushed)
+
+| Batch | Commit | Summary |
+|---|---|---|
+| 180 | `3667945dae` | **NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT RESOLVED** — fix WebGPU BufferPolygon vector-tile render; preprocessor resolves bare `#import` from `BUFFER_WGSL_CHUNKS` so the pipeline compiles |
+| 181 | `4063cc7fbc` | Log-depth epic **Slice 0** — reconcile `csm_*LogDepth` chunk family to one canonical WebGL-parity contract |
+| 182 | `f3849b7587` | Log-depth epic **Slice 1** — shared inert infrastructure (define bit + master switch `_logDepthWriteEnabled` defaulting FALSE + lane helper) |
+| 183 | `92fec34c16` | Log-depth epic **Slice 2a** — globe producer writes `@builtin(frag_depth)` log depth (flag-gated, inert until the switch flips) |
+| 184 | `a5b737df6c` | Fix Dawn/Tint uniform `vec4 .zw` past-byte-512 aliasing (classifier U-struct reorder) + log-depth epic Links 1–4a (inert). Docs commits `fdd5b8f1a8` (EXECUTION_ROADMAP baseline) + `f3c962a109` (recorded the VERIFIED textured-classifier root cause) followed |
+| 185 | `88b111e49c` | **Flat textured-material GroundPrimitive classification (Color/Stripe/Checkerboard/Grid) SHIPPED** — `packExtents` wrapper-chain walk (`WebGPUGroundPrimitiveRenderer.js:313`); root cause was the inner-`_primitive` lookup depth, NOT depth precision |
+
+## Roadblocks / residuals (the load-bearing findings — read before picking up this domain)
+
+1. **NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION — the genuine open residual that survives Batch 185.** With the `packExtents` fix in place, flat textured materials now render, but the **far-corner reconstruction precision** degrades: Checkerboard visibly degrades toward the far corner of a large polygon while Stripe stays clean. This is the legitimately **log-depth-gated** remainder — it needs the renderer-wide log-depth epic's producer+consumer wiring to finish (the globe currently writes hyperbolic NDC depth into an RGBA8 target, so a ~350 km surface in a `[0.1, 1e8]` slice sits where one 24-bit quantization step ≈ ±50–90 km of reconstructed eye-z; the far corner is where this bites). Currently tracked only in `WEBGPU_DEBUGGING_LOG.md` — needs propagating into `DEFERRED_WORK.md` / `FEATURE_INVENTORY.md` §C.4 / `WEBGPU_MIGRATION_BACKLOG.md` / `WEBGPU_EXECUTION_ROADMAP.md`.
+
+2. **Renderer-wide log-depth epic — Slices 0/1/2a shipped but inert; remaining slices are the frontier.** `_logDepthWriteEnabled` defaults FALSE, so the producer/consumer halves are not yet active end-to-end. The remaining work (consumer-reverse across every pipeline that shares the depth attachment, then the master-switch flip + validation) is the path that also unblocks roadblock #1 above and pick/distance precision everywhere. Plan + slice breakdown live in `WEBGPU_EXECUTION_ROADMAP.md`.
+
+3. **Vector3DTile 2D/CV → implemented but still pixel-UNVERIFIED here (carried from Batch 178).** The BufferPolygon fix (Batch 180) now gives a renderable modern glTF-vector scene, so the retroactive e2e verification the prior handoff deferred is now possible — but had not been run as of this handoff. Slice 1 remains a line-for-line port of the verified Batch 170 path (builds, 0 device errors 3D/2D/CV), not yet claimed pixel-correct.
+
+4. **GPU-sort Phase-3 consumer → deferred (perf, correctness trap).** `_lastSortedIndices` is written but never read. The consumer must map compacted-SOA indices back to raw command indices (trap: naive `commands[indices[i]]` corrupts the opaque set), handle 1-frame latency, and — because opaque early-Z makes the reorder pixel-identical when correct — needs a **counter probe** (a pixel-diff can't catch a reorder bug). Its own probe-first session.
+
+5. **C-R9-MODEL-FEATURE-PICK → re-scoped, not closed (carried).** The 3 documented blockers ARE resolved (30 pick IDs + texture allocated, primitive cache populated) but the b3dm `BatchTableHierarchy` tileset doesn't visibly render in the probe — residual b3dm content-render/pick gap needing focused investigation.
+
+6. **BUG-WEBGPU-CANVAS-BLACK appears already resolved (carried)** — every probe across recent spans rendered globes/imagery/polygons fine, never black (likely fixed by Session 61's AsyncResourceMonitor). Owes a formal re-verify but not a lurking showstopper.
+
+## Recommended next steps
+
+The authoritative, slice-by-slice frontier lives in **[WEBGPU_EXECUTION_ROADMAP.md](WEBGPU_EXECUTION_ROADMAP.md)** (committed `fdd5b8f1a8`) — treat it as the live planning artifact rather than re-enumerating here. The two highest-leverage items it drives:
+
+1. **Finish the renderer-wide log-depth epic** (consumer-reverse + master-switch flip + validation). This is what closes **NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION** (residual #1) and improves pick + distance precision everywhere.
+2. **Retroactively verify + extend Batch 178** now that the BufferPolygon fix gives a renderable modern-vector scene; then Vector3DTilePolylines + ClampedPolylines 2D/CV slices, then MORPHING.
+
+(Lower-priority carries: GPU-sort Phase-3 consumer — own probe-first session; C-R9 b3dm render gap; formal BUG-WEBGPU-CANVAS-BLACK re-verify.)
+
+## Doc state (synced this handoff, Batch 185)
+
+`DEFERRED_WORK.md` and `WEBGPU_DEBUGGING_LOG.md` carry the Batch 179–185 narrative; `WEBGPU_EXECUTION_ROADMAP.md` is the committed live planning artifact. **Propagation still owed:** `NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION` (residual #1) currently lives only in `WEBGPU_DEBUGGING_LOG.md` and must be lifted into `DEFERRED_WORK.md`, `FEATURE_INVENTORY.md` §C.4, `WEBGPU_MIGRATION_BACKLOG.md`, and `WEBGPU_EXECUTION_ROADMAP.md`. The prior 2026-05-28 handoff (Batches 167–178) follows below, archived.
+
+---
+
+# (Archived) Next Session Handoff — 2026-05-28 (Batches 167–178 — classification arc: 2D/CV + textured materials + triage)
 
 **Branch:** `main` only (local + origin in sync at `3802e45d3b`). No safety / feature / worktree branches. Working tree carries only pre-existing root `Source/Shaders/WebGPU/Primitive/*.wgsl` build-output drift (regenerated material shaders that match canonical `packages/engine/Source` — NOT in-progress work; left uncommitted intentionally).
+
+> **Note (2026-05-30):** Roadblocks #1 (textured-classifier "blocked on globe depth precision") and #3 (BufferPolygon `#import` compile bug) below were resolved in Batches 180/185 — see the current top section. Roadblock #1's *depth-precision* framing was superseded: the flat textured materials shipped via the `packExtents` fix (Batch 185), and only the far-corner reconstruction-precision residual (NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION) remains log-depth-gated. The text below is preserved as the point-in-time record.
 
 **Headline:** A ~3-day push (2026-05-26 → 05-28) on the **classification / ground-primitive arc** plus a 27-agent **triage workflow** over the whole deferred backlog. Flat-color ground classification now renders in **all scene modes**; a large slice of the backlog turned out to be stale doc-drift and was retired/corrected; and the remaining textured-material + vector-classification work was driven until it hit two genuine, now-precisely-documented architectural roadblocks.
 

@@ -66,7 +66,7 @@ Before this session, `WebGPUCSMRenderer.renderCastPass` filtered commands to `_s
   - **Extras path** (modelP12, modelInstancedSB, modelSkinned, quantized12): per-command bind group indexed by cascade via `cmd._shadowCastCSMBindGroups[ci]` + parallel `cmd._shadowCastCSMBindGroupKeys[ci]` for layout invalidation. Mirrors the single-shadow-map invalidation pattern but scoped to CSM (separate cache keys — no cross-contamination between the two paths).
   - **Multi-VB variants** (modelSkinned): walks `vertexBufferSourceSlots` to bind slot 0/5/6 of the command's 7-buffer layout into the cast pipeline's compact 0/1/2 layout. Single-VB variants fall through to default slot-0 bind.
   - Draw calls now forward `cmd.instanceCount` to `pass.drawIndexed(count, instanceCount)` so `modelInstancedSB` renders all instances (previously instancing was inherited only by the single-shadow-map path).
-- Pipeline compilation is shared through the already-wired `_getOrCreateCastPipeline` factory with a CSM-owned cache (`this._sharedPipelineCache`). Each variant compiles once per cascade-renderer lifetime. Pipeline's bind-group layout is identical to the single-shadow-map variant — the 128-byte cast UBO (Slice 1 `WebGPUCSMCastUBOLayoutSpec.js`) matches `SHADOW_UNIFORM_SIZE`, so the same WGSL `u` struct binds cleanly against either path's UBO.
+- Pipeline compilation is shared through the already-wired `_getOrCreateCastPipeline` factory with a CSM-owned cache (`this._sharedPipelineCache`). Each variant compiles once per cascade-renderer lifetime. Pipeline's bind-group layout is identical to the single-shadow-map variant — the 128-byte cast UBO (Slice 1 [WebGPUCSMCastUBOLayoutSpec.js](../packages/engine/Specs/Renderer/WebGPU/WebGPUCSMCastUBOLayoutSpec.js)) matches `SHADOW_UNIFORM_SIZE`, so the same WGSL `u` struct binds cleanly against either path's UBO.
 
 **Per-command UB ownership — safe for multi-cascade iteration.** Models allocate `cache.shadowCastUB` once per Model and write the model matrix once per frame before the cast pass ([WebGPUModelRenderer.js:710-725](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js#L710-L725)). CSM iterates the same command list four times (once per cascade), each reading the same stable UB — no race, no staleness. Bind-group caches stay valid frame-to-frame because the UB object identity never changes.
 
@@ -86,7 +86,7 @@ Shadow texels were drifting continuously against world-space as the camera moved
 
 ### PrimitivePhongColor CSM receive — SHIPPED
 
-[PrimitivePhongColor.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePhongColor.wgsl) now consumes the CSM bindings at `@group(2) @binding(10)` and `@group(2) @binding(11)` (group 2, not 3, because PhongColor has no texture bind group in between — the primitive pipeline builds `[cameraBGL, materialBGL, effectsBGL]` for non-textured shaders). Struct additions and helper functions copied verbatim from `PrimitivePhongTexturedColor.wgsl` (the reference implementation) — EffectsUniforms now carries the required `atmosphereLutControl` + `csmControl` tail fields so byte offsets line up with the 272-byte UBO. Fragment shader routes through `computeShadowFactorCSM(eyePosition, viewDepth, normal, lightDir)` when `effects.csmControl.x > 0.5`, falls back to the single-map path otherwise. **No pipeline or JS changes needed** — the effects BGL already advertised bindings 10/11 from Slice 1, with placeholder buffers when CSM is off.
+[PrimitivePhongColor.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePhongColor.wgsl) now consumes the CSM bindings at `@group(2) @binding(10)` and `@group(2) @binding(11)` (group 2, not 3, because PhongColor has no texture bind group in between — the primitive pipeline builds `[cameraBGL, materialBGL, effectsBGL]` for non-textured shaders). Struct additions and helper functions copied verbatim from `PrimitivePhongTexturedColor.wgsl` (the reference implementation) — EffectsUniforms now carries the required `atmosphereLutControl` + `csmControl` tail fields so byte offsets line up with the shared effects UBO (272 bytes when this entry was written 2026-04-18; the struct has since grown to **480 bytes** — `WebGPUEffectsBindGroup.js:198 EFFECTS_UNIFORM_SIZE = 480` — with `atmosphereLutControl` at offset 240 / `csmControl` at offset 256). Fragment shader routes through `computeShadowFactorCSM(eyePosition, viewDepth, normal, lightDir)` when `effects.csmControl.x > 0.5`, falls back to the single-map path otherwise. **No pipeline or JS changes needed** — the effects BGL already advertised bindings 10/11 from Slice 1, with placeholder buffers when CSM is off.
 
 ## Slice 2c progress (2026-04-18) — ModelPBRComplete receive
 
@@ -96,14 +96,14 @@ The glTF PBR shader now receives cascaded shadows. Scope was larger than the pri
 
 **Pipeline layout extension** ([WebGPUModelPipelineCache.js:328-351](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js#L328-L351)):
 
-- Added `this._effectsBGL = getEffectsBindGroupLayout(device)` alongside the other BGLs. Same factory the globe + primitive paths use, so the 272-byte EffectsUniforms layout stays in lockstep across every consumer.
+- Added `this._effectsBGL = getEffectsBindGroupLayout(device)` alongside the other BGLs. Same factory the globe + primitive paths use, so the EffectsUniforms layout stays in lockstep across every consumer (272 bytes at the time of this 2026-04-18 entry; **480 bytes** at HEAD per `WebGPUEffectsBindGroup.js:198`).
 - Extended `createPipelineLayout` bindGroupLayouts array from 7 to 8 slots: `[camera, material, texture, skinning, morph, instancing, featureId, effects]`. Existing pipelines don't break — no other model-rendering code binds group 7, so the addition is backward-compatible.
 
 **Per-frame effects bind group** ([WebGPUModelRenderer.js:698-733](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js#L698-L733)):
 
 - Per-model call to `createEffectsBindGroup(device, frameState, { shadowMap, csm, cameraInPlaneSpace })` inside `updateWebGPUModel`. Mirrors the pattern in `WebGPUGlobeSurfaceRenderer.ts:1554`. CSM binding resolved the same way: read `frameState.context.csmRenderer`, gate on `.enabled === true` plus valid `cascadeParamsBuffer` + `cascadeArrayView`.
 - Bind group stored on `cache.effectsBG` and pushed into each primitive's `WebGPUDrawCommand.bindGroups[]` at index 7.
-- **Scope note:** cost is one 272-byte UB write + one bind-group creation per model per frame. Acceptable for typical scenes (few models); if model count grows to hundreds, consider a scene-wide shared bind group cached on `frameState.context` per frame.
+- **Scope note:** cost is one effects-UB write (272 bytes at this 2026-04-18 entry; **480 bytes** at HEAD per `WebGPUEffectsBindGroup.js:198`) + one bind-group creation per model per frame. Acceptable for typical scenes (few models); if model count grows to hundreds, consider a scene-wide shared bind group cached on `frameState.context` per frame.
 
 **Shader changes** ([ModelPBRComplete.wgsl](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl)):
 
@@ -129,7 +129,7 @@ Infrastructure gap discovered while shipping 2d: primitive commands were built o
 - New `_refreshPrimitiveEffectsSlot(command, frameState)` swaps `command.bindGroups[last]` to the active BG. Skips pick commands (they don't receive shadows). Falls through to the cached placeholder when no feature is active, so the swap becomes a no-op.
 - Called from both `updateWebGPUCommandUniforms` (per-instance + phong path) and `updateWebGPUMaterialCommandUniforms` (material + PBR path) every frame.
 - Primitives have identity `modelMatrix` for current appearance primitives, so one shared BG across every primitive per frame is correct. If per-model-matrix primitives show up later, the cache key needs a modelMatrix hash.
-- **Cost**: one `createEffectsBindGroup` call + one 272-byte UB write per frame, reused across every primitive command. For N primitives, O(1) instead of O(N) — meaningful difference at scene scale.
+- **Cost**: one `createEffectsBindGroup` call + one effects-UB write (272 bytes at this 2026-04-18 entry; **480 bytes** at HEAD per `WebGPUEffectsBindGroup.js:198`) per frame, reused across every primitive command. For N primitives, O(1) instead of O(N) — meaningful difference at scene scale.
 
 ### Material + PBR pipeline layout forward-compat — SHIPPED
 
@@ -213,9 +213,9 @@ CSM splits the camera frustum into N depth ranges (typically 3 or 4), renders ea
 
 ### New files
 
-- `Source/Shaders/WebGPU/Shadow/ShadowCastCSM.wgsl` — replacement for the current `WebGPUShadowMapRenderer` cast shader, parameterized over cascade index. Reuses the existing per-vertex-layout cache (rte24 + p12 variants from S25 + 2026-04-09 work).
-- `Source/Shaders/WebGPU/Shadow/ShadowReceiveCSM.wgsl` — fragment-side cascade selection helper (chunk, included by terrain + primitive shaders).
-- `Source/Renderer/WebGPU/WebGPUCSMRenderer.ts` — the cascade-aware shadow renderer. Owns:
+- ~~`Source/Shaders/WebGPU/Shadow/ShadowCastCSM.wgsl`~~ — **never created.** As shipped, CSM reuses the existing single-shadow-map cast shader `Source/Shaders/WebGPU/Shadow/ShadowMap.wgsl` directly (parameterized over cascade index via the per-cascade cast UBO); a separate CSM cast shader proved unnecessary because the per-vertex-layout cache (rte24 + p12 + later variants from S25 + 2026-04-09 work) is shared with the single-shadow-map path.
+- `Source/Shaders/WebGPU/Shadow/ShadowReceiveCSM.wgsl` — fragment-side cascade selection helper (chunk, included by terrain + primitive shaders). **The only CSM-specific WGSL file that actually exists in `Source/Shaders/WebGPU/Shadow/`** (alongside `ShadowMap.wgsl`).
+- `Source/Renderer/WebGPU/WebGPUCSMRenderer.ts` — the cascade-aware shadow renderer. The ~326-LOC `renderCastPass` body was later extracted into `Source/Renderer/WebGPU/WebGPUCSMCastPass.ts` (Batch 159 maintainability sweep); the renderer's `renderCastPass` is now a 1-line delegator. Owns:
   - 4 cascade textures (currently a single 2048×2048 array texture; 4 × 1024² array layers when memory matters)
   - 4 light-space VP matrices
   - 4 cascade split distances (in view space)
@@ -338,7 +338,7 @@ let shadow = mix(s0, s1, blendT);
 - **Memory cost**: 4 × 2048² × depth32float = 64 MB. Acceptable for desktop, possibly too much for low-end mobile. **Mitigation**: expose `Scene.cascadeShadowMapResolution` as a tunable; default to 1024² (16 MB) when on a constrained adapter.
 - **Snapshot mode interaction**: cascade VPs are camera-derived, so they change every frame even under "no animation" conditions. When snapshot mode is frozen, the cascade VPs and the cast pass should both be skipped — the previous frame's cascade textures still produce visually-correct shadows. **Mitigation**: `WebGPUCSMRenderer` registers as a freezable, just like the volumetric fog and bundle manager.
 - **Receive shader compilation cost**: every shader that samples shadows now takes a 4-cascade selection function in its hot path. The compiled shader gets ~50 lines longer per variant. **Decision**: acceptable; cascade selection compiles to ~6 ALU + 1 array sample on Vulkan/Metal/D3D.
-- **EffectsUniforms struct size (added 2026-04-11)**: the shared EffectsUniforms UBO was extended to 240 bytes (from 112) by Phase 5 WGF-1, adding `clipPlaneEqHW: array<vec4<f32>, 8>` (128 bytes). The CSM receive shader's `ShadowReceiveCSM.wgsl` chunk must include the full 240-byte struct (including the WGF-1 tail) so the bind group layout matches the shared effects BGL. The cascade-specific fields (4 VP matrices, 4 split distances) should go in a **separate UBO** (new binding in group 3) rather than further extending EffectsUniforms, to keep the shared struct stable.
+- **EffectsUniforms struct size (added 2026-04-11; size updated to HEAD)**: the shared EffectsUniforms UBO was first extended to 240 bytes (from 112) by Phase 5 WGF-1, adding `clipPlaneEqHW: array<vec4<f32>, 8>` (128 bytes), and has since grown to **480 bytes** at HEAD (`WebGPUEffectsBindGroup.js:198 EFFECTS_UNIFORM_SIZE = 480`) as later tail fields (atmosphere LUT control, CSM control, edge control/viewport, polygon-clipping atlas control + per-extent remap, etc.) were appended. The CSM receive shader's `ShadowReceiveCSM.wgsl` chunk must include the full struct (matching `EFFECTS_UNIFORM_SIZE`) so the bind group layout matches the shared effects BGL. The cascade-specific fields (4 VP matrices, 4 split distances) should go in a **separate UBO** (new binding in group 3) rather than further extending EffectsUniforms, to keep the shared struct stable.
 
 ## Acceptance criteria
 

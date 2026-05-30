@@ -35,7 +35,7 @@ The following features are already in the `DESIRED_FEATURES` list and auto-reque
 | `timestamp-query` | Yes | Yes (`WebGPUTimestampProfiler`) | Used by `Scene.beginPerformanceTrace` |
 | `subgroups` | Yes | Partial (`FrustumCull` + `PointCloudLOD`) | Subgroup-aware compute variants |
 | `clip-distances` | Yes | **No** | See WGF-1 below |
-| `dual-source-blending` | Yes | **No** | See WGF-2 below |
+| `dual-source-blending` | Yes | **No** | OIT is MRT-fallback-only; dual-source path unbuilt — see WGF-2 below |
 | `shader-f16` | Yes | **No** | See WGF-3 below |
 | `indirect-first-instance` | Yes | **No** | Pairs with `WebGPUIndirectDrawManager` — see WGF-5 |
 | `bgra8unorm-storage` | Yes | **No** | Niche; for compute-write to swap chain |
@@ -94,7 +94,9 @@ The following features are already in the `DESIRED_FEATURES` list and auto-reque
 
 **Goal:** replace the multi-pass weighted-blended OIT with a single-pass version that uses dual-source output.
 
-**State:** detected, never wired. The current OIT path is in `WebGPUOIT.ts` and uses two render targets + a separate composite pass.
+**State:** detected, **dual-source path NOT wired** — MRT composite fallback only. Verified against code (`WebGPUOIT.ts`, HEAD `88b111e49c` Batch 185): the OIT path renders to two render targets (accumulation `@location(0)` + revealage `@location(1)`, see `OITFragOutput` / `injectOITOutput` ~line 412) and resolves them in a separate fullscreen composite pass (`OIT_COMPOSITE_WGSL` ~line 31). There is **no `blend_src`/`src1` dual-source blend factor and no consumer of `hasDualSourceBlending`** anywhere in the file — the `@location(1)` output is the second MRT target, *not* a dual-source second source. The module docstring's "if dual-source-blending is available we use it for single-pass OIT" (lines 16-17) is an aspiration, not the shipped behavior.
+
+> **Cross-doc reconciliation (doc-audit §3.3):** `FEATURE_INVENTORY.md:592` previously read "weighted-average single-pass when `dual-source-blending` available (SHIPPED)", which overclaims relative to the code above. Both docs are reconciled toward the code: WGF-2 is **MRT-fallback-only; the single-pass dual-source path is unbuilt.**
 
 **Migration:**
 1. Audit `WebGPUOIT.ts` for the current weighted-average accumulator structure

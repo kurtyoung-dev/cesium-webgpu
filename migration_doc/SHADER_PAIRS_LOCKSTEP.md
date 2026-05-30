@@ -1,6 +1,6 @@
 # Shader Pairs Lockstep — WebGL ↔ WebGPU Manual Parity Plan
 
-**Status:** Drafting · Owner: WebGPU migration · First batch: Imagery reproject pair
+**Status:** Phases 1–3 shipped; Phase 4 + Naga-verifier outstanding · Owner: WebGPU migration · First batch: Imagery reproject pair
 
 ---
 
@@ -109,7 +109,7 @@ We keep the existing directory structure. Each shader file gets a
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ PAIR: WebGL GLSL (this file)                                         │
 // │       WebGPU WGSL: Shaders/WebGPU/ReprojectWebMercator.wgsl          │
-// │ Last lockstep audit: 2026-05-XX, Batch 67                            │
+// │ Last lockstep audit: 2026-05-18, Batch 67                            │
 // └─────────────────────────────────────────────────────────────────────┘
 // Any change in this file MUST land with a matching change in the WGSL
 // counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
@@ -121,7 +121,7 @@ And the matching WGSL header:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ PAIR: WebGPU WGSL (this file)                                        │
 // │       WebGL GLSL: Shaders/ReprojectWebMercator{VS,FS}.glsl           │
-// │ Last lockstep audit: 2026-05-XX, Batch 67                            │
+// │ Last lockstep audit: 2026-05-18, Batch 67                            │
 // └─────────────────────────────────────────────────────────────────────┘
 // Any change in this file MUST land with a matching change in the GLSL
 // counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.

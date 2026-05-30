@@ -13,6 +13,22 @@ volumetric fog froxel grid defined there.
 locks all 14 C-series decisions referenced throughout this doc. When in doubt
 on a value, that section is the source of truth.
 
+> **Implementation status (2026-05-30):** **Phase 0 + Phase 0.3 are DONE.**
+> The canonical-home facade shipped: `GlobeWater.js` exists and is reached as
+> `scene.globe.water` (`Globe.js:560` `get water()` → `this._water`,
+> delegating to the legacy `showWaterEffect` / `oceanNormalMapUrl` /
+> enhanced-ocean fields). **Phases 1–9 remain unbuilt** — no
+> `WaterClassificationProvider`, no Gerstner surface shader, no bathymetry,
+> foam, caustics, river pipeline, or `WaterRegion` collection exists yet.
+> The `scene.globe.water.*` toggle tree documented in §5 is the *planned*
+> surface; only the upstream-owned `showWaterEffect` / `oceanNormalMapUrl` /
+> enhanced-ocean leaves are live today. **Namespace note:** the canonical
+> home is `scene.globe.water.*`, **not** `scene.water.*`. The design-session
+> `scene.water.*` spelling in §4.7, §5.1, §6, §7, §8 has been reconciled to
+> `scene.globe.water.*` to match the shipped Phase 0.3 facade; remaining bare
+> `scene.water` mentions are intentional historical contrasts ("refined from
+> the original `scene.water`").
+
 > **Reading guide for v2:** §4 Architecture, §5 Toggle Inventory, and §6 Phases
 > have been updated in place to reflect the locked decisions. New §9 documents
 > the quantized-mesh Option A wire format. New §10 documents the OSM vocabulary
@@ -393,14 +409,15 @@ indigo Pacific over Bing — without any per-region tuning.
 The user explicitly asked for "control when and where the water tech is
 active". The `WaterRegion` system provides this.
 
-> **Locked C14:** The collection is **namespaced** under `scene.water` (not
-> hung directly off `Scene` as `scene.waterRegions`). This keeps `Scene`
-> flat and follows the same pattern as other locked decisions in this
-> session — every new water-related property goes under `scene.water.*`,
+> **Locked C14:** The collection is **namespaced** under `scene.globe.water`
+> (Phase 0.3 refined the canonical home from the original `scene.water` —
+> see §5), not hung directly off `Scene` as `scene.waterRegions`. This keeps
+> `Scene` flat and follows the same pattern as other locked decisions in this
+> session — every new water-related property goes under `scene.globe.water.*`,
 > every new atmospheric property goes under `scene.globe.atmosphericConditions.*`.
 
 ```js
-scene.water.regions.add(new WaterRegion({
+scene.globe.water.regions.add(new WaterRegion({
   geometry: rectangle,           // or polygon, or tileset bounding region
   enabled: true,
   type: WaterType.OCEAN,         // override classification for this AOI
@@ -421,11 +438,11 @@ wins. A region with `enabled: false` *disables* water inside it, even
 if classification says it's water — useful for "render this dam
 reservoir as terrain, not water".
 
-A global `scene.water.enabled = false` (per **C10**, default `false`)
+A global `scene.globe.water.enabled = false` (per **C10**, default `false`)
 disables everything without removing regions (cheap kill switch for
 performance probes). The legacy property `scene.waterEffectsEnabled`
 is preserved as a delegating shell that reads/writes through to
-`scene.water.enabled` for backward compatibility — see the toggle
+`scene.globe.water.enabled` for backward compatibility — see the toggle
 audit pattern in `SESSION_2026-04-08_RESEARCH_REPORT.md §9.5`.
 
 ---
@@ -460,7 +477,7 @@ band thresholds carry hysteresis.
 Before *any* per-fragment water work runs, a tile must pass these gates,
 in order, on the CPU side of the renderer:
 
-1. **Master toggle.** `scene.waterEffectsEnabled === false` → skip.
+1. **Master toggle.** `scene.globe.water.enabled === false` → skip.
 2. **Frustum cull.** Same frustum cull terrain already does — water
    surface mesh inherits the terrain tile's bounding volume.
 3. **Classification non-empty.** If the tile's classification mask is
@@ -612,9 +629,11 @@ publishing for parity with the rest of `czm_pbr*`.
 > `ocean*` tunables), (2) water is rendered as part of the terrain pass
 > via the water mask, so it conceptually belongs to the globe, and (3)
 > it pairs symmetrically with `scene.globe.atmosphericConditions`. The
-> `scene.globe.water` facade is introduced in the Phase 0.3 refactor PR
-> (pure delegation, zero behavior change); all toggles listed below are
-> accessed through it.
+> `scene.globe.water` facade **shipped** in the Phase 0.3 refactor
+> (`GlobeWater.js`, `Globe.js:560`; pure delegation, zero behavior change).
+> The `showWaterEffect` / `oceanNormalMapUrl` / enhanced-ocean leaves are
+> live through it today; all other toggles listed below are the *planned*
+> Phase 1+ surface and are accessed through the same facade once built.
 
 All toggles live under the namespaced `scene.globe.water.*` tree per **C14**.
 Per **C10**, `scene.globe.water.enabled` defaults to `false` (status quo
@@ -684,11 +703,11 @@ as the celestial doc's toggle audit (`SESSION_2026-04-08_RESEARCH_REPORT.md §9.
 // Legacy → canonical delegation (illustrative — actual implementation
 // in the Scene/Globe extension PR that lands before water Phase 1)
 Object.defineProperty(Scene.prototype, "waterEffectsEnabled", {
-  get() { return this.water.enabled; },
-  set(v) { this.water.enabled = v; },
+  get() { return this.globe.water.enabled; },
+  set(v) { this.globe.water.enabled = v; },
 });
 Object.defineProperty(Scene.prototype, "waterRegions", {
-  get() { return this.water.regions; },
+  get() { return this.globe.water.regions; },
 });
 ```
 
@@ -713,19 +732,19 @@ deprecate nothing in this pass; the legacy paths are documented as
 > PR** documented in `SESSION_2026-04-08_RESEARCH_REPORT.md §9.5`. That
 > PR is a prerequisite for both this design's Phase 1 AND celestial
 > Phase 1, because it establishes the nested config object structure
-> (`scene.water.*` for water; `scene.globe.atmosphericConditions.*` for
+> (`scene.globe.water.*` for water; `scene.globe.atmosphericConditions.*` for
 > celestial) that both designs build on.
 
 | Phase | Scope | Sessions | Depends on |
 |---|---|---|---|
-| **0 — Toggle audit prep PR** | Canonical home migration: introduce `scene.water` namespace + delegating shells for legacy paths. Pure refactor, no behavior change. Lands before any feature work. Shared with celestial doc. | 1-2 | None |
+| **0 / 0.3 — Toggle audit prep PR** ✅ **DONE** | Canonical home migration: introduce the `scene.globe.water` facade (`GlobeWater.js`, `Globe.js:560`) + delegating shells for legacy paths. Pure delegation, no behavior change. Phase 0.3 refined the home from the originally-planned `scene.water` to `scene.globe.water` (water already lives on `Globe`). Shared with celestial doc. | 1-2 | None |
 | **1 — Foundation** | `WaterClassificationProvider` skeleton (pluggable per globe per C1), RGBA mask texture (renderer-internal cache, OSM tag preservation in source data per C8), fall-through to existing `waterMaskTexture`, `WaterRegion` API + scene flags. No shader changes yet. | 1 | Phase 0 |
-| **2 — Surface shader v1** | Replace existing ripple with Gerstner sum, type LUT, imagery-tinted base color, Fresnel + reflection (sky cubemap probe). Both WGSL + GLSL. Toggle via `scene.water.surfaceWaves.enabled`. Investigate imagery sampling reuse via varying (C7). | 2 | Phase 1 |
+| **2 — Surface shader v1** | Replace existing ripple with Gerstner sum, type LUT, imagery-tinted base color, Fresnel + reflection (sky cubemap probe). Both WGSL + GLSL. Toggle via `scene.globe.water.surfaceWaves.enabled`. Investigate imagery sampling reuse via varying (C7). | 2 | Phase 1 |
 | **3 — Bathymetry & depth** | Water datum mesh, depth-buffer sampling, Beer-Lambert column attenuation, refraction via screen-space UV perturbation. Cheap exp depth-fog fallback for `enableUnderwaterFog` (C3). | 1.5 | Phase 2 |
 | **4 — Foam & caustics** | Coastline foam from mask gradient, wave-slope whitecaps, screen-space obstacle foam, procedural caustics on bed. | 1 | Phase 3 |
 | **5 — Rivers** | Flow vector pipeline, OSM/HydroRIVERS classification (WASM rasterization per C2), flow displacement model, river-specific shader branch. Both `RIVER_AREA` (polygon) and `RIVER_LINE` (centerline) paths. | 1.5 | Phase 4 |
 | **6 — Underwater & god rays** | Camera-under-water transition, underwater fog routed through celestial froxel grid (when available) or cheap exp fallback (always available), in-scattering god rays, surface-from-below shimmer. **Gates on celestial Phase 5a**, but ships with exp fallback if Phase 5a slips. | 1 | Phase 5 + (celestial Phase 5a optional) |
-| **7 — Spatial control** | `scene.water.regions` evaluation in classification provider, per-region toggles, debug visualization. | 0.5 | Phase 1 |
+| **7 — Spatial control** | `scene.globe.water.regions` evaluation in classification provider, per-region toggles, debug visualization. | 0.5 | Phase 1 |
 | **Total v1** | | **8.5 + 1-2 prep** | |
 | **Phase 8+ (future)** | FFT ocean, wave particles for boat wakes, ML-segmented water from imagery, seasonal river masks (JRC GSW), tide model | optional | |
 | **Phase 9+ (future)** | Quantized-mesh **Option B version bump** (see §9.2). Promote the additive water classification extension from Option A (extension ID 0x05) to a first-class format field via a coordinated quantized-mesh format version bump. Requires ecosystem coordination with cesium-native, Cesium for Unreal, and major third-party tilers. Schedule when ~6-12 months of Option A real-world usage is available. | 2-3 + coordination | Option A in production for 6-12 months |
@@ -776,7 +795,7 @@ pointer table:
 | OQ2 — River width inference in WASM | **WASM with JS fallback** per CLAUDE.md WASM bridge pattern. | C2 |
 | OQ3 — `enableUnderwaterFog` default when no froxel grid | **Cheap exponential depth-fog fallback.** Single multiply + exp per fragment. See §4.4. | C3 |
 | OQ4 — Water vs 3D Tiles classification interaction | **Compose, don't override.** They answer different questions through different APIs. Use `EXT_structural_metadata` for the water semantic — already supported by 3D Tiles 1.1, no spec change needed. See `SESSION_2026-04-08_RESEARCH_REPORT.md §9.3`. | C4 |
-| OQ5 — Tide source | **User-provided callback, default zero** (`scene.water.tideCallback`). Leave room to expand the default later. | C5 |
+| OQ5 — Tide source | **User-provided callback, default zero** (`scene.globe.water.tideCallback`). Leave room to expand the default later. | C5 |
 | OQ6 — Per-region wave parameter overrides | **Type-only at v1**, individual Gerstner override at Phase 8. | C6 |
 | OQ7 — Imagery sampling reuse cost | **Investigate during Phase 2** (likely viable via varying — no extra sample cost). | C7 |
 
@@ -792,11 +811,11 @@ pointer table:
 |---|---|---|
 | DP1 — Water type taxonomy | **Six rendered types** (`OCEAN`, `SEA`, `LAKE`, `RIVER_AREA`, `RIVER_LINE`, `WETLAND`) plus two future slots (`GLACIER`, `ICE_SHELF`). OSM tag vocabulary preserved verbatim as the canonical data form; the enum is a renderer-internal normalization helper. See §4.2 and §10. | C8 |
 | DP2 — River source data licensing | **Ship NO OSM data in the default build.** Sandcastle demo loads OSM live with proper attribution (`© OpenStreetMap contributors` + link). Document user licensing responsibility in API reference. **Zero ODbL exposure for Cesium itself.** See §11 and `SESSION_2026-04-08_RESEARCH_REPORT.md §9.4`. | C9 |
-| DP3 — Default for water effects | **Off by default** (`scene.water.enabled = false`), may revisit later. Backward-compat shell preserves the legacy `scene.waterEffectsEnabled` property. See §5.1. | C10 |
+| DP3 — Default for water effects | **Off by default** (`scene.globe.water.enabled = false`), may revisit later. Backward-compat shell preserves the legacy `scene.waterEffectsEnabled` property. See §5.1. | C10 |
 | DP4 — Quantized-mesh extension | **Ship Option A (backward-compatible additive) now**, using extension ID `0x05`. Document Option B (cleaner version-bumped format) as deferred long-term work for Phase 9+. See §9. | C11 |
 | DP5 — `containsWaterSurface` flag | **No spec change.** Use custom `_CESIUM_CONTAINS_WATER_SURFACE` semantic via `EXT_structural_metadata`. Per-tileset runtime override (`tileset.containsWaterSurface = true`) for tilesets that don't set it. Heuristic detection NOT in v1. See §4.5. | C12 |
 | DP6 — Phase 1 blocking | **Run in parallel with celestial.** Water Phases 1-5 are fully independent. Only water Phase 6 (underwater god rays) depends on celestial Phase 5a (froxel grid infrastructure) — and Phase 6 ships with the exp fallback (C3) even if Phase 5a slips. See §6. | C13 |
-| DP7 — Region API shape | **Namespaced** (`scene.water.regions.add(...)`), not flat. Keeps `Scene` flat. See §4.7. | C14 |
+| DP7 — Region API shape | **Namespaced** (`scene.globe.water.regions.add(...)`), not flat. Keeps `Scene` flat. See §4.7. | C14 |
 
 ---
 
@@ -1311,10 +1330,11 @@ a new feature.
 ---
 
 *End of v2 draft. All 14 C-series decisions are locked — see §7 and §8
-for the resolution tables. Phase 0 (toggle audit prep PR) is the next
-implementation step, shared with the celestial design. Water Phase 1
-follows immediately after Phase 0 lands. Phase 6 (underwater god rays)
-gates on celestial Phase 5a, but ships with the cheap exp depth-fog
-fallback (C3) even if Phase 5a slips. Phase 9+ (Quantized-mesh
-Option B version bump) is the deferred long-term direction documented
-in §9.2.*
+for the resolution tables. Phase 0 / Phase 0.3 (toggle audit prep +
+canonical-home facade) have **shipped** — `GlobeWater.js` is live at
+`scene.globe.water` (`Globe.js:560`); Phases 1–9 remain unbuilt. Water
+Phase 1 (the `WaterClassificationProvider` foundation) is the next
+implementation step. Phase 6 (underwater god rays) gates on celestial
+Phase 5a, but ships with the cheap exp depth-fog fallback (C3) even if
+Phase 5a slips. Phase 9+ (Quantized-mesh Option B version bump) is the
+deferred long-term direction documented in §9.2.*

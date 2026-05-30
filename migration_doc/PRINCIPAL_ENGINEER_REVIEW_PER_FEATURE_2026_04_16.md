@@ -15,6 +15,8 @@
 
 ## Executive summary
 
+> **Status banner (added 2026-05-30):** Findings below carry per-finding status annotations (FIXED / DEFERRED / PARTIAL). The Executive summary and severity table reflect the **2026-04-16 baseline**, not current state — several BLOCKER/CRITICAL items (B-2, B-5, B-6, C-P9, and others) have since shipped. Read the per-finding annotations, not the summary counts, for the live picture.
+
 The fork has scope issues far deeper than the prior two reviews exposed. The abstractions are still correct, but many individual feature renderers are **placeholder stubs**, **missing entire code paths the WebGL counterpart has**, or **silently break at planetary scale despite surface-level tests appearing green**.
 
 The finding count breakdown:
@@ -50,7 +52,9 @@ The takeaway: **the fork is not at feature parity with WebGL**, even in areas th
 ---
 
 ### B-2. Cascaded Shadow Maps are a literal placeholder
-**Verified.** [WebGPUCSMRenderer.ts:212-224](../packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts):
+**FIXED.** `computeCascadeVPs` is no longer a placeholder. [WebGPUCSMRenderer.ts:433](../packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts) now does a real per-cascade fit: world-space frustum-corner extraction from the camera basis (`_computeFrustumCornersWorldSpace`), bounding-sphere fit (`_fitBoundingSphere`, rotation-invariant), light-space lookAt view from `lightDirection`, ortho projection at `±radius`, plus texel-snap stabilization (`snapToTexelGrid`) to kill sub-texel shimmer under camera motion. The identity-matrix-with-scale-entries placeholder described below is gone.
+
+**Original finding — Verified.** [WebGPUCSMRenderer.ts:212-224](../packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts):
 
 ```ts
 // This is a simplified placeholder.
@@ -88,7 +92,9 @@ Also: `executeSSR` calls `device.queue.submit(...)` at line 230 — **inside the
 ---
 
 ### B-5. InvertClassification has no draw command; architecture is a simple post-process, not the WebGL 2-pass FBO composition
-**Verified.** [WebGPUInvertClassification.ts:26-31](../packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts) declares `command: CesiumAnyDrawCommand | null` but the WGSL shader (lines 36-74) is a simple `sceneTex + classifiedTex` sample-and-mix. There is no 2-pass "render classified to FBO → swap FBOs → render unclassified into scene → blend with classified" pattern like [Scene/InvertClassification.js](../packages/engine/Source/Scene/InvertClassification.js).
+**FIXED.** The simple `sceneTex + classifiedTex` post-process (the legacy single-pass `fragmentMain`, Batch 39) has been superseded by a stencil-gated two-pass composite (C-R8-INVERT-CLASS-STENCIL, Batch 40). [WebGPUInvertClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts) now allocates a dedicated `depth24plus-stencil8` depth-stencil (:288-299) so the classification-ignore-show pass writes stencil bits marking classified regions, and the composite runs two stencil-gated pipelines: `fragmentUnclassified` (`stencilCompare = EQUAL`, ref 0 — fires on unmarked tile pixels) and `fragmentClassified` (`stencilCompare = NOT_EQUAL`, ref 0 — fires on classification-primitive-flagged pixels), :330-385. The single-pass `fragmentMain` survives only as the no-stencil-view fallback. Selection styling on 3D Tiles now composites correctly.
+
+**Original finding — Verified.** [WebGPUInvertClassification.ts:26-31](../packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts) declares `command: CesiumAnyDrawCommand | null` but the WGSL shader (lines 36-74) is a simple `sceneTex + classifiedTex` sample-and-mix. There is no 2-pass "render classified to FBO → swap FBOs → render unclassified into scene → blend with classified" pattern like [Scene/InvertClassification.js](../packages/engine/Source/Scene/InvertClassification.js).
 
 Also: `cache.classifiedTexture` is declared but the agent's trace confirms it's never populated from the actual classified pass output. `sceneTex` is bound to a placeholder.
 
@@ -141,7 +147,11 @@ No code path reads `collection.textureAtlas` or `_textureAtlas`. Once populated 
 ---
 
 ### B-9. GroundPrimitive stencil uses wrong compare/passOp for depth-fail classification
-**Verified.** [WebGPUGroundPrimitiveRenderer.js:91-102](../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js) stencil pass uses `compare: "always"`, `passOp: "replace"`, `depthFailOp: "keep"`. The upstream depth-fail classification pattern uses `stencilFront.depthFailOp = DECREMENT_WRAP` + `stencilBack.depthFailOp = INCREMENT_WRAP` so stencil ≠ 0 only where the ray enters and doesn't exit the extruded volume.
+**PARTIALLY FIXED — stencil-op half still open.** Separate from this stencil finding, flat textured-material classification (Color/Stripe/Checkerboard/Grid) now *renders* as of Batch 185 (`88b111e49c`): the root cause was a 1-hop-too-deep inner-`_primitive` lookup that wrote `materialMeta.x = 0` (flipping the shader to the flat-color fast path), fixed by the wrapper-chain walk in `packExtents` ([WebGPUGroundPrimitiveRenderer.js:313](../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js)) — **not** a depth-precision fix.
+
+The **stencil-op half of this finding remains genuinely open**: the stencil pass still uses `compare: "always"`, `passOp: "replace"`, and `depthFailOp: "keep"` ([:1210](../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js) front / [:1216](../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js) back) — NOT the `stencilFront.depthFailOp = DECREMENT_WRAP` / `stencilBack.depthFailOp = INCREMENT_WRAP` enter-without-exit pattern the upstream depth-fail classification needs. The remaining far-corner reconstruction-precision residual that survives Batch 185 (log-depth-gated; Checkerboard degrades toward the far corner, Stripe stays clean) is tracked as **`NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION`** (currently in `WEBGPU_DEBUGGING_LOG.md`).
+
+**Original finding — Verified.** [WebGPUGroundPrimitiveRenderer.js:91-102](../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js) stencil pass uses `compare: "always"`, `passOp: "replace"`, `depthFailOp: "keep"`. The upstream depth-fail classification pattern uses `stencilFront.depthFailOp = DECREMENT_WRAP` + `stencilBack.depthFailOp = INCREMENT_WRAP` so stencil ≠ 0 only where the ray enters and doesn't exit the extruded volume.
 
 **User-visible:** GroundPrimitives paint past their tile footprint onto terrain behind the extruded volume, and onto the sky where the volume's front face rasterizes against the sky background. Visually incorrect everywhere classification is used.
 
@@ -316,7 +326,9 @@ Additionally — caller hazard: [WebGPUModelRenderer.js:445](../packages/engine/
 ---
 
 ### C-P9. DistanceDisplayCondition / NearFarScalar family entirely absent on WebGPU
-**DEFERRED 2026-04-16 (Batch 13).** Requires adding 5 per-instance attribute slots (eyeOffset vec3, pixelOffsetScaleByDistance vec4, translucencyByDistance vec4, scaleByDistance vec4, distanceDisplayCondition vec2) + shader logic in all 4 collection shaders + a `csm_nearFarScalar` helper. Multi-file, multi-shader scope — tracked as **FOLLOW-UP C-P9-COLLECTIONS** for a dedicated session.
+**FIXED/SHIPPED.** The `csm_nearFarScalar` helper is now wired into the collection shaders — it is no longer "imported by zero shaders." [BillboardCollection.wgsl:117](../packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollection.wgsl) defines `czm_nearFarScalar` (the WGSL port of `nearFarScalar.glsl`) and the vertex stage consumes it for `scaleByDistance` (:283), `pixelOffsetScaleByDistance` (:296), and `translucencyByDistance` (:505), backed by the per-instance attribute slots `@location(6)` `perInstanceFlags` (disableDepthTestDistance + distanceDisplayCondition near/far²), `@location(7)` `translucencyByDistance`, `@location(8)` `pixelOffsetScaleByDistance`, `@location(9)` `scaleByDistance` (:84-87). The same helper is now imported across the PointPrimitive and Polyline families (`PointPrimitiveColor.wgsl`, `PolylineCollection.wgsl` + Outline/Glow/Dash/Arrow, and the pick variants — 11 collection shaders total).
+
+**Original finding — DEFERRED 2026-04-16 (Batch 13).** Requires adding 5 per-instance attribute slots (eyeOffset vec3, pixelOffsetScaleByDistance vec4, translucencyByDistance vec4, scaleByDistance vec4, distanceDisplayCondition vec2) + shader logic in all 4 collection shaders + a `csm_nearFarScalar` helper. Multi-file, multi-shader scope — tracked as **FOLLOW-UP C-P9-COLLECTIONS** for a dedicated session.
 
 **Verified.** Grep for `distanceDisplayCondition|translucencyByDistance|pixelOffsetScaleByDistance|scaleByDistance|eyeOffset` in `Shaders/WebGPU/` and `Renderer/WebGPU/` returns no production hits. `csm_nearFarScalar.wgsl` exists as a helper but is imported by zero shaders.
 

@@ -1,6 +1,22 @@
 # Phase 8 Shader Strategy — Coarse Variants + Pre-Warm
 
-**Status:** Decided · Batch 80 (2026-05-20) · Resolves `TILE-ARCH-SHADER-STRATEGY` (Tier 4 #13 in the parity audit)
+**Status:** Decided Batch 80 (2026-05-20) · Implementation diverged — shipped a basic/full split (Batch 174+), not the ~20-family table · Resolves `TILE-ARCH-SHADER-STRATEGY` (Tier 4 #13 in the parity audit)
+
+---
+
+## What actually shipped (reconciliation — read this first)
+
+The decision below proposed a **~20-variant table keyed on `{material family} × alphaMode × doubleSided`** with per-family `ShaderDefine` bits and a tileset-manifest pre-warm. The implementation that landed (Batches 162/174+) **diverged from that table** in two ways:
+
+1. **Binary basic/full split, not a per-family table.** Rather than one variant per BRDF model, the shipped split is a single `ShaderDefine` bit — `MODEL_HAS_KHR_TEXTURES (1<<9)` — selected per-primitive by `computeMaterialDefines()` in `WebGPUModelRenderer.js` (the `FLAG_HAS_KHR_MASK` OR at `WebGPUModelRenderer.js:178-212`):
+   - **basic** (`materialDefines = 0`) — no KHR-extension textures; the WGSL strips bindings 12–25, dropping the sampled-texture count under the WebGPU spec floor (`maxSampledTexturesPerShaderStage = 16`) so models render on mobile/compatibility devices.
+   - **full** (`MODEL_HAS_KHR_TEXTURES` set) — all 14 KHR texture/sampler slots declared; pairs with the full 37-binding `materialBGL`.
+   The intra-family flags (`hasBaseColorTexture`, etc.) and the alphaMode/doubleSided axes stay runtime flags / GPU-state cache keys, as the decision anticipated — but the *family* axis collapsed to a single basic/full bit.
+2. **The KHR BRDFs are no longer "silently dropped."** `ModelPBRComplete.wgsl` wires clearcoat, sheen, anisotropy, iridescence, transmission, volume, and KHR_materials_specular (search `FLAG_HAS_*` in that file; 14 sites). They are all gated inside the single `MODEL_HAS_KHR_TEXTURES` "full" variant rather than each getting its own family entry.
+
+The per-family table + per-extension `ShaderDefine` bits remain a **documented future split** (`computeMaterialDefines` JSDoc at `WebGPUModelRenderer.js:187-212` explicitly notes the architecture supports a granular per-KHR-extension `materialDefines` without further refactoring). The pre-warm hook on `Cesium3DTileset._initialize` (below) is **not yet wired**.
+
+The original decision narrative below is preserved as the rationale-of-record; treat the ~20-family table, the "3-bit/6-variant family key", and the "silently dropped KHR" framing as superseded by this section.
 
 ---
 
@@ -16,15 +32,17 @@ This resolves the design question that has gated KHR BRDFs, Phase 7 quality item
 
 | Strategy | Compile cost | Runtime cost | Extension support | Verdict |
 |---|---|---|---|---|
-| Monolithic (current) — one 2,943-line shader, all features as uniform flags | ~0 (compile once) | High — every fragment branches on material feature flags, branch divergence kills cache coherence across thousands of tiles, over-fetch from always-bound default textures | Each new KHR BRDF inflates the shader linearly. Design doc flags "wall at 4-5 BRDFs"; clearcoat + sheen + anisotropy + transmission = 4. Fifth (iridescence or volume) forces this decision anyway. | **Hits wall imminently.** Reject. |
+| Monolithic (current) — one 3,102-line shader, all features as uniform flags | ~0 (compile once) | High — every fragment branches on material feature flags, branch divergence kills cache coherence across thousands of tiles, over-fetch from always-bound default textures | Each new KHR BRDF inflates the shader linearly. Design doc flags "wall at 4-5 BRDFs"; clearcoat + sheen + anisotropy + transmission = 4. Fifth (iridescence or volume) forces this decision anyway. | **Hits wall imminently.** Reject. |
 | Fine-grained (WebGL-style) — every define-set produces a distinct compiled program (potentially thousands of variants) | High — every new material feature combination triggers a fresh compile on first hit, causing tile-stream stutter | Lowest possible | Free — each extension is its own permutation | **Bad for streaming.** Per-tile stutter is exactly what GPU-resident tiling is trying to eliminate. Reject. |
 | **Coarse-grained — ~20 pipelines keyed on `{material family} × alphaMode × doubleSided`, pre-warmed during tileset load** | Low (~20 pipelines × 5-50ms = 250-1000 ms one-time at tileset load, amortized into the asynchronous manifest parse before first tile arrives) | Low — fewer runtime branches than monolithic; only intra-family flags branched | Adding a new KHR BRDF = one new material family + one new variant set, not a referendum on the whole shader | **Accept.** |
 
-The deciding piece of evidence is on KHR support: **clearcoat, sheen, anisotropy, iridescence, transmission, volume are all silently dropped on WebGPU today.** That's a real bug, not a future enhancement. Monolithic was designed for one BRDF; adding 6 to it costs 6× the same internal-cost-doubling. Fine-grained adds them for free but pays per-tile stutter (which is the exact thing we're trying to eliminate). Coarse-grained pays a fixed up-front cost we can amortize.
+The deciding piece of evidence (as of Batch 80) was on KHR support: at the time of this decision, **clearcoat, sheen, anisotropy, iridescence, transmission, volume were all unimplemented on WebGPU.** That was a real bug, not a future enhancement. Monolithic was designed for one BRDF; adding 6 to it costs 6× the same internal-cost-doubling. Fine-grained adds them for free but pays per-tile stutter (which is the exact thing we're trying to eliminate). Coarse-grained pays a fixed up-front cost we can amortize.
+
+> **Status update (Batch 174+):** the KHR BRDFs are no longer dropped. `ModelPBRComplete.wgsl` now wires `FLAG_HAS_CLEARCOAT / _SPECULAR_EXT / _ANISOTROPY / _IRIDESCENCE / _SHEEN / _TRANSMISSION` (KHR_texture_transform also landed; see `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` C-R4). The shipped variant strategy diverged from the ~20-family table described below — see "What actually shipped".
 
 ## Capacity check — does this fit the existing infrastructure?
 
-- **Pipeline-key bits:** the WGSL preprocessor uses a Uint32 `ShaderDefine` bitmask. 15 of 24 bits are currently allocated. **9 bits remain.** Coarse variants need ~3-4 bits for material family + ~1 bit for skinning/morph-targets + we already have alphaMode/doubleSided in the GPU-state cache key. **Fits without expanding to 64-bit.**
+- **Pipeline-key bits:** the WGSL preprocessor uses a Uint32 `ShaderDefine` bitmask (the cache key reserves 24 bits for active defines). **16 bits (0–15) are now allocated** — through `LOG_DEPTH (1<<15)` — leaving **8 bits remaining.** Coarse variants need ~3-4 bits for material family + ~1 bit for skinning/morph-targets + we already have alphaMode/doubleSided in the GPU-state cache key. **Fits without expanding to 64-bit.** (The shipped impl used a single `MODEL_HAS_KHR_TEXTURES (1<<9)` bit — a binary basic/full split — rather than per-family bits; see "What actually shipped".)
 - **Compile latency:** 5-50 ms per variant per device. 20 variants × 50 ms = **1 s worst case stutter** if not pre-warmed. With pre-warm (walk the tileset manifest, kick off compiles before the first tile streams in), this lands BEFORE the first frame that needs the pipeline. Tileset manifest parse + IndexedDB cache lookup typically takes 200-500 ms, comfortably masking the compile cost.
 - **Pipeline cache infrastructure:** `WebGPUShaderModuleCache` (per-device, keyed by `(sourceId & 0xff) | ((defines & 0xffffff) << 8)`) already exists and handles the dedupe. Adding coarse-variant keys is a one-line addition to `ShaderDefine`.
 
@@ -84,5 +102,5 @@ Decision unblocks:
 
 - `migration_doc/PHASE_8_GPU_RESIDENT_TILES_DESIGN.md` § 2 — the original recommendation that this doc formalizes
 - `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts` — the bitmask registry
-- `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` — current monolithic shader (2,943 lines)
+- `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` — the model PBR shader (3,102 lines; now split into basic/full variants via `MODEL_HAS_KHR_TEXTURES` — see "What actually shipped" below)
 - `migration_doc/WEBGPU_DEBUGGING_LOG.md` Batch 80 — implementation kickoff

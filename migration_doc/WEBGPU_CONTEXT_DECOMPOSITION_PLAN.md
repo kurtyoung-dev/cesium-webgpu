@@ -5,24 +5,52 @@
 
 ## Status
 
-- `WebGPUContext.ts`: 4427 → 4354 lines after Batch 127 (extracted `_initializeContextLimits`).
-- `WebGPUSceneRenderer.ts`: 3626 lines, untouched.
+> **Updated 2026-05-30 (HEAD `88b111e49c`, Batch 185).** The earlier
+> header counts were *inverted* — they read as if both files had shrunk
+> after Batch 127. In reality **both files GREW**: the six extractions
+> (Batches 129–133 + 143/144, ~600 LOC moved out) were outpaced by new
+> feature work landing in-place. Verified with `wc -l` at HEAD.
+
+- `WebGPUContext.ts`: 4354 (post-Batch-127) → **5178 lines** at HEAD — *grew* despite extracting the WebGL stub, device-invalidation bus, resource-cache registry, feature-flag plumbing, enum wrappers, and frame statistics.
+- `WebGPUSceneRenderer.ts`: 3626 → **4016 lines** at HEAD — *grew* despite extracting the pick pass plus 10 other `WebGPUSceneRenderer*.ts` slice files and `WebGPUPostProcessPipeline.ts`.
 
 Both files are still well above the 1000-line threshold called out in
-`CLAUDE.md`. Decomposition is multi-session work; this document tracks
-remaining candidates so future passes pick up where Batch 127 left off.
+`CLAUDE.md`, and the gap to that goal moved **further away**, not closer —
+feature growth is outrunning decomposition. The mechanical, low-risk
+candidates enumerated below are now all DONE; the genuinely-unfinished
+residual is the SceneRenderer core (still 4016 LOC even after 10 slice
+files plus `WebGPUPostProcessPipeline.ts` were peeled off), which needs a
+different strategy than the "extract a self-contained helper" pattern that
+closed candidates #1–#6.
 
 ## Already extracted
 
-| Module | LOC moved | Pattern |
-|---|---|---|
-| `WebGPUContextLimitsInit.ts` | 47 | Pure function. Takes a `GPUDevice`, writes the global `ContextLimits`. Idempotent so device-loss recovery can re-invoke. |
+All six WebGPUContext helper modules below now exist on disk (verified at
+HEAD). LOC is the *current* size of the extracted file, not the original
+moved-line count.
 
-## High-value candidates in `WebGPUContext.ts`
+| Module | Batch | LOC | Pattern |
+|---|---|---|---|
+| `WebGPUContextLimitsInit.ts` | 127 | 104 | Pure function. Takes a `GPUDevice`, writes the global `ContextLimits`. Idempotent so device-loss recovery can re-invoke. |
+| `WebGPUContextWebGLStubInit.ts` | 129 | 353 | The ~230-line WebGL-stub state literal (candidate #1) plus the now-removed `webglToWebGPU*` enum wrappers (candidate #5) — the stub points straight at the module-level functions in `WebGLStateConverters.ts`. |
+| `WebGPUDeviceInvalidationBus.ts` | 130 | 87 | Subscriber registry (`onDeviceInvalidated` / `_fireDeviceInvalidated`) — candidate #2. Context owns one instance and delegates. |
+| `WebGPUResourceCacheRegistry.ts` | 131 | 100 | Owns the cleanable-cache list; `_clearAllCaches()` (candidate #3) walks it in registration order, then fires the invalidation bus. |
+| `WebGPUFeatureFlags.ts` | 132 | 142 | `_buildFeatureList` / `_updateFeatureFlags` / `hasFeature` plumbing (candidate #4). Context constructs one and `hasFeature` delegates. |
+| `WebGPUFrameStatistics.ts` | 143/144 | 83 | `getStatistics` / `resetStatistics` / `recordDrawCall` + the draw/triangle/frame counters (candidate #6). |
+
+## High-value candidates in `WebGPUContext.ts` — ALL DONE
+
+> **All six candidates below shipped (Batches 129–132 + 143/144).** They
+> are preserved here as the rationale-of-record for the shipped
+> extractions; line-number citations are pre-extraction and are no longer
+> live anchors. See the "Already extracted" table for the resulting files.
 
 Listed roughly in order of cleanliness × impact (highest first).
 
-### 1. `_initializeWebGLStub()` (~230 LOC, lines 1817-2044)
+### 1. `_initializeWebGLStub()` — DONE (Batch 129 → `WebGPUContextWebGLStubInit.ts`)
+
+*Original: ~230 LOC, lines 1817-2044.*
+
 
 A 230-line method that's ~95% a state-proxy literal handed to
 `createWebGLCompatibilityStub(state)`. Already uses an explicit
@@ -41,7 +69,9 @@ in the new file.
 **Recommendation:** option (a) for consistency. The fields are already
 read/written from across the renderer module via the stub itself.
 
-### 2. Device-invalidation subscriber registry (~35 LOC, lines 4362-4393)
+### 2. Device-invalidation subscriber registry — DONE (Batch 130 → `WebGPUDeviceInvalidationBus.ts`)
+
+*Original: ~35 LOC, lines 4362-4393.*
 
 `_deviceInvalidatedListeners: Set<() => void>`, `onDeviceInvalidated`,
 `_fireDeviceInvalidated`. Pure subscriber pattern with no Context-specific
@@ -58,7 +88,9 @@ export class DeviceInvalidationBus {
 Context owns one instance, delegates `onDeviceInvalidated` and
 `_fireDeviceInvalidated`. Net Context savings: ~30 LOC.
 
-### 3. `_clearAllCaches()` (~40 LOC, lines 4321-4360)
+### 3. `_clearAllCaches()` — DONE (Batch 131 → `WebGPUResourceCacheRegistry.ts`)
+
+*Original: ~40 LOC, lines 4321-4360.*
 
 Self-contained: walks the various caches and pools on the context,
 clears them, then fires the invalidation bus. The "what to clear" list
@@ -72,7 +104,9 @@ cache). Context registers its caches with the registry; clearAll fires
 the registry. Less mechanical than #1 / #2 but pays off when more
 caches arrive.
 
-### 4. WebGPU feature flag plumbing (~80 LOC)
+### 4. WebGPU feature flag plumbing — DONE (Batch 132 → `WebGPUFeatureFlags.ts`)
+
+*Original: ~80 LOC.*
 
 `_buildFeatureList()` (line 1661) + `_updateFeatureFlags()` (line 1683)
 + `hasFeature()` (line 1745) + the `_enabledFeatures: Set<string>`
@@ -91,7 +125,12 @@ export class WebGPUFeatureFlags {
 Context constructs one in `_initialize` and exposes `hasFeature` as a
 delegator.
 
-### 5. WebGL→WebGPU enum conversions (~18 LOC, lines 3249-3261)
+### 5. WebGL→WebGPU enum conversions — DONE (Batch 129, removed with the stub)
+
+*Original: ~18 LOC, lines 3249-3261.* As predicted below, moving the
+stub-state builder out (#1) let these wrappers disappear entirely — the
+stub now binds the module-level `WebGLStateConverters.ts` functions
+directly.
 
 Three thin wrappers (`_webglToWebGPUBlendFactor`, `_webglToWebGPUBlendOp`,
 `_webglToWebGPUCompareFunction`) that already delegate to module-level
@@ -100,7 +139,9 @@ function shape. If we move the stub-state builder out (#1), these can
 disappear too — just bind the module-level functions directly into the
 state proxy.
 
-### 6. Statistics block (~30 LOC, lines 4219-4258)
+### 6. Statistics block — DONE (Batches 143/144 → `WebGPUFrameStatistics.ts`)
+
+*Original: ~30 LOC, lines 4219-4258.*
 
 `getStatistics`, `resetStatistics`, `recordDrawCall`, plus the
 `_drawCallCount` / `_triangleCount` / `_frameCount` fields. Trivial
@@ -110,17 +151,30 @@ candidate for a `WebGPUFrameStatistics.ts` helper class.
 
 Lower priority than Context decomposition because the SceneRenderer is
 younger code with cleaner internal sections, but several blocks meet
-the 1000-line threshold themselves:
+the 1000-line threshold themselves. **Two of the three original candidates
+have shipped**; ten `WebGPUSceneRenderer*.ts` slice files now exist
+(`3DTilePasses`, `EnsureResources`, `EnvironmentalEffects`, `FrameReset`,
+`FrustumLoop`, `GlobePass`, `PassRedirect`, `PickPass`, `PostFrustumChain`,
+`TranslucentPass`) plus `WebGPUPostProcessPipeline.ts` — yet the core is
+**still 4016 LOC**. The pass family is the genuinely-unfinished residual.
 
-- **Pass orchestration** — the `_executeXxxPass` family (globe, model,
-  primitive, classification, edges, transparency). Each could move to
-  its own pass-specific file with a stable interface back to the
-  renderer (encoder, frustum index, clear/load policy).
-- **Post-process plumbing** — the SceneRenderer holds the post-process
-  pipeline lifecycle + scene framebuffer + canvas blit + HDR-toggle
-  guard. Extract to `WebGPUSceneRendererPostProcess.ts`.
-- **Pick path** — pick framebuffer, pick command issuance, pick result
-  decode. Self-contained block roughly 400 LOC.
+- **Pass orchestration — PARTIALLY DONE / RESIDUAL.** Globe, translucent,
+  3D-tile, post-frustum, and pass-redirect slices have moved to their own
+  `WebGPUSceneRenderer*.ts` files, but the core `_executeXxxPass`
+  orchestration (model, primitive, classification, edges) still lives in
+  the 4016-LOC core. This is where the remaining decomposition work is —
+  and it resists the clean "extract a self-contained helper" pattern that
+  closed Context candidates #1–#6, because each pass reaches back into
+  renderer state (encoder, frustum index, clear/load policy). **This is
+  the genuinely-unfinished residual** and the reason the core grew rather
+  than shrank.
+- **Post-process plumbing — DONE.** Extracted to
+  `WebGPUPostProcessPipeline.ts` (1477 LOC: pipeline lifecycle + scene
+  framebuffer + canvas blit + HDR-toggle guard).
+- **Pick path — DONE (Batch 133 → `WebGPUSceneRendererPickPass.ts`, 310 LOC).**
+  Pick framebuffer, pick command issuance, and pick result decode are
+  split out (companion helpers `WebGPUPickFramebuffer.ts` /
+  `WebGPUPickCommandHelpers.ts`).
 
 ## Non-candidates (leave alone)
 
