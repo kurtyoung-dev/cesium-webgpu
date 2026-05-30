@@ -311,11 +311,23 @@ function resolveMaterialState(primitive) {
  * @private
  */
 function packExtents(data, primitive, frameState) {
-  // Walk the wrapping chain: GroundPrimitive → ClassificationPrimitive
-  // → Primitive (mirrors the comment at the _webgpuGeometryData lookup
-  // site below). Lookup may fail during the first few frames before
-  // ClassificationPrimitive.update has run.
-  const inner = primitive?._primitive?._primitive;
+  // Walk the wrapping chain to the inner Cesium `Primitive` that carries the
+  // batch table. The renderer is invoked with VARIABLE wrapper depth:
+  //   GroundPrimitive → ._primitive (ClassificationPrimitive) → ._primitive
+  //   (Primitive),  OR directly with a ClassificationPrimitive / Primitive.
+  // The old hard-coded `primitive._primitive._primitive` assumed exactly the
+  // 2-level GroundPrimitive chain, so the per-frame ClassificationPrimitive
+  // call (1 level) walked one hop too deep → null → `return false` →
+  // packUniforms wrote `materialMeta.x = 0`. That zero landed LAST in the
+  // shared uniform buffer, flipping dsColorFS to the flat-color fast path and
+  // rendering every textured material as solid `i.col`. Walk until we find the
+  // object that actually owns `_batchTable` (mirrors the `_webgpuGeometryData`
+  // chain walk at the command-build site below). Bug pinned via the [GPDIAG]
+  // packUniforms trace, Batch 184 — WEBGPU_DEBUGGING_LOG.
+  let inner = primitive;
+  for (let depth = 0; depth < 4 && inner && !inner._batchTable; depth++) {
+    inner = inner._primitive;
+  }
   if (!inner || !inner._instanceIds || inner._instanceIds.length === 0) {
     return false;
   }

@@ -9698,3 +9698,68 @@ the same struct; fixing it was necessary but not sufficient.
    regardless of slice — but the master switch cannot flip ON until every
    producer writes log `frag_depth` and every consumer reverses it
    (see `WEBGPU_EXECUTION_ROADMAP.md`).
+
+---
+
+### Batch 184 — ACTUAL ROOT CAUSE of flat textured-material classification (SUPERSEDES the constant-ec / windowToEye / frustum-distribution analysis above)
+
+The textured GroundPrimitive materials (Stripe / Checkerboard / Grid) rendered
+as a solid flat color. After the Dawn-512 reorder and an extended windowToEye /
+eye-space-reconstruction investigation, the **real** cause turned out to be far
+simpler — and the reconstruction analysis was chasing a ghost.
+
+**Real cause (pinned via a JS `[GPDIAG]` trace in `packUniforms`):** the renderer
+is invoked **twice per frame with two different wrapper objects** — once with the
+outer `GroundPrimitive` and once with its inner `ClassificationPrimitive`
+(`groundPrimitive._primitive`). `packExtents` hard-coded the inner-Primitive
+lookup as `primitive._primitive._primitive` (exactly the 2-level GroundPrimitive
+chain). For the **1-level ClassificationPrimitive call** that walked one hop too
+deep → `null` → `return false` → `packUniforms` wrote `materialMeta.x = 0`. That
+zero landed **last** in the shared uniform buffer, so the shader read
+`materialType == 0` and took the **flat-color fast path** (`return i.col`),
+painting every textured material solid `i.col`.
+
+```
+[GPDIAG] matType=1 haveExtents=true  data56=1  innerChain=true    (GroundPrimitive call)
+[GPDIAG] matType=1 haveExtents=false data56=0  innerChain=false   (ClassificationPrimitive call — writes 0 LAST)
+```
+
+**Fix:** `packExtents` now walks the wrapper chain (`while !inner._batchTable`)
+to the inner `Primitive` regardless of entry depth — mirroring the
+`_webgpuGeometryData` chain walk already used at the command-build site. Both
+calls now resolve the batch table → both write `materialMeta.x = matType`.
+
+**The Dawn-512 reorder WAS load-bearing (keep it).** Once the material path
+actually runs, `surfaceUV` reads `extentMode.z` (= `1/northExtent`, the NORTH UV
+scale). `.z` is a `.zw` lane, so if `extentMode` sat past byte 512 the Dawn
+uniform-vec4 `.zw` aliasing would zero it → `t`-scale 0 → flat horizontal
+stripes. Reorder (extentMode < 512) + the packExtents fix **together** produce
+correct output.
+
+**What was a MISDIAGNOSIS:** the "constant `ec`", "degenerate / stale `invProj`",
+"`i.pos` is ~16x downscaled", "screenUV wrong", and "frustum-distribution / per-
+slice reconstruction" analyses. Those diagnostics were all placed in `dsColorFS`
+**after** the `materialType == 0` fast path, which was being taken every frame —
+so they **never executed**. The "flat red" pixels I was reading were simply
+`i.col` (the appearance base color), not diagnostic output. The breakthrough was
+moving a saturated diagnostic **above** the fast path (DIAG9 unconditional white
+rendered → dsColorFS runs) and a `materialMeta.x` readback (DIAG10 green → the
+shader reads 0), then the `[GPDIAG]` JS trace.
+
+**Lesson:** when shader-side pixel diagnostics produce a color indistinguishable
+from a plausible real output, prove they EXECUTE first (output a color the real
+path cannot produce, placed before any early `return`). A diagnostic after an
+always-taken early-return is dead code that silently reads as "nothing changed".
+
+**Verified (probe-classifier-textured-materials, port 8134, Edge):** Stripe
+varR 0.01→1.74 (clean red/blue stripes, parity with WebGL), Checkerboard
+varR→1.43, Grid renders cells+lines, Color unaffected, 0 device errors. PNGs
+read directly.
+
+**Remaining (genuine, now that the path runs):** Checkerboard degrades to solid
+toward the far corner — a real eye-space reconstruction-precision artifact (the
+standard-depth `windowToEye` catastrophic cancellation near `storedDepth ≈
+0.9999997`). Stripe (1-D) hides it; Checkerboard (2-D) exposes it. This is the
+legitimate next follow-up and is what the log-depth path (precise eye distance
+from log-encoded depth) is designed to resolve. Tracked as
+`NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION`.
