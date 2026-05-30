@@ -9654,3 +9654,47 @@ The U-struct reorder was implemented (struct + `packUniforms` + `packExtents` of
   - Confirm the material path (not the flat-color `matType==0` fast path) is the one producing the on-screen pixels in the SETTLE probe (the variance has been byte-identical across every windowToEye/invProj change — suspicious; verify `u.materialMeta.x` reads `1` post-reorder).
 
 **Net for this marathon:** the Dawn 512-byte uniform-vec4 bug was found, verified (mapAsync + boundary probe), documented, and fixed (U-struct reorder) — a real, permanent correctness fix that unblocks ALL the >512 material fields. The log-depth producer/consumer chain (Links 1–4a) is real, correct, and inert behind the master switch. Two further defects are isolated (stale invProj cache — fixed; constant-`ec` reconstruction — open). The textured-material classifier (`NEW-GROUNDPRIM-TEXTURED-MATERIALS`) remains WIP with the constant-`ec` reconstruction as the live blocker.
+
+---
+
+### Batch 184 — VERIFIED root cause of the flat textured-material classifier (post-commit, switch OFF)
+
+The prior Batch 184 entry listed the constant-`ec` reconstruction as an
+*unexplained* open blocker. It is now empirically pinned down (probes:
+`probe-classifier-frustum-count.mjs` + a projection-matrix readback):
+
+- At the textured-probe view (350 km nadir), the scene splits into **2 frustum
+  slices**: slice 0 = [1 m, 130 467 m], slice 1 = [130 467 m, 85 124 552 m].
+  The classified surface sits at eye-distance ~350 km → it lives in **slice 1
+  (the far slice)**.
+- `uniformState.projection` at FR pack time is the **full camera frustum**
+  (proj[10] = −1.0000000, proj[14] = −0.2 ⇒ near = 0.1, far → ∞), NOT either
+  slice's tight band. `windowToEye` reconstructs with this single full-frustum
+  `u.invProj`.
+- Reconstructing a 350 km surface from a depth buffer encoded near = 0.1 /
+  far → ∞ is precision-dead (NDC z ≈ 0.9999997, below float32 resolution at
+  that magnitude) AND projection-mismatched against the slice whose depth is
+  actually in `globeDepthTex`. The recovered `ec` lands far enough off that
+  `surfaceUV` saturates `s`/`t` to a constant → flat material, and is
+  **insensitive to any `windowToEye` math edit** (the "byte-identical variance
+  ~19/61" symptom).
+
+This confirms the Batch 173 hypothesis in `dsColorFS` (wrong-frustum
+reconstruction), with the correction that here the surface is in the FAR slice,
+not a near slice. The Dawn-512 reorder (this batch) was a real, separate bug on
+the same struct; fixing it was necessary but not sufficient.
+
+**Two real fix paths (both architectural, switch-state-dependent):**
+
+1. **Per-slice reconstruction (switch OFF, WebGL-parity, delivers now).** Deliver
+   the per-slice projection + [near,far] to the classifier replay (the
+   `FrustumState` group-2 infra exists but its resolver is not invoked — static
+   slot 0 binds instead), have `windowToEye` reconstruct with the slice's
+   `invProj`, and add a per-slice discard to the STANDARD path (the log path
+   already has `sliceEyeDist` discard) so only the slice containing the surface
+   contributes. Tracked: `NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION`.
+2. **Log-depth epic (switch ON).** Completing Slices 2b + 3 lets `windowToEye`
+   decode true eye-distance from the log-encoded depth (full-frustum, precise)
+   regardless of slice — but the master switch cannot flip ON until every
+   producer writes log `frag_depth` and every consumer reverses it
+   (see `WEBGPU_EXECUTION_ROADMAP.md`).
