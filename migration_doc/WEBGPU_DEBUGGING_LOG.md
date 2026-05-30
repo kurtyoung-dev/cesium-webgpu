@@ -9535,3 +9535,122 @@ WebGL vs WebGPU on `Apps/SampleData/vector/sample-us-states.tileset.json`: 593 d
 ### Probes
 
 - `probe-bufferpolygon-vector-tile.mjs` (new) — WebGL vs WebGPU `sample-us-states` load + canvas diff + feature/geometry/error metrics.
+
+---
+
+## Batch 184 — Renderer-wide log depth, end-to-end: textured-material GroundPrimitive classification (continues Bug 174.1; log-depth epic Slices 3–4)
+
+**Status: chain of 3 root causes FOUND + FIXED; 1 final link (UV reconstruction) still open at time of writing. `_logDepthWriteEnabled` master switch still defaults FALSE — all edits are inert until the epic's final flip. Verified exclusively via ground-truth pixel probes (Principle 8).**
+
+### Context — why this exists
+
+Bug 174.1 ("textured materials STILL flat: the globe-depth-precision floor") established that a single ~`[near,far]` hyperbolic depth frustum spanning the planet gives ~73 km per 24-bit quantum at a 350 km surface — far coarser than a classified polygon, so the depth-sample classifier reconstructs a banded/flat planar UV. The fix is **renderer-wide logarithmic depth** (Approach A = WebGL parity): every depth-writing pass writes `log2(eyeDist) * factor`, every consumer reverses it. Slices 0/1/2a (Batches 181/182/183) landed the inert infrastructure + the globe producer. This batch drove the consumer + the depth-test integration to actually light up the path — and surfaced that "make the globe write log depth" is necessary but **far** from sufficient.
+
+### The debugging chain (each link was a distinct, separately-verified root cause)
+
+**Link 1 — classifier decoded log depth with the WRONG frustum (~1e12 m reconstruction).**
+WebGL re-renders the globe *per frustum*, so it encodes log depth with each slice's `czm_currentFrustum` and decodes with the same. The WebGPU fork **replays** the globe DrawCommand once (built at scene-update with `uniformState.currentFrustum === camera.frustum`), so the *entire* globe depth texture is log-encoded against ONE near/far: the full camera frustum. The classifier was decoding with a *per-slice* `near/far` (`u.frustum`, packed at an unreliable time) → wrong log base → reconstructed ~1e12 m → planar UV clamps flat.
+*Fix:* capture the full encode frustum (`camera.frustum`) once pre-loop into `context._logDepthEncodeNearFar` (before the per-slice `updateFrustum` mutates `camera.frustum`); deliver it to the classifier via the existing per-slice `fstate` UBO as `encodeFrustum`; `windowToEye` decodes eye distance with `fstate.encodeFrustum`, re-encodes per-slice `windowZ`, unprojects with the per-slice `fstate.invProj`, and applies WebGL's `eye.w = 1/depthFromCamera` **precision override** (ported from `czm_screenToEyeCoordinates`'s `LOG_DEPTH` path) — essential because the per-slice projection's `windowZ` near 1.0 is precision-crushed.
+*Architecture note:* the deep-dive design recommended making the globe encode *per-slice* (true WebGL parity). That was rejected here because WebGPU's `maxBindGroups` is 4 and **the globe already uses all four** (0 camera+tile, 1 day textures, 2 water mask, 3 effects) — there is no free group for a per-slice log-depth UBO, and group 0 is per-tile. Full-frustum-consistent encode/decode is the architecturally-appropriate fit for the *replay* model and gives adequate precision (~0.42 m/quantum at 350 km).
+
+**Link 2 — FALSE TRAIL (recorded so we don't repeat it): "the globe writes standard depth."**
+An early ground-truth probe was misread (continuous values crushed by the mandatory post-process tonemap+gamma) and concluded the globe wasn't writing log depth. A globe-side **saturated decision-color** diagnostic (bucket the *written* `frag_depth` into green/orange/blue) proved the opposite: the globe writes ~0.55 (correct log) — the producer (Slice 2a) works. *Lesson: never read continuous diagnostic values through the post-process pipeline; bucket into saturated primaries.*
+
+**Link 3 — THE KILLER: the shadow volume wasn't writing log depth → the entire classifier was depth-culled.**
+With the globe now writing log z (~0.55), the depth-sample classifier's shadow-volume `colorVS` still wrote **standard** hyperbolic z (~1.0 at the surface). The pipeline depth-tests `depthCompare: "less-equal"` against the globe depth buffer (the comment calls it "early rejection of fragments beyond the volume's far face", with `cullMode: "none"`). `1.0 <= 0.55` is false → **both** volume faces fail → nothing rasterizes → the classifier vanishes entirely (the globe green showed straight through where the polygon should be). This is the central renderer-wide-log-depth lesson: **anything that depth-tests against the log-depth globe must itself write log depth**, exactly as WebGL applies `czm_writeLogDepth` to ALL geometry including shadow volumes.
+*Fix:* `colorVS` writes **per-vertex log z** into clip space (`o.pos.z = clamp(csm_writeLogDepth(csm_vertexLogDepth(o.pos, encNear), factor), 0, 1) * o.pos.w`). Coarse per-vertex log z (vs the globe's per-fragment `frag_depth`) is well within the terrain-height margin the front-face-pass / back-face-reject test needs, so **no FS `frag_depth` output struct change is needed** — only the VS. After this, the classifier rasterizes again and samples the correct log 0.55 (verified: polygon went from globe-green to the YELLOW "sampled-log" diagnostic bucket). NO regression / 0 device errors with the flag off (WebGPU OFF variance stays 61).
+
+**Link 4 — OPEN: the encode frustum isn't reaching the classifier shader → reconstruction still wrong → flat.** With Links 1–3 fixed, the classifier rasterizes and samples log 0.55, but `windowToEye` reconstructs a garbage eye position (magnitude >1e9, UV clamps flat). Localized via probes to: **the decode uses the wrong far** — `fstate.frustum.w` (the encode far) reads the per-slice far (~5e5), not the globe's encode far (~1e10). The investigation surfaced TWO distinct blockers:
+
+  1. **GraphicsContext object-identity (SOLVED in design, not yet landing):** the classifier reads `frameState.context`, which is a **different object** than the renderer's `config.context` that the frustum loop publishes `_currentFrustumInvProj` / `_currentFrustumNearFar` / `_currentFrustumIndex` / `_logDepthEncodeNearFar` to. So the per-slice resolver (`resolveFrustumStateBindGroup`) has been **returning null every frame** (its `context._currentFrustum*` reads null) and falling through to the stale static slot-0 bind group — Batch 173's per-slice projection never actually bound. The ONE provably-shared object is `uniformState` (the loop's per-slice `currentFrustum` DOES reach the classifier through `frameState.context.uniformState`; JS check: `s.context.uniformState === s._frameState.context.uniformState` is `true`, and `uniformState._logDepthEncodeNearFar` reads `[0.1, 1e10]`). Fix in progress: stash the encode frustum + slice index on `uniformState`; rewrite the resolver to read `frameState.context.uniformState` for invProj/near-far/encode/index. The JS-side value is now confirmed correct on the object the classifier reads.
+
+  2. **SYSTEMIC group-2 uniform `.zw`→`.xy` aliasing (THE ROOT — partially worked around):** an exhaustive sentinel sweep proved the real bug. Hardcoding `writeFrustumState` to write `frustum = (11, 22, 33, 44)` and reading back in the shader: `frustum.x` reads `11` (correct) but **`frustum.z` reads `11` = `frustum.x`'s value** — i.e. the group-2 uniform `vec4` reads as `(x, y, x, y)`; `.zw` mirror `.xy`. This reproduced with the struct field FIRST (bytes 0-15) and SECOND (bytes 64-79), so it is NOT a byte-offset cap — it is specific to how the **group-2 (`fstate`, late-bound via the bind-group resolver) `vec4` uniform** is read. Critically, the globe's **group-0** `camera.logDepth.z` (a `vec4`) reads correctly, so `.zw` aliasing is **not** universal — only group 2. **Workaround that helped:** splitting the encode `vec4` into two `vec2` fields (`perSlice: vec2`, `encode: vec2`) — `vec2` has no `.zw` so the scalar encode now reads correctly. **But the `mat4x4 invProj` is 4 `vec4` columns** — if each column's `.zw` mirrors `.xy`, rows 2–3 alias rows 0–1 → **degenerate `invProj`**. Probe confirms: after the encode is delivered correctly, `windowToEye` still returns a **constant `ec`** across the whole polygon (`fract(ec.x)` uniform, `length(ec)≈4000`) → flat UV. The `invProj` corruption (and/or `perSlice` being the full frustum so `windowZ≈1.0` degenerates) is the live blocker.
+
+  3. **Encode DELIVERY solved (Link-4a):** the encode now reaches the classifier — `WebGPUGlobeSurfaceCameraUB` stashes `uniformState._logDepthEncodeNearFar = [ldNear, ldFar]` at scene-update (full frustum, before the classifier's command-build), and the classifier's static fallback reads it. Probe shows `fstate.encode.y` ≈ the globe's `currentFrustum.y` (~5e8, ORANGE bucket) — and since the globe ENCODES with that same value, encode==decode now match (math: globe `0.637` with `[0.1, 5e8]` → classifier decodes → 350000 m, correct). The resolver (`bindGroupResolvers[2]`) is **NOT invoked** for the color draw (sentinel proved the static slot 0 is what binds) — so per-slice `invProj`/`perSlice` never bind; only the static fallback's single command-build snapshot does.
+
+**Next-session entry points for Link 4:**
+  - **Root-cause the group-2 `.zw`→`.xy` aliasing.** Compare the group-2 bind-group/buffer/BGL setup against a working group-0 `vec4`. Suspects: `WebGPUBuffer.createUniformBuffer` size/usage for the `frustumStateUBOs`, the `makeBindGroupLayout`/`uniformBuffer(0, Stage.VERTEX_FRAGMENT)` (no `minBindingSize`), or the late-bind path. Consider reading actual GPU bytes via `mapAsync` on a COPY of the bound buffer to confirm the buffer content vs the shader read.
+  - **Why is `bindGroupResolvers[2]` not invoked** for the `dsColorFS` color draw (it IS set on `sharedDrawArgs`)? Trace `WebGPUDrawCommand.execute` for the color command specifically.
+  - If the aliasing can't be root-caused quickly, declare `invProj` as a struct of **four `vec2` pairs** (or split rows) to dodge the `.zw` lanes, mirroring the `vec2` encode workaround.
+
+*Current tree state:* all conceptual fixes landed + inert (master switch `_logDepthWriteEnabled` defaults FALSE); WebGPU OFF unchanged (0 device errors); WebGPU ON flat (solid-red, full coverage) pending Link-4 `invProj`/reconstruction. `fstate` struct is now `perSlice: vec2, encode: vec2, invProj: mat4x4`. Globe stashes encode on `uniformState`. All temp diagnostics + sentinels removed; PNGs read (solid red, no stripes — confirmed flat).
+
+### Methodology that worked (worth reusing)
+
+- **Ground-truth pixel diagnostics over reasoning.** Every reasoning-only hypothesis in this chain (including a confident, internally-consistent deep-dive synthesis) was eventually overturned by a pixel probe. The decisive tool was a shader that emits **saturated decision colors** (pure primaries that survive tonemap+gamma) encoding a discrete decision, read back via a full-viewport sample grid.
+- **Disjoint color palettes when two subsystems co-render.** The globe and classifier both paint the polygon region; overloading green for both made the polygon ambiguous. Globe = green/orange/blue, classifier = yellow/magenta/cyan/white made "is the classifier even drawing?" answerable in one frame.
+- **Move the diagnostic to the top of the FS** (before any discard/branch) to separate "does it rasterize?" from "what does the math produce?".
+
+### Files modified (uncommitted at time of writing)
+
+- `Renderer/WebGPU/WebGPUSceneRendererFrustumLoop.ts` — capture `camera.frustum` → `context._logDepthEncodeNearFar` pre-loop (the globe's whole-texture encode frustum).
+- `Renderer/WebGPU/WebGPUContext.ts` — `_logDepthEncodeNearFar` field.
+- `Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js` — `FrustumState.encodeFrustum` (UBO 96 B); `writeFrustumState`/static-fallback/resolver thread it; `windowToEye` full-frustum decode + per-slice unproject + `eye.w` override; per-slice discard via `encodeFrustum`; `colorVS` per-vertex log z; `fstate` BGL `Stage.VERTEX_FRAGMENT`; imports `csm_vertexLogDepth` + `csm_writeLogDepth`.
+
+### Probes (new, untracked)
+
+- `Tools/visual-regression/probe-classifier-logdepth-settle.mjs` — settle-to-`tilesLoaded && ground.ready` WebGL / OFF / ON variance + PNGs (the reliable measurement harness; user's insight to wait for tiles rather than force determinism).
+- `Tools/visual-regression/probe-logdepth-diag.mjs` — full-viewport sample grid reading globe-area + polygon diagnostic colors (the workhorse for Links 2–4).
+
+---
+
+## Batch 184 — FINAL ROOT CAUSE (supersedes the Link-4 "group-2 aliasing" hypothesis above)
+
+**The flat textured-material GroundPrimitive classification is a Dawn/Tint codegen bug, NOT a log-depth bug. It has existed since Batch 171 grew the classifier's group-0 `U` uniform struct past 512 bytes, independent of log depth.**
+
+### The bug (verified two independent ways)
+
+**Dawn/Tint reads uniform-buffer `vec4` `.zw` components located at/after byte 512 as `.xy`** — the high 8 bytes of such a vec4 mirror its low 8 bytes (the vec4 reads as `(x, y, x, y)`). Confirmed:
+
+1. **`mapAsync` GPU readback** of the `U` buffer's `frustum` region (bytes 624-639) returns `[11, 22, 33, 44]` — the **buffer content is correct**. But the shader reads `u.frustum.z == 11` (= `.x`). So the **shader LOAD is wrong, not the buffer/write/binding**.
+2. **Boundary probe:** `u.swCornerEC.z` @byte 488 (**< 512**) reads its sentinel correctly; `u.frustum.z` @byte 632 (**> 512**) aliases `.x`. `u.frustum.x` @byte 624 (the low half, > 512) still reads correctly — so it is the `.zw` (high 8 bytes) of vec4s starting ≥ 512 that mirror `.xy`.
+
+Copying the vec4 to a local first (`let v = u.frustum; v.z`) does **not** help — the vec4 LOAD itself produces `(x,y,x,y)`. The globe's WebGPU shaders are unaffected because their largest uniform struct (`CameraUniforms`) is 368 bytes — entirely < 512.
+
+### Why this is the flat textured material
+
+The classifier `U` struct (640 bytes) places the textured-material UV fields **past byte 512**: `northwardEC` @512, `extentMode` @528 (the `1/eastExtent` / `1/northExtent` UV scales are in `.zw`!), `sphericalSW` @544, `invView` @560 (mat4 — its columns' `.zw` = rows 2-3), `frustum` @624. Their `.zw` lanes are corrupted → the planar/spherical UV reconstruction is degenerate → uniform "solid red" polygon. Fields **< 512** (`mvpRTE`, `color`, `viewport`, `invProj` @352, `swCornerEC` @480) read correctly — which is why flat-color classification, the depth sample, and the volume all work.
+
+This also explains why the whole log-depth chain (Links 1–4a, all real fixes) couldn't surface stripes: even with the globe writing log depth, the volume passing, the encode delivered, and the decode correct (350000 m verified), the **`extentMode` UV-scale lanes were corrupted** by this independent bug.
+
+### THE REAL FIX (next session — mechanical, ~19 offset edits)
+
+Reorder the classifier `U` struct so **every field the shader READS lands below byte 512**. The three big fields that are safe to push past 512 are the **unused `prevViewProjection`** (mat4, "layout-only invariant") and the **morph-only `mvRTE` + `proj`** (mat4×2, read solely by `morphColorVS` during the transient 2D↔3D MORPH). Move those three (192 bytes) to the struct tail; the material/extent/`invView`/`frustum` fields shift down to < 512.
+
+New float-offset map (subtract 48 from the old offset of every field currently @84-159; the three moved matrices go to tail @112/@128/@144):
+`morphFlags 84→36, invProj 88→40, materialMeta 104→56, materialColor 108→60, materialParam0 112→64, materialParam1 116→68, swCornerEC 120→72, eastwardEC 124→76, northwardEC 128→80, extentMode 132→84, sphericalSW 136→88, invView 140→92, frustum 156→108; prevViewProjection 36→112, mvRTE 52→128, proj 68→144.`
+After the move: `mvRTE` @byte 512 and `proj` @byte 576 are > 512, so the **morph-during-transition** textured path keeps the bug (acceptable: WIP + transient); everything else is correct. Update the WGSL `U` struct field order, `packUniforms` (the matrix packs + `data[]` writes + the `for i=120..155` zeroing loop → `72..107`), and `packExtents` (`data[120..155]` → `72..107`). Then verify stripes via `probe-classifier-logdepth-settle.mjs` and READ the PNGs.
+
+**Alternative (morph-safe, more work):** move `prevViewProjection`/`mvRTE`/`proj` into a NEW group-3 uniform buffer (the classifier only uses groups 0-2; group 3 is free), each < 512 in its own buffer.
+
+### Methodology notes (this batch)
+
+- **`mapAsync` GPU readback is the definitive arbiter** of "buffer content vs shader read." All the "vec4 aliasing" theorizing only resolved once the buffer bytes were read directly.
+- **Sentinel-write distinct values per field** (`11,22,33,44`) and bucket the shader read — this is what localized the exact 512-byte boundary.
+- The whole log-depth investigation (Links 1–4a) was real and correct work, but it was chasing a symptom downstream of an unrelated, pre-existing uniform-layout bug. **When a "fix" delivers verified-correct intermediate values yet the output stays wrong, suspect a layer you haven't instrumented** — here, the GPU uniform read itself.
+
+### UPDATE — reorder APPLIED + a SECOND blocker found (degenerate invProj)
+
+The U-struct reorder was implemented (struct + `packUniforms` + `packExtents` offsets; mvRTE/proj/prevViewProjection moved to the tail > 512). Verified clean: 0 device errors, flat-color path unaffected. **But the textured material still renders solid (flat) — because the flat material is a CHAIN of defects, not one.** A fresh `ec`-variation probe (after the reorder, with `windowToEye` reading the now-reliable group-0 `u.invProj`) shows:
+
+- `ec` (reconstructed eye position) is **CONSTANT** across the polygon, AND
+- `u.invProj[0].x ≈ 0` → **the inverse-projection matrix delivered to the classifier is DEGENERATE (~zero).**
+
+`u.invProj` = `Matrix4.pack(uniformState.inverseProjection, …)` and `fstate.invProj` = the same `uniformState.inverseProjection` (static fallback) — BOTH degenerate, so `windowToEye` returns a constant `ec` → constant UV → flat, regardless of the encode/decode being correct. This is **pre-existing** (the reorder only moved the offset; the value was always ~zero) and **independent** of the Dawn 512 bug and of log depth.
+
+**So `NEW-GROUNDPRIM-TEXTURED-MATERIALS` is a WIP feature with a CHAIN of distinct defects, now all isolated:**
+1. ✅ Dawn 512-byte uniform-vec4 `.zw` bug → corrupts `extentMode`/`invView`/`frustum` (FIXED: U-struct reorder).
+2. ✅ Globe log-depth producer + volume per-vertex log z + encode delivery via the shared `uniformState` (Links 1–4a — done, inert behind the master switch).
+3. ⛔ **NEXT BLOCKER: `uniformState.inverseProjection` is ~zero at the classifier's command-build / FR-update time** → degenerate `invProj` → constant `ec` → flat UV. Next step: instrument WHERE/WHEN the classifier reads `inverseProjection` (is the projection set on `uniformState` when the GroundPrimitive FR packs its UB, or does it run before `updateFrustum`/`setProjection`?), and deliver a valid inverse projection (e.g., capture it on the shared `uniformState` like the encode stash, or pack it at a point where the projection is live).
+4. (Likely also) frustum-distribution — the classifier command has no bounding volume so View.js bins it to the far slice (tracked as `NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION`); the per-slice discard mitigates but the per-slice projection still needs to bind.
+
+**Current tree:** all fixes inert (master switch `_logDepthWriteEnabled` defaults FALSE); WebGPU OFF unchanged; 0 device errors. The reorder is a permanent correctness fix (keep it). `windowToEye` now reads group-0 `u.invProj`/`u.frustum` (cleaner than the fstate static fallback, and correct once invProj is non-degenerate).
+
+### UPDATE 2 — invProj now computed from live projection (stale-cache fix), but `ec` STILL constant
+
+`uniformState.inverseProjection` reads ~0 in the shader at the classifier's FR pack time though its JS post-render value is valid `[0.577, 0.433, 0, 10]` — a stale lazy-cache. Fix applied: `packUniforms` now computes `Matrix4.inverse(uniformState.projection, …)` (projection IS live at pack time — the volume's `mvpRTE` uses it) instead of reading the stale `inverseProjection`. This is a correct defensive fix (keep it). **However `ec` (the reconstructed eye position) is STILL constant across the polygon**, so the flat textured UV persists. With a valid `invProj` and a varying `ndc` (the depth-sample `screenUV` from the same `u.viewport.zw` works), `windowToEye` should produce a varying `ec` — it does not. The remaining constancy is unexplained after extensive probing; candidates for the next session:
+  - Instrument `ndc`, `windowZ`, and `q` separately inside `windowToEye` (sentinel each) — is `ndc` actually varying in the FS, or is `i.pos.xy` / `u.viewport.zw` off?
+  - The infinite-far projection makes `windowZ ≈ 0.9999997` (surface ~at the far plane); verify the WebGPU [0,1]-clip `eye.w` override reconstruction is numerically valid there (it works in WebGL with [-1,1] NDC — the [0,1] port may need the viewport-z remap `czm_screenToEyeCoordinates` does).
+  - Confirm the material path (not the flat-color `matType==0` fast path) is the one producing the on-screen pixels in the SETTLE probe (the variance has been byte-identical across every windowToEye/invProj change — suspicious; verify `u.materialMeta.x` reads `1` post-reorder).
+
+**Net for this marathon:** the Dawn 512-byte uniform-vec4 bug was found, verified (mapAsync + boundary probe), documented, and fixed (U-struct reorder) — a real, permanent correctness fix that unblocks ALL the >512 material fields. The log-depth producer/consumer chain (Links 1–4a) is real, correct, and inert behind the master switch. Two further defects are isolated (stale invProj cache — fixed; constant-`ec` reconstruction — open). The textured-material classifier (`NEW-GROUNDPRIM-TEXTURED-MATERIALS`) remains WIP with the constant-`ec` reconstruction as the live blocker.

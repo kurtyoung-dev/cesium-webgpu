@@ -159,6 +159,43 @@ export function executeFrustumLoop(
   const initialHeight2D =
     scene.mode === 2 /* SceneMode.SCENE2D */ ? scene2DCamera.position.z : 0;
 
+  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — capture the REAL camera frustum
+  // (near, far) the globe log-encodes the entire depth texture against, BEFORE
+  // the per-slice loop runs. CRITICAL: read `scene.camera` (the persistent
+  // camera, far ~1e10), NOT `scene._frameState.camera` — the multi-frustum
+  // machinery SLICES the frameState camera's frustum to per-band near/far
+  // (~5e5), which is NOT what the replayed globe command encoded with. The globe
+  // packs `uniformState.currentFrustum` (= scene.camera.frustum) at scene-update
+  // and replays unchanged, so scene.camera.frustum here equals its encode
+  // frustum exactly. Depth-sample classifiers read this via fstate.encodeFrustum
+  // to decode eye distance, then unproject with the per-slice projection.
+  {
+    const camFrust = scene.camera?.frustum as
+      | { near?: number; far?: number }
+      | undefined;
+    if (
+      camFrust &&
+      typeof camFrust.near === "number" &&
+      typeof camFrust.far === "number"
+    ) {
+      // Stash on uniformState — the ONE object provably shared between the
+      // renderer's config.context and the classifier's frameState.context (the
+      // GraphicsContext abstraction makes those two context objects DIFFERENT,
+      // so context fields don't cross; but the per-slice currentFrustum set here
+      // via this uniformState IS read by the classifier, proving uniformState is
+      // the shared singleton). The classifier reads
+      // frameState.context.uniformState._logDepthEncodeNearFar.
+      const usEnc = uniformState as unknown as {
+        _logDepthEncodeNearFar: Float32Array | null;
+      };
+      if (!usEnc._logDepthEncodeNearFar) {
+        usEnc._logDepthEncodeNearFar = new Float32Array(2);
+      }
+      usEnc._logDepthEncodeNearFar[0] = camFrust.near;
+      usEnc._logDepthEncodeNearFar[1] = camFrust.far;
+    }
+  }
+
   // --- Multi-frustum loop: iterate from FAR to NEAR ---
   // This matches the WebGL path in Scene.js which goes (numFrustums - 1 - i)
   for (let i = 0; i < numFrustums; i++) {
@@ -258,6 +295,14 @@ export function executeFrustumLoop(
       ctxFrustum._currentFrustumNearFar[1] = far;
       ctxFrustum._currentFrustumIndex = i;
     }
+    // Also publish the slice index on the SHARED uniformState so depth-sample
+    // classifiers (which read frameState.context.uniformState, NOT the renderer's
+    // config.context — different objects under the GraphicsContext abstraction)
+    // can pick the correct per-slice fstate buffer. uniformState.inverseProjection
+    // / .currentFrustum already carry this slice's values (just updated above).
+    (
+      uniformState as unknown as { _currentSliceIndex: number }
+    )._currentSliceIndex = i;
 
     // Clear depth/stencil per frustum (but not color — color accumulates across frustums).
     //

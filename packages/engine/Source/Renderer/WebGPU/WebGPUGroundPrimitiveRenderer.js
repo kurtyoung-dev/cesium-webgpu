@@ -41,6 +41,9 @@ import Matrix4 from "../../Core/Matrix4.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
+import csm_reverseLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_reverseLogDepth.js";
+import csm_vertexLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_vertexLogDepth.js";
+import csm_writeLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_writeLogDepth.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 // Slice 5c-B Phase 1 (Batch 111) — scene-FB target helper. Used only
@@ -60,8 +63,9 @@ import {
   destroyPickIds,
   ensurePickId,
 } from "./WebGPUPickCommandHelpers.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
 // GroundPrimitive is typically few-per-scene, but we just touched this
@@ -107,6 +111,7 @@ const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
 const scratchProjection = new Matrix4();
+const scratchInvProj = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
 
 // NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — eye-space scratches
@@ -330,13 +335,14 @@ function packExtents(data, primitive, frameState) {
     return false;
   }
 
-  // Slot layout (recap):
-  //   swCornerEC   = 120..123 (planar only; 0 in spherical)
-  //   eastwardEC   = 124..127 (planar only)
-  //   northwardEC  = 128..131 (planar only)
-  //   extentMode   = 132..135 (.x = mode, .yz = inv extents, .w = lonRot)
-  //   sphericalSW  = 136..139 (.xy = (south, west); 0 in planar)
-  //   invView      = 140..155 (spherical only; identity in planar)
+  // Slot layout (recap; floats — kept < byte 512 per the U-struct Dawn-bug
+  // invariant, see packUniforms / WEBGPU_DEBUGGING_LOG Batch 184):
+  //   swCornerEC   = 72..75  (planar only; 0 in spherical)
+  //   eastwardEC   = 76..79  (planar only)
+  //   northwardEC  = 80..83  (planar only)
+  //   extentMode   = 84..87  (.x = mode, .yz = inv extents, .w = lonRot)
+  //   sphericalSW  = 88..91  (.xy = (south, west); 0 in planar)
+  //   invView      = 92..107 (spherical only; zeroed in planar)
 
   // Planar path: 4 attributes (southWest_HIGH/LOW + eastward + northward).
   const swHIdx = indices.southWest_HIGH;
@@ -399,29 +405,30 @@ function packExtents(data, primitive, frameState) {
     Cartesian3.divideByScalar(scratchEastEC, eastExtent, scratchEastEC);
     Cartesian3.divideByScalar(scratchNorthEC, northExtent, scratchNorthEC);
 
-    data[120] = scratchSWEC.x;
-    data[121] = scratchSWEC.y;
-    data[122] = scratchSWEC.z;
-    data[123] = 0.0;
-    data[124] = scratchEastEC.x;
-    data[125] = scratchEastEC.y;
-    data[126] = scratchEastEC.z;
-    data[127] = 0.0;
-    data[128] = scratchNorthEC.x;
-    data[129] = scratchNorthEC.y;
-    data[130] = scratchNorthEC.z;
-    data[131] = 0.0;
-    // extentMode.x = 0 (planar), .y/z = inv extents.
-    data[132] = 0.0;
-    data[133] = 1.0 / eastExtent;
-    data[134] = 1.0 / northExtent;
-    data[135] = 0.0;
+    data[72] = scratchSWEC.x; // swCornerEC @72
+    data[73] = scratchSWEC.y;
+    data[74] = scratchSWEC.z;
+    data[75] = 0.0;
+    data[76] = scratchEastEC.x; // eastwardEC @76
+    data[77] = scratchEastEC.y;
+    data[78] = scratchEastEC.z;
+    data[79] = 0.0;
+    data[80] = scratchNorthEC.x; // northwardEC @80
+    data[81] = scratchNorthEC.y;
+    data[82] = scratchNorthEC.z;
+    data[83] = 0.0;
+    // extentMode @84: .x = 0 (planar), .y/z = inv extents.
+    data[84] = 0.0;
+    data[85] = 1.0 / eastExtent;
+    data[86] = 1.0 / northExtent;
+    data[87] = 0.0;
     // Spherical slots zeroed.
-    data[136] = 0.0;
-    data[137] = 0.0;
-    data[138] = 0.0;
-    data[139] = 0.0;
-    for (let i = 140; i <= 155; i++) {
+    data[88] = 0.0; // sphericalSW @88
+    data[89] = 0.0;
+    data[90] = 0.0;
+    data[91] = 0.0;
+    for (let i = 92; i <= 107; i++) {
+      // invView @92 zeroed (identity not needed; planar path ignores it)
       data[i] = 0.0;
     }
     return true;
@@ -457,24 +464,24 @@ function packExtents(data, primitive, frameState) {
   }
 
   // Planar slots zeroed (FS skips them when extentMode.x == 1).
-  for (let i = 120; i <= 131; i++) {
+  for (let i = 72; i <= 83; i++) {
     data[i] = 0.0;
   }
-  // extentMode.x = 1 (spherical), .y = 1/latRange, .z = 1/lonRange,
+  // extentMode @84: .x = 1 (spherical), .y = 1/latRange, .z = 1/lonRange,
   // .w = longitudeRotation.
-  data[132] = 1.0;
-  data[133] = latInv;
-  data[134] = lonInv;
-  data[135] = longitudeRotation;
-  // sphericalSW.xy = (south, west).
-  data[136] = south;
-  data[137] = west;
-  data[138] = 0.0;
-  data[139] = 0.0;
-  // invView (16 floats, slots 140..155) — uniformState exposes
-  // `inverseView` for the active SceneMode. Used by the FS to recover
+  data[84] = 1.0;
+  data[85] = latInv;
+  data[86] = lonInv;
+  data[87] = longitudeRotation;
+  // sphericalSW.xy = (south, west) @88.
+  data[88] = south;
+  data[89] = west;
+  data[90] = 0.0;
+  data[91] = 0.0;
+  // invView (16 floats, slots 92..107, byte 368-431 < 512) — uniformState
+  // exposes `inverseView` for the active SceneMode. Used by the FS to recover
   // worldCoord from eye coords for the (lat, lon) computation.
-  Matrix4.pack(frameState.context.uniformState.inverseView, data, 140);
+  Matrix4.pack(frameState.context.uniformState.inverseView, data, 92);
   return true;
 }
 
@@ -497,6 +504,7 @@ function buildGroundPipelineResources(
   format,
   depthFormat,
   sampleCount,
+  logDepthActive,
 ) {
   // UBO layout (256 bytes total — `UNIFORM_BUFFER_SIZE`):
   //   floats   0-15 : mvpRTE                         (mat4x4<f32>)
@@ -517,83 +525,55 @@ function buildGroundPipelineResources(
   // a cost of one missed classification frame at startup.
   const code = `
 ${csm_depthClamp}
+${logDepthActive ? csm_reverseLogDepth : ""}
+${logDepthActive ? csm_vertexLogDepth : ""}
+${logDepthActive ? csm_writeLogDepth : ""}
 struct U {
-  mvpRTE: mat4x4<f32>,
-  camH: vec3<f32>, _p0: f32,
-  camL: vec3<f32>, _p1: f32,
-  color: vec4<f32>,
-  pickColor: vec4<f32>,
-  viewport: vec4<f32>,
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at
-  // floats 36..51. Layout-only invariant today; consumed by future
-  // motion-vector pass for ground classifiers.
-  prevViewProjection: mat4x4<f32>,
-  // Batch 164 — A.4 NEW-CLASSIFIER-2D-CV-MORPH morph fields. Populated
-  // unconditionally so the WGSL struct size matches the 384-byte UBO,
-  // but morphFlags.x (morphTime) is only read by the morph VS.
-  // The non-morph VS (colorVS) keeps using mvpRTE alone. mvRTE and
-  // proj are the morph-state matrices, separate because the morph
-  // blend happens in EC space and re-projects with proj after lerp.
-  mvRTE: mat4x4<f32>,
-  proj: mat4x4<f32>,
-  // .x = morphTime (1.0 = full SCENE3D, 0.0 = full SCENE2D / Columbus
-  //      View, fractional during MORPHING). Outside MORPHING the
-  //      morph VS isn't dispatched so this slot is don't-care.
-  // .yzw = reserved.
-  morphFlags: vec4<f32>,
-  // NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — material dispatch.
-  //
-  // invProj — inverse projection matrix (uniformState.inverseProjection).
-  // Used by the FS to recover eye-space from window XY + sampled depth
-  // (mirrors GroundPolyline's windowToEyeCoordinates).
-  invProj: mat4x4<f32>,
-  // materialMeta.x = materialType enum:
-  //   0 = Color (default; FS returns o.col from VS — fast path, no UV)
-  //   1 = Stripe (evenColor + oddColor + repeat + offset + orientation)
-  //   2 = Checkerboard (lightColor + darkColor + repeat)
-  //   3 = Grid (color + cellAlpha + lineCount + lineThickness)
-  //   4 = Image  (uniforms.image sampled at (s,t); reserved -- texture
-  //              upload plumbing is a follow-up Tier 4)
-  // materialMeta.y/z = reserved (Image-material repeat will land here).
-  materialMeta: vec4<f32>,
-  materialColor: vec4<f32>,
-  materialParam0: vec4<f32>,
-  materialParam1: vec4<f32>,
-  // Planar-extent fields (CPU-transformed to eye space). Valid when
-  // extentMode.x == 0 (primitive built with planar extents -- bounding
-  // rect smaller than MAX_WIDTH_FOR_PLANAR_EXTENTS, ~1 degree). Zero
-  // in spherical mode.
-  //   swCornerEC.xyz   = SW corner of the polygon in eye space.
-  //   eastwardEC.xyz   = unit east direction at SW in eye space.
-  //   northwardEC.xyz  = unit north direction at SW in eye space.
-  swCornerEC: vec4<f32>,
-  eastwardEC: vec4<f32>,
-  northwardEC: vec4<f32>,
-  // extentMode.x = 0 (planar) | 1 (spherical) -- selects the FS path.
-  // extentMode.y = 1/eastExtent  (planar) | 1/latRange (spherical)
-  // extentMode.z = 1/northExtent (planar) | 1/lonRange (spherical)
-  // extentMode.w = longitudeRotation (spherical, for IDL handling)
-  //                | pad (planar)
-  extentMode: vec4<f32>,
-  // Spherical-extent fields. Valid when extentMode.x == 1.
-  //   sphericalSW.xy = (south, west) -- (lat, lon) of SW corner in
-  //     radians. UV recovery in the FS:
-  //       worldPos    = invView * vec4(eyeCoord, 1.0)
-  //       (lat, lon)  = approximateSpherical(worldPos)
-  //       lon        += extentMode.w  (longitudeRotation; IDL shift)
-  //       u           = (lon - sphericalSW.y) * extentMode.z
-  //       v           = (lat - sphericalSW.x) * extentMode.y
-  //     Mirrors WebGL's ShadowVolumeAppearanceFS SPHERICAL branch
-  //     (ShadowVolumeAppearanceFS.glsl lines 54-65).
-  sphericalSW: vec4<f32>,
-  invView: mat4x4<f32>,
-  // frustum.xy = (near, far) of the CURRENT frustum slice. Used by
-  // windowToEye to reverse log-depth back to the camera-distance value
-  // clipW = exp2(logDepth * log2(1+far)) - 1. Cesium's WebGPU pipeline
-  // turns on useLogDepth by default and the globe-depth pass writes
-  // log-encoded depth -- treating it as linear NDC z gives an eye-z
-  // pinned at the far plane (uniform "red polygon" in the diagnostic).
-  frustum: vec4<f32>,
+  // CRITICAL LAYOUT INVARIANT (WEBGPU_DEBUGGING_LOG Batch 184 FINAL ROOT CAUSE):
+  // Dawn/Tint MIS-READS a uniform-buffer vec4's .zw components as .xy when the
+  // vec4 starts at/after BYTE 512. (Verified: the GPU buffer bytes are correct
+  // via mapAsync; the SHADER LOAD aliases.) Therefore EVERY field the shader
+  // actually reads MUST live below byte 512. The unused prevViewProjection and
+  // the morph-only mvRTE/proj (read solely by morphColorVS during the transient
+  // 2D-to-3D morph) are pushed to the tail (> 512) where the bug is benign.
+  // DO NOT insert read fields after frustum, and DO NOT grow the head past byte
+  // 512, without splitting into a 2nd uniform buffer. Float offsets are
+  // annotated; packUniforms / packExtents MUST match.
+  mvpRTE: mat4x4<f32>,        // @0   (byte 0)
+  camH: vec3<f32>, _p0: f32,  // @16
+  camL: vec3<f32>, _p1: f32,  // @20
+  color: vec4<f32>,           // @24
+  pickColor: vec4<f32>,       // @28
+  viewport: vec4<f32>,        // @32  — FS divides @builtin(position).xy by .zw
+  // morphFlags.x = morphTime (read by morph VS). .yzw reserved.
+  morphFlags: vec4<f32>,      // @36
+  // invProj — inverse projection (uniformState.inverseProjection); windowToEye.
+  invProj: mat4x4<f32>,       // @40  (byte 160)
+  // materialMeta.x = materialType (0 Color / 1 Stripe / 2 Checker / 3 Grid / 4 Image)
+  materialMeta: vec4<f32>,    // @56
+  materialColor: vec4<f32>,   // @60
+  materialParam0: vec4<f32>,  // @64
+  materialParam1: vec4<f32>,  // @68
+  // Planar-extent eye-space frame (valid when extentMode.x == 0).
+  swCornerEC: vec4<f32>,      // @72  (byte 288)
+  eastwardEC: vec4<f32>,      // @76
+  northwardEC: vec4<f32>,     // @80
+  // extentMode: .x mode, .y 1/eastExtent|1/latRange, .z 1/northExtent|1/lonRange,
+  // .w longitudeRotation. (.zw — the UV SCALES — were the corrupted lanes.)
+  extentMode: vec4<f32>,      // @84
+  // sphericalSW.xy = (south, west) of SW corner (radians), for the spherical path.
+  sphericalSW: vec4<f32>,     // @88
+  invView: mat4x4<f32>,       // @92  (byte 368) — spherical UV worldPos recovery
+  // frustum.xy = (near, far) of the current frustum slice.
+  frustum: vec4<f32>,         // @108 (byte 432, < 512 ✓ — last READ field)
+  // ── tail: > byte 512, EXPENDABLE to the Dawn .zw bug ──
+  // prevViewProjection — layout-only invariant today (NOT read by any FS/VS).
+  prevViewProjection: mat4x4<f32>, // @112 (byte 448)
+  // mvRTE / proj — morph-state matrices, read ONLY by morphColorVS during the
+  // transient MORPH. Their .zw columns alias here (byte >= 512) → textured
+  // classification DURING a 2D↔3D morph is imperfect (WIP edge case).
+  mvRTE: mat4x4<f32>,         // @128 (byte 512)
+  proj: mat4x4<f32>,          // @144 (byte 576)
 };
 @group(0) @binding(0) var<uniform> u: U;
 
@@ -619,8 +599,9 @@ struct U {
 // reads this group (short-circuits when materialType == 0), so flat-color
 // classification is unaffected.
 struct FrustumState {
+  perSlice: vec2<f32>,  // (near, far) of THIS draw's frustum band
+  encode: vec2<f32>,    // (near, far) the globe LOG-encoded the depth texture with
   invProj: mat4x4<f32>,
-  frustum: vec4<f32>,   // .xy = (near, far)
 };
 @group(2) @binding(0) var<uniform> fstate: FrustumState;
 
@@ -649,6 +630,24 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
   // volumes bracket terrain min/max; without depth clamp the upper /
   // lower extremes get frustum-clipped at oblique viewing angles.
   o.pos = csm_depthClamp(u.mvpRTE * vec4f(rte, 1.0));
+${
+  logDepthActive
+    ? // Renderer-wide log depth: the shadow volume must depth-test against the
+      // LOG-depth globe with the SAME encoding (fstate.encodeFrustum = the full
+      // camera frustum the globe encoded with). Otherwise the volume's standard
+      // hyperbolic z (~1.0 at the surface) fails the `less-equal` test vs the
+      // globe's log z (~0.55) and the ENTIRE volume is culled — the classifier
+      // vanishes. Write per-vertex log z into clip space (coarse vs the globe's
+      // per-fragment frag_depth, but well within the terrain-height margin the
+      // front-face-pass / back-face-reject test needs). Mirrors WebGL, which
+      // applies czm_writeLogDepth to ALL geometry including shadow volumes.
+      "  let _ldNear = fstate.encode.x;\n" +
+      "  let _ldFar = fstate.encode.y;\n" +
+      "  let _ldFactor = 1.0 / log2((_ldFar - _ldNear) + 1.0);\n" +
+      "  let _logZ = csm_writeLogDepth(csm_vertexLogDepth(o.pos, _ldNear), _ldFactor);\n" +
+      "  o.pos.z = clamp(_logZ, 0.0, 1.0) * o.pos.w;\n"
+    : ""
+}
   o.col = u.color;
   return o;
 }
@@ -680,9 +679,44 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
 fn windowToEye(fragXY: vec2<f32>, storedDepth: f32) -> vec3<f32> {
   var ndc = (fragXY / u.viewport.zw) * 2.0 - 1.0;
   ndc.y = -ndc.y;
-  let clip = vec4<f32>(ndc, storedDepth, 1.0);
-  let eye = fstate.invProj * clip;
-  return eye.xyz / eye.w;
+${
+  logDepthActive
+    ? // The globe writes LOG depth (renderer-wide log-depth epic). Ports WebGL's
+      // czm_screenToEyeCoordinates LOG_DEPTH path (windowToEyeCoordinates.glsl)
+      // to WebGPU's replay architecture, where the globe DrawCommand is built once
+      // and replayed across every frustum slice — so the entire globe depth texture
+      // is log-encoded against ONE near/far: the full camera frustum captured at
+      // scene-update (fstate.encodeFrustum), NOT the per-slice band the surface is
+      // drawn in (fstate.frustum, e.g. [0.1,1e8] of a [0.1,1e10] camera).
+      //   (1) DECODE the precise eye distance with the ENCODING near/far
+      //       (fstate.encodeFrustum) — log encodes clipW = eye distance, which is
+      //       projection-independent. Decoding with the per-slice near/far (the
+      //       prior bug, via the unreliable group-0 u.frustum) used the wrong log
+      //       base and reconstructed ~1e12 m → flat UV.
+      //   (2) RE-ENCODE that distance to the PER-SLICE window depth and unproject
+      //       with the per-slice fstate.invProj, applying WebGL's
+      //       `eye.w = 1/depthFromCamera` precision override so the slice
+      //       projection's crushed-near-1.0 window depth never limits precision.
+      // DECODE the eye distance with the globe's ENCODE frustum (fstate.encode,
+      // the value the globe log-encoded the whole depth texture with, stashed on
+      // the shared uniformState). UNPROJECT with the per-primitive group-0
+      // u.invProj + u.frustum (the command-build slice; self-consistent, and
+      // reliable now that the U struct reorder put them below the Dawn 512-byte
+      // uniform-vec4 bug). The eye.w = 1/depthFromCamera override (WebGL
+      // windowToEyeCoordinates) makes the crushed-near-1.0 window depth not limit
+      // precision — the xy ray comes from u.invProj (fov/aspect identical across
+      // slices), the distance from the precise log decode.
+      "  let depthFromCamera = csm_reverseLogDepthToEyeDistance(storedDepth, fstate.encode.x, fstate.encode.y);\n" +
+      "  let sNear = u.frustum.x;\n" +
+      "  let sFar = u.frustum.y;\n" +
+      "  let windowZ = sFar * (1.0 - sNear / depthFromCamera) / (sFar - sNear);\n" +
+      "  var q = u.invProj * vec4<f32>(ndc, windowZ, 1.0);\n" +
+      "  q.w = 1.0 / depthFromCamera;\n" +
+      "  return q.xyz / q.w;"
+    : "  let clip = vec4<f32>(ndc, storedDepth, 1.0);\n" +
+      "  let eye = u.invProj * clip;\n" +
+      "  return eye.xyz / eye.w;"
+}
 }
 
 // UV recovery for the depth-sampled surface point. Dispatches on
@@ -867,6 +901,20 @@ fn applyMaterial(st: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
   // (tracked under NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION). The
   // flat-color Color path is unaffected (it short-circuits above and never
   // reads fstate / the depth → eye recovery).
+${
+  logDepthActive
+    ? // Multi-frustum: View.js bins this classifier command into EVERY slice its
+      // bounding volume spans, but only the slice whose [near,far] CONTAINS the
+      // surface holds the real (log-encoded) globe depth — the others hold the
+      // far/cleared depth. Decode the eye distance (full-frustum encoding in
+      // u.frustum) and discard when the surface lies outside THIS slice's
+      // [near,far] (fstate.frustum), so the far-slice draw doesn't alpha-blend a
+      // garbage (flat) reconstruction over the correct near-slice draw. Mirrors
+      // WebGL, where each frustum only classifies surfaces within its own band.
+      "  let sliceEyeDist = csm_reverseLogDepthToEyeDistance(surfaceDepth, fstate.encode.x, fstate.encode.y);\n" +
+      "  if (sliceEyeDist < fstate.perSlice.x || sliceEyeDist > fstate.perSlice.y) { discard; }"
+    : ""
+}
   let ec = windowToEye(i.pos.xy, surfaceDepth);
   let st = surfaceUV(ec);
   let outColor = applyMaterial(st, i.col);
@@ -1003,7 +1051,7 @@ struct VelocityCO {
   const mod = getGroundPrimitiveShaderCache(device).getOrCreate(
     ShaderSourceId.GROUND_PRIMITIVE,
     code,
-    0,
+    logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
     "GroundPrimitive",
   );
   const bgl = makeBindGroupLayout(device, "GroundPrimitive BGL", [
@@ -1023,16 +1071,17 @@ struct VelocityCO {
     ],
   );
   // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — group 2:
-  // per-slice frustum state (invProj + near/far). FRAGMENT-only (only the
-  // depth-sample FS reads it). Bound per-slice at draw time via the
-  // frustum-state bind-group resolver. Every GroundPrimitive pipeline
-  // (color / pick / stencil / morph / velocity) shares `depthSampleLayout`,
-  // so they all gain this third group; the pick / stencil / velocity FS
-  // don't read it but a bound-unused group is valid.
+  // per-slice frustum state (invProj + per-slice near/far). FRAGMENT-only — the
+  // depth-sample FS reads it for eye-space recovery. The globe's LOG-encode
+  // frustum (needed by both the VS log-z write and the FS decode) is delivered
+  // via group-0 `u.frustum` instead. Bound per-slice at draw time via the
+  // frustum-state bind-group resolver. Every GroundPrimitive pipeline (color /
+  // pick / stencil / morph / velocity) shares `depthSampleLayout`, so they all
+  // gain this third group.
   const frustumStateBgl = makeBindGroupLayout(
     device,
     "GroundPrimitive FrustumState BGL",
-    [uniformBuffer(0, Stage.FRAGMENT)],
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
   );
   const depthSampleLayout = device.createPipelineLayout({
     label: "GroundPrimitive DepthSample PipelineLayout",
@@ -1507,24 +1556,24 @@ function packUniforms(
   // to identity.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
-    Matrix4.pack(prevVP, data, 36);
+    Matrix4.pack(prevVP, data, 112); // tail (byte 448) — unused, dodges the Dawn >512 bug
   } else {
-    data[36] = 1;
-    data[37] = 0;
-    data[38] = 0;
-    data[39] = 0;
-    data[40] = 0;
-    data[41] = 1;
-    data[42] = 0;
-    data[43] = 0;
-    data[44] = 0;
-    data[45] = 0;
-    data[46] = 1;
-    data[47] = 0;
-    data[48] = 0;
-    data[49] = 0;
-    data[50] = 0;
-    data[51] = 1;
+    data[112] = 1;
+    data[113] = 0;
+    data[114] = 0;
+    data[115] = 0;
+    data[116] = 0;
+    data[117] = 1;
+    data[118] = 0;
+    data[119] = 0;
+    data[120] = 0;
+    data[121] = 0;
+    data[122] = 1;
+    data[123] = 0;
+    data[124] = 0;
+    data[125] = 0;
+    data[126] = 0;
+    data[127] = 1;
   }
 
   // Batch 164 — A.4 NEW-CLASSIFIER-2D-CV-MORPH morph fields.
@@ -1545,26 +1594,30 @@ function packUniforms(
   scratchMVRTE[12] = 0.0;
   scratchMVRTE[13] = 0.0;
   scratchMVRTE[14] = 0.0;
-  Matrix4.pack(scratchMVRTE, data, 52);
+  Matrix4.pack(scratchMVRTE, data, 128); // tail (byte 512) — morph-only
   Matrix4.clone(uniformState.projection, scratchProjection);
-  Matrix4.pack(scratchProjection, data, 68);
+  Matrix4.pack(scratchProjection, data, 144); // tail (byte 576) — morph-only
   // SceneMode 3D = 1.0, MORPHING = frameState.morphTime ∈ [0, 1]
   // (1.0 = full 3D, 0.0 = full 2D), SCENE2D / COLUMBUS_VIEW = 0.0.
   // `morphTime` is canonical on `frameState` (FrameState.js:98 init,
   // updated by `Scene.morphComplete*` listeners); `uniformState`
   // doesn't carry it directly. Non-morph scenes leave this stale,
   // which is fine — only `morphColorVS` reads it.
-  data[84] = frameState?.morphTime ?? 0.0;
-  data[85] = 0.0;
-  data[86] = 0.0;
-  data[87] = 0.0;
+  data[36] = frameState?.morphTime ?? 0.0; // morphFlags @36
+  data[37] = 0.0;
+  data[38] = 0.0;
+  data[39] = 0.0;
 
   // NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — material dispatch slots.
-  //
-  // invProj (floats 88..103) — inverse projection, mode-correct
-  // (uniformState.inverseProjection is rebuilt every frame from the active
-  // SceneMode's projection). Used by `windowToEye` in the FS.
-  Matrix4.pack(uniformState.inverseProjection, data, 88);
+  // invProj (floats 40..55) — inverse projection, used by windowToEye in the FS.
+  // COMPUTE it from uniformState.projection (which is live at FR pack time — the
+  // volume's mvpRTE uses it) rather than reading uniformState.inverseProjection,
+  // whose lazy cache is STALE/zero when the GroundPrimitive FR packs its UB at
+  // command-build (verified: the cached value reads ~0 in the shader while the
+  // JS-side post-render value is correct). Degenerate invProj → constant eye
+  // recovery → flat textured UV.
+  Matrix4.inverse(uniformState.projection, scratchInvProj);
+  Matrix4.pack(scratchInvProj, data, 40);
 
   // Resolve material state. The Color (type 0) path skips planar-extent
   // packing because dsColorFS short-circuits to `i.col` — no UV / no
@@ -1579,56 +1632,55 @@ function packUniforms(
       // No extents at all — fall back to Color so the primitive still
       // classifies (just as flat color). Logged once via the
       // resolveMaterialState's custom-material path.
-      data[104] = 0.0;
+      data[56] = 0.0;
     } else {
-      data[104] = matType;
+      data[56] = matType;
     }
   } else {
-    data[104] = 0.0;
+    data[56] = 0.0;
   }
-  data[105] = 0.0;
-  data[106] = 0.0;
-  data[107] = 0.0; // materialMeta.yzw
+  data[57] = 0.0;
+  data[58] = 0.0;
+  data[59] = 0.0; // materialMeta.yzw @56
 
-  // materialColor (floats 108..111).
+  // materialColor (floats 60..63).
   const mc = materialState?.color ?? [1.0, 1.0, 1.0, 1.0];
-  data[108] = mc[0];
-  data[109] = mc[1];
-  data[110] = mc[2];
-  data[111] = mc[3];
-  // materialParam0 (floats 112..115).
+  data[60] = mc[0];
+  data[61] = mc[1];
+  data[62] = mc[2];
+  data[63] = mc[3];
+  // materialParam0 (floats 64..67).
   const mp0 = materialState?.param0 ?? [0.0, 0.0, 0.0, 0.0];
-  data[112] = mp0[0];
-  data[113] = mp0[1];
-  data[114] = mp0[2];
-  data[115] = mp0[3];
-  // materialParam1 (floats 116..119).
+  data[64] = mp0[0]; // materialParam0 @64
+  data[65] = mp0[1];
+  data[66] = mp0[2];
+  data[67] = mp0[3];
+  // materialParam1 (floats 68..71).
   const mp1 = materialState?.param1 ?? [0.0, 0.0, 0.0, 0.0];
-  data[116] = mp1[0];
-  data[117] = mp1[1];
-  data[118] = mp1[2];
-  data[119] = mp1[3];
+  data[68] = mp1[0];
+  data[69] = mp1[1];
+  data[70] = mp1[2];
+  data[71] = mp1[3];
 
-  // Extents (floats 120..155) — packExtents wrote these if the material
-  // path is active. Zero them out otherwise so the FS dispatch reading
-  // them gets deterministic safe values (dsColorFS's fast path won't
-  // even touch them when matType==0).
+  // Extents (floats 72..107) — packExtents wrote these if the material path is
+  // active. Zero them out otherwise so the FS dispatch reading them gets
+  // deterministic safe values (dsColorFS's fast path won't touch them at
+  // matType==0). NOTE: floats 72..107 (bytes 288..431) are < 512 — see the
+  // U-struct layout invariant (Dawn >512 vec4 .zw aliasing bug).
   if (matType === 0 || !primitive) {
-    for (let i = 120; i <= 155; i++) {
+    for (let i = 72; i <= 107; i++) {
       data[i] = 0.0;
     }
   }
 
-  // frustum.xy = (near, far) of the CURRENT frustum slice. Pulled from
-  // uniformState.currentFrustum which Cesium updates per-frustum-band
-  // during multi-frustum rendering. Used by windowToEye to reverse log
-  // depth back to linear distance-from-camera. Pack unconditionally
-  // (cheap; the dsColorFS fast path skips reading it when matType=0).
+  // frustum.xy = (near, far) of the CURRENT frustum slice (per-slice band).
+  // The globe's LOG-encode frustum is delivered to the depth-sample shaders via
+  // group-2 fstate.frustum.zw (written every draw at draw-time), NOT here.
   const cf = uniformState.currentFrustum;
-  data[156] = cf?.x ?? 0.1; // near
-  data[157] = cf?.y ?? 1.0e8; // far
-  data[158] = 0.0;
-  data[159] = 0.0;
+  data[108] = cf?.x ?? 0.1; // frustum.x = near (@108, byte 432)
+  data[109] = cf?.y ?? 1.0e8; // far
+  data[110] = 0.0;
+  data[111] = 0.0;
 }
 
 /**
@@ -1713,9 +1765,15 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // WebGPUVector3DTilePrimitiveRenderer.js:796-801); GroundPrimitive
   // was the outlier.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  // Renderer-wide log depth: when the master switch flips, the classifier's
+  // windowToEye must (de)activate the reverse-log path, which changes the
+  // shader source — so a flip invalidates the cached pipeline resources just
+  // like a format change does. Inert while the flag is off (default).
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
   if (
     defined(cache._pipelineResources) &&
-    cache._pipelineFormatGeneration !== sceneGen
+    (cache._pipelineFormatGeneration !== sceneGen ||
+      cache._pipelineLogDepth !== logDepthActive)
   ) {
     cache._pipelineResources = undefined;
     cache.bgl = undefined;
@@ -1759,10 +1817,12 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       format,
       depthFmt,
       sampleCount,
+      logDepthActive,
     );
     cache.bgl = cache._pipelineResources.bgl;
     cache.pipelineRequestPending = false;
     cache._pipelineFormatGeneration = sceneGen;
+    cache._pipelineLogDepth = logDepthActive;
   }
 
   // Resolve stencil + color + pick through the central cache. On the
@@ -2198,7 +2258,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   if (!defined(cache.frustumStateUBOs)) {
     cache.frustumStateUBOs = [];
     cache.frustumStateBindGroups = [];
-    cache.frustumStateData = new Float32Array(20); // mat4(16) + vec4(4)
+    cache.frustumStateData = new Float32Array(20); // mat4(16) + frustum vec4(4)
   }
   const ensureFrustumStateSlot = (idx) => {
     let ubo = cache.frustumStateUBOs[idx];
@@ -2217,46 +2277,80 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     }
     return idx;
   };
-  const writeFrustumState = (idx, invProj, near, far) => {
+  const writeFrustumState = (idx, invProj, near, far, encNear, encFar) => {
     const data = cache.frustumStateData;
+    data[0] = near; // perSlice.x
+    data[1] = far; // perSlice.y
+    data[2] = encNear; // encode.x
+    data[3] = encFar; // encode.y
     for (let c = 0; c < 16; c++) {
-      data[c] = invProj[c];
+      data[4 + c] = invProj[c];
     }
-    data[16] = near;
-    data[17] = far;
-    data[18] = 0.0;
-    data[19] = 0.0;
     device.queue.writeBuffer(
       cache.frustumStateUBOs[idx].buffer,
       0,
       data.buffer,
       0,
-      80, // mat4 (64B) + vec4 (16B)
+      80, // mat4 (64B) + frustum vec4 (16B)
     );
   };
   // Static fallback (slice 0) seeded from the once-per-frame uniformState
   // — used only if the per-slice publish is absent (resolver returns
   // null). Matches the pre-Batch-173 behaviour, so non-multi-frustum and
   // first-frame paths still get a valid (if not slice-refined) projection.
+  // NOTE: fstate carries only the per-slice invProj + band; the globe's
+  // LOG-encode frustum is delivered separately via group-0 u.frustum.
+  // The globe's LOG-encode frustum is stashed on the SHARED uniformState by the
+  // frustum loop (context fields don't cross the GraphicsContext boundary, but
+  // uniformState is the same singleton). Packed into fstate.frustum.zw.
+  const encNF = frameState.context.uniformState._logDepthEncodeNearFar;
   ensureFrustumStateSlot(0);
   {
     const us = frameState.context.uniformState;
     const invProj0 = us.inverseProjection;
     const cf = us.currentFrustum;
     if (invProj0) {
-      writeFrustumState(0, invProj0, cf?.x ?? 0.1, cf?.y ?? 1.0e8);
+      const n = cf?.x ?? 0.1;
+      const f = cf?.y ?? 1.0e8;
+      writeFrustumState(
+        0,
+        invProj0,
+        n,
+        f,
+        encNF ? encNF[0] : n,
+        encNF ? encNF[1] : f,
+      );
     }
     cache.frustumStateBindGroup = cache.frustumStateBindGroups[0];
   }
   const resolveFrustumStateBindGroup = () => {
-    const invProj = context._currentFrustumInvProj;
-    const nearFar = context._currentFrustumNearFar;
-    if (!invProj || !nearFar) {
-      return null; // fall through to the static slice-0 bind group
+    // Read the SHARED uniformState (NOT context._currentFrustum* — those live on
+    // the renderer's config.context, a DIFFERENT object than this classifier's
+    // frameState.context under the GraphicsContext abstraction). uniformState
+    // carries this slice's projection + the loop-stashed encode frustum + slice
+    // index. NOTE (Link 4, unresolved): this resolver is currently NOT invoked
+    // for the color draw — the static slot 0 below is what binds — so the encode
+    // delivery is still incomplete. See WEBGPU_DEBUGGING_LOG Batch 184.
+    const us = frameState?.context?.uniformState;
+    if (!us) {
+      return null;
     }
-    const idx = context._currentFrustumIndex | 0;
+    const invProj = us.inverseProjection;
+    const cf = us.currentFrustum;
+    if (!invProj || !cf) {
+      return null;
+    }
+    const idx = us._currentSliceIndex | 0;
+    const enc = us._logDepthEncodeNearFar;
     ensureFrustumStateSlot(idx);
-    writeFrustumState(idx, invProj, nearFar[0], nearFar[1]);
+    writeFrustumState(
+      idx,
+      invProj,
+      cf.x,
+      cf.y,
+      enc ? enc[0] : cf.x,
+      enc ? enc[1] : cf.y,
+    );
     return cache.frustumStateBindGroups[idx];
   };
 

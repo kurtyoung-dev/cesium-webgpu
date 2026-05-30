@@ -457,6 +457,18 @@ export class WebGPUContext extends GraphicsContext {
   public _currentFrustumInvProj: Float32Array | null = null;
   public _currentFrustumNearFar: Float32Array | null = null;
   public _currentFrustumIndex: number = 0;
+  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — the FULL camera frustum
+  // `[near, far]` the globe used to LOG-encode the entire depth texture this
+  // frame. The globe DrawCommand is built once at scene-update (with
+  // `uniformState.currentFrustum === camera.frustum`) and REPLAYED unchanged
+  // across every slice, so there is exactly ONE log-encode near/far for the
+  // whole globe depth texture. Depth-sample classifiers MUST decode eye
+  // distance with THIS, then unproject with the per-slice `invProj`/`(near,
+  // far)` above — decoding with the per-slice band reconstructs garbage
+  // (~1e12 m) → flat textured-material UV. Captured pre-loop in
+  // `WebGPUSceneRendererFrustumLoop` before the per-slice `updateFrustum`
+  // mutates `camera.frustum`; consumed via the classifier `fstate` UBO.
+  public _logDepthEncodeNearFar: Float32Array | null = null;
   // Migration Session 2 — packed translucent depth view from
   // `WebGPUTranslucentTileClassification.executePackDepth`. Published
   // each frame after the pack-depth pipeline runs IF translucent depth

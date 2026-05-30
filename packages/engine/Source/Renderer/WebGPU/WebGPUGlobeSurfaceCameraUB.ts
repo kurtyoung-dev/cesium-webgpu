@@ -664,6 +664,25 @@ export function createCameraUniformBuffer(
   data[offset++] = ldFactor;
   data[offset++] = 0.0; // reserved
 
+  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this
+  // globe command log-encodes the whole depth texture against onto the SHARED
+  // uniformState (the one object that crosses the GraphicsContext boundary to
+  // the depth-sample classifier's frameState.context.uniformState). This runs
+  // at scene-update (full frustum, before the per-slice loop slices
+  // currentFrustum AND before the classifier's command-build), so depth-sample
+  // classifiers read the correct encode frustum to reverse the log depth. Only
+  // stash a valid frustum so an early-frame zero never poisons the decode.
+  if (ldFar > ldNear) {
+    const usStash = uniformState as unknown as {
+      _logDepthEncodeNearFar: Float32Array | null;
+    };
+    if (!usStash._logDepthEncodeNearFar) {
+      usStash._logDepthEncodeNearFar = new Float32Array(2);
+    }
+    usStash._logDepthEncodeNearFar[0] = ldNear;
+    usStash._logDepthEncodeNearFar[1] = ldFar;
+  }
+
   const bufferSize = Math.max(CAMERA_UNIFORM_BYTES, 256);
   return writeUniformSlice(
     device,
