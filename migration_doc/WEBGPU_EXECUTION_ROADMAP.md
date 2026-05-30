@@ -1,0 +1,225 @@
+Confirmed: `WebGPUGroundPolylineRenderer.js:532` has `windowToEyeCoordinates` with no `csm_reverseLogDepth` reversal (the gap that breaks polyline classification at the log-depth flip), and the master switch defaults `false` at `WebGPUContext.ts:399`. All adversarial verdicts are grounded in real code. I have everything needed to write the roadmap.
+
+```markdown
+# WebGPU Migration — Execution Roadmap
+
+_Generated 2026-05-29. Source of truth for outstanding work. Cross-reference `migration_doc/DEFERRED_WORK.md`, `FEATURE_INVENTORY.md`, `NEXT_SESSION_HANDOFF.md`. All file:line refs verified against HEAD where load-bearing._
+
+---
+
+## 1. Executive Summary & Critical Path
+
+The dominant work item is the **renderer-wide log-depth epic**, the spine through which most other deferred items are gated. Slices 0/1/2a are committed (`4063cc7fbc`, `f3849b7587`, `92fec34c16`); Slice 3a (the GroundPrimitive classifier reverse) is **built but uncommitted in the working tree**. Because every WebGPU producer writes into one shared scene-framebuffer depth attachment, the master switch (`WebGPUContext.ts:399` `_logDepthWriteEnabled = false`) **cannot flip ON** until *every* depth producer emits log-encoded `@builtin(frag_depth)` (Slice 2b) **and** *every* depth consumer reverses it (Slice 3). Flipping early causes global z-fighting and corrupts pick / SSAO / SSR / DoF / TAA / contact-shadows / volumetric-fog reconstruction. The honest first move is to **bank Slice 3a's textured-classifier payoff via a startup-flip probe** (zero production risk while the switch stays off) before committing 3–4 weeks to the rest of the epic.
+
+Critical path (the spine):
+
+```
+[Slice 3a commit + startup-flip payoff validation]   ← de-risks the whole approach (P1, ~0.5–1d)
+        │
+        ▼
+[Slice 2b: ALL remaining producers write gated frag_depth]   ← all-or-nothing (P1, 2–3 wks)
+   ├─ pick-pipeline depth coherence (Billboard pick depthWriteEnabled:true @613) ← CORRECTNESS PREREQ
+   └─ Mat* family (46 shaders) split to its own sub-batch (2c)
+        │
+        ▼
+[Slice 3: ALL remaining consumers reverse log]   ← pick + 7 post-process + GBuffer + GroundPolyline (P1, 4–6 d)
+   ├─ compute-pipeline preprocess() wiring (GBuffer createShaderModule @244/260, no preprocess) ← PREREQ
+   ├─ per-frame near/far uniform updates to 8 effect packers (AO hardcoded 0.1/10000)
+   └─ GroundPolyline windowToEyeCoordinates reverse (@532, currently MISSING)
+        │
+        ▼
+[Slice 4: flip _logDepthWriteEnabled default ON + full sweep + docs]   ← terminal (P2, ~0.5d after deps)
+        │
+        ▼  UNBLOCKS AFTER FLIP:
+   ├─ NEW-GROUNDPRIM-TEXTURED-MATERIALS (Stripe/Checker/Grid ship; Image is separate)
+   ├─ NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION (closes as RESOLVED via Approach A)
+   ├─ NEW-VR2-5 polylines-on-3D-tiles (regresses at flip unless GroundPolyline reversed first)
+   └─ water-phase-3 bathymetry (samples scene depth)
+```
+
+Items **independent of the log-depth epic** (can run in parallel): BUG-WEBGPU-CANVAS-BLACK re-verify (P2), NEW-GPU-SORT-PHASE-3 (P3), FEAT-GAP-09 Lit-shader fog tail (P3), C-R9-MODEL-FEATURE-PICK probe-correction (P2), Phase-8a normal-G-buffer validation (P2), the doc/inventory reconciliations (TS-DEBT, ES6, TAA-2b, KHR-iridescence — all P3 and mostly already-shipped).
+
+---
+
+## 2. Prioritized Work Table
+
+| Pri | Item | Category | Risk | Effort | Depends-on | User decision? |
+|-----|------|----------|------|--------|------------|----------------|
+| **P1** | log-depth Slice 3a validate (startup-flip payoff) | Log-depth | Med | 0.5–1d | 2a✅, 3a(uncommitted), 1✅ | Yes |
+| **P1** | log-depth Slice 2b producers | Log-depth | **High (correctness)** | **2–3 wk** | 0✅,1✅,2a✅; BufferPolygon fixed✅ | Yes |
+| **P1** | log-depth Slice 3 consumers | Log-depth/Post-proc/Pick | **High** | **4–6 d** | Slice 2b | Yes |
+| **P1** | NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION (epic umbrella) | Classification | High | 3–4 wk | all log-depth slices | Yes |
+| **P2** | log-depth Slice 4 flip + sweep | Log-depth | High | ~0.5d (post-deps) | 2b, 3, 3a | Yes |
+| **P2** | NEW-GROUNDPRIM-TEXTURED-MATERIALS | Classification | Med | see deps | 3a, 2b, 3, 4; Image branch separate | Yes |
+| **P2** | BUG-WEBGPU-CANVAS-BLACK re-verify | Pick/Render | Low | 0.5–1d | none | No |
+| **P2** | Phase-8a normal-G-buffer validation (GAP 1 only) | Post-proc/Infra | Low | 0.5–1d | none | Yes |
+| **P2** | C-R9-MODEL-FEATURE-PICK probe-correction | Pick/3D-Tiles | Low | 0.5–1d (+1–2d if real bug) | none | Yes |
+| **P2** | NEW-VR2-2 3DTiles base-color close + Moon re-attribute | 3D-Tiles | Low | 0.5d (probe) | FEAT-3DT2-03 (Moon fix) | Yes |
+| **P2** | NEW-VR2-5 polylines-on-3D-tiles close + log-depth-proof | Classification | Med | ~1d | 2a✅, 3a, Slice 3 | Yes |
+| **P2** | NEW-GPU-SORT-PHASE-3 (path a) | Perf/Compute | Med | 1–2d | none | Yes |
+| **P2** | TAA Slice 2b (doc + payoff probe) | Models/TAA | Low | ~1d (B); 1.5–2d (C) | none | Yes |
+| **P3** | FEAT-GAP-09 Lit fog tail (11 shaders) | Collections/Materials | Low | 2–3h | none | No |
+| **P3** | NEW-CLASSIFIER-2D-CV-MORPH | Classification | Med | 5–7d (if test data) | .vctr fixture (hard) | Yes |
+| **P3** | NEW-MODEL-WGSL-CUSTOM-SHADER | Models | **High** | 3–4d (min slice)–wks | binding-budget, cache-key, log-depth seq | Yes |
+| **P3** | NEW-DYNAMIC-ENVMAP-FULL-SCENE | Post-proc | **Extreme** | **20–30 d** | Slice 2b (depth contract) | Yes |
+| **P3** | CSM Slice 4 WebGL parity (toggle bridge) | Shadows | Med | 1–1.5d (A) | none | Yes |
+| **P3** | CSM Slice 3 altitude-adaptive splits | Shadows | Med | 2–4d | none | Yes |
+| **P3** | CSM Slice 3 moon dual-light | Shadows | **High** | 5–8d (B); 2–3d (C) | binding budget | Yes |
+| **P3** | C-R9-VOXEL-CELL-PICK | Pick/Voxels | **Extreme (blocked)** | blocked + 2–3 sess | real-voxel-data port | Yes |
+| **P3** | C-R10 cast linear-depth | Shadows | Med | 1.5–2 sess | none | Yes (rec: no-op) |
+| **P3** | NEW-VR-USER-POSTPROCESS-WGSL | Post-proc | Med | 0.5d (B/C); 2–3wk (A) | none | Yes |
+| **P3** | WGF-3 f16 variants | Post-proc/Perf | Low | 0.5–1.5d | none | Yes (rec: defer) |
+| **P3** | FEAT-GAP-06 bent-normal AO | Post-proc | High | 1.5–1.75 wk | FEAT-GAP-01 | Yes |
+| **P3** | Phase-8b TileStoreGPU | 3D-Tiles/Perf | High | 6–7 wk (+8a) | Phase 8a (partial) | Yes |
+| **P3** | R-4 off-thread MVT vector tiles | Future/Research | Med | 4–8 sess | Slice 2b (soft) | Yes |
+| **P3** | R-3 WebNN imagery super-res | Future/Research | Med | 3–8 sess | none | Yes (rec: defer) |
+| **P3** | R-5 single-buffer GPU pick | Future/Research | Low (doc) | 1–2h | none | Yes (rec: park) |
+| **P3** | WORKER-1 scene in worker | Future/Research | Med-High | 1–2 wk | none | Yes |
+| **P3** | water-phase-1 | Future/Research | High | wks–months | Phase 0, log-depth 2b/3/4 | Yes |
+| **P3** | CONTEXT-DECOMPOSITION | Build/Infra | Med | 3–5d | Slice 2b/3 (Batch D collision) | Yes |
+| **P3** | TS-DEBT sweep | Build/Infra | Low | 1d (B) | none | Yes |
+| **P3** | ES6 modernization remaining | Build/Infra | Med | 1–2h (A doc) | none | Yes |
+| **P3** | KHR-iridescence LUT | Models | Low | 15 min (doc) | none | Yes (rec: retire) |
+
+---
+
+## 3. Per-Item Entries (by subsystem)
+
+### Log-depth epic (the spine)
+
+**log-depth Slice 3a validate** (P1, Med). Slice 3a's consumer code is wired and inert in `WebGPUGroundPrimitiveRenderer.js` (csm_reverseLogDepth import :44/:523, threaded through `buildGroundPipelineResources` :502, gated `windowToEye` ndcZ swap :684-697, cache-key OR :1021, `_pipelineLogDepth` flip-invalidation :1735-1788). The producer (`GlobeTerrain.wgsl:2538-2564`) is committed. The only inert-gate is the master switch (`WebGPUContext.ts:399`, verified `false`). **Plan:** new `Tools/visual-regression/probe-classifier-logdepth-flip.mjs` (clone of `probe-classifier-textured-materials.mjs`) that sets `window.viewer.scene.context._logDepthWriteEnabled = true` for the WebGPU capture before building the GroundPrimitive, forces a frame to clear cached pipelines, sets `ENFORCE_TEXTURED=true`, and asserts WebGPU `varR >= 0.3` for Stripe/Checkerboard/Grid + 0 device errors. **Verify (Principle 8):** run inert-baseline first (band-crush ~19-65 vs WebGL ~2300-9000), then flipped (variance must climb), READ both PNGs, then prove globe-only `capture-and-diff --scene globe-default` doesn't worsen with the flip (catches producer/consumer near-far mismatch). Prefer a reusable `CesiumDebug.toggleLogDepth(bool)` accessor over inline `page.evaluate` so later slices reuse it.
+
+**log-depth Slice 2b producers** (P1, **High-correctness, 2–3 wk** — refuted plan). Converts ~10 remaining producer shader families to gated `frag_depth` log via the globe template (gated `logDepth` vec4 tail on each bespoke CameraUniforms, inline `csm_vertexLogDepth`/`csm_writeLogDepth`, gated `@location v_logDepth`, gated `@builtin(frag_depth)` via `var<private> g_fragLogDepth`, per-renderer UB pack + 5-define-site OR + flip-invalidation). **ADVERSARIAL CORRECTION (load-bearing):** the plan's claim "pick stays defines=0" is **incoherent** — Billboard's pick pipeline has `depthWriteEnabled: true` (`WebGPUBillboardRenderer.js:613`, verified), so pick writes raw hyperbolic NDC into the *same* attachment color writes log depth into → silent z-fighting at the Slice-4 flip. **Pick coherence is a correctness prerequisite, not out-of-scope:** every in-scope pick producer with `depthWriteEnabled:true` MUST emit `frag_depth` too, and the flip-on smoke test must add an interactive pick-overlap z-fight check. **Second correction:** the Primitive UB size bump (`FLAT_CAMERA_BYTES 160→176`, `LIT_CAMERA_BYTES 304→320`) cascades to 6+ client call sites in `WebGPUPrimitiveCommands.js` (~912/921/1089/2342/2740/2749) + the pick buffer — track as one coordinated sub-batch (+2-3d ripple testing). **Third:** the 46-shader Mat* family must be **split into its own Batch 2c** with a concrete codegen plan, not folded inline. Excluded by code: SkyAtmosphere/Sun/Moon (`depthWriteEnabled:false`); ShadowMap/DepthPlane/Wireframe/Edge/Splat are special-case skips with rationale comments. **Verify:** per-producer inert (flag-off byte-identical via `capture-and-diff`) + flip-on smoke (0 compile errors, pixel-identical color) + the load-bearing cross-producer depth-consistency test (globe+primitive+model overlapping, correct occlusion).
+
+**log-depth Slice 3 consumers** (P1, **High, 4–6 d** — refuted plan). Reverses log in pick + the 7 post-process reconstructors + the shared GBuffer producer. The only true classifier consumer (GroundPrimitive) shipped in 3a; the plan's listed GroundPolyline/Vector3DTile turn out to be 2D/CV color classifiers — **except** `WebGPUGroundPolylineRenderer.js:532` `windowToEyeCoordinates` (verified, has NO reverse), which WILL break at the flip and must be patched here. **ADVERSARIAL CORRECTIONS (verified):** (1) `WebGPUGBufferRenderer.ts:244/260` call `device.createShaderModule` directly with **no `preprocess()`** — the `//>>ifdef LOG_DEPTH` blocks in `GBufferNormalsFromDepth.wgsl`/MSAA won't be stripped and won't cache-invalidate on flip; compute-pipeline preprocess wiring is a new prerequisite. (2) Pick (`PickDepth.js`, `Picking.js`) needs an async-readback frustum-timing design — `getDepth()` is decoupled from per-frustum near/far; capture frustum state at readback-dispatch and apply on completion. Note `SceneTransforms.drawingBufferToWorldCoordinates:410-418` already reverses log on the CPU when `useLogDepth`, so pick may be largely free *if* per-frustum near/far match. (3) AO ships hardcoded `near=0.1/far=10000` (`WebGPUAmbientOcclusionEffect.ts:432-446`) — fix requires per-frame `writeBuffer` of `currentFrustum.x/.y` to all 8 effect packers, not just an init value. **Verify:** inert byte-equivalence (flag off) + unflipped post-process probe no-regression (`probe-ssr-consumer`, `probe-contact-shadows`, `probe-taa-disocclusion`) + flipped payoff probe loading SSAO+SSR+ContactShadows+DoF+VolumetricFog+TAA at 350km.
+
+**log-depth Slice 4 flip-sweep** (P2, High, ~0.5d once deps land). One functional change: `WebGPUContext.ts:399` `false → true`. Hard-blocked by 2b+3. **ADVERSARIAL NOTE:** the slice IDs ("2b","3","3a") are not formally tracked in `DEFERRED_WORK.md` as discrete entries — they live under the single "Approach A vs B" framing of NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION. Slice 4 must first **create those formal slice entries + per-producer regression-probe baselines** before claiming "half a day." **Verify:** `capture-and-diff` all 7 scenes before/after, textured payoff, post-process/pick/bufferpolygon/saved-view regression probes, variant + Sandcastle baselines, read every PNG.
+
+**NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION** (P1 umbrella, High, 3–4 wk). The parent entry (`DEFERRED_WORK.md:943`) for Approach A. Root cause: at 350km a 24-bit hyperbolic-NDC quantum ≈ 73km >> ~80km polygon → banded UV. Fix = finish 3a (commit+validate) → 2b → 3 → 4. **ADVERSARIAL CORRECTION:** before the 3a commit, run the startup-flip payoff probe AND audit GroundPolyline (`:532`, gap confirmed) + Vector3DTile for depth-reconstruction, adding reversal gates where missing (~1-2d discovery before Slice 3 proper). Pick is plausibly free via `SceneTransforms`.
+
+### Classification / Vector
+
+**NEW-GROUNDPRIM-TEXTURED-MATERIALS** (P2, Med). Stripe/Checkerboard/Grid + Color are code-complete (`WebGPUGroundPrimitiveRenderer.js:521-1016`, applyMaterial dispatch :758-844, surfaceUV planar/spherical :709-751) and blocked *only* on the log-depth flip. Image material (type 4) is genuinely unimplemented — needs a group-3 texture+sampler branch + BGL extension, porting `WebGPUGroundPolylineRenderer::applyMaterial`'s Image branch. **Plan:** commit Slice 3a; ship Stripe/Checker/Grid as the first validated log-depth consumer via the startup-flip probe (A1 sequencing); split Image into its own tracked sub-item. **Verify:** startup-flip variant of `probe-classifier-textured-materials.mjs`, `ENFORCE_TEXTURED=true` after flip, read texmat PNGs.
+
+**NEW-VR2-5 polylines-on-3D-tiles** (P2, Med). Original oversaturation artifact does NOT reproduce; the GroundPolyline classifier (`WebGPUGroundPolylineRenderer.js` colorFS :794-840 discards non-classified) cannot emit raw saturated color. **Real risk (verified):** `windowToEyeCoordinates:532` treats sampled depth as linear NDC with group-0 `u.invProj` and no per-slice near/far — it WILL ghost/vanish at the Slice-4 flip. **Plan (Option B):** harden `probe-vr2-polylines-3dtiles.mjs` to wait `tileset.ready===true` + dual log-depth OFF/ON capture; port the 3a reverse-log pattern into the renderer (csm_reverseLogDepth, near/far UBO lane, cache-key + `_pipelineLogDepth` invalidation); audit `WebGPUVector3DTileClampedPolylinesRenderer.js`. This folds the GroundPolyline half of Slice 3 forward into this item.
+
+**NEW-CLASSIFIER-2D-CV-MORPH** (P3, Med, 5–7d). Vector3DTilePrimitive 2D/CV shipped (Batch 178) but unverified; polylines 2D/CV gated; Primitive MORPHING hard-returns empty (`:970`). **HARD BLOCKER (verified):** no classic `.vctr` fixture exists in-repo and the internal classes aren't bundle-exported, so per Principle 8 nothing here is pixel-verifiable. **ADVERSARIAL CORRECTION:** even with a fixture, upstream WebGL **silently skips** Vector3DTile in 2D/CV (zero pixels to diff against), so the pixel-count parity probe is structurally impossible — ship code-verified-only with UNVERIFIED tags (Batch 178 precedent) OR build a geometric-coverage check. Primitive MORPHING is NOT cheap: needs new morphFlags/morphTime UBO slots (Primitive packs differently than GroundPrimitive), morph pipeline, morphColorVS entry (~2-3d). Polylines 2D/CV needs ENU-frame miter-extrusion e2e validation (+1-2d). Keep ClampedPolylines gated.
+
+### Models / 3D-Tiles
+
+**C-R9-MODEL-FEATURE-PICK** (P2, Low). Pick infra is fully allocated (`WebGPUModelFeatureId.js:512-580`, 30 pickIds, texture at group-1 binding 31). The DEFERRED entry blames a "b3dm content-render gap" but on-disk `b3dm-webgpu.png` shows b3dm renders fine — the failure is specific to the BatchTableHierarchy probe's framing. **ADVERSARIAL CORRECTION:** root cause is likely (a) `verify-model-feature-pick.mjs` framing straight-down at 2.5×radius on a 50m box (tile may not be SSE-selected) and (b) pick coordinate space (`clientWidth/Height` CSS px vs `canvas.width/height` device px). `Scene.js:3900` `voxelPrimitive._traversal.findKeyframeNode` would crash if reached. **Plan (A):** rewrite the probe to frame like the working `verify-b3dm-render.mjs` (`camera.viewBoundingSphere`), assert a `Pass.CESIUM_3D_TILE` command count >0 before picking, pick in device-px space, re-point `verify-pick-webgl-control.mjs` to the same fixture for an apples-to-apples A/B. Most likely closes the item; renderer fix only in the unlikely real-bug branch.
+
+**NEW-VR2-2 3DTiles base-color-white** (P2, Low). Base-color-white is fixed for Earth tilesets (`WebGPUModelRenderer.js` createGPUTextureFromReader stub-reuse + refreshDeferredModelTextures). Only Moon.html shows black. **ADVERSARIAL CORRECTION:** the doc blames Sandcastle-state; the plan re-attributes to FEAT-3DT2-03 RTE; the verdict finds a **third** root cause — `Cesium3DTile.js` hardcodes `Ellipsoid.WGS84` in bounding-volume computation (lines 952/961/2091/2174/2236), so `Ellipsoid.default=MOON` mis-sizes tile bounds (6.378Mm vs 1.737Mm) → culling or off-screen geometry. `ModelPBRComplete.wgsl` CameraUniforms also lacks `ellipsoidRadius` (GlobeTerrain got it in Batch 6, Model never did). **Plan:** build `probe-moon-tileset.mjs` FIRST with a draw-command/bounding-volume dump to distinguish tile-culling (Cesium3DTile.js hardcoding) vs RTE-mispositioning (FEAT-3DT2-03) vs Sandcastle-state, THEN attribute. Don't commit to a fix before the probe result.
+
+**NEW-MODEL-WGSL-CUSTOM-SHADER** (P3, **High**). GLSL CustomShader is backend-agnostic at Scene layer; WebGPU is a one-time-warning no-op (`WebGPUModelRenderer.js:1942`). **ADVERSARIAL CORRECTIONS (hard blockers):** (1) **Binding-group capacity** — group 1 is full (bindings 0-36) and `maxBindGroups=4` is maxed; "5th-group emulation" has no WebGPU spec support. Custom textures require compressing existing bindings into a flexible storage buffer OR declaring KHR incompatibility. (2) **Cache-key collision** — the numeric Uint32 module key (`WebGPUShaderModuleCache.ts:82`) can't hold per-Model WGSL text; the proposed string-keyed bypass reverses C-R7-SHADER-MODULE-DEDUP (Batch 162). Needs a hash-based `(sourceId, defines, customShaderHash)` key. (3) **fragmentMain merge conflict** — Slice 2b will edit `ModelPBRComplete.wgsl:1888` for frag_depth at the *same* injection site; sequence one before the other. (4) **Varying exhaustion** — TAA uses @location 9-10; only 2-3 free slots before WGSL limits. **Plan:** defer full impl until Slice 2b stabilizes ModelPBRComplete; ship a minimal first slice (fragment MODIFY_MATERIAL, 4 scalar uniforms, NO textures/varyings/vertex hook) in 3-4d. Decision 1: parallel WGSL options (recommended C-hybrid). Decision 2: minimal slice Y first.
+
+**TAA Slice 2b** (P2, Low). **Inventory is STALE** — per-model motion vectors for skinned/morphed/static-instanced shipped Batches 96-175 (`ModelPBRComplete.wgsl:758-814` velocity VS re-runs morph→skin→instance with previous-frame data; dedicated velocity *pass* at `WebGPUSceneRenderer.ts:2495`, NOT MRT @location(1) as the title implies). One real gap: animated GPU-instancing aliases current→previous (`WebGPUModelRenderer.js:2879`) → animated `EXT_mesh_gpu_instancing` ghosts. Two stale "motionView currently null" comments (`WebGPUSceneRenderer.ts:2710-2716`, `WebGPUPostProcessPipeline.ts:1048-1052`) are false. **Plan (B, recommended):** reconcile inventory (§C→§B), delete stale comments, build `probe-model-taa-skinned.mjs` reading back velocityTexture to assert non-zero rg on a walking CesiumMan silhouette. (C) adds the prev-instance buffer fix.
+
+**KHR-iridescence LUT** (P3, Low, 15 min). **OBSOLETE** — the LUT path was abandoned Batch 181 (`eb7542166e`) for the analytical Belcour 2017 formula already shipped (`ModelPBRComplete.wgsl:2107-2227`, probe-verified). `FEATURE_INVENTORY.md:909` (§D.3) is a stale leftover. A LUT yields NO fidelity gain (analytical sums the same spectral orders). **Plan:** delete line 909; flag adjacent stale clearcoat/sheen/anisotropy §D.3 lines (906-908).
+
+### Post-process
+
+**Phase-8a normal-G-buffer validation** (P2, Low, GAP 1 only). Normal G-buffer producer + MRT slot-1 + consumer-threading are shipped (`GBufferFramebuffer.js`, `WebGPUSceneFBTargetHelpers.ts:71`, threaded at `WebGPUSceneRenderer.ts:2766-2779`) but off by default (`scene.deferredLighting=false`, `Scene.js:959`) with no payoff probe. **ADVERSARIAL CORRECTIONS:** (1) the "176 shaders emit @location(1)" claim is overstated — actual ~88, and Lit Mat primitives (Box/Sphere/Polygon/Wall/Corridor/Frustum) are only partially shipped. (2) The proposed payoff probe is **flawed**: SSR silently falls back to depth-derived normals ("far better than noise", `WebGPUSSREffect.ts:174-193`) when `gBufferNormalView` is null, so SSR-on vs SSR-off will be near-identical and the "differ" assertion fails. **Plan:** redesign verification to (a) `probe-gbuffer-visualize.mjs` confirming non-sentinel normals over globe/models/lit-primitives, (b) `probe-gbuffer-enabled.mjs` confirming pixel-identical baseline when off, (c) audit which primitive families lack @location(1) and file separate entries. Split stale §D.2 line (normal-G-buffer → §B SHIPPED; keep only hardware depth prepass in §D). Leave default OFF.
+
+**FEAT-GAP-09 Lit fog tail** (P3, Low, 2–3h). 33/44 consumable primitive shaders sample the aerial-perspective LUT; 11 Lit variants lag (carry the `atmosphereLutControl` struct field but no binding 7/8/9 + no fog block). Two binding regimes: 9 textured-Lit (LUT @group(3), template `PrimitiveMatNormalMapLit.wgsl`), 2 procedural-Lit (DotLit/FadeLit, LUT @group(2), template `PrimitiveMatGridLit.wgsl`). No JS change (`WebGPUEffectsBindGroup.js` binds 7/8/9 unconditionally). **Plan:** 11 near-mechanical WGSL edits + fix stale inventory count (44/44 not "12/44"). **Verify:** `probe-all-materials.mjs` (0 device errors) + `probe-aerial-lut-primitive.mjs` parameterized per type (fog payoff). _(Note: NEW-WEBGPU-GLOBE-MATERIAL-SUPPORT is mis-scoped — globe material proper is already shipped via `WebGPUGlobeMaterial.ts`; its only residual IS this FEAT-GAP-09 tail.)_
+
+**NEW-VR-USER-POSTPROCESS-WGSL** (P3, Med). Naga transpiler is vendored and works for clean Vulkan GLSL (`WebGPUNagaTranspiler.ts`). **ADVERSARIAL CORRECTION:** the real blocker is NOT "build Naga" (stale framing) but the Cesium-GLSL dialect mismatch — combined `sampler2D`, undecorated `in v_textureCoordinates`, `out_FragColor`, and runtime `czm_pixelRatio`/`czm_viewport` AutomaticUniforms that **cannot be defined as constants** (must be injected into the UBO). Option A's "normalization shim + binding remap" is unbounded/unvalidated. **Plan:** Option C now (refresh stale doc framing, ~2-4h), Option B opportunistically (hand-port ~6 gallery demos to `wgslFragmentShader`, ~0.5-1d), Option A only on real consumer demand (2-3 wk research).
+
+**NEW-DYNAMIC-ENVMAP-FULL-SCENE** (P3, **Extreme, 20–30d** — refuted plan). Today captures only procedural sky. **ADVERSARIAL CORRECTIONS:** (1) `WebGPUMipmapGenerator.ts:29` blit shader reads `texture_2d<f32>` with no array indexing — cubemap mipping needs a per-layer shader recompile OR `texture_2d_array` redesign (~60 LOC, not 30); render-pass binding at :216-220 hardcodes single-layer dest with no layer parameter. (2) `WebGPUSkyAtmosphereRenderer.js` reads camera projection (532-535), position (540), positionWC (544), AND near/far (548) — all must be overrideable, not just projection*view. (3) **Depth-contract dependency is load-bearing, not optional** — if face passes reuse scene producers before Slice 2b converts Model/Tiles, the captured faces fork the depth convention → z-fight/wrong IBL. **Recommend Option C (defer)** unless a demo requires it; Option B (globe+sky only) before A.
+
+### Pick
+
+**BUG-WEBGPU-CANVAS-BLACK re-verify** (P2, Low). Both bug (`2c86a7cca6`) and fix (`17441c3af9`, AsyncResourceMonitor) are in HEAD; the fix is wired (`Scene.js:356-377` subscribes to `context.asyncResources`, shouldRender gate :3580-3591, producers in `WebGPURenderPipelineCache.ts`). Gap = no probe reproduces the hibernate-then-wake race AND reads pixels. **Plan:** new `probe-canvas-black-reverify.mjs` — render until tiles present, idle 4-6s (let scene hibernate), sample 25 canvas points, assert nonBlackSamples>0 AND `asyncResources.getStats().resolved>0` during the idle window (proves a pipeline resolved while hibernated and woke the scene). `npm run restart` first (dev server down). Read the PNG. If black, escalate to the 213-225 bisect.
+
+**R-5 single-buffer GPU pick** (P3, Low doc). Already analyzed and recommended NOT to pursue. **ADVERSARIAL CORRECTION:** the cost analysis wrongly assumed the pick FBO is "1x1/small" — `WebGPUPickFramebuffer.ts:152-163` allocates it **full-viewport**, so there's no memory saving vs current. Worse, G-buffer MRT slot-1 (Batch 117) now exists, so a 2nd-MRT pick slot means **3-target pipelines** across all scene-color shaders. **Plan:** confirm-and-park — run `CesiumDebug.cpuPassCost()` once on a hover-active scene to attach a measured number to the >5% gate, append the corrected note to `FUTURE_RESEARCH_2026_05_01.md:263` + `FEATURE_INVENTORY.md:921`.
+
+**C-R9-VOXEL-CELL-PICK** (P3, **Extreme, blocked**). **ADVERSARIAL CORRECTION:** the title implies a 4-byte pickColor packing problem (a red herring — WebGL's PICKING_VOXEL approach already solves packing). The real blockers: WebGPU voxel rendering is a placeholder gradient (`WebGPUVoxelRenderer.ts:468-499`, no provider/megatexture/octree), `VoxelPrimitive.update` early-returns so `_traversal` is undefined (`Scene.js:3900` would crash), `selectCommandVariant:172` lumps pickVoxel into generic pick, and there's no `pickVoxelCommand` slot. **Plan:** Option A — defer explicitly, schedule the real-voxel-data port as the actual next voxel epic; cell-pick is a 1-2 session rider on it. Do NOT build inert scaffolding (untestable, Principle 8).
+
+### Collections / Materials
+
+_(FEAT-GAP-09 covered under Post-process; it spans the Primitive material family which collections also use.)_
+
+### Shadows
+
+**CSM Slice 4 WebGL parity** (P3, Med, 1–1.5d — refuted plan). `scene.useCascadedShadowMaps` lights up CSM on WebGPU but is a silent no-op on WebGL (upstream `ShadowMap.js` CSM is gated by `scene.shadows` instead). **ADVERSARIAL CORRECTIONS:** (1) the flag is read NOWHERE per-frame (`Scene.js` only declares/snapshots it) — the toggle bridge needs a **frame-scoped** conditional in the shadow-setup block (~`Scene.js:5089-5100`), not construction-time. (2) `ShadowMap._cascadesEnabled`/`_numberOfCascades` have **no public setters** — design one `configureCascades(enabled,count,size)` method handling dirty-flag + render-state invalidation. (3) `scenes.json` has **no csm-shadows entry** — the baseline probe can't even load without ~2-3h of scene geometry setup. **Plan:** Option A toggle bridge. Verify no double-init of cascade render states.
+
+**CSM Slice 3 altitude-adaptive splits** (P3, Med, 2–4d). At orbital altitude the λ=0.7 practical split wastes 3 of 4 cascades on empty near-space (`WebGPUCSMRenderer.ts:385-400` `computeSplits` is altitude-blind). **Plan:** thread camera altitude in; above ~500km collapse to fewer cascades fitted to the visible spherical-cap (Option A) or refit 4 across `[terrain-intersection-near, cap-far]` (Option B); make `selectCascade` tolerate a collapsed set (mirror into both `ShadowReceiveCSM.wgsl:44-49` AND the duplicated `GlobeTerrain.wgsl:2298-2301` per SHADER_PAIRS_LOCKSTEP). Inert below threshold. No log-depth dep (reads `viewDepth` varying, not depth buffer).
+
+**CSM Slice 3 moon dual-light** (P3, **High, 5–8d** — refuted plan). Single-sun CSM end-to-end. **ADVERSARIAL CORRECTIONS:** (1) effects BGL is **saturated at bindings 0-22** (Batch 122 8→4 consolidation) — zero room for a 2nd CSM params UBO + cascade array without evicting a feature or reversing the consolidation. (2) `frameState.moonDirectionWC` is threaded into NO shader uniforms — adding moon diffuse requires CameraUniforms/EffectsUniforms expansion cascading to all FS receivers. (3) The `sunWeight/moonWeight` blend has **no formula** (moonPhaseFraction is disk coverage, not irradiance). **Recommend Option C (night-only switch):** when sun is below horizon AND `scene.light instanceof MoonLight`, replace the sun direction feeding the existing single CSM with `moonDirectionWC` — reuses the entire pipeline, zero BGL change, ~2-3d. Or defer (Option A).
+
+**C-R10 cast linear-depth** (P3, Med, recommend no-op). Point-light cube cast writes hardware perspective-Z; receivers reconstruct it (88 sites across 27 WGSL files). The "optimization" swaps to linear `axisDist/farPlane`. Batch 172 triage already classified it "NOT actionable-worthwhile"; writing `@builtin(frag_depth)` on the cast pass disables early-Z (likely net-negative). **Recommend Option A (leave deferred).** If pursued, build `probe-point-light-shadow.mjs` and gate on a measured `gpuPassCost()` win — accept it may conclude "revert."
+
+### Build / Infra
+
+**NEW-GPU-SORT-PHASE-3** (P3, Med, 1–2d, path a). Phase 2 readback runs but `_lastSortedIndices` (`WebGPUSceneRenderer.ts:937/3815`) is read nowhere. **GAP-2 (architectural):** the readback permutation indexes the *compacted* SOA (center-less commands skipped at :3763-3764), not the original command array — a naive count-match guard (HiZ pattern :3485) falls back to CPU comparator nearly every frame. **Plan (Option a + scope A):** fill a `compactedToOriginal` map + `skipped` list, add `_applySortedOrder` consuming both (Principle 9 — finish the scaffolding, don't paper over with a count-match guard). New `probe-gpu-sort-order.mjs` with a >6000-command dense scene asserting opaque pixels byte-identical vs sort-off (lossless reorder).
+
+**CONTEXT-DECOMPOSITION** (P3, Med, 3–5d). The original plan's 6 candidates were extracted (Batches 127-144); both files re-grew (`WebGPUContext.ts` 5166 LOC, `WebGPUSceneRenderer.ts` 4016 LOC). 5 new seams: culler-pool (Batch A), HDR-canvas (B), high-density-cull (C), deferred/GBuffer/velocity dispatch (D), debug-overlays (E). **Plan:** refresh the stale plan doc first; apply the proven host-interface pattern (template `WebGPUFrameStatistics.ts`), one batch each. **CRITICAL sequencing:** Batch D moves `_runVelocityPass`/`_runPostProcessing` which are Slice-3 log-depth consumers → **defer C+D behind the log-depth epic**, do A+B+E now (~830 LOC, low collision). Verify: tsc + byte-equivalence audit + variant-smoke + capture-and-diff (mismatch must not move — pure refactor).
+
+**TS-DEBT sweep** (P3, Low, 1d). Inventory counts (`FEATURE_INVENTORY.md:838-845`) are stale and inverted: ~0 real `:any`, ~3 real `as any`, but ~183 `as unknown as` (not ~10), of which 157 are inline-shape widenings. **Plan (Option B):** re-baseline the inventory + add 3 absent context fields to `cesium-js-types.d.ts` (`_scenePipelineFormatGeneration`, `_currentCommandEncoder`) + sweep the 18+14 highest-cluster casts. Leave the 26 legitimate boundary casts (SinglePickIdCache, gpuData/numericArray TS5 bridges) alone (Principle 7).
+
+**ES6 modernization remaining** (P3, 1–2h doc / 2–4d sweep). var/indexOf are done in production source (residual hits are WGSL-in-string build artifacts + vendored ThirdParty + the intentional `TimeIntervalCollection.js:126` trap). Real remaining = ES6 prototype-class conversion. **ADVERSARIAL CORRECTION:** the plan named only 22 of **52** files; full set is 36 spec-covered (not 38) + 16 no-spec, and `StyleExpression.js` is miscategorized as no-spec. **Plan (A):** correct the inventory counts listing all 52 (or "representative examples + full audit required"); run the Specs-only indexOf codemod; re-file class-conversion as its own narrowly-scoped item. Do NOT bulk-sweep (prior bulk sweep shipped HIGH-severity BUG-35.1/35.2).
+
+### Future / Research
+
+**Phase-8b TileStoreGPU** (P3, High, 6–7 wk — plan holds with corrections). GPU-resident SoA tile storage; greenfield (no `TileStore`/`MegaBuffer` symbols exist). **ADVERSARIAL CORRECTIONS:** (1) Phase-8a shader-variant *decision* is done but the pre-warm/material-family pipeline *implementation* is missing (+0.5-1 wk). (2) CPU traversal redesign (emit visibleTileID buffers, `Cesium3DTilesetBaseTraversal.js`) is hidden in "foundation plumbing." (3) WGSL styling-compiler 1.5-wk estimate is a guess — gate behind a 3-day grammar/corpus spike. (4) WBOIT × indirect-draw composition is unproven — mark a blocker, add feature-picking specs. **Recommend Option A (RFC + spike, 2-3d) first.** Two dependency layers deep (Phase 8a unshipped).
+
+**R-4 off-thread MVT vector tiles** (P3, Med, 4–8 sess). No MVT code exists. **Reuse finding:** the `.vctr` path already tessellates in a JS worker (`createVectorTilePolygons.js`) — a v1 could ship with `vector-tile`/`pbf` npm decode + that tessellator and ZERO Rust (Option A); the Rust crate is the speculative accelerator (Option B). **Soft dependency:** the new `WebGPUVectorTileRenderer` is a NEW depth producer — build it log-depth-gated from day one (GlobeTerrain pattern) so it doesn't become Slice-2b backfill. v1 SCENE3D-only. Phase-0 decode spike (JS vs WASM) gates the rest.
+
+**R-3 WebNN imagery super-res** (P3, Med, recommend defer). Greenfield; WebNN is Chrome/Edge-only behind flags. **Plan:** Option A (defer until a second browser ships WebNN). If pursued, default-OFF Chrome-flagged feature renderer (FeatureRendererKey index 49) intercepting `WebGPUGlobeSurfaceTextures.ts:189-219` before upload — preserve the flipY/Mercator conventions (Batch 60 regression check). No log-depth dep.
+
+**WORKER-1 scene in worker** (P3, Med-High, 1–2 wk — refuted plan). Worker can spawn/heartbeat/crash-recover; Scene constructor survives headless. **ADVERSARIAL CORRECTION:** the plan's core gap (Camera.js `clientWidth` reads at 1130/1165/1497-1498) is **mislabeled** — those are in pick methods NOT called during render; the render loop uses `context.drawingBufferWidth/Height` (safe). The real DOM coupling is `SceneTransforms.js:131-132` (verified) reading `clientWidth/clientHeight` for the viewport (used in pick/input, deferred to WORKER-4). The genuine Phase-1 blocker is **image loading** (`Resource.js:1945` `new Image()`; `preferImageBitmap` defaults false at :550) — and the injection mechanism (global side-effect vs sceneOptions passthrough) is unspecified and main-thread-regression-risky. Also undefined: how the test page instantiates a globe+imagery in the worker (no `MSG_CREATE_GLOBE` protocol). **Recommend Option A (defer behind log-depth) or B (Phase 1 only) with the image-loading scope decided up front.**
+
+**FEAT-GAP-06 bent-normal AO** (P3, High, 1.5–1.75 wk — refuted plan). No bent-normal code exists. **ADVERSARIAL CORRECTIONS:** (1) `AmbientOcclusionModulate.wgsl` is a scalar multiply with no surface context — bent-normal **must** live in `GlobeTerrain.wgsl` (terrain-only feature, not a generalized post-process). (2) The normal G-buffer producer gates on `scene.deferredLighting` *by design* (cost control) — extending it is a new flag, not a bug fix. (3) Verification is circular (can't probe before the skeleton exists). **Recommend C-then-A:** harden FEAT-GAP-01 producer strategy first, prototype GTAO bent-normal accumulation to prove plumbing, then ship the screen-space variant. Effort omits the ~3-5d FEAT-GAP-01 hardening.
+
+**water-phase-1** (P3, High, wks–months — refuted plan). Locked v2 design, near-zero impl. **ADVERSARIAL CORRECTION:** Phase 0 is declared PARTIAL but the **nested toggle tree (§5) is entirely missing** — `GlobeWater.js` only has enhanced-ocean tunables; frameState forwarding doesn't exist. The filesToTouch claims the full toggle tree but the code matches a minimal facade. Phase 3 bathymetry samples scene depth = the renderer-wide NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION gap (not a localized producer issue) → hard-blocked on log-depth 2b/3/4. **Plan:** clarify Phase-0 scope (minimal facade vs full toggle tree) in the decision; build Phases 0-2 (Gerstner+imagery-tint, depth-independent) in parallel now; gate Phase 3 on the log-depth flip; Phase 1 classification can use OSM-vector WaterRegion API without the NEW-9 0x05 parser.
+
+---
+
+## 4. Decisions Needed From the User
+
+1. **Log-depth Approach A vs B (the foundational call).** Continue Approach A (renderer-wide log depth, in-flight, 3-4 wk, also fixes pick/distance precision everywhere) — or pivot to Approach B (contained R32F linear-eye-z classifier-only globe target, multi-day, diverges from WebGL)? The repo is already executing A (Slices 0/1/2a committed, 3a uncommitted); B would abandon in-flight work. **Recommend A.**
+2. **Slice 3a sequencing.** Commit + startup-flip-validate Slice 3a NOW (banks the textured-classifier payoff, zero-risk while inert) before the multi-week 2b? **Recommend yes (A1).**
+3. **Slice 2b pick-scope (CORRECTNESS-LOAD-BEARING).** Pick pipelines with `depthWriteEnabled:true` (verified: Billboard `:613`) MUST emit `frag_depth` when LOG_DEPTH is on, or z-fighting at the flip. Confirm: pick producers in-scope (required) and add a pick-overlap z-fight check to the flip-on smoke test.
+4. **Slice 2b Mat* sub-scope.** Split the 46 Mat* shaders into a separate Batch 2c with a concrete codegen plan? **Recommend yes.**
+5. **Slice 2b/3 sequencing.** Land all of 2b then all of 3 then flip (clean phases, long un-validated stretch) vs interleave per-subsystem? **Recommend A3-then-A1** (validate the one textured path end-to-end first, then convert remaining producers).
+6. **Slice 3 plumbing.** Compute-pipeline `preprocess()` wiring (GBuffer prereq), async pick frustum-timing design, and per-frame near/far updates to 8 effect packers — land Slice 3 INERT with these fixed, deferring payoff to Slice 4? **Recommend yes.**
+7. **Slice 4 / epic commitment.** Commit to the full multi-week 2b+3+4 epic, or pause at the inert state and build Approach B for textured materials specifically?
+8. **NEW-GROUNDPRIM Image material.** Split Image (type 4) into its own tracked entry separate from the precision blocker? **Recommend yes.**
+9. **NEW-CLASSIFIER-2D-CV-MORPH test data.** (A) acquire/synthesize a `.vctr` fixture, (B) ship code-verified-only with UNVERIFIED tags (note: WebGL emits no 2D/CV pixels to diff against — pixel-parity probe is structurally impossible), or (C) defer entirely? Keep ClampedPolylines gated?
+10. **C-R9-MODEL-FEATURE-PICK.** Probe-correction-first (A, recommended) vs renderer-debug-first (B)?
+11. **NEW-VR2-2 Moon.** (A) close VR2-2 for Earth + build the Moon diagnostic probe + re-attribute; (B) fold into the ellipsoid-aware-RTE fix now; (C) defer Moon residual? Build the probe before committing to root cause (Cesium3DTile.js WGS84 hardcoding vs RTE vs Sandcastle-state).
+12. **NEW-VR2-5.** (A) close via re-run only; (B, recommended) close + port GroundPolyline log-depth reverse so it survives the flip; (C) full Slice 3?
+13. **NEW-GPU-SORT-PHASE-3.** Path (a) CPU reorder vs (b) full indirect-draw; scope (A) correct compacted→original map (recommended, Principle 9) vs (B) count-match guard vs (C) defer + JSDoc?
+14. **TAA Slice 2b.** (A) doc-only, (B, recommended) doc + payoff probe, or (C) + animated-instancing fix?
+15. **NEW-MODEL-WGSL-CUSTOM-SHADER.** API surface (parallel WGSL options vs GLSL→WGSL transpile vs hybrid-C recommended); scope (full vs minimal fragment-only slice Y recommended); and sequencing vs Slice 2b's edit to the same `ModelPBRComplete.wgsl:1888` fragmentMain.
+16. **NEW-DYNAMIC-ENVMAP.** (A) full, (B) globe+sky subset, or (C, recommended) defer? Must land after Slice 2b regardless.
+17. **CSM Slice 4 WebGL parity.** (A, recommended) toggle bridge, (B) algorithm parity, or (C) from-scratch GLSL? Priority now or stay deferred?
+18. **CSM Slice 3 altitude-adaptive.** Regime strategy A (hard collapse to 1) / B (refit 4) / C (continuous ramp)? Confirm moon-dual-light + VSM stay separate.
+19. **CSM Slice 3 moon dual-light.** (A) defer, (B) full dual-cascade (binding-budget collision + doubled cast cost), or (C, recommended) night-only light-direction switch?
+20. **C-R10 cast linear-depth.** (A, recommended) leave deferred, (B) implement only after a measured `gpuPassCost()` win, or (C) unconditional?
+21. **C-R9-VOXEL-CELL-PICK.** (A, recommended) defer + schedule the real-voxel-data port as the next voxel epic, (B) inert scaffolding, or (C) leave deferred?
+22. **NEW-VR-USER-POSTPROCESS-WGSL.** (A) full auto-transpile (2-3 wk research), (B) hand-port demos, or (C, recommended) refresh stale docs now?
+23. **NEW-WEBGPU-GLOBE-MATERIAL-SUPPORT (FEAT-GAP-09 tail).** Finish the 11 Lit shaders now (recommended, ~2-3h), defer, or docs-only?
+24. **WGF-3 f16.** (A, recommended) defer, (B) ColorGrading+FXAA only, or (C) bloom HDR trio?
+25. **FEAT-GAP-06 bent-normal AO.** Screen-space (A) vs pre-baked (B) vs defer-until-FEAT-GAP-01-hardened (C, recommended C-then-A)?
+26. **Phase-8b TileStoreGPU.** (A, recommended) RFC + spike, (B) Phase 8a first, (C) plumbing slice, or (D) keep deferred?
+27. **R-4 MVT.** Pursue now? Decode strategy (JS Option A vs Rust/WASM Option B — run the spike)? Surface shape (imagery-layer vs primitive collection)?
+28. **R-3 WebNN.** (A, recommended) defer, (B) super-res prototype, or (C) +segmentation?
+29. **R-5 GPU pick.** (A, recommended) confirm-and-park with profiler number, (B) nothing, or (C) implement?
+30. **WORKER-1.** (A, recommended) defer behind log-depth, (B) Phase 1 only, or (C) commit to full migration? Plus the image-loading injection mechanism.
+31. **water-phase-1.** Phase-0 scope (minimal facade vs full toggle tree)? Depth sequencing (B2: build 0-2 in parallel, gate Phase 3)? NEW-9 0x05 parser now vs defer?
+32. **CONTEXT-DECOMPOSITION.** (1) Sequencing — A (A+B+E now, defer C+D behind log-depth, recommended) vs B (all 5 now) vs C (skip); (2) map ownership (helper-owns vs host-keeps).
+33. **TS-DEBT.** (A) re-baseline only, (B, recommended) re-baseline + high-cluster sweep, or (C) exhaustive?
+34. **ES6.** (A, recommended) doc-only close, (B) spec-gated class sweep of 36 files, or (C) full incl. 16 no-spec?
+35. **KHR-iridescence.** (A, recommended) delete the stale §D.3 line, (B) build the LUT (no fidelity gain), or (C) re-tag in place?
+
+---
+
+## 5. Recommended Next 5 Actions (ordered)
+
+1. **Commit Slice 3a + build `probe-classifier-logdepth-flip.mjs` and validate the startup-flip payoff** (P1, ~0.5-1d). The code is done and inert; this banks the textured-classifier win, proves Approach A end-to-end, and is zero-risk while the master switch stays off. Add a reusable `CesiumDebug.toggleLogDepth(bool)` so every later slice reuses it. Read the PNGs; confirm globe-only `capture-and-diff` doesn't worsen under the flip.
+2. **Run the pick-pipeline depth-coherence audit before scoping Slice 2b** (P1, ~1h). `grep depthWriteEnabled` across Billboard/Point/Polyline renderers (Billboard `:613` already confirmed `true`) and decide: in-scope pick producers emit `frag_depth`. This is a correctness gate, not optional — skipping it ships silent z-fighting at the Slice-4 flip.
+3. **Port the Slice-3a reverse-log pattern into `WebGPUGroundPolylineRenderer.js:532` (NEW-VR2-5 Option B)** (P2, ~1d). Verified gap: its `windowToEyeCoordinates` has no reversal and will ghost at the flip. Folding this GroundPolyline half of Slice 3 forward closes VR2-5 honestly AND removes the latent regression on the demo most likely to expose it — independent of finishing all of 2b.
+4. **Re-verify BUG-WEBGPU-CANVAS-BLACK with a hibernate-then-wake pixel probe** (P2, ~0.5-1d, log-depth-independent). `npm run restart`, build `probe-canvas-black-reverify.mjs` matching the actual repro (idle → hibernate → late async pipeline resolution → sample pixels). Closes a long-open doc entry whose fix is already in HEAD but never adversarially re-probed.
+5. **Reconcile the stale inventories** (P3, ~2-3h batched): retire KHR-iridescence §D.3 line 909; move TAA Slice 2b §C→§B + delete the two false "motionView null" comments; correct TS-DEBT `:any`/`as any` counts and ES6 var/indexOf/`52-file` numbers; split Phase-8a §D.2 (normal-G-buffer → §B SHIPPED). These are load-bearing for impact analysis (Principle 6) and several are already-shipped features mislabeled as outstanding.
+```
