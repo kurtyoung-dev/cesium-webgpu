@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-05-30** — historical point-in-time snapshot, superseded. NOT a live tracker. Live successors + index: `migration_doc/README.md`. Still-open items were lifted to `DEFERRED_WORK.md` (see its "Carried-forward on archive" section).
+
 # CesiumJS WebGPU — Comprehensive Codebase Audit
 
 **Date:** March 31, 2026  

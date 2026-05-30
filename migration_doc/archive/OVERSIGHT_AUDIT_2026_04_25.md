@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-05-30** — historical point-in-time snapshot, superseded. NOT a live tracker. Live successors + index: `migration_doc/README.md`. Still-open items were lifted to `DEFERRED_WORK.md` (see its "Carried-forward on archive" section).
+
 # Migration Oversight Audit — 2026-04-25
 
 **Reviewer posture:** Read-only oversight on the parallel C-R7/C-R9/C-R10/C-R11 workstreams. Spot-checks against the principal review (`PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`), `REVIEW_FIX_PROGRESS.md` (Batches 1–52), and live source under `packages/engine/Source/Renderer/WebGPU/`.

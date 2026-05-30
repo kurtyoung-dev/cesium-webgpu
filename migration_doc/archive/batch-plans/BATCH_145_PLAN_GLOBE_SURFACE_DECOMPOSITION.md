@@ -1,3 +1,5 @@
+> **STATUS: SHIPPED — ARCHIVED 2026-05-30.** This decomposition plan was executed and landed; retained as rationale-of-record, not live work. Index: `migration_doc/README.md`; live roll-up: `WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`.
+
 # Batch 145 Plan — `WebGPUGlobeSurfaceRenderer.ts` Decomposition
 
 **Status**: ✅ **COMPLETE (2026-05-01)** — All 9 batches (145-153) shipped. Renderer reduced 3933 → 1310 LOC (−67%). Batch 154 evaluated and skipped (diminishing returns; remaining `createTileCommands` body is the public orchestrator and has no natural sub-decomposition). See `WEBGPU_MIGRATION_STATUS.md` § "Recent Progress (2026-05-01)" for the full arc summary.

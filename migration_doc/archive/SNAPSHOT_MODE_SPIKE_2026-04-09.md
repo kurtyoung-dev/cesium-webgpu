@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-05-30** — historical point-in-time snapshot, superseded. NOT a live tracker. Live successors + index: `migration_doc/README.md`. Still-open items were lifted to `DEFERRED_WORK.md` (see its "Carried-forward on archive" section).
+
 # Snapshot Mode Integration Spike — 2026-04-09
 
 > **Phase 0.7 deliverable.** Research-only spike validating how the

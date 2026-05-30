@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-05-30** — historical point-in-time snapshot, superseded. NOT a live tracker. Live successors + index: `migration_doc/README.md`. Still-open items were lifted to `DEFERRED_WORK.md` (see its "Carried-forward on archive" section).
+
 # CesiumJS WebGPU Fork — Data Pipeline Correctness Review
 
 **Date:** 2026-04-16 (fourth review in the 2026-04-16 series)
@@ -83,7 +85,7 @@ The CPU cost of rendering a single Model on WebGPU is therefore BOTH the WebGPU-
 ### DP-C3. Imagery layer function-valued alpha/brightness/etc. produce NaN uniforms
 **FIXED 2026-04-16 (Batch 4).** Added `resolveImageryLayerValue(value, default, frameState, layer, tile)` helper that branches on `typeof value === "function"` and invokes the callback with `(frameState, layer, x, y, level)` before writing to the Float32Array. Every per-layer read (alpha / brightness / contrast / saturation / dayAlpha / nightAlpha) now goes through it. Dynamic imagery fades (hover-fade, time-of-day, elevation-based) work on WebGPU identically to WebGL.
 
-**Original finding — Verified.** [WebGPUGlobeSurfaceRenderer.ts:1908-1909](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts):
+**Original finding — Verified.** The per-layer pack has since moved to [WebGPUGlobeSurfaceTileUB.ts:256-269](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) (alpha at baseOffset+16, brightness at baseOffset+17), now routed through `resolveImageryLayerValue`. Before the fix the equivalent reads were the unguarded casts described here:
 ```ts
 data[baseOffset + 8] = layer.alpha ?? 1.0;
 data[baseOffset + 9] = layer.brightness ?? 1.0;
@@ -387,9 +389,9 @@ Legend: ✓ honored / ∅ dropped / ~ partial / — N/A
 | brightness | ✓ | ✗ NaN if function |
 | contrast | ✓ | ✗ NaN if function |
 | saturation | ✓ | ✗ NaN if function |
-| hue | ✓ | ∅ not packed at all |
-| gamma | ✓ | ∅ not packed |
-| splitDirection | ✓ | ∅ not packed |
+| hue | ✓ | ✓ packed (WebGPUGlobeSurfaceTileUB.ts:310) |
+| gamma | ✓ | ✓ packed as oneOverGamma (WebGPUGlobeSurfaceTileUB.ts:313) |
+| splitDirection | ✓ | ✓ packed (WebGPUGlobeSurfaceTileUB.ts:314) |
 | colorToAlpha | ✓ | ∅ |
 | cutoutRectangle | ✓ | ∅ |
 | dayAlpha / nightAlpha | ✓ | ~ scalar-only, NaN if function |

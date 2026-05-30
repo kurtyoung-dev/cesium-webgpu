@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-05-30** — historical point-in-time snapshot, superseded. NOT a live tracker. Live successors + index: `migration_doc/README.md`. Still-open items were lifted to `DEFERRED_WORK.md` (see its "Carried-forward on archive" section).
+
 # Sandcastle Batch 66 FINAL Test Report
 
 **Run date:** 2026-04-25 19:05 UTC

@@ -1,3 +1,5 @@
+> **STATUS: SHIPPED — ARCHIVED 2026-05-30.** This decomposition plan was executed and landed; retained as rationale-of-record, not live work. Index: `migration_doc/README.md`; live roll-up: `WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`.
+
 # Batch 133 Plan — Extract `_executePickPass` from `WebGPUSceneRenderer`
 
 **Source:** `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`
