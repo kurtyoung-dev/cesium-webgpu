@@ -7,18 +7,13 @@
  */
 import { chromium } from "playwright";
 
-const BASE = "http://localhost:8080";
+const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 
 (async () => {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: [
-      "--enable-unsafe-webgpu",
-      "--enable-features=Vulkan",
-      "--use-vulkan",
-      "--disable-cache",
-    ],
+    args: ["--enable-unsafe-webgpu", "--disable-cache"],
   });
   const page = await browser.newPage();
   const errors = [];
@@ -35,14 +30,17 @@ const BASE = "http://localhost:8080";
   const result = await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
+    // Default ion World Imagery now loads (valid default token), so this
+    // exercises the real default-viewer render path. Frame the globe disk.
     v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(-75.5, 40.0, 5_000_000),
+      destination: C.Cartesian3.fromDegrees(-75.5, 40.0, 3_000_000),
     });
 
-    // Render 90 frames to let imagery + tiles load
-    for (let i = 0; i < 90; i++) {
+    // Render until imagery tiles settle (or a frame cap).
+    for (let i = 0; i < 400; i++) {
       v.scene.render();
       await new Promise((r) => requestAnimationFrame(r));
+      if (v.scene.globe.tilesLoaded && i > 60) break;
     }
 
     const ctx = v.scene.context;
@@ -109,8 +107,47 @@ const BASE = "http://localhost:8080";
     };
   });
 
+  // Canvas screenshot — the user-facing symptom of BUG-WEBGPU-CANVAS-BLACK
+  // is the CANVAS rendering black, not the scene FB. Capture + sample center
+  // pixels (away from the UI overlays) so we test the post-process blit to
+  // the swap chain, which is what the bug broke.
+  const png = await page.screenshot({ type: "png" });
+  const fs = await import("fs");
+  fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
+  fs.writeFileSync(
+    "Tools/visual-regression/output/canvas-black-reverify.png",
+    png,
+  );
+  const canvasSample = await page.evaluate(async (durl) => {
+    return await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = img.width;
+        c.height = img.height;
+        const cx = c.getContext("2d");
+        cx.drawImage(img, 0, 0);
+        const d = cx.getImageData(0, 0, c.width, c.height).data;
+        // Sample a centered region (avoid the right-side help panel + bottom
+        // timeline). 30%-70% horizontally, 20%-60% vertically.
+        let nonBlack = 0;
+        let total = 0;
+        for (let y = (img.height * 0.2) | 0; y < (img.height * 0.6) | 0; y += 7) {
+          for (let x = (img.width * 0.3) | 0; x < (img.width * 0.7) | 0; x += 7) {
+            const i = (y * img.width + x) * 4;
+            total++;
+            if (d[i] + d[i + 1] + d[i + 2] > 12) nonBlack++;
+          }
+        }
+        resolve({ total, nonBlack, fraction: +(nonBlack / total).toFixed(3) });
+      };
+      img.src = durl;
+    });
+  }, `data:image/png;base64,${png.toString("base64")}`);
+
   await browser.close();
   console.log("Result:", JSON.stringify(result, null, 2));
+  console.log("Canvas sample:", JSON.stringify(canvasSample));
   if (errors.length) {
     console.log("\nFirst errors/warnings:");
     for (const e of errors.slice(0, 10)) console.log("  " + e.slice(0, 250));
