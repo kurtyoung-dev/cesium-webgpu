@@ -309,3 +309,88 @@ Recommended ingest companion (no engine code): document the **I3DM + EXT_structu
 ### Source URLs (vegetation-LOD literature)
 
 Octahedral/billboard impostors: Shaderbits "Octahedral Impostors"; NVIDIA GPU Gems 3 ch.21 "True Impostors"; InstaLOD / Simplygon impostor docs; Amplify Impostors (80.lv). HLOD/mesh-merge: UE5 Proxy Geometry Tool + HLOD Mesh Merge Modifier; Nanite Foliage (UE 5.7 docs). GPU-driven grass: Codrops "False Earth: From WebGL Limits to a WebGPU-Driven World" (tympanus.net/codrops/2026/04/21); Cyanilux "GPU Instanced Grass Breakdown"; Toji.dev "WebGPU Indirect Draw Best Practices"; webgpufundamentals.org optimization. LOD transitions: SpeedTree LOD docs; alpha-to-coverage (Grokipedia); Cinevva "Landscape Generation … Browser Open Worlds". Data: OSM `natural=tree`/`forest`; Google Photorealistic 3D Tiles; 3D Tiles I3DM spec (CesiumGS).
+
+---
+
+## 3D Tiles integration + spec-extension analysis
+
+**Status:** Spec-level survey (3D Tiles 1.1 / OGC 22-025r4, 3D-Tiles-Next, Khronos glTF registry, CesiumGS repos + community forum). **Date:** 2026-06-05. **Scope:** what the standard *can* express for vegetation today, what it is *missing*, what is on the roadmap, and whether a new extension is warranted. This complements §4.2 (data model) and §2.2 (what the fork already consumes) — it does not change the build plan in §8; it scopes the *authoring/interchange* layer the plan sits on.
+
+### A. The explicit-instances model — fully viable today
+
+The end-to-end "every tree is a real instance with per-instance metadata" path is **production-ready and rides entirely on ratified or in-flight standards** the fork already loads (§2.1, §2.2). There is **no new loader required** — this confirms §4.2 tier 1.
+
+- **Geometry / transforms — `EXT_mesh_gpu_instancing`** (Khronos, *ratified* multi-vendor; https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Vendor/EXT_mesh_gpu_instancing/README.md). Per-instance `TRANSLATION` (VEC3), `ROTATION` (VEC4 quat), `SCALE` (VEC3), plus underscore-prefixed custom attributes (`_SPECIES`, `_HEIGHT`, `_DBH`, `_FEATURE_ID_0`). All instances share one fixed buffer layout — **no variable-length per-instance arrays, no runtime add/remove** (count is baked at load). Fork: `Scene/Model/InstancingPipelineStage.js` → WebGL2 vertex attrs; `Renderer/WebGPU/WebGPUModelInstancing.js` → 64 B/instance storage buffer → `@builtin(instance_index)`.
+- **Container — `3DTILES_content_gltf` + I3DM.** glTF can be referenced directly as tile content (core in 1.1), or wrapped as I3DM (deprecated in 1.1 but still valid and still the most widely-tooled path: `CesiumGS/3d-tiles-tools`, `i3dm.export` PostGIS→i3dm). Fork loads both (`I3dmLoader.js`, `Model3DTileContent.js`).
+- **Per-instance identity / picking — `EXT_mesh_features` + `EXT_instance_features`.** `EXT_mesh_features` is the *recommended* glTF extension in the 1.1 CHANGES.md (assigns feature IDs to vertices/texels via attribute, texture, or implicit index). `EXT_instance_features` (CesiumGS 3d-tiles-next, https://github.com/CesiumGS/glTF/tree/3d-tiles-next/extensions/2.0/Vendor/EXT_instance_features) is the *instance-level* sibling — feature IDs per GPU instance, linking each tree to a property-table row. Fork: `Scene/Model/ModelFeatureTable.js` routes `instanceFeatureIdLabel`/`featureIdLabel`; GPU pick path exists.
+- **Per-instance attributes — `EXT_structural_metadata`** (CesiumGS/Khronos, recommended in 1.1; https://github.com/CesiumGS/glTF/tree/3d-tiles-next/extensions/2.0/Vendor/EXT_structural_metadata). Schema (classes/enums/typed properties) bound to a `PropertyTable` (per-feature, binary), `PropertyAttribute` (per-vertex), or `PropertyTexture` (per-texel). Fork: `Scene/StructuralMetadata.js` + `Scene/PropertyTable.js` are **fully wired for per-instance read** (this is the load-bearing capability for tier 1); `PropertyTexture` sampling is **scaffolded but not shader-wired** (§9 item 5), `PropertyAttribute` is scaffolded.
+- **Tile/region-scoped metadata — `3DTILES_metadata`** (core in 1.1, https://github.com/CesiumGS/3d-tiles/tree/main/extensions/3DTILES_metadata). Same schema framework, attached at **tileset / tile / content-group / content** level — the right place for *coarse* "this tile is temperate_broadleaf, 800 stems/ha" hints. **Cannot reach individual instances** (that is EXT_structural_metadata's job).
+- **LOD organization — `3DTILES_implicit_tiling`** (core in 1.1) + **REPLACE refinement** + `3DTILES_multiple_contents` (core in 1.1, one tile → trees.glb + grass.pnts + rocks.glb). These *organize* the §5 4-stage chain (mesh→impostor→clump→albedo) into a streamable quadtree/octree but **do not generate** the LOD assets. Fork: `Implicit3DTileContent.js` (experimental), `Composite3DTileContent.js`.
+- **Styling — `Cesium3DTileStyle`** expressions (`${species} === 'oak'` → color, `${height}` → scale) work cross-backend once feature IDs + property tables are present.
+
+**Limits of the explicit model (confirms §3 / §7):** fixed instance count (no runtime scatter — adding/removing trees means re-authoring the glTF); bandwidth ~48 B/instance raw → ~2.4 MB per 50K-tree tile uncompressed, ~100–300 KB with Draco+meshopt+zstd; per-instance metadata genuinely needs the glTF-level extensions (3DTILES_metadata alone is tile-scoped); and the legacy I3DM `BatchTable` is **not schema-standardized** (every author invents property names).
+
+### B. What the spec is MISSING for vegetation — precise coverage map
+
+The gap is **semantic + procedural**, not geometric. Geometry/instancing/metadata *plumbing* exists; what is absent is any standardized way to say "this is vegetation, here is the region, scatter it like this." Precise breakdown:
+
+| Vegetation concept | Spec expression today | Verdict |
+|---|---|---|
+| Flag content as "vegetation" | `EXT_structural_metadata`/`3DTILES_metadata` **author-defined** class/enum (e.g. a `class:"vegetation"`) | **Partial / ad-hoc** — works but no standard semantic; tilesets won't interoperate |
+| Define a vegetation **AREA / region** | none — only the tile bounding volume (a box/region/sphere), which is the *tile* extent, not a vegetation boundary; implicit tiling uses *regular grids* so irregular patches need explicit tiles | **No expression** for an arbitrary vegetated polygon inside a tile |
+| **Scatter / placement rules** (density, spacing, Poisson, seed) | none at any level | **No expression at all** |
+| **Biome / ecosystem** definition | author-defined enum only; **no standard vocabulary** (NLCD/CORINE/FAO/ASPRS classes live entirely outside the spec) | **No standard** — every dataset differs |
+| **Density / landcover raster** | `PropertyTexture` *could* carry per-texel density in theory, but it is rarely implemented in viewers (and **not shader-wired in this fork**, §9 item 5) | **No practical expression**; workaround = custom control texture sampled in viewer code |
+| Species **palette / catalog** | author-defined `3DTILES_metadata` class is expressive enough to *list* species; no standard schema | **Partial** — expressible, not standardized |
+| Per-instance species/height/DBH | `EXT_structural_metadata` PropertyTable (or custom instance attrs) | **Covered** (see A) |
+| LOD-tier transition criteria | implicit tiling geometric error (SSE) only; no vegetation-specific enter/exit/hysteresis | **Partial** — generic SSE, not the §5.1 hysteresis model (which is correctly viewer-driven) |
+| Render hints (alpha-to-coverage, translucency, wind freq/amp) | none | **No expression** — these stay fork `ShaderDefine` bits (§6.1), viewer-side |
+
+**Net:** the spec has **no built-in semantic types for species / biome / canopyDensity / ageClass**, **no region-of-vegetation primitive**, and **no scatter-rule schema**. Everything author-defined means zero cross-tileset interoperability on vegetation properties. This is the single concrete gap that a new extension (D) would close.
+
+### C. Roadmap / repo status — what is proposed or shipped
+
+Searched CesiumGS/3d-tiles, the 3d-tiles-next branch, KhronosGroup/glTF registry, Cesium blog/roadmap, and the community forum.
+
+**Shipped / ratified (usable now):**
+
+- `EXT_mesh_gpu_instancing` — ratified (Khronos). Forum migration thread: https://community.cesium.com/t/from-i3dm-to-ext-mesh-gpu-instancing/19731
+- `3DTILES_implicit_tiling`, `3DTILES_multiple_contents`, `3DTILES_content_gltf`, `3DTILES_metadata` — core in **3D Tiles 1.1 / OGC 22-025r4** (approved **Dec 2022**).
+- glTF point clouds (POINTS mode + `EXT_mesh_features` + `EXT_structural_metadata`) replaced native PNTS in 1.1 — LiDAR per-point classification (ASPRS ground/low-veg/high-veg) flows through here.
+- **`KHR_gaussian_splatting` + `KHR_gaussian_splatting_compression_spz`** — release candidate (**Feb 2026**), Cesium platform support landing **June 2026** (https://cesium.com/blog/2026/04/27/3d-gaussian-splats-lod/). Cesium explicitly cites splats "excel at preserving visual fidelity for vegetation" where mesh reconstruction fails — relevant as a *5th representation* alongside §5's mesh/impostor/clump/albedo, but it is generic splatting, **not a vegetation extension**.
+
+**Proposed / in-flight:**
+
+- `EXT_instance_features`, `EXT_structural_metadata`, `EXT_mesh_features` — 3d-tiles-next, *recommended* in 1.1 CHANGES.md; metadata blog https://cesium.com/blog/2022/05/31/fine-grained-metadata-in-3d-tiles-next/ (**May 2022**).
+- **`CesiumGS/cesium-unreal#558`** "Add land cover data or create splatmaps to empower procedural worlds" (https://github.com/CesiumGS/cesium-unreal/issues/558, filed **2023**, **open/unresolved** — Cesium undecided between exposing land-classification vs generating splatmaps). This is the *closest* thing to a vegetation/landcover request and it is **engine-level, not spec-level**.
+
+**Explicitly nothing found:**
+
+- **No `3DTILES_vegetation`, `3DTILES_scatter`, biome, or density-map extension** exists, is drafted, or is on the public 3D Tiles 2.0 roadmap. June-2026 roadmap items (https://cesium.com/blog/2026/06/01/cesium-releases-in-june-2026/) are vector tiles (`3DTILES_content_gltf_vector`), Gaussian-splat LOD, voxel tiling preview, and CAD/IFC design formats — **vegetation/biome features are absent**.
+- **No point-instancing extension** distinct from mesh instancing (grass-blade/rock primitives) — none proposed.
+- Community demand is real but **all application-level**: "Foliage 3D Tileset" (Aug 2024, https://community.cesium.com/t/foliage-3d-tileset/34414), "optimal representation of large forest areas" (May 2023, https://community.cesium.com/t/discussion-optimal-and-most-efficient-representation-of-large-forest-areas/24269 — consensus answer is "use EXT_mesh_gpu_instancing", not a spec change), "Best practices for tree/foliage coverage" (Aug 2023), "WMS as basis for vegetation" (Nov 2021). Cesium's own foliage tutorials (cesium.com/learn/unreal/unreal-foliage, .../unreal-procedural-foliage) use **Unreal's native foliage/Niagara systems, not 3D Tiles**.
+
+**Industry pattern (why the gap persists):** UE5 (Foliage component → baked instances in the .umap; offline procedural paint/spawn), Unity (TerrainTools density `Texture2D` → editor/runtime spawner → serialized prefab instances), and Godot (MultiMesh) all treat scatter as an **offline content-creation step that emits explicit instances**, not a runtime data format. The web/3D-Tiles consensus mirrors this: scatter is a **client-side rendering/optimization problem**, which is exactly why §4.2 tier 2 (`VegetationScatterCollection`) is viewer-side and correct.
+
+### D. Does a new extension make sense? — verdict + sketch
+
+**Verdict: YES, but as a fork-local convention FIRST, not an upstream proposal yet — and only for the *procedural* model (B). The explicit model (A) needs zero new spec.** The value of an extension is **interoperability + bandwidth** for planetary-scale procedural fill (encode a density raster + rules in ~100–300 KB/tile instead of baking millions of explicit instances). The risk is **cross-client non-determinism** (a scattered tree must land in the *same* place in every viewer or picking/styling breaks across clients). Because determinism is the hard part and is viewer-implementation-coupled, **prove it locally before standardizing.**
+
+**Recommended sequencing:**
+
+1. **Fork-local first (V1–V2, §8):** ship `VegetationScatterCollection` driving placement from a control texture + a small JSON rules block, using a **documented private namespace** (e.g. `_CESIUMWEBGPU_vegetation_scatter` on tile/tileset `3DTILES_metadata`, since underscore/vendor-prefixed unknown extensions are ignored by other viewers per the spec's forward-compat rule). Define a versioned external schema (`vegetation-1.0.json`) for the species palette + per-instance properties so authored (model A) tilesets interoperate immediately.
+2. **Propose upstream only after** the fork demonstrates a deterministic seeded scatter (mandate xorshift128/PCG, ideally in WASM, *not* JS `Math.random()`) and a real workload proves the bandwidth win. Then take it to CesiumGS as a 3d-tiles-next draft, ideally co-designed with the open `cesium-unreal#558` landcover thread (shared density/biome raster definition serves both).
+
+**Candidate sketch — `3DTILES_vegetation_scatter`** (rides on existing metadata + semantics; nothing here needs a new binary tile format):
+
+- **Region geometry:** reuse the tile's bounding volume as the scatter extent; optionally an inner clip polygon as a `PropertyTexture` mask (R8 in-region). No new geometry primitive — keeps it metadata-only.
+- **Control rasters (KTX2, ~50–80 KB each):** `densityMapUri` (R8 spawn probability), `biomeMapUri` (RGBA8 = biomeId / slopeMask / altitudeZone / reserved). These are ordinary glTF/KTX2 textures referenced by URI — already streamable.
+- **Species palette (tileset-level `3DTILES_metadata` class):** array of `{ id, name, glbUri, impostorUri, heightRange, dbhRange, biomeWeights }` — directly expressible *today* in 3DTILES_metadata; the extension only standardizes the property *names*.
+- **Placement rules (tile-level JSON):** `{ mode: poisson_disk, minDistance, noiseOctaves/lacunarity/persistence, globalDensityScale, slopeRejectAngle, seedBase, heightSamplingMode }` + a `lodLevels[]` array mapping distance ranges → mesh-LOD index + density falloff (maps 1:1 onto §5.1).
+- **Semantics:** define `VEG_DENSITY`, `VEG_BIOME`, `VEG_SPECIES` semantic strings so the rasters/enums are machine-discoverable (the spec's semantics framework is the right hook; today it only ships spatial/structural semantics — this is the additive piece).
+- **Client contract:** fetch metadata → fetch rasters → seeded scatter (Poisson-disk rejection sampling, biome-weighted species pick, terrain/depth height sample, RTE-encode) → indirect draw. **Determinism is mandated** (fixed PRNG) so picking/feature-IDs are stable across clients.
+- **Explicit-vs-procedural tradeoff (carry both):** explicit (model A, I3DM + metadata) for high-value precise regions (OSM/survey trees — exact positions, perfect determinism, larger payload); procedural (this extension) for global low-detail fill (Global Forest Watch canopy density — tiny payload, approximate positions). Mark which tiles are which via a `3DTILES_metadata` group flag.
+
+**Why our client is well-positioned to consume it (strand 4):** the consumer half already exists. Control-raster sampling reuses the same KTX2/texture path; height sampling reuses `Core/sampleTerrainMostDetailed.js` + the depth-drape mechanism (§4.3); per-instance identity flows through `Scene/Model/ModelFeatureTable.js`; metadata schema parsing is live in `Scene/StructuralMetadata.js` + `Scene/PropertyTable.js`; instancing lands in `Scene/Model/InstancingPipelineStage.js` (WebGL2) and `Renderer/WebGPU/WebGPUModelInstancing.js` (WebGPU). The **only genuinely new artifact** is the scatter compute pass / CPU-worker twin (`VegetationScatter.wgsl`, V1 in §8) — which the plan already builds regardless of whether an extension is ever standardized. The remaining consumer gap is `Scene/PropertyTexture.js` shader wiring (§9 item 5), needed only if density maps are sourced from PropertyTexture rather than a plain control texture.
+
+**Spec sources cited:** 3D Tiles 1.1 / OGC 22-025r4 (https://github.com/CesiumGS/3d-tiles, CHANGES.md, /extensions/3DTILES_metadata, /extensions/3DTILES_implicit_tiling, /specification/Metadata/README.adoc); `EXT_mesh_gpu_instancing` (KhronosGroup/glTF); `EXT_structural_metadata` / `EXT_instance_features` / `EXT_mesh_features` (CesiumGS/glTF 3d-tiles-next); cesium-unreal#558; Cesium blogs (fine-grained metadata 2022-05-31, gaussian-splat LOD 2026-04-27, June-2026 releases 2026-06-01); community.cesium.com forum threads above.
