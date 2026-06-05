@@ -118,10 +118,12 @@ export class WebGPUBuffer {
     // (common during initial frames before data is ready).
     const rawSize = Number(options.size) || 0;
     if (rawSize <= 0) {
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[WebGPU:Buffer] size is zero — label="${options.label ?? "(unlabeled)"}" ` +
           `rawSize=${options.size} usage=${options.usage}. Clamping to 4 bytes.`,
       );
+      //>>includeEnd('debug');
     }
     let bufferSize = Math.max(rawSize, 4);
     if (defined(options.data)) {

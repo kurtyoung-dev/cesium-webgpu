@@ -440,9 +440,11 @@ fn csm_oitOutput(color: vec4<f32>, clipZ: f32) -> OITFragOutput {
         `(@fragment[\\s\\S]*?fn\\s+)(${fragmentEntryPoint})(\\s*\\()`,
       );
       if (!lenientRegex.test(baseWGSL)) {
+        //>>includeStart('debug', pragmas.debug);
         console.warn(
           `[OIT] Could not find fragment entry '${fragmentEntryPoint}' for OIT injection`,
         );
+        //>>includeEnd('debug');
         return baseWGSL;
       }
     }
@@ -551,7 +553,11 @@ fn ${fragmentEntryPoint}(${paramName}: ${paramType}) -> OITFragOutput {
       this._oitPipelineCache.set(cacheKey, pipeline);
       return pipeline;
     } catch (e) {
-      console.warn(`[OIT] Failed to create OIT pipeline variant:`, e);
+      // Pipeline creation failure — must always reach the console as a real
+      // error per CLAUDE.md (shader compile / pipeline creation failures are
+      // never pragma-stripped). Promoted from console.warn so the
+      // debug-pragma lint leaves it permanent.
+      console.error(`[OIT] Failed to create OIT pipeline variant:`, e);
       return null;
     }
   }

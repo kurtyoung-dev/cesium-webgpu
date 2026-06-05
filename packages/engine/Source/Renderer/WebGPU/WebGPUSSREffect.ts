@@ -181,12 +181,14 @@ export function executeSSR(
   if (!normalView) {
     if (!cache.warnedNoNormalGBuffer) {
       cache.warnedNoNormalGBuffer = true;
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         "[CesiumJS:webgpu] Screen-space reflections enabled without a normal G-buffer. " +
           "SSR will sample an uninitialized placeholder and produce noise. " +
           "A real normal G-buffer is gated on FEAT-GAP-01 (Phase-8a Foundation). " +
           "See migration_doc/DEFERRED_WORK.md.",
       );
+      //>>includeEnd('debug');
     }
     ensureNormalTexture(device, cache, w, h);
     normalView = cache.normalView!;

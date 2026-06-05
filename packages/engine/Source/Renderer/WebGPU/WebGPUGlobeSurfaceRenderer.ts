@@ -1321,6 +1321,7 @@ export class WebGPUGlobeSurfaceRenderer {
       if (result) {
         textureViews.push(result.view);
       } else if (this._diagShouldLog()) {
+        //>>includeStart('debug', pragmas.debug);
         console.warn(
           `[WebGPU:GlobeTile] _getOrCreateImageryTexture returned null for imagery`,
           {
@@ -1333,6 +1334,7 @@ export class WebGPUGlobeSurfaceRenderer {
             )?._source,
           },
         );
+        //>>includeEnd('debug');
       }
     }
 

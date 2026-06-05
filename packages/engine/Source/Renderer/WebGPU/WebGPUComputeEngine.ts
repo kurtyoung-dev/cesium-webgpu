@@ -179,10 +179,12 @@ class WebGPUComputeEngine {
       return true;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[CesiumJS:WebGPUComputeEngine] Compute dispatch failed for '${command.label}': ${msg}. ` +
           `Falling back to CPU path.`,
       );
+      //>>includeEnd('debug');
       return false;
     }
   }
@@ -240,10 +242,12 @@ class WebGPUComputeEngine {
       return true;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[CesiumJS:WebGPUComputeEngine] Batch compute dispatch failed: ${msg}. ` +
           `Falling back to CPU path.`,
       );
+      //>>includeEnd('debug');
       return false;
     }
   }
@@ -287,9 +291,11 @@ class WebGPUComputeEngine {
       return true;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[CesiumJS:WebGPUComputeEngine] Compute on encoder failed for '${command.label}': ${msg}`,
       );
+      //>>includeEnd('debug');
       return false;
     }
   }

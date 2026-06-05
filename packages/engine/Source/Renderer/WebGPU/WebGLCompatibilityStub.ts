@@ -298,10 +298,12 @@ export function createWebGLCompatibilityStub(state: WebGLStubState) {
   const logUsage = (method: string, reason: string) => {
     if (!_loggedMethods.has(method)) {
       _loggedMethods.add(method);
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[WebGPU:StubFallback] gl.${method}() called — ${reason}. ` +
           `This indicates missing WebGPU functionality that should be added.`,
       );
+      //>>includeEnd('debug');
     }
   };
 

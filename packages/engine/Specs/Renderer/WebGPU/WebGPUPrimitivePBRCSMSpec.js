@@ -176,18 +176,35 @@ describe("Renderer/WebGPU PBR CSM receive layout", function () {
     // Catch accidental deletion of the CSM helper block.
     it("PBRSimple source carries the full CSM helper suite", function () {
       expect(PrimitivePBRSimple.length).toBeGreaterThan(6000);
-      // 5 bind declarations (effects UBO + shadow tex + sampler + csmParams + cascadeDepthArray)
+      // 9 bind declarations on @group(2). The original CSM Slice 2d set
+      // was 5 (effects UBO @0 + shadowDepthTex @1 + shadowCompSampler @2
+      // + csmParams @10 + cascadeDepthArray @11). Four more landed as
+      // legitimate feature slices, each a distinct binding index wired by
+      // WebGPUEffectsBindGroup.js (bindings 7/8/9/10/11/17, see
+      // WebGPUEffectsBindGroup.js:723-737 / 1423-1437):
+      //   - @7/@8/@9 aerial-perspective LUT (FEAT-GAP-09):
+      //       PrimitivePBRSimple.wgsl:110-112
+      //   - @17 point-light cube depth (Batch 161/165):
+      //       PrimitivePBRSimple.wgsl:118
+      // Distinct indices, no duplicates → not a module-cache/dedup
+      // regression. Bump the guard if (and only if) another wired
+      // binding is intentionally added.
       expect(
         countMatches(PrimitivePBRSimple, /@group\(2\)\s*@binding\(/g),
-      ).toBe(5);
+      ).toBe(9);
     });
 
     it("PBRTextured source carries the full CSM helper suite", function () {
       expect(PrimitivePBRTextured.length).toBeGreaterThan(6000);
-      // 5 bindings on @group(3) for effects + shadow + CSM
+      // 9 bindings on @group(3) — same evolution as PBRSimple's @group(2)
+      // set (effects @0 + shadowDepthTex @1 + shadowCompSampler @2 +
+      // aerial LUT @7/@8/@9 + csmParams @10 + cascadeDepthArray @11 +
+      // point-light cube depth @17). All distinct indices wired by
+      // WebGPUEffectsBindGroup.js:1423-1437; declarations at
+      // PrimitivePBRTextured.wgsl:95-107. Not a dedup regression.
       expect(
         countMatches(PrimitivePBRTextured, /@group\(3\)\s*@binding\(/g),
-      ).toBe(5);
+      ).toBe(9);
       // 2 bindings on @group(2) for sampler + texture
       expect(
         countMatches(PrimitivePBRTextured, /@group\(2\)\s*@binding\(/g),

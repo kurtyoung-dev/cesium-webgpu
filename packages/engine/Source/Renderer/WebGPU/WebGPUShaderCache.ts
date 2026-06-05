@@ -364,10 +364,12 @@ export class WebGPUShaderCache {
         (msg) => msg.type === "warning",
       );
       if (warnings.length > 0) {
+        //>>includeStart('debug', pragmas.debug);
         console.warn(
           `Shader compilation warnings for "${descriptor.name}":`,
           warnings,
         );
+        //>>includeEnd('debug');
       }
 
       // Cache the compiled module

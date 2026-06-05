@@ -162,8 +162,11 @@ export class WebGPUIndirectDrawManager {
    */
   addDrawCall(params: IndirectDrawParams): number {
     if (this._drawCount >= this._maxDrawCalls) {
-      console.warn(
-        `[${this._label}] Max draw calls (${this._maxDrawCalls}) exceeded`,
+      // Permanent overflow sentinel (CLAUDE.md): the draw is dropped (return -1),
+      // so this must reach the console in production — debug-stripping it would
+      // hide silently-missing geometry.
+      console.error(
+        `[${this._label}] Max draw calls (${this._maxDrawCalls}) exceeded — draw dropped`,
       );
       return -1;
     }
@@ -188,8 +191,11 @@ export class WebGPUIndirectDrawManager {
    */
   addIndexedDrawCall(params: IndirectDrawIndexedParams): number {
     if (this._drawCount >= this._maxDrawCalls) {
-      console.warn(
-        `[${this._label}] Max draw calls (${this._maxDrawCalls}) exceeded`,
+      // Permanent overflow sentinel (CLAUDE.md): the draw is dropped (return -1),
+      // so this must reach the console in production — debug-stripping it would
+      // hide silently-missing geometry.
+      console.error(
+        `[${this._label}] Max draw calls (${this._maxDrawCalls}) exceeded — draw dropped`,
       );
       return -1;
     }
@@ -329,7 +335,9 @@ export class WebGPUIndirectDrawManager {
   submitBatch(commands: ReadonlyArray<any>): number {
     if (commands.length === 0) return this._drawCount;
     if (this._drawCount + commands.length > this._maxDrawCalls) {
-      console.warn(
+      // Permanent overflow sentinel (CLAUDE.md): batch dropped (return -1) — must
+      // reach the console in production.
+      console.error(
         `[${this._label}] submitBatch overflow: have=${this._drawCount} ` +
           `incoming=${commands.length} max=${this._maxDrawCalls}`,
       );

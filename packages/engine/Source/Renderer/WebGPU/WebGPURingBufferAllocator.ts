@@ -226,12 +226,14 @@ export class WebGPURingBufferAllocator {
       this._overflowCount++;
       if (!this._hasWarnedOverflow) {
         this._hasWarnedOverflow = true;
+        //>>includeStart('debug', pragmas.debug);
         console.warn(
           `[CesiumJS:webgpu] Ring allocator "${this._label}" overflowed its ` +
             `${(this._pageSize / 1024 / 1024).toFixed(1)}MB page. ` +
             `Consider raising pageSize. Overflow pages auto-trim every ` +
             `${this._autoTrimEveryFrames} frames.`,
         );
+        //>>includeEnd('debug');
       }
       const overflowSize = Math.max(this._pageSize, alignedSize);
       const overflowIndex = this._pages.length;

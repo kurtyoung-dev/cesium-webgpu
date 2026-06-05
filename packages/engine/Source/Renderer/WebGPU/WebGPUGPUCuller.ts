@@ -340,9 +340,11 @@ export class WebGPUGPUCuller {
     externalIndirectBuffer?: GPUBuffer,
   ): void {
     if (!this._initialized || !this._pipeline || !this._bindGroupLayout) {
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[${this._label}] Not initialized — call initialize() first`,
       );
+      //>>includeEnd('debug');
       return;
     }
 

@@ -616,10 +616,12 @@ function _inferShadowLayoutKey(cmd, vbStride) {
   }
   if (!_shadowLayoutWarned.has(vbStride)) {
     _shadowLayoutWarned.add(vbStride);
+    //>>includeStart('debug', pragmas.debug);
     console.warn(
       `[WebGPUShadowMap] No shadow cast pipeline registered for vertex stride ${vbStride}. ` +
         `Commands with this layout will be skipped. See SHADOW-LAYOUT in the migration backlog.`,
     );
+    //>>includeEnd('debug');
   }
   return null;
 }

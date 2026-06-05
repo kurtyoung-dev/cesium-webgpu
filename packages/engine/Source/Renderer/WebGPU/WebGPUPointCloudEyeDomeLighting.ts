@@ -33,12 +33,14 @@ function updateWebGPUPointCloudEDL(
 ): void {
   if (!_edlWarned) {
     _edlWarned = true;
+    //>>includeStart('debug', pragmas.debug);
     console.warn(
       "[CesiumJS:webgpu] PointCloudEyeDomeLighting (EDL) is not yet " +
         "implemented on the WebGPU backend. Point clouds render without " +
         "edge-darkening. Port tracked as C-P14 in the 2026-04-16 " +
         "per-feature review (see migration_doc/).",
     );
+    //>>includeEnd('debug');
   }
   // Intentional no-op — see module header for full port requirements.
 }

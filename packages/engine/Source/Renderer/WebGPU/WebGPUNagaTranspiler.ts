@@ -129,12 +129,14 @@ async function loadNaga(): Promise<NagaModule | null> {
 
       if (typeof mod.glsl_to_wgsl !== "function") {
         _nagaUnavailable = true;
+        //>>includeStart('debug', pragmas.debug);
         // eslint-disable-next-line no-console
         console.warn(
           "[WebGPU:Naga] naga-wasm loaded but glsl_to_wgsl is missing — " +
             "the vendored build may be stale. Rebuild via " +
             "`packages/wasm-naga`: wasm-pack build --target web --release --features runtime",
         );
+        //>>includeEnd('debug');
         return null;
       }
 
@@ -153,6 +155,7 @@ async function loadNaga(): Promise<NagaModule | null> {
       return _nagaModule;
     } catch (err) {
       _nagaUnavailable = true;
+      //>>includeStart('debug', pragmas.debug);
       // eslint-disable-next-line no-console
       console.warn(
         "[WebGPU:Naga] naga-wasm not available — the vendored blob at " +
@@ -160,6 +163,7 @@ async function loadNaga(): Promise<NagaModule | null> {
           "`packages/wasm-naga` (see that crate's README). " +
           `Reason: ${(err as Error).message}`,
       );
+      //>>includeEnd('debug');
       return null;
     }
   })();

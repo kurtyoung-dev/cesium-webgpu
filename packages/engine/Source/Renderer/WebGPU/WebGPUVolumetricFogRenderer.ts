@@ -981,7 +981,9 @@ class WebGPUVolumetricFogRenderer {
       try {
         this._snapshotService.unregisterFreezable("webgpu-volumetric-fog");
       } catch (e) {
+        //>>includeStart('debug', pragmas.debug);
         console.warn("[WebGPU:VolumetricFog] unregisterFreezable failed:", e);
+        //>>includeEnd('debug');
       }
       this._snapshotRegistered = false;
       this._snapshotService = null;

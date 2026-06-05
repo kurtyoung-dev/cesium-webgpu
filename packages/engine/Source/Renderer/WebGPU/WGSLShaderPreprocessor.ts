@@ -602,9 +602,11 @@ export class WGSLShaderPreprocessor {
 
       const chunk = this._library.get(name);
       if (!chunk) {
+        //>>includeStart('debug', pragmas.debug);
         console.warn(
           `[WGSLPreprocessor] Warning: chunk "${name}" not found in library (referenced by "${label}")`,
         );
+        //>>includeEnd('debug');
         return null;
       }
 

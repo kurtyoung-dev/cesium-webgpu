@@ -197,8 +197,10 @@ const _warnedNames = new Set<string>();
 function _warnUnknownModeOnce(name: string): void {
   if (_warnedNames.has(name)) return;
   _warnedNames.add(name);
+  //>>includeStart('debug', pragmas.debug);
   console.warn(
     `[CesiumDebug] Unknown globeFragmentDebug mode '${name}'. ` +
       `Known modes: ${GLOBE_FRAGMENT_DEBUG_MODES.map((m) => m.name).join(", ")}`,
   );
+  //>>includeEnd('debug');
 }

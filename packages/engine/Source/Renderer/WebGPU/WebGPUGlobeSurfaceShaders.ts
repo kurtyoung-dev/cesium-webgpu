@@ -232,10 +232,12 @@ fn fragmentDebugNormal(input: VertexOutput) -> FragOutput {
     device.popErrorScope().then((err) => {
       if (err) {
         host._debugFragmentShaderModules.set(defines, null);
+        //>>includeStart('debug', pragmas.debug);
         console.warn(
           `[WebGPUGlobeSurfaceRenderer] debug fragment variants disabled ` +
             `for defines=0x${defines.toString(16)}: ${err.message}`,
         );
+        //>>includeEnd('debug');
       }
     });
     host._debugFragmentShaderModules.set(defines, mod);
@@ -296,11 +298,13 @@ export function getClipDistancesShaderModule(
   const preprocessedBase = preprocessShaderSource(host._shaderCode, defines);
   const augmented = buildClipDistancesShaderSource(preprocessedBase);
   if (augmented === null) {
+    //>>includeStart('debug', pragmas.debug);
     console.warn(
       "[WebGPUGlobeSurfaceRenderer] clip-distances shader augmentation " +
         "could not locate one of its anchor strings; falling back to the " +
         "fragment-discard path.",
     );
+    //>>includeEnd('debug');
     host._clipDistancesShaderModules.set(defines, null);
     return null;
   }
@@ -314,10 +318,12 @@ export function getClipDistancesShaderModule(
     device.popErrorScope().then((err) => {
       if (err) {
         host._clipDistancesShaderModules.set(defines, null);
+        //>>includeStart('debug', pragmas.debug);
         console.warn(
           `[WebGPUGlobeSurfaceRenderer] clip-distances variant disabled ` +
             `for defines=0x${defines.toString(16)}: ${err.message}`,
         );
+        //>>includeEnd('debug');
       }
     });
     host._clipDistancesShaderModules.set(defines, mod);

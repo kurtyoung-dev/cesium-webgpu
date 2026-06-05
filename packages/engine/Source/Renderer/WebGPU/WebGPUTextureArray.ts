@@ -164,9 +164,11 @@ export class WebGPUTextureArray {
     name?: string,
   ): void {
     if (layerIndex < 0 || layerIndex >= this._maxLayers) {
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[${this._label}] Layer index ${layerIndex} out of range [0, ${this._maxLayers})`,
       );
+      //>>includeEnd('debug');
       return;
     }
 

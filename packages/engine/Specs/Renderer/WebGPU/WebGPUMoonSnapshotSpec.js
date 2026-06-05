@@ -144,7 +144,14 @@ describe("Renderer/WebGPU/WebGPUEnvironmentRenderer moon snapshot contract", fun
       expect(stats.bundleStale).toBe(false);
       expect(stats.snapshotRegistered).toBe(true);
       expect(stats.frozen).toBe(false);
-      expect(stats.moonDirectionWC).toEqual({ x: 0.5, y: 0.0, z: 0.866 });
+      // moonDirectionWC is read straight out of a Float32Array, so the
+      // values are the float32-truncated round-trip of the doubles packed
+      // above (z: 0.866 reads back as 0.8659999966621399). Use the same
+      // toBeCloseTo tolerance the phaseFraction/specularStrength checks
+      // below use rather than exact toEqual on float32 round-trips.
+      expect(stats.moonDirectionWC.x).toBeCloseTo(0.5, 5);
+      expect(stats.moonDirectionWC.y).toBeCloseTo(0.0, 5);
+      expect(stats.moonDirectionWC.z).toBeCloseTo(0.866, 5);
       expect(stats.phaseFraction).toBeCloseTo(0.73, 5);
       expect(stats.earthshineOn).toBe(true);
       expect(stats.useLogDepth).toBe(true);

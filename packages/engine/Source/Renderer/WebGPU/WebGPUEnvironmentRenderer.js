@@ -675,10 +675,12 @@ function _loadRealMoonTexture(device, cache, textureUrl) {
       });
     })
     .catch(function (err) {
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         "[WebGPUEnvironmentRenderer] Moon texture load failed:",
         err && err.message ? err.message : err,
       );
+      //>>includeEnd('debug');
       cache._textureLoading = false;
       // Leave _cachedTextureUrl set so we don't retry the same broken URL
       // on every frame. A subsequent change to moon.textureUrl will trigger
@@ -1197,7 +1199,9 @@ function destroyWebGPUMoonResources(moon) {
     try {
       cache._snapshotService.unregisterFreezable("moon-renderer");
     } catch (e) {
+      //>>includeStart('debug', pragmas.debug);
       console.warn("[WebGPU:Moon] unregisterFreezable failed:", e);
+      //>>includeEnd('debug');
     }
     cache._snapshotRegistered = false;
     cache._snapshotService = undefined;

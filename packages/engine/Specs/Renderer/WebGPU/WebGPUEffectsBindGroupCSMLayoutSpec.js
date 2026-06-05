@@ -13,8 +13,14 @@ import {
 // mismatched buffers at pipeline creation.
 
 describe("Renderer/WebGPU/WebGPUEffectsBindGroup CSM layout", function () {
-  it("exports EFFECTS_UNIFORM_SIZE = 272 after the CSM control vec4 tail", function () {
-    expect(EFFECTS_UNIFORM_SIZE).toBe(272);
+  it("exports EFFECTS_UNIFORM_SIZE = 480 after the model-clipping-polygon tail", function () {
+    // Grown 272 → 480 across later batches: the CSM control vec4 tail put
+    // it at 272, then edge-inline (304), point-light-receive (336), and
+    // finally the Batch 160 model-clipping-polygon control + per-extent UV
+    // remap block (336 → 480). See WebGPUEffectsBindGroup.js:198 and the
+    // size-history comment at lines 104-197; CSM_DESIGN.md:99 also records
+    // 480B at HEAD.
+    expect(EFFECTS_UNIFORM_SIZE).toBe(480);
   });
 
   it("places atmosphereLutControl at float offset 60 (byte 240)", function () {
@@ -41,12 +47,18 @@ describe("Renderer/WebGPU/WebGPUEffectsBindGroup CSM layout", function () {
     //   offset 72:  vec4<f32>        cascadeMinBias            ( 4 floats)
     //   offset 76:  vec4<f32>        cascadeMaxSlopeBias       ( 4 floats)
     // Shader-visible struct: 80 floats = 320 bytes.
-    // We over-allocate the buffer to 1088 bytes so it stays
-    // 256-aligned (WebGPU UBO offset alignment) without introducing a
-    // new size constant for every CSM consumer. Bytes beyond 320 are
-    // unwritten zeros — the shader never reads them.
-    expect(CSM_PARAMS_PLACEHOLDER_BYTES % 256).toBe(0);
-    // Must be at least the shader-visible struct size.
+    // The placeholder is over-allocated to 1088 bytes (272 floats) to
+    // match `WebGPUCSMRenderer._cascadeParamsData = new Float32Array(272)`
+    // (WebGPUCSMRenderer.ts:311), keeping the placeholder and the renderer's
+    // CPU staging array the same length. 1088 is NOT 256-aligned — a UBO's
+    // buffer *size* has no alignment requirement (only dynamic binding
+    // *offsets* must be 256-aligned). The renderer separately rounds the
+    // real GPU buffer up to 1280 via `Math.ceil(byteLength/256)*256`
+    // (WebGPUCSMRenderer.ts:372-373). Bytes beyond 320 are unwritten zeros —
+    // the shader never reads them.
+    expect(CSM_PARAMS_PLACEHOLDER_BYTES).toBe(272 * 4);
+    // Must be at least the shader-visible struct size (the real
+    // minBindingSize invariant for binding 10).
     expect(CSM_PARAMS_PLACEHOLDER_BYTES).toBeGreaterThanOrEqual(320);
   });
 });

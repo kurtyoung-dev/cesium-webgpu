@@ -2298,10 +2298,12 @@ function ensureMaterialImage(device, cache, imageSource) {
   const fail = (err) => {
     if (cache._materialImageSource === imageSource) {
       cache._materialImageLoading = false;
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         "[WebGPU:GroundPolyline] Failed to load Image material source:",
         err,
       );
+      //>>includeEnd('debug');
     }
   };
 

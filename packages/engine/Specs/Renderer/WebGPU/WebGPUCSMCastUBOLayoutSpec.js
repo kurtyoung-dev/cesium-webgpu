@@ -19,7 +19,11 @@ import {
 //   offset 92 (float 23):     _pad
 //   offset 96 (float 24):     depthBias     (f32)
 //   offset100 (float 25):     normalBias    (f32 — reserved, always 0 in Slice 1)
-//   offset104 (float 26..27): _pad (2 floats)
+//   offset104 (float 26..31): _pad (6 floats)
+// Only floats 0..27 (112 bytes) carry data; the buffer is rounded up to
+// 128 bytes (floats 28..31, the final 16) to match WebGPUShadowMapRenderer's
+// SHADOW_UNIFORM_SIZE so CSM reuses the existing cast pipelines'
+// bind-group layout without a second compile (WebGPUCSMRenderer.ts:62-68).
 //
 // If this layout needs to change, ALL Slice 2 variants' WGSL `u` struct
 // declarations + `WebGPUCSMRenderer.renderCastPass` write sites move in
@@ -31,11 +35,17 @@ describe("Renderer/WebGPU/WebGPUCSMRenderer cast UBO layout", function () {
     expect(CSM_CAST_UBO_SIZE % 16).toBe(0); // WGSL mat4 alignment
   });
 
-  it("fits a column-major mat4 + two vec3+pad + two f32 + 2-float pad", function () {
+  it("fits a column-major mat4 + two vec3+pad + two f32 + 6-float pad", function () {
     const matBytes = 16 * 4; // 64
     const vec3PadBytes = (3 + 1) * 4; // 16 each
     const biasBytes = 2 * 4; // 8 (depthBias + normalBias)
-    const trailingPad = 2 * 4; // 8
+    // Floats 26..31 are trailing pad: 4 bytes round the bias block up to a
+    // 16-byte stride boundary, plus a final 16-byte (4-float) chunk that
+    // bumps the buffer from 112 to 128 so its bind-group layout matches
+    // WebGPUShadowMapRenderer's SHADOW_UNIFORM_SIZE (WebGPUCSMRenderer.ts:62-68,
+    // WebGPUCSMCastPass.ts:206-217). The pack loop writes data[0..27] and
+    // leaves data[28..31] zero.
+    const trailingPad = 6 * 4; // 24
     const total =
       matBytes + vec3PadBytes + vec3PadBytes + biasBytes + trailingPad;
     expect(total).toBe(CSM_CAST_UBO_SIZE);

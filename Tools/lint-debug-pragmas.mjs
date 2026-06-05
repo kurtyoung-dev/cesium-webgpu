@@ -86,7 +86,15 @@ function findOffenders(source, relPath) {
 
     const guarded = depth > 0;
 
-    if (CONSOLE_RE.test(line) && !guarded && !isCommentLine) {
+    // Explicit opt-out for intentional PERMANENT sentinels that CLAUDE.md says
+    // must stay unguarded even though they are console.warn (e.g. device-loss
+    // recovery-attempt failures). Marker on the console line itself or the line
+    // directly above it.
+    const allowed =
+      /lint-debug-pragmas-allow/.test(line) ||
+      (i > 0 && /lint-debug-pragmas-allow/.test(lines[i - 1]));
+
+    if (CONSOLE_RE.test(line) && !guarded && !isCommentLine && !allowed) {
       const m = line.match(CONSOLE_RE);
       offenders.push({
         file: relPath,

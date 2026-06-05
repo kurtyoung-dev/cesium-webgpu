@@ -275,11 +275,13 @@ function ensureUncompressedAttributes(geometry) {
     hasBitangent = false;
     if (!_decompressMissingMetaWarned) {
       _decompressMissingMetaWarned = true;
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         "[WebGPUPrimitiveCommands] compressedAttributes without " +
           "`_compressedAttributesMeta` — falling back to inference. " +
           "Verify geometry source calls GeometryPipeline.compressVertices.",
       );
+      //>>includeEnd('debug');
     }
   }
 

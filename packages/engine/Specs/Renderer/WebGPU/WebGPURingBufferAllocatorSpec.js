@@ -82,7 +82,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
     expect(pageIndices).toEqual([1, 2, 0, 1, 2, 0]);
   });
 
-  it("aligns allocations and sizes to minAlignment", function () {
+  it("aligns offsets to minAlignment and sizes to 4 bytes", function () {
     const { device } = makeMockDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 8192,
@@ -92,10 +92,18 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
     alloc.beginFrame();
     const a = alloc.allocate(100);
     const b = alloc.allocate(100);
+    // Offsets are rounded up to minAlignment (256) via _alignOffset so each
+    // allocation begins on a UBO-bindable boundary (WebGPURingBufferAllocator
+    // .ts:340-342). Reported sizes are rounded only to 4 bytes via _alignSize
+    // (WebGPURingBufferAllocator.ts:348-350) — WebGPU requires writeBuffer /
+    // copy byteLength to be a 4-byte multiple, but does NOT require allocation
+    // size to be padded to minAlignment. The next allocation's offset is
+    // re-aligned to 256 regardless of the prior size, which is what guarantees
+    // b.offset === 256.
     expect(a.offset).toBe(0);
-    expect(a.size).toBe(256); // size rounded up
-    expect(b.offset).toBe(256); // next alloc starts at the next aligned slot
-    expect(b.size).toBe(256);
+    expect(a.size).toBe(100); // 100 is already a 4-byte multiple
+    expect(b.offset).toBe(256); // offset re-aligned to next 256 boundary
+    expect(b.size).toBe(100);
     alloc.endFrame();
   });
 

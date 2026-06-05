@@ -64,9 +64,11 @@ export class WebGPUPrimitiveIndexUtils {
       device.popErrorScope().then((err) => {
         if (err) {
           WebGPUPrimitiveIndexUtils._supportCache.set(device, false);
+          //>>includeStart('debug', pragmas.debug);
           console.warn(
             `[WebGPUPrimitiveIndexUtils] @builtin(primitive_index) probe failed: ${err.message}`,
           );
+          //>>includeEnd('debug');
         }
       });
     } catch (e) {

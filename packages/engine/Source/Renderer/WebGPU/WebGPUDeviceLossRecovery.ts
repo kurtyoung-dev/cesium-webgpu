@@ -308,6 +308,7 @@ export class WebGPUDeviceLossRecovery {
             device = acquired.device;
             recoveredViaPool = true;
           } catch (poolError) {
+            // lint-debug-pragmas-allow: permanent device-loss recovery-attempt sentinel (CLAUDE.md — recovery failures must reach the console)
             console.warn(
               `[WebGPU] Pool-routed recovery failed, falling back to direct: ${(poolError as Error).message}`,
             );
@@ -330,6 +331,7 @@ export class WebGPUDeviceLossRecovery {
           });
 
           if (!directAdapter) {
+            // lint-debug-pragmas-allow: permanent device-loss recovery-attempt sentinel (CLAUDE.md)
             console.warn(
               `[WebGPU] Recovery attempt ${attempt}: No adapter available`,
             );
@@ -371,6 +373,7 @@ export class WebGPUDeviceLossRecovery {
         //>>includeEnd('debug');
         return true;
       } catch (error) {
+        // lint-debug-pragmas-allow: permanent device-loss recovery-attempt sentinel (CLAUDE.md)
         console.warn(
           `[WebGPU] Recovery attempt ${attempt} failed:`,
           (error as Error).message,

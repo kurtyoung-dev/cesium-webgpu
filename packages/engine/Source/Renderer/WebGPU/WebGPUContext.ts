@@ -2414,9 +2414,11 @@ export class WebGPUContext extends GraphicsContext {
       getBufferData: (dst: Uint8Array | Uint16Array | Float32Array): void => {
         if (!mappedData) {
           // Can't use this.log() in closure — use console.warn with prefix
+          //>>includeStart('debug', pragmas.debug);
           console.warn(
             "[CesiumJS:webgpu] getBufferData called before mapAsync completed",
           );
+          //>>includeEnd('debug');
           return;
         }
         // Strip row-padding: copy only `width * 4` bytes per row
@@ -4446,10 +4448,12 @@ export class WebGPUContext extends GraphicsContext {
             });
           })
           .catch((e: unknown) => {
+            //>>includeStart('debug', pragmas.debug);
             console.warn(
               `[CesiumJS:webgpu:ctx-${this._id}] GPU culler init failed:`,
               e,
             );
+            //>>includeEnd('debug');
             this._gpuCullerInitializing = false;
           });
       });
@@ -4512,10 +4516,12 @@ export class WebGPUContext extends GraphicsContext {
           });
         })
         .catch((e: unknown) => {
+          //>>includeStart('debug', pragmas.debug);
           console.warn(
             `[CesiumJS:webgpu:ctx-${this._id}] GPU culler frustum-${idx} init failed:`,
             e,
           );
+          //>>includeEnd('debug');
           this._gpuCullerByFrustumInitializing.delete(idx);
         });
     });
@@ -4577,10 +4583,12 @@ export class WebGPUContext extends GraphicsContext {
           });
         })
         .catch((e: unknown) => {
+          //>>includeStart('debug', pragmas.debug);
           console.warn(
             `[CesiumJS:webgpu:ctx-${this._id}] GPU culler cascade-${idx} init failed:`,
             e,
           );
+          //>>includeEnd('debug');
           this._gpuCullerByCascadeInitializing.delete(idx);
         });
     });
@@ -4626,10 +4634,12 @@ export class WebGPUContext extends GraphicsContext {
             });
           })
           .catch((e: unknown) => {
+            //>>includeStart('debug', pragmas.debug);
             console.warn(
               `[CesiumJS:webgpu:ctx-${this._id}] GPU culler (translucent) init failed:`,
               e,
             );
+            //>>includeEnd('debug');
             this._gpuCullerTranslucentInitializing = false;
           });
       });
@@ -4675,10 +4685,12 @@ export class WebGPUContext extends GraphicsContext {
           });
         })
         .catch((e: unknown) => {
+          //>>includeStart('debug', pragmas.debug);
           console.warn(
             `[CesiumJS:webgpu:ctx-${this._id}] Point cloud LOD init failed:`,
             e,
           );
+          //>>includeEnd('debug');
           this._pointCloudLODInitializing = false;
         });
     }
