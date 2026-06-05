@@ -47,9 +47,13 @@ import {
 
 const DEPTH_OVERLAY_WGSL = /* wgsl */ `
 struct Uniforms {
-  // x = near, y = far, z = mode (0 = linearized red, 1 = raw green, 2 = both),
-  // w = unused
+  // x = near, y = far, z = mode (0 = log-linear gray, 1 = raw gray, 2 = both,
+  //   3 = WINDOWED turbo, 4 = WINDOWED gray), w = unused
   params: vec4<f32>,
+  // x = windowMin (m), y = windowMax (m), z = useTurbo (1/0), w = unused.
+  // The window spends the FULL output range on the linear-eye-z band
+  // [windowMin, windowMax] so near-identical depths get distinct hues.
+  window: vec4<f32>,
 };
 
 @group(0) @binding(0) var depthTexture: texture_depth_2d;
@@ -82,6 +86,23 @@ fn linearizeDepth(rawDepth: f32, near: f32, far: f32) -> f32 {
   return (near * far) / max(denom, 1e-6);
 }
 
+// Turbo colormap (Google / Anton Mikhailov) — polynomial approximation. A
+// perceptually-ordered rainbow: low = dark blue, mid = green, high = red. Far
+// better than grayscale at making a sub-meter depth delta a visibly different
+// hue. Input clamped to [0,1].
+fn turbo(tIn: f32) -> vec3<f32> {
+  let x = clamp(tIn, 0.0, 1.0);
+  let v4 = vec4<f32>(1.0, x, x * x, x * x * x);
+  let v2 = vec2<f32>(v4.z * v4.z, v4.z * v4.w);
+  let r = dot(v4, vec4<f32>(0.13572138, 4.61539260, -42.66032258, 132.13108234)) +
+          dot(v2, vec2<f32>(-152.94239396, 59.28637943));
+  let g = dot(v4, vec4<f32>(0.09140261, 2.19418839, 4.84296658, -14.18503333)) +
+          dot(v2, vec2<f32>(4.27729857, 2.82956604));
+  let b = dot(v4, vec4<f32>(0.10667330, 12.64194608, -60.58204836, 110.36276771)) +
+          dot(v2, vec2<f32>(-89.90310912, 27.34824973));
+  return clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // textureSampleLevel on a depth texture returns f32 directly.
@@ -104,6 +125,23 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   let linear = linearizeDepth(raw, near, far);
+
+  // ── WINDOWED modes (3 = turbo, 4 = grayscale) ──
+  // Map the linear-eye-z band [windowMin, windowMax] across the FULL output
+  // range so two near-identical depths (building ~188m vs terrain ~188m at
+  // far=1e8, where log-normalization collapses both to one shade) become
+  // distinct. This is the C-R9 discriminator the plain modes can't provide.
+  if (mode > 2.5) {
+    let wMin = u.window.x;
+    let wMax = u.window.y;
+    let t = clamp((linear - wMin) / max(wMax - wMin, 1e-6), 0.0, 1.0);
+    // Pixels OUTSIDE the window get clamped to the band ends (deep blue / deep
+    // red), so in-window structure dominates. mode 3 = turbo, 4 = grayscale.
+    if (mode > 3.5) {
+      return vec4<f32>(t, t, t, 1.0);
+    }
+    return vec4<f32>(turbo(t), 1.0);
+  }
 
   // ── Log-scale normalization ──
   // Cesium's planetary camera runs near ≈ 1m, far ≈ 1e10m (ten decades).
@@ -151,7 +189,7 @@ export class WebGPUDebugDepthOverlay {
   private _bindGroupLayout: GPUBindGroupLayout | null = null;
   private _sampler: GPUSampler | null = null;
   private _uniformBuffer: GPUBuffer | null = null;
-  private _uniformData: Float32Array = new Float32Array(4);
+  private _uniformData: Float32Array = new Float32Array(8);
   private _canvasFormat: GPUTextureFormat = "bgra8unorm";
   private _isInitialized: boolean = false;
   private _isDestroyed: boolean = false;
@@ -215,7 +253,7 @@ export class WebGPUDebugDepthOverlay {
 
     this._uniformBuffer = device.createBuffer({
       label: "DebugDepthOverlay UB",
-      size: 16,
+      size: 32, // two vec4: params + window
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -230,7 +268,10 @@ export class WebGPUDebugDepthOverlay {
    *
    * @param near - Camera near plane distance (used for linearization)
    * @param far - Camera far plane distance
-   * @param mode - 0 linearized, 1 raw NDC, 2 combined R=linear G=raw
+   * @param mode - 0 linearized, 1 raw NDC, 2 combined, 3 windowed-turbo, 4 windowed-gray
+   * @param windowMin - eye-z band start (m) for windowed modes 3/4
+   * @param windowMax - eye-z band end (m); window disabled when <= windowMin
+   * @param useTurbo - Turbo colormap (mode 3) vs grayscale (mode 4)
    */
   execute(
     encoder: GPUCommandEncoder,
@@ -239,6 +280,9 @@ export class WebGPUDebugDepthOverlay {
     near: number,
     far: number,
     mode: number = 0,
+    windowMin: number = 0,
+    windowMax: number = 0,
+    useTurbo: boolean = true,
   ): void {
     if (!this._isInitialized || !this._device || !this._pipeline) {
       return;
@@ -248,6 +292,10 @@ export class WebGPUDebugDepthOverlay {
     this._uniformData[1] = far;
     this._uniformData[2] = mode;
     this._uniformData[3] = 0;
+    this._uniformData[4] = windowMin;
+    this._uniformData[5] = windowMax;
+    this._uniformData[6] = useTurbo ? 1 : 0;
+    this._uniformData[7] = 0;
     this._device.queue.writeBuffer(this._uniformBuffer!, 0, this._uniformData);
 
     const bindGroup = this._device.createBindGroup({

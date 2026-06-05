@@ -404,6 +404,9 @@ interface CesiumFrameState {
   debugShowTerrainLOD: boolean;
   debugShowTerrainNormals: boolean;
   debugDepthAsColorMode: number;
+  debugDepthWindowMin: number;
+  debugDepthWindowMax: number;
+  debugDepthWindowTurbo: boolean;
 }
 
 // ─── Camera (minimal) ────────────────────────────────────────────────────

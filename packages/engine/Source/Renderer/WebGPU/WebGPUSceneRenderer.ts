@@ -2841,7 +2841,18 @@ export class WebGPUSceneRenderer {
     const frustum = camera?.frustum;
     const near = frustum?.near ?? 1;
     const far = frustum?.far ?? 1e9;
-    const mode = scene?._frameState?.debugDepthAsColorMode | 0 || 0;
+    const fs = scene?._frameState;
+    let mode = (fs?.debugDepthAsColorMode as number) | 0 || 0;
+    // Windowed band (meters of eye-space distance). When max > min, force the
+    // windowed overlay mode (3 = turbo, 4 = grayscale) so a tight depth band
+    // gets the full color range — discriminates near-identical depths the
+    // log-normalized modes 0-2 collapse to one shade (C-R9 tooling).
+    const windowMin = (fs?.debugDepthWindowMin as number) || 0;
+    const windowMax = (fs?.debugDepthWindowMax as number) || 0;
+    const useTurbo = fs?.debugDepthWindowTurbo !== false;
+    if (windowMax > windowMin) {
+      mode = useTurbo ? 3 : 4;
+    }
 
     this._debugDepthOverlay.execute(
       encoder,
@@ -2850,6 +2861,9 @@ export class WebGPUSceneRenderer {
       near,
       far,
       mode,
+      windowMin,
+      windowMax,
+      useTurbo,
     );
 
     context.resumeDefaultRenderPass?.();

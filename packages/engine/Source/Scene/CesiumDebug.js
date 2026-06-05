@@ -190,11 +190,60 @@ function installCesiumDebug(viewer) {
      */
     hideDepth() {
       scene.debugShowDepthAsColor = false;
+      scene.debugDepthWindowMin = 0;
+      scene.debugDepthWindowMax = 0;
       if (webglDepthViewStage) {
         webglDepthViewStage.enabled = false;
       }
       scene.requestRender();
       console.log("[CesiumDebug] Depth buffer visualization OFF");
+    },
+
+    /**
+     * Show the depth buffer as a WINDOWED color overlay (WebGPU): spend the
+     * full Turbo color range on the eye-space distance band
+     * <code>[minMeters, maxMeters]</code>, so two near-identical depths get
+     * distinct hues (low = blue, mid = green, high = red). Use this when the
+     * plain {@link CesiumDebug#showDepth} collapses everything to one shade —
+     * e.g. a building flush on terrain at far ≈ 1e8. Pass
+     * <code>turbo=false</code> for windowed grayscale.
+     *
+     * Example — inspect a building footprint at ~188 m:
+     *   CesiumDebug.showDepthWindow(180, 200);
+     *
+     * @param {number} minMeters band start (eye-space distance, meters)
+     * @param {number} maxMeters band end (must be &gt; minMeters)
+     * @param {boolean} [turbo=true] Turbo colormap vs grayscale
+     */
+    showDepthWindow(minMeters, maxMeters, turbo) {
+      clearAllOverlays();
+      scene.debugShowDepthAsColor = true;
+      scene.debugDepthWindowMin = +minMeters || 0;
+      scene.debugDepthWindowMax = +maxMeters || 0;
+      scene.debugDepthWindowTurbo = turbo !== false;
+      scene.requestRender();
+      console.log(
+        `[CesiumDebug] Windowed depth overlay ON: [${scene.debugDepthWindowMin}, ${scene.debugDepthWindowMax}] m, ${scene.debugDepthWindowTurbo ? "turbo" : "grayscale"} (WebGPU only)`,
+      );
+    },
+
+    /**
+     * Skip the ellipsoid depth-plane render (debug bisect for C-R9 — terrain-
+     * flush 3D-Tiles / b3dm invisible on WebGPU). The depth plane is drawn
+     * between the globe and 3D-Tiles when <code>clearGlobeDepth</code> is active
+     * (the default). If content reappears with this ON, the depth plane is
+     * writing a depth nearer than the content and occluding it. Applies to both
+     * backends. Call with no arg / <code>true</code> to skip; <code>false</code>
+     * to restore.
+     *
+     * @param {boolean} [on=true]
+     */
+    skipDepthPlane(on) {
+      scene.debugSkipDepthPlane = on !== false;
+      scene.requestRender();
+      console.log(
+        `[CesiumDebug] Ellipsoid depth plane ${scene.debugSkipDepthPlane ? "SKIPPED" : "restored"}`,
+      );
     },
 
     /**

@@ -144,7 +144,9 @@ Installed by [Apps/CesiumViewer/CesiumViewer.js](../Apps/CesiumViewer/CesiumView
 | --- | --- | :---: | :---: |
 | `help()` | List all commands | ✓ | ✓ |
 | `snapshot()` | Full scene + renderer + toggles dump | ✓ | ✓ |
-| `showDepth()` / `hideDepth()` | Depth buffer as grayscale | ✓ | ✓ |
+| `showDepth()` / `hideDepth()` | Depth buffer as grayscale (log-normalized over full near/far) | ✓ | ✓ |
+| `showDepthWindow(minM, maxM, turbo)` | **Windowed Turbo color depth** — full color range on eye-z band `[minM,maxM]` m; discriminates near-identical depths the plain view collapses. Needs `scene.msaaSamples=1`. NOTE: samples the FINAL (depth-test winner) depth — can't show a primitive that LOST the test | — | ✓ |
+| `skipDepthPlane(on)` | Skip the ellipsoid depth-plane render (debug bisect, both backends) | ✓ | ✓ |
 | `showWireframe()` / `hideWireframe()` | Globe wireframe overlay | ✓ | ✓ |
 | `showFrustums()` / `hideFrustums()` | Colorize frustum splits | ✓ | ✓ |
 | `showCommands()` / `hideCommands()` | Command-count overlay | ✓ | ✓ |

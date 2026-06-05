@@ -834,6 +834,47 @@ class Scene {
     /**
      * This property is for debugging only; it is not for production use.
      * <p>
+     * Eye-space distance window (meters) for the depth-as-color overlay. When
+     * <code>debugDepthWindowMax &gt; debugDepthWindowMin</code>, the overlay
+     * (modes 3/4) spends the FULL color range on the linear-eye-z band
+     * <code>[min, max]</code> instead of the whole <code>[near, far]</code>
+     * range — so two near-identical depths (e.g. a building at 188.1 m vs the
+     * terrain under it at 188.4 m) become distinct hues. Use
+     * {@link CesiumDebug#showDepthWindow}. Disabled when max &le; min.
+     * </p>
+     * @type {number}
+     * @default 0
+     */
+    this.debugDepthWindowMin = 0.0;
+    /** @see Scene#debugDepthWindowMin @type {number} @default 0 */
+    this.debugDepthWindowMax = 0.0;
+    /**
+     * Use the Turbo colormap (vs grayscale) for the windowed depth overlay.
+     * @type {boolean}
+     * @default true
+     */
+    this.debugDepthWindowTurbo = true;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When <code>true</code>, the ellipsoid depth-plane render is skipped (both
+     * backends). The depth plane is drawn between the globe and 3D-Tiles when
+     * <code>clearGlobeDepth</code> is active (the default, since
+     * <code>depthTestAgainstTerrain</code> defaults false) so primitives on the
+     * globe backface aren't picked. This toggle bisects whether the depth plane
+     * is what occludes terrain-flush 3D-Tiles / b3dm on WebGPU (DEFERRED_WORK
+     * C-R9): if content reappears with this on, the depth plane writes a depth
+     * nearer than the content. Use {@link CesiumDebug#skipDepthPlane}.
+     * </p>
+     * @type {boolean}
+     * @default false
+     */
+    this.debugSkipDepthPlane = false;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
      * When <code>true</code> and the active rendering context is WebGPU with
      * `@builtin(primitive_index)` support, feature renderers that opt in
      * (terrain, polygon collections, batched models) will switch their
@@ -3087,6 +3128,10 @@ class Scene {
     // Mode integer selects linearized vs raw vs combined visualization.
     frameState.debugShowDepthAsColor = this.debugShowDepthAsColor === true;
     frameState.debugDepthAsColorMode = this.debugDepthAsColorMode | 0;
+    // Windowed depth-overlay band (meters of eye-space distance) + colormap.
+    frameState.debugDepthWindowMin = this.debugDepthWindowMin || 0.0;
+    frameState.debugDepthWindowMax = this.debugDepthWindowMax || 0.0;
+    frameState.debugDepthWindowTurbo = this.debugDepthWindowTurbo !== false;
     // Tier 2 debug — frustum / command visualization. WebGL's SceneRenderer
     // reads these directly from `scene.*` for the DebugInspector path, and
     // the WebGPU scene renderer reads them from `frameState.*` when deciding
@@ -3275,7 +3320,11 @@ class Scene {
     const useDepthPlane = (environmentState.useDepthPlane =
       clearGlobeDepth &&
       this.mode === SceneMode.SCENE3D &&
-      globeTranslucencyState.useDepthPlane);
+      globeTranslucencyState.useDepthPlane &&
+      // Debug bisect (C-R9): skip the ellipsoid depth plane to test whether it
+      // occludes terrain-flush 3D-Tiles / b3dm. No-op in production (default
+      // false). Backend-agnostic — applies to WebGL + WebGPU identically.
+      this.debugSkipDepthPlane !== true);
     if (useDepthPlane) {
       // Update the depth plane that is rendered in 3D when the primitives are
       // not depth tested against terrain so primitives on the backface
