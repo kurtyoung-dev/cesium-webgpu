@@ -1,5 +1,6 @@
-import { WebGPUResourceCacheRegistry } from "../../../Source/Renderer/WebGPU/WebGPUResourceCacheRegistry.js";
-import WebGPUResourceCacheRegistryDefault from "../../../Source/Renderer/WebGPU/WebGPUResourceCacheRegistry.js";
+import WebGPUResourceCacheRegistryDefault, {
+  WebGPUResourceCacheRegistry,
+} from "../../../Source/Renderer/WebGPU/WebGPUResourceCacheRegistry.js";
 
 // These specs are pure-logic tests — the registry is a plain dispatcher
 // over `() => void` callbacks. It owns no GPU handles and needs no device,

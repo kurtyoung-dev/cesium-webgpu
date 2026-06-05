@@ -256,11 +256,9 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
 
   describe("createBindGroupLayouts", function () {
     let host;
-    let bgls;
     beforeEach(function () {
       host = createHost();
       createBindGroupLayouts(host);
-      bgls = host._device.__records.bindGroupLayouts;
     });
 
     it("writes the three globe BGLs plus the effects BGL onto the host", function () {
