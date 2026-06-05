@@ -2394,7 +2394,18 @@ now passes.
 
 **Trace:** Discovered 2026-04-30 during the b3dm-Model rendering investigation. `Tools/visual-regression/verify-glb-renders.mjs` is the repro — load CesiumAir.glb → see "bindGroupLayoutCount (8) is larger than the maximum allowed (4)" warning.
 
-### C-R9-MODEL-FEATURE-PICK — INFRA RESOLVED; residual b3dm content-render gap (re-scoped Batch 172)
+### C-R9-MODEL-FEATURE-PICK — RENDER IS NOT A BUG (Batch 205 correction); residual = WebGPU b3dm PICK returns undefined
+
+**★ MAJOR CORRECTION (Batch 205, Principle-8 WebGL-vs-WebGPU control, runtime-verified) — the "b3dm invisible on WebGPU" premise behind C-R9 (and ALL the Batch 201/203/204 depth-pipeline theories) WAS A TEST ARTIFACT.** `probe-c-r9-webgl-vs-webgpu.mjs` loaded the BatchTableHierarchy tileset on BOTH backends at the same 188 m nadir view, ×2 terrains:
+
+| terrain | WebGL building px | WebGPU building px |
+|---|---|---|
+| **EllipsoidTerrainProvider** | 525 | 535 |
+| **default (Cesium World Terrain)** | 0 | 0 |
+
+The b3dm RENDERS IDENTICALLY on WebGL and WebGPU (gray boxes on the terrain, ~525/535 px, visually matching — `c-r9-cmp-{webgl,webgpu}-ellipsoid.png`). With the default terrain BOTH show 0 buildings — because the **real Cesium World Terrain elevation at the sample tileset's location sits ABOVE the sample buildings and legitimately occludes them, on BOTH backends.** The earlier verify probe used the default terrain; once the expired ion token was refreshed (Batch 202) the default became Cesium World Terrain, so the probe was measuring terrain occlusion, not a render bug. **There is NO WebGPU b3dm-on-terrain render bug, no globe/model depth-value mismatch, no depth-plane bug, no log-depth-epic dependency for rendering.** The Batch 201 root-cause (depth occlusion via log-depth frustum) + Batch 203/204 follow-ons were all chasing this artifact — superseded by this control. (The depth-debug TOOLING from Batch 204 + the `logDepthWriteActive` analysis remain valid general assets; only the C-R9 render diagnosis was wrong.)
+
+**RESIDUAL (the real, narrowed C-R9 — open): WebGPU per-feature PICK of a b3dm tileset returns undefined.** With ellipsoid terrain (buildings visibly rendering on both), `verify-model-feature-pick.mjs`: WebGL `scene.pick(center)` → `pickedDefined:true`, `primitive` = `_Cesium3DTileset` (picks the tileset/feature); WebGPU → `pickedDefined:false` across a 240 px spiral. The pick INFRA is allocated (featurePickIdCount 30, featurePickTexExists true, primCache feature-pick GPU texture present) but the b3dm model's pick result never latches into the scene pick FBO that `scene.pick` reads. NEXT: investigate the WebGPU model PICK pass for b3dm — is the model's pick draw emitted into the pick framebuffer, and does the pick readback at the building pixel return the model's pick color vs the clear value? (The render pass works; the pick pass is the gap.) `verify-model-feature-pick.mjs` now forces `EllipsoidTerrainProvider` + takes `PROBE_RENDERER` so WebGL/WebGPU pick can be compared directly. NOTE: the probe's `hasId` metric is misleading for tile features (a `Cesium3DTileFeature` is the picked object itself, not `picked.id`); use `pickedDefined` + `primitiveCtor`.
 
 **Status (re-verified Batch 172 via `Tools/visual-regression/verify-model-feature-pick.mjs` on the live WebGPU CesiumViewer):** The three originally-documented blockers are RESOLVED. The probe now reports `featurePickIdCount: 30` (was 0), `featurePickTexExists: true` (was false), and a NON-empty `primCacheKeys` (was `[]` — the PRIMARY-blocker signal). The per-feature pick infrastructure is allocated end-to-end:
 

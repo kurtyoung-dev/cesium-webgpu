@@ -10,6 +10,7 @@
  */
 import { chromium } from "playwright";
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
+const RENDERER = process.env.PROBE_RENDERER || "webgpu";
 (async () => {
   const browser = await chromium.launch({
     channel: "msedge", headless: true,
@@ -22,7 +23,7 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
       console.log(`[${t}] ${m.text().slice(0, 250)}`);
     }
   });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${RENDERER}`, {
     waitUntil: "networkidle", timeout: 90_000,
   });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
@@ -30,6 +31,14 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
   const result = await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
+
+    // CRITICAL (Batch 204 correction): force ELLIPSOID terrain. The default
+    // viewer now loads Cesium World Terrain (valid token), whose real elevation
+    // at the BatchTableHierarchy sample location sits ABOVE the sample
+    // buildings and legitimately occludes them — on BOTH WebGL and WebGPU.
+    // Without this the probe was testing terrain occlusion, not the model
+    // render/pick path (the false "b3dm invisible on WebGPU" C-R9 signal).
+    v.terrainProvider = new C.EllipsoidTerrainProvider();
 
     // Add a 3D Tileset that has a batch table — use Cesium's built-in
     // sample BIM tileset (b3dm with batchTable). This is the canonical
