@@ -28,26 +28,41 @@
 //     of WebGL's variance (the texture pattern is actually rendered).
 //   - Image: WebGPU shows non-trivial variance + 0 device errors.
 //
-// Status (Batch 171): material dispatch INFRASTRUCTURE is in place in
-// `WebGPUGroundPrimitiveRenderer` — UBO extended to 640 bytes carrying
-// invProj + materialMeta + planar/spherical extents; `applyMaterial`
-// dispatches on `materialMeta.x` for Color (works), Stripe, Checkerboard,
-// Grid; `resolveMaterialState` packs each material's params from the
-// `Material.uniforms` Cesium API. The FS recovers eye-space from
-// depth-sampled fragment + planar OR spherical extent attrs (mirrors
-// WebGL's `ShadowVolumeAppearanceFS`). 0 device errors across all
-// materials in the probe.
+// Status (Batch 198): material dispatch is in place in
+// `WebGPUGroundPrimitiveRenderer` — UBO carries invProj + materialMeta +
+// planar/spherical extents; `applyMaterial` dispatches on `materialMeta.x`
+// for Color (flat path), Stripe, Checkerboard, Grid, AND **Image** (Batch
+// 198 — group-0 material texture + sampler, async upload via
+// `ensureMaterialImage`, 1x1 white fallback). `resolveMaterialState` packs
+// each material's params from the `Material.uniforms` Cesium API. 0 device
+// errors across all materials. All textured materials render a pattern
+// (high variance); the Image checkerboard, Stripe, and Checkerboard match
+// WebGL's variance within ±25%.
 //
-// REMAINING BLOCKER (NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO):
-// `u.invProj` + `u.frustum` are packed ONCE per packUniforms (per frame),
-// but Cesium's multi-frustum renderer rebinds the per-slice
-// projection / currentFrustum at draw time. With a single UBO value the
-// FS reverse-projects depth using the wrong matrix in some slices,
-// giving off-axis UVs. The flat-color path is unaffected (it doesn't
-// read UV). Resolving this needs a per-slice UBO refresh — either a
-// secondary UBO with dynamic offsets, or a draw-time bind-group rebuild.
-// Until then, textured materials may render flat-ish in multi-frustum
-// scenes (variance ≪ WebGL).
+// KNOWN LIMITATION — variance is FREQUENCY-BLIND. This probe asserts a
+// pattern is present (variance) + coverage parity (lit), NOT that the
+// tiling FREQUENCY matches WebGL. As of Batch 198 the WebGPU textured
+// UV tiles ~4x FINER than WebGL at this 350 km nadir view (visible in the
+// texmat-*-webgpu.png: the Image polygon reads as a fine magenta blur, the
+// Stripe polygon shows ~30+ thin bands vs WebGL's ~10). The variance check
+// still passes because a high-frequency red/blue pattern has ~constant
+// variance regardless of tile count.
+//
+// ROOT CAUSE (confirmed empirically, Batch 198 — NEW-GROUNDPRIM-CLASSIFIER-
+// RECON-PRECISION): the planar extents are CORRECT (eastward 58.6 km /
+// northward 33.5 km world-space for the 0.7°×0.3° polygon) and the OBB
+// remap is an identity u/v swap (uvMinAndExtents=[0,0,1,1],
+// uMaxVmax=[0,1,1,0]). The ~4x error is in `windowToEye`'s NON-LOG path:
+// it unprojects the sampled globe depth with `u.invProj` =
+// inverse(uniformState.projection) captured ONCE at createCommands time.
+// That projection's z-terms (p22/p23, near/far-dependent) don't match the
+// per-slice projection the globe used to WRITE the sampled depth, so the
+// recovered eye.w — and thus the eye.xy the UV is derived from — is scaled.
+// The per-slice fix (fstate group-2 invProj) exists for the LOG path but
+// `resolveFrustumStateBindGroup` is NOT invoked for the color draw
+// ("Link 4 unresolved", Batch 184), so the non-log path can't use it yet.
+// Fixing it = wiring the per-slice frustum-state bind group into the color
+// draw + a fresh per-slice inverseProjection. Tracked in DEFERRED_WORK.
 
 import { chromium } from "playwright";
 import fs from "fs";
@@ -113,6 +128,38 @@ const MATERIALS = [
       },
     })`,
   },
+  {
+    // Image material — uniforms.image is a 16x16 red/blue checkerboard
+    // built in-page as a data URL (self-contained, high spatial variance
+    // so the pattern is unambiguous in the variance signal). repeat x4
+    // tiles it across the polygon. White tint (no modulation) so the
+    // image's own colors show. Exercises the Batch-198 group-0 material
+    // texture + sampler path (ensureMaterialImage upload + bind-group
+    // rebuild + the materialType==4 applyMaterial Image branch).
+    name: "Image",
+    build: `(() => {
+      const cv = document.createElement("canvas");
+      cv.width = 16; cv.height = 16;
+      const cc = cv.getContext("2d");
+      for (let yy = 0; yy < 16; yy++) {
+        for (let xx = 0; xx < 16; xx++) {
+          const on = (((xx >> 2) + (yy >> 2)) % 2) === 0;
+          cc.fillStyle = on ? "#ff0d0d" : "#0d0dff";
+          cc.fillRect(xx, yy, 1, 1);
+        }
+      }
+      return new C.Material({
+        fabric: {
+          type: "Image",
+          uniforms: {
+            image: cv.toDataURL(),
+            repeat: new C.Cartesian2(4, 4),
+            color: new C.Color(1.0, 1.0, 1.0, 1.0),
+          },
+        },
+      });
+    })()`,
+  },
 ];
 
 // Polygon-interior ROI (the polygon at -100..-95 / 40..43 at 2.4 Mm
@@ -158,10 +205,37 @@ async function captureMaterial(renderer, mat) {
       scene.skyBox.show = false;
       scene.skyAtmosphere.show = false;
       scene.backgroundColor = C.Color.fromCssColorString("#101014");
-      // Keep imagery in place -- without it, the globe-depth pass writes
-      // 1.0 (far plane) which breaks windowToEye depth recovery in the
-      // FS material path. The default imagery + dark backgroundColor
-      // still gives a clean polygon-vs-background variance signal.
+      // The globe surface MUST render (both backends) so the globe-depth
+      // pass writes real depth — without it, depth = 1.0 (far plane) and
+      // the FS material path's windowToEye recovery degenerates. The
+      // default ion imagery needs a token (absent in headless CI), so the
+      // WebGL globe renders nothing and the classifier has no surface to
+      // clamp to. Use a token-free SingleTileImageryProvider with a solid
+      // DARK fill (#26262c, channel-sum 114 < LIT_THRESHOLD 160) so the
+      // globe surface stays below the "lit polygon pixel" cutoff and the
+      // ROI variance is driven purely by the polygon material — not by the
+      // underlying imagery showing through the translucent appearance.
+      {
+        const solid = document.createElement("canvas");
+        solid.width = 4;
+        solid.height = 4;
+        const sc = solid.getContext("2d");
+        sc.fillStyle = "#26262c";
+        sc.fillRect(0, 0, 4, 4);
+        const prov = await C.SingleTileImageryProvider.fromUrl(
+          solid.toDataURL(),
+          { rectangle: C.Rectangle.fromDegrees(-180, -90, 180, 90) },
+        );
+        scene.imageryLayers.removeAll();
+        scene.imageryLayers.addImageryProvider(prov);
+      }
+      // Force the token-free ellipsoid terrain so neither backend waits on
+      // the (failing) ion World Terrain asset — the WebGL GroundPrimitive
+      // depth-classification will not emit draw commands until its terrain
+      // provider is ready, so a stalled ion terrain leaves the WebGL globe
+      // surface unclassified (0 lit) even though the imagery loaded.
+      v.terrainProvider = new C.EllipsoidTerrainProvider();
+      scene.globe.depthTestAgainstTerrain = true;
       scene.globe.showGroundAtmosphere = false;
 
       // GroundPrimitive with a MaterialAppearance (no per-instance color —
@@ -191,13 +265,9 @@ async function captureMaterial(renderer, mat) {
       });
       scene.groundPrimitives.add(ground);
 
-      // Build the primitive.
-      for (let i = 0; i < 240; i++) {
-        scene.render();
-        await new Promise((r) => requestAnimationFrame(r));
-        if (ground.ready) break;
-      }
-      // Frame the polygon nadir.
+      // Frame the polygon nadir FIRST so the globe tiles for this region
+      // load during the build loop — the WebGL GroundPrimitive only emits
+      // classification commands once the underlying surface tiles are ready.
       v.camera.setView({
         // Tighter altitude scaled to the sub-degree polygon (~0.7° wide
         // → ~80 km). 350 km altitude puts the polygon at a similar
@@ -205,6 +275,13 @@ async function captureMaterial(renderer, mat) {
         destination: C.Cartesian3.fromDegrees(-97.5, 41.5, 350_000),
         orientation: { heading: 0, pitch: -C.Math.PI_OVER_TWO, roll: 0 },
       });
+
+      // Build the primitive AND settle globe tiles.
+      for (let i = 0; i < 400; i++) {
+        scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+        if (ground.ready && scene.globe.tilesLoaded && i > 30) break;
+      }
       for (let i = 0; i < 60; i++) {
         scene.requestRender();
         scene.render();
@@ -310,7 +387,7 @@ async function captureMaterial(renderer, mat) {
     if (verdict === "FAIL") pass = false;
   }
 
-  console.log(`\n  PNGs: ${OUT_DIR}/texmat-{Color,Stripe,Checkerboard,Grid}-{webgl,webgpu}.png`);
+  console.log(`\n  PNGs: ${OUT_DIR}/texmat-{Color,Stripe,Checkerboard,Grid,Image}-{webgl,webgpu}.png`);
   console.log(pass ? "\nPASS" : "\nFAIL");
   process.exit(pass ? 0 : 1);
 })();

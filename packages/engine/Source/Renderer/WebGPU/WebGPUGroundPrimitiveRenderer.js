@@ -142,8 +142,7 @@ const GroundPrimitiveMaterialType = Object.freeze({
   STRIPE: 1,
   CHECKERBOARD: 2,
   GRID: 3,
-  // IMAGE = 4 (reserved — texture upload plumbing is a follow-up; falls
-  // through to COLOR until then).
+  IMAGE: 4,
 });
 
 // Track which custom material `type` strings we've already warned about
@@ -259,22 +258,217 @@ function resolveMaterialState(primitive) {
     };
   }
 
+  if (type === "Image") {
+    // ImageMaterial — sample uniforms.image (a 2D texture) at st*repeat,
+    // modulated by uniforms.color (tint). The texture is uploaded by
+    // ensureMaterialImage and bound at group-0 binding 1; until it loads a
+    // 1x1 white fallback is bound so the tint still shows. Mirrors the
+    // GroundPolyline Image path (resolveMaterialState + ensureMaterialImage).
+    const repeat = uniforms.repeat;
+    return {
+      type: GroundPrimitiveMaterialType.IMAGE,
+      color: packColor(uniforms.color, [1.0, 1.0, 1.0, 1.0]),
+      param0: [
+        repeat?.x ?? repeat?.[0] ?? 1.0,
+        repeat?.y ?? repeat?.[1] ?? 1.0,
+        0.0,
+        0.0,
+      ],
+      param1: [0.0, 0.0, 0.0, 0.0],
+      image: uniforms.image ?? null,
+    };
+  }
+
   // Unknown material type — warn once + fall through to Color so the
-  // primitive still classifies (just untextured). Image material is the
-  // intended next addition; until its texture-upload plumbing lands it
-  // also lands here.
+  // primitive still classifies (just untextured). Custom procedural
+  // materials (Fabric shaders) still land here.
   //>>includeStart('debug', pragmas.debug);
   if (defined(type) && !_warnedCustomGroundMaterialTypes.has(type)) {
     _warnedCustomGroundMaterialTypes.add(type);
     console.warn(
       `[WebGPU:GroundPrimitive] material type="${type}" not natively ` +
         "supported — falling back to flat color. " +
-        "Supported: Color, Stripe, Checkerboard, Grid. " +
-        "Image + custom materials are pending follow-up work.",
+        "Supported: Color, Stripe, Checkerboard, Grid, Image. " +
+        "Custom procedural (Fabric) materials are pending follow-up work.",
     );
   }
   //>>includeEnd('debug');
   return fallback;
+}
+
+/**
+ * Upload the Image-material source into a per-primitive GPU texture and
+ * expose it as `cache.materialImageView`. Idempotent on the same source
+ * (tracked via `cache._materialImageSource`); a newer source supersedes
+ * an in-flight load. On success, nulls `cache.materialBindGroupViewRef`
+ * so the next `createCommands` rebuilds the group-0 bind group against
+ * the new view. Mirrors the GroundPolyline `ensureMaterialImage` port —
+ * the only difference is the diagnostic tag.
+ *
+ * Accepts a URL string, ImageBitmap, HTMLImageElement, HTMLCanvasElement,
+ * or ImageData (the source types Cesium's ImageMaterial accepts on
+ * `uniforms.image`).
+ *
+ * @private
+ */
+function ensureMaterialImage(device, cache, imageSource) {
+  if (!defined(imageSource)) {
+    cache._materialImageSource = null;
+    cache.materialImageView = undefined;
+    return;
+  }
+  if (cache._materialImageSource === imageSource) {
+    return;
+  }
+  cache._materialImageSource = imageSource;
+  cache._materialImageLoading = true;
+  cache.materialImageView = undefined;
+
+  const finishLoad = (imageBitmap) => {
+    if (cache._materialImageSource !== imageSource) {
+      // A newer load superseded this one — drop it on the floor.
+      imageBitmap.close?.();
+      return;
+    }
+    const tex = device.createTexture({
+      label: "GroundPrimitive material image",
+      size: {
+        width: imageBitmap.width,
+        height: imageBitmap.height,
+        depthOrArrayLayers: 1,
+      },
+      format: "rgba8unorm",
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    device.queue.copyExternalImageToTexture(
+      { source: imageBitmap },
+      { texture: tex },
+      { width: imageBitmap.width, height: imageBitmap.height },
+    );
+    cache.materialImageTexture?.destroy?.();
+    cache.materialImageTexture = tex;
+    cache.materialImageView = tex.createView();
+    cache._materialImageLoading = false;
+    // Invalidate the material bind group so the next createCommands
+    // rebuilds with the new view.
+    cache.materialBindGroupViewRef = null;
+    imageBitmap.close?.();
+  };
+
+  const fail = (err) => {
+    if (cache._materialImageSource === imageSource) {
+      cache._materialImageLoading = false;
+      //>>includeStart('debug', pragmas.debug);
+      console.warn(
+        "[WebGPU:GroundPrimitive] Failed to load Image material source:",
+        err,
+      );
+      //>>includeEnd('debug');
+    }
+  };
+
+  if (typeof imageSource === "string") {
+    fetch(imageSource)
+      .then((r) => r.blob())
+      .then((blob) => createImageBitmap(blob))
+      .then(finishLoad)
+      .catch(fail);
+  } else if (imageSource instanceof ImageBitmap) {
+    finishLoad(imageSource);
+  } else if (
+    typeof HTMLImageElement !== "undefined" &&
+    imageSource instanceof HTMLImageElement
+  ) {
+    if (imageSource.complete && imageSource.naturalWidth > 0) {
+      createImageBitmap(imageSource).then(finishLoad).catch(fail);
+    } else {
+      imageSource.addEventListener(
+        "load",
+        () => createImageBitmap(imageSource).then(finishLoad).catch(fail),
+        { once: true },
+      );
+      imageSource.addEventListener("error", fail, { once: true });
+    }
+  } else if (
+    typeof HTMLCanvasElement !== "undefined" &&
+    imageSource instanceof HTMLCanvasElement
+  ) {
+    createImageBitmap(imageSource).then(finishLoad).catch(fail);
+  } else if (
+    typeof ImageData !== "undefined" &&
+    imageSource instanceof ImageData
+  ) {
+    createImageBitmap(imageSource).then(finishLoad).catch(fail);
+  } else {
+    fail(new Error(`unsupported image source type: ${typeof imageSource}`));
+  }
+}
+
+/**
+ * Lazily create the 1x1 white fallback material texture + the material
+ * sampler. The fallback is ALWAYS bound at group-0 binding 1 for non-image
+ * materials (and for image materials before their texture finishes loading)
+ * so the single group-0 layout is uniform across material types. White is
+ * the multiplicative identity, so the `materialColor` tint shows through
+ * unmodified. Mirrors the GroundPolyline port.
+ *
+ * @private
+ */
+function ensureFallbackMaterialTexture(device, cache) {
+  if (defined(cache.fallbackMaterialTexture)) {
+    return;
+  }
+  cache.fallbackMaterialTexture = device.createTexture({
+    label: "GroundPrimitive fallback material tex",
+    size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture: cache.fallbackMaterialTexture },
+    new Uint8Array([255, 255, 255, 255]),
+    { bytesPerRow: 4 },
+    { width: 1, height: 1, depthOrArrayLayers: 1 },
+  );
+  cache.fallbackMaterialView = cache.fallbackMaterialTexture.createView();
+  cache.materialSampler = device.createSampler({
+    label: "GroundPrimitive material sampler",
+    magFilter: "linear",
+    minFilter: "linear",
+    mipmapFilter: "linear",
+    addressModeU: "repeat",
+    addressModeV: "repeat",
+  });
+}
+
+/**
+ * (Re)build the group-0 bind group (binding 0 = per-primitive uniforms,
+ * binding 1 = material image view, binding 2 = material sampler). Picks
+ * `cache.materialImageView` when an Image material's texture has loaded,
+ * else the 1x1 white fallback. Records the bound view on
+ * `cache.materialBindGroupViewRef` so the caller only rebuilds when the
+ * effective view changes (async image load, or first allocation). The
+ * same field is nulled by `ensureMaterialImage` on load completion to
+ * force a rebuild.
+ *
+ * @private
+ */
+function rebuildMaterialBindGroup(device, cache) {
+  ensureFallbackMaterialTexture(device, cache);
+  const matView = cache.materialImageView ?? cache.fallbackMaterialView;
+  cache.bindGroup = device.createBindGroup({
+    label: "GroundPrimitive group0",
+    layout: cache.bgl,
+    entries: [
+      { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+      { binding: 1, resource: matView },
+      { binding: 2, resource: cache.materialSampler },
+    ],
+  });
+  cache.materialBindGroupViewRef = matView;
 }
 
 /**
@@ -588,6 +782,13 @@ struct U {
   proj: mat4x4<f32>,          // @144 (byte 576)
 };
 @group(0) @binding(0) var<uniform> u: U;
+// Image-material texture + sampler. Always bound (1x1 white fallback when the
+// material is not Image / its image is still loading). Read ONLY by the
+// materialType==4 (Image) branch of applyMaterial; other material types + the
+// pick/stencil shaders leave them unused (valid — the binding is in the shared
+// group-0 layout but a shader may ignore it).
+@group(0) @binding(1) var materialTex: texture_2d<f32>;
+@group(0) @binding(2) var materialSampler: sampler;
 
 // Depth-sample resources. Group 1 carries the depth texture + sampler;
 // the source view is bound late by WebGPUDrawCommand.bindGroupResolvers
@@ -869,6 +1070,17 @@ fn applyMaterial(st: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(baseColor.rgb, baseColor.a * cellAlpha);
   }
 
+  if (materialType == 4u) {
+    // Image. Mirrors ImageMaterial.glsl: sample the material texture at
+    // st * repeat (wrapped), modulate by the tint color (materialColor).
+    //   repeat (materialParam0.xy)
+    //   color  (materialColor) -- tint; defaults to white so an untinted
+    //          image shows its own colors.
+    let uv = vec2<f32>(st.x * u.materialParam0.x, st.y * u.materialParam0.y);
+    let texel = textureSampleLevel(materialTex, materialSampler, fract(uv), 0.0);
+    return texel * u.materialColor;
+  }
+
   // materialType == 0 (Color): caller already returned via the fast
   // path; any unrecognized type also falls through to the fallback.
   return fallbackColor;
@@ -898,21 +1110,26 @@ fn applyMaterial(st: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
     return i.col;
   }
   // Material path: recover eye-space, compute planar UV, apply material.
-  // NOTE (Batch 173): windowToEye now reads the PER-SLICE invProj from
-  // group 2 (fstate) and uses the correct standard inverse-projection
-  // (Batch 171 wrongly applied reverseLogDepth to linear NDC depth).
-  // BUT textured materials are STILL not pixel-correct in multi-frustum:
-  // the classification command has no bounding volume, so Cesium
-  // distributes it to the FARTHEST frustum slice (e.g. near=1e8/far=1e10
-  // at a 350 km nadir view) instead of the near slice that actually
-  // contains the surface (near=0.1/far=1e8). Reconstructing the sampled
-  // depth with the far slice's projection yields an eye-z in the billions
-  // -> the planar UV clamps and the material renders flat. The remaining
-  // fix is to give the classification command the shadow-volume bounding
-  // sphere so it is frustum-distributed to the slice matching its surface
-  // (tracked under NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION). The
-  // flat-color Color path is unaffected (it short-circuits above and never
-  // reads fstate / the depth → eye recovery).
+  // NOTE (Batch 171): the LOG path's windowToEye reads the per-slice
+  // invProj from group 2 (fstate); the NON-LOG path (default) still
+  // unprojects with the group-0 u.invProj — see the caveat below.
+  // The Batch 174 bounding-volume distribution (frustum-distribution fix,
+  // NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION) IS in place, so the
+  // command now lands in the slice containing its surface.
+  //
+  // KNOWN RESIDUAL (Batch 198, confirmed empirically — see
+  // NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION "ADDITIONAL FINDING"): the
+  // textured UV tiles ~4× too FINE vs WebGL across the whole polygon. The
+  // extents + OBB remap are correct; the error is that the non-log
+  // windowToEye uses u.invProj = inverse(uniformState.projection) captured
+  // at createCommands time, whose near/far z-terms don't match the
+  // per-slice projection the globe wrote the sampled depth with → eye.w
+  // (and the eye.xy the UV derives from) is uniformly scaled. The per-slice
+  // fstate.invProj that would fix this is NOT bound for the color draw
+  // (resolveFrustumStateBindGroup "Link 4 unresolved", Batch 184). Variance
+  // probes don't catch it (frequency-blind). The flat-color Color path is
+  // unaffected (it short-circuits above and never reads fstate / the
+  // depth → eye recovery).
 ${
   logDepthActive
     ? // Multi-frustum: View.js bins this classifier command into EVERY slice its
@@ -1066,8 +1283,16 @@ struct VelocityCO {
     logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
     "GroundPrimitive",
   );
+  // Group 0: per-primitive uniforms (binding 0) + the material image
+  // texture (binding 1) and its sampler (binding 2). The texture/sampler
+  // are ALWAYS bound — non-image materials (color/stripe/checkerboard/grid)
+  // bind a 1x1 white fallback so the single group-0 layout is shared by
+  // every material type. The Image branch of `applyMaterial` (materialType
+  // == 4u) is the only consumer; other branches ignore the binding.
   const bgl = makeBindGroupLayout(device, "GroundPrimitive BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    textureEntry(1, Stage.FRAGMENT, { sampleType: "float" }),
+    samplerEntry(2, Stage.FRAGMENT, "filtering"),
   ]);
 
   // Depth-sample BGL + 2-group pipeline layout. Group 0 carries the
@@ -1890,12 +2115,10 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       "GroundPrimitive uniforms",
     );
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
-    cache.bindGroup = device.createBindGroup({
-      layout: cache.bgl,
-      entries: [
-        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
-      ],
-    });
+    // group-0 bind group (uniforms @0 + material texture @1 + sampler @2).
+    // Built via the shared helper so the material slots are always bound;
+    // the 1x1 white fallback stands in until an Image material loads.
+    rebuildMaterialBindGroup(device, cache);
   }
 
   const modelMatrix = primitive.modelMatrix || Matrix4.IDENTITY;
@@ -1927,6 +2150,26 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     0,
     UNIFORM_BUFFER_SIZE,
   );
+
+  // Image material: kick off (idempotent) texture upload, and rebuild the
+  // group-0 bind group whenever the effective material view changes — first
+  // allocation, source swap, or async load completion (which nulls
+  // materialBindGroupViewRef in ensureMaterialImage's finishLoad). Non-image
+  // materials drop any cached image source so a later Image re-assignment
+  // reloads, then ride the always-bound white fallback.
+  const materialState = resolveMaterialState(primitive);
+  if (materialState.type === GroundPrimitiveMaterialType.IMAGE) {
+    ensureMaterialImage(device, cache, materialState.image);
+  } else if (defined(cache._materialImageSource)) {
+    cache._materialImageSource = null;
+    cache.materialImageView = undefined;
+    cache.materialBindGroupViewRef = null;
+  }
+  const effectiveMatView =
+    cache.materialImageView ?? cache.fallbackMaterialView;
+  if (cache.materialBindGroupViewRef !== effectiveMatView) {
+    rebuildMaterialBindGroup(device, cache);
+  }
 
   // Build actual draw commands if vertex data is available.
   //
