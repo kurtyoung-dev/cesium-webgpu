@@ -39,6 +39,8 @@ _Last reorganized 2026-05-30 (HEAD `de9d82abe2`, Batch 186). A multi-agent audit
 | [`PHASE_8_GPU_RESIDENT_TILES_DESIGN.md`](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) · [`PHASE_8_SHADER_STRATEGY.md`](PHASE_8_SHADER_STRATEGY.md) | Phase-8 GPU-resident tiles + shader-variant strategy (8a partly shipped; 8b unbuilt). |
 | [`WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`](WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md) | Decomposition roll-up (candidates #1–#6 shipped; SceneRenderer residual remains). |
 | [`OPTION_B_SCENE_IN_WORKER.md`](OPTION_B_SCENE_IN_WORKER.md) | Scene-in-worker spike (headless Scene construction now attempted). |
+| [`VEGETATION_SYSTEM_DESIGN.md`](VEGETATION_SYSTEM_DESIGN.md) | Planetary vegetation deep-dive: feasibility + gap analysis + 4-stage LOD (mesh→impostor→merged-clump→terrain-albedo) + foliage PBR, globe+3D-Tiles, WebGPU-first/WebGL2-fallback. Unbuilt (investigation). |
+| [`ES6_MODERNIZATION_STATUS.md`](ES6_MODERNIZATION_STATUS.md) | ES6/ES2022 modernization status: what remains (Object.defineProperties long tail; Core/Scene/DataSources JS↔TS bifurcation) + ES2022 opportunities. |
 
 ## LIVE — audits & reviews (frozen baselines, still referenced)
 
