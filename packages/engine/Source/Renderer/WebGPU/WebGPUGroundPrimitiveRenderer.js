@@ -1120,15 +1120,18 @@ fn applyMaterial(st: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
   // KNOWN RESIDUAL (Batch 198, confirmed empirically — see
   // NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION "ADDITIONAL FINDING"): the
   // textured UV tiles ~4× too FINE vs WebGL across the whole polygon. The
-  // extents + OBB remap are correct; the error is that the non-log
-  // windowToEye uses u.invProj = inverse(uniformState.projection) captured
-  // at createCommands time, whose near/far z-terms don't match the
-  // per-slice projection the globe wrote the sampled depth with → eye.w
-  // (and the eye.xy the UV derives from) is uniformly scaled. The per-slice
-  // fstate.invProj that would fix this is NOT bound for the color draw
-  // (resolveFrustumStateBindGroup "Link 4 unresolved", Batch 184). Variance
-  // probes don't catch it (frequency-blind). The flat-color Color path is
-  // unaffected (it short-circuits above and never reads fstate / the
+  // extents + OBB remap are correct; the error is a windowToEye invProj /
+  // depth-reconstruction mismatch — the non-log path uses u.invProj =
+  // inverse(uniformState.projection) captured at createCommands time, which
+  // doesn't match the projection the globe wrote the sampled depth with, so
+  // eye.w (and the eye.xy the UV derives from) is scaled. Shares the
+  // mid-flight log-depth-epic root with the b3dm-occlusion gap (Batch 201):
+  // with scene.logarithmicDepthBuffer on, the render frustum is the single
+  // [0.1, 1e8] log partition but depth is written HYPERBOLIC (log write off).
+  // Re-verify the frustum count + st range before fixing (the earlier
+  // "per-slice / Link 4" framing assumed multi-frustum and is likely wrong).
+  // Variance probes don't catch it (frequency-blind). The flat-color Color
+  // path is unaffected (it short-circuits above and never reads the
   // depth → eye recovery).
 ${
   logDepthActive
