@@ -3605,6 +3605,31 @@ Surfaced at the end of Batch 141 (2026-05-26) when the Model PBR audit completed
 
 ---
 
+## NEW-VEGETATION-SYSTEM — Planetary vegetation epic (trees / grass / rocks, globe + 3D Tiles, dual-backend) — FUTURE / unbuilt
+
+**Status:** FUTURE — design complete, **zero code shipped** (investigation/design only, 2026-06-05). This is a scope flag + pointer; the full design (feasibility, gap analysis, 4-stage LOD, foliage PBR, 3D-Tiles spec analysis, perf-feature usage, biome/ecoregion data layer) is canonical in **[VEGETATION_SYSTEM_DESIGN.md](VEGETATION_SYSTEM_DESIGN.md)** — do not duplicate detail here.
+
+**What:** Ultra-performant planetary vegetation on the globe + draped on 3D Tiles, WebGPU-first with a degraded-but-correct WebGL2 fallback. Six independently-shippable slices (each must ship a Playwright probe per CLAUDE.md Principle 8):
+
+- **V1 — Scatter foundation:** `Scene/VegetationLayer.js` + `VegetationScatterCollection` + `FeatureRendererKey.VEGETATION_SCATTER` + `WebGPUVegetationScatterRenderer.ts` + `Shaders/WebGPU/Compute/VegetationScatter.wgsl` (density/biome map → RTE instance buffer); WebGL2 CPU-worker twin writing the identical layout (deterministic seeded PRNG, never `Math.random()`).
+- **V2 — 4-stage mesh-LOD chain + GPU LOD select:** the central new artifact — no per-Model mesh-LOD chain exists today (`Scene/Model/Model.js` has only `distanceDisplayCondition`, a binary cull). Reuse `WebGPUGPUCuller` + `WebGPUIndirectDrawManager`; CPU per-instance tiering on WebGL2. **Decision point:** add a GPU-cull gate to the `Pass.CESIUM_3D_TILE` path (currently bypasses `gpuCullCommands()`) vs dispatch scatter through `Pass.OPAQUE` to inherit the existing gate.
+- **V3 — Octahedral impostor bake + sample** (resolves `FEAT-GAP-07`): offline + lazy-RTT atlas; portable octahedral FS sampling; stochastic-dither L0↔L1 cross-fade (`csm_stochasticDither.wgsl`, shipped).
+- **V4 — `VegetationPBR` shader pair:** new `ShaderDefine` bits + flag bits 26–30 (wind, two-sided leaf translucency, alpha-to-coverage, canopy AO, impostor sampling) in WGSL + GLSL lockstep.
+- **V5 — Grass + rocks profiles:** grass chain (blades → density imposter → detail-albedo); rocks/sparse-arid parameter profile (no wind, full-octahedron impostor, Hi-Z occlusion).
+- **V6 (optional) — optimization:** GPU-sort consumer wiring, render-bundle caching for static L2/L3 tiles, per-instance picking + `Cesium3DTileStyle` species coloring.
+
+**3D-Tiles authoring / extension idea:** explicit instances ride entirely on ratified/in-flight standards (`EXT_mesh_gpu_instancing` + `EXT_structural_metadata` + `EXT_instance_features` + `3DTILES_metadata` + `3DTILES_implicit_tiling`) with **zero new loader** — the recommended ingest for real datasets (OSM `natural=tree`, Global Forest Watch). The spec has **no** vegetation/biome/scatter semantics and **no** metadata-driven auto-LOD/impostor/HLOD generation (those are author-baked-explicit or viewer-side). A fork-local `3DTILES_vegetation_scatter` / `_CESIUMWEBGPU_vegetation_scatter` convention (`VEG_BIOME` / `VEG_ECOREGION` / `VEG_SPECIES` / `VEG_DENSITY_SCALE` semantics + density/biome KTX2 rasters) is proposed for procedural fill — fork-local first, upstream only after deterministic seeded scatter is proven.
+
+**Biome/ecoregion data dependency (asset-prep, not engine work):** three-layer model (biome/climate + ecoregion + landcover) keying a species palette per `(biome × ecoregion × landcover)`. Recommended permissive stack: Köppen-Geiger v3 + RESOLVE Ecoregions 2017 + ESA WorldCover 2021 (all **CC-BY-4.0** — note: no MIT-licensed geospatial data exists; CC-BY/CC0/public-domain is the field norm). Auto-sample (pre-rasterized KTX2 → O(1) lookup) + manual GeoJSON/tileset override with strict precedence (explicit > manual > tileset > global).
+
+**WebGL2 / WebGPU split:** the recurring deficit is WebGL2 has no compute, no GPU-driven indirect-arg generation, no per-point LOD (`Context.js:1107`). Every GPU-driven stage (scatter, cull, LOD-select) needs a maintained CPU twin. The portable subset (impostor sampling, HLOD proxies, wind, dither/A2C, terrain-albedo bake) is large enough that WebGL2 still gets a correct, shippable experience — just CPU-bounded scatter and tile-granular (not per-instance) LOD.
+
+**Related existing inventory entries** (this epic consolidates them): `FEAT-GAP-07` (impostors, §D.2), `FEAT-SURVEY-43` (grass/foliage material + vegetation instancing, §D.7), `BACKLOG-§9` (subsurface scattering, §D.7). Refraction-MRT for physically-correct leaf transmission is unbuilt (ties to `BACKLOG-§9`); no runtime mesh-merge tool (L2 HLOD clumps baked offline); `Scene/PropertyTexture.js` shader-wiring gap blocks per-texel density maps (workaround: plain control texture).
+
+**Prerequisites:** none hard-blocking V1 (the consumer half — instancing, metadata, depth-draping, terrain sampling, RTE, stochastic dither — already exists). V4 refraction defers to `BACKLOG-§9`. **Effort:** multi-slice epic, each slice independently shippable. **Trace:** `migration_doc/VEGETATION_SYSTEM_DESIGN.md` (canonical design, §1–§9 + 3D-Tiles spec section + LOD-A..C perf-feature section + BIOME-A..E data-layer section).
+
+---
+
 ## Carried-forward on archive (2026-05-30) — lifted from archived 2026-04-16 principal-review pillars
 
 These entries were lifted out of three docs being archived per `_DOC_AUDIT_PLAN.md` §2 Cluster B / §3.7 so that archiving them orphans nothing. Origin docs:

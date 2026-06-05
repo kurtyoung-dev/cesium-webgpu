@@ -394,3 +394,146 @@ Searched CesiumGS/3d-tiles, the 3d-tiles-next branch, KhronosGroup/glTF registry
 **Why our client is well-positioned to consume it (strand 4):** the consumer half already exists. Control-raster sampling reuses the same KTX2/texture path; height sampling reuses `Core/sampleTerrainMostDetailed.js` + the depth-drape mechanism (§4.3); per-instance identity flows through `Scene/Model/ModelFeatureTable.js`; metadata schema parsing is live in `Scene/StructuralMetadata.js` + `Scene/PropertyTable.js`; instancing lands in `Scene/Model/InstancingPipelineStage.js` (WebGL2) and `Renderer/WebGPU/WebGPUModelInstancing.js` (WebGPU). The **only genuinely new artifact** is the scatter compute pass / CPU-worker twin (`VegetationScatter.wgsl`, V1 in §8) — which the plan already builds regardless of whether an extension is ever standardized. The remaining consumer gap is `Scene/PropertyTexture.js` shader wiring (§9 item 5), needed only if density maps are sourced from PropertyTexture rather than a plain control texture.
 
 **Spec sources cited:** 3D Tiles 1.1 / OGC 22-025r4 (https://github.com/CesiumGS/3d-tiles, CHANGES.md, /extensions/3DTILES_metadata, /extensions/3DTILES_implicit_tiling, /specification/Metadata/README.adoc); `EXT_mesh_gpu_instancing` (KhronosGroup/glTF); `EXT_structural_metadata` / `EXT_instance_features` / `EXT_mesh_features` (CesiumGS/glTF 3d-tiles-next); cesium-unreal#558; Cesium blogs (fine-grained metadata 2022-05-31, gaussian-splat LOD 2026-04-27, June-2026 releases 2026-06-01); community.cesium.com forum threads above.
+
+---
+
+## 3D Tiles LOD / impostor / HLOD / albedo — explicit vs attribution, and perf-feature usage
+
+**Status:** Spec-LOD-model + fork-perf-stack survey. **Date:** 2026-06-05. **Scope:** answers the two questions that gate the §8 build plan — (a) does 3D Tiles auto-generate impostors / HLOD / albedo-fallback from metadata, or must they be author-baked-explicit? and (b) which fork GPU perf/cull features already serve 3D Tiles/Models today, and which a vegetation-on-3D-Tiles path must still wire. This refines §A–§D above (which covered the *authoring/interchange* layer) with the *LOD-selection + runtime-perf* layer. It does not change §8.
+
+### LOD-A. Verdict — explicit author-baked, NOT metadata-driven auto-generation
+
+**The 3D Tiles 1.1 LOD model is EXPLICIT and author-baked. There is NO spec mechanism for metadata-driven client-side auto-generation of impostors, HLOD proxies, or albedo fallback.** All three are *client-side optimization patterns* layered on top of the spec's geometric-error infrastructure — the spec neither mandates nor mentions them.
+
+| Capability | 3D Tiles 1.1 spec support | Verdict |
+|---|---|---|
+| **Impostors / billboards** | none — not in the LOD framework at any level | **Viewer-side only.** Our §5.1 L1 octahedral impostor is correctly a fork-local innovation (`FEAT-GAP-07`), not a consumed spec feature. |
+| **HLOD (merged-clump proxy)** | `3DTILES_implicit_tiling` *organizes* a pre-authored hierarchy ("each child's `geometricError` is half its parent's") but does **not generate** the proxy assets | **Org structure consumed, assets baked offline.** Our §5.1 L2 clump must be pre-merged (UE5 Proxy Geometry / InstaLOD / Cesium ion), exactly as §9 item 3 states. |
+| **Albedo-on-terrain fallback** | zero spec support | **Viewer-side bake only** (our §5.1 L3 / §5.2 G2 detail-albedo). |
+| **LOD selection metric** | geometric error → SSE: `SSE = geometricError × pixelsPerMeter`; if `SSE ≥ maxAllowedSSE` → REFINE (load children) else RENDER | **Explicit.** REPLACE (children replace parent — classic discrete swap, our §5.1 hysteresis tiers) vs ADD (parent + children both draw). |
+| **Metadata "auto-generate impostor past X / fade to albedo past Y"** | **none** — no extension, no roadmap item (June-2026 roadmap = vector tiles, splat-LOD, voxels, CAD; vegetation/impostor/HLOD absent) | **No expression.** The Q&A note "metadata *can drive refinement*" means a viewer may *adjust `maxAllowedSSE`* per tile — it does **not** auto-synthesize missing LOD assets. |
+
+**Game-engine contrast (confirms the pattern):** no engine does fully-automatic client-side impostor synthesis either. UE5 HLOD proxies + Foliage are **baked offline** (manual Generate-Clusters → Generate-Proxy-Meshes → serialized `.umap`); Nanite does per-pixel virtual geometry but distant HLOD proxies are still pre-authored. Unity (TerrainTools density → serialized prefabs) and Godot (MultiMesh) likewise bake scatter/LOD as an **offline content step that emits explicit instances**. The four drivers are determinism (trees must land identically every frame/client or picking breaks), bandwidth (offline-decimated LODs compress better), artist control, and per-frame cost (octahedral bake = render + atlas + mips, too expensive per-frame). Sources: 3D Tiles spec README + ImplicitTiling/README.adoc + Q-and-A.md; cesium-native selection-algorithm-details; UE5 Proxy Geometry + HLOD docs; cesium-unreal#558 (open, engine-level land-cover/splatmap request — *not* spec-level).
+
+### LOD-B. What this means for our vegetation system
+
+Two mutually-compatible paths, both already in §8:
+
+1. **Consume explicitly-authored LOD tiles (zero new loader).** Pre-baked mesh-LOD chain + impostor atlas + HLOD clump as I3DM/B3DM/CMPT, organized by `3DTILES_implicit_tiling`, selected by the existing CPU SSE traversal. This is §4.2 tier 1 — recommended ingest for real datasets. The fork consumes the *org structure* today; the *assets* must be baked offline (asset-prep tool — §9 item 3 is the tracked gap).
+2. **Add client-side auto-LOD/impostor on top (the genuinely new artifact).** `VegetationScatterCollection` (§4.2 tier 2) generates instances at runtime and our §5 4-stage chain (mesh→impostor→clump→albedo) does the LOD selection viewer-side — because the spec will never do it for us. V2 builds the mesh-LOD-chain descriptor + selection logic; V3 builds the impostor bake (`FEAT-GAP-07`). Determinism (seeded PRNG, not `Math.random()`) is mandatory so picking is stable across clients.
+
+**Net:** vegetation LODs must be *either* explicitly authored as tile assets *or* synthesized by our own client code. There is no metadata shortcut. This is exactly what §8 V1–V3 builds.
+
+### LOD-C. Fork perf/cull stack — what serves 3D Tiles/Models TODAY vs what vegetation must still wire
+
+The fork's 3D Tiles rendering path is **CPU-first with strategic GPU opt-ins**. The GPU-driven compute stack (cull / occlusion / sort / bundles) is implemented but **NOT integrated into the `Pass.CESIUM_3D_TILE` pass** — it currently serves only `Pass.OPAQUE`/`Pass.TRANSLUCENT`. This is the central perf asymmetry a vegetation-on-3D-Tiles path must close.
+
+| Perf/cull feature | File:symbol | Serves 3D Tiles/Models today? | Evidence / what vegetation must wire |
+|---|---|---|---|
+| **CPU SSE traversal** | `Scene/Cesium3DTilesetTraversal.js:selectTiles()` | ✅ **ACTIVE** (same JS both backends) | Distance²/SSE/frustum/horizon select → only visible tiles reach the Model pipeline. Pre-filters ~80% of instances before raster. Vegetation inherits free. |
+| **Frustum / horizon cull (CPU)** | `Cesium3DTile.contentVisibility()`, `Cesium3DTilesetTraversal.js` | ✅ **ACTIVE** | Tile-granular. Inherited free. |
+| **GPU frustum cull** | `Renderer/WebGPU/WebGPUGPUCuller.ts`; consumed in `WebGPUSceneRenderer.ts:_executeOpaquePass()` (`gpuCullCommands()`) | ❌ **NOT WIRED to tiles** | `Pass.CESIUM_3D_TILE` runs via `WebGPUSceneRenderer3DTilePasses.ts:runPass()` → `executeBatch()` directly, *bypassing* `gpuCullCommands()`. Vegetation V2 must either (a) add a GPU-cull gate to `execute3DTilePasses()`, or (b) dispatch scatter to `Pass.OPAQUE` to inherit the existing gate. WebGL2 has no GPU cull — CPU pre-filter only. |
+| **Hi-Z occlusion** | `Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts`; `Scene/OcclusionCulling.js` (default off) | ❌ **NOT WIRED to tiles** | No dispatch in the 3D-tile path. Vegetation V5 (dense canopy / boulder fields) would wire it; WebGPU-only, no WebGL2 equivalent. |
+| **GPU sort keys** | `Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts` | ❌ **NOT WIRED** (no consumer anywhere yet) | Pipeline exists, consumer integration pending fork-wide (JS comparator faster <50K). Opportunistic for vegetation V6 — do not gate on it. |
+| **Render bundles** | `Renderer/WebGPU/WebGPURenderBundleManager.ts` | ❌ **NOT WIRED to tiles** | Exists, never called from tile passes. Vegetation V6 would cache static L2/L3 forest-mesh tiles here (50–80% CPU cut). |
+| **Indirect draw** | `Renderer/WebGPU/WebGPUIndirectDrawManager.ts`; `executeBatchIndirect()` in the 3D-tile path | 🟨 **OPTIONAL, threshold-gated** (≥32 commands share pipeline+bindgroup) | The one GPU-driven feature already reachable from the tile path. Vegetation V2 reuses it for per-(LOD-tier × material) draws once LOD args are ready. WebGL2 has **no** indirect-arg generation (`Context.js:1107`) — CPU-built args or N draws. |
+| **Point-cloud per-point LOD** | `Renderer/WebGPU/WebGPUPointCloudLODProcessor.ts` (in `PntsLoader`) | 🟨 **PNTS ONLY** | Not exposed as a reusable primitive for Model/mesh instances. Instanced vegetation (I3DM, grass blades) cannot reuse it — V2/V5 must build a separate mesh-instance LOD compute pass (WebGPU) / CPU bucketing (WebGL2). |
+| **Per-Model mesh-LOD chain** | `Scene/Model/Model.js` — only `distanceDisplayCondition` (binary cull) | ❌ **ABSENT both backends** | No `lodMeshes` array, no tier selection. The §5 4-stage chain is built from scratch (V2). Cannot reuse existing Model LOD plumbing — there is none. |
+| **Terrain-depth draping** | `Renderer/WebGPU/WebGPUGlobeDepth` `globeDepthTexture` (Batch 111), `Scene/GroundPrimitive.js` | ✅ **ACTIVE** | Reused to clamp scatter to tile/building surfaces (§4.3). Inherited. |
+| **Instancing** | `Scene/Model/InstancingPipelineStage.js` (WebGL2), `Renderer/WebGPU/WebGPUModelInstancing.js` (WebGPU) | ✅ **ACTIVE** both backends | I3DM + `EXT_mesh_gpu_instancing` per-instance transforms + custom attrs. ~1–10K/mesh WebGL2, 65K+ WebGPU. Inherited. |
+| **Per-instance metadata + picking** | `Scene/PropertyTable.js`, `Scene/Model/ModelFeatureTable.js` | ✅ PropertyTable wired; ⚠️ PropertyTexture scaffolded | species/height/DBH/feature-IDs reach the GPU pick pass. Inherited (per-texel density-map sampling still gated on §9 item 5). |
+
+**Bottom line for the build plan:** vegetation on 3D Tiles inherits CPU SSE + frustum/horizon cull, instancing, metadata/picking, and depth-draping for free, and can opt into threshold-gated indirect draw. It must build from scratch: the mesh-LOD chain (V2), the scatter + mesh-instance LOD compute pass (V1/V2), and — to get GPU frustum cull / Hi-Z / sort / render bundles on tiles — a new wiring step (V2/V5/V6) OR a routing decision to dispatch scatter through `Pass.OPAQUE`. None of this changes §8; it sharpens the V2 decision point (cull-gate on tile path vs OPAQUE-pass routing) and confirms §9's mesh-LOD-chain gap as the central new artifact.
+
+---
+
+## Biome & ecoregion mapping (auto + manual)
+
+**Status:** Data-layer + mapping design (consolidates the global-vegetation-datasets strand + the biome-mapping/override strand). **Date:** 2026-06-05. **Scope:** how the procedural-scatter path (§4.2 tier 2) decides *what grows where* — the three-layer classification model, the permissive datasets that feed it, the auto-sample + manual-override design with precedence, the runtime sampling strategy, and the species-palette data model. Ties to the `3DTILES_vegetation_scatter` / `VEG_BIOME` / `VEG_SPECIES` semantics sketched in §D.
+
+### BIOME-A. The three-layer classification model
+
+Vegetation placement is driven by three nested classification layers, coarsest → finest. Each is an independent control input to the scatter pass (§4.2 tier 2):
+
+1. **Biome / climate zone** — broad climate-driven vegetation type (tropical rainforest, temperate broadleaf, grassland, desert…). Drives the *species palette family* and the shader color-tint blend. ~1 km grain is sufficient.
+2. **Ecoregion** — a *named* biogeographic region within a biome (Amazon Basin, Serengeti acacia, North American prairie…). Drives *which* species within the biome family and per-region density/weighting. Vector polygons (846 global regions).
+3. **Land cover / land use** — the actual surface class at a point (dense forest, sparse forest, grassland, shrubland, cropland, urban, water…). Drives *spawn probability / density* and per-class rejection. 10 m grain matches LOD0/L1 tree-instance placement.
+
+The product `(biome × ecoregion × landcover)` keys the species palette (§BIOME-E) — this is what makes "grassland" yield *completely different* vegetation in the N.A. prairie vs African savanna vs Eurasian steppe.
+
+### BIOME-B. Recommended permissive dataset stack (with the MIT caveat)
+
+**MIT-vs-CC caveat (important and honest):** geospatial data essentially never uses software licenses. There is **no MIT-licensed global vegetation dataset** — the field standardized on Creative Commons / public-domain. The closest practical permissive analogue to MIT/BSD/Apache is **CC-BY-4.0** (commercial use OK, attribution required) or **CC0 / public-domain** (no attribution). **CC-BY-NC must be avoided** (no commercial use). All datasets below are CC-BY-4.0 or public-domain — commercial use is explicitly permitted with attribution only (no royalties, no share-alike).
+
+| Layer | Dataset | Resolution / form | License | Commercial | URL |
+|---|---|---|---|---|---|
+| **Biome / climate** | Köppen-Geiger v3 (Beck et al. 2023) | 1 km GeoTIFF, 1901–2099 (incl. CMIP6 projections) | CC-BY-4.0 | ✅ | https://www.gloh2o.org/koppen/ |
+| **Ecoregion** | RESOLVE Ecoregions 2017 (846 regions; realm→biome→ecoregion hierarchy) | vector shapefile / EE raster | CC-BY-4.0 | ✅ | https://data-gis.unep-wcmc.org/.../Resolve_Ecoregions/ |
+| **Land cover (primary)** | ESA WorldCover 2021 v200 (11 classes) | **10 m** GeoTIFF/COG | CC-BY-4.0 | ✅ | https://esa-worldcover.org/en/data-access |
+| **Land cover (fallback)** | Copernicus Global Land Cover Collection 3 (22 classes) | 100 m GeoTIFF | CC-BY-4.0 (since 2025-07-02) | ✅ | https://land.copernicus.eu/en/products/global-dynamic-land-cover |
+| **Land cover (alt / historical)** | MODIS MCD12Q1 v061 (17 IGBP classes, 2001–) | 500 m HDF/GeoTIFF | public domain (NASA EOSDIS) | ✅ | https://www.earthdata.nasa.gov/data/catalog/lpcloud-mcd12q1-061 |
+| **Land cover (near-realtime)** | Google Dynamic World v1 (9 classes + probabilities, 2–5 day revisit) | 10 m | CC-BY-4.0 | ✅ | https://dynamicworld.app/ |
+
+**Recommended minimal stack:** Köppen-Geiger v3 (biome) + RESOLVE 2017 (ecoregion) + ESA WorldCover 2021 (land cover, 10 m), with Copernicus 100 m as the bandwidth-constrained fallback. **One attribution line covers all three:** *"Vegetation data: Köppen-Geiger (Beck et al. 2023, CC-BY-4.0), RESOLVE Ecoregions 2017 (CC-BY-4.0), ESA WorldCover 2021 (CC-BY-4.0)."*
+
+**Integration:** rasters → KTX2 texture atlases (compressed, ~10× smaller than GeoTIFF) for compute-shader sampling; RESOLVE vector → GeoJSON or pre-rasterized ID raster; sampling via `Core/sampleTerrainMostDetailed.js` + texture filtering at scatter points. Pre-tile to the LOD0 grid (e.g. 512×512 per EPSG:4326 quadrant), host per-region `.ktx2` (~100–500 KB each) alongside tilesets or on CDN.
+
+### BIOME-C. Auto-sample + manual-override design (with precedence)
+
+Placement resolves through a strict precedence chain — **explicit > manual > tileset > global** — so behaviour is predictable and debuggable. This mirrors the game-engine pattern (Vegetation Studio / UE5 Foliage) where *authored* edits survive procedural re-runs:
+
+```text
+FOR each scatter-point candidate at (lat, lon, height):
+  1. Tier-1 EXPLICIT (I3DM instance present)        → use its props, render        [HIGHEST]
+  2. Tier-2a MANUAL GeoJSON polygon hit             → use polygon biome/species/density
+     (force_disable_scatter → reject; preserve_tier1_only → keep only explicit)
+  3. Tier-2b TILESET metadata (3DTILES_metadata     → use VEG_BIOME / VEG_ECOREGION hint,
+     or _CESIUMWEBGPU_vegetation_scatter)              density *= VEG_DENSITY_SCALE
+  4. Tier-2c GLOBAL raster sample                    → biome/ecoregion/landcover from KTX2  [LOWEST]
+  5. LOOKUP species palette[(biome × ecoregion × landcover)]
+  6. APPLY rejection: density (stochastic), slope > max, altitude outside range
+  7. EMIT RTE-encoded instance (speciesId, biomeId, ecoregionId, featureId, scale, rot)
+```
+
+- **Manual GeoJSON** carries `{ biome_override_id, ecoregion_override_id, species_force[], density_scale, force_disable_scatter, preserve_tier1_only }`. Authored regions (e.g. "Old Growth Reserve", "City Center → no scatter") always win over the global raster.
+- **Tileset/tile metadata** carries `VEG_BIOME`, `VEG_ECOREGION`, `VEG_DENSITY_SCALE`, `VEG_SPECIES_WHITELIST` at tileset/tile level (binds to §D's `3DTILES_vegetation_scatter` / `_CESIUMWEBGPU_vegetation_scatter` namespace). `VEG_BIOME` semantic = the biome raster channel; `VEG_SPECIES` = the palette whitelist.
+- **Global raster** is the default fallback when no override is set (`biome_id == 0` → sample global map).
+
+### BIOME-D. Runtime sampling strategy — pre-rasterized override map (not GPU point-in-polygon)
+
+At planetary scale, testing millions of scatter points against hundreds of GeoJSON polygons per frame is too expensive (research: 170M points × 40K polys ≈ 11 s on GPU). The design uses **pre-rasterization → O(1) texture lookup** instead:
+
+- **CPU setup (once per tileset load):** rasterize the manual GeoJSON polygons to a 512²/1024² override-map texture (`R8=biome_id, G8=ecoregion_id, B8=density_scale, A8=flags`) via offscreen-canvas triangle rasterization; upload the global biome/ecoregion/landcover composite as KTX2; precompute the species-palette GPU buffer.
+- **Per-tile scatter (WebGPU compute, first visibility):** `VegetationScatter.wgsl` (V1, §8) — grid point → lat/lon within tile bounds → sample heightmap (slope from finite-difference) → sample override map, fall back to global raster → palette lookup → stochastic Poisson-disk + density acceptance → slope/altitude reject → weighted species pick → emit RTE instance via `atomicAdd`.
+- **WebGL2 CPU fallback:** a pooled `VegetationScatterWorker.js` runs the identical decision tree against decoded textures, writing the **same instance-buffer layout**, posted back as a transferable `ArrayBuffer`. **Determinism is mandatory** — seeded PRNG (xorshift128 / PCG, ideally WASM), never `Math.random()`, so positions/feature-IDs are stable across frames and clients (picking + styling depend on it).
+
+This is the consumer of the §D `densityMapUri` / `biomeMapUri` control rasters — the only genuinely new artifact (the scatter pass / its CPU twin) is the same one V1 builds regardless of whether the extension is standardized.
+
+### BIOME-E. Species-palette data model — keyed by (biome × ecoregion × landcover)
+
+A statically-loaded JSON palette (versioned external schema, §D) defines biomes, ecoregions, landcover classes, species, and a `palette_lookup` keyed `"biome_id:ecoregion_id:landcover_id"`:
+
+```jsonc
+{
+  "biomes":     [ { "id": 3, "name": "grassland_temperate", "color_tint": "#8b9c49" }, … ],
+  "ecoregions": [ { "id": 4, "name": "north_american_prairie", "biome_id": 3 }, … ],
+  "landcover_classes": [ { "id": 3, "name": "grassland" }, … ],
+  "species":    [ { "id": 4, "name": "grass_temperate", "height_range": [0.3, 1.5], "dbh_range": [...] }, … ],
+  "palette_lookup": [
+    { "key": "3:4:3",            // temperate grassland × N.A. prairie × grassland
+      "density": 0.3, "max_slope": 30, "min_altitude": 500, "max_altitude": 3000,
+      "species": [ { "id": 4, "weight": 0.6 }, { "id": 8, "weight": 0.2 }, { "id": 9, "weight": 0.2 } ] },
+    { "key": "4:5:3",            // savanna × Serengeti × grassland → totally different species
+      "density": 0.2, "max_slope": 25, "min_altitude": 1200, "max_altitude": 1900,
+      "species": [ { "id": 5, "weight": 0.7 }, { "id": 3, "weight": 0.2 }, { "id": 10, "weight": 0.1 } ] }
+  ]
+}
+```
+
+- **`density`** controls spawn fraction per (biome × ecoregion × landcover) — dense tropical forest ≈ 0.15, sparse prairie ≈ 0.3 (more but shorter).
+- **Weighted `species[]`** drives the stochastic per-instance pick; **`height_range`/`dbh_range`** feed L0 mesh scaling + impostor sampling; **`max_slope`/altitude range** are the per-biome rejection rules.
+- Loaded into a flat GPU buffer indexed `biome_id * 256 + ecoregion_id` for the compute shader (`Scene/VegetationLayer.js:setSpeciesPalette()`), with the CPU worker reading the same table.
+
+**Data-pipeline note:** this is **data/asset-prep work, not engine work** (§9 item 7). The engine consumes control rasters + a palette JSON; sourcing/baking them (Köppen + RESOLVE + WorldCover → composite KTX2 + palette) is an offline step, parallel to the §8 V1 engine build.
+
+**Dataset sources cited:** Köppen-Geiger v3 (gloh2o.org/koppen; Beck et al. 2023, Scientific Data 10, 724); RESOLVE Ecoregions 2017 (data-gis.unep-wcmc.org; developers.google.com/earth-engine/datasets/catalog/RESOLVE_ECOREGIONS_2017); ESA WorldCover 2021 v200 (esa-worldcover.org); Copernicus Global Land Cover C3 (land.copernicus.eu); MODIS MCD12Q1 v061 (earthdata.nasa.gov); Google Dynamic World v1 (dynamicworld.app); TEoW (databasin.org); GLanCE (gee-community-catalog.org/projects/glance_training). Mapping/override patterns: Vegetation Studio terrain splatmaps (awesometech.no); UE5 Foliage + procedural layers (docs.unrealengine.com); WebGPU compute rasterizer (github.com/OmarShehata/webgpu-compute-rasterizer); large-scale GPU point-in-polygon (BigSpatial2012). 3D Tiles metadata semantics (github.com/CesiumGS/3d-tiles/tree/main/specification/Metadata; fine-grained metadata blog 2022-05-31).

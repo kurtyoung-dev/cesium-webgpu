@@ -891,6 +891,7 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - TILE-PERF-03 shared UBO for tile-invariant data (TILE-PERF-03)
 - TILE-PERF-04 early-out on static camera (TILE-PERF-04)
 - FEAT-GAP-07 impostors for far-LOD 3D Tiles + vegetation (FEAT-GAP-07)
+- NEW-VEGETATION-SYSTEM planetary vegetation epic (trees/grass/rocks, globe + 3D Tiles, dual-backend) — V1 scatter, V2 mesh-LOD chain + GPU select, V3 octahedral impostor (FEAT-GAP-07), V4 VegetationPBR shader pair, V5 grass/rocks profiles; 3D-Tiles LOD is explicit-authored (no client auto-gen), so consume authored LOD tiles or add client auto-LOD; `3DTILES_vegetation_scatter` convention; biome/ecoregion/landcover data layer (Köppen-Geiger + RESOLVE Ecoregions 2017 + ESA WorldCover, all CC-BY-4.0 — no MIT-licensed global vegetation data exists). Unbuilt — canonical design: `migration_doc/VEGETATION_SYSTEM_DESIGN.md`; tracked as `DEFERRED_WORK.md` NEW-VEGETATION-SYSTEM (NEW-VEGETATION-SYSTEM)
 - FEAT-SURVEY-20 MegaBuffer (subsumed under Phase 8b) (FEAT-SURVEY-20)
 - FEAT-SURVEY-23 dynamic-offset UBO orchestration (FEAT-SURVEY-23)
 - FEAT-SURVEY-24 GPU Resident Drawer / persistent instance table (FEAT-SURVEY-24)
