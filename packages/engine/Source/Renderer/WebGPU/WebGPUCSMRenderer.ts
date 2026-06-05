@@ -304,10 +304,12 @@ export class WebGPUCSMRenderer {
     //   vec4<f32> cascadeMinBias                =  4 floats  offset  72
     //   vec4<f32> cascadeMaxSlopeBias           =  4 floats  offset  76
     // WGSL struct size: 80 floats = 320 bytes.
-    // We over-allocate to 272 floats (1088 bytes) so the buffer stays
-    // 256-aligned and matches CSM_PARAMS_PLACEHOLDER_BYTES without
-    // forcing every CSM consumer to track a new size constant. Bytes
-    // beyond 320 are unwritten zeros — the shader never reads them.
+    // We over-allocate to 272 floats (1088 bytes) so the staging array matches
+    // CSM_PARAMS_PLACEHOLDER_BYTES (one shared size for binding 10) without
+    // forcing every CSM consumer to track a new size constant. Bytes beyond 320
+    // are unwritten zeros — the shader never reads them. NOTE: 1088 is NOT
+    // 256-aligned (1088 % 256 = 64); the real GPU buffer is rounded up to 1280
+    // at creation below via Math.ceil(byteLength / 256) * 256.
     this._cascadeParamsData = new Float32Array(272);
 
     for (let i = 0; i < this._cascadeCount; i++) {

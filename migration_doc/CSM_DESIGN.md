@@ -38,7 +38,7 @@ Original design deferred bias tuning to "Slice 2" with a hardcoded `0.005` place
 
 **Fix (Session 33, shipped):**
 
-- `CSMParams` UBO gained `cascadeMinBias: vec4<f32>` and `cascadeMaxSlopeBias: vec4<f32>` at float offsets 264/268. Fits within the existing 1088B placeholder — no BGL churn.
+- `CSMParams` UBO gained `cascadeMinBias: vec4<f32>` and `cascadeMaxSlopeBias: vec4<f32>` at float offsets 72/76 (per the layout comment at `WebGPUCSMRenderer.ts:300-305`; packed at `:526-527`). Fits within the existing 1088B placeholder — no BGL churn.
 - Per-cascade constants scale linearly with `sphereRadius[i] / sphereRadius[0]`, so NDC bias tracks each cascade's orthographic depth range (`fn = 3*r` in the projection).
 - Base values `minBias = 5e-5`, `maxSlopeBias = 5e-4`; cascade 3 (km-scale) scales up proportionally.
 - Shader formula (inside `sampleOneCascade` for both primitive + globe paths):

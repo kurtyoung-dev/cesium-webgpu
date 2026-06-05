@@ -215,12 +215,16 @@ const POINT_LIGHT_POSITION_OFFSET = 80; // 320 bytes / 4
 const CLIP_DPRIME_FLOAT_OFFSET = 28;
 
 // CSM params UBO size. Must match `WebGPUCSMRenderer._cascadeParamsData`
-// (264 floats = 1056 bytes, rounded to 1088 for 256-byte alignment) —
-// we only use this number as a validation minBindingSize hint. If the
-// placeholder diverges from the real buffer layout in the future, the
-// BGL minBindingSize guard on binding 10 will catch it at pipeline
-// creation time. Keep this in sync with the CSM renderer.
-const CSM_PARAMS_PLACEHOLDER_FLOATS = 264;
+// (272 floats = 1088 bytes). The WGSL CSMParams struct is only 80 floats /
+// 320 bytes; the renderer over-allocates to 272 floats so this placeholder and
+// the real buffer share one size for the binding-10 minBindingSize hint.
+// NOTE: 1088 is NOT 256-aligned (1088 % 256 = 64) — a uniform buffer's SIZE only
+// needs a 4-byte multiple; the 256 rule applies to dynamic binding OFFSETS, not
+// buffer size. The renderer separately rounds its real GPU buffer up to 1280 at
+// creation (WebGPUCSMRenderer.ts:372-373). If the placeholder ever diverges from
+// the real layout, the BGL minBindingSize guard on binding 10 catches it at
+// pipeline-creation time. Keep this in sync with the CSM renderer.
+const CSM_PARAMS_PLACEHOLDER_FLOATS = 272;
 const CSM_PARAMS_PLACEHOLDER_BYTES = 1088;
 
 // Cached per-device placeholder resources (shared across all primitives).
