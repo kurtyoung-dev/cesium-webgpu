@@ -218,6 +218,12 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
       tilesetFeaturesLoaded: tileset.statistics?.numberOfFeaturesLoaded,
       sceneMode: v.scene.mode,
       cameraHeight: v.camera.positionCartographic?.height,
+      // Diagnostics for the C-R9 b3dm-on-terrain depth-occlusion investigation
+      // (Batch 203): the frustum partition + useLogDepth state. NOTE: the
+      // frustum-partition "fix A" was tried + reverted — multi-frustum does NOT
+      // fix the occlusion (see DEFERRED_WORK C-R9 corrected root cause).
+      useLogDepth: v.scene.frameState?.useLogDepth,
+      numFrustums: v.scene._view?.frustumCommandsList?.length,
       // C-R9 plumbing checks (don't depend on visible rendering or pick FBO)
       featurePickIdCount,
       featurePickTexExists,
