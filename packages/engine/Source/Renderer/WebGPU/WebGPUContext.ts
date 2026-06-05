@@ -1164,7 +1164,7 @@ export class WebGPUContext extends GraphicsContext {
 
   /**
    * Initialize default textures (white, black, normal, cubemap)
-   * @private
+   * @internal
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _initializeDefaultTextures(): void {
@@ -1995,7 +1995,7 @@ export class WebGPUContext extends GraphicsContext {
 
   /**
    * Initializes the global ContextLimits with values from WebGPU device limits
-   * @private
+   * @internal
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _initializeContextLimits(): void {
@@ -4732,7 +4732,7 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Re-configure the canvas context after device loss recovery.
    * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
-   * @private
+   * @internal
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _reconfigureCanvas(): void {
@@ -5075,7 +5075,7 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Clear all stale GPU caches after device loss recovery.
    * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
-   * @private
+   * @internal
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _clearAllCaches(): void {

@@ -23,6 +23,7 @@ _Last reorganized 2026-05-30 (HEAD `de9d82abe2`, Batch 186). A multi-agent audit
 | Doc | Role |
 |---|---|
 | [`DEBUGGING_GUIDE.md`](DEBUGGING_GUIDE.md) | Single entry point for debugging tools + probes + CesiumDebug commands. |
+| [`FEATURE_RENDERER_ONBOARDING.md`](FEATURE_RENDERER_ONBOARDING.md) | Step-by-step guide to adding a new WebGPU Feature Renderer (key, eager/lazy registration, lifecycle, Scene access, compat exemption). |
 | [`IMAGERY_PROJECTION.md`](IMAGERY_PROJECTION.md) | Single source of truth for imagery-layer projection (WebGL + WebGPU). |
 | [`SHADER_PAIRS_LOCKSTEP.md`](SHADER_PAIRS_LOCKSTEP.md) | WGSL/GLSL shader-pair parity contract. |
 

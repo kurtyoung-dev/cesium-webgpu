@@ -1,0 +1,189 @@
+import {
+  ShaderDefine,
+  ShaderSourceId,
+  defineKeyToNames,
+  resolveDefineBit,
+} from "../../../Source/Renderer/WebGPU/WebGPUShaderDefines.js";
+
+describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
+  // This module is pure data + two pure lookup functions. It needs no
+  // GPU device, no scene context, and no async setup. The values below
+  // are load-bearing: per the module's "add-only; never reorder or
+  // remove" rule, a careless renumber would silently alias cached shader
+  // modules across rebuilds. These assertions pin every bit and source
+  // ID so an accidental reorder fails fast in CI.
+
+  describe("ShaderDefine bitmask registry", function () {
+    it("assigns each define a distinct single-bit value", function () {
+      expect(ShaderDefine.GEODETIC_NORMAL).toBe(1 << 0);
+      expect(ShaderDefine.DISABLE_DEPTH_DISTANCE).toBe(1 << 1);
+      expect(ShaderDefine.SPLIT_ENABLED).toBe(1 << 2);
+      expect(ShaderDefine.COMPRESSED_VERTICES).toBe(1 << 3);
+      expect(ShaderDefine.DISTANCE_DISPLAY_CONDITION).toBe(1 << 4);
+      expect(ShaderDefine.EYE_DISTANCE_TRANSLUCENCY).toBe(1 << 5);
+      expect(ShaderDefine.EYE_DISTANCE_PIXEL_OFFSET).toBe(1 << 6);
+      expect(ShaderDefine.EYE_DISTANCE_SCALING).toBe(1 << 7);
+      expect(ShaderDefine.VS_THREE_POINT_DEPTH_CHECK).toBe(1 << 8);
+      expect(ShaderDefine.MODEL_HAS_KHR_TEXTURES).toBe(1 << 9);
+      expect(ShaderDefine.STOCHASTIC_DITHER_ALPHA).toBe(1 << 10);
+      expect(ShaderDefine.STENCIL_PICK_WINNER).toBe(1 << 11);
+      expect(ShaderDefine.MODEL_HAS_TEXCOORD_1).toBe(1 << 12);
+      expect(ShaderDefine.MODEL_HAS_FEATURE_ID_0).toBe(1 << 13);
+      expect(ShaderDefine.MATERIAL_APPLY).toBe(1 << 14);
+      expect(ShaderDefine.LOG_DEPTH).toBe(1 << 15);
+    });
+
+    it("uses each bit exactly once (no aliasing)", function () {
+      const bits = Object.values(ShaderDefine);
+      const unique = new Set(bits);
+      expect(unique.size).toBe(bits.length);
+    });
+
+    it("declares every value as a single power of two", function () {
+      for (const bit of Object.values(ShaderDefine)) {
+        // Power-of-two check: exactly one bit set.
+        expect(bit & (bit - 1)).toBe(0);
+        expect(bit).toBeGreaterThan(0);
+      }
+    });
+
+    it("keeps all defines within the 24-bit cache-key field", function () {
+      // The cache key packs defines into bits 8..31 via
+      // ((defines & 0xffffff) << 8), so every bit must fit in 24 bits.
+      for (const bit of Object.values(ShaderDefine)) {
+        expect(bit & 0xffffff).toBe(bit);
+      }
+    });
+
+    it("is frozen (add-only registry cannot be mutated at runtime)", function () {
+      expect(Object.isFrozen(ShaderDefine)).toBe(true);
+    });
+  });
+
+  describe("ShaderSourceId registry", function () {
+    it("assigns the documented stable numeric identity to each source", function () {
+      expect(ShaderSourceId.GLOBE_TERRAIN).toBe(1);
+      expect(ShaderSourceId.BILLBOARD_COLLECTION).toBe(2);
+      expect(ShaderSourceId.BILLBOARD_COLLECTION_PICK).toBe(3);
+      expect(ShaderSourceId.BILLBOARD_COLLECTION_SDF).toBe(4);
+      expect(ShaderSourceId.POINT_PRIMITIVE_COLOR).toBe(5);
+      expect(ShaderSourceId.POINT_PRIMITIVE_PICK).toBe(6);
+      expect(ShaderSourceId.POLYLINE_COLLECTION).toBe(7);
+      expect(ShaderSourceId.POLYLINE_COLLECTION_PICK).toBe(8);
+      expect(ShaderSourceId.POLYLINE_ARROW).toBe(9);
+      expect(ShaderSourceId.POLYLINE_DASH).toBe(10);
+      expect(ShaderSourceId.POLYLINE_GLOW).toBe(11);
+      expect(ShaderSourceId.POLYLINE_OUTLINE).toBe(12);
+      expect(ShaderSourceId.CLOUD_COLLECTION).toBe(13);
+      expect(ShaderSourceId.VOXEL_PRIMITIVE).toBe(14);
+      expect(ShaderSourceId.WEATHER_PARTICLE_RENDER).toBe(15);
+      expect(ShaderSourceId.WEATHER_PARTICLES_COMPUTE).toBe(16);
+      expect(ShaderSourceId.ENVIRONMENT_SUN).toBe(17);
+      expect(ShaderSourceId.ENVIRONMENT_MOON).toBe(18);
+      expect(ShaderSourceId.VOLUMETRIC_FOG_COMPUTE).toBe(19);
+      expect(ShaderSourceId.VOLUMETRIC_FOG_COMPOSITE).toBe(20);
+      expect(ShaderSourceId.POINT_CLOUD).toBe(21);
+      expect(ShaderSourceId.POINT_CLOUD_LOD).toBe(22);
+      expect(ShaderSourceId.MODEL_PBR_COMPLETE).toBe(23);
+      expect(ShaderSourceId.VECTOR_3DTILE_PRIMITIVE).toBe(24);
+      expect(ShaderSourceId.VECTOR_3DTILE_POLYLINES).toBe(25);
+      expect(ShaderSourceId.VECTOR_3DTILE_CLAMPED_POLYLINES).toBe(26);
+      expect(ShaderSourceId.BUFFER_POINT_MATERIAL).toBe(27);
+      expect(ShaderSourceId.BUFFER_POLYLINE_MATERIAL).toBe(28);
+      expect(ShaderSourceId.BUFFER_POLYGON_MATERIAL).toBe(29);
+      expect(ShaderSourceId.GROUND_PRIMITIVE).toBe(30);
+      expect(ShaderSourceId.GROUND_POLYLINE).toBe(31);
+      expect(ShaderSourceId.SKY_ATMOSPHERE).toBe(32);
+      expect(ShaderSourceId.ELLIPSOID_PRIMITIVE).toBe(33);
+    });
+
+    it("reserves source ID 0 (no entry uses it)", function () {
+      // ID 0 is intentionally unused so a cache key of zero is
+      // distinguishable from "no source."
+      expect(Object.values(ShaderSourceId)).not.toContain(0);
+    });
+
+    it("uses a unique ID per source (no collisions)", function () {
+      const ids = Object.values(ShaderSourceId);
+      const unique = new Set(ids);
+      expect(unique.size).toBe(ids.length);
+    });
+
+    it("keeps every source ID within the 8-bit cache-key field", function () {
+      // The cache key packs the source ID into bits 0..7 via
+      // (sourceId & 0xff), so every ID must fit in 8 bits.
+      for (const id of Object.values(ShaderSourceId)) {
+        expect(id & 0xff).toBe(id);
+      }
+    });
+
+    it("is frozen (add-only registry cannot be mutated at runtime)", function () {
+      expect(Object.isFrozen(ShaderSourceId)).toBe(true);
+    });
+  });
+
+  describe("defineKeyToNames", function () {
+    it("returns an empty array for a zero bitmask", function () {
+      expect(defineKeyToNames(0)).toEqual([]);
+    });
+
+    it("returns the single matching name for a single bit", function () {
+      expect(defineKeyToNames(ShaderDefine.GEODETIC_NORMAL)).toEqual([
+        "GEODETIC_NORMAL",
+      ]);
+      expect(defineKeyToNames(ShaderDefine.LOG_DEPTH)).toEqual(["LOG_DEPTH"]);
+    });
+
+    it("expands a multi-bit mask in registry order", function () {
+      const mask =
+        ShaderDefine.GEODETIC_NORMAL |
+        ShaderDefine.SPLIT_ENABLED |
+        ShaderDefine.MATERIAL_APPLY;
+      // Object.entries iterates in insertion order, so the returned
+      // names follow the declaration order in the registry.
+      expect(defineKeyToNames(mask)).toEqual([
+        "GEODETIC_NORMAL",
+        "SPLIT_ENABLED",
+        "MATERIAL_APPLY",
+      ]);
+    });
+
+    it("ignores bits that don't correspond to any define", function () {
+      // Bit 30 is not a declared define; it must not produce a name and
+      // must not throw.
+      const mask = ShaderDefine.COMPRESSED_VERTICES | (1 << 30);
+      expect(defineKeyToNames(mask)).toEqual(["COMPRESSED_VERTICES"]);
+    });
+
+    it("returns every name when all declared bits are set", function () {
+      let mask = 0;
+      for (const bit of Object.values(ShaderDefine)) {
+        mask |= bit;
+      }
+      expect(defineKeyToNames(mask)).toEqual(Object.keys(ShaderDefine));
+    });
+  });
+
+  describe("resolveDefineBit", function () {
+    it("resolves a known flag name to its bit", function () {
+      expect(resolveDefineBit("GEODETIC_NORMAL")).toBe(
+        ShaderDefine.GEODETIC_NORMAL,
+      );
+      expect(resolveDefineBit("DISABLE_DEPTH_DISTANCE")).toBe(
+        ShaderDefine.DISABLE_DEPTH_DISTANCE,
+      );
+      expect(resolveDefineBit("LOG_DEPTH")).toBe(ShaderDefine.LOG_DEPTH);
+    });
+
+    it("returns undefined for an unknown flag name", function () {
+      expect(resolveDefineBit("NOT_A_REAL_DEFINE")).toBeUndefined();
+    });
+
+    it("is the inverse of defineKeyToNames for each single define", function () {
+      for (const [name, bit] of Object.entries(ShaderDefine)) {
+        expect(resolveDefineBit(name)).toBe(bit);
+        expect(defineKeyToNames(bit)).toEqual([name]);
+      }
+    });
+  });
+});
