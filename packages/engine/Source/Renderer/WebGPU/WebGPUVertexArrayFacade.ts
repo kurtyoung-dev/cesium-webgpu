@@ -328,7 +328,11 @@ class WebGPUVertexArrayFacade {
   private _resizeBuffer(buffer: ManagedBuffer, size: number): void {
     if (buffer.vertexSizeInBytes <= 0) return;
 
-    const newArrayBuffer = new ArrayBuffer(size * buffer.vertexSizeInBytes);
+    // Clamp negative sizes to 0. The facade is legitimately constructed with
+    // size 0 (sizeInVertices omitted -> `_size = sizeInVertices ?? 0`) and
+    // grown later via resize(); a 0 (or stray negative) size must not throw.
+    const safeSize = size > 0 ? size : 0;
+    const newArrayBuffer = new ArrayBuffer(safeSize * buffer.vertexSizeInBytes);
 
     // Copy old data
     if (buffer.arrayBuffer) {
@@ -340,10 +344,18 @@ class WebGPUVertexArrayFacade {
 
     // Create typed views
     for (const view of buffer.arrayViews) {
+      // When the buffer is empty (size 0), any attribute whose offset is at
+      // or past the zero-length end cannot back a typed array — the default
+      // length `(byteLength - offset) / bytesPerComponent` goes NEGATIVE
+      // (e.g. (0 - 12) / 4 = -3) and `new Float32Array(buf, off, -3)` throws.
+      // Emit an explicit zero-length view at offset 0 instead; the next
+      // resize(>0) rebuilds the real buffer-backed view.
+      const pastEnd = view.offsetInBytes >= newArrayBuffer.byteLength;
       view.view = CDT.createArrayBufferView(
         view.componentDatatype,
         newArrayBuffer,
-        view.offsetInBytes,
+        pastEnd ? 0 : view.offsetInBytes,
+        pastEnd ? 0 : undefined,
       ) as
         | Float32Array
         | Uint8Array
