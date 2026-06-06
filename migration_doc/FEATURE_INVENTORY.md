@@ -736,17 +736,17 @@ Partially shipped features with known gaps. Working code exists but the feature 
 
 ### C.1 Globe & Imagery
 
-- BUG-11 globe geometry never rasterizes in WebGPU; depth uniformly 1.0 — pipelines build, no validation errors, 11 cmds/frame queued, nothing reaches FS (BACKLOG-§1)
+- ~~BUG-11 globe geometry never rasterizes~~ — ✅ STALE/RESOLVED (Wave 0 verify, Batch 211). The globe demonstrably rasterizes on WebGPU (probe-globe-rasterizes.mjs: N. America + oceans + atmosphere limb, WebGL color parity, 0 GPU errors). The "never rasterizes / canvas BLACK" framing outlived the code. Residual narrows to the imagery-tile dark-patch symptom (WEBGPU_DEBUGGING_LOG.md:3982); the orthogonal pickPosition-returns-no-depth issue is FORK-34/C-R9 (separate). (BACKLOG-§1)
 - C-R1-GLOBE-RENDERSTATE: GlobeSurfaceRenderer builds variants from hardcoded state instead of upstream `command.renderState` (C-R1-GLOBE-RENDERSTATE)
-- BUG-3 2D / Columbus View modes: branching landed S18, visual smoke test pending (BACKLOG-§1)
-- BUG-1 stars/skybox fixed in S16 but never visually confirmed (BACKLOG-§1)
+- BUG-3 2D / Columbus View modes — ⚠️ PARTIAL (Wave 0 verify, Batch 211): **Columbus View renders correctly** on WebGPU (parity with WebGL); **SCENE2D is BLANK on WebGPU** (3.6% non-black vs WebGL 96.8% — flat map collapses off-screen under `_OrthographicOffCenterFrustum`; tiles are selected, 0 GPU errors → silent planar-projection bug). Fix the SCENE2D vertex transform in GlobeTerrain.wgsl 2D branch + SCENE2D camera/tile UB packing. probe-2dcv-verify.mjs. (BACKLOG-§1)
+- BUG-1 stars/skybox — ⚠️ PARTIAL (Wave 0 verify, Batch 211): **stars/skyBox render correctly** on WebGPU (match WebGL); **the SUN disc is ABSENT on WebGPU** (WebGL shows disc+glow+lens-flare; `updateWebGPUSun` is a real impl, so it's a render gap — likely sun billboard depth-fails/clips with no globe occluder behind it). Fix Sun pipeline depthCompare/depthWriteEnabled + clip-space Z in WebGPUEnvironmentRenderer.js updateWebGPUSun. probe-skybox-stars-sun.mjs. (BACKLOG-§1)
 - DP-H19-SHADER-DECODE-RUNTIME: GPU compressed-vertex decode scaffold landed; runtime flip + per-shader expansion remaining (BACKLOG-§Recent)
 
 ### C.2 3D Tiles
 
 - C-R1-CLASSIFICATION primitives need 3-pass renderState (stencil-depth/color/pick) routed through pipeline variants (C-R1-CLASSIFICATION)
 - C-R1-TILE-BATCH per-feature `Cesium3DTileBatchTable` renderState (depthMask flip, custom blend) not consumed by WebGPU model emission (C-R1-TILE-BATCH)
-- NEW-BG-CONSOLIDATION: ModelPBR pipeline declares 8 bind groups but spec default is 4 — silently breaks ALL b3dm/i3dm/glb on Edge/Vulkan (NEW-BG-CONSOLIDATION)
+- ~~NEW-BG-CONSOLIDATION: ModelPBR 8 bind groups > spec default 4 → breaks b3dm on Edge/Vulkan~~ — ✅ STALE/RESOLVED (Wave 0 verify, Batch 211): b3dm renders correctly on WebGPU/Edge with WebGL parity, 0 near-black px, 0 GPU validation errors (probe-b3dm-render-edge.mjs, BatchTableHierarchy on Edge). The bind-group ceiling was addressed earlier (ModelPBRComplete declares groups 0-3); the "b3dm black on Edge" framing is stale. (NEW-BG-CONSOLIDATION)
 - ~~C-R9-MODEL-FEATURE-PICK code wired but un-testable~~ — RESOLVED (Batch 209): b3dm/glTF per-feature pick returns a Cesium3DTileFeature/ModelFeature with readable properties, at WebGL parity. Moved to §B SHIPPED. (C-R9-MODEL-FEATURE-PICK)
 - 3D Tiles tile pop-in motion-vector NaN reject for TAA disocclusion deferred to TAA Slice 4 (TAA-DESIGN)
 - 3D Tiles per-tile cascade culling deferred to CSM Slice 4 (CSM-DESIGN)
@@ -831,7 +831,7 @@ Partially shipped features with known gaps. Working code exists but the feature 
 - WebGPUContext.ts decomposition in progress — 4354 LOC, 6 high-value extraction candidates queued (CONTEXT_DECOMPOSITION)
 - WebGPUSceneRenderer.ts decomposition in progress past Batches 133-142 (CONTEXT_DECOMPOSITION)
 - Indirect drawing for 3D Tiles (4.6) — opt-in flag landed S26; needs consumer renderer with homogeneous pipeline+bindgroup runs (BACKLOG-§4.6)
-- HiZPyramid + OcclusionTest activated 2026-04-19; opt-in via `scheduler.occlusionCulling.enabled` + Sandcastle visual verification pending (BACKLOG-§7)
+- 🔴 HIZ-OCCLUSION-CONSUMER — **P0 REGRESSION (Wave 0 verify, Batch 211): the Hi-Z occlusion consumer BLACK-SCREENS any dense (≥2400 opaque-cmd) WebGPU scene.** Hi-Z activates (dispatches climb, lastFrameInput >1M) but invalidates every command buffer → 0 non-bg px; the Batch 208 error gate caught 695 validation errors. Two root causes, both understood: (1) `beginComputePass` recorded while the Scene Framebuffer render pass is still open ("CommandEncoder is locked while RenderPassEncoder is open") — the EXACT Batch 90 GBuffer bug, never applied to `_dispatchHiZForNextFrame`; needs `context.endCurrentRenderPass?.()` before / `resumeDefaultRenderPass?.()` after. (2) `Occlusion_BGL` binds a filtering sampler to a NonFiltering slot (the SkyAtmosphere LUT sampler — depth is unfilterable-float, shouldn't be filtering). Control `gpuCullingHint='never'` renders identically to WebGL (86.9%), isolating the Hi-Z path. probe-hiz-occlusion-consumer.mjs + probe-hiz-occlusion-control.mjs. Interim safe state: gpuCullingHint='never'. DO NOT ship until fixed. (BACKLOG-§7)
 - PointCloudSort dispatcher landed 2026-04-09; consumer integration in point cloud collection pending (BACKLOG-§7)
 - GPUSortKeys WGSL + dispatcher exist; SOA buffers + bind group factory + RenderScheduler integration pending (BACKLOG-§7)
 - C-R12-PER-OBJECT-CACHES: device-loss invalidation event subscriber walk doesn't reach `model._webgpuCache`/`clippingPlanes._webgpuCache` (C-R12-PER-OBJECT-CACHES)
