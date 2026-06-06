@@ -35,6 +35,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  errorGateInit,
+  armWebGPUDevices,
+  collectGateErrors,
+  attachConsoleErrorGate,
+} from "./lib/webgpu-error-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.join(__dirname, "..");
@@ -194,6 +200,20 @@ function htmlTemplate(bundlePath, rendererType) {
         : new Cesium.Viewer("container", viewerOptions);
       window.__viewer = viewer;
 
+      // Arm the WebGPU error/crash gate on the freshly-created device BEFORE
+      // the render frames below, so attachment-incompat / bad-bind-group
+      // validation errors and device-loss during those frames are caught
+      // (the FORK-34 class the smoke test previously slept through). No-op
+      // for the webgl variant (no _device / installer is a guarded call).
+      try {
+        window.__armWebGPUDevice?.(
+          viewer.scene?.context?._device,
+          "smoke:${rendererType}",
+        );
+      } catch (gateErr) {
+        window.__smokeErrors.push("gate-arm: " + String(gateErr));
+      }
+
       // Wait for a few frames to render so shader compile / pipeline
       // creation paths exercise.
       await new Promise(function (resolve) {
@@ -342,6 +362,11 @@ async function runVariant(browserType, args, variant) {
     page.on("pageerror", (err) => {
       errors.push(`pageerror: ${err.message}`);
     });
+    // WebGPU error/crash gate — catches validation errors + device-loss that
+    // never surface as a thrown JS exception (FORK-34 class). `attachConsoleErrorGate`
+    // also flags WebGPU-fault console prints; its array is folded in below.
+    const gateConsoleErrors = attachConsoleErrorGate(page);
+    await page.addInitScript(errorGateInit);
     // Log failed network requests — helps diagnose 404s where the message
     // only says "Request has failed. Status Code: 404" without a URL.
     page.on("requestfailed", (req) => {
@@ -366,6 +391,28 @@ async function runVariant(browserType, args, variant) {
     const ready = await readyState.jsonValue();
     const pageErrors = await page.evaluate(() => window.__smokeErrors || []);
     errors.push(...pageErrors);
+
+    // WebGPU error/crash gate collection. Arm any device that appeared after
+    // boot (idempotent), let async GPU errors / device-lost rejections flush
+    // (onuncapturederror fires after the queue validates submitted work), then
+    // fold uncaptured GPU errors + device-loss + WebGPU-fault console prints
+    // into the failure set. For a webgpu variant the gate MUST have armed a
+    // device — zero armed means the bundle silently fell back to WebGL, which
+    // is itself a smoke failure.
+    const gateArm = await armWebGPUDevices(page);
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
+    const gate = await collectGateErrors(page);
+    errors.push(...gate.errors);
+    if (gate.deviceLost) errors.push(gate.deviceLost);
+    errors.push(...gateConsoleErrors);
+    if (variant.renderer === "webgpu" && gate.armedDevices === 0) {
+      errors.push(
+        `webgpu-gate: no WebGPU device was armed (armed=${gateArm.armed} found=${gateArm.found}) — likely a silent fallback to WebGL`,
+      );
+    }
+    console.log(
+      `  [debug] webgpu-gate armedDevices=${gate.armedDevices} uncaptured=${gate.errors.length} deviceLost=${gate.deviceLost ? "YES" : "no"} faultConsole=${gateConsoleErrors.length}`,
+    );
     // AUDIT_2026_05_02 C.10 — pixel-verification result. `__smokePixelCount`
     // is the number of distinct RGB values sampled from a 5×5 grid on the
     // canvas; under 2 means the pixel-verify gate failed (canvas appears

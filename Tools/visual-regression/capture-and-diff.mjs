@@ -33,6 +33,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  errorGateInit,
+  armWebGPUDevices,
+  collectGateErrors,
+  attachConsoleErrorGate,
+} from "../lib/webgpu-error-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENES_PATH = path.join(__dirname, "scenes.json");
@@ -420,6 +426,13 @@ async function main() {
   });
   const page = await context.newPage();
 
+  // WebGPU error/crash gate — this runner previously captured NO console
+  // errors, so a backend that emitted validation errors / lost its device
+  // still "passed" as long as the pixel diff stayed under threshold. The gate
+  // turns those faults into a run failure (FORK-34 class).
+  const gateConsoleErrors = attachConsoleErrorGate(page);
+  await page.addInitScript(errorGateInit);
+
   console.log(`[visual-regression] navigating ${cfg.baseUrl}`);
   await page.goto(cfg.baseUrl, { waitUntil: "networkidle" });
   // The split-screen page gates viewer creation behind a "Launch
@@ -432,6 +445,12 @@ async function main() {
     () => !!(window.webglViewer && window.webgpuViewer),
     null,
     { timeout: 60000 },
+  );
+  // Arm the WebGPU error/crash gate now that both devices exist, so faults
+  // during scene rendering below are captured.
+  const gateArm = await armWebGPUDevices(page);
+  console.log(
+    `[visual-regression] webgpu-gate armed=${gateArm.armed} found=${gateArm.found}`,
   );
   // Batch 227b — wait for both globes to actually render at least
   // one non-black frame. Bing imagery + terrain tiles take real
@@ -515,6 +534,34 @@ async function main() {
       `  ${status} diff=${(ratio * 100).toFixed(2)}%  threshold=${(args.threshold * 100).toFixed(2)}%`,
     );
     report.scenes.push({ name: scene.name, ratio, status });
+  }
+
+  // WebGPU error/crash gate verdict. Let async GPU errors / device-lost
+  // rejections flush, then fold uncaptured GPU errors + device-loss +
+  // WebGPU-fault console prints into the run result. Any fault FAILS the run
+  // regardless of the pixel diff — a backend that renders the right pixels
+  // while spewing validation errors is not actually healthy.
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
+  const gate = await collectGateErrors(page);
+  const gateFaults = [
+    ...gate.errors,
+    ...(gate.deviceLost ? [gate.deviceLost] : []),
+    ...gateConsoleErrors,
+  ];
+  report.webgpuGate = {
+    armedDevices: gate.armedDevices,
+    uncapturedErrors: gate.errors,
+    deviceLost: gate.deviceLost,
+    faultConsole: gateConsoleErrors,
+  };
+  if (gateFaults.length > 0) {
+    anyFail = true;
+    console.log(`\n[visual-regression] WebGPU gate FAILED — ${gateFaults.length} fault(s):`);
+    for (const f of gateFaults.slice(0, 30)) console.log(`  · ${f}`);
+  } else {
+    console.log(
+      `[visual-regression] WebGPU gate clean (armedDevices=${gate.armedDevices})`,
+    );
   }
 
   await fs.writeFile(
