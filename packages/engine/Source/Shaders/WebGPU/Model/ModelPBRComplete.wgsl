@@ -2656,7 +2656,45 @@ struct FragOutput {
   // `textureSampleLevel` is required for explicit lod control; the
   // FS would otherwise get an implicit derivative-based lod that
   // doesn't align with the prefilter's roughness convention.
-  let R = reflect(-V, N);
+  var R = reflect(-V, N);
+  //>>ifdef MODEL_HAS_KHR_TEXTURES
+  // NEW-KHR-ANISO-TANGENT (IBL) — bend the reflection normal for
+  // anisotropic materials so the specular IBL streaks along the authored
+  // tangent, matching WebGL `ImageBasedLightingStageFS.glsl` USE_ANISOTROPY
+  // (lines 78-86). WebGL bends about `anisotropicB = cross(N, rotatedTangent)`
+  // (the anisotropy BITANGENT), not the tangent itself — so we compute
+  // `cross(N, aniDir)` here. `aniDir` is the authored tangent rotated by the
+  // anisotropy rotation, derived exactly as the direct-light block above.
+  // `mix(anisotropicNormal, N, bendFactorPow4)` fades the bend out as
+  // roughness -> 1 (bendFactorPow4 -> 1 -> unbent N). Gated under
+  // MODEL_HAS_KHR_TEXTURES because it samples `anisotropyTexture`.
+  if (hasFlag(flags, FLAG_HAS_ANISOTROPY)) {
+    let aniTexIBL = textureSampleLevel(
+      anisotropyTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    let aniRotIBL = material.anisotropyFactors.y +
+      atan2(aniTexIBL.g * 2.0 - 1.0, aniTexIBL.r * 2.0 - 1.0);
+    let aniStrIBL = material.anisotropyFactors.x * aniTexIBL.b;
+    let tanLenSqIBL = dot(input.tangentEC, input.tangentEC);
+    var aniTI: vec3<f32>;
+    var aniBI: vec3<f32>;
+    if (tanLenSqIBL > 1.0e-6) {
+      aniTI = input.tangentEC * inverseSqrt(tanLenSqIBL);
+      aniBI = normalize(input.bitangentEC);
+    } else {
+      aniTI = normalize(cross(N, V));
+      aniBI = normalize(cross(aniTI, N));
+    }
+    let aniDirIBL = aniTI * cos(aniRotIBL) + aniBI * sin(aniRotIBL);
+    let anisotropyDirection = cross(N, aniDirIBL);
+    let anisotropicTangent = cross(anisotropyDirection, V);
+    let anisotropicNormal = cross(anisotropicTangent, anisotropyDirection);
+    let bendFactor = 1.0 - aniStrIBL * (1.0 - roughness);
+    let bendFactorPow4 = bendFactor * bendFactor * bendFactor * bendFactor;
+    let bentNormal = normalize(mix(anisotropicNormal, N, bendFactorPow4));
+    R = reflect(-V, bentNormal);
+  }
+  //>>endif
   let specLod = roughness * light.iblMaxMipLevel;
   let radiance = textureSampleLevel(
     iblSpecularTexture, iblSampler, R, specLod

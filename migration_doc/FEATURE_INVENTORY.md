@@ -758,9 +758,10 @@ Partially shipped features with known gaps. Working code exists but the feature 
 
 ### C.3 glTF Models + KHR Extensions
 
-- NEW-KHR-ANISO-TANGENT: anisotropy approximated via view-relative `viewRight = cross(N,V)` instead of authored TANGENT (NEW-KHR-ANISO-TANGENT)
-- NEW-KHR-IRIDESCENCE-LUT: hue-shift approximation, no precomputed thin-film LUT (NEW-KHR-IRIDESCENCE-LUT)
-- NEW-KHR-TRANSMISSION-THICKNESS: refraction UV offset is fixed 0.05, not coupled to volume thickness (NEW-KHR-TRANSMISSION-THICKNESS)
+- ~~NEW-KHR-ANISO-TANGENT: anisotropy approximated via view-relative tangent~~ — ✅ RESOLVED (Batch 210). Direct-light path already used the authored TANGENT (AUDIT_2026_05_02 B.5); Batch 210 adds the IBL anisotropic bent-normal (`ModelPBRComplete.wgsl` ~2659), matching WebGL `ImageBasedLightingStageFS.glsl:78-86` (bend about `cross(N, rotatedTangent)`). NOTE: pixel-parity vs WebGL is currently blocked by a SEPARATE pre-existing WebGL GLSL compile bug on TestKhrAnisotropy.gltf (`computeTangent`/`normalTexCoords` undeclared @0:366) — see NEW-WEBGL-ANISO-GLSL-BROKEN below. (NEW-KHR-ANISO-TANGENT)
+- ~~NEW-KHR-IRIDESCENCE-LUT: hue-shift approximation~~ — ✅ ALREADY SHIPPED (Batch 181, doc was stale). `ModelPBRComplete.wgsl:2107-2226` implements the Belcour 2017 analytical thin-film integral (spec-compliant; no LUT needed — per-wavelength sensitivity baked as Gaussian fits). (NEW-KHR-IRIDESCENCE-LUT)
+- ~~NEW-KHR-TRANSMISSION-THICKNESS: fixed 0.05 refraction offset~~ — ✅ ALREADY SHIPPED (Batch 176, doc was stale). `ModelPBRComplete.wgsl:2469` couples the refraction UV step to volume thickness via `thicknessStepScale = 1.0 + 4.0 * thicknessForKHR`. (NEW-KHR-TRANSMISSION-THICKNESS)
+- NEW-WEBGL-ANISO-GLSL-BROKEN (found Batch 210): the **WebGL** model FS fails to compile for KHR_materials_anisotropy assets — `ERROR 0:366 'normalTexCoords' undeclared` + `'computeTangent' no matching overloaded function` (rendering halts with the error dialog). Pre-existing, NOT a WebGPU issue; blocks WebGL-vs-WebGPU anisotropy pixel-diffs. Likely the anisotropy GLSL stage references a normal-texture varying/function absent in the anisotropy-without-normal-texture permutation. Separate WebGL fix. (NEW-WEBGL-ANISO-GLSL-BROKEN)
 - ~~KHR_lights_punctual not wired in WebGPU model path; shader hardcodes 1 sun + ambient~~ — ✅ RESOLVED: loader (Batch 134) + LightCollection + Forward+ clustered consumer (Batch 153) deliver multi-light point/spot/directional per-pixel lighting beyond the sun in ModelPBRComplete. Lit Mat shaders still sun-only pending Batch 154+. (Phase-8 §2)
 - KHR_materials_variants / IOR / clearcoat-IOR coupling unwired on WebGPU (Phase-8 §2)
 - 5 default textures bound on every model draw even when unused (cost on every fragment) (Phase-8 §2)
@@ -780,7 +781,7 @@ Partially shipped features with known gaps. Working code exists but the feature 
 - C-R9-VOXEL-CELL-PICK: per-cell granularity unsupported (cell coords don't fit in 4-byte pickColor) (C-R9-VOXEL-CELL-PICK)
 - Picking 6.1 main scene depth-blit shader still pending (globe depth blit done) (BACKLOG-§4)
 - Pick layer filtering bitmask (6.2), octree pick acceleration (6.3) unwired (BACKLOG-§4)
-- C-R1-COLLECTIONS-PER-ENCODER: 5 collections (Billboard/Cloud/Point/Polyline/Label) don't call `applyPerEncoderState` — custom stencilRef/blendConstant silently ignored (C-R1-COLLECTIONS-PER-ENCODER)
+- ~~C-R1-COLLECTIONS-PER-ENCODER: 5 collections don't call `applyPerEncoderState`~~ — ✅ STALE/RESOLVED (verified Batch 210). All five named collections DO forward their renderState to the draw command, so `WebGPUDrawCommand.execute` runs `applyPerEncoderState`: Billboard (`_rsOpaque`/`_rsTranslucent`), Cloud (`WebGPUCloudRenderer.ts:738` `_rs`), Point (`WebGPUPointPrimitiveRenderer.js:1125,1327`), Polyline (`_opaqueRS`/`_translucentRS`), Label (`WebGPULabelRenderer.js:1129,1151` `labelRS`). (NOTE: the separate Buffer* collections — BufferPoint/Polyline/Polygon — expose no custom render-state API, so there is nothing to forward there yet; revisit if they gain one.) (C-R1-COLLECTIONS-PER-ENCODER)
 - TAA Slice 4 needs picking depth-readback un-jittering (TAA-DESIGN)
 
 ### C.6 Shadows / Lighting
