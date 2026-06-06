@@ -92,8 +92,15 @@ interface HiZOcclusionResources {
   occlusionParamsBuffer: GPUBuffer;
   /** Visibility output — one u32 per command (0 = occluded, 1 = visible). */
   visibilityBuffer: GPUBuffer;
-  /** Staging buffer for async readback of visibility. */
-  stagingBuffer: GPUBuffer;
+  /**
+   * Ring of staging buffers for async readback of visibility. A single
+   * buffer cannot pipeline the readback: `mapAsync` must run AFTER the copy
+   * is submitted, but the next frame's copy must not target a buffer that is
+   * still mapping. With a 2-buffer ring the dispatch writes one buffer while
+   * the OTHER (written + submitted last frame) is mapped, so neither
+   * "used in submit while pending map" nor "while mapped" can occur.
+   */
+  stagingBuffers: GPUBuffer[];
   /** Occlusion test bind group — rebuilt when a sphere buffer is re-allocated. */
   occlusionBindGroup: GPUBindGroup;
   /** Width of the input depth texture (mip 0). */
@@ -164,6 +171,17 @@ class WebGPUHiZOcclusionDispatcher {
   private _successfulReadbacks = 0;
   private _failedReadbacks = 0;
   private _inFlightReadback = false;
+  // ── Deferred / double-buffered readback state (Wave-0 P0 residual fix) ──
+  // The dispatch copies visibility into staging[_stagingWriteIdx]; the
+  // mapAsync for a buffer is deferred to the NEXT dispatch (by which point
+  // that buffer's copy has been submitted), and is never issued for the
+  // buffer being written this frame. `_latestVisibility` caches the most
+  // recently decoded result; `readbackVisibility()` returns it.
+  private _stagingWriteIdx = 0;
+  private _pendingReadIdx = -1;
+  private _pendingReadCount = 0;
+  private _stagingMapping: boolean[] = [false, false];
+  private _latestVisibility: Uint32Array | null = null;
   // B210-D1 (Batch 213) — track which frame the pyramid was last
   // built for. Per-frustum dispatches in the same frame share the
   // same depth texture and can reuse the previously-built pyramid.
@@ -518,11 +536,25 @@ class WebGPUHiZOcclusionDispatcher {
         GPUBufferUsage.COPY_SRC |
         GPUBufferUsage.COPY_DST,
     });
-    const stagingBuffer = device.createBuffer({
-      label: "Occlusion_VisibilityStaging",
-      size: maxCommands * 4,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
+    // Two-buffer ring (Wave-0 P0 residual fix) — write one while the other
+    // is mapped for readback. See `stagingBuffers` doc on the resources type.
+    const stagingBuffers = [
+      device.createBuffer({
+        label: "Occlusion_VisibilityStaging0",
+        size: maxCommands * 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      }),
+      device.createBuffer({
+        label: "Occlusion_VisibilityStaging1",
+        size: maxCommands * 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      }),
+    ];
+    // Reset ring state for the new allocation.
+    this._stagingWriteIdx = 0;
+    this._pendingReadIdx = -1;
+    this._pendingReadCount = 0;
+    this._stagingMapping = [false, false];
 
     const occlusionBindGroup = device.createBindGroup({
       label: "Occlusion_BG",
@@ -558,7 +590,7 @@ class WebGPUHiZOcclusionDispatcher {
       sphereRadiusBuffer,
       occlusionParamsBuffer,
       visibilityBuffer,
-      stagingBuffer,
+      stagingBuffers,
       occlusionBindGroup,
       inputWidth,
       inputHeight,
@@ -712,6 +744,22 @@ class WebGPUHiZOcclusionDispatcher {
     if (!r || !this.shadersReady) return false;
     if (soa.count <= 0 || soa.count > r.maxCommands) return false;
 
+    // Deferred readback (Wave-0 P0 residual fix): map the buffer written on a
+    // PRIOR dispatch — its copy has been submitted by now, so mapAsync is
+    // safe ("after the command buffer has been submitted"). This never maps
+    // the buffer we are about to write below.
+    this._pumpPendingReadback(r);
+
+    // Pick a staging buffer that is NOT currently mapping. Prefer the
+    // round-robin slot; fall back to the other; if BOTH are mapping (a very
+    // slow readback), skip this dispatch — the consumer keeps using the
+    // cached visibility from `_latestVisibility`.
+    let widx = this._stagingWriteIdx;
+    if (this._stagingMapping[widx]) {
+      widx ^= 1;
+      if (this._stagingMapping[widx]) return false;
+    }
+
     const device = this._device;
     // Upload SOA — one queue.writeBuffer per component, sub-range so
     // we don't overshoot on small command counts.
@@ -773,53 +821,75 @@ class WebGPUHiZOcclusionDispatcher {
     pass.dispatchWorkgroups(workgroupsX, 1, 1);
     pass.end();
 
-    // Copy visibility → staging so the CPU can map it next frame.
-    // Only copy the range we actually wrote.
+    // Copy visibility → the chosen staging buffer. The mapAsync for THIS
+    // buffer is deferred to the next dispatch (via _pumpPendingReadback),
+    // by which point this copy will have been submitted.
     encoder.copyBufferToBuffer(
       r.visibilityBuffer,
       0,
-      r.stagingBuffer,
+      r.stagingBuffers[widx],
       0,
       soa.count * 4,
     );
+    this._pendingReadIdx = widx;
+    this._pendingReadCount = soa.count;
+    this._stagingWriteIdx = widx ^ 1;
     this._occlusionDispatches++;
     return true;
   }
 
   /**
-   * Map the staging buffer and read the visibility results. Returns
-   * `null` when no test has been dispatched yet or when a previous
-   * readback is still in-flight (the dispatcher avoids two concurrent
-   * map calls).
-   *
-   * The returned array holds one u32 per command: 0 = occluded,
-   * nonzero = visible. The caller converts that to the `Uint8Array`
-   * that `SOABoundingSphereLayout.visibility` expects.
+   * Deferred-readback pump (Wave-0 P0 residual fix). Maps the staging buffer
+   * written by a PRIOR dispatch — by the time this runs (the start of the
+   * next dispatch) that copy has been submitted, so `mapAsync` is legal
+   * ("after the command buffer has been submitted") and the buffer is NOT
+   * the one about to be written this frame. Decodes into `_latestVisibility`.
+   * No-op when there's nothing pending or the slot is still mapping.
+   */
+  private _pumpPendingReadback(r: HiZOcclusionResources): void {
+    const idx = this._pendingReadIdx;
+    if (idx < 0 || this._stagingMapping[idx]) return;
+    const count = this._pendingReadCount;
+    this._pendingReadIdx = -1;
+    if (count <= 0) return;
+    const buf = r.stagingBuffers[idx];
+    this._stagingMapping[idx] = true;
+    this._inFlightReadback = true;
+    buf
+      .mapAsync(GPUMapMode.READ, 0, Math.min(count * 4, r.maxCommands * 4))
+      .then(() => {
+        const mapped = buf.getMappedRange(0, count * 4);
+        const out = new Uint32Array(count);
+        out.set(new Uint32Array(mapped));
+        buf.unmap();
+        this._latestVisibility = out;
+        this._successfulReadbacks++;
+      })
+      .catch(() => {
+        try {
+          buf.unmap();
+        } catch {
+          // not mapped — device lost / already unmapped
+        }
+        this._failedReadbacks++;
+      })
+      .finally(() => {
+        this._stagingMapping[idx] = false;
+        this._inFlightReadback = false;
+      });
+  }
+
+  /**
+   * Return the most recently decoded visibility (one u32 per command,
+   * 0 = occluded, nonzero = visible). Readback itself is now deferred +
+   * double-buffered inside `dispatchOcclusionTest` / `_pumpPendingReadback`
+   * (mapAsync runs at the next dispatch, after the prior copy submitted), so
+   * this entry point just hands back the cache — preserving the existing
+   * `fr.readback().then(store)` caller contract with zero map-vs-submit races.
    */
   async readbackVisibility(count: number): Promise<Uint32Array | null> {
-    const r = this._resources;
-    if (!r) return null;
-    if (this._inFlightReadback) return null;
-    if (count <= 0) return null;
-    this._inFlightReadback = true;
-    try {
-      await r.stagingBuffer.mapAsync(
-        GPUMapMode.READ,
-        0,
-        Math.min(count * 4, r.maxCommands * 4),
-      );
-      const mapped = r.stagingBuffer.getMappedRange(0, count * 4);
-      const out = new Uint32Array(count);
-      out.set(new Uint32Array(mapped));
-      r.stagingBuffer.unmap();
-      this._successfulReadbacks++;
-      return out;
-    } catch (_e) {
-      this._failedReadbacks++;
-      return null;
-    } finally {
-      this._inFlightReadback = false;
-    }
+    void count;
+    return this._latestVisibility;
   }
 
   /**
@@ -836,7 +906,9 @@ class WebGPUHiZOcclusionDispatcher {
       r.sphereRadiusBuffer.destroy();
       r.occlusionParamsBuffer.destroy();
       r.visibilityBuffer.destroy();
-      r.stagingBuffer.destroy();
+      for (const sb of r.stagingBuffers) {
+        sb.destroy();
+      }
       for (const mip of r.mipLevels) {
         mip.paramsBuffer.destroy();
       }
@@ -844,6 +916,9 @@ class WebGPUHiZOcclusionDispatcher {
       // Defensive — second destroy() is a no-op.
     }
     this._resources = null;
+    this._latestVisibility = null;
+    this._pendingReadIdx = -1;
+    this._stagingMapping = [false, false];
   }
 }
 

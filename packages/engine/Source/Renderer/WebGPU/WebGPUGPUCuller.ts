@@ -101,8 +101,20 @@ export class WebGPUGPUCuller {
   private _visibilityBuffer: GPUBuffer | null = null;
   private _indirectBuffer: GPUBuffer | null = null;
   private _visibleCountBuffer: GPUBuffer | null = null;
-  private _readbackBuffer: GPUBuffer | null = null;
-  private _countReadbackBuffer: GPUBuffer | null = null;
+  // Two-buffer readback ring (Wave-0 P0 residual fix) — a single staging
+  // buffer cannot pipeline GPU->CPU readback: mapAsync must run AFTER the
+  // copy is submitted, yet the next frame's copy must not target a buffer
+  // that is still mapping. With a ring the prepareReadback writes one slot
+  // while the OTHER (written + submitted last frame) is mapped, so neither
+  // "used in submit while pending map" nor "while mapped" can occur. The
+  // decoded result is cached in `_latestResults`; `readResults()` returns it.
+  private _readbackBuffers: (GPUBuffer | null)[] = [null, null];
+  private _countReadbackBuffers: (GPUBuffer | null)[] = [null, null];
+  private _rbWriteIdx: number = 0;
+  private _rbPendingIdx: number = -1;
+  private _rbPendingCount: number = 0;
+  private _rbMapping: boolean[] = [false, false];
+  private _latestResults: CullResults | null = null;
 
   private _isDestroyed: boolean = false;
 
@@ -291,18 +303,26 @@ export class WebGPUGPUCuller {
       label: `${this._label} Visible Count`,
     });
 
-    // Readback buffers
-    this._readbackBuffer = this._device.createBuffer({
-      size: maxObj * 4,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      label: `${this._label} Visibility Readback`,
-    });
-
-    this._countReadbackBuffer = this._device.createBuffer({
-      size: 4,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      label: `${this._label} Count Readback`,
-    });
+    // Readback buffers — two-slot ring (Wave-0 P0 residual fix). See the
+    // `_readbackBuffers` field doc for why a single buffer races.
+    this._readbackBuffers = [0, 1].map((i) =>
+      this._device.createBuffer({
+        size: maxObj * 4,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        label: `${this._label} Visibility Readback${i}`,
+      }),
+    );
+    this._countReadbackBuffers = [0, 1].map((i) =>
+      this._device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        label: `${this._label} Count Readback${i}`,
+      }),
+    );
+    this._rbWriteIdx = 0;
+    this._rbPendingIdx = -1;
+    this._rbPendingCount = 0;
+    this._rbMapping = [false, false];
   }
 
   /**
@@ -396,23 +416,88 @@ export class WebGPUGPUCuller {
    * @param objectCount - Number of objects
    */
   prepareReadback(encoder: GPUCommandEncoder, objectCount: number): void {
-    if (!this._visibilityBuffer || !this._readbackBuffer) return;
+    if (!this._visibilityBuffer) return;
+
+    // Deferred readback (Wave-0 P0 residual fix): map the slot written on a
+    // PRIOR prepareReadback — its copy has been submitted by now, so mapAsync
+    // is legal and never targets the slot we are about to write below.
+    this._pumpReadback();
+
+    // Pick a slot that isn't currently mapping. Prefer the round-robin index;
+    // fall back to the other; if BOTH are mapping (very slow readback), skip
+    // the copy this frame — the consumer keeps using `_latestResults`.
+    let i = this._rbWriteIdx;
+    if (this._rbMapping[i]) {
+      i ^= 1;
+      if (this._rbMapping[i]) return;
+    }
+    const vbuf = this._readbackBuffers[i];
+    const cbuf = this._countReadbackBuffers[i];
+    if (!vbuf || !cbuf) return;
 
     encoder.copyBufferToBuffer(
       this._visibilityBuffer,
       0,
-      this._readbackBuffer,
+      vbuf,
       0,
       objectCount * 4,
     );
+    encoder.copyBufferToBuffer(this._visibleCountBuffer!, 0, cbuf, 0, 4);
 
-    encoder.copyBufferToBuffer(
-      this._visibleCountBuffer!,
-      0,
-      this._countReadbackBuffer!,
-      0,
-      4,
-    );
+    this._rbPendingIdx = i;
+    this._rbPendingCount = objectCount;
+    this._rbWriteIdx = i ^ 1;
+  }
+
+  /**
+   * Deferred-readback pump (Wave-0 P0 residual fix). Maps the readback slot
+   * written by a PRIOR `prepareReadback` — by the time this runs (the start
+   * of the next prepareReadback) that copy has been submitted, so mapAsync is
+   * legal and the slot is not the one about to be written. Decodes into
+   * `_latestResults`. No-op when nothing is pending or the slot is mapping.
+   */
+  private _pumpReadback(): void {
+    const i = this._rbPendingIdx;
+    if (i < 0 || this._rbMapping[i]) return;
+    const count = this._rbPendingCount;
+    this._rbPendingIdx = -1;
+    if (count <= 0) return;
+    const vbuf = this._readbackBuffers[i];
+    const cbuf = this._countReadbackBuffers[i];
+    if (!vbuf || !cbuf) return;
+    this._rbMapping[i] = true;
+    Promise.all([
+      vbuf.mapAsync(GPUMapMode.READ, 0, count * 4),
+      cbuf.mapAsync(GPUMapMode.READ, 0, 4),
+    ])
+      .then(() => {
+        const visibilityFlags = new Uint32Array(
+          new Uint32Array(vbuf.getMappedRange(0, count * 4)),
+        );
+        const visibleCount = new Uint32Array(cbuf.getMappedRange(0, 4))[0];
+        vbuf.unmap();
+        cbuf.unmap();
+        this._latestResults = {
+          visibilityFlags,
+          visibleCount,
+          objectCount: count,
+        };
+      })
+      .catch(() => {
+        try {
+          vbuf.unmap();
+        } catch {
+          /* not mapped */
+        }
+        try {
+          cbuf.unmap();
+        } catch {
+          /* not mapped */
+        }
+      })
+      .finally(() => {
+        this._rbMapping[i] = false;
+      });
   }
 
   /**
@@ -422,59 +507,22 @@ export class WebGPUGPUCuller {
    * @param objectCount - Number of objects that were culled
    * @returns Culling results
    */
+  /**
+   * Return the most recently decoded cull results. Readback is now deferred +
+   * double-buffered inside `prepareReadback` / `_pumpReadback` (mapAsync runs
+   * at the next prepareReadback, after the prior copy submitted), so this
+   * entry point hands back the cache — preserving the existing
+   * `readResults().then(store)` caller contract with zero map-vs-submit races.
+   */
   async readResults(objectCount: number): Promise<CullResults> {
-    const emptyResult: CullResults = {
-      visibilityFlags: new Uint32Array(0),
-      visibleCount: 0,
-      objectCount: 0,
-    };
-    if (!this._readbackBuffer || !this._countReadbackBuffer) {
-      return emptyResult;
-    }
-
-    // H-P5 — both readback maps can reject if the device is lost or
-    // the buffer was destroyed while the submit was still in flight.
-    // Catch once around the whole readback so the caller sees a clean
-    // empty-result fallback instead of an unhandled promise rejection.
-    // `unmap()` is always called on success paths; on rejection the
-    // buffer is left mapped, so caller must re-init the culler before
-    // the next pass anyway.
-    try {
-      // Map visibility buffer
-      await this._readbackBuffer.mapAsync(GPUMapMode.READ);
-      const visData = new Uint32Array(
-        this._readbackBuffer.getMappedRange(0, objectCount * 4),
-      );
-      const visibilityFlags = new Uint32Array(visData);
-      this._readbackBuffer.unmap();
-
-      // Map count buffer
-      await this._countReadbackBuffer.mapAsync(GPUMapMode.READ);
-      const countData = new Uint32Array(
-        this._countReadbackBuffer.getMappedRange(0, 4),
-      );
-      const visibleCount = countData[0];
-      this._countReadbackBuffer.unmap();
-
-      return { visibilityFlags, visibleCount, objectCount };
-    } catch (e) {
-      // Device lost or buffer destroyed. Attempt to release any map
-      // we may have acquired before rejection; ignore secondary
-      // throws. Return empty so the culler reports "nothing visible"
-      // (safe: caller falls back to CPU frustum culling on a zero
-      // visibility count).
-      try {
-        this._readbackBuffer.unmap();
-      } catch {
-        // ignore
+    void objectCount;
+    return (
+      this._latestResults ?? {
+        visibilityFlags: new Uint32Array(0),
+        visibleCount: 0,
+        objectCount: 0,
       }
-      try {
-        this._countReadbackBuffer.unmap();
-      } catch {
-        // ignore
-      }
-      return emptyResult;
-    }
+    );
   }
 
   /**
@@ -517,8 +565,15 @@ export class WebGPUGPUCuller {
     this._visibilityBuffer?.destroy();
     this._indirectBuffer?.destroy();
     this._visibleCountBuffer?.destroy();
-    this._readbackBuffer?.destroy();
-    this._countReadbackBuffer?.destroy();
+    for (const b of this._readbackBuffers) {
+      b?.destroy();
+    }
+    for (const b of this._countReadbackBuffers) {
+      b?.destroy();
+    }
+    this._latestResults = null;
+    this._rbPendingIdx = -1;
+    this._rbMapping = [false, false];
 
     this._pipeline = null;
     this._bindGroupLayout = null;
