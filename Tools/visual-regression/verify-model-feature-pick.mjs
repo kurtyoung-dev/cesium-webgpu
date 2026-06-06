@@ -99,12 +99,16 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     const cw = v.canvas.clientWidth || 1280;
     const ch = v.canvas.clientHeight || 720;
     const cx = Math.floor(cw / 2), cy = Math.floor(ch / 2);
-    let picked = v.scene.pick(new C.Cartesian2(cx, cy));
+    // WebGPU pick is ASYNC (GPU->CPU readback). Synchronous scene.pick returns
+    // the prior frame's result on WebGPU, so use scene.pickAsync — ONE awaited
+    // call at a time (overlapping pickAsync double-maps the readback buffer).
+    let picked = await v.scene.pickAsync(new C.Cartesian2(cx, cy));
     if (!C.defined(picked)) {
-      // Spiral search — sample a grid around center to find the tileset.
       outer: for (let r = 20; r <= 240 && !C.defined(picked); r += 20) {
-        for (const [dx, dy] of [[0, -r], [r, 0], [0, r], [-r, 0], [r, r], [-r, -r], [r, -r], [-r, r]]) {
-          const p = v.scene.pick(new C.Cartesian2(cx + dx, cy + dy));
+        for (const [dx, dy] of [[0, -r], [r, 0], [0, r], [-r, 0]]) {
+          v.scene.render();
+          const p = await v.scene.pickAsync(new C.Cartesian2(cx + dx, cy + dy));
+          v.scene.render();
           if (C.defined(p)) { picked = p; break outer; }
         }
       }
@@ -246,25 +250,8 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
       primitiveCtor: picked?.primitive?.constructor?.name,
     };
 
-    // Spiral pick to find anything if center missed.
-    if (!out.pickedDefined) {
-      for (let r = 50; r < 350 && !out.pickedDefined; r += 50) {
-        for (let a = 0; a < 6; a++) {
-          const dx = Math.round(Math.cos(a) * r), dy = Math.round(Math.sin(a) * r);
-          const p = v.scene.pick(new C.Cartesian2(cx + dx, cy + dy));
-          if (p) {
-            out.pickedDefined = true;
-            out.hasPrimitive = !!p.primitive;
-            out.hasId = p.id !== undefined;
-            out.idType = typeof p.id;
-            out.idValue = typeof p.id === "number" ? p.id : String(p.id).slice(0, 80);
-            out.primitiveCtor = p.primitive?.constructor?.name;
-            out.foundOffset = [dx, dy];
-            break;
-          }
-        }
-      }
-    }
+    // (Second sync-pick spiral removed — sync scene.pick double-maps the
+    // WebGPU pick readback buffer. The pickAsync block above is authoritative.)
     return out;
   });
   console.log(JSON.stringify(result, null, 2));
