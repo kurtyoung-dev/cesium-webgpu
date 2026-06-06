@@ -9829,3 +9829,42 @@ mismatch from a true empty draw before theorising about depth/culling.
 returns the feature). The per-feature pick-color lookup must map to the
 `Cesium3DTileContent`'s registered `Cesium3DTileFeature` pick ids — tracked as
 `C-R9-MODEL-FEATURE-PICK` (now unblocked by this infra fix).
+
+---
+
+## Batch 209 — C-R9-MODEL-FEATURE-PICK: b3dm pick returns the Model, not a Cesium3DTileFeature (two more bugs)
+
+**Symptom (post-FORK-34):** WebGPU picking a b3dm building returned the content
+`Model` with the primitive-granular pick id (`id:"0_0"`) where WebGL returns a
+`Cesium3DTileFeature` (with readable batch-table properties).
+
+**Files:** `ModelPBRComplete.wgsl`, `WebGPUModelFeatureId.js`.
+
+**Root cause — two bugs in the per-feature pick path (the infra was already
+allocated: flags `0x60000` = FEATURE_ID_ATTRIBUTE|BATCH_TABLE, 30 pickIds, the
+feature-pick texture, `featurePickEnabled=1`):**
+
+1. **The pick FS gated the per-feature lookup on ALPHA.** `fragmentPickMain` and
+   `fragmentPickHoverMain` did `if (featurePickColor.a > 0.004) return …;`. But
+   the feature-pick texture is written from `Color.fromRgba(key)`, whose alpha is
+   the high key byte = 0 for every key below 2^24. So the gate ALWAYS failed and
+   fell through to `material.pickColor`. Same little-endian trap as the FORK-34
+   readback gate (Batch 207, bug 5). Fixed: gate on RGB (`r||g||b > 0`).
+2. **`ensurePerFeaturePickIds` registered a bare `{primitive: model, id: fid}`**
+   instead of the object WebGL registers. Fixed to register
+   `batchTexture._owner.getFeature(fid)` — the `Cesium3DTileFeature` (3D Tiles)
+   / `ModelFeature` (glTF EXT_mesh_features), exactly as `BatchTexture.js:528`,
+   kind `"tile-feature"`. `_owner` is the `ModelFeatureTable`, whose
+   `getFeature` returns `Cesium3DTileFeature(content, i)` for tile content.
+
+**Lesson:** the SAME alpha-vs-RGB trap bit two independent layers (the JS
+readback gate AND the WGSL feature-pick gate). When a subsystem encodes an id in
+a color, audit EVERY "is this texel set?" test for the alpha==0 assumption — pick
+ids legitimately have alpha 0. And to match a cross-backend result exactly,
+register the IDENTICAL object the reference backend registers (`owner.getFeature`)
+rather than reconstructing a look-alike.
+
+**Verified (verify-model-feature-pick.mjs, Edge, ellipsoid terrain) — WebGPU ==
+WebGL:** both `pickedCtor:"_Cesium3DTileFeature"`, `primitive:_Cesium3DTileset`,
+and the SAME properties (`roof_name:"roof2"`, `building_name:"building2"`,
+`building_area:"39.3"`). Box pick unaffected.

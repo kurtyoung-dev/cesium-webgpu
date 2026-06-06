@@ -288,6 +288,25 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
       idType: typeof picked?.id,
       idValue: typeof picked?.id === "number" ? picked.id : String(picked?.id).slice(0, 80),
       primitiveCtor: picked?.primitive?.constructor?.name,
+      // C-R9-MODEL-FEATURE-PICK parity check — the picked object must be a
+      // real Cesium3DTileFeature with readable batch-table properties, not
+      // a bare {primitive, id}. Capture its ctor + a couple of property
+      // values so WebGPU vs WebGL can be compared directly.
+      pickedCtor: picked?.constructor?.name,
+      isTileFeature: typeof picked?.getProperty === "function",
+      propertyIds:
+        typeof picked?.getPropertyIds === "function"
+          ? picked.getPropertyIds().slice(0, 8)
+          : null,
+      sampleProperties:
+        typeof picked?.getProperty === "function"
+          ? (() => {
+              const ids = picked.getPropertyIds().slice(0, 4);
+              const o = {};
+              for (const id of ids) o[id] = String(picked.getProperty(id)).slice(0, 40);
+              return o;
+            })()
+          : null,
     };
 
     // (Second sync-pick spiral removed — sync scene.pick double-maps the

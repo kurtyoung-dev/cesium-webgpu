@@ -2902,7 +2902,10 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
     if (batchColor.a < 0.004) { discard; }
     if (featureId.featurePickEnabled > 0.5) {
       let featurePickColor = lookupFeaturePickColor(fidInt);
-      if (featurePickColor.a > 0.004) {
+      // C-R9-MODEL-FEATURE-PICK fix — gate on RGB, not alpha (see the
+      // detailed note in fragmentPickMain). Pick-ID colors have alpha 0 for
+      // keys below 2^24; a valid pickId is identified by nonzero RGB.
+      if (featurePickColor.r > 0.0 || featurePickColor.g > 0.0 || featurePickColor.b > 0.0) {
         return featurePickColor;
       }
     }
@@ -2995,10 +2998,17 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
     if (batchColor.a < 0.004) { discard; }
     if (featureId.featurePickEnabled > 0.5) {
       let featurePickColor = lookupFeaturePickColor(fidInt);
-      // Feature-pick texture entries with alpha == 0 mean "no pickId
-      // allocated for this feature" -- fall through to the per-primitive
-      // pick color so the primitive remains pickable.
-      if (featurePickColor.a > 0.004) {
+      // C-R9-MODEL-FEATURE-PICK fix — gate on RGB, not alpha. Pick-ID colors
+      // come from `Color.fromRgba(key)`, which on a little-endian host packs
+      // the key low-to-high: red=key&0xff, green=(key>>8)&0xff,
+      // blue=(key>>16)&0xff, ALPHA=(key>>24)&0xff. Every key below 2^24
+      // (essentially all of them) therefore has alpha 0, so the old
+      // `a > 0.004` test fell through to the per-primitive pick color for
+      // EVERY feature — the b3dm picks resolved to the Model, not the
+      // Cesium3DTileFeature. Unallocated feature texels are (0,0,0,0); a
+      // valid pickId has a nonzero key → nonzero RGB. Same RGB!=0 decode as
+      // WebGPUPickFramebuffer.pickObjectsFromPixels.
+      if (featurePickColor.r > 0.0 || featurePickColor.g > 0.0 || featurePickColor.b > 0.0) {
         return featurePickColor;
       }
     }

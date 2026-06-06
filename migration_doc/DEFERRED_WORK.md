@@ -2413,7 +2413,20 @@ now passes.
 
 **REMAINING GAP — b3dm per-feature → `Cesium3DTileFeature` resolution.** WebGPU picking a b3dm building now returns the content **Model** with a model-level pick id (`"0_0"`), where WebGL returns a `Cesium3DTileFeature` (so `feature.getProperty(...)` works). The per-feature pick FBO is writing the model's pick id rather than the per-feature pick colors that the `Cesium3DTileContent` registered against `Cesium3DTileFeature` objects. This is the original C-R9-MODEL-FEATURE-PICK scope (the feature-ID-driven pick-color lookup in `WebGPUModelFeatureId.js` / the model pick FS), now unblocked by the infra fix above — see the dedicated entry below.
 
-### C-R9-MODEL-FEATURE-PICK — per-feature→Cesium3DTileFeature resolution (unblocked by FORK-34 fix, Batch 207)
+### ~~C-R9-MODEL-FEATURE-PICK~~ — RESOLVED (Batch 209). WebGPU b3dm pick returns a Cesium3DTileFeature with readable batch-table properties, at full WebGL parity.
+
+**★ RESOLVED (Batch 209, runtime-verified).** After the FORK-34 pick infra fix (Batch 207) the b3dm pick latched but returned the content `Model` (`id:"0_0"`, the primitive-granular pick id) instead of a `Cesium3DTileFeature`. Two more bugs in the per-feature path:
+
+1. **The pick FS gated the per-feature lookup on alpha.** `fragmentPickMain` / `fragmentPickHoverMain` did `if (featurePickColor.a > 0.004) return featurePickColor;`. But the feature-pick texture is written from `Color.fromRgba(key)` whose alpha is the high key byte — 0 for every key below 2^24. So the gate always failed and fell through to `material.pickColor`. Fixed to gate on RGB (`r||g||b > 0`), matching the FORK-34 readback fix. (`ModelPBRComplete.wgsl`.)
+2. **`ensurePerFeaturePickIds` registered a bare `{primitive: model, id: fid}`** instead of the object WebGL registers. Fixed to register `batchTexture._owner.getFeature(fid)` — the `Cesium3DTileFeature` (3D Tiles) / `ModelFeature` (glTF EXT_mesh_features), exactly as `BatchTexture.js:528` does — with kind `"tile-feature"`. (`WebGPUModelFeatureId.js`.)
+
+**Verified (`verify-model-feature-pick.mjs`, Edge headless, ellipsoid terrain), WebGPU vs WebGL — IDENTICAL:** both return `pickedCtor: "_Cesium3DTileFeature"`, `primitive: _Cesium3DTileset`, `isTileFeature: true`, and the SAME batch-table properties (`roof_name:"roof2"`, `building_name:"building2"`, `building_area:"39.3"`). `feature.getProperty(...)` works on WebGPU. Box pick unaffected (regression-checked).
+
+The render-gap analysis below (`firstRP.hasRenderResources: false`, "b3dm not visibly rendering") was the pre-FORK-34 state and is **superseded** — the b3dm renders and picks per-feature on WebGPU now.
+
+---
+
+#### Historical (pre-resolution) notes — per-feature→Cesium3DTileFeature resolution (unblocked by FORK-34 fix, Batch 207)
 
 **★ MAJOR CORRECTION (Batch 205, Principle-8 WebGL-vs-WebGPU control, runtime-verified) — the "b3dm invisible on WebGPU" premise behind C-R9 (and ALL the Batch 201/203/204 depth-pipeline theories) WAS A TEST ARTIFACT.** `probe-c-r9-webgl-vs-webgpu.mjs` loaded the BatchTableHierarchy tileset on BOTH backends at the same 188 m nadir view, ×2 terrains:
 

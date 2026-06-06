@@ -648,11 +648,25 @@ function ensurePerFeaturePickIds(
     cache._featurePickIds = new Map();
   }
   const pickIds = cache._featurePickIds;
+  // C-R9-MODEL-FEATURE-PICK — register the SAME object WebGL registers
+  // (BatchTexture.js:528 `context.createPickId(owner.getFeature(i),
+  // "tile-feature")`) so `scene.pick` returns a real Cesium3DTileFeature
+  // (3D Tiles) / ModelFeature (glTF EXT_mesh_features) — matching WebGL —
+  // instead of a bare `{primitive, id}`. `_owner` is the
+  // Cesium3DTileContent / ModelFeatureTable that owns this batch table;
+  // both expose `getFeature(batchId)`. Fall back to the bare descriptor for
+  // any owner that doesn't (keeps the primitive pickable rather than null).
+  const owner = batchTexture._owner;
+  const ownerHasGetFeature =
+    defined(owner) && typeof owner.getFeature === "function";
   const data = new Uint8Array(dimensions.x * dimensions.y * 4);
   for (let fid = 0; fid < featuresLength; fid++) {
     let pid = pickIds.get(fid);
     if (!defined(pid)) {
-      pid = context.createPickId({ primitive: model, id: fid }, "feature");
+      const target = ownerHasGetFeature
+        ? owner.getFeature(fid)
+        : { primitive: model, id: fid };
+      pid = context.createPickId(target, "tile-feature");
       pickIds.set(fid, pid);
     }
     const off = fid * 4;
