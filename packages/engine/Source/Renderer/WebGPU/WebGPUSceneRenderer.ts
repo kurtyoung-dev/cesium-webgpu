@@ -840,6 +840,13 @@ export class WebGPUSceneRenderer {
   // GPU cull benefit instead of the previous "last-frustum-wins"
   // limitation.
   private _lastCullResultsByFrustum: Map<number, GPUCullResults> = new Map();
+  // Wave-0 P0 fix — per-frustum readback in-flight guard. The GPUCuller's
+  // readback staging buffer is mapped (mapAsync) while `readResults`
+  // resolves; re-running `prepareReadback` (copyBufferToBuffer into that
+  // staging buffer) on the next frame while it is still mapped raises
+  // "[Buffer] used in submit while mapped", invalidating the whole command
+  // buffer → dense-scene black screen. Mirrors `_hiZReadbackInFlight`.
+  private _gpuCullReadbackInFlight: Set<number> = new Set();
   // Batch 216 — separate readback slot for the translucent pass so
   // its readback (keyed on the translucent command count) doesn't
   // race / mismatch with the opaque pass's. Same 1-frame latency
@@ -1755,12 +1762,22 @@ export class WebGPUSceneRenderer {
         | { planes: Array<{ x: number; y: number; z: number; w: number }> }
         | undefined;
       if (cv && cv.planes && cv.planes.length > 0) {
+        // Wave-0 P0 fix — gpuCullCommands records a `beginComputePass`
+        // ("frustum-N Compute Pass") on the frame encoder; like HiZ/sort it
+        // must NOT run while the scene render pass is open (invalidates the
+        // whole command buffer → dense-scene black screen). It is
+        // async-latency (consumes the PRIOR frame's readback synchronously,
+        // line ~3308), so simply bracketing the compute dispatch is correct;
+        // resume restores the scene pass (loadOp:load) for executeBatch below.
+        const wgpuCtx = context as WebGPUContext;
+        wgpuCtx.endCurrentRenderPass?.();
         const culled = this.gpuCullCommands(
           activeCommands,
-          context as WebGPUContext,
+          wgpuCtx,
           cv,
           activeCount,
         );
+        this._resumeScenePass(wgpuCtx);
         if (culled !== activeCommands) {
           activeCommands = culled;
           activeCount = culled.length;
@@ -1799,25 +1816,35 @@ export class WebGPUSceneRenderer {
     // never feeds a render frame.
     // HiZ dispatch for next frame — per-frustum gate (Batch 219) so
     // the producer side respects the same hysteresis as the consumer.
-    if (hiZActive) {
-      this._dispatchHiZForNextFrame(
-        context as WebGPUContext,
-        commands as CesiumAnyDrawCommand[],
-        count,
-        frustumCommands,
-      );
-    }
-
-    // NEW-GPUSORTKEYS-CONSUME (Batch 211, Phase 1) — generate packed
-    // sort keys on the GPU when the gate is active. The follow-up
-    // GPU sort pipeline that consumes these keys is deferred
-    // (NEW-GPU-SORT-PIPELINE in DEFERRED_WORK.md).
-    if (gpuSortActive) {
-      this._dispatchGPUSortKeys(
-        context as WebGPUContext,
-        commands as CesiumAnyDrawCommand[],
-        count,
-      );
+    // Wave-0 P0 fix — both HiZ and GPU-sort-key dispatches record
+    // `beginComputePass` on the frame encoder. Doing that while the scene
+    // framebuffer render pass is still open is a "CommandEncoder is locked
+    // while RenderPassEncoder is open" validation error that invalidates the
+    // ENTIRE command buffer → every dense (>=2400 opaque-cmd) WebGPU scene
+    // black-screened. Bracket the compute dispatches with
+    // endCurrentRenderPass / resumeDefaultRenderPass exactly like the
+    // clustered-lighting + velocity compute dispatches do (resume preserves
+    // scene-FB contents via loadOp:load, so the frustum loop continues
+    // seamlessly). Only pay the pass end/resume when a dispatch will fire.
+    if (hiZActive || gpuSortActive) {
+      const wgpuCtx = context as WebGPUContext;
+      wgpuCtx.endCurrentRenderPass?.();
+      if (hiZActive) {
+        this._dispatchHiZForNextFrame(
+          wgpuCtx,
+          commands as CesiumAnyDrawCommand[],
+          count,
+          frustumCommands,
+        );
+      }
+      if (gpuSortActive) {
+        this._dispatchGPUSortKeys(
+          wgpuCtx,
+          commands as CesiumAnyDrawCommand[],
+          count,
+        );
+      }
+      this._resumeScenePass(wgpuCtx);
     }
   }
 
@@ -3278,19 +3305,33 @@ export class WebGPUSceneRenderer {
       return commands;
     }
 
-    culler.dispatch(encoder, count, 0 /* CullMode.VISIBILITY */);
-    this._gpuCullDispatchCount++;
+    // Wave-0 P0 fix — skip re-dispatch + readback for this frustum while its
+    // prior readback is still mapping. `prepareReadback` copies into the
+    // readback staging buffer; doing that while a prior `readResults`
+    // mapAsync is still pending raises "[Buffer] used in submit while
+    // mapped" and invalidates the entire command buffer (dense-scene black
+    // screen). The filter below falls through to the prior frame's cached
+    // results — 1-frame-staler visibility is imperceptible at the densities
+    // this gate activates. Mirrors the HiZ `_hiZReadbackInFlight` guard.
+    if (!this._gpuCullReadbackInFlight.has(fIdx)) {
+      culler.dispatch(encoder, count, 0 /* CullMode.VISIBILITY */);
+      this._gpuCullDispatchCount++;
 
-    // Async readback — results available next frame, keyed per-
-    // frustum (Batch 220) so each frustum's filter consumes its own
-    // readback instead of racing the others.
-    culler.prepareReadback(encoder, count);
-    culler
-      .readResults(count)
-      .then((results: GPUCullResults) => {
-        this._lastCullResultsByFrustum.set(fIdx, results);
-      })
-      .catch(() => {});
+      // Async readback — results available next frame, keyed per-
+      // frustum (Batch 220) so each frustum's filter consumes its own
+      // readback instead of racing the others.
+      culler.prepareReadback(encoder, count);
+      this._gpuCullReadbackInFlight.add(fIdx);
+      culler
+        .readResults(count)
+        .then((results: GPUCullResults) => {
+          this._lastCullResultsByFrustum.set(fIdx, results);
+          this._gpuCullReadbackInFlight.delete(fIdx);
+        })
+        .catch(() => {
+          this._gpuCullReadbackInFlight.delete(fIdx);
+        });
+    }
 
     // Use previous frame's results if available. Output array is
     // pooled (Batch 213) — the call site reads `filtered.length`

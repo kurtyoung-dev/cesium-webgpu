@@ -328,10 +328,18 @@ class WebGPUHiZOcclusionDispatcher {
       mipLevelCount: pyramidMips,
     });
 
+    // NON-filtering sampler. `Occlusion_BGL` binding(2) is declared
+    // `"non-filtering"` and the Hi-Z texture (binding 1) is
+    // `unfilterable-float`, so a linear/filtering sampler here is a double
+    // WebGPU validation violation (filtering sampler in a non-filtering slot
+    // AND filtering an unfilterable-float texture) — a Wave-0 P0 cause. The
+    // occlusion test is the only consumer of this sampler (the pyramid build
+    // uses textureLoad, no sampler), and conservative max-depth occlusion
+    // wants point sampling anyway, so `nearest` is both correct and required.
     const hiZSampler = device.createSampler({
       label: "HiZ_Sampler",
-      magFilter: "linear",
-      minFilter: "linear",
+      magFilter: "nearest",
+      minFilter: "nearest",
       mipmapFilter: "nearest",
     });
 
