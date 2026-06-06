@@ -18,7 +18,26 @@ import Color from "../../Core/Color.js";
 import defined from "../../Core/defined.js";
 
 /**
+ * The pick color attachment MUST use the same format the pick PIPELINES target
+ * (they target `context.scenePipelineFormat`), otherwise WebGPU drops every
+ * pick draw with "Attachment state of [RenderPipeline] is not compatible with
+ * [RenderPassEncoder Pick render pass]" and the pick FBO stays empty — the
+ * actual cause of FORK-34 (all picking returns undefined). Only 8-bit unorm
+ * formats support the byte-readback path below; an HDR/float scene format
+ * falls back to rgba8unorm here (HDR pick needs LDR pick pipelines — a
+ * separate follow-up; the mismatch only re-appears in HDR mode).
+ * @private
+ */
+function pickColorFormat(context: CesiumGraphicsContext): GPUTextureFormat {
+  const f = (context as unknown as { scenePipelineFormat?: GPUTextureFormat })
+    ?.scenePipelineFormat;
+  return f === "bgra8unorm" || f === "rgba8unorm" ? f : "rgba8unorm";
+}
+
+/**
  * Spiral search pattern for finding picked objects from center outward.
+ * `bgra` swaps R/B because `bgra8unorm` stores bytes as [B,G,R,A] while the
+ * pickId color comparison is in [R,G,B,A].
  */
 function pickObjectsFromPixels(
   context: CesiumGraphicsContext,
@@ -26,6 +45,7 @@ function pickObjectsFromPixels(
   width: number,
   height: number,
   limit: number = 1,
+  bgra: boolean = false,
 ): CesiumOpaqueObject[] {
   const max = Math.max(width, height);
   const length = max * max;
@@ -46,13 +66,23 @@ function pickObjectsFromPixels(
       y <= halfHeight
     ) {
       const index = 4 * ((halfHeight - y) * width + x + halfWidth);
-      const r = pixels[index];
+      const r = bgra ? pixels[index + 2] : pixels[index];
       const g = pixels[index + 1];
-      const b = pixels[index + 2];
+      const b = bgra ? pixels[index] : pixels[index + 2];
       const a = pixels[index + 3];
 
-      if (a > 0) {
-        // Non-zero alpha means something was rendered
+      // A pick hit is any pixel whose reconstructed key (RGB, little-endian)
+      // is nonzero. Pick-ID colors come from `Color.fromRgba(key)`, which
+      // packs the incrementing integer key into the bytes low-to-high on a
+      // little-endian host: red = key & 0xff, green = (key >> 8) & 0xff,
+      // blue = (key >> 16) & 0xff, ALPHA = (key >> 24) & 0xff. So every pick
+      // id below 2^24 (i.e. essentially all of them) has alpha 0. The old
+      // `a > 0` gate therefore rejected virtually every real pick — the true
+      // cause of FORK-34 once the pick pass itself was fixed. The cleared
+      // pick FBO is (0,0,0,0) → key 0, which `getObjectByPickColor` maps to
+      // undefined (pick ids start at 1), so "RGB != 0" is the correct
+      // "something was drawn here" test and matches WebGL's decode.
+      if (r !== 0 || g !== 0 || b !== 0) {
         const pickColor = Color.bytesToRgba(r, g, b, a);
         const object = context.getObjectByPickColor(pickColor);
         if (defined(object)) {
@@ -84,6 +114,9 @@ export class WebGPUPickFramebuffer {
   private _depthTexture: GPUTexture | null = null;
   private _width: number = 0;
   private _height: number = 0;
+  // Pick color attachment format — must match the pick pipelines
+  // (context.scenePipelineFormat). Recreated when it changes (e.g. HDR toggle).
+  private _colorFormat: GPUTextureFormat = "rgba8unorm";
   private _passState: CesiumPassState;
   private _isDestroyed: boolean = false;
 
@@ -172,14 +205,23 @@ export class WebGPUPickFramebuffer {
     this._pickOriginX = Math.max(0, Math.floor(screenSpaceRectangle.x ?? 0));
     this._pickOriginY = Math.max(0, Math.floor(screenSpaceRectangle.y ?? 0));
 
+    // The pick color attachment MUST match the pick pipelines' target format
+    // (context.scenePipelineFormat) or WebGPU drops every pick draw — FORK-34.
+    const colorFormat = pickColorFormat(this._context);
+
     // Create or recreate render targets
-    if (width !== this._width || height !== this._height) {
+    if (
+      width !== this._width ||
+      height !== this._height ||
+      colorFormat !== this._colorFormat
+    ) {
       this._destroyTextures();
+      this._colorFormat = colorFormat;
 
       this._colorTexture = device.createTexture({
         label: "Pick color texture",
         size: [width, height],
-        format: "rgba8unorm",
+        format: colorFormat,
         usage:
           GPUTextureUsage.RENDER_ATTACHMENT |
           GPUTextureUsage.COPY_SRC |
@@ -280,6 +322,7 @@ export class WebGPUPickFramebuffer {
         width,
         height,
         limit,
+        this._colorFormat === "bgra8unorm",
       );
     }
 
@@ -353,7 +396,14 @@ export class WebGPUPickFramebuffer {
     stagingBuffer.unmap();
     this._lastReadPixels = pixels;
 
-    return pickObjectsFromPixels(context, pixels, width, height, limit);
+    return pickObjectsFromPixels(
+      context,
+      pixels,
+      width,
+      height,
+      limit,
+      this._colorFormat === "bgra8unorm",
+    );
   }
 
   /**

@@ -471,6 +471,10 @@ export function updateWebGPUBufferPointCollection(
         vertexCount: 6,
         instanceCount: primitiveCount,
         pass: Pass.TRANSLUCENT,
+        // FORK-34 (Batch 207) — mark as a dedicated pick command so the
+        // pick pass dispatches it instead of skipping it as a base
+        // (no-pick-variant) command.
+        pickOnly: true,
       });
     } else {
       cache.pickCommand.instanceCount = primitiveCount;

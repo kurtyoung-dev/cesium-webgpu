@@ -1648,6 +1648,8 @@ function _pushPolylinePickCommand(
     // relevant to pick IDs). Falls back to translucent state for
     // TRANSLUCENT-only collections.
     renderState: collection._opaqueRS ?? collection._translucentRS,
+    // FORK-34 (Batch 207) — dedicated pick command marker.
+    pickOnly: true,
   });
 
   commandList.push(cache.pickCommand);

@@ -462,6 +462,8 @@ export function updateWebGPUBufferPolygonCollection(
         indexFormat: cache.indexFormat,
         indexCount,
         pass: Pass.OPAQUE,
+        // FORK-34 (Batch 207) — dedicated pick command marker.
+        pickOnly: true,
       });
     } else {
       cache.pickCommand.indexCount = indexCount;

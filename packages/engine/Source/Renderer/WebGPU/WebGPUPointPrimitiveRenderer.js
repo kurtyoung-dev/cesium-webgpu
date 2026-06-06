@@ -1325,6 +1325,8 @@ function _pushPickCommand(
     // matches the color-opaque path. Falls back to `_rsTranslucent`
     // when the collection is TRANSLUCENT-only.
     renderState: collection._rsOpaque ?? collection._rsTranslucent,
+    // FORK-34 (Batch 207) — dedicated pick command marker.
+    pickOnly: true,
   });
 
   commandList.push(cache.pickCommand);

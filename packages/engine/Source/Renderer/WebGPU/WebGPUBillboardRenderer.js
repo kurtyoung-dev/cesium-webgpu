@@ -1529,6 +1529,10 @@ function _pushBillboardPickCommand(
     modelMatrix: modelMatrix,
     cull: true,
     renderState: collection._rsOpaque ?? collection._rsTranslucent,
+    // FORK-34 (Batch 207) — mark as a dedicated pick command so the pick
+    // pass dispatches it (single-target pick pipeline) instead of skipping
+    // it as a no-pick-variant base command.
+    pickOnly: true,
   });
 
   commandList.push(cache.pickCommand);

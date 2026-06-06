@@ -19,8 +19,14 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   page.on("console", (m) => {
     const t = m.type();
-    if (t === "error" || (t === "warning" && m.text().includes("validation"))) {
-      console.log(`[${t}] ${m.text().slice(0, 250)}`);
+    const txt = m.text();
+    if (txt.includes("[PICKDIAG")) {
+      console.log(txt);
+    } else if (
+      t === "error" ||
+      (t === "warning" && txt.includes("validation"))
+    ) {
+      console.log(`[${t}] ${txt.slice(0, 250)}`);
     }
   });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${RENDERER}`, {
@@ -31,6 +37,13 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
   const result = await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
+    const dev = v.scene.context?._device;
+    if (dev) {
+      dev.onuncapturederror = (ev) => {
+        // eslint-disable-next-line no-console
+        console.log(`[PICKDIAG-ERR] ${ev?.error?.message?.slice(0, 280)}`);
+      };
+    }
 
     // CRITICAL (Batch 204 correction): force ELLIPSOID terrain. The default
     // viewer now loads Cesium World Terrain (valid token), whose real elevation
@@ -102,15 +115,40 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     // WebGPU pick is ASYNC (GPU->CPU readback). Synchronous scene.pick returns
     // the prior frame's result on WebGPU, so use scene.pickAsync — ONE awaited
     // call at a time (overlapping pickAsync double-maps the readback buffer).
-    let picked = await v.scene.pickAsync(new C.Cartesian2(cx, cy));
-    if (!C.defined(picked)) {
-      outer: for (let r = 20; r <= 240 && !C.defined(picked); r += 20) {
-        for (const [dx, dy] of [[0, -r], [r, 0], [0, r], [-r, 0]]) {
-          v.scene.render();
-          const p = await v.scene.pickAsync(new C.Cartesian2(cx + dx, cy + dy));
-          v.scene.render();
-          if (C.defined(p)) { picked = p; break outer; }
-        }
+    //
+    // Pick targets, in priority order:
+    //   1. The on-screen projection of the model / tileset bounding-sphere
+    //      center (the geometry's actual pixel, not the canvas center — the
+    //      buildings can sit off-center depending on the bounding-sphere
+    //      geometry vs the look-at point).
+    //   2. A coarse grid scan across the whole canvas — definitively answers
+    //      "does pick latch ANYWHERE" rather than relying on a cardinal
+    //      spiral that can thread between the building footprints.
+    const pickTargets = [];
+    const projCenter =
+      (model?.boundingSphere?.center &&
+        v.scene.cartesianToCanvasCoordinates(model.boundingSphere.center)) ||
+      (tileset.boundingSphere?.center &&
+        v.scene.cartesianToCanvasCoordinates(tileset.boundingSphere.center));
+    if (projCenter && C.defined(projCenter.x)) {
+      pickTargets.push([Math.round(projCenter.x), Math.round(projCenter.y)]);
+    }
+    pickTargets.push([cx, cy]);
+    for (let gy = 60; gy < ch; gy += 60) {
+      for (let gx = 60; gx < cw; gx += 60) {
+        pickTargets.push([gx, gy]);
+      }
+    }
+    let picked;
+    let pickedAt = null;
+    for (const [px, py] of pickTargets) {
+      v.scene.render();
+      const p = await v.scene.pickAsync(new C.Cartesian2(px, py));
+      v.scene.render();
+      if (C.defined(p)) {
+        picked = p;
+        pickedAt = [px, py];
+        break;
       }
     }
     // Probe model cache state to verify per-feature pickIds were
@@ -243,6 +281,8 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
       featurePickFeaturesLength,
       diagnostic,
       pickedDefined: !!picked,
+      pickedAt,
+      pickTargetsTried: pickTargets.length,
       hasPrimitive: !!picked?.primitive,
       hasId: picked?.id !== undefined,
       idType: typeof picked?.id,

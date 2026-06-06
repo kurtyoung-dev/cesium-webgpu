@@ -1505,6 +1505,33 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Begin a command encoder for an OFF-SCREEN mini-frame (pick / metadata
+   * pick) that runs OUTSIDE the normal `render()` path.
+   *
+   * `Scene.pick`/`pickAsync` render via `pickBegin → updateAndExecuteCommands`,
+   * which never calls {@link WebGPUContext#beginFrame} — so there is no command
+   * encoder, and the WebGPU pick pass (`executePickPass`) would early-return on
+   * the missing encoder, leaving the pick framebuffer empty (every pick returns
+   * `undefined` — FORK-34). This creates just the encoder + advances the uniform
+   * ring-buffer page (the non-canvas half of `beginFrame`); it deliberately
+   * does NOT acquire the canvas texture or open the default canvas render pass
+   * (the pick pass renders to the pick FBO and manages its own pass). The
+   * matching submit/finalize is `pickEnd → context.endFrame()`. No-op if an
+   * encoder already exists (e.g. re-entrant call within one pick).
+   */
+  beginPickFrame(): void {
+    if (!this._device || this._currentCommandEncoder) {
+      return;
+    }
+    if (this._uniformAllocator) {
+      this._uniformAllocator.beginFrame();
+    }
+    this._currentCommandEncoder = this._device.createCommandEncoder({
+      label: "Pick Frame Command Encoder",
+    });
+  }
+
+  /**
    * Starts the default render pass targeting the canvas surface.
    * This is called automatically by `beginFrame()` and can also be called
    * after `endCurrentRenderPass()` to resume rendering to the canvas.

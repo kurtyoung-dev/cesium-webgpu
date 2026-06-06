@@ -107,8 +107,19 @@ export function executePickPass(
   }
 
   const device: GPUDevice | undefined = context._device;
+  if (!device) {
+    return;
+  }
+  // The pick render runs via `pickBegin → updateAndExecuteCommands`, NOT the
+  // normal `render()` path, so `context.beginFrame()` never ran and there is no
+  // command encoder yet. Create the off-screen pick mini-frame encoder (+ the
+  // uniform-allocator page) here; `pickEnd → context.endFrame()` submits +
+  // finalizes it. Without this the pick pass renders nothing and every
+  // scene.pick / pickAsync returns undefined (FORK-34). No-op if an encoder
+  // already exists (e.g. pick nested inside a normal frame).
+  context.beginPickFrame?.();
   const encoder: GPUCommandEncoder | undefined = context._currentCommandEncoder;
-  if (!device || !encoder) {
+  if (!encoder) {
     return;
   }
 
@@ -266,13 +277,44 @@ function executePickBatch(
 
     // C-R2: pick pass consults derivedCommands.picking/pickingMetadata
     // so commands that pre-built pick variants render those (pick color
-    // output, not base-material output) into the pick FBO. Commands
-    // without a pick variant fall through to the base command — same
-    // as WebGL. WebGPU-native feature renderers (Globe, GltfModel,
-    // GroundPrimitive) typically emit pick commands through their own
-    // path and don't populate derivedCommands.picking; those still
-    // take the fallback branch.
+    // output, not base-material output) into the pick FBO. WebGPU-native
+    // feature renderers (Globe, GltfModel, GroundPrimitive) typically emit
+    // dedicated pick commands through their own path (flagged `pickOnly` /
+    // `_isPickCommand`) instead of populating derivedCommands.picking.
     const dispatched = selectCommandVariant(command, scene, true);
+
+    // FORK-34 fix (Batch 207) — a command that `selectCommandVariant`
+    // returns UNCHANGED has no pick variant. In WebGPU a pipeline is
+    // validated against the render pass's attachment formats at draw time,
+    // so dispatching a base COLOR command (whose pipeline targets the MRT
+    // scene framebuffer) into the single-target pick render pass raises an
+    // "attachment state not compatible" validation error that invalidates
+    // the ENTIRE pick command buffer — discarding even the correctly-built
+    // pick variants, so every pick returns undefined. WebGL tolerates this
+    // (no attachment-count validation at draw time), which is why the old
+    // "fall through to the base command, same as WebGL" behavior was wrong
+    // for WebGPU. Skip such commands unless they are dedicated pick
+    // commands (`pickOnly`) whose pipelines already target the single pick
+    // attachment. The skipped base commands (globe tiles, the model's
+    // secondary translucent draw, edge/velocity draws) carry no pick ID,
+    // so dropping them loses no pick coverage — the geometry's real pick
+    // command is either its resolved variant or a sibling pickOnly draw.
+    const resolvedPickVariant = dispatched !== command;
+    const cmdMarkers = command as {
+      pickOnly?: boolean;
+      _isPickCommand?: boolean;
+    };
+    // Two established dedicated-pick markers: `pickOnly` (collections,
+    // mirrors WebGL `DrawCommand.pickOnly`) and `_isPickCommand`
+    // (geometry-primitive path in WebGPUPrimitiveCommands.js). Either
+    // means the command's pipeline already targets the single pick
+    // attachment, so it is safe to dispatch into the pick render pass.
+    const isDedicatedPick =
+      cmdMarkers.pickOnly === true || cmdMarkers._isPickCommand === true;
+    if (!resolvedPickVariant && !isDedicatedPick) {
+      continue;
+    }
+
     if (dispatched.isWebGPUDrawCommand === true) {
       dispatched.execute(pickRenderPass, context);
     } else if (dispatched.execute) {

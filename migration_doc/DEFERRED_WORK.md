@@ -2394,7 +2394,26 @@ now passes.
 
 **Trace:** Discovered 2026-04-30 during the b3dm-Model rendering investigation. `Tools/visual-regression/verify-glb-renders.mjs` is the repro — load CesiumAir.glb → see "bindGroupLayoutCount (8) is larger than the maximum allowed (4)" warning.
 
-### C-R9-MODEL-FEATURE-PICK — RENDER IS NOT A BUG (Batch 205 correction); residual = WebGPU b3dm PICK returns undefined
+### FORK-34 — WebGPU pick pass FIXED (Batch 207, runtime-verified). Box pick at WebGL parity; b3dm-feature→Cesium3DTileFeature resolution is the remaining narrower gap.
+
+**★ RESOLVED (Batch 207) — `scene.pickAsync` now returns objects on WebGPU.** The broad "all picking returns undefined" gap (re-scoped in Batch 206, below) was **five compounding bugs**, each masking the next. Found by instrumenting the pick path end-to-end (PICKDIAG, since removed) and a decisive diagnostic-clear test (clear the pick FBO to a recognizable color → discriminate "readback reads wrong texture" from "draws produce no fragments"):
+
+1. **No command encoder during pick.** Pick runs via `pickBegin → updateAndExecuteCommands → pickEnd`, NOT `render()→beginFrame()`, so `context._currentCommandEncoder` was null and `executePickPass` early-returned (rendered nothing). Fix: `WebGPUContext.beginPickFrame()` creates the off-screen pick encoder (+ uniform-allocator page); `pickEnd→endFrame()` submits it. (`WebGPUContext.ts`, `WebGPUSceneRendererPickPass.ts`.)
+2. **Pick FBO color format ≠ pick pipeline target format.** The pick FBO was hard-coded `rgba8unorm` but the pick pipelines target `context.scenePipelineFormat` (`bgra8unorm` here) → every pick draw dropped with an attachment-incompatibility validation error. Fix: `pickColorFormat()` picks `scenePipelineFormat` when it's an 8-bit unorm; readback swaps R/B for `bgra8unorm`. (`WebGPUPickFramebuffer.ts`.)
+3. **The log-depth swap hid the pick command.** `selectCommandVariant` swapped to the log-depth COLOR variant BEFORE the pick check, so the model's pick command (attached to the BASE command's `derivedCommands.picking`) was never reached. Fix: skip the log-depth swap when `isPicking`. (`WebGPUSceneRenderer.ts`.)
+4. **Base (MRT) commands invalidated the entire pick command buffer.** A command with no pick variant resolves to its base COLOR command, whose pipeline targets the MRT scene framebuffer; dispatching it into the single-target pick render pass raised an attachment-incompatibility error that invalidated the WHOLE pick command buffer — discarding even the correctly-built pick variants. WebGL tolerates this (no draw-time attachment-count validation); WebGPU does not. Fix: in `executePickBatch`, skip any command that `selectCommandVariant` returns unchanged UNLESS it is a dedicated pick command (`pickOnly` for collections, `_isPickCommand` for geometry primitives). Marked the collection pick commands (`pickOnly: true`) that previously lacked the flag (billboard, buffer-point/-polygon/-polyline, polyline, point-primitive). This is the bug that made globe-containing scenes (i.e. essentially all of them) unpickable. (`WebGPUSceneRendererPickPass.ts` + the 6 renderers.)
+5. **`a > 0` readback gate rejected every real pick id.** THE final layer. Pick-ID colors come from `Color.fromRgba(key)` which packs the incrementing integer key into the bytes low-to-high on a little-endian host: `red=key&0xff, …, ALPHA=(key>>24)&0xff`. So every pick id below 2^24 (essentially all of them) has **alpha 0** — and `pickObjectsFromPixels` gated hits on `if (a > 0)`, silently dropping them. The cleared FBO is `(0,0,0,0)`→key 0 (no object), so the correct test is `r||g||b !== 0` (matches WebGL's decode). Fix: `WebGPUPickFramebuffer.ts` `pickObjectsFromPixels`.
+
+**Runtime verification (Edge, headless, `node server.js --port 8134`, `EllipsoidTerrainProvider`, valid token):**
+
+| probe | WebGL | WebGPU (after fix) |
+|---|---|---|
+| `probe-pick-basic.mjs` (Box `Primitive`) | `id:"the-box"`, `Primitive` | `id:"the-box"`, `Primitive` ✅ **parity** |
+| `verify-model-feature-pick.mjs` (b3dm) | `Cesium3DTileFeature` (`primitive=_Cesium3DTileset`, `id=undefined`) | `{primitive: Model, id:"0_0"}` ⚠️ **picks the Model, not the feature** |
+
+**REMAINING GAP — b3dm per-feature → `Cesium3DTileFeature` resolution.** WebGPU picking a b3dm building now returns the content **Model** with a model-level pick id (`"0_0"`), where WebGL returns a `Cesium3DTileFeature` (so `feature.getProperty(...)` works). The per-feature pick FBO is writing the model's pick id rather than the per-feature pick colors that the `Cesium3DTileContent` registered against `Cesium3DTileFeature` objects. This is the original C-R9-MODEL-FEATURE-PICK scope (the feature-ID-driven pick-color lookup in `WebGPUModelFeatureId.js` / the model pick FS), now unblocked by the infra fix above — see the dedicated entry below.
+
+### C-R9-MODEL-FEATURE-PICK — per-feature→Cesium3DTileFeature resolution (unblocked by FORK-34 fix, Batch 207)
 
 **★ MAJOR CORRECTION (Batch 205, Principle-8 WebGL-vs-WebGPU control, runtime-verified) — the "b3dm invisible on WebGPU" premise behind C-R9 (and ALL the Batch 201/203/204 depth-pipeline theories) WAS A TEST ARTIFACT.** `probe-c-r9-webgl-vs-webgpu.mjs` loaded the BatchTableHierarchy tileset on BOTH backends at the same 188 m nadir view, ×2 terrains:
 

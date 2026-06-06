@@ -158,19 +158,26 @@ export function selectCommandVariant(
   }
 
   const frameState = scene.frameState;
-  let cmd: CesiumAnyDrawCommand = command;
-
-  // Log depth applies to every pass — it's a depth-write variant, not a
-  // color-path variant. Swap before every other gate so downstream reads
-  // see the log-depth command's own `derivedCommands` chain (matching
-  // SceneRenderer.executeCommand line 49-51).
-  if (frameState.useLogDepth && derived.logDepth?.command) {
-    cmd = derived.logDepth.command;
-  }
-
   const passes = frameState.passes;
   const isPicking = isPickPass || passes.pick || passes.pickVoxel;
   const isDepth = passes.depth;
+  let cmd: CesiumAnyDrawCommand = command;
+
+  // Log depth is a depth-write variant — swap before the other gates so
+  // downstream reads see the log-depth command's own `derivedCommands` chain
+  // (matching SceneRenderer.executeCommand line 49-51). EXCEPT during PICK:
+  // the pick command is attached to the BASE command's
+  // `derivedCommands.picking.pickCommand` (attachPickToColorCommand), NOT to
+  // the log-depth variant. Swapping first hides it, so the pick check below
+  // falls through and returns the log-depth COLOR command — whose MRT
+  // scene-framebuffer attachments are incompatible with the single-target
+  // pick render pass, so WebGPU drops every pick draw and the pick FBO stays
+  // empty (FORK-34: all picking returns undefined). The pick pass renders its
+  // own self-consistent depth in the pick FBO, so it doesn't need the
+  // log-depth variant.
+  if (frameState.useLogDepth && !isPicking && derived.logDepth?.command) {
+    cmd = derived.logDepth.command;
+  }
 
   // HDR variant — only swap when rendering to an HDR framebuffer, which
   // never happens during pick/depth/pickVoxel passes.

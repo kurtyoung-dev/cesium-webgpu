@@ -13,6 +13,10 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
 page.on("pageerror", (e) => console.log("pageerror:", e.message.slice(0, 160)));
+page.on("console", (m) => {
+  const t = m.text();
+  if (t.includes("[PICKDIAG")) console.log(t);
+});
 await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${RENDERER}`, {
   waitUntil: "networkidle",
   timeout: 90000,
@@ -24,6 +28,15 @@ const out = await page.evaluate(async () => {
   const v = window.viewer,
     scene = v.scene;
   v.terrainProvider = new C.EllipsoidTerrainProvider();
+  scene.msaaSamples = 1; // DIAG: test the sampleCount-mismatch hypothesis
+  // Capture WebGPU validation / uncaptured errors during pick.
+  const dev = scene.context?._device;
+  if (dev) {
+    dev.onuncapturederror = (ev) => {
+      // eslint-disable-next-line no-console
+      console.log(`[PICKDIAG-ERR] ${ev?.error?.message?.slice(0, 300)}`);
+    };
+  }
 
   const cx = Math.floor((scene.canvas.clientWidth || scene.canvas.width || 1024) / 2);
   const cy = Math.floor((scene.canvas.clientHeight || scene.canvas.height || 768) / 2);
@@ -60,22 +73,17 @@ const out = await page.evaluate(async () => {
     await new Promise((r) => requestAnimationFrame(r));
   }
 
-  // ONLY pickAsync. Try a vertical strip of positions, ONE fully-awaited call
-  // at a time (no overlap → no double-map).
+  // DIAG: one large-region pickAsync at center. A 400x400 readback covers the
+  // box wherever it landed in the attachment — if the box's pick color renders
+  // ANYWHERE the [PICKDIAG] nonZeroAlphaPx will be > 0 (coordinate/Y-flip
+  // mismatch); if 0, the draw produced nothing.
   let hit;
   const tried = [];
-  for (const dy of [-100, -180, 0, -260, 80, 160]) {
-    const pos = new C.Cartesian2(cx, cy + dy);
-    scene.render();
-    const p = await scene.pickAsync(pos);
-    scene.render();
-    await new Promise((r) => requestAnimationFrame(r));
-    tried.push({ dy, defined: C.defined(p), id: p?.id });
-    if (C.defined(p) && p.id === "the-box") {
-      hit = p;
-      break;
-    }
-  }
+  scene.render();
+  hit = await scene.pickAsync(new C.Cartesian2(cx, cy), 400, 400);
+  scene.render();
+  await new Promise((r) => requestAnimationFrame(r));
+  tried.push({ dy: 0, defined: C.defined(hit), id: hit?.id });
 
   return {
     boxPickAsync: {
