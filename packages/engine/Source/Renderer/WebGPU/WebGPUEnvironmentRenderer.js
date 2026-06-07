@@ -9,6 +9,7 @@
  * @private
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
+import CesiumMath from "../../Core/Math.js";
 import createGuid from "../../Core/createGuid.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
@@ -88,10 +89,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 }
 
 @fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
-  let tc = textureSample(tex, samp, i.uv);
-  let d = length(i.uv - vec2f(0.5));
-  let g = exp(-d * d * 8.0) * u.glowFactor;
-  return vec4f(tc.rgb + vec3f(g), clamp(tc.a + g * 0.5, 0.0, 1.0));
+  // BUG-1 fix — near-passthrough sample (matches WebGL SunFS.glsl). The baked
+  // texture already carries the disc + glow halo + lens-flare (createSunTexture
+  // replicates SunTextureFS.glsl); the previous extra exp() glow here was a
+  // redundant second halo that over-brightened the (then disc-only) sun. The
+  // additive blend turns the white texel * alpha into a glowing sun over the sky.
+  return textureSample(tex, samp, i.uv);
 }`;
 
 /**
@@ -201,24 +204,66 @@ function createSunTexture(device, size) {
       GPUTextureUsage.COPY_DST,
   });
 
+  // BUG-1 fix — bake the sun texture exactly like WebGL SunTextureFS.glsl
+  // instead of the old disc-fills-85%-of-texture procedural (which left no
+  // room for a glow halo or lens flare). The disc occupies a SMALL central
+  // radius (u_radiusTS), a soft glow halo fills the rest, and six pre-rotated
+  // lens-flare bursts radiate out. RGB is ~white; the disc+glow+flare shape
+  // lives in alpha (and blue), so additive blending paints a glowing sun.
+  // glowLengthTS matches packSunUniforms (Sun default glowFactor=1 -> 5).
+  const glowLengthTS = 5.0;
+  const radiusTS = 0.5 / (1.0 + 2.0 * glowLengthTS);
+  const lengthScalar = 2.0 / Math.sqrt(2.0);
+  const smoothstep = (e0, e1, x) => {
+    const t = Math.min(1.0, Math.max(0.0, (x - e0) / (e1 - e0)));
+    return t * t * (3.0 - 2.0 * t);
+  };
+  // Six manually-unrolled burst directions from SunTextureFS.glsl:42-48.
+  const bursts = [
+    [0.38942, 0.92106, 0.4],
+    [0.99235, 0.12348, 0.4],
+    [0.60327, -0.79754, 0.4],
+    [0.31457, 0.94924, 0.3],
+    [0.97931, 0.20239, 0.3],
+    [0.66507, -0.74678, 0.3],
+  ];
   const pixels = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const u = (x + 0.5) / size;
-      const v = (y + 0.5) / size;
-      const dist = Math.sqrt((u - 0.5) ** 2 + (v - 0.5) ** 2) * 2.0;
-
-      const disk =
-        dist < 0.85 ? 1.0 : dist < 0.9 ? 1.0 - (dist - 0.85) / 0.05 : 0.0;
-      const corona = Math.exp(-dist * dist * 3.0) * 0.6;
-      const limb = 1.0 - Math.pow(dist * 0.95, 4.0);
-      const brightness = Math.max(disk * Math.max(limb, 0), corona);
+      const px = (x + 0.5) / size - 0.5;
+      const py = (y + 0.5) / size - 0.5;
+      const radius = Math.sqrt(px * px + py * py) * lengthScalar;
+      const surface = radius <= radiusTS ? 1.0 : 0.0;
+      // color = vec4(1, 1, surface + 0.2, surface)
+      let cr = 1.0;
+      let cg = 1.0;
+      let cb = surface + 0.2;
+      let ca = surface;
+      // glow halo into blue + alpha.
+      const glow = 1.0 - smoothstep(0.0, 0.55, radius);
+      cb += glow * 0.75;
+      ca += glow * 0.75;
+      // lens-flare bursts (rotate(position, dir) * (25, 0.75), then radius).
+      let burst = 0.0;
+      for (let b = 0; b < bursts.length; b++) {
+        const dx = bursts[b][0];
+        const dy = bursts[b][1];
+        const rx = (px * dx - py * dy) * 25.0;
+        const ry = (px * dy + py * dx) * 0.75;
+        const rb = Math.sqrt(rx * rx + ry * ry) * lengthScalar;
+        burst += bursts[b][2] * (1.0 - smoothstep(0.0, 0.55, rb));
+      }
+      burst = Math.min(1.0, Math.max(0.0, burst)) * 0.15;
+      cr += burst;
+      cg += burst;
+      cb += burst;
+      ca += burst;
 
       const idx = (y * size + x) * 4;
-      pixels[idx + 0] = Math.min(255, brightness * 255);
-      pixels[idx + 1] = Math.min(255, brightness * 0.95 * 255);
-      pixels[idx + 2] = Math.min(255, brightness * 0.8 * 255);
-      pixels[idx + 3] = Math.min(255, Math.max(0, brightness) * 255);
+      pixels[idx + 0] = Math.min(255, Math.max(0, cr) * 255);
+      pixels[idx + 1] = Math.min(255, Math.max(0, cg) * 255);
+      pixels[idx + 2] = Math.min(255, Math.max(0, cb) * 255);
+      pixels[idx + 3] = Math.min(255, Math.max(0, ca) * 255);
     }
   }
 
@@ -323,9 +368,31 @@ function packSunUniforms(uniformData, frameState) {
   uniformData[22] = scratchEncodedCamera.low.z;
   uniformData[23] = 0.0;
 
-  uniformData[24] = 0.02; // sunSize.x
-  uniformData[25] = 0.02; // sunSize.y
-  uniformData[26] = 1.0; // glowFactor
+  // BUG-1 fix — size the sun quad from its true angular radius + glow length,
+  // aspect-corrected, instead of the old fixed (0.02, 0.02) NDC half-extent
+  // (which, applied equally to a non-square viewport, made the sun a tiny
+  // glow-less ellipse easily lost against the stars — the "sun absent"
+  // symptom). Mirrors WebGL Sun.update (Sun.js:301-317): on-screen size =
+  // 2 * solarLimbPixels * (1 + 2*glowLengthTS), glowLengthTS = glowFactor*5.
+  // NDC half-extent = (SOLAR_RADIUS / camera->sun distance) * projection focal
+  // term * (1 + 2*glowLengthTS). Using projection[0] for X and [5] for Y
+  // auto-corrects aspect (proj[0] = proj[5]/aspect for a perspective frustum),
+  // so the quad is circular. The texture (createSunTexture) carries the small
+  // central disc + soft glow halo + lens-flare bursts across the full quad.
+  const glowFactor = 1.0; // Sun default; dynamic glowFactor is a follow-up.
+  const glowLengthTS = glowFactor * 5.0;
+  const sunSizeScale = 1.0 + 2.0 * glowLengthTS;
+  const sunPos = uniformState.sunPositionWC;
+  const sunDist = defined(sunPos)
+    ? Cartesian3.distance(sunPos, frameState.camera.positionWC)
+    : 0.0;
+  // Solar angular half-size (radians); fall back to ~0.0046 (the real solar
+  // angular radius at 1 AU) if the distance is unavailable.
+  const angHalf = sunDist > 0.0 ? CesiumMath.SOLAR_RADIUS / sunDist : 0.0046;
+  const proj = uniformState.projection;
+  uniformData[24] = angHalf * Math.abs(proj[0]) * sunSizeScale; // sunSize.x
+  uniformData[25] = angHalf * Math.abs(proj[5]) * sunSizeScale; // sunSize.y
+  uniformData[26] = glowFactor;
   uniformData[27] = 0.0;
 }
 
