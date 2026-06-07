@@ -10021,3 +10021,46 @@ read is silently always-undefined.
 morph globe sphere→half-flat→flat-map smooth across the full morphTime range
 (0.9/0.65/0.4/0.15), no splay, WebGL parity; SCENE2D/CV/3D non-regression; 0
 console/device errors; PNGs read.
+
+---
+
+## Batch 217 — 2D/CV/morph parity: globe morph mix() jitter + Web Mercator detection (2026-06-07)
+
+Batch 1 of the 2D/CV/morph parity plan (migration_doc/PLAN_2DCV_MORPH_BATCHES.md).
+Two surgical P2 globe-path fixes; both are no-ops on dev hardware by their nature
+(so dev probes prove no-regression; correctness is by construction + WebGL parity).
+
+**Files:** `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts`.
+
+**MORPH-MIX-JITTER** — the morph blend at `GlobeTerrain.wgsl:1111` used the WGSL
+builtin `mix(position2DWC, position3DWC4, morphTime)`. WebGL deliberately avoids
+`mix` (columbusViewMorph.glsl) with a manual lerp because on NVidia 3070 Ti /
+Intel Arc A750 `mix` does not return exactly the endpoint at t=0/t=1, shimmering
+the settled globe. Replaced with `position2DWC.xyz*(1-morphTime) +
+position3DWC4.xyz*morphTime` (exact at endpoints by construction). `v_positionEC`
+derives from the same `morphPos` so it's fixed too. The byte-identical
+`csm_columbusViewMorph.wgsl` chunk is left in place as scaffolding (Principle 7)
+— the globe shader is fully inline, so the lerp is inlined rather than wired as
+a chunk include.
+
+**MORPH-WEBMERCATOR-INSTANCEOF** — `WebGPUGlobeSurfaceCameraUB.ts` detected Web
+Mercator via `projection.constructor.name === "WebMercatorProjection"`. esbuild's
+`minifyIdentifiers` renames the class in release builds, so the string compare
+returns false → `useWebMercator` flips to 0 → geographic-linear latitude spacing
+(vertical tile warping at mid/high latitudes) in minified 2D/CV/morph. Switched
+to `import WebMercatorProjection` + `projection instanceof WebMercatorProjection`,
+matching WebGL (GlobeSurfaceTileProviderRendering.js:1201). No-op in dev
+(unminified — both detect correctly); fixes the minified release path.
+
+**Lesson:** never identify a class by `constructor.name` in code that ships
+through a minifier — esbuild renames identifiers and the string compare silently
+fails only in release builds (invisible in dev). Use `instanceof`.
+
+**Verified (probe-morph-midframe.mjs + probe-2dcv-verify.mjs, Edge):** morph
+globe renders smooth across the morphTime range (no splay, no regression from the
+lerp change); SCENE2D 96.8% = WebGL, COLUMBUS_VIEW 81.5% = WebGL, 3D unaffected,
+0 console/device errors; PNGs read. Caveat: the mix-jitter (hardware-specific)
+and the WebMercator minified-build repros are NOT reproducible on dev hardware;
+both fixes are verified by no-regression + exact WebGL parity. A minified
+`buildRelease` + WebMercator-projection functional probe remains a nice-to-have.

@@ -47,6 +47,7 @@
  */
 
 import Cartographic from "../../Core/Cartographic.js";
+import WebMercatorProjection from "../../Core/WebMercatorProjection.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
 import {
@@ -433,12 +434,15 @@ export function createCameraUniformBuffer(
   data[offset++] = frameState?.mode ?? 3;
   // morphTime (f32): 0..1, used for morphing transitions
   data[offset++] = frameState?.morphTime ?? 1.0;
-  // useWebMercator (f32): 1 if Web Mercator projection, 0 if Geographic
+  // useWebMercator (f32): 1 if Web Mercator projection, 0 if Geographic.
+  // Use `instanceof`, NOT `constructor.name === "WebMercatorProjection"` —
+  // esbuild's minifyIdentifiers renames the class in release builds, so the
+  // string compare silently returns false and the globe reverts to
+  // geographic-linear latitude spacing (vertical tile warping at mid/high
+  // latitudes) in minified 2D/CV/morph. Mirrors WebGL
+  // GlobeSurfaceTileProviderRendering.js:1201 (`projection instanceof WebMercatorProjection`).
   const projection = frameState?.mapProjection;
-  const isWebMercator =
-    projection &&
-    projection.constructor &&
-    projection.constructor.name === "WebMercatorProjection";
+  const isWebMercator = projection instanceof WebMercatorProjection;
   data[offset++] = isWebMercator ? 1.0 : 0.0;
   data[offset++] = 0; // pad
 

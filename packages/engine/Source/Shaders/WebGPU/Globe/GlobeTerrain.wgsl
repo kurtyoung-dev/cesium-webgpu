@@ -1108,7 +1108,16 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     let planar = computePlanarPosition(resolvedHeight, textureCoordinates);
     let position2DWC = vec4<f32>(planar, 1.0);
     let position3DWC4 = vec4<f32>(position3DWC, 1.0);
-    let morphPos = mix(position2DWC, position3DWC4, morphTime);
+    // Manual lerp (not the builtin `mix`) — mirrors WebGL `czm_columbusViewMorph`
+    // (columbusViewMorph.glsl), which deliberately avoids `mix` because on some
+    // GPUs (NVidia 3070 Ti, Intel Arc A750) mix does not return exactly the
+    // endpoint at morphTime 0/1, shimmering the settled globe. Exact at the
+    // endpoints by construction. The unused `csm_columbusViewMorph.wgsl` chunk
+    // holds the same formula for a future chunk-include refactor.
+    let morphPos = vec4<f32>(
+      position2DWC.xyz * (1.0 - morphTime) + position3DWC4.xyz * morphTime,
+      1.0,
+    );
     out.position = camera.modifiedModelViewProjection * morphPos;
     out.v_positionEC = (camera.modifiedModelView * morphPos).xyz;
   } else if (mode < 1.5) {
