@@ -1658,12 +1658,19 @@ function packUniforms(
 
   // Flags: x=debugShowVolume, y=numBatchInstances, z=sceneMode, w=morphTime.
   // sceneMode encoding: 1.0 = SCENE3D, 0.0 = SCENE2D / Columbus View.
-  // morphTime is uniformState.morphTime — 0.0 in 2D/CV destination,
+  // morphTime is frameState.morphTime — 0.0 in 2D/CV destination,
   // 1.0 in 3D destination, fractional during a scene-mode transition.
   // The morph pipeline reads it; the regular pipeline ignores it.
+  // BUG: this previously read `uniformState.morphTime`, which does not exist
+  // (the live value lives at `uniformState.frameState.morphTime`); it was
+  // always undefined, so during a morph it fell back to 0.0 and the ground
+  // polyline snapped to its flat 2D shape for the whole transition instead of
+  // interpolating. Mirror the correct sibling read in
+  // `WebGPUGroundPrimitiveRenderer.js` (and the panorama renderer) — use
+  // `frameState.morphTime`.
   const sceneMode = frameState?.mode;
   const is3D = sceneMode === SceneMode.SCENE3D;
-  const morphTime = uniformState?.morphTime ?? (is3D ? 1.0 : 0.0);
+  const morphTime = frameState?.morphTime ?? (is3D ? 1.0 : 0.0);
   data[84] = debugShowVolume ? 1.0 : 0.0;
   data[85] = batchInstanceCount ?? 0;
   data[86] = is3D ? 1.0 : 0.0;

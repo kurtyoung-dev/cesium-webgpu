@@ -9943,3 +9943,81 @@ attributing it to per-frame drift.
 WebGL:** 2D nonBlackPct 96.8% ↔ 96.8% (was 3.6%), CV 81.5% unchanged, 3D
 unaffected (21.2%, normal globe-on-black), 0 console/device errors. PNGs show
 the full flat map with the antimeridian wrap seam working.
+
+---
+
+## Batch 216 — WebGPU scene-mode morph: globe terrain splay + ground-polyline freeze (2026-06-07)
+
+From the `webgpu-morph-review` multi-agent audit of the 3D⇄Columbus⇄2D transition. Two confirmed P1s fixed; a third (exaggeration) attempted and reverted.
+
+**Files:** `Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts`,
+`Renderer/WebGPU/WebGPUGroundPolylineRenderer.js`.
+
+**P1a — globe terrain splays apart through the whole morph.** During any
+3D⇄CV / 3D⇄2D transition the WebGPU globe exploded (tiles flung to the screen
+edges around a central black hole) and snapped correct only at the endpoints.
+Why the whole animation: `SceneTransitioner` keeps `scene._mode === MORPHING`
+until the final frame, so the buggy MORPHING branch runs throughout (the
+endpoints render via their own SCENE3D/CV/2D branches, which is why static
+duration-0 probes never caught it).
+
+Root cause: the WGSL MORPHING branch (`GlobeTerrain.wgsl:1103-1113`) multiplies a
+WORLD-space morph position (`position3DWC = exaggeratedPosition + center3D`, plus
+an absolute-projected planar position) by the **center-baked**
+`modifiedModelView` / `modifiedModelViewProjection`. For `sceneMode === 0` the
+camera-UB packer set `rtcSource = mesh`, so `computeModifiedModelView` baked
+`view × mesh.center` (~6.4 Mm) into the translation — counting the tile center a
+SECOND time. The SCENE3D branch correctly uses that center-baked matrix with
+tile-LOCAL positions (`GlobeTerrain.wgsl:1146`), which is what made the
+double-count obvious. WebGL's `getPositionMorphingMode` (GlobeVS.glsl:172-182)
+uses plain `czm_modelView` + `czm_projection`; the globe draw command sets NO
+modelMatrix (`GlobeSurfaceTileProviderRendering.js:1291-1297` → identity), so
+`czm_modelView` is the plain view, NOT the center-baked `u_modifiedModelView`
+(which WebGL reserves for the tile-LOCAL `getPositionPlanarEarth` path).
+
+Fix: `WebGPUGlobeSurfaceCameraUB.ts` packs a PLAIN view (zero RTC center) when
+`sceneMode === 0` so the morph branch's matrices equal WebGL's plain
+view/projection. `computeModifiedModelView` returns the plain view when handed a
+source with no `center`.
+
+**P1b — ground polylines freeze flat at the start of a morph.**
+`WebGPUGroundPolylineRenderer.js:1666` read `uniformState?.morphTime`, which does
+not exist (the live value lives at `uniformState.frameState.morphTime`). It was
+always `undefined`, so during a morph the `is3D ? 1 : 0` fallback packed 0.0 for
+the whole transition, pinning the morph blend to the flat 2D leg. Fixed to
+`frameState?.morphTime`, matching the already-correct
+`WebGPUGroundPrimitiveRenderer.js` and the panorama renderer.
+
+**P1c — exaggeration dropped during MORPHING/CV — ATTEMPTED, REVERTED.**
+`GlobeTerrain.wgsl` gates the exaggeration block on `sceneMode > 2.5` (SCENE3D
+only); WebGL applies it for all modes (GlobeVS.glsl:245-258, gated only by the
+EXAGGERATION define). Ungating it + feeding the exaggerated height into the
+planar (CV / morph-2D) leg turned terrain SKIRT vertices (tile-edge geometry
+extruded below the surface) into tall vertical WALLS — the globe shattered into
+spikes at exaggeration=10 (probe-exaggeration-cv.mjs: WebGL clean peaks, WebGPU
+shattered). Tried both length-based and decoded (`precomputedHeight`) height —
+both shatter, because the skirt's height itself (×10) is the wall. WebGL must
+special-case skirts in the planar exaggeration path. Reverted; deferred as
+`MORPH-EXAG-SKIRTS` in DEFERRED_WORK.md with the probe.
+
+**Probe (NEW): `Tools/visual-regression/probe-morph-midframe.mjs`** — runs a
+non-zero-duration morph (the existing probes used duration-0, capturing only
+terminal states) and captures the canvas IN-EVALUATE at chosen morphTimes
+(deterministic — a Node-side `page.screenshot` races the default render loop,
+which keeps morphing after `evaluate()` returns and captures an arbitrary later
+frame). `scene.initializeFrame()` is the tween driver and must be called each
+frame; `useDefaultRenderLoop = false` breaks canvas presentation (leave it on).
+nonBlack% is too coarse for the splay (splayed tiles cover ~the same pixels) —
+READ the PNGs.
+
+**Lesson:** when a WGSL branch reuses a packed matrix (`modifiedModelView`)
+across scene modes, confirm WHICH position space each mode feeds it (tile-local
+vs world) — a center-baked matrix is correct for tile-local positions and a
+double-count for world positions. And `czm_*` automatic uniforms map to
+`uniformState.frameState.*`, NOT `uniformState.*` — a `uniformState.morphTime`
+read is silently always-undefined.
+
+**Verified (probe-morph-midframe.mjs + probe-2dcv-verify.mjs, Edge):** WebGPU
+morph globe sphere→half-flat→flat-map smooth across the full morphTime range
+(0.9/0.65/0.4/0.15), no splay, WebGL parity; SCENE2D/CV/3D non-regression; 0
+console/device errors; PNGs read.

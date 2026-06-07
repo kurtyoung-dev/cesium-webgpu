@@ -191,7 +191,25 @@ export function createCameraUniformBuffer(
   // would translate the view to an impossible eye-space point and the
   // planar geometry would never reach clip space. Mirrors `rtc` assignment
   // at `GlobeSurfaceTileProviderRendering.js:1156-1163`.
-  const rtcSource = usePlanarMv ? { center: rtc2D } : mesh;
+  //
+  // MORPHING override (mode 0): use a PLAIN view (no center baked) so the
+  // morph branch's `modifiedModelView(Projection)` equals WebGL's plain
+  // `czm_modelView` / `czm_projection`. The WGSL MORPHING branch feeds these
+  // matrices a WORLD-space position (`position3DWC = exaggeratedPosition +
+  // center3D`, and an absolute-projected planar position), so baking
+  // `view × mesh.center` would add the tile center a SECOND time — the
+  // ~6.4 Mm per-tile eye-space offset that splayed the globe apart through
+  // every transition. WebGL's `getPositionMorphingMode` (GlobeVS.glsl:172-182)
+  // uses `czm_modelView` (the globe command has an identity modelMatrix, so
+  // that is the plain view) — NOT the center-baked `u_modifiedModelView`,
+  // which it only uses for the 3D/CV/2D planar `getPositionPlanarEarth` path
+  // with tile-LOCAL positions. `computeModifiedModelView` returns the plain
+  // view when handed a source with no `center`. (BUG: globe morph splay.)
+  const rtcSource = usePlanarMv
+    ? { center: rtc2D }
+    : sceneMode === 0 /* MORPHING */
+      ? { center: undefined }
+      : mesh;
   const modifiedView = computeModifiedModelView(uniformState, rtcSource);
   const mv = m4Values(modifiedView);
   for (let i = 0; i < 16; i++) data[offset++] = mv[i];
