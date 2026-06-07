@@ -89,6 +89,15 @@ export interface PassRedirectHost {
   _sceneFramebuffer: WebGPUSceneFramebuffer | null;
   _width: number;
   _height: number;
+  // Per-frame cached viewport (set from `passState.viewport` at the top of
+  // `executeCommands`). Equals the full canvas for normal renders; equals the
+  // per-half sub-rect during the SCENE2D infinite-scroll wrap (BUG-3). The
+  // scene-FB pass opens with THIS viewport/scissor so the wrap's two halves
+  // each draw only into their screen sub-rect.
+  _viewportX: number;
+  _viewportY: number;
+  _viewportWidth: number;
+  _viewportHeight: number;
   // Pragma-stripped log-once guard (production builds elide the field
   // declaration AND the read/write inside this module — both sides are
   // wrapped in debug pragma blocks). NOTE: do not paste the literal
@@ -164,8 +173,25 @@ export function setupSceneFramebufferRenderPass(
     // `buildMrtSlot1Attachment`. loadOp="clear" here because this is
     // the FIRST open of the scene-FB pass per frame; the re-open
     // sites pass "load" to preserve accumulated G-buffer writes.
+    // BUG-3 — SCENE2D infinite-scroll wrap accumulation. On the SECOND
+    // viewport half (`config.sceneFbLoad`), open the scene-FB pass with
+    // color loadOp="load" so the first half's draws (and the cleared
+    // background everywhere else) survive. The first half / single render
+    // keeps the default "clear". (loadOp=clear/load applies to the whole
+    // attachment regardless of viewport, so the first half's clear still
+    // covers the full FB; the per-half viewport below only confines DRAWS.)
+    const sceneFbLoad = config.sceneFbLoad === true;
+    if (sceneFbLoad && colorAttachments?.length) {
+      colorAttachments = colorAttachments.map((a) => ({
+        ...a,
+        loadOp: "load" as GPULoadOp,
+      }));
+    }
     if (colorAttachments?.length) {
-      const slot1 = buildMrtSlot1Attachment(config.scene, "clear");
+      const slot1 = buildMrtSlot1Attachment(
+        config.scene,
+        sceneFbLoad ? "load" : "clear",
+      );
       if (slot1) {
         // Defensive: build a NEW array rather than mutating in place,
         // in case the producer returns a frozen one (was one of the
@@ -181,20 +207,17 @@ export function setupSceneFramebufferRenderPass(
       };
       context._currentRenderPassEncoder =
         context._currentCommandEncoder.beginRenderPass(passDesc);
-      context._currentRenderPassEncoder.setViewport(
-        0,
-        0,
-        host._width,
-        host._height,
-        0,
-        1,
-      );
-      context._currentRenderPassEncoder.setScissorRect(
-        0,
-        0,
-        host._width,
-        host._height,
-      );
+      // Use the per-frame cached viewport (= full canvas for normal renders;
+      // = the per-half sub-rect during the SCENE2D wrap, BUG-3) so each wrap
+      // half's draws are confined to its screen region. Clamp to a valid,
+      // non-zero extent — a degenerate (0-width/height) viewport trips a
+      // WebGPU validation error.
+      const vx = host._viewportX || 0;
+      const vy = host._viewportY || 0;
+      const vw = host._viewportWidth > 0 ? host._viewportWidth : host._width;
+      const vh = host._viewportHeight > 0 ? host._viewportHeight : host._height;
+      context._currentRenderPassEncoder.setViewport(vx, vy, vw, vh, 0, 1);
+      context._currentRenderPassEncoder.setScissorRect(vx, vy, vw, vh);
       //>>includeStart('debug', pragmas.debug);
       if (!host._renderPassRedirectLogged) {
         host._renderPassRedirectLogged = true;

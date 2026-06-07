@@ -375,6 +375,17 @@ function executeCommands(scene, passState) {
       }
     }
 
+    // BUG-3 — SCENE2D infinite-scroll wrap accumulation. `executeCommandsInViewport`
+    // sets these per-call so the WebGPU renderer accumulates both viewport halves
+    // into one scene framebuffer and blits once: `sceneFbLoad` (preserve the prior
+    // half instead of clearing) on the second half, `deferComposite` (skip the
+    // post-process blit) on the first half. Consume + reset so non-2D / single
+    // renders (which never set them) always see the default single-pass behavior.
+    const sceneFbLoad = scene._exec2DSceneFbLoad === true;
+    const deferComposite = scene._exec2DDeferComposite === true;
+    scene._exec2DSceneFbLoad = false;
+    scene._exec2DDeferComposite = false;
+
     scene._alternateSceneRenderer.executeCommands({
       scene,
       context,
@@ -389,6 +400,8 @@ function executeCommands(scene, passState) {
       usePostProcess: envState.usePostProcess,
       useHDR: scene._hdr,
       shadowState: frameState.shadowState,
+      sceneFbLoad,
+      deferComposite,
     });
     return;
   }

@@ -169,6 +169,14 @@ function execute2DViewportCommands(scene, passState) {
   const viewport = BoundingRectangle.clone(originalViewport, scratch2DViewport);
   passState.viewport = viewport;
 
+  // BUG-3 — flag that the SCENE2D infinite-scroll wrap MAY split the frame into
+  // two viewport halves. Default true (the else-if/else branches below all
+  // split); the single-pass `if` branch resets it to false. Consumed by
+  // `executeCommandsInViewport` to tell the WebGPU renderer to accumulate both
+  // halves into one scene framebuffer (clear+blit once) rather than clearing +
+  // blitting per half (which would leave only the last half — the BUG-3 sliver).
+  scene._is2DViewportSplit = true;
+
   const maxCartographic = scratch2DViewportCartographic;
   const maxCoord = scratch2DViewportMaxCoord;
 
@@ -219,6 +227,8 @@ function execute2DViewportCommands(scene, passState) {
     windowCoordinates.x <= viewportX ||
     windowCoordinates.x >= viewportX + viewportWidth
   ) {
+    // Single full-viewport render — no wrap split this frame.
+    scene._is2DViewportSplit = false;
     executeCommandsInViewport(true, scene, passState);
   } else if (
     Math.abs(viewportX + viewportWidth * 0.5 - windowCoordinates.x) < 1.0
@@ -322,6 +332,11 @@ function execute2DViewportCommands(scene, passState) {
   Cartesian3.clone(position, camera.position);
   camera.frustum = frustum.clone();
   passState.viewport = originalViewport;
+
+  // BUG-3 — clear the wrap-split flag so the next non-2D frame's
+  // `executeCommandsInViewport` doesn't inherit a stale "split" state (which
+  // would make the WebGPU renderer defer the post-process blit → blank frame).
+  scene._is2DViewportSplit = false;
 }
 
 /**
@@ -413,6 +428,20 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
       executeShadowMapCastCommands(scene);
     }
   }
+
+  // BUG-3 — derive the WebGPU 2D-wrap accumulation flags for this pass.
+  // WebGL ignores them (it clears framebuffers per `firstViewport` directly).
+  // For the WebGPU renderer (SceneRenderer.executeCommands → alternate renderer):
+  //   - `_exec2DSceneFbLoad` (true on the SECOND half): open the scene FB with
+  //     loadOp="load" so the first half's draws survive.
+  //   - `_exec2DDeferComposite` (true on the FIRST half of a split): skip the
+  //     post-process blit so the half just accumulates; the second half blits
+  //     the fully-accumulated FB once.
+  // A single full-viewport render (`_is2DViewportSplit` false) keeps both false
+  // → unchanged clear+blit behavior.
+  scene._exec2DSceneFbLoad = !firstViewport;
+  scene._exec2DDeferComposite =
+    scene._is2DViewportSplit === true && firstViewport;
 
   executeCommands(scene, passState);
 

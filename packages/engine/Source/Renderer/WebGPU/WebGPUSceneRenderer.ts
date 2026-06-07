@@ -108,6 +108,26 @@ export interface WebGPURenderFrameConfig {
   usePostProcess?: boolean;
   useHDR?: boolean;
   shadowState?: CesiumFrameState["shadowState"];
+  // ── SCENE2D infinite-scroll wrap (BUG-3) ──
+  // `execute2DViewportCommands` (ViewportExecutor.js) renders the 2D map in
+  // two viewport halves via TWO `executeCommands` calls per frame, each with
+  // its own off-center frustum + `passState.viewport` sub-rect. WebGL
+  // accumulates both halves into one framebuffer (clear on the first half
+  // only). The WebGPU renderer mirrors that by accumulating both halves into
+  // the scene framebuffer and blitting once:
+  //   - `sceneFbLoad`: when true, open the scene-FB pass with color
+  //     loadOp="load" (preserve the first half) instead of "clear". Set on the
+  //     SECOND half. Undefined/false → clear (normal single-pass behavior).
+  //   - `deferComposite`: when true, skip the post-frustum chain (env effects,
+  //     composite, velocity, post-process blit) AND the per-frame
+  //     perf/profiler endFrame so the first half just accumulates into the
+  //     scene FB. Set on the FIRST half of a split. The SECOND (or single)
+  //     pass runs the chain, which blits the fully-accumulated scene FB once.
+  // The perf/profiler beginFrame is correspondingly skipped on the second half
+  // (sceneFbLoad=true) so the begin/end pair stays balanced across the two
+  // calls. Both default false → byte-for-byte the pre-fix single-pass path.
+  sceneFbLoad?: boolean;
+  deferComposite?: boolean;
 }
 
 // --------------- Module-level helpers ---------------
@@ -1240,14 +1260,21 @@ export class WebGPUSceneRenderer {
     //>>includeEnd('debug');
 
     // Performance infrastructure: begin frame for render bundles, indirect draws, profiling
+    //
+    // BUG-3 — in the SCENE2D two-pass wrap, `beginFrame` runs only on the
+    // first pass (`sceneFbLoad` false) and `endFrame` only on the last pass
+    // (`deferComposite` false), so the begin/end pair stays balanced across
+    // the two `executeCommands` calls that render one frame.
     const perfManager = context.performanceManager;
-    if (perfManager) {
+    if (perfManager && !config.sceneFbLoad) {
       perfManager.beginFrame();
     }
 
     // R-7a CPU pass profiler — begin the per-frame bucket. No-op when
     // profiling is disabled.
-    this._cpuPassProfiler.beginFrame();
+    if (!config.sceneFbLoad) {
+      this._cpuPassProfiler.beginFrame();
+    }
 
     // Slice 5d Batch 151 — dispatch clustered lighting compute passes
     // once per frame, BEFORE any material draws. The dispatcher
@@ -1291,19 +1318,27 @@ export class WebGPUSceneRenderer {
     // teardown) extracted to `WebGPUSceneRendererPostFrustumChain.ts`
     // in Batch 141 (Slice D — final slice of the executeCommands
     // decomposition).
-    this._cpuPassProfiler.time("postFrustumChain", () =>
-      executePostFrustumChain(
-        this,
-        context,
-        config,
-        frustumCommandsList,
-        perfManager,
-      ),
-    );
+    //
+    // BUG-3 — on the FIRST half of the SCENE2D wrap (`deferComposite`), skip
+    // the chain entirely: the half just accumulates its draws into the scene
+    // framebuffer. The pass it left open is closed + reopened with
+    // loadOp="load" by the second half's `setupSceneFramebufferRenderPass`,
+    // and the second half runs the chain once over the fully-accumulated FB.
+    if (!config.deferComposite) {
+      this._cpuPassProfiler.time("postFrustumChain", () =>
+        executePostFrustumChain(
+          this,
+          context,
+          config,
+          frustumCommandsList,
+          perfManager,
+        ),
+      );
 
-    // R-7a CPU pass profiler — close out the per-frame bucket and roll
-    // into the rolling window. No-op when profiling is disabled.
-    this._cpuPassProfiler.endFrame();
+      // R-7a CPU pass profiler — close out the per-frame bucket and roll
+      // into the rolling window. No-op when profiling is disabled.
+      this._cpuPassProfiler.endFrame();
+    }
   }
 
   // --- Pick pass: render to offscreen pick framebuffer ---

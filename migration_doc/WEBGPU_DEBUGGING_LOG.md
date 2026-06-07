@@ -9868,3 +9868,78 @@ rather than reconstructing a look-alike.
 WebGL:** both `pickedCtor:"_Cesium3DTileFeature"`, `primitive:_Cesium3DTileset`,
 and the SAME properties (`roof_name:"roof2"`, `building_name:"building2"`,
 `building_area:"39.3"`). Box pick unaffected.
+
+---
+
+## Batch 215 — BUG-3 SCENE2D blank (left-edge sliver) — 2D infinite-scroll wrap renders executeCommands TWICE/frame (2026-06-07)
+
+**Symptom:** WebGPU SCENE2D rendered only a thin full-height sliver at the left
+edge of the canvas (nonBlackPct ~3.6%). Columbus View (mode 1) and 3D worked.
+
+**Files:** `Scene/ViewportExecutor.js`, `Scene/SceneRenderer.js`,
+`Renderer/WebGPU/WebGPUSceneRenderer.ts`,
+`Renderer/WebGPU/WebGPUSceneRendererPassRedirect.ts`.
+
+**Prior diagnoses (both DISPROVEN at runtime — recorded so they aren't re-tried):**
+- The multi-agent workflow's "missing 2D bounding volume" theory: attaching the
+  WebGL planar BV fixed frustum binning but NOT the blank (WebGL also smears
+  tiles across all bands and renders fine). Reverted.
+- Batch-214's "ortho width re-derived from the per-band camera-Z compress"
+  theory: the camera-Z compress branch (`numFrustums>1`) isn't even taken at the
+  default 2D view (`numFrustums===1`), and WebGL's `camera.frustum` left/right
+  shows the IDENTICAL two-value pattern yet renders fine. The two ortho widths
+  were a real symptom, mis-attributed.
+
+**Actual root cause (runtime-confirmed):** `execute2DViewportCommands`
+(`ViewportExecutor.js`) renders the 2D infinite-scroll wrap by splitting the
+frame into TWO viewport halves, calling `executeCommands` TWICE per frame — each
+with its own off-center `camera.frustum` (left/right) and `passState.viewport`
+sub-rect. (That is the "two widths / alternation" the instrumentation saw: the
+two halves of ONE frame, NOT frame-to-frame drift. Both backends show it.) WebGL
+accumulates both halves into one framebuffer — clears only on `firstViewport`,
+blits at scene level. WebGPU's `executeCommands` ran its FULL pipeline on EACH
+call (scene-FB clear in `setupSceneFramebufferRenderPass` + frustum loop +
+`executePostFrustumChain` post-process blit to canvas), so the SECOND half
+cleared away the first and blitted only its own viewport sub-rect → one half
+survived = the sliver. (`setupSceneFramebufferRenderPass` also hard-coded the
+scene-FB pass viewport to the FULL canvas, ignoring the per-half
+`passState.viewport`, so neither half was confined to its sub-rect either.)
+
+**Fix — accumulate both halves into the scene FB, blit once:**
+- `executeCommandsInViewport` derives two per-call flags: `_exec2DSceneFbLoad`
+  (= `!firstViewport`, true on the 2nd half) and `_exec2DDeferComposite`
+  (= split && `firstViewport`, true on the 1st half). `execute2DViewportCommands`
+  sets `_is2DViewportSplit` (true for the wrap branches, false for the single
+  full-viewport branch; reset to false on exit so non-2D frames never inherit it).
+- `SceneRenderer.executeCommands` forwards them to the alternate (WebGPU)
+  renderer as `config.sceneFbLoad` / `config.deferComposite`, then resets the
+  scene flags.
+- `setupSceneFramebufferRenderPass`: opens the scene-FB pass with the per-half
+  viewport (`host._viewportX/Y/Width/Height`, was full canvas) and, when
+  `sceneFbLoad`, color `loadOp:"load"` (preserve the first half) instead of
+  "clear". (loadOp applies to the whole attachment regardless of viewport, so
+  the first half's clear still fills the full FB background; the per-half
+  viewport only confines DRAWS.)
+- `WebGPUSceneRenderer.executeCommands`: skips `executePostFrustumChain` (and the
+  profiler `endFrame`) when `deferComposite`; skips perf/profiler `beginFrame`
+  when `sceneFbLoad`. Net: `beginFrame` on the 1st half, `endFrame` on the 2nd —
+  balanced. The single command encoder spans both halves (`context.beginFrame()`
+  / `endFrame()` wrap the whole frame in `Scene.js`), so accumulation + a single
+  deferred blit is valid.
+- All flags default false → the non-2D / single-viewport path is byte-for-byte
+  unchanged.
+
+**Lesson:** a deferred/scene-FB renderer that owns clear+blit inside its own
+`executeCommands` is NOT safe to call multiple times per frame. The 2D
+infinite-scroll wrap is the one upstream path that does exactly that. When a
+WebGL helper calls `executeCommands` in a loop (here: per viewport half),
+the WebGPU equivalent must treat "clear" and "composite/blit" as
+frame-scoped (first/last), not call-scoped. Also: the "alternation" of a
+camera value across consecutive `executeCommands` invocations may be two
+sub-passes of one frame — confirm against the reference backend before
+attributing it to per-frame drift.
+
+**Verified (probe-2dcv-verify.mjs + probe-2d-blank-where.mjs, Edge) — WebGPU ==
+WebGL:** 2D nonBlackPct 96.8% ↔ 96.8% (was 3.6%), CV 81.5% unchanged, 3D
+unaffected (21.2%, normal globe-on-black), 0 console/device errors. PNGs show
+the full flat map with the antimeridian wrap seam working.
