@@ -733,6 +733,16 @@ class BillboardCollection {
     );
     if (fr) {
       this._featureRenderer = fr;
+      // The WebGL path below computes the collection bounding volume (after its
+      // own vertex build) via `updateBoundingVolume`, which the draw command's
+      // frustum-cull test needs. The FR replaces that path, so compute the
+      // bounding volume here for WebGPU. Without it the command carried the
+      // default degenerate sphere (center 0,0,0, radius 0 = Earth's centre,
+      // outside every frustum) AND — once the center was fixed — a radius-0
+      // sphere sitting exactly on the surface was horizon-occluded; either way
+      // `View.createPotentiallyVisibleSet` silently culled the command, so
+      // billboards/labels never rendered on WebGPU in any scene mode.
+      computeBoundingVolumeForFeatureRenderer(this, frameState);
       fr.update(this, frameState, frameState.commandList);
       return;
     }
@@ -2030,6 +2040,104 @@ function updateMode(billboardCollection, frameState) {
       false,
     );
   }
+}
+
+const scratchFRPixelOffset = new Cartesian2();
+
+/**
+ * Compute `collection._boundingVolume` for the WebGPU feature-renderer path.
+ *
+ * The WebGL render path computes the bounding volume AFTER its vertex build,
+ * and the per-billboard vertex writers ALSO accumulate the `_max*`/`_all*`
+ * aggregates (`_maxSize`, `_maxScale`, `_maxPixelOffset`, `_maxEyeOffset`,
+ * `_allSizedInMeters`, `_allHorizontalCenter`, `_allVerticalCenter`) that
+ * `updateBoundingVolume` reads to expand the sphere by the billboards'
+ * screen-space extent. The WebGPU feature renderer replaces that vertex path,
+ * so those aggregates were never produced — leaving a radius-0 sphere that the
+ * frustum/horizon cull rejected, so billboards/labels never rendered. This
+ * reproduces the same aggregates (one extra billboard pass on WebGPU only; the
+ * WebGL path is untouched) and runs the identical transform + clone +
+ * `updateBoundingVolume` the WebGL block uses. `_baseVolume`/`_baseVolume2D`
+ * are produced by `updateMode` (shared, before the feature-renderer branch).
+ * @private
+ */
+function computeBoundingVolumeForFeatureRenderer(collection, frameState) {
+  // Reset to ctor defaults, then re-derive from the live billboards so removal
+  // and per-frame property changes are reflected (the WebGL aggregates are
+  // monotonic, but a fresh recompute is strictly more correct for the cull).
+  collection._maxSize = 0.0;
+  collection._maxScale = 1.0;
+  collection._maxPixelOffset = 0.0;
+  collection._maxEyeOffset = 0.0;
+  collection._allHorizontalCenter = true;
+  collection._allVerticalCenter = true;
+  collection._allSizedInMeters = true;
+
+  const billboards = collection._billboards;
+  const length = billboards.length;
+  for (let i = 0; i < length; ++i) {
+    const billboard = billboards[i];
+    if (!defined(billboard)) {
+      continue;
+    }
+    // Mirror writeCompressedAttrib0/1/2 + writeEyeOffset aggregate updates.
+    collection._maxScale = Math.max(collection._maxScale, billboard.scale);
+
+    const pixelOffset = billboard.pixelOffset;
+    const translate = billboard._translate;
+    collection._maxPixelOffset = Math.max(
+      collection._maxPixelOffset,
+      Math.abs(pixelOffset.x + translate.x),
+      Math.abs(-pixelOffset.y + translate.y),
+    );
+
+    let verticalOrigin = billboard._verticalOrigin;
+    if (verticalOrigin === VerticalOrigin.BASELINE) {
+      verticalOrigin = VerticalOrigin.BOTTOM;
+    }
+    collection._allHorizontalCenter =
+      collection._allHorizontalCenter &&
+      billboard.horizontalOrigin === HorizontalOrigin.CENTER;
+    collection._allVerticalCenter =
+      collection._allVerticalCenter &&
+      verticalOrigin === VerticalOrigin.CENTER;
+
+    collection._maxSize = Math.max(
+      collection._maxSize,
+      Math.round(billboard.width ?? 0),
+      billboard.height ?? 0,
+    );
+    collection._allSizedInMeters =
+      collection._allSizedInMeters && billboard.sizeInMeters === true;
+
+    const eyeOffset = billboard.eyeOffset;
+    let eyeOffsetZ = eyeOffset.z;
+    if (billboard._heightReference !== HeightReference.NONE) {
+      eyeOffsetZ *= 1.005;
+    }
+    collection._maxEyeOffset = Math.max(
+      collection._maxEyeOffset,
+      Math.abs(eyeOffset.x),
+      Math.abs(eyeOffset.y),
+      Math.abs(eyeOffsetZ),
+    );
+  }
+
+  // Same transform + clone + expand as the WebGL block (lines below in the
+  // WebGL path). `updateMode` populated `_baseVolume`/`_baseVolume2D`.
+  if (collection._boundingVolumeDirty) {
+    collection._boundingVolumeDirty = false;
+    BoundingSphere.transform(
+      collection._baseVolume,
+      collection.modelMatrix,
+      collection._baseVolumeWC,
+    );
+  }
+  const boundingVolume =
+    frameState.mode === SceneMode.SCENE3D
+      ? BoundingSphere.clone(collection._baseVolumeWC, collection._boundingVolume)
+      : BoundingSphere.clone(collection._baseVolume2D, collection._boundingVolume);
+  updateBoundingVolume(collection, frameState, boundingVolume);
 }
 
 function updateBoundingVolume(collection, frameState, boundingVolume) {

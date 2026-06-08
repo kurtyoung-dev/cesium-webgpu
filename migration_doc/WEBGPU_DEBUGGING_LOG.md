@@ -10104,3 +10104,50 @@ only asserted 0 device errors, never visual presence) is NOT visual verification
 A renderer can compile + dispatch with zero validation errors and still draw nothing.
 Code-review "structurally correct" (the audit's first pass) must be backed by a
 read-the-PNG check (Principle 8) before trusting it.
+
+---
+
+## Batch 218 — Billboard/Point/Label no-render deep-dive: 3-bug chain, 2 fixed (2026-06-07)
+
+Deep-dive of the Batch-2 critical finding (billboards/labels/points render nothing on
+WebGPU). It is a CHAIN of three independent bugs; two fixed + verified here.
+
+**Files:** `Scene/BillboardCollection.js`, `Shaders/WebGPU/Collections/BillboardCollection.wgsl`.
+
+**Method (runtime introspection, all via `/Build/CesiumUnminified/index.js` same module):**
+walked the path command → frustum binning → cull test → depth. The FR (`updateWebGPUBillboards`)
+IS invoked and builds a correct command (pipeline resolved, instanceCount 1, pass 9). But the
+command was binned into NO frustum (`foundInFrustum:-1`).
+
+**Bug 1 (FIXED) — bounding volume never computed on WebGPU → frustum-culled.**
+`BillboardCollection.update` computed `_boundingVolume` only in the WebGL path (after the
+`fr` early-return). The WebGPU command carried the default degenerate sphere (center 0,0,0,
+radius 0) → `scene.isVisible` OUTSIDE → culled. Fix: `computeBoundingVolumeForFeatureRenderer`
+in the `if (fr)` block reproduces the `_max*`/`_all*` aggregates the WebGL vertex writers
+compute (one billboard pass; WebGL path untouched), transforms `_baseVolume`→WC, calls
+`updateBoundingVolume`. Verified: 100 km-altitude billboard 0 → 992 magenta px.
+
+**Bug 3 (FIXED) — `disableDepthTestDistance` rendered BEHIND, not on top.**
+The DISABLE_DEPTH_DISTANCE WGSL block set `clipPos.z = clipPos.w` (NDC z=1 = FAR plane),
+which under `less-equal` fails against the closer globe — it pushed the billboard behind
+everything. WebGPU clip-z is [0,1] (near→far), so "always on top" is NEAR (0). Fix:
+`clipPos.z = 0.0` (3 sites). Verified: surface billboard + `disableDepthTestDistance=Infinity`
+0 → 992. (The standard ground-marker pattern now works.)
+
+**Bug 2 (OPEN — common-case blocker) — default surface billboards z-fight the globe.**
+A height-0 billboard with no `disableDepthTestDistance` is occluded by the globe (renders
+only with `globe.show=false` → 992). The billboard VS writes LINEAR depth
+(`clipPos = mvpRelativeToEye * positionRTE`) while the globe writes LOGARITHMIC depth, so at
+the surface the billboard lands marginally behind and fails `less-equal`. Ruled out: BV (fixed),
+OIT (off → still fails), log-depth toggle at runtime (no effect — pipelines cached),
+`depthTestAgainstTerrain`. Fix needed: apply the globe's log-depth transform to the
+billboard/point/label clip-z. Substantial; deferred (DEFERRED_WORK WEBGPU-BILLBOARD-POINT-LABEL-NO-RENDER).
+
+**Points + Labels:** Labels use an internal BillboardCollection → bugs 1+3 propagate.
+PointPrimitiveCollection is a separate file with the same FR-early-return-before-BV pattern →
+needs the same bug-1 BV fix (not yet applied) + shares bug 2.
+
+**Lesson:** a renderer that replaces a WebGL path inherits that path's SIDE EFFECTS, not just
+its draw. The WebGL billboard vertex writers also produced `_boundingVolume` + `_max*`; the FR
+reproduced the draw but not those, so the command was silently culled before ever reaching a
+pixel. When porting, audit what the replaced code SET, not just what it drew.

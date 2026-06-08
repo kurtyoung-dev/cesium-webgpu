@@ -337,9 +337,15 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // DP-H42 — override depth when the camera is within the configured
   // distance of this billboard. Mirrors BillboardCollectionVS.glsl:267-276:
   // per-instance value wins, falling back to the frame-wide minimum, then
-  // comparing squared eye-space distance so we avoid a sqrt. Setting
-  // `clipPos.z = clipPos.w` maps to NDC z=1 (far plane) so the rasterizer
-  // always passes `less-equal` depth regardless of what's in the buffer.
+  // comparing squared eye-space distance so we avoid a sqrt.
+  //
+  // Set `clipPos.z = 0.0` → NDC z = 0 = the WebGPU NEAR plane (depth 0), so the
+  // billboard always passes the `less-equal` depth test regardless of what is in
+  // the buffer (it renders ON TOP). The previous code set `clipPos.z = clipPos.w`
+  // → NDC z = 1 = the FAR plane (depth 1.0), which under `less-equal` fails
+  // against any closer geometry (the globe) — i.e. it pushed the billboard
+  // BEHIND everything instead of on top. WebGPU clip space is z∈[0,1] (near→far),
+  // not WebGL's [-1,1]; "always on top" is the near plane (0), not the far plane.
   //
   // Batch 139 (4th-pass audit) — check the raw signed value for the
   // `< 0` infinity sentinel BEFORE squaring (squaring kills the sign).
@@ -348,18 +354,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let disableRawDP = input.perInstanceFlags.x;
   if (disableRawDP < 0.0) {
     // Sentinel: always disable depth test.
-    clipPos.z = clipPos.w;
+    clipPos.z = 0.0;
   } else if (disableRawDP != 0.0) {
     let disableDepthSqDP = disableRawDP * disableRawDP;
     if (camDistSq < disableDepthSqDP) {
-      clipPos.z = clipPos.w;
+      clipPos.z = 0.0;
     }
   } else if (camera.minimumDisableDepthTestDistance != 0.0) {
     let frameMinSqDP =
       camera.minimumDisableDepthTestDistance *
       camera.minimumDisableDepthTestDistance;
     if (camDistSq < frameMinSqDP) {
-      clipPos.z = clipPos.w;
+      clipPos.z = 0.0;
     }
   }
   //>>endif
