@@ -10216,3 +10216,66 @@ WebGL layout.
 `LabelCollection` replaced only the billboard *draw* with the SDF renderer but still needed
 the billboard *shared scene logic* (atlas upload + BV) to run for its glyph collection. The
 early-return that skipped `glyphCollection.update()` silently dropped both side effects.
+
+---
+
+## Batch 220 — Collections 2D/CV + far-3D no-render: deep diagnosis (per-frustum UB necessary but not sufficient) — INVESTIGATION, no functional change
+
+After Batch 219 (collections render in SCENE3D close-camera), the two remaining gaps were
+the far-camera-3D failure and the total SCENE2D/COLUMBUS_VIEW no-render. Investigated and a
+fix attempt was made + reverted; this entry records the (durable) findings.
+
+**Reproducer/instrument:** `Tools/visual-regression/probe-billboard-2d-debug.mjs`
+(`PROBE_MODE=2d|3d`) — introspects a single billboard's `_actualPosition`, draw-command
+bounding volume, frustum binning, manual clip position, frustum count, and (when the resolver
+WIP was in) per-slice resolver call counts + per-slice `currentFrustum`.
+
+**Initial root cause (CONFIRMED):** the collection camera UB is packed ONCE per frame with
+ONE depth-frustum slice's projection, but the scene renders in MANY slices (SCENE2D → 9).
+`probe-billboard-2d-debug.mjs` (2D): command NOT culled (`bvVisibility=1`), `_actualPosition`
+correctly projected, but `clip.z = 7.289` (WebGPU clip is [0,1] → CLIPPED). `numFrustums=9`,
+billboard eye-z `−12,756,274`, UB packed with frustum 0 (`near=1, far=1.75M`):
+`12.75M/1.75M ≈ 7.28` = the clip.z. The globe avoids this by re-packing its camera UB per
+tile during execution (picks up the per-slice `uniformState.projection`).
+
+**Execution-path map (for the resume):** `WebGPUSceneRendererFrustumLoop.executeFrustumLoop`
+iterates slices far→near; per slice calls `host._updateFrustumUniforms` →
+`uniformState.updateFrustum(frustum)` (publishes the slice projection) and sets
+`uniformState._currentSliceIndex = i`. `WebGPUDrawCommand.execute` runs
+`bindGroupResolvers[i]()` per draw (lines 515-519) — the established per-slice swap pattern
+(`WebGPUGroundPrimitiveRenderer`, Batch 173). Per-slice GPU buffers MUST be distinct
+(`device.queue.writeBuffer` is unordered vs the encoder, last-wins).
+
+**Fix attempt (REVERTED) — per-frustum UB resolver fires but DOES NOT fix rendering.** Added a
+`bindGroupResolvers[0]` to the billboard color/velocity commands that re-packs the camera UB
+per slice into distinct per-slice buffers (+ the 2D/CV camera-frame fix: encode the RTE camera
+from `inverse(uniformState.view).translation`, since 2D instance positions are projected
+Columbus coords). The resolver verifiably FIRES (225+ calls, per-slice indices, per-slice
+`currentFrustum`), but billboards still render NOTHING in 2D/CV and far-3D. So the
+single-projection theory was incomplete; two further independent blockers:
+
+1. **far-3D is depth-test OCCLUSION, not clipping.** With the slice projection correct, the
+   far-3D billboard's clip.z is in [0,1] yet it's still 0 px — occluded by the globe in the
+   depth buffer (its written depth ≠ the globe's depth at that surface in that slice). This is
+   the genuine depth-match issue (partially rehabilitates the Batch-218 "bug 2 = depth"
+   framing, though the per-frustum projection is ALSO required). `disableDepthTestDistance`
+   sidesteps it (forces clip.z=0/NEAR).
+2. **2D is the C-R8-SCENE2D-JITTER camera-Z shift.** In SCENE2D the frustum loop SHIFTS
+   `scene2DCamera.position.z` per slice and compresses each band to `[1, far−near+1]`
+   (`WebGPUSceneRendererFrustumLoop.ts:211-230`). Globe tiles ride this via their per-tile UB
+   rebuild against the shifted camera + projected-RTC (`WebGPUGlobeSurfaceCameraUB`
+   `computeModifiedModelView`). A resolver that just swaps the projection does NOT reproduce
+   that planar per-slice camera math, so the billboard's clip position stays wrong in the band.
+
+**Revised plan (resume point):** (a) far-3D — make the collection pipelines write a depth that
+matches the globe's per-slice depth (mirror the globe depth encode), OR formally adopt
+`disableDepthTestDistance` as the supported ground-marker path + document it; (b) 2D/CV — the
+resolver must reproduce the globe's planar per-slice camera handling (projected-RTC + shifted
+camera), not just swap the projection. Multi-part; larger than one batch. WIP reverted to keep
+`main` clean (low-risk per user direction).
+
+**Lesson:** "the camera UB carries one frustum's projection" was a REAL bug but only one of
+three stacked causes (projection slice + depth-match + 2D planar-jitter). Each masks the next:
+fixing the projection alone left the command firing into the depth-occlusion / wrong-band
+clip, so the visible result didn't move. Verify a fix moves the PIXELS, not just the
+mechanism (the resolver fired perfectly and changed nothing on screen).
