@@ -10064,3 +10064,43 @@ lerp change); SCENE2D 96.8% = WebGL, COLUMBUS_VIEW 81.5% = WebGL, 3D unaffected,
 and the WebMercator minified-build repros are NOT reproducible on dev hardware;
 both fixes are verified by no-regression + exact WebGL parity. A minified
 `buildRelease` + WebMercator-projection functional probe remains a nice-to-have.
+
+---
+
+## Batch 2 audit (2026-06-07) — CRITICAL: Billboard/Point/Label render nothing on WebGPU
+
+While confirming the morph "billboard/point/label 2D/CV" sub-audit (PLAN_2DCV_MORPH_BATCHES
+Batch 2), found that `BillboardCollection`, `PointPrimitiveCollection`, and
+`LabelCollection` produce NO visible output on the WebGPU CesiumViewer in EVERY
+scene mode (3D/2D/CV). WebGL renders them. Full writeup +
+root-cause hypothesis: DEFERRED_WORK.md → "WEBGPU-BILLBOARD-POINT-LABEL-NO-RENDER".
+
+**Investigation (so the next session doesn't re-run it):**
+- Reproducers: `Tools/visual-regression/probe-collections-2dcv-morph.mjs` (raw
+  primitive collections), `probe-collections-entity.mjs` (Entity API). Both: WebGPU
+  billboard/point/label = 0 colored px vs hundreds on WebGL; PNGs read directly.
+- Ruled OUT (each tested): dual-module-instance (the viewer imports the SAME
+  `/Build/CesiumUnminified/index.js` my probe imports → same module); camera distance
+  (fails close ~4 km AND far 1.2 Mm); timing (150-300 frames, WebGL fine same timing);
+  canvas readback (drawImage captures the polyline + globe on WebGPU, and the PNGs
+  visually confirm absence); entity-vs-raw (both fail); double-render (fails with the
+  default render loop only, no manual `scene.render()`); depth occlusion (fails with
+  `disableDepthTestDistance = Infinity`).
+- A `PolylineCollection` in the same scene DOES render on WebGPU → the scene/opaque
+  pipeline is partially functional; the failure is specific to the billboard family
+  (screen-space sprite collections, translucent pass).
+- NOT a regression from this session: git-bisected — billboard=0/point=0 at Batch 214
+  (`0e51182139`), before the Batch-215 BUG-3 scene-FB changes. Long-standing; the
+  visual-regression suite has ~zero billboard/label/point coverage.
+- The feature renderer IS invoked: `BillboardCollection.update` (BillboardCollection.js:731-738)
+  finds the BILLBOARD_COLLECTION FR and calls `fr.update(...)` with no fallback error.
+  So commands are generated but draw nothing visible. NEXT (the fix, not done here):
+  inspect whether the FR pushes commands, the screen-space vertex/instance generation,
+  the texture-atlas binding (billboard/label), and the translucent-pass execution /
+  pipeline state on WebGPU.
+
+**Lesson:** a "(SHIPPED)" tag + a passing device-error probe (probe-collections-msaa.mjs
+only asserted 0 device errors, never visual presence) is NOT visual verification.
+A renderer can compile + dispatch with zero validation errors and still draw nothing.
+Code-review "structurally correct" (the audit's first pass) must be backed by a
+read-the-PNG check (Principle 8) before trusting it.
