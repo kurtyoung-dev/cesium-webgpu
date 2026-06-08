@@ -954,6 +954,19 @@ class LabelCollection {
       FeatureRendererKey.LABEL_COLLECTION,
     );
     if (labelFR) {
+      // The WebGL fallback below calls `billboardCollection.update()` on each
+      // child collection, which runs the shared scene-logic prologue (atlas GPU
+      // upload schedule + `_baseVolume`/`_boundingVolume` computation). The
+      // WebGPU label renderer replaces only the DRAW step (SDF glyph pass +
+      // delegated background-billboard pass), so we must still run that shared
+      // prologue here — otherwise the glyph atlas is never uploaded (the SDF
+      // pass samples the 1×1 placeholder and discards every fragment) and the
+      // glyph bounding volume stays degenerate (radius 0 at Earth's centre),
+      // which the frustum cull rejects. Either failure makes labels render
+      // nothing on WebGPU. Background billboards are also routed through the
+      // billboard FR inside `labelFR.update`, so they need their volume too.
+      glyphBillboardCollection.prepareForFeatureRenderer(frameState);
+      backgroundBillboardCollection.prepareForFeatureRenderer(frameState);
       labelFR.update(this, frameState, frameState.commandList);
       return;
     }

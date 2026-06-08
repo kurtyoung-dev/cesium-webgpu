@@ -685,47 +685,14 @@ class BillboardCollection {
    * @exception {RuntimeError} image with id must be in the atlas.
    */
   update(frameState) {
-    removeBillboards(this);
-
-    if (!this.show) {
+    // ─── Shared scene logic (runs for BOTH WebGL and WebGPU) ───
+    // Returns false when the collection is hidden — skip rendering entirely.
+    if (!runSharedSceneLogic(this, frameState)) {
       return;
     }
+    // ─── End shared scene logic ───
 
     const context = frameState.context;
-
-    // ─── Shared scene logic (runs for BOTH WebGL and WebGPU) ───
-    updateMode(this, frameState);
-
-    // Handle billboard load errors and dirty state (shared for both backends)
-    const billboardsForReadiness = this._billboards;
-    const billboardsLengthForReadiness = billboardsForReadiness.length;
-    let allBillboardsReady = true;
-    for (let i = 0; i < billboardsLengthForReadiness; ++i) {
-      const billboard = billboardsForReadiness[i];
-      if (defined(billboard.loadError)) {
-        console.error(
-          `Error loading image for billboard: ${billboard.loadError}`,
-        );
-        billboard.image = undefined;
-      }
-      if (billboard.textureDirty) {
-        this._updateBillboard(billboard, IMAGE_INDEX_INDEX);
-      }
-      if (billboard.show) {
-        allBillboardsReady = allBillboardsReady && billboard.ready;
-      }
-    }
-    this._allBillboardsReady = allBillboardsReady;
-
-    // Schedule texture atlas update (needed by both backends for image loading)
-    const textureAtlasShared = this._textureAtlas;
-    frameState.afterRender.push(() => {
-      if (this.isDestroyed()) {
-        return;
-      }
-      return textureAtlasShared.update(frameState.context);
-    });
-    // ─── End shared scene logic ───
 
     // Backend-specific rendering path — delegate to feature renderer if available
     const fr = context.getFeatureRenderer(
@@ -1212,6 +1179,36 @@ class BillboardCollection {
         commandList.push(this.debugCommand);
       }
     }
+  }
+
+  /**
+   * WebGPU-only: run the shared scene-logic prologue (atlas upload schedule,
+   * actual-position + `_baseVolume` recompute, billboard readiness) AND compute
+   * the feature-renderer bounding volume, WITHOUT emitting any draw commands.
+   *
+   * The {@link LabelCollection} WebGPU path delegates glyph rendering to the
+   * dedicated SDF renderer and returns before calling
+   * <code>glyphCollection.update()</code>, so it must invoke this on its glyph
+   * and background billboard collections itself. Without it the glyph atlas is
+   * never uploaded (the SDF pass samples the placeholder and discards) and the
+   * glyph bounding volume stays degenerate (radius 0 at Earth's centre), which
+   * the frustum cull rejects — labels rendered nothing on WebGPU.
+   *
+   * This is a no-op consumer of the same code `update()` runs on the WebGPU
+   * branch; it must not be called on the WebGL path (which uses the full
+   * <code>update()</code>).
+   *
+   * @param {FrameState} frameState The frame state.
+   * @returns {boolean} <code>false</code> when the collection is hidden;
+   *   the caller should skip rendering it. <code>true</code> otherwise.
+   * @private
+   */
+  prepareForFeatureRenderer(frameState) {
+    if (!runSharedSceneLogic(this, frameState)) {
+      return false;
+    }
+    computeBoundingVolumeForFeatureRenderer(this, frameState);
+    return true;
   }
 
   /**
@@ -2042,7 +2039,65 @@ function updateMode(billboardCollection, frameState) {
   }
 }
 
-const scratchFRPixelOffset = new Cartesian2();
+/**
+ * Shared scene-logic prologue for `BillboardCollection.update()` that must run
+ * for BOTH backends before the renderer branch: process pending removals,
+ * recompute actual positions + `_baseVolume`/`_baseVolume2D` (`updateMode`),
+ * surface per-billboard load errors, refresh dirty textures, and schedule the
+ * texture-atlas GPU upload.
+ *
+ * Extracted so the WebGPU LabelCollection path can run it directly for its
+ * glyph + background billboard collections via {@link BillboardCollection#prepareForFeatureRenderer}
+ * — that path delegates glyph rendering to the dedicated SDF renderer and
+ * returns before calling `glyphCollection.update()`, so without running this
+ * the glyph atlas was never uploaded (labels sampled the 1×1 placeholder and
+ * discarded every fragment).
+ *
+ * @returns {boolean} `false` when the collection is hidden (`show === false`);
+ *   `true` otherwise.
+ * @private
+ */
+function runSharedSceneLogic(collection, frameState) {
+  removeBillboards(collection);
+
+  if (!collection.show) {
+    return false;
+  }
+
+  updateMode(collection, frameState);
+
+  // Handle billboard load errors and dirty state (shared for both backends)
+  const billboards = collection._billboards;
+  const length = billboards.length;
+  let allBillboardsReady = true;
+  for (let i = 0; i < length; ++i) {
+    const billboard = billboards[i];
+    if (defined(billboard.loadError)) {
+      console.error(
+        `Error loading image for billboard: ${billboard.loadError}`,
+      );
+      billboard.image = undefined;
+    }
+    if (billboard.textureDirty) {
+      collection._updateBillboard(billboard, IMAGE_INDEX_INDEX);
+    }
+    if (billboard.show) {
+      allBillboardsReady = allBillboardsReady && billboard.ready;
+    }
+  }
+  collection._allBillboardsReady = allBillboardsReady;
+
+  // Schedule texture atlas update (needed by both backends for image loading)
+  const textureAtlas = collection._textureAtlas;
+  frameState.afterRender.push(() => {
+    if (collection.isDestroyed()) {
+      return;
+    }
+    return textureAtlas.update(frameState.context);
+  });
+
+  return true;
+}
 
 /**
  * Compute `collection._boundingVolume` for the WebGPU feature-renderer path.
@@ -2099,8 +2154,7 @@ function computeBoundingVolumeForFeatureRenderer(collection, frameState) {
       collection._allHorizontalCenter &&
       billboard.horizontalOrigin === HorizontalOrigin.CENTER;
     collection._allVerticalCenter =
-      collection._allVerticalCenter &&
-      verticalOrigin === VerticalOrigin.CENTER;
+      collection._allVerticalCenter && verticalOrigin === VerticalOrigin.CENTER;
 
     collection._maxSize = Math.max(
       collection._maxSize,
@@ -2135,8 +2189,14 @@ function computeBoundingVolumeForFeatureRenderer(collection, frameState) {
   }
   const boundingVolume =
     frameState.mode === SceneMode.SCENE3D
-      ? BoundingSphere.clone(collection._baseVolumeWC, collection._boundingVolume)
-      : BoundingSphere.clone(collection._baseVolume2D, collection._boundingVolume);
+      ? BoundingSphere.clone(
+          collection._baseVolumeWC,
+          collection._boundingVolume,
+        )
+      : BoundingSphere.clone(
+          collection._baseVolume2D,
+          collection._boundingVolume,
+        );
   updateBoundingVolume(collection, frameState, boundingVolume);
 }
 

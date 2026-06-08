@@ -10151,3 +10151,68 @@ needs the same bug-1 BV fix (not yet applied) + shares bug 2.
 its draw. The WebGL billboard vertex writers also produced `_boundingVolume` + `_max*`; the FR
 reproduced the draw but not those, so the command was silently culled before ever reaching a
 pixel. When porting, audit what the replaced code SET, not just what it drew.
+
+---
+
+## Batch 219 — Billboard/Point/Label no-render: points + labels fixed in 3D (glyph-atlas root cause) (2026-06-07)
+
+Continuation of Batch 218. Applied the bug-1 (BV) + bug-3 (clip-z) fixes to **points**,
+then found + fixed a fourth, **label-specific** bug. All three collections now render in
+**SCENE3D** with WebGL parity (verified close-camera, PNGs read — Principle 8). Two
+cross-cutting gaps remain (bug 2 far-surface depth, bug 5 2D/CV no-render).
+
+**Files:** `Scene/PointPrimitiveCollection.js`, `Scene/BillboardCollection.js`,
+`Scene/LabelCollection.js`, `Shaders/WebGPU/Collections/PointPrimitiveColor.wgsl`,
+`Shaders/WebGPU/Collections/BillboardCollectionSDF.wgsl`. New probe:
+`Tools/visual-regression/probe-collections-closeup.mjs`.
+
+**Points (bug 1 + bug 3).** `PointPrimitiveCollection` is a separate collection/renderer
+with the identical FR-early-return-before-BV pattern. Added `computeBoundingVolumeForFeatureRenderer`
+plus its call in the `if (fr)` block (bug 1), and `clipPos.z = clipPos.w` → `0.0` in the
+DISABLE_DEPTH_DISTANCE block of `PointPrimitiveColor.wgsl` (bug 3, 3 sites). Verified
+(`{altitude_100km_far:640, surface_DDTD_far:640, surface_default_close:644, surface_default_far:0}`):
+points render at altitude, with `disableDepthTestDistance`, and at the close surface; only
+far-surface-default fails (bug 2, shared).
+
+**Bug 4 / LABEL-SPECIFIC (FIXED) — glyph atlas never uploaded + glyph BV degenerate.**
+After bugs 1+3, labels were STILL 0 even at close camera in 3D (`probe-collections-closeup.mjs`
+→ label 0). Root cause: `LabelCollection.update()` delegates glyph rendering to the dedicated
+SDF renderer (`WebGPULabelRenderer`) and **returns before calling `glyphBillboardCollection.update()`**.
+That early return skipped the billboard *shared scene-logic prologue* — which (a) schedules
+the texture-atlas GPU upload via `frameState.afterRender` and (b) runs `updateMode` →
+`_baseVolume`. So the glyph atlas `_webgpuTexture` was never built (the SDF pass sampled the
+1×1 placeholder → `smoothstep` alpha 0 → discard every fragment) AND the glyph draw command
+carried the radius-0 BV → frustum-culled. Two independent kills, both from the same skipped
+prologue.
+
+Fix (Scene-Logic-Extractor pattern, CLAUDE.md): extracted the prologue from
+`BillboardCollection.update()` into a module fn `runSharedSceneLogic(collection, frameState)`
+(returns `false` when hidden) + a public `BillboardCollection.prepareForFeatureRenderer(frameState)`
+(prologue + `computeBoundingVolumeForFeatureRenderer`, **no draw emission**). `update()` now
+calls `runSharedSceneLogic` then, on the FR branch, `computeBoundingVolumeForFeatureRenderer`
+(WebGL path unchanged — billboard still 289 px, was 576... see screen-size note).
+`LabelCollection.update()` calls `prepareForFeatureRenderer` on the glyph + background
+collections before `labelFR.update()`. Verified: label "X" renders at close camera in 3D
+(251 lime px, was 0). Also applied bug-3 clip-z fix to `BillboardCollectionSDF.wgsl` (3 sites)
+for consistency (labels with `disableDepthTestDistance`).
+
+**Verification (`probe-collections-closeup.mjs`, ~600 m, 3D, PNG-read):**
+billboard GL 576 / GPU 289, point GL 619 / GPU 548, label GL 369 / GPU **251 (was 0)**.
+All three visible in the WebGPU PNG (lime X, yellow point, magenta billboard) matching the
+WebGL layout.
+
+**Still open (documented):**
+- **Bug 2 (far-surface depth)** — at 1.5 Mm, surface markers without `disableDepthTestDistance`
+  are occluded by the globe (linear vs log depth). Shared by all three; needs WebGPU log-depth.
+- **Bug 5 (2D / COLUMBUS_VIEW)** — `probe-collections-2dcv-morph.mjs`: all three = 0 px on
+  WebGPU in 2D/CV (WebGL renders). The 3D fixes don't apply — the renderers encode raw 3D
+  position + a single 3D MVP; 2D/CV need the projected coordinate + ortho frustum (+ morphTime
+  blend). This is the next concrete collections work item (MORPH-COLLECTIONS-AUDIT).
+- **Minor screen-size** — 3D markers render ~0.7× linear (billboard 289 vs 576, label 251 vs
+  369; point matches at 0.89). Likely a `highResMultiplier`/device-pixel-ratio mismatch in the
+  instance-quad sizing. Cosmetic; refine after 2D/CV.
+
+**Lesson (extends Batch 218):** a delegating wrapper inherits its delegate's prologue too.
+`LabelCollection` replaced only the billboard *draw* with the SDF renderer but still needed
+the billboard *shared scene logic* (atlas upload + BV) to run for its glyph collection. The
+early-return that skipped `glyphCollection.update()` silently dropped both side effects.

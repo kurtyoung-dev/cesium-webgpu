@@ -457,6 +457,13 @@ class PointPrimitiveCollection {
     );
     if (fr) {
       this._pointPrimitivesLength = this._pointPrimitives.length;
+      // The WebGL path below computes the collection bounding volume (after its
+      // own vertex build) via `updateBoundingVolume`, which the draw command's
+      // frustum-cull test needs. The feature renderer replaces that path, so
+      // compute it here for WebGPU — otherwise the command keeps the default
+      // degenerate sphere (center 0,0,0, radius 0) and is silently culled, so
+      // points never render. Mirrors the same fix in BillboardCollection.js.
+      computeBoundingVolumeForFeatureRenderer(this, frameState);
       fr.update(this, frameState, frameState.commandList);
       return;
     }
@@ -1242,6 +1249,53 @@ function updateMode(pointPrimitiveCollection, frameState) {
       false,
     );
   }
+}
+
+/**
+ * Compute `collection._boundingVolume` for the WebGPU feature-renderer path.
+ *
+ * The WebGL render path computes the bounding volume AFTER its vertex build, and
+ * the per-point vertex writers ALSO accumulate `_maxPixelSize` (max of
+ * pixelSize + outlineWidth) that `updateBoundingVolume` reads to expand the
+ * sphere by the points' screen-space radius. The WebGPU feature renderer
+ * replaces that vertex path, so `_maxPixelSize` was never produced and
+ * `_boundingVolume` stayed the default degenerate sphere (center 0,0,0,
+ * radius 0) — the frustum cull then rejected the draw command and points never
+ * rendered. This reproduces `_maxPixelSize` (one extra point pass on WebGPU;
+ * the WebGL path is untouched) and runs the identical transform + clone +
+ * `updateBoundingVolume`. `_baseVolume`/`_baseVolume2D` are produced by
+ * `updateMode` (shared, before the feature-renderer branch). Mirrors the same
+ * fix in BillboardCollection.js.
+ * @private
+ */
+function computeBoundingVolumeForFeatureRenderer(collection, frameState) {
+  collection._maxPixelSize = 1.0;
+  const points = collection._pointPrimitives;
+  const length = points.length;
+  for (let i = 0; i < length; ++i) {
+    const point = points[i];
+    if (!defined(point)) {
+      continue;
+    }
+    collection._maxPixelSize = Math.max(
+      collection._maxPixelSize,
+      point.pixelSize + point.outlineWidth,
+    );
+  }
+
+  if (collection._boundingVolumeDirty) {
+    collection._boundingVolumeDirty = false;
+    BoundingSphere.transform(
+      collection._baseVolume,
+      collection.modelMatrix,
+      collection._baseVolumeWC,
+    );
+  }
+  const boundingVolume =
+    frameState.mode === SceneMode.SCENE3D
+      ? BoundingSphere.clone(collection._baseVolumeWC, collection._boundingVolume)
+      : BoundingSphere.clone(collection._baseVolume2D, collection._boundingVolume);
+  updateBoundingVolume(collection, frameState, boundingVolume);
 }
 
 function updateBoundingVolume(collection, frameState, boundingVolume) {

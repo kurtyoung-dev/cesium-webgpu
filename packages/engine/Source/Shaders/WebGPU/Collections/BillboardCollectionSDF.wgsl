@@ -262,21 +262,24 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
   // DP-H42 — same logic as BillboardCollection.wgsl. Batch 139
-  // (4th-pass audit) — raw-sentinel pattern.
+  // (4th-pass audit) — raw-sentinel pattern. Batch 219 — "render on top"
+  // is the WebGPU NEAR plane (NDC z = 0, depth range [0,1] / less-equal
+  // compare), NOT z = w (that is the FAR plane and pushes the label
+  // BEHIND everything). Matches the billboard + point bug-3 fix.
   let disableRawDP = input.perInstanceFlags.x;
   if (disableRawDP < 0.0) {
-    clipPos.z = clipPos.w;
+    clipPos.z = 0.0;
   } else if (disableRawDP != 0.0) {
     let disableDepthSqDP = disableRawDP * disableRawDP;
     if (camDistSq < disableDepthSqDP) {
-      clipPos.z = clipPos.w;
+      clipPos.z = 0.0;
     }
   } else if (camera.minimumDisableDepthTestDistance != 0.0) {
     let frameMinSqDP =
       camera.minimumDisableDepthTestDistance *
       camera.minimumDisableDepthTestDistance;
     if (camDistSq < frameMinSqDP) {
-      clipPos.z = clipPos.w;
+      clipPos.z = 0.0;
     }
   }
   //>>endif

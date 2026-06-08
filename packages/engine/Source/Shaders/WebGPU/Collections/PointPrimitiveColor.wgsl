@@ -180,20 +180,28 @@ fn vertexMain(
     // `disableDepthTestDistance`. Batch 140 — raw-sentinel pattern (see
     // BillboardCollection.wgsl). Pre-fix the squaring step killed the
     // sign on the `-1` "always disable" sentinel.
+    //
+    // Set `clipPos.z = 0.0` → NDC z = 0 = the WebGPU NEAR plane, so the point
+    // always passes the `less-equal` depth test (renders ON TOP). The previous
+    // `clipPos.z = clipPos.w` → NDC z = 1 = the FAR plane, which under
+    // `less-equal` fails against the closer globe — pushing the point BEHIND
+    // everything. WebGPU clip-z is [0,1] (near→far), not WebGL's [-1,1]; "on
+    // top" is the near plane (0), not far. Mirrors the same fix in
+    // BillboardCollection.wgsl.
     let disableRawDP = perInstanceFlags.x;
     if (disableRawDP < 0.0) {
-        clipPos.z = clipPos.w;
+        clipPos.z = 0.0;
     } else if (disableRawDP != 0.0) {
         let disableDepthSqDP = disableRawDP * disableRawDP;
         if (camDistSq < disableDepthSqDP) {
-            clipPos.z = clipPos.w;
+            clipPos.z = 0.0;
         }
     } else if (camera.minimumDisableDepthTestDistance != 0.0) {
         let frameMinSqDP =
             camera.minimumDisableDepthTestDistance *
             camera.minimumDisableDepthTestDistance;
         if (camDistSq < frameMinSqDP) {
-            clipPos.z = clipPos.w;
+            clipPos.z = 0.0;
         }
     }
     //>>endif
