@@ -340,6 +340,22 @@ export class WebGPUPostProcessPipeline {
 
     this._destroyTextures();
 
+    // Reset the built-in effects so the configure path recreates them with the
+    // CURRENT intermediate format + size. They are created once (the `addX`
+    // guards `if (this._bloomEffect) return`), so without this an HDR toggle
+    // (or resize) would leave them holding their first-creation 8-bit /
+    // wrong-size intermediate textures — which clamps HDR highlights BEFORE
+    // tonemap (NEW-POSTPROCESS-HDR-INTERMEDIATES). Only runs on a real
+    // recreate (device / size / HDR change), not per frame.
+    this._bloomEffect?.destroy();
+    this._aoEffect?.destroy();
+    this._dofEffect?.destroy();
+    this._godRayEffect?.destroy();
+    this._bloomEffect = null;
+    this._aoEffect = null;
+    this._dofEffect = null;
+    this._godRayEffect = null;
+
     // When HDR is on, intermediate textures use rgba16float so the full
     // dynamic range from the scene framebuffer survives through bloom,
     // tonemapping, and color grading. The final blit downsamples to the
@@ -707,11 +723,14 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._bloomEffect) return;
     this._bloomEffect = new BloomEffect(config);
+    // Use the intermediate format (rgba16float in HDR) so bloom's bright-pass +
+    // blur chain preserves HDR highlights instead of clamping at 8-bit
+    // (NEW-POSTPROCESS-HDR-INTERMEDIATES). In SDR this equals canvasFormat.
     this._bloomEffect.initialize(
       device,
       this._width,
       this._height,
-      canvasFormat,
+      this._intermediateFormat || canvasFormat,
     );
   }
 
@@ -726,7 +745,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._aoEffect) return;
     this._aoEffect = new AmbientOcclusionEffect(config);
-    this._aoEffect.initialize(device, this._width, this._height, canvasFormat);
+    // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
+    this._aoEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
   }
 
   /**
@@ -808,7 +833,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._dofEffect) return;
     this._dofEffect = new DepthOfFieldEffect(config);
-    this._dofEffect.initialize(device, this._width, this._height, canvasFormat);
+    // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
+    this._dofEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
   }
 
   /**
@@ -827,11 +858,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._godRayEffect) return;
     this._godRayEffect = new GodRayEffect(config);
+    // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
     this._godRayEffect.initialize(
       device,
       this._width,
       this._height,
-      canvasFormat,
+      this._intermediateFormat || canvasFormat,
     );
   }
 
