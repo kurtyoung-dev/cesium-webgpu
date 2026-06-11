@@ -1068,6 +1068,10 @@ interface CesiumObjectWithWebGPUCache {
     color?: CesiumColor;
   }>;
   get?(index: number): CesiumObjectWithWebGPUCache | null;
+  // Phase 0 dirty-consume — CloudCollection (and other collections) expose
+  // `_consumeDirtyState()` so the WebGPU feature renderer can clear per-frame
+  // dirty bookkeeping after capturing instance data.
+  _consumeDirtyState?(): void;
   // Post-process stage collection fields
   bloom?: CesiumPostProcessStage;
   ambientOcclusion?: CesiumPostProcessStage;

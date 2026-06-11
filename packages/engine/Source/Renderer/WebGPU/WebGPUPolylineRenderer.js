@@ -1503,6 +1503,18 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       commandList,
     );
   }
+
+  // Phase 0 dirty-consume (NEW-DIRTY-CONSUME-POLYLINE). The WebGPU renderer
+  // replaces the WebGL vertex-array build and PolylineCollection.update()
+  // returns to the FR before the WebGL clear path runs, so the per-polyline
+  // _dirty flags, the _polylinesToUpdate queue, and _propertiesChanged are
+  // never cleared on the FR path. Consume them now that segment data has been
+  // built/grouped this frame — otherwise the shared scene logic and property
+  // setters re-touch every settled polyline every frame and _polylinesToUpdate
+  // grows unbounded. Mirrors the billboard/point consume call site.
+  if (typeof collection._consumeDirtyState === "function") {
+    collection._consumeDirtyState();
+  }
 }
 
 /**

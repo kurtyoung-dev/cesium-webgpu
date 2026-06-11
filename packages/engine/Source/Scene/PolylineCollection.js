@@ -563,6 +563,48 @@ class PolylineCollection {
   }
 
   /**
+   * Clears the per-frame dirty bookkeeping after a WebGPU feature renderer has
+   * captured this collection's instance data. The WebGPU PolylineRenderer
+   * rebuilds segment data unconditionally from `polyline.positions` each frame
+   * and returns from {@link PolylineCollection#update} before the WebGL clear
+   * path (the per-bucket update loop ending at the `polylinesToUpdate.length = 0`
+   * / `_propertiesChanged` zeroing). Without this consume the FR-driven path
+   * never clears `_dirty`, so `_polylinesToUpdate` grows unbounded and the
+   * shared scene logic / property setters re-touch every settled polyline every
+   * frame — the bucket-shaped analog of the billboard re-dirty bug.
+   *
+   * Mirrors the WebGL clears at the end of {@link PolylineCollection#update}:
+   * per-polyline {@link Polyline#_clean} (resets `_dirty` + zeros that
+   * polyline's own `_propertiesChanged`), then drains `_polylinesToUpdate`,
+   * clears `_polylinesUpdated` / `_createVertexArray`, and zeros the
+   * collection-level `_propertiesChanged`.
+   *
+   * Idempotent — safe to call once per frame after the FR builds/groups.
+   *
+   * @private
+   */
+  _consumeDirtyState() {
+    const polylines = this._polylines;
+    const length = polylines.length;
+    for (let i = 0; i < length; ++i) {
+      const polyline = polylines[i];
+      if (defined(polyline) && !polyline.isDestroyed) {
+        // Resets polyline._dirty = false and zeros its _propertiesChanged.
+        polyline._clean();
+      }
+    }
+
+    this._polylinesToUpdate.length = 0;
+    this._polylinesUpdated = false;
+    this._createVertexArray = false;
+
+    const propertiesChanged = this._propertiesChanged;
+    for (let k = 0; k < NUMBER_OF_PROPERTIES; ++k) {
+      propertiesChanged[k] = 0;
+    }
+  }
+
+  /**
    * @private
    */
   _updatePolyline(polyline, propertyChanged) {

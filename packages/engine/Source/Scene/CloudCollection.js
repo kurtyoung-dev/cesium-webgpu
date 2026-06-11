@@ -331,6 +331,49 @@ class CloudCollection {
   }
 
   /**
+   * Clears the per-frame dirty bookkeeping after a WebGPU feature renderer has
+   * captured this collection's instance data. The WebGPU CloudRenderer replaces
+   * the WebGL vertex-array build (`createVertexArray` / `updateClouds`), so the
+   * per-cloud `_dirty` flags, the `_cloudsToUpdate` queue, `_createVertexArray`,
+   * and `_cloudsRemoved` are never cleared on the FR path. Without this consume,
+   * `_cloudsToUpdateIndex` grows unbounded and every property setter re-dirties
+   * settled clouds each frame.
+   *
+   * Mirrors the WebGL clears:
+   *  - per-cloud `_dirty = false` (`updateClouds`, CloudCollection.js:912/923)
+   *  - `_cloudsToUpdateIndex = 0` (`updateClouds`, CloudCollection.js:938)
+   *  - `_createVertexArray = false` (`createVertexArray`, CloudCollection.js:855)
+   *  - `_cloudsRemoved = false` (`removeClouds`, CloudCollection.js:518)
+   *  - zero `_propertiesChanged[]`
+   *
+   * NOTE: this consume only stops the dirty-queue leak — it does NOT address the
+   * separate count-only rebuild gate in WebGPUCloudRenderer (which rebuilds the
+   * instance buffer only when the cloud count changes, missing per-cloud
+   * property edits). That is tracked separately as NEW-CLOUD-REBUILD-DIRTY-GATE.
+   *
+   * @private
+   */
+  _consumeDirtyState() {
+    const clouds = this._clouds;
+    const length = clouds.length;
+    for (let i = 0; i < length; ++i) {
+      const cloud = clouds[i];
+      if (defined(cloud)) {
+        cloud._dirty = false;
+      }
+    }
+
+    this._cloudsToUpdateIndex = 0;
+    this._createVertexArray = false;
+    this._cloudsRemoved = false;
+
+    const propertiesChanged = this._propertiesChanged;
+    for (let k = 0; k < NUMBER_OF_PROPERTIES; ++k) {
+      propertiesChanged[k] = 0;
+    }
+  }
+
+  /**
    * Check whether this collection contains a given cloud.
    *
    * @param {CumulusCloud} [cloud] The cloud to check for.

@@ -517,8 +517,17 @@ function updateWebGPUCloudCollection(
     // `GPURenderPipeline`. The descriptor object is held on the cache
     // sidecar so re-resolution attempts use a stable key (cache key
     // hashes the full descriptor shape).
+    // NEW-CLOUD-SCENEFB-PIPELINE-MISMATCH — bake the scene-FB MSAA sample
+    // count into the pipeline (mirrors the Billboard Batch-134 fix). Without
+    // it the pipeline defaults to count=1 and fails attachment-state
+    // validation against the MSAA scene framebuffer pass — which invalidates
+    // the WHOLE pass encoder, so adding a single cloud blanked every other
+    // primitive in the scene. `ms=` is keyed into the name so the central
+    // pipeline cache distinguishes sample-count variants.
+    const sampleCount =
+      (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
     cache.pipelineDescriptor = {
-      name: "CloudCollection pipeline",
+      name: `CloudCollection pipeline [${canvasFormat}/ms=${sampleCount}]`,
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
       vertex: {
         module: cache.shaderModule,
@@ -592,6 +601,7 @@ function updateWebGPUCloudCollection(
         // the matching comment in WebGPUBufferPrimitiveRenderer.
         depthCompare: "less-equal",
       },
+      multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
     };
 
     cache.bindGroup = device.createBindGroup({
@@ -643,6 +653,18 @@ function updateWebGPUCloudCollection(
     // comment on the `attachCloudVelocityCommand` helper for the
     // first-frame-seed and revision-change-mismatch cases.
     cache.instanceData = result.instanceData;
+  }
+
+  // Phase 0 dirty-consume (NEW-DIRTY-CONSUME-CLOUD). The WebGPU renderer
+  // replaces the WebGL vertex build, so CloudCollection's per-cloud `_dirty`,
+  // `_cloudsToUpdateIndex`, `_createVertexArray`, and `_propertiesChanged`
+  // are never cleared on this path — settled clouds get re-dirtied every
+  // frame and the update queue grows unbounded. Consume every frame (not just
+  // on rebuild — the count-only rebuild gate above ignores property dirties
+  // anyway; that separate bug is tracked as NEW-CLOUD-REBUILD-DIRTY-GATE, and
+  // when it's fixed the gate must read the dirty state BEFORE this consume).
+  if (typeof collection._consumeDirtyState === "function") {
+    collection._consumeDirtyState();
   }
 
   if (cache.instanceCount === 0) {
