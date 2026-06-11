@@ -442,13 +442,20 @@ export const ShaderSourceId = Object.freeze({
   GROUND_POLYLINE: 31,
   SKY_ATMOSPHERE: 32,
   ELLIPSOID_PRIMITIVE: 33,
-  // Phase 3 — GPU-resident orbital catalog (Batch 230,
-  // NEW-ORBITAL-GPU-RESIDENT-RENDERER). 34 is the circular-orbit
-  // propagation compute kernel (`Compute/OrbitalPropagate.wgsl`); 35 is
-  // the instanced storage-buffer-vertex-pull render shader
-  // (`Compute/OrbitalCatalogRender.wgsl`). Add-only; never renumber.
-  ORBITAL_PROPAGATE_COMPUTE: 34,
-  ORBITAL_CATALOG_RENDER: 35,
+  // Phase 3 — GPU-resident compute-instance system (Batch 231,
+  // NEW-COMPUTE-INSTANCE-SYSTEM). RENAMED in place from the Batch-230
+  // ORBITAL_PROPAGATE_COMPUTE / ORBITAL_CATALOG_RENDER labels when the
+  // orbital catalog was generalized and its domain math moved out of the
+  // engine — numbers kept per the add-only registry rule; never renumber.
+  // 34 labels the engine-side kernel scaffold
+  // (`Compute/ComputeInstanceScaffold.wgsl`). NOTE: composed user-kernel
+  // modules are NOT cached under this id — `WebGPUComputeInstanceRenderer`
+  // caches them per composed-source string, because the (sourceId, defines)
+  // key can't represent arbitrary user kernel strings. 35 is the instanced
+  // storage-buffer-vertex-pull render shader
+  // (`Compute/ComputeInstanceRender.wgsl`).
+  COMPUTE_INSTANCE_SCAFFOLD: 34,
+  COMPUTE_INSTANCE_RENDER: 35,
 } as const);
 
 /**

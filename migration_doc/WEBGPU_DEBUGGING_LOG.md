@@ -10311,3 +10311,51 @@ runs `requestRenderMode: true` — once tiles settle the loop stops rendering, s
 await `scene.postRender` hang and time-driven content freezes; set
 `scene.requestRenderMode = false` in probes that drive the clock. Both patterns are baked into
 `Tools/visual-regression/probe-orbital-catalog.mjs`.
+
+## Batch 231 — Orbital catalog generalized into the feature-agnostic compute-instance system (NEW-COMPUTE-INSTANCE-SYSTEM) (2026-06-11)
+
+**Not a bug fix — an owner-directed architecture rework of the hours-old Batch 230 MVP.** The
+engine must keep ZERO orbital domain knowledge; the generic capability — "N instances whose
+per-instance data lives in a GPU storage buffer, repopulated each frame by a pluggable compute
+kernel, drawn as instanced vertex-pulled quads, CPU uploads only a time scalar" — is the engine
+feature. Everything orbital (element lane layout, circular-orbit WGSL kernel, LEO/MEO/GEO
+catalog generation) moved wholly into the "WebGPU Orbital Catalog" Sandcastle + the probe.
+
+**What changed:**
+- NEW `Scene/ComputeInstanceCollection.js` — generic collection: `{kernel, floatsPerInstance,
+  count?, epoch?, show?}`; flat Float32Array param lanes (layout is the USER's business);
+  loud `DeveloperError` (all builds) when the kernel doesn't define `csm_computeInstance`;
+  kept the Batch-230 dirty-consume + sim-time-before-FR-branch logic verbatim.
+  `OrbitalCatalogCollection.js` DELETED (unpublished; the Sandcastle was the only consumer).
+- NEW `WebGPUComputeInstanceRenderer.ts` (replaces `WebGPUOrbitalCatalogRenderer.ts`) — same
+  machinery, but the compute module is COMPOSED at pipeline build:
+  `const FLOATS_PER_INSTANCE` prologue + `ComputeInstanceScaffold.wgsl` (bindings, entry point,
+  bounds check, RTE high/low split + 64-B instance-record write — users never touch RTE) +
+  the user kernel (UserPostProcessStage precedent). Composed modules cached per
+  composed-source string per device (a `(sourceId, defines)` key can't represent user
+  strings); kernel FNV-1a hash keyed into compute-pipeline-cache names so kernels never alias.
+- Render side: `OrbitalCatalogRender.wgsl` → `ComputeInstanceRender.wgsl`, now reading
+  position/color/pixelSize from the kernel-written instance record instead of the (orbital)
+  elements SSBO — the render shader never sees the user's param layout. `OrbitalPropagate.wgsl`
+  deleted from the engine; its math is the demo/probe kernel snippet.
+- Renames in place per the add-only registry rules: FR key 49 `ORBITAL_CATALOG_COLLECTION` →
+  `COMPUTE_INSTANCE_COLLECTION`; ShaderSourceId 34 → `COMPUTE_INSTANCE_SCAFFOLD`,
+  35 → `COMPUTE_INSTANCE_RENDER` (numbers kept).
+
+**Verification (Principle 8):** `probe-orbital-catalog.mjs` re-pointed to the new API with the
+orbital kernel defined in-probe — PASS with numbers equivalent to the Batch-230 baseline
+(15289 magenta px @ frame 15 vs 15286-15289; 187.2% mask change vs 187.3%; 0 errors). NEW
+`probe-compute-instance-generic.mjs` proves feature-agnosticism with a NON-orbital kernel
+(rotating-Lissajous figure-8 above the globe; the whole pattern rotates so the mask provably
+moves even though 400 random-phase dots cover the closed curve) — PASS (6552 px, 177.4% mask
+change, 0 errors). `npx tsc --noEmit` clean; engine grep for orbital domain identifiers
+(raan/meanMotion/semiMajor/inclination + Orbital symbols) returns only rename-history comments
+and pre-existing upstream uses (EllipseGeometry semiMajorAxis, "orbital altitude" prose).
+
+**Files:** +`Scene/ComputeInstanceCollection.js`, +`Renderer/WebGPU/WebGPUComputeInstanceRenderer.ts`,
++`Shaders/WebGPU/Compute/ComputeInstanceScaffold.wgsl`, +`Compute/ComputeInstanceRender.wgsl`,
+−`Scene/OrbitalCatalogCollection.js`, −`Renderer/WebGPU/WebGPUOrbitalCatalogRenderer.ts`,
+−`Compute/OrbitalPropagate.wgsl`, −`Compute/OrbitalCatalogRender.wgsl`;
+`FeatureRendererKey.js`, `WebGPUFeatureRenderers.ts`, `WebGPUShaderDefines.ts`,
+"WebGPU Orbital Catalog.html", both probes, DEFERRED_WORK / FEATURE_INVENTORY /
+LARGE_DYNAMIC_OBJECTS_DESIGN docs.

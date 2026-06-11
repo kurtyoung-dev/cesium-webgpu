@@ -189,16 +189,20 @@ const FeatureRendererKey = {
   // Opt-in via `scene.enableContactShadows`.
   CONTACT_SHADOWS: 48,
 
-  // ── GPU-resident orbital catalog (Phase 3, Batch 230) ──
-  // `OrbitalCatalogCollection` routes here. The renderer keeps the whole
-  // catalog GPU-resident: elements upload once to a storage buffer, a
-  // compute kernel (`OrbitalPropagate.wgsl`) propagates circular orbits
-  // each frame into a positions storage buffer, and the instanced draw
-  // vertex-pulls `positions[instance_index]` — positions never leave the
+  // ── GPU-resident compute-instance collection (Phase 3, Batch 231) ──
+  // `ComputeInstanceCollection` routes here. Renamed from
+  // ORBITAL_CATALOG_COLLECTION (Batch 230) in Batch 231 — same slot 49;
+  // the orbital catalog was generalized into this feature-agnostic system
+  // and the orbital math moved out of the engine into Sandcastle demo
+  // content. The renderer keeps per-instance data GPU-resident: parameter
+  // floats upload once to a storage buffer, a USER-SUPPLIED WGSL kernel
+  // (composed with `ComputeInstanceScaffold.wgsl`) repopulates an instance
+  // record buffer each frame via compute, and the instanced draw
+  // vertex-pulls `instances[instance_index]` — positions never leave the
   // GPU; the CPU uploads only the simulation time per frame. WebGPU-only
-  // for now — the WebGL2 fallback (SGP4-on-worker WASM) is tracked as
-  // NEW-ORBITAL-SGP4-WASM-WORKER in DEFERRED_WORK.md.
-  ORBITAL_CATALOG_COLLECTION: 49,
+  // for now — the WebGL2 fallback (worker/WASM kernel host) is tracked as
+  // NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK in DEFERRED_WORK.md.
+  COMPUTE_INSTANCE_COLLECTION: 49,
 
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and

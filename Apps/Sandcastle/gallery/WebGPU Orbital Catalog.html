@@ -9,7 +9,7 @@
     />
     <meta
       name="description"
-      content="GPU-resident orbital catalog: thousands of objects propagated each frame by a compute shader — positions never leave the GPU."
+      content="GPU-resident orbital catalog: thousands of objects propagated each frame by a user-supplied WGSL compute kernel — positions never leave the GPU."
     />
     <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
     <title>Cesium Demo</title>
@@ -23,18 +23,23 @@
   </head>
   <!--
     WebGPU Orbital Catalog demo (Phase 3 of the Large Dynamic Objects
-    roadmap — NEW-ORBITAL-GPU-RESIDENT-RENDERER).
+    roadmap), built on the feature-agnostic `ComputeInstanceCollection`.
 
-    Demonstrates `OrbitalCatalogCollection`: the orbital element set
-    uploads ONCE to a GPU storage buffer; every frame a compute shader
-    (`OrbitalPropagate.wgsl`) propagates all objects in parallel and an
-    instanced draw vertex-pulls the propagated positions directly from
-    GPU memory. The CPU's only per-frame upload is the simulation time —
-    object positions never round-trip through JavaScript.
+    The ENGINE knows nothing about orbits: it provides "N instances whose
+    per-instance data lives in a GPU storage buffer, repopulated each frame
+    by a pluggable compute kernel, drawn as instanced vertex-pulled quads;
+    the CPU uploads only a time scalar". Everything orbital — the element
+    lane layout, the circular-orbit WGSL kernel, and the LEO/MEO/GEO catalog
+    generation — is defined HERE in the demo.
+
+    The per-instance lanes upload ONCE to a GPU storage buffer; every frame
+    the kernel below propagates all objects in parallel and an instanced
+    draw vertex-pulls the results directly from GPU memory. Object positions
+    never round-trip through JavaScript.
 
     Simulation time follows the scene clock, so the speed slider just
     drives `viewer.clock.multiplier`. WebGPU-only: the WebGL2 fallback
-    (SGP4-on-worker WASM) is a tracked follow-up.
+    (worker/WASM kernel host) is a tracked follow-up.
   -->
   <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
     <style>
@@ -83,23 +88,87 @@
         });
         const scene = viewer.scene;
 
+        // ── Orbital element layout (DEMO-owned — the engine never sees it) ──
+        // Lane 0: semiMajorAxis (m)        Lane 1: inclination (rad)
+        // Lane 2: raan (rad)               Lane 3: phase (rad)
+        // Lane 4: meanMotion (rad/s)       Lane 5: epochOffset (s)
+        // Lane 6-8: color r, g, b          Lane 9: pixelSize (px)
+        const FLOATS_PER_INSTANCE = 10;
+
+        // Circular-orbit kernel — ported verbatim from the Batch-230 engine
+        // OrbitalPropagate.wgsl when the orbital math moved out of the
+        // engine. Same MVP caveats as that kernel:
+        //   - CIRCULAR orbits only: angle = phase + meanMotion*(t-epochOffset),
+        //     radius = semiMajorAxis. No eccentricity, no Kepler solver.
+        //   - ECI treated as ECEF directly (Earth rotation / GMST skipped),
+        //     so RAAN is not a true inertial node.
+        //   - f32 math throughout; the engine writes the RTE low part as 0.
+        //     Error budget ~2.5 m absolute at GEO radius — invisible for
+        //     catalog-scale point rendering, NOT for conjunction analysis.
+        // The engine scaffolding provides `params`, `FLOATS_PER_INSTANCE`,
+        // `ComputeInstanceOut`, the bounds check, and the RTE output write.
+        const orbitalKernel = `
+          fn csm_computeInstance(index: u32, time: f32) -> ComputeInstanceOut {
+            let base = index * FLOATS_PER_INSTANCE;
+            let semiMajorAxis = params[base + 0u];
+            let inclination   = params[base + 1u];
+            let raan          = params[base + 2u];
+            let phase         = params[base + 3u];
+            let meanMotion    = params[base + 4u];
+            let epochOffset   = params[base + 5u];
+
+            // Circular orbit: uniform angular motion in the orbital plane.
+            let t = time - epochOffset;
+            let angle = phase + meanMotion * t;
+            let xp = semiMajorAxis * cos(angle);
+            let yp = semiMajorAxis * sin(angle);
+
+            // Rotate the in-plane position (xp, yp, 0) by inclination about
+            // +X, then by RAAN about +Z: r_out = Rz(raan) * Rx(inc) * r_plane.
+            // With Cesium's ECEF convention (+Z = polar axis), inclination 0
+            // keeps the orbit in the equatorial plane.
+            let ci = cos(inclination);
+            let si = sin(inclination);
+            let co = cos(raan);
+            let so = sin(raan);
+
+            var out: ComputeInstanceOut;
+            out.position = vec3<f32>(
+              xp * co - yp * ci * so,
+              xp * so + yp * ci * co,
+              yp * si,
+            );
+            out.color = vec4<f32>(params[base + 6u], params[base + 7u], params[base + 8u], 1.0);
+            out.pixelSize = params[base + 9u];
+            return out;
+          }`;
+
+        // Earth's gravitational parameter (m^3/s^2) — circular-orbit mean
+        // motion n = sqrt(GM / a^3).
+        const GM = 3.986004418e14;
+
         let catalog;
 
         function rebuildCatalog(count) {
           if (Cesium.defined(catalog)) {
             scene.primitives.remove(catalog);
           }
-          catalog = scene.primitives.add(new Cesium.OrbitalCatalogCollection());
+          catalog = scene.primitives.add(
+            new Cesium.ComputeInstanceCollection({
+              kernel: orbitalKernel,
+              floatsPerInstance: FLOATS_PER_INSTANCE,
+            }),
+          );
 
-          // Three altitude regimes. meanMotion defaults to the physical
-          // circular rate sqrt(GM / a^3), so LEO objects visibly lap the
-          // higher shells.
+          // Three altitude regimes. meanMotion is the physical circular
+          // rate sqrt(GM / a^3), so LEO objects visibly lap the higher
+          // shells.
           const EARTH_RADIUS = 6.371e6;
           const REGIMES = [
-            // [altitude range (m), weight, color]
-            [[400.0e3, 2000.0e3], 0.6, Cesium.Color.CYAN], // LEO
-            [[19000.0e3, 21000.0e3], 0.25, Cesium.Color.YELLOW], // MEO
-            [[35786.0e3, 35786.0e3], 0.15, Cesium.Color.MAGENTA], // GEO
+            // [altitude range (m), weight, [r, g, b]]
+            [[400.0e3, 2000.0e3], 0.6, [0.0, 1.0, 1.0]], // LEO — cyan
+            [[19000.0e3, 21000.0e3], 0.25, [1.0, 1.0, 0.0]], // MEO — yellow
+            [[35786.0e3, 35786.0e3], 0.15, [1.0, 0.0, 1.0]], // GEO — magenta
           ];
 
           for (let i = 0; i < count; i++) {
@@ -115,15 +184,20 @@
             const [altRange, , color] = regime;
             const altitude = altRange[0] + Math.random() * (altRange[1] - altRange[0]);
             const isGEO = regime === REGIMES[2];
-            catalog.add({
-              semiMajorAxis: EARTH_RADIUS + altitude,
+            const semiMajorAxis = EARTH_RADIUS + altitude;
+            catalog.addInstance([
+              semiMajorAxis,
               // GEO objects cluster near the equatorial plane.
-              inclination: isGEO ? Math.random() * 0.1 : Math.random() * Math.PI,
-              raan: Math.random() * 2.0 * Math.PI,
-              phase: Math.random() * 2.0 * Math.PI,
-              color: color,
-              pixelSize: 3,
-            });
+              isGEO ? Math.random() * 0.1 : Math.random() * Math.PI,
+              Math.random() * 2.0 * Math.PI, // raan
+              Math.random() * 2.0 * Math.PI, // phase
+              Math.sqrt(GM / (semiMajorAxis * semiMajorAxis * semiMajorAxis)),
+              0.0, // epochOffset
+              color[0],
+              color[1],
+              color[2],
+              3.0, // pixelSize
+            ]);
           }
         }
 

@@ -1,32 +1,43 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU Orbital Catalog Renderer — Phase 3 of the Large Dynamic Objects
- * roadmap (NEW-ORBITAL-GPU-RESIDENT-RENDERER).
+ * WebGPU Compute-Instance Renderer — the feature-agnostic GPU-resident
+ * instance system (NEW-COMPUTE-INSTANCE-SYSTEM; Phase 3 of the Large
+ * Dynamic Objects roadmap, generalized in Batch 231 from the Batch-230
+ * catalog renderer).
  *
- * GPU-resident rendering for `OrbitalCatalogCollection`: the element
- * catalog (circular-orbit elements + color/size per object) is uploaded
- * ONCE to a read-only storage buffer; every frame a compute dispatch
- * (`OrbitalPropagate.wgsl`, one invocation per object) writes propagated
- * positions as RTE high/low pairs into a second storage buffer; the
- * instanced draw (`OrbitalCatalogRender.wgsl`) vertex-pulls
- * `positions[instance_index]` directly from that buffer. Object positions
- * never leave the GPU — the CPU's per-frame upload is the camera uniform
+ * GPU-resident rendering for `ComputeInstanceCollection`: the per-instance
+ * parameter floats (layout = the user's business) upload ONCE to a
+ * read-only storage buffer; every frame a compute dispatch (one invocation
+ * per instance) runs the USER-SUPPLIED WGSL kernel and writes position
+ * (RTE high/low) + color + pixelSize into a second storage buffer; the
+ * instanced draw (`ComputeInstanceRender.wgsl`) vertex-pulls
+ * `instances[instance_index]` directly from that buffer. Instance state
+ * never leaves the GPU — the CPU's per-frame upload is the camera uniform
  * block plus ONE scalar (simulation time).
  *
- * What's shipped in this batch (230):
- *   - circular-orbit compute propagation + instanced storage-pull draw
- *   - catalog dirty upload (re-upload only when the collection changes)
- *   - scene-FB pipeline with baked MSAA sample count (cloud Batch-228 rule)
- * Currently deferred (tracked in DEFERRED_WORK.md):
- *   - J2/SGP4 kernels (NEW-ORBITAL-J2-KERNEL / NEW-ORBITAL-SGP4-KERNEL)
- *   - Earth-rotation (GMST) so RAAN is truly inertial
- *   - WebGL2 fallback (NEW-ORBITAL-SGP4-WASM-WORKER)
- *   - picking (NEW-ORBITAL-GPU-PICKING) and TAA motion vectors
+ * Kernel composition (UserPostProcessStage-style, see that file for the
+ * precedent): the compute module is composed at pipeline build as
+ *
+ *     <generated prologue: const FLOATS_PER_INSTANCE>
+ *   + ComputeInstanceScaffold.wgsl   (bindings + entry point + bounds
+ *                                     check + RTE split/write)
+ *   + <user kernel defining csm_computeInstance>
+ *
+ * Composed modules are cached per composed-source string in a per-device
+ * map (kernels are per-collection, low cardinality) — NOT in
+ * `WebGPUShaderModuleCache`, whose (sourceId, defines) key can't represent
+ * arbitrary user strings. The static render module still goes through the
+ * sourceId cache (`ShaderSourceId.COMPUTE_INSTANCE_RENDER`).
+ *
+ * Currently deferred (tracked in DEFERRED_WORK.md, NEW-COMPUTE-INSTANCE-*):
+ *   - df64 kernel math (RTE low part is always 0)
+ *   - WebGL2 fallback (worker/WASM kernel host)
+ *   - picking, TAA motion vectors, command boundingVolume cull
  *
  * Compute scheduling mirrors `WebGPUWeatherRenderer`: the dispatch is
  * recorded on its OWN command encoder and submitted immediately during the
  * collection's update — queue submission order guarantees it executes
- * before the scene's render submit that consumes the positions buffer.
+ * before the scene's render submit that consumes the instance buffer.
  *
  * @private
  */
@@ -36,8 +47,8 @@ import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
-import OrbitalPropagateWGSL from "../../Shaders/WebGPU/Compute/OrbitalPropagate.js";
-import OrbitalCatalogRenderWGSL from "../../Shaders/WebGPU/Compute/OrbitalCatalogRender.js";
+import ComputeInstanceScaffoldWGSL from "../../Shaders/WebGPU/Compute/ComputeInstanceScaffold.js";
+import ComputeInstanceRenderWGSL from "../../Shaders/WebGPU/Compute/ComputeInstanceRender.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -53,56 +64,102 @@ import type {
 } from "./WebGPURenderPipelineCache.js";
 
 // Per-device shader module cache so two contexts (split-screen) share the
-// compiled modules (C-R7-SHADER-MODULE-DEDUP pattern).
-const _orbitalShaderModuleCaches = new WeakMap<
+// compiled modules (C-R7-SHADER-MODULE-DEDUP pattern). Holds the STATIC
+// render module only.
+const _renderShaderModuleCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
 >();
 
-function getOrbitalShaderModuleCache(
+function getRenderShaderModuleCache(
   device: GPUDevice,
 ): WebGPUShaderModuleCache {
-  let cache = _orbitalShaderModuleCaches.get(device);
+  let cache = _renderShaderModuleCaches.get(device);
   if (!cache) {
     cache = new WebGPUShaderModuleCache(device);
-    _orbitalShaderModuleCaches.set(device, cache);
+    _renderShaderModuleCaches.set(device, cache);
   }
   return cache;
 }
 
-// Element record: 8 × 4 bytes. MUST match `OrbitalElement` in both WGSL
-// files and the pack loop below.
-const ELEMENT_FLOATS = 8;
-const ELEMENT_BYTES = ELEMENT_FLOATS * 4;
-// PositionHL: two vec3<f32> at 16-byte alignment = 32 bytes.
-const POSITION_BYTES = 32;
-// CameraUniforms: mat4 + vec2 + pads + 2×(vec3+pad) + mat4 = 176 bytes.
-const CAMERA_UNIFORM_FLOATS = 44;
-const PROPAGATE_WORKGROUP_SIZE = 64;
+// Per-device cache of COMPOSED user-kernel compute modules, keyed by the
+// full composed source string (collision-free content key; kernels are
+// per-collection so cardinality stays low).
+const _composedModuleCaches = new WeakMap<
+  GPUDevice,
+  Map<string, GPUShaderModule>
+>();
 
-interface OrbitalElementRecord {
-  semiMajorAxis: number;
-  inclination: number;
-  raan: number;
-  phase: number;
-  meanMotion: number;
-  epochOffset: number;
-  color: { red: number; green: number; blue: number; alpha: number };
-  pixelSize: number;
+function getOrCreateComposedModule(
+  device: GPUDevice,
+  composedSource: string,
+  label: string,
+): GPUShaderModule {
+  let cache = _composedModuleCaches.get(device);
+  if (!cache) {
+    cache = new Map();
+    _composedModuleCaches.set(device, cache);
+  }
+  let module = cache.get(composedSource);
+  if (!module) {
+    module = device.createShaderModule({ label, code: composedSource });
+    cache.set(composedSource, module);
+  }
+  return module;
 }
 
-interface OrbitalCatalogCache {
+// FNV-1a 32-bit — used only for human-readable module labels and pipeline
+// cache names (the module cache itself keys on the full source string).
+function fnv1a32(str: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Compose the final compute module source. The scaffold owns bindings,
+ * entry point, bounds check, and the RTE high/low split + write; the
+ * prologue injects `FLOATS_PER_INSTANCE`; the user kernel supplies
+ * `csm_computeInstance`. WGSL module-scope declarations are
+ * order-independent, so concatenation order is purely cosmetic.
+ */
+function composeKernelSource(
+  kernel: string,
+  floatsPerInstance: number,
+): string {
+  return (
+    `// ── engine prologue (generated per collection) ──\n` +
+    `const FLOATS_PER_INSTANCE: u32 = ${floatsPerInstance >>> 0}u;\n\n` +
+    `${ComputeInstanceScaffoldWGSL}\n` +
+    `// ── user kernel ──\n` +
+    `${kernel}\n`
+  );
+}
+
+// Per-instance float lanes are raw f32s: stride = floatsPerInstance * 4.
+// InstanceRecord (scaffold/render output): vec3+pad, vec3+pad, vec4,
+// f32+12 pad = 64 bytes. MUST match `CsmInstanceRecord` /
+// `InstanceRecord` in the two WGSL files.
+const INSTANCE_RECORD_BYTES = 64;
+// CameraUniforms: mat4 + vec2 + pads + 2×(vec3+pad) + mat4 = 176 bytes.
+const CAMERA_UNIFORM_FLOATS = 44;
+const COMPUTE_WORKGROUP_SIZE = 64;
+
+interface ComputeInstanceCache {
   initialized: boolean;
   // Compute side
   computePipeline: GPUComputePipeline | null;
   computeBindGroupLayout: GPUBindGroupLayout | null;
   computeBindGroup: GPUBindGroup | null;
+  frameParamsBuffer: GPUBuffer | null;
+  frameParamsData: Float32Array;
+  // Instance buffers
   paramsBuffer: GPUBuffer | null;
-  paramsData: Float32Array;
-  // Catalog buffers
-  elementBuffer: GPUBuffer | null;
-  positionBuffer: GPUBuffer | null;
-  elementCount: number;
+  instanceBuffer: GPUBuffer | null;
+  instanceCount: number;
   // Render side
   quadVertexBuffer: GPUBuffer | null;
   cameraUniformBuffer: GPUBuffer | null;
@@ -124,7 +181,7 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
   // [-1,1] quad, 2 triangles, 6 vertices — same shape as the cloud quad.
   const v = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
   const buf = device.createBuffer({
-    label: "OrbitalCatalog quad VB",
+    label: "ComputeInstance quad VB",
     size: v.byteLength,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
@@ -132,43 +189,30 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
   return buf;
 }
 
-function packColorRGBA8(c: {
-  red: number;
-  green: number;
-  blue: number;
-  alpha: number;
-}): number {
-  const r = Math.max(0, Math.min(255, Math.round((c.red ?? 1) * 255)));
-  const g = Math.max(0, Math.min(255, Math.round((c.green ?? 1) * 255)));
-  const b = Math.max(0, Math.min(255, Math.round((c.blue ?? 1) * 255)));
-  const a = Math.max(0, Math.min(255, Math.round((c.alpha ?? 1) * 255)));
-  // r in the low byte — matches WGSL unpack4x8unorm component order.
-  return (r | (g << 8) | (b << 16) | (a << 24)) >>> 0;
-}
-
 /**
- * Pack the collection's element records into the GPU element layout and
- * upload. Runs only when the catalog is dirty (add/remove/edit) — NOT per
- * frame.
+ * Upload the collection's flat per-instance parameter lanes. Runs only
+ * when the collection is dirty (add/edit/removeAll) — NOT per frame.
+ * Recreates the GPU buffers (and invalidates dependent bind groups +
+ * command) when the instance count changes.
  */
-function uploadCatalog(
+function uploadParams(
   device: GPUDevice,
-  cache: OrbitalCatalogCache,
-  records: OrbitalElementRecord[],
+  cache: ComputeInstanceCache,
+  paramsData: Float32Array,
+  count: number,
+  floatsPerInstance: number,
 ): void {
-  const count = records.length;
-
-  if (count !== cache.elementCount) {
-    cache.elementBuffer?.destroy();
-    cache.positionBuffer?.destroy();
-    cache.elementBuffer = device.createBuffer({
-      label: "OrbitalCatalog elements",
-      size: Math.max(count * ELEMENT_BYTES, ELEMENT_BYTES),
+  if (count !== cache.instanceCount) {
+    cache.paramsBuffer?.destroy();
+    cache.instanceBuffer?.destroy();
+    cache.paramsBuffer = device.createBuffer({
+      label: "ComputeInstance params",
+      size: Math.max(count * floatsPerInstance, 4) * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    cache.positionBuffer = device.createBuffer({
-      label: "OrbitalCatalog positions",
-      size: Math.max(count * POSITION_BYTES, POSITION_BYTES),
+    cache.instanceBuffer = device.createBuffer({
+      label: "ComputeInstance records",
+      size: Math.max(count * INSTANCE_RECORD_BYTES, INSTANCE_RECORD_BYTES),
       usage: GPUBufferUsage.STORAGE,
     });
     // Buffer identity changed — bind groups and the draw command must be
@@ -176,25 +220,18 @@ function uploadCatalog(
     cache.computeBindGroup = null;
     cache.renderBindGroup = null;
     cache.command = null;
-    cache.elementCount = count;
+    cache.instanceCount = count;
   }
 
-  const data = new ArrayBuffer(Math.max(count, 1) * ELEMENT_BYTES);
-  const f32 = new Float32Array(data);
-  const u32 = new Uint32Array(data);
-  for (let i = 0; i < count; i++) {
-    const e = records[i];
-    const off = i * ELEMENT_FLOATS;
-    f32[off] = e.semiMajorAxis;
-    f32[off + 1] = e.inclination;
-    f32[off + 2] = e.raan;
-    f32[off + 3] = e.phase;
-    f32[off + 4] = e.meanMotion;
-    f32[off + 5] = e.epochOffset;
-    u32[off + 6] = packColorRGBA8(e.color);
-    f32[off + 7] = e.pixelSize;
+  if (count > 0) {
+    device.queue.writeBuffer(
+      cache.paramsBuffer!,
+      0,
+      paramsData,
+      0,
+      count * floatsPerInstance,
+    );
   }
-  device.queue.writeBuffer(cache.elementBuffer!, 0, data);
 }
 
 /**
@@ -204,7 +241,7 @@ function uploadCatalog(
 function tryResolveRenderPipeline(
   device: GPUDevice,
   pipelineCache: WebGPURenderPipelineCache | null | undefined,
-  cache: OrbitalCatalogCache,
+  cache: ComputeInstanceCache,
 ): boolean {
   if (cache.renderPipeline) {
     return true;
@@ -259,56 +296,60 @@ function tryResolveRenderPipeline(
   return true;
 }
 
-function initializeOrbitalResources(
+function initializeComputeInstanceResources(
   context: CesiumGraphicsContext,
   device: GPUDevice,
-  cache: OrbitalCatalogCache,
+  cache: ComputeInstanceCache,
   sceneFormat: GPUTextureFormat,
+  kernel: string,
+  floatsPerInstance: number,
 ): void {
-  const moduleCache = getOrbitalShaderModuleCache(device);
-  const computeModule = moduleCache.getOrCreate(
-    ShaderSourceId.ORBITAL_PROPAGATE_COMPUTE,
-    OrbitalPropagateWGSL,
-    0,
-    "OrbitalPropagate compute",
+  const composedSource = composeKernelSource(kernel, floatsPerInstance);
+  const kernelTag = `fpi=${floatsPerInstance}/k=${fnv1a32(composedSource)}-${composedSource.length}`;
+  const computeModule = getOrCreateComposedModule(
+    device,
+    composedSource,
+    `ComputeInstance kernel [${kernelTag}]`,
   );
-  const renderModule = moduleCache.getOrCreate(
-    ShaderSourceId.ORBITAL_CATALOG_RENDER,
-    OrbitalCatalogRenderWGSL,
+  const renderModule = getRenderShaderModuleCache(device).getOrCreate(
+    ShaderSourceId.COMPUTE_INSTANCE_RENDER,
+    ComputeInstanceRenderWGSL,
     0,
-    "OrbitalCatalog render",
+    "ComputeInstance render",
   );
 
   // ── Compute pipeline ──
   cache.computeBindGroupLayout = makeBindGroupLayout(
     device,
-    "OrbitalCatalog compute BGL",
+    "ComputeInstance compute BGL",
     [
-      storageBuffer(0, Stage.COMPUTE, { readOnly: true }), // elements
-      storageBuffer(1, Stage.COMPUTE), // positions (read_write)
-      uniformBuffer(2, Stage.COMPUTE), // params
+      storageBuffer(0, Stage.COMPUTE, { readOnly: true }), // params
+      storageBuffer(1, Stage.COMPUTE), // instance records (read_write)
+      uniformBuffer(2, Stage.COMPUTE), // frame params (time + count)
     ],
   );
   const computeLayout = device.createPipelineLayout({
     bindGroupLayouts: [cache.computeBindGroupLayout],
   });
+  // The kernel tag is keyed into the name so the central cache never
+  // aliases pipelines built from different user kernels.
   const computePipelineCache = context.webgpuComputePipelineCache ?? null;
   if (computePipelineCache) {
     cache.computePipeline = computePipelineCache.getOrCreateSync({
-      name: "OrbitalCatalog propagate",
+      name: `ComputeInstance dispatch [${kernelTag}]`,
       layout: computeLayout,
-      compute: { module: computeModule, entryPoint: "propagate" },
+      compute: { module: computeModule, entryPoint: "computeInstanceMain" },
     });
   } else {
     cache.computePipeline = device.createComputePipeline({
-      label: "OrbitalCatalog propagate",
+      label: `ComputeInstance dispatch [${kernelTag}]`,
       layout: computeLayout,
-      compute: { module: computeModule, entryPoint: "propagate" },
+      compute: { module: computeModule, entryPoint: "computeInstanceMain" },
     });
   }
 
-  cache.paramsBuffer = device.createBuffer({
-    label: "OrbitalCatalog propagate params",
+  cache.frameParamsBuffer = device.createBuffer({
+    label: "ComputeInstance frame params",
     size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
@@ -316,11 +357,10 @@ function initializeOrbitalResources(
   // ── Render pipeline (descriptor — materialized via the central cache) ──
   cache.renderBindGroupLayout = makeBindGroupLayout(
     device,
-    "OrbitalCatalog render BGL",
+    "ComputeInstance render BGL",
     [
       uniformBuffer(0, Stage.VERTEX), // camera
-      storageBuffer(1, Stage.VERTEX, { readOnly: true }), // positions
-      storageBuffer(2, Stage.VERTEX, { readOnly: true }), // elements
+      storageBuffer(1, Stage.VERTEX, { readOnly: true }), // instance records
     ],
   );
 
@@ -331,7 +371,7 @@ function initializeOrbitalResources(
   const sampleCount =
     (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
   cache.renderPipelineDescriptor = {
-    name: `OrbitalCatalog pipeline [${sceneFormat}/ms=${sampleCount}]`,
+    name: `ComputeInstance pipeline [${sceneFormat}/ms=${sampleCount}]`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [cache.renderBindGroupLayout],
     }),
@@ -376,7 +416,7 @@ function initializeOrbitalResources(
 
   cache.quadVertexBuffer = createQuadVB(device);
   cache.cameraUniformBuffer = device.createBuffer({
-    label: "OrbitalCatalog camera UB",
+    label: "ComputeInstance camera UB",
     size: 256,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
@@ -385,15 +425,15 @@ function initializeOrbitalResources(
 }
 
 /**
- * Per-frame update: upload catalog when dirty, write the time uniform,
- * dispatch the propagation compute, and push the instanced draw command.
+ * Per-frame update: upload params when dirty, write the time uniform,
+ * dispatch the user kernel, and push the instanced draw command.
  *
  * Simulation time arrives via `collection._simulationTimeSeconds`, which
- * `OrbitalCatalogCollection.update()` derives from `frameState.time`
+ * `ComputeInstanceCollection.update()` derives from `frameState.time`
  * relative to the collection's epoch BEFORE routing to this renderer
  * (scene-logic-extractor pattern — the time source is backend-agnostic).
  */
-function updateWebGPUOrbitalCatalog(
+function updateWebGPUComputeInstanceCollection(
   collection: CesiumObjectWithWebGPUCache,
   frameState: CesiumFrameState,
 ): void {
@@ -403,9 +443,18 @@ function updateWebGPUOrbitalCatalog(
     return;
   }
 
-  const records =
-    (collection._objects as OrbitalElementRecord[] | undefined) ?? [];
-  if (collection.show === false || records.length === 0) {
+  const count = (collection.length as number | undefined) ?? 0;
+  const kernel = collection._kernel as string | undefined;
+  const floatsPerInstance =
+    (collection._floatsPerInstance as number | undefined) ?? 0;
+  const paramsData = collection._paramsData as Float32Array | undefined;
+  if (
+    collection.show === false ||
+    count === 0 ||
+    !kernel ||
+    floatsPerInstance < 1 ||
+    !paramsData
+  ) {
     return;
   }
 
@@ -415,11 +464,11 @@ function updateWebGPUOrbitalCatalog(
       computePipeline: null,
       computeBindGroupLayout: null,
       computeBindGroup: null,
+      frameParamsBuffer: null,
+      frameParamsData: new Float32Array(4),
       paramsBuffer: null,
-      paramsData: new Float32Array(4),
-      elementBuffer: null,
-      positionBuffer: null,
-      elementCount: -1,
+      instanceBuffer: null,
+      instanceCount: -1,
       quadVertexBuffer: null,
       cameraUniformBuffer: null,
       cameraUniformData: new Float32Array(CAMERA_UNIFORM_FLOATS),
@@ -431,7 +480,7 @@ function updateWebGPUOrbitalCatalog(
       command: null,
     } as unknown as CesiumOpaqueObject;
   }
-  const cache = collection._webgpuCache as unknown as OrbitalCatalogCache;
+  const cache = collection._webgpuCache as unknown as ComputeInstanceCache;
 
   // Scene-FB format + generation tracking (Batch 110 pattern) — HDR mode
   // targets rgba16float instead of canvas bgra8unorm.
@@ -455,25 +504,29 @@ function updateWebGPUOrbitalCatalog(
   }
 
   if (!cache.initialized) {
-    initializeOrbitalResources(context, device, cache, sceneFormat);
+    initializeComputeInstanceResources(
+      context,
+      device,
+      cache,
+      sceneFormat,
+      kernel,
+      floatsPerInstance,
+    );
     cache._pipelineFormatGeneration = sceneGen;
   }
 
-  // Catalog upload — only when the collection reports dirty (or the count
-  // drifted, which covers external mutation of the records array).
-  if (
-    collection._catalogDirty === true ||
-    cache.elementCount !== records.length
-  ) {
-    uploadCatalog(device, cache, records);
+  // Params upload — only when the collection reports dirty (or the count
+  // drifted, which covers external mutation of the backing array).
+  if (collection._catalogDirty === true || cache.instanceCount !== count) {
+    uploadParams(device, cache, paramsData, count, floatsPerInstance);
   }
   // Phase-0 dirty-consume discipline: clear the collection's dirty state
-  // every frame on the WebGPU path so settled catalogs never re-upload.
+  // every frame on the WebGPU path so settled collections never re-upload.
   if (typeof collection._consumeDirtyState === "function") {
     collection._consumeDirtyState();
   }
 
-  if (cache.elementCount === 0) {
+  if (cache.instanceCount === 0) {
     return;
   }
 
@@ -489,43 +542,43 @@ function updateWebGPUOrbitalCatalog(
   // (Re)build bind groups when buffers changed.
   if (!cache.computeBindGroup) {
     cache.computeBindGroup = device.createBindGroup({
-      label: "OrbitalCatalog compute BG",
+      label: "ComputeInstance compute BG",
       layout: cache.computeBindGroupLayout!,
       entries: [
-        { binding: 0, resource: { buffer: cache.elementBuffer! } },
-        { binding: 1, resource: { buffer: cache.positionBuffer! } },
-        { binding: 2, resource: { buffer: cache.paramsBuffer! } },
+        { binding: 0, resource: { buffer: cache.paramsBuffer! } },
+        { binding: 1, resource: { buffer: cache.instanceBuffer! } },
+        { binding: 2, resource: { buffer: cache.frameParamsBuffer! } },
       ],
     });
   }
   if (!cache.renderBindGroup) {
     cache.renderBindGroup = device.createBindGroup({
-      label: "OrbitalCatalog render BG",
+      label: "ComputeInstance render BG",
       layout: cache.renderBindGroupLayout!,
       entries: [
         { binding: 0, resource: { buffer: cache.cameraUniformBuffer! } },
-        { binding: 1, resource: { buffer: cache.positionBuffer! } },
-        { binding: 2, resource: { buffer: cache.elementBuffer! } },
+        { binding: 1, resource: { buffer: cache.instanceBuffer! } },
       ],
     });
     cache.command = null;
   }
 
-  // ── Per-frame CPU upload #1: ONE time scalar (+ object count) ──
+  // ── Per-frame CPU upload #1: ONE time scalar (+ instance count) ──
   const simTime = (collection._simulationTimeSeconds as number) ?? 0;
-  const params = cache.paramsData;
-  params[0] = simTime;
-  new Uint32Array(params.buffer)[1] = cache.elementCount;
-  device.queue.writeBuffer(cache.paramsBuffer!, 0, params);
+  const frameParams = cache.frameParamsData;
+  frameParams[0] = simTime;
+  new Uint32Array(frameParams.buffer)[1] = cache.instanceCount;
+  device.queue.writeBuffer(cache.frameParamsBuffer!, 0, frameParams);
 
-  // Dispatch propagation on its own encoder (weather pattern) — submitted
-  // now, so queue order places it before the scene's render submit.
-  const workgroups = Math.ceil(cache.elementCount / PROPAGATE_WORKGROUP_SIZE);
+  // Dispatch the user kernel on its own encoder (weather pattern) —
+  // submitted now, so queue order places it before the scene's render
+  // submit.
+  const workgroups = Math.ceil(cache.instanceCount / COMPUTE_WORKGROUP_SIZE);
   const encoder = device.createCommandEncoder({
-    label: "OrbitalCatalog propagate",
+    label: "ComputeInstance dispatch",
   });
   const pass = encoder.beginComputePass({
-    label: "OrbitalCatalog propagate pass",
+    label: "ComputeInstance dispatch pass",
   });
   pass.setPipeline(cache.computePipeline!);
   pass.setBindGroup(0, cache.computeBindGroup);
@@ -585,7 +638,7 @@ function updateWebGPUOrbitalCatalog(
       bindGroups: [cache.renderBindGroup!],
       vertexBuffers: [cache.quadVertexBuffer!],
       vertexCount: 6,
-      instanceCount: cache.elementCount,
+      instanceCount: cache.instanceCount,
       pass: Pass.TRANSLUCENT,
     });
   }
@@ -593,25 +646,28 @@ function updateWebGPUOrbitalCatalog(
   frameState.commandList.push(cache.command);
 }
 
-function destroyWebGPUOrbitalCatalogResources(
+function destroyWebGPUComputeInstanceResources(
   collection: CesiumObjectWithWebGPUCache,
 ): void {
   const cache = collection._webgpuCache as unknown as
-    | OrbitalCatalogCache
+    | ComputeInstanceCache
     | undefined;
   if (!cache) {
     return;
   }
-  cache.elementBuffer?.destroy();
-  cache.positionBuffer?.destroy();
   cache.paramsBuffer?.destroy();
+  cache.instanceBuffer?.destroy();
+  cache.frameParamsBuffer?.destroy();
   cache.quadVertexBuffer?.destroy();
   cache.cameraUniformBuffer?.destroy();
   collection._webgpuCache = undefined;
 }
 
-export { updateWebGPUOrbitalCatalog, destroyWebGPUOrbitalCatalogResources };
+export {
+  updateWebGPUComputeInstanceCollection,
+  destroyWebGPUComputeInstanceResources,
+};
 export default {
-  updateWebGPUOrbitalCatalog,
-  destroyWebGPUOrbitalCatalogResources,
+  updateWebGPUComputeInstanceCollection,
+  destroyWebGPUComputeInstanceResources,
 };

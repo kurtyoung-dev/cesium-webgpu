@@ -44,12 +44,13 @@ import {
   updateWebGPUBufferPointCollection,
   destroyWebGPUBufferPointCollection,
 } from "./WebGPUBufferPrimitiveRenderer.js";
-// Phase 3 (Batch 230) — GPU-resident orbital catalog (compute propagation
+// Phase 3 (Batch 231, generalized from the Batch-230 orbital catalog) —
+// GPU-resident compute-instance system (user WGSL kernel dispatch
 // → storage buffer → instanced vertex-pull draw).
 import {
-  updateWebGPUOrbitalCatalog,
-  destroyWebGPUOrbitalCatalogResources,
-} from "./WebGPUOrbitalCatalogRenderer.js";
+  updateWebGPUComputeInstanceCollection,
+  destroyWebGPUComputeInstanceResources,
+} from "./WebGPUComputeInstanceRenderer.js";
 
 // ── Primitive system ──
 import {
@@ -286,13 +287,14 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
-  // ── GPU-resident orbital catalog (Phase 3, Batch 230) ──
-  // Compute-propagated circular orbits; positions never leave the GPU.
+  // ── GPU-resident compute-instance collection (Phase 3, Batch 231) ──
+  // User-supplied WGSL kernel repopulates the instance buffer each frame;
+  // positions never leave the GPU.
   context.registerFeatureRenderer(
-    FeatureRendererKey.ORBITAL_CATALOG_COLLECTION,
+    FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
     {
-      update: updateWebGPUOrbitalCatalog,
-      destroy: destroyWebGPUOrbitalCatalogResources,
+      update: updateWebGPUComputeInstanceCollection,
+      destroy: destroyWebGPUComputeInstanceResources,
     },
   );
 

@@ -1,12 +1,15 @@
 #!/usr/bin/env node
-// Probe (Phase 3 — NEW-ORBITAL-GPU-RESIDENT-RENDERER +
-// NEW-ORBITAL-CATALOG-COLLECTION verify): the GPU-resident orbital catalog
+// Probe (Phase 3 — NEW-COMPUTE-INSTANCE-SYSTEM regression gate; formerly
+// the Batch-230 NEW-ORBITAL-GPU-RESIDENT-RENDERER verify): the orbital
+// catalog built ON TOP of the generic `ComputeInstanceCollection` — the
+// circular-orbit element layout + WGSL kernel are defined IN THIS PROBE,
+// exactly like the Sandcastle demo; the engine has zero orbital knowledge —
 // must
 //   (A) RENDER — ~2000 magenta points (varied circular orbits across three
 //       shells) produce a magenta pixel count over threshold from a 35 Mm
 //       camera,
-//   (B) MOVE — positions are propagated by the compute kernel from the
-//       per-frame time scalar alone (catalog uploads once). The magenta
+//   (B) MOVE — positions are repopulated by the user compute kernel from
+//       the per-frame time scalar alone (params upload once). The magenta
 //       pixel mask at frame ~15 vs frame ~60 must differ substantially
 //       (>20% of mask pixels change) while the camera stays fixed,
 //   (C) produce ZERO console errors (incl. WebGPU validation errors).
@@ -67,23 +70,74 @@ const out = await page.evaluate(async () => {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 
-  const catalog = scene.primitives.add(new C.OrbitalCatalogCollection());
+  // Orbital element layout + circular-orbit kernel are PROBE-owned content
+  // (the engine is feature-agnostic). Lanes: 0 semiMajorAxis(m),
+  // 1 inclination(rad), 2 raan(rad), 3 phase(rad), 4 meanMotion(rad/s),
+  // 5 epochOffset(s), 6-8 color rgb, 9 pixelSize(px). Kernel math ported
+  // verbatim from the Batch-230 engine OrbitalPropagate.wgsl (f32, low=0
+  // handled by the engine scaffold, ECI treated as ECEF / GMST skipped).
+  const FPI = 10;
+  const orbitalKernel = `
+    fn csm_computeInstance(index: u32, time: f32) -> ComputeInstanceOut {
+      let base = index * FLOATS_PER_INSTANCE;
+      let a = params[base + 0u];
+      let inc = params[base + 1u];
+      let raan = params[base + 2u];
+      let phase = params[base + 3u];
+      let meanMotion = params[base + 4u];
+      let epochOffset = params[base + 5u];
+
+      let t = time - epochOffset;
+      let angle = phase + meanMotion * t;
+      let xp = a * cos(angle);
+      let yp = a * sin(angle);
+
+      let ci = cos(inc);
+      let si = sin(inc);
+      let co = cos(raan);
+      let so = sin(raan);
+
+      var out: ComputeInstanceOut;
+      out.position = vec3<f32>(
+        xp * co - yp * ci * so,
+        xp * so + yp * ci * co,
+        yp * si,
+      );
+      out.color = vec4<f32>(params[base + 6u], params[base + 7u], params[base + 8u], 1.0);
+      out.pixelSize = params[base + 9u];
+      return out;
+    }`;
+
+  const catalog = scene.primitives.add(
+    new C.ComputeInstanceCollection({
+      kernel: orbitalKernel,
+      floatsPerInstance: FPI,
+    }),
+  );
   const epoch = C.JulianDate.clone(v.clock.currentTime);
   catalog.epoch = epoch;
 
   // ~2000 objects over three shells (LEO-ish, MEO-ish, GEO-ish radii).
-  // meanMotion defaults to the physical circular rate sqrt(GM/a^3).
+  // meanMotion is the physical circular rate sqrt(GM/a^3). Same seeded
+  // catalog as the Batch-230 baseline — the regression gate's pixel
+  // numbers must stay equivalent.
+  const GM = 3.986004418e14;
   const SHELLS = [7.0e6, 1.2e7, 2.0e7];
   const COUNT = 2000;
   for (let i = 0; i < COUNT; i++) {
-    catalog.add({
-      semiMajorAxis: SHELLS[i % SHELLS.length] * (1.0 + 0.05 * rand()),
-      inclination: rand() * Math.PI,
-      raan: rand() * 2.0 * Math.PI,
-      phase: rand() * 2.0 * Math.PI,
-      color: C.Color.MAGENTA,
-      pixelSize: 4,
-    });
+    const a = SHELLS[i % SHELLS.length] * (1.0 + 0.05 * rand());
+    catalog.addInstance([
+      a,
+      rand() * Math.PI, // inclination
+      rand() * 2.0 * Math.PI, // raan
+      rand() * 2.0 * Math.PI, // phase
+      Math.sqrt(GM / (a * a * a)), // meanMotion
+      0.0, // epochOffset
+      1.0, // r  (magenta)
+      0.0, // g
+      1.0, // b
+      4.0, // pixelSize
+    ]);
   }
 
   // Camera: 35 Mm out on +X, looking at Earth's center — all three shells
