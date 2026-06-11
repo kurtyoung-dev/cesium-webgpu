@@ -1014,6 +1014,16 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     labelCollection,
   );
 
+  // Consume the glyph collection's dirty-tracking state now that this frame's
+  // SDF instance data is captured. The glyph collection is a BillboardCollection
+  // driven through `prepareForFeatureRenderer` (updateMode + readiness loop) but
+  // rendered by THIS SDF path, not the billboard FR — so without this its
+  // `_createVertexArray` / per-glyph `textureDirty` stay set and every glyph is
+  // re-dirtied every frame (the same per-frame re-touch fixed for billboards in
+  // step 0). The background billboards already consume via the billboard FR.
+  // (NEW-COLLECTIONS-DIRTY-GATE step 0 — labels.)
+  glyphCollection._consumeDirtyState();
+
   if (visibleCount === 0) {
     return;
   }
