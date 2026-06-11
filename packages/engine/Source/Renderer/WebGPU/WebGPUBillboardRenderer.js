@@ -42,6 +42,8 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
+import SceneMode from "../../Scene/SceneMode.js";
 
 // Per-instance stride. Batch 135 carried 7 vec4 (28 floats) for
 // DP-H42/H40 + DISTANCE_DISPLAY_CONDITION. Batch 136 (Audit A.14
@@ -147,152 +149,137 @@ function getShaderSource() {
 }
 
 /**
- * Build instance data from billboard collection.
+ * Visibility predicate shared by the resident-instance slot map, the pack
+ * loop, and the pick builder. clusterShow is false when EntityCluster has
+ * folded this billboard into a cluster glyph. Skipping these prevents the
+ * stack of overlapping icons that WebGL already avoids via the same read.
  * @private
  */
-function buildInstanceData(collection) {
-  const billboards = collection._billboards;
-  const length = collection.length;
-  const instanceData = new Float32Array(length * FLOATS_PER_INSTANCE);
-  let visibleCount = 0;
+function isBillboardVisible(bb) {
+  return defined(bb) && bb.show && bb._clusterShow !== false;
+}
 
-  for (let i = 0; i < length; i++) {
-    const bb = billboards[i];
-    // clusterShow is false when EntityCluster has folded this billboard into a
-    // cluster glyph. Skipping these prevents the stack of overlapping icons
-    // that WebGL already avoids via the same read.
-    if (!defined(bb) || !bb.show || bb._clusterShow === false) {
-      continue;
-    }
+/**
+ * Pack ONE billboard's 44-float instance record at `offset` floats into
+ * `out`. Extracted from the former whole-collection `buildInstanceData`
+ * loop (NEW-PARTIAL-WRITE-WIRE-BPL) so the resident-instance manager can
+ * re-pack a single changed slot without touching its neighbors. The pick
+ * builder reuses it and overwrites the color slot.
+ * @private
+ */
+function packBillboardInstance(out, offset, bb) {
+  const position = bb._actualPosition || bb._position || bb.position;
+  EncodedCartesian3.fromCartesian(position, scratchEncodedPos);
 
-    const offset = visibleCount * FLOATS_PER_INSTANCE;
-    const position = bb._actualPosition || bb._position || bb.position;
-    EncodedCartesian3.fromCartesian(position, scratchEncodedPos);
+  // posHighAndScale
+  out[offset + 0] = scratchEncodedPos.high.x;
+  out[offset + 1] = scratchEncodedPos.high.y;
+  out[offset + 2] = scratchEncodedPos.high.z;
+  out[offset + 3] = bb.scale || 1.0;
 
-    // posHighAndScale
-    instanceData[offset + 0] = scratchEncodedPos.high.x;
-    instanceData[offset + 1] = scratchEncodedPos.high.y;
-    instanceData[offset + 2] = scratchEncodedPos.high.z;
-    instanceData[offset + 3] = bb.scale || 1.0;
+  // posLowAndRotation
+  out[offset + 4] = scratchEncodedPos.low.x;
+  out[offset + 5] = scratchEncodedPos.low.y;
+  out[offset + 6] = scratchEncodedPos.low.z;
+  out[offset + 7] = bb.rotation || 0.0;
 
-    // posLowAndRotation
-    instanceData[offset + 4] = scratchEncodedPos.low.x;
-    instanceData[offset + 5] = scratchEncodedPos.low.y;
-    instanceData[offset + 6] = scratchEncodedPos.low.z;
-    instanceData[offset + 7] = bb.rotation || 0.0;
+  // compressedAttr0: pixelOffset.xy, alignedAxis.xy
+  // alignedAxis is a Cartesian3 world-space axis; billboard shader supports
+  // 2D eye-space rotation, so we project to the screen-plane components
+  // (x = east-west, y = up-down). Non-(0,0,0) axes orient the billboard
+  // around that world axis (e.g. flagpole pointing up, road chevrons
+  // pointing along a road vector).
+  const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
+  const alignedAxis = bb._alignedAxis;
+  out[offset + 8] = pixelOffset.x;
+  out[offset + 9] = pixelOffset.y;
+  out[offset + 10] = alignedAxis ? alignedAxis.x : 0.0;
+  out[offset + 11] = alignedAxis ? alignedAxis.y : 0.0;
 
-    // compressedAttr0: pixelOffset.xy, alignedAxis.xy
-    // alignedAxis is a Cartesian3 world-space axis; billboard shader supports
-    // 2D eye-space rotation, so we project to the screen-plane components
-    // (x = east-west, y = up-down). Non-(0,0,0) axes orient the billboard
-    // around that world axis (e.g. flagpole pointing up, road chevrons
-    // pointing along a road vector).
-    const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
-    const alignedAxis = bb._alignedAxis;
-    instanceData[offset + 8] = pixelOffset.x;
-    instanceData[offset + 9] = pixelOffset.y;
-    instanceData[offset + 10] = alignedAxis ? alignedAxis.x : 0.0;
-    instanceData[offset + 11] = alignedAxis ? alignedAxis.y : 0.0;
-
-    // compressedAttr1: imageRect (x,y,w,h in atlas, normalized)
-    const imageRect =
-      bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
-    if (defined(imageRect) && typeof imageRect === "object") {
-      instanceData[offset + 12] = imageRect.x || 0;
-      instanceData[offset + 13] = imageRect.y || 0;
-      instanceData[offset + 14] = imageRect.width || 1;
-      instanceData[offset + 15] = imageRect.height || 1;
-    } else {
-      instanceData[offset + 12] = 0.0;
-      instanceData[offset + 13] = 0.0;
-      instanceData[offset + 14] = 1.0;
-      instanceData[offset + 15] = 1.0;
-    }
-
-    // color
-    const color = bb.color;
-    instanceData[offset + 16] = color.red;
-    instanceData[offset + 17] = color.green;
-    instanceData[offset + 18] = color.blue;
-    instanceData[offset + 19] = color.alpha;
-
-    // miscFlags: show, sizeInMeters, width, height
-    instanceData[offset + 20] = 1.0; // show
-    instanceData[offset + 21] = bb.sizeInMeters ? 1.0 : 0.0;
-    instanceData[offset + 22] = bb.width || 32.0;
-    instanceData[offset + 23] = bb.height || 32.0;
-
-    // perInstanceFlags — DP-H42 / DP-H40 / A.14 per-billboard state.
-    //   x: disableDepthTestDistance (raw meters; squared in shader)
-    //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
-    //   z: distanceDisplayCondition.near^2 (squared meters; 0 if unset)
-    //   w: distanceDisplayCondition.far^2 (squared meters; +Inf if unset)
-    instanceData[offset + 24] = encodeDisableDepthTestDistance(
-      bb._disableDepthTestDistance,
-    );
-    instanceData[offset + 25] = bb._splitDirection ?? 0.0;
-    // AUDIT_2026_05_02 A.14 (Batch 135) — pack the squared near/far
-    // distance display window. WGSL gate compares squared eye distance
-    // against [near^2, far^2] (no sqrt). Default values match WebGL's
-    // `czm_nearFarScalar` semantics: near=0 / far=Infinity → always
-    // visible. The renderer also flips DISTANCE_DISPLAY_CONDITION on
-    // the pipeline key so the gate's runtime cost is paid only when
-    // any billboard in the collection actually sets a window.
-    const ddc = bb._distanceDisplayCondition;
-    if (ddc) {
-      const near = typeof ddc.near === "number" ? ddc.near : 0.0;
-      const far =
-        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
-      instanceData[offset + 26] = near * near;
-      instanceData[offset + 27] = isFinite(far) ? far * far : Number.MAX_VALUE;
-    } else {
-      instanceData[offset + 26] = 0.0;
-      instanceData[offset + 27] = Number.MAX_VALUE;
-    }
-
-    // AUDIT_2026_05_02 A.14 (Batch 136) — three NearFarScalar gates
-    // packed into vec4 slots 7/8/9. Identity is 1.0 for all three (each
-    // is multiplicative — alpha, pixel-offset scale, quad scale). The
-    // `packNearFarScalar` helper writes an identity-NFS when the user
-    // didn't set the property, so the shader's gate produces the
-    // unchanged baseline (alpha=1, scale=1) without needing a separate
-    // sentinel check.
-    packNearFarScalar(
-      instanceData,
-      offset + 28,
-      bb._translucencyByDistance,
-      1.0,
-    );
-    packNearFarScalar(
-      instanceData,
-      offset + 32,
-      bb._pixelOffsetScaleByDistance,
-      1.0,
-    );
-    packNearFarScalar(instanceData, offset + 36, bb._scaleByDistance, 1.0);
-
-    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointAttribs vec4:
-    //   .x = depthOrigin.x (-1 / 0 / +1, label horizontal anchor; 0 means
-    //         "inherit billboard origin" per WebGL convention).
-    //   .y = depthOrigin.y (-1 / 0 / +1, vertical anchor).
-    //   .z = enableDepthCheck (1.0 default; 0.0 means "skip the 3-point
-    //         check on this billboard" — used by WebGL when the billboard
-    //         is below the ellipsoid surface so the depth-check would
-    //         occlude it incorrectly).
-    //   .w = reserved.
-    // The Billboard primitive itself doesn't expose `depthOrigin` —
-    // it's a Label-only attribute. Default to (0, 0) so plain
-    // Billboards take the "inherit origin" path. Labels override via
-    // the LabelRenderer's instance data builder.
-    instanceData[offset + 40] = 0.0;
-    instanceData[offset + 41] = 0.0;
-    instanceData[offset + 42] = 1.0;
-    instanceData[offset + 43] = 0.0;
-
-    visibleCount++;
+  // compressedAttr1: imageRect (x,y,w,h in atlas, normalized)
+  const imageRect =
+    bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
+  if (defined(imageRect) && typeof imageRect === "object") {
+    out[offset + 12] = imageRect.x || 0;
+    out[offset + 13] = imageRect.y || 0;
+    out[offset + 14] = imageRect.width || 1;
+    out[offset + 15] = imageRect.height || 1;
+  } else {
+    out[offset + 12] = 0.0;
+    out[offset + 13] = 0.0;
+    out[offset + 14] = 1.0;
+    out[offset + 15] = 1.0;
   }
 
-  return { instanceData, visibleCount };
+  // color
+  const color = bb.color;
+  out[offset + 16] = color.red;
+  out[offset + 17] = color.green;
+  out[offset + 18] = color.blue;
+  out[offset + 19] = color.alpha;
+
+  // miscFlags: show, sizeInMeters, width, height
+  out[offset + 20] = 1.0; // show
+  out[offset + 21] = bb.sizeInMeters ? 1.0 : 0.0;
+  out[offset + 22] = bb.width || 32.0;
+  out[offset + 23] = bb.height || 32.0;
+
+  // perInstanceFlags — DP-H42 / DP-H40 / A.14 per-billboard state.
+  //   x: disableDepthTestDistance (raw meters; squared in shader)
+  //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
+  //   z: distanceDisplayCondition.near^2 (squared meters; 0 if unset)
+  //   w: distanceDisplayCondition.far^2 (squared meters; +Inf if unset)
+  out[offset + 24] = encodeDisableDepthTestDistance(
+    bb._disableDepthTestDistance,
+  );
+  out[offset + 25] = bb._splitDirection ?? 0.0;
+  // AUDIT_2026_05_02 A.14 (Batch 135) — pack the squared near/far
+  // distance display window. WGSL gate compares squared eye distance
+  // against [near^2, far^2] (no sqrt). Default values match WebGL's
+  // `czm_nearFarScalar` semantics: near=0 / far=Infinity → always
+  // visible. The renderer also flips DISTANCE_DISPLAY_CONDITION on
+  // the pipeline key so the gate's runtime cost is paid only when
+  // any billboard in the collection actually sets a window.
+  const ddc = bb._distanceDisplayCondition;
+  if (ddc) {
+    const near = typeof ddc.near === "number" ? ddc.near : 0.0;
+    const far =
+      typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+    out[offset + 26] = near * near;
+    out[offset + 27] = isFinite(far) ? far * far : Number.MAX_VALUE;
+  } else {
+    out[offset + 26] = 0.0;
+    out[offset + 27] = Number.MAX_VALUE;
+  }
+
+  // AUDIT_2026_05_02 A.14 (Batch 136) — three NearFarScalar gates
+  // packed into vec4 slots 7/8/9. Identity is 1.0 for all three (each
+  // is multiplicative — alpha, pixel-offset scale, quad scale). The
+  // `packNearFarScalar` helper writes an identity-NFS when the user
+  // didn't set the property, so the shader's gate produces the
+  // unchanged baseline (alpha=1, scale=1) without needing a separate
+  // sentinel check.
+  packNearFarScalar(out, offset + 28, bb._translucencyByDistance, 1.0);
+  packNearFarScalar(out, offset + 32, bb._pixelOffsetScaleByDistance, 1.0);
+  packNearFarScalar(out, offset + 36, bb._scaleByDistance, 1.0);
+
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointAttribs vec4:
+  //   .x = depthOrigin.x (-1 / 0 / +1, label horizontal anchor; 0 means
+  //         "inherit billboard origin" per WebGL convention).
+  //   .y = depthOrigin.y (-1 / 0 / +1, vertical anchor).
+  //   .z = enableDepthCheck (1.0 default; 0.0 means "skip the 3-point
+  //         check on this billboard" — used by WebGL when the billboard
+  //         is below the ellipsoid surface so the depth-check would
+  //         occlude it incorrectly).
+  //   .w = reserved.
+  // The Billboard primitive itself doesn't expose `depthOrigin` —
+  // it's a Label-only attribute. Default to (0, 0) so plain
+  // Billboards take the "inherit origin" path. Labels override via
+  // the LabelRenderer's instance data builder.
+  out[offset + 40] = 0.0;
+  out[offset + 41] = 0.0;
+  out[offset + 42] = 1.0;
+  out[offset + 43] = 0.0;
 }
 
 /**
@@ -308,47 +295,18 @@ function buildPickInstanceData(collection, context) {
 
   for (let i = 0; i < length; i++) {
     const bb = billboards[i];
-    // clusterShow is false when EntityCluster has folded this billboard into a
-    // cluster glyph. Skipping these prevents the stack of overlapping icons
-    // that WebGL already avoids via the same read.
-    if (!defined(bb) || !bb.show || bb._clusterShow === false) {
+    if (!isBillboardVisible(bb)) {
       continue;
     }
 
     const offset = visibleCount * FLOATS_PER_INSTANCE;
-    const position = bb._actualPosition || bb._position || bb.position;
-    EncodedCartesian3.fromCartesian(position, scratchEncodedPos);
-
-    // Attributes 0-3 identical to color path
-    instanceData[offset + 0] = scratchEncodedPos.high.x;
-    instanceData[offset + 1] = scratchEncodedPos.high.y;
-    instanceData[offset + 2] = scratchEncodedPos.high.z;
-    instanceData[offset + 3] = bb.scale || 1.0;
-    instanceData[offset + 4] = scratchEncodedPos.low.x;
-    instanceData[offset + 5] = scratchEncodedPos.low.y;
-    instanceData[offset + 6] = scratchEncodedPos.low.z;
-    instanceData[offset + 7] = bb.rotation || 0.0;
-
-    const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
-    const alignedAxis = bb._alignedAxis;
-    instanceData[offset + 8] = pixelOffset.x;
-    instanceData[offset + 9] = pixelOffset.y;
-    instanceData[offset + 10] = alignedAxis ? alignedAxis.x : 0.0;
-    instanceData[offset + 11] = alignedAxis ? alignedAxis.y : 0.0;
-
-    const imageRect =
-      bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
-    if (defined(imageRect) && typeof imageRect === "object") {
-      instanceData[offset + 12] = imageRect.x || 0;
-      instanceData[offset + 13] = imageRect.y || 0;
-      instanceData[offset + 14] = imageRect.width || 1;
-      instanceData[offset + 15] = imageRect.height || 1;
-    } else {
-      instanceData[offset + 12] = 0.0;
-      instanceData[offset + 13] = 0.0;
-      instanceData[offset + 14] = 1.0;
-      instanceData[offset + 15] = 1.0;
-    }
+    // Same record as the color path — the pick pipeline obeys DP-H42,
+    // DP-H40, and A.14 too so the picked region matches what the user
+    // sees on screen (a clicked pixel below the camera's DepthDistance
+    // threshold should still pick the billboard above terrain; a pixel
+    // outside the split-cutoff or distance window should not pick a
+    // billboard it can't see).
+    packBillboardInstance(instanceData, offset, bb);
 
     // @location(4): pick color instead of display color
     if (!defined(bb._pickId)) {
@@ -359,58 +317,6 @@ function buildPickInstanceData(collection, context) {
     instanceData[offset + 17] = pc.green;
     instanceData[offset + 18] = pc.blue;
     instanceData[offset + 19] = pc.alpha;
-
-    instanceData[offset + 20] = 1.0;
-    instanceData[offset + 21] = bb.sizeInMeters ? 1.0 : 0.0;
-    instanceData[offset + 22] = bb.width || 32.0;
-    instanceData[offset + 23] = bb.height || 32.0;
-
-    // Same perInstanceFlags as the color path — the pick pipeline obeys
-    // DP-H42, DP-H40, and A.14 too so the picked region matches what
-    // the user sees on screen (a clicked pixel below the camera's
-    // DepthDistance threshold should still pick the billboard above
-    // terrain; a pixel outside the split-cutoff or distance window
-    // should not pick a billboard it can't see).
-    instanceData[offset + 24] = encodeDisableDepthTestDistance(
-      bb._disableDepthTestDistance,
-    );
-    instanceData[offset + 25] = bb._splitDirection ?? 0.0;
-    const ddc = bb._distanceDisplayCondition;
-    if (ddc) {
-      const near = typeof ddc.near === "number" ? ddc.near : 0.0;
-      const far =
-        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
-      instanceData[offset + 26] = near * near;
-      instanceData[offset + 27] = isFinite(far) ? far * far : Number.MAX_VALUE;
-    } else {
-      instanceData[offset + 26] = 0.0;
-      instanceData[offset + 27] = Number.MAX_VALUE;
-    }
-
-    // AUDIT_2026_05_02 A.14 (Batch 136) — same NearFarScalar packing as
-    // the color path so the pick pipeline gates pixels identically.
-    packNearFarScalar(
-      instanceData,
-      offset + 28,
-      bb._translucencyByDistance,
-      1.0,
-    );
-    packNearFarScalar(
-      instanceData,
-      offset + 32,
-      bb._pixelOffsetScaleByDistance,
-      1.0,
-    );
-    packNearFarScalar(instanceData, offset + 36, bb._scaleByDistance, 1.0);
-
-    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — pick path mirrors the
-    // color path layout. Pick shader doesn't read these slots
-    // (pick-through-terrain is intentional, matching WebGL), but the
-    // buffer layout must include all attributes.
-    instanceData[offset + 40] = 0.0;
-    instanceData[offset + 41] = 0.0;
-    instanceData[offset + 42] = 1.0;
-    instanceData[offset + 43] = 0.0;
 
     visibleCount++;
   }
@@ -1247,8 +1153,53 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     });
   }
 
-  // Instance buffer
-  const { instanceData, visibleCount } = buildInstanceData(collection);
+  // Instance data — resident-instance partial-write path
+  // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL).
+  // A settled collection uploads nothing; a sparse change re-packs +
+  // uploads only the changed slots' byte ranges. The manager owns the
+  // resident CPU array, the GPU vertex buffer, the compacted
+  // _index→slot map, and the slot-aligned velocity prev mirror.
+  if (!defined(cache.instanceManager)) {
+    cache.instanceManager = new WebGPUResidentInstanceBuffer(
+      device,
+      "Billboard instances",
+    );
+  }
+
+  // Structural invalidations the manager can't see from the dirty list
+  // alone. `_createVertexArray` covers add/remove/removeAll/mode-change/
+  // 2D-CV modelMatrix change (read BEFORE _consumeDirtyState clears it);
+  // defines/atlas-guid changes re-shape packed data collection-wide;
+  // MORPHING recomputes every _actualPosition per frame without dirtying.
+  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+  const atlasGuidNow = collection._textureAtlas?.guid;
+  const forceFullRebuild =
+    collection._createVertexArray === true ||
+    cache._instanceDefines !== defines ||
+    cache._instanceSceneMode !== frameState.mode ||
+    cache._instanceAtlasGuid !== atlasGuidNow ||
+    frameState.mode === SceneMode.MORPHING;
+
+  // ORDERING (load-bearing): capture + sync the dirty list FIRST, then
+  // consume. `_consumeDirtyState` resets `_billboardsToUpdateIndex`, so
+  // syncing after the consume would always see an empty dirty list and
+  // never partial-write. (NEW-COLLECTIONS-DIRTY-GATE step 0 + Phase 1.)
+  const syncResult = cache.instanceManager.sync({
+    items: collection._billboards,
+    length: length,
+    dirtyList: collection._billboardsToUpdate,
+    dirtyCount: collection._billboardsToUpdateIndex,
+    packInstance: packBillboardInstance,
+    isVisible: isBillboardVisible,
+    floatsPerInstance: FLOATS_PER_INSTANCE,
+    bytesPerInstance: BYTES_PER_INSTANCE,
+    forceFullRebuild: forceFullRebuild,
+    mirrorPrev: taaEnabledThisFrame,
+  });
+  cache._instanceDefines = defines;
+  cache._instanceSceneMode = frameState.mode;
+  cache._instanceAtlasGuid = atlasGuidNow;
+
   // Consume the collection's dirty-tracking state now that this frame's
   // instance data is captured. Without this the WebGL `_createVertexArray` /
   // `textureDirty` flags stay set on the WebGPU path and `updateMode` + the
@@ -1256,93 +1207,12 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   // any dirty gate / per-instance partial-update. See
   // BillboardCollection._consumeDirtyState. (NEW-COLLECTIONS-DIRTY-GATE step 0.)
   collection._consumeDirtyState();
-  if (visibleCount === 0) {
+
+  const visibleCount = syncResult.visibleCount;
+  if (visibleCount === 0 || !defined(syncResult.buffer)) {
     return;
   }
-
-  const requiredSize = visibleCount * BYTES_PER_INSTANCE;
-  if (
-    !defined(cache.instanceBuffer) ||
-    cache.instanceBuffer.size < requiredSize
-  ) {
-    if (defined(cache.instanceBuffer)) {
-      cache.instanceBuffer.destroy();
-    }
-    cache.instanceBuffer = WebGPUBuffer.createVertexBuffer(
-      device,
-      requiredSize,
-      false,
-      "Billboard instances",
-    );
-  }
-
-  // AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
-  // before we overwrite the GPU instance buffer with this frame's data,
-  // upload the PREVIOUS frame's data to the prev-instance buffer so the
-  // velocity VS can read both streams. `cache.prevInstanceData` is the
-  // CPU-side typed array we stashed at the end of the LAST frame; on
-  // the very first frame it's undefined, in which case we initialize
-  // prev = current (velocity = 0, equivalent to "no history").
-  // Allocated lazily — only if TAA is enabled this frame OR was enabled
-  // in a prior frame (the buffer outlives a single TAA toggle so a TAA
-  // off → on transition doesn't drop a frame of velocity).
-  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
-  if (taaEnabledThisFrame || defined(cache.prevInstanceBuffer)) {
-    if (
-      !defined(cache.prevInstanceBuffer) ||
-      cache.prevInstanceBuffer.size < requiredSize
-    ) {
-      if (defined(cache.prevInstanceBuffer)) {
-        cache.prevInstanceBuffer.destroy();
-      }
-      cache.prevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
-        device,
-        requiredSize,
-        false,
-        "Billboard prev instances",
-      );
-    }
-    const prevSource = cache.prevInstanceData ?? instanceData;
-    // The previous frame's typed array may be sized for a different
-    // visibleCount; truncate or pad against the current `requiredSize`
-    // so the writeBuffer payload matches the GPU buffer's used range.
-    // For an undersized prev (fewer billboards last frame), pad the
-    // tail with current data so newly-spawned billboards see prev =
-    // current → zero velocity, as expected for "born this frame".
-    let prevPayload = prevSource;
-    const expectedFloats = visibleCount * FLOATS_PER_INSTANCE;
-    if (prevSource.length < expectedFloats) {
-      prevPayload = new Float32Array(expectedFloats);
-      prevPayload.set(prevSource);
-      // Tail: copy current data so prev == current for newcomers.
-      prevPayload.set(
-        instanceData.subarray(prevSource.length, expectedFloats),
-        prevSource.length,
-      );
-    } else if (prevSource.length > expectedFloats) {
-      prevPayload = prevSource.subarray(0, expectedFloats);
-    }
-    device.queue.writeBuffer(
-      cache.prevInstanceBuffer.buffer,
-      0,
-      prevPayload.buffer,
-      prevPayload.byteOffset,
-      requiredSize,
-    );
-  }
-
-  device.queue.writeBuffer(
-    cache.instanceBuffer.buffer,
-    0,
-    instanceData.buffer,
-    0,
-    requiredSize,
-  );
-
-  // Stash THIS frame's data so next frame's velocity pass has prev
-  // available. Always done — even when TAA is off — so a TAA off → on
-  // transition doesn't lose a frame of history.
-  cache.prevInstanceData = instanceData;
+  cache.instanceBuffer = syncResult.buffer;
 
   // Pick the command pass from the collection's blendOption so translucent
   // billboards composite in the back-to-front translucent pass rather than
@@ -1392,11 +1262,14 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   // AND the velocity pipeline resolved this tick (it can be null on
   // the first frame after TAA enables, while async pipeline creation
   // is in flight; the next frame will pick up the resolved pipeline).
-  if (taaEnabledThisFrame && velocityPipeline && cache.prevInstanceBuffer) {
+  // The prev mirror is slot-aligned with the current buffer by the
+  // resident-instance manager (partial writes mirror the prev slot too),
+  // so the velocity VS reads matching instances at locations 11/12.
+  if (taaEnabledThisFrame && velocityPipeline && syncResult.prevBuffer) {
     cache.velocityCommand = new WebGPUDrawCommand({
       pipeline: velocityPipeline,
       bindGroups: [cache.bindGroup],
-      vertexBuffers: [cache.instanceBuffer, cache.prevInstanceBuffer],
+      vertexBuffers: [cache.instanceBuffer, syncResult.prevBuffer],
       vertexCount: VERTICES_PER_QUAD,
       instanceCount: visibleCount,
       pass: billboardPass,
@@ -1550,11 +1423,11 @@ function destroyWebGPUBillboardResources(collection) {
   if (!defined(cache)) {
     return;
   }
-  if (defined(cache.instanceBuffer)) {
-    cache.instanceBuffer.destroy();
-  }
-  if (defined(cache.prevInstanceBuffer)) {
-    cache.prevInstanceBuffer.destroy();
+  // The resident-instance manager owns the current instance buffer AND
+  // the velocity prev mirror (cache.instanceBuffer is just an alias of
+  // manager.buffer for the draw command).
+  if (defined(cache.instanceManager)) {
+    cache.instanceManager.destroy();
   }
   if (defined(cache.pickInstanceBuffer)) {
     cache.pickInstanceBuffer.destroy();
