@@ -368,6 +368,37 @@ class PointPrimitiveCollection {
   }
 
   /**
+   * Clear the per-frame dirty-tracking state once a renderer has consumed it for
+   * this frame — the "dirties consumed" semantics the WebGL vertex build applies
+   * inline. The WebGPU feature renderer REPLACES that build, so it must call this
+   * after capturing the instance data; otherwise `updateMode` (gated on
+   * `_createVertexArray`) re-projects every position every frame, so every
+   * settled point is re-dirtied and the renderer's `needsRebuild` gate fires
+   * forever AND — because `_dirty` is never cleared — a genuinely-moved point can
+   * never re-enqueue (`_updatePointPrimitive`'s `if (!_dirty)` guard) and renders
+   * stale. Points have no texture, so (unlike billboards) there is no
+   * `textureDirty` to clear. Mirrors `BillboardCollection._consumeDirtyState`.
+   * @private
+   */
+  _consumeDirtyState() {
+    const pointPrimitives = this._pointPrimitives;
+    const length = pointPrimitives.length;
+    for (let i = 0; i < length; ++i) {
+      const pointPrimitive = pointPrimitives[i];
+      if (defined(pointPrimitive)) {
+        pointPrimitive._dirty = false;
+      }
+    }
+    this._pointPrimitivesToUpdate.length = 0;
+    this._pointPrimitivesToUpdateIndex = 0;
+    this._createVertexArray = false;
+    const propertiesChanged = this._propertiesChanged;
+    for (let k = 0; k < propertiesChanged.length; ++k) {
+      propertiesChanged[k] = 0;
+    }
+  }
+
+  /**
    * Check whether this collection contains a given point.
    *
    * @param {PointPrimitive} [pointPrimitive] The point to check for.
@@ -1293,8 +1324,14 @@ function computeBoundingVolumeForFeatureRenderer(collection, frameState) {
   }
   const boundingVolume =
     frameState.mode === SceneMode.SCENE3D
-      ? BoundingSphere.clone(collection._baseVolumeWC, collection._boundingVolume)
-      : BoundingSphere.clone(collection._baseVolume2D, collection._boundingVolume);
+      ? BoundingSphere.clone(
+          collection._baseVolumeWC,
+          collection._boundingVolume,
+        )
+      : BoundingSphere.clone(
+          collection._baseVolume2D,
+          collection._boundingVolume,
+        );
   updateBoundingVolume(collection, frameState, boundingVolume);
 }
 

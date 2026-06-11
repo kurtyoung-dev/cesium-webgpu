@@ -1006,6 +1006,14 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   if (needsRebuild) {
     const { instanceData, visibleCount } = buildInstanceData(collection);
 
+    // Consume the collection's dirty-tracking state now that this frame's
+    // instance data is captured. Without it, `_createVertexArray`/`_dirty` stay
+    // set on the WebGPU path: `updateMode` re-projects every position every
+    // frame (so `needsRebuild` fires forever) AND a moved point can never
+    // re-enqueue (the `if (!_dirty)` guard) so it renders stale. See
+    // PointPrimitiveCollection._consumeDirtyState. (NEW-DIRTY-CONSUME-POINT.)
+    collection._consumeDirtyState();
+
     if (visibleCount === 0) {
       cache.colorCommand = undefined;
       cache.lastLength = length;
