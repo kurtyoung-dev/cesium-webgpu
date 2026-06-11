@@ -612,6 +612,42 @@ class BillboardCollection {
   }
 
   /**
+   * Clear the per-frame dirty-tracking state once a renderer has consumed it
+   * for this frame — the "dirties consumed" semantics the WebGL vertex build
+   * applies inline (it clears `billboard._dirty`/`.textureDirty` while writing,
+   * and resets `_createVertexArray` / `_billboardsToUpdateIndex` /
+   * `_propertiesChanged`).
+   *
+   * The WebGPU feature renderer REPLACES the vertex build, so it must call this
+   * after capturing the instance data — otherwise `updateMode` (gated on
+   * `_createVertexArray`) re-projects every position and the readiness loop
+   * (gated on `textureDirty`) re-marks every image EVERY frame, so the
+   * collection looks fully dirty forever (measured: ≈4 spurious
+   * `_updateBillboard` calls per billboard per frame). That defeats any dirty
+   * gate or per-instance partial-update path. Backend-agnostic and safe for the
+   * WebGL path to call too; placed on the collection so Billboard / Label /
+   * Point can share one dirty-lifecycle contract.
+   * @private
+   */
+  _consumeDirtyState() {
+    const billboards = this._billboards;
+    const length = billboards.length;
+    for (let i = 0; i < length; ++i) {
+      const billboard = billboards[i];
+      if (defined(billboard)) {
+        billboard._dirty = false;
+        billboard.textureDirty = false;
+      }
+    }
+    this._billboardsToUpdateIndex = 0;
+    this._createVertexArray = false;
+    const propertiesChanged = this._propertiesChanged;
+    for (let k = 0; k < propertiesChanged.length; ++k) {
+      propertiesChanged[k] = 0;
+    }
+  }
+
+  /**
    * Check whether this collection contains a given billboard.
    *
    * @param {Billboard} [billboard] The billboard to check for.

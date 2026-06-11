@@ -1249,6 +1249,13 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
 
   // Instance buffer
   const { instanceData, visibleCount } = buildInstanceData(collection);
+  // Consume the collection's dirty-tracking state now that this frame's
+  // instance data is captured. Without this the WebGL `_createVertexArray` /
+  // `textureDirty` flags stay set on the WebGPU path and `updateMode` + the
+  // readiness loop re-dirty every settled billboard every frame — defeating
+  // any dirty gate / per-instance partial-update. See
+  // BillboardCollection._consumeDirtyState. (NEW-COLLECTIONS-DIRTY-GATE step 0.)
+  collection._consumeDirtyState();
   if (visibleCount === 0) {
     return;
   }
