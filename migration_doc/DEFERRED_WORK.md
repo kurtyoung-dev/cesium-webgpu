@@ -17,6 +17,51 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-06-11 — Dual-axis Ultra-Review findings (49 new IDs)
+
+Source of record: [audits/2026-06-11_ULTRA_REVIEW.md](audits/2026-06-11_ULTRA_REVIEW.md) (full report) + `audits/2026-06-11_ULTRA_REVIEW_findings.json` (all 195 confirmed-real findings with per-finding verdicts). Produced by the `webgpu-ultra-review` workflow (53 agents, adversarial-verified). Axis A = WebGPU vs our-WebGL; Axis B = our-WebGL vs upstream fork drift. The 2 CRITICALs were orchestrator-spot-checked against live code (both CONFIRMED REAL); medium/low await per-item check at fix time.
+
+### CRITICAL (2 — verified)
+
+- **NEW-PICKDEPTH-CAPABILITY-READBACK** (A) — PickDepth feature-detection picks WebGL branch on WebGPU; pickPosition returns undefined. defined(context.readPixels) is true on WebGPU so the async depth path is never reached; add a supportsSyncReadback capability getter (supersede stale DP-H45/DP-H46).
+- **NEW-OIT-COMPOSITE-FORMAT** (A) — OIT MRT composite pipeline hardcoded to rgba8unorm; fails validation vs scene color. executeComposite ignores its targetFormat param; cache the composite pipeline per _sceneColorFormat and rebuild on HDR toggle.
+
+### HIGH — Axis A (WebGPU vs WebGL)
+
+- **NEW-PICK-RAY-ASYNC** — Ray picks (pickFromRay/sampleHeight/clampToHeight) use sync end() -> stale results on WebGPU. Add an async ray-pick path (endAsync + awaited getDepth) plus a oneTimeWarning, mirroring drillPickAsync.
+- **NEW-PICK-METADATA-READBACK** — readCenterPixel returns stale prior-frame pixels; pickMetadata/pickVoxelCoordinate broken. Sync metadata/voxel picks read _lastReadPixels from a prior frame before endFrame submits the current render; add sync-after-submit or async variants.
+- **NEW-TONEMAPPER-STRING-MAP** — Tonemapper reads non-existent _tonemapping.type; user tonemapper always ignored. mapTonemapType always returns PBR_NEUTRAL; read collection.tonemapper string and map to TonemapMode, with a unit test.
+- **NEW-POSTPROCESS-HDR-INTERMEDIATES** — Built-in Bloom/AO/DoF/GodRay allocate 8-bit intermediates in HDR mode. Pass _intermediateFormat (not canvasFormat) to the four built-in effects; add an HDR bloom visual-regression probe.
+- **NEW-BLOOM-UNIFORM-PARITY** — Bloom mis-maps WebGL brightness/contrast onto a luminance threshold (inverts default). brightness default -0.3 fed as threshold passes everything; port HSB contrast/brightness bright-pass + map all six uniforms.
+- **NEW-POSTPROCESS-USER-WARN-PROD** — User GLSL post-process stages silently dropped in production (warning pragma-stripped). Move the glslOnly oneTimeWarning out of the debug pragma; it is a real functionality loss across the entire PostProcessStageLibrary.
+- **NEW-MODEL-IBL-BRDF-LUT** — Specular IBL uses analytic Fresnel; generated BRDF LUT never consumed by model path. Bind the LUT into the model material bind group and use split-sum F*lut.x+lut.y + FmsEms; fixes the wasted device-init dispatch and misleading docstring.
+- **NEW-CSM-SOFT-SHADOW-PCF** — CSM receive drops soft-shadow PCF + normal-shading the single-map path keeps. Add a shadowSoftShadows-gated PCF kernel to sampleOneCascade and the normal-shading clamp to computeShadowFactorCSM.
+- **NEW-SPLAT-SORT-CONSUME-INDEXES** — Gaussian splats render in buffer order; CPU back-to-front sort silently dropped. Consume primitive._indexes as a per-instance attribute (or GPU radix sort -> drawIndirect); correct DEFERRED_WORK:637.
+- **NEW-POINTCLOUDLOD-SLOT255-OFFBYONE** — PointCloudLOD slot-255 offset broadcast clobbers a compacted index on full workgroups. localCount can equal 256 at LOD-0; use a dedicated var<workgroup> wgOffset or size sharedVisible to 257 (subgroup variant too).
+- **NEW-GLOBE-BINDGROUP-CACHE** — Globe surface renderer allocates 3-4 GPUBindGroups per tile per pass per frame. Cache group1/group2 per (tile,imagery-revision)/(waterMask id); add getStats; pairs with dynamic-offset BGL for group0.
+- **NEW-COLLECTIONS-DIRTY-GATE** — Billboard/Label rebuild + full-upload entire instance buffer every frame. Port the Point renderer needsRebuild gate; keep resident instance array; writeBuffer only dirty sub-ranges.
+- **NEW-GLOBE-RENDERBUNDLE-CACHE** — Globe pass builds and discards a render bundle every frame instead of caching. Route through renderBundleManager.getOrCreate keyed on tile-set/pass/format with invalidation, or drop the inline bundle path.
+- **NEW-GROUNDATMOSPHERE-RENDERER-DEAD** — WebGPUGroundAtmosphereRenderer produces an unbound buffer every frame (dead path). Buffer is never bound; real shading is in the camera UB. Delete renderer+WGSL+call+registration or wire it; fix FEATURE_INVENTORY:500.
+- **NEW-WEBGPUDERIVEDCOMMAND-ORPHAN** — WebGPUDerivedCommand orphaned scaffolding mislabeled SHIPPED. Flags never read, caches never populated, dispatcher zero callers; delete (+dead clone() + shadow-acne flags) or add no-op-pending docstring; fix FEATURE_INVENTORY:423.
+- **NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING** — Unconditional WebGPU cluster re-exports break the webgl-only variant build. Move the 4 cluster re-exports + constants into index-wgsl.js; ESM named-export linking errors against emptyModule.js in webgl-only.
+- **NEW-CAMERA-JITTER-ACCUMULATION** — Camera jitter accumulates unboundedly on a stable frustum. proj[8]/[9] += jitter mutates the cached matrix that early-returns unchanged; set absolute base+jitter or apply delta and restore; add a stable-frustum bounded-drift spec.
+
+### HIGH — Axis B (fork drift vs upstream)
+
+- **NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD** — Port upstream fix: empty imageryLayers array wrongly triggers ImageryPipelineStage. hasImageryLayers must also check imageryLayers.length>0 (upstream one-liner; affects WebGL too); the class rewrite will not auto-apply it at merge.
+- **NEW-CONTEXT-PICKID-MERGE-PRESTAGE** — Context.js content conflict + PickId.js add/add conflict (confirmed via merge-tree). At sync, take upstream PickId.js as base, re-apply normalizedRgba/pickKinds, align the @ts-check header; document Context.js manual resolution in the sync runbook.
+- **NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION** — Model3DTileContent class-converted on both fork and upstream (no --ours/--theirs). Prefer upstream's class body (richer @import/@implements typing) wholesale and re-apply fork deltas at merge.
+- **NEW-FORK-MODERNIZATION-REVERT** — Revert ~15 pure-cosmetic ES6 conversions of files with no WebGPU hook. Revert the gratuitous conversions (widgets x34, B9 metadata/sampled/timeinterval/terrain, B3 tiles, B4 animation) to slash merge conflict surface for zero functional loss; add a hook-or-.d.ts modernization guardrail + diff -w CI guard.
+- **NEW-VOXELELLIPSOIDSHAPE-UPSTREAM-COLLISION** — VoxelEllipsoidShape class rewrite frozen behind an upstream UV-uniform rewrite. Revert to upstream form; upstream replaced the longitude/latitude UV uniforms with scale/translate the fork must adopt anyway.
+- **NEW-CAMERA-JSDOC-RESTORE** — Restore ~80% public-API JSDoc/@example loss on Camera/SSCC. Re-add shipped @example blocks and full @param prose (setView/lookAt etc.) per the preserve-JSDoc rule; these feed cesium.com API docs.
+- **NEW-WEBGL-REPROJECT-BASELINE** — WebGL imagery reprojection forked to per-fragment Mercator; add a regression baseline. The 64-row-grid -> 4-vertex-quad change forks WebGL pixel output; add a visual-regression tolerance baseline asserting it matches upstream.
+
+### MEDIUM / LOW (23)
+
+Catalogued in the audit doc + sidecar JSON (not expanded here to keep this index scannable). IDs: `NEW-MODEL-IBL-REFERENCE-FRAME`, `NEW-MODEL-DIRECT-BRDF-PARITY`, `NEW-MODEL-VS-MOTION-GATE`, `NEW-GLOBE-DYNAMIC-OFFSET-UBO`, `NEW-COLLECTIONS-ERROR-SENTINELS`, `NEW-COLLECTION-RENDERER-BASE`, `NEW-VARIANT-CI`, `NEW-DECOUPLEDSCAN-FORWARD-PROGRESS-GUARD`, `NEW-BINDGROUPCACHE-EVICTION`, `NEW-RENDERBUNDLE-AGING-DECOUPLE`, `NEW-RESOURCEMANAGER-KEY-EVICTION`, `NEW-CLUSTERED-ASSIGN-BOUNDS-DIRTY`, `NEW-CLUSTER-MULTIFRUSTUM-BOUNDS`, `NEW-TAA-PIPELINE-ORDER-RECONCILE`, `NEW-USEWEBMERCATORT-SINGLE-SOURCE`, `NEW-UPLOADIMAGESOURCE-OBSERVABILITY`, `NEW-RAYSPHERE-PRECISION-BACKPORT`, `NEW-CAMERA-UPDATEVIEWMATRIX-REVERT`, `NEW-BILLBOARD-UPDATEMODE-ORDERING`, `NEW-SHADOWMAP-COMMENT-RESTORE`, `NEW-SYNC-MOVEMAP`, `NEW-CAPABILITY-GETTER-CODIFY`, `NEW-TS-CONVERT-JS-RENDERERS`.
+
+---
+
 ## ADR-2026-04-28: Classification architecture — depth-sampling over stencil
 
 **Decision:** Migrate `WebGPUGroundPrimitiveRenderer` from its current 2-pass stencil approach to WebGL's depth-texture sampling architecture. Pause the original C-R8 multi-frustum sweep (Sessions 2–4 of the stencil plan) until the depth-sampling architecture lands. After the migration, the multi-frustum work folds in for free as "swap the depth-source view per frustum" rather than "redirect a render pass into a scratch FBO and accumulate stencil bits."
