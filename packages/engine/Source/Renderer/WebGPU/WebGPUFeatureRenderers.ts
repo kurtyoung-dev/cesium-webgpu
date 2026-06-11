@@ -44,6 +44,12 @@ import {
   updateWebGPUBufferPointCollection,
   destroyWebGPUBufferPointCollection,
 } from "./WebGPUBufferPrimitiveRenderer.js";
+// Phase 3 (Batch 230) — GPU-resident orbital catalog (compute propagation
+// → storage buffer → instanced vertex-pull draw).
+import {
+  updateWebGPUOrbitalCatalog,
+  destroyWebGPUOrbitalCatalogResources,
+} from "./WebGPUOrbitalCatalogRenderer.js";
 
 // ── Primitive system ──
 import {
@@ -277,6 +283,16 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     {
       update: updateWebGPUBufferPolygonCollection,
       destroy: destroyWebGPUBufferPolygonCollection,
+    },
+  );
+
+  // ── GPU-resident orbital catalog (Phase 3, Batch 230) ──
+  // Compute-propagated circular orbits; positions never leave the GPU.
+  context.registerFeatureRenderer(
+    FeatureRendererKey.ORBITAL_CATALOG_COLLECTION,
+    {
+      update: updateWebGPUOrbitalCatalog,
+      destroy: destroyWebGPUOrbitalCatalogResources,
     },
   );
 

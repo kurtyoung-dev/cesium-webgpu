@@ -10279,3 +10279,35 @@ three stacked causes (projection slice + depth-match + 2D planar-jitter). Each m
 fixing the projection alone left the command firing into the depth-occlusion / wrong-band
 clip, so the visible result didn't move. Verify a fix moves the PIXELS, not just the
 mechanism (the resolver fired perfectly and changed nothing on screen).
+
+## Batch 230 — DepthPlane MRT attachment mismatch blanked EVERY Sandcastle WebGPU demo (2026-06-11)
+
+**Symptom:** all Sandcastle WebGPU gallery demos rendered a fully black canvas (verified on
+"WebGPU Weather Particles" and the new "WebGPU Orbital Catalog"), with one console error per
+frame: `Attachment state of [RenderPipeline "DepthPlane-Pipeline"] is not compatible with
+[RenderPassEncoder "Scene Framebuffer Render Pass"]` — pipeline declared 1 color target, the
+pass has 2 (`bgra8unorm` + `rgba16float` G-buffer) at sampleCount 4.
+
+**Root cause:** `WebGPUDepthPlane.initialize()` hand-rolled its fragment `targets` as a single
+`[{format, writeMask: 0}]` — written before the always-on MRT scene FB (Batch 115b+) and never
+converted to `makeSceneFBTargets`. A draw-time attachment mismatch invalidates the WHOLE pass
+encoder, so the one bad `setPipeline` blanked every other primitive in the frame (same failure
+shape as the Batch 228 cloud MSAA bug). **Why probes never caught it:** CesiumViewer's views
+run with the depth plane inactive (`depthPlane=false` in the executeCommands diagnostics), so
+every CesiumViewer-based probe was blind to it; only Sandcastle's default Viewer enables the
+depth plane. Likely broken for all Sandcastle WebGPU demos since the MRT flip landed.
+
+**Fix:** route the fragment targets through `makeSceneFBTargets(colorFormat, { writeMask: 0 })`
+(slot-0 depth-only + slot-1 G-buffer placeholder). Verified: orbital + weather Sandcastle demos
+render with 0 console errors; `probe-orbital-catalog.mjs` still PASSes.
+
+**Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGPUDepthPlane.ts`.
+
+**Probe lessons (orbital bring-up, same batch):** (1) a WebGPU canvas clears its current
+texture on presentation — canvas-2D `drawImage` readback from a later task reads BLACK unless
+the readback runs inside `scene.postRender` (after render, before present). Intermittent
+"works during tile churn, black when settled" readbacks are this. (2) The CesiumViewer app
+runs `requestRenderMode: true` — once tiles settle the loop stops rendering, so probes that
+await `scene.postRender` hang and time-driven content freezes; set
+`scene.requestRenderMode = false` in probes that drive the clock. Both patterns are baked into
+`Tools/visual-regression/probe-orbital-catalog.mjs`.

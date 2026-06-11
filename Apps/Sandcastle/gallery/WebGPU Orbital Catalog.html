@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="GPU-resident orbital catalog: thousands of objects propagated each frame by a compute shader — positions never leave the GPU."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Orbital Catalog demo (Phase 3 of the Large Dynamic Objects
+    roadmap — NEW-ORBITAL-GPU-RESIDENT-RENDERER).
+
+    Demonstrates `OrbitalCatalogCollection`: the orbital element set
+    uploads ONCE to a GPU storage buffer; every frame a compute shader
+    (`OrbitalPropagate.wgsl`) propagates all objects in parallel and an
+    instanced draw vertex-pulls the propagated positions directly from
+    GPU memory. The CPU's only per-frame upload is the simulation time —
+    object positions never round-trip through JavaScript.
+
+    Simulation time follows the scene clock, so the speed slider just
+    drives `viewer.clock.multiplier`. WebGPU-only: the WebGL2 fallback
+    (SGP4-on-worker WASM) is a tracked follow-up.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Objects</td>
+            <td>
+              <select data-bind="value: objectCount">
+                <option value="1000">1,000</option>
+                <option value="5000">5,000</option>
+                <option value="20000">20,000</option>
+                <option value="100000">100,000</option>
+              </select>
+            </td>
+          </tr>
+          <tr>
+            <td>Time speed</td>
+            <td>
+              <input
+                type="range"
+                min="1"
+                max="600"
+                step="1"
+                data-bind="value: clockMultiplier, valueUpdate: 'input'"
+              />
+              <span data-bind="text: clockMultiplier + 'x'"></span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+          shouldAnimate: true,
+        });
+        const scene = viewer.scene;
+
+        let catalog;
+
+        function rebuildCatalog(count) {
+          if (Cesium.defined(catalog)) {
+            scene.primitives.remove(catalog);
+          }
+          catalog = scene.primitives.add(new Cesium.OrbitalCatalogCollection());
+
+          // Three altitude regimes. meanMotion defaults to the physical
+          // circular rate sqrt(GM / a^3), so LEO objects visibly lap the
+          // higher shells.
+          const EARTH_RADIUS = 6.371e6;
+          const REGIMES = [
+            // [altitude range (m), weight, color]
+            [[400.0e3, 2000.0e3], 0.6, Cesium.Color.CYAN], // LEO
+            [[19000.0e3, 21000.0e3], 0.25, Cesium.Color.YELLOW], // MEO
+            [[35786.0e3, 35786.0e3], 0.15, Cesium.Color.MAGENTA], // GEO
+          ];
+
+          for (let i = 0; i < count; i++) {
+            let pick = Math.random();
+            let regime = REGIMES[0];
+            for (const r of REGIMES) {
+              if (pick < r[1]) {
+                regime = r;
+                break;
+              }
+              pick -= r[1];
+            }
+            const [altRange, , color] = regime;
+            const altitude = altRange[0] + Math.random() * (altRange[1] - altRange[0]);
+            const isGEO = regime === REGIMES[2];
+            catalog.add({
+              semiMajorAxis: EARTH_RADIUS + altitude,
+              // GEO objects cluster near the equatorial plane.
+              inclination: isGEO ? Math.random() * 0.1 : Math.random() * Math.PI,
+              raan: Math.random() * 2.0 * Math.PI,
+              phase: Math.random() * 2.0 * Math.PI,
+              color: color,
+              pixelSize: 3,
+            });
+          }
+        }
+
+        const viewModel = {
+          objectCount: "5000",
+          clockMultiplier: 60,
+        };
+
+        function applySettings() {
+          viewer.clock.multiplier = Number(viewModel.clockMultiplier);
+        }
+
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+        Cesium.knockout
+          .getObservable(viewModel, "objectCount")
+          .subscribe(function (value) {
+            rebuildCatalog(parseInt(value, 10));
+          });
+        Cesium.knockout
+          .getObservable(viewModel, "clockMultiplier")
+          .subscribe(applySettings);
+
+        rebuildCatalog(5000);
+        applySettings();
+
+        // Pull back far enough to see the GEO shell.
+        viewer.camera.setView({
+          destination: new Cesium.Cartesian3(1.1e8, 4.0e7, 5.0e7),
+          orientation: {
+            direction: Cesium.Cartesian3.normalize(
+              new Cesium.Cartesian3(-1.1, -0.4, -0.5),
+              new Cesium.Cartesian3(),
+            ),
+            up: new Cesium.Cartesian3(0.0, 0.0, 1.0),
+          },
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -189,6 +189,17 @@ const FeatureRendererKey = {
   // Opt-in via `scene.enableContactShadows`.
   CONTACT_SHADOWS: 48,
 
+  // ── GPU-resident orbital catalog (Phase 3, Batch 230) ──
+  // `OrbitalCatalogCollection` routes here. The renderer keeps the whole
+  // catalog GPU-resident: elements upload once to a storage buffer, a
+  // compute kernel (`OrbitalPropagate.wgsl`) propagates circular orbits
+  // each frame into a positions storage buffer, and the instanced draw
+  // vertex-pulls `positions[instance_index]` — positions never leave the
+  // GPU; the CPU uploads only the simulation time per frame. WebGPU-only
+  // for now — the WebGL2 fallback (SGP4-on-worker WASM) is tracked as
+  // NEW-ORBITAL-SGP4-WASM-WORKER in DEFERRED_WORK.md.
+  ORBITAL_CATALOG_COLLECTION: 49,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -201,7 +212,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 49,
+  COUNT: 50,
 };
 
 export default Object.freeze(FeatureRendererKey);

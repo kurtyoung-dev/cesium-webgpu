@@ -442,6 +442,13 @@ export const ShaderSourceId = Object.freeze({
   GROUND_POLYLINE: 31,
   SKY_ATMOSPHERE: 32,
   ELLIPSOID_PRIMITIVE: 33,
+  // Phase 3 — GPU-resident orbital catalog (Batch 230,
+  // NEW-ORBITAL-GPU-RESIDENT-RENDERER). 34 is the circular-orbit
+  // propagation compute kernel (`Compute/OrbitalPropagate.wgsl`); 35 is
+  // the instanced storage-buffer-vertex-pull render shader
+  // (`Compute/OrbitalCatalogRender.wgsl`). Add-only; never renumber.
+  ORBITAL_PROPAGATE_COMPUTE: 34,
+  ORBITAL_CATALOG_RENDER: 35,
 } as const);
 
 /**

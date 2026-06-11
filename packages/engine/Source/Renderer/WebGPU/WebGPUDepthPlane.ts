@@ -31,6 +31,8 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+// Batch 230 — scene-FB target helper (MRT slot-1 placeholder).
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -339,12 +341,15 @@ export class WebGPUDepthPlane {
       fragment: {
         module: this._shaderModule,
         entryPoint: "fragmentMain",
-        targets: [
-          {
-            format: colorFormat, // Must match canvas format (typically bgra8unorm)
-            writeMask: 0, // No color writes — depth only
-          },
-        ],
+        // Batch 230 — route through `makeSceneFBTargets` so the pipeline
+        // declares the MRT slot-1 placeholder. The hand-rolled 1-target
+        // array predated the always-on G-buffer (Batch 115b+) and failed
+        // attachment-state validation against the 2-attachment scene-FB
+        // pass — which invalidated the WHOLE pass encoder and blanked
+        // every Sandcastle WebGPU demo (CesiumViewer was unaffected only
+        // because its views never enabled the depth plane). writeMask 0
+        // on slot 0 keeps this depth-only.
+        targets: makeSceneFBTargets(colorFormat, { writeMask: 0 }),
       },
       depthStencil: {
         format: depthFormat,
