@@ -98,9 +98,15 @@ class PickDepth {
   }
 
   update(context, depthTexture) {
-    // If context provides sync readPixels (WebGL), use framebuffer path.
-    // Otherwise store reference for async readback.
-    if (defined(context.readPixels)) {
+    // If context supports SYNCHRONOUS readback (WebGL), use the framebuffer +
+    // readPixels path. Otherwise (WebGPU) store the packed-depth texture for
+    // async buffer readback. NOTE: must branch on `supportsSynchronousReadback`,
+    // NOT `defined(context.readPixels)` — `readPixels` is a required abstract
+    // method BOTH backends implement (WebGPU's returns null), so `defined()`
+    // is true on WebGPU and wrongly took the sync branch, leaving
+    // `_asyncDepthTexture` unset → pickPosition/sampleHeight/clampToHeight
+    // returned undefined on WebGPU.
+    if (context.supportsSynchronousReadback) {
       updateFramebuffers(this, context, depthTexture);
       updateCopyCommands(this, context, depthTexture);
     } else {
@@ -121,8 +127,9 @@ class PickDepth {
    * @private
    */
   getDepth(context, x, y) {
-    // Sync path: framebuffer + readPixels (WebGL)
-    if (defined(this.framebuffer) && defined(context.readPixels)) {
+    // Sync path: framebuffer + readPixels (WebGL). Gate on the capability,
+    // not `defined(context.readPixels)` (see update() — WebGPU defines it too).
+    if (defined(this.framebuffer) && context.supportsSynchronousReadback) {
       const pixels = context.readPixels({
         x: x,
         y: y,
@@ -141,15 +148,28 @@ class PickDepth {
       }
     }
 
-    // Async path: kick off GPU readback. Returns a Promise when async
-    // depth texture is available, or undefined if no async texture exists.
-    // Only start a new readback if no previous one is in-flight — never
-    // overlap mapAsync calls (causes "buffer is still mapped" errors).
-    if (defined(this._asyncDepthTexture) && !this._pendingReadback) {
-      return this._readDepthAsync(context, x, y);
-    }
-    // Readback in-flight or no async texture — return undefined so callers
-    // fall back to ray pick rather than using a stale cached value
+    // WebGPU async path. Two contracts matter here:
+    //  1. EVERY consumer of getDepth is SYNCHRONOUS and cannot await it:
+    //     scene.pickPosition / scene.pickPositionWorldCoordinates
+    //     (Picking.js:608, Scene.js:4069) AND camera zoom/tilt-to-cursor
+    //     (CameraHelpers.js:247, SSCCInputHelpers.js:65). So this must return a
+    //     number|undefined — NEVER a Promise (a Promise silently broke all of
+    //     them: callers treated the Promise object as a depth value).
+    //  2. The reconstruction is NOT yet correct on WebGPU. All frustums share
+    //     the single packed `globeDepth.globeDepthTexture`
+    //     (WebGPUSceneRendererFrustumLoop.ts:641), but `unprojectDepth` rebuilds
+    //     the world position with each frustum's OWN near/far — so the depth's
+    //     frustum-space doesn't match the reconstruction and the result is a
+    //     garbage world position (e.g. the antipode at ~85,000 km). A garbage
+    //     position is WORSE than undefined (camera-to-cursor would jump to it).
+    //
+    // Until per-frustum WebGPU pick-depth reconstruction lands
+    // (DEFERRED_WORK: NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION), return undefined so
+    // callers fall back to ray pick — the same safe result as before, but now
+    // via the correct async architecture (the WebGL pick framebuffer is no
+    // longer wrongly allocated on WebGPU, and InstancingPipelineStage keeps the
+    // typed array WebGPU instanced models need). `_readDepthAsync` +
+    // `_lastDepthValue` are the scaffolding that fix switches on.
     return undefined;
   }
 

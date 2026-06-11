@@ -76,9 +76,13 @@ InstancingPipelineStage.process = function (renderResources, node, frameState) {
     model._projectTo2D;
   // Keep CPU-side typed array when picking requires it (WebGL1 lacks transform
   // feedback) or when the context doesn't support sync buffer readback.
+  // Branch on `supportsSynchronousReadback`, NOT `defined(readPixels)`:
+  // `readPixels` is a required abstract method both backends implement
+  // (WebGPU's returns null), so `defined()` was true on WebGPU and wrongly
+  // dropped the typed array WebGPU instanced models need for readback.
   const keepTypedArray =
     (model._enablePick && !frameState.context.webgl2) ||
-    !defined(frameState.context.readPixels);
+    !frameState.context.supportsSynchronousReadback;
 
   const instancingVertexAttributes = [];
 

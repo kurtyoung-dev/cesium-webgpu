@@ -763,6 +763,28 @@ export abstract class GraphicsContext {
     return true;
   }
 
+  /**
+   * Capability getter for SYNCHRONOUS pixel readback (`readPixels()` returning
+   * pixel data on the calling frame). WebGL's `gl.readPixels` is synchronous;
+   * WebGPU has no synchronous readback (its `readPixels` is a required-abstract
+   * shim that returns `null`, and real readback is async via
+   * `readPixelsToPBO` + `mapAsync`).
+   *
+   * This exists because several call sites used `defined(context.readPixels)`
+   * as a proxy for "is this WebGL" — but `readPixels` is a required abstract
+   * method BOTH backends must implement, so `defined()` is `true` on WebGPU and
+   * silently routed those sites into the synchronous WebGL branch. The visible
+   * fallout: `PickDepth` never set its async depth texture, so `pickPosition` /
+   * `sampleHeight` / `clampToHeight` returned `undefined` on WebGPU, and
+   * `InstancingPipelineStage` dropped the CPU typed array WebGPU instanced
+   * models need. Branch on this capability instead of `defined(readPixels)`.
+   *
+   * Default `true` (WebGL); WebGPU overrides to `false`.
+   */
+  get supportsSynchronousReadback(): boolean {
+    return true;
+  }
+
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: CANVAS & DIMENSIONS
   // ═══════════════════════════════════════════════════════════

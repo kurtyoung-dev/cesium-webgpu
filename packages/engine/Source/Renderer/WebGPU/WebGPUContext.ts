@@ -1320,6 +1320,18 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * WebGPU has no synchronous pixel readback — `readPixels` is a shim that
+   * returns `null` (see below); real readback is async (`readPixelsToPBO` +
+   * `mapAsync`). Overrides the base `true` so call sites that previously used
+   * `defined(context.readPixels)` as a "is WebGL" proxy (PickDepth,
+   * InstancingPipelineStage) correctly take their async / keep-typed-array
+   * branch on WebGPU.
+   */
+  override get supportsSynchronousReadback(): boolean {
+    return false;
+  }
+
+  /**
    * AUDIT_2026_05_02 — WebGPU scene renderer hard-codes the full-canvas
    * viewport (`setViewport(0, 0, _width, _height)`); the per-eye split
    * `executeWebVRCommands` performs has no effect. Until the per-eye
