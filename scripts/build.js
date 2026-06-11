@@ -489,17 +489,13 @@ export async function createCesiumJs(variant = "dual") {
   // don't reference the base directly.
   contents +=
     `\n// Slice 5d step 2 — multi-light public API (Batch 142).\n` +
-    `export { LightCollection, PointLight, SpotLight, LightType } from '@${scope}/engine/Source/Scene/LightTypes.js';\n` +
-    // Batch 147 — Slice 5d step 3c cluster-bounds renderer. See
-    // createIndexJs("engine") below for the matching engine-package
-    // re-export and full rationale.
-    `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js';\n` +
-    // Batch 148 — Slice 5d step 137d cluster-assign renderer.
-    `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js';\n` +
-    // Batch 149 — Slice 5d step 137e cluster debug renderer.
-    `export { WebGPUClusterDebugRenderer } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js';\n` +
-    // Batch 150 — Slice 5d per-frame dispatcher.
-    `export { WebGPUClusteredLightingDispatcher } from '@${scope}/engine/Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.js';\n`;
+    `export { LightCollection, PointLight, SpotLight, LightType } from '@${scope}/engine/Source/Scene/LightTypes.js';\n`;
+  // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
+  // Batches 147–150) are now gated below with the other WebGPU-source
+  // re-exports — they import from `index-wgsl.js` and are skipped for the
+  // webgl-only variant (whose alias plugin strips Source/Renderer/WebGPU/* to
+  // empty stubs, which would fail ESM's static named-re-export check).
+  // (NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING.)
 
   // FORK-16: Re-export TypeScript-only WGSL preprocessor + library
   // surface that the .js glob in workspaceSourceFiles can't pick up.
@@ -513,6 +509,13 @@ export async function createCesiumJs(variant = "dual") {
   // rewrites those paths to the empty-module stub in webgl-only mode.
   if (variant !== "webgl-only") {
     contents +=
+      `\n// Slice 5d cluster renderer + lighting public API (Batches 147–150).\n` +
+      `// Imported from index-wgsl.js (not the WebGPU source directly) so this\n` +
+      `// block shares the same webgl-only gating as the WGSL re-exports below.\n` +
+      `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from '@${scope}/engine/index-wgsl.js';\n` +
+      `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from '@${scope}/engine/index-wgsl.js';\n` +
+      `export { WebGPUClusterDebugRenderer } from '@${scope}/engine/index-wgsl.js';\n` +
+      `export { WebGPUClusteredLightingDispatcher } from '@${scope}/engine/index-wgsl.js';\n` +
       `\n// TypeScript-only WGSL preprocessor exports — needed by wgsl-import-test.html\n` +
       `export { WGSLShaderPreprocessor, WGSLShaderLibrary } from '@${scope}/engine/index-wgsl.js';\n` +
       `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from '@${scope}/engine/index-wgsl.js';\n` +
@@ -1503,21 +1506,16 @@ export async function createIndexJs(workspace) {
       // construct concrete subclasses (PointLight / SpotLight /
       // DirectionalLight) via `scene.lights.add(...)`. Backend-agnostic
       // so always included regardless of variant.
-      `export { LightCollection, PointLight, SpotLight, LightType } from './Source/Scene/LightTypes.js';${EOL}` +
-      // Batch 147 — Slice 5d step 3c cluster-bounds renderer + grid
-      // constants. The renderer class is internal to the Forward+
-      // implementation (Batches 137d/e will own the per-frame wiring)
-      // but expose it now so the probe (probe-cluster-bounds.mjs) can
-      // construct + dispatch it standalone for verification. Same
-      // reasoning as the LightTypes re-export above: workspace `.js`
-      // glob can't pick up `.ts` files.
-      `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js';${EOL}` +
-      // Batch 148 — Slice 5d step 137d cluster-assign renderer.
-      `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js';${EOL}` +
-      // Batch 149 — Slice 5d step 137e cluster debug renderer.
-      `export { WebGPUClusterDebugRenderer } from './Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js';${EOL}` +
-      // Batch 150 — Slice 5d per-frame dispatcher.
-      `export { WebGPUClusteredLightingDispatcher } from './Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.js';${EOL}`;
+      `export { LightCollection, PointLight, SpotLight, LightType } from './Source/Scene/LightTypes.js';${EOL}`;
+    // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
+    // Batches 147–150) used to live here in the MAIN index.js, but they
+    // reference `Source/Renderer/WebGPU/*` which the webgl-only variant alias
+    // plugin rewrites to the empty-module stub — and ESM's static named
+    // re-export check then fails the whole webgl-only build ("No matching
+    // export in emptyModule.js for WebGPUClusterBoundsRenderer", etc.). They
+    // now live in `index-wgsl.js` below (the dual + webgpu-only entry barrels
+    // import it; webgl-only deliberately does NOT), exactly like the WGSL
+    // preprocessor + WebGL-compat-stub re-exports. (NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING.)
 
     // WGSL-adjacent re-exports live in a SEPARATE file (index-wgsl.js)
     // that the webgl-only variant entry barrel deliberately does NOT
@@ -1529,6 +1527,15 @@ export async function createIndexJs(workspace) {
     // stubs. ESM's static named-re-export check would fail if this
     // file were pulled into the webgl-only graph.
     const wgslContents =
+      `${EOL}// WebGPU cluster renderer + lighting re-exports (Slice 5d, Batches 147–150).${EOL}` +
+      `// They reference Source/Renderer/WebGPU/* which the webgl-only variant strips${EOL}` +
+      `// to empty stubs, so they live here (webgl-only does NOT import index-wgsl.js).${EOL}` +
+      `// Exposed so the cluster probes + the Clustered Lighting Sandcastle can${EOL}` +
+      `// construct + dispatch the renderers standalone. (NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING.)${EOL}` +
+      `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js';${EOL}` +
+      `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js';${EOL}` +
+      `export { WebGPUClusterDebugRenderer } from './Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js';${EOL}` +
+      `export { WebGPUClusteredLightingDispatcher } from './Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.js';${EOL}` +
       `${EOL}// TypeScript-only WGSL preprocessor exports — for wgsl-import-test.html${EOL}` +
       `export { WGSLShaderPreprocessor, WGSLShaderLibrary } from './Source/Renderer/WebGPU/WGSLShaderPreprocessor.js';${EOL}` +
       `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from './Source/Renderer/WebGPU/WGSLBuiltins.js';${EOL}` +
