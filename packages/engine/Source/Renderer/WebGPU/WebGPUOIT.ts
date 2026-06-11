@@ -92,6 +92,12 @@ export class WebGPUOIT {
 
   // Composite pipeline resources
   private _compositePipeline: GPURenderPipeline | null = null;
+  // The color-target format the current composite pipeline was built for. The
+  // composite render pass writes into the scene color (bgra8unorm by default,
+  // rgba16float in HDR); the pipeline's target format MUST match the attachment
+  // or WebGPU fails pipeline-vs-attachment validation. Pre-fix this was pinned
+  // to rgba8unorm and never rebuilt, so MRT-OIT composite failed every frame.
+  private _compositeFormat: GPUTextureFormat = "rgba8unorm";
   private _compositeBindGroupLayout: GPUBindGroupLayout | null = null;
   private _compositeBindGroup: GPUBindGroup | null = null;
   private _compositeSampler: GPUSampler | null = null;
@@ -209,8 +215,10 @@ export class WebGPUOIT {
     });
     this._revealageView = this._revealageTexture.createView();
 
-    // Create composite pipeline
-    this._createCompositePipeline(device);
+    // Create composite pipeline for the current scene-color format. The actual
+    // target format is authoritative at draw time (`executeComposite` rebuilds
+    // on mismatch — e.g. HDR toggle), but seed it from the known scene color.
+    this._createCompositePipeline(device, this._sceneColorFormat);
   }
 
   /**
@@ -224,11 +232,23 @@ export class WebGPUOIT {
     targetView: GPUTextureView,
     targetFormat: GPUTextureFormat,
   ): void {
+    if (!this._accumulationView || !this._revealageView) {
+      return;
+    }
+
+    // Ensure the composite pipeline's color-target format matches the actual
+    // attachment we're about to write into. The scene color is bgra8unorm by
+    // default and rgba16float in HDR; the pipeline must match or the render
+    // pass fails WebGPU's pipeline-vs-attachment format validation. Pre-fix the
+    // pipeline was pinned to rgba8unorm and `targetFormat` was ignored, so this
+    // (the entire MRT-OIT composite) failed validation every frame.
     if (
-      !this._compositePipeline ||
-      !this._accumulationView ||
-      !this._revealageView
+      this._device &&
+      (!this._compositePipeline || this._compositeFormat !== targetFormat)
     ) {
+      this._createCompositePipeline(this._device, targetFormat);
+    }
+    if (!this._compositePipeline) {
       return;
     }
 
@@ -253,7 +273,11 @@ export class WebGPUOIT {
     pass.end();
   }
 
-  private _createCompositePipeline(device: GPUDevice): void {
+  private _createCompositePipeline(
+    device: GPUDevice,
+    targetFormat: GPUTextureFormat,
+  ): void {
+    this._compositeFormat = targetFormat;
     const shaderModule = device.createShaderModule({
       label: "OIT-Composite-Shader",
       code: OIT_COMPOSITE_WGSL,
@@ -292,7 +316,7 @@ export class WebGPUOIT {
         entryPoint: "fragmentMain",
         targets: [
           {
-            format: "rgba8unorm", // Will be overridden at draw time if HDR
+            format: targetFormat, // matches the scene-color attachment
             blend: {
               color: {
                 srcFactor: "one",
