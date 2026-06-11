@@ -168,21 +168,31 @@ function findDepthOfFieldStage(collection: unknown): {
 }
 
 /**
- * Map CesiumJS Tonemapper enum to our WebGPU tonemapping mode.
- * CesiumJS: REINHARD=0, MODIFIED_REINHARD=1, FILMIC=2, ACES=3, PBR_NEUTRAL=4
+ * Map the CesiumJS Tonemapper to our WebGPU tonemapping mode.
+ *
+ * CesiumJS's `Tonemapper` is a STRING enum ("REINHARD" / "MODIFIED_REINHARD" /
+ * "FILMIC" / "ACES" / "PBR_NEUTRAL") stored on
+ * `PostProcessStageCollection._tonemapper` (the `tonemapper` getter/setter).
+ *
+ * Pre-fix this read `collection._tonemapping?.type ?? collection._tonemappingType`
+ * — `_tonemapping` is the post-process STAGE object (no `.type`) and
+ * `_tonemappingType` doesn't exist — AND switched on NUMBERS (0..4). Both the
+ * property and the value type were wrong, so it ALWAYS hit the default: the
+ * user-facing `scene.postProcessStages.tonemapper` setting was a silent no-op
+ * (every scene rendered with PBR_NEUTRAL regardless of selection).
  */
 function mapTonemapType(collection: CesiumObjectWithWebGPUCache): number {
-  const type = collection._tonemapping?.type ?? collection._tonemappingType;
+  const type = collection._tonemapper ?? collection.tonemapper;
   switch (type) {
-    case 0:
+    case "REINHARD":
       return TonemapMode.REINHARD;
-    case 1:
+    case "MODIFIED_REINHARD":
       return TonemapMode.MODIFIED_REINHARD;
-    case 2:
+    case "FILMIC":
       return TonemapMode.FILMIC;
-    case 3:
+    case "ACES":
       return TonemapMode.ACES;
-    case 4:
+    case "PBR_NEUTRAL":
       return TonemapMode.PBR_NEUTRAL;
     default:
       return TonemapMode.PBR_NEUTRAL; // CesiumJS default
