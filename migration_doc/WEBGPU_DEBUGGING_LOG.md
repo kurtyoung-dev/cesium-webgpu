@@ -11084,3 +11084,60 @@ msaa restored to 4. Regression gates: probe-collections-regression,
 probe-taa-velocity-emission, probe-compute-instance-generic (TAA sections),
 probe-billboard-partial-write, probe-bloom-parity, probe-orbital-catalog,
 probe-globe-bindgroup-cache, sandcastle-smoke — all PASS. `npx tsc --noEmit` clean.
+
+## Batch 245 — Instanced models no longer crash the WebGPU render loop (NEW-WEBGPU-INSTANCED-VA-DIVISORS) + no-normals primitives go unlit (2026-06-12)
+
+**Symptom (pre-existing since the v1.140 upstream merge):** rendering ANY instanced model
+(EXT_mesh_gpu_instancing / i3dm, vec3 AND matrix paths) on WebGPU crashed the render loop:
+`TypeError: Cannot set properties of undefined (setting '1')` at `attr.vertexAttrib` →
+`buildDrawCommandForModel` → "Rendering has stopped". The model never reached `ready`, so the
+WebGPU CPU-pick path for instanced models (Batch 221 keepTypedArray + Batch 238 pick fixes)
+had never executed at runtime.
+
+**Root cause:** `VertexArray.js` bind runs `context._vertexAttribDivisors[index] =
+this.instanceDivisor` + `context._previousDrawInstanced = true` (the ANGLE-workaround divisor
+state cache `Context.js` allocates in its constructor) — but `WebGPUContext` only initialized
+the `glVertexAttribDivisor` no-op compat stub; the divisor state cache next to it was missed.
+
+**Fix:** `WebGPUContext` declares `_vertexAttribDivisors: number[]` + `_previousDrawInstanced`
+and (re)builds the cache in `_initializeContextLimits`, sized from
+`device.limits.maxVertexAttributes` — that hook re-runs on device-loss recovery, resetting all
+divisors to 0 (fresh-context semantics, mirroring the `Context.js` constructor loop). Safe
+absorption is the backend-correct shape: a vertex-attrib divisor has no GPU-side meaning on
+WebGPU — model instancing flows through the `instance_index`-indexed storage buffer
+(`WebGPUModelInstancing.ensureInstancingResources`), and collection instancing bakes
+`stepMode: "instance"` into pipeline vertex-buffer layouts.
+
+**Second pre-existing gap surfaced by verification (fixed same batch):** primitives WITHOUT a
+NORMAL attribute rendered BLACK on WebGPU. `extractMaterialInfo` set `isUnlit` only from
+`material.unlit`, missing upstream's `material.unlit || !hasNormals → LightingModel.UNLIT`
+convention (`MaterialPipelineStage.js:176`) — so the FS ran the PBR path against the
+single-element default normal buffer (indexed draws skip vertex-buffer OOB validation;
+robust access zeros reads past vertex 0 → `normalize(vec3(0))` → black, no console errors).
+Diagnosed pixel-exactly: BoxInstancedNoNormals coverage on WebGPU was IDENTICAL to WebGL
+(122944 non-background px both) but the box-center sample was (0,0,0) vs WebGL's unlit white;
+post-fix (239,239,239) — tonemapped white, same coverage. `isUnlit: material.unlit === true ||
+!hasNormals` restores parity (PntsLoader already sets `material.unlit` explicitly, so point
+clouds are unchanged).
+
+**Probe hardening:** the now-required gate's litCount checks were wall-clock dependent — the
+default SunLight angle can put camera-facing faces right at the dim threshold (`r+g+b > 24`),
+where the known WebGL/WebGPU BRDF micro-divergence (NEW-MODEL-DIRECT-BRDF-PARITY) flips counts
+en masse (observed: WebGPU litRotated 14266 vs 569 ten minutes apart while WebGL held ~14.3k).
+The probe now sets a fixed `DirectionalLight` along the -X view direction (headlight) —
+camera-facing +X faces at full N·L on both backends, byte-identical counts across runs.
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts`,
+`packages/engine/Source/Scene/Model/ModelMaterialInfo.js`,
+`Tools/visual-regression/probe-pickmodel-instanced.mjs` (WebGPU section gated → REQUIRED),
+`Tools/visual-regression/probe-model-pbr-audit.mjs` (hardcoded :8080 → `PROBE_BASE`/:8134).
+
+**Verification:** `probe-pickmodel-instanced.mjs` ALL sections green, twice, byte-identical:
+matrix-path BoxInstanced 60721 lit px on WebGPU (WebGL 60734 — 0.02% apart), translation-only
+BoxInstancedNoNormals 122944 lit px (exactly the WebGL count), **WebGPU CPU picks hit all 4
+instances at the exact +X faces (err=0)** — first runtime verification of WebGPU `pickModel`
+on instanced models — empty-center ray misses, 0 console errors. Regression gates:
+probe-collections-regression, probe-model-pbr-audit (5/5 assets, 0 device errors),
+probe-billboard-partial-write, probe-compute-instance-generic, probe-orbital-catalog,
+probe-globe-bindgroup-cache, probe-bloom-parity, sandcastle-smoke — all PASS.
+`npx tsc --noEmit` clean; `npx gulp build` green.

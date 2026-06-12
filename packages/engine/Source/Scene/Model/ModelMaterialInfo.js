@@ -75,7 +75,14 @@ const AlphaModes = Object.freeze({
 function extractMaterialInfo(material, hasVertexColors, hasNormals) {
   const info = {
     // Material type
-    isUnlit: material.unlit === true,
+    // Upstream parity (MaterialPipelineStage.js): a primitive without a
+    // NORMAL attribute cannot be lit — `material.unlit || !hasNormals`
+    // selects LightingModel.UNLIT. Without this, the WebGPU FS lights
+    // against the single-element default normal buffer (robust-access
+    // zeros past vertex 0) and the model renders black
+    // (NEW-WEBGPU-INSTANCED-VA-DIVISORS verification surfaced this,
+    // Batch 245 — BoxInstancedNoNormals rendered black-on-black).
+    isUnlit: material.unlit === true || !hasNormals,
     isSpecularGlossiness: defined(material.specularGlossiness),
     isDoubleSided: material.doubleSided === true,
 

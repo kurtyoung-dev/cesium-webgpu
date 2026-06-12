@@ -21,9 +21,9 @@
 //       the CPU thinks the cubes are at un-axis-corrected glTF positions and
 //       misses where the GPU rendered them.
 //
-//   [2] WEBGPU (GATED: set PROBE_WEBGPU=1 — currently expected-fail) —
-//       BoxInstancedNoNormals (TRANSLATION-only instancing). On WebGPU
-//       `keepTypedArray` is always true (`supportsSynchronousReadback`
+//   [2] WEBGPU (REQUIRED since Batch 245 — NEW-WEBGPU-INSTANCED-VA-DIVISORS
+//       landed) — BoxInstancedNoNormals (TRANSLATION-only instancing). On
+//       WebGPU `keepTypedArray` is always true (`supportsSynchronousReadback`
 //       is false), and pre-fix `InstancingPipelineStage` routed translation-
 //       only models down the vec3 path which stuffs 2D-PROJECTED vec3
 //       translations into `runtimeNode.transformsTypedArray` — pickModel
@@ -35,19 +35,19 @@
 //       instance center hits the +X face at x=0.5 — same expectations as
 //       upstream's pickModelSpec). Also render-smokes BOTH models on WebGPU.
 //
-//       WHY GATED: ANY instanced model currently crashes the WebGPU render
-//       loop in `VertexArray` bind — `context._vertexAttribDivisors[index]`
-//       is undefined on `WebGPUContext` (the `glVertexAttribDivisor` compat
-//       stub exists at WebGPUContext.ts:756 but the divisors array was never
-//       initialized). Pre-existing on main (came in with the v1.140 upstream
-//       merge), hits BOTH the vec3 and matrix instancing paths, so the model
-//       never reaches `ready` and pickModel can't be driven. Tracked as
-//       NEW-WEBGPU-INSTANCED-VA-DIVISORS in migration_doc/DEFERRED_WORK.md —
-//       flip this section on (and make it a required gate) when that lands.
+//       This section was GATED (PROBE_WEBGPU=1, expected-fail) between
+//       Batch 238 and Batch 245: ANY instanced model crashed the WebGPU
+//       render loop in `VertexArray` bind — `context._vertexAttribDivisors`
+//       was never initialized on `WebGPUContext` (the `glVertexAttribDivisor`
+//       compat stub existed, the divisor state cache next to it was missed).
+//       Batch 245 initialized the divisor cache (+ `_previousDrawInstanced`)
+//       sized from `device.limits.maxVertexAttributes`, so this section is
+//       now a REQUIRED gate: both instancing paths render, and the WebGPU
+//       CPU-pick path (Batch 221 keepTypedArray + Batch 238 pick fixes)
+//       is runtime-verified here.
 //
 // Usage: node Tools/visual-regression/probe-pickmodel-instanced.mjs
 // Env:   PROBE_BASE (default http://localhost:8134)
-//        PROBE_WEBGPU=1 to run the gated WebGPU section
 
 import { chromium } from "playwright";
 import { fileURLToPath } from "url";
@@ -154,6 +154,18 @@ const PAGE_PRELUDE = `
   if (scene.sun) scene.sun.show = false;
   if (scene.moon) scene.moon.show = false;
   scene.screenSpaceCameraController.enableCollisionDetection = false;
+
+  // Deterministic lighting (Batch 245): the default SunLight makes the
+  // litCount gates wall-clock dependent — at some times of day the
+  // camera-facing faces straddle the dim threshold (r+g+b > 24), where
+  // the known WebGL/WebGPU BRDF micro-divergence (tracked as
+  // NEW-MODEL-DIRECT-BRDF-PARITY) flips the count en masse (observed:
+  // litRotated 14266 vs 569 ten minutes apart). A fixed headlight along
+  // the -X view direction lights the camera-facing +X faces at full
+  // N·L on both backends, every run.
+  scene.light = new C.DirectionalLight({
+    direction: new C.Cartesian3(-1, 0, 0),
+  });
 
   const loadModel = async (url) => {
     const model = await C.Model.fromGltfAsync({ url, enablePick: true });
@@ -311,13 +323,8 @@ const PAGE_PRELUDE = `
 }
 
 // ─── [2] WebGPU: translation-only instancing render + exact CPU picks ───
-if (process.env.PROBE_WEBGPU !== "1") {
-  console.log(
-    "SKIP  webgpu section (set PROBE_WEBGPU=1) — blocked by " +
-      "NEW-WEBGPU-INSTANCED-VA-DIVISORS (instanced models crash the WebGPU " +
-      "render loop in VertexArray bind; see header)",
-  );
-} else {
+// REQUIRED gate since Batch 245 (NEW-WEBGPU-INSTANCED-VA-DIVISORS fixed).
+{
   const { page, errors } = await openViewer("webgpu");
   let r;
   try {

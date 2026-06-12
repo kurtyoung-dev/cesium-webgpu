@@ -17,7 +17,7 @@
 import { chromium } from "playwright";
 import fs from "fs";
 
-const BASE = "http://localhost:8080";
+const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 
 const MODELS = [
   {

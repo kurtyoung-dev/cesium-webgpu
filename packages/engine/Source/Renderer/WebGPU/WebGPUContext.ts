@@ -598,6 +598,21 @@ export class WebGPUContext extends GraphicsContext {
   public glDrawArraysInstanced: ((...args: unknown[]) => void) | null = null;
   public glVertexAttribDivisor: ((...args: unknown[]) => void) | null = null;
 
+  // Vertex-attribute divisor state cache (WebGL-parity bookkeeping).
+  // Shared `VertexArray.js` writes `context._vertexAttribDivisors[index]`
+  // and `context._previousDrawInstanced` when binding instanced attributes
+  // (the ANGLE-workaround divisor cache `Context.js` keeps). On WebGPU a
+  // divisor has no GPU-side meaning — model instancing flows through a
+  // storage buffer indexed by `instance_index` (WebGPUModelInstancing),
+  // and collection instancing bakes `stepMode: "instance"` into each
+  // pipeline's vertex-buffer layout — but the cache must exist so the
+  // shared bookkeeping is absorbed instead of crashing the render loop
+  // (NEW-WEBGPU-INSTANCED-VA-DIVISORS, Batch 245). Sized from device
+  // limits in `_initializeContextLimits` (re-run on device-loss recovery,
+  // which also resets it — fresh-context semantics, matching Context.js).
+  public _vertexAttribDivisors: number[] = [];
+  public _previousDrawInstanced: boolean = false;
+
   // Draw buffers (WebGL compat stubs)
   public glDrawBuffers: ((...args: unknown[]) => void) | null = null;
 
@@ -2038,6 +2053,17 @@ export class WebGPUContext extends GraphicsContext {
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _initializeContextLimits(): void {
     initializeContextLimitsFromDevice(this._device);
+
+    // (Re)build the vertex-attribute divisor state cache now that the
+    // real device limits are known. Runs again on device-loss recovery,
+    // resetting all divisors to 0 — fresh-context semantics, mirroring
+    // the Context.js constructor loop over maximumVertexAttributes.
+    const maxVertexAttributes = this._device?.limits.maxVertexAttributes ?? 16;
+    this._vertexAttribDivisors.length = 0;
+    for (let i = 0; i < maxVertexAttributes; i++) {
+      this._vertexAttribDivisors.push(0);
+    }
+    this._previousDrawInstanced = false;
   }
 
   /**
