@@ -70,6 +70,12 @@ const FeatureRendererKey = {
   IMAGERY_REPROJECTION: 28,
 
   // ── Atmosphere ──
+  // RETIRED (Batch 239) — superseded by in-GlobeTerrain.wgsl ground
+  // atmosphere (csm_computeGroundAtmosphereScattering + WebGPUAtmosphereLUT,
+  // params in the globe camera/tile uniform buffers), matching WebGL's
+  // in-GlobeFS integration. The separate-pass WebGPUGroundAtmosphereRenderer
+  // was deleted (full Nishita reference in git history at 05b6da60d1).
+  // Keys are positional — keep slot 29 reserved; do NOT reuse the number.
   GROUND_ATMOSPHERE: 29,
 
   // ── Screen-space effects ──

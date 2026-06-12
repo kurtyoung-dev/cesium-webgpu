@@ -20,7 +20,6 @@ import GlobeFS from "../Shaders/GlobeFS.js";
 import GlobeVS from "../Shaders/GlobeVS.js";
 import AtmosphereCommon from "../Shaders/AtmosphereCommon.js";
 import GroundAtmosphere from "../Shaders/GroundAtmosphere.js";
-import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import GlobeSurfaceShaderSet from "./GlobeSurfaceShaderSet.js";
 import GlobeSurfaceTileProvider from "./GlobeSurfaceTileProvider.js";
 import GlobeTranslucency from "./GlobeTranslucency.js";
@@ -1169,14 +1168,11 @@ class Globe {
         tileProvider.cloudQuality = this.cloudQuality;
       }
 
-      // ── Ground atmosphere uniform buffer (WebGPU only) ──
-      const context = frameState.context;
-      const gaFR = context.getFeatureRenderer(
-        FeatureRendererKey.GROUND_ATMOSPHERE,
-      );
-      if (gaFR) {
-        gaFR.update(this, frameState);
-      }
+      // Ground atmosphere needs no separate WebGPU pass — it is shaded
+      // inside GlobeTerrain.wgsl (csm_computeGroundAtmosphereScattering +
+      // WebGPUAtmosphereLUT), with parameters carried by the globe camera
+      // and tile uniform buffers. The old separate-pass
+      // WebGPUGroundAtmosphereRenderer was retired in Batch 239.
 
       surface.beginFrame(frameState);
     }
@@ -1246,15 +1242,6 @@ class Globe {
     this._surface = this._surface && this._surface.destroy();
     this._oceanNormalMap =
       this._oceanNormalMap && this._oceanNormalMap.destroy();
-    // Cleanup WebGPU ground atmosphere resources
-    if (this._webgpuAtmosphereCache) {
-      const cache = this._webgpuAtmosphereCache;
-      if (cache.uniformBuffer) {
-        cache.uniformBuffer.destroy();
-      }
-      this._webgpuAtmosphereCache = undefined;
-      this._webgpuAtmosphereBuffer = undefined;
-    }
     return destroyObject(this);
   }
 }

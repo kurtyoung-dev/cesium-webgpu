@@ -203,12 +203,6 @@ import {
   uploadAndReprojectMercatorImage,
 } from "./WebGPUImageryReprojection.js";
 
-// ── Atmosphere ──
-import {
-  updateWebGPUGroundAtmosphere,
-  destroyWebGPUGroundAtmosphereResources,
-} from "./WebGPUGroundAtmosphereRenderer.js";
-
 // SSR, Weather, and Procedural Clouds are also lazy — see the
 // registerFeatureRendererLoader calls below.
 
@@ -678,11 +672,13 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     uploadAndReproject: uploadAndReprojectMercatorImage,
   });
 
-  // ── Atmosphere ──
-  context.registerFeatureRenderer(FeatureRendererKey.GROUND_ATMOSPHERE, {
-    update: updateWebGPUGroundAtmosphere,
-    destroy: destroyWebGPUGroundAtmosphereResources,
-  });
+  // NOTE: FeatureRendererKey.GROUND_ATMOSPHERE (29) is retired — ground
+  // atmosphere is shaded inside GlobeTerrain.wgsl
+  // (csm_computeGroundAtmosphereScattering + WebGPUAtmosphereLUT), with
+  // parameters carried by the globe camera/tile uniform buffers, matching
+  // WebGL's in-GlobeFS integration. The separate-pass
+  // WebGPUGroundAtmosphereRenderer was deleted in Batch 239 (its full
+  // Nishita ray-marcher reference lives in git history at 05b6da60d1).
 
   // ── Screen-space effects (LAZY) ──
   // SSR is opt-in via scene flag; only loaded when actually enabled.

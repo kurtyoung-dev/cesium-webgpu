@@ -2155,7 +2155,7 @@ migration_doc/                             <- This documentation
 | **Label** | **Built (S18)** | `WebGPULabelRenderer` registered as `LABEL_COLLECTION` FR (key 36) — SDF text with 5-tap supersampling, outlines, screen-space derivative AA. WebGL fallback preserved. |
 | **Polyline** | Built | Screen-space thick lines, per-segment quads, AA |
 | **SkyAtmosphere** | **Working + LUT consumer (S26)** | Nishita scattering with Rayleigh + Mie, HSB correction, debug bypass (`debugDisableAtmosphereScattering`). New `useLut` fast path samples precomputed inscatter LUT instead of per-pixel ray march when `WebGPUPerformanceManager.dispatchAtmosphereLUT` has run; falls back to ray march when compute unavailable. |
-| **GroundAtmosphere** | Wired (Session 17) | `Globe.js beginFrame()` calls FR; uniform buffer with packed atmosphere parameters |
+| **GroundAtmosphere** | **Working (in-globe-FS)** | Shaded inside `GlobeTerrain.wgsl` (`csm_computeGroundAtmosphereScattering` + `WebGPUAtmosphereLUT`), params via globe camera/tile UBs — WebGL-parity integration (Session 65 Batch 9). The Session-17 separate-pass FR (`WebGPUGroundAtmosphereRenderer`, key 29) packed a UB nothing ever bound; deleted Batch 239 (reference at `05b6da60d1`). |
 | **Sun** | Built | Procedural texture, billboard quad |
 | **Moon** | Built | UV sphere mesh, textured diffuse lighting, full RTE |
 | **Fog** | **Working** | Parameters wired via tile uniform buffer + full shader fog blending (Session 17) |

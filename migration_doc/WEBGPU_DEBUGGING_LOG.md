@@ -10718,3 +10718,62 @@ sections); probe-orbital-catalog.mjs + probe-compute-instance-generic.mjs PASS (
 **Files:** `pickModel.js`, `ModelReader.js`, `InstancingPipelineStage.js`,
 +`Tools/visual-regression/probe-pickmodel-instanced.mjs`, `Tools/upstream-regression-check.mjs` [5],
 FORK_DRIFT_ANALYSIS / DEFERRED_WORK docs.
+
+## Batch 239 — Scaffolding disposition: ground-atmosphere renderer DELETED (superseded), WebGPUDerivedCommand KEPT (re-documented as live scaffolding) (2026-06-12)
+
+**Scope:** archaeology-informed split verdict on the two "dead" files from the 2026-06-11 ultra-review
+(NEW-GROUNDATMOSPHERE-RENDERER-DEAD + NEW-WEBGPUDERIVEDCOMMAND-ORPHAN). Owner directive: don't throw
+the baby out with the bathwater — the verdicts DIFFER per file.
+
+### (1) WebGPUGroundAtmosphereRenderer + Environment/GroundAtmosphere.wgsl — SUPERSEDED, deleted
+
+**Files deleted:** `WebGPUGroundAtmosphereRenderer.ts`, `Shaders/WebGPU/Environment/GroundAtmosphere.wgsl`
+(+ generated `.js`). **Files edited:** `WebGPUFeatureRenderers.ts` (import + key-29 registration removed,
+retirement note left in place), `Globe.js` (beginFrame FR call + destroy cleanup + now-unused
+`FeatureRendererKey` import removed), `cesium-js-types.d.ts` (`_webgpuAtmosphere*` fields removed),
+`FeatureRendererKey.js` (`GROUND_ATMOSPHERE: 29` deprecated IN PLACE — slot reserved, keys are
+positional, never renumber).
+
+**Root cause (why it was dead):** the 2026-03-31 separate-pass design (`05b6da60d1` — full Nishita
+single-scattering ray-marcher + 64-byte AtmosphereParams UB + FR key 29) was a parity misread: WebGL
+integrates ground atmosphere INTO the globe FS via defines, not as a separate pass. The parity-correct
+path shipped later (Session 65 Batch 9): in-`GlobeTerrain.wgsl` shading via
+`csm_computeGroundAtmosphereScattering` + `WebGPUAtmosphereLUT`, params in the globe camera/tile UBs.
+**Archaeology correction to the orchestrating verdict:** a `Globe.js beginFrame` call site DID exist and
+ran `update()` every frame — but the UB it packed (`globe._webgpuAtmosphereBuffer`) had ZERO consumers
+(never bound by any pipeline; the WGSL had zero code references), so the path was dead at the consumer
+end: per-frame pack+compare(+writeBuffer on param change) wasted for nothing. The full-Nishita
+reference implementation lives in git history at `05b6da60d1`.
+
+**Evidence (new probe `Tools/visual-regression/probe-ground-atmosphere.mjs`):** CesiumViewer webgpu,
+`showGroundAtmosphere=true`, skyAtmosphere HIDDEN (so limb glow can't masquerade as ground atmosphere),
+18 Mm over (-100,40), clock pinned 2026-06-15T18:00Z: (A) 181,216/786,432 non-black px (threshold
+20,000); (B) ON→OFF toggle in-session diffs 180,626 px (threshold 1,500) — the in-shader veil is live,
+not a silent no-op; (C) `getFeatureRenderer(29)` → undefined (retired slot empty); (D) 0 console/
+validation errors. WebGL reference at the same view: ground atmosphere ON shifts center px
+(95,101,69)→(143,158,145) — same family of contribution. **Probe gotcha captured in-file:** WebGPU
+`tilesLoaded` goes true ~frame 61 while imagery upload/reproject is still in flight (surface reads
+black for ~200 more frames) — the probe requires a 300-frame floor + 60 consecutive tilesLoaded frames.
+
+### (2) WebGPUDerivedCommand.ts — KEPT, docstring-only rewrite (no functional change)
+
+Introduced 2026-03-09 as the WebGPU mirror of WebGL's centralized DerivedCommand factory. The fork
+matured around PER-RENDERER variant creation, so the factory half never wired (`createDerivedCommand` /
+`create*DerivedCommand` zero callers; `_depthOnly`/`_logDepth`/`_pickMode`/`_hdrMode`/`_shadowMode`
+flags unread; `_pipelineCache`/`_shaderCache` never populated) — BUT the architecture's structure half
+IS live: `selectCommandVariant` + the `cmd.derivedCommands.{picking,depth,shadows}.*` dispatch run
+every frame. Kept per CLAUDE.md Principle 7 (scaffolding, not dead code): the centralized factory is
+the right future home for (a) deduplicating per-renderer pick/velocity/depth variant code, (b)
+enforcing the MSAA-bake rule centrally (Batch-228 Cloud pass-kill bug class becomes impossible), and
+(c) the NEW-COLLECTIONS-LOG-DEPTH epic — one uniform depth transformation across every
+collection+globe pipeline. Module docstring rewritten to the truthful no-op-pending state.
+
+**Docs:** DEFERRED_WORK — NEW-GROUNDATMOSPHERE-RENDERER-DEAD ✅ RESOLVED; NEW-WEBGPUDERIVEDCOMMAND-ORPHAN
+replaced by **NEW-DERIVEDCOMMAND-VARIANT-FACTORY** (M/L, first consumer = log-depth epic).
+FEATURE_INVENTORY §B — ground-atmosphere entry rewritten to the live in-GlobeTerrain path;
+WebGPUDerivedCommand re-tagged SHIPPED → SCAFFOLDED. WEBGPU_MIGRATION_STATUS GroundAtmosphere row
+corrected ("Wired (Session 17)" → in-globe-FS working state).
+
+**Regression:** `npx tsc --noEmit` clean; `gulp build` green (55 s); probe-ground-atmosphere PASS;
+probe-orbital-catalog PASS (magenta 14154/14528, mask Δ185.7%, 0 errors); probe-compute-instance-generic
+PASS (6287/6406, Δ177.8%, BV + TAA on/off checks OK, 0 errors).

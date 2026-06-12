@@ -1,18 +1,47 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU equivalent of DerivedCommand.js
+ * WebGPU mirror of WebGL's centralized DerivedCommand factory — SCAFFOLD,
+ * factory half not yet wired (status re-documented Batch 239; tracked as
+ * NEW-DERIVEDCOMMAND-VARIANT-FACTORY in migration_doc/DEFERRED_WORK.md).
  *
- * Creates pipeline variants of WebGPU draw commands for different rendering modes:
- * - Log depth: Writes logarithmic depth for multi-frustum precision
- * - Depth-only: Renders only to depth buffer (color write disabled)
- * - Pick: Renders pick color for GPU-based object identification
- * - HDR: Adjusts for high dynamic range render targets
- * - 2D: Adjusts depth clamping for 2D/Columbus view
+ * The architecture has two halves:
  *
- * In WebGL, DerivedCommand modifies ShaderPrograms by injecting defines and
- * replacing fragment shader code. In WebGPU, we create pipeline variants by
- * modifying pipeline descriptor state (colorWriteMask, depthBias, etc.)
- * and swapping shader modules.
+ * **Live half — variant STRUCTURE + dispatch.** Commands carry a
+ * `derivedCommands.{picking,depth,shadows}.*` structure, and
+ * `selectCommandVariant` (WebGPUSceneRenderer.ts) dispatches through it
+ * every frame for pick/depth/shadow passes. That half does not live in
+ * this file, but it is the consumer the factory below was designed for.
+ *
+ * **Scaffold half — THIS file (currently no-op-pending, per CLAUDE.md
+ * Principle 7 these are not dead code):**
+ * - `create{DepthOnly,LogDepth,Pick,HDR,Shadow}DerivedCommand` and the
+ *   `WebGPUSceneRenderer.createDerivedCommand` wrapper have ZERO callers —
+ *   the fork matured around PER-RENDERER variant creation instead (each
+ *   collection/model/classifier renderer builds its own pick/depth/velocity
+ *   pipelines inline).
+ * - The `_depthOnly`/`_logDepth`/`_pickMode`/`_hdrMode`/`_shadowMode`/
+ *   `_colorWriteMask`/`_cullMode`/`_depthBias*` flags the factories set are
+ *   read by nothing yet — they await the pipeline-build layer that turns
+ *   them into mutated GPURenderPipeline descriptors.
+ * - `_pipelineCache`/`_shaderCache` are never populated; `clearCache()` and
+ *   `getCacheStats()` run against empty maps.
+ *
+ * Why the centralized factory stays (planned fill-in order):
+ * 1. **First consumer: the NEW-COLLECTIONS-LOG-DEPTH epic** — porting czm
+ *    log-depth needs ONE uniform depth transformation applied across EVERY
+ *    collection + globe pipeline; a descriptor-variant layer is exactly
+ *    that, vs. hand-editing each renderer's pipeline creation.
+ * 2. Deduplicating the per-renderer pick/velocity/depth pipeline-variant
+ *    code (~the same descriptor surgery re-implemented per renderer).
+ * 3. Enforcing invariants centrally, e.g. the MSAA-bake rule — every
+ *    scene-FB pipeline must bake `multisample.count = context._msaaSamples`
+ *    (the Batch-228 Cloud pass-kill bug class becomes impossible when one
+ *    factory stamps every variant).
+ *
+ * Design (unchanged from the original skeleton): in WebGL, DerivedCommand
+ * mutates ShaderPrograms by injecting defines and replacing fragment shader
+ * code. In WebGPU, variants are pipeline-descriptor mutations
+ * (colorWriteMask, depthBias, formats, …) plus shader-module swaps.
  *
  * @private
  */

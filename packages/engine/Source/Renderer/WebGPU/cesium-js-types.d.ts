@@ -984,14 +984,6 @@ interface CesiumGlobe {
   cloudDensity?: number;
   cloudWindSpeed?: number;
   cloudWindDirection?: CesiumCartesian2;
-  _webgpuAtmosphereCache?: {
-    uniformBuffer: GPUBuffer | null;
-    data: Float32Array;
-    enabled: boolean;
-    dirty: boolean;
-  };
-  _webgpuAtmosphereBuffer?: GPUBuffer | null;
-  _webgpuAtmosphereEnabled?: boolean;
 }
 
 // ─── FrustumCommands ─────────────────────────────────────────────────────
