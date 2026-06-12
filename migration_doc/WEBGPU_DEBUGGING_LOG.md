@@ -10555,3 +10555,42 @@ both buffers and restart on the primary.
 `Shaders/WebGPU/Compute/ComputeInstanceRender.wgsl`, `Apps/Sandcastle/gallery/WebGPU Orbital
 Catalog.html`, `Tools/visual-regression/probe-{orbital-catalog,compute-instance-generic}.mjs`,
 DEFERRED_WORK / FEATURE_INVENTORY docs.
+
+## Batch 236 — Consolidated all-collections regression gate (NEW-COLLECTION-RETOUCH-PROBE) (2026-06-12)
+
+**Harness, no engine change.** The collections dirty-lifecycle + partial-write surface (Batches
+226-234) was guarded by four separate probes, each covering one slice. This batch consolidates the
+settled-scene contract into ONE fast deterministic gate:
+`Tools/visual-regression/probe-collections-regression.mjs` — all five collections (Billboard,
+Label, PointPrimitive, Polyline, Cloud) in a single close-camera scene (11 km, straight down,
+globe/sky/sun/moon hidden, black background), five checks:
+
+1. **RENDER** — per-collection saturated-color pixel counts with mutually-exclusive predicates:
+   billboard=magenta 4520 px, point=cyan 3127, label=yellow 1539, polyline=red 19992,
+   cloud=green 68682 (CumulusCloud.color tints the cloud FS to exact `(0,g,0)` over black).
+2. **SETTLED RE-TOUCH** — monkeypatched `_updateBillboard` (collection + label glyph/background
+   children), `_updatePointPrimitive`, `_updatePolyline`, `_updateCloud` → 0 calls TOTAL over 20
+   settled frames (Phase-0 dirty-consume contract).
+3. **UPLOAD GATE** — billboard/point/label resident-instance managers (`_fullRebuilds` /
+   `_partialWrites` / `_bytesUploaded` debug-pragma counters) all 0/0/0 over the same 20 frames.
+4. **MUTATE** — move one primitive of EACH kind into its own empty screen window → its color
+   appears there within 2 frames (bb 0→173 px, pt 0→35, lbl 0→21, pl 0→306, cloud 0→6561).
+5. **0 console errors** (incl. WebGPU validation — a count=1 pipeline in the MSAA scene pass
+   kills the whole pass, so any per-collection pipeline regression trips this).
+
+Two consecutive runs produce byte-identical counts (postRender-captured readback, driven
+`scene.render()` loop, pinned clock). PNGs at `output/collections-regression-{before,after}.png`.
+
+**Iteration note (altitude-dependent frustum):** the first cut placed clouds at lat 40.044 / alt
+5 km — inside the GROUND footprint but outside the frustum cross-section AT CLOUD ALTITUDE
+(±0.021° lat at 6 km range vs ±0.039° at ground), so the clouds rendered cut off at the top edge
+and the mutation window clamped to zero area (cloud check 0→0). Cloud placement and the mutation
+destination must use the footprint at the primitive's altitude; documented in the probe header.
+
+**Regression:** probe-orbital-catalog.mjs PASS (14156/14449 magenta px, 186.3% mask change, 0
+errors), probe-compute-instance-generic.mjs PASS (6289/6406 px, BV + TAA ping-pong checks OK).
+The four finer-grained probes stay for their unique assertions (exact stride bytes,
+full-vs-partial path choice, TAA velocity emission).
+
+**Files:** +`Tools/visual-regression/probe-collections-regression.mjs`,
+DEFERRED_WORK (NEW-COLLECTION-RETOUCH-PROBE ✅ SHIPPED) / DEBUGGING_GUIDE (probe inventory) docs.
