@@ -10839,3 +10839,66 @@ where WebGL shows the disk; (c) the no-imagery globe renders baseColor (31,38,51
 **Regression:** `npx tsc --noEmit` clean; `gulp build` green (53 s); probe-bloom-parity PASS;
 probe-orbital-catalog PASS (magenta 14151/14515, mask Δ185.7%, 0 errors); probe-compute-instance-generic
 PASS (BV + TAA on/off checks OK, 0 errors).
+
+## Batch 241 — Globe per-tile bind-group cache: steady-state creations 68/frame → 0 (NEW-GLOBE-BINDGROUP-CACHE) (2026-06-12)
+
+**Scope:** 2026-06-11 ultra-review HIGH (Axis A, perf). `WebGPUGlobeSurfaceRenderer.createTileCommands`
+called `device.createBindGroup` 3-4× per tile per pass per FRAME with no cache — measured 68
+creations/frame at a fixed settled camera (~4,000/sec at 60fps). Bind groups are immutable descriptors
+over resource identities; re-creating one whose bound resources haven't changed is pure driver-overhead
+waste. Group 2 was additionally created TWICE per pass (`bindGroup2` for the translucency pre-passes +
+`bindGroup2Final` for the color pass) even when identical.
+
+**Files:** `Renderer/WebGPU/WebGPUGlobeBindGroupCache.ts` (new), `Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`,
+`Scene/CesiumDebug.js` (new `globeBindGroups()` command), `Tools/visual-regression/probe-globe-bindgroup-cache.mjs` (new).
+
+**Design (identity-keyed, the C-R11 effects-cache pattern):** every GPU resource object gets a stable
+numeric id via WeakMap; a bind group's cache key is the joined id tuple of its actual bound resources
+(the Batch-139 lesson — key on stable underlying objects, never per-frame wrappers):
+
+1. **Group 1 (16 imagery views + sampler)** — keyed on the 16 view identities. Views ARE stable per
+   texture: created once and cached in `_imageryTextureCache` / `_waterMaskTextureCache` beside their
+   `GPUTexture`, so a key change means the texture genuinely rotated. Sampler is an init singleton.
+2. **Group 2 (waterMask + oceanNormal + material UBO/textures)** — keyed on the 5 variable resource
+   identities. The material UBO's contents rewrite per frame via writeBuffer but the buffer object is
+   stable per material type. The per-pass double-create collapses to one cached entry.
+3. **Group 0 (camera UB + tile UB)** — keyed on (ring-page buffer id, byte offset) of both slices. The
+   UBs come from the per-frame ring allocator (`WebGPURingBufferAllocator`, pageCount=3 cycling); at a
+   settled camera the per-frame allocation sequence is deterministic, so the same (page, offset) tuples
+   recur with period = pageCount and lookups hit (≈3 entries per tile-pass). During tile churn offsets
+   shift → keyed misses → exactly the pre-cache create-per-call behavior, never worse. Correctness is
+   key-exact regardless: the bind group is content-agnostic (contents are writeBuffer'd every frame
+   before use). **Boundary:** the offset-churn-proof fix for group 0 is dynamic-offset BGL conversion —
+   tracked as NEW-GLOBE-DYNAMIC-OFFSET-UBO (MEDIUM), out of scope here.
+4. **Group 3 (effects)** — NOT routed through this cache; already identity-cached since Batch 55
+   (C-R11-EFFECTS-BGL-COLLECTION-CACHE in `WebGPUEffectsBindGroup.js`).
+
+**Eviction + safety:** age-based (600-frame TTL, scan every 120 frames, ticked by a per-frame
+`beginFrame(frameState.frameNumber)` that no-ops within a frame). Stale entries referencing destroyed
+resources (trimmed ring overflow pages, evicted imagery textures) are harmless by construction — a
+destroyed resource can never re-acquire its identity key, so the entry is never looked up again and
+ages out. `destroy()` clears the cache and unpublishes the debug global. Counters
+(`_bindGroupCreates`/`_bindGroupHits` + per-frame deltas) are debug-pragma'd (zero production cost);
+read via `CesiumDebug.globeBindGroups()` or `globalThis.__webgpuGlobeBindGroupCache.getStats()`.
+
+**Evidence (`probe-globe-bindgroup-cache.mjs`, Edge headless, CesiumViewer webgpu):**
+(A) fixed camera (lon 0 / lat 20 / 15 Mm), settled: **0.000 creates/frame over a 30-frame window at
+68.0 requests/frame** — pre-cache, every request was a create; (B) pan to lon 80 / lat -10: 12-17
+creates during pan+load (new imagery views + shifted ring offsets), then re-settles to **0.000
+creates/frame at 64.0 requests/frame**; (C) visual: 31.4% non-black canvas, 264 imagery color buckets;
+(D) 0 console/validation errors. Lifetime hit rate 99.0-99.1%, 81-86 cache entries. **No-regression
+pixel proof:** WebGPU HEAD-baseline vs cache-build at the same settled camera = 0.012% pixel mismatch
+(96/786k px, readback noise); the small white tile patch visible near the globe bottom exists
+IDENTICALLY at HEAD (pre-existing imagery/tile behavior, not introduced here). WebGL-vs-WebGPU at the
+same camera shows only the known tonal/brightness divergence family (NEW-GROUND-VIEW-ENV-DIVERGENCES).
+
+**Probe gotcha (settle gate):** `tilesLoaded` is true while the imagery provider is still
+async-initializing AND while the central pipeline cache is still materializing globe pipeline variants
+(`selectPipelineHelper` returns null → `createTileCommands` early-`continue`s before any bind-group
+request) — both windows let a hollow steady measurement pass with 0 requests/frame. The probe's settle
+gate therefore requires tilesLoaded AND tilesToRender > 0 AND the bind-group request counter actively
+ticking every frame of the streak.
+
+**Regression:** `npx tsc --noEmit` clean; `gulp build` green; probe-globe-bindgroup-cache PASS (×2 runs,
+deterministic); probe-orbital-catalog PASS (magenta 14155/14527, mask Δ185.7%, 0 errors);
+probe-compute-instance-generic PASS; probe-collections-regression PASS (all five checks).

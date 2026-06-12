@@ -446,6 +446,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - RenderStateToPipelineVariant — maps Cesium RenderState → unique pipeline variant key (SHIPPED)
 - WebGPUPipelineDescriptorBuilder — fluent builder constructing GPURenderPipelineDescriptors (SHIPPED)
 - WebGPUBindGroupCache — dedup of `createBindGroup()` calls across frames (SHIPPED)
+- WebGPUGlobeBindGroupCache — per-tile bind-group cache for the globe surface renderer: groups 0/1/2 keyed on bound-resource identity (group 0 = ring-page buffer+offset, group 1 = 16 imagery view ids, group 2 = waterMask/ocean/material ids) with 600-frame age eviction + debug-pragma'd counters via `CesiumDebug.globeBindGroups()`; steady-state tile bind-group creations 68/frame → 0 (SHIPPED — NEW-GLOBE-BINDGROUP-CACHE, Batch 241)
 - WebGPUBindGroupLayoutHelpers — typed helpers used by 86 of 88 BGL creation sites (SHIPPED)
 - WebGPUBindGroupReflection — runtime introspection of WGSL bind-group layouts (SHIPPED)
 - WebGPUUniformGroupManager — tier-3 caching for shared per-pass uniform groups (SHIPPED)

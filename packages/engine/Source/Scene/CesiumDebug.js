@@ -83,6 +83,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.cpuPassCost(t/f)  — CPU per-pass cost (R-7a) ║
 ║  CesiumDebug.gpuPassCost()     — GPU per-pass cost (timestamp) ║
 ║  CesiumDebug.highDensityCull() — gpuCuller/HiZ/sort-keys stats ║
+║  CesiumDebug.globeBindGroups() — globe bind-group cache stats ║
 ║  CesiumDebug.globeFragmentDebug(name) — visualize FS stages ║
 ║  CesiumDebug.globeFragmentDebug()        — list available modes ║
 ╚══════════════════════════════════════════════════════╝
@@ -569,6 +570,30 @@ function installCesiumDebug(viewer) {
         hiZ: stats.hiZ,
         gpuSortKeys: stats.gpuSortKeys,
       });
+      return stats;
+    },
+
+    /**
+     * Dump the globe surface bind-group cache stats
+     * (NEW-GLOBE-BINDGROUP-CACHE, Batch 241). Healthy steady-state at a
+     * fixed camera: `lastFrameCreates` ~0 with a high `hitRate`. A
+     * sustained non-zero `lastFrameCreates` at a settled camera means
+     * the ring-allocator offsets (group 0) or texture identities
+     * (groups 1/2) are churning — see WEBGPU_DEBUGGING_LOG Batch 241.
+     *
+     * Counters are debug-pragma'd: production builds report 0 for
+     * creates/hits (the cache still works; only the bookkeeping strips).
+     */
+    globeBindGroups() {
+      const cache = globalThis.__webgpuGlobeBindGroupCache;
+      if (!cache) {
+        console.warn(
+          "[CesiumDebug] No globe bind-group cache — WebGPU globe renderer not initialized",
+        );
+        return null;
+      }
+      const stats = cache.getStats();
+      console.table(stats);
       return stats;
     },
 

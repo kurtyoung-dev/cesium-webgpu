@@ -40,6 +40,7 @@ import {
 } from "./WebGPUGlobeSurfaceTileBuffers.js";
 import { createCameraUniformBuffer as createCameraUniformBufferHelper } from "./WebGPUGlobeSurfaceCameraUB.js";
 import { createTileUniformBuffer as createTileUniformBufferHelper } from "./WebGPUGlobeSurfaceTileUB.js";
+import { WebGPUGlobeBindGroupCache } from "./WebGPUGlobeBindGroupCache.js";
 import {
   aggregateCompositeUniforms,
   buildMaterialPrelude,
@@ -251,6 +252,14 @@ export class WebGPUGlobeSurfaceRenderer {
     { buffer: GPUBuffer; count: number; format: GPUIndexFormat }
   > = new Map();
 
+  // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — per-tile bind-group cache
+  // keyed on bound-resource identity. Groups 0/1/2 route through it;
+  // group 3 (effects) has its own cache in `WebGPUEffectsBindGroup.js`
+  // (C-R11, Batch 55). Stats readable via
+  // `CesiumDebug.globeBindGroups()` / `globalThis.__webgpuGlobeBindGroupCache`.
+  private _bindGroupCache: WebGPUGlobeBindGroupCache =
+    new WebGPUGlobeBindGroupCache();
+
   // Per-tile GPU resource caches
   // Public underscore: shared with the tile-buffer helpers (Batch 151).
   public _tileBufferCache: Map<string, TileGPUResources> = new Map();
@@ -432,6 +441,15 @@ export class WebGPUGlobeSurfaceRenderer {
     createPlaceholderTextureHelper(this);
     // Pipelines are created lazily in _selectPipeline based on actual tile stride
     this._isInitialized = true;
+
+    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — publish the bind-group
+    // cache for `CesiumDebug.globeBindGroups()` and the regression
+    // probe. Last-initialized renderer wins (same convention as
+    // `__webgpuGlobeFragmentDebugRegistry`); split-screen debug reads
+    // the most recent device's cache, which is the common case.
+    (
+      globalThis as { __webgpuGlobeBindGroupCache?: WebGPUGlobeBindGroupCache }
+    ).__webgpuGlobeBindGroupCache = this._bindGroupCache;
   }
 
   get isInitialized(): boolean {
@@ -562,6 +580,11 @@ export class WebGPUGlobeSurfaceRenderer {
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
     if (!mesh) return null;
+
+    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — per-frame tick (no-ops
+    // when called again for subsequent tiles in the same frame). Rolls
+    // the per-frame stat counters and runs the periodic age eviction.
+    this._bindGroupCache.beginFrame(frameState.frameNumber ?? 0);
 
     const tileKey = getTileKeyHelper(tile);
     const gpuResources = getOrCreateTileBuffersHelper(this, tileKey, mesh);
@@ -874,27 +897,7 @@ export class WebGPUGlobeSurfaceRenderer {
         isSubsequentPass,
       );
 
-      const bindGroup0 = device.createBindGroup({
-        layout: this._bindGroupLayout0!,
-        entries: [
-          {
-            binding: 0,
-            resource: {
-              buffer: cameraUB.buffer,
-              offset: cameraUB.offset,
-              size: cameraUB.size,
-            },
-          },
-          {
-            binding: 1,
-            resource: {
-              buffer: tileUB.buffer,
-              offset: tileUB.offset,
-              size: tileUB.size,
-            },
-          },
-        ],
-      });
+      const bindGroup0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
 
       const bindGroup1 = this._createTextureBindGroup(device, passLayers);
       // Group 2: Merged water mask + ocean normal map
@@ -1299,6 +1302,48 @@ export class WebGPUGlobeSurfaceRenderer {
   // Texture Management
   // ═══════════════════════════════════════════════════════════════════════
 
+  /**
+   * Group 0 (camera UB + tile UB), cached on (buffer identity, byte
+   * offset) of both ring-allocator slices. At a settled camera the
+   * ring allocator reproduces the same (page, offset) tuples with
+   * period = pageCount, so steady-state lookups hit. During tile churn
+   * the offsets shift and this degrades gracefully to the pre-cache
+   * create-per-call behavior. NEW-GLOBE-BINDGROUP-CACHE (Batch 241);
+   * the offset-churn-proof fix is dynamic-offset BGL conversion
+   * (NEW-GLOBE-DYNAMIC-OFFSET-UBO, deferred).
+   */
+  private _getOrCreateBindGroup0(
+    device: GPUDevice,
+    cameraUB: { buffer: GPUBuffer; offset: number; size: number },
+    tileUB: { buffer: GPUBuffer; offset: number; size: number },
+  ): GPUBindGroup {
+    const cache = this._bindGroupCache;
+    const key = `0|${cache.idOf(cameraUB.buffer)}:${cameraUB.offset}|${cache.idOf(tileUB.buffer)}:${tileUB.offset}`;
+    return cache.getOrCreate(key, () =>
+      device.createBindGroup({
+        layout: this._bindGroupLayout0!,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: cameraUB.buffer,
+              offset: cameraUB.offset,
+              size: cameraUB.size,
+            },
+          },
+          {
+            binding: 1,
+            resource: {
+              buffer: tileUB.buffer,
+              offset: tileUB.offset,
+              size: tileUB.size,
+            },
+          },
+        ],
+      }),
+    );
+  }
+
   private _createTextureBindGroup(
     device: GPUDevice,
     passLayers: CesiumTileImagery[],
@@ -1342,31 +1387,44 @@ export class WebGPUGlobeSurfaceRenderer {
       textureViews.push(this._placeholderView!);
     }
 
+    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — keyed on the 16 view
+    // identities. Views are stable per texture (created once, cached in
+    // `_imageryTextureCache` next to their GPUTexture), so a key change
+    // means the underlying texture actually rotated. The sampler is an
+    // init-time singleton and stays out of the key.
+    const cache = this._bindGroupCache;
+    let key = "1";
+    for (let i = 0; i < MAX_IMAGERY_LAYERS; i++) {
+      key += `|${cache.idOf(textureViews[i])}`;
+    }
+
     // Batch 58 (C-R5): 16 texture bindings + sampler at binding 16. Each
     // entry pulls from `textureViews[i]` which is padded with placeholder
     // views above so unused slots still bind a valid resource.
-    return device.createBindGroup({
-      layout: this._bindGroupLayout1!,
-      entries: [
-        { binding: 0, resource: textureViews[0] },
-        { binding: 1, resource: textureViews[1] },
-        { binding: 2, resource: textureViews[2] },
-        { binding: 3, resource: textureViews[3] },
-        { binding: 4, resource: textureViews[4] },
-        { binding: 5, resource: textureViews[5] },
-        { binding: 6, resource: textureViews[6] },
-        { binding: 7, resource: textureViews[7] },
-        { binding: 8, resource: textureViews[8] },
-        { binding: 9, resource: textureViews[9] },
-        { binding: 10, resource: textureViews[10] },
-        { binding: 11, resource: textureViews[11] },
-        { binding: 12, resource: textureViews[12] },
-        { binding: 13, resource: textureViews[13] },
-        { binding: 14, resource: textureViews[14] },
-        { binding: 15, resource: textureViews[15] },
-        { binding: 16, resource: this._sampler! },
-      ],
-    });
+    return cache.getOrCreate(key, () =>
+      device.createBindGroup({
+        layout: this._bindGroupLayout1!,
+        entries: [
+          { binding: 0, resource: textureViews[0] },
+          { binding: 1, resource: textureViews[1] },
+          { binding: 2, resource: textureViews[2] },
+          { binding: 3, resource: textureViews[3] },
+          { binding: 4, resource: textureViews[4] },
+          { binding: 5, resource: textureViews[5] },
+          { binding: 6, resource: textureViews[6] },
+          { binding: 7, resource: textureViews[7] },
+          { binding: 8, resource: textureViews[8] },
+          { binding: 9, resource: textureViews[9] },
+          { binding: 10, resource: textureViews[10] },
+          { binding: 11, resource: textureViews[11] },
+          { binding: 12, resource: textureViews[12] },
+          { binding: 13, resource: textureViews[13] },
+          { binding: 14, resource: textureViews[14] },
+          { binding: 15, resource: textureViews[15] },
+          { binding: 16, resource: this._sampler! },
+        ],
+      }),
+    );
   }
 
   /**
@@ -1535,20 +1593,35 @@ export class WebGPUGlobeSurfaceRenderer {
       matUBO = this._placeholderMaterialUBO;
     }
 
-    return device.createBindGroup({
-      layout: this._bindGroupLayout2!,
-      entries: [
-        { binding: 0, resource: waterMaskView },
-        { binding: 1, resource: this._waterMaskSampler! },
-        { binding: 2, resource: normalMapView },
-        { binding: 3, resource: this._oceanNormalSampler! },
-        { binding: 4, resource: { buffer: matUBO } },
-        { binding: 5, resource: matImage },
-        { binding: 6, resource: this._sampler! },
-        { binding: 7, resource: matHeights },
-        { binding: 8, resource: this._sampler! },
-      ],
-    });
+    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — keyed on the 5 variable
+    // resource identities (water mask view, ocean normal view, material
+    // UBO + 2 material texture views). Samplers are init-time
+    // singletons. The material UBO's CONTENTS are rewritten per frame
+    // via writeBuffer, but the buffer object is stable per material
+    // type, so the bind group itself is reusable. This also collapses
+    // the per-pass double-create (`bindGroup2` for the translucency
+    // pre-passes + `bindGroup2Final` for the color pass resolve to the
+    // same key when their resolved resources match).
+    const cache = this._bindGroupCache;
+    const key =
+      `2|${cache.idOf(waterMaskView)}|${cache.idOf(normalMapView)}|` +
+      `${cache.idOf(matUBO)}|${cache.idOf(matImage)}|${cache.idOf(matHeights)}`;
+    return cache.getOrCreate(key, () =>
+      device.createBindGroup({
+        layout: this._bindGroupLayout2!,
+        entries: [
+          { binding: 0, resource: waterMaskView },
+          { binding: 1, resource: this._waterMaskSampler! },
+          { binding: 2, resource: normalMapView },
+          { binding: 3, resource: this._oceanNormalSampler! },
+          { binding: 4, resource: { buffer: matUBO } },
+          { binding: 5, resource: matImage },
+          { binding: 6, resource: this._sampler! },
+          { binding: 7, resource: matHeights },
+          { binding: 8, resource: this._sampler! },
+        ],
+      }),
+    );
   }
 
   // ─── Imagery / Water-Mask Texture Cache ───
@@ -1603,6 +1676,10 @@ export class WebGPUGlobeSurfaceRenderer {
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
     if (!mesh) return null;
 
+    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — same per-frame tick as
+    // `createTileCommands` (no-op when already ticked this frame).
+    this._bindGroupCache.beginFrame(frameState.frameNumber ?? 0);
+
     const tileKey = getTileKeyHelper(tile);
     const gpuResources = getOrCreateTileBuffersHelper(this, tileKey, mesh);
     if (!gpuResources) return null;
@@ -1644,27 +1721,7 @@ export class WebGPUGlobeSurfaceRenderer {
       false,
     );
 
-    const bindGroup0 = device.createBindGroup({
-      layout: this._bindGroupLayout0!,
-      entries: [
-        {
-          binding: 0,
-          resource: {
-            buffer: cameraUB.buffer,
-            offset: cameraUB.offset,
-            size: cameraUB.size,
-          },
-        },
-        {
-          binding: 1,
-          resource: {
-            buffer: tileUB.buffer,
-            offset: tileUB.offset,
-            size: tileUB.size,
-          },
-        },
-      ],
-    });
+    const bindGroup0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
 
     // Use placeholder textures for wireframe — imagery not needed
     const bindGroup1 = this._createTextureBindGroup(device, []);
@@ -1799,6 +1856,16 @@ export class WebGPUGlobeSurfaceRenderer {
     this._pipelineCache.clear();
     this._wireframePipelineCache.clear();
     this._debugFragmentPipelineCache.clear();
+    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — drop all cached bind
+    // groups (they reference textures/buffers destroyed above) and
+    // unpublish the debug handle if it points at this cache.
+    this._bindGroupCache.clear();
+    const g = globalThis as {
+      __webgpuGlobeBindGroupCache?: WebGPUGlobeBindGroupCache;
+    };
+    if (g.__webgpuGlobeBindGroupCache === this._bindGroupCache) {
+      g.__webgpuGlobeBindGroupCache = undefined;
+    }
     if (this._shaderModuleCache) {
       this._shaderModuleCache.destroy();
       this._shaderModuleCache = null;
