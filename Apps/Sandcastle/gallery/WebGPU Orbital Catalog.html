@@ -157,6 +157,11 @@
             new Cesium.ComputeInstanceCollection({
               kernel: orbitalKernel,
               floatsPerInstance: FLOATS_PER_INSTANCE,
+              // Positions are GPU-resident, so the bounding volume is a
+              // USER contract: every orbit fits inside GEO radius + margin
+              // (largest semiMajorAxis = 6.371e6 + 35786e3 ≈ 4.216e7 m).
+              // Enables per-frustum culling/binning of the catalog draw.
+              boundingSphere: new Cesium.BoundingSphere(Cesium.Cartesian3.ZERO, 4.4e7),
             }),
           );
 

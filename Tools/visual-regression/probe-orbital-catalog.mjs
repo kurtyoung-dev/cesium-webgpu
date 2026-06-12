@@ -112,6 +112,11 @@ const out = await page.evaluate(async () => {
     new C.ComputeInstanceCollection({
       kernel: orbitalKernel,
       floatsPerInstance: FPI,
+      // Batch 235: user-contract bounding volume (positions are
+      // GPU-resident). Earth center, GEO radius + margin — bounds all
+      // three shells (max a = 2.0e7 * 1.05), so the regression numbers
+      // must stay equivalent to the no-BV baseline.
+      boundingSphere: new C.BoundingSphere(C.Cartesian3.ZERO, 4.4e7),
     }),
   );
   const epoch = C.JulianDate.clone(v.clock.currentTime);

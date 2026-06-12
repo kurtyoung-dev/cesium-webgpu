@@ -12,6 +12,14 @@
 //       while the camera stays fixed,
 //   (C) produce ZERO console errors (incl. WebGPU validation errors).
 //
+// Batch 235 additions (BV + TAA velocity for the compute-instance system):
+//   (D) BV — the user-supplied `boundingSphere` threads onto the draw
+//       command (`boundingVolume` present, `cull === true`),
+//   (E) TAA ON — the command carries a `velocityCommand` (prev-position
+//       ping-pong + velocity pipeline live) and the whole run still
+//       produces ZERO console/validation errors (covered by (C)),
+//   (F) TAA OFF again — the `velocityCommand` detaches.
+//
 // Determinism: same harness as probe-orbital-catalog.mjs (see its header
 // for the postRender-readback + requestRenderMode rationale) — widget loop
 // keeps running, clock pinned to epoch + i*30 s per frame, so the kernel's
@@ -85,10 +93,14 @@ const out = await page.evaluate(async () => {
       return out;
     }`;
 
+  const BV_RADIUS = 4.4e7; // earth center, GEO radius + margin
   const collection = scene.primitives.add(
     new C.ComputeInstanceCollection({
       kernel: lissajousKernel,
       floatsPerInstance: 2,
+      // Batch 235: user-contract bounding volume (positions are
+      // GPU-resident; the figure-8 maxes out ~1.05e7 m from origin).
+      boundingSphere: new C.BoundingSphere(C.Cartesian3.ZERO, BV_RADIUS),
     }),
   );
   const epoch = C.JulianDate.clone(v.clock.currentTime);
@@ -179,6 +191,40 @@ const out = await page.evaluate(async () => {
   }
   const denom = Math.max(A.count, B.count, 1);
 
+  // ── (D) Batch 235: the user BV must ride the draw command ──
+  const cache = collection._webgpuCache;
+  const cmd = cache?.command;
+  const bvState = {
+    hasBoundingVolume: !!cmd?.boundingVolume,
+    bvRadius: cmd?.boundingVolume?.radius ?? 0,
+    cullFlag: cmd?.cull === true,
+  };
+
+  // ── (E) TAA ON: prev-position ping-pong + velocityCommand ──
+  // The partner buffer allocates on the first TAA frame and the async
+  // velocity pipeline resolves over the next few — give it 12 frames of
+  // headroom, then the attachment must be stable.
+  scene.taaEnabled = true;
+  for (let k = 0; k < 12; k++) {
+    await renderAt(f * 30.0);
+    f++;
+  }
+  const taaOnState = {
+    hasVelocityCommand: !!cache?.command?.velocityCommand,
+    velocityInstances: cache?.command?.velocityCommand?.instanceCount ?? 0,
+    pingPongPartnerAllocated: !!cache?.instanceBuffers?.[1],
+  };
+
+  // ── (F) TAA OFF: velocityCommand must detach within a few frames ──
+  scene.taaEnabled = false;
+  for (let k = 0; k < 6; k++) {
+    await renderAt(f * 30.0);
+    f++;
+  }
+  const taaOffState = {
+    hasVelocityCommand: !!cache?.command?.velocityCommand,
+  };
+
   return {
     instanceCount: collection.length,
     simTimeA_s: 15 * 30,
@@ -187,12 +233,25 @@ const out = await page.evaluate(async () => {
     magentaB: B.count,
     changedPixels: changed,
     changedPct: changed / denom,
+    bvRadiusSupplied: BV_RADIUS,
+    bvState,
+    taaOnState,
+    taaOffState,
   };
 });
 
 const aOK = out.magentaA > 300 && out.magentaB > 300;
 const bOK = out.changedPct > 0.2;
 const cOK = errors.length === 0;
+const dOK =
+  out.bvState.hasBoundingVolume &&
+  out.bvState.bvRadius === out.bvRadiusSupplied &&
+  out.bvState.cullFlag;
+const eOK =
+  out.taaOnState.hasVelocityCommand &&
+  out.taaOnState.pingPongPartnerAllocated &&
+  out.taaOnState.velocityInstances === out.instanceCount;
+const fOK = !out.taaOffState.hasVelocityCommand;
 
 console.log(
   `(A) renders: ${out.instanceCount} instances -> magenta px frame15=${out.magentaA} frame60=${out.magentaB} (threshold 300) ${aOK ? "OK" : "FAIL"}`,
@@ -202,8 +261,17 @@ console.log(
 );
 console.log(`(C) console errors: ${errors.length} ${cOK ? "OK" : "FAIL"}`);
 errors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 250)));
+console.log(
+  `(D) bounding volume: onCommand=${out.bvState.hasBoundingVolume} radius=${out.bvState.bvRadius} (supplied ${out.bvRadiusSupplied}) cull=${out.bvState.cullFlag} ${dOK ? "OK" : "FAIL"}`,
+);
+console.log(
+  `(E) TAA on: velocityCommand=${out.taaOnState.hasVelocityCommand} instances=${out.taaOnState.velocityInstances} pingPongPartner=${out.taaOnState.pingPongPartnerAllocated} ${eOK ? "OK" : "FAIL"}`,
+);
+console.log(
+  `(F) TAA off: velocityCommand=${out.taaOffState.hasVelocityCommand} (must be false) ${fOK ? "OK" : "FAIL"}`,
+);
 
-const pass = aOK && bOK && cOK;
+const pass = aOK && bOK && cOK && dOK && eOK && fOK;
 console.log(pass ? "PASS" : "FAIL");
 await browser.close();
 process.exit(pass ? 0 : 1);

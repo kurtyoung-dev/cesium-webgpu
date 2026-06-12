@@ -17,9 +17,13 @@
 // absolute world-space position in f32.
 //
 // `previousViewProjection` rides at the CameraUniforms tail per the DP-H41
-// (Batch 27) struct contract. No velocity entry point yet — TAA motion
-// vectors for GPU-resident instances are a tracked follow-up
-// (the prev-position storage buffer double-buffer does not exist yet).
+// (Batch 27) struct contract. TAA motion vectors (Batch 235): the renderer
+// ping-pongs two instance-record buffers — the kernel writes the CURRENT
+// buffer each frame and last frame's output buffer binds as `prevInstances`
+// (@binding(2), statically used only by the velocity entry points below, so
+// the color pipeline's two-entry bind group layout is unaffected). The
+// velocity pass rasterizes at the current position and outputs the NDC
+// delta into the rg16float velocity target (cloud/point/billboard pattern).
 
 // MUST match `CsmInstanceRecord` in ComputeInstanceScaffold.wgsl
 // (64 bytes: vec3+pad, vec3+pad, vec4, f32+12 pad).
@@ -96,4 +100,75 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     discard;
   }
   return vec4<f32>(input.color.rgb, alpha);
+}
+
+// ── TAA velocity entry points (Batch 235) ──────────────────────────────
+// Previous frame's instance records — the OTHER half of the renderer's
+// ping-pong pair (last frame's kernel output buffer). Bound only by the
+// velocity pipeline's three-entry bind group; the color pipeline never
+// statically references this binding.
+@group(0) @binding(2) var<storage, read> prevInstances: array<InstanceRecord>;
+
+struct VelocityVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currentCenterClip: vec4<f32>,
+  @location(1) prevCenterClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMain(
+  @builtin(instance_index) instanceIndex: u32,
+  @location(0) quadPos: vec2<f32>,  // [-1, 1] quad corners
+) -> VelocityVertexOutput {
+  var output: VelocityVertexOutput;
+
+  let inst = instances[instanceIndex];
+  let prev = prevInstances[instanceIndex];
+
+  // Current-frame center clip via RTE (identical math to vertexMain).
+  var highDiff = inst.positionHigh - camera.encodedCameraHigh;
+  if (length(highDiff) == 0.0) {
+    highDiff = vec3<f32>(0.0, 0.0, 0.0);
+  }
+  let lowDiff = inst.positionLow - camera.encodedCameraLow;
+  let currentCenterClip =
+    camera.mvpRelativeToEye * vec4<f32>(highDiff + lowDiff, 1.0);
+
+  // Previous-frame center clip via the full previous viewProjection.
+  // high + low reconstructs the absolute position because
+  // previousViewProjection is a plain world-space matrix, not RTE — the
+  // f32 precision loss only perturbs the velocity vector, never the
+  // rasterized position (PointPrimitiveColor.wgsl velocity precedent).
+  let prevWorld = vec4<f32>(prev.positionHigh + prev.positionLow, 1.0);
+  let prevCenterClip = camera.previousViewProjection * prevWorld;
+
+  // Rasterize at the CURRENT-frame position so the velocity texture
+  // covers the same pixels the color pass touched (same quad expansion
+  // as vertexMain).
+  let size = max(inst.pixelSize, 1.0);
+  output.position = vec4<f32>(
+    currentCenterClip.x +
+      quadPos.x * size / camera.viewportSize.x * currentCenterClip.w,
+    currentCenterClip.y +
+      quadPos.y * size / camera.viewportSize.y * currentCenterClip.w,
+    currentCenterClip.z,
+    currentCenterClip.w,
+  );
+  output.currentCenterClip = currentCenterClip;
+  output.prevCenterClip = prevCenterClip;
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMain(
+  input: VelocityVertexOutput,
+) -> @location(0) vec2<f32> {
+  let curW = input.currentCenterClip.w;
+  let prevW = input.prevCenterClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currentCenterClip.xy / curW;
+  let prevNdc = input.prevCenterClip.xy / prevW;
+  return curNdc - prevNdc;
 }

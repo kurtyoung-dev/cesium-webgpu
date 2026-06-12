@@ -1,3 +1,4 @@
+import BoundingSphere from "../Core/BoundingSphere.js";
 import Check from "../Core/Check.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import Frozen from "../Core/Frozen.js";
@@ -80,6 +81,13 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  * @param {boolean} [options.show=true] Whether to display the collection.
  * @param {JulianDate} [options.epoch] The epoch that simulation time is
  *        measured from. Defaults to the first rendered frame's time.
+ * @param {BoundingSphere} [options.boundingSphere] A user-supplied sphere
+ *        (world/ECEF meters) that bounds every position the kernel can
+ *        produce. Because positions are GPU-resident the engine cannot
+ *        derive one. When supplied, the draw command carries it as its
+ *        bounding volume and is frustum-culled / frustum-binned like any
+ *        CPU primitive; when omitted the collection is never culled and
+ *        bins into all frustums (the pre-Batch-235 behavior).
  *
  * @example
  * // Instances on a vertical circle above the equator; one parameter lane
@@ -141,6 +149,9 @@ class ComputeInstanceCollection {
     this._floatsPerInstance = floatsPerInstance;
     this._epoch = defined(options.epoch)
       ? JulianDate.clone(options.epoch)
+      : undefined;
+    this._boundingSphere = defined(options.boundingSphere)
+      ? BoundingSphere.clone(options.boundingSphere)
       : undefined;
 
     const count = options.count ?? 0;
@@ -206,6 +217,26 @@ class ComputeInstanceCollection {
 
   set epoch(value) {
     this._epoch = defined(value) ? JulianDate.clone(value) : undefined;
+  }
+
+  /**
+   * A user-supplied sphere (world/ECEF meters) bounding every position the
+   * kernel can produce, used as the draw command's bounding volume for
+   * frustum culling/binning. Positions are GPU-resident, so the engine
+   * cannot derive this — it is entirely the caller's contract. Assign
+   * <code>undefined</code> to restore the never-culled behavior. The value
+   * is cloned on assignment; mutate-and-reassign to update.
+   * @memberof ComputeInstanceCollection.prototype
+   * @type {BoundingSphere|undefined}
+   */
+  get boundingSphere() {
+    return this._boundingSphere;
+  }
+
+  set boundingSphere(value) {
+    this._boundingSphere = defined(value)
+      ? BoundingSphere.clone(value, this._boundingSphere)
+      : undefined;
   }
 
   /**

@@ -10503,3 +10503,55 @@ HIGH) — next concrete step is the lazy `addTAA` + a first-activation probe for
 Polyline}Renderer.js`, `Renderer/WebGPU/WebGPU{Cloud,PointCloud,Voxel,GaussianSplat}Renderer.ts`,
 +`Tools/visual-regression/probe-taa-velocity-emission.mjs`, DEFERRED_WORK / FEATURE_INVENTORY /
 DEBUGGING_GUIDE docs.
+
+## Batch 235 — Compute-instance system: user-contract bounding volume + TAA prev-position ping-pong velocity (2026-06-12)
+
+**Two Batch-231 follow-ups on the generic compute-instance system** (both were called out as
+deferred in the `WebGPUComputeInstanceRenderer` header + the NEW-ORBITAL re-label notes):
+
+**1. Bounding volume (cull):** the draw command shipped with NO `boundingVolume`, so it was
+binned into every frustum and never frustum/occlusion-culled. Positions are GPU-resident — the
+engine cannot derive a BV — so the bound is a USER contract: new documented
+`ComputeInstanceCollection` option/property `boundingSphere` ("every position the kernel can
+produce fits in this sphere", cloned on assignment, `undefined` keeps the historical no-cull
+behavior). The renderer refreshes `command.boundingVolume` + `command.cull` from it every frame.
+
+*Measured side effect (expected, an improvement):* the orbital probe's magenta count dropped
+15286 → 14156 px when the BV landed. Diagnosed with a temp frustum probe: the scene's computed
+frusta are IDENTICAL (`[0.1,1e8],[1e8,1e10]`), but a no-BV command bins into BOTH frusta (drawn
+2×, alpha-blend applied twice at dot edges) while the BV command (max distance 7.9e7 < 1e8) bins
+into exactly one — bin count 2 → 1 verified by walking `frustumCommandsList` for the command.
+The delta is the removal of cross-frustum double-blending, not lost dots.
+
+**2. TAA motion vectors (prev-position ping-pong):** the velocity surface needs last frame's
+positions, which only ever existed transiently in the single instance-record buffer. The
+renderer now ping-pongs TWO record buffers: the kernel writes `instanceBuffers[pingPongIndex]`
+each frame (per-orientation compute/render bind groups; the color command's bind group is
+re-pointed per frame) and the other slot — last frame's kernel output — binds as
+`prevInstances` (@binding(2), statically used only by the new `vertexVelocityMain` /
+`fragmentVelocityMain` entry points in `ComputeInstanceRender.wgsl`, so the color BGL is
+untouched). Velocity command (rg16float NDC delta, rasterized at the current position,
+cloud/point/billboard pattern; current = RTE `mvpRelativeToEye`, prev = full
+`previousViewProjection` × (high+low)) attaches as `cmd.velocityCommand` ONLY when the
+canonical `frameState.taaEnabled` (Batch 234) is on. Zero cost when TAA is off: the partner
+buffer + velocity BGL/pipeline/bind groups all allocate lazily on the first TAA-on frame
+(emission starts one frame later — the fresh partner holds no prior positions, no seed copy
+needed), and a collection that never sees TAA never allocates any of it. Count changes destroy
+both buffers and restart on the primary.
+
+**Verification (Principle 8):**
+- `probe-compute-instance-generic.mjs` extended with three assertions: (D) BV on command —
+  `boundingVolume.radius === 4.4e7`, `cull === true`; (E) TAA ON 12f — `velocityCommand`
+  attached, instanceCount 400, ping-pong partner allocated; (F) TAA OFF 6f — detached. Full run
+  (A) 6289/6405 magenta px, (B) 177.8% mask change, (C) **0 console/validation errors across
+  the OFF→ON→OFF cycle** → PASS.
+- `probe-orbital-catalog.mjs` now supplies the BV (earth center, 4.4e7 = GEO + margin):
+  14156/14529 px, 185.6% mask change, 0 errors → PASS (deterministic ±2 px across runs; delta
+  vs the 15286 no-BV number explained above).
+- Sandcastle "WebGPU Orbital Catalog" supplies the same sphere.
+- `npx gulp build` + `npx tsc --noEmit` clean.
+
+**Files:** `Scene/ComputeInstanceCollection.js`, `Renderer/WebGPU/WebGPUComputeInstanceRenderer.ts`,
+`Shaders/WebGPU/Compute/ComputeInstanceRender.wgsl`, `Apps/Sandcastle/gallery/WebGPU Orbital
+Catalog.html`, `Tools/visual-regression/probe-{orbital-catalog,compute-instance-generic}.mjs`,
+DEFERRED_WORK / FEATURE_INVENTORY docs.
