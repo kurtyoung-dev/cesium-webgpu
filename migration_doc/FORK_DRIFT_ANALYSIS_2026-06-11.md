@@ -25,7 +25,7 @@ Upstream shipped v1.142 (2026-06-01) since our merge-base. These are the items w
 
 | Priority | Upstream change | PR | Why it improves our fork |
 |---|---|---|---|
-| **P1** | `pickModel`: fixed incorrect matrix multiplication for non-worldspace instance transforms; fixed `ModelReader.octDecode` arg order (`octDecodeInRange`/`Cartesian3.pack`) | #13433 | Directly correctness-relevant — we're actively working picking (Batch 221). Our model-pick path should carry these fixes; verify against our forked `Model.js`/picking. |
+| **P1** | `pickModel`: fixed incorrect matrix multiplication for non-worldspace instance transforms; fixed `ModelReader.octDecode` arg order (`octDecodeInRange`/`Cartesian3.pack`) | #13433 | ✅ **SHIPPED (Batch 238)** — all three source fixes ported into our PRE-refactor structure (incl. the `InstancingPipelineStage` `keepTypedArray` routing + the same swapped-arg bug inline in `getVertexPosition`); upstream's `forEachPrimitive` refactor NOT adopted. Evidence: `probe-pickmodel-instanced.mjs` (0/42 → 42/42 GPU-anchored CPU pick hits) + `upstream-regression-check.mjs` [5]. Found + tracked pre-existing `NEW-WEBGPU-INSTANCED-VA-DIVISORS` (instanced models crash WebGPU render loop). See DEFERRED_WORK `NEW-UPSTREAM-PICKMODEL-13433`. |
 | **P1** | `BufferPointCollection` not updating after point-position changes | #13465 | Collections are an active fork area (Batches 218–220). Real data-staleness bug; port into our `Buffer*` collection path. |
 | **P1** | Empty `imageryLayers` array wrongly triggers `ImageryPipelineStage` (`hasImageryLayers` must also check `.length > 0`) | (Axis-B `NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD`) | ✅ **SHIPPED (Batch 237)** — guard ported into `ModelRuntimePrimitive.configurePipeline` (upstream-identical), + 2 specs + `Tools/upstream-regression-check.mjs` item [1] with negative control. |
 | **P2** | Stale `showsUpdated` persisting when entities are removed from ground-primitive batches | #13366 | We've touched ground-primitive classification heavily (Batch 173/184). Port to keep batch state correct. |
@@ -99,7 +99,7 @@ The only "drift-management" items worth keeping are the ones that reduce **our**
 
 1. **`NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD`** — port the `hasImageryLayers && length>0` guard (P1, one-liner, affects WebGL).
 2. **`NEW-FORK-MODERNIZATION-REGRESSIONS`** — fix `Resource.contains`, `TimeIntervalCollection.contains`, `Animation.js` text-node (with a unit test each).
-3. **`pickModel` fixes** (#13433) — port the matrix + octDecode fixes into our model-pick path (pairs with the Batch-221 picking work).
+3. **`pickModel` fixes** (#13433) — ✅ SHIPPED (Batch 238, see P1 table row above + DEFERRED_WORK `NEW-UPSTREAM-PICKMODEL-13433`).
 4. **`BufferPointCollection` update fix** (#13465) — port into our `Buffer*` collections.
 5. **`NEW-CAMERA-JSDOC-RESTORE`** + adopt **sg-scan** lint — restore public-API docs + guard against re-loss.
 6. **`PickId.js` rebase assessment** — diff vs upstream; adopt upstream body iff our delta is small.

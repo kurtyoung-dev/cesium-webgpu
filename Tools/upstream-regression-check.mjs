@@ -21,6 +21,12 @@
  *      (the childNodes[0..7] indexing depends on it). Verified by simulating
  *      JS line-continuation join on the actual source literal and comparing
  *      to upstream's exact string.
+ *   5. ModelReader.octDecode — upstream #13433 (ported Batch 238) fixed the
+ *      argument order of `AttributeCompression.octDecodeInRange` (signature
+ *      is `(x, y, rangeMax, result)`; was called `(cart3, range, cart3)` —
+ *      threw "result is required") and `Cartesian3.pack` (signature is
+ *      `(value, array, index)`; args were swapped). Verified by an
+ *      encode→decode round-trip over known unit vectors.
  *
  * Run: node Tools/upstream-regression-check.mjs   (exit 0 = all pass)
  */
@@ -244,6 +250,67 @@ console.log("\n[4] Animation.js themeEle.innerHTML flush-left literal");
     /\s/.test(joined.replace(/ class="/g, 'class="')),
     false,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 5. ModelReader.octDecode — #13433 argument-order fix (Batch 238)
+// ---------------------------------------------------------------------------
+console.log("\n[5] ModelReader.octDecode round-trip (#13433 arg order)");
+{
+  const { default: AttributeCompression } = await import(
+    `file://${join(root, "packages/engine/Source/Core/AttributeCompression.js")}`
+  );
+  const { default: Cartesian3 } = await import(
+    `file://${join(root, "packages/engine/Source/Core/Cartesian3.js")}`
+  );
+  const { default: ModelReader } = await import(
+    `file://${join(root, "packages/engine/Source/Scene/Model/ModelReader.js")}`
+  );
+
+  const vectors = [
+    new Cartesian3(1, 0, 0),
+    new Cartesian3(0, 1, 0),
+    new Cartesian3(0, 0, 1),
+    Cartesian3.normalize(new Cartesian3(1, 2, 3), new Cartesian3()),
+    Cartesian3.normalize(new Cartesian3(-1, -1, 1), new Cartesian3()),
+    Cartesian3.normalize(new Cartesian3(0.3, -0.9, -0.4), new Cartesian3()),
+  ];
+  const range = 65535;
+  const encoded = new Float32Array(vectors.length * 3);
+  const scratch2 = { x: 0, y: 0 };
+  for (let i = 0; i < vectors.length; i++) {
+    AttributeCompression.octEncodeInRange(vectors[i], range, scratch2);
+    encoded[i * 3] = scratch2.x;
+    encoded[i * 3 + 1] = scratch2.y;
+  }
+  let threw = false;
+  let maxErr = Infinity;
+  let wrotePack = false;
+  try {
+    const decoded = ModelReader.octDecode(
+      encoded,
+      vectors.length,
+      range,
+      undefined,
+    );
+    maxErr = 0;
+    for (let i = 0; i < vectors.length; i++) {
+      const d = new Cartesian3(
+        decoded[i * 3],
+        decoded[i * 3 + 1],
+        decoded[i * 3 + 2],
+      );
+      maxErr = Math.max(maxErr, Cartesian3.distance(d, vectors[i]));
+    }
+    // Cartesian3.pack arg-order regression guard: output must actually be
+    // populated (wrong order writes into the scratch Cartesian3 instead).
+    wrotePack = decoded.some((v) => v !== 0);
+  } catch (e) {
+    threw = true;
+  }
+  check("octDecodeInRange call does not throw", threw, false);
+  check("round-trip error < 1e-4", maxErr < 1e-4, true);
+  check("Cartesian3.pack wrote the output array", wrotePack, true);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

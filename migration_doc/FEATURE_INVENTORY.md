@@ -486,7 +486,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUDepthPlane — horizon depth fill (SHIPPED)
 - WebGPUModelRenderer — full glTF Model render path with PBR + KHR extensions (SHIPPED)
 - WebGPUModelPipelineCache — per-model pipeline cache (SHIPPED)
-- WebGPUModelInstancing — EXT_mesh_gpu_instancing draw-instanced path (SHIPPED)
+- WebGPUModelInstancing — EXT_mesh_gpu_instancing draw-instanced path (SHIPPED — **currently regressed**: Batch-238 probe baseline showed ANY instanced model crashes the WebGPU render loop in `VertexArray` bind (`context._vertexAttribDivisors` uninitialized on WebGPUContext; pre-existing since the v1.140 merge) — see DEFERRED_WORK `NEW-WEBGPU-INSTANCED-VA-DIVISORS`; verification gate ready via `PROBE_WEBGPU=1 probe-pickmodel-instanced.mjs`)
 - WebGPUModelMorphTargets — morph-target weighted blending in vertex stage (SHIPPED)
 - WebGPUModelFeatureId — FEATURE_ID_n attribute + texture lookup for batch-table styling (SHIPPED)
 - WebGPUBillboardRenderer — Billboard collection on WGPU (SHIPPED in 3D as of Batch 218 — renders with WebGL parity at close camera; bug 2 far-surface depth + 2D/CV no-render remain — see DEFERRED_WORK "WEBGPU-BILLBOARD-POINT-LABEL-NO-RENDER". Batch 229: instance upload moved onto WebGPUResidentInstanceBuffer — static collections upload 0 B/frame, sparse edits partial-write only changed slots; far-surface depth root-caused to missing collection log-depth, tracked NEW-COLLECTIONS-LOG-DEPTH)

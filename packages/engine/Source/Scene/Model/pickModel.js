@@ -158,9 +158,13 @@ export default function pickModel(
             );
             Matrix4.multiplyTransformation(modelMatrix, transform, transform);
           } else {
+            // Upstream #13433: instance transforms apply in node space, so the
+            // composition is computedModelMatrix * instanceTransform (matches
+            // InstancingStageVS). The old transform * computedModelMatrix
+            // order left instances at un-axis-corrected glTF positions.
             Matrix4.multiplyTransformation(
-              transform,
               computedModelMatrix,
+              transform,
               transform,
             );
           }
@@ -382,8 +386,11 @@ function getVertexPosition(
 
   if (defined(quantization)) {
     if (quantization.octEncoded) {
+      // Upstream #13433 (equivalent): octDecodeInRange takes (x, y, rangeMax,
+      // result) — passing the Cartesian3 itself left `result` undefined.
       result = AttributeCompression.octDecodeInRange(
-        result,
+        result.x,
+        result.y,
         quantization.normalizationRange,
         result,
       );

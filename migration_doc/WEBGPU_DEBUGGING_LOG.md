@@ -10648,3 +10648,73 @@ asset-fetch path end-to-end); probe-compute-instance-generic.mjs PASS (6287/6406
 
 **Files:** `ModelRuntimePrimitive.js`, `Resource.js`, `ModelRuntimePrimitiveSpec.js`, `ResourceSpec.js`,
 +`Tools/upstream-regression-check.mjs`, FORK_DRIFT_ANALYSIS / DEFERRED_WORK docs.
+
+## Batch 238 — Upstream #13433 port: pickModel instance composition + ModelReader.octDecode arg order (2026-06-12)
+
+**Scope:** FORK_DRIFT_ANALYSIS_2026-06-11.md fix-forward item 3 (NEW-UPSTREAM-PICKMODEL-13433).
+CPU-side (renderer-agnostic) model picking. Our fork keeps the PRE-refactor `pickModel` structure;
+the EQUIVALENT fixes were ported, NOT upstream's `ModelReader.forEachPrimitive` refactor.
+Fork files were byte-identical to upstream's pre-#13433 parents, so all three bugs were live.
+
+### BUG-238.0 — pickModel composed non-worldspace instance transforms in the wrong order
+
+**File:** `packages/engine/Source/Scene/Model/pickModel.js`
+**Root cause:** for EXT_mesh_gpu_instancing (non-`transformInWorldSpace`) the per-instance matrix was
+combined as `instanceTransform * computedModelMatrix`; the vertex shader applies
+`computedModelMatrix * instanceTransform` (instance transforms live in node space). CPU picks
+therefore tested triangles at un-axis-corrected glTF positions — e.g. BoxInstanced's cubes render at
+Cesium (0,±2,±2) but were CPU-picked at glTF (±2,±2,0).
+**Fix:** swapped to `Matrix4.multiplyTransformation(computedModelMatrix, transform, transform)`
+(upstream-identical math, our loop structure).
+**Evidence:** `Tools/visual-regression/probe-pickmodel-instanced.mjs` [webgl section] — GPU-render-anchored:
+scans the rasterized frame for interior instance pixels, then compares `scene.pickPosition` (GPU depth)
+vs `model.pick` (CPU) at each. Pre-fix: **0/42** CPU hits at GPU-confirmed instance pixels (miss-ray
+control passed, litPixels=45652). Post-fix: **42/42**, maxDist 0.0065, meanDist 0.0026 (same litPixels —
+pure CPU-side fix). Probe is deterministic across runs.
+
+### BUG-238.1 — ModelReader.octDecode called octDecodeInRange + Cartesian3.pack with swapped args
+
+**Files:** `packages/engine/Source/Scene/Model/ModelReader.js`, `pickModel.js` (`getVertexPosition`)
+**Root cause:** `AttributeCompression.octDecodeInRange` takes `(x, y, rangeMax, result)` but was called
+`(cart3, range, cart3)` → `result` undefined → throws "result is required" (debug) / TypeError (release).
+`Cartesian3.pack` takes `(value, array, startingIndex)` but was called `(array, value, index)`.
+Affects every oct-encoded path through `ModelReader.dequantize`/`readAttributeAsTypedArray`
+(EdgeVisibility adjacency, vector-tile buffers, model-imagery mapping), not just picking. The SAME
+swapped-arg `octDecodeInRange` call existed inline in `pickModel.getVertexPosition` (upstream fixed it
+implicitly by routing through ModelReader; we fixed it in place).
+**Fix:** `octDecodeInRange(c.x, c.y, normalizationRange, c)` + `Cartesian3.pack(c, dequantizedTypedArray, i*3)`.
+**Evidence:** `Tools/upstream-regression-check.mjs` [5] — encode→decode round-trip over 6 unit vectors:
+pre-fix throws; post-fix maxErr 2.185e-5 (< 1e-4) + pack-wrote-output guard. 21/21 checks green.
+
+### Port (same PR) — InstancingPipelineStage routes keepTypedArray models through the matrix path
+
+**File:** `packages/engine/Source/Scene/Model/InstancingPipelineStage.js`
+`defined(rotationAttribute) || keepTypedArray` (was rotation-only): the vec3 path never keeps real 4x3
+transforms — it stuffed 2D-PROJECTED vec3 translations into `runtimeNode.transformsTypedArray`, which
+pickModel misreads as 12-float matrices (NaN transforms). No-op on WebGL2 (`keepTypedArray` false —
+post-fix webgl probe litPixels unchanged at 45652); matters on WebGPU where `supportsSynchronousReadback`
+forces `keepTypedArray` true for every instanced model.
+
+### Found (pre-existing, NOT fixed here) — NEW-WEBGPU-INSTANCED-VA-DIVISORS
+
+The probe's WebGPU baseline run surfaced that ANY instanced model crashes the WebGPU render loop:
+`VertexArray` bind runs `context._vertexAttribDivisors[index] = divisor` (VertexArray.js:123) but
+`WebGPUContext` never initializes `_vertexAttribDivisors` (the `glVertexAttribDivisor` no-op stub at
+WebGPUContext.ts:756 exists; the array beside it was missed) → `TypeError: Cannot set properties of
+undefined (setting '1')` → "Rendering has stopped"; model never reaches `ready`. Pre-existing on main
+(line arrived with the v1.140 upstream merge); hits BOTH instancing paths, so it gates — not gated by —
+the InstancingPipelineStage change above. Tracked in DEFERRED_WORK.md; the probe's WebGPU section
+(render smoke both paths + exact-value CPU picks at (0.5,±2,±2)) is gated behind `PROBE_WEBGPU=1`,
+ready to flip on as the verification for that fix.
+
+**Residual (small, tracked in the DEFERRED_WORK entry):** translation-only instanced models on WebGL2
+still CPU-pick as if un-instanced (no transforms buffer/typed array exists on that path); upstream
+covers it via `ModelReader.computeInstanceTransformsFromAttributes` (part of the #13433 refactor we
+did not adopt).
+
+**Regression:** `npx tsc --noEmit` clean; `gulp build` green; probe-pickmodel-instanced.mjs PASS (all
+sections); probe-orbital-catalog.mjs + probe-compute-instance-generic.mjs PASS (see commit).
+
+**Files:** `pickModel.js`, `ModelReader.js`, `InstancingPipelineStage.js`,
++`Tools/visual-regression/probe-pickmodel-instanced.mjs`, `Tools/upstream-regression-check.mjs` [5],
+FORK_DRIFT_ANALYSIS / DEFERRED_WORK docs.

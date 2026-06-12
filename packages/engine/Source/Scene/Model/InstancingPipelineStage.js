@@ -714,7 +714,11 @@ function processTransformAttributes(
   );
 
   // Only use matrices for the transforms if the rotation attribute is defined.
-  if (defined(rotationAttribute)) {
+  // Upstream #13433: also use matrices when the CPU copy is required for
+  // picking (`keepTypedArray`) — the vec3 path never keeps a typed array of
+  // 4x3 transforms (it stored 2D-PROJECTED vec3 translations in
+  // `runtimeNode.transformsTypedArray`, which pickModel misreads as matrices).
+  if (defined(rotationAttribute) || keepTypedArray) {
     processTransformMatrixAttributes(
       renderResources,
       instances,
