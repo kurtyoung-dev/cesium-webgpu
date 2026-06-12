@@ -10410,3 +10410,37 @@ probe-compute-instance-generic (PASS). `npx gulp build` + `npx tsc --noEmit` cle
 DEFERRED_WORK / FEATURE_INVENTORY / LARGE_DYNAMIC_OBJECTS_DESIGN / DEBUGGING_GUIDE docs
 (DEBUGGING_GUIDE gains a "Collections" probe-inventory section backfilling the Batch 226-231
 collection probes that had drifted out of the guide).
+
+## Batch 233 — Cloud property-edit rebuild gate (NEW-CLOUD-REBUILD-DIRTY-GATE) (2026-06-12)
+
+**Bug:** `WebGPUCloudRenderer` rebuilt its instance buffer ONLY when the collection length changed
+(`cloudCount !== cache.lastCloudCount`), so per-cloud property edits (position / scale / brightness
+/ color / show) never re-uploaded — an edited cloud rendered stale forever. Pre-existing
+correctness bug, surfaced during Batch 228's dirty-consume work and tracked separately per
+Principle 9.
+
+**Root cause:** the count-only gate predates the collection dirty machinery being readable on the
+FR path. Batch 228 added the per-frame `_consumeDirtyState()` call (to stop the unbounded
+`_cloudsToUpdate` queue leak) and its comment explicitly documented that a future gate fix must
+read the dirty state BEFORE the consume clears it.
+
+**Fix:** capture `_cloudsToUpdateIndex > 0 || _createVertexArray` into `hasDirtyEdits` BEFORE the
+consume, and extend the rebuild gate to `cloudCount !== cache.lastCloudCount || hasDirtyEdits`.
+`_cloudsToUpdateIndex` covers every property setter routed through `_updateCloud` (CumulusCloud
+setters all `makeDirty`); `_createVertexArray` covers add/remove/removeAll (count changes are
+already caught by the count gate, but a same-frame add+remove nets to an equal count with
+different members). The consume comment now marks the ordering as load-bearing; the
+`CloudCollection._consumeDirtyState` JSDoc NOTE updated to match.
+
+**Verification (Principle 8):** NEW `probe-cloud-property-edit.mjs` — black background
+(globe/sky/sun/moon hidden), 2 clouds, postRender-captured bright-pixel mask. Pre-fix baseline
+(fix reverted, rebuilt) reproduced the symptom exactly: edit one cloud's position (+0.5°,+0.2°) +
+scale (220×150 → 360×240) → changedPixels=0, instance buffer NOT rebuilt → FAIL. Post-fix: edit
+lands within 2 frames (changedPixels=135041, mask 109996 → 243025 px, buffer rebuilt), settled
+frames after the edit → 0 further rebuilds (instance-buffer identity stable over 15 frames) +
+`_cloudsToUpdateIndex` drained to 0, 0 console errors → PASS. Regression:
+probe-polyline-cloud-consume.mjs PASS (consume parity intact: 0 re-touch/frame, queues drained,
+polylines render 1730 cyan px, 0 errors). `npx gulp build` + `npx tsc --noEmit` clean.
+
+**Files:** `Renderer/WebGPU/WebGPUCloudRenderer.ts`, `Scene/CloudCollection.js` (JSDoc NOTE only),
++`Tools/visual-regression/probe-cloud-property-edit.mjs`, DEFERRED_WORK / DEBUGGING_GUIDE docs.

@@ -346,10 +346,10 @@ class CloudCollection {
    *  - `_cloudsRemoved = false` (`removeClouds`, CloudCollection.js:518)
    *  - zero `_propertiesChanged[]`
    *
-   * NOTE: this consume only stops the dirty-queue leak — it does NOT address the
-   * separate count-only rebuild gate in WebGPUCloudRenderer (which rebuilds the
-   * instance buffer only when the cloud count changes, missing per-cloud
-   * property edits). That is tracked separately as NEW-CLOUD-REBUILD-DIRTY-GATE.
+   * NOTE: WebGPUCloudRenderer's rebuild gate reads `_cloudsToUpdateIndex` /
+   * `_createVertexArray` BEFORE calling this consume so per-cloud property
+   * edits trigger an instance-buffer re-upload (NEW-CLOUD-REBUILD-DIRTY-GATE,
+   * Batch 233). Callers must preserve that read-before-consume ordering.
    *
    * @private
    */

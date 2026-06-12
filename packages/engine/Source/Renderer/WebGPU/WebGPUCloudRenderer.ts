@@ -636,9 +636,28 @@ function updateWebGPUCloudCollection(
     }
   }
 
-  // Rebuild instance buffer when clouds change
+  // NEW-CLOUD-REBUILD-DIRTY-GATE (Batch 233) — capture the collection's
+  // dirty state BEFORE the per-frame consume below clears it (the consume
+  // comment has documented this ordering requirement since Batch 228).
+  // `_cloudsToUpdateIndex > 0` covers every property setter routed through
+  // `_updateCloud` (show/position/scale/maximumSize/slice/brightness/color);
+  // `_createVertexArray` covers add/remove/removeAll — count changes are
+  // already caught by the count gate, but a same-frame add+remove nets to
+  // an equal count with different members.
+  const dirtyState = collection as unknown as {
+    _cloudsToUpdateIndex?: number;
+    _createVertexArray?: boolean;
+  };
+  const hasDirtyEdits =
+    (dirtyState._cloudsToUpdateIndex ?? 0) > 0 ||
+    dirtyState._createVertexArray === true;
+
+  // Rebuild instance buffer when clouds change — count change OR per-cloud
+  // property edits. Pre-Batch-233 this keyed only on the count, so property
+  // edits (position/scale/brightness/color) never re-uploaded and rendered
+  // stale forever.
   const cloudCount = collection.length;
-  if (cloudCount !== cache.lastCloudCount) {
+  if (cloudCount !== cache.lastCloudCount || hasDirtyEdits) {
     if (cache.instanceBuffer) {
       cache.instanceBuffer.destroy();
     }
@@ -659,10 +678,11 @@ function updateWebGPUCloudCollection(
   // replaces the WebGL vertex build, so CloudCollection's per-cloud `_dirty`,
   // `_cloudsToUpdateIndex`, `_createVertexArray`, and `_propertiesChanged`
   // are never cleared on this path — settled clouds get re-dirtied every
-  // frame and the update queue grows unbounded. Consume every frame (not just
-  // on rebuild — the count-only rebuild gate above ignores property dirties
-  // anyway; that separate bug is tracked as NEW-CLOUD-REBUILD-DIRTY-GATE, and
-  // when it's fixed the gate must read the dirty state BEFORE this consume).
+  // frame and the update queue grows unbounded. Consume every frame (not
+  // just on rebuild). ORDERING (load-bearing): the rebuild gate above reads
+  // `_cloudsToUpdateIndex` / `_createVertexArray` BEFORE this consume clears
+  // them (NEW-CLOUD-REBUILD-DIRTY-GATE, Batch 233) — never move this call
+  // above the gate.
   if (typeof collection._consumeDirtyState === "function") {
     collection._consumeDirtyState();
   }
