@@ -41,6 +41,14 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// NEW-DERIVEDCOMMAND-VARIANT-FACTORY (Batch 248) — pick pipeline descriptor
+// is derived from the color descriptor through the centralized variant
+// factory; pipeline resolution (color/pick/velocity) routes through the
+// factory's shared sync/async state machine.
+import {
+  DerivedCommandType,
+  WebGPUDerivedCommand,
+} from "./WebGPUDerivedCommand.js";
 import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
 import SceneMode from "../../Scene/SceneMode.js";
 
@@ -401,9 +409,10 @@ function buildBillboardDescriptor(
       module: shaderModule,
       entryPoint: "fragmentMain",
       // Slice 5c-B Phase 1 (Batch 110) — scene-FB color target via
-      // helper. The velocity (rg16float, line 573) and pick (line 611)
-      // pipelines are SEPARATE builders with their own render passes;
-      // they intentionally stay single-target.
+      // helper. The velocity (rg16float) builder and the pick variant
+      // (derived from THIS descriptor via WebGPUDerivedCommand, Batch
+      // 248) target their own render passes; both intentionally stay
+      // single-target.
       targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
@@ -484,110 +493,24 @@ function buildBillboardVelocityDescriptor(
 }
 
 /**
- * Build the cache-friendly descriptor for the billboard pick pipeline —
- * no blending, depth write enabled, uses atlas texture for alpha discard
- * but outputs pick color. C-R7-RENDERER-MIGRATION (Batch 73).
- * @private
- */
-function buildBillboardPickDescriptor(
-  device,
-  shaderModule,
-  format,
-  depthFormat,
-  bindGroupLayout,
-  defines,
-) {
-  return {
-    name: `Billboard pick pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
-    layout: device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout],
-    }),
-    vertex: {
-      module: shaderModule,
-      entryPoint: "vertexMain",
-      buffers: [INSTANCE_BUFFER_LAYOUT],
-    },
-    fragment: {
-      module: shaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format }],
-    },
-    primitive: { topology: "triangle-list", cullMode: "none" },
-    depthStencil: {
-      format: depthFormat,
-      depthWriteEnabled: true,
-      depthCompare: "less-equal",
-    },
-  };
-}
-
-/**
- * Convert our cache-friendly descriptor back into the WebGPU descriptor
- * shape for the fallback path (no central cache available).
- * @private
- */
-function descriptorToGPU(d) {
-  return {
-    label: d.name,
-    layout: d.layout ?? "auto",
-    vertex: {
-      module: d.vertex.module,
-      entryPoint: d.vertex.entryPoint,
-      buffers: d.vertex.buffers,
-    },
-    fragment: d.fragment
-      ? {
-          module: d.fragment.module,
-          entryPoint: d.fragment.entryPoint,
-          targets: d.fragment.targets,
-        }
-      : undefined,
-    primitive: d.primitive,
-    depthStencil: d.depthStencil,
-    multisample: d.multisample,
-  };
-}
-
-/**
- * Resolve a billboard pipeline (color or pick) through the central
- * pipeline cache. Returns the existing GPU pipeline if cached; otherwise
- * kicks off async creation and returns null so the caller skips the
- * frame. Falls back to direct synchronous creation when `pipelineCache`
- * is null.
+ * Resolve a billboard pipeline (color, pick, or velocity) through the
+ * central pipeline cache. Returns the existing GPU pipeline if cached;
+ * otherwise kicks off async creation and returns null so the caller skips
+ * the frame. Falls back to direct synchronous creation when
+ * `pipelineCache` is null.
  *
- * C-R7-RENDERER-MIGRATION (Batch 73). Mirrors `tryResolvePolylinePipeline`.
+ * C-R7-RENDERER-MIGRATION (Batch 73). Since Batch 248 this delegates to
+ * the centralized variant factory's shared resolution state machine
+ * (`WebGPUDerivedCommand.resolveVariantPipeline`) — same behavior, one
+ * implementation.
  * @private
  */
 function tryResolveBillboardPipeline(device, pipelineCache, entry) {
-  if (entry.pipeline) {
-    return entry.pipeline;
-  }
-  if (pipelineCache) {
-    const sync = pipelineCache.getPipelineSync(entry.descriptor);
-    if (sync) {
-      entry.pipeline = sync;
-      entry.pending = false;
-      return sync;
-    }
-    if (!entry.pending) {
-      entry.pending = true;
-      pipelineCache
-        .getPipeline(entry.descriptor)
-        .then((p) => {
-          entry.pipeline = p;
-          entry.pending = false;
-        })
-        .catch(() => {
-          entry.pending = false;
-        });
-    }
-    return null;
-  }
-  entry.pipeline = device.createRenderPipeline(
-    descriptorToGPU(entry.descriptor),
+  return WebGPUDerivedCommand.resolveVariantPipeline(
+    device,
+    pipelineCache,
+    entry,
   );
-  entry.pending = false;
-  return entry.pipeline;
 }
 
 // Module-level shader-module cache keyed by GPUDevice. Shared across every
@@ -1330,9 +1253,21 @@ function _pushBillboardPickCommand(
   }
   let pickEntry = cache.pickPipelineEntries.get(pickDefines);
   if (!defined(pickEntry)) {
+    // NEW-DERIVEDCOMMAND-VARIANT-FACTORY (Batch 248) — the pick descriptor
+    // is DERIVED from the color descriptor through the centralized variant
+    // factory (slot-0-only blend-stripped target, depth write forced on,
+    // multisample dropped for the single-sample pick FBO) instead of the
+    // old hand-rolled `buildBillboardPickDescriptor`. The color entry for
+    // this defines-set always exists here: `updateWebGPUBillboards` builds
+    // and resolves it before pushing the pick command.
+    const colorEntry = cache.pipelineEntries.get(pickDefines);
+    if (!defined(colorEntry)) {
+      // Only reachable via the `?? 0` fallback before the first color
+      // resolve — skip the pick draw this frame; next frame the color
+      // descriptor exists.
+      return;
+    }
     const pickShader = getCollectionShaderSource("billboardPick");
-    const format = context.scenePipelineFormat || "bgra8unorm";
-    const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getShaderModuleCache(device);
     // Pick shader has its own source ID so its cache entries stay
     // distinct from the color pipeline's at the same defines.
@@ -1342,13 +1277,13 @@ function _pushBillboardPickCommand(
       pickDefines,
       "Billboard pick shader",
     );
-    const descriptor = buildBillboardPickDescriptor(
-      device,
-      pickModule,
-      format,
-      depthFmt,
-      cache.bindGroupLayout,
-      pickDefines,
+    const descriptor = WebGPUDerivedCommand.deriveDescriptor(
+      colorEntry.descriptor,
+      DerivedCommandType.PICK,
+      // Whole-module swap: the dedicated pick shader source compiled at
+      // the same defines as the color module (entry points unchanged —
+      // vertexMain/fragmentMain exist in both modules).
+      { module: pickModule },
     );
     pickEntry = { descriptor, pipeline: null, pending: false };
     cache.pickPipelineEntries.set(pickDefines, pickEntry);

@@ -11290,3 +11290,76 @@ textures — the budget comment in `WebGPUGlobeSurfaceTypes.ts` is load-bearing.
 `.../WebGPUGlobeSurfacePipelines.ts`, `.../WebGPUGlobeSurfaceWireframe.ts`,
 `Tools/variant-smoke-test.mjs`, `Tools/visual-regression/probe-globe-default-limits.mjs` (NEW),
 `.github/workflows/dev.yml`.
+
+## Batch 248 — WebGPUDerivedCommand becomes the real centralized pipeline-variant factory (NEW-DERIVEDCOMMAND-VARIANT-FACTORY) (2026-06-12)
+
+**What shipped:** the factory half of the derived-command architecture, which had been
+no-op scaffolding since the original skeleton (re-documented truthfully Batch 239). The
+old flag-stamping `create*DerivedCommand` statics (flags read by nothing), the never-
+populated static `_pipelineCache`/`_shaderCache`, and the zero-caller
+`WebGPUSceneRenderer.createDerivedCommand` wrapper are replaced by a real surface:
+
+- `deriveDescriptor(base, kind, options)` — PURE descriptor derivation per
+  `DerivedCommandType`, given a base `WebGPURenderPipelineDescriptor`:
+  - **PICK** — slot-0-only blend-stripped color target (pick pass has exactly one
+    attachment; pick colors must land byte-exact), depth write forced on (configurable),
+    `multisample` dropped (pick FBO is single-sample). Supports both pick styles:
+    same-module fragment-entry swap (the C-R9 `fragmentPickMain` pattern) and
+    whole-module swap (billboard's dedicated pick shader source).
+  - **VELOCITY** — single rg16float target, read-only depth (`less-equal`, no write),
+    optional appended vertex-buffer layouts for the prev-instance mirror (Batch 143
+    motion-vector pattern), single-sample.
+  - **LOG_DEPTH** — same scene-FB pass shape: targets re-stamped through
+    `makeSceneFBTargets` (matches the CURRENT MRT mode even if the base predates a
+    flip), MSAA baked from `options.sceneFBSampleCount` (pass `context._msaaSamples` —
+    the central MSAA-bake rule; the Batch-228 Cloud pass-kill class becomes impossible
+    for factory-derived variants), module swap carries the `LOG_DEPTH`-define variant.
+    This kind is the NEW-COLLECTIONS-LOG-DEPTH epic's vehicle.
+  - **DEPTH_ONLY** — writeMask 0 on every color target (count/formats preserved for
+    pass-compat), depth write forced on.
+  - **HDR / SHADOW** — throw loudly; tracked follow-ups.
+- Variant-keyed names — `${base.name}::${kind}` (+ `::vs=`/`::fs=` markers on entry
+  swaps). The central `WebGPURenderPipelineCache` keys on name + state fields but NOT
+  shader-module identity, so the name discipline (defines hex in the base name) is
+  what keeps variants from aliasing; the factory encodes the variant dimension itself.
+- `resolveVariantPipeline(device, pipelineCache, entry)` — the shared
+  sync → async → direct-create resolution state machine every renderer had hand-rolled
+  since Batch 73 (`tryResolve*Pipeline`).
+- `deriveCommand(base, overrides)` — command-level clone + override stamping for
+  `derivedCommands.*` attachment (the dispatch half, `selectCommandVariant`, was
+  already live and is unchanged).
+
+**Adoption proof (same batch): billboard PICK migrated with zero behavior change.**
+`buildBillboardPickDescriptor` and the renderer-local `descriptorToGPU` are deleted;
+the pick descriptor is now derived from the LIVE color descriptor (same pipelineLayout
+object reused — one fewer `createPipelineLayout`), and billboard color/velocity/pick
+resolution all delegate to `resolveVariantPipeline`. Cache name changed
+`Billboard pick pipeline [...]` → `Billboard pipeline [...]::pick` (cache-key-only).
+
+**Verification (probe-first):**
+- NEW `Tools/visual-regression/probe-billboard-pick.mjs` — pickAsync hit at a
+  billboard's center + miss control + repeatability + pipeline-cache name hygiene
+  (a `::pick` name exists post-change, ZERO duplicate descriptor names) + 0 errors.
+  PASS on the pre-change build (baseline) AND post-change — zero behavior change.
+  (Probe detail: the first-ever pick warms the lazily-created pick pipeline — the
+  probe warms up before asserting; pre-existing Batch 73 behavior on both sides.)
+- Regression gates: probe-collections-regression (all 5 collections),
+  probe-billboard-partial-write, probe-orbital-catalog, sandcastle-smoke (3 demos) —
+  all PASS, 0 errors.
+- `WebGPUDerivedCommandSpec.js` rewritten for the new surface (descriptor derivation
+  per kind, name keying, no-mutation contract, resolution state machine incl. async
+  dedupe + failure retry, deriveCommand clone contract): 23/23 SUCCESS.
+- `npx tsc --noEmit` clean; `npx gulp build` green (46 s); repo `npm run markdownlint`
+  exit 0.
+
+**Docs:** DEFERRED_WORK NEW-DERIVEDCOMMAND-VARIANT-FACTORY → ✅ SHIPPED (core) with
+follow-ups (HDR/SHADOW kinds; absorb remaining per-renderer variant surgery — the
+`WebGPUPickCommandHelpers.buildPickPipelineDescriptor` call sites are next candidates);
+FEATURE_INVENTORY §B WebGPUDerivedCommand SCAFFOLDED → SHIPPED (core); DEBUGGING_GUIDE
+probe inventory + this entry.
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUDerivedCommand.ts` (rewrite),
+`.../WebGPUBillboardRenderer.js`, `.../WebGPUSceneRenderer.ts`,
+`packages/engine/Source/Scene/{DerivedCommand.js,Scene.js}` (stale comment refs),
+`packages/engine/Specs/Renderer/WebGPU/WebGPUDerivedCommandSpec.js` (rewrite),
+`Tools/visual-regression/probe-billboard-pick.mjs` (NEW).

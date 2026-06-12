@@ -9,7 +9,10 @@
  *   - WebGPUGlobeDepth (globe depth framebuffer for picking/clamping)
  *   - WebGPUDepthPlane (depth-only quad at ellipsoid surface)
  *   - WebGPUPostProcessPipeline (tonemapping, FXAA, custom effects)
- *   - WebGPUDerivedCommand (depth-only, pick, shadow, HDR variants)
+ *
+ * Derived-command variants (pick / depth-only / log-depth / velocity) are
+ * produced by the centralized `WebGPUDerivedCommand` factory at the
+ * renderer layer and dispatched here via `selectCommandVariant`.
  *
  * For each frustum (far to near):
  *   1. Update uniform state with frustum near/far
@@ -63,7 +66,6 @@ import { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
 import { WebGPUDebugGBufferOverlay } from "./WebGPUDebugGBufferOverlay.js";
 import { WebGPUDebugFrustumOverlay } from "./WebGPUDebugFrustumOverlay.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
-import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
 import { executePickPass } from "./WebGPUSceneRendererPickPass.js";
 import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalEffects.js";
 import { executeGlobeDispatch } from "./WebGPUSceneRendererGlobePass.js";
@@ -3137,47 +3139,13 @@ export class WebGPUSceneRenderer {
     return this._postProcess;
   }
 
-  /**
-   * Create a derived command for a specific rendering mode.
-   * Delegates to WebGPUDerivedCommand static methods.
-   */
-  static createDerivedCommand(
-    baseCommand: CesiumAnyDrawCommand,
-    type: string,
-    context: WebGPUContext,
-  ): CesiumAnyDrawCommand {
-    switch (type) {
-      case "depthOnly":
-        return (
-          WebGPUDerivedCommand.createDepthOnlyDerivedCommand(baseCommand)
-            .command ?? baseCommand
-        );
-      case "logDepth":
-        return (
-          WebGPUDerivedCommand.createLogDepthCommand(baseCommand).command ??
-          baseCommand
-        );
-      case "pick":
-        return (
-          WebGPUDerivedCommand.createPickDerivedCommand(
-            baseCommand,
-            baseCommand._pickColor ?? [],
-          ).command ?? baseCommand
-        );
-      case "hdr":
-        return (
-          WebGPUDerivedCommand.createHDRDerivedCommand(baseCommand).command ??
-          baseCommand
-        );
-      case "shadow":
-        return (
-          WebGPUDerivedCommand.createShadowDerivedCommand(baseCommand)
-            .command ?? baseCommand
-        );
-      default:
-        return baseCommand;
-    }
-  }
+  // NEW-DERIVEDCOMMAND-VARIANT-FACTORY (Batch 248) — the old
+  // `createDerivedCommand(baseCommand, type, context)` static (a zero-caller
+  // wrapper over the pre-rewrite flag-stamping factories) was removed when
+  // `WebGPUDerivedCommand` became the real descriptor-variant factory.
+  // Renderers call `WebGPUDerivedCommand.deriveDescriptor` /
+  // `.resolveVariantPipeline` directly and attach the resulting commands on
+  // `derivedCommands.*` for `selectCommandVariant` to dispatch.
 
   // --- Lifecycle ---
 
@@ -3217,7 +3185,6 @@ export class WebGPUSceneRenderer {
       this._deviceInvalidationUnsub();
       this._deviceInvalidationUnsub = null;
     }
-    WebGPUDerivedCommand.clearCache();
     this._isDestroyed = true;
   }
 

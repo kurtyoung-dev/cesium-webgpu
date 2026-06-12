@@ -4983,9 +4983,9 @@ function updateDerivedCommands(scene, command, shadowsDirty) {
     }
   }
   if (!command.pickOnly && !command.isWebGPUDrawCommand) {
-    // WebGPU commands carry pre-built depth-only pipelines via
-    // `WebGPUDerivedCommand.createDepthOnlyDerivedCommand` (consumed by
-    // `WebGPUSceneRenderer.executeBatchDepthOnly`). The WebGL helper
+    // WebGPU commands carry pre-built depth-only pipelines via the
+    // `WebGPUDerivedCommand` variant factory (dispatched through
+    // `selectCommandVariant` in `WebGPUSceneRenderer`). The WebGL helper
     // here would `DrawCommand.shallowClone` the WebGPU command into a
     // raw `DrawCommand`, which lacks `pipeline` / `indexBuffer` and
     // crashes when re-dispatched through `WebGPUContext.draw` (the

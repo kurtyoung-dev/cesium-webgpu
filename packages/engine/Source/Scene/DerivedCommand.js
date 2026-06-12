@@ -121,8 +121,8 @@ DerivedCommand.createDepthOnlyDerivedCommand = function (
   // GLSL depth-only derivation when the shader program isn't a WebGL
   // ShaderProgram — the WebGPU dispatcher (`selectCommandVariant`) already
   // routes depth-only via `derivedCommands.depth.command` with a pre-built
-  // WGSL pipeline (see `WebGPUDerivedCommand.createDepthOnlyDerivedCommand`
-  // and the `WebGPUSceneRenderer` consumer at the depth-only pass).
+  // WGSL pipeline (see the `WebGPUDerivedCommand` variant factory's
+  // DEPTH_ONLY kind and the `WebGPUSceneRenderer` dispatch consumer).
   // Without this guard, `getDepthOnlyShaderProgram → ShaderCache.getDerivedShaderProgram`
   // dereferences `shaderProgram._cachedShader` on an undefined or non-WebGL
   // shader and crashes the render loop on Voxel + Translucent Classification.
