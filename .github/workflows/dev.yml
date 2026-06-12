@@ -83,3 +83,46 @@ jobs:
       - name: package workspace modules
         run: npm pack --workspaces &> /dev/null
       - uses: ./.github/actions/verify-package
+  # Bundle-variant build + runtime smoke (NEW-VARIANT-CI, Batch 242).
+  # The webgl-only variant build was broken for an unknown period
+  # (NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING, Batch 224) because nothing in
+  # CI exercised the variant tasks — this job closes that blind spot.
+  variants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - name: install node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: npm install
+        run: npm install
+      # Build ALL three variants (dual / webgl-only / webgpu-only) — the
+      # ESM static named-re-export class of break (Batch 224) hits at
+      # BUILD time for either non-dual variant, so build-checking both is
+      # cheap insurance even though only webgl-only can run here.
+      - name: build variants
+        run: npx gulp buildAllVariants
+      - name: install playwright + chromium
+        run: npx playwright install --with-deps chromium
+      - name: start dev server (background)
+        run: |
+          npm run start &
+          # Wait for the server to come up before continuing.
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8080/ > /dev/null; then
+              echo "Dev server is up"
+              break
+            fi
+            sleep 1
+          done
+      # Runtime smoke for the webgl-only variant ONLY. GitHub-hosted
+      # runners have no WebGPU adapter (same constraint documented in
+      # visual-regression.yml), so the dual/webgpu-only variant smokes and
+      # the Sandcastle WebGPU smoke
+      # (Tools/visual-regression/sandcastle-smoke.mjs) are LOCAL-REQUIRED
+      # gates — see "Probe inventory" in migration_doc/DEBUGGING_GUIDE.md.
+      # Headless Chromium WebGL renders via SwiftShader on the runner.
+      - name: variant smoke (webgl-only)
+        run: node Tools/variant-smoke-test.mjs --variant webgl-only --browser chromium

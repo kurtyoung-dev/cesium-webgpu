@@ -51,8 +51,12 @@ A user reports a bug. Where do I start?
 │       See "Streaming bugs".
 │
 ├── Demo regression (Sandcastle scene that used to work)?
-│   └── Run the variant smoke + Sandcastle runner (see "Sandcastle &
-│       cross-backend"). Compare to last green build via git bisect.
+│   ├── First reach: node Tools/visual-regression/sandcastle-smoke.mjs —
+│   │   the 3-demo WebGPU Sandcastle gate (CesiumViewer probes can ALL be
+│   │   green while every Sandcastle demo is black — the DepthPlane MRT
+│   │   lesson). See "Sandcastle & cross-backend".
+│   └── Then: variant smoke + full Sandcastle runner. Compare to last
+│       green build via git bisect.
 │
 ├── Picking / metadata pick bug?
 │   └── verify-model-feature-pick.mjs / verify-pick-webgl-control.mjs are
@@ -355,6 +359,7 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 
 | Script | What it does |
 | --- | --- |
+| `sandcastle-smoke.mjs` | **LOCAL-REQUIRED Sandcastle WebGPU gate (Batch 242).** Loads 3 renderer-pinned WebGPU gallery demos at their standalone URLs (Orbital Catalog → globe + depth plane + compute-instance; Clustered Lighting → glTF + clustered lights, globe off; Point Light Shadows → entities + glTF + cube shadows) and asserts per demo: non-black pixel fraction ≥ ~half the healthy baseline (15.8% / 79.7% / 100% measured 2026-06-12), ≥8 distinct sampled colors, ≥1 WebGPU device created (silent WebGL fallback = FAIL), 0 console/validation/device-loss errors (auto-arms the error gate by patching `GPUAdapter.requestDevice` — Sandcastle demos expose no `window.viewer`). Exists because the DepthPlane MRT bug blanked EVERY Sandcastle demo for ~115 batches while all CesiumViewer-driven probes stayed green. **Cannot run in CI** (no WebGPU adapter on hosted runners) — run it locally before committing anything touching scene-FB passes, the post-process blit chain, MRT attachment states, or the Sandcastle bootstrap. Captures land in `output/sandcastle-smoke/*.png`. |
 | `cross-backend-sandcastle-runner.mjs` | Runs Sandcastle demos on both backends, diffs results |
 | `sandcastle-batch-66-runner.mjs` / `-final-runner.mjs` / `-end-of-session-runner.mjs` | Batch-specific Sandcastle runners |
 | `analyze-cross-backend-report.mjs` | Post-process the cross-backend report |
@@ -937,6 +942,13 @@ The pick framebuffer is its own render path — `CesiumDebug.snapshot()` reports
 
 ## Sandcastle & cross-backend regression
 
+### Sandcastle smoke gate (LOCAL-REQUIRED)
+
+`node Tools/visual-regression/sandcastle-smoke.mjs` — the fast (≈1 min) Sandcastle WebGPU gate added in Batch 242. See the probe-inventory entry above for the demo set + pass criteria. Two structural facts drive its existence:
+
+1. **CesiumViewer probes do not cover Sandcastle.** The DepthPlane MRT bug blanked every WebGPU Sandcastle demo for ~115 batches while the whole CesiumViewer-driven probe suite stayed green (the depth plane is inactive in CesiumViewer's default views). Sandcastle's bootstrap (`Viewer.createAsync` + demo script + default home view) is a distinct integration surface — probe it directly.
+2. **CI cannot run it.** GitHub-hosted runners expose no WebGPU adapter (the same constraint documented in `.github/workflows/visual-regression.yml`), so this is a LOCAL-REQUIRED gate: run it before committing anything that touches scene-FB render passes, MRT attachment states, the post-process blit chain, or Sandcastle bootstrap code.
+
 ### Sandcastle runner
 
 `cross-backend-sandcastle-runner.mjs` loads each Sandcastle demo on both backends and diffs results. Demos that PASS-on-WebGL and FAIL-on-WebGPU are the regression set.
@@ -945,7 +957,11 @@ Run after any change that could affect demo-level behavior (renderer, scene logi
 
 ### Variant smoke test
 
-`node Tools/variant-smoke-test.mjs` loads each build variant (`Cesium.js`, `CesiumWebGL.js`, `CesiumWebGPU.js`) in Playwright, asserts no console errors, and verifies a frame renders. Run after any change to the bundle variant plugin, the exemption list, or the entry-barrel generation. See [CLAUDE.md "Build Variants"](../CLAUDE.md).
+`node Tools/variant-smoke-test.mjs` loads each build variant (`Cesium.js`, `CesiumWebGL.js`, `CesiumWebGPU.js`) in Playwright, asserts no console errors, and verifies a non-uniform frame renders (pixel gate sampled INSIDE `scene.postRender` and polled until a 15 s deadline — Batch 242; a deferred read races the compositor and false-positives black on both backends). Run after any change to the bundle variant plugin, the exemption list, or the entry-barrel generation. See [CLAUDE.md "Build Variants"](../CLAUDE.md).
+
+**CI coverage (Batch 242, NEW-VARIANT-CI):** the `variants` job in [.github/workflows/dev.yml](../.github/workflows/dev.yml) runs `npx gulp buildAllVariants` (build-time gate for all three variants — catches the Batch-224 ESM named-re-export class) + the **webgl-only** runtime smoke under headless Chromium/SwiftShader on every push/PR. The dual/webgpu-only runtime smokes need a WebGPU adapter and are local gates.
+
+**Known local failure (tracked):** under the harness's software adapter flags (`--use-vulkan=swiftshader`), the dual and webgpu-only variants currently FAIL with `Globe terrain pipeline layout` requiring 31 fragment-stage sampled textures vs the spec-default limit of 16 — the adaptive limit opt-in in `WebGPUDevicePool` can only raise limits the adapter actually offers. Tracked as **NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT** in [DEFERRED_WORK.md](DEFERRED_WORK.md); until it lands, `--variant webgl-only` is the variant gated green everywhere and the dual/webgpu-only smokes are meaningful only on real-GPU adapters (drop the SwiftShader flags manually to test that).
 
 ### Visual regression suite
 

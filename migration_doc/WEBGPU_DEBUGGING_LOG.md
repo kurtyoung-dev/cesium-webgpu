@@ -10902,3 +10902,58 @@ ticking every frame of the streak.
 **Regression:** `npx tsc --noEmit` clean; `gulp build` green; probe-globe-bindgroup-cache PASS (×2 runs,
 deterministic); probe-orbital-catalog PASS (magenta 14155/14527, mask Δ185.7%, 0 errors);
 probe-compute-instance-generic PASS; probe-collections-regression PASS (all five checks).
+
+## Batch 242 — CI blind-spot closure: Sandcastle WebGPU smoke gate + variant build/smoke CI job (NEW-VARIANT-CI) (2026-06-12)
+
+**Scope:** two structural verification gaps proven this cycle, closed together. (a) The DepthPlane MRT
+bug blanked EVERY WebGPU Sandcastle demo for ~115 batches while ALL probes stayed green — every probe
+drove Apps/CesiumViewer, where the depth plane happens to be inactive; Sandcastle (its own bootstrap:
+`Viewer.createAsync` + demo script + standalone gallery URL) was structurally unprobed. (b) The
+webgl-only build variant was broken for an unknown period (the Batch-224 ESM named-re-export link
+failure) because no CI job runs any variant task.
+
+**Files:** `Tools/visual-regression/sandcastle-smoke.mjs` (new), `Tools/variant-smoke-test.mjs`
+(pixel-gate readback fix), `.github/workflows/dev.yml` (new `variants` job),
+`migration_doc/{DEBUGGING_GUIDE,DEFERRED_WORK,FEATURE_INVENTORY}.md`.
+
+**1. Sandcastle smoke probe (LOCAL-REQUIRED gate).** Loads 3 renderer-pinned WebGPU gallery demos at
+their standalone URLs — Orbital Catalog (globe + depth plane + compute-instance), Clustered Lighting
+(glTF + clustered lights, globe off), Point Light Shadows (entities + glTF + cube shadows) — and
+asserts per demo: non-black fraction ≥ ~half the visually-confirmed healthy baseline (15.8% / 79.7% /
+100.0% measured at creation), ≥8 distinct sampled colors (anti-solid-fill), ≥1 WebGPU device created
+(silent WebGL fallback = FAIL; armed by patching `GPUAdapter.prototype.requestDevice` in an init
+script — demos hold their viewer in a local const so no global walk reaches the device), and 0 console
+/ validation / device-loss errors via the Batch-207 error gate. Readback = Playwright element
+screenshot (compositor capture, immune to present-clears) decoded in-page. PASS evidence (Edge
+headless, local): orbital 15.8% non-black / 27 colors, clustered 79.7% / 122, shadows 100.0% / 55 —
+all attempts=1, armedDevices=1, 0 fatal errors each. Cannot run in CI (no WebGPU adapter on hosted
+runners) — documented as LOCAL-REQUIRED in DEBUGGING_GUIDE.
+
+**2. Variant CI job (`variants` in dev.yml).** `npx gulp buildAllVariants` (build-time gate for all
+three variants — exactly the class of break Batch 224 fixed) + `node Tools/variant-smoke-test.mjs
+--variant webgl-only --browser chromium` against the repo dev server. Honest CI boundary: headless
+Chromium WebGL renders via SwiftShader on GitHub-hosted runners, WebGPU does not (the constraint
+visual-regression.yml already documents), so only the webgl-only runtime smoke runs in CI; the
+dual/webgpu-only smokes + the Sandcastle gate stay local.
+
+**3. Harness bug the wiring exposed (BUG-242.1):** the variant smoke's AUDIT-C.10 pixel gate read the
+canvas via a deferred drawImage after 5 bare rAF ticks. That read races the compositor — a WebGL
+drawing buffer (preserveDrawingBuffer=false) clears after compositing exactly like a WebGPU canvas
+texture clears at present — and 5 frames predates async content arrival (worker-built ellipsoid tile
+meshes, async pipeline compiles), so webgl-only FAILED with a false "uniform black canvas" (diagnostic
+control: the same bundle read 30.5% non-black / 23 colors inside `scene.postRender` at frame 30).
+Fixed: the gate now samples INSIDE `scene.postRender` and polls each completed render (after a 5-frame
+warmup) until non-uniform or a 15 s deadline; outer harness wait bumped 20 s → 45 s. webgl-only:
+FAIL → PASS (5 distinct samples, 0 errors).
+
+**4. Pre-existing finding surfaced (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT, M — tracked in
+DEFERRED_WORK):** under the harness's SwiftShader flags the dual + webgpu-only smokes FAIL: the globe
+terrain pipeline layout needs 31 fragment-stage sampled textures vs the spec-default per-stage limit
+of 16 (all the device pool's adaptive opt-in can obtain on such adapters) → `CreatePipelineLayout`
+uncaptured error + repeated pipeline-cache failures. Confirmed pre-existing by re-running the
+UNCHANGED harness from HEAD (identical 4 errors). Real-GPU adapters unaffected (the D3D adapter offers
+≥31; every CesiumViewer/Sandcastle probe passes).
+
+**Regression:** sandcastle-smoke PASS (3/3 demos); variant webgl-only smoke PASS; `buildAllVariants`
+exit 0 (1.16 min); probe-orbital-catalog + probe-compute-instance-generic + probe-collections-regression
+re-run green (engine code untouched — tools/CI/docs only).

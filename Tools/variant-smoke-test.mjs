@@ -214,21 +214,20 @@ function htmlTemplate(bundlePath, rendererType) {
         window.__smokeErrors.push("gate-arm: " + String(gateErr));
       }
 
-      // Wait for a few frames to render so shader compile / pipeline
-      // creation paths exercise.
-      await new Promise(function (resolve) {
-        let frames = 0;
-        function tick() {
-          if (++frames >= 5) {
-            resolve();
-            return;
-          }
-          requestAnimationFrame(tick);
-        }
-        tick();
-      });
-
-      // AUDIT_2026_05_02 C.10 — pixel-verification gate. Previously this
+      // Run the pixel gate synchronously INSIDE scene.postRender — the only
+      // timing at which both backends' canvases are readable. A WebGL
+      // drawing buffer (preserveDrawingBuffer=false) is cleared after
+      // compositing and a WebGPU canvas texture is cleared at present, so a
+      // drawImage from a deferred task reads black whenever it loses the
+      // race with the compositor. The gate POLLS each completed render
+      // (after a 5-frame warmup) until the canvas is non-uniform or the
+      // deadline expires — scene content arrives asynchronously (ellipsoid
+      // tile meshes come from workers, atmosphere/sky pipelines compile a
+      // few frames in), so any fixed frame count is a race. (Batch 242 —
+      // previously 5 bare rAF ticks + a deferred read; that failed
+      // webgl-only with a "uniform black canvas" false positive.)
+      //
+      // AUDIT_2026_05_02 C.10 — pixel-verification gate. Before C.10 this
       // script just counted frames and called it ready, so a black canvas
       // (silent fallback to WebGL after WebGPU init failure, missing
       // post-process blit, etc.) passed the smoke test. Sample a handful
@@ -236,41 +235,65 @@ function htmlTemplate(bundlePath, rendererType) {
       // points in a 5×5 grid (skipping the exact center which on the
       // default viewer can land on the navigation widget).
       try {
-        const canvas = viewer.scene.canvas || viewer.canvas;
-        if (!canvas) {
-          throw new Error("No canvas on viewer");
-        }
-        // Use the WebGL context for read; for WebGPU draw to a 2D canvas
-        // first since gpuCtx.canvas.toDataURL only works after a present.
-        const w = canvas.width;
-        const h = canvas.height;
-        const tmp = document.createElement("canvas");
-        tmp.width = w;
-        tmp.height = h;
-        const ctx2d = tmp.getContext("2d");
-        ctx2d.drawImage(canvas, 0, 0);
-        const pixels = [];
-        for (let i = 1; i <= 5; i++) {
-          for (let j = 1; j <= 5; j++) {
-            if (i === 3 && j === 3) continue; // skip center
-            const x = Math.floor((w * i) / 6);
-            const y = Math.floor((h * j) / 6);
-            const px = ctx2d.getImageData(x, y, 1, 1).data;
-            pixels.push([px[0], px[1], px[2]]);
-          }
-        }
-        // Non-uniform = at least 2 distinct RGB triplets in our sample
-        const unique = new Set(pixels.map((p) => p.join(",")));
-        if (unique.size < 2) {
-          throw new Error(
-            "Canvas appears uniform (" +
-              unique.size +
-              " distinct pixels in 24 samples). Likely a black canvas / " +
-              "silent backend fallback / missing post-process blit. " +
-              "First pixel: " + Array.from(unique)[0],
+        await new Promise(function (resolve, reject) {
+          const deadlineMs = 15000;
+          const start = performance.now();
+          let frames = 0;
+          let lastUniquePixel = "<none>";
+          const remove = viewer.scene.postRender.addEventListener(
+            function () {
+              if (++frames < 5) {
+                return;
+              }
+              try {
+                const canvas = viewer.scene.canvas || viewer.canvas;
+                if (!canvas) {
+                  throw new Error("No canvas on viewer");
+                }
+                const w = canvas.width;
+                const h = canvas.height;
+                const tmp = document.createElement("canvas");
+                tmp.width = w;
+                tmp.height = h;
+                const ctx2d = tmp.getContext("2d");
+                ctx2d.drawImage(canvas, 0, 0);
+                const pixels = [];
+                for (let i = 1; i <= 5; i++) {
+                  for (let j = 1; j <= 5; j++) {
+                    if (i === 3 && j === 3) continue; // skip center
+                    const x = Math.floor((w * i) / 6);
+                    const y = Math.floor((h * j) / 6);
+                    const px = ctx2d.getImageData(x, y, 1, 1).data;
+                    pixels.push([px[0], px[1], px[2]]);
+                  }
+                }
+                // Non-uniform = at least 2 distinct RGB triplets
+                const unique = new Set(pixels.map((p) => p.join(",")));
+                if (unique.size >= 2) {
+                  window.__smokePixelCount = unique.size;
+                  remove();
+                  resolve();
+                  return;
+                }
+                lastUniquePixel = Array.from(unique)[0];
+                if (performance.now() - start > deadlineMs) {
+                  throw new Error(
+                    "Canvas stayed uniform for " +
+                      deadlineMs +
+                      " ms / " +
+                      frames +
+                      " frames (1 distinct pixel in 24 samples). Likely a " +
+                      "black canvas / silent backend fallback / missing " +
+                      "post-process blit. Last pixel: " + lastUniquePixel,
+                  );
+                }
+              } catch (innerErr) {
+                remove();
+                reject(innerErr);
+              }
+            },
           );
-        }
-        window.__smokePixelCount = unique.size;
+        });
       } catch (pixErr) {
         window.__smokeErrors.push(
           "pixel-verify: " +
@@ -380,13 +403,14 @@ async function runVariant(browserType, args, variant) {
 
     await page.goto(`${args.baseUrl}/${urlPath}`, { waitUntil: "load" });
 
-    // Wait up to 20s for __smokeReady to flip. A webgpu-only bundle on a
-    // machine without GPU support may trip one of the guards; that's a
-    // FAIL that we want to see.
+    // Wait up to 45s for __smokeReady to flip (boot + the pixel gate's
+    // 15s uniform-canvas deadline + CI scheduling slack). A webgpu-only
+    // bundle on a machine without GPU support may trip one of the guards;
+    // that's a FAIL that we want to see.
     const readyState = await page.waitForFunction(
       () => window.__smokeReady,
       null,
-      { timeout: 20000 },
+      { timeout: 45000 },
     );
     const ready = await readyState.jsonValue();
     const pageErrors = await page.evaluate(() => window.__smokeErrors || []);
