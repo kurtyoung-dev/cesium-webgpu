@@ -64,6 +64,15 @@ export interface ShaderFactoryHost {
   _shaderModuleCache: WebGPUShaderModuleCache | null;
   readonly _debugFragmentShaderModules: Map<number, GPUShaderModule | null>;
   readonly _clipDistancesShaderModules: Map<number, GPUShaderModule | null>;
+  /**
+   * NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — true when the
+   * device's `maxSampledTexturesPerShaderStage` can't fit the full
+   * 31-texture globe layout and the renderer runs the 1-imagery-slot
+   * variant. Every defines computation (pipelines, wireframe, material,
+   * prewarm) ORs `ShaderDefine.GLOBE_IMAGERY_REDUCED` when set. Fixed
+   * per device — captured once at renderer `initialize()`.
+   */
+  readonly _imageryReduced?: boolean;
 }
 
 // ─── Shader Module Cache ─────────────────────────────────────────
@@ -81,9 +90,16 @@ export function initShaderCache(host: ShaderFactoryHost, code: string): void {
   // ~10–20 ms of shader-compile cost off the render path. The list is
   // deliberately concrete rather than computed — it should match the
   // call sites in `_createPipelineVariant` / `_createWireframePipelineVariant`.
+  // Batch 246 — on a reduced-imagery device every globe module carries
+  // the GLOBE_IMAGERY_REDUCED bit, so prewarm the variants that will
+  // actually be requested (the full-layout variants would be dead weight
+  // there, and vice versa).
+  const reducedBit = host._imageryReduced
+    ? ShaderDefine.GLOBE_IMAGERY_REDUCED
+    : 0;
   const prewarmSets: readonly number[] = [
-    0, // production terrain without geodetic normals
-    ShaderDefine.GEODETIC_NORMAL, // DP-H25 path for exaggerated terrain
+    reducedBit, // production terrain without geodetic normals
+    ShaderDefine.GEODETIC_NORMAL | reducedBit, // DP-H25 exaggerated terrain
   ];
   host._shaderModuleCache.prewarm(
     ShaderSourceId.GLOBE_TERRAIN,

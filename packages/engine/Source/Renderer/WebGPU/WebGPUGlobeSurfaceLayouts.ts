@@ -56,6 +56,14 @@ import {
  */
 export interface LayoutsHost {
   readonly _device: GPUDevice | null;
+  /**
+   * NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — per-device
+   * imagery slot count (16 full / 1 reduced), computed by
+   * `computeGlobeImagerySlotCount` at renderer init. Group 1 is built
+   * with this many texture bindings; the sampler stays at binding 16
+   * in both shapes (sparse binding indices are valid in WebGPU).
+   */
+  readonly _imagerySlotCount: number;
   _bindGroupLayout0: GPUBindGroupLayout | null;
   _bindGroupLayout1: GPUBindGroupLayout | null;
   _bindGroupLayout2: GPUBindGroupLayout | null;
@@ -83,32 +91,25 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
     ],
   );
 
-  // Group 1: Day imagery textures (16) + shared sampler at binding 16.
-  // Batch 58 (C-R5): bumped from 4 to 16 — WebGPU's minimum-guaranteed
-  // `maxSampledTexturesPerShaderStage` is 16 so this is safe across all
-  // compliant devices without probing limits.
+  // Group 1: Day imagery textures + shared sampler at binding 16.
+  // Batch 58 (C-R5): bumped from 4 to 16 imagery slots. Batch 246
+  // (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT): the slot count is now
+  // per-device — 16 on adapters whose `maxSampledTexturesPerShaderStage`
+  // covers the full 31-texture pipeline layout, 1 on default-limit
+  // adapters (spec floor 16, e.g. SwiftShader CI / compat mode) so the
+  // whole layout fits exactly 16. The sampler keeps binding 16 in both
+  // shapes (WebGPU allows sparse binding indices) so the WGSL
+  // `texSampler` declaration and the JS bind-group builder are shared.
+  const imagerySlots = host._imagerySlotCount;
+  const group1Entries: GPUBindGroupLayoutEntry[] = [];
+  for (let i = 0; i < imagerySlots; i++) {
+    group1Entries.push(texture(i, Stage.FRAGMENT));
+  }
+  group1Entries.push(sampler(16, Stage.FRAGMENT));
   host._bindGroupLayout1 = makeBindGroupLayout(
     device,
-    "Globe terrain textures layout",
-    [
-      texture(0, Stage.FRAGMENT),
-      texture(1, Stage.FRAGMENT),
-      texture(2, Stage.FRAGMENT),
-      texture(3, Stage.FRAGMENT),
-      texture(4, Stage.FRAGMENT),
-      texture(5, Stage.FRAGMENT),
-      texture(6, Stage.FRAGMENT),
-      texture(7, Stage.FRAGMENT),
-      texture(8, Stage.FRAGMENT),
-      texture(9, Stage.FRAGMENT),
-      texture(10, Stage.FRAGMENT),
-      texture(11, Stage.FRAGMENT),
-      texture(12, Stage.FRAGMENT),
-      texture(13, Stage.FRAGMENT),
-      texture(14, Stage.FRAGMENT),
-      texture(15, Stage.FRAGMENT),
-      sampler(16, Stage.FRAGMENT),
-    ],
+    `Globe terrain textures layout (${imagerySlots} slots)`,
+    group1Entries,
   );
 
   // Group 2: Water mask + Ocean normal map + Material UBO + Material textures.

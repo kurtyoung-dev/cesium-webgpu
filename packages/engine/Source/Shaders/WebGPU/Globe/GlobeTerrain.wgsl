@@ -288,6 +288,16 @@ struct TileUniforms {
 // 16 is the safe ceiling without device-limit probing. Tiles with >16 layers
 // fall back to multi-pass rendering (CPU-side, see createTileCommands).
 @group(1) @binding(0)  var dayTexture0:  texture_2d<f32>;
+//>>ifdef GLOBE_IMAGERY_REDUCED
+// NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — reduced layout for
+// default-limit adapters (maxSampledTexturesPerShaderStage = 16, e.g.
+// SwiftShader CI / compat mode). Only dayTexture0 is declared; the full
+// pipeline layout's other 15 sampled textures (4 in group 2 + 11 in the
+// effects group) bring the total to exactly 16. Multi-layer tiles
+// multi-pass at one layer per pass (CPU-side slicing keys off the
+// renderer's `_imagerySlotCount`). `texSampler` stays at @binding(16) in
+// BOTH variants so the JS bind-group builder shares one shape.
+//>>else
 @group(1) @binding(1)  var dayTexture1:  texture_2d<f32>;
 @group(1) @binding(2)  var dayTexture2:  texture_2d<f32>;
 @group(1) @binding(3)  var dayTexture3:  texture_2d<f32>;
@@ -303,6 +313,7 @@ struct TileUniforms {
 @group(1) @binding(13) var dayTexture13: texture_2d<f32>;
 @group(1) @binding(14) var dayTexture14: texture_2d<f32>;
 @group(1) @binding(15) var dayTexture15: texture_2d<f32>;
+//>>endif
 @group(1) @binding(16) var texSampler: sampler;
 
 // ─── Water mask + Ocean normal map (Group 2, merged) ───
@@ -2690,6 +2701,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
   // Batch 56 — direct imagery sample for layer 1.
+  //>>ifdef GLOBE_IMAGERY_REDUCED
+  // Reduced layout has no dayTexture1 binding — the layer-1 debug
+  // sentinel is unavailable (each pass carries one layer in slot 0).
+  //>>else
   if (tile.time > 4.5e9 && tile.time < 5.5e9) {
     if (u32(tile.layerCount) >= 2u) {
       let useWMT = tile.useWebMercatorTLayer[0].y;
@@ -2701,6 +2716,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     }
     return makeFragOutput(vec4<f32>(0.0, 1.0, 1.0, 1.0), normalEC); // cyan = no layer 1
   }
+  //>>endif
   // Batch 56 — texSample.a debug. Visualize the imagery's alpha channel
   // for layer 0. RED = layer 0's tex.a. If alpha is 0, the composite
   // multiplier kills imagery contribution → BLACK output even with
@@ -2720,6 +2736,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   // upload path has alpha=0. Reprojected layers force alpha=1 (after
   // Batch 56 fix); direct uploads via uploadImageSource for opaque JPEGs
   // may have alpha=0.
+  //>>ifdef GLOBE_IMAGERY_REDUCED
+  // Reduced layout has no dayTexture1 binding — see the layer-1 debug
+  // sentinel note above.
+  //>>else
   if (tile.time > 6.5e9 && tile.time < 7.5e9) {
     if (u32(tile.layerCount) >= 2u) {
       let useWMT = tile.useWebMercatorTLayer[0].y;
@@ -2731,6 +2751,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     }
     return makeFragOutput(vec4<f32>(0.0, 1.0, 1.0, 1.0), normalEC); // cyan = no layer 1
   }
+  //>>endif
 
   // Compute shadow factor early — textureSampleCompare must be called
   // from uniform control flow (before any non-uniform discard/return).
@@ -2913,6 +2934,12 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
+  //>>ifdef GLOBE_IMAGERY_REDUCED
+  // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — reduced layout
+  // carries exactly one imagery slot per pass; slots 1..15 don't exist.
+  // The CPU multi-pass slicer caps `tile.layerCount` at 1 per pass, so
+  // the composite loop above is complete.
+  //>>else
   if (count >= 2u) {
     let layer = tile.layers[1];
     let useWMT = tile.useWebMercatorTLayer[0].y;
@@ -3108,6 +3135,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
+  //>>endif
 
   // Batch 56 — post-composite color debug. Trigger via tile.time in
   // [7.5e9, 8.5e9]. Returns the imagery-composited color BEFORE all

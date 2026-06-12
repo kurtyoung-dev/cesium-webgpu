@@ -78,6 +78,14 @@ function parseArgs(argv) {
     // (NEW-VARIANT-CI follow-up, Batch 243).
     baseUrl: null,
     browser: "msedge",
+    // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — when set,
+    // forces Chromium's WebGPU adapter selection via
+    // `--use-webgpu-adapter=<value>`. `swiftshader` pins the software
+    // Vulkan adapter: the deterministic CI configuration (hosted
+    // runners have no GPU) AND the local reproduction of the
+    // default-limits environment (SwiftShader reports the WebGPU spec
+    // floor — maxSampledTexturesPerShaderStage=16 etc.).
+    webgpuAdapter: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -85,6 +93,7 @@ function parseArgs(argv) {
     else if (a === "--variant") args.variant = argv[++i];
     else if (a === "--url") args.baseUrl = argv[++i];
     else if (a === "--browser") args.browser = argv[++i];
+    else if (a === "--webgpu-adapter") args.webgpuAdapter = argv[++i];
     else if (a === "--help") {
       printHelp();
       process.exit(0);
@@ -172,7 +181,7 @@ async function startStaticServer(rootDir) {
 
 function printHelp() {
   console.log(
-    "Usage: node Tools/variant-smoke-test.mjs [--variant NAME] [--url URL (default: self-served ephemeral port)] [--browser msedge|chromium|firefox|webkit] [--headed]",
+    "Usage: node Tools/variant-smoke-test.mjs [--variant NAME] [--url URL (default: self-served ephemeral port)] [--browser msedge|chromium|firefox|webkit] [--webgpu-adapter swiftshader] [--headed]",
   );
 }
 
@@ -454,6 +463,13 @@ async function runVariant(browserType, args, variant) {
       // headless runners (and GPU-less CI boxes) need this opt-in or the
       // webgl variants get NO context at all and the boot never readies.
       "--enable-unsafe-swiftshader",
+      // Optional WebGPU adapter pin (Batch 246) — `--webgpu-adapter
+      // swiftshader` forces the software Vulkan adapter so the webgpu
+      // smokes run identically on GPU-less hosted runners and on dev
+      // machines reproducing the default-limits environment.
+      ...(args.webgpuAdapter
+        ? [`--use-webgpu-adapter=${args.webgpuAdapter}`]
+        : []),
     ],
   });
 

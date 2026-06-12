@@ -482,6 +482,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 
 - WebGPUGlobeSurfaceRenderer — full quadtree terrain renderer (SHIPPED)
 - WebGPUGlobeSurface helpers — Shaders/Layouts/Pipelines/Textures/TileBuffers/CameraUB/TileUB/Wireframe (Batch 145-153 decomposition into 9 helpers) (SHIPPED)
+- Globe default-limit fallback layout — per-device imagery slot count (16 full / 1 reduced via `ShaderDefine.GLOBE_IMAGERY_REDUCED`) so the globe terrain pipeline layout fits the WebGPU spec floor `maxSampledTexturesPerShaderStage = 16` (SwiftShader CI, compat/low-end adapters); multi-layer tiles multi-pass at 1 layer/blend-pass on reduced devices; full 16-slot single-pass layout unchanged on capable adapters. Gates: probe-globe-default-limits.mjs + variant-smoke `--webgpu-adapter swiftshader` (SHIPPED — NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT, Batch 246)
 - WebGPUGlobeDepth — packed depth target + readback (SHIPPED)
 - WebGPUGlobeTranslucencyState — translucent-globe depth/pass orchestration (SHIPPED)
 - WebGPUDepthPlane — horizon depth fill (SHIPPED)

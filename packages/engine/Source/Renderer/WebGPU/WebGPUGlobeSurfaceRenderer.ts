@@ -55,6 +55,7 @@ import {
   CAMERA_UNIFORM_FLOATS,
   TILE_UNIFORM_FLOATS,
   MAX_IMAGERY_LAYERS,
+  computeGlobeImagerySlotCount,
   DebugFragmentMode,
 } from "./WebGPUGlobeSurfaceTypes.js";
 import type {
@@ -242,6 +243,20 @@ export class WebGPUGlobeSurfaceRenderer {
   // scene FB color format.
   private _scenePipelineFormatGeneration: number = -1;
 
+  // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — per-device
+  // imagery slot count (16 full / 1 reduced) and the matching
+  // `GLOBE_IMAGERY_REDUCED` shader-define flag. Captured ONCE at
+  // `initialize()` from `device.limits.maxSampledTexturesPerShaderStage`
+  // (a device's limits are immutable, so this never flips at runtime).
+  // Drives: group-1 BGL width (WebGPUGlobeSurfaceLayouts), the WGSL
+  // variant (via the define bit ORed into every pipeline's defines),
+  // the bind-group-1 entry count, and the CPU multi-pass slicing width
+  // in `createTileCommands`.
+  // Public underscore: shared with the layouts initializer + the shader/
+  // pipeline/wireframe helper modules (same convention as Batches 142–153).
+  public _imagerySlotCount: number = MAX_IMAGERY_LAYERS;
+  public _imageryReduced: boolean = false;
+
   // Wireframe pipelines — keyed by the same shape string used by
   // _selectPipeline so they share variant granularity (Q/U, N/X, M/G, stride).
   // Lazily built on first wireframe request; production cache is untouched.
@@ -342,10 +357,14 @@ export class WebGPUGlobeSurfaceRenderer {
         rewritten,
       );
       // Preprocess with MATERIAL_APPLY set so the `//>>ifdef`-gated
-      // material call site + group(4) bindings are included.
+      // material call site + group(4) bindings are included. Batch 246:
+      // the reduced-imagery bit must ride along — on a default-limit
+      // device the material module would otherwise declare all 16
+      // dayTextures and mismatch the 1-slot group-1 layout.
       const preprocessed = preprocessWGSL(
         fullSource,
-        ShaderDefine.MATERIAL_APPLY,
+        ShaderDefine.MATERIAL_APPLY |
+          (this._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0),
       );
       const module = device.createShaderModule({
         label: `Globe material module ${material.type}`,
@@ -434,6 +453,23 @@ export class WebGPUGlobeSurfaceRenderer {
     this._device = device;
     this._canvasFormat = canvasFormat;
 
+    // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — resolve the
+    // per-device imagery slot count BEFORE the shader cache (prewarm
+    // needs the define bit) and the bind-group layouts (group 1 width).
+    this._imagerySlotCount = computeGlobeImagerySlotCount(device.limits);
+    this._imageryReduced = this._imagerySlotCount < MAX_IMAGERY_LAYERS;
+    if (this._imageryReduced) {
+      // PERMANENT (not debug-pragma'd) — a degraded layout on a real
+      // user device is something a bug report needs to show.
+      console.warn(
+        `[CesiumJS:WebGPU] Globe imagery layout reduced to ` +
+          `${this._imagerySlotCount} slot(s)/pass: device ` +
+          `maxSampledTexturesPerShaderStage=` +
+          `${device.limits?.maxSampledTexturesPerShaderStage} < 31 ` +
+          `(full globe layout). Multi-layer tiles will multi-pass.`,
+      );
+    }
+
     this._initShaderCache(shaderCode);
     createBindGroupLayoutsHelper(this);
     createPipelineLayoutHelper(this);
@@ -450,6 +486,12 @@ export class WebGPUGlobeSurfaceRenderer {
     (
       globalThis as { __webgpuGlobeBindGroupCache?: WebGPUGlobeBindGroupCache }
     ).__webgpuGlobeBindGroupCache = this._bindGroupCache;
+    // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — publish the
+    // resolved slot count for probe-globe-default-limits.mjs and
+    // CesiumDebug introspection (same last-initialized-wins convention).
+    (
+      globalThis as { __webgpuGlobeImagerySlotCount?: number }
+    ).__webgpuGlobeImagerySlotCount = this._imagerySlotCount;
   }
 
   get isInitialized(): boolean {
@@ -606,9 +648,13 @@ export class WebGPUGlobeSurfaceRenderer {
       }
     }
 
-    // Determine number of passes needed (4 imagery layers per pass)
+    // Determine number of passes needed. Pass width is the per-device
+    // imagery slot count — 16 on full-layout adapters, 1 on default-
+    // limit adapters (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT, Batch 246),
+    // so reduced devices render N layers as N blend passes.
+    const imagerySlots = this._imagerySlotCount;
     const totalLayers = readyLayers.length;
-    const passCount = Math.max(1, Math.ceil(totalLayers / MAX_IMAGERY_LAYERS));
+    const passCount = Math.max(1, Math.ceil(totalLayers / imagerySlots));
     const commands: TileDrawDescriptor[] = [];
 
     // BUG-11 imagery probe diagnostic. Off by default — opt in via
@@ -737,8 +783,8 @@ export class WebGPUGlobeSurfaceRenderer {
 
     for (let pass = 0; pass < passCount; pass++) {
       const isSubsequentPass = pass > 0;
-      const layerStart = pass * MAX_IMAGERY_LAYERS;
-      const layerEnd = Math.min(layerStart + MAX_IMAGERY_LAYERS, totalLayers);
+      const layerStart = pass * imagerySlots;
+      const layerEnd = Math.min(layerStart + imagerySlots, totalLayers);
       const passLayers = readyLayers.slice(layerStart, layerEnd);
 
       // Phase 5 WGF-1: pick the hardware clip-distances variant only when
@@ -1349,10 +1395,13 @@ export class WebGPUGlobeSurfaceRenderer {
     passLayers: CesiumTileImagery[],
   ): GPUBindGroup {
     const textureViews: GPUTextureView[] = [];
+    // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — entry count
+    // follows the per-device group-1 layout width (16 full / 1 reduced).
+    const imagerySlots = this._imagerySlotCount;
 
     for (
       let i = 0;
-      i < passLayers.length && textureViews.length < MAX_IMAGERY_LAYERS;
+      i < passLayers.length && textureViews.length < imagerySlots;
       i++
     ) {
       const tileImagery = passLayers[i];
@@ -1383,48 +1432,37 @@ export class WebGPUGlobeSurfaceRenderer {
       }
     }
 
-    while (textureViews.length < MAX_IMAGERY_LAYERS) {
+    while (textureViews.length < imagerySlots) {
       textureViews.push(this._placeholderView!);
     }
 
-    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — keyed on the 16 view
+    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — keyed on the per-slot view
     // identities. Views are stable per texture (created once, cached in
     // `_imageryTextureCache` next to their GPUTexture), so a key change
     // means the underlying texture actually rotated. The sampler is an
     // init-time singleton and stays out of the key.
     const cache = this._bindGroupCache;
     let key = "1";
-    for (let i = 0; i < MAX_IMAGERY_LAYERS; i++) {
+    for (let i = 0; i < imagerySlots; i++) {
       key += `|${cache.idOf(textureViews[i])}`;
     }
 
-    // Batch 58 (C-R5): 16 texture bindings + sampler at binding 16. Each
-    // entry pulls from `textureViews[i]` which is padded with placeholder
-    // views above so unused slots still bind a valid resource.
-    return cache.getOrCreate(key, () =>
-      device.createBindGroup({
+    // Batch 58 (C-R5) / Batch 246: one texture binding per imagery slot
+    // + the shared sampler at binding 16 (both layout shapes keep the
+    // sampler there). Each entry pulls from `textureViews[i]` which is
+    // padded with placeholder views above so unused slots still bind a
+    // valid resource.
+    return cache.getOrCreate(key, () => {
+      const entries: GPUBindGroupEntry[] = [];
+      for (let i = 0; i < imagerySlots; i++) {
+        entries.push({ binding: i, resource: textureViews[i] });
+      }
+      entries.push({ binding: 16, resource: this._sampler! });
+      return device.createBindGroup({
         layout: this._bindGroupLayout1!,
-        entries: [
-          { binding: 0, resource: textureViews[0] },
-          { binding: 1, resource: textureViews[1] },
-          { binding: 2, resource: textureViews[2] },
-          { binding: 3, resource: textureViews[3] },
-          { binding: 4, resource: textureViews[4] },
-          { binding: 5, resource: textureViews[5] },
-          { binding: 6, resource: textureViews[6] },
-          { binding: 7, resource: textureViews[7] },
-          { binding: 8, resource: textureViews[8] },
-          { binding: 9, resource: textureViews[9] },
-          { binding: 10, resource: textureViews[10] },
-          { binding: 11, resource: textureViews[11] },
-          { binding: 12, resource: textureViews[12] },
-          { binding: 13, resource: textureViews[13] },
-          { binding: 14, resource: textureViews[14] },
-          { binding: 15, resource: textureViews[15] },
-          { binding: 16, resource: this._sampler! },
-        ],
-      }),
-    );
+        entries,
+      });
+    });
   }
 
   /**

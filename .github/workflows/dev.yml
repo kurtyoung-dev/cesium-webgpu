@@ -110,12 +110,29 @@ jobs:
       # artifacts on an ephemeral port (Batch 243). The previous
       # backgrounded `npm run start` died when its step shell exited,
       # so the smoke navigation hit ERR_CONNECTION_REFUSED.
-      # Runtime smoke for the webgl-only variant ONLY. GitHub-hosted
-      # runners have no WebGPU adapter (same constraint documented in
-      # visual-regression.yml), so the dual/webgpu-only variant smokes and
-      # the Sandcastle WebGPU smoke
-      # (Tools/visual-regression/sandcastle-smoke.mjs) are LOCAL-REQUIRED
-      # gates — see "Probe inventory" in migration_doc/DEBUGGING_GUIDE.md.
       # Headless Chromium WebGL renders via SwiftShader on the runner.
       - name: variant smoke (webgl-only)
         run: node Tools/variant-smoke-test.mjs --variant webgl-only --browser chromium
+      # WebGPU variant smokes on SwiftShader (Batch 246,
+      # NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT). Previously LOCAL-REQUIRED:
+      # SwiftShader reports the WebGPU spec-floor limits
+      # (maxSampledTexturesPerShaderStage=16) and the globe terrain
+      # pipeline layout needed 31 sampled textures, so the smoke died at
+      # CreatePipelineLayout. The Batch-246 reduced imagery layout fits
+      # the floor; verified locally against a real SwiftShader adapter
+      # (Edge channel, vendor=google/architecture=swiftshader): pre-fix
+      # build FAILs with "sampled textures (31) ... exceeds (16)",
+      # post-fix dual + webgpu-only both PASS.
+      #
+      # FIRST-HOSTED-RUN CAVEAT: the hosted ubuntu runner's bundled
+      # Chromium must expose the SwiftShader Vulkan WebGPU adapter under
+      # `--use-webgpu-adapter=swiftshader` (verified locally on Windows
+      # via the Edge channel; Linux-runner behavior unverified until this
+      # job's first run). If the adapter is missing, the smoke fails with
+      # "no adapter" — in that case revert these two steps to
+      # LOCAL-REQUIRED and note the runner's Chromium version in
+      # NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (DEFERRED_WORK.md).
+      - name: variant smoke (dual, SwiftShader WebGPU)
+        run: node Tools/variant-smoke-test.mjs --variant dual --browser chromium --webgpu-adapter swiftshader
+      - name: variant smoke (webgpu-only, SwiftShader WebGPU)
+        run: node Tools/variant-smoke-test.mjs --variant webgpu-only --browser chromium --webgpu-adapter swiftshader

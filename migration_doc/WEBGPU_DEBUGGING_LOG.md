@@ -11141,3 +11141,87 @@ probe-collections-regression, probe-model-pbr-audit (5/5 assets, 0 device errors
 probe-billboard-partial-write, probe-compute-instance-generic, probe-orbital-catalog,
 probe-globe-bindgroup-cache, probe-bloom-parity, sandcastle-smoke — all PASS.
 `npx tsc --noEmit` clean; `npx gulp build` green.
+
+## Batch 246 — Globe fits default-limit adapters: reduced imagery layout (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT) (2026-06-12)
+
+**Symptom (found Batch 242):** on any adapter reporting the WebGPU spec floor
+`maxSampledTexturesPerShaderStage = 16` (SwiftShader — the only adapter hosted CI runners have —
+plus compat-mode and low-end mobile adapters), every globe terrain pipeline died at creation:
+`CreatePipelineLayout([PipelineLayoutDescriptor "Globe terrain pipeline layout"])` → "The number of
+sampled textures (31) in the Fragment stage exceeds the maximum per-stage limit (16)". The globe
+never rendered; the dual + webgpu-only variant smokes could not run on hosted CI.
+
+**Root cause:** the per-stage sampled-texture limit counts the TOTAL across ALL bind-group layouts
+in the pipeline layout. The globe's fragment stage binds 16 imagery textures (group 1, Batch 58)
++ 4 in group 2 (water mask, ocean normal, material image, material heights) + 11 in the shared
+effects BGL (shadow depth, clipping, polygon SDF, 2× atmosphere LUT, CSM cascade array, 4× edge/
+globe-depth, point-light cube) = 31. The Batch 58 comment ("minimum-guaranteed ... is 16 so this
+is safe") sized ONLY group 1 against the floor. `WebGPUDevicePool`'s adaptive opt-in (to 64) can
+only raise limits the adapter actually OFFERS — a no-op at exactly-spec-floor adapters.
+
+**Fix — per-device reduced imagery layout (binary, one define bit):**
+
+- `computeGlobeImagerySlotCount(device.limits)` (`WebGPUGlobeSurfaceTypes.ts`, with the new
+  `GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES = 15` budget constant): 16 slots when the device limit
+  covers the full 31-texture layout, else 1 slot (1 + 15 = exactly the spec floor 16). Captured
+  once at renderer `initialize()` (device limits are immutable); permanent `console.warn`
+  sentinel names the limit when the reduced layout activates.
+- New add-only `ShaderDefine.GLOBE_IMAGERY_REDUCED` (1<<16). `GlobeTerrain.wgsl` wraps the
+  `dayTexture1..15` declarations, the slot-1..15 composite blocks, and the two layer-1
+  debug-sentinel blocks in `//>>ifdef GLOBE_IMAGERY_REDUCED` / `//>>else` / `//>>endif` — the
+  `//>>else` branch is the historical full path, so capable adapters compile byte-identical
+  modules (zero regression). `texSampler` stays at `@binding(16)` in BOTH shapes (sparse binding
+  indices are valid) so the JS builders share one shape.
+- Group-1 BGL + bind-group entries are width-dynamic (`WebGPUGlobeSurfaceLayouts.ts` /
+  `_createTextureBindGroup`); the Batch-241 bind-group cache key loops the active slot count.
+- The bit rides EVERY globe defines computation — selectPipeline / translucent-back-face /
+  depth-only-back-face / debug-fragment selectors, wireframe (×2), the material-pipeline
+  preprocess, and the prewarm sets — so shader-module cache keys (24-bit defines field, bit 16
+  fits) and renderer pipeline cache keys all distinguish the variant; the descriptor `name`
+  carries an `imagery1` marker so the central `WebGPURenderPipelineCache` (which keys on name +
+  structural fields) cannot alias the two layouts.
+- Multi-layer tiles still render every layer: `createTileCommands`' existing multi-pass slicer
+  now keys off the per-device slot count — N layers become N blend passes on reduced devices
+  (same composite order/math as the 16-wide single pass).
+
+**Probe-first verification:**
+
+- Symptom reproduced before claiming the fix: the stale pre-fix `Build/CesiumWebGPU` bundle run
+  via `variant-smoke-test --webgpu-adapter swiftshader` (new flag: pins
+  `--use-webgpu-adapter=swiftshader`, giving a REAL software adapter — vendor=google,
+  architecture=swiftshader, limit 16) FAILS with the exact "(31) exceeds (16)" error; the
+  rebuilt post-fix dual + webgpu-only bundles PASS.
+- NEW `Tools/visual-regression/probe-globe-default-limits.mjs` (regression gate): constructs its
+  OWN CesiumWidget on a bare page (the device pool would otherwise hand back a shared high-limit
+  primary device) with `contextOptions.requiredLimits: { maxSampledTexturesPerShaderStage: 16 }`
+  (user-pinned limits are never auto-raised by the pool negotiator). Asserts: device reports 16;
+  `globalThis.__webgpuGlobeImagerySlotCount === 1` (new debug publication); globe renders
+  offline NaturalEarthII (23.6% non-black, 179 color buckets — no network/Ion dependency);
+  adding a GridImageryProvider exercises the 1-slot multi-pass blend path (its default 20% green
+  background wash shifts the disk's mean green-excess by +3.8 vs ~0 for a skipped pass; 376
+  buckets); 0 console/validation errors. PNGs read and confirmed (full earth, then green-washed
+  earth). Bring-up gotchas baked into the probe: bare pages lack widgets.css (canvas collapses
+  to a ~150px strip → readback sees mostly background) and `tilesLoaded` precedes the WebGPU
+  imagery upload by a few frames (gate on actual center-pixel content, not just tilesLoaded).
+- Standard-limit regression: probe-globe-bindgroup-cache, probe-collections-regression,
+  probe-bloom-parity, sandcastle-smoke (3 demos) — all PASS. `npx tsc --noEmit` clean,
+  `npx gulp build` green.
+
+**CI flip:** dev.yml `variants` job now also runs the dual + webgpu-only smokes with
+`--webgpu-adapter swiftshader` (previously LOCAL-REQUIRED). First-hosted-run caveat documented
+inline: the Linux runner's Chromium must expose the SwiftShader Vulkan WebGPU adapter under the
+flag (verified locally via the Edge channel on Windows; bundled Windows chromium does NOT expose
+it — "no adapter"); if the hosted run fails that way, revert the two steps to LOCAL-REQUIRED.
+
+**Residual:** devices in the 17..30 band conservatively take the 1-slot layout (the negotiator
+opts real adapters to 64, so the band is essentially empty). Keep
+`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES` in sync when group 2 / the effects BGL grow sampled
+textures — the budget comment in `WebGPUGlobeSurfaceTypes.ts` is load-bearing.
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts`,
+`.../WebGPUGlobeSurfaceTypes.ts`, `.../WebGPUGlobeSurfaceLayouts.ts`,
+`.../WebGPUGlobeSurfaceRenderer.ts`, `.../WebGPUGlobeSurfaceShaders.ts`,
+`.../WebGPUGlobeSurfacePipelines.ts`, `.../WebGPUGlobeSurfaceWireframe.ts`,
+`Tools/variant-smoke-test.mjs`, `Tools/visual-regression/probe-globe-default-limits.mjs` (NEW),
+`.github/workflows/dev.yml`.

@@ -348,6 +348,37 @@ export const ShaderDefine = Object.freeze({
    * post-process eye-space reconstructors.
    */
   LOG_DEPTH: 1 << 15,
+
+  /**
+   * Reduced globe imagery layout for default-limit adapters
+   * (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT, Batch 246). The full globe
+   * terrain pipeline layout needs 31 fragment-stage sampled textures
+   * (16 imagery + 4 water/ocean/material + 11 effects), which exceeds
+   * the WebGPU spec floor `maxSampledTexturesPerShaderStage = 16`
+   * (SwiftShader CI, compat-mode adapters, low-end mobile). When set,
+   * `GlobeTerrain.wgsl` strips the `dayTexture1..15` declarations, the
+   * per-layer composite blocks for slots 1..15, and the two layer-1
+   * debug-sentinel blocks — leaving exactly ONE imagery slot
+   * (`dayTexture0`; `texSampler` stays at `@binding(16)` so the
+   * bind-group layout shape is shared). 31 - 15 = 16 sampled textures →
+   * fits the spec floor exactly.
+   *
+   * Multi-layer tiles still render every layer: the CPU-side multi-pass
+   * slicing in `WebGPUGlobeSurfaceRenderer.createTileCommands` uses the
+   * per-device `_imagerySlotCount` (1 when this bit is active) as the
+   * pass width, so N layers become N blend passes instead of one
+   * 16-wide pass. Capable adapters (limit ≥ 31) never set this bit and
+   * keep the full single-pass layout — zero regression.
+   *
+   * Per-device selection: `computeGlobeImagerySlotCount(device.limits)`
+   * in `WebGPUGlobeSurfaceTypes.ts`, captured once at renderer
+   * `initialize()`. The bit participates in the shader-module cache key,
+   * the renderer's pipeline cache keys, and the central pipeline cache
+   * (via an `imagery1` marker in the descriptor name).
+   *
+   * Consumer: `GlobeTerrain.wgsl`.
+   */
+  GLOBE_IMAGERY_REDUCED: 1 << 16,
 } as const);
 
 /**

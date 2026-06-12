@@ -279,10 +279,13 @@ export function buildPipelineDescriptor(
   // `GEODETIC_NORMAL` define; the cache hands back the preprocessed
   // module. Augmented variants (debug fragment / clip distances)
   // inherit the same define set so their base source stays consistent
-  // with the pipeline's vertex buffer layout.
+  // with the pipeline's vertex buffer layout. Batch 246 — the reduced-
+  // imagery bit rides along on default-limit devices so the module's
+  // group-1 declarations match the 1-slot pipeline layout.
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
-    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
   const productionModule = getProductionShaderModuleHelper(host, defines);
   // Phase 5 WGF-1: when the hardware clip-distances variant is requested,
   // both stages must come from the augmented module — the vertex stage
@@ -339,6 +342,11 @@ export function buildPipelineDescriptor(
   // Cache key suffixes (`_DOB`, `_TBF`) keep the three variants distinct.
   const dobLabel = depthOnlyBackFace ? ", depthOnlyBackFace" : "";
   const tbfLabel = translucentBackFace ? ", translucentBackFace" : "";
+  // Batch 246 — the central pipeline cache keys on the descriptor name
+  // (plus structural fields); the reduced-imagery variant has a
+  // different pipeline layout + shader module, so it MUST carry a
+  // distinct name to avoid stale-pipeline aliasing in any shared cache.
+  const imgLabel = host._imageryReduced ? ", imagery1" : "";
   const cullMode: GPUCullMode =
     depthOnlyBackFace || translucentBackFace
       ? "front"
@@ -376,7 +384,7 @@ export function buildPipelineDescriptor(
   const colorWriteMask: GPUColorWriteFlags = depthOnlyBackFace ? 0 : 0xf;
 
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${tbfLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${tbfLabel}${imgLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,
@@ -562,7 +570,8 @@ export function selectPipeline(
   const ncSuffix = disableCulling ? "_NC" : "";
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
-    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
   const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}${ncSuffix}|${defines.toString(16)}`;
   let entry = host._pipelineCache.get(cacheKey);
   let entryWasJustCreated = false;
@@ -656,7 +665,8 @@ export function selectTranslucentBackFacePipeline(
   const cdSuffix = useClipDistances ? "_CD" : "";
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
-    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
   // `isBlend=true` forces the ALPHA blend state; `_TBF` (translucent
   // back-face) suffix distinguishes from the standard blend variant
   // which cullMode: "back" (front-face). _TBF means cullMode: "front"
@@ -727,7 +737,8 @@ export function selectDepthOnlyBackFacePipeline(
   const cdSuffix = useClipDistances ? "_CD" : "";
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
-    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
   // Use the same cache key shape as `selectPipeline` for diagnostic
   // readability. `isBlend=false` and `disableCulling=false` are
   // hardcoded since the depth-only override supersedes both axes.
@@ -783,7 +794,8 @@ export function selectDebugFragmentPipeline(
   }
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
-    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0);
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
   // Probe the augmented shader module first; the probe is define-keyed
   // and the `null` cache entry short-circuits pipeline builds when the
   // device rejected the augmented source for this define-set. Passing

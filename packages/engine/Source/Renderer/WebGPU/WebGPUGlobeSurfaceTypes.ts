@@ -198,6 +198,49 @@ export const GROUND_ATMOSPHERE_CONTROL_OFFSET = 472;
 // `maxSampledTexturesPerShaderStage`). Tiles exceeding this count multi-pass.
 export const MAX_IMAGERY_LAYERS = 16;
 
+// NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — fragment-stage
+// sampled textures the globe terrain pipeline layout needs BESIDES the
+// group-1 imagery slots:
+//   group 2 (4): water mask, ocean normal, material image, material heights
+//   group 3 effects (11): shadow depth, clipping planes, polygon SDF,
+//     2× atmosphere LUT, CSM cascade array, 4× edge/globe-depth, point-
+//     light cube depth (see WebGPUEffectsBindGroup.js bindings 1/3/5/7/8/
+//     11/12-15/17 — the effects BGL is shared with model/primitive
+//     pipelines and is NOT reducible per-consumer).
+// Full layout total = 15 + MAX_IMAGERY_LAYERS = 31. Keep this in sync
+// when adding sampled textures to group 2 or the effects BGL — drift
+// here silently re-breaks default-limit adapters.
+export const GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES = 15;
+
+/**
+ * Per-device imagery slot count for the globe terrain layout.
+ *
+ * Binary by design — the WGSL variant axis is one preprocessor bit
+ * (`ShaderDefine.GLOBE_IMAGERY_REDUCED`), so the only two shapes are:
+ *
+ *   - 16 slots (full, single-pass up to 16 layers) when the device's
+ *     `maxSampledTexturesPerShaderStage` covers the full layout's 31
+ *     fragment-stage sampled textures, and
+ *   - 1 slot (reduced, one blend pass per layer) otherwise — sized so
+ *     the layout needs exactly 16, the WebGPU spec floor that every
+ *     compliant adapter (incl. SwiftShader CI / compat mode) guarantees.
+ *
+ * Devices in the 17..30 band conservatively take the reduced layout;
+ * in practice the pool's adaptive negotiator opts capable adapters up
+ * to 64, so the band is essentially empty (adapters either sit at the
+ * spec floor or well above 31).
+ *
+ * @private
+ */
+export function computeGlobeImagerySlotCount(
+  limits: GPUSupportedLimits | undefined | null,
+): number {
+  const limit = limits?.maxSampledTexturesPerShaderStage ?? 16;
+  return limit >= GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES + MAX_IMAGERY_LAYERS
+    ? MAX_IMAGERY_LAYERS
+    : 1;
+}
+
 /**
  * Resolve an `ImageryLayer` property that the public API documents as either a
  * scalar or a callback `(frameState, layer, x, y, level) => number`. Writing

@@ -91,7 +91,9 @@ export function selectWireframePipeline(
   // resolves through the central cache. Returns null when the pipeline
   // hasn't materialized yet (caller should skip the wireframe overlay
   // for this tile this frame).
-  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
   const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}_${strideBytes}|${defines.toString(16)}`;
   let entry = host._wireframePipelineCache.get(cacheKey);
   if (!entry) {
@@ -134,8 +136,12 @@ export function buildWireframePipelineDescriptor(
   // define keep the wireframe pipeline's vertex layout in sync with
   // the colored pass automatically. Entry-point names are unqualified;
   // the correct variant is selected via the active-defines bitmask
-  // passed to `getProductionShaderModule`.
-  const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+  // passed to `getProductionShaderModule`. Batch 246 — the reduced-
+  // imagery bit rides along so the wireframe module's group-1
+  // declarations match the device's 1-slot pipeline layout.
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
 
   if (isQuantized) {
     // See `_createPipelineVariant` for the full documentation of the
@@ -231,7 +237,7 @@ export function buildWireframePipelineDescriptor(
   // so the wireframe overlay always matches its colored counterpart.
   const shaderModule = getProductionShaderModuleHelper(host, defines);
   return {
-    name: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b)`,
+    name: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b${host._imageryReduced ? ", imagery1" : ""})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: shaderModule,
