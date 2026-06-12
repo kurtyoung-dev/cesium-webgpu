@@ -3104,6 +3104,12 @@ class Scene {
     // which was equally unset. This single publication activates ALL of
     // those gates from one backend-agnostic source of truth.
     frameState.taaEnabled = this.taaEnabled === true;
+    // Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED follow-on) — canonical
+    // per-frame snapshot-mode service reference, same dormant-gate
+    // family as `taaEnabled` above: WebGPUEnvironmentRenderer's moon
+    // freezable registration read `frameState.scene` (never populated)
+    // and silently never registered. Renderers read THIS field instead.
+    frameState.snapshotMode = this._snapshotMode;
     frameState.debugShowTriangulation = this.debugShowTriangulation === true;
     // Globe wireframe overlay (Tier 1 debug). Forwarded to the WebGPU globe
     // surface renderer's wireframe pipeline path. WebGL renderers ignore.

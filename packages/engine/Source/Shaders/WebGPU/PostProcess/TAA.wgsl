@@ -66,6 +66,14 @@ struct TAAParams {
 // placeholder, the check skips and the prior depth+motion gates run
 // unchanged.
 @group(0) @binding(6) var gBufferNormalTex: texture_2d<f32>;
+// Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED first activation) — dedicated
+// NEAREST sampler for the depth texture. WebGPU forbids pairing a
+// TextureSampleType::Depth binding with a Filtering sampler (the
+// TAA_Pipeline failed creation silently for the shader's whole dormant
+// life). Nearest is also the CORRECT depth policy: bilinear blends
+// across depth edges fabricate depths belonging to neither surface.
+// Same NEW-4-B (Batch 66) rule as WebGPUGlobeDepth / DebugDepthOverlay.
+@group(0) @binding(7) var depthSampler: sampler;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -175,7 +183,13 @@ fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
   // Fetch depth at the pixel center. We sample from the depth texture
   // that the main scene wrote with the JITTERED projection — the inverse
   // matrix matches, so the unproject is self-consistent.
-  let rawDepth = textureSampleLevel(depthTex, linearSampler, uv, 0.0);
+  // Batch 244 — texture_depth_2d's textureSampleLevel overload takes an
+  // INTEGER mip level (u32/i32), unlike texture_2d<f32>'s f32 level.
+  // `0.0` here was a compile error that stayed hidden for the shader's
+  // whole life because the TAA effect was never instantiated until
+  // NEW-TAA-EFFECT-NEVER-ADDED landed. Depth also uses the dedicated
+  // non-filtering `depthSampler` (see binding 7).
+  let rawDepth = textureSampleLevel(depthTex, depthSampler, uv, 0u);
 
   // Slice 2 — sky reprojection (rotation-dominated).
   //
@@ -272,7 +286,9 @@ fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
   }
 
   if (!isSky) {
-    let prevDepthRaw = textureSampleLevel(depthTex, linearSampler, prevUV, 0.0);
+    // Batch 244 — integer mip level + non-filtering depth sampler for
+    // texture_depth_2d (see rawDepth).
+    let prevDepthRaw = textureSampleLevel(depthTex, depthSampler, prevUV, 0u);
     if (prevDepthRaw < 0.99999) {
       // Only check non-sky neighbors. Sky pixels can be near 1.0 even
       // when the current pixel is non-sky (legitimate occlusion of

@@ -949,14 +949,20 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   // unregister later — without it, the closure would leak after the
   // moon's GPU resources are destroyed.
   if (!cache._snapshotRegistered) {
-    const scene = frameState.scene;
-    if (defined(scene) && defined(scene.snapshotMode)) {
-      scene.snapshotMode.registerFreezable(
+    // Batch 244 — read the canonical `frameState.snapshotMode`
+    // publication (Scene.updateFrameState). The old `frameState.scene`
+    // read was ALWAYS undefined (that property is never populated —
+    // same dormant-gate bug class as Batch 234's `taaEnabled` fix), so
+    // this registration silently never fired and the moon kept packing
+    // + uploading uniforms every frame while the scene was frozen.
+    const snapshotMode = frameState.snapshotMode;
+    if (defined(snapshotMode)) {
+      snapshotMode.registerFreezable(
         "moon-renderer",
         createMoonFreezable(cache),
       );
       cache._snapshotRegistered = true;
-      cache._snapshotService = scene.snapshotMode;
+      cache._snapshotService = snapshotMode;
     }
   }
 

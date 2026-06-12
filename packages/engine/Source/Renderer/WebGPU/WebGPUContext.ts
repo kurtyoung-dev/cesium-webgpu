@@ -3209,18 +3209,27 @@ export class WebGPUContext extends GraphicsContext {
     // the texture without enabling the consumer doesn't incur producer
     // dispatch cost — just the one-time GPU memory allocation.
     if (!picking && view?.gBufferFramebuffer) {
-      // `_hdr` and `msaaSamples` aren't in the ambient `CesiumScene`
-      // interface — structurally narrow here. Mirrors the same access
-      // pattern used in `FramebufferOrchestrator.js` (the WebGL side).
+      // `_hdr` isn't in the ambient `CesiumScene` interface —
+      // structurally narrow here. Mirrors the same access pattern used
+      // in `FramebufferOrchestrator.js` (the WebGL side).
       const sceneExt = scene as unknown as {
         _hdr: boolean;
-        msaaSamples: number;
       };
+      // Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED first activation) — use
+      // the EFFECTIVE sample count (`this._msaaSamples`, written by
+      // `WebGPUSceneRenderer.prepareFrame`; TAA forces it to 1 per the
+      // Batch 234 coupling), NOT the raw user `scene.msaaSamples`.
+      // This was the lone scene-pass attachment producer still reading
+      // the user setting: on the first taaEnabled frame it kept the
+      // G-buffer's MSAA x4 companion bound as colorAttachments[1]
+      // while every other attachment dropped to single-sample —
+      // "sample count (4) does not match" killed the WHOLE scene pass
+      // and the canvas went black for as long as TAA stayed on.
       view.gBufferFramebuffer.update(
         this,
         view.viewport,
         sceneExt._hdr,
-        sceneExt.msaaSamples,
+        this._msaaSamples ?? 1,
       );
       view.gBufferFramebuffer.clear(this, passState);
     }

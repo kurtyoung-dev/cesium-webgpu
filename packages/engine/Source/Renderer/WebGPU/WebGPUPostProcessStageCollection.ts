@@ -287,7 +287,30 @@ function configureWebGPUPostProcessPipeline(
     (scene as unknown as { godRayEnabled?: boolean })?.godRayEnabled === true;
 
   // --- TAA (controlled by scene.taaEnabled, not the collection) ---
+  // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — lazily add the effect on
+  // the first `scene.taaEnabled` frame, mirroring the bloom/AO/DoF
+  // lazy-init below. Before this, `addTAA()` had ZERO callers, so
+  // `setStageEnabled("TAA", true)` no-opped on a null `_taaEffect` and
+  // `scene.taaEnabled = true` paid for velocity passes + the MSAA=1
+  // downgrade while producing no temporal accumulation at all.
+  //
+  // The gate checks the LIVE `pipeline.taaEffect` slot (addTAA is also
+  // internally idempotent) rather than a sticky `cache.taaInitialized`
+  // flag so the effect transparently re-adds after any pipeline
+  // recreate (HDR toggle, resize, device loss) that nulls the slot.
   const taaEnabled = scene?.taaEnabled === true;
+  if (taaEnabled && !pipeline.taaEffect) {
+    pipeline.addTAA(device, canvasFormat);
+  }
+  // Toggle-off is a clean bypass: `enabled = false` drops the effect
+  // out of `execute()` and `hasActiveStages` while keeping the history
+  // textures allocated (same policy as disabled bloom). On the
+  // off→on rising edge, invalidate the stale history so the first
+  // re-enabled frame doesn't blend 90% of an old scene back in.
+  const taaFx = pipeline.taaEffect;
+  if (taaFx && taaEnabled && !taaFx.enabled) {
+    taaFx.resetHistory();
+  }
   pipeline.setStageEnabled("TAA", taaEnabled);
   // When TAA is active, disable FXAA (TAA provides superior AA).
   const fxaaEnabled = taaEnabled ? false : cache.fxaaEnabled;

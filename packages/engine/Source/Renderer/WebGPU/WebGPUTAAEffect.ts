@@ -357,6 +357,13 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   private _height = 0;
   private _format: GPUTextureFormat = "bgra8unorm";
   private _sampler: GPUSampler | null = null;
+  // Batch 244 — dedicated NEAREST sampler for the depth binding.
+  // WebGPU forbids TextureSampleType::Depth + a Filtering sampler in
+  // the same static texture/sampler pair; TAA_Pipeline creation failed
+  // on exactly that for the effect's whole dormant life (surfaced on
+  // first activation, NEW-TAA-EFFECT-NEVER-ADDED). NEW-4-B (Batch 66)
+  // pattern, same as WebGPUGlobeDepth / WebGPUDebugDepthOverlay.
+  private _depthSampler: GPUSampler | null = null;
 
   // Current jitter offset in UV space (set by the caller before execute).
   jitterX = 0;
@@ -364,6 +371,15 @@ export class WebGPUTAAEffect implements PostProcessEffect {
 
   /** Blend weight: fraction of current frame in the blend (0.1 = 10%). */
   blendWeight = 0.1;
+
+  // Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED) — debug-only resolve counter.
+  // Counts how many times the temporal-resolve render pass was actually
+  // ENCODED (i.e., past every early-return guard in `execute()`).
+  // Incremented under a debug pragma, so production builds report 0 via
+  // `getStatistics().resolveCount`; unminified builds let probes assert
+  // the resolve stage runs (vs. the pre-Batch-244 dormancy where
+  // `_taaEffect` was never instantiated at all).
+  private _resolveCount = 0;
 
   initialize(
     device: GPUDevice,
@@ -390,6 +406,15 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       minFilter: "linear",
     });
 
+    // Batch 244 — nearest sampler for the depth binding (see the
+    // `_depthSampler` field comment). Color/history/motion/G-buffer
+    // keep the linear sampler; ONLY depth routes through this one.
+    this._depthSampler = device.createSampler({
+      label: "TAA_DepthSampler",
+      magFilter: "nearest",
+      minFilter: "nearest",
+    });
+
     // Bind group layout
     // TAA Slice 2d (Batch 104) — adds binding 5 for the per-pixel
     // motion-vector texture (rg16float, written by the model FS at
@@ -410,6 +435,8 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       // G-buffer view; the shader's sentinel check (length < 0.1)
       // skips the test for those frames.
       texture(6, Stage.FRAGMENT),
+      // Batch 244 — non-filtering depth sampler (see `_depthSampler`).
+      sampler(7, Stage.FRAGMENT, "non-filtering"),
     ]);
 
     // Render pipeline
@@ -490,6 +517,19 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     this._allocateHistoryTextures(width, height, this._format);
   }
 
+  /**
+   * Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED) — invalidate the temporal
+   * history without reallocating it. Called by the configure pass on
+   * the disabled→enabled rising edge: while TAA was off the history
+   * textures kept whatever the last enabled frame wrote, and blending
+   * 90% of a stale scene into the first re-enabled frame would flash
+   * old content. The next `execute()` passes the source through
+   * unblended and accumulation restarts clean on the frame after.
+   */
+  resetHistory(): void {
+    this._skipNextBlend = true;
+  }
+
   execute(
     encoder: GPUCommandEncoder,
     sourceView: GPUTextureView,
@@ -506,6 +546,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       !this._pipeline ||
       !this._paramsBuffer ||
       !this._sampler ||
+      !this._depthSampler ||
       !this._bindGroupLayout ||
       this._historySlotId === null
     ) {
@@ -591,6 +632,8 @@ export class WebGPUTAAEffect implements PostProcessEffect {
         { binding: 4, resource: { buffer: this._paramsBuffer } },
         { binding: 5, resource: motionBindView },
         { binding: 6, resource: gBufferBindView },
+        // Batch 244 — non-filtering depth sampler (see `_depthSampler`).
+        { binding: 7, resource: this._depthSampler },
       ],
     });
 
@@ -610,6 +653,11 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     pass.setBindGroup(0, bg);
     pass.draw(3, 1, 0, 0);
     pass.end();
+
+    //>>includeStart('debug', pragmas.debug);
+    // Batch 244 — the resolve pass was actually encoded this frame.
+    this._resolveCount++;
+    //>>includeEnd('debug');
 
     // Parity was already advanced at the top of execute() — no manual
     // flip needed here. Returning `historyWriteView` matches the old
@@ -695,6 +743,9 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       // `historyIndex` retains its historical meaning: which slot is the
       // WRITE slot this frame (= `frameIndex & 1` for phaseOffset 0).
       historyIndex: this._parityManager.frameIndex & 1,
+      // Batch 244 — debug-pragma counter; always 0 in production builds
+      // (the increment is stripped), real encode count in unminified.
+      resolveCount: this._resolveCount,
     };
   }
 

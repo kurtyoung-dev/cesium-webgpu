@@ -389,6 +389,13 @@ interface CesiumFrameState {
    * `frameState.scene` (which does not exist at runtime).
    */
   taaEnabled: boolean;
+  /**
+   * Canonical per-frame mirror of `scene.snapshotMode`, published by
+   * `Scene.updateFrameState` (Batch 244 — same dormant-`frameState.scene`
+   * family as `taaEnabled`). Renderers registering snapshot freezables
+   * read THIS — never `frameState.scene`.
+   */
+  snapshotMode?: CesiumScene["snapshotMode"];
   minimumTerrainHeight: number;
   invertClassification: boolean;
   // Phase 8a (Batch 80 + 86) — gates the WebGPU G-buffer producer

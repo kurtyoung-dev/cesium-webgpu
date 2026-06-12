@@ -490,6 +490,19 @@ class FrameState {
     this.taaEnabled = false;
 
     /**
+     * The scene's snapshot-mode service for this frame. Canonical
+     * per-frame mirror of `scene.snapshotMode`, published by
+     * `Scene.updateFrameState`. Renderers that register snapshot
+     * freezables (moon, volumetric fog, render bundles) read THIS —
+     * never `frameState.scene`, which does not exist at runtime
+     * (Batch 244; same dormant-gate family as `taaEnabled` / Batch 234).
+     *
+     * @type {SnapshotModeService|undefined}
+     * @default undefined
+     */
+    this.snapshotMode = undefined;
+
+    /**
      * Additional state used to update 3D Tilesets.
      *
      * @type {Cesium3DTilePassState}

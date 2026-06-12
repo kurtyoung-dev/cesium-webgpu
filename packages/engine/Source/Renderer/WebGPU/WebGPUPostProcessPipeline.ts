@@ -12,7 +12,10 @@
  * 3.5 AutoExposure (compute, feeds Tonemap exposure uniform)
  * 4. TAA (Audit B.16, Batch 155 — runs in linear/HDR domain BEFORE
  *    Tonemap so neighborhood-clamp + history-blend math operates in
- *    linear color space)
+ *    linear color space. Batch 244 first activation kept this order
+ *    deliberately; whether the clamp should be retuned for pre- vs
+ *    post-tonemap input remains open under
+ *    NEW-TAA-PIPELINE-ORDER-RECONCILE.)
  * 5. Tonemapping / HDR (single-pass, mode-selectable operator)
  * 6. ColorGrading (single-pass LUT)
  * 7. Custom stages (user-added via addCustomStage)
@@ -355,6 +358,15 @@ export class WebGPUPostProcessPipeline {
     this._aoEffect = null;
     this._dofEffect = null;
     this._godRayEffect = null;
+    // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — TAA joins the recreate
+    // reset list: its history textures + pipeline target are sized and
+    // formatted against `_intermediateFormat`, so a resize / HDR toggle
+    // must drop them too. The configure pass (`WebGPUPostProcess
+    // StageCollection`) lazily re-adds the effect on the same frame
+    // because its gate checks the LIVE `pipeline.taaEffect` slot, not a
+    // sticky cache flag.
+    this._taaEffect?.destroy();
+    this._taaEffect = null;
 
     // When HDR is on, intermediate textures use rgba16float so the full
     // dynamic range from the scene framebuffer survives through bloom,
@@ -645,17 +657,30 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   // ================================================================
 
   /**
-   * Add Temporal Anti-Aliasing effect. Runs after ColorGrading, before
-   * FXAA. Requires sub-pixel jitter on the projection matrix (see
-   * WebGPUTAAEffect.computeJitter). Default disabled — toggled via
-   * `scene.taaEnabled`.
+   * Add Temporal Anti-Aliasing effect. Runs in the linear/HDR domain
+   * BEFORE Tonemap (see the pipeline-order header). Requires sub-pixel
+   * jitter on the projection matrix (see WebGPUTAAEffect.computeJitter).
+   * Default disabled — toggled via `scene.taaEnabled`, which drives the
+   * lazy-add in `configureWebGPUPostProcessPipeline` (Batch 244,
+   * NEW-TAA-EFFECT-NEVER-ADDED — this method previously had zero
+   * callers, so the resolve stage never ran).
    */
   addTAA(device: GPUDevice, canvasFormat: GPUTextureFormat): void {
     if (this._taaEffect) {
       return;
     }
     this._taaEffect = new WebGPUTAAEffect();
-    this._taaEffect.initialize(device, this._width, this._height, canvasFormat);
+    // Intermediate format (rgba16float in HDR) — same
+    // NEW-POSTPROCESS-HDR-INTERMEDIATES (Batch 225) rule as the other
+    // built-in effects: TAA runs pre-tonemap, so an 8-bit history would
+    // clamp HDR highlights before the tonemapper sees them. SDR =
+    // canvasFormat (no-op for the common path).
+    this._taaEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
   }
 
   get taaEffect(): WebGPUTAAEffect | null {
@@ -1486,11 +1511,17 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
     this._autoExposure?.destroy();
+    // Batch 244 — TAA was missing from teardown (the effect was never
+    // instantiated before NEW-TAA-EFFECT-NEVER-ADDED landed, so the
+    // leak was unreachable). History textures + params UBO are real
+    // GPU allocations; drop them with the rest.
+    this._taaEffect?.destroy();
     this._bloomEffect = null;
     this._aoEffect = null;
     this._dofEffect = null;
     this._godRayEffect = null;
     this._autoExposure = null;
+    this._taaEffect = null;
 
     this._tonemapStage = null;
     this._fxaaStage = null;

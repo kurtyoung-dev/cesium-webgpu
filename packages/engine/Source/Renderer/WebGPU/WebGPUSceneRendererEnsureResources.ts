@@ -419,7 +419,11 @@ export function ensureResources(
       undefined,
       !!(context && context.useShaderF16),
     );
-    // TAA is added lazily when scene.taaEnabled = true (not default).
+    // TAA is added lazily when scene.taaEnabled = true (not default) —
+    // the lazy-add lives in `configureWebGPUPostProcessPipeline` below,
+    // gated on the live `pipeline.taaEffect` slot (Batch 244,
+    // NEW-TAA-EFFECT-NEVER-ADDED; this comment used to describe a
+    // lazy-add that didn't exist anywhere).
     host._postProcess.addFXAA(device, canvasFormat);
     // AUDIT_2026_05_02 B.14 — auto-exposure was previously gated behind
     // `if (hdr)` only, but SDR scenes still need adaptive exposure for

@@ -567,7 +567,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUAmbientOcclusionEffect — SSAO/GTAO 4-pass: AmbientOcclusionGenerate + GTAOGenerate + Modulate (SHIPPED)
 - WebGPUDepthOfFieldEffect — DoF 3-pass blur with focus-distance ramp (SHIPPED)
 - WebGPUGodRayEffect — radial god-rays from sun direction (SHIPPED)
-- WebGPUTAAEffect — TAA with RTE depth-reprojection motion vectors + history validity gate (SHIPPED Slice 1+2; per-model MRT 2c-2e WIP. **Batch 234 finding: the resolve stage is DORMANT — `addTAA()` has zero callers, so `scene.taaEnabled` never instantiates the effect; velocity producers went live in Batch 234 but nothing consumes `motionTex` yet — NEW-TAA-EFFECT-NEVER-ADDED in DEFERRED_WORK**)
+- WebGPUTAAEffect — TAA with RTE depth-reprojection motion vectors + history validity gate (SHIPPED Slice 1+2; per-model MRT 2c-2e WIP. Batch 244: the resolve stage went LIVE — `configureWebGPUPostProcessPipeline` lazy-adds the effect on the first `scene.taaEnabled` frame and consumes `motionTex`; first activation fixed a TAA.wgsl depth-mip compile error, a depth+filtering-sampler pipeline rejection (dedicated non-filtering depthSampler), and the G-buffer raw-`scene.msaaSamples` scene-pass kill — NEW-TAA-EFFECT-NEVER-ADDED ✅ SHIPPED, gated by probe-taa-resolve.mjs; pre- vs post-tonemap clamp retune stays open under NEW-TAA-PIPELINE-ORDER-RECONCILE)
 - WebGPUSSREffect — Screen-Space Reflections (SHIPPED)
 - WebGPUAutoExposure — auto-exposure based on luminance histogram (SHIPPED)
 - Tonemapping.wgsl + Tonemapping_f16.wgsl — 5 tonemapping operators; f16 variant gated on `shader-f16` (SHIPPED)

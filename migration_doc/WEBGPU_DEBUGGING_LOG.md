@@ -11027,3 +11027,60 @@ hosted run is the true test for the browser-suite steps that cannot run on this 
 `gulp buildTs` exit 0 (was 46 jsdoc ERRORs + 15→295→39→1 tsc errors across the layers); `npm run make-zip`
 exit 0; `node -e require("./")` + dev/prod `Specs/test.cjs` pass; variant webgl-only smoke PASS with NO
 pre-running server (CI condition); probe-collections-regression + probe-globe-bindgroup-cache green.
+## Batch 244 — TAA resolve goes live: lazy-add the missing consumer (NEW-TAA-EFFECT-NEVER-ADDED) (2026-06-12)
+
+**Symptom:** `scene.taaEnabled = true` cost the velocity passes (Batch 234/235) and the MSAA=1
+downgrade but produced NO temporal antialiasing. `WebGPUPostProcessPipeline.addTAA()` had ZERO
+callers — `_taaEffect` stayed null, `setStageEnabled("TAA", true)` no-opped, and the `Scene.js`
+jitter/motion-vector block short-circuited on `pipeline?.taaEffect == null`.
+
+**Fix (the consumer):** `configureWebGPUPostProcessPipeline` lazy-adds the TAA effect on the
+first `taaEnabled` frame, mirroring the bloom/AO/DoF lazy-init — but gated on the LIVE
+`pipeline.taaEffect` slot instead of a sticky cache flag, so the effect transparently re-adds
+after any pipeline recreate (HDR toggle / resize / device loss). Toggle-off is a clean bypass
+(`enabled = false`, instance + history textures kept, same policy as disabled bloom);
+`WebGPUTAAEffect.resetHistory()` invalidates stale history on the off→on rising edge. `addTAA`
+now allocates against `_intermediateFormat` (rgba16float in HDR — Batch 225 rule), and the
+effect joined the pipeline's recreate-reset list + `destroy()` teardown (it was missing from
+both — unreachable leak while dormant). Insertion order stays pre-tonemap per the pipeline
+header (Audit B.16 / Batch 155); the deliberate pre- vs post-tonemap clamp retune decision
+remains open under NEW-TAA-PIPELINE-ORDER-RECONCILE. A debug-pragma `resolveCount` counter on
+`WebGPUTAAEffect.execute` (exposed via `getStatistics()`) proves the resolve pass encodes.
+
+**Three latent bugs surfaced by the first-ever activation (all fixed):**
+
+1. **TAA.wgsl never compiled** — `textureSampleLevel(texture_depth_2d, …, 0.0)` at two call
+   sites; the depth overload takes an INTEGER mip level. Loud console error on first compile.
+2. **TAA_Pipeline creation rejected** — TextureSampleType::Depth statically paired with the
+   filtering `linearSampler`. Added a dedicated non-filtering NEAREST `depthSampler`
+   (binding 7; NEW-4-B / Batch 66 pattern, same as WebGPUGlobeDepth). **This error never
+   reached the console** — found via an explicit `device.pushErrorScope` (`diag-taa-black.mjs`,
+   kept as the template for "pass runs, output black, zero console errors").
+3. **Scene pass killed while TAA on** — `WebGPUContext.updateAndClearFramebuffers` fed the
+   G-buffer update the RAW `scene.msaaSamples` (4) instead of the TAA-effective
+   `context._msaaSamples` (1, Batch 234 coupling). The Phase8a normal-roughness MSAA x4
+   attachment in the otherwise single-sample scene pass → "sample count (4) does not match"
+   → the WHOLE scene framebuffer pass discarded → black canvas for as long as TAA was on.
+   It was the lone scene-pass attachment producer still reading the user setting.
+
+**Related dormant gate fixed (same `frameState.scene` bug class as Batch 234):**
+`WebGPUEnvironmentRenderer.js` moon snapshot-freezable registration read `frameState.scene`
+(never populated) so it silently never registered. `Scene.updateFrameState` now publishes the
+canonical `frameState.snapshotMode` (declared on `FrameState.js` + `CesiumFrameState`), and the
+moon gate reads it.
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/{WebGPUPostProcessPipeline.ts,WebGPUPostProcessStageCollection.ts,WebGPUTAAEffect.ts,WebGPUSceneRendererEnsureResources.ts,WebGPUContext.ts,WebGPUEnvironmentRenderer.js,cesium-js-types.d.ts}`,
+`packages/engine/Source/Shaders/WebGPU/PostProcess/TAA.wgsl`,
+`packages/engine/Source/Scene/{Scene.js,FrameState.js}`,
+`Tools/visual-regression/{probe-taa-resolve.mjs,diag-taa-black.mjs}` (new).
+
+**Verification:** `probe-taa-resolve.mjs` (NEW) OFF→ON→OFF — OFF: no effect, no velocity,
+msaa=4, baseline renders; ON: effect added + enabled, resolveCount 29→60 across 60 moving
+frames, velocity attached, msaa=1, settled consecutive-frame diff 0.054% (<1% — temporally
+stable under per-frame jitter), camera-rotation (sub-teleport, blend path) moved-frame diff
+0.506% (>4x settled — image follows within one frame) with billboard pixel count 2422→2443
+(no ghost doubling), 0 console errors; OFF: bypassed, resolveCount frozen, velocity detached,
+msaa restored to 4. Regression gates: probe-collections-regression,
+probe-taa-velocity-emission, probe-compute-instance-generic (TAA sections),
+probe-billboard-partial-write, probe-bloom-parity, probe-orbital-catalog,
+probe-globe-bindgroup-cache, sandcastle-smoke — all PASS. `npx tsc --noEmit` clean.
