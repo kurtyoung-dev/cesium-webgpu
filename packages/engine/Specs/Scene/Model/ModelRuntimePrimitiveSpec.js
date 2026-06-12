@@ -10,6 +10,7 @@ import {
   CPUStylingPipelineStage,
   DequantizationPipelineStage,
   GeometryPipelineStage,
+  ImageryPipelineStage,
   LightingPipelineStage,
   MaterialPipelineStage,
   MetadataPipelineStage,
@@ -161,6 +162,36 @@ describe("Scene/Model/ModelRuntimePrimitive", function () {
 
     primitive.configurePipeline(mockFrameState);
     verifyExpectedStages(primitive.pipelineStages, expectedStages);
+  });
+
+  it("does not add ImageryPipelineStage for an empty imagery layers array", function () {
+    const primitive = new ModelRuntimePrimitive({
+      primitive: mockPrimitive,
+      node: mockNode,
+      model: {
+        type: ModelType.GLTF,
+        allowPicking: false,
+        imageryLayers: [],
+      },
+    });
+
+    primitive.configurePipeline(mockFrameState);
+    expect(primitive.pipelineStages.includes(ImageryPipelineStage)).toBe(false);
+  });
+
+  it("adds ImageryPipelineStage when imagery layers are present", function () {
+    const primitive = new ModelRuntimePrimitive({
+      primitive: mockPrimitive,
+      node: mockNode,
+      model: {
+        type: ModelType.GLTF,
+        allowPicking: false,
+        imageryLayers: [{}],
+      },
+    });
+
+    primitive.configurePipeline(mockFrameState);
+    expect(primitive.pipelineStages.includes(ImageryPipelineStage)).toBe(true);
   });
 
   it("configures the pipeline stages for instance feature picking", function () {

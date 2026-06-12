@@ -217,7 +217,10 @@ class ModelRuntimePrimitive {
     // Check whether the model is part of a `Model3DTileContent` that
     // belongs to a tileset that has imagery layers. If this is the
     // case, then the `ImageryPipelineStage` will be required.
-    const hasImageryLayers = defined(model.imageryLayers);
+    // The `.length > 0` check matters: an EMPTY imagery-layers array must
+    // not trigger the stage (upstream fix post-v1.142 merge-base).
+    const hasImageryLayers =
+      defined(model.imageryLayers) && model.imageryLayers.length > 0;
 
     const hasCustomShader = defined(customShader);
     const hasCustomFragmentShader =

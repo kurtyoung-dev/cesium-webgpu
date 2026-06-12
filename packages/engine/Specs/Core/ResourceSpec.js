@@ -138,6 +138,31 @@ describe("Core/Resource", function () {
     });
   });
 
+  it("keeps the authority of a protocol-relative url", function () {
+    // Regression (Batch 237): the hand-rolled parseUrl reduced
+    // "//host/path" to its pathname, dropping the authority.
+    const resource = new Resource({
+      url: "//test.invalid/tileset/",
+    });
+    expect(resource.url).toEqual("//test.invalid/tileset/");
+
+    const withQuery = new Resource({
+      url: "//test.invalid/tileset?foo=bar",
+    });
+    expect(withQuery.getUrlComponent()).toEqual("//test.invalid/tileset");
+    expect(withQuery.queryParameters).toEqual({ foo: "bar" });
+  });
+
+  it("keeps a bare-relative url relative", function () {
+    // Regression (Batch 237): the hand-rolled parseUrl normalized
+    // "Assets/foo" to "/Assets/foo", re-rooting it against the
+    // document origin.
+    const resource = new Resource({
+      url: "Assets/approximateTerrainHeights.json",
+    });
+    expect(resource.url).toEqual("Assets/approximateTerrainHeights.json");
+  });
+
   it("Constructing with parseUrl false does not strip query parameters from url", function () {
     const resource = new Resource({
       url: "http://test.com/tileset?foo=bar&baz=foo",

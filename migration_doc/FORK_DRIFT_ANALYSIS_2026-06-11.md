@@ -27,7 +27,7 @@ Upstream shipped v1.142 (2026-06-01) since our merge-base. These are the items w
 |---|---|---|---|
 | **P1** | `pickModel`: fixed incorrect matrix multiplication for non-worldspace instance transforms; fixed `ModelReader.octDecode` arg order (`octDecodeInRange`/`Cartesian3.pack`) | #13433 | Directly correctness-relevant — we're actively working picking (Batch 221). Our model-pick path should carry these fixes; verify against our forked `Model.js`/picking. |
 | **P1** | `BufferPointCollection` not updating after point-position changes | #13465 | Collections are an active fork area (Batches 218–220). Real data-staleness bug; port into our `Buffer*` collection path. |
-| **P1** | Empty `imageryLayers` array wrongly triggers `ImageryPipelineStage` (`hasImageryLayers` must also check `.length > 0`) | (Axis-B `NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD`) | Real behavioral fix we DROPPED in our rewrite. One-liner; affects WebGL too. Apply now. |
+| **P1** | Empty `imageryLayers` array wrongly triggers `ImageryPipelineStage` (`hasImageryLayers` must also check `.length > 0`) | (Axis-B `NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD`) | ✅ **SHIPPED (Batch 237)** — guard ported into `ModelRuntimePrimitive.configurePipeline` (upstream-identical), + 2 specs + `Tools/upstream-regression-check.mjs` item [1] with negative control. |
 | **P2** | Stale `showsUpdated` persisting when entities are removed from ground-primitive batches | #13366 | We've touched ground-primitive classification heavily (Batch 173/184). Port to keep batch state correct. |
 | **P2** | `DeveloperError` on 3D tiles with degenerate (zero-area) triangles + edge-visibility data | #13421 | We added edge-visibility (WebGPU) — the WebGL/core guard should match. Verify our edge path has the same guard. |
 | **P2** | Lighting affecting `EquirectangularPanorama` | #13369 | Panorama is in our feature set; correctness port. |
@@ -51,6 +51,8 @@ The ultra-review found the big ES6-modernization pass shipped real behavioral re
 > **Action:** add `NEW-FORK-MODERNIZATION-REGRESSIONS` to DEFERRED_WORK with these three as concrete sub-items + a verifying test each (diff our logic against upstream's for the specific method, write a unit test that upstream would pass).
 
 These three are the **highest-value Axis-B items** under the fix-forward lens: they're live defects, not cosmetic drift.
+
+> **✅ RESOLVED (Batch 237) — verify-then-fix outcome.** (a) `Resource.contains` does not exist as a method in either tree — the label conflated Axis-B findings; the documented Resource regressions were `parseUrl` (Session 35, already fixed). The verification however surfaced a **third, still-live `parseUrl` divergence**: the no-scheme/no-base branch dropped protocol-relative authority (`"//host/"` → `"/"`, failing `ArcGisMapServerImageryProviderSpec` on main) and re-rooted bare-relative URLs (`"Assets/foo"` → `"/Assets/foo"`). Fixed forward (verbatim-minus-query/fragment, upstream urijs semantics); `gulp test --includeName Resource` 397/397 (was 1 FAILED). (b) `TimeIntervalCollection.contains` already fixed (`17441c3af9`), upstream-identical — no change. (c) `Animation.js` already patched (flush-left + prettier-ignore), literal byte-identical to upstream — no change. All locked by `Tools/upstream-regression-check.mjs` (18 checks) + 2 new `ResourceSpec` specs. See DEFERRED_WORK `NEW-FORK-MODERNIZATION-REGRESSIONS` for full evidence.
 
 ---
 

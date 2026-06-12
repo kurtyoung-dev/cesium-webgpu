@@ -10594,3 +10594,57 @@ full-vs-partial path choice, TAA velocity emission).
 
 **Files:** +`Tools/visual-regression/probe-collections-regression.mjs`,
 DEFERRED_WORK (NEW-COLLECTION-RETOUCH-PROBE ✅ SHIPPED) / DEBUGGING_GUIDE (probe inventory) docs.
+
+## Batch 237 — Upstream imagery-layers guard + modernization-regression audit closes with a live Resource.parseUrl fix (2026-06-12)
+
+**Scope:** FORK_DRIFT_ANALYSIS_2026-06-11.md fix-forward items 1+2 (NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD
++ NEW-FORK-MODERNIZATION-REGRESSIONS). Renderer-agnostic — affects WebGL AND WebGPU identically.
+
+### BUG-237.0 — empty imageryLayers array wrongly triggered ImageryPipelineStage (upstream port)
+
+**File:** `packages/engine/Source/Scene/Model/ModelRuntimePrimitive.js`
+**Root cause:** our rewrite kept the pre-fix upstream form `hasImageryLayers = defined(model.imageryLayers)`;
+upstream (post-v1.142 merge-base) also requires `.length > 0`, so a defined-but-EMPTY array enabled the
+imagery draping stage (shader bloat + wrong pipeline for undecorated tiles).
+**Fix:** ported the upstream-identical guard `defined(model.imageryLayers) && model.imageryLayers.length > 0`.
+**Evidence:** 2 new specs in `ModelRuntimePrimitiveSpec.js` (empty → stage absent, non-empty → present);
+`gulp test --includeName ModelRuntimePrimitive` 33/33 (Edge via CHROME_BIN); negative control — running
+`Tools/upstream-regression-check.mjs` against the pre-fix file fails exactly the empty-array check.
+
+### BUG-237.1 — Resource.parseUrl dropped protocol-relative authority + re-rooted bare-relative URLs
+
+**File:** `packages/engine/Source/Core/Resource.js`
+**Symptom:** `new Resource({url: "//tiledArcGisMapServer.invalid/"}).url` → `"/"`;
+`new Resource({url: "Assets/foo.json"}).url` → `"/Assets/foo.json"`. The first was failing
+`ArcGisMapServerImageryProviderSpec` ("fromUrl resolves with created provider with Resource parameter")
+on main. The second silently re-roots document-relative fetches against the origin.
+**Root cause:** third fallout case of the Session-35 hand-rolled `parseUrl` (mega-commit 39f5341e64):
+the no-scheme/no-base branch reconstructed `cleanUrl = parsed.pathname` from the placeholder-resolved
+`URL`, which (i) has no authority for protocol-relative input and (ii) always carries a leading slash.
+Upstream's urijs `uri.toString()` preserves the original form (it only strips query/fragment).
+**Fix:** the no-base branch now slices the original `url` at the first `?`/`#` and keeps it verbatim —
+upstream-equivalent for protocol-relative, bare-relative, root-relative, and fragment cases. The
+BUG-35.1/35.2 branches (baseUrl resolution, data:/blob: verbatim) are untouched.
+**Evidence:** `gulp test --includeName Resource` 397/397 (was 1 FAILED + 394 on main);
+2 new `ResourceSpec` regression specs; `Tools/upstream-regression-check.mjs` items [2] (8 checks).
+
+### Verification audit — the other two suspected modernization regressions do NOT diverge
+
+- **`TimeIntervalCollection.contains`** — already fixed in `17441c3af9`
+  (BUG-WEBGL-TIMEINTERVAL-CONTAINS-STALE); body is upstream-identical (`indexOf(julianDate) >= 0`).
+  Targeted run: 87/87. No change.
+- **`Animation.js` childNodes** — already patched (flush-left continuations + `// prettier-ignore`
+  guard); `themeEle.innerHTML` literal byte-identical to upstream. Verified by literal-extraction
+  check (line-continuation join === upstream string, zero inter-element text nodes). No change.
+- **`Resource.contains`** — does not exist as a method in either tree; the drift-doc label conflated
+  the TimeIntervalCollection `contains` finding with the Resource `parseUrl` finding.
+
+**New tooling:** `Tools/upstream-regression-check.mjs` — standalone Node check (no browser/build;
+imports engine source directly), 18 checks across the four items against upstream-expected outputs.
+
+**Regression:** `npx tsc --noEmit` clean; `gulp build` green; probe-orbital-catalog.mjs PASS
+(14105/14445 magenta px, 186.0% mask change, 0 errors — exercises viewer boot, i.e. the parseUrl
+asset-fetch path end-to-end); probe-compute-instance-generic.mjs PASS (6287/6406 px, BV+TAA OK).
+
+**Files:** `ModelRuntimePrimitive.js`, `Resource.js`, `ModelRuntimePrimitiveSpec.js`, `ResourceSpec.js`,
++`Tools/upstream-regression-check.mjs`, FORK_DRIFT_ANALYSIS / DEFERRED_WORK docs.

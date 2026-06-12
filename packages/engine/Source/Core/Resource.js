@@ -229,9 +229,15 @@ class Resource {
       // callers downstream see a stable, fully-qualified URL.
       cleanUrl = `${parsed.origin}${parsed.pathname}`;
     } else {
-      // No base — keep the path-only form that upstream Cesium historically
-      // produced for relative URLs without a base.
-      cleanUrl = parsed.pathname;
+      // No base — preserve the original form verbatim (minus query/fragment),
+      // matching upstream's urijs `uri.toString()` semantics. Using
+      // `parsed.pathname` here regressed two cases (caught by
+      // ArcGisMapServerImageryProviderSpec + upstream-regression-check):
+      //   - protocol-relative "//host/path" lost its authority → "/path"
+      //   - bare-relative "Assets/foo" gained a leading slash → "/Assets/foo"
+      //     (silently re-rooting it against the document origin)
+      const queryIndex = url.search(/[?#]/);
+      cleanUrl = queryIndex >= 0 ? url.slice(0, queryIndex) : url;
     }
 
     this._url = cleanUrl;
