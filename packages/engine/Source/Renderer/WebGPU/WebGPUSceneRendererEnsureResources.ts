@@ -54,6 +54,7 @@ import { WebGPUTranslucentTileClassification } from "./WebGPUTranslucentTileClas
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
 import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import type { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
@@ -350,10 +351,21 @@ export function ensureResources(
   // Pass]" every frame and the depth plane silently no-ops.
   const desiredDepthPlaneFormat: GPUTextureFormat =
     context.scenePipelineFormat ?? context.presentationFormat ?? "bgra8unorm";
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the depth plane
+  // must write the SAME depth encoding as the globe/collections, so a
+  // master-switch flip rebuilds it (same drift pattern as the color-format
+  // check).
+  const desiredDepthPlaneLogDepth = isWebGPULogDepthActive(
+    context,
+    (scene as unknown as { _frameState?: { useLogDepth?: boolean } })
+      ._frameState,
+  );
   if (
     host._depthPlane &&
-    (host._depthPlane as unknown as { _colorFormat?: GPUTextureFormat })
-      ._colorFormat !== desiredDepthPlaneFormat
+    ((host._depthPlane as unknown as { _colorFormat?: GPUTextureFormat })
+      ._colorFormat !== desiredDepthPlaneFormat ||
+      (host._depthPlane as unknown as { _logDepth?: boolean })._logDepth !==
+        desiredDepthPlaneLogDepth)
   ) {
     host._depthPlane.destroy?.();
     host._depthPlane = null;
@@ -372,6 +384,7 @@ export function ensureResources(
       desiredDepthPlaneFormat,
       context.webgpuPipelineCache ?? null,
       context._msaaSamples ?? 1,
+      desiredDepthPlaneLogDepth,
     );
   }
 

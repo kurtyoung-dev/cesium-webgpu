@@ -45,13 +45,26 @@ interface EncodedCartesian3Statics {
 
 // Simple depth-only WGSL shader for the depth plane
 // Uses RTE (Relative-To-Eye) precision for planetary-scale rendering
-const DEPTH_PLANE_WGSL = /* wgsl */ `
+//
+// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH): when `logDepth` is
+// true the plane writes logarithmic `@builtin(frag_depth)` with the SAME
+// encode as the globe / collections (csm_vertexLogDepth + csm_writeLogDepth
+// contract — see WebGPULogDepth.ts). The depth plane occludes content behind
+// the horizon; if it kept hyperbolic z (~1.0 at the limb) while everything
+// else writes log z, geometry behind the limb (log z < 1.0) would wrongly
+// pass the depth test and show through the planet. The `logDepthParams`
+// uniform lane is ALWAYS present (static 112-byte layout, packed
+// unconditionally) — only the log variant reads it.
+function makeDepthPlaneWGSL(logDepth: boolean): string {
+  return /* wgsl */ `
 struct Uniforms {
   mvpRelativeToEye: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
   _pad0: f32,
   encodedCameraLow: vec3<f32>,
   _pad1: f32,
+  // (near, far, oneOverLog2FarDepthFromNearPlusOne, reserved)
+  logDepthParams: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -62,7 +75,13 @@ struct VertexInput {
 };
 
 struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
+  @builtin(position) position: vec4<f32>,${
+    logDepth
+      ? `
+  // Interpolated linear depthFromNearPlusOne; the FS converts to frag_depth.
+  @location(0) v_logDepth: f32,`
+      : ""
+  }
 };
 
 fn translateRelativeToEye(
@@ -79,17 +98,45 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     uniforms.encodedCameraHigh, uniforms.encodedCameraLow
   );
   var out: VertexOutput;
-  out.position = uniforms.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
+  out.position = uniforms.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);${
+    logDepth
+      ? `
+  // csm_vertexLogDepth + csm_updatePositionDepth (canonical contract —
+  // chunks/functions/csm_vertexLogDepth.wgsl). Clamp clip-z so FP rounding
+  // at huge far/near ratios can't clip the vertex before the FS writes depth.
+  out.v_logDepth = (out.position.w - uniforms.logDepthParams.x) + 1.0;
+  out.position.z = clamp(out.position.z / out.position.w, 0.0, 1.0) * out.position.w;`
+      : ""
+  }
   return out;
 }
 
-// Fragment shader outputs nothing (depth-only rendering)
+${
+  logDepth
+    ? `// Depth-only rendering (colorWriteMask = 0) — but the log variant DOES
+// write @builtin(frag_depth): log2 of the interpolated linear distance,
+// matching csm_writeLogDepth.
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+};
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> FragOutput {
+  var out: FragOutput;
+  out.color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+  out.depth = log2(max(input.v_logDepth, 1e-9)) * uniforms.logDepthParams.z;
+  return out;
+}`
+    : `// Fragment shader outputs nothing (depth-only rendering)
 // The pipeline has colorWriteMask = 0 so this is effectively a no-op
 @fragment
 fn fragmentMain() -> @location(0) vec4<f32> {
   return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+}`
 }
 `;
+}
 
 // SceneMode.SCENE3D = 3
 const SCENE_MODE_3D = 3;
@@ -104,7 +151,8 @@ const scratchCartesian5 = new Cartesian3();
 // 4 corners × 6 floats (posHigh xyz + posLow xyz) = 24 floats
 const depthQuadRTE = new Float32Array(24);
 // 4×4 matrix (64 bytes) + vec3+pad (16) + vec3+pad (16) = 96 bytes = 24 floats
-const uniformScratch = new Float32Array(24);
+// 28 floats = mat4(16) + camHigh(4) + camLow(4) + logDepthParams(4)
+const uniformScratch = new Float32Array(28);
 
 /**
  * Compute the depth quad corners in world space from the camera and ellipsoid.
@@ -253,6 +301,12 @@ export class WebGPUDepthPlane {
   // Framebuffer Render Pass]" validation warnings every frame.
   _colorFormat: GPUTextureFormat | null = null;
 
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — whether the
+  // pipeline was built with the log-depth frag_depth shader variant. Read by
+  // the SceneRenderer's resource-ensure step to detect a master-switch flip
+  // and rebuild (same drift pattern as `_colorFormat`).
+  _logDepth: boolean = false;
+
   constructor(ellipsoidOffset: number = 0) {
     this._ellipsoidOffset = ellipsoidOffset;
   }
@@ -286,15 +340,17 @@ export class WebGPUDepthPlane {
     colorFormat: GPUTextureFormat = "bgra8unorm",
     pipelineCache?: WebGPURenderPipelineCache | null,
     sampleCount: number = 1,
+    useLogDepth: boolean = false,
   ): void {
     if (this._pipeline) return;
 
     this._device = device;
     this._colorFormat = colorFormat;
+    this._logDepth = useLogDepth;
 
     this._shaderModule = device.createShaderModule({
-      label: "DepthPlane-Shader",
-      code: DEPTH_PLANE_WGSL,
+      label: useLogDepth ? "DepthPlane-Shader[ld]" : "DepthPlane-Shader",
+      code: makeDepthPlaneWGSL(useLogDepth),
     });
 
     this._bindGroupLayout = makeBindGroupLayout(
@@ -303,10 +359,12 @@ export class WebGPUDepthPlane {
       [uniformBuffer(0, Stage.VERTEX)],
     );
 
-    // 96 bytes = mat4(64) + vec3+pad(16) + vec3+pad(16)
+    // 112 bytes = mat4(64) + vec3+pad(16) + vec3+pad(16) + logDepthParams(16)
+    // The logDepthParams vec4 is always declared/packed (static layout);
+    // only the log-depth shader variant reads it.
     this._uniformBuffer = device.createBuffer({
       label: "DepthPlane-Uniforms",
-      size: 96,
+      size: 112,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -322,7 +380,9 @@ export class WebGPUDepthPlane {
     });
 
     const descriptor: WebGPURenderPipelineDescriptor = {
-      name: "DepthPlane-Pipeline",
+      // The central cache keys on name + state (not module identity), so the
+      // log-depth shader variant MUST carry a distinct name.
+      name: useLogDepth ? "DepthPlane-Pipeline[ld]" : "DepthPlane-Pipeline",
       layout: pipelineLayout,
       vertex: {
         module: this._shaderModule,
@@ -523,6 +583,29 @@ export class WebGPUDepthPlane {
     uniformScratch[21] = camLow.y;
     uniformScratch[22] = camLow.z;
     uniformScratch[23] = 0.0; // padding
+
+    // Renderer-wide log depth — pack (near, far, factor, 0). Same source as
+    // every other producer (uniformState.currentFrustum at scene-update
+    // time = the encode frustum the globe log-encodes with). Packed
+    // unconditionally; only the log shader variant reads the lane.
+    const usLog = uniformState as unknown as {
+      currentFrustum?: { x: number; y: number };
+      oneOverLog2FarDepthFromNearPlusOne?: number;
+    };
+    const ldNear = usLog.currentFrustum?.x ?? 0.0;
+    const ldFar = usLog.currentFrustum?.y ?? 0.0;
+    let ldFactor =
+      typeof usLog.oneOverLog2FarDepthFromNearPlusOne === "number"
+        ? usLog.oneOverLog2FarDepthFromNearPlusOne
+        : 0.0;
+    if (!(ldFactor > 0.0) && ldFar > ldNear) {
+      const log2Far = Math.log2(ldFar - ldNear + 1.0);
+      ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+    }
+    uniformScratch[24] = ldNear;
+    uniformScratch[25] = ldFar;
+    uniformScratch[26] = ldFactor;
+    uniformScratch[27] = 0.0;
 
     this.updateUniforms(device, uniformScratch);
 
