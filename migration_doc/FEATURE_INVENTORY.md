@@ -562,7 +562,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUPostProcessPipeline — compositing pipeline orchestrating all post stages; required for canvas blit (SHIPPED)
 - WebGPUPostProcessStageCollection — equivalent of upstream `PostProcessStageCollection.js` (SHIPPED)
 - WebGPUPostProcessEffects — top-level entry coordinating Bloom/AO/etc. (SHIPPED)
-- WebGPUBloomEffect — multi-pass bloom (BrightPass → GaussianBlur → AdditiveBlend → Composite) (SHIPPED)
+- WebGPUBloomEffect — multi-pass bloom (BrightPass → GaussianBlur → AdditiveBlend → Composite); Batch 240: bright pass is a 1:1 ContrastBias.glsl port (HSB brightness + contrast curve), all six WebGL bloom uniforms mapped (NEW-BLOOM-UNIFORM-PARITY) (SHIPPED)
 - WebGPUAmbientOcclusionEffect — SSAO/GTAO 4-pass: AmbientOcclusionGenerate + GTAOGenerate + Modulate (SHIPPED)
 - WebGPUDepthOfFieldEffect — DoF 3-pass blur with focus-distance ramp (SHIPPED)
 - WebGPUGodRayEffect — radial god-rays from sun direction (SHIPPED)

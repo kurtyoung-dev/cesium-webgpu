@@ -52,9 +52,17 @@ export interface PostProcessCache {
   bloomInitialized: boolean;
   aoInitialized: boolean;
   dofInitialized: boolean;
-  // Track bloom/AO uniform values for dirty checking
-  bloomThreshold: number;
-  bloomIntensity: number;
+  // Track bloom/AO uniform values for dirty checking. The bloom set
+  // mirrors ALL six `scene.postProcessStages.bloom.uniforms` 1:1
+  // (NEW-BLOOM-UNIFORM-PARITY, Batch 240). Written ONLY by the
+  // configure pass — `updateWebGPUPostProcessStages` must not refresh
+  // them, or the configure-side dirty check can never fire.
+  bloomContrast: number;
+  bloomBrightness: number;
+  bloomDelta: number;
+  bloomSigma: number;
+  bloomStepSize: number;
+  bloomGlowOnly: boolean;
   aoIntensity: number;
   aoBias: number;
   // NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
@@ -111,8 +119,14 @@ function getDefaultCache(): PostProcessCache {
     bloomInitialized: false,
     aoInitialized: false,
     dofInitialized: false,
-    bloomThreshold: 0.8,
-    bloomIntensity: 0.5,
+    // WebGL defaults from PostProcessStageLibrary.createBloomStage
+    // (contrast/brightness) + createBlur (delta/sigma/stepSize).
+    bloomContrast: 128.0,
+    bloomBrightness: -0.3,
+    bloomDelta: 1.0,
+    bloomSigma: 2.0,
+    bloomStepSize: 1.0,
+    bloomGlowOnly: false,
     aoIntensity: 3.0,
     aoBias: 0.1,
   };
@@ -227,12 +241,13 @@ function updateWebGPUPostProcessStages(
   const dofStage = findDepthOfFieldStage(collection);
   cache.depthOfFieldEnabled = dofStage?.enabled ?? false;
 
-  // Cache bloom/AO uniform values for runtime update
-  if (cache.bloomEnabled) {
-    const bloom = collection.bloom;
-    cache.bloomThreshold = numU(bloom?.uniforms?.brightness, 0.8);
-    cache.bloomIntensity = bloom?.uniforms?.glowOnly ? 1.0 : 0.5;
-  }
+  // Cache AO uniform values for runtime update.
+  // NEW-BLOOM-UNIFORM-PARITY (Batch 240): the bloom uniforms are
+  // deliberately NOT cached here — `configureWebGPUPostProcessPipeline`
+  // owns the bloom dirty check, and refreshing the cache in this
+  // earlier-running sync masked every runtime uniform change (the
+  // configure pass compared fresh reads against values this function
+  // had already updated).
   if (cache.ambientOcclusionEnabled) {
     const ao = collection.ambientOcclusion;
     cache.aoIntensity = numU(ao?.uniforms?.intensity, 3.0);
@@ -317,13 +332,23 @@ function configureWebGPUPostProcessPipeline(
   pipeline.setTonemappingMode(cache.tonemapMode);
 
   // --- Bloom: lazily initialize on first enable ---
+  // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — map ALL six WebGL bloom
+  // uniforms (contrast, brightness, glowOnly, delta, sigma, stepSize)
+  // 1:1 onto the WebGPU effect. The previous mapping fed WebGL's
+  // BRIGHTNESS (-0.3 default) into a luminance THRESHOLD — a negative
+  // threshold that passed every pixel, blooming the whole scene at
+  // default uniforms. `intensity` is a fork extra (altitude-gate
+  // lever); 1.0 matches WebGL's plain `bloom + color` composite.
   if (cache.bloomEnabled && !cache.bloomInitialized) {
     const bloom = collection.bloom;
     pipeline.addBloom(device, canvasFormat, {
-      threshold: numU(bloom?.uniforms?.brightness, 0.8),
-      intensity: bloom?.uniforms?.glowOnly ? 1.0 : 0.5,
-      sigma: numU(bloom?.uniforms?.sigma, 3.5),
+      contrast: numU(bloom?.uniforms?.contrast, 128.0),
+      brightness: numU(bloom?.uniforms?.brightness, -0.3),
+      delta: numU(bloom?.uniforms?.delta, 1.0),
+      sigma: numU(bloom?.uniforms?.sigma, 2.0),
+      stepSize: numU(bloom?.uniforms?.stepSize, 1.0),
       glowOnly: Boolean(bloom?.uniforms?.glowOnly ?? false),
+      intensity: 1.0,
     });
     cache.bloomInitialized = true;
   }
@@ -332,19 +357,34 @@ function configureWebGPUPostProcessPipeline(
   // Update bloom config if it changed
   if (cache.bloomEnabled && pipeline.bloomEffect) {
     const bloom = collection.bloom;
-    const newThreshold = numU(bloom?.uniforms?.brightness, 0.8);
-    const newIntensity = bloom?.uniforms?.glowOnly ? 1.0 : 0.5;
+    const newContrast = numU(bloom?.uniforms?.contrast, 128.0);
+    const newBrightness = numU(bloom?.uniforms?.brightness, -0.3);
+    const newDelta = numU(bloom?.uniforms?.delta, 1.0);
+    const newSigma = numU(bloom?.uniforms?.sigma, 2.0);
+    const newStepSize = numU(bloom?.uniforms?.stepSize, 1.0);
+    const newGlowOnly = Boolean(bloom?.uniforms?.glowOnly ?? false);
     if (
-      newThreshold !== cache.bloomThreshold ||
-      newIntensity !== cache.bloomIntensity
+      newContrast !== cache.bloomContrast ||
+      newBrightness !== cache.bloomBrightness ||
+      newDelta !== cache.bloomDelta ||
+      newSigma !== cache.bloomSigma ||
+      newStepSize !== cache.bloomStepSize ||
+      newGlowOnly !== cache.bloomGlowOnly
     ) {
       pipeline.bloomEffect.updateConfig({
-        threshold: newThreshold,
-        intensity: newIntensity,
-        glowOnly: Boolean(bloom?.uniforms?.glowOnly ?? false),
+        contrast: newContrast,
+        brightness: newBrightness,
+        delta: newDelta,
+        sigma: newSigma,
+        stepSize: newStepSize,
+        glowOnly: newGlowOnly,
       });
-      cache.bloomThreshold = newThreshold;
-      cache.bloomIntensity = newIntensity;
+      cache.bloomContrast = newContrast;
+      cache.bloomBrightness = newBrightness;
+      cache.bloomDelta = newDelta;
+      cache.bloomSigma = newSigma;
+      cache.bloomStepSize = newStepSize;
+      cache.bloomGlowOnly = newGlowOnly;
     }
   }
 

@@ -28,10 +28,21 @@ import {
 import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
 
 export interface BloomConfig {
-  threshold?: number; // Luminance threshold for bright pass (default 0.8)
-  intensity?: number; // Bloom glow intensity (default 0.5)
-  sigma?: number; // Gaussian sigma for blur (default 3.5)
-  glowOnly?: boolean; // Debug: show only the glow
+  // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — the bright pass is a port of
+  // WebGL's ContrastBias.glsl (HSB brightness shift + contrast curve),
+  // NOT a luminance threshold. These six fields mirror the six uniforms
+  // of `scene.postProcessStages.bloom.uniforms` 1:1 (defaults from
+  // PostProcessStageLibrary.createBloomStage / createBlur).
+  contrast?: number; // Bright-pass contrast curve, (-255, 259) (default 128)
+  brightness?: number; // Bright-pass HSB value offset (default -0.3)
+  delta?: number; // Blur incremental-Gaussian delta (default 1.0)
+  sigma?: number; // Blur Gaussian sigma (default 2.0)
+  stepSize?: number; // Blur sample step in texels (default 1.0)
+  glowOnly?: boolean; // Show only the glow (WebGL parity uniform)
+  // Fork extra (not a WebGL uniform): composite multiplier on the glow.
+  // WebGL's composite is plain `bloom + color`, so 1.0 is parity; the
+  // scalar exists as the altitude gate's per-frame lever (below).
+  intensity?: number; // Bloom glow intensity (default 1.0)
   // Session 65 Batch 22 — altitude-gated bloom (orbit polish §13.1).
   // When `enableAltitudeGate` is true (default), per-frame bloom
   // intensity is multiplied by an altitude factor that fades from
@@ -65,8 +76,8 @@ export interface BloomConfig {
   // ─────────────────────────────────────────────────────────────────
   // FUTURE WORK — per-layer reflective bloom (orbit polish §13.x)
   // ─────────────────────────────────────────────────────────────────
-  // The bloom bright-pass currently runs a SINGLE luminance threshold
-  // over the composite scene color. Real-world bloom is camera-lens
+  // The bloom bright-pass currently runs a SINGLE contrast/brightness
+  // curve over the composite scene color. Real-world bloom is camera-lens
   // light bleed proportional to per-surface RADIANCE, which varies
   // sharply by material type:
   //   - Ocean: high specular at sun-glint angles, low diffuse →
@@ -140,7 +151,7 @@ export class BloomEffect implements PostProcessEffect {
   // the altitude gate multiplies AGAINST it each frame rather than
   // permanently mutating `_config.intensity` (which would lose the
   // user's authored value on subsequent gate updates).
-  private _baseIntensity: number = 0.5;
+  private _baseIntensity: number = 1.0;
   // Last value written to the composite UBO. Avoids re-writing the
   // buffer when the gated intensity hasn't changed (e.g., camera
   // hasn't moved).
@@ -148,9 +159,12 @@ export class BloomEffect implements PostProcessEffect {
 
   constructor(config: BloomConfig = {}) {
     this._config = {
-      threshold: config.threshold ?? 0.8,
-      intensity: config.intensity ?? 0.5,
-      sigma: config.sigma ?? 3.5,
+      contrast: config.contrast ?? 128.0,
+      brightness: config.brightness ?? -0.3,
+      delta: config.delta ?? 1.0,
+      sigma: config.sigma ?? 2.0,
+      stepSize: config.stepSize ?? 1.0,
+      intensity: config.intensity ?? 1.0,
       glowOnly: config.glowOnly ?? false,
       enableAltitudeGate: config.enableAltitudeGate ?? true,
       altitudeGateMinMeters: config.altitudeGateMinMeters ?? 100_000.0,
@@ -412,24 +426,34 @@ export class BloomEffect implements PostProcessEffect {
     );
   }
 
+  // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — the blur chain runs on
+  // HALF-resolution textures (perf choice), so one blur texel covers 2
+  // full-resolution pixels. WebGL's blur samples in full-res pixels
+  // (`stepSize * czm_pixelRatio / czm_viewport.zw`); halving the user's
+  // stepSize keeps the screen-space blur footprint identical across
+  // backends.
+  private static readonly _HALF_RES_STEP_SCALE = 0.5;
+
   private _createUniforms(device: GPUDevice, hw: number, hh: number): void {
     const cfg = this._config;
-    // BrightPass: threshold, contrast, bias, averageLuminance
+    const step = cfg.stepSize * BloomEffect._HALF_RES_STEP_SCALE;
+    // BrightPass: contrast, brightness (WebGL ContrastBias parity —
+    // NEW-BLOOM-UNIFORM-PARITY, Batch 240)
     this._brightUniforms = createUniformBuffer(
       device,
       "Bloom-BrightPass-UB",
-      new Float32Array([cfg.threshold, 1.0, 0.0, 0.5]),
+      new Float32Array([cfg.contrast, cfg.brightness, 0.0, 0.0]),
     );
 
-    // BlurH: delta, sigma, direction=0, stepSize=1
+    // BlurH: delta, sigma, direction=0, stepSize
     this._blurHUniforms = createUniformBuffer(
       device,
       "Bloom-BlurH-UB",
       new Float32Array([
-        1.0,
+        cfg.delta,
         cfg.sigma,
         0.0,
-        1.0,
+        step,
         1.0 / hw,
         1.0 / hh,
         1.0,
@@ -437,15 +461,15 @@ export class BloomEffect implements PostProcessEffect {
       ]),
     );
 
-    // BlurV: delta, sigma, direction=1, stepSize=1
+    // BlurV: delta, sigma, direction=1, stepSize
     this._blurVUniforms = createUniformBuffer(
       device,
       "Bloom-BlurV-UB",
       new Float32Array([
-        1.0,
+        cfg.delta,
         cfg.sigma,
         1.0,
-        1.0,
+        step,
         1.0 / hw,
         1.0 / hh,
         1.0,
@@ -465,7 +489,10 @@ export class BloomEffect implements PostProcessEffect {
   updateConfig(config: Partial<BloomConfig>): void {
     if (!this._device) return;
     const cfg = this._config;
-    if (config.threshold !== undefined) cfg.threshold = config.threshold;
+    if (config.contrast !== undefined) cfg.contrast = config.contrast;
+    if (config.brightness !== undefined) cfg.brightness = config.brightness;
+    if (config.delta !== undefined) cfg.delta = config.delta;
+    if (config.stepSize !== undefined) cfg.stepSize = config.stepSize;
     if (config.intensity !== undefined) {
       cfg.intensity = config.intensity;
       // Session 65 Batch 22 — capture as new base intensity so the
@@ -498,10 +525,37 @@ export class BloomEffect implements PostProcessEffect {
         this._brightUniforms,
         0,
         new Float32Array([
-          cfg.threshold,
-          1.0,
+          cfg.contrast,
+          cfg.brightness,
           0.0,
-          0.5,
+          0.0,
+        ]) as Float32Array<ArrayBuffer>,
+      );
+    }
+    // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — delta/sigma/stepSize were
+    // previously baked at init only; runtime changes to the blur
+    // uniforms silently no-oped. Rewrite both blur UBOs (params half —
+    // texel size at offset 16 is owned by initialize/resize).
+    if (this._blurHUniforms && this._blurVUniforms) {
+      const step = cfg.stepSize * BloomEffect._HALF_RES_STEP_SCALE;
+      this._device.queue.writeBuffer(
+        this._blurHUniforms,
+        0,
+        new Float32Array([
+          cfg.delta,
+          cfg.sigma,
+          0.0,
+          step,
+        ]) as Float32Array<ArrayBuffer>,
+      );
+      this._device.queue.writeBuffer(
+        this._blurVUniforms,
+        0,
+        new Float32Array([
+          cfg.delta,
+          cfg.sigma,
+          1.0,
+          step,
         ]) as Float32Array<ArrayBuffer>,
       );
     }

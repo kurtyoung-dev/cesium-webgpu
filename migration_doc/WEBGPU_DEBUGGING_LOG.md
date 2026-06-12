@@ -10777,3 +10777,65 @@ corrected ("Wired (Session 17)" → in-globe-FS working state).
 **Regression:** `npx tsc --noEmit` clean; `gulp build` green (55 s); probe-ground-atmosphere PASS;
 probe-orbital-catalog PASS (magenta 14154/14528, mask Δ185.7%, 0 errors); probe-compute-instance-generic
 PASS (6287/6406, Δ177.8%, BV + TAA on/off checks OK, 0 errors).
+
+## Batch 240 — Bloom uniform parity: ContrastBias bright-pass port + all six uniforms mapped (NEW-BLOOM-UNIFORM-PARITY) (2026-06-12)
+
+**Scope:** 2026-06-11 ultra-review HIGH (Axis A). The WebGPU bloom mis-mapped WebGL's
+brightness/contrast onto a luminance threshold: `threshold: numU(bloom?.uniforms?.brightness, 0.8)` fed
+WebGL's default brightness (-0.3) into `max(color - threshold*avgLum, 0)` — a NEGATIVE threshold passes
+every pixel, so default-uniform bloom bloomed the entire frame (probe-measured 100% of pixels vs WebGL's
+0.16%). `intensity` was likewise derived from `glowOnly` (`glowOnly ? 1.0 : 0.5`), and contrast / delta /
+stepSize were never mapped at all.
+
+**Files:** `Shaders/WebGPU/PostProcess/BrightPass.wgsl` (rewritten), `Renderer/WebGPU/WebGPUBloomEffect.ts`,
+`Renderer/WebGPU/WebGPUPostProcessStageCollection.ts`, `Tools/visual-regression/probe-bloom-parity.mjs` (new).
+
+**Fixes:**
+
+1. **BrightPass.wgsl** — now a 1:1 port of WebGL's `ContrastBias.glsl` (the `czm_bloom_contrast_bias`
+   stage): HSB brightness shift (`rgbToHsb`/`hsbToRgb` ports of czm_RGBToHSB/czm_HSBToRGB, lolengine
+   minimal-branching form with czm_epsilon7 guards) followed by the `(259*(c+255))/(255*(259-c))`
+   contrast curve. Output clamped to [0,1] explicitly (WebGL writes the stage to an RGBA8 target which
+   clamps implicitly; our HDR rgba16float intermediates would otherwise propagate negatives that DARKEN
+   the additive composite).
+2. **WebGPUBloomEffect.ts** — `BloomConfig` now carries the six WebGL uniforms (contrast=128,
+   brightness=-0.3, delta=1, sigma=2, stepSize=1, glowOnly=false) + the fork-extra `intensity`
+   (default 0.5 → 1.0: WebGL's composite is plain `bloom + color`, so 1.0 is parity; the scalar remains
+   the altitude-gate lever). `updateConfig` now also rewrites the BLUR UBOs — delta/sigma/stepSize were
+   previously baked at init only (runtime changes silently no-oped). **Half-res step compensation:** the
+   blur chain runs on half-resolution textures, so one blur texel = 2 full-res pixels; the user's
+   stepSize (full-res pixel semantics in WebGL) is scaled by 0.5 to keep the screen-space footprint
+   identical — this is what brings the halo-size ratio to 1.01x.
+3. **WebGPUPostProcessStageCollection.ts** — lazy-init + per-frame dirty check now read/compare ALL six
+   uniforms. Latent dirty-check masking fixed: `updateWebGPUPostProcessStages` (the FR sync that runs
+   earlier in the frame) also refreshed `cache.bloomThreshold/bloomIntensity`, so the configure pass's
+   fresh-vs-cache comparison could never fire depending on call order — bloom uniform caching now lives
+   solely in the configure pass.
+
+**Evidence (`probe-bloom-parity.mjs`, Edge headless, webgl + webgpu CesiumViewer):** deterministic
+scene — 200 px white point disk over a solid-color globe at 20 km camera (below the 100 km altitude-gate
+floor → gate multiplier exactly 1.0), atmosphere/sun/skybox/imagery/water-effect all disabled (each
+renders with KNOWN cross-backend divergence bright enough to contaminate the metric — see probe gotchas
+below). (A) default-uniform bloomed-pixel fraction (lum +12/255 over off baseline): webgl 0.160% vs
+webgpu 0.161% — ratio **1.01x** (pre-fix: 100% / 1842x); (B) glowOnly toggle responds: 71.0% of pixels
+change (webgl same toggle 71.0%); (C) brightness -0.3 → -0.9 responds: 0.17% pixel delta and bloomed
+fraction drops to 0.000% (< 0.25x default, directional); (D) 0 console/validation errors both backends.
+PNGs visually confirmed: identical tight halo around the disk on both backends, globe not blooming.
+
+**Probe gotchas captured in-file:** (1) the CesiumViewer app adds its default ion imagery ASYNCHRONOUSLY
+after viewer creation — a single `imageryLayers.removeAll()` races it (strip per-frame during warmup);
+(2) CesiumViewer loads world TERRAIN (water mask) — at lat0/lon0 the WebGL globe renders the bright
+animated ocean-wave effect (pin `EllipsoidTerrainProvider` + `showWaterEffect=false`); (3) WebGPU
+`globe.tilesLoaded` goes true during a terrain-provider swap ~25 frames before tiles actually render —
+wait for a non-black globe pixel, not just tilesLoaded.
+
+**Cross-backend divergences OBSERVED while stabilizing the probe (not fixed here, surfaced per
+Principle 9):** (a) the WebGPU daytime sky-atmosphere at ground level is dramatically brighter than
+WebGL's at the same view/time (bright enough to legitimately pass the parity bright-pass — frame-filling
+bloom on WebGPU only); (b) the WebGPU sun primitive did not render at a ground-level 45°-elevation view
+where WebGL shows the disk; (c) the no-imagery globe renders baseColor (31,38,51) on WebGL but
+~(10,10,15) on WebGPU; WebGL additionally shows the water-wave material where WebGPU shows flat color.
+
+**Regression:** `npx tsc --noEmit` clean; `gulp build` green (53 s); probe-bloom-parity PASS;
+probe-orbital-catalog PASS (magenta 14151/14515, mask Δ185.7%, 0 errors); probe-compute-instance-generic
+PASS (BV + TAA on/off checks OK, 0 errors).

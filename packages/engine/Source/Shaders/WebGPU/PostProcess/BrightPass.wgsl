@@ -1,5 +1,21 @@
-// BrightPass — Extracts pixels above a luminance threshold for bloom.
-// Also applies contrast/bias adjustment to control bloom intensity.
+// BrightPass — bloom bright-pass, WebGL-parity port of ContrastBias.glsl
+// (the `czm_bloom_contrast_bias` stage inside PostProcessStageLibrary.
+// createBloomStage). NEW-BLOOM-UNIFORM-PARITY (Batch 240).
+//
+// Cesium's WebGL bloom does NOT use a luminance threshold. Its "bright"
+// region is derived by an HSB brightness shift followed by a contrast
+// curve over the scene color:
+//
+//   hsb = czm_RGBToHSB(scene); hsb.z += brightness; scene = czm_HSBToRGB(hsb);
+//   factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+//   out = factor * (scene - 0.5) + 0.5;
+//
+// With the WebGL defaults (contrast = 128, brightness = -0.3) the factor
+// is ~2.97 and only pixels whose HSB value exceeds ~0.67 survive above
+// black — a selective bright region. The previous WGSL shader here used
+// `max(color - threshold * avgLum, 0)` with `threshold` fed from WebGL's
+// BRIGHTNESS uniform (-0.3) — a negative threshold that passed every
+// pixel, blooming the whole scene.
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -7,7 +23,9 @@ struct VertexOutput {
 };
 
 struct BrightPassUniforms {
-  // x = threshold, y = contrast, z = bias, w = averageLuminance
+  // x = contrast ((-255, 259) exclusive; WebGL default 128),
+  // y = brightness (HSB value offset; WebGL default -0.3),
+  // z, w = unused
   params: vec4<f32>,
 };
 
@@ -25,25 +43,50 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-fn luminance(color: vec3<f32>) -> f32 {
-  return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+// czm_epsilon7 — guards the divisions in the HSB round-trip.
+const EPSILON7: f32 = 0.0000001;
+
+// Port of czm_RGBToHSB (Shaders/Builtin/Functions/RGBToHSB.glsl).
+// Minimal-branching RGB -> HSV from http://lolengine.net/blog/2013/07/27.
+fn rgbToHsb(rgb: vec3<f32>) -> vec3<f32> {
+  let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  let p = mix(vec4<f32>(rgb.bg, K.wz), vec4<f32>(rgb.gb, K.xy), step(rgb.b, rgb.g));
+  let q = mix(vec4<f32>(p.xyw, rgb.r), vec4<f32>(rgb.r, p.yzx), step(p.x, rgb.r));
+  let d = q.x - min(q.w, q.y);
+  return vec3<f32>(
+    abs(q.z + (q.w - q.y) / (6.0 * d + EPSILON7)),
+    d / (q.x + EPSILON7),
+    q.x,
+  );
+}
+
+// Port of czm_HSBToRGB (Shaders/Builtin/Functions/HSBToRGB.glsl).
+fn hsbToRgb(hsb: vec3<f32>) -> vec3<f32> {
+  let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  let p = abs(fract(hsb.xxx + K.xyz) * 6.0 - K.www);
+  return hsb.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), hsb.y);
 }
 
 @fragment
 fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
-  let color = textureSample(inputTexture, inputSampler, in.uv);
-  let threshold = uniforms.params.x;
-  let contrast = uniforms.params.y;
-  let bias = uniforms.params.z;
-  let avgLum = uniforms.params.w;
+  var sceneColor = textureSample(inputTexture, inputSampler, in.uv).rgb;
+  let contrast = uniforms.params.x;
+  let brightness = uniforms.params.y;
 
-  let lum = luminance(color.rgb);
+  // HSB brightness shift (czm_RGBToHSB / czm_HSBToRGB round-trip).
+  var hsb = rgbToHsb(sceneColor);
+  hsb.z = hsb.z + brightness;
+  sceneColor = hsbToRgb(hsb);
 
-  // Bright pass: keep only pixels above threshold relative to average luminance
-  let brightColor = max(color.rgb - vec3<f32>(threshold * avgLum), vec3<f32>(0.0));
+  // Contrast curve around mid-gray.
+  let factor = (259.0 * (contrast + 255.0)) / (255.0 * (259.0 - contrast));
+  sceneColor = factor * (sceneColor - vec3<f32>(0.5)) + vec3<f32>(0.5);
 
-  // Apply contrast and bias: out = contrast * (in - 0.5) + 0.5 + bias
-  let adjusted = clamp(contrast * (brightColor - vec3<f32>(0.5)) + vec3<f32>(0.5 + bias), vec3<f32>(0.0), vec3<f32>(1.0));
+  // WebGL writes this stage to an RGBA8 (UNSIGNED_BYTE) target, which
+  // clamps implicitly. Clamp explicitly here so rgba16float HDR
+  // intermediates match (negatives would otherwise DARKEN the scene in
+  // the additive composite).
+  sceneColor = clamp(sceneColor, vec3<f32>(0.0), vec3<f32>(1.0));
 
-  return vec4<f32>(adjusted, 1.0);
+  return vec4<f32>(sceneColor, 1.0);
 }
