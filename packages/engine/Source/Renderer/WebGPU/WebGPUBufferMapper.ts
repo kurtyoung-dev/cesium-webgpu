@@ -1,7 +1,5 @@
 /// <reference types="@webgpu/types" />
 /**
- * @module WebGPUBufferMapper
- *
  * Efficient CPU↔GPU buffer access via `buffer.mapAsync()` + `getMappedRange()`.
  *
  * mapAsync() provides direct memory access to GPU buffers without intermediate
@@ -20,6 +18,7 @@
  *
  * // Read back data:
  * const result = await mapper.readbackBuffer(sourceBuffer, byteLength);
+ * @module WebGPUBufferMapper
  */
 
 /**

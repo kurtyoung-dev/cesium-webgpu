@@ -212,21 +212,12 @@ class Clock {
    * Changing this property will change
    * {@link Clock#clockStep} from {@link ClockStep.SYSTEM_CLOCK} to
    * {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}.
-   * @memberof Clock.prototype
    * @type {JulianDate}
    */
   get currentTime() {
     return this._currentTime;
   }
 
-  /**
-   * The current time.
-   * Changing this property will change
-   * {@link Clock#clockStep} from {@link ClockStep.SYSTEM_CLOCK} to
-   * {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}.
-   * @memberof Clock.prototype
-   * @type {JulianDate}
-   */
   set currentTime(value) {
     if (JulianDate.equals(this._currentTime, value)) {
       return;
@@ -247,7 +238,6 @@ class Clock {
    * Changing this property will change
    * {@link Clock#clockStep} from {@link ClockStep.SYSTEM_CLOCK} to
    * {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}.
-   * @memberof Clock.prototype
    * @type {number}
    * @default 1.0
    */
@@ -255,18 +245,6 @@ class Clock {
     return this._multiplier;
   }
 
-  /**
-   * Gets or sets how much time advances when {@link Clock#tick} is called. Negative values allow for advancing backwards.
-   * If {@link Clock#clockStep} is set to {@link ClockStep.TICK_DEPENDENT}, this is the number of seconds to advance.
-   * If {@link Clock#clockStep} is set to {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}, this value is multiplied by the
-   * elapsed system time since the last call to {@link Clock#tick}.
-   * Changing this property will change
-   * {@link Clock#clockStep} from {@link ClockStep.SYSTEM_CLOCK} to
-   * {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}.
-   * @memberof Clock.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set multiplier(value) {
     if (this._multiplier === value) {
       return;
@@ -284,7 +262,6 @@ class Clock {
    * Changing this property to {@link ClockStep.SYSTEM_CLOCK} will set
    * {@link Clock#multiplier} to 1.0, {@link Clock#shouldAnimate} to true, and
    * {@link Clock#currentTime} to the current system clock time.
-   * @memberof Clock.prototype
    * @type ClockStep
    * @default {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}
    */
@@ -292,15 +269,6 @@ class Clock {
     return this._clockStep;
   }
 
-  /**
-   * Determines if calls to {@link Clock#tick} are frame dependent or system clock dependent.
-   * Changing this property to {@link ClockStep.SYSTEM_CLOCK} will set
-   * {@link Clock#multiplier} to 1.0, {@link Clock#shouldAnimate} to true, and
-   * {@link Clock#currentTime} to the current system clock time.
-   * @memberof Clock.prototype
-   * @type ClockStep
-   * @default {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}
-   */
   set clockStep(value) {
     if (value === ClockStep.SYSTEM_CLOCK) {
       this._multiplier = 1.0;
@@ -318,7 +286,6 @@ class Clock {
    * Changing this property will change
    * {@link Clock#clockStep} from {@link ClockStep.SYSTEM_CLOCK} to
    * {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}.
-   * @memberof Clock.prototype
    * @type {boolean}
    * @default false
    */
@@ -326,17 +293,6 @@ class Clock {
     return this._shouldAnimate;
   }
 
-  /**
-   * Indicates whether {@link Clock#tick} should attempt to advance time.
-   * The clock will only advance time when both
-   * {@link Clock#canAnimate} and {@link Clock#shouldAnimate} are true.
-   * Changing this property will change
-   * {@link Clock#clockStep} from {@link ClockStep.SYSTEM_CLOCK} to
-   * {@link ClockStep.SYSTEM_CLOCK_MULTIPLIER}.
-   * @memberof Clock.prototype
-   * @type {boolean}
-   * @default false
-   */
   set shouldAnimate(value) {
     if (this._shouldAnimate === value) {
       return;

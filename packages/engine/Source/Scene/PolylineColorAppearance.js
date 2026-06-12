@@ -91,7 +91,6 @@ class PolylineColorAppearance {
   /**
    * The GLSL source code for the vertex shader.
    *
-   * @memberof PolylineColorAppearance.prototype
    *
    * @type {string}
    * @readonly
@@ -103,7 +102,6 @@ class PolylineColorAppearance {
   /**
    * The GLSL source code for the fragment shader.
    *
-   * @memberof PolylineColorAppearance.prototype
    *
    * @type {string}
    * @readonly
@@ -119,7 +117,6 @@ class PolylineColorAppearance {
    * instance, or it is set implicitly via {@link PolylineColorAppearance#translucent}.
    * </p>
    *
-   * @memberof PolylineColorAppearance.prototype
    *
    * @type {object}
    * @readonly
@@ -133,7 +130,6 @@ class PolylineColorAppearance {
    * {@link PolylineColorAppearance#renderState} has backface culling enabled.
    * This is always <code>false</code> for <code>PolylineColorAppearance</code>.
    *
-   * @memberof PolylineColorAppearance.prototype
    *
    * @type {boolean}
    * @readonly
@@ -149,7 +145,6 @@ class PolylineColorAppearance {
    * A geometry can have more vertex attributes and still be compatible - at a
    * potential performance cost - but it can't have less.
    *
-   * @memberof PolylineColorAppearance.prototype
    *
    * @type VertexFormat
    * @readonly

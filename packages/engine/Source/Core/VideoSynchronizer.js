@@ -150,19 +150,12 @@ class VideoSynchronizer {
   /**
    * Gets or sets the clock used to drive the video element.
    *
-   * @memberof VideoSynchronizer.prototype
    * @type {Clock}
    */
   get clock() {
     return this._clock;
   }
 
-  /**
-   * Gets or sets the clock used to drive the video element.
-   *
-   * @memberof VideoSynchronizer.prototype
-   * @type {Clock}
-   */
   set clock(value) {
     const oldValue = this._clock;
 
@@ -188,19 +181,12 @@ class VideoSynchronizer {
   /**
    * Gets or sets the video element to synchronize.
    *
-   * @memberof VideoSynchronizer.prototype
    * @type {HTMLVideoElement}
    */
   get element() {
     return this._element;
   }
 
-  /**
-   * Gets or sets the video element to synchronize.
-   *
-   * @memberof VideoSynchronizer.prototype
-   * @type {HTMLVideoElement}
-   */
   set element(value) {
     const oldValue = this._element;
 

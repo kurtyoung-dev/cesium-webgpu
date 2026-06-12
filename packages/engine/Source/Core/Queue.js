@@ -96,7 +96,6 @@ class Queue {
   /**
    * The length of the queue.
    *
-   * @memberof Queue.prototype
    *
    * @type {number}
    * @readonly

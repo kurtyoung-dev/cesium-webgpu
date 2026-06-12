@@ -83,7 +83,6 @@ class PerformanceWatchdog {
 
   /**
    * Gets the parent container.
-   * @memberof PerformanceWatchdog.prototype
    *
    * @type {Element}
    */
@@ -93,7 +92,6 @@ class PerformanceWatchdog {
 
   /**
    * Gets the view model.
-   * @memberof PerformanceWatchdog.prototype
    *
    * @type {PerformanceWatchdogViewModel}
    */

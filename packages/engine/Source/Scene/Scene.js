@@ -1559,7 +1559,6 @@ class Scene {
    * always false on WebGL because `gl_PrimitiveID` requires a geometry shader.
    * Drives whether {@link Scene#debugShowTriangulation} has any effect.
    *
-   * @memberof Scene.prototype
    * @type {boolean}
    * @readonly
    */
@@ -1621,7 +1620,7 @@ class Scene {
    * them to hold a target framerate. Disabled by default — opt in via
    * `scene.visualPerformanceTarget.enabled = true`.
    *
-   * @type {VisualPerformanceTargetService}
+   * @type {object}
    * @readonly
    */
   get visualPerformanceTarget() {
@@ -1637,7 +1636,7 @@ class Scene {
    * inspection cameras). Auto-thaws when `scene._snapshotVersion`
    * advances past the captured baseline. Disabled by default.
    *
-   * @type {SnapshotModeService}
+   * @type {object}
    * @readonly
    */
   get snapshotMode() {
@@ -1846,7 +1845,7 @@ class Scene {
    * result without having to thread the result object through the
    * application.
    *
-   * @type {PerformanceTracker}
+   * @type {object}
    * @readonly
    */
   get performanceTracker() {
@@ -2531,7 +2530,7 @@ class Scene {
    *
    * @type {boolean}
    * @default false
-   * @experimental
+   * @experimental This feature is experimental and may change or be removed without Cesium's standard deprecation policy.
    */
   get useHDRCanvasOutput() {
     return this._useHDRCanvasOutput === true;
@@ -2580,7 +2579,7 @@ class Scene {
    *
    * @type {'auto' | 'always' | 'never'}
    * @default 'auto'
-   * @experimental
+   * @experimental This feature is experimental and may change or be removed without Cesium's standard deprecation policy.
    */
   get gpuCullingHint() {
     return this._gpuCullingHint ?? "auto";
@@ -2736,7 +2735,6 @@ class Scene {
    *
    * Default false. Has no effect on the WebGL renderer.
    *
-   * @memberof Scene.prototype
    * @type {boolean}
    * @default false
    *

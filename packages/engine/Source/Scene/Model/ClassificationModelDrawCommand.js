@@ -139,7 +139,6 @@ class ClassificationModelDrawCommand {
   /**
    * The main draw command that the other commands are derived from.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {DrawCommand}
    *
    * @readonly
@@ -152,7 +151,6 @@ class ClassificationModelDrawCommand {
   /**
    * The runtime primitive that the draw command belongs to.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {ModelRuntimePrimitive}
    *
    * @readonly
@@ -165,7 +163,6 @@ class ClassificationModelDrawCommand {
   /**
    * The batch lengths used to generate multiple draw commands.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {number[]}
    *
    * @readonly
@@ -178,7 +175,6 @@ class ClassificationModelDrawCommand {
   /**
    * The batch offsets used to generate multiple draw commands.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {number[]}
    *
    * @readonly
@@ -191,7 +187,6 @@ class ClassificationModelDrawCommand {
   /**
    * The model that the draw command belongs to.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {Model}
    *
    * @readonly
@@ -204,7 +199,6 @@ class ClassificationModelDrawCommand {
   /**
    * The classification type of the model that this draw command belongs to.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {ClassificationType}
    *
    * @readonly
@@ -217,7 +211,6 @@ class ClassificationModelDrawCommand {
   /**
    * The current model matrix applied to the draw commands.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {Matrix4}
    *
    * @readonly
@@ -227,15 +220,6 @@ class ClassificationModelDrawCommand {
     return this._modelMatrix;
   }
 
-  /**
-   * The current model matrix applied to the draw commands.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {Matrix4}
-   *
-   * @readonly
-   * @private
-   */
   set modelMatrix(value) {
     this._modelMatrix = Matrix4.clone(value, this._modelMatrix);
     const boundingSphere = this._runtimePrimitive.boundingSphere;
@@ -251,7 +235,6 @@ class ClassificationModelDrawCommand {
    * to the primitive's bounding sphere transformed by the draw
    * command's model matrix.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {BoundingSphere}
    *
    * @readonly
@@ -266,7 +249,6 @@ class ClassificationModelDrawCommand {
    * how the model renders. This only exists to match the interface of
    * {@link ModelDrawCommand}.
    *
-   * @memberof ClassificationModelDrawCommand.prototype
    * @type {CullFace}
    *
    * @private
@@ -275,16 +257,6 @@ class ClassificationModelDrawCommand {
     return this._cullFace;
   }
 
-  /**
-   * Culling is disabled for classification models, so this has no effect on
-   * how the model renders. This only exists to match the interface of
-   * {@link ModelDrawCommand}.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {CullFace}
-   *
-   * @private
-   */
   set cullFace(value) {
     this._cullFace = value;
   }

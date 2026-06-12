@@ -90,7 +90,6 @@ class Tileset3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof Tileset3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly

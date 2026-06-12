@@ -91,7 +91,6 @@ class SelectionIndicator {
 
   /**
    * Gets the parent container.
-   * @memberof SelectionIndicator.prototype
    *
    * @type {Element}
    */
@@ -101,7 +100,6 @@ class SelectionIndicator {
 
   /**
    * Gets the view model.
-   * @memberof SelectionIndicator.prototype
    *
    * @type {SelectionIndicatorViewModel}
    */

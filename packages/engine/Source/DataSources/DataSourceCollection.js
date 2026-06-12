@@ -248,7 +248,6 @@ class DataSourceCollection {
 
   /**
    * Gets the number of data sources in this collection.
-   * @memberof DataSourceCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -259,7 +258,6 @@ class DataSourceCollection {
   /**
    * An event that is raised when a data source is added to the collection.
    * Event handlers are passed the data source that was added.
-   * @memberof DataSourceCollection.prototype
    * @type {Event}
    * @readonly
    */
@@ -270,7 +268,6 @@ class DataSourceCollection {
   /**
    * An event that is raised when a data source is removed from the collection.
    * Event handlers are passed the data source that was removed.
-   * @memberof DataSourceCollection.prototype
    * @type {Event}
    * @readonly
    */
@@ -281,7 +278,6 @@ class DataSourceCollection {
   /**
    * An event that is raised when a data source changes position in the collection.  Event handlers are passed the data source
    * that was moved, its new index after the move, and its old index prior to the move.
-   * @memberof DataSourceCollection.prototype
    * @type {Event}
    * @readonly
    */

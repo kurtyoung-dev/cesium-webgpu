@@ -176,7 +176,6 @@ class PrimitiveOutlineGenerator {
    * The updated triangle indices after generating outlines. The caller is for
    * responsible for updating the primitive's indices to use this array.
    *
-   * @memberof PrimitiveOutlineGenerator.prototype
    *
    * @type {Uint8Array|Uint16Array|Uint32Array}
    * @readonly
@@ -191,7 +190,6 @@ class PrimitiveOutlineGenerator {
    * The computed outline coordinates. The caller is responsible for
    * turning this into a vec3 attribute for rendering.
    *
-   * @memberof PrimitiveOutlineGenerator.prototype
    *
    * @type {Float32Array}
    * @readonly

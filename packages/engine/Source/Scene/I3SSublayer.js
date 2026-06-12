@@ -27,7 +27,6 @@ class I3SSublayer {
 
   /**
    * Gets the resource for the sublayer
-   * @memberof I3SSublayer.prototype
    * @type {Resource}
    * @readonly
    */
@@ -37,7 +36,6 @@ class I3SSublayer {
 
   /**
    * Gets the I3S data for this object.
-   * @memberof I3SSublayer.prototype
    * @type {object}
    * @readonly
    */
@@ -47,7 +45,6 @@ class I3SSublayer {
 
   /**
    * Gets the name for the sublayer.
-   * @memberof I3SSublayer.prototype
    * @type {string}
    * @readonly
    */
@@ -57,7 +54,6 @@ class I3SSublayer {
 
   /**
    * Gets the model name for the sublayer.
-   * @memberof I3SSublayer.prototype
    * @type {string}
    * @readonly
    */
@@ -67,7 +63,6 @@ class I3SSublayer {
 
   /**
    * Gets the collection of child sublayers.
-   * @memberof I3SSublayer.prototype
    * @type {I3SSublayer[]}
    * @readonly
    */
@@ -77,18 +72,12 @@ class I3SSublayer {
 
   /**
    * Gets or sets the sublayer visibility.
-   * @memberof I3SSublayer.prototype
    * @type {boolean}
    */
   get visibility() {
     return this._visibility;
   }
 
-  /**
-   * Gets or sets the sublayer visibility.
-   * @memberof I3SSublayer.prototype
-   * @type {boolean}
-   */
   set visibility(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("value", value);
@@ -104,7 +93,6 @@ class I3SSublayer {
 
   /**
    * Determines if the sublayer will be shown.
-   * @memberof I3SSublayer.prototype
    * @type {boolean}
    * @readonly
    */

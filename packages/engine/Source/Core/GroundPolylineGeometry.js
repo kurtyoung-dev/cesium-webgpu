@@ -134,7 +134,6 @@ class GroundPolylineGeometry {
 
   /**
    * The number of elements used to pack the object into an array.
-   * @memberof GroundPolylineGeometry.prototype
    * @type {number}
    * @readonly
    * @private

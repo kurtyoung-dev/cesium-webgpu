@@ -91,7 +91,6 @@ class BingMapsGeocoderService {
   /**
    * The URL endpoint for the Bing geocoder service
    * @type {string}
-   * @memberof BingMapsGeocoderService.prototype
    * @readonly
    */
   get url() {
@@ -101,7 +100,6 @@ class BingMapsGeocoderService {
   /**
    * The key for the Bing geocoder service
    * @type {string}
-   * @memberof BingMapsGeocoderService.prototype
    * @readonly
    */
   get key() {
@@ -111,7 +109,6 @@ class BingMapsGeocoderService {
   /**
    * Gets the credit to display after a geocode is performed. Typically this is used to credit
    * the geocoder service.
-   * @memberof BingMapsGeocoderService.prototype
    * @type {Credit|undefined}
    * @readonly
    */

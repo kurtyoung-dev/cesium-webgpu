@@ -1,8 +1,6 @@
 /// <reference types="@webgpu/types" />
 
 /**
- * @module WebGPUParityManager
- *
  * Centralized ping-pong slot resolver — FEAT-SURVEY-07.
  *
  * Every frame-history effect today tracks parity inline:
@@ -46,6 +44,7 @@
  *   const writeTex = parity.write(taaHistorySlot);
  *   const readTex = parity.read(taaHistorySlot);
  *   // ... dispatch TAA with read→write
+ * @module WebGPUParityManager
  */
 
 /**

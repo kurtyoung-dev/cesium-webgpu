@@ -1,11 +1,10 @@
 /**
- * @module WebGPUShadowMapRenderer
- *
  * Handles WebGPU shadow map generation and shadow receiving.
  * Creates a depth-only render target for the shadow map, renders scene
  * from light's perspective, then provides shadow sampling for color passes.
  *
  * @private
+ * @module WebGPUShadowMapRenderer
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
@@ -1001,12 +1000,12 @@ function getPointLightFacePassDescriptor(shadowMap, faceIndex) {
  *   darkness: number,
  *   softShadows: boolean,
  *   isPointLight: boolean,
- *   cubeView: GPUTextureView | undefined,
- *   lightPositionWC: object | undefined,
- *   farPlane: number | undefined,
- *   nearPlane: number | undefined,
- *   pointDepthBias: number | undefined,
- * } | null}
+ *   cubeView: (GPUTextureView|undefined),
+ *   lightPositionWC: (object|undefined),
+ *   farPlane: (number|undefined),
+ *   nearPlane: (number|undefined),
+ *   pointDepthBias: (number|undefined)
+ * }|null}
  */
 function getShadowMapResources(shadowMap) {
   const cache = shadowMap._webgpuCache;

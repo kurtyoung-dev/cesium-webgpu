@@ -1,6 +1,4 @@
 /**
- * @module WebGPUPolylineRenderer
- *
  * Handles WebGPU rendering of PolylineCollection with material support.
  * Polylines are rendered as instanced screen-space quads per line segment.
  *
@@ -30,6 +28,7 @@
  * re-packing.
  *
  * @private
+ * @module WebGPUPolylineRenderer
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";

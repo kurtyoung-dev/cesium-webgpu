@@ -1,6 +1,4 @@
 /**
- * @module WebGPUShaderModuleCache
- *
  * Deduplicates `GPUShaderModule` compilation across pipelines that
  * share the same `(shader source, active defines)` tuple. Today the
  * globe terrain renderer produces 3+ pipelines from the same shader
@@ -43,6 +41,7 @@
  * destroyed, so clearing the cache on device loss is sufficient.
  *
  * @private
+ * @module WebGPUShaderModuleCache
  */
 
 import { preprocess } from "./WebGPUShaderPreprocessor.js";

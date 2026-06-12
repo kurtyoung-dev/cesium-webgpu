@@ -443,26 +443,6 @@ class Cesium3DTilesTerrainData {
   wasCreatedByUpsampling() {
     return false;
   }
-
-  /**
-   * An array of credits for this tile.
-   * @memberof Cesium3DTilesTerrainData.prototype
-   * @type {Credit[]|undefined}
-   */
-  get credits() {
-    return this._credits;
-  }
-
-  /**
-   * The water mask included in this terrain data, if any. A water mask is a rectangular
-   * Uint8Array or image where a value of 255 indicates water and a value of 0 indicates land.
-   * Values in between 0 and 255 are allowed as well to smoothly blend between land and water.
-   * @memberof Cesium3DTilesTerrainData.prototype
-   * @type {Uint8Array|HTMLImageElement|HTMLCanvasElement|ImageBitmap|undefined}
-   */
-  get waterMask() {
-    return this._waterMask;
-  }
 }
 
 const createMeshTaskName = "createVerticesFromCesium3DTilesTerrain";

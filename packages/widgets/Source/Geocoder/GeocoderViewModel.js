@@ -269,7 +269,6 @@ class GeocoderViewModel {
 
   /**
    * Gets the event triggered on flight completion.
-   * @memberof GeocoderViewModel.prototype
    *
    * @type {Event}
    */
@@ -279,7 +278,6 @@ class GeocoderViewModel {
 
   /**
    * Gets the scene to control.
-   * @memberof GeocoderViewModel.prototype
    *
    * @type {Scene}
    */
@@ -289,7 +287,6 @@ class GeocoderViewModel {
 
   /**
    * Gets the Command that is executed when the button is clicked.
-   * @memberof GeocoderViewModel.prototype
    *
    * @type {Command}
    */
@@ -299,7 +296,6 @@ class GeocoderViewModel {
 
   /**
    * Gets the currently selected geocoder search suggestion
-   * @memberof GeocoderViewModel.prototype
    *
    * @type {object}
    */
@@ -309,7 +305,6 @@ class GeocoderViewModel {
 
   /**
    * Gets the list of geocoder search suggestions
-   * @memberof GeocoderViewModel.prototype
    *
    * @type {object[]}
    */

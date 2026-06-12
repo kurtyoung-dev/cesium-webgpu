@@ -60,7 +60,6 @@ class MetadataEnum {
   /**
    * The enum values.
    *
-   * @memberof MetadataEnum.prototype
    * @type {MetadataEnumValue[]}
    * @readonly
    */
@@ -71,7 +70,6 @@ class MetadataEnum {
   /**
    * A dictionary mapping enum integer values to names.
    *
-   * @memberof MetadataEnum.prototype
    * @type {Object<number, string>}
    * @readonly
    *
@@ -84,7 +82,6 @@ class MetadataEnum {
   /**
    * A dictionary mapping enum names to integer values.
    *
-   * @memberof MetadataEnum.prototype
    * @type {Object<string, number>}
    * @readonly
    *
@@ -97,7 +94,6 @@ class MetadataEnum {
   /**
    * The enum value type.
    *
-   * @memberof MetadataEnum.prototype
    * @type {MetadataComponentType}
    * @readonly
    */
@@ -108,7 +104,6 @@ class MetadataEnum {
   /**
    * The ID of the enum.
    *
-   * @memberof MetadataEnum.prototype
    * @type {string}
    * @readonly
    */
@@ -119,7 +114,6 @@ class MetadataEnum {
   /**
    * The name of the enum.
    *
-   * @memberof MetadataEnum.prototype
    * @type {string}
    * @readonly
    */
@@ -130,7 +124,6 @@ class MetadataEnum {
   /**
    * The description of the enum.
    *
-   * @memberof MetadataEnum.prototype
    * @type {string}
    * @readonly
    */
@@ -141,7 +134,6 @@ class MetadataEnum {
   /**
    * Extra user-defined properties.
    *
-   * @memberof MetadataEnum.prototype
    * @type {*}
    * @readonly
    */
@@ -152,7 +144,6 @@ class MetadataEnum {
   /**
    * An object containing extensions.
    *
-   * @memberof MetadataEnum.prototype
    * @type {object}
    * @readonly
    */

@@ -292,18 +292,12 @@ class Megatexture {
 
   /**
    * Gets or sets the nearest sampling flag.
-   * @memberof Megatexture.prototype
    * @type {boolean}
    */
   get nearestSampling() {
     return this._nearestSampling;
   }
 
-  /**
-   * Gets or sets the nearest sampling flag.
-   * @memberof Megatexture.prototype
-   * @type {boolean}
-   */
   set nearestSampling(nearestSampling) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.bool("nearestSampling", nearestSampling);

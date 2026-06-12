@@ -1,6 +1,4 @@
 /**
- * @module WebGPUVideoTextureManager
- *
  * Zero-copy video texture integration using GPUExternalTexture.
  * Imports video frames directly to GPU without CPU-side pixel copies.
  *
@@ -40,6 +38,7 @@
  * // Each frame:
  * videoMgr.updateAll();
  * const bindGroup = videoMgr.getBindGroup(handle, layout, sampler);
+ * @module WebGPUVideoTextureManager
  */
 
 /// <reference types="@webgpu/types" />

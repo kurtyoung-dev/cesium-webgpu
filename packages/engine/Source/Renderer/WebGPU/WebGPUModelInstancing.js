@@ -1,6 +1,4 @@
 /**
- * @module WebGPUModelInstancing
- *
  * Packs instance transforms into a GPU storage buffer for WebGPU model
  * rendering via EXT_mesh_gpu_instancing or i3dm.
  *
@@ -16,6 +14,7 @@
  * full mat4x4 (16 floats) for the storage buffer.
  *
  * @private
+ * @module WebGPUModelInstancing
  */
 import defined from "../../Core/defined.js";
 

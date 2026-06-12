@@ -40,7 +40,6 @@ class NavigationHelpButtonViewModel {
 
   /**
    * Gets the Command that is executed when the button is clicked.
-   * @memberof NavigationHelpButtonViewModel.prototype
    *
    * @type {Command}
    */
@@ -50,7 +49,6 @@ class NavigationHelpButtonViewModel {
 
   /**
    * Gets the Command that is executed when the mouse instructions should be shown.
-   * @memberof NavigationHelpButtonViewModel.prototype
    *
    * @type {Command}
    */
@@ -60,7 +58,6 @@ class NavigationHelpButtonViewModel {
 
   /**
    * Gets the Command that is executed when the touch instructions should be shown.
-   * @memberof NavigationHelpButtonViewModel.prototype
    *
    * @type {Command}
    */

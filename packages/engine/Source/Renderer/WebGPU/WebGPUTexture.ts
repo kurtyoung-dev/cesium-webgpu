@@ -1,6 +1,4 @@
 /**
- * @module WebGPUTexture
- *
  * WebGPU texture implementation for 2D, 3D, and cube map textures.
  * Provides GPU texture management, sampling, and mipmap generation.
  *
@@ -10,6 +8,7 @@
  *   height: 256,
  *   format: 'rgba8unorm'
  * });
+ * @module WebGPUTexture
  */
 
 /// <reference types="@webgpu/types" />

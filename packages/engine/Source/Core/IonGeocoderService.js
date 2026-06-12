@@ -109,7 +109,6 @@ class IonGeocoderService {
   /**
    * Gets the credit to display after a geocode is performed. Typically this is used to credit
    * the geocoder service.
-   * @memberof IonGeocoderService.prototype
    * @type {Credit|undefined}
    * @readonly
    */
@@ -119,7 +118,6 @@ class IonGeocoderService {
 
   /**
    * The geocoding service that Cesium ion API server should use to fulfill geocding requests.
-   * @memberof IonGeocoderService.prototype
    * @type {IonGeocodeProviderType}
    * @default IonGeocodeProviderType.DEFAULT
    */
@@ -129,12 +127,6 @@ class IonGeocoderService {
     );
   }
 
-  /**
-   * The geocoding service that Cesium ion API server should use to fulfill geocding requests.
-   * @memberof IonGeocoderService.prototype
-   * @type {IonGeocodeProviderType}
-   * @default IonGeocodeProviderType.DEFAULT
-   */
   set geocodeProviderType(geocodeProviderType) {
     validateIonGeocodeProviderType(geocodeProviderType);
     const query = {

@@ -1,6 +1,4 @@
 /**
- * @module WebGPUVector3DTileClampedPolylinesRenderer
- *
  * WebGPU equivalent of `Vector3DTileClampedPolylines` (3D Tiles polylines
  * clamped to terrain). Pairs with `WebGPUVector3DTilePolylinesRenderer`
  * for the un-clamped variant and with `WebGPUVector3DTilePrimitiveRenderer`
@@ -57,6 +55,7 @@
  *   buffer; only the pass enum differs.
  *
  * @private
+ * @module WebGPUVector3DTileClampedPolylinesRenderer
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";

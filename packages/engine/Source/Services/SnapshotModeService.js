@@ -1,6 +1,4 @@
 /**
- * @module SnapshotModeService
- *
  * Locked-orbit / inspection-mode renderer optimization. When enabled,
  * tells {@link WebGPURenderBundleManager} (and any other registered
  * "freezable" subsystems) to treat their current cache state as frozen:
@@ -115,6 +113,7 @@
  * ownership of the context.
  *
  * @private
+ * @module SnapshotModeService
  */
 
 import defined from "../Core/defined.js";

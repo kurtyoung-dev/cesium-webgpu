@@ -390,7 +390,6 @@ class VoxelBoxShape {
   /**
    * An oriented bounding box containing the bounded shape.
    *
-   * @memberof VoxelBoxShape.prototype
    * @type {OrientedBoundingBox}
    * @readonly
    * @private
@@ -401,7 +400,6 @@ class VoxelBoxShape {
 
   /**
    * A collection of planes used for the render bounds
-   * @memberof VoxelBoxShape.prototype
    * @type {VoxelBoundsCollection}
    * @readonly
    * @private
@@ -413,7 +411,6 @@ class VoxelBoxShape {
   /**
    * A bounding sphere containing the bounded shape.
    *
-   * @memberof VoxelBoxShape.prototype
    * @type {BoundingSphere}
    * @readonly
    * @private
@@ -425,7 +422,6 @@ class VoxelBoxShape {
   /**
    * A transformation matrix containing the bounded shape.
    *
-   * @memberof VoxelBoxShape.prototype
    * @type {Matrix4}
    * @readonly
    * @private
@@ -437,7 +433,6 @@ class VoxelBoxShape {
   /**
    * A transformation matrix containing the shape, ignoring the bounds.
    *
-   * @memberof VoxelBoxShape.prototype
    * @type {Matrix4}
    * @readonly
    * @private
@@ -447,7 +442,6 @@ class VoxelBoxShape {
   }
 
   /**
-   * @memberof VoxelBoxShape.prototype
    * @type {Object<string, any>}
    * @readonly
    * @private
@@ -457,7 +451,6 @@ class VoxelBoxShape {
   }
 
   /**
-   * @memberof VoxelBoxShape.prototype
    * @type {Object<string, any>}
    * @readonly
    * @private
@@ -468,7 +461,6 @@ class VoxelBoxShape {
 
   /**
    * The maximum number of intersections against the shape for any ray direction.
-   * @memberof VoxelBoxShape.prototype
    * @type {number}
    * @readonly
    * @private

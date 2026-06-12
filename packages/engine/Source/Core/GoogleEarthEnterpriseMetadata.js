@@ -252,7 +252,6 @@ class GoogleEarthEnterpriseMetadata {
 
   /**
    * Gets the name of the Google Earth Enterprise server.
-   * @memberof GoogleEarthEnterpriseMetadata.prototype
    * @type {string}
    * @readonly
    */
@@ -262,7 +261,6 @@ class GoogleEarthEnterpriseMetadata {
 
   /**
    * Gets the proxy used for metadata requests.
-   * @memberof GoogleEarthEnterpriseMetadata.prototype
    * @type {Proxy}
    * @readonly
    */
@@ -272,7 +270,6 @@ class GoogleEarthEnterpriseMetadata {
 
   /**
    * Gets the resource used for metadata requests.
-   * @memberof GoogleEarthEnterpriseMetadata.prototype
    * @type {Resource}
    * @readonly
    */

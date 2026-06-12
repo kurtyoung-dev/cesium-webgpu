@@ -1,7 +1,5 @@
 /// <reference types="@webgpu/types" />
 /**
- * @module WebGPUCSMRenderer
- *
  * Cascaded Shadow Map renderer. Splits the camera frustum into N depth
  * ranges (default 4) and renders each range's shadow map at full
  * resolution. The fragment shader picks the smallest cascade that
@@ -13,6 +11,7 @@
  * When disabled, the existing single-shadow-map path remains active.
  *
  * @private
+ * @module WebGPUCSMRenderer
  */
 
 import Matrix4 from "../../Core/Matrix4.js";

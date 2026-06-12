@@ -152,7 +152,6 @@ class Event {
 
   /**
    * The number of listeners currently subscribed to the event.
-   * @memberof Event.prototype
    * @type {number}
    * @readonly
    */

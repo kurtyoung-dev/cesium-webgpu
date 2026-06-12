@@ -115,7 +115,6 @@ class I3SSymbology {
 
   /**
    * Gets the default symbology data.
-   * @memberof I3SSymbology.prototype
    * @type {object}
    * @readonly
    */

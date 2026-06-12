@@ -178,7 +178,6 @@ class InfoBox {
 
   /**
    * Gets the parent container.
-   * @memberof InfoBox.prototype
    *
    * @type {Element}
    */
@@ -188,7 +187,6 @@ class InfoBox {
 
   /**
    * Gets the view model.
-   * @memberof InfoBox.prototype
    *
    * @type {InfoBoxViewModel}
    */
@@ -198,7 +196,6 @@ class InfoBox {
 
   /**
    * Gets the iframe used to display the description.
-   * @memberof InfoBox.prototype
    *
    * @type {HTMLIFrameElement}
    */

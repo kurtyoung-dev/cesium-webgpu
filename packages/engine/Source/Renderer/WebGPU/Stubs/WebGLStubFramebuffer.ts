@@ -1,11 +1,10 @@
 /**
- * @module WebGLStubFramebuffer
- *
  * WebGL framebuffer and renderbuffer method stubs for the WebGPU
  * compatibility layer. Maps framebuffer/renderbuffer lifecycle operations
  * to WebGPU texture creation and state tracking.
  *
  * @see WebGLCompatibilityStub (nexus)
+ * @module WebGLStubFramebuffer
  */
 
 /// <reference types="@webgpu/types" />

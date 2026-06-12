@@ -292,7 +292,6 @@ class HermiteSpline {
   /**
    * An array of times for the control points.
    *
-   * @memberof HermiteSpline.prototype
    *
    * @type {number[]}
    * @readonly
@@ -304,7 +303,6 @@ class HermiteSpline {
   /**
    * An array of control points.
    *
-   * @memberof HermiteSpline.prototype
    *
    * @type {Cartesian3[]}
    * @readonly
@@ -316,7 +314,6 @@ class HermiteSpline {
   /**
    * An array of incoming tangents at each control point.
    *
-   * @memberof HermiteSpline.prototype
    *
    * @type {Cartesian3[]}
    * @readonly
@@ -328,7 +325,6 @@ class HermiteSpline {
   /**
    * An array of outgoing tangents at each control point.
    *
-   * @memberof HermiteSpline.prototype
    *
    * @type {Cartesian3[]}
    * @readonly

@@ -53,7 +53,6 @@ class Stereographic {
 
   /**
    * Gets the ellipsoid.
-   * @memberof Stereographic.prototype
    * @type {Ellipsoid}
    */
   get ellipsoid() {
@@ -62,7 +61,6 @@ class Stereographic {
 
   /**
    * Gets the x coordinate
-   * @memberof Stereographic.prototype
    * @type {number}
    */
   get x() {
@@ -71,7 +69,6 @@ class Stereographic {
 
   /**
    * Gets the y coordinate
-   * @memberof Stereographic.prototype
    * @type {number}
    */
   get y() {
@@ -80,7 +77,6 @@ class Stereographic {
 
   /**
    * Computes the conformal latitude, or the ellipsoidal latitude projected onto an arbitrary sphere.
-   * @memberof Stereographic.prototype
    * @type {number}
    */
   get conformalLatitude() {
@@ -92,7 +88,6 @@ class Stereographic {
 
   /**
    * Computes the longitude
-   * @memberof Stereographic.prototype
    * @type {number}
    */
   get longitude() {
@@ -117,7 +112,7 @@ const scratchProjectPointOntoPlaneCartesian3 = new Cartesian3();
  *
  * @param {Cartesian3} cartesian The point to project.
  * @param {Stereographic} [result] The object onto which to store the result.
- * @returns {Sterographic} The modified result parameter or a new Sterographic instance if none was provided.
+ * @returns {Stereographic} The modified result parameter or a new Sterographic instance if none was provided.
  */
 Stereographic.fromCartesian = function (cartesian, result) {
   //>>includeStart('debug', pragmas.debug);
@@ -167,7 +162,7 @@ Stereographic.fromCartesian = function (cartesian, result) {
  *
  * @param {Cartesian3[]} cartesians The points to project.
  * @param {Stereographic[]} [result] The object onto which to store the result.
- * @returns {Sterographic[]} The modified result parameter or a new Sterographic instance if none was provided.
+ * @returns {Stereographic[]} The modified result parameter or a new Sterographic instance if none was provided.
  */
 Stereographic.fromCartesianArray = function (cartesians, result) {
   //>>includeStart('debug', pragmas.debug);

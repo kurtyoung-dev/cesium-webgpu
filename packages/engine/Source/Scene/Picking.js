@@ -152,11 +152,11 @@ class Picking {
   }
 
   /**
-   * @private
    * Drains queued hover-pick requests one at a time, always using
    * the most recent cursor / args. Resolves with the result of the
    * FINAL pick (latest cursor at drain time), shared with all
    * coalesced callers awaiting `_inFlightHoverPick`.
+   * @private
    */
   async _runHoverChain(scene) {
     let lastResult;

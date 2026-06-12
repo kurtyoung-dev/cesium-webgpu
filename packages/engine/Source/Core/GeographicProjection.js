@@ -90,7 +90,6 @@ class GeographicProjection {
   /**
    * Gets the {@link Ellipsoid}.
    *
-   * @memberof GeographicProjection.prototype
    *
    * @type {Ellipsoid}
    * @readonly

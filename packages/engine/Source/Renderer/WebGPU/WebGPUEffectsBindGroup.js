@@ -1,6 +1,4 @@
 /**
- * @module WebGPUEffectsBindGroup
- *
  * Creates and manages the combined shadow-receive + clipping-planes bind group
  * used by lit/flat primitive shaders and the globe terrain shader.
  *
@@ -64,6 +62,7 @@
  * plane count are filled with +Infinity (no clip).
  *
  * @private
+ * @module WebGPUEffectsBindGroup
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
@@ -252,15 +251,18 @@ const _placeholderCache = new WeakMap();
  * placeholder cache entry. Returns the cache object so the caller can
  * mutate `bindGroups` / `hits` / `misses` directly.
  *
+ * Each `bindGroups` entry is a `{buffer: GPUBuffer, bindGroup:
+ * GPUBindGroup, contentKey: string}` tuple.
+ *
  * @param {object} cache - per-device placeholder cache entry
  * @returns {{
- *   bindGroups: Map<string, {buffer: GPUBuffer, bindGroup: GPUBindGroup, contentKey: string}>,
+ *   bindGroups: Map<string, object>,
  *   idMap: WeakMap<object, number>,
  *   idCounter: number,
  *   hits: number,
  *   misses: number,
  *   bufferWrites: number,
- *   diagLastFrame: number,
+ *   diagLastFrame: number
  * }}
  */
 function _ensureEffectsBgCache(cache) {
@@ -780,7 +782,7 @@ const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
  *   LUT-sampled fog path activates.
  * @param {GPUTextureView} [options.atmosphereLutInscatterView] - Atmosphere
  *   inscatter LUT (256×128 rgba16float) from the performance manager.
- * @param {{inner?: number, outer?: number}} [options.atmosphereLutPlanetRadii]
+ * @param {{inner: (number|undefined), outer: (number|undefined)}} [options.atmosphereLutPlanetRadii]
  *   - Planet radii (meters) for LUT altitude mapping. Defaults to WGS84
  *   + 2.5% atmosphere thickness.
  * @param {{enabled: boolean, paramsBuffer: GPUBuffer, cascadeArrayView: GPUTextureView}} [options.csm]

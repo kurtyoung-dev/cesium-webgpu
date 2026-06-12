@@ -306,7 +306,6 @@ class BaseLayerPickerViewModel {
 
   /**
    * Gets the command to toggle the visibility of the drop down.
-   * @memberof BaseLayerPickerViewModel.prototype
    *
    * @type {Command}
    */
@@ -316,7 +315,6 @@ class BaseLayerPickerViewModel {
 
   /**
    * Gets the globe.
-   * @memberof BaseLayerPickerViewModel.prototype
    *
    * @type {Globe}
    */

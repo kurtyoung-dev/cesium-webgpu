@@ -245,7 +245,6 @@ class BillboardTexture {
 
   /**
    * If defined, this error was encountered during the loading process.
-   * @memberof BillboardTexture.prototype
    * @type {Error|undefined}
    * @readonly
    * @private
@@ -257,7 +256,6 @@ class BillboardTexture {
   /**
    * The current status of the image load. When <code>BillboardLoadState.LOADED</code>, this billboard is ready to render, i.e., the image
    * has been downloaded and the WebGL resources are created.
-   * @memberof BillboardTexture.prototype
    * @type {BillboardLoadState}
    * @readonly
    * @default BillboardLoadState.NONE
@@ -270,7 +268,6 @@ class BillboardTexture {
   /**
    * When <code>true</code>, this texture is ready to render, i.e., the image
    * has been downloaded and the WebGL resources are created.
-   * @memberof BillboardTexture.prototype
    * @type {boolean}
    * @readonly
    * @default false
@@ -282,7 +279,6 @@ class BillboardTexture {
 
   /**
    * Returns <code>true</code> if there is image data associated with this instance.
-   * @memberof BillboardTexture.prototype
    * @type {boolean}
    * @readonly
    * @private
@@ -293,7 +289,6 @@ class BillboardTexture {
 
   /**
    * A unique identifier for the image, or undefined if no image data has been associated with this instance.
-   * @memberof BillboardTexture.prototype
    * @type {string|undefined}
    * @readonly
    * @private
@@ -304,7 +299,6 @@ class BillboardTexture {
 
   /**
    * The width of the associated image. Before the instance is <code>ready</code>, this will be <code>undefined</code>.
-   * @memberof BillboardTexture.prototype
    * @type {number|undefined}
    * @readonly
    * @private
@@ -315,7 +309,6 @@ class BillboardTexture {
 
   /**
    * The height of the associated image. Before the instance is <code>ready</code>, this will be <code>undefined</code>.
-   * @memberof BillboardTexture.prototype
    * @type {number|undefined}
    * @readonly
    * @private

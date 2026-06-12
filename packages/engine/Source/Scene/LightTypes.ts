@@ -1,6 +1,4 @@
 /**
- * @module Light
- *
  * Light source classes for CesiumJS multi-light rendering.
  * Addresses upstream issue #8518 — currently CesiumJS only supports
  * one directional sun light.
@@ -31,6 +29,7 @@
  * Lit shaders loop over `lightCount` active lights in the uniform buffer.
  *
  * @see https://github.com/CesiumGS/cesium/issues/8518
+ * @module Light
  */
 
 import Cartesian3 from "../Core/Cartesian3.js";

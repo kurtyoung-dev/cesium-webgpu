@@ -197,7 +197,6 @@ class EquirectangularPanorama {
 
   /**
    * Gets the radius of the panorama.
-   * @memberof EquirectangularPanorama.prototype
    * @type {number}
    * @readonly
    */
@@ -207,7 +206,6 @@ class EquirectangularPanorama {
 
   /**
    * Gets the source image of the panorama.
-   * @memberof EquirectangularPanorama.prototype
    * @type {string|HTMLImageElement|HTMLCanvasElement|ImageBitmap}
    * @readonly
    */
@@ -217,7 +215,6 @@ class EquirectangularPanorama {
 
   /**
    * Gets the transform of the panorama.
-   * @memberof EquirectangularPanorama.prototype
    * @type {Matrix4}
    * @readonly
    */
@@ -227,7 +224,6 @@ class EquirectangularPanorama {
 
   /**
    * Gets the credits of the panorama.
-   * @memberof EquirectangularPanorama.prototype
    * @type {Credit}
    * @readonly
    */
@@ -237,18 +233,12 @@ class EquirectangularPanorama {
 
   /**
    * Determines if the equirectangular panorama will be shown.
-   * @memberof EquirectangularPanorama.prototype
    * @type {boolean}
    */
   get show() {
     return defined(this._primitive) ? this._primitive.show : undefined;
   }
 
-  /**
-   * Determines if the equirectangular panorama will be shown.
-   * @memberof EquirectangularPanorama.prototype
-   * @type {boolean}
-   */
   set show(value) {
     if (defined(this._primitive)) {
       this._primitive.show = value;

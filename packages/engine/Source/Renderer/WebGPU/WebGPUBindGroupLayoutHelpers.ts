@@ -17,13 +17,28 @@
  * @private
  */
 
+// GPUShaderStage only exists on WebGPU-capable hosts. This module is
+// evaluated by every consumer of the engine bundle — including Node.js
+// (`require("cesium")`, verify-package CI) and browsers without WebGPU
+// (FirefoxHeadless coverage CI) — so module evaluation must never touch
+// the global directly. The bit values are fixed by the WebGPU spec
+// (GPUShaderStage interface constants), so the fallback is exact.
+const ShaderStage: {
+  readonly VERTEX: number;
+  readonly FRAGMENT: number;
+  readonly COMPUTE: number;
+} =
+  typeof GPUShaderStage !== "undefined"
+    ? GPUShaderStage
+    : { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
+
 /** Shorthand for the GPUShaderStage combinations we actually use. */
 export const Stage = {
-  COMPUTE: GPUShaderStage.COMPUTE,
-  VERTEX: GPUShaderStage.VERTEX,
-  FRAGMENT: GPUShaderStage.FRAGMENT,
-  VERTEX_FRAGMENT: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-  ALL: GPUShaderStage.COMPUTE | GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+  COMPUTE: ShaderStage.COMPUTE,
+  VERTEX: ShaderStage.VERTEX,
+  FRAGMENT: ShaderStage.FRAGMENT,
+  VERTEX_FRAGMENT: ShaderStage.VERTEX | ShaderStage.FRAGMENT,
+  ALL: ShaderStage.COMPUTE | ShaderStage.VERTEX | ShaderStage.FRAGMENT,
 } as const;
 
 /** Builds a uniform-buffer entry. */

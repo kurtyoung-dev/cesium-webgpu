@@ -239,7 +239,6 @@ class Multiple3DTileContent {
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code> checks if any of the inner contents have dirty featurePropertiesDirty.
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {boolean}
    *
@@ -257,14 +256,6 @@ class Multiple3DTileContent {
     return false;
   }
 
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code> checks if any of the inner contents have dirty featurePropertiesDirty.
-   * @memberof Multiple3DTileContent.prototype
-   *
-   * @type {boolean}
-   *
-   * @private
-   */
   set featurePropertiesDirty(value) {
     const contents = this._contents;
     const length = contents.length;
@@ -277,7 +268,6 @@ class Multiple3DTileContent {
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>featuresLength</code> for a specific inner content.
    *
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -292,7 +282,6 @@ class Multiple3DTileContent {
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
    * always returns <code>0</code>.  Instead, call <code>pointsLength</code> for a specific inner content.
    *
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -307,7 +296,6 @@ class Multiple3DTileContent {
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>trianglesLength</code> for a specific inner content.
    *
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -322,7 +310,6 @@ class Multiple3DTileContent {
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>geometryByteLength</code> for a specific inner content.
    *
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -337,7 +324,6 @@ class Multiple3DTileContent {
    * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>texturesByteLength</code> for a specific inner content.
    *
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -352,7 +338,6 @@ class Multiple3DTileContent {
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>batchTableByteLength</code> for a specific inner content.
    *
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -370,7 +355,6 @@ class Multiple3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly
@@ -396,7 +380,6 @@ class Multiple3DTileContent {
    * Part of the {@link Cesium3DTileContent} interface.
    * Unlike other content types, <code>Multiple3DTileContent</code> does not
    * have a single URL, so this returns undefined.
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {string}
    * @readonly
@@ -409,19 +392,12 @@ class Multiple3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
    * always returns <code>undefined</code>.  Instead call <code>metadata</code> for a specific inner content.
-   * @memberof Multiple3DTileContent.prototype
    * @private
    */
   get metadata() {
     return undefined;
   }
 
-  /**
-   * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
-   * always returns <code>undefined</code>.  Instead call <code>metadata</code> for a specific inner content.
-   * @memberof Multiple3DTileContent.prototype
-   * @private
-   */
   set metadata(value) {
     //>>includeStart('debug', pragmas.debug);
     throw new DeveloperError("Multiple3DTileContent cannot have metadata");
@@ -431,7 +407,6 @@ class Multiple3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
    * always returns <code>undefined</code>.  Instead call <code>batchTable</code> for a specific inner content.
-   * @memberof Multiple3DTileContent.prototype
    * @private
    */
   get batchTable() {
@@ -441,19 +416,12 @@ class Multiple3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
    * always returns <code>undefined</code>.  Instead call <code>group</code> for a specific inner content.
-   * @memberof Multiple3DTileContent.prototype
    * @private
    */
   get group() {
     return undefined;
   }
 
-  /**
-   * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
-   * always returns <code>undefined</code>.  Instead call <code>group</code> for a specific inner content.
-   * @memberof Multiple3DTileContent.prototype
-   * @private
-   */
   set group(value) {
     //>>includeStart('debug', pragmas.debug);
     throw new DeveloperError(
@@ -466,7 +434,6 @@ class Multiple3DTileContent {
    * Get an array of the inner content URLs, regardless of whether they've
    * been fetched or not. This is intended for use with
    * {@link Cesium3DTileset#debugShowUrl}.
-   * @memberof Multiple3DTileContent.prototype
    *
    * @type {string[]}
    * @readonly

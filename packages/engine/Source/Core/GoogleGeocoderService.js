@@ -96,7 +96,6 @@ class GoogleGeocoderService {
   /**
    * Gets the credit to display after a geocode is performed. Typically this is used to credit
    * the geocoder service.
-   * @memberof GoogleGeocoderService.prototype
    * @type {Credit|undefined}
    * @readonly
    */

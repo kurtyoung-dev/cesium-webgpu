@@ -149,7 +149,6 @@ class Heap {
   /**
    * Gets the length of the heap.
    *
-   * @memberof Heap.prototype
    *
    * @type {number}
    * @readonly
@@ -161,7 +160,6 @@ class Heap {
   /**
    * Gets the internal array.
    *
-   * @memberof Heap.prototype
    *
    * @type {Array}
    * @readonly
@@ -173,7 +171,6 @@ class Heap {
   /**
    * Gets and sets the maximum length of the heap.
    *
-   * @memberof Heap.prototype
    *
    * @type {number}
    */
@@ -181,13 +178,6 @@ class Heap {
     return this._maximumLength;
   }
 
-  /**
-   * Gets and sets the maximum length of the heap.
-   *
-   * @memberof Heap.prototype
-   *
-   * @type {number}
-   */
   set maximumLength(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("maximumLength", value, 0);
@@ -208,7 +198,6 @@ class Heap {
   /**
    * The comparator to use for the heap. If comparator(a, b) is less than 0, sort a to a lower index than b, otherwise sort to a higher index.
    *
-   * @memberof Heap.prototype
    *
    * @type {Heap.ComparatorCallback}
    */

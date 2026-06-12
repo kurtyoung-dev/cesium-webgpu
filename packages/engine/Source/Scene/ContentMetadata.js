@@ -153,7 +153,6 @@ class ContentMetadata {
   /**
    * The class that properties conform to.
    *
-   * @memberof ContentMetadata.prototype
    * @type {MetadataClass}
    * @readonly
    * @private
@@ -165,7 +164,6 @@ class ContentMetadata {
   /**
    * Extra user-defined properties.
    *
-   * @memberof ContentMetadata.prototype
    * @type {object}
    * @readonly
    * @private
@@ -177,7 +175,6 @@ class ContentMetadata {
   /**
    * An object containing extensions.
    *
-   * @memberof ContentMetadata.prototype
    * @type {object}
    * @readonly
    * @private

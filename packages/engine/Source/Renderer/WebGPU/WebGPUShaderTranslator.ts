@@ -1,6 +1,4 @@
 /**
- * @module WebGPUShaderTranslator
- *
  * Pluggable runtime GLSL→WGSL shader translation for the
  * WebGL-compatibility code path. Closes the loop on the Proton-style
  * stub: previously `gl.shaderSource(shader, glslText)` accepted the
@@ -50,6 +48,7 @@
  *
  * @see WebGLCompatibilityStub (consumer nexus)
  * @see WebGLStubPipelineExtractor (state extractor for pipeline building)
+ * @module WebGPUShaderTranslator
  */
 
 /// <reference types="@webgpu/types" />

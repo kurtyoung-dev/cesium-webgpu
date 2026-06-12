@@ -1,6 +1,4 @@
 /**
- * @module WorkerSceneProtocol
- *
  * The postMessage protocol shared by `WorkerSceneHost` (main thread)
  * and `RendererWorker` (worker thread). Defining the message types as
  * exported constants in one place keeps both sides in sync without
@@ -24,6 +22,7 @@
  * to rebuild the scene from scratch) is replayed into the new worker
  * before any user-visible commands resume.
  *
+ * @module WorkerSceneProtocol
  * @private
  */
 

@@ -1149,7 +1149,6 @@ class Resource {
   /**
    * Query parameters appended to the url.
    *
-   * @memberof Resource.prototype
    * @type {object}
    *
    * @readonly
@@ -1161,7 +1160,6 @@ class Resource {
   /**
    * The key/value pairs used to replace template parameters in the url.
    *
-   * @memberof Resource.prototype
    * @type {object}
    *
    * @readonly
@@ -1173,19 +1171,12 @@ class Resource {
   /**
    * The url to the resource with template values replaced, query string appended and encoded by proxy if one was set.
    *
-   * @memberof Resource.prototype
    * @type {string}
    */
   get url() {
     return this.getUrlComponent(true, true);
   }
 
-  /**
-   * The url to the resource with template values replaced, query string appended and encoded by proxy if one was set.
-   *
-   * @memberof Resource.prototype
-   * @type {string}
-   */
   set url(value) {
     this.parseUrl(value, false, false);
   }
@@ -1193,7 +1184,6 @@ class Resource {
   /**
    * The file extension of the resource.
    *
-   * @memberof Resource.prototype
    * @type {string}
    *
    * @readonly
@@ -1205,7 +1195,6 @@ class Resource {
   /**
    * True if the Resource refers to a data URI.
    *
-   * @memberof Resource.prototype
    * @type {boolean}
    */
   get isDataUri() {
@@ -1215,7 +1204,6 @@ class Resource {
   /**
    * True if the Resource refers to a blob URI.
    *
-   * @memberof Resource.prototype
    * @type {boolean}
    */
   get isBlobUri() {
@@ -1225,7 +1213,6 @@ class Resource {
   /**
    * True if the Resource refers to a cross origin URL.
    *
-   * @memberof Resource.prototype
    * @type {boolean}
    */
   get isCrossOriginUrl() {
@@ -1235,7 +1222,6 @@ class Resource {
   /**
    * True if the Resource has request headers. This is equivalent to checking if the headers property has any keys.
    *
-   * @memberof Resource.prototype
    * @type {boolean}
    */
   get hasHeaders() {

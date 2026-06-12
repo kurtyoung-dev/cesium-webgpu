@@ -589,7 +589,6 @@ class Cesium3DTileBatchTable {
    * Size of the batch table, including the batch table hierarchy's binary
    * buffers and any binary properties. JSON data is not counted.
    *
-   * @memberof Cesium3DTileBatchTable.prototype
    * @type {number}
    * @readonly
    * @private

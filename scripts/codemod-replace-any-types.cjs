@@ -17,6 +17,8 @@
  *       --parser ts packages/engine/Source/Renderer/WebGPU/
  */
 
+"use strict";
+
 module.exports = function transformer(fileInfo, api) {
   const j = api.jscodeshift;
   const root = j(fileInfo.source);
@@ -38,11 +40,15 @@ module.exports = function transformer(fileInfo, api) {
   // and replace with the mapped type if available.
   root.find(j.TSTypeAnnotation).forEach((path) => {
     const annotation = path.node;
-    if (annotation.typeAnnotation.type !== "TSAnyKeyword") return;
+    if (annotation.typeAnnotation.type !== "TSAnyKeyword") {
+      return;
+    }
 
     // Walk up to find the parameter/variable declarator that owns this annotation
     const parent = path.parentPath;
-    if (!parent || !parent.node) return;
+    if (!parent || !parent.node) {
+      return;
+    }
 
     let paramName;
     if (parent.node.type === "Identifier") {
@@ -54,16 +60,22 @@ module.exports = function transformer(fileInfo, api) {
       paramName = parent.node.left.name;
     }
 
-    if (!paramName) return;
+    if (!paramName) {
+      return;
+    }
 
     const mappedType = nameToType[paramName];
-    if (!mappedType || mappedType === "any") return;
+    if (!mappedType || mappedType === "any") {
+      return;
+    }
 
     // Replace the TSAnyKeyword with a TSTypeReference to our declared type
     annotation.typeAnnotation = j.tsTypeReference(j.identifier(mappedType));
     changed = true;
   });
 
-  if (!changed) return;
+  if (!changed) {
+    return;
+  }
   return root.toSource({ quote: "double", trailingComma: true, tabWidth: 2 });
 };

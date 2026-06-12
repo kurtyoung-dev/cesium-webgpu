@@ -45,7 +45,6 @@ class DistanceDisplayCondition {
 
   /**
    * The smallest distance in the interval where the object is visible.
-   * @memberof DistanceDisplayCondition.prototype
    * @type {number}
    * @default 0.0
    */
@@ -53,19 +52,12 @@ class DistanceDisplayCondition {
     return this._near;
   }
 
-  /**
-   * The smallest distance in the interval where the object is visible.
-   * @memberof DistanceDisplayCondition.prototype
-   * @type {number}
-   * @default 0.0
-   */
   set near(value) {
     this._near = value;
   }
 
   /**
    * The largest distance in the interval where the object is visible.
-   * @memberof DistanceDisplayCondition.prototype
    * @type {number}
    * @default Number.MAX_VALUE
    */
@@ -73,12 +65,6 @@ class DistanceDisplayCondition {
     return this._far;
   }
 
-  /**
-   * The largest distance in the interval where the object is visible.
-   * @memberof DistanceDisplayCondition.prototype
-   * @type {number}
-   * @default Number.MAX_VALUE
-   */
   set far(value) {
     this._far = value;
   }

@@ -1,6 +1,4 @@
 /**
- * @module WebGPURingBufferAllocator
- *
  * Per-frame ring buffer allocator for uniform data.
  * Eliminates per-frame GPU buffer creation by sub-allocating from large
  * backing buffers in a circular fashion.
@@ -23,6 +21,7 @@
  * device.queue.writeBuffer(alloc.buffer, alloc.offset, data);
  * // Use alloc.buffer + alloc.offset in bind group
  * allocator.endFrame();
+ * @module WebGPURingBufferAllocator
  */
 
 /// <reference types="@webgpu/types" />

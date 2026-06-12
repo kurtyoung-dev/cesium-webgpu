@@ -1,6 +1,4 @@
 /**
- * @module WebGPUStorageBufferPool
- *
  * Pooled storage buffer manager for large GPU datasets.
  * Storage buffers (SSBO) enable shaders to read/write arbitrary-sized data,
  * essential for compute shaders, large point clouds, and instance data.
@@ -14,6 +12,7 @@
  * device.queue.writeBuffer(buf.buffer, 0, data);
  * // ... use in bind group ...
  * pool.release(buf);
+ * @module WebGPUStorageBufferPool
  */
 
 /// <reference types="@webgpu/types" />

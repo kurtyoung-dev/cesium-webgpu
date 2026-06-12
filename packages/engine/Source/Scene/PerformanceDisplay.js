@@ -94,7 +94,6 @@ class PerformanceDisplay {
 
   /**
    * The display should indicate the FPS is being throttled.
-   * @memberof PerformanceDisplay.prototype
    *
    * @type {boolean}
    */
@@ -102,12 +101,6 @@ class PerformanceDisplay {
     return this._throttled;
   }
 
-  /**
-   * The display should indicate the FPS is being throttled.
-   * @memberof PerformanceDisplay.prototype
-   *
-   * @type {boolean}
-   */
   set throttled(value) {
     if (this._throttled === value) {
       return;

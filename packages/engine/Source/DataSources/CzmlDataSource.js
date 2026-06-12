@@ -4889,7 +4889,6 @@ class CzmlDataSource {
 
   /**
    * Gets a human-readable name for this instance.
-   * @memberof CzmlDataSource.prototype
    * @type {string}
    */
   get name() {
@@ -4900,7 +4899,6 @@ class CzmlDataSource {
    * Gets the clock settings defined by the loaded CZML.  If no clock is explicitly
    * defined in the CZML, the combined availability of all objects is returned.  If
    * only static data exists, this value is undefined.
-   * @memberof CzmlDataSource.prototype
    * @type {DataSourceClock}
    */
   get clock() {
@@ -4909,7 +4907,6 @@ class CzmlDataSource {
 
   /**
    * Gets the collection of {@link Entity} instances.
-   * @memberof CzmlDataSource.prototype
    * @type {EntityCollection}
    */
   get entities() {
@@ -4918,7 +4915,6 @@ class CzmlDataSource {
 
   /**
    * Gets a value indicating if the data source is currently loading data.
-   * @memberof CzmlDataSource.prototype
    * @type {boolean}
    */
   get isLoading() {
@@ -4927,7 +4923,6 @@ class CzmlDataSource {
 
   /**
    * Gets an event that will be raised when the underlying data changes.
-   * @memberof CzmlDataSource.prototype
    * @type {Event}
    */
   get changedEvent() {
@@ -4936,7 +4931,6 @@ class CzmlDataSource {
 
   /**
    * Gets an event that will be raised if an error is encountered during processing.
-   * @memberof CzmlDataSource.prototype
    * @type {Event}
    */
   get errorEvent() {
@@ -4945,7 +4939,6 @@ class CzmlDataSource {
 
   /**
    * Gets an event that will be raised when the data source either starts or stops loading.
-   * @memberof CzmlDataSource.prototype
    * @type {Event}
    */
   get loadingEvent() {
@@ -4954,18 +4947,12 @@ class CzmlDataSource {
 
   /**
    * Gets whether or not this data source should be displayed.
-   * @memberof CzmlDataSource.prototype
    * @type {boolean}
    */
   get show() {
     return this._entityCollection.show;
   }
 
-  /**
-   * Gets whether or not this data source should be displayed.
-   * @memberof CzmlDataSource.prototype
-   * @type {boolean}
-   */
   set show(value) {
     this._entityCollection.show = value;
   }
@@ -4973,19 +4960,12 @@ class CzmlDataSource {
   /**
    * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
    *
-   * @memberof CzmlDataSource.prototype
    * @type {EntityCluster}
    */
   get clustering() {
     return this._entityCluster;
   }
 
-  /**
-   * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
-   *
-   * @memberof CzmlDataSource.prototype
-   * @type {EntityCluster}
-   */
   set clustering(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -4997,7 +4977,6 @@ class CzmlDataSource {
 
   /**
    * Gets the credit that will be displayed for the data source
-   * @memberof CzmlDataSource.prototype
    * @type {Credit}
    */
   get credit() {

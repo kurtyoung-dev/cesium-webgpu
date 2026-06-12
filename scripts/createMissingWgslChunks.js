@@ -3,17 +3,25 @@
  * Each chunk is a port of the corresponding czm_* GLSL function to csm_* WGSL.
  * Run: node scripts/createMissingWgslChunks.js
  */
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync } from "fs";
 import { join } from "path";
 
-const DIR = join("packages", "engine", "Source", "Shaders", "WebGPU", "chunks", "functions");
+const DIR = join(
+  "packages",
+  "engine",
+  "Source",
+  "Shaders",
+  "WebGPU",
+  "chunks",
+  "functions",
+);
 
 const chunks = {
-// ─── Already created by previous tool calls ───
-// csm_antialias, csm_applyHSBShift, csm_approximateTanh, csm_backFacing
+  // ─── Already created by previous tool calls ───
+  // csm_antialias, csm_applyHSBShift, csm_approximateTanh, csm_backFacing
 
-// ─── Cascade Shadow Map distance ───
-"csm_cascadeDistance": `/**
+  // ─── Cascade Shadow Map distance ───
+  csm_cascadeDistance: `/**
  * Computes cascade distance for shadow mapping. Port of czm_cascadeDistance.
  * @chunk functions/csm_cascadeDistance
  */
@@ -28,8 +36,8 @@ fn csm_cascadeDistance(
 }
 `,
 
-// ─── Atmosphere scattering ───
-"csm_computeScattering": `/**
+  // ─── Atmosphere scattering ───
+  csm_computeScattering: `/**
  * Computes Rayleigh/Mie scattering along a ray. Port of czm_computeScattering.
  * Uses Nishita single-scattering with configurable step counts.
  * @chunk functions/csm_computeScattering
@@ -117,8 +125,8 @@ fn csm_computeScattering(
 }
 `,
 
-// ─── Atmosphere color (uses scattering results) ───
-"csm_computeAtmosphereColor": `/**
+  // ─── Atmosphere color (uses scattering results) ───
+  csm_computeAtmosphereColor: `/**
  * Computes the atmosphere color from scattering. Port of czm_computeAtmosphereColor.
  * @chunk functions/csm_computeAtmosphereColor
  */
@@ -148,8 +156,8 @@ fn csm_computeAtmosphereColor(
 }
 `,
 
-// ─── Ground atmosphere scattering ───
-"csm_computeGroundAtmosphereScattering": `/**
+  // ─── Ground atmosphere scattering ───
+  csm_computeGroundAtmosphereScattering: `/**
  * Computes ground atmosphere scattering. Port of czm_computeGroundAtmosphereScattering.
  * @chunk functions/csm_computeGroundAtmosphereScattering
  */
@@ -175,8 +183,8 @@ fn csm_computeGroundAtmosphereScattering(
 }
 `,
 
-// ─── Light attenuation ───
-"csm_computeAttenuation": `/**
+  // ─── Light attenuation ───
+  csm_computeAttenuation: `/**
  * Computes distance attenuation for point/spot lights. Port of czm_computeAttenuation.
  * @chunk functions/csm_computeAttenuation
  */
@@ -193,8 +201,8 @@ fn csm_computeAttenuation(lightRange: f32, distance: f32) -> f32 {
 }
 `,
 
-// ─── Spot light cone ───
-"csm_computeSpotCone": `/**
+  // ─── Spot light cone ───
+  csm_computeSpotCone: `/**
  * Computes spot light cone attenuation. Port of czm_computeSpotCone.
  * @chunk functions/csm_computeSpotCone
  */
@@ -206,8 +214,8 @@ fn csm_computeSpotCone(spotDirection: vec3<f32>, lightDir: vec3<f32>, innerCone:
 }
 `,
 
-// ─── Depth clamp ───
-"csm_depthClamp": `/**
+  // ─── Depth clamp ───
+  csm_depthClamp: `/**
  * Emulates GL_DEPTH_CLAMP. Adjusts vertex position depth to clamp to near/far.
  * Port of czm_depthClamp.
  * @chunk functions/csm_depthClamp
@@ -220,8 +228,8 @@ fn csm_depthClamp(clipPos: vec4<f32>) -> vec4<f32> {
 }
 `,
 
-// ─── East-North-Up to Eye coordinates ───
-"csm_eastNorthUpToEyeCoordinates": `/**
+  // ─── East-North-Up to Eye coordinates ───
+  csm_eastNorthUpToEyeCoordinates: `/**
  * Computes an ENU rotation matrix from position in eye coords + normal.
  * Port of czm_eastNorthUpToEyeCoordinates.
  * @chunk functions/csm_eastNorthUpToEyeCoordinates
@@ -238,8 +246,8 @@ fn csm_eastNorthUpToEyeCoordinates(positionEC: vec3<f32>, normalEC: vec3<f32>) -
 }
 `,
 
-// ─── Ellipsoid texture coordinates ───
-"csm_ellipsoidTextureCoordinates": `/**
+  // ─── Ellipsoid texture coordinates ───
+  csm_ellipsoidTextureCoordinates: `/**
  * Computes texture coordinates for a position on an ellipsoid.
  * Port of czm_ellipsoidTextureCoordinates.
  * @chunk functions/csm_ellipsoidTextureCoordinates
@@ -252,8 +260,8 @@ fn csm_ellipsoidTextureCoordinates(normal: vec3<f32>) -> vec2<f32> {
 }
 `,
 
-// ─── Float equals with epsilon ───
-"csm_equalsEpsilon": `/**
+  // ─── Float equals with epsilon ───
+  csm_equalsEpsilon: `/**
  * Compares two floats with an epsilon tolerance. Port of czm_equalsEpsilon.
  * @chunk functions/csm_equalsEpsilon
  */
@@ -280,8 +288,8 @@ fn csm_equalsEpsilonVec4(left: vec4<f32>, right: vec4<f32>, epsilon: f32) -> boo
 }
 `,
 
-// ─── Eye offset (billboard displacement) ───
-"csm_eyeOffset": `/**
+  // ─── Eye offset (billboard displacement) ───
+  csm_eyeOffset: `/**
  * Computes an eye-space offset for billboards/labels. Port of czm_eyeOffset.
  * @chunk functions/csm_eyeOffset
  */
@@ -295,8 +303,8 @@ fn csm_eyeOffset(positionEC: vec4<f32>, eyeOff: vec3<f32>) -> vec4<f32> {
 }
 `,
 
-// ─── Eye to window coordinates ───
-"csm_eyeToWindowCoordinates": `/**
+  // ─── Eye to window coordinates ───
+  csm_eyeToWindowCoordinates: `/**
  * Transforms a position from eye to window coordinates.
  * Port of czm_eyeToWindowCoordinates.
  * Requires csm_projection and csm_viewportTransformation uniforms.
@@ -320,8 +328,8 @@ fn csm_eyeToWindowCoordinates(
 }
 `,
 
-// ─── Geodetic surface normal ───
-"csm_geodeticSurfaceNormal": `/**
+  // ─── Geodetic surface normal ───
+  csm_geodeticSurfaceNormal: `/**
  * Computes the geodetic surface normal for a position on an ellipsoid.
  * Port of czm_geodeticSurfaceNormal.
  * @chunk functions/csm_geodeticSurfaceNormal
@@ -331,8 +339,8 @@ fn csm_geodeticSurfaceNormal(positionWC: vec3<f32>, oneOverRadiiSquared: vec3<f3
 }
 `,
 
-// ─── Default material ───
-"csm_getDefaultMaterial": `/**
+  // ─── Default material ───
+  csm_getDefaultMaterial: `/**
  * Returns a default material with standard initial values. Port of czm_getDefaultMaterial.
  * @chunk functions/csm_getDefaultMaterial
  */
@@ -357,8 +365,8 @@ fn csm_getDefaultMaterial() -> CsmMaterial {
 }
 `,
 
-// ─── Dynamic atmosphere light direction ───
-"csm_getDynamicAtmosphereLightDirection": `/**
+  // ─── Dynamic atmosphere light direction ───
+  csm_getDynamicAtmosphereLightDirection: `/**
  * Computes the dynamic light direction for atmosphere effects.
  * Matches czm_getDynamicAtmosphereLightDirection.
  * @chunk functions/csm_getDynamicAtmosphereLightDirection
@@ -373,8 +381,8 @@ fn csm_getDynamicAtmosphereLightDirection(positionWC: vec3<f32>, lightDirectionW
 }
 `,
 
-// ─── Lambert diffuse ───
-"csm_getLambertDiffuse": `/**
+  // ─── Lambert diffuse ───
+  csm_getLambertDiffuse: `/**
  * Computes Lambert diffuse lighting. Port of czm_getLambertDiffuse.
  * @chunk functions/csm_getLambertDiffuse
  */
@@ -383,8 +391,8 @@ fn csm_getLambertDiffuse(lightDirectionEC: vec3<f32>, normalEC: vec3<f32>) -> f3
 }
 `,
 
-// ─── Specular (Blinn-Phong) ───
-"csm_getSpecular": `/**
+  // ─── Specular (Blinn-Phong) ───
+  csm_getSpecular: `/**
  * Computes Blinn-Phong specular. Port of czm_getSpecular.
  * @chunk functions/csm_getSpecular
  */
@@ -395,8 +403,8 @@ fn csm_getSpecular(lightDirectionEC: vec3<f32>, toEyeEC: vec3<f32>, normalEC: ve
 }
 `,
 
-// ─── HSL to RGB ───
-"csm_HSLToRGB": `/**
+  // ─── HSL to RGB ───
+  csm_HSLToRGB: `/**
  * Converts HSL to RGB color space. Port of czm_HSLToRGB.
  * @chunk functions/csm_HSLToRGB
  */
@@ -426,8 +434,8 @@ fn csm_HSLToRGB(hsl: vec3<f32>) -> vec3<f32> {
 }
 `,
 
-// ─── Hue adjustment ───
-"csm_hue": `/**
+  // ─── Hue adjustment ───
+  csm_hue: `/**
  * Adjusts the hue of an RGB color. Port of czm_hue.
  * @chunk functions/csm_hue
  */
@@ -449,8 +457,8 @@ fn csm_hue(rgb: vec3<f32>, adjustment: f32) -> vec3<f32> {
 }
 `,
 
-// ─── Inverse gamma ───
-"csm_inverseGamma": `/**
+  // ─── Inverse gamma ───
+  csm_inverseGamma: `/**
  * Converts linear RGB to sRGB (inverse gamma). Port of czm_inverseGamma.
  * @chunk functions/csm_inverseGamma
  */
@@ -459,8 +467,8 @@ fn csm_inverseGamma(linearColor: vec3<f32>) -> vec3<f32> {
 }
 `,
 
-// ─── isEmpty / isFull (czm_material range checks) ───
-"csm_isEmpty": `/**
+  // ─── isEmpty / isFull (czm_material range checks) ───
+  csm_isEmpty: `/**
  * Tests if the material intersection interval is empty. Port of czm_isEmpty.
  * @chunk functions/csm_isEmpty
  */
@@ -469,7 +477,7 @@ fn csm_isEmpty(interval: vec4<f32>) -> bool {
 }
 `,
 
-"csm_isFull": `/**
+  csm_isFull: `/**
  * Tests if the material intersection interval is full. Port of czm_isFull.
  * @chunk functions/csm_isFull
  */
@@ -478,8 +486,8 @@ fn csm_isFull(interval: vec4<f32>) -> bool {
 }
 `,
 
-// ─── Web Mercator projection ───
-"csm_latitudeToWebMercatorFraction": `/**
+  // ─── Web Mercator projection ───
+  csm_latitudeToWebMercatorFraction: `/**
  * Converts a geodetic latitude to Web Mercator fraction [0,1].
  * Port of czm_latitudeToWebMercatorFraction.
  * @chunk functions/csm_latitudeToWebMercatorFraction
@@ -493,8 +501,8 @@ fn csm_latitudeToWebMercatorFraction(latitude: f32, southLatitude: f32, oneOverI
 }
 `,
 
-// ─── Line distance ───
-"csm_lineDistance": `/**
+  // ─── Line distance ───
+  csm_lineDistance: `/**
  * Distance from a point to a line. Port of czm_lineDistance.
  * @chunk functions/csm_lineDistance
  */
@@ -504,8 +512,8 @@ fn csm_lineDistance(p1: vec2<f32>, p2: vec2<f32>, point: vec2<f32>) -> f32 {
 }
 `,
 
-// ─── Log2 depth ───
-"csm_log2Depth": `/**
+  // ─── Log2 depth ───
+  csm_log2Depth: `/**
  * Computes log2 depth from linear depth. Port of czm_log2Depth.
  * @chunk functions/csm_log2Depth
  */
@@ -514,8 +522,8 @@ fn csm_log2Depth(depth: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
 }
 `,
 
-// ─── Model to window coordinates ───
-"csm_modelToWindowCoordinates": `/**
+  // ─── Model to window coordinates ───
+  csm_modelToWindowCoordinates: `/**
  * Transforms a model position to window coordinates.
  * Port of czm_modelToWindowCoordinates.
  * @chunk functions/csm_modelToWindowCoordinates
@@ -538,8 +546,8 @@ fn csm_modelToWindowCoordinates(
 }
 `,
 
-// ─── Read depth from texture ───
-"csm_readDepth": `/**
+  // ─── Read depth from texture ───
+  csm_readDepth: `/**
  * Reads depth from a depth texture and converts from log depth.
  * Port of czm_readDepth.
  * @chunk functions/csm_readDepth
@@ -550,8 +558,8 @@ fn csm_readDepth(depthTexture: texture_2d<f32>, depthSampler: sampler, texCoords
 }
 `,
 
-// ─── Non-perspective read/write ───
-"csm_readNonPerspective": `/**
+  // ─── Non-perspective read/write ───
+  csm_readNonPerspective: `/**
  * Reads a value corrected from non-perspective interpolation.
  * Port of czm_readNonPerspective.
  * @chunk functions/csm_readNonPerspective
@@ -573,7 +581,7 @@ fn csm_readNonPerspectiveVec4(value: vec4<f32>, oneOverW: f32) -> vec4<f32> {
 }
 `,
 
-"csm_writeNonPerspective": `/**
+  csm_writeNonPerspective: `/**
  * Writes a value prepared for non-perspective interpolation.
  * Port of czm_writeNonPerspective.
  * @chunk functions/csm_writeNonPerspective
@@ -595,8 +603,8 @@ fn csm_writeNonPerspectiveVec4(value: vec4<f32>, w: f32) -> vec4<f32> {
 }
 `,
 
-// ─── Octahedral projection sampling (for IBL) ───
-"csm_sampleOctahedralProjection": `/**
+  // ─── Octahedral projection sampling (for IBL) ───
+  csm_sampleOctahedralProjection: `/**
  * Samples an octahedral projection texture for IBL.
  * Port of czm_sampleOctahedralProjection.
  * @chunk functions/csm_sampleOctahedralProjection
@@ -630,8 +638,8 @@ fn csm_sampleOctahedralProjection(
 }
 `,
 
-// ─── Translucent phong ───
-"csm_translucentPhong": `/**
+  // ─── Translucent phong ───
+  csm_translucentPhong: `/**
  * Phong lighting for translucent materials with back-face handling.
  * Port of czm_translucentPhong.
  * @chunk functions/csm_translucentPhong
@@ -657,8 +665,8 @@ fn csm_translucentPhong(
 }
 `,
 
-// ─── Unpack clipping extents ───
-"csm_unpackClippingExtents": `/**
+  // ─── Unpack clipping extents ───
+  csm_unpackClippingExtents: `/**
  * Unpacks clipping plane extents from a packed texture. Port of czm_unpackClippingExtents.
  * @chunk functions/csm_unpackClippingExtents
  */
@@ -667,8 +675,8 @@ fn csm_unpackClippingExtents(packedExtents: vec4<f32>) -> vec4<f32> {
 }
 `,
 
-// ─── Unpack uint from float ───
-"csm_unpackUint": `/**
+  // ─── Unpack uint from float ───
+  csm_unpackUint: `/**
  * Unpacks unsigned integers from float channels. Port of czm_unpackUint.
  * @chunk functions/csm_unpackUint
  */
@@ -694,8 +702,8 @@ fn csm_unpackUintVec4(packedValue: vec4<f32>) -> u32 {
 }
 `,
 
-// ─── Vertex log depth ───
-"csm_vertexLogDepth": `/**
+  // ─── Vertex log depth ───
+  csm_vertexLogDepth: `/**
  * Computes log depth in vertex shader. Port of czm_vertexLogDepth.
  * @chunk functions/csm_vertexLogDepth
  */
@@ -708,8 +716,8 @@ fn csm_vertexLogDepth(clipPos: vec4<f32>, oneOverLog2FarDepthFromNearPlusOne: f3
 }
 `,
 
-// ─── Window to eye coordinates ───
-"csm_windowToEyeCoordinates": `/**
+  // ─── Window to eye coordinates ───
+  csm_windowToEyeCoordinates: `/**
  * Transforms window coordinates back to eye coordinates.
  * Port of czm_windowToEyeCoordinates.
  * @chunk functions/csm_windowToEyeCoordinates
@@ -731,8 +739,8 @@ fn csm_windowToEyeCoordinates(
 }
 `,
 
-// ─── Write depth clamp ───
-"csm_writeDepthClamp": `/**
+  // ─── Write depth clamp ───
+  csm_writeDepthClamp: `/**
  * Fragment shader depth clamp write. Port of czm_writeDepthClamp.
  * In WebGPU, frag_depth output handles depth clamping.
  * @chunk functions/csm_writeDepthClamp
@@ -741,14 +749,13 @@ fn csm_writeDepthClamp(windowZ: f32) -> f32 {
     return clamp(windowZ, 0.0, 1.0);
 }
 `,
-
 };
 
 let count = 0;
 for (const [name, content] of Object.entries(chunks)) {
-    const path = join(DIR, name + ".wgsl");
-    writeFileSync(path, content, "utf8");
-    count++;
-    console.log(`Created: ${name}.wgsl`);
+  const path = join(DIR, `${name}.wgsl`);
+  writeFileSync(path, content, "utf8");
+  count++;
+  console.log(`Created: ${name}.wgsl`);
 }
 console.log(`\nTotal: ${count} WGSL files created.`);

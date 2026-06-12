@@ -112,17 +112,6 @@ class PointGraphics {
 
     this.splitDirection = this.splitDirection ?? source.splitDirection;
   }
-
-  /**
-   * Gets the event that is raised whenever a property or sub-property is changed or modified.
-   * @memberof PointGraphics.prototype
-   *
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 Object.defineProperties(PointGraphics.prototype, {

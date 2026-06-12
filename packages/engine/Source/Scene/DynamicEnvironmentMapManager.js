@@ -397,7 +397,6 @@ class DynamicEnvironmentMapManager {
 
   /**
    * A reference to the DynamicEnvironmentMapManager's owner, if any.
-   * @memberof DynamicEnvironmentMapManager.prototype
    * @type {object|undefined}
    * @readonly
    * @private
@@ -408,7 +407,6 @@ class DynamicEnvironmentMapManager {
 
   /**
    * True if model shaders need to be regenerated to account for updates.
-   * @memberof DynamicEnvironmentMapManager.prototype
    * @type {boolean}
    * @readonly
    * @private
@@ -419,18 +417,12 @@ class DynamicEnvironmentMapManager {
 
   /**
    * The position around which the environment map is generated.
-   * @memberof DynamicEnvironmentMapManager.prototype
    * @type {Cartesian3|undefined}
    */
   get position() {
     return this._position;
   }
 
-  /**
-   * The position around which the environment map is generated.
-   * @memberof DynamicEnvironmentMapManager.prototype
-   * @type {Cartesian3|undefined}
-   */
   set position(value) {
     if (
       Cartesian3.equalsEpsilon(
@@ -449,7 +441,6 @@ class DynamicEnvironmentMapManager {
 
   /**
    * The computed radiance map, or <code>undefined</code> if it has not yet been created.
-   * @memberof DynamicEnvironmentMapManager.prototype
    * @type {CubeMap|undefined}
    * @readonly
    * @private
@@ -460,7 +451,6 @@ class DynamicEnvironmentMapManager {
 
   /**
    * The maximum number of mip levels available in the radiance cubemap.
-   * @memberof DynamicEnvironmentMapManager.prototype
    * @type {number}
    * @readonly
    * @private
@@ -475,7 +465,6 @@ class DynamicEnvironmentMapManager {
    * There are nine <code>Cartesian3</code> coefficients.
    * The order of the coefficients is: L<sub>0,0</sub>, L<sub>1,-1</sub>, L<sub>1,0</sub>, L<sub>1,1</sub>, L<sub>2,-2</sub>, L<sub>2,-1</sub>, L<sub>2,0</sub>, L<sub>2,1</sub>, L<sub>2,2</sub>
    * </p>
-   * @memberof DynamicEnvironmentMapManager.prototype
    * @readonly
    * @type {Cartesian3[]}
    * @see {@link https://graphics.stanford.edu/papers/envmap/envmap.pdf|An Efficient Representation for Irradiance Environment Maps}

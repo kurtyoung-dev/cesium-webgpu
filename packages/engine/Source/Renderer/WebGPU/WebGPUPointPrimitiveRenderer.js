@@ -1,6 +1,4 @@
 /**
- * @module WebGPUPointPrimitiveRenderer
- *
  * Handles WebGPU rendering of PointPrimitiveCollection.
  * Points are rendered as instanced screen-space quads (6 vertices per point)
  * because WebGPU has no gl_PointSize/gl_PointCoord support.
@@ -22,6 +20,7 @@
  *   pad2:                          f32         (4 bytes)
  *
  * @private
+ * @module WebGPUPointPrimitiveRenderer
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";

@@ -9,6 +9,8 @@
  *   npx jscodeshift -t scripts/codemod-indexof-to-includes.cjs --extensions js <dir>
  */
 
+"use strict";
+
 module.exports = function transformer(fileInfo, api) {
   const j = api.jscodeshift;
   const root = j(fileInfo.source);
@@ -41,13 +43,19 @@ module.exports = function transformer(fileInfo, api) {
     }
 
     // Must compare against -1 or 0
-    if (literal.type !== "NumericLiteral" && literal.type !== "Literal") return;
+    if (literal.type !== "NumericLiteral" && literal.type !== "Literal") {
+      return;
+    }
     const num =
       literal.type === "NumericLiteral" ? literal.value : literal.value;
-    if (typeof num !== "number") return;
+    if (typeof num !== "number") {
+      return;
+    }
 
     // indexOf must have exactly 1 argument (the search element)
-    if (indexOfCall.arguments.length !== 1) return;
+    if (indexOfCall.arguments.length !== 1) {
+      return;
+    }
 
     const obj = indexOfCall.callee.object;
     const searchArg = indexOfCall.arguments[0];
@@ -96,7 +104,9 @@ module.exports = function transformer(fileInfo, api) {
     }
   });
 
-  if (!changed) return;
+  if (!changed) {
+    return;
+  }
 
   return root.toSource({
     quote: "double",

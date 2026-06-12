@@ -308,7 +308,6 @@ class EllipsoidalOccluder {
 
   /**
    * Gets the occluding ellipsoid.
-   * @memberof EllipsoidalOccluder.prototype
    * @type {Ellipsoid}
    */
   get ellipsoid() {
@@ -317,18 +316,12 @@ class EllipsoidalOccluder {
 
   /**
    * Gets or sets the position of the camera.
-   * @memberof EllipsoidalOccluder.prototype
    * @type {Cartesian3}
    */
   get cameraPosition() {
     return this._cameraPosition;
   }
 
-  /**
-   * Gets or sets the position of the camera.
-   * @memberof EllipsoidalOccluder.prototype
-   * @type {Cartesian3}
-   */
   set cameraPosition(cameraPosition) {
     // See https://cesium.com/blog/2013/04/25/Horizon-culling/
     const ellipsoid = this._ellipsoid;

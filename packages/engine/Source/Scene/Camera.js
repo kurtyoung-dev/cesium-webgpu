@@ -210,17 +210,35 @@ class Camera {
       scene.drawingBufferWidth / scene.drawingBufferHeight;
     this.frustum.fov = CesiumMath.toRadians(60.0);
 
-    /** @type {number} @default 100000.0 */
+    /**
+     * @type {number}
+     * @default 100000.0
+     */
     this.defaultMoveAmount = 100000.0;
-    /** @type {number} @default Math.PI / 60.0 */
+    /**
+     * @type {number}
+     * @default Math.PI / 60.0
+     */
     this.defaultLookAmount = Math.PI / 60.0;
-    /** @type {number} @default Math.PI / 3600.0 */
+    /**
+     * @type {number}
+     * @default Math.PI / 3600.0
+     */
     this.defaultRotateAmount = Math.PI / 3600.0;
-    /** @type {number} @default 100000.0 */
+    /**
+     * @type {number}
+     * @default 100000.0
+     */
     this.defaultZoomAmount = 100000.0;
-    /** @type {Cartesian3 | undefined} @default undefined */
+    /**
+     * @type {Cartesian3 | undefined}
+     * @default undefined
+     */
     this.constrainedAxis = undefined;
-    /** @type {number} @default 1.5 */
+    /**
+     * @type {number}
+     * @default 1.5
+     */
     this.maximumZoomFactor = 1.5;
 
     this._moveStart = new Event();
@@ -232,7 +250,10 @@ class Camera {
     this._changedHeading = undefined;
     this._changedRoll = undefined;
 
-    /** @type {number} @default 0.5 */
+    /**
+     * @type {number}
+     * @default 0.5
+     */
     this.percentageChanged = 0.5;
 
     this._viewMatrix = new Matrix4();
@@ -262,60 +283,90 @@ class Camera {
     Cartesian3.multiplyByScalar(this.position, mag, this.position);
   }
 
-  /** @type {Matrix4} @readonly */
+  /**
+   * @readonly
+   * @type {Matrix4}
+   */
   get transform() {
     return this._transform;
   }
 
-  /** @type {Matrix4} @readonly */
+  /**
+   * @readonly
+   * @type {Matrix4}
+   */
   get inverseTransform() {
     updateMembers(this);
     return this._invTransform;
   }
 
-  /** @type {Matrix4} @readonly */
+  /**
+   * @readonly
+   * @type {Matrix4}
+   */
   get viewMatrix() {
     updateMembers(this);
     return this._viewMatrix;
   }
 
-  /** @type {Matrix4} @readonly */
+  /**
+   * @readonly
+   * @type {Matrix4}
+   */
   get inverseViewMatrix() {
     updateMembers(this);
     return this._invViewMatrix;
   }
 
-  /** @type {Cartographic} @readonly */
+  /**
+   * @readonly
+   * @type {Cartographic}
+   */
   get positionCartographic() {
     updateMembers(this);
     return this._positionCartographic;
   }
 
-  /** @type {Cartesian3} @readonly */
+  /**
+   * @readonly
+   * @type {Cartesian3}
+   */
   get positionWC() {
     updateMembers(this);
     return this._positionWC;
   }
 
-  /** @type {Cartesian3} @readonly */
+  /**
+   * @readonly
+   * @type {Cartesian3}
+   */
   get directionWC() {
     updateMembers(this);
     return this._directionWC;
   }
 
-  /** @type {Cartesian3} @readonly */
+  /**
+   * @readonly
+   * @type {Cartesian3}
+   */
   get upWC() {
     updateMembers(this);
     return this._upWC;
   }
 
-  /** @type {Cartesian3} @readonly */
+  /**
+   * @readonly
+   * @type {Cartesian3}
+   */
   get rightWC() {
     updateMembers(this);
     return this._rightWC;
   }
 
-  /** @type {number} @readonly */
+  /**
+   * @readonly
+   * @type {number}
+   */
   get heading() {
     if (this._mode !== SceneMode.MORPHING) {
       const ellipsoid = this._projection.ellipsoid;
@@ -333,7 +384,10 @@ class Camera {
     return undefined;
   }
 
-  /** @type {number} @readonly */
+  /**
+   * @readonly
+   * @type {number}
+   */
   get pitch() {
     if (this._mode !== SceneMode.MORPHING) {
       const ellipsoid = this._projection.ellipsoid;
@@ -351,7 +405,10 @@ class Camera {
     return undefined;
   }
 
-  /** @type {number} @readonly */
+  /**
+   * @readonly
+   * @type {number}
+   */
   get roll() {
     if (this._mode !== SceneMode.MORPHING) {
       const ellipsoid = this._projection.ellipsoid;
@@ -369,17 +426,26 @@ class Camera {
     return undefined;
   }
 
-  /** @type {Event} @readonly */
+  /**
+   * @readonly
+   * @type {Event}
+   */
   get moveStart() {
     return this._moveStart;
   }
 
-  /** @type {Event} @readonly */
+  /**
+   * @readonly
+   * @type {Event}
+   */
   get moveEnd() {
     return this._moveEnd;
   }
 
-  /** @type {Event} @readonly */
+  /**
+   * @readonly
+   * @type {Event}
+   */
   get changed() {
     return this._changed;
   }

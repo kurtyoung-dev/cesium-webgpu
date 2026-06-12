@@ -95,7 +95,6 @@ class QuaternionSpline {
   /**
    * An array of times for the control points.
    *
-   * @memberof QuaternionSpline.prototype
    *
    * @type {number[]}
    * @readonly
@@ -107,7 +106,6 @@ class QuaternionSpline {
   /**
    * An array of {@link Quaternion} control points.
    *
-   * @memberof QuaternionSpline.prototype
    *
    * @type {Quaternion[]}
    * @readonly

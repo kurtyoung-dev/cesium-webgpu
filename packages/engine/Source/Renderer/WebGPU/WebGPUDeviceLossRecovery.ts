@@ -1,6 +1,4 @@
 /**
- * @module WebGPUDeviceLossRecovery
- *
  * Encapsulates GPU device loss detection and automatic recovery logic.
  * When the GPU device is lost (driver crash, tab backgrounding, etc.),
  * this module handles retry with exponential backoff and state cleanup.
@@ -9,6 +7,7 @@
  * core frame and rendering management.
  *
  * @see WebGPUContext
+ * @module WebGPUDeviceLossRecovery
  */
 
 /// <reference types="@webgpu/types" />

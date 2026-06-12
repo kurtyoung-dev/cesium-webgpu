@@ -104,7 +104,6 @@ class ConstantPositionProperty {
   /**
    * Gets a value indicating if this property is constant.  A property is considered
    * constant if getValue always returns the same result for the current definition.
-   * @memberof ConstantPositionProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -119,7 +118,6 @@ class ConstantPositionProperty {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is considered to have changed if a call to getValue would return
    * a different result for the same time.
-   * @memberof ConstantPositionProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -130,7 +128,6 @@ class ConstantPositionProperty {
 
   /**
    * Gets the reference frame in which the position is defined.
-   * @memberof ConstantPositionProperty.prototype
    * @type {ReferenceFrame}
    * @default ReferenceFrame.FIXED;
    */

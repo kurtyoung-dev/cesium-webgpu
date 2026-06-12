@@ -1,6 +1,4 @@
 /**
- * @module WebGPUModelFeatureId
- *
  * Helper for feature ID texture and batch texture (per-feature styling)
  * resources in the WebGPU model rendering pipeline.
  *
@@ -13,6 +11,7 @@
  * packed into a storage buffer indexed by vertex_index.
  *
  * @private
+ * @module WebGPUModelFeatureId
  */
 import defined from "../../Core/defined.js";
 import ModelComponents from "../../Scene/ModelComponents.js";

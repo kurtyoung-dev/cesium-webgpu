@@ -1,6 +1,4 @@
 /**
- * @module WebGPUModelRenderer
- *
  * Comprehensive WebGPU rendering of glTF Model instances with full PBR support.
  *
  * Architecture:
@@ -21,6 +19,7 @@
  * - Skeletal animation / Skinning (joint matrices via storage buffer)
  *
  * @private
+ * @module WebGPUModelRenderer
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
@@ -983,8 +982,8 @@ function ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData) {
 
 /**
  * Audit A.5 (Batch 130) — lazily allocates the per-node prev-frame
- * joint matrix storage buffer that the WGSL velocity pass binds at
- * @group(2) @binding(4). Sized to match the current `jointBuffer`
+ * joint matrix storage buffer that the WGSL velocity pass binds
+ * at group(2) binding(4). Sized to match the current `jointBuffer`
  * (`prevPackedJointMatrices` length × 4 bytes); recreated when the
  * skin's joint count changes (skin swaps are rare but legal in glTF).
  *

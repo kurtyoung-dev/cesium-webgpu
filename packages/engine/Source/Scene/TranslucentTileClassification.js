@@ -225,7 +225,6 @@ class TranslucentTileClassification {
 
   /**
    * Gets whether or not translucent depth was rendered.
-   * @memberof TranslucentTileClassification.prototype
    *
    * @type {boolean}
    * @readonly

@@ -836,7 +836,6 @@ class Context extends GraphicsContext {
 
   /**
    * The number of stencil bits per pixel in the default bound framebuffer.  The minimum is eight bits.
-   * @memberof Context.prototype
    * @type {number}
    * @see {@link https://www.khronos.org/opengles/sdk/docs/man/xhtml/glGet.xml|glGet} with <code>STENCIL_BITS</code>.
    */
@@ -847,7 +846,6 @@ class Context extends GraphicsContext {
   /**
    * <code>true</code> if the WebGL context supports stencil buffers.
    * Stencil buffers are not supported by all systems.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get stencilBuffer() {
@@ -857,7 +855,6 @@ class Context extends GraphicsContext {
   /**
    * <code>true</code> if the WebGL context supports antialiasing.  By default
    * antialiasing is requested, but it is not supported by all systems.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get antialias() {
@@ -867,7 +864,6 @@ class Context extends GraphicsContext {
   /**
    * <code>true</code> if the WebGL context supports multisample antialiasing. Requires
    * WebGL2.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get msaa() {
@@ -876,7 +872,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the OES_standard_derivatives extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get standardDerivatives() {
@@ -885,7 +880,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the EXT_float_blend extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get floatBlend() {
@@ -894,7 +888,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the EXT_blend_minmax extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get blendMinmax() {
@@ -903,7 +896,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the OES_element_index_uint extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get elementIndexUint() {
@@ -912,7 +904,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if WEBGL_depth_texture is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get depthTexture() {
@@ -921,7 +912,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if OES_texture_float is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get floatingPointTexture() {
@@ -930,7 +920,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if OES_texture_half_float is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get halfFloatingPointTexture() {
@@ -939,7 +928,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if OES_texture_float_linear is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get textureFloatLinear() {
@@ -948,7 +936,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if OES_texture_half_float_linear is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get textureHalfFloatLinear() {
@@ -960,7 +947,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if EXT_shader_texture_lod is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get supportsTextureLod() {
@@ -969,7 +955,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if EXT_texture_filter_anisotropic is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get textureFilterAnisotropic() {
@@ -978,7 +963,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if WEBGL_compressed_texture_s3tc is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get s3tc() {
@@ -987,7 +971,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if WEBGL_compressed_texture_pvrtc is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get pvrtc() {
@@ -996,7 +979,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if WEBGL_compressed_texture_astc is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get astc() {
@@ -1005,7 +987,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if WEBGL_compressed_texture_etc is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get etc() {
@@ -1014,7 +995,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if WEBGL_compressed_texture_etc1 is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get etc1() {
@@ -1023,7 +1003,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if EXT_texture_compression_bptc is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get bc7() {
@@ -1032,7 +1011,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if S3TC, PVRTC, ASTC, ETC, ETC1, or BC7 compression is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get supportsBasis() {
@@ -1048,7 +1026,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the OES_vertex_array_object extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get vertexArrayObject() {
@@ -1057,7 +1034,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the EXT_frag_depth extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get fragmentDepth() {
@@ -1066,7 +1042,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the ANGLE_instanced_arrays extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get instancedArrays() {
@@ -1075,7 +1050,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the EXT_color_buffer_float extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get colorBufferFloat() {
@@ -1084,7 +1058,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the EXT_color_buffer_half_float extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get colorBufferHalfFloat() {
@@ -1096,7 +1069,6 @@ class Context extends GraphicsContext {
 
   /**
    * <code>true</code> if the WEBGL_draw_buffers extension is supported.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get drawBuffers() {
@@ -1118,7 +1090,6 @@ class Context extends GraphicsContext {
    * Whether this WebGL context supports real GPU compute shaders.
    * Currently always false (no WEBGL_compute extension exists yet).
    * When the extension ships, this will automatically return true.
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get supportsComputeShaders() {
@@ -1128,7 +1099,6 @@ class Context extends GraphicsContext {
   /**
    * Whether this WebGL context supports shader storage buffers (SSBOs).
    * Currently always false (no WEBGL_shader_storage_buffer extension yet).
-   * @memberof Context.prototype
    * @type {boolean}
    */
   get supportsStorageBuffers() {
@@ -1154,7 +1124,6 @@ class Context extends GraphicsContext {
   /**
    * A 1x1 RGBA texture initialized to [255, 255, 255, 255].  This can
    * be used as a placeholder texture while other textures are downloaded.
-   * @memberof Context.prototype
    * @type {Texture}
    */
   get defaultTexture() {
@@ -1176,7 +1145,6 @@ class Context extends GraphicsContext {
   /**
    * A 1x1 RGB texture initialized to [0, 0, 0] representing a material that is
    * not emissive.
-   * @memberof Context.prototype
    * @type {Texture}
    */
   get defaultEmissiveTexture() {
@@ -1199,7 +1167,6 @@ class Context extends GraphicsContext {
   /**
    * A 1x1 RGBA texture initialized to [128, 128, 255] to encode a tangent
    * space normal pointing in the +z direction, i.e. (0, 0, 1).
-   * @memberof Context.prototype
    * @type {Texture}
    */
   get defaultNormalTexture() {
@@ -1222,7 +1189,6 @@ class Context extends GraphicsContext {
   /**
    * A cube map, where each face is a 1x1 RGBA texture initialized to
    * [255, 255, 255, 255].
-   * @memberof Context.prototype
    * @type {CubeMap}
    */
   get defaultCubeMap() {
@@ -1252,7 +1218,6 @@ class Context extends GraphicsContext {
 
   /**
    * The drawingBufferHeight of the underlying GL context.
-   * @memberof Context.prototype
    * @type {number}
    */
   get drawingBufferHeight() {
@@ -1261,7 +1226,6 @@ class Context extends GraphicsContext {
 
   /**
    * The drawingBufferWidth of the underlying GL context.
-   * @memberof Context.prototype
    * @type {number}
    */
   get drawingBufferWidth() {
@@ -1270,7 +1234,6 @@ class Context extends GraphicsContext {
 
   /**
    * Gets an object representing the currently bound framebuffer.
-   * @memberof Context.prototype
    * @type {object}
    */
   get defaultFramebuffer() {

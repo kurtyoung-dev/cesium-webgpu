@@ -158,7 +158,6 @@ class GroupMetadata {
   /**
    * The class that properties conform to.
    *
-   * @memberof GroupMetadata.prototype
    * @type {MetadataClass}
    * @readonly
    * @private
@@ -170,7 +169,6 @@ class GroupMetadata {
   /**
    * The ID of the group.
    *
-   * @memberof GroupMetadata.prototype
    * @type {string}
    * @readonly
    * @private
@@ -182,7 +180,6 @@ class GroupMetadata {
   /**
    * Extra user-defined properties.
    *
-   * @memberof GroupMetadata.prototype
    * @type {*}
    * @readonly
    * @private
@@ -194,7 +191,6 @@ class GroupMetadata {
   /**
    * An object containing extensions.
    *
-   * @memberof GroupMetadata.prototype
    * @type {object}
    * @readonly
    * @private

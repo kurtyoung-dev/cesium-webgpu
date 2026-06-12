@@ -260,7 +260,6 @@ class VRTheWorldTerrainProvider {
    * Gets an event that is raised when the terrain provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of {@link TileProviderError}.
-   * @memberof VRTheWorldTerrainProvider.prototype
    * @type {Event}
    * @readonly
    */
@@ -271,7 +270,6 @@ class VRTheWorldTerrainProvider {
   /**
    * Gets the credit to display when this terrain provider is active.  Typically this is used to credit
    * the source of the terrain.
-   * @memberof VRTheWorldTerrainProvider.prototype
    * @type {Credit}
    * @readonly
    */
@@ -281,7 +279,6 @@ class VRTheWorldTerrainProvider {
 
   /**
    * Gets the tiling scheme used by this provider.
-   * @memberof VRTheWorldTerrainProvider.prototype
    * @type {GeographicTilingScheme}
    * @readonly
    */
@@ -293,7 +290,6 @@ class VRTheWorldTerrainProvider {
    * Gets a value indicating whether or not the provider includes a water mask.  The water mask
    * indicates which areas of the globe are water rather than land, so they can be rendered
    * as a reflective surface with animated waves.
-   * @memberof VRTheWorldTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -303,7 +299,6 @@ class VRTheWorldTerrainProvider {
 
   /**
    * Gets a value indicating whether or not the requested tiles include vertex normals.
-   * @memberof VRTheWorldTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -315,7 +310,6 @@ class VRTheWorldTerrainProvider {
    * Gets an object that can be used to determine availability of terrain from this provider, such as
    * at points and in rectangles. This property may be undefined if availability
    * information is not available.
-   * @memberof VRTheWorldTerrainProvider.prototype
    * @type {TileAvailability|undefined}
    * @readonly
    */

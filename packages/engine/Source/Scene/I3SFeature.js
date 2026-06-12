@@ -36,7 +36,6 @@ class I3SFeature {
 
   /**
    * Gets the resource for the feature
-   * @memberof I3SFeature.prototype
    * @type {Resource}
    * @readonly
    */
@@ -46,7 +45,6 @@ class I3SFeature {
 
   /**
    * Gets the I3S data for this object.
-   * @memberof I3SFeature.prototype
    * @type {object}
    * @readonly
    */

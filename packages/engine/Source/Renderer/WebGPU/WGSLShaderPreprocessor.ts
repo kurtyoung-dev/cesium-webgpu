@@ -1,6 +1,4 @@
 /**
- * @module WGSLShaderPreprocessor
- *
  * WGSL Shader Preprocessor for CesiumJS WebGPU
  *
  * Since WGSL does not natively support `#import` or `#include` directives,
@@ -43,6 +41,7 @@
  *   defines: ['USE_NORMAL_MAP', 'MAX_LIGHTS 4'],
  * });
  * ```
+ * @module WGSLShaderPreprocessor
  */
 
 /// <reference types="@webgpu/types" />

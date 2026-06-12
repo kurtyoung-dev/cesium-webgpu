@@ -1,6 +1,4 @@
 /**
- * @module RendererWorker
- *
  * Worker-thread entry point for the per-renderer worker pattern. This
  * file runs INSIDE a Web Worker. The main thread imports it as a
  * worker URL via `new Worker(new URL("./RendererWorker.js", import.meta.url))`
@@ -33,6 +31,7 @@
  *     never sees that case.
  *
  * @private
+ * @module RendererWorker
  */
 
 // NOTE: this file deliberately does NOT statically import Cesium

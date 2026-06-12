@@ -1,6 +1,4 @@
 /**
- * @module WebGPUEllipsoidRenderer
- *
  * Shared infrastructure for rendering ellipsoid bodies via the
  * **bounding-cube + analytic ray-march** approach. Phase 1.2c v2's Moon
  * shader pioneered this technique in our codebase; this module extracts
@@ -45,6 +43,7 @@
  *   - Custom planet feature renderer
  *   - The orphan `WebGPUEllipsoidPrimitiveRenderer.ts` could be migrated
  *     from its current screen-space-quad approach to use this module.
+ * @module WebGPUEllipsoidRenderer
  */
 
 /// <reference types="@webgpu/types" />

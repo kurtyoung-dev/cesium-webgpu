@@ -408,7 +408,6 @@ class DataSourceDisplay {
 
   /**
    * Gets the scene associated with this display.
-   * @memberof DataSourceDisplay.prototype
    * @type {Scene}
    */
   get scene() {
@@ -417,7 +416,6 @@ class DataSourceDisplay {
 
   /**
    * Gets the collection of data sources to display.
-   * @memberof DataSourceDisplay.prototype
    * @type {DataSourceCollection}
    */
   get dataSources() {
@@ -429,7 +427,6 @@ class DataSourceDisplay {
    * manually create and visualize entities not tied to
    * a specific data source. This instance is always available
    * and does not appear in the list dataSources collection.
-   * @memberof DataSourceDisplay.prototype
    * @type {CustomDataSource}
    */
   get defaultDataSource() {
@@ -438,7 +435,6 @@ class DataSourceDisplay {
 
   /**
    * Gets a value indicating whether or not all entities in the data source are ready
-   * @memberof DataSourceDisplay.prototype
    * @type {boolean}
    * @readonly
    */

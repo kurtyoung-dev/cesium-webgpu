@@ -1,6 +1,4 @@
 /**
- * @module ModelSkinData
- *
  * Renderer-agnostic skinning data extractor for glTF model nodes.
  * Extracts computed joint matrices from a ModelRuntimeNode's skinning data
  * into a flat Float32Array, so both WebGL and WebGPU renderers can consume them.
@@ -16,6 +14,7 @@
  *   3. This extractor — packs computedJointMatrices[] into flat Float32Array
  *
  * @private
+ * @module ModelSkinData
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
@@ -52,15 +51,30 @@ function extractSkinData(runtimeNode) {
   }
 
   return {
-    /** @type {boolean} Always true when this result is returned */
+    /**
+     * Always true when this result is returned
+     * @type {boolean}
+     */
     hasSkinning: true,
-    /** @type {number} Number of joints */
+    /**
+     * Number of joints
+     * @type {number}
+     */
     jointCount: jointCount,
-    /** @type {Float32Array} Flat array of mat4 values (16 floats per joint) */
+    /**
+     * Flat array of mat4 values (16 floats per joint)
+     * @type {Float32Array}
+     */
     packedJointMatrices: packedMatrices,
-    /** @type {number} Size in bytes of the packed matrices */
+    /**
+     * Size in bytes of the packed matrices
+     * @type {number}
+     */
     byteLength: packedSize * 4,
-    /** @type {Matrix4[]} Reference to the source Matrix4 array (for direct access) */
+    /**
+     * Reference to the source Matrix4 array (for direct access)
+     * @type {Matrix4[]}
+     */
     jointMatrices: jointMatrices,
   };
 }

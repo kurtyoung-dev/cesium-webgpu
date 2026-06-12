@@ -1,6 +1,4 @@
 /**
- * @module WebGPUSubgroupUtils
- *
  * Subgroup operation utilities for SIMD-like GPU computation.
  * Requires the 'subgroups' feature (Chrome 132+ origin trial).
  *
@@ -28,6 +26,7 @@
  *   const wgsl = WebGPUSubgroupUtils.generatePrefixSumWGSL();
  *   // Use in compute shader for point cloud rendering
  * }
+ * @module WebGPUSubgroupUtils
  */
 
 /// <reference types="@webgpu/types" />

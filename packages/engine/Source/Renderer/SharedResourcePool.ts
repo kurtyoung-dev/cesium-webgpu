@@ -1,6 +1,4 @@
 /**
- * @module SharedResourcePool
- *
  * Strategy A: Shared CPU-Side Data Pool using SharedArrayBuffer.
  *
  * When multiple GraphicsContexts are active (e.g., split-screen with WebGL + WebGPU),
@@ -36,6 +34,7 @@
  *
  * @see ContextRegistry
  * @see WebGPUDevicePool
+ * @module SharedResourcePool
  */
 
 /**

@@ -409,7 +409,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets the unique ID associated with this updater
-   * @memberof PolylineGeometryUpdater.prototype
    * @type {string}
    * @readonly
    */
@@ -419,7 +418,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets the entity associated with this geometry.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {Entity}
    * @readonly
@@ -430,7 +428,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets a value indicating if the geometry has a fill component.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -441,7 +438,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets a value indicating if fill visibility varies with simulation time.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -456,7 +452,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets the material property used to fill the geometry.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {MaterialProperty}
    * @readonly
@@ -467,7 +462,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets the material property used to fill the geometry when it fails the depth test.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {MaterialProperty}
    * @readonly
@@ -479,7 +473,6 @@ class PolylineGeometryUpdater {
   /**
    * Gets the property specifying whether the geometry
    * casts or receives shadows from light sources.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {Property}
    * @readonly
@@ -490,7 +483,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this geometry will be displayed.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {Property}
    * @readonly
@@ -501,7 +493,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets or sets the {@link ClassificationType} Property specifying if this geometry will classify terrain, 3D Tiles, or both when on the ground.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {Property}
    * @readonly
@@ -513,7 +504,6 @@ class PolylineGeometryUpdater {
   /**
    * Gets a value indicating if the geometry is time-varying.
    *
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -525,7 +515,6 @@ class PolylineGeometryUpdater {
   /**
    * Gets an event that is raised whenever the public properties
    * of this updater change.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -536,7 +525,6 @@ class PolylineGeometryUpdater {
 
   /**
    * Gets a value indicating if the path of the line.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {ArcType}
    * @readonly
@@ -548,7 +536,6 @@ class PolylineGeometryUpdater {
   /**
    * Gets a value indicating if the geometry is clamped to the ground.
    * Returns false if polylines on terrain is not supported.
-   * @memberof PolylineGeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -560,7 +547,6 @@ class PolylineGeometryUpdater {
   /**
    * Gets the zindex
    * @type {number}
-   * @memberof PolylineGeometryUpdater.prototype
    * @readonly
    */
   get zIndex() {

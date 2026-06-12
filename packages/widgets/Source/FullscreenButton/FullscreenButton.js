@@ -86,7 +86,6 @@ class FullscreenButton {
 
   /**
    * Gets the parent container.
-   * @memberof FullscreenButton.prototype
    *
    * @type {Element}
    */
@@ -96,7 +95,6 @@ class FullscreenButton {
 
   /**
    * Gets the view model.
-   * @memberof FullscreenButton.prototype
    *
    * @type {FullscreenButtonViewModel}
    */

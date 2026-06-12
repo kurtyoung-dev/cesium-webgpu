@@ -394,7 +394,6 @@ class GoogleEarthEnterpriseTerrainProvider {
 
   /**
    * Gets the name of the Google Earth Enterprise server url hosting the imagery.
-   * @memberof GoogleEarthEnterpriseTerrainProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -404,7 +403,6 @@ class GoogleEarthEnterpriseTerrainProvider {
 
   /**
    * Gets the proxy used by this provider.
-   * @memberof GoogleEarthEnterpriseTerrainProvider.prototype
    * @type {Proxy}
    * @readonly
    */
@@ -414,7 +412,6 @@ class GoogleEarthEnterpriseTerrainProvider {
 
   /**
    * Gets the tiling scheme used by this provider.
-   * @memberof GoogleEarthEnterpriseTerrainProvider.prototype
    * @type {TilingScheme}
    * @readonly
    */
@@ -426,7 +423,6 @@ class GoogleEarthEnterpriseTerrainProvider {
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of {@link TileProviderError}.
-   * @memberof GoogleEarthEnterpriseTerrainProvider.prototype
    * @type {Event}
    * @readonly
    */
@@ -437,7 +433,6 @@ class GoogleEarthEnterpriseTerrainProvider {
   /**
    * Gets the credit to display when this terrain provider is active.  Typically this is used to credit
    * the source of the terrain.
-   * @memberof GoogleEarthEnterpriseTerrainProvider.prototype
    * @type {Credit}
    * @readonly
    */
@@ -449,7 +444,6 @@ class GoogleEarthEnterpriseTerrainProvider {
    * Gets a value indicating whether or not the provider includes a water mask.  The water mask
    * indicates which areas of the globe are water rather than land, so they can be rendered
    * as a reflective surface with animated waves.
-   * @memberof GoogleEarthEnterpriseTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -459,7 +453,6 @@ class GoogleEarthEnterpriseTerrainProvider {
 
   /**
    * Gets a value indicating whether or not the requested tiles include vertex normals.
-   * @memberof GoogleEarthEnterpriseTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -471,7 +464,6 @@ class GoogleEarthEnterpriseTerrainProvider {
    * Gets an object that can be used to determine availability of terrain from this provider, such as
    * at points and in rectangles. This property may be undefined if availability
    * information is not available.
-   * @memberof GoogleEarthEnterpriseTerrainProvider.prototype
    * @type {TileAvailability|undefined}
    * @readonly
    */

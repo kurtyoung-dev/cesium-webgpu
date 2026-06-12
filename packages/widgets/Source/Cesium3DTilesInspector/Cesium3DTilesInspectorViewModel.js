@@ -1340,7 +1340,6 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the scene
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {Scene}
    * @readonly
    */
@@ -1350,7 +1349,6 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the performance container
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {HTMLElement}
    * @readonly
    */
@@ -1360,7 +1358,6 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the statistics text.  This property is observable.
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {string}
    * @readonly
    */
@@ -1370,7 +1367,6 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the pick statistics text.  This property is observable.
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {string}
    * @readonly
    */
@@ -1380,7 +1376,6 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the resource cache statistics text. This property is observable.
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {string}
    * @readonly
    */
@@ -1390,7 +1385,6 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the available blend modes
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {object[]}
    * @readonly
    */
@@ -1400,7 +1394,6 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the editor error message
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {string}
    * @readonly
    */
@@ -1410,18 +1403,12 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets or sets the tileset of the view model.
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {Cesium3DTileset}
    */
   get tileset() {
     return this._tileset;
   }
 
-  /**
-   * Gets or sets the tileset of the view model.
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
-   * @type {Cesium3DTileset}
-   */
   set tileset(tileset) {
     this._tileset = tileset;
     this._style = undefined;
@@ -1496,18 +1483,12 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the current feature of the view model.
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {Cesium3DTileFeature}
    */
   get feature() {
     return this._feature;
   }
 
-  /**
-   * Gets the current feature of the view model.
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
-   * @type {Cesium3DTileFeature}
-   */
   set feature(feature) {
     if (this._feature === feature) {
       return;
@@ -1535,18 +1516,12 @@ class Cesium3DTilesInspectorViewModel {
 
   /**
    * Gets the current tile of the view model
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
    * @type {Cesium3DTile}
    */
   get tile() {
     return this._tile;
   }
 
-  /**
-   * Gets the current tile of the view model
-   * @memberof Cesium3DTilesInspectorViewModel.prototype
-   * @type {Cesium3DTile}
-   */
   set tile(tile) {
     if (this._tile === tile) {
       return;

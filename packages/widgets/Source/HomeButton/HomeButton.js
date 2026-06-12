@@ -73,7 +73,6 @@ class HomeButton {
 
   /**
    * Gets the parent container.
-   * @memberof HomeButton.prototype
    *
    * @type {Element}
    */
@@ -83,7 +82,6 @@ class HomeButton {
 
   /**
    * Gets the view model.
-   * @memberof HomeButton.prototype
    *
    * @type {HomeButtonViewModel}
    */

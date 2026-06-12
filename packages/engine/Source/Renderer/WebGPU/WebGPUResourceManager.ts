@@ -1,6 +1,4 @@
 /**
- * @module WebGPUResourceManager
- *
  * Centralized GPU resource management: sampler caching, bind group layout
  * caching, bind group creation, uniform buffer pooling, general buffer
  * pooling, and texture compression format queries.
@@ -9,6 +7,7 @@
  * frame lifecycle and rendering.
  *
  * @see WebGPUContext
+ * @module WebGPUResourceManager
  */
 
 /// <reference types="@webgpu/types" />

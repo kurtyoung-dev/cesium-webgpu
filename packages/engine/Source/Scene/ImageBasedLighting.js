@@ -252,7 +252,6 @@ class ImageBasedLighting {
    * contribution from those sources to the final color. A value of 0.0 will
    * disable those light sources.
    *
-   * @memberof ImageBasedLighting.prototype
    *
    * @type {Cartesian2}
    * @default Cartesian2(1.0, 1.0)
@@ -261,17 +260,6 @@ class ImageBasedLighting {
     return this._imageBasedLightingFactor;
   }
 
-  /**
-   * Cesium adds lighting from the earth, sky, atmosphere, and star skybox.
-   * This cartesian is used to scale the final diffuse and specular lighting
-   * contribution from those sources to the final color. A value of 0.0 will
-   * disable those light sources.
-   *
-   * @memberof ImageBasedLighting.prototype
-   *
-   * @type {Cartesian2}
-   * @default Cartesian2(1.0, 1.0)
-   */
   set imageBasedLightingFactor(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("imageBasedLightingFactor", value);
@@ -318,7 +306,6 @@ class ImageBasedLighting {
    * {@link https://github.com/google/filament/releases|Google's Filament project}.
    * Be sure to use the <code>--no-mirror</code> option in <code>cmgen</code>.
    *
-   * @memberof ImageBasedLighting.prototype
    *
    * @type {Cartesian3[]}
    * @demo {@link https://sandcastle.cesium.com/index.html?id=image-based-lighting|Sandcastle Image Based Lighting Demo}
@@ -328,24 +315,6 @@ class ImageBasedLighting {
     return this._sphericalHarmonicCoefficients;
   }
 
-  /**
-   * The third order spherical harmonic coefficients used for the diffuse color of image-based lighting. When <code>undefined</code>, a diffuse irradiance
-   * computed from the atmosphere color is used.
-   * <p>
-   * There are nine <code>Cartesian3</code> coefficients.
-   * The order of the coefficients is: L<sub>0,0</sub>, L<sub>1,-1</sub>, L<sub>1,0</sub>, L<sub>1,1</sub>, L<sub>2,-2</sub>, L<sub>2,-1</sub>, L<sub>2,0</sub>, L<sub>2,1</sub>, L<sub>2,2</sub>
-   * </p>
-   *
-   * These values can be obtained by preprocessing the environment map using the <code>cmgen</code> tool of
-   * {@link https://github.com/google/filament/releases|Google's Filament project}.
-   * Be sure to use the <code>--no-mirror</code> option in <code>cmgen</code>.
-   *
-   * @memberof ImageBasedLighting.prototype
-   *
-   * @type {Cartesian3[]}
-   * @demo {@link https://sandcastle.cesium.com/index.html?id=image-based-lighting|Sandcastle Image Based Lighting Demo}
-   * @see {@link https://graphics.stanford.edu/papers/envmap/envmap.pdf|An Efficient Representation for Irradiance Environment Maps}
-   */
   set sphericalHarmonicCoefficients(value) {
     //>>includeStart('debug', pragmas.debug);
     if (defined(value) && (!Array.isArray(value) || value.length !== 9)) {
@@ -362,7 +331,6 @@ class ImageBasedLighting {
   /**
    * A URL to a KTX2 file that contains a cube map of the specular lighting and the convoluted specular mipmaps.
    *
-   * @memberof ImageBasedLighting.prototype
    * @demo {@link https://sandcastle.cesium.com/index.html?id=image-based-lighting|Sandcastle Image Based Lighting Demo}
    * @type {string}
    * @see ImageBasedLighting#sphericalHarmonicCoefficients
@@ -371,14 +339,6 @@ class ImageBasedLighting {
     return this._specularEnvironmentMaps;
   }
 
-  /**
-   * A URL to a KTX2 file that contains a cube map of the specular lighting and the convoluted specular mipmaps.
-   *
-   * @memberof ImageBasedLighting.prototype
-   * @demo {@link https://sandcastle.cesium.com/index.html?id=image-based-lighting|Sandcastle Image Based Lighting Demo}
-   * @type {string}
-   * @see ImageBasedLighting#sphericalHarmonicCoefficients
-   */
   set specularEnvironmentMaps(value) {
     if (value !== this._specularEnvironmentMaps) {
       this._specularEnvironmentCubeMapDirty =
@@ -392,7 +352,6 @@ class ImageBasedLighting {
   /**
    * Whether or not image-based lighting is enabled.
    *
-   * @memberof ImageBasedLighting.prototype
    * @type {boolean}
    *
    * @private
@@ -408,7 +367,6 @@ class ImageBasedLighting {
    * Whether or not the models that use this lighting should regenerate their shaders,
    * based on the properties and resources have changed.
    *
-   * @memberof ImageBasedLighting.prototype
    * @type {boolean}
    *
    * @private
@@ -420,7 +378,6 @@ class ImageBasedLighting {
   /**
    * The texture atlas for the specular environment maps.
    *
-   * @memberof ImageBasedLighting.prototype
    * @type {SpecularEnvironmentCubeMap}
    *
    * @private
@@ -432,7 +389,6 @@ class ImageBasedLighting {
   /**
    * Whether or not to use the default spherical harmonics coefficients.
    *
-   * @memberof ImageBasedLighting.prototype
    * @type {boolean}
    *
    * @private
@@ -444,7 +400,6 @@ class ImageBasedLighting {
   /**
    * Whether or not to use the default specular environment maps.
    *
-   * @memberof ImageBasedLighting.prototype
    * @type {boolean}
    *
    * @private
@@ -456,7 +411,6 @@ class ImageBasedLighting {
   /**
    * Whether or not the image-based lighting settings use specular environment maps.
    *
-   * @memberof ImageBasedLighting.prototype
    * @type {boolean}
    *
    * @private

@@ -565,7 +565,6 @@ class TweenCollection {
 
   /**
    * The number of tweens in the collection.
-   * @memberof TweenCollection.prototype
    *
    * @type {number}
    * @readonly

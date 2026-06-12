@@ -82,7 +82,6 @@ class PeliasGeocoderService {
   /**
    * The Resource used to access the Pelias endpoint.
    * @type {Resource}
-   * @memberof PeliasGeocoderService.prototype
    * @readonly
    */
   get url() {
@@ -92,7 +91,6 @@ class PeliasGeocoderService {
   /**
    * Gets the credit to display after a geocode is performed. Typically this is used to credit
    * the geocoder service.
-   * @memberof PeliasGeocoderService.prototype
    * @type {Credit|undefined}
    * @readonly
    */

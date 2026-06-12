@@ -140,7 +140,6 @@ class Geometry3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof Geometry3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly

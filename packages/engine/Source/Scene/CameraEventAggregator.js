@@ -581,7 +581,6 @@ class CameraEventAggregator {
 
   /**
    * Gets the current mouse position.
-   * @memberof CameraEventAggregator.prototype
    * @type {Cartesian2}
    */
   get currentMousePosition() {
@@ -590,7 +589,6 @@ class CameraEventAggregator {
 
   /**
    * Gets whether any mouse button is down, a touch has started, or the wheel has been moved.
-   * @memberof CameraEventAggregator.prototype
    * @type {boolean}
    */
   get anyButtonDown() {

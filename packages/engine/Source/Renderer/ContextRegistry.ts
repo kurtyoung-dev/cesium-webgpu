@@ -1,6 +1,4 @@
 /**
- * @module ContextRegistry
- *
  * Tracks all active GraphicsContext instances across the application.
  * Supports multi-view and split-screen scenarios where multiple rendering
  * contexts (WebGL, WebGPU, or mixed) run simultaneously.
@@ -17,6 +15,7 @@
  *
  * // Check if any WebGPU context is running
  * if (GraphicsContext.registry.hasType(RendererType.WEBGPU)) { ... }
+ * @module ContextRegistry
  */
 
 import RendererType from "./RendererType.js";

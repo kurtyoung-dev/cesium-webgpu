@@ -85,7 +85,6 @@ class Empty3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof Empty3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly

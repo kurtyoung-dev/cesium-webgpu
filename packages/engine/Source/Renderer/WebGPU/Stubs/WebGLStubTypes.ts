@@ -1,6 +1,4 @@
 /**
- * @module WebGLStubTypes
- *
  * Shared type definitions for the WebGL compatibility stub modules.
  * The `WebGLStubState` interface defines the mutable state that WebGPUContext
  * provides — all stub domain modules read/write through this interface to
@@ -8,6 +6,7 @@
  *
  * @see WebGLCompatibilityStub (nexus)
  * @see WebGPUContext
+ * @module WebGLStubTypes
  */
 
 /// <reference types="@webgpu/types" />

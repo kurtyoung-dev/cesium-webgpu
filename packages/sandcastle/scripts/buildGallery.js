@@ -10,7 +10,6 @@ import { rimraf } from "rimraf";
 import { parse } from "yaml";
 import { globby } from "globby";
 import * as pagefind from "pagefind";
-//eslint-disable-next-line n/no-missing-import
 import { AutoModel, AutoTokenizer } from "@huggingface/transformers";
 
 import createGalleryRecord from "./createGalleryRecord.js";

@@ -1,6 +1,4 @@
 /**
- * @module WebGPUAutoUniforms
- *
  * Automatic uniform system for WebGPU rendering — the csm_* equivalent of
  * WebGL's czm_* AutomaticUniforms.js.
  *
@@ -21,6 +19,7 @@
  * - csm_modelViewRelativeToEye (translation column zeroed)
  *
  * @private
+ * @module WebGPUAutoUniforms
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";

@@ -176,7 +176,6 @@ class ConditionsExpression {
   /**
    * Gets the conditions expression defined in the 3D Tiles Styling language.
    *
-   * @memberof ConditionsExpression.prototype
    *
    * @type {object}
    * @readonly

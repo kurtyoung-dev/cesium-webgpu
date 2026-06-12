@@ -536,7 +536,6 @@ class QuantizedMeshTerrainData {
 
   /**
    * An array of credits for this tile.
-   * @memberof QuantizedMeshTerrainData.prototype
    * @type {Credit[]}
    */
   get credits() {
@@ -547,7 +546,6 @@ class QuantizedMeshTerrainData {
    * The water mask included in this terrain data, if any.  A water mask is a rectangular
    * Uint8Array or image where a value of 255 indicates water and a value of 0 indicates land.
    * Values in between 0 and 255 are allowed as well to smoothly blend between land and water.
-   * @memberof QuantizedMeshTerrainData.prototype
    * @type {Uint8Array|HTMLImageElement|HTMLCanvasElement|undefined}
    */
   get waterMask() {

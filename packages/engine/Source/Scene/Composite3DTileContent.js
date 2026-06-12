@@ -156,7 +156,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>featuresLength</code> for a tile in the composite.
-   * @memberof Composite3DTileContent.prototype
    */
   get featuresLength() {
     return 0;
@@ -165,7 +164,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>pointsLength</code> for a tile in the composite.
-   * @memberof Composite3DTileContent.prototype
    */
   get pointsLength() {
     return 0;
@@ -174,7 +172,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>trianglesLength</code> for a tile in the composite.
-   * @memberof Composite3DTileContent.prototype
    */
   get trianglesLength() {
     return 0;
@@ -183,7 +180,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>geometryByteLength</code> for a tile in the composite.
-   * @memberof Composite3DTileContent.prototype
    */
   get geometryByteLength() {
     return 0;
@@ -192,7 +188,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface.   <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>texturesByteLength</code> for a tile in the composite.
-   * @memberof Composite3DTileContent.prototype
    */
   get texturesByteLength() {
     return 0;
@@ -201,7 +196,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>batchTableByteLength</code> for a tile in the composite.
-   * @memberof Composite3DTileContent.prototype
    */
   get batchTableByteLength() {
     return 0;
@@ -214,7 +208,6 @@ class Composite3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof Composite3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly
@@ -239,7 +232,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
    * both stores the content metadata and propagates the content metadata to all of its children.
-   * @memberof Composite3DTileContent.prototype
    * @private
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
@@ -247,13 +239,6 @@ class Composite3DTileContent {
     return this._metadata;
   }
 
-  /**
-   * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
-   * both stores the content metadata and propagates the content metadata to all of its children.
-   * @memberof Composite3DTileContent.prototype
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
   set metadata(value) {
     this._metadata = value;
     const contents = this._contents;
@@ -266,7 +251,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
    * always returns <code>undefined</code>.  Instead call <code>batchTable</code> for a tile in the composite.
-   * @memberof Composite3DTileContent.prototype
    */
   get batchTable() {
     return undefined;
@@ -275,7 +259,6 @@ class Composite3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
    * both stores the group metadata and propagates the group metadata to all of its children.
-   * @memberof Composite3DTileContent.prototype
    * @private
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
@@ -283,13 +266,6 @@ class Composite3DTileContent {
     return this._group;
   }
 
-  /**
-   * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
-   * both stores the group metadata and propagates the group metadata to all of its children.
-   * @memberof Composite3DTileContent.prototype
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
   set group(value) {
     this._group = value;
     const contents = this._contents;

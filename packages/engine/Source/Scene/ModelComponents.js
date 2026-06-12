@@ -1165,16 +1165,7 @@ export class Components {
      * values for the punctual light UBO. Empty when the asset has no
      * KHR_lights_punctual extension.
      *
-     * @type {Array<{
-     *   type: number,
-     *   color: { red: number, green: number, blue: number },
-     *   intensity: number,
-     *   range: number,
-     *   innerConeAngle: number,
-     *   outerConeAngle: number,
-     *   position?: { x: number, y: number, z: number },
-     *   direction?: { x: number, y: number, z: number },
-     * }>}
+     * @type {object[]}
      */
     this.lights = [];
 

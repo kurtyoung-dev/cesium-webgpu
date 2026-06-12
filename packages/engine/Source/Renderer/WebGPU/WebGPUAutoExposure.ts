@@ -1,6 +1,4 @@
 /**
- * @module WebGPUAutoExposure
- *
  * GPU compute-based auto-exposure for the WebGPU post-process pipeline.
  * Replaces the WebGL multi-pass framebuffer reduction (AutoExposure.js)
  * with a two-pass compute shader that's both simpler and faster.
@@ -18,6 +16,7 @@
  * scenes and darken bright scenes.
  *
  * @private
+ * @module WebGPUAutoExposure
  */
 
 /// <reference types="@webgpu/types" />

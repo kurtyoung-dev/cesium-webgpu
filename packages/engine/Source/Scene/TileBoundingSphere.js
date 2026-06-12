@@ -112,7 +112,6 @@ class TileBoundingSphere {
   /**
    * The center of the bounding sphere
    *
-   * @memberof TileBoundingSphere.prototype
    *
    * @type {Cartesian3}
    * @readonly
@@ -124,7 +123,6 @@ class TileBoundingSphere {
   /**
    * The radius of the bounding sphere
    *
-   * @memberof TileBoundingSphere.prototype
    *
    * @type {number}
    * @readonly
@@ -136,7 +134,6 @@ class TileBoundingSphere {
   /**
    * The underlying bounding volume
    *
-   * @memberof TileBoundingSphere.prototype
    *
    * @type {object}
    * @readonly
@@ -148,7 +145,6 @@ class TileBoundingSphere {
   /**
    * The underlying bounding sphere
    *
-   * @memberof TileBoundingSphere.prototype
    *
    * @type {BoundingSphere}
    * @readonly

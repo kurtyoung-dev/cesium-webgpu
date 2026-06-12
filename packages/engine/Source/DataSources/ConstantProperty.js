@@ -88,10 +88,20 @@ class ConstantProperty {
   }
 
   /**
+   * Gets a value indicating if this property is constant.
+   * This property always returns <code>true</code>.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  get isConstant() {
+    return true;
+  }
+
+  /**
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is changed whenever setValue is called with data different
    * than the current value.
-   * @memberof ConstantProperty.prototype
    *
    * @type {Event}
    * @readonly

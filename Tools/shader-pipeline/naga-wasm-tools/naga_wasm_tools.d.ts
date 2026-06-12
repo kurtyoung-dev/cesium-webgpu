@@ -64,21 +64,43 @@ export function wgsl_to_hlsl(source: string): string;
  */
 export function wgsl_to_msl(source: string): string;
 
-export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
+export type InitInput =
+  | RequestInfo
+  | URL
+  | Response
+  | BufferSource
+  | WebAssembly.Module;
 
 export interface InitOutput {
-    readonly memory: WebAssembly.Memory;
-    readonly glsl_to_spv: (a: number, b: number, c: number, d: number, e: number) => void;
-    readonly glsl_to_wgsl: (a: number, b: number, c: number, d: number, e: number) => void;
-    readonly normalize_wgsl: (a: number, b: number, c: number) => void;
-    readonly spirv_to_wgsl: (a: number, b: number, c: number) => void;
-    readonly validate_wgsl: (a: number, b: number, c: number) => void;
-    readonly wgsl_to_hlsl: (a: number, b: number, c: number) => void;
-    readonly wgsl_to_msl: (a: number, b: number, c: number) => void;
-    readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-    readonly __wbindgen_export: (a: number, b: number) => number;
-    readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_export3: (a: number, b: number, c: number) => void;
+  readonly memory: WebAssembly.Memory;
+  readonly glsl_to_spv: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+  ) => void;
+  readonly glsl_to_wgsl: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+  ) => void;
+  readonly normalize_wgsl: (a: number, b: number, c: number) => void;
+  readonly spirv_to_wgsl: (a: number, b: number, c: number) => void;
+  readonly validate_wgsl: (a: number, b: number, c: number) => void;
+  readonly wgsl_to_hlsl: (a: number, b: number, c: number) => void;
+  readonly wgsl_to_msl: (a: number, b: number, c: number) => void;
+  readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+  readonly __wbindgen_export: (a: number, b: number) => number;
+  readonly __wbindgen_export2: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => number;
+  readonly __wbindgen_export3: (a: number, b: number, c: number) => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;
@@ -91,7 +113,9 @@ export type SyncInitInput = BufferSource | WebAssembly.Module;
  *
  * @returns {InitOutput}
  */
-export function initSync(module: { module: SyncInitInput } | SyncInitInput): InitOutput;
+export function initSync(
+  module: { module: SyncInitInput } | SyncInitInput,
+): InitOutput;
 
 /**
  * If `module_or_path` is {RequestInfo} or {URL}, makes a request and
@@ -101,4 +125,9 @@ export function initSync(module: { module: SyncInitInput } | SyncInitInput): Ini
  *
  * @returns {Promise<InitOutput>}
  */
-export default function __wbg_init (module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;
+export default function __wbg_init(
+  module_or_path?:
+    | { module_or_path: InitInput | Promise<InitInput> }
+    | InitInput
+    | Promise<InitInput>,
+): Promise<InitOutput>;

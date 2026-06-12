@@ -104,7 +104,6 @@ class ConstantSpline {
   /**
    * The constant value that the spline evaluates to.
    *
-   * @memberof ConstantSpline.prototype
    *
    * @type {number|Cartesian3|Quaternion}
    * @readonly

@@ -1424,7 +1424,6 @@ class Viewer {
 
   /**
    * Gets the parent container.
-   * @memberof Viewer.prototype
    * @type {Element}
    * @readonly
    */
@@ -1434,7 +1433,6 @@ class Viewer {
 
   /**
    * Manages the list of credits to display on screen and in the lightbox.
-   * @memberof Viewer.prototype
    *
    * @type {CreditDisplay}
    */
@@ -1445,7 +1443,6 @@ class Viewer {
   /**
    * Gets the DOM element for the area at the bottom of the window containing the
    * {@link CreditDisplay} and potentially other things.
-   * @memberof Viewer.prototype
    * @type {Element}
    * @readonly
    */
@@ -1455,7 +1452,6 @@ class Viewer {
 
   /**
    * Gets the CesiumWidget.
-   * @memberof Viewer.prototype
    * @type {CesiumWidget}
    * @readonly
    */
@@ -1465,7 +1461,6 @@ class Viewer {
 
   /**
    * Gets the selection indicator.
-   * @memberof Viewer.prototype
    * @type {SelectionIndicator}
    * @readonly
    */
@@ -1475,7 +1470,6 @@ class Viewer {
 
   /**
    * Gets the info box.
-   * @memberof Viewer.prototype
    * @type {InfoBox}
    * @readonly
    */
@@ -1485,7 +1479,6 @@ class Viewer {
 
   /**
    * Gets the Geocoder.
-   * @memberof Viewer.prototype
    * @type {Geocoder}
    * @readonly
    */
@@ -1495,7 +1488,6 @@ class Viewer {
 
   /**
    * Gets the HomeButton.
-   * @memberof Viewer.prototype
    * @type {HomeButton}
    * @readonly
    */
@@ -1505,7 +1497,6 @@ class Viewer {
 
   /**
    * Gets the SceneModePicker.
-   * @memberof Viewer.prototype
    * @type {SceneModePicker}
    * @readonly
    */
@@ -1515,7 +1506,6 @@ class Viewer {
 
   /**
    * Gets the ProjectionPicker.
-   * @memberof Viewer.prototype
    * @type {ProjectionPicker}
    * @readonly
    */
@@ -1525,7 +1515,6 @@ class Viewer {
 
   /**
    * Gets the BaseLayerPicker.
-   * @memberof Viewer.prototype
    * @type {BaseLayerPicker}
    * @readonly
    */
@@ -1535,7 +1524,6 @@ class Viewer {
 
   /**
    * Gets the NavigationHelpButton.
-   * @memberof Viewer.prototype
    * @type {NavigationHelpButton}
    * @readonly
    */
@@ -1545,7 +1533,6 @@ class Viewer {
 
   /**
    * Gets the Animation widget.
-   * @memberof Viewer.prototype
    * @type {Animation}
    * @readonly
    */
@@ -1555,7 +1542,6 @@ class Viewer {
 
   /**
    * Gets the Timeline widget.
-   * @memberof Viewer.prototype
    * @type {Timeline}
    * @readonly
    */
@@ -1565,7 +1551,6 @@ class Viewer {
 
   /**
    * Gets the FullscreenButton.
-   * @memberof Viewer.prototype
    * @type {FullscreenButton}
    * @readonly
    */
@@ -1575,7 +1560,6 @@ class Viewer {
 
   /**
    * Gets the VRButton.
-   * @memberof Viewer.prototype
    * @type {VRButton}
    * @readonly
    */
@@ -1585,7 +1569,6 @@ class Viewer {
 
   /**
    * Gets the display used for {@link DataSource} visualization.
-   * @memberof Viewer.prototype
    * @type {DataSourceDisplay}
    * @readonly
    */
@@ -1596,7 +1579,6 @@ class Viewer {
   /**
    * Gets the collection of entities not tied to a particular data source.
    * This is a shortcut to [dataSourceDisplay.defaultDataSource.entities]{@link Viewer#dataSourceDisplay}.
-   * @memberof Viewer.prototype
    * @type {EntityCollection}
    * @readonly
    */
@@ -1606,7 +1588,6 @@ class Viewer {
 
   /**
    * Gets the set of {@link DataSource} instances to be visualized.
-   * @memberof Viewer.prototype
    * @type {DataSourceCollection}
    * @readonly
    */
@@ -1616,7 +1597,6 @@ class Viewer {
 
   /**
    * Gets the canvas.
-   * @memberof Viewer.prototype
    * @type {HTMLCanvasElement}
    * @readonly
    */
@@ -1626,7 +1606,6 @@ class Viewer {
 
   /**
    * Gets the scene.
-   * @memberof Viewer.prototype
    * @type {Scene}
    * @readonly
    */
@@ -1636,43 +1615,30 @@ class Viewer {
 
   /**
    * Determines if shadows are cast by light sources.
-   * @memberof Viewer.prototype
    * @type {boolean}
    */
   get shadows() {
     return this.scene.shadowMap.enabled;
   }
 
-  /**
-   * Determines if shadows are cast by light sources.
-   * @memberof Viewer.prototype
-   * @type {boolean}
-   */
   set shadows(value) {
     this.scene.shadowMap.enabled = value;
   }
 
   /**
    * Determines if the terrain casts or shadows from light sources.
-   * @memberof Viewer.prototype
    * @type {ShadowMode}
    */
   get terrainShadows() {
     return this.scene.globe.shadows;
   }
 
-  /**
-   * Determines if the terrain casts or shadows from light sources.
-   * @memberof Viewer.prototype
-   * @type {ShadowMode}
-   */
   set terrainShadows(value) {
     this.scene.globe.shadows = value;
   }
 
   /**
    * Get the scene's shadow map
-   * @memberof Viewer.prototype
    * @type {ShadowMap}
    * @readonly
    */
@@ -1682,7 +1648,6 @@ class Viewer {
 
   /**
    * Gets the collection of image layers that will be rendered on the globe.
-   * @memberof Viewer.prototype
    *
    * @type {ImageryLayerCollection}
    * @readonly
@@ -1693,7 +1658,6 @@ class Viewer {
 
   /**
    * The terrain provider providing surface geometry for the globe.
-   * @memberof Viewer.prototype
    *
    * @type {TerrainProvider}
    */
@@ -1701,19 +1665,12 @@ class Viewer {
     return this.scene.terrainProvider;
   }
 
-  /**
-   * The terrain provider providing surface geometry for the globe.
-   * @memberof Viewer.prototype
-   *
-   * @type {TerrainProvider}
-   */
   set terrainProvider(terrainProvider) {
     this.scene.terrainProvider = terrainProvider;
   }
 
   /**
    * Gets the camera.
-   * @memberof Viewer.prototype
    *
    * @type {Camera}
    * @readonly
@@ -1724,7 +1681,6 @@ class Viewer {
 
   /**
    * Gets the default ellipsoid for the scene.
-   * @memberof Viewer.prototype
    *
    * @type {Ellipsoid}
    * @default Ellipsoid.default
@@ -1736,7 +1692,6 @@ class Viewer {
 
   /**
    * Gets the post-process stages.
-   * @memberof Viewer.prototype
    *
    * @type {PostProcessStageCollection}
    * @readonly
@@ -1747,7 +1702,6 @@ class Viewer {
 
   /**
    * Gets the clock.
-   * @memberof Viewer.prototype
    * @type {Clock}
    * @readonly
    */
@@ -1757,7 +1711,6 @@ class Viewer {
 
   /**
    * Gets the clock view model.
-   * @memberof Viewer.prototype
    * @type {ClockViewModel}
    * @readonly
    */
@@ -1767,7 +1720,6 @@ class Viewer {
 
   /**
    * Gets the screen space event handler.
-   * @memberof Viewer.prototype
    * @type {ScreenSpaceEventHandler}
    * @readonly
    */
@@ -1780,7 +1732,6 @@ class Viewer {
    * is true. If undefined, the browser's requestAnimationFrame implementation
    * determines the frame rate.  If defined, this value must be greater than 0.  A value higher
    * than the underlying requestAnimationFrame implementation will have no effect.
-   * @memberof Viewer.prototype
    *
    * @type {number}
    */
@@ -1788,15 +1739,6 @@ class Viewer {
     return this._cesiumWidget.targetFrameRate;
   }
 
-  /**
-   * Gets or sets the target frame rate of the widget when <code>useDefaultRenderLoop</code>
-   * is true. If undefined, the browser's requestAnimationFrame implementation
-   * determines the frame rate.  If defined, this value must be greater than 0.  A value higher
-   * than the underlying requestAnimationFrame implementation will have no effect.
-   * @memberof Viewer.prototype
-   *
-   * @type {number}
-   */
   set targetFrameRate(value) {
     this._cesiumWidget.targetFrameRate = value;
   }
@@ -1811,7 +1753,6 @@ class Viewer {
    * <code>renderError</code> event will be raised and this property
    * will be set to false.  It must be set back to true to continue rendering
    * after the error.
-   * @memberof Viewer.prototype
    *
    * @type {boolean}
    */
@@ -1819,20 +1760,6 @@ class Viewer {
     return this._cesiumWidget.useDefaultRenderLoop;
   }
 
-  /**
-   * Gets or sets whether or not this widget should control the render loop.
-   * If true the widget will use requestAnimationFrame to
-   * perform rendering and resizing of the widget, as well as drive the
-   * simulation clock. If set to false, you must manually call the
-   * <code>resize</code>, <code>render</code> methods
-   * as part of a custom render loop.  If an error occurs during rendering, {@link Scene}'s
-   * <code>renderError</code> event will be raised and this property
-   * will be set to false.  It must be set back to true to continue rendering
-   * after the error.
-   * @memberof Viewer.prototype
-   *
-   * @type {boolean}
-   */
   set useDefaultRenderLoop(value) {
     this._cesiumWidget.useDefaultRenderLoop = value;
   }
@@ -1844,7 +1771,6 @@ class Viewer {
    * For example, if the widget is laid out at a size of 640x480, setting this value to 0.5
    * will cause the scene to be rendered at 320x240 and then scaled up while setting
    * it to 2.0 will cause the scene to be rendered at 1280x960 and then scaled down.
-   * @memberof Viewer.prototype
    *
    * @type {number}
    * @default 1.0
@@ -1853,18 +1779,6 @@ class Viewer {
     return this._cesiumWidget.resolutionScale;
   }
 
-  /**
-   * Gets or sets a scaling factor for rendering resolution.  Values less than 1.0 can improve
-   * performance on less powerful devices while values greater than 1.0 will render at a higher
-   * resolution and then scale down, resulting in improved visual fidelity.
-   * For example, if the widget is laid out at a size of 640x480, setting this value to 0.5
-   * will cause the scene to be rendered at 320x240 and then scaled up while setting
-   * it to 2.0 will cause the scene to be rendered at 1280x960 and then scaled down.
-   * @memberof Viewer.prototype
-   *
-   * @type {number}
-   * @default 1.0
-   */
   set resolutionScale(value) {
     this._cesiumWidget.resolutionScale = value;
   }
@@ -1876,7 +1790,6 @@ class Viewer {
    * performance on less powerful devices that have high pixel density. When false, rendering
    * will be in device pixels. {@link Viewer#resolutionScale} will still take effect whether
    * this flag is true or false.
-   * @memberof Viewer.prototype
    *
    * @type {boolean}
    * @default true
@@ -1885,18 +1798,6 @@ class Viewer {
     return this._cesiumWidget.useBrowserRecommendedResolution;
   }
 
-  /**
-   * Boolean flag indicating if the browser's recommended resolution is used.
-   * If true, the browser's device pixel ratio is ignored and 1.0 is used instead,
-   * effectively rendering based on CSS pixels instead of device pixels. This can improve
-   * performance on less powerful devices that have high pixel density. When false, rendering
-   * will be in device pixels. {@link Viewer#resolutionScale} will still take effect whether
-   * this flag is true or false.
-   * @memberof Viewer.prototype
-   *
-   * @type {boolean}
-   * @default true
-   */
   set useBrowserRecommendedResolution(value) {
     this._cesiumWidget.useBrowserRecommendedResolution = value;
   }
@@ -1907,7 +1808,6 @@ class Viewer {
    * For example, if asynchronous primitives are being processed in the
    * background, the clock will not advance until the geometry is ready.
    *
-   * @memberof Viewer.prototype
    *
    * @type {boolean}
    */
@@ -1915,34 +1815,18 @@ class Viewer {
     return this._cesiumWidget.allowDataSourcesToSuspendAnimation;
   }
 
-  /**
-   * Gets or sets whether or not data sources can temporarily pause
-   * animation in order to avoid showing an incomplete picture to the user.
-   * For example, if asynchronous primitives are being processed in the
-   * background, the clock will not advance until the geometry is ready.
-   *
-   * @memberof Viewer.prototype
-   *
-   * @type {boolean}
-   */
   set allowDataSourcesToSuspendAnimation(value) {
     this._cesiumWidget.allowDataSourcesToSuspendAnimation = value;
   }
 
   /**
    * Gets or sets the Entity instance currently being tracked by the camera.
-   * @memberof Viewer.prototype
    * @type {Entity | undefined}
    */
   get trackedEntity() {
     return this._cesiumWidget.trackedEntity;
   }
 
-  /**
-   * Gets or sets the Entity instance currently being tracked by the camera.
-   * @memberof Viewer.prototype
-   * @type {Entity | undefined}
-   */
   set trackedEntity(value) {
     this._cesiumWidget.trackedEntity = value;
   }
@@ -1953,22 +1837,12 @@ class Viewer {
    * If a user interactively picks a Cesium3DTilesFeature instance, then this property
    * will contain a transient Entity instance with a property named "feature" that is
    * the instance that was picked.
-   * @memberof Viewer.prototype
    * @type {Entity | undefined}
    */
   get selectedEntity() {
     return this._selectedEntity;
   }
 
-  /**
-   * Gets or sets the object instance for which to display a selection indicator.
-   *
-   * If a user interactively picks a Cesium3DTilesFeature instance, then this property
-   * will contain a transient Entity instance with a property named "feature" that is
-   * the instance that was picked.
-   * @memberof Viewer.prototype
-   * @type {Entity | undefined}
-   */
   set selectedEntity(value) {
     if (this._selectedEntity !== value) {
       this._selectedEntity = value;
@@ -1989,7 +1863,6 @@ class Viewer {
 
   /**
    * Gets the event that is raised when the selected entity changes.
-   * @memberof Viewer.prototype
    * @type {Event}
    * @readonly
    */
@@ -1999,7 +1872,6 @@ class Viewer {
 
   /**
    * Gets the event that is raised when the tracked entity changes.
-   * @memberof Viewer.prototype
    * @type {Event}
    * @readonly
    */
@@ -2009,18 +1881,12 @@ class Viewer {
 
   /**
    * Gets or sets the data source to track with the viewer's clock.
-   * @memberof Viewer.prototype
    * @type {DataSource}
    */
   get clockTrackedDataSource() {
     return this._cesiumWidget.clockTrackedDataSource;
   }
 
-  /**
-   * Gets or sets the data source to track with the viewer's clock.
-   * @memberof Viewer.prototype
-   * @type {DataSource}
-   */
   set clockTrackedDataSource(value) {
     if (this._cesiumWidget.clockTrackedDataSource !== value) {
       this._cesiumWidget.clockTrackedDataSource = value;

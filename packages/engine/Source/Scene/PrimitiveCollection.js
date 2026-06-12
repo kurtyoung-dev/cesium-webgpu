@@ -481,7 +481,6 @@ class PrimitiveCollection {
   /**
    * Gets the number of primitives in the collection.
    *
-   * @memberof PrimitiveCollection.prototype
    *
    * @type {number}
    * @readonly
@@ -493,7 +492,6 @@ class PrimitiveCollection {
   /**
    * An event that is raised when a primitive is added to the collection.
    * Event handlers are passed the primitive that was added.
-   * @memberof PrimitiveCollection.prototype
    * @type {Event}
    * @readonly
    */
@@ -507,7 +505,6 @@ class PrimitiveCollection {
    * <p>
    * Note: Depending on the destroyPrimitives constructor option, the primitive may already be destroyed.
    * </p>
-   * @memberof PrimitiveCollection.prototype
    * @type {Event}
    * @readonly
    */

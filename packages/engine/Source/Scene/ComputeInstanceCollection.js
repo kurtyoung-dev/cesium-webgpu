@@ -176,7 +176,6 @@ class ComputeInstanceCollection {
 
   /**
    * The number of instances in the collection.
-   * @memberof ComputeInstanceCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -186,7 +185,6 @@ class ComputeInstanceCollection {
 
   /**
    * The user WGSL kernel snippet. Immutable after construction.
-   * @memberof ComputeInstanceCollection.prototype
    * @type {string}
    * @readonly
    */
@@ -197,7 +195,6 @@ class ComputeInstanceCollection {
   /**
    * Number of float parameter lanes per instance. Immutable after
    * construction.
-   * @memberof ComputeInstanceCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -208,7 +205,6 @@ class ComputeInstanceCollection {
   /**
    * The epoch that simulation time is measured from. Undefined until set
    * explicitly or until the first frame renders.
-   * @memberof ComputeInstanceCollection.prototype
    * @type {JulianDate|undefined}
    */
   get epoch() {
@@ -226,7 +222,6 @@ class ComputeInstanceCollection {
    * cannot derive this — it is entirely the caller's contract. Assign
    * <code>undefined</code> to restore the never-culled behavior. The value
    * is cloned on assignment; mutate-and-reassign to update.
-   * @memberof ComputeInstanceCollection.prototype
    * @type {BoundingSphere|undefined}
    */
   get boundingSphere() {

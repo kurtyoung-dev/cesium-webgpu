@@ -5,6 +5,8 @@ import ProducerListenerAdapter from "./ProducerListenerAdapter.js";
 import TilePathEncoding from "./TilePathEncoding.js";
 import { createTilePathResolver } from "./TilePathResolver.js";
 
+/** @import Cesium3DTilesInvalidationFeedAdapter, { InvalidationSet } from "./Cesium3DTilesInvalidationFeedAdapter.js"; */
+
 /**
  * Coordinator for the 3D Tiles live invalidation feed.
  *
@@ -37,7 +39,7 @@ import { createTilePathResolver } from "./TilePathResolver.js";
  *
  * @param {Cesium3DTileset} tileset Parent tileset.
  * @param {object} options
- * @param {import("./Cesium3DTilesInvalidationFeedAdapter.js").default} options.adapter
+ * @param {Cesium3DTilesInvalidationFeedAdapter} options.adapter
  * @param {string[]} options.layers Layer names this feed listens for.
  * @param {string} [options.pathEncoding] A {@link TilePathEncoding} value;
  *   defaults to {@link TilePathEncoding.CHILD_INDEX}.
@@ -98,7 +100,7 @@ class Cesium3DTilesInvalidationFeed {
 
   /**
    * Apply every set in an array. Returns the sum of affected tiles.
-   * @param {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]} sets
+   * @param {InvalidationSet[]} sets
    * @returns {number}
    */
   applyAll(sets) {
@@ -114,7 +116,7 @@ class Cesium3DTilesInvalidationFeed {
 
   /**
    * Apply a single normalized invalidation set.
-   * @param {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet} set
+   * @param {InvalidationSet} set
    * @returns {number}
    */
   apply(set) {
@@ -294,7 +296,10 @@ function invalidateTile(tile) {
 // Adapter registry (A2)
 // ---------------------------------------------------------------------------
 
-/** @type {Map<string, () => import("./Cesium3DTilesInvalidationFeedAdapter.js").default>} */
+/**
+ * @type {Map<string, function(): Cesium3DTilesInvalidationFeedAdapter>}
+ * @private
+ */
 const adapterRegistry = new Map();
 
 Cesium3DTilesInvalidationFeed.registerAdapter = function (formatId, factory) {

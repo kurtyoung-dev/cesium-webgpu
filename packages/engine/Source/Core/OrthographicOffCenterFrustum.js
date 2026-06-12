@@ -385,7 +385,6 @@ class OrthographicOffCenterFrustum {
 
   /**
    * Gets the orthographic projection matrix computed from the view frustum.
-   * @memberof OrthographicOffCenterFrustum.prototype
    * @type {Matrix4}
    * @readonly
    */

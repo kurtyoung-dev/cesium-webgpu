@@ -344,7 +344,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the URL of the WMS server.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -354,7 +353,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the proxy used by this provider.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {Proxy}
    * @readonly
    */
@@ -364,7 +362,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the names of the WMS layers, separated by commas.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -374,7 +371,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the width of each tile, in pixels.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -384,7 +380,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the height of each tile, in pixels.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -394,7 +389,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the maximum level-of-detail that can be requested.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -404,7 +398,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the minimum level-of-detail that can be requested.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -414,7 +407,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the tiling scheme used by this provider.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {TilingScheme}
    * @readonly
    */
@@ -424,7 +416,6 @@ class WebMapServiceImageryProvider {
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {Rectangle}
    * @readonly
    */
@@ -436,7 +427,6 @@ class WebMapServiceImageryProvider {
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
    * for filtering out "missing" tiles via its shouldDiscardImage function.  If this function
    * returns undefined, no tiles are filtered.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {TileDiscardPolicy}
    * @readonly
    */
@@ -448,7 +438,6 @@ class WebMapServiceImageryProvider {
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of {@link TileProviderError}.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {Event}
    * @readonly
    */
@@ -459,7 +448,6 @@ class WebMapServiceImageryProvider {
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
    * the source of the imagery.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {Credit}
    * @readonly
    */
@@ -473,7 +461,6 @@ class WebMapServiceImageryProvider {
    * be ignored.  If this property is true, any images without an alpha channel will be treated
    * as if their alpha is 1.0 everywhere.  When this property is false, memory usage
    * and texture upload time are reduced.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -487,7 +474,6 @@ class WebMapServiceImageryProvider {
    * {@link WebMapServiceImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable
    * features) without communicating with the server.  Set this property to false if you know your data
    * source does not support picking features or if you don't want this provider's features to be pickable.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {boolean}
    * @default true
    */
@@ -495,34 +481,18 @@ class WebMapServiceImageryProvider {
     return this._tileProvider.enablePickFeatures;
   }
 
-  /**
-   * Gets or sets a value indicating whether feature picking is enabled.  If true, {@link WebMapServiceImageryProvider#pickFeatures} will
-   * invoke the <code>GetFeatureInfo</code> service on the WMS server and attempt to interpret the features included in the response.  If false,
-   * {@link WebMapServiceImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable
-   * features) without communicating with the server.  Set this property to false if you know your data
-   * source does not support picking features or if you don't want this provider's features to be pickable.
-   * @memberof WebMapServiceImageryProvider.prototype
-   * @type {boolean}
-   * @default true
-   */
   set enablePickFeatures(enablePickFeatures) {
     this._tileProvider.enablePickFeatures = enablePickFeatures;
   }
 
   /**
    * Gets or sets a clock that is used to get keep the time used for time dynamic parameters.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {Clock}
    */
   get clock() {
     return this._timeDynamicImagery.clock;
   }
 
-  /**
-   * Gets or sets a clock that is used to get keep the time used for time dynamic parameters.
-   * @memberof WebMapServiceImageryProvider.prototype
-   * @type {Clock}
-   */
   set clock(value) {
     this._timeDynamicImagery.clock = value;
   }
@@ -531,27 +501,18 @@ class WebMapServiceImageryProvider {
    * Gets or sets a time interval collection that is used to get time dynamic parameters. The data of each
    * TimeInterval is an object containing the keys and values of the properties that are used during
    * tile requests.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {TimeIntervalCollection}
    */
   get times() {
     return this._timeDynamicImagery.times;
   }
 
-  /**
-   * Gets or sets a time interval collection that is used to get time dynamic parameters. The data of each
-   * TimeInterval is an object containing the keys and values of the properties that are used during
-   * tile requests.
-   * @memberof WebMapServiceImageryProvider.prototype
-   * @type {TimeIntervalCollection}
-   */
   set times(value) {
     this._timeDynamicImagery.times = value;
   }
 
   /**
    * Gets the getFeatureInfo URL of the WMS server.
-   * @memberof WebMapServiceImageryProvider.prototype
    * @type {Resource|string}
    * @readonly
    */

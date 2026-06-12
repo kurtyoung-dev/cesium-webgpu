@@ -1,6 +1,4 @@
 /**
- * @module WebGPUGroundPolylineRenderer
- *
  * **C-R8-GROUND-POLYLINE-NATIVE — RESOLVED 2026-04-30.** Earlier symptom:
  * polylines on terrain were silently invisible on WebGPU (no crash,
  * no validation warnings). Three independent bugs combined:
@@ -87,6 +85,7 @@
  *     Vector3DTile{Polylines,ClampedPolylines,Primitives,Classifier} +
  *     GroundPrimitive shipped earlier in the sweep).
  *
+ * @module WebGPUGroundPolylineRenderer
  * @private
  */
 import ComponentDatatype from "../../Core/ComponentDatatype.js";

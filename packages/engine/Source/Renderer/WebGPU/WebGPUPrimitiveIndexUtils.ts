@@ -1,6 +1,4 @@
 /**
- * @module WebGPUPrimitiveIndexUtils
- *
  * WGF-6 helper — `@builtin(primitive_index)` capability detection and
  * pipeline-augmentation utilities.
  *
@@ -22,6 +20,7 @@
  *   const wireframeFS = WebGPUPrimitiveIndexUtils.generateWireframeOverlayWGSL();
  *   // Plug into a debug post-process or as a fragment variant on terrain.
  * }
+ * @module WebGPUPrimitiveIndexUtils
  */
 
 /// <reference types="@webgpu/types" />

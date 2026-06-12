@@ -125,7 +125,6 @@ class VelocityVectorProperty {
 
   /**
    * Gets a value indicating if this property is constant.
-   * @memberof VelocityVectorProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -136,7 +135,6 @@ class VelocityVectorProperty {
 
   /**
    * Gets the event that is raised whenever the definition of this property changes.
-   * @memberof VelocityVectorProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -147,7 +145,6 @@ class VelocityVectorProperty {
 
   /**
    * Gets or sets the position property used to compute the velocity vector.
-   * @memberof VelocityVectorProperty.prototype
    *
    * @type {Property|undefined}
    */
@@ -155,12 +152,6 @@ class VelocityVectorProperty {
     return this._position;
   }
 
-  /**
-   * Gets or sets the position property used to compute the velocity vector.
-   * @memberof VelocityVectorProperty.prototype
-   *
-   * @type {Property|undefined}
-   */
   set position(value) {
     const oldValue = this._position;
     if (oldValue !== value) {
@@ -186,7 +177,6 @@ class VelocityVectorProperty {
   /**
    * Gets or sets whether the vector produced by this property
    * will be normalized or not.
-   * @memberof VelocityVectorProperty.prototype
    *
    * @type {boolean}
    */
@@ -194,13 +184,6 @@ class VelocityVectorProperty {
     return this._normalize;
   }
 
-  /**
-   * Gets or sets whether the vector produced by this property
-   * will be normalized or not.
-   * @memberof VelocityVectorProperty.prototype
-   *
-   * @type {boolean}
-   */
   set normalize(value) {
     if (this._normalize === value) {
       return;

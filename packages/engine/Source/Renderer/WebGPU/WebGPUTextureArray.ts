@@ -1,6 +1,4 @@
 /**
- * @module WebGPUTextureArray
- *
  * Texture array manager for imagery layer optimization.
  * Instead of binding separate textures for each imagery layer,
  * packs multiple layers into a single 2D texture array with one bind group.
@@ -15,6 +13,7 @@
  * texArray.uploadLayer(0, imageBitmap);
  * texArray.uploadLayer(1, anotherImageBitmap);
  * // In shader: textureSample(textureArray, sampler, uv, layerIndex)
+ * @module WebGPUTextureArray
  */
 
 /// <reference types="@webgpu/types" />

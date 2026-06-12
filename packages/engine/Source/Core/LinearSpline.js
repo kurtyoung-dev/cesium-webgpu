@@ -105,7 +105,6 @@ class LinearSpline {
   /**
    * An array of times for the control points.
    *
-   * @memberof LinearSpline.prototype
    *
    * @type {number[]}
    * @readonly
@@ -117,7 +116,6 @@ class LinearSpline {
   /**
    * An array of {@link Cartesian3} control points.
    *
-   * @memberof LinearSpline.prototype
    *
    * @type {number[]|Cartesian3[]}
    * @readonly

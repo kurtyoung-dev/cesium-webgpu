@@ -14,6 +14,13 @@ export default [
       "Source/*",
       "**/ThirdParty/",
       "Tools/**/*",
+      // wasm-bindgen build outputs + local scratch — git-ignored, but
+      // present in local working trees. CI never sees these; ignoring
+      // them keeps local `npm run eslint` equivalent to the CI run.
+      "packages/wasm/pkg/",
+      "packages/wasm-naga/pkg/",
+      "packages/wasm-naga/pkg-tooling/",
+      "tmp/",
       "index.html",
       "index.release.html",
       "Apps/HelloWorld.html",
@@ -48,6 +55,7 @@ export default [
     files: [
       ".github/**/*.js",
       "scripts/**/*.js",
+      "scripts/**/*.mjs",
       "packages/sandcastle/scripts/**/*.js",
       "packages/wasm-naga/*.mjs",
       "gulpfile.js",

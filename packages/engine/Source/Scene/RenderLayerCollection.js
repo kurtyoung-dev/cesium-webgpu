@@ -244,7 +244,6 @@ class RenderLayerCollection {
 
   /**
    * The number of layers in this collection.
-   * @memberof RenderLayerCollection.prototype
    * @type {number}
    * @readonly
    */

@@ -37,7 +37,6 @@ class PpeMetadata {
    * values after the transforms based on the offset and scale properties
    * have been applied.
    *
-   * @memberof PpeMetadata.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -50,7 +49,6 @@ class PpeMetadata {
    * values after the transforms based on the offset and scale properties
    * have been applied.
    *
-   * @memberof PpeMetadata.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -61,7 +59,6 @@ class PpeMetadata {
   /**
    * Possible error source contents
    *
-   * @memberof PpeMetadata.prototype
    * @type {PpeSource}
    * @readonly
    */

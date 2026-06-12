@@ -81,10 +81,9 @@ describe("Renderer/WebGPU/WebGPUFeatureFlags", function () {
 
     it("merges user-requested with auto-detected features", function () {
       const flags = new WebGPUFeatureFlags();
-      const list = flags.buildRequestList(
-        stubAdapter(["clip-distances"]),
-        ["depth-clip-control"],
-      );
+      const list = flags.buildRequestList(stubAdapter(["clip-distances"]), [
+        "depth-clip-control",
+      ]);
       // User-requested are seeded into the Set first, then matching
       // DESIRED_FEATURES are added.
       expect(list).toEqual(["depth-clip-control", "clip-distances"]);
@@ -92,10 +91,9 @@ describe("Renderer/WebGPU/WebGPUFeatureFlags", function () {
 
     it("dedupes when a user-requested feature is also auto-detected", function () {
       const flags = new WebGPUFeatureFlags();
-      const list = flags.buildRequestList(
-        stubAdapter(["shader-f16"]),
-        ["shader-f16"],
-      );
+      const list = flags.buildRequestList(stubAdapter(["shader-f16"]), [
+        "shader-f16",
+      ]);
       expect(list).toEqual(["shader-f16"]);
       expect(list.length).toBe(1);
     });

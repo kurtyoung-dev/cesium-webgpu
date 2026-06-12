@@ -52,18 +52,12 @@ class CustomDataSource {
 
   /**
    * Gets or sets a human-readable name for this instance.
-   * @memberof CustomDataSource.prototype
    * @type {string}
    */
   get name() {
     return this._name;
   }
 
-  /**
-   * Gets or sets a human-readable name for this instance.
-   * @memberof CustomDataSource.prototype
-   * @type {string}
-   */
   set name(value) {
     if (this._name !== value) {
       this._name = value;
@@ -73,18 +67,12 @@ class CustomDataSource {
 
   /**
    * Gets or sets the clock for this instance.
-   * @memberof CustomDataSource.prototype
    * @type {DataSourceClock}
    */
   get clock() {
     return this._clock;
   }
 
-  /**
-   * Gets or sets the clock for this instance.
-   * @memberof CustomDataSource.prototype
-   * @type {DataSourceClock}
-   */
   set clock(value) {
     if (this._clock !== value) {
       this._clock = value;
@@ -94,7 +82,6 @@ class CustomDataSource {
 
   /**
    * Gets the collection of {@link Entity} instances.
-   * @memberof CustomDataSource.prototype
    * @type {EntityCollection}
    */
   get entities() {
@@ -103,25 +90,18 @@ class CustomDataSource {
 
   /**
    * Gets or sets whether the data source is currently loading data.
-   * @memberof CustomDataSource.prototype
    * @type {boolean}
    */
   get isLoading() {
     return this._isLoading;
   }
 
-  /**
-   * Gets or sets whether the data source is currently loading data.
-   * @memberof CustomDataSource.prototype
-   * @type {boolean}
-   */
   set isLoading(value) {
     DataSource.setLoading(this, value);
   }
 
   /**
    * Gets an event that will be raised when the underlying data changes.
-   * @memberof CustomDataSource.prototype
    * @type {Event}
    */
   get changedEvent() {
@@ -130,7 +110,6 @@ class CustomDataSource {
 
   /**
    * Gets an event that will be raised if an error is encountered during processing.
-   * @memberof CustomDataSource.prototype
    * @type {Event}
    */
   get errorEvent() {
@@ -139,7 +118,6 @@ class CustomDataSource {
 
   /**
    * Gets an event that will be raised when the data source either starts or stops loading.
-   * @memberof CustomDataSource.prototype
    * @type {Event}
    */
   get loadingEvent() {
@@ -148,18 +126,12 @@ class CustomDataSource {
 
   /**
    * Gets whether or not this data source should be displayed.
-   * @memberof CustomDataSource.prototype
    * @type {boolean}
    */
   get show() {
     return this._entityCollection.show;
   }
 
-  /**
-   * Gets whether or not this data source should be displayed.
-   * @memberof CustomDataSource.prototype
-   * @type {boolean}
-   */
   set show(value) {
     this._entityCollection.show = value;
   }
@@ -167,19 +139,12 @@ class CustomDataSource {
   /**
    * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
    *
-   * @memberof CustomDataSource.prototype
    * @type {EntityCluster}
    */
   get clustering() {
     return this._entityCluster;
   }
 
-  /**
-   * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
-   *
-   * @memberof CustomDataSource.prototype
-   * @type {EntityCluster}
-   */
   set clustering(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {

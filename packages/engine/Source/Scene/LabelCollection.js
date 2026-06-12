@@ -1019,7 +1019,6 @@ class LabelCollection {
    * Returns the number of labels in this collection.  This is commonly used with
    * {@link LabelCollection#get} to iterate over all the labels
    * in the collection.
-   * @memberof LabelCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -1030,7 +1029,6 @@ class LabelCollection {
   /**
    * Returns the size in bytes of the WebGL texture resources.
    * @private
-   * @memberof LabelCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -1044,7 +1042,6 @@ class LabelCollection {
   /**
    * True when all labels currently in the collection are ready for rendering.
    * @private
-   * @memberof LabelCollection.prototype
    * @type {boolean}
    * @readonly
    */
@@ -1066,25 +1063,12 @@ class LabelCollection {
    * This setting only applies when a label's {@link Label#disableDepthTestDistance} value would
    * otherwise allow depth testing—i.e., distance from the camera to the label is less than the
    * label's {@link Label#disableDepthTestDistance} value.
-   * @memberof LabelCollection.prototype
    * @type {number}
    */
   get coarseDepthTestDistance() {
     return this._backgroundBillboardCollection.coarseDepthTestDistance;
   }
 
-  /**
-   * The distance from the camera, beyond which, labels are depth-tested against an approximation of
-   * the globe ellipsoid rather than against the full globe depth buffer. When set to <code>0</code>, the
-   * approximate depth test is always applied. When set to <code>Number.POSITIVE_INFINITY</code>, the
-   * approximate depth test is never applied.
-   * <br/><br/>
-   * This setting only applies when a label's {@link Label#disableDepthTestDistance} value would
-   * otherwise allow depth testing—i.e., distance from the camera to the label is less than the
-   * label's {@link Label#disableDepthTestDistance} value.
-   * @memberof LabelCollection.prototype
-   * @type {number}
-   */
   set coarseDepthTestDistance(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number("coarseDepthTestDistance", value);
@@ -1104,27 +1088,12 @@ class LabelCollection {
    * otherwise allow depth testing—i.e., distance from the camera to the label is less than the
    * labels's {@link Label#disableDepthTestDistance} value.
    * @see {@link https://cesium.com/blog/2018/07/30/billboards-on-terrain-improvements/|Billboards and Labels on Terrain Improvements}
-   * @memberof LabelCollection.prototype
    * @type {number}
    */
   get threePointDepthTestDistance() {
     return this._backgroundBillboardCollection.threePointDepthTestDistance;
   }
 
-  /**
-   * The distance from the camera, within which, labels with a {@link Label#heightReference} value
-   * of {@link HeightReference.CLAMP_TO_GROUND} or {@link HeightReference.CLAMP_TO_TERRAIN} are depth tested
-   * against three key points. This ensures that if any key point of the label is visible, the whole
-   * label will be visible. When set to <code>0</code>, this feature is disabled and portions of a
-   * label behind terrain be clipped.
-   * <br/><br/>
-   * This setting only applies when a labels's {@link Label#disableDepthTestDistance} value would
-   * otherwise allow depth testing—i.e., distance from the camera to the label is less than the
-   * labels's {@link Label#disableDepthTestDistance} value.
-   * @see {@link https://cesium.com/blog/2018/07/30/billboards-on-terrain-improvements/|Billboards and Labels on Terrain Improvements}
-   * @memberof LabelCollection.prototype
-   * @type {number}
-   */
   set threePointDepthTestDistance(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number("threePointDepthTestDistance", value);

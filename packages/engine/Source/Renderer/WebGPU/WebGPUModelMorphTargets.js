@@ -1,6 +1,4 @@
 /**
- * @module WebGPUModelMorphTargets
- *
  * Packs morph target deltas into a GPU storage buffer and morph weights
  * into a uniform buffer for WebGPU model rendering.
  *
@@ -15,6 +13,7 @@
  * uniform buffer. Max 8 morph targets supported per primitive.
  *
  * @private
+ * @module WebGPUModelMorphTargets
  */
 import defined from "../../Core/defined.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";

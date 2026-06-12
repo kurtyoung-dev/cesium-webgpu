@@ -299,7 +299,6 @@ class CesiumInspector {
 
   /**
    * Gets the parent container.
-   * @memberof CesiumInspector.prototype
    *
    * @type {Element}
    */
@@ -309,7 +308,6 @@ class CesiumInspector {
 
   /**
    * Gets the view model.
-   * @memberof CesiumInspector.prototype
    *
    * @type {CesiumInspectorViewModel}
    */

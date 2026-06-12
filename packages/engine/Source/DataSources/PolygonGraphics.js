@@ -183,17 +183,6 @@ class PolygonGraphics {
     this.textureCoordinates =
       this.textureCoordinates ?? source.textureCoordinates;
   }
-
-  /**
-   * Gets the event that is raised whenever a property or sub-property is changed or modified.
-   * @memberof PolygonGraphics.prototype
-   *
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 Object.defineProperties(PolygonGraphics.prototype, {

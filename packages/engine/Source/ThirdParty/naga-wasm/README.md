@@ -6,8 +6,8 @@ backend.
 
 ## Files
 
-| File                | Purpose                                                        |
-| ------------------- | -------------------------------------------------------------- |
+| File                | Purpose                                                       |
+| ------------------- | ------------------------------------------------------------- |
 | `naga_wasm.js`      | wasm-bindgen JS glue. Exports `default` (init) + translators. |
 | `naga_wasm_bg.wasm` | Compiled naga WASM blob (~1.26 MB raw / ~415 KB gzipped).     |
 | `naga_wasm.d.ts`    | TypeScript declarations for all exported functions.           |

@@ -450,7 +450,9 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
     it("replaces the pickCommand on an existing picking slot", function () {
       const first = { tag: "first" };
       const second = { tag: "second" };
-      const colorCommand = { derivedCommands: { picking: { pickCommand: first } } };
+      const colorCommand = {
+        derivedCommands: { picking: { pickCommand: first } },
+      };
       attachPickToColorCommand(colorCommand, second);
       expect(colorCommand.derivedCommands.picking.pickCommand).toBe(second);
     });
@@ -498,7 +500,9 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
       attachPickVariantsToColorCommand(colorCommand, {
         hoverPick: { tag: "hover" },
       });
-      expect(colorCommand.derivedCommands.picking.pickCommand).toBe(defaultPick);
+      expect(colorCommand.derivedCommands.picking.pickCommand).toBe(
+        defaultPick,
+      );
       expect(colorCommand.derivedCommands.picking.pickHoverCommand).toEqual({
         tag: "hover",
       });

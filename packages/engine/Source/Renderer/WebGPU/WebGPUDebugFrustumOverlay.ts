@@ -1,6 +1,4 @@
 /**
- * @module WebGPUDebugFrustumOverlay
- *
  * Tier 2 debug pass — tints the scene framebuffer based on per-pixel
  * depth membership, implementing the WebGPU equivalents of
  * `scene.debugShowFrustums` and `scene.debugShowCommands`.
@@ -38,6 +36,7 @@
  * color) instead of overwriting, so users can still see the scene
  * structure with the tint applied — matching WebGL's `rgb *= tint`
  * behavior.
+ * @module WebGPUDebugFrustumOverlay
  */
 
 /// <reference types="@webgpu/types" />

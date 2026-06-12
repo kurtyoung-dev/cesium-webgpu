@@ -139,7 +139,6 @@ class MaterialSortIdAllocator {
 
   /**
    * The number of unique materials tracked by this allocator.
-   * @memberof MaterialSortIdAllocator.prototype
    * @type {number}
    * @readonly
    */

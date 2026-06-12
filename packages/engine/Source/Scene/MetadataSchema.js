@@ -45,7 +45,6 @@ class MetadataSchema {
   /**
    * Classes defined in the schema.
    *
-   * @memberof MetadataSchema.prototype
    * @type {Object<string, MetadataClass>}
    * @readonly
    */
@@ -56,7 +55,6 @@ class MetadataSchema {
   /**
    * Enums defined in the schema.
    *
-   * @memberof MetadataSchema.prototype
    * @type {Object<string, MetadataEnum>}
    * @readonly
    */
@@ -67,7 +65,6 @@ class MetadataSchema {
   /**
    * The ID of the schema.
    *
-   * @memberof MetadataSchema.prototype
    * @type {string}
    * @readonly
    */
@@ -78,7 +75,6 @@ class MetadataSchema {
   /**
    * The name of the schema.
    *
-   * @memberof MetadataSchema.prototype
    * @type {string}
    * @readonly
    */
@@ -89,7 +85,6 @@ class MetadataSchema {
   /**
    * The description of the schema.
    *
-   * @memberof MetadataSchema.prototype
    * @type {string}
    * @readonly
    */
@@ -100,7 +95,6 @@ class MetadataSchema {
   /**
    * The application-specific version of the schema.
    *
-   * @memberof MetadataSchema.prototype
    * @type {string}
    * @readonly
    */
@@ -111,7 +105,6 @@ class MetadataSchema {
   /**
    * Extra user-defined properties.
    *
-   * @memberof MetadataSchema.prototype
    * @type {*}
    * @readonly
    */
@@ -122,7 +115,6 @@ class MetadataSchema {
   /**
    * An object containing extensions.
    *
-   * @memberof MetadataSchema.prototype
    * @type {object}
    * @readonly
    */

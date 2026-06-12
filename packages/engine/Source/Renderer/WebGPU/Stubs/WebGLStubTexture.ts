@@ -1,6 +1,4 @@
 /**
- * @module WebGLStubTexture
- *
  * **Proton-style WebGL→WebGPU texture translation.** Implements the full
  * `gl.createTexture / bindTexture / texImage2D / texParameteri /
  *  pixelStorei / generateMipmap` upload pipeline as real WebGPU operations
@@ -25,6 +23,7 @@
  *
  * @see WebGLCompatibilityStub
  * @see WebGPUMipmapGenerator
+ * @module WebGLStubTexture
  */
 
 /// <reference types="@webgpu/types" />

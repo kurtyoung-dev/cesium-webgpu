@@ -1,6 +1,4 @@
 /**
- * @module WebGPUModelPipelineCache
- *
  * Manages GPU render pipeline variants for glTF Model rendering.
  * Pipelines vary by: alpha mode (OPAQUE/MASK/BLEND), cull mode (back/none),
  * and presentation format.
@@ -27,6 +25,7 @@
  * instance transforms at binding 3.
  *
  * @private
+ * @module WebGPUModelPipelineCache
  */
 
 import ModelPBRCompleteWGSL from "../../Shaders/WebGPU/Model/ModelPBRComplete.js";

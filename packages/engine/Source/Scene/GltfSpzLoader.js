@@ -154,7 +154,6 @@ class GltfSpzLoader extends ResourceLoader {
 
   /**
    * The cache key of the resource.
-   * @memberof GltfSpzLoader.prototype
    * @type {string}
    * @readonly
    * @private
@@ -165,7 +164,6 @@ class GltfSpzLoader extends ResourceLoader {
 
   /**
    * The decoded SPZ data.
-   * @memberof GltfSpzLoader.prototype
    * @type {object}
    * @readonly
    * @private

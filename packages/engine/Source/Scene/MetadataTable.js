@@ -301,7 +301,6 @@ class MetadataTable {
   /**
    * The number of entities in the table.
    *
-   * @memberof MetadataTable.prototype
    * @type {number}
    * @readonly
    * @private
@@ -313,7 +312,6 @@ class MetadataTable {
   /**
    * The class that properties conform to.
    *
-   * @memberof MetadataTable.prototype
    * @type {MetadataClass}
    * @readonly
    * @private
@@ -325,7 +323,6 @@ class MetadataTable {
   /**
    * The size of all typed arrays used in this table.
    *
-   * @memberof MetadataTable.prototype
    * @type {number}
    * @readonly
    * @private
@@ -337,7 +334,6 @@ class MetadataTable {
   /**
    * The properties of the table.
    *
-   * @memberof MetadataTable.prototype
    * @type {Object<string, MetadataTableProperty>}
    * @readonly
    * @private

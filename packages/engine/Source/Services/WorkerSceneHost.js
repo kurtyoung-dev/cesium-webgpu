@@ -1,6 +1,4 @@
 /**
- * @module WorkerSceneHost
- *
  * Main-thread wrapper that owns a renderer worker. Each instance
  * manages exactly one worker that runs an independent Cesium Scene
  * against an `OffscreenCanvas`. Multiple `WorkerSceneHost` instances
@@ -50,6 +48,7 @@
  * a deterministic crash because we'd just burn CPU forever.
  *
  * @private
+ * @module WorkerSceneHost
  */
 
 import defined from "../Core/defined.js";
@@ -278,7 +277,7 @@ class WorkerSceneHost {
    * `scene.context`. The worker applies them on receipt and they survive
    * restarts via shadow-state replay.
    *
-   * @param {{ useHardwareClipDistances?: boolean, useShaderF16?: boolean }} flags
+   * @param {{useHardwareClipDistances: (boolean|undefined), useShaderF16: (boolean|undefined)}} flags
    */
   setFeatureFlags(flags) {
     if (!this._shadowState.featureFlags) {

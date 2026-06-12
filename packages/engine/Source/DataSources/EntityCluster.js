@@ -312,18 +312,12 @@ class EntityCluster {
 
   /**
    * Gets or sets whether clustering is enabled.
-   * @memberof EntityCluster.prototype
    * @type {boolean}
    */
   get enabled() {
     return this._enabled;
   }
 
-  /**
-   * Gets or sets whether clustering is enabled.
-   * @memberof EntityCluster.prototype
-   * @type {boolean}
-   */
   set enabled(value) {
     this._enabledDirty = value !== this._enabled;
     this._enabled = value;
@@ -331,18 +325,12 @@ class EntityCluster {
 
   /**
    * Gets or sets the pixel range to extend the screen space bounding box.
-   * @memberof EntityCluster.prototype
    * @type {number}
    */
   get pixelRange() {
     return this._pixelRange;
   }
 
-  /**
-   * Gets or sets the pixel range to extend the screen space bounding box.
-   * @memberof EntityCluster.prototype
-   * @type {number}
-   */
   set pixelRange(value) {
     this._clusterDirty = this._clusterDirty || value !== this._pixelRange;
     this._pixelRange = value;
@@ -350,18 +338,12 @@ class EntityCluster {
 
   /**
    * Gets or sets the minimum number of screen space objects that can be clustered.
-   * @memberof EntityCluster.prototype
    * @type {number}
    */
   get minimumClusterSize() {
     return this._minimumClusterSize;
   }
 
-  /**
-   * Gets or sets the minimum number of screen space objects that can be clustered.
-   * @memberof EntityCluster.prototype
-   * @type {number}
-   */
   set minimumClusterSize(value) {
     this._clusterDirty =
       this._clusterDirty || value !== this._minimumClusterSize;
@@ -370,7 +352,6 @@ class EntityCluster {
 
   /**
    * Gets the event that will be raised when a new cluster will be displayed. The signature of the event listener is {@link EntityCluster.newClusterCallback}.
-   * @memberof EntityCluster.prototype
    * @type {Event<EntityCluster.newClusterCallback>}
    */
   get clusterEvent() {
@@ -379,18 +360,12 @@ class EntityCluster {
 
   /**
    * Gets or sets whether clustering billboard entities is enabled.
-   * @memberof EntityCluster.prototype
    * @type {boolean}
    */
   get clusterBillboards() {
     return this._clusterBillboards;
   }
 
-  /**
-   * Gets or sets whether clustering billboard entities is enabled.
-   * @memberof EntityCluster.prototype
-   * @type {boolean}
-   */
   set clusterBillboards(value) {
     this._clusterDirty =
       this._clusterDirty || value !== this._clusterBillboards;
@@ -399,18 +374,12 @@ class EntityCluster {
 
   /**
    * Gets or sets whether clustering labels entities is enabled.
-   * @memberof EntityCluster.prototype
    * @type {boolean}
    */
   get clusterLabels() {
     return this._clusterLabels;
   }
 
-  /**
-   * Gets or sets whether clustering labels entities is enabled.
-   * @memberof EntityCluster.prototype
-   * @type {boolean}
-   */
   set clusterLabels(value) {
     this._clusterDirty = this._clusterDirty || value !== this._clusterLabels;
     this._clusterLabels = value;
@@ -418,18 +387,12 @@ class EntityCluster {
 
   /**
    * Gets or sets whether clustering point entities is enabled.
-   * @memberof EntityCluster.prototype
    * @type {boolean}
    */
   get clusterPoints() {
     return this._clusterPoints;
   }
 
-  /**
-   * Gets or sets whether clustering point entities is enabled.
-   * @memberof EntityCluster.prototype
-   * @type {boolean}
-   */
   set clusterPoints(value) {
     this._clusterDirty = this._clusterDirty || value !== this._clusterPoints;
     this._clusterPoints = value;
@@ -437,7 +400,6 @@ class EntityCluster {
 
   /**
    * Returns true when all clustered data has been rendered.
-   * @memberof EntityCluster.prototype
    * @type {boolean}
    * @readonly
    * @private

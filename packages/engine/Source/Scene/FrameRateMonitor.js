@@ -210,7 +210,6 @@ class FrameRateMonitor {
 
   /**
    * Gets the {@link Scene} instance for which to monitor performance.
-   * @memberof FrameRateMonitor.prototype
    * @type {Scene}
    */
   get scene() {
@@ -221,7 +220,6 @@ class FrameRateMonitor {
    * Gets the event that is raised when a low frame rate is detected.  The function will be passed
    * the {@link Scene} instance as its first parameter and the average number of frames per second
    * over the sampling window as its second parameter.
-   * @memberof FrameRateMonitor.prototype
    * @type {Event}
    */
   get lowFrameRate() {
@@ -232,7 +230,6 @@ class FrameRateMonitor {
    * Gets the event that is raised when the frame rate returns to a normal level after having been low.
    * The function will be passed the {@link Scene} instance as its first parameter and the average
    * number of frames per second over the sampling window as its second parameter.
-   * @memberof FrameRateMonitor.prototype
    * @type {Event}
    */
   get nominalFrameRate() {
@@ -242,7 +239,6 @@ class FrameRateMonitor {
   /**
    * Gets the most recently computed average frames-per-second over the last <code>samplingWindow</code>.
    * This property may be undefined if the frame rate has not been computed.
-   * @memberof FrameRateMonitor.prototype
    * @type {number}
    */
   get lastFramesPerSecond() {

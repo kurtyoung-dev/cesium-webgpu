@@ -36,7 +36,6 @@ class ModelNode {
   /**
    * The value of the <code>name</code> property of this node.
    *
-   * @memberof ModelNode.prototype
    *
    * @type {string}
    * @readonly
@@ -48,7 +47,6 @@ class ModelNode {
   /**
    * The index of the node in the glTF.
    *
-   * @memberof ModelNode.prototype
    *
    * @type {number}
    * @readonly
@@ -60,7 +58,6 @@ class ModelNode {
   /**
    * Determines if this node and its children will be shown.
    *
-   * @memberof ModelNode.prototype
    * @type {boolean}
    *
    * @default true
@@ -69,14 +66,6 @@ class ModelNode {
     return this._runtimeNode.show;
   }
 
-  /**
-   * Determines if this node and its children will be shown.
-   *
-   * @memberof ModelNode.prototype
-   * @type {boolean}
-   *
-   * @default true
-   */
   set show(value) {
     this._runtimeNode.show = value;
   }
@@ -91,26 +80,12 @@ class ModelNode {
    * setting individual elements of the matrix will not work.
    * </p>
    *
-   * @memberof ModelNode.prototype
    * @type {Matrix4}
    */
   get matrix() {
     return this._runtimeNode.transform;
   }
 
-  /**
-   * The node's 4x4 matrix transform from its local coordinates to
-   * its parent's. Setting the matrix to undefined will restore the
-   * node's original transform, and allow the node to be animated by
-   * any animations in the model again.
-   * <p>
-   * For changes to take effect, this property must be assigned to;
-   * setting individual elements of the matrix will not work.
-   * </p>
-   *
-   * @memberof ModelNode.prototype
-   * @type {Matrix4}
-   */
   set matrix(value) {
     if (defined(value)) {
       this._runtimeNode.transform = value;
@@ -127,7 +102,6 @@ class ModelNode {
    * coordinates to its parent's, without any node transformations
    * or articulations applied.
    *
-   * @memberof ModelNode.prototype
    * @type {Matrix4}
    */
   get originalMatrix() {

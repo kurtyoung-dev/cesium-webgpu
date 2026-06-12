@@ -1,6 +1,4 @@
 /**
- * @module WebGPURenderBundleManager
- *
  * Manages WebGPU render bundles for pre-encoding static draw commands.
  * Render bundles dramatically reduce CPU overhead for geometry that doesn't
  * change command structure frame-to-frame (e.g., terrain tiles, buildings).
@@ -13,6 +11,7 @@
  *
  * @see https://www.w3.org/TR/webgpu/#render-bundles
  * @private
+ * @module WebGPURenderBundleManager
  */
 
 /// <reference types="@webgpu/types" />

@@ -256,18 +256,12 @@ class RenderLayer {
 
   /**
    * The execution order of this layer. Lower values render first.
-   * @memberof RenderLayer.prototype
    * @type {number}
    */
   get order() {
     return this._order;
   }
 
-  /**
-   * The execution order of this layer. Lower values render first.
-   * @memberof RenderLayer.prototype
-   * @type {number}
-   */
   set order(value) {
     if (this._order !== value) {
       this._order = value;

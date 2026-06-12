@@ -100,7 +100,9 @@ export interface CesiumRenderStateLike {
 //  - KEEP = 0x1E00, REPLACE = 0x1E01, INCR = 0x1E02, DECR = 0x1E03,
 //    INVERT = 0x150A, INCR_WRAP = 0x8507, DECR_WRAP = 0x8508
 
-function glCompareToGPU(func: number | undefined): GPUCompareFunction | undefined {
+function glCompareToGPU(
+  func: number | undefined,
+): GPUCompareFunction | undefined {
   switch (func) {
     case 0x0200:
       return "never";
@@ -123,7 +125,9 @@ function glCompareToGPU(func: number | undefined): GPUCompareFunction | undefine
   }
 }
 
-function glBlendFactorToGPU(factor: number | undefined): GPUBlendFactor | undefined {
+function glBlendFactorToGPU(
+  factor: number | undefined,
+): GPUBlendFactor | undefined {
   switch (factor) {
     case 0:
       return "zero";
@@ -165,7 +169,9 @@ function glBlendFactorToGPU(factor: number | undefined): GPUBlendFactor | undefi
   }
 }
 
-function glBlendEquationToGPU(eq: number | undefined): GPUBlendOperation | undefined {
+function glBlendEquationToGPU(
+  eq: number | undefined,
+): GPUBlendOperation | undefined {
   switch (eq) {
     case 0x8006:
       return "add";
@@ -182,7 +188,9 @@ function glBlendEquationToGPU(eq: number | undefined): GPUBlendOperation | undef
   }
 }
 
-function glStencilOpToGPU(op: number | undefined): GPUStencilOperation | undefined {
+function glStencilOpToGPU(
+  op: number | undefined,
+): GPUStencilOperation | undefined {
   switch (op) {
     case 0:
       return "zero";
@@ -205,7 +213,10 @@ function glStencilOpToGPU(op: number | undefined): GPUStencilOperation | undefin
   }
 }
 
-function glCullFaceToGPU(enabled: boolean | undefined, face: number | undefined): GPUCullMode {
+function glCullFaceToGPU(
+  enabled: boolean | undefined,
+  face: number | undefined,
+): GPUCullMode {
   if (!enabled) {
     return "none";
   }
@@ -292,15 +303,13 @@ export function renderStateToPipelineVariant(
   if (blending?.enabled) {
     const blend: GPUBlendState = {
       color: {
-        srcFactor:
-          glBlendFactorToGPU(blending.functionSourceRgb) ?? "one",
+        srcFactor: glBlendFactorToGPU(blending.functionSourceRgb) ?? "one",
         dstFactor:
           glBlendFactorToGPU(blending.functionDestinationRgb) ?? "zero",
         operation: glBlendEquationToGPU(blending.equationRgb) ?? "add",
       },
       alpha: {
-        srcFactor:
-          glBlendFactorToGPU(blending.functionSourceAlpha) ?? "one",
+        srcFactor: glBlendFactorToGPU(blending.functionSourceAlpha) ?? "one",
         dstFactor:
           glBlendFactorToGPU(blending.functionDestinationAlpha) ?? "zero",
         operation: glBlendEquationToGPU(blending.equationAlpha) ?? "add",

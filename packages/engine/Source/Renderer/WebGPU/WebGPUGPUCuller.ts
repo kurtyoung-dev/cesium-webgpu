@@ -1,6 +1,4 @@
 /**
- * @module WebGPUGPUCuller
- *
  * GPU-side frustum culling via compute shader.
  * Tests arrays of bounding spheres against frustum planes entirely on the GPU,
  * eliminating the CPU bottleneck for dense 3D Tiles scenes.
@@ -18,6 +16,7 @@
  * culler.uploadFrustumPlanes(frustumPlanes);
  * culler.dispatch(commandEncoder, objectCount, CullMode.VISIBILITY);
  * // After submit: read visibilityFlags or use indirect draw buffer
+ * @module WebGPUGPUCuller
  */
 
 /// <reference types="@webgpu/types" />

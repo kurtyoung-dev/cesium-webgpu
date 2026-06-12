@@ -207,7 +207,6 @@ class TileBoundingRegion {
   /**
    * The underlying bounding volume
    *
-   * @memberof TileBoundingRegion.prototype
    *
    * @type {object}
    * @readonly
@@ -219,7 +218,6 @@ class TileBoundingRegion {
   /**
    * The underlying bounding sphere
    *
-   * @memberof TileBoundingRegion.prototype
    *
    * @type {BoundingSphere}
    * @readonly

@@ -153,7 +153,6 @@ class TileMetadata {
   /**
    * The class that properties conform to.
    *
-   * @memberof TileMetadata.prototype
    * @type {MetadataClass}
    * @readonly
    * @private
@@ -165,7 +164,6 @@ class TileMetadata {
   /**
    * Extra user-defined properties.
    *
-   * @memberof TileMetadata.prototype
    * @type {object}
    * @readonly
    * @private
@@ -177,7 +175,6 @@ class TileMetadata {
   /**
    * An object containing extensions.
    *
-   * @memberof TileMetadata.prototype
    * @type {object}
    * @readonly
    * @private

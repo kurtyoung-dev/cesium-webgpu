@@ -1,6 +1,4 @@
 /**
- * @module WebGPUIndirectDrawManager
- *
  * Manages indirect draw buffers for GPU-driven rendering.
  * Instead of issuing thousands of individual draw calls from the CPU,
  * a compute shader fills an indirect draw buffer with draw parameters,
@@ -21,6 +19,7 @@
  * manager.flush(); // Writes all draw params to GPU buffer
  * // In render pass:
  * renderPass.drawIndirect(manager.indirectBuffer, 0);
+ * @module WebGPUIndirectDrawManager
  */
 
 /// <reference types="@webgpu/types" />

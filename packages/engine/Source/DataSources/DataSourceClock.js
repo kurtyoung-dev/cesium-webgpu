@@ -99,17 +99,6 @@ class DataSourceClock {
     result.clockStep = this.clockStep ?? result.clockStep;
     return result;
   }
-
-  /**
-   * Gets the event that is raised whenever a new property is assigned.
-   * @memberof DataSourceClock.prototype
-   *
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 Object.defineProperties(DataSourceClock.prototype, {

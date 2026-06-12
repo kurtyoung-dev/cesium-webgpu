@@ -26,6 +26,7 @@
 
 packages/engine/Build/**
 packages/engine/index.js
+packages/engine/index-wgsl.js
 packages/engine/Source/Scene/GltfPipeline/**
 packages/engine/Source/Shaders/**/*.js
 packages/engine/Source/ThirdParty/**

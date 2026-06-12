@@ -159,7 +159,6 @@ class ClippingPolygon {
   /**
    * Returns the total number of positions in the polygon, include any holes.
    *
-   * @memberof ClippingPolygon.prototype
    * @type {number}
    * @readonly
    */
@@ -170,7 +169,6 @@ class ClippingPolygon {
   /**
    * Returns the outer ring of positions.
    *
-   * @memberof ClippingPolygon.prototype
    * @type {Cartesian3[]}
    * @readonly
    */
@@ -181,7 +179,6 @@ class ClippingPolygon {
   /**
    * Returns the ellipsoid used to project the polygon onto surfaces when clipping.
    *
-   * @memberof ClippingPolygon.prototype
    * @type {Ellipsoid}
    * @readonly
    */

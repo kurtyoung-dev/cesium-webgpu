@@ -251,7 +251,6 @@ class NavigationHelpButton {
 
   /**
    * Gets the parent container.
-   * @memberof NavigationHelpButton.prototype
    *
    * @type {Element}
    */
@@ -261,7 +260,6 @@ class NavigationHelpButton {
 
   /**
    * Gets the view model.
-   * @memberof NavigationHelpButton.prototype
    *
    * @type {NavigationHelpButtonViewModel}
    */

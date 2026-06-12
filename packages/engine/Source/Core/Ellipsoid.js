@@ -551,7 +551,6 @@ class Ellipsoid {
 
   /**
    * Gets the radii of the ellipsoid.
-   * @memberof Ellipsoid.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -561,7 +560,6 @@ class Ellipsoid {
 
   /**
    * Gets the squared radii of the ellipsoid.
-   * @memberof Ellipsoid.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -571,7 +569,6 @@ class Ellipsoid {
 
   /**
    * Gets the radii of the ellipsoid raise to the fourth power.
-   * @memberof Ellipsoid.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -581,7 +578,6 @@ class Ellipsoid {
 
   /**
    * Gets one over the radii of the ellipsoid.
-   * @memberof Ellipsoid.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -591,7 +587,6 @@ class Ellipsoid {
 
   /**
    * Gets one over the squared radii of the ellipsoid.
-   * @memberof Ellipsoid.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -601,7 +596,6 @@ class Ellipsoid {
 
   /**
    * Gets the minimum radius of the ellipsoid.
-   * @memberof Ellipsoid.prototype
    * @type {number}
    * @readonly
    */
@@ -611,7 +605,6 @@ class Ellipsoid {
 
   /**
    * Gets the maximum radius of the ellipsoid.
-   * @memberof Ellipsoid.prototype
    * @type {number}
    * @readonly
    */

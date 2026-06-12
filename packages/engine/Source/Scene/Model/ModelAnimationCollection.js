@@ -508,7 +508,6 @@ class ModelAnimationCollection {
   /**
    * The number of animations in the collection.
    *
-   * @memberof ModelAnimationCollection.prototype
    *
    * @type {number}
    * @readonly
@@ -520,7 +519,6 @@ class ModelAnimationCollection {
   /**
    * The model that owns this animation collection.
    *
-   * @memberof ModelAnimationCollection.prototype
    *
    * @type {Model}
    * @readonly

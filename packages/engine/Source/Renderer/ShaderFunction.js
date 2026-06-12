@@ -1,4 +1,3 @@
-
 /**
  * A utility for dynamically-generating a GLSL function
  *

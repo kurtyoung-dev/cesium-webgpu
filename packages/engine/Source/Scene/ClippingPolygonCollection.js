@@ -576,7 +576,6 @@ class ClippingPolygonCollection {
    * {@link ClippingPolygonCollection#get} to iterate over all the polygons
    * in the collection.
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -587,7 +586,6 @@ class ClippingPolygonCollection {
   /**
    * Returns the total number of positions in all polygons in the collection.
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @type {number}
    * @readonly
    * @private
@@ -599,7 +597,6 @@ class ClippingPolygonCollection {
   /**
    * Returns a texture containing the packed computed spherical extents for each polygon
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @type {Texture}
    * @readonly
    * @private
@@ -611,7 +608,6 @@ class ClippingPolygonCollection {
   /**
    * Returns the number of packed extents, which can be fewer than the number of polygons.
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @type {number}
    * @readonly
    * @private
@@ -623,7 +619,6 @@ class ClippingPolygonCollection {
   /**
    * Returns the number of pixels needed in the texture containing the packed computed spherical extents for each polygon.
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @type {number}
    * @readonly
    * @private
@@ -635,7 +630,6 @@ class ClippingPolygonCollection {
   /**
    * Returns the number of pixels needed in the texture containing the packed polygon positions.
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @type {number}
    * @readonly
    * @private
@@ -649,7 +643,6 @@ class ClippingPolygonCollection {
   /**
    * Returns a texture containing the computed signed distance of each polygon.
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @type {Texture}
    * @readonly
    * @private
@@ -661,7 +654,6 @@ class ClippingPolygonCollection {
   /**
    * A reference to the ClippingPolygonCollection's owner, if any.
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @readonly
    * @private
    */
@@ -675,7 +667,6 @@ class ClippingPolygonCollection {
    * Clipping mode is encoded in the sign of the number, which is just the total position count.
    * If this value changes, then shader regeneration is necessary.
    *
-   * @memberof ClippingPolygonCollection.prototype
    * @returns {number} A Number that describes the ClippingPolygonCollection's state.
    * @readonly
    * @private

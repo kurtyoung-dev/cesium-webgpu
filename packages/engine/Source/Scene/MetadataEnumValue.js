@@ -41,7 +41,6 @@ class MetadataEnumValue {
   /**
    * The integer value.
    *
-   * @memberof MetadataEnumValue.prototype
    * @type {number}
    * @readonly
    */
@@ -52,7 +51,6 @@ class MetadataEnumValue {
   /**
    * The name of the enum value.
    *
-   * @memberof MetadataEnumValue.prototype
    * @type {string}
    * @readonly
    */
@@ -63,7 +61,6 @@ class MetadataEnumValue {
   /**
    * The description of the enum value.
    *
-   * @memberof MetadataEnumValue.prototype
    * @type {string}
    * @readonly
    */
@@ -74,7 +71,6 @@ class MetadataEnumValue {
   /**
    * Extra user-defined properties.
    *
-   * @memberof MetadataEnumValue.prototype
    * @type {*}
    * @readonly
    */
@@ -85,7 +81,6 @@ class MetadataEnumValue {
   /**
    * An object containing extensions.
    *
-   * @memberof MetadataEnumValue.prototype
    * @type {object}
    * @readonly
    */

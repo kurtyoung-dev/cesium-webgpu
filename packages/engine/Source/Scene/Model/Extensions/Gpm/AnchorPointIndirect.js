@@ -36,7 +36,6 @@ class AnchorPointIndirect {
   /**
    * Anchor point geographic coordinates in meters as X/Easting, Y/Northing, Z/HAE
    *
-   * @memberof AnchorPointIndirect.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -48,7 +47,6 @@ class AnchorPointIndirect {
    * The delta-x delta-y delta-z adjustment values in meters per anchor
    * point.
    *
-   * @memberof AnchorPointIndirect.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -59,7 +57,6 @@ class AnchorPointIndirect {
   /**
    * The 3x3 covariance matrix.
    *
-   * @memberof AnchorPointIndirect.prototype
    * @type {Matrix3}
    * @readonly
    */

@@ -76,7 +76,6 @@ class Credit {
 
   /**
    * The credit content
-   * @memberof Credit.prototype
    * @type {string}
    * @readonly
    */
@@ -85,7 +84,6 @@ class Credit {
   }
 
   /**
-   * @memberof Credit.prototype
    * @type {number}
    * @readonly
    *
@@ -97,25 +95,18 @@ class Credit {
 
   /**
    * Whether the credit should be displayed on screen or in a lightbox
-   * @memberof Credit.prototype
    * @type {boolean}
    */
   get showOnScreen() {
     return this._showOnScreen;
   }
 
-  /**
-   * Whether the credit should be displayed on screen or in a lightbox
-   * @memberof Credit.prototype
-   * @type {boolean}
-   */
   set showOnScreen(value) {
     this._showOnScreen = value;
   }
 
   /**
    * Gets the credit element
-   * @memberof Credit.prototype
    * @type {HTMLElement}
    * @readonly
    */

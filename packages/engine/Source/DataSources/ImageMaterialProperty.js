@@ -107,33 +107,6 @@ class ImageMaterialProperty {
         Property.equals(this._transparent, other._transparent))
     );
   }
-
-  /**
-   * Gets a value indicating if this property is constant.  A property is considered
-   * constant if getValue always returns the same result for the current definition.
-   * @memberof ImageMaterialProperty.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   */
-  get isConstant() {
-    return (
-      Property.isConstant(this._image) && Property.isConstant(this._repeat)
-    );
-  }
-
-  /**
-   * Gets the event that is raised whenever the definition of this property changes.
-   * The definition is considered to have changed if a call to getValue would return
-   * a different result for the same time.
-   * @memberof ImageMaterialProperty.prototype
-   *
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 const timeScratch = new JulianDate();

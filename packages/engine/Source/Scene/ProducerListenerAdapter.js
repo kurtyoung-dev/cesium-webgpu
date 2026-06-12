@@ -2,6 +2,8 @@ import defined from "../Core/defined.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import Cesium3DTilesInvalidationFeedAdapter from "./Cesium3DTilesInvalidationFeedAdapter.js";
 
+/** @import { InvalidationLayer, InvalidationSet } from "./Cesium3DTilesInvalidationFeedAdapter.js"; */
+
 /* ============================================================================
  * Producer "listener invalidations" v2.0 adapter
  * ----------------------------------------------------------------------------
@@ -83,7 +85,7 @@ class ProducerListenerAdapter extends Cesium3DTilesInvalidationFeedAdapter {
    * Parse a producer listener-invalidations v2.0 payload.
    * @param {string|ArrayBuffer} payload
    * @param {object} [perCallOptions] Override sourceMtime / sourceUrl.
-   * @returns {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]}
+   * @returns {InvalidationSet[]}
    */
   parse(payload, perCallOptions) {
     const text = decodePayload(payload);
@@ -101,7 +103,7 @@ class ProducerListenerAdapter extends Cesium3DTilesInvalidationFeedAdapter {
         : this._sourceUrl;
 
     const chunks = splitBlocks(text);
-    /** @type {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]} */
+    /** @type {InvalidationSet[]} */
     const sets = [];
 
     for (let b = 0; b < chunks.length; ++b) {
@@ -203,7 +205,7 @@ function splitBlocks(text) {
  * @private
  */
 function buildLayerMap(resources) {
-  /** @type {Map<string, import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationLayer>} */
+  /** @type {Map<string, InvalidationLayer>} */
   const layers = new Map();
 
   for (let i = 0; i < resources.length; ++i) {

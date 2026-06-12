@@ -1,6 +1,4 @@
 /**
- * @module WebGPUDevicePool
- *
  * Strategy B: WebGPU Device Sharing — One GPUDevice, Multiple Canvases.
  *
  * AUDIT_2026_05_02 C.1 — **Status: ACTIVE (adopted Batch 135).**
@@ -83,6 +81,7 @@
  *
  * @see SharedResourcePool
  * @see ContextRegistry
+ * @module WebGPUDevicePool
  */
 
 import { WebGPUFeatureFlags, DESIRED_FEATURES } from "./WebGPUFeatureFlags.js";

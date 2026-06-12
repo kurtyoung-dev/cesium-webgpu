@@ -52,6 +52,17 @@ exports.defineTags = function (dictionary) {
     },
   });
 
+  // @internal marks API that must remain TypeScript-public (it is called
+  // cross-module, so TS private visibility would be wrong) but is NOT
+  // part of the published Cesium API. For documentation and .d.ts
+  // generation it behaves exactly like @private.
+  dictionary.defineTag("internal", {
+    mustHaveValue: false,
+    onTagged: function (doclet) {
+      doclet.access = "private";
+    },
+  });
+
   // @privateParam looks just like @param in the code, but is ignored
   // in the output
   dictionary.defineTag("privateParam", {

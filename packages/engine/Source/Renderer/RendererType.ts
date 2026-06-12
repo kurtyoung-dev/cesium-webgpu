@@ -1,6 +1,4 @@
 /**
- * @module RendererType
- *
  * Enum defining the available renderer backends for CesiumJS.
  * This allows users to explicitly choose between WebGL and WebGPU rendering,
  * or let the system automatically select the best available option.
@@ -20,6 +18,7 @@
  *     renderer: RendererType.AUTO
  *   }
  * });
+ * @module RendererType
  */
 
 /**

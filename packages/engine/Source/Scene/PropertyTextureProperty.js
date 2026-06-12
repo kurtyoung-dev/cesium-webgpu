@@ -79,7 +79,6 @@ class PropertyTextureProperty {
   /**
    * The texture reader.
    *
-   * @memberof PropertyTextureProperty.prototype
    * @type {ModelComponents.TextureReader}
    * @readonly
    * @private
@@ -92,7 +91,6 @@ class PropertyTextureProperty {
    * True if offset/scale should be applied. If both offset/scale were
    * undefined, they default to identity so this property is set false
    *
-   * @memberof PropertyTextureProperty.prototype
    * @type {boolean}
    * @readonly
    * @private
@@ -110,7 +108,6 @@ class PropertyTextureProperty {
    * defined, and initialized to the default value if it was not contained
    * in the class property JSON.
    *
-   * @memberof PropertyTextureProperty.prototype
    * @type {number|Cartesian2|Cartesian3|Cartesian4|Matrix2|Matrix3|Matrix4}
    * @readonly
    * @private
@@ -128,7 +125,6 @@ class PropertyTextureProperty {
    * defined, and initialized to the default value if it was not contained
    * in the class property JSON.
    *
-   * @memberof PropertyTextureProperty.prototype
    * @type {number|Cartesian2|Cartesian3|Cartesian4|Matrix2|Matrix3|Matrix4}
    * @readonly
    * @private
@@ -140,7 +136,6 @@ class PropertyTextureProperty {
   /**
    * The properties inherited from this property's class
    *
-   * @memberof PropertyTextureProperty.prototype
    * @type {MetadataClassProperty}
    * @readonly
    * @private
@@ -152,7 +147,6 @@ class PropertyTextureProperty {
   /**
    * Extra user-defined properties.
    *
-   * @memberof PropertyTextureProperty.prototype
    * @type {*}
    * @readonly
    * @private
@@ -164,7 +158,6 @@ class PropertyTextureProperty {
   /**
    * An object containing extensions.
    *
-   * @memberof PropertyTextureProperty.prototype
    * @type {*}
    * @readonly
    * @private

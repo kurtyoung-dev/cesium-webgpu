@@ -1,6 +1,4 @@
 /**
- * @module VisualPerformanceTargetService
- *
  * Adaptive visual quality coordinator. Acts as the puppeteer of both Scene
  * and Renderer features that have a tunable quality dial — the user picks a
  * target framerate (e.g. "hold 60 FPS") and this service dynamically adjusts
@@ -54,6 +52,7 @@
  *    is nothing meaningful to tune.
  *
  * @private
+ * @module VisualPerformanceTargetService
  */
 
 import defined from "../Core/defined.js";

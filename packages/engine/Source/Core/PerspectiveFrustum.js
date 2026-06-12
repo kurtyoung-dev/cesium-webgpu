@@ -249,7 +249,6 @@ class PerspectiveFrustum {
    * Gets the perspective projection matrix computed from the view frustum.
    * If necessary, the projection matrix will be recomputed.
    *
-   * @memberof PerspectiveFrustum.prototype
    * @type {Matrix4}
    * @readonly
    *
@@ -263,7 +262,6 @@ class PerspectiveFrustum {
 
   /**
    * The perspective projection matrix computed from the view frustum with an infinite far plane.
-   * @memberof PerspectiveFrustum.prototype
    * @type {Matrix4}
    * @readonly
    *
@@ -276,7 +274,6 @@ class PerspectiveFrustum {
 
   /**
    * Gets the angle of the vertical field of view, in radians.
-   * @memberof PerspectiveFrustum.prototype
    * @type {number|undefined}
    * @readonly
    * @default undefined
@@ -297,7 +294,6 @@ class PerspectiveFrustum {
 
   /**
    * Gets the orthographic projection matrix computed from the view frustum.
-   * @memberof PerspectiveFrustum.prototype
    * @type {PerspectiveOffCenterFrustum}
    * @readonly
    * @private

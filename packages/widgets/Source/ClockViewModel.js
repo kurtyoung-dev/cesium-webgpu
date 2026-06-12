@@ -184,7 +184,6 @@ class ClockViewModel {
 
   /**
    * Gets the underlying Clock.
-   * @memberof ClockViewModel.prototype
    * @type {Clock}
    */
   get clock() {

@@ -435,7 +435,6 @@ class GroundPolylinePrimitive {
   /**
    * Determines if geometry vertex attributes are interleaved, which can slightly improve rendering performance.
    *
-   * @memberof GroundPolylinePrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -449,7 +448,6 @@ class GroundPolylinePrimitive {
   /**
    * When <code>true</code>, the primitive does not keep a reference to the input <code>geometryInstances</code> to save memory.
    *
-   * @memberof GroundPolylinePrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -463,7 +461,6 @@ class GroundPolylinePrimitive {
   /**
    * When <code>true</code>, each geometry instance will only be pickable with {@link Scene#pick}.  When <code>false</code>, GPU memory is saved.
    *
-   * @memberof GroundPolylinePrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -477,7 +474,6 @@ class GroundPolylinePrimitive {
   /**
    * Determines if the geometry instances will be created and batched on a web worker.
    *
-   * @memberof GroundPolylinePrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -493,7 +489,6 @@ class GroundPolylinePrimitive {
    * true, the primitive will be rendered the next time that {@link GroundPolylinePrimitive#update}
    * is called.
    *
-   * @memberof GroundPolylinePrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -508,7 +503,6 @@ class GroundPolylinePrimitive {
    * If true, draws the shadow volume for each geometry in the primitive.
    * </p>
    *
-   * @memberof GroundPolylinePrimitive.prototype
    *
    * @type {boolean}
    * @readonly

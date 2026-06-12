@@ -95,7 +95,6 @@ class Cesium3DTilesetMetadata {
   /**
    * Schema containing classes and enums.
    *
-   * @memberof Cesium3DTilesetMetadata.prototype
    * @type {MetadataSchema}
    * @readonly
    * @private
@@ -107,7 +106,6 @@ class Cesium3DTilesetMetadata {
   /**
    * Metadata about groups of content.
    *
-   * @memberof Cesium3DTilesetMetadata.prototype
    * @type {GroupMetadata[]}
    * @readonly
    * @private
@@ -120,7 +118,6 @@ class Cesium3DTilesetMetadata {
    * The IDs of the group metadata in the corresponding groups dictionary.
    * Only populated if using the legacy schema.
    *
-   * @memberof Cesium3DTilesetMetadata.prototype
    * @type {}
    * @readonly
    * @private
@@ -132,7 +129,6 @@ class Cesium3DTilesetMetadata {
   /**
    * Metadata about the tileset as a whole.
    *
-   * @memberof Cesium3DTilesetMetadata.prototype
    * @type {TilesetMetadata}
    * @readonly
    * @private
@@ -148,7 +144,6 @@ class Cesium3DTilesetMetadata {
    * in the 3D Tiles spec for the full set of properties.
    * </p>
    *
-   * @memberof Cesium3DTilesetMetadata.prototype
    * @type {object}
    * @readonly
    * @private
@@ -160,7 +155,6 @@ class Cesium3DTilesetMetadata {
   /**
    * Extra user-defined properties.
    *
-   * @memberof Cesium3DTilesetMetadata.prototype
    * @type {*}
    * @readonly
    * @private
@@ -172,7 +166,6 @@ class Cesium3DTilesetMetadata {
   /**
    * An object containing extensions.
    *
-   * @memberof Cesium3DTilesetMetadata.prototype
    * @type {object}
    * @readonly
    * @private

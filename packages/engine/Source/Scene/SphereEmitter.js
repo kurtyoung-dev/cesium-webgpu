@@ -46,7 +46,6 @@ class SphereEmitter {
 
   /**
    * The radius of the sphere in meters.
-   * @memberof SphereEmitter.prototype
    * @type {number}
    * @default 1.0
    */
@@ -54,12 +53,6 @@ class SphereEmitter {
     return this._radius;
   }
 
-  /**
-   * The radius of the sphere in meters.
-   * @memberof SphereEmitter.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set radius(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThan("value", value, 0.0);

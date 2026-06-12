@@ -1,6 +1,4 @@
 /**
- * @module WebGPULogDepth
- *
  * Shared infrastructure for renderer-wide logarithmic depth (Approach A for
  * NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). This module is the single point
  * that decides whether log depth is active and packs the per-frustum log-depth
@@ -42,6 +40,7 @@
  * packing their `CameraUniforms`; the globe (bespoke 116-float layout) and the
  * handful of custom classifier UBs carry the same three scalars in their own
  * reserved lanes (wired alongside their `frag_depth` write).
+ * @module WebGPULogDepth
  */
 
 /** Float index of `cameraPosition.w` within the CameraUniforms struct. */

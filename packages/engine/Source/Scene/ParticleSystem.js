@@ -324,7 +324,6 @@ class ParticleSystem {
 
   /**
    * The particle emitter for this
-   * @memberof ParticleSystem.prototype
    * @type {ParticleEmitter}
    * @default CircleEmitter
    */
@@ -332,12 +331,6 @@ class ParticleSystem {
     return this._emitter;
   }
 
-  /**
-   * The particle emitter for this
-   * @memberof ParticleSystem.prototype
-   * @type {ParticleEmitter}
-   * @default CircleEmitter
-   */
   set emitter(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("value", value);
@@ -347,7 +340,6 @@ class ParticleSystem {
 
   /**
    * An array of {@link ParticleBurst}, emitting bursts of particles at periodic times.
-   * @memberof ParticleSystem.prototype
    * @type {ParticleBurst[]}
    * @default undefined
    */
@@ -355,12 +347,6 @@ class ParticleSystem {
     return this._bursts;
   }
 
-  /**
-   * An array of {@link ParticleBurst}, emitting bursts of particles at periodic times.
-   * @memberof ParticleSystem.prototype
-   * @type {ParticleBurst[]}
-   * @default undefined
-   */
   set bursts(value) {
     this._bursts = value;
     this._updateParticlePool = true;
@@ -368,7 +354,6 @@ class ParticleSystem {
 
   /**
    * The 4x4 transformation matrix that transforms the particle system from model to world coordinates.
-   * @memberof ParticleSystem.prototype
    * @type {Matrix4}
    * @default Matrix4.IDENTITY
    */
@@ -376,12 +361,6 @@ class ParticleSystem {
     return this._modelMatrix;
   }
 
-  /**
-   * The 4x4 transformation matrix that transforms the particle system from model to world coordinates.
-   * @memberof ParticleSystem.prototype
-   * @type {Matrix4}
-   * @default Matrix4.IDENTITY
-   */
   set modelMatrix(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("value", value);
@@ -393,7 +372,6 @@ class ParticleSystem {
 
   /**
    * The 4x4 transformation matrix that transforms the particle system emitter within the particle systems local coordinate system.
-   * @memberof ParticleSystem.prototype
    * @type {Matrix4}
    * @default Matrix4.IDENTITY
    */
@@ -401,12 +379,6 @@ class ParticleSystem {
     return this._emitterModelMatrix;
   }
 
-  /**
-   * The 4x4 transformation matrix that transforms the particle system emitter within the particle systems local coordinate system.
-   * @memberof ParticleSystem.prototype
-   * @type {Matrix4}
-   * @default Matrix4.IDENTITY
-   */
   set emitterModelMatrix(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("value", value);
@@ -418,7 +390,6 @@ class ParticleSystem {
 
   /**
    * The color of the particle at the beginning of its life.
-   * @memberof ParticleSystem.prototype
    * @type {Color}
    * @default Color.WHITE
    */
@@ -426,12 +397,6 @@ class ParticleSystem {
     return this._startColor;
   }
 
-  /**
-   * The color of the particle at the beginning of its life.
-   * @memberof ParticleSystem.prototype
-   * @type {Color}
-   * @default Color.WHITE
-   */
   set startColor(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("value", value);
@@ -441,7 +406,6 @@ class ParticleSystem {
 
   /**
    * The color of the particle at the end of its life.
-   * @memberof ParticleSystem.prototype
    * @type {Color}
    * @default Color.WHITE
    */
@@ -449,12 +413,6 @@ class ParticleSystem {
     return this._endColor;
   }
 
-  /**
-   * The color of the particle at the end of its life.
-   * @memberof ParticleSystem.prototype
-   * @type {Color}
-   * @default Color.WHITE
-   */
   set endColor(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("value", value);
@@ -464,7 +422,6 @@ class ParticleSystem {
 
   /**
    * The initial scale to apply to the image of the particle at the beginning of its life.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
@@ -472,12 +429,6 @@ class ParticleSystem {
     return this._startScale;
   }
 
-  /**
-   * The initial scale to apply to the image of the particle at the beginning of its life.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set startScale(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -487,7 +438,6 @@ class ParticleSystem {
 
   /**
    * The final scale to apply to the image of the particle at the end of its life.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
@@ -495,12 +445,6 @@ class ParticleSystem {
     return this._endScale;
   }
 
-  /**
-   * The final scale to apply to the image of the particle at the end of its life.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set endScale(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -510,7 +454,6 @@ class ParticleSystem {
 
   /**
    * The number of particles to emit per second.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 5
    */
@@ -518,12 +461,6 @@ class ParticleSystem {
     return this._emissionRate;
   }
 
-  /**
-   * The number of particles to emit per second.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 5
-   */
   set emissionRate(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -534,7 +471,6 @@ class ParticleSystem {
 
   /**
    * Sets the minimum bound in meters per second above which a particle's actual speed will be randomly chosen.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
@@ -542,12 +478,6 @@ class ParticleSystem {
     return this._minimumSpeed;
   }
 
-  /**
-   * Sets the minimum bound in meters per second above which a particle's actual speed will be randomly chosen.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set minimumSpeed(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -557,7 +487,6 @@ class ParticleSystem {
 
   /**
    * Sets the maximum bound in meters per second below which a particle's actual speed will be randomly chosen.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
@@ -565,12 +494,6 @@ class ParticleSystem {
     return this._maximumSpeed;
   }
 
-  /**
-   * Sets the maximum bound in meters per second below which a particle's actual speed will be randomly chosen.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set maximumSpeed(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -580,7 +503,6 @@ class ParticleSystem {
 
   /**
    * Sets the minimum bound in seconds for the possible duration of a particle's life above which a particle's actual life will be randomly chosen.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 5.0
    */
@@ -588,12 +510,6 @@ class ParticleSystem {
     return this._minimumParticleLife;
   }
 
-  /**
-   * Sets the minimum bound in seconds for the possible duration of a particle's life above which a particle's actual life will be randomly chosen.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 5.0
-   */
   set minimumParticleLife(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -603,7 +519,6 @@ class ParticleSystem {
 
   /**
    * Sets the maximum bound in seconds for the possible duration of a particle's life below which a particle's actual life will be randomly chosen.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 5.0
    */
@@ -611,12 +526,6 @@ class ParticleSystem {
     return this._maximumParticleLife;
   }
 
-  /**
-   * Sets the maximum bound in seconds for the possible duration of a particle's life below which a particle's actual life will be randomly chosen.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 5.0
-   */
   set maximumParticleLife(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -627,7 +536,6 @@ class ParticleSystem {
 
   /**
    * Sets the minimum mass of particles in kilograms.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
@@ -635,12 +543,6 @@ class ParticleSystem {
     return this._minimumMass;
   }
 
-  /**
-   * Sets the minimum mass of particles in kilograms.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set minimumMass(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -650,7 +552,6 @@ class ParticleSystem {
 
   /**
    * Sets the maximum mass of particles in kilograms.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
@@ -658,12 +559,6 @@ class ParticleSystem {
     return this._maximumMass;
   }
 
-  /**
-   * Sets the maximum mass of particles in kilograms.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set maximumMass(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -673,7 +568,6 @@ class ParticleSystem {
 
   /**
    * Sets the minimum bound, width by height, above which to randomly scale the particle image's dimensions in pixels.
-   * @memberof ParticleSystem.prototype
    * @type {Cartesian2}
    * @default new Cartesian2(1.0, 1.0)
    */
@@ -681,12 +575,6 @@ class ParticleSystem {
     return this._minimumImageSize;
   }
 
-  /**
-   * Sets the minimum bound, width by height, above which to randomly scale the particle image's dimensions in pixels.
-   * @memberof ParticleSystem.prototype
-   * @type {Cartesian2}
-   * @default new Cartesian2(1.0, 1.0)
-   */
   set minimumImageSize(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("value", value);
@@ -698,7 +586,6 @@ class ParticleSystem {
 
   /**
    * Sets the maximum bound, width by height, below which to randomly scale the particle image's dimensions in pixels.
-   * @memberof ParticleSystem.prototype
    * @type {Cartesian2}
    * @default new Cartesian2(1.0, 1.0)
    */
@@ -706,12 +593,6 @@ class ParticleSystem {
     return this._maximumImageSize;
   }
 
-  /**
-   * Sets the maximum bound, width by height, below which to randomly scale the particle image's dimensions in pixels.
-   * @memberof ParticleSystem.prototype
-   * @type {Cartesian2}
-   * @default new Cartesian2(1.0, 1.0)
-   */
   set maximumImageSize(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("value", value);
@@ -723,7 +604,6 @@ class ParticleSystem {
 
   /**
    * Gets or sets if the particle size is in meters or pixels. <code>true</code> to size particles in meters; otherwise, the size is in pixels.
-   * @memberof ParticleSystem.prototype
    * @type {boolean}
    * @default false
    */
@@ -731,12 +611,6 @@ class ParticleSystem {
     return this._sizeInMeters;
   }
 
-  /**
-   * Gets or sets if the particle size is in meters or pixels. <code>true</code> to size particles in meters; otherwise, the size is in pixels.
-   * @memberof ParticleSystem.prototype
-   * @type {boolean}
-   * @default false
-   */
   set sizeInMeters(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.bool("value", value);
@@ -746,7 +620,6 @@ class ParticleSystem {
 
   /**
    * How long the particle system will emit particles, in seconds.
-   * @memberof ParticleSystem.prototype
    * @type {number}
    * @default Number.MAX_VALUE
    */
@@ -754,12 +627,6 @@ class ParticleSystem {
     return this._lifetime;
   }
 
-  /**
-   * How long the particle system will emit particles, in seconds.
-   * @memberof ParticleSystem.prototype
-   * @type {number}
-   * @default Number.MAX_VALUE
-   */
   set lifetime(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
@@ -769,7 +636,6 @@ class ParticleSystem {
 
   /**
    * Fires an event when the particle system has reached the end of its lifetime.
-   * @memberof ParticleSystem.prototype
    * @type {Event}
    */
   get complete() {
@@ -778,7 +644,6 @@ class ParticleSystem {
 
   /**
    * When <code>true</code>, the particle system has reached the end of its lifetime; <code>false</code> otherwise.
-   * @memberof ParticleSystem.prototype
    * @type {boolean}
    */
   get isComplete() {

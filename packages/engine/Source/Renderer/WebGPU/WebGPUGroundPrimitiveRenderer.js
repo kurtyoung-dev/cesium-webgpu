@@ -1,6 +1,4 @@
 /**
- * @module WebGPUGroundPrimitiveRenderer
- *
  * Handles WebGPU rendering of GroundPrimitive / ClassificationPrimitive.
  *
  * **Architecture pivot (ADR-2026-04-28, Migration Session 1):** This
@@ -33,6 +31,7 @@
  *     normal-from-depth-derivative computation are not ported yet.
  *
  * @private
+ * @module WebGPUGroundPrimitiveRenderer
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";

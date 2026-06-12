@@ -165,7 +165,6 @@ class SelectionIndicatorViewModel {
 
   /**
    * Gets the HTML element containing the selection indicator.
-   * @memberof SelectionIndicatorViewModel.prototype
    *
    * @type {Element}
    */
@@ -175,7 +174,6 @@ class SelectionIndicatorViewModel {
 
   /**
    * Gets the HTML element that holds the selection indicator.
-   * @memberof SelectionIndicatorViewModel.prototype
    *
    * @type {Element}
    */
@@ -185,7 +183,6 @@ class SelectionIndicatorViewModel {
 
   /**
    * Gets the scene being used.
-   * @memberof SelectionIndicatorViewModel.prototype
    *
    * @type {Scene}
    */

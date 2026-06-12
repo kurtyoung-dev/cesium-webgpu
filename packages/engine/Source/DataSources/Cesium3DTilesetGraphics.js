@@ -72,16 +72,6 @@ class Cesium3DTilesetGraphics {
     this.maximumScreenSpaceError =
       this.maximumScreenSpaceError ?? source.maximumScreenSpaceError;
   }
-
-  /**
-   * Gets the event that is raised whenever a property or sub-property is changed or modified.
-   * @memberof Cesium3DTilesetGraphics.prototype
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 Object.defineProperties(Cesium3DTilesetGraphics.prototype, {

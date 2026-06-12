@@ -183,7 +183,6 @@ class SceneModePicker {
 
   /**
    * Gets the parent container.
-   * @memberof SceneModePicker.prototype
    *
    * @type {Element}
    */
@@ -193,7 +192,6 @@ class SceneModePicker {
 
   /**
    * Gets the view model.
-   * @memberof SceneModePicker.prototype
    *
    * @type {SceneModePickerViewModel}
    */

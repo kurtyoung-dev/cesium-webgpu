@@ -116,7 +116,6 @@ class StructuralMetadata {
   /**
    * Schema containing classes and enums.
    *
-   * @memberof StructuralMetadata.prototype
    * @type {MetadataSchema}
    * @readonly
    * @private
@@ -131,7 +130,6 @@ class StructuralMetadata {
    * See the {@link https://github.com/CesiumGS/glTF/blob/3d-tiles-next/extensions/2.0/Vendor/EXT_feature_metadata/schema/statistics.schema.json|statistics schema reference} for the full set of properties.
    * </p>
    *
-   * @memberof StructuralMetadata.prototype
    * @type {object}
    * @readonly
    * @private
@@ -143,7 +141,6 @@ class StructuralMetadata {
   /**
    * Extra user-defined properties.
    *
-   * @memberof StructuralMetadata.prototype
    * @type {*}
    * @readonly
    * @private
@@ -155,7 +152,6 @@ class StructuralMetadata {
   /**
    * An object containing extensions.
    *
-   * @memberof StructuralMetadata.prototype
    * @type {object}
    * @readonly
    * @private
@@ -167,7 +163,6 @@ class StructuralMetadata {
   /**
    * Number of property tables in the metadata.
    *
-   * @memberof StructuralMetadata.prototype
    * @type {number}
    * @readonly
    * @private
@@ -179,7 +174,6 @@ class StructuralMetadata {
   /**
    * The property tables in the metadata.
    *
-   * @memberof StructuralMetadata.prototype
    * @type {PropertyTable[]}
    * @readonly
    * @private
@@ -191,7 +185,6 @@ class StructuralMetadata {
   /**
    * The property textures in the metadata.
    *
-   * @memberof StructuralMetadata.prototype
    * @type {PropertyTexture[]}
    * @readonly
    * @private
@@ -203,7 +196,6 @@ class StructuralMetadata {
   /**
    * The property attributes from the structural metadata extension
    *
-   * @memberof StructuralMetadata.prototype
    * @type {PropertyAttribute[]}
    * @readonly
    * @private
@@ -215,7 +207,6 @@ class StructuralMetadata {
   /**
    * Total size in bytes across all property tables
    *
-   * @memberof StructuralMetadata.prototype
    * @type {number}
    * @readonly
    * @private

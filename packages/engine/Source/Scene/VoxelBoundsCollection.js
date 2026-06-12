@@ -305,7 +305,6 @@ class VoxelBoundsCollection {
    * {@link VoxelBoundsCollection#get} to iterate over all the planes
    * in the collection.
    *
-   * @memberof VoxelBoundsCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -318,7 +317,6 @@ class VoxelBoundsCollection {
    * collection. Otherwise, a region will only be clipped if it is on the
    * outside of every plane.
    *
-   * @memberof VoxelBoundsCollection.prototype
    * @type {boolean}
    * @default false
    */
@@ -326,15 +324,6 @@ class VoxelBoundsCollection {
     return this._unionClippingRegions;
   }
 
-  /**
-   * If true, a region will be clipped if it is on the outside of any plane in the
-   * collection. Otherwise, a region will only be clipped if it is on the
-   * outside of every plane.
-   *
-   * @memberof VoxelBoundsCollection.prototype
-   * @type {boolean}
-   * @default false
-   */
   set unionClippingRegions(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.bool("value", value);
@@ -351,7 +340,6 @@ class VoxelBoundsCollection {
   /**
    * Returns a texture containing packed, untransformed clipping planes.
    *
-   * @memberof VoxelBoundsCollection.prototype
    * @type {Texture}
    * @readonly
    * @private
@@ -366,7 +354,6 @@ class VoxelBoundsCollection {
    * Clipping mode is encoded in the sign of the number, which is just the plane count.
    * If this value changes, then shader regeneration is necessary.
    *
-   * @memberof VoxelBoundsCollection.prototype
    * @returns {number} A Number that describes the VoxelBoundsCollection's state.
    * @readonly
    * @private

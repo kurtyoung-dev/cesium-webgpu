@@ -317,7 +317,6 @@ class EllipsoidGeometryUpdater extends GeometryUpdater {
   /**
    * Gets the terrain offset property
    * @type {TerrainOffsetProperty}
-   * @memberof EllipsoidGeometryUpdater.prototype
    * @readonly
    * @private
    */

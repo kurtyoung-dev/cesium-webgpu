@@ -114,18 +114,12 @@ class TerrainPicker {
 
   /**
    * Indicates whether the terrain picker needs to be rebuilt due to changes in the underlying terrain mesh's vertices or indices.
-   * @memberof TerrainPicker.prototype
    * @type {boolean}
    */
   get needsRebuild() {
     return this._needsRebuild;
   }
 
-  /**
-   * Indicates whether the terrain picker needs to be rebuilt due to changes in the underlying terrain mesh's vertices or indices.
-   * @memberof TerrainPicker.prototype
-   * @type {boolean}
-   */
   set needsRebuild(value) {
     this._needsRebuild = value;
   }

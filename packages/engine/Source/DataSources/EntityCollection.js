@@ -340,7 +340,6 @@ class EntityCollection {
 
   /**
    * Gets a globally unique identifier for this collection.
-   * @memberof EntityCollection.prototype
    * @readonly
    * @type {string}
    */
@@ -351,7 +350,6 @@ class EntityCollection {
   /**
    * Gets the array of Entity instances in the collection.
    * This array should not be modified directly.
-   * @memberof EntityCollection.prototype
    * @readonly
    * @type {Entity[]}
    */
@@ -363,20 +361,12 @@ class EntityCollection {
    * Gets whether or not this entity collection should be
    * displayed.  When true, each entity is only displayed if
    * its own show property is also true.
-   * @memberof EntityCollection.prototype
    * @type {boolean}
    */
   get show() {
     return this._show;
   }
 
-  /**
-   * Gets whether or not this entity collection should be
-   * displayed.  When true, each entity is only displayed if
-   * its own show property is also true.
-   * @memberof EntityCollection.prototype
-   * @type {boolean}
-   */
   set show(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -423,7 +413,6 @@ class EntityCollection {
 
   /**
    * Gets the owner of this entity collection, ie. the data source or composite entity collection which created it.
-   * @memberof EntityCollection.prototype
    * @readonly
    * @type {DataSource|CompositeEntityCollection}
    */

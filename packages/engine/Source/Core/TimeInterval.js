@@ -144,7 +144,6 @@ class TimeInterval {
 
   /**
    * Gets whether or not this interval is empty.
-   * @memberof TimeInterval.prototype
    * @type {boolean}
    * @readonly
    */

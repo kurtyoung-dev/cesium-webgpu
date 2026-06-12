@@ -114,7 +114,6 @@ class CompositeProperty {
   /**
    * Gets a value indicating if this property is constant.  A property is considered
    * constant if getValue always returns the same result for the current definition.
-   * @memberof CompositeProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -127,7 +126,6 @@ class CompositeProperty {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is changed whenever setValue is called with data different
    * than the current value.
-   * @memberof CompositeProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -138,7 +136,6 @@ class CompositeProperty {
 
   /**
    * Gets the interval collection.
-   * @memberof CompositeProperty.prototype
    *
    * @type {TimeIntervalCollection}
    */

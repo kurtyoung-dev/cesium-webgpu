@@ -562,7 +562,6 @@ class MetadataClassProperty {
   /**
    * The ID of the property.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {string}
    * @readonly
    */
@@ -573,7 +572,6 @@ class MetadataClassProperty {
   /**
    * The name of the property.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {string}
    * @readonly
    */
@@ -584,7 +582,6 @@ class MetadataClassProperty {
   /**
    * The description of the property.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {string}
    * @readonly
    */
@@ -595,7 +592,6 @@ class MetadataClassProperty {
   /**
    * The type of the property such as SCALAR, VEC2, VEC3
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {MetadataType}
    * @readonly
    */
@@ -606,7 +602,6 @@ class MetadataClassProperty {
   /**
    * The enum type of the property. Only defined when type is ENUM.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {MetadataEnum}
    * @readonly
    */
@@ -618,7 +613,6 @@ class MetadataClassProperty {
    * The component type of the property. This includes integer
    * (e.g. INT8 or UINT16), and floating point (FLOAT32 and FLOAT64) values
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {MetadataComponentType}
    * @readonly
    */
@@ -631,7 +625,6 @@ class MetadataClassProperty {
    * is usually the same as componentType except for ENUM, where this
    * returns an integer type
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {MetadataComponentType}
    * @readonly
    * @private
@@ -644,7 +637,6 @@ class MetadataClassProperty {
    * True if a property is an array (either fixed length or variable length),
    * false otherwise.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {boolean}
    * @readonly
    */
@@ -655,7 +647,6 @@ class MetadataClassProperty {
   /**
    * True if a property is a variable length array, false otherwise.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {boolean}
    * @readonly
    */
@@ -667,7 +658,6 @@ class MetadataClassProperty {
    * The number of array elements. Only defined for fixed-size
    * arrays.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {number}
    * @readonly
    */
@@ -678,7 +668,6 @@ class MetadataClassProperty {
   /**
    * Whether the property is normalized.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {boolean}
    * @readonly
    */
@@ -689,7 +678,6 @@ class MetadataClassProperty {
   /**
    * A number or an array of numbers storing the maximum allowable value of this property. Only defined when type is a numeric type.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {number|number[]|number[][]}
    * @readonly
    */
@@ -700,7 +688,6 @@ class MetadataClassProperty {
   /**
    * A number or an array of numbers storing the minimum allowable value of this property. Only defined when type is a numeric type.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {number|number[]|number[][]}
    * @readonly
    */
@@ -711,7 +698,6 @@ class MetadataClassProperty {
   /**
    * The no-data sentinel value that represents null values
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {number|string|Array}
    * @readonly
    */
@@ -722,7 +708,6 @@ class MetadataClassProperty {
   /**
    * A default value to use when an entity's property value is not defined.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {number|string|Array}
    * @readonly
    */
@@ -733,7 +718,6 @@ class MetadataClassProperty {
   /**
    * Whether the property is required.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {boolean}
    * @readonly
    */
@@ -744,7 +728,6 @@ class MetadataClassProperty {
   /**
    * An identifier that describes how this property should be interpreted.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {string}
    * @readonly
    */
@@ -756,7 +739,6 @@ class MetadataClassProperty {
    * True if offset/scale should be applied. If both offset/scale were
    * undefined, they default to identity so this property is set false
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {boolean}
    * @readonly
    * @private
@@ -772,7 +754,6 @@ class MetadataClassProperty {
    * the class property JSON itself did not define it, then it will be
    * initialized to the default value.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {number|number[]|number[][]}
    * @readonly
    */
@@ -787,7 +768,6 @@ class MetadataClassProperty {
    * the class property JSON itself did not define it, then it will be
    * initialized to the default value.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {number|number[]|number[][]}
    * @readonly
    */
@@ -798,7 +778,6 @@ class MetadataClassProperty {
   /**
    * Extra user-defined properties.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {*}
    * @readonly
    */
@@ -809,7 +788,6 @@ class MetadataClassProperty {
   /**
    * An object containing extensions.
    *
-   * @memberof MetadataClassProperty.prototype
    * @type {object}
    * @readonly
    */

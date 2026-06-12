@@ -91,8 +91,7 @@ class OpenStreetMapImageryProvider extends UrlTemplateImageryProvider {
       minimumLevel,
     );
     const tileCount =
-      (Math.abs(neTile.x - swTile.x) + 1) *
-      (Math.abs(neTile.y - swTile.y) + 1);
+      (Math.abs(neTile.x - swTile.x) + 1) * (Math.abs(neTile.y - swTile.y) + 1);
     //>>includeStart('debug', pragmas.debug);
     if (tileCount > 4) {
       throw new DeveloperError(

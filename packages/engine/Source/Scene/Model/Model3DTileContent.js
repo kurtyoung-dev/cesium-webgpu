@@ -295,7 +295,6 @@ class Model3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof Model3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly

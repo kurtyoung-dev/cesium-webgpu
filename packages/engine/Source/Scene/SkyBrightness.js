@@ -1,6 +1,4 @@
 /**
- * @module SkyBrightness
- *
  * CPU-side estimator that maps sun + moon altitude (relative to the local
  * up at the camera) to a 0..1 sky brightness scalar. Phase 1.3 of the
  * celestial atmosphere design uses this to drive star modulation in the
@@ -20,6 +18,7 @@
  * `frameState`.
  *
  * @private
+ * @module SkyBrightness
  */
 
 import defined from "../Core/defined.js";

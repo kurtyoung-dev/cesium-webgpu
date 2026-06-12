@@ -419,7 +419,6 @@ class PerspectiveOffCenterFrustum {
    * Gets the perspective projection matrix computed from the view frustum.
    * The projection matrix will be recomputed if any frustum parameters have changed.
    *
-   * @memberof PerspectiveOffCenterFrustum.prototype
    * @type {Matrix4}
    * @readonly
    *
@@ -432,7 +431,6 @@ class PerspectiveOffCenterFrustum {
 
   /**
    * Gets the perspective projection matrix computed from the view frustum with an infinite far plane.
-   * @memberof PerspectiveOffCenterFrustum.prototype
    * @type {Matrix4}
    * @readonly
    *

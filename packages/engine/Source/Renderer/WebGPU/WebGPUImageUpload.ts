@@ -1,6 +1,4 @@
 /**
- * @module WebGPUImageUpload
- *
  * WGF-8 helper — image-to-texture upload with EXIF/orientation handling.
  *
  * `GPUQueue.copyExternalImageToTexture()` does NOT inspect EXIF metadata.
@@ -22,6 +20,7 @@
  *
  * Companion to `WebGPUContext.createTextureFromImage()` — the context method
  * delegates to `uploadImageToTexture()` here when `respectEXIF` is requested.
+ * @module WebGPUImageUpload
  */
 
 /// <reference types="@webgpu/types" />

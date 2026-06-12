@@ -210,7 +210,15 @@ describe("Renderer/WebGPU/WebGPUTextureUtilities", function () {
     it("requests a COPY_DST | MAP_READ buffer sized bytesPerRow*height", function () {
       const device = createFakeDevice();
       const encoder = createFakeEncoder();
-      createPixelReadbackPBO(device, encoder, fakeTexture(50, 20), 0, 0, 50, 20);
+      createPixelReadbackPBO(
+        device,
+        encoder,
+        fakeTexture(50, 20),
+        0,
+        0,
+        50,
+        20,
+      );
 
       // width=50 → 50*4 = 200 → ceil(200/256)*256 = 256.
       const descriptor = device.createdBuffers[0].descriptor;
@@ -223,7 +231,15 @@ describe("Renderer/WebGPU/WebGPUTextureUtilities", function () {
     it("issues copyTextureToBuffer from the (x,y,z=0) origin with the aligned bytesPerRow", function () {
       const device = createFakeDevice();
       const encoder = createFakeEncoder();
-      createPixelReadbackPBO(device, encoder, fakeTexture(64, 64), 12, 34, 8, 4);
+      createPixelReadbackPBO(
+        device,
+        encoder,
+        fakeTexture(64, 64),
+        12,
+        34,
+        8,
+        4,
+      );
 
       expect(encoder.copyTextureToBufferCalls.length).toBe(1);
       const call = encoder.copyTextureToBufferCalls[0];

@@ -115,7 +115,6 @@ class CallbackPositionProperty {
 
   /**
    * Gets a value indicating if this property is constant.
-   * @memberof CallbackPositionProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -128,7 +127,6 @@ class CallbackPositionProperty {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is considered to have changed if a call to getValue would return
    * a different result for the same time.
-   * @memberof CallbackPositionProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -139,7 +137,6 @@ class CallbackPositionProperty {
 
   /**
    * Gets the reference frame in which the position is defined.
-   * @memberof CallbackPositionProperty.prototype
    * @type {ReferenceFrame}
    * @default ReferenceFrame.FIXED;
    */

@@ -147,7 +147,6 @@ class DebugAppearance {
   /**
    * The GLSL source code for the vertex shader.
    *
-   * @memberof DebugAppearance.prototype
    *
    * @type {string}
    * @readonly
@@ -161,7 +160,6 @@ class DebugAppearance {
    * source is built procedurally taking into account the {@link DebugAppearance#material}.
    * Use {@link DebugAppearance#getFragmentShaderSource} to get the full source.
    *
-   * @memberof DebugAppearance.prototype
    *
    * @type {string}
    * @readonly
@@ -173,7 +171,6 @@ class DebugAppearance {
   /**
    * The WebGL fixed-function state to use when rendering the geometry.
    *
-   * @memberof DebugAppearance.prototype
    *
    * @type {object}
    * @readonly
@@ -185,7 +182,6 @@ class DebugAppearance {
   /**
    * When <code>true</code>, the geometry is expected to be closed.
    *
-   * @memberof DebugAppearance.prototype
    *
    * @type {boolean}
    * @readonly
@@ -199,7 +195,6 @@ class DebugAppearance {
   /**
    * The name of the attribute being visualized.
    *
-   * @memberof DebugAppearance.prototype
    *
    * @type {string}
    * @readonly
@@ -211,7 +206,6 @@ class DebugAppearance {
   /**
    * The GLSL datatype of the attribute being visualized.
    *
-   * @memberof DebugAppearance.prototype
    *
    * @type {string}
    * @readonly

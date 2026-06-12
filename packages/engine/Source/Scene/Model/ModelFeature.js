@@ -137,7 +137,6 @@ class ModelFeature {
    * Gets or sets if the feature will be shown. This is set for all features
    * when a style's show is evaluated.
    *
-   * @memberof ModelFeature.prototype
    *
    * @type {boolean}
    *
@@ -147,16 +146,6 @@ class ModelFeature {
     return this._featureTable.getShow(this._featureId);
   }
 
-  /**
-   * Gets or sets if the feature will be shown. This is set for all features
-   * when a style's show is evaluated.
-   *
-   * @memberof ModelFeature.prototype
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
   set show(value) {
     this._featureTable.setShow(this._featureId, value);
   }
@@ -166,7 +155,6 @@ class ModelFeature {
    * this is white, the feature's color is not changed. This is set for all features
    * when a style's color is evaluated.
    *
-   * @memberof ModelFeature.prototype
    *
    * @type {Color}
    *
@@ -179,17 +167,6 @@ class ModelFeature {
     return this._featureTable.getColor(this._featureId, this._color);
   }
 
-  /**
-   * Gets or sets the highlight color multiplied with the feature's color.  When
-   * this is white, the feature's color is not changed. This is set for all features
-   * when a style's color is evaluated.
-   *
-   * @memberof ModelFeature.prototype
-   *
-   * @type {Color}
-   *
-   * @default {@link Color.WHITE}
-   */
   set color(value) {
     this._featureTable.setColor(this._featureId, value);
   }
@@ -198,7 +175,6 @@ class ModelFeature {
    * All objects returned by {@link Scene#pick} have a <code>primitive</code> property. This returns
    * the model containing the feature.
    *
-   * @memberof ModelFeature.prototype
    *
    * @type {Model}
    *
@@ -212,7 +188,6 @@ class ModelFeature {
   /**
    *  The {@link ModelFeatureTable} that this feature belongs to.
    *
-   * @memberof ModelFeature.prototype
    *
    * @type {ModelFeatureTable}
    *
@@ -228,7 +203,6 @@ class ModelFeature {
    * batch ID is returned. For EXT_mesh_features, this is the feature ID from
    * the selected feature ID set.
    *
-   * @memberof ModelFeature.prototype
    *
    * @type {number}
    *

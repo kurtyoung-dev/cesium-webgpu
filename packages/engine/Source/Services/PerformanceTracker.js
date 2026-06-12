@@ -1,6 +1,4 @@
 /**
- * @module PerformanceTracker
- *
  * Backend-neutral perf benchmarking + logging service. Records a
  * window of per-frame measurements (CPU time, GPU time, draw count,
  * bundle hit rate, snapshot mode state) and exposes the result as a
@@ -25,6 +23,7 @@
  * The tracker is intentionally side-effect free until `beginTrace` is
  * called. Production scenes pay zero cost while no trace is active.
  *
+ * @module PerformanceTracker
  * @private
  */
 
@@ -58,7 +57,10 @@ class PerformanceTracker {
     this._startWallTime = null;
     /** @type {Array<object>} */
     this._samples = [];
-    /** @type {number} Last `performance.now()` reading for CPU dt. */
+    /**
+     * Last `performance.now()` reading for CPU dt.
+     * @type {number}
+     */
     this._lastSampleWallTime = 0;
     // Diagnostic — total traces completed since construction.
     this._traceCount = 0;
@@ -68,17 +70,35 @@ class PerformanceTracker {
     // The trace API (begin/end) is for one-shot benchmarking; the live
     // buffer is for the always-on FPS HUD that wants average + 1% lows
     // + 1% highs over a rolling window.
-    /** @type {Float32Array} circular buffer of wall-time deltas in ms */
+    /**
+     * circular buffer of wall-time deltas in ms
+     * @type {Float32Array}
+     */
     this._liveDtMs = new Float32Array(LIVE_BUFFER_CAPACITY);
-    /** @type {Float64Array} parallel circular buffer of frame timestamps */
+    /**
+     * parallel circular buffer of frame timestamps
+     * @type {Float64Array}
+     */
     this._liveTimestamps = new Float64Array(LIVE_BUFFER_CAPACITY);
-    /** @type {number} write index — bumps modulo capacity */
+    /**
+     * write index — bumps modulo capacity
+     * @type {number}
+     */
     this._liveWriteIndex = 0;
-    /** @type {number} total frames recorded since reset */
+    /**
+     * total frames recorded since reset
+     * @type {number}
+     */
     this._liveFrameCount = 0;
-    /** @type {number|null} last live recordFrame timestamp for delta calc */
+    /**
+     * last live recordFrame timestamp for delta calc
+     * @type {number|null}
+     */
     this._liveLastRecordTime = null;
-    /** @type {object} cached live snapshot (avoids per-poll allocation) */
+    /**
+     * cached live snapshot (avoids per-poll allocation)
+     * @type {object}
+     */
     this._liveCachedSnapshot = {
       windowSeconds: 0,
       sampleCount: 0,
@@ -448,7 +468,7 @@ class PerformanceTracker {
    *   minFrameMs: number,
    *   maxFrameMs: number,
    *   latestFrameMs: number,
-   *   latestFps: number,
+   *   latestFps: number
    * }}
    */
   getLiveStats(windowSeconds) {

@@ -42,7 +42,6 @@ class CircleEmitter {
 
   /**
    * The radius of the circle in meters.
-   * @memberof CircleEmitter.prototype
    * @type {number}
    * @default 1.0
    */
@@ -50,12 +49,6 @@ class CircleEmitter {
     return this._radius;
   }
 
-  /**
-   * The radius of the circle in meters.
-   * @memberof CircleEmitter.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set radius(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThan("value", value, 0.0);

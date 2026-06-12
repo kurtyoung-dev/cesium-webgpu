@@ -107,7 +107,6 @@ class PropertyArray {
   /**
    * Gets a value indicating if this property is constant.  This property
    * is considered constant if all property items in the array are constant.
-   * @memberof PropertyArray.prototype
    *
    * @type {boolean}
    * @readonly
@@ -130,7 +129,6 @@ class PropertyArray {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is changed whenever setValue is called with data different
    * than the current value or one of the properties in the array also changes.
-   * @memberof PropertyArray.prototype
    *
    * @type {Event}
    * @readonly

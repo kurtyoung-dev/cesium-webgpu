@@ -190,18 +190,12 @@
       }
 
       function updateStatus() {
-        const counts = panes.reduce(
-          (acc, p) => {
-            acc[p.host.rendererType] = (acc[p.host.rendererType] ?? 0) + 1;
-            return acc;
-          },
-          {},
-        );
-        const parts = Object.entries(counts).map(
-          ([k, v]) => `${k}:${v}`,
-        );
-        status.textContent =
-          panes.length === 0 ? "no panes" : parts.join("  ");
+        const counts = panes.reduce((acc, p) => {
+          acc[p.host.rendererType] = (acc[p.host.rendererType] ?? 0) + 1;
+          return acc;
+        }, {});
+        const parts = Object.entries(counts).map(([k, v]) => `${k}:${v}`);
+        status.textContent = panes.length === 0 ? "no panes" : parts.join("  ");
       }
 
       function relayoutGrid() {
@@ -237,9 +231,7 @@
           workerUrl: RENDERER_WORKER_URL,
           maxFps: currentMaxFps(),
           onReady: (info) => {
-            console.log(
-              `[pane ${id}] worker ready, session=${info.sessionId}`,
-            );
+            console.log(`[pane ${id}] worker ready, session=${info.sessionId}`);
           },
           onCrash: (info) => {
             console.warn(`[pane ${id}] worker crashed:`, info);

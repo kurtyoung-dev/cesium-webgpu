@@ -1,12 +1,11 @@
 /**
- * @module WebGPUEnvironmentRenderer
- *
  * Handles WebGPU rendering of celestial bodies (Sun, Moon) and Fog integration.
  * Sun uses a procedurally generated texture rendered as a billboard quad.
  * Moon uses a textured sphere with simple diffuse lighting.
  * Fog is applied via fog density parameters passed to globe/atmosphere shaders.
  *
  * @private
+ * @module WebGPUEnvironmentRenderer
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import CesiumMath from "../../Core/Math.js";

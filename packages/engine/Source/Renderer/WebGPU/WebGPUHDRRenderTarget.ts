@@ -1,6 +1,4 @@
 /**
- * @module WebGPUHDRRenderTarget
- *
  * HDR render target using rg11b10ufloat format for high dynamic range
  * post-processing. Requires the 'rg11b10ufloat-renderable' device feature.
  *
@@ -24,6 +22,7 @@
  * // ... render scene ...
  * renderPass.end();
  * // Tonemap hdr.colorView → canvas
+ * @module WebGPUHDRRenderTarget
  */
 
 /// <reference types="@webgpu/types" />

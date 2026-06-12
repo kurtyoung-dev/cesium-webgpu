@@ -1,6 +1,4 @@
 /**
- * @module WebGPUPrimitiveShaders
- *
  * Shader selection logic, vertex layout configuration, and uniform buffer sizing
  * for the WebGPU Primitive rendering pipeline.
  *
@@ -11,6 +9,7 @@
  * exports the shader source as a string. This avoids runtime fetch() calls.
  *
  * @private
+ * @module WebGPUPrimitiveShaders
  */
 import defined from "../../Core/defined.js";
 

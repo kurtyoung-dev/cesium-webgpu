@@ -1117,7 +1117,6 @@ class Model {
    * When <code>true</code>, this model is ready to render, i.e., the external binary, image,
    * and shader files were downloaded and the WebGL resources were created.
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1132,7 +1131,6 @@ class Model {
    * Gets an event that is raised when the model encounters an asynchronous rendering error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of {@link ModelError}.
-   * @memberof Model.prototype
    * @type {Event}
    * @readonly
    */
@@ -1149,7 +1147,6 @@ class Model {
    * If {@link Model.incrementallyLoadTextures} is true, this event will be raised before all textures are loaded and ready for rendering. Subscribe to {@link Model.texturesReadyEvent} to be notified when the textures are ready.
    * </p>
    *
-   * @memberof Model.prototype
    * @type {Event}
    * @readonly
    */
@@ -1160,7 +1157,6 @@ class Model {
   /**
    * Returns true if textures are loaded separately from the other glTF resources.
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1175,7 +1171,6 @@ class Model {
    * have been downloaded and the WebGL resources are created. Event listeners
    * are passed an instance of the {@link Model}.
    *
-   * @memberof Model.prototype
    * @type {Event}
    * @readonly
    */
@@ -1193,7 +1188,6 @@ class Model {
   /**
    * Get the estimated memory usage statistics for this model.
    *
-   * @memberof Model.prototype
    *
    * @type {ModelStatistics}
    * @readonly
@@ -1207,7 +1201,6 @@ class Model {
   /**
    * The currently playing glTF animations.
    *
-   * @memberof Model.prototype
    *
    * @type {ModelAnimationCollection}
    * @readonly
@@ -1219,7 +1212,6 @@ class Model {
   /**
    * Determines if the model's animations should hold a pose over frames where no keyframes are specified.
    *
-   * @memberof Model.prototype
    * @type {boolean}
    *
    * @default true
@@ -1228,14 +1220,6 @@ class Model {
     return this._clampAnimations;
   }
 
-  /**
-   * Determines if the model's animations should hold a pose over frames where no keyframes are specified.
-   *
-   * @memberof Model.prototype
-   * @type {boolean}
-   *
-   * @default true
-   */
   set clampAnimations(value) {
     this._clampAnimations = value;
   }
@@ -1244,7 +1228,6 @@ class Model {
    * Whether or not to cull the model using frustum/horizon culling. If the model is part of a 3D Tiles tileset, this property
    * will always be false, since the 3D Tiles culling system is used.
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1258,7 +1241,6 @@ class Model {
   /**
    * The pass to use in the {@link DrawCommand} for the opaque portions of the model.
    *
-   * @memberof Model.prototype
    *
    * @type {Pass}
    * @readonly
@@ -1274,7 +1256,6 @@ class Model {
    * and lighting. For 3D Tiles, this is inherited from the
    * {@link Cesium3DTileset}.
    *
-   * @memberof Model.prototype
    *
    * @type {PointCloudShading}
    */
@@ -1282,15 +1263,6 @@ class Model {
     return this._pointCloudShading;
   }
 
-  /**
-   * Point cloud shading settings for controlling point cloud attenuation
-   * and lighting. For 3D Tiles, this is inherited from the
-   * {@link Cesium3DTileset}.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {PointCloudShading}
-   */
   set pointCloudShading(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("pointCloudShading", value);
@@ -1305,7 +1277,6 @@ class Model {
    * The model's custom shader, if it exists. Using custom shaders with a {@link Cesium3DTileStyle}
    * may lead to undefined behavior.
    *
-   * @memberof Model.prototype
    *
    * @type {CustomShader}
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
@@ -1314,15 +1285,6 @@ class Model {
     return this._customShader;
   }
 
-  /**
-   * The model's custom shader, if it exists. Using custom shaders with a {@link Cesium3DTileStyle}
-   * may lead to undefined behavior.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {CustomShader}
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
   set customShader(value) {
     if (value !== this._customShader) {
       this.resetDrawCommands();
@@ -1333,7 +1295,6 @@ class Model {
   /**
    * The scene graph of this model.
    *
-   * @memberof Model.prototype
    *
    * @type {ModelSceneGraph}
    * @private
@@ -1349,7 +1310,6 @@ class Model {
    * position / direction by `model.modelMatrix` to get world-space
    * values. Empty when the asset declares no extension.
    *
-   * @memberof Model.prototype
    * @type {Array<object>}
    * @readonly
    * @private
@@ -1361,7 +1321,6 @@ class Model {
   /**
    * The tile content this model belongs to, if it is loaded as part of a {@link Cesium3DTileset}.
    *
-   * @memberof Model.prototype
    *
    * @type {Cesium3DTileContent}
    * @readonly
@@ -1376,7 +1335,6 @@ class Model {
    * The height reference of the model, which determines how the model is drawn
    * relative to terrain.
    *
-   * @memberof Model.prototype
    *
    * @type {HeightReference}
    * @default {HeightReference.NONE}
@@ -1386,16 +1344,6 @@ class Model {
     return this._heightReference;
   }
 
-  /**
-   * The height reference of the model, which determines how the model is drawn
-   * relative to terrain.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {HeightReference}
-   * @default {HeightReference.NONE}
-   *
-   */
   set heightReference(value) {
     if (value !== this._heightReference) {
       this._heightDirty = true;
@@ -1407,7 +1355,6 @@ class Model {
    * Gets or sets the distance display condition, which specifies at what distance
    * from the camera this model will be displayed.
    *
-   * @memberof Model.prototype
    *
    * @type {DistanceDisplayCondition}
    *
@@ -1418,17 +1365,6 @@ class Model {
     return this._distanceDisplayCondition;
   }
 
-  /**
-   * Gets or sets the distance display condition, which specifies at what distance
-   * from the camera this model will be displayed.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {DistanceDisplayCondition}
-   *
-   * @default undefined
-   *
-   */
   set distanceDisplayCondition(value) {
     //>>includeStart('debug', pragmas.debug);
     if (defined(value) && value.far <= value.near) {
@@ -1444,7 +1380,6 @@ class Model {
   /**
    * The structural metadata from the EXT_structural_metadata extension
    *
-   * @memberof Model.prototype
    *
    * @type {StructuralMetadata}
    * @readonly
@@ -1458,7 +1393,6 @@ class Model {
   /**
    * The ID for the feature table to use for picking and styling in this model.
    *
-   * @memberof Model.prototype
    *
    * @type {number}
    *
@@ -1468,15 +1402,6 @@ class Model {
     return this._featureTableId;
   }
 
-  /**
-   * The ID for the feature table to use for picking and styling in this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @private
-   */
   set featureTableId(value) {
     this._featureTableId = value;
   }
@@ -1484,7 +1409,6 @@ class Model {
   /**
    * The feature tables for this model.
    *
-   * @memberof Model.prototype
    *
    * @type {Array}
    * @readonly
@@ -1495,16 +1419,6 @@ class Model {
     return this._featureTables;
   }
 
-  /**
-   * The feature tables for this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Array}
-   * @readonly
-   *
-   * @private
-   */
   set featureTables(value) {
     this._featureTables = value;
   }
@@ -1512,7 +1426,6 @@ class Model {
   /**
    * A user-defined object that is returned when the model is picked.
    *
-   * @memberof Model.prototype
    *
    * @type {object}
    *
@@ -1524,17 +1437,6 @@ class Model {
     return this._id;
   }
 
-  /**
-   * A user-defined object that is returned when the model is picked.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {object}
-   *
-   * @default undefined
-   *
-   * @see Scene#pick
-   */
   set id(value) {
     if (value !== this._id) {
       this._idDirty = true;
@@ -1546,7 +1448,6 @@ class Model {
   /**
    * When <code>true</code>, each primitive is pickable with {@link Scene#pick}.  When <code>false</code>, GPU memory is saved.
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1560,7 +1461,6 @@ class Model {
   /**
    * The style to apply to the features in the model. Cannot be applied if a {@link CustomShader} is also applied.
    *
-   * @memberof Model.prototype
    *
    * @type {Cesium3DTileStyle}
    */
@@ -1568,13 +1468,6 @@ class Model {
     return this._style;
   }
 
-  /**
-   * The style to apply to the features in the model. Cannot be applied if a {@link CustomShader} is also applied.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Cesium3DTileStyle}
-   */
   set style(value) {
     this._style = value;
     this._styleDirty = true;
@@ -1583,7 +1476,6 @@ class Model {
   /**
    * The color to blend with the model's rendered color.
    *
-   * @memberof Model.prototype
    *
    * @type {Color}
    *
@@ -1593,15 +1485,6 @@ class Model {
     return this._color;
   }
 
-  /**
-   * The color to blend with the model's rendered color.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Color}
-   *
-   * @default undefined
-   */
   set color(value) {
     if (isColorAlphaDirty(value, this._color)) {
       this.resetDrawCommands();
@@ -1612,7 +1495,6 @@ class Model {
   /**
    * Defines how the color blends with the model.
    *
-   * @memberof Model.prototype
    *
    * @type {Cesium3DTileColorBlendMode|ColorBlendMode}
    *
@@ -1622,15 +1504,6 @@ class Model {
     return this._colorBlendMode;
   }
 
-  /**
-   * Defines how the color blends with the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Cesium3DTileColorBlendMode|ColorBlendMode}
-   *
-   * @default ColorBlendMode.HIGHLIGHT
-   */
   set colorBlendMode(value) {
     this._colorBlendMode = value;
   }
@@ -1638,7 +1511,6 @@ class Model {
   /**
    * Value used to determine the color strength when the <code>colorBlendMode</code> is <code>MIX</code>. A value of 0.0 results in the model's rendered color while a value of 1.0 results in a solid color, with any value in-between resulting in a mix of the two.
    *
-   * @memberof Model.prototype
    *
    * @type {number}
    *
@@ -1648,15 +1520,6 @@ class Model {
     return this._colorBlendAmount;
   }
 
-  /**
-   * Value used to determine the color strength when the <code>colorBlendMode</code> is <code>MIX</code>. A value of 0.0 results in the model's rendered color while a value of 1.0 results in a solid color, with any value in-between resulting in a mix of the two.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @default 0.5
-   */
   set colorBlendAmount(value) {
     this._colorBlendAmount = value;
   }
@@ -1664,7 +1527,6 @@ class Model {
   /**
    * The silhouette color.
    *
-   * @memberof Model.prototype
    *
    * @type {Color}
    *
@@ -1674,15 +1536,6 @@ class Model {
     return this._silhouetteColor;
   }
 
-  /**
-   * The silhouette color.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Color}
-   *
-   * @default Color.RED
-   */
   set silhouetteColor(value) {
     if (!Color.equals(value, this._silhouetteColor)) {
       const alphaDirty = isColorAlphaDirty(value, this._silhouetteColor);
@@ -1695,7 +1548,6 @@ class Model {
   /**
    * The size of the silhouette in pixels.
    *
-   * @memberof Model.prototype
    *
    * @type {number}
    *
@@ -1705,15 +1557,6 @@ class Model {
     return this._silhouetteSize;
   }
 
-  /**
-   * The size of the silhouette in pixels.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @default 0.0
-   */
   set silhouetteSize(value) {
     if (value !== this._silhouetteSize) {
       const currentSize = this._silhouetteSize;
@@ -1735,7 +1578,6 @@ class Model {
    * glTF animations, skins, or morph targets. It also does not account for
    * {@link Model#minimumPixelSize}.
    *
-   * @memberof Model.prototype
    *
    * @type {BoundingSphere}
    * @readonly
@@ -1763,7 +1605,6 @@ class Model {
    * Draws the bounding sphere for each draw command in the model.
    * </p>
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    *
@@ -1773,18 +1614,6 @@ class Model {
     return this._debugShowBoundingVolume;
   }
 
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the bounding sphere for each draw command in the model.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
   set debugShowBoundingVolume(value) {
     if (this._debugShowBoundingVolume !== value) {
       this._debugShowBoundingVolumeDirty = true;
@@ -1798,7 +1627,6 @@ class Model {
    * Draws the model in wireframe.
    * </p>
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    *
@@ -1808,18 +1636,6 @@ class Model {
     return this._debugWireframe;
   }
 
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the model in wireframe.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
   set debugWireframe(value) {
     if (this._debugWireframe !== value) {
       this.resetDrawCommands();
@@ -1842,7 +1658,6 @@ class Model {
   /**
    * Whether or not to render the model.
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    *
@@ -1852,15 +1667,6 @@ class Model {
     return this._show;
   }
 
-  /**
-   * Whether or not to render the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
   set show(value) {
     this._show = value;
   }
@@ -1882,7 +1688,6 @@ class Model {
    * priority.
    * </p>
    *
-   * @memberof Model.prototype
    *
    * @type {string}
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
@@ -1891,28 +1696,6 @@ class Model {
     return this._featureIdLabel;
   }
 
-  /**
-   * Label of the feature ID set to use for picking and styling.
-   * <p>
-   * For EXT_mesh_features, this is the feature ID's label property, or
-   * "featureId_N" (where N is the index in the featureIds array) when not
-   * specified. EXT_feature_metadata did not have a label field, so such
-   * feature ID sets are always labeled "featureId_N" where N is the index in
-   * the list of all feature Ids, where feature ID attributes are listed before
-   * feature ID textures.
-   * </p>
-   * <p>
-   * If featureIdLabel is set to an integer N, it is converted to
-   * the string "featureId_N" automatically. If both per-primitive and
-   * per-instance feature IDs are present, the instance feature IDs take
-   * priority.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {string}
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
   set featureIdLabel(value) {
     // indices get converted into featureId_N
     if (typeof value === "number") {
@@ -1939,7 +1722,6 @@ class Model {
    * instance feature IDs take priority.
    * </p>
    *
-   * @memberof Model.prototype
    *
    * @type {string}
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
@@ -1948,20 +1730,6 @@ class Model {
     return this._instanceFeatureIdLabel;
   }
 
-  /**
-   * Label of the instance feature ID set used for picking and styling.
-   * <p>
-   * If instanceFeatureIdLabel is set to an integer N, it is converted to
-   * the string "instanceFeatureId_N" automatically.
-   * If both per-primitive and per-instance feature IDs are present, the
-   * instance feature IDs take priority.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {string}
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
   set instanceFeatureIdLabel(value) {
     // indices get converted into instanceFeatureId_N
     if (typeof value === "number") {
@@ -1982,7 +1750,6 @@ class Model {
   /**
    * The {@link ClippingPlaneCollection} used to selectively disable rendering the model.
    *
-   * @memberof Model.prototype
    *
    * @type {ClippingPlaneCollection}
    */
@@ -1990,13 +1757,6 @@ class Model {
     return this._clippingPlanes;
   }
 
-  /**
-   * The {@link ClippingPlaneCollection} used to selectively disable rendering the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ClippingPlaneCollection}
-   */
   set clippingPlanes(value) {
     if (value !== this._clippingPlanes) {
       // Handle destroying old clipping planes, new clipping planes ownership
@@ -2008,7 +1768,6 @@ class Model {
   /**
    * The {@link ClippingPolygonCollection} used to selectively disable rendering the model.
    *
-   * @memberof Model.prototype
    *
    * @type {ClippingPolygonCollection}
    */
@@ -2016,13 +1775,6 @@ class Model {
     return this._clippingPolygons;
   }
 
-  /**
-   * The {@link ClippingPolygonCollection} used to selectively disable rendering the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ClippingPolygonCollection}
-   */
   set clippingPolygons(value) {
     if (value !== this._clippingPolygons) {
       // Handle destroying old clipping polygons, new clipping polygons ownership
@@ -2034,7 +1786,6 @@ class Model {
   /**
    * If <code>true</code>, the model is exaggerated along the ellipsoid normal when {@link Scene.verticalExaggeration} is set to a value other than <code>1.0</code>.
    *
-   * @memberof Model.prototype
    * @type {boolean}
    * @default true
    *
@@ -2047,18 +1798,6 @@ class Model {
     return this._enableVerticalExaggeration;
   }
 
-  /**
-   * If <code>true</code>, the model is exaggerated along the ellipsoid normal when {@link Scene.verticalExaggeration} is set to a value other than <code>1.0</code>.
-   *
-   * @memberof Model.prototype
-   * @type {boolean}
-   * @default true
-   *
-   * @example
-   * // Exaggerate terrain by a factor of 2, but prevent model exaggeration
-   * scene.verticalExaggeration = 2.0;
-   * model.enableVerticalExaggeration = false;
-   */
   set enableVerticalExaggeration(value) {
     if (value !== this._enableVerticalExaggeration) {
       this.resetDrawCommands();
@@ -2069,7 +1808,6 @@ class Model {
   /**
    * If <code>true</code>, the model is vertically exaggerated along the ellipsoid normal.
    *
-   * @memberof Model.prototype
    * @type {boolean}
    * @default true
    * @readonly
@@ -2084,7 +1822,6 @@ class Model {
    * then this will return the <code>ImageryLayerCollection</code>
    * of that tileset. Otherwise, <code>undefined</code> is returned.
    *
-   * @memberof Model.prototype
    * @type {ImageryLayerCollection|undefined}
    * @readonly
    * @private
@@ -2106,7 +1843,6 @@ class Model {
    * <code>model.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(0.0, 0.0)</code>
    * will make the model much darker. Here, increasing the intensity of the light source will make the model brighter.
    * </p>
-   * @memberof Model.prototype
    *
    * @type {Cartesian3}
    *
@@ -2116,19 +1852,6 @@ class Model {
     return this._lightColor;
   }
 
-  /**
-   * The directional light color when shading the model. When <code>undefined</code> the scene's light color is used instead.
-   * <p>
-   * Disabling additional light sources by setting
-   * <code>model.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(0.0, 0.0)</code>
-   * will make the model much darker. Here, increasing the intensity of the light source will make the model brighter.
-   * </p>
-   * @memberof Model.prototype
-   *
-   * @type {Cartesian3}
-   *
-   * @default undefined
-   */
   set lightColor(value) {
     if (defined(value) !== defined(this._lightColor)) {
       this.resetDrawCommands();
@@ -2140,7 +1863,6 @@ class Model {
   /**
    * The properties for managing image-based lighting on this model.
    *
-   * @memberof Model.prototype
    *
    * @type {ImageBasedLighting}
    */
@@ -2148,13 +1870,6 @@ class Model {
     return this._imageBasedLighting;
   }
 
-  /**
-   * The properties for managing image-based lighting on this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ImageBasedLighting}
-   */
   set imageBasedLighting(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("imageBasedLighting", value);
@@ -2175,7 +1890,6 @@ class Model {
 
   /**
    * The properties for managing dynamic environment maps on this model. Affects lighting.
-   * @memberof Model.prototype
    * @readonly
    *
    * @example
@@ -2189,18 +1903,6 @@ class Model {
     return this._environmentMapManager;
   }
 
-  /**
-   * The properties for managing dynamic environment maps on this model. Affects lighting.
-   * @memberof Model.prototype
-   * @readonly
-   *
-   * @example
-   * // Change the ground color used for a model's environment map to a forest green
-   * const environmentMapManager = model.environmentMapManager;
-   * environmentMapManager.groundColor = Cesium.Color.fromCssColorString("#203b34");
-   *
-   * @type {DynamicEnvironmentMapManager}
-   */
   set environmentMapManager(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("environmentMapManager", value);
@@ -2222,7 +1924,6 @@ class Model {
    * culling is disabled. Back faces are not culled if {@link Model#color}
    * is translucent or {@link Model#silhouetteSize} is greater than 0.0.
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    *
@@ -2232,18 +1933,6 @@ class Model {
     return this._backFaceCulling;
   }
 
-  /**
-   * Whether to cull back-facing geometry. When true, back face culling is
-   * determined by the material's doubleSided property; when false, back face
-   * culling is disabled. Back faces are not culled if {@link Model#color}
-   * is translucent or {@link Model#silhouetteSize} is greater than 0.0.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
   set backFaceCulling(value) {
     if (value !== this._backFaceCulling) {
       this._backFaceCullingDirty = true;
@@ -2257,7 +1946,6 @@ class Model {
    * Values greater than <code>1.0</code> increase the size of the model; values
    * less than <code>1.0</code> decrease.
    *
-   * @memberof Model.prototype
    *
    * @type {number}
    *
@@ -2267,17 +1955,6 @@ class Model {
     return this._scale;
   }
 
-  /**
-   * A uniform scale applied to this model before the {@link Model#modelMatrix}.
-   * Values greater than <code>1.0</code> increase the size of the model; values
-   * less than <code>1.0</code> decrease.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @default 1.0
-   */
   set scale(value) {
     if (value !== this._scale) {
       this._updateModelMatrix = true;
@@ -2289,7 +1966,6 @@ class Model {
    * The true scale of the model after being affected by the model's scale,
    * minimum pixel size, and maximum scale parameters.
    *
-   * @memberof Model.prototype
    *
    * @type {number}
    * @readonly
@@ -2305,7 +1981,6 @@ class Model {
    * This can be used to ensure that a model is visible even when the viewer
    * zooms out.  When <code>0.0</code>, no minimum size is enforced.
    *
-   * @memberof Model.prototype
    *
    * @type {number}
    *
@@ -2315,17 +1990,6 @@ class Model {
     return this._minimumPixelSize;
   }
 
-  /**
-   * The approximate minimum pixel size of the model regardless of zoom.
-   * This can be used to ensure that a model is visible even when the viewer
-   * zooms out.  When <code>0.0</code>, no minimum size is enforced.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @default 0.0
-   */
   set minimumPixelSize(value) {
     if (value !== this._minimumPixelSize) {
       this._updateModelMatrix = true;
@@ -2338,7 +2002,6 @@ class Model {
    * an upper limit to the {@link Model#minimumPixelSize}, ensuring that the model
    * is never an unreasonable scale.
    *
-   * @memberof Model.prototype
    *
    * @type {number}
    */
@@ -2346,15 +2009,6 @@ class Model {
     return this._maximumScale;
   }
 
-  /**
-   * The maximum scale size for a model. This can be used to give
-   * an upper limit to the {@link Model#minimumPixelSize}, ensuring that the model
-   * is never an unreasonable scale.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   */
   set maximumScale(value) {
     if (value !== this._maximumScale) {
       this._updateModelMatrix = true;
@@ -2365,7 +2019,6 @@ class Model {
   /**
    * Determines whether the model casts or receives shadows from light sources.
 
-   * @memberof Model.prototype
    *
    * @type {ShadowMode}
    *
@@ -2375,15 +2028,6 @@ class Model {
     return this._shadows;
   }
 
-  /**
-   * Determines whether the model casts or receives shadows from light sources.
-
-   * @memberof Model.prototype
-   *
-   * @type {ShadowMode}
-   *
-   * @default ShadowMode.ENABLED
-   */
   set shadows(value) {
     if (value !== this._shadows) {
       this._shadowsDirty = true;
@@ -2395,7 +2039,6 @@ class Model {
   /**
    * Gets the credit that will be displayed for the model.
    *
-   * @memberof Model.prototype
    *
    * @type {Credit}
    * @readonly
@@ -2408,7 +2051,6 @@ class Model {
    * Gets or sets whether the credits of the model will be displayed
    * on the screen.
    *
-   * @memberof Model.prototype
    *
    * @type {boolean}
    *
@@ -2418,16 +2060,6 @@ class Model {
     return this._showCreditsOnScreen;
   }
 
-  /**
-   * Gets or sets whether the credits of the model will be displayed
-   * on the screen.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
   set showCreditsOnScreen(value) {
     if (this._showCreditsOnScreen !== value) {
       this._showCreditsOnScreenDirty = true;
@@ -2439,7 +2071,6 @@ class Model {
   /**
    * The {@link SplitDirection} to apply to this model.
    *
-   * @memberof Model.prototype
    *
    * @type {SplitDirection}
    *
@@ -2449,15 +2080,6 @@ class Model {
     return this._splitDirection;
   }
 
-  /**
-   * The {@link SplitDirection} to apply to this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {SplitDirection}
-   *
-   * @default {@link SplitDirection.NONE}
-   */
   set splitDirection(value) {
     if (this._splitDirection !== value) {
       this.resetDrawCommands();
@@ -2484,7 +2106,6 @@ class Model {
    * The 3D Tiles or terrain receiving the classification must be opaque.
    * </p>
    *
-   * @memberof Model.prototype
    *
    * @type {ClassificationType}
    * @default undefined
@@ -2500,7 +2121,6 @@ class Model {
    * Reference to the pick IDs. This is only used internally, e.g. for
    * per-feature post-processing in {@link PostProcessStage}.
    *
-   * @memberof Model.prototype
    *
    * @type {PickId[]}
    * @readonly
@@ -2516,7 +2136,6 @@ class Model {
    * the features in the model. This is used internally by the {@link ModelDrawCommand}
    * when determining which commands to submit in an update.
    *
-   * @memberof Model.prototype
    *
    * @type {StyleCommandsNeeded}
    * @readonly

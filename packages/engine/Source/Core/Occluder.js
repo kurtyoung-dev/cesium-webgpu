@@ -252,7 +252,6 @@ class Occluder {
 
   /**
    * The position of the occluder.
-   * @memberof Occluder.prototype
    * @type {Cartesian3}
    */
   get position() {
@@ -261,7 +260,6 @@ class Occluder {
 
   /**
    * The radius of the occluder.
-   * @memberof Occluder.prototype
    * @type {number}
    */
   get radius() {
@@ -270,7 +268,6 @@ class Occluder {
 
   /**
    * The position of the camera.
-   * @memberof Occluder.prototype
    * @type {Cartesian3}
    */
   set cameraPosition(cameraPosition) {

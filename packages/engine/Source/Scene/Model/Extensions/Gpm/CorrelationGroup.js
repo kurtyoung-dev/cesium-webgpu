@@ -41,7 +41,6 @@ class CorrelationGroup {
    * Array of 3 booleans indicating if parameters delta-x delta-y delta-z
    * used in the correlation group
    *
-   * @memberof CorrelationGroup.prototype
    * @type {boolean[]}
    * @readonly
    */
@@ -52,7 +51,6 @@ class CorrelationGroup {
   /**
    * Rotations in milliradians about X, Y, Z axes, respectively
    *
-   * @memberof CorrelationGroup.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -63,7 +61,6 @@ class CorrelationGroup {
   /**
    * Array of 3 sets of SPDCF parameters, for the U, V, W directions, respectively
    *
-   * @memberof CorrelationGroup.prototype
    * @type {Spdcf[]}
    * @readonly
    */

@@ -112,7 +112,6 @@ class GltfGpmLocal {
   /**
    * Specifies if covariance storage is indirect or direct.
    *
-   * @memberof GltfGpmLocal.prototype
    * @type {StorageType}
    * @readonly
    */
@@ -123,7 +122,6 @@ class GltfGpmLocal {
   /**
    * Array of stored indirect anchor points
    *
-   * @memberof GltfGpmLocal.prototype
    * @type {AnchorPointIndirect[]|undefined}
    * @readonly
    */
@@ -134,7 +132,6 @@ class GltfGpmLocal {
   /**
    * Array of stored direct anchor points
    *
-   * @memberof GltfGpmLocal.prototype
    * @type {AnchorPointDirect[]|undefined}
    * @readonly
    */
@@ -146,7 +143,6 @@ class GltfGpmLocal {
    * Metadata identifying parameters using same correlation modeling and
    * associated correlation parameters
    *
-   * @memberof GltfGpmLocal.prototype
    * @type {CorrelationGroup[]|undefined}
    * @readonly
    */
@@ -157,7 +153,6 @@ class GltfGpmLocal {
   /**
    * The full covariance of anchor point parameters
    *
-   * @memberof GltfGpmLocal.prototype
    * @type {Matrix3|undefined}
    * @readonly
    */

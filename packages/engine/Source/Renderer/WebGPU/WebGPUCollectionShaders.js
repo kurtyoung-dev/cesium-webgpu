@@ -1,6 +1,4 @@
 /**
- * @module WebGPUCollectionShaders
- *
  * Shader loader for WebGPU collection rendering (PointPrimitive, Billboard, Polyline).
  * All WGSL shader source code is imported from pre-built JS modules under:
  *   Source/Shaders/WebGPU/Collections/
@@ -9,6 +7,7 @@
  * exports the shader source as a string. This avoids runtime fetch() calls.
  *
  * @private
+ * @module WebGPUCollectionShaders
  */
 import defined from "../../Core/defined.js";
 

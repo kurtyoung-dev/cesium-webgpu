@@ -1,6 +1,4 @@
 /**
- * @module WebGPURTEAssertions
- *
  * Debug-only validators for the precision-critical pieces of every camera
  * UBO packer in the WebGPU backend. These exist to catch the failure
  * modes that have already cost us multiple debugging sessions:
@@ -25,6 +23,7 @@
  * builds and have zero runtime cost.
  *
  * @private
+ * @module WebGPURTEAssertions
  */
 
 /// <reference types="@webgpu/types" />

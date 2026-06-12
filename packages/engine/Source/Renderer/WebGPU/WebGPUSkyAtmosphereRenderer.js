@@ -1,10 +1,9 @@
 /**
- * @module WebGPUSkyAtmosphereRenderer
- *
  * Handles WebGPU rendering of the SkyAtmosphere effect.
  * Renders an ellipsoid shell with Nishita-style atmospheric scattering.
  *
  * @private
+ * @module WebGPUSkyAtmosphereRenderer
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";

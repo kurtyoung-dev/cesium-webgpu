@@ -214,7 +214,6 @@ class CatmullRomSpline {
   /**
    * An array of times for the control points.
    *
-   * @memberof CatmullRomSpline.prototype
    *
    * @type {number[]}
    * @readonly
@@ -226,7 +225,6 @@ class CatmullRomSpline {
   /**
    * An array of {@link Cartesian3} control points.
    *
-   * @memberof CatmullRomSpline.prototype
    *
    * @type {Cartesian3[]}
    * @readonly
@@ -238,7 +236,6 @@ class CatmullRomSpline {
   /**
    * The tangent at the first control point.
    *
-   * @memberof CatmullRomSpline.prototype
    *
    * @type {Cartesian3}
    * @readonly
@@ -250,7 +247,6 @@ class CatmullRomSpline {
   /**
    * The tangent at the last control point.
    *
-   * @memberof CatmullRomSpline.prototype
    *
    * @type {Cartesian3}
    * @readonly

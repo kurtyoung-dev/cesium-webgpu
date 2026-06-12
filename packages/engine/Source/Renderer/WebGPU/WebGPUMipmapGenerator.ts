@@ -1,6 +1,4 @@
 /**
- * @module WebGPUMipmapGenerator
- *
  * Generates mipmaps for WebGPU textures using a blit-based render pass approach.
  * WebGPU has no equivalent to WebGL's gl.generateMipmap(), so mipmaps must be
  * generated manually by rendering a fullscreen triangle from each mip level to the next.
@@ -12,6 +10,7 @@
  * const generator = new WebGPUMipmapGenerator(device);
  * generator.generateMipmaps(texture); // texture must have mipLevelCount > 1
  * generator.destroy(); // when done
+ * @module WebGPUMipmapGenerator
  */
 
 import {

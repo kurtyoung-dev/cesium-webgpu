@@ -393,7 +393,6 @@ class TileBoundingS2Cell {
   /**
    * The underlying bounding volume.
    *
-   * @memberof TileBoundingS2Cell.prototype
    *
    * @type {object}
    * @readonly
@@ -405,7 +404,6 @@ class TileBoundingS2Cell {
   /**
    * The underlying bounding sphere.
    *
-   * @memberof TileBoundingS2Cell.prototype
    *
    * @type {BoundingSphere}
    * @readonly

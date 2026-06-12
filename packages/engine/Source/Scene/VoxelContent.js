@@ -111,7 +111,6 @@ class VoxelContent {
   /**
    * Returns true when the content is ready to render; otherwise false
    *
-   * @memberof VoxelContent.prototype
    *
    * @type {boolean}
    * @readonly

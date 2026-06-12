@@ -134,7 +134,6 @@ class SceneModePickerViewModel {
 
   /**
    * Gets the scene
-   * @memberof SceneModePickerViewModel.prototype
    * @type {Scene}
    */
   get scene() {
@@ -144,19 +143,12 @@ class SceneModePickerViewModel {
   /**
    * Gets or sets the the duration of scene mode transition animations in seconds.
    * A value of zero causes the scene to instantly change modes.
-   * @memberof SceneModePickerViewModel.prototype
    * @type {number}
    */
   get duration() {
     return this._duration;
   }
 
-  /**
-   * Gets or sets the the duration of scene mode transition animations in seconds.
-   * A value of zero causes the scene to instantly change modes.
-   * @memberof SceneModePickerViewModel.prototype
-   * @type {number}
-   */
   set duration(value) {
     //>>includeStart('debug', pragmas.debug);
     if (value < 0.0) {
@@ -169,7 +161,6 @@ class SceneModePickerViewModel {
 
   /**
    * Gets the command to toggle the drop down box.
-   * @memberof SceneModePickerViewModel.prototype
    *
    * @type {Command}
    */
@@ -179,7 +170,6 @@ class SceneModePickerViewModel {
 
   /**
    * Gets the command to morph to 2D.
-   * @memberof SceneModePickerViewModel.prototype
    *
    * @type {Command}
    */
@@ -189,7 +179,6 @@ class SceneModePickerViewModel {
 
   /**
    * Gets the command to morph to 3D.
-   * @memberof SceneModePickerViewModel.prototype
    *
    * @type {Command}
    */
@@ -199,7 +188,6 @@ class SceneModePickerViewModel {
 
   /**
    * Gets the command to morph to Columbus View.
-   * @memberof SceneModePickerViewModel.prototype
    *
    * @type {Command}
    */

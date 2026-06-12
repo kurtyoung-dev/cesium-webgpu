@@ -35,6 +35,8 @@ import {
   getInitializationPromises,
 } from "./MaterialHelpers.js";
 
+/** @import MaterialUniformBuffer from "./MaterialUniformBuffer.js"; */
+
 /**
  * A Material defines surface appearance through a combination of diffuse, specular,
  * normal, emission, and alpha components. These values are specified using a
@@ -317,7 +319,7 @@ class Material {
      * initialization from the fabric template. WebGPU renderers use
      * `material._uniformBuffer.gpuData` for zero-copy upload.
      *
-     * @type {import('./MaterialUniformBuffer.js').default|undefined}
+     * @type {MaterialUniformBuffer|undefined}
      * @private
      */
     this._uniformBuffer = undefined;

@@ -204,7 +204,6 @@ class ModelFeatureTable {
   /**
    * The batch texture created for the features in this table.
    *
-   * @memberof ModelFeatureTable.prototype
    *
    * @type {BatchTexture}
    * @readonly
@@ -218,7 +217,6 @@ class ModelFeatureTable {
   /**
    * The number of features in this table.
    *
-   * @memberof ModelFeatureTable.prototype
    *
    * @type {number}
    * @readonly
@@ -233,7 +231,6 @@ class ModelFeatureTable {
    * Size of the batch texture. This does not count the property table size
    * as that is counted separately through StructuralMetadata.
    *
-   * @memberof ModelFeatureTable.prototype
    *
    * @type {number}
    * @readonly
@@ -251,7 +248,6 @@ class ModelFeatureTable {
   /**
    * A flag to indicate whether or not the types of style commands needed by this feature table have changed.
    *
-   * @memberof ModelFeatureTable.prototype
    *
    * @type {boolean}
    * @readonly

@@ -142,7 +142,6 @@ class SingleTileImageryProvider {
 
   /**
    * Gets the URL of the single, top-level imagery tile.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -152,7 +151,6 @@ class SingleTileImageryProvider {
 
   /**
    * Gets the proxy used by this provider.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {Proxy}
    * @readonly
    */
@@ -162,7 +160,6 @@ class SingleTileImageryProvider {
 
   /**
    * Gets the width of each tile, in pixels.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -172,7 +169,6 @@ class SingleTileImageryProvider {
 
   /**
    * Gets the height of each tile, in pixels.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -182,7 +178,6 @@ class SingleTileImageryProvider {
 
   /**
    * Gets the maximum level-of-detail that can be requested.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -192,7 +187,6 @@ class SingleTileImageryProvider {
 
   /**
    * Gets the minimum level-of-detail that can be requested.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -202,7 +196,6 @@ class SingleTileImageryProvider {
 
   /**
    * Gets the tiling scheme used by this provider.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {TilingScheme}
    * @readonly
    */
@@ -212,7 +205,6 @@ class SingleTileImageryProvider {
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {Rectangle}
    * @readonly
    */
@@ -224,7 +216,6 @@ class SingleTileImageryProvider {
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
    * for filtering out "missing" tiles via its shouldDiscardImage function.  If this function
    * returns undefined, no tiles are filtered.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {TileDiscardPolicy}
    * @readonly
    */
@@ -236,7 +227,6 @@ class SingleTileImageryProvider {
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of {@link TileProviderError}.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {Event}
    * @readonly
    */
@@ -247,7 +237,6 @@ class SingleTileImageryProvider {
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
    * the source of the imagery.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {Credit}
    * @readonly
    */
@@ -261,7 +250,6 @@ class SingleTileImageryProvider {
    * be ignored.  If this property is true, any images without an alpha channel will be treated
    * as if their alpha is 1.0 everywhere.  When this property is false, memory usage
    * and texture upload time are reduced.
-   * @memberof SingleTileImageryProvider.prototype
    * @type {boolean}
    * @readonly
    */

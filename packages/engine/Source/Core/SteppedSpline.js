@@ -98,7 +98,6 @@ class SteppedSpline {
   /**
    * An array of times for the control points.
    *
-   * @memberof SteppedSpline.prototype
    *
    * @type {number[]}
    * @readonly
@@ -110,7 +109,6 @@ class SteppedSpline {
   /**
    * An array of control points.
    *
-   * @memberof SteppedSpline.prototype
    *
    * @type {number[]|Cartesian3[]|Quaternion[]}
    * @readonly

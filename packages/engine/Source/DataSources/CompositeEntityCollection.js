@@ -493,7 +493,6 @@ class CompositeEntityCollection {
   /**
    * Gets the event that is fired when entities are added or removed from the collection.
    * The generated event is a {@link EntityCollection.collectionChangedEventCallback}.
-   * @memberof CompositeEntityCollection.prototype
    * @readonly
    * @type {Event}
    */
@@ -503,7 +502,6 @@ class CompositeEntityCollection {
 
   /**
    * Gets a globally unique identifier for this collection.
-   * @memberof CompositeEntityCollection.prototype
    * @readonly
    * @type {string}
    */
@@ -514,7 +512,6 @@ class CompositeEntityCollection {
   /**
    * Gets the array of Entity instances in the collection.
    * This array should not be modified directly.
-   * @memberof CompositeEntityCollection.prototype
    * @readonly
    * @type {Entity[]}
    */
@@ -524,7 +521,6 @@ class CompositeEntityCollection {
 
   /**
    * Gets the owner of this composite entity collection, ie. the data source or composite entity collection which created it.
-   * @memberof CompositeEntityCollection.prototype
    * @readonly
    * @type {DataSource|CompositeEntityCollection}
    */

@@ -1,6 +1,4 @@
 /**
- * @module WebGPUClipDistancePrecompute
- *
  * Precomputes the per-frame `dPrime` scalars that let the vertex shader
  * test clipping plane equations against eye-relative positions instead
  * of model-space positions. This is the CPU half of WGF-1 (hardware
@@ -44,6 +42,7 @@
  * keeps the existing renderer code thin.
  *
  * @private
+ * @module WebGPUClipDistancePrecompute
  */
 
 /// <reference types="@webgpu/types" />

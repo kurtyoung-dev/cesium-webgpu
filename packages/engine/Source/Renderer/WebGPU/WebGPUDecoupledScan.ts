@@ -1,6 +1,4 @@
 /**
- * @module WebGPUDecoupledScan
- *
  * Single-dispatch inclusive prefix sum over a `storage array<u32>` using the
  * decoupled-lookback scan pattern from Merrill & Garland 2016 (NVIDIA CUB).
  * This is the runtime wrapper around `Shaders/WebGPU/Compute/DecoupledLookbackScan.wgsl`
@@ -36,6 +34,7 @@
  * → `dispatch(encoder, input, output, count)` → `destroy()`.
  *
  * @private
+ * @module WebGPUDecoupledScan
  */
 
 /// <reference types="@webgpu/types" />

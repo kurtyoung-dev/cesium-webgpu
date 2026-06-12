@@ -233,7 +233,6 @@ class VoxelInspector {
 
   /**
    * Gets the parent container.
-   * @memberof VoxelInspector.prototype
    *
    * @type {Element}
    */
@@ -243,7 +242,6 @@ class VoxelInspector {
 
   /**
    * Gets the view model.
-   * @memberof VoxelInspector.prototype
    *
    * @type {VoxelInspectorViewModel}
    */

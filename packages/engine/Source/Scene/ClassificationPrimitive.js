@@ -587,7 +587,6 @@ class ClassificationPrimitive {
   /**
    * When <code>true</code>, geometry vertices are optimized for the pre and post-vertex-shader caches.
    *
-   * @memberof ClassificationPrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -601,7 +600,6 @@ class ClassificationPrimitive {
   /**
    * Determines if geometry vertex attributes are interleaved, which can slightly improve rendering performance.
    *
-   * @memberof ClassificationPrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -615,7 +613,6 @@ class ClassificationPrimitive {
   /**
    * When <code>true</code>, the primitive does not keep a reference to the input <code>geometryInstances</code> to save memory.
    *
-   * @memberof ClassificationPrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -629,7 +626,6 @@ class ClassificationPrimitive {
   /**
    * When <code>true</code>, each geometry instance will only be pickable with {@link Scene#pick}.  When <code>false</code>, GPU memory is saved.
    *
-   * @memberof ClassificationPrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -643,7 +639,6 @@ class ClassificationPrimitive {
   /**
    * Determines if the geometry instances will be created and batched on a web worker.
    *
-   * @memberof ClassificationPrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -657,7 +652,6 @@ class ClassificationPrimitive {
   /**
    * When <code>true</code>, geometry vertices are compressed, which will save memory.
    *
-   * @memberof ClassificationPrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -673,7 +667,6 @@ class ClassificationPrimitive {
    * true, the primitive will be rendered the next time that {@link ClassificationPrimitive#update}
    * is called.
    *
-   * @memberof ClassificationPrimitive.prototype
    *
    * @type {boolean}
    * @readonly
@@ -686,7 +679,6 @@ class ClassificationPrimitive {
    * Returns true if the ClassificationPrimitive needs a separate shader and commands for 2D.
    * This is because texture coordinates on ClassificationPrimitives are computed differently,
    * and are used for culling when multiple GeometryInstances are batched in one ClassificationPrimitive.
-   * @memberof ClassificationPrimitive.prototype
    * @type {boolean}
    * @readonly
    * @private

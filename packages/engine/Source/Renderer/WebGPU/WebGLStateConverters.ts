@@ -1,6 +1,4 @@
 /**
- * @module WebGLStateConverters
- *
  * Pure utility functions that convert WebGL enum constants to their
  * WebGPU equivalents. These are used by both the WebGPUContext (for
  * pipeline state tracking) and the WebGLCompatibilityStub (for state
@@ -11,6 +9,7 @@
  *
  * @see WebGPUContext
  * @see WebGLCompatibilityStub
+ * @module WebGLStateConverters
  */
 
 /// <reference types="@webgpu/types" />

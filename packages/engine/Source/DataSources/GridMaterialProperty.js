@@ -123,37 +123,6 @@ class GridMaterialProperty {
         Property.equals(this._lineOffset, other._lineOffset))
     );
   }
-
-  /**
-   * Gets a value indicating if this property is constant.  A property is considered
-   * constant if getValue always returns the same result for the current definition.
-   * @memberof GridMaterialProperty.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   */
-  get isConstant() {
-    return (
-      Property.isConstant(this._color) &&
-      Property.isConstant(this._cellAlpha) &&
-      Property.isConstant(this._lineCount) &&
-      Property.isConstant(this._lineThickness) &&
-      Property.isConstant(this._lineOffset)
-    );
-  }
-
-  /**
-   * Gets the event that is raised whenever the definition of this property changes.
-   * The definition is considered to have changed if a call to getValue would return
-   * a different result for the same time.
-   * @memberof GridMaterialProperty.prototype
-   *
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 const timeScratch = new JulianDate();

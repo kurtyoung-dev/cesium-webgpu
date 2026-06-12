@@ -621,7 +621,6 @@ class EllipsoidRhumbLine {
 
   /**
    * Gets the ellipsoid.
-   * @memberof EllipsoidRhumbLine.prototype
    * @type {Ellipsoid}
    * @readonly
    */
@@ -631,7 +630,6 @@ class EllipsoidRhumbLine {
 
   /**
    * Gets the surface distance between the start and end point
-   * @memberof EllipsoidRhumbLine.prototype
    * @type {number}
    * @readonly
    */
@@ -645,7 +643,6 @@ class EllipsoidRhumbLine {
 
   /**
    * Gets the initial planetodetic point on the path.
-   * @memberof EllipsoidRhumbLine.prototype
    * @type {Cartographic}
    * @readonly
    */
@@ -655,7 +652,6 @@ class EllipsoidRhumbLine {
 
   /**
    * Gets the final planetodetic point on the path.
-   * @memberof EllipsoidRhumbLine.prototype
    * @type {Cartographic}
    * @readonly
    */
@@ -665,7 +661,6 @@ class EllipsoidRhumbLine {
 
   /**
    * Gets the heading from the start point to the end point.
-   * @memberof EllipsoidRhumbLine.prototype
    * @type {number}
    * @readonly
    */

@@ -1,6 +1,4 @@
 /**
- * @module WebGPULabelRenderer
- *
  * Handles WebGPU rendering of LabelCollection. Labels are composed of SDF
  * (Signed Distance Field) glyph billboards with antialiased edges and outlines.
  *
@@ -17,6 +15,7 @@
  *   SDF_EDGE = 1.0 - CUTOFF = 0.75 (distance at glyph boundary)
  *
  * @private
+ * @module WebGPULabelRenderer
  */
 
 import Cartesian2 from "../../Core/Cartesian2.js";

@@ -57,7 +57,6 @@ class ColorGeometryInstanceAttribute {
    * The datatype of each component in the attribute, e.g., individual elements in
    * {@link ColorGeometryInstanceAttribute#value}.
    *
-   * @memberof ColorGeometryInstanceAttribute.prototype
    *
    * @type {ComponentDatatype}
    * @readonly
@@ -71,7 +70,6 @@ class ColorGeometryInstanceAttribute {
   /**
    * The number of components in the attributes, i.e., {@link ColorGeometryInstanceAttribute#value}.
    *
-   * @memberof ColorGeometryInstanceAttribute.prototype
    *
    * @type {number}
    * @readonly
@@ -87,7 +85,6 @@ class ColorGeometryInstanceAttribute {
    * indicate that the components should be mapped to the range [0, 1] (unsigned)
    * or [-1, 1] (signed) when they are accessed as floating-point for rendering.
    *
-   * @memberof ColorGeometryInstanceAttribute.prototype
    *
    * @type {boolean}
    * @readonly

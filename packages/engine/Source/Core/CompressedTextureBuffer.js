@@ -33,7 +33,6 @@ class CompressedTextureBuffer {
    * The format of the compressed texture.
    * @type {PixelFormat}
    * @readonly
-   * @memberof CompressedTextureBuffer.prototype
    */
   get internalFormat() {
     return this._format;
@@ -43,7 +42,6 @@ class CompressedTextureBuffer {
    * The datatype of the compressed texture.
    * @type {PixelDatatype}
    * @readonly
-   * @memberof CompressedTextureBuffer.prototype
    */
   get pixelDatatype() {
     return this._datatype;
@@ -53,7 +51,6 @@ class CompressedTextureBuffer {
    * The width of the texture.
    * @type {number}
    * @readonly
-   * @memberof CompressedTextureBuffer.prototype
    */
   get width() {
     return this._width;
@@ -63,7 +60,6 @@ class CompressedTextureBuffer {
    * The height of the texture.
    * @type {number}
    * @readonly
-   * @memberof CompressedTextureBuffer.prototype
    */
   get height() {
     return this._height;
@@ -73,7 +69,6 @@ class CompressedTextureBuffer {
    * The compressed texture buffer.
    * @type {Uint8Array}
    * @readonly
-   * @memberof CompressedTextureBuffer.prototype
    */
   get bufferView() {
     return this._buffer;
@@ -83,7 +78,6 @@ class CompressedTextureBuffer {
    * The compressed texture buffer. Alias for bufferView.
    * @type {Uint8Array}
    * @readonly
-   * @memberof CompressedTextureBuffer.prototype
    */
   get arrayBufferView() {
     return this._buffer;

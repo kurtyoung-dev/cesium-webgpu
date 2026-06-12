@@ -437,7 +437,6 @@ class Vector3DTilePrimitive {
   /**
    * Gets the number of triangles.
    *
-   * @memberof Vector3DTilePrimitive.prototype
    *
    * @type {number}
    * @readonly
@@ -449,7 +448,6 @@ class Vector3DTilePrimitive {
   /**
    * Gets the geometry memory in bytes.
    *
-   * @memberof Vector3DTilePrimitive.prototype
    *
    * @type {number}
    * @readonly

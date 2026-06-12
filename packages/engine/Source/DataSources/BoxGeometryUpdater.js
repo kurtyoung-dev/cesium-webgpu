@@ -251,7 +251,6 @@ class BoxGeometryUpdater extends GeometryUpdater {
   /**
    * Gets the terrain offset property
    * @type {TerrainOffsetProperty}
-   * @memberof BoxGeometryUpdater.prototype
    * @readonly
    * @private
    */

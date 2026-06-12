@@ -2,6 +2,8 @@ import defined from "../Core/defined.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import TilePathEncoding from "./TilePathEncoding.js";
 
+/** @import Cesium3DTile from "./Cesium3DTile.js"; */
+
 /* ============================================================================
  * TilePathResolver — pluggable path parsing + in-memory tree walking for the
  * 3D Tiles live invalidation feed.
@@ -77,10 +79,10 @@ TilePathResolver.prototype.parsePath = function (rawPath) {
 
 /**
  * Walk the in-memory tile tree from {@link rootTile} to find matching tiles.
- * @param {import("./Cesium3DTile.js").default} rootTile
+ * @param {Cesium3DTile} rootTile
  * @param {ParsedTilePath} parsedPath
  * @param {("exact"|"subtree")} kind
- * @returns {import("./Cesium3DTile.js").default[]}
+ * @returns {Cesium3DTile[]}
  */
 TilePathResolver.prototype.resolve = function (rootTile, parsedPath, kind) {
   throw new DeveloperError(
@@ -405,6 +407,7 @@ LevelXyTilePathResolver.prototype.resolve = function (rootTile, parsed, kind) {
  * Construct the resolver that matches the given encoding.
  * @param {string} encoding One of {@link TilePathEncoding} values.
  * @returns {TilePathResolver}
+ * @private
  */
 export function createTilePathResolver(encoding) {
   switch (encoding) {

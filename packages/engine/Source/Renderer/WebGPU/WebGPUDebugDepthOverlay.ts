@@ -1,6 +1,4 @@
 /**
- * @module WebGPUDebugDepthOverlay
- *
  * Tier 2 debug pass — visualizes the scene depth attachment as a grayscale
  * fullscreen overlay. Used for z-fighting diagnostics, depth-precision
  * analysis at the horizon (stars vs terrain), and verifying that
@@ -33,6 +31,7 @@
  * Raw NDC depth is also available in mode 1, but because Cesium's planetary
  * depth values sit in [0.9999, 1.0] we apply a pow() stretch so the tail is
  * actually visible instead of saturating to white.
+ * @module WebGPUDebugDepthOverlay
  */
 
 /// <reference types="@webgpu/types" />

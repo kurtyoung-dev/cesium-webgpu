@@ -95,7 +95,6 @@ class CompositePositionProperty {
   /**
    * Gets a value indicating if this property is constant.  A property is considered
    * constant if getValue always returns the same result for the current definition.
-   * @memberof CompositePositionProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -108,7 +107,6 @@ class CompositePositionProperty {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is changed whenever setValue is called with data different
    * than the current value.
-   * @memberof CompositePositionProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -119,7 +117,6 @@ class CompositePositionProperty {
 
   /**
    * Gets the interval collection.
-   * @memberof CompositePositionProperty.prototype
    *
    * @type {TimeIntervalCollection}
    */
@@ -132,7 +129,6 @@ class CompositePositionProperty {
    * Each PositionProperty making up this object has it's own reference frame,
    * so this property merely exposes a "preferred" reference frame for clients
    * to use.
-   * @memberof CompositePositionProperty.prototype
    *
    * @type {ReferenceFrame}
    */
@@ -140,15 +136,6 @@ class CompositePositionProperty {
     return this._referenceFrame;
   }
 
-  /**
-   * Gets or sets the reference frame which this position presents itself as.
-   * Each PositionProperty making up this object has it's own reference frame,
-   * so this property merely exposes a "preferred" reference frame for clients
-   * to use.
-   * @memberof CompositePositionProperty.prototype
-   *
-   * @type {ReferenceFrame}
-   */
   set referenceFrame(value) {
     this._referenceFrame = value;
   }

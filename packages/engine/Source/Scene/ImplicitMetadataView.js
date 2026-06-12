@@ -135,7 +135,6 @@ class ImplicitMetadataView {
   /**
    * The class that properties conform to.
    *
-   * @memberof ImplicitMetadataView.prototype
    * @type {MetadataClass}
    * @readonly
    */
@@ -146,7 +145,6 @@ class ImplicitMetadataView {
   /**
    * Extra user-defined properties.
    *
-   * @memberof ImplicitMetadataView.prototype
    * @type {object}
    * @readonly
    */
@@ -157,7 +155,6 @@ class ImplicitMetadataView {
   /**
    * An object containing extensions.
    *
-   * @memberof ImplicitMetadataView.prototype
    * @type {object}
    * @readonly
    */

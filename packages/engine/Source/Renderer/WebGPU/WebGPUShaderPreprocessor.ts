@@ -1,6 +1,4 @@
 /**
- * @module WebGPUShaderPreprocessor
- *
  * Runtime WGSL preprocessor extending Cesium's existing `//>>` pragma
  * style with `//>>ifdef`, `//>>else`, and `//>>endif` conditional
  * compilation directives. Runs before `device.createShaderModule`
@@ -42,6 +40,7 @@
  * concept.
  *
  * @private
+ * @module WebGPUShaderPreprocessor
  */
 
 import { resolveDefineBit } from "./WebGPUShaderDefines.js";

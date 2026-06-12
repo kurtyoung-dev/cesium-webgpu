@@ -372,7 +372,6 @@ class Cesium3DTilesInspector {
 
   /**
    * Gets the parent container.
-   * @memberof Cesium3DTilesInspector.prototype
    *
    * @type {Element}
    */
@@ -382,7 +381,6 @@ class Cesium3DTilesInspector {
 
   /**
    * Gets the view model.
-   * @memberof Cesium3DTilesInspector.prototype
    *
    * @type {Cesium3DTilesInspectorViewModel}
    */

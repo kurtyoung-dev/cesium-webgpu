@@ -58,7 +58,6 @@ class DistanceDisplayConditionGeometryInstanceAttribute {
    * The datatype of each component in the attribute, e.g., individual elements in
    * {@link DistanceDisplayConditionGeometryInstanceAttribute#value}.
    *
-   * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
    *
    * @type {ComponentDatatype}
    * @readonly
@@ -72,7 +71,6 @@ class DistanceDisplayConditionGeometryInstanceAttribute {
   /**
    * The number of components in the attributes, i.e., {@link DistanceDisplayConditionGeometryInstanceAttribute#value}.
    *
-   * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
    *
    * @type {number}
    * @readonly
@@ -88,7 +86,6 @@ class DistanceDisplayConditionGeometryInstanceAttribute {
    * indicate that the components should be mapped to the range [0, 1] (unsigned)
    * or [-1, 1] (signed) when they are accessed as floating-point for rendering.
    *
-   * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
    *
    * @type {boolean}
    * @readonly

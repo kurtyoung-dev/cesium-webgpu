@@ -50,12 +50,6 @@ class ConeEmitter {
     return this._angle;
   }
 
-  /**
-   * The angle of the cone in radians.
-   * @memberof CircleEmitter.prototype
-   * @type {number}
-   * @default Cesium.Math.toRadians(30.0)
-   */
   set angle(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number("value", value);

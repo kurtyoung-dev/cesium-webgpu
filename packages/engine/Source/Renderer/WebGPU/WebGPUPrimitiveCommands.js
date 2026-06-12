@@ -1,6 +1,4 @@
 /**
- * @module WebGPUPrimitiveCommands
- *
  * WebGPU command creation and per-frame uniform update logic for the Primitive
  * rendering pipeline. Extracted from Primitive.js for better organization and
  * maintainability.
@@ -15,6 +13,7 @@
  * - Shaders use translateRelativeToEye() for sub-meter precision at planetary scale
  *
  * @private
+ * @module WebGPUPrimitiveCommands
  */
 import AttributeCompression from "../../Core/AttributeCompression.js";
 import Cartesian2 from "../../Core/Cartesian2.js";
@@ -1880,7 +1879,7 @@ function createWebGPUCommands(
  * `===` checks on `_matPrimarySource` / `_matSecondarySource`.
  *
  * @param {string} shaderType
- * @returns {{primary: string, secondary?: string}}
+ * @returns {{primary: string, secondary: (string|undefined)}}
  * @private
  */
 function getTextureUniformName(shaderType) {

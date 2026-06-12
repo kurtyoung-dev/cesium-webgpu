@@ -897,7 +897,6 @@ class VoxelInspectorViewModel {
 
   /**
    * Gets the scene
-   * @memberof VoxelInspectorViewModel.prototype
    * @type {Scene}
    * @readonly
    */
@@ -907,18 +906,12 @@ class VoxelInspectorViewModel {
 
   /**
    * Gets or sets the primitive of the view model.
-   * @memberof VoxelInspectorViewModel.prototype
    * @type {VoxelPrimitive}
    */
   get voxelPrimitive() {
     return this._voxelPrimitive;
   }
 
-  /**
-   * Gets or sets the primitive of the view model.
-   * @memberof VoxelInspectorViewModel.prototype
-   * @type {VoxelPrimitive}
-   */
   set voxelPrimitive(voxelPrimitive) {
     if (defined(this._customShaderCompilationRemoveCallback)) {
       this._customShaderCompilationRemoveCallback();

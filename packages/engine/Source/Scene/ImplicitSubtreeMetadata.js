@@ -157,7 +157,6 @@ class ImplicitSubtreeMetadata {
   /**
    * The class that properties conform to.
    *
-   * @memberof ImplicitSubtreeMetadata.prototype
    * @type {MetadataClass}
    * @readonly
    * @private
@@ -169,7 +168,6 @@ class ImplicitSubtreeMetadata {
   /**
    * Extra user-defined properties.
    *
-   * @memberof ImplicitSubtreeMetadata.prototype
    * @type {object}
    * @readonly
    * @private
@@ -181,7 +179,6 @@ class ImplicitSubtreeMetadata {
   /**
    * An object containing extensions.
    *
-   * @memberof ImplicitSubtreeMetadata.prototype
    * @type {object}
    * @readonly
    * @private

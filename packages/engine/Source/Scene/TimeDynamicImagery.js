@@ -153,18 +153,12 @@ class TimeDynamicImagery {
 
   /**
    * Gets or sets a clock that is used to get keep the time used for time dynamic parameters.
-   * @memberof TimeDynamicImagery.prototype
    * @type {Clock}
    */
   get clock() {
     return this._clock;
   }
 
-  /**
-   * Gets or sets a clock that is used to get keep the time used for time dynamic parameters.
-   * @memberof TimeDynamicImagery.prototype
-   * @type {Clock}
-   */
   set clock(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -181,18 +175,12 @@ class TimeDynamicImagery {
 
   /**
    * Gets or sets a time interval collection.
-   * @memberof TimeDynamicImagery.prototype
    * @type {TimeIntervalCollection}
    */
   get times() {
     return this._times;
   }
 
-  /**
-   * Gets or sets a time interval collection.
-   * @memberof TimeDynamicImagery.prototype
-   * @type {TimeIntervalCollection}
-   */
   set times(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -209,7 +197,6 @@ class TimeDynamicImagery {
 
   /**
    * Gets the current interval.
-   * @memberof TimeDynamicImagery.prototype
    * @type {TimeInterval}
    */
   get currentInterval() {

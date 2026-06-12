@@ -287,7 +287,6 @@ class BaseLayerPicker {
 
   /**
    * Gets the parent container.
-   * @memberof BaseLayerPicker.prototype
    *
    * @type {Element}
    */
@@ -297,7 +296,6 @@ class BaseLayerPicker {
 
   /**
    * Gets the view model.
-   * @memberof BaseLayerPicker.prototype
    *
    * @type {BaseLayerPickerViewModel}
    */

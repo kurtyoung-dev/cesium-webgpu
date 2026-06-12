@@ -192,7 +192,6 @@ class TileOrientedBoundingBox {
   /**
    * The underlying bounding volume.
    *
-   * @memberof TileOrientedBoundingBox.prototype
    *
    * @type {OrientedBoundingBox}
    * @readonly
@@ -204,7 +203,6 @@ class TileOrientedBoundingBox {
   /**
    * The underlying bounding sphere.
    *
-   * @memberof TileOrientedBoundingBox.prototype
    *
    * @type {BoundingSphere}
    * @readonly

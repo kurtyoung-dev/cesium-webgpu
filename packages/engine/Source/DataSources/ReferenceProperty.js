@@ -224,7 +224,6 @@ class ReferenceProperty {
 
   /**
    * Gets a value indicating if this property is constant.
-   * @memberof ReferenceProperty.prototype
    * @type {boolean}
    * @readonly
    */
@@ -235,7 +234,6 @@ class ReferenceProperty {
   /**
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is changed whenever the referenced property's definition is changed.
-   * @memberof ReferenceProperty.prototype
    * @type {Event}
    * @readonly
    */
@@ -246,7 +244,6 @@ class ReferenceProperty {
   /**
    * Gets the reference frame that the position is defined in.
    * This property is only valid if the referenced property is a {@link PositionProperty}.
-   * @memberof ReferenceProperty.prototype
    * @type {ReferenceFrame}
    * @readonly
    */
@@ -257,7 +254,6 @@ class ReferenceProperty {
 
   /**
    * Gets the id of the entity being referenced.
-   * @memberof ReferenceProperty.prototype
    * @type {string}
    * @readonly
    */
@@ -267,7 +263,6 @@ class ReferenceProperty {
 
   /**
    * Gets the collection containing the entity being referenced.
-   * @memberof ReferenceProperty.prototype
    * @type {EntityCollection}
    * @readonly
    */
@@ -277,7 +272,6 @@ class ReferenceProperty {
 
   /**
    * Gets the array of property names used to retrieve the referenced property.
-   * @memberof ReferenceProperty.prototype
    * @type {}
    * @readonly
    */
@@ -287,7 +281,6 @@ class ReferenceProperty {
 
   /**
    * Gets the resolved instance of the underlying referenced property.
-   * @memberof ReferenceProperty.prototype
    * @type {Property|undefined}
    * @readonly
    */

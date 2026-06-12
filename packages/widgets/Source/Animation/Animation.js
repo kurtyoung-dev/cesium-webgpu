@@ -1243,7 +1243,6 @@ class Animation {
   /**
    * Gets the parent container.
    *
-   * @memberof Animation.prototype
    * @type {Element}
    * @readonly
    */
@@ -1254,7 +1253,6 @@ class Animation {
   /**
    * Gets the view model.
    *
-   * @memberof Animation.prototype
    * @type {AnimationViewModel}
    * @readonly
    */

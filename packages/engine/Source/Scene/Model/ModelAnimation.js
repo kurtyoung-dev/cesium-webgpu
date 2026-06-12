@@ -145,7 +145,6 @@ class ModelAnimation {
   /**
    * The glTF animation.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {ModelComponents.Animation}
    * @readonly
@@ -159,7 +158,6 @@ class ModelAnimation {
   /**
    * The name that identifies this animation in the model, if it exists.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {string}
    * @readonly
@@ -171,7 +169,6 @@ class ModelAnimation {
   /**
    * The runtime animation channels for this animation.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {ModelAnimationChannel[]}
    * @readonly
@@ -185,7 +182,6 @@ class ModelAnimation {
   /**
    * The {@link Model} that owns this animation.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {Model}
    * @readonly
@@ -200,7 +196,6 @@ class ModelAnimation {
    * The starting point of the animation in local animation time. This is the minimum
    * time value across all of the keyframes belonging to this animation.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {number}
    * @readonly
@@ -215,7 +210,6 @@ class ModelAnimation {
    * The stopping point of the animation in local animation time. This is the maximum
    * time value across all of the keyframes belonging to this animation.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {number}
    * @readonly
@@ -230,7 +224,6 @@ class ModelAnimation {
    * The scene time to start playing this animation. When this is <code>undefined</code>,
    * the animation starts at the next frame.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {JulianDate}
    * @readonly
@@ -244,7 +237,6 @@ class ModelAnimation {
   /**
    * The delay, in seconds, from {@link ModelAnimation#startTime} to start playing.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {number}
    * @readonly
@@ -260,7 +252,6 @@ class ModelAnimation {
    * the animation is played for its full duration and perhaps repeated depending on
    * {@link ModelAnimation#loop}.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {JulianDate}
    * @readonly
@@ -278,7 +269,6 @@ class ModelAnimation {
    * clock speed.  For example, if the scene is played at 2x real-time, a two-second glTF animation
    * will play in one second even if <code>multiplier</code> is <code>1.0</code>.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {number}
    * @readonly
@@ -292,7 +282,6 @@ class ModelAnimation {
   /**
    * When <code>true</code>, the animation is played in reverse.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {boolean}
    * @readonly
@@ -306,7 +295,6 @@ class ModelAnimation {
   /**
    * Determines if and how the animation is looped.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {ModelAnimationLoop}
    * @readonly
@@ -321,7 +309,6 @@ class ModelAnimation {
    * If this is defined, it will be used to compute the local animation time
    * instead of the scene's time.
    *
-   * @memberof ModelAnimation.prototype
    *
    * @type {ModelAnimation.AnimationTimeCallback}
    * @default undefined

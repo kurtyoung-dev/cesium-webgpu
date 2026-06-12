@@ -50,7 +50,6 @@ class BoxEmitter {
 
   /**
    * The width, height and depth dimensions of the box in meters.
-   * @memberof BoxEmitter.prototype
    * @type {Cartesian3}
    * @default new Cartesian3(1.0, 1.0, 1.0)
    */
@@ -58,12 +57,6 @@ class BoxEmitter {
     return this._dimensions;
   }
 
-  /**
-   * The width, height and depth dimensions of the box in meters.
-   * @memberof BoxEmitter.prototype
-   * @type {Cartesian3}
-   * @default new Cartesian3(1.0, 1.0, 1.0)
-   */
   set dimensions(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("value", value);

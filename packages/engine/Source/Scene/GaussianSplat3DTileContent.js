@@ -298,7 +298,6 @@ class GaussianSplat3DTileContent {
   /**
    * Gets the number of features in the tile. Currently this is always zero.
    *
-   * @memberof GaussianSplat3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -311,7 +310,6 @@ class GaussianSplat3DTileContent {
    * Equal to the number of Gaussian splats in the tile. Each splat is represented by a median point and a set of attributes, so we can
    * treat this as the number of points in the tile.
    *
-   * @memberof GaussianSplat3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -323,7 +321,6 @@ class GaussianSplat3DTileContent {
   /**
    * Gets the number of triangles in the tile. Currently this is always zero because Gaussian splats are not represented as triangles in the tile content.
    * <p>
-   * @memberof GaussianSplat3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -335,7 +332,6 @@ class GaussianSplat3DTileContent {
   /**
    * The number of bytes used by the geometry attributes of this content.
    * <p>
-   * @memberof GaussianSplat3DTileContent.prototype
    * @type {number}
    * @readonly
    */
@@ -346,7 +342,6 @@ class GaussianSplat3DTileContent {
   /**
    * The number of bytes used by the textures of this content.
    * <p>
-   * @memberof GaussianSplat3DTileContent.prototype
    * @type {number}
    * @readonly
    */
@@ -368,7 +363,6 @@ class GaussianSplat3DTileContent {
    * metadata properties not accounted for in geometryByteLength or
    * texturesByteLength
    * <p>
-   * @memberof GaussianSplat3DTileContent.prototype
    *
    * @type {number}
    * @readonly
@@ -382,7 +376,6 @@ class GaussianSplat3DTileContent {
    *
    * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/TileFormats/Composite|Composite specification}
    *
-   * @memberof GaussianSplat3DTileContent.prototype
    *
    * @type {Array}
    * @readonly
@@ -394,7 +387,6 @@ class GaussianSplat3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof GaussianSplat3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly
@@ -406,7 +398,6 @@ class GaussianSplat3DTileContent {
   /**
    * Returns true when the tile's content is transformed to world coordinates; otherwise false
    * <p>
-   * @memberof GaussianSplat3DTileContent.prototype
    * @type {boolean}
    * @readonly
    */
@@ -417,7 +408,6 @@ class GaussianSplat3DTileContent {
   /**
    * The tileset that this content belongs to.
    * <p>
-   * @memberof GaussianSplat3DTileContent.prototype
    * @type {Cesium3DTileset}
    * @readonly
    */
@@ -428,7 +418,6 @@ class GaussianSplat3DTileContent {
   /**
    * The tile that this content belongs to.
    * <p>
-   * @memberof GaussianSplat3DTileContent.prototype
    * @type {Cesium3DTile}
    * @readonly
    */
@@ -439,7 +428,6 @@ class GaussianSplat3DTileContent {
   /**
    * The resource that this content was loaded from.
    * <p>
-   * @memberof GaussianSplat3DTileContent.prototype
    * @type {Resource}
    * @readonly
    */
@@ -480,19 +468,6 @@ class GaussianSplat3DTileContent {
     return this._metadata;
   }
 
-  /**
-   * Gets the metadata for this content, whether it is available explicitly or via
-   * implicit tiling. If there is no metadata, this property should be undefined.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {ImplicitMetadataView|undefined}
-   *
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
   set metadata(value) {
     this._metadata = value;
   }
@@ -515,20 +490,6 @@ class GaussianSplat3DTileContent {
     return this._group;
   }
 
-  /**
-   * Gets the group for this content if the content has metadata (3D Tiles 1.1) or
-   * if it uses the <code>3DTILES_metadata</code> extension. If neither are present,
-   * this property should be undefined.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {Cesium3DContentGroup|undefined}
-   *
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
   set group(value) {
     this._group = value;
   }

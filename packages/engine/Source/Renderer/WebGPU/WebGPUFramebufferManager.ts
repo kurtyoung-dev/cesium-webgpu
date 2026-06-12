@@ -1,6 +1,4 @@
 /**
- * @module WebGPUFramebufferManager
- *
  * Manages WebGPU render targets (color, depth, stencil) with MSAA support.
  * This is the WebGPU equivalent of FramebufferManager.js for WebGL.
  *
@@ -27,6 +25,7 @@
  * const encoder = commandEncoder.beginRenderPass(passDesc);
  *
  * @private
+ * @module WebGPUFramebufferManager
  */
 
 /// <reference types="@webgpu/types" />

@@ -322,7 +322,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the name of the BingMaps server url hosting the imagery.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -332,7 +331,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the proxy used by this provider.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {Proxy}
    * @readonly
    */
@@ -342,7 +340,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the Bing Maps key.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -352,7 +349,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the type of Bing Maps imagery to load.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {BingMapsStyle}
    * @readonly
    */
@@ -362,7 +358,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the additional map layer options as defined in {@link https://learn.microsoft.com/en-us/bingmaps/rest-services/imagery/get-imagery-metadata#template-parameters}/
-   * @memberof BingMapsImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -374,7 +369,6 @@ class BingMapsImageryProvider {
    * The culture to use when requesting Bing Maps imagery. Not
    * all cultures are supported. See {@link http://msdn.microsoft.com/en-us/library/hh441729.aspx}
    * for information on the supported cultures.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -384,7 +378,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the width of each tile, in pixels.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -394,7 +387,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the height of each tile, in pixels.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -404,7 +396,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the maximum level-of-detail that can be requested.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -414,7 +405,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the minimum level-of-detail that can be requested.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {number}
    * @readonly
    */
@@ -424,7 +414,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the tiling scheme used by this provider.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {TilingScheme}
    * @readonly
    */
@@ -434,7 +423,6 @@ class BingMapsImageryProvider {
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {Rectangle}
    * @readonly
    */
@@ -446,7 +434,6 @@ class BingMapsImageryProvider {
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
    * for filtering out "missing" tiles via its shouldDiscardImage function.  If this function
    * returns undefined, no tiles are filtered.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {TileDiscardPolicy}
    * @readonly
    */
@@ -458,7 +445,6 @@ class BingMapsImageryProvider {
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of {@link TileProviderError}.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {Event}
    * @readonly
    */
@@ -469,7 +455,6 @@ class BingMapsImageryProvider {
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
    * the source of the imagery.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {Credit}
    * @readonly
    */
@@ -483,7 +468,6 @@ class BingMapsImageryProvider {
    * be ignored.  If this property is true, any images without an alpha channel will be treated
    * as if their alpha is 1.0 everywhere.  Setting this property to false reduces memory usage
    * and texture upload time.
-   * @memberof BingMapsImageryProvider.prototype
    * @type {boolean}
    * @readonly
    */

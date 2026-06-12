@@ -135,7 +135,6 @@ class ModelArticulationStage {
   /**
    * The internal articulation stage that this runtime stage represents.
    *
-   * @memberof ModelArticulationStage.prototype
    * @type {ModelComponents.ArticulationStage}
    * @readonly
    *
@@ -148,7 +147,6 @@ class ModelArticulationStage {
   /**
    * The runtime articulation that this stage belongs to.
    *
-   * @memberof ModelArticulationStage.prototype
    * @type {ModelArticulation}
    * @readonly
    *
@@ -161,7 +159,6 @@ class ModelArticulationStage {
   /**
    * The name of this articulation stage.
    *
-   * @memberof ModelArticulationStage.prototype
    * @type {string}
    * @readonly
    *
@@ -175,7 +172,6 @@ class ModelArticulationStage {
    * The type of this articulation stage. This specifies which of the
    * node's properties is modified by the stage's value.
    *
-   * @memberof ModelArticulationStage.prototype
    * @type {ArticulationStageType}
    * @readonly
    *
@@ -188,7 +184,6 @@ class ModelArticulationStage {
   /**
    * The minimum value of this articulation stage.
    *
-   * @memberof ModelArticulationStage.prototype
    * @type {number}
    * @readonly
    *
@@ -201,7 +196,6 @@ class ModelArticulationStage {
   /**
    * The maximum value of this articulation stage.
    *
-   * @memberof ModelArticulationStage.prototype
    * @type {number}
    * @readonly
    *
@@ -214,7 +208,6 @@ class ModelArticulationStage {
   /**
    * The current value of this articulation stage.
    *
-   * @memberof ModelArticulationStage.prototype
    * @type {number}
    *
    * @private
@@ -223,14 +216,6 @@ class ModelArticulationStage {
     return this._currentValue;
   }
 
-  /**
-   * The current value of this articulation stage.
-   *
-   * @memberof ModelArticulationStage.prototype
-   * @type {number}
-   *
-   * @private
-   */
   set currentValue(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number("value", value);

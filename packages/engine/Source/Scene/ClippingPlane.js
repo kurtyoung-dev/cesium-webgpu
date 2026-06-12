@@ -37,22 +37,11 @@ class ClippingPlane {
    * opposite to the normal; if zero, the plane passes through the origin.
    *
    * @type {number}
-   * @memberof ClippingPlane.prototype
    */
   get distance() {
     return this._distance;
   }
 
-  /**
-   * The shortest distance from the origin to the plane.  The sign of
-   * <code>distance</code> determines which side of the plane the origin
-   * is on.  If <code>distance</code> is positive, the origin is in the half-space
-   * in the direction of the normal; if negative, the origin is in the half-space
-   * opposite to the normal; if zero, the plane passes through the origin.
-   *
-   * @type {number}
-   * @memberof ClippingPlane.prototype
-   */
   set distance(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number("value", value);
@@ -67,18 +56,11 @@ class ClippingPlane {
    * The plane's normal.
    *
    * @type {Cartesian3}
-   * @memberof ClippingPlane.prototype
    */
   get normal() {
     return this._normal;
   }
 
-  /**
-   * The plane's normal.
-   *
-   * @type {Cartesian3}
-   * @memberof ClippingPlane.prototype
-   */
   set normal(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("value", value);

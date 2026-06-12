@@ -28,8 +28,10 @@
  *
  * Exit code: 0 = all pass, 1 = any failure, 2 = bad args.
  *
- * Requires `npm run restart` (or equivalent) to be serving the dev
- * server so Build/ artifacts are reachable via HTTP.
+ * Serving: by default the tool starts its OWN static server on an
+ * ephemeral port rooted at the project directory, so no dev server is
+ * required (CI runners depend on this). Pass --url http://localhost:8080
+ * to reuse an already-running dev server instead.
  */
 
 import { promises as fs } from "node:fs";
@@ -69,7 +71,12 @@ function parseArgs(argv) {
   const args = {
     variant: null,
     headless: true,
-    baseUrl: "http://localhost:8080",
+    // When --url is NOT given, the tool starts its own static server on an
+    // ephemeral port (see startStaticServer) — no pre-running dev server is
+    // required. CI runners rely on this; the backgrounded `npm run start`
+    // arrangement died with the step shell and broke the hosted run
+    // (NEW-VARIANT-CI follow-up, Batch 243).
+    baseUrl: null,
     browser: "msedge",
   };
   for (let i = 2; i < argv.length; i++) {
@@ -89,9 +96,83 @@ function parseArgs(argv) {
   return args;
 }
 
+const STATIC_MIME = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".wasm": "application/wasm",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".xml": "application/xml",
+  ".gltf": "model/gltf+json",
+  ".glb": "model/gltf-binary",
+  ".bin": "application/octet-stream",
+  ".ktx2": "image/ktx2",
+  ".terrain": "application/octet-stream",
+  ".czml": "application/json",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
+
+/**
+ * Zero-dependency static file server rooted at `rootDir`, bound to an
+ * ephemeral 127.0.0.1 port. Serves the Build/ artifacts + the generated
+ * __smoke-*.html so the smoke test is fully self-contained — required on
+ * CI runners where no dev server exists.
+ */
+async function startStaticServer(rootDir) {
+  const { createServer } = await import("node:http");
+  const { createReadStream } = await import("node:fs");
+  const normalizedRoot = path.normalize(rootDir);
+  const server = createServer(async (req, res) => {
+    try {
+      const urlPath = decodeURIComponent(
+        new URL(req.url, "http://localhost").pathname,
+      );
+      let filePath = path.normalize(path.join(normalizedRoot, urlPath));
+      if (!filePath.startsWith(normalizedRoot)) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
+      let stat = await fs.stat(filePath).catch(() => null);
+      if (stat?.isDirectory()) {
+        filePath = path.join(filePath, "index.html");
+        stat = await fs.stat(filePath).catch(() => null);
+      }
+      if (!stat || !stat.isFile()) {
+        res.writeHead(404);
+        res.end("not found");
+        return;
+      }
+      res.writeHead(200, {
+        "content-type":
+          STATIC_MIME[path.extname(filePath).toLowerCase()] ??
+          "application/octet-stream",
+        "cache-control": "no-store",
+      });
+      createReadStream(filePath).pipe(res);
+    } catch (err) {
+      res.writeHead(500);
+      res.end(String(err));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return { server, baseUrl: `http://127.0.0.1:${server.address().port}` };
+}
+
 function printHelp() {
   console.log(
-    "Usage: node Tools/variant-smoke-test.mjs [--variant NAME] [--url URL] [--browser msedge|chromium|firefox|webkit] [--headed]",
+    "Usage: node Tools/variant-smoke-test.mjs [--variant NAME] [--url URL (default: self-served ephemeral port)] [--browser msedge|chromium|firefox|webkit] [--headed]",
   );
 }
 
@@ -369,6 +450,10 @@ async function runVariant(browserType, args, variant) {
       "--use-vulkan=swiftshader",
       "--disable-vulkan-surface",
       "--enable-dawn-features=allow_unsafe_apis",
+      // Chromium ≥136 deprecated the automatic software-WebGL fallback;
+      // headless runners (and GPU-less CI boxes) need this opt-in or the
+      // webgl variants get NO context at all and the boot never readies.
+      "--enable-unsafe-swiftshader",
     ],
   });
 
@@ -406,13 +491,20 @@ async function runVariant(browserType, args, variant) {
     // Wait up to 45s for __smokeReady to flip (boot + the pixel gate's
     // 15s uniform-canvas deadline + CI scheduling slack). A webgpu-only
     // bundle on a machine without GPU support may trip one of the guards;
-    // that's a FAIL that we want to see.
-    const readyState = await page.waitForFunction(
-      () => window.__smokeReady,
-      null,
-      { timeout: 45000 },
-    );
-    const ready = await readyState.jsonValue();
+    // that's a FAIL that we want to see. On timeout, fall through with
+    // ready=false so the page errors / failed requests below still get
+    // dumped — a bare TimeoutError hides the actual boot failure.
+    let ready = false;
+    try {
+      const readyState = await page.waitForFunction(
+        () => window.__smokeReady,
+        null,
+        { timeout: 45000 },
+      );
+      ready = await readyState.jsonValue();
+    } catch {
+      errors.push("timeout: __smokeReady never flipped within 45s");
+    }
     const pageErrors = await page.evaluate(() => window.__smokeErrors || []);
     errors.push(...pageErrors);
 
@@ -518,18 +610,35 @@ async function main() {
         ? playwright.webkit
         : playwright.chromium;
 
-  const results = [];
-  for (const variant of targets) {
-    const result = await runVariant(browserType, args, variant);
-    results.push(result);
+  // Self-serve unless the caller pointed us at an existing server with
+  // --url. The ephemeral-port server makes the smoke test runnable on a
+  // bare CI runner with zero server orchestration in the workflow.
+  let staticServer = null;
+  if (!args.baseUrl) {
+    staticServer = await startStaticServer(projectRoot);
+    args.baseUrl = staticServer.baseUrl;
+    console.log(
+      `[variant-smoke-test] self-serving ${projectRoot} at ${args.baseUrl}`,
+    );
   }
 
-  console.log("\n=== Summary ===");
-  for (const r of results) {
-    console.log(`  ${r.variant.padEnd(15)}  ${r.status}`);
-  }
+  let anyFail = true;
+  try {
+    const results = [];
+    for (const variant of targets) {
+      const result = await runVariant(browserType, args, variant);
+      results.push(result);
+    }
 
-  const anyFail = results.some((r) => r.status !== "PASS");
+    console.log("\n=== Summary ===");
+    for (const r of results) {
+      console.log(`  ${r.variant.padEnd(15)}  ${r.status}`);
+    }
+
+    anyFail = results.some((r) => r.status !== "PASS");
+  } finally {
+    staticServer?.server.close();
+  }
   process.exit(anyFail ? 1 : 0);
 }
 

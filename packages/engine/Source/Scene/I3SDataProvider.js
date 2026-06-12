@@ -384,7 +384,6 @@ class I3SDataProvider {
 
   /**
    * Gets a human-readable name for this dataset.
-   * @memberof I3SDataProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -394,18 +393,12 @@ class I3SDataProvider {
 
   /**
    * Determines if the dataset will be shown.
-   * @memberof I3SDataProvider.prototype
    * @type {boolean}
    */
   get show() {
     return this._show;
   }
 
-  /**
-   * Determines if the dataset will be shown.
-   * @memberof I3SDataProvider.prototype
-   * @type {boolean}
-   */
   set show(value) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("value", value);
@@ -421,7 +414,6 @@ class I3SDataProvider {
 
   /**
    * The terrain provider referencing the GEOID service to be used for orthometric to ellipsoidal conversion.
-   * @memberof I3SDataProvider.prototype
    * @type {ArcGISTiledElevationTerrainProvider}
    * @readonly
    */
@@ -431,7 +423,6 @@ class I3SDataProvider {
 
   /**
    * Gets the collection of layers.
-   * @memberof I3SDataProvider.prototype
    * @type {I3SLayer[]}
    * @readonly
    */
@@ -441,7 +432,6 @@ class I3SDataProvider {
 
   /**
    * Gets the collection of building sublayers.
-   * @memberof I3SDataProvider.prototype
    * @type {I3SSublayer[]}
    * @readonly
    */
@@ -451,7 +441,6 @@ class I3SDataProvider {
 
   /**
    * Gets the I3S data for this object.
-   * @memberof I3SDataProvider.prototype
    * @type {object}
    * @readonly
    */
@@ -461,7 +450,6 @@ class I3SDataProvider {
 
   /**
    * Gets the extent covered by this I3S.
-   * @memberof I3SDataProvider.prototype
    * @type {Rectangle}
    * @readonly
    */
@@ -471,7 +459,6 @@ class I3SDataProvider {
 
   /**
    * The resource used to fetch the I3S dataset.
-   * @memberof I3SDataProvider.prototype
    * @type {Resource}
    * @readonly
    */
@@ -481,7 +468,6 @@ class I3SDataProvider {
 
   /**
    * Determines if the features will be shown.
-   * @memberof I3SDataProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -491,7 +477,6 @@ class I3SDataProvider {
 
   /**
    * Determines if the alpha mode of the material will be adjusted depending on the color vertex attribute.
-   * @memberof I3SDataProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -501,7 +486,6 @@ class I3SDataProvider {
 
   /**
    * Determines if the I3S symbology will be parsed and applied for the layers.
-   * @memberof I3SDataProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -511,7 +495,6 @@ class I3SDataProvider {
 
   /**
    * Determines if the flat normals will be generated for I3S geometry without normals.
-   * @memberof I3SDataProvider.prototype
    * @type {boolean}
    * @readonly
    */

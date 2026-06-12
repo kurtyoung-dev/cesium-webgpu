@@ -238,7 +238,6 @@ class ModelDrawCommand {
   /**
    * The main draw command that the other commands are derived from.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {DrawCommand}
    *
    * @readonly
@@ -251,7 +250,6 @@ class ModelDrawCommand {
   /**
    * The runtime primitive that the draw command belongs to.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {ModelRuntimePrimitive}
    *
    * @readonly
@@ -264,7 +262,6 @@ class ModelDrawCommand {
   /**
    * The model that the draw command belongs to.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {Model}
    *
    * @readonly
@@ -277,7 +274,6 @@ class ModelDrawCommand {
   /**
    * The primitive type of the draw command.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {PrimitiveType}
    *
    * @readonly
@@ -291,7 +287,6 @@ class ModelDrawCommand {
    * The current model matrix applied to the draw commands. If there are
    * 2D draw commands, their model matrix will be derived from the 3D one.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {Matrix4}
    *
    * @readonly
@@ -301,16 +296,6 @@ class ModelDrawCommand {
     return this._modelMatrix;
   }
 
-  /**
-   * The current model matrix applied to the draw commands. If there are
-   * 2D draw commands, their model matrix will be derived from the 3D one.
-   *
-   * @memberof ModelDrawCommand.prototype
-   * @type {Matrix4}
-   *
-   * @readonly
-   * @private
-   */
   set modelMatrix(value) {
     this._modelMatrix = Matrix4.clone(value, this._modelMatrix);
     this._modelMatrix2DDirty = true;
@@ -327,7 +312,6 @@ class ModelDrawCommand {
    * to the primitive's bounding sphere transformed by the draw
    * command's model matrix.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {BoundingSphere}
    *
    * @readonly
@@ -340,7 +324,6 @@ class ModelDrawCommand {
   /**
    * Whether the geometry casts or receives shadows from light sources.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {ShadowMode}
    *
    * @private
@@ -349,14 +332,6 @@ class ModelDrawCommand {
     return this._shadows;
   }
 
-  /**
-   * Whether the geometry casts or receives shadows from light sources.
-   *
-   * @memberof ModelDrawCommand.prototype
-   * @type {ShadowMode}
-   *
-   * @private
-   */
   set shadows(value) {
     this._shadows = value;
     updateShadows(this);
@@ -368,7 +343,6 @@ class ModelDrawCommand {
    * culling is disabled. Back faces are not culled if the command is
    * translucent.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {boolean}
    *
    * @private
@@ -377,17 +351,6 @@ class ModelDrawCommand {
     return this._backFaceCulling;
   }
 
-  /**
-   * Whether to cull back-facing geometry. When true, back face culling is
-   * determined by the material's doubleSided property; when false, back face
-   * culling is disabled. Back faces are not culled if the command is
-   * translucent.
-   *
-   * @memberof ModelDrawCommand.prototype
-   * @type {boolean}
-   *
-   * @private
-   */
   set backFaceCulling(value) {
     if (this._backFaceCulling === value) {
       return;
@@ -400,7 +363,6 @@ class ModelDrawCommand {
   /**
    * Determines which faces to cull, if culling is enabled.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {CullFace}
    *
    * @private
@@ -409,14 +371,6 @@ class ModelDrawCommand {
     return this._cullFace;
   }
 
-  /**
-   * Determines which faces to cull, if culling is enabled.
-   *
-   * @memberof ModelDrawCommand.prototype
-   * @type {CullFace}
-   *
-   * @private
-   */
   set cullFace(value) {
     if (this._cullFace === value) {
       return;
@@ -429,7 +383,6 @@ class ModelDrawCommand {
   /**
    * Whether to draw the bounding sphere associated with this draw command.
    *
-   * @memberof ModelDrawCommand.prototype
    * @type {boolean}
    *
    * @private
@@ -438,14 +391,6 @@ class ModelDrawCommand {
     return this._debugShowBoundingVolume;
   }
 
-  /**
-   * Whether to draw the bounding sphere associated with this draw command.
-   *
-   * @memberof ModelDrawCommand.prototype
-   * @type {boolean}
-   *
-   * @private
-   */
   set debugShowBoundingVolume(value) {
     if (this._debugShowBoundingVolume === value) {
       return;

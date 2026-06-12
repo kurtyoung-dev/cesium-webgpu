@@ -176,7 +176,6 @@ class SampledPositionProperty {
   /**
    * Gets a value indicating if this property is constant.  A property is considered
    * constant if getValue always returns the same result for the current definition.
-   * @memberof SampledPositionProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -189,7 +188,6 @@ class SampledPositionProperty {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is considered to have changed if a call to getValue would return
    * a different result for the same time.
-   * @memberof SampledPositionProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -200,7 +198,6 @@ class SampledPositionProperty {
 
   /**
    * Gets the reference frame in which the position is defined.
-   * @memberof SampledPositionProperty.prototype
    * @type {ReferenceFrame}
    * @default ReferenceFrame.FIXED;
    */
@@ -210,7 +207,6 @@ class SampledPositionProperty {
 
   /**
    * Gets the degree of interpolation to perform when retrieving a value. Call <code>setInterpolationOptions</code> to set this.
-   * @memberof SampledPositionProperty.prototype
    *
    * @type {number}
    * @default 1
@@ -222,7 +218,6 @@ class SampledPositionProperty {
 
   /**
    * Gets the interpolation algorithm to use when retrieving a value. Call <code>setInterpolationOptions</code> to set this.
-   * @memberof SampledPositionProperty.prototype
    *
    * @type {InterpolationAlgorithm}
    * @default LinearApproximation
@@ -234,7 +229,6 @@ class SampledPositionProperty {
 
   /**
    * The number of derivatives contained by this property; i.e. 0 for just position, 1 for velocity, etc.
-   * @memberof SampledPositionProperty.prototype
    *
    * @type {number}
    * @default 0
@@ -246,7 +240,6 @@ class SampledPositionProperty {
   /**
    * Gets or sets the type of extrapolation to perform when a value
    * is requested at a time after any available samples.
-   * @memberof SampledPositionProperty.prototype
    * @type {ExtrapolationType}
    * @default ExtrapolationType.NONE
    */
@@ -254,13 +247,6 @@ class SampledPositionProperty {
     return this._property.forwardExtrapolationType;
   }
 
-  /**
-   * Gets or sets the type of extrapolation to perform when a value
-   * is requested at a time after any available samples.
-   * @memberof SampledPositionProperty.prototype
-   * @type {ExtrapolationType}
-   * @default ExtrapolationType.NONE
-   */
   set forwardExtrapolationType(value) {
     this._property.forwardExtrapolationType = value;
   }
@@ -268,7 +254,6 @@ class SampledPositionProperty {
   /**
    * Gets or sets the amount of time to extrapolate forward before
    * the property becomes undefined.  A value of 0 will extrapolate forever.
-   * @memberof SampledPositionProperty.prototype
    * @type {number}
    * @default 0
    */
@@ -276,13 +261,6 @@ class SampledPositionProperty {
     return this._property.forwardExtrapolationDuration;
   }
 
-  /**
-   * Gets or sets the amount of time to extrapolate forward before
-   * the property becomes undefined.  A value of 0 will extrapolate forever.
-   * @memberof SampledPositionProperty.prototype
-   * @type {number}
-   * @default 0
-   */
   set forwardExtrapolationDuration(value) {
     this._property.forwardExtrapolationDuration = value;
   }
@@ -290,7 +268,6 @@ class SampledPositionProperty {
   /**
    * Gets or sets the type of extrapolation to perform when a value
    * is requested at a time before any available samples.
-   * @memberof SampledPositionProperty.prototype
    * @type {ExtrapolationType}
    * @default ExtrapolationType.NONE
    */
@@ -298,13 +275,6 @@ class SampledPositionProperty {
     return this._property.backwardExtrapolationType;
   }
 
-  /**
-   * Gets or sets the type of extrapolation to perform when a value
-   * is requested at a time before any available samples.
-   * @memberof SampledPositionProperty.prototype
-   * @type {ExtrapolationType}
-   * @default ExtrapolationType.NONE
-   */
   set backwardExtrapolationType(value) {
     this._property.backwardExtrapolationType = value;
   }
@@ -312,7 +282,6 @@ class SampledPositionProperty {
   /**
    * Gets or sets the amount of time to extrapolate backward
    * before the property becomes undefined.  A value of 0 will extrapolate forever.
-   * @memberof SampledPositionProperty.prototype
    * @type {number}
    * @default 0
    */
@@ -320,13 +289,6 @@ class SampledPositionProperty {
     return this._property.backwardExtrapolationDuration;
   }
 
-  /**
-   * Gets or sets the amount of time to extrapolate backward
-   * before the property becomes undefined.  A value of 0 will extrapolate forever.
-   * @memberof SampledPositionProperty.prototype
-   * @type {number}
-   * @default 0
-   */
   set backwardExtrapolationDuration(value) {
     this._property.backwardExtrapolationDuration = value;
   }

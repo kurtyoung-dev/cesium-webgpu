@@ -86,7 +86,6 @@ class ImplicitAvailabilityBitstream {
   /**
    * The length of the bitstream in bits.
    *
-   * @memberof ImplicitAvailabilityBitstream.prototype
    *
    * @type {number}
    * @readonly
@@ -99,7 +98,6 @@ class ImplicitAvailabilityBitstream {
   /**
    * The number of bits in the bitstream with value <code>1</code>.
    *
-   * @memberof ImplicitAvailabilityBitstream.prototype
    *
    * @type {number}
    * @readonly

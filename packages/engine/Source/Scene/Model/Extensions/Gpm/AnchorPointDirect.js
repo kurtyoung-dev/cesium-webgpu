@@ -33,7 +33,6 @@ class AnchorPointDirect {
   /**
    * Anchor point geographic coordinates in meters as X/Easting, Y/Northing, Z/HAE
    *
-   * @memberof AnchorPointDirect.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -45,7 +44,6 @@ class AnchorPointDirect {
    * The delta-x delta-y delta-z adjustment values in meters per anchor
    * point.
    *
-   * @memberof AnchorPointDirect.prototype
    * @type {Cartesian3}
    * @readonly
    */

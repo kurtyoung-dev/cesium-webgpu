@@ -189,7 +189,6 @@ class Geocoder {
 
   /**
    * Gets the parent container.
-   * @memberof Geocoder.prototype
    *
    * @type {Element}
    */
@@ -199,7 +198,6 @@ class Geocoder {
 
   /**
    * Gets the parent container.
-   * @memberof Geocoder.prototype
    *
    * @type {Element}
    */
@@ -209,7 +207,6 @@ class Geocoder {
 
   /**
    * Gets the view model.
-   * @memberof Geocoder.prototype
    *
    * @type {GeocoderViewModel}
    */

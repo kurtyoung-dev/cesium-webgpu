@@ -58,7 +58,6 @@ class ModelSkin {
   /**
    * The internal skin this runtime skin represents.
    *
-   * @memberof ModelSkin.prototype
    * @type {ModelComponents.Skin}
    * @readonly
    *
@@ -71,7 +70,6 @@ class ModelSkin {
   /**
    * The scene graph this skin belongs to.
    *
-   * @memberof ModelSkin.prototype
    * @type {ModelSceneGraph}
    * @readonly
    *
@@ -84,7 +82,6 @@ class ModelSkin {
   /**
    * The inverse bind matrices of the skin.
    *
-   * @memberof ModelSkin.prototype
    * @type {Matrix4[]}
    * @readonly
    *
@@ -97,7 +94,6 @@ class ModelSkin {
   /**
    * The joints of the skin.
    *
-   * @memberof ModelSkin.prototype
    * @type {ModelRuntimeNode[]}
    * @readonly
    *
@@ -114,7 +110,6 @@ class ModelSkin {
    * Each node that references this skin is responsible for pre-multiplying its inverse
    * world transform to the joint matrices for its own use.
    *
-   * @memberof ModelSkin.prototype
    * @type {Matrix4[]}
    * @readonly
    *

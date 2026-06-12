@@ -258,7 +258,6 @@ class GltfMeshPrimitiveGpmLoader extends ResourceLoader {
   /**
    * The cache key of the resource.
    *
-   * @memberof GltfMeshPrimitiveGpmLoader.prototype
    *
    * @type {string}
    * @readonly
@@ -271,7 +270,6 @@ class GltfMeshPrimitiveGpmLoader extends ResourceLoader {
   /**
    * The parsed GPM extension information from the mesh primitive
    *
-   * @memberof GltfMeshPrimitiveGpmLoader.prototype
    *
    * @type {MeshPrimitiveGpmLocal}
    * @readonly
@@ -287,7 +285,6 @@ class GltfMeshPrimitiveGpmLoader extends ResourceLoader {
    *
    * Some details about the translation are intentionally not specified here.
    *
-   * @memberof GltfMeshPrimitiveGpmLoader.prototype
    *
    * @type {StructuralMetadata}
    * @readonly

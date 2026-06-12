@@ -167,7 +167,6 @@ class CustomHeightmapTerrainProvider {
    * Gets an event that is raised when the terrain provider encounters an asynchronous error. By subscribing
    * to the event, you will be notified of the error and can potentially recover from it. Event listeners
    * are passed an instance of {@link TileProviderError}.
-   * @memberof CustomHeightmapTerrainProvider.prototype
    * @type {Event}
    * @readonly
    */
@@ -178,7 +177,6 @@ class CustomHeightmapTerrainProvider {
   /**
    * Gets the credit to display when this terrain provider is active. Typically this is used to credit
    * the source of the terrain.
-   * @memberof CustomHeightmapTerrainProvider.prototype
    * @type {Credit}
    * @readonly
    */
@@ -188,7 +186,6 @@ class CustomHeightmapTerrainProvider {
 
   /**
    * Gets the tiling scheme used by this provider.
-   * @memberof CustomHeightmapTerrainProvider.prototype
    * @type {TilingScheme}
    * @readonly
    */
@@ -202,7 +199,6 @@ class CustomHeightmapTerrainProvider {
    * as a reflective surface with animated waves.
    * Water mask is not supported by {@link CustomHeightmapTerrainProvider}, so the return
    * value will always be false.
-   * @memberof CustomHeightmapTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -214,7 +210,6 @@ class CustomHeightmapTerrainProvider {
    * Gets a value indicating whether or not the requested tiles include vertex normals.
    * Vertex normals are not supported by {@link CustomHeightmapTerrainProvider}, so the return
    * value will always be false.
-   * @memberof CustomHeightmapTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -226,7 +221,6 @@ class CustomHeightmapTerrainProvider {
    * Gets an object that can be used to determine availability of terrain from this provider, such as
    * at points and in rectangles. This property may be undefined if availability
    * information is not available.
-   * @memberof CustomHeightmapTerrainProvider.prototype
    * @type {TileAvailability}
    * @readonly
    */
@@ -236,7 +230,6 @@ class CustomHeightmapTerrainProvider {
 
   /**
    * Gets the number of columns per heightmap tile.
-   * @memberof CustomHeightmapTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -246,7 +239,6 @@ class CustomHeightmapTerrainProvider {
 
   /**
    * Gets the number of rows per heightmap tile.
-   * @memberof CustomHeightmapTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */

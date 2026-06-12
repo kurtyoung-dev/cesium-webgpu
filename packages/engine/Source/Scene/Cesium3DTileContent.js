@@ -1,4 +1,18 @@
+// @ts-check
+
 import DeveloperError from "../Core/DeveloperError.js";
+
+/** @import Cartesian3 from "../Core/Cartesian3.js"; */
+/** @import Cesium3DContentGroup from "./Cesium3DContentGroup.js"; */
+/** @import Cesium3DTile from "./Cesium3DTile.js"; */
+/** @import Cesium3DTileBatchTable from "./Cesium3DTileBatchTable.js"; */
+/** @import Cesium3DTileFeature from "./Cesium3DTileFeature.js"; */
+/** @import Cesium3DTileStyle from "./Cesium3DTileStyle.js"; */
+/** @import Cesium3DTileset from "./Cesium3DTileset.js"; */
+/** @import Color from "../Core/Color.js"; */
+/** @import FrameState from "./FrameState.js"; */
+/** @import ImplicitMetadataView from "./ImplicitMetadataView.js"; */
+/** @import Ray from "../Core/Ray.js"; */
 
 /**
  * The content of a tile in a {@link Cesium3DTileset}.
@@ -10,8 +24,7 @@ import DeveloperError from "../Core/DeveloperError.js";
  * This type describes an interface and is not intended to be instantiated directly.
  * </p>
  *
- * @alias Cesium3DTileContent
- * @constructor
+ * @interface
  */
 class Cesium3DTileContent {
   constructor() {
@@ -25,10 +38,176 @@ class Cesium3DTileContent {
      *
      * @type {boolean}
      *
-     * @private
+     * @protected
+     * @ignore
      */
     this.featurePropertiesDirty = false;
   }
+
+  /**
+   * Gets the number of features in the tile.
+   *
+   *
+   * @type {number}
+   * @readonly
+   * @constant
+   */
+  featuresLength;
+
+  /**
+   * Gets the number of points in the tile.
+   * <p>
+   * Only applicable for tiles with Point Cloud content. This is different than {@link Cesium3DTileContent#featuresLength} which
+   * equals the number of groups of points as distinguished by the <code>BATCH_ID</code> feature table semantic.
+   * </p>
+   *
+   * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/TileFormats/PointCloud#batched-points}
+   *
+   *
+   * @type {number}
+   * @readonly
+   * @constant
+   */
+  pointsLength;
+
+  /**
+   * Gets the number of triangles in the tile.
+   *
+   *
+   * @type {number}
+   * @readonly
+   * @constant
+   */
+  trianglesLength;
+
+  /**
+   * Gets the tile's geometry memory in bytes.
+   *
+   *
+   * @type {number}
+   * @readonly
+   * @constant
+   */
+  geometryByteLength;
+
+  /**
+   * Gets the tile's texture memory in bytes.
+   *
+   *
+   * @type {number}
+   * @readonly
+   * @constant
+   */
+  texturesByteLength;
+
+  /**
+   * Gets the amount of memory used by the batch table textures and any binary
+   * metadata properties not accounted for in geometryByteLength or
+   * texturesByteLength
+   *
+   *
+   * @type {number}
+   * @readonly
+   * @constant
+   */
+  batchTableByteLength;
+
+  /**
+   * Gets the array of {@link Cesium3DTileContent} objects for contents that contain other contents, such as composite tiles. The inner contents may in turn have inner contents, such as a composite tile that contains a composite tile.
+   *
+   * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/TileFormats/Composite|Composite specification}
+   *
+   *
+   * @type {Array<*>}
+   * @readonly
+   * @constant
+   */
+  innerContents;
+
+  /**
+   * Returns true when the tile's content is ready to render; otherwise false
+   *
+   *
+   * @type {boolean}
+   * @readonly
+   * @constant
+   */
+  ready;
+
+  /**
+   * Gets the tileset for this tile.
+   *
+   *
+   * @type {Cesium3DTileset}
+   * @readonly
+   * @constant
+   */
+  tileset;
+
+  /**
+   * Gets the tile containing this content.
+   *
+   *
+   * @type {Cesium3DTile}
+   * @readonly
+   * @constant
+   */
+  tile;
+
+  /**
+   * Gets the url of the tile's content.
+   *
+   * @type {string}
+   * @readonly
+   * @constant
+   */
+  url;
+
+  /**
+   * Gets the batch table for this content.
+   * <p>
+   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
+   * not part of the public Cesium API.
+   * </p>
+   *
+   * @type {Cesium3DTileBatchTable}
+   * @readonly
+   * @constant
+   *
+   * @private
+   */
+  batchTable;
+
+  /**
+   * Gets the metadata for this content, whether it is available explicitly or via
+   * implicit tiling. If there is no metadata, this property should be undefined.
+   * <p>
+   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
+   * not part of the public Cesium API.
+   * </p>
+   *
+   * @type {ImplicitMetadataView|undefined}
+   *
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  metadata;
+
+  /**
+   * Gets the group for this content if the content has metadata (3D Tiles 1.1) or
+   * if it uses the <code>3DTILES_metadata</code> extension. If neither are present,
+   * this property should be undefined.
+   * <p>
+   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
+   * not part of the public Cesium API.
+   * </p>
+   *
+   * @type {Cesium3DContentGroup|undefined}
+   *
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  group;
 
   /**
    * Returns whether the feature has this property.
@@ -68,6 +247,7 @@ class Cesium3DTileContent {
        * </p>
        *
        * @param {boolean} enabled Whether to enable or disable debug settings.
+       * @param {Color} color Debug color.
        * @returns {Cesium3DTileFeature} The corresponding {@link Cesium3DTileFeature} object.
 
        * @private
@@ -169,233 +349,6 @@ class Cesium3DTileContent {
    * @private
    */
   destroy() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the number of features in the tile.
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {number}
-   * @readonly
-   */
-  get featuresLength() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the number of points in the tile.
-   * <p>
-   * Only applicable for tiles with Point Cloud content. This is different than {@link Cesium3DTileContent#featuresLength} which
-   * equals the number of groups of points as distinguished by the <code>BATCH_ID</code> feature table semantic.
-   * </p>
-   *
-   * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/TileFormats/PointCloud#batched-points}
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {number}
-   * @readonly
-   */
-  get pointsLength() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the number of triangles in the tile.
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {number}
-   * @readonly
-   */
-  get trianglesLength() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the tile's geometry memory in bytes.
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {number}
-   * @readonly
-   */
-  get geometryByteLength() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the tile's texture memory in bytes.
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {number}
-   * @readonly
-   */
-  get texturesByteLength() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the amount of memory used by the batch table textures and any binary
-   * metadata properties not accounted for in geometryByteLength or
-   * texturesByteLength
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {number}
-   * @readonly
-   */
-  get batchTableByteLength() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the array of {@link Cesium3DTileContent} objects for contents that contain other contents, such as composite tiles. The inner contents may in turn have inner contents, such as a composite tile that contains a composite tile.
-   *
-   * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/TileFormats/Composite|Composite specification}
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {Array}
-   * @readonly
-   */
-  get innerContents() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Returns true when the tile's content is ready to render; otherwise false
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   */
-  get ready() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the tileset for this tile.
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {Cesium3DTileset}
-   * @readonly
-   */
-  get tileset() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the tile containing this content.
-   *
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {Cesium3DTile}
-   * @readonly
-   */
-  get tile() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the url of the tile's content.
-   * @memberof Cesium3DTileContent.prototype
-   *
-   * @type {string}
-   * @readonly
-   */
-  get url() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the batch table for this content.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {Cesium3DTileBatchTable}
-   * @readonly
-   *
-   * @private
-   */
-  get batchTable() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the metadata for this content, whether it is available explicitly or via
-   * implicit tiling. If there is no metadata, this property should be undefined.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {ImplicitMetadataView|undefined}
-   *
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  get metadata() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the metadata for this content, whether it is available explicitly or via
-   * implicit tiling. If there is no metadata, this property should be undefined.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {ImplicitMetadataView|undefined}
-   *
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  set metadata(value) {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the group for this content if the content has metadata (3D Tiles 1.1) or
-   * if it uses the <code>3DTILES_metadata</code> extension. If neither are present,
-   * this property should be undefined.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {Cesium3DContentGroup|undefined}
-   *
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  get group() {
-    DeveloperError.throwInstantiationError();
-  }
-
-  /**
-   * Gets the group for this content if the content has metadata (3D Tiles 1.1) or
-   * if it uses the <code>3DTILES_metadata</code> extension. If neither are present,
-   * this property should be undefined.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {Cesium3DContentGroup|undefined}
-   *
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  set group(value) {
     DeveloperError.throwInstantiationError();
   }
 }

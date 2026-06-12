@@ -49,7 +49,6 @@ class I3SStatistics {
 
   /**
    * Gets the resource for the statistics
-   * @memberof I3SStatistics.prototype
    * @type {Resource}
    * @readonly
    */
@@ -59,7 +58,6 @@ class I3SStatistics {
 
   /**
    * Gets the I3S data for this object.
-   * @memberof I3SStatistics.prototype
    * @type {object}
    * @readonly
    */
@@ -69,7 +67,6 @@ class I3SStatistics {
 
   /**
    * Gets the collection of attribute names.
-   * @memberof I3SStatistics.prototype
    * @type {string[]}
    * @readonly
    */

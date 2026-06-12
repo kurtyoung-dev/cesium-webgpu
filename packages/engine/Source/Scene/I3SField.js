@@ -268,7 +268,6 @@ class I3SField {
 
   /**
    * Gets the resource for the fields
-   * @memberof I3SField.prototype
    * @type {Resource}
    * @readonly
    */
@@ -278,7 +277,6 @@ class I3SField {
 
   /**
    * Gets the header for this field.
-   * @memberof I3SField.prototype
    * @type {object}
    * @readonly
    */
@@ -288,7 +286,6 @@ class I3SField {
 
   /**
    * Gets the values for this field.
-   * @memberof I3SField.prototype
    * @type {object}
    * @readonly
    */
@@ -307,7 +304,6 @@ class I3SField {
 
   /**
    * Gets the name for the field.
-   * @memberof I3SField.prototype
    * @type {string}
    * @readonly
    */

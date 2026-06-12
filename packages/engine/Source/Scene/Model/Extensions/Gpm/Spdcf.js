@@ -54,7 +54,6 @@ class Spdcf {
   /**
    * In (0, 1]
    *
-   * @memberof Spdcf.prototype
    * @type {number}
    * @readonly
    */
@@ -65,7 +64,6 @@ class Spdcf {
   /**
    * In [0, 1)
    *
-   * @memberof Spdcf.prototype
    * @type {number}
    * @readonly
    */
@@ -76,7 +74,6 @@ class Spdcf {
   /**
    * In [0, 10]
    *
-   * @memberof Spdcf.prototype
    * @type {number}
    * @readonly
    */
@@ -87,7 +84,6 @@ class Spdcf {
   /**
    * In (0, +inf)
    *
-   * @memberof Spdcf.prototype
    * @type {number}
    * @readonly
    */

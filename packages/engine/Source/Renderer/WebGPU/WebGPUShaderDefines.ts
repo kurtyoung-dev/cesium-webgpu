@@ -1,6 +1,4 @@
 /**
- * @module WebGPUShaderDefines
- *
  * Central registry of preprocessor defines consumed by the `//>>ifdef`
  * system in Cesium-authored WGSL shaders, plus stable numeric identity
  * for each shader source file. Both tables are pure data — no runtime
@@ -26,6 +24,7 @@
  * in a comment and left in place.
  *
  * @private
+ * @module WebGPUShaderDefines
  */
 
 /**

@@ -645,7 +645,6 @@ class TimeIntervalCollection {
 
   /**
    * Gets an event that is raised whenever the collection of intervals change.
-   * @memberof TimeIntervalCollection.prototype
    * @type {Event}
    * @readonly
    */
@@ -655,7 +654,6 @@ class TimeIntervalCollection {
 
   /**
    * Gets the start time of the collection.
-   * @memberof TimeIntervalCollection.prototype
    * @type {JulianDate}
    * @readonly
    */
@@ -666,7 +664,6 @@ class TimeIntervalCollection {
 
   /**
    * Gets whether or not the start time is included in the collection.
-   * @memberof TimeIntervalCollection.prototype
    * @type {boolean}
    * @readonly
    */
@@ -677,7 +674,6 @@ class TimeIntervalCollection {
 
   /**
    * Gets the stop time of the collection.
-   * @memberof TimeIntervalCollection.prototype
    * @type {JulianDate}
    * @readonly
    */
@@ -689,7 +685,6 @@ class TimeIntervalCollection {
 
   /**
    * Gets whether or not the stop time is included in the collection.
-   * @memberof TimeIntervalCollection.prototype
    * @type {boolean}
    * @readonly
    */
@@ -701,7 +696,6 @@ class TimeIntervalCollection {
 
   /**
    * Gets the number of intervals in the collection.
-   * @memberof TimeIntervalCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -711,7 +705,6 @@ class TimeIntervalCollection {
 
   /**
    * Gets whether or not the collection is empty.
-   * @memberof TimeIntervalCollection.prototype
    * @type {boolean}
    * @readonly
    */

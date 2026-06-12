@@ -87,7 +87,6 @@ class PerformanceWatchdogViewModel {
 
   /**
    * Gets the {@link Scene} instance for which to monitor performance.
-   * @memberof PerformanceWatchdogViewModel.prototype
    * @type {Scene}
    */
   get scene() {
@@ -97,7 +96,6 @@ class PerformanceWatchdogViewModel {
   /**
    * Gets a command that dismisses the low frame rate message.  Once it is dismissed, the message
    * will not be redisplayed.
-   * @memberof PerformanceWatchdogViewModel.prototype
    * @type {Command}
    */
   get dismissMessage() {

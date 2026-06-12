@@ -121,17 +121,6 @@ class PolylineGraphics {
       this.classificationType ?? source.classificationType;
     this.zIndex = this.zIndex ?? source.zIndex;
   }
-
-  /**
-   * Gets the event that is raised whenever a property or sub-property is changed or modified.
-   * @memberof PolylineGraphics.prototype
-   *
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 Object.defineProperties(PolylineGraphics.prototype, {

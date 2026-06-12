@@ -280,7 +280,6 @@ class CylinderGeometryUpdater extends GeometryUpdater {
   /**
    * Gets the terrain offset property
    * @type {TerrainOffsetProperty}
-   * @memberof CylinderGeometryUpdater.prototype
    * @readonly
    * @private
    */

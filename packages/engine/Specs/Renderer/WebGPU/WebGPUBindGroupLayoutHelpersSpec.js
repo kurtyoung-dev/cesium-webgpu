@@ -54,7 +54,9 @@ describe("Renderer/WebGPU/WebGPUBindGroupLayoutHelpers", function () {
 
     it("computes ALL as COMPUTE | VERTEX | FRAGMENT", function () {
       expect(Stage.ALL).toBe(
-        GPUShaderStage.COMPUTE | GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        GPUShaderStage.COMPUTE |
+          GPUShaderStage.VERTEX |
+          GPUShaderStage.FRAGMENT,
       );
       // 4 | 1 | 2 === 7 under spec values.
       expect(Stage.ALL).toBe(7);

@@ -1,6 +1,4 @@
 /**
- * @module WebGLCompatibilityStub
- *
  * **Proton-Style WebGL→WebGPU Translation Layer**
  *
  * Similar to how Valve's Proton translates Windows DirectX calls to Linux
@@ -134,6 +132,7 @@
  * @see GraphicsContext
  * @see WebGLStateConverters
  * @see RenderCommand
+ * @module WebGLCompatibilityStub
  */
 
 // Re-export the shared types so consumers can import from this nexus

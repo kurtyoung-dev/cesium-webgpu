@@ -384,7 +384,6 @@ class UrlTemplateImageryProvider {
    *  <li> <code>{width}</code>: The width of each tile in pixels.</li>
    *  <li> <code>{height}</code>: The height of each tile in pixels.</li>
    * </ul>
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -406,7 +405,6 @@ class UrlTemplateImageryProvider {
    *  <li> <code>{reverseY}</code>: The zero padding for the tile reverseY coordinate in the tiling scheme.</li>
    *  <li> <code>{reverseZ}</code>: The zero padding for the reverseZ coordinate of the tile in the tiling scheme.</li>
    * </ul>
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {object}
    * @readonly
    */
@@ -430,7 +428,6 @@ class UrlTemplateImageryProvider {
    *     <li><code>{latitudeProjected}</code>: The latitude of the picked position in the projected coordinates of the tiling scheme.</li>
    *     <li><code>{format}</code>: The format in which to get feature information, as specified in the {@link GetFeatureInfoFormat}.</li>
    * </ul>
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -440,7 +437,6 @@ class UrlTemplateImageryProvider {
 
   /**
    * Gets the proxy used by this provider.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {Proxy}
    * @readonly
    * @default undefined
@@ -451,7 +447,6 @@ class UrlTemplateImageryProvider {
 
   /**
    * Gets the width of each tile, in pixels.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {number}
    * @readonly
    * @default 256
@@ -462,7 +457,6 @@ class UrlTemplateImageryProvider {
 
   /**
    * Gets the height of each tile, in pixels.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {number}
    * @readonly
    * @default 256
@@ -473,7 +467,6 @@ class UrlTemplateImageryProvider {
 
   /**
    * Gets the maximum level-of-detail that can be requested, or undefined if there is no limit.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {number|undefined}
    * @readonly
    * @default undefined
@@ -484,7 +477,6 @@ class UrlTemplateImageryProvider {
 
   /**
    * Gets the minimum level-of-detail that can be requested.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {number}
    * @readonly
    * @default 0
@@ -495,7 +487,6 @@ class UrlTemplateImageryProvider {
 
   /**
    * Gets the tiling scheme used by this provider.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {TilingScheme}
    * @readonly
    * @default new WebMercatorTilingScheme()
@@ -506,7 +497,6 @@ class UrlTemplateImageryProvider {
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {Rectangle}
    * @readonly
    * @default tilingScheme.rectangle
@@ -519,7 +509,6 @@ class UrlTemplateImageryProvider {
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
    * for filtering out "missing" tiles via its shouldDiscardImage function.  If this function
    * returns undefined, no tiles are filtered.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {TileDiscardPolicy}
    * @readonly
    * @default undefined
@@ -532,7 +521,6 @@ class UrlTemplateImageryProvider {
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of {@link TileProviderError}.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {Event}
    * @readonly
    */
@@ -543,7 +531,6 @@ class UrlTemplateImageryProvider {
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
    * the source of the imagery.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {Credit}
    * @readonly
    * @default undefined
@@ -558,7 +545,6 @@ class UrlTemplateImageryProvider {
    * be ignored.  If this property is true, any images without an alpha channel will be treated
    * as if their alpha is 1.0 everywhere.  When this property is false, memory usage
    * and texture upload time are reduced.
-   * @memberof UrlTemplateImageryProvider.prototype
    * @type {boolean}
    * @readonly
    * @default true

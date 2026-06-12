@@ -676,7 +676,6 @@ class CesiumTerrainProvider {
    * Gets an event that is raised when the terrain provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of {@link TileProviderError}.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {Event}
    * @readonly
    */
@@ -687,7 +686,6 @@ class CesiumTerrainProvider {
   /**
    * Gets the credit to display when this terrain provider is active.  Typically this is used to credit
    * the source of the terrain.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {Credit}
    * @readonly
    */
@@ -697,7 +695,6 @@ class CesiumTerrainProvider {
 
   /**
    * Gets the tiling scheme used by this provider.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {GeographicTilingScheme}
    * @readonly
    */
@@ -709,7 +706,6 @@ class CesiumTerrainProvider {
    * Gets a value indicating whether or not the provider includes a water mask.  The water mask
    * indicates which areas of the globe are water rather than land, so they can be rendered
    * as a reflective surface with animated waves.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -719,7 +715,6 @@ class CesiumTerrainProvider {
 
   /**
    * Gets a value indicating whether or not the requested tiles include vertex normals.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -730,7 +725,6 @@ class CesiumTerrainProvider {
 
   /**
    * Gets a value indicating whether or not the requested tiles include metadata.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -743,7 +737,6 @@ class CesiumTerrainProvider {
    * Boolean flag that indicates if the client should request vertex normals from the server.
    * Vertex normals data is appended to the standard tile mesh data only if the client requests the vertex normals and
    * if the server provides vertex normals.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -755,7 +748,6 @@ class CesiumTerrainProvider {
    * Boolean flag that indicates if the client should request a watermask from the server.
    * Watermask data is appended to the standard tile mesh data only if the client requests the watermask and
    * if the server provides a watermask.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -767,7 +759,6 @@ class CesiumTerrainProvider {
    * Boolean flag that indicates if the client should request metadata from the server.
    * Metadata is appended to the standard tile mesh data only if the client requests the metadata and
    * if the server provides a metadata.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {boolean}
    * @readonly
    */
@@ -782,7 +773,6 @@ class CesiumTerrainProvider {
    * Additional tiles may be discovered to be available in the future, e.g. if availability information
    * exists deeper in the tree rather than it all being discoverable at the root. However, a tile that
    * is available now will not become unavailable in the future.
-   * @memberof CesiumTerrainProvider.prototype
    * @type {TileAvailability|undefined}
    * @readonly
    */

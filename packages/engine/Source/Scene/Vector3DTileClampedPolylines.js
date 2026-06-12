@@ -291,7 +291,6 @@ class Vector3DTileClampedPolylines {
   /**
    * Gets the number of triangles.
    *
-   * @memberof Vector3DTileClampedPolylines.prototype
    *
    * @type {number}
    * @readonly
@@ -303,7 +302,6 @@ class Vector3DTileClampedPolylines {
   /**
    * Gets the geometry memory in bytes.
    *
-   * @memberof Vector3DTileClampedPolylines.prototype
    *
    * @type {number}
    * @readonly
@@ -314,7 +312,6 @@ class Vector3DTileClampedPolylines {
 
   /**
    * Returns true when the primitive is ready to render.
-   * @memberof Vector3DTileClampedPolylines.prototype
    * @type {boolean}
    * @readonly
    */

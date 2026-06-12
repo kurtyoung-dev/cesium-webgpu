@@ -54,6 +54,12 @@
  * @module WebGPUClusteredLightingBGL
  */
 
+// Stage carries spec-exact fallbacks for the GPUShaderStage bits, so this
+// module stays evaluable on hosts without WebGPU (Node require(),
+// FirefoxHeadless coverage) — the raw GPUShaderStage global does not exist
+// there and referencing it at module scope throws.
+import { Stage } from "./WebGPUBindGroupLayoutHelpers.js";
+
 /**
  * Starting binding index for clustered lighting on group 3 (effects).
  * Effects bindings 0..17 are claimed by shadow/clip/SDF/atmosphere/CSM/
@@ -109,27 +115,27 @@ export const CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES: ReadonlyArray<GPUBindGr
   [
     {
       binding: 18,
-      visibility: GPUShaderStage.FRAGMENT,
+      visibility: Stage.FRAGMENT,
       buffer: { type: "read-only-storage" },
     },
     {
       binding: 19,
-      visibility: GPUShaderStage.FRAGMENT,
+      visibility: Stage.FRAGMENT,
       buffer: { type: "read-only-storage" },
     },
     {
       binding: 20,
-      visibility: GPUShaderStage.FRAGMENT,
+      visibility: Stage.FRAGMENT,
       buffer: { type: "read-only-storage" },
     },
     {
       binding: 21,
-      visibility: GPUShaderStage.FRAGMENT,
+      visibility: Stage.FRAGMENT,
       buffer: { type: "read-only-storage" },
     },
     {
       binding: 22,
-      visibility: GPUShaderStage.FRAGMENT,
+      visibility: Stage.FRAGMENT,
       buffer: { type: "uniform" },
     },
   ];

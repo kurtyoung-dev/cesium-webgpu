@@ -1,6 +1,4 @@
 /**
- * @module WebGPUVector3DTilePrimitiveRenderer
- *
  * WebGPU equivalent of `Vector3DTilePrimitive` (3D Tiles vector polygon
  * classification). Handles batched extruded polygon classification meshes
  * generated from vector tile sources — building footprints, admin
@@ -35,6 +33,7 @@
  *     `LINES`-topology pipeline; trivial follow-up).
  *
  * @private
+ * @module WebGPUVector3DTilePrimitiveRenderer
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Cartographic from "../../Core/Cartographic.js";

@@ -663,7 +663,6 @@ class I3SNode {
 
   /**
    * Gets the resource for the node.
-   * @memberof I3SNode.prototype
    * @type {Resource}
    * @readonly
    */
@@ -673,7 +672,6 @@ class I3SNode {
 
   /**
    * Gets the parent layer.
-   * @memberof I3SNode.prototype
    * @type {I3SLayer}
    * @readonly
    */
@@ -683,7 +681,6 @@ class I3SNode {
 
   /**
    * Gets the parent node.
-   * @memberof I3SNode.prototype
    * @type {I3SNode|undefined}
    * @readonly
    */
@@ -693,7 +690,6 @@ class I3SNode {
 
   /**
    * Gets the children nodes.
-   * @memberof I3SNode.prototype
    * @type {I3SNode[]}
    * @readonly
    */
@@ -703,7 +699,6 @@ class I3SNode {
 
   /**
    * Gets the collection of geometries.
-   * @memberof I3SNode.prototype
    * @type {I3SGeometry[]}
    * @readonly
    */
@@ -713,7 +708,6 @@ class I3SNode {
 
   /**
    * Gets the collection of features.
-   * @memberof I3SNode.prototype
    * @type {I3SFeature[]}
    * @readonly
    */
@@ -723,7 +717,6 @@ class I3SNode {
 
   /**
    * Gets the collection of fields.
-   * @memberof I3SNode.prototype
    * @type {I3SField[]}
    * @readonly
    */
@@ -733,7 +726,6 @@ class I3SNode {
 
   /**
    * Gets the Cesium3DTile for this node.
-   * @memberof I3SNode.prototype
    * @type {Cesium3DTile}
    * @readonly
    */
@@ -743,7 +735,6 @@ class I3SNode {
 
   /**
    * Gets the I3S data for this object.
-   * @memberof I3SNode.prototype
    * @type {object}
    * @readonly
    */

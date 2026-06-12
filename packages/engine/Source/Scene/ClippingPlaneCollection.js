@@ -511,7 +511,6 @@ class ClippingPlaneCollection {
    * {@link ClippingPlaneCollection#get} to iterate over all the planes
    * in the collection.
    *
-   * @memberof ClippingPlaneCollection.prototype
    * @type {number}
    * @readonly
    */
@@ -524,7 +523,6 @@ class ClippingPlaneCollection {
    * collection. Otherwise, a region will only be clipped if it is on the
    * outside of every plane.
    *
-   * @memberof ClippingPlaneCollection.prototype
    * @type {boolean}
    * @default false
    */
@@ -532,15 +530,6 @@ class ClippingPlaneCollection {
     return this._unionClippingRegions;
   }
 
-  /**
-   * If true, a region will be clipped if it is on the outside of any plane in the
-   * collection. Otherwise, a region will only be clipped if it is on the
-   * outside of every plane.
-   *
-   * @memberof ClippingPlaneCollection.prototype
-   * @type {boolean}
-   * @default false
-   */
   set unionClippingRegions(value) {
     if (this._unionClippingRegions === value) {
       return;
@@ -554,7 +543,6 @@ class ClippingPlaneCollection {
   /**
    * If true, clipping will be enabled.
    *
-   * @memberof ClippingPlaneCollection.prototype
    * @type {boolean}
    * @default true
    */
@@ -562,13 +550,6 @@ class ClippingPlaneCollection {
     return this._enabled;
   }
 
-  /**
-   * If true, clipping will be enabled.
-   *
-   * @memberof ClippingPlaneCollection.prototype
-   * @type {boolean}
-   * @default true
-   */
   set enabled(value) {
     if (this._enabled === value) {
       return;
@@ -579,7 +560,6 @@ class ClippingPlaneCollection {
   /**
    * Returns a texture containing packed, untransformed clipping planes.
    *
-   * @memberof ClippingPlaneCollection.prototype
    * @type {Texture}
    * @readonly
    * @private
@@ -591,7 +571,6 @@ class ClippingPlaneCollection {
   /**
    * A reference to the ClippingPlaneCollection's owner, if any.
    *
-   * @memberof ClippingPlaneCollection.prototype
    * @readonly
    * @private
    */
@@ -605,7 +584,6 @@ class ClippingPlaneCollection {
    * Clipping mode is encoded in the sign of the number, which is just the plane count.
    * If this value changes, then shader regeneration is necessary.
    *
-   * @memberof ClippingPlaneCollection.prototype
    * @returns {number} A Number that describes the ClippingPlaneCollection's state.
    * @readonly
    * @private

@@ -354,7 +354,6 @@ class Vector3DTilePoints {
   /**
    * Returns true if the points are ready to render
    *
-   * @memberof Vector3DTilePoints.prototype
    *
    * @type {boolean}
    * @readonly
@@ -367,7 +366,6 @@ class Vector3DTilePoints {
   /**
    * Gets the number of points.
    *
-   * @memberof Vector3DTilePoints.prototype
    *
    * @type {number}
    * @readonly
@@ -380,7 +378,6 @@ class Vector3DTilePoints {
   /**
    * Gets the texture atlas memory in bytes.
    *
-   * @memberof Vector3DTilePoints.prototype
    *
    * @type {number}
    * @readonly

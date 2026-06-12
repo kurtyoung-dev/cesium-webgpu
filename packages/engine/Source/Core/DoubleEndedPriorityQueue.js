@@ -234,7 +234,6 @@ class DoubleEndedPriorityQueue {
   /**
    * Gets the number of elements in the queue.
    *
-   * @memberof DoubleEndedPriorityQueue.prototype
    *
    * @type {number}
    * @readonly
@@ -249,7 +248,6 @@ class DoubleEndedPriorityQueue {
    * If an element is inserted when the queue is at full capacity, the minimum element is removed.
    * If set to undefined, the size of the queue is unlimited.
    *
-   * @memberof DoubleEndedPriorityQueue.prototype
    *
    * @type {number}
    * @readonly
@@ -258,17 +256,6 @@ class DoubleEndedPriorityQueue {
     return this._maximumLength;
   }
 
-  /**
-   * Gets or sets the maximum number of elements in the queue.
-   * If set to a smaller value than the current length of the queue, the lowest priority elements are removed.
-   * If an element is inserted when the queue is at full capacity, the minimum element is removed.
-   * If set to undefined, the size of the queue is unlimited.
-   *
-   * @memberof DoubleEndedPriorityQueue.prototype
-   *
-   * @type {number}
-   * @readonly
-   */
   set maximumLength(value) {
     if (defined(value)) {
       //>>includeStart('debug', pragmas.debug);
@@ -289,7 +276,6 @@ class DoubleEndedPriorityQueue {
   /**
    * Gets the internal array.
    *
-   * @memberof DoubleEndedPriorityQueue.prototype
    *
    * @type {Array}
    * @readonly
@@ -302,7 +288,6 @@ class DoubleEndedPriorityQueue {
    * The comparator used by the queue.
    * If comparator(a, b) is less than 0, a is lower priority than b.
    *
-   * @memberof DoubleEndedPriorityQueue.prototype
    *
    * @type {DoubleEndedPriorityQueue.ComparatorCallback}
    * @readonly

@@ -212,7 +212,9 @@ describe("Renderer/WebGPU/WebGPUSceneFBTargetHelpers", function () {
     });
 
     it("applies slot-0 options (translucent blend)", function () {
-      const targets = makeSceneFBTargetsMRT("bgra8unorm", { translucent: true });
+      const targets = makeSceneFBTargetsMRT("bgra8unorm", {
+        translucent: true,
+      });
       expect(targets[0]).toEqual({
         format: "bgra8unorm",
         blend: {

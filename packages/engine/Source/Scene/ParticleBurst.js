@@ -39,7 +39,6 @@ class ParticleBurst {
 
   /**
    * <code>true</code> if the burst has been completed; <code>false</code> otherwise.
-   * @memberof ParticleBurst.prototype
    * @type {boolean}
    */
   get complete() {

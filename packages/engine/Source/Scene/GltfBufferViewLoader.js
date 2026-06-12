@@ -107,7 +107,6 @@ class GltfBufferViewLoader extends ResourceLoader {
   /**
    * The cache key of the resource.
    *
-   * @memberof GltfBufferViewLoader.prototype
    *
    * @type {string}
    * @readonly
@@ -120,7 +119,6 @@ class GltfBufferViewLoader extends ResourceLoader {
   /**
    * The typed array containing buffer view data.
    *
-   * @memberof GltfBufferViewLoader.prototype
    *
    * @type {Uint8Array}
    * @readonly

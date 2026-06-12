@@ -141,7 +141,6 @@ class ProjectionPickerViewModel {
 
   /**
    * Gets the scene
-   * @memberof ProjectionPickerViewModel.prototype
    * @type {Scene}
    */
   get scene() {
@@ -150,7 +149,6 @@ class ProjectionPickerViewModel {
 
   /**
    * Gets the command to toggle the drop down box.
-   * @memberof ProjectionPickerViewModel.prototype
    *
    * @type {Command}
    */
@@ -160,7 +158,6 @@ class ProjectionPickerViewModel {
 
   /**
    * Gets the command to switch to a perspective projection.
-   * @memberof ProjectionPickerViewModel.prototype
    *
    * @type {Command}
    */
@@ -170,7 +167,6 @@ class ProjectionPickerViewModel {
 
   /**
    * Gets the command to switch to orthographic projection.
-   * @memberof ProjectionPickerViewModel.prototype
    *
    * @type {Command}
    */
@@ -180,7 +176,6 @@ class ProjectionPickerViewModel {
 
   /**
    * Gets whether the scene is currently using an orthographic projection.
-   * @memberof ProjectionPickerViewModel.prototype
    *
    * @type {Command}
    */

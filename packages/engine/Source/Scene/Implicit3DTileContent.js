@@ -141,7 +141,6 @@ class Implicit3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof Implicit3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly
@@ -166,19 +165,12 @@ class Implicit3DTileContent {
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Implicit3DTileContent</code>
    * always returns <code>undefined</code>. Only transcoded tiles have content metadata.
-   * @memberof Implicit3DTileContent.prototype
    * @private
    */
   get metadata() {
     return undefined;
   }
 
-  /**
-   * Part of the {@link Cesium3DTileContent} interface. <code>Implicit3DTileContent</code>
-   * always returns <code>undefined</code>. Only transcoded tiles have content metadata.
-   * @memberof Implicit3DTileContent.prototype
-   * @private
-   */
   set metadata(value) {
     //>>includeStart('debug', pragmas.debug);
     throw new DeveloperError("Implicit3DTileContent cannot have metadata");

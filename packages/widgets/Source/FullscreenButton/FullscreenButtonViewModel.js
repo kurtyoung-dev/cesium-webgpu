@@ -110,7 +110,6 @@ class FullscreenButtonViewModel {
   /**
    * Gets or sets the HTML element to place into fullscreen mode when the
    * corresponding button is pressed.
-   * @memberof FullscreenButtonViewModel.prototype
    *
    * @type {Element}
    */
@@ -118,13 +117,6 @@ class FullscreenButtonViewModel {
     return this._fullscreenElement;
   }
 
-  /**
-   * Gets or sets the HTML element to place into fullscreen mode when the
-   * corresponding button is pressed.
-   * @memberof FullscreenButtonViewModel.prototype
-   *
-   * @type {Element}
-   */
   set fullscreenElement(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!(value instanceof Element)) {
@@ -137,7 +129,6 @@ class FullscreenButtonViewModel {
 
   /**
    * Gets the Command to toggle fullscreen mode.
-   * @memberof FullscreenButtonViewModel.prototype
    *
    * @type {Command}
    */

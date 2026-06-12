@@ -701,7 +701,6 @@ class SampledProperty {
   /**
    * Gets a value indicating if this property is constant.  A property is considered
    * constant if getValue always returns the same result for the current definition.
-   * @memberof SampledProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -714,7 +713,6 @@ class SampledProperty {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is considered to have changed if a call to getValue would return
    * a different result for the same time.
-   * @memberof SampledProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -725,7 +723,6 @@ class SampledProperty {
 
   /**
    * Gets the type of property.
-   * @memberof SampledProperty.prototype
    * @type {*}
    */
   get type() {
@@ -734,7 +731,6 @@ class SampledProperty {
 
   /**
    * Gets the derivative types used by this property.
-   * @memberof SampledProperty.prototype
    * @type {Packable[]}
    */
   get derivativeTypes() {
@@ -743,7 +739,6 @@ class SampledProperty {
 
   /**
    * Gets the degree of interpolation to perform when retrieving a value.
-   * @memberof SampledProperty.prototype
    * @type {number}
    * @default 1
    */
@@ -753,7 +748,6 @@ class SampledProperty {
 
   /**
    * Gets the interpolation algorithm to use when retrieving a value.
-   * @memberof SampledProperty.prototype
    * @type {InterpolationAlgorithm}
    * @default LinearApproximation
    */
@@ -764,7 +758,6 @@ class SampledProperty {
   /**
    * Gets or sets the type of extrapolation to perform when a value
    * is requested at a time after any available samples.
-   * @memberof SampledProperty.prototype
    * @type {ExtrapolationType}
    * @default ExtrapolationType.NONE
    */
@@ -772,13 +765,6 @@ class SampledProperty {
     return this._forwardExtrapolationType;
   }
 
-  /**
-   * Gets or sets the type of extrapolation to perform when a value
-   * is requested at a time after any available samples.
-   * @memberof SampledProperty.prototype
-   * @type {ExtrapolationType}
-   * @default ExtrapolationType.NONE
-   */
   set forwardExtrapolationType(value) {
     if (this._forwardExtrapolationType !== value) {
       this._forwardExtrapolationType = value;
@@ -789,7 +775,6 @@ class SampledProperty {
   /**
    * Gets or sets the amount of time to extrapolate forward before
    * the property becomes undefined.  A value of 0 will extrapolate forever.
-   * @memberof SampledProperty.prototype
    * @type {number}
    * @default 0
    */
@@ -797,13 +782,6 @@ class SampledProperty {
     return this._forwardExtrapolationDuration;
   }
 
-  /**
-   * Gets or sets the amount of time to extrapolate forward before
-   * the property becomes undefined.  A value of 0 will extrapolate forever.
-   * @memberof SampledProperty.prototype
-   * @type {number}
-   * @default 0
-   */
   set forwardExtrapolationDuration(value) {
     if (this._forwardExtrapolationDuration !== value) {
       this._forwardExtrapolationDuration = value;
@@ -814,7 +792,6 @@ class SampledProperty {
   /**
    * Gets or sets the type of extrapolation to perform when a value
    * is requested at a time before any available samples.
-   * @memberof SampledProperty.prototype
    * @type {ExtrapolationType}
    * @default ExtrapolationType.NONE
    */
@@ -822,13 +799,6 @@ class SampledProperty {
     return this._backwardExtrapolationType;
   }
 
-  /**
-   * Gets or sets the type of extrapolation to perform when a value
-   * is requested at a time before any available samples.
-   * @memberof SampledProperty.prototype
-   * @type {ExtrapolationType}
-   * @default ExtrapolationType.NONE
-   */
   set backwardExtrapolationType(value) {
     if (this._backwardExtrapolationType !== value) {
       this._backwardExtrapolationType = value;
@@ -839,7 +809,6 @@ class SampledProperty {
   /**
    * Gets or sets the amount of time to extrapolate backward
    * before the property becomes undefined.  A value of 0 will extrapolate forever.
-   * @memberof SampledProperty.prototype
    * @type {number}
    * @default 0
    */
@@ -847,13 +816,6 @@ class SampledProperty {
     return this._backwardExtrapolationDuration;
   }
 
-  /**
-   * Gets or sets the amount of time to extrapolate backward
-   * before the property becomes undefined.  A value of 0 will extrapolate forever.
-   * @memberof SampledProperty.prototype
-   * @type {number}
-   * @default 0
-   */
   set backwardExtrapolationDuration(value) {
     if (this._backwardExtrapolationDuration !== value) {
       this._backwardExtrapolationDuration = value;

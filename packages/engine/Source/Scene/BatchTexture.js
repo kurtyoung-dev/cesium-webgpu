@@ -362,7 +362,6 @@ class BatchTexture {
   /**
    * Number of features that are translucent
    *
-   * @memberof BatchTexture.prototype
    * @type {number}
    * @readonly
    * @private
@@ -374,7 +373,6 @@ class BatchTexture {
   /**
    * Total size of all GPU resources used by this batch texture.
    *
-   * @memberof BatchTexture.prototype
    * @type {number}
    * @readonly
    * @private
@@ -393,7 +391,6 @@ class BatchTexture {
   /**
    * Dimensions of the underlying batch texture.
    *
-   * @memberof BatchTexture.prototype
    * @type {Cartesian2}
    * @readonly
    * @private
@@ -406,7 +403,6 @@ class BatchTexture {
    * Size of each texture and distance from side to center of a texel in
    * each direction. Stored as (stepX, centerX, stepY, centerY)
    *
-   * @memberof BatchTexture.prototype
    * @type {Cartesian4}
    * @readonly
    * @private
@@ -420,7 +416,6 @@ class BatchTexture {
    * by batch ID, and the value is the color of this feature after accounting
    * for show/hide settings.
    *
-   * @memberof BatchTexture.prototype
    * @type {Texture}
    * @readonly
    * @private
@@ -432,7 +427,6 @@ class BatchTexture {
   /**
    * The default texture to use when there are no batch values
    *
-   * @memberof BatchTexture.prototype
    * @type {Texture}
    * @readonly
    * @private
@@ -445,7 +439,6 @@ class BatchTexture {
    * The underlying texture used for picking. The texels are accessed by
    * batch ID, and the value is the pick color.
    *
-   * @memberof BatchTexture.prototype
    * @type {Texture}
    * @readonly
    * @private

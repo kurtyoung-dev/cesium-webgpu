@@ -287,7 +287,6 @@ class GeometryUpdater {
 
   /**
    * Gets the unique ID associated with this updater
-   * @memberof GeometryUpdater.prototype
    * @type {string}
    * @readonly
    */
@@ -297,7 +296,6 @@ class GeometryUpdater {
 
   /**
    * Gets the entity associated with this geometry.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {Entity}
    * @readonly
@@ -308,7 +306,6 @@ class GeometryUpdater {
 
   /**
    * Gets a value indicating if the geometry has a fill component.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -319,7 +316,6 @@ class GeometryUpdater {
 
   /**
    * Gets a value indicating if fill visibility varies with simulation time.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -335,7 +331,6 @@ class GeometryUpdater {
 
   /**
    * Gets the material property used to fill the geometry.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {MaterialProperty}
    * @readonly
@@ -346,7 +341,6 @@ class GeometryUpdater {
 
   /**
    * Gets a value indicating if the geometry has an outline component.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -357,7 +351,6 @@ class GeometryUpdater {
 
   /**
    * Gets a value indicating if the geometry has an outline component.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -373,7 +366,6 @@ class GeometryUpdater {
 
   /**
    * Gets the {@link Color} property for the geometry outline.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {Property}
    * @readonly
@@ -385,7 +377,6 @@ class GeometryUpdater {
   /**
    * Gets the constant with of the geometry outline, in pixels.
    * This value is only valid if isDynamic is false.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {number}
    * @readonly
@@ -397,7 +388,6 @@ class GeometryUpdater {
   /**
    * Gets the property specifying whether the geometry
    * casts or receives shadows from light sources.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {Property}
    * @readonly
@@ -408,7 +398,6 @@ class GeometryUpdater {
 
   /**
    * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this geometry will be displayed.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {Property}
    * @readonly
@@ -419,7 +408,6 @@ class GeometryUpdater {
 
   /**
    * Gets or sets the {@link ClassificationType} Property specifying if this geometry will classify terrain, 3D Tiles, or both when on the ground.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {Property}
    * @readonly
@@ -431,7 +419,6 @@ class GeometryUpdater {
   /**
    * Gets a value indicating if the geometry is time-varying.
    *
-   * @memberof GeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -443,7 +430,6 @@ class GeometryUpdater {
   /**
    * Gets a value indicating if the geometry is closed.
    * This property is only valid for static geometry.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly
@@ -466,7 +452,6 @@ class GeometryUpdater {
   /**
    * Gets an event that is raised whenever the public properties
    * of this updater change.
-   * @memberof GeometryUpdater.prototype
    *
    * @type {boolean}
    * @readonly

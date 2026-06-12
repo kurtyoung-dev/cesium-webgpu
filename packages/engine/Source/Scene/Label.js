@@ -363,7 +363,6 @@ class Label {
   /**
    * Determines if this label will be shown.  Use this to hide or show a label, instead
    * of removing it and re-adding it to the collection.
-   * @memberof Label.prototype
    * @type {boolean}
    * @default true
    */
@@ -371,13 +370,6 @@ class Label {
     return this._show;
   }
 
-  /**
-   * Determines if this label will be shown.  Use this to hide or show a label, instead
-   * of removing it and re-adding it to the collection.
-   * @memberof Label.prototype
-   * @type {boolean}
-   * @default true
-   */
   set show(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -404,18 +396,12 @@ class Label {
 
   /**
    * Gets or sets the Cartesian position of this label.
-   * @memberof Label.prototype
    * @type {Cartesian3}
    */
   get position() {
     return this._position;
   }
 
-  /**
-   * Gets or sets the Cartesian position of this label.
-   * @memberof Label.prototype
-   * @type {Cartesian3}
-   */
   set position(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -445,7 +431,6 @@ class Label {
 
   /**
    * Gets or sets the height reference of this billboard.
-   * @memberof Label.prototype
    * @type {HeightReference}
    * @default HeightReference.NONE
    */
@@ -453,12 +438,6 @@ class Label {
     return this._heightReference;
   }
 
-  /**
-   * Gets or sets the height reference of this billboard.
-   * @memberof Label.prototype
-   * @type {HeightReference}
-   * @default HeightReference.NONE
-   */
   set heightReference(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -489,18 +468,12 @@ class Label {
 
   /**
    * Gets or sets the text of this label.
-   * @memberof Label.prototype
    * @type {string}
    */
   get text() {
     return this._text;
   }
 
-  /**
-   * Gets or sets the text of this label.
-   * @memberof Label.prototype
-   * @type {string}
-   */
   set text(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -521,7 +494,6 @@ class Label {
 
   /**
    * Gets or sets the font used to draw this label. Fonts are specified using the same syntax as the CSS 'font' property.
-   * @memberof Label.prototype
    * @type {string}
    * @default '30px sans-serif'
    * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#text-styles|HTML canvas 2D context text styles}
@@ -530,13 +502,6 @@ class Label {
     return this._font;
   }
 
-  /**
-   * Gets or sets the font used to draw this label. Fonts are specified using the same syntax as the CSS 'font' property.
-   * @memberof Label.prototype
-   * @type {string}
-   * @default '30px sans-serif'
-   * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#text-styles|HTML canvas 2D context text styles}
-   */
   set font(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -553,7 +518,6 @@ class Label {
 
   /**
    * Gets or sets the fill color of this label.
-   * @memberof Label.prototype
    * @type {Color}
    * @default Color.WHITE
    * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
@@ -562,13 +526,6 @@ class Label {
     return this._fillColor;
   }
 
-  /**
-   * Gets or sets the fill color of this label.
-   * @memberof Label.prototype
-   * @type {Color}
-   * @default Color.WHITE
-   * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
-   */
   set fillColor(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -585,7 +542,6 @@ class Label {
 
   /**
    * Gets or sets the outline color of this label.
-   * @memberof Label.prototype
    * @type {Color}
    * @default Color.BLACK
    * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
@@ -594,13 +550,6 @@ class Label {
     return this._outlineColor;
   }
 
-  /**
-   * Gets or sets the outline color of this label.
-   * @memberof Label.prototype
-   * @type {Color}
-   * @default Color.BLACK
-   * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
-   */
   set outlineColor(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -617,7 +566,6 @@ class Label {
 
   /**
    * Gets or sets the outline width of this label.
-   * @memberof Label.prototype
    * @type {number}
    * @default 1.0
    * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
@@ -626,13 +574,6 @@ class Label {
     return this._outlineWidth;
   }
 
-  /**
-   * Gets or sets the outline width of this label.
-   * @memberof Label.prototype
-   * @type {number}
-   * @default 1.0
-   * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
-   */
   set outlineWidth(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -648,7 +589,6 @@ class Label {
 
   /**
    * Determines if a background behind this label will be shown.
-   * @memberof Label.prototype
    * @default false
    * @type {boolean}
    */
@@ -656,12 +596,6 @@ class Label {
     return this._showBackground;
   }
 
-  /**
-   * Determines if a background behind this label will be shown.
-   * @memberof Label.prototype
-   * @default false
-   * @type {boolean}
-   */
   set showBackground(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -677,7 +611,6 @@ class Label {
 
   /**
    * Gets or sets the background color of this label.
-   * @memberof Label.prototype
    * @type {Color}
    * @default new Color(0.165, 0.165, 0.165, 0.8)
    */
@@ -685,12 +618,6 @@ class Label {
     return this._backgroundColor;
   }
 
-  /**
-   * Gets or sets the background color of this label.
-   * @memberof Label.prototype
-   * @type {Color}
-   * @default new Color(0.165, 0.165, 0.165, 0.8)
-   */
   set backgroundColor(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -712,7 +639,6 @@ class Label {
   /**
    * Gets or sets the background padding, in pixels, of this label.  The <code>x</code> value
    * controls horizontal padding, and the <code>y</code> value controls vertical padding.
-   * @memberof Label.prototype
    * @type {Cartesian2}
    * @default new Cartesian2(7, 5)
    */
@@ -720,13 +646,6 @@ class Label {
     return this._backgroundPadding;
   }
 
-  /**
-   * Gets or sets the background padding, in pixels, of this label.  The <code>x</code> value
-   * controls horizontal padding, and the <code>y</code> value controls vertical padding.
-   * @memberof Label.prototype
-   * @type {Cartesian2}
-   * @default new Cartesian2(7, 5)
-   */
   set backgroundPadding(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -743,7 +662,6 @@ class Label {
 
   /**
    * Gets or sets the style of this label.
-   * @memberof Label.prototype
    * @type {LabelStyle}
    * @default LabelStyle.FILL
    */
@@ -751,12 +669,6 @@ class Label {
     return this._style;
   }
 
-  /**
-   * Gets or sets the style of this label.
-   * @memberof Label.prototype
-   * @type {LabelStyle}
-   * @default LabelStyle.FILL
-   */
   set style(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -783,7 +695,6 @@ class Label {
    * </tr></table>
    * The label's origin is indicated by the yellow point.
    * </div>
-   * @memberof Label.prototype
    * @type {Cartesian2}
    * @default Cartesian2.ZERO
    */
@@ -791,23 +702,6 @@ class Label {
     return this._pixelOffset;
   }
 
-  /**
-   * Gets or sets the pixel offset in screen space from the origin of this label.  This is commonly used
-   * to align multiple labels and billboards at the same position, e.g., an image and text.  The
-   * screen space origin is the top, left corner of the canvas; <code>x</code> increases from
-   * left to right, and <code>y</code> increases from top to bottom.
-   * <br /><br />
-   * <div align='center'>
-   * <table border='0' cellpadding='5'><tr>
-   * <td align='center'><code>default</code><br/><img src='Images/Label.setPixelOffset.default.png' width='250' height='188' /></td>
-   * <td align='center'><code>l.pixeloffset = new Cartesian2(25, 75);</code><br/><img src='Images/Label.setPixelOffset.x50y-25.png' width='250' height='188' /></td>
-   * </tr></table>
-   * The label's origin is indicated by the yellow point.
-   * </div>
-   * @memberof Label.prototype
-   * @type {Cartesian2}
-   * @default Cartesian2.ZERO
-   */
   set pixelOffset(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -840,7 +734,6 @@ class Label {
    * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
    * Outside of these ranges the label's translucency remains clamped to the nearest bound.  If undefined,
    * translucencyByDistance will be disabled.
-   * @memberof Label.prototype
    * @type {NearFarScalar}
    *
    * @example
@@ -859,28 +752,6 @@ class Label {
     return this._translucencyByDistance;
   }
 
-  /**
-   * Gets or sets near and far translucency properties of a Label based on the Label's distance from the camera.
-   * A label's translucency will interpolate between the {@link NearFarScalar#nearValue} and
-   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
-   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
-   * Outside of these ranges the label's translucency remains clamped to the nearest bound.  If undefined,
-   * translucencyByDistance will be disabled.
-   * @memberof Label.prototype
-   * @type {NearFarScalar}
-   *
-   * @example
-   * // Example 1.
-   * // Set a label's translucencyByDistance to 1.0 when the
-   * // camera is 1500 meters from the label and disappear as
-   * // the camera distance approaches 8.0e6 meters.
-   * text.translucencyByDistance = new Cesium.NearFarScalar(1.5e2, 1.0, 8.0e6, 0.0);
-   *
-   * @example
-   * // Example 2.
-   * // disable translucency by distance
-   * text.translucencyByDistance = undefined;
-   */
   set translucencyByDistance(value) {
     //>>includeStart('debug', pragmas.debug);
     if (defined(value) && value.far <= value.near) {
@@ -918,7 +789,6 @@ class Label {
    * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
    * Outside of these ranges the label's pixel offset scaling remains clamped to the nearest bound.  If undefined,
    * pixelOffsetScaleByDistance will be disabled.
-   * @memberof Label.prototype
    * @type {NearFarScalar}
    *
    * @example
@@ -938,29 +808,6 @@ class Label {
     return this._pixelOffsetScaleByDistance;
   }
 
-  /**
-   * Gets or sets near and far pixel offset scaling properties of a Label based on the Label's distance from the camera.
-   * A label's pixel offset will be scaled between the {@link NearFarScalar#nearValue} and
-   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
-   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
-   * Outside of these ranges the label's pixel offset scaling remains clamped to the nearest bound.  If undefined,
-   * pixelOffsetScaleByDistance will be disabled.
-   * @memberof Label.prototype
-   * @type {NearFarScalar}
-   *
-   * @example
-   * // Example 1.
-   * // Set a label's pixel offset scale to 0.0 when the
-   * // camera is 1500 meters from the label and scale pixel offset to 10.0 pixels
-   * // in the y direction the camera distance approaches 8.0e6 meters.
-   * text.pixelOffset = new Cesium.Cartesian2(0.0, 1.0);
-   * text.pixelOffsetScaleByDistance = new Cesium.NearFarScalar(1.5e2, 0.0, 8.0e6, 10.0);
-   *
-   * @example
-   * // Example 2.
-   * // disable pixel offset by distance
-   * text.pixelOffsetScaleByDistance = undefined;
-   */
   set pixelOffsetScaleByDistance(value) {
     //>>includeStart('debug', pragmas.debug);
     if (defined(value) && value.far <= value.near) {
@@ -998,7 +845,6 @@ class Label {
    * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
    * Outside of these ranges the label's scale remains clamped to the nearest bound.  If undefined,
    * scaleByDistance will be disabled.
-   * @memberof Label.prototype
    * @type {NearFarScalar}
    *
    * @example
@@ -1017,28 +863,6 @@ class Label {
     return this._scaleByDistance;
   }
 
-  /**
-   * Gets or sets near and far scaling properties of a Label based on the label's distance from the camera.
-   * A label's scale will interpolate between the {@link NearFarScalar#nearValue} and
-   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
-   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
-   * Outside of these ranges the label's scale remains clamped to the nearest bound.  If undefined,
-   * scaleByDistance will be disabled.
-   * @memberof Label.prototype
-   * @type {NearFarScalar}
-   *
-   * @example
-   * // Example 1.
-   * // Set a label's scaleByDistance to scale by 1.5 when the
-   * // camera is 1500 meters from the label and disappear as
-   * // the camera distance approaches 8.0e6 meters.
-   * label.scaleByDistance = new Cesium.NearFarScalar(1.5e2, 1.5, 8.0e6, 0.0);
-   *
-   * @example
-   * // Example 2.
-   * // disable scaling by distance
-   * label.scaleByDistance = undefined;
-   */
   set scaleByDistance(value) {
     //>>includeStart('debug', pragmas.debug);
     if (defined(value) && value.far <= value.near) {
@@ -1085,7 +909,6 @@ class Label {
    * </tr></table>
    * <code>l.eyeOffset = new Cartesian3(0.0, 8000000.0, 0.0);</code><br /><br />
    * </div>
-   * @memberof Label.prototype
    * @type {Cartesian3}
    * @default Cartesian3.ZERO
    */
@@ -1093,29 +916,6 @@ class Label {
     return this._eyeOffset;
   }
 
-  /**
-   * Gets and sets the 3D Cartesian offset applied to this label in eye coordinates.  Eye coordinates is a left-handed
-   * coordinate system, where <code>x</code> points towards the viewer's right, <code>y</code> points up, and
-   * <code>z</code> points into the screen.  Eye coordinates use the same scale as world and model coordinates,
-   * which is typically meters.
-   * <br /><br />
-   * An eye offset is commonly used to arrange multiple label or objects at the same position, e.g., to
-   * arrange a label above its corresponding 3D model.
-   * <br /><br />
-   * Below, the label is positioned at the center of the Earth but an eye offset makes it always
-   * appear on top of the Earth regardless of the viewer's or Earth's orientation.
-   * <br /><br />
-   * <div align='center'>
-   * <table border='0' cellpadding='5'><tr>
-   * <td align='center'><img src='Images/Billboard.setEyeOffset.one.png' width='250' height='188' /></td>
-   * <td align='center'><img src='Images/Billboard.setEyeOffset.two.png' width='250' height='188' /></td>
-   * </tr></table>
-   * <code>l.eyeOffset = new Cartesian3(0.0, 8000000.0, 0.0);</code><br /><br />
-   * </div>
-   * @memberof Label.prototype
-   * @type {Cartesian3}
-   * @default Cartesian3.ZERO
-   */
   set eyeOffset(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -1148,7 +948,6 @@ class Label {
    * <div align='center'>
    * <img src='Images/Billboard.setHorizontalOrigin.png' width='648' height='196' /><br />
    * </div>
-   * @memberof Label.prototype
    * @type {HorizontalOrigin}
    * @default HorizontalOrigin.LEFT
    * @example
@@ -1160,21 +959,6 @@ class Label {
     return this._horizontalOrigin;
   }
 
-  /**
-   * Gets or sets the horizontal origin of this label, which determines if the label is drawn
-   * to the left, center, or right of its anchor position.
-   * <br /><br />
-   * <div align='center'>
-   * <img src='Images/Billboard.setHorizontalOrigin.png' width='648' height='196' /><br />
-   * </div>
-   * @memberof Label.prototype
-   * @type {HorizontalOrigin}
-   * @default HorizontalOrigin.LEFT
-   * @example
-   * // Use a top, right origin
-   * l.horizontalOrigin = Cesium.HorizontalOrigin.RIGHT;
-   * l.verticalOrigin = Cesium.VerticalOrigin.TOP;
-   */
   set horizontalOrigin(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -1195,7 +979,6 @@ class Label {
    * <div align='center'>
    * <img src='Images/Billboard.setVerticalOrigin.png' width='695' height='175' /><br />
    * </div>
-   * @memberof Label.prototype
    * @type {VerticalOrigin}
    * @default VerticalOrigin.BASELINE
    * @example
@@ -1207,21 +990,6 @@ class Label {
     return this._verticalOrigin;
   }
 
-  /**
-   * Gets or sets the vertical origin of this label, which determines if the label is
-   * to the above, below, or at the center of its anchor position.
-   * <br /><br />
-   * <div align='center'>
-   * <img src='Images/Billboard.setVerticalOrigin.png' width='695' height='175' /><br />
-   * </div>
-   * @memberof Label.prototype
-   * @type {VerticalOrigin}
-   * @default VerticalOrigin.BASELINE
-   * @example
-   * // Use a top, right origin
-   * l.horizontalOrigin = Cesium.HorizontalOrigin.RIGHT;
-   * l.verticalOrigin = Cesium.VerticalOrigin.TOP;
-   */
   set verticalOrigin(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -1262,7 +1030,6 @@ class Label {
    * From left to right in the above image, the scales are <code>0.5</code>, <code>1.0</code>,
    * and <code>2.0</code>.
    * </div>
-   * @memberof Label.prototype
    * @type {number}
    * @default 1.0
    */
@@ -1270,24 +1037,6 @@ class Label {
     return this._scale;
   }
 
-  /**
-   * Gets or sets the uniform scale that is multiplied with the label's size in pixels.
-   * A scale of <code>1.0</code> does not change the size of the label; a scale greater than
-   * <code>1.0</code> enlarges the label; a positive scale less than <code>1.0</code> shrinks
-   * the label.
-   * <br /><br />
-   * Applying a large scale value may pixelate the label.  To make text larger without pixelation,
-   * use a larger font size when calling {@link Label#font} instead.
-   * <br /><br />
-   * <div align='center'>
-   * <img src='Images/Label.setScale.png' width='400' height='300' /><br/>
-   * From left to right in the above image, the scales are <code>0.5</code>, <code>1.0</code>,
-   * and <code>2.0</code>.
-   * </div>
-   * @memberof Label.prototype
-   * @type {number}
-   * @default 1.0
-   */
   set scale(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -1317,7 +1066,6 @@ class Label {
   /**
    * Gets the total scale of the label, which is the label's scale multiplied by the computed relative size
    * of the desired font compared to the generated glyph size.
-   * @memberof Label.prototype
    * @type {number}
    * @default 1.0
    */
@@ -1327,7 +1075,6 @@ class Label {
 
   /**
    * Gets or sets the condition specifying at what distance from the camera that this label will be displayed.
-   * @memberof Label.prototype
    * @type {DistanceDisplayCondition}
    * @default undefined
    */
@@ -1335,12 +1082,6 @@ class Label {
     return this._distanceDisplayCondition;
   }
 
-  /**
-   * Gets or sets the condition specifying at what distance from the camera that this label will be displayed.
-   * @memberof Label.prototype
-   * @type {DistanceDisplayCondition}
-   * @default undefined
-   */
   set distanceDisplayCondition(value) {
     //>>includeStart('debug', pragmas.debug);
     if (defined(value) && value.far <= value.near) {
@@ -1373,7 +1114,6 @@ class Label {
    * Gets or sets the distance from the camera, beyond which, depth testing is disabled—to, for example, prevent clipping against terrain.
    * When set to <code>undefined</code> or
    * <code>0</code>, the depth test is always applied. When set to Number.<code>POSITIVE_INFINITY</code>, the depth test is never applied.
-   * @memberof Label.prototype
    * @type {number|undefined}
    * @default undefined
    */
@@ -1381,14 +1121,6 @@ class Label {
     return this._disableDepthTestDistance;
   }
 
-  /**
-   * Gets or sets the distance from the camera, beyond which, depth testing is disabled—to, for example, prevent clipping against terrain.
-   * When set to <code>undefined</code> or
-   * <code>0</code>, the depth test is always applied. When set to Number.<code>POSITIVE_INFINITY</code>, the depth test is never applied.
-   * @memberof Label.prototype
-   * @type {number|undefined}
-   * @default undefined
-   */
   set disableDepthTestDistance(value) {
     if (this._disableDepthTestDistance !== value) {
       //>>includeStart('debug', pragmas.debug);
@@ -1416,18 +1148,12 @@ class Label {
 
   /**
    * Gets or sets the user-defined value returned when the label is picked.
-   * @memberof Label.prototype
    * @type {*}
    */
   get id() {
     return this._id;
   }
 
-  /**
-   * Gets or sets the user-defined value returned when the label is picked.
-   * @memberof Label.prototype
-   * @type {*}
-   */
   set id(value) {
     if (this._id !== value) {
       this._id = value;
@@ -1458,7 +1184,6 @@ class Label {
 
   /**
    * Keeps track of the position of the label based on the height reference.
-   * @memberof Label.prototype
    * @type {Cartesian3}
    * @private
    */
@@ -1466,12 +1191,6 @@ class Label {
     return this._actualClampedPosition;
   }
 
-  /**
-   * Keeps track of the position of the label based on the height reference.
-   * @memberof Label.prototype
-   * @type {Cartesian3}
-   * @private
-   */
   set _clampedPosition(value) {
     this._actualClampedPosition = Cartesian3.clone(
       value,
@@ -1495,7 +1214,6 @@ class Label {
 
   /**
    * Determines whether or not this label will be shown or hidden because it was clustered.
-   * @memberof Label.prototype
    * @type {boolean}
    * @default true
    * @private
@@ -1504,13 +1222,6 @@ class Label {
     return this._clusterShow;
   }
 
-  /**
-   * Determines whether or not this label will be shown or hidden because it was clustered.
-   * @memberof Label.prototype
-   * @type {boolean}
-   * @default true
-   * @private
-   */
   set clusterShow(value) {
     if (this._clusterShow !== value) {
       this._clusterShow = value;
@@ -1531,7 +1242,6 @@ class Label {
 
   /**
    * When <code>true</code>, this label is ready to render, i.e., the glyphs have been mapped and the WebGL resources are created. This property is exposed for testing purposes.
-   * @memberof Label.prototype
    * @type {boolean}
    * @readonly
    * @private

@@ -1,6 +1,4 @@
 /**
- * @module WebGPUShaderModule
- *
  * WebGPU shader module implementation for WGSL shader compilation.
  * Provides shader creation, pipeline state management, and bind group layouts.
  *
@@ -9,6 +7,7 @@
  *   code: wgslCode,
  *   label: 'MyShader'
  * });
+ * @module WebGPUShaderModule
  */
 
 /// <reference types="@webgpu/types" />

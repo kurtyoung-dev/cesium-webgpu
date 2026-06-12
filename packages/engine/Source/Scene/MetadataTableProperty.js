@@ -320,7 +320,6 @@ class MetadataTableProperty {
   /**
    * Extra user-defined properties.
    *
-   * @memberof MetadataTableProperty.prototype
    * @type {*}
    * @readonly
    * @private
@@ -332,7 +331,6 @@ class MetadataTableProperty {
   /**
    * An object containing extensions.
    *
-   * @memberof MetadataTableProperty.prototype
    * @type {*}
    * @readonly
    * @private
@@ -344,7 +342,6 @@ class MetadataTableProperty {
   /**
    * Size of all typed arrays used by this table property
    *
-   * @memberof MetadataTableProperty.prototype
    * @type {Normal}
    * @readonly
    * @private
@@ -356,7 +353,6 @@ class MetadataTableProperty {
   /**
    * The class property that this table property corresponds to.
    *
-   * @memberof MetadataTableProperty.prototype
    * @type {MetadataClassProperty}
    * @readonly
    * @private

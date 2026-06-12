@@ -1,6 +1,4 @@
 /**
- * @module WebGPUBuffer
- *
  * WebGPU buffer implementation for vertex, index, uniform, and storage buffers.
  * Provides efficient GPU memory management and data transfer.
  *
@@ -8,6 +6,7 @@
  * const vertexBuffer = WebGPUBuffer.createVertexBuffer(device, vertexData);
  * const indexBuffer = WebGPUBuffer.createIndexBuffer(device, indexData);
  * const uniformBuffer = WebGPUBuffer.createUniformBuffer(device, uniformData);
+ * @module WebGPUBuffer
  */
 
 /// <reference types="@webgpu/types" />

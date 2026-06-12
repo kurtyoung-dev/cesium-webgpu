@@ -426,7 +426,6 @@ class PropertyTable {
   /**
    * A human-readable name for this table
    *
-   * @memberof PropertyTable.prototype
    * @type {string}
    * @readonly
    * @private
@@ -438,7 +437,6 @@ class PropertyTable {
   /**
    * An identifier for this table. Useful for debugging.
    *
-   * @memberof PropertyTable.prototype
    * @type {string|number}
    * @readonly
    * @private
@@ -450,7 +448,6 @@ class PropertyTable {
   /**
    * The number of features in the table.
    *
-   * @memberof PropertyTable.prototype
    * @type {number}
    * @readonly
    * @private
@@ -462,7 +459,6 @@ class PropertyTable {
   /**
    * The class that properties conform to.
    *
-   * @memberof PropertyTable.prototype
    * @type {MetadataClass}
    * @readonly
    */
@@ -477,7 +473,6 @@ class PropertyTable {
   /**
    * The properties stored in this table.
    *
-   * @memberof PropertyTable.prototype
    * @type {Object<string, MetadataTableProperty>}
    * @readonly
    */
@@ -492,7 +487,6 @@ class PropertyTable {
   /**
    * Extra user-defined properties.
    *
-   * @memberof PropertyTable.prototype
    * @type {*}
    * @readonly
    * @private
@@ -504,7 +498,6 @@ class PropertyTable {
   /**
    * An object containing extensions.
    *
-   * @memberof PropertyTable.prototype
    * @type {object}
    * @readonly
    * @private
@@ -517,7 +510,6 @@ class PropertyTable {
    * Get the total amount of binary metadata stored in memory. This does
    * not include JSON metadata
    *
-   * @memberof PropertyTable.prototype
    * @type {number}
    * @readonly
    * @private
@@ -538,7 +530,6 @@ class PropertyTable {
   /**
    * The texture containing the property table data, if any.
    *
-   * @memberof PropertyTable.prototype
    * @type {Texture | undefined}
    * @readonly
    * @private

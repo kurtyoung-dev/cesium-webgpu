@@ -1,6 +1,4 @@
 /**
- * @module WebGPUContext
- *
  * WebGPU implementation of the GraphicsContext interface.
  * Provides a WebGPU-based rendering backend for CesiumJS with modern GPU features.
  *
@@ -9,6 +7,7 @@
  * context.beginFrame();
  * // ... render commands ...
  * context.endFrame();
+ * @module WebGPUContext
  */
 
 /// <reference types="@webgpu/types" />

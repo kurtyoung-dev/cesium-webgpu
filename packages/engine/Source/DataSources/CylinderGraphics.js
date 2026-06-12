@@ -127,17 +127,6 @@ class CylinderGraphics {
     this.distanceDisplayCondition =
       this.distanceDisplayCondition ?? source.distanceDisplayCondition;
   }
-
-  /**
-   * Gets the event that is raised whenever a property or sub-property is changed or modified.
-   * @memberof CylinderGraphics.prototype
-   *
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 Object.defineProperties(CylinderGraphics.prototype, {

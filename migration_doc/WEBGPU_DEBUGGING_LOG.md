@@ -10957,3 +10957,73 @@ UNCHANGED harness from HEAD (identical 4 errors). Real-GPU adapters unaffected (
 **Regression:** sandcastle-smoke PASS (3/3 demos); variant webgl-only smoke PASS; `buildAllVariants`
 exit 0 (1.16 min); probe-orbital-catalog + probe-compute-instance-generic + probe-collections-regression
 re-run green (engine code untouched — tools/CI/docs only).
+
+## Batch 243 — CI green sweep: lint/markdown zero, GPU-globals host guard, buildTs end-to-end, variant smoke self-serve (2026-06-12)
+
+**Scope:** first hosted run of the dev workflow (27431634995) was red on ALL five jobs (pre-existing
+reds + the new variants job). Fixed everything fixable in-repo; two suite-level unknowns + one deep
+ESM item documented in DEFERRED_WORK (NEW-CI-NODE20-ESM-TS-BARREL, NEW-CI-COVERAGE-SUITE). The next
+hosted run is the true test for the browser-suite steps that cannot run on this box.
+
+**Root causes + fixes (per job):**
+
+- **lint:** `Cesium3DTileContent.js` abstract getters called `DeveloperError.throwInstantiationError()` —
+  eslint cannot see the call throws, so getter-return fired ×14. Took upstream/main's file wholesale
+  (class-field interface form; nothing extends the class, diff showed zero fork-specific members).
+  Sandcastle `set-state-in-effect` ×2 fixed with upstream's own restructure (`setInitialized` inside
+  `load()`). scripts/*.mjs lacked node globals (eslint config glob was `scripts/**/*.js` only);
+  codemod .cjs files needed global `use strict` + curly/prefer-template `--fix`. Added wasm `pkg/`
+  outputs + `tmp/` to eslint ignores (git-ignored, but they made local lint diverge from CI by 34k errors).
+- **node-20 + coverage (shared root cause):** `GPUShaderStage` at module scope in
+  `WebGPUBindGroupLayoutHelpers.ts` + `WebGPUClusteredLightingBGL.ts` crashed any non-WebGPU host at
+  module-eval time (Node `require("cesium")`; FirefoxHeadless SpecList load → `Executed 0 of 0`).
+  `Stage` now typeof-guards with spec-exact fallback bits; the BGL consumes `Stage`. Verified by a
+  TS-compiler-API AST scan: zero module-scope GPU-global references remain in the engine.
+- **release-tests (make-zip → buildTs):** jsdoc ERRORs (unknown `@internal`/`@group(2)`/`@binding(2)`
+  tags, TS-style `{x?: T}` type expressions, `{...}` brace groups inside `@module` tag text, bare
+  `@experimental`), then THREE layers of generated-d.ts errors the jsdoc fix exposed: (a) ~1,938
+  redundant `@memberof X.prototype` lines inside ES6 class accessors across 323 files doubled doclet
+  longnames (`X#X#member`) → doclets orphaned → members silently MISSING from Cesium.d.ts (provider
+  classes failed structural assignability in Specs/TypeScript); (b) duplicated getter+setter doc
+  blocks (294) + class-accessor/defineProperties twins (40) → TS2300 duplicate identifiers;
+  (c) public doclets typed with @private classes (→ `object`) + `Sterographic` typo. `@internal` is
+  now a REGISTERED jsdoc tag (cesiumTags.js) mapping to private access — keeps the CLAUDE.md
+  "@internal = TS-public, doc-private" pattern legal.
+- **REAL RUNTIME BUG found by the d.ts gate:** `ConstantProperty` lost `isConstant` in its ES6
+  conversion — the property did not exist at runtime (`undefined` = falsy), so every consumer treated
+  constant properties as time-varying (cache-busting on the entity property fast path). Restored as a
+  `get isConstant() { return true; }`. The upstream defineProperties block had `isConstant: { value: true }`.
+- **release-tests (make-zip → buildDocs --pedantic):** buildDocs runs jsdoc with `--pedantic` (warnings
+  fatal) AND writes one HTML file per doclet — fork `@module X` docstrings with the description INSIDE
+  the tag text made jsdoc fold the whole prose into the module NAME (unwritable output filename →
+  ENOENT) and parse `{...}` brace groups in the prose as type expressions. Codemod moved `@module` to
+  the tag block END across 100 files. Remaining pedantic warnings: 50 single-line
+  `/** @type {T} description */` comments (Camera/ModelSkinData/PerformanceTracker/SSCC — @type
+  permits no description; split into multi-line desc + tag) + Picking.js `@private`-then-prose blocks.
+  make-zip now exit 0 end-to-end (6.3 min local).
+- **lint (prettier-check):** next step in the lint job after eslint; 522 files nonconforming (297
+  pre-existing + 225 left by the JSDoc codemods). `prettier --write` on all; generated
+  `packages/engine/index-wgsl.js` added to .prettierignore (sibling `index.js` already there);
+  un-mangled a comment block in `WebGLStubShader.ts` that flapped prettier write/check.
+- **variants:** the job backgrounded `npm run start &`; the server died with the step shell (and the
+  curl wait-loop exits 0 on timeout), so the smoke navigation got `ERR_CONNECTION_REFUSED`.
+  `variant-smoke-test.mjs` now self-serves the repo root on an ephemeral port (zero-dep node:http)
+  unless `--url` is given; the workflow server step is deleted.
+  Second latent CI breaker found while verifying: Chromium ≥136 removed the automatic software-WebGL
+  fallback — headless/GPU-less boxes (incl. the hosted runner's SwiftShader path) now need
+  `--enable-unsafe-swiftshader` or the webgl variant gets no context and the boot never readies.
+  Flag added to the launch args; timeout now dumps page errors instead of a bare TimeoutError.
+
+**Files:** `eslint.config.js`, `packages/engine/Source/Scene/Cesium3DTileContent.js` (upstream form),
+`packages/sandcastle/{scripts/buildGallery.js,src/App.tsx,src/Standalone/AppStandalone.tsx}`,
+`scripts/codemod-*.{cjs,mjs}`, `scripts/{createMissingWgslChunks.js,run-build-no-tsc.mjs,__tests__/bundleVariantPlugin.spec.mjs}`,
+`CLAUDE.md` + `packages/engine/Source/ThirdParty/naga-wasm/README.md` (markdownlint formatting),
+`Tools/jsdoc/cesiumTags.js` (@internal), `packages/engine/Source/Renderer/WebGPU/{WebGPUBindGroupLayoutHelpers.ts,WebGPUClusteredLightingBGL.ts}`,
+~330 engine/widgets Source files (JSDoc-only memberof/setter-doc cleanup),
+`packages/engine/Source/DataSources/ConstantProperty.js` (isConstant restore),
+`Tools/variant-smoke-test.mjs`, `.github/workflows/dev.yml`, `migration_doc/DEFERRED_WORK.md`.
+
+**Verification (local):** `npm run eslint` 0 errors; `npm run markdownlint` 0; `npx tsc --noEmit` 0;
+`gulp buildTs` exit 0 (was 46 jsdoc ERRORs + 15→295→39→1 tsc errors across the layers); `npm run make-zip`
+exit 0; `node -e require("./")` + dev/prod `Specs/test.cjs` pass; variant webgl-only smoke PASS with NO
+pre-running server (CI condition); probe-collections-regression + probe-globe-bindgroup-cache green.

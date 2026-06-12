@@ -1,6 +1,4 @@
 /**
- * @module WebGPUBillboardRenderer
- *
  * Handles WebGPU rendering of BillboardCollection.
  * Billboards are rendered as instanced screen-aligned quads with texture atlas.
  *
@@ -21,6 +19,7 @@
  * of upload bandwidth (negligible for typical Cesium scenes).
  *
  * @private
+ * @module WebGPUBillboardRenderer
  */
 import Cartesian2 from "../../Core/Cartesian2.js";
 import Cartesian3 from "../../Core/Cartesian3.js";

@@ -549,7 +549,6 @@ class VoxelCylinderShape {
   /**
    * An oriented bounding box containing the bounded shape.
    *
-   * @memberof VoxelCylinderShape.prototype
    * @type {OrientedBoundingBox}
    * @readonly
    * @private
@@ -560,7 +559,6 @@ class VoxelCylinderShape {
 
   /**
    * A collection of planes used for the render bounds
-   * @memberof VoxelCylinderShape.prototype
    * @type {VoxelBoundsCollection}
    * @readonly
    * @private
@@ -572,7 +570,6 @@ class VoxelCylinderShape {
   /**
    * A bounding sphere containing the bounded shape.
    *
-   * @memberof VoxelCylinderShape.prototype
    * @type {BoundingSphere}
    * @readonly
    * @private
@@ -584,7 +581,6 @@ class VoxelCylinderShape {
   /**
    * A transformation matrix containing the bounded shape.
    *
-   * @memberof VoxelCylinderShape.prototype
    * @type {Matrix4}
    * @readonly
    * @private
@@ -596,7 +592,6 @@ class VoxelCylinderShape {
   /**
    * A transformation matrix containing the shape, ignoring the bounds.
    *
-   * @memberof VoxelCylinderShape.prototype
    * @type {Matrix4}
    * @readonly
    * @private
@@ -606,7 +601,6 @@ class VoxelCylinderShape {
   }
 
   /**
-   * @memberof VoxelCylinderShape.prototype
    * @type {Object<string, any>}
    * @readonly
    * @private
@@ -616,7 +610,6 @@ class VoxelCylinderShape {
   }
 
   /**
-   * @memberof VoxelCylinderShape.prototype
    * @type {Object<string, any>}
    * @readonly
    * @private
@@ -627,7 +620,6 @@ class VoxelCylinderShape {
 
   /**
    * The maximum number of intersections against the shape for any ray direction.
-   * @memberof VoxelCylinderShape.prototype
    * @type {number}
    * @readonly
    * @private

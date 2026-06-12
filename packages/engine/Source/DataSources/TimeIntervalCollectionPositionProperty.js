@@ -97,7 +97,6 @@ class TimeIntervalCollectionPositionProperty {
   /**
    * Gets a value indicating if this property is constant.  A property is considered
    * constant if getValue always returns the same result for the current definition.
-   * @memberof TimeIntervalCollectionPositionProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -110,7 +109,6 @@ class TimeIntervalCollectionPositionProperty {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is considered to have changed if a call to getValue would return
    * a different result for the same time.
-   * @memberof TimeIntervalCollectionPositionProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -121,7 +119,6 @@ class TimeIntervalCollectionPositionProperty {
 
   /**
    * Gets the interval collection.
-   * @memberof TimeIntervalCollectionPositionProperty.prototype
    * @type {TimeIntervalCollection}
    * @readonly
    */
@@ -131,7 +128,6 @@ class TimeIntervalCollectionPositionProperty {
 
   /**
    * Gets the reference frame in which the position is defined.
-   * @memberof TimeIntervalCollectionPositionProperty.prototype
    * @type {ReferenceFrame}
    * @readonly
    * @default ReferenceFrame.FIXED;

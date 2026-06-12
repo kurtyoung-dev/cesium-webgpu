@@ -70,8 +70,6 @@ class ProviderViewModel {
   /**
    * Gets the Command that creates one or more providers which will be added to
    * the globe when this item is selected.
-   * @memberof ProviderViewModel.prototype
-   * @memberof ProviderViewModel.prototype
    * @type {Command}
    * @readonly
    */
@@ -82,7 +80,6 @@ class ProviderViewModel {
   /**
    * Gets the category
    * @type {string}
-   * @memberof ProviderViewModel.prototype
    * @readonly
    */
   get category() {

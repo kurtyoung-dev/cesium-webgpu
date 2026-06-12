@@ -198,7 +198,6 @@ class PropertyBag {
 
   /**
    * Gets the names of all properties registered on this instance.
-   * @memberof PropertyBag.prototype
    * @type {Array}
    */
   get propertyNames() {
@@ -208,7 +207,6 @@ class PropertyBag {
   /**
    * Gets a value indicating if this property is constant.  This property
    * is considered constant if all property items in this object are constant.
-   * @memberof PropertyBag.prototype
    *
    * @type {boolean}
    * @readonly
@@ -227,7 +225,6 @@ class PropertyBag {
    * Gets the event that is raised whenever the set of properties contained in this
    * object changes, or one of the properties itself changes.
    *
-   * @memberof PropertyBag.prototype
    *
    * @type {Event}
    * @readonly

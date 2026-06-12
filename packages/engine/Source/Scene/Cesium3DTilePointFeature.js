@@ -218,7 +218,6 @@ class Cesium3DTilePointFeature {
    * Gets or sets if the feature will be shown. This is set for all features
    * when a style's show is evaluated.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {boolean}
    *
@@ -228,16 +227,6 @@ class Cesium3DTilePointFeature {
     return this._label.show;
   }
 
-  /**
-   * Gets or sets if the feature will be shown. This is set for all features
-   * when a style's show is evaluated.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
   set show(value) {
     this._label.show = value;
     this._billboard.show = value;
@@ -250,7 +239,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>image</code> is <code>undefined</code>.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Color}
    */
@@ -258,16 +246,6 @@ class Cesium3DTilePointFeature {
     return this._color;
   }
 
-  /**
-   * Gets or sets the color of the point of this feature.
-   * <p>
-   * Only applied when <code>image</code> is <code>undefined</code>.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {Color}
-   */
   set color(value) {
     this._color = Color.clone(value, this._color);
     setBillboardImage(this);
@@ -279,7 +257,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>image</code> is <code>undefined</code>.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {number}
    */
@@ -287,16 +264,6 @@ class Cesium3DTilePointFeature {
     return this._pointSize;
   }
 
-  /**
-   * Gets or sets the point size of this feature.
-   * <p>
-   * Only applied when <code>image</code> is <code>undefined</code>.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {number}
-   */
   set pointSize(value) {
     this._pointSize = value;
     setBillboardImage(this);
@@ -308,7 +275,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>image</code> is <code>undefined</code>.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Color}
    */
@@ -316,16 +282,6 @@ class Cesium3DTilePointFeature {
     return this._pointOutlineColor;
   }
 
-  /**
-   * Gets or sets the point outline color of this feature.
-   * <p>
-   * Only applied when <code>image</code> is <code>undefined</code>.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {Color}
-   */
   set pointOutlineColor(value) {
     this._pointOutlineColor = Color.clone(value, this._pointOutlineColor);
     setBillboardImage(this);
@@ -337,7 +293,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>image</code> is <code>undefined</code>.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {number}
    */
@@ -345,16 +300,6 @@ class Cesium3DTilePointFeature {
     return this._pointOutlineWidth;
   }
 
-  /**
-   * Gets or sets the point outline width in pixels of this feature.
-   * <p>
-   * Only applied when <code>image</code> is <code>undefined</code>.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {number}
-   */
   set pointOutlineWidth(value) {
     this._pointOutlineWidth = value;
     setBillboardImage(this);
@@ -366,7 +311,6 @@ class Cesium3DTilePointFeature {
    * The color will be applied to the label if <code>labelText</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Color}
    */
@@ -374,16 +318,6 @@ class Cesium3DTilePointFeature {
     return this._label.fillColor;
   }
 
-  /**
-   * Gets or sets the label color of this feature.
-   * <p>
-   * The color will be applied to the label if <code>labelText</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {Color}
-   */
   set labelColor(value) {
     this._label.fillColor = value;
     this._polyline.show = this._label.show && value.alpha > 0.0;
@@ -395,7 +329,6 @@ class Cesium3DTilePointFeature {
    * The outline color will be applied to the label if <code>labelText</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Color}
    */
@@ -403,16 +336,6 @@ class Cesium3DTilePointFeature {
     return this._label.outlineColor;
   }
 
-  /**
-   * Gets or sets the label outline color of this feature.
-   * <p>
-   * The outline color will be applied to the label if <code>labelText</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {Color}
-   */
   set labelOutlineColor(value) {
     this._label.outlineColor = value;
   }
@@ -423,7 +346,6 @@ class Cesium3DTilePointFeature {
    * The outline width will be applied to the point if <code>labelText</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {number}
    */
@@ -431,16 +353,6 @@ class Cesium3DTilePointFeature {
     return this._label.outlineWidth;
   }
 
-  /**
-   * Gets or sets the outline width in pixels of this feature.
-   * <p>
-   * The outline width will be applied to the point if <code>labelText</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {number}
-   */
   set labelOutlineWidth(value) {
     this._label.outlineWidth = value;
   }
@@ -451,7 +363,6 @@ class Cesium3DTilePointFeature {
    * Only applied when the <code>labelText</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {string}
    */
@@ -459,16 +370,6 @@ class Cesium3DTilePointFeature {
     return this._label.font;
   }
 
-  /**
-   * Gets or sets the font of this feature.
-   * <p>
-   * Only applied when the <code>labelText</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {string}
-   */
   set font(value) {
     this._label.font = value;
   }
@@ -479,7 +380,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>labelText</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {LabelStyle}
    */
@@ -487,16 +387,6 @@ class Cesium3DTilePointFeature {
     return this._label.style;
   }
 
-  /**
-   * Gets or sets the fill and outline style of this feature.
-   * <p>
-   * Only applied when <code>labelText</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {LabelStyle}
-   */
   set labelStyle(value) {
     this._label.style = value;
   }
@@ -504,7 +394,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets or sets the text for this feature.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {string}
    */
@@ -512,13 +401,6 @@ class Cesium3DTilePointFeature {
     return this._label.text;
   }
 
-  /**
-   * Gets or sets the text for this feature.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {string}
-   */
   set labelText(value) {
     if (!defined(value)) {
       value = "";
@@ -532,7 +414,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>labelText</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Color}
    */
@@ -540,16 +421,6 @@ class Cesium3DTilePointFeature {
     return this._label.backgroundColor;
   }
 
-  /**
-   * Gets or sets the background color of the text for this feature.
-   * <p>
-   * Only applied when <code>labelText</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {Color}
-   */
   set backgroundColor(value) {
     this._label.backgroundColor = value;
   }
@@ -560,7 +431,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>labelText</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Cartesian2}
    */
@@ -568,16 +438,6 @@ class Cesium3DTilePointFeature {
     return this._label.backgroundPadding;
   }
 
-  /**
-   * Gets or sets the background padding of the text for this feature.
-   * <p>
-   * Only applied when <code>labelText</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {Cartesian2}
-   */
   set backgroundPadding(value) {
     this._label.backgroundPadding = value;
   }
@@ -588,7 +448,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>labelText</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {boolean}
    */
@@ -596,16 +455,6 @@ class Cesium3DTilePointFeature {
     return this._label.showBackground;
   }
 
-  /**
-   * Gets or sets whether to display the background of the text for this feature.
-   * <p>
-   * Only applied when <code>labelText</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {boolean}
-   */
   set backgroundEnabled(value) {
     this._label.showBackground = value;
   }
@@ -613,7 +462,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets or sets the near and far scaling properties for this feature.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {NearFarScalar}
    */
@@ -621,13 +469,6 @@ class Cesium3DTilePointFeature {
     return this._label.scaleByDistance;
   }
 
-  /**
-   * Gets or sets the near and far scaling properties for this feature.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {NearFarScalar}
-   */
   set scaleByDistance(value) {
     this._label.scaleByDistance = value;
     this._billboard.scaleByDistance = value;
@@ -636,7 +477,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets or sets the near and far translucency properties for this feature.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {NearFarScalar}
    */
@@ -644,13 +484,6 @@ class Cesium3DTilePointFeature {
     return this._label.translucencyByDistance;
   }
 
-  /**
-   * Gets or sets the near and far translucency properties for this feature.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {NearFarScalar}
-   */
   set translucencyByDistance(value) {
     this._label.translucencyByDistance = value;
     this._billboard.translucencyByDistance = value;
@@ -659,7 +492,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets or sets the condition specifying at what distance from the camera that this feature will be displayed.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {DistanceDisplayCondition}
    */
@@ -667,13 +499,6 @@ class Cesium3DTilePointFeature {
     return this._label.distanceDisplayCondition;
   }
 
-  /**
-   * Gets or sets the condition specifying at what distance from the camera that this feature will be displayed.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {DistanceDisplayCondition}
-   */
   set distanceDisplayCondition(value) {
     this._label.distanceDisplayCondition = value;
     this._polyline.distanceDisplayCondition = value;
@@ -683,7 +508,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets or sets the height offset in meters of this feature.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {number}
    */
@@ -691,13 +515,6 @@ class Cesium3DTilePointFeature {
     return this._heightOffset;
   }
 
-  /**
-   * Gets or sets the height offset in meters of this feature.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {number}
-   */
   set heightOffset(value) {
     const offset = this._heightOffset ?? 0.0;
 
@@ -722,7 +539,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>heightOffset</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {boolean}
    */
@@ -730,16 +546,6 @@ class Cesium3DTilePointFeature {
     return this._polyline.show;
   }
 
-  /**
-   * Gets or sets whether the anchor line is displayed.
-   * <p>
-   * Only applied when <code>heightOffset</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {boolean}
-   */
   set anchorLineEnabled(value) {
     this._polyline.show = value;
   }
@@ -750,7 +556,6 @@ class Cesium3DTilePointFeature {
    * Only applied when <code>heightOffset</code> is defined.
    * </p>
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Color}
    */
@@ -758,16 +563,6 @@ class Cesium3DTilePointFeature {
     return this._polyline.material.uniforms.color;
   }
 
-  /**
-   * Gets or sets the color for the anchor line.
-   * <p>
-   * Only applied when <code>heightOffset</code> is defined.
-   * </p>
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {Color}
-   */
   set anchorLineColor(value) {
     this._polyline.material.uniforms.color = Color.clone(
       value,
@@ -778,7 +573,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets or sets the image of this feature.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {string}
    */
@@ -786,13 +580,6 @@ class Cesium3DTilePointFeature {
     return this._billboardImage;
   }
 
-  /**
-   * Gets or sets the image of this feature.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {string}
-   */
   set image(value) {
     const imageChanged = this._billboardImage !== value;
     this._billboardImage = value;
@@ -804,7 +591,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets or sets the distance where depth testing will be disabled.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {number}
    */
@@ -812,13 +598,6 @@ class Cesium3DTilePointFeature {
     return this._label.disableDepthTestDistance;
   }
 
-  /**
-   * Gets or sets the distance where depth testing will be disabled.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {number}
-   */
   set disableDepthTestDistance(value) {
     this._label.disableDepthTestDistance = value;
     this._billboard.disableDepthTestDistance = value;
@@ -828,7 +607,6 @@ class Cesium3DTilePointFeature {
    * Gets or sets the horizontal origin of this point, which determines if the point is
    * to the left, center, or right of its anchor position.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {HorizontalOrigin}
    */
@@ -836,14 +614,6 @@ class Cesium3DTilePointFeature {
     return this._billboard.horizontalOrigin;
   }
 
-  /**
-   * Gets or sets the horizontal origin of this point, which determines if the point is
-   * to the left, center, or right of its anchor position.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {HorizontalOrigin}
-   */
   set horizontalOrigin(value) {
     this._billboard.horizontalOrigin = value;
   }
@@ -852,7 +622,6 @@ class Cesium3DTilePointFeature {
    * Gets or sets the vertical origin of this point, which determines if the point is
    * to the bottom, center, or top of its anchor position.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {VerticalOrigin}
    */
@@ -860,14 +629,6 @@ class Cesium3DTilePointFeature {
     return this._billboard.verticalOrigin;
   }
 
-  /**
-   * Gets or sets the vertical origin of this point, which determines if the point is
-   * to the bottom, center, or top of its anchor position.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {VerticalOrigin}
-   */
   set verticalOrigin(value) {
     this._billboard.verticalOrigin = value;
   }
@@ -876,7 +637,6 @@ class Cesium3DTilePointFeature {
    * Gets or sets the horizontal origin of this point's text, which determines if the point's text is
    * to the left, center, or right of its anchor position.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {HorizontalOrigin}
    */
@@ -884,14 +644,6 @@ class Cesium3DTilePointFeature {
     return this._label.horizontalOrigin;
   }
 
-  /**
-   * Gets or sets the horizontal origin of this point's text, which determines if the point's text is
-   * to the left, center, or right of its anchor position.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {HorizontalOrigin}
-   */
   set labelHorizontalOrigin(value) {
     this._label.horizontalOrigin = value;
   }
@@ -900,7 +652,6 @@ class Cesium3DTilePointFeature {
    * Get or sets the vertical origin of this point's text, which determines if the point's text is
    * to the bottom, center, top, or baseline of it's anchor point.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {VerticalOrigin}
    */
@@ -908,14 +659,6 @@ class Cesium3DTilePointFeature {
     return this._label.verticalOrigin;
   }
 
-  /**
-   * Get or sets the vertical origin of this point's text, which determines if the point's text is
-   * to the bottom, center, top, or baseline of it's anchor point.
-   *
-   * @memberof Cesium3DTilePointFeature.prototype
-   *
-   * @type {VerticalOrigin}
-   */
   set labelVerticalOrigin(value) {
     this._label.verticalOrigin = value;
   }
@@ -923,7 +666,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets the content of the tile containing the feature.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Cesium3DTileContent}
    *
@@ -937,7 +679,6 @@ class Cesium3DTilePointFeature {
   /**
    * Gets the tileset containing the feature.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Cesium3DTileset}
    *
@@ -951,7 +692,6 @@ class Cesium3DTilePointFeature {
    * All objects returned by {@link Scene#pick} have a <code>primitive</code> property. This returns
    * the tileset containing the feature.
    *
-   * @memberof Cesium3DTilePointFeature.prototype
    *
    * @type {Cesium3DTileset}
    *

@@ -1,7 +1,5 @@
 /// <reference types="@webgpu/types" />
 /**
- * @module WebGPUTAAEffect
- *
  * Temporal Anti-Aliasing post-process effect. Accumulates jittered frames
  * into a history buffer using neighborhood clamping to suppress ghosting.
  *
@@ -14,6 +12,7 @@
  *   - Depth texture for future motion vector reprojection
  *
  * @private
+ * @module WebGPUTAAEffect
  */
 
 import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";

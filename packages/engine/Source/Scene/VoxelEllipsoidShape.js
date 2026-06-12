@@ -903,7 +903,6 @@ class VoxelEllipsoidShape {
   /**
    * An oriented bounding box containing the bounded shape.
    *
-   * @memberof VoxelEllipsoidShape.prototype
    * @type {OrientedBoundingBox}
    * @readonly
    * @private
@@ -915,7 +914,6 @@ class VoxelEllipsoidShape {
   /**
    * A bounding sphere containing the bounded shape.
    *
-   * @memberof VoxelEllipsoidShape.prototype
    * @type {BoundingSphere}
    * @readonly
    * @private
@@ -927,7 +925,6 @@ class VoxelEllipsoidShape {
   /**
    * A transformation matrix containing the bounded shape.
    *
-   * @memberof VoxelEllipsoidShape.prototype
    * @type {Matrix4}
    * @readonly
    * @private
@@ -939,7 +936,6 @@ class VoxelEllipsoidShape {
   /**
    * A transformation matrix containing the shape, ignoring the bounds.
    *
-   * @memberof VoxelEllipsoidShape.prototype
    * @type {Matrix4}
    * @readonly
    * @private
@@ -949,7 +945,6 @@ class VoxelEllipsoidShape {
   }
 
   /**
-   * @memberof VoxelEllipsoidShape.prototype
    * @type {Object<string, any>}
    * @readonly
    * @private
@@ -959,7 +954,6 @@ class VoxelEllipsoidShape {
   }
 
   /**
-   * @memberof VoxelEllipsoidShape.prototype
    * @type {Object<string, any>}
    * @readonly
    * @private
@@ -970,7 +964,6 @@ class VoxelEllipsoidShape {
 
   /**
    * The maximum number of intersections against the shape for any ray direction.
-   * @memberof VoxelEllipsoidShape.prototype
    * @type {number}
    * @readonly
    * @private

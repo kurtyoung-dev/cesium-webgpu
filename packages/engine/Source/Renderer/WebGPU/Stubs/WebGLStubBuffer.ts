@@ -1,12 +1,11 @@
 /**
- * @module WebGLStubBuffer
- *
  * WebGL buffer and vertex attribute method stubs for the WebGPU
  * compatibility layer. Maps buffer creation, binding, and data upload
  * to WebGPU buffer operations. Vertex attribute methods are no-ops
  * since WebGPU handles them via pipeline vertex state descriptors.
  *
  * @see WebGLCompatibilityStub (nexus)
+ * @module WebGLStubBuffer
  */
 
 /// <reference types="@webgpu/types" />

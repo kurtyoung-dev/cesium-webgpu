@@ -47,7 +47,6 @@ class PpeTexture {
    * The data contained here applies to this node and corresponding
    * texture.
    *
-   * @memberof PpeTexture.prototype
    * @type {PpeMetadata}
    * @readonly
    */
@@ -59,7 +58,6 @@ class PpeTexture {
    * A value to represent missing data - also known as a sentinel value -
    * wherever it appears.
    *
-   * @memberof PpeTexture.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -70,7 +68,6 @@ class PpeTexture {
   /**
    * An offset to apply to property values.
    *
-   * @memberof PpeTexture.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -81,7 +78,6 @@ class PpeTexture {
   /**
    * An scale to apply to property values.
    *
-   * @memberof PpeTexture.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -92,7 +88,6 @@ class PpeTexture {
   /**
    * The index of the texture
    *
-   * @memberof PpeTexture.prototype
    * @type {number}
    * @readonly
    */
@@ -103,7 +98,6 @@ class PpeTexture {
   /**
    * The set index of texture's TEXCOORD attribute used for texture coordinate mapping.
    *
-   * @memberof PpeTexture.prototype
    * @type {number|undefined}
    * @readonly
    */

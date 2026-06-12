@@ -1,6 +1,4 @@
 /**
- * @module WebGPUUniformGroupManager
- *
  * Manages uniform buffers grouped by update frequency, following the
  * industry-standard pattern:
  *
@@ -11,6 +9,7 @@
  * This reduces GPU buffer writes by separating data that changes at different rates.
  * Without grouping, ALL uniforms are re-uploaded every draw call even if only the
  * model matrix changed.
+ * @module WebGPUUniformGroupManager
  */
 
 /// <reference types="@webgpu/types" />

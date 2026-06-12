@@ -98,29 +98,6 @@ class PolylineGlowMaterialProperty {
         Property.equals(this._taperPower, other._taperPower))
     );
   }
-
-  /**
-   * Gets a value indicating if this property is constant.  A property is considered
-   * constant if getValue always returns the same result for the current definition.
-   * @memberof PolylineGlowMaterialProperty.prototype
-   * @type {boolean}
-   * @readonly
-   */
-  get isConstant() {
-    return Property.isConstant(this._color) && Property.isConstant(this._glow);
-  }
-
-  /**
-   * Gets the event that is raised whenever the definition of this property changes.
-   * The definition is considered to have changed if a call to getValue would return
-   * a different result for the same time.
-   * @memberof PolylineGlowMaterialProperty.prototype
-   * @type {Event}
-   * @readonly
-   */
-  get definitionChanged() {
-    return this._definitionChanged;
-  }
 }
 
 const timeScratch = new JulianDate();

@@ -1,6 +1,4 @@
 /**
- * @module WebGPUVector3DTilePolylinesRenderer
- *
  * (Per-feature pick added in Batch 115.)
  *
  * WebGPU equivalent of `Vector3DTilePolylines` (3D Tiles polylines NOT
@@ -34,14 +32,15 @@
  *   - `POLYLINE_DASH` material variant.
  *
  * **Per-feature pick (Batch 115):**
- *   - A second storage buffer `pickColors[batchId]` is bound at @group(0)
- *     @binding(2) and uploaded from `batchTable.getPickColor(i)`.
+ *   - A second storage buffer `pickColors[batchId]` is bound at
+ *     group(0) binding(2) and uploaded from `batchTable.getPickColor(i)`.
  *   - A second pipeline (`pickPipeline`) shares the same VS but uses a
  *     `pickFS` entry point that returns `pickColors[batchId]`.
  *   - `createCommands` returns `{ colorCommands, pickCommands }`. The
  *     Scene-side `Vector3DTilePolylines.update()` pushes `pickCommands`
  *     when `frameState.passes.pick === true`.
  *
+ * @module WebGPUVector3DTilePolylinesRenderer
  * @private
  */
 import defined from "../../Core/defined.js";

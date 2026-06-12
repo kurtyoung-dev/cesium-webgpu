@@ -1,6 +1,4 @@
 /**
- * @module WebGLStubPipelineExtractor
- *
  * Converts the accumulated `WebGLStubState` (blend / depth / stencil /
  * cull / color-mask / etc.) into the WebGPU pipeline-config pieces
  * the render pipeline cache and builder consume. This closes the loop
@@ -59,6 +57,7 @@
  * @see WebGPURenderPipelineCache (variant consumer)
  * @see WebGPUPipelineDescriptorBuilder (fluent API)
  * @see Stubs/WebGLStubPipelineState (state producer)
+ * @module WebGLStubPipelineExtractor
  */
 
 /// <reference types="@webgpu/types" />
@@ -233,8 +232,7 @@ export function applyStubVariantToBuilder(
   // Stencil front/back are the canonical trigger — passing them to
   // enableStencilTest forces the depth-stencil format upgrade.
   if (variant.stencilFront || variant.stencilBack) {
-    const front =
-      variant.stencilFront ??
+    const front = variant.stencilFront ??
       variant.stencilBack ?? {
         compare: "always" as GPUCompareFunction,
         failOp: "keep" as GPUStencilOperation,

@@ -42,7 +42,6 @@ class ToggleButtonViewModel {
 
   /**
    * Gets the command which will be executed when the button is toggled.
-   * @memberof ToggleButtonViewModel.prototype
    * @type {Command}
    */
   get command() {

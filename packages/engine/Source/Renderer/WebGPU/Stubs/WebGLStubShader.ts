@@ -1,6 +1,4 @@
 /**
- * @module WebGLStubShader
- *
  * **Proton-style WebGL→WebGPU shader / parameter / extension translation.**
  *
  * The classic WebGL compile/link workflow has no equivalent in WebGPU
@@ -21,6 +19,7 @@
  *   `WebGPUPickFramebuffer` async API.
  *
  * @see WebGLCompatibilityStub
+ * @module WebGLStubShader
  */
 
 /// <reference types="@webgpu/types" />
@@ -214,10 +213,15 @@ function getDeviceParameter(
     // Vertex attribute / varying / uniform slot counts
     case GL_MAX_VERTEX_ATTRIBS:
       return limits?.maxVertexAttributes ?? 16;
-    case GL_MAX_VARYING_VECTORS: // consumer pins an older @webgpu/types version. Vars and // fallback so the code still compiles cleanly if a downstream // 0.1.83, so the new name is always present, but we keep the // than per scalar component). The package.json floor pins us to // maxInterStageShaderVariables (one entry per vec4 slot rather // @webgpu/types ≥0.1.79 renamed maxInterStageShaderComponents →
-    // components produce equivalent vec4 counts after the division
-    // below, so the math stays correct under either name.
-    {
+    case GL_MAX_VARYING_VECTORS: {
+      // @webgpu/types ≥0.1.79 renamed maxInterStageShaderComponents →
+      // maxInterStageShaderVariables (one entry per vec4 slot rather
+      // than per scalar component). The package.json floor pins us to
+      // 0.1.83, so the new name is always present, but we keep the
+      // fallback so the code still compiles cleanly if a downstream
+      // consumer pins an older @webgpu/types version. Vars and
+      // components produce equivalent vec4 counts after the division
+      // below, so the math stays correct under either name.
       // Version-bridged read: new @webgpu/types (≥0.1.83) always has
       // `maxInterStageShaderVariables`; older versions have only
       // `maxInterStageShaderComponents`. `Reflect.get` lets us query

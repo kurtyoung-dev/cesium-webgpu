@@ -7,7 +7,11 @@ import { join } from "path";
 
 const BASE = join("packages", "engine", "Source", "Shaders", "WebGPU");
 
-function ensureDir(dir) { if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }); } }
+function ensureDir(dir) {
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+}
 
 const files = {};
 
@@ -621,11 +625,16 @@ fn csm_voxelRayMarch(
 // Create all files
 let count = 0;
 for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = join(BASE, relPath);
-    const dir = fullPath.substring(0, fullPath.lastIndexOf("\\") > 0 ? fullPath.lastIndexOf("\\") : fullPath.lastIndexOf("/"));
-    ensureDir(dir);
-    writeFileSync(fullPath, content, "utf8");
-    count++;
-    console.log(`Created: ${relPath}`);
+  const fullPath = join(BASE, relPath);
+  const dir = fullPath.substring(
+    0,
+    fullPath.lastIndexOf("\\") > 0
+      ? fullPath.lastIndexOf("\\")
+      : fullPath.lastIndexOf("/"),
+  );
+  ensureDir(dir);
+  writeFileSync(fullPath, content, "utf8");
+  count++;
+  console.log(`Created: ${relPath}`);
 }
 console.log(`\nTotal: ${count} feature-level WGSL files created.`);

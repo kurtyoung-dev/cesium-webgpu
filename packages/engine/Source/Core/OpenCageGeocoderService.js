@@ -98,7 +98,6 @@ class OpenCageGeocoderService {
   /**
    * The Resource used to access the OpenCage endpoint.
    * @type {Resource}
-   * @memberof OpenCageGeocoderService.prototype
    * @readonly
    */
   get url() {
@@ -108,7 +107,6 @@ class OpenCageGeocoderService {
   /**
    * Optional params passed to OpenCage in order to customize geocoding
    * @type {object}
-   * @memberof OpenCageGeocoderService.prototype
    * @readonly
    */
   get params() {
@@ -118,7 +116,6 @@ class OpenCageGeocoderService {
   /**
    * Gets the credit to display after a geocode is performed. Typically this is used to credit
    * the geocoder service.
-   * @memberof OpenCageGeocoderService.prototype
    * @type {Credit|undefined}
    * @readonly
    */

@@ -1,6 +1,4 @@
 /**
- * @module GraphicsContext
- *
  * Abstract base class that defines the unified API for both WebGL and WebGPU
  * rendering contexts. This is the cornerstone of CesiumJS's backend-agnostic
  * architecture — scene code interacts with this class, never with backend-specific
@@ -45,6 +43,7 @@
  * @see ContextRegistry
  * @see ContextFactory
  * @see SharedResourcePool
+ * @module GraphicsContext
  */
 
 import RendererType from "./RendererType.js";

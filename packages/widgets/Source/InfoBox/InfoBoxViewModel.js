@@ -95,7 +95,6 @@ class InfoBoxViewModel {
 
   /**
    * Gets an {@link Event} that is fired when the user clicks the camera icon.
-   * @memberof InfoBoxViewModel.prototype
    * @type {Event}
    */
   get cameraClicked() {
@@ -104,7 +103,6 @@ class InfoBoxViewModel {
 
   /**
    * Gets an {@link Event} that is fired when the user closes the info box.
-   * @memberof InfoBoxViewModel.prototype
    * @type {Event}
    */
   get closeClicked() {

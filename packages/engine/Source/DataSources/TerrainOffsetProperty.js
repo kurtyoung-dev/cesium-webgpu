@@ -210,7 +210,6 @@ class TerrainOffsetProperty {
 
   /**
    * Gets a value indicating if this property is constant.
-   * @memberof TerrainOffsetProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -221,7 +220,6 @@ class TerrainOffsetProperty {
 
   /**
    * Gets the event that is raised whenever the definition of this property changes.
-   * @memberof TerrainOffsetProperty.prototype
    *
    * @type {Event}
    * @readonly

@@ -1,6 +1,4 @@
 /**
- * @module WebGPUNagaTranspiler
- *
  * Lazy GLSL / SPIR-V → WGSL transpilation via a vendored Naga WASM build.
  *
  * Goal: let the WebGL compatibility stub fall through to a real
@@ -43,6 +41,7 @@
  *   - Specialization-constant injection.
  *   - Removing this stub once Naga-based translation covers everything
  *     CesiumJS ships in stock GLSL.
+ * @module WebGPUNagaTranspiler
  */
 
 /// <reference types="@webgpu/types" />

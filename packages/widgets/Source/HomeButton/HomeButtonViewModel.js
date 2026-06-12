@@ -38,7 +38,6 @@ class HomeButtonViewModel {
 
   /**
    * Gets the scene to control.
-   * @memberof HomeButtonViewModel.prototype
    *
    * @type {Scene}
    */
@@ -48,7 +47,6 @@ class HomeButtonViewModel {
 
   /**
    * Gets the Command that is executed when the button is clicked.
-   * @memberof HomeButtonViewModel.prototype
    *
    * @type {Command}
    */
@@ -60,7 +58,6 @@ class HomeButtonViewModel {
    * Gets or sets the the duration of the camera flight in seconds.
    * A value of zero causes the camera to instantly switch to home view.
    * The duration will be computed based on the distance when undefined.
-   * @memberof HomeButtonViewModel.prototype
    *
    * @type {number|undefined}
    */
@@ -68,14 +65,6 @@ class HomeButtonViewModel {
     return this._duration;
   }
 
-  /**
-   * Gets or sets the the duration of the camera flight in seconds.
-   * A value of zero causes the camera to instantly switch to home view.
-   * The duration will be computed based on the distance when undefined.
-   * @memberof HomeButtonViewModel.prototype
-   *
-   * @type {number|undefined}
-   */
   set duration(value) {
     //>>includeStart('debug', pragmas.debug);
     if (defined(value) && value < 0) {

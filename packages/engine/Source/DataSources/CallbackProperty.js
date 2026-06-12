@@ -79,7 +79,6 @@ class CallbackProperty {
 
   /**
    * Gets a value indicating if this property is constant.
-   * @memberof CallbackProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -91,7 +90,6 @@ class CallbackProperty {
   /**
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is changed whenever setCallback is called.
-   * @memberof CallbackProperty.prototype
    *
    * @type {Event}
    * @readonly

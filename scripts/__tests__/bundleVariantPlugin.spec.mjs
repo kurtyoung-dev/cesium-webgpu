@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // bundleVariantPlugin spec — exercised without esbuild by capturing the
 // onResolve handler the plugin registers and calling it with synthetic
 // args. Covers the decision matrix that governs whether an import gets
@@ -55,7 +54,7 @@ function makeFakeBuild() {
 
 function setupPlugin(variant) {
   const plugin = bundleVariantPlugin(variant);
-  if (!plugin) return null;
+  if (!plugin) {return null;}
   const fake = makeFakeBuild();
   plugin.setup(fake);
   return fake.handler;

@@ -1,6 +1,4 @@
 /**
- * @module FpsOverlay
- *
  * Full-featured FPS HUD that renders an absolutely-positioned Canvas2D
  * panel over a host element (typically the same parent as the Cesium
  * canvas). Reads from a `PerformanceTracker`-shaped data source via a
@@ -31,6 +29,7 @@
  * budget so visual stutters jump out at a glance.
  *
  * @private
+ * @module FpsOverlay
  */
 
 import defined from "../Core/defined.js";

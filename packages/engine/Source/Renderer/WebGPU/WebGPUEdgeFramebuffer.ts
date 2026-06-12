@@ -202,7 +202,7 @@ export class WebGPUEdgeFramebuffer {
         view: this._colorViews[i],
         resolveTarget:
           this._numSamples > 1
-            ? this._resolveViews[i] ?? undefined
+            ? (this._resolveViews[i] ?? undefined)
             : undefined,
         loadOp: "clear",
         storeOp: "store",

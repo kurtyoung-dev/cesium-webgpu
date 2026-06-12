@@ -1,6 +1,4 @@
 /**
- * @module WebGPUPerformanceManager
- *
  * Central orchestrator for all WebGPU performance infrastructure activation.
  * Wires the lazy-initialized infrastructure singletons from WebGPUContext into
  * the rendering pipeline:
@@ -17,6 +15,7 @@
  * the existing per-command execution path is used (zero overhead).
  *
  * @private
+ * @module WebGPUPerformanceManager
  */
 
 /// <reference types="@webgpu/types" />

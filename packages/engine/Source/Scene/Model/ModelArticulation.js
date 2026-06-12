@@ -110,7 +110,6 @@ class ModelArticulation {
   /**
    * The internal articulation that this runtime articulation represents.
    *
-   * @memberof ModelArticulation.prototype
    * @type {ModelComponents.Articulation}
    * @readonly
    *
@@ -123,7 +122,6 @@ class ModelArticulation {
   /**
    * The scene graph that this articulation belongs to.
    *
-   * @memberof ModelArticulation.prototype
    * @type {ModelSceneGraph}
    * @readonly
    *
@@ -136,7 +134,6 @@ class ModelArticulation {
   /**
    * The name of this articulation.
    *
-   * @memberof ModelArticulation.prototype
    * @type {string}
    * @readonly
    *
@@ -149,7 +146,6 @@ class ModelArticulation {
   /**
    * The runtime stages that belong to this articulation.
    *
-   * @memberof ModelArticulation.prototype
    * @type {ModelArticulationStage[]}
    * @readonly
    *
@@ -162,7 +158,6 @@ class ModelArticulation {
   /**
    * The runtime nodes that are affected by this articulation.
    *
-   * @memberof ModelArticulation.prototype
    * @type {ModelRuntimeNode[]}
    * @readonly
    *

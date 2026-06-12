@@ -194,7 +194,6 @@ class GeographicTilingScheme {
 
   /**
    * Gets the ellipsoid that is tiled by this tiling scheme.
-   * @memberof GeographicTilingScheme.prototype
    * @type {Ellipsoid}
    */
   get ellipsoid() {
@@ -203,7 +202,6 @@ class GeographicTilingScheme {
 
   /**
    * Gets the rectangle, in radians, covered by this tiling scheme.
-   * @memberof GeographicTilingScheme.prototype
    * @type {Rectangle}
    */
   get rectangle() {
@@ -212,7 +210,6 @@ class GeographicTilingScheme {
 
   /**
    * Gets the map projection used by this tiling scheme.
-   * @memberof GeographicTilingScheme.prototype
    * @type {MapProjection}
    */
   get projection() {

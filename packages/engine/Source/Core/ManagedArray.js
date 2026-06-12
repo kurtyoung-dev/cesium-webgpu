@@ -121,20 +121,12 @@ class ManagedArray {
    * Gets or sets the length of the array.
    * If the set length is greater than the length of the internal array, the internal array is resized.
    *
-   * @memberof ManagedArray.prototype
    * @type {number}
    */
   get length() {
     return this._length;
   }
 
-  /**
-   * Gets or sets the length of the array.
-   * If the set length is greater than the length of the internal array, the internal array is resized.
-   *
-   * @memberof ManagedArray.prototype
-   * @type {number}
-   */
   set length(length) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThanOrEquals("length", length, 0);
@@ -155,7 +147,6 @@ class ManagedArray {
   /**
    * Gets the internal array.
    *
-   * @memberof ManagedArray.prototype
    * @type {Array}
    * @readonly
    */

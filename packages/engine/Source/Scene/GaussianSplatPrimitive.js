@@ -1664,7 +1664,6 @@ class GaussianSplatPrimitive {
 
   /**
    * Indicates whether the primitive is ready for use.
-   * @memberof GaussianSplatPrimitive.prototype
    * @type {boolean}
    * @readonly
    */
@@ -1674,7 +1673,6 @@ class GaussianSplatPrimitive {
 
   /**
    * Indicates whether the primitive has completed loading and sorting.
-   * @memberof GaussianSplatPrimitive.prototype
    * @type {boolean}
    * @private
    * @readonly
@@ -1689,7 +1687,6 @@ class GaussianSplatPrimitive {
 
   /**
    * The {@link SplitDirection} to apply to this point.
-   * @memberof GaussianSplatPrimitive.prototype
    * @type {SplitDirection}
    * @default {@link SplitDirection.NONE}
    */
@@ -1697,12 +1694,6 @@ class GaussianSplatPrimitive {
     return this._splitDirection;
   }
 
-  /**
-   * The {@link SplitDirection} to apply to this point.
-   * @memberof GaussianSplatPrimitive.prototype
-   * @type {SplitDirection}
-   * @default {@link SplitDirection.NONE}
-   */
   set splitDirection(value) {
     if (this._splitDirection !== value) {
       this._splitDirection = value;

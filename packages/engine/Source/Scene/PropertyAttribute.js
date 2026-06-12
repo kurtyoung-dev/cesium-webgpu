@@ -71,7 +71,6 @@ class PropertyAttribute {
   /**
    * A human-readable name for this attribute
    *
-   * @memberof PropertyAttribute.prototype
    *
    * @type {string}
    * @readonly
@@ -84,7 +83,6 @@ class PropertyAttribute {
   /**
    * An identifier for this attribute. Useful for debugging.
    *
-   * @memberof PropertyAttribute.prototype
    *
    * @type {string|number}
    * @readonly
@@ -97,7 +95,6 @@ class PropertyAttribute {
   /**
    * The class that properties conform to.
    *
-   * @memberof PropertyAttribute.prototype
    *
    * @type {MetadataClass}
    * @readonly
@@ -110,7 +107,6 @@ class PropertyAttribute {
   /**
    * The properties in this property attribute.
    *
-   * @memberof PropertyAttribute.prototype
    *
    * @type {Object<string, PropertyAttributeProperty>}
    * @readonly
@@ -123,7 +119,6 @@ class PropertyAttribute {
   /**
    * Extra user-defined properties.
    *
-   * @memberof PropertyAttribute.prototype
    *
    * @type {*}
    * @readonly
@@ -136,7 +131,6 @@ class PropertyAttribute {
   /**
    * An object containing extensions.
    *
-   * @memberof PropertyAttribute.prototype
    *
    * @type {object}
    * @readonly

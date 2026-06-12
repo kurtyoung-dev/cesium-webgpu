@@ -1,6 +1,4 @@
 /**
- * @module WGSLShaderBuilder
- *
  * Programmatic WGSL shader construction — the WebGPU equivalent of
  * ShaderBuilder.js for GLSL. Used by the Model/glTF pipeline and
  * other systems that need to dynamically compose shader code.
@@ -38,6 +36,7 @@
  *   "return color;",
  * ]);
  * const wgslSource = builder.build();
+ * @module WGSLShaderBuilder
  */
 import defined from "../../Core/defined.js";
 

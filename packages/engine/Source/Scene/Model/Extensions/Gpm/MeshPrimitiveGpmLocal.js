@@ -14,7 +14,6 @@ class MeshPrimitiveGpmLocal {
   /**
    * An array of ppe textures.
    *
-   * @memberof MeshPrimitiveGpmLocal.prototype
    * @type {PpeTexture[]|undefined}
    * @readonly
    */

@@ -649,7 +649,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the scene to control.
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Scene}
    */
@@ -659,7 +658,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the container of the PerformanceDisplay
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Element}
    */
@@ -669,7 +667,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to toggle the visibility of the drop down.
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -679,7 +676,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to toggle the visibility of a BoundingSphere for a primitive
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -689,7 +685,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to toggle the visibility of a {@link DebugModelMatrixPrimitive} for the model matrix of a primitive
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -699,7 +694,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to toggle a filter that renders only a selected primitive
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -709,7 +703,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to increment the depth frustum index to be shown
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -719,7 +712,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to decrement the depth frustum index to be shown
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -729,7 +721,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to toggle the visibility of tile coordinates
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -739,7 +730,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to toggle the visibility of a BoundingSphere for a selected tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -749,7 +739,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to toggle a filter that renders only a selected tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -759,7 +748,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to expand and collapse the general section
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -769,7 +757,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to expand and collapse the primitives section
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -779,7 +766,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to expand and collapse the terrain section
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -789,7 +775,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to pick a primitive
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -799,7 +784,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to pick a tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -809,7 +793,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to pick a tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -822,7 +805,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to pick a tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -835,7 +817,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to pick a tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -848,7 +829,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to pick a tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -861,7 +841,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets the command to pick a tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -874,7 +853,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets or sets the current selected primitive
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -882,12 +860,6 @@ class CesiumInspectorViewModel {
     return this._primitive;
   }
 
-  /**
-   * Gets or sets the current selected primitive
-   * @memberof CesiumInspectorViewModel.prototype
-   *
-   * @type {Command}
-   */
   set primitive(newPrimitive) {
     const oldPrimitive = this._primitive;
     if (newPrimitive !== oldPrimitive) {
@@ -913,7 +885,6 @@ class CesiumInspectorViewModel {
 
   /**
    * Gets or sets the current selected tile
-   * @memberof CesiumInspectorViewModel.prototype
    *
    * @type {Command}
    */
@@ -921,12 +892,6 @@ class CesiumInspectorViewModel {
     return this._tile;
   }
 
-  /**
-   * Gets or sets the current selected tile
-   * @memberof CesiumInspectorViewModel.prototype
-   *
-   * @type {Command}
-   */
   set tile(newTile) {
     if (defined(newTile)) {
       this.hasPickedTile = true;

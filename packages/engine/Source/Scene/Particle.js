@@ -125,7 +125,6 @@ class Particle {
 
   /**
    * Gets the age of the particle in seconds.
-   * @memberof Particle.prototype
    * @type {number}
    */
   get age() {
@@ -134,7 +133,6 @@ class Particle {
 
   /**
    * Gets the age normalized to a value in the range [0.0, 1.0].
-   * @memberof Particle.prototype
    * @type {number}
    */
   get normalizedAge() {

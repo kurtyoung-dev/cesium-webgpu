@@ -1,6 +1,4 @@
 /**
- * @module RenderCommand
- *
  * ## Execution Model
  *
  * RenderCommand supports two execution modes:
@@ -21,6 +19,7 @@
  * eliminates these imports.
  *
  * @private
+ * @module RenderCommand
  */
 import Pass from "../Pass.js";
 import DrawCommand from "../DrawCommand.js";

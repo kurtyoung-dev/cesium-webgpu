@@ -1,6 +1,4 @@
 /**
- * @module WebGPUGlobeMaterial
- *
  * Cluster 3 — globe-material pipeline factory + UBO/texture wiring.
  * Bridges the parallel WGSL fabric API (`material.wgslShaderSource`
  * emitted by `MaterialHelpers.createWGSLMethodDefinition`) into the
@@ -36,6 +34,7 @@
  *     supports the single-material cases.
  *
  * @private
+ * @module WebGPUGlobeMaterial
  */
 /// <reference types="@webgpu/types" />
 

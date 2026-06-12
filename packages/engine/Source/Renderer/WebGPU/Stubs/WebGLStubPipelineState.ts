@@ -1,6 +1,4 @@
 /**
- * @module WebGLStubPipelineState
- *
  * WebGL pipeline state method stubs for the WebGPU compatibility layer.
  * Covers clear operations, viewport/scissor, enable/disable capabilities,
  * blend functions, depth functions, stencil operations, face culling,
@@ -8,6 +6,7 @@
  * and consumed when WebGPU pipelines or render passes are created.
  *
  * @see WebGLCompatibilityStub (nexus)
+ * @module WebGLStubPipelineState
  */
 
 /// <reference types="@webgpu/types" />

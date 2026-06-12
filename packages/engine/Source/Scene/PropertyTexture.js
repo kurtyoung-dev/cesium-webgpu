@@ -78,7 +78,6 @@ class PropertyTexture {
   /**
    * A human-readable name for this texture
    *
-   * @memberof PropertyTexture.prototype
    * @type {string}
    * @readonly
    * @private
@@ -90,7 +89,6 @@ class PropertyTexture {
   /**
    * An identifier for this texture. Useful for debugging.
    *
-   * @memberof PropertyTexture.prototype
    * @type {string|number}
    * @readonly
    * @private
@@ -102,7 +100,6 @@ class PropertyTexture {
   /**
    * The class that properties conform to.
    *
-   * @memberof PropertyTexture.prototype
    * @type {MetadataClass}
    * @readonly
    * @private
@@ -114,7 +111,6 @@ class PropertyTexture {
   /**
    * The properties in this property texture.
    *
-   * @memberof PropertyTexture.prototype
    *
    * @type {Object<string, PropertyTextureProperty>}
    * @readonly
@@ -127,7 +123,6 @@ class PropertyTexture {
   /**
    * Extra user-defined properties.
    *
-   * @memberof PropertyTexture.prototype
    * @type {*}
    * @readonly
    * @private
@@ -139,7 +134,6 @@ class PropertyTexture {
   /**
    * An object containing extensions.
    *
-   * @memberof PropertyTexture.prototype
    * @type {object}
    * @readonly
    * @private

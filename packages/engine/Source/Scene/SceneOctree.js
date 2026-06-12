@@ -263,7 +263,6 @@ class SceneOctree {
 
   /**
    * Per-frame octree statistics for profiling.
-   * @memberof SceneOctree.prototype
    * @type {object}
    * @readonly
    */
@@ -273,7 +272,6 @@ class SceneOctree {
 
   /**
    * Whether the octree has been built for the current frame.
-   * @memberof SceneOctree.prototype
    * @type {boolean}
    * @readonly
    */

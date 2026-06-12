@@ -395,7 +395,6 @@ class I3SGeometry {
 
   /**
    * Gets the resource for the geometry
-   * @memberof I3SGeometry.prototype
    * @type {Resource}
    * @readonly
    */
@@ -405,7 +404,6 @@ class I3SGeometry {
 
   /**
    * Gets the I3S data for this object.
-   * @memberof I3SGeometry.prototype
    * @type {object}
    * @readonly
    */
@@ -415,7 +413,6 @@ class I3SGeometry {
 
   /**
    * Gets the custom attributes of the geometry.
-   * @memberof I3SGeometry.prototype
    * @type {object}
    * @readonly
    */

@@ -65,7 +65,6 @@ class PropertyAttributeProperty {
   /**
    * The attribute semantic
    *
-   * @memberof PropertyAttributeProperty.prototype
    * @type {string}
    * @readonly
    * @private
@@ -78,7 +77,6 @@ class PropertyAttributeProperty {
    * True if offset/scale should be applied. If both offset/scale were
    * undefined, they default to identity so this property is set false
    *
-   * @memberof PropertyAttributeProperty.prototype
    * @type {boolean}
    * @readonly
    * @private
@@ -96,7 +94,6 @@ class PropertyAttributeProperty {
    * defined, and initialized to the default value if it was not contained
    * in the class property JSON.
    *
-   * @memberof PropertyAttributeProperty.prototype
    * @type {number|Cartesian2|Cartesian3|Cartesian4|Matrix2|Matrix3|Matrix4}
    * @readonly
    * @private
@@ -114,7 +111,6 @@ class PropertyAttributeProperty {
    * defined, and initialized to the default value if it was not contained
    * in the class property JSON.
    *
-   * @memberof PropertyAttributeProperty.prototype
    * @type {number|Cartesian2|Cartesian3|Cartesian4|Matrix2|Matrix3|Matrix4}
    * @readonly
    * @private
@@ -126,7 +122,6 @@ class PropertyAttributeProperty {
   /**
    * The properties inherited from this property's class
    *
-   * @memberof PropertyAttributeProperty.prototype
    * @type {MetadataClassProperty}
    * @readonly
    * @private
@@ -138,7 +133,6 @@ class PropertyAttributeProperty {
   /**
    * Extra user-defined properties.
    *
-   * @memberof PropertyAttributeProperty.prototype
    * @type {*}
    * @readonly
    * @private
@@ -150,7 +144,6 @@ class PropertyAttributeProperty {
   /**
    * An object containing extensions.
    *
-   * @memberof PropertyAttributeProperty.prototype
    * @type {*}
    * @readonly
    * @private

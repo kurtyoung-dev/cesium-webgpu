@@ -108,7 +108,6 @@ class ModelAnimationChannel {
   /**
    * The glTF animation channel.
    *
-   * @memberof ModelAnimationChannel.prototype
    *
    * @type {ModelComponents.AnimationChannel}
    * @readonly
@@ -122,7 +121,6 @@ class ModelAnimationChannel {
   /**
    * The runtime animation that owns this channel.
    *
-   * @memberof ModelAnimationChannel.prototype
    *
    * @type {ModelAnimation}
    * @readonly
@@ -136,7 +134,6 @@ class ModelAnimationChannel {
   /**
    * The runtime node that this channel animates.
    *
-   * @memberof ModelAnimationChannel.prototype
    *
    * @type {ModelRuntimeNode}
    * @readonly
@@ -150,7 +147,6 @@ class ModelAnimationChannel {
   /**
    * The splines used to evaluate this animation channel.
    *
-   * @memberof ModelAnimationChannel.prototype
    *
    * @type {Spline[]}
    * @readonly

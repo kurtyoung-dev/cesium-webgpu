@@ -28,7 +28,6 @@ class Cesium3DContentGroup {
   /**
    * Get the metadata for this group
    *
-   * @memberof Cesium3DContentGroup.prototype
    *
    * @type {GroupMetadata}
    *

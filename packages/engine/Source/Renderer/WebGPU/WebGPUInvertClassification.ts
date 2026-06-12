@@ -206,8 +206,8 @@ function updateWebGPUInvertClassification(
   // draw commands' color target compatible with the pipelines that
   // emitted them.
   const canvasFormat: GPUTextureFormat =
-    ((context as unknown as { _sceneColorFormat?: GPUTextureFormat })
-      ._sceneColorFormat ?? navigator.gpu.getPreferredCanvasFormat());
+    (context as unknown as { _sceneColorFormat?: GPUTextureFormat })
+      ._sceneColorFormat ?? navigator.gpu.getPreferredCanvasFormat();
   const width = context.drawingBufferWidth;
   const height = context.drawingBufferHeight;
   // numSamples is forwarded from FramebufferOrchestrator (which reads
@@ -537,8 +537,7 @@ function executeInvertClassificationComposite(
       colorAttachments: [
         {
           view: sceneColorAttachmentView!,
-          resolveTarget:
-            cache.sampleCount > 1 ? sceneResolveView : undefined,
+          resolveTarget: cache.sampleCount > 1 ? sceneResolveView : undefined,
           loadOp: "load" as GPULoadOp,
           storeOp: "store" as GPUStoreOp,
         },

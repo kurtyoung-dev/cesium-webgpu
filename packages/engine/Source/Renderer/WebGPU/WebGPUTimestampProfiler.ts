@@ -1,8 +1,6 @@
 /// <reference types="@webgpu/types" />
 import type { DebugStatsObject } from "../GraphicsContext.js";
 /**
- * @module WebGPUTimestampProfiler
- *
  * GPU-side performance profiling using WebGPU timestamp queries.
  * Requires the 'timestamp-query' device feature to be enabled.
  *
@@ -30,6 +28,7 @@ import type { DebugStatsObject } from "../GraphicsContext.js";
  * // Read results (async — results are from N frames ago):
  * const results = profiler.getResults();
  * console.log(results.passes.terrain?.avgMs);
+ * @module WebGPUTimestampProfiler
  */
 
 /**

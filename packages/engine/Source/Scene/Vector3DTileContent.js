@@ -209,7 +209,6 @@ class Vector3DTileContent {
   /**
    * Returns true when the tile's content is ready to render; otherwise false
    *
-   * @memberof Vector3DTileContent.prototype
    *
    * @type {boolean}
    * @readonly

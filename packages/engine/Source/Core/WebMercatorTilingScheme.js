@@ -242,7 +242,6 @@ class WebMercatorTilingScheme {
 
   /**
    * Gets the ellipsoid that is tiled by this tiling scheme.
-   * @memberof WebMercatorTilingScheme.prototype
    * @type {Ellipsoid}
    */
   get ellipsoid() {
@@ -251,7 +250,6 @@ class WebMercatorTilingScheme {
 
   /**
    * Gets the rectangle, in radians, covered by this tiling scheme.
-   * @memberof WebMercatorTilingScheme.prototype
    * @type {Rectangle}
    */
   get rectangle() {
@@ -260,7 +258,6 @@ class WebMercatorTilingScheme {
 
   /**
    * Gets the map projection used by this tiling scheme.
-   * @memberof WebMercatorTilingScheme.prototype
    * @type {MapProjection}
    */
   get projection() {

@@ -97,7 +97,6 @@ class VelocityOrientationProperty {
 
   /**
    * Gets a value indicating if this property is constant.
-   * @memberof VelocityOrientationProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -108,7 +107,6 @@ class VelocityOrientationProperty {
 
   /**
    * Gets the event that is raised whenever the definition of this property changes.
-   * @memberof VelocityOrientationProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -119,7 +117,6 @@ class VelocityOrientationProperty {
 
   /**
    * Gets or sets the position property used to compute orientation.
-   * @memberof VelocityOrientationProperty.prototype
    *
    * @type {Property|undefined}
    */
@@ -127,19 +124,12 @@ class VelocityOrientationProperty {
     return this._velocityVectorProperty.position;
   }
 
-  /**
-   * Gets or sets the position property used to compute orientation.
-   * @memberof VelocityOrientationProperty.prototype
-   *
-   * @type {Property|undefined}
-   */
   set position(value) {
     this._velocityVectorProperty.position = value;
   }
 
   /**
    * Gets or sets the ellipsoid used to determine which way is up.
-   * @memberof VelocityOrientationProperty.prototype
    *
    * @type {Property|undefined}
    */
@@ -147,12 +137,6 @@ class VelocityOrientationProperty {
     return this._ellipsoid;
   }
 
-  /**
-   * Gets or sets the ellipsoid used to determine which way is up.
-   * @memberof VelocityOrientationProperty.prototype
-   *
-   * @type {Property|undefined}
-   */
   set ellipsoid(value) {
     const oldValue = this._ellipsoid;
     if (oldValue !== value) {

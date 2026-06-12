@@ -85,7 +85,6 @@ class VoxelCell {
   /**
    * Gets an object of the metadata values for this cell. The object's keys are the metadata names.
    *
-   * @memberof VoxelCell.prototype
    *
    * @type {object}
    *
@@ -100,7 +99,6 @@ class VoxelCell {
    * All objects returned by {@link Scene#pick} have a <code>primitive</code> property. This returns
    * the VoxelPrimitive containing the cell.
    *
-   * @memberof VoxelCell.prototype
    *
    * @type {VoxelPrimitive}
    *
@@ -113,7 +111,6 @@ class VoxelCell {
   /**
    * Get the sample index of the cell.
    *
-   * @memberof VoxelCell.prototype
    *
    * @type {number}
    *
@@ -126,7 +123,6 @@ class VoxelCell {
   /**
    * Get the index of the tile containing the cell.
    *
-   * @memberof VoxelCell.prototype
    *
    * @type {number}
    *
@@ -139,7 +135,6 @@ class VoxelCell {
   /**
    * Get a copy of the oriented bounding box containing the cell.
    *
-   * @memberof VoxelCell.prototype
    *
    * @type {OrientedBoundingBox}
    *

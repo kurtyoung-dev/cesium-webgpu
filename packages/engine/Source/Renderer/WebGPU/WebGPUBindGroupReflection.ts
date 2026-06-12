@@ -1,6 +1,4 @@
 /**
- * @module WebGPUBindGroupReflection
- *
  * Converts naga's `validate_wgsl` reflection JSON into
  * `GPUBindGroupLayoutDescriptor`s. Closes the loop on the Naga spike:
  * with this helper, a stub consumer that translates GLSL→WGSL can
@@ -26,6 +24,7 @@
  * The function returns one descriptor per DECLARED group (sparse
  * groups are skipped — if your shader uses group 0 and group 2, you
  * get two descriptors keyed on 0 and 2, not three with an empty 1).
+ * @module WebGPUBindGroupReflection
  */
 
 /// <reference types="@webgpu/types" />

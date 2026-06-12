@@ -349,7 +349,6 @@ class I3SLayer {
 
   /**
    * Gets the resource for the layer.
-   * @memberof I3SLayer.prototype
    * @type {Resource}
    * @readonly
    */
@@ -359,7 +358,6 @@ class I3SLayer {
 
   /**
    * Gets the root node of this layer.
-   * @memberof I3SLayer.prototype
    * @type {I3SNode}
    * @readonly
    */
@@ -369,7 +367,6 @@ class I3SLayer {
 
   /**
    * Gets the Cesium3DTileset for this layer.
-   * @memberof I3SLayer.prototype
    * @type {Cesium3DTileset|undefined}
    * @readonly
    */
@@ -379,7 +376,6 @@ class I3SLayer {
 
   /**
    * Gets the I3S data for this object.
-   * @memberof I3SLayer.prototype
    * @type {object}
    * @readonly
    */
@@ -389,7 +385,6 @@ class I3SLayer {
 
   /**
    * The version string of the loaded I3S dataset
-   * @memberof I3SLayer.prototype
    * @type {string}
    * @readonly
    */
@@ -399,7 +394,6 @@ class I3SLayer {
 
   /**
    * The major version number of the loaded I3S dataset
-   * @memberof I3SLayer.prototype
    * @type {number}
    * @readonly
    */
@@ -409,7 +403,6 @@ class I3SLayer {
 
   /**
    * The minor version number of the loaded I3S dataset
-   * @memberof I3SLayer.prototype
    * @type {number}
    * @readonly
    */
@@ -419,7 +412,6 @@ class I3SLayer {
 
   /**
    * When <code>true</code>, when the loaded I3S version is 1.6 or older
-   * @memberof I3SLayer.prototype
    * @type {boolean}
    * @readonly
    */

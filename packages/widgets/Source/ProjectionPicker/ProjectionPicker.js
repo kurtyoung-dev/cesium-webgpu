@@ -152,7 +152,6 @@ class ProjectionPicker {
 
   /**
    * Gets the parent container.
-   * @memberof ProjectionPicker.prototype
    *
    * @type {Element}
    */
@@ -162,7 +161,6 @@ class ProjectionPicker {
 
   /**
    * Gets the view model.
-   * @memberof ProjectionPicker.prototype
    *
    * @type {ProjectionPickerViewModel}
    */

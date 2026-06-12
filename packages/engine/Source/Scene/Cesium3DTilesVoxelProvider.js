@@ -204,7 +204,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * A transform from local space to global space.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {Matrix4}
    * @default Matrix4.IDENTITY
    * @readonly
@@ -216,7 +215,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * A transform from shape space to local space.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {Matrix4}
    * @default Matrix4.IDENTITY
    * @readonly
@@ -228,7 +226,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the {@link VoxelShapeType}
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {VoxelShapeType}
    * @readonly
    */
@@ -240,7 +237,6 @@ class Cesium3DTilesVoxelProvider {
    * Gets the minimum bounds.
    * If undefined, the shape's default minimum bounds will be used instead.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {Cartesian3|undefined}
    * @readonly
    */
@@ -252,7 +248,6 @@ class Cesium3DTilesVoxelProvider {
    * Gets the maximum bounds.
    * If undefined, the shape's default maximum bounds will be used instead.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {Cartesian3|undefined}
    * @readonly
    */
@@ -263,7 +258,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the number of voxels per dimension of a tile. This is the same for all tiles in the dataset.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {Cartesian3}
    * @readonly
    */
@@ -274,7 +268,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the number of padding voxels before the tile. This improves rendering quality when sampling the edge of a tile, but it increases memory usage.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {Cartesian3}
    * @default Cartesian3.ZERO
    * @readonly
@@ -286,7 +279,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the number of padding voxels after the tile. This improves rendering quality when sampling the edge of a tile, but it increases memory usage.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {Cartesian3}
    * @default Cartesian3.ZERO
    * @readonly
@@ -298,7 +290,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * The metadata class for this tileset.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {string}
    * @readonly
    */
@@ -309,7 +300,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the metadata names.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {string[]}
    * @readonly
    */
@@ -320,7 +310,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the metadata types.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {MetadataType[]}
    * @readonly
    */
@@ -331,7 +320,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the metadata component types.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {MetadataComponentType[]}
    * @readonly
    */
@@ -342,7 +330,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the ordering of the metadata in the buffers.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {VoxelMetadataOrder}
    * @readonly
    * @private
@@ -354,7 +341,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the metadata minimum values.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {number[][]|undefined}
    * @readonly
    */
@@ -365,7 +351,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * Gets the metadata maximum values.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {number[][]|undefined}
    * @readonly
    */
@@ -378,7 +363,6 @@ class Cesium3DTilesVoxelProvider {
    * This value is used as a hint to the voxel renderer to allocate an appropriate amount of GPU memory.
    * If this value is not known it can be undefined.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {number|undefined}
    * @readonly
    */
@@ -389,7 +373,6 @@ class Cesium3DTilesVoxelProvider {
   /**
    * The number of levels of detail containing available tiles in the tileset.
    *
-   * @memberof Cesium3DTilesVoxelProvider.prototype
    * @type {number|undefined}
    * @readonly
    */

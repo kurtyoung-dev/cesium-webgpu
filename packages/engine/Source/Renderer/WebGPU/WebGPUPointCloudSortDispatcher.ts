@@ -8,8 +8,6 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 
 /**
- * @module WebGPUPointCloudSortDispatcher
- *
  * Phase 3 activation wrapper around the PointCloudSort.wgsl bitonic
  * merge sort. Provides a self-contained dispatcher that the consumer
  * (point cloud collection / 3D Tiles point primitive) can call without
@@ -40,6 +38,7 @@ import {
  * `WebGPUPerformanceManager.shouldUseGPUPointCloud(count)`.
  *
  * @private
+ * @module WebGPUPointCloudSortDispatcher
  */
 
 const SORT_PARAMS_BYTES = 16; // 4 × u32

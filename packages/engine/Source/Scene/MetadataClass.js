@@ -55,7 +55,6 @@ class MetadataClass {
   /**
    * The class properties.
    *
-   * @memberof MetadataClass.prototype
    * @type {Object<string, MetadataClassProperty>}
    * @readonly
    */
@@ -66,7 +65,6 @@ class MetadataClass {
   /**
    * A dictionary mapping semantics to class properties.
    *
-   * @memberof MetadataClass.prototype
    * @type {Object<string, MetadataClassProperty>}
    * @readonly
    *
@@ -79,7 +77,6 @@ class MetadataClass {
   /**
    * The ID of the class.
    *
-   * @memberof MetadataClass.prototype
    * @type {string}
    * @readonly
    */
@@ -90,7 +87,6 @@ class MetadataClass {
   /**
    * The name of the class.
    *
-   * @memberof MetadataClass.prototype
    * @type {string}
    * @readonly
    */
@@ -101,7 +97,6 @@ class MetadataClass {
   /**
    * The description of the class.
    *
-   * @memberof MetadataClass.prototype
    * @type {string}
    * @readonly
    */
@@ -112,7 +107,6 @@ class MetadataClass {
   /**
    * Extra user-defined properties.
    *
-   * @memberof MetadataClass.prototype
    * @type {*}
    * @readonly
    */
@@ -123,7 +117,6 @@ class MetadataClass {
   /**
    * An object containing extensions.
    *
-   * @memberof MetadataClass.prototype
    * @type {object}
    * @readonly
    */

@@ -168,7 +168,6 @@ class SpecularEnvironmentCubeMap {
 
   /**
    * The url to the KTX2 file containing the specular environment map and convoluted mipmaps.
-   * @memberof SpecularEnvironmentCubeMap.prototype
    * @type {string}
    * @readonly
    */
@@ -179,7 +178,6 @@ class SpecularEnvironmentCubeMap {
   /**
    * Gets an event that is raised when encountering an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.
-   * @memberof SpecularEnvironmentCubeMap.prototype
    * @type {Event}
    * @readonly
    */
@@ -189,7 +187,6 @@ class SpecularEnvironmentCubeMap {
 
   /**
    * A texture containing all the packed convolutions.
-   * @memberof SpecularEnvironmentCubeMap.prototype
    * @type {Texture}
    * @readonly
    */
@@ -212,7 +209,6 @@ class SpecularEnvironmentCubeMap {
 
   /**
    * Determines if the cube map is complete and ready to use.
-   * @memberof SpecularEnvironmentCubeMap.prototype
    * @type {boolean}
    * @readonly
    */

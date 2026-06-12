@@ -3835,19 +3835,12 @@ class KmlDataSource {
   /**
    * Gets or sets a human-readable name for this instance.
    * This will be automatically be set to the KML document name on load.
-   * @memberof KmlDataSource.prototype
    * @type {string}
    */
   get name() {
     return this._name;
   }
 
-  /**
-   * Gets or sets a human-readable name for this instance.
-   * This will be automatically be set to the KML document name on load.
-   * @memberof KmlDataSource.prototype
-   * @type {string}
-   */
   set name(value) {
     if (this._name !== value) {
       this._name = value;
@@ -3859,7 +3852,6 @@ class KmlDataSource {
    * Gets the clock settings defined by the loaded KML. This represents the total
    * availability interval for all time-dynamic data. If the KML does not contain
    * time-dynamic data, this value is undefined.
-   * @memberof KmlDataSource.prototype
    * @type {DataSourceClock}
    */
   get clock() {
@@ -3868,7 +3860,6 @@ class KmlDataSource {
 
   /**
    * Gets the collection of {@link Entity} instances.
-   * @memberof KmlDataSource.prototype
    * @type {EntityCollection}
    */
   get entities() {
@@ -3877,7 +3868,6 @@ class KmlDataSource {
 
   /**
    * Gets a value indicating if the data source is currently loading data.
-   * @memberof KmlDataSource.prototype
    * @type {boolean}
    */
   get isLoading() {
@@ -3886,7 +3876,6 @@ class KmlDataSource {
 
   /**
    * Gets an event that will be raised when the underlying data changes.
-   * @memberof KmlDataSource.prototype
    * @type {Event}
    */
   get changedEvent() {
@@ -3895,7 +3884,6 @@ class KmlDataSource {
 
   /**
    * Gets an event that will be raised if an error is encountered during processing.
-   * @memberof KmlDataSource.prototype
    * @type {Event}
    */
   get errorEvent() {
@@ -3904,7 +3892,6 @@ class KmlDataSource {
 
   /**
    * Gets an event that will be raised when the data source either starts or stops loading.
-   * @memberof KmlDataSource.prototype
    * @type {Event}
    */
   get loadingEvent() {
@@ -3913,7 +3900,6 @@ class KmlDataSource {
 
   /**
    * Gets an event that will be raised when the data source refreshes a network link.
-   * @memberof KmlDataSource.prototype
    * @type {Event}
    */
   get refreshEvent() {
@@ -3922,7 +3908,6 @@ class KmlDataSource {
 
   /**
    * Gets an event that will be raised when the data source finds an unsupported node type.
-   * @memberof KmlDataSource.prototype
    * @type {Event}
    */
   get unsupportedNodeEvent() {
@@ -3931,18 +3916,12 @@ class KmlDataSource {
 
   /**
    * Gets whether or not this data source should be displayed.
-   * @memberof KmlDataSource.prototype
    * @type {boolean}
    */
   get show() {
     return this._entityCollection.show;
   }
 
-  /**
-   * Gets whether or not this data source should be displayed.
-   * @memberof KmlDataSource.prototype
-   * @type {boolean}
-   */
   set show(value) {
     this._entityCollection.show = value;
   }
@@ -3950,19 +3929,12 @@ class KmlDataSource {
   /**
    * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
    *
-   * @memberof KmlDataSource.prototype
    * @type {EntityCluster}
    */
   get clustering() {
     return this._entityCluster;
   }
 
-  /**
-   * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
-   *
-   * @memberof KmlDataSource.prototype
-   * @type {EntityCluster}
-   */
   set clustering(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -3974,7 +3946,6 @@ class KmlDataSource {
 
   /**
    * Gets the credit that will be displayed for the data source
-   * @memberof KmlDataSource.prototype
    * @type {Credit}
    */
   get credit() {
@@ -3983,7 +3954,6 @@ class KmlDataSource {
 
   /**
    * Gets the KML Tours that are used to guide the camera to specified destinations on given time intervals.
-   * @memberof KmlDataSource.prototype
    * @type {KmlTour[]}
    */
   get kmlTours() {

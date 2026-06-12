@@ -200,7 +200,6 @@ class ModelStatistics {
    * Batch textures are created asynchronously, so this iterates
    * over the textures to ensure their memory values are accurate.
    *
-   * @memberof ModelStatistics.prototype
    *
    * @type {number}
    * @readonly

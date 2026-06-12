@@ -1,6 +1,4 @@
 /**
- * @module WebGPUF16Utils
- *
  * Half-precision (f16) shader and data utilities.
  * Requires the 'shader-f16' device feature to be enabled.
  *
@@ -19,6 +17,7 @@
  *   // Upload normals as uint16 vertex buffer
  *   // In WGSL: enable f16; @location(N) normal: vec3<f16>
  * }
+ * @module WebGPUF16Utils
  */
 
 /// <reference types="@webgpu/types" />

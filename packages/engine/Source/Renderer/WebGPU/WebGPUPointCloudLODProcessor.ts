@@ -1,6 +1,4 @@
 /**
- * @module WebGPUPointCloudLODProcessor
- *
  * GPU compute processor that filters a large point cloud down to a
  * compacted list of currently-visible points. Replaces per-frame CPU
  * iteration across millions of points with a single compute dispatch
@@ -77,6 +75,7 @@
  * @see PointCloudLOD.wgsl (shader source)
  * @see WebGPUGPUCuller (same subgroup preprocessor pattern)
  * @see Cesium3DTile.getScreenSpaceError (tile-level LOD, complementary)
+ * @module WebGPUPointCloudLODProcessor
  */
 
 /// <reference types="@webgpu/types" />

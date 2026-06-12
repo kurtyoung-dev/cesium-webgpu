@@ -302,7 +302,6 @@ class ModelRuntimeNode {
   /**
    * The internal node this runtime node represents.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {ModelComponents.Node}
    * @readonly
    *
@@ -315,7 +314,6 @@ class ModelRuntimeNode {
   /**
    * The scene graph this node belongs to.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {ModelSceneGraph}
    * @readonly
    *
@@ -328,7 +326,6 @@ class ModelRuntimeNode {
   /**
    * The indices of the children of this node in the scene graph.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {number[]}
    * @readonly
    *
@@ -343,7 +340,6 @@ class ModelRuntimeNode {
    * the corresponding {@link ModelNode}, such that animation can be
    * driven by another source, not just an animation in the model's asset.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {Matrix4}
    *
    * @private
@@ -352,16 +348,6 @@ class ModelRuntimeNode {
     return this._transform;
   }
 
-  /**
-   * The node's local space transform. This can be changed externally via
-   * the corresponding {@link ModelNode}, such that animation can be
-   * driven by another source, not just an animation in the model's asset.
-   *
-   * @memberof ModelRuntimeNode.prototype
-   * @type {Matrix4}
-   *
-   * @private
-   */
   set transform(value) {
     this._transformDirty = true;
     this._transform = Matrix4.clone(value, this._transform);
@@ -373,7 +359,6 @@ class ModelRuntimeNode {
    *
    * @see ModelRuntimeNode#computedTransform
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {Matrix4}
    * @readonly
    *
@@ -387,7 +372,6 @@ class ModelRuntimeNode {
    * A transform from the node's local space to the model's scene graph space.
    * This is the product of transformToRoot * transform.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {Matrix4}
    * @readonly
    *
@@ -401,7 +385,6 @@ class ModelRuntimeNode {
    * The node's original transform, as specified in the model.
    * Does not include transformations from the node's ancestors.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {Matrix4}
    * @readonly
    *
@@ -418,7 +401,6 @@ class ModelRuntimeNode {
    * If the node's transformation was originally described using a matrix
    * in the model, then this will return undefined.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {Cartesian3}
    *
    * @exception {DeveloperError} The translation of a node cannot be set if it was defined using a matrix in the model's asset.
@@ -431,20 +413,6 @@ class ModelRuntimeNode {
       : undefined;
   }
 
-  /**
-   * The node's local space translation. This is used internally to allow
-   * animations in the model's asset to affect the node's properties.
-   *
-   * If the node's transformation was originally described using a matrix
-   * in the model, then this will return undefined.
-   *
-   * @memberof ModelRuntimeNode.prototype
-   * @type {Cartesian3}
-   *
-   * @exception {DeveloperError} The translation of a node cannot be set if it was defined using a matrix in the model's asset.
-   *
-   * @private
-   */
   set translation(value) {
     const transformParameters = this._transformParameters;
     //>>includeStart('debug', pragmas.debug);
@@ -475,7 +443,6 @@ class ModelRuntimeNode {
    * If the node's transformation was originally described using a matrix
    * in the model, then this will return undefined.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {Quaternion}
    *
    * @exception {DeveloperError} The rotation of a node cannot be set if it was defined using a matrix in the model's asset.
@@ -488,20 +455,6 @@ class ModelRuntimeNode {
       : undefined;
   }
 
-  /**
-   * The node's local space rotation. This is used internally to allow
-   * animations in the model's asset to affect the node's properties.
-   *
-   * If the node's transformation was originally described using a matrix
-   * in the model, then this will return undefined.
-   *
-   * @memberof ModelRuntimeNode.prototype
-   * @type {Quaternion}
-   *
-   * @exception {DeveloperError} The rotation of a node cannot be set if it was defined using a matrix in the model's asset.
-   *
-   * @private
-   */
   set rotation(value) {
     const transformParameters = this._transformParameters;
     //>>includeStart('debug', pragmas.debug);
@@ -532,7 +485,6 @@ class ModelRuntimeNode {
    * If the node's transformation was originally described using a matrix
    * in the model, then this will return undefined.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {Cartesian3}
    *
    * @exception {DeveloperError} The scale of a node cannot be set if it was defined using a matrix in the model's asset.
@@ -544,19 +496,6 @@ class ModelRuntimeNode {
       : undefined;
   }
 
-  /**
-   * The node's local space scale. This is used internally to allow
-   * animations in the model's asset to affect the node's properties.
-   *
-   * If the node's transformation was originally described using a matrix
-   * in the model, then this will return undefined.
-   *
-   * @memberof ModelRuntimeNode.prototype
-   * @type {Cartesian3}
-   *
-   * @exception {DeveloperError} The scale of a node cannot be set if it was defined using a matrix in the model's asset.
-   * @private
-   */
   set scale(value) {
     const transformParameters = this._transformParameters;
     //>>includeStart('debug', pragmas.debug);
@@ -583,7 +522,6 @@ class ModelRuntimeNode {
    * The node's morph weights. This is used internally to allow animations
    * in the model's asset to affect the node's properties.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {number[]}
    *
    * @private
@@ -592,15 +530,6 @@ class ModelRuntimeNode {
     return this._morphWeights;
   }
 
-  /**
-   * The node's morph weights. This is used internally to allow animations
-   * in the model's asset to affect the node's properties.
-   *
-   * @memberof ModelRuntimeNode.prototype
-   * @type {number[]}
-   *
-   * @private
-   */
   set morphWeights(value) {
     const valueLength = value.length;
     //>>includeStart('debug', pragmas.debug);
@@ -618,7 +547,6 @@ class ModelRuntimeNode {
   /**
    * The skin applied to this node, if it exists.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {ModelSkin}
    * @readonly
    *
@@ -631,7 +559,6 @@ class ModelRuntimeNode {
   /**
    * The computed joint matrices of this node, derived from its skin.
    *
-   * @memberof ModelRuntimeNode.prototype
    * @type {Matrix4[]}
    * @readonly
    *

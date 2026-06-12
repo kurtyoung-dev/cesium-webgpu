@@ -1284,7 +1284,6 @@ class Cesium3DTile {
   /**
    * The tileset containing this tile.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {Cesium3DTileset}
    * @readonly
@@ -1297,7 +1296,6 @@ class Cesium3DTile {
    * The tile's content.  This represents the actual tile's payload,
    * not the content's metadata in the tileset JSON file.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {Cesium3DTileContent}
    * @readonly
@@ -1309,7 +1307,6 @@ class Cesium3DTile {
   /**
    * Get the tile's bounding volume.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {TileBoundingVolume}
    * @readonly
@@ -1324,7 +1321,6 @@ class Cesium3DTile {
    * tile's bounding volume when the content's bounding volume is
    * <code>undefined</code>.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {TileBoundingVolume}
    * @readonly
@@ -1337,7 +1333,6 @@ class Cesium3DTile {
   /**
    * Get the bounding sphere derived from the tile's bounding volume.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {BoundingSphere}
    * @readonly
@@ -1349,7 +1344,6 @@ class Cesium3DTile {
   /**
    * Determines if the tile is visible within the current field of view
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1364,7 +1358,6 @@ class Cesium3DTile {
    * Returns the <code>extras</code> property in the tileset JSON for this tile, which contains application specific metadata.
    * Returns <code>undefined</code> if <code>extras</code> does not exist.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {object}
    * @readonly
@@ -1377,7 +1370,6 @@ class Cesium3DTile {
   /**
    * Gets or sets the tile's highlight color.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {Color}
    *
@@ -1392,17 +1384,6 @@ class Cesium3DTile {
     return Color.clone(this._color);
   }
 
-  /**
-   * Gets or sets the tile's highlight color.
-   *
-   * @memberof Cesium3DTile.prototype
-   *
-   * @type {Color}
-   *
-   * @default {@link Color.WHITE}
-   *
-   * @private
-   */
   set color(value) {
     this._color = Color.clone(value, this._color);
     this._colorDirty = true;
@@ -1413,7 +1394,6 @@ class Cesium3DTile {
    * content is ready or if it has expired content that renders while new content loads; otherwise,
    * <code>false</code>.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1431,7 +1411,6 @@ class Cesium3DTile {
    * Determines if the tile's content is ready. This is automatically <code>true</code> for
    * tile's with empty content.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1446,7 +1425,6 @@ class Cesium3DTile {
    * Determines if the tile's content has not be requested. <code>true</code> if tile's
    * content has not be requested; otherwise, <code>false</code>.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1460,7 +1438,6 @@ class Cesium3DTile {
   /**
    * Determines if the tile has renderable content which is unloaded
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1475,7 +1452,6 @@ class Cesium3DTile {
    * Determines if the tile's content is expired. <code>true</code> if tile's
    * content is expired; otherwise, <code>false</code>.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {boolean}
    * @readonly
@@ -1490,7 +1466,6 @@ class Cesium3DTile {
    * Determines if the tile's content failed to load.  <code>true</code> if the tile's
    * content failed to load; otherwise, <code>false</code>.
    *
-   * @memberof Cesium3DTile.prototype
    *
    * @type {boolean}
    * @readonly

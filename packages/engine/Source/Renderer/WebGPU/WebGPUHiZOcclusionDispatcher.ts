@@ -1,7 +1,5 @@
 /// <reference types="@webgpu/types" />
 /**
- * @module WebGPUHiZOcclusionDispatcher
- *
  * Phase 3 activation wrapper for the HiZPyramid + OcclusionTest compute
  * shaders. Owns the GPU resources that the pair of shaders needs:
  *
@@ -36,6 +34,7 @@
  * step (tracked in the backlog).
  *
  * @private
+ * @module WebGPUHiZOcclusionDispatcher
  */
 
 /**

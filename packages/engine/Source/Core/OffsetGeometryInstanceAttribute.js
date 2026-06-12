@@ -35,7 +35,6 @@ class OffsetGeometryInstanceAttribute {
    * The datatype of each component in the attribute, e.g., individual elements in
    * {@link OffsetGeometryInstanceAttribute#value}.
    *
-   * @memberof OffsetGeometryInstanceAttribute.prototype
    *
    * @type {ComponentDatatype}
    * @readonly
@@ -49,7 +48,6 @@ class OffsetGeometryInstanceAttribute {
   /**
    * The number of components in the attributes, i.e., {@link OffsetGeometryInstanceAttribute#value}.
    *
-   * @memberof OffsetGeometryInstanceAttribute.prototype
    *
    * @type {number}
    * @readonly
@@ -65,7 +63,6 @@ class OffsetGeometryInstanceAttribute {
    * indicate that the components should be mapped to the range [0, 1] (unsigned)
    * or [-1, 1] (signed) when they are accessed as floating-point for rendering.
    *
-   * @memberof OffsetGeometryInstanceAttribute.prototype
    *
    * @type {boolean}
    * @readonly

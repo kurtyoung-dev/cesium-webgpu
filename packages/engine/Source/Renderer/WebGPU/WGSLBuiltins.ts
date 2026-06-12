@@ -1,6 +1,4 @@
 /**
- * @module WGSLBuiltins
- *
  * Built-in WGSL shader chunks for CesiumJS WebGPU.
  * This module registers all default shader chunks with the WGSLShaderLibrary,
  * analogous to CzmBuiltins.js for the GLSL shader system.
@@ -30,6 +28,7 @@
  * 3. The `.wgsl` files may include doc-comment headers (`/** ... *'/`) that are
  *    stripped by the preprocessor — this is fine and expected.
  * 4. A future build step may automate this sync (see WGSL_IMPORT_SYSTEM.md).
+ * @module WGSLBuiltins
  */
 
 import { WGSLShaderLibrary } from "./WGSLShaderPreprocessor.js";

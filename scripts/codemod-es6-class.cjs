@@ -24,6 +24,8 @@
  *   3. Spot-check a few files for correctness
  */
 
+"use strict";
+
 module.exports = function transformer(fileInfo, api) {
   const j = api.jscodeshift;
   const root = j(fileInfo.source);
@@ -34,7 +36,9 @@ module.exports = function transformer(fileInfo, api) {
 
   // Find `export default Foo;`
   const defaultExports = root.find(j.ExportDefaultDeclaration);
-  if (defaultExports.length === 0) return; // No default export → skip
+  if (defaultExports.length === 0) {
+    return;
+  } // No default export → skip
 
   const defaultExportNode = defaultExports.get().node;
   let className;
@@ -45,13 +49,17 @@ module.exports = function transformer(fileInfo, api) {
   }
 
   // Must start with uppercase (PascalCase constructor convention)
-  if (!/^[A-Z]/.test(className)) return;
+  if (!/^[A-Z]/.test(className)) {
+    return;
+  }
 
   // Find the constructor function
   const ctorDecls = root.find(j.FunctionDeclaration, {
     id: { name: className },
   });
-  if (ctorDecls.length !== 1) return; // 0 or multiple → skip
+  if (ctorDecls.length !== 1) {
+    return;
+  } // 0 or multiple → skip
 
   const ctorPath = ctorDecls.get();
   const ctorNode = ctorPath.node;
@@ -64,11 +72,12 @@ module.exports = function transformer(fileInfo, api) {
   }
 
   // Already a class? Skip.
-  if (source.includes(`class ${className}`)) return;
+  if (source.includes(`class ${className}`)) {
+    return;
+  }
 
   // ── Step 1: Extract prototype methods ────────────────────────────────
   const methods = [];
-  const statics = [];
   const nodesToRemove = [];
 
   // Pattern: Foo.prototype.methodName = function(...) { ... };
@@ -129,7 +138,9 @@ module.exports = function transformer(fileInfo, api) {
     })
     .forEach((path) => {
       const args = path.node.expression.arguments;
-      if (args.length < 2) return;
+      if (args.length < 2) {
+        return;
+      }
 
       // Check it's on Foo.prototype
       const target = args[0];
@@ -142,20 +153,30 @@ module.exports = function transformer(fileInfo, api) {
       }
 
       const props = args[1];
-      if (props.type !== "ObjectExpression") return;
+      if (props.type !== "ObjectExpression") {
+        return;
+      }
 
       // Leading comment for the whole defineProperties block
       const blockComments = path.node.leadingComments || [];
 
       props.properties.forEach((prop, idx) => {
-        if (prop.type !== "Property") return;
+        if (prop.type !== "Property") {
+          return;
+        }
         const propName = prop.key.name || prop.key.value;
-        if (!prop.value || prop.value.type !== "ObjectExpression") return;
+        if (!prop.value || prop.value.type !== "ObjectExpression") {
+          return;
+        }
 
         prop.value.properties.forEach((accessor) => {
-          if (accessor.type !== "Property") return;
+          if (accessor.type !== "Property") {
+            return;
+          }
           const kind = accessor.key.name; // "get" or "set"
-          if (kind !== "get" && kind !== "set") return;
+          if (kind !== "get" && kind !== "set") {
+            return;
+          }
           const fn = accessor.value;
           if (
             fn.type !== "FunctionExpression" &&
@@ -210,7 +231,9 @@ module.exports = function transformer(fileInfo, api) {
       const propName = prop.name || prop.value;
 
       // Skip Foo.prototype (already handled above)
-      if (propName === "prototype") return;
+      if (propName === "prototype") {
+        return;
+      }
 
       // Keep static assignments outside the class — they're often
       // Foo.CONSTANT = Object.freeze(...) or Foo.pack = function(...)

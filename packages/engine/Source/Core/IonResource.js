@@ -139,7 +139,6 @@ class IonResource extends Resource {
   /**
    * Gets the credits required for attribution of the asset.
    *
-   * @memberof IonResource.prototype
    * @type {Credit[]}
    * @readonly
    */

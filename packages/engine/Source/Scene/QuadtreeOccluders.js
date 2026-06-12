@@ -22,7 +22,6 @@ class QuadtreeOccluders {
    * Gets the {@link EllipsoidalOccluder} that can be used to determine if a point is
    * occluded by an {@link Ellipsoid}.
    * @type {EllipsoidalOccluder}
-   * @memberof QuadtreeOccluders.prototype
    */
   get ellipsoid() {
     return this._ellipsoid;

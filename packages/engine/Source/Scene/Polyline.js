@@ -191,19 +191,12 @@ class Polyline {
   /**
    * Determines if this polyline will be shown.  Use this to hide or show a polyline, instead
    * of removing it and re-adding it to the collection.
-   * @memberof Polyline.prototype
    * @type {boolean}
    */
   get show() {
     return this._show;
   }
 
-  /**
-   * Determines if this polyline will be shown.  Use this to hide or show a polyline, instead
-   * of removing it and re-adding it to the collection.
-   * @memberof Polyline.prototype
-   * @type {boolean}
-   */
   set show(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -219,7 +212,6 @@ class Polyline {
 
   /**
    * Gets or sets the positions of the polyline.
-   * @memberof Polyline.prototype
    * @type {Cartesian3[]}
    * @example
    * polyline.positions = Cesium.Cartesian3.fromDegreesArray([
@@ -232,17 +224,6 @@ class Polyline {
     return this._positions;
   }
 
-  /**
-   * Gets or sets the positions of the polyline.
-   * @memberof Polyline.prototype
-   * @type {Cartesian3[]}
-   * @example
-   * polyline.positions = Cesium.Cartesian3.fromDegreesArray([
-   *     0.0, 0.0,
-   *     10.0, 0.0,
-   *     0.0, 20.0
-   * ]);
-   */
   set positions(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(value)) {
@@ -286,19 +267,12 @@ class Polyline {
   /**
    * Gets or sets the surface appearance of the polyline.  This can be one of several built-in {@link Material} objects or a custom material, scripted with
    * {@link https://github.com/CesiumGS/cesium/wiki/Fabric|Fabric}.
-   * @memberof Polyline.prototype
    * @type {Material}
    */
   get material() {
     return this._material;
   }
 
-  /**
-   * Gets or sets the surface appearance of the polyline.  This can be one of several built-in {@link Material} objects or a custom material, scripted with
-   * {@link https://github.com/CesiumGS/cesium/wiki/Fabric|Fabric}.
-   * @memberof Polyline.prototype
-   * @type {Material}
-   */
   set material(material) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(material)) {
@@ -314,18 +288,12 @@ class Polyline {
 
   /**
    * Gets or sets the width of the polyline.
-   * @memberof Polyline.prototype
    * @type {number}
    */
   get width() {
     return this._width;
   }
 
-  /**
-   * Gets or sets the width of the polyline.
-   * @memberof Polyline.prototype
-   * @type {number}
-   */
   set width(value) {
     //>>includeStart('debug', pragmas.debug)
     if (!defined(value)) {
@@ -342,18 +310,12 @@ class Polyline {
 
   /**
    * Gets or sets whether a line segment will be added between the first and last polyline positions.
-   * @memberof Polyline.prototype
    * @type {boolean}
    */
   get loop() {
     return this._loop;
   }
 
-  /**
-   * Gets or sets whether a line segment will be added between the first and last polyline positions.
-   * @memberof Polyline.prototype
-   * @type {boolean}
-   */
   set loop(value) {
     //>>includeStart('debug', pragmas.debug)
     if (!defined(value)) {
@@ -391,18 +353,12 @@ class Polyline {
 
   /**
    * Gets or sets the user-defined value returned when the polyline is picked.
-   * @memberof Polyline.prototype
    * @type {*}
    */
   get id() {
     return this._id;
   }
 
-  /**
-   * Gets or sets the user-defined value returned when the polyline is picked.
-   * @memberof Polyline.prototype
-   * @type {*}
-   */
   set id(value) {
     this._id = value;
     if (defined(this._pickId)) {
@@ -419,7 +375,6 @@ class Polyline {
 
   /**
    * Gets the destruction status of this polyline
-   * @memberof Polyline.prototype
    * @type {boolean}
    * @default false
    * @private
@@ -430,7 +385,6 @@ class Polyline {
 
   /**
    * Gets or sets the condition specifying at what distance from the camera that this polyline will be displayed.
-   * @memberof Polyline.prototype
    * @type {DistanceDisplayCondition}
    * @default undefined
    */
@@ -438,12 +392,6 @@ class Polyline {
     return this._distanceDisplayCondition;
   }
 
-  /**
-   * Gets or sets the condition specifying at what distance from the camera that this polyline will be displayed.
-   * @memberof Polyline.prototype
-   * @type {DistanceDisplayCondition}
-   * @default undefined
-   */
   set distanceDisplayCondition(value) {
     //>>includeStart('debug', pragmas.debug);
     if (defined(value) && value.far <= value.near) {
@@ -467,7 +415,6 @@ class Polyline {
    * Gets or sets the distance from the camera at which to disable the depth
    * test to prevent clipping against terrain, e.g., to prevent clipping
    * against the edge of the Earth when looking at the horizon.
-   * @memberof Polyline.prototype
    * @type {number}
    * @default 0.0
    */
@@ -492,7 +439,6 @@ class Polyline {
   /**
    * Gets or sets the {@link SplitDirection} of this polyline. Controls which
    * side of `scene.splitPosition` the polyline is rendered on.
-   * @memberof Polyline.prototype
    * @type {SplitDirection}
    * @default SplitDirection.NONE
    */
@@ -514,8 +460,7 @@ const WIDTH_INDEX = (Polyline.WIDTH_INDEX = 2);
 const MATERIAL_INDEX = (Polyline.MATERIAL_INDEX = 3);
 const POSITION_SIZE_INDEX = (Polyline.POSITION_SIZE_INDEX = 4);
 const DISTANCE_DISPLAY_CONDITION = (Polyline.DISTANCE_DISPLAY_CONDITION = 5);
-const DISABLE_DEPTH_TEST_DISTANCE =
-  (Polyline.DISABLE_DEPTH_TEST_DISTANCE = 6);
+const DISABLE_DEPTH_TEST_DISTANCE = (Polyline.DISABLE_DEPTH_TEST_DISTANCE = 6);
 const SPLIT_DIRECTION = (Polyline.SPLIT_DIRECTION = 7);
 const NUMBER_OF_PROPERTIES = (Polyline.NUMBER_OF_PROPERTIES = 8);
 

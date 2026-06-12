@@ -8,8 +8,6 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 
 /**
- * @module WebGPUGPUSortKeysDispatcher
- *
  * Phase 3 activation wrapper for `GPUSortKeys.wgsl`. Owns the SOA
  * command metadata storage buffers (centerX/Y/Z + renderLayer +
  * sortPriority + materialSortId) and the packed output buffers
@@ -36,6 +34,7 @@ import {
  * is a separate step tracked in the backlog.
  *
  * @private
+ * @module WebGPUGPUSortKeysDispatcher
  */
 
 const SORT_KEY_PARAMS_BYTES = 32; // 8 × u32

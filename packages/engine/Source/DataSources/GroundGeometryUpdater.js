@@ -117,7 +117,6 @@ class GroundGeometryUpdater extends GeometryUpdater {
   /**
    * Gets the zindex
    * @type {number}
-   * @memberof GroundGeometryUpdater.prototype
    * @readonly
    */
   get zIndex() {
@@ -127,7 +126,6 @@ class GroundGeometryUpdater extends GeometryUpdater {
   /**
    * Gets the terrain offset property
    * @type {TerrainOffsetProperty}
-   * @memberof GroundGeometryUpdater.prototype
    * @readonly
    * @private
    */

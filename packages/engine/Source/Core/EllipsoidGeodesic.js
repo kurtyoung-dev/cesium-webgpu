@@ -432,7 +432,6 @@ class EllipsoidGeodesic {
 
   /**
    * Gets the ellipsoid.
-   * @memberof EllipsoidGeodesic.prototype
    * @type {Ellipsoid}
    * @readonly
    */
@@ -442,7 +441,6 @@ class EllipsoidGeodesic {
 
   /**
    * Gets the surface distance between the start and end point
-   * @memberof EllipsoidGeodesic.prototype
    * @type {number}
    * @readonly
    */
@@ -456,7 +454,6 @@ class EllipsoidGeodesic {
 
   /**
    * Gets the initial planetodetic point on the path.
-   * @memberof EllipsoidGeodesic.prototype
    * @type {Cartographic}
    * @readonly
    */
@@ -466,7 +463,6 @@ class EllipsoidGeodesic {
 
   /**
    * Gets the final planetodetic point on the path.
-   * @memberof EllipsoidGeodesic.prototype
    * @type {Cartographic}
    * @readonly
    */
@@ -476,7 +472,6 @@ class EllipsoidGeodesic {
 
   /**
    * Gets the heading at the initial point.
-   * @memberof EllipsoidGeodesic.prototype
    * @type {number}
    * @readonly
    */
@@ -490,7 +485,6 @@ class EllipsoidGeodesic {
 
   /**
    * Gets the heading at the final point.
-   * @memberof EllipsoidGeodesic.prototype
    * @type {number}
    * @readonly
    */

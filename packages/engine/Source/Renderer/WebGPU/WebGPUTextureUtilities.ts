@@ -1,6 +1,4 @@
 /**
- * @module WebGPUTextureUtilities
- *
  * Utility functions for texture operations in the WebGPU renderer:
  * default texture initialization, texture copy operations, and
  * texture creation from image sources.
@@ -10,6 +8,7 @@
  *
  * @see WebGPUContext
  * @see WebGPUTexture
+ * @module WebGPUTextureUtilities
  */
 
 /// <reference types="@webgpu/types" />

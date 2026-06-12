@@ -1,6 +1,4 @@
 /**
- * @module ContextFactory
- *
  * Factory for creating graphics contexts (WebGL or WebGPU).
  * This provides a unified entry point for context creation and handles
  * automatic renderer selection based on browser capabilities.
@@ -17,6 +15,7 @@
  * const context = await ContextFactory.createContext(canvas, {
  *   renderer: RendererType.WEBGL
  * });
+ * @module ContextFactory
  */
 
 import RendererType, {

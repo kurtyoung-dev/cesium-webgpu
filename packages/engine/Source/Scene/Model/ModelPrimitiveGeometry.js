@@ -1,6 +1,4 @@
 /**
- * @module ModelPrimitiveGeometry
- *
  * Renderer-agnostic geometry descriptor for glTF model primitives.
  * Extracts vertex attribute metadata and typed arrays from ModelRuntimePrimitive
  * render resources, so both WebGL and WebGPU renderers can consume them.
@@ -10,6 +8,7 @@
  * (renderer-specific: WebGL VertexArray vs WebGPU GPUBuffer).
  *
  * @private
+ * @module ModelPrimitiveGeometry
  */
 import defined from "../../Core/defined.js";
 

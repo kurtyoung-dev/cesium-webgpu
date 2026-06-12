@@ -1,6 +1,4 @@
 /**
- * @module OffscreenContextSupport
- *
  * Strategy C: OffscreenCanvas in WebWorker for Background Rendering.
  *
  * Enables a secondary rendering context to operate on an OffscreenCanvas
@@ -49,6 +47,7 @@
  * @see SharedResourcePool
  * @see WebGPUDevicePool
  * @see ContextRegistry
+ * @module OffscreenContextSupport
  */
 
 import RendererType from "./RendererType.js";

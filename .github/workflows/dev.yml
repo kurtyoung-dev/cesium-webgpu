@@ -106,17 +106,10 @@ jobs:
         run: npx gulp buildAllVariants
       - name: install playwright + chromium
         run: npx playwright install --with-deps chromium
-      - name: start dev server (background)
-        run: |
-          npm run start &
-          # Wait for the server to come up before continuing.
-          for i in {1..30}; do
-            if curl -fsS http://localhost:8080/ > /dev/null; then
-              echo "Dev server is up"
-              break
-            fi
-            sleep 1
-          done
+      # No server step: variant-smoke-test.mjs self-serves the Build/
+      # artifacts on an ephemeral port (Batch 243). The previous
+      # backgrounded `npm run start` died when its step shell exited,
+      # so the smoke navigation hit ERR_CONNECTION_REFUSED.
       # Runtime smoke for the webgl-only variant ONLY. GitHub-hosted
       # runners have no WebGPU adapter (same constraint documented in
       # visual-regression.yml), so the dual/webgpu-only variant smokes and

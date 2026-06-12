@@ -178,7 +178,6 @@ class Expression {
   /**
    * Gets the expression defined in the 3D Tiles Styling language.
    *
-   * @memberof Expression.prototype
    *
    * @type {string}
    * @readonly

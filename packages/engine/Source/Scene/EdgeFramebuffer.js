@@ -177,7 +177,6 @@ class EdgeFramebuffer {
 
   /**
    * Gets the framebuffer for edge rendering.
-   * @memberof EdgeFramebuffer.prototype
    * @type {Framebuffer}
    * @readonly
    */
@@ -187,7 +186,6 @@ class EdgeFramebuffer {
 
   /**
    * Gets the color texture.
-   * @memberof EdgeFramebuffer.prototype
    * @type {Texture}
    * @readonly
    */
@@ -197,7 +195,6 @@ class EdgeFramebuffer {
 
   /**
    * Gets the ID texture.
-   * @memberof EdgeFramebuffer.prototype
    * @type {Texture}
    * @readonly
    */
@@ -207,7 +204,6 @@ class EdgeFramebuffer {
 
   /**
    * Gets the packed depth texture written during the edge pass.
-   * @memberof EdgeFramebuffer.prototype
    * @type {Texture}
    * @readonly
    */
@@ -217,7 +213,6 @@ class EdgeFramebuffer {
 
   /**
    * Gets the depth-stencil texture.
-   * @memberof EdgeFramebuffer.prototype
    * @type {Texture}
    * @readonly
    */

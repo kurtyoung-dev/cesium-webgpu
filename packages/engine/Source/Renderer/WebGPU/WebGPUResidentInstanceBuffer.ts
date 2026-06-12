@@ -1,6 +1,4 @@
 /**
- * @module WebGPUResidentInstanceBuffer
- *
  * Resident-instance partial-write manager for the WebGPU collection
  * renderers (Phase 1 of the Large Dynamic Objects roadmap —
  * NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-COALESCING).
@@ -39,6 +37,7 @@
  * Folding into NEW-COLLECTION-RENDERER-BASE is P1-T6.
  *
  * @private
+ * @module WebGPUResidentInstanceBuffer
  */
 
 /// <reference types="@webgpu/types" />

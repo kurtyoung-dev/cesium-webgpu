@@ -442,7 +442,6 @@ class AnimationViewModel {
 
   /**
    * Gets a command that decreases the speed of animation.
-   * @memberof AnimationViewModel.prototype
    * @type {Command}
    */
   get slower() {
@@ -451,7 +450,6 @@ class AnimationViewModel {
 
   /**
    * Gets a command that increases the speed of animation.
-   * @memberof AnimationViewModel.prototype
    * @type {Command}
    */
   get faster() {
@@ -460,7 +458,6 @@ class AnimationViewModel {
 
   /**
    * Gets the clock view model.
-   * @memberof AnimationViewModel.prototype
    *
    * @type {ClockViewModel}
    */
@@ -470,7 +467,6 @@ class AnimationViewModel {
 
   /**
    * Gets the pause toggle button view model.
-   * @memberof AnimationViewModel.prototype
    *
    * @type {ToggleButtonViewModel}
    */
@@ -480,7 +476,6 @@ class AnimationViewModel {
 
   /**
    * Gets the reverse toggle button view model.
-   * @memberof AnimationViewModel.prototype
    *
    * @type {ToggleButtonViewModel}
    */
@@ -490,7 +485,6 @@ class AnimationViewModel {
 
   /**
    * Gets the play toggle button view model.
-   * @memberof AnimationViewModel.prototype
    *
    * @type {ToggleButtonViewModel}
    */
@@ -500,7 +494,6 @@ class AnimationViewModel {
 
   /**
    * Gets the realtime toggle button view model.
-   * @memberof AnimationViewModel.prototype
    *
    * @type {ToggleButtonViewModel}
    */
@@ -510,7 +503,6 @@ class AnimationViewModel {
 
   /**
    * Gets or sets the function which formats a date for display.
-   * @memberof AnimationViewModel.prototype
    *
    * @type {AnimationViewModel.DateFormatter}
    * @default AnimationViewModel.defaultDateFormatter
@@ -519,13 +511,6 @@ class AnimationViewModel {
     return this._dateFormatter;
   }
 
-  /**
-   * Gets or sets the function which formats a date for display.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {AnimationViewModel.DateFormatter}
-   * @default AnimationViewModel.defaultDateFormatter
-   */
   set dateFormatter(dateFormatter) {
     //>>includeStart('debug', pragmas.debug);
     if (typeof dateFormatter !== "function") {
@@ -538,7 +523,6 @@ class AnimationViewModel {
 
   /**
    * Gets or sets the function which formats a time for display.
-   * @memberof AnimationViewModel.prototype
    *
    * @type {AnimationViewModel.TimeFormatter}
    * @default AnimationViewModel.defaultTimeFormatter
@@ -547,13 +531,6 @@ class AnimationViewModel {
     return this._timeFormatter;
   }
 
-  /**
-   * Gets or sets the function which formats a time for display.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {AnimationViewModel.TimeFormatter}
-   * @default AnimationViewModel.defaultTimeFormatter
-   */
   set timeFormatter(timeFormatter) {
     //>>includeStart('debug', pragmas.debug);
     if (typeof timeFormatter !== "function") {

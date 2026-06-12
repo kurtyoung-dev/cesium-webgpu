@@ -178,7 +178,6 @@ class AutoExposure {
    * and {@link AutoExposure#enabled} are <code>true</code>. A stage will not be ready while it is waiting on textures
    * to load.
    *
-   * @memberof AutoExposure.prototype
    * @type {boolean}
    * @readonly
    */
@@ -189,7 +188,6 @@ class AutoExposure {
   /**
    * The unique name of this post-process stage for reference by other stages.
    *
-   * @memberof AutoExposure.prototype
    * @type {string}
    * @readonly
    */
@@ -200,7 +198,6 @@ class AutoExposure {
   /**
    * A reference to the texture written to when executing this post process stage.
    *
-   * @memberof AutoExposure.prototype
    * @type {Texture}
    * @readonly
    * @private

@@ -199,7 +199,6 @@ class Vector3DTileGeometry {
   /**
    * Gets the number of triangles.
    *
-   * @memberof Vector3DTileGeometry.prototype
    *
    * @type {number}
    * @readonly
@@ -215,7 +214,6 @@ class Vector3DTileGeometry {
   /**
    * Gets the geometry memory in bytes.
    *
-   * @memberof Vector3DTileGeometry.prototype
    *
    * @type {number}
    * @readonly
@@ -230,7 +228,6 @@ class Vector3DTileGeometry {
 
   /**
    * Return true when the primitive is ready to render.
-   * @memberof Vector3DTileGeometry.prototype
    * @type {boolean}
    * @readonly
    * @private

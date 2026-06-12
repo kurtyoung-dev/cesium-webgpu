@@ -1,6 +1,4 @@
 /**
- * @module WebGPUDebugGBufferOverlay
- *
  * Phase 8a Slice 2c (Batch 89) — visualizes the G-buffer
  * `normalRoughnessTexture` as a fullscreen overlay. Models on
  * `WebGPUDebugDepthOverlay`: same shape, same lifecycle, swap the
@@ -30,6 +28,7 @@
  * setting `debugShowGBufferNormals = true` ALSO forces
  * `scene.deferredLighting = true` for the same frame
  * (the CesiumDebug command sets both).
+ * @module WebGPUDebugGBufferOverlay
  */
 
 /// <reference types="@webgpu/types" />

@@ -87,7 +87,6 @@ class CompositeMaterialProperty {
   /**
    * Gets a value indicating if this property is constant.  A property is considered
    * constant if getValue always returns the same result for the current definition.
-   * @memberof CompositeMaterialProperty.prototype
    *
    * @type {boolean}
    * @readonly
@@ -100,7 +99,6 @@ class CompositeMaterialProperty {
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is changed whenever setValue is called with data different
    * than the current value.
-   * @memberof CompositeMaterialProperty.prototype
    *
    * @type {Event}
    * @readonly
@@ -111,7 +109,6 @@ class CompositeMaterialProperty {
 
   /**
    * Gets the interval collection.
-   * @memberof CompositeMaterialProperty.prototype
    *
    * @type {TimeIntervalCollection}
    */

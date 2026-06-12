@@ -58,7 +58,6 @@ class Terrain {
    * Gets an event that is raised when the terrain provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
    * are passed an instance of the thrown error.
-   * @memberof Terrain.prototype
    * @type {Event<Terrain.ErrorEventCallback>}
    * @readonly
    */
@@ -69,7 +68,6 @@ class Terrain {
   /**
    * Gets an event that is raised when the terrain provider has been successfully created. Event listeners
    * are passed the created instance of {@link TerrainProvider}.
-   * @memberof Terrain.prototype
    * @type {Event<Terrain.ReadyEventCallback>}
    * @readonly
    */
@@ -79,7 +77,6 @@ class Terrain {
 
   /**
    * Returns true when the terrain provider has been successfully created. Otherwise, returns false.
-   * @memberof Terrain.prototype
    *
    * @type {boolean}
    * @readonly
@@ -90,7 +87,6 @@ class Terrain {
 
   /**
    * The terrain provider providing surface geometry to a globe. Do not use until {@link Terrain.readyEvent} is raised.
-   * @memberof Terrain.prototype
    *
    * @type {TerrainProvider}
    * @readonly

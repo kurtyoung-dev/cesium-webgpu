@@ -1,6 +1,4 @@
 /**
- * @module ModelMaterialInfo
- *
  * Renderer-agnostic material descriptor for glTF models.
  * Extracts material properties from ModelComponents.Material into a flat data
  * object that both WebGL and WebGPU renderers can consume.
@@ -10,6 +8,7 @@
  * (renderer-specific).
  *
  * @private
+ * @module ModelMaterialInfo
  */
 import defined from "../../Core/defined.js";
 

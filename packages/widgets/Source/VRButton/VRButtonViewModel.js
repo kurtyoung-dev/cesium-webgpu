@@ -192,7 +192,6 @@ class VRButtonViewModel {
   /**
    * Gets or sets the HTML element to place into VR mode when the
    * corresponding button is pressed.
-   * @memberof VRButtonViewModel.prototype
    *
    * @type {Element}
    */
@@ -200,13 +199,6 @@ class VRButtonViewModel {
     return this._vrElement;
   }
 
-  /**
-   * Gets or sets the HTML element to place into VR mode when the
-   * corresponding button is pressed.
-   * @memberof VRButtonViewModel.prototype
-   *
-   * @type {Element}
-   */
   set vrElement(value) {
     //>>includeStart('debug', pragmas.debug);
     if (!(value instanceof Element)) {
@@ -219,7 +211,6 @@ class VRButtonViewModel {
 
   /**
    * Gets the Command to toggle VR mode.
-   * @memberof VRButtonViewModel.prototype
    *
    * @type {Command}
    */

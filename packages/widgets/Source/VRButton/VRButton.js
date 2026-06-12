@@ -86,7 +86,6 @@ class VRButton {
 
   /**
    * Gets the parent container.
-   * @memberof VRButton.prototype
    *
    * @type {Element}
    */
@@ -96,7 +95,6 @@ class VRButton {
 
   /**
    * Gets the view model.
-   * @memberof VRButton.prototype
    *
    * @type {VRButtonViewModel}
    */

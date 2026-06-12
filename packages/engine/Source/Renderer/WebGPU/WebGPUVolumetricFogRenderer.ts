@@ -1,6 +1,4 @@
 /**
- * @module WebGPUVolumetricFogRenderer
- *
  * Froxel-grid participating media renderer (`CELESTIAL_ATMOSPHERE_DESIGN.md`
  * §4.8). Allocates the 3D texture pair (density + scattered light + integrated
  * volume), creates compute pipelines for the three Frostbite-style passes
@@ -48,6 +46,7 @@
  *
  * The `auto` setting picks one of the above based on the
  * VisualPerformanceTargetService's init benchmark (B7/B17 lock).
+ * @module WebGPUVolumetricFogRenderer
  */
 
 /// <reference types="@webgpu/types" />

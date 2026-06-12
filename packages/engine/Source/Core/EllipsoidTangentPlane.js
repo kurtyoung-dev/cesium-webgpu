@@ -272,7 +272,6 @@ class EllipsoidTangentPlane {
 
   /**
    * Gets the ellipsoid.
-   * @memberof EllipsoidTangentPlane.prototype
    * @type {Ellipsoid}
    */
   get ellipsoid() {
@@ -281,7 +280,6 @@ class EllipsoidTangentPlane {
 
   /**
    * Gets the origin.
-   * @memberof EllipsoidTangentPlane.prototype
    * @type {Cartesian3}
    */
   get origin() {
@@ -290,7 +288,6 @@ class EllipsoidTangentPlane {
 
   /**
    * Gets the plane which is tangent to the ellipsoid.
-   * @memberof EllipsoidTangentPlane.prototype
    * @readonly
    * @type {Plane}
    */
@@ -300,7 +297,6 @@ class EllipsoidTangentPlane {
 
   /**
    * Gets the local X-axis (east) of the tangent plane.
-   * @memberof EllipsoidTangentPlane.prototype
    * @readonly
    * @type {Cartesian3}
    */
@@ -310,7 +306,6 @@ class EllipsoidTangentPlane {
 
   /**
    * Gets the local Y-axis (north) of the tangent plane.
-   * @memberof EllipsoidTangentPlane.prototype
    * @readonly
    * @type {Cartesian3}
    */
@@ -320,7 +315,6 @@ class EllipsoidTangentPlane {
 
   /**
    * Gets the local Z-axis (up) of the tangent plane.
-   * @memberof EllipsoidTangentPlane.prototype
    * @readonly
    * @type {Cartesian3}
    */

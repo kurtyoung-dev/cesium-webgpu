@@ -150,33 +150,75 @@ class ScreenSpaceCameraController {
     }
     //>>includeEnd('debug');
 
-    /** @type {boolean} @default true */
+    /**
+     * @type {boolean}
+     * @default true
+     */
     this.enableInputs = true;
-    /** @type {boolean} @default true */
+    /**
+     * @type {boolean}
+     * @default true
+     */
     this.enableTranslate = true;
-    /** @type {boolean} @default true */
+    /**
+     * @type {boolean}
+     * @default true
+     */
     this.enableZoom = true;
-    /** @type {boolean} @default true */
+    /**
+     * @type {boolean}
+     * @default true
+     */
     this.enableRotate = true;
-    /** @type {boolean} @default true */
+    /**
+     * @type {boolean}
+     * @default true
+     */
     this.enableTilt = true;
-    /** @type {boolean} @default true */
+    /**
+     * @type {boolean}
+     * @default true
+     */
     this.enableLook = true;
-    /** @type {number} @default 0.9 */
+    /**
+     * @type {number}
+     * @default 0.9
+     */
     this.inertiaSpin = 0.9;
-    /** @type {number} @default 0.9 */
+    /**
+     * @type {number}
+     * @default 0.9
+     */
     this.inertiaTranslate = 0.9;
-    /** @type {number} @default 0.8 */
+    /**
+     * @type {number}
+     * @default 0.8
+     */
     this.inertiaZoom = 0.8;
-    /** @type {number} @default 0.1 */
+    /**
+     * @type {number}
+     * @default 0.1
+     */
     this.maximumMovementRatio = 0.1;
-    /** @type {number} @default 3.0 */
+    /**
+     * @type {number}
+     * @default 3.0
+     */
     this.bounceAnimationTime = 3.0;
-    /** @type {number} @default 1.0 */
+    /**
+     * @type {number}
+     * @default 1.0
+     */
     this.minimumZoomDistance = 1.0;
-    /** @type {number} @default Number.POSITIVE_INFINITY */
+    /**
+     * @type {number}
+     * @default Number.POSITIVE_INFINITY
+     */
     this.maximumZoomDistance = Number.POSITIVE_INFINITY;
-    /** @type {number} @default 5.0 */
+    /**
+     * @type {number}
+     * @default 5.0
+     */
     this.zoomFactor = 5.0;
 
     this.translateEventTypes = CameraEventType.LEFT_DRAG;
@@ -222,9 +264,15 @@ class ScreenSpaceCameraController {
       ? 7500000.0
       : ellipsoid.minimumRadius * 1.175;
     this._minimumTrackBallHeight = this.minimumTrackBallHeight;
-    /** @type {boolean} @default true */
+    /**
+     * @type {boolean}
+     * @default true
+     */
     this.enableCollisionDetection = true;
-    /** @type {number|undefined} @default undefined */
+    /**
+     * @type {number|undefined}
+     * @default undefined
+     */
     this.maximumTiltAngle = undefined;
 
     this._scene = scene;

@@ -453,7 +453,6 @@ class OcclusionCulling {
 
   /**
    * Per-frame occlusion statistics.
-   * @memberof OcclusionCulling.prototype
    * @type {object}
    * @readonly
    */
@@ -463,7 +462,6 @@ class OcclusionCulling {
 
   /**
    * Whether the GPU resources have been initialized.
-   * @memberof OcclusionCulling.prototype
    * @type {boolean}
    * @readonly
    */

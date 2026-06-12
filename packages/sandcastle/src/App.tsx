@@ -220,7 +220,8 @@ function App() {
   const { useLoadFromUrl } = galleryItemStore;
   const loadFromUrl = useLoadFromUrl();
   useEffect(() => {
-    const load = () =>
+    const load = () => {
+      setInitialized(true);
       startLoadPending(async () => {
         try {
           if (isLoadPending || !loadFromUrl) {
@@ -250,9 +251,9 @@ function App() {
           console.error(message);
         }
       });
+    };
 
     if (!initialized && loadFromUrl) {
-      setInitialized(true);
       load();
     }
 
