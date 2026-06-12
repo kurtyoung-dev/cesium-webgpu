@@ -1140,9 +1140,7 @@ function attachSplatVelocityCommand(
   frameState: CesiumFrameState,
   cache: GaussianSplatCache,
 ): void {
-  const taaEnabledThisFrame =
-    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
-    true;
+  const taaEnabledThisFrame = frameState.taaEnabled === true;
   if (!taaEnabledThisFrame && !cache.prevSplatBuffer) {
     if (cache.command) {
       (cache.command as { velocityCommand?: unknown }).velocityCommand =

@@ -1055,9 +1055,7 @@ function attachVoxelVelocityCommand(
   frameState: CesiumFrameState,
   cache: VoxelCache,
 ): void {
-  const taaEnabledThisFrame =
-    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
-    true;
+  const taaEnabledThisFrame = frameState.taaEnabled === true;
   if (!taaEnabledThisFrame) {
     if (cache.command) {
       (cache.command as { velocityCommand?: unknown }).velocityCommand =

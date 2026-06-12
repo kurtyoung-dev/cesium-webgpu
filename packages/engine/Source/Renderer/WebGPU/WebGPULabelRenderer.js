@@ -821,7 +821,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   // velocity pipeline. Reuses the same shader module + bind group
   // layout as the color SDF pipeline.
   let velocityPipeline = null;
-  if (frameState.scene?.taaEnabled === true) {
+  if (frameState.taaEnabled === true) {
     let velEntry = cache.sdfVelocityPipelineEntries.get(defines);
     if (!defined(velEntry)) {
       const depthFmt2 = context.depthFormat || "depth24plus-stencil8";
@@ -1015,7 +1015,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   // Phase 1 scope this is wired conservative-correct. The big win stands:
   // a SETTLED label collection (dirty list empty) uploads NOTHING, where
   // pre-Batch-232 it re-packed + re-uploaded every glyph every frame.
-  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+  const taaEnabledThisFrame = frameState.taaEnabled === true;
   if (!defined(cache.sdfInstanceManager)) {
     cache.sdfInstanceManager = new WebGPUResidentInstanceBuffer(
       device,

@@ -1011,7 +1011,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   // pipeline. Reuses the same shader module + bind group layout as the
   // color pipeline.
   let velocityPipeline = null;
-  if (frameState.scene?.taaEnabled === true) {
+  if (frameState.taaEnabled === true) {
     let velEntry = cache.velocityPipelineEntries.get(defines);
     if (!defined(velEntry)) {
       const depthFmt2 = context.depthFormat || "depth24plus-stencil8";
@@ -1171,7 +1171,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   // 2D-CV modelMatrix change (read BEFORE _consumeDirtyState clears it);
   // defines/atlas-guid changes re-shape packed data collection-wide;
   // MORPHING recomputes every _actualPosition per frame without dirtying.
-  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+  const taaEnabledThisFrame = frameState.taaEnabled === true;
   const atlasGuidNow = collection._textureAtlas?.guid;
   const forceFullRebuild =
     collection._createVertexArray === true ||

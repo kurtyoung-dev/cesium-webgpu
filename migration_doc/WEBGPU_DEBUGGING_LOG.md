@@ -10444,3 +10444,62 @@ polylines render 1730 cyan px, 0 errors). `npx gulp build` + `npx tsc --noEmit` 
 
 **Files:** `Renderer/WebGPU/WebGPUCloudRenderer.ts`, `Scene/CloudCollection.js` (JSDoc NOTE only),
 +`Tools/visual-regression/probe-cloud-property-edit.mjs`, DEFERRED_WORK / DEBUGGING_GUIDE docs.
+
+## Batch 234 — Canonical `frameState.taaEnabled` activates ALL dormant velocity gates + TAA→MSAA=1 coupling (NEW-COLLECTIONS-TAA-GATE-DORMANT) (2026-06-12)
+
+**Bug:** every collection velocity-emission gate read `frameState.scene?.taaEnabled`, but
+`FrameState` never carries a scene back-pointer — the property is undefined at runtime, so
+billboard / label / point / polyline / cloud / point-cloud / voxel / gaussian-splat velocity
+commands had NEVER emitted (the entire Batch 143/144/148/168-183 velocity surface was dormant).
+The model / ground-primitive / ground-polyline / vector-3d-tile renderers used the other spelling,
+`frameState.taaEnabled` — equally undefined, since NOTHING ever published a TAA flag onto the
+frame state. Found in Batch 229, confirmed by audit: the only `taaEnabled` definitions were
+`Scene.taaEnabled` (authoritative toggle) and direct `scene.taaEnabled` reads in the
+SceneRenderer / post-process stage sync.
+
+**Fix (one canonical flag, all gates switched):**
+- `Scene.updateFrameState` publishes `frameState.taaEnabled = this.taaEnabled === true` each frame
+  (backend-agnostic — WebGL ignores it). Property declared in `FrameState.js` and on
+  `CesiumFrameState` (cesium-js-types.d.ts) so the TS renderers read it without casts.
+- Switched all 11 `frameState.scene?.taaEnabled` reads across 8 renderers
+  (Billboard ×2 / Label ×2 / PointPrimitive / Polyline JS; Cloud / PointCloud ×2 / Voxel /
+  GaussianSplat TS) to `frameState.taaEnabled`. The `frameState?.taaEnabled` renderers went live
+  with no change.
+
+**First-execution bug surfaced + fixed (Principle 9):** `Scene.taaEnabled`'s JSDoc has always
+promised "Disables MSAA when active (the two are incompatible)" but nothing enforced it. The
+velocity pass pairs the SINGLE-sample rg16float velocity texture with the scene depth attachment;
+with the default `scene.msaaSamples = 4` that pass descriptor is an attachment-sample-count
+mismatch → validation error that kills the whole velocity pass (same family as the Batch 228/230
+count-mismatch lessons). `WebGPUSceneRenderer.prepareFrame` now forces effective samples to 1
+while `scene.taaEnabled` is true; `scene.msaaSamples` is left untouched and the existing
+sample-count drift detection recreates the scene FB + bumps the pipeline-format generation on
+each toggle, restoring the user's MSAA when TAA turns off.
+
+**Verification (Principle 8):** NEW `probe-taa-velocity-emission.mjs` — 40 moving billboards +
+40 moving points (every primitive repositioned every frame as an exact function of the frame
+counter), command introspection inside `scene.postRender`, full OFF→ON→OFF cycle:
+- TAA OFF (25f): billboard + point color commands found, NO `velocityCommand`, scene-FB velocity
+  texture unallocated, msaa=4 → OK.
+- TAA ON (60 moving frames): `velocityCommand` attached on BOTH, 2 vertex streams with the
+  slot-aligned resident-instance prev mirror wired as stream 1, instanceCount=40 each, velocity
+  texture allocated (`_runVelocityPass` found commands and began the rg16float pass), msaa=1,
+  **0 console / validation errors on the first-ever execution of the collection velocity
+  pipelines** → OK.
+- TAA OFF (10f): commands detach, velocity texture freed by the msaa-toggle FB recreate, msaa=4
+  → OK.
+Regression: probe-billboard-partial-write, probe-point-label-partial-write, probe-orbital-catalog,
+probe-compute-instance-generic all PASS. `npx gulp build` + `npx tsc --noEmit` clean.
+
+**Surfaced follow-up (tracked, Principle 9):** the TAA RESOLVE stage is still dormant —
+`WebGPUPostProcessPipeline.addTAA()` has ZERO callers, so `_taaEffect` is null,
+`setStageEnabled("TAA", true)` no-ops, and the Scene jitter block no-ops. Velocity now populates
+`motionTex` but nothing consumes it; `scene.taaEnabled = true` costs the velocity pass + MSAA
+downgrade with no temporal accumulation yet. Tracked as NEW-TAA-EFFECT-NEVER-ADDED (DEFERRED_WORK
+HIGH) — next concrete step is the lazy `addTAA` + a first-activation probe for the resolve stage.
+
+**Files:** `Scene/Scene.js`, `Scene/FrameState.js`, `Renderer/WebGPU/cesium-js-types.d.ts`,
+`Renderer/WebGPU/WebGPUSceneRenderer.ts`, `Renderer/WebGPU/WebGPU{Billboard,Label,PointPrimitive,
+Polyline}Renderer.js`, `Renderer/WebGPU/WebGPU{Cloud,PointCloud,Voxel,GaussianSplat}Renderer.ts`,
++`Tools/visual-regression/probe-taa-velocity-emission.mjs`, DEFERRED_WORK / FEATURE_INVENTORY /
+DEBUGGING_GUIDE docs.

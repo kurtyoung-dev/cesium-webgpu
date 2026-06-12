@@ -1010,7 +1010,7 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   // resident CPU array, the GPU vertex buffer, the _index→slot map, and
   // the slot-aligned velocity prev mirror (TAA motion vectors) — it
   // subsumes the former all-or-nothing `needsRebuild` gate.
-  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+  const taaEnabledThisFrame = frameState.taaEnabled === true;
   if (!defined(cache.instanceManager)) {
     cache.instanceManager = new WebGPUResidentInstanceBuffer(
       device,

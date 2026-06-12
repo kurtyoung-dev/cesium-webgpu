@@ -477,6 +477,19 @@ class FrameState {
     this.useLogDepth = false;
 
     /**
+     * Whether temporal anti-aliasing is enabled this frame. Canonical
+     * per-frame mirror of `scene.taaEnabled`, published by
+     * `Scene.updateFrameState`. This is THE flag velocity-emission gates
+     * read (billboard/label/point/cloud/polyline/model/voxel/splat/...) —
+     * renderers must NOT reach back through a scene reference for it.
+     * (Batch 234, NEW-COLLECTIONS-TAA-GATE-DORMANT.)
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.taaEnabled = false;
+
+    /**
      * Additional state used to update 3D Tilesets.
      *
      * @type {Cesium3DTilePassState}

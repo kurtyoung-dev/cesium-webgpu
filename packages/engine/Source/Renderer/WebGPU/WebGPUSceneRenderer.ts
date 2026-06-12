@@ -1041,14 +1041,29 @@ export class WebGPUSceneRenderer {
     //   refreshes on the next frame
     //
     // Kill switch: set `scene.msaaSamples = 1` to fall back to no-AA.
+    //
+    // Batch 234 (NEW-COLLECTIONS-TAA-GATE-DORMANT) — TAA forces the
+    // effective sample count to 1, implementing the contract documented
+    // on `Scene.taaEnabled` ("Disables MSAA when active — the two are
+    // incompatible"). The contract was never enforced before because the
+    // velocity gates never fired (frameState.taaEnabled was unpublished),
+    // so the incompatibility never surfaced: the velocity pass pairs the
+    // single-sample rg16float velocity texture with the scene depth
+    // attachment, and a 4x multisampled depth in that pass descriptor is
+    // a validation error that kills the whole pass. `scene.msaaSamples`
+    // itself is left untouched — toggling TAA off restores the user's
+    // MSAA setting via the existing sample-count drift detection below.
     const scene = config.scene;
-    const requestedSamples = Math.max(
-      1,
-      Math.min(
-        4,
-        (scene as unknown as { msaaSamples?: number }).msaaSamples ?? 1,
-      ),
-    );
+    const taaActive = scene.taaEnabled === true;
+    const requestedSamples = taaActive
+      ? 1
+      : Math.max(
+          1,
+          Math.min(
+            4,
+            (scene as unknown as { msaaSamples?: number }).msaaSamples ?? 1,
+          ),
+        );
     if (context._msaaSamples !== requestedSamples) {
       context._msaaSamples = requestedSamples;
     }

@@ -1349,7 +1349,7 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
     // upload the PREVIOUS frame's data to the prev-segment buffer so
     // the velocity VS reads both streams at slot 0 and slot 1. Mirrors
     // the Billboard / Label pattern from Batches 143/144.
-    const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+    const taaEnabledThisFrame = frameState.taaEnabled === true;
     const prevSbKey = `prevSegmentBuffer_${materialType}`;
     const prevDataKey = `prevSegmentData_${materialType}`;
     if (taaEnabledThisFrame || defined(cache[prevSbKey])) {

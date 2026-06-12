@@ -1408,9 +1408,7 @@ function attachPointCloudVelocityCommand(
   canvasFormat: GPUTextureFormat,
 ): void {
   // Read the TAA flag from the same source the Collection renderers use.
-  const taaEnabledThisFrame =
-    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
-    true;
+  const taaEnabledThisFrame = frameState.taaEnabled === true;
   if (!taaEnabledThisFrame && !cache.prevInstanceBuffer) {
     if (cache.command) {
       (cache.command as { velocityCommand?: unknown }).velocityCommand =
@@ -1764,9 +1762,7 @@ function attachLODPointCloudVelocityCommand(
   frameState: CesiumFrameState,
   cache: PointCloudCache,
 ): void {
-  const taaEnabledThisFrame =
-    (frameState as { scene?: { taaEnabled?: boolean } }).scene?.taaEnabled ===
-    true;
+  const taaEnabledThisFrame = frameState.taaEnabled === true;
   if (!taaEnabledThisFrame && !cache.lodPrevInstanceBuffer) {
     if (cache.lodCommand) {
       (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =

@@ -382,6 +382,13 @@ interface CesiumFrameState {
       }>
     | undefined;
   useLogDepth: boolean;
+  /**
+   * Canonical per-frame mirror of `scene.taaEnabled`, published by
+   * `Scene.updateFrameState` (Batch 234). Velocity-emission gates in
+   * every WebGPU feature renderer read THIS flag — never
+   * `frameState.scene` (which does not exist at runtime).
+   */
+  taaEnabled: boolean;
   minimumTerrainHeight: number;
   invertClassification: boolean;
   // Phase 8a (Batch 80 + 86) — gates the WebGPU G-buffer producer

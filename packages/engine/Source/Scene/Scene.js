@@ -3097,6 +3097,15 @@ class Scene {
     // tonemap is replaced with a saturation boost and final compression
     // is deferred to the post-process chain).
     frameState.useHDR = this._hdr === true;
+    // Batch 234 (NEW-COLLECTIONS-TAA-GATE-DORMANT) — canonical per-frame
+    // TAA flag. The Batch-143/144 velocity-emission gates in the
+    // billboard/label/point/cloud/polyline renderers read
+    // `frameState.scene?.taaEnabled`, but `frameState.scene` is never
+    // populated, so velocity commands silently never emitted; the
+    // model/ground/vector-tile renderers read `frameState.taaEnabled`,
+    // which was equally unset. This single publication activates ALL of
+    // those gates from one backend-agnostic source of truth.
+    frameState.taaEnabled = this.taaEnabled === true;
     frameState.debugShowTriangulation = this.debugShowTriangulation === true;
     // Globe wireframe overlay (Tier 1 debug). Forwarded to the WebGPU globe
     // surface renderer's wireframe pipeline path. WebGL renderers ignore.
