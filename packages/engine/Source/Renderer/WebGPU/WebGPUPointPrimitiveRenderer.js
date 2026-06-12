@@ -39,6 +39,8 @@ import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
+import SceneMode from "../../Scene/SceneMode.js";
 
 // =========================================================================
 // Constants
@@ -119,7 +121,95 @@ function packNearFarScalar(out, offset, scalar, identity) {
 }
 
 /**
+ * Slot-presence predicate shared by the resident-instance manager and the
+ * pick builder. Points (unlike billboards) keep hidden primitives IN the
+ * packed stream — `_show` is packed into the instance record (slot 15)
+ * and the shader collapses hidden quads — so a `show` toggle is a plain
+ * property edit (partial write), never a slot shift. Only holes (removed
+ * entries pending compaction, `null` per `PointPrimitiveCollection.remove`)
+ * have no slot, and removal always arrives with `_createVertexArray`.
+ * @private
+ */
+function isPointInstance(point) {
+  return defined(point);
+}
+
+/**
+ * Pack ONE point's 28-float instance record at `offset` floats into
+ * `out`. Extracted from the former whole-collection `buildInstanceData`
+ * loop (NEW-PARTIAL-WRITE-WIRE-BPL, point half) so the resident-instance
+ * manager can re-pack a single changed slot without touching neighbors.
+ * @private
+ */
+function packPointInstance(out, offset, point) {
+  const position = point._actualPosition || point._position;
+
+  // RTE: Encode position into high/low 32-bit float pairs
+  // This enables sub-meter precision at planetary-scale coordinates
+  EncodedCartesian3.fromCartesian(position, scratchEncodedPosition);
+  const high = scratchEncodedPosition.high;
+  const low = scratchEncodedPosition.low;
+
+  // posHighAndSize: encodedPosition.high.xyz, pixelSize
+  out[offset + 0] = high.x;
+  out[offset + 1] = high.y;
+  out[offset + 2] = high.z;
+  out[offset + 3] = point._pixelSize;
+
+  // posLowAndOutline: encodedPosition.low.xyz, outlineWidth
+  out[offset + 4] = low.x;
+  out[offset + 5] = low.y;
+  out[offset + 6] = low.z;
+  out[offset + 7] = point._outlineWidth;
+
+  // color: rgba
+  const color = point._color;
+  out[offset + 8] = color.red;
+  out[offset + 9] = color.green;
+  out[offset + 10] = color.blue;
+  out[offset + 11] = color.alpha;
+
+  // outColorAndShow: outlineColor.rgb, show
+  const outlineColor = point._outlineColor;
+  out[offset + 12] = outlineColor.red;
+  out[offset + 13] = outlineColor.green;
+  out[offset + 14] = outlineColor.blue;
+  out[offset + 15] = point._show ? 1.0 : 0.0;
+
+  // perInstanceFlags — DP-H42 / DP-H40 / A.14 DDC.
+  //   x: disableDepthTestDistance (raw meters; squared in shader)
+  //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
+  //   z: distanceDisplayCondition.near^2 (Batch 136)
+  //   w: distanceDisplayCondition.far^2 (Batch 136)
+  out[offset + 16] = encodeDisableDepthTestDistance(
+    point._disableDepthTestDistance,
+  );
+  out[offset + 17] = point._splitDirection ?? 0.0;
+  const ddc = point._distanceDisplayCondition;
+  if (ddc) {
+    const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
+    const ddcFar =
+      typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+    out[offset + 18] = ddcNear * ddcNear;
+    out[offset + 19] = isFinite(ddcFar) ? ddcFar * ddcFar : Number.MAX_VALUE;
+  } else {
+    out[offset + 18] = 0.0;
+    out[offset + 19] = Number.MAX_VALUE;
+  }
+
+  // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance +
+  // scaleByDistance NearFarScalars. Identity = 1.0 for both
+  // (multiplicative). EYE_DISTANCE_PIXEL_OFFSET doesn't apply here
+  // (Point has no pixelOffset attribute).
+  packNearFarScalar(out, offset + 20, point._translucencyByDistance, 1.0);
+  packNearFarScalar(out, offset + 24, point._scaleByDistance, 1.0);
+}
+
+/**
  * Builds a Float32Array of per-instance data from the collection's point primitives.
+ *
+ * Retained for export compatibility (test harnesses); the render path now
+ * goes through `WebGPUResidentInstanceBuffer.sync` + `packPointInstance`.
  *
  * @param {PointPrimitiveCollection} collection - The point collection
  * @returns {{ instanceData: Float32Array, visibleCount: number }}
@@ -134,80 +224,10 @@ function buildInstanceData(collection) {
 
   for (let i = 0; i < length; i++) {
     const point = points[i];
-    if (!defined(point)) {
+    if (!isPointInstance(point)) {
       continue;
     }
-
-    const offset = visibleCount * FLOATS_PER_INSTANCE;
-    const position = point._actualPosition || point._position;
-
-    // RTE: Encode position into high/low 32-bit float pairs
-    // This enables sub-meter precision at planetary-scale coordinates
-    EncodedCartesian3.fromCartesian(position, scratchEncodedPosition);
-    const high = scratchEncodedPosition.high;
-    const low = scratchEncodedPosition.low;
-
-    // posHighAndSize: encodedPosition.high.xyz, pixelSize
-    instanceData[offset + 0] = high.x;
-    instanceData[offset + 1] = high.y;
-    instanceData[offset + 2] = high.z;
-    instanceData[offset + 3] = point._pixelSize;
-
-    // posLowAndOutline: encodedPosition.low.xyz, outlineWidth
-    instanceData[offset + 4] = low.x;
-    instanceData[offset + 5] = low.y;
-    instanceData[offset + 6] = low.z;
-    instanceData[offset + 7] = point._outlineWidth;
-
-    // color: rgba
-    const color = point._color;
-    instanceData[offset + 8] = color.red;
-    instanceData[offset + 9] = color.green;
-    instanceData[offset + 10] = color.blue;
-    instanceData[offset + 11] = color.alpha;
-
-    // outColorAndShow: outlineColor.rgb, show
-    const outlineColor = point._outlineColor;
-    instanceData[offset + 12] = outlineColor.red;
-    instanceData[offset + 13] = outlineColor.green;
-    instanceData[offset + 14] = outlineColor.blue;
-    instanceData[offset + 15] = point._show ? 1.0 : 0.0;
-
-    // perInstanceFlags — DP-H42 / DP-H40 / A.14 DDC.
-    //   x: disableDepthTestDistance (raw meters; squared in shader)
-    //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
-    //   z: distanceDisplayCondition.near^2 (Batch 136)
-    //   w: distanceDisplayCondition.far^2 (Batch 136)
-    instanceData[offset + 16] = encodeDisableDepthTestDistance(
-      point._disableDepthTestDistance,
-    );
-    instanceData[offset + 17] = point._splitDirection ?? 0.0;
-    const ddc = point._distanceDisplayCondition;
-    if (ddc) {
-      const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
-      const ddcFar =
-        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
-      instanceData[offset + 18] = ddcNear * ddcNear;
-      instanceData[offset + 19] = isFinite(ddcFar)
-        ? ddcFar * ddcFar
-        : Number.MAX_VALUE;
-    } else {
-      instanceData[offset + 18] = 0.0;
-      instanceData[offset + 19] = Number.MAX_VALUE;
-    }
-
-    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance +
-    // scaleByDistance NearFarScalars. Identity = 1.0 for both
-    // (multiplicative). EYE_DISTANCE_PIXEL_OFFSET doesn't apply here
-    // (Point has no pixelOffset attribute).
-    packNearFarScalar(
-      instanceData,
-      offset + 20,
-      point._translucencyByDistance,
-      1.0,
-    );
-    packNearFarScalar(instanceData, offset + 24, point._scaleByDistance, 1.0);
-
+    packPointInstance(instanceData, visibleCount * FLOATS_PER_INSTANCE, point);
     visibleCount++;
   }
 
@@ -951,20 +971,6 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   cache.pipeline = pipeline;
   cache.currentDefines = defines;
 
-  // Determine if we need to rebuild instance data. Also rebuild when the
-  // active-defines bitmask changes — the per-instance buffer layout is
-  // constant, but having distinct colorCommand pipelines means stale
-  // commands can reference a pipeline that doesn't match this frame's
-  // defines. Simplest fix: touch needsRebuild whenever defines rotate.
-  const definesChanged = cache.lastDefines !== defines;
-  const needsRebuild =
-    !defined(cache.instanceBuffer) ||
-    !defined(cache.colorCommand) ||
-    collection._pointPrimitivesToUpdate.length > 0 ||
-    cache.lastLength !== length ||
-    definesChanged;
-  cache.lastDefines = defines;
-
   // --- Uniform buffer (created once, updated every frame) ---
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
@@ -997,206 +1003,160 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
     });
   }
 
-  // --- Instance buffer (rebuilt when points change) ---
-  // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
-  // hoist the TAA flag so both the rebuild path and the velocity-command
-  // attachment below can read it. Used to gate prev-instance buffer
-  // allocation + velocity emission.
+  // --- Instance data — resident-instance partial-write path ---
+  // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL, point
+  // half.) A settled collection uploads nothing; a sparse change re-packs
+  // + uploads only the changed slots' byte ranges. The manager owns the
+  // resident CPU array, the GPU vertex buffer, the _index→slot map, and
+  // the slot-aligned velocity prev mirror (TAA motion vectors) — it
+  // subsumes the former all-or-nothing `needsRebuild` gate.
   const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
-  if (needsRebuild) {
-    const { instanceData, visibleCount } = buildInstanceData(collection);
-
-    // Consume the collection's dirty-tracking state now that this frame's
-    // instance data is captured. Without it, `_createVertexArray`/`_dirty` stay
-    // set on the WebGPU path: `updateMode` re-projects every position every
-    // frame (so `needsRebuild` fires forever) AND a moved point can never
-    // re-enqueue (the `if (!_dirty)` guard) so it renders stale. See
-    // PointPrimitiveCollection._consumeDirtyState. (NEW-DIRTY-CONSUME-POINT.)
-    collection._consumeDirtyState();
-
-    if (visibleCount === 0) {
-      cache.colorCommand = undefined;
-      cache.lastLength = length;
-      return;
-    }
-
-    // Create or resize instance buffer
-    const requiredSize = visibleCount * BYTES_PER_INSTANCE;
-    if (
-      !defined(cache.instanceBuffer) ||
-      cache.instanceBuffer.size < requiredSize
-    ) {
-      if (defined(cache.instanceBuffer)) {
-        cache.instanceBuffer.destroy();
-      }
-      cache.instanceBuffer = WebGPUBuffer.createVertexBuffer(
-        device,
-        requiredSize,
-        false, // mappedAtCreation = false — data uploaded via writeBuffer below
-        "PointPrimitive instances",
-      );
-    }
-
-    // AUDIT_2026_05_02 B.10 (Batch 148) — before overwriting the GPU
-    // instance buffer with this frame's data, upload the PREVIOUS
-    // frame's data to the prev-instance buffer so the velocity VS reads
-    // both streams. Mirrors the Billboard pattern (Batch 143).
-    if (taaEnabledThisFrame || defined(cache.prevInstanceBuffer)) {
-      if (
-        !defined(cache.prevInstanceBuffer) ||
-        cache.prevInstanceBuffer.size < requiredSize
-      ) {
-        if (defined(cache.prevInstanceBuffer)) {
-          cache.prevInstanceBuffer.destroy();
-        }
-        cache.prevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
-          device,
-          requiredSize,
-          false,
-          "PointPrimitive prev instances",
-        );
-      }
-      const prevSource = cache.prevInstanceData ?? instanceData;
-      let prevPayload = prevSource;
-      const expectedFloats = visibleCount * FLOATS_PER_INSTANCE;
-      if (prevSource.length < expectedFloats) {
-        prevPayload = new Float32Array(expectedFloats);
-        prevPayload.set(prevSource);
-        prevPayload.set(
-          instanceData.subarray(prevSource.length, expectedFloats),
-          prevSource.length,
-        );
-      } else if (prevSource.length > expectedFloats) {
-        prevPayload = prevSource.subarray(0, expectedFloats);
-      }
-      device.queue.writeBuffer(
-        cache.prevInstanceBuffer.buffer,
-        0,
-        prevPayload.buffer,
-        prevPayload.byteOffset,
-        requiredSize,
-      );
-    }
-
-    device.queue.writeBuffer(
-      cache.instanceBuffer.buffer,
-      0,
-      instanceData.buffer,
-      0,
-      requiredSize,
+  if (!defined(cache.instanceManager)) {
+    cache.instanceManager = new WebGPUResidentInstanceBuffer(
+      device,
+      "PointPrimitive instances",
     );
-
-    // Stash this frame's data so next frame's velocity pass has prev
-    // available. Always done — even when TAA is off — so a TAA off → on
-    // transition doesn't lose a frame of history.
-    cache.prevInstanceData = instanceData;
-
-    cache.visibleCount = visibleCount;
-    cache.lastLength = length;
-
-    // Create draw command (instanced: 6 verts per quad, N instances)
-    cache.colorCommand = new WebGPUDrawCommand({
-      pipeline: cache.pipeline,
-      bindGroups: [cache.bindGroup],
-      vertexBuffers: [cache.instanceBuffer],
-      vertexCount: VERTICES_PER_QUAD,
-      instanceCount: visibleCount,
-      // pass:0 was a real bug (that value is Pass.ENVIRONMENT, not OPAQUE),
-      // causing points to render before the globe surface and paint over
-      // the sky. OPAQUE=8 or TRANSLUCENT=9 are the valid pass values.
-      // Pick by collection.blendOption — point primitives use discard-based
-      // alpha cutoffs so OPAQUE is safe when the collection is all-opaque.
-      pass:
-        collection._blendOption === 0
-          ? 8 /* Pass.OPAQUE */
-          : 9 /* Pass.TRANSLUCENT */,
-      owner: collection,
-      boundingVolume: collection._boundingVolume,
-      modelMatrix: modelMatrix,
-      cull: true,
-    });
-
-    // Clear the dirty list
-    collection._pointPrimitivesToUpdate.length = 0;
-  } else if (defined(cache.colorCommand)) {
-    // Only update instance count if it changed
-    cache.colorCommand.instanceCount = cache.visibleCount;
   }
 
-  // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
-  // render-state (`_rsOpaque` vs `_rsTranslucent`) onto the colorCommand.
-  // PointPrimitiveCollection rebuilds these when `blendOption` changes
-  // (line 624/639 in the collection) so we write them every frame to
-  // stay in sync. The WebGL path does the equivalent at line 785 of
-  // PointPrimitiveCollection.js.
-  if (defined(cache.colorCommand)) {
-    cache.colorCommand.renderState =
-      cache.colorCommand.pass === 8 /* Pass.OPAQUE */
+  // Structural invalidations the manager can't see from the dirty list
+  // alone. `_createVertexArray` covers add/remove/removeAll/mode-change/
+  // 2D-CV modelMatrix change (read BEFORE _consumeDirtyState clears it);
+  // a defines rotation means a stale colorCommand could reference a
+  // pipeline that doesn't match this frame's defines, so rebuild data +
+  // command together; MORPHING recomputes every `_actualPosition` per
+  // frame without dirtying. Mirrors the billboard wiring (no atlas guid
+  // here — points sample no texture).
+  const forceFullRebuild =
+    collection._createVertexArray === true ||
+    cache._instanceDefines !== defines ||
+    cache._instanceSceneMode !== frameState.mode ||
+    frameState.mode === SceneMode.MORPHING;
+
+  // ORDERING (load-bearing): capture + sync the dirty list FIRST, then
+  // consume. `_consumeDirtyState` resets `_pointPrimitivesToUpdateIndex`,
+  // so syncing after the consume would always see an empty dirty list and
+  // never partial-write. (NEW-DIRTY-CONSUME-POINT + Phase 1.)
+  const syncResult = cache.instanceManager.sync({
+    items: collection._pointPrimitives,
+    length: length,
+    dirtyList: collection._pointPrimitivesToUpdate,
+    dirtyCount: collection._pointPrimitivesToUpdateIndex,
+    packInstance: packPointInstance,
+    isVisible: isPointInstance,
+    floatsPerInstance: FLOATS_PER_INSTANCE,
+    bytesPerInstance: BYTES_PER_INSTANCE,
+    forceFullRebuild: forceFullRebuild,
+    mirrorPrev: taaEnabledThisFrame,
+  });
+  cache._instanceDefines = defines;
+  cache._instanceSceneMode = frameState.mode;
+
+  // Consume the collection's dirty-tracking state now that this frame's
+  // instance data is captured. Without it, `_createVertexArray`/`_dirty`
+  // stay set on the WebGPU path: `updateMode` re-projects every position
+  // every frame AND a moved point can never re-enqueue (the `if (!_dirty)`
+  // guard in `_updatePointPrimitive`) so it renders stale. See
+  // PointPrimitiveCollection._consumeDirtyState. (NEW-DIRTY-CONSUME-POINT.)
+  collection._consumeDirtyState();
+
+  const visibleCount = syncResult.visibleCount;
+  if (visibleCount === 0 || !defined(syncResult.buffer)) {
+    cache.colorCommand = undefined;
+    return;
+  }
+  cache.instanceBuffer = syncResult.buffer;
+  cache.visibleCount = visibleCount;
+
+  // Create draw command (instanced: 6 verts per quad, N instances).
+  // Recreated every frame (cheap object) so pipeline/defines rotation,
+  // blend-option changes, and visible-count changes are always reflected
+  // — mirrors the billboard wiring.
+  // pass:0 was a real bug (that value is Pass.ENVIRONMENT, not OPAQUE),
+  // causing points to render before the globe surface and paint over
+  // the sky. OPAQUE=8 or TRANSLUCENT=9 are the valid pass values.
+  // Pick by collection.blendOption — point primitives use discard-based
+  // alpha cutoffs so OPAQUE is safe when the collection is all-opaque.
+  const pointPass =
+    collection._blendOption === 0
+      ? 8 /* Pass.OPAQUE */
+      : 9; /* Pass.TRANSLUCENT */
+  cache.colorCommand = new WebGPUDrawCommand({
+    pipeline: cache.pipeline,
+    bindGroups: [cache.bindGroup],
+    vertexBuffers: [cache.instanceBuffer],
+    vertexCount: VERTICES_PER_QUAD,
+    instanceCount: visibleCount,
+    pass: pointPass,
+    owner: collection,
+    boundingVolume: collection._boundingVolume,
+    modelMatrix: modelMatrix,
+    cull: true,
+    // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
+    // render-state (`_rsOpaque` vs `_rsTranslucent`) so
+    // `applyPerEncoderState` drives the dynamic WebGPU pass state from
+    // the same values the WebGL path uses.
+    renderState:
+      pointPass === 8 /* Pass.OPAQUE */
         ? collection._rsOpaque
-        : collection._rsTranslucent;
-  }
+        : collection._rsTranslucent,
+  });
 
   // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
   // attach velocity command. The TAA pass walks the command list for
   // `cmd.velocityCommand` and dispatches it into the rg16float velocity
-  // texture. Mirrors the Billboard pattern from Batch 143. Re-attached
-  // every frame (cheap reference assignment) so it picks up changes to
-  // visible count or pipeline resolution without a full rebuild.
-  if (defined(cache.colorCommand)) {
-    if (
-      taaEnabledThisFrame &&
-      defined(cache.prevInstanceBuffer) &&
-      defined(cache.instanceBuffer)
-    ) {
-      // Resolve the velocity pipeline lazily.
-      let velEntry = cache.velocityPipelines.get(cache.currentDefines ?? 0);
-      if (!defined(velEntry)) {
-        const depthFmt2 = context.depthFormat || "depth24plus-stencil8";
-        const moduleCache2 = getPointShaderModuleCache(device);
-        const shaderModule2 = moduleCache2.getOrCreate(
-          ShaderSourceId.POINT_PRIMITIVE_COLOR,
-          colorShaderCode,
-          cache.currentDefines ?? 0,
-          "PointPrimitive color shader",
-        );
-        velEntry = {
-          descriptor: buildPointVelocityDescriptor(
-            device,
-            shaderModule2,
-            depthFmt2,
-            cache.bindGroupLayout,
-            cache.currentDefines ?? 0,
-          ),
-          pipeline: null,
-          pending: false,
-        };
-        cache.velocityPipelines.set(cache.currentDefines ?? 0, velEntry);
-      }
-      const velocityPipeline = tryResolvePointPipeline(
-        device,
-        context.webgpuPipelineCache ?? null,
-        velEntry.descriptor,
-        velEntry,
+  // texture. The prev mirror is slot-aligned with the current buffer by
+  // the resident-instance manager (partial writes mirror the prev slot
+  // too — see WebGPUResidentInstanceBuffer), so the velocity VS reads
+  // matching instances at locations 7/8.
+  if (taaEnabledThisFrame && defined(syncResult.prevBuffer)) {
+    // Resolve the velocity pipeline lazily.
+    let velEntry = cache.velocityPipelines.get(cache.currentDefines ?? 0);
+    if (!defined(velEntry)) {
+      const depthFmt2 = context.depthFormat || "depth24plus-stencil8";
+      const moduleCache2 = getPointShaderModuleCache(device);
+      const shaderModule2 = moduleCache2.getOrCreate(
+        ShaderSourceId.POINT_PRIMITIVE_COLOR,
+        colorShaderCode,
+        cache.currentDefines ?? 0,
+        "PointPrimitive color shader",
       );
-      if (defined(velocityPipeline)) {
-        cache.colorCommand.velocityCommand = new WebGPUDrawCommand({
-          pipeline: velocityPipeline,
-          bindGroups: [cache.bindGroup],
-          vertexBuffers: [cache.instanceBuffer, cache.prevInstanceBuffer],
-          vertexCount: VERTICES_PER_QUAD,
-          instanceCount: cache.visibleCount,
-          pass: cache.colorCommand.pass,
-          owner: collection,
-          boundingVolume: collection._boundingVolume,
-          modelMatrix: modelMatrix,
-          cull: true,
-        });
-      } else {
-        cache.colorCommand.velocityCommand = undefined;
-      }
+      velEntry = {
+        descriptor: buildPointVelocityDescriptor(
+          device,
+          shaderModule2,
+          depthFmt2,
+          cache.bindGroupLayout,
+          cache.currentDefines ?? 0,
+        ),
+        pipeline: null,
+        pending: false,
+      };
+      cache.velocityPipelines.set(cache.currentDefines ?? 0, velEntry);
+    }
+    const velocityPipeline = tryResolvePointPipeline(
+      device,
+      context.webgpuPipelineCache ?? null,
+      velEntry.descriptor,
+      velEntry,
+    );
+    if (defined(velocityPipeline)) {
+      cache.colorCommand.velocityCommand = new WebGPUDrawCommand({
+        pipeline: velocityPipeline,
+        bindGroups: [cache.bindGroup],
+        vertexBuffers: [cache.instanceBuffer, syncResult.prevBuffer],
+        vertexCount: VERTICES_PER_QUAD,
+        instanceCount: visibleCount,
+        pass: pointPass,
+        owner: collection,
+        boundingVolume: collection._boundingVolume,
+        modelMatrix: modelMatrix,
+        cull: true,
+      });
     } else {
       cache.colorCommand.velocityCommand = undefined;
     }
+  } else {
+    cache.colorCommand.velocityCommand = undefined;
   }
 
   // --- Pick pass handling ---
@@ -1353,11 +1313,11 @@ function destroyWebGPUPointResources(collection) {
     return;
   }
 
-  if (defined(cache.instanceBuffer)) {
-    cache.instanceBuffer.destroy();
-  }
-  if (defined(cache.prevInstanceBuffer)) {
-    cache.prevInstanceBuffer.destroy();
+  // The resident-instance manager owns the current instance buffer AND
+  // the velocity prev mirror (cache.instanceBuffer is just an alias of
+  // manager.buffer for the draw command).
+  if (defined(cache.instanceManager)) {
+    cache.instanceManager.destroy();
   }
   if (defined(cache.pickInstanceBuffer)) {
     cache.pickInstanceBuffer.destroy();

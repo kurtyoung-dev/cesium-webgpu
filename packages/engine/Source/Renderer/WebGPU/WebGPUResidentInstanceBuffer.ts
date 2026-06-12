@@ -31,10 +31,12 @@
  * (zero velocity for the rebuild frame — slots may have shifted, so
  * mapping old slots forward would be wrong).
  *
- * What's shipped in this batch: the manager + billboard wiring
- * (NEW-PARTIAL-WRITE-WIRE-BPL, billboard half). Point + Label wiring is
- * the P1-T5 follow-up; folding into NEW-COLLECTION-RENDERER-BASE is
- * P1-T6.
+ * Consumers: billboard (Batch 229), point + label (Batch 232 —
+ * NEW-PARTIAL-WRITE-WIRE-BPL complete). The label wiring deliberately
+ * forces the full-rebuild path on ANY glyph dirty (glyph dirty
+ * granularity is unsound for per-slot writes — see the GRANULARITY NOTE
+ * in WebGPULabelRenderer); settled label frames still upload nothing.
+ * Folding into NEW-COLLECTION-RENDERER-BASE is P1-T6.
  *
  * @private
  */

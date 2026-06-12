@@ -43,6 +43,8 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
+import SceneMode from "../../Scene/SceneMode.js";
 
 const SDF_EDGE = 1.0 - SDFSettings.CUTOFF; // 0.75
 
@@ -135,160 +137,145 @@ const SDF_INSTANCE_BUFFER_LAYOUT = {
 };
 
 /**
- * Build SDF instance data from label's glyph billboard collection.
- * Extends the standard billboard instance data with outline color and SDF params.
+ * Slot-presence predicate for the glyph resident-instance stream. Matches
+ * the historical pack-loop skip (`!defined(bb) || !bb.show`): spare glyph
+ * billboards parked by `LabelCollection.rebindAllGlyphs` are hidden via
+ * `billboard.show = false`, so they hold no slot.
  * @private
  */
-function buildSDFInstanceData(collection, labelCollection) {
-  const billboards = collection._billboards;
-  const length = collection.length;
-  const instanceData = new Float32Array(length * FLOATS_PER_SDF_INSTANCE);
-  let visibleCount = 0;
+function isGlyphVisible(bb) {
+  return defined(bb) && bb.show;
+}
 
-  for (let i = 0; i < length; i++) {
-    const bb = billboards[i];
-    if (!defined(bb) || !bb.show) {
-      continue;
-    }
+/**
+ * Pack ONE glyph billboard's 52-float SDF instance record at `offset`
+ * floats into `out`. Extracted from the former whole-collection
+ * `buildSDFInstanceData` loop (NEW-PARTIAL-WRITE-WIRE-BPL, label half) so
+ * the resident-instance manager owns the resident array + upload policy.
+ * Extends the standard billboard record with outline color and SDF params.
+ * @private
+ */
+function packSDFGlyphInstance(out, offset, bb) {
+  const position = bb._actualPosition || bb._position || bb.position;
+  EncodedCartesian3.fromCartesian(position, scratchEncodedPos);
 
-    const offset = visibleCount * FLOATS_PER_SDF_INSTANCE;
-    const position = bb._actualPosition || bb._position || bb.position;
-    EncodedCartesian3.fromCartesian(position, scratchEncodedPos);
+  // posHighAndScale
+  out[offset + 0] = scratchEncodedPos.high.x;
+  out[offset + 1] = scratchEncodedPos.high.y;
+  out[offset + 2] = scratchEncodedPos.high.z;
+  out[offset + 3] = bb.scale || 1.0;
 
-    // posHighAndScale
-    instanceData[offset + 0] = scratchEncodedPos.high.x;
-    instanceData[offset + 1] = scratchEncodedPos.high.y;
-    instanceData[offset + 2] = scratchEncodedPos.high.z;
-    instanceData[offset + 3] = bb.scale || 1.0;
+  // posLowAndRotation
+  out[offset + 4] = scratchEncodedPos.low.x;
+  out[offset + 5] = scratchEncodedPos.low.y;
+  out[offset + 6] = scratchEncodedPos.low.z;
+  out[offset + 7] = bb.rotation || 0.0;
 
-    // posLowAndRotation
-    instanceData[offset + 4] = scratchEncodedPos.low.x;
-    instanceData[offset + 5] = scratchEncodedPos.low.y;
-    instanceData[offset + 6] = scratchEncodedPos.low.z;
-    instanceData[offset + 7] = bb.rotation || 0.0;
+  // compressedAttr0: pixelOffset.xy, alignedAxis.xy
+  const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
+  out[offset + 8] = pixelOffset.x;
+  out[offset + 9] = pixelOffset.y;
+  out[offset + 10] = 0.0;
+  out[offset + 11] = 0.0;
 
-    // compressedAttr0: pixelOffset.xy, alignedAxis.xy
-    const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
-    instanceData[offset + 8] = pixelOffset.x;
-    instanceData[offset + 9] = pixelOffset.y;
-    instanceData[offset + 10] = 0.0;
-    instanceData[offset + 11] = 0.0;
-
-    // compressedAttr1: imageRect (x,y,w,h in atlas, normalized)
-    const imageRect =
-      bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
-    if (defined(imageRect) && typeof imageRect === "object") {
-      instanceData[offset + 12] = imageRect.x || 0;
-      instanceData[offset + 13] = imageRect.y || 0;
-      instanceData[offset + 14] = imageRect.width || 1;
-      instanceData[offset + 15] = imageRect.height || 1;
-    } else {
-      instanceData[offset + 12] = 0.0;
-      instanceData[offset + 13] = 0.0;
-      instanceData[offset + 14] = 1.0;
-      instanceData[offset + 15] = 1.0;
-    }
-
-    // Fill color
-    const color = bb.color || Color.WHITE;
-    instanceData[offset + 16] = color.red;
-    instanceData[offset + 17] = color.green;
-    instanceData[offset + 18] = color.blue;
-    instanceData[offset + 19] = color.alpha;
-
-    // miscFlags: show, sizeInMeters, width, height
-    instanceData[offset + 20] = 1.0;
-    instanceData[offset + 21] = bb.sizeInMeters ? 1.0 : 0.0;
-    instanceData[offset + 22] = bb.width || 32.0;
-    instanceData[offset + 23] = bb.height || 32.0;
-
-    // Outline color — from the billboard's label parent
-    const outlineColor = bb.outlineColor || Color.BLACK;
-    instanceData[offset + 24] = outlineColor.red;
-    instanceData[offset + 25] = outlineColor.green;
-    instanceData[offset + 26] = outlineColor.blue;
-    instanceData[offset + 27] = outlineColor.alpha;
-
-    // SDF params: outlineWidth, sdfEdge, 0, 0
-    instanceData[offset + 28] = bb.outlineWidth || 0.0;
-    instanceData[offset + 29] = SDF_EDGE;
-    instanceData[offset + 30] = 0.0;
-    instanceData[offset + 31] = 0.0;
-
-    // DP-H42 / DP-H40 / A.14 — perInstanceFlags. Labels inherit
-    // `disableDepthTestDistance`, `splitDirection`, and
-    // `distanceDisplayCondition` from the parent Label; the glyph
-    // billboards have these fields propagated from the label via
-    // `Label.set distanceDisplayCondition` → `glyph.billboard.distanceDisplayCondition`.
-    //   x: disableDepthTestDistance (raw meters; squared in shader)
-    //   y: splitDirection
-    //   z: distanceDisplayCondition.near^2 (Batch 137)
-    //   w: distanceDisplayCondition.far^2 (Batch 137)
-    instanceData[offset + 32] = encodeDisableDepthTestDistance(
-      bb._disableDepthTestDistance,
-    );
-    instanceData[offset + 33] = bb._splitDirection ?? 0.0;
-    const ddc = bb._distanceDisplayCondition;
-    if (ddc) {
-      const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
-      const ddcFar =
-        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
-      instanceData[offset + 34] = ddcNear * ddcNear;
-      instanceData[offset + 35] = isFinite(ddcFar)
-        ? ddcFar * ddcFar
-        : Number.MAX_VALUE;
-    } else {
-      instanceData[offset + 34] = 0.0;
-      instanceData[offset + 35] = Number.MAX_VALUE;
-    }
-
-    // AUDIT_2026_05_02 A.14 (Batch 137) — three NearFarScalar gates
-    // packed into vec4 slots 9/10/11. Identity = 1.0 for all (each is
-    // multiplicative onto alpha / pixel-offset / scale). The labels
-    // propagate their parent's properties to glyph billboards via
-    // `Label.set translucencyByDistance` etc., so reading from the
-    // billboard's `_translucencyByDistance` etc. gives the right value.
-    packNearFarScalar(
-      instanceData,
-      offset + 36,
-      bb._translucencyByDistance,
-      1.0,
-    );
-    packNearFarScalar(
-      instanceData,
-      offset + 40,
-      bb._pixelOffsetScaleByDistance,
-      1.0,
-    );
-    packNearFarScalar(instanceData, offset + 44, bb._scaleByDistance, 1.0);
-
-    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointAttribs.
-    //   .x: depthOrigin.x — Label-only "horizontal anchor for the
-    //        depth-check sample point." Label uses HorizontalOrigin
-    //        enum: LEFT=-1, CENTER=0, RIGHT=+1. We read from the
-    //        underlying glyph billboard's `_horizontalOrigin` (set
-    //        by `Label._rebindAllGlyphs`).
-    //   .y: depthOrigin.y — VerticalOrigin enum: TOP=-1, CENTER=0,
-    //        BOTTOM=+1.
-    //   .z: enableDepthCheck — 1.0 default; future hook for the
-    //        "label is below ellipsoid" case which WebGL detects via
-    //        scene-mode + ellipsoid intersection. For first cut we
-    //        always enable; deferred refinement matches WebGL's edge
-    //        case.
-    //   .w: reserved.
-    const horizontalOrigin =
-      typeof bb._horizontalOrigin === "number" ? bb._horizontalOrigin : 0;
-    const verticalOrigin =
-      typeof bb._verticalOrigin === "number" ? bb._verticalOrigin : 0;
-    instanceData[offset + 48] = horizontalOrigin;
-    instanceData[offset + 49] = verticalOrigin;
-    instanceData[offset + 50] = 1.0;
-    instanceData[offset + 51] = 0.0;
-
-    visibleCount++;
+  // compressedAttr1: imageRect (x,y,w,h in atlas, normalized)
+  const imageRect =
+    bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
+  if (defined(imageRect) && typeof imageRect === "object") {
+    out[offset + 12] = imageRect.x || 0;
+    out[offset + 13] = imageRect.y || 0;
+    out[offset + 14] = imageRect.width || 1;
+    out[offset + 15] = imageRect.height || 1;
+  } else {
+    out[offset + 12] = 0.0;
+    out[offset + 13] = 0.0;
+    out[offset + 14] = 1.0;
+    out[offset + 15] = 1.0;
   }
 
-  return { instanceData, visibleCount };
+  // Fill color
+  const color = bb.color || Color.WHITE;
+  out[offset + 16] = color.red;
+  out[offset + 17] = color.green;
+  out[offset + 18] = color.blue;
+  out[offset + 19] = color.alpha;
+
+  // miscFlags: show, sizeInMeters, width, height
+  out[offset + 20] = 1.0;
+  out[offset + 21] = bb.sizeInMeters ? 1.0 : 0.0;
+  out[offset + 22] = bb.width || 32.0;
+  out[offset + 23] = bb.height || 32.0;
+
+  // Outline color — from the billboard's label parent
+  const outlineColor = bb.outlineColor || Color.BLACK;
+  out[offset + 24] = outlineColor.red;
+  out[offset + 25] = outlineColor.green;
+  out[offset + 26] = outlineColor.blue;
+  out[offset + 27] = outlineColor.alpha;
+
+  // SDF params: outlineWidth, sdfEdge, 0, 0
+  out[offset + 28] = bb.outlineWidth || 0.0;
+  out[offset + 29] = SDF_EDGE;
+  out[offset + 30] = 0.0;
+  out[offset + 31] = 0.0;
+
+  // DP-H42 / DP-H40 / A.14 — perInstanceFlags. Labels inherit
+  // `disableDepthTestDistance`, `splitDirection`, and
+  // `distanceDisplayCondition` from the parent Label; the glyph
+  // billboards have these fields propagated from the label via
+  // `Label.set distanceDisplayCondition` → `glyph.billboard.distanceDisplayCondition`.
+  //   x: disableDepthTestDistance (raw meters; squared in shader)
+  //   y: splitDirection
+  //   z: distanceDisplayCondition.near^2 (Batch 137)
+  //   w: distanceDisplayCondition.far^2 (Batch 137)
+  out[offset + 32] = encodeDisableDepthTestDistance(
+    bb._disableDepthTestDistance,
+  );
+  out[offset + 33] = bb._splitDirection ?? 0.0;
+  const ddc = bb._distanceDisplayCondition;
+  if (ddc) {
+    const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
+    const ddcFar =
+      typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+    out[offset + 34] = ddcNear * ddcNear;
+    out[offset + 35] = isFinite(ddcFar) ? ddcFar * ddcFar : Number.MAX_VALUE;
+  } else {
+    out[offset + 34] = 0.0;
+    out[offset + 35] = Number.MAX_VALUE;
+  }
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — three NearFarScalar gates
+  // packed into vec4 slots 9/10/11. Identity = 1.0 for all (each is
+  // multiplicative onto alpha / pixel-offset / scale). The labels
+  // propagate their parent's properties to glyph billboards via
+  // `Label.set translucencyByDistance` etc., so reading from the
+  // billboard's `_translucencyByDistance` etc. gives the right value.
+  packNearFarScalar(out, offset + 36, bb._translucencyByDistance, 1.0);
+  packNearFarScalar(out, offset + 40, bb._pixelOffsetScaleByDistance, 1.0);
+  packNearFarScalar(out, offset + 44, bb._scaleByDistance, 1.0);
+
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointAttribs.
+  //   .x: depthOrigin.x — Label-only "horizontal anchor for the
+  //        depth-check sample point." Label uses HorizontalOrigin
+  //        enum: LEFT=-1, CENTER=0, RIGHT=+1. We read from the
+  //        underlying glyph billboard's `_horizontalOrigin` (set
+  //        by `Label._rebindAllGlyphs`).
+  //   .y: depthOrigin.y — VerticalOrigin enum: TOP=-1, CENTER=0,
+  //        BOTTOM=+1.
+  //   .z: enableDepthCheck — 1.0 default; future hook for the
+  //        "label is below ellipsoid" case which WebGL detects via
+  //        scene-mode + ellipsoid intersection. For first cut we
+  //        always enable; deferred refinement matches WebGL's edge
+  //        case.
+  //   .w: reserved.
+  const horizontalOrigin =
+    typeof bb._horizontalOrigin === "number" ? bb._horizontalOrigin : 0;
+  const verticalOrigin =
+    typeof bb._verticalOrigin === "number" ? bb._verticalOrigin : 0;
+  out[offset + 48] = horizontalOrigin;
+  out[offset + 49] = verticalOrigin;
+  out[offset + 50] = 1.0;
+  out[offset + 51] = 0.0;
 }
 
 /**
@@ -1008,11 +995,62 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     cache.sdfBindGroupUniformBuffer = uniformBuffer;
   }
 
-  // Build SDF instance data
-  const { instanceData, visibleCount } = buildSDFInstanceData(
-    glyphCollection,
-    labelCollection,
-  );
+  // SDF instance data — resident-instance manager path
+  // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL, label
+  // half). The manager owns the resident CPU array, the GPU vertex
+  // buffer, and the slot-aligned velocity prev mirror, replacing the
+  // former unconditional whole-collection pack + writeBuffer every frame.
+  //
+  // GRANULARITY NOTE (load-bearing): unlike billboards/points, the glyph
+  // stream takes the FULL-REBUILD path whenever ANY glyph is dirty
+  // (`forceFullRebuild` includes `glyphDirtyCount > 0`). Label dirty
+  // granularity is NOT sound for per-slot partial writes:
+  //   - `LabelCollection.repositionAllGlyphs` mutates glyph layout state
+  //     via direct field writes (`billboard._labelDimensions.x = ...`,
+  //     `._labelHorizontalOrigin = ...`) that never call makeDirty, and
+  //   - `rebindAllGlyphs` re-purposes spare billboards across labels
+  //     (show toggles + image swaps), shifting the compacted slot mapping
+  //     mid-frame in ways one glyph's dirty entry doesn't describe.
+  // A partial write driven by that list can render stale glyphs; per the
+  // Phase 1 scope this is wired conservative-correct. The big win stands:
+  // a SETTLED label collection (dirty list empty) uploads NOTHING, where
+  // pre-Batch-232 it re-packed + re-uploaded every glyph every frame.
+  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+  if (!defined(cache.sdfInstanceManager)) {
+    cache.sdfInstanceManager = new WebGPUResidentInstanceBuffer(
+      device,
+      "Label SDF instances",
+    );
+  }
+
+  // ORDERING (load-bearing): capture the dirty state BEFORE the consume
+  // call below clears it. `_createVertexArray` covers glyph add/remove/
+  // mode-change; atlas-guid rotation re-shapes every packed imageRect;
+  // MORPHING recomputes `_actualPosition` per frame without dirtying.
+  const glyphDirtyCount = glyphCollection._billboardsToUpdateIndex;
+  const forceFullRebuild =
+    glyphDirtyCount > 0 ||
+    glyphCollection._createVertexArray === true ||
+    cache._instanceDefines !== defines ||
+    cache._instanceSceneMode !== frameState.mode ||
+    cache._instanceAtlasGuid !== atlasGuid ||
+    frameState.mode === SceneMode.MORPHING;
+
+  const syncResult = cache.sdfInstanceManager.sync({
+    items: glyphCollection._billboards,
+    length: glyphCollection.length,
+    dirtyList: glyphCollection._billboardsToUpdate,
+    dirtyCount: glyphDirtyCount,
+    packInstance: packSDFGlyphInstance,
+    isVisible: isGlyphVisible,
+    floatsPerInstance: FLOATS_PER_SDF_INSTANCE,
+    bytesPerInstance: BYTES_PER_SDF_INSTANCE,
+    forceFullRebuild: forceFullRebuild,
+    mirrorPrev: taaEnabledThisFrame,
+  });
+  cache._instanceDefines = defines;
+  cache._instanceSceneMode = frameState.mode;
+  cache._instanceAtlasGuid = atlasGuid;
 
   // Consume the glyph collection's dirty-tracking state now that this frame's
   // SDF instance data is captured. The glyph collection is a BillboardCollection
@@ -1024,85 +1062,11 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   // (NEW-COLLECTIONS-DIRTY-GATE step 0 — labels.)
   glyphCollection._consumeDirtyState();
 
-  if (visibleCount === 0) {
+  const visibleCount = syncResult.visibleCount;
+  if (visibleCount === 0 || !defined(syncResult.buffer)) {
     return;
   }
-
-  const requiredSize = visibleCount * BYTES_PER_SDF_INSTANCE;
-  if (
-    !defined(cache.sdfInstanceBuffer) ||
-    cache.sdfInstanceBuffer.size < requiredSize
-  ) {
-    if (defined(cache.sdfInstanceBuffer)) {
-      cache.sdfInstanceBuffer.destroy();
-    }
-    cache.sdfInstanceBuffer = WebGPUBuffer.createVertexBuffer(
-      device,
-      requiredSize,
-      false,
-      "Label SDF instances",
-    );
-  }
-
-  // AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
-  // before overwriting the GPU instance buffer with this frame's data,
-  // upload the PREVIOUS frame's data to the prev-instance buffer so
-  // the velocity VS reads both streams at slot 0 and slot 1. See
-  // `WebGPUBillboardRenderer.js`'s prev-instance pattern for the full
-  // design notes — this mirror is identical except for the SDF
-  // per-instance stride.
-  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
-  if (taaEnabledThisFrame || defined(cache.sdfPrevInstanceBuffer)) {
-    if (
-      !defined(cache.sdfPrevInstanceBuffer) ||
-      cache.sdfPrevInstanceBuffer.size < requiredSize
-    ) {
-      if (defined(cache.sdfPrevInstanceBuffer)) {
-        cache.sdfPrevInstanceBuffer.destroy();
-      }
-      cache.sdfPrevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
-        device,
-        requiredSize,
-        false,
-        "Label SDF prev instances",
-      );
-    }
-    const prevSource = cache.sdfPrevInstanceData ?? instanceData;
-    let prevPayload = prevSource;
-    const expectedFloats = visibleCount * FLOATS_PER_SDF_INSTANCE;
-    if (prevSource.length < expectedFloats) {
-      // Last frame had fewer glyphs — pad the tail with current data so
-      // newly-spawned glyphs see prev = current → zero velocity.
-      prevPayload = new Float32Array(expectedFloats);
-      prevPayload.set(prevSource);
-      prevPayload.set(
-        instanceData.subarray(prevSource.length, expectedFloats),
-        prevSource.length,
-      );
-    } else if (prevSource.length > expectedFloats) {
-      prevPayload = prevSource.subarray(0, expectedFloats);
-    }
-    device.queue.writeBuffer(
-      cache.sdfPrevInstanceBuffer.buffer,
-      0,
-      prevPayload.buffer,
-      prevPayload.byteOffset,
-      requiredSize,
-    );
-  }
-
-  device.queue.writeBuffer(
-    cache.sdfInstanceBuffer.buffer,
-    0,
-    instanceData.buffer,
-    0,
-    requiredSize,
-  );
-
-  // Stash this frame's data so next frame's velocity pass has prev
-  // available. Always done — even when TAA is off — so a TAA off → on
-  // transition doesn't lose a frame of history.
-  cache.sdfPrevInstanceData = instanceData;
+  cache.sdfInstanceBuffer = syncResult.buffer;
 
   // Create SDF draw command. Labels are alpha-blended via the SDF shader, so
   // they must run in the TRANSLUCENT pass or they'll paint opaque rectangles
@@ -1146,11 +1110,14 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   // Batch 143. Only emitted when TAA is enabled this frame AND the
   // velocity pipeline resolved (it can be null on the first frame
   // after TAA enables, while async pipeline creation is in flight).
-  if (taaEnabledThisFrame && velocityPipeline && cache.sdfPrevInstanceBuffer) {
+  // The prev mirror is slot-aligned with the current buffer by the
+  // resident-instance manager, so the velocity VS reads matching
+  // instances at locations 13/14.
+  if (taaEnabledThisFrame && velocityPipeline && syncResult.prevBuffer) {
     const sdfVelocityCommand = new WebGPUDrawCommand({
       pipeline: velocityPipeline,
       bindGroups: [cache.sdfBindGroup],
-      vertexBuffers: [cache.sdfInstanceBuffer, cache.sdfPrevInstanceBuffer],
+      vertexBuffers: [cache.sdfInstanceBuffer, syncResult.prevBuffer],
       vertexCount: VERTICES_PER_QUAD,
       instanceCount: visibleCount,
       pass: labelPass,
@@ -1203,11 +1170,11 @@ function destroyWebGPULabelResources(labelCollection) {
   if (!defined(cache)) {
     return;
   }
-  if (defined(cache.sdfInstanceBuffer)) {
-    cache.sdfInstanceBuffer.destroy();
-  }
-  if (defined(cache.sdfPrevInstanceBuffer)) {
-    cache.sdfPrevInstanceBuffer.destroy();
+  // The resident-instance manager owns the current SDF instance buffer
+  // AND the velocity prev mirror (cache.sdfInstanceBuffer is just an
+  // alias of manager.buffer for the draw command).
+  if (defined(cache.sdfInstanceManager)) {
+    cache.sdfInstanceManager.destroy();
   }
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();

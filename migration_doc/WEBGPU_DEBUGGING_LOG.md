@@ -10359,3 +10359,54 @@ and pre-existing upstream uses (EllipseGeometry semiMajorAxis, "orbital altitude
 `FeatureRendererKey.js`, `WebGPUFeatureRenderers.ts`, `WebGPUShaderDefines.ts`,
 "WebGPU Orbital Catalog.html", both probes, DEFERRED_WORK / FEATURE_INVENTORY /
 LARGE_DYNAMIC_OBJECTS_DESIGN docs.
+
+## Batch 232 — Point + Label wired onto the resident-instance partial-write manager (NEW-PARTIAL-WRITE-WIRE-BPL complete) (2026-06-12)
+
+**Not a bug fix — Phase 1 completion across collections.** Billboard was wired in Batch 229; this
+batch wires `WebGPUPointPrimitiveRenderer` + `WebGPULabelRenderer` (SDF glyph stream) onto
+`WebGPUResidentInstanceBuffer`, replacing their all-or-nothing rebuild/full-upload paths. A settled
+collection now uploads NOTHING per frame; a sparse point edit uploads only the changed slots'
+byte ranges.
+
+**Point half:** the whole-collection pack loop extracted into `packPointInstance(out, off, point)`
++ `isPointInstance` (= `defined` — hidden points KEEP their slot because `_show` is packed into the
+record (float 15) and the shader collapses hidden quads, so a `show` toggle is a partial write,
+never a slot shift; only holes pending compaction lack slots, and removal always arrives with
+`_createVertexArray`). The manager subsumes the former `needsRebuild` gate. `forceFullRebuild` =
+pre-consume `_createVertexArray` | defines rotation | sceneMode change | MORPHING (no atlas guid —
+points sample no texture). Ordering is load-bearing: dirty list
+(`_pointPrimitivesToUpdate[0.._pointPrimitivesToUpdateIndex)`) is captured + synced BEFORE
+`_consumeDirtyState()` resets the index. The colorCommand is recreated every frame (cheap object)
+so defines/blend-option/visibleCount rotation always lands; the velocity command now reads the
+manager's slot-aligned prev mirror; the pick path is unchanged (full pick build on pick frames).
+
+**Label half — deliberately full-rebuild-on-ANY-dirty:** `buildSDFInstanceData` extracted into
+`packSDFGlyphInstance` + `isGlyphVisible` (`defined && show` — spare glyph billboards parked by
+`rebindAllGlyphs` hold no slot). `forceFullRebuild` = `glyphDirtyCount > 0` | glyph
+`_createVertexArray` | defines | sceneMode | atlas-guid | MORPHING. Glyph dirty granularity is NOT
+sound for per-slot partial writes: `LabelCollection.repositionAllGlyphs` mutates glyph layout state
+via direct field writes (`billboard._labelDimensions.x = ...`, `._labelHorizontalOrigin = ...`)
+that never call makeDirty, and `rebindAllGlyphs` re-purposes spare billboards across labels
+(show toggles + image swaps) shifting the compacted slot map in ways one glyph's dirty entry
+doesn't describe. Everything `packSDFGlyphInstance` READS does route through makeDirty setters
+(`_setTranslate` dirties on change), so the settled-frame skip is safe — but per-slot writes
+driven by that list could render stale glyphs, hence conservative-correct. The big win stands:
+a settled label collection uploads nothing, where pre-Batch-232 it re-packed + re-uploaded every
+glyph every frame unconditionally.
+
+**Verification (Principle 8):** NEW `probe-point-label-partial-write.mjs` — PASS:
+(A) 1000 points + 200 labels settled → 0 full rebuilds / 0 partial writes / 0 bytes on BOTH
+managers over 30 frames; (B) move 1 point → exactly 1 partial write of exactly 112 B (1 point
+stride), 0 full rebuilds, settles after one frame, mover renders at the new position (cyan 0→34
+px); (C) label text "i"→"WWWW" → 2 full rebuilds / 0 partials on the label manager only (point
+manager untouched: 0/0), new text renders (yellow 9→137 px in the label window); (D) points render
+throughout (magenta 2947/2947); (E) 0 console errors. Regression: probe-billboard-partial-write
+(1×176 B, PASS), probe-polyline-cloud-consume (PASS), probe-orbital-catalog (PASS),
+probe-compute-instance-generic (PASS). `npx gulp build` + `npx tsc --noEmit` clean.
+
+**Files:** `Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js`,
+`Renderer/WebGPU/WebGPULabelRenderer.js`, `Renderer/WebGPU/WebGPUResidentInstanceBuffer.ts`
+(docstring only), +`Tools/visual-regression/probe-point-label-partial-write.mjs`,
+DEFERRED_WORK / FEATURE_INVENTORY / LARGE_DYNAMIC_OBJECTS_DESIGN / DEBUGGING_GUIDE docs
+(DEBUGGING_GUIDE gains a "Collections" probe-inventory section backfilling the Batch 226-231
+collection probes that had drifted out of the guide).
