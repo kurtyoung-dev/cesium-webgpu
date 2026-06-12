@@ -279,6 +279,12 @@ struct TileUniforms {
   //   z = atmosphereLightIntensity
   //   w = reserved
   groundAtmosphereControl: vec4<f32>,
+  // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES) — WebGL's `u_initialColor`:
+  // `globe.baseColor` on the first pass (rendered where no imagery is
+  // available), transparent black on subsequent multi-pass imagery passes
+  // (matching WebGL's `otherPassesInitialColor`). Replaces the previous
+  // hardcoded vec3(0.04, 0.04, 0.06) first-pass base.
+  initialColor: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -2856,17 +2862,13 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 
   let isSubsequentPass = tile.flags.w > 0.5;
 
-  // Base color: dark for first pass (night side will be very dark),
-  // transparent for subsequent multi-pass imagery.
-  var color: vec3<f32>;
-  var alpha: f32;
-  if (isSubsequentPass) {
-    color = vec3<f32>(0.0, 0.0, 0.0);
-    alpha = 0.0;
-  } else {
-    color = vec3<f32>(0.04, 0.04, 0.06);
-    alpha = 1.0;
-  }
+  // Base color: `globe.baseColor` (tile.initialColor — WebGL's
+  // `u_initialColor`) for the first pass, transparent for subsequent
+  // multi-pass imagery (the CPU packer zeroes the slot). Batch 247 —
+  // previously hardcoded vec3(0.04, 0.04, 0.06), which rendered
+  // rgb(10,10,15) where WebGL rendered the configured baseColor.
+  var color: vec3<f32> = tile.initialColor.rgb;
+  var alpha: f32 = tile.initialColor.a;
 
   // Slice 5c-B Batch 117 — `normalEC` is hoisted to the top of the
   // function for the G-buffer emit. Reuse it here instead of normalizing

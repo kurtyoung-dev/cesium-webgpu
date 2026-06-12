@@ -1029,6 +1029,12 @@ interface CesiumGlobeTileProvider {
   hueShift?: number;
   saturationShift?: number;
   brightnessShift?: number;
+  /**
+   * `Globe.baseColor` — the color rendered where no imagery is available
+   * (WebGL `u_initialColor` / `_firstPassInitialColor`). Read by the
+   * terrain tile UB writer (Batch 247, NEW-GROUND-VIEW-ENV-DIVERGENCES).
+   */
+  baseColor?: CesiumColor;
   [key: string]: unknown;
 }
 

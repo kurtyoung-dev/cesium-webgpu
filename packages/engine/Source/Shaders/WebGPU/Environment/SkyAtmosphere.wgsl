@@ -23,12 +23,14 @@
 //    `pbrNeutralTonemapSky`, `pow(x, 1/2.2)`, `rgbToHsb`/`hsbToRgb`,
 //    `raySphereIntersect`.
 //
-// 2. **Ray-march step count.** GLSL: 16 uniform-stride samples with an
-//    adaptive `rayStepLengthIncrease` curve (AtmosphereCommon.glsl L81).
-//    WGSL: 64 uniform-stride samples (no adaptive curve). The 64-step
-//    grid converges to the same visual result with less code branching;
-//    cost is negligible since SkyAtmosphere only runs on the thin limb
-//    ring. See `NUM_SCATTER_STEPS` comment at line ~125.
+// 2. **Ray-march quadrature.** RESOLVED Batch 247 — `computeScattering`
+//    is now a 1:1 port of czm_computeScattering's 16/4 adaptive scheme
+//    (w_inside_atmosphere / w_stop_gt_lprl step counts + stride,
+//    including its quadrature quirks). The previous 64-step uniform
+//    march was MORE converged than WebGL, which made the ground-level
+//    sky ~1.5× brighter than the WebGL reference (the coarse GLSL
+//    quadrature undershoots the converged Rayleigh integral). See the
+//    `PRIMARY_STEPS_MAX` comment at line ~230.
 //
 // 3. **Per-vertex vs per-fragment.** GLSL has #ifdef
 //    PER_FRAGMENT_ATMOSPHERE that decides between vertex-evaluated
@@ -46,6 +48,14 @@
 //    no compute shaders, so the LUT bake step doesn't exist on that
 //    backend. WebGL always uses the inline ray march. Documented as
 //    an intentional one-way enhancement (Phase 4).
+//    ⚠ Batch 247: the JS side currently packs `useLut = 0`
+//    unconditionally (`ENABLE_SKY_INSCATTER_LUT = false` in
+//    WebGPUSkyAtmosphereRenderer) — the 2D bake encodes the world-space
+//    sun direction in a synthetic Y-up frame and has no view–sun
+//    azimuth axis, which rendered a frame-filling over-bright daytime
+//    sky at ground level (NEW-GROUND-VIEW-ENV-DIVERGENCES). The branch
+//    below is retained scaffolding for the sun-relative re-bake
+//    (DEFERRED_WORK: NEW-ATMOSPHERE-LUT-SUN-RELATIVE).
 //
 // 5. **Dual-light scattering (sun + moon).** WGSL samples a SECOND
 //    inscatter LUT (`moonInscatterLut`) when `dualLightControl.x > 0.5`
@@ -106,7 +116,16 @@ struct Uniforms {
   _pad2: f32,
   sunDirectionWC: vec3<f32>,
   _pad3: f32,
-  radiiAndDynamicAtmosphere: vec4<f32>, // x=innerRadius, y=outerRadius, z=dynamicLighting, w=unused
+  // x = innerRadius — WebGL-parity scattering-shell inner radius
+  //     (`(|cameraWC| - eyeHeight) - radiusAdjust`, Batch 247; mirrors
+  //     SkyAtmosphereCommon.glsl L43-54)
+  // y = outerRadius — innerRadius + 111e3 (czm_computeScattering's
+  //     ATMOSPHERE_THICKNESS)
+  // z = dynamicLighting enum
+  // w = WebGL-convention camera height for the altitude-opacity ramp
+  //     (`czm_eyeHeight + atmosphereInnerRadius`, SkyAtmosphereCommon.glsl
+  //     L104) — NOT |cameraPositionWC|, which differs by radiusAdjust
+  radiiAndDynamicAtmosphere: vec4<f32>,
   rayleighScaleHeight: f32,
   mieScaleHeight: f32,
   mieAnisotropy: f32,
@@ -218,22 +237,30 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 // Constants
 const PI: f32 = 3.14159265358979323846;
-// Session 65 cont. — NUM_SCATTER_STEPS bumped 16 → 64 to fix the
-// "no halo at orbit altitude" symptom. The previous 16 uniform-stride
-// samples on a typical limb chord (~3 Mm at LEO) had a spacing of
-// 187 km, but the atmosphere shell is only ~160 km thick — most
-// samples landed above the dense low-altitude region where most
-// scattering happens. 64 steps brings the sampling grid down to
-// ~47 km which captures the rayleigh shell properly. The cost is
-// O(N) per fragment but the SkyAtmosphere shader only runs on the
-// thin limb ring (a few thousand pixels), so the wall-clock impact
-// is negligible. WebGL's variable-stride 16-step ray-march dodges
-// this same problem via the `rayStepLengthIncrease` adaptive scheme
-// in AtmosphereCommon.glsl L81; we'd port that for parity but the
-// 64-step uniform version converges to the same visual result with
-// less code change.
-const NUM_SCATTER_STEPS: i32 = 64;
-const NUM_OPTICAL_DEPTH_STEPS: i32 = 8;
+// Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — `computeScattering`
+// below is now a 1:1 port of WebGL's `czm_computeScattering`
+// (Builtin/Functions/computeScattering.glsl): 16/4 max steps with the
+// adaptive `w_inside_atmosphere` / `w_stop_gt_lprl` step-count and
+// stride scheme, INCLUDING its quadrature quirks (first sample one full
+// step from the ray start, `total/7` stride inside the atmosphere).
+// The previous 64-step uniform-stride midpoint march was numerically
+// *more* converged than WebGL — which is exactly why it diverged:
+// WebGL's coarse inside-atmosphere quadrature undershoots the converged
+// Rayleigh integral, so the near-converged WGSL sky rendered ~1.5×
+// brighter at ground level even with identical coefficients and shell
+// geometry. Parity means matching WebGL's *output*, not the ideal
+// integral. (The earlier 64-step bump that fixed "no halo at orbit"
+// is preserved by this port too: at orbit `w_inside_atmosphere ≈ 0`
+// → 16 uniform steps from the shell entry point — the same sampling
+// WebGL uses to render its orbit halo.)
+const PRIMARY_STEPS_MAX: i32 = 16;
+const LIGHT_STEPS_MAX: i32 = 4;
+
+// Port of czm_approximateTanh (Builtin/Functions/approximateTanh.glsl).
+fn approximateTanh(x: f32) -> f32 {
+  let x2 = x * x;
+  return max(-1.0, min(1.0, x * (27.0 + x2) / (27.0 + 9.0 * x2)));
+}
 
 fn rayleighPhaseFunction(cosAngle: f32) -> f32 {
   return 3.0 / (16.0 * PI) * (1.0 + cosAngle * cosAngle);
@@ -262,68 +289,113 @@ fn raySphereIntersect(origin: vec3<f32>, dir: vec3<f32>, radius: f32) -> vec2<f3
   return vec2<f32>((-b - sqrtD) / (2.0 * a), (-b + sqrtD) / (2.0 * a));
 }
 
-fn opticalDepth(origin: vec3<f32>, dir: vec3<f32>, pathLength: f32, scaleHeight: f32, innerRadius: f32) -> f32 {
-  let stepSize = pathLength / f32(NUM_OPTICAL_DEPTH_STEPS);
-  var totalDensity: f32 = 0.0;
-  var point = origin + dir * (stepSize * 0.5);
-  for (var i: i32 = 0; i < NUM_OPTICAL_DEPTH_STEPS; i++) {
-    let height = max(0.0, length(point) - innerRadius);
-    totalDensity += densityAtHeight(height, scaleHeight) * stepSize;
-    point += dir * stepSize;
-  }
-  return totalDensity;
-}
-
+// 1:1 port of czm_computeScattering (computeScattering.glsl) followed by
+// czm_computeAtmosphereColor's phase/intensity combine. `rayOrigin` is the
+// CAMERA world position (GLSL `primaryRay.origin`) and `primaryRayLength`
+// is the camera→shell-fragment distance (GLSL `length(cameraToPositionWC)`)
+// — NOT a pre-clamped march segment; the function derives its own start/
+// stop exactly like the GLSL (no earth-surface clipping: WebGL doesn't
+// test the inner sphere here, and below-horizon fragments are overdrawn
+// by the globe anyway).
 fn computeScattering(
   rayOrigin: vec3<f32>,
   rayDir: vec3<f32>,
-  rayLength: f32,
+  primaryRayLength: f32,
   sunDir: vec3<f32>,
   innerRadius: f32,
   outerRadius: f32,
 ) -> vec3<f32> {
-  let stepSize = rayLength / f32(NUM_SCATTER_STEPS);
-  var point = rayOrigin + rayDir * (stepSize * 0.5);
+  let atmosphereThickness = outerRadius - innerRadius;
 
-  var totalRayleigh = vec3<f32>(0.0);
-  var totalMie = vec3<f32>(0.0);
-  var rayleighOpticalDepthSum: f32 = 0.0;
-  var mieOpticalDepthSum: f32 = 0.0;
-
-  for (var i: i32 = 0; i < NUM_SCATTER_STEPS; i++) {
-    let height = max(0.0, length(point) - innerRadius);
-    let rayleighDensity = densityAtHeight(height, u.rayleighScaleHeight) * stepSize;
-    let mieDensity = densityAtHeight(height, u.mieScaleHeight) * stepSize;
-
-    rayleighOpticalDepthSum += rayleighDensity;
-    mieOpticalDepthSum += mieDensity;
-
-    // Sun optical depth from this point
-    let sunIntersect = raySphereIntersect(point, sunDir, outerRadius);
-    if (sunIntersect.y > 0.0) {
-      let sunRayLength = sunIntersect.y;
-      let sunOptDepthR = opticalDepth(point, sunDir, sunRayLength, u.rayleighScaleHeight, innerRadius);
-      let sunOptDepthM = opticalDepth(point, sunDir, sunRayLength, u.mieScaleHeight, innerRadius);
-
-      let attenuation = exp(
-        -(u.rayleighCoefficient * (rayleighOpticalDepthSum + sunOptDepthR) +
-          u.mieCoefficient * (mieOpticalDepthSum + sunOptDepthM))
-      );
-
-      totalRayleigh += rayleighDensity * attenuation;
-      totalMie += mieDensity * attenuation;
-    }
-
-    point += rayDir * stepSize;
+  // Intersection from the camera to the outer ring of the atmosphere.
+  let intersect = raySphereIntersect(rayOrigin, rayDir, outerRadius);
+  if (intersect.y < 0.0) {
+    // GLSL czm_emptyRaySegment case — no scattering.
+    return vec3<f32>(0.0);
   }
 
+  // Sky-or-horizon soft split weight (GLSL w_stop_gt_lprl).
+  let x = 1e-7 * intersect.y / primaryRayLength;
+  let w_stop_gt_lprl = 0.5 * (1.0 + approximateTanh(x));
+
+  // Ray starts at the shell entry (or camera when inside); ends at the
+  // shell exit or the fragment distance, whichever is smaller.
+  let start_0 = intersect.x;
+  let tStart = max(intersect.x, 0.0);
+  let tStop = min(intersect.y, primaryRayLength);
+
+  // Inside-vs-outside atmosphere weight → adaptive step counts.
+  let x_o_a = start_0 - atmosphereThickness;
+  let w_inside_atmosphere = 1.0 - 0.5 * (1.0 + approximateTanh(x_o_a));
+  let primarySteps = PRIMARY_STEPS_MAX - i32(w_inside_atmosphere * 12.0);
+  let lightSteps = LIGHT_STEPS_MAX - i32(w_inside_atmosphere * 2.0);
+
+  var rayPositionLength = tStart;
+  let totalRayLength = tStop - rayPositionLength;
+  let rayStepLengthIncrease = w_inside_atmosphere *
+    ((1.0 - w_stop_gt_lprl) * totalRayLength /
+      (f32(primarySteps * (primarySteps + 1)) / 2.0));
+  var rayStepLength = max(1.0 - w_inside_atmosphere, w_stop_gt_lprl) *
+    totalRayLength / max(7.0 * w_inside_atmosphere, f32(primarySteps));
+
+  var rayleighAccumulation = vec3<f32>(0.0);
+  var mieAccumulation = vec3<f32>(0.0);
+  var opticalDepth = vec2<f32>(0.0);
+  let heightScale = vec2<f32>(u.rayleighScaleHeight, u.mieScaleHeight);
+
+  for (var i: i32 = 0; i < PRIMARY_STEPS_MAX; i++) {
+    if (i >= primarySteps) {
+      break;
+    }
+
+    // Sample position along the view ray — one full step from the start,
+    // matching the GLSL exactly (NOT midpoint).
+    let samplePosition = rayOrigin + rayDir * (rayPositionLength + rayStepLength);
+    let sampleHeight = length(samplePosition) - innerRadius;
+    let sampleDensity = exp(-sampleHeight / heightScale) * rayStepLength;
+    opticalDepth += sampleDensity;
+
+    // Light ray from the sample to the outer ring of the atmosphere.
+    let lightIntersect = raySphereIntersect(samplePosition, sunDir, outerRadius);
+    let lightStepLength = lightIntersect.y / f32(lightSteps);
+    var lightPositionLength = 0.0;
+    var lightOpticalDepth = vec2<f32>(0.0);
+
+    for (var j: i32 = 0; j < LIGHT_STEPS_MAX; j++) {
+      if (j >= lightSteps) {
+        break;
+      }
+      let lightPosition = samplePosition +
+        sunDir * (lightPositionLength + lightStepLength * 0.5);
+      let lightHeight = length(lightPosition) - innerRadius;
+      lightOpticalDepth += exp(-lightHeight / heightScale) * lightStepLength;
+      lightPositionLength += lightStepLength;
+    }
+
+    let attenuation = exp(
+      -((u.mieCoefficient * (opticalDepth.y + lightOpticalDepth.y)) +
+        (u.rayleighCoefficient * (opticalDepth.x + lightOpticalDepth.x)))
+    );
+
+    rayleighAccumulation += sampleDensity.x * attenuation;
+    mieAccumulation += sampleDensity.y * attenuation;
+
+    // GLSL: rayPositionLength += (rayStepLength += rayStepLengthIncrease);
+    rayStepLength += rayStepLengthIncrease;
+    rayPositionLength += rayStepLength;
+  }
+
+  // czm_computeAtmosphereColor combine: phase functions × accumulated
+  // scattering × light intensity. (The GLSL's transmittance `opacity`
+  // output is discarded by SkyAtmosphereCommon.glsl L106, which
+  // overwrites it with the altitude ramp — mirrored in fragmentMain.)
   let cosAngle = dot(rayDir, sunDir);
   let rayleighPhase = rayleighPhaseFunction(cosAngle);
   let miePhase = miePhaseFunction(cosAngle, u.mieAnisotropy);
 
   return u.intensity * (
-    totalRayleigh * u.rayleighCoefficient * rayleighPhase +
-    totalMie * u.mieCoefficient * miePhase
+    rayleighPhase * u.rayleighCoefficient * rayleighAccumulation +
+    miePhase * u.mieCoefficient * mieAccumulation
   );
 }
 
@@ -455,7 +527,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let outerRadius = u.radiiAndDynamicAtmosphere.y;
 
   let rayDir = normalize(input.cameraToVertex);
-  let cameraHeight = length(u.cameraPositionWC);
+  // Batch 247 — WebGL-convention camera height (eyeHeight + adjusted
+  // inner radius, packed CPU-side) for the altitude-opacity ramp;
+  // |cameraPositionWC| differs from it by the WebGL radiusAdjust.
+  let cameraHeight = u.radiiAndDynamicAtmosphere.w;
 
   // Determine ray origin and intersections
   var rayOrigin = u.cameraPositionWC;
@@ -565,7 +640,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       color = color + moonColor * moonScale;
     }
   } else {
-    color = computeScattering(startPoint, rayDir, rayLength, lightDirWC, innerRadius, outerRadius);
+    // Batch 247 — czm_computeScattering port takes the CAMERA origin and
+    // the camera→shell-fragment distance (GLSL primaryRayLength) and
+    // derives its own start/stop internally.
+    color = computeScattering(
+      u.cameraPositionWC,
+      rayDir,
+      length(input.cameraToVertex),
+      lightDirWC,
+      innerRadius,
+      outerRadius,
+    );
   }
 
   // Session 65 Batch 27 (NEW-VR2-3b limb halo fix) — match WebGL's

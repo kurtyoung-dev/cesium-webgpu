@@ -323,8 +323,24 @@ function executeCommands(scene, passState) {
         // scene renderer's executeBatch handles both WebGPU commands
         // (via command.execute(renderPass)) and WebGL-style commands
         // (via command.execute(context, passState)) transparently.
+        //
+        // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 2) — dedupe
+        // against commands already binned into this frustum's
+        // ENVIRONMENT slot from frameState.commandList. SkyAtmosphere
+        // and Sun follow the dual-path convention (push to commandList
+        // so a frustum exists on sky-only views AND return for
+        // environmentState); without the dedupe the injected
+        // skyAtmosphere DUPLICATE executed after the binned sun, and
+        // its alpha-over shell (alpha ≈ 1 at ground level) erased the
+        // sun disk WebGL shows. Identity scan is over ≤ a handful of
+        // env commands — negligible.
         const maybeInject = (cmd, label) => {
           if (defined(cmd) && typeof cmd.execute === "function") {
+            for (let c = 0; c < envIdx; c++) {
+              if (envCmds[c] === cmd) {
+                return;
+              }
+            }
             envCmds[envIdx++] = cmd;
           } else if (defined(cmd) && !scene._envDiagLogged) {
             console.warn(

@@ -160,9 +160,16 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                z = atmosphereLightIntensity (default 10.0)
 //                w = reserved
 //
-// Total = 476 floats = 1904 bytes. Well under WebGPU's
+// initialColor — vec4 globe.baseColor (WebGL `u_initialColor`) consumed
+//                by the no-imagery first-pass base color in
+//                GlobeTerrain.wgsl (Batch 247,
+//                NEW-GROUND-VIEW-ENV-DIVERGENCES fix 3). Subsequent
+//                passes leave it zeroed (transparent), matching WebGL's
+//                `otherPassesInitialColor`.
+//
+// Total = 480 floats = 1920 bytes. Well under WebGPU's
 // `maxUniformBufferBindingSize` floor (16 KiB).
-export const TILE_UNIFORM_FLOATS = 476;
+export const TILE_UNIFORM_FLOATS = 480;
 export const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Per-layer floats: vec4 translationAndScale + vec4 texCoordsRect +
@@ -193,6 +200,7 @@ export const SPLIT_POSITION_OFFSET = 462;
 export const DEBUG_FIELDS_OFFSET = 464;
 export const HSB_SHIFT_OFFSET = 468;
 export const GROUND_ATMOSPHERE_CONTROL_OFFSET = 472;
+export const INITIAL_COLOR_OFFSET = 476;
 
 // Max imagery layers per tile in a single draw call (16 — WebGPU minimum
 // `maxSampledTexturesPerShaderStage`). Tiles exceeding this count multi-pass.

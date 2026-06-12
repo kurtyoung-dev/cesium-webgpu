@@ -50,12 +50,33 @@ function getSkyAtmosphereShaderCache(device) {
 const UNIFORM_BUFFER_SIZE = 272;
 
 // Default atmosphere parameters
+// Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — the SKY shader's
+// inscatter-LUT fast path is DISABLED pending a sun-relative
+// re-parameterization of the bake (DEFERRED_WORK:
+// NEW-ATMOSPHERE-LUT-SUN-RELATIVE). The 2D LUT (AtmosphereLUT.wgsl
+// computeInscatter) bakes the WORLD-space sun direction into a synthetic
+// Y-up frame — geometrically unrelated to any fragment's local up — and
+// its (cosViewZenith, altitude) parameterization cannot represent the
+// view–sun azimuth dependence at all, so at ground level it rendered a
+// frame-filling daytime-bright sky regardless of actual sun geometry
+// (probe-ground-view-env: 1.73x the WebGL luminance). With the gate off,
+// the fragment shader takes the inline 64-step ray-march, which is the
+// parity port of WebGL's czm_computeScattering. The LUT BAKE still runs —
+// the globe/voxel/splat fog drape paths sample the same inscatter texture
+// and are tuned against it; only the sky shader's consumption is gated.
+// All LUT scaffolding (bake dispatch, bind group, WGSL branch, dual-light
+// moon LUT) stays in place for the re-parameterized bake to re-enable.
+const ENABLE_SKY_INSCATTER_LUT = false;
+
 const DEFAULT_RAYLEIGH_COEFFICIENT = new Cartesian3(5.5e-6, 13.0e-6, 22.4e-6);
 const DEFAULT_MIE_COEFFICIENT = new Cartesian3(21e-6, 21e-6, 21e-6);
 const DEFAULT_RAYLEIGH_SCALE_HEIGHT = 8500.0;
 const DEFAULT_MIE_SCALE_HEIGHT = 1200.0;
 const DEFAULT_MIE_ANISOTROPY = 0.758;
 const ATMOSPHERE_SCALE = 1.025;
+// WebGL's scattering-shell thickness (czm_computeScattering's
+// ATMOSPHERE_THICKNESS, computeScattering.glsl) — Batch 247.
+const ATMOSPHERE_THICKNESS = 111e3;
 
 // Scratch
 const scratchModelView = new Matrix4();
@@ -665,21 +686,66 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   // the WGSL struct), so removing it here doesn't lose any data the
   // shader actually reads — `u.radiiAndDynamicAtmosphere.z` was
   // documented as the enum slot but was never consumed by the WGSL.
-  // Forward-compatible: when the WGSL adds a per-fragment NONE
-  // branch, it can read `u.radiiAndDynamicAtmosphere.z` to make the
-  // decision without any further JS changes.
+  //
+  // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — port WebGL's
+  // scattering-shell geometry EXACTLY (SkyAtmosphereCommon.glsl L43-54 +
+  // czm_computeScattering's ATMOSPHERE_THICKNESS = 111e3):
+  //
+  //   radiusAdjust = (radiiDiff / 4) + distanceAdjust(eyeHeight)
+  //   atmosphereInnerRadius = (|cameraWC| - eyeHeight) - radiusAdjust
+  //   atmosphereOuterRadius = atmosphereInnerRadius + 111e3
+  //
+  // The previous packing used innerRadius = max ellipsoid radius and
+  // outerRadius = innerRadius × 1.025 (≈ 159.5 km shell). Two parity
+  // consequences at ground level: (a) density heights lacked WebGL's
+  // ~5.3 km radiusAdjust offset, over-weighting the Rayleigh integrand
+  // by ~1/exp(-5346/10000) ≈ 1.7× — the dominant term of the measured
+  // 1.7-1.8× ground-sky over-brightness; (b) the 43%-thicker shell
+  // stretched the altitude-opacity ramp. The `.w` slot packs WebGL's
+  // camera-height convention (`czm_eyeHeight + atmosphereInnerRadius`,
+  // SkyAtmosphereCommon.glsl L104) for the WGSL altitudeOpacity ramp.
+  // The shell MESH stays at ellipsoid × 1.025 (rasterization coverage
+  // only, same as WebGL's scaled ellipsoid geometry).
   const ellipsoid = skyAtmosphere._ellipsoid || Ellipsoid.WGS84;
-  const innerRadius = Cartesian3.maximumComponent(ellipsoid.radii);
-  const outerRadius = innerRadius * ATMOSPHERE_SCALE;
+  const maxRadius = Cartesian3.maximumComponent(ellipsoid.radii);
+  const camDist = Cartesian3.magnitude(camera.positionWC);
+  const eyeHeight = camera.positionCartographic?.height ?? camDist - maxRadius;
+  const radiiDiff = ellipsoid.radii.x - ellipsoid.radii.z;
+  const distanceAdjustMin = maxRadius / 4.0;
+  const distanceAdjustMax = maxRadius;
+  const distanceAdjustT = Math.min(
+    1.0,
+    Math.max(
+      0.0,
+      (eyeHeight - distanceAdjustMin) / (distanceAdjustMax - distanceAdjustMin),
+    ),
+  );
+  const radiusAdjust = radiiDiff / 4.0 + (radiiDiff / 2.0) * distanceAdjustT;
+  const innerRadius = camDist - eyeHeight - radiusAdjust;
+  const outerRadius = innerRadius + ATMOSPHERE_THICKNESS;
   uniformData[32] = innerRadius;
   uniformData[33] = outerRadius;
   uniformData[34] = dynamicLighting;
-  uniformData[35] = 0.0;
+  uniformData[35] = eyeHeight + innerRadius;
 
-  // Scale heights and anisotropy
-  uniformData[36] = DEFAULT_RAYLEIGH_SCALE_HEIGHT;
-  uniformData[37] = DEFAULT_MIE_SCALE_HEIGHT;
-  uniformData[38] = DEFAULT_MIE_ANISOTROPY;
+  // Scale heights and anisotropy — Batch 247 (NEW-GROUND-VIEW-ENV-
+  // DIVERGENCES fix 1): read the per-instance SkyAtmosphere properties
+  // (WebGL parity — `u_atmosphere*` uniforms in SkyAtmosphere.js) instead
+  // of module constants that had silently diverged from the WebGL
+  // defaults (8500/1200/0.758 vs WebGL's 10000/3200/0.9). This both
+  // matches the WebGL reference AND honors user-configured values.
+  // NOTE: the LUT bake dispatch (createOrUpdateLutResources) still uses
+  // the legacy DEFAULT_* constants — the inscatter LUT now only feeds the
+  // globe/voxel/splat fog drape paths (see ENABLE_SKY_INSCATTER_LUT),
+  // which are tuned against those constants. Unify when the LUT is
+  // re-parameterized (DEFERRED_WORK: NEW-ATMOSPHERE-LUT-SUN-RELATIVE).
+  uniformData[36] =
+    skyAtmosphere.atmosphereRayleighScaleHeight ??
+    DEFAULT_RAYLEIGH_SCALE_HEIGHT;
+  uniformData[37] =
+    skyAtmosphere.atmosphereMieScaleHeight ?? DEFAULT_MIE_SCALE_HEIGHT;
+  uniformData[38] =
+    skyAtmosphere.atmosphereMieAnisotropy ?? DEFAULT_MIE_ANISOTROPY;
   uniformData[39] = skyAtmosphere.atmosphereLightIntensity || 50.0;
 
   // hsbShift + useLut flag (replaces _pad4 — see SkyAtmosphere.wgsl Uniforms)
@@ -711,15 +777,23 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   const mieScaleRT = 0.5 + humidityRT;
   const rayleighScaleRT = airQualityRT > 0.001 ? 1.0 / airQualityRT : 1000.0;
 
-  uniformData[44] = DEFAULT_RAYLEIGH_COEFFICIENT.x * rayleighScaleRT;
-  uniformData[45] = DEFAULT_RAYLEIGH_COEFFICIENT.y * rayleighScaleRT;
-  uniformData[46] = DEFAULT_RAYLEIGH_COEFFICIENT.z * rayleighScaleRT;
+  // Batch 247 — read the per-instance coefficients (WebGL parity; the
+  // module DEFAULT_RAYLEIGH_COEFFICIENT's blue term 22.4e-6 had diverged
+  // from WebGL's 28.4e-6 default). Weather scaling stays a fork extra
+  // (neutral at default humidity 0.5 / airQuality 1.0).
+  const rayleighCoefRT =
+    skyAtmosphere.atmosphereRayleighCoefficient ?? DEFAULT_RAYLEIGH_COEFFICIENT;
+  const mieCoefRT =
+    skyAtmosphere.atmosphereMieCoefficient ?? DEFAULT_MIE_COEFFICIENT;
+  uniformData[44] = rayleighCoefRT.x * rayleighScaleRT;
+  uniformData[45] = rayleighCoefRT.y * rayleighScaleRT;
+  uniformData[46] = rayleighCoefRT.z * rayleighScaleRT;
   uniformData[47] = 0.0;
 
   // mieCoefficient (humidity-scaled — see comment above).
-  uniformData[48] = DEFAULT_MIE_COEFFICIENT.x * mieScaleRT;
-  uniformData[49] = DEFAULT_MIE_COEFFICIENT.y * mieScaleRT;
-  uniformData[50] = DEFAULT_MIE_COEFFICIENT.z * mieScaleRT;
+  uniformData[48] = mieCoefRT.x * mieScaleRT;
+  uniformData[49] = mieCoefRT.y * mieScaleRT;
+  uniformData[50] = mieCoefRT.z * mieScaleRT;
   uniformData[51] = 0.0;
 
   // Tier 1 debug controls. Read from frameState (set by Scene each frame)
@@ -942,8 +1016,16 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     skyAtmosphere,
   );
 
-  // Update uniforms every frame
-  packUniforms(cache.uniformData, frameState, skyAtmosphere, lutInfo.useLut);
+  // Update uniforms every frame. The SKY shader's LUT fast-path is gated
+  // off (ENABLE_SKY_INSCATTER_LUT) — see the constant's doc block; the
+  // bake itself still runs above because the globe fog drape consumes
+  // the same inscatter texture.
+  packUniforms(
+    cache.uniformData,
+    frameState,
+    skyAtmosphere,
+    ENABLE_SKY_INSCATTER_LUT && lutInfo.useLut,
+  );
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,

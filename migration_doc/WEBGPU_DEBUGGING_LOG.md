@@ -10778,6 +10778,71 @@ corrected ("Wired (Session 17)" → in-globe-FS working state).
 probe-orbital-catalog PASS (magenta 14154/14528, mask Δ185.7%, 0 errors); probe-compute-instance-generic
 PASS (6287/6406, Δ177.8%, BV + TAA on/off checks OK, 0 errors).
 
+## Batch 247 — Ground-level environment parity: sky brightness + sun disk + globe baseColor (NEW-GROUND-VIEW-ENV-DIVERGENCES) (2026-06-12)
+
+**Scope:** the three ground-level cross-backend divergences surfaced (per Principle 9) while
+stabilizing probe-bloom-parity in Batch 240. Each was root-caused against the WebGL reference
+shaders and fixed; `probe-ground-view-env.mjs` (webgl-vs-webgpu, same scene, numeric) is the gate.
+
+**Files:** `Shaders/WebGPU/Globe/GlobeTerrain.wgsl` (initialColor consume),
+`Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` (czm_computeScattering 1:1 port + shell-geometry
+uniforms + LUT-gate comment), `Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js` (WebGL shell
+geometry pack + per-instance coefficients + `ENABLE_SKY_INSCATTER_LUT=false`),
+`Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts` + `WebGPUGlobeSurfaceTypes.ts`
+(`TILE_UNIFORM_FLOATS` 476→480, `INITIAL_COLOR_OFFSET`), `Renderer/WebGPU/cesium-js-types.d.ts`
+(`baseColor` on the tile-provider interface), `Scene/Sun.js` (dual-path return),
+`Scene/SceneRenderer.js` (env-inject dedupe), `Tools/visual-regression/probe-ground-view-env.mjs` (new).
+
+**Fixes:**
+
+1. **Globe baseColor (fix 3).** NOT sRGB — the WGSL hardcoded `vec3(0.04,0.04,0.06)` (rgb 10,10,15)
+   for the first-pass base instead of WebGL's `u_initialColor` (`globe.baseColor`). Wired a
+   `TileUniforms.initialColor` vec4 tail: packer writes `tileProvider.baseColor` on the first pass
+   (zeroed scratch covers the transparent subsequent-pass case, matching `otherPassesInitialColor`).
+   `var color = tile.initialColor.rgb; var alpha = tile.initialColor.a;`. Now exact rgb(31,38,51).
+
+2. **Sun disk missing at ground level (fix 2).** The WebGPU sun command went onto
+   `frameState.commandList`, which is frustum-binned and executes BEFORE the env-injected
+   skyAtmosphere DUPLICATE — the alpha-over atmosphere shell (alpha≈1 at ground) overwrote the
+   disk. WebGL renders sun AFTER skyAtmosphere (EnvironmentRenderer.js). Fix: Sun.js now follows
+   the SkyAtmosphere dual-path convention (push to commandList so a frustum exists on sky-only
+   views AND return the command for `environmentState.sunDrawCommand`), and the ENVIRONMENT
+   injection in SceneRenderer.js dedupes against commands already binned from the commandList —
+   so the injected skyAtmosphere no longer double-executes after the binned sun. Disk present
+   (atmoOn bright-pixel 0→1051) with the atmosphere-off control unaffected (104 px).
+
+3. **Over-bright ground sky (fix 1).** Three compounding non-parity bugs:
+   - **LUT fast-path**: `AtmosphereLUT.wgsl::computeInscatter` bakes the world-space sun in a
+     synthetic Y-up frame and its `(cosViewZenith, altitude)` 2D table has no view-sun azimuth
+     axis, so at ground level it returned frame-filling daytime blue regardless of sun geometry.
+     Gated OFF for the sky shader (`ENABLE_SKY_INSCATTER_LUT=false`) — bake retained for the
+     globe fog drape. New deferred item NEW-ATMOSPHERE-LUT-SUN-RELATIVE tracks the re-bake.
+   - **Scattering shell geometry**: used `innerRadius=maxRadius`, `outerRadius=×1.025`. Re-ported
+     WebGL's `SkyAtmosphereCommon.glsl` exactly: `radiusAdjust = radiiDiff/4 + distanceAdjust`,
+     `innerRadius = (|cam|-eyeHeight) - radiusAdjust`, `outerRadius = inner + 111e3`. The missing
+     ~5 km radiusAdjust offset had over-weighted the Rayleigh density integrand ~1.7×. Camera
+     height for the altitude-opacity ramp now packs WebGL's `eyeHeight + innerRadius` convention
+     (`radiiAndDynamicAtmosphere.w`) rather than `|cameraPositionWC|`.
+   - **Quadrature**: the 64-step uniform midpoint march was MORE converged than WebGL's coarse
+     16/4 adaptive scheme — so even with matching coefficients the sky read ~1.5× brighter (the
+     GLSL quadrature undershoots the converged Rayleigh integral; parity = match WebGL's output,
+     not the ideal integral). `computeScattering` is now a 1:1 port of `czm_computeScattering`
+     (adaptive `w_inside_atmosphere`/`w_stop_gt_lprl` step counts + stride + light-ray loop).
+   - Also switched to per-instance `atmosphere{Rayleigh,Mie}Coefficient/ScaleHeight/Anisotropy`
+     (module constants had diverged from WebGL defaults — e.g. Rayleigh blue 22.4e-6 vs 28.4e-6).
+
+**Evidence (`probe-ground-view-env.mjs`, Edge headless):** ground-sky luminance ratio
+webgpu/webgl **1.73x → 0.99x**, HSB value **1.46x → 0.99x**; sun atmoOn bright-pixel **0 → 1051**
+(control atmoOff 104, both backends); globe baseColor **rgb(10,10,15) → rgb(31,38,51)** (exact vs
+WebGL & expected, ±0). 0 console errors both backends. PNGs visually confirmed (gradient sky +
+warm horizon + navy globe strip + star-burst sun disk all match WebGL). **No high-altitude
+regression:** orbit limb-halo ring is bit-comparable to HEAD (pre-existing dark shell-seam arcs
+are identical pre/post — NOT introduced here); bloom-parity (1.01x), orbital-catalog,
+globe-bindgroup-cache (0 creates/frame), ground-atmosphere (LUT fog-drape consumer still green,
+180626-px contribution), billboard-partial-write, compute-instance-generic, sandcastle-smoke all PASS.
+
+**Regression:** `npx tsc --noEmit` clean; `gulp build` green (44 s); all standing gates PASS.
+
 ## Batch 240 — Bloom uniform parity: ContrastBias bright-pass port + all six uniforms mapped (NEW-BLOOM-UNIFORM-PARITY) (2026-06-12)
 
 **Scope:** 2026-06-11 ultra-review HIGH (Axis A). The WebGPU bloom mis-mapped WebGL's

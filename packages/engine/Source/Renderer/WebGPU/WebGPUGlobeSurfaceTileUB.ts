@@ -75,6 +75,7 @@ import {
   DEBUG_FIELDS_OFFSET,
   HSB_SHIFT_OFFSET,
   GROUND_ATMOSPHERE_CONTROL_OFFSET,
+  INITIAL_COLOR_OFFSET,
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
@@ -703,6 +704,27 @@ export function createTileUniformBuffer(
   // channel before the post-process gets a chance to compress.
   const hdrEnabled = (frameState as { useHDR?: boolean }).useHDR === true;
   data[GROUND_ATMOSPHERE_CONTROL_OFFSET + 3] = hdrEnabled ? 1.0 : 0.0;
+
+  // ─── initialColor (vec4) — Batch 247, NEW-GROUND-VIEW-ENV-DIVERGENCES ───
+  // Mirrors WebGL's `u_initialColor`: `globe.baseColor` on the first pass
+  // (the color rendered where no imagery is available), transparent black
+  // (`otherPassesInitialColor`) on subsequent multi-pass imagery passes —
+  // the zeroed scratch already covers the subsequent-pass case. The WGSL
+  // previously hardcoded vec3(0.04, 0.04, 0.06), rendering rgb(10,10,15)
+  // where WebGL rendered the configured baseColor.
+  if (!isSubsequentPass) {
+    const baseColor = tileProvider?.baseColor;
+    if (baseColor) {
+      data[INITIAL_COLOR_OFFSET + 0] = baseColor.red ?? 0.0;
+      data[INITIAL_COLOR_OFFSET + 1] = baseColor.green ?? 0.0;
+      data[INITIAL_COLOR_OFFSET + 2] = baseColor.blue ?? 0.0;
+      data[INITIAL_COLOR_OFFSET + 3] = baseColor.alpha ?? 1.0;
+    } else {
+      // GlobeSurfaceTileProvider's constructor default: Color(0, 0, 0.5, 1).
+      data[INITIAL_COLOR_OFFSET + 2] = 0.5;
+      data[INITIAL_COLOR_OFFSET + 3] = 1.0;
+    }
+  }
 
   return writeUniformSlice(
     device,
