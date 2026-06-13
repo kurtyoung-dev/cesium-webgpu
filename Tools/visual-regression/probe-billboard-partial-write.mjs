@@ -15,10 +15,13 @@
 // (_fullRebuilds / _partialWrites / _bytesUploaded — debug-pragma
 // instrumentation, present in CesiumUnminified).
 //
-// GEOMETRY NOTE (depth-precision envelope): the camera sits ~8 km above the
-// billboards, NOT hundreds of km. The WebGPU globe + collection pipelines
-// write standard hyperbolic NDC depth (no log-depth — see the Batch 180
-// note in DEFERRED_WORK; WebGL billboards use czm log depth). At 220 km a
+// GEOMETRY NOTE (historical depth-precision envelope): the camera sits ~8 km
+// above the billboards. When this probe was written the WebGPU globe +
+// collection pipelines wrote standard hyperbolic NDC depth (WebGL used czm
+// log depth) — RESOLVED Batches 249-251 (NEW-COLLECTIONS-LOG-DEPTH): log
+// depth is live by default and probe-collections-far-camera.mjs covers the
+// 220 km envelope. The ~8 km camera here is kept for the probe's original
+// purpose (partial-write upload accounting, not depth range). At 220 km a
 // 1000 m billboard-above-ground separation is ~0.03 depth-quantization
 // steps (0.1*1000/220000^2 vs 2^-24) — an unresolvable tie, and the moved
 // billboard loses it on some tiles REGARDLESS of upload strategy (verified:

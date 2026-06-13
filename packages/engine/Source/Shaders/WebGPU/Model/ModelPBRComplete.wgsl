@@ -78,12 +78,37 @@ struct CameraUniforms {
   modelViewRelativeToEye: mat4x4<f32>,
   normalMatrix: mat4x4<f32>,
   encodedCameraPositionMCHigh: vec3<f32>,
-  _pad0: f32,
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the three
+  // formerly-pad lanes at floats 51/55/59 carry the log-depth scalars in
+  // the WebGPULogDepth.ts packCameraLogDepthLanes convention:
+  //   51 = oneOverLog2FarDepthFromNearPlusOne (factor)
+  //   55 = encode frustum near
+  //   59 = encode frustum far
+  // Packed unconditionally by the model renderer; only the
+  // `//>>ifdef LOG_DEPTH` blocks read them.
+  logDepthFactor: f32,
   encodedCameraPositionMCLow: vec3<f32>,
-  _pad1: f32,
+  logDepthNear: f32,
   cameraPositionWC: vec3<f32>,
+  logDepthFar: f32,
     previousViewProjection: mat4x4<f32>,
 };
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth — canonical inline copies; see
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 struct MaterialUniforms {
   modelMatrix: mat4x4<f32>,
@@ -679,6 +704,10 @@ struct VertexOutput {
   // its provoking vertex's integer feature ID without averaging across
   // the triangle. The FS converts back to u32 with `u32(featureId0)`.
   @location(10) @interpolate(flat) featureId0: f32,
+  //>>ifdef LOG_DEPTH
+  // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+  @location(11) v_logDepth: f32,
+  //>>endif
 };
 
 @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -829,6 +858,16 @@ struct VertexOutput {
   output.featureId0 = input.featureId0;
   //>>else
   output.featureId0 = 0.0;
+  //>>endif
+
+  //>>ifdef LOG_DEPTH
+  // Renderer-wide log depth — interpolate the linear depthFromNearPlusOne
+  // and clamp clip-z so huge far/near ratios can't clip the vertex before
+  // the FS writes log depth. Shared by every fragment entry point of this
+  // module (color/pick/velocity/classification); only entries that write
+  // frag_depth consume the varying.
+  output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepthNear);
+  output.position = csm_updatePositionDepth(output.position);
   //>>endif
 
   return output;
@@ -1089,6 +1128,9 @@ struct FragmentInput {
   // fragmentPickMain (per-feature pick lookup) when
   // FLAG_HAS_FEATURE_ID_ATTRIBUTE is set.
   @location(10) @interpolate(flat) featureId0: f32,
+  //>>ifdef LOG_DEPTH
+  @location(11) v_logDepth: f32,
+  //>>endif
   @builtin(front_facing) frontFacing: bool,
 };
 
@@ -1883,6 +1925,11 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
 struct FragOutput {
   @location(0) color: vec4<f32>,
   @location(1) normalRoughness: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Written for the depth TEST as well (frag_depth replaces rasterized z)
+  // so translucent model passes test correctly against log scene depth.
+  @builtin(frag_depth) depth: f32,
+  //>>endif
 };
 
 @fragment fn fragmentMain(input: FragmentInput) -> FragOutput {
@@ -1939,6 +1986,9 @@ struct FragOutput {
       var out: FragOutput;
       out.color = effects.clippingEdgeColor;
       out.normalRoughness = vec4<f32>(geomNormalEC, 0.5);
+      //>>ifdef LOG_DEPTH
+      out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+      //>>endif
       return out;
     }
   }
@@ -2032,6 +2082,9 @@ struct FragOutput {
     var out: FragOutput;
     out.color = unlitWithEdge;
     out.normalRoughness = vec4<f32>(geomNormalEC, 0.5);
+    //>>ifdef LOG_DEPTH
+    out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+    //>>endif
     return out;
   }
 
@@ -2841,6 +2894,9 @@ struct FragOutput {
   var out: FragOutput;
   out.color = finalColor;
   out.normalRoughness = vec4<f32>(N, roughness);
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
   return out;
 }
 
@@ -3082,7 +3138,14 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 // Alpha-mask discards run identical to fragmentMain so masked-out
 // texels don't leak velocity into hole pixels. Skips lighting / IBL /
 // atmosphere / edge stages — pure motion vector emission.
-@fragment fn fragmentVelocityMain(input: FragmentInput) -> @location(0) vec2<f32> {
+struct VelocityFragOutput {
+  @location(0) velocity: vec2<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
+@fragment fn fragmentVelocityMain(input: FragmentInput) -> VelocityFragOutput {
   let flags = material.materialFlags;
 
   // Alpha-mask discard parity with the color pass.
@@ -3105,7 +3168,12 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
     if (baseColor.a < material.alphaCutoff) { discard; }
   }
 
-  return computeMotionVectorScreenSpace(input);
+  var velOut: VelocityFragOutput;
+  //>>ifdef LOG_DEPTH
+  velOut.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
+  velOut.velocity = computeMotionVectorScreenSpace(input);
+  return velOut;
 }
 
 // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) — classifier

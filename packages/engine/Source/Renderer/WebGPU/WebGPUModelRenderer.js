@@ -59,6 +59,10 @@ import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
 import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import {
+  isWebGPULogDepthActive,
+  packCameraLogDepthLanes,
+} from "./WebGPULogDepth.js";
+import {
   attachPickToColorCommand,
   attachPickVariantsToColorCommand,
   destroyPickIds,
@@ -302,6 +306,11 @@ function packCameraUniforms(data, frameState, modelMatrix) {
   data[57] = camWC.y;
   data[58] = camWC.z;
   data[59] = 0.0;
+
+  // Renderer-wide log depth — floats 51/55/59 carry (factor, near, far)
+  // per the WebGPULogDepth.ts lane convention. Fills previously-zero pad
+  // lanes; only the LOG_DEPTH module variant reads them.
+  packCameraLogDepthLanes(data, 0, uniformState);
 
   // DP-H41 (Batch 27) — previousViewProjection at offset 60..75 (16 floats).
   // `UniformState.update()` clones the current viewProjection into
@@ -1990,8 +1999,16 @@ function updateWebGPUModel(model, frameState) {
   // depth-write) drop to undefined and are re-fetched on next use.
   const previousGen = pipelineCache._sceneFormatGeneration;
   pipelineCache.maybeUpdateForSceneFormat(context);
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — mirror the master
+  // switch into the pipeline cache; a flip wipes pipelines so modules
+  // recompile with/without the LOG_DEPTH define.
+  const logDepthFlipped = pipelineCache.maybeUpdateForLogDepth(
+    isWebGPULogDepthActive(context, frameState),
+  );
+  // A log-depth flip needs the SAME per-primitive direct-reference drop as
+  // a scene-format change (pc.pipeline & friends point at wiped pipelines).
   const sceneFormatChanged =
-    previousGen !== pipelineCache._sceneFormatGeneration;
+    previousGen !== pipelineCache._sceneFormatGeneration || logDepthFlipped;
   if (sceneFormatChanged) {
     const primKeys = Object.keys(cache.primitives);
     for (let i = 0; i < primKeys.length; i++) {

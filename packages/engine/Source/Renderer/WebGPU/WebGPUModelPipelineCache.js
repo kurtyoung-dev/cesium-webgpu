@@ -1182,6 +1182,10 @@ class WebGPUModelPipelineCache {
     // doubles as a `materialBGL_basic` accessor for renderer code that
     // wants to peek at the layout without going through the variant
     // API.
+    // Renderer-wide log depth — OFF until the renderer's first
+    // maybeUpdateForLogDepth() call mirrors the live master switch.
+    this._logDepthEnabled = false;
+
     this._materialBGL_basic = this._getOrCreateMaterialBGL(0);
     this._pipelineLayout_basic = this._getOrCreatePipelineLayout(0);
     this._shaderModule_basic = this._getOrCreateShaderModule(0);
@@ -1506,11 +1510,17 @@ class WebGPUModelPipelineCache {
    */
   _getOrCreateShaderModule(materialDefines) {
     const key = this._normalizeMaterialDefines(materialDefines);
-    let module = this._shaderModuleCache.get(key);
+    // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the module
+    // (NOT the BGL/pipeline-layout, whose bindings don't change) forks on
+    // the LOG_DEPTH bit. `_logDepthEnabled` mirrors
+    // isWebGPULogDepthActive() via maybeUpdateForLogDepth() each frame.
+    const effectiveDefines =
+      (key | (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>> 0;
+    let module = this._shaderModuleCache.get(effectiveDefines);
     if (module) {
       return module;
     }
-    const variantHex = `0x${key.toString(16)}`;
+    const variantHex = `0x${effectiveDefines.toString(16)}`;
     // Slice 5d Batch 153 — prepend the ClusteredLighting chunk so the
     // Model PBR shader has @group(3) bindings 18..22 declared + the
     // evalClusteredLights() function defined. The chunk declares the
@@ -1523,10 +1533,10 @@ class WebGPUModelPipelineCache {
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
       fullSource,
-      key,
+      effectiveDefines,
       `Model PBR ShaderModule [defines=${variantHex}]`,
     );
-    this._shaderModuleCache.set(key, module);
+    this._shaderModuleCache.set(effectiveDefines, module);
     return module;
   }
 
@@ -1569,6 +1579,41 @@ class WebGPUModelPipelineCache {
    *
    * @param {object} context WebGPUContext
    */
+  /**
+   * Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — mirror the
+   * master switch each frame. When the flag flips, wipe every pipeline
+   * map (the cached pipelines reference modules compiled with the wrong
+   * LOG_DEPTH state) and refresh the eagerly-built module fields. Cheap
+   * boolean compare on the steady path; the wipe only fires on a flip.
+   *
+   * @param {boolean} active isWebGPULogDepthActive(context, frameState)
+   * @returns {boolean} true when the flag flipped this call (callers use
+   *   this to drop per-primitive direct pipeline references, mirroring
+   *   the scene-format-generation invalidation).
+   */
+  maybeUpdateForLogDepth(active) {
+    const enabled = active === true;
+    if (this._logDepthEnabled === enabled) {
+      return false;
+    }
+    this._logDepthEnabled = enabled;
+    this._pipelines.clear();
+    this._pickPipelines.clear();
+    this._depthWritePipelines.clear();
+    this._velocityPipelines.clear();
+    this._classificationPipelines.clear();
+    this._pickHoverPipelines.clear();
+    this._pickPrecisePass1Pipelines.clear();
+    this._pickPrecisePass2Pipelines.clear();
+    // Refresh the eager compatibility module fields so legacy callers
+    // never see a stale-variant module after a flip.
+    this._shaderModule_basic = this._getOrCreateShaderModule(0);
+    this._shaderModule = this._getOrCreateShaderModule(
+      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+    );
+    return true;
+  }
+
   maybeUpdateForSceneFormat(context) {
     const generation = context._scenePipelineFormatGeneration ?? 0;
     if (this._sceneFormatGeneration === generation) {

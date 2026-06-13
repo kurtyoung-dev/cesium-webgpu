@@ -390,12 +390,23 @@ export class WebGPUContext extends GraphicsContext {
   public useIndirectDrawForTiles: boolean = false;
 
   // Renderer-wide log-depth master switch (Approach A for
-  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). Default FALSE: every producer/
-  // consumer change in the log-depth epic is gated on
-  // `isWebGPULogDepthActive(context, frameState)` (= this && useLogDepth), so
-  // each slice lands inert. The final epic commit flips this default to true;
-  // it remains a one-line kill switch afterward. See WebGPULogDepth.ts.
-  public _logDepthWriteEnabled: boolean = false;
+  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION / NEW-COLLECTIONS-LOG-DEPTH).
+  // Default TRUE since Batch 251: the globe (Batch 183), lit Phong
+  // primitives (Batch 188), depth plane (Batch 249), the five collections +
+  // compute-instance system (Batch 250), and the Model PBR pipeline family
+  // (Batch 251) all write csm_writeLogDepth-encoded `@builtin(frag_depth)`
+  // when `isWebGPULogDepthActive(context, frameState)` is true — matching
+  // WebGL's LOG_DEPTH path. Far-range depth ties (a billboard 1000 m above
+  // terrain at a 220 km camera was ~0.03 hyperbolic quanta — Batch 229
+  // measurement) now resolve at sub-meter precision. This remains a
+  // one-line kill switch: flipping it false restores hyperbolic NDC depth
+  // everywhere (every producer/consumer is define-gated and rebuilds
+  // through keyed cache misses / per-renderer flip guards). Remaining
+  // hyperbolic writers (Mat* primitives, Buffer* family,
+  // EllipsoidPrimitive, Vector3DTile, GroundPolyline's depth-sample read)
+  // are tracked under NEW-LOG-DEPTH-REMAINING-PRODUCERS in
+  // migration_doc/DEFERRED_WORK.md. See WebGPULogDepth.ts.
+  public _logDepthWriteEnabled: boolean = true;
 
   // Slice 5c-B Batch 129 — post-process snapshot. After the post-process
   // pipeline has blitted scene FB to canvas, a 1-pass copyTextureToTexture

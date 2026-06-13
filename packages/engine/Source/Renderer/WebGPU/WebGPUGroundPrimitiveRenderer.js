@@ -2031,6 +2031,15 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.velocityPipeline = undefined;
     // Bind groups reference the old BGL which is now stale.
     cache.bindGroup = undefined;
+    // ALSO null the material-view ref: the lazy group-0 rebuild gates on
+    // `materialBindGroupViewRef !== effectiveMatView`, so leaving the ref
+    // intact after dropping `cache.bindGroup` skips the rebuild and the
+    // draw submits with NO bind group at index 0 (invalidates the whole
+    // scene pass encoder). Latent since the Batch-110 format-change path
+    // (HDR toggles are rare); exposed by the log-depth master switch,
+    // which legitimately flips per scene MODE (useLogDepth is false under
+    // 2D's orthographic frustum), making 3D->2D hit this every time.
+    cache.materialBindGroupViewRef = null;
     cache.depthSampleBindGroup = undefined;
     cache.depthSampleViewRef = undefined;
     // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — the
