@@ -63,6 +63,12 @@ declare class UniformState {
   readonly fogMinimumBrightness: number | undefined;
   readonly currentFrustum: Cartesian2;
   readonly entireFrustum: Cartesian2;
+  /**
+   * `1 / log2((far - near) + 1)` for the current frustum — the per-frustum
+   * log-depth factor (`czm_oneOverLog2FarDepthFromNearPlusOne`). Consumed by
+   * the renderer-wide log-depth producers.
+   */
+  readonly oneOverLog2FarDepthFromNearPlusOne: number;
   readonly pixelRatio: number;
   readonly pass: number | undefined;
   readonly backgroundColor: Color;

@@ -56,8 +56,9 @@ import {
   storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 // Slice 5c-B Phase 1 (Batch 113) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
@@ -80,8 +81,28 @@ const INITIAL_BATCH_BUFFER_FEATURES = 64;
 const scratchModifiedView = new Matrix4();
 const scratchRtcCenter = new Cartesian3();
 
-function buildPolylinePipelineResources(device, format, depthFormat) {
+function buildPolylinePipelineResources(
+  device,
+  format,
+  depthFormat,
+  logDepthActive,
+) {
   const code = `
+${
+  logDepthActive
+    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — canonical inline copies. The
+      // non-clamped polyline tests less-equal against the shared scene depth
+      // (write-disabled), which the globe now LOG-encodes; without writing log
+      // z the polyline's hyperbolic z fails the test and it vanishes behind
+      // the surface. Mirrors GroundPrimitive colorVS.
+      "fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {\n" +
+      "  return (clipPosition.w - near) + 1.0;\n" +
+      "}\n" +
+      "fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {\n" +
+      "  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;\n" +
+      "}\n"
+    : ""
+}
 struct U {
   modifiedView: mat4x4<f32>,
   projection: mat4x4<f32>,
@@ -106,6 +127,10 @@ struct U {
   // (we don't — the screen delta is bounded by viewport).
   centerWC: vec3<f32>,
   _padCenter: f32,
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — renderer-wide log-depth encode
+  // frustum (near, far, oneOverLog2FarDepthFromNearPlusOne, reserved). Packed
+  // unconditionally; only the //>>ifdef LOG_DEPTH VS branch reads it.
+  logDepth: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
@@ -200,11 +225,23 @@ fn vsMain(
 
   let pClip = u.projection * pEC;
   let offsetNDC = offsetPx / halfVP;
-  let outClip = vec4<f32>(
+  var outClip = vec4<f32>(
     pClip.xy + offsetNDC * pClip.w,
     pClip.z,
     pClip.w,
   );
+${
+  logDepthActive
+    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — write log z so the polyline's
+      // less-equal test (against the write-disabled LOG-depth scene depth)
+      // passes. u.logDepth = (encodeNear, encodeFar, factor, _).
+      "  let _ldNear = u.logDepth.x;\n" +
+      "  let _ldFar = u.logDepth.y;\n" +
+      "  let _ldFactor = 1.0 / log2((_ldFar - _ldNear) + 1.0);\n" +
+      "  let _logZ = csm_writeLogDepth(csm_vertexLogDepth(outClip, _ldNear), _ldFactor);\n" +
+      "  outClip.z = clamp(_logZ, 0.0, 1.0) * outClip.w;\n"
+    : ""
+}
 
   var output: VOut;
   output.pos = outClip;
@@ -282,11 +319,23 @@ fn vsVelocity(
 
   let pClip = u.projection * pEC;
   let offsetNDC = offsetPx / halfVP;
-  let curClip = vec4<f32>(
+  var curClip = vec4<f32>(
     pClip.xy + offsetNDC * pClip.w,
     pClip.z,
     pClip.w,
   );
+${
+  logDepthActive
+    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — the velocity pass shares the
+      // scene depth read-only (less-equal), so its rasterized z must match the
+      // log color pass or coverage diverges. Same log-z write as vsMain.
+      "  let _ldNearV = u.logDepth.x;\n" +
+      "  let _ldFarV = u.logDepth.y;\n" +
+      "  let _ldFactorV = 1.0 / log2((_ldFarV - _ldNearV) + 1.0);\n" +
+      "  let _logZV = csm_writeLogDepth(csm_vertexLogDepth(curClip, _ldNearV), _ldFactorV);\n" +
+      "  curClip.z = clamp(_logZV, 0.0, 1.0) * curClip.w;\n"
+    : ""
+}
 
   // Previous-frame clip for the SAME extruded vertex's world position.
   // World position = primitive's centerWC + RTC-relative curr (the
@@ -327,8 +376,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   const mod = getPolylineShaderCache(device).getOrCreate(
     ShaderSourceId.VECTOR_3DTILE_POLYLINES,
     code,
-    0,
-    "Vector3DTilePolylines",
+    logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
+    `Vector3DTilePolylines${logDepthActive ? " [log]" : ""}`,
   );
 
   const sharedBgl = makeBindGroupLayout(device, "Vector3DTilePolylines BGL", [
@@ -614,6 +663,34 @@ function packUniforms(data, frameState, primitive) {
   data[57] = center.y;
   data[58] = center.z;
   data[59] = 0.0;
+
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — log-depth encode frustum at floats
+  // 60..63 (near, far, factor, reserved). Prefer the stashed FULL-frustum
+  // encode the globe baked with over the live per-slice currentFrustum so the
+  // polyline's per-vertex log z composes with the globe's scene depth (see the
+  // same pattern in WebGPUBillboardRenderer.packUniforms). Packed
+  // unconditionally; only the LOG_DEPTH VS variant reads it.
+  const ldEncode = uniformState._logDepthEncodeNearFar;
+  const ldFrustum = uniformState.currentFrustum;
+  let ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  let ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldFactor =
+    typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? uniformState.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    ldNear = ldEncode[0];
+    ldFar = ldEncode[1];
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  }
+  data[60] = ldNear;
+  data[61] = ldFar;
+  data[62] = ldFactor;
+  data[63] = 0.0; // reserved
 }
 
 function ensureVertexBuffer(cache, primitive, device) {
@@ -882,9 +959,14 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
   const cache = primitive._webgpuCache;
 
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — rebuild on LOG_DEPTH master-switch
+  // flip (or a frame toggling frameState.useLogDepth). Mirrors the
+  // GroundPrimitive `_pipelineLogDepth` flip guard.
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
   if (
     defined(cache._pipelineResources) &&
-    cache._pipelineFormatGeneration !== sceneGen
+    (cache._pipelineFormatGeneration !== sceneGen ||
+      cache._pipelineLogDepth !== logDepthActive)
   ) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
@@ -903,8 +985,10 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
       device,
       format,
       depthFmt,
+      logDepthActive,
     );
     cache._pipelineFormatGeneration = sceneGen;
+    cache._pipelineLogDepth = logDepthActive;
     cache.colorRequestPending = false;
     cache.pickRequestPending = false;
     // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — pending-

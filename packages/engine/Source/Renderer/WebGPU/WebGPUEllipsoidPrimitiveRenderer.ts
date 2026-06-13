@@ -33,8 +33,9 @@ import {
   ensurePickId,
   type SinglePickIdCache,
 } from "./WebGPUPickCommandHelpers.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
 // EllipsoidPrimitive is typically few-per-scene; the dedup win is
@@ -93,7 +94,31 @@ struct CameraUniforms {
   // TAA / motion-vector reprojection. Sourced from
   // UniformState._previousViewProjection (f32 mat4).
   previousViewProjection: mat4x4<f32>,
+  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — the camera projection
+  // matrix (uniformState.projection) so the ray-cast FS can recover the
+  // eye-space hit's clip-space w (= eye distance) for log/hyperbolic
+  // depth. WebGL EllipsoidFS does positionCC = czm_projection *
+  // vec4(positionEC, 1.0); the FS mirrors that here.
+  projection: mat4x4<f32>,
+  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — renderer-wide log depth
+  // lanes: (near, far, oneOverLog2FarDepthFromNearPlusOne, reserved).
+  // Packed unconditionally by packCameraUniforms; only the //>>ifdef
+  // LOG_DEPTH FS branch reads it. See WebGPULogDepth.ts.
+  logDepth: vec4<f32>,
 };
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth (NEW-ELLIPSOIDPRIM-LOG-DEPTH) — canonical inline
+// copies; see chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+// The ellipsoid is a full-screen ray-cast, so depth is computed entirely
+// in the FS from the eye-space hit point (no v_logDepth varying).
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 struct EllipsoidUniforms {
   radii: vec3<f32>,
@@ -162,6 +187,14 @@ fn intersectEllipsoid(
 struct FragOutput {
   @location(0) color: vec4<f32>,
   @location(1) normalRoughness: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — the ellipsoid is a full-screen
+  // ray-cast quad whose rasterized z is the near plane (z=0); without an
+  // explicit frag_depth it would always test as on-top. With renderer-wide
+  // log depth ON it MUST write the same log-depth encoding the globe wrote so
+  // an ellipsoid shell at altitude depth-tests correctly against the terrain.
+  @builtin(frag_depth) depth: f32,
+  //>>endif
 };
 
 @fragment
@@ -192,6 +225,19 @@ fn fragmentMain(
   var out: FragOutput;
   out.color = vec4<f32>(col, ellipsoid.color.a);
   out.normalRoughness = vec4<f32>(n, 0.5);
+  //>>ifdef LOG_DEPTH
+  // Recover the eye-space hit's clip-space w (= eye distance) via the camera
+  // projection, then encode log depth with the SAME (near, factor) the globe
+  // used. Mirrors WebGL EllipsoidFS's WRITE_DEPTH/LOG_DEPTH block, but uses the
+  // renderer-wide csm_vertexLogDepth ((w - near) + 1) convention so the value
+  // composes with the globe + collections rather than WebGL's idiosyncratic
+  // (1 + w) ray-cast form.
+  let positionCC = camera.projection * vec4<f32>(hit, 1.0);
+  out.depth = csm_writeLogDepth(
+    csm_vertexLogDepth(positionCC, camera.logDepth.x),
+    camera.logDepth.z,
+  );
+  //>>endif
   return out;
 }
 
@@ -288,12 +334,18 @@ function buildEllipsoidPipelineResources(
   device: GPUDevice,
   canvasFormat: GPUTextureFormat,
   sampleCount: number = 1,
+  logDepthActive: boolean = false,
 ): EllipsoidPipelineResources {
+  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — OR in LOG_DEPTH when active so
+  // the module cache compiles the //>>ifdef LOG_DEPTH FS branch (projection-
+  // recovered eye distance → log frag_depth). defines=0 emits the //>>else
+  // (no frag_depth → rasterized near-plane z), byte-identical to pre-fix.
+  const defines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
   const shaderModule = getEllipsoidPrimitiveShaderCache(device).getOrCreate(
     ShaderSourceId.ELLIPSOID_PRIMITIVE,
     ELLIPSOID_WGSL,
-    0,
-    "EllipsoidPrimitive",
+    defines,
+    `EllipsoidPrimitive${logDepthActive ? " [log]" : ""}`,
   );
 
   const bindGroupLayout0 = makeBindGroupLayout(
@@ -474,9 +526,10 @@ function packCameraUniforms(
   viewportWidth: number,
   viewportHeight: number,
 ): Float32Array {
-  // 240 bytes = 60 floats: mvpRTE(16) + mvRTE(16) + camHigh(3+1) + camLow(3+1)
+  // 320 bytes = 80 floats: mvpRTE(16) + mvRTE(16) + camHigh(3+1) + camLow(3+1)
   //   + viewport(2+2 pad) + previousViewProjection(16) [DP-H41, Batch 27]
-  const data = new Float32Array(60);
+  //   + projection(16) + logDepth(4) [NEW-ELLIPSOIDPRIM-LOG-DEPTH, Batch 266]
+  const data = new Float32Array(80);
   const view = uniformState.view;
   const projection = uniformState.projection;
 
@@ -550,6 +603,48 @@ function packCameraUniforms(
     data[58] = 0;
     data[59] = 1;
   }
+
+  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — camera projection at floats
+  // 60..75. The ray-cast FS recovers the eye-space hit's clip-space w
+  // (= eye distance) via this projection to encode log/hyperbolic depth.
+  const proj = m4Values(projection);
+  for (let i = 0; i < 16; i++) {
+    data[60 + i] = proj[i];
+  }
+
+  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — renderer-wide log-depth lanes
+  // at floats 76..79 (near, far, factor, reserved). This UB carries a
+  // dedicated `logDepth: vec4` tail (NOT the shared CameraUniforms `.w`-lane
+  // convention), so the scalars are written directly here rather than via
+  // packCameraLogDepthLanes (which targets floats 51/55/59 of the shared
+  // struct — inside this layout's previousViewProjection). Prefer the
+  // stashed FULL-frustum encode the globe baked with over the live per-slice
+  // currentFrustum so the ellipsoid's depth composes with the globe; see the
+  // same pattern in WebGPUBillboardRenderer.packUniforms.
+  const ldEncode = (
+    uniformState as unknown as { _logDepthEncodeNearFar?: Float32Array | null }
+  )._logDepthEncodeNearFar;
+  const ldFrustum = uniformState.currentFrustum;
+  let ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  let ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldFactor =
+    typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? uniformState.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    ldNear = ldEncode[0];
+    ldFar = ldEncode[1];
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  }
+  data[76] = ldNear;
+  data[77] = ldFar;
+  data[78] = ldFactor;
+  data[79] = 0.0; // reserved
+
   return data;
 }
 
@@ -685,19 +780,27 @@ function updateWebGPUEllipsoidPrimitive(
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
+  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — the LOG_DEPTH master switch (or a
+  // frame that toggles frameState.useLogDepth) flips the shader define, so the
+  // shader module + pipelines must rebuild. Tracked alongside the scene-format
+  // generation; mirrors the GroundPrimitive `_pipelineLogDepth` flip guard.
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
+  const cacheGuard = cache as unknown as {
+    _pipelineFormatGeneration?: number;
+    _pipelineLogDepth?: boolean;
+  };
   if (
     cache.initialized &&
-    (cache as unknown as { _pipelineFormatGeneration?: number })
-      ._pipelineFormatGeneration !== sceneGen
+    (cacheGuard._pipelineFormatGeneration !== sceneGen ||
+      cacheGuard._pipelineLogDepth !== logDepthActive)
   ) {
     (
       cache as EllipsoidCache & {
         _pipelineResources?: EllipsoidPipelineResources;
       }
     )._pipelineResources = undefined;
-    (
-      cache as unknown as { _pipelineFormatGeneration?: number }
-    )._pipelineFormatGeneration = sceneGen;
+    cacheGuard._pipelineFormatGeneration = sceneGen;
+    cacheGuard._pipelineLogDepth = logDepthActive;
   }
 
   // C-R7-RENDERER-MIGRATION (Batch 56) — route pipeline creation through
@@ -728,6 +831,7 @@ function updateWebGPUEllipsoidPrimitive(
       device,
       canvasFormat,
       sampleCount,
+      logDepthActive,
     );
     (
       cache as EllipsoidCache & {
@@ -757,10 +861,11 @@ function updateWebGPUEllipsoidPrimitive(
   // pipeline-layout, bind groups, and the quad geometry). The pipelines
   // themselves are resolved separately via the central cache below.
   if (!cache.initialized) {
-    // Camera UBO: 60 floats × 4 = 240 bytes (mvpRTE + mvRTE + camHigh/Low +
-    //   viewport + previousViewProjection [DP-H41, Batch 27])
+    // Camera UBO: 80 floats × 4 = 320 bytes (mvpRTE + mvRTE + camHigh/Low +
+    //   viewport + previousViewProjection [DP-H41, Batch 27] + projection +
+    //   logDepth [NEW-ELLIPSOIDPRIM-LOG-DEPTH, Batch 266])
     cache.uniformBuffer = device.createBuffer({
-      size: 240,
+      size: 320,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -775,6 +880,7 @@ function updateWebGPUEllipsoidPrimitive(
       device,
       canvasFormat,
       sampleCount,
+      logDepthActive,
     );
     (
       cache as EllipsoidCache & {

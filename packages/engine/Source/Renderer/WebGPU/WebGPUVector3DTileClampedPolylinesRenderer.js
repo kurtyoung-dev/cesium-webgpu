@@ -62,6 +62,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
+import csm_reverseLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_reverseLogDepth.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 // Slice 5c-B Phase 1 (Batch 113) — scene-FB target helper.
@@ -74,8 +75,9 @@ import {
   texture as textureEntry,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 163) — per-device module cache.
 const _clampedPolylineShaderCaches = new WeakMap();
@@ -106,9 +108,15 @@ const CLASSIFICATION_TYPE_TERRAIN = 0;
 const CLASSIFICATION_TYPE_3DTILE = 1;
 const CLASSIFICATION_TYPE_BOTH = 2;
 
-function buildClampedPolylinePipelineResources(device, format, depthFormat) {
+function buildClampedPolylinePipelineResources(
+  device,
+  format,
+  depthFormat,
+  logDepthActive,
+) {
   const code = `
 ${csm_depthClamp}
+${logDepthActive ? csm_reverseLogDepth : ""}
 struct U {
   modifiedView: mat4x4<f32>,
   projection: mat4x4<f32>,
@@ -132,6 +140,15 @@ struct U {
   // Batch 179 for the analogous wiring.
   centerWC: vec3<f32>,
   _padCenter: f32,
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — renderer-wide log-depth frustum
+  // lanes: (encodeNear, encodeFar, sliceNear, sliceFar). When the globe
+  // LOG-encodes the sampled scene depth, the FS reverses it before inverse-
+  // projecting (otherwise the eye-space surface point is reconstructed wildly
+  // wrong and the 5-plane swept-volume test discards every fragment). encode*
+  // = the FULL-frustum near/far the globe encoded with; slice* = the
+  // command-build frustum used to re-encode the per-slice window z. Packed
+  // unconditionally; only the log windowToEyeCoordinates branch reads it.
+  logDepth: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
@@ -249,9 +266,27 @@ fn windowToEyeCoordinates(fragXY: vec2<f32>, depth: f32) -> vec3<f32> {
   // accounts for fragCoord (top-left origin) vs NDC (bottom-up).
   var ndc = (fragXY / u.viewport.zw) * 2.0 - 1.0;
   ndc.y = -ndc.y;
-  let clip = vec4<f32>(ndc, depth, 1.0);
-  let eye = u.invProjection * clip;
-  return eye.xyz / eye.w;
+${
+  logDepthActive
+    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — the sampled scene depth is
+      // LOG-encoded by the globe. Mirrors GroundPrimitive windowToEye: (1)
+      // DECODE the precise eye distance with the globe's ENCODE frustum
+      // (u.logDepth.xy = full-frustum near/far the globe encoded with), since
+      // log encodes clipW = eye distance (projection-independent). (2) RE-ENCODE
+      // to the per-slice window z (u.logDepth.zw = command-build near/far) and
+      // inverse-project, applying the eye.w = 1/depthFromCamera precision
+      // override so the crushed-near-1.0 window depth never limits precision.
+      "  let depthFromCamera = csm_reverseLogDepthToEyeDistance(depth, u.logDepth.x, u.logDepth.y);\n" +
+      "  let sNear = u.logDepth.z;\n" +
+      "  let sFar = u.logDepth.w;\n" +
+      "  let windowZ = sFar * (1.0 - sNear / depthFromCamera) / (sFar - sNear);\n" +
+      "  var q = u.invProjection * vec4<f32>(ndc, windowZ, 1.0);\n" +
+      "  q.w = 1.0 / depthFromCamera;\n" +
+      "  return q.xyz / q.w;\n"
+    : "  let clip = vec4<f32>(ndc, depth, 1.0);\n" +
+      "  let eye = u.invProjection * clip;\n" +
+      "  return eye.xyz / eye.w;\n"
+}
 }
 
 fn planeDistance(plane: vec4<f32>, p: vec3<f32>) -> f32 {
@@ -412,8 +447,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   const mod = getClampedPolylineShaderCache(device).getOrCreate(
     ShaderSourceId.VECTOR_3DTILE_CLAMPED_POLYLINES,
     code,
-    0,
-    "Vector3DTileClampedPolylines",
+    logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
+    `Vector3DTileClampedPolylines${logDepthActive ? " [log]" : ""}`,
   );
 
   const sharedBgl = makeBindGroupLayout(
@@ -803,6 +838,30 @@ function packUniforms(data, frameState, primitive) {
     data[86] = 0;
   }
   data[87] = 0.0;
+
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — log-depth frustum lanes at floats
+  // 88..91 (encodeNear, encodeFar, sliceNear, sliceFar). The FS reverses the
+  // globe's log encoding before inverse-projecting the sampled scene depth.
+  // encode* prefers the stashed FULL-frustum encode the globe baked with;
+  // slice* is the command-build current frustum used to re-encode the per-slice
+  // window z (matches GroundPrimitive's group-0 windowToEye fallback —
+  // single-frustum correct; per-slice multi-frustum refinement via a resolver
+  // is a separate deferred slice). Packed unconditionally; only the log
+  // windowToEyeCoordinates branch reads it.
+  const ldEncode = uniformState._logDepthEncodeNearFar;
+  const ldFrustum = uniformState.currentFrustum;
+  const sNear = ldFrustum ? ldFrustum.x : 0.0;
+  const sFar = ldFrustum ? ldFrustum.y : 0.0;
+  let encNear = sNear;
+  let encFar = sFar;
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    encNear = ldEncode[0];
+    encFar = ldEncode[1];
+  }
+  data[88] = encNear;
+  data[89] = encFar;
+  data[90] = sNear;
+  data[91] = sFar;
 }
 
 function ensureVertexBuffer(cache, primitive, device) {
@@ -1083,9 +1142,14 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   const cache = primitive._webgpuCache;
 
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — rebuild on LOG_DEPTH master-switch
+  // flip (or a frame toggling frameState.useLogDepth) so the FS reverse-log
+  // branch is compiled in / out. Mirrors the GroundPrimitive flip guard.
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
   if (
     defined(cache._pipelineResources) &&
-    cache._pipelineFormatGeneration !== sceneGen
+    (cache._pipelineFormatGeneration !== sceneGen ||
+      cache._pipelineLogDepth !== logDepthActive)
   ) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
@@ -1105,8 +1169,10 @@ function createWebGPUVector3DTileClampedPolylineCommands(
       device,
       format,
       depthFmt,
+      logDepthActive,
     );
     cache._pipelineFormatGeneration = sceneGen;
+    cache._pipelineLogDepth = logDepthActive;
     cache.colorRequestPending = false;
     cache.pickRequestPending = false;
     cache.stencilRequestPending = false;

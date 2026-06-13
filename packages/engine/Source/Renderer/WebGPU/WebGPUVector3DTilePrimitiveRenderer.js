@@ -55,8 +55,9 @@ import {
   texture as textureEntry,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 163) — per-device cache so multiple visible
 // vector tiles share one compiled `GPUShaderModule` for the primitive shader.
@@ -114,7 +115,12 @@ const scratchCenter2D = new Cartesian3();
  *   floats  36-63 : reserved.
  * @private
  */
-function buildVectorTilePipelineResources(device, format, depthFormat) {
+function buildVectorTilePipelineResources(
+  device,
+  format,
+  depthFormat,
+  logDepthActive,
+) {
   const code = `
 ${csm_depthClamp}
 struct U {
@@ -131,7 +137,27 @@ struct U {
   // UniformState.previousViewProjection with column-major identity
   // fallback on the first frame.
   prevViewProjection: mat4x4<f32>,
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — renderer-wide log-depth encode
+  // frustum (near, far, oneOverLog2FarDepthFromNearPlusOne, reserved). This
+  // classification volume depth-TESTS (less-equal) against the shared scene
+  // depth, which the globe now LOG-encodes; without writing log z the
+  // volume's hyperbolic z fails the test and the entire volume is culled.
+  // Packed unconditionally; only the //>>ifdef LOG_DEPTH VS branch reads it.
+  logDepth: vec4<f32>,
 };
+${
+  logDepthActive
+    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — canonical inline copies. The
+      // volume writes per-vertex log z so its hardware less-equal depth test
+      // composes with the LOG-depth globe. Mirrors GroundPrimitive colorVS.
+      "fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {\n" +
+      "  return (clipPosition.w - near) + 1.0;\n" +
+      "}\n" +
+      "fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {\n" +
+      "  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;\n" +
+      "}\n"
+    : ""
+}
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> pickColors: array<vec4<f32>>;
@@ -160,6 +186,22 @@ fn vsMain(
   // vertices that bracket terrain min/max can shoot past the far plane
   // at oblique angles and get frustum-clipped, dropping the volume.
   o.pos = csm_depthClamp(u.vpRTE * vec4<f32>(rte, 1.0));
+${
+  logDepthActive
+    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — write per-vertex log z so the
+      // volume's hardware less-equal depth test composes with the LOG-depth
+      // globe. u.logDepth = (encodeNear, encodeFar, factor, _). The factor is
+      // derived inline from the encode near/far to match the globe's encoding
+      // exactly (mirrors GroundPrimitive colorVS). Coarse per-vertex vs the
+      // globe's per-fragment frag_depth, but well within the terrain-height
+      // margin the front-face / back-face classification needs.
+      "  let _ldNear = u.logDepth.x;\n" +
+      "  let _ldFar = u.logDepth.y;\n" +
+      "  let _ldFactor = 1.0 / log2((_ldFar - _ldNear) + 1.0);\n" +
+      "  let _logZ = csm_writeLogDepth(csm_vertexLogDepth(o.pos, _ldNear), _ldFactor);\n" +
+      "  o.pos.z = clamp(_logZ, 0.0, 1.0) * o.pos.w;\n"
+    : ""
+}
   let bi = u32(batchId);
   o.col = batchColors[bi];
   o.pickCol = pickColors[bi];
@@ -246,7 +288,19 @@ fn vsVelocity(
   // walks identical fragments → no spurious half-pixel offsets in the
   // emitted velocity vectors.
   let rte = (u.centerH - u.camH) + (u.centerL - u.camL) + position;
-  let curClip = csm_depthClamp(u.vpRTE * vec4<f32>(rte, 1.0));
+  var curClip = csm_depthClamp(u.vpRTE * vec4<f32>(rte, 1.0));
+${
+  logDepthActive
+    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — the velocity pass shares the
+      // scene depth read-only and tests less-equal, so its rasterized z must
+      // match the log color pass's z or coverage diverges. Same log-z write.
+      "  let _ldNearV = u.logDepth.x;\n" +
+      "  let _ldFarV = u.logDepth.y;\n" +
+      "  let _ldFactorV = 1.0 / log2((_ldFarV - _ldNearV) + 1.0);\n" +
+      "  let _logZV = csm_writeLogDepth(csm_vertexLogDepth(curClip, _ldNearV), _ldFactorV);\n" +
+      "  curClip.z = clamp(_logZV, 0.0, 1.0) * curClip.w;\n"
+    : ""
+}
   // Previous frame: rebuild the absolute world-space position
   // (centerH + centerL + position) and project through prevVP. The
   // prevVP includes the prev-frame translation, so this yields the
@@ -281,8 +335,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   const mod = getVectorTilePrimitiveShaderCache(device).getOrCreate(
     ShaderSourceId.VECTOR_3DTILE_PRIMITIVE,
     code,
-    0,
-    "Vector3DTilePrimitive",
+    logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
+    `Vector3DTilePrimitive${logDepthActive ? " [log]" : ""}`,
   );
 
   const sharedBgl = makeBindGroupLayout(
@@ -642,6 +696,35 @@ function packUniforms(data, frameState, primitive, cache) {
     data[50] = 0;
     data[51] = 1;
   }
+
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — log-depth encode frustum at floats
+  // 52..55 (near, far, factor, reserved). Prefer the stashed FULL-frustum
+  // encode the globe baked with (`_logDepthEncodeNearFar`) over the live
+  // per-slice currentFrustum so this volume's per-vertex log z is encoded
+  // against the SAME near/far the globe wrote into the shared scene depth
+  // (mismatched encode → the less-equal test fails and the volume vanishes).
+  // Packed unconditionally; only the LOG_DEPTH VS variant reads it.
+  const ldEncode = uniformState._logDepthEncodeNearFar;
+  const ldFrustum = uniformState.currentFrustum;
+  let ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  let ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldFactor =
+    typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? uniformState.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    ldNear = ldEncode[0];
+    ldFar = ldEncode[1];
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  }
+  data[52] = ldNear;
+  data[53] = ldFar;
+  data[54] = ldFactor;
+  data[55] = 0.0; // reserved
 }
 
 function ensureGeometry(cache, primitive, device, frameState) {
@@ -985,9 +1068,15 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
 
   // HDR-toggle invalidation (Batch 110 pattern).
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — the LOG_DEPTH master switch (or a
+  // frame toggling frameState.useLogDepth) flips the VS log-z write, so the
+  // shader module + every pipeline variant must rebuild. Mirrors the
+  // GroundPrimitive `_pipelineLogDepth` flip guard.
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
   if (
     defined(cache._pipelineResources) &&
-    cache._pipelineFormatGeneration !== sceneGen
+    (cache._pipelineFormatGeneration !== sceneGen ||
+      cache._pipelineLogDepth !== logDepthActive)
   ) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
@@ -1011,8 +1100,10 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       device,
       format,
       depthFmt,
+      logDepthActive,
     );
     cache._pipelineFormatGeneration = sceneGen;
+    cache._pipelineLogDepth = logDepthActive;
     cache.colorRequestPending = false;
     cache.pickRequestPending = false;
     cache.stencilRequestPending = false;

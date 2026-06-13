@@ -494,6 +494,13 @@ interface CesiumUniformState {
   readonly fogMinimumBrightness: number | undefined;
   readonly currentFrustum: CesiumCartesian2;
   readonly entireFrustum: CesiumCartesian2;
+  /**
+   * `1 / log2((far - near) + 1)` for the current frustum — the per-frustum
+   * log-depth factor (`czm_oneOverLog2FarDepthFromNearPlusOne`). Consumed by
+   * the renderer-wide log-depth producers (NEW-COLLECTIONS-LOG-DEPTH and the
+   * EllipsoidPrimitive / Vector3DTile classifiers).
+   */
+  readonly oneOverLog2FarDepthFromNearPlusOne: number;
   readonly pixelRatio: number;
   readonly pass: number | undefined;
   readonly backgroundColor: CesiumColor;
