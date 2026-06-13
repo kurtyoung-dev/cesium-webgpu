@@ -104,6 +104,31 @@ const out = await page.evaluate(async () => {
     for (let p = 0; p < img.w * img.h; p++) if (pred(img.data, 4 * p)) n++;
     return n;
   };
+  // The dark-blue globe baseColor fills most of the frame; a (near-)black frame
+  // is the globe having skipped its draw this frame (the documented async-
+  // pipeline / kill-switch settle race). The negative control (below-ground
+  // boxes must be occluded) is only meaningful when the globe actually wrote
+  // depth, so gate every capture on the globe being present. Sample the globe
+  // baseColor directly (rgb ~31,38,51): require a healthy non-black fraction.
+  const globeDrawn = (img) => {
+    let nonBlack = 0;
+    const total = img.w * img.h;
+    for (let p = 0; p < total; p++) {
+      const i = 4 * p;
+      // baseColor pixels: blue dominant, all channels > black-ish floor.
+      if (img.data[i + 2] > 20 && img.data[i + 1] > 10 && img.data[i] < 120)
+        nonBlack++;
+    }
+    return nonBlack / total > 0.25; // globe fills well over a quarter of the frame
+  };
+  const snapWithGlobe = async (withPng, maxTries = 40) => {
+    let img = await snap(withPng);
+    for (let t = 0; t < maxTries && !globeDrawn(img); t++) {
+      await frame(2);
+      img = await snap(withPng);
+    }
+    return img;
+  };
 
   const LON = -75.0;
   const LAT = 40.0;
@@ -218,7 +243,8 @@ const out = await page.evaluate(async () => {
   const ctx = scene.context;
 
   // ---- (1) ON leg ----
-  const imgOn = await snap(true);
+  const imgOn = await snapWithGlobe(true);
+  const onGlobe = globeDrawn(imgOn);
   const onGreen = countAll(imgOn, isGreen);
   const onMag = countAll(imgOn, isMagenta);
 
@@ -238,14 +264,14 @@ const out = await page.evaluate(async () => {
   // ---- (2) OFF leg — runtime kill switch to hyperbolic ----
   ctx._logDepthWriteEnabled = false;
   await frame(20); // Mat pipeline rebuilds via its flip guard
-  const imgOff = await snap(true);
+  const imgOff = await snapWithGlobe(true);
   const offGreen = countAll(imgOff, isGreen);
   const offMag = countAll(imgOff, isMagenta);
 
   // ---- flip back ON and re-verify ----
   ctx._logDepthWriteEnabled = true;
   await frame(20);
-  const imgOn2 = await snap(false);
+  const imgOn2 = await snapWithGlobe(false);
   const on2Green = countAll(imgOn2, isGreen);
 
   return {
@@ -255,6 +281,7 @@ const out = await page.evaluate(async () => {
     offMag,
     on2Green,
     ctrlGreen,
+    onGlobe,
     boxReady: boxPrim.ready,
     pngOn: imgOn.png,
     pngOff: imgOff.png,
@@ -303,6 +330,15 @@ check(
   "2",
   ratio >= RECOVER_RATIO,
   `log depth composes with the log globe: ON/OFF green ratio=${ratio.toFixed(3)} (>= ${RECOVER_RATIO}; pre-fix mixed-depth bug was ~0.72 — a 28% slab-pixel loss). ON=${out.onGreen} OFF=${out.offGreen} delta=${out.onGreen - out.offGreen}`,
+);
+// The negative control is only meaningful when the globe is present to occlude
+// (the globe writes the depth that occludes the below-ground boxes). snapWithGlobe
+// guarantees it; assert it explicitly so a settle race can't masquerade as a
+// passing-but-empty frame (was an intermittent false FAIL pre-Batch-267).
+check(
+  "3g",
+  out.onGlobe === true,
+  `globe present in capture (precondition for occlusion): onGlobe=${out.onGlobe}`,
 );
 check(
   "3",

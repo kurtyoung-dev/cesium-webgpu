@@ -116,6 +116,28 @@ const out = await page.evaluate(async () => {
     }
     return n;
   };
+  // The globe baseColor is dark blue rgb(~31,38,51); a black frame is the
+  // not-yet-drawn globe. The center of the canvas (between the marker grids)
+  // is bare globe at this nadir camera, so a non-black center pixel proves the
+  // globe actually rendered into THIS frame's depth buffer — the precondition
+  // for the below-ground negative control to be meaningful.
+  const globeDrawn = (img) => {
+    const i = 4 * (Math.floor(img.h / 2) * img.w + Math.floor(img.w / 2));
+    return img.data[i + 2] > 20 && img.data[i + 1] > 12; // blue+green of baseColor
+  };
+  // Re-render until the globe is confirmed present in the captured frame, then
+  // return that confirmed snapshot. Guards against the documented kill-switch /
+  // async-pipeline settle race where tilesLoaded is true but the globe pipeline
+  // skips a draw — which empties the depth buffer and lets below-ground markers
+  // leak through (a probe-settle flake, NOT a log-depth-producer fault).
+  const snapWithGlobe = async (withPng, maxTries = 40) => {
+    let img = await snap(withPng);
+    for (let t = 0; t < maxTries && !globeDrawn(img); t++) {
+      await frame(2);
+      img = await snap(withPng);
+    }
+    return img;
+  };
 
   // ---- Scene: markers 1000 m above the ellipsoid, camera at 220 km ----
   const LON = -75.0;
@@ -199,7 +221,8 @@ const out = await page.evaluate(async () => {
     scene.render();
   }
   const msOn = (performance.now() - t0) / N_TIME;
-  const imgOn = await snap(true);
+  const imgOn = await snapWithGlobe(true);
+  const onGlobe = globeDrawn(imgOn);
   const onBB = countAll(imgOn, isMagenta);
   const onPT = countAll(imgOn, isCyan);
   const onBelow = countAll(imgOn, isRed);
@@ -212,14 +235,17 @@ const out = await page.evaluate(async () => {
     scene.render();
   }
   const msOff = (performance.now() - t0) / N_TIME;
-  const imgOff = await snap(true);
+  // Gate on the globe being present so the hyperbolic OFF-leg diagnostics
+  // compare like-for-like against the ON leg (an empty globe frame would make
+  // the markers spuriously "vanish" for the wrong reason).
+  const imgOff = await snapWithGlobe(true);
   const offBB = countAll(imgOff, isMagenta);
   const offPT = countAll(imgOff, isCyan);
 
   // ---- flip back ON and re-verify ----
   ctx._logDepthWriteEnabled = true;
   await frame(20);
-  const imgOn2 = await snap(false);
+  const imgOn2 = await snapWithGlobe(false);
   const on2BB = countAll(imgOn2, isMagenta);
   const on2PT = countAll(imgOn2, isCyan);
 
@@ -233,6 +259,7 @@ const out = await page.evaluate(async () => {
     on2PT,
     msOn: msOn.toFixed(2),
     msOff: msOff.toFixed(2),
+    onGlobe,
     pngOn: imgOn.png,
     pngOff: imgOff.png,
     useLogDepth: scene._frameState ? scene._frameState.useLogDepth : null,
@@ -268,6 +295,15 @@ check(
   "1",
   out.onBB >= BB_MIN && out.onPT >= PT_MIN,
   `far-camera render @220km (log depth ON): bb(magenta)=${out.onBB}/${BB_MIN} pt(cyan)=${out.onPT}/${PT_MIN} (useLogDepth=${out.useLogDepth})`,
+);
+// The negative control is only meaningful when the globe is present to occlude
+// (the globe writes the depth that occludes below-ground markers). snapWithGlobe
+// guarantees it; assert it explicitly so a regression here can't masquerade as a
+// passing-but-empty frame.
+check(
+  "2g",
+  out.onGlobe === true,
+  `globe present in capture (precondition for occlusion): onGlobe=${out.onGlobe}`,
 );
 check(
   "2",

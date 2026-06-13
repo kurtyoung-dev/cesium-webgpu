@@ -378,9 +378,28 @@ fn fs(i: VO) -> FragOut {
   let alpha = 1.0 - (1.0 - insideColor.a) * (1.0 - outsideColor.a);
   out.color = vec4<f32>(mixed.rgb, alpha);
 
-  // Exact log depth — uses the VS-output clip w directly. No approximation
-  // (the Phase 1.2c v1 approximation was a workaround for the full-screen-
-  // quad approach which didn't have a real per-pixel clip w).
+  // Log depth — this INTENTIONALLY DIVERGES from the shared csm_writeLogDepth
+  // contract, and the divergence is safe (see below).
+  //
+  // The canonical renderer-wide encode (csm_vertexLogDepth + csm_writeLogDepth,
+  // used by globe/collections/primitives/buffer/ellipsoid) is:
+  //     fragDepth = log2((clipW - near) + 1) * (1 / log2((far - near) + 1))
+  // i.e. it measures eye distance FROM THE NEAR PLANE and normalizes by the
+  // (far - near) span. The form below instead uses log2(1 + clipW) / log2(1 + far)
+  // — it omits `near` entirely and normalizes by the full [0, far] span.
+  //
+  // Why the divergence is harmless: the VS parks the moon at the FAR plane
+  // (o.pos.z = o.pos.w ⇒ NDC z = 1.0). Real scene geometry (globe, tiles,
+  // models) sits at lunar-scale-smaller eye distances, so the moon's depth is
+  // ALWAYS at/near the far end of the buffer and can never win a `less-equal`
+  // depth tie against any opaque fragment — it only fills pixels nothing else
+  // occupies. The exact normalization of that always-far value is therefore
+  // cosmetically irrelevant; both encodes produce a monotonic ≈1.0. Routing
+  // this through the shared chunk would require carrying `near` + the precomputed
+  // `oneOverLog2FarDepthFromNearPlusOne` factor in this UB (which today carries
+  // only `farPlane`) — pure plumbing for zero visible effect on a parked-at-far
+  // environment shader. Left as the lighter self-contained encode by design.
+  // (NEW-LOG-DEPTH-REMAINING-PRODUCERS — documented divergence, not a residual.)
   let useLog: bool = u32(round(u.useLogDepth)) == 1u;
   if (useLog) {
     let logZ = log2(max(1e-6, 1.0 + i.clipW));

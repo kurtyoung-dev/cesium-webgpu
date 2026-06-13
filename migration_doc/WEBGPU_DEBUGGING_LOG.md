@@ -24,6 +24,32 @@
 
 ---
 
+## Batch 267 — Log-depth final sweep + Moon encode divergence documented + far-camera probe flake fixed (NEW-LOG-DEPTH-REMAINING-PRODUCERS) (2026-06-13)
+
+**Goal:** Close out the renderer-wide log-depth epic — verify ALL geometry/opaque producers participate, identify any residual hyperbolic producer precisely, reconcile the Moon encode divergence, and reconcile the ledger.
+
+**Full z-fight gate (the 3 log-depth z-fight probes) — all GREEN from the committed Batch-266 build:**
+
+| Probe | Result | Key numbers |
+| --- | --- | --- |
+| `probe-logdepth-zfight.mjs` (Mat/material-primitive) | PASS | green slab @220km = 39540; ON/OFF ratio 0.988 (≥0.9); below-ground control = 0; magenta log-ref renders only ON |
+| `probe-buffer-logdepth-zfight.mjs` (Buffer*) | PASS | cyan=3112 yellow=9738 red=3221; cyan/magenta coverage 0.505 (≥0.4); flip-rebuild clean |
+| `probe-ellipsoidprim-logdepth.mjs` (Ellipsoid, structural) | PASS | LOG_DEPTH pipeline builds; `_pipelineLogDepth` toggles ON→OFF→ON; 0 validation errors |
+
+**All 11 standing gates — GREEN:** probe-collections-regression, probe-billboard-partial-write, probe-point-label-partial-write, probe-polyline-cloud-consume, probe-orbital-catalog, probe-compute-instance-generic, probe-globe-bindgroup-cache, probe-bloom-parity, probe-pickposition-webgpu, probe-collections-far-camera (after the fix below), sandcastle-smoke (3 demos).
+
+**Residual hyperbolic producers — identified by code audit (NOT a behavioral surprise):** `WebGPUPointCloudRenderer` (PNTS/EDL) + `WebGPUGaussianSplatRenderer` — grep-confirmed 0 occurrences of `frag_depth`/`LOG_DEPTH`/`isWebGPULogDepthActive` in either. Both are distinct non-geometry rendering families, not the shared geometry pipelines this epic converted. Carved out as NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT. Point clouds through the *Model* pipeline already have log depth (Batch 251). Off-by-default depth CONSUMERS (post-process readers, HiZ, GroundPolyline/model recon) carved out as NEW-LOG-DEPTH-REMAINING-CONSUMERS.
+
+**Moon encode divergence — documented, not changed (P3 judgment).** `Moon.wgsl` fs() writes `log2(1+w)/log2(1+far)` — omits `near` and normalizes by the full `[0,far]` span, diverging from the canonical `csm_writeLogDepth` `((w-near)+1)*(1/log2((far-near)+1))`. SAFE because the VS parks the moon at the far plane (`o.pos.z = o.pos.w` ⇒ NDC z=1.0): its depth is always ≈1.0 and never wins a `less-equal` tie against opaque geometry, so the exact normalization is cosmetically irrelevant. Routing it through the shared chunk would require adding `near`+`factor` UB lanes (its UB carries only `farPlane` today) for zero visible effect. Added a 20-line rationale comment in `Moon.wgsl` rather than re-plumb.
+
+**Two probe flakes — same root cause — root-caused + fixed.** Both `probe-collections-far-camera.mjs` and `probe-logdepth-zfight.mjs` FAILED intermittently on their below-ground negative control (far-camera: `red=1455` max 10; zfight: control-region `green=3291` max 40), each 100%-correlated with the kill-switch OFF leg failing to vanish. Reading the ON-leg PNG showed the **globe entirely black** — it skipped its draw in the captured frame, emptying the depth buffer so the below-ground markers had nothing to occlude them (the documented kill-switch/async-pipeline settle race). NOT a log-depth-producer regression: a good settle always gives 0 below-ground leakage (the shaders are correct; same probe passes 0 on a clean run, and the slab green count also stabilized once gated — was drifting 39540↔49845). Fix (both probes): a `snapWithGlobe()` capture helper re-renders until the globe is confirmed present (far-camera: non-black center pixel; zfight: >25% non-black baseColor fraction) before every capture leg, plus an explicit globe-present assertion (`(2g)` / `(3g)`) so a future flake is self-explaining. Verified far-camera 3/3 + zfight 4/4 green post-fix (both were ~50% flaky). Probe-only changes — no renderer code touched.
+
+**Master switch confirmed:** `WebGPUContext.ts:409` `_logDepthWriteEnabled = true` (defaults TRUE). All producers gate through `isWebGPULogDepthActive` (`_logDepthWriteEnabled && frameState.useLogDepth`), so the kill switch flips collections + globe + primitives + buffer + ellipsoid + classifiers together — empirically confirmed by the clean ON→OFF→ON flip legs in all three z-fight probes.
+
+**Files modified:** `packages/engine/Source/Shaders/WebGPU/Environment/Moon.wgsl` (rationale comment), `Tools/visual-regression/probe-collections-far-camera.mjs` + `Tools/visual-regression/probe-logdepth-zfight.mjs` (globe-present capture gate), + ledger reconciliation (DEFERRED_WORK / FEATURE_INVENTORY / DEBUGGING_GUIDE / CAMPAIGN_ROADMAP / this log).
+
+---
+
 ## Batch 263 — Collection coplanar 2D/CV depth (NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH) (2026-06-13)
 
 **Symptom:** `probe-collections-2dcv-morph.mjs` — billboard / point / label all 0 px in WebGPU SCENE2D and COLUMBUS_VIEW (markers at height 0, coplanar with the map). Polyline already rendered (Batch 261 reference).
