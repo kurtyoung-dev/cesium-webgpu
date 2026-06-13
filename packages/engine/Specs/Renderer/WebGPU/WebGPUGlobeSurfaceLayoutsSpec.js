@@ -143,6 +143,12 @@ function createHost() {
   const device = createRecordingDevice();
   return {
     _device: device,
+    // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246): the per-device
+    // imagery slot count drives the group-1 texture-binding count + the
+    // device-shape-aware label. The renderer computes this via
+    // `computeGlobeImagerySlotCount` at init; mirror the full-limit value
+    // (16) here so the spec exercises the 31-texture pipeline-layout shape.
+    _imagerySlotCount: 16,
     _bindGroupLayout0: null,
     _bindGroupLayout1: null,
     _bindGroupLayout2: null,
@@ -300,7 +306,10 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
       });
 
       it("is labeled and has 17 entries (16 textures + 1 sampler)", function () {
-        expect(layout.label).toBe("Globe terrain textures layout");
+        // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246): the label
+        // carries the per-device slot count so devtools can tell the
+        // full-limit (16) shape apart from the reduced (1) compat shape.
+        expect(layout.label).toBe("Globe terrain textures layout (16 slots)");
         expect(layout.entries.length).toBe(17);
       });
 
