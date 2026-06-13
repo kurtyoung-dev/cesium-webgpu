@@ -476,6 +476,40 @@ export function executeFrustumLoop(
       host._executeOpaquePass(frustumCommands, config),
     );
 
+    // DP-H45 (Batch 257) — re-pack scene depth after the OPAQUE pass so
+    // pickPosition/pickFromRay over opaque Model/Primitive surfaces reads
+    // the model surface, not the globe behind it. OPAQUE models write into
+    // the scene-framebuffer depth, but nothing re-copied that depth into
+    // `globeDepthTexture` (the packed RGBA8 color texture that
+    // `pickDepth.update` reads at the end of this frustum, see L662). The
+    // post-globe `executeCopyDepth` (above) and post-3D-tiles
+    // `executeUpdateDepth` (above) both run BEFORE opaque, so without this
+    // block the picked depth is frozen at the pre-opaque (globe + tiles
+    // only) state. WebGL has no equivalent gap because its
+    // `pickDepth.update` samples the live shared depth attachment, which
+    // already contains opaque-model depth after `performPass(Pass.OPAQUE)`
+    // (`SceneRenderer.js:637` → `:656`). Mirrors the post-3D-tiles block
+    // above (endCurrentRenderPass → executeUpdateDepth(sceneFB depth) →
+    // _resumeScenePass). Gated on `!picking` to match the per-frustum
+    // pick-depth copy below (L662) — that copy runs on the NORMAL render
+    // frame, not the pick pass, so the depth must be repacked here on the
+    // same `!picking` frame whose `globeDepthTexture` feeds `pickDepth`.
+    if (
+      !picking &&
+      host._globeDepth &&
+      config.useGlobeDepthFramebuffer &&
+      scene._picking
+    ) {
+      const enc: GPUCommandEncoder | undefined = context._currentCommandEncoder;
+      if (enc) {
+        const depthSource: GPUTexture | undefined =
+          host._sceneFramebuffer?.colorTarget?.getDepthTexture();
+        context.endCurrentRenderPass?.();
+        host._globeDepth.executeUpdateDepth(enc, depthSource);
+        host._resumeScenePass(context);
+      }
+    }
+
     // Pass 11: GAUSSIAN_SPLATS
     // GS-WSR: If OIT is available and splat commands have OIT variants,
     // defer them to the translucent OIT pass for proper weighted-sum rendering.
