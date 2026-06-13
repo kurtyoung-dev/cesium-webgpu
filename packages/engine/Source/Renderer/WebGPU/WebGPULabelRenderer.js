@@ -41,6 +41,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
 import SceneMode from "../../Scene/SceneMode.js";
@@ -287,6 +288,14 @@ function packSDFGlyphInstance(out, offset, bb) {
  */
 function computeLabelDefinesForFrame(glyphCollection, frameState) {
   let defines = 0;
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — OR the LOG_DEPTH
+  // bit when the master switch + per-frame flag are on. The bit keys the
+  // shader-module cache AND the pipeline maps/names, so the flip rebuilds
+  // through the normal keyed-miss path. Inert while the switch defaults
+  // FALSE (defines unchanged, byte-identical shaders).
+  if (isWebGPULogDepthActive(frameState?.context, frameState)) {
+    defines |= ShaderDefine.LOG_DEPTH;
+  }
   const frameMin =
     typeof frameState?.minimumDisableDepthTestDistance === "number"
       ? frameState.minimumDisableDepthTestDistance
@@ -447,14 +456,30 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
     scratchCameraMC,
   );
   EncodedCartesian3.fromCartesian(scratchCameraMC, scratchEncodedCamera);
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — encode frustum
+  // (near, far) + oneOverLog2FarDepthFromNearPlusOne packed into the
+  // reserved lanes. Same source every producer uses
+  // (uniformState.currentFrustum at scene-update time); unconditional —
+  // only the LOG_DEPTH shader variant reads them.
+  const ldFrustum = uniformState.currentFrustum;
+  const ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  const ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldFactor =
+    typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? uniformState.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  }
   uniformData[32] = scratchEncodedCamera.high.x;
   uniformData[33] = scratchEncodedCamera.high.y;
   uniformData[34] = scratchEncodedCamera.high.z;
-  uniformData[35] = 0.0;
+  uniformData[35] = ldNear;
   uniformData[36] = scratchEncodedCamera.low.x;
   uniformData[37] = scratchEncodedCamera.low.y;
   uniformData[38] = scratchEncodedCamera.low.z;
-  uniformData[39] = 0.0;
+  uniformData[39] = ldFar;
 
   uniformData[40] = canvas.width;
   uniformData[41] = canvas.height;
@@ -482,7 +507,8 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
       : 0.0;
   const drawingBufferWidth = context?.drawingBufferWidth ?? canvas.width ?? 0.0;
   uniformData[45] = splitFraction * drawingBufferWidth;
-  uniformData[46] = 0.0;
+  // Log-depth factor at float 46 (previously implicit padding).
+  uniformData[46] = ldFactor;
   uniformData[47] = 0.0;
 
   // DP-H41 (Batch 27) — previousViewProjection at slots 48..63 (16 floats,

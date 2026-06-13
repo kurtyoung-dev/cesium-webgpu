@@ -27,16 +27,39 @@ struct CameraUniforms {
   encodedCameraLow: vec3<f32>,
   _pad1: f32,
   viewportSize: vec2<f32>,
-  _pad2: vec2<f32>,
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — formerly
+  // `_pad2`; carries the encode frustum (near, far). The factor lane
+  // sits after `splitPosition` (previously implicit padding before
+  // previousViewProjection's 16-byte alignment). Packed
+  // unconditionally; only `//>>ifdef LOG_DEPTH` blocks read them.
+  logDepthNearFar: vec2<f32>,
   // DP-H42 — frame-wide fallback threshold (meters). Squared in the shader.
   minimumDisableDepthTestDistance: f32,
   // DP-H40 — split cutoff in framebuffer pixels
   // (`frameState.splitPosition * drawingBufferWidth`).
   splitPosition: f32,
+  logDepthFactor: f32,
+  _padLog: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — canonical inline
+// copies; see chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -55,6 +78,10 @@ struct VertexOutput {
   @location(1) distFromCenter: f32,
   //>>ifdef SPLIT_ENABLED
   @location(2) splitDirection: f32,
+  //>>endif
+  //>>ifdef LOG_DEPTH
+  // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+  @location(3) v_logDepth: f32,
   //>>endif
 };
 
@@ -216,11 +243,38 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.splitDirection = input.perInstanceFlags.y;
   //>>endif
 
+  //>>ifdef LOG_DEPTH
+  // Renderer-wide log depth — computed AFTER every position override above.
+  // The pre-existing DISABLE_DEPTH_DISTANCE path pushes to the far plane
+  // (z = w); map it to the log far plane (csm_writeLogDepth returns exactly
+  // 1.0 when depthFromNearPlusOne = (far - near) + 1). A forced z == 0
+  // (degenerate hide collapse) maps to the near plane.
+  if (output.position.z == output.position.w && output.position.w != 0.0) {
+    output.v_logDepth =
+      (camera.logDepthNearFar.y - camera.logDepthNearFar.x) + 1.0;
+  } else if (output.position.z == 0.0) {
+    output.v_logDepth = 1.0;
+  } else {
+    output.v_logDepth =
+      csm_vertexLogDepth(output.position, camera.logDepthNearFar.x);
+  }
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
+
   return output;
 }
 
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Written for the depth TEST as well (frag_depth replaces rasterized z),
+  // so the translucent polyline pass tests correctly against log depth.
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
   //>>ifdef SPLIT_ENABLED
   // DP-H40 — discard pixels on the wrong side of the split cutoff.
   // `camera.splitPosition` is in framebuffer pixels (JS pre-multiplies
@@ -242,7 +296,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (color.a < 0.005) {
     discard;
   }
-  return color;
+  var fragOut: FragOutput;
+  fragOut.color = color;
+  //>>ifdef LOG_DEPTH
+  fragOut.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
+  return fragOut;
 }
 
 // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
@@ -284,6 +343,10 @@ struct VelocityVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) currentBaseClip: vec4<f32>,
   @location(1) prevBaseClip: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Velocity pass shares scene depth read-only — test in log space.
+  @location(2) v_logDepth: f32,
+  //>>endif
 };
 
 @vertex
@@ -350,17 +413,35 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   output.position = finalPos;
   output.currentBaseClip = baseClip;
   output.prevBaseClip = mix(prevClipStart, prevClipEnd, isEnd);
+  //>>ifdef LOG_DEPTH
+  output.v_logDepth =
+    csm_vertexLogDepth(output.position, camera.logDepthNearFar.x);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
 
+struct VelocityFragOutput {
+  @location(0) velocity: vec2<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> VelocityFragOutput {
+  var out: VelocityFragOutput;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
   let curW = input.currentBaseClip.w;
   let prevW = input.prevBaseClip.w;
   if (curW <= 0.0 || prevW <= 0.0) {
-    return vec2<f32>(0.0);
+    out.velocity = vec2<f32>(0.0);
+    return out;
   }
   let curNdc = input.currentBaseClip.xy / curW;
   let prevNdc = input.prevBaseClip.xy / prevW;
-  return curNdc - prevNdc;
+  out.velocity = curNdc - prevNdc;
+  return out;
 }

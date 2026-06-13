@@ -45,6 +45,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
 // Instance buffer: 7 × vec4 = 28 floats (112 bytes).
@@ -561,6 +562,14 @@ function getPolylineShaderModuleCache(device) {
  */
 function computePolylineDefinesForFrame(collection, frameState) {
   let defines = 0;
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — OR the LOG_DEPTH
+  // bit when the master switch + per-frame flag are on. The bit keys the
+  // shader-module cache AND the pipeline maps/names, so the flip rebuilds
+  // through the normal keyed-miss path. Inert while the switch defaults
+  // FALSE (defines unchanged, byte-identical shaders).
+  if (isWebGPULogDepthActive(frameState?.context, frameState)) {
+    defines |= ShaderDefine.LOG_DEPTH;
+  }
   const frameMin =
     typeof frameState?.minimumDisableDepthTestDistance === "number"
       ? frameState.minimumDisableDepthTestDistance
@@ -952,8 +961,25 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   // Viewport size for screen-space line expansion
   uniformData[24] = canvas.width;
   uniformData[25] = canvas.height;
-  uniformData[26] = 0.0;
-  uniformData[27] = 0.0;
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — encode frustum
+  // (near, far) + oneOverLog2FarDepthFromNearPlusOne packed into the
+  // reserved lanes. Same source every producer uses
+  // (uniformState.currentFrustum at scene-update time); unconditional —
+  // only the LOG_DEPTH shader variant reads them.
+  const ldFrustum = uniformState.currentFrustum;
+  const ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  const ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldFactor =
+    typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? uniformState.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  }
+  // Log-depth encode frustum at the former _pad2 lanes.
+  uniformData[26] = ldNear;
+  uniformData[27] = ldFar;
 
   // DP-H42 — frame-wide fallback threshold (meters; squared in shader).
   uniformData[28] =
@@ -971,7 +997,8 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
       : 0.0;
   const drawingBufferWidth = context?.drawingBufferWidth ?? canvas.width ?? 0.0;
   uniformData[29] = splitFraction * drawingBufferWidth;
-  uniformData[30] = 0.0;
+  // Log-depth factor at float 30 (previously implicit padding).
+  uniformData[30] = ldFactor;
   uniformData[31] = 0.0;
 
   // DP-H41 (Batch 27) — previousViewProjection at slots 32..47 (16 floats,

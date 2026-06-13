@@ -29,9 +29,13 @@ struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
   viewRotation: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — formerly-zero
+  // `_pad0` / `_pad1` lanes carry the encode frustum near/far; float 46
+  // (previously implicit padding) carries the factor. Same UBO positions
+  // as the base Billboard shader. See WebGPULogDepth.ts.
+  logDepthNear: f32,
   encodedCameraLow: vec3<f32>,
-  _pad1: f32,
+  logDepthFar: f32,
   viewportSize: vec2<f32>,
   highResMultiplier: f32,
   // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `_threePointDepthTestDistance`
@@ -40,6 +44,8 @@ struct CameraUniforms {
   threePointDepthTestDistance: f32,
   minimumDisableDepthTestDistance: f32,
   splitPosition: f32,
+  logDepthFactor: f32,
+  _padLog: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
@@ -50,6 +56,22 @@ struct CameraUniforms {
 // + sampler for terrain occlusion of clamp-to-ground labels.
 @group(0) @binding(3) var globeDepthTex: texture_2d<f32>;
 @group(0) @binding(4) var globeDepthSampler: sampler;
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — canonical inline
+// copies; see BillboardCollection.wgsl / chunks/functions/csm_*.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -93,6 +115,10 @@ struct VertexOutput {
   //>>ifdef SPLIT_ENABLED
   @location(4) splitDirection: f32,
   //>>endif
+  //>>ifdef LOG_DEPTH
+  // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+  @location(5) v_logDepth: f32,
+  //>>endif
 };
 
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
@@ -123,6 +149,18 @@ fn getGlobeNdcDepth(clipPos: vec4<f32>) -> f32 {
   }
   let packed = textureSampleLevel(globeDepthTex, globeDepthSampler, uv, 0.0);
   return czm_unpackDepth(packed);
+}
+
+// Renderer-wide log depth — candidate depth for the 3-point check in the
+// SAME space as the (possibly log-encoded) globe depth texture. See
+// BillboardCollection.wgsl::candidateGlobeCompareDepth.
+fn candidateGlobeCompareDepth(clipPos: vec4<f32>) -> f32 {
+  //>>ifdef LOG_DEPTH
+  return log2(max((clipPos.w - camera.logDepthNear) + 1.0, 1e-9)) *
+    camera.logDepthFactor;
+  //>>else
+  return clipPos.z / clipPos.w;
+  //>>endif
 }
 
 // Batch 139 (4th-pass audit fix) — see BillboardCollection.wgsl for
@@ -336,7 +374,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
       pixelToClip,
     );
     let depth1 = getGlobeNdcDepth(pClip1);
-    let labelNdcZ1 = pClip1.z / pClip1.w;
+    let labelNdcZ1 = candidateGlobeCompareDepth(pClip1);
     if (depth1 != 0.0 && labelNdcZ1 > depth1 + ndcBias) {
       let pClip2 = addScreenSpaceOffsetClip(
         anchorClipLabel,
@@ -348,7 +386,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
         pixelToClip,
       );
       let depth2 = getGlobeNdcDepth(pClip2);
-      let labelNdcZ2 = pClip2.z / pClip2.w;
+      let labelNdcZ2 = candidateGlobeCompareDepth(pClip2);
       if (depth2 != 0.0 && labelNdcZ2 > depth2 + ndcBias) {
         let pClip3 = addScreenSpaceOffsetClip(
           anchorClipLabel,
@@ -360,7 +398,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
           pixelToClip,
         );
         let depth3 = getGlobeNdcDepth(pClip3);
-        let labelNdcZ3 = pClip3.z / pClip3.w;
+        let labelNdcZ3 = candidateGlobeCompareDepth(pClip3);
         if (depth3 != 0.0 && labelNdcZ3 > depth3 + ndcBias) {
           clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
         }
@@ -400,6 +438,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     input.outlineColor.a * alphaMultiplier,
   );
   output.sdfParams = input.sdfParams.xy; // outlineWidth, sdfEdge
+
+  //>>ifdef LOG_DEPTH
+  // Computed AFTER every clipPos override above; forced z == 0 (disable-
+  // depth near-plane trick / hide collapse) maps to v_logDepth = 1.0 ->
+  // frag_depth 0, mirroring WebGL's v_depthFromNearPlusOne = 1.0.
+  if (output.position.z == 0.0) {
+    output.v_logDepth = 1.0;
+  } else {
+    output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepthNear);
+  }
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
 
@@ -431,8 +481,17 @@ fn getSDFColor(
   }
 }
 
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Written for the depth TEST as well (frag_depth replaces rasterized z),
+  // so the translucent label pass tests correctly against log scene depth.
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
   //>>ifdef SPLIT_ENABLED
   // DP-H40 — discard pixels on the wrong side of the split cutoff before
   // doing any SDF math. Same convention as BillboardCollection.wgsl.
@@ -467,7 +526,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     discard;
   }
 
-  return color;
+  var out: FragOutput;
+  out.color = color;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
+  return out;
 }
 
 // AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
@@ -506,6 +570,10 @@ struct VelocityVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) currentCenterClip: vec4<f32>,
   @location(1) prevCenterClip: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Velocity pass shares scene depth read-only — test in log space.
+  @location(2) v_logDepth: f32,
+  //>>endif
 };
 
 @vertex
@@ -562,17 +630,34 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   output.position = clipPos;
   output.currentCenterClip = currentCenterClip;
   output.prevCenterClip = prevCenterClip;
+  //>>ifdef LOG_DEPTH
+  output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepthNear);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
 
+struct VelocityFragOutput {
+  @location(0) velocity: vec2<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> VelocityFragOutput {
+  var out: VelocityFragOutput;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
   let curW = input.currentCenterClip.w;
   let prevW = input.prevCenterClip.w;
   if (curW <= 0.0 || prevW <= 0.0) {
-    return vec2<f32>(0.0);
+    out.velocity = vec2<f32>(0.0);
+    return out;
   }
   let curNdc = input.currentCenterClip.xy / curW;
   let prevNdc = input.prevCenterClip.xy / prevW;
-  return curNdc - prevNdc;
+  out.velocity = curNdc - prevNdc;
+  return out;
 }

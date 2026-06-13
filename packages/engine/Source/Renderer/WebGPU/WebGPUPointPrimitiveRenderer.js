@@ -37,6 +37,7 @@ import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 // Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
 import SceneMode from "../../Scene/SceneMode.js";
@@ -677,6 +678,14 @@ function prewarmPointShaders(device, colorSource, pickSource) {
  */
 function computePointDefinesForFrame(collection, frameState) {
   let defines = 0;
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — OR the LOG_DEPTH
+  // bit when the master switch + per-frame flag are on. The bit keys the
+  // shader-module cache AND the pipeline maps/names, so the flip rebuilds
+  // through the normal keyed-miss path. Inert while the switch defaults
+  // FALSE (defines unchanged, byte-identical shaders).
+  if (isWebGPULogDepthActive(frameState?.context, frameState)) {
+    defines |= ShaderDefine.LOG_DEPTH;
+  }
   const frameMin =
     typeof frameState?.minimumDisableDepthTestDistance === "number"
       ? frameState.minimumDisableDepthTestDistance
@@ -855,6 +864,26 @@ function packUniforms(uniformData, frameState, modelMatrix) {
     uniformData[42] = 0;
     uniformData[43] = 1;
   }
+
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — logDepth vec4
+  // (near, far, factor, reserved) at floats 44-47 (struct tail; the GPU
+  // buffer is 256 bytes so no resize). Same encode frustum every producer
+  // packs; unconditional — only the LOG_DEPTH shader variant reads it.
+  const ldFrustum = uniformState.currentFrustum;
+  const ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  const ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldFactor =
+    typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? uniformState.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  }
+  uniformData[44] = ldNear;
+  uniformData[45] = ldFar;
+  uniformData[46] = ldFactor;
+  uniformData[47] = 0.0;
 }
 
 // =========================================================================

@@ -37,9 +37,13 @@ struct InstanceRecord {
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,         // bytes 0-63
   viewportSize: vec2<f32>,               // bytes 64-71
-  _padA: vec2<f32>,                      // bytes 72-79
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — formerly `_padA`
+  // + `_pad0`; carry the encode frustum (near, far) + the factor
+  // (oneOverLog2FarDepthFromNearPlusOne). Packed unconditionally; only
+  // `//>>ifdef LOG_DEPTH` blocks read them. See WebGPULogDepth.ts.
+  logDepthNearFar: vec2<f32>,            // bytes 72-79
   encodedCameraHigh: vec3<f32>,          // bytes 80-91 (+4 pad)
-  _pad0: f32,
+  logDepthFactor: f32,
   encodedCameraLow: vec3<f32>,           // bytes 96-107 (+4 pad)
   _pad1: f32,
   // DP-H41 (Batch 27) — previous frame's viewProjection at the tail.
@@ -49,10 +53,30 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var<storage, read> instances: array<InstanceRecord>;
 
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth — canonical inline copies; see
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
+
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
   @location(1) uv: vec2<f32>,
+  //>>ifdef LOG_DEPTH
+  // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+  @location(2) v_logDepth: f32,
+  //>>endif
 };
 
 @vertex
@@ -88,18 +112,37 @@ fn vertexMain(
   output.position = clipPos;
   output.uv = quadPos;
   output.color = inst.color;
+  //>>ifdef LOG_DEPTH
+  output.v_logDepth =
+    csm_vertexLogDepth(output.position, camera.logDepthNearFar.x);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
 
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Written for the depth TEST as well (frag_depth replaces rasterized z),
+  // so dots test correctly against the globe's log depth at orbital range.
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
   // Anti-aliased circular dot: uv is [-1,1] across the quad.
   let dist = length(input.uv);
   let alpha = (1.0 - smoothstep(0.7, 1.0, dist)) * input.color.a;
   if (alpha < 0.01) {
     discard;
   }
-  return vec4<f32>(input.color.rgb, alpha);
+  var out: FragOutput;
+  out.color = vec4<f32>(input.color.rgb, alpha);
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
+  return out;
 }
 
 // ── TAA velocity entry points (Batch 235) ──────────────────────────────
@@ -113,6 +156,10 @@ struct VelocityVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) currentCenterClip: vec4<f32>,
   @location(1) prevCenterClip: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Velocity pass shares scene depth read-only — test in log space.
+  @location(2) v_logDepth: f32,
+  //>>endif
 };
 
 @vertex
@@ -156,19 +203,37 @@ fn vertexVelocityMain(
   );
   output.currentCenterClip = currentCenterClip;
   output.prevCenterClip = prevCenterClip;
+  //>>ifdef LOG_DEPTH
+  output.v_logDepth =
+    csm_vertexLogDepth(output.position, camera.logDepthNearFar.x);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
+
+struct VelocityFragOutput {
+  @location(0) velocity: vec2<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
 
 @fragment
 fn fragmentVelocityMain(
   input: VelocityVertexOutput,
-) -> @location(0) vec2<f32> {
+) -> VelocityFragOutput {
+  var out: VelocityFragOutput;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
   let curW = input.currentCenterClip.w;
   let prevW = input.prevCenterClip.w;
   if (curW <= 0.0 || prevW <= 0.0) {
-    return vec2<f32>(0.0);
+    out.velocity = vec2<f32>(0.0);
+    return out;
   }
   let curNdc = input.currentCenterClip.xy / curW;
   let prevNdc = input.prevCenterClip.xy / prevW;
-  return curNdc - prevNdc;
+  out.velocity = curNdc - prevNdc;
+  return out;
 }

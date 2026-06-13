@@ -71,7 +71,8 @@ import {
   storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
@@ -202,6 +203,11 @@ interface ComputeInstanceCache {
   velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
   _pipelineFormatGeneration?: number;
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — whether the
+  // render/velocity modules + pipelines were built with LOG_DEPTH; a
+  // master-switch flip forces a re-init (same pattern as the
+  // scene-format generation above).
+  _logDepthEnabled?: boolean;
 }
 
 const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
@@ -374,13 +380,15 @@ function tryResolveVelocityPipeline(
       device,
       "ComputeInstance velocity BGL",
       [
-        uniformBuffer(0, Stage.VERTEX), // camera
+        // Camera UB is VERTEX_FRAGMENT: the LOG_DEPTH fragment variant
+        // reads camera.logDepthFactor for the frag_depth write.
+        uniformBuffer(0, Stage.VERTEX_FRAGMENT), // camera
         storageBuffer(1, Stage.VERTEX, { readOnly: true }), // current records
         storageBuffer(2, Stage.VERTEX, { readOnly: true }), // prev records
       ],
     );
     cache.velocityPipelineDescriptor = {
-      name: "ComputeInstance velocity pipeline",
+      name: `ComputeInstance velocity pipeline [ld=${cache._logDepthEnabled === true ? 1 : 0}]`,
       layout: device.createPipelineLayout({
         bindGroupLayouts: [cache.velocityBindGroupLayout],
       }),
@@ -458,6 +466,7 @@ function initializeComputeInstanceResources(
   sceneFormat: GPUTextureFormat,
   kernel: string,
   floatsPerInstance: number,
+  logDepthActive: boolean,
 ): void {
   const composedSource = composeKernelSource(kernel, floatsPerInstance);
   const kernelTag = `fpi=${floatsPerInstance}/k=${fnv1a32(composedSource)}-${composedSource.length}`;
@@ -469,7 +478,7 @@ function initializeComputeInstanceResources(
   const renderModule = getRenderShaderModuleCache(device).getOrCreate(
     ShaderSourceId.COMPUTE_INSTANCE_RENDER,
     ComputeInstanceRenderWGSL,
-    0,
+    logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
     "ComputeInstance render",
   );
   // Stashed so the velocity pipeline (lazy — first TAA-on frame) can
@@ -517,7 +526,9 @@ function initializeComputeInstanceResources(
     device,
     "ComputeInstance render BGL",
     [
-      uniformBuffer(0, Stage.VERTEX), // camera
+      // Camera UB is VERTEX_FRAGMENT: the LOG_DEPTH fragment variant reads
+      // camera.logDepthFactor for the frag_depth write.
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT), // camera
       storageBuffer(1, Stage.VERTEX, { readOnly: true }), // instance records
     ],
   );
@@ -529,7 +540,7 @@ function initializeComputeInstanceResources(
   const sampleCount =
     (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
   cache.renderPipelineDescriptor = {
-    name: `ComputeInstance pipeline [${sceneFormat}/ms=${sampleCount}]`,
+    name: `ComputeInstance pipeline [${sceneFormat}/ms=${sampleCount}/ld=${logDepthActive ? 1 : 0}]`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [cache.renderBindGroupLayout],
     }),
@@ -646,6 +657,26 @@ function updateWebGPUComputeInstanceCollection(
   const sceneFormat: GPUTextureFormat =
     ctxAny.scenePipelineFormat ?? ctxAny.presentationFormat ?? "bgra8unorm";
   const sceneGen = ctxAny._scenePipelineFormatGeneration ?? 0;
+  // Renderer-wide log depth — force a full re-init when the master switch
+  // flips so the render/velocity modules recompile with/without LOG_DEPTH.
+  const logDepthActive = isWebGPULogDepthActive(
+    context as unknown as { _logDepthWriteEnabled?: boolean },
+    frameState as unknown as { useLogDepth?: boolean },
+  );
+  if (cache.initialized && cache._logDepthEnabled !== logDepthActive) {
+    cache.initialized = false;
+    cache.renderPipeline = null;
+    cache.renderPipelineDescriptor = null;
+    cache.renderPipelineRequestPending = false;
+    cache.renderBindGroups = [null, null];
+    cache.velocityPipeline = null;
+    cache.velocityPipelineDescriptor = null;
+    cache.velocityPipelineRequestPending = false;
+    cache.velocityBindGroupLayout = null;
+    cache.velocityBindGroups = [null, null];
+    cache.command = null;
+  }
+
   if (cache.initialized && cache._pipelineFormatGeneration !== sceneGen) {
     cache.initialized = false;
     cache.renderPipeline = null;
@@ -672,8 +703,10 @@ function updateWebGPUComputeInstanceCollection(
       sceneFormat,
       kernel,
       floatsPerInstance,
+      logDepthActive,
     );
     cache._pipelineFormatGeneration = sceneGen;
+    cache._logDepthEnabled = logDepthActive;
   }
 
   // Params upload — only when the collection reports dirty (or the count
@@ -796,13 +829,31 @@ function updateWebGPUComputeInstanceCollection(
   const canvas = context._canvas || { width: 1920, height: 1080 };
   data[16] = canvas.width;
   data[17] = canvas.height;
-  data[18] = 0;
-  data[19] = 0;
+  // Renderer-wide log depth — (near, far) at the former _padA lanes +
+  // factor at the former _pad0 lane. Same encode frustum every producer
+  // packs (uniformState.currentFrustum). Unconditional; only the
+  // LOG_DEPTH module variant reads them.
+  const usLog = us as unknown as {
+    currentFrustum?: { x: number; y: number };
+    oneOverLog2FarDepthFromNearPlusOne?: number;
+  };
+  const ldNear = usLog.currentFrustum?.x ?? 0.0;
+  const ldFar = usLog.currentFrustum?.y ?? 0.0;
+  let ldFactor =
+    typeof usLog.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? usLog.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const log2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+  }
+  data[18] = ldNear;
+  data[19] = ldFar;
   EncodedCartesian3.fromCartesian(us.cameraPosition, scratchEncoded);
   data[20] = scratchEncoded.high.x;
   data[21] = scratchEncoded.high.y;
   data[22] = scratchEncoded.high.z;
-  data[23] = 0;
+  data[23] = ldFactor;
   data[24] = scratchEncoded.low.x;
   data[25] = scratchEncoded.low.y;
   data[26] = scratchEncoded.low.z;

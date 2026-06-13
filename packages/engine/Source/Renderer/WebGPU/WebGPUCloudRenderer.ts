@@ -21,7 +21,8 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 // Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
@@ -101,11 +102,31 @@ struct CameraUniforms {
   // positions are in world space (no modelMatrix), so the velocity VS
   // can apply prevVP directly to the prev instance position.
   prevViewProjection: mat4x4<f32>,
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — (near, far,
+  // oneOverLog2FarDepthFromNearPlusOne, reserved) at floats 44-47. Packed
+  // unconditionally; only the LOG_DEPTH ifdef blocks read it.
+  logDepth: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var noiseTex: texture_2d<f32>;
 @group(0) @binding(2) var noiseSampler: sampler;
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth — canonical inline copies; see
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 struct VertexInput {
   @location(0) quadPos: vec2<f32>,
@@ -120,6 +141,10 @@ struct VertexOutput {
   @location(0) uv: vec2<f32>,
   @location(1) vColor: vec4<f32>,
   @location(2) vBrightness: f32,
+  //>>ifdef LOG_DEPTH
+  // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+  @location(3) v_logDepth: f32,
+  //>>endif
 };
 
 @vertex
@@ -136,18 +161,36 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.uv = input.quadPos * 0.5 + 0.5;
   output.vColor = input.color;
   output.vBrightness = input.scaleAndBrightness.z;
+  //>>ifdef LOG_DEPTH
+  output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepth.x);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
 
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Written for the depth TEST as well (frag_depth replaces rasterized z),
+  // so the translucent cloud pass tests correctly against log scene depth.
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
   let dist = length(input.uv - vec2<f32>(0.5));
   let alpha = smoothstep(0.5, 0.2, dist);
   let noise = textureSample(noiseTex, noiseSampler, input.uv * 2.0).r;
   let cloudAlpha = alpha * (0.5 + 0.5 * noise) * input.vColor.a;
   let cloudColor = input.vColor.rgb * input.vBrightness;
   if (cloudAlpha < 0.01) { discard; }
-  return vec4<f32>(cloudColor, cloudAlpha);
+  var out: FragOutput;
+  out.color = vec4<f32>(cloudColor, cloudAlpha);
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
+  //>>endif
+  return out;
 }
 
 // Batch 170 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
@@ -171,6 +214,10 @@ struct VelocityVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) currCenterClip: vec4<f32>,
   @location(1) prevCenterClip: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Velocity pass shares scene depth read-only — test in log space.
+  @location(2) v_logDepth: f32,
+  //>>endif
 };
 
 @vertex
@@ -194,19 +241,36 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     currCenterClip + vec4<f32>(offset * currCenterClip.w, 0.0, 0.0);
   output.currCenterClip = currCenterClip;
   output.prevCenterClip = prevCenterClip;
+  //>>ifdef LOG_DEPTH
+  output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepth.x);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
 
+struct VelocityFragOutput {
+  @location(0) velocity: vec2<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> VelocityFragOutput {
+  var out: VelocityFragOutput;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
+  //>>endif
   let curW = input.currCenterClip.w;
   let prevW = input.prevCenterClip.w;
   if (curW <= 0.0 || prevW <= 0.0) {
-    return vec2<f32>(0.0);
+    out.velocity = vec2<f32>(0.0);
+    return out;
   }
   let curNdc = input.currCenterClip.xy / curW;
   let prevNdc = input.prevCenterClip.xy / prevW;
-  return curNdc - prevNdc;
+  out.velocity = curNdc - prevNdc;
+  return out;
 }
 `;
 
@@ -479,6 +543,31 @@ function updateWebGPUCloudCollection(
     )._pipelineFormatGeneration = sceneGen;
   }
 
+  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — bake the
+  // LOG_DEPTH define into the cloud module + pipelines when active; force
+  // a full re-init when the master switch flips (mirrors the
+  // scene-format-generation invalidation above).
+  const logDepthActive = isWebGPULogDepthActive(
+    context as unknown as { _logDepthWriteEnabled?: boolean },
+    frameState as unknown as { useLogDepth?: boolean },
+  );
+  if (
+    cache.initialized &&
+    (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled !==
+      logDepthActive
+  ) {
+    cache.initialized = false;
+    cache.command = null;
+    cache.pipelineDescriptor = null;
+    cache.pipeline = null;
+    cache.pipelineRequestPending = false;
+    cache.velocityPipeline = null;
+    cache.velocityPipelineDescriptor = null;
+    cache.velocityPipelineRequestPending = false;
+  }
+  (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled =
+    logDepthActive;
+
   if (!cache.initialized) {
     // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route module compilation
     // through the per-device shader module cache so two CloudCollections
@@ -487,7 +576,7 @@ function updateWebGPUCloudCollection(
     cache.shaderModule = moduleCache.getOrCreate(
       ShaderSourceId.CLOUD_COLLECTION,
       CLOUD_WGSL,
-      0,
+      logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
       "CloudCollection",
     );
     cache.uniformBuffer = device.createBuffer({
@@ -527,7 +616,7 @@ function updateWebGPUCloudCollection(
     const sampleCount =
       (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
     cache.pipelineDescriptor = {
-      name: `CloudCollection pipeline [${canvasFormat}/ms=${sampleCount}]`,
+      name: `CloudCollection pipeline [${canvasFormat}/ms=${sampleCount}/ld=${logDepthActive ? 1 : 0}]`,
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
       vertex: {
         module: cache.shaderModule,
@@ -710,7 +799,9 @@ function updateWebGPUCloudCollection(
   // Batch 170 - bumped from 28 → 44 floats (176 bytes) to fit the
   // trailing `prevViewProjection: mat4x4<f32>` (16 floats). UBO is
   // allocated at 256 bytes; comfortably fits with 80 spare.
-  const data = new Float32Array(44);
+  // NEW-COLLECTIONS-LOG-DEPTH — bumped 44 -> 48 floats for the trailing
+  // logDepth vec4 (near, far, factor, reserved) at floats 44-47.
+  const data = new Float32Array(48);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -759,6 +850,28 @@ function updateWebGPUCloudCollection(
     data[42] = 0;
     data[43] = 1;
   }
+  // Renderer-wide log depth — (near, far, factor) from the same encode
+  // frustum every producer packs (uniformState.currentFrustum at
+  // scene-update time). Unconditional; only the LOG_DEPTH variant reads it.
+  const usLog = us as unknown as {
+    currentFrustum?: { x: number; y: number };
+    oneOverLog2FarDepthFromNearPlusOne?: number;
+  };
+  const ldNear = usLog.currentFrustum?.x ?? 0.0;
+  const ldFar = usLog.currentFrustum?.y ?? 0.0;
+  let ldFactor =
+    typeof usLog.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? usLog.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const log2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+  }
+  data[44] = ldNear;
+  data[45] = ldFar;
+  data[46] = ldFactor;
+  data[47] = 0.0;
+
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
   if (!cache.command) {
@@ -878,7 +991,12 @@ function attachCloudVelocityCommand(
     const layout = cache.pipelineDescriptor?.layout;
     if (layout) {
       cache.velocityPipelineDescriptor = {
-        name: "CloudCollection velocity pipeline",
+        name: `CloudCollection velocity pipeline [ld=${
+          (cache as unknown as { _logDepthEnabled?: boolean })
+            ._logDepthEnabled === true
+            ? 1
+            : 0
+        }]`,
         layout,
         vertex: {
           module: cache.shaderModule,
