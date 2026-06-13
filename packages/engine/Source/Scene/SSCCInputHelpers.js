@@ -670,12 +670,24 @@ export function handleZoom(
               positionNormal,
               scratchZoomAxis,
             );
-            const denom =
-              Math.abs(angle) > CesiumMath.toRadians(20.0)
-                ? camera.positionCartographic.height * 0.75
-                : camera.positionCartographic.height - distance;
-            const scalar = distance / denom;
-            camera.rotate(axis, angle * scalar);
+            // Degenerate-axis guard (Batch 252): when the zoom target and the
+            // screen-center pick are (nearly) the same point — e.g. wheel-zoom
+            // with the cursor exactly at screen center — `dotProduct` can
+            // round to just below 1.0 while the cross product is exactly the
+            // zero vector, and Quaternion.fromAxisAngle inside camera.rotate
+            // throws "normalized result is not a number". Deterministic on
+            // WebGPU, where PickDepth's sync cache returns bit-identical
+            // positions for both pickPosition queries; reachable on WebGL too
+            // when the two picks coincide. A ~zero axis means there is no arc
+            // to rotate through, so skipping the rotation is exact.
+            if (Cartesian3.magnitudeSquared(axis) > CesiumMath.EPSILON15) {
+              const denom =
+                Math.abs(angle) > CesiumMath.toRadians(20.0)
+                  ? camera.positionCartographic.height * 0.75
+                  : camera.positionCartographic.height - distance;
+              const scalar = distance / denom;
+              camera.rotate(axis, angle * scalar);
+            }
           }
         }
       }

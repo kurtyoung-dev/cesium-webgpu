@@ -15,6 +15,20 @@ const packedDepthScale = new Cartesian4(
 // Staging buffer size: 256 bytes (minimum alignment for WebGPU buffer mapping)
 const STAGING_BUFFER_SIZE = 256;
 
+// NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252) — sync-cache validity
+// window for the async (WebGPU) getDepth path. The cached value is only
+// returned when the query is within this many pixels of the readback's
+// coordinate (depth varies slowly across adjacent globe pixels; a moving
+// cursor re-arms the readback and converges next frame)...
+const ASYNC_DEPTH_COORD_TOLERANCE = 4;
+// ...and when no more than this many frames have rendered since the readback
+// was armed. Staleness is counted in RENDERED frames (update() calls), not
+// wall time, so requestRenderMode / paused scenes keep a valid cache
+// indefinitely — depth can't change without a render. A short window bounds
+// how far a continuously-moving camera can drift from the cached value
+// (one-frame-stale is the contract; a few frames is the tolerance).
+const ASYNC_DEPTH_MAX_STALE_FRAMES = 4;
+
 function updateFramebuffers(pickDepth, context, depthTexture) {
   const { width, height } = depthTexture;
   pickDepth._framebuffer.update(context, width, height);
@@ -55,14 +69,18 @@ void main()
 /**
  * Unpack a depth value from RGBA bytes (matching the WebGPUGlobeDepth
  * packing: r = floor(d*255)/255, g = frac*255 portion, b = deeper frac).
- * Uses the same dot-product unpacking as the WebGL path.
+ * Uses the same dot-product unpacking as the WebGL path, except the alpha
+ * channel: WebGPUGlobeDepth's pack shader writes only THREE channels
+ * (a = 1.0 constant), so including `a` would add a constant one-quantum
+ * (~6e-8) bias that pushes far-plane depth (1.0 exactly) above the
+ * `depth >= 1.0` sky rejection threshold's intent. Zero it out.
  * @private
  */
-function unpackDepthFromRGBA(r, g, b, a) {
+function unpackDepthFromRGBA(r, g, b) {
   scratchPackedDepth.x = r;
   scratchPackedDepth.y = g;
   scratchPackedDepth.z = b;
-  scratchPackedDepth.w = a;
+  scratchPackedDepth.w = 0.0;
   Cartesian4.divideByScalar(scratchPackedDepth, 255.0, scratchPackedDepth);
   return Cartesian4.dot(scratchPackedDepth, packedDepthScale);
 }
@@ -86,8 +104,15 @@ class PickDepth {
     this._textureToCopy = undefined;
     this._copyDepthCommand = undefined;
 
-    // Async depth readback state (used when sync readPixels is unavailable)
+    // Async depth readback state (used when sync readPixels is unavailable).
+    // `_lastDepthValue` is the one-frame-stale sync cache that bridges the
+    // async GPU readback to getDepth's synchronous consumers; the coordinate
+    // + frame stamp bound its validity (see getDepth).
     this._lastDepthValue = undefined;
+    this._lastDepthX = -1;
+    this._lastDepthY = -1;
+    this._lastDepthStamp = -1;
+    this._updateCount = 0;
     this._asyncDepthTexture = undefined;
     this._depthStagingBuffer = null;
     this._pendingReadback = false;
@@ -110,8 +135,13 @@ class PickDepth {
       updateFramebuffers(this, context, depthTexture);
       updateCopyCommands(this, context, depthTexture);
     } else {
-      // Async path: store packed-depth RGBA texture for buffer readback
+      // Async path: store packed-depth RGBA texture for buffer readback.
+      // The update count is the staleness clock for the sync cache — it
+      // advances once per RENDERED frame (the WebGPU frustum loop calls
+      // update() once per frame per PickDepth instance), so cache age is
+      // measured in renders, not wall time.
       this._asyncDepthTexture = depthTexture;
+      this._updateCount++;
     }
   }
 
@@ -148,29 +178,53 @@ class PickDepth {
       }
     }
 
-    // WebGPU async path. Two contracts matter here:
+    // WebGPU async path (NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION, Batch 252).
+    // The contract:
     //  1. EVERY consumer of getDepth is SYNCHRONOUS and cannot await it:
     //     scene.pickPosition / scene.pickPositionWorldCoordinates
-    //     (Picking.js:608, Scene.js:4069) AND camera zoom/tilt-to-cursor
-    //     (CameraHelpers.js:247, SSCCInputHelpers.js:65). So this must return a
+    //     (Picking.js, Scene.js) AND camera zoom/tilt-to-cursor
+    //     (CameraHelpers.js, SSCCInputHelpers.js). So this returns a
     //     number|undefined — NEVER a Promise (a Promise silently broke all of
     //     them: callers treated the Promise object as a depth value).
-    //  2. The reconstruction is NOT yet correct on WebGPU. All frustums share
-    //     the single packed `globeDepth.globeDepthTexture`
-    //     (WebGPUSceneRendererFrustumLoop.ts:641), but `unprojectDepth` rebuilds
-    //     the world position with each frustum's OWN near/far — so the depth's
-    //     frustum-space doesn't match the reconstruction and the result is a
-    //     garbage world position (e.g. the antipode at ~85,000 km). A garbage
-    //     position is WORSE than undefined (camera-to-cursor would jump to it).
+    //  2. GPU buffer mapping cannot resolve within the calling frame, so the
+    //     value returned is the ONE-FRAME-STALE cached result of an earlier
+    //     call's readback. The first query at a new location returns
+    //     undefined (callers fall back to ray picking — the pre-fix SAFE
+    //     state) and ARMS the readback; queries converge 1-2 frames later.
+    //  3. The cached value is only trusted near the readback's own pixel and
+    //     for a few rendered frames (see the ASYNC_DEPTH_* constants) so a
+    //     long-dead readback can't anchor camera-to-cursor to garbage.
     //
-    // Until per-frustum WebGPU pick-depth reconstruction lands
-    // (DEFERRED_WORK: NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION), return undefined so
-    // callers fall back to ray pick — the same safe result as before, but now
-    // via the correct async architecture (the WebGL pick framebuffer is no
-    // longer wrongly allocated on WebGPU, and InstancingPipelineStage keeps the
-    // typed array WebGPU instanced models need). `_readDepthAsync` +
-    // `_lastDepthValue` are the scaffolding that fix switches on.
-    return undefined;
+    // The value itself is full-frustum LOG depth (the shared packed
+    // `globeDepth.globeDepthTexture` — every WebGPU depth producer encodes
+    // against the full camera frustum since Batch 251). The matching
+    // reconstruction lives in Picking.pickPositionWorldCoordinates, gated on
+    // `context.pickDepthFullFrustumLogEncode`.
+    if (!defined(this._asyncDepthTexture)) {
+      return undefined;
+    }
+
+    // Arm/refresh the background readback for this coordinate. Errors are
+    // swallowed inside (_pendingReadback also dedupes overlapping requests).
+    this._readDepthAsync(context, x, y);
+
+    const cached = this._lastDepthValue;
+    if (!defined(cached)) {
+      return undefined;
+    }
+    if (
+      Math.abs(x - this._lastDepthX) > ASYNC_DEPTH_COORD_TOLERANCE ||
+      Math.abs(y - this._lastDepthY) > ASYNC_DEPTH_COORD_TOLERANCE
+    ) {
+      return undefined;
+    }
+    if (
+      this._updateCount - this._lastDepthStamp >
+      ASYNC_DEPTH_MAX_STALE_FRAMES
+    ) {
+      return undefined;
+    }
+    return cached;
   }
 
   /**
@@ -200,11 +254,21 @@ class PickDepth {
       return this._lastDepthValue;
     }
 
-    // Clamp coordinates to texture bounds
+    // Clamp coordinates to texture bounds. Callers pass bottom-left-origin
+    // coordinates (Picking.js flips `drawingBufferPosition.y` for WebGL's
+    // readPixels convention before calling getDepth), but the packed depth
+    // texture is screen-oriented (row 0 = top of screen) and WebGPU's
+    // copyTextureToBuffer origin is top-left — flip y back.
     const texWidth = packedTexture.width;
     const texHeight = packedTexture.height;
     const px = Math.max(0, Math.min(Math.floor(x), texWidth - 1));
-    const py = Math.max(0, Math.min(Math.floor(y), texHeight - 1));
+    const py =
+      texHeight - 1 - Math.max(0, Math.min(Math.floor(y), texHeight - 1));
+
+    // Stamp the request with the CURRENT update count — the depth decoded
+    // below corresponds to the texture content as of this frame, and the
+    // staleness window in getDepth is measured from here.
+    const requestStamp = this._updateCount;
 
     this._pendingReadback = true;
 
@@ -237,11 +301,16 @@ class PickDepth {
 
       await stagingBuffer.mapAsync(GPUMapMode.READ, 0, 4);
       const data = new Uint8Array(stagingBuffer.getMappedRange(0, 4));
-      const depth = unpackDepthFromRGBA(data[0], data[1], data[2], data[3]);
+      const depth = unpackDepthFromRGBA(data[0], data[1], data[2]);
       stagingBuffer.unmap();
       stagingBuffer.destroy();
 
       this._lastDepthValue = depth;
+      // Cache validity key: the BOTTOM-LEFT-origin coordinates the caller
+      // queried with (getDepth compares against the same convention).
+      this._lastDepthX = x;
+      this._lastDepthY = y;
+      this._lastDepthStamp = requestStamp;
       this._pendingReadback = false;
       return depth;
     } catch (e) {

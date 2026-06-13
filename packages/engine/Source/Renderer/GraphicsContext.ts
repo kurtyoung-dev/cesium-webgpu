@@ -784,6 +784,28 @@ export abstract class GraphicsContext {
     return true;
   }
 
+  /**
+   * Capability getter for the encoding of the packed pick-depth texture this
+   * context publishes to `PickDepth` (NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION,
+   * Batch 252).
+   *
+   * `true` means ONE packed depth texture is shared by all frustum slices and
+   * its values are LOGARITHMIC depth encoded against the FULL camera frustum
+   * (`log2(eyeDistFromNear + 1) / log2(far - near + 1)` with the persistent
+   * `scene.camera.frustum` near/far — the renderer-wide log-depth convention
+   * of Batches 249-251). `Picking.pickPositionWorldCoordinates` uses this to
+   * pick the full-frustum reconstruction path instead of the per-frustum-slice
+   * loop (per-slice near/far against a full-frustum encode produced the
+   * ~85,000 km antipode garbage of Batch 221).
+   *
+   * Default `false` (WebGL packs per-slice depth into per-slice PickDepth
+   * framebuffers, reconstructed per slice); WebGPU overrides to mirror its
+   * log-depth master switch.
+   */
+  get pickDepthFullFrustumLogEncode(): boolean {
+    return false;
+  }
+
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: CANVAS & DIMENSIONS
   // ═══════════════════════════════════════════════════════════

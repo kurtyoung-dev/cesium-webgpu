@@ -575,6 +575,78 @@ class Picking {
       return undefined;
     };
 
+    // NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252) — full-frustum log
+    // reconstruction for contexts without synchronous readback (WebGPU).
+    // ALL frustum slices there share ONE packed depth texture
+    // (WebGPUSceneRendererFrustumLoop's pick-depth copy of
+    // `globeDepth.globeDepthTexture`), and every depth producer encodes it
+    // LOGARITHMICALLY against the FULL camera frustum (Batches 249-251), not
+    // against per-slice near/far. Running the per-slice loop below against
+    // that texture is what produced the ~85,000 km antipode garbage of
+    // Batch 221. Instead: keep the cloned camera frustum's own near/far (the
+    // encode frustum — `scene.camera` is the persistent camera the WebGPU
+    // frustum loop encodes against) and let the `useLogDepth` branch of
+    // SceneTransforms.drawingBufferToWorldCoordinates reverse the log encode
+    // against `uniformState.currentFrustum`.
+    //
+    // The depth value is PickDepth's one-frame-stale async sync-cache
+    // (number|undefined — all consumers here are synchronous): the first
+    // query at a location returns undefined (callers fall back to ray
+    // picking, the pre-Batch-252 SAFE state) and arms the readback;
+    // subsequent queries converge within 1-2 frames.
+    if (!context.supportsSynchronousReadback) {
+      if (
+        numFrustums === 0 ||
+        !frameState.useLogDepth ||
+        !context.pickDepthFullFrustumLogEncode
+      ) {
+        // Without the full-frustum log encode (kill switch off, or an
+        // orthographic/2D camera where useLogDepth is false) the shared
+        // packed texture holds per-slice hyperbolic depth, which has NO
+        // consistent single-texture reconstruction — keep the SAFE
+        // undefined → ray-pick fallback rather than a garbage position.
+        this._pickPositionCache[cacheKey] = undefined;
+        return undefined;
+      }
+
+      // Index 0 — every PickDepth instance receives the same shared packed
+      // texture; index 0 is updated every rendered frame.
+      const pickDepth = this.getPickDepth(scene, 0);
+      const depthValue = pickDepth.getDepth(
+        context,
+        drawingBufferPosition.x,
+        drawingBufferPosition.y,
+      );
+      if (!defined(depthValue) || depthValue <= 0.0 || depthValue >= 1.0) {
+        this._pickPositionCache[cacheKey] = undefined;
+        return undefined;
+      }
+
+      // `frustum` is the untouched clone of the persistent camera frustum,
+      // so its near/far ARE the encode frustum. updateFrustum publishes its
+      // projection + near/far + log2FarDepthFromNearPlusOne, which is
+      // exactly what drawingBufferToWorldCoordinates consumes for the
+      // log-depth reversal and the unproject.
+      uniformState.updateFrustum(frustum);
+      const worldPos = SceneTransforms.drawingBufferToWorldCoordinates(
+        scene,
+        drawingBufferPosition,
+        depthValue,
+        result,
+      );
+      if (
+        defined(worldPos) &&
+        !isNaN(worldPos.x) &&
+        !isNaN(worldPos.y) &&
+        !isNaN(worldPos.z)
+      ) {
+        this._pickPositionCache[cacheKey] = Cartesian3.clone(worldPos);
+        return worldPos;
+      }
+      this._pickPositionCache[cacheKey] = undefined;
+      return undefined;
+    }
+
     for (let i = 0; i < numFrustums; ++i) {
       const pickDepth = this.getPickDepth(scene, i);
       const depthOrPromise = pickDepth.getDepth(

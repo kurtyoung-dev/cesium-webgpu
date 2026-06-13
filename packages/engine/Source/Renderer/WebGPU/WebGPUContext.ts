@@ -1357,6 +1357,20 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252) — the single packed
+   * pick-depth texture (`WebGPUGlobeDepth.globeDepthTexture`, shared across
+   * all frustum slices) carries full-frustum LOG depth whenever the
+   * renderer-wide log-depth master switch is on (Batch 251 default). Mirrors
+   * `_logDepthWriteEnabled` so flipping the kill switch automatically returns
+   * `Picking` to its SAFE undefined → ray-pick fallback (the per-slice
+   * hyperbolic depth written with the switch off has no consistent
+   * single-texture reconstruction).
+   */
+  override get pickDepthFullFrustumLogEncode(): boolean {
+    return this._logDepthWriteEnabled;
+  }
+
+  /**
    * AUDIT_2026_05_02 — WebGPU scene renderer hard-codes the full-canvas
    * viewport (`setViewport(0, 0, _width, _height)`); the per-eye split
    * `executeWebVRCommands` performs has no effect. Until the per-eye

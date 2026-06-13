@@ -422,7 +422,15 @@ SceneTransforms.drawingBufferToWorldCoordinates = function (
   ndc.x = ((drawingBufferPosition.x - viewport.x) / viewport.width) * 2.0 - 1.0;
   ndc.y =
     ((drawingBufferPosition.y - viewport.y) / viewport.height) * 2.0 - 1.0;
-  ndc.z = depth * 2.0 - 1.0;
+  // NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252): the NDC z convention
+  // must match the convention the projection matrix was built with
+  // (Matrix4.setDepthRangeType). `depth` here is window-space [0, 1] in both
+  // conventions (the useLogDepth branch above decodes the log value into
+  // exactly that): WebGL projections map it to NDC z in [-1, 1]; WebGPU
+  // projections' clip z/w IS window depth, so it passes through unchanged.
+  // Feeding 2d-1 into a [0,1]-range inverse projection breaks the w
+  // reconstruction and unprojects to garbage.
+  ndc.z = Matrix4._depthRangeType === "webgpu" ? depth : depth * 2.0 - 1.0;
   ndc.w = 1.0;
 
   let worldCoords;
@@ -439,7 +447,10 @@ SceneTransforms.drawingBufferToWorldCoordinates = function (
     worldCoords.y =
       (ndc.y * (frustum.top - frustum.bottom) + frustum.bottom + frustum.top) *
       0.5;
-    worldCoords.z = (ndc.z * (near - far) - near - far) * 0.5;
+    // Eye-space z from window depth directly (convention-independent —
+    // algebraically identical to the previous GL-NDC form
+    // `(ndc.z * (near - far) - near - far) * 0.5` when ndc.z = 2*depth - 1).
+    worldCoords.z = -(near + depth * (far - near));
     worldCoords.w = 1.0;
 
     worldCoords = Matrix4.multiplyByVector(
