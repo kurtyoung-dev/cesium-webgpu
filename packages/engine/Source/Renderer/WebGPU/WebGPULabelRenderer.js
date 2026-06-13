@@ -597,13 +597,14 @@ function buildSDFDescriptor(
   bindGroupLayout,
   defines,
   sampleCount,
+  noDepthTest,
 ) {
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],
   });
 
   return {
-    name: `Label SDF pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}]`,
+    name: `Label SDF pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}${noDepthTest ? "/noDepth" : ""}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -623,7 +624,12 @@ function buildSDFDescriptor(
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      depthCompare: "less-equal",
+      // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — disable the depth test in settled
+      // 2D/CV so coplanar map-surface label glyphs draw on top of the flat map
+      // instead of losing the `less-equal` test to z-fighting. See
+      // WebGPUBillboardRenderer for the full rationale; mirrors the
+      // PolylineCollection reference (Batch 261). 3D / mid-morph unchanged.
+      depthCompare: noDepthTest ? "always" : "less-equal",
     },
     // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
@@ -818,7 +824,14 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     cache.sdfVelocityPipelineEntries?.clear();
     cache._pipelineFormatGeneration = sceneGen;
   }
-  let entry = cache.sdfPipelineEntries.get(defines);
+  // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — settled 2D/CV draws coplanar label
+  // glyphs on top of the flat map with the depth test disabled. Fold the flag
+  // into the pipeline-cache key (bit 31, above every ShaderDefine bit) so 3D
+  // keeps its `less-equal` variant byte-identical.
+  const noDepthTest =
+    frameState.morphTime === 0.0 && frameState.mode !== SceneMode.SCENE3D;
+  const pipelineKey = noDepthTest ? defines | 0x80000000 : defines;
+  let entry = cache.sdfPipelineEntries.get(pipelineKey);
   if (!defined(entry)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
@@ -838,9 +851,10 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       cache.sdfBindGroupLayout,
       defines,
       sampleCount,
+      noDepthTest,
     );
     entry = { descriptor, pipeline: null, pending: false };
-    cache.sdfPipelineEntries.set(defines, entry);
+    cache.sdfPipelineEntries.set(pipelineKey, entry);
   }
   const sdfPipeline = tryResolveLabelSDFPipeline(
     device,

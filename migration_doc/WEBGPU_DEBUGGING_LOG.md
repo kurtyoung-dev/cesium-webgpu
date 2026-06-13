@@ -24,6 +24,29 @@
 
 ---
 
+## Batch 263 — Collection coplanar 2D/CV depth (NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH) (2026-06-13)
+
+**Symptom:** `probe-collections-2dcv-morph.mjs` — billboard / point / label all 0 px in WebGPU SCENE2D and COLUMBUS_VIEW (markers at height 0, coplanar with the map). Polyline already rendered (Batch 261 reference).
+
+**Root causes (three distinct, all root-caused probe-first):**
+
+1. **Coplanar `less-equal` tie loss.** A h=0 marker coplanar with the flat 2D/CV map z-fights the map surface; `depthCompare: "less-equal"` loses the tie → every fragment discarded. WebGL's 2D overlays draw in front; the proven in-repo fix is `PolylineCollection`'s settled-2D/CV depth-test disable.
+
+2. **`OrthographicOffCenterFrustum` served a STALE WebGL-range projection to a WebGPU pass.** `Matrix4.computeOrthographicOffCenter` bakes `Matrix4._depthRangeType` ([-1,1] vs [0,1]) into the matrix, but the frustum's `update()` only recomputed when `left/right/top/bottom/near/far` changed — not when the global depth-range type flipped per frame in the WebGPU multi-frustum loop. In single-frustum SCENE2D the extent is stable, so the cached WebGL-range matrix was reused → a map-surface marker at NDC z ≈ 7.3 (outside [0,1]) → clipped. (Confirmed via a draw-time projection capture: m10/m14 had matching WebGL signs.)
+
+3. **OIT accumulation path ignored `bindGroupResolvers`.** `executeOITCommand` (`WebGPUSceneRendererTranslucentPass.ts`) hand-rolled `setBindGroup(bi, cmd.bindGroups[bi])`, bypassing the per-slice repacked camera UB delivered only via a resolver. (Defensive — collections don't auto-create OIT pipelines today, but the gap was real.)
+
+**Fixes (5 files, all `packages/engine/Source/`):**
+- `Core/OrthographicOffCenterFrustum.js` — track `_depthRangeType` in the `update()` cache check (backend-neutral root fix).
+- `Renderer/WebGPU/WebGPUBillboardRenderer.js`, `WebGPUPointPrimitiveRenderer.js`, `WebGPULabelRenderer.js` — `noDepthTest` pipeline variant (`depthCompare: "always"`, no depth write) keyed at pipeline-cache bit 31, gated on `morphTime === 0 && mode !== SCENE3D`.
+- `Renderer/WebGPU/WebGPUSceneRendererTranslucentPass.ts` — `executeOITCommand` honors `bindGroupResolvers` (mirrors `WebGPUDrawCommand.execute()`).
+
+**Result:** COLUMBUS_VIEW billboard 0 → 37 px, point 0 → 231 px (now render). 3D byte-identical (billboard 56 / point 267 / label 125). All standing regression gates green.
+
+**STILL OPEN — SCENE2D coplanar (= 0 px), root-caused to a GLOBE-PASS issue, NOT the collection FRs:** the billboard now packs correct in-range NDC z in every slice (verified) and renders **9213 px globe-hidden (single frustum)**. With the globe shown the scene splits into 9 uniform 2D frustums (`View.js`); the billboard's tight bounding volume bins it only into the 2 farthest frustums, and its far-frustum translucent color is overwritten by the nearer-frustum opaque globe passes (color accumulates; depth clears per-frustum). Polyline survives because its longer extent reaches the nearest frustum. Fix belongs in the WebGPU 2D globe pass (per-frustum tile distribution / overlay ordering) — tracked in DEFERRED_WORK `MORPH-COLLECTIONS-AUDIT` Slice 2b.
+
+---
+
 ## Batches 105-115b + 2v2-C dry-run — Slice 5c-B "always-on G-buffer + MRT" arc (2026-05-24)
 
 **Date:** 2026-05-24

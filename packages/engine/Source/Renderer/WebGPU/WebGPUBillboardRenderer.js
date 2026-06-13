@@ -394,13 +394,14 @@ function buildBillboardDescriptor(
   bindGroupLayout,
   defines,
   sampleCount,
+  noDepthTest,
 ) {
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],
   });
 
   return {
-    name: `Billboard pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}]`,
+    name: `Billboard pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}${noDepthTest ? "/noDepth" : ""}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -421,7 +422,19 @@ function buildBillboardDescriptor(
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      depthCompare: "less-equal",
+      // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH) — in settled
+      // 2D / Columbus View (morphTime === 0) the billboard sits COPLANAR
+      // with the flat map / globe surface it depth-tests against. Under the
+      // orthographic (2D) or full-frustum (CV) depth encode a height-0
+      // anchor lands at essentially the same NDC z as the map, so the
+      // `less-equal` test loses to z-fighting and every quad fragment is
+      // discarded — the all-zero 2D/CV billboard state. WebGL's 2D path
+      // dodges this because its ortho depth places overlays in front; the
+      // proven in-repo fix (PolylineCollection, Batch 261) is to DISABLE
+      // the depth test in settled 2D/CV so overlays draw on top of the flat
+      // map. 3D and mid-morph keep `less-equal` so terrain occlusion + the
+      // 3-point clamp-to-ground check stay byte-identical.
+      depthCompare: noDepthTest ? "always" : "less-equal",
     },
     // Batch 134 — scene FB color pass is MSAA when context._msaaSamples > 1.
     // Pre-Batch-134 this builder dropped `multisample`, defaulting to count=1
@@ -933,7 +946,17 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     cache.velocityPipelineEntries?.clear();
     cache._pipelineFormatGeneration = sceneGen;
   }
-  let entry = cache.pipelineEntries.get(defines);
+  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH) — settled 2D / CV
+  // (morphTime === 0) draws coplanar billboards on top of the flat map with
+  // the depth test disabled (see `buildBillboardDescriptor`). Fold the flag
+  // into the pipeline-cache key so a 3D↔2D flip resolves a DISTINCT pipeline
+  // and 3D keeps its `less-equal` variant byte-identical. Mirrors the
+  // PolylineRenderer `noDepthTest` pipeline-key dimension (Batch 261).
+  const noDepthTest =
+    frameState.morphTime === 0.0 && frameState.mode !== SceneMode.SCENE3D;
+  cache.currentNoDepthTest = noDepthTest;
+  const pipelineKey = noDepthTest ? defines | 0x80000000 : defines;
+  let entry = cache.pipelineEntries.get(pipelineKey);
   if (!defined(entry)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
@@ -953,9 +976,10 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
       cache.bindGroupLayout,
       defines,
       sampleCount,
+      noDepthTest,
     );
     entry = { descriptor, pipeline: null, pending: false };
-    cache.pipelineEntries.set(defines, entry);
+    cache.pipelineEntries.set(pipelineKey, entry);
   }
   const pipeline = tryResolveBillboardPipeline(
     device,

@@ -157,8 +157,30 @@ export function executeTranslucentPass(
           const executeOITCommand = (cmd: CesiumAnyDrawCommand) => {
             if (!cmd?._oitPipeline) return;
             accPass.setPipeline(cmd._oitPipeline);
+            // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — honor per-index bind-group
+            // resolvers, mirroring `WebGPUDrawCommand.execute()` (L515-519).
+            // Collection FRs (billboard/point/label/polyline/cloud) deliver
+            // their per-slice camera UB — repacked against the live per-slice
+            // projection (WebGPU depth range, this band's near/far) — ONLY via
+            // a resolver; the static `cmd.bindGroups[bi]` holds the stale
+            // FR-update-time bake (WebGL clip-z range). In SCENE2D that stale
+            // bake puts a map-surface overlay at NDC z ≈ 7.3 (outside [0,1]),
+            // so the OIT accumulation draw clipped every fragment — the
+            // all-zero 2D billboard/point/label state. Resolving here routes
+            // the in-range per-slice UB into the OIT path too. A resolver
+            // returning null falls back to the static group (single-frustum /
+            // first frame), unchanged.
+            const resolvers = (
+              cmd as unknown as {
+                bindGroupResolvers?: Array<
+                  undefined | (() => GPUBindGroup | null)
+                >;
+              }
+            ).bindGroupResolvers;
             for (let bi = 0; bi < cmd.bindGroups.length; bi++) {
-              accPass.setBindGroup(bi, cmd.bindGroups[bi]);
+              const resolver = resolvers?.[bi];
+              const resolved = resolver ? resolver() : null;
+              accPass.setBindGroup(bi, resolved ?? cmd.bindGroups[bi]);
             }
             for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
               accPass.setVertexBuffer(

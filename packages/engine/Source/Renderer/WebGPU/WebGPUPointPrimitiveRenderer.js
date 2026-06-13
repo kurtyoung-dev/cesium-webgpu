@@ -403,6 +403,7 @@ function buildPointColorDescriptor(
   bindGroupLayout,
   defines,
   sampleCount,
+  noDepthTest,
 ) {
   const pipelineLayout = device.createPipelineLayout({
     label: "PointPrimitive pipeline layout",
@@ -425,7 +426,7 @@ function buildPointColorDescriptor(
     : undefined;
 
   return {
-    name: `PointPrimitive ${translucent ? "translucent" : "opaque"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}]`,
+    name: `PointPrimitive ${translucent ? "translucent" : "opaque"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}${noDepthTest ? "/noDepth" : ""}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -446,8 +447,13 @@ function buildPointColorDescriptor(
     },
     depthStencil: {
       format: depthFormat,
-      depthWriteEnabled: !translucent,
-      depthCompare: "less-equal",
+      // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — disable depth WRITE and TEST in
+      // settled 2D/CV so coplanar map-surface points draw on top of the flat
+      // map instead of losing the `less-equal` test to z-fighting against it.
+      // See WebGPUBillboardRenderer for the full rationale; mirrors the
+      // PolylineCollection reference (Batch 261). 3D / mid-morph unchanged.
+      depthWriteEnabled: noDepthTest ? false : !translucent,
+      depthCompare: noDepthTest ? "always" : "less-equal",
     },
     // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
@@ -980,7 +986,14 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
     cache.velocityPipelines?.clear();
     cache._pipelineFormatGeneration = sceneGen;
   }
-  let pipelineEntry = cache.pipelines.get(defines);
+  // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — settled 2D/CV draws coplanar points
+  // on top of the flat map with the depth test disabled. Fold the flag into
+  // the pipeline-cache key (bit 31, above every ShaderDefine bit) so 3D keeps
+  // its `less-equal` variant byte-identical.
+  const noDepthTest =
+    frameState.morphTime === 0.0 && frameState.mode !== SceneMode.SCENE3D;
+  const pipelineKey = noDepthTest ? defines | 0x80000000 : defines;
+  let pipelineEntry = cache.pipelines.get(pipelineKey);
   if (!defined(pipelineEntry)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
@@ -1002,11 +1015,12 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
         cache.bindGroupLayout,
         defines,
         sampleCount,
+        noDepthTest,
       ),
       pipeline: null,
       pending: false,
     };
-    cache.pipelines.set(defines, pipelineEntry);
+    cache.pipelines.set(pipelineKey, pipelineEntry);
   }
   const pipeline = tryResolvePointPipeline(
     device,

@@ -89,6 +89,16 @@ class OrthographicOffCenterFrustum {
 
     this._cullingVolume = new CullingVolume();
     this._orthographicMatrix = new Matrix4();
+    // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — the cached projection bakes in
+    // the global `Matrix4._depthRangeType` ([-1,1] WebGL vs [0,1] WebGPU)
+    // at compute time. The WebGPU multi-frustum loop flips that type per
+    // frame, but in single-frustum SCENE2D the near/far/extent are stable,
+    // so without tracking the type here `update()` would skip the recompute
+    // and hand back a WebGL-range matrix to a WebGPU pass — putting every
+    // map-surface overlay (billboard/point/label) at NDC z ≈ 7.3, outside
+    // the [0,1] clip volume, so it's clipped away. Seeded undefined so the
+    // first `update()` always computes.
+    this._depthRangeType = undefined;
   }
 
   /**
@@ -410,13 +420,20 @@ function update(frustum) {
   }
   //>>includeEnd('debug');
 
+  // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — recompute when the global clip-z
+  // depth-range type flips (WebGL [-1,1] ↔ WebGPU [0,1]) even if the
+  // near/far/extent are otherwise unchanged. `computeOrthographicOffCenter`
+  // bakes the active `Matrix4._depthRangeType` into the matrix, so a stale
+  // cache from a WebGL-range bake would otherwise be served to a WebGPU pass.
+  const depthRangeType = Matrix4._depthRangeType;
   if (
     frustum.top !== frustum._top ||
     frustum.bottom !== frustum._bottom ||
     frustum.left !== frustum._left ||
     frustum.right !== frustum._right ||
     frustum.near !== frustum._near ||
-    frustum.far !== frustum._far
+    frustum.far !== frustum._far ||
+    depthRangeType !== frustum._depthRangeType
   ) {
     //>>includeStart('debug', pragmas.debug);
     if (frustum.left > frustum.right) {
@@ -438,6 +455,7 @@ function update(frustum) {
     frustum._bottom = frustum.bottom;
     frustum._near = frustum.near;
     frustum._far = frustum.far;
+    frustum._depthRangeType = depthRangeType;
     frustum._orthographicMatrix = Matrix4.computeOrthographicOffCenter(
       frustum.left,
       frustum.right,
