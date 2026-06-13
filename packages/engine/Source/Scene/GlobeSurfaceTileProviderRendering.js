@@ -915,21 +915,75 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     // space (centered ~6.4 Mm from the origin); culling them against the
     // 2D / Columbus PROJECTED frustum rejected EVERY tile at regional zoom
     // (the small frustum's planes are nowhere near the ECEF sphere), so the
-    // WebGPU globe rendered blank when zoomed in — it survived only at
-    // full-globe zoom where the frustum is huge enough to straddle the sphere
-    // by coincidence. The QuadtreePrimitive already performs the
-    // authoritative, mode-correct visibility cull when it selects the tiles
-    // to render, so dropping the redundant 3D bounding volume here is safe:
-    // the tiles drawn are exactly the visible ones. SCENE3D keeps the 3D
+    // WebGPU globe rendered blank when zoomed in. SCENE3D keeps the 3D
     // volume for its per-command cull optimization.
+    //
+    // NEW-SCENE2D-GLOBE-PASS-OVERWRITE (Batch 268) — Batch 167 fixed the cull
+    // by dropping the bounding volume ENTIRELY in non-3D, but a command with
+    // NO bounding volume forces `View.createPotentiallyVisibleSet` down its
+    // worst-case branch: `commandNear = frustum.near (=1 in 2D)`,
+    // `commandFar = frustum.far (=500 Mm)`. That collapses the scene near to 1
+    // and explodes the 2D multi-frustum split from 1 to ~9 uniform frustums,
+    // binning the globe into ALL of them (no-BV commands match every bin in
+    // `insertIntoBin`). Because color accumulates across frustums while depth
+    // clears per-frustum, the OPAQUE globe in the NEAR frustums overwrites the
+    // coplanar translucent billboard/point/label that only binned into the FAR
+    // frustums (their tight bounding volumes sit ~12.76 Mm out) — markers went
+    // to 0 px in SCENE2D. WebGL never hits this: it always supplies a bounding
+    // volume and relies on `command.cull = false` (not a missing volume) to
+    // avoid the 2D-frustum-mismatch cull (`Scene.isVisible` short-circuits on
+    // `!command.cull` BEFORE touching the volume). Mirror WebGL exactly:
+    // supply the 2D-PROJECTED bounding sphere (correct near/far → 1 frustum,
+    // matching WebGL's split) AND set `cull = false` so the projected sphere is
+    // never used to wrongly reject a tile. This keeps Batch 167's fix intact
+    // while restoring the correct frustum count. See WebGL
+    // `addDrawCommandsForTile` (this file, ~line 1721) for the reference 2D
+    // bounding-sphere computation.
     const non3D = frameState.mode !== SceneMode.SCENE3D;
+    let non3DBoundingVolume;
+    if (non3D && tileBR) {
+      // 2D-projected bounding sphere (same computation WebGL uses): project
+      // the tile rectangle into map space at the tile's height range, then
+      // swap axes so `center.z` carries the screen-depth component the 2D
+      // frustum split reads via `computePlaneDistances`. Fresh allocation per
+      // command — these command objects are created per-tile per-frame (not
+      // pooled like WebGL's), so a shared scratch would be clobbered by the
+      // next tile before this command is consumed downstream.
+      non3DBoundingVolume = BoundingSphere.fromRectangleWithHeights2D(
+        tile.rectangle,
+        frameState.mapProjection,
+        tileBR.minimumHeight,
+        tileBR.maximumHeight,
+        new BoundingSphere(),
+      );
+      Cartesian3.fromElements(
+        non3DBoundingVolume.center.z,
+        non3DBoundingVolume.center.x,
+        non3DBoundingVolume.center.y,
+        non3DBoundingVolume.center,
+      );
+      if (frameState.mode === SceneMode.MORPHING) {
+        // Morphing draws both the 3D and 2D positions; union the spheres so
+        // the command's extent covers the in-flight interpolated geometry.
+        non3DBoundingVolume = BoundingSphere.union(
+          tileBR.boundingSphere,
+          non3DBoundingVolume,
+          non3DBoundingVolume,
+        );
+      }
+    }
     const command = {
       pass: Pass.GLOBE,
       owner: tile,
+      // `cull = false` in non-3D (mirrors WebGL): the 2D-projected sphere is
+      // present only to drive the near/far split + binning, NOT to cull —
+      // `Scene.isVisible` returns true before inspecting the volume when
+      // `cull` is false, so the 2D-frustum mismatch that Batch 167 fixed can
+      // never reject a tile.
       cull: !non3D,
       enabled: true,
       boundingVolume: non3D
-        ? undefined
+        ? non3DBoundingVolume
         : tileBR
           ? tileBR.boundingSphere
           : undefined,
