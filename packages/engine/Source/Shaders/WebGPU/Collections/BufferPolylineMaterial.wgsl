@@ -43,7 +43,10 @@ struct VertexOutput {
   @location(0) v_pickColor        : vec4<f32>,
   @location(1) v_color            : vec4<f32>,
   @location(2) v_st               : vec2<f32>,
-  @location(3) v_logDepthOrDepth  : f32,
+  //>>ifdef LOG_DEPTH
+  // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+  @location(3) v_logDepth         : f32,
+  //>>endif
 };
 
 // ── Vertex shader ───────────────────────────────────────────────────────────
@@ -116,7 +119,13 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
     output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
   }
 
-  output.v_logDepthOrDepth = csm_vertexLogDepth(clipPos);
+  //>>ifdef LOG_DEPTH
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — log-depth varying + clip-z clamp on the
+  // rasterized (extruded) position. near rides in encodedCameraPositionMCHigh.w.
+  output.v_logDepth = csm_vertexLogDepth(output.position, camera.encodedCameraPositionMCHigh.w);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
+
   output.v_pickColor = input.pickColor;
   output.v_color = color;
   output.v_st = vec2<f32>(s, (direction + 1.0) * 0.5);
@@ -125,6 +134,26 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
 }
 
 // ── Fragment shader ─────────────────────────────────────────────────────────
+//>>ifdef LOG_DEPTH
+struct FragOutput {
+  @location(0) color : vec4<f32>,
+  // Written for the depth TEST too. factor rides in cameraPosition.w.
+  @builtin(frag_depth) depth : f32,
+};
+@fragment
+fn fragmentMain(input : VertexOutput) -> FragOutput {
+  var outColor = input.v_color;
+
+  if (outColor.a < 0.005) {
+    discard;
+  }
+
+  var out : FragOutput;
+  out.color = outColor;
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.cameraPosition.w);
+  return out;
+}
+//>>else
 @fragment
 fn fragmentMain(input : VertexOutput) -> @location(0) vec4<f32> {
   var outColor = input.v_color;
@@ -133,7 +162,6 @@ fn fragmentMain(input : VertexOutput) -> @location(0) vec4<f32> {
     discard;
   }
 
-  csm_writeLogDepth(input.v_logDepthOrDepth);
-
   return outColor;
 }
+//>>endif

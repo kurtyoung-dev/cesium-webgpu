@@ -58,36 +58,36 @@ import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import CameraUniformsChunk from "../../Shaders/WebGPU/chunks/structs/CameraUniforms.js";
 import csm_translateRelativeToEyeChunk from "../../Shaders/WebGPU/chunks/functions/csm_translateRelativeToEye.js";
 import csm_decodeRGB8Chunk from "../../Shaders/WebGPU/chunks/functions/csm_decodeRGB8.js";
+import csm_vertexLogDepthChunk from "../../Shaders/WebGPU/chunks/functions/csm_vertexLogDepth.js";
+import csm_writeLogDepthChunk from "../../Shaders/WebGPU/chunks/functions/csm_writeLogDepth.js";
+import { preprocess } from "./WebGPUShaderPreprocessor.js";
+import { packCameraLogDepthLanes } from "./WebGPULogDepth.js";
 
-// The Buffer* material shaders were authored against a 1-arg log-depth
-// convention (`csm_vertexLogDepth(clipPos)` returns the varying;
-// `csm_writeLogDepth(v)` writes it). The shared chunk library has since
-// diverged to 2-arg scaled variants, and `csm_writeLogDepth.wgsl` even
-// bundles its own conflicting 1-arg `csm_vertexLogDepth` copy — inlining
-// both library chunks redeclares the symbol. Resolve these two import names
-// to the Buffer-family 1-arg definitions here instead. `csm_writeLogDepth`
-// is a deliberate no-op on WebGPU: these fragment shaders have no
-// @builtin(frag_depth) output, and the WebGPU globe writes hyperbolic NDC
-// depth (no log-depth write — see GlobeTerrain.wgsl / CLAUDE.md), so the
-// polygon must match it for consistent depth testing. Writing log depth here
-// would put the fill geometry in a different depth space than the globe.
-const CSM_VERTEX_LOG_DEPTH_1ARG = `fn csm_vertexLogDepth(clipPos: vec4<f32>) -> f32 {
-  // clipPos.w is the positive eye-space distance in clip space.
-  return log2(max(1e-6, 1.0 + clipPos.w));
-}
-`;
-const CSM_WRITE_LOG_DEPTH_NOOP = `fn csm_writeLogDepth(logDepth: f32) {
-  // No-op on WebGPU: no @builtin(frag_depth) output here, and the globe writes
-  // hyperbolic NDC depth — see GlobeTerrain.wgsl. Hyperbolic NDC depth from
-  // @builtin(position).z keeps this geometry in the same depth space.
-}
-`;
-
+// NEW-BUFFER-LOG-DEPTH (Batch 263) — the Buffer* material shaders now join the
+// renderer-wide logarithmic-depth epic. They use the SAME canonical chunk
+// library as the five collection shaders + Model PBR:
+//   vertex:   v_logDepth = csm_vertexLogDepth(clipPos, near);
+//             out.position = csm_updatePositionDepth(clipPos);
+//   fragment: out.depth = csm_writeLogDepth(v_logDepth, factor);  // @builtin(frag_depth)
+// The `near` / `factor` (= oneOverLog2FarDepthFromNearPlusOne) scalars ride in
+// the reserved `.w` pad lanes of the shared `CameraUniforms` struct
+// (encodedCameraPositionMCHigh.w / cameraPosition.w — see WebGPULogDepth.ts +
+// chunks/structs/CameraUniforms.wgsl), packed by `packCameraLogDepthLanes`.
+//
+// Previously these import names resolved to a 1-arg `csm_vertexLogDepth` + an
+// empty `csm_writeLogDepth` no-op, so the Buffer family ALWAYS wrote hyperbolic
+// NDC depth and never consulted `isWebGPULogDepthActive`. That stub comment was
+// actively wrong as of Batch 251: the WebGPU globe writes LOG depth now, so the
+// Buffer fill geometry sank behind terrain at far cameras whenever the master
+// switch was on. The `//>>else` branch of each shader keeps the historical
+// hyperbolic path so LOG_DEPTH-off is byte-identical. `csm_updatePositionDepth`
+// ships inside the `csm_vertexLogDepth` chunk; both chunks are leaf (no nested
+// `#import`).
 const BUFFER_WGSL_CHUNKS: Record<string, string> = {
   CameraUniforms: CameraUniformsChunk,
   csm_translateRelativeToEye: csm_translateRelativeToEyeChunk,
-  csm_vertexLogDepth: CSM_VERTEX_LOG_DEPTH_1ARG,
-  csm_writeLogDepth: CSM_WRITE_LOG_DEPTH_NOOP,
+  csm_vertexLogDepth: csm_vertexLogDepthChunk,
+  csm_writeLogDepth: csm_writeLogDepthChunk,
   csm_decodeRGB8: csm_decodeRGB8Chunk,
 };
 const _warnedUnknownImports = new Set<string>();
@@ -253,6 +253,18 @@ export function packCameraUniforms(
     out[60 + i] = mvIdx[i];
     out[76 + i] = mvpIdx[i];
   }
+
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — fill the reserved `.w` pad lanes of the
+  // CameraUniforms struct with the per-frustum log-depth scalars (factor at
+  // float 51, near at 55, far at 59). Safe to call unconditionally: it only
+  // writes previously-zero pads, so it is inert until a shader reads them and
+  // a pipeline activates the LOG_DEPTH define. Cast to the LogDepthUniformState
+  // shape the helper expects (currentFrustum + the precomputed reciprocal).
+  packCameraLogDepthLanes(
+    out,
+    0,
+    uniformState as unknown as Parameters<typeof packCameraLogDepthLanes>[2],
+  );
 }
 
 const scratchInvModel = new Matrix4();
@@ -286,8 +298,13 @@ export function preprocessShader(
   context: CesiumGraphicsContext,
   name: string,
   source: string,
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — active-defines bitmask. The Buffer*
+  // shaders now carry `//>>ifdef LOG_DEPTH` blocks; resolving them depends on
+  // the bitmask, so the processed-source cache keys by (name, defines).
+  defines: number = 0,
 ): string {
-  let processed = _processedShaderCache.get(name);
+  const cacheKey = `${name}|${defines}`;
+  let processed = _processedShaderCache.get(cacheKey);
   if (processed) {
     return processed;
   }
@@ -328,10 +345,17 @@ export function preprocessShader(
   // is the WebGL `ShaderCache` (no `preprocessOnly`); kept in the signature
   // for API stability with other callers.
   void context;
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve the `//>>ifdef LOG_DEPTH`
+  // conditional blocks against the active-defines bitmask AFTER `#import`
+  // inlining (the chunks themselves carry no directives, so order is safe).
+  // `defines=0` emits the `//>>else` branch of every block byte-identically to
+  // the historical hyperbolic path. Done BEFORE the pick suffix is appended so
+  // the pick FS never sees a frag_depth write (pick stays hyperbolic).
+  processed = preprocess(processed!, defines);
   // Append the pick fragment entry. Done after preprocessing so the pick
   // function references the already-resolved VertexOutput struct definition.
   processed = processed + PICK_FRAGMENT_SUFFIX;
-  _processedShaderCache.set(name, processed!);
+  _processedShaderCache.set(cacheKey, processed!);
   return processed!;
 }
 

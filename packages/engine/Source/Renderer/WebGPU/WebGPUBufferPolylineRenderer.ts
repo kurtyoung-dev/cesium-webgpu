@@ -46,7 +46,8 @@ import {
   scratchCart,
   scratchEnc,
 } from "./WebGPUBufferPrimitiveRenderer.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import type {
   BufferPrimitiveCollection,
   CesiumPickIdRef,
@@ -179,6 +180,7 @@ function initPolylineCache(
   collection: BufferPrimitiveCollection,
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
+  defines: number,
 ): PolylineCache {
   const device: GPUDevice = context.device;
   const vertexCountMax: number = collection.vertexCountMax * 2; // each vertex written twice
@@ -200,15 +202,18 @@ function initPolylineCache(
   const indexFormat: GPUIndexFormat =
     indexArr instanceof Uint32Array ? "uint32" : "uint16";
 
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve `//>>ifdef LOG_DEPTH` against
+  // `defines`; key the module cache by it so on/off compile distinct modules.
   const shaderSource = preprocessShader(
     context,
     "BufferPolylineMaterial",
     BufferPolylineMaterialWGSL,
+    defines,
   );
   const shaderModule = getBufferPrimitiveShaderCache(device).getOrCreate(
     ShaderSourceId.BUFFER_POLYLINE_MATERIAL,
     shaderSource,
-    0,
+    defines,
     "BufferPolylineMaterial",
   );
   const bgls = makeCameraBindGroupLayout(device, true);
@@ -471,6 +476,11 @@ export function updateWebGPUBufferPolylineCollection(
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — renderer-wide log-depth gate; flipping
+  // it invalidates the cache so module + pipeline rebuild.
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
+  const defines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
+
   let cache = collection._webgpuCache as PolylineCache | undefined;
   // Batch 110 — invalidate on scene format change (HDR toggle).
   const sceneGen =
@@ -478,17 +488,21 @@ export function updateWebGPUBufferPolylineCollection(
       ._scenePipelineFormatGeneration ?? 0;
   if (
     cache &&
-    (cache as unknown as { _pipelineFormatGeneration?: number })
-      ._pipelineFormatGeneration !== sceneGen
+    ((cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen ||
+      (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled !==
+        logDepthActive)
   ) {
     cache = undefined;
     collection._webgpuCache = undefined;
   }
   if (!cache) {
-    cache = initPolylineCache(collection, context, format);
+    cache = initPolylineCache(collection, context, format, defines);
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
+    (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled =
+      logDepthActive;
     collection._webgpuCache = cache;
     collection._dirtyOffset = 0;
     collection._dirtyCount = collection.primitiveCount;

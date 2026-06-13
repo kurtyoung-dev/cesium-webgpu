@@ -46,7 +46,8 @@ import {
   scratchCart,
   scratchEnc,
 } from "./WebGPUBufferPrimitiveRenderer.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import type {
   BufferPrimitiveCollection,
   CesiumPickIdRef,
@@ -182,6 +183,7 @@ function initPointCache(
   collection: BufferPrimitiveCollection,
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
+  defines: number,
 ): PointCache {
   const device: GPUDevice = context.device;
   const primitiveCountMax: number = collection.primitiveCountMax;
@@ -194,15 +196,20 @@ function initPointCache(
     primitiveCountMax * 2,
   );
 
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve `//>>ifdef LOG_DEPTH` against
+  // `defines` and key the module cache by it so LOG_DEPTH on/off compile to
+  // distinct modules. The pick FS suffix is appended inside preprocessShader
+  // and never sees the frag_depth write (pick stays hyperbolic).
   const shaderSource = preprocessShader(
     context,
     "BufferPointMaterial",
     BufferPointMaterialWGSL,
+    defines,
   );
   const shaderModule = getBufferPrimitiveShaderCache(device).getOrCreate(
     ShaderSourceId.BUFFER_POINT_MATERIAL,
     shaderSource,
-    0,
+    defines,
     "BufferPointMaterial",
   );
   const bgls = makeCameraBindGroupLayout(device, true);
@@ -379,6 +386,14 @@ export function updateWebGPUBufferPointCollection(
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — pick up the renderer-wide log-depth
+  // master switch + per-frame flag. Activating OR's the LOG_DEPTH define into
+  // the shader/pipeline build; flipping it invalidates the cache so the
+  // pipeline + module rebuild (mirrors the format-generation guard below). The
+  // master switch off is byte-identical to the historical hyperbolic path.
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
+  const defines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
+
   let cache = collection._webgpuCache as PointCache | undefined;
   // Batch 110 — invalidate on scene format change (HDR toggle).
   const sceneGen =
@@ -386,17 +401,21 @@ export function updateWebGPUBufferPointCollection(
       ._scenePipelineFormatGeneration ?? 0;
   if (
     cache &&
-    (cache as unknown as { _pipelineFormatGeneration?: number })
-      ._pipelineFormatGeneration !== sceneGen
+    ((cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen ||
+      (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled !==
+        logDepthActive)
   ) {
     cache = undefined;
     collection._webgpuCache = undefined;
   }
   if (!cache) {
-    cache = initPointCache(collection, context, format);
+    cache = initPointCache(collection, context, format, defines);
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
+    (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled =
+      logDepthActive;
     collection._webgpuCache = cache;
     collection._dirtyOffset = 0;
     collection._dirtyCount = collection.primitiveCount;

@@ -45,7 +45,10 @@ struct VertexOutput {
   @location(2) v_outlineColor       : vec4<f32>,
   @location(3) v_innerRadiusFrac    : f32,
   @location(4) v_quadCoord          : vec2<f32>,
-  @location(5) v_logDepthOrDepth    : f32,
+  //>>ifdef LOG_DEPTH
+  // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+  @location(5) v_logDepth           : f32,
+  //>>endif
 };
 
 // ── Vertex shader ───────────────────────────────────────────────────────────
@@ -82,7 +85,13 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
     output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
   }
 
-  output.v_logDepthOrDepth = csm_vertexLogDepth(clipPos);
+  //>>ifdef LOG_DEPTH
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — log-depth varying + clip-z clamp.
+  // near rides in encodedCameraPositionMCHigh.w.
+  output.v_logDepth = csm_vertexLogDepth(output.position, camera.encodedCameraPositionMCHigh.w);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
+
   output.v_pickColor = input.pickColor;
   output.v_color = color;
   output.v_outlineColor = outlineColor;
@@ -93,6 +102,44 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
 }
 
 // ── Fragment shader ─────────────────────────────────────────────────────────
+//>>ifdef LOG_DEPTH
+struct FragOutput {
+  @location(0) color : vec4<f32>,
+  // Written for the depth TEST too. factor rides in cameraPosition.w.
+  @builtin(frag_depth) depth : f32,
+};
+@fragment
+fn fragmentMain(input : VertexOutput) -> FragOutput {
+  let dist = length(input.v_quadCoord);
+
+  // Discard outside circle
+  if (dist > 1.0) {
+    discard;
+  }
+
+  // Inner fill vs outline
+  var outColor : vec4<f32>;
+  if (dist <= input.v_innerRadiusFrac) {
+    outColor = input.v_color;
+  } else {
+    outColor = input.v_outlineColor;
+  }
+
+  // Edge anti-aliasing
+  let aa = fwidth(dist);
+  let outerAlpha = 1.0 - smoothstep(1.0 - aa, 1.0, dist);
+  outColor = vec4<f32>(outColor.rgb, outColor.a * outerAlpha);
+
+  if (outColor.a < 0.005) {
+    discard;
+  }
+
+  var out : FragOutput;
+  out.color = outColor;
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.cameraPosition.w);
+  return out;
+}
+//>>else
 @fragment
 fn fragmentMain(input : VertexOutput) -> @location(0) vec4<f32> {
   let dist = length(input.v_quadCoord);
@@ -119,7 +166,6 @@ fn fragmentMain(input : VertexOutput) -> @location(0) vec4<f32> {
     discard;
   }
 
-  csm_writeLogDepth(input.v_logDepthOrDepth);
-
   return outColor;
 }
+//>>endif
