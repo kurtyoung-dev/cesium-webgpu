@@ -103,6 +103,9 @@ class EllipsoidPrimitive {
     this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
     this._modelMatrix = new Matrix4();
     this._computedModelMatrix = new Matrix4();
+    // Batch 269 — dirty flag persisted on the instance (was a local) so the
+    // hoisted radii/transform block and the WebGL appearance block share it.
+    this._boundingSphereDirty = false;
 
     /**
      * Determines if the ellipsoid primitive will be shown.
@@ -216,21 +219,68 @@ class EllipsoidPrimitive {
    * @exception {DeveloperError} this.material must be defined.
    */
   update(frameState) {
-    // Route to WebGPU feature renderer if available
-    const fr = frameState.context.getFeatureRenderer(
-      FeatureRendererKey.ELLIPSOID_PRIMITIVE,
-    );
-    if (fr) {
-      fr.update(this, frameState);
-      this._featureRenderer = fr;
-      return;
-    }
     if (
       !this.show ||
       frameState.mode !== SceneMode.SCENE3D ||
       !defined(this.center) ||
       !defined(this.radii)
     ) {
+      return;
+    }
+
+    // Scene Logic Extractor pattern (CLAUDE.md) — the world transform
+    // (`_computedModelMatrix = modelMatrix * translate(center)`) and the
+    // derived `_oneOverEllipsoidRadiiSquared` are backend-agnostic scene
+    // logic and MUST be computed BEFORE the WebGPU feature-renderer branch.
+    // The WebGPU renderer reads `_computedModelMatrix` for RTE positioning;
+    // pre-Batch-268 this code ran only AFTER the `fr.update()` early-return,
+    // so the WebGPU path saw the zero-initialized `new Matrix4()` (a
+    // non-invertible all-zeros matrix → "determinate is zero" throw) and the
+    // shell was never placed (BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE).
+    const radii = this.radii;
+    if (!Cartesian3.equals(this._radii, radii)) {
+      Cartesian3.clone(radii, this._radii);
+      const r = this._oneOverEllipsoidRadiiSquared;
+      r.x = 1.0 / (radii.x * radii.x);
+      r.y = 1.0 / (radii.y * radii.y);
+      r.z = 1.0 / (radii.z * radii.z);
+      this._boundingSphereDirty = true;
+    }
+
+    if (
+      !Matrix4.equals(this.modelMatrix, this._modelMatrix) ||
+      !Cartesian3.equals(this.center, this._center)
+    ) {
+      Matrix4.clone(this.modelMatrix, this._modelMatrix);
+      Cartesian3.clone(this.center, this._center);
+      Matrix4.multiplyByTranslation(
+        this.modelMatrix,
+        this.center,
+        this._computedModelMatrix,
+      );
+      this._boundingSphereDirty = true;
+    }
+
+    if (this._boundingSphereDirty) {
+      Cartesian3.clone(Cartesian3.ZERO, this._boundingSphere.center);
+      this._boundingSphere.radius = Cartesian3.maximumComponent(radii);
+      BoundingSphere.transform(
+        this._boundingSphere,
+        this._computedModelMatrix,
+        this._boundingSphere,
+      );
+      this._boundingSphereDirty = false;
+    }
+
+    // Route to WebGPU feature renderer if available. Runs AFTER the shared
+    // transform/radii logic above so the renderer sees a valid
+    // `_computedModelMatrix` + `_oneOverEllipsoidRadiiSquared`.
+    const fr = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.ELLIPSOID_PRIMITIVE,
+    );
+    if (fr) {
+      fr.update(this, frameState);
+      this._featureRenderer = fr;
       return;
     }
 
@@ -264,44 +314,10 @@ class EllipsoidPrimitive {
       this._va = getVertexArray(context);
     }
 
-    let boundingSphereDirty = false;
-
-    const radii = this.radii;
-    if (!Cartesian3.equals(this._radii, radii)) {
-      Cartesian3.clone(radii, this._radii);
-
-      const r = this._oneOverEllipsoidRadiiSquared;
-      r.x = 1.0 / (radii.x * radii.x);
-      r.y = 1.0 / (radii.y * radii.y);
-      r.z = 1.0 / (radii.z * radii.z);
-
-      boundingSphereDirty = true;
-    }
-
-    if (
-      !Matrix4.equals(this.modelMatrix, this._modelMatrix) ||
-      !Cartesian3.equals(this.center, this._center)
-    ) {
-      Matrix4.clone(this.modelMatrix, this._modelMatrix);
-      Cartesian3.clone(this.center, this._center);
-
-      Matrix4.multiplyByTranslation(
-        this.modelMatrix,
-        this.center,
-        this._computedModelMatrix,
-      );
-      boundingSphereDirty = true;
-    }
-
-    if (boundingSphereDirty) {
-      Cartesian3.clone(Cartesian3.ZERO, this._boundingSphere.center);
-      this._boundingSphere.radius = Cartesian3.maximumComponent(radii);
-      BoundingSphere.transform(
-        this._boundingSphere,
-        this._computedModelMatrix,
-        this._boundingSphere,
-      );
-    }
+    // NOTE: radii / center / modelMatrix / bounding-sphere updates were
+    // hoisted above the feature-renderer branch (Scene Logic Extractor
+    // pattern, Batch 269) so both backends share one computation of
+    // `_computedModelMatrix` + `_oneOverEllipsoidRadiiSquared`.
 
     const materialChanged = this._material !== this.material;
     this._material = this.material;

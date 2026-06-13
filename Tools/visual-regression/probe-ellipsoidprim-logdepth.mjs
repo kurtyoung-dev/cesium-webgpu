@@ -1,34 +1,38 @@
 #!/usr/bin/env node
 // Probe (NEW-ELLIPSOIDPRIM-LOG-DEPTH — log-depth slice for the ray-marched
-// EllipsoidPrimitive). Verifies the LOG_DEPTH shader variant compiles, the
-// renderer's flip-rebuild guard toggles the pipeline, and NO WebGPU validation
-// or console errors occur across a log-depth ON -> OFF -> ON flip while an
-// EllipsoidPrimitive is in the scene over a settled globe.
+// EllipsoidPrimitive) + BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE end-to-end pixel
+// verification.
 //
-// WHY THIS IS A STRUCTURAL (no-pixel) PROBE:
-//   The WebGPU EllipsoidPrimitive renderer does NOT currently produce visible
-//   output for a scene-placed ellipsoid (verified 2026-06-13: 0 lit pixels with
-//   log depth BOTH ON and OFF, for radii 30 km..200 km, center passed via either
-//   `center` or `modelMatrix`). Two pre-existing gaps stack:
-//     (a) updateWebGPUEllipsoidPrimitive reads `primitive.modelMatrix` instead of
-//         the Scene's `_computedModelMatrix` (= modelMatrix * translate(center)),
-//         so `center` is dropped and the shell lands at the Earth's center;
-//     (b) even when placed via modelMatrix translation the ray-cast quad emits no
-//         visible coverage at these views.
-//   Both predate this log-depth slice (the OFF leg is byte-identical to the
-//   pre-change shader, and it is equally invisible). They are tracked as
-//   BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE in DEFERRED_WORK.md. Until that lands a
-//   pixel ON~=OFF assertion is impossible, so this probe asserts the achievable
-//   invariant: the log-depth plumbing compiles + flips + stays error-free.
+// HISTORY:
+//   Batch 266 shipped the LOG_DEPTH shader variant + flip-rebuild guard but the
+//   WebGPU EllipsoidPrimitive rendered 0 visible pixels (log ON and OFF), so the
+//   pixel ON~=OFF assertions were scaffolded-but-disabled — only the structural
+//   compile/flip/error-free invariant was checked. Two stacked pre-existing bugs
+//   were the cause (BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE):
+//     (a) the renderer read `primitive.modelMatrix` instead of the Scene's
+//         `_computedModelMatrix` (= modelMatrix * translate(center)), dropping
+//         `center` so the shell landed at the model-frame origin;
+//     (b) the ray-cast used a full-screen quad with a FOV-less fake eyeDirection
+//         (x*aspect, y, -1) that never matched the real camera ray → 0 fragments.
+//   Batch 269 fixed both: the renderer now uses _computedModelMatrix and renders
+//   a radii-scaled bounding-box geometry whose rasterized eye-space surface
+//   gives the FS correct per-pixel rays (mirrors WebGL EllipsoidVS/FS). The pixel
+//   assertions below are now ENABLED.
 //
 // Checks:
 //   (1) log depth reports ACTIVE when the master switch is on (useLogDepth=true).
 //   (2) the EllipsoidPrimitive renderer materializes its cache + pipeline with
 //       log depth ON (`_pipelineLogDepth === true`).
-//   (3) flipping the kill switch OFF rebuilds the pipeline (`_pipelineLogDepth
-//       === false`) — exercises the flip-rebuild guard.
-//   (4) flipping back ON rebuilds again (`_pipelineLogDepth === true`).
-//   (5) 0 console / WebGPU validation errors across the whole flip sequence.
+//   (3) the ellipsoid renders NON-ZERO green pixels with log depth ON (the shell
+//       is lit + composes against the log globe).
+//   (4) flipping the kill switch OFF rebuilds the pipeline (`_pipelineLogDepth
+//       === false`) AND still renders ~the same green-pixel count (ON ~= OFF).
+//   (5) flipping back ON rebuilds again (`_pipelineLogDepth === true`) and the
+//       ellipsoid is still visible.
+//   (6) FAR-CAMERA composition: from a distant camera the log ellipsoid at
+//       altitude still renders non-zero pixels and is NOT eaten by the globe
+//       (no terrain bleed-through / z-fight at planetary distance).
+//   (7) 0 console / WebGPU validation errors across the whole flip sequence.
 //
 // Usage: node Tools/visual-regression/probe-ellipsoidprim-logdepth.mjs
 // Env:   PROBE_BASE (default http://localhost:8134)
@@ -77,12 +81,67 @@ const out = await page.evaluate(async () => {
     }
   };
 
+  // Deterministic readback INSIDE postRender (rules: readback inside postRender).
+  const snap = () =>
+    new Promise((resolve) => {
+      const remove = scene.postRender.addEventListener(() => {
+        remove();
+        const c = scene.canvas;
+        const off = document.createElement("canvas");
+        off.width = c.width;
+        off.height = c.height;
+        const cx = off.getContext("2d");
+        cx.drawImage(c, 0, 0);
+        resolve({
+          data: cx.getImageData(0, 0, c.width, c.height).data,
+          w: c.width,
+          h: c.height,
+        });
+      });
+      scene.render();
+    });
+
+  // The ellipsoid material is bright green (0.1, 1.0, 0.1); the FS dims it to
+  // 0.3..1.0 of base by NdotL. Accept any pixel where green clearly dominates.
+  const isGreen = (d, i) =>
+    d[i + 1] > 70 && d[i + 1] > d[i] + 30 && d[i + 1] > d[i + 2] + 30;
+  const countGreen = (img) => {
+    let n = 0;
+    for (let p = 0; p < img.w * img.h; p++) if (isGreen(img.data, 4 * p)) n++;
+    return n;
+  };
+  // Gate captures on the globe actually having drawn (dark-blue baseColor fills
+  // most of the frame). A near-black frame means the globe skipped its draw this
+  // tick (async-pipeline settle race) and the no-bleed assertion would be moot.
+  const globeDrawn = (img) => {
+    let nonBlack = 0;
+    const total = img.w * img.h;
+    for (let p = 0; p < total; p++) {
+      const i = 4 * p;
+      if (img.data[i + 2] > 20 && img.data[i + 1] > 10 && img.data[i] < 120)
+        nonBlack++;
+    }
+    return nonBlack / total > 0.2;
+  };
+  const snapWithGlobe = async (maxTries = 40) => {
+    let img = await snap();
+    for (let t = 0; t < maxTries && !globeDrawn(img); t++) {
+      await frame(2);
+      img = await snap();
+    }
+    return img;
+  };
+
   const LON = -75.0;
   const LAT = 40.0;
   const m = C.Material.fromType("Color");
   m.uniforms.color = new C.Color(0.1, 1.0, 0.1, 1.0);
+  // Canonical placement (matches WebGL EllipsoidPrimitive.modelMatrix JSDoc):
+  // modelMatrix = ENU frame at the origin; center defaults to ZERO. Passing a
+  // world-position `center` AND an ENU modelMatrix (as an earlier draft of this
+  // probe did) double-positions the shell to ~2x Earth radius — behind the
+  // camera — which is why it appeared invisible (it WAS off-screen).
   const ep = new C.EllipsoidPrimitive({
-    center: C.Cartesian3.fromDegrees(LON, LAT, 50000.0),
     radii: new C.Cartesian3(30000.0, 30000.0, 30000.0),
     material: m,
     modelMatrix: C.Transforms.eastNorthUpToFixedFrame(
@@ -91,6 +150,7 @@ const out = await page.evaluate(async () => {
   });
   scene.primitives.add(ep);
 
+  // ---- Near camera (the original probe view) ----
   v.camera.setView({
     destination: C.Cartesian3.fromDegrees(LON, LAT, 400000.0),
     orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
@@ -106,32 +166,60 @@ const out = await page.evaluate(async () => {
 
   const ctx = scene.context;
 
-  // ON leg.
+  // ON leg — structural + pixels.
   const useLogDepth = scene._frameState ? scene._frameState.useLogDepth : null;
   const onCache = ep._webgpuCache;
   const onLog = onCache ? onCache._pipelineLogDepth : null;
   const onPipeline = !!onCache?.pipeline;
+  const onImg = await snapWithGlobe();
+  const onGreen = countGreen(onImg);
 
   // OFF leg — runtime kill switch.
   ctx._logDepthWriteEnabled = false;
   await frame(20);
   const offLog = ep._webgpuCache ? ep._webgpuCache._pipelineLogDepth : null;
   const offPipeline = !!ep._webgpuCache?.pipeline;
+  const offImg = await snapWithGlobe();
+  const offGreen = countGreen(offImg);
 
   // Flip back ON.
   ctx._logDepthWriteEnabled = true;
   await frame(20);
   const on2Log = ep._webgpuCache ? ep._webgpuCache._pipelineLogDepth : null;
   const on2Pipeline = !!ep._webgpuCache?.pipeline;
+  const on2Img = await snapWithGlobe();
+  const on2Green = countGreen(on2Img);
+
+  // ---- Far camera: log ellipsoid at altitude composed against the log globe
+  // at planetary distance. Pull WAY back; the shell must still render and not be
+  // eaten by terrain bleed-through (the z-fight failure mode log depth fixes).
+  v.camera.setView({
+    destination: C.Cartesian3.fromDegrees(LON, LAT, 6000000.0),
+    orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+  });
+  await frame(20);
+  stable = 0;
+  for (let i = 0; i < 120 && stable < 6; i++) {
+    await frame(1);
+    stable = scene.globe.tilesLoaded ? stable + 1 : 0;
+  }
+  const farImg = await snapWithGlobe();
+  const farGreen = countGreen(farImg);
+  const farGlobeOk = globeDrawn(farImg);
 
   return {
     useLogDepth,
     onLog,
     onPipeline,
+    onGreen,
     offLog,
     offPipeline,
+    offGreen,
     on2Log,
     on2Pipeline,
+    on2Green,
+    farGreen,
+    farGlobeOk,
   };
 });
 
@@ -153,15 +241,37 @@ check(
 );
 check(
   "3",
-  out.offLog === false && out.offPipeline === true,
-  `kill switch OFF rebuilds hyperbolic pipeline: _pipelineLogDepth=${out.offLog} pipeline=${out.offPipeline}`,
+  out.onGreen > 200,
+  `ellipsoid renders green pixels with LOG ON: green=${out.onGreen}`,
 );
+
+// ON ~= OFF: same shell, log-depth only affects the depth value, not coverage.
+const lo = Math.min(out.onGreen, out.offGreen);
+const hi = Math.max(out.onGreen, out.offGreen);
+const ratio = hi > 0 ? lo / hi : 0;
 check(
   "4",
-  out.on2Log === true && out.on2Pipeline === true,
-  `flip back ON rebuilds log pipeline: _pipelineLogDepth=${out.on2Log} pipeline=${out.on2Pipeline}`,
+  out.offLog === false &&
+    out.offPipeline === true &&
+    out.offGreen > 200 &&
+    ratio > 0.8,
+  `kill switch OFF rebuilds hyperbolic pipeline + ON~=OFF pixels: _pipelineLogDepth=${out.offLog} pipeline=${out.offPipeline} offGreen=${out.offGreen} onGreen=${out.onGreen} ratio=${ratio.toFixed(3)}`,
 );
-check("5", errors.length === 0, `console / WebGPU validation errors: ${errors.length}`);
+check(
+  "5",
+  out.on2Log === true && out.on2Pipeline === true && out.on2Green > 200,
+  `flip back ON rebuilds log pipeline + still visible: _pipelineLogDepth=${out.on2Log} pipeline=${out.on2Pipeline} on2Green=${out.on2Green}`,
+);
+check(
+  "6",
+  out.farGlobeOk === true && out.farGreen > 50,
+  `FAR camera: log globe present + ellipsoid NOT eaten by terrain bleed-through: globeOk=${out.farGlobeOk} farGreen=${out.farGreen}`,
+);
+check(
+  "7",
+  errors.length === 0,
+  `console / WebGPU validation errors: ${errors.length}`,
+);
 if (errors.length) for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
 
 console.log(ok ? "PASS" : "FAIL");

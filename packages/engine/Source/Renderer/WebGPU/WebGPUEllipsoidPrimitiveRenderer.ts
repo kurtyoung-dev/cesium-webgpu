@@ -1,10 +1,13 @@
 /**
  * WebGPU Ellipsoid Primitive Renderer
  *
- * Renders ray-marched ellipsoid primitives using WebGPU. Each ellipsoid
- * is rendered as a screen-space quad with a fragment shader that performs
- * analytical ray-ellipsoid intersection for pixel-perfect rendering.
- * Uses RTE (Relative-To-Eye) positioning for planetary-scale precision.
+ * Renders ray-cast ellipsoid primitives using WebGPU. Each ellipsoid is
+ * rendered as a radii-scaled bounding-box geometry (Batch 269 — matching
+ * WebGL EllipsoidVS; replaced the old FOV-less screen quad) whose rasterized
+ * eye-space surface hands the fragment shader a correct per-pixel eye->surface
+ * ray for analytical ray-ellipsoid intersection. Uses RTE (Relative-To-Eye)
+ * positioning for planetary-scale precision; the world transform comes from
+ * the Scene's `_computedModelMatrix` (modelMatrix * translate(center)).
  *
  * @module WebGPUEllipsoidPrimitiveRenderer
  */
@@ -139,25 +142,51 @@ struct EllipsoidUniforms {
 @group(1) @binding(0) var<uniform> ellipsoid: EllipsoidUniforms;
 
 struct VertexInput {
-  @location(0) position: vec2<f32>,
+  // BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — bounding-box geometry,
+  // matching WebGL EllipsoidVS. The cube spans (-1,-1,-1)..(1,1,1) in the
+  // ellipsoid's MODEL frame; the VS scales it by radii so it encloses the
+  // shell, and the rasterizer hands the FS exactly the screen coverage the
+  // ray-cast needs. Pre-Batch-269 this was a full-screen 2D quad with a
+  // FOV-less fake eyeDirection (x*aspect, y, -1) that never matched the real
+  // camera ray, so the intersection test produced 0 fragments.
+  @location(0) position: vec3<f32>,
 };
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
-  @location(0) eyeDirection: vec3<f32>,
+  // Box-surface position in EYE coordinates (mirrors WebGL v_positionEC).
+  // normalize(positionEC) in the FS is the per-pixel eye->surface ray.
+  @location(0) positionEC: vec3<f32>,
+  // Ellipsoid center in EYE coordinates. With _computedModelMatrix folding
+  // in the center, the ellipsoid origin in the model frame is (0,0,0), so the
+  // center RTE offset reduces to (-camHigh) + (-camLow).
   @location(1) ellipsoidCenter: vec3<f32>,
 };
 
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
-  output.position = vec4<f32>(input.position, 0.0, 1.0);
-  let centerRTE = (ellipsoid.centerHigh - camera.encodedCameraPositionMCHigh)
-                + (ellipsoid.centerLow - camera.encodedCameraPositionMCLow);
-  let centerEye = (camera.modelViewRelativeToEye * vec4<f32>(centerRTE, 1.0)).xyz;
-  output.ellipsoidCenter = centerEye;
-  let aspectRatio = camera.viewportSize.x / camera.viewportSize.y;
-  output.eyeDirection = vec3<f32>(input.position.x * aspectRatio, input.position.y, -1.0);
+
+  // Box-surface position in the ellipsoid's MODEL frame, scaled by radii.
+  // radii-scale (~km) is small + exact in f32 — the planetary-scale
+  // translation lives in modelViewRelativeToEye + the RTE camera split.
+  let positionMC = ellipsoid.radii * input.position;
+
+  // Model-space RTE: subtract the high/low-split camera position (already in
+  // the model frame; packCameraUniforms encodes invModel * cameraWorld). The
+  // box vertex is exact so its low part is zero.
+  let positionRTE = (positionMC - camera.encodedCameraPositionMCHigh)
+                  - camera.encodedCameraPositionMCLow;
+  let positionEye = (camera.modelViewRelativeToEye * vec4<f32>(positionRTE, 1.0)).xyz;
+  output.positionEC = positionEye;
+
+  // Ellipsoid center (model-frame origin) in eye space.
+  let centerRTE = (-camera.encodedCameraPositionMCHigh) - camera.encodedCameraPositionMCLow;
+  output.ellipsoidCenter = (camera.modelViewRelativeToEye * vec4<f32>(centerRTE, 1.0)).xyz;
+
+  // Project the eye-space box surface. modelViewProjectionRelativeToEye =
+  // projection * modelViewRelativeToEye, so this is projection * positionEye.
+  output.position = camera.modelViewProjectionRelativeToEye * vec4<f32>(positionRTE, 1.0);
   return output;
 }
 
@@ -200,10 +229,13 @@ struct FragOutput {
 @fragment
 fn fragmentMain(
   @builtin(position) fragPos: vec4<f32>,
-  @location(0) eyeDirection: vec3<f32>,
+  @location(0) positionEC: vec3<f32>,
   @location(1) ellipsoidCenter: vec3<f32>,
 ) -> FragOutput {
-  let rayDir = normalize(eyeDirection);
+  // The eye is at the origin in eye space; the ray points from the eye
+  // toward the rasterized box-surface position (mirrors WebGL
+  // normalize(v_positionEC)).
+  let rayDir = normalize(positionEC);
   let t = intersectEllipsoid(vec3<f32>(0.0), rayDir, ellipsoidCenter, ellipsoid.oneOverRadiiSq);
   if (t.x < 0.0 && t.y < 0.0) { discard; }
   var tHit = t.x;
@@ -248,10 +280,10 @@ fn fragmentMain(
 @fragment
 fn fragmentPickMain(
   @builtin(position) fragPos: vec4<f32>,
-  @location(0) eyeDirection: vec3<f32>,
+  @location(0) positionEC: vec3<f32>,
   @location(1) ellipsoidCenter: vec3<f32>,
 ) -> @location(0) vec4<f32> {
-  let rayDir = normalize(eyeDirection);
+  let rayDir = normalize(positionEC);
   let t = intersectEllipsoid(vec3<f32>(0.0), rayDir, ellipsoidCenter, ellipsoid.oneOverRadiiSq);
   if (t.x < 0.0 && t.y < 0.0) { discard; }
   var tHit = t.x;
@@ -269,14 +301,85 @@ const scratchEncodedPosition = {
 const scratchMVP = new Matrix4();
 const scratchMV = new Matrix4();
 
-function createQuadGeometry(device: GPUDevice): {
+// BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — unit bounding cube spanning
+// (-1,-1,-1)..(1,1,1), matching WebGL's BoxGeometry.fromDimensions({2,2,2}).
+// The VS scales each vertex by radii so the box encloses the ellipsoid shell;
+// the rasterized box surface gives the FS correct per-pixel eye->surface rays.
+// 36 indices (12 triangles, 2 per face) — cullMode "none" so both the front
+// and back faces rasterize, which lets the FS see the shell when the camera
+// is inside the box too.
+const ELLIPSOID_BOX_INDEX_COUNT = 36;
+
+function createBoxGeometry(device: GPUDevice): {
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
 } {
+  // 8 corners of the unit cube.
   const vertices = new Float32Array([
-    -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
+    -1.0,
+    -1.0,
+    -1.0, // 0
+    1.0,
+    -1.0,
+    -1.0, // 1
+    1.0,
+    1.0,
+    -1.0, // 2
+    -1.0,
+    1.0,
+    -1.0, // 3
+    -1.0,
+    -1.0,
+    1.0, // 4
+    1.0,
+    -1.0,
+    1.0, // 5
+    1.0,
+    1.0,
+    1.0, // 6
+    -1.0,
+    1.0,
+    1.0, // 7
   ]);
-  const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+  // 12 triangles (winding is irrelevant — cullMode is "none").
+  const indices = new Uint16Array([
+    0,
+    1,
+    2,
+    0,
+    2,
+    3, // -z
+    4,
+    6,
+    5,
+    4,
+    7,
+    6, // +z
+    0,
+    4,
+    5,
+    0,
+    5,
+    1, // -y
+    3,
+    2,
+    6,
+    3,
+    6,
+    7, // +y
+    0,
+    3,
+    7,
+    0,
+    7,
+    4, // -x
+    1,
+    5,
+    6,
+    1,
+    6,
+    2, // +x
+  ]);
 
   const vertexBuffer = device.createBuffer({
     size: vertices.byteLength,
@@ -299,12 +402,14 @@ function createQuadGeometry(device: GPUDevice): {
 // requests — otherwise the cache would treat them as different layouts.
 const ELLIPSOID_VERTEX_BUFFERS: GPUVertexBufferLayout[] = [
   {
-    arrayStride: 8,
+    // BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — box geometry is vec3
+    // position (12-byte stride), was vec2 (8-byte) for the old screen quad.
+    arrayStride: 12,
     attributes: [
       {
         shaderLocation: 0,
         offset: 0,
-        format: "float32x2" as GPUVertexFormat,
+        format: "float32x3" as GPUVertexFormat,
       },
     ],
   },
@@ -684,17 +789,21 @@ function packEllipsoidUniforms(
     data[11] = 1.0;
   }
 
-  // Encode center position (from modelMatrix translation).
-  const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
-  const center = Matrix4.getTranslation(modelMatrix, new Cartesian3());
-  EncodedCartesian3.fromCartesian(center, scratchEncodedPosition);
-  data[12] = scratchEncodedPosition.high.x;
-  data[13] = scratchEncodedPosition.high.y;
-  data[14] = scratchEncodedPosition.high.z;
+  // BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — the VS now positions the
+  // shell entirely through `_computedModelMatrix` (folded into the camera UB's
+  // modelViewRelativeToEye + RTE camera split), so the ellipsoid center in the
+  // model frame is the ORIGIN. These centerHigh/centerLow slots are retained
+  // in the struct for layout stability (add-only) but are no longer read by
+  // the shader; zero them. Pre-Batch-268 they carried the bare modelMatrix
+  // translation — which double-counted the transform and (with an IDENTITY
+  // modelMatrix) was just (0,0,0) anyway, contributing to the invisibility.
+  data[12] = 0;
+  data[13] = 0;
+  data[14] = 0;
   data[15] = 0;
-  data[16] = scratchEncodedPosition.low.x;
-  data[17] = scratchEncodedPosition.low.y;
-  data[18] = scratchEncodedPosition.low.z;
+  data[16] = 0;
+  data[17] = 0;
+  data[18] = 0;
   data[19] = 0;
 
   // C-R9 (Batch 30) — pick color slot. Zero when the primitive hasn't
@@ -901,8 +1010,8 @@ function updateWebGPUEllipsoidPrimitive(
       ],
     });
 
-    // Create quad geometry
-    const geom = createQuadGeometry(device);
+    // Create bounding-box geometry (replaces the old screen quad).
+    const geom = createBoxGeometry(device);
     cache.vertexBuffer = geom.vertexBuffer;
     cache.indexBuffer = geom.indexBuffer;
 
@@ -928,9 +1037,17 @@ function updateWebGPUEllipsoidPrimitive(
     return;
   }
 
-  // Per-frame uniform updates
+  // Per-frame uniform updates.
+  // BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — use the Scene's
+  // `_computedModelMatrix` (= modelMatrix * translate(center)), NOT the bare
+  // `modelMatrix`. Scene/EllipsoidPrimitive.js folds `center` into
+  // `_computedModelMatrix`; reading the bare modelMatrix dropped `center`
+  // entirely, placing every ellipsoid at its model-frame origin (the Earth's
+  // center for an IDENTITY modelMatrix) where the camera never sees it.
   const uniformState = context.uniformState;
-  const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
+  const modelMatrix = (primitive._computedModelMatrix ??
+    primitive.modelMatrix ??
+    Matrix4.IDENTITY) as Matrix4 | CesiumMatrix4;
 
   const viewportWidth = context.drawingBufferWidth || 1;
   const viewportHeight = context.drawingBufferHeight || 1;
@@ -979,7 +1096,7 @@ function updateWebGPUEllipsoidPrimitive(
       bindGroups: [cache.bindGroup0, cache.bindGroup1],
       vertexBuffers: [cache.vertexBuffer],
       indexBuffer: cache.indexBuffer,
-      indexCount: 6,
+      indexCount: ELLIPSOID_BOX_INDEX_COUNT,
       pass: Pass.OPAQUE,
     });
   }
@@ -1007,7 +1124,7 @@ function updateWebGPUEllipsoidPrimitive(
         bindGroups: [cache.bindGroup0, cache.bindGroup1],
         vertexBuffers: [cache.vertexBuffer],
         indexBuffer: cache.indexBuffer,
-        indexCount: 6,
+        indexCount: ELLIPSOID_BOX_INDEX_COUNT,
         pass: Pass.OPAQUE,
         pickOnly: true,
       });

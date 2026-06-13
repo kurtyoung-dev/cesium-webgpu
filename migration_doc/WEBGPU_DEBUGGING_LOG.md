@@ -24,6 +24,28 @@
 
 ---
 
+## Batch 269 — EllipsoidPrimitive renders end-to-end on WebGPU + log-depth pixel-verified (BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE) (2026-06-13)
+
+**Bug:** A scene-placed `EllipsoidPrimitive` rendered 0 visible pixels on WebGPU (log ON and OFF). The Batch-266 log-depth slice was therefore only STRUCTURALLY verified (pipeline-builds / flip-rebuild). Probe `probe-ellipsoidprim-logdepth.mjs` was a no-pixel structural probe with its ON≈OFF green assertions scaffolded-but-disabled.
+
+**Files affected:**
+- `packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts`
+- `packages/engine/Source/Scene/EllipsoidPrimitive.js`
+- `Tools/visual-regression/probe-ellipsoidprim-logdepth.mjs`
+
+**Three stacked root causes (debugged in order — each masked the next):**
+1. **`_computedModelMatrix` never computed for the WebGPU path → crash.** `Scene/EllipsoidPrimitive.js` computed `_computedModelMatrix = modelMatrix * translate(center)` only AFTER the `fr.update()` feature-renderer early-return. The WebGPU renderer read the still-zero-initialized `new Matrix4()` (all zeros). `packCameraUniforms` calls `Matrix4.inverse(modelMatrix)` → threw "matrix is not invertible because its determinate is zero" *inside* the scene main render pass, leaving the pass open → next-frame cascade `_beginDefaultRenderPass() called with an active render pass` (the BUG-118-class encoder-invalidation chain; the original throw was swallowed by `tryAndCatchError` so only the cascade surfaced). Surfaced by capturing `scene.renderError` one frame at a time. **Fix:** Scene Logic Extractor pattern — hoisted the radii / `_computedModelMatrix` / bounding-sphere block ABOVE the FR branch (`_boundingSphereDirty` promoted from a local to an instance field shared by both backends). NB: the OLD code did NOT crash because it read `primitive.modelMatrix ?? IDENTITY` (invertible) — it was just invisible.
+2. **Center dropped.** The renderer read the raw `primitive.modelMatrix` (not `_computedModelMatrix`) and `packEllipsoidUniforms` encoded its translation. **Fix:** read `_computedModelMatrix`; center in the model frame is now the origin, so the UBO `centerHigh/centerLow` slots are zeroed (kept for add-only layout stability).
+3. **Screen-quad ray never matched the camera.** The VS built a FOV-less fake `eyeDirection = (x*aspect, y, -1)` for a 2D full-screen quad, so the ray-ellipsoid intersect discarded every fragment for any real perspective camera. **Fix:** replaced the quad with a radii-scaled **bounding-box geometry** (8 verts / 36 indices, vec3 position, stride 12), matching WebGL `EllipsoidVS.glsl`. The VS scales the unit cube by `radii`, projects via model-space-RTE, and emits the box-surface eye-space position as `v_positionEC`; the FS ray-casts along `normalize(positionEC)`. Same bounding-cube design the Moon ray-marcher adopted (this log, Batch-30 note: "audit the actual WebGL primitive's geometry before assuming the shader-side reference represents the canonical approach").
+
+**Gotcha (cost one build):** the box-geometry doc-comments I added inside the `ELLIPSOID_WGSL` template literal used backticks around `` `center` `` / `` `normalize(v_positionEC)` `` — backticks inside a JS template literal terminate the string. `tsc --noEmit` (loose) missed it; the build's project tsc flagged `',' expected`. This is the SAME trap recorded in this log's Batch-DP-H41 note — backticks in inline-WGSL doc-comments are forbidden.
+
+**Probe setup bug found + fixed:** the original probe passed BOTH a world-position `center: fromDegrees(...)` AND `modelMatrix: eastNorthUpToFixedFrame(samePoint)`, double-positioning the shell to ~2× Earth radius (behind the camera). Corrected to the canonical WebGL JSDoc pattern (`modelMatrix` = ENU frame, `center` defaults to ZERO). This was an independent reason the Batch-266 probe could never have seen pixels even after the renderer fix.
+
+**Verification:** `probe-ellipsoidprim-logdepth.mjs` upgraded to a full pixel probe — 18280 green px with log ON, ON≈OFF coverage ratio 1.000, far-camera (6000 km) composition against the log globe intact (no terrain bleed-through), 0 validation errors. Visually confirmed a clean lit green sphere at 400 km + 1500 km. Standing gates green (collections-regression, logdepth-zfight, collections-far-camera, pickposition-webgpu, sandcastle-smoke); tsc clean. **Ellipsoid log-depth (NEW-ELLIPSOIDPRIM-LOG-DEPTH) is now end-to-end pixel-verified, not just structural.**
+
+---
+
 ## Batch 267 — Log-depth final sweep + Moon encode divergence documented + far-camera probe flake fixed (NEW-LOG-DEPTH-REMAINING-PRODUCERS) (2026-06-13)
 
 **Goal:** Close out the renderer-wide log-depth epic — verify ALL geometry/opaque producers participate, identify any residual hyperbolic producer precisely, reconcile the Moon encode divergence, and reconcile the ledger.
