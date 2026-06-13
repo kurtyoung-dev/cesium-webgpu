@@ -138,6 +138,12 @@ export interface BufferPrimitiveCollection {
   _allowPicking: boolean;
   _dirtyOffset: number;
   _dirtyCount: number;
+  // Flat interleaved [x,y,z,...] position store. DOUBLE (Float64Array) by
+  // default; FLOAT (Float32Array) when the collection opts into low-precision
+  // positions. For points, position index i maps to _positionView[i*3..i*3+2]
+  // (vertexOffset == index), so a dirty [offset,count) slice is contiguous —
+  // consumed directly by the WASM batch RTE encode (NEW-BUFFERCOLL-WASM-ENCODE-WIRE).
+  _positionView: Float64Array | Float32Array;
   // The narrow shape (`PolygonCache` / `PolylineCache` / `PointCache`)
   // lives in each per-collection module and is recovered there via a
   // type-narrowing cast on the cached value. Storing as `SharedCache`

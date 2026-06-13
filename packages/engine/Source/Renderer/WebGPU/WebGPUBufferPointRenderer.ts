@@ -29,6 +29,7 @@ import { gpuData } from "./webgpuTypeHelpers.js";
 import BufferPoint from "../../Scene/BufferPoint.js";
 import BufferPointMaterial from "../../Scene/BufferPointMaterial.js";
 import BufferPointMaterialWGSL from "../../Shaders/WebGPU/Collections/BufferPointMaterial.js";
+import WasmRTEBridge from "../../Scene/WasmRTEBridge.js";
 // Slice 5c-B Phase 1 (Batch 109) — scene-FB target helper. Used only
 // for the COLOR pipeline variant; the PICK variant stays single-target
 // because it runs in its own pick-FB render pass.
@@ -58,6 +59,27 @@ import type {
 const scratchPoint = new BufferPoint();
 const scratchPointMat = new BufferPointMaterial();
 
+// NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — minimum dirty primitive count
+// before the position high/low lanes are routed through the WASM batch RTE
+// encode instead of the per-primitive scalar `EncodedCartesian3` loop. Below
+// this, the per-call bridge/arena overhead outweighs the SIMD win, so small
+// edits stay on the scalar path.
+export const BUFFER_WASM_ENCODE_THRESHOLD = 5000;
+
+// The effective threshold honors an optional per-collection override
+// (`_wasmEncodeThresholdOverride`) so the parity probe can force the SAME large
+// collection onto the scalar path (override = Number.POSITIVE_INFINITY) or the
+// batch path (override = 0) and pixel-compare both encodes. Absent the override,
+// the module default applies.
+function effectiveEncodeThreshold(
+  collection: BufferPrimitiveCollection,
+): number {
+  const override = (
+    collection as unknown as { _wasmEncodeThresholdOverride?: number }
+  )._wasmEncodeThresholdOverride;
+  return typeof override === "number" ? override : BUFFER_WASM_ENCODE_THRESHOLD;
+}
+
 // ─── PointCache type ─────────────────────────────────────────────────────────
 export interface PointCache extends SharedCache {
   paramsUBO: GPUBuffer;
@@ -81,6 +103,17 @@ export interface PointCache extends SharedCache {
   command: WebGPUDrawCommand | null;
   pickCommand: WebGPUDrawCommand | null;
   pickIds: CesiumPickIdRef[];
+  // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — lazily-instantiated RTE
+  // bridge for the threshold-gated batch position encode. Created on the cache
+  // (one per collection); `loadWasm()` is kicked off once on first use and the
+  // module-level WASM-ready flag is shared across all bridges, so first frames
+  // before the module resolves fall back to the scalar `EncodedCartesian3` path
+  // (byte-equivalent in eye space). Destroyed in destroyWebGPUBufferPointCollection.
+  rteBridge?: WasmRTEBridge;
+  /** Instrumentation: how many repacks took the WASM/batch position path. */
+  wasmEncodeRepacks: number;
+  /** Instrumentation: how many repacks took the scalar position path. */
+  scalarEncodeRepacks: number;
 }
 
 // ─── Pipeline builder ────────────────────────────────────────────────────────
@@ -279,6 +312,8 @@ function initPointCache(
     command: null,
     pickCommand: null,
     pickIds: [],
+    wasmEncodeRepacks: 0,
+    scalarEncodeRepacks: 0,
   };
   cache.paramsBindGroup = device.createBindGroup({
     label: "BufferPoint params BG",
@@ -299,6 +334,46 @@ function repackPointDirty(
     return;
   }
   const allowPicking: boolean = collection._allowPicking;
+
+  // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — for large dirty ranges, encode
+  // the POSITION high/low lanes for the whole contiguous slice in one batch call
+  // (WASM SIMD when the module is ready, byte-equivalent scalar fallback before).
+  // Points have vertexOffset == index, so _positionView[i*3..] is contiguous over
+  // [dirtyOffset, dirtyOffset+dirtyCount) and maps 1:1 onto positionHighArr[i*3..].
+  // Color / pick / outline interleave stays in the per-primitive JS loop below.
+  //
+  // The batch encode (fround split) and the scalar EncodedCartesian3 (AGI
+  // 65536-grid split) produce DIFFERENT high/low bytes but the SAME eye-space
+  // position after the shader's (posHigh-camHigh)+(posLow-camLow) reconstruction
+  // (both encodings satisfy high+low == value exactly in f64; the f32 RTE
+  // cancellation rounds identically), so the on-screen result is unchanged.
+  const positionView = collection._positionView;
+  const useBatchPositionEncode =
+    dirtyCount >= effectiveEncodeThreshold(collection) &&
+    positionView instanceof Float64Array;
+  if (useBatchPositionEncode) {
+    let bridge = cache.rteBridge;
+    if (bridge === undefined) {
+      bridge = new WasmRTEBridge();
+      cache.rteBridge = bridge;
+      // Fire-and-forget: until this resolves, batchEncodeRange uses the
+      // byte-equivalent scalar fallback, so there is no visible pop. The
+      // module-level ready flag is shared, so any prior bridge load is reused.
+      void bridge.loadWasm();
+    }
+    bridge.batchEncodeRange(
+      positionView,
+      dirtyOffset,
+      dirtyCount,
+      cache.positionHighArr,
+      cache.positionLowArr,
+      dirtyOffset,
+    );
+    cache.wasmEncodeRepacks++;
+  } else {
+    cache.scalarEncodeRepacks++;
+  }
+
   for (let i = dirtyOffset; i < dirtyOffset + dirtyCount; i++) {
     collection.get(i, scratchPoint);
     if (!scratchPoint._dirty) {
@@ -318,17 +393,20 @@ function repackPointDirty(
       scratchPoint._pickId = pickId.key;
       cache.pickIds.push(pickId);
     }
-    scratchPoint.getPosition(scratchCart);
-    EncodedCartesian3.fromCartesian(scratchCart, scratchEnc);
+    if (!useBatchPositionEncode) {
+      scratchPoint.getPosition(scratchCart);
+      EncodedCartesian3.fromCartesian(scratchCart, scratchEnc);
+
+      cache.positionHighArr[i * 3] = scratchEnc.high.x;
+      cache.positionHighArr[i * 3 + 1] = scratchEnc.high.y;
+      cache.positionHighArr[i * 3 + 2] = scratchEnc.high.z;
+      cache.positionLowArr[i * 3] = scratchEnc.low.x;
+      cache.positionLowArr[i * 3 + 1] = scratchEnc.low.y;
+      cache.positionLowArr[i * 3 + 2] = scratchEnc.low.z;
+    }
     scratchPoint.getMaterial(scratchPointMat);
     Color.fromRgba(scratchPoint._pickId, scratchColor);
 
-    cache.positionHighArr[i * 3] = scratchEnc.high.x;
-    cache.positionHighArr[i * 3 + 1] = scratchEnc.high.y;
-    cache.positionHighArr[i * 3 + 2] = scratchEnc.high.z;
-    cache.positionLowArr[i * 3] = scratchEnc.low.x;
-    cache.positionLowArr[i * 3 + 1] = scratchEnc.low.y;
-    cache.positionLowArr[i * 3 + 2] = scratchEnc.low.z;
     cache.pickColorArr[i * 4] = Color.floatToByte(scratchColor.red);
     cache.pickColorArr[i * 4 + 1] = Color.floatToByte(scratchColor.green);
     cache.pickColorArr[i * 4 + 2] = Color.floatToByte(scratchColor.blue);
@@ -513,6 +591,11 @@ export function destroyWebGPUBufferPointCollection(
     return;
   }
   destroyPickIds(cache);
+  // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — release the RTE bridge's
+  // arena/version handle. The bridge's destroy() is idempotent and the WASM
+  // module is shared, so this only frees this collection's buffer claim.
+  cache.rteBridge?.destroy();
+  cache.rteBridge = undefined;
   cache.cameraUBO.destroy();
   cache.paramsUBO.destroy();
   cache.quadVB.destroy();

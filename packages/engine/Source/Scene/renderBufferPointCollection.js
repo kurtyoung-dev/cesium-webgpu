@@ -22,6 +22,14 @@ import AttributeCompression from "../Core/AttributeCompression.js";
 import Matrix4 from "../Core/Matrix4.js";
 import BoundingSphere from "../Core/BoundingSphere.js";
 import BufferPointMaterial from "./BufferPointMaterial.js";
+import WasmRTEBridge from "./WasmRTEBridge.js";
+
+// NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — minimum dirty primitive count
+// before routing the POSITION high/low encode through the WASM batch RTE kernel
+// instead of the per-primitive scalar EncodedCartesian3 loop. Mirrors the
+// WebGPU renderer's BUFFER_WASM_ENCODE_THRESHOLD; WebGL2 has no compute, so the
+// WASM-on-main-thread encode is the dense-update fast path for this backend.
+const BUFFER_WASM_ENCODE_THRESHOLD = 5000;
 
 /** @import FrameState from "./FrameState.js"; */
 /** @import BufferPointCollection from "./BufferPointCollection.js"; */
@@ -53,6 +61,9 @@ const BufferPointAttributeLocations = {
  * @property {ShaderProgram} [shaderProgram]
  * @property {DrawCommand} [command]
  * @property {Destroyable[]} [pickIds] Unordered list of collection PickIds.
+ * @property {WasmRTEBridge} [rteBridge] Lazily-created bridge for the threshold-gated WASM batch position encode.
+ * @property {number} [wasmEncodeRepacks] Instrumentation: repacks that took the WASM/batch position path.
+ * @property {number} [scalarEncodeRepacks] Instrumentation: repacks that took the scalar position path.
  * @property {Function} destroy
  * @ignore
  */
@@ -103,6 +114,54 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
 
     const { _dirtyOffset, _dirtyCount } = collection;
 
+    // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — for large dirty ranges,
+    // encode the POSITION high/low lanes for the whole contiguous slice in one
+    // WASM batch call (SIMD when ready, byte-equivalent scalar fallback before).
+    // Points have vertexOffset == index, so collection._positionView[i*3..] is
+    // contiguous over the dirty range and maps 1:1 onto positionHighArray[i*3..].
+    // The batch (fround) and scalar EncodedCartesian3 (AGI 65536-grid) splits
+    // produce different high/low bytes but the same eye-space position after the
+    // shader's RTE reconstruction (both satisfy high+low == value in f64), so the
+    // rendered result is unchanged. Color / pick / outline interleave stays in
+    // the per-primitive JS loop below.
+    const positionView = collection._positionView;
+    // Honor an optional per-collection threshold override so the parity probe
+    // can force the SAME large collection onto the scalar path
+    // (override = Number.POSITIVE_INFINITY) or batch path (override = 0).
+    const thresholdOverride =
+      /** @type {{_wasmEncodeThresholdOverride?: number}} */ (collection)
+        ._wasmEncodeThresholdOverride;
+    const threshold =
+      typeof thresholdOverride === "number"
+        ? thresholdOverride
+        : BUFFER_WASM_ENCODE_THRESHOLD;
+    const useBatchPositionEncode =
+      _dirtyCount >= threshold && positionView instanceof Float64Array;
+    if (useBatchPositionEncode) {
+      let bridge = renderContext.rteBridge;
+      if (!defined(bridge)) {
+        bridge = new WasmRTEBridge();
+        renderContext.rteBridge = bridge;
+        // Fire-and-forget: until the module resolves, batchEncodeRange uses the
+        // byte-equivalent scalar fallback, so there is no visible pop on the
+        // first frames. The module-level ready flag is shared across bridges.
+        void bridge.loadWasm();
+      }
+      bridge.batchEncodeRange(
+        positionView,
+        _dirtyOffset,
+        _dirtyCount,
+        /** @type {Float32Array} */ (positionHighArray),
+        /** @type {Float32Array} */ (positionLowArray),
+        _dirtyOffset,
+      );
+      renderContext.wasmEncodeRepacks =
+        (renderContext.wasmEncodeRepacks ?? 0) + 1;
+    } else {
+      renderContext.scalarEncodeRepacks =
+        (renderContext.scalarEncodeRepacks ?? 0) + 1;
+    }
+
     for (let i = _dirtyOffset, il = _dirtyOffset + _dirtyCount; i < il; i++) {
       collection.get(i, point);
 
@@ -124,18 +183,21 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
         pickIds.push(pickId);
       }
 
-      point.getPosition(cartesian);
-      EncodedCartesian3.fromCartesian(cartesian, encodedCartesian);
+      if (!useBatchPositionEncode) {
+        point.getPosition(cartesian);
+        EncodedCartesian3.fromCartesian(cartesian, encodedCartesian);
+
+        positionHighArray[i * 3] = encodedCartesian.high.x;
+        positionHighArray[i * 3 + 1] = encodedCartesian.high.y;
+        positionHighArray[i * 3 + 2] = encodedCartesian.high.z;
+
+        positionLowArray[i * 3] = encodedCartesian.low.x;
+        positionLowArray[i * 3 + 1] = encodedCartesian.low.y;
+        positionLowArray[i * 3 + 2] = encodedCartesian.low.z;
+      }
+
       point.getMaterial(material);
       Color.fromRgba(point._pickId, pickColor);
-
-      positionHighArray[i * 3] = encodedCartesian.high.x;
-      positionHighArray[i * 3 + 1] = encodedCartesian.high.y;
-      positionHighArray[i * 3 + 2] = encodedCartesian.high.z;
-
-      positionLowArray[i * 3] = encodedCartesian.low.x;
-      positionLowArray[i * 3 + 1] = encodedCartesian.low.y;
-      positionLowArray[i * 3 + 2] = encodedCartesian.low.z;
 
       pickColorArray[i * 4] = Color.floatToByte(pickColor.red);
       pickColorArray[i * 4 + 1] = Color.floatToByte(pickColor.green);
@@ -329,6 +391,12 @@ function destroyRenderContext() {
     for (const pickId of context.pickIds) {
       pickId.destroy();
     }
+  }
+
+  // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — release the RTE bridge handle.
+  // destroy() is idempotent and the WASM module is shared across bridges.
+  if (defined(context.rteBridge)) {
+    context.rteBridge.destroy();
   }
 }
 
