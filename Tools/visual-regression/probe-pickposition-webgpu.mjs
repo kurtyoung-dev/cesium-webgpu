@@ -58,10 +58,39 @@ async function runLeg(renderer) {
       });
 
       // Let the globe load + render so the depth texture is populated.
-      // IMPORTANT: no pickPosition call happens before the cold-cache test.
-      for (let i = 0; i < 90; i++) {
+      // IMPORTANT: no pickPosition call happens before the cold-cache test —
+      // calling pickPosition here would arm the async readback and break the
+      // frame-0-undefined cold-cache assertion below. scene.globe.tilesLoaded
+      // is a pure read that does NOT arm the pick readback, so it is the safe
+      // readiness signal.
+      //
+      // A fixed 90-frame warmup was flaky (FQ-7): in headless Edge the globe
+      // depth texture sometimes still read 1.0 everywhere at frame 90, so the
+      // cold-cache getDepth cached _lastDepthValue=1, the >=1.0 sky-reject
+      // fired, and the leg returned all-undefined nondeterministically. Gate
+      // the sample window on actual tile-load completion instead, with a frame
+      // cap so the probe can never hang, plus a few settling frames after
+      // tilesLoaded so the depth attachment is definitely written.
+      const MAX_WARMUP_FRAMES = 600;
+      let warmupFrames = 0;
+      let tilesLoadedAt = -1;
+      for (let i = 0; i < MAX_WARMUP_FRAMES; i++) {
         scene.render();
         await new Promise((r) => requestAnimationFrame(r));
+        warmupFrames = i + 1;
+        if (scene.globe && scene.globe.tilesLoaded) {
+          tilesLoadedAt = i;
+          break;
+        }
+      }
+      // Settle frames: ensure the depth texture is rendered from the now-loaded
+      // tiles before the cold-cache window opens. Also enforce a generous floor
+      // so very fast tile loads still get a populated depth attachment.
+      const SETTLE_FRAMES = 60;
+      for (let i = 0; i < SETTLE_FRAMES; i++) {
+        scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+        warmupFrames += 1;
       }
 
       const center = new C.Cartesian2(
@@ -115,6 +144,9 @@ async function runLeg(renderer) {
         pickPositionSupported: scene.pickPositionSupported,
         useLogDepth: scene.frameState?.useLogDepth,
         numFrustums: scene._view?.frustumCommandsList?.length,
+        warmupFrames,
+        tilesLoadedAt,
+        tilesLoaded: !!(scene.globe && scene.globe.tilesLoaded),
         samples,
         camBefore,
       };
@@ -161,6 +193,9 @@ function printLeg(name, leg) {
   console.log(`\n=== ${name} (${leg.rendererType}) ===`);
   console.log(
     `pickPositionSupported: ${leg.pickPositionSupported}  useLogDepth: ${leg.useLogDepth}  numFrustums: ${leg.numFrustums}`,
+  );
+  console.log(
+    `warmup: ${leg.warmupFrames} frames  tilesLoadedAt: ${leg.tilesLoadedAt}  tilesLoaded: ${leg.tilesLoaded}`,
   );
   for (const s of leg.samples) {
     console.log(
