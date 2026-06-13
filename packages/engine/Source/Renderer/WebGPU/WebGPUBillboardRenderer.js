@@ -640,14 +640,28 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
   // reserved lanes. Same source every producer uses
   // (uniformState.currentFrustum at scene-update time); unconditional —
   // only the LOG_DEPTH shader variant reads them.
+  //
+  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — prefer the
+  // stashed FULL-frustum encode (`_logDepthEncodeNearFar`) over the live
+  // per-slice `currentFrustum`. The globe bakes its log-depth uniform once at
+  // scene update (full frustum) and replays unchanged; when this collection
+  // REPACKS per slice (2D/CV), reading the per-slice currentFrustum would
+  // encode against a different near/far than the globe and lose the depth test.
+  // See the same fix in WebGPUPointPrimitiveRenderer.packUniforms.
+  const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
-  const ldNear = ldFrustum ? ldFrustum.x : 0.0;
-  const ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  let ldFar = ldFrustum ? ldFrustum.y : 0.0;
   let ldFactor =
     typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
       ? uniformState.oneOverLog2FarDepthFromNearPlusOne
       : 0.0;
-  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    ldNear = ldEncode[0];
+    ldFar = ldEncode[1];
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
     const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
     ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
   }
@@ -1113,10 +1127,15 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     cache.cameraUB = new WebGPUCollectionCameraUB(device, "Billboard");
   }
   cache.cameraUB.bindUniformState(context.uniformState);
+  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — repack the
+  // camera UB per slice at draw time in 2D/CV/MORPHING so the MVP uses the live
+  // slice projection (WebGPU depth range). SCENE3D stays snapshot-only.
+  const repackPerSlice = frameState.mode !== SceneMode.SCENE3D;
   cache.cameraResolver = cache.cameraUB.makeResolver({
     bufferSize: UNIFORM_BUFFER_SIZE,
     bindGroupLayout: cache.bindGroupLayout,
     pack: (data) => packUniforms(data, frameState, modelMatrix, collection),
+    repackPerSlice: repackPerSlice,
     extraEntries: [
       { binding: 1, resource: cache.atlasTextureView },
       { binding: 2, resource: cache.sampler },

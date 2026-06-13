@@ -870,14 +870,36 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   // (near, far, factor, reserved) at floats 44-47 (struct tail; the GPU
   // buffer is 256 bytes so no resize). Same encode frustum every producer
   // packs; unconditional — only the LOG_DEPTH shader variant reads it.
+  //
+  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — the log-depth
+  // ENCODE frustum MUST be the FULL camera frustum, NOT the per-slice
+  // `currentFrustum`. The globe bakes its log-depth uniform ONCE at scene
+  // update (full frustum) and replays unchanged across slices; it stashes that
+  // exact near/far on `uniformState._logDepthEncodeNearFar`. When this collection
+  // REPACKS per slice (2D/CV), reading the live `currentFrustum` would encode log
+  // depth against the SLICE's narrow near/far — a different curve than the globe's
+  // — so the point's frag_depth no longer compares correctly against the globe and
+  // the point loses the depth test (the CV occlusion). Prefer the stashed
+  // full-frustum encode so the collection's log depth matches the globe's in every
+  // slice; fall back to `currentFrustum` only before the loop populates the stash.
+  const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
-  const ldNear = ldFrustum ? ldFrustum.x : 0.0;
-  const ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  let ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  // When the stashed full-frustum encode is available, both the near/far AND
+  // the factor must come from it (the uniformState factor is per-slice and would
+  // mismatch the full-frustum near/far). Recompute the factor from the chosen
+  // pair so encode + factor are always self-consistent.
   let ldFactor =
     typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
       ? uniformState.oneOverLog2FarDepthFromNearPlusOne
       : 0.0;
-  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    ldNear = ldEncode[0];
+    ldFar = ldEncode[1];
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
     const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
     ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
   }
@@ -1042,10 +1064,18 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
     cache.cameraUB = new WebGPUCollectionCameraUB(device, "PointPrimitive");
   }
   cache.cameraUB.bindUniformState(context.uniformState);
+  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — in
+  // SCENE2D / COLUMBUS_VIEW / MORPHING, repack the camera UB per slice at
+  // DRAW time so `mvpRelativeToEye` is baked against the live slice
+  // projection (WebGPU depth range + per-band near/far) instead of the
+  // stale WebGL-range update-time snapshot. SCENE3D stays snapshot-only
+  // (byte-identical to the pre-Slice-2 path).
+  const repackPerSlice = frameState.mode !== SceneMode.SCENE3D;
   cache.cameraResolver = cache.cameraUB.makeResolver({
     bufferSize: UNIFORM_BUFFER_SIZE,
     bindGroupLayout: cache.bindGroupLayout,
     pack: (data) => packUniforms(data, frameState, modelMatrix),
+    repackPerSlice: repackPerSlice,
   });
 
   // --- Instance data — resident-instance partial-write path ---

@@ -462,14 +462,26 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
   // reserved lanes. Same source every producer uses
   // (uniformState.currentFrustum at scene-update time); unconditional —
   // only the LOG_DEPTH shader variant reads them.
+  //
+  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — prefer the
+  // stashed FULL-frustum encode (`_logDepthEncodeNearFar`) over the live
+  // per-slice `currentFrustum` so a per-slice REPACK (2D/CV) keeps the label's
+  // log depth on the same curve as the globe's. See the same fix in
+  // WebGPUPointPrimitiveRenderer.packUniforms.
+  const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
-  const ldNear = ldFrustum ? ldFrustum.x : 0.0;
-  const ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  let ldFar = ldFrustum ? ldFrustum.y : 0.0;
   let ldFactor =
     typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
       ? uniformState.oneOverLog2FarDepthFromNearPlusOne
       : 0.0;
-  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    ldNear = ldEncode[0];
+    ldFar = ldEncode[1];
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
     const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
     ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
   }
@@ -1030,11 +1042,16 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     cache.cameraUB = new WebGPUCollectionCameraUB(device, "Label");
   }
   cache.cameraUB.bindUniformState(context.uniformState);
+  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — repack the
+  // camera UB per slice at draw time in 2D/CV/MORPHING so the MVP uses the live
+  // slice projection (WebGPU depth range). SCENE3D stays snapshot-only.
+  const repackPerSlice = frameState.mode !== SceneMode.SCENE3D;
   cache.cameraResolver = cache.cameraUB.makeResolver({
     bufferSize: UNIFORM_BUFFER_SIZE,
     bindGroupLayout: cache.sdfBindGroupLayout,
     pack: (data) =>
       packUniforms(data, frameState, modelMatrix, labelCollection),
+    repackPerSlice: repackPerSlice,
     extraEntries: [
       { binding: 1, resource: atlasTextureView },
       { binding: 2, resource: atlasSampler },

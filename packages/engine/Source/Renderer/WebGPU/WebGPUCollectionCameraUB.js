@@ -106,11 +106,35 @@ class WebGPUCollectionCameraUB {
    * @param {(data: Float32Array) => void} opts.pack - Packs the camera UB.
    *   Invoked ONCE here (at update time) to capture the frame's reference
    *   snapshot — the SAME full-camera-frustum bake the static bind group
-   *   holds. Reads `uniformState.projection`/`.view`/encode frustum.
+   *   holds. Reads `uniformState.projection`/`.view`/encode frustum. When
+   *   `repackPerSlice` is set this same closure is ALSO re-invoked at draw
+   *   time per slice, so it must read live `uniformState` (it does).
    * @param {Array<{binding: number, resource: object}>} [opts.extraEntries] -
    *   group-0 entries beyond the camera buffer (binding 0): atlas texture +
    *   sampler, globe-depth view + sampler, noise texture, etc.
    * @param {number} [opts.cameraBinding=0] - Binding slot of the camera UB.
+   * @param {boolean} [opts.repackPerSlice=false] - PHASE 3 SLICE 2
+   *   (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE). When TRUE the resolver
+   *   RE-INVOKES `pack(scratch)` at DRAW time — after the frustum loop's
+   *   `_updateFrustumUniforms(...)` has (a) applied
+   *   `Matrix4.setDepthRangeType("webgpu")` and (b) recomputed
+   *   `uniformState.projection` for THIS slice's near/far — so each slice's
+   *   `mvpRelativeToEye` is baked against the LIVE slice projection instead
+   *   of the stale update-time snapshot.
+   *
+   *   WHY this is the 2D/CV fix. A collection FR packs its MVP at `update()`
+   *   from `uniformState.projection`, which at that point is still the
+   *   WebGL-clip-z `[-1,1]` projection (the loop flips depth-range type +
+   *   recomputes only DURING render, after FR update). In SCENE2D the
+   *   orthographic depth-range mismatch is catastrophic: a point at the map
+   *   surface lands at NDC z ≈ 7.3 (WebGL range) instead of ≈ 0.026 (WebGPU
+   *   range) and is clipped out — the all-zero 2D state. In COLUMBUS_VIEW the
+   *   bake uses the FULL camera frustum (far ~1e10) so the geometry pins to
+   *   NDC z ≈ 0.99999993 (the far plane) and loses to the globe under
+   *   `less-equal`; the per-band slice projection (far ~1e8) restores a
+   *   correct in-range z. SCENE3D perspective + log-depth's clip-z clamp
+   *   already keeps the single bake correct in all slices, so 3D leaves
+   *   `repackPerSlice` FALSE and stays byte-identical (no regression).
    * @returns {() => (GPUBindGroup|null)} Resolver; returns `null` to fall back
    *   to the static bind group when the slice index is unavailable.
    */
@@ -120,6 +144,7 @@ class WebGPUCollectionCameraUB {
     const pack = opts.pack;
     const extraEntries = opts.extraEntries;
     const cameraBinding = opts.cameraBinding ?? 0;
+    const repackPerSlice = opts.repackPerSlice === true;
 
     // Resize / (re)allocate the shared scratch when the layout grows.
     const floats = bufferSize / 4;
@@ -208,6 +233,16 @@ class WebGPUCollectionCameraUB {
       // race adjacent slices. Guarded to one upload per slice per frame.
       if (slot.frameToken !== self._frameToken) {
         slot.frameToken = self._frameToken;
+        // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — in
+        // 2D/CV/MORPHING, RE-PACK against the LIVE per-slice projection that
+        // the frustum loop just established (WebGPU depth range + this slice's
+        // near/far), overwriting the stale update-time snapshot. In 3D the
+        // flag is off so the snapshot is uploaded verbatim (byte-identical to
+        // the pre-Slice-2 path). The repack reads `uniformState` through the
+        // `pack` closure, which closes over the live `frameState`.
+        if (repackPerSlice) {
+          pack(self._scratch);
+        }
         self._device.queue.writeBuffer(
           slot.buffer.buffer,
           0,
