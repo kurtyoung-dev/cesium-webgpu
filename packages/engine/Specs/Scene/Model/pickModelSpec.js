@@ -14,6 +14,8 @@ import loadAndZoomToModelAsync from "./loadAndZoomToModelAsync.js";
 import createScene from "../../../../../Specs/createScene.js";
 
 describe("Scene/Model/pickModel", function () {
+  const webglStub = !!window.webglStub;
+
   const boxTexturedGltfUrl =
     "./Data/Models/glTF-2.0/BoxTextured/glTF/BoxTextured.gltf";
   const boxInstanced =
@@ -251,6 +253,15 @@ describe("Scene/Model/pickModel", function () {
   });
 
   it("returns position of intersection with instanced model", async function () {
+    // The instance transforms are read back from the GPU instancing buffer via
+    // Buffer.getBufferData (gl.getBufferSubData). The WebGL stub no-ops that
+    // readback, leaving the transforms zero-filled, so the CPU pick falls back
+    // to the un-instanced model and returns a meaningless position. Skip under
+    // the stub — same convention as InstancingPipelineStageSpec / ModelSpec.
+    if (webglStub) {
+      return;
+    }
+
     // None of the 4 instanced cubes are in the center of the model's bounding
     // sphere, so set up a camera view that focuses in on one of them.
     const offset = new HeadingPitchRange(
