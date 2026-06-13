@@ -3,6 +3,7 @@ import BoundingRectangle from "../Core/BoundingRectangle.js";
 import Cartesian3 from "../Core/Cartesian3.js";
 import Cartographic from "../Core/Cartographic.js";
 import defined from "../Core/defined.js";
+import oneTimeWarning from "../Core/oneTimeWarning.js";
 import Ray from "../Core/Ray.js";
 import Cesium3DTilePass from "./Cesium3DTilePass.js";
 import Cesium3DTilePassState from "./Cesium3DTilePassState.js";
@@ -181,6 +182,28 @@ function getRayIntersection(
 ) {
   const { context, frameState } = scene;
   const uniformState = context.uniformState;
+
+  // NEW-PICK-RAY-ASYNC (Phase 6, deferred) — the synchronous depth-readback
+  // block below (per-frustum LINEAR reconstruction off the offscreen
+  // pickFramebuffer's PickDepth) cannot recover a position on contexts without
+  // synchronous readback (WebGPU): the offscreen ray-pick PickDepth instances
+  // never receive update() and the shared globe-depth texture is LOG-encoded,
+  // so getDepth returns a cold/stale value and `position` stays undefined.
+  // pickFromRay/sampleHeight/clampToHeight therefore silently return undefined
+  // there. Until the async ray-pick path lands (Phase 6), surface the
+  // limitation once instead of failing silently — sampleHeightSupported /
+  // clampToHeightSupported still report true (pickPosition works via Batch 252)
+  // but these ray-based queries do not.
+  if (!context.supportsSynchronousReadback) {
+    oneTimeWarning(
+      "WebGPU.rayPick.unsupported",
+      "Scene.pickFromRay, Scene.sampleHeight, and Scene.clampToHeight return " +
+        "undefined on WebGPU: the synchronous ray-pick depth path is not yet " +
+        "implemented for asynchronous-readback backends (tracked as " +
+        "NEW-PICK-RAY-ASYNC). Use the *MostDetailed async variants, or query " +
+        "terrain height via sampleTerrainMostDetailed, for correct results.",
+    );
+  }
 
   const view = picking._pickOffscreenView;
   scene.view = view;

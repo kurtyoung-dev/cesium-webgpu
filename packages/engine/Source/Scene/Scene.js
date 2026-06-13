@@ -1505,6 +1505,11 @@ class Scene {
   /**
    * Returns <code>true</code> if the {@link Scene#sampleHeight} and {@link Scene#sampleHeightMostDetailed} functions are supported.
    *
+   * On WebGPU the synchronous {@link Scene#sampleHeight} ray-pick path is not
+   * yet implemented (tracked as NEW-PICK-RAY-ASYNC); it returns
+   * <code>undefined</code> and emits a one-time console warning. The
+   * asynchronous {@link Scene#sampleHeightMostDetailed} variant is supported.
+   *
    * @type {boolean}
    * @readonly
    *
@@ -1517,6 +1522,11 @@ class Scene {
 
   /**
    * Returns <code>true</code> if the {@link Scene#clampToHeight} and {@link Scene#clampToHeightMostDetailed} functions are supported.
+   *
+   * On WebGPU the synchronous {@link Scene#clampToHeight} ray-pick path is not
+   * yet implemented (tracked as NEW-PICK-RAY-ASYNC); it returns
+   * <code>undefined</code> and emits a one-time console warning. The
+   * asynchronous {@link Scene#clampToHeightMostDetailed} variant is supported.
    *
    * @type {boolean}
    * @readonly
