@@ -32,6 +32,10 @@ struct VertexOutput {
     // RTE (camera-relative world) position for CSM cascade VP sampling.
     // Same vector the globe + Phong receivers use.
     @location(3) eyePosition: vec3<f32>,
+    //>>ifdef LOG_DEPTH
+    // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
+    @location(7) v_logDepth: f32,
+    //>>endif
 }
 
 struct CameraUniforms {
@@ -47,6 +51,14 @@ struct CameraUniforms {
     // TAA / motion-vector reprojection. Sourced from
     // `UniformState._previousViewProjection` (f32 mat4).
     previousViewProjection: mat4x4<f32>,
+    //>>ifdef LOG_DEPTH
+    // ─── Renderer-wide log depth (Approach A) ───
+    //   x = frustum near, y = frustum far,
+    //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
+    //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
+    // into the 16-byte LIT UB tail (LIT_CAMERA_BYTES 304 -> 320).
+    logDepth: vec4<f32>,
+    //>>endif
 }
 
 struct MaterialUniforms {
@@ -118,6 +130,29 @@ struct CSMParams {
 @group(2) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 const PI: f32 = 3.14159265359;
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth (Approach A). Mirror of PrimitivePhongColor.wgsl —
+// keep byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
+// to a FragOut struct so it can write @builtin(frag_depth) alongside the color.
+struct FragOut {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+    return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+    var coords = clipPosition;
+    coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+    return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+    return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+// Per-fragment interpolated depthFromNearPlusOne, stashed by fragmentMain.
+var<private> g_fragLogDepth: f32;
+//>>endif
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -264,11 +299,24 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.worldPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
     output.eyePosition = eyePos.xyz;
 
+    //>>ifdef LOG_DEPTH
+    // Renderer-wide log depth: interpolate linear depthFromNearPlusOne and clamp
+    // clip-z so the FS-written log depth isn't pre-empted by clipping.
+    output.v_logDepth = csm_vertexLogDepth(output.clipPosition, camera.logDepth.x);
+    output.clipPosition = csm_updatePositionDepth(output.clipPosition);
+    //>>endif
     return output;
 }
 
 @fragment
+//>>ifdef LOG_DEPTH
+fn fragmentMain(input: VertexOutput) -> FragOut {
+//>>else
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+//>>endif
+    //>>ifdef LOG_DEPTH
+    g_fragLogDepth = input.v_logDepth;
+    //>>endif
     let albedo = input.color.rgb;
     let N = normalize(input.worldNormal);
     let V = normalize(-input.worldPosition);
@@ -368,5 +416,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
+    //>>ifdef LOG_DEPTH
+    return FragOut(finalColor, csm_writeLogDepth(g_fragLogDepth, camera.logDepth.z));
+    //>>else
     return finalColor;
+    //>>endif
 }

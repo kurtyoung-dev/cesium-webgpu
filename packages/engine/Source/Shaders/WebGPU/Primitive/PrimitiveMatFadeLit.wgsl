@@ -27,6 +27,10 @@ struct VertexOutput {
     @location(2) texCoord: vec2<f32>,
     // CSM Slice 2d — RTE (camera-relative world) position for cascade VP sampling.
     @location(3) eyePosition: vec3<f32>,
+    //>>ifdef LOG_DEPTH
+    // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
+    @location(7) v_logDepth: f32,
+    //>>endif
 }
 
 struct CameraUniforms {
@@ -42,6 +46,15 @@ struct CameraUniforms {
     // TAA / motion-vector reprojection. Sourced from
     // `UniformState._previousViewProjection` (f32 mat4).
     previousViewProjection: mat4x4<f32>,
+    //>>ifdef LOG_DEPTH
+    // ─── Renderer-wide log depth (Approach A) ───
+    //   x = frustum near, y = frustum far,
+    //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
+    //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
+    // into the 16-byte tail appended after previousViewProjection
+    // (LIT_CAMERA_BYTES 304 -> 320). See WebGPULogDepth.ts.
+    logDepth: vec4<f32>,
+    //>>endif
 }
 
 // Material.FadeType fabric: { fadeInColor, fadeOutColor, maximumDistance,
@@ -99,6 +112,25 @@ struct CSMParams {
 @group(2) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
 // Batch 166 - B.12 point-light cube depth.
 @group(2) @binding(17) var pointLightCubeDepth: texture_depth_cube;
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth (Approach A). These mirror the canonical definitions
+// in PrimitivePhongColor.wgsl / Shaders/WebGPU/chunks/functions/csm_*LogDepth —
+// keep them byte-compatible. near/far/factor come from camera.logDepth.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+    return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+    var coords = clipPosition;
+    coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+    return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+    return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+// Per-fragment interpolated depthFromNearPlusOne, stashed by fragmentMain.
+var<private> g_fragLogDepth: f32;
+//>>endif
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -218,6 +250,14 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.viewPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
     output.eyePosition = eyePos.xyz;
 
+
+    //>>ifdef LOG_DEPTH
+    // Renderer-wide log depth: interpolate linear depthFromNearPlusOne and clamp
+    // clip-z so the FS-written log depth isn't pre-empted by clipping. near =
+    // camera.logDepth.x; computed from clipPosition.w BEFORE the clamp.
+    output.v_logDepth = csm_vertexLogDepth(output.clipPosition, camera.logDepth.x);
+    output.clipPosition = csm_updatePositionDepth(output.clipPosition);
+    //>>endif
     return output;
 }
 
@@ -241,10 +281,16 @@ fn getFadeTime(t: f32, coord: f32) -> f32 {
 struct FragOutput {
     @location(0) color: vec4<f32>,
     @location(1) normalRoughness: vec4<f32>,
+    //>>ifdef LOG_DEPTH
+    @builtin(frag_depth) depth: f32,
+    //>>endif
 };
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOutput {
+    //>>ifdef LOG_DEPTH
+    g_fragLogDepth = input.v_logDepth;
+    //>>endif
     let st = input.texCoord;
     let sAxis = getFadeTime(material.time.x, st.x) * material.fadeDirection.x;
     let tAxis = getFadeTime(material.time.y, st.y) * material.fadeDirection.y;
@@ -292,5 +338,9 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     var mrtOut: FragOutput;
     mrtOut.color = vec4<f32>(baseColor.rgb * lighting + clusteredContrib, baseColor.a);
     mrtOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);
+    //>>ifdef LOG_DEPTH
+    // Write logarithmic frag depth. factor = camera.logDepth.z.
+    mrtOut.depth = csm_writeLogDepth(g_fragLogDepth, camera.logDepth.z);
+    //>>endif
     return mrtOut;
 }
