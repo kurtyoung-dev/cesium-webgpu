@@ -338,9 +338,11 @@ export const ShaderDefine = Object.freeze({
    * Gating (single flip point): the define is set when
    * `isWebGPULogDepthActive(context, frameState)` is true — i.e.
    * `context._logDepthWriteEnabled && frameState.useLogDepth`. The
-   * `_logDepthWriteEnabled` master switch defaults FALSE while the epic is
-   * being landed slice-by-slice (every producer/consumer change is inert until
-   * the flip), and is set TRUE in the final epic commit. See
+   * `_logDepthWriteEnabled` master switch now defaults TRUE — Batch 251
+   * (NEW-COLLECTIONS-LOG-DEPTH master-switch) flipped it on, so renderer-wide
+   * log depth is LIVE by default. It historically defaulted FALSE while the
+   * epic was landed slice-by-slice (every producer/consumer change was inert
+   * until the flip); the switch survives as a one-line kill switch. See
    * `WebGPULogDepth.ts`.
    *
    * Consumers (rolled out across the epic): GlobeTerrain.wgsl + every other

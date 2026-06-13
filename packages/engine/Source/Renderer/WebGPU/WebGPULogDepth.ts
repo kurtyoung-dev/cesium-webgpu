@@ -20,11 +20,14 @@
  * Producers set the `LOG_DEPTH` shader define, and consumers reverse the
  * encoding, exactly when {@link isWebGPULogDepthActive} returns true. That is
  * `context._logDepthWriteEnabled && frameState.useLogDepth`. The
- * `_logDepthWriteEnabled` master switch defaults FALSE so each slice of the
- * epic lands inert (the lanes below are packed regardless — they only fill
- * previously-zero pads — but no shader reads them and no pipeline sets the
- * define until the switch flips). The final epic commit flips the default to
- * TRUE. Keeping the switch afterwards gives a one-line kill switch.
+ * `_logDepthWriteEnabled` master switch now defaults TRUE — Batch 251
+ * (NEW-COLLECTIONS-LOG-DEPTH master-switch) flipped it on, so renderer-wide
+ * log depth is LIVE by default. Historically the switch defaulted FALSE while
+ * the epic was landed slice-by-slice so each producer/consumer change stayed
+ * inert until the flip (the lanes below are packed regardless — they only fill
+ * previously-zero pads — but no shader read them and no pipeline set the
+ * define until the switch flipped). Keeping the switch gives a one-line kill
+ * switch: flipping it false restores hyperbolic NDC depth everywhere.
  *
  * # CameraUniforms `.w`-lane convention
  *
