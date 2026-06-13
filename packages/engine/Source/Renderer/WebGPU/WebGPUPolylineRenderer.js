@@ -34,6 +34,19 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+// PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — scene-mode-aware
+// position projection. `SceneTransforms.computeActualEllipsoidPosition`
+// maps an ECEF position to the active scene mode's frame: identity in
+// SCENE3D, `(proj.z, proj.x, proj.y)` in COLUMBUS_VIEW, `(0, proj.x,
+// proj.y)` in SCENE2D, and a CPU-side per-vertex lerp by `morphTime`
+// in MORPHING (the same `.zxy` swizzle + manual lerp the WebGL
+// `PolylineVS.glsl` does on the GPU). Encoding the actual position in
+// the segment buffer — instead of the raw ECEF — lets the existing
+// mode-aware `mvpRelativeToEye` (built from `uniformState.view/projection`)
+// project polylines correctly in all four modes WITHOUT adding a second
+// position stream or a WGSL morph branch. SCENE3D stays byte-identical.
+import SceneMode from "../../Scene/SceneMode.js";
+import SceneTransforms from "../../Scene/SceneTransforms.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
@@ -120,6 +133,49 @@ const scratchMVPRTE = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
 const scratchEncodedStart = new EncodedCartesian3();
 const scratchEncodedEnd = new EncodedCartesian3();
+
+// PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — scratch for the
+// per-endpoint mode-projected position + a world-frame copy after the
+// collection modelMatrix is applied. The projection is keyed off the
+// ECEF position run through the collection's modelMatrix, matching the
+// WebGL `PolylineBucket.getSegments` step (`modelMatrix * position`
+// THEN `projection.project(cartographic)`).
+const scratchActualStart = new Cartesian3();
+const scratchActualEnd = new Cartesian3();
+const scratchModelPoint = new Cartesian3();
+
+/**
+ * PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — map an ECEF position
+ * into the active scene mode's render frame. In SCENE3D this is the raw
+ * world position (after the collection modelMatrix). In 2D / Columbus
+ * View / Morph it's the projected `.zxy`-convention position that the
+ * mode-aware `mvpRelativeToEye` expects, with the morph lerp applied
+ * CPU-side. Returns `result` (a Cartesian3).
+ *
+ * `modelMatrix` is the collection's modelMatrix; identity for the common
+ * case, in which the multiply is a no-op clone.
+ * @private
+ */
+function projectPositionForMode(position, frameState, modelMatrix, result) {
+  if (frameState.mode === SceneMode.SCENE3D) {
+    // SCENE3D byte-identical: encode the raw ECEF position. The
+    // existing `mvpRelativeToEye` already folds in the modelMatrix, so
+    // we hand back the un-transformed position (matching the legacy
+    // `EncodedCartesian3.fromCartesian(start)` call site).
+    return Cartesian3.clone(position, result);
+  }
+  // 2D / CV / Morph: project the modelMatrix-applied world position.
+  Matrix4.multiplyByPoint(modelMatrix, position, scratchModelPoint);
+  const actual = SceneTransforms.computeActualEllipsoidPosition(
+    frameState,
+    scratchModelPoint,
+    result,
+  );
+  // `computeActualEllipsoidPosition` can return undefined if the point
+  // has no valid cartographic (e.g. exactly at the ellipsoid center).
+  // Fall back to the world point so the segment still has finite data.
+  return defined(actual) ? actual : Cartesian3.clone(scratchModelPoint, result);
+}
 
 // =========================================================================
 // Material type → shader key mapping
@@ -229,7 +285,12 @@ function groupByMaterialType(collection) {
  * into the padding slots (startPosLow.w = sStart, endPosLow.w = sEnd).
  * @private
  */
-function buildSegmentDataForGroup(polylineGroup, computeST) {
+function buildSegmentDataForGroup(
+  polylineGroup,
+  computeST,
+  frameState,
+  modelMatrix,
+) {
   const polylines = polylineGroup.polylines;
 
   // Count total segments. When a polyline has `loop: true`, it also emits
@@ -275,8 +336,23 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
       // Wrap to positions[0] for the final closing segment of a loop.
       const end = positions[(j + 1) % positions.length];
 
-      EncodedCartesian3.fromCartesian(start, scratchEncodedStart);
-      EncodedCartesian3.fromCartesian(end, scratchEncodedEnd);
+      // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — encode the
+      // scene-mode-projected endpoint so 2D / CV / Morph project at the
+      // right map location. No-op clone in SCENE3D (byte-identical).
+      const projStart = projectPositionForMode(
+        start,
+        frameState,
+        modelMatrix,
+        scratchActualStart,
+      );
+      const projEnd = projectPositionForMode(
+        end,
+        frameState,
+        modelMatrix,
+        scratchActualEnd,
+      );
+      EncodedCartesian3.fromCartesian(projStart, scratchEncodedStart);
+      EncodedCartesian3.fromCartesian(projEnd, scratchEncodedEnd);
 
       // startPosHighAndWidth — RTE high component + line width
       segmentData[offset + 0] = scratchEncodedStart.high.x;
@@ -365,7 +441,7 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
  * all its segments share that pick color.
  * @private
  */
-function buildPickSegmentData(collection, context) {
+function buildPickSegmentData(collection, context, frameState, modelMatrix) {
   const polylines = collection._polylines;
   const length = collection._polylines.length;
 
@@ -406,11 +482,23 @@ function buildPickSegmentData(collection, context) {
     const segLimit = loopClose ? positions.length : positions.length - 1;
     for (let j = 0; j < segLimit; j++) {
       const offset = segmentCount * FLOATS_PER_SEGMENT;
-      EncodedCartesian3.fromCartesian(positions[j], scratchEncodedStart);
-      EncodedCartesian3.fromCartesian(
-        positions[(j + 1) % positions.length],
-        scratchEncodedEnd,
+      // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — pick path mirrors
+      // the color path's projected encoding so picked regions land on the
+      // same screen pixels in 2D / CV / Morph.
+      const projPickStart = projectPositionForMode(
+        positions[j],
+        frameState,
+        modelMatrix,
+        scratchActualStart,
       );
+      const projPickEnd = projectPositionForMode(
+        positions[(j + 1) % positions.length],
+        frameState,
+        modelMatrix,
+        scratchActualEnd,
+      );
+      EncodedCartesian3.fromCartesian(projPickStart, scratchEncodedStart);
+      EncodedCartesian3.fromCartesian(projPickEnd, scratchEncodedEnd);
 
       segmentData[offset + 0] = scratchEncodedStart.high.x;
       segmentData[offset + 1] = scratchEncodedStart.high.y;
@@ -701,6 +789,7 @@ function buildPolylineColorDescriptor(
   label,
   defines,
   sampleCount,
+  noDepthTest,
 ) {
   const cameraBindGroupLayout = makeBindGroupLayout(
     device,
@@ -719,7 +808,7 @@ function buildPolylineColorDescriptor(
   });
 
   const descriptor = {
-    name: `${label || "Polyline pipeline"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}]`,
+    name: `${label || "Polyline pipeline"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}/ms=${sampleCount ?? 1}/ndt=${noDepthTest ? 1 : 0}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -735,11 +824,27 @@ function buildPolylineColorDescriptor(
       targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
-    depthStencil: {
-      format: depthFormat,
-      depthWriteEnabled: true,
-      depthCompare: "less-equal",
-    },
+    // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — honor the
+    // collection's `depthTest.enabled` state. WebGL's PolylineCollection
+    // sets `useDepthTest = frameState.morphTime !== 0.0`
+    // (PolylineCollection.js:530), so in 2D AND Columbus View (both
+    // morphTime === 0) the polyline renders with depth test OFF / no
+    // depth write — it draws ON TOP of the co-planar flat map instead of
+    // z-fighting it. The WebGPU pipeline previously hardcoded
+    // `less-equal` + depthWrite, which made the CV polyline lose the
+    // depth test against the map surface and render as a truncated wedge.
+    // `always` + no depth-write matches the WebGL no-depth-test path.
+    depthStencil: noDepthTest
+      ? {
+          format: depthFormat,
+          depthWriteEnabled: false,
+          depthCompare: "always",
+        }
+      : {
+          format: depthFormat,
+          depthWriteEnabled: true,
+          depthCompare: "less-equal",
+        },
     // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
@@ -943,6 +1048,16 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   // frame that the per-vertex positions live in (model-space when the
   // collection's modelMatrix is non-identity); see C-P5 in the 2026-04-16
   // per-feature review for the frame-mismatch rationale.
+  //
+  // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — this is ALSO correct
+  // for 2D / Columbus View / Morph WITHOUT re-projecting the camera.
+  // `camera.positionWC` in 2D/CV is already expressed in the projected
+  // `.zxy` frame (x = height above the map, y = easting, z = northing),
+  // the same frame `computeActualEllipsoidPosition` produces for the
+  // segment positions and that `czm_encodedCameraPositionMC` (=
+  // `inverseModel * positionWC`) uses on the WebGL path. Re-projecting it
+  // through `computeActualEllipsoidPosition` would double-project and
+  // throw the lines off-anchor by thousands of km.
   Matrix4.inverse(modelMatrix, scratchInverseModel);
   Matrix4.multiplyByPoint(
     scratchInverseModel,
@@ -967,14 +1082,32 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   // reserved lanes. Same source every producer uses
   // (uniformState.currentFrustum at scene-update time); unconditional —
   // only the LOG_DEPTH shader variant reads them.
+  //
+  // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — prefer the stashed
+  // FULL-frustum encode (`_logDepthEncodeNearFar`) over the live per-slice
+  // `currentFrustum`, mirroring the Slice-2 fix in
+  // WebGPUBillboardRenderer / WebGPUPointPrimitiveRenderer. The globe bakes
+  // its log-depth uniform once at scene update (full frustum) and replays
+  // it unchanged across slices; when this collection REPACKS per slice
+  // (2D / CV / Morph rebuild the segment + camera every frame), reading the
+  // per-slice `currentFrustum` would encode the polyline against a
+  // different near/far than the globe wrote, so the polyline's frag_depth
+  // fails the depth test against the globe and fragments get discarded —
+  // the Columbus-View "line renders but truncated" symptom.
+  const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
-  const ldNear = ldFrustum ? ldFrustum.x : 0.0;
-  const ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  let ldFar = ldFrustum ? ldFrustum.y : 0.0;
   let ldFactor =
     typeof uniformState.oneOverLog2FarDepthFromNearPlusOne === "number"
       ? uniformState.oneOverLog2FarDepthFromNearPlusOne
       : 0.0;
-  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    ldNear = ldEncode[0];
+    ldFar = ldEncode[1];
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
     const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
     ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
   }
@@ -1058,6 +1191,7 @@ function getOrCreatePolylinePipelineEntry(
   context,
   materialType,
   defines,
+  noDepthTest,
 ) {
   if (!defined(cache.pipelines)) {
     cache.pipelines = {};
@@ -1083,8 +1217,14 @@ function getOrCreatePolylinePipelineEntry(
     byDefines = new Map();
     cache.pipelines[materialType] = byDefines;
   }
-  if (byDefines.has(defines)) {
-    return byDefines.get(defines);
+  // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — the depth-test state
+  // (on in 3D / morph-in-progress, off in settled 2D/CV) is part of the
+  // pipeline, so it has to key the cache alongside `defines`. Compose a
+  // string key so a 3D→2D flip resolves a distinct pipeline rather than
+  // reusing the depth-testing one.
+  const pipelineKey = `${defines}|${noDepthTest ? 1 : 0}`;
+  if (byDefines.has(pipelineKey)) {
+    return byDefines.get(pipelineKey);
   }
 
   const shaderKey = selectShaderKey(materialType);
@@ -1108,6 +1248,7 @@ function getOrCreatePolylinePipelineEntry(
     label,
     defines,
     sampleCount,
+    noDepthTest,
   );
 
   const entry = {
@@ -1118,7 +1259,7 @@ function getOrCreatePolylinePipelineEntry(
     materialBindGroupLayout: built.materialBindGroupLayout,
   };
 
-  byDefines.set(defines, entry);
+  byDefines.set(pipelineKey, entry);
   return entry;
 }
 
@@ -1231,6 +1372,14 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
   const defines = computePolylineDefinesForFrame(collection, frameState);
   cache.currentDefines = defines;
 
+  // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — mirror WebGL's
+  // `useDepthTest = frameState.morphTime !== 0.0` (PolylineCollection.js:530).
+  // In settled 2D + Columbus View (morphTime === 0) the polyline draws on
+  // top of the flat map with NO depth test; in 3D / mid-morph it depth-tests
+  // normally. Keys the pipeline cache so the 3D pipeline stays byte-identical.
+  const noDepthTest = frameState.morphTime === 0.0;
+  cache.currentNoDepthTest = noDepthTest;
+
   // Group polylines by material type
   const groups = groupByMaterialType(collection);
 
@@ -1244,6 +1393,7 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       context,
       materialType,
       defines,
+      noDepthTest,
     );
     const resolvedPipeline = tryResolvePolylinePipeline(
       device,
@@ -1371,6 +1521,8 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
     const { segmentData, segmentCount } = buildSegmentDataForGroup(
       group,
       needsST,
+      frameState,
+      modelMatrix,
     );
     if (segmentCount === 0) {
       continue;
@@ -1666,7 +1818,12 @@ function _pushPolylinePickCommand(
     });
   }
 
-  const pickResult = buildPickSegmentData(collection, context);
+  const pickResult = buildPickSegmentData(
+    collection,
+    context,
+    frameState,
+    modelMatrix,
+  );
   if (pickResult.segmentCount === 0) {
     return;
   }
