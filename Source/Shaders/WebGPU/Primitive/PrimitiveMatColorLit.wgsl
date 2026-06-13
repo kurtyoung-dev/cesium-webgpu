@@ -276,7 +276,23 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     }
 
     let lighting = ambient + direct;
-    var finalColor = vec4<f32>(material.color.rgb * lighting, material.color.a);
+    var litRgb = material.color.rgb * lighting;
+    // Slice 5d Batch 154 — additive Forward+ clustered lighting. The chunk
+    // (prepended by WebGPUPrimitiveCommands.createMaterialPipelineAndCache)
+    // sums this fragment's cluster's point/spot/directional lights. All
+    // inputs are eye-space: `viewPosition` is the eye-space position,
+    // `normal`/`worldNormal` is the eye-space normal (misnamed — see the
+    // VertexOutput note), `viewDir = -viewPosition`. Blinn-Phong primitives
+    // have no PBR F0/roughness, so synthesize a neutral dielectric
+    // (F0 = 0.04, roughness = 0.5 — matches the MRT normalRoughness slot).
+    // Early-outs to zero when clusterParams.activeLightCount.x == 0.
+    let clusteredContrib = evalClusteredLights(
+        input.viewPosition, normal, viewDir,
+        vec3<f32>(0.04), 0.5, material.color.rgb,
+        input.clipPosition.xy, input.viewPosition.z,
+    );
+    litRgb = litRgb + clusteredContrib;
+    var finalColor = vec4<f32>(litRgb, material.color.a);
 
     // FEAT-GAP-09 — Aerial-perspective fog blend (Session 34 pattern).
     // Sample the pre-integrated LUT by (cos view-zenith, camera altitude)

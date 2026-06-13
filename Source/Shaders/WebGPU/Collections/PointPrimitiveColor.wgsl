@@ -28,6 +28,11 @@ struct CameraUniforms {
     // TAA / motion-vector reprojection. Sourced from
     // `UniformState._previousViewProjection` (f32 mat4).
     previousViewProjection: mat4x4<f32>,
+    // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — (near, far,
+    // oneOverLog2FarDepthFromNearPlusOne, reserved) at floats 44-47.
+    // Packed unconditionally by packUniforms; only the `//>>ifdef
+    // LOG_DEPTH` blocks read it. See WebGPULogDepth.ts.
+    logDepth: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -40,9 +45,29 @@ struct VertexOutput {
     //>>ifdef SPLIT_ENABLED
     @location(5) splitDirection: f32,
     //>>endif
+    //>>ifdef LOG_DEPTH
+    // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+    @location(6) v_logDepth: f32,
+    //>>endif
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — canonical inline
+// copies; see chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+    return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+    var coords = clipPosition;
+    coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+    return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+    return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 // Quad corners for 2 triangles (6 vertices per instance)
 const QUAD_CORNERS = array<vec2<f32>, 6>(
@@ -180,20 +205,28 @@ fn vertexMain(
     // `disableDepthTestDistance`. Batch 140 — raw-sentinel pattern (see
     // BillboardCollection.wgsl). Pre-fix the squaring step killed the
     // sign on the `-1` "always disable" sentinel.
+    //
+    // Set `clipPos.z = 0.0` → NDC z = 0 = the WebGPU NEAR plane, so the point
+    // always passes the `less-equal` depth test (renders ON TOP). The previous
+    // `clipPos.z = clipPos.w` → NDC z = 1 = the FAR plane, which under
+    // `less-equal` fails against the closer globe — pushing the point BEHIND
+    // everything. WebGPU clip-z is [0,1] (near→far), not WebGL's [-1,1]; "on
+    // top" is the near plane (0), not far. Mirrors the same fix in
+    // BillboardCollection.wgsl.
     let disableRawDP = perInstanceFlags.x;
     if (disableRawDP < 0.0) {
-        clipPos.z = clipPos.w;
+        clipPos.z = 0.0;
     } else if (disableRawDP != 0.0) {
         let disableDepthSqDP = disableRawDP * disableRawDP;
         if (camDistSq < disableDepthSqDP) {
-            clipPos.z = clipPos.w;
+            clipPos.z = 0.0;
         }
     } else if (camera.minimumDisableDepthTestDistance != 0.0) {
         let frameMinSqDP =
             camera.minimumDisableDepthTestDistance *
             camera.minimumDisableDepthTestDistance;
         if (camDistSq < frameMinSqDP) {
-            clipPos.z = clipPos.w;
+            clipPos.z = 0.0;
         }
     }
     //>>endif
@@ -223,11 +256,34 @@ fn vertexMain(
     output.splitDirection = perInstanceFlags.y;
     //>>endif
 
+    //>>ifdef LOG_DEPTH
+    // Computed AFTER every clipPos override above (DDC/translucency hide
+    // collapse, DISABLE_DEPTH_DISTANCE z = 0 near-plane trick). Forced
+    // z == 0 maps to v_logDepth = 1.0 -> frag_depth 0 (near plane),
+    // mirroring WebGL's v_depthFromNearPlusOne = 1.0 convention.
+    if (output.position.z == 0.0) {
+        output.v_logDepth = 1.0;
+    } else {
+        output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepth.x);
+    }
+    output.position = csm_updatePositionDepth(output.position);
+    //>>endif
+
     return output;
 }
 
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    //>>ifdef LOG_DEPTH
+    // Written for the depth TEST as well (frag_depth replaces the
+    // rasterized z), so the translucent point pass tests correctly
+    // against the globe's log depth.
+    @builtin(frag_depth) depth: f32,
+    //>>endif
+}
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
     //>>ifdef SPLIT_ENABLED
     // DP-H40 — discard pixels on the wrong side of the split cutoff.
     if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
@@ -258,7 +314,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    return color;
+    var out: FragOutput;
+    out.color = color;
+    //>>ifdef LOG_DEPTH
+    out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
+    //>>endif
+    return out;
 }
 
 // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
@@ -289,6 +350,10 @@ struct VelocityVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) currentCenterClip: vec4<f32>,
   @location(1) prevCenterClip: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  // Velocity pass shares scene depth read-only — test in log space.
+  @location(2) v_logDepth: f32,
+  //>>endif
 };
 
 @vertex
@@ -338,17 +403,34 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   output.position = clipPos;
   output.currentCenterClip = currentCenterClip;
   output.prevCenterClip = prevCenterClip;
+  //>>ifdef LOG_DEPTH
+  output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepth.x);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
 
+struct VelocityFragOutput {
+  @location(0) velocity: vec2<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> VelocityFragOutput {
+  var out: VelocityFragOutput;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
+  //>>endif
   let curW = input.currentCenterClip.w;
   let prevW = input.prevCenterClip.w;
   if (curW <= 0.0 || prevW <= 0.0) {
-    return vec2<f32>(0.0);
+    out.velocity = vec2<f32>(0.0);
+    return out;
   }
   let curNdc = input.currentCenterClip.xy / curW;
   let prevNdc = input.prevCenterClip.xy / prevW;
-  return curNdc - prevNdc;
+  out.velocity = curNdc - prevNdc;
+  return out;
 }

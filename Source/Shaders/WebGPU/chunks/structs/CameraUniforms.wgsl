@@ -27,11 +27,14 @@ struct CameraUniforms {
     projectionMatrix: mat4x4<f32>,                 // offset  64, size 64
     viewProjectionMatrix: mat4x4<f32>,             // offset 128, size 64
 
-    // Camera position (world space). .w lane unused (reserved for altitude / log-depth far).
+    // Camera position (world space).
+    // .w lane carries oneOverLog2FarDepthFromNearPlusOne (the log-depth factor)
+    // when log depth is active — see WebGPULogDepth.ts / packCameraLogDepthLanes.
     cameraPosition: vec4<f32>,                     // offset 192, size 16
 
     // RTE: Encoded camera position in model coordinates (high/low split).
-    // .w lane unused on both — reserved for future per-axis scale or epoch metadata.
+    // .w lanes carry the log-depth frustum near (High.w) and far (Low.w) when
+    // log depth is active — see WebGPULogDepth.ts. Zero otherwise.
     encodedCameraPositionMCHigh: vec4<f32>,        // offset 208, size 16
     encodedCameraPositionMCLow: vec4<f32>,         // offset 224, size 16
 
