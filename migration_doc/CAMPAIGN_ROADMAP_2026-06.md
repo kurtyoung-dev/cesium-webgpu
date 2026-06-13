@@ -2,11 +2,13 @@
 
 Multi-phase execution plan for working through ALL of `DEFERRED_WORK.md`, then bugs/fixes/smaller improvements. Each phase = one workflow run (the proven sequential implement → `gulp build` → Playwright-probe → commit pattern), sized 4–11 stages. Ordering reflects dependencies (noted per phase).
 
-**Phase 1 — IN FLIGHT (the current 11-stage marathon, Batches 232+):** Point/Label partial-write, Cloud gate, TAA velocity activation, compute-instance BV+velocity, all-collections harness, upstream pulls + modernization regressions, pickModel #13433, scaffolding disposition, bloom parity, globe bind-group cache, CI smoke.
+**Phase 1 — ✅ DONE (Batches 232–242):** Point/Label partial-write, Cloud gate, TAA velocity activation, compute-instance BV+velocity, all-collections harness, upstream pulls + modernization regressions, pickModel #13433, scaffolding disposition, bloom parity, globe bind-group cache, CI smoke.
+
+**Phase 2 — ✅ DONE (Batches 243–253, 2026-06-12 run):** all three bullets shipped — NEW-DERIVEDCOMMAND-VARIANT-FACTORY core (Batch 248; billboard PICK migrated as adoption proof; HDR/SHADOW kinds remain its tracked follow-ups), NEW-COLLECTIONS-LOG-DEPTH (Batches 249/250/251 — master switch defaults TRUE; residual hyperbolic writers tracked NEW-LOG-DEPTH-REMAINING-PRODUCERS), NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252 — pickPosition parity dH 4.1 m). Same run also landed the CI green sweep (243), TAA resolve activation (244), instanced-model VA divisors + CPU pick (245), default-limit globe layout (246), ground-view env parity (247), and the final sweep's two catches (253: cloud scale METERS + depth-plane [ld] bind visibility). All Phase-2 gates green on the final tree: far-camera + pickPosition + collections-regression + globe visual probes, full 17-gate table in WEBGPU_DEBUGGING_LOG Batch 253. **Remaining from this phase's scope, now next up:** Phase 6 pick siblings (NEW-PICK-RAY-ASYNC / NEW-PICK-METADATA-READBACK), NEW-LOG-DEPTH-REMAINING-PRODUCERS (Mat*/Buffer*/EllipsoidPrimitive/Vector3DTile* + post-process depth readers), derived-command HDR/SHADOW kinds.
 
 ---
 
-## Phase 2 — The log-depth epic (the critical path)
+## Phase 2 — The log-depth epic (the critical path) — ✅ SHIPPED (Batches 248–253; see status block above)
 
 The single highest-leverage remaining correctness effort; three tracked problems share it.
 
