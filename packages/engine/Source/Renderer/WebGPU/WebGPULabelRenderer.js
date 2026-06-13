@@ -27,6 +27,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import SDFSettings from "../../Scene/SDFSettings.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
 // Slice 5c-B Phase 1 (Batch 107) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
@@ -1020,6 +1021,28 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     cache.sdfBindGroupUniformBuffer = uniformBuffer;
   }
 
+  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice camera
+  // UB. Label's group 0 mixes the camera buffer (binding 0) with the SDF atlas
+  // texture/sampler + globe-depth view/sampler (bindings 1-4); the resolver
+  // rebuilds group 0 with the slice's own buffer + those same texture refs.
+  // The static `cache.sdfBindGroup` is the slice-0 / single-frustum fallback.
+  if (!defined(cache.cameraUB)) {
+    cache.cameraUB = new WebGPUCollectionCameraUB(device, "Label");
+  }
+  cache.cameraUB.bindUniformState(context.uniformState);
+  cache.cameraResolver = cache.cameraUB.makeResolver({
+    bufferSize: UNIFORM_BUFFER_SIZE,
+    bindGroupLayout: cache.sdfBindGroupLayout,
+    pack: (data) =>
+      packUniforms(data, frameState, modelMatrix, labelCollection),
+    extraEntries: [
+      { binding: 1, resource: atlasTextureView },
+      { binding: 2, resource: atlasSampler },
+      { binding: 3, resource: globeDepthView },
+      { binding: 4, resource: cache.globeDepthSampler },
+    ],
+  });
+
   // SDF instance data — resident-instance manager path
   // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL, label
   // half). The manager owns the resident CPU array, the GPU vertex
@@ -1117,6 +1140,10 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   const sdfCommand = new WebGPUDrawCommand({
     pipeline: cache.sdfPipeline,
     bindGroups: [cache.sdfBindGroup],
+    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
+    // camera UB at group 0; resolver falls back to the static bind group
+    // when the slice index is unavailable.
+    bindGroupResolvers: [cache.cameraResolver],
     vertexBuffers: [cache.sdfInstanceBuffer],
     vertexCount: VERTICES_PER_QUAD,
     instanceCount: visibleCount,

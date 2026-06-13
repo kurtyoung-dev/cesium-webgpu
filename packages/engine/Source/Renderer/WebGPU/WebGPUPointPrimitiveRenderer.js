@@ -33,6 +33,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 // Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
@@ -1031,6 +1032,22 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
     });
   }
 
+  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
+  // camera-UB resolver. The static `cache.bindGroup` above carries the
+  // slice-0 / single-frustum bake (packed just above); the resolver repacks
+  // + binds a DISTINCT per-slice buffer at draw time so each depth slice the
+  // multi-frustum loop re-executes this command in gets its OWN projection.
+  // Group 0 is camera-UB-only for points (no atlas/depth), so no extraEntries.
+  if (!defined(cache.cameraUB)) {
+    cache.cameraUB = new WebGPUCollectionCameraUB(device, "PointPrimitive");
+  }
+  cache.cameraUB.bindUniformState(context.uniformState);
+  cache.cameraResolver = cache.cameraUB.makeResolver({
+    bufferSize: UNIFORM_BUFFER_SIZE,
+    bindGroupLayout: cache.bindGroupLayout,
+    pack: (data) => packUniforms(data, frameState, modelMatrix),
+  });
+
   // --- Instance data — resident-instance partial-write path ---
   // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL, point
   // half.) A settled collection uploads nothing; a sparse change re-packs
@@ -1111,6 +1128,10 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   cache.colorCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
+    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
+    // camera UB. Resolver returns null on single-frustum / first frame →
+    // falls back to the static bind group, preserving prior behaviour.
+    bindGroupResolvers: [cache.cameraResolver],
     vertexBuffers: [cache.instanceBuffer],
     vertexCount: VERTICES_PER_QUAD,
     instanceCount: visibleCount,

@@ -13,6 +13,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import {
   makeBindGroupLayout,
@@ -56,6 +57,11 @@ interface CloudCache {
   pipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
+  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — group-0 layout
+  // (stashed for the per-slice resolver to rebuild bind groups) + the
+  // per-collection per-slice camera-UB pool/resolver factory.
+  bindGroupLayout?: GPUBindGroupLayout | null;
+  cameraUB?: WebGPUCollectionCameraUB;
   noiseTexture: GPUTexture | null;
   noiseTextureView: GPUTextureView | null;
   sampler: GPUSampler | null;
@@ -610,6 +616,9 @@ function updateWebGPUCloudCollection(
       texture(1, Stage.FRAGMENT),
       sampler(2, Stage.FRAGMENT),
     ]);
+    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — stash the
+    // group-0 layout so the per-slice resolver can rebuild the bind group.
+    cache.bindGroupLayout = bgl;
 
     // C-R7-RENDERER-MIGRATION (Batch 72) — descriptor-only construction;
     // the pipeline itself materializes through `webgpuPipelineCache` so
@@ -798,105 +807,134 @@ function updateWebGPUCloudCollection(
   // projection's P23 depth-mapping term, producing incorrect NDC depth.
   // See `UniformStateComputations.cleanModelViewProjectionRelativeToEye`
   // for the canonical pattern.
+  //
+  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — the body is a
+  // closure so the per-slice resolver can re-invoke it at draw time against
+  // the slice's refreshed `uniformState.view`/`.projection`. Called once here
+  // to fill the static (slice-0 / single-frustum) buffer, then again per slice
+  // by the resolver into the slice's own buffer.
   const us = context.uniformState;
-  const view = us.view;
-  const proj = us.projection;
-  Matrix4.clone(view, scratchMVRTE);
-  scratchMVRTE[12] = 0;
-  scratchMVRTE[13] = 0;
-  scratchMVRTE[14] = 0;
-  const mvp = m4Values(Matrix4.multiply(proj, scratchMVRTE, scratchMVP));
+  const packCloud = (data: Float32Array): void => {
+    const view = us.view;
+    const proj = us.projection;
+    Matrix4.clone(view, scratchMVRTE);
+    scratchMVRTE[12] = 0;
+    scratchMVRTE[13] = 0;
+    scratchMVRTE[14] = 0;
+    const mvp = m4Values(Matrix4.multiply(proj, scratchMVRTE, scratchMVP));
+    for (let i = 0; i < 16; i++) {
+      data[i] = mvp[i];
+    }
 
-  // Batch 170 - bumped from 28 → 44 floats (176 bytes) to fit the
-  // trailing `prevViewProjection: mat4x4<f32>` (16 floats). UBO is
-  // allocated at 256 bytes; comfortably fits with 80 spare.
-  // NEW-COLLECTIONS-LOG-DEPTH — bumped 44 -> 48 floats for the trailing
-  // logDepth vec4 (near, far, factor, reserved) at floats 44-47.
-  const data = new Float32Array(48);
-  for (let i = 0; i < 16; i++) {
-    data[i] = mvp[i];
-  }
+    const camWorld = us.cameraPosition;
+    EncodedCartesian3.fromCartesian(camWorld, scratchEncoded);
+    data[16] = scratchEncoded.high.x;
+    data[17] = scratchEncoded.high.y;
+    data[18] = scratchEncoded.high.z;
+    // Projection diagonal for meters-based quad sizing
+    // (NEW-CLOUD-SCALE-METERS, Batch 253) — column-major m00/m11. Valid for
+    // both perspective (3D) and orthographic (2D/CV) frusta.
+    data[19] = proj[0];
+    data[20] = scratchEncoded.low.x;
+    data[21] = scratchEncoded.low.y;
+    data[22] = scratchEncoded.low.z;
+    data[23] = proj[5];
 
-  const camWorld = us.cameraPosition;
-  EncodedCartesian3.fromCartesian(camWorld, scratchEncoded);
-  data[16] = scratchEncoded.high.x;
-  data[17] = scratchEncoded.high.y;
-  data[18] = scratchEncoded.high.z;
-  // Projection diagonal for meters-based quad sizing
-  // (NEW-CLOUD-SCALE-METERS, Batch 253) — column-major m00/m11. Valid for
-  // both perspective (3D) and orthographic (2D/CV) frusta.
-  data[19] = proj[0];
-  data[20] = scratchEncoded.low.x;
-  data[21] = scratchEncoded.low.y;
-  data[22] = scratchEncoded.low.z;
-  data[23] = proj[5];
+    const canvas = context._canvas || { width: 1920, height: 1080 };
+    data[24] = canvas.width;
+    data[25] = canvas.height;
+    data[26] = frameState.frameNumber * 0.016; // approximate time for animation
+    data[27] = 0;
 
-  const canvas = context._canvas || { width: 1920, height: 1080 };
-  data[24] = canvas.width;
-  data[25] = canvas.height;
-  data[26] = frameState.frameNumber * 0.016; // approximate time for animation
-  data[27] = 0;
-
-  // Batch 170 - DP-H41 prev viewProjection at floats 28..43.
-  // UniformState swaps `_previousViewProjection := viewProjection` at
-  // the END of `update()` AFTER returning the prior frame's value, so
-  // on frame N this slot holds frame N-1's VP. First frame falls
-  // through to identity.
-  const prevVP = (us as { previousViewProjection?: Matrix4 })
-    .previousViewProjection;
-  if (prevVP) {
-    Matrix4.pack(prevVP, data, 28);
-  } else {
-    data[28] = 1;
-    data[29] = 0;
-    data[30] = 0;
-    data[31] = 0;
-    data[32] = 0;
-    data[33] = 1;
-    data[34] = 0;
-    data[35] = 0;
-    data[36] = 0;
-    data[37] = 0;
-    data[38] = 1;
-    data[39] = 0;
-    data[40] = 0;
-    data[41] = 0;
-    data[42] = 0;
-    data[43] = 1;
-  }
-  // Renderer-wide log depth — (near, far, factor) from the same encode
-  // frustum every producer packs (uniformState.currentFrustum at
-  // scene-update time). Unconditional; only the LOG_DEPTH variant reads it.
-  const usLog = us as unknown as {
-    currentFrustum?: { x: number; y: number };
-    oneOverLog2FarDepthFromNearPlusOne?: number;
+    // Batch 170 - DP-H41 prev viewProjection at floats 28..43.
+    // UniformState swaps `_previousViewProjection := viewProjection` at
+    // the END of `update()` AFTER returning the prior frame's value, so
+    // on frame N this slot holds frame N-1's VP. First frame falls
+    // through to identity.
+    const prevVP = (us as { previousViewProjection?: Matrix4 })
+      .previousViewProjection;
+    if (prevVP) {
+      Matrix4.pack(prevVP, data, 28);
+    } else {
+      data[28] = 1;
+      data[29] = 0;
+      data[30] = 0;
+      data[31] = 0;
+      data[32] = 0;
+      data[33] = 1;
+      data[34] = 0;
+      data[35] = 0;
+      data[36] = 0;
+      data[37] = 0;
+      data[38] = 1;
+      data[39] = 0;
+      data[40] = 0;
+      data[41] = 0;
+      data[42] = 0;
+      data[43] = 1;
+    }
+    // Renderer-wide log depth — (near, far, factor) from the same encode
+    // frustum every producer packs (uniformState.currentFrustum at
+    // scene-update time). Unconditional; only the LOG_DEPTH variant reads it.
+    const usLog = us as unknown as {
+      currentFrustum?: { x: number; y: number };
+      oneOverLog2FarDepthFromNearPlusOne?: number;
+    };
+    const ldNear = usLog.currentFrustum?.x ?? 0.0;
+    const ldFar = usLog.currentFrustum?.y ?? 0.0;
+    let ldFactor =
+      typeof usLog.oneOverLog2FarDepthFromNearPlusOne === "number"
+        ? usLog.oneOverLog2FarDepthFromNearPlusOne
+        : 0.0;
+    if (!(ldFactor > 0.0) && ldFar > ldNear) {
+      const log2Far = Math.log2(ldFar - ldNear + 1.0);
+      ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+    }
+    data[44] = ldNear;
+    data[45] = ldFar;
+    data[46] = ldFactor;
+    data[47] = 0.0;
   };
-  const ldNear = usLog.currentFrustum?.x ?? 0.0;
-  const ldFar = usLog.currentFrustum?.y ?? 0.0;
-  let ldFactor =
-    typeof usLog.oneOverLog2FarDepthFromNearPlusOne === "number"
-      ? usLog.oneOverLog2FarDepthFromNearPlusOne
-      : 0.0;
-  if (!(ldFactor > 0.0) && ldFar > ldNear) {
-    const log2Far = Math.log2(ldFar - ldNear + 1.0);
-    ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
-  }
-  data[44] = ldNear;
-  data[45] = ldFar;
-  data[46] = ldFactor;
-  data[47] = 0.0;
 
+  const data = new Float32Array(48);
+  packCloud(data);
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
+
+  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice camera
+  // UB resolver. Cloud's group 0 carries the camera UB (binding 0) plus the
+  // STABLE noise texture + sampler (bindings 1-2, created once at init), so the
+  // resolver rebuilds group 0 with the slice's own buffer + those same texture
+  // refs as extraEntries. The static `cache.bindGroup` is the slice-0 fallback.
+  if (!cache.cameraUB) {
+    cache.cameraUB = new WebGPUCollectionCameraUB(device, "Cloud");
+  }
+  cache.cameraUB.bindUniformState(us);
+  const cloudCameraResolver = cache.cameraUB.makeResolver({
+    bufferSize: 192, // 48 floats packed; buffer aligned to 256 by helper
+    bindGroupLayout: cache.bindGroupLayout!,
+    pack: packCloud,
+    extraEntries: [
+      { binding: 1, resource: cache.noiseTextureView! },
+      { binding: 2, resource: cache.sampler! },
+    ],
+  });
 
   if (!cache.command) {
     cache.command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: [cache.bindGroup],
+      bindGroupResolvers: [cloudCameraResolver],
       vertexBuffers: [cache.quadVertexBuffer, cache.instanceBuffer],
       vertexCount: 6,
       instanceCount: cache.instanceCount,
       pass: Pass.TRANSLUCENT,
     });
+  } else {
+    // `cache.command` is built once; refresh the resolver each frame so it
+    // re-packs against THIS frame's camera + the current texture refs.
+    (cache.command as { bindGroupResolvers?: unknown[] }).bindGroupResolvers = [
+      cloudCameraResolver,
+    ];
   }
 
   // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward CloudCollection's

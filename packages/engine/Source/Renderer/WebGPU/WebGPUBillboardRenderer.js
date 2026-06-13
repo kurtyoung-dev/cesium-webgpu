@@ -28,6 +28,7 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 // Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper. Used only
 // for the COLOR pipeline; pick + velocity stay single-target.
@@ -1101,6 +1102,29 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     });
   }
 
+  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) \u2014 per-slice camera
+  // UB. Billboard's group 0 mixes the camera buffer (binding 0) with the atlas
+  // texture/sampler + globe-depth view/sampler (bindings 1-4), which rotate per
+  // frame \u2014 the resolver rebuilds group 0 with the slice's own buffer + those
+  // SAME texture refs as extraEntries (its generation token keys off the
+  // texture identities so a view rotation rebuilds the per-slice groups too).
+  // The static `cache.bindGroup` is the slice-0 / single-frustum fallback.
+  if (!defined(cache.cameraUB)) {
+    cache.cameraUB = new WebGPUCollectionCameraUB(device, "Billboard");
+  }
+  cache.cameraUB.bindUniformState(context.uniformState);
+  cache.cameraResolver = cache.cameraUB.makeResolver({
+    bufferSize: UNIFORM_BUFFER_SIZE,
+    bindGroupLayout: cache.bindGroupLayout,
+    pack: (data) => packUniforms(data, frameState, modelMatrix, collection),
+    extraEntries: [
+      { binding: 1, resource: cache.atlasTextureView },
+      { binding: 2, resource: cache.sampler },
+      { binding: 3, resource: effectiveGlobeDepthView },
+      { binding: 4, resource: cache.globeDepthSampler },
+    ],
+  });
+
   // Instance data — resident-instance partial-write path
   // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL).
   // A settled collection uploads nothing; a sparse change re-packs +
@@ -1191,6 +1215,10 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   cache.colorCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
+    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
+    // camera UB at group 0. Falls back to the static bind group when the
+    // slice index is unavailable (single-frustum / first frame).
+    bindGroupResolvers: [cache.cameraResolver],
     vertexBuffers: [cache.instanceBuffer],
     vertexCount: VERTICES_PER_QUAD,
     instanceCount: visibleCount,

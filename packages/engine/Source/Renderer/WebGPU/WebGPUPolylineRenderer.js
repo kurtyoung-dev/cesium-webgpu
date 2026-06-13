@@ -36,6 +36,7 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 // Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
@@ -1336,6 +1337,26 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       });
     }
 
+    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
+    // camera UB, one resolver per material type (each material group keeps
+    // its own per-slice buffer pool). The static `cache[camBgKey]` above is
+    // the slice-0 / single-frustum fallback. Polyline's camera UB lives in a
+    // DEDICATED group at command index 0 (material is group 1), so the
+    // resolver swaps just the camera group — the cleanest case.
+    const camUBKey = `cameraUB_${materialType}`;
+    if (!defined(cache[camUBKey])) {
+      cache[camUBKey] = new WebGPUCollectionCameraUB(
+        device,
+        `Polyline ${materialType}`,
+      );
+    }
+    cache[camUBKey].bindUniformState(context.uniformState);
+    const cameraResolver = cache[camUBKey].makeResolver({
+      bufferSize: CAMERA_BUFFER_SIZE,
+      bindGroupLayout: pipelineResult.cameraBindGroupLayout,
+      pack: (data) => packCameraUniforms(data, frameState, modelMatrix),
+    });
+
     // Material bind group
     const matBgKey = `matBindGroup_${materialType}`;
     if (!defined(cache[matBgKey])) {
@@ -1450,6 +1471,9 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       const cmd = new WebGPUDrawCommand({
         pipeline: pipelineResult.pipeline,
         bindGroups: [cache[camBgKey], cache[matBgKey]],
+        // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
+        // camera UB at group 0; material group 1 is slice-invariant.
+        bindGroupResolvers: [cameraResolver, undefined],
         vertexBuffers: [cache[sbKey]],
         vertexCount: VERTICES_PER_SEGMENT,
         instanceCount: segmentCount,
