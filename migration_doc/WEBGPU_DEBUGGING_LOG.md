@@ -24,6 +24,27 @@
 
 ---
 
+## Batch 270 — BufferPoint/Polygon/Polyline dynamic geometry re-renders (NEW-UPSTREAM-13465-BUFFERPOINT-STALENESS) (2026-06-13)
+
+**Bug:** Changing a `BufferPoint`'s position via `setPosition()` AFTER it had already rendered did not re-render the point at its new location — the point stayed frozen at its original spot on BOTH backends. Same class of bug for `BufferPolygon`/`BufferPolyline` geometry setters. This is the port of upstream #13465 ("BufferPointCollection: Fix for dynamic geometry", commit `e4e8b3b778`).
+
+**Files affected:**
+- `packages/engine/Source/Scene/BufferPoint.js` (setPosition)
+- `packages/engine/Source/Scene/BufferPolyline.js` (setPositions)
+- `packages/engine/Source/Scene/BufferPolygon.js` (setPositions / setHoles / setTriangles — 3 setters)
+- `packages/engine/Specs/Scene/BufferPointCollectionSpec.js` (new regression spec)
+- `Tools/visual-regression/probe-buffer-point-update.mjs` (new dual-backend probe)
+
+**Root cause:** Vertex positions live in a buffer (`collection._positionView`) SEPARATE from the per-primitive record. The geometry setters wrote the new vertex directly into `_positionView` and called `collection._makeDirtyBoundingVolume()`, but never flipped the primitive's `_dirty` flag. The repack pass in BOTH renderers — WebGPU `WebGPUBufferPointRenderer.repackPointDirty` and WebGL `renderBufferPointCollection` — gates on TWO checks: the collection-level `_dirtyCount > 0`, and a per-primitive `if (!point._dirty) continue;`. With `_dirty` never set, `_makeDirty(index)` was never called (so `_dirtyCount` stayed 0 for a position-only change) AND the per-primitive guard skipped the moved point even if the range happened to cover it. Net: the GPU position buffers (`positionHigh`/`positionLow`) retained the stale encoded position. (Newly-ADDED points were unaffected because `add()` writes `POSITION_OFFSET_U32` via `_setUint32`, which sets `_dirty` as a side effect — the bug only bites mutation-after-add.)
+
+**Fix:** Added `this._dirty = true;` to all five geometry setters (mirrors upstream). The `_dirty` setter both flips the per-primitive flag AND calls `_collection._makeDirty(index)` to extend the dirty range, so the next frame's repack re-encodes the moved primitive on either backend. Did NOT pull the unrelated `positionDatatype`/`positionNormalized`/`allowPicking` JSDoc + feature additions bundled into the upstream commit — our fork hasn't taken those features; the dynamic-geometry correctness change is the `_dirty` lines only.
+
+**Verification:** `probe-buffer-point-update.mjs` adds a 2-point collection (static red anchor + moving cyan point), renders to a clean repacked state, calls `setPosition()` on the cyan point, renders exactly 2 frames, and asserts the cyan centroid shifts >= 80px while the red anchor stays put — PASSES on WebGPU (253px shift) AND WebGL (253px shift), pixel-matched. Reverting the fix makes the probe FAIL with a 0.0px shift on both backends (proves it catches the staleness). New unit spec asserts `_dirty` flips true and the collection dirty range covers the moved index after `setPosition()` — PASSES (10/10 BufferPointCollection specs green). All collection/buffer standing gates green (collections-regression, buffer-logdepth-zfight, far-camera, logdepth-zfight, billboard/point-label partial-write, polyline-cloud-consume).
+
+**Side finding (NOT fixed here):** a single-point `gl.POINTS` BufferPointCollection on WebGL can drop its lone vertex on a sub-data update — tracked NEW-BUFFERPOINT-WEBGL-SINGLE-VERTEX-DROPOUT in DEFERRED_WORK; the probe uses 2 points to sidestep it. WebGPU single-point updates are fine.
+
+---
+
 ## Batch 269 — EllipsoidPrimitive renders end-to-end on WebGPU + log-depth pixel-verified (BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE) (2026-06-13)
 
 **Bug:** A scene-placed `EllipsoidPrimitive` rendered 0 visible pixels on WebGPU (log ON and OFF). The Batch-266 log-depth slice was therefore only STRUCTURALLY verified (pipeline-builds / flip-rebuild). Probe `probe-ellipsoidprim-logdepth.mjs` was a no-pixel structural probe with its ON≈OFF green assertions scaffolded-but-disabled.

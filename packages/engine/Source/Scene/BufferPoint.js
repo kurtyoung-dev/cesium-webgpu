@@ -122,6 +122,11 @@ class BufferPoint extends BufferPrimitive {
     collection._positionView[vertexOffset * 3 + 1] = position.y;
     collection._positionView[vertexOffset * 3 + 2] = position.z;
 
+    // Position lives in a separate buffer from the primitive record, so writing
+    // it directly does not flip the primitive's _dirty flag. Without this, the
+    // repack pass (gated on _dirty per-primitive) skips the changed point and
+    // the GPU buffers retain the stale encoded position. Upstream #13465.
+    this._dirty = true;
     collection._makeDirtyBoundingVolume();
   }
 

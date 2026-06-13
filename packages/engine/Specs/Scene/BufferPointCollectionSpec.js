@@ -176,6 +176,41 @@ describe("Scene/BufferPointCollection", () => {
     expect(collection.boundingVolume.radius).toEqual(1);
   });
 
+  it("marks the primitive dirty when position changes after a render cycle", () => {
+    // Regression for upstream #13465 (BufferPointCollection: Fix for dynamic
+    // geometry). Position is stored in a buffer separate from the primitive
+    // record, so setPosition() must explicitly flip the primitive _dirty flag
+    // and extend the collection dirty range. Otherwise the repack pass — which
+    // iterates only [_dirtyOffset, _dirtyOffset + _dirtyCount) and skips any
+    // primitive whose _dirty is false — never re-encodes the moved point, and
+    // the GPU buffers retain the stale position (point never visibly moves).
+    const collection = new BufferPointCollection({ primitiveCountMax: 3 });
+    const point = new BufferPoint();
+
+    collection.add({ position: new Cartesian3(1, 0, 0) }, point);
+    collection.add({ position: new Cartesian3(2, 0, 0) }, point);
+
+    // Simulate the end of a render cycle: the renderer repacks the dirty range,
+    // clears each primitive's _dirty flag, and resets the collection range.
+    collection.get(0, point);
+    point._dirty = false;
+    collection.get(1, point);
+    point._dirty = false;
+    collection._dirtyOffset = 0;
+    collection._dirtyCount = 0;
+
+    // Move an existing point. Before the fix this left _dirty === false and
+    // _dirtyCount === 0, so the repack skipped it entirely.
+    collection.get(1, point);
+    point.setPosition(new Cartesian3(99, 0, 0));
+
+    expect(point._dirty).toBe(true);
+    expect(collection._dirtyCount).toBeGreaterThan(0);
+    // The dirty range must cover index 1 (the moved point).
+    expect(collection._dirtyOffset).toBeLessThanOrEqual(1);
+    expect(collection._dirtyOffset + collection._dirtyCount).toBeGreaterThan(1);
+  });
+
   it("positionDatatype", () => {
     const center = new Cartesian3(1000, 0, 0);
 
