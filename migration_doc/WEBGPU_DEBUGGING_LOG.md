@@ -24,6 +24,23 @@
 
 ---
 
+## Batch 271 — WasmRTEBridge sub-range encode + latent WASM-memory-handle fix (NEW-WASMRTE-SUBRANGE-ENCODE) (2026-06-13)
+
+**Feature:** Added `WasmRTEBridge.batchEncodeRange(positions, srcOffset, count, outHigh, outLow, dstOffset?)` — a sub-range variant of `batchEncode` that encodes only a contiguous `[srcOffset, srcOffset+count)` slice of f64 positions into a `[dstOffset, ..)` window of the high/low f32 output arrays IN PLACE (bytes outside the window untouched), enabling incremental repack to re-encode just its dirty slice. Implemented as JS-side pointer arithmetic over the EXISTING `batch_rte_encode` kernel (slice copied to the front of the RTE arena, encoded from index 0, read back into the dst window) — no new Rust export, no WASM rebuild. The scalar `_encodeRangeJS` fallback uses the same fround split as the kernel, so WASM and JS are byte-identical.
+
+**Files affected:**
+- `packages/engine/Source/Scene/WasmRTEBridge.js` (new `batchEncodeRange` + `_encodeRangeWasm`/`_encodeRangeJS`; `_wasmExports` capture + `_wasmMemory()` helper)
+- `Tools/wasm-subrange-encode-check.mjs` (new standalone node unit check, 18 assertions)
+- `Tools/wasm-subrange-loader.mjs` (ESM resolve/load hook so the check drives the real bridge under raw node)
+
+**Bug (latent, surfaced while verifying):** The WASM path of EVERY RTE encode (`_encodeWasm`, `_toEyeWasm`) was silently catching an internal exception and falling back to the JS scalar loop, so the WASM kernel never actually ran. Root cause: the committed wasm-bindgen glue (`ThirdParty/Workers/cesium_wasm.js`) does NOT re-export `memory` as a named ESM export — the wasm linear memory lives only on the instance's `exports` object that `module.default()` (`__wbg_init`) returns. The bridge read `_wasmModule.__wbindgen_export_0 ?? _wasmModule.memory`, both `undefined` on the imported namespace → `memory.buffer` threw → catch → JS fallback. Output was unaffected (the JS fallback is byte-exact), so this was invisible to rendering but defeated the entire point of the WASM acceleration. The pattern is shared by all seven Wasm*Bridge files; only `WasmRTEBridge` is fixed here (the others are out of scope for this stage and produce correct output via their JS fallback today).
+
+**Fix:** `loadWasm` now captures `_wasmExports = await module.default()` (the exports object, which carries `.memory`); a new `_wasmMemory()` helper resolves the memory as `_wasmExports?.memory ?? _wasmModule?.__wbindgen_export_0 ?? _wasmModule?.memory` and the three WASM paths use it, throwing a clear "wasm linear memory unavailable" error (→ JS fallback) only if all three are absent.
+
+**Verification:** `node Tools/wasm-subrange-encode-check.mjs` — drives the REAL canonical bridge under node (an ESM resolve-hook loader redirects the build-layout-relative glue import to the canonical glue + forces ESM parse; a `globalThis.fetch` shim feeds the on-disk `cesium_wasm_bg.wasm`). 18 assertions PASS: WASM-vs-JS byte-identity over an interior sub-range, equality to an independent reference fround encode, dst-offset placement, untouched-byte preservation, src≠dst relocation, full-range == whole-array `batchEncode`, default-dstOffset, AND a trip-wire that FAILS if any "using JS fallback" warning fires (proving the WASM kernel genuinely executes, not a JS-vs-JS tautology). `npx tsc --noEmit` + `npx gulp build` green. Standing gates: collections-regression, buffer-logdepth-zfight, collections-far-camera, orbital-catalog, sandcastle-smoke all PASS (no consumers wired yet, so no rendering-path change — the encode wiring is the separate NEW-BUFFERCOLL-WASM-ENCODE-WIRE stage).
+
+---
+
 ## Batch 270 — BufferPoint/Polygon/Polyline dynamic geometry re-renders (NEW-UPSTREAM-13465-BUFFERPOINT-STALENESS) (2026-06-13)
 
 **Bug:** Changing a `BufferPoint`'s position via `setPosition()` AFTER it had already rendered did not re-render the point at its new location — the point stayed frozen at its original spot on BOTH backends. Same class of bug for `BufferPolygon`/`BufferPolyline` geometry setters. This is the port of upstream #13465 ("BufferPointCollection: Fix for dynamic geometry", commit `e4e8b3b778`).

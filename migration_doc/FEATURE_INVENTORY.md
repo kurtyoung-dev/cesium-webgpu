@@ -657,7 +657,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 
 ### B.8 Backend-Specific Optimizations
 
-- WASM bridges — WasmCullBridge / WasmSortBridge / WasmHeightmapBridge / WasmQuantizedMeshBridge / WasmRTEBridge / WasmMatrixBridge / WasmPointCloudBridge (SHIPPED)
+- WASM bridges — WasmCullBridge / WasmSortBridge / WasmHeightmapBridge / WasmQuantizedMeshBridge / WasmRTEBridge / WasmMatrixBridge / WasmPointCloudBridge (SHIPPED). `WasmRTEBridge.batchEncodeRange` (Batch 271, NEW-WASMRTE-SUBRANGE-ENCODE) adds in-place sub-range `[srcOffset,count)→[dstOffset,..)` encoding over the existing `batch_rte_encode` kernel (no new Rust export) for incremental-repack hot paths; same batch fixed the latent missing-`memory`-export bug that was silently forcing the RTE WASM path onto its JS fallback. Routing the bridge into the Buffer* repack hot paths is the still-open NEW-BUFFERCOLL-WASM-ENCODE-WIRE (§C / DEFERRED_WORK).
 - WasmFeatureDetection.js — shared SIMD detect / version match / `free_buffer` for all bridges (SHIPPED)
 - WasmArenaSlots.js — per-bridge buffer slots replacing FORK-45 shared mutex arena (SCAFFOLDED — sequential bridges work today)
 - packages/wasm-naga/ — Rust source + vendored WASM runtime for Naga shader translator (EXPERIMENTAL)
