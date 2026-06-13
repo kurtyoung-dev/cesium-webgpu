@@ -17,6 +17,12 @@
 //     identity stable; the dirty-consume keeps the gate from re-firing).
 //  4. 0 console errors.
 //
+// Batch 253 (NEW-CLOUD-SCALE-METERS): CumulusCloud.scale is METERS (upstream
+// parity) — the WebGPU renderer previously sized quads in screen PIXELS, so
+// this probe's original 220x150 "px" clouds at a 300 km camera became
+// sub-pixel after the fix. Re-parameterized to 2000x1300 m clouds at a
+// 15 km camera (~156x101 px) — same assertions, same dirty-gate coverage.
+//
 // Usage: node Tools/visual-regression/probe-cloud-property-edit.mjs
 // Env:   PROBE_BASE (default http://localhost:8134)
 
@@ -58,15 +64,15 @@ const out = await page.evaluate(async () => {
   // Cloud 0 — the one we edit. Cloud 1 — static control off to the side.
   const cloud0 = clouds.add({
     position: C.Cartesian3.fromDegrees(LON, LAT, 5000.0),
-    scale: new C.Cartesian2(220, 150),
+    scale: new C.Cartesian2(2000, 1300),
   });
   clouds.add({
-    position: C.Cartesian3.fromDegrees(LON - 0.9, LAT, 5000.0),
-    scale: new C.Cartesian2(160, 110),
+    position: C.Cartesian3.fromDegrees(LON - 0.03, LAT, 5000.0),
+    scale: new C.Cartesian2(1500, 1000),
   });
   scene.morphTo3D(0);
   v.camera.setView({
-    destination: C.Cartesian3.fromDegrees(LON, LAT, 300000.0),
+    destination: C.Cartesian3.fromDegrees(LON, LAT, 15000.0),
   });
 
   const frame = () =>
@@ -109,9 +115,10 @@ const out = await page.evaluate(async () => {
   const before = await captureMask();
   const bufBeforeEdit = cacheOf()?.instanceBuffer;
 
-  // THE EDIT: move cloud 0 by a clearly visible amount + change its scale.
-  cloud0.position = C.Cartesian3.fromDegrees(LON + 0.5, LAT + 0.2, 5000.0);
-  cloud0.scale = new C.Cartesian2(360, 240);
+  // THE EDIT: move cloud 0 by a clearly visible amount (~200 px east,
+  // ~130 px north at the 15 km camera) + change its scale.
+  cloud0.position = C.Cartesian3.fromDegrees(LON + 0.03, LAT + 0.015, 5000.0);
+  cloud0.scale = new C.Cartesian2(3000, 2000);
   const dirtyIndexAtEdit = clouds._cloudsToUpdateIndex;
 
   // Mask must change within 2 frames.

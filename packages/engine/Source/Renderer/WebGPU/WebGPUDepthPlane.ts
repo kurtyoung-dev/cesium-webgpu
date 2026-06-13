@@ -353,10 +353,18 @@ export class WebGPUDepthPlane {
       code: makeDepthPlaneWGSL(useLogDepth),
     });
 
+    // VERTEX_FRAGMENT (Batch 253 — Batch 249 left this VERTEX-only): the
+    // [ld] fragment shader reads `uniforms.logDepthParams.z` for the
+    // csm_writeLogDepth contract, so [ld] pipeline creation failed with
+    // "Entry point's stage (Fragment) is not in the binding visibility".
+    // Unexercised until a gate scene actually had useDepthPlane=true
+    // (probe-globe-default-limits). Superset visibility is valid for the
+    // non-ld variant too (its FS simply doesn't read the binding). Same
+    // bug class as the Batch-250 ComputeInstanceRender widening.
     this._bindGroupLayout = makeBindGroupLayout(
       device,
       "DepthPlane-BindGroupLayout",
-      [uniformBuffer(0, Stage.VERTEX)],
+      [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
     );
 
     // 112 bytes = mat4(64) + vec3+pad(16) + vec3+pad(16) + logDepthParams(16)

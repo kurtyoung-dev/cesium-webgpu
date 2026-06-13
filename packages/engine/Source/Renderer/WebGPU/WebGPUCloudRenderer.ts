@@ -92,9 +92,13 @@ const CLOUD_WGSL = /* wgsl */ `
 struct CameraUniforms {
   modelViewProjectionRTE: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
+  // Projection diagonal P00/P11 (NEW-CLOUD-SCALE-METERS, Batch 253) —
+  // CumulusCloud.scale is METERS in eye space (upstream CloudCollectionVS:
+  // positionEC.xy += scale * offset), so the VS sizes the quad via
+  // clip-offset = scale * (P00, P11). Packed into the former pad lanes.
+  projScaleX: f32,
   encodedCameraLow: vec3<f32>,
-  _pad1: f32,
+  projScaleY: f32,
   viewportSize: vec2<f32>,
   time: f32,
   _pad2: f32,
@@ -153,11 +157,17 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let posRTE = (input.positionHigh - camera.encodedCameraHigh)
              + (input.positionLow - camera.encodedCameraLow);
   let centerClip = camera.modelViewProjectionRTE * vec4<f32>(posRTE, 1.0);
+  // Scale is METERS (upstream parity): an eye-space lateral offset of
+  // (dx, dy) meters projects to clip offset (dx*P00, dy*P11) for a
+  // symmetric frustum — no /w, no viewport term. The previous
+  // /viewportSize*2*w form sized the quad in screen PIXELS, blowing a
+  // 2000 m cloud up to full-screen at any camera distance
+  // (NEW-CLOUD-SCALE-METERS, Batch 253).
   let offset = vec2<f32>(
-    input.quadPos.x * input.scaleAndBrightness.x / camera.viewportSize.x * 2.0,
-    input.quadPos.y * input.scaleAndBrightness.y / camera.viewportSize.y * 2.0
+    input.quadPos.x * input.scaleAndBrightness.x * camera.projScaleX,
+    input.quadPos.y * input.scaleAndBrightness.y * camera.projScaleY
   );
-  output.position = centerClip + vec4<f32>(offset * centerClip.w, 0.0, 0.0);
+  output.position = centerClip + vec4<f32>(offset, 0.0, 0.0);
   output.uv = input.quadPos * 0.5 + 0.5;
   output.vColor = input.color;
   output.vBrightness = input.scaleAndBrightness.z;
@@ -232,13 +242,14 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     input.prevPositionHigh + input.prevPositionLow, 1.0,
   );
   let prevCenterClip = camera.prevViewProjection * prevWorldPos;
-  // Rasterize quad at the current center.
+  // Rasterize quad at the current center. Meters-based sizing — must
+  // match vertexMain exactly so velocity covers the same fragments
+  // (NEW-CLOUD-SCALE-METERS, Batch 253).
   let offset = vec2<f32>(
-    input.quadPos.x * input.scaleAndBrightness.x / camera.viewportSize.x * 2.0,
-    input.quadPos.y * input.scaleAndBrightness.y / camera.viewportSize.y * 2.0
+    input.quadPos.x * input.scaleAndBrightness.x * camera.projScaleX,
+    input.quadPos.y * input.scaleAndBrightness.y * camera.projScaleY
   );
-  output.position =
-    currCenterClip + vec4<f32>(offset * currCenterClip.w, 0.0, 0.0);
+  output.position = currCenterClip + vec4<f32>(offset, 0.0, 0.0);
   output.currCenterClip = currCenterClip;
   output.prevCenterClip = prevCenterClip;
   //>>ifdef LOG_DEPTH
@@ -811,11 +822,14 @@ function updateWebGPUCloudCollection(
   data[16] = scratchEncoded.high.x;
   data[17] = scratchEncoded.high.y;
   data[18] = scratchEncoded.high.z;
-  data[19] = 0;
+  // Projection diagonal for meters-based quad sizing
+  // (NEW-CLOUD-SCALE-METERS, Batch 253) — column-major m00/m11. Valid for
+  // both perspective (3D) and orthographic (2D/CV) frusta.
+  data[19] = proj[0];
   data[20] = scratchEncoded.low.x;
   data[21] = scratchEncoded.low.y;
   data[22] = scratchEncoded.low.z;
-  data[23] = 0;
+  data[23] = proj[5];
 
   const canvas = context._canvas || { width: 1920, height: 1080 };
   data[24] = canvas.width;
