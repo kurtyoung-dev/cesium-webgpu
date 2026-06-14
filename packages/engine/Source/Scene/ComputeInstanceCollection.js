@@ -37,10 +37,13 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  * <code>Shaders/WebGPU/Compute/ComputeInstanceScaffold.wgsl</code>):
  * <ul>
  *   <li><code>struct ComputeInstanceOut { position: vec3&lt;f32&gt;,
- *       color: vec4&lt;f32&gt;, pixelSize: f32 }</code> — the kernel's
- *       return type. <code>position</code> is absolute ECEF meters;
- *       <code>color</code> is straight RGBA in [0,1]; <code>pixelSize</code>
- *       is the dot diameter in pixels.</li>
+ *       positionLow: vec3&lt;f32&gt;, color: vec4&lt;f32&gt;,
+ *       pixelSize: f32 }</code> — the kernel's return type.
+ *       <code>position</code> is absolute ECEF meters (the RTE HIGH part);
+ *       <code>positionLow</code> is the RTE low part (leave it zero for
+ *       f32 kernels — the default — or fill it from df64 math for extended
+ *       precision, see below); <code>color</code> is straight RGBA in
+ *       [0,1]; <code>pixelSize</code> is the dot diameter in pixels.</li>
  *   <li><code>params: array&lt;f32&gt;</code> — read access to the raw
  *       per-instance float lanes exactly as passed to
  *       {@link ComputeInstanceCollection#addInstance}. The lane layout is
@@ -53,9 +56,26 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  * The ENGINE wraps the snippet with the storage-buffer bindings, the
  * dispatch entry point, the instance-count bounds check, and the RTE
  * (relative-to-eye) high/low split + output write — kernels never declare
- * bindings and never deal with RTE. Kernel math runs in f32, so the RTE low
- * part is currently always 0 (the slot is the contract for a future df64
- * kernel upgrade); expect ~meter-scale absolute error at planetary radii.
+ * bindings and never deal with RTE.
+ *
+ * <h4>Precision: f32 (default) vs df64 (opt-in)</h4>
+ *
+ * By default a kernel computes <code>out.position</code> in f32 and leaves
+ * <code>out.positionLow</code> zero, giving ~meter-scale absolute error at
+ * planetary radii. For extended precision the scaffold exposes
+ * double-single (two-float, ~46-bit) <code>df64</code> helpers
+ * (<code>csm_df64_add</code>, <code>csm_df64_mul</code>,
+ * <code>csm_df64_sin</code>/<code>cos</code>, <code>csm_df64_split</code>)
+ * and a <code>csm_emitDF64(x, y, z)</code> packer that fills BOTH the RTE
+ * high and low from three df64 position components. A kernel that
+ * accumulates a precision-sensitive angle (e.g. mean anomaly over a long
+ * propagation interval, where <code>time * meanMotion</code> overflows
+ * f32 angular resolution) in df64 and emits via <code>csm_emitDF64</code>
+ * makes the RTE low part meaningful — no buffer/render/pipeline changes,
+ * the df64 path just fills a slot the f32 path leaves zero. df64 is opt-in
+ * per quantity (mix df64 angle accumulation with f32 color/size freely).
+ * See the scaffold header for the full df64 contract.
+ *
  * All <code>csm_</code>-prefixed identifiers are engine-reserved; kernels
  * must not redeclare <code>ComputeInstanceOut</code>, <code>params</code>,
  * or anything <code>csm_*</code>. The kernel and

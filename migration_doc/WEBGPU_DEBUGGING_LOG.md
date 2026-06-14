@@ -24,6 +24,26 @@
 
 ---
 
+## Batch 277 — Orbital accuracy: df64 helpers in the engine scaffold + secular-J2/GMST demo kernel (NEW-ORBITAL-J2-KERNEL) (2026-06-13)
+
+Upgraded the compute-instance orbital demo from circular (f32, RTE low=0, ECI≈ECEF) to a real secular-J2 mean-element propagator with Earth rotation. Two parts: ENGINE-side df64 (two-float / double-single) arithmetic helpers added to `ComputeInstanceScaffold.wgsl` (reusable, domain-agnostic) + a DEMO-side secular-J2 + Kepler + GMST kernel. Verified by a NEW probe `probe-orbital-j2.mjs` that diffs the GPU df64 kernel against a JS FP64 reference of the identical math.
+
+**What shipped (engine):** `csm_df64`/`csm_df64_add`/`csm_df64_add_f32`/`csm_df64_mul`/`csm_df64_mul_f32` (Knuth two-sum + Dekker two-product, built on `csm_twoSum`/`csm_split`/`csm_twoProd` error-free transformations), `csm_df64_reducePi` (Cody-Waite df64 range reduction), `csm_df64_sin`/`csm_df64_cos` (reduce-then-evaluate with first-order lo correction), `csm_df64_split` (exact f32 hi/lo = the per-component RTE encode). `ComputeInstanceOut` gained a `positionLow: vec3<f32>` field (zero-init → existing f32 kernels stay byte-identical) + a `csm_emitDF64(x,y,z)` packer. This removes the "RTE low always 0" limitation for opt-in kernels; the buffer/render/pipeline are unchanged (df64 fills a slot f32 left zero).
+
+**Two non-obvious precision bugs found while bringing up the probe (both worth remembering for any future GPU orbital/df64 kernel):**
+
+1. **df64 cannot rescue a quantity that was already rounded to f32 *before* the df64 math.** First cut computed the mean-anomaly rate `mDot` inside the shader from f32 inputs, then accumulated `M0 + mDot·t` in df64. Over a 30-day span the f32 quantization of `mDot` (relative ~6e-8) × t (2.6e6 s) → ~1.7e-4 rad → ~1200 m LEO error — df64 made no difference (MEO/GEO ~1100 m, no win). *Fix:* compute `mDot` in JS FP64 and upload it as a df64 lane pair `(mDotHi, mDotLo)`; the kernel then does `csm_df64_mul_f32(mDot_df64, t)`. The df64 win is REAL only when the precision-carrying *input* enters as df64 — df64 accumulation of an f32-rounded rate is pointless.
+
+2. **J2 secular rates use the UNPERTURBED mean motion `n = sqrt(GM/a³)`, NOT the J2-corrected `mDot`.** After fix #1, LEO was still ~6 km off in BOTH the df64 and f32 paths — so it was a MODEL error, not a precision error. The kernel was computing the apsidal/nodal `factor = 1.5·J2·(Re/p)²·X` with `X = mDot.x` (the rate I happened to have in a lane) while the FP64 reference used `n`. `mDot = n + correction` differs from `n` by relative ~5.6e-4 at LEO; that biases `argpDot·t` by ~8e-4 rad → **~6085 m/orbit** along-track. *Fix:* compute `n = sqrt(GM/a³)` in the kernel (from the `a` lane) and use it for `factor`; keep the df64 `mDot` pair for the M accumulation only. (Diagnostic that nailed it: a standalone compute shader writing the reduced mean anomaly back to a COPY_SRC buffer showed reduced-M was accurate to 2.4e-8 rad → 0.2 m, proving the error was downstream in the rate-driven slow angles, not the fast-angle accumulation.)
+
+**Result after both fixes:** df64 LEO max error **15 m** vs an f32-control's **2177 m** over 30 days — a **145× precision win**, all regimes 5-18 m, 0 validation errors. The probe composes the SHIPPED scaffold WGSL (fetched raw over HTTP) + the demo kernel on a probe-owned device with a COPY_SRC-readable output buffer, so it tests the real helpers, not a copy.
+
+**Probe readback gotcha:** the engine renderer allocates the instance-record buffer `STORAGE`-only (no `COPY_SRC`) — a probe can't map it. `probe-orbital-j2.mjs` therefore runs its OWN dispatch of the composed module with a `STORAGE | COPY_SRC` output buffer + a `MAP_READ` staging buffer, rather than trying to read the renderer's buffer.
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/Compute/ComputeInstanceScaffold.wgsl` (df64 helpers + `positionLow`/`csm_emitDF64`), `packages/engine/Source/Scene/ComputeInstanceCollection.js` (JSDoc: f32 vs df64 contract), `Apps/Sandcastle/gallery/WebGPU Orbital Catalog.html` (secular-J2 kernel + 13-lane layout + GMST), `Tools/visual-regression/probe-orbital-j2.mjs` (new). Regression: `probe-orbital-catalog.mjs`, `probe-compute-instance-generic.mjs`, `probe-collections-regression.mjs`, `probe-logdepth-zfight.mjs`, `sandcastle-smoke.mjs` all green.
+
+---
+
 ## Batch 276 — TAA history invalidated across the morph projection flip + translucent EllipsoidPrimitive blends once (MORPH-TAA-PREVVP, BUG-ELLIPSOIDPRIM-WEBGPU-TRANSLUCENT-DOUBLE-BLEND) (2026-06-13)
 
 Three smaller Phase-4-run cleanup items.
