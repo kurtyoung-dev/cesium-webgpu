@@ -24,6 +24,35 @@
 
 ---
 
+## Batch 282 — Phase 5 closeout: orbital / compute-instance productionization VERIFIED + ledger reconciled (2026-06-14)
+
+Not a bug fix — the Phase-5 closeout of the campaign roadmap (orbital / compute-instance productionization, Batches 277–281). The whole orbital/compute-instance gate set was re-run FRESH from the committed build (HEAD `bb90ad7a90`, `gulp build` artifact dated the same), every probe green with numbers, then the migration ledgers reconciled.
+
+**Full gate table (all PASS, from the committed build):**
+
+| Probe | Result |
+| --- | --- |
+| `probe-orbital-catalog.mjs` | 2000 obj render (magenta 14104→14384 px) + move (186.4% mask change) + 0 errors |
+| `probe-compute-instance-generic.mjs` | 400 Lissajous render+move + BV (radius 44e6, cull) + TAA-on velocityCommand/partner + TAA-off detach + 0 errors |
+| `probe-compute-instance-pick.mjs` | 3/3 instances pick own index (0→0,1→1,2→2), empty→undefined, domain-agnostic record, 0 errors |
+| `probe-orbital-j2.mjs` | df64 LEO max **15.00 m** over 30 days vs f32 control 2177 m (**145×** win), 0 validation errors |
+| `probe-orbital-sgp4.mjs` | near-earth GPU SGP4 worst **55.2 m** (NOAA-19 @ 1440 min) vs python-sgp4, deep-space GPS flagged/skipped, demo render+move, 0 errors |
+| `probe-compute-instance-webgl2.mjs` | WebGL CPU-kernel renders+moves (usedFallback=true), WebGL≈WebGPU centroid **0.39 px**, 0 errors both backends |
+| `probe-orbital-1m.mjs` | target 1,000,000 **achieved 1,000,000**, single-binding max 4,194,240, 21,064 cyan px, 0 errors |
+| `probe-collections-regression.mjs` | all 5 collections render + settled re-touch 0 + upload-gate 0 + mutation-lands + 0 errors |
+| `sandcastle-smoke.mjs` | 3/3 demos (Orbital Catalog / Clustered Lighting / Point Light Shadows), 0 fatal |
+| `probe-ellipsoidprim-logdepth.mjs` | **18280 px** green, ON≈OFF ratio 1.000, far-camera intact, 0 errors |
+
+**BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE confirmed RESOLVED (Batch 269).** The probe is a full pixel probe (18280 px), not the old structural shell. A stale Batch-274-era note had wrongly listed it open; no such "open" entry exists in DEFERRED_WORK (the only record is the Batch-269 ✅ RESOLVED block) — nothing to strike, confirmed in this closeout.
+
+**Engine purity re-confirmed.** Grepped `packages/engine/Source` for orbital identifiers (SGP4 / TLE / propagateOrbit / meanMotion / J2 kernel bodies / element layouts): ZERO domain logic. The only hits are (a) pre-existing upstream Cesium astronomy (`Simon1994PlanetaryPositions` sun/moon, `Transforms` GMST), (b) `semiMajorAxis` as the ELLIPSE-geometry param, (c) comments about camera "orbital altitudes" in atmosphere/fog/globe shaders, (d) `NEW-ORBITAL-*` batch tags in JSDoc, and (e) a single JSDoc EXAMPLE in `ComputeInstanceCollection.js` mentioning "mean anomaly" as a motivating df64 use-case. No `csm_computeInstance` body, no SGP4/J2/Brouwer kernel, no element layout in the engine — all of that lives in the "WebGPU Orbital Catalog" / "WebGPU SGP4 Satellites" Sandcastle demos + the probes. The engine owns only the feature-agnostic substrate.
+
+**Ledger reconciliation (doc-only):** `CAMPAIGN_ROADMAP_2026-06.md` Phase 5 → ✅ DONE (Batches 277–281; closeout 282) with the accuracy headline (J2 15 m/30 day, SGP4 55 m/1440 min) + per-item SHIPPED bullets. `DEBUGGING_GUIDE.md` probe inventory += `probe-compute-instance-pick` + `probe-compute-instance-webgl2`, and the now-stale `probe-ellipsoidprim-logdepth` row rewritten from "STRUCTURAL / renders NO pixels" to the full pixel probe it became in Batch 269 (+ the translucent sibling). `DEFERRED_WORK.md` + `FEATURE_INVENTORY.md` were already current for 277–281 (verified, no edit needed). This entry is the closeout record.
+
+**Files:** docs only — `migration_doc/{CAMPAIGN_ROADMAP_2026-06,DEBUGGING_GUIDE,WEBGPU_DEBUGGING_LOG}.md`. No engine/source/probe code touched this batch. Build was already green from Batch 281 (`bb90ad7a90`); no rebuild needed for a doc-only closeout.
+
+---
+
 ## Batch 281 — 1M-instance device-limits validation for the compute-instance system (NEW-ORBITAL-DEVICE-LIMITS-PROBE) (2026-06-14)
 
 Not a bug fix — a scaling-validation stage. The question: does the GPU-resident compute-instance pipeline (NEW-COMPUTE-INSTANCE-SYSTEM) actually scale to the 1M-object catalog the roadmap targets, or does 1M trip a WebGPU device limit (`maxStorageBufferBindingSize`, `maxBufferSize`, `maxComputeWorkgroupsPerDimension`, `maxComputeInvocationsPerWorkgroup`) and force a multi-SSBO / tiled-dispatch redesign?
