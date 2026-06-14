@@ -170,8 +170,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Billboard size in pixels (post-distance-scaling)
   let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
 
-  // Convert pixel offset to clip space
-  let pixelToClip = 2.0 / camera.viewportSize;
+  // Convert CSS-pixel offsets to clip space. NEW-BILLBOARD-SIZE-PARITY —
+  // pick quads must cover the same device pixels as the color pass so picks
+  // land on the rendered billboard; bake pixelRatio (highResMultiplier) into
+  // the CSS-px → device-px conversion. See BillboardCollection.wgsl.
+  let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
 

@@ -24,6 +24,27 @@
 
 ---
 
+## Batch 275 — Billboards/labels render at full WebGL size: the bug was the atlas sub-rect, not the size term (NEW-BILLBOARD-SIZE-PARITY) (2026-06-13)
+
+**Symptom:** WebGPU rendered `BillboardCollection` images and `LabelCollection` glyphs at ≈½ the linear dimension / ≈¼ the pixel area of WebGL in every scene mode (3D/2D/CV). `probe-collections-2dcv-morph.mjs` billboard ratio ≈0.23-0.28, label ratio ≈0.26.
+
+**Root cause (found probe-first, not from the size math):** the quad-expansion math in `BillboardCollection.wgsl` vertexMain is byte-equivalent to WebGL (`QUAD_OFFSETS ∈ {−0.5,+0.5}` × `size` == WebGL `halfSize × (direction·2−1)`). The real defect was the **per-instance atlas sub-rect**: `packBillboardInstance` / `packSDFGlyphInstance` read `bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex` — both **undefined** for a normal billboard — so `imageRect` defaulted to `(0,0,1,1)`, the WHOLE atlas. The texture atlas is larger than any single image (a 16px image lands in a 32×32 atlas at width/height = 0.5), so the quad's outer region sampled transparent atlas padding and was discarded by `color.a < 0.005`, shrinking the billboard to the fraction of the atlas its image filled. Diagnosed by measuring the rendered bbox (WebGL 16×16 centered on the anchor; WebGPU only the lower-left ¼, edge-matched to WebGL's left/top edge) and confirming `bb.computeTextureCoordinates()` returned `{x:0.03, y:0.03, width:0.5, height:0.5}` against a 32×32 atlas.
+
+**Fix:** in both `WebGPUBillboardRenderer.js` and `WebGPULabelRenderer.js`, pack the real normalized atlas rect via `bb.computeTextureCoordinates(scratch)` (exactly what WebGL does at `BillboardCollection.js:1572`), falling back to `(0,0,1,1)` only when `!bb.ready`. The instance manager already forces a full re-pack on `atlasGuid` change, so the rect stays fresh as the atlas grows/resizes.
+
+**Two adjacent parity fixes in the same batch:**
+
+- **Label glyph layout** — the label renderer packed only `bb.pixelOffset`, omitting each glyph's per-character `_translate` (the horizontal advance `LabelCollection.repositionAllGlyphs` sets via `_setTranslate`). WebGL adds `(translate + pixelOffset)` (`BillboardCollectionVS.glsl:84` / `Billboard._computeScreenSpacePosition:1216`). Without it every glyph stacked at one spot and a 4-letter label rendered ~1 glyph wide (label width ratio 0.24). Now packs `pixelOffset.x + _translate.x` (and y). `_setTranslate` already `makeDirty`s the glyph so the partial-write manager re-packs it.
+- **HiDPI parity (DPR > 1)** — `highResMultiplier` (camera UB float 42) was hardcoded `1.0`; set it to `frameState.pixelRatio` and fold into the WGSL `pixelToClip = (2.0 * highResMultiplier) / viewportSize` (color + velocity + SDF + pick). The viewport is in DEVICE pixels but billboard sizes/offsets are CSS pixels, so WebGL scales them via `czm_metersPerPixel × czm_pixelRatio`; this mirrors that. No-op at DPR 1 (the probe environment) but prevents 1/pixelRatio shrink on Retina/HiDPI.
+
+**Verification (probe-first):** `probe-collections-2dcv-morph.mjs` — billboard 0.23 → **1.00 / 0.99 / 0.99** (3D/2D/CV), label 0.26 → ≈1.2 (FULL-size: rendered bbox now byte-matches WebGL 80×24; +20% fill is SDF anti-alias edge spread, not a size error). Direct bbox probe: WebGPU billboard 16×15 px @ 492-507 == WebGL exactly. Standing gates green: collections-regression, billboard/point-label partial-write (delta-gated, no re-baseline needed), logdepth-zfight, collections-far-camera, pickposition (cross-backend ≈0 delta — pick quads now correct size), buffer-point-update, sandcastle-smoke. `npx tsc --noEmit` exit 0, `npx gulp build` green.
+
+**Files modified:** `WebGPUBillboardRenderer.js`, `WebGPULabelRenderer.js`, `BillboardCollection.wgsl`, `BillboardCollectionSDF.wgsl`, `BillboardCollectionPick.wgsl`.
+
+**Residual (separate, P3):** WebGPU label carries a small anchor offset vs WebGL (~17px x / ~18px y on the test word) — a label horizontal-origin/baseline nuance, NOT a size defect.
+
+---
+
 ## Batch 273 — BufferPoint encode benchmark + threshold tuned 5000→2000; the win is the encode-hoist, not WASM SIMD (NEW-BUFFERCOLL-ENCODE-BENCHMARK) (2026-06-13)
 
 **Goal:** Benchmark the BufferPointCollection POSITION repack encode (scalar `EncodedCartesian3` vs the Batch-272 batch path) at 10k/50k/100k on BOTH backends, tune `BUFFER_WASM_ENCODE_THRESHOLD` from real numbers, and prove no visual regression (Principle 8). The stage explicitly required measuring rather than assuming a WASM win — and the bundle can't even load WASM (NEW-WASM-BRIDGE-BUNDLE-LOAD), so a naive in-browser "WASM vs scalar" would compare JS-fallback-to-JS-fallback.

@@ -18,6 +18,7 @@
  * @module WebGPULabelRenderer
  */
 
+import BoundingRectangle from "../../Core/BoundingRectangle.js";
 import Cartesian2 from "../../Core/Cartesian2.js";
 import Color from "../../Core/Color.js";
 import defined from "../../Core/defined.js";
@@ -110,6 +111,11 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
+// NEW-BILLBOARD-SIZE-PARITY — per-glyph normalized atlas sub-rect; see the
+// matching scratch + rationale in WebGPUBillboardRenderer.js. Each glyph is
+// a small image packed into a larger SDF atlas, so the full-`(0,0,1,1)`
+// fallback shrank glyphs to ~1/4 area and sampled neighboring glyphs.
+const scratchImageRect = new BoundingRectangle();
 
 const SDF_INSTANCE_BUFFER_LAYOUT = {
   arrayStride: BYTES_PER_SDF_INSTANCE,
@@ -172,22 +178,39 @@ function packSDFGlyphInstance(out, offset, bb) {
   out[offset + 6] = scratchEncodedPos.low.z;
   out[offset + 7] = bb.rotation || 0.0;
 
-  // compressedAttr0: pixelOffset.xy, alignedAxis.xy
+  // compressedAttr0: pixelOffset.xy, alignedAxis.xy.
+  // NEW-BILLBOARD-SIZE-PARITY (label layout) — each glyph's per-character
+  // horizontal advance + vertical baseline is stored in the glyph
+  // billboard's `_translate` (set by LabelCollection.repositionAllGlyphs via
+  // `_setTranslate`), SEPARATE from the label's `_pixelOffset`. WebGL adds
+  // both (`(translate + pixelOffset) * mpp`, BillboardCollectionVS.glsl:84 /
+  // Billboard._computeScreenSpacePosition:1216). Packing only `pixelOffset`
+  // left `_translate` at 0, so every glyph stacked at the same spot — a
+  // 4-letter label rendered ~1 glyph wide. Sum them like WebGL.
   const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
-  out[offset + 8] = pixelOffset.x;
-  out[offset + 9] = pixelOffset.y;
+  const translate = bb._translate || Cartesian2.ZERO;
+  out[offset + 8] = pixelOffset.x + translate.x;
+  out[offset + 9] = pixelOffset.y + translate.y;
   out[offset + 10] = 0.0;
   out[offset + 11] = 0.0;
 
-  // compressedAttr1: imageRect (x,y,w,h in atlas, normalized)
-  const imageRect =
-    bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
-  if (defined(imageRect) && typeof imageRect === "object") {
-    out[offset + 12] = imageRect.x || 0;
-    out[offset + 13] = imageRect.y || 0;
-    out[offset + 14] = imageRect.width || 1;
-    out[offset + 15] = imageRect.height || 1;
-  } else {
+  // compressedAttr1: imageRect (x,y,w,h in atlas, normalized).
+  // NEW-BILLBOARD-SIZE-PARITY — pull the real per-glyph atlas sub-rect via
+  // `computeTextureCoordinates` (same as WebGL). The old `(0,0,1,1)`
+  // fallback sampled the whole SDF atlas, so each glyph rendered at ~1/4
+  // area and bled into adjacent glyphs.
+  let imageRectValid = false;
+  if (bb.ready && typeof bb.computeTextureCoordinates === "function") {
+    const rect = bb.computeTextureCoordinates(scratchImageRect);
+    if (defined(rect)) {
+      out[offset + 12] = rect.x;
+      out[offset + 13] = rect.y;
+      out[offset + 14] = rect.width;
+      out[offset + 15] = rect.height;
+      imageRectValid = true;
+    }
+  }
+  if (!imageRectValid) {
     out[offset + 12] = 0.0;
     out[offset + 13] = 0.0;
     out[offset + 14] = 1.0;
@@ -496,7 +519,12 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
 
   uniformData[40] = canvas.width;
   uniformData[41] = canvas.height;
-  uniformData[42] = 1.0;
+  // NEW-BILLBOARD-SIZE-PARITY — `highResMultiplier` = devicePixelRatio so the
+  // WGSL converts CSS-pixel glyph sizes to device pixels (the viewport is in
+  // device pixels). Was 1.0, which rendered labels at 1/pixelRatio the linear
+  // size (1/4 area at DPR 2). See WebGPUBillboardRenderer.packUniforms.
+  uniformData[42] =
+    typeof frameState.pixelRatio === "number" ? frameState.pixelRatio : 1.0;
   // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — pull threePointDepthTestDistance
   // from the parent LabelCollection's underlying glyph BillboardCollection.
   // Labels delegate to BillboardCollection internally, so the value

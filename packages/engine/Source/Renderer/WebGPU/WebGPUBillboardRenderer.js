@@ -21,6 +21,7 @@
  * @private
  * @module WebGPUBillboardRenderer
  */
+import BoundingRectangle from "../../Core/BoundingRectangle.js";
 import Cartesian2 from "../../Core/Cartesian2.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
@@ -72,6 +73,14 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
+// NEW-BILLBOARD-SIZE-PARITY — the billboard's normalized atlas sub-rect
+// (bottom-left x/y + width/height). The atlas is larger than any single
+// image (32×32 for a 16px image), so a billboard that samples the full
+// `(0,0,1,1)` atlas covers only the fraction of the quad where its image
+// actually sits — the rest samples transparent padding and is discarded,
+// shrinking the visible billboard. WebGL reads this rect via
+// `computeTextureCoordinates` (BillboardCollection.js:1572); mirror that.
+const scratchImageRect = new BoundingRectangle();
 
 /**
  * Batch 139 (3rd-pass audit fix) — encode the
@@ -205,15 +214,28 @@ function packBillboardInstance(out, offset, bb) {
   out[offset + 10] = alignedAxis ? alignedAxis.x : 0.0;
   out[offset + 11] = alignedAxis ? alignedAxis.y : 0.0;
 
-  // compressedAttr1: imageRect (x,y,w,h in atlas, normalized)
-  const imageRect =
-    bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
-  if (defined(imageRect) && typeof imageRect === "object") {
-    out[offset + 12] = imageRect.x || 0;
-    out[offset + 13] = imageRect.y || 0;
-    out[offset + 14] = imageRect.width || 1;
-    out[offset + 15] = imageRect.height || 1;
-  } else {
+  // compressedAttr1: imageRect (x,y,w,h in atlas, normalized).
+  // NEW-BILLBOARD-SIZE-PARITY — pull the real atlas sub-rect from the
+  // billboard's resolved texture, exactly like WebGL's
+  // `writeCompressedAttribute0/1` (BillboardCollection.js:1572). The atlas
+  // packs each image into a power-of-two region larger than the image
+  // (e.g. a 16px image lands in a 32×32 atlas at width/height = 0.5), so
+  // the old `(0,0,1,1)` fallback sampled the entire atlas — the quad's
+  // outer region hit transparent padding and was discarded, shrinking the
+  // billboard to ~1/4 area. `computeTextureCoordinates` returns the
+  // bottom-left x/y + normalized width/height the WGSL `imageRect` expects.
+  let imageRectValid = false;
+  if (bb.ready && typeof bb.computeTextureCoordinates === "function") {
+    const rect = bb.computeTextureCoordinates(scratchImageRect);
+    if (defined(rect)) {
+      out[offset + 12] = rect.x;
+      out[offset + 13] = rect.y;
+      out[offset + 14] = rect.width;
+      out[offset + 15] = rect.height;
+      imageRectValid = true;
+    }
+  }
+  if (!imageRectValid) {
     out[offset + 12] = 0.0;
     out[offset + 13] = 0.0;
     out[offset + 14] = 1.0;
@@ -689,7 +711,15 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
 
   uniformData[40] = canvas.width;
   uniformData[41] = canvas.height;
-  uniformData[42] = 1.0; // highResMultiplier
+  // NEW-BILLBOARD-SIZE-PARITY — `highResMultiplier` = devicePixelRatio. The
+  // viewport (`canvas.width/height`) is in DEVICE pixels but billboard
+  // `width`/`height`/`pixelOffset` are authored in CSS pixels, so the WGSL
+  // pixel→clip factor must scale CSS px up by pixelRatio to match WebGL,
+  // which folds `czm_pixelRatio` into `czm_metersPerPixel`. Previously hard-
+  // coded to 1.0, which made WebGPU billboards/labels render at 1/pixelRatio
+  // the linear size (1/4 the pixel area at DPR 2).
+  uniformData[42] =
+    typeof frameState.pixelRatio === "number" ? frameState.pixelRatio : 1.0;
   // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointDepthTestDistance
   // populated from `BillboardCollection.threePointDepthTestDistance`
   // when the collection has clamp-to-ground billboards. WebGL stores

@@ -283,7 +283,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
 
   let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
-  let pixelToClip = 2.0 / camera.viewportSize;
+  // NEW-BILLBOARD-SIZE-PARITY — bake pixelRatio (highResMultiplier) into the
+  // CSS-px → device-px conversion; see BillboardCollection.wgsl for the
+  // full rationale.
+  let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
 
@@ -623,7 +626,9 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     );
   }
   let size = vec2<f32>(glyphWidth, glyphHeight) * baseScale;
-  let pixelToClip = 2.0 / camera.viewportSize;
+  // NEW-BILLBOARD-SIZE-PARITY — bake pixelRatio (highResMultiplier) into the
+  // CSS-px → device-px conversion; see BillboardCollection.wgsl.
+  let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + basePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + basePixelOffset.y) * pixelToClip.y * clipPos.w;
 

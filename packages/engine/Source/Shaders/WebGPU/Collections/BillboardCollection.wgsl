@@ -370,8 +370,16 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Billboard size in pixels (post-distance-scaling)
   let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
 
-  // Convert pixel offset to clip space
-  let pixelToClip = 2.0 / camera.viewportSize;
+  // Convert CSS-pixel offsets to clip space. NEW-BILLBOARD-SIZE-PARITY —
+  // `viewportSize` is the DEVICE-pixel drawing buffer (canvas.width =
+  // cssWidth * devicePixelRatio), but `size` and `pixelOffset` are authored
+  // in CSS pixels. WebGL scales both by `czm_metersPerPixel`, which folds in
+  // `czm_pixelRatio` (metersPerPixel.glsl:43), so a billboard of N CSS px
+  // covers N*pixelRatio device px. Mirror that by baking `highResMultiplier`
+  // (= frameState.pixelRatio) into the pixel→clip factor. Without it WebGPU
+  // rendered billboards/labels at 1/pixelRatio the linear size (1/4 area at
+  // DPR 2). Matches BufferPointMaterial.wgsl's `outerRadius * pixelRatio`.
+  let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
 
@@ -738,7 +746,10 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     );
   }
   let size = vec2<f32>(billboardWidth, billboardHeight) * baseScale;
-  let pixelToClip = 2.0 / camera.viewportSize;
+  // NEW-BILLBOARD-SIZE-PARITY — same CSS-px → device-px conversion as the
+  // color VS so the velocity quad covers exactly the pixels the color pass
+  // rasterized.
+  let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + basePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + basePixelOffset.y) * pixelToClip.y * clipPos.w;
 
