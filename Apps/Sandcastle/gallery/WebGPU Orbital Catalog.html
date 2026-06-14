@@ -242,6 +242,88 @@
             return out;
           }`;
 
+        // ── WebGL2 CPU fallback kernel (NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK) ──
+        // WebGL2 has no compute shaders, so the WGSL `orbitalKernel` above
+        // cannot run there. This JS kernel is the SAME secular-J2 propagation
+        // expressed for the CPU; on a WebGL2 context the engine runs it over
+        // all objects each frame, RTE-splits the positions, and instanced-draws
+        // them — landing satellites at the same screen positions as the WebGPU
+        // leg. On WebGPU this is ignored (the GPU kernel runs instead). The two
+        // kernels share the element lane layout by THIS demo's contract; the
+        // engine never transpiles WGSL.
+        function reduceToPi(angle) {
+          const twoPi = 2.0 * Math.PI;
+          let r = angle - twoPi * Math.round(angle / twoPi);
+          if (r > Math.PI) {
+            r -= twoPi;
+          } else if (r < -Math.PI) {
+            r += twoPi;
+          }
+          return r;
+        }
+        function orbitalCpuKernel(out, index, timeSeconds, params) {
+          const base = index * FLOATS_PER_INSTANCE;
+          const a = params[base + 0];
+          const e = params[base + 1];
+          const inc = params[base + 2];
+          const raan0 = params[base + 3];
+          const argp0 = params[base + 4];
+          const m0 = params[base + 5];
+          const mDot = params[base + 6] + params[base + 7]; // df64 hi+lo
+          const gmst0 = params[base + 8];
+
+          const n = Math.sqrt(GM / (a * a * a));
+          const ome2 = Math.max(1.0 - e * e, 1.0e-6);
+          const p = a * ome2;
+          const reOverP = EARTH_RADIUS / p;
+          const factor = 1.5 * J2 * reOverP * reOverP * n;
+          const ci = Math.cos(inc);
+          const si = Math.sin(inc);
+          const si2 = si * si;
+
+          const raanDot = -factor * ci;
+          const argpDot = factor * (2.0 - 2.5 * si2);
+
+          const M = m0 + mDot * timeSeconds;
+          const raan = raan0 + raanDot * timeSeconds;
+          const argp = argp0 + argpDot * timeSeconds;
+          const gmst = gmst0 + EARTH_ROTATION_RATE * timeSeconds;
+
+          const Mred = reduceToPi(M);
+          let E = Mred;
+          for (let k = 0; k < 4; k++) {
+            const f = E - e * Math.sin(E) - Mred;
+            const fp = 1.0 - e * Math.cos(E);
+            E = E - f / fp;
+          }
+          const cosE = Math.cos(E);
+          const sinE = Math.sin(E);
+          const r = a * (1.0 - e * cosE);
+          const beta = Math.sqrt(Math.max(1.0 - e * e, 0.0));
+          const nu = Math.atan2(beta * sinE, cosE - e);
+
+          const u = nu + argp;
+          const cu = Math.cos(u);
+          const su = Math.sin(u);
+          const co = Math.cos(raan);
+          const so = Math.sin(raan);
+
+          const xEci = r * (cu * co - su * ci * so);
+          const yEci = r * (cu * so + su * ci * co);
+          const zEci = r * (su * si);
+
+          const cg = Math.cos(gmst);
+          const sg = Math.sin(gmst);
+          out.position.x = cg * xEci + sg * yEci;
+          out.position.y = -sg * xEci + cg * yEci;
+          out.position.z = zEci;
+          out.color.red = params[base + 9];
+          out.color.green = params[base + 10];
+          out.color.blue = params[base + 11];
+          out.color.alpha = 1.0;
+          out.pixelSize = params[base + 12];
+        }
+
         // GMST at the catalog epoch (rad). Same value for every object — the
         // kernel advances it per frame as gmst0 + omega_earth * t. Computed
         // once when the catalog is (re)built from the scene clock so the
@@ -274,6 +356,8 @@
           catalog = scene.primitives.add(
             new Cesium.ComputeInstanceCollection({
               kernel: orbitalKernel,
+              // WebGL2 fallback (ignored on WebGPU) — same propagation on CPU.
+              cpuKernel: orbitalCpuKernel,
               floatsPerInstance: FLOATS_PER_INSTANCE,
               // Positions are GPU-resident, so the bounding volume is a
               // USER contract: every orbit fits inside GEO radius + margin

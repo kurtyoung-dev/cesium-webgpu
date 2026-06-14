@@ -6,6 +6,33 @@ import JulianDate from "../Core/JulianDate.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import {
+  updateWebGLComputeInstanceCollection,
+  destroyWebGLComputeInstanceResources,
+} from "../Renderer/WebGLComputeInstanceRenderer.js";
+
+// Registers the backend-agnostic WebGL2 compute-instance renderer on the
+// context once (idempotent — registerFeatureRenderer overwrites the same slot
+// but getFeatureRenderer short-circuits after the first registration). Lives
+// under Renderer/, so the scene file never reaches into Renderer/WebGPU/.
+function ensureWebGLComputeInstanceRenderer(context) {
+  let fr = context.getFeatureRenderer(
+    FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
+  );
+  if (!fr) {
+    context.registerFeatureRenderer(
+      FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
+      {
+        update: updateWebGLComputeInstanceCollection,
+        destroy: destroyWebGLComputeInstanceResources,
+      },
+    );
+    fr = context.getFeatureRenderer(
+      FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
+    );
+  }
+  return fr;
+}
 
 /**
  * A GPU-resident collection of N instances whose per-instance data lives in
@@ -81,11 +108,26 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  * or anything <code>csm_*</code>. The kernel and
  * <code>floatsPerInstance</code> are immutable after construction.
  *
- * Rendering is currently WebGPU-only (WebGL2 has no compute). The WebGL2
- * fallback (worker/WASM kernel writing the same instance buffer) is a
- * tracked follow-up — see NEW-COMPUTE-INSTANCE-* entries in
- * migration_doc/DEFERRED_WORK.md. On a WebGL context this collection
- * renders nothing.
+ * <h4>WebGL2 fallback (NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK)</h4>
+ *
+ * WebGL2 has no compute shaders, so the WGSL <code>kernel</code> cannot run
+ * on that backend. Supply an optional <code>options.cpuKernel</code> — a JS
+ * function <code>(out, index, timeSeconds, params) =&gt; void</code> that
+ * writes the SAME per-instance result the WGSL kernel produces
+ * (<code>out.position</code> a Cartesian3-shaped <code>{x,y,z}</code> in
+ * absolute ECEF meters, <code>out.color</code> a
+ * <code>{red,green,blue,alpha}</code> in [0,1], <code>out.pixelSize</code> in
+ * pixels) — and on a WebGL2 context the engine runs it over all instances
+ * each frame, RTE-splits the positions with the same AGI high/low encode the
+ * WebGPU records reconstruct against, and issues an instanced quad draw that
+ * mirrors the WebGPU vertex layout. The two kernels share an element layout
+ * by the CALLER's contract — the engine never transpiles the WGSL. Without a
+ * <code>cpuKernel</code> the collection still renders nothing on WebGL2.
+ *
+ * <code>cpuKernel</code> is used ONLY on the non-compute backend; the WebGPU
+ * leg always runs the GPU <code>kernel</code> and ignores it. A Worker + WASM
+ * offload of the CPU kernel is a tracked enhancement
+ * (NEW-COMPUTE-INSTANCE-WEBGL2-WORKER in migration_doc/DEFERRED_WORK.md).
  *
  * @alias ComputeInstanceCollection
  *
@@ -107,6 +149,11 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  *        (positions are GPU-resident, so picking is rasterized, not
  *        CPU-hit-tested). Set <code>false</code> to skip the per-instance
  *        pick id allocation and the pick draw entirely.
+ * @param {ComputeInstanceCollection.CpuKernel} [options.cpuKernel] Optional
+ *        JS kernel <code>(out, index, timeSeconds, params) =&gt; void</code>
+ *        used ONLY on the WebGL2 (non-compute) backend to produce the same
+ *        per-instance result as the WGSL <code>kernel</code>. See the WebGL2
+ *        fallback note above. Omit for a WebGPU-only collection.
  * @param {JulianDate} [options.epoch] The epoch that simulation time is
  *        measured from. Defaults to the first rendered frame's time.
  * @param {BoundingSphere} [options.boundingSphere] A user-supplied sphere
@@ -182,7 +229,18 @@ class ComputeInstanceCollection {
      */
     this.allowPicking = options.allowPicking ?? true;
 
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(options.cpuKernel) && typeof options.cpuKernel !== "function") {
+      throw new DeveloperError(
+        "options.cpuKernel must be a function (out, index, timeSeconds, params) => void.",
+      );
+    }
+    //>>includeEnd('debug');
+
     this._kernel = options.kernel;
+    // WebGL2-only CPU fallback kernel (the WGSL `kernel` can't run without
+    // compute). Mutable post-construction so a demo can attach it after build.
+    this._cpuKernel = options.cpuKernel;
     this._floatsPerInstance = floatsPerInstance;
     this._epoch = defined(options.epoch)
       ? JulianDate.clone(options.epoch)
@@ -209,6 +267,7 @@ class ComputeInstanceCollection {
     this._simulationTimeSeconds = 0;
     this._featureRenderer = undefined;
     this._webgpuCache = undefined;
+    this._webglCache = undefined;
   }
 
   /**
@@ -227,6 +286,30 @@ class ComputeInstanceCollection {
    */
   get kernel() {
     return this._kernel;
+  }
+
+  /**
+   * The JS CPU fallback kernel used ONLY on the WebGL2 (non-compute) backend:
+   * <code>(out, index, timeSeconds, params) =&gt; void</code>. Writes
+   * <code>out.position</code> ({x,y,z} ECEF meters), <code>out.color</code>
+   * ({red,green,blue,alpha} in [0,1]) and <code>out.pixelSize</code> (px) to
+   * mirror the WGSL <code>kernel</code>'s per-instance output. Ignored on
+   * WebGPU. Assignable after construction.
+   * @type {ComputeInstanceCollection.CpuKernel|undefined}
+   */
+  get cpuKernel() {
+    return this._cpuKernel;
+  }
+
+  set cpuKernel(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(value) && typeof value !== "function") {
+      throw new DeveloperError(
+        "cpuKernel must be a function (out, index, timeSeconds, params) => void.",
+      );
+    }
+    //>>includeEnd('debug');
+    this._cpuKernel = value;
   }
 
   /**
@@ -391,19 +474,31 @@ class ComputeInstanceCollection {
       this._epoch,
     );
 
-    const fr = frameState.context.getFeatureRenderer(
+    const context = frameState.context;
+    let fr = context.getFeatureRenderer(
       FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
     );
+
+    // WebGL2 (non-compute) backend: no compute-instance FR is registered by
+    // default (only the WebGPU context registers one). When a CPU fallback
+    // kernel is supplied, lazily register the backend-agnostic WebGL renderer
+    // — it lives under Renderer/ (NOT Renderer/WebGPU/), so this stays within
+    // the FeatureRenderer seam (CLAUDE.md §2) rather than branching on
+    // isWebGPU. Without a cpuKernel the collection still renders nothing here.
+    if (!fr && !context.isWebGPU && defined(this._cpuKernel)) {
+      fr = ensureWebGLComputeInstanceRenderer(context);
+    }
+
     if (fr) {
       fr.update(this, frameState);
       this._featureRenderer = fr;
       return;
     }
 
-    // WebGL2 has no compute — the fallback (a worker/WASM kernel host
-    // writing the same instance buffer) is tracked as
-    // NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK in migration_doc/DEFERRED_WORK.md.
-    // Until it lands, the collection renders nothing on WebGL.
+    // No renderer for this backend (e.g. WebGL2 without a cpuKernel) — the
+    // collection renders nothing. NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK adds
+    // the cpuKernel path above; a Worker/WASM offload of it is tracked as
+    // NEW-COMPUTE-INSTANCE-WEBGL2-WORKER in migration_doc/DEFERRED_WORK.md.
   }
 
   /**
