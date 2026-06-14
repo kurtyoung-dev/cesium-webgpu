@@ -59,12 +59,29 @@ import type {
 const scratchPoint = new BufferPoint();
 const scratchPointMat = new BufferPointMaterial();
 
-// NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — minimum dirty primitive count
-// before the position high/low lanes are routed through the WASM batch RTE
-// encode instead of the per-primitive scalar `EncodedCartesian3` loop. Below
-// this, the per-call bridge/arena overhead outweighs the SIMD win, so small
-// edits stay on the scalar path.
-export const BUFFER_WASM_ENCODE_THRESHOLD = 5000;
+// NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) / NEW-BUFFERCOLL-ENCODE-BENCHMARK
+// (Batch 273) — minimum dirty primitive count before the position high/low lanes
+// are routed through the batch RTE encode (one contiguous `batchEncodeRange`
+// call: WASM SIMD kernel when the module loads, byte-identical scalar fround
+// twin otherwise) instead of the per-primitive scalar `EncodedCartesian3` loop.
+//
+// Tuned from measurement (Batch 273), NOT assumption — see
+// Tools/wasm-encode-benchmark.mjs (real-kernel CPU encode) +
+// Tools/visual-regression/probe-buffercoll-encode-benchmark.mjs (end-to-end
+// repack+upload, both backends). Findings:
+//   - The DOMINANT win is hoisting the position encode OUT of the per-primitive
+//     loop (the per-point EncodedCartesian3 65536-grid split is the bottleneck),
+//     NOT WASM SIMD. The batch fround split over a contiguous Float64Array beats
+//     the per-primitive scalar path by ~25-40% end-to-end at >= 1500 points on
+//     BOTH backends, even with the WASM kernel dark (JS fround twin running).
+//   - The real WASM kernel (Node micro-bench) adds only ~1.2x over scalar fround
+//     at 10k-50k and ties at 100k — below browser measurement noise, so no
+//     WASM-specific gating is warranted.
+//   - Crossover: batch loses below ~750 points (fixed slice-setup overhead),
+//     is marginal at ~1000, and wins reliably from ~1500 up. Absolute repack
+//     time below 1500 is < 0.5 ms/frame — negligible vs the frame budget.
+// 2000 sits comfortably inside the winning region with margin against noise.
+export const BUFFER_WASM_ENCODE_THRESHOLD = 2000;
 
 // The effective threshold honors an optional per-collection override
 // (`_wasmEncodeThresholdOverride`) so the parity probe can force the SAME large
@@ -114,6 +131,14 @@ export interface PointCache extends SharedCache {
   wasmEncodeRepacks: number;
   /** Instrumentation: how many repacks took the scalar position path. */
   scalarEncodeRepacks: number;
+  // NEW-BUFFERCOLL-ENCODE-BENCHMARK (Batch 273) — debug-only repack+upload
+  // timing accumulators, populated only under the debug pragma (stripped from
+  // production builds). `_repackMsLast` is the most recent repack+writeBuffer
+  // duration (ms); `_repackMsTotal`/`_repackSamples` let the benchmark probe
+  // average across frames. Read via the probe; never consulted at runtime.
+  _repackMsLast?: number;
+  _repackMsTotal?: number;
+  _repackSamples?: number;
 }
 
 // ─── Pipeline builder ────────────────────────────────────────────────────────
@@ -500,8 +525,23 @@ export function updateWebGPUBufferPointCollection(
   }
 
   if (collection._dirtyCount > 0) {
+    // NEW-BUFFERCOLL-ENCODE-BENCHMARK (Batch 273) — time the repack (position
+    // encode + color/pick/outline interleave) AND the writeBuffer upload of the
+    // dirty range together, so the benchmark probe can compare the batch-encode
+    // vs scalar-encode strategies WITH the GPU-upload cost in the picture (the
+    // upload may dominate the CPU encode at high counts). Debug-only: the timer
+    // calls + accumulator writes are pragma-stripped from production builds.
+    //>>includeStart('debug', pragmas.debug);
+    const _repackT0 = performance.now();
+    //>>includeEnd('debug');
     repackPointDirty(collection, cache, context);
     uploadPointBuffers(device, cache);
+    //>>includeStart('debug', pragmas.debug);
+    const _repackDt = performance.now() - _repackT0;
+    cache._repackMsLast = _repackDt;
+    cache._repackMsTotal = (cache._repackMsTotal ?? 0) + _repackDt;
+    cache._repackSamples = (cache._repackSamples ?? 0) + 1;
+    //>>includeEnd('debug');
     cache.command = null;
     cache.pickCommand = null;
   }

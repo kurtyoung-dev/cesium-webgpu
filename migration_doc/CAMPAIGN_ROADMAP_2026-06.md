@@ -27,10 +27,11 @@ Resumes the paused Batch-220 diagnosis. Depends on Phase 2 (depth-match half).
 - Cosmetic: collections ~0.7× screen-size mismatch (highResMultiplier/DPR).
 - Gate: `probe-collections-2dcv-morph.mjs` goes green in 2D + CV (currently all-zero).
 
-## Phase 4 — Large Dynamic Objects, roadmap Phase 2 (flat-buffer + WASM)
+## Phase 4 — Large Dynamic Objects, roadmap Phase 2 (flat-buffer + WASM) ✅ CORE SHIPPED (Batches 270-273)
 
-- **NEW-WASMRTE-SUBRANGE-ENCODE** (sub-range batchEncode + JS fallback), **NEW-BUFFERCOLL-WASM-ENCODE-WIRE** (threshold-gated into WebGPU+WebGL `Buffer*` repack), **NEW-BUFFERCOLL-ENCODE-BENCHMARK** (10k/50k/100k, threshold tuning), optional **NEW-WASM-WIDE-INSTANCE-KERNEL**.
-- Depends on the #13465 BufferPointCollection staleness fix (Phase-1 stage 6).
+- ✅ **NEW-WASMRTE-SUBRANGE-ENCODE** (Batch 271, sub-range batchEncode + JS fallback), ✅ **NEW-BUFFERCOLL-WASM-ENCODE-WIRE** (Batch 272, threshold-gated into WebGPU+WebGL `Buffer*` repack), ✅ **NEW-BUFFERCOLL-ENCODE-BENCHMARK** (Batch 273, 10k/50k/100k both backends, threshold tuned 5000→2000 from measurement). Optional **NEW-WASM-WIDE-INSTANCE-KERNEL** remains deferred (only worth it if the residual color-pack loop becomes the bottleneck — the benchmark showed the position-encode hoist already captures the win).
+- Built on the #13465 BufferPointCollection staleness fix (Batch 270).
+- **Benchmark headline (Batch 273):** the win is the position-encode HOIST out of the per-primitive loop (batch fround over a contiguous Float64Array beats the per-point AGI `EncodedCartesian3` split by ~25-40% end-to-end at ≥1500 points on BOTH backends), NOT WASM SIMD (real-kernel CPU micro-bench: ~1.2x at 10k-50k, ties at 100k — below browser noise). Threshold lowered to 2000 to capture medium dynamic updates. Honest caveat carried forward: the WASM kernel still does not load in the bundle (**NEW-WASM-BRIDGE-BUNDLE-LOAD**) — the bundle runs the byte-identical JS fround twin, so the SIMD win is dormant until that infra fix lands; the strategy win stands regardless.
 
 ## Phase 5 — Orbital / compute-instance productionization
 

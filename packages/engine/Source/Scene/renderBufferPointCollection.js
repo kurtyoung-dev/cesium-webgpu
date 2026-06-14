@@ -24,12 +24,17 @@ import BoundingSphere from "../Core/BoundingSphere.js";
 import BufferPointMaterial from "./BufferPointMaterial.js";
 import WasmRTEBridge from "./WasmRTEBridge.js";
 
-// NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — minimum dirty primitive count
-// before routing the POSITION high/low encode through the WASM batch RTE kernel
-// instead of the per-primitive scalar EncodedCartesian3 loop. Mirrors the
-// WebGPU renderer's BUFFER_WASM_ENCODE_THRESHOLD; WebGL2 has no compute, so the
-// WASM-on-main-thread encode is the dense-update fast path for this backend.
-const BUFFER_WASM_ENCODE_THRESHOLD = 5000;
+// NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) / NEW-BUFFERCOLL-ENCODE-BENCHMARK
+// (Batch 273) — minimum dirty primitive count before routing the POSITION
+// high/low encode through the batch RTE path (one contiguous `batchEncodeRange`
+// call: WASM kernel when loaded, byte-identical scalar fround twin otherwise)
+// instead of the per-primitive scalar EncodedCartesian3 loop. Mirrors the WebGPU
+// renderer's BUFFER_WASM_ENCODE_THRESHOLD (kept in lock-step — both tuned to
+// 2000 from the Batch-273 benchmark). The win is the encode-hoist out of the
+// per-primitive loop, measured ~25-40% faster end-to-end at >= 1500 points on
+// BOTH backends; see Tools/visual-regression/probe-buffercoll-encode-benchmark.mjs
+// + Tools/wasm-encode-benchmark.mjs for the data and crossover rationale.
+const BUFFER_WASM_ENCODE_THRESHOLD = 2000;
 
 /** @import FrameState from "./FrameState.js"; */
 /** @import BufferPointCollection from "./BufferPointCollection.js"; */
@@ -64,6 +69,9 @@ const BufferPointAttributeLocations = {
  * @property {WasmRTEBridge} [rteBridge] Lazily-created bridge for the threshold-gated WASM batch position encode.
  * @property {number} [wasmEncodeRepacks] Instrumentation: repacks that took the WASM/batch position path.
  * @property {number} [scalarEncodeRepacks] Instrumentation: repacks that took the scalar position path.
+ * @property {number} [_repackMsLast] Debug-only (Batch 273): last repack+upload duration in ms.
+ * @property {number} [_repackMsTotal] Debug-only (Batch 273): cumulative repack+upload ms across frames.
+ * @property {number} [_repackSamples] Debug-only (Batch 273): number of timed repack frames.
  * @property {Function} destroy
  * @ignore
  */
@@ -101,6 +109,17 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
   if (!defined(renderContext.pickIds)) {
     renderContext.pickIds = [];
   }
+
+  // NEW-BUFFERCOLL-ENCODE-BENCHMARK (Batch 273) — repack+upload timer. Captured
+  // at the start of the dirty repack and read after the copyAttributeFromRange
+  // upload below so the benchmark probe sees position-encode + GPU-upload cost
+  // together. Debug-only: pragma-stripped from production builds.
+  //>>includeStart('debug', pragmas.debug);
+  let _repackT0 = 0;
+  if (collection._dirtyCount > 0) {
+    _repackT0 = performance.now();
+  }
+  //>>includeEnd('debug');
 
   if (collection._dirtyCount > 0) {
     const { attributeArrays, pickIds } = renderContext;
@@ -294,6 +313,18 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
       }
     }
   }
+
+  // NEW-BUFFERCOLL-ENCODE-BENCHMARK (Batch 273) — record the repack+upload
+  // duration captured above (debug-only; stripped from production builds).
+  //>>includeStart('debug', pragmas.debug);
+  if (_repackT0 !== 0) {
+    const _repackDt = performance.now() - _repackT0;
+    renderContext._repackMsLast = _repackDt;
+    renderContext._repackMsTotal =
+      (renderContext._repackMsTotal ?? 0) + _repackDt;
+    renderContext._repackSamples = (renderContext._repackSamples ?? 0) + 1;
+  }
+  //>>includeEnd('debug');
 
   if (!defined(renderContext.renderState)) {
     renderContext.renderState = RenderState.fromCache({

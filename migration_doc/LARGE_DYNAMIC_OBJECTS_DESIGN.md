@@ -117,11 +117,13 @@ The manager should land **as part of / paired with `NEW-COLLECTION-RENDERER-BASE
 | **P2-T2** | Wire the RTE fast-path into `WebGPUBufferPointRenderer.repackPointDirty` (`:284-340`): gate on `_dirtyCount ≥ threshold`, feed the contiguous `_positionView` slice (for points `vertexOffset==index` → contiguous f64 XYZ, zero deinterleave), keep color/pick/outline interleave in JS. Instantiate bridge on `PointCache`, destroy in `destroyWebGPUBufferPointCollection` (`:489-506`). | M | P2-T1 |
 | **P2-T3** | Apply the same routing to the WebGL `renderBufferPointCollection.js` encode loop (Principle-5 parity; WebGL2 = WASM-on-main-thread for this regime). | S | P2-T1 |
 | **P2-T4** | Port upstream **#13465** staleness fix + regression spec. Land before/with P2-T2. | S | none |
-| **P2-T5** | Benchmark 10k/50k/100k bulk-update repack: scalar JS vs WASM, both backends; tune threshold; Playwright probe confirming no visual regression vs WebGL (Principle 8). | M | P2-T2, P2-T3, P2-T4 |
-| **P2-T6** | *Optional* wider kernel: `batch_encode_point_instances` in `rte_encode.rs` (position high/low + RGB8 color/outline in one pass), bump WASM version (`lib.rs:193` + `WasmFeatureDetection.js` `EXPECTED_WASM_VERSION`), route Polygon/Polyline repack through it. **Only if P2-T5 shows the JS color-pack loop is the residual bottleneck.** Polygon/polyline positions are non-contiguous (index→vertex) so they need this wider kernel, not a simple slice. | L | P2-T5 |
+| **P2-T5** | ✅ **Batch 273.** Benchmarked 10k/50k/100k bulk-update repack, both backends; tuned threshold 5000→2000; Playwright probe confirms no WebGL-vs-WebGPU regression (Principle 8). Tools: `wasm-encode-benchmark.mjs` (Node real-kernel CPU) + `probe-buffercoll-encode-benchmark.mjs` (browser end-to-end). | M | P2-T2, P2-T3, P2-T4 |
+| **P2-T6** | DEFERRED — *Optional* wider kernel: `batch_encode_point_instances` in `rte_encode.rs` (position high/low + RGB8 color/outline in one pass). **P2-T5 showed the color-pack loop is NOT the residual bottleneck** — the position-encode hoist alone captured the ~25-40% repack win, so this wider kernel is not justified for the current workload. Polygon/polyline positions are non-contiguous (index→vertex) so they would need this wider kernel, not a simple slice. | L | P2-T5 |
 | **P2-T7** | Sync-planning note: track **#13448** (readonly props, Node 22) as a next-merge breaking change; ensure encode code doesn't mutate `modelMatrix`/BV post-construction. | S | none |
 
 **Risks:** the win may be modest if GPU `writeBuffer` upload dominates over CPU encode at these counts — **measure (P2-T5) before claiming** (Principle 8). Async WASM load means first frames always run the JS fallback (which is byte-exact). Do **not** treat the dead `WasmRTEBridge` as removable (Principle 7) — it's scaffolding for exactly this task.
+
+**P2-T5 measured result (Batch 273) — the risk above resolved as a surprise:** neither the GPU upload NOR WASM SIMD is where the win lives. The dominant repack cost is the **per-primitive `EncodedCartesian3` 65536-grid split inside the loop**. Hoisting the position encode into one contiguous `batchEncodeRange` fround call makes the repack **~25-40% faster end-to-end at ≥1500 points on BOTH backends** even with the WASM kernel dark (the bundle can't load WASM — `NEW-WASM-BRIDGE-BUNDLE-LOAD` — so the JS fround twin runs). The real WASM kernel (Node micro-bench) adds only ~1.2x over scalar fround at 10k-50k and ties at 100k (its per-call arena copy/readback overhead scales with count). End-to-end repack ms/frame at the moving-grid worst case: ~2/10/20 ms (batch) vs ~3/14/27 ms (scalar) at 10k/50k/100k. Threshold lowered to **2000** (crossover ~750-1500; absolute < 0.5 ms/frame below that). Net: the threshold gates an **encode-strategy hoist** that wins independent of WASM; the SIMD speedup is below browser noise and dormant until the bundle-load infra fix lands.
 
 ---
 
@@ -268,11 +270,11 @@ Phase 2 (SoA + WASM encode) ─── independent of 0/1 ───┐
 | `NEW-PARTIAL-WRITE-COALESCING` | 1 | M | Dirty-range coalescing + changed-fraction whole-buffer fallback. |
 | `NEW-PARTIAL-WRITE-WIRE-BPL` | 1 | M | Wire Billboard/Point/Label renderers onto the manager; slot-aligned velocity prev-mirror. |
 | `NEW-COLLECTION-RENDERER-BASE` | 1 | M | Shared base for the 4 collection renderers; manager folds in (already tracked at findings.json:231). |
-| `NEW-WASMRTE-SUBRANGE-ENCODE` | 2 | S | Sub-range variant of `WasmRTEBridge.batchEncode` (encode dirty `[offset,count)`). |
-| `NEW-BUFFERCOLL-WASM-ENCODE-WIRE` | 2 | M | Route WASM encode into WebGPU+WebGL Buffer* repack hot paths, threshold-gated. |
-| `NEW-UPSTREAM-13465-BUFFERPOINT-STALENESS` | 2 | S | Port upstream #13465 update-staleness fix + regression spec (gates benchmark). |
-| `NEW-BUFFERCOLL-ENCODE-BENCHMARK` | 2 | M | Benchmark 10k/50k/100k scalar-vs-WASM both backends + visual-regression probe. |
-| `NEW-WASM-WIDE-INSTANCE-KERNEL` | 2 | L | Optional single-pass position+color/outline kernel for Polygon/Polyline (non-contiguous); gated on benchmark. |
+| `NEW-WASMRTE-SUBRANGE-ENCODE` | 2 | S | ✅ Batch 271. Sub-range `batchEncodeRange` + latent WASM-memory-handle fix. |
+| `NEW-BUFFERCOLL-WASM-ENCODE-WIRE` | 2 | M | ✅ Batch 272. WASM encode wired into WebGPU+WebGL Buffer* repack, threshold-gated. |
+| `NEW-UPSTREAM-13465-BUFFERPOINT-STALENESS` | 2 | S | ✅ Batch 270. Port upstream #13465 update-staleness fix + regression spec. |
+| `NEW-BUFFERCOLL-ENCODE-BENCHMARK` | 2 | M | ✅ Batch 273. Node real-kernel CPU bench + both-backend end-to-end probe; threshold tuned 5000→2000 (win = encode-hoist, not WASM SIMD). |
+| `NEW-WASM-WIDE-INSTANCE-KERNEL` | 2 | L | DEFERRED — benchmark showed the color-pack loop is NOT the residual bottleneck (the position hoist captured the win). |
 | `NEW-UPSTREAM-13448-READONLY-PROPS` | 2 | S | Next-sync breaking-change note: Buffer* modelMatrix/BV readonly + Node 22. |
 | `NEW-ORBITAL-DATA-MODEL` | 3 | S | Element SSBO + time uniform + RTE output layout; decide RTE-encode location (1-pager). |
 | `NEW-ORBITAL-DEVICE-LIMITS-PROBE` | 3 | S | Validate storage/compute limits for 1M target; single- vs multi-binding split. |
