@@ -1,5 +1,6 @@
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
 import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+import resolveWasmGlueUrl from "./resolveWasmGlueUrl.js";
 // AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
 
 /**
@@ -75,19 +76,13 @@ class WasmRTEBridge {
     WasmFeatureDetection.checkSIMDSupport();
     _wasmLoading = (async () => {
       try {
+        // NEW-WASM-BRIDGE-BUNDLE-LOAD (Batch 274): resolve the glue URL via the
+        // shared buildModuleUrl-backed helper so the dynamic import lands on the
+        // real on-disk glue in EVERY output format (ESM/IIFE/CJS) instead of
+        // 404ing relative to the emitted bundle. See resolveWasmGlueUrl.js.
         const module = await import(
           /* webpackIgnore: true */
-          // NOTE (Batch 272): this specifier 404s in the BUNDLED build for ALL
-          // seven Wasm*Bridge files — the external import resolves relative to
-          // the emitted bundle, not this source file, and the glue's sibling
-          // cesium_wasm_bg.wasm then can't be located either. The encode is
-          // unaffected because every bridge has a byte-identical JS fallback, so
-          // rendering is correct, but the WASM kernel never actually runs in a
-          // real page. Fixing the build-output WASM specifier is a bundle-wide
-          // infra task tracked as NEW-WASM-BRIDGE-BUNDLE-LOAD in DEFERRED_WORK —
-          // do NOT special-case RTE here (it would diverge from the 6 siblings
-          // and complicate the systemic fix).
-          "../../ThirdParty/Workers/cesium_wasm.js"
+          resolveWasmGlueUrl()
         );
         // __wbg_init returns the instance exports (incl. `.memory`).
         _wasmExports = await module.default();

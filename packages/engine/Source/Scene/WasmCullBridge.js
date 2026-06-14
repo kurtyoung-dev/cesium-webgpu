@@ -1,6 +1,7 @@
 import SOABoundingSphereLayout from "./SOABoundingSphereLayout.js";
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
 import { WasmArenaSlot, allocFromSlot, freeSlot } from "./WasmArenaSlots.js";
+import resolveWasmGlueUrl from "./resolveWasmGlueUrl.js";
 
 // Shared WASM module state — loaded once, reused across all bridge instances.
 let _wasmModule = null;
@@ -70,6 +71,17 @@ class WasmCullBridge {
    * @readonly
    */
   get isAvailable() {
+    return _wasmModule !== null;
+  }
+
+  /**
+   * Whether the WASM module is loaded and ready. Alias of {@link WasmCullBridge#isAvailable}
+   * that matches the `wasmReady` accessor on the other Wasm*Bridge classes so a
+   * single load-state probe works uniformly across all bridges.
+   * @type {boolean}
+   * @readonly
+   */
+  get wasmReady() {
     return _wasmModule !== null;
   }
 
@@ -202,9 +214,17 @@ class WasmCullBridge {
       );
     }
 
-    _wasmLoading = import("../ThirdParty/Workers/cesium_wasm.js")
+    // NEW-WASM-BRIDGE-BUNDLE-LOAD (Batch 274): route through the shared
+    // buildModuleUrl-backed resolver + keep the import EXTERNAL (webpackIgnore)
+    // so esbuild no longer INLINES the glue (the inlined glue's
+    // `new URL("cesium_wasm_bg.wasm", import.meta.url)` resolved to the bundle
+    // root and 404'd the binary). The glue now loads as its own module with the
+    // correct sibling-binary URL. See resolveWasmGlueUrl.js.
+    _wasmLoading = import(/* webpackIgnore: true */ resolveWasmGlueUrl())
       .then((glue) => glue.default())
       .then((wasm) => {
+        // glue.default() (__wbg_init) returns the instance exports (incl.
+        // `.memory`) — `_wasmModule` therefore already exposes linear memory.
         // Version check (mandated by .clinerules)
         WasmFeatureDetection.checkVersionMatch(wasm, "cull");
         // SIMD check

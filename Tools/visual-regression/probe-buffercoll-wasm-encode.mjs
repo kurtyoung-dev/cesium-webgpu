@@ -359,7 +359,7 @@ for (const renderer of ["webgpu", "webgl"]) {
   check(
     `${renderer}-4`,
     r.bridgeCreated === true && r.batchWasmRepacks > 0,
-    `RTE bridge created + batch path engaged: bridgeCreated=${r.bridgeCreated} wasmRepacks=${r.batchWasmRepacks} (kernel-ran=${r.diagLastWasmUsed}; bundle WASM load is a tracked separate blocker)`,
+    `RTE bridge created + batch path engaged: bridgeCreated=${r.bridgeCreated} wasmRepacks=${r.batchWasmRepacks} (kernel-ran=${r.diagLastWasmUsed}; bundle WASM load fixed in Batch 274 — NEW-WASM-BRIDGE-BUNDLE-LOAD)`,
   );
 
   // (5) forced-scalar collection stayed on the scalar path.
@@ -385,18 +385,25 @@ for (const renderer of ["webgpu", "webgl"]) {
     `position update re-rendered via batch path (centroid shift +${r.movedDelta.toFixed(1)}px >= 20; movedWasmRepacks=${r.movedWasmRepacks})`,
   );
 
-  // (8) 0 console errors — EXCEPT the known wasm-binary/glue 404 from the
-  // bundle-wide WASM load blocker (NEW-WASM-BRIDGE-BUNDLE-LOAD). That 404 is the
-  // bridge probing for its (currently unresolvable) glue/binary and harmlessly
-  // falling back to the JS encode; it is not a rendering error. Any OTHER error
-  // (WebGPU validation, JS exceptions) still fails the probe.
+  // (8) 0 console errors. The wasm glue/binary 404 that this filter used to
+  // tolerate is GONE as of Batch 274 (NEW-WASM-BRIDGE-BUNDLE-LOAD fixed the
+  // bundle-output glue specifier), so the bridge now loads the real kernel with
+  // no 404. The filter is retained as a defensive no-op tripwire: if a
+  // cesium_wasm 404 ever reappears it will show in `total` while `realErrors`
+  // stays 0 — surfacing a regression of the load fix without failing unrelated
+  // runs. Any OTHER error (WebGPU validation, JS exceptions) still fails.
   const realErrors = r.errors.filter(
     (e) => !/Failed to load resource.*404|cesium_wasm.*\.wasm|404 \(Not Found\)/i.test(e),
   );
+  if (r.errors.length !== realErrors.length) {
+    console.log(
+      `    NOTE: ${r.errors.length - realErrors.length} cesium_wasm 404(s) seen — the Batch-274 bundle WASM load fix may have regressed`,
+    );
+  }
   check(
     `${renderer}-8`,
     realErrors.length === 0,
-    `console errors (excl. known wasm-load 404): ${realErrors.length} (total ${r.errors.length})`,
+    `console errors: ${realErrors.length} (total ${r.errors.length})`,
   );
   if (realErrors.length)
     for (const e of realErrors.slice(0, 6)) console.log(`    ERR: ${e}`);

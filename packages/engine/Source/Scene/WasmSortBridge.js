@@ -1,6 +1,7 @@
 import defined from "../Core/defined.js";
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
 import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+import resolveWasmGlueUrl from "./resolveWasmGlueUrl.js";
 
 // Shared WASM module state — loaded once, shared with other bridges.
 let _wasmModule = null;
@@ -97,6 +98,17 @@ class WasmSortBridge {
   }
 
   /**
+   * Whether the WASM module is loaded and ready. Alias of {@link WasmSortBridge#isAvailable}
+   * that matches the `wasmReady` accessor on the other Wasm*Bridge classes so a
+   * single load-state probe works uniformly across all bridges.
+   * @type {boolean}
+   * @readonly
+   */
+  get wasmReady() {
+    return _wasmModule !== null;
+  }
+
+  /**
    * Per-frame sort statistics.
    * @type {object}
    * @readonly
@@ -187,9 +199,16 @@ class WasmSortBridge {
 
     WasmFeatureDetection.checkSIMDSupport();
 
-    _wasmLoading = import("../ThirdParty/Workers/cesium_wasm.js")
+    // NEW-WASM-BRIDGE-BUNDLE-LOAD (Batch 274): route through the shared
+    // buildModuleUrl-backed resolver + keep the import EXTERNAL (webpackIgnore)
+    // so esbuild no longer INLINES the glue (the inlined glue's
+    // `new URL("cesium_wasm_bg.wasm", import.meta.url)` resolved to the bundle
+    // root and 404'd the binary). See resolveWasmGlueUrl.js.
+    _wasmLoading = import(/* webpackIgnore: true */ resolveWasmGlueUrl())
       .then((glue) => glue.default())
       .then((wasm) => {
+        // glue.default() (__wbg_init) returns the instance exports (incl.
+        // `.memory`) — `_wasmModule` therefore already exposes linear memory.
         WasmFeatureDetection.checkVersionMatch(wasm, "sort");
         _simdActive = WasmFeatureDetection.checkModuleSIMD(wasm, "sort");
         _wasmModule = wasm;

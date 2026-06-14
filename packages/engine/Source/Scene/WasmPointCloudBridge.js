@@ -1,6 +1,7 @@
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
 import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+import resolveWasmGlueUrl from "./resolveWasmGlueUrl.js";
 // AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
 
 /**
@@ -16,9 +17,27 @@ import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
  */
 
 let _wasmModule = null;
+// __wbg_init's return value (the instance exports object) is the ONLY place the
+// shared WASM linear memory is reachable — the glue does NOT re-export `memory`
+// as a named ESM export, so `_wasmModule.memory` is undefined. (FORK /
+// NEW-WASM-BRIDGE-BUNDLE-LOAD memory-export consistency fix, Batch 274.)
+let _wasmExports = null;
 let _wasmLoading = null;
 let _wasmReady = false;
 let _simdActive = false;
+
+/**
+ * Resolve the WASM linear memory regardless of how the glue surfaces it.
+ * @private
+ * @returns {WebAssembly.Memory|undefined}
+ */
+function _wasmMemory() {
+  return (
+    _wasmExports?.memory ??
+    _wasmModule?.__wbindgen_export_0 ??
+    _wasmModule?.memory
+  );
+}
 
 class WasmPointCloudBridge {
   constructor() {
@@ -67,9 +86,10 @@ class WasmPointCloudBridge {
       try {
         const module = await import(
           /* webpackIgnore: true */
-          "../../ThirdParty/Workers/cesium_wasm.js"
+          resolveWasmGlueUrl()
         );
-        await module.default();
+        // __wbg_init returns the instance exports (incl. `.memory`).
+        _wasmExports = await module.default();
         WasmFeatureDetection.checkVersionMatch(module, "pointcloud");
         _simdActive = WasmFeatureDetection.checkModuleSIMD(
           module,
@@ -142,7 +162,10 @@ class WasmPointCloudBridge {
         this._distJS(px, py, pz, cx, cy, cz, count, out);
         return;
       }
-      const memory = _wasmModule.__wbindgen_export_0 ?? _wasmModule.memory;
+      const memory = _wasmMemory();
+      if (memory === undefined) {
+        throw new Error("wasm linear memory unavailable");
+      }
       const buf = memory.buffer;
 
       new Float32Array(buf, ptr, count).set(px.subarray(0, count));
@@ -213,7 +236,10 @@ class WasmPointCloudBridge {
       if (ptr === 0) {
         return this._lodFilterJS(distSq, thresholdSq, count, visibility);
       }
-      const memory = _wasmModule.__wbindgen_export_0 ?? _wasmModule.memory;
+      const memory = _wasmMemory();
+      if (memory === undefined) {
+        throw new Error("wasm linear memory unavailable");
+      }
       const buf = memory.buffer;
 
       new Float32Array(buf, ptr, count).set(distSq.subarray(0, count));
@@ -323,7 +349,10 @@ class WasmPointCloudBridge {
       if (ptr === 0) {
         return this._aabbJS(cx, cy, cz, hx, hy, hz, planes, count, vis);
       }
-      const memory = _wasmModule.__wbindgen_export_0 ?? _wasmModule.memory;
+      const memory = _wasmMemory();
+      if (memory === undefined) {
+        throw new Error("wasm linear memory unavailable");
+      }
       const buf = memory.buffer;
 
       let off = ptr;

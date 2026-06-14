@@ -1,5 +1,6 @@
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
 import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+import resolveWasmGlueUrl from "./resolveWasmGlueUrl.js";
 // AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
 
 /**
@@ -15,9 +16,27 @@ import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
  */
 
 let _wasmModule = null;
+// __wbg_init's return value (the instance exports object) is the ONLY place the
+// shared WASM linear memory is reachable — the glue does NOT re-export `memory`
+// as a named ESM export, so `_wasmModule.memory` is undefined. (FORK /
+// NEW-WASM-BRIDGE-BUNDLE-LOAD memory-export consistency fix, Batch 274.)
+let _wasmExports = null;
 let _wasmLoading = null;
 let _wasmReady = false;
 let _simdActive = false;
+
+/**
+ * Resolve the WASM linear memory regardless of how the glue surfaces it.
+ * @private
+ * @returns {WebAssembly.Memory|undefined}
+ */
+function _wasmMemory() {
+  return (
+    _wasmExports?.memory ??
+    _wasmModule?.__wbindgen_export_0 ??
+    _wasmModule?.memory
+  );
+}
 
 class WasmQuantizedMeshBridge {
   constructor() {
@@ -54,9 +73,10 @@ class WasmQuantizedMeshBridge {
       try {
         const module = await import(
           /* webpackIgnore: true */
-          "../../ThirdParty/Workers/cesium_wasm.js"
+          resolveWasmGlueUrl()
         );
-        await module.default();
+        // __wbg_init returns the instance exports (incl. `.memory`).
+        _wasmExports = await module.default();
         WasmFeatureDetection.checkVersionMatch(module, "qmesh");
         _simdActive = WasmFeatureDetection.checkModuleSIMD(module, "qmesh");
         _wasmModule = module;
@@ -125,7 +145,10 @@ class WasmQuantizedMeshBridge {
       if (ptr === 0) {
         return this._decodeJS(eu, ev, eh, count, outU, outV, outH);
       }
-      const memory = _wasmModule.__wbindgen_export_0 ?? _wasmModule.memory;
+      const memory = _wasmMemory();
+      if (memory === undefined) {
+        throw new Error("wasm linear memory unavailable");
+      }
       const buf = memory.buffer;
 
       const euPtr = ptr;
