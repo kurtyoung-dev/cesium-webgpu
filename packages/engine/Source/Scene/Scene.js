@@ -1147,6 +1147,18 @@ class Scene {
     this.taaEnabled = options.taaEnabled ?? false;
 
     /**
+     * MORPH-TAA-PREVVP — last frame's projection type (true = orthographic,
+     * false = perspective) as seen by the TAA motion-vector path. Used to
+     * detect the perspective↔orthographic flip that happens mid-morph so the
+     * TAA history can be invalidated for that frame (reprojecting against the
+     * prior-projection `previousViewProjection` would smear/ghost). `undefined`
+     * until the first taaEnabled frame so the flip check is a no-op on frame 1.
+     * @type {boolean|undefined}
+     * @private
+     */
+    this._taaPrevProjectionOrtho = undefined;
+
+    /**
      * When true, Cascaded Shadow Maps split the camera frustum into
      * 4 depth ranges, each rendered at full shadow map resolution.
      * Gives high-resolution shadows near the camera without
@@ -5290,6 +5302,35 @@ function render(scene) {
       const TELEPORT_THRESHOLD = 50000.0; // meters
       const isTeleport = deltaLenSq > TELEPORT_THRESHOLD * TELEPORT_THRESHOLD;
 
+      // MORPH-TAA-PREVVP — invalidate TAA history across the morph and at the
+      // perspective↔orthographic projection flip. During a 2D/CV/3D morph the
+      // camera frustum type swaps mid-flight (perspective ⇄ orthographic), and
+      // `previousViewProjectionRelativeToEye` is the PRIOR frame's matrix —
+      // built from the prior projection type. Reprojecting the current depth
+      // against a stale/incompatible VP across that flip warps every history
+      // sample, so the TAA blend smears/ghosts through the transition. We gate
+      // history off whenever the scene is MORPHING or the projection type
+      // changed since last frame, and reset the effect's history so the next
+      // execute() passes the source through unblended (prev := current for the
+      // flip frame) instead of reprojecting against the incompatible matrix.
+      const isMorphing = frameState.mode === SceneMode.MORPHING;
+      const isOrthographic =
+        cam.frustum instanceof OrthographicFrustum ||
+        cam.frustum instanceof OrthographicOffCenterFrustum;
+      const projectionFlipped =
+        defined(scene._taaPrevProjectionOrtho) &&
+        scene._taaPrevProjectionOrtho !== isOrthographic;
+      scene._taaPrevProjectionOrtho = isOrthographic;
+
+      const historyInvalid = isMorphing || projectionFlipped;
+      if (historyInvalid) {
+        // Drop the history buffer for this frame so the upcoming execute()
+        // returns the un-reprojected source (no blend against the stale,
+        // incompatible-projection history). Accumulation restarts clean on
+        // the next frame once both projections agree again.
+        taa.resetHistory();
+      }
+
       // historyValid is false until we've seen at least one frame; the TAA
       // effect's own frameCounter also gates the blend, but keeping the
       // motion-vector flag independent lets the shader choose whether to
@@ -5300,7 +5341,7 @@ function render(scene) {
         deltaX,
         deltaY,
         deltaZ,
-        frameState.frameNumber > 1 && !isTeleport,
+        frameState.frameNumber > 1 && !isTeleport && !historyInvalid,
       );
     }
   }

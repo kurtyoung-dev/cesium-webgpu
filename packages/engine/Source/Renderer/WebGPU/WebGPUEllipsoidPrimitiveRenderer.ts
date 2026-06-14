@@ -305,9 +305,11 @@ const scratchMV = new Matrix4();
 // (-1,-1,-1)..(1,1,1), matching WebGL's BoxGeometry.fromDimensions({2,2,2}).
 // The VS scales each vertex by radii so the box encloses the ellipsoid shell;
 // the rasterized box surface gives the FS correct per-pixel eye->surface rays.
-// 36 indices (12 triangles, 2 per face) — cullMode "none" so both the front
-// and back faces rasterize, which lets the FS see the shell when the camera
-// is inside the box too.
+// 36 indices (12 triangles, 2 per face). cullMode "back" (Batch 276) rasterizes
+// exactly ONE box face per pixel so the ray-cast FS runs once — matching WebGL's
+// CullFace.FRONT single-rasterization (fixes translucent double-blend). The FS
+// ray-casts to the near ellipsoid surface (t.x) from whichever face rasterizes,
+// so coverage is identical to the prior cullMode "none".
 const ELLIPSOID_BOX_INDEX_COUNT = 36;
 
 function createBoxGeometry(device: GPUDevice): {
@@ -494,7 +496,21 @@ function buildEllipsoidPipelineResources(
         },
       }),
     },
-    primitive: { topology: "triangle-list", cullMode: "none" },
+    // BUG-ELLIPSOIDPRIM-WEBGPU-TRANSLUCENT-DOUBLE-BLEND (Batch 276) — rasterize
+    // only ONE box face per pixel (was cullMode "none", which let both the near
+    // and far box face survive). For opaque the second fragment overwrites
+    // identically (harmless), but a translucent shell (alpha < 1) would blend
+    // twice. WebGL's EllipsoidPrimitive cuts this with `CullFace.FRONT`
+    // (single rasterization); we mirror that with backface culling here. The FS
+    // ray-casts to the NEAR ellipsoid surface (`t.x`) from whichever face
+    // rasterizes, and the box silhouette is identical from either face set, so
+    // coverage is unchanged (verified: opaque green-pixel count is byte-identical
+    // to the prior cullMode "none"). NOTE: the dominant double-blend on this
+    // primitive came from the command carrying NO boundingVolume and NOT being
+    // flagged executeInClosestFrustum — a no-BV command bins into EVERY frustum
+    // slice (2 by default) and draws once per slice; that is fixed below by
+    // mirroring WebGL's boundingVolume + executeInClosestFrustum + Pass wiring.
+    primitive: { topology: "triangle-list", cullMode: "back" },
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: true,
@@ -1089,6 +1105,22 @@ function updateWebGPUEllipsoidPrimitive(
   // without needing to invalidate the command.
   const primitiveRS = (primitive as unknown as { _rs?: unknown })._rs;
 
+  // BUG-ELLIPSOIDPRIM-WEBGPU-TRANSLUCENT-DOUBLE-BLEND (Batch 276) — mirror
+  // Scene/EllipsoidPrimitive.js's command wiring (lines 375-385). A command
+  // with NO boundingVolume is binned into EVERY frustum slice and executed
+  // once per slice (2 by default even with the globe off) — harmless for an
+  // opaque shell (identical depth → same pixel overwritten) but a translucent
+  // shell blends its alpha twice (over black: 0.5·S becomes 0.75·S, 1.5× too
+  // opaque). WebGL avoids this by carrying the bounding sphere AND flagging
+  // `executeInClosestFrustum` for translucent draws so the command runs in a
+  // single frustum. We replicate both, plus route translucent shells through
+  // Pass.TRANSLUCENT for correct back-to-front ordering.
+  const material = primitive.material;
+  const translucent =
+    typeof material?.isTranslucent === "function"
+      ? material.isTranslucent()
+      : (material?.uniforms?.color?.alpha ?? 1.0) < 1.0;
+
   // Color command (normal render pass)
   if (!cache.command) {
     cache.command = new WebGPUDrawCommand({
@@ -1097,16 +1129,24 @@ function updateWebGPUEllipsoidPrimitive(
       vertexBuffers: [cache.vertexBuffer],
       indexBuffer: cache.indexBuffer,
       indexCount: ELLIPSOID_BOX_INDEX_COUNT,
-      pass: Pass.OPAQUE,
+      pass: translucent ? Pass.TRANSLUCENT : Pass.OPAQUE,
     });
   }
+  // Refresh per-frame so a material translucency toggle (alpha crossing 1.0)
+  // re-routes the command between the opaque and translucent passes and keeps
+  // the bounding volume / closest-frustum flag current as `center`/`radii`
+  // change. These fields are plain command properties (no pipeline rebuild).
+  const cmd = cache.command as CesiumAnyDrawCommand;
+  cmd.pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
+  cmd.boundingVolume = primitive._boundingSphere;
+  (cmd as { executeInClosestFrustum?: boolean }).executeInClosestFrustum =
+    translucent;
   // Keep renderState in sync each frame — catches primitive.material
   // translucent-toggle cases where `_rs` rebuilds between frames. The
   // WebGL-shape `renderState` is passed through as an opaque object and
   // consumed by `applyPerEncoderState` in `WebGPUDrawCommand.execute`.
   if (primitiveRS) {
-    (cache.command as CesiumAnyDrawCommand).renderState =
-      primitiveRS as CesiumAnyDrawCommand["renderState"];
+    cmd.renderState = primitiveRS as CesiumAnyDrawCommand["renderState"];
   }
 
   commandList.push(cache.command);
@@ -1129,6 +1169,10 @@ function updateWebGPUEllipsoidPrimitive(
         pickOnly: true,
       });
     }
+    // Carry the bounding sphere on the pick command too (WebGL sets it at
+    // EllipsoidPrimitive.js:447) so pick-pass frustum culling matches color.
+    (cache.pickCommand as CesiumAnyDrawCommand).boundingVolume =
+      primitive._boundingSphere;
     // Wire onto `colorCommand.derivedCommands.picking.pickCommand` so the
     // Batch 29 `selectCommandVariant` dispatcher swaps to this command on
     // pick passes.

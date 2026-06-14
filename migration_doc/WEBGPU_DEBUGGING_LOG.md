@@ -24,6 +24,27 @@
 
 ---
 
+## Batch 276 — TAA history invalidated across the morph projection flip + translucent EllipsoidPrimitive blends once (MORPH-TAA-PREVVP, BUG-ELLIPSOIDPRIM-WEBGPU-TRANSLUCENT-DOUBLE-BLEND) (2026-06-13)
+
+Three smaller Phase-4-run cleanup items.
+
+**1. MORPH-TAA-PREVVP — `previousViewProjection` unguarded across the perspective↔orthographic morph flip.**
+
+- *Symptom:* With TAA on (`scene.taaEnabled`), a mid-morph frame reprojects the current depth against the prior frame's view-projection. At the morph flip the projection regime changes (perspective ⇄ orthographic), so the prior VP is incompatible → whole-frame ghosting/smear.
+- *Fix:* `Scene/Scene.js`, in the `scene.taaEnabled` motion-vector block — a history-invalid gate: when `frameState.mode === SceneMode.MORPHING` OR the camera projection type flipped since last frame (new `scene._taaPrevProjectionOrtho` boolean, set inside the TAA block), call `taa.resetHistory()` (next `execute()` passes the source through un-reprojected, prev := current for the flip frame) AND pass `valid=false` to `updateMotionVectorParams` so the shader skips the reproject.
+- *Verified:* `probe-taa-morph-prevvp.mjs` (WebGPU, taaEnabled) — `morphTo2D()`→`morphTo3D()` renders clean through the flip (no NaN-garbage wipeout, 0 validation errors) AND the guard fires (`sawInvalidDuringMorph=true`; the only non-teleport path that sets validity false). Probe gotcha documented: keep the sky enabled or the WebGPU post-process pipeline skips the lazy TAA-effect add.
+
+**2. NEW-BUFFERPOINT-WEBGL-SINGLE-VERTEX-DROPOUT — reproduction attempt, NOT fixed.** Static analysis cleared the whole count==1 WebGL path (`_makeDirty`, `copyAttributeFromRange`, `_positionCount`, single-point bounding sphere all correct). New `probe-buffer-point-single.mjs` renders + moves a lone WebGL point via the count==1 sub-data path and PASSES in the standard viewer loop — the documented flaky dropout did not reproduce. Per Principle 8 no speculative fix shipped; probe retained as a regression gate. See DEFERRED_WORK for detail.
+
+**3. BUG-ELLIPSOIDPRIM-WEBGPU-TRANSLUCENT-DOUBLE-BLEND — translucent EllipsoidPrimitive blended ~1.5× too opaque.**
+
+- *Symptom:* alpha-0.5 WebGPU ellipsoid measured `0.748·S` green (double-blend `0.75·S`) vs the correct single-blend `0.5·S`.
+- *Root cause (DOMINANT, found via a frustum-count diagnostic):* the command carried NO `boundingVolume` and was not `executeInClosestFrustum`, so it binned into BOTH frustum slices (`frustums: 2` even globe-off) and drew twice → translucent blends twice. The box `cullMode: "none"` (front+far face) was a secondary contributor; cullMode alone did NOT move the ratio.
+- *Fix:* `WebGPUEllipsoidPrimitiveRenderer.ts` — mirror `Scene/EllipsoidPrimitive.js`: set `command.boundingVolume = primitive._boundingSphere`, `executeInClosestFrustum = translucent`, route translucent through `Pass.TRANSLUCENT` (refreshed per frame for alpha-toggle); pick command gets the BV too. Box `cullMode: "none"` → `"back"` (consistent CCW-inward winding verified; one face per pixel, opaque coverage byte-identical). New `.d.ts` fields `_computedModelMatrix`/`_boundingSphere`/`material.isTranslucent()`.
+- *Verified:* `probe-ellipsoidprim-translucent.mjs` ratio `0.748 → 0.499`; also re-verifies the Batch-269 `_computedModelMatrix` hoist on WebGL (renders post-hoist with the globe on — the WebGL ellipsoid needs a depth context, an unrelated pre-existing quirk, NOT a hoist regression). `probe-ellipsoidprim-logdepth.mjs` (opaque) stays green.
+
+---
+
 ## Batch 275 — Billboards/labels render at full WebGL size: the bug was the atlas sub-rect, not the size term (NEW-BILLBOARD-SIZE-PARITY) (2026-06-13)
 
 **Symptom:** WebGPU rendered `BillboardCollection` images and `LabelCollection` glyphs at ≈½ the linear dimension / ≈¼ the pixel area of WebGL in every scene mode (3D/2D/CV). `probe-collections-2dcv-morph.mjs` billboard ratio ≈0.23-0.28, label ratio ≈0.26.

@@ -1102,7 +1102,20 @@ interface CesiumObjectWithWebGPUCache {
   // Ellipsoid primitive-specific fields
   radii?: CesiumCartesian3;
   _oneOverEllipsoidRadiiSquared?: CesiumCartesian3;
-  material?: { uniforms?: { color?: CesiumColor } };
+  material?: {
+    uniforms?: { color?: CesiumColor };
+    isTranslucent?(): boolean;
+  };
+  // World transform (modelMatrix * translate(center)) + collection bounding
+  // sphere, both computed by Scene/EllipsoidPrimitive.js BEFORE the WebGPU
+  // feature-renderer branch (Scene Logic Extractor). The WebGPU renderer reads
+  // `_boundingSphere` to set the command's per-frustum bounding volume so a
+  // translucent shell isn't binned into (and blended once per) every frustum.
+  _computedModelMatrix?: CesiumMatrix4;
+  _boundingSphere?: {
+    center: CesiumCartesian3;
+    radius: number;
+  };
 }
 
 // ─── Duck-typed command dispatch ─────────────────────────────────────────
