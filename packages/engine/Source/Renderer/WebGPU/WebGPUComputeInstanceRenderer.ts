@@ -38,17 +38,34 @@
  *
  * TAA motion vectors (Batch 235): two instance-record buffers ping-pong —
  * the kernel writes `instanceBuffers[pingPongIndex]` each frame, and last
- * frame's output buffer binds as the velocity pass's `prevInstances`. The
+ * frame's output buffer binds as the velocity pass's `prevInstances`
+ * (@binding(3) — the pick variant claims @binding(2) for pickColors). The
  * partner buffer, velocity pipeline, and per-orientation bind groups all
  * allocate lazily on the first `frameState.taaEnabled` frame, so
  * TAA-off collections pay nothing. The velocity command (rg16float NDC
  * delta, `_runVelocityPass` walks `cmd.velocityCommand`) mirrors the
  * cloud/point/billboard pattern.
  *
+ * GPU picking (Batch 279, NEW-ORBITAL-GPU-PICKING): positions are GPU-
+ * resident so there is no CPU position to hit-test — picking RASTERIZES the
+ * same instanced quads with a per-instance pick color (one CPU-allocated
+ * `context.createPickId` per instance) into the single-attachment pick FBO,
+ * and the readback decodes the instance under the cursor. The pick id,
+ * pick-color storage buffer, pick BGL/pipeline (slot-0-only blend-stripped,
+ * the pick-FBO invariants), and pick command all allocate lazily on the
+ * first `frameState.passes.pick` frame, so non-picked frames pay nothing.
+ * `scene.pick` returns the engine's domain-agnostic
+ * `{ collection, instanceIndex, primitive }` record (the demo maps
+ * instanceIndex → its domain object). `collection.allowPicking` (default
+ * true) gates the whole pick side.
+ *
  * Currently deferred (tracked in DEFERRED_WORK.md, NEW-COMPUTE-INSTANCE-*):
- *   - df64 kernel math (RTE low part is always 0)
  *   - WebGL2 fallback (worker/WASM kernel host)
- *   - picking
+ *   - pickPosition for a compute-instance (per-instance GPU position
+ *     reconstruction; scene.pick returns the instance, scene.pickPosition
+ *     does not yet reconstruct its world position) — NEW-ORBITAL-GPU-PICKING
+ *   - HDR-mode pick (LDR pick pipelines for a float scene format — same
+ *     caveat as billboard/point pick)
  *
  * Compute scheduling mirrors `WebGPUWeatherRenderer`: the dispatch is
  * recorded on its OWN command encoder and submitted immediately during the
@@ -58,6 +75,7 @@
  * @private
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
+import Color from "../../Core/Color.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../Pass.js";
@@ -156,6 +174,38 @@ function composeKernelSource(
   );
 }
 
+/**
+ * Free every pick id this collection allocated (releases the context's
+ * `_pickObjects` / `_pickKinds` entries). Called on count change and on
+ * teardown so the pick maps never accumulate orphan instance ids.
+ */
+function destroyPickIds(cache: {
+  pickIds: Array<{ destroy(): void } | null>;
+}): void {
+  for (const id of cache.pickIds) {
+    id?.destroy();
+  }
+  cache.pickIds.length = 0;
+}
+
+/**
+ * Drop the pick PIPELINE (descriptor + BGL + bind group + command) on a
+ * log-depth flip or scene-format-generation bump so it rebuilds against the
+ * recompiled render module / new pick-FBO format. The pick IDS and the pick
+ * COLOR buffer are NOT cleared here — they depend only on the instance count,
+ * not the pipeline shape, so they survive a format flip (uploadParams clears
+ * them on a count change).
+ */
+function resetPickPipeline(cache: ComputeInstanceCache): void {
+  cache.pickPipeline = null;
+  cache.pickPipelineDescriptor = null;
+  cache.pickPipelineRequestPending = false;
+  cache.pickBindGroupLayout = null;
+  cache.pickBindGroup = null;
+  cache.pickBindGroupOrientation = -1;
+  cache.pickCommand = null;
+}
+
 // Per-instance float lanes are raw f32s: stride = floatsPerInstance * 4.
 // InstanceRecord (scaffold/render output): vec3+pad, vec3+pad, vec4,
 // f32+12 pad = 64 bytes. MUST match `CsmInstanceRecord` /
@@ -164,6 +214,10 @@ const INSTANCE_RECORD_BYTES = 64;
 // CameraUniforms: mat4 + vec2 + pads + 2×(vec3+pad) + mat4 = 176 bytes.
 const CAMERA_UNIFORM_FLOATS = 44;
 const COMPUTE_WORKGROUP_SIZE = 64;
+// Per-instance pick color: one vec4<f32> (RGBA in [0,1]) = 16 bytes. The
+// pick id rides RGB (little-endian); alpha is unused (forced to 1.0 in the
+// pick FS). Matches `pickColors: array<vec4<f32>>` in ComputeInstanceRender.
+const PICK_COLOR_BYTES = 16;
 
 interface ComputeInstanceCache {
   initialized: boolean;
@@ -202,6 +256,24 @@ interface ComputeInstanceCache {
   velocityPipeline: GPURenderPipeline | null;
   velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
+  // Pick side (NEW-ORBITAL-GPU-PICKING) — all lazy; null until the first
+  // frame the scene runs a pick pass (frameState.passes.pick). GPU-resident
+  // instances have no CPU position to hit-test, so picking renders the same
+  // instanced quads with a per-instance pick color (CPU-allocated pick id)
+  // into the single-attachment pick FBO; the readback decodes the instance.
+  pickIds: Array<{ key: number; destroy(): void } | null>;
+  pickColorData: Float32Array | null; // 4 floats per instance (RGBA in [0,1])
+  pickColorBuffer: GPUBuffer | null; // storage buffer, vertex-pulled in pick VS
+  pickBindGroupLayout: GPUBindGroupLayout | null;
+  pickBindGroup: GPUBindGroup | null; // one orientation — current records buffer
+  pickBindGroupOrientation: number; // which ping-pong slot pickBindGroup wraps
+  pickPipeline: GPURenderPipeline | null;
+  pickPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
+  pickPipelineRequestPending: boolean;
+  pickCommand: WebGPUDrawCommand | null;
+  // Count the pick ids were last allocated/uploaded for — re-alloc when the
+  // instance count drifts (mirrors the color path's instanceCount tracking).
+  pickIdCount: number;
   _pipelineFormatGeneration?: number;
   // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — whether the
   // render/velocity modules + pipelines were built with LOG_DEPTH; a
@@ -280,6 +352,20 @@ function uploadParams(
     cache.velocityBindGroups = [null, null];
     cache.command = null;
     cache.instanceCount = count;
+
+    // Pick side (NEW-ORBITAL-GPU-PICKING): the instance count drove the pick
+    // id allocation + pick color buffer size, so a count change invalidates
+    // them. Free the old pick ids (releases the context pickObjects entries)
+    // and tear down the GPU pick color buffer + bind group; they re-allocate
+    // lazily on the next pick pass via `ensurePickResources`.
+    destroyPickIds(cache);
+    cache.pickColorBuffer?.destroy();
+    cache.pickColorBuffer = null;
+    cache.pickColorData = null;
+    cache.pickBindGroup = null;
+    cache.pickBindGroupOrientation = -1;
+    cache.pickCommand = null;
+    cache.pickIdCount = -1;
   }
 
   if (count > 0) {
@@ -384,7 +470,12 @@ function tryResolveVelocityPipeline(
         // reads camera.logDepthFactor for the frag_depth write.
         uniformBuffer(0, Stage.VERTEX_FRAGMENT), // camera
         storageBuffer(1, Stage.VERTEX, { readOnly: true }), // current records
-        storageBuffer(2, Stage.VERTEX, { readOnly: true }), // prev records
+        // prevInstances is @binding(3) in the render module — the pick
+        // variant claims @binding(2) for pickColors and WGSL forbids two
+        // module-scope vars sharing a (group, binding). The velocity BGL
+        // mirrors the module's binding number so leaving binding(2) unused
+        // here is intentional (this layout is velocity-only).
+        storageBuffer(3, Stage.VERTEX, { readOnly: true }), // prev records
       ],
     );
     cache.velocityPipelineDescriptor = {
@@ -439,6 +530,129 @@ function tryResolveVelocityPipeline(
 
   // Fallback: no central cache.
   cache.velocityPipeline = device.createRenderPipeline({
+    label: desc.name,
+    layout: desc.layout ?? "auto",
+    vertex: {
+      module: desc.vertex.module,
+      entryPoint: desc.vertex.entryPoint,
+      buffers: desc.vertex.buffers,
+    },
+    fragment: desc.fragment
+      ? {
+          module: desc.fragment.module,
+          entryPoint: desc.fragment.entryPoint,
+          targets: desc.fragment.targets,
+        }
+      : undefined,
+    primitive: desc.primitive,
+    depthStencil: desc.depthStencil,
+  });
+  return true;
+}
+
+/**
+ * Lazily build + resolve the GPU pick pipeline (NEW-ORBITAL-GPU-PICKING).
+ * First call on a pick-pass frame creates the three-entry pick BGL (camera +
+ * current instance records + per-instance pick colors) and the descriptor;
+ * resolution then follows the same central-cache sync/async flow as the
+ * color pipeline. The pick pipeline targets the SINGLE-attachment pick FBO
+ * (slot-0 only, blend stripped, multisample dropped — the pick-FBO invariant
+ * enforced by `WebGPUDerivedCommand` PICK variants) and swaps to the render
+ * module's `vertexPickMain`/`fragmentPickMain` entry points, which output the
+ * per-instance pick color byte-exact. Never reached until the scene runs a
+ * pick pass — the whole pick side stays unallocated for never-picked frames.
+ */
+function tryResolvePickPipeline(
+  device: GPUDevice,
+  pipelineCache: WebGPURenderPipelineCache | null | undefined,
+  cache: ComputeInstanceCache,
+  sceneFormat: GPUTextureFormat,
+): boolean {
+  if (cache.pickPipeline) {
+    return true;
+  }
+  // The pick pipeline MUST target the pick FBO's color format or WebGPU
+  // drops every pick draw ("attachment state not compatible") — FORK-34. The
+  // pick FBO allocates with `scenePipelineFormat` clamped to an 8-bit unorm
+  // (WebGPUPickFramebuffer.pickColorFormat): HDR scene formats fall back to
+  // rgba8unorm there, so HDR pick of compute-instances is a known follow-up
+  // (same caveat the billboard/point pick pipelines carry).
+  const pickFormat: GPUTextureFormat =
+    sceneFormat === "bgra8unorm" || sceneFormat === "rgba8unorm"
+      ? sceneFormat
+      : "rgba8unorm";
+  if (!cache.pickPipelineDescriptor) {
+    const module = cache.renderShaderModule;
+    if (!module) {
+      return false;
+    }
+    cache.pickBindGroupLayout = makeBindGroupLayout(
+      device,
+      "ComputeInstance pick BGL",
+      [
+        // Camera UB is VERTEX_FRAGMENT: the LOG_DEPTH pick fragment variant
+        // reads camera.logDepthFactor for the frag_depth write.
+        uniformBuffer(0, Stage.VERTEX_FRAGMENT), // camera
+        storageBuffer(1, Stage.VERTEX, { readOnly: true }), // instance records
+        storageBuffer(2, Stage.VERTEX, { readOnly: true }), // pick colors
+      ],
+    );
+    // Pick color must reach the single-attachment pick FBO byte-exact —
+    // slot-0 only, NO blend, multisample dropped (the pick FBO is always
+    // single-sample). These are exactly the PICK-variant invariants in
+    // WebGPUDerivedCommand; mirrored inline here because the pick pipeline
+    // needs its OWN bind group layout (the extra pick-color binding), which
+    // the factory's `base.layout` passthrough can't express.
+    cache.pickPipelineDescriptor = {
+      name: `ComputeInstance pick pipeline [${pickFormat}/ld=${cache._logDepthEnabled === true ? 1 : 0}]`,
+      layout: device.createPipelineLayout({
+        bindGroupLayouts: [cache.pickBindGroupLayout],
+      }),
+      vertex: {
+        module,
+        entryPoint: "vertexPickMain",
+        buffers: QUAD_VERTEX_LAYOUT,
+      },
+      fragment: {
+        module,
+        entryPoint: "fragmentPickMain",
+        targets: [{ format: pickFormat }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: true,
+        depthCompare: "less-equal",
+      },
+      multisample: undefined,
+    };
+  }
+  const desc = cache.pickPipelineDescriptor;
+
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(desc);
+    if (sync) {
+      cache.pickPipeline = sync;
+      cache.pickPipelineRequestPending = false;
+      return true;
+    }
+    if (!cache.pickPipelineRequestPending) {
+      cache.pickPipelineRequestPending = true;
+      pipelineCache
+        .getPipeline(desc)
+        .then((p) => {
+          cache.pickPipeline = p;
+          cache.pickPipelineRequestPending = false;
+        })
+        .catch(() => {
+          cache.pickPipelineRequestPending = false;
+        });
+    }
+    return false;
+  }
+
+  // Fallback: no central cache.
+  cache.pickPipeline = device.createRenderPipeline({
     label: desc.name,
     layout: desc.layout ?? "auto",
     vertex: {
@@ -642,6 +856,17 @@ function updateWebGPUComputeInstanceCollection(
       velocityPipeline: null,
       velocityPipelineDescriptor: null,
       velocityPipelineRequestPending: false,
+      pickIds: [],
+      pickColorData: null,
+      pickColorBuffer: null,
+      pickBindGroupLayout: null,
+      pickBindGroup: null,
+      pickBindGroupOrientation: -1,
+      pickPipeline: null,
+      pickPipelineDescriptor: null,
+      pickPipelineRequestPending: false,
+      pickCommand: null,
+      pickIdCount: -1,
     } as unknown as CesiumOpaqueObject;
   }
   const cache = collection._webgpuCache as unknown as ComputeInstanceCache;
@@ -675,6 +900,10 @@ function updateWebGPUComputeInstanceCollection(
     cache.velocityBindGroupLayout = null;
     cache.velocityBindGroups = [null, null];
     cache.command = null;
+    // Pick side rebuilds lazily — the pick pipeline swaps the recompiled
+    // render module's pick entry points, so it must recompile on a log-depth
+    // flip too (the pick FS writes frag_depth only in the LOG_DEPTH variant).
+    resetPickPipeline(cache);
   }
 
   if (cache.initialized && cache._pipelineFormatGeneration !== sceneGen) {
@@ -692,6 +921,9 @@ function updateWebGPUComputeInstanceCollection(
     cache.velocityBindGroupLayout = null;
     cache.velocityBindGroups = [null, null];
     cache.command = null;
+    // Pick pipeline targets the pick FBO format (clamped from sceneFormat),
+    // so a scene-format-generation bump invalidates it the same way.
+    resetPickPipeline(cache);
     cache._pipelineFormatGeneration = sceneGen;
   }
 
@@ -915,6 +1147,146 @@ function updateWebGPUComputeInstanceCollection(
   );
 
   frameState.commandList.push(command);
+
+  // ── GPU pick command (NEW-ORBITAL-GPU-PICKING) ──
+  // Only on a pick-pass frame and when the collection allows picking. The
+  // whole pick side (ids, pick-color buffer, pipeline, bind group, command)
+  // stays unallocated until the first pick pass, so non-picked frames pay
+  // nothing. The pick command rasterizes the SAME instanced quads pointed at
+  // THIS frame's current instance buffer, so the pick region matches the
+  // rendered region exactly.
+  if (frameState.passes?.pick === true && collection.allowPicking !== false) {
+    pushPickCommand(
+      context,
+      device,
+      ctxAny.webgpuPipelineCache ?? null,
+      collection,
+      cache,
+      sceneFormat,
+      currentBuffer,
+      cur,
+      command.boundingVolume,
+      command.cull === true,
+      frameState,
+    );
+  }
+}
+
+/**
+ * Build (lazily) and push the GPU pick command for this frame's ping-pong
+ * orientation (NEW-ORBITAL-GPU-PICKING). Allocates one pick id per instance
+ * via `context.createPickId({ collection, instanceIndex, primitive }, ...)`
+ * and uploads the packed pick colors to a storage buffer the pick VS
+ * vertex-pulls. The pick command is flagged `pickOnly` so the pick pass
+ * (`WebGPUSceneRendererPickPass`) dispatches it into the single-attachment
+ * pick FBO; the readback decodes the pick color back to the picked instance.
+ */
+function pushPickCommand(
+  context: CesiumGraphicsContext,
+  device: GPUDevice,
+  pipelineCache: WebGPURenderPipelineCache | null | undefined,
+  collection: CesiumObjectWithWebGPUCache,
+  cache: ComputeInstanceCache,
+  sceneFormat: GPUTextureFormat,
+  currentBuffer: GPUBuffer,
+  cur: number,
+  boundingVolume: CesiumBoundingSphere | undefined,
+  cull: boolean,
+  frameState: CesiumFrameState,
+): void {
+  const count = cache.instanceCount;
+  if (count <= 0) {
+    return;
+  }
+
+  if (!tryResolvePickPipeline(device, pipelineCache, cache, sceneFormat)) {
+    return;
+  }
+
+  // (Re)allocate the per-instance pick ids + pick-color buffer when the
+  // count drifted (uploadParams already freed the stale ids on a count
+  // change). One id per instance index; the pickable object is the engine's
+  // domain-agnostic { collection, instanceIndex, primitive } record — the
+  // demo maps instanceIndex → satellite.
+  if (cache.pickIdCount !== count || !cache.pickColorBuffer) {
+    destroyPickIds(cache);
+    cache.pickColorData = new Float32Array(count * 4);
+    for (let i = 0; i < count; i++) {
+      const pickId = context.createPickId(
+        {
+          collection: collection as unknown as object,
+          instanceIndex: i,
+          primitive: collection as unknown as object,
+        } as unknown as Parameters<CesiumGraphicsContext["createPickId"]>[0],
+        "compute-instance",
+      );
+      cache.pickIds.push(pickId);
+      // PickId.color is Color.fromRgba(key) — the integer key packed
+      // little-endian across ALL FOUR channels (red=key&0xff, …,
+      // alpha=(key>>24)&0xff). Store the full RGBA (including alpha, which is
+      // 0 for keys < 2^24); the pick FS writes it byte-exact and the readback
+      // reconstructs the key from all four bytes. Forcing alpha to 1.0 would
+      // corrupt the decoded key (see the fragmentPickMain comment).
+      const c = pickId.color;
+      cache.pickColorData[i * 4] = c.red;
+      cache.pickColorData[i * 4 + 1] = c.green;
+      cache.pickColorData[i * 4 + 2] = c.blue;
+      cache.pickColorData[i * 4 + 3] = c.alpha;
+    }
+    cache.pickColorBuffer?.destroy();
+    cache.pickColorBuffer = device.createBuffer({
+      label: "ComputeInstance pick colors",
+      size: Math.max(count * PICK_COLOR_BYTES, PICK_COLOR_BYTES),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(cache.pickColorBuffer, 0, cache.pickColorData);
+    cache.pickIdCount = count;
+    // Buffer identity changed — the bind group must rebind.
+    cache.pickBindGroup = null;
+    cache.pickBindGroupOrientation = -1;
+  }
+
+  // (Re)build the pick bind group for THIS frame's ping-pong orientation —
+  // the instance-records binding tracks `currentBuffer`, which flips each
+  // TAA frame, so cache the orientation it was built for and rebind on flip.
+  if (!cache.pickBindGroup || cache.pickBindGroupOrientation !== cur) {
+    cache.pickBindGroup = device.createBindGroup({
+      label: `ComputeInstance pick BG [${cur}]`,
+      layout: cache.pickBindGroupLayout!,
+      entries: [
+        { binding: 0, resource: { buffer: cache.cameraUniformBuffer! } },
+        { binding: 1, resource: { buffer: currentBuffer } },
+        { binding: 2, resource: { buffer: cache.pickColorBuffer! } },
+      ],
+    });
+    cache.pickBindGroupOrientation = cur;
+  }
+
+  if (!cache.pickCommand) {
+    cache.pickCommand = new WebGPUDrawCommand({
+      pipeline: cache.pickPipeline!,
+      bindGroups: [cache.pickBindGroup!],
+      vertexBuffers: [cache.quadVertexBuffer!],
+      vertexCount: 6,
+      instanceCount: count,
+      pass: Pass.TRANSLUCENT,
+      // FORK-34 (Batch 207) — dedicated pick command: its pipeline already
+      // targets the single pick attachment, so the pick pass dispatches it
+      // instead of skipping it as a no-pick-variant base command.
+      pickOnly: true,
+    });
+  }
+  const pickCommand = cache.pickCommand;
+  pickCommand.pipeline = cache.pickPipeline!;
+  pickCommand.bindGroups[0] = cache.pickBindGroup!;
+  pickCommand.bindGroup = pickCommand.bindGroups[0];
+  pickCommand.instanceCount = count;
+  // Frustum-cull / bin the pick command exactly like the color command so a
+  // culled collection contributes no pick coverage either.
+  pickCommand.boundingVolume = boundingVolume;
+  pickCommand.cull = cull;
+
+  frameState.commandList.push(pickCommand);
 }
 
 /**
@@ -952,7 +1324,7 @@ function attachVelocityCommand(
       entries: [
         { binding: 0, resource: { buffer: cache.cameraUniformBuffer! } },
         { binding: 1, resource: { buffer: cache.instanceBuffers[cur]! } },
-        { binding: 2, resource: { buffer: prevBuffer } },
+        { binding: 3, resource: { buffer: prevBuffer } },
       ],
     });
   }
@@ -984,6 +1356,11 @@ function destroyWebGPUComputeInstanceResources(
   cache.frameParamsBuffer?.destroy();
   cache.quadVertexBuffer?.destroy();
   cache.cameraUniformBuffer?.destroy();
+  // Pick side (NEW-ORBITAL-GPU-PICKING) — free the per-instance pick ids
+  // (releases the context's pickObjects/pickKinds entries) and the GPU pick
+  // color buffer so a destroyed collection leaves no orphan pick state.
+  destroyPickIds(cache);
+  cache.pickColorBuffer?.destroy();
   collection._webgpuCache = undefined;
 }
 

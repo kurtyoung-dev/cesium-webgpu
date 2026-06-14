@@ -203,6 +203,7 @@ export type PickKind =
   | "cloud"
   | "particle"
   | "buffer-primitive"
+  | "compute-instance"
   | "custom";
 
 /**

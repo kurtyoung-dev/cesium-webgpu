@@ -145,12 +145,102 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   return out;
 }
 
+// ── GPU picking entry points (NEW-ORBITAL-GPU-PICKING) ──────────────────
+// Per-instance pick color, RGB-packed pick id in [0,1] (CPU-allocated via
+// context.createPickId, one id per instance index, uploaded to its own
+// storage buffer). Bound ONLY by the pick pipeline's two-entry bind group
+// (@binding(0) camera, @binding(1) instances, @binding(2) HERE); the color
+// and velocity pipelines never statically reference this binding, so their
+// own bind group layouts are unaffected. The pick pass rasterizes the same
+// instanced quads as the color pass and writes the pick color byte-exact
+// into the single-attachment pick FBO (no blend), so the readback decodes
+// the instance under the cursor (GPU-resident point picking — there is no
+// CPU position to hit-test).
+@group(0) @binding(2) var<storage, read> pickColors: array<vec4<f32>>;
+
+struct PickVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) pickColor: vec4<f32>,
+  @location(1) uv: vec2<f32>,
+  //>>ifdef LOG_DEPTH
+  @location(2) v_logDepth: f32,
+  //>>endif
+};
+
+@vertex
+fn vertexPickMain(
+  @builtin(instance_index) instanceIndex: u32,
+  @location(0) quadPos: vec2<f32>,  // [-1, 1] quad corners
+) -> PickVertexOutput {
+  var output: PickVertexOutput;
+
+  let inst = instances[instanceIndex];
+
+  // RTE: emulated 64-bit camera-relative translation (identical math to
+  // vertexMain — the picked region must match the rendered region exactly).
+  var highDiff = inst.positionHigh - camera.encodedCameraHigh;
+  if (length(highDiff) == 0.0) {
+    highDiff = vec3<f32>(0.0, 0.0, 0.0);
+  }
+  let lowDiff = inst.positionLow - camera.encodedCameraLow;
+  var clipPos = camera.mvpRelativeToEye * vec4<f32>(highDiff + lowDiff, 1.0);
+
+  let size = max(inst.pixelSize, 1.0);
+  clipPos = vec4<f32>(
+    clipPos.x + quadPos.x * size / camera.viewportSize.x * clipPos.w,
+    clipPos.y + quadPos.y * size / camera.viewportSize.y * clipPos.w,
+    clipPos.z,
+    clipPos.w,
+  );
+
+  output.position = clipPos;
+  output.uv = quadPos;
+  output.pickColor = pickColors[instanceIndex];
+  //>>ifdef LOG_DEPTH
+  output.v_logDepth =
+    csm_vertexLogDepth(output.position, camera.logDepthNearFar.x);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
+  return output;
+}
+
+struct PickFragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
+@fragment
+fn fragmentPickMain(input: PickVertexOutput) -> PickFragOutput {
+  // Match the color path's circular-dot discard so picks line up with the
+  // visible dot (no picking through the transparent quad corners).
+  let dist = length(input.uv);
+  let alpha = 1.0 - smoothstep(0.7, 1.0, dist);
+  if (alpha < 0.5) {
+    discard;
+  }
+  var out: PickFragOutput;
+  // Pick color must reach the FBO BYTE-EXACT (RGBA) — no blend on the pick
+  // pipeline. The pick id is Color.fromRgba(key) packed little-endian across
+  // ALL FOUR channels (red=key&0xff, …, ALPHA=(key>>24)&0xff), and the
+  // readback decode reconstructs the key from all four bytes. Forcing alpha
+  // to 1.0 here would pack 0xff into the high key byte and the decoded key
+  // would miss every registered id (all keys < 2^24 have alpha 0). So write
+  // the pick color verbatim, including its (typically 0) alpha.
+  out.color = input.pickColor;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
+  return out;
+}
+
 // ── TAA velocity entry points (Batch 235) ──────────────────────────────
 // Previous frame's instance records — the OTHER half of the renderer's
 // ping-pong pair (last frame's kernel output buffer). Bound only by the
 // velocity pipeline's three-entry bind group; the color pipeline never
 // statically references this binding.
-@group(0) @binding(2) var<storage, read> prevInstances: array<InstanceRecord>;
+@group(0) @binding(3) var<storage, read> prevInstances: array<InstanceRecord>;
 
 struct VelocityVertexOutput {
   @builtin(position) position: vec4<f32>,

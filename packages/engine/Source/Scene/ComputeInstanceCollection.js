@@ -99,6 +99,14 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  *        that derive everything from <code>index</code> and
  *        <code>time</code>).
  * @param {boolean} [options.show=true] Whether to display the collection.
+ * @param {boolean} [options.allowPicking=true] When <code>true</code> the
+ *        collection participates in {@link Scene#pick}: the GPU pick pass
+ *        renders one pick id per instance into the pick framebuffer, so a
+ *        <code>scene.pick</code> over an instance returns a
+ *        <code>{ collection, instanceIndex, primitive }</code> record
+ *        (positions are GPU-resident, so picking is rasterized, not
+ *        CPU-hit-tested). Set <code>false</code> to skip the per-instance
+ *        pick id allocation and the pick draw entirely.
  * @param {JulianDate} [options.epoch] The epoch that simulation time is
  *        measured from. Defaults to the first rendered frame's time.
  * @param {BoundingSphere} [options.boundingSphere] A user-supplied sphere
@@ -164,6 +172,15 @@ class ComputeInstanceCollection {
      * @default true
      */
     this.show = options.show ?? true;
+
+    /**
+     * When <code>true</code> the collection participates in {@link Scene#pick}
+     * via the GPU pick pass (one pick id per instance). Read by the WebGPU
+     * feature renderer each frame, so it can be toggled after construction.
+     * @type {boolean}
+     * @default true
+     */
+    this.allowPicking = options.allowPicking ?? true;
 
     this._kernel = options.kernel;
     this._floatsPerInstance = floatsPerInstance;
