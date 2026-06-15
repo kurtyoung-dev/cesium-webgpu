@@ -391,8 +391,16 @@ class Picking {
     scene.updateAndExecuteCommands(passState, scratchColorZero);
     scene.resolveFramebuffers(passState);
 
-    const voxelInfo = pickFramebuffer.readCenterPixel(drawingBufferRectangle);
+    // endFrame() MUST run before readCenterPixel() on WebGPU: it submits the
+    // voxel pass's command encoder to the queue. readCenterPixel arms its own
+    // copyTextureToBuffer readback (NEW-PICK-METADATA-READBACK); if it ran
+    // first the readback would be submitted ahead of the voxel render and
+    // decode a stale/cleared pixel (the same submission-order hazard the async
+    // pick path documents in _pickAsyncWithMode). On WebGL, endFrame() only
+    // unbinds the default framebuffer — the pick FBO content persists and
+    // readCenterPixel re-binds it explicitly — so the reorder is a no-op there.
     context.endFrame();
+    const voxelInfo = pickFramebuffer.readCenterPixel(drawingBufferRectangle);
     return voxelInfo;
   }
 
@@ -457,10 +465,14 @@ class Picking {
     scene.resolveFramebuffers(passState);
     scene._environmentState.useOIT = oldOIT;
 
+    // endFrame() before readCenterPixel() — submits the metadata pass so the
+    // WebGPU center-pixel readback (NEW-PICK-METADATA-READBACK) copies the
+    // just-rendered pixel rather than a stale one. No-op ordering on WebGL
+    // (see pickVoxelCoordinate for the full rationale).
+    context.endFrame();
     const rawMetadataPixel = pickFramebuffer.readCenterPixel(
       drawingBufferRectangle,
     );
-    context.endFrame();
     frameState.pickingMetadata = false;
 
     return MetadataPicking.decodeMetadataValues(

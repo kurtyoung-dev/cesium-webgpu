@@ -17,6 +17,18 @@ import BoundingRectangle from "../../Core/BoundingRectangle.js";
 import Color from "../../Core/Color.js";
 import defined from "../../Core/defined.js";
 
+// NEW-PICK-METADATA-READBACK (Batch 285) — validity window for the cached
+// center pixel (pickMetadata / pickVoxelCoordinate). The cache is only
+// returned when the query is within this many pixels of the readback's own
+// coordinate (a moving cursor re-arms and converges next frame)...
+const CENTER_PIXEL_COORD_TOLERANCE = 2;
+// ...and when no more than this many picks have rendered since the readback
+// was armed (the pixel content can't change without a new metadata/voxel
+// pass, so a short window bounds drift on a continuously-moving cursor).
+const CENTER_PIXEL_MAX_STALE_FRAMES = 4;
+// 256-byte minimum mapping alignment for a 1x1 RGBA8 copy.
+const CENTER_STAGING_BUFFER_SIZE = 256;
+
 /**
  * The pick color attachment MUST use the same format the pick PIPELINES target
  * (they target `context.scenePipelineFormat`), otherwise WebGPU drops every
@@ -151,6 +163,31 @@ export class WebGPUPickFramebuffer {
   private _readableDepthTexture: GPUTexture | null = null;
   private _depthStagingBuffer: GPUBuffer | null = null;
 
+  // NEW-PICK-METADATA-READBACK (Batch 285) — center-pixel readback state for
+  // pickMetadata / pickVoxelCoordinate. These callers render their own pass
+  // into `_colorTexture` then call readCenterPixel() SYNCHRONOUSLY, so they
+  // cannot consume `_lastReadPixels` (which holds the most recent regular
+  // scene.pick() color pass — a STALE pixel from a different pass). Instead
+  // readCenterPixel arms its OWN 1x1 readback of the just-rendered center
+  // pixel and returns a one-frame-stale cached value keyed to the query
+  // coordinate + frame stamp, mirroring PickDepth.getDepth's async contract:
+  // the first query at a new spot returns the cleared pixel (caller gets
+  // undefined / no voxel) and arms the readback; a re-pick at the same spot
+  // 1-2 frames later returns the correct metadata/voxel value.
+  private _centerPixelValue: Uint8Array | null = null;
+  private _centerPixelX: number = -1;
+  private _centerPixelY: number = -1;
+  private _centerPixelStamp: number = -1;
+  // Re-entrancy guard: true between submit-of-copyTextureToBuffer and the
+  // unmap that follows mapAsync's resolution. Prevents a rapid re-pick from
+  // re-reading a half-written staging buffer (the metadata/voxel analogue of
+  // _readbackInFlight on the color path).
+  private _centerReadbackInFlight: boolean = false;
+  // Staleness clock — advanced once per begin() (one metadata/voxel pick is
+  // one begin → render → readCenterPixel cycle). Measured in picks, not wall
+  // time, so a paused scene keeps a valid cache indefinitely.
+  private _updateCount: number = 0;
+
   constructor(context: CesiumGraphicsContext) {
     this._context = context;
     this._device = context._device ?? null;
@@ -194,6 +231,9 @@ export class WebGPUPickFramebuffer {
       typeof rawHeight === "number" && rawHeight > 0
         ? Math.floor(rawHeight)
         : 1;
+
+    // Advance the staleness clock once per pick pass (NEW-PICK-METADATA-READBACK).
+    this._updateCount++;
 
     BoundingRectangle.clone(
       screenSpaceRectangle,
@@ -409,17 +449,144 @@ export class WebGPUPickFramebuffer {
   /**
    * Read the center pixel of the pick rectangle.
    * Used for voxel coordinate picking and metadata picking.
+   *
+   * NEW-PICK-METADATA-READBACK (Batch 285) — synchronized async readback.
+   * The metadata/voxel callers (Picking.pickMetadata / pickVoxelCoordinate)
+   * render their pass into `_colorTexture`, submit it via context.endFrame(),
+   * then call this SYNCHRONOUSLY expecting the just-rendered center pixel.
+   * Because WebGPU readback is async, we arm a fresh 1x1 readback of the
+   * current center pixel (guarded so a re-pick can't read a half-written
+   * buffer) and return a one-frame-stale cache keyed to the query coordinate
+   * + a frame stamp. A cold query returns (0,0,0,0) (caller decodes to
+   * "no metadata / no voxel") and arms the readback; the same query 1-2 frames
+   * later returns the correct value — identical to PickDepth.getDepth's
+   * contract. This replaces the old `_lastReadPixels.slice()` which returned
+   * the STALE pixel from the most recent regular scene.pick() COLOR pass.
    */
   readCenterPixel(screenSpaceRectangle: CesiumBoundingRectangle): Uint8Array {
-    if (this._lastReadPixels) {
-      const width = screenSpaceRectangle.width ?? 1;
-      const height = screenSpaceRectangle.height ?? 1;
-      const halfWidth = Math.floor(width * 0.5);
-      const halfHeight = Math.floor(height * 0.5);
-      const index = 4 * (halfHeight * width + halfWidth);
-      return this._lastReadPixels.slice(index, index + 4);
+    const width = screenSpaceRectangle.width ?? 1;
+    const height = screenSpaceRectangle.height ?? 1;
+    const halfWidth = Math.floor(width * 0.5);
+    const halfHeight = Math.floor(height * 0.5);
+
+    // Absolute center coordinate within the full-viewport `_colorTexture`:
+    // the pick rectangle starts at (pickOriginX, pickOriginY) and the center
+    // pixel sits (halfWidth, halfHeight) inside it (matches the JS path's
+    // `4 * (halfHeight * width + halfWidth)` slice into a rect-local buffer).
+    const px = this._pickOriginX + halfWidth;
+    const py = this._pickOriginY + halfHeight;
+
+    // Arm/refresh the readback for this center pixel. The guard inside dedupes
+    // overlapping requests and swallows teardown races.
+    this._readCenterPixelAsync(px, py);
+
+    const cached = this._centerPixelValue;
+    if (
+      cached &&
+      Math.abs(px - this._centerPixelX) <= CENTER_PIXEL_COORD_TOLERANCE &&
+      Math.abs(py - this._centerPixelY) <= CENTER_PIXEL_COORD_TOLERANCE &&
+      this._updateCount - this._centerPixelStamp <=
+        CENTER_PIXEL_MAX_STALE_FRAMES
+    ) {
+      return cached.slice(0, 4);
     }
     return new Uint8Array([0, 0, 0, 0]);
+  }
+
+  /**
+   * Asynchronously read a single RGBA8 pixel from `_colorTexture` at the
+   * given texture coordinate, caching it for the next synchronous
+   * readCenterPixel() call. NEW-PICK-METADATA-READBACK (Batch 285).
+   *
+   * Uses a fresh staging buffer per readback (destroyed after unmap) so it
+   * never collides with the color-path `_stagingBuffer` used by end()/
+   * endAsync(), and so an in-flight readback can't be re-read mid-write
+   * (the `_centerReadbackInFlight` guard enforces the latter).
+   */
+  private _readCenterPixelAsync(x: number, y: number): void {
+    const device = this._device;
+    const colorTexture = this._colorTexture;
+    if (!device || !colorTexture) {
+      return;
+    }
+
+    // Re-entrancy guard: a readback is still mapping/mapped — don't submit a
+    // second copy nor read the half-written buffer. The current cached value
+    // (if any) is returned by the caller; this query converges next frame.
+    if (this._centerReadbackInFlight) {
+      return;
+    }
+
+    const px = Math.max(0, Math.min(Math.floor(x), this._width - 1));
+    const py = Math.max(0, Math.min(Math.floor(y), this._height - 1));
+
+    // Stamp with the CURRENT pick count — the pixel decoded below corresponds
+    // to the metadata/voxel pass that rendered into `_colorTexture` this pick.
+    const requestStamp = this._updateCount;
+    const bgra = this._colorFormat === "bgra8unorm";
+
+    this._centerReadbackInFlight = true;
+
+    let stagingBuffer: GPUBuffer | null = null;
+    try {
+      stagingBuffer = device.createBuffer({
+        label: "Pick center-pixel staging buffer",
+        size: CENTER_STAGING_BUFFER_SIZE,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+
+      const encoder = device.createCommandEncoder({
+        label: "Pick center-pixel readback",
+      });
+      encoder.copyTextureToBuffer(
+        {
+          texture: colorTexture,
+          origin: [px, py, 0],
+        },
+        {
+          buffer: stagingBuffer,
+          bytesPerRow: CENTER_STAGING_BUFFER_SIZE,
+          rowsPerImage: 1,
+        },
+        [1, 1],
+      );
+      device.queue.submit([encoder.finish()]);
+
+      const buffer = stagingBuffer;
+      buffer
+        .mapAsync(GPUMapMode.READ, 0, 4)
+        .then(() => {
+          if (this._isDestroyed) {
+            buffer.destroy();
+            this._centerReadbackInFlight = false;
+            return;
+          }
+          const data = new Uint8Array(buffer.getMappedRange(0, 4));
+          // Normalize to [R,G,B,A] regardless of the texture's byte order so
+          // downstream decoders (MetadataPicking, voxel tile/sample unpack)
+          // see the same layout the WebGL readPixels path produces.
+          const value = bgra
+            ? new Uint8Array([data[2], data[1], data[0], data[3]])
+            : new Uint8Array([data[0], data[1], data[2], data[3]]);
+          buffer.unmap();
+          buffer.destroy();
+
+          this._centerPixelValue = value;
+          this._centerPixelX = x;
+          this._centerPixelY = y;
+          this._centerPixelStamp = requestStamp;
+          this._centerReadbackInFlight = false;
+        })
+        .catch(() => {
+          buffer.destroy();
+          this._centerReadbackInFlight = false;
+        });
+    } catch {
+      if (stagingBuffer) {
+        stagingBuffer.destroy();
+      }
+      this._centerReadbackInFlight = false;
+    }
   }
 
   /**
@@ -612,6 +779,11 @@ export class WebGPUPickFramebuffer {
       this._depthStagingBuffer = null;
     }
     this._lastReadPixels = null;
+    // NEW-PICK-METADATA-READBACK — drop the center cache so a destroyed FBO
+    // can't hand a stale pixel to a new pick after recreation. Any in-flight
+    // center readback hits the `_isDestroyed` guard in its .then().
+    this._centerPixelValue = null;
+    this._centerReadbackInFlight = false;
   }
 }
 

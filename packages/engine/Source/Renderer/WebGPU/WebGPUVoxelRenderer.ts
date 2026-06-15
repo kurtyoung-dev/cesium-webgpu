@@ -627,14 +627,34 @@ function updateWebGPUVoxelPrimitive(
       }
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
+
+  // NEW-PICK-METADATA-READBACK (Batch 285) — the color pipeline draws into the
+  // MSAA scene framebuffer, so it MUST bake `multisample.count =
+  // context._msaaSamples` like every other scene-FB renderer
+  // (WebGPUEllipsoidPrimitiveRenderer / BufferPoint / Cloud / ComputeInstance,
+  // etc.). It was previously left at the default count:1, so on any MSAA scene
+  // (the default msaaSamples is 4) WebGPU dropped every voxel color draw with
+  // "Attachment state of [Voxel color pipeline] is not compatible with [Scene
+  // Framebuffer Render Pass]" — the voxel never rendered, so pickVoxel had no
+  // pixel to read back. Pick + velocity stay single-sample (pick FBO and the
+  // velocity target are single-sample). The cache invalidates on sample-count
+  // change as well as format change so a mid-session msaaSamples toggle
+  // rebuilds the descriptor.
+  const sceneSampleCount =
+    (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
+
   // Batch 110 — invalidate cached pipeline on scene format change.
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
+  const prevSampleCount = (
+    cache as unknown as { _pipelineSampleCount?: number }
+  )._pipelineSampleCount;
   if (
     cache.initialized &&
-    (cache as unknown as { _pipelineFormatGeneration?: number })
-      ._pipelineFormatGeneration !== sceneGen
+    ((cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen ||
+      (prevSampleCount !== undefined && prevSampleCount !== sceneSampleCount))
   ) {
     cache.initialized = false;
     cache.pipeline = null;
@@ -652,6 +672,9 @@ function updateWebGPUVoxelPrimitive(
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
+    (
+      cache as unknown as { _pipelineSampleCount?: number }
+    )._pipelineSampleCount = sceneSampleCount;
   }
 
   if (!cache.initialized) {
@@ -756,6 +779,9 @@ function updateWebGPUVoxelPrimitive(
         // less-equal for planetary-scale precision robustness.
         depthCompare: "less-equal",
       },
+      // Match the MSAA scene framebuffer's sample count (NEW-PICK-METADATA-READBACK).
+      multisample:
+        sceneSampleCount > 1 ? { count: sceneSampleCount } : undefined,
     };
 
     // C-R9-VOXEL-PICK (Batch 53) — pick pipeline. Same layout, same
@@ -822,6 +848,16 @@ function updateWebGPUVoxelPrimitive(
     const geom = createBoxGeometry(device);
     cache.vertexBuffer = geom.vertexBuffer;
     cache.indexBuffer = geom.indexBuffer;
+
+    // Stamp the generation + sample count this descriptor was built against so
+    // the invalidation block above rebuilds on a later format / MSAA change
+    // (NEW-PICK-METADATA-READBACK).
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
+    (
+      cache as unknown as { _pipelineSampleCount?: number }
+    )._pipelineSampleCount = sceneSampleCount;
 
     cache.initialized = true;
   }
