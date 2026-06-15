@@ -24,6 +24,31 @@
 
 ---
 
+## Batch 298 — CSM globe receive FIXED: cascade light-eye was on the wrong side (NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS) (2026-06-15)
+
+**Bug (Session.Bug):** 298.1 — NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS.
+
+**Symptom.** WebGPU globe-terrain ground does NOT darken where a caster's shadow falls (the wall self-shadows, but its shadow never lands on the ground). `probe-csm-soft-shadow.mjs` FAILs — WebGPU globe ground uniformly bright, WebGL shows the dark cast shadow.
+
+**Files affected.**
+- `packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts` — `_computeCascadeVPMatrix` eye placement (the fix); 3 debug hooks + `COPY_SRC` on the cascade texture (the trace tooling).
+- `Tools/visual-regression/probe-csm-globe-receive-trace.mjs` — NEW trace probe.
+
+**Trace-then-fix (Principle 8).** Built `probe-csm-globe-receive-trace.mjs`: for a known ground point in the wall's umbra, project it through `cascade.viewProjectionRTE` two ways (globe `eyePos = worldPos − encodedCameraPositionMC` vs cast `eyePos = worldPos − EncodedCartesian3.fromCartesian(cameraPositionWC)`) and read the caster's STORED depth at each projected uv (`debugReadCascadeDepth`). Findings:
+- Camera encoding IDENTICAL: `globeVsCastMeters = 0`, `eyeDeltaMeters = 0`, `uvDelta = 0`, `ndcZDelta = 0`. **Ruled out the encoding-path suspect (a).** The globe receiver's projection is bit-for-bit the cast's.
+- Layer scan (`debugScanCascadeLayer`): the cascade depth IS populated (cascade 0 min 0.74, 615 written texels = the wall).
+- BUT ground points in the wall's umbra projected to UVs reading `stored = 1.0` (cleared/lit) — the wall's footprint was ~30 texels away from where the ground points the wall shadows landed. **Spatial XY misalignment, NOT a Z/depth issue.**
+
+**Root cause = suspect (b): cascade light-eye on the wrong side.** `_computeCascadeVPMatrix` used `eye = center − lightDir·2r` → `forward = center − eye = +lightDir`, i.e. the light camera sat on the ANTI-sun side looking BACK toward the sun. A shadow camera must sit on the LIGHT side and look along the light's travel direction (`forward = −lightDir`). The mirrored projection stored the caster's depth mirrored about the cascade center, so a ground point in shadow and its occluder projected to different texels. Self-shadowing primitives tolerated the mirror (caster + receiver = same texel); cross-object globe receive did not.
+
+**Fix.** `eye = center + lightDir·2r` (`forward = −lightDir`). `snapToTexelGrid` builds its basis from `forward = lightDir`; the forward-sign flip only mirrors the (side, up) basis, and the texel-grid rounding is sign-symmetric, so snapping is unaffected (left as-is).
+
+**Verified.** After the fix the trace shows 313/961 swept ground points correctly occluded by the wall (was ~0). `probe-csm-soft-shadow.mjs` cells A/B render a real, correctly-positioned rectangular cast shadow on the WebGPU globe ground (PNG-read confirmed); 5/6 sub-checks PASS (shadow casts, PCF softens B>A, no peter-panning, no acne wipe, 0 errors). `probe-csm-cast-dispatch.mjs` PASS (584 dispatches). collections-regression + sandcastle-smoke + 12 standing gates green; upstream-regression 21/21.
+
+**Remaining (NOT this bug).** The 6th sub-check (`B.perEdge/C.perEdge` ≈ 50× vs [0.25,4.0]) FAILs on edge SHARPNESS: the 1024² cascade-0 fits a 6226 m sphere (~12 m/texel) so the cast-shadow edge is a coarse sawtooth, while the WebGL reference cell uses a tightly-fit 2048 single shadow map. Tried bias bump (worse) + normal-offset bias (worse) — both confirmed the sawtooth is undersampling, not acne. Tracked as NEW-CSM-CASCADE-GROUND-FIT (clamp cascade frustum-slice far at the ground before fitting).
+
+---
+
 ## Batch 297 — CSM soft-shadow PCF end-to-end retest (post-cast-fix): PCF verified on the primitive self-shadow edge; globe-receiver closeout still gated on NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS (2026-06-15)
 
 **Goal.** Re-run `probe-csm-soft-shadow.mjs` after the Batch-296 cast fix to close out CSM soft shadows end-to-end. Per the Batch-289 diagnosis, the hard-vs-soft A/B diff (0.000% when `_castDispatches===0`) should now be non-zero and the probe should go green with no probe changes.

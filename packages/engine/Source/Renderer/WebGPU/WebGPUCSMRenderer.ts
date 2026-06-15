@@ -361,7 +361,13 @@ export class WebGPUCSMRenderer {
       },
       format: "depth32float",
       usage:
-        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.TEXTURE_BINDING |
+        // COPY_SRC lets `debugReadCascadeDepth` copy a single texel out for
+        // the CSM trace probe (NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS). The
+        // cost is one extra usage bit; no GPU work happens unless the debug
+        // path runs.
+        GPUTextureUsage.COPY_SRC,
     });
 
     // Per-layer views for cast render passes.
@@ -703,6 +709,152 @@ export class WebGPUCSMRenderer {
   }
 
   /**
+   * Debug trace surface for NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS. Exposes
+   * the per-cascade RTE-aware VP matrices + sphere centers/radii so a probe
+   * can project a known ground point through the SAME matrix the receive
+   * shaders use and compare its (uv, ndc.z) against the stored cast depth.
+   * Pure read of already-computed CPU state — no GPU work.
+   */
+  debugCascadeMatrices(): Array<{
+    splitNear: number;
+    splitFar: number;
+    sphereCenter: [number, number, number];
+    sphereRadius: number;
+    viewProjectionRTE: number[];
+    viewProjection: number[];
+  }> {
+    return this._cascades.map((c) => ({
+      splitNear: c.splitNear,
+      splitFar: c.splitFar,
+      sphereCenter: [
+        c.sphereCenter[0] as number,
+        c.sphereCenter[1] as number,
+        c.sphereCenter[2] as number,
+      ],
+      sphereRadius: c.sphereRadius,
+      viewProjectionRTE: Array.from(c.viewProjectionRTE),
+      viewProjection: Array.from(c.viewProjection),
+    }));
+  }
+
+  /**
+   * Read a single texel out of one cascade's stored depth map. Used by the
+   * CSM trace probe to compare the caster's STORED depth at a projected uv
+   * against the receiver's reconstructed ndc.z. `u`,`v` are in [0,1] texture
+   * space (same convention the receive shaders sample with). Returns the
+   * raw depth32float value (0 = light near plane, 1 = far / cleared).
+   * Async (one copyTextureToBuffer + mapAsync). Returns null when CSM is not
+   * initialized.
+   */
+  async debugReadCascadeDepth(
+    cascadeIdx: number,
+    u: number,
+    v: number,
+  ): Promise<number | null> {
+    const device = this._device;
+    const tex = this._cascadeTexture;
+    if (!device || !tex) {
+      return null;
+    }
+    const res = this._resolution;
+    const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
+    const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
+    // Copy the FULL layer (identical to debugScanCascadeLayer, which reads
+    // back correctly) and index the texel. A partial-row copy with a non-zero
+    // origin.y read back as zero on the Vulkan/SwiftShader path; the full
+    // copy is the reliable shape. bytesPerRow must be a 256-multiple.
+    const bytesPerRow = Math.ceil((res * 4) / 256) * 256;
+    const readback = device.createBuffer({
+      label: "CSM_DebugDepthReadback",
+      size: bytesPerRow * res,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const encoder = device.createCommandEncoder({
+      label: "CSM_DebugDepthCopy",
+    });
+    encoder.copyTextureToBuffer(
+      {
+        texture: tex,
+        mipLevel: 0,
+        origin: { x: 0, y: 0, z: cascadeIdx },
+        aspect: "depth-only",
+      },
+      { buffer: readback, bytesPerRow, rowsPerImage: res },
+      { width: res, height: res, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const raw = new Uint8Array(readback.getMappedRange());
+    const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+    const value = dv.getFloat32(py * bytesPerRow + px * 4, true);
+    readback.unmap();
+    readback.destroy();
+    return value;
+  }
+
+  /**
+   * Copy a full cascade layer back to the CPU and report min/max + a coarse
+   * histogram of stored depth. Confirms whether the cast pass wrote ANY
+   * non-cleared depth into the cascade (a uniform 1.0 = nothing drawn; a
+   * uniform 0.0 = degenerate cast VP). For the trace probe only.
+   */
+  async debugScanCascadeLayer(cascadeIdx: number): Promise<{
+    min: number;
+    max: number;
+    nonOne: number;
+    nonZero: number;
+    total: number;
+  } | null> {
+    const device = this._device;
+    const tex = this._cascadeTexture;
+    if (!device || !tex) {
+      return null;
+    }
+    const res = this._resolution;
+    const bytesPerRow = Math.ceil((res * 4) / 256) * 256;
+    const readback = device.createBuffer({
+      label: "CSM_DebugLayerScan",
+      size: bytesPerRow * res,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const encoder = device.createCommandEncoder({
+      label: "CSM_DebugLayerCopy",
+    });
+    encoder.copyTextureToBuffer(
+      {
+        texture: tex,
+        mipLevel: 0,
+        origin: { x: 0, y: 0, z: cascadeIdx },
+        aspect: "depth-only",
+      },
+      { buffer: readback, bytesPerRow, rowsPerImage: res },
+      { width: res, height: res, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const raw = new Uint8Array(readback.getMappedRange());
+    let min = Infinity;
+    let max = -Infinity;
+    let nonOne = 0;
+    let nonZero = 0;
+    let total = 0;
+    const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+    for (let row = 0; row < res; row++) {
+      for (let col = 0; col < res; col++) {
+        const d = view.getFloat32(row * bytesPerRow + col * 4, true);
+        if (d < min) min = d;
+        if (d > max) max = d;
+        if (d < 0.9999) nonOne++;
+        if (d > 1e-6) nonZero++;
+        total++;
+      }
+    }
+    readback.unmap();
+    readback.destroy();
+    return { min, max, nonOne, nonZero, total };
+  }
+
+  /**
    * Release GPU resources.
    */
   destroy(): void {
@@ -874,11 +1026,24 @@ function _computeCascadeVPMatrix(
   const cz = center[2];
   const r = Math.max(radius, 1.0);
 
-  // Eye pulled back along the light direction by 2r. Near plane sits
-  // just outside the sphere, far plane at 3r.
-  const eyeX = cx - lightDir.x * 2 * r;
-  const eyeY = cy - lightDir.y * 2 * r;
-  const eyeZ = cz - lightDir.z * 2 * r;
+  // Eye placed on the LIGHT side of the cascade sphere, looking back toward
+  // the scene along the light's travel direction (-lightDir). `lightDir` is
+  // surface→light, so the light camera sits at `center + lightDir*2r` and
+  // `forward = center - eye = -lightDir` (FROM the light TOWARD the scene).
+  //
+  // NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS (Batch 298): the previous
+  // `eye = center - lightDir*2r` placed the eye on the ANTI-light side and
+  // made `forward = +lightDir` (looking back toward the sun). That records
+  // the scene depth mirrored about the cascade center, so a ground point in
+  // a wall's umbra and the wall occluding it project to DIFFERENT shadow-map
+  // texels (verified: wall footprint stored at uv≈(0.40,0.58) while the
+  // umbra ground points the wall hides land at uv≈(0.38,0.56), stored=1.0 →
+  // judged lit). Self-shadowing primitives tolerated the mirror because the
+  // caster and receiver share the same texel; cross-object globe receive did
+  // not. Near plane sits just outside the sphere, far plane at 3r.
+  const eyeX = cx + lightDir.x * 2 * r;
+  const eyeY = cy + lightDir.y * 2 * r;
+  const eyeZ = cz + lightDir.z * 2 * r;
 
   // Pick world-up that isn't parallel to the light direction. For a
   // zenith-sun (light ≈ -up) we want world-Z up. For a horizon-sun we
