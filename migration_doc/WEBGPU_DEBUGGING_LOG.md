@@ -24,6 +24,34 @@
 
 ---
 
+## Batch 283 — Phase-5 demo WebGL2 polish: both compute-instance demos run on WebGL2 + `?renderer=` selectable (2026-06-15)
+
+Not a bug fix — the two small Phase-5 follow-ups worth doing now (Phase 5 itself found no bugs). User-facing polish on the WebGL2 CPU-kernel fallback (Batch 280):
+
+1. **`?renderer=` selectable on both demos.** "WebGPU Orbital Catalog" + "WebGPU SGP4 Satellites" hardcoded `contextOptions.renderer = "webgpu"`; both now read `new URLSearchParams(location.search).get("renderer") || "webgpu"`, so a user can open the demo on the WebGL2 CPU-kernel fallback (`?renderer=webgl`) straight from the URL. Default unchanged (webgpu).
+2. **SGP4 demo gained a `cpuKernel`.** The SGP4 demo previously had no `cpuKernel`, so it rendered NOTHING on WebGL2. Added a `sgp4CpuKernel` (the time-dependent SGP4 update expressed for the CPU, reading the SAME 42 packed param lanes `packInstance` produces — inline in the demo like the orbital demo's J2 `cpuKernel`). Factored the shared FP64 propagator into `Tools/visual-regression/sgp4-cpu-kernel.mjs` (`propagateSgp4FromParams` / `cpuKernelSgp4`) for the probe. Cross-checked against the validated FP64 reference (`sgp4-reference.mjs` `sgp4()` + `temeToEcef`): worst **0.652 m** over a full day (STARLINK @ 1440 min) — the tiny residual is the WGSL kernel's range-reduction (reducePi vs mod) reproduced in FP64, well inside the SGP4 model's own ~1 km uncertainty.
+
+**Verify (new gate `probe-compute-instance-webgl2-demos.mjs`):** drives the REAL standalone Sandcastle URLs on both backends. Sandcastle holds the viewer in a local const (no `window.viewer`), so it captures via compositor canvas screenshot + frame-differencing for motion (the globe is static; only the dots flip bright-state), and arms the WebGPU device via the `GPUAdapter.prototype.requestDevice` patch (same hook as `sandcastle-smoke.mjs`). Per (demo, renderer) asserts (A) renders, (B) moves (≥ N px flip bright-state over a ~12 sim-minute window), (C) the right backend ran (webgpu arms a device, webgl arms none — catches a silent fallback either way), (D) zero fatal errors.
+
+**Result (all 4 legs PASS):**
+
+| Demo / renderer | bright px A/B | moved px | device armed | errors |
+| --- | --- | --- | --- | --- |
+| Orbital Catalog ?renderer=webgl | 32017 / 32072 | 16281 | 0 | 0 |
+| Orbital Catalog ?renderer=webgpu | 29986 / 29811 | 15783 | 1 | 0 |
+| SGP4 Satellites ?renderer=webgl | 43265 / 43336 | 1893 | 0 | 0 |
+| SGP4 Satellites ?renderer=webgpu | 33774 / 33781 | 3077 | 1 | 0 |
+
+Read the captures (Principle 8): the SGP4 WebGL leg shows the real satellite dots (the demo's toolbar reads "180 near-earth drawn, 1 deep-space skipped" on WebGL2 too — the deep-space skip works in the fallback path) over a static globe, shifted between A and B; the orbital leg shows the three dense cyan/yellow/magenta shells.
+
+**Standing gates re-run green:** probe-orbital-catalog (2000 obj, 24361 px move, 0 err), probe-orbital-sgp4 (55.2 m / 1440 min, deep-space skipped, 0 err), probe-compute-instance-webgl2 (CPU≈WebGPU 0.27 px, 0 err both backends), probe-collections-regression (5 collections, 0 err), sandcastle-smoke (3/3, the orbital demo now reaching webgpu via the new param default).
+
+**`NEW-COMPUTE-INSTANCE-WEBGL2-WORKER` stays DEFERRED** — the main-thread CPU fallback is functionally complete for BOTH headline demos; the Worker/WASM offload is a perf-only enhancement (avoid main-thread stall at 100k+), not a correctness gap.
+
+**Files:** `Apps/Sandcastle/gallery/{WebGPU Orbital Catalog,WebGPU SGP4 Satellites}.html`, `Tools/visual-regression/{sgp4-cpu-kernel.mjs (new),probe-compute-instance-webgl2-demos.mjs (new)}`, ledger docs (`DEFERRED_WORK` / `FEATURE_INVENTORY` / `CAMPAIGN_ROADMAP` / this log). No engine source touched (the cpuKernel substrate shipped Batch 280).
+
+---
+
 ## Batch 282 — Phase 5 closeout: orbital / compute-instance productionization VERIFIED + ledger reconciled (2026-06-14)
 
 Not a bug fix — the Phase-5 closeout of the campaign roadmap (orbital / compute-instance productionization, Batches 277–281). The whole orbital/compute-instance gate set was re-run FRESH from the committed build (HEAD `bb90ad7a90`, `gulp build` artifact dated the same), every probe green with numbers, then the migration ledgers reconciled.

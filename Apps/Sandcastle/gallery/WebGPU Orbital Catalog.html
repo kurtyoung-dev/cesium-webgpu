@@ -46,8 +46,11 @@
     "low = 0" of the original circular MVP.
 
     Simulation time follows the scene clock, so the speed slider just
-    drives `viewer.clock.multiplier`. WebGPU-only: the WebGL2 fallback
-    (worker/WASM kernel host) is a tracked follow-up.
+    drives `viewer.clock.multiplier`. Backend is selectable via
+    ?renderer=webgpu (default) | webgl — on WebGL2 the engine runs the JS
+    `cpuKernel` (same secular-J2 math) each frame instead of the WGSL
+    compute kernel, so the catalog renders on both backends. (A worker/WASM
+    kernel host for the WebGL2 leg is a tracked perf-only follow-up.)
   -->
   <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
     <style>
@@ -90,8 +93,14 @@
         "use strict";
         //Sandcastle_Begin
 
+        // Backend is selectable via ?renderer= (default webgpu) so a user can
+        // exercise the WebGL2 CPU-kernel fallback (cpuKernel below) straight
+        // from the demo — on WebGL2 the engine runs the JS kernel each frame
+        // instead of the WGSL compute kernel.
+        const requestedRenderer =
+          new URLSearchParams(window.location.search).get("renderer") || "webgpu";
         const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
-          contextOptions: { renderer: "webgpu" },
+          contextOptions: { renderer: requestedRenderer },
           shouldAnimate: true,
         });
         const scene = viewer.scene;

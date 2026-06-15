@@ -45,6 +45,8 @@ Resumes the paused Batch-220 diagnosis. Depends on Phase 2 (depth-match half).
 
 **Closeout (Batch 282):** full orbital/compute-instance gate set re-run green from the committed build — probe-orbital-catalog (2000 obj, 0 err), -compute-instance-generic (BV+TAA on/off), -compute-instance-pick (3/3 indices), -orbital-j2 (15 m / 30 day), -orbital-sgp4 (55 m / 1440 min), -compute-instance-webgl2 (0.39 px), -orbital-1m (1,000,000 achieved), plus probe-collections-regression + sandcastle-smoke (3/3). BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE confirmed RESOLVED (probe-ellipsoidprim-logdepth, 18280 px). Engine-purity grep confirms zero orbital domain logic in `packages/engine/Source`.
 
+**Demo WebGL2 polish (Batch 283):** the two compute-instance demos are now WebGL2-exercisable from the demo URL. Both "WebGPU Orbital Catalog" + "WebGPU SGP4 Satellites" read `?renderer=webgpu|webgl` (default webgpu), and the SGP4 demo gained a `cpuKernel` (FP64 SGP4 update over the same 42 packed param lanes; factored into `Tools/visual-regression/sgp4-cpu-kernel.mjs`, matching the validated reference to < 1 m / full day) so it renders on the WebGL2 CPU-kernel fallback too. New gate `probe-compute-instance-webgl2-demos.mjs` drives both demos on both backends (renders + moves + correct-backend-armed + 0 errors; all 4 legs PASS). NEW-COMPUTE-INSTANCE-WEBGL2-WORKER (worker/WASM offload) stays DEFERRED — perf-only, the main-thread fallback is functionally complete.
+
 ## Phase 6 — Picking parity completion
 
 - **NEW-PICK-RAY-ASYNC** (pickFromRay/sampleHeight/clampToHeight async path + oneTimeWarning), **NEW-PICK-METADATA-READBACK** (pickMetadata/pickVoxelCoordinate stale-pixel fix), endAsync `_readbackInFlight` guard.
