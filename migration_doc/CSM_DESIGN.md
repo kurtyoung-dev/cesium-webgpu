@@ -208,14 +208,24 @@ it stays a faithful source of truth).
   renderers) forward `csmCandidate.pcfRadius`. New Scene option
   `cascadedShadowMapSoftShadows` (default true) → `_initCSMRenderer`.
 
-**Verification status — BLOCKED on a separate cast-side gap.** The kernel is
-confirmed compiled into the bundle and the radius reaches the runtime (0 in
-the hard cell, 1.5 in the soft cell). But the new `probe-csm-soft-shadow.mjs`
-A-vs-B (hard-vs-soft) pixel diff is **0.000%** because the WebGPU CSM **cast
-pass dispatches zero commands** in every CesiumViewer scene tried
-(`_castDispatches === 0`) — so no cast shadow reaches the receiver for PCF to
-soften. Tracked as `NEW-CSM-CAST-NO-DISPATCH-VIEWER` in DEFERRED_WORK; the
-probe will go green once that lands, with no probe changes needed.
+**Verification status — PCF VERIFIED on the primitive self-shadow edge
+(Batch 297 retest); end-to-end globe-receiver closeout still BLOCKED on
+`NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS`.** The kernel is confirmed compiled
+into the bundle and the radius reaches the runtime (0 in the hard cell, 1.5 in
+the soft cell). After the Batch-296 cast fix landed, the `probe-csm-soft-shadow.mjs`
+A-vs-B (hard-vs-soft) pixel diff rose from **0.000%** (Batch 289) to **6.551%**
+(Batch 297) — the PCF toggle now demonstrably reaches the runtime and reworks
+shadow-edge pixels (0 device errors). **However** the probe still FAILS overall:
+the 6.5% diff is entirely the kernel softening the caster wall's own
+**self-shadow** edge (the appearance-primitive receiver self-shadows
+correctly), NOT a softened **ground cast shadow** — the output PNGs
+(`output/csm-soft-{a,b,c}.png`) show the WebGPU globe ground uniformly bright
+with NO cast shadow, while the WebGL reference cell shows the large dark ground
+shadow. The remaining gap is the **globe-terrain receiver** missing the
+caster's stored depth at its projected cascade UV (`NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS`,
+HIGH). The cast side is green (`probe-csm-cast-dispatch.mjs` PASS, 584
+dispatches). `probe-csm-soft-shadow.mjs` goes green with NO probe changes once
+the globe-receive projection miss is fixed.
 
 **Still pending:** the `czm_private_shadowVisibility` normal-shading-smooth
 clamp in `computeShadowFactorCSM` (lower value than the kernel, deferred);

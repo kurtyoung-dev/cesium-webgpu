@@ -24,6 +24,26 @@
 
 ---
 
+## Batch 297 — CSM soft-shadow PCF end-to-end retest (post-cast-fix): PCF verified on the primitive self-shadow edge; globe-receiver closeout still gated on NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS (2026-06-15)
+
+**Goal.** Re-run `probe-csm-soft-shadow.mjs` after the Batch-296 cast fix to close out CSM soft shadows end-to-end. Per the Batch-289 diagnosis, the hard-vs-soft A/B diff (0.000% when `_castDispatches===0`) should now be non-zero and the probe should go green with no probe changes.
+
+**Result — partial.** Rebuilt (gulp green, ~49s) so the build artifact carries the Batch-296 source. `npx tsc --noEmit` 0 errors. Both CSM probes run against the fresh build:
+
+- `probe-csm-cast-dispatch.mjs` → **PASS** (cast side green): `_castDispatches = 584`, CSM + single-map both dispatch, 0 device errors. Confirms the Batch-296 cast fix is live in the build.
+- `probe-csm-soft-shadow.mjs` → **FAIL overall**, but with a meaningful delta vs Batch 289:
+  - A-vs-B (hard-vs-soft, identical WebGPU scene) masked diff = **6.551%** (was **0.000%** in Batch 289). The PCF toggle now demonstrably reaches the runtime and reworks shadow-edge pixels — `csmRenderer.pcfRadius` reads 0 in the hard cell, 1.5 in the soft cell.
+  - 0 device errors in all three cells.
+  - Assertions that still FAIL: `B.penumbraPerEdge(124.6) > A.penumbraPerEdge(179.5)` (soft should be wider than hard — it is NOT) and `B.perEdge/C.perEdge = 35.0` (WebGL parity band [0.25,4.0]).
+
+**Root cause of the remaining FAIL (visually confirmed — Principle 8).** Read the output PNGs (`output/csm-soft-{a,b,c}.png`). The WebGPU cells (A hard, B soft) show the caster wall block but the **globe ground is uniformly bright with NO cast shadow**. The WebGL reference (cell C) shows the large dark ground cast shadow correctly. So the 6.5% A-vs-B diff is entirely the PCF kernel softening the **wall's own self-shadow edge** (the appearance-primitive receiver self-shadows correctly — consistent with Batch 296), NOT a softened ground shadow. The probe's penumbra/umbra counts for the WebGPU cells come from the wall's own pixels, which is why the softness ordering is noisy/inverted.
+
+**Conclusion.** The cast side is fully fixed (A/B diff 0.000% → 6.5% proves PCF reaches the runtime). The end-to-end CSM soft-shadow closeout on the **globe terrain receiver** remains BLOCKED on the separate HIGH bug `NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS` (the globe receiver does not sample the caster's stored depth at the ground's projected cascade UV). `NEW-CSM-SOFT-SHADOW-PCF` is therefore NOT flipped to COMPLETE — it is "PCF verified on the primitive self-shadow edge; globe-receive end-to-end gated". `probe-csm-soft-shadow.mjs` goes green with NO probe changes once the globe-receive projection miss is fixed. Per Principle 9, the next concrete step is the cast-depth readback probe described in the `NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS` entry (compare the globe's projected cascade UV/NDC.z against the caster's stored depth at the same UV to localize the offset; verify the cascade light-eye sign).
+
+**Files modified.** Docs only — no source change (the probe correctly fails; modifying it to pass would mask the open globe-receive bug, which Principle 8/9 forbids). DEFERRED_WORK (NEW-CSM-SOFT-SHADOW-PCF retest evidence + NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS marked as the active closeout blocker), FEATURE_INVENTORY (CSM tag), CSM_DESIGN.md (PCF section), CAMPAIGN_ROADMAP_2026-06 (Phase 7).
+
+---
+
 ## Batch 296 — WebGPU shadow CAST commands never reached the cast pass (NEW-CSM-CAST-NO-DISPATCH-VIEWER) (2026-06-15) — CAST SIDE FIXED; globe-receive projection gap remains
 
 **Symptom (from Batch 289).** WebGPU shadows did not cast at all in CesiumViewer
