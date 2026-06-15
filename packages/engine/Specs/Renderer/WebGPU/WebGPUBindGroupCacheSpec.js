@@ -386,6 +386,126 @@ describe("Renderer/WebGPU/WebGPUBindGroupCache", function () {
     });
   });
 
+  describe("bounded LRU eviction (maxEntries)", function () {
+    it("never exceeds maxEntries — oldest entry is evicted on overflow", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUBindGroupCache({ maxEntries: 3 });
+      const lay = layout();
+      // Insert 3 distinct entries (each a unique view identity → unique key).
+      const v0 = view();
+      cache.getOrCreate(device, "a", lay, [{ binding: 0, resource: v0 }]);
+      cache.getOrCreate(device, "b", lay, [{ binding: 0, resource: view() }]);
+      cache.getOrCreate(device, "c", lay, [{ binding: 0, resource: view() }]);
+      expect(cache.size).toBe(3);
+
+      // 4th distinct entry overflows the cap → evicts the LRU (v0/"a").
+      cache.getOrCreate(device, "d", lay, [{ binding: 0, resource: view() }]);
+      expect(cache.size).toBe(3);
+      expect(cache.getStats().evictions).toBe(1);
+
+      // "a"'s key is gone → re-requesting it is a miss (re-creates).
+      const callsBefore = device.calls.length;
+      cache.getOrCreate(device, "a", lay, [{ binding: 0, resource: v0 }]);
+      expect(device.calls.length).toBe(callsBefore + 1);
+    });
+
+    it("a recently-hit entry is NOT the eviction victim (LRU recency touch)", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUBindGroupCache({ maxEntries: 3 });
+      const lay = layout();
+      const vA = view();
+      const vB = view();
+      const vC = view();
+      const bgA = cache.getOrCreate(device, "a", lay, [
+        { binding: 0, resource: vA },
+      ]);
+      cache.getOrCreate(device, "b", lay, [{ binding: 0, resource: vB }]);
+      cache.getOrCreate(device, "c", lay, [{ binding: 0, resource: vC }]);
+
+      // Touch "a" so it becomes most-recently-used; "b" is now the LRU.
+      cache.getOrCreate(device, "a", lay, [{ binding: 0, resource: vA }]);
+
+      // Overflow → "b" (the LRU) is evicted, "a" survives.
+      cache.getOrCreate(device, "d", lay, [{ binding: 0, resource: view() }]);
+      expect(cache.size).toBe(3);
+
+      // "a" still resolves to the original bind group (cache hit, no re-create).
+      const callsBefore = device.calls.length;
+      const bgAAgain = cache.getOrCreate(device, "a", lay, [
+        { binding: 0, resource: vA },
+      ]);
+      expect(bgAAgain).toBe(bgA);
+      expect(device.calls.length).toBe(callsBefore);
+
+      // "b" was evicted → re-requesting is a miss.
+      const callsBeforeB = device.calls.length;
+      cache.getOrCreate(device, "b", lay, [{ binding: 0, resource: vB }]);
+      expect(device.calls.length).toBe(callsBeforeB + 1);
+    });
+
+    it("stays bounded under per-frame identity churn (the unbounded-growth case)", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUBindGroupCache({ maxEntries: 16 });
+      const lay = layout();
+      // Simulate the docstring failure mode: a fresh texture-view identity
+      // every "frame" without a matching invalidateAll. Pre-fix this grew
+      // the map by one per frame forever.
+      for (let frame = 0; frame < 500; frame++) {
+        cache.getOrCreate(device, `f${frame}`, lay, [
+          { binding: 0, resource: view() },
+        ]);
+        cache.beginFrame();
+      }
+      expect(cache.size).toBeLessThanOrEqual(16);
+      // 500 misses, 16 retained → 484 evictions.
+      expect(cache.getStats().evictions).toBe(500 - 16);
+    });
+  });
+
+  describe("age eviction (maxIdleFrames)", function () {
+    it("drops entries not touched within the idle window on beginFrame", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUBindGroupCache({ maxIdleFrames: 3 });
+      const lay = layout();
+      const v = view();
+      cache.getOrCreate(device, "a", lay, [{ binding: 0, resource: v }]);
+      expect(cache.size).toBe(1);
+
+      // Tick past the idle window without touching "a".
+      cache.beginFrame(); // frame 1
+      cache.beginFrame(); // frame 2
+      cache.beginFrame(); // frame 3
+      cache.beginFrame(); // frame 4 → lastUsedFrame(0) < 4-3=1 → evicted
+      expect(cache.size).toBe(0);
+      expect(cache.getStats().evictions).toBe(1);
+    });
+
+    it("keeps entries touched within the idle window alive", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUBindGroupCache({ maxIdleFrames: 3 });
+      const lay = layout();
+      const v = view();
+      cache.getOrCreate(device, "a", lay, [{ binding: 0, resource: v }]);
+      cache.beginFrame(); // frame 1
+      cache.beginFrame(); // frame 2
+      // Touch it on frame 2 → lastUsedFrame becomes 2.
+      cache.getOrCreate(device, "a", lay, [{ binding: 0, resource: v }]);
+      cache.beginFrame(); // frame 3
+      cache.beginFrame(); // frame 4 → lastUsedFrame(2) >= 4-3=1 → survives
+      expect(cache.size).toBe(1);
+    });
+
+    it("does no age eviction when maxIdleFrames is 0 (default)", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUBindGroupCache();
+      const lay = layout();
+      cache.getOrCreate(device, "a", lay, [{ binding: 0, resource: view() }]);
+      for (let i = 0; i < 1000; i++) cache.beginFrame();
+      expect(cache.size).toBe(1);
+      expect(cache.getStats().evictions).toBe(0);
+    });
+  });
+
   describe("resetStats", function () {
     it("zeroes hit/miss/invalidation counters without dropping cache contents", function () {
       const device = makeStubDevice();

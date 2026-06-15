@@ -50,6 +50,14 @@ struct LODParams {
 // Shared memory for workgroup-level compaction
 var<workgroup> sharedVisible: array<u32, 256>;
 var<workgroup> sharedCount: atomic<u32>;
+// Dedicated broadcast slot for the global output offset. The earlier
+// design reused sharedVisible[255] to broadcast this value, but at full
+// workgroup occupancy localCount can equal 256 (LOD 0 keeps every point
+// and all pass the frustum test), in which case sharedVisible[255] holds
+// a REAL compacted point index — overwriting it corrupted that point
+// (it got written to the output as the base offset instead of its true
+// index). A separate scalar slot removes the data/broadcast aliasing.
+var<workgroup> sharedGlobalOffset: u32;
 
 fn frustumTest(pos: vec3<f32>) -> bool {
   // Test point against 6 frustum planes
@@ -134,26 +142,21 @@ fn computeMain(
 
   workgroupBarrier();
 
-  // First thread allocates a contiguous range in the global output
-  var globalOffset = 0u;
+  // First thread allocates a contiguous range in the global output and
+  // broadcasts the base offset to the rest of the workgroup via a
+  // dedicated scalar (NOT a sharedVisible slot — see sharedGlobalOffset).
   let localCount = atomicLoad(&sharedCount);
 
-  if (lid.x == 0u && localCount > 0u) {
-    globalOffset = atomicAdd(&visibleCount, localCount);
-  }
-
-  workgroupBarrier();
-
-  // Copy workgroup results to global output (all threads participate)
-  // Re-read globalOffset from shared memory via the first thread's result
-  // We need to broadcast globalOffset — use shared memory trick
   if (lid.x == 0u) {
-    // Reuse slot 255 to broadcast the offset (safe because localCount < 256)
-    sharedVisible[255u] = globalOffset;
+    var globalOffset = 0u;
+    if (localCount > 0u) {
+      globalOffset = atomicAdd(&visibleCount, localCount);
+    }
+    sharedGlobalOffset = globalOffset;
   }
   workgroupBarrier();
 
-  let baseOffset = sharedVisible[255u];
+  let baseOffset = sharedGlobalOffset;
 
   if (lid.x < localCount) {
     let globalIdx = baseOffset + lid.x;
@@ -254,15 +257,20 @@ fn computeMainSubgroups(
 
   workgroupBarrier();
 
-  var globalOffset = 0u;
+  // Broadcast the reserved global offset via the dedicated scalar slot,
+  // not sharedVisible[255] — at full occupancy localCount == 256 and
+  // sharedVisible[255] holds a live compacted point index.
   let localCount = atomicLoad(&sharedCount);
-  if (lid.x == 0u && localCount > 0u) {
-    globalOffset = atomicAdd(&visibleCount, localCount);
-    sharedVisible[255u] = globalOffset; // broadcast slot
+  if (lid.x == 0u) {
+    var globalOffset = 0u;
+    if (localCount > 0u) {
+      globalOffset = atomicAdd(&visibleCount, localCount);
+    }
+    sharedGlobalOffset = globalOffset;
   }
   workgroupBarrier();
 
-  let baseOffset = sharedVisible[255u];
+  let baseOffset = sharedGlobalOffset;
   if (lid.x < localCount) {
     let globalIdx = baseOffset + lid.x;
     if (globalIdx < params.maxVisiblePoints) {

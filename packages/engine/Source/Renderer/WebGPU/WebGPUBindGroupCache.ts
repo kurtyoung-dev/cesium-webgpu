@@ -89,12 +89,50 @@ export interface BindGroupCacheStats {
   readonly hits: number;
   readonly misses: number;
   readonly invalidations: number;
+  /** Number of entries dropped by bounded LRU / age eviction. */
+  readonly evictions: number;
   /** Hit rate as a fraction in [0, 1]. NaN when no lookups have run. */
   readonly hitRate: number;
 }
 
+/**
+ * Eviction-tuning knobs. Both are bounded growth guards, not correctness
+ * controls — a stable-identity caller never hits either bound because its
+ * key set is finite. They exist for the pathological churn case the class
+ * docstring warns about (input texture views recreated every frame without
+ * a matching {@link WebGPUBindGroupCache.invalidateAll}), where the key set
+ * grows once per frame forever.
+ */
+export interface BindGroupCacheOptions {
+  /**
+   * Hard upper bound on distinct cached bind groups. On a miss that would
+   * exceed this, the least-recently-used entry is evicted first. Default
+   * 1024 — comfortably above any real post-process pipeline's stable key
+   * set (a 4-stage bloom is single digits) while capping a churning
+   * cache's growth.
+   */
+  maxEntries?: number;
+  /**
+   * Evict entries not touched within this many `beginFrame()` ticks. 0
+   * disables age eviction (LRU cap still applies). Default 0 — most
+   * effect caches don't drive a frame clock; callers that do (or that
+   * want a TTL) pass a positive value. ~600 ≈ 10 s at 60 fps.
+   */
+  maxIdleFrames?: number;
+}
+
+/** One cached bind group plus the frame it was last touched (for age eviction). */
+interface BindGroupCacheEntry {
+  bindGroup: GPUBindGroup;
+  lastUsedFrame: number;
+}
+
 export class WebGPUBindGroupCache {
-  private _map = new Map<string, GPUBindGroup>();
+  // Map iteration order == insertion order; we keep it as a recency list by
+  // re-inserting (delete + set) an entry whenever it's touched. The first
+  // key in iteration order is therefore the least-recently-used → O(1)
+  // eviction without a separate ordering structure.
+  private _map = new Map<string, BindGroupCacheEntry>();
   private _idCounter = 0;
   // WeakMap keyed on the resource object (GPUTextureView / GPUSampler /
   // GPUBuffer / GPUBindGroupLayout / GPUExternalTexture). The counter
@@ -107,6 +145,16 @@ export class WebGPUBindGroupCache {
   private _hits = 0;
   private _misses = 0;
   private _invalidations = 0;
+  // NEW-BINDGROUPCACHE-EVICTION — bounded growth guards.
+  private _evictions = 0;
+  private _maxEntries: number;
+  private _maxIdleFrames: number;
+  private _currentFrame = 0;
+
+  constructor(options: BindGroupCacheOptions = {}) {
+    this._maxEntries = options.maxEntries ?? 1024;
+    this._maxIdleFrames = options.maxIdleFrames ?? 0;
+  }
 
   /** Stable numeric ID for any GPU resource object. */
   private _idFor(obj: object): number {
@@ -159,19 +207,61 @@ export class WebGPUBindGroupCache {
     }
     const key = keyParts.join("|");
 
-    let bg = this._map.get(key);
-    if (!bg) {
-      this._misses++;
-      bg = device.createBindGroup({
-        label,
-        layout,
-        entries: entries as GPUBindGroupEntry[],
-      });
-      this._map.set(key, bg);
-    } else {
+    const existing = this._map.get(key);
+    if (existing) {
       this._hits++;
+      // Touch for LRU recency: move to the tail of the iteration order so
+      // it isn't a near-term eviction candidate, and stamp the frame for
+      // age eviction.
+      existing.lastUsedFrame = this._currentFrame;
+      this._map.delete(key);
+      this._map.set(key, existing);
+      return existing.bindGroup;
     }
-    return bg;
+
+    this._misses++;
+    // Make room before inserting so the cache never exceeds the cap.
+    if (this._map.size >= this._maxEntries) {
+      this._evictLRU();
+    }
+    const bindGroup = device.createBindGroup({
+      label,
+      layout,
+      entries: entries as GPUBindGroupEntry[],
+    });
+    this._map.set(key, { bindGroup, lastUsedFrame: this._currentFrame });
+    return bindGroup;
+  }
+
+  /**
+   * Evict the single least-recently-used entry. The first key in Map
+   * iteration order is the LRU because every hit re-inserts its entry at
+   * the tail. O(1) — `keys().next()` short-circuits on the first key.
+   */
+  private _evictLRU(): void {
+    const lruKey = this._map.keys().next().value;
+    if (lruKey !== undefined) {
+      this._map.delete(lruKey);
+      this._evictions++;
+    }
+  }
+
+  /**
+   * Advance the frame clock and, when `maxIdleFrames > 0`, drop entries
+   * not touched within that window. Call once per frame from the owner's
+   * frame loop. No-op for age eviction when `maxIdleFrames === 0` (the
+   * LRU cap still bounds growth on every miss regardless).
+   */
+  beginFrame(): void {
+    this._currentFrame++;
+    if (this._maxIdleFrames <= 0) return;
+    const threshold = this._currentFrame - this._maxIdleFrames;
+    for (const [key, entry] of this._map) {
+      if (entry.lastUsedFrame < threshold) {
+        this._map.delete(key);
+        this._evictions++;
+      }
+    }
   }
 
   /**
@@ -203,15 +293,17 @@ export class WebGPUBindGroupCache {
       hits: this._hits,
       misses: this._misses,
       invalidations: this._invalidations,
+      evictions: this._evictions,
       hitRate: total > 0 ? this._hits / total : NaN,
     };
   }
 
-  /** Reset hit/miss/invalidation counters without dropping cache contents. */
+  /** Reset hit/miss/invalidation/eviction counters without dropping cache contents. */
   resetStats(): void {
     this._hits = 0;
     this._misses = 0;
     this._invalidations = 0;
+    this._evictions = 0;
   }
 }
 
