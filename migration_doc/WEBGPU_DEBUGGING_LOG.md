@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 299 — Phase-9 fix-forward: three upstream pulls (#13366/#13421/#13369) + Camera/ShadowMap JSDoc restore (2026-06-15)
+
+**Items:** NEW-UPSTREAM-GROUNDPRIM-SHOWSUPDATED-13366, NEW-UPSTREAM-EDGE-DEGENERATE-13421, NEW-UPSTREAM-PANORAMA-LIGHTING-13369, NEW-CAMERA-JSDOC-RESTORE, NEW-SHADOWMAP-COMMENT-RESTORE.
+
+**Method.** Each pull was verified to exist in OUR (forked) tree before porting — none were already fixed. Ported into our structure, not cherry-picked.
+
+- **#13366 (ground-prim `showsUpdated` cleanup).** Files: `DataSources/StaticGroundGeometryPerMaterialBatch.js`, `DataSources/StaticGroundPolylinePerMaterialBatch.js`. Root cause: `Batch.remove()` cleared `subscriptions` but not `showsUpdated`; an entity whose show changed then removed before the next `update()` left a stale `showsUpdated` entry → "Cannot read properties of undefined (reading 'id')". Fix: add `this.showsUpdated.remove(id)` inside the unsubscribe block. Both files confirmed missing it first.
+- **#13421 (degenerate-triangle edge-visibility guard).** File: `Scene/Model/EdgeVisibilityPipelineStage.js`. Root cause: zero-area triangle → zero-length cross product → `Cartesian3.normalize` throws `DeveloperError("normalized result is not a number")` (Cartesian3.js:419) at tile load. Fix (upstream-matching): guard `crossMagnitudeSquared === 0.0 || !Number.isFinite(...)` → register the triangle's edges then `continue`; else normalize via `multiplyByScalar(1/sqrt(magSq))`.
+- **#13369 (panorama lighting).** File: `Scene/EquirectangularPanorama.js`. Fix: `MaterialAppearance` now sets `flat: true` so scene lighting does not darken the equirectangular image. Verified `MaterialAppearance` supports `flat` (`_flat = options.flat ?? false`).
+- **NEW-CAMERA-JSDOC-RESTORE.** Files: `Scene/Camera.js`, `Scene/ScreenSpaceCameraController.js`. Restored public-API JSDoc lost in the ES6-class modernization, sourced verbatim from merge-base `0becdbfc17`, re-indented to class-method form. `@example` 1→6; 37 method docblocks restored. JSDoc-only.
+- **NEW-SHADOWMAP-COMMENT-RESTORE.** File: `Scene/ShadowMapComputations.js`. Restored ~25 stripped WHY-comments (cascade split-mix, light-space sign convention, perspective-divide, resize ASCII layout diagrams, visibility/camera section headers) from merge-base. Comment-only.
+
+**Verification.** `npx gulp build` green; `npx tsc --noEmit` clean (after reverting `index-wgsl.js` churn). New specs: EdgeVisibility degenerate (17/17), Panorama flat (8/8), GroundGeometry showsUpdated (9/9), GroundPolyline (10/10), Camera suite (349/349), ShadowMap (50/50). `Tools/upstream-regression-check.mjs` extended to 26 checks (added [6] ground-prim showsUpdated source guard, [7] edge degenerate guard, [8] panorama flat) — 26/26 PASS. Standing gates: collections-regression PASS, sandcastle-smoke PASS (3 demos), csm-cast-dispatch PASS. csm-soft-shadow remains 5/6 (the pre-existing `NEW-CSM-CASCADE-GROUND-FIT` WebGL edge-sharpness parity ballpark — unrelated to these comment-only ShadowMap changes; confirmed the ShadowMapComputations diff is 100% comments). **sg-scan (#13377) deferred** as `NEW-SG-SCAN-ADOPT` (adds `@ast-grep/cli` binary + 7 upstream-convention rules that would flag our diverged files — not low-risk for a drift stage).
+
+---
+
 ## Batch 298 — CSM globe receive FIXED: cascade light-eye was on the wrong side (NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS) (2026-06-15)
 
 **Bug (Session.Bug):** 298.1 — NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS.

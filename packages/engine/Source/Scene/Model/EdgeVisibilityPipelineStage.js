@@ -388,7 +388,29 @@ function buildTriangleAdjacency(primitive) {
     Cartesian3.subtract(scratchP1, scratchP0, scratchE1);
     Cartesian3.subtract(scratchP2, scratchP0, scratchE2);
     Cartesian3.cross(scratchE1, scratchE2, scratchCross);
-    Cartesian3.normalize(scratchCross, scratchCross);
+
+    // Degenerate (zero-area) triangles produce a zero-length cross product;
+    // normalizing it throws a DeveloperError ("normalized result is not a
+    // number"). Skip the face-normal computation for such triangles and leave
+    // their faceNormals slot as the zero default — the edge-classification
+    // shader treats a zero normal as "no silhouette contribution". Upstream
+    // #13421 fixes the same crash on degenerate edge-visibility tiles.
+    const crossMagnitudeSquared = Cartesian3.magnitudeSquared(scratchCross);
+    if (
+      crossMagnitudeSquared === 0.0 ||
+      !Number.isFinite(crossMagnitudeSquared)
+    ) {
+      // Still register the edges so adjacency is correct; just skip the normal.
+      processEdge(i0, i1, t);
+      processEdge(i1, i2, t);
+      processEdge(i2, i0, t);
+      continue;
+    }
+    Cartesian3.multiplyByScalar(
+      scratchCross,
+      1.0 / Math.sqrt(crossMagnitudeSquared),
+      scratchCross,
+    );
 
     faceNormals[base] = scratchCross.x;
     faceNormals[base + 1] = scratchCross.y;

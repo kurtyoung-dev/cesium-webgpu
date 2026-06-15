@@ -222,6 +222,9 @@ function resize(shadowMap, size) {
     passes[4].passState.viewport = faceViewport;
     passes[5].passState.viewport = faceViewport;
   } else if (numberOfPasses === 1) {
+    // +----+
+    // |  1 |
+    // +----+
     size =
       ContextLimits.maximumTextureSize >= size
         ? size
@@ -230,6 +233,11 @@ function resize(shadowMap, size) {
     textureSize.y = size;
     passes[0].passState.viewport = new BoundingRectangle(0, 0, size, size);
   } else if (numberOfPasses === 4) {
+    // +----+----+
+    // |  3 |  4 |
+    // +----+----+
+    // |  1 |  2 |
+    // +----+----+
     size =
       ContextLimits.maximumTextureSize >= size * 2
         ? size
@@ -247,6 +255,7 @@ function resize(shadowMap, size) {
     );
   }
 
+  // Update clear pass state
   shadowMap._clearPassState.viewport = new BoundingRectangle(
     0,
     0,
@@ -254,6 +263,7 @@ function resize(shadowMap, size) {
     textureSize.y,
   );
 
+  // Transforms shadow coordinates [0, 1] into the pass's region of the texture
   for (let i = 0; i < numberOfPasses; ++i) {
     const pass = passes[i];
     const viewport = pass.passState.viewport;
@@ -313,6 +323,7 @@ function computeCascades(shadowMap, frameState) {
   const cameraFar = sceneCamera.frustum.far;
   const numberOfCascades = shadowMap._numberOfCascades;
 
+  // Split cascades. Use a mix of linear and log splits.
   let i;
   const range = cameraFar - cameraNear;
   const ratio = cameraFar / cameraNear;
@@ -320,6 +331,9 @@ function computeCascades(shadowMap, frameState) {
   let lambda = 0.9;
   let clampCascadeDistances = false;
 
+  // When the camera is close to a relatively small model, provide more detail in the closer cascades.
+  // If the camera is near or inside a large model, such as the root tile of a city, then use the default values.
+  // To get the most accurate cascade splits we would need to find the min and max values from the depth texture.
   if (frameState.shadowState.closestObjectSize < 200.0) {
     clampCascadeDistances = true;
     lambda = 0.9;
@@ -330,6 +344,7 @@ function computeCascades(shadowMap, frameState) {
   splits[0] = cameraNear;
   splits[numberOfCascades] = cameraFar;
 
+  // Find initial splits
   for (i = 0; i < numberOfCascades; ++i) {
     const p = (i + 1) / numberOfCascades;
     const logScale = cameraNear * Math.pow(ratio, p);
@@ -340,6 +355,7 @@ function computeCascades(shadowMap, frameState) {
   }
 
   if (clampCascadeDistances) {
+    // Clamp each cascade to its maximum distance
     for (i = 0; i < numberOfCascades; ++i) {
       cascadeDistances[i] = Math.min(
         cascadeDistances[i],
@@ -347,6 +363,7 @@ function computeCascades(shadowMap, frameState) {
       );
     }
 
+    // Recompute splits
     let distance = splits[0];
     for (i = 0; i < numberOfCascades - 1; ++i) {
       distance += cascadeDistances[i];
@@ -374,6 +391,7 @@ function computeCascades(shadowMap, frameState) {
   const shadowViewProjection = shadowMapCamera.getViewProjection();
 
   for (i = 0; i < numberOfCascades; ++i) {
+    // Find the bounding box of the camera sub-frustum in shadow map texture space
     cascadeSubFrustum.near = splits[i];
     cascadeSubFrustum.far = splits[i + 1];
     const viewProjection = Matrix4.multiply(
@@ -391,6 +409,7 @@ function computeCascades(shadowMap, frameState) {
       scratchMatrix,
     );
 
+    // Project each corner from camera NDC space to shadow map texture space. Min and max will be from 0 to 1.
     const min = Cartesian3.fromElements(
       Number.MAX_VALUE,
       Number.MAX_VALUE,
@@ -410,21 +429,22 @@ function computeCascades(shadowMap, frameState) {
         scratchFrustumCorners[k],
       );
       Matrix4.multiplyByVector(shadowMapMatrix, corner, corner);
-      Cartesian3.divideByScalar(corner, corner.w, corner);
+      Cartesian3.divideByScalar(corner, corner.w, corner); // Handle the perspective divide
       Cartesian3.minimumByComponent(corner, min, min);
       Cartesian3.maximumByComponent(corner, max, max);
     }
 
+    // Limit light-space coordinates to the [0, 1] range
     min.x = Math.max(min.x, 0.0);
     min.y = Math.max(min.y, 0.0);
-    min.z = 0.0;
+    min.z = 0.0; // Always start cascade frustum at the top of the light frustum to capture objects in the light's path
     max.x = Math.min(max.x, 1.0);
     max.y = Math.min(max.y, 1.0);
     max.z = Math.min(max.z, 1.0);
 
     const pass = shadowMap._passes[i];
     const cascadeCamera = pass.camera;
-    cascadeCamera.clone(shadowMapCamera);
+    cascadeCamera.clone(shadowMapCamera); // PERFORMANCE_IDEA : could do a shallow clone for all properties except the frustum
 
     const frustum = cascadeCamera.frustum;
     frustum.left = left + min.x * (right - left);
@@ -440,6 +460,7 @@ function computeCascades(shadowMap, frameState) {
       up,
     );
 
+    // Transforms from eye space to the cascade's texture space
     const cascadeMatrix = shadowMap._cascadeMatrices[i];
     Matrix4.multiply(
       cascadeCamera.getViewProjection(),
@@ -461,6 +482,7 @@ function fitShadowMapToScene(shadowMap, frameState) {
   const shadowMapCamera = shadowMap._shadowMapCamera;
   const sceneCamera = shadowMap._sceneCamera;
 
+  // 1. First find a tight bounding box in light space that contains the entire camera frustum.
   const viewProjection = Matrix4.multiply(
     sceneCamera.frustum.projectionMatrix,
     sceneCamera.viewMatrix,
@@ -468,13 +490,14 @@ function fitShadowMapToScene(shadowMap, frameState) {
   );
   const inverseViewProjection = Matrix4.inverse(viewProjection, scratchMatrix);
 
+  // Start to construct the light view matrix. Set translation later once the bounding box is found.
   const lightDir = shadowMapCamera.directionWC;
-  let lightUp = sceneCamera.directionWC;
+  let lightUp = sceneCamera.directionWC; // Align shadows to the camera view.
   if (Cartesian3.equalsEpsilon(lightDir, lightUp, CesiumMath.EPSILON10)) {
     lightUp = sceneCamera.upWC;
   }
   const lightRight = Cartesian3.cross(lightDir, lightUp, scratchRight);
-  lightUp = Cartesian3.cross(lightRight, lightDir, scratchUp);
+  lightUp = Cartesian3.cross(lightRight, lightDir, scratchUp); // Recalculate up now that right is derived
   Cartesian3.normalize(lightUp, lightUp);
   Cartesian3.normalize(lightRight, lightRight);
   const lightPosition = Cartesian3.fromElements(
@@ -497,6 +520,7 @@ function fitShadowMapToScene(shadowMap, frameState) {
     scratchMatrix,
   );
 
+  // Project each corner from NDC space to light view space, and calculate a min and max in light view space
   const min = Cartesian3.fromElements(
     Number.MAX_VALUE,
     Number.MAX_VALUE,
@@ -516,14 +540,16 @@ function fitShadowMapToScene(shadowMap, frameState) {
       scratchFrustumCorners[i],
     );
     Matrix4.multiplyByVector(cameraToLight, corner, corner);
-    Cartesian3.divideByScalar(corner, corner.w, corner);
+    Cartesian3.divideByScalar(corner, corner.w, corner); // Handle the perspective divide
     Cartesian3.minimumByComponent(corner, min, min);
     Cartesian3.maximumByComponent(corner, max, max);
   }
 
-  max.z += 1000.0;
-  min.z -= 10.0;
+  // 2. Set bounding box back to include objects in the light's view
+  max.z += 1000.0; // Note: in light space, a positive number is behind the camera
+  min.z -= 10.0; // Extend the shadow volume forward slightly to avoid problems right at the edge
 
+  // 3. Adjust light view matrix so that it is centered on the bounding volume
   const translation = scratchTranslation;
   translation.x = -(0.5 * (min.x + max.x));
   translation.y = -(0.5 * (min.y + max.y));
@@ -532,6 +558,7 @@ function fitShadowMapToScene(shadowMap, frameState) {
   const translationMatrix = Matrix4.fromTranslation(translation, scratchMatrix);
   lightView = Matrix4.multiply(translationMatrix, lightView, lightView);
 
+  // 4. Create an orthographic frustum that covers the bounding box extents
   const halfWidth = 0.5 * (max.x - min.x);
   const halfHeight = 0.5 * (max.y - min.y);
   const depth = max.z - min.z;
@@ -544,6 +571,7 @@ function fitShadowMapToScene(shadowMap, frameState) {
   frustum.near = 0.01;
   frustum.far = depth;
 
+  // 5. Update the shadow map camera
   Matrix4.clone(lightView, shadowMapCamera.viewMatrix);
   Matrix4.inverse(lightView, shadowMapCamera.inverseViewMatrix);
   Matrix4.getTranslation(
@@ -589,6 +617,7 @@ const rights = [
 ];
 
 function computeOmnidirectional(shadowMap, frameState) {
+  // All sides share the same frustum
   const frustum = new PerspectiveFrustum();
   frustum.fov = CesiumMath.PI_OVER_TWO;
   frustum.near = 1.0;
@@ -633,13 +662,16 @@ function checkVisibility(shadowMap, frameState) {
 
   const boundingSphere = scratchBoundingSphere;
 
+  // Check whether the shadow map is in view and needs to be updated
   if (shadowMap._cascadesEnabled) {
+    // If the nearest shadow receiver is further than the shadow map's maximum distance then the shadow map is out of view.
     if (sceneCamera.frustum.near >= shadowMap.maximumDistance) {
       shadowMap._outOfView = true;
       shadowMap._needsUpdate = false;
       return;
     }
 
+    // If the light source is below the horizon then the shadow map is out of view
     const surfaceNormal =
       frameState.mapProjection.ellipsoid.geodeticSurfaceNormal(
         sceneCamera.positionWC,
@@ -651,6 +683,8 @@ function checkVisibility(shadowMap, frameState) {
     );
     const dot = Cartesian3.dot(surfaceNormal, lightDirection);
     if (shadowMap.fadingEnabled) {
+      // Shadows start to fade out once the light gets closer to the horizon.
+      // At this point the globe uses vertex lighting alone to darken the surface.
       const darknessAmount = CesiumMath.clamp(dot / 0.1, 0.0, 1.0);
       shadowMap._darkness = CesiumMath.lerp(
         1.0,
@@ -667,9 +701,11 @@ function checkVisibility(shadowMap, frameState) {
       return;
     }
 
+    // By default cascaded shadows need to update and are always in view
     shadowMap._needsUpdate = true;
     shadowMap._outOfView = false;
   } else if (shadowMap._isPointLight) {
+    // Sphere-frustum intersection test
     boundingSphere.center = shadowMapCamera.positionWC;
     boundingSphere.radius = shadowMap._pointLightRadius;
     shadowMap._outOfView =
@@ -680,6 +716,7 @@ function checkVisibility(shadowMap, frameState) {
       !shadowMap._boundingSphere.equals(boundingSphere);
     BoundingSphere.clone(boundingSphere, shadowMap._boundingSphere);
   } else {
+    // Simplify frustum-frustum intersection test as a sphere-frustum test
     const frustumRadius = shadowMapCamera.frustum.far / 2.0;
     const frustumCenter = Cartesian3.add(
       shadowMapCamera.positionWC,
@@ -705,11 +742,12 @@ function checkVisibility(shadowMap, frameState) {
 // ---------- Camera updates ----------
 
 function updateCameras(shadowMap, frameState) {
-  const camera = frameState.camera;
-  const lightCamera = shadowMap._lightCamera;
-  const sceneCamera = shadowMap._sceneCamera;
-  const shadowMapCamera = shadowMap._shadowMapCamera;
+  const camera = frameState.camera; // The actual camera in the scene
+  const lightCamera = shadowMap._lightCamera; // The external camera representing the light source
+  const sceneCamera = shadowMap._sceneCamera; // Clone of camera, with clamped near and far planes
+  const shadowMapCamera = shadowMap._shadowMapCamera; // Camera representing the shadow volume, initially cloned from lightCamera
 
+  // Clone light camera into the shadow map camera
   if (shadowMap._cascadesEnabled) {
     Cartesian3.clone(lightCamera.directionWC, shadowMapCamera.directionWC);
   } else if (shadowMap._isPointLight) {
@@ -718,6 +756,7 @@ function updateCameras(shadowMap, frameState) {
     shadowMapCamera.clone(lightCamera);
   }
 
+  // Get the light direction in eye coordinates
   const lightDirection = shadowMap._lightDirectionEC;
   Matrix4.multiplyByPointAsVector(
     camera.viewMatrix,
@@ -727,6 +766,7 @@ function updateCameras(shadowMap, frameState) {
   Cartesian3.normalize(lightDirection, lightDirection);
   Cartesian3.negate(lightDirection, lightDirection);
 
+  // Get the light position in eye coordinates
   Matrix4.multiplyByPoint(
     camera.viewMatrix,
     shadowMapCamera.positionWC,
@@ -734,9 +774,12 @@ function updateCameras(shadowMap, frameState) {
   );
   shadowMap._lightPositionEC.w = shadowMap._pointLightRadius;
 
+  // Get the near and far of the scene camera
   let near;
   let far;
   if (shadowMap._fitNearFar) {
+    // shadowFar can be very large, so limit to shadowMap.maximumDistance
+    // Push the far plane slightly further than the near plane to avoid degenerate frustum
     near = Math.min(
       frameState.shadowState.nearPlane,
       shadowMap.maximumDistance,
@@ -815,6 +858,7 @@ ${sampleLine}
 }
 
 function updateDebugShadowViewCommand(shadowMap, frameState) {
+  // Draws the shadow map on the bottom-right corner of the screen
   const context = frameState.context;
   const screenWidth = frameState.context.drawingBufferWidth;
   const screenHeight = frameState.context.drawingBufferHeight;

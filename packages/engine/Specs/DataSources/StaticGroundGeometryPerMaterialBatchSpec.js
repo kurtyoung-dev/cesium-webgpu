@@ -561,4 +561,61 @@ describe("DataSources/StaticGroundGeometryPerMaterialBatch", function () {
 
     batch.removeAllPrimitives();
   });
+
+  // Upstream #13366: when an entity's show changed (queuing it in showsUpdated)
+  // and was then removed before the next batch update, the stale showsUpdated
+  // entry was left behind, and the next update threw
+  // "Cannot read properties of undefined (reading 'id')". Removal must also
+  // clear the updater from showsUpdated.
+  it("clears showsUpdated when an updater is removed (upstream #13366)", async function () {
+    if (
+      !GroundPrimitive.isSupported(scene) ||
+      !GroundPrimitive.supportsMaterials(scene)
+    ) {
+      // Don't fail if materials on GroundPrimitive not supported
+      return;
+    }
+
+    const batch = new StaticGroundGeometryPerMaterialBatch(
+      scene.groundPrimitives,
+      ClassificationType.BOTH,
+      MaterialAppearance,
+    );
+
+    function buildEntity(x, y, z) {
+      return new Entity({
+        position: new Cartesian3(x, y, z),
+        ellipse: {
+          semiMajorAxis: 2,
+          semiMinorAxis: 1,
+          material: new GridMaterialProperty({ color: Color.YELLOW }),
+        },
+      });
+    }
+
+    function renderScene() {
+      scene.initializeFrame();
+      const isUpdated = batch.update(time);
+      scene.render(time);
+      return isUpdated;
+    }
+
+    const entity = buildEntity(1234, 5678, 9101112);
+    const updater = new EllipseGeometryUpdater(entity, scene);
+    batch.add(time, updater);
+
+    await pollToPromise(renderScene);
+
+    // Queue a show update for the updater, then remove it before the next update.
+    entity.show = false;
+    updater._onEntityPropertyChanged(entity, "isShowing");
+    batch.remove(updater);
+
+    // Pre-fix the stale showsUpdated entry crashed the next update.
+    expect(function () {
+      renderScene();
+    }).not.toThrowError();
+
+    batch.removeAllPrimitives();
+  });
 });

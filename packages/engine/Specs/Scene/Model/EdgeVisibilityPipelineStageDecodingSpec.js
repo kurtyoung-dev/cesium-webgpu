@@ -577,4 +577,82 @@ describe("Scene/Model/EdgeVisibilityPipelineStage", function () {
     );
     expect(renderResources.edgeGeometry.indexCount).toBe(18); // 3 edges × 6 indices per quad
   });
+
+  // Upstream #13421: loading 3D tiles containing degenerate (zero-area) triangles
+  // with edge-visibility data threw a DeveloperError because the per-face normal
+  // computation normalized a zero-length cross product. The fix skips the
+  // degenerate triangle's normal rather than normalizing NaN. This test builds a
+  // primitive whose first triangle is degenerate (two coincident vertices → zero
+  // area) and asserts process() no longer throws.
+  function createDegenerateTrianglePrimitive() {
+    // Vertices: vertex 0 and vertex 1 are coincident, so triangle [0,1,2] has
+    // zero area. Triangle [0,2,3] is a normal triangle.
+    const positions = new Float32Array([
+      0.0,
+      0.0,
+      0.0, // vertex 0
+      0.0,
+      0.0,
+      0.0, // vertex 1 (coincident with vertex 0 → degenerate)
+      1.0,
+      1.0,
+      0.0, // vertex 2
+      0.0,
+      1.0,
+      0.0, // vertex 3
+    ]);
+
+    const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+
+    return {
+      attributes: [
+        {
+          semantic: VertexAttributeSemantic.POSITION,
+          componentDatatype: ComponentDatatype.FLOAT,
+          count: 4,
+          typedArray: positions,
+          buffer: Buffer.createVertexBuffer({
+            context: context,
+            typedArray: positions,
+            usage: BufferUsage.STATIC_DRAW,
+          }),
+          strideInBytes: 12,
+          offsetInBytes: 0,
+        },
+      ],
+      indices: {
+        indexDatatype: IndexDatatype.UNSIGNED_SHORT,
+        count: 6,
+        typedArray: indices,
+        buffer: Buffer.createIndexBuffer({
+          context: context,
+          typedArray: indices,
+          usage: BufferUsage.STATIC_DRAW,
+          indexDatatype: IndexDatatype.UNSIGNED_SHORT,
+        }),
+      },
+      mode: PrimitiveType.TRIANGLES,
+      edgeVisibility: createTestEdgeVisibilityData(),
+    };
+  }
+
+  it("does not throw on degenerate (zero-area) triangles (upstream #13421)", function () {
+    const primitive = createDegenerateTrianglePrimitive();
+    const renderResources = createMockRenderResources(primitive);
+    const frameState = createMockFrameState();
+
+    // Pre-fix this threw DeveloperError("normalized result is not a number")
+    // from the face-normal computation. Post-fix the degenerate triangle is
+    // skipped and the non-degenerate triangle's edges still process.
+    expect(function () {
+      EdgeVisibilityPipelineStage.process(
+        renderResources,
+        primitive,
+        frameState,
+      );
+    }).not.toThrowError();
+
+    expect(renderResources.edgeGeometry).toBeDefined();
+    expect(renderResources.edgeGeometry.vertexArray).toBeDefined();
+  });
 });

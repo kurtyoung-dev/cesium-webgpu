@@ -270,8 +270,13 @@ class ScreenSpaceCameraController {
      */
     this.enableCollisionDetection = true;
     /**
+     * The angle, relative to the ellipsoid normal, restricting the maximum amount that the user can tilt the camera. If <code>undefined</code>, the angle of the camera tilt is unrestricted.
      * @type {number|undefined}
      * @default undefined
+     *
+     * @example
+     * // Prevent the camera from tilting below the ellipsoid surface
+     * viewer.scene.screenSpaceCameraController.maximumTiltAngle = Math.PI / 2.0;
      */
     this.maximumTiltAngle = undefined;
 
@@ -555,10 +560,35 @@ class ScreenSpaceCameraController {
     this._aggregator.reset();
   }
 
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see ScreenSpaceCameraController#destroy
+   */
   isDestroyed() {
     return false;
   }
 
+  /**
+   * Removes mouse listeners held by this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * controller = controller && controller.destroy();
+   *
+   * @see ScreenSpaceCameraController#isDestroyed
+   */
   destroy() {
     this._tweens.removeAll();
     this._aggregator = this._aggregator && this._aggregator.destroy();

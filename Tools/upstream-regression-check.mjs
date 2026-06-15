@@ -1,6 +1,7 @@
 /**
  * upstream-regression-check.mjs — NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD +
- * NEW-FORK-MODERNIZATION-REGRESSIONS verification (Batch 232).
+ * NEW-FORK-MODERNIZATION-REGRESSIONS verification (Batch 232; extended Batch 299
+ * with checks 6-8 for the Phase-9 upstream pulls #13366/#13421/#13369).
  *
  * Standalone Node check (no browser, no build needed — imports engine source
  * directly) that exercises the four items from
@@ -311,6 +312,72 @@ console.log("\n[5] ModelReader.octDecode round-trip (#13433 arg order)");
   check("octDecodeInRange call does not throw", threw, false);
   check("round-trip error < 1e-4", maxErr < 1e-4, true);
   check("Cartesian3.pack wrote the output array", wrotePack, true);
+}
+
+// ---------------------------------------------------------------------------
+// 6. Ground-primitive batch showsUpdated cleanup — #13366 (Batch 299)
+//    Removing an updater must also clear it from showsUpdated, otherwise the
+//    next batch update dereferences a stale entry. Source-text guard: both
+//    StaticGround*PerMaterialBatch.remove() bodies must call
+//    `this.showsUpdated.remove(id)` next to `this.subscriptions.remove(id)`.
+// ---------------------------------------------------------------------------
+console.log("\n[6] Ground-primitive batch showsUpdated cleanup (#13366)");
+{
+  for (const file of [
+    "packages/engine/Source/DataSources/StaticGroundGeometryPerMaterialBatch.js",
+    "packages/engine/Source/DataSources/StaticGroundPolylinePerMaterialBatch.js",
+  ]) {
+    const src = readFileSync(join(root, file), "utf8");
+    // The cleanup must appear inside the unsubscribe block (right after
+    // subscriptions.remove(id)).
+    const hasCleanup =
+      /this\.subscriptions\.remove\(id\);\s*\n\s*this\.showsUpdated\.remove\(id\);/.test(
+        src,
+      );
+    check(`${file.split("/").pop()} clears showsUpdated on remove`, hasCleanup, true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 7. EdgeVisibility degenerate-triangle guard — #13421 (Batch 299)
+//    Zero-area triangles produce a zero-length cross product; normalizing it
+//    threw DeveloperError. The fix guards on magnitudeSquared and skips the
+//    triangle. Source-text guard: the face-normal computation must check the
+//    cross magnitude before normalizing.
+// ---------------------------------------------------------------------------
+console.log("\n[7] EdgeVisibility degenerate-triangle guard (#13421)");
+{
+  const src = readFileSync(
+    join(root, "packages/engine/Source/Scene/Model/EdgeVisibilityPipelineStage.js"),
+    "utf8",
+  );
+  const hasMagCheck = /crossMagnitudeSquared\s*===\s*0\.0\s*\|\|\s*!Number\.isFinite\(\s*crossMagnitudeSquared\s*\)/.test(
+    src,
+  );
+  // The unguarded Cartesian3.normalize(scratchCross,...) must be gone from the
+  // face-normal loop (replaced by multiplyByScalar(1/sqrt(magSq))).
+  const usesScaledNormalize = /Cartesian3\.multiplyByScalar\(\s*scratchCross,\s*\n?\s*1\.0\s*\/\s*Math\.sqrt\(crossMagnitudeSquared\)/.test(
+    src,
+  );
+  check("face-normal loop guards on cross magnitude", hasMagCheck, true);
+  check("face-normal loop normalizes via 1/sqrt(magSq)", usesScaledNormalize, true);
+}
+
+// ---------------------------------------------------------------------------
+// 8. EquirectangularPanorama flat shading — #13369 (Batch 299)
+//    The panorama appearance must use flat:true so scene lighting does not
+//    darken the equirectangular image.
+// ---------------------------------------------------------------------------
+console.log("\n[8] EquirectangularPanorama flat shading (#13369)");
+{
+  const src = readFileSync(
+    join(root, "packages/engine/Source/Scene/EquirectangularPanorama.js"),
+    "utf8",
+  );
+  const hasFlat = /new MaterialAppearance\(\{[\s\S]*?flat:\s*true[\s\S]*?\}\)/.test(
+    src,
+  );
+  check("panorama MaterialAppearance uses flat:true", hasFlat, true);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

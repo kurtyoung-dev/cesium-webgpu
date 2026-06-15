@@ -72,4 +72,14 @@ describe("Scene/EquirectangularPanorama", function () {
 
     expect(uniforms.repeat).toEqual(new Cartesian2(-2.0, 3.0));
   });
+
+  // Upstream #13369: the panorama appearance must use flat shading so scene
+  // lighting does not darken the equirectangular image.
+  it("uses flat shading so lighting does not affect the panorama", function () {
+    const panorama = new EquirectangularPanorama({
+      image: "test.png",
+    });
+
+    expect(panorama._primitive.appearance.flat).toBe(true);
+  });
 });
