@@ -160,6 +160,7 @@ Installed by [Apps/CesiumViewer/CesiumViewer.js](../Apps/CesiumViewer/CesiumView
 | `cpuPassCost(true \| false \| undefined)` | CPU per-pass profile (R-7a) | — | ✓ |
 | `gpuPassCost()` | GPU per-pass timing (timestamp-query) | — | ✓ |
 | `highDensityCull()` | GPU culler / HiZ / sort-keys stats (Batch 217) | — | ✓ |
+| `hiZConsume(on)` | FORK-41 (Batch 291) — toggle whether Hi-Z occlusion DROPS occluded commands (default OFF; build/dispatch/readback always run, result inert until the residual OcclusionTest correctness fix lands — see DEFERRED_WORK FORK-41) | — | ✓ |
 | `globeBindGroups()` | Globe bind-group cache stats (Batch 241) — healthy steady-state: `lastFrameCreates` ~0, high `hitRate` | — | ✓ |
 | `canvasPixels()` | Sample canvas pixel data | ✓ | ✓ |
 | `logImageryProbe()` | Dump next 4 tile updates to console | ✓ | ✓ |

@@ -378,6 +378,83 @@ in Batch 222.
 
 ---
 
+### FORK-41 — Hi-Z occlusion: depth-space reconciled + false-cull fixed; command-drop GATED OFF pending one residual correctness gap (Batch 291, PARTIAL)
+
+**Premise correction.** FORK-41 was scoped as "the HiZ + OcclusionTest
+compute dispatchers are compiled + registered but never invoked in the
+frame loop" (`WebGPUPerformanceManager.ts` ~957-979). That description is
+**stale**: the WORKING occlusion path is `WebGPUHiZOcclusionDispatcher`,
+which `WebGPUSceneRenderer` already drives every frame in the density-gated
+branch (`_dispatchHiZForNextFrame` build+dispatch+async readback,
+`_filterByHiZVisibility` consumer — Batches 210-223, the NEW-HIZ-CONSUME
+section above). The `WebGPUPerformanceManager.dispatchHiZPyramid` /
+`dispatchOcclusionTest` pair the prompt pointed at are a *separate, lower-level*
+set superseded by the dispatcher; they remain genuinely uncalled scaffolding
+(Principle 7 — leave in place).
+
+**Real gap found (probe-first, `probe-fork41-occlusion.mjs` + diagnostics).**
+The wired path RAN but `hitRatio` was **0** — it culled NOTHING, even with a
+giant near wall fully occluding 3600 boxes (`occludedFlags=0`). Three real
+correctness bugs in `OcclusionTest.wgsl`, all fixed in Batch 291:
+
+1. **Depth-space mismatch (the big one).** The Hi-Z pyramid is built from the
+   scene depth attachment, which the renderer-wide log-depth buffer writes in
+   LOG space (`csm_writeLogDepth`: `log2((eyeDist-near)+1) * oneOver...`). The
+   occlusion test computed the sphere's `sphereNearZ` in LINEAR NDC (`z/w`), so
+   `sphereNearZ > maxHiZ` was comparing two different spaces → all-visible. Fix:
+   encode the sphere's nearest eye distance (`w - radius`) into the SAME log
+   space, gated by a new `logDepthEnabled` + `logDepthFactor` in `OcclusionParams`
+   (the two former padding lanes; struct stays 96 B). `WebGPUSceneRenderer`
+   forwards `frameState.useLogDepth` + the per-frustum-derived
+   `1/log2((far-near)+1)`.
+2. **Off-screen → occluded false-cull.** A sphere whose projected rect fell
+   entirely off-screen was marked `0u` (OCCLUDED). Off-screen is a FRUSTUM-cull
+   case, not occlusion — that false-culls geometry straddling the screen edge.
+   Fixed to mark VISIBLE (frustum culling owns that decision).
+3. **Hi-Z mip-index off-by-one.** The shader was fed `totalMipLevels`
+   (input-inclusive) as `hiZMipLevels`, but the pyramid texture only stores
+   `totalMipLevels-1` mips, so the coarsest sampled mip was out of range
+   (`textureLoad` → 0 = near). Now passes `pyramidMips`.
+
+**Residual gap (why command-drop is still OFF by default).** Even after all
+three fixes the test culls nothing in a guaranteed-occlusion scene. At least
+one more correctness gap remains: the 4-corner **max-Z sample reads background**
+(far=1.0) wherever a sphere's screen rect overhangs un-drawn pixels, pinning
+`maxHiZ` to far and defeating the test (classic Hi-Z footprint-coverage problem);
+a UV row-order suspicion (`ndcToUV` Y-flip vs the pyramid's texel rows) is also
+unverified. Per the FORK-41 risk guidance ("if correct occlusion culling can't
+be verified, ship the build+dispatch wiring DISABLED-by-default behind a flag +
+document, rather than enabling a visual regression"), the consumer-side command
+DROP is gated behind `WebGPUSceneRenderer._hiZConsumeEnabled` (**default false**,
+toggle `CesiumDebug.hiZConsume(true)`). The build/dispatch/readback still run
+when the density gate is active (measurable via `CesiumDebug.highDensityCull()`
+/ `gpuPassCost()`), but the visibility result is inert — every command stays
+VISIBLE → **zero false-cull risk, zero visual change** vs pre-Batch-291.
+
+**Verified (`probe-fork41-occlusion.mjs`):** dense (3600 cmd) WebGPU scene,
+occlusion path RUNS (202 dispatches, gate latched), SAFE default produces a
+**0.004% pixel mismatch** vs GPU-cull-forced-off (sub-pixel AA noise — no
+false-cull, PNGs visually identical), **0 validation errors / no device loss**.
+All standing gates green (collections-regression, orbital-catalog,
+globe-bindgroup-cache, logdepth-zfight, sandcastle-smoke); the pre-existing
+`probe-buffer-logdepth-zfight` Buffer-point failure reproduces with these
+changes STASHED OUT (unrelated).
+
+**NEXT CONCRETE WORK (to flip the flag on):** fix the background-bleed in the
+max-Z footprint sample — sample the full rect via a min/max Hi-Z mip loop (or
+mark "any background texel in footprint" → visible), verify UV row-order against
+the pyramid, then re-run `probe-fork41-occlusion.mjs` with `hiZConsume(true)` and
+assert `hitRatio>0` with the pixel match still holding (occlusion only removes
+provably-hidden geometry → pixels must stay identical). Then flip
+`_hiZConsumeEnabled` default to true.
+
+**Files:** `Shaders/WebGPU/Compute/OcclusionTest.wgsl`,
+`Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts`,
+`Renderer/WebGPU/WebGPUSceneRenderer.ts`, `Scene/CesiumDebug.js`,
+`Tools/visual-regression/probe-fork41-occlusion.mjs`.
+
+---
+
 ### ~~NEW-GPU-SORT-PIPELINE~~ — RESOLVED (Batch 228) — BitonicSortU64 + sort+readback chain shipped; Phase 3 consumer integration tracked below
 
 **Resolution:** `BitonicSortU64.wgsl` ships a generic u32×2 bitonic sort

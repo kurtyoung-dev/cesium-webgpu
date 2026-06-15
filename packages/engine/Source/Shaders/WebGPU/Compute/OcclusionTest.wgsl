@@ -21,8 +21,17 @@ struct OcclusionParams {
   farPlane: f32,
   hiZMipLevels: u32,
   commandCount: u32,
-  _padding0: u32,
-  _padding1: u32,
+  // FORK-41 (Batch 291) — log-depth reconciliation. The renderer-wide
+  // log-depth buffer stores `log2(eyeDist - near + 1) * logDepthFactor`
+  // in the depth attachment, so the Hi-Z pyramid (built from that
+  // attachment) is in LOG-DEPTH space. The sphere's nearest depth MUST
+  // be encoded the same way or every `sphereNearZ > maxHiZ` test
+  // collapses to all-visible (hitRatio=0). `logDepthEnabled` is 1 when
+  // the active frustum uses the log-depth buffer (the common case);
+  // `logDepthFactor` is `czm_oneOverLog2FarDepthFromNearPlusOne` =
+  // 1 / log2((far - near) + 1).
+  logDepthEnabled: u32,
+  logDepthFactor: f32,
 }
 
 // Bounding sphere data in SOA layout (from SOABoundingSphereLayout)
@@ -121,13 +130,27 @@ fn computeMain(
   );
   let radius = sphereRadius[commandIndex];
 
+  // Reject degenerate spheres (no bounding volume) — always visible so we
+  // never drop geometry whose extent we can't reason about.
+  if (radius <= 0.0) {
+    visibility[commandIndex] = 1u;
+    return;
+  }
+
   // Project sphere to screen-space rectangle
   let screenRect = projectSphereToScreen(center, radius);
 
-  // Bounds check — if rect is outside screen, mark as culled (not occluded)
+  // Bounds check — if the projected rect is entirely OFF-screen the sphere
+  // is outside the view frustum, which is a FRUSTUM-cull case, NOT an
+  // OCCLUSION case. Marking it 0u (occluded) here is a false-cull bug:
+  // the CPU frustum culler already removed truly off-screen commands, and
+  // a sphere straddling the screen edge still has on-screen, potentially
+  // visible portions. Hi-Z occlusion only proves "hidden BEHIND nearer
+  // geometry"; off-screen tells us nothing about that. Treat off-screen as
+  // VISIBLE (conservative) and let frustum culling own that decision.
   if (screenRect.z < 0.0 || screenRect.x > 1.0 ||
       screenRect.w < 0.0 || screenRect.y > 1.0) {
-    visibility[commandIndex] = 0u;
+    visibility[commandIndex] = 1u;
     return;
   }
 
@@ -155,23 +178,45 @@ fn computeMain(
   let d01 = textureLoad(hiZTexture, clamp(vec2<i32>(minCoord.x, maxCoord.y), vec2<i32>(0), vec2<i32>(hiZSize) - 1), mip).r;
   let d11 = textureLoad(hiZTexture, clamp(maxCoord, vec2<i32>(0), vec2<i32>(hiZSize) - 1), mip).r;
 
-  // Maximum Hi-Z depth in the bounding rectangle
+  // Maximum Hi-Z depth in the bounding rectangle, in the SAME depth space
+  // the depth attachment was written in (log-depth when enabled).
   let maxHiZ = max(max(d00, d10), max(d01, d11));
 
-  // Compute the sphere's nearest depth (in NDC [0,1])
+  // Compute the sphere's NEAREST depth in the depth-buffer space.
   let sphereClip = projectToNDC(center);
-  var sphereNearZ: f32;
-  if (sphereClip.w > 0.0) {
-    // Nearest point on sphere (center - radius along view direction)
-    sphereNearZ = (sphereClip.z / sphereClip.w) - (radius / sphereClip.w);
-    sphereNearZ = clamp(sphereNearZ, 0.0, 1.0);
-  } else {
-    sphereNearZ = 0.0; // Behind camera — treat as visible
+  if (sphereClip.w <= 0.0) {
+    // Center behind the camera — part of the sphere may still be in front.
+    // Conservative: visible.
+    visibility[commandIndex] = 1u;
+    return;
   }
 
-  // Occlusion test: if sphere's near Z is BEHIND the Hi-Z value,
-  // the sphere is fully occluded.
-  // WebGPU: depth 0 = near, 1 = far. Greater depth = farther.
+  var sphereNearZ: f32;
+  if (params.logDepthEnabled != 0u) {
+    // ── Log-depth space (renderer-wide default) ──
+    // The depth attachment stores, per the csm_writeLogDepth contract:
+    //   fragDepth = log2((eyeDist - near) + 1.0) * logDepthFactor
+    // where `eyeDist` is the positive eye-space distance (perspective w)
+    // and `logDepthFactor = 1 / log2((far - near) + 1)`. clipPos.w IS that
+    // positive eye distance, so the sphere's nearest eye distance is
+    // `w - radius`. Encode it identically so the comparison is apples-to-
+    // apples. Clamp `depthFromNearPlusOne` to >= 1 so log2 stays >= 0
+    // (matches the near-plane clamp the fragment path relies on).
+    let nearestEyeDist = sphereClip.w - radius;
+    let depthFromNearPlusOne = max((nearestEyeDist - params.nearPlane) + 1.0, 1.0);
+    sphereNearZ = clamp(log2(depthFromNearPlusOne) * params.logDepthFactor, 0.0, 1.0);
+  } else {
+    // ── Linear NDC space (non-log frustum, e.g. the closest frustum where
+    // Cesium disables the log-depth buffer) ──
+    // Nearest point on sphere (center - radius along view direction).
+    sphereNearZ = (sphereClip.z / sphereClip.w) - (radius / sphereClip.w);
+    sphereNearZ = clamp(sphereNearZ, 0.0, 1.0);
+  }
+
+  // Occlusion test: if the sphere's NEAREST depth is still BEHIND (greater
+  // than) the FARTHEST drawn depth in its screen footprint, every fragment
+  // of the sphere is hidden → OCCLUDED. WebGPU/Cesium convention: depth
+  // 0 = near, 1 = far; greater = farther.
   if (sphereNearZ > maxHiZ) {
     visibility[commandIndex] = 0u; // OCCLUDED
   } else {

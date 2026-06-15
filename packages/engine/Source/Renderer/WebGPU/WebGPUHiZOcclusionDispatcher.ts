@@ -108,6 +108,15 @@ interface HiZOcclusionResources {
   inputHeight: number;
   /** Number of Hi-Z mip levels (including mip 0 in the input). */
   totalMipLevels: number;
+  /**
+   * Number of mips actually stored in the pyramid texture
+   * (= totalMipLevels - 1, since pyramid mip 0 is input mip 1). This — NOT
+   * `totalMipLevels` — is the valid `textureLoad` mip range, so it is what the
+   * occlusion-test shader must clamp against. FORK-41 (Batch 291) bugfix: the
+   * shader was previously fed `totalMipLevels`, making its coarsest sampled
+   * mip out of range (textureLoad → 0 = near → never occluded).
+   */
+  pyramidMips: number;
   /** Max commands the SOA buffers were sized for. */
   maxCommands: number;
 }
@@ -594,6 +603,7 @@ class WebGPUHiZOcclusionDispatcher {
       inputWidth,
       inputHeight,
       totalMipLevels,
+      pyramidMips,
       maxCommands,
     };
     return true;
@@ -737,6 +747,14 @@ class WebGPUHiZOcclusionDispatcher {
       screenHeight: number;
       nearPlane: number;
       farPlane: number;
+      // FORK-41 (Batch 291) — log-depth reconciliation. When the active
+      // frustum uses the renderer-wide log-depth buffer (the common case),
+      // `logDepthEnabled` is true and `logDepthFactor` carries
+      // czm_oneOverLog2FarDepthFromNearPlusOne so the WGSL can encode the
+      // sphere's nearest depth into the same space the Hi-Z pyramid stores.
+      // Omitting them (legacy callers) falls back to linear-NDC comparison.
+      logDepthEnabled?: boolean;
+      logDepthFactor?: number;
     },
   ): boolean {
     const r = this._resources;
@@ -801,10 +819,17 @@ class WebGPUHiZOcclusionDispatcher {
     f[17] = params.screenHeight;
     f[18] = params.nearPlane;
     f[19] = params.farPlane;
-    this._occlusionParamsU32[20] = r.totalMipLevels;
+    // FORK-41 (Batch 291) — pass the pyramid's STORED mip count, not the
+    // input-inclusive total, so the shader's `min(mip, hiZMipLevels - 1)`
+    // clamp stays inside the texture's valid `textureLoad` mip range.
+    this._occlusionParamsU32[20] = r.pyramidMips;
     this._occlusionParamsU32[21] = soa.count;
-    this._occlusionParamsU32[22] = 0;
-    this._occlusionParamsU32[23] = 0;
+    // FORK-41 (Batch 291) — repurpose the two former padding lanes as
+    // logDepthEnabled (u32) + logDepthFactor (f32). The struct stays 96
+    // bytes; OCCLUSION_PARAMS_BYTES is unchanged. When the caller doesn't
+    // supply log-depth info the WGSL takes the linear-NDC branch.
+    this._occlusionParamsU32[22] = params.logDepthEnabled ? 1 : 0;
+    this._occlusionParamsFloats[23] = params.logDepthFactor ?? 0.0;
     device.queue.writeBuffer(
       r.occlusionParamsBuffer,
       0,
@@ -1019,6 +1044,8 @@ function dispatchWebGPUHiZOcclusion(
     screenHeight: number;
     nearPlane: number;
     farPlane: number;
+    logDepthEnabled?: boolean;
+    logDepthFactor?: number;
   },
   frameId?: number,
 ): boolean {

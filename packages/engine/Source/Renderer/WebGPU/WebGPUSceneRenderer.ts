@@ -904,6 +904,44 @@ export class WebGPUSceneRenderer {
   private static readonly HI_Z_THRESHOLD = 2000;
   private static readonly HI_Z_THRESHOLD_HI = 2400;
   private static readonly HI_Z_THRESHOLD_LO = 1600;
+  // FORK-41 (Batch 291) — consumer-side activation flag, DEFAULT OFF.
+  //
+  // The Hi-Z pyramid build + OcclusionTest dispatch + async readback run
+  // whenever the gate is active (so the path is exercised + measurable via
+  // CesiumDebug.highDensityCull / gpuPassCost), but the VISIBILITY RESULT is
+  // only allowed to DROP commands when this flag is true. Batch 291 fixed the
+  // log-depth-vs-linear depth-space mismatch and an off-screen->occluded
+  // false-cull in OcclusionTest.wgsl, but the occlusion test still has TWO
+  // unresolved correctness gaps that make it unsafe to drop geometry by
+  // default (documented in DEFERRED_WORK FORK-41):
+  //   (a) Hi-Z mip indexing is off-by-one — `hiZMipLevels` passed to the
+  //       shader is the input-inclusive total (totalMipLevels) but the
+  //       pyramid texture only has totalMipLevels-1 mips, so the coarsest
+  //       sampled mip is out of range (textureLoad returns 0 = near).
+  //   (b) the 4-corner max-Z sample reads background (far=1.0) wherever a
+  //       sphere's screen rect overhangs un-drawn pixels, pinning maxHiZ to
+  //       far and defeating the test.
+  // Until (a)+(b) are fixed and a probe proves real culls with zero
+  // false-cull, leaving this OFF keeps the wiring active but the output inert
+  // (every command stays VISIBLE), exactly matching pre-Batch-291 behavior
+  // with no risk of a visual regression. Flip via `setHiZConsumeEnabled` once
+  // verified.
+  private static _hiZConsumeEnabled = false;
+
+  /**
+   * FORK-41 — enable/disable the consumer-side application of Hi-Z occlusion
+   * visibility (dropping occluded commands). Default false until the
+   * OcclusionTest correctness gaps are resolved + probe-verified. The
+   * build/dispatch/readback always run when the density gate is active.
+   */
+  static setHiZConsumeEnabled(value: boolean): void {
+    WebGPUSceneRenderer._hiZConsumeEnabled = value === true;
+  }
+
+  /** FORK-41 — whether occluded commands are actually dropped. */
+  static get hiZConsumeEnabled(): boolean {
+    return WebGPUSceneRenderer._hiZConsumeEnabled;
+  }
   // B214-N1 (Batch 219) — per-frustum gate state.
   private _hiZActiveByFrustum: Map<number, boolean> = new Map();
   // Batch 217 — HiZ effectiveness counters.
@@ -3575,8 +3613,15 @@ export class WebGPUSceneRenderer {
     }
     // B217-N1 (Batch 219) + B219-N2 (Batch 223) — accumulate across
     // frustums. Reset moved to `_executeOpaquePass` frustum-0 entry.
+    // Stats reflect what the test WOULD drop even when consumption is off,
+    // so CesiumDebug.highDensityCull surfaces the (currently inert) hit ratio.
     this._hiZLastInput += count;
     this._hiZLastFiltered += filtered.length;
+    // FORK-41 (Batch 291) — gate the actual command drop. OFF by default
+    // until the OcclusionTest correctness gaps (see `_hiZConsumeEnabled`)
+    // are resolved + probe-verified. Returning the original list keeps the
+    // build/dispatch/readback running (measurable) with zero false-cull risk.
+    if (!WebGPUSceneRenderer._hiZConsumeEnabled) return commands;
     return filtered;
   }
 
@@ -3617,6 +3662,8 @@ export class WebGPUSceneRenderer {
               screenHeight: number;
               nearPlane: number;
               farPlane: number;
+              logDepthEnabled?: boolean;
+              logDepthFactor?: number;
             },
             frameId?: number,
           ) => boolean;
@@ -3635,7 +3682,8 @@ export class WebGPUSceneRenderer {
         viewProjection?: ArrayLike<number>;
         currentFrustumNear?: number;
         currentFrustumFar?: number;
-        frameState?: { frameNumber?: number };
+        oneOverLog2FarDepthFromNearPlusOne?: number;
+        frameState?: { frameNumber?: number; useLogDepth?: boolean };
       };
     };
     const encoder = ctxAny._currentCommandEncoder;
@@ -3699,12 +3747,38 @@ export class WebGPUSceneRenderer {
     // occlusion test. Fallback chain: per-frustum → uniformState →
     // loose default. The loose default still produces correct
     // visibility (just less aggressive culling).
+    // FORK-41 (Batch 291) — log-depth reconciliation. The Hi-Z pyramid is
+    // built from the depth attachment, which the renderer-wide log-depth
+    // buffer writes in log space. Forward `useLogDepth` + the precomputed
+    // czm_oneOverLog2FarDepthFromNearPlusOne so the occlusion-test WGSL
+    // encodes the sphere's nearest depth into the SAME space. Without this
+    // the comparison is linear-vs-log and collapses to all-visible
+    // (hitRatio=0 — measured pre-fix). `nearPlane` here MUST be the frustum
+    // near used by the depth write so the log encoding matches; we already
+    // forward the per-frustum near above.
+    const logDepthEnabled = us?.frameState?.useLogDepth === true;
+    const nearPlane = frustumCommands?.near ?? us?.currentFrustumNear ?? 1.0;
+    const farPlane = frustumCommands?.far ?? us?.currentFrustumFar ?? 1e9;
+    // Derive the log-depth factor (czm_oneOverLog2FarDepthFromNearPlusOne)
+    // from THIS frustum's near/far rather than reading the shared
+    // uniformState scalar. `Scene.executeCommands` advances uniformState to
+    // the last frustum after the split loop, so the cached scalar can be
+    // stale relative to `frustumCommands` (the same B210-N2 reason the
+    // near/far above prefer frustumCommands). `UniformState.updateFrustum`
+    // computes exactly `1 / log2((far - near) + 1)`, so we match it here.
+    let logDepthFactor = 0.0;
+    if (logDepthEnabled && farPlane > nearPlane) {
+      const log2Far = Math.log2(farPlane - nearPlane + 1.0);
+      logDepthFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+    }
     const params = {
       viewProjection: vp,
       screenWidth: w,
       screenHeight: h,
-      nearPlane: frustumCommands?.near ?? us?.currentFrustumNear ?? 1.0,
-      farPlane: frustumCommands?.far ?? us?.currentFrustumFar ?? 1e9,
+      nearPlane,
+      farPlane,
+      logDepthEnabled,
+      logDepthFactor,
     };
 
     // B210-D1 (Batch 213) — pass the frame counter so per-frustum

@@ -548,8 +548,8 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - Moon phase + earthshine — Phase 2 1.2c v2 (SHIPPED) — CPU-side phase fraction from sun/moon dot product; lit hemisphere `smoothstep(0, 0.3, phase)` gated; unlit hemisphere soft blue-grey earthshine ambient (`vec3(0.4, 0.5, 0.7) × 0.08 × (1 - rawNdotL)`)
 - `czm_getDynamicAtmosphereLightDirection` parity (NONE / SCENE_LIGHT / SUNLIGHT enum) — Batch 20 (SHIPPED) — per-fragment `normalize(positionWC)` for NONE case, scene-light direction for SCENE_LIGHT, sun for SUNLIGHT
 - FrustumCull.wgsl — GPU frustum culling for >50K objects, dispatched by WebGPUGPUCuller (SCAFFOLDED — WASM/JS culling active)
-- HiZPyramid.wgsl / HiZPyramidFromDepth.wgsl — hierarchical-Z pyramid build from prev-frame depth (SCAFFOLDED)
-- OcclusionTest.wgsl — bounding-sphere vs Hi-Z occlusion test (SCAFFOLDED)
+- HiZPyramid.wgsl / HiZPyramidFromDepth.wgsl — hierarchical-Z pyramid build from prev-frame depth (WIP — built+dispatched every frame in the density gate via WebGPUSceneRenderer, FORK-41 Batch 291)
+- OcclusionTest.wgsl — bounding-sphere vs Hi-Z occlusion test (WIP — depth-space reconciled + false-cull/mip-index fixed Batch 291; command-drop GATED OFF (`_hiZConsumeEnabled` default false / `CesiumDebug.hiZConsume`) pending one residual max-Z footprint-coverage fix — see DEFERRED_WORK FORK-41)
 - PointCloudSort.wgsl — bitonic GPU sort on point distance² (EXPERIMENTAL — `useGPUSort` flag default false)
 - PointCloudLOD.wgsl + PointCloudLODScanCompact.wgsl — visibility-tag + scan-compact LOD pipeline (SHIPPED)
 - GPUSortKeys.wgsl — packed 64-bit sort keys for >50K draw commands (SCAFFOLDED)

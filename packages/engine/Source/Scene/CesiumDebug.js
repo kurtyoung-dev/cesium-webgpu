@@ -574,6 +574,36 @@ function installCesiumDebug(viewer) {
     },
 
     /**
+     * FORK-41 — toggle whether Hi-Z occlusion VISIBILITY is actually applied
+     * (occluded commands dropped). Default OFF: the Hi-Z pyramid build +
+     * OcclusionTest dispatch + readback still run when the density gate is
+     * active (so `highDensityCull()` shows live `hiZ` stats), but the result
+     * is inert (nothing dropped) until the OcclusionTest correctness gaps are
+     * resolved + probe-verified (see DEFERRED_WORK FORK-41). Pass `true` to
+     * enable command dropping for testing, `false` to restore the safe default.
+     *
+     * @param {boolean} [on=true] Whether to drop occluded commands.
+     * @returns {boolean|null} The resulting enable state, or null if no WebGPU
+     *   renderer is active.
+     */
+    hiZConsume(on = true) {
+      const renderer = scene._alternateSceneRenderer;
+      const ctor = renderer && renderer.constructor;
+      if (!ctor || typeof ctor.setHiZConsumeEnabled !== "function") {
+        console.warn(
+          "[CesiumDebug] No WebGPU scene renderer — Hi-Z consume toggle unavailable",
+        );
+        return null;
+      }
+      ctor.setHiZConsumeEnabled(on === true);
+      const state = ctor.hiZConsumeEnabled;
+      console.log(
+        `[CesiumDebug] Hi-Z occlusion consume (command drop) = ${state}`,
+      );
+      return state;
+    },
+
+    /**
      * Dump the globe surface bind-group cache stats
      * (NEW-GLOBE-BINDGROUP-CACHE, Batch 241). Healthy steady-state at a
      * fixed camera: `lastFrameCreates` ~0 with a high `hitRate`. A

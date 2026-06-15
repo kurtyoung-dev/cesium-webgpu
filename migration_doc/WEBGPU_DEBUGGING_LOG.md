@@ -24,6 +24,53 @@
 
 ---
 
+## Batch 291 — FORK-41: Hi-Z occlusion depth-space reconciled; 3 OcclusionTest bugs fixed; command-drop gated off pending residual (2026-06-15)
+
+**Symptom.** The Hi-Z occlusion path (`WebGPUHiZOcclusionDispatcher` driven by
+`WebGPUSceneRenderer._dispatchHiZForNextFrame`/`_filterByHiZVisibility`, Batches
+210-223) runs in the dense (>=2400 cmd) density gate but `hitRatio` was **0** —
+it culled NOTHING, even with a giant near wall fully occluding 3600 boxes
+(`occludedFlags=0`). FORK-41's "never invoked in the frame loop" premise was
+**stale** (it confused the working dispatcher with the separately-dormant
+`WebGPUPerformanceManager.dispatchHiZPyramid/dispatchOcclusionTest` pair).
+
+**Root causes (3 real bugs in `OcclusionTest.wgsl`).**
+
+1. **Depth-space mismatch.** Hi-Z pyramid is built from the depth attachment,
+   which the renderer-wide log-depth buffer writes in LOG space; the test
+   computed `sphereNearZ` in LINEAR NDC (`z/w`). `sphereNearZ > maxHiZ` compared
+   two spaces → always-visible. Fixed: encode the sphere's nearest eye distance
+   (`w - radius`) via `log2((eyeDist-near)+1)*factor`, gated by new
+   `logDepthEnabled`/`logDepthFactor` `OcclusionParams` lanes (the 2 former
+   padding u32s; struct stays 96 B). `WebGPUSceneRenderer` forwards
+   `frameState.useLogDepth` + per-frustum `1/log2((far-near)+1)`.
+2. **Off-screen → occluded false-cull.** A fully-off-screen projected rect was
+   marked OCCLUDED; off-screen is a frustum-cull case, not occlusion. Fixed →
+   VISIBLE.
+3. **Hi-Z mip-index off-by-one.** Shader fed `totalMipLevels` (input-inclusive)
+   as `hiZMipLevels`, but the pyramid stores `totalMipLevels-1` mips → coarsest
+   sampled mip out of range (`textureLoad`→0=near). Fixed → pass `pyramidMips`.
+
+**Residual + decision.** Even after the 3 fixes the test culls nothing
+(background bleed pins `maxHiZ` to far=1.0 wherever a sphere's rect overhangs
+un-drawn pixels; possible UV row-order issue — both unverified). Per the FORK-41
+risk guidance, the consumer command-DROP is gated behind
+`WebGPUSceneRenderer._hiZConsumeEnabled` (**default false**, toggle
+`CesiumDebug.hiZConsume(true)`). Build/dispatch/readback still run + are
+measurable; the result is inert → **zero false-cull, zero visual change**.
+
+**Verification.** `probe-fork41-occlusion.mjs` — path RUNS (202 dispatches,
+gate latched), safe default 0.004% pixel mismatch vs cull-forced-off (PNGs
+identical), 0 validation errors. Pre-existing `probe-buffer-logdepth-zfight`
+failure reproduces with these changes stashed out (unrelated).
+
+**Files:** `Shaders/WebGPU/Compute/OcclusionTest.wgsl`,
+`Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts`,
+`Renderer/WebGPU/WebGPUSceneRenderer.ts`, `Scene/CesiumDebug.js`,
+`Tools/visual-regression/probe-fork41-occlusion.mjs`.
+
+---
+
 ## Batch 288 — Gaussian splats consume the back-to-front sort + write log depth (NEW-SPLAT-SORT-CONSUME-INDEXES / NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT splat half) (2026-06-15)
 
 **Symptom:** The WebGPU Gaussian-splat renderer drew `instanceCount` splats in storage (buffer) order and never consumed any depth sort, so the premultiplied over-blend (an order-dependent operator) produced wrong tinting/haloing that shifted with the camera angle (audit A2.1). It also wrote hyperbolic rasterizer z while the rest of the renderer (globe, collections, primitives, …) had moved to logarithmic depth, so splats would mis-sort against log geometry at far range.
