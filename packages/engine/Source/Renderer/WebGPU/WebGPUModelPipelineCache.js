@@ -270,6 +270,20 @@ function buildMaterialBGL(device, materialDefines) {
     uniformBuffer(36, Stage.FRAGMENT),
   );
 
+  // 37-38: NEW-MODEL-IBL-BRDF-LUT (Batch 287) — split-sum environment
+  // BRDF integration LUT (`WebGPUBrdfLutGenerator`, rg32float 256×256).
+  // R = scale, G = bias for F0, indexed by (NdotV, roughness). The FS
+  // applies `radiance * (F0 * scale + bias)` to match WebGL's
+  // `computeSpecularIBL` (ImageBasedLightingStageFS.glsl) instead of the
+  // prior `radiance * fresnelSchlickRoughness(...)` hack. rg32float is
+  // non-filterable without the optional `float32-filterable` feature, so
+  // the LUT binds as `unfilterable-float` + a non-filtering sampler;
+  // nearest sampling of a smooth 256×256 table is visually indistinct.
+  entries.push(
+    texture(37, Stage.FRAGMENT, { sampleType: "unfilterable-float" }),
+    sampler(38, Stage.FRAGMENT, "non-filtering"),
+  );
+
   // ── Capability check ──
   // Count sampled textures in the assembled layout and compare against
   // the device's reported limit. Fires LOUDLY (a permanent error log
@@ -1283,6 +1297,34 @@ class WebGPUModelPipelineCache {
     });
     device.queue.writeBuffer(this._defaultSHBuffer, 0, new Float32Array(40));
 
+    // NEW-MODEL-IBL-BRDF-LUT (Batch 287) — 1×1 placeholder BRDF
+    // integration LUT (bindings 37/38) for models drawn before
+    // `BrdfLutGenerator` has produced the real 256×256 table. (scale=1,
+    // bias=0) makes the split-sum term collapse to `radiance * F0`,
+    // matching the pre-LUT behaviour so the placeholder frame doesn't
+    // flash a different specular intensity. rg32float is non-filterable;
+    // the sampler is `non-filtering` to satisfy validation.
+    this._defaultBrdfLut = device.createTexture({
+      label: "default-brdf-lut",
+      size: [1, 1],
+      format: "rg32float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: this._defaultBrdfLut },
+      new Float32Array([1.0, 0.0]),
+      { bytesPerRow: 8 },
+      { width: 1, height: 1 },
+    );
+    this._defaultBrdfLutView = this._defaultBrdfLut.createView();
+    this._defaultBrdfLutSampler = device.createSampler({
+      label: "default-brdf-lut-sampler",
+      magFilter: "nearest",
+      minFilter: "nearest",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+
     // Per-textureInfo sampler cache. glTF textures each carry a
     // `sampler` object with magFilter / minFilter / wrapS / wrapT values;
     // creating a new GPUSampler per distinct combination and reusing it
@@ -2126,6 +2168,16 @@ class WebGPUModelPipelineCache {
     return this._defaultSHBuffer;
   }
 
+  /** @returns {GPUTextureView} Default BRDF LUT view (1×1, scale=1/bias=0). */
+  get defaultBrdfLutView() {
+    return this._defaultBrdfLutView;
+  }
+
+  /** @returns {GPUSampler} Non-filtering sampler for the rg32float BRDF LUT. */
+  get defaultBrdfLutSampler() {
+    return this._defaultBrdfLutSampler;
+  }
+
   /**
    * Returns a fresh array of `entries[]` objects (bindings 26-32) for
    * the merged group 1 bind group when no feature ID resources are
@@ -2224,6 +2276,7 @@ class WebGPUModelPipelineCache {
     this._defaultFeatureIdBuffer?.destroy();
     this._defaultIBLCubemap?.destroy();
     this._defaultSHBuffer?.destroy();
+    this._defaultBrdfLut?.destroy();
     this._defaultJointBuffer?.destroy();
     this._defaultMorphDeltaBuffer?.destroy();
     this._defaultMorphWeightBuffer?.destroy();

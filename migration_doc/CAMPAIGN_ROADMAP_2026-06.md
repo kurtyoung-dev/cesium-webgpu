@@ -57,7 +57,7 @@ Resumes the paused Batch-220 diagnosis. Depends on Phase 2 (depth-match half).
 
 ## Phase 7 — Shading & material parity
 
-- Model PBR: **NEW-MODEL-IBL-BRDF-LUT** (wire the generated-but-unconsumed LUT split-sum), **NEW-MODEL-IBL-REFERENCE-FRAME** (stop reflections rotating with camera), **NEW-MODEL-DIRECT-BRDF-PARITY** (Smith-joint + f90).
+- Model PBR: ✅ **NEW-MODEL-IBL-BRDF-LUT** (Batch 287 — split-sum LUT wired + Fdez-Aguera diffuse), ✅ **NEW-MODEL-IBL-REFERENCE-FRAME** (Batch 287 — reflections now world-fixed via the packed `iblReferenceFrameMatrix` mat3), **NEW-MODEL-DIRECT-BRDF-PARITY** (Smith-joint + f90 — still open). Surfaced: **NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU** (authored KTX2 specular env maps don't load on the WebGPU context; procedural fallback used).
 - **NEW-SPLAT-SORT-CONSUME-INDEXES** (Gaussian splats render unsorted), **NEW-CSM-SOFT-SHADOW-PCF** (+ remaining CSM_DESIGN slices), **NEW-TAA-PIPELINE-ORDER-RECONCILE** (pre/post-tonemap decision + clamp retune), **NEW-POSTPROCESS-USER-WARN-PROD** (user GLSL stages silently dropped — un-strip the warning).
 - Gate: WebGL-vs-WebGPU material/shadow visual-diff probes.
 

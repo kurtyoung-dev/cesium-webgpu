@@ -24,6 +24,24 @@
 
 ---
 
+## Batch 287 — Model IBL parity: split-sum BRDF LUT consumed + world-fixed reflection reference frame (NEW-MODEL-IBL-BRDF-LUT / NEW-MODEL-IBL-REFERENCE-FRAME) (2026-06-15)
+
+**Symptom:** WebGPU glTF model IBL diverged from WebGL two ways. (1) The split-sum environment BRDF LUT that `WebGPUBrdfLutGenerator` produces on device init was NEVER consumed by `ModelPBRComplete.wgsl` — the specular IBL term used a hand-rolled `radiance * fresnelSchlickRoughness(NdotV, F0, roughness)` approximation, so the generated LUT was a wasted dispatch and specular intensity/tint drifted from WebGL. (2) IBL reflections rotated WITH the camera: the FS sampled the irradiance cubemap with the eye-space normal `N` and the radiance cubemap with the eye-space reflection `R = reflect(-V, N)`, so as the camera orbited a fixed model the reflected environment swam instead of staying world-anchored.
+
+**Root cause:** WebGL's `ImageBasedLightingStageFS.glsl::textureIBL` (the parity reference) does two things the WebGPU port skipped: it looks up `czm_brdfLut` at `(NdotV, roughness)` to get the split-sum scale/bias (`FssEss = singleScatterFresnel * lut.x + lut.y`) and adds the Fdez-Aguera multi-scatter diffuse compensation (`FmsEms`/`dielectricScattering`); and it rotates the diffuse normal + specular reflection into the fixed IBL reference frame via the `model_iblReferenceFrameMatrix` mat3 (`yUpToZUp * transpose(rotation(view3D * referenceMatrix))`, computed every frame in `Model.updateReferenceMatrices`) BEFORE every cubemap sample. The WebGPU path had neither the LUT binding nor the reference-frame uniform.
+
+**Fix:**
+- BRDF LUT: added material-bind-group bindings 37 (rg32float LUT, `unfilterable-float`) + 38 (`non-filtering` sampler) in `WebGPUModelPipelineCache` (+ a 1×1 scale=1/bias=0 placeholder so pre-generation frames collapse to `radiance*F0`). `WebGPUModelRenderer.brdfLutEntries` plumbs `frameState.brdfLutGenerator._colorTexture._webgpuTextureView`. `ModelPBRComplete.wgsl` now computes `FssEss = Fr*lut.x + lut.y` and the full Fdez-Aguera diffuse term — a 1:1 port of WebGL `textureIBL`.
+- Reference frame: packed `model._iblReferenceFrameMatrix` (column-major Cesium Matrix3, all backends) into the tail of the per-primitive `LightUniforms` UBO as a WGSL `mat3x3<f32>` (byte 720 / float 180, 3 vec4-padded columns; `LIGHT_UNIFORM_SIZE` 720→768). The FS rotates `N→Nibl` and `R→Ribl` with it before sampling the diffuse + specular cubemaps (the eye-space anisotropy bend on `R` is preserved — it happens before the frame rotation, matching WebGL).
+
+**Verification (`Tools/visual-regression/probe-model-ibl.mjs`, new):** a metallic/specular glTF lit only by the per-model procedural sky env (world-fixed) on both backends. Parity vs WebGL 8.5% (edge-dominated) at two camera headings; **world-anchor metric** — on a ~90° camera orbit the WebGPU reflection shifts by 0.67% vs the world-anchored WebGL reflection's 0.69% (|Δ|=0.02%); a camera-locked reflection would shift differently. 0 device errors across 5 page loads. Standing gates green: collections-regression, model-pbr-audit (5 models, 0 errors), model-aniso-ibl, pickmodel-instanced, pickposition-webgpu, sandcastle-smoke (3/3). `npx gulp build` + `npx tsc --noEmit` clean.
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` (LightUniforms mat3 tail + BRDF LUT bindings + rewritten IBL term), `packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js` (BGL bindings 37/38 + default BRDF LUT + getters/destroy), `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js` (`brdfLutEntries`, `packIBLReferenceFrame`, `LIGHT_UNIFORM_SIZE` bump, threaded `frameState` into the IBL bind-group builders), `Tools/visual-regression/probe-model-ibl.mjs` (new).
+
+**Asset note (surfaced, not papered over):** the explicit KTX2 `specularEnvironmentMaps` cubemap path does NOT become `ready` on a WebGPU context — `SpecularEnvironmentCubeMap.isSupported` gates on WebGL-only capability getters (`colorBufferHalfFloat`/`floatingPointTexture`/`supportsTextureLod`), so an explicit env map silently falls back to the procedural `DynamicEnvironmentMapManager` on WebGPU. The probe therefore uses the procedural sky env on both backends (apples-to-apples). Wiring explicit KTX2 specular cubemaps through the WebGPU context is a separate gap — tracked as NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU below.
+
+---
+
 ## Batch 284 — NEW-PICK-RAY-ASYNC: sampleHeight / clampToHeight WORK on WebGPU (main-scene-depth reuse) (2026-06-15)
 
 **Symptom (residual from Batch 254/258):** `scene.sampleHeight` / `scene.clampToHeight` reported supported on WebGPU (`sampleHeightSupported` / `clampToHeightSupported` gate only on `context.depthTexture`) but returned `undefined`. Batch 254 made the silent failure honest (a `oneTimeWarning("WebGPU.rayPick.unsupported", …)`) but left the actual queries non-functional.

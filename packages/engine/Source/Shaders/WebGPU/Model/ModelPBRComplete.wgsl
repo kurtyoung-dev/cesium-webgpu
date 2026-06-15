@@ -324,6 +324,19 @@ struct LightUniforms {
   _pad2b: f32,
   _pad2c: f32,
   punctualLights: array<PunctualLight, 8>,
+  // NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — eye→IBL-reference-frame
+  // rotation. Matches WebGL's `model_iblReferenceFrameMatrix`
+  // (ImageBasedLightingPipelineStage.js): `yUpToZUp *
+  // transpose(rotation(view3D * referenceMatrix))`. The diffuse normal
+  // and specular reflection vectors are computed in eye space, then
+  // rotated by this matrix into the fixed environment frame BEFORE the
+  // cubemap sample, so IBL reflections stay world-anchored as the camera
+  // orbits instead of rotating with it. Appended after the punctual-
+  // light array at byte 720 (16-aligned); a mat3x3 occupies 48 bytes
+  // (3 × vec4 columns in std140), so LightUniforms is now 768 bytes.
+  // Identity when no IBL is configured (FS still samples the placeholder
+  // cubemap, which is rotation-invariant grey).
+  iblReferenceFrameMatrix: mat3x3<f32>,
 };
 
 // ─── Bind Groups ─────────────────────────────────────────────────────────────
@@ -491,6 +504,18 @@ struct SHUniforms {
   control: vec4<f32>,
 };
 @group(1) @binding(36) var<uniform> sh: SHUniforms;
+
+// NEW-MODEL-IBL-BRDF-LUT (Batch 287) — split-sum environment BRDF
+// integration LUT (rg32float 256×256, produced once by
+// `WebGPUBrdfLutGenerator`). R = scale factor for F0, G = bias, indexed
+// by (NdotV, roughness). Consumed in the specular-IBL term as
+// `radiance * (FssEss = F0 * scale + bias)` to match WebGL's
+// `computeSpecularIBL`/`textureIBL` (ImageBasedLightingStageFS.glsl).
+// rg32float is non-filterable without `float32-filterable`, so the
+// sampler at binding 38 is non-filtering; the table is smooth enough
+// that nearest sampling is visually indistinct.
+@group(1) @binding(37) var brdfLutTexture: texture_2d<f32>;
+@group(1) @binding(38) var brdfLutSampler: sampler;
 
 // ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
 // NEW-BG-CONSOLIDATION (2026-04-30): effects binds at @group(3),
@@ -2683,26 +2708,49 @@ struct FragOutput {
   }
 
   // ── Ambient / IBL ─────────────────────────────────────────────────────────
-  // Audit A.9 (Batch 130) -- proper split-sum IBL sampling. Diffuse
-  // irradiance comes from either the SH analytic evaluation (when
-  // `sh.control.w > 0.5`) or the irradiance cubemap (binding 33);
-  // specular radiance comes from the prefiltered cubemap (binding 34)
-  // sampled at `roughness * iblMaxMipLevel` mip level. Replaces the
-  // pre-Batch-130 hack that approximated both with `light.ambientColor`
-  // — that produced flat ambient for every PBR material on WebGPU.
-  let kS_ibl = fresnelSchlickRoughness(NdotV, F0, roughness);
-  let kD_ibl = (vec3<f32>(1.0) - kS_ibl) * (1.0 - metallic);
+  // NEW-MODEL-IBL-BRDF-LUT + NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287).
+  // Matches WebGL `textureIBL` (ImageBasedLightingStageFS.glsl): the
+  // split-sum environment BRDF is looked up from the precomputed LUT
+  // (`brdfLutTexture`, R = scale / G = bias) and the diffuse + specular
+  // contributions use the Fdez-Aguera single+multi-scatter model rather
+  // than the prior `fresnelSchlickRoughness` approximation. Both the
+  // diffuse normal and the specular reflection vector are rotated from
+  // eye space into the fixed IBL reference frame
+  // (`light.iblReferenceFrameMatrix`) BEFORE the cubemap sample, so the
+  // reflection stays world-anchored as the camera orbits (previously the
+  // eye-space sample rotated the environment with the camera).
+  //
+  // Roughness-dependent Fresnel from Fdez-Aguera (see
+  // https://www.jcgt.org/published/0008/01/03/paper.pdf), matching WebGL's
+  // fresnelSchlick2(f0, f90, NdotV) with f90 = max(1 - roughness, f0).
+  let f90 = max(vec3<f32>(1.0 - roughness), F0);
+  let fresnelT = clamp(1.0 - NdotV, 0.0, 1.0);
+  let fresnelT5 = fresnelT * fresnelT * fresnelT * fresnelT * fresnelT;
+  let Fr = F0 + (f90 - F0) * fresnelT5;
+  let brdfLut = textureSampleLevel(
+    brdfLutTexture, brdfLutSampler, vec2<f32>(NdotV, roughness), 0.0
+  ).rg;
+  let FssEss = Fr * brdfLut.x + brdfLut.y;
 
   // Diffuse IBL irradiance. SH path is cheaper (constant-time
   // analytic) and lower-frequency; cubemap path is ground-truth for
-  // assets without authored SH coefficients.
+  // assets without authored SH coefficients. Sample in the fixed IBL
+  // reference frame.
+  let Nibl = normalize(light.iblReferenceFrameMatrix * N);
   var irradiance: vec3<f32>;
   if (sh.control.w > 0.5) {
-    irradiance = evalSphericalHarmonics(N);
+    irradiance = evalSphericalHarmonics(Nibl);
   } else {
-    irradiance = textureSampleLevel(iblDiffuseTexture, iblSampler, N, 0.0).rgb;
+    irradiance = textureSampleLevel(iblDiffuseTexture, iblSampler, Nibl, 0.0).rgb;
   }
-  let diffuseIBL = irradiance * diffuseColor * light.iblDiffuseFactor;
+  // Fdez-Aguera multi-scatter diffuse (matches WebGL textureIBL):
+  // averageFresnel + Ems multiple-scatter energy compensation, then the
+  // dielectric scattering term scaled by the diffuse albedo.
+  let averageFresnel = F0 + (vec3<f32>(1.0) - F0) / 21.0;
+  let Ems = 1.0 - brdfLut.x - brdfLut.y;
+  let FmsEms = FssEss * averageFresnel * Ems / (vec3<f32>(1.0) - averageFresnel * Ems);
+  let dielectricScattering = (vec3<f32>(1.0) - FssEss - FmsEms) * diffuseColor;
+  let diffuseIBL = irradiance * (FmsEms + dielectricScattering) * light.iblDiffuseFactor;
 
   // Specular IBL radiance from the prefiltered cubemap. Roughness
   // selects the mip level (mirror = mip 0, fully diffuse = max mip).
@@ -2748,17 +2796,25 @@ struct FragOutput {
     R = reflect(-V, bentNormal);
   }
   //>>endif
+  // Rotate the eye-space reflection into the fixed IBL reference frame so
+  // the prefiltered-radiance sample stays world-anchored as the camera
+  // orbits (matches WebGL `reflectMC = iblReferenceFrameMatrix * reflectEC`).
+  let Ribl = normalize(light.iblReferenceFrameMatrix * R);
   let specLod = roughness * light.iblMaxMipLevel;
   let radiance = textureSampleLevel(
-    iblSpecularTexture, iblSampler, R, specLod
+    iblSpecularTexture, iblSampler, Ribl, specLod
   ).rgb;
-  let specularIBL = radiance * kS_ibl * light.iblSpecularFactor;
+  // Split-sum specular: radiance * FssEss (already folds the BRDF LUT
+  // scale/bias) * the user specular factor. Matches WebGL
+  // `specularContribution = radiance * FssEss * model_iblFactor.y`.
+  let specularIBL = radiance * FssEss * light.iblSpecularFactor;
 
-  // Ambient floor: keep `light.ambientColor` as a constant additive
-  // term so unconfigured lighting (no IBL set up, default placeholder
-  // cubemap = mid-grey) still produces a non-black ambient consistent
-  // with the original behaviour.
-  var ambient = kD_ibl * diffuseIBL + specularIBL + light.ambientColor * diffuseColor * 0.05;
+  // `diffuseIBL` already carries the full Fdez-Aguera diffuse term
+  // (FmsEms + dielectricScattering); add it directly alongside the
+  // specular contribution as WebGL does. Keep `light.ambientColor` as a
+  // small constant floor so unconfigured lighting (placeholder cubemap)
+  // still produces a non-black ambient.
+  var ambient = diffuseIBL + specularIBL + light.ambientColor * diffuseColor * 0.05;
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {

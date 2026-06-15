@@ -521,7 +521,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUClippingPlaneCollection — uniform-buffer plane list, optional native `clip-distances` path (SHIPPED)
 - WebGPUClippingPolygonCollection — SDF-atlas based polygon clipping (SHIPPED)
 - WebGPUClipDistancePrecompute — precomputes distance-to-plane uniform packing (SHIPPED)
-- WebGPUImageBasedLighting — diffuse + specular IBL lookup for PBR (SHIPPED)
+- WebGPUImageBasedLighting — diffuse + specular IBL lookup for PBR (SHIPPED; Batch 287 completed the split-sum BRDF LUT consumption + world-fixed reference-frame reflection — see NEW-MODEL-IBL-BRDF-LUT / NEW-MODEL-IBL-REFERENCE-FRAME, now 1:1 with WebGL ImageBasedLightingStageFS::textureIBL)
 - WebGPUDynamicEnvironmentMapManager — per-position dynamic env map probes (SHIPPED)
 - WebGPUBrdfLutGenerator — one-time BRDF integration LUT (compute-driven) (SHIPPED)
 - Forward+ clustered lighting — `WebGPUClusterBoundsRenderer` + `WebGPUClusterAssignRenderer` (16×9×24 grid compute passes) + `WebGPUClusteredLightingDispatcher` (per-frame orchestration) + `ClusteredLighting.wgsl` FS chunk consumed by ModelPBRComplete (group-3 effects bindings 18-22) AND all 19 primitive `Mat*Lit` material shaders (group-2 or group-3 via the `__CL_GROUP__` token substitution, Batches 154-155). Multi-light point/spot/directional per-pixel diffuse+specular beyond the single sun. Resolves FEAT-SURVEY-40. (SHIPPED Batches 153-155; Model PBR + all Lit Mat consumers live. Remaining: Phong primitive shaders + a Sandcastle demo.)

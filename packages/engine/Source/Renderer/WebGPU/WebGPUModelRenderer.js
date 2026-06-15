@@ -150,9 +150,12 @@ const MATERIAL_UNIFORM_SIZE = 768;
 //                  - +14..15 padding
 //                  - +16..18 spotDirection xyz (spot lights only)
 //                  - +19    padding
-// Total: 64 + 656 = 720 bytes. Keep in sync with struct LightUniforms
-// in ModelPBRComplete.wgsl.
-const LIGHT_UNIFORM_SIZE = 720;
+//   bytes 720-767: iblReferenceFrameMatrix (mat3x3) — NEW-MODEL-IBL-
+//                  REFERENCE-FRAME (Batch 287). 3 vec4-padded columns:
+//                  col0 @ floats 180-182, col1 @ 184-186, col2 @ 188-190.
+// Total: 64 + 656 + 48 = 768 bytes. Keep in sync with struct
+// LightUniforms in ModelPBRComplete.wgsl.
+const LIGHT_UNIFORM_SIZE = 768;
 
 // materialFlags bit for skinning (bit 13 = 8192)
 const FLAG_HAS_SKINNING = 8192;
@@ -757,6 +760,47 @@ function packLightUniforms(data, frameState, model) {
   // total -- scene lights win when the union exceeds the cap so
   // user-added lights aren't silently dropped by a noisy asset.
   packPunctualLights(data, 16, frameState.lights, model);
+
+  // NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — eye→IBL-frame rotation
+  // (`model._iblReferenceFrameMatrix`, a column-major Cesium Matrix3 set
+  // by `updateReferenceMatrices` every frame). Mirrors WebGL's
+  // `model_iblReferenceFrameMatrix` mat3 uniform. Packed at the tail of
+  // LightUniforms (byte 720 / float 180) as a WGSL mat3x3<f32>: three
+  // vec4-padded columns (each column's xyz at floats 0/1/2, pad at 3).
+  // Defaults to identity (Matrix3.IDENTITY clone) so a model without IBL
+  // configured samples the placeholder cubemap unrotated.
+  packIBLReferenceFrame(data, 180, model);
+}
+
+// NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — writes the model's
+// `_iblReferenceFrameMatrix` (column-major Matrix3) into a WGSL
+// std140 mat3x3 slot (3 vec4-padded columns).
+function packIBLReferenceFrame(data, floatOffset, model) {
+  const m = model?._iblReferenceFrameMatrix;
+  if (!m) {
+    // Identity fallback (no IBL frame available yet).
+    data[floatOffset + 0] = 1.0;
+    data[floatOffset + 1] = 0.0;
+    data[floatOffset + 2] = 0.0;
+    data[floatOffset + 4] = 0.0;
+    data[floatOffset + 5] = 1.0;
+    data[floatOffset + 6] = 0.0;
+    data[floatOffset + 8] = 0.0;
+    data[floatOffset + 9] = 0.0;
+    data[floatOffset + 10] = 1.0;
+    return;
+  }
+  // Cesium Matrix3 is column-major: m[0..2]=col0, m[3..5]=col1, m[6..8]=col2.
+  // WGSL mat3x3 columns are vec4-padded (stride 4 floats).
+  data[floatOffset + 0] = m[0];
+  data[floatOffset + 1] = m[1];
+  data[floatOffset + 2] = m[2];
+  data[floatOffset + 4] = m[3];
+  data[floatOffset + 5] = m[4];
+  data[floatOffset + 6] = m[5];
+  data[floatOffset + 8] = m[6];
+  data[floatOffset + 9] = m[7];
+  data[floatOffset + 10] = m[8];
 }
 
 // Audit B.3 (Batch 131) + re-review (Batch 134) -- pre-allocated
@@ -1427,6 +1471,7 @@ function buildMergedMaterialBindGroup(
   featureIdEntries,
   iblEntries,
   materialDefines,
+  frameState,
 ) {
   return device.createBindGroup({
     layout: pipelineCache.getOrCreateMaterialBGL(materialDefines | 0),
@@ -1435,7 +1480,7 @@ function buildMergedMaterialBindGroup(
       { binding: 1, resource: { buffer: lightBuffer.buffer } },
       ...textureEntries,
       ...(featureIdEntries ?? pipelineCache.defaultFeatureIdEntries()),
-      ...(iblEntries ?? defaultIBLEntries(pipelineCache)),
+      ...(iblEntries ?? defaultIBLEntries(pipelineCache, frameState)),
     ],
   });
 }
@@ -1448,12 +1493,35 @@ function buildMergedMaterialBindGroup(
  * the cubemap sample on an explicit "iblEnabled" flag.
  * @private
  */
-function defaultIBLEntries(pipelineCache) {
+function defaultIBLEntries(pipelineCache, frameState) {
   return [
     { binding: 33, resource: pipelineCache.defaultIBLCubemapView },
     { binding: 34, resource: pipelineCache.defaultIBLCubemapView },
     { binding: 35, resource: pipelineCache.defaultIBLSampler },
     { binding: 36, resource: { buffer: pipelineCache.defaultSHBuffer } },
+    ...brdfLutEntries(pipelineCache, frameState),
+  ];
+}
+
+/**
+ * NEW-MODEL-IBL-BRDF-LUT (Batch 287) — bindings 37/38 (split-sum
+ * environment BRDF integration LUT + non-filtering sampler). The LUT is
+ * device-global (generated once by `BrdfLutGenerator`); the WebGPU
+ * generator stores its view + sampler on `_colorTexture` (see
+ * WebGPUBrdfLutGenerator.update). Falls back to the pipeline cache's 1×1
+ * (scale=1, bias=0) placeholder until the real table is generated, which
+ * collapses the split-sum term to `radiance * F0`.
+ * @private
+ */
+function brdfLutEntries(pipelineCache, frameState) {
+  const lutTex = frameState?.brdfLutGenerator?._colorTexture;
+  const lutView = lutTex?._webgpuTextureView;
+  return [
+    {
+      binding: 37,
+      resource: defined(lutView) ? lutView : pipelineCache.defaultBrdfLutView,
+    },
+    { binding: 38, resource: pipelineCache.defaultBrdfLutSampler },
   ];
 }
 
@@ -1467,7 +1535,7 @@ function defaultIBLEntries(pipelineCache) {
  * generated mips.
  * @private
  */
-function buildModelIBLEntries(model, pipelineCache) {
+function buildModelIBLEntries(model, pipelineCache, frameState) {
   const ibl = model?._imageBasedLighting;
   let specularView = ibl?._webgpuSpecularView;
   let diffuseView = ibl?._webgpuDiffuseView;
@@ -1509,6 +1577,7 @@ function buildModelIBLEntries(model, pipelineCache) {
     { binding: 34, resource: specularView },
     { binding: 35, resource: sampler },
     { binding: 36, resource: shResource },
+    ...brdfLutEntries(pipelineCache, frameState),
   ];
 }
 
@@ -2868,7 +2937,7 @@ function updateWebGPUModel(model, frameState) {
 
       // NEW-BG-CONSOLIDATION (Batch 122) — 4 merged bind groups.
       // Batch 174 — `materialDefines` selects the per-variant materialBGL.
-      const iblEntries = buildModelIBLEntries(model, pipelineCache);
+      const iblEntries = buildModelIBLEntries(model, pipelineCache, frameState);
       const mergedMaterialBG = buildMergedMaterialBindGroup(
         device,
         pipelineCache,
@@ -2878,6 +2947,7 @@ function updateWebGPUModel(model, frameState) {
         featureIdEntries,
         iblEntries,
         primCache.materialDefines | 0,
+        frameState,
       );
       const mergedInstanceBG = buildMergedInstanceBindGroup(
         device,
@@ -3340,6 +3410,7 @@ function updateWebGPUModel(model, frameState) {
           featureIdEntries,
           iblEntries,
           primCache.materialDefines | 0,
+          frameState,
         );
         const translucentCmd = new WebGPUDrawCommand({
           pipeline: primCache.translucentPipeline,
