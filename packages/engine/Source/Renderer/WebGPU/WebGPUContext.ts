@@ -1970,14 +1970,18 @@ export class WebGPUContext extends GraphicsContext {
    * @param resolution Per-cascade texture resolution (256..4096). Passed
    *   through from `scene.cascadedShadowMapResolution`. The CSM renderer
    *   clamps the value, so callers need not pre-clamp.
+   * @param softShadows Whether the receive shaders soften cascade edges
+   *   with a 3x3 PCF box kernel (NEW-CSM-SOFT-SHADOW-PCF). Passed through
+   *   from `scene.cascadedShadowMapSoftShadows`. Defaults to true.
    */
-  private _initCSMRenderer(resolution?: number): void {
+  private _initCSMRenderer(resolution?: number, softShadows?: boolean): void {
     if (this._csmRenderer || !this._device) {
       return;
     }
     this._csmRenderer = new WebGPUCSMRenderer({
       enabled: true,
       resolution,
+      softShadows: softShadows ?? true,
     });
     this._csmRenderer.initialize(this._device);
   }
@@ -3068,7 +3072,10 @@ export class WebGPUContext extends GraphicsContext {
         // (scene property) — honor it at lazy-init time. Subsequent
         // changes don't re-allocate; user must dispose + reinit for
         // a different resolution to take effect.
-        this._initCSMRenderer(scene.cascadedShadowMapResolution);
+        this._initCSMRenderer(
+          scene.cascadedShadowMapResolution,
+          scene.cascadedShadowMapSoftShadows,
+        );
       }
       const csm = this._csmRenderer;
       if (csm) {

@@ -177,7 +177,20 @@ export interface CSMConfig {
   blendBand?: number;
   maxShadowDistance?: number;
   enabled?: boolean;
+  // NEW-CSM-SOFT-SHADOW-PCF — soften cascade edges with a 3x3 PCF box
+  // kernel in the receive shaders (matches WebGL's czm_shadowVisibility
+  // USE_SOFT_SHADOWS path). When false, the receivers fall back to a
+  // single hardware-comparison tap (hard aliased edge). Default true.
+  softShadows?: boolean;
+  // PCF kernel radius in shadow texels (only used when softShadows is
+  // true). 1.5 mirrors the single-shadow-map soft path's radius.
+  pcfRadius?: number;
 }
+
+// Default PCF kernel radius (shadow texels) when soft shadows are on.
+// Matches the single-shadow-map path's `shadowMap.softShadows ? 1.5`
+// convention in WebGPUEffectsBindGroup.js.
+export const DEFAULT_CSM_PCF_RADIUS = 1.5;
 
 interface CascadeData {
   splitNear: number;
@@ -210,6 +223,9 @@ export class WebGPUCSMRenderer {
   private _blendBand: number;
   private _maxShadowDistance: number;
   enabled: boolean;
+  // NEW-CSM-SOFT-SHADOW-PCF — PCF kernel radius in shadow texels uploaded
+  // to the receive shaders via `effects.csmControl.y`. 0 → hard single tap.
+  private _pcfRadius: number;
 
   // GPU resources
   public _cascadeTexture: GPUTexture | null = null;
@@ -295,6 +311,12 @@ export class WebGPUCSMRenderer {
     this._blendBand = config?.blendBand ?? DEFAULT_BLEND_BAND;
     this._maxShadowDistance = config?.maxShadowDistance ?? 100000;
     this.enabled = config?.enabled ?? false;
+    // Soft shadows default ON (parity with WebGL czm_shadowVisibility's
+    // USE_SOFT_SHADOWS). pcfRadius=0 disables the kernel (hard edge).
+    const softShadows = config?.softShadows ?? true;
+    this._pcfRadius = softShadows
+      ? (config?.pcfRadius ?? DEFAULT_CSM_PCF_RADIUS)
+      : 0.0;
 
     // Cascade params UBO layout (float offsets, each slot is 4 floats):
     //   4 × mat4x4<f32> cascade VP_RTE matrices = 64 floats  offset   0
@@ -585,6 +607,27 @@ export class WebGPUCSMRenderer {
    */
   get cascadeResolution(): number {
     return this._resolution;
+  }
+
+  /**
+   * PCF kernel radius (in shadow texels) the receive shaders use to
+   * soften cascade edges. 0 → hard single tap. Uploaded into
+   * `effects.csmControl.y` by `createEffectsBindGroup`.
+   */
+  get pcfRadius(): number {
+    return this._pcfRadius;
+  }
+
+  /**
+   * Whether soft (PCF) cascade shadows are active. Convenience over
+   * `pcfRadius > 0`.
+   */
+  get softShadows(): boolean {
+    return this._pcfRadius > 0.0;
+  }
+
+  set softShadows(value: boolean) {
+    this._pcfRadius = value ? DEFAULT_CSM_PCF_RADIUS : 0.0;
   }
 
   /**

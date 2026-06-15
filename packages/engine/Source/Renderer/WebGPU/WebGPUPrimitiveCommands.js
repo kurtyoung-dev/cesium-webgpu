@@ -805,6 +805,8 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
         enabled: true,
         paramsBuffer: csmCandidate.cascadeParamsBuffer,
         cascadeArrayView: csmCandidate.cascadeArrayView,
+        // NEW-CSM-SOFT-SHADOW-PCF — soft-shadow kernel radius (texels).
+        pcfRadius: csmCandidate.pcfRadius,
       }
     : undefined;
 

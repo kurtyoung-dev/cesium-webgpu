@@ -178,6 +178,49 @@ Remaining shaders to port:
 
 Flat variants (`matXxxFlat`) are unaffected — they don't have normals and don't compute lit direct radiance, so there's nothing to shadow.
 
+## Soft-shadow PCF (NEW-CSM-SOFT-SHADOW-PCF) — 2026-06-15 (Batch 289)
+
+### 3x3 PCF box kernel on the receive side — CODE SHIPPED
+
+The CSM receive path's `sampleOneCascade` did a single hardware-comparison
+tap (`textureSampleCompareLevel`), giving hard aliased cascade edges. WebGL's
+`czm_shadowVisibility` softens its single-map shadow with a 9-tap (3x3) box
+PCF kernel under `USE_SOFT_SHADOWS`; the WebGPU CSM path lacked the
+equivalent.
+
+**Fix:** an `effects.csmControl.y`-gated 3x3 PCF box kernel (averaged ×1/9,
+the exact WebGL kernel shape) inside `sampleOneCascade`, applied to ALL 25
+inlined receivers (`GlobeTerrain.wgsl`, `ModelPBRComplete.wgsl`, every
+`PrimitivePhong*/PBR*/Mat*Lit.wgsl`) plus the canonical
+`Shadow/ShadowReceiveCSM.wgsl` reference (which gains a `pcfRadius` param so
+it stays a faithful source of truth).
+
+- **Texel size** comes from `textureDimensions(cascadeDepthArray, 0)` — no
+  new UBO field, uniform across every receiver. `textureSampleCompareLevel`
+  (explicit LOD) is valid even inside the non-uniform cascade-select branch
+  (same pattern the pre-existing `globeShadowPCF` uses).
+- **`pcfRadius = 0`** keeps the original single tap bit-exact (hard fallback).
+- **JS plumbing:** `WebGPUCSMRenderer` config gains `softShadows` (default
+  true) + `pcfRadius` (default `DEFAULT_CSM_PCF_RADIUS = 1.5`, matching the
+  single-map `shadowMap.softShadows ? 1.5` convention) + getters;
+  `WebGPUEffectsBindGroup.js` writes `ud[CSM_CONTROL_OFFSET + 1] =
+  csm.pcfRadius`; the three csmBinding sites (globe / model / primitive
+  renderers) forward `csmCandidate.pcfRadius`. New Scene option
+  `cascadedShadowMapSoftShadows` (default true) → `_initCSMRenderer`.
+
+**Verification status — BLOCKED on a separate cast-side gap.** The kernel is
+confirmed compiled into the bundle and the radius reaches the runtime (0 in
+the hard cell, 1.5 in the soft cell). But the new `probe-csm-soft-shadow.mjs`
+A-vs-B (hard-vs-soft) pixel diff is **0.000%** because the WebGPU CSM **cast
+pass dispatches zero commands** in every CesiumViewer scene tried
+(`_castDispatches === 0`) — so no cast shadow reaches the receiver for PCF to
+soften. Tracked as `NEW-CSM-CAST-NO-DISPATCH-VIEWER` in DEFERRED_WORK; the
+probe will go green once that lands, with no probe changes needed.
+
+**Still pending:** the `czm_private_shadowVisibility` normal-shading-smooth
+clamp in `computeShadowFactorCSM` (lower value than the kernel, deferred);
+VSM/rg32float variance soft shadows (Slice 3 stretch goal).
+
 ## Cesium feature integration — how each slice handles it
 
 This matrix tracks how every Cesium feature interacts with CSM as the slices land. Pending items are scope for later slices, not missing functionality.

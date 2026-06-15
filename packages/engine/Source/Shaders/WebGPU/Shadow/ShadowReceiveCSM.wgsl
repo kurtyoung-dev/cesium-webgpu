@@ -77,10 +77,20 @@ fn cascadeDepthBias(
 // Sample a single cascade's shadow map. `eyePos` is the camera-relative
 // position (RTE); the cascade VP is pre-multiplied by T(+cameraWC) so
 // we skip the lossy worldPos reconstruction.
+//
+// `pcfRadius` (in shadow texels) softens the cascade edge with a 3x3 PCF
+// box kernel, matching WebGL's czm_shadowVisibility USE_SOFT_SHADOWS path
+// (9-tap box averaged 1/9). 0 keeps a single hardware-comparison tap
+// (hard aliased edge — bit-exact with the pre-PCF behavior). Callers wire
+// `effects.csmControl.y` into this; the inlined copies in the receive
+// shaders (GlobeTerrain / ModelPBRComplete / Primitive*) carry the same
+// kernel verbatim. `textureSampleCompareLevel` (explicit LOD) is used so
+// the taps are valid even inside the non-uniform cascade-select branch.
 fn sampleOneCascade(
   eyePos: vec3<f32>,
   cascadeIdx: u32,
   depthBias: f32,
+  pcfRadius: f32,
   params: CSMParams,
   shadowMap: texture_depth_2d_array,
   shadowSampler: sampler_comparison,
@@ -103,14 +113,22 @@ fn sampleOneCascade(
     return 1.0;
   }
 
-  // Hardware comparison sample (PCF-ready via comparison sampler).
-  return textureSampleCompareLevel(
-    shadowMap,
-    shadowSampler,
-    uv,
-    i32(cascadeIdx),
-    depth,
-  );
+  // CSM-PCF-SOFT: hard single tap when pcfRadius <= 0.
+  if (pcfRadius <= 0.0) {
+    return textureSampleCompareLevel(
+      shadowMap, shadowSampler, uv, i32(cascadeIdx), depth);
+  }
+  let dim = vec2<f32>(textureDimensions(shadowMap, 0));
+  let texel = pcfRadius / max(dim, vec2<f32>(1.0));
+  var vis = 0.0;
+  for (var sx: i32 = -1; sx <= 1; sx++) {
+    for (var sy: i32 = -1; sy <= 1; sy++) {
+      let off = vec2<f32>(f32(sx), f32(sy)) * texel;
+      vis = vis + textureSampleCompareLevel(
+        shadowMap, shadowSampler, uv + off, i32(cascadeIdx), depth);
+    }
+  }
+  return vis * (1.0 / 9.0);
 }
 
 // Sample shadow with inter-cascade blending to hide seams. Applies the
@@ -121,13 +139,14 @@ fn sampleCascadeShadow(
   viewDepth: f32,
   normal: vec3<f32>,
   lightDir: vec3<f32>,
+  pcfRadius: f32,
   params: CSMParams,
   shadowMap: texture_depth_2d_array,
   shadowSampler: sampler_comparison,
 ) -> f32 {
   let cascadeIdx = selectCascade(viewDepth, params.cascadeSplits);
   let bias0 = cascadeDepthBias(cascadeIdx, normal, lightDir, params);
-  let s0 = sampleOneCascade(eyePos, cascadeIdx, bias0, params, shadowMap, shadowSampler);
+  let s0 = sampleOneCascade(eyePos, cascadeIdx, bias0, pcfRadius, params, shadowMap, shadowSampler);
 
   // Blend with next cascade near the split boundary.
   let splitDist = params.cascadeSplits[cascadeIdx];
@@ -137,7 +156,7 @@ fn sampleCascadeShadow(
   if (viewDepth > blendStart && cascadeIdx < 3u) {
     let nextIdx = cascadeIdx + 1u;
     let bias1 = cascadeDepthBias(nextIdx, normal, lightDir, params);
-    let s1 = sampleOneCascade(eyePos, nextIdx, bias1, params, shadowMap, shadowSampler);
+    let s1 = sampleOneCascade(eyePos, nextIdx, bias1, pcfRadius, params, shadowMap, shadowSampler);
     let blendT = smoothstep(blendStart, splitDist, viewDepth);
     return mix(s0, s1, blendT);
   }

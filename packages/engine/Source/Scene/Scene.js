@@ -1189,6 +1189,23 @@ class Scene {
     this.cascadedShadowMapResolution =
       options.cascadedShadowMapResolution ?? 1024;
 
+    /**
+     * When true, the CSM receive shaders soften cascade edges with a 3x3
+     * PCF box kernel (matches the WebGL `softShadows` path / the single
+     * shadow map's `czm_shadowVisibility` USE_SOFT_SHADOWS kernel). When
+     * false, each cascade is sampled with a single hardware-comparison
+     * tap, producing hard aliased shadow edges.
+     *
+     * Read once at CSM init time (the first CSM frame); like
+     * `cascadedShadowMapResolution`, change it BEFORE enabling
+     * `useCascadedShadowMaps`.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.cascadedShadowMapSoftShadows =
+      options.cascadedShadowMapSoftShadows ?? true;
+
     // Bumped by subsystems that mutate scene-visible state in ways that
     // invalidate frozen render bundles. Used by the snapshot/locked-orbit
     // mode (future Phase 0.7) to know when to discard cached bundles.

@@ -785,12 +785,14 @@ const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
  * @param {{inner: (number|undefined), outer: (number|undefined)}} [options.atmosphereLutPlanetRadii]
  *   - Planet radii (meters) for LUT altitude mapping. Defaults to WGS84
  *   + 2.5% atmosphere thickness.
- * @param {{enabled: boolean, paramsBuffer: GPUBuffer, cascadeArrayView: GPUTextureView}} [options.csm]
+ * @param {{enabled: boolean, paramsBuffer: GPUBuffer, cascadeArrayView: GPUTextureView, pcfRadius: (number|undefined)}} [options.csm]
  *   - CSM Slice 1: when present with `enabled === true`, binds the cascade
  *   params UBO at binding 10 and the cascade depth array at binding 11,
  *   setting `effects.csmControl.x = 1.0` so the shader routes through
  *   `sampleCascadeShadow` instead of the single-map path. Lives on
- *   `WebGPUCSMRenderer` when active.
+ *   `WebGPUCSMRenderer` when active. `pcfRadius` (shadow texels, default
+ *   from the renderer's `softShadows` config) drives the 3x3 PCF box
+ *   kernel via `effects.csmControl.y` (NEW-CSM-SOFT-SHADOW-PCF).
  * @param {object} [options.edges] - C-R8-EDGE-INLINE: when populated AND
  *   `edges.ready === true`, binds the edge MRT views at bindings 12/13/14
  *   and the globe packed-depth at binding 15, then sets
@@ -1202,7 +1204,12 @@ function createEffectsBindGroup(device, frameState, options) {
   // Future slices pack cascade count into .y and moon-light flag
   // into .z.
   ud[CSM_CONTROL_OFFSET + 0] = hasCsm ? 1.0 : 0.0;
-  ud[CSM_CONTROL_OFFSET + 1] = 0.0;
+  // NEW-CSM-SOFT-SHADOW-PCF — .y = PCF kernel radius in shadow texels.
+  // >0 routes the receive shaders' `sampleOneCascade` through a 3x3 box
+  // kernel (matches WebGL's czm_shadowVisibility USE_SOFT_SHADOWS); 0
+  // keeps a single hardware-comparison tap (hard edge). Sourced from the
+  // CSM renderer's `softShadows` config (default 1.5 texels).
+  ud[CSM_CONTROL_OFFSET + 1] = hasCsm ? (csm?.pcfRadius ?? 0.0) : 0.0;
   ud[CSM_CONTROL_OFFSET + 2] = 0.0;
   ud[CSM_CONTROL_OFFSET + 3] = 0.0;
 

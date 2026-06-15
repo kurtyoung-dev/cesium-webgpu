@@ -906,6 +906,12 @@ interface CesiumScene {
    * dispose + reinit to take effect.
    */
   readonly cascadedShadowMapResolution?: number;
+  /**
+   * Whether the CSM receive shaders soften cascade edges with a 3x3 PCF
+   * box kernel (NEW-CSM-SOFT-SHADOW-PCF). Read lazily at CSM init time.
+   * Defaults to true when omitted.
+   */
+  readonly cascadedShadowMapSoftShadows?: boolean;
   readonly weather: CesiumWeatherConfig | undefined;
   readonly snapshotMode:
     | {

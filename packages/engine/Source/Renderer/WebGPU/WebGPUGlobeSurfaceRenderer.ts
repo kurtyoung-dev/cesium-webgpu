@@ -1042,6 +1042,7 @@ export class WebGPUGlobeSurfaceRenderer {
         enabled?: boolean;
         cascadeParamsBuffer?: GPUBuffer | null;
         cascadeArrayView?: GPUTextureView | null;
+        pcfRadius?: number;
       };
       const csmCandidate = frameState.context?.csmRenderer as
         | CSMRendererView
@@ -1056,6 +1057,8 @@ export class WebGPUGlobeSurfaceRenderer {
               enabled: true,
               paramsBuffer: csmCandidate.cascadeParamsBuffer,
               cascadeArrayView: csmCandidate.cascadeArrayView,
+              // NEW-CSM-SOFT-SHADOW-PCF — soft-shadow kernel radius (texels).
+              pcfRadius: csmCandidate.pcfRadius,
             }
           : undefined;
 

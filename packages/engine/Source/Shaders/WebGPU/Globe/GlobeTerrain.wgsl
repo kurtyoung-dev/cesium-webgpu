@@ -360,7 +360,11 @@ struct EffectsUniforms {
     //   .x = csmEnabled flag (>0.5 → sample cascade depth array at
     //        bindings 10/11 via `sampleCascadeShadow`; otherwise use
     //        the single shadow map at bindings 1/2)
-    //   .y/.z/.w reserved (cascade count, moon-light flag, etc).
+    //   .y = PCF kernel radius in shadow texels (NEW-CSM-SOFT-SHADOW-PCF).
+    //        >0 → `sampleOneCascade` runs a 3x3 PCF box kernel (soft
+    //        edges, matches WebGL czm_shadowVisibility USE_SOFT_SHADOWS);
+    //        0 → single hardware-comparison tap (hard edge).
+    //   .z/.w reserved (cascade count, moon-light flag, etc).
     // Matches `CSM_CONTROL_OFFSET` on the JS side.
     csmControl: vec4<f32>,
     // C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — point-light cube
@@ -2370,13 +2374,26 @@ fn sampleOneCascade(eyePos: vec3<f32>, cascadeIdx: u32, depthBias: f32) -> f32 {
       depth > 1.0 || depth < 0.0) {
     return 1.0;
   }
-  return textureSampleCompareLevel(
-    cascadeDepthArray,
-    shadowCompSampler,
-    uv,
-    i32(cascadeIdx),
-    depth,
-  );
+  // CSM-PCF-SOFT: soften the cascade edge with a 3x3 PCF box kernel,
+  // matching WebGL's czm_shadowVisibility USE_SOFT_SHADOWS path. The
+  // kernel radius (in shadow texels) is effects.csmControl.y; 0 keeps
+  // the original single hardware-comparison tap (hard edge).
+  let csmPcfRadius = effects.csmControl.y;
+  if (csmPcfRadius <= 0.0) {
+    return textureSampleCompareLevel(
+      cascadeDepthArray, shadowCompSampler, uv, i32(cascadeIdx), depth);
+  }
+  let csmDim = vec2<f32>(textureDimensions(cascadeDepthArray, 0));
+  let csmTexel = csmPcfRadius / max(csmDim, vec2<f32>(1.0));
+  var csmVis = 0.0;
+  for (var sx: i32 = -1; sx <= 1; sx++) {
+    for (var sy: i32 = -1; sy <= 1; sy++) {
+      let csmOff = vec2<f32>(f32(sx), f32(sy)) * csmTexel;
+      csmVis = csmVis + textureSampleCompareLevel(
+          cascadeDepthArray, shadowCompSampler, uv + csmOff, i32(cascadeIdx), depth);
+    }
+  }
+  return csmVis * (1.0 / 9.0);
 }
 
 fn sampleCascadeShadow(

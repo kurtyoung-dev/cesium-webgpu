@@ -2163,6 +2163,8 @@ function updateWebGPUModel(model, frameState) {
           enabled: true,
           paramsBuffer: csmCandidate.cascadeParamsBuffer,
           cascadeArrayView: csmCandidate.cascadeArrayView,
+          // NEW-CSM-SOFT-SHADOW-PCF — soft-shadow kernel radius (texels).
+          pcfRadius: csmCandidate.pcfRadius,
         }
       : undefined;
   // C-R8-EDGE-INLINE — gather edge-detection inputs for the inline
