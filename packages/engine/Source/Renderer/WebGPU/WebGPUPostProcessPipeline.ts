@@ -11,11 +11,31 @@
  * 3. Depth of Field (complex multi-pass effect, depth-gated)
  * 3.5 AutoExposure (compute, feeds Tonemap exposure uniform)
  * 4. TAA (Audit B.16, Batch 155 — runs in linear/HDR domain BEFORE
- *    Tonemap so neighborhood-clamp + history-blend math operates in
- *    linear color space. Batch 244 first activation kept this order
- *    deliberately; whether the clamp should be retuned for pre- vs
- *    post-tonemap input remains open under
- *    NEW-TAA-PIPELINE-ORDER-RECONCILE.)
+ *    Tonemap. NEW-TAA-PIPELINE-ORDER-RECONCILE (Batch 290) — RESOLVED:
+ *    pre-tonemap (linear/HDR) is the CORRECT placement and the existing
+ *    clamp constants already suit linear input. Rationale:
+ *      • TAA.wgsl's resolve does its OWN reversible tonemap-weighting
+ *        (`tonemapWeight` = c/(1+luma), the Karis HDR anti-firefly
+ *        map [0,∞)→[0,1)) before the neighborhood-AABB clamp + blend,
+ *        then `inverseTonemapWeight` = c/(1-luma) to recover HDR. That
+ *        weighting is well-defined ONLY for linear/HDR input: on
+ *        already-tonemapped SDR [0,1] the inverse divides by (1-luma)
+ *        which → 0 / negative as highlights approach luma=1, yielding
+ *        Inf/NaN. So the clamp domain is the tonemap-WEIGHT space, not
+ *        raw HDR — the constants (3×3 AABB, 0.1 blend, 0.13 normal-
+ *        divergence, 0.1 motion-length gate) are already domain-correct
+ *        and need NO retune for linear input.
+ *      • Running TAA post-tonemap would double-apply a tone curve
+ *        (display tonemap, then the internal Reinhard weight) and break
+ *        HDR history accumulation — the 8/16-bit history would clamp
+ *        highlights the tonemapper hadn't yet rolled off.
+ *      • WebGL Cesium has no built-in TAA stage, so there's no upstream
+ *        reference that contradicts the linear-domain placement; the
+ *        decision rests on the resolve shader's own math + standard
+ *        HDR-resolve practice (UE/Frostbite resolve in linear with a
+ *        reversible weight).
+ *    History buffers therefore use `_intermediateFormat` (rgba16float
+ *    in HDR) — see addTAA / NEW-POSTPROCESS-HDR-INTERMEDIATES.)
  * 5. Tonemapping / HDR (single-pass, mode-selectable operator)
  * 6. ColorGrading (single-pass LUT)
  * 7. Custom stages (user-added via addCustomStage)

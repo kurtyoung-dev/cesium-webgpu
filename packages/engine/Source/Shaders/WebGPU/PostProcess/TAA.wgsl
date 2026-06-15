@@ -4,8 +4,15 @@
 // buffer using depth-based motion-vector reprojection + neighborhood
 // clamping.
 //
-// Pipeline order: after ColorGrading, before optional FXAA.
-// Input: current frame color (jittered), history buffer, depth.
+// Pipeline order: BEFORE Tonemap (linear/HDR domain), before optional
+// FXAA. NEW-TAA-PIPELINE-ORDER-RECONCILE (Batch 290) confirmed this is
+// the correct placement: the resolve below operates in `tonemapWeight`
+// space (c/(1+luma)), whose inverse c/(1-luma) is only well-defined for
+// linear/HDR input — already-tonemapped SDR highlights (luma→1) would
+// divide by ~0 and produce Inf/NaN. So this stage MUST stay upstream of
+// the display tonemapper. See WebGPUPostProcessPipeline.ts pipeline-order
+// header for the full decision record. Do not move post-tonemap.
+// Input: current frame color (jittered, linear/HDR), history buffer, depth.
 // Output: resolved anti-aliased color written to the current history slot.
 //
 // Motion-vector math (RTE-safe at Earth scale):

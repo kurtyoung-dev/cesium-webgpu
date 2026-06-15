@@ -71,6 +71,17 @@ export interface PostProcessCache {
   // session. Set on first build, reset to `false` when the user
   // collection's stage list empties so the configure pass re-builds.
   _userStagesBuilt?: boolean;
+  // NEW-POSTPROCESS-USER-WARN-PROD (Batch 290) — the user-stage list
+  // length last consumed by a (re)build. The prior gate only re-scanned
+  // the list on first build or when it EMPTIED, so a runtime
+  // `postProcessStages.add(...)` (list 1→2, or the first add after the
+  // empty-list first frame already flipped `_userStagesBuilt` true) never
+  // rebuilt — neither compiling a runtime-added WGSL stage NOR firing the
+  // GLSL-drop warning. Tracking the length lets the configure pass detect
+  // any add/remove and re-scan, so the un-stripped warning actually
+  // reaches users (and runtime WGSL stages compile). `undefined` until
+  // the first build.
+  _userStagesCount?: number;
 }
 
 // Narrow a polymorphic PostProcessStage uniform value to a number for
@@ -466,6 +477,21 @@ function configureWebGPUPostProcessPipeline(
   //   - All other uniform keys: numeric scalars (or arrays when schema
   //     declares them as vec2/3/4) packed into the 64-byte UBO.
   const userStages = (collection as unknown as { _stages?: unknown[] })._stages;
+  const userStageCount = Array.isArray(userStages) ? userStages.length : 0;
+  // NEW-POSTPROCESS-USER-WARN-PROD (Batch 290) — rebuild whenever the
+  // user-stage list length changes (add OR remove), not only on first
+  // build / empty-list. A runtime add (e.g. `scene.postProcessStages.add`
+  // after startup) previously left `_userStagesBuilt` stuck true, so the
+  // new stage never compiled (WGSL) and never warned (GLSL). Comparing the
+  // live length against the last-built count detects both directions; on a
+  // mismatch we drop the existing user-stage compiles and re-scan from
+  // scratch so the (re)build below is authoritative.
+  const listChanged =
+    cache._userStagesBuilt && userStageCount !== (cache._userStagesCount ?? 0);
+  if (listChanged) {
+    pipeline.clearUserWGSLStages();
+    cache._userStagesBuilt = false;
+  }
   if (!cache._userStagesBuilt && Array.isArray(userStages)) {
     let glslOnlyCount = 0;
     for (const s of userStages) {
@@ -535,25 +561,38 @@ function configureWebGPUPostProcessPipeline(
       }
     }
     cache._userStagesBuilt = true;
-    //>>includeStart('debug', pragmas.debug);
+    cache._userStagesCount = userStageCount;
+    // NEW-POSTPROCESS-USER-WARN-PROD (Batch 290) — this warning is
+    // PERMANENT (not pragma-stripped). A user-supplied GLSL
+    // PostProcessStage is silently DROPPED on the WebGPU backend (WebGPU
+    // needs WGSL); the dropped stage produces NO output and the user has
+    // no other signal that their effect didn't run. That's a real,
+    // user-actionable error per the CLAUDE.md logging rules ("Real
+    // errors must always reach the console"), not a debug diagnostic —
+    // stripping it in production left shipping users with silence.
+    // `oneTimeWarning` is production-safe (only its internal
+    // `defined(identifier)` assert is pragma-stripped; the `console.warn`
+    // body runs in every build) and dedupes by identifier so a scene
+    // with the same GLSL stage doesn't spam the console per frame.
     if (glslOnlyCount > 0) {
       oneTimeWarning(
         "WebGPUPostProcessStageCollection.userStagesGLSL",
         `${glslOnlyCount} user-added PostProcessStage instance(s) without ` +
           "a `wgslFragmentShader` uniform detected on a WebGPU scene. " +
           "GLSL custom shaders are not transpiled on the WebGPU backend; " +
-          "supply a `wgslFragmentShader: string` uniform on each stage to " +
+          "these stages are SKIPPED (they produce no output). " +
+          "Supply a `wgslFragmentShader: string` uniform on each stage to " +
           "execute custom WGSL post-process effects. Stages with " +
           "`wgslFragmentShader` set are honored. Track NEW-POSTPROCESS-USER-WGSL.",
       );
     }
-    //>>includeEnd('debug');
   } else if (
     cache._userStagesBuilt &&
     (!Array.isArray(userStages) || userStages.length === 0)
   ) {
     pipeline.clearUserWGSLStages();
     cache._userStagesBuilt = false;
+    cache._userStagesCount = 0;
   }
 
   // Audit A.11 (Batch 133) -- GodRay lazy init + per-frame sun UV
