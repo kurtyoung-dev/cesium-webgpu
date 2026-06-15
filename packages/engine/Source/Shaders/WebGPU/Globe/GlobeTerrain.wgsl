@@ -2784,8 +2784,27 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   // convention (`v_positionMC + cameraWC`); view-space depth is the
   // magnitude of `v_positionEC.z` (right-handed view, camera at origin
   // looking -Z).
+  // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — shadow receive is
+  // applied INDEPENDENT of `enableLighting`, matching WebGL's
+  // `ShadowMapShader.js` which injects `out_FragColor.rgb *= visibility;`
+  // unconditionally (it never wraps the shadow multiply in the lighting
+  // `#ifdef`). Previously this whole block was gated on
+  // `camera.enableLighting > 0.5`, so a scene with directional lighting
+  // disabled (a common isolation setup, and the one the shadow probes use)
+  // showed NO cast shadow on WebGPU even though the cast depth map was
+  // populated. The shadow factor is now computed whenever a shadow mode is
+  // active (point-light / CSM / single-map) and applied once to the final
+  // color below (see the `color *= shadowFactor` after the lighting block).
   var shadowFactor: f32 = 1.0;
-  if (camera.enableLighting > 0.5) {
+  // Single-shadow-map presence is signalled by `shadowDarkness < 1.0`
+  // (the default 1.0 means "no darkening / no shadow map bound"; the
+  // single-map self-gate at the top of `globeComputeShadowFactor` checks
+  // the same value). Point-light and CSM each carry their own active flag.
+  let shadowModeActive =
+    effects.pointLightControl.x > 0.5 ||
+    effects.csmControl.x > 0.5 ||
+    effects.shadowDarkness < 1.0;
+  if (shadowModeActive) {
     if (effects.pointLightControl.x > 0.5) {
       // C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — point-light
       // cube-shadow path. Reconstructs world-space fragment position
@@ -3373,9 +3392,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
       //                   + vertexShadowDarkness, 0, 1)
       // WebGL has no `fade`/`dayFade` mix in this path (the night-side
       // ambient is `vertexShadowDarkness` itself), so WGSL mirrors that.
-      // shadowFactor multiplies the Lambert term, matching the WebGL
-      // pipeline-cache-injected `ShadowMapShader.js` shadow injection.
-      let lambertTerm = NdotL * camera.lighting.x * shadowFactor;
+      // Shadow is applied to the FINAL color after this block (matching
+      // WebGL's `out_FragColor.rgb *= visibility`), NOT folded into the
+      // Lambert term — so the lit term here is shadow-free.
+      let lambertTerm = NdotL * camera.lighting.x;
       diffuse = clamp(lambertTerm + camera.lighting.y, 0.0, 1.0);
     } else {
       // DAYNIGHT_SHADING analogue: terrain has no vertex normals.
@@ -3383,7 +3403,8 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
       // rewrite of WebGL's `NdotL × 5 + 0.3` × `fade` path — gentler
       // transition, brighter ambient, separate night ambient).
       let ambient = 0.12;
-      let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
+      // Shadow applied to the final color below, not the Lambert term.
+      let dayDiffuse = NdotL * 0.88 + ambient;
       let nightAmbient = 0.025;
       diffuse = mix(nightAmbient, dayDiffuse, dayFade);
     }
@@ -3398,6 +3419,14 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     // Terminator glow: warm atmosphere color right at the day-night boundary
     color += computeTerminatorGlow(normal, sunDir);
   }
+
+  // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — apply the shadow receive
+  // ONCE to the final color, independent of `enableLighting`. Mirrors
+  // WebGL's `ShadowMapShader.js`: `out_FragColor.rgb *= visibility;` runs
+  // outside the lighting branch, so cast shadows darken the surface even
+  // when directional lighting is off. `shadowFactor` is 1.0 (no-op) when no
+  // shadow mode is active, so lighting-only scenes are unchanged.
+  color = color * shadowFactor;
 
   // ┌─────────────────────────────────────────────────────────────────────┐
   // │ PAIR-SECTION: Ground Atmosphere + Fog (WGSL) ↔ GLSL                  │

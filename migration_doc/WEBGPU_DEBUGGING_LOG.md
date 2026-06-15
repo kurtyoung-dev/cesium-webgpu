@@ -24,6 +24,80 @@
 
 ---
 
+## Batch 296 — WebGPU shadow CAST commands never reached the cast pass (NEW-CSM-CAST-NO-DISPATCH-VIEWER) (2026-06-15) — CAST SIDE FIXED; globe-receive projection gap remains
+
+**Symptom (from Batch 289).** WebGPU shadows did not cast at all in CesiumViewer
+scenes — `csmRenderer._castDispatches` stayed 0 with an in-view enabled
+shadowMap, `viewer.shadows = true`, `useCascadedShadowMaps = true`. Both the CSM
+path AND the single (non-CSM) WebGPU shadow map showed 0% cast shadow for an
+appearance `Primitive`; the SAME scene cast correctly on WebGL.
+
+**Root cause.** `SceneRenderer.executeShadowMapCastCommands` populated the
+per-pass cast lists (`insertShadowCastCommands` → `shadowMap.passes[j].commandList`)
+ONLY on the WebGL fall-through path. `context.executeShadowMapCastCommands(scene)`
+returns `true` on WebGPU, and the old `if (context.executeShadowMapCastCommands(scene)) return;`
+short-circuited the function BEFORE the population loop. So the WebGPU context
+iterated an empty `passes[j].commandList`, `castCommands.length === 0`, and
+`renderCSMCastPass` / the single-map cast pass early-returned with nothing drawn.
+This is lead hypothesis (3) from the Batch-289 diagnosis: the cast-list
+population lived on a WebGL-only code path the WebGPU renderer bypassed.
+
+**Fix.** (1) `SceneRenderer.executeShadowMapCastCommands`: hoisted the population
+loop (clear + `insertShadowCastCommands` per in-view shadow map) ABOVE the
+`context.executeShadowMapCastCommands` delegate so it runs for BOTH backends.
+WebGL behavior is byte-identical (it already ran the same population in the same
+place); WebGPU now reads a populated cast list. `updateDerivedCommands`
+early-returns for WebGPU commands (they have no `derivedCommands`), so
+`ShadowMap.createCastDerivedCommand` is never called for them — the WebGPU cast
+loop consumes the RAW `WebGPUDrawCommand`, which already carries `castShadows`
+(set in `PrimitiveCommandHelpers.updateAndQueueCommands`), `boundingVolume`, and
+vertex/index buffers. (2) `WebGPUPrimitiveCommands.js`: tagged appearance-primitive
+commands (both the PerInstanceColor `createWebGPUCommands` path and the
+`createWebGPUMaterialCommands` path) with `_shadowCastLayout = "rte24"` +
+`vertexStride = fpv*4`. The interleaved primitive VB always begins with
+positionHigh(3)+positionLow(3), so the canonical `rte24` cast variant reads it
+correctly once its declared stride (24) is overridden to the primitive's real
+interleaved stride via `_getOrCreateCastPipeline`'s existing override path
+(`_inferShadowLayoutKey` can't sniff this from stride alone). (3) Companion
+receive-side parity fix in `GlobeTerrain.wgsl`: `shadowFactor` is now applied to
+the FINAL globe color independent of `camera.enableLighting`, matching WebGL's
+`ShadowMapShader.js` which injects `out_FragColor.rgb *= visibility;` outside the
+lighting `#ifdef`. (Previously the whole shadow computation was gated on
+`enableLighting > 0.5`, so shadow-isolation scenes with directional lighting off
+— including the shadow probes — never darkened.)
+
+**Verified (Principle 8).** New `Tools/visual-regression/probe-csm-cast-dispatch.mjs`
+(3-cell: WebGPU CSM / WebGPU single-map / WebGL ref): `_castDispatches` = 584
+(was 0); cast loop draws the caster (`drawIndexed key=rte24 stride=52 idxCount=36`);
+the cast depth map is non-empty (the caster wall self-shadows correctly); 0
+device errors; all cells show umbra. Regression gates green:
+collections-regression, model-pbr-audit (incl. instanced + skinned cast layouts),
+sandcastle-smoke (incl. WebGPU Point Light Shadows). `npx tsc --noEmit` 0 errors;
+`gulp build` green.
+
+**REMAINING — globe-receive projection miss (separate bug, surfaced per Principle 9).**
+The globe-terrain CSM/single-map receiver does NOT darken the ground where the
+caster's shadow falls, even though the cast depth is correct: the caster *self*-
+shadows fine, the camera encoding `encodedCameraPositionMC` reconstructs to
+`cameraWC` exactly (verified by readback: `encH+encL == camWC`), and the cascade
+footprint covers the scene (cascade-0 sphereRadius ≈ 6226 m, splitFar ≈ 7502 m).
+Sampling ALL 4 cascades with a generous bias still reports the ground "lit"
+everywhere → the caster's stored depth is absent at the ground's projected
+cascade UV. The misalignment is GLOBE-specific (the appearance-primitive
+receiver self-shadows correctly using the same encoding the cast uses). Tracked
+as `NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS` (HIGH) in DEFERRED_WORK; next step is
+a cast-depth readback probe comparing the globe's projected UV/NDC.z against the
+caster's stored depth, plus a check of the cascade light-eye sign
+(`eye = center - lightDir*2r`, `lightDir = sunDirectionWC`).
+
+**Files modified:** `packages/engine/Source/Scene/SceneRenderer.js` (population
+hoist), `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js`
+(rte24 cast metadata on appearance + material commands),
+`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` (shadow receive
+independent of `enableLighting`). New: `Tools/visual-regression/probe-csm-cast-dispatch.mjs`.
+
+---
+
 ## Batch 292 — Globe group-0 dynamic-offset UBO + inline render-bundle drop (2026-06-15)
 
 **Context (Phase 8 perf sweep, not a bug).** Two globe-pass perf items:

@@ -1765,6 +1765,17 @@ function createWebGPUCommands(
       cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
       cmd._webgpuShaderType = shaderInfo.type;
       cmd._label = label;
+      // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — shadow-cast metadata.
+      // The interleaved primitive vertex buffer always begins with
+      // positionHigh(3) + positionLow(3) (the first 24 bytes; see the
+      // vertexData packing above), so the canonical `rte24` cast variant
+      // reads it correctly — its declared stride of 24 just needs to be
+      // overridden to this primitive's real interleaved stride
+      // (`fpv * 4` bytes). `_inferShadowLayoutKey` can't sniff this from
+      // the stride alone (it isn't 24), so we set the layout explicitly
+      // and expose the stride for the cast pass's pipeline override.
+      cmd._shadowCastLayout = "rte24";
+      cmd.vertexStride = fpv * 4;
       return cmd;
     };
     if (twoPasses && cache.pipelineFrontCull && cache.pipelineBackCull) {
@@ -2717,6 +2728,13 @@ function createWebGPUMaterialCommands(
     // (animated water, flowing dash, glowing polyline) froze after frame 1.
     cmd._webgpuMaterialBuffer = cache.materialBuffer;
     cmd._webgpuMaterialUB = matUB;
+    // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — shadow-cast metadata.
+    // The material vertex buffer (buildMaterialVertexData) is interleaved
+    // posHigh(3) + posLow(3) + ... so the first 24 bytes match the `rte24`
+    // cast variant; only the stride differs (8 floats flat / 11 floats lit).
+    // See the matching block in the PerInstanceColor path above.
+    cmd._shadowCastLayout = "rte24";
+    cmd.vertexStride = (isLit ? 11 : 8) * 4;
     validCommands.push(cmd);
 
     // Pick command (split camera/material bind groups)

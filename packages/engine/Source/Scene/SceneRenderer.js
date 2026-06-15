@@ -776,6 +776,42 @@ function executeShadowMapCastCommands(scene) {
   }
 
   const context = scene._context;
+
+  // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — populate the per-pass
+  // cast command lists for BOTH backends here, BEFORE delegating GPU
+  // dispatch. The population is fully backend-agnostic: it runs
+  // `scene.updateDerivedCommands` (which builds the per-shadow-map cast
+  // derived commands), frustum/cascade-culls each caster via
+  // `scene.isVisible`, and pushes the visible casters into
+  // `shadowMap.passes[j].commandList`.
+  //
+  // Previously this ran ONLY on the WebGL fall-through path below — the
+  // WebGPU context's `executeShadowMapCastCommands` returns `true` and the
+  // old `if (...) return;` short-circuited the function before the
+  // population loop, so `shadowMap.passes[j].commandList` was always empty
+  // when the WebGPU cast pass iterated it. Result: zero WebGPU shadow
+  // casters reached the cast pass (`csmRenderer._castDispatches` stayed 0)
+  // and nothing cast a shadow, on both the single shadow map and the CSM
+  // path. Hoisting the population so it runs unconditionally fixes both:
+  // the WebGPU context now reads a populated cast list, and the WebGL
+  // execute loop below consumes the same lists exactly as before.
+  for (let i = 0; i < shadowMaps.length; ++i) {
+    const shadowMap = shadowMaps[i];
+    if (shadowMap.outOfView) {
+      continue;
+    }
+    const { passes } = shadowMap;
+    for (let j = 0; j < passes.length; ++j) {
+      passes[j].commandList.length = 0;
+    }
+    insertShadowCastCommands(scene, commandList, shadowMap);
+  }
+
+  // Backend dispatch. WebGPU consumes the populated `passes[].commandList`
+  // (raw WebGPUDrawCommands carry their own cast vertex buffers + cast
+  // layout metadata) and returns `true`. WebGL returns `false` and falls
+  // through to the per-pass execute loop, which dispatches the per-shadow-
+  // map DERIVED cast command (`command.derivedCommands.shadows.castCommands[i]`).
   if (context.executeShadowMapCastCommands(scene)) {
     return;
   }
@@ -789,12 +825,6 @@ function executeShadowMapCastCommands(scene) {
     }
 
     const { passes } = shadowMap;
-    for (let j = 0; j < passes.length; ++j) {
-      passes[j].commandList.length = 0;
-    }
-
-    insertShadowCastCommands(scene, commandList, shadowMap);
-
     for (let j = 0; j < passes.length; ++j) {
       const pass = shadowMap.passes[j];
       const { camera, commandList } = pass;
