@@ -482,6 +482,46 @@ class Picking {
     );
   }
 
+  /**
+   * If the object under `windowPosition` is a GPU-resident compute-instance,
+   * return that instance's world position; otherwise undefined
+   * (NEW-COMPUTE-INSTANCE-PICKPOSITION). Stays domain-agnostic by duck-typing
+   * the pick record — a `{ collection, instanceIndex }` whose collection
+   * exposes `getInstanceWorldPosition(index, result)` — so no
+   * ComputeInstanceCollection import is needed here.
+   * @private
+   */
+  _pickComputeInstancePosition(scene, windowPosition, result) {
+    // Gate: only run the extra object-pick when a pickable compute-instance
+    // collection actually rendered recently (it frame-stamps the context in
+    // ComputeInstanceCollection.update). Otherwise this would run a full pick
+    // pass on EVERY pickPosition query — disrupting the globe depth-buffer
+    // pickPosition path (the pick pass + endFrame clobber the shared depth
+    // state the async getDepth readback depends on) and wasting a render.
+    const context = scene.context;
+    const stamp = context?._pickableComputeInstanceFrame;
+    const frameNumber = scene.frameState?.frameNumber ?? 0;
+    if (!defined(stamp) || frameNumber - stamp > 2) {
+      return undefined;
+    }
+
+    // Picking.pick returns the array of picked records (Scene.pick unwraps
+    // `[0]`); take the front record.
+    const picked = this.pick(scene, windowPosition, 1, 1)[0];
+    if (
+      !defined(picked) ||
+      !defined(picked.collection) ||
+      typeof picked.instanceIndex !== "number" ||
+      typeof picked.collection.getInstanceWorldPosition !== "function"
+    ) {
+      return undefined;
+    }
+    return picked.collection.getInstanceWorldPosition(
+      picked.instanceIndex,
+      result,
+    );
+  }
+
   pickPositionWorldCoordinates(scene, windowPosition, result) {
     if (!scene.useDepthPicking) {
       return undefined;
@@ -503,6 +543,27 @@ class Picking {
       this._pickPositionCacheDirty = false;
     } else if (Object.hasOwn(this._pickPositionCache, cacheKey)) {
       return Cartesian3.clone(this._pickPositionCache[cacheKey], result);
+    }
+
+    // GPU-resident instance pickPosition (NEW-COMPUTE-INSTANCE-PICKPOSITION).
+    // A ComputeInstanceCollection's positions live only in a GPU storage buffer
+    // (WebGPU) or are CPU-computed by its cpuKernel (WebGL2), so the depth
+    // reconstruction below — which unprojects the scene depth at the cursor —
+    // can't give the instance's OWN position (a dot is sub-pixel; its center
+    // rarely coincides with the sampled depth, and on WebGPU the translucent
+    // dots don't even write depth). Instead, pick the object under the cursor;
+    // if it is one of these instances, ask its collection to reconstruct the
+    // instance's world position directly. Duck-typed (collection exposes
+    // getInstanceWorldPosition + a numeric instanceIndex) so Picking stays
+    // domain-agnostic and avoids a hard ComputeInstanceCollection import.
+    const instancePosition = this._pickComputeInstancePosition(
+      scene,
+      windowPosition,
+      result,
+    );
+    if (defined(instancePosition)) {
+      this._pickPositionCache[cacheKey] = Cartesian3.clone(instancePosition);
+      return instancePosition;
     }
 
     const { context, frameState, camera, defaultView } = scene;

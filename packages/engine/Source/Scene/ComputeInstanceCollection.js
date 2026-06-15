@@ -9,6 +9,7 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import {
   updateWebGLComputeInstanceCollection,
   destroyWebGLComputeInstanceResources,
+  getWebGLInstanceWorldPosition,
 } from "../Renderer/WebGLComputeInstanceRenderer.js";
 
 // Registers the backend-agnostic WebGL2 compute-instance renderer on the
@@ -25,6 +26,10 @@ function ensureWebGLComputeInstanceRenderer(context) {
       {
         update: updateWebGLComputeInstanceCollection,
         destroy: destroyWebGLComputeInstanceResources,
+        // pickPosition over a compute-instance
+        // (NEW-COMPUTE-INSTANCE-PICKPOSITION) — re-runs the cpuKernel for the
+        // picked index (positions are CPU-computed on this backend).
+        getInstanceWorldPosition: getWebGLInstanceWorldPosition,
       },
     );
     fr = context.getFeatureRenderer(
@@ -266,6 +271,10 @@ class ComputeInstanceCollection {
     // read by the feature renderer (the only per-frame CPU→GPU scalar).
     this._simulationTimeSeconds = 0;
     this._featureRenderer = undefined;
+    // The context from the most recent update() — pickPosition
+    // (getInstanceWorldPosition) needs it to reach the GPU device on WebGPU,
+    // but it's called outside the render loop (from Scene#pickPosition).
+    this._context = undefined;
     this._webgpuCache = undefined;
     this._webglCache = undefined;
   }
@@ -456,6 +465,50 @@ class ComputeInstanceCollection {
   }
 
   /**
+   * Reconstruct the WORLD position (absolute ECEF meters) of one instance
+   * (NEW-COMPUTE-INSTANCE-PICKPOSITION). Positions are produced by the kernel,
+   * not stored CPU-side on WebGPU, so this routes through the active backend's
+   * feature renderer:
+   * <ul>
+   *   <li><b>WebGPU</b>: reads the instance's record slot back from the GPU
+   *       position buffer via an async <code>copyBufferToBuffer</code> +
+   *       <code>mapAsync</code>, bridged to this synchronous call by a
+   *       one-frame-stale per-index cache (the PickDepth pattern). The FIRST
+   *       call for an index returns <code>undefined</code> and ARMS the
+   *       readback; subsequent calls for the same index converge within 1-2
+   *       rendered frames.</li>
+   *   <li><b>WebGL2</b>: re-runs the <code>cpuKernel</code> for the index at the
+   *       current simulation time and returns the result directly (synchronous,
+   *       deterministic).</li>
+   * </ul>
+   * Used by {@link Scene#pickPosition} when the picked object is one of this
+   * collection's instances. The collection must have rendered at least once
+   * (so the backend renderer and — on WebGPU — its GPU buffers exist).
+   *
+   * @param {number} index The zero-based instance index (e.g. the
+   *        <code>instanceIndex</code> from a {@link Scene#pick} result).
+   * @param {Cartesian3} [result] The object on which to store the result.
+   * @returns {Cartesian3|undefined} The instance's world position, or
+   *          <code>undefined</code> when it is unavailable (no renderer yet,
+   *          index out of range, WebGL2 without a <code>cpuKernel</code>, or a
+   *          cold WebGPU readback).
+   * @private
+   */
+  getInstanceWorldPosition(index, result) {
+    const fr = this._featureRenderer;
+    if (
+      !defined(fr) ||
+      typeof fr.getInstanceWorldPosition !== "function" ||
+      index < 0 ||
+      index >= this._count
+    ) {
+      return undefined;
+    }
+    // WebGPU needs the device (from the context); WebGL ignores the extra arg.
+    return fr.getInstanceWorldPosition(this, index, result, this._context);
+  }
+
+  /**
    * @private
    */
   update(frameState) {
@@ -475,6 +528,7 @@ class ComputeInstanceCollection {
     );
 
     const context = frameState.context;
+    this._context = context;
     let fr = context.getFeatureRenderer(
       FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
     );
@@ -492,6 +546,18 @@ class ComputeInstanceCollection {
     if (fr) {
       fr.update(this, frameState);
       this._featureRenderer = fr;
+      // Frame-stamp the context so Scene#pickPosition knows a pickable
+      // compute-instance is live this frame and only then runs the extra
+      // object-pick that reconstructs an instance's position
+      // (NEW-COMPUTE-INSTANCE-PICKPOSITION). Without this gate, pickPosition
+      // would run a pick pass on EVERY query even in scenes with no
+      // compute-instances, disrupting the globe depth-buffer pickPosition path.
+      if (
+        this.allowPicking !== false &&
+        typeof fr.getInstanceWorldPosition === "function"
+      ) {
+        context._pickableComputeInstanceFrame = frameState.frameNumber;
+      }
       return;
     }
 

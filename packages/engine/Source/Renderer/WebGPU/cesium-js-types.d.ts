@@ -640,6 +640,11 @@ interface CesiumFeatureRenderer {
   composite?(...args: unknown[]): void;
   destroy?(): void;
   isDestroyed?(): boolean;
+  /** ComputeInstanceCollection pickPosition (NEW-COMPUTE-INSTANCE-PICKPOSITION):
+   *  reconstruct a picked instance's world position. WebGPU reads it back from
+   *  the GPU record buffer (one-frame-stale sync cache); WebGL2 re-runs the
+   *  cpuKernel. Returns a Cartesian3 or undefined while cold/unavailable. */
+  getInstanceWorldPosition?(...args: unknown[]): unknown;
   /** Lazy-construction pattern: some feature renderers register a
    *  `RendererClass` constructor that gets instantiated on first touch
    *  (or via `_warmUpPipelines`) and cached on `_instance`. */

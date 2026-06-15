@@ -1,5 +1,6 @@
 import BlendingState from "../Scene/BlendingState.js";
 import Buffer from "./Buffer.js";
+import Cartesian3 from "../Core/Cartesian3.js";
 import BufferUsage from "./BufferUsage.js";
 import ComponentDatatype from "../Core/ComponentDatatype.js";
 import DrawCommand from "./DrawCommand.js";
@@ -12,6 +13,8 @@ import WebGLConstants from "../Core/WebGLConstants.js";
 import defined from "../Core/defined.js";
 import ComputeInstanceWebGLVS from "../Shaders/ComputeInstanceWebGLVS.js";
 import ComputeInstanceWebGLFS from "../Shaders/ComputeInstanceWebGLFS.js";
+import ComputeInstanceWebGLPickVS from "../Shaders/ComputeInstanceWebGLPickVS.js";
+import ComputeInstanceWebGLPickFS from "../Shaders/ComputeInstanceWebGLPickFS.js";
 
 /**
  * WebGL2 CPU-kernel fallback renderer for `ComputeInstanceCollection`
@@ -70,6 +73,19 @@ const attributeLocations = {
   pixelSize: 4,
 };
 
+// Pick VAO attribute layout (NEW-COMPUTE-INSTANCE-PICKPOSITION): same as the
+// color layout except `color` is replaced by the per-instance `pickColor` (the
+// instance's pick id). The pick VAO shares the quad buffer + the SAME instance
+// buffer for positionHigh/Low/pixelSize, and binds a separate pick-color
+// buffer for the pick id colors.
+const pickAttributeLocations = {
+  quadPos: 0,
+  positionHigh: 1,
+  positionLow: 2,
+  pickColor: 3,
+  pixelSize: 4,
+};
+
 // Reusable scratch so the per-frame CPU kernel loop allocates nothing.
 const scratchKernelOut = {
   position: { x: 0, y: 0, z: 0 },
@@ -91,6 +107,18 @@ function getCache(collection) {
       renderState: undefined,
       command: undefined,
       lastInstanceCount: -1,
+      // Pick side (NEW-COMPUTE-INSTANCE-PICKPOSITION) — all lazy; built on the
+      // first pick pass. One createPickId per instance; the colors ride a
+      // per-instance attribute buffer the pick VAO binds.
+      pickIds: [], // Array<PickId>
+      pickIdCount: -1,
+      pickInstanceData: undefined, // Float32Array, FLOATS_PER_RECORD * capacity
+      pickInstanceBuffer: undefined,
+      pickCapacity: 0,
+      pickVertexArray: undefined,
+      pickShaderProgram: undefined,
+      pickRenderState: undefined,
+      pickCommand: undefined,
     };
   }
   return cache;
@@ -204,6 +232,108 @@ function ensureInstanceResources(context, cache, count) {
   });
   // The command holds the VAO reference; force a rebind next push.
   cache.command = undefined;
+
+  // The pick VAO + its own instance buffer mirror this layout but with a
+  // pickColor slot; they're tied to `capacity`, so drop them here and let
+  // ensurePickResources rebuild lazily on the next pick pass.
+  destroyPickGpuResources(cache);
+}
+
+// Pick uses a SEPARATE per-instance buffer (its own VertexArray owns it) so the
+// color VAO and pick VAO never both claim the instance buffer (double-free).
+// The layout matches the color record (FLOATS_PER_RECORD) — positionHigh(3) +
+// positionLow(3) + pickColor(4) + pixelSize(1) — so packInstancesPick reuses
+// the same offsets the color shader expects, just with the pick id in the
+// color slot.
+function ensurePickResources(context, cache, count) {
+  ensurePickShader(context, cache);
+  if (count <= cache.pickCapacity && defined(cache.pickVertexArray)) {
+    return;
+  }
+  const capacity = Math.max(count, (cache.pickCapacity ?? 0) * 2, 64);
+  cache.pickInstanceData = new Float32Array(capacity * FLOATS_PER_RECORD);
+  cache.pickCapacity = capacity;
+
+  cache.pickVertexArray =
+    cache.pickVertexArray && cache.pickVertexArray.destroy();
+  cache.pickInstanceBuffer = Buffer.createVertexBuffer({
+    context: context,
+    sizeInBytes: capacity * FLOATS_PER_RECORD * Float32Array.BYTES_PER_ELEMENT,
+    usage: BufferUsage.DYNAMIC_DRAW,
+  });
+
+  const stride = FLOATS_PER_RECORD * Float32Array.BYTES_PER_ELEMENT;
+  const F = ComponentDatatype.FLOAT;
+  const buf = cache.pickInstanceBuffer;
+  cache.pickVertexArray = new VertexArray({
+    context: context,
+    attributes: [
+      {
+        index: pickAttributeLocations.quadPos,
+        vertexBuffer: cache.quadBuffer,
+        componentsPerAttribute: 2,
+        componentDatatype: F,
+      },
+      {
+        index: pickAttributeLocations.positionHigh,
+        vertexBuffer: buf,
+        componentsPerAttribute: 3,
+        componentDatatype: F,
+        offsetInBytes: 0,
+        strideInBytes: stride,
+        instanceDivisor: 1,
+      },
+      {
+        index: pickAttributeLocations.positionLow,
+        vertexBuffer: buf,
+        componentsPerAttribute: 3,
+        componentDatatype: F,
+        offsetInBytes: 3 * 4,
+        strideInBytes: stride,
+        instanceDivisor: 1,
+      },
+      {
+        index: pickAttributeLocations.pickColor,
+        vertexBuffer: buf,
+        componentsPerAttribute: 4,
+        componentDatatype: F,
+        offsetInBytes: 6 * 4,
+        strideInBytes: stride,
+        instanceDivisor: 1,
+      },
+      {
+        index: pickAttributeLocations.pixelSize,
+        vertexBuffer: buf,
+        componentsPerAttribute: 1,
+        componentDatatype: F,
+        offsetInBytes: 10 * 4,
+        strideInBytes: stride,
+        instanceDivisor: 1,
+      },
+    ],
+  });
+  // The pick command holds the VAO reference; force a rebind next push.
+  cache.pickCommand = undefined;
+}
+
+function ensurePickShader(context, cache) {
+  if (defined(cache.pickShaderProgram)) {
+    return;
+  }
+  cache.pickShaderProgram = ShaderProgram.fromCache({
+    context: context,
+    vertexShaderSource: ComputeInstanceWebGLPickVS,
+    fragmentShaderSource: ComputeInstanceWebGLPickFS,
+    attributeLocations: pickAttributeLocations,
+  });
+  // Pick must be byte-exact: opaque, depth-tested, NO alpha blend (blending the
+  // pick color would corrupt the decoded key). Depth write on so a nearer dot
+  // wins the pick over a farther one.
+  cache.pickRenderState = RenderState.fromCache({
+    depthTest: { enabled: true, func: WebGLConstants.LEQUAL },
+    depthMask: true,
+    blending: BlendingState.DISABLED,
+  });
 }
 
 // Run the CPU kernel over every instance and pack the RTE-split records into
@@ -272,7 +402,10 @@ function updateWebGLComputeInstanceCollection(collection, frameState) {
   ) {
     return;
   }
-  if (!frameState.passes.render) {
+  const passes = frameState.passes;
+  // Color pass (render) OR a pick pass — nothing else needs commands.
+  const pickPass = passes.pick === true && collection.allowPicking !== false;
+  if (!passes.render && !pickPass) {
     return;
   }
 
@@ -285,6 +418,27 @@ function updateWebGLComputeInstanceCollection(collection, frameState) {
   ensureInstanceResources(context, cache, count);
 
   const timeSeconds = collection._simulationTimeSeconds ?? 0;
+  const boundingSphere = collection.boundingSphere;
+
+  // ── Pick pass (NEW-COMPUTE-INSTANCE-PICKPOSITION) ──
+  // One createPickId per instance (the engine's domain-agnostic
+  // { collection, instanceIndex, primitive } record — the demo maps index →
+  // its object), packed into the pick instance buffer's color slot and
+  // rasterized into the pick FBO so scene.pick decodes the instance under the
+  // cursor (the WebGL counterpart of the WebGPU Batch-279 pick path).
+  if (pickPass) {
+    pushWebGLPickCommand(
+      context,
+      collection,
+      cache,
+      count,
+      timeSeconds,
+      boundingSphere,
+      frameState,
+    );
+    return;
+  }
+
   packInstances(collection, count, timeSeconds);
 
   // Upload this frame's records. copyFromArrayView writes the populated
@@ -310,11 +464,169 @@ function updateWebGLComputeInstanceCollection(collection, frameState) {
   // Bounding volume is a user contract (positions are produced by the kernel,
   // not known to the engine) — mirror the WebGPU leg: cull/bin when supplied,
   // never-cull when absent.
-  const boundingSphere = collection.boundingSphere;
   command.boundingVolume = boundingSphere;
   command.cull = defined(boundingSphere);
 
   frameState.commandList.push(command);
+}
+
+// Free every pick id this collection allocated (releases the context's
+// pickObjects/pickKinds entries). Called on count change and teardown.
+function destroyPickIds(cache) {
+  const ids = cache.pickIds;
+  if (defined(ids)) {
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      if (defined(id)) {
+        id.destroy();
+      }
+    }
+    ids.length = 0;
+  }
+  cache.pickIdCount = -1;
+}
+
+// Free the pick VAO + its instance buffer (the VAO owns that buffer). Pick ids
+// survive — they depend only on the instance count, not the VAO shape.
+function destroyPickGpuResources(cache) {
+  cache.pickVertexArray =
+    cache.pickVertexArray && cache.pickVertexArray.destroy();
+  cache.pickInstanceBuffer = undefined; // owned + freed by the VAO above
+  cache.pickInstanceData = undefined;
+  cache.pickCapacity = 0;
+  cache.pickCommand = undefined;
+}
+
+// Pack the per-instance PICK records (positionHigh/Low + pickColor + pixelSize)
+// into the pick staging array. Reuses packInstances' RTE split + the color
+// kernel's pixelSize; the color slot carries the instance's pick id color.
+function packPickInstances(collection, cache, count, timeSeconds) {
+  const cpuKernel = collection._cpuKernel;
+  const params = collection._paramsData;
+  const data = cache.pickInstanceData;
+  const out = scratchKernelOut;
+  const ids = cache.pickIds;
+
+  for (let i = 0; i < count; i++) {
+    out.color.red = 1.0;
+    out.color.green = 1.0;
+    out.color.blue = 1.0;
+    out.color.alpha = 1.0;
+    out.pixelSize = 1.0;
+    cpuKernel(out, i, timeSeconds, params);
+
+    const o = i * FLOATS_PER_RECORD;
+    EncodedCartesian3.encode(out.position.x, scratchEncoded);
+    data[o] = scratchEncoded.high;
+    data[o + 3] = scratchEncoded.low;
+    EncodedCartesian3.encode(out.position.y, scratchEncoded);
+    data[o + 1] = scratchEncoded.high;
+    data[o + 4] = scratchEncoded.low;
+    EncodedCartesian3.encode(out.position.z, scratchEncoded);
+    data[o + 2] = scratchEncoded.high;
+    data[o + 5] = scratchEncoded.low;
+
+    // Color slot carries the per-instance pick id color (Color.fromRgba(key)).
+    const c = ids[i].color;
+    data[o + 6] = c.red;
+    data[o + 7] = c.green;
+    data[o + 8] = c.blue;
+    data[o + 9] = c.alpha;
+    data[o + 10] = out.pixelSize;
+  }
+}
+
+// Build (lazily) + push the WebGL pick command for this frame.
+function pushWebGLPickCommand(
+  context,
+  collection,
+  cache,
+  count,
+  timeSeconds,
+  boundingSphere,
+  frameState,
+) {
+  ensurePickResources(context, cache, count);
+
+  // (Re)allocate one pick id per instance when the count drifts.
+  if (cache.pickIdCount !== count) {
+    destroyPickIds(cache);
+    for (let i = 0; i < count; i++) {
+      cache.pickIds.push(
+        context.createPickId({
+          collection: collection,
+          instanceIndex: i,
+          primitive: collection,
+        }),
+      );
+    }
+    cache.pickIdCount = count;
+  }
+
+  packPickInstances(collection, cache, count, timeSeconds);
+  cache.pickInstanceBuffer.copyFromArrayView(
+    cache.pickInstanceData.subarray(0, count * FLOATS_PER_RECORD),
+    0,
+  );
+
+  if (!defined(cache.pickCommand)) {
+    cache.pickCommand = new DrawCommand({
+      vertexArray: cache.pickVertexArray,
+      shaderProgram: cache.pickShaderProgram,
+      renderState: cache.pickRenderState,
+      pass: Pass.TRANSLUCENT,
+      count: 6,
+      owner: collection,
+    });
+  }
+  const pickCommand = cache.pickCommand;
+  pickCommand.instanceCount = count;
+  pickCommand.boundingVolume = boundingSphere;
+  pickCommand.cull = defined(boundingSphere);
+  frameState.commandList.push(pickCommand);
+}
+
+// Scratch so the pickPosition path allocates nothing per query.
+const scratchPosKernelOut = {
+  position: { x: 0, y: 0, z: 0 },
+  color: { red: 1, green: 1, blue: 1, alpha: 1 },
+  pixelSize: 1,
+};
+
+/**
+ * Reconstruct a picked instance's WORLD position (absolute ECEF meters) on
+ * WebGL2 (NEW-COMPUTE-INSTANCE-PICKPOSITION). Unlike WebGPU — where positions
+ * are GPU-resident and must be read back — the WebGL2 fallback computes every
+ * position on the CPU each frame via `cpuKernel`. So pickPosition just RE-RUNS
+ * the cpuKernel for the picked index at the current simulation time and returns
+ * `out.position` directly: synchronous, deterministic, and exactly the value
+ * the renderer packed into the instance buffer this frame (the kernel is a pure
+ * function of index + time + params). No readback, no stale cache.
+ *
+ * @param {ComputeInstanceCollection} collection
+ * @param {number} index The zero-based instance index (from scene.pick).
+ * @param {Cartesian3} [result]
+ * @returns {Cartesian3|undefined} The instance's world position, or undefined
+ *          when there is no cpuKernel or the index is out of range.
+ * @private
+ */
+function getWebGLInstanceWorldPosition(collection, index, result) {
+  const cpuKernel = collection._cpuKernel;
+  const count = collection.length;
+  if (!defined(cpuKernel) || !(index >= 0) || index >= count) {
+    return undefined;
+  }
+  const out = scratchPosKernelOut;
+  out.position.x = 0;
+  out.position.y = 0;
+  out.position.z = 0;
+  const timeSeconds = collection._simulationTimeSeconds ?? 0;
+  cpuKernel(out, index, timeSeconds, collection._paramsData);
+  const p = out.position;
+  if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) {
+    return undefined;
+  }
+  return Cartesian3.fromElements(p.x, p.y, p.z, result);
 }
 
 /**
@@ -327,10 +639,18 @@ function destroyWebGLComputeInstanceResources(collection) {
   if (!defined(cache)) {
     return;
   }
-  // The quad buffer is flagged not-vertexArrayDestroyable, so the VAO destroy
-  // won't take it; destroy it explicitly. The instance buffer IS owned by the
-  // VAO, so destroying the VAO frees it.
+  // The quad buffer is flagged not-vertexArrayDestroyable, so neither VAO
+  // destroy takes it; destroy it explicitly after both VAOs. Each VAO owns its
+  // OWN instance buffer (color VAO → instanceBuffer, pick VAO →
+  // pickInstanceBuffer), so destroying the VAOs frees those.
   cache.vertexArray = cache.vertexArray && cache.vertexArray.destroy();
+  // Pick side (NEW-COMPUTE-INSTANCE-PICKPOSITION): free the per-instance pick
+  // ids (releases the context pickObjects entries) + the pick VAO/buffer +
+  // pick shader before the shared quad buffer goes.
+  destroyPickIds(cache);
+  destroyPickGpuResources(cache);
+  cache.pickShaderProgram =
+    cache.pickShaderProgram && cache.pickShaderProgram.destroy();
   cache.quadBuffer = cache.quadBuffer && cache.quadBuffer.destroy();
   // ShaderProgram came from the cache (ref-counted) — release, don't destroy.
   cache.shaderProgram = cache.shaderProgram && cache.shaderProgram.destroy();
@@ -340,8 +660,10 @@ function destroyWebGLComputeInstanceResources(collection) {
 export {
   updateWebGLComputeInstanceCollection,
   destroyWebGLComputeInstanceResources,
+  getWebGLInstanceWorldPosition,
 };
 export default {
   updateWebGLComputeInstanceCollection,
   destroyWebGLComputeInstanceResources,
+  getWebGLInstanceWorldPosition,
 };

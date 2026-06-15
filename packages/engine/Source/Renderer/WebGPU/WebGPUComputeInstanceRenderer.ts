@@ -219,6 +219,15 @@ const COMPUTE_WORKGROUP_SIZE = 64;
 // pick FS). Matches `pickColors: array<vec4<f32>>` in ComputeInstanceRender.
 const PICK_COLOR_BYTES = 16;
 
+// pickPosition readback (NEW-COMPUTE-INSTANCE-PICKPOSITION) — the cached
+// instance position is only returned for the SAME instance index it was armed
+// for and within this many rendered frames of that arming. Staleness is
+// counted in dispatched frames (cache.posUpdateCount), not wall time, so a
+// paused / requestRenderMode scene keeps a valid cache indefinitely (positions
+// can't move without a kernel dispatch). Mirrors PickDepth's
+// ASYNC_DEPTH_MAX_STALE_FRAMES contract.
+const POS_READBACK_MAX_STALE_FRAMES = 4;
+
 interface ComputeInstanceCache {
   initialized: boolean;
   // Compute side
@@ -274,6 +283,19 @@ interface ComputeInstanceCache {
   // Count the pick ids were last allocated/uploaded for — re-alloc when the
   // instance count drifts (mirrors the color path's instanceCount tracking).
   pickIdCount: number;
+  // pickPosition readback (NEW-COMPUTE-INSTANCE-PICKPOSITION) — positions are
+  // GPU-resident, so reconstructing a picked instance's world position means
+  // reading its one record slot back from the instance buffer. Same
+  // one-frame-stale sync-cache bridge as PickDepth: getInstanceWorldPosition
+  // returns the cached value when the query matches the armed index and is
+  // recent, else arms a copyBufferToBuffer + mapAsync readback and returns
+  // undefined. All lazy; null until the first getInstanceWorldPosition call.
+  posReadbackBuffer: GPUBuffer | null; // 64-byte (one record) MAP_READ staging
+  posReadbackPending: boolean; // dedupe overlapping mapAsync calls
+  posCacheValue: { x: number; y: number; z: number } | null; // last decode
+  posCacheIndex: number; // which instance the cached value is for
+  posCacheStamp: number; // frame stamp the readback was armed at
+  posUpdateCount: number; // advances once per rendered frame (staleness clock)
   _pipelineFormatGeneration?: number;
   // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — whether the
   // render/velocity modules + pipelines were built with LOG_DEPTH; a
@@ -339,7 +361,9 @@ function uploadParams(
     cache.instanceBuffers[0] = device.createBuffer({
       label: "ComputeInstance records A",
       size: Math.max(count * INSTANCE_RECORD_BYTES, INSTANCE_RECORD_BYTES),
-      usage: GPUBufferUsage.STORAGE,
+      // COPY_SRC so the pickPosition readback can copyBufferToBuffer the picked
+      // instance's record slot (NEW-COMPUTE-INSTANCE-PICKPOSITION).
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
     // The TAA ping-pong partner re-allocates lazily at the new size on
     // the next taaEnabled frame; restart on the primary buffer.
@@ -867,6 +891,12 @@ function updateWebGPUComputeInstanceCollection(
       pickPipelineRequestPending: false,
       pickCommand: null,
       pickIdCount: -1,
+      posReadbackBuffer: null,
+      posReadbackPending: false,
+      posCacheValue: null,
+      posCacheIndex: -1,
+      posCacheStamp: -1,
+      posUpdateCount: 0,
     } as unknown as CesiumOpaqueObject;
   }
   const cache = collection._webgpuCache as unknown as ComputeInstanceCache;
@@ -981,7 +1011,9 @@ function updateWebGPUComputeInstanceCollection(
     cache.instanceBuffers[1] = device.createBuffer({
       label: "ComputeInstance records B (velocity ping-pong)",
       size: cache.instanceBuffers[0]!.size,
-      usage: GPUBufferUsage.STORAGE,
+      // COPY_SRC so a TAA-on collection's pickPosition readback can read
+      // whichever ping-pong buffer is live (NEW-COMPUTE-INSTANCE-PICKPOSITION).
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
     // This frame still writes+reads the primary buffer; the fresh
     // partner holds no prior-frame positions yet, so velocity emission
@@ -1040,6 +1072,14 @@ function updateWebGPUComputeInstanceCollection(
   pass.dispatchWorkgroups(workgroups);
   pass.end();
   device.queue.submit([encoder.finish()]);
+
+  // Advance the pickPosition readback staleness clock — the kernel just wrote
+  // fresh positions into instanceBuffers[cur], so any pickPosition readback
+  // armed against an older frame is now one render staler
+  // (NEW-COMPUTE-INSTANCE-PICKPOSITION). Counted in RENDERED frames (not wall
+  // time) so a paused/requestRenderMode scene keeps a cached value valid —
+  // positions can't change without a dispatch.
+  cache.posUpdateCount++;
 
   // ── Per-frame CPU upload #2: camera uniforms ──
   // RTE: zero the VIEW translation column BEFORE multiplying by projection
@@ -1290,6 +1330,136 @@ function pushPickCommand(
 }
 
 /**
+ * Reconstruct a picked instance's WORLD position (absolute ECEF meters) on
+ * WebGPU (NEW-COMPUTE-INSTANCE-PICKPOSITION). Positions are GPU-resident — the
+ * kernel writes `positionHigh` + `positionLow` (the RTE split of the absolute
+ * position) into the instance record buffer each frame and they never come
+ * back to the CPU — so `scene.pickPosition` over a compute-instance has no CPU
+ * value to return. This reads the picked instance's ONE 64-byte record slot
+ * back via `copyBufferToBuffer` + `mapAsync` and sums high+low to recover the
+ * absolute position.
+ *
+ * The readback is asynchronous (GPU buffer mapping can't resolve within the
+ * calling frame), so this uses the SAME one-frame-stale sync-cache bridge as
+ * `PickDepth.getDepth`: the FIRST query for an index returns `undefined` (the
+ * caller — `Picking.pickPositionWorldCoordinates` — then falls back to the
+ * depth path, the pre-feature SAFE state) and ARMS the readback; subsequent
+ * queries for the SAME index converge once the map resolves (1-2 frames).
+ * The cached value is only trusted for the index it was armed for and within
+ * `POS_READBACK_MAX_STALE_FRAMES` dispatched frames.
+ *
+ * @returns the world position, or `undefined` while the readback is cold.
+ * @private
+ */
+function getWebGPUInstanceWorldPosition(
+  collection: CesiumObjectWithWebGPUCache,
+  index: number,
+  result: Cartesian3 | undefined,
+  context: CesiumGraphicsContext,
+): Cartesian3 | undefined {
+  const cache = collection._webgpuCache as unknown as
+    | ComputeInstanceCache
+    | undefined;
+  if (!cache) {
+    return undefined;
+  }
+  const count = cache.instanceCount;
+  if (!(index >= 0) || index >= count) {
+    return undefined;
+  }
+  const device = (context as unknown as { _device?: GPUDevice })._device;
+  // The buffer the kernel wrote THIS frame (the color/pick draws read the same
+  // slot) — read back from the live orientation, not the velocity partner.
+  const sourceBuffer = cache.instanceBuffers[cache.pingPongIndex];
+  if (!device || !sourceBuffer) {
+    return undefined;
+  }
+
+  // Arm/refresh the background readback for this index (dedup + errors handled
+  // inside).
+  void _readInstancePositionAsync(device, cache, sourceBuffer, index);
+
+  const cached = cache.posCacheValue;
+  if (
+    !cached ||
+    cache.posCacheIndex !== index ||
+    cache.posUpdateCount - cache.posCacheStamp > POS_READBACK_MAX_STALE_FRAMES
+  ) {
+    return undefined;
+  }
+  return Cartesian3.clone(cached as unknown as Cartesian3, result);
+}
+
+/**
+ * Background half of `getWebGPUInstanceWorldPosition`: copy instance `index`'s
+ * 64-byte record to a MAP_READ staging buffer, map it, and decode
+ * `positionHigh + positionLow` into `cache.posCacheValue`. The CsmInstanceRecord
+ * layout (std430) is positionHigh @0 (vec3), positionLow @16 (vec3), so the
+ * absolute world position is the component-wise sum.
+ * @private
+ */
+async function _readInstancePositionAsync(
+  device: GPUDevice,
+  cache: ComputeInstanceCache,
+  sourceBuffer: GPUBuffer,
+  index: number,
+): Promise<void> {
+  if (cache.posReadbackPending) {
+    return;
+  }
+  const requestStamp = cache.posUpdateCount;
+  cache.posReadbackPending = true;
+  try {
+    if (!cache.posReadbackBuffer) {
+      cache.posReadbackBuffer = device.createBuffer({
+        label: "ComputeInstance pickPosition readback",
+        size: INSTANCE_RECORD_BYTES,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+    }
+    const staging = cache.posReadbackBuffer;
+    const encoder = device.createCommandEncoder({
+      label: "ComputeInstance pickPosition readback",
+    });
+    encoder.copyBufferToBuffer(
+      sourceBuffer,
+      index * INSTANCE_RECORD_BYTES,
+      staging,
+      0,
+      INSTANCE_RECORD_BYTES,
+    );
+    device.queue.submit([encoder.finish()]);
+
+    await staging.mapAsync(GPUMapMode.READ, 0, INSTANCE_RECORD_BYTES);
+    const f = new Float32Array(
+      staging.getMappedRange(0, INSTANCE_RECORD_BYTES),
+    );
+    // positionHigh = f[0..2], positionLow = f[4..6] (vec3 padded to 16 bytes).
+    const px = f[0] + f[4];
+    const py = f[1] + f[5];
+    const pz = f[2] + f[6];
+    staging.unmap();
+
+    if (isFinite(px) && isFinite(py) && isFinite(pz)) {
+      if (!cache.posCacheValue) {
+        cache.posCacheValue = { x: px, y: py, z: pz };
+      } else {
+        cache.posCacheValue.x = px;
+        cache.posCacheValue.y = py;
+        cache.posCacheValue.z = pz;
+      }
+      cache.posCacheIndex = index;
+      cache.posCacheStamp = requestStamp;
+    }
+  } catch (e) {
+    // Buffer destroyed / device lost — drop this readback; the next query
+    // re-arms. (No console.error: a stale-cache miss falls back to depth pick.)
+  } finally {
+    cache.posReadbackPending = false;
+  }
+}
+
+/**
  * Attach (or clear) `cache.command.velocityCommand` for this frame's
  * ping-pong orientation. Mirrors `attachCloudVelocityCommand` — the TAA
  * velocity pass (`WebGPUSceneRenderer._runVelocityPass`) walks the binned
@@ -1361,14 +1531,18 @@ function destroyWebGPUComputeInstanceResources(
   // color buffer so a destroyed collection leaves no orphan pick state.
   destroyPickIds(cache);
   cache.pickColorBuffer?.destroy();
+  // pickPosition readback staging buffer (NEW-COMPUTE-INSTANCE-PICKPOSITION).
+  cache.posReadbackBuffer?.destroy();
   collection._webgpuCache = undefined;
 }
 
 export {
   updateWebGPUComputeInstanceCollection,
   destroyWebGPUComputeInstanceResources,
+  getWebGPUInstanceWorldPosition,
 };
 export default {
   updateWebGPUComputeInstanceCollection,
   destroyWebGPUComputeInstanceResources,
+  getWebGPUInstanceWorldPosition,
 };

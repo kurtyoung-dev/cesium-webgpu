@@ -50,6 +50,7 @@ import {
 import {
   updateWebGPUComputeInstanceCollection,
   destroyWebGPUComputeInstanceResources,
+  getWebGPUInstanceWorldPosition,
 } from "./WebGPUComputeInstanceRenderer.js";
 
 // ── Primitive system ──
@@ -289,6 +290,9 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     {
       update: updateWebGPUComputeInstanceCollection,
       destroy: destroyWebGPUComputeInstanceResources,
+      // pickPosition over a compute-instance (NEW-COMPUTE-INSTANCE-PICKPOSITION)
+      // — GPU position-buffer readback with a one-frame-stale sync cache.
+      getInstanceWorldPosition: getWebGPUInstanceWorldPosition,
     },
   );
 
