@@ -488,6 +488,12 @@ export const ShaderSourceId = Object.freeze({
   // (`Compute/ComputeInstanceRender.wgsl`).
   COMPUTE_INSTANCE_SCAFFOLD: 34,
   COMPUTE_INSTANCE_RENDER: 35,
+  // NEW-SPLAT-SORT-CONSUME-INDEXES / NEW-LOG-DEPTH-REMAINING-PRODUCERS-
+  // POINTCLOUD-SPLAT (Batch 288). The inline Gaussian-splat WGSL
+  // (`WebGPUGaussianSplatRenderer.ts` SPLAT_WGSL) now resolves through the
+  // module cache so its `//>>ifdef LOG_DEPTH` blocks preprocess and the
+  // log-depth color/depth-write variants dedupe per (sourceId, defines).
+  GAUSSIAN_SPLAT: 36,
 } as const);
 
 /**

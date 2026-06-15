@@ -516,7 +516,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUPointCloudEyeDomeLighting — EDL post-effect for point clouds (SHIPPED)
 - WebGPUPointCloudLODProcessor — LOD selection + DecoupledScan deterministic path (SHIPPED)
 - WebGPUVoxelRenderer — VoxelPrimitive ray-march. NOTE (triage Batch 172): code-read found this is a PLACEHOLDER gradient ray-marcher (no provider / megatexture / octree traversal wired); `VoxelPrimitive.update` returns early so `_traversal` is never built. Real voxel-data rendering + per-cell pick (C-R9-VOXEL-CELL-PICK) remain genuinely open. (SCAFFOLDED — not real voxel data)
-- WebGPUGaussianSplatRenderer — Gaussian splat rendering (3DGS) (SHIPPED)
+- WebGPUGaussianSplatRenderer — Gaussian splat rendering (3DGS); back-to-front depth sort consumed via a sorted-index storage buffer (the VS reads `splats[sortedIndices[ii]]`) + logarithmic frag_depth producer (Batch 288, NEW-SPLAT-SORT-CONSUME-INDEXES / NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT splat half). WIP boundary: single-pack command occluded by opaque geometry in multi-frustum scenes — NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE (SHIPPED, with tracked multi-frustum follow-up)
 - WebGPUInvertClassification — inverted-stencil classification mask (SHIPPED)
 - WebGPUClippingPlaneCollection — uniform-buffer plane list, optional native `clip-distances` path (SHIPPED)
 - WebGPUClippingPolygonCollection — SDF-atlas based polygon clipping (SHIPPED)

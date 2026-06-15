@@ -16,8 +16,13 @@ import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
+  storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { preprocess } from "./WebGPUShaderPreprocessor.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import type {
@@ -59,12 +64,30 @@ interface GaussianSplatCache {
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
   quadVertexBuffer: GPUBuffer | null;
+  // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — splat attributes now live in
+  // a read-only STORAGE buffer (group 0 binding 1) the VS reads via
+  // sortedIndices[instance_index]. `sortedIndexBuffer` (binding 2) holds the
+  // CPU back-to-front depth permutation. The bind group needs rebuilding when
+  // either buffer is reallocated (count change).
   splatBuffer: GPUBuffer | null;
+  sortedIndexBuffer: GPUBuffer | null;
+  sortedIndexCount: number;
+  // CPU-side sorted permutation staging; reused across frames when the count
+  // is unchanged. Identity until the async sort resolves.
+  sortIndices: Uint32Array | null;
+  // Camera pose at the last sort so we only re-sort when the view moves enough.
+  lastSortCameraDir: Cartesian3 | null;
+  sortRequestPending: boolean;
   splatCount: number;
   command: CesiumAnyDrawCommand | null;
   pickCommand: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastRevision: number;
+  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — flip-
+  // rebuild guard mirroring the format-generation guard. When the LOG_DEPTH
+  // master switch flips, the color/depth-write pipelines must recompile from
+  // the other shader-module variant.
+  logDepthEnabled: boolean;
   pipelineLayout: GPUPipelineLayout | null;
   // C-R7-RENDERER-MIGRATION (Batch 56) — see EllipsoidPrimitiveRenderer
   // for the rationale. The OIT pipeline is optional (its WGSL injection
@@ -93,13 +116,28 @@ interface GaussianSplatCache {
 }
 
 const SPLAT_WGSL = `
+// NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — splat attributes now live in a
+// read-only storage buffer (one SplatRecord per splat, 64 bytes — byte-
+// identical to the former 64-byte per-instance vertex stride) and the draw
+// indexes through a sorted-index storage buffer so the rasterizer visits
+// splats in back-to-front depth order. Pre-Batch-288 the splat data was a
+// per-instance VERTEX buffer drawn in storage order, so the premultiplied
+// over-blend (order-dependent) produced wrong tinting/haloing that shifted
+// with camera angle (audit A2.1). The CPU radix sort already produced a
+// depth order (primitive._indexes) that the WebGPU draw silently dropped.
+// Scalar fields (NOT vec3) so the storage-buffer record is exactly 64 bytes,
+// byte-identical to the tightly-packed CPU _splatData (16 floats/splat). WGSL
+// gives vec3 a 16-byte size+alignment INSIDE a struct, which would make a
+// vec3-field record 80 bytes and mis-stride against the 64-byte CPU layout.
+struct SplatRecord {
+  phx: f32, phy: f32, phz: f32,   // positionHigh
+  plx: f32, ply: f32, plz: f32,   // positionLow
+  ca0: f32, ca1: f32, ca2: f32,   // covA (Sxx, Sxy, Sxz)
+  cb0: f32, cb1: f32, cb2: f32,   // covB (Syy, Syz, Szz)
+  cr: f32, cg: f32, cb: f32, calpha: f32, // color + alpha
+};
 struct VertexInput {
   @location(0) quadVertex: vec2<f32>,
-  @location(1) positionHigh: vec3<f32>,
-  @location(2) positionLow: vec3<f32>,
-  @location(3) covA: vec3<f32>,
-  @location(4) covB: vec3<f32>,
-  @location(5) colorAndAlpha: vec4<f32>,
 };
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -110,14 +148,28 @@ struct VertexOutput {
   // (position relative to camera) for the aerial-perspective fog
   // block. Per-quad-vertex spread is tiny relative to fog scale.
   @location(3) worldPos: vec3<f32>,
+  //>>ifdef LOG_DEPTH
+  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) —
+  // interpolated linear depthFromNearPlusOne (splat-center eye distance + 1).
+  // The FS converts it to log @builtin(frag_depth) so a splat cloud at
+  // altitude depth-tests against the log-depth globe at FAR range instead of
+  // z-fighting it. Per-quad-vertex depth spread is negligible vs the splat
+  // center, so using the center value across the quad is correct.
+  @location(4) v_logDepth: f32,
+  //>>endif
 };
 struct Uniforms {
   mvpRelativeToEye: mat4x4<f32>,
   modelViewRelativeToEye: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
+  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — renderer-
+  // wide log-depth near plane (formerly _pad0, float 35). Packed
+  // unconditionally; only the //>>ifdef LOG_DEPTH blocks read it.
+  logDepthNear: f32,
   encodedCameraLow: vec3<f32>,
-  _pad1: f32,
+  // log-depth factor = oneOverLog2FarDepthFromNearPlusOne (formerly _pad1,
+  // float 39).
+  logDepthFactor: f32,
   viewportSize: vec2<f32>,
   focalX: f32,
   focalY: f32,
@@ -136,6 +188,27 @@ struct Uniforms {
   modelMatrix: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var<storage, read> splats: array<SplatRecord>;
+// Sorted draw order — sortedIndices[instanceIndex] = the splat to draw at
+// rasterizer instance position instanceIndex. Back-to-front for correct
+// premultiplied over-blend.
+@group(0) @binding(2) var<storage, read> sortedIndices: array<u32>;
+
+//>>ifdef LOG_DEPTH
+// Renderer-wide log depth — canonical inline copies; see
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 // FEAT-GAP-09 (Batch 103 audit fix; original Batch 101 modified the
 // dead standalone Advanced/GaussianSplat.wgsl). Same EffectsUniforms
@@ -159,10 +232,19 @@ struct EffectsUniforms {
 @group(1) @binding(9) var atmosphereLutSampler: sampler;
 
 @vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
+fn vertexMain(
+  @builtin(instance_index) instanceIndex: u32,
+  input: VertexInput,
+) -> VertexOutput {
   var output: VertexOutput;
-  let posRTE = (input.positionHigh - u.encodedCameraHigh)
-             + (input.positionLow - u.encodedCameraLow);
+  // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — index through the sorted
+  // order so the rasterizer visits splats back-to-front.
+  let splatIdx = sortedIndices[instanceIndex];
+  let s = splats[splatIdx];
+  let positionHigh = vec3<f32>(s.phx, s.phy, s.phz);
+  let positionLow = vec3<f32>(s.plx, s.ply, s.plz);
+  let posRTE = (positionHigh - u.encodedCameraHigh)
+             + (positionLow - u.encodedCameraLow);
   let clipPos = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
   let t = u.modelViewRelativeToEye * vec4<f32>(posRTE, 1.0);
   let J00 = u.focalX / t.z;
@@ -179,9 +261,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     u.modelViewRelativeToEye[2].xyz,
   );
   let Sigma = mat3x3<f32>(
-    vec3<f32>(input.covA.x, input.covA.y, input.covA.z),
-    vec3<f32>(input.covA.y, input.covB.x, input.covB.y),
-    vec3<f32>(input.covA.z, input.covB.y, input.covB.z),
+    vec3<f32>(s.ca0, s.ca1, s.ca2),
+    vec3<f32>(s.ca1, s.cb0, s.cb1),
+    vec3<f32>(s.ca2, s.cb1, s.cb2),
   );
   let SV = R * Sigma * transpose(R);
   let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];
@@ -195,6 +277,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.color = vec4<f32>(0.0); output.conic = vec3<f32>(0.0);
     output.centerOffset = vec2<f32>(0.0);
     output.worldPos = vec3<f32>(0.0);
+    //>>ifdef LOG_DEPTH
+    output.v_logDepth = 1.0;
+    //>>endif
     return output;
   }
   let invDet = 1.0 / det;
@@ -205,8 +290,15 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let ndcOff = pixOff / u.viewportSize * 2.0 * clipPos.w;
   var fp = clipPos;
   fp.x = fp.x + ndcOff.x; fp.y = fp.y + ndcOff.y;
+  //>>ifdef LOG_DEPTH
+  // Use the splat-CENTER clip w for the eye distance (the quad expansion only
+  // moves x/y; the center w is the splat's depth). Then clamp clip-z so the
+  // high far/near ratio of a log buffer can't pre-clip the vertex.
+  output.v_logDepth = csm_vertexLogDepth(clipPos, u.logDepthNear);
+  fp = csm_updatePositionDepth(fp);
+  //>>endif
   output.position = fp;
-  output.color = input.colorAndAlpha;
+  output.color = vec4<f32>(s.cr, s.cg, s.cb, s.calpha);
   output.conic = conic;
   output.centerOffset = pixOff;
   // FEAT-GAP-09 (Batch 103) — splat-center RTE position for fog block.
@@ -214,8 +306,23 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   return output;
 }
 
+// NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — the color
+// FS returns a struct carrying @builtin(frag_depth) ONLY in the LOG_DEPTH
+// variant. The //>>else branch keeps the historical bare-@location(0) vec4
+// signature byte-identical so (a) the hyperbolic kill-switch path is
+// unchanged and (b) the OIT module (injected from the raw defines=0 source)
+// still sees the bare-vec4 fragmentMain its WGSL transform expects.
+//>>ifdef LOG_DEPTH
+struct FragOutput {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+};
+@fragment
+fn fragmentMain(input: VertexOutput) -> FragOutput {
+//>>else
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+//>>endif
   let off = input.centerOffset;
   let power = -0.5*(input.conic.x*off.x*off.x + input.conic.z*off.y*off.y)
               - input.conic.y*off.x*off.y;
@@ -260,7 +367,14 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     }
   }
 
+  //>>ifdef LOG_DEPTH
+  var out: FragOutput;
+  out.color = finalColor;
+  out.depth = csm_writeLogDepth(input.v_logDepth, u.logDepthFactor);
+  return out;
+  //>>else
   return finalColor;
+  //>>endif
 }
 
 // C-R9 (Batch 31) — pick entry point. Same gaussian footprint test as
@@ -282,48 +396,47 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
 // animated Gaussian splat clouds. Mirrors PointCloud Batch 168/169 +
 // CloudCollection Batch 170 patterns.
 //
-// On the deferred entry's "sort-order indexing" wrinkle: this renderer
-// uploads splat data once per revision (the splat buffer is typed-array
-// content from the loader) — there is NO per-frame sort/compaction at
-// this layer that would shuffle indices, so the prev buffer can use the
-// stable splat ID (= buffer index) directly. If a future GPU-sort pass
-// is wired in this renderer, the prev buffer would need a parallel
-// permutation lookup; until then index identity holds.
-struct VelocityVertexInput {
-  @location(0) quadVertex: vec2<f32>,
-  @location(1) positionHigh: vec3<f32>,
-  @location(2) positionLow: vec3<f32>,
-  @location(3) covA: vec3<f32>,
-  @location(4) covB: vec3<f32>,
-  @location(5) colorAndAlpha: vec4<f32>,
-  // Slot 1: prev-frame instance data — only positions are read.
-  @location(6) prevPositionHigh: vec3<f32>,
-  @location(7) prevPositionLow: vec3<f32>,
-};
-
+// NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — the velocity VS now also reads
+// the current splat from the storage buffer indexed through the SAME sorted
+// order as the color pass, and the prev-frame positions from a parallel
+// prevSplats storage buffer at the SAME splat index. Because prev/curr are
+// indexed by the stable splat id (sortedIndices is a permutation of the same
+// splat-id space), the prev lookup follows the current sort permutation
+// automatically — index identity holds even with per-frame re-sorting.
 struct VelocityVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) currCenterClip: vec4<f32>,
   @location(1) prevCenterClip: vec4<f32>,
 };
 
+@group(0) @binding(3) var<storage, read> prevSplats: array<SplatRecord>;
+
 @vertex
-fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
+fn vertexVelocityMain(
+  @builtin(instance_index) instanceIndex: u32,
+  input: VertexInput,
+) -> VelocityVertexOutput {
   var output: VelocityVertexOutput;
+  let splatIdx = sortedIndices[instanceIndex];
+  let s = splats[splatIdx];
+  let prev = prevSplats[splatIdx];
+  let positionHigh = vec3<f32>(s.phx, s.phy, s.phz);
+  let positionLow = vec3<f32>(s.plx, s.ply, s.plz);
   // Current-frame center clip via RTE (matches vertexMain).
-  let posRTE = (input.positionHigh - u.encodedCameraHigh)
-             + (input.positionLow - u.encodedCameraLow);
+  let posRTE = (positionHigh - u.encodedCameraHigh)
+             + (positionLow - u.encodedCameraLow);
   let currCenterClip = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
   // Batch 172 — Previous-frame center clip via prevVP × modelMatrix ×
-  // prevModelPos. Splat positions in _splatData are model-space; the
-  // current-frame VS folds the modelMatrix into mvpRelativeToEye, so
-  // prev needs the explicit lift via the standalone modelMatrix
-  // (added to the UBO this batch). For typical 3D-Tiles content the
-  // modelMatrix is identity and the lift is a no-op; for custom
-  // primitives with non-identity modelMatrix this is required for
-  // correct prev-clip projection.
+  // prevModelPos. Splat positions are model-space; the current-frame VS
+  // folds the modelMatrix into mvpRelativeToEye, so prev needs the explicit
+  // lift via the standalone modelMatrix (in the UBO). For typical 3D-Tiles
+  // content the modelMatrix is identity and the lift is a no-op; for custom
+  // primitives with non-identity modelMatrix this is required for correct
+  // prev-clip projection.
   let prevModelPos = vec4<f32>(
-    input.prevPositionHigh + input.prevPositionLow, 1.0,
+    vec3<f32>(prev.phx, prev.phy, prev.phz)
+      + vec3<f32>(prev.plx, prev.ply, prev.plz),
+    1.0,
   );
   let prevWorldPos = u.modelMatrix * prevModelPos;
   let prevCenterClip = u.prevViewProjection * prevWorldPos;
@@ -345,9 +458,9 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     u.modelViewRelativeToEye[2].xyz,
   );
   let Sigma = mat3x3<f32>(
-    vec3<f32>(input.covA.x, input.covA.y, input.covA.z),
-    vec3<f32>(input.covA.y, input.covB.x, input.covB.y),
-    vec3<f32>(input.covA.z, input.covB.y, input.covB.z),
+    vec3<f32>(s.ca0, s.ca1, s.ca2),
+    vec3<f32>(s.ca1, s.cb0, s.cb1),
+    vec3<f32>(s.ca2, s.cb1, s.cb2),
   );
   let SV = R * Sigma * transpose(R);
   let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];
@@ -395,6 +508,19 @@ const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
 const scratchMVP = new Matrix4();
 const scratchMV = new Matrix4();
 
+// Per-device shader-module cache so the LOG_DEPTH and non-log variants compile
+// once per device and dedupe across split-screen contexts (C-R7-SHADER-MODULE-
+// DEDUP). The cache runs the `//>>ifdef` preprocessor on miss.
+const _splatModuleCaches = new WeakMap<GPUDevice, WebGPUShaderModuleCache>();
+function getSplatModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
+  let cache = _splatModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _splatModuleCaches.set(device, cache);
+  }
+  return cache;
+}
+
 function createQuadVB(device: GPUDevice): GPUBuffer {
   const v = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
   const buf = device.createBuffer({
@@ -405,10 +531,11 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
   return buf;
 }
 
-// Vertex buffer layout shared by the color, OIT, and pick pipelines.
-// Defined once so the cache-key signature in `WebGPURenderPipelineCache`
-// (which hashes the full `vertex.buffers[]` shape) lines up across all
-// three descriptors when the cache routes them.
+// NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — the only vertex buffer is now
+// the 6-vertex quad at location 0. Splat attributes moved to a storage buffer
+// (group 0 binding 1) the VS reads via sortedIndices[instance_index], so the
+// rasterizer visits splats in back-to-front depth order. Pre-Batch-288 the
+// splat data was a 64-byte per-instance vertex buffer drawn in storage order.
 const SPLAT_VERTEX_BUFFERS: GPUVertexBufferLayout[] = [
   {
     arrayStride: 8,
@@ -418,37 +545,6 @@ const SPLAT_VERTEX_BUFFERS: GPUVertexBufferLayout[] = [
         shaderLocation: 0,
         offset: 0,
         format: "float32x2" as GPUVertexFormat,
-      },
-    ],
-  },
-  {
-    arrayStride: 64,
-    stepMode: "instance" as GPUVertexStepMode,
-    attributes: [
-      {
-        shaderLocation: 1,
-        offset: 0,
-        format: "float32x3" as GPUVertexFormat,
-      },
-      {
-        shaderLocation: 2,
-        offset: 12,
-        format: "float32x3" as GPUVertexFormat,
-      },
-      {
-        shaderLocation: 3,
-        offset: 24,
-        format: "float32x3" as GPUVertexFormat,
-      },
-      {
-        shaderLocation: 4,
-        offset: 36,
-        format: "float32x3" as GPUVertexFormat,
-      },
-      {
-        shaderLocation: 5,
-        offset: 48,
-        format: "float32x4" as GPUVertexFormat,
       },
     ],
   },
@@ -480,23 +576,54 @@ interface SplatPipelineResources {
 function buildSplatPipelineResources(
   device: GPUDevice,
   format: GPUTextureFormat,
+  logDepthActive: boolean,
+  sampleCount: number,
 ): SplatPipelineResources {
-  const sm = device.createShaderModule({ code: SPLAT_WGSL });
+  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — the color
+  // + depth-write variants use the LOG_DEPTH-preprocessed module when active so
+  // the splat FS writes log @builtin(frag_depth). The PICK + OIT variants
+  // always use the base (defines=0) module: pick stays hyperbolic (the pick
+  // FBO is self-consistent — CLAUDE.md rule), and OIT's WGSL injection expects
+  // the bare-@location(0) fragmentMain signature (its pass has
+  // depthWriteEnabled:false anyway, so frag_depth is irrelevant to it).
+  const moduleCache = getSplatModuleCache(device);
+  const smBase = moduleCache.getOrCreate(
+    ShaderSourceId.GAUSSIAN_SPLAT,
+    SPLAT_WGSL,
+    0,
+    "GaussianSplat",
+  );
+  const sm = logDepthActive
+    ? moduleCache.getOrCreate(
+        ShaderSourceId.GAUSSIAN_SPLAT,
+        SPLAT_WGSL,
+        ShaderDefine.LOG_DEPTH,
+        "GaussianSplat [log]",
+      )
+    : smBase;
   const bgl = makeBindGroupLayout(device, "GaussianSplat BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — splat attributes, sorted
+    // index permutation, and the prev-frame splat mirror (velocity). All
+    // read-only VERTEX-stage storage; bound on a single group-0 BGL shared
+    // by the color / pick / velocity / depth-write pipelines (each statically
+    // references the subset it needs — unused bindings are still provided so
+    // the bind group matches the shared pipeline layout).
+    storageBuffer(1, Stage.VERTEX, { readOnly: true }),
+    storageBuffer(2, Stage.VERTEX, { readOnly: true }),
+    storageBuffer(3, Stage.VERTEX, { readOnly: true }),
   ]);
   // FEAT-GAP-09 (Batch 101) — append shared effects BGL at slot 1 so
   // the WGSL fog block at @group(1) resolves. Shared layout cascades
   // to the pick, velocity, OIT, and depth-write pipelines too (all
   // built with this same `layout` below).
   const effectsBGL = getEffectsBindGroupLayout(device);
-  // Instance stride: posHigh(12) + posLow(12) + covA(12) + covB(12) + color(16) = 64 bytes
   const layout = device.createPipelineLayout({
     bindGroupLayouts: [bgl, effectsBGL],
   });
 
   const colorDescriptor: WebGPURenderPipelineDescriptor = {
-    name: "GaussianSplat color pipeline",
+    name: `GaussianSplat color pipeline [ld=${logDepthActive ? 1 : 0}/ms=${sampleCount}]`,
     layout,
     vertex: {
       module: sm,
@@ -508,11 +635,6 @@ function buildSplatPipelineResources(
       entryPoint: "fragmentMain",
       // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
       // helper. Premultiplied alpha blend preserved verbatim.
-      // Pick pipeline derived via buildPickPipelineDescriptor below
-      // (line ~570) — flagged as Phase 2 prerequisite (.map(null)
-      // null-filter needed when MRT mode flips on). OIT pipeline at
-      // line ~548 uses WebGPUOIT.OIT_TARGETS (separate render pass
-      // for weighted-sum). Velocity at line ~1267 stays single-target.
       targets: makeSceneFBTargets(format, {
         blend: {
           color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
@@ -527,15 +649,24 @@ function buildSplatPipelineResources(
       // less-equal for planetary-scale precision robustness.
       depthCompare: "less-equal",
     },
+    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — scene-FB pipelines MUST
+    // bake the MSAA sample count or the attachment state mismatches the
+    // multisampled Scene Framebuffer Render Pass and invalidates the whole
+    // command buffer. Pre-Batch-288 the splat color/depth-write pipelines
+    // omitted this; the bug was latent because the renderer never actually
+    // drew (no _splatData producer was wired).
+    multisample: { count: sampleCount },
   };
 
   // GS-WSR: OIT pipeline variant for weighted-sum rendering. WGSL injection
   // can fail (returns null), in which case OIT support is skipped — same
-  // semantics as the pre-cache path.
+  // semantics as the pre-cache path. Inject on the defines=0-preprocessed
+  // source so the injector sees the bare-@location(0) fragmentMain.
   let oitShaderModule: GPUShaderModule | null = null;
   let oitDescriptor: WebGPURenderPipelineDescriptor | null = null;
   try {
-    const oitCode = WebGPUOIT.injectOITOutput(SPLAT_WGSL, "fragmentMain");
+    const baseCode = preprocess(SPLAT_WGSL, 0);
+    const oitCode = WebGPUOIT.injectOITOutput(baseCode, "fragmentMain");
     oitShaderModule = device.createShaderModule({
       label: "GaussianSplat-OIT-GS-WSR",
       code: oitCode,
@@ -560,23 +691,35 @@ function buildSplatPipelineResources(
         // less-equal for planetary-scale precision robustness.
         depthCompare: "less-equal",
       },
+      // OIT pass is multisampled (WebGPUOIT._sampleCount tracks _msaaSamples).
+      multisample: { count: sampleCount },
     };
   } catch (e) {
     // OIT variant creation is non-fatal — falls back to standard alpha blending
   }
 
-  // C-R9 (Batch 31 / refactored Batch 59) — pick descriptor derived from
-  // the color descriptor via {@link buildPickPipelineDescriptor}. Same
-  // layout + VS + depthStencil shape; fragment entry swapped to
-  // `fragmentPickMain` and blend stripped so pick colors reach the FBO
-  // unmodified. `forceDepthWriteEnabled: false` preserves the historical
-  // setting (splats are translucent — neither color nor pick path writes
-  // depth so the OIT pass behind them stays correct).
+  // C-R9 (Batch 31 / refactored Batch 59) — pick descriptor. The pick VS is
+  // `vertexMain` of the BASE (non-log) module so the pick FBO stays hyperbolic
+  // and self-consistent (CLAUDE.md pick rule). Built explicitly (not via
+  // buildPickPipelineDescriptor's color-clone) because the color descriptor
+  // may reference the LOG_DEPTH module. Blend stripped; single pick target.
   const pickDescriptor: WebGPURenderPipelineDescriptor =
-    buildPickPipelineDescriptor(colorDescriptor, "fragmentPickMain", {
-      name: "GaussianSplat pick pipeline",
-      forceDepthWriteEnabled: false,
-    });
+    buildPickPipelineDescriptor(
+      {
+        ...colorDescriptor,
+        vertex: { ...colorDescriptor.vertex, module: smBase },
+      },
+      "fragmentPickMain",
+      {
+        name: "GaussianSplat pick pipeline",
+        forceDepthWriteEnabled: false,
+      },
+    );
+  // Ensure the pick FS module is also the base module (buildPickPipelineDescriptor
+  // copies the color fragment.module by default).
+  if (pickDescriptor.fragment) {
+    pickDescriptor.fragment.module = smBase;
+  }
 
   // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant of the
   // color pipeline. Same module / layout / vertex / fragment / blend as
@@ -588,7 +731,7 @@ function buildSplatPipelineResources(
   // Batch 79's translucent-classification mechanism for Models).
   const depthWriteDescriptor: WebGPURenderPipelineDescriptor = {
     ...colorDescriptor,
-    name: "GaussianSplat depth-write pipeline",
+    name: `GaussianSplat depth-write pipeline [ld=${logDepthActive ? 1 : 0}/ms=${sampleCount}]`,
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: true,
@@ -737,6 +880,108 @@ function tryResolveSplatPipelines(
   return true;
 }
 
+// NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — re-sort threshold. Re-sort when
+// the camera view direction has rotated more than ~0.5° OR moved enough
+// relative to the splat cloud. Mirrors the WebGL steady-sort cadence
+// (GaussianSplatPrimitive DEFAULT_SORT_MIN_ANGLE_RADIANS).
+const SORT_MIN_ANGLE_COS = Math.cos(0.008726646259971648);
+const scratchSortDir = new Cartesian3();
+const scratchSortMV = new Matrix4();
+
+/**
+ * NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288). CPU back-to-front sort of the
+ * splat indices by view-space depth, uploaded to the sorted-index storage
+ * buffer the VS reads via `sortedIndices[instance_index]`. Without this the
+ * WebGPU draw visited splats in buffer order, producing order-dependent
+ * premultiplied over-blend errors (audit A2.1). Runs only when the camera has
+ * rotated enough since the last sort (cheap-frame amortization). The sort key
+ * is the splat-center eye-space z; farthest (most negative z) drawn first.
+ *
+ * @private
+ */
+function maybeSortSplats(
+  device: GPUDevice,
+  primitive: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+  cache: GaussianSplatCache,
+): void {
+  const count = cache.splatCount;
+  if (count === 0 || !cache.sortedIndexBuffer) {
+    return;
+  }
+  const splatData = (cache.splatData ?? null) as Float32Array | null;
+  // Need the interleaved 64-byte (16-float) records to read positions.
+  if (!splatData || splatData.length < count * 16) {
+    return;
+  }
+
+  const camera = (
+    frameState as unknown as { camera?: { directionWC?: Cartesian3 } }
+  ).camera;
+  const dir = camera?.directionWC;
+  // Throttle: skip if the view direction hasn't rotated past the threshold.
+  if (dir && cache.lastSortCameraDir) {
+    const cosAngle = Cartesian3.dot(
+      Cartesian3.normalize(dir, scratchSortDir),
+      cache.lastSortCameraDir,
+    );
+    if (cosAngle >= SORT_MIN_ANGLE_COS && !cache.sortRequestPending) {
+      return;
+    }
+  }
+
+  // modelView = view * modelMatrix (the eye-space transform of model-space
+  // splat positions). The renderer packs the same MV (with the translation
+  // column zeroed for RTE) into the UBO below; here we keep the full MV so the
+  // depth key is the true eye-space z.
+  const us = (
+    frameState as unknown as { context: { uniformState: { view: Matrix4 } } }
+  ).context.uniformState;
+  const mm = (primitive.modelMatrix as Matrix4 | undefined) ?? Matrix4.IDENTITY;
+  Matrix4.multiply(us.view, mm, scratchSortMV);
+  const m0 = scratchSortMV[2];
+  const m1 = scratchSortMV[6];
+  const m2 = scratchSortMV[10];
+  const m3 = scratchSortMV[14];
+
+  let indices = cache.sortIndices;
+  if (!indices || indices.length !== count) {
+    indices = new Uint32Array(count);
+    for (let i = 0; i < count; i++) {
+      indices[i] = i;
+    }
+    cache.sortIndices = indices;
+  }
+
+  // Eye-space z for each splat (the depth-sort key). Interleaved layout is
+  // [posHigh(0-2), posLow(3-5), covA(6-8), covB(9-11), color(12-15)]; the
+  // world position is posHigh + posLow.
+  const depth = new Float64Array(count);
+  for (let i = 0; i < count; i++) {
+    const base = i * 16;
+    const px = splatData[base] + splatData[base + 3];
+    const py = splatData[base + 1] + splatData[base + 4];
+    const pz = splatData[base + 2] + splatData[base + 5];
+    depth[i] = m0 * px + m1 * py + m2 * pz + m3;
+  }
+
+  // Ascending eye-space z = farthest (most negative) first → back-to-front for
+  // the premultiplied over-blend operator.
+  Array.prototype.sort.call(
+    indices,
+    (a: number, b: number) => depth[a] - depth[b],
+  );
+
+  device.queue.writeBuffer(cache.sortedIndexBuffer, 0, indices);
+  if (dir) {
+    cache.lastSortCameraDir = Cartesian3.normalize(
+      dir,
+      cache.lastSortCameraDir ?? new Cartesian3(),
+    );
+  }
+  cache.sortRequestPending = false;
+}
+
 function updateWebGPUGaussianSplats(
   primitive: CesiumObjectWithWebGPUCache,
   frameState: CesiumFrameState,
@@ -762,11 +1007,17 @@ function updateWebGPUGaussianSplats(
       bindGroup: null,
       quadVertexBuffer: null,
       splatBuffer: null,
+      sortedIndexBuffer: null,
+      sortedIndexCount: 0,
+      sortIndices: null,
+      lastSortCameraDir: null,
+      sortRequestPending: false,
       splatCount: 0,
       command: null,
       pickCommand: null,
       initialized: false,
       lastRevision: -1,
+      logDepthEnabled: false,
       pipelineLayout: null,
       pipelineRequestPending: false,
       // Batch 171 - velocity slots (lazy, allocated when TAA is on).
@@ -792,10 +1043,21 @@ function updateWebGPUGaussianSplats(
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
+  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — recompile
+  // the color/depth-write pipelines from the other shader-module variant when
+  // the LOG_DEPTH master switch flips. Shares the format-invalidation reset
+  // machinery (which already tears down + rebuilds all pipeline resources).
+  const logDepthActive = isWebGPULogDepthActive(
+    context as unknown as { _logDepthWriteEnabled?: boolean },
+    frameState as unknown as { useLogDepth?: boolean },
+  );
+  const logDepthFlipped =
+    cache.initialized && cache.logDepthEnabled !== logDepthActive;
   if (
     cache.initialized &&
-    (cache as unknown as { _pipelineFormatGeneration?: number })
-      ._pipelineFormatGeneration !== sceneGen
+    ((cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen ||
+      logDepthFlipped)
   ) {
     (
       cache as GaussianSplatCache & {
@@ -827,6 +1089,9 @@ function updateWebGPUGaussianSplats(
     cache.velocityPipeline = null;
     cache.velocityPipelineDescriptor = null;
     cache.velocityPipelineRequestPending = false;
+    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — the bind group references
+    // the old BGL; drop it so it rebuilds against the new resources below.
+    cache.bindGroup = null;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
@@ -856,7 +1121,47 @@ function updateWebGPUGaussianSplats(
       size: 320,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    resources = buildSplatPipelineResources(device, canvasFormat);
+    cache.quadVertexBuffer = createQuadVB(device);
+
+    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — placeholder STORAGE buffers
+    // (replaced when splat data loads). All three group-0 storage bindings
+    // must exist before the first bind group is built.
+    // COPY_SRC so the velocity prev-seed copyBufferToBuffer (curr → prev) is
+    // valid (the prev path GPU-self-copies when no continuous prev exists).
+    cache.splatBuffer = device.createBuffer({
+      label: "GaussianSplat splats (placeholder)",
+      size: 64,
+      usage:
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.COPY_DST |
+        GPUBufferUsage.COPY_SRC,
+    });
+    cache.sortedIndexBuffer = device.createBuffer({
+      label: "GaussianSplat sorted indices (placeholder)",
+      size: 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    cache.prevSplatBuffer = device.createBuffer({
+      label: "GaussianSplat prev splats (placeholder)",
+      size: 64,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    cache.splatCount = 0;
+    cache.sortedIndexCount = 0;
+    cache.initialized = true;
+  }
+
+  // Build (or rebuild after format/log-depth invalidation) the pipeline
+  // resources from the current format + log-depth state.
+  if (!resources) {
+    const sampleCount =
+      (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
+    resources = buildSplatPipelineResources(
+      device,
+      canvasFormat,
+      logDepthActive,
+      sampleCount,
+    );
     (
       cache as GaussianSplatCache & {
         _pipelineResources?: SplatPipelineResources;
@@ -864,19 +1169,27 @@ function updateWebGPUGaussianSplats(
     )._pipelineResources = resources;
     cache.shaderModule = resources.shaderModule;
     cache.pipelineLayout = resources.layout;
+    cache.logDepthEnabled = logDepthActive;
+    // Bind group references the freshly-built BGL + current buffers.
+    cache.bindGroup = null;
+  }
+
+  // (Re)build the group-0 bind group whenever it's missing (init, format/
+  // log-depth flip, or a storage-buffer reallocation cleared it).
+  if (!cache.bindGroup) {
     cache.bindGroup = device.createBindGroup({
       layout: resources.bgl,
-      entries: [{ binding: 0, resource: { buffer: cache.uniformBuffer } }],
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer! } },
+        { binding: 1, resource: { buffer: cache.splatBuffer! } },
+        { binding: 2, resource: { buffer: cache.sortedIndexBuffer! } },
+        { binding: 3, resource: { buffer: cache.prevSplatBuffer! } },
+      ],
     });
-    cache.quadVertexBuffer = createQuadVB(device);
-
-    // Create placeholder splat buffer (will be replaced when data loads)
-    cache.splatBuffer = device.createBuffer({
-      size: 64,
-      usage: GPUBufferUsage.VERTEX,
-    });
-    cache.splatCount = 0;
-    cache.initialized = true;
+    // Bind group identity changed — drop cached commands so they rebuild
+    // with the new bind group.
+    cache.command = null;
+    cache.pickCommand = null;
   }
 
   // Resolve the color + OIT + pick pipelines via the central cache.
@@ -903,9 +1216,16 @@ function updateWebGPUGaussianSplats(
     if (cache.splatBuffer) {
       cache.splatBuffer.destroy();
     }
+    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — splat attributes now live
+    // in a read-only STORAGE buffer the VS reads via sortedIndices. COPY_SRC
+    // for the velocity prev-seed self-copy.
     cache.splatBuffer = device.createBuffer({
+      label: "GaussianSplat splats",
       size: splatData.byteLength || 64,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      usage:
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.COPY_DST |
+        GPUBufferUsage.COPY_SRC,
     });
     if (splatData.byteLength > 0) {
       device.queue.writeBuffer(cache.splatBuffer, 0, splatData);
@@ -917,11 +1237,60 @@ function updateWebGPUGaussianSplats(
     // can promote it to `prevSplatData` AFTER its dispatch. Reference
     // to the same typed array — the loader owns the storage.
     cache.splatData = splatData;
+
+    // (Re)allocate the sorted-index storage buffer to match the count, and
+    // seed it with identity order (overwritten once the sort resolves). Force
+    // a re-sort + bind-group rebuild for the new buffers.
+    const count = cache.splatCount;
+    if (count > 0) {
+      if (cache.sortedIndexBuffer) {
+        cache.sortedIndexBuffer.destroy();
+      }
+      cache.sortedIndexBuffer = device.createBuffer({
+        label: "GaussianSplat sorted indices",
+        size: count * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      const identity = new Uint32Array(count);
+      for (let i = 0; i < count; i++) {
+        identity[i] = i;
+      }
+      device.queue.writeBuffer(cache.sortedIndexBuffer, 0, identity);
+      cache.sortIndices = identity;
+      cache.sortedIndexCount = count;
+      cache.lastSortCameraDir = null; // force a sort against the new data
+    }
+    // The splat + sorted-index storage buffers were reallocated, so the
+    // bind group must be rebuilt against the new buffers.
+    cache.bindGroup = null;
+    cache.pickCommand = null;
   }
 
   if (cache.splatCount === 0) {
     return;
   }
+
+  // (Re)build the bind group if a buffer reallocation above cleared it. (The
+  // earlier rebuild ran before the data upload; this catches the realloc.)
+  if (!cache.bindGroup) {
+    cache.bindGroup = device.createBindGroup({
+      layout: resources.bgl,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer! } },
+        { binding: 1, resource: { buffer: cache.splatBuffer! } },
+        { binding: 2, resource: { buffer: cache.sortedIndexBuffer! } },
+        { binding: 3, resource: { buffer: cache.prevSplatBuffer! } },
+      ],
+    });
+    cache.command = null;
+    cache.pickCommand = null;
+  }
+
+  // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — run a CPU back-to-front sort
+  // when the view has moved enough since the last sort, then upload the new
+  // permutation to the sorted-index storage buffer. Mirrors WebGL's radix
+  // sort feeding primitive._indexes — the WebGPU draw previously dropped it.
+  maybeSortSplats(device, primitive, frameState, cache);
 
   // Pack uniforms.
   //
@@ -954,11 +1323,42 @@ function updateWebGPUGaussianSplats(
   data[32] = scratchEncoded.high.x;
   data[33] = scratchEncoded.high.y;
   data[34] = scratchEncoded.high.z;
-  data[35] = 0;
   data[36] = scratchEncoded.low.x;
   data[37] = scratchEncoded.low.y;
   data[38] = scratchEncoded.low.z;
-  data[39] = 0;
+  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — renderer-
+  // wide log-depth lanes in the formerly-zero pad slots (float 35 = near,
+  // float 39 = oneOverLog2FarDepthFromNearPlusOne). Packed unconditionally;
+  // only the //>>ifdef LOG_DEPTH shader variant reads them.
+  //
+  // CRITICAL: prefer the stashed FULL-frustum `_logDepthEncodeNearFar` the
+  // globe baked with over the live per-slice `currentFrustum`. The splat
+  // command is pushed once and executed across all frustum slices, but its
+  // log-depth MUST use the same (near, factor) the globe encoded with or the
+  // splat's frag_depth disagrees with the globe at the same pixel and the
+  // splat loses every depth tie (occluded by terrain it sits above). Same
+  // pattern as WebGPUEllipsoidPrimitiveRenderer / WebGPUBillboardRenderer.
+  const lds = us as unknown as {
+    currentFrustum?: { x: number; y: number };
+    oneOverLog2FarDepthFromNearPlusOne?: number;
+    _logDepthEncodeNearFar?: Float32Array | null;
+  };
+  // The globe (WebGPUGlobeSurfaceCameraUB) encodes log depth with the LIVE
+  // per-pass `currentFrustum` near/far. The splat command is pushed once and
+  // executed in the GAUSSIAN_SPLATS (translucent) pass; to depth-test against
+  // the globe it MUST encode with the same `currentFrustum` the globe used.
+  // (Using the stashed full-frustum `_logDepthEncodeNearFar` — meant for
+  // depth-sample classifiers — over-deepens the splat vs the globe's per-pass
+  // encode and the splat loses every tie.)
+  const ldNear = lds.currentFrustum?.x ?? 0.0;
+  const ldFar = lds.currentFrustum?.y ?? 0.0;
+  let ldFactor = lds.oneOverLog2FarDepthFromNearPlusOne ?? 0.0;
+  if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const log2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+  }
+  data[35] = ldNear;
+  data[39] = ldFactor;
 
   // Viewport + focal length derived from the perspective projection matrix.
   // For a standard perspective: P[0][0] = 1/(aspect*tan(fov/2)),
@@ -1038,7 +1438,9 @@ function updateWebGPUGaussianSplats(
     const cmd = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: [cache.bindGroup, effectsBG],
-      vertexBuffers: [cache.quadVertexBuffer, cache.splatBuffer],
+      // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — only the quad VB; splats
+      // + sorted indices are read from group-0 storage buffers in the VS.
+      vertexBuffers: [cache.quadVertexBuffer],
       vertexCount: 6,
       instanceCount: cache.splatCount,
       pass: Pass.GAUSSIAN_SPLATS,
@@ -1098,7 +1500,8 @@ function updateWebGPUGaussianSplats(
       cache.pickCommand = new WebGPUDrawCommand({
         pipeline: cache.pickPipeline!,
         bindGroups: [cache.bindGroup, pickEffectsBG],
-        vertexBuffers: [cache.quadVertexBuffer, cache.splatBuffer],
+        // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — quad VB only.
+        vertexBuffers: [cache.quadVertexBuffer],
         vertexCount: 6,
         instanceCount: cache.splatCount,
         pass: Pass.GAUSSIAN_SPLATS,
@@ -1157,11 +1560,54 @@ function attachSplatVelocityCommand(
     if (cache.prevSplatBuffer) {
       cache.prevSplatBuffer.destroy();
     }
+    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — prev splats are now a
+    // read-only STORAGE buffer (group-0 binding 3) the velocity VS reads via
+    // sortedIndices[instance_index] (parallel to the current splat fetch). The
+    // bind group references it, so rebuild the bind group after realloc.
     cache.prevSplatBuffer = device.createBuffer({
       label: "GaussianSplat prev splats",
       size: requiredBytes,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    // Rebuild the bind group immediately against the new prev buffer so the
+    // velocity command built THIS frame (and the color command, which shares
+    // the bind group) reference a valid group-0 binding 3.
+    const res = (
+      cache as GaussianSplatCache & {
+        _pipelineResources?: SplatPipelineResources;
+      }
+    )._pipelineResources;
+    if (
+      res &&
+      cache.uniformBuffer &&
+      cache.splatBuffer &&
+      cache.sortedIndexBuffer
+    ) {
+      cache.bindGroup = device.createBindGroup({
+        layout: res.bgl,
+        entries: [
+          { binding: 0, resource: { buffer: cache.uniformBuffer } },
+          { binding: 1, resource: { buffer: cache.splatBuffer } },
+          { binding: 2, resource: { buffer: cache.sortedIndexBuffer } },
+          { binding: 3, resource: { buffer: cache.prevSplatBuffer } },
+        ],
+      });
+      // Color/pick commands captured the old bind group; refresh slot 0 while
+      // preserving the per-frame effects BG already in slot 1.
+      if (cache.command) {
+        const cmdBGs = (cache.command as { bindGroups?: GPUBindGroup[] })
+          .bindGroups;
+        const effSlot =
+          cmdBGs && cmdBGs[1]
+            ? cmdBGs[1]
+            : getPlaceholderEffects(device).bindGroup;
+        (cache.command as { bindGroups?: GPUBindGroup[] }).bindGroups = [
+          cache.bindGroup,
+          effSlot,
+        ];
+      }
+      cache.pickCommand = null;
+    }
   }
 
   const prevSrc = cache.prevSplatData;
@@ -1200,6 +1646,9 @@ function attachSplatVelocityCommand(
       vertex: {
         module: cache.shaderModule,
         entryPoint: "vertexVelocityMain",
+        // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — quad VB only. The
+        // velocity VS reads the current splat (binding 1) and prev splat
+        // (binding 3) from group-0 storage via sortedIndices[instance_index].
         buffers: [
           {
             arrayStride: 8,
@@ -1209,57 +1658,6 @@ function attachSplatVelocityCommand(
                 shaderLocation: 0,
                 offset: 0,
                 format: "float32x2" as GPUVertexFormat,
-              },
-            ],
-          },
-          {
-            // Curr instance buffer (same 64-byte stride as the color
-            // pipeline; velocity VS reads locations 1-5).
-            arrayStride: 64,
-            stepMode: "instance" as GPUVertexStepMode,
-            attributes: [
-              {
-                shaderLocation: 1,
-                offset: 0,
-                format: "float32x3" as GPUVertexFormat,
-              },
-              {
-                shaderLocation: 2,
-                offset: 12,
-                format: "float32x3" as GPUVertexFormat,
-              },
-              {
-                shaderLocation: 3,
-                offset: 24,
-                format: "float32x3" as GPUVertexFormat,
-              },
-              {
-                shaderLocation: 4,
-                offset: 36,
-                format: "float32x3" as GPUVertexFormat,
-              },
-              {
-                shaderLocation: 5,
-                offset: 48,
-                format: "float32x4" as GPUVertexFormat,
-              },
-            ],
-          },
-          {
-            // Prev splat buffer — same 64-byte stride; only positions
-            // (locations 6/7) are read by the velocity VS.
-            arrayStride: 64,
-            stepMode: "instance" as GPUVertexStepMode,
-            attributes: [
-              {
-                shaderLocation: 6,
-                offset: 0,
-                format: "float32x3" as GPUVertexFormat,
-              },
-              {
-                shaderLocation: 7,
-                offset: 12,
-                format: "float32x3" as GPUVertexFormat,
               },
             ],
           },
@@ -1343,11 +1741,9 @@ function attachSplatVelocityCommand(
       new WebGPUDrawCommand({
         pipeline: cache.velocityPipeline,
         bindGroups: [cache.bindGroup, velocityEffectsBG],
-        vertexBuffers: [
-          cache.quadVertexBuffer,
-          cache.splatBuffer,
-          cache.prevSplatBuffer,
-        ],
+        // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — quad VB only; curr +
+        // prev splats are read from group-0 storage bindings 1/3.
+        vertexBuffers: [cache.quadVertexBuffer],
         vertexCount: 6,
         instanceCount: cache.splatCount,
         pass: Pass.GAUSSIAN_SPLATS,
@@ -1372,6 +1768,9 @@ function destroyWebGPUGaussianSplatResources(
   cache.uniformBuffer?.destroy();
   cache.quadVertexBuffer?.destroy();
   cache.splatBuffer?.destroy();
+  // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — release the sorted-index
+  // storage buffer.
+  cache.sortedIndexBuffer?.destroy();
   // Batch 171 - release the velocity-path GPU buffer.
   cache.prevSplatBuffer?.destroy();
 
