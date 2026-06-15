@@ -63,7 +63,7 @@ Resumes the paused Batch-220 diagnosis. Depends on Phase 2 (depth-match half).
 
 ## Phase 8 — Performance sweep
 
-- Globe: **NEW-GLOBE-DYNAMIC-OFFSET-UBO**, **NEW-GLOBE-RENDERBUNDLE-CACHE** (getOrCreate or drop the inline bundle).
+- Globe: ✅ **NEW-GLOBE-DYNAMIC-OFFSET-UBO** (Batch 292 — group-0 camera/tile UB on a dynamic-offset BGL; the Batch-241 cache now keys on ring-page identity only, so group-0 bind-group creations during sustained panning dropped from ~15/120f to 0, cache capped at ~pageCount entries). ✅ **NEW-GLOBE-RENDERBUNDLE-CACHE** (Batch 292 — dropped the inline per-frame globe render bundle: it was ~0.3-0.4 ms/frame net-NEGATIVE with worse p90, and can't be cached because per-tile dynamic UB offsets are baked into the recorded commands and rotate each frame; `executeGlobeDispatch` now goes straight to `executeBatch`).
 - **FORK-41** dormant compute activation (HiZ + OcclusionTest — "5-20× on dense 3D Tiles" left on the floor), **NEW-POINTCLOUDLOD-SLOT255-OFFBYONE** (real correctness bug at full workgroups).
 - Cache hygiene: **NEW-BINDGROUPCACHE-EVICTION**, **NEW-RENDERBUNDLE-AGING-DECOUPLE**, **NEW-RESOURCEMANAGER-KEY-EVICTION**; clustered: **NEW-CLUSTERED-ASSIGN-BOUNDS-DIRTY**, **NEW-CLUSTER-MULTIFRUSTUM-BOUNDS**; **NEW-MODEL-VS-MOTION-GATE**, **NEW-CAMERA-JITTER-ACCUMULATION**, **NEW-DECOUPLEDSCAN-FORWARD-PROGRESS-GUARD**.
 - Gate: CesiumDebug.gpuPassCost/cpuPassCost before/after numbers per item.

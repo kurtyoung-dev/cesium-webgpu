@@ -25,11 +25,6 @@
  * @module WebGPUSceneRendererGlobePass
  */
 
-import type { WebGPUContext } from "./WebGPUContext.js";
-import {
-  isSceneFBMrtMode,
-  MRT_NORMAL_ROUGHNESS_FORMAT,
-} from "./WebGPUSceneFBTargetHelpers.js";
 import {
   executeBatch,
   executeBatchTranslucent,
@@ -52,13 +47,33 @@ import {
  *      (translucency uses per-command blend/cull/depth state from
  *      `_webgpuTranslucencyDerived` — opaque optimisations don't
  *      apply).
- *   2. For opaque terrain, attempts a `GPURenderBundle` when the
- *      command count meets the perfManager threshold (default 8).
- *      Bundles reduce driver overhead at the cost of a one-time
- *      build; falls back to unbundled execution if either bundle
- *      recording or `executeBundles` throws.
- *   3. Falls through to `executeBatch` for the standard per-command
+ *   2. Falls through to `executeBatch` for the standard per-command
  *      dispatch.
+ *
+ * NEW-GLOBE-RENDERBUNDLE-CACHE (Batch 292) — the inline per-frame
+ * `GPURenderBundle` that used to wrap the opaque-terrain dispatch was
+ * REMOVED. Render bundles only pay off when cached and replayed across
+ * many frames; this one was rebuilt from scratch every frame (create
+ * encoder → record every tile command → `finish()` → `executeBundles`),
+ * so it paid the full bundle-construction cost with zero amortization.
+ * Measured cost (probe-globe-bundle-cost.mjs, 55-tile low view): the
+ * bundle path ran ~0.3-0.4 ms SLOWER at the median than direct
+ * `executeBatch`, with a markedly worse p90 (build-cost spikes).
+ *
+ * It also can't be safely cached: each globe command records
+ * `setBindGroup(0, bg0, [cameraOffset, tileOffset])` with the
+ * per-tile ring-allocator byte offsets BAKED IN at record time. Those
+ * offsets rotate every frame (the per-frame ring allocator cycles
+ * pages by design — NEW-GLOBE-DYNAMIC-OFFSET-UBO made the bind-GROUP
+ * object stable across motion, but the dynamic-OFFSET values still
+ * change frame-to-frame), so a cached bundle would replay stale offsets
+ * and bind the wrong UB slices. A signature-keyed cache that included
+ * the offsets would miss every frame — no better than rebuilding.
+ *
+ * The path therefore drops straight through to `executeBatch`. Do not
+ * re-add an inline bundle here without first making the per-tile UBs
+ * frame-stable (i.e. not ring-allocated) — see the cost probe before
+ * assuming a bundle helps.
  */
 export function executeGlobeDispatch(
   commands: CesiumAnyDrawCommand[],
@@ -83,63 +98,11 @@ export function executeGlobeDispatch(
     return;
   }
 
-  // Try render bundles for opaque terrain (reduces driver overhead)
-  const perfMgr = context.performanceManager;
-  const renderPass = context.currentRenderPassEncoder;
-  if (
-    perfMgr &&
-    renderPass &&
-    count >= (perfMgr.config?.renderBundleThreshold ?? 8)
-  ) {
-    try {
-      // Batch 110 — globe terrain pipelines target the scene FB, so
-      // the bundle's `colorFormats` must mirror the scene FB color
-      // format (rgba16float in HDR, canvas format otherwise). Using
-      // `presentationFormat` here would mismatch in HDR mode and the
-      // bundle would be flagged invalid.
-      //
-      // Slice 5c-B Batch 117 — when MRT mode is on, the bundle also
-      // needs slot 1 (rgba16float G-buffer normal-roughness) to match
-      // the 2-attachment scene-FB render pass that contains the
-      // bundle's globe pipelines.
-      const colorFormats: GPUTextureFormat[] = isSceneFBMrtMode()
-        ? [context.scenePipelineFormat, MRT_NORMAL_ROUGHNESS_FORMAT]
-        : [context.scenePipelineFormat];
-      const bundleEncoder = (
-        context._device as GPUDevice
-      ).createRenderBundleEncoder({
-        label: "Globe terrain bundle",
-        colorFormats,
-        depthStencilFormat: context.depthFormat ?? "depth24plus-stencil8",
-        // Session 65 Batch 36 — match scene FB sample count so the
-        // bundle's recorded pipelines (which now bake their own
-        // multisample state via the Batch 32 globe surface
-        // PipelineHost._sampleCount wiring) validate against the
-        // encoder's attachment state.
-        sampleCount:
-          (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1,
-      });
-
-      let drawCalls = 0;
-      for (let i = 0; i < count; i++) {
-        const cmd = commands[i];
-        if (cmd && cmd.execute) {
-          // Ad-hoc globe commands and WebGPUDrawCommands both accept
-          // a GPURenderBundleEncoder (same API as GPURenderPassEncoder)
-          cmd.execute(bundleEncoder, context as WebGPUContext);
-          drawCalls++;
-        }
-      }
-
-      if (drawCalls > 0) {
-        const bundle = bundleEncoder.finish();
-        renderPass.executeBundles([bundle]);
-        return;
-      }
-    } catch (_e) {
-      // Fall through to unbundled execution if bundle recording fails
-    }
-  }
-
+  // Opaque terrain: direct per-command dispatch. The previous inline
+  // per-frame render bundle was removed (NEW-GLOBE-RENDERBUNDLE-CACHE,
+  // Batch 292) — it was net-negative because it rebuilt the bundle every
+  // frame and could not be cached (per-tile dynamic UB offsets are baked
+  // into the recorded commands and rotate each frame). See the
+  // file-level docstring for the cost measurement + rationale.
   executeBatch(commands, count, scene, context, passState);
 }

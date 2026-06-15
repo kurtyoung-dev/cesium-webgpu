@@ -94,6 +94,16 @@ export interface GlobeBindGroupCacheStats {
   hitRate: number;
   /** Frame number of the most recent beginFrame tick. */
   frameNumber: number;
+  /**
+   * Per-group lifetime creation counts, indexed by the leading key
+   * token (`"0"` camera+tile UB, `"1"` imagery views, `"2"` water/
+   * ocean/material). Debug builds only — empty in production.
+   * NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) uses `byGroup["0"]` to
+   * prove group-0 creations stay flat under sustained camera motion.
+   */
+  byGroup: Record<string, number>;
+  /** Per-group creations during the last completed frame (debug only). */
+  lastFrameByGroup: Record<string, number>;
 }
 
 // Entries unused for this many frames get evicted. ~10s at 60fps —
@@ -123,6 +133,13 @@ export class WebGPUGlobeBindGroupCache {
   private _hitsThisFrame = 0;
   private _lastFrameCreates = 0;
   private _lastFrameHits = 0;
+  // Per-group creation counters, keyed by the leading key token. Lets
+  // the regression probe isolate group-0 (camera+tile UB) churn from
+  // group-1 (imagery) churn — the dynamic-offset conversion only
+  // targets group 0. Debug-pragma'd: never written in production.
+  private _createsByGroup: Record<string, number> = {};
+  private _createsByGroupThisFrame: Record<string, number> = {};
+  private _lastFrameCreatesByGroup: Record<string, number> = {};
 
   /**
    * Stable >0 identity for a GPU resource object; 0 for null/undefined.
@@ -154,6 +171,8 @@ export class WebGPUGlobeBindGroupCache {
     this._lastFrameHits = this._hitsThisFrame;
     this._createsThisFrame = 0;
     this._hitsThisFrame = 0;
+    this._lastFrameCreatesByGroup = this._createsByGroupThisFrame;
+    this._createsByGroupThisFrame = {};
     //>>includeEnd('debug');
 
     if (Math.abs(frameNumber - this._lastScanFrame) >= SCAN_EVERY_FRAMES) {
@@ -186,6 +205,12 @@ export class WebGPUGlobeBindGroupCache {
     //>>includeStart('debug', pragmas.debug);
     this._bindGroupCreates++;
     this._createsThisFrame++;
+    // Leading token before the first `|` identifies the group (0/1/2).
+    const sep = key.indexOf("|");
+    const group = sep === -1 ? key : key.slice(0, sep);
+    this._createsByGroup[group] = (this._createsByGroup[group] ?? 0) + 1;
+    this._createsByGroupThisFrame[group] =
+      (this._createsByGroupThisFrame[group] ?? 0) + 1;
     //>>includeEnd('debug');
     return bindGroup;
   }
@@ -204,6 +229,8 @@ export class WebGPUGlobeBindGroupCache {
       lastFrameHits: this._lastFrameHits,
       hitRate: total > 0 ? this._bindGroupHits / total : 0,
       frameNumber: this._frameNumber,
+      byGroup: { ...this._createsByGroup },
+      lastFrameByGroup: { ...this._lastFrameCreatesByGroup },
     };
   }
 

@@ -81,13 +81,33 @@ export interface LayoutsHost {
 export function createBindGroupLayouts(host: LayoutsHost): void {
   const device = host._device!;
 
-  // Group 0: Camera + Tile uniform buffers
+  // Group 0: Camera + Tile uniform buffers.
+  //
+  // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — both bindings use
+  // dynamic offsets. The bind group is built ONCE over the ring
+  // allocator's page buffer (offset 0, size = struct width) and keyed
+  // only on the (camera page, tile page) buffer identities — never on
+  // the per-allocation byte offset. The actual slice offset is supplied
+  // per-draw via `setBindGroup(0, bg0, [camOffset, tileOffset])`.
+  //
+  // Why this matters: the camera/tile UBs are sub-allocated from the
+  // per-frame ring allocator, so their byte offset within a page shifts
+  // whenever the per-frame allocation sequence changes (tile streaming
+  // in/out during camera motion). Keying the cache on that offset meant
+  // a fresh `createBindGroup` for every tile after the shift point.
+  // With dynamic offsets the bind group survives motion: the cache
+  // converges to ~pageCount group-0 entries (one per ring page) and
+  // stays at ~100% hit-rate while panning.
+  //
+  // `minBindingSize: 0` keeps the layout shape-agnostic; the camera
+  // struct (CAMERA_UNIFORM_BYTES) and the tile struct have different
+  // widths and the binding view supplies the exact size at build time.
   host._bindGroupLayout0 = makeBindGroupLayout(
     device,
-    "Globe terrain uniforms layout",
+    "Globe terrain uniforms layout (dynamic offset)",
     [
-      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-      uniformBuffer(1, Stage.VERTEX_FRAGMENT),
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT, { hasDynamicOffset: true }),
+      uniformBuffer(1, Stage.VERTEX_FRAGMENT, { hasDynamicOffset: true }),
     ],
   );
 

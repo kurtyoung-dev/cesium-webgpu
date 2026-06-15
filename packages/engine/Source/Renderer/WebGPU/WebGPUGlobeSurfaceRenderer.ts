@@ -943,7 +943,9 @@ export class WebGPUGlobeSurfaceRenderer {
         isSubsequentPass,
       );
 
-      const bindGroup0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
+      const bg0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
+      const bindGroup0 = bg0.bindGroup;
+      const bindGroup0DynamicOffsets = bg0.dynamicOffsets;
 
       const bindGroup1 = this._createTextureBindGroup(device, passLayers);
       // Group 2: Merged water mask + ocean normal map
@@ -1196,6 +1198,7 @@ export class WebGPUGlobeSurfaceRenderer {
           commands.push({
             pipeline: depthOnlyPipeline,
             bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+            bindGroup0DynamicOffsets,
             vertexBuffer: gpuResources.vertexBuffer,
             indexBuffer: drawIndexBuffer,
             indexCount: drawIndexCount,
@@ -1238,6 +1241,7 @@ export class WebGPUGlobeSurfaceRenderer {
           commands.push({
             pipeline: translucentBackPipeline,
             bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+            bindGroup0DynamicOffsets,
             vertexBuffer: gpuResources.vertexBuffer,
             indexBuffer: drawIndexBuffer,
             indexCount: drawIndexCount,
@@ -1282,6 +1286,7 @@ export class WebGPUGlobeSurfaceRenderer {
       commands.push({
         pipeline,
         bindGroups: [bindGroup0, bindGroup1, bindGroup2Final, bindGroup3],
+        bindGroup0DynamicOffsets,
         vertexBuffer: gpuResources.vertexBuffer,
         indexBuffer: drawIndexBuffer,
         indexCount: drawIndexCount,
@@ -1338,6 +1343,7 @@ export class WebGPUGlobeSurfaceRenderer {
     return {
       pipeline: cmd.pipeline,
       bindGroups: cmd.bindGroups,
+      bindGroup0DynamicOffsets: cmd.bindGroup0DynamicOffsets,
       vertexBuffer: cmd.vertexBuffer,
       indexBuffer: cmd.indexBuffer,
       indexCount: cmd.indexCount,
@@ -1365,10 +1371,18 @@ export class WebGPUGlobeSurfaceRenderer {
     device: GPUDevice,
     cameraUB: { buffer: GPUBuffer; offset: number; size: number },
     tileUB: { buffer: GPUBuffer; offset: number; size: number },
-  ): GPUBindGroup {
+  ): { bindGroup: GPUBindGroup; dynamicOffsets: number[] } {
     const cache = this._bindGroupCache;
-    const key = `0|${cache.idOf(cameraUB.buffer)}:${cameraUB.offset}|${cache.idOf(tileUB.buffer)}:${tileUB.offset}`;
-    return cache.getOrCreate(key, () =>
+    // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — the bind group is built
+    // over the ring page at offset 0 (size = struct width). Its key is
+    // ONLY the (camera page, tile page) buffer identities — the
+    // per-allocation byte offset is supplied per-draw as a dynamic
+    // offset instead. Under camera motion the page identities cycle
+    // through the ring's pageCount and recur every pageCount frames, so
+    // the cache converges to ~pageCount group-0 entries and stays at
+    // ~100% hit-rate even while the byte offsets shift each frame.
+    const key = `0|${cache.idOf(cameraUB.buffer)}|${cache.idOf(tileUB.buffer)}`;
+    const bindGroup = cache.getOrCreate(key, () =>
       device.createBindGroup({
         layout: this._bindGroupLayout0!,
         entries: [
@@ -1376,7 +1390,7 @@ export class WebGPUGlobeSurfaceRenderer {
             binding: 0,
             resource: {
               buffer: cameraUB.buffer,
-              offset: cameraUB.offset,
+              offset: 0,
               size: cameraUB.size,
             },
           },
@@ -1384,13 +1398,18 @@ export class WebGPUGlobeSurfaceRenderer {
             binding: 1,
             resource: {
               buffer: tileUB.buffer,
-              offset: tileUB.offset,
+              offset: 0,
               size: tileUB.size,
             },
           },
         ],
       }),
     );
+    // Dynamic offsets must be multiples of minUniformBufferOffsetAlignment
+    // (256). The ring allocator aligns every allocation to 256, and the
+    // first-frame fallback path returns offset 0 — both satisfy the
+    // constraint. The array order matches the binding order (0, 1).
+    return { bindGroup, dynamicOffsets: [cameraUB.offset, tileUB.offset] };
   }
 
   private _createTextureBindGroup(
@@ -1762,7 +1781,7 @@ export class WebGPUGlobeSurfaceRenderer {
       false,
     );
 
-    const bindGroup0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
+    const bg0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
 
     // Use placeholder textures for wireframe — imagery not needed
     const bindGroup1 = this._createTextureBindGroup(device, []);
@@ -1776,11 +1795,12 @@ export class WebGPUGlobeSurfaceRenderer {
       {
         pipeline,
         bindGroups: [
-          bindGroup0,
+          bg0.bindGroup,
           bindGroup1,
           bindGroup2,
           this._placeholderEffectsBG!,
         ],
+        bindGroup0DynamicOffsets: bg0.dynamicOffsets,
         vertexBuffer: gpuResources.vertexBuffer,
         indexBuffer: wireIB.buffer,
         indexCount: wireIB.count,

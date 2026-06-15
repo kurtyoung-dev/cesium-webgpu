@@ -24,6 +24,66 @@
 
 ---
 
+## Batch 292 — Globe group-0 dynamic-offset UBO + inline render-bundle drop (2026-06-15)
+
+**Context (Phase 8 perf sweep, not a bug).** Two globe-pass perf items:
+NEW-GLOBE-DYNAMIC-OFFSET-UBO and NEW-GLOBE-RENDERBUNDLE-CACHE.
+
+**NEW-GLOBE-DYNAMIC-OFFSET-UBO.** The Batch-241 globe bind-group cache keyed
+group 0 (camera UB + tile UB) on `(buffer identity, byte offset)` of the
+ring-allocator slice. Under sustained camera motion the per-frame allocation
+sequence shifts (tiles stream in/out → every later tile's offset moves), so
+group-0 keys missed and a fresh `createBindGroup` happened for each tile after
+the shift point. **Fix:** convert group-0's BGL to `hasDynamicOffset: true` on
+both bindings; build the bind group ONCE over the ring page at offset 0
+(size = struct width), key only on the `(camera page, tile page)` identities,
+and supply the actual slice offset per-draw via
+`setBindGroup(0, bg0, [cameraOffset, tileOffset])`. The page identities cycle
+through the ring's `pageCount` and recur every `pageCount` frames → the cache
+converges to ~`pageCount` group-0 entries and stays ~100% hit under panning.
+The `_pipelineLayout` is unchanged (dynamic-offset is a BGL-entry property,
+transparent to pipelines). Offsets thread through
+`TileDrawDescriptor.bindGroup0DynamicOffsets` → the scene-adapter command's
+`_bindGroup0DynamicOffsets` → the `execute` closure (covers opaque, translucent,
+depth-only pre-pass, wireframe). **Measured** (`probe-globe-bindgroup-cache.mjs`
+new Phase E, 120 panning frames at a 250 km SF view): group-0 creations
+15 → 0 (max 3/frame → 0; churn in 9 frames → 0); group-0 lifetime entries
+63 → 3 (= pageCount). Non-vacuity guard: group-1 imagery churn 23-27 over the
+same window proves tiles actually streamed.
+
+**NEW-GLOBE-RENDERBUNDLE-CACHE (dropped-as-net-negative).** `executeGlobeDispatch`
+built+discarded a `GPURenderBundle` every frame. Render bundles only amortize
+when cached+replayed; this one was rebuilt from scratch each frame. It also
+can't be cached: each command records `setBindGroup(0, bg0, [camOff, tileOff])`
+with the per-tile dynamic offsets BAKED IN at record time, and those offsets
+rotate every frame (ring allocator cycles pages) → a cached bundle replays
+stale offsets. **Measured** (`probe-globe-bundle-cost.mjs`, 55-tile low view,
+toggling `renderBundleThreshold`): bundle path ~0.3-0.4 ms SLOWER at the median
++ worse p90 (~7.0 ms vs ~4.6 ms build-cost spikes). **Decision: removed the
+inline bundle** — opaque terrain now dispatches straight through `executeBatch`;
+p90 dropped to the no-bundle regime. Removed now-unused imports
+(`isSceneFBMrtMode`, `MRT_NORMAL_ROUGHNESS_FORMAT`, `WebGPUContext` type).
+
+**Files modified.**
+`WebGPUGlobeSurfaceLayouts.ts` (group-0 BGL → dynamic offset),
+`WebGPUGlobeSurfaceRenderer.ts` (`_getOrCreateBindGroup0` returns
+`{bindGroup, dynamicOffsets}`; 5 descriptor push sites carry
+`bindGroup0DynamicOffsets`),
+`WebGPUGlobeSurfaceTypes.ts` (`TileDrawDescriptor.bindGroup0DynamicOffsets`),
+`WebGPUGlobeBindGroupCache.ts` (per-group `byGroup`/`lastFrameByGroup` stats),
+`GlobeSurfaceTileProviderRendering.js` (command `_bindGroup0DynamicOffsets` +
+`execute` passes offsets to group 0),
+`WebGPUSceneRendererGlobePass.ts` (inline bundle removed),
+`Tools/visual-regression/probe-globe-bindgroup-cache.mjs` (Phase E sustained-pan).
+
+**Verification.** probe-globe-bindgroup-cache (A-E all PASS), collections-regression,
+collections-far-camera, collections-2dcv-morph, bloom-parity, orbital-catalog,
+pickposition-webgpu, sandcastle-smoke (3 demos) all PASS. 0 validation errors.
+(Pre-existing, unrelated: probe-buffer-logdepth-zfight FAILs on HEAD too — buffer
+points `cyan=0`, confirmed independent of this change via a stash-and-rebuild.)
+
+---
+
 ## Batch 291 — FORK-41: Hi-Z occlusion depth-space reconciled; 3 OcclusionTest bugs fixed; command-drop gated off pending residual (2026-06-15)
 
 **Symptom.** The Hi-Z occlusion path (`WebGPUHiZOcclusionDispatcher` driven by

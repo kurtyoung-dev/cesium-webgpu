@@ -141,6 +141,9 @@ const out = await page.evaluate(async () => {
   const steadyB = await measure(30);
 
   // ── Phase C: visual — globe present with imagery diversity ──
+  // Captured here (before the Phase E sustained-pan flight) so the
+  // readback lands on the settled Phase-B view rather than a mid-flight
+  // low view.
   // Readback inside postRender (WebGPU canvas clears on present).
   const img = await new Promise((resolve) => {
     const remove = scene.postRender.addEventListener(() => {
@@ -173,12 +176,60 @@ const out = await page.evaluate(async () => {
     }
   }
 
+  // ── Phase E: SUSTAINED PANNING (NEW-GLOBE-DYNAMIC-OFFSET-UBO,
+  //    Batch 292) — fly low and translate over the surface every frame
+  //    so tiles stream in/out and the ring allocator hands out new byte
+  //    offsets each frame. BEFORE the dynamic-offset conversion, group-0
+  //    (camera+tile UB) bind groups were keyed on (buffer, OFFSET) and
+  //    churned under this motion (~0.1-0.5/frame, spiking to 3+/frame).
+  //    AFTER, group 0 is built once over the ring page and keyed on the
+  //    page identity only, so group-0 creations during sustained motion
+  //    stay ~0. Tracked via the per-group stats breakdown so legitimate
+  //    group-1 (imagery view) churn from new tiles can't mask a group-0
+  //    regression. Runs LAST so it doesn't disturb the Phase C visual.
+  v.camera.setView({
+    destination: C.Cartesian3.fromDegrees(-122.4, 37.6, 250000.0),
+  });
+  await renderUntilSettled(600, 20);
+  const panG0Before = stats();
+  const PAN_FRAMES = 120;
+  let maxGroup0PerFrame = 0;
+  let panFramesWithGroup0 = 0;
+  for (let i = 0; i < PAN_FRAMES; i++) {
+    // Bounded back-and-forth so the camera stays over loaded terrain and
+    // keeps streaming tiles (the offset-churn driver) rather than flying
+    // off into space.
+    const dir = i % 2 === 0 ? 1 : -1;
+    v.camera.moveRight(6000.0 * dir);
+    v.camera.twistRight(0.01);
+    await oncePostRender();
+    const s = stats();
+    const g0f = s.lastFrameByGroup ? (s.lastFrameByGroup["0"] ?? 0) : 0;
+    if (g0f > maxGroup0PerFrame) maxGroup0PerFrame = g0f;
+    if (g0f > 0) panFramesWithGroup0++;
+  }
+  const panG0After = stats();
+  const sustainedPanGroup0Creates =
+    (panG0After.byGroup?.["0"] ?? 0) - (panG0Before.byGroup?.["0"] ?? 0);
+  const sustainedPanGroup0PerFrame = sustainedPanGroup0Creates / PAN_FRAMES;
+  // Group-1 (imagery) churn during the same window proves the motion
+  // actually streamed tiles — otherwise the group-0 == 0 result would be
+  // vacuous (a static scene trivially creates nothing).
+  const sustainedPanGroup1Creates =
+    (panG0After.byGroup?.["1"] ?? 0) - (panG0Before.byGroup?.["1"] ?? 0);
+
   return {
     settledA: settleA.settled,
     settledB: settleB.settled,
     steadyA,
     steadyB,
     panCreates,
+    sustainedPanGroup0Creates,
+    sustainedPanGroup0PerFrame,
+    sustainedPanGroup1Creates,
+    maxGroup0PerFrame,
+    panFramesWithGroup0,
+    panFrames: PAN_FRAMES,
     cacheEntries: stats().entries,
     lifetime: stats(),
     nonBlackPct: nonBlack / (img.w * img.h),
@@ -213,6 +264,19 @@ const bOK =
 const cOK = out.nonBlackPct > 0.08 && out.colorBuckets > 100;
 // (D) zero console errors (incl. WebGPU validation errors).
 const dOK = errors.length === 0;
+// (E) NEW-GLOBE-DYNAMIC-OFFSET-UBO — group-0 (camera+tile UB) bind-group
+//     creations during SUSTAINED panning must stay ~0. Pre-conversion
+//     this churned (~0.1-0.5/frame, spiking to 3+ in frames where tiles
+//     stream and the ring offsets shift). Post-conversion the group-0
+//     bind group is built once per ring page and survives motion, so the
+//     creation total over 120 panning frames is capped at ~pageCount
+//     (3). Threshold 8 leaves slack for the one-time per-page warmup if
+//     it lands inside the measured window, but the real value is ≤3.
+//     `sustainedPanGroup1Creates > 0` guards against a vacuous pass —
+//     it proves the motion actually streamed new tiles (the offset-churn
+//     driver). A static scene would trivially report 0 group-0 creates.
+const eOK =
+  out.sustainedPanGroup0Creates <= 8 && out.sustainedPanGroup1Creates > 0;
 
 console.log(
   `(A) steady-state @fixed camera: creates/frame=${out.steadyA.createsPerFrame.toFixed(3)} ` +
@@ -228,12 +292,19 @@ console.log(
   `(C) visual: nonBlack=${(out.nonBlackPct * 100).toFixed(1)}% (>8%), colorBuckets=${out.colorBuckets} (>100) ${cOK ? "OK" : "FAIL"}`,
 );
 console.log(`(D) console errors: ${errors.length} ${dOK ? "OK" : "FAIL"}`);
+console.log(
+  `(E) sustained-pan group-0 creates: ${out.sustainedPanGroup0Creates} over ${out.panFrames}f ` +
+    `(${out.sustainedPanGroup0PerFrame.toFixed(3)}/frame, max ${out.maxGroup0PerFrame}/frame, ` +
+    `${out.panFramesWithGroup0} frames w/ churn; threshold <=8), ` +
+    `group-1 churn=${out.sustainedPanGroup1Creates} (>0 proves tiles streamed) ${eOK ? "OK" : "FAIL"}`,
+);
 errors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 250)));
 console.log(
   `    cache: entries=${out.cacheEntries}, lifetime creates=${out.lifetime.creates}, ` +
-    `hits=${out.lifetime.hits}, hitRate=${(out.lifetime.hitRate * 100).toFixed(1)}%`,
+    `hits=${out.lifetime.hits}, hitRate=${(out.lifetime.hitRate * 100).toFixed(1)}%, ` +
+    `group0 lifetime=${out.lifetime.byGroup?.["0"] ?? "?"}`,
 );
 
-const pass = aOK && bOK && cOK && dOK;
+const pass = aOK && bOK && cOK && dOK && eOK;
 console.log(pass ? "PASS" : "FAIL");
 process.exit(pass ? 0 : 1);

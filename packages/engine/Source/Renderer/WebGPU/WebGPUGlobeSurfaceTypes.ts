@@ -385,6 +385,17 @@ export interface ImageryGPUTexture {
 export interface TileDrawDescriptor {
   pipeline: GPURenderPipeline;
   bindGroups: GPUBindGroup[];
+  // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — dynamic byte offsets for
+  // group 0's two uniform-buffer bindings (camera UB, tile UB). The
+  // group-0 bind group is built over the ring page at offset 0 and
+  // these two values shift it to this draw's actual slice at
+  // `setBindGroup(0, bg0, bindGroup0DynamicOffsets)` time. Always a
+  // 2-element array `[cameraOffset, tileOffset]` when group 0 uses the
+  // dynamic-offset layout (the standard path); omitted only for the
+  // legacy/wireframe descriptors that don't route through group 0
+  // dynamically. The scene-adapter execute closure passes it straight
+  // through to `renderPass.setBindGroup`.
+  bindGroup0DynamicOffsets?: number[];
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
   indexCount: number;

@@ -994,6 +994,13 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
           : undefined,
       _pipeline: cmdDesc.pipeline,
       _bindGroups: cmdDesc.bindGroups,
+      // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — group-0 (camera UB +
+      // tile UB) uses a dynamic-offset bind-group layout. The bind group
+      // is built once over the ring page; this 2-element array shifts it
+      // to this command's actual UB slice at draw time. Undefined only
+      // for descriptors that predate the dynamic-offset path (none
+      // currently emit group 0 without it).
+      _bindGroup0DynamicOffsets: cmdDesc.bindGroup0DynamicOffsets,
       _vertexBuffer: cmdDesc.vertexBuffer,
       _indexBuffer: cmdDesc.indexBuffer,
       _indexCount: cmdDesc.indexCount,
@@ -1039,7 +1046,18 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       execute: function (renderPass) {
         renderPass.setPipeline(this._pipeline);
         for (let i = 0; i < this._bindGroups.length; i++) {
-          renderPass.setBindGroup(i, this._bindGroups[i]);
+          // Group 0 carries dynamic offsets (camera + tile UB slices in
+          // the ring page); pass them so the bind group built once over
+          // the page resolves to this command's actual UB region.
+          if (i === 0 && this._bindGroup0DynamicOffsets !== undefined) {
+            renderPass.setBindGroup(
+              0,
+              this._bindGroups[0],
+              this._bindGroup0DynamicOffsets,
+            );
+          } else {
+            renderPass.setBindGroup(i, this._bindGroups[i]);
+          }
         }
         renderPass.setVertexBuffer(0, this._vertexBuffer);
         renderPass.setIndexBuffer(this._indexBuffer, this._indexFormat);
