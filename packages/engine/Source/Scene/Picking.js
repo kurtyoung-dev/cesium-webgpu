@@ -893,6 +893,25 @@ class Picking {
       );
     }
     //>>includeEnd('debug');
+
+    // NEW-PICK-RAY-ASYNC (Phase 6) — on asynchronous-readback backends
+    // (WebGPU) the offscreen ray-render depth path cannot recover a position
+    // (the offscreen pick view's PickDepth instances never receive the packed
+    // globe-depth texture, and that texture is LOG-encoded against the MAIN
+    // camera frustum, not the offscreen one). Instead reuse the main scene's
+    // already-rendered depth via the Batch-252 pickPosition reconstruction:
+    // project the cartographic position into the live view, sample the surface
+    // under that pixel, and return its height. Same one-frame-stale sync-cache
+    // contract as pickPosition (cold query → undefined + arms readback →
+    // converges in 1-2 frames).
+    if (!scene.context.supportsSynchronousReadback) {
+      const surface = this._reconstructHeightSurfaceWebGPU(scene, position);
+      if (defined(surface)) {
+        return getHeightFromCartesian(scene, surface);
+      }
+      return undefined;
+    }
+
     const ray = getRayForSampleHeight(scene, position);
     const pickResult = pickFromRay(
       this,
@@ -920,6 +939,18 @@ class Picking {
       );
     }
     //>>includeEnd('debug');
+
+    // NEW-PICK-RAY-ASYNC (Phase 6) — see sampleHeight above. Same main-scene
+    // depth reuse; clampToHeight returns the reconstructed surface Cartesian3
+    // directly instead of just its height.
+    if (!scene.context.supportsSynchronousReadback) {
+      const surface = this._reconstructHeightSurfaceWebGPU(scene, cartesian);
+      if (defined(surface)) {
+        return Cartesian3.clone(surface, result);
+      }
+      return undefined;
+    }
+
     const ray = getRayForClampToHeight(scene, cartesian);
     const pickResult = pickFromRay(
       this,
@@ -933,6 +964,77 @@ class Picking {
     if (defined(pickResult)) {
       return Cartesian3.clone(pickResult.position, result);
     }
+  }
+
+  /**
+   * NEW-PICK-RAY-ASYNC (Phase 6) — WebGPU implementation of the
+   * sampleHeight / clampToHeight surface lookup. Reuses the main scene's
+   * already-rendered depth (the same packed log-depth texture pickPosition
+   * reads since Batch 252) rather than an offscreen ray render, which the
+   * async-readback backend cannot support.
+   *
+   * Given a target world/cartographic position, project it into the live
+   * camera view and reconstruct the rendered surface (globe/tileset) under
+   * that pixel via {@link Picking#pickPositionWorldCoordinates}. The returned
+   * surface lies on the camera ray through the projected pixel — for a
+   * position currently visible in the view this is the globe/tileset height
+   * at (approximately) that location. Inherits pickPosition's one-frame-stale
+   * sync cache: the first query at a new screen location returns
+   * <code>undefined</code> (and arms the async readback) and converges within
+   * 1-2 rendered frames.
+   *
+   * Returns <code>undefined</code> when the target is off-screen / behind the
+   * camera, or while the depth readback is still cold.
+   *
+   * @param {Scene} scene
+   * @param {Cartographic|Cartesian3} target Cartographic (sampleHeight) or
+   *   Cartesian3 (clampToHeight) position to look up the surface beneath.
+   * @returns {Cartesian3|undefined} The reconstructed surface position, or
+   *   undefined.
+   * @private
+   */
+  _reconstructHeightSurfaceWebGPU(scene, target) {
+    // Normalize to a world-space Cartesian3 anchor on the ellipsoid surface.
+    const ellipsoid = scene.ellipsoid;
+    let anchor;
+    if (target instanceof Cartographic) {
+      // sampleHeight passes a Cartographic; ignore its (often unknown) height
+      // and anchor on the ellipsoid surface so the projection is stable.
+      const carto = Cartographic.clone(
+        target,
+        scratchReconstructHeightCartographic,
+      );
+      carto.height = 0.0;
+      anchor = Cartographic.toCartesian(
+        carto,
+        ellipsoid,
+        scratchReconstructHeightAnchor,
+      );
+    } else {
+      anchor = Cartesian3.clone(target, scratchReconstructHeightAnchor);
+    }
+
+    const windowPosition = SceneTransforms.worldToWindowCoordinates(
+      scene,
+      anchor,
+      scratchReconstructHeightWindow,
+    );
+    if (!defined(windowPosition)) {
+      // Behind the camera / near the ellipsoid center — no on-screen pixel.
+      return undefined;
+    }
+    // Reject positions outside the canvas: pickPosition would read an
+    // unrelated edge pixel and return a misleading surface.
+    if (
+      windowPosition.x < 0 ||
+      windowPosition.y < 0 ||
+      windowPosition.x > scene.canvas.clientWidth ||
+      windowPosition.y > scene.canvas.clientHeight
+    ) {
+      return undefined;
+    }
+
+    return this.pickPositionWorldCoordinates(scene, windowPosition);
   }
 
   sampleHeightMostDetailed(scene, positions, objectsToExclude, width) {
@@ -1315,6 +1417,11 @@ const scratchPerspectiveOffCenterFrustum = new PerspectiveOffCenterFrustum();
 const scratchOrthographicFrustum = new OrthographicFrustum();
 const scratchOrthographicOffCenterFrustum = new OrthographicOffCenterFrustum();
 const scratchPickPositionCartographic = new Cartographic();
+
+// NEW-PICK-RAY-ASYNC (Phase 6) — scratch for _reconstructHeightSurfaceWebGPU.
+const scratchReconstructHeightCartographic = new Cartographic();
+const scratchReconstructHeightAnchor = new Cartesian3();
+const scratchReconstructHeightWindow = new Cartesian2();
 
 // ---- Screen-space drill pick ----
 

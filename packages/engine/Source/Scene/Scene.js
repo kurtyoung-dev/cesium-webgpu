@@ -1517,10 +1517,13 @@ class Scene {
   /**
    * Returns <code>true</code> if the {@link Scene#sampleHeight} and {@link Scene#sampleHeightMostDetailed} functions are supported.
    *
-   * On WebGPU the synchronous {@link Scene#sampleHeight} ray-pick path is not
-   * yet implemented (tracked as NEW-PICK-RAY-ASYNC); it returns
-   * <code>undefined</code> and emits a one-time console warning. The
-   * asynchronous {@link Scene#sampleHeightMostDetailed} variant is supported.
+   * On WebGPU the synchronous {@link Scene#sampleHeight} reuses the main
+   * scene depth (NEW-PICK-RAY-ASYNC, Batch 284): it projects the position
+   * into the live view and reconstructs the surface height beneath it. It is
+   * one-frame-stale (the first query at a new location returns
+   * <code>undefined</code> and converges in 1-2 frames) and only resolves for
+   * positions currently visible in the view. The asynchronous
+   * {@link Scene#sampleHeightMostDetailed} variant is always supported.
    *
    * @type {boolean}
    * @readonly
@@ -1535,10 +1538,13 @@ class Scene {
   /**
    * Returns <code>true</code> if the {@link Scene#clampToHeight} and {@link Scene#clampToHeightMostDetailed} functions are supported.
    *
-   * On WebGPU the synchronous {@link Scene#clampToHeight} ray-pick path is not
-   * yet implemented (tracked as NEW-PICK-RAY-ASYNC); it returns
-   * <code>undefined</code> and emits a one-time console warning. The
-   * asynchronous {@link Scene#clampToHeightMostDetailed} variant is supported.
+   * On WebGPU the synchronous {@link Scene#clampToHeight} reuses the main
+   * scene depth (NEW-PICK-RAY-ASYNC, Batch 284): it projects the position
+   * into the live view and reconstructs the surface beneath it. It is
+   * one-frame-stale (the first query at a new location returns
+   * <code>undefined</code> and converges in 1-2 frames) and only resolves for
+   * positions currently visible in the view. The asynchronous
+   * {@link Scene#clampToHeightMostDetailed} variant is always supported.
    *
    * @type {boolean}
    * @readonly

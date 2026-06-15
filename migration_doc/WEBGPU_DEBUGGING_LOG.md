@@ -24,6 +24,29 @@
 
 ---
 
+## Batch 284 — NEW-PICK-RAY-ASYNC: sampleHeight / clampToHeight WORK on WebGPU (main-scene-depth reuse) (2026-06-15)
+
+**Symptom (residual from Batch 254/258):** `scene.sampleHeight` / `scene.clampToHeight` reported supported on WebGPU (`sampleHeightSupported` / `clampToHeightSupported` gate only on `context.depthTexture`) but returned `undefined`. Batch 254 made the silent failure honest (a `oneTimeWarning("WebGPU.rayPick.unsupported", …)`) but left the actual queries non-functional.
+
+**Root cause:** the WebGL path renders an OFFSCREEN pick view down the geodetic-normal ray, then reads its depth. On WebGPU this can't recover a position: the offscreen view's `PickDepth` instances never receive `update()` (only the main frustum loop calls it), and even the shared packed globe-depth texture is LOG-encoded against the MAIN camera frustum, not the offscreen one — so `getRayIntersection`'s per-frustum LINEAR reconstruction reads cold/stale depth and `position` stays undefined.
+
+**Fix (the high-value half — globe/tileset height at a position):** route WebGPU sampleHeight/clampToHeight away from the offscreen render and reuse the main scene's already-rendered depth (the same texture pickPosition reads since Batch 252). New `Picking._reconstructHeightSurfaceWebGPU(scene, target)`:
+
+1. Normalize the target to an ellipsoid-surface anchor (Cartographic→surface for sampleHeight; the Cartesian directly for clampToHeight).
+2. Project to window coords via `SceneTransforms.worldToWindowCoordinates`; bail if behind-camera (undefined) or outside the canvas (would read an unrelated edge pixel).
+3. Read the surface beneath that pixel via `Picking.pickPositionWorldCoordinates` (the proven Batch-252 full-frustum log reconstruction).
+sampleHeight returns the surface's height; clampToHeight returns the surface Cartesian3. Branch gated on `!scene.context.supportsSynchronousReadback`; the WebGL ray path is untouched.
+
+**Contract:** one-frame-stale sync cache inherited from PickDepth (cold query → undefined + arms the readback → converges 1-2 frames). Returns `number|undefined` (sampleHeight) / `Cartesian3|undefined` (clampToHeight), never a Promise. **Limitation:** resolves only for in-view positions, and the reconstructed point lies on the CAMERA ray through the pixel (not the geodetic-normal ray) — near-nadir matches within metres, oblique drifts.
+
+**pickFromRay (arbitrary ray) — scoped out, made consistent:** the offscreen object readback still works (hit object), but `position` stays undefined. The shared `getRayIntersection` warning is re-pointed to `oneTimeWarning("WebGPU.pickFromRay.noPosition", …)` (the old text claimed sampleHeight/clampToHeight also fail, which is no longer true). pickFromRay does NOT throw. Arbitrary-ray async position needs an offscreen GlobeDepth pack + per-view async readback — deferred.
+
+**Verification:** `probe-pick-ray-async.mjs` (new canonical gate) — WebGPU sampleHeight cold→converge frame 1, dH 3.5 m vs WebGL (WebGL −942.9 m, WebGPU −946.4 m), clampToHeight converges at exact (-75.0000, 40.0000), pickFromRay returns undefined + scope warning without throwing, 0 console errors both legs. `probe-sampleheight-webgpu.mjs` rewritten from the SAFE-undefined assertion to the working-parity assertion. Standing gates green: probe-pickposition-webgpu (dH 4.1 m, no regression), probe-pickposition-model-webgpu (dH 0 m), probe-pick-basic, probe-collections-regression, sandcastle-smoke (3/3). `npx tsc --noEmit` clean.
+
+**Files:** `packages/engine/Source/Scene/Picking.js` (WebGPU branch in sampleHeight/clampToHeight + `_reconstructHeightSurfaceWebGPU` + scratch), `packages/engine/Source/Scene/PickingRayHelpers.js` (re-pointed warning), `packages/engine/Source/Scene/Scene.js` (getter JSDoc), `Tools/visual-regression/probe-pick-ray-async.mjs` (new), `Tools/visual-regression/probe-sampleheight-webgpu.mjs` (rewritten).
+
+---
+
 ## Batch 283 — Phase-5 demo WebGL2 polish: both compute-instance demos run on WebGL2 + `?renderer=` selectable (2026-06-15)
 
 Not a bug fix — the two small Phase-5 follow-ups worth doing now (Phase 5 itself found no bugs). User-facing polish on the WebGL2 CPU-kernel fallback (Batch 280):

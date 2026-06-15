@@ -49,7 +49,8 @@ Resumes the paused Batch-220 diagnosis. Depends on Phase 2 (depth-match half).
 
 ## Phase 6 — Picking parity completion
 
-- **NEW-PICK-RAY-ASYNC** (pickFromRay/sampleHeight/clampToHeight async path + oneTimeWarning), **NEW-PICK-METADATA-READBACK** (pickMetadata/pickVoxelCoordinate stale-pixel fix), endAsync `_readbackInFlight` guard.
+- ✅ **NEW-PICK-RAY-ASYNC sampleHeight/clampToHeight SHIPPED (Batch 284)** — these two now WORK on WebGPU by reusing the main scene depth (`Picking._reconstructHeightSurfaceWebGPU`: project target into the live view → read the surface beneath it via the Batch-252 `pickPositionWorldCoordinates` reconstruction). One-frame-stale sync cache (cold→undefined→converge 1-2 frames). pickFromRay over an ARBITRARY ray is explicitly scoped out (hit object, no position; `oneTimeWarning("WebGPU.pickFromRay.noPosition", …)`, no throw) — arbitrary-ray async position needs an offscreen GlobeDepth pack + per-view readback, deferred until a consumer needs it. Gate: `probe-pick-ray-async.mjs` (sampleHeight dH 3.5 m vs WebGL, clampToHeight exact, cold→converge, no-throw, 0 errors) + `probe-sampleheight-webgpu.mjs` rewritten to working-parity.
+- Remaining Phase 6: **NEW-PICK-METADATA-READBACK** (pickMetadata/pickVoxelCoordinate stale-pixel fix), endAsync `_readbackInFlight` guard, arbitrary-ray pickFromRay position (offscreen-render async depth).
 - Depends on Phase 2 (depth reconstruction). Gate: full pick API probe matrix WebGL vs WebGPU.
 
 ## Phase 7 — Shading & material parity
