@@ -42,8 +42,23 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
-import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+// NEW-COLLECTION-RENDERER-BASE (Phase 11) — shared per-frame plumbing +
+// the three permanent collection sentinels. Billboard keeps its own
+// pack/define-scan/atlas/descriptors; only duplicated scaffolding moved.
+import {
+  beginCollectionFrame,
+  endCollectionFrame,
+  invalidatePipelinesOnSceneFormatChange,
+  computeNoDepthTest,
+  pipelineKeyWithDepthFlag,
+  getOrCreateInstanceManager,
+  syncInstancesAndConsume,
+  validateInstanceSyncResult,
+  ensurePickInstanceBuffer,
+  writePickInstances,
+  makeDeviceShaderModuleCacheAccessor,
+} from "./WebGPUCollectionRendererBase.js";
 // NEW-DERIVEDCOMMAND-VARIANT-FACTORY (Batch 248) — pick pipeline descriptor
 // is derived from the color descriptor through the centralized variant
 // factory; pipeline resolution (color/pick/velocity) routes through the
@@ -52,7 +67,6 @@ import {
   DerivedCommandType,
   WebGPUDerivedCommand,
 } from "./WebGPUDerivedCommand.js";
-import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
 import SceneMode from "../../Scene/SceneMode.js";
 
 // Per-instance stride. Batch 135 carried 7 vec4 (28 floats) for
@@ -553,17 +567,9 @@ function tryResolveBillboardPipeline(device, pipelineCache, entry) {
 // Module-level shader-module cache keyed by GPUDevice. Shared across every
 // BillboardCollection rendered on a given device so we don't recompile
 // the same (source, defines) tuple for each collection. Weak so a lost
-// device is GC'd along with its modules.
-const _shaderModuleCaches = new WeakMap();
-
-function getShaderModuleCache(device) {
-  let cache = _shaderModuleCaches.get(device);
-  if (!cache) {
-    cache = new WebGPUShaderModuleCache(device);
-    _shaderModuleCaches.set(device, cache);
-  }
-  return cache;
-}
+// device is GC'd along with its modules. The per-device WeakMap accessor
+// now comes from the shared collection base (NEW-COLLECTION-RENDERER-BASE).
+const getShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 /**
  * Prewarm the most-likely define sets on first use per device. Called
@@ -915,7 +921,30 @@ function createPlaceholderTexture(device) {
  * @param {FrameState} frameState
  * @param {Array} commandList
  */
-async function updateWebGPUBillboards(collection, frameState, commandList) {
+function updateWebGPUBillboards(collection, frameState, commandList) {
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1) — re-entry / infinite-loop
+  // guard around the whole update. The inner build is SYNCHRONOUS (no
+  // `await` inside `_updateWebGPUBillboardsInner`), so the begin/end MUST
+  // bracket it synchronously — NOT across an `await` microtask boundary.
+  // Bracketing across `await` would defer every `endCollectionFrame` to a
+  // microtask, letting the depth climb to "calls this frame" (per
+  // frustum-slice / pass) and false-trip the sentinel. The function still
+  // returns a Promise (kept async-compatible for the feature-renderer
+  // contract) by handing back a resolved promise after the synchronous
+  // work completes.
+  if (!defined(collection._webgpuCache)) {
+    collection._webgpuCache = {};
+  }
+  beginCollectionFrame(collection._webgpuCache, "Billboard");
+  try {
+    _updateWebGPUBillboardsInner(collection, frameState, commandList);
+  } finally {
+    endCollectionFrame(collection._webgpuCache);
+  }
+  return Promise.resolve();
+}
+
+function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   const context = frameState.context;
   const device = context.device;
   const length = collection.length;
@@ -923,9 +952,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     return;
   }
 
-  if (!defined(collection._webgpuCache)) {
-    collection._webgpuCache = {};
-  }
+  // Cache initialized by the outer `updateWebGPUBillboards` wrapper.
   const cache = collection._webgpuCache;
 
   // AUDIT_2026_05_02 A.14 (Batch 136) — all four billboard distance
@@ -968,24 +995,22 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     cache.velocityPipelineEntries = new Map();
   }
   // Batch 110 — invalidate cached pipeline entries on scene format
-  // change (HDR toggle).
-  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
-  if (cache._pipelineFormatGeneration !== sceneGen) {
-    cache.pipelineEntries.clear();
-    cache.pickPipelineEntries?.clear();
-    cache.velocityPipelineEntries?.clear();
-    cache._pipelineFormatGeneration = sceneGen;
-  }
+  // change (HDR toggle). NEW-COLLECTION-RENDERER-BASE — shared guard.
+  invalidatePipelinesOnSceneFormatChange(cache, context, [
+    cache.pipelineEntries,
+    cache.pickPipelineEntries,
+    cache.velocityPipelineEntries,
+  ]);
   // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH) — settled 2D / CV
   // (morphTime === 0) draws coplanar billboards on top of the flat map with
   // the depth test disabled (see `buildBillboardDescriptor`). Fold the flag
   // into the pipeline-cache key so a 3D↔2D flip resolves a DISTINCT pipeline
   // and 3D keeps its `less-equal` variant byte-identical. Mirrors the
   // PolylineRenderer `noDepthTest` pipeline-key dimension (Batch 261).
-  const noDepthTest =
-    frameState.morphTime === 0.0 && frameState.mode !== SceneMode.SCENE3D;
+  // (Shared base helpers.)
+  const noDepthTest = computeNoDepthTest(frameState);
   cache.currentNoDepthTest = noDepthTest;
-  const pipelineKey = noDepthTest ? defines | 0x80000000 : defines;
+  const pipelineKey = pipelineKeyWithDepthFlag(defines, noDepthTest);
   let entry = cache.pipelineEntries.get(pipelineKey);
   if (!defined(entry)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
@@ -1204,12 +1229,13 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   // uploads only the changed slots' byte ranges. The manager owns the
   // resident CPU array, the GPU vertex buffer, the compacted
   // _index→slot map, and the slot-aligned velocity prev mirror.
-  if (!defined(cache.instanceManager)) {
-    cache.instanceManager = new WebGPUResidentInstanceBuffer(
-      device,
-      "Billboard instances",
-    );
-  }
+  // NEW-COLLECTION-RENDERER-BASE — shared lazy create of the resident
+  // instance manager (was an inline `if (!defined) new …`).
+  const instanceManager = getOrCreateInstanceManager(
+    cache,
+    device,
+    "Billboard instances",
+  );
 
   // Structural invalidations the manager can't see from the dirty list
   // alone. `_createVertexArray` covers add/remove/removeAll/mode-change/
@@ -1229,32 +1255,37 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   // consume. `_consumeDirtyState` resets `_billboardsToUpdateIndex`, so
   // syncing after the consume would always see an empty dirty list and
   // never partial-write. (NEW-COLLECTIONS-DIRTY-GATE step 0 + Phase 1.)
-  const syncResult = cache.instanceManager.sync({
-    items: collection._billboards,
-    length: length,
-    dirtyList: collection._billboardsToUpdate,
-    dirtyCount: collection._billboardsToUpdateIndex,
-    packInstance: packBillboardInstance,
-    isVisible: isBillboardVisible,
-    floatsPerInstance: FLOATS_PER_INSTANCE,
-    bytesPerInstance: BYTES_PER_INSTANCE,
-    forceFullRebuild: forceFullRebuild,
-    mirrorPrev: taaEnabledThisFrame,
-  });
+  // The capture→sync→consume ordering is now enforced structurally by
+  // `syncInstancesAndConsume` (NEW-COLLECTION-RENDERER-BASE). Without it
+  // the WebGL `_createVertexArray` / `textureDirty` flags stay set on the
+  // WebGPU path and `updateMode` + the readiness loop re-dirty every
+  // settled billboard every frame — defeating the partial-update gate. See
+  // BillboardCollection._consumeDirtyState.
+  const syncResult = syncInstancesAndConsume(
+    instanceManager,
+    {
+      items: collection._billboards,
+      length: length,
+      dirtyList: collection._billboardsToUpdate,
+      dirtyCount: collection._billboardsToUpdateIndex,
+      packInstance: packBillboardInstance,
+      isVisible: isBillboardVisible,
+      floatsPerInstance: FLOATS_PER_INSTANCE,
+      bytesPerInstance: BYTES_PER_INSTANCE,
+      forceFullRebuild: forceFullRebuild,
+      mirrorPrev: taaEnabledThisFrame,
+    },
+    () => collection._consumeDirtyState(),
+  );
   cache._instanceDefines = defines;
   cache._instanceSceneMode = frameState.mode;
   cache._instanceAtlasGuid = atlasGuidNow;
 
-  // Consume the collection's dirty-tracking state now that this frame's
-  // instance data is captured. Without this the WebGL `_createVertexArray` /
-  // `textureDirty` flags stay set on the WebGPU path and `updateMode` + the
-  // readiness loop re-dirty every settled billboard every frame — defeating
-  // any dirty gate / per-instance partial-update. See
-  // BillboardCollection._consumeDirtyState. (NEW-COLLECTIONS-DIRTY-GATE step 0.)
-  collection._consumeDirtyState();
-
+  // Sentinel 2 (null-target guard) — non-zero visible count with a null
+  // buffer is a hard bug; logs (permanent) and returns false. Also handles
+  // the empty-collection case (visibleCount 0 → false) without a log.
   const visibleCount = syncResult.visibleCount;
-  if (visibleCount === 0 || !defined(syncResult.buffer)) {
+  if (!validateInstanceSyncResult(syncResult, "Billboard")) {
     return;
   }
   cache.instanceBuffer = syncResult.buffer;
@@ -1430,27 +1461,24 @@ function _pushBillboardPickCommand(
     return;
   }
 
+  // NEW-COLLECTION-RENDERER-BASE — shared grow-on-demand pick buffer +
+  // size-validation/overflow sentinel (Sentinel 3). `writePickInstances`
+  // clamps + logs if the payload would overrun, then returns the safe
+  // instance count for the draw.
   const pickSize = pickResult.visibleCount * BYTES_PER_INSTANCE;
-  if (
-    !defined(cache.pickInstanceBuffer) ||
-    cache.pickInstanceBuffer.size < pickSize
-  ) {
-    if (defined(cache.pickInstanceBuffer)) {
-      cache.pickInstanceBuffer.destroy();
-    }
-    cache.pickInstanceBuffer = WebGPUBuffer.createVertexBuffer(
-      device,
-      pickSize,
-      false,
-      "Billboard pick instances",
-    );
-  }
-  device.queue.writeBuffer(
-    cache.pickInstanceBuffer.buffer,
-    0,
-    pickResult.instanceData.buffer,
-    0,
+  const pickBuffer = ensurePickInstanceBuffer(
+    cache,
+    device,
     pickSize,
+    "Billboard pick instances",
+  );
+  const safePickCount = writePickInstances(
+    device,
+    pickBuffer,
+    pickResult.instanceData,
+    pickResult.visibleCount,
+    BYTES_PER_INSTANCE,
+    "Billboard",
   );
 
   // Pick always runs in the OPAQUE pass — use `_rsOpaque` so the pick
@@ -1461,9 +1489,9 @@ function _pushBillboardPickCommand(
   cache.pickCommand = new WebGPUDrawCommand({
     pipeline: cache.pickPipeline,
     bindGroups: [cache.bindGroup], // Reuse color bind group (same uniforms + atlas)
-    vertexBuffers: [cache.pickInstanceBuffer],
+    vertexBuffers: [pickBuffer],
     vertexCount: VERTICES_PER_QUAD,
-    instanceCount: pickResult.visibleCount,
+    instanceCount: safePickCount,
     pass: 8,
     owner: collection,
     boundingVolume: collection._boundingVolume,

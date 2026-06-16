@@ -81,6 +81,7 @@ Resumes the paused Batch-220 diagnosis. Depends on Phase 2 (depth-match half).
 ## Phase 11 — Maintainability & architecture debt
 
 - **NEW-TS-CONVERT-JS-RENDERERS** (Model renderer first), **NEW-COLLECTION-RENDERER-BASE** (fold the resident-instance manager into a shared base, ~3000 LOC dedup), SceneRenderer god-object residual (WEBGPU_CONTEXT_DECOMPOSITION_PLAN), **NEW-COLLECTIONS-ERROR-SENTINELS** (the three mandated permanent sentinels), **NEW-CAPABILITY-GETTER-CODIFY** (migrate remaining isWebGPU branches), **NEW-INDEXWGSL-CHURN**, >1000-LOC decompositions, doc-currency sweep (FEATURE_INVENTORY / DEBUGGING_GUIDE / README index).
+- **✅ STARTED (Batch 302):** `WebGPUCollectionRendererBase.ts` shipped + Billboard + Point migrated onto it (zero behavior change, all collection gates byte-green, −131 LOC duplicated scaffolding). **NEW-COLLECTIONS-ERROR-SENTINELS fully shipped** (the three permanent sentinels live in the base, unit-tested 10/10). NEW-COLLECTION-RENDERER-BASE remains PARTIAL — Label/Cloud/Polyline fold pending (next Phase-11 stage). En route: the re-entry sentinel must bracket SYNCHRONOUS work, so Billboard's async `update` became a sync build returning `Promise.resolve()` (bracketing across the no-op `await` false-tripped the guard — caught by probe-collections-far-camera, see WEBGPU_DEBUGGING_LOG Bug 302.1).
 
 ## Phase 12 — Bug bash & small improvements (the long tail)
 

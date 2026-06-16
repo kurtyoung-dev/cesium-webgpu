@@ -39,9 +39,25 @@ import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
 import SceneMode from "../../Scene/SceneMode.js";
+// NEW-COLLECTION-RENDERER-BASE (Phase 11) — shared per-frame plumbing
+// (resident-instance manager fold, pipeline-format-gen invalidation,
+// 2D/CV coplanar-depth flag, pick buffer mgmt) + the three permanent
+// collection sentinels. Point keeps its own pack/define-scan/descriptors;
+// only the duplicated scaffolding moved to the base.
+import {
+  beginCollectionFrame,
+  endCollectionFrame,
+  invalidatePipelinesOnSceneFormatChange,
+  computeNoDepthTest,
+  pipelineKeyWithDepthFlag,
+  getOrCreateInstanceManager,
+  syncInstancesAndConsume,
+  validateInstanceSyncResult,
+  ensurePickInstanceBuffer,
+  writePickInstances,
+  makeDeviceShaderModuleCacheAccessor,
+} from "./WebGPUCollectionRendererBase.js";
 
 // =========================================================================
 // Constants
@@ -617,17 +633,10 @@ function tryResolvePointPipeline(device, pipelineCache, descriptor, entry) {
 }
 
 // Module-level shader-module cache keyed by GPUDevice. Shared across every
-// PointPrimitiveCollection rendered on a given device.
-const _pointShaderModuleCaches = new WeakMap();
-
-function getPointShaderModuleCache(device) {
-  let cache = _pointShaderModuleCaches.get(device);
-  if (!cache) {
-    cache = new WebGPUShaderModuleCache(device);
-    _pointShaderModuleCaches.set(device, cache);
-  }
-  return cache;
-}
+// PointPrimitiveCollection rendered on a given device. The per-device
+// WeakMap accessor now comes from the shared collection base
+// (NEW-COLLECTION-RENDERER-BASE) — same dedupe behavior, one implementation.
+const getPointShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 /**
  * Prewarm the color + pick modules for the common define sets. Idempotent
@@ -934,6 +943,27 @@ function packUniforms(uniformData, frameState, modelMatrix) {
  * @private
  */
 function updateWebGPUPointPrimitives(collection, frameState, commandList) {
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1) — re-entry / infinite-loop
+  // guard around the whole update. `beginCollectionFrame` increments a
+  // per-collection depth and logs (throttled) if this update is re-entered
+  // for the same collection before returning; `endCollectionFrame` in the
+  // finally always settles it back to 0.
+  if (!defined(collection._webgpuCache)) {
+    collection._webgpuCache = {};
+  }
+  beginCollectionFrame(collection._webgpuCache, "PointPrimitive");
+  try {
+    _updateWebGPUPointPrimitivesInner(collection, frameState, commandList);
+  } finally {
+    endCollectionFrame(collection._webgpuCache);
+  }
+}
+
+function _updateWebGPUPointPrimitivesInner(
+  collection,
+  frameState,
+  commandList,
+) {
   const context = frameState.context;
   const device = context.device;
   const length = collection._pointPrimitivesLength;
@@ -942,10 +972,7 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
     return;
   }
 
-  // Initialize GPU cache on first call
-  if (!defined(collection._webgpuCache)) {
-    collection._webgpuCache = {};
-  }
+  // Cache initialized by the outer `updateWebGPUPointPrimitives` wrapper.
   const cache = collection._webgpuCache;
 
   // AUDIT_2026_05_02 A.14 (Batch 136) — all three Point distance gates
@@ -979,20 +1006,18 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
     cache.velocityPipelines = new Map();
   }
   // Batch 110 — invalidate cached pipelines on scene format change.
-  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
-  if (cache._pipelineFormatGeneration !== sceneGen) {
-    cache.pipelines.clear();
-    cache.pickPipelines?.clear();
-    cache.velocityPipelines?.clear();
-    cache._pipelineFormatGeneration = sceneGen;
-  }
+  // NEW-COLLECTION-RENDERER-BASE — shared format-generation guard.
+  invalidatePipelinesOnSceneFormatChange(cache, context, [
+    cache.pipelines,
+    cache.pickPipelines,
+    cache.velocityPipelines,
+  ]);
   // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — settled 2D/CV draws coplanar points
   // on top of the flat map with the depth test disabled. Fold the flag into
   // the pipeline-cache key (bit 31, above every ShaderDefine bit) so 3D keeps
-  // its `less-equal` variant byte-identical.
-  const noDepthTest =
-    frameState.morphTime === 0.0 && frameState.mode !== SceneMode.SCENE3D;
-  const pipelineKey = noDepthTest ? defines | 0x80000000 : defines;
+  // its `less-equal` variant byte-identical. (Shared base helpers.)
+  const noDepthTest = computeNoDepthTest(frameState);
+  const pipelineKey = pipelineKeyWithDepthFlag(defines, noDepthTest);
   let pipelineEntry = cache.pipelines.get(pipelineKey);
   if (!defined(pipelineEntry)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
@@ -1100,12 +1125,13 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   // the slot-aligned velocity prev mirror (TAA motion vectors) — it
   // subsumes the former all-or-nothing `needsRebuild` gate.
   const taaEnabledThisFrame = frameState.taaEnabled === true;
-  if (!defined(cache.instanceManager)) {
-    cache.instanceManager = new WebGPUResidentInstanceBuffer(
-      device,
-      "PointPrimitive instances",
-    );
-  }
+  // NEW-COLLECTION-RENDERER-BASE — shared lazy create of the resident
+  // instance manager (was an inline `if (!defined) new …`).
+  const instanceManager = getOrCreateInstanceManager(
+    cache,
+    device,
+    "PointPrimitive instances",
+  );
 
   // Structural invalidations the manager can't see from the dirty list
   // alone. `_createVertexArray` covers add/remove/removeAll/mode-change/
@@ -1124,32 +1150,40 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   // ORDERING (load-bearing): capture + sync the dirty list FIRST, then
   // consume. `_consumeDirtyState` resets `_pointPrimitivesToUpdateIndex`,
   // so syncing after the consume would always see an empty dirty list and
-  // never partial-write. (NEW-DIRTY-CONSUME-POINT + Phase 1.)
-  const syncResult = cache.instanceManager.sync({
-    items: collection._pointPrimitives,
-    length: length,
-    dirtyList: collection._pointPrimitivesToUpdate,
-    dirtyCount: collection._pointPrimitivesToUpdateIndex,
-    packInstance: packPointInstance,
-    isVisible: isPointInstance,
-    floatsPerInstance: FLOATS_PER_INSTANCE,
-    bytesPerInstance: BYTES_PER_INSTANCE,
-    forceFullRebuild: forceFullRebuild,
-    mirrorPrev: taaEnabledThisFrame,
-  });
+  // never partial-write. (NEW-DIRTY-CONSUME-POINT + Phase 1.) The
+  // capture→sync→consume ordering is now enforced structurally by
+  // `syncInstancesAndConsume` (NEW-COLLECTION-RENDERER-BASE): it runs the
+  // sync against the captured dirty snapshot, THEN invokes the consume.
+  // Without it, `_createVertexArray`/`_dirty` stay set on the WebGPU path:
+  // `updateMode` re-projects every position every frame AND a moved point
+  // can never re-enqueue (the `if (!_dirty)` guard in
+  // `_updatePointPrimitive`) so it renders stale. See
+  // PointPrimitiveCollection._consumeDirtyState.
+  const syncResult = syncInstancesAndConsume(
+    instanceManager,
+    {
+      items: collection._pointPrimitives,
+      length: length,
+      dirtyList: collection._pointPrimitivesToUpdate,
+      dirtyCount: collection._pointPrimitivesToUpdateIndex,
+      packInstance: packPointInstance,
+      isVisible: isPointInstance,
+      floatsPerInstance: FLOATS_PER_INSTANCE,
+      bytesPerInstance: BYTES_PER_INSTANCE,
+      forceFullRebuild: forceFullRebuild,
+      mirrorPrev: taaEnabledThisFrame,
+    },
+    () => collection._consumeDirtyState(),
+  );
   cache._instanceDefines = defines;
   cache._instanceSceneMode = frameState.mode;
 
-  // Consume the collection's dirty-tracking state now that this frame's
-  // instance data is captured. Without it, `_createVertexArray`/`_dirty`
-  // stay set on the WebGPU path: `updateMode` re-projects every position
-  // every frame AND a moved point can never re-enqueue (the `if (!_dirty)`
-  // guard in `_updatePointPrimitive`) so it renders stale. See
-  // PointPrimitiveCollection._consumeDirtyState. (NEW-DIRTY-CONSUME-POINT.)
-  collection._consumeDirtyState();
-
+  // Sentinel 2 (null-target guard) — a non-zero visible count with a null
+  // buffer is a hard bug; `validateInstanceSyncResult` logs it (permanent)
+  // and returns false. Also covers the empty-collection case (visibleCount
+  // 0 → false) without a log.
   const visibleCount = syncResult.visibleCount;
-  if (visibleCount === 0 || !defined(syncResult.buffer)) {
+  if (!validateInstanceSyncResult(syncResult, "PointPrimitive")) {
     cache.colorCommand = undefined;
     return;
   }
@@ -1348,35 +1382,32 @@ function _pushPickCommand(
     return;
   }
 
+  // NEW-COLLECTION-RENDERER-BASE — shared grow-on-demand pick buffer +
+  // size-validation/overflow sentinel (Sentinel 3). `writePickInstances`
+  // clamps + logs if the payload would overrun the buffer, then returns
+  // the safe instance count for the draw.
   const pickSize = pickResult.visibleCount * BYTES_PER_INSTANCE;
-  if (
-    !defined(cache.pickInstanceBuffer) ||
-    cache.pickInstanceBuffer.size < pickSize
-  ) {
-    if (defined(cache.pickInstanceBuffer)) {
-      cache.pickInstanceBuffer.destroy();
-    }
-    cache.pickInstanceBuffer = WebGPUBuffer.createVertexBuffer(
-      device,
-      pickSize,
-      false,
-      "PointPrimitive pick instances",
-    );
-  }
-  device.queue.writeBuffer(
-    cache.pickInstanceBuffer.buffer,
-    0,
-    pickResult.instanceData.buffer,
-    0,
+  const pickBuffer = ensurePickInstanceBuffer(
+    cache,
+    device,
     pickSize,
+    "PointPrimitive pick instances",
+  );
+  const safePickCount = writePickInstances(
+    device,
+    pickBuffer,
+    pickResult.instanceData,
+    pickResult.visibleCount,
+    BYTES_PER_INSTANCE,
+    "PointPrimitive",
   );
 
   cache.pickCommand = new WebGPUDrawCommand({
     pipeline: cache.pickPipeline,
     bindGroups: [cache.pickBindGroup],
-    vertexBuffers: [cache.pickInstanceBuffer],
+    vertexBuffers: [pickBuffer],
     vertexCount: VERTICES_PER_QUAD,
-    instanceCount: pickResult.visibleCount,
+    instanceCount: safePickCount,
     pass: 8,
     owner: collection,
     boundingVolume: collection._boundingVolume,

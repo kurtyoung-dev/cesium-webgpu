@@ -726,6 +726,8 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - BUG-12 clear-loop sentinel — re-entry/infinite-loop guard with throttled console.error (SHIPPED)
 - BUG-13 null PP-views guard — null source/destination texture-view check at render-pass boundaries (SHIPPED)
 - BUG-15 index-overflow guard — buffer-size validation before draw, clamp to safe value (SHIPPED)
+- WebGPUCollectionRendererBase — shared base for the collection feature renderers; folds the resident-instance-manager per-frame flow (lazy create + capture→sync→consume ordering), scene-format-gen pipeline invalidation, settled-2D/CV coplanar-depth flag/key, per-device shader-module-cache accessor, and grow-on-demand pick buffer mgmt. Billboard + Point migrated; Label/Cloud/Polyline pending (PARTIAL, Batch 302, NEW-COLLECTION-RENDERER-BASE)
+- Collection error sentinels — the three mandated permanent sentinels in the collection base: re-entry/infinite-loop guard (sane-limit depth, synchronous-bracketed), null-target guard (null buffer for non-zero visible count), size-validation/overflow guard (pick writeBuffer clamp). Unit-tested 10/10 (SHIPPED, Batch 302, NEW-COLLECTIONS-ERROR-SENTINELS)
 - BUG-11 canvas-black-screen probe scripts (Batches 89-93) (SHIPPED)
 - WebGPUParityManager log-once guards — preserves single-emit semantics for parity warnings (SHIPPED)
 - Async pick with staleness validation — PlayCanvas pattern in WebGPUPickFramebuffer (SHIPPED)
