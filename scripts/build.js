@@ -1526,26 +1526,104 @@ export async function createIndexJs(workspace) {
     // which the webgl-only variant's alias plugin strips to empty
     // stubs. ESM's static named-re-export check would fail if this
     // file were pulled into the webgl-only graph.
+    // Emit PRETTIER-STABLE output (NEW-INDEXWGSL-CHURN, Batch 303): this file
+    // is tracked + .prettierignore'd, but the commit hook's stash/restore had
+    // left the committed copy in prettier's multi-line form while this emitter
+    // produced the un-prettified single-line form — so `gulp build` re-dirtied
+    // it every time. `prettierExport` reproduces prettier 3.x's exact wrapping
+    // (multi-symbol → one symbol per indented line + trailing comma; single
+    // symbol → one line; double-quoted module path) so the build output is
+    // byte-identical to the committed copy and the churn stops at the source.
+    // Keep this in sync with the repo prettier config if the print width changes.
+    /**
+     * @param {string[]} symbols
+     * @param {string} modulePath
+     * @returns {string}
+     */
+    const prettierExport = (symbols, modulePath) => {
+      if (symbols.length === 1) {
+        return `export { ${symbols[0]} } from "${modulePath}";${EOL}`;
+      }
+      return (
+        `export {${EOL}` +
+        symbols.map((/** @type {string} */ s) => `  ${s},${EOL}`).join("") +
+        `} from "${modulePath}";${EOL}`
+      );
+    };
     const wgslContents =
-      `${EOL}// WebGPU cluster renderer + lighting re-exports (Slice 5d, Batches 147–150).${EOL}` +
+      `// WebGPU cluster renderer + lighting re-exports (Slice 5d, Batches 147–150).${EOL}` +
       `// They reference Source/Renderer/WebGPU/* which the webgl-only variant strips${EOL}` +
       `// to empty stubs, so they live here (webgl-only does NOT import index-wgsl.js).${EOL}` +
       `// Exposed so the cluster probes + the Clustered Lighting Sandcastle can${EOL}` +
       `// construct + dispatch the renderers standalone. (NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING.)${EOL}` +
-      `export { WebGPUClusterBoundsRenderer, CLUSTER_TILE_COUNT_X, CLUSTER_TILE_COUNT_Y, CLUSTER_SLICE_COUNT_Z, CLUSTER_TOTAL_COUNT, CLUSTER_BOUNDS_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js';${EOL}` +
-      `export { WebGPUClusterAssignRenderer, CLUSTER_MAX_LIGHTS, CLUSTER_MAX_LIGHTS_PER_CLUSTER, CLUSTER_LIGHT_STORAGE_BYTES, CLUSTER_LIGHT_COUNT_STORAGE_BYTES, CLUSTER_LIGHT_INDICES_STORAGE_BYTES } from './Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js';${EOL}` +
-      `export { WebGPUClusterDebugRenderer } from './Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js';${EOL}` +
-      `export { WebGPUClusteredLightingDispatcher } from './Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.js';${EOL}` +
+      prettierExport(
+        [
+          "WebGPUClusterBoundsRenderer",
+          "CLUSTER_TILE_COUNT_X",
+          "CLUSTER_TILE_COUNT_Y",
+          "CLUSTER_SLICE_COUNT_Z",
+          "CLUSTER_TOTAL_COUNT",
+          "CLUSTER_BOUNDS_STORAGE_BYTES",
+        ],
+        "./Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js",
+      ) +
+      prettierExport(
+        [
+          "WebGPUClusterAssignRenderer",
+          "CLUSTER_MAX_LIGHTS",
+          "CLUSTER_MAX_LIGHTS_PER_CLUSTER",
+          "CLUSTER_LIGHT_STORAGE_BYTES",
+          "CLUSTER_LIGHT_COUNT_STORAGE_BYTES",
+          "CLUSTER_LIGHT_INDICES_STORAGE_BYTES",
+        ],
+        "./Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js",
+      ) +
+      prettierExport(
+        ["WebGPUClusterDebugRenderer"],
+        "./Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js",
+      ) +
+      prettierExport(
+        ["WebGPUClusteredLightingDispatcher"],
+        "./Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.js",
+      ) +
       `${EOL}// TypeScript-only WGSL preprocessor exports — for wgsl-import-test.html${EOL}` +
-      `export { WGSLShaderPreprocessor, WGSLShaderLibrary } from './Source/Renderer/WebGPU/WGSLShaderPreprocessor.js';${EOL}` +
-      `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from './Source/Renderer/WebGPU/WGSLBuiltins.js';${EOL}` +
+      prettierExport(
+        ["WGSLShaderPreprocessor", "WGSLShaderLibrary"],
+        "./Source/Renderer/WebGPU/WGSLShaderPreprocessor.js",
+      ) +
+      prettierExport(
+        ["createDefaultWGSLLibrary", "WGSLBuiltinChunks"],
+        "./Source/Renderer/WebGPU/WGSLBuiltins.js",
+      ) +
       // WebGL compatibility stub helpers — apps on the dual or
       // webgpu-only variant can register a shader translator
       // (naga-wasm adapter, etc.) and build pipelines from tracked
       // gl.* state without reaching into the WebGPU renderer's
       // private directory structure.
       `${EOL}// WebGL compatibility stub — translator registry + pipeline extractor${EOL}` +
-      `export { registerShaderTranslator, getActiveShaderTranslator, subscribeToShaderTranslatorChange, registerShaderPreprocessor, getActiveShaderPreprocessor, parseNagaReflection, buildBindGroupLayoutDescriptors, buildBindGroupLayoutsFromProgram, WGSLPassthroughTranslator, NotSupportedTranslator, NagaShaderTranslator, nagaTranspileGLSL, isNagaReady, isNagaUnavailable, extractPipelineStateFromStub, extractRenderPassStateFromStub, applyStubVariantToBuilder, getCompiledShaderForProgram } from './Source/Renderer/WebGPU/WebGLCompatibilityStub.js';${EOL}`;
+      prettierExport(
+        [
+          "registerShaderTranslator",
+          "getActiveShaderTranslator",
+          "subscribeToShaderTranslatorChange",
+          "registerShaderPreprocessor",
+          "getActiveShaderPreprocessor",
+          "parseNagaReflection",
+          "buildBindGroupLayoutDescriptors",
+          "buildBindGroupLayoutsFromProgram",
+          "WGSLPassthroughTranslator",
+          "NotSupportedTranslator",
+          "NagaShaderTranslator",
+          "nagaTranspileGLSL",
+          "isNagaReady",
+          "isNagaUnavailable",
+          "extractPipelineStateFromStub",
+          "extractRenderPassStateFromStub",
+          "applyStubVariantToBuilder",
+          "getCompiledShaderForProgram",
+        ],
+        "./Source/Renderer/WebGPU/WebGLCompatibilityStub.js",
+      );
     await writeFile(`packages/${workspace}/index-wgsl.js`, wgslContents, {
       encoding: "utf-8",
     });
