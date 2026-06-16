@@ -81,6 +81,10 @@ import {
 } from "./WebGPUGlobeSurfaceTypes.js";
 import { writeUniformSlice } from "./WebGPUGlobeSurfaceCameraUB.js";
 import { getActiveDebugSentinel } from "./WebGPUGlobeFragmentDebug.js";
+import {
+  resolveImageryProjection,
+  type TextureCacheHost,
+} from "./WebGPUGlobeSurfaceTextures.js";
 
 /**
  * The renderer surface the tile-UB packer reaches into.
@@ -92,7 +96,7 @@ import { getActiveDebugSentinel } from "./WebGPUGlobeFragmentDebug.js";
  *     diagnostic-throttle state. Read+write by the pragma-stripped log
  *     blocks; production builds dead-code-eliminate the call sites.
  */
-export interface TileUBHost {
+export interface TileUBHost extends TextureCacheHost {
   readonly _tileUniformData: Float32Array;
   readonly _tileUniformU32View: Uint32Array;
   _diagLastLayerCountLogMs: number;
@@ -155,11 +159,18 @@ export function createTileUniformBuffer(
     // projection, the cached translation/scale and texCoordsRect line
     // up without any inline recalc (the Batch 62 fixup is no longer
     // needed and would have been wrong in either direction).
-    const hasMercatorTexture = !!(
-      imagery as { _webgpuMercatorTexture?: unknown }
-    )._webgpuMercatorTexture;
+    //
+    // NEW-USEWEBMERCATORT-SINGLE-SOURCE (Batch 304): derive the flag
+    // from `resolveImageryProjection` — the SAME pure peek
+    // `getOrCreateImageryTexture` uses to pick the bound variant — so
+    // the shader's `useWebMercatorTLayer` flag can never diverge from
+    // the actually-bound texture's projection (cache hits, the
+    // Mercator→geographic fall-through, and the race-window bind all
+    // resolve identically here and at bind-group creation). The old
+    // local `tileImagery.useWebMercatorT && !!_webgpuMercatorTexture`
+    // recompute missed the cache and fall-through cases.
     const effectiveUseWebMercatorT =
-      tileImagery.useWebMercatorT && hasMercatorTexture;
+      resolveImageryProjection(host, tileImagery)?.isMercator ?? false;
 
     // translationAndScale (vec4) — cached value, matches the bound
     // texture's coordinate space.

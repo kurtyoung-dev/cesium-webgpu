@@ -117,6 +117,80 @@ export interface TextureCacheHost {
  * `useWebMercatorTLayer` in lock-step with what was actually bound.
  * Returns null when the imagery is missing or every fallback fails.
  */
+/**
+ * The single authority for the Mercator-vs-geographic projection
+ * decision used by both the texture binding (`getOrCreateImageryTexture`)
+ * and the tile-uniform-buffer's `useWebMercatorTLayer` flag
+ * (`createTileUniformBuffer`).
+ *
+ * NEW-USEWEBMERCATORT-SINGLE-SOURCE (Batch 304): previously the tile-UB
+ * packer recomputed the flag as `tileImagery.useWebMercatorT &&
+ * !!imagery._webgpuMercatorTexture`, which does NOT match the richer
+ * decision tree in `getOrCreateImageryTexture` (cache hits, the
+ * geographic fall-through when a Mercator skeleton has no merc texture,
+ * and the race-window bind where only the merc texture is resident).
+ * In those windows the shader's V-coordinate space and the bound
+ * texture's actual projection could disagree, producing a misprojected
+ * imagery strip until the next steady-state frame. Routing both
+ * consumers through this pure peek closes that gap.
+ *
+ * Pure: no uploads, no cache writes — it only inspects the imagery
+ * texture cache and the per-imagery dual-texture fields. The `variant`
+ * mirrors which branch `getOrCreateImageryTexture` will take:
+ *
+ *   - `"merc"`   → a Mercator GPUTexture is (or will be) bound; isMercator true.
+ *   - `"geo"`    → a geographic (reprojected/cached) GPUTexture is bound; false.
+ *   - `"upload"` → nothing GPU-resident yet; the direct `imagery.image`
+ *                  upload path runs, producing geographic data; false.
+ *
+ * Returns null only when there is no `readyImagery` to resolve.
+ */
+export function resolveImageryProjection(
+  host: TextureCacheHost,
+  tileImagery: CesiumTileImagery | null | undefined,
+): { variant: "merc" | "geo" | "upload"; isMercator: boolean } | null {
+  if (!tileImagery) return null;
+  const imagery = tileImagery.readyImagery as CesiumReadyImagery | undefined;
+  if (!imagery) return null;
+
+  const baseKey =
+    imagery.key || `${imagery.x ?? 0}_${imagery.y ?? 0}_${imagery.level ?? 0}`;
+  const wantMercator = !!tileImagery.useWebMercatorT;
+
+  // First preference: Mercator variant when the skeleton requested it
+  // and a Mercator source (cached view or pre-reprojected GPUTexture)
+  // is resident.
+  if (wantMercator) {
+    if (
+      host._imageryTextureCache.has(`${baseKey}_merc`) ||
+      imagery._webgpuMercatorTexture
+    ) {
+      return { variant: "merc", isMercator: true };
+    }
+    // Mercator requested but no Mercator texture yet — fall through to
+    // geographic so the tile still renders (flag flips to geographic-V).
+  }
+
+  // Geographic variant: cached geo view or the pre-reprojected texture.
+  if (
+    host._imageryTextureCache.has(baseKey) ||
+    imagery._webgpuReprojectedTexture
+  ) {
+    return { variant: "geo", isMercator: false };
+  }
+
+  // Race window: only the Mercator texture is resident (reprojection
+  // hasn't produced the geographic version yet). Bind it and flag
+  // Mercator-V so the shader stays consistent with the bound data.
+  if (imagery._webgpuMercatorTexture) {
+    return { variant: "merc", isMercator: true };
+  }
+
+  // Nothing GPU-resident — the direct `imagery.image` upload path runs,
+  // which always produces geographic-V data.
+  return { variant: "upload", isMercator: false };
+}
+
 export function getOrCreateImageryTexture(
   host: TextureCacheHost,
   tileImagery: CesiumTileImagery | null | undefined,
@@ -131,10 +205,18 @@ export function getOrCreateImageryTexture(
 
   const baseKey =
     imagery.key || `${imagery.x ?? 0}_${imagery.y ?? 0}_${imagery.level ?? 0}`;
-  const wantMercator = !!tileImagery.useWebMercatorT;
 
-  // First-preference lookup: Mercator variant when requested.
-  if (wantMercator) {
+  // NEW-USEWEBMERCATORT-SINGLE-SOURCE (Batch 304) — the projection
+  // decision (Mercator vs geographic variant) is computed ONCE in
+  // `resolveImageryProjection` so the bound texture, the shader's
+  // `useWebMercatorTLayer` flag, and the cached translation/scale
+  // coordinate space can't diverge. `resolveImageryProjection` is a
+  // pure peek (no uploads, no cache writes); the branches below honor
+  // its `variant` choice exactly.
+  const projection = resolveImageryProjection(host, tileImagery);
+
+  // First-preference lookup: Mercator variant when the peek chose it.
+  if (projection?.variant === "merc") {
     const cachedMerc = host._imageryTextureCache.get(`${baseKey}_merc`);
     if (cachedMerc) {
       return { view: cachedMerc.view, isMercator: true };
@@ -150,40 +232,26 @@ export function getOrCreateImageryTexture(
       });
       return { view, isMercator: true };
     }
-    // Fall through to geographic — adopt whatever's available so the
-    // tile renders, but flip the flag so the shader samples geographic-V
-    // instead of Mercator-V on a geographic-data texture.
+    // Unreachable: the peek only returns "merc" when one of the two
+    // mercator sources above exists. Fall through defensively.
   }
 
   // Geographic variant lookup.
-  const cachedGeo = host._imageryTextureCache.get(baseKey);
-  if (cachedGeo) return { view: cachedGeo.view, isMercator: false };
+  if (projection?.variant === "geo") {
+    const cachedGeo = host._imageryTextureCache.get(baseKey);
+    if (cachedGeo) return { view: cachedGeo.view, isMercator: false };
 
-  if (imagery._webgpuReprojectedTexture) {
-    const gpuTex = imagery._webgpuReprojectedTexture;
-    const view = gpuTex.createView({ label: `imagery_reproj_${baseKey}` });
-    host._imageryTextureCache.set(baseKey, {
-      texture: gpuTex,
-      view,
-      sourceWidth: gpuTex.width,
-      sourceHeight: gpuTex.height,
-    });
-    return { view, isMercator: false };
-  }
-
-  // Last-resort: race window where the Mercator texture exists but
-  // reprojection hasn't produced the geographic version yet. Bind
-  // mercator and report it back so the shader stays consistent.
-  if (imagery._webgpuMercatorTexture) {
-    const gpuTex = imagery._webgpuMercatorTexture;
-    const view = gpuTex.createView({ label: `imagery_merc_${baseKey}` });
-    host._imageryTextureCache.set(`${baseKey}_merc`, {
-      texture: gpuTex,
-      view,
-      sourceWidth: gpuTex.width,
-      sourceHeight: gpuTex.height,
-    });
-    return { view, isMercator: true };
+    if (imagery._webgpuReprojectedTexture) {
+      const gpuTex = imagery._webgpuReprojectedTexture;
+      const view = gpuTex.createView({ label: `imagery_reproj_${baseKey}` });
+      host._imageryTextureCache.set(baseKey, {
+        texture: gpuTex,
+        view,
+        sourceWidth: gpuTex.width,
+        sourceHeight: gpuTex.height,
+      });
+      return { view, isMercator: false };
+    }
   }
 
   const source = imagery.image || imagery._source;
@@ -376,6 +444,24 @@ export function uploadImageSource(
 
     return view;
   } catch (e) {
+    // NEW-UPLOADIMAGESOURCE-OBSERVABILITY (Batch 304) — reaching here is
+    // unexpected: the transient undecoded-`<img>` case is already handled
+    // by the early `!source.complete` return above, and unsupported source
+    // types are rejected before the try. A throw from
+    // `createTexture`/`copyExternalImageToTexture` therefore signals a real
+    // fault (out-of-memory, an out-of-bounds size, or a lost device) that
+    // would otherwise silently blank the tile with no signal at all.
+    // Surface it as a permanent (non-pragma) error so the failure is
+    // diagnosable. We deliberately do NOT re-throw: device loss is already
+    // routed through the `device.lost` promise in WebGPUContextDeviceLoss /
+    // WebGPUDeviceLossRecovery, and throwing synchronously from this
+    // globe-render hot path would crash the frame loop instead of letting
+    // that async recovery engage. Returning null preserves the caller's
+    // cache-miss retry for recoverable cases.
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(
+      `[CesiumJS:webgpu] uploadImageSource failed for "${cacheKey}": ${message}`,
+    );
     return null;
   }
 }

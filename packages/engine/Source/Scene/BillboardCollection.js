@@ -767,7 +767,13 @@ class BillboardCollection {
       return;
     }
 
-    updateMode(this, frameState);
+    // NEW-BILLBOARD-UPDATEMODE-ORDERING (Batch 304): `updateMode` already
+    // ran inside `runSharedSceneLogic` at the top of `update()` (it must,
+    // so the WebGPU label/billboard feature-renderer path gets
+    // `_baseVolume`/`_baseVolume2D` populated). Calling it a second time
+    // here was redundant — `_createVertexArray`/`_mode` are unchanged
+    // since the shared call, so the re-entry only re-walks the billboards
+    // to no effect. Dropped to keep a single `updateMode` per frame.
 
     const billboards = this._billboards;
     const billboardsLength = billboards.length;

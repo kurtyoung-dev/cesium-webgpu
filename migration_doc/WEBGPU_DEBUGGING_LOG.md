@@ -24,6 +24,24 @@
 
 ---
 
+## Batch 304 — Phase-12 med/low bug-bash: useWebMercatorT single-source + uploadImageSource observability + ray-sphere GLSL backport + billboard updateMode dedup (2026-06-15)
+
+**Items:** NEW-USEWEBMERCATORT-SINGLE-SOURCE (SHIPPED), NEW-UPLOADIMAGESOURCE-OBSERVABILITY (SHIPPED), NEW-RAYSPHERE-PRECISION-BACKPORT (SHIPPED), NEW-BILLBOARD-UPDATEMODE-ORDERING (SHIPPED). Confirmed-real-but-out-of-bug-bash-scope: DP-H47 (czm_atmosphere suite absent from csm_*; scoped + tracked), NEW-WEBGPU-POINT-COLLECTION-PICK (re-triaged as a pick-readback investigation, not a map-back).
+
+**1. useWebMercatorT single-source.** The Mercator-vs-geographic imagery projection decision lived in two places that could disagree: `WebGPUGlobeSurfaceTextures.ts::getOrCreateImageryTexture` (rich decision tree → `isMercator`) and `WebGPUGlobeSurfaceTileUB.ts` (local recompute `tileImagery.useWebMercatorT && !!imagery._webgpuMercatorTexture` for the shader's `useWebMercatorTLayer` flag). The local recompute missed cache hits + the Mercator→geographic fall-through + the race-window bind, so in streaming windows the shader's V-space could disagree with the bound texture's projection (misprojected imagery strip until steady state). Fix: new pure peek `resolveImageryProjection(host, tileImagery) → { variant, isMercator }` is the single authority; `getOrCreateImageryTexture` honors its `variant`, the tile-UB packer derives the flag from its `isMercator`. `TileUBHost extends TextureCacheHost`.
+
+**2. uploadImageSource observability.** `uploadImageSource`'s `catch (e) { return null; }` swallowed all errors; the transient undecoded-`<img>` case is already handled by an early return before the try, so reaching the catch means a genuine fault (OOM / OOB size / lost device) that silently blanked the tile. Fix: permanent (non-pragma) `console.error("[CesiumJS:webgpu] uploadImageSource failed ...")` then return null. Deliberately NOT re-throwing — device loss is routed via the `device.lost` promise; a synchronous throw from the globe-render hot path would crash the frame loop.
+
+**3. Ray-sphere precision backport (GLSL).** The WGSL globe ray-sphere already scaled origin by 1/radius for f32 stability; the GLSL builtin `czm_raySphereIntersectionInterval` still used the naive `c = dot(oc,oc) - radius*radius` (loses ~10 m at Cesium scale, `dot(oc,oc) ≈ radius² ≈ 4e13` beyond f32's 2^24 mantissa). Ported the 1/radius scaling, preserving the general (non-normalized-direction) form: `A=a/r²`, `B=b/r²`, precision-stable `C=dot(ocScaled,ocScaled)-1`; radius² cancels in the root ratio so t stays in world units. Numerically verified f64-equivalent to the original. Benefits all GLSL ray-sphere consumers (sky/ground atmosphere, radiance map, computeScattering). This is a WebGL-path fix — WebGPU uses the already-fixed WGSL.
+
+**4. Billboard updateMode dedup.** `BillboardCollection.update()` ran `updateMode` twice/frame: once in `runSharedSceneLogic` (required, so the WebGPU label/billboard FR path gets `_baseVolume`/`_baseVolume2D`) and again at the old WebGL line ~770. The second call re-entered `recomputeActualPositions` to no effect. Dropped the redundant call (upstream calls it once). The WebGL2 capability + texture-undefined guards stay after the FR branch (WebGL-only — WebGPU must not throw on `!context.instancedArrays`), so the genuine defect was the double-call, not the guard ordering.
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts` (resolveImageryProjection + observability catch), `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts` (peek consumer + TileUBHost extends), `packages/engine/Source/Scene/BillboardCollection.js` (updateMode dedup), `packages/engine/Source/Shaders/Builtin/Functions/raySphereIntersectionInterval.glsl` (1/radius scaling), `Tools/visual-regression/probe-phase12-bugbash.mjs` (NEW gate).
+
+**Verification.** `npx tsc --noEmit` clean; `npx gulp build` green (no index-wgsl churn). probe-phase12-bugbash PASS (5/5: globe+imagery diversity, zero upload errors, WebGL atmosphere ring, billboards render, zero console errors both backends). Standing gates: probe-collections-regression PASS, probe-billboard-partial-write PASS, probe-point-label-partial-write PASS, probe-globe-bindgroup-cache PASS, probe-logdepth-zfight PASS, probe-collections-2dcv-morph clean (billboard GL/GPU ~0.99 across 3D/2D/CV), sandcastle-smoke PASS (3 demos), upstream-regression-check 26/26 PASS.
+
+---
+
 ## Batch 301 — Phase-10 EntityCluster-on-GPU: screen-space bin/count offloaded to a compute pass (2026-06-15)
 
 **Item:** NEW-ENTITYCLUSTER-GPU (SHIPPED — GPU bin/count + CPU merge). Follow-up: NEW-ENTITYCLUSTER-GPU-MERGE.
