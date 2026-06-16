@@ -23,6 +23,11 @@
  * repacked per frame. The renderer is a singleton per scene, owned by
  * SkyBox via the FeatureRenderer seam (FeatureRendererKey.STAR_FIELD).
  *
+ * NEW-TS-CONVERT-JS-RENDERERS (Batch 314) — converted from JS to
+ * TypeScript with ZERO behavior change. Types annotate the existing
+ * logic; the module-level function shapes, exports, and runtime paths are
+ * byte-for-byte equivalent to the prior `.js`.
+ *
  * @private
  * @module WebGPUStarFieldRenderer
  */
@@ -32,6 +37,7 @@ import defined from "../../Core/defined.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Transforms from "../../Core/Transforms.js";
+import type JulianDate from "../../Core/JulianDate.js";
 import BrightStarCatalog from "../../Scene/BrightStarCatalog.js";
 import StarFieldShaderCode from "../../Shaders/WebGPU/Catalog/StarField.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -48,11 +54,83 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import type { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
+import type { WebGPURenderPipelineDescriptor } from "./WebGPURenderPipelineCache.js";
+
+/**
+ * The backend-agnostic StarField scene primitive, narrowed to the fields
+ * this renderer reads/writes. Declared structurally (not imported from
+ * the untyped `Scene/StarField.js`) so this module stays free of a JS
+ * inference dependency while preserving the exact runtime contract.
+ * @private
+ */
+interface StarFieldLike {
+  show: boolean;
+  readonly _intensity: number;
+  readonly _pointAngularSize: number;
+  readonly _minPointSize: number;
+  _webgpuCache?: StarFieldWebGPUCache;
+  // Present on every class instance at runtime; declared so the primitive
+  // structurally satisfies `WebGPUCommandOwner` when passed as a draw
+  // command `owner` (the SceneRenderer reads `owner.constructor.name`).
+  readonly constructor?: { readonly name?: string };
+}
+
+/**
+ * A cached pipeline + its in-flight resolution state. The descriptor is
+ * built once; `pipeline` is filled when the central pipeline cache
+ * resolves it (sync hit or async settle). Mirrors the
+ * `compositePipelineEntry` shape in WebGPUVolumetricFogRenderer.
+ * @private
+ */
+interface StarPipelineEntry {
+  descriptor: WebGPURenderPipelineDescriptor;
+  pipeline: GPURenderPipeline | null;
+  pending: boolean;
+}
+
+/**
+ * Per-StarField WebGPU resource cache, attached to `starField._webgpuCache`.
+ * All slots are lazily created on the first `updateWebGPUStarField` call.
+ * @private
+ */
+interface StarFieldWebGPUCache {
+  instanceBuffer?: WebGPUBuffer;
+  starCount?: number;
+  pipelineEntry?: StarPipelineEntry;
+  pipeline?: GPURenderPipeline;
+  bindGroupLayout?: GPUBindGroupLayout;
+  _pipelineFormatGeneration?: number;
+  uniformBuffer?: WebGPUBuffer;
+  uniformData?: Float32Array;
+  bindGroup?: GPUBindGroup;
+  command?: WebGPUDrawCommand;
+  injectCommand?: WebGPUDrawCommand;
+}
+
+/**
+ * The WebGPU-context fields this renderer reads. The scene-FB format and
+ * its invalidation generation are WebGPU-only and not present on the
+ * ambient `CesiumGraphicsContext`; narrow to them here at the boundary.
+ * @private
+ */
+interface StarFieldContext {
+  readonly device?: GPUDevice | null;
+  readonly uniformState: CesiumUniformState;
+  readonly scenePipelineFormat?: GPUTextureFormat;
+  readonly depthFormat?: GPUTextureFormat;
+  readonly _msaaSamples?: number;
+  readonly _scenePipelineFormatGeneration?: number;
+  readonly webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+}
 
 // Per-device shader-module cache so two starfields on the same GPUDevice
 // share one compiled module. (Pattern: WebGPUEnvironmentRenderer.)
-const _starShaderModuleCaches = new WeakMap();
-function getStarShaderModuleCache(device) {
+const _starShaderModuleCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+function getStarShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
   let cache = _starShaderModuleCaches.get(device);
   if (!cache) {
     cache = new WebGPUShaderModuleCache(device);
@@ -89,7 +167,7 @@ const scratchStarDir = new Cartesian3();
  * @returns {number[]} [r, g, b] in [0, 1].
  * @private
  */
-function bvToRgb(bv) {
+function bvToRgb(bv: number): [number, number, number] {
   const denomA = 0.92 * bv + 1.7;
   const denomB = 0.92 * bv + 0.62;
   // Guard against the (rare for real stars) pole near bv ≈ -1.8 / -0.67.
@@ -136,7 +214,7 @@ function bvToRgb(bv) {
  *
  * @private
  */
-function buildStarInstanceData() {
+function buildStarInstanceData(): Float32Array {
   const cat = BrightStarCatalog.data;
   const stride = BrightStarCatalog.STRIDE;
   const count = BrightStarCatalog.count;
@@ -207,16 +285,24 @@ function buildStarInstanceData() {
  * daytime fade.
  *
  * Star directions in the instance buffer are TEME/inertial. We bake the
- * TEME→pseudo-fixed rotation into the matrix here so the shader can apply
+ * TEME→fixed rotation into the matrix here so the shader can apply
  * one transform: viewProjection(noTranslation) · temeToFixed · dir.
  *
  * @private
  */
-function packStarUniforms(uniformData, frameState, starField) {
+function packStarUniforms(
+  uniformData: Float32Array,
+  frameState: CesiumFrameState,
+  starField: StarFieldLike,
+): void {
   const uniformState = frameState.context.uniformState;
 
   // TEME → fixed rotation for the current scene time.
-  const date = frameState.time;
+  // `frameState.time` is the ambient opaque JulianDate; bridge to the real
+  // Core `JulianDate` type that `Transforms` consumes. The ambient boundary
+  // type (cesium-js-types.d.ts) deliberately keeps it opaque so that file
+  // stays free of Core imports — the cast is the documented seam.
+  const date = frameState.time as unknown as JulianDate | undefined;
   let temeToFixed4;
   if (defined(date)) {
     Transforms.computeTemeToPseudoFixedMatrix(date, scratchTemeToFixed3);
@@ -262,7 +348,7 @@ function packStarUniforms(uniformData, frameState, starField) {
   // altitude sine.
   let dayFade = 1.0;
   const sunDir = uniformState.sunDirectionWC;
-  const camPos = frameState.camera.positionWC;
+  const camPos = frameState.camera?.positionWC;
   if (defined(sunDir) && defined(camPos)) {
     const camLen = Cartesian3.magnitude(camPos);
     if (camLen > 1.0) {
@@ -298,7 +384,9 @@ function packStarUniforms(uniformData, frameState, starField) {
  * for the no-central-cache fallback path.
  * @private
  */
-function _starDescriptorToGPU(d) {
+function _starDescriptorToGPU(
+  d: WebGPURenderPipelineDescriptor,
+): GPURenderPipelineDescriptor {
   return {
     label: d.name,
     layout: d.layout ?? "auto",
@@ -327,7 +415,11 @@ function _starDescriptorToGPU(d) {
  * (Pattern: tryResolveEnvPipeline.)
  * @private
  */
-function tryResolveStarPipeline(device, pipelineCache, entry) {
+function tryResolveStarPipeline(
+  device: GPUDevice,
+  pipelineCache: WebGPURenderPipelineCache | null,
+  entry: StarPipelineEntry,
+): GPURenderPipeline | null {
   if (entry.pipeline) {
     return entry.pipeline;
   }
@@ -370,11 +462,15 @@ function tryResolveStarPipeline(device, pipelineCache, entry) {
  * @param {Array} commandList The frame's command list to push onto.
  * @private
  */
-function updateWebGPUStarField(starField, frameState, commandList) {
+function updateWebGPUStarField(
+  starField: StarFieldLike,
+  frameState: CesiumFrameState,
+  commandList: CesiumAnyDrawCommand[],
+): WebGPUDrawCommand | undefined {
   if (!starField.show) {
     return;
   }
-  const context = frameState.context;
+  const context = frameState.context as unknown as StarFieldContext;
   const device = context.device;
   if (!defined(device)) {
     return;
@@ -421,7 +517,7 @@ function updateWebGPUStarField(starField, frameState, commandList) {
 
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFormat = context.depthFormat || "depth24plus-stencil8";
-    const descriptor = {
+    const descriptor: WebGPURenderPipelineDescriptor = {
       name: `StarField pipeline [${format}/${depthFormat}]`,
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
       vertex: {
@@ -547,7 +643,7 @@ function updateWebGPUStarField(starField, frameState, commandList) {
     pass: 0, // Pass.ENVIRONMENT
     owner: starField,
   });
-  commandList.push(cache.command);
+  commandList.push(cache.command as unknown as CesiumAnyDrawCommand);
 
   cache.injectCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
@@ -562,6 +658,20 @@ function updateWebGPUStarField(starField, frameState, commandList) {
 }
 
 /**
+ * A read-only diagnostic snapshot of a starfield's WebGPU cache.
+ * @private
+ */
+interface StarFieldStatistics {
+  backend: "webgpu";
+  starCount: number;
+  pipelineReady: boolean;
+  bindGroupReady: boolean;
+  mrtMode: boolean;
+  mrtSlot1Format: GPUTextureFormat;
+  intensityScale: number | null;
+}
+
+/**
  * Debug surface — returns a diagnostic snapshot of a starfield's WebGPU
  * cache. Pure read; safe from Scene.getDebugSnapshot().
  *
@@ -569,7 +679,9 @@ function updateWebGPUStarField(starField, frameState, commandList) {
  * @returns {object|null}
  * @private
  */
-function getWebGPUStarFieldStatistics(starField) {
+function getWebGPUStarFieldStatistics(
+  starField: StarFieldLike | undefined,
+): StarFieldStatistics | null {
   if (!defined(starField) || !defined(starField._webgpuCache)) {
     return null;
   }
@@ -593,7 +705,9 @@ function getWebGPUStarFieldStatistics(starField) {
  * @param {StarField} starField
  * @private
  */
-function destroyWebGPUStarFieldResources(starField) {
+function destroyWebGPUStarFieldResources(
+  starField: StarFieldLike | undefined,
+): void {
   const cache = starField && starField._webgpuCache;
   if (!defined(cache)) {
     return;

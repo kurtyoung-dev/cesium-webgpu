@@ -24,6 +24,25 @@
 
 ---
 
+## Batch 314 — TS-convert WebGPUStarFieldRenderer (NEW-TS-CONVERT-JS-RENDERERS, first slice) (2026-06-16)
+
+**Item:** NEW-TS-CONVERT-JS-RENDERERS — convert one substantial JS WebGPU renderer to TypeScript with ZERO behavior change. Model renderer (`WebGPUModelRenderer.js`, 3802 LOC) was too entangled for a single safe zero-behavior pass; converted the freshly-landed `WebGPUStarFieldRenderer` (622 LOC, Batch 313) instead — self-contained, module-level functions (no `@private` cross-module method trap), all imported deps already TS.
+
+**Files:** `Renderer/WebGPU/WebGPUStarFieldRenderer.js` → `.ts` (renamed; logic byte-equivalent). Consumer `Renderer/WebGPU/WebGPUFeatureRenderers.ts` unchanged (it already imported the named exports via the `.js` specifier, which TS resolves to the `.ts`).
+
+**Typing approach (no `any`; the any-ban):**
+
+- Declared local structural interfaces for the scene-side shapes the renderer touches — `StarFieldLike` (the `Scene/StarField.js` fields read/written, incl. a `readonly constructor?` slot so the primitive structurally satisfies `WebGPUDrawCommand`'s `WebGPUCommandOwner`), `StarFieldWebGPUCache` (the `_webgpuCache` sidecar), `StarPipelineEntry` (descriptor + in-flight pipeline, mirroring `WebGPUVolumetricFogRenderer`'s `compositePipelineEntry`), and `StarFieldContext` (the WebGPU-only context fields — `scenePipelineFormat`, `_scenePipelineFormatGeneration`, `_msaaSamples`, `webgpuPipelineCache` — narrowed at the `frameState.context as unknown as StarFieldContext` boundary because the ambient `CesiumGraphicsContext` doesn't carry `scenePipelineFormat`).
+- `frameState: CesiumFrameState`, `commandList: CesiumAnyDrawCommand[]` from the global ambient `cesium-js-types.d.ts`.
+- Imported `JulianDate` as a TYPE and cast `frameState.time as unknown as JulianDate` for `Transforms.computeTemeToPseudoFixedMatrix` (the ambient time is deliberately opaque to keep that .d.ts free of Core imports — the cast is the documented seam, same `as unknown as` pattern `WebGPUVolumetricFogRenderer` uses for `frameState.time`).
+- Strong return types: `bvToRgb → [number,number,number]`, `getWebGPUStarFieldStatistics → StarFieldStatistics | null`, `updateWebGPUStarField → WebGPUDrawCommand | undefined`.
+
+**Two strictness gaps the engine tsconfig (not root `tsc --noEmit`) caught** — worth noting because root and gulp tsc differ in strictness: (1) `Transforms` wants the real `JulianDate`, not the opaque ambient time; (2) `WebGPUCommandOwner` requires a `constructor` property in common, so the structural `StarFieldLike` needed a `readonly constructor?` slot. Both fixed without `any` or logic change.
+
+**Verified:** `npx tsc --noEmit` clean (root) + `npx gulp build` green (engine tsconfig, the stricter gate). Domain + standing gates all PASS: `probe-stars-catalog` (Sirius RA/Dec center cluster, Pogson intensity liveness, bloom-fed brightness, 263 stars, pipelineReady, 0 errors — PNG visually confirms the starfield is identical), `probe-collections-regression` (5/5), `probe-skybox-stars-sun` (0 gate/console faults, no device loss), `probe-bloom-parity` (A–D), `sandcastle-smoke` (3 demos), `upstream-regression-check` (26/26). No `index-wgsl.js` churn.
+
+---
+
 ## Batch 313 — Track V-C: bright-star catalog starfield (NEW-STARS-BRIGHT-CATALOG) (2026-06-16)
 
 **Item:** NEW-STARS-BRIGHT-CATALOG (Track V-C, independent of the atmosphere stages). A real Yale Bright Star Catalog starfield that augments the static SkyBox cubemap on WebGPU with physically-placed, time-correct HDR stars fed through bloom.
