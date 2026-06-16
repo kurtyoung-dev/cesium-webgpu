@@ -58,6 +58,81 @@ const DEFAULT_LAMBDA = 0.7;
 const DEFAULT_BLEND_BAND = 0.05;
 
 /**
+ * WGS84 ellipsoid radii (metres). Used by the ground-clamp pass in
+ * `_computeFrustumCornersWorldSpace` (NEW-CSM-CASCADE-GROUND-FIT) to pull
+ * each cascade frustum-slice's far corners back to the point where the
+ * corresponding view ray pierces the globe surface. Without this clamp a
+ * low top-down camera's near cascade fits a multi-km bounding sphere
+ * (~12 m/texel at 1024²) because the perspective frustum extends to the
+ * horizon, whereas the WebGL `ShadowMap` path fits the actual visible
+ * scene volume (clamps `sceneCamera.frustum.far` to `shadowState.farPlane`
+ * before the cascade fit). Clamping at the ground reproduces that tight
+ * fit so cascade-0 stays sub-metre/texel and the cast-shadow edge is
+ * crisp instead of a 12 m-texel sawtooth. Inverse-square radii are
+ * precomputed for the closed-form ray/ellipsoid solve.
+ */
+const WGS84_RADII_X = 6378137.0;
+const WGS84_RADII_Y = 6378137.0;
+const WGS84_RADII_Z = 6356752.314245179;
+const WGS84_ONE_OVER_RADII_SQ_X = 1.0 / (WGS84_RADII_X * WGS84_RADII_X);
+const WGS84_ONE_OVER_RADII_SQ_Y = 1.0 / (WGS84_RADII_Y * WGS84_RADII_Y);
+const WGS84_ONE_OVER_RADII_SQ_Z = 1.0 / (WGS84_RADII_Z * WGS84_RADII_Z);
+
+/**
+ * Closed-form distance from `origin` to the first (entry) ray/ellipsoid
+ * intersection along unit `dir`, both in world (ECEF) coordinates. Returns
+ * the positive entry-distance `t`, or `Infinity` when the ray misses the
+ * ellipsoid (camera looking at the horizon / sky). FP64 throughout — the
+ * coefficients involve 6.4M-scale ECEF coordinates squared, so single
+ * precision would lose the discriminant. Mirrors the quadratic in
+ * `IntersectionTests.rayEllipsoid` but inlined + scalarized to avoid the
+ * per-corner `Ray`/`Cartesian3`/`Interval` allocations that helper makes
+ * (this runs 4× per cascade per frame).
+ */
+function _rayEllipsoidEntryDistance(
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+): number {
+  // Scale into the unit-sphere frame where the ellipsoid becomes a sphere.
+  const oxs = ox * ox * WGS84_ONE_OVER_RADII_SQ_X;
+  const oys = oy * oy * WGS84_ONE_OVER_RADII_SQ_Y;
+  const ozs = oz * oz * WGS84_ONE_OVER_RADII_SQ_Z;
+  const odd =
+    ox * dx * WGS84_ONE_OVER_RADII_SQ_X +
+    oy * dy * WGS84_ONE_OVER_RADII_SQ_Y +
+    oz * dz * WGS84_ONE_OVER_RADII_SQ_Z;
+  const ddd =
+    dx * dx * WGS84_ONE_OVER_RADII_SQ_X +
+    dy * dy * WGS84_ONE_OVER_RADII_SQ_Y +
+    dz * dz * WGS84_ONE_OVER_RADII_SQ_Z;
+
+  const a = ddd;
+  const b = 2.0 * odd;
+  const c = oxs + oys + ozs - 1.0;
+  const disc = b * b - 4.0 * a * c;
+  if (a <= 0.0 || disc < 0.0) {
+    return Infinity;
+  }
+  const sqrtDisc = Math.sqrt(disc);
+  // Smaller root = entry point. Both roots share denominator 2a (>0).
+  const t0 = (-b - sqrtDisc) / (2.0 * a);
+  const t1 = (-b + sqrtDisc) / (2.0 * a);
+  // Camera is above ground (c < 0 → inside) or outside. Take the nearest
+  // intersection in front of the camera; ignore intersections behind it.
+  if (t0 > 0.0) {
+    return t0;
+  }
+  if (t1 > 0.0) {
+    return t1;
+  }
+  return Infinity;
+}
+
+/**
  * Per-cascade cast UBO size. Matches `SHADOW_UNIFORM_SIZE` over in
  * WebGPUShadowMapRenderer.js (same struct layout: VP + RTE camera +
  * biases), but bumped to 128 bytes for alignment. Keeping the shape
@@ -408,11 +483,87 @@ export class WebGPUCSMRenderer {
   }
 
   /**
+   * Largest along-view distance at which any of the camera frustum's four
+   * far-edge rays pierces the WGS84 ellipsoid (NEW-CSM-CASCADE-GROUND-FIT).
+   * This is the depth of the *visible ground patch* — clamping the split
+   * distribution to it (via `computeSplits`'s `groundFar` argument) keeps
+   * the cascades packed across the receivers the camera can actually see,
+   * rather than spread across `[near, maxShadowDistance]`. Returns
+   * `Infinity` when no frustum-edge ray hits the globe (camera aimed at
+   * the horizon/sky), in which case `computeSplits` falls back to the
+   * `maxShadowDistance` clamp. The MAX (not min) edge is used so the whole
+   * visible ground stays inside the cascade set; the per-corner MIN clamp
+   * inside `_computeFrustumCornersWorldSpace` then tightens each individual
+   * cascade's bounding sphere.
+   */
+  computeVisibleGroundFar(camera: {
+    positionWC: CesiumCartesian3;
+    directionWC: CesiumCartesian3;
+    upWC: CesiumCartesian3;
+    rightWC: CesiumCartesian3;
+    frustum: { fovy?: number; aspectRatio?: number };
+  }): number {
+    const fovy = camera.frustum.fovy ?? Math.PI / 3;
+    const aspect = camera.frustum.aspectRatio ?? 1;
+    const tanHalfFovY = Math.tan(fovy * 0.5);
+    const tanW = tanHalfFovY * aspect;
+    const pos = camera.positionWC;
+    const fwd = camera.directionWC;
+    const up = camera.upWC;
+    const rt = camera.rightWC;
+
+    let maxT = 0;
+    let anyHit = false;
+    const signs = [
+      [-1, +1],
+      [+1, +1],
+      [-1, -1],
+      [+1, -1],
+    ];
+    for (const [sW, sH] of signs) {
+      const dirX = fwd.x + sW * tanW * rt.x + sH * tanHalfFovY * up.x;
+      const dirY = fwd.y + sW * tanW * rt.y + sH * tanHalfFovY * up.y;
+      const dirZ = fwd.z + sW * tanW * rt.z + sH * tanHalfFovY * up.z;
+      const t = _rayEllipsoidEntryDistance(
+        pos.x,
+        pos.y,
+        pos.z,
+        dirX,
+        dirY,
+        dirZ,
+      );
+      if (Number.isFinite(t)) {
+        anyHit = true;
+        if (t > maxT) maxT = t;
+      }
+    }
+    return anyHit ? maxT : Infinity;
+  }
+
+  /**
    * Compute cascade splits using a blend of uniform and logarithmic
    * distributions (Practical Split Schemes for Shadow Mapping, GPU Gems 3).
+   *
+   * @param groundFar Optional visible-ground far distance (from
+   *   `computeVisibleGroundFar`). When finite + smaller than the
+   *   `maxShadowDistance` clamp, the cascades are distributed across
+   *   `[near, groundFar]` so the near cascade stays tight (see
+   *   NEW-CSM-CASCADE-GROUND-FIT). Omitted/Infinity → legacy
+   *   `maxShadowDistance` clamp.
    */
-  computeSplits(cameraNear: number, cameraFar: number): void {
-    const far = Math.min(cameraFar, this._maxShadowDistance);
+  computeSplits(
+    cameraNear: number,
+    cameraFar: number,
+    groundFar?: number,
+  ): void {
+    let far = Math.min(cameraFar, this._maxShadowDistance);
+    if (groundFar !== undefined && Number.isFinite(groundFar)) {
+      // Pad the visible-ground far slightly so receivers right at the
+      // horizon edge of the visible patch still fall inside the last
+      // cascade (the per-corner clamp already tightens each slice).
+      far = Math.min(far, groundFar * 1.1);
+    }
+    far = Math.max(far, cameraNear + 1.0);
     const lambda = this._lambda;
     const n = this._cascadeCount;
 
@@ -477,10 +628,17 @@ export class WebGPUCSMRenderer {
     // reference cascade-0 radius for bias scaling below.
     for (let c = 0; c < this._cascadeCount; c++) {
       const cascade = this._cascades[c];
+      // NEW-CSM-CASCADE-GROUND-FIT — ground-clamp the far corners so a low
+      // top-down camera's near cascade fits the actual visible ground patch
+      // (sub-metre/texel at 1024²) instead of ballooning to the horizon
+      // (~12 m/texel → 50× too-soft sawtooth edge vs the WebGL tight-fit
+      // reference). Mirrors WebGL `ShadowMap` clamping `sceneCamera.frustum
+      // .far` to the visible scene volume before the cascade fit.
       const corners = _computeFrustumCornersWorldSpace(
         camera,
         cascade.splitNear,
         cascade.splitFar,
+        true,
       );
       const { center, radius } = _fitBoundingSphere(corners);
 
@@ -887,6 +1045,17 @@ export class WebGPUCSMRenderer {
  * vectors + FOV directly rather than an inverse-NDC walk — more
  * numerically stable under the wide near/far ranges Cesium scenes use.
  *
+ * @param groundClamp When true (NEW-CSM-CASCADE-GROUND-FIT), each of the
+ *   four far-plane corners is pulled back along its own view ray to the
+ *   point where the ray pierces the WGS84 ellipsoid. This stops a near
+ *   cascade from ballooning to the horizon under a low top-down camera
+ *   (where the perspective far plane is multi-km past the visible ground
+ *   but the actual receivers sit just below the camera). The near plane is
+ *   never clamped — it's always in front of the ground. Rays that miss the
+ *   ellipsoid (looking at the sky / horizon) keep the unclamped `farDist`.
+ *   Default false preserves the pre-fix behavior for specs that exercise
+ *   the raw frustum.
+ *
  * @returns Flat Float64Array of 24 floats (8 corners × xyz).
  */
 export function computeFrustumCornersWorldSpace(
@@ -899,8 +1068,14 @@ export function computeFrustumCornersWorldSpace(
   },
   nearDist: number,
   farDist: number,
+  groundClamp = false,
 ): Float64Array {
-  return _computeFrustumCornersWorldSpace(camera, nearDist, farDist);
+  return _computeFrustumCornersWorldSpace(
+    camera,
+    nearDist,
+    farDist,
+    groundClamp,
+  );
 }
 
 function _computeFrustumCornersWorldSpace(
@@ -913,14 +1088,12 @@ function _computeFrustumCornersWorldSpace(
   },
   nearDist: number,
   farDist: number,
+  groundClamp = false,
 ): Float64Array {
   const fovy = camera.frustum.fovy ?? Math.PI / 3;
   const aspect = camera.frustum.aspectRatio ?? 1;
   const tanHalfFovY = Math.tan(fovy * 0.5);
-  const nearH = tanHalfFovY * nearDist;
-  const nearW = nearH * aspect;
-  const farH = tanHalfFovY * farDist;
-  const farW = farH * aspect;
+  const tanW = tanHalfFovY * aspect;
 
   const pos = camera.positionWC;
   const fwd = camera.directionWC;
@@ -928,28 +1101,80 @@ function _computeFrustumCornersWorldSpace(
   const rt = camera.rightWC;
 
   const out = new Float64Array(24);
-  const write = (
-    i: number,
-    dist: number,
-    w: number,
-    h: number,
-    sW: number,
-    sH: number,
-  ) => {
-    out[i * 3 + 0] = pos.x + fwd.x * dist + rt.x * sW * w + up.x * sH * h;
-    out[i * 3 + 1] = pos.y + fwd.y * dist + rt.y * sW * w + up.y * sH * h;
-    out[i * 3 + 2] = pos.z + fwd.z * dist + rt.z * sW * w + up.z * sH * h;
+  // A corner sits at `pos + dist * (fwd + sW*tanW*rt + sH*tanHalfFovY*up)`.
+  // The bracketed vector is the (non-unit) ray direction through that
+  // corner whose forward component is exactly 1, so the scalar `dist` IS
+  // the along-view (planar) depth — clamping it keeps the corner on the
+  // frustum edge while shortening the slice.
+  const write = (i: number, dist: number, sW: number, sH: number) => {
+    const dirX = fwd.x + sW * tanW * rt.x + sH * tanHalfFovY * up.x;
+    const dirY = fwd.y + sW * tanW * rt.y + sH * tanHalfFovY * up.y;
+    const dirZ = fwd.z + sW * tanW * rt.z + sH * tanHalfFovY * up.z;
+    out[i * 3 + 0] = pos.x + dirX * dist;
+    out[i * 3 + 1] = pos.y + dirY * dist;
+    out[i * 3 + 2] = pos.z + dirZ * dist;
   };
-  // Near plane: TL, TR, BL, BR
-  write(0, nearDist, nearW, nearH, -1, +1);
-  write(1, nearDist, nearW, nearH, +1, +1);
-  write(2, nearDist, nearW, nearH, -1, -1);
-  write(3, nearDist, nearW, nearH, +1, -1);
-  // Far plane
-  write(4, farDist, farW, farH, -1, +1);
-  write(5, farDist, farW, farH, +1, +1);
-  write(6, farDist, farW, farH, -1, -1);
-  write(7, farDist, farW, farH, +1, -1);
+
+  // Per-corner along-view distance to the ground (Infinity when the ray
+  // misses the globe). `_rayEllipsoidEntryDistance` returns the along-ray
+  // parameter `t`; because each corner ray has unit forward component,
+  // that `t` is the same along-view distance the corner uses.
+  const tGroundFor = (sW: number, sH: number): number => {
+    const dirX = fwd.x + sW * tanW * rt.x + sH * tanHalfFovY * up.x;
+    const dirY = fwd.y + sW * tanW * rt.y + sH * tanHalfFovY * up.y;
+    const dirZ = fwd.z + sW * tanW * rt.z + sH * tanHalfFovY * up.z;
+    return _rayEllipsoidEntryDistance(pos.x, pos.y, pos.z, dirX, dirY, dirZ);
+  };
+
+  if (!groundClamp) {
+    // Legacy raw-frustum corners (specs + 2D/CV gating already excludes
+    // the ground-clamp path; this preserves the historical shape).
+    write(0, nearDist, -1, +1);
+    write(1, nearDist, +1, +1);
+    write(2, nearDist, -1, -1);
+    write(3, nearDist, +1, -1);
+    write(4, farDist, -1, +1);
+    write(5, farDist, +1, +1);
+    write(6, farDist, -1, -1);
+    write(7, farDist, +1, -1);
+    return out;
+  }
+
+  // Ground-clamped fit (NEW-CSM-CASCADE-GROUND-FIT). The shadow RECEIVERS
+  // live in a thin shell at the globe surface, but a perspective frustum
+  // slice is a fat wedge most of whose volume is empty air above the
+  // ground. Fitting a bounding sphere to the raw wedge bloats the radius
+  // (its near corners sit ~km above the surface for a top-down camera),
+  // which is exactly what made the far cascade ~12 m/texel and the cast
+  // edge a 50× sawtooth. So we collapse BOTH the near and far corners onto
+  // the ground along their own view rays: each corner is placed at the
+  // point where its ray pierces the globe, clamped into this cascade's
+  // [splitNear, splitFar] depth band so the cascade still owns only its
+  // slice of the visible ground. Corners whose ray misses the globe keep
+  // their geometric slice depth (so airborne casters near the horizon are
+  // still covered). The result hugs the visible ground patch the way
+  // WebGL's light-space-AABB fit does.
+  const clampToBand = (sW: number, sH: number, fallback: number): number => {
+    const t = tGroundFor(sW, sH);
+    if (!Number.isFinite(t)) {
+      return fallback;
+    }
+    // Place the corner on the ground, but never outside this cascade's own
+    // depth band — that keeps adjacent cascades from overlapping onto the
+    // same ground ring and preserves the split partition.
+    return Math.min(farDist, Math.max(nearDist, t));
+  };
+
+  // Near "plane": ground points at this cascade's near depth band edge.
+  write(0, clampToBand(-1, +1, nearDist), -1, +1);
+  write(1, clampToBand(+1, +1, nearDist), +1, +1);
+  write(2, clampToBand(-1, -1, nearDist), -1, -1);
+  write(3, clampToBand(+1, -1, nearDist), +1, -1);
+  // Far "plane": ground points at this cascade's far depth band edge.
+  write(4, clampToBand(-1, +1, farDist), -1, +1);
+  write(5, clampToBand(+1, +1, farDist), +1, +1);
+  write(6, clampToBand(-1, -1, farDist), -1, -1);
+  write(7, clampToBand(+1, -1, farDist), +1, -1);
   return out;
 }
 

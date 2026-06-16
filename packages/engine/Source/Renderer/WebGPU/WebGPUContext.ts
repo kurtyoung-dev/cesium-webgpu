@@ -3089,7 +3089,13 @@ export class WebGPUContext extends GraphicsContext {
           | { x: number; y: number; z: number }
           | undefined;
         const lightDir = sunDir ?? { x: 0, y: 1, z: 0 };
-        csm.computeSplits(frustum.near, frustum.far);
+        // NEW-CSM-CASCADE-GROUND-FIT — clamp the split distribution to the
+        // visible ground depth so the near cascade fits the actual receiver
+        // patch (sub-metre/texel) instead of spreading over the whole
+        // [near, maxShadowDistance] range. Mirrors WebGL ShadowMap clamping
+        // sceneCamera.frustum.far to the visible scene volume.
+        const groundFar = csm.computeVisibleGroundFar(camera);
+        csm.computeSplits(frustum.near, frustum.far, groundFar);
         csm.computeCascadeVPs(camera, lightDir);
       }
     }

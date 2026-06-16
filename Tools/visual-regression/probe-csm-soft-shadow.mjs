@@ -143,13 +143,28 @@ async function capture(label, { renderer, useCsm, csmSoft, webglSoft }) {
         view.lon + 0.0004, view.lat + 0.0030,
         view.lon - 0.0004, view.lat + 0.0030,
       ]);
+      // FLAT appearance (no diffuse lighting) is REQUIRED for this probe.
+      // The metric counts ROI pixels whose luminance sits in the penumbra
+      // band as "soft-edge" pixels. A lit (flat:false) PerInstanceColor
+      // wall renders its body at a DIFFERENT luminance on WebGPU vs WebGL
+      // (~92 vs ~154) because of a pre-existing PerInstanceColorAppearance
+      // diffuse-shading parity gap that is INDEPENDENT of shadows (it is
+      // present with shadows fully OFF — NEW-PERINSTANCE-DIFFUSE-PARITY).
+      // That gap puts the whole WebGPU wall body inside the penumbra band
+      // (~14k pixels) and swamps the actual cast-shadow edge the
+      // parity-ballpark sub-check is meant to measure. `flat:true` makes
+      // the caster body render at its base color on BOTH backends (lit,
+      // out of the penumbra band), so the only penumbra pixels left are
+      // the genuine ground cast-shadow edge — exactly what we want to
+      // compare for soft-shadow parity. (The cast shadow itself is
+      // unaffected by the caster's appearance.)
       const wall = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
           geometry: new C.PolygonGeometry({
             polygonHierarchy: new C.PolygonHierarchy(wallCoords),
             height: 0,
             extrudedHeight: 120, // 120 m tall block
-            vertexFormat: C.PerInstanceColorAppearance.VERTEX_FORMAT,
+            vertexFormat: C.PerInstanceColorAppearance.FLAT_VERTEX_FORMAT,
           }),
           attributes: {
             color: C.ColorGeometryInstanceAttribute.fromColor(
@@ -159,7 +174,7 @@ async function capture(label, { renderer, useCsm, csmSoft, webglSoft }) {
         }),
         appearance: new C.PerInstanceColorAppearance({
           translucent: false,
-          flat: false,
+          flat: true,
         }),
         asynchronous: false,
         shadows: C.ShadowMode.ENABLED,
