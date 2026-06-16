@@ -24,6 +24,24 @@
 
 ---
 
+## Batch 307 — NEW-COLLECTION-RENDERER-BASE finisher: fold Cloud + Polyline onto the shared base (2026-06-16)
+
+**Item:** NEW-COLLECTION-RENDERER-BASE (Phase 11 finisher). Batch 302 extracted `WebGPUCollectionRendererBase.ts` and migrated Billboard + Point byte-green; this batch folds Cloud + Polyline onto the base's genuinely-shared per-frame plumbing with ZERO behavior change, taking the base from 2/5 → 4/5 collection renderers (Label still pending its own stage).
+
+**Not a bug fix — a dedup refactor.** Cloud and Polyline differ structurally from Billboard/Point (Cloud is non-resident with a count-only rebuild gate + its own velocity lifecycle; Polyline is bucket-shaped, grouped by material type, no resident-instance manager), so only the genuinely-shared scaffolding moved; each renderer keeps its unique pack + pipeline logic.
+
+**Cloud (`WebGPUCloudRenderer.ts`).** Replaced the inline `_cloudShaderModuleCaches` WeakMap + 8-line `getCloudShaderModuleCache` getter with the base's `makeDeviceShaderModuleCacheAccessor()` one-liner (and dropped the now-unused `WebGPUShaderModuleCache` import). Added the re-entry / infinite-loop sentinel (Sentinel 1) by splitting the entry into a thin `updateWebGPUCloudCollection` wrapper (early `show`/`length` return → ensure cache → `beginCollectionFrame` → inner in try/`finally` `endCollectionFrame`) around a new `_updateWebGPUCloudCollectionInner`; `CloudCache` now `extends CollectionRenderCache` so the sentinel fields are typed. KEPT: the count-only rebuild gate, `buildInstanceBuffer` non-resident packing, the Batch-170 velocity lifecycle, and the full-re-init format/log-depth invalidation (it nulls a single `pipelineDescriptor` + velocity pipelines + sets `initialized=false`, NOT defines→entry Maps, so the base's Map-clearing `invalidatePipelinesOnSceneFormatChange` and `getOrCreateInstanceManager`/`syncInstancesAndConsume` do not apply — Cloud has no resident manager and no pick path).
+
+**Polyline (`WebGPUPolylineRenderer.js`).** Replaced the `_polylineShaderModuleCaches` WeakMap + getter with `makeDeviceShaderModuleCacheAccessor()`. Folded `computeNoDepthTest(frameState)` in place of the inline `frameState.morphTime === 0.0` — byte-identical because settled SCENE3D always reports `morphTime === 1.0` (`SceneMode.getMorphTime`), so the base's extra `&& mode !== SCENE3D` guard never flips the result (verified: 2D coplanar-depth draw-on-top still works in `coll2dcv-2d-webgpu.png`). Added the re-entry sentinel via a thin async `updateWebGPUPolylines` wrapper around `_updateWebGPUPolylinesInner` (the inner is `await`ed inside the wrapper's try, so the depth settles in `finally` only after the inner promise resolves — correct for the async per-material-group build). KEPT: material-type bucketing, the nested `pipelines[materialType] → Map` cache + bespoke `${defines}|${noDepthTest?1:0}` string key (so `pipelineKeyWithDepthFlag`'s bitmask fold does not apply), segment packing, and the per-material velocity gate.
+
+**Dedup.** ~22 lines of duplicated per-renderer shader-module-cache WeakMap+accessor boilerplate collapsed to two shared-import one-liners; the inline noDepthTest derivation is now shared. (The net `git diff` shows +86/−35 because the re-entry-sentinel wrapper + the WHY-comments are additive; the actual *duplicated-scaffolding* removed is the WeakMap+getter blocks + the noDepthTest derivation.)
+
+**Verification (Principle 8 + standing gates).** `probe-polyline-cloud-consume` PASS (queues drained pl=0/cloud=0, modified polyline re-enqueues=1, polyline 3996px). `probe-cloud-property-edit` PASS (edit lands ≤2 frames, settled rebuilds=0, 0 errors). `probe-collections-regression` PASS (settled re-touch 0/0/0/0/0, upload-gate 0/0/0, cloud 1774px + polyline 19992px render; read `collections-regression-after.png` — all five collection types render correctly). `probe-collections-far-camera` PASS. `probe-collections-2dcv-morph` — polyline renders 3D/2D/CV on both backends, errs=0 in all six runs (comparison report, no hard gate). `sandcastle-smoke` 3/3 PASS. `upstream-regression-check` 26/0. `tsc --noEmit` clean; `npx gulp build` green; `index-wgsl.js` stayed clean (Batch-303 fix holds).
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js`, `migration_doc/DEFERRED_WORK.md`, `migration_doc/FEATURE_INVENTORY.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`.
+
+---
+
 ## Batch 306 — NEW-CSM-CASCADE-GROUND-FIT: sharpen the globe cast-shadow edge to WebGL parity (2026-06-16)
 
 **Item:** NEW-CSM-CASCADE-GROUND-FIT (SHIPPED → closes the last CSM soft-shadow sub-check; CSM soft-shadows now fully COMPLETE).

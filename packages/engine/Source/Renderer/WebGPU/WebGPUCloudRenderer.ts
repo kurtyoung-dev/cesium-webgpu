@@ -24,33 +24,36 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 // Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+// NEW-COLLECTION-RENDERER-BASE (Phase 11 finisher, Batch 307) — shared
+// per-frame scaffolding. Cloud uses the genuinely-shared pieces only:
+//   - the per-device shader-module-cache accessor (was an inline WeakMap),
+//   - the re-entry / infinite-loop sentinel (Sentinel 1).
+// Cloud keeps its OWN unique logic: the count-only rebuild gate, the
+// `buildInstanceBuffer` non-resident packing, the velocity lifecycle, and
+// the format/log-depth full-re-init invalidation (which nulls the single
+// `pipelineDescriptor` + velocity pipelines, not defines→entry Maps, so the
+// base's Map-clearing `invalidatePipelinesOnSceneFormatChange` doesn't fit).
+import {
+  beginCollectionFrame,
+  endCollectionFrame,
+  makeDeviceShaderModuleCacheAccessor,
+  type CollectionRenderCache,
+} from "./WebGPUCollectionRendererBase.js";
 
 // Per-device shader module cache so multiple CloudCollections sharing the
 // same GPUDevice reuse a single compiled `GPUShaderModule`. Mirrors the
 // per-renderer WeakMap pattern used by Polyline / Billboard / Label /
-// PointPrimitive (C-R7-SHADER-MODULE-DEDUP, Batch 72).
-const _cloudShaderModuleCaches = new WeakMap<
-  GPUDevice,
-  WebGPUShaderModuleCache
->();
+// PointPrimitive (C-R7-SHADER-MODULE-DEDUP, Batch 72). Folded onto the
+// shared base accessor (NEW-COLLECTION-RENDERER-BASE).
+const getCloudShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
-function getCloudShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
-  let cache = _cloudShaderModuleCaches.get(device);
-  if (!cache) {
-    cache = new WebGPUShaderModuleCache(device);
-    _cloudShaderModuleCaches.set(device, cache);
-  }
-  return cache;
-}
-
-interface CloudCache {
+interface CloudCache extends CollectionRenderCache {
   quadVertexBuffer: GPUBuffer | null;
   instanceBuffer: GPUBuffer | null;
   uniformBuffer: GPUBuffer | null;
@@ -485,10 +488,6 @@ function updateWebGPUCloudCollection(
   collection: CesiumObjectWithWebGPUCache,
   frameState: CesiumFrameState,
 ): void {
-  const context = frameState.context;
-  const device: GPUDevice = context.device;
-  const commandList = frameState.commandList;
-
   if (!collection.show || collection.length === 0) {
     return;
   }
@@ -519,6 +518,28 @@ function updateWebGPUCloudCollection(
       velocityPipelineRequestPending: false,
     } as CloudCache;
   }
+
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1, NEW-COLLECTION-RENDERER-BASE)
+  // — re-entry / infinite-loop guard around the whole update. Increments a
+  // per-collection depth and `console.error`s (throttled) if the cloud update
+  // re-enters itself for the same collection before settling; the `finally`
+  // always settles the depth back to 0.
+  const sentinelCache = collection._webgpuCache as unknown as CloudCache;
+  beginCollectionFrame(sentinelCache, "CloudCollection");
+  try {
+    _updateWebGPUCloudCollectionInner(collection, frameState);
+  } finally {
+    endCollectionFrame(sentinelCache);
+  }
+}
+
+function _updateWebGPUCloudCollectionInner(
+  collection: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+): void {
+  const context = frameState.context;
+  const device: GPUDevice = context.device;
+  const commandList = frameState.commandList;
 
   const cache = collection._webgpuCache as CloudCache;
   // Batch 110 — clouds draw into scene FB; use scenePipelineFormat

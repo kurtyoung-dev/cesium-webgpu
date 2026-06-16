@@ -60,7 +60,22 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// NEW-COLLECTION-RENDERER-BASE (Phase 11 finisher, Batch 307) — shared
+// per-frame scaffolding. Polyline is bucket-shaped (grouped by material
+// type, no resident-instance manager, no per-instance pick buffer), so it
+// folds only the genuinely-shared pieces:
+//   - the per-device shader-module-cache accessor (was an inline WeakMap),
+//   - the settled-2D/CV coplanar-depth flag (`computeNoDepthTest`), and
+//   - the re-entry / infinite-loop sentinel (Sentinel 1).
+// Polyline keeps its OWN unique logic: the material-type bucketing, the
+// nested `pipelines[materialType] → Map` cache + its bespoke string
+// pipeline key, segment packing, and the per-material velocity gate.
+import {
+  beginCollectionFrame,
+  endCollectionFrame,
+  computeNoDepthTest,
+  makeDeviceShaderModuleCacheAccessor,
+} from "./WebGPUCollectionRendererBase.js";
 
 // Instance buffer: 7 × vec4 = 28 floats (112 bytes).
 // Was 24 floats (Batch 22); bumped in Batch 136 to add the
@@ -631,17 +646,9 @@ function sourceIdForMaterialType(materialType) {
 
 // Module-level shader-module cache keyed by GPUDevice, shared across
 // every PolylineCollection on that device. Same pattern as Billboard /
-// Label / Point.
-const _polylineShaderModuleCaches = new WeakMap();
-
-function getPolylineShaderModuleCache(device) {
-  let cache = _polylineShaderModuleCaches.get(device);
-  if (!cache) {
-    cache = new WebGPUShaderModuleCache(device);
-    _polylineShaderModuleCaches.set(device, cache);
-  }
-  return cache;
-}
+// Label / Point — folded onto the shared base accessor
+// (NEW-COLLECTION-RENDERER-BASE).
+const getPolylineShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 /**
  * Scan the collection for the DP-H42 / DP-H40 / A.14 defines that
@@ -1345,8 +1352,6 @@ function getOrCreatePolylineVelocityPipelineEntry(
  * with material-specific shaders and uniform data.
  */
 async function updateWebGPUPolylines(collection, frameState, commandList) {
-  const context = frameState.context;
-  const device = context.device;
   const length = collection._polylines.length;
   if (length === 0) {
     return;
@@ -1355,6 +1360,29 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
   if (!defined(collection._webgpuCache)) {
     collection._webgpuCache = {};
   }
+
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1, NEW-COLLECTION-RENDERER-BASE)
+  // — re-entry / infinite-loop guard around the whole (async) update. The
+  // polyline update is awaited per material group; `beginCollectionFrame`
+  // counts overlapping in-flight entries and `console.error`s (throttled)
+  // only on a runaway recursive re-enqueue. The `finally` always settles the
+  // depth even if the inner update rejects.
+  beginCollectionFrame(collection._webgpuCache, "PolylineCollection");
+  try {
+    await _updateWebGPUPolylinesInner(collection, frameState, commandList);
+  } finally {
+    endCollectionFrame(collection._webgpuCache);
+  }
+}
+
+async function _updateWebGPUPolylinesInner(
+  collection,
+  frameState,
+  commandList,
+) {
+  const context = frameState.context;
+  const device = context.device;
+
   const cache = collection._webgpuCache;
   const modelMatrix = collection.modelMatrix || Matrix4.IDENTITY;
 
@@ -1377,7 +1405,13 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
   // In settled 2D + Columbus View (morphTime === 0) the polyline draws on
   // top of the flat map with NO depth test; in 3D / mid-morph it depth-tests
   // normally. Keys the pipeline cache so the 3D pipeline stays byte-identical.
-  const noDepthTest = frameState.morphTime === 0.0;
+  // NEW-COLLECTION-RENDERER-BASE — folded onto the shared coplanar-depth
+  // flag. `computeNoDepthTest` returns `morphTime === 0 && mode !== SCENE3D`;
+  // settled 3D always reports `morphTime === 1.0` (SceneMode.getMorphTime), so
+  // the extra `mode !== SCENE3D` guard never changes the result vs the prior
+  // `frameState.morphTime === 0.0` test — byte-identical, with the SCENE3D
+  // intent now explicit and shared with Billboard/Point/Label.
+  const noDepthTest = computeNoDepthTest(frameState);
   cache.currentNoDepthTest = noDepthTest;
 
   // Group polylines by material type
