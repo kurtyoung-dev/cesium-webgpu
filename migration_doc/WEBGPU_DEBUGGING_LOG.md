@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 308 — NEW-ENTITYCLUSTER-GPU-MERGE: tighten the GPU cluster-merge to CPU parity via a rep-to-rep pixel-distance gate (2026-06-16)
+
+**Item:** NEW-ENTITYCLUSTER-GPU-MERGE (Phase-10 finisher, parity half). Batch 301 offloaded the EntityCluster declutter BINNING to a GPU compute pass; the representative-selection + 3×3-neighbour MERGE still runs on the CPU consuming the one-frame-stale grid (`DataSources/EntityClusterGPU.js::clusterWithGrid`). The cross-backend parity ratio was a loose 0.42 — the GPU path produced systematically FEWER representatives than the WebGL KDBush path.
+
+**Root cause (over-aggressive merge, not a rendering bug).** The CPU merge absorbed the ENTIRE unclaimed 3×3 cell neighbourhood UNCONDITIONALLY. A grid cell edge equals `pixelRange`, so a 3×3 block spans `3·pixelRange` per axis — the merge clustered points up to ~3× the merge radius apart. The CPU KDBush path instead runs a per-point `pixelRange`-expanded screen-bbox range query (absorbs a neighbour only when its SCREEN position overlaps the seed's range ≈ within `pixelRange` centre-to-centre). So the GPU consumer over-merged → 20 reps vs WebGL 48 from 2000 dense points (ratio 0.42).
+
+**Fix (the requested rep-to-rep gate + per-point greedy claim).** The neighbour absorb is now GATED on screen-space pixel distance to the seed: (a) a NEIGHBOUR cell only merges when its per-cell representative (`cellRep`, the GPU `atomicMin` smallest-index member) is within `pixelRange` of the seed's representative; (b) within an absorbed cell, only the individual members within `pixelRange` of the seed are pulled in (member-to-seed gate, mirroring the CPU bbox range query). The merge bookkeeping switched from a per-CELL `claimed` array to per-POINT greedy claim-on-ACCEPT: a point is claimed only when its cluster meets `minimumClusterSize`, so a sub-threshold seed's members stay available to a denser later seed (exact CPU greedy semantics) AND a partially-absorbed cell can't double-count its leftover members. The seed is chosen as the smallest UNCLAIMED member of the seed cell (prefer the GPU `cellRep` when still unclaimed) for determinism. NO new GPU readback — the merge still consumes the existing one-frame-stale grid, so no per-frame stall was added.
+
+**Verification (Principle 8 + standing gates).** `probe-entitycluster-gpu.mjs` PASS — parity ratio **0.42 → 1.02** (WebGPU 49 reps vs WebGL 48; far-count 4→3, now both 3), GPU still dispatched (10), 0 console errors on both backends; probe parity band tightened 0.4–2.5 → **0.75–1.25**. `probe-collections-regression` PASS, `probe-entity-bulk` PASS (clustering composes with the bulk fast-path's legacy lane), `probe-point-label-partial-write` / `probe-billboard-partial-write` / `probe-collections-2dcv-morph` / `probe-collections-far-camera` all green; `sandcastle-smoke` 3/3, `upstream-regression-check` 26/0. `tsc --noEmit` clean; `npx gulp build` green.
+
+**Still deferred (the GPU half):** moving the merge itself onto the GPU (parallel union-find / connected-components over the grid, no per-cell readback) — a perf refinement for the very largest sets, now that the cross-backend cluster-count parity it would have needed is already achieved on the CPU consumer.
+
+**Files:** `packages/engine/Source/DataSources/EntityClusterGPU.js`, `Tools/visual-regression/probe-entitycluster-gpu.mjs`, `migration_doc/DEFERRED_WORK.md`, `migration_doc/FEATURE_INVENTORY.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`.
+
+---
+
 ## Batch 307 — NEW-COLLECTION-RENDERER-BASE finisher: fold Cloud + Polyline onto the shared base (2026-06-16)
 
 **Item:** NEW-COLLECTION-RENDERER-BASE (Phase 11 finisher). Batch 302 extracted `WebGPUCollectionRendererBase.ts` and migrated Billboard + Point byte-green; this batch folds Cloud + Polyline onto the base's genuinely-shared per-frame plumbing with ZERO behavior change, taking the base from 2/5 → 4/5 collection renderers (Label still pending its own stage).

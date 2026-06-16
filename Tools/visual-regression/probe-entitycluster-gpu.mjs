@@ -209,9 +209,13 @@ async function run(rendererArg) {
   }
 
   // Cross-backend parity: WebGPU representative count within tolerance of WebGL.
+  // Tightened in Batch 308 (NEW-ENTITYCLUSTER-GPU-MERGE): the rep-to-rep /
+  // member-to-seed pixel-distance gate replaced the unconditional 3×3-cell
+  // absorb, so the grid merge now matches the CPU bbox range query closely
+  // (ratio went 0.42 → ~1.0). Band is ±25% (was 0.4–2.5).
   const ref = Math.max(webgl.nearCount, 1);
   const parityRatio = webgpu.nearCount / ref;
-  const parity = parityRatio >= 0.4 && parityRatio <= 2.5;
+  const parity = parityRatio >= 0.75 && parityRatio <= 1.25;
   ok = ok && parity;
 
   // GPU actually ran on WebGPU.

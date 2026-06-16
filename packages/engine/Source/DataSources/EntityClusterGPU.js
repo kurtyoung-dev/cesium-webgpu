@@ -189,11 +189,21 @@ function requestGrid(entityCluster, points, pixelRange) {
  * Each returned cluster descriptor:
  *   { position: Cartesian3, ids: Entity[], numPoints: number }
  *
- * The merge is a greedy raster-order walk over non-empty cells: a cell with
- * total occupancy (its own count, optionally absorbing unclaimed 3×3 neighbour
- * cells whose representatives are within the merge radius) of at least
- * `minimumClusterSize` becomes one cluster at the world centroid of its
- * members. Members of sub-threshold cells stay un-clustered.
+ * The merge is a greedy raster-order walk over non-empty cells: a seed cell
+ * with members absorbs the unclaimed 3×3 neighbour cells, but the absorb is now
+ * GATED on representative-to-representative pixel distance (Batch 308,
+ * NEW-ENTITYCLUSTER-GPU-MERGE) — a neighbour cell only merges into the seed when
+ * its representative is within the merge radius of the seed's representative, and
+ * within an absorbed neighbour cell only the individual members within the merge
+ * radius of the seed are pulled in. This mirrors the CPU KDBush path's per-point
+ * `pixelRange`-expanded bbox range query (which absorbs a neighbour only when its
+ * SCREEN position overlaps the seed's range), tightening cross-backend cluster-
+ * count parity vs the previous unconditional whole-3×3-cell absorb (a 3×3 block
+ * spans 3·pixelRange, so the old path over-merged points up to ~3× the radius
+ * apart → systematically fewer representatives than the CPU path). A seed whose
+ * gated membership is at least `minimumClusterSize` becomes one cluster at the
+ * world centroid of its members; sub-threshold seeds leave their members
+ * un-clustered (rendered individually).
  *
  * @param {EntityCluster} entityCluster
  * @param {object[]} points
@@ -202,7 +212,12 @@ function requestGrid(entityCluster, points, pixelRange) {
  * @returns {object[]|null}
  * @private
  */
-function clusterWithGrid(entityCluster, points, pixelRange, minimumClusterSize) {
+function clusterWithGrid(
+  entityCluster,
+  points,
+  pixelRange,
+  minimumClusterSize,
+) {
   const grid = entityCluster._gpuGrid;
   if (!defined(grid)) {
     return null;
@@ -237,9 +252,31 @@ function clusterWithGrid(entityCluster, points, pixelRange, minimumClusterSize) 
     arr.push(i);
   }
 
-  const claimed = new Uint8Array(numCells);
   const clusters = [];
   const centroidScratch = new Cartesian3();
+
+  // Rep-to-rep / member-to-seed absorb radius (squared, in screen pixels).
+  // pixelRange is the cell edge AND the CPU path's bbox half-extent — two
+  // markers cluster on the CPU when their pixelRange-expanded screen bboxes
+  // overlap, i.e. roughly within pixelRange centre-to-centre. Gate the GPU
+  // absorb at the same distance so the 3×3 block (which spans 3·pixelRange)
+  // no longer over-merges far-apart points.
+  const mergeRadius = Math.max(pixelRange, 1.0);
+  const mergeRadiusSq = mergeRadius * mergeRadius;
+
+  // Screen coord of a point index, or undefined when it carries no coord.
+  function coordOf(idx) {
+    const p = points[idx];
+    return defined(p) ? p.coord : undefined;
+  }
+
+  // Point-level greedy claim (mirrors the CPU path's `point.clustered`): a
+  // point joins exactly one cluster. We claim on ACCEPT (cluster ≥ threshold),
+  // not on candidacy, so a sub-threshold seed's members stay available to a
+  // denser later seed — exactly the CPU greedy semantics. Note `point.clustered`
+  // itself is set by EntityCluster.js AFTER this returns; this scratch is the
+  // intra-merge bookkeeping and stays internal to clusterWithGrid.
+  const claimedPoint = new Uint8Array(points.length);
 
   // Raster-order walk for determinism (smallest cellId first).
   const cellIds = Array.from(membersByCell.keys()).sort(function (a, b) {
@@ -248,9 +285,6 @@ function clusterWithGrid(entityCluster, points, pixelRange, minimumClusterSize) 
 
   for (let k = 0; k < cellIds.length; k++) {
     const cellId = cellIds[k];
-    if (claimed[cellId]) {
-      continue;
-    }
     if (cellCounts[cellId] === 0) {
       continue;
     }
@@ -258,10 +292,38 @@ function clusterWithGrid(entityCluster, points, pixelRange, minimumClusterSize) 
     const col = cellId % gridCols;
     const row = (cellId - col) / gridCols;
 
-    // Gather this cell's members plus the unclaimed 3×3 neighbourhood. The
-    // neighbourhood absorb mirrors the CPU path's pixelRange-expanded bbox
-    // range query: two markers straddling a cell boundary still cluster.
-    const memberIndices = [];
+    // Seed: the smallest UNCLAIMED member of the seed cell (prefer the GPU's
+    // atomicMin per-cell rep when it is still unclaimed + carries a coord, else
+    // the smallest unclaimed bucketed member). Its screen coord anchors the
+    // pixel-distance gate.
+    const seedMembers = membersByCell.get(cellId);
+    let seedIndex = -1;
+    const seedCellRep = cellRep[cellId];
+    if (
+      seedCellRep !== EMPTY &&
+      seedCellRep < points.length &&
+      !claimedPoint[seedCellRep] &&
+      defined(coordOf(seedCellRep))
+    ) {
+      seedIndex = seedCellRep;
+    } else if (defined(seedMembers)) {
+      for (let m = 0; m < seedMembers.length; m++) {
+        if (!claimedPoint[seedMembers[m]]) {
+          seedIndex = seedMembers[m];
+          break;
+        }
+      }
+    }
+    if (seedIndex < 0) {
+      continue; // every member of this cell already belongs to a cluster
+    }
+    const seedCoord = coordOf(seedIndex);
+
+    // Gather the seed plus the unclaimed 3×3 neighbourhood, GATING each
+    // candidate on screen-distance to the seed (rep-to-rep for the neighbour
+    // cell, then member-to-seed per point). This mirrors the CPU path's
+    // pixelRange range query instead of absorbing the whole 3×3 block.
+    const memberIndices = [seedIndex];
     for (let dr = -1; dr <= 1; dr++) {
       const nr = row + dr;
       if (nr < 0) {
@@ -273,42 +335,82 @@ function clusterWithGrid(entityCluster, points, pixelRange, minimumClusterSize) 
           continue;
         }
         const nId = nr * gridCols + nc;
-        if (nId >= numCells || claimed[nId]) {
+        if (nId >= numCells) {
           continue;
         }
         const arr = membersByCell.get(nId);
         if (!defined(arr)) {
           continue;
         }
-        for (let m = 0; m < arr.length; m++) {
-          memberIndices.push(arr[m]);
+
+        const isSeedCell = nId === cellId;
+        // Rep-to-rep gate for NEIGHBOUR cells: skip a neighbour whose own
+        // representative is beyond the merge radius from the seed. The seed
+        // cell is handled member-by-member below (its rep IS the seed).
+        if (!isSeedCell && defined(seedCoord)) {
+          const nRep = cellRep[nId];
+          const repIdx = nRep !== EMPTY && nRep < points.length ? nRep : arr[0];
+          const repCoord = coordOf(repIdx);
+          if (defined(repCoord)) {
+            const drx = repCoord.x - seedCoord.x;
+            const dry = repCoord.y - seedCoord.y;
+            if (drx * drx + dry * dry > mergeRadiusSq) {
+              continue;
+            }
+          }
         }
-        claimed[nId] = 1;
+
+        // Member-to-seed gate: pull in only the unclaimed members within the
+        // merge radius of the seed. Out-of-range / already-claimed members are
+        // left for a nearer (or earlier) seed.
+        for (let m = 0; m < arr.length; m++) {
+          const mi = arr[m];
+          if (mi === seedIndex || claimedPoint[mi]) {
+            continue;
+          }
+          if (defined(seedCoord)) {
+            const mc = coordOf(mi);
+            if (defined(mc)) {
+              const dx = mc.x - seedCoord.x;
+              const dy = mc.y - seedCoord.y;
+              if (dx * dx + dy * dy > mergeRadiusSq) {
+                continue;
+              }
+            }
+          }
+          memberIndices.push(mi);
+        }
       }
     }
 
     const numPoints = memberIndices.length;
     if (numPoints < minimumClusterSize) {
-      // Sub-threshold — leave these points un-clustered (rendered individually).
-      // Un-claim so a later, denser cell can still absorb a boundary neighbour.
-      // (We intentionally keep them claimed: matching the CPU greedy path,
-      // a point participates in at most one cluster decision.)
+      // Sub-threshold — leave these points un-claimed so a denser later seed
+      // can still absorb them (CPU greedy parity: a point participates in at
+      // most one ACCEPTED cluster, not one candidacy).
       continue;
     }
 
-    // World centroid of the members (Cesium averages world positions).
+    // World centroid of the members (Cesium averages world positions); claim
+    // each member so it can't be double-counted by a later seed.
     centroidScratch.x = 0;
     centroidScratch.y = 0;
     centroidScratch.z = 0;
     const ids = [];
     for (let m = 0; m < numPoints; m++) {
-      const p = points[memberIndices[m]];
+      const mi = memberIndices[m];
+      const p = points[mi];
       const item = p.collection.get(p.index);
       Cartesian3.add(item.position, centroidScratch, centroidScratch);
       ids.push(item.id);
       p.clustered = true;
+      claimedPoint[mi] = 1;
     }
-    Cartesian3.multiplyByScalar(centroidScratch, 1.0 / numPoints, centroidScratch);
+    Cartesian3.multiplyByScalar(
+      centroidScratch,
+      1.0 / numPoints,
+      centroidScratch,
+    );
 
     clusters.push({
       position: Cartesian3.clone(centroidScratch),
