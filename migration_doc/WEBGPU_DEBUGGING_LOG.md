@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 300 — Phase-10 Entity bulk fast-path (points) + surfaced WebGPU point-collection pick gap (2026-06-15)
+
+**Item:** NEW-ENTITY-BULK-FASTPATH (SHIPPED — points). Surfaced: NEW-WEBGPU-POINT-COLLECTION-PICK.
+
+**What shipped.** `DataSources/BulkPointVisualizer.js` (NEW) — the Entity-API on-ramp to the flat-buffer collections. Replaces `PointVisualizer` in `DataSourceDisplay.defaultVisualizersCallback` (signature gained `dataSource._primitives` so the visualizer can host its own static `PointPrimitiveCollection`). Classifies each `point` entity into a STATIC lane (all consumed `PointGraphics` properties `ConstantProperty`, position `ConstantPositionProperty`, no `availability`, height-reference NONE, clustering off) vs a DYNAMIC lane. Static entities are written ONCE into the flat-buffer collection (`id = entity` → pick returns the Entity) and skipped per-frame; the dynamic/clamped/clustered remainder delegates to a wrapped `PointVisualizer` whose auto `collectionChanged` subscription is detached and whose constructor-seeded `_items` is cleared (so each entity is owned by exactly one lane). Backend-agnostic — touches only `PointPrimitiveCollection`, which already carries both feature renderers.
+
+**Result (probe-entity-bulk.mjs, both backends).** 20k static point entities cost ~0.01–0.02 ms/frame in `DataSourceDisplay.update()` (flat, count-independent) vs ~15–17 ms for the forced-dynamic control — 800×–1400× per-frame speedup. staticCount=20000 / fallbackCount=0; 20k points render (yellow px) on WebGL + WebGPU.
+
+**Surfaced gap (NOT a regression — pre-existing, isolated).** `scene.pick` over a `PointPrimitiveCollection` returns nothing on WebGPU (WebGL returns the picked point + `id`). A raw collection added directly to `scene.primitives` reproduces it (WebGL `id` round-trips, WebGPU `undefined`), so it is independent of the bulk fast-path — it affects ALL WebGPU point picking. The pick infrastructure exists (`WebGPUPointPrimitiveRenderer.buildPickInstanceData` + pick pipeline + `pickOnly` command pushed under `frameState.passes.pick`), so the producer half is wired but the readback resolves null — the "producer pushed, consumer doesn't resolve" shape. Tracked as `NEW-WEBGPU-POINT-COLLECTION-PICK` for a dedicated WebGPU pick-pass investigation. The Batch-300 probe gates pick-returns-Entity on WebGL (where point pick works) and records the WebGPU gap rather than failing the on-ramp; billboard entity pick on WebGPU works, so the Entity-API pick contract is proven on at least one graphic type per backend.
+
+**Files:** `packages/engine/Source/DataSources/BulkPointVisualizer.js` (NEW), `packages/engine/Source/DataSources/DataSourceDisplay.js` (swap PointVisualizer→BulkPointVisualizer in default callback), `Tools/visual-regression/probe-entity-bulk.mjs` (NEW gate).
+
+**Verification.** `npx gulp build` green (index-wgsl churn reverted); `npx tsc --noEmit` clean. probe-entity-bulk PASS both backends. Standing gates: collections-regression PASS, collections-entity PASS, collections-2dcv-morph PASS, collections-far-camera PASS, sandcastle-smoke PASS (3 demos), upstream-regression-check 26/26 PASS.
+
+---
+
 ## Batch 299 — Phase-9 fix-forward: three upstream pulls (#13366/#13421/#13369) + Camera/ShadowMap JSDoc restore (2026-06-15)
 
 **Items:** NEW-UPSTREAM-GROUNDPRIM-SHOWSUPDATED-13366, NEW-UPSTREAM-EDGE-DEGENERATE-13421, NEW-UPSTREAM-PANORAMA-LIGHTING-13369, NEW-CAMERA-JSDOC-RESTORE, NEW-SHADOWMAP-COMMENT-RESTORE.

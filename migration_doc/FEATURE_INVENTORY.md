@@ -217,7 +217,7 @@ These features ship in upstream CesiumJS and are inherited by this fork. Many ha
 - Material properties — Color, Checkerboard, Grid, Image, Stripe, Composite, PolylineArrow, PolylineDash, PolylineGlow, PolylineOutline
 - Specialized — NodeTransformationProperty, TerrainOffsetProperty, Rotation
 - Graphics types — Billboard, Label, Point, Model, Path, Polyline, Polygon, Rectangle, Ellipse, Ellipsoid, Box, Cylinder, Corridor, Wall, PolylineVolume, Plane, Cesium3DTileset
-- Visualizers — Billboard, Label, Point, Model, Path, Polyline, Geometry, Cesium3DTileset
+- Visualizers — Billboard, Label, Point (bulk fast-path via `BulkPointVisualizer` §B.1, Batch 300), Model, Path, Polyline, Geometry, Cesium3DTileset
 - GeometryUpdater / GeometryUpdaterSet / GroundGeometryUpdater / DynamicGeometryUpdater / DynamicGeometryBatch
 - Static batches — StaticGeometryColor, StaticGeometryPerMaterial, StaticGroundGeometryColor, StaticGroundGeometryPerMaterial, StaticGroundPolylinePerMaterial, StaticOutlineGeometry
 - DataSourceDisplay / DataSourceCollection / DataSource / DataSourceClock — datasource framework
@@ -433,6 +433,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUResourceCacheRegistry — registry of cache-clear callbacks invoked on device loss (SHIPPED)
 - WebGPUFrameStatistics — per-frame draw/dispatch/buffer counters (SHIPPED)
 - WebGPUParityManager — orchestrates feature-parity flags between WebGL and WebGPU code paths (SHIPPED)
+- BulkPointVisualizer (DataSources/BulkPointVisualizer.js) — backend-agnostic Entity→flat-buffer bulk fast-path (Phase 10 of the Large Dynamic Objects roadmap; Batch 300, NEW-ENTITY-BULK-FASTPATH). Drop-in replacement for `PointVisualizer` in `DataSourceDisplay.defaultVisualizersCallback`. Classifies each `point` entity into a STATIC lane (every consumed PointGraphics property is `ConstantProperty`, position is a `ConstantPositionProperty`, no `availability`, height-reference resolves to NONE, clustering off) vs a DYNAMIC lane. Static entities are written ONCE into a flat-buffer `PointPrimitiveCollection` (`id = entity`, so `scene.pick` returns the Entity) and then SKIPPED entirely by the per-frame update loop — eliminating the dominant legacy cost of re-reading ~10 `Property.getValueOrDefault` values per entity every frame. Dynamic / clamped / time-windowed entities (and ALL entities while clustering is enabled) transparently delegate to a wrapped `PointVisualizer` so their behaviour is byte-identical to the legacy path. `EntityCollection.collectionChanged.changed` re-classifies an entity in place on a definition change. Measured (`probe-entity-bulk.mjs`): at 20k static point entities the per-frame `DataSourceDisplay.update()` cost is ~0.01–0.02 ms (flat, count-independent) vs the per-entity path's ~15–17 ms — an **800×–1400× per-frame speedup** on BOTH WebGL and WebGPU; all 20k route through the static lane (staticCount=20000, fallbackCount=0); 20k points render on both backends; `scene.pick` returns the originating Entity on WebGL. (SHIPPED — points. Billboard/Label bulk lanes + CZML/GeoJSON ingest hints + GPU keyframe kernel for `SampledPositionProperty` entities are tracked in DEFERRED_WORK under NEW-ENTITY-BULK-FASTPATH-BILLBOARD-LABEL / NEW-ENTITY-BULK-CZML-HINT / NEW-ENTITY-GPU-KEYFRAME-KERNEL.)
 
 ### B.2 WebGPU Pipeline Infrastructure
 
