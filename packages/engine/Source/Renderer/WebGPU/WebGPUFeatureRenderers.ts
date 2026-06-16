@@ -80,6 +80,12 @@ import {
   updateCubeMapPanorama,
   destroyCubeMapPanorama,
 } from "./WebGPUCubeMapPanoramaRenderer.js";
+// Track V-C (Batch 313) — Yale Bright Star Catalog HDR starfield.
+import {
+  updateWebGPUStarField,
+  getWebGPUStarFieldStatistics,
+  destroyWebGPUStarFieldResources,
+} from "./WebGPUStarFieldRenderer.js";
 // Phase 5a — froxel-grid volumetric fog (infrastructure only).
 import {
   updateWebGPUVolumetricFog,
@@ -378,6 +384,17 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA, {
     update: updateCubeMapPanorama,
     destroy: destroyCubeMapPanorama,
+  });
+
+  // Track V-C (Batch 313) — bright-star catalog starfield. The renderer
+  // uploads the Yale BSC subset once to a per-instance GPU buffer and
+  // pushes one instanced draw (6 verts × N stars) onto the command list
+  // each frame; the SceneRenderer bins it into the ENVIRONMENT pass.
+  // Drawn additively into the scene FB so bloom makes bright stars glow.
+  context.registerFeatureRenderer(FeatureRendererKey.STAR_FIELD, {
+    update: updateWebGPUStarField,
+    destroy: destroyWebGPUStarFieldResources,
+    getStatistics: getWebGPUStarFieldStatistics,
   });
 
   // Phase 5a — froxel-grid volumetric fog. The renderer exposes both an

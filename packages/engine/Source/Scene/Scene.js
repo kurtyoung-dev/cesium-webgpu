@@ -1096,6 +1096,7 @@ class Scene {
     // a certain order as well as updating/tracking framebuffer usage.
     this._environmentState = {
       skyBoxCommand: undefined,
+      starFieldCommand: undefined,
       skyAtmosphereCommand: undefined,
       sunDrawCommand: undefined,
       sunComputeCommand: undefined,
@@ -3416,6 +3417,7 @@ class Scene {
     ) {
       environmentState.skyAtmosphereCommand = undefined;
       environmentState.skyBoxCommand = undefined;
+      environmentState.starFieldCommand = undefined;
       environmentState.sunDrawCommand = undefined;
       environmentState.sunComputeCommand = undefined;
       environmentState.moonCommand = undefined;
@@ -3448,6 +3450,29 @@ class Scene {
 
       environmentState.skyBoxCommand = defined(this.skyBox)
         ? this.skyBox.update(frameState, this._hdr)
+        : undefined;
+      // Track V-C — bright-star catalog starfield (augments the cubemap).
+      // Driven here (not inside SkyBox.update) so its command can be
+      // injected AFTER skyBoxCommand by the SceneRenderer — the additive
+      // HDR stars then land on top of the (often opaque) cubemap rather
+      // than being overwritten by its alpha-over pass. A no-op on backends
+      // without a STAR_FIELD feature renderer (WebGL keeps the cubemap
+      // stars only).
+      //
+      // The renderer ALSO pushes a binned copy onto frameState.commandList
+      // (frustum guarantee on sky-only views). To avoid drawing the
+      // additive stars twice, only route the returned inject command to
+      // the post-skyBox injection slot when a cubemap command actually
+      // exists (which would otherwise wipe the binned copy). With no
+      // cubemap, the binned copy alone is correct and we drop the inject.
+      const starCommand =
+        defined(this.skyBox) && defined(this.skyBox.starField)
+          ? this.skyBox.starField.update(frameState)
+          : undefined;
+      environmentState.starFieldCommand = defined(
+        environmentState.skyBoxCommand,
+      )
+        ? starCommand
         : undefined;
       const sunCommands = defined(this.sun)
         ? this.sun.update(frameState, view.passState, this._hdr)

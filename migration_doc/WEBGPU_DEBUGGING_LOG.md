@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 313 — Track V-C: bright-star catalog starfield (NEW-STARS-BRIGHT-CATALOG) (2026-06-16)
+
+**Item:** NEW-STARS-BRIGHT-CATALOG (Track V-C, independent of the atmosphere stages). A real Yale Bright Star Catalog starfield that augments the static SkyBox cubemap on WebGPU with physically-placed, time-correct HDR stars fed through bloom.
+
+**Files added:** `Scene/BrightStarCatalog.js` (embedded BSC5 subset, ~230 brightest stars), `Scene/StarField.js` (backend-agnostic FR-seam primitive), `Renderer/WebGPU/WebGPUStarFieldRenderer.js` (FeatureRendererKey.STAR_FIELD=51), `Shaders/WebGPU/Catalog/StarField.wgsl`, `Tools/visual-regression/probe-stars-catalog.mjs`.
+
+**Files modified:** `Renderer/FeatureRendererKey.js` (+STAR_FIELD=51, COUNT 51→52), `Renderer/WebGPU/WebGPUShaderDefines.ts` (+ShaderSourceId.STAR_FIELD_CATALOG=37), `Renderer/WebGPU/WebGPUFeatureRenderers.ts` (register FR), `Scene/SkyBox.js` (owns StarField, `starField` getter), `Scene/Scene.js` (`environmentState.starFieldCommand` + drive in updateEnvironment), `Scene/SceneRenderer.js` (inject after skyBox).
+
+**Two bring-up bugs (caught by the probe, not the user):**
+
+1. **Double-attenuated stars → invisible.** First pass used `srcFactor: "src-alpha"` additive blend while the FS already premultiplied rgb by the radial falloff `alpha` — so the on-screen contribution was `alpha²`, crushing every star to a sub-threshold smudge. Plus the initial Pogson normalization (`6.0/brightestFlux`, refMag 6.5) compressed the faint end to ~0.04 (≈10/255), below visibility. Fix: `srcFactor: "one"` (premultiplied additive) + a gamma-compressed `[LO=0.55, HI=6.0]` brightness band (`pow(norm, 0.38)`) so the faintest stars stay visible while the brightest overflow 1.0 into bloom. Symptom was a frozen byte-identical readback across builds — the tell that the visible pixels weren't responding to brightness/blend changes (the per-pixel additive was sub-rounding).
+
+2. **Cubemap overwrote the catalog.** The catalog was pushed to the binned ENVIRONMENT command list (frustum guarantee, same as Sun) and drew EARLY; the SkyBox cubemap is an alpha-over draw the SceneRenderer injects AFTER the binned commands, and at `morphTime=1` (3D) its alpha=1 fully replaces dst → wiped the stars (probe measured 115 surviving px with cubemap on vs 4527 with it off). Fix: the renderer still pushes a binned copy (frustum guarantee on sky-only views) AND returns a SEPARATE inject instance; `Scene.updateEnvironment` routes that inject to `environmentState.starFieldCommand` ONLY when a `skyBoxCommand` exists, and `SceneRenderer.maybeInject` runs it right after `skyBoxCommand`. Net: catalog drawn exactly once — binned-then-wiped + injected-on-top when a cubemap is present, binned-only otherwise (no double-add).
+
+**Verification:** `probe-stars-catalog.mjs` PASS (augment path, cubemap on): ON adds 4527 bright px vs 0 OFF, maxLum=255, Sirius-aimed center cluster 923 px vs 104 blank-aimed (RA/Dec correctness), intensity raise grows count, 0 console errors; PNG read — Sirius central disc + winter constellations at correct relative positions + warm/cool stars by B−V. Standing gates green (collections-regression, bloom-parity, logdepth-zfight, collections-far-camera, sandcastle-smoke, upstream-regression-check 26/26).
+
 ## Batch 312 — Track V-A3: atmosphere-derived sun + sky lighting + mixed mask (NEW-ATMO-DERIVED-LIGHTING) (2026-06-16)
 
 **Item:** NEW-ATMO-DERIVED-LIGHTING (Track V-A3, builds on V-A2 Batch 311 + the Batch-306 Bruneton LUTs). Derive the directional SUN light (colour + intensity) and a SKY-IRRADIANCE ambient from the atmosphere so discrete glTF MODELS are lit consistently with the V-A2 aerial-perspective haze + the sky shell — the Takram-talk "light-source lighting for the ISS" half of the mixed-lighting pattern.

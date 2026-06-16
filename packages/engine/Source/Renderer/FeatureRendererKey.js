@@ -224,6 +224,21 @@ const FeatureRendererKey = {
   // is tracked as NEW-ENTITYCLUSTER-GPU-MERGE in DEFERRED_WORK.md.
   ENTITY_CLUSTER_GPU: 50,
 
+  // ── Bright-star catalog starfield (Track V-C, Batch 313) ──
+  // `StarField` (owned by SkyBox) routes here on WebGPU. The renderer
+  // (`WebGPUStarFieldRenderer`) uploads the Yale Bright Star Catalog
+  // subset (RA/Dec/magnitude/B−V) once to a GPU vertex buffer and draws
+  // it as HDR point sprites into the scene framebuffer with additive
+  // blend, so the existing bloom post-process makes bright stars glow.
+  // Per-star intensity follows the Pogson magnitude scale; per-star color
+  // is derived from the B−V index via a blackbody approximation. The
+  // inertial (TEME/J2000) catalog directions are rotated into the
+  // Earth-fixed frame by the same TEME→pseudo-fixed matrix SkyBox uses,
+  // so constellations land at the correct RA/Dec for the scene clock.
+  // WebGPU-only for now — the static SkyBox cubemap remains the WebGL
+  // path (NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK in DEFERRED_WORK.md).
+  STAR_FIELD: 51,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -236,7 +251,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 51,
+  COUNT: 52,
 };
 
 export default Object.freeze(FeatureRendererKey);

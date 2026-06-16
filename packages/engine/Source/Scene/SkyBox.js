@@ -1,6 +1,7 @@
 import buildModuleUrl from "../Core/buildModuleUrl.js";
 import CubeMapPanorama from "./CubeMapPanorama.js";
 import SceneMode from "./SceneMode.js";
+import StarField from "./StarField.js";
 import destroyObject from "../Core/destroyObject.js";
 
 /**
@@ -42,6 +43,28 @@ class SkyBox {
       show: this._show,
       returnCommand: true,
     });
+
+    // Track V-C (NEW-STARS-BRIGHT-CATALOG) — real bright-star catalog
+    // starfield. Backend-agnostic; renders (additively, into the bloom
+    // pipeline) only on backends that register a STAR_FIELD feature
+    // renderer (WebGPU). On WebGL it is an inert no-op and the cubemap
+    // stars above are the only starfield. Defaults ON to AUGMENT the
+    // cubemap (both render — the catalog stars sit on top of the cubemap
+    // and feed bloom). Opt out via `skyBox.starField.show = false`.
+    this._starField = new StarField({
+      show: options.showStarCatalog ?? true,
+    });
+  }
+
+  /**
+   * The real bright-star catalog starfield (Track V-C). Augments the
+   * static star cubemap with HDR points placed at actual RA/Dec on
+   * backends that support it (WebGPU). Toggle with `starField.show`.
+   * @type {StarField}
+   * @readonly
+   */
+  get starField() {
+    return this._starField;
   }
 
   /**
@@ -91,7 +114,10 @@ class SkyBox {
       return;
     }
 
-    // Delegate completely
+    // Delegate completely. The bright-star catalog starfield (Track V-C)
+    // is driven separately by Scene.updateEnvironment via
+    // `skyBox.starField.update(...)` so its command can be injected AFTER
+    // this cubemap command (it augments — draws on top of — the cubemap).
     return this._panorama.update(frameState, useHdr);
   }
 
@@ -127,6 +153,7 @@ class SkyBox {
    */
   destroy() {
     this._panorama = this._panorama && this._panorama.destroy();
+    this._starField = this._starField && this._starField.destroy();
     return destroyObject(this);
   }
 

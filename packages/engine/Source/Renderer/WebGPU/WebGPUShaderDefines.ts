@@ -494,6 +494,13 @@ export const ShaderSourceId = Object.freeze({
   // module cache so its `//>>ifdef LOG_DEPTH` blocks preprocess and the
   // log-depth color/depth-write variants dedupe per (sourceId, defines).
   GAUSSIAN_SPLAT: 36,
+  // NEW-STARS-BRIGHT-CATALOG (Track V-C, Batch 313). The Yale Bright
+  // Star Catalog starfield shader (`Catalog/StarField.wgsl`). One
+  // `GPUShaderModule` per device — the starfield is a singleton per
+  // scene (owned by SkyBox), so this is a no-op dedupe today, but it
+  // keeps the every-Cesium-WGSL-source-resolves-through-the-cache
+  // invariant intact (closed in Batch 185).
+  STAR_FIELD_CATALOG: 37,
 } as const);
 
 /**

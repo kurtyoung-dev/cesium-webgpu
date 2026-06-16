@@ -350,6 +350,13 @@ function executeCommands(scene, passState) {
         };
 
         maybeInject(envState.skyBoxCommand, "skyBox");
+        // Track V-C — bright-star catalog starfield. Injected right AFTER
+        // the skyBox cubemap so the additive HDR stars draw ON TOP of the
+        // (often opaque, dark) cubemap rather than being overwritten by
+        // its alpha-over pass. Distinct command instance from any binned
+        // ENVIRONMENT command, so the maybeInject identity-dedup does not
+        // skip it.
+        maybeInject(envState.starFieldCommand, "starField");
         if (envState.isSkyAtmosphereVisible) {
           maybeInject(envState.skyAtmosphereCommand, "skyAtmosphere");
         }
