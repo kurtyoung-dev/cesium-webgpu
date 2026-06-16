@@ -210,6 +210,20 @@ const FeatureRendererKey = {
   // NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK in DEFERRED_WORK.md.
   COMPUTE_INSTANCE_COLLECTION: 49,
 
+  // ── Entity-cluster GPU bin/count (Phase 10, Batch 301) ──
+  // `EntityCluster` (screen-space proximity declutter of billboard/label/
+  // point entities) routes its binning half here on WebGPU. The dispatcher
+  // (`WebGPUEntityClusterDispatcher`) runs `EntityClusterGridGPU.wgsl`: a
+  // single O(N) compute pass hashes every visible screen-space point into a
+  // uniform grid whose cell edge equals the merge radius (pixelRange) and
+  // accumulates per-cell occupancy + a per-cell representative point index.
+  // The SEQUENTIAL representative-selection + 3×3-neighbourhood merge stays on
+  // the CPU but iterates the (far smaller) non-empty-cell set rather than every
+  // point — replacing the per-frame KDBush build that doesn't scale to 50k+
+  // markers. WebGL2 keeps the full CPU KDBush path. A fully-GPU parallel merge
+  // is tracked as NEW-ENTITYCLUSTER-GPU-MERGE in DEFERRED_WORK.md.
+  ENTITY_CLUSTER_GPU: 50,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -222,7 +236,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 50,
+  COUNT: 51,
 };
 
 export default Object.freeze(FeatureRendererKey);

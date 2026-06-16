@@ -52,6 +52,12 @@ import {
   destroyWebGPUComputeInstanceResources,
   getWebGPUInstanceWorldPosition,
 } from "./WebGPUComputeInstanceRenderer.js";
+// Phase 10 (Batch 301) — Entity-cluster screen-space grid bin/count.
+import {
+  computeWebGPUEntityClusterGrid,
+  getWebGPUEntityClusterStatistics,
+  destroyWebGPUEntityCluster,
+} from "./WebGPUEntityClusterDispatcher.js";
 
 // ── Primitive system ──
 import {
@@ -295,6 +301,41 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       getInstanceWorldPosition: getWebGPUInstanceWorldPosition,
     },
   );
+
+  // ── Entity-cluster GPU bin/count (Phase 10, Batch 301) ──
+  // `EntityCluster` offloads its screen-space binning to a single O(N)
+  // compute pass; the (sequential) representative-selection + 3×3-neighbour
+  // merge stays on the CPU but runs over the reduced non-empty-cell set.
+  // `computeGrid` returns a Promise (one-frame-latency readback); declutter
+  // already lags the camera by a frame so a one-frame-stale grid is identical.
+  context.registerFeatureRenderer(FeatureRendererKey.ENTITY_CLUSTER_GPU, {
+    computeGrid: function (
+      coords: Float32Array,
+      pointCount: number,
+      gridCols: number,
+      gridRows: number,
+      cellSize: number,
+      originX: number,
+      originY: number,
+    ) {
+      return computeWebGPUEntityClusterGrid(
+        context,
+        coords,
+        pointCount,
+        gridCols,
+        gridRows,
+        cellSize,
+        originX,
+        originY,
+      );
+    },
+    destroy: function () {
+      destroyWebGPUEntityCluster(context);
+    },
+    getStatistics: function () {
+      return getWebGPUEntityClusterStatistics(context);
+    },
+  });
 
   // ── Primitive system ──
   context.registerFeatureRenderer(FeatureRendererKey.PRIMITIVE, {

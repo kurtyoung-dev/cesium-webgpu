@@ -14,6 +14,11 @@ import PointPrimitive from "../Scene/PointPrimitive.js";
 import PointPrimitiveCollection from "../Scene/PointPrimitiveCollection.js";
 import SceneMode from "../Scene/SceneMode.js";
 import KDBush from "kdbush";
+import {
+  gpuClusteringAvailable,
+  requestGrid,
+  clusterWithGrid,
+} from "./EntityClusterGPU.js";
 
 /**
  * Defines how screen space objects (billboards, points, labels) are clustered.
@@ -59,6 +64,14 @@ class EntityCluster {
 
     this._previousClusters = [];
     this._previousHeight = undefined;
+
+    // GPU bin/count state (Phase 10, NEW-ENTITYCLUSTER-GPU). `_gpuGrid` holds
+    // the most-recent (one-frame-stale) per-cell grid from the WebGPU
+    // dispatcher; `_gpuCoordsScratch` is the reusable screen-coord upload
+    // buffer; `_gpuGridGeneration` monotonically tags grid requests.
+    this._gpuGrid = undefined;
+    this._gpuCoordsScratch = undefined;
+    this._gpuGridGeneration = 0;
 
     this._enabledDirty = false;
     this._clusterDirty = false;
@@ -302,6 +315,11 @@ class EntityCluster {
 
     this._previousClusters = [];
     this._previousHeight = undefined;
+
+    // GPU bin/count state (Phase 10, NEW-ENTITYCLUSTER-GPU).
+    this._gpuGrid = undefined;
+    this._gpuCoordsScratch = undefined;
+    this._gpuGridGeneration = 0;
 
     this._enabledDirty = false;
     this._pixelRangeDirty = false;
@@ -667,6 +685,73 @@ function createDeclutterCallback(entityCluster) {
 
     let collection;
     let collectionIndex;
+
+    // ── GPU bin/count fast path (Phase 10, NEW-ENTITYCLUSTER-GPU) ──
+    // When the scene's context exposes the ENTITY_CLUSTER_GPU feature renderer
+    // (WebGPU), offload the screen-space binning to a single O(N) compute pass
+    // and run the (sequential) representative-selection + neighbour merge over
+    // the reduced non-empty-cell set instead of building a per-frame KDBush.
+    // The grid is one frame stale (async readback) — declutter already lags
+    // the camera by a frame, so this is visually identical. A point-count or
+    // pixelRange mismatch (or no grid yet) falls back to the CPU path below for
+    // this frame; `requestGrid` always (re)fires so the next frame has a fresh
+    // grid. WebGL2 never reaches this branch (`gpuClusteringAvailable` false).
+    const gpuAvailable = gpuClusteringAvailable(entityCluster);
+    if (gpuAvailable && points.length > 0) {
+      const gpuClusters = clusterWithGrid(
+        entityCluster,
+        points,
+        pixelRange,
+        minimumClusterSize,
+      );
+      // Refresh the grid for next frame regardless of whether we consumed one
+      // this frame (the point set / camera may have changed).
+      requestGrid(entityCluster, points, pixelRange);
+
+      if (defined(gpuClusters)) {
+        length = gpuClusters.length;
+        for (i = 0; i < length; ++i) {
+          const gc = gpuClusters[i];
+          addCluster(gc.position, gc.numPoints, gc.ids, entityCluster);
+        }
+        // Any point the grid merge did not claim renders individually.
+        length = points.length;
+        for (i = 0; i < length; ++i) {
+          const point = points[i];
+          if (point.clustered) {
+            continue;
+          }
+          point.clustered = true;
+          addNonClusteredItem(
+            point.collection.get(point.index),
+            entityCluster,
+          );
+        }
+
+        // Finalize the cluster collections + bookkeeping exactly as the CPU
+        // tail does, then return — skip the KDBush path entirely.
+        if (clusteredLabelCollection.length === 0) {
+          clusteredLabelCollection.destroy();
+          entityCluster._clusterLabelCollection = undefined;
+        }
+        if (clusteredBillboardCollection.length === 0) {
+          clusteredBillboardCollection.destroy();
+          entityCluster._clusterBillboardCollection = undefined;
+        }
+        if (clusteredPointCollection.length === 0) {
+          clusteredPointCollection.destroy();
+          entityCluster._clusterPointCollection = undefined;
+        }
+        // GPU centroid clustering does not carry the height-zoom-in
+        // re-projection state the CPU path threads through `_previousClusters`;
+        // clear it so a later fall-back to the CPU path starts clean.
+        entityCluster._previousClusters = [];
+        entityCluster._previousHeight = currentHeight;
+        return;
+      }
+      // No fresh grid this frame — fall through to the CPU KDBush path; the
+      // `requestGrid` above seeds the next frame.
+    }
 
     if (points.length > 0) {
       const index = new KDBush(points.length, 64, Float64Array);

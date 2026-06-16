@@ -24,6 +24,33 @@
 
 ---
 
+## Batch 301 — Phase-10 EntityCluster-on-GPU: screen-space bin/count offloaded to a compute pass (2026-06-15)
+
+**Item:** NEW-ENTITYCLUSTER-GPU (SHIPPED — GPU bin/count + CPU merge). Follow-up: NEW-ENTITYCLUSTER-GPU-MERGE.
+
+**Problem.** `EntityCluster`'s screen-space proximity declutter (the billboard/label/point marker merging behind `dataSource.clustering`) was pure CPU: every declutter built a fresh `new KDBush(...)` over every visible screen-space point (O(N log N)) then ran a greedy range-query merge. That doesn't scale to the 50k+ markers Phase 10 targets — the index build alone dominates.
+
+**What shipped.** Split the declutter into a data-parallel BIN/COUNT half (GPU) and a sequential MERGE half (CPU over the reduced set):
+
+- `Shaders/WebGPU/Compute/EntityClusterGridGPU.wgsl` (NEW) — one O(N) compute pass: hash each visible screen-space point into a uniform grid whose cell edge equals the merge radius (`pixelRange`), accumulate per-cell occupancy (`atomicAdd`), a per-cell representative point index (`atomicMin` → deterministic), and a per-point cell-id. CPU-rejected points carry an `x < -1e30` sentinel and skip binning.
+- `Renderer/WebGPU/WebGPUEntityClusterDispatcher.ts` (NEW) — owns the coord input + per-cell atomic buffers + per-point cell-id + readback staging; `computeGrid()` uploads coords, clears the accumulators (counts→0, rep→0xFFFFFFFF), dispatches, and `mapAsync`-reads-back the aggregates (one-frame latency, drops overlapping calls). Registered as the `ENTITY_CLUSTER_GPU` FeatureRenderer (slot 50; `computeGrid`/`destroy`/`getStatistics`).
+- `DataSources/EntityClusterGPU.js` (NEW) — backend-agnostic seam: consulted ONLY via `context.getFeatureRenderer(ENTITY_CLUSTER_GPU)` (no `isWebGPU` branch). `requestGrid()` fires the async grid; `clusterWithGrid()` runs the representative-selection + 3×3-neighbour merge on the CPU but over the reduced NON-EMPTY-cell set, emitting cluster centroids (averaged member world positions). A point-count or `pixelRange` mismatch (or no grid yet) falls back to the CPU path that frame.
+- `DataSources/EntityCluster.js` — declutter callback gains the GPU branch BEFORE the KDBush block: when `gpuClusteringAvailable`, consume a fresh grid via `clusterWithGrid` (emit clusters + un-clustered remainder, finalize the cluster collections, return) and always `requestGrid` for next frame; else fall through to the unchanged CPU KDBush path. WebGL2 never reaches the GPU branch.
+
+**Why one-frame-stale is fine.** Declutter already runs off `camera.changed` (it lags the camera by a frame by design). The async readback adds exactly that latency, so the consumed grid matches what the user already sees. `scene.requestRender()` after the readback lands ensures the fresh grid is picked up.
+
+**Result (probe-entitycluster-gpu.mjs, NEW gate, both backends).** 2000 dense clusterable point entities: WebGL 48 reps / WebGPU 20 reps from 2000 (both well below entity count); zoom-out merges (near→far 48→3 WebGL, 20→4 WebGPU); the GPU dispatcher ran (10 dispatches, vs -1 on WebGL where the path is absent); parity ratio 0.42 (the grid merge is more aggressive at near zoom than the CPU bbox merge — both are valid declutters of the same set, within tolerance); 0 console errors on both.
+
+**Composition with Batch 300.** When clustering is enabled the bulk fast-path (`BulkPointVisualizer`) routes ALL points to its legacy lane (clustering re-positions primitives per frame), so the GPU cluster path operates on that lane's flat-buffer `PointPrimitiveCollection` — they compose cleanly.
+
+**Partial, by design.** The MERGE half stays on the CPU (over the reduced cell set). The fully-GPU parallel merge — union-find over the grid, no per-cell readback — is tracked as `NEW-ENTITYCLUSTER-GPU-MERGE`. The grid buffers are the scaffolding it builds on.
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/Compute/EntityClusterGridGPU.wgsl` (NEW), `packages/engine/Source/Renderer/WebGPU/WebGPUEntityClusterDispatcher.ts` (NEW), `packages/engine/Source/DataSources/EntityClusterGPU.js` (NEW), `packages/engine/Source/DataSources/EntityCluster.js` (GPU branch + state), `packages/engine/Source/Renderer/FeatureRendererKey.js` (ENTITY_CLUSTER_GPU=50, COUNT→51), `packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts` (register), `Tools/visual-regression/probe-entitycluster-gpu.mjs` (NEW gate).
+
+**Verification.** `npx gulp build` green (index-wgsl churn reverted); `npx tsc --noEmit` clean. probe-entitycluster-gpu PASS. Standing gates: collections-regression PASS, entity-bulk PASS (both backends), point-label-partial-write PASS, collections-2dcv-morph clean, sandcastle-smoke PASS (3 demos), upstream-regression-check 26/26 PASS.
+
+---
+
 ## Batch 300 — Phase-10 Entity bulk fast-path (points) + surfaced WebGPU point-collection pick gap (2026-06-15)
 
 **Item:** NEW-ENTITY-BULK-FASTPATH (SHIPPED — points). Surfaced: NEW-WEBGPU-POINT-COLLECTION-PICK.
