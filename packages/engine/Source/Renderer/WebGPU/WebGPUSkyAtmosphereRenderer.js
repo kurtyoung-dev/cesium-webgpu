@@ -507,6 +507,18 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
         },
         "sun",
       );
+      // Track V-A1 (NEW-ATMO-BRUNETON-FULL-LUTS) — chain the multiple-
+      // scattering + irradiance extension passes on the same encoder. They
+      // read the sun transmittance + single-scattering LUTs we just wrote
+      // and populate the multiple-scatter + irradiance targets. Gated on the
+      // sun dispatch succeeding (compute available). No-op on devices where
+      // the method is absent (older perf-manager stubs in tests).
+      if (
+        sunOk &&
+        typeof perfMgr.dispatchAtmosphereExtendedLUT === "function"
+      ) {
+        perfMgr.dispatchAtmosphereExtendedLUT(encoder, device);
+      }
     }
 
     if (moonDirty) {

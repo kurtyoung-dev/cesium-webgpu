@@ -43,6 +43,7 @@ import type { DebugStatsObject } from "../GraphicsContext.js";
 import {
   ensureAtmosphereLUTResources as ensureAtmosphereLUTResourcesHelper,
   dispatchAtmosphereLUT as dispatchAtmosphereLUTHelper,
+  dispatchAtmosphereExtendedLUT as dispatchAtmosphereExtendedLUTHelper,
 } from "./WebGPUAtmosphereLUT.js";
 import type { AtmosphereLUTResources } from "./WebGPUAtmosphereLUT.js";
 import type {
@@ -733,6 +734,37 @@ export class WebGPUPerformanceManager {
     moonInscatterView: GPUTextureView;
   } | null {
     return ensureAtmosphereLUTResourcesHelper(this, device);
+  }
+
+  /**
+   * Track V-A1 (NEW-ATMO-BRUNETON-FULL-LUTS) — dispatch the multiple-
+   * scattering + irradiance extension passes for the SUN LUT pair. Must run
+   * after a `dispatchAtmosphereLUT(…, "sun")` in the same frame so the
+   * transmittance + single-scattering inputs are populated. Returns false if
+   * compute is unavailable or the LUT resources have not been allocated yet.
+   */
+  dispatchAtmosphereExtendedLUT(
+    encoder: GPUCommandEncoder,
+    device: GPUDevice,
+  ): boolean {
+    return dispatchAtmosphereExtendedLUTHelper(this, encoder, device);
+  }
+
+  /**
+   * Track V-A1 — direct accessor for the extended LUT texture views
+   * (multiple-scattering + irradiance), for consumers/probes that read them.
+   * Returns null until {@link ensureAtmosphereLUTResources} has run.
+   */
+  getAtmosphereExtendedLUTViews(): {
+    multipleScatterView: GPUTextureView;
+    irradianceView: GPUTextureView;
+  } | null {
+    const lut = this._atmosphereLutResources;
+    if (!lut) return null;
+    return {
+      multipleScatterView: lut.multipleScatterView,
+      irradianceView: lut.irradianceView,
+    };
   }
 
   /**

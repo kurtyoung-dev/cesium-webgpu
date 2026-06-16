@@ -24,6 +24,8 @@ import {
   makeBindGroupLayout,
   uniformBuffer,
   storageTexture,
+  texture,
+  sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ComputeTaskType } from "./WebGPUPerformanceManager.js";
@@ -49,6 +51,19 @@ export interface AtmosphereLUTResources {
   moonParamsData: Float32Array;
   moonBindGroup: GPUBindGroup | null;
   bindGroupLayout: GPUBindGroupLayout | null;
+  // ── Track V-A1: full-Bruneton extension (multiple-scattering + irradiance) ──
+  // Sun-only for now (the moon path keeps transmittance + single scatter).
+  // multipleScatter shares the inscatter (256×128) parameterization;
+  // irradiance shares the transmittance (256×64) parameterization.
+  multipleScatter: GPUTexture;
+  multipleScatterView: GPUTextureView;
+  irradiance: GPUTexture;
+  irradianceView: GPUTextureView;
+  // Sampler + group-1 bind group for the extended passes (read single-scatter
+  // + transmittance as sampled inputs, write multiple-scatter + irradiance).
+  extendedSampler: GPUSampler | null;
+  extendedBindGroupLayout: GPUBindGroupLayout | null;
+  extendedBindGroup: GPUBindGroup | null;
   width: number;
   inscatterHeight: number;
   transmittanceHeight: number;
@@ -102,8 +117,15 @@ export function ensureAtmosphereLUTResources(
   const transmittanceHeight = 64;
   const inscatterHeight = 128;
 
+  // COPY_SRC lets diagnostics/probes read back the LUTs via
+  // copyTextureToBuffer (Track V-A1 probe-atmo-luts). The sun
+  // transmittance + inscatter textures also gain TEXTURE_BINDING so the
+  // extended passes can sample them as inputs (already implied below, but
+  // explicit here). The cost is nil — these are tiny precompute targets.
   const usage =
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
+    GPUTextureUsage.STORAGE_BINDING |
+    GPUTextureUsage.TEXTURE_BINDING |
+    GPUTextureUsage.COPY_SRC;
 
   // ── Sun LUT pair ──
   const transmittance = device.createTexture({
@@ -129,6 +151,20 @@ export function ensureAtmosphereLUTResources(
   const moonInscatter = device.createTexture({
     label: "AtmosphereLUT_Moon_Inscatter",
     size: { width, height: inscatterHeight },
+    format: "rgba16float",
+    usage,
+  });
+
+  // ── Track V-A1: full-Bruneton extension targets (sun only) ──
+  const multipleScatter = device.createTexture({
+    label: "AtmosphereLUT_Sun_MultipleScatter",
+    size: { width, height: inscatterHeight },
+    format: "rgba16float",
+    usage,
+  });
+  const irradiance = device.createTexture({
+    label: "AtmosphereLUT_Sun_Irradiance",
+    size: { width, height: transmittanceHeight },
     format: "rgba16float",
     usage,
   });
@@ -162,6 +198,13 @@ export function ensureAtmosphereLUTResources(
     moonParamsData,
     moonBindGroup: null,
     bindGroupLayout: null,
+    multipleScatter,
+    multipleScatterView: multipleScatter.createView(),
+    irradiance,
+    irradianceView: irradiance.createView(),
+    extendedSampler: null,
+    extendedBindGroupLayout: null,
+    extendedBindGroup: null,
     width,
     transmittanceHeight,
     inscatterHeight,
@@ -290,6 +333,101 @@ export function dispatchAtmosphereLUT(
     wgsI,
     1,
     "computeInscatter",
+  );
+
+  return true;
+}
+
+/**
+ * Track V-A1 — dispatch the two full-Bruneton extension passes
+ * (`computeMultipleScattering`, `computeIrradiance`) for the SUN LUT pair.
+ *
+ * MUST be called AFTER {@link dispatchAtmosphereLUT}(…, "sun") in the same
+ * (or a later) command encoder: the extended passes read the sun
+ * transmittance + single-scattering LUTs as sampled inputs. They write the
+ * sun multiple-scattering + irradiance targets allocated by
+ * {@link ensureAtmosphereLUTResources}.
+ *
+ * The extended kernels read their params from a SECOND uniform binding
+ * (group 1, binding 0) — we reuse the already-packed sun params buffer, so
+ * no extra `writeBuffer` is needed. The kernels never touch group 0, so the
+ * auto-derived pipeline layout is a single group-1 bind group bound at
+ * index 1.
+ *
+ * @returns true on success, false if compute is unavailable / resources missing.
+ */
+export function dispatchAtmosphereExtendedLUT(
+  host: AtmosphereLUTHost,
+  encoder: GPUCommandEncoder,
+  device: GPUDevice,
+): boolean {
+  if (!host._context.supportsComputeShaders) return false;
+  if (!host._atmosphereLutResources) return false;
+  const lut = host._atmosphereLutResources;
+
+  if (!lut.extendedSampler) {
+    lut.extendedSampler = device.createSampler({
+      label: "AtmosphereLUT_Extended_Sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+
+  if (!lut.extendedBindGroupLayout) {
+    lut.extendedBindGroupLayout = makeBindGroupLayout(
+      device,
+      "AtmosphereLUT_Extended_BGL",
+      [
+        uniformBuffer(0, Stage.COMPUTE),
+        sampler(1, Stage.COMPUTE, "filtering"),
+        texture(2, Stage.COMPUTE),
+        texture(3, Stage.COMPUTE),
+        storageTexture(4, Stage.COMPUTE, "rgba16float"),
+        storageTexture(5, Stage.COMPUTE, "rgba16float"),
+      ],
+    );
+  }
+
+  if (!lut.extendedBindGroup) {
+    lut.extendedBindGroup = device.createBindGroup({
+      label: "AtmosphereLUT_Extended_BG",
+      layout: lut.extendedBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: lut.paramsBuffer } },
+        { binding: 1, resource: lut.extendedSampler },
+        { binding: 2, resource: lut.transmittanceView },
+        { binding: 3, resource: lut.inscatterView },
+        { binding: 4, resource: lut.multipleScatterView },
+        { binding: 5, resource: lut.irradianceView },
+      ],
+    });
+  }
+
+  const wgsX = Math.ceil(lut.width / 16);
+  const wgsMS = Math.ceil(lut.inscatterHeight / 16);
+  const wgsIrr = Math.ceil(lut.transmittanceHeight / 16);
+
+  // Both extended kernels bind their resources at group index 1 (group 0 is
+  // unused → the auto layout has no group-0 entry to satisfy).
+  host.dispatchCompute(
+    encoder,
+    ComputeTaskType.ATMOSPHERE_LUT,
+    [{ index: 1, bindGroup: lut.extendedBindGroup }],
+    wgsX,
+    wgsMS,
+    1,
+    "computeMultipleScattering",
+  );
+  host.dispatchCompute(
+    encoder,
+    ComputeTaskType.ATMOSPHERE_LUT,
+    [{ index: 1, bindGroup: lut.extendedBindGroup }],
+    wgsX,
+    wgsIrr,
+    1,
+    "computeIrradiance",
   );
 
   return true;
