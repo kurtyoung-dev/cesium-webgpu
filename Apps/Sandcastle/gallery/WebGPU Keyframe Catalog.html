@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="GPU-resident keyframe catalog: thousands of time-dynamic objects whose (time, position) samples are interpolated each frame by a GPU kernel — the GPU analogue of SampledPositionProperty."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Keyframe Catalog demo — the SECOND ComputeInstanceCollection kernel
+    family (NEW-SAMPLED-POSITION-KERNEL), complementing the analytic orbital
+    propagator (the first family, see "WebGPU Orbital Catalog").
+
+    Where the orbital kernel DERIVES each object's position from a closed-form
+    model (six mean elements + secular rates), MANY time-dynamic catalogs are
+    NOT analytically derivable — their positions are given as discrete
+    (time, position) KEYFRAMES (CZML `position` tracks, recorded telemetry,
+    flight paths). On the CPU each such object is a Cesium SampledPositionProperty
+    that interpolates on demand; a dense catalog of them is N JavaScript
+    getValue() calls per frame.
+
+    This demo makes that catalog GPU-resident. Each object's keyframes upload
+    ONCE to a storage buffer; every frame `Cesium.SampledPositionKernel`'s WGSL
+    kernel linearly interpolates every object's position in parallel and an
+    instanced draw vertex-pulls the result directly from GPU memory — the CPU
+    uploads only a time scalar. The kernel is the GPU analogue of
+    SampledPositionProperty (linear interpolation, HOLD extrapolation outside
+    the keyframe span).
+
+    Simulation time follows the scene clock, so the speed slider just drives
+    `viewer.clock.multiplier`. Backend is selectable via ?renderer=webgpu
+    (default) | webgl — on WebGL2 the engine runs the family's JS `cpuKernel`
+    (the SAME interpolation) each frame instead of the WGSL compute kernel, so
+    the catalog renders on both backends.
+
+    The engine knows nothing about keyframes: SampledPositionKernel is a
+    reusable kernel FAMILY that produces the matched (WGSL kernel + JS cpuKernel
+    + param packer) for a chosen per-instance keyframe budget — everything
+    catalog-specific (how many objects, where each track goes) is defined HERE.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Objects</td>
+            <td>
+              <select data-bind="value: objectCount">
+                <option value="1000">1,000</option>
+                <option value="5000">5,000</option>
+                <option value="20000">20,000</option>
+              </select>
+            </td>
+          </tr>
+          <tr>
+            <td>Time speed</td>
+            <td>
+              <input
+                type="range"
+                min="1"
+                max="300"
+                step="1"
+                data-bind="value: clockMultiplier, valueUpdate: 'input'"
+              />
+              <span data-bind="text: clockMultiplier + 'x'"></span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        // Backend is selectable via ?renderer= (default webgpu) so a user can
+        // exercise the WebGL2 CPU-kernel fallback (cpuKernel) straight from the
+        // demo — on WebGL2 the engine runs the family's JS kernel each frame.
+        const requestedRenderer =
+          new URLSearchParams(window.location.search).get("renderer") || "webgpu";
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: requestedRenderer },
+          shouldAnimate: true,
+        });
+        const scene = viewer.scene;
+
+        // Per-instance keyframe budget. The lane stride is 1 + 4 * MAX_KEYFRAMES
+        // floats; instances may carry fewer keyframes than this.
+        const MAX_KEYFRAMES = 8;
+
+        // The reusable keyframe-interpolation kernel family (engine artifact).
+        // It hands back the matched WGSL kernel, the JS cpuKernel (WebGL2
+        // fallback), the param stride, and a per-instance packer.
+        const family = Cesium.SampledPositionKernel.create({
+          maxKeyframes: MAX_KEYFRAMES,
+          color: new Cesium.Color(0.2, 0.9, 1.0, 1.0),
+          pixelSize: 3.0,
+        });
+
+        // Epoch = the keyframe time origin (seconds since here). Simulation
+        // time follows the scene clock relative to this epoch.
+        const epoch = Cesium.JulianDate.now();
+        const SPAN_SECONDS = 3600.0; // each track spans one simulated hour
+
+        // Deterministic PRNG so the catalog is reproducible across reloads.
+        let seed = 0x2545f491;
+        const rand = () => {
+          seed = (seed + 0x6d2b79f5) | 0;
+          let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+
+        // Build one object's keyframe track: a great-circle-ish arc of random
+        // waypoints over the globe at a random altitude (a stand-in for a CZML
+        // `position` track or recorded telemetry — the kernel doesn't care how
+        // the keyframes were produced). Returns the packed lane array.
+        const ellipsoid = Cesium.Ellipsoid.WGS84;
+        const scratchCarto = new Cesium.Cartographic();
+        const buildTrack = () => {
+          const kfCount = 4 + Math.floor(rand() * (MAX_KEYFRAMES - 4)); // 4..8
+          const lon0 = (rand() * 2.0 - 1.0) * Math.PI;
+          const lat0 = (rand() * 2.0 - 1.0) * (Math.PI / 3.0);
+          const dLon = (rand() * 2.0 - 1.0) * 0.8;
+          const dLat = (rand() * 2.0 - 1.0) * 0.4;
+          const altitude = 4.0e5 + rand() * 1.2e6; // 400 km .. 1.6 Mm
+          const keyframes = [];
+          for (let k = 0; k < kfCount; k++) {
+            const f = k / (kfCount - 1);
+            // Wander a little off the straight arc so segments are visibly bent.
+            const wobble = (rand() * 2.0 - 1.0) * 0.05;
+            scratchCarto.longitude = lon0 + dLon * f + wobble;
+            scratchCarto.latitude = lat0 + dLat * f + wobble * 0.5;
+            scratchCarto.height = altitude;
+            const position = ellipsoid.cartographicToCartesian(
+              scratchCarto,
+              new Cesium.Cartesian3(),
+            );
+            keyframes.push({ time: f * SPAN_SECONDS, position });
+          }
+          return family.packInstance(keyframes, epoch);
+        };
+
+        let collection;
+        const rebuild = (count) => {
+          if (Cesium.defined(collection)) {
+            scene.primitives.remove(collection);
+            collection = undefined;
+          }
+          collection = scene.primitives.add(
+            new Cesium.ComputeInstanceCollection({
+              kernel: family.kernel,
+              cpuKernel: family.cpuKernel, // WebGL2 fallback
+              floatsPerInstance: family.floatsPerInstance,
+              // Positions are GPU-resident, so the engine can't derive a
+              // bounding volume — the whole catalog fits inside GEO radius.
+              boundingSphere: new Cesium.BoundingSphere(Cesium.Cartesian3.ZERO, 4.4e7),
+            }),
+          );
+          collection.epoch = epoch;
+          for (let i = 0; i < count; i++) {
+            collection.addInstance(buildTrack());
+          }
+        };
+
+        // Loop the clock over the keyframe span so the catalog perpetually
+        // re-runs its tracks (animation never stalls past the last keyframe).
+        viewer.clock.startTime = Cesium.JulianDate.clone(epoch);
+        viewer.clock.stopTime = Cesium.JulianDate.addSeconds(
+          epoch,
+          SPAN_SECONDS,
+          new Cesium.JulianDate(),
+        );
+        viewer.clock.currentTime = Cesium.JulianDate.clone(epoch);
+        viewer.clock.clockRange = Cesium.ClockRange.LOOP_STOP;
+        viewer.clock.multiplier = 60;
+
+        // Knockout view-model for the toolbar.
+        const viewModel = { objectCount: "5000", clockMultiplier: 60 };
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+        Cesium.knockout
+          .getObservable(viewModel, "objectCount")
+          .subscribe((value) => rebuild(parseInt(value, 10)));
+        Cesium.knockout.getObservable(viewModel, "clockMultiplier").subscribe((value) => {
+          viewer.clock.multiplier = parseInt(value, 10);
+        });
+
+        rebuild(parseInt(viewModel.objectCount, 10));
+
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(0.0, 10.0, 4.0e7),
+        });
+
+        //Sandcastle_End
+        window.viewer = viewer;
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.log(error);
+        });
+        Sandcastle.finishedLoading();
+      }
+    </script>
+  </body>
+</html>
