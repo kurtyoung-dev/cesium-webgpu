@@ -1544,18 +1544,21 @@ export async function createIndexJs(workspace) {
       if (symbols.length === 1) {
         return `export { ${symbols[0]} } from "${modulePath}";${EOL}`;
       }
-      return (
-        `export {${EOL}` +
-        symbols.map((/** @type {string} */ s) => `  ${s},${EOL}`).join("") +
-        `} from "${modulePath}";${EOL}`
-      );
+      const body = symbols
+        .map((/** @type {string} */ s) => `  ${s},${EOL}`)
+        .join("");
+      return `export {${EOL}${body}} from "${modulePath}";${EOL}`;
     };
-    const wgslContents =
-      `// WebGPU cluster renderer + lighting re-exports (Slice 5d, Batches 147–150).${EOL}` +
-      `// They reference Source/Renderer/WebGPU/* which the webgl-only variant strips${EOL}` +
-      `// to empty stubs, so they live here (webgl-only does NOT import index-wgsl.js).${EOL}` +
-      `// Exposed so the cluster probes + the Clustered Lighting Sandcastle can${EOL}` +
-      `// construct + dispatch the renderers standalone. (NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING.)${EOL}` +
+    // Assembled as an array + `.join("")` (not a `+`-chain) so eslint's
+    // `prefer-template` rule stays satisfied — `prettierExport()` returns a
+    // plain string, and concatenating a template literal with a plain-string
+    // function call via `+` trips the rule.
+    const wgslContents = [
+      `// WebGPU cluster renderer + lighting re-exports (Slice 5d, Batches 147–150).${EOL}`,
+      `// They reference Source/Renderer/WebGPU/* which the webgl-only variant strips${EOL}`,
+      `// to empty stubs, so they live here (webgl-only does NOT import index-wgsl.js).${EOL}`,
+      `// Exposed so the cluster probes + the Clustered Lighting Sandcastle can${EOL}`,
+      `// construct + dispatch the renderers standalone. (NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING.)${EOL}`,
       prettierExport(
         [
           "WebGPUClusterBoundsRenderer",
@@ -1566,7 +1569,7 @@ export async function createIndexJs(workspace) {
           "CLUSTER_BOUNDS_STORAGE_BYTES",
         ],
         "./Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.js",
-      ) +
+      ),
       prettierExport(
         [
           "WebGPUClusterAssignRenderer",
@@ -1577,30 +1580,30 @@ export async function createIndexJs(workspace) {
           "CLUSTER_LIGHT_INDICES_STORAGE_BYTES",
         ],
         "./Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.js",
-      ) +
+      ),
       prettierExport(
         ["WebGPUClusterDebugRenderer"],
         "./Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.js",
-      ) +
+      ),
       prettierExport(
         ["WebGPUClusteredLightingDispatcher"],
         "./Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.js",
-      ) +
-      `${EOL}// TypeScript-only WGSL preprocessor exports — for wgsl-import-test.html${EOL}` +
+      ),
+      `${EOL}// TypeScript-only WGSL preprocessor exports — for wgsl-import-test.html${EOL}`,
       prettierExport(
         ["WGSLShaderPreprocessor", "WGSLShaderLibrary"],
         "./Source/Renderer/WebGPU/WGSLShaderPreprocessor.js",
-      ) +
+      ),
       prettierExport(
         ["createDefaultWGSLLibrary", "WGSLBuiltinChunks"],
         "./Source/Renderer/WebGPU/WGSLBuiltins.js",
-      ) +
+      ),
       // WebGL compatibility stub helpers — apps on the dual or
       // webgpu-only variant can register a shader translator
       // (naga-wasm adapter, etc.) and build pipelines from tracked
       // gl.* state without reaching into the WebGPU renderer's
       // private directory structure.
-      `${EOL}// WebGL compatibility stub — translator registry + pipeline extractor${EOL}` +
+      `${EOL}// WebGL compatibility stub — translator registry + pipeline extractor${EOL}`,
       prettierExport(
         [
           "registerShaderTranslator",
@@ -1623,7 +1626,8 @@ export async function createIndexJs(workspace) {
           "getCompiledShaderForProgram",
         ],
         "./Source/Renderer/WebGPU/WebGLCompatibilityStub.js",
-      );
+      ),
+    ].join("");
     await writeFile(`packages/${workspace}/index-wgsl.js`, wgslContents, {
       encoding: "utf-8",
     });
