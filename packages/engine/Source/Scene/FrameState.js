@@ -447,6 +447,19 @@ class FrameState {
     this.lights = undefined;
 
     /**
+     * Track V-A3 (NEW-ATMO-DERIVED-LIGHTING) — atmosphere-derived sky-
+     * irradiance ambient colour (linear RGB), published by Scene each frame
+     * ONLY when `aerialPerspective` is active (WebGPU). Consumers (the WebGPU
+     * model renderer) use it as the ambient floor in place of the flat
+     * neutral grey, so models pick up a plausible day/night-aware sky ambient
+     * consistent with the atmosphere-derived sun (`frameState.light`).
+     * Undefined when aerial perspective is off — consumers fall back to their
+     * existing neutral ambient. WebGL ignores it.
+     * @type {Cartesian3|undefined}
+     */
+    this.atmosphereSkyIrradiance = undefined;
+
+    /**
      * The distance from the camera at which to disable the depth test of billboards, labels and points
      * to, for example, prevent clipping against terrain. When set to zero, the depth test should always
      * be applied. When less than zero, the depth test should never be applied.

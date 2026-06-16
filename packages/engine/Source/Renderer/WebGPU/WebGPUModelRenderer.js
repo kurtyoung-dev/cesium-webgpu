@@ -727,10 +727,25 @@ function packLightUniforms(data, frameState, model) {
   }
   data[7] = light?.intensity ?? 2.0;
 
-  // ambientColor — small neutral floor so unlit faces aren't pitch black.
-  data[8] = 0.2;
-  data[9] = 0.2;
-  data[10] = 0.2;
+  // ambientColor — small floor so unlit faces aren't pitch black. Track V-A3
+  // (NEW-ATMO-DERIVED-LIGHTING): when the unified aerial-perspective
+  // atmosphere is active, Scene publishes a sky-irradiance ambient
+  // (`frameState.atmosphereSkyIrradiance`) derived from the same atmosphere
+  // that lights the sun (`frameState.light`) and produces the post-process
+  // haze — so the model's ambient is a plausible day/night-aware blue-tinted
+  // sky term, consistent with its direct sun, rather than a flat grey. Falls
+  // back to the historical neutral 0.2 floor when aerial perspective is off
+  // (or on WebGL).
+  const skyIrradiance = frameState.atmosphereSkyIrradiance;
+  if (skyIrradiance) {
+    data[8] = skyIrradiance.x;
+    data[9] = skyIrradiance.y;
+    data[10] = skyIrradiance.z;
+  } else {
+    data[8] = 0.2;
+    data[9] = 0.2;
+    data[10] = 0.2;
+  }
   data[11] = 0.0;
 
   // IBL factors — consumed by ModelPBRComplete.wgsl for split-sum ambient.

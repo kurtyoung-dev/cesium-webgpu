@@ -77,6 +77,7 @@ import SpecularEnvironmentCubeMap from "./SpecularEnvironmentCubeMap.js";
 import StencilConstants from "./StencilConstants.js";
 import { LightCollection } from "./LightTypes.js";
 import SunLight from "./SunLight.js";
+import computeAtmosphereDerivedLighting from "./AtmosphereDerivedLighting.js";
 import TweenCollection from "./TweenCollection.js";
 import View from "./View.js";
 import DebugInspector from "./DebugInspector.js";
@@ -96,6 +97,11 @@ import {
   execute2DViewportCommands,
   executeWebVRCommands,
 } from "./ViewportExecutor.js";
+
+// Track V-A3 — scratch for the local-up vector passed to the atmosphere-
+// derived lighting (camera position direction). Module-scope to avoid a
+// per-frame allocation.
+const scratchAtmosphereUp = new Cartesian3();
 
 const requestRenderAfterFrame = function (scene) {
   return function () {
@@ -1348,6 +1354,17 @@ class Scene {
      * @type {Light}
      */
     this.light = new SunLight();
+
+    // Track V-A3 (NEW-ATMO-DERIVED-LIGHTING) — a private SunLight whose
+    // colour/intensity is re-derived each frame from the atmosphere (sun
+    // transmittance) when `aerialPerspective` is enabled (WebGPU). Published
+    // as `frameState.light` ONLY while aerial perspective is on, so discrete
+    // models are lit by the same sun that produces the post-process haze. The
+    // user's `scene.light` is never mutated (turning aerial perspective off
+    // restores it untouched). The sky-irradiance ambient is published
+    // alongside on `frameState.atmosphereSkyIrradiance`.
+    this._atmosphereDerivedLight = new SunLight();
+    this._atmosphereSkyIrradiance = new Cartesian3(0.2, 0.2, 0.2);
 
     /**
      * Collection of additional light sources for multi-light rendering.
@@ -3140,6 +3157,57 @@ class Scene {
         this.camera.frustum instanceof OrthographicOffCenterFrustum
       );
     frameState.light = this.light;
+    // Track V-A3 (NEW-ATMO-DERIVED-LIGHTING) — when the unified aerial-
+    // perspective atmosphere is active (WebGPU), derive the directional SUN
+    // light (colour + intensity) and a SKY-IRRADIANCE ambient from the
+    // atmosphere so discrete MODELS are lit by the SAME sun/sky that produces
+    // the post-process haze (the Takram talk's "light-source lighting for the
+    // ISS"). Terrain keeps the post-process Lambertian aerial-perspective
+    // (V-A2); models use light-source PBR via `frameState.light` — the mixed-
+    // lighting mask, both halves driven by one coherent atmosphere. Only the
+    // SunLight case is derived (the sun-direction model); a user-supplied
+    // DirectionalLight is left as-is. We never mutate `scene.light` — the
+    // derived values live on a private SunLight, swapped into `frameState`
+    // only while aerial perspective is on. The sun direction is the previous
+    // frame's `uniformState.sunDirectionWC` (one frame stale — visually
+    // indistinguishable at any sane sim rate, same trick as `computeSkyBrightness`).
+    frameState.atmosphereSkyIrradiance = undefined;
+    if (
+      this.aerialPerspective === true &&
+      this.isWebGPU &&
+      this.light instanceof SunLight
+    ) {
+      const us = this._context?.uniformState;
+      const sunDir = us?.sunDirectionWC;
+      const cameraPos = this.camera?.positionWC;
+      if (defined(sunDir) && defined(cameraPos)) {
+        const altitude = this.camera?.positionCartographic?.height ?? 0.0;
+        const baseIntensity = this.light.intensity ?? 2.0;
+        const lightIntensity =
+          this.skyAtmosphere?.atmosphereLightIntensity ?? 50.0;
+        // Local up = camera position direction (ECEF position normalized) —
+        // the surface normal under the camera. The sun zenith that drives the
+        // derived sun colour/intensity is measured against THIS, so it tracks
+        // the viewed site's time-of-day (not the pole axis).
+        const localUp = Cartesian3.normalize(cameraPos, scratchAtmosphereUp);
+        const derived = computeAtmosphereDerivedLighting(
+          sunDir,
+          localUp,
+          altitude,
+          lightIntensity,
+          baseIntensity,
+        );
+        const dl = this._atmosphereDerivedLight;
+        dl.color.red = derived.sunColor.x;
+        dl.color.green = derived.sunColor.y;
+        dl.color.blue = derived.sunColor.z;
+        dl.color.alpha = 1.0;
+        dl.intensity = derived.sunIntensity;
+        frameState.light = dl;
+        Cartesian3.clone(derived.skyIrradiance, this._atmosphereSkyIrradiance);
+        frameState.atmosphereSkyIrradiance = this._atmosphereSkyIrradiance;
+      }
+    }
     frameState.lights = this.lights;
     frameState.cameraUnderground = this._cameraUnderground;
     frameState.globeTranslucencyState = this._globeTranslucencyState;
