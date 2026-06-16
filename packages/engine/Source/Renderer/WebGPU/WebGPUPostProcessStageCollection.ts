@@ -48,6 +48,12 @@ export interface PostProcessCache {
   // viewProjection.
   godRayEnabled: boolean;
   godRayInitialized: boolean;
+  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
+  // atmosphere. Activated via `scene.aerialPerspective = true` (optional
+  // `scene.aerialPerspectiveConfig`). The per-frame configure pass pushes
+  // camera/sun/atmosphere uniforms + the Bruneton transmittance LUT view.
+  aerialPerspectiveEnabled: boolean;
+  aerialPerspectiveInitialized: boolean;
   // Track whether complex effects have been initialized on the pipeline
   bloomInitialized: boolean;
   aoInitialized: boolean;
@@ -127,6 +133,8 @@ function getDefaultCache(): PostProcessCache {
     depthOfFieldEnabled: false,
     godRayEnabled: false,
     godRayInitialized: false,
+    aerialPerspectiveEnabled: false,
+    aerialPerspectiveInitialized: false,
     bloomInitialized: false,
     aoInitialized: false,
     dofInitialized: false,
@@ -620,6 +628,121 @@ function configureWebGPUPostProcessPipeline(
   } else if (pipeline.godRayEffect) {
     pipeline.godRayEffect.enabled = false;
   }
+
+  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified aerial-
+  // perspective atmosphere. Scene-level flag (`scene.aerialPerspective`), no
+  // upstream PostProcessStageCollection slot. Lazy-init on first enable;
+  // per-frame the configure pass pushes camera/sun/atmosphere uniforms + the
+  // Bruneton transmittance LUT view.
+  cache.aerialPerspectiveEnabled =
+    (scene as unknown as { aerialPerspective?: boolean })?.aerialPerspective ===
+    true;
+  if (cache.aerialPerspectiveEnabled && !cache.aerialPerspectiveInitialized) {
+    const cfg = (
+      scene as unknown as {
+        aerialPerspectiveConfig?: import("./WebGPUAerialPerspectiveEffect.js").AerialPerspectiveConfig;
+      }
+    )?.aerialPerspectiveConfig;
+    pipeline.addAerialPerspective(device, canvasFormat, cfg);
+    cache.aerialPerspectiveInitialized = true;
+  }
+  if (cache.aerialPerspectiveEnabled && pipeline.aerialPerspectiveEffect) {
+    pipeline.aerialPerspectiveEffect.enabled = true;
+    updateAerialPerspectiveFrameData(pipeline, scene);
+  } else if (pipeline.aerialPerspectiveEffect) {
+    pipeline.aerialPerspectiveEffect.enabled = false;
+  }
+}
+
+// ── Track V-A2 atmosphere constants ──
+// MUST match WebGPUSkyAtmosphereRenderer.js's DEFAULT_* / ATMOSPHERE_*
+// constants so the aerial-perspective haze agrees with the sky shell + the
+// Bruneton LUT bake (which uses the same coefficients). Kept inline here
+// rather than imported because the renderer is plain JS with no exports for
+// these; a divergence would desync the haze from the LUT, so this is the one
+// spot to update if the renderer's defaults change.
+const AP_RAYLEIGH_COEFFICIENT: [number, number, number] = [
+  5.5e-6, 13.0e-6, 22.4e-6,
+];
+const AP_MIE_COEFFICIENT: [number, number, number] = [21e-6, 21e-6, 21e-6];
+const AP_RAYLEIGH_SCALE_HEIGHT = 8500.0;
+const AP_MIE_SCALE_HEIGHT = 1200.0;
+const AP_MIE_ANISOTROPY = 0.758;
+const AP_ATMOSPHERE_THICKNESS = 111e3; // WebGL ATMOSPHERE_THICKNESS.
+// WGS84 max radius (metres) — matches Cartesian3.maximumComponent(WGS84.radii)
+// used by the LUT bake. The LUT's transmittance UV parameterization keys off
+// this same inner radius, so they must agree for the extinction lookup to be
+// physically consistent.
+const AP_WGS84_MAX_RADIUS = 6378137.0;
+
+/**
+ * Track V-A2 — push the per-frame camera / sun / atmosphere uniforms + the
+ * transmittance LUT view into the aerial-perspective effect. Reads the
+ * camera world position, inverse view-projection, and sun direction from
+ * `uniformState`, the LUT view from the perf manager's atmosphere LUT
+ * resources, and the atmosphere intensity from the scene's SkyAtmosphere.
+ */
+function updateAerialPerspectiveFrameData(
+  pipeline: WebGPUPostProcessPipeline,
+  scene?: CesiumScene,
+): void {
+  const fx = pipeline.aerialPerspectiveEffect;
+  if (!fx) return;
+
+  const sceneAny = scene as unknown as {
+    context?: {
+      uniformState?: {
+        cameraPosition?: { x: number; y: number; z: number };
+        sunDirectionWC?: { x: number; y: number; z: number };
+        inverseProjection?: number[] | Float64Array;
+        inverseView?: number[] | Float64Array;
+      };
+      performanceManager?: {
+        _atmosphereLutResources?: { transmittanceView?: GPUTextureView } | null;
+      };
+    };
+    camera?: { frustum?: { near?: number; far?: number } };
+    skyAtmosphere?: { atmosphereLightIntensity?: number };
+  };
+
+  const us = sceneAny?.context?.uniformState;
+  if (!us || !us.cameraPosition || !us.inverseProjection || !us.inverseView) {
+    return;
+  }
+
+  // Push the transmittance LUT view (stable for the device lifetime — the
+  // effect's bind-group cache invalidates at most once). Null until the
+  // SkyAtmosphere renderer first allocates the LUTs; the effect binds a white
+  // placeholder until then (extinction ratio 1 → passthrough), so aerial
+  // perspective shows inscatter-only haze on the very first frame and the
+  // full extinction once the LUT lands.
+  const lut =
+    sceneAny?.context?.performanceManager?._atmosphereLutResources ?? null;
+  fx.setTransmittanceView(lut?.transmittanceView ?? null);
+
+  const cam = us.cameraPosition;
+  const sun = us.sunDirectionWC ?? { x: 0, y: 0, z: 1 };
+  const near = sceneAny?.camera?.frustum?.near ?? 1.0;
+  const far = sceneAny?.camera?.frustum?.far ?? 1e8;
+  const lightIntensity =
+    sceneAny?.skyAtmosphere?.atmosphereLightIntensity ?? 50.0;
+
+  fx.setFrameData({
+    cameraPositionWC: [cam.x, cam.y, cam.z],
+    innerRadius: AP_WGS84_MAX_RADIUS,
+    sunDirectionWC: [sun.x, sun.y, sun.z],
+    lightIntensity,
+    rayleighCoefficient: AP_RAYLEIGH_COEFFICIENT,
+    rayleighScaleHeight: AP_RAYLEIGH_SCALE_HEIGHT,
+    mieCoefficient: AP_MIE_COEFFICIENT,
+    mieScaleHeight: AP_MIE_SCALE_HEIGHT,
+    mieAnisotropy: AP_MIE_ANISOTROPY,
+    near,
+    far,
+    atmosphereThickness: AP_ATMOSPHERE_THICKNESS,
+    inverseProjection: us.inverseProjection,
+    inverseView: us.inverseView,
+  });
 }
 
 // Audit A.11 (Batch 133) -- per-frame sun screen-space UV computed
@@ -733,7 +856,8 @@ function hasActiveWebGPUPostProcessStages(
     cache.ambientOcclusionEnabled ||
     cache.bloomEnabled ||
     cache.depthOfFieldEnabled ||
-    cache.godRayEnabled
+    cache.godRayEnabled ||
+    cache.aerialPerspectiveEnabled
   );
 }
 

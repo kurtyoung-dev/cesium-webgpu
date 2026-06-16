@@ -588,8 +588,16 @@ export function createCameraUniformBuffer(
   // the ray-march entirely (zero per-vertex cost). `showGroundAtmosphere`
   // is mirrored from Globe.js onto tileProvider; fog.enabled comes from
   // the per-frame Fog.update.
-  const fogEnabled = fs?.fog?.enabled !== false;
-  const groundAtmoEnabled = tp.showGroundAtmosphere !== false;
+  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — when the unified
+  // aerial-perspective post-process owns the atmosphere, gate the in-globe
+  // ground-atmosphere + fog drape OFF so the two don't double-apply. Read the
+  // canonical per-frame flag Scene publishes onto frameState (same pattern as
+  // `taaEnabled`). WebGL never sets it, so this is a no-op there.
+  const aerialPerspectiveActive =
+    (frameState as { aerialPerspective?: boolean })?.aerialPerspective === true;
+  const fogEnabled = !aerialPerspectiveActive && fs?.fog?.enabled !== false;
+  const groundAtmoEnabled =
+    !aerialPerspectiveActive && tp.showGroundAtmosphere !== false;
   // Session 65 Batch 38 — ground-atmosphere proper integration.
   // `atmosphereParams.w` encodes the enable flag AND the lighting mode,
   // replacing the empirical cap=1.5 × scale=0.15 workaround:

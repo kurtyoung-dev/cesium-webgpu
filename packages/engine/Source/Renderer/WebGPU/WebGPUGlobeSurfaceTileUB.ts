@@ -415,7 +415,12 @@ export function createTileUniformBuffer(
   // Explicitly zeroing when !enabled makes the GPU state consistent
   // with the user-facing switch.
   if (frameState && frameState.fog) {
-    const fogEnabled = frameState.fog.enabled !== false;
+    // Track V-A2 — when aerial perspective owns the atmosphere, force the
+    // in-globe fog density to 0 so the two don't double-apply.
+    const fogEnabled =
+      frameState.fog.enabled !== false &&
+      (frameState as { aerialPerspective?: boolean }).aerialPerspective !==
+        true;
     let density = fogEnabled ? (frameState.fog.density ?? 0.0) : 0.0;
     if (fogEnabled) {
       const ac = frameState.atmosphericConditions;
@@ -672,7 +677,13 @@ export function createTileUniformBuffer(
   //   fadeInDist  = lightingFadeInDistance  (default π   × R ≈ 20 Mm)
   //   fade        = clamp((cameraDist - fadeOutDist) /
   //                       (fadeInDist - fadeOutDist), 0, 1)
+  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — gate the per-tile
+  // ground-atmosphere drape OFF when the unified aerial-perspective
+  // post-process is active, so they don't double-apply (it owns the haze).
+  const aerialPerspectiveActive =
+    (frameState as { aerialPerspective?: boolean })?.aerialPerspective === true;
   const showGroundAtmosphere =
+    !aerialPerspectiveActive &&
     (tileProvider as { showGroundAtmosphere?: boolean })
       .showGroundAtmosphere !== false;
   let groundAtmosphereFade = 0;

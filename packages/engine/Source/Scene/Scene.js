@@ -1147,6 +1147,22 @@ class Scene {
     this.taaEnabled = options.taaEnabled ?? false;
 
     /**
+     * Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — when true (WebGPU
+     * only), a unified per-pixel aerial-perspective atmosphere post-process
+     * applies one depth-correct haze (transmittance extinction + inscatter)
+     * over the WHOLE scene (terrain, 3D tiles, glTF models, geometry),
+     * replacing the per-tile ground-atmosphere drape. Distant features dim,
+     * redden, and gain inscattered sky light exactly like real aerial
+     * perspective. The in-globe ground-atmosphere/fog drape is gated OFF while
+     * this is active so the two don't double-apply; the sky/atmosphere shell
+     * (WebGPUSkyAtmosphereRenderer) is left untouched. No effect on WebGL.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.aerialPerspective = options.aerialPerspective ?? false;
+
+    /**
      * MORPH-TAA-PREVVP — last frame's projection type (true = orthographic,
      * false = perspective) as seen by the TAA motion-vector path. Used to
      * detect the perspective↔orthographic flip that happens mid-morph so the
@@ -3149,6 +3165,14 @@ class Scene {
     // which was equally unset. This single publication activates ALL of
     // those gates from one backend-agnostic source of truth.
     frameState.taaEnabled = this.taaEnabled === true;
+    // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — canonical
+    // per-frame aerial-perspective flag. When on, the WebGPU globe surface UB
+    // packers gate the in-globe ground-atmosphere/fog drape OFF (same
+    // dormant-gate publication pattern as `taaEnabled`) so the unified
+    // aerial-perspective post-process is the SINGLE owner of distance haze and
+    // the two don't double-apply. Backend-agnostic source of truth — WebGL
+    // ignores it (no aerial-perspective post-process on that backend).
+    frameState.aerialPerspective = this.aerialPerspective === true;
     // Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED follow-on) — canonical
     // per-frame snapshot-mode service reference, same dormant-gate
     // family as `taaEnabled` above: WebGPUEnvironmentRenderer's moon

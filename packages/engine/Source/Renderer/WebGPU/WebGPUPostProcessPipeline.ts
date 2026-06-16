@@ -75,6 +75,12 @@ import { WebGPUTAAEffect } from "./WebGPUTAAEffect.js";
 import { WebGPUUserPostProcessStage } from "./WebGPUUserPostProcessStage.js";
 // Audit A.11 (Batch 133) -- pipeline-level GodRay registration.
 import { GodRayEffect, type GodRayConfig } from "./WebGPUGodRayEffect.js";
+// Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
+// atmosphere over the whole scene.
+import {
+  AerialPerspectiveEffect,
+  type AerialPerspectiveConfig,
+} from "./WebGPUAerialPerspectiveEffect.js";
 import {
   WebGPUAutoExposure,
   type AutoExposureConfig,
@@ -93,6 +99,7 @@ export type {
   AmbientOcclusionConfig,
   DepthOfFieldConfig,
   AutoExposureConfig,
+  AerialPerspectiveConfig,
 };
 
 /** Tonemapping operator modes */
@@ -262,6 +269,13 @@ export class WebGPUPostProcessPipeline {
   // sync; per-frame sun screen UV updated via
   // `setSunScreenUV` from the scene-level configure pass.
   private _godRayEffect: GodRayEffect | null = null;
+  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
+  // atmosphere. Runs FIRST in the depth-dependent chain (before AO/bloom) so
+  // the haze participates in bloom + tonemap, matching how WebGL applies the
+  // ground atmosphere in the globe fragment shader before post-process.
+  // Per-frame camera/sun/atmosphere uniforms + the transmittance LUT view are
+  // pushed by the configure pass.
+  private _aerialPerspectiveEffect: AerialPerspectiveEffect | null = null;
   // HDR auto-exposure: compute-based luminance reduction that feeds
   // the tonemapping stage's exposure multiplier. Dispatched before
   // tonemapping in the execute chain.
@@ -297,6 +311,7 @@ export class WebGPUPostProcessPipeline {
     if (this._aoEffect?.enabled) return true;
     if (this._dofEffect?.enabled) return true;
     if (this._godRayEffect?.enabled) return true;
+    if (this._aerialPerspectiveEffect?.enabled) return true;
     // NEW-POSTPROCESS-USER-WGSL (Batch 198) — user-supplied WGSL stages.
     if (this._userStages.some((s) => s.enabled)) return true;
     return this._customStages.some((s) => s.enabled);
@@ -321,6 +336,15 @@ export class WebGPUPostProcessPipeline {
   /** Audit A.11 (Batch 133) -- GodRay effect or null if not added. */
   get godRayEffect(): GodRayEffect | null {
     return this._godRayEffect;
+  }
+
+  /**
+   * Track V-A2 — unified aerial-perspective atmosphere effect, or null if
+   * not added. The configure pass uses this to push per-frame camera/sun/
+   * atmosphere uniforms + the transmittance LUT view.
+   */
+  get aerialPerspectiveEffect(): AerialPerspectiveEffect | null {
+    return this._aerialPerspectiveEffect;
   }
 
   // ================================================================
@@ -374,10 +398,16 @@ export class WebGPUPostProcessPipeline {
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
+    // Track V-A2 — aerial-perspective output texture is sized + formatted
+    // against `_intermediateFormat`, so a resize / HDR toggle must drop it
+    // too. The configure pass lazily re-adds it on the same frame when
+    // `scene.aerialPerspective` is on (gate checks the live slot).
+    this._aerialPerspectiveEffect?.destroy();
     this._bloomEffect = null;
     this._aoEffect = null;
     this._dofEffect = null;
     this._godRayEffect = null;
+    this._aerialPerspectiveEffect = null;
     // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — TAA joins the recreate
     // reset list: its history textures + pipeline target are sized and
     // formatted against `_intermediateFormat`, so a resize / HDR toggle
@@ -912,6 +942,31 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     );
   }
 
+  /**
+   * Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — add the unified
+   * aerial-perspective atmosphere effect. Runs first in the depth-dependent
+   * chain so the haze participates in bloom + tonemap. Requires the scene
+   * depth texture + the per-frame camera/sun/atmosphere uniforms + the
+   * Bruneton transmittance LUT view (all pushed by the configure pass).
+   *
+   * Uses the intermediate format (rgba16float in HDR) like the other
+   * built-in effects so HDR highlights survive into the inscatter add.
+   */
+  addAerialPerspective(
+    device: GPUDevice,
+    canvasFormat: GPUTextureFormat,
+    config?: AerialPerspectiveConfig,
+  ): void {
+    if (this._aerialPerspectiveEffect) return;
+    this._aerialPerspectiveEffect = new AerialPerspectiveEffect(config);
+    this._aerialPerspectiveEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
+  }
+
   // ================================================================
   //  Custom stages
   // ================================================================
@@ -996,6 +1051,21 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
     let currentView = sourceView;
     const depth = depthView ?? null;
+
+    // 0. Aerial Perspective (Track V-A2) — unified per-pixel atmosphere over
+    // the whole scene. Runs FIRST so the distance haze + inscatter
+    // participate in AO/bloom/tonemap downstream, matching how WebGL applies
+    // the ground atmosphere inside the globe fragment shader before
+    // post-process. Needs depth to recover per-pixel distance; passes
+    // through unmodified when depth is null.
+    if (this._aerialPerspectiveEffect?.enabled && depth) {
+      currentView = this._aerialPerspectiveEffect.execute(
+        encoder,
+        currentView,
+        depth,
+        this._sampler!,
+      );
+    }
 
     // 1. Ambient Occlusion (needs depth; optionally reads G-buffer
     // normal — Phase 8a Slice 4, Batch 87).
@@ -1230,6 +1300,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect?.resize(width, height);
     this._dofEffect?.resize(width, height);
     this._godRayEffect?.resize(width, height);
+    this._aerialPerspectiveEffect?.resize(width, height);
 
     // Update FXAA texel size
     if (this._fxaaStage?.uniformBuffer && this._device) {
@@ -1530,6 +1601,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
+    this._aerialPerspectiveEffect?.destroy();
     this._autoExposure?.destroy();
     // Batch 244 — TAA was missing from teardown (the effect was never
     // instantiated before NEW-TAA-EFFECT-NEVER-ADDED landed, so the
@@ -1540,6 +1612,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect = null;
     this._dofEffect = null;
     this._godRayEffect = null;
+    this._aerialPerspectiveEffect = null;
     this._autoExposure = null;
     this._taaEffect = null;
 
