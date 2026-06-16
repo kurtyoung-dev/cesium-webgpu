@@ -533,13 +533,16 @@ class ComputeInstanceCollection {
       FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
     );
 
-    // WebGL2 (non-compute) backend: no compute-instance FR is registered by
-    // default (only the WebGPU context registers one). When a CPU fallback
-    // kernel is supplied, lazily register the backend-agnostic WebGL renderer
-    // — it lives under Renderer/ (NOT Renderer/WebGPU/), so this stays within
-    // the FeatureRenderer seam (CLAUDE.md §2) rather than branching on
-    // isWebGPU. Without a cpuKernel the collection still renders nothing here.
-    if (!fr && !context.isWebGPU && defined(this._cpuKernel)) {
+    // Non-compute backend (WebGL2 today): no compute-instance FR is registered
+    // by default — only a context that supports GPU compute shaders registers
+    // one. When a CPU fallback kernel is supplied, lazily register the
+    // backend-agnostic WebGL renderer — it lives under Renderer/ (NOT
+    // Renderer/WebGPU/), so this stays within the FeatureRenderer seam
+    // (CLAUDE.md §2). Gated on the `supportsComputeShaders` capability getter
+    // rather than `isWebGPU` per CLAUDE.md §2 — a future WebGL compute
+    // extension would flip the getter and skip the CPU fallback automatically.
+    // Without a cpuKernel the collection still renders nothing here.
+    if (!fr && !context.supportsComputeShaders && defined(this._cpuKernel)) {
       fr = ensureWebGLComputeInstanceRenderer(context);
     }
 
