@@ -230,6 +230,21 @@ export function execute3DTilePasses(
     host._edgeTexturesPopulated = false;
   }
 
+  // C-R8-EDGE-DISPLAY-MODE (§5 P2) — `CESIUM_3D_TILE_EDGES_DIRECT`
+  // (Pass slot 12, EDGES_ONLY CAD wireframe) is INTENTIONALLY NOT run
+  // in this module. The MRT block above handles `CESIUM_3D_TILE_EDGES`
+  // (slot 4) only — slot 12 is a distinct, non-redirected pass that
+  // draws straight onto the scene framebuffer ON TOP of opaque
+  // surfaces. WebGL dispatches it from `performCesium3DTileEdgesDirectPass`
+  // AFTER `performPass(Pass.OPAQUE)` (`SceneRenderer.js:663-666`), NOT
+  // inside the 3D-tile chain (which runs BEFORE opaque). Running it here
+  // would (a) z-occlude later opaque models against edge depth and
+  // (b) double-render against the post-opaque dispatch. The slot-12
+  // execution therefore lives in `WebGPUSceneRendererFrustumLoop` right
+  // after the OPAQUE pass via `host._executePassCommands(..., slot 12, ...)`.
+  // This note prevents a future "slot 12 is binned but never executed
+  // here" mis-fix from adding a duplicate dispatch inside the tile chain.
+
   // Track whether the stencil-gated composite can run. Set to true
   // once the CLASSIFICATION_IGNORE_SHOW pass actually ran inside the
   // invert FBO (writing stencil bits). If false, the composite falls

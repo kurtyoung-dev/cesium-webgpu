@@ -23,17 +23,39 @@
  *     `lineCoord` is computed in screen space matching
  *     `EdgeVisibilityStageVS.glsl:51-63`.
  *
+ * C-R8-EDGE-LINESTRINGS (NEW-EDGE-DISPLAY-MODE-WEBGPU, edge-data slice)
+ * — `extractEdgeGeometry` now also consumes the explicit
+ * `edgeVisibility.lineStrings` array (BENTLEY / styled-gltf-lines
+ * assets). Previously the extractor early-returned when
+ * `edgeVisibility.visibility` was absent, so lineStrings-only primitives
+ * emitted ZERO WebGPU edges. Each lineString's primitive-restart-
+ * delimited index list now produces one HARD edge per consecutive index
+ * pair, deduped against the same edge set the visibility path uses
+ * (matches WebGL `EdgeVisibilityPipelineStage.extractVisibleEdges`).
+ *
  * **Still deferred** (`C-R8-EDGE-FEATURE-ID`): per-feature edge gating
  * needs the model fragment's current featureId at composite time,
  * which a post-process consumer can't see. Requires `C-R8-EDGE-INLINE`
  * (in-shader per-fragment edge detection in every Model FS) before
  * feature-ID gating becomes implementable.
  *
+ * **Edge-data parity remaining** (next slice — both need the
+ * `WebGPUModelRenderer.js` side, which is owned by
+ * batch-edge-display-mode-tri, so they're sequenced after it):
+ *   - authored `edgeVisibility.silhouetteNormals` signed-byte accessor
+ *     (WebGPU still re-derives face normals from adjacency → silhouette
+ *     classification can diverge on meshes shipping that accessor);
+ *   - per-edge / per-lineString `materialColor` overrides (the emitter
+ *     applies one primitive-level edge color; matching WebGL's
+ *     `a_edgeColor` needs a per-edge color vertex attribute + the
+ *     packed-lane widening).
+ *
  * @module WebGPUEdgeVisibilityEmitter
  * @private
  */
 
 import Cartesian3 from "../../Core/Cartesian3.js";
+import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 const EDGE_EMITTER_WGSL = /* wgsl */ `
 struct CameraUniforms {
@@ -228,6 +250,40 @@ fn fragmentMain(input: VertexOutput) -> FragmentOutput {
   out.depth = packDepth(input.position.z);
   return out;
 }
+
+// Scene-FB fragment entry — used when edges render directly into the SCENE
+// framebuffer pass (the EDGES_ONLY CESIUM_3D_TILE_EDGES_DIRECT slot-12 pass,
+// and the SURFACES_AND_EDGES fallback when the edge MRT FBO isn't allocated).
+// That pass has 2 color attachments under MRT (slot 0 color + the rgba16float
+// G-buffer at slot 1), NOT the 3 the dedicated edge FBO has. Running
+// fragmentMain's 3-output FragmentOutput against the scene-FB pipeline leaves
+// @location(2) (packed depth) with no color target → an INVALID pipeline →
+// the draw silently renders nothing. That was the EDGES_ONLY non-render the
+// 14-batch review surfaced (every other layer — VS, frustum binning, depth,
+// discard, color — checked out; the pipeline itself was the problem). This
+// variant emits only color (slot 0) + a slot-1 placeholder (writeMask 0 in
+// makeSceneFBTargets) so the output count matches the scene-FB pipeline.
+struct FragmentSceneFBOutput {
+  @location(0) color: vec4<f32>,
+  @location(1) gbuffer: vec4<f32>,
+};
+
+@fragment
+fn fragmentSceneFB(input: VertexOutput) -> FragmentSceneFBOutput {
+  let pattern = u32(edge.params.w);
+  if (pattern != 0xffffu) {
+    let maskLength = 16.0;
+    let dashPosition = fract(input.lineCoord / maskLength);
+    let maskIndex = u32(floor(dashPosition * maskLength));
+    if ((pattern & (1u << maskIndex)) == 0u) {
+      discard;
+    }
+  }
+  var out: FragmentSceneFBOutput;
+  out.color = edge.color;
+  out.gbuffer = vec4<f32>(0.0);
+  return out;
+}
 `;
 
 interface EdgeGeometry {
@@ -268,13 +324,25 @@ const _scratchN = new Cartesian3();
  * edge geometry. Returns null when the primitive has no edge data or
  * no usable position attribute.
  *
- * Layout per vertex (14 floats, 56 bytes):
+ * Two edge encodings are consumed, deduped against a single shared edge
+ * set so an edge present in both is emitted once (matches WebGL
+ * `EdgeVisibilityPipelineStage.extractVisibleEdges`):
+ *   1. the per-triangle 2-bit `edgeVisibility.visibility` encoding
+ *      (silhouette / hard / repeated-hard), which carries derived face
+ *      normals for the silhouette test; and
+ *   2. explicit `edgeVisibility.lineStrings` (C-R8-EDGE-LINESTRINGS) —
+ *      primitive-restart-delimited polyline index lists. Every
+ *      lineString edge is EdgeVisibilityType.HARD, so it carries no
+ *      face normals (the silhouette branch in the VS skips type != 1).
+ *
+ * Layout per vertex (15 floats, 60 bytes):
  *   [0..2]  position.xyz       — endpoint position (model space)
  *   [3]     edgeType           — 1/2/3 normalized to /255
- *   [4..6]  normalA.xyz        — first triangle's face normal
- *   [7..9]  normalB.xyz        — second triangle's face normal (or -A for boundary)
+ *   [4..6]  normalA.xyz        — first triangle's face normal (0 for lineStrings)
+ *   [7..9]  normalB.xyz        — second triangle's face normal (or -A for boundary; 0 for lineStrings)
  *   [10..12] otherPos.xyz       — the OTHER endpoint's position
  *   [13]    edgeOffset         — -1 (left) or +1 (right) for quad expansion
+ *   [14]    featureId          — per-edge FEATURE_ID_0 (0 when absent)
  *
  * Quad layout per edge (4 vertices indexed 0..3 within the edge,
  * absolute index = edgeIdx*4 + local):
@@ -287,6 +355,17 @@ const _scratchN = new Cartesian3();
  * normalA / normalB / edgeType are the same across all 4 vertices of
  * the edge — they're per-edge attributes replicated per-vertex so the
  * shader doesn't need a separate per-edge lookup.
+ *
+ * DEFERRED (next slice — needs the WebGPUModelRenderer side too, so it
+ * collides with batch-edge-display-mode-tri):
+ *   - authored `edgeVisibility.silhouetteNormals` signed-byte accessor:
+ *     WebGPU still re-derives face normals from triangle adjacency for
+ *     the visibility path, so silhouette classification can diverge from
+ *     WebGL's authored-normal path on meshes that ship that accessor.
+ *   - per-edge / per-lineString `materialColor` overrides: the emitter
+ *     applies one primitive-level edge color (no `a_edgeColor`
+ *     equivalent), so the WGSL `EdgeUniforms.color` would need to become
+ *     a per-edge vertex attribute + a packed-lane widening.
  */
 export function extractEdgeGeometry(
   primitive: unknown,
@@ -305,90 +384,194 @@ export function extractEdgeGeometry(
   featureIds?: Float32Array | Uint8Array | Uint16Array | Uint32Array | null,
 ): EdgeGeometry | null {
   const p = primitive as {
-    edgeVisibility?: { visibility?: Uint8Array };
+    edgeVisibility?: {
+      visibility?: Uint8Array;
+      // C-R8-EDGE-LINESTRINGS — explicit polyline edges from the
+      // EXT_mesh_primitive_edge_visibility `lineStrings` array. Each
+      // entry carries a primitive-restart-delimited index list into the
+      // same vertex positions the triangle indices reference. Mirrors
+      // the shape `GltfLoader.loadEdgeVisibilityLineStrings` produces.
+      lineStrings?: Array<{
+        indices?: Uint8Array | Uint16Array | Uint32Array;
+        restartIndex?: number;
+      }>;
+    };
     indices?: { typedArray?: Uint8Array | Uint16Array | Uint32Array };
+    attributes?: Array<{ count?: number }>;
   };
   const edgeVis = p?.edgeVisibility;
-  if (!edgeVis || !edgeVis.visibility) return null;
+  if (!edgeVis) return null;
   const visibility = edgeVis.visibility;
+  const lineStrings = edgeVis.lineStrings;
   const indices = p?.indices?.typedArray;
-  if (!indices || indices.length === 0) return null;
+  const hasVisibilityData = !!visibility && !!indices && indices.length > 0;
+  const hasLineStrings = !!lineStrings && lineStrings.length > 0;
+  // Neither encoding present → nothing to emit.
+  if (!hasVisibilityData && !hasLineStrings) return null;
   if (!positionData || positionData.length === 0) return null;
   const fidSource = featureIds ?? null;
   let sawNonZeroFeature = false;
 
+  // Vertex count guard for the lineStrings path (mirrors WebGL
+  // `extractVisibleEdges`: attributes[0].count). Used to reject
+  // out-of-range lineString indices; 0 disables the range check.
+  const attributes = p?.attributes;
+  const vertexCount =
+    attributes && attributes.length > 0 ? (attributes[0]?.count ?? 0) : 0;
+
+  // Shared output buffers — both the per-triangle 2-bit `visibility`
+  // path and the explicit `lineStrings` path append into these, and a
+  // single `seen` set dedups across BOTH so an edge present in both
+  // encodings is emitted once (matching WebGL `extractVisibleEdges`).
+  const verts: number[] = [];
+  const idx: number[] = [];
+  const seen = new Set<string>();
+  let outEdge = 0;
+
   // Build per-triangle face normals + edge adjacency. `edgeMap` maps
   // an edge key ("min,max") to a small array of triangle indices that
   // contain that edge. Boundary edges have one entry; interior edges
-  // have two.
-  const triangleCount = Math.floor(indices.length / 3);
+  // have two. Only meaningful for the silhouette/HARD `visibility`
+  // path — `lineStrings` edges are always HARD and carry no face
+  // normals, so this is skipped for lineStrings-only primitives.
+  const triangleCount = hasVisibilityData
+    ? Math.floor((indices as Uint8Array | Uint16Array | Uint32Array).length / 3)
+    : 0;
   const faceNormals = new Float32Array(triangleCount * 3);
   const edgeMap = new Map<string, number[]>();
 
-  for (let t = 0; t < triangleCount; t++) {
-    const base = t * 3;
-    const i0 = indices[base];
-    const i1 = indices[base + 1];
-    const i2 = indices[base + 2];
+  if (hasVisibilityData) {
+    const triIndices = indices as Uint8Array | Uint16Array | Uint32Array;
+    for (let t = 0; t < triangleCount; t++) {
+      const base = t * 3;
+      const i0 = triIndices[base];
+      const i1 = triIndices[base + 1];
+      const i2 = triIndices[base + 2];
 
-    const i0o = i0 * 3;
-    const i1o = i1 * 3;
-    const i2o = i2 * 3;
-    if (
-      i0o + 2 >= positionData.length ||
-      i1o + 2 >= positionData.length ||
-      i2o + 2 >= positionData.length
-    ) {
-      // Out-of-bounds index — skip this triangle but keep going.
-      continue;
-    }
-
-    _scratchA.x = positionData[i0o];
-    _scratchA.y = positionData[i0o + 1];
-    _scratchA.z = positionData[i0o + 2];
-    _scratchB.x = positionData[i1o];
-    _scratchB.y = positionData[i1o + 1];
-    _scratchB.z = positionData[i1o + 2];
-    _scratchC.x = positionData[i2o];
-    _scratchC.y = positionData[i2o + 1];
-    _scratchC.z = positionData[i2o + 2];
-
-    Cartesian3.subtract(_scratchB, _scratchA, _scratchE1);
-    Cartesian3.subtract(_scratchC, _scratchA, _scratchE2);
-    Cartesian3.cross(_scratchE1, _scratchE2, _scratchN);
-    if (Cartesian3.magnitudeSquared(_scratchN) > 0) {
-      Cartesian3.normalize(_scratchN, _scratchN);
-    }
-    faceNormals[base] = _scratchN.x;
-    faceNormals[base + 1] = _scratchN.y;
-    faceNormals[base + 2] = _scratchN.z;
-
-    const registerEdge = (a: number, b: number) => {
-      const key = a < b ? `${a},${b}` : `${b},${a}`;
-      let list = edgeMap.get(key);
-      if (!list) {
-        list = [];
-        edgeMap.set(key, list);
+      const i0o = i0 * 3;
+      const i1o = i1 * 3;
+      const i2o = i2 * 3;
+      if (
+        i0o + 2 >= positionData.length ||
+        i1o + 2 >= positionData.length ||
+        i2o + 2 >= positionData.length
+      ) {
+        // Out-of-bounds index — skip this triangle but keep going.
+        continue;
       }
-      if (list.length < 2) list.push(t);
-    };
-    registerEdge(i0, i1);
-    registerEdge(i1, i2);
-    registerEdge(i2, i0);
+
+      _scratchA.x = positionData[i0o];
+      _scratchA.y = positionData[i0o + 1];
+      _scratchA.z = positionData[i0o + 2];
+      _scratchB.x = positionData[i1o];
+      _scratchB.y = positionData[i1o + 1];
+      _scratchB.z = positionData[i1o + 2];
+      _scratchC.x = positionData[i2o];
+      _scratchC.y = positionData[i2o + 1];
+      _scratchC.z = positionData[i2o + 2];
+
+      Cartesian3.subtract(_scratchB, _scratchA, _scratchE1);
+      Cartesian3.subtract(_scratchC, _scratchA, _scratchE2);
+      Cartesian3.cross(_scratchE1, _scratchE2, _scratchN);
+      if (Cartesian3.magnitudeSquared(_scratchN) > 0) {
+        Cartesian3.normalize(_scratchN, _scratchN);
+      }
+      faceNormals[base] = _scratchN.x;
+      faceNormals[base + 1] = _scratchN.y;
+      faceNormals[base + 2] = _scratchN.z;
+
+      const registerEdge = (a: number, b: number) => {
+        const key = a < b ? `${a},${b}` : `${b},${a}`;
+        let list = edgeMap.get(key);
+        if (!list) {
+          list = [];
+          edgeMap.set(key, list);
+        }
+        if (list.length < 2) list.push(t);
+      };
+      registerEdge(i0, i1);
+      registerEdge(i1, i2);
+      registerEdge(i2, i0);
+    }
   }
+
+  // Helper used by both paths to push a single edge's 4-vertex quad +
+  // 6 indices. `nA*/nB*` are the per-edge face normals (zeroed for the
+  // lineStrings path, which is always HARD and skips the silhouette
+  // branch). `typeNorm` is the edge type / 255.
+  const emitEdgeQuad = (
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    nAx: number,
+    nAy: number,
+    nAz: number,
+    nBx: number,
+    nBy: number,
+    nBz: number,
+    typeNorm: number,
+    edgeFeatureId: number,
+  ): void => {
+    const pushVertex = (
+      px: number,
+      py: number,
+      pz: number,
+      ox: number,
+      oy: number,
+      oz: number,
+      offset: number,
+    ): void => {
+      verts.push(
+        px,
+        py,
+        pz,
+        typeNorm,
+        nAx,
+        nAy,
+        nAz,
+        nBx,
+        nBy,
+        nBz,
+        ox,
+        oy,
+        oz,
+        offset,
+        edgeFeatureId,
+      );
+    };
+    pushVertex(ax, ay, az, bx, by, bz, -1.0); // v0 — endpoint A, left
+    pushVertex(ax, ay, az, bx, by, bz, +1.0); // v1 — endpoint A, right
+    pushVertex(bx, by, bz, ax, ay, az, -1.0); // v2 — endpoint B, left
+    pushVertex(bx, by, bz, ax, ay, az, +1.0); // v3 — endpoint B, right
+
+    const baseV = outEdge * VERTICES_PER_EDGE;
+    idx.push(baseV + 0, baseV + 1, baseV + 2, baseV + 1, baseV + 3, baseV + 2);
+    outEdge++;
+  };
 
   // Decode visibility, dedupe, and emit 4 vertices + 6 indices per
   // visible edge. Mirrors WebGL's `extractVisibleEdges` ordering so
   // edge dedup is consistent across renderers.
-  const verts: number[] = [];
-  const idx: number[] = [];
-  const seen = new Set<string>();
+  const triIndicesForEdges = hasVisibilityData
+    ? (indices as Uint8Array | Uint16Array | Uint32Array)
+    : undefined;
+  const visibilityArr = hasVisibilityData
+    ? (visibility as Uint8Array)
+    : undefined;
   let edgeIndex = 0;
-  let outEdge = 0;
-  for (let i = 0; i + 2 < indices.length; i += 3) {
-    const v0 = indices[i];
-    const v1 = indices[i + 1];
-    const v2 = indices[i + 2];
+  for (
+    let i = 0;
+    triIndicesForEdges !== undefined &&
+    visibilityArr !== undefined &&
+    i + 2 < triIndicesForEdges.length;
+    i += 3
+  ) {
+    const v0 = triIndicesForEdges[i];
+    const v1 = triIndicesForEdges[i + 1];
+    const v2 = triIndicesForEdges[i + 2];
     for (let e = 0; e < 3; e++) {
       let a: number;
       let b: number;
@@ -405,8 +588,8 @@ export function extractEdgeGeometry(
       const byteIdx = Math.floor(edgeIndex / 4);
       const bitOff = (edgeIndex % 4) * 2;
       edgeIndex++;
-      if (byteIdx >= visibility.length) break;
-      const v2bit = (visibility[byteIdx] >> bitOff) & 0x3;
+      if (byteIdx >= visibilityArr.length) break;
+      const v2bit = (visibilityArr[byteIdx] >> bitOff) & 0x3;
       if (v2bit === 0) continue;
       const small = Math.min(a, b);
       const big = Math.max(a, b);
@@ -469,49 +652,117 @@ export function extractEdgeGeometry(
         }
       }
 
-      // Push 4 vertices for the quad.
-      const pushVertex = (
-        px: number,
-        py: number,
-        pz: number,
-        ox: number,
-        oy: number,
-        oz: number,
-        offset: number,
-      ): void => {
-        verts.push(
-          px,
-          py,
-          pz,
-          typeNorm,
-          nAx,
-          nAy,
-          nAz,
-          nBx,
-          nBy,
-          nBz,
-          ox,
-          oy,
-          oz,
-          offset,
+      // Push 4 vertices + 6 indices for the quad.
+      emitEdgeQuad(
+        ax,
+        ay,
+        az,
+        bx,
+        by,
+        bz,
+        nAx,
+        nAy,
+        nAz,
+        nBx,
+        nBy,
+        nBz,
+        typeNorm,
+        edgeFeatureId,
+      );
+    }
+  }
+
+  // C-R8-EDGE-LINESTRINGS — explicit polyline edges. The WebGL extractor
+  // (`EdgeVisibilityPipelineStage.extractVisibleEdges`) walks each
+  // lineString's primitive-restart-delimited index list and emits one
+  // HARD edge per consecutive index pair, deduped against the same
+  // `seen` set the visibility path uses. We mirror that here. These
+  // edges are always EdgeVisibilityType.HARD (=2) — the silhouette
+  // branch in the VS never runs for them, so the zeroed face normals
+  // are inert (HARD edges are unconditionally drawn).
+  const HARD_TYPE_NORM = 2 / 255.0;
+  if (hasLineStrings && lineStrings) {
+    for (let s = 0; s < lineStrings.length; s++) {
+      const lineString = lineStrings[s];
+      const lineIndices = lineString?.indices;
+      if (!lineIndices || lineIndices.length < 2) continue;
+      const restartValue = lineString.restartIndex;
+      const hasRestart = restartValue !== undefined;
+
+      let previous: number | undefined;
+      for (let j = 0; j < lineIndices.length; j++) {
+        const currentIndex = lineIndices[j];
+        if (hasRestart && currentIndex === restartValue) {
+          previous = undefined;
+          continue;
+        }
+        if (previous === undefined) {
+          previous = currentIndex;
+          continue;
+        }
+        const a = previous;
+        const b = currentIndex;
+        previous = currentIndex;
+
+        if (a === b) continue;
+        // Range check against the primitive's vertex count (mirrors
+        // WebGL). 0 disables the upper-bound test when no attribute
+        // count is available, but the position-bounds skip below still
+        // catches any genuinely out-of-range index.
+        if (
+          vertexCount > 0 &&
+          (a < 0 || a >= vertexCount || b < 0 || b >= vertexCount)
+        ) {
+          continue;
+        }
+
+        const small = Math.min(a, b);
+        const big = Math.max(a, b);
+        const key = `${small},${big}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const ai = a * 3;
+        const bi = b * 3;
+        if (ai + 2 >= positionData.length || bi + 2 >= positionData.length) {
+          continue;
+        }
+        const ax = positionData[ai];
+        const ay = positionData[ai + 1];
+        const az = positionData[ai + 2];
+        const bx = positionData[bi];
+        const by = positionData[bi + 1];
+        const bz = positionData[bi + 2];
+
+        // Sample feature ID from the lower-index endpoint, same as the
+        // visibility path. lineStrings without a FEATURE_ID_0 attribute
+        // leave this at 0.
+        let edgeFeatureId = 0;
+        if (fidSource !== null) {
+          const idxForFeature = small;
+          if (idxForFeature < fidSource.length) {
+            edgeFeatureId = fidSource[idxForFeature];
+            if (edgeFeatureId > 0) sawNonZeroFeature = true;
+          }
+        }
+
+        emitEdgeQuad(
+          ax,
+          ay,
+          az,
+          bx,
+          by,
+          bz,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          HARD_TYPE_NORM,
           edgeFeatureId,
         );
-      };
-      pushVertex(ax, ay, az, bx, by, bz, -1.0); // v0 — endpoint A, left
-      pushVertex(ax, ay, az, bx, by, bz, +1.0); // v1 — endpoint A, right
-      pushVertex(bx, by, bz, ax, ay, az, -1.0); // v2 — endpoint B, left
-      pushVertex(bx, by, bz, ax, ay, az, +1.0); // v3 — endpoint B, right
-
-      const baseV = outEdge * VERTICES_PER_EDGE;
-      idx.push(
-        baseV + 0,
-        baseV + 1,
-        baseV + 2,
-        baseV + 1,
-        baseV + 3,
-        baseV + 2,
-      );
-      outEdge++;
+      }
     }
   }
 
@@ -691,8 +942,8 @@ export function ensureEdgeEmitterPipeline(
     vertex,
     fragment: {
       module: cache.shaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: colorFormat }],
+      entryPoint: "fragmentSceneFB",
+      targets: makeSceneFBTargets(colorFormat), // scene-FB MRT attachment count
     },
     primitive,
     depthStencil,

@@ -53,6 +53,7 @@ import {
   synthesizeImplicitFeatureIdData,
 } from "./WebGPUModelFeatureId.js";
 import Pass from "../Pass.js";
+import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
@@ -2917,6 +2918,40 @@ function updateWebGPUModel(model, frameState) {
       // non-classifier path still emits a single command. Both paths
       // run through the same `passes` loop below.
       const isClassifier = defined(model.classificationType);
+
+      // C-R8-EDGE-DISPLAY-MODE (§5 P2) — resolve the model's
+      // EdgeDisplayMode for this edge-bearing primitive. Mirrors WebGL's
+      // `ModelDrawCommand.pushCommands` / `pushEdgeCommands`
+      // (`ModelDrawCommand.js:185-265`):
+      //   - SURFACES_ONLY (default): surface renders, edges suppressed.
+      //   - SURFACES_AND_EDGES: surface renders, edges → MRT
+      //     (`CESIUM_3D_TILE_EDGES`) for the Batch 44 composite.
+      //   - EDGES_ONLY: surface suppressed for edge-bearing primitives,
+      //     edges → `CESIUM_3D_TILE_EDGES_DIRECT` (renders straight onto
+      //     the scene framebuffer — CAD wireframe).
+      // `_needsEdgeCommands` on WebGL ⇔ this primitive actually produced
+      // edge geometry. WebGL gates on `defined(renderResources.edgeGeometry)`
+      // (`ModelDrawCommand.js:81`), NOT just the extension's presence — a
+      // primitive that declares `EXT_mesh_primitive_edge_visibility` but
+      // yields no extractable edges keeps its surface (`_needsEdgeCommands`
+      // is false). We mirror that: the edge emitter below sets
+      // `primCache.edgeResources = false` (a sentinel distinct from
+      // `undefined` = "not yet checked") once it confirms a primitive has
+      // no edges. Suppress the surface only when edges are present OR not
+      // yet determined (`!== false`) — on the steady-state frame after the
+      // first, a degenerate edge-less primitive falls back to rendering its
+      // surface exactly like WebGL. Classifiers never run the edge stage
+      // (see Batch 142 note below), so the suppression skips them.
+      const edgeDisplayMode =
+        model.edgeDisplayMode ?? EdgeDisplayMode.SURFACES_ONLY;
+      const primitiveHasEdges =
+        defined(glTFPrimitive?.edgeVisibility) &&
+        primCache.edgeResources !== false;
+      const suppressSurfaceForEdgesOnly =
+        !isClassifier &&
+        primitiveHasEdges &&
+        edgeDisplayMode === EdgeDisplayMode.EDGES_ONLY;
+
       const drawPasses = [];
       if (isClassifier) {
         const classType = model.classificationType;
@@ -3296,7 +3331,19 @@ function updateWebGPUModel(model, frameState) {
         webgpuCmd.velocityCommand = velocityCmd;
       }
 
-      commandList.push(webgpuCmd);
+      // C-R8-EDGE-DISPLAY-MODE (§5 P2) — EDGES_ONLY suppresses the
+      // surface command for edge-bearing primitives so only the edge
+      // pass renders (CAD wireframe). Mirrors WebGL's early-return in
+      // `ModelDrawCommand.pushCommands` (`ModelDrawCommand.js:187-192`)
+      // which skips `_originalCommand` while still pushing the edge
+      // command via `pushEdgeCommands`. The edge emitter below is still
+      // reached (it gates separately on the same mode). Velocity / pick
+      // variants attached to `webgpuCmd` ride along on the un-pushed
+      // command and are harmless. The `isClassifier` second-pass block
+      // below never coincides with this (classifiers don't emit edges).
+      if (!suppressSurfaceForEdgesOnly) {
+        commandList.push(webgpuCmd);
+      }
 
       // AUDIT_2026_05_02 A.3 (Batch 146) — for `classificationType: BOTH`
       // emit a SECOND command targeting the second pass. Same args as
@@ -3345,7 +3392,12 @@ function updateWebGPUModel(model, frameState) {
       const hasBatchTable =
         defined(featureIdRes) &&
         (featureIdRes.flags & MaterialFlags.HAS_BATCH_TABLE) !== 0;
-      if (passClass === 0 && hasBatchTable) {
+      // C-R8-EDGE-DISPLAY-MODE (§5 P2) — the dual translucent-class
+      // command is a SURFACE derivative (per-feature styling of the same
+      // geometry), so EDGES_ONLY must suppress it alongside the primary
+      // surface command above; otherwise the surface would still render
+      // through the batch-table styling path in wireframe mode.
+      if (passClass === 0 && hasBatchTable && !suppressSurfaceForEdgesOnly) {
         if (!defined(primCache.materialBufferTranslucent)) {
           primCache.materialBufferTranslucent =
             WebGPUBuffer.createUniformBuffer(
@@ -3481,8 +3533,21 @@ function updateWebGPUModel(model, frameState) {
       // frames; per-frame cost is two `writeBuffer` calls for the
       // camera + edge uniform UBs. Primitives without edge data skip
       // the whole block (the `extractEdgeGeometry` early-returns).
+      //
+      // C-R8-EDGE-DISPLAY-MODE (§5 P2) — gate the whole emitter on
+      // `edgeDisplayMode !== SURFACES_ONLY`. SURFACES_ONLY is the DEFAULT
+      // (`EdgeDisplayMode.js:26`, `Model.js:437-438`), so until the host
+      // app opts into SURFACES_AND_EDGES / EDGES_ONLY, extension edges
+      // are fully suppressed — matching WebGL's early-return in
+      // `ModelDrawCommand.pushEdgeCommands` (`ModelDrawCommand.js:245-248`).
+      // Previously this gated only on `defined(edgeVisibility)`, so edges
+      // always drew regardless of the mode (the SURFACES_ONLY regression
+      // this batch fixes).
       const edgeGltfPrimitive = rp.primitive || rp._primitive;
-      if (defined(edgeGltfPrimitive?.edgeVisibility)) {
+      if (
+        defined(edgeGltfPrimitive?.edgeVisibility) &&
+        edgeDisplayMode !== EdgeDisplayMode.SURFACES_ONLY
+      ) {
         if (!defined(cache.edgeEmitterCache)) {
           cache.edgeEmitterCache = createEdgeEmitterCache();
         }
@@ -3554,37 +3619,44 @@ function updateWebGPUModel(model, frameState) {
         }
 
         if (primCache.edgeResources) {
-          // Compute MVP = projection * view * model and MV = view * model.
-          // Both are needed: MVP for clip-space output, MV for the
-          // silhouette discard's eye-space face-normal transform.
-          // Standard RTE isn't applied — edge positions are model-
-          // space; native 32-bit precision is fine at typical edge-
-          // rendering distances. (Future: switch to RTE when an edge-
-          // enabled model gets used at planet-scale distances.)
+          // Compute MVP = projection * view * nodeModelMatrix and
+          // MV = view * nodeModelMatrix. Use the NODE-level matrix (the SAME
+          // one the surface packs via packCameraUniforms) — NOT the model-
+          // level `modelMatrix`. Edge positions are model-space, so for a glTF
+          // whose node carries a scale (the EXT_mesh_primitive_edge_visibility
+          // sample's ~1e4 model-space coords scale ~0.0012 to world) the
+          // model-level matrix omits that scale and projects every edge ~1e4 m
+          // off-screen — the EDGES_ONLY non-render the 14-batch review
+          // surfaced. RTE still isn't applied (fine at typical distances).
           const us = context.uniformState;
           const vp = us?.viewProjection;
           const view = us?.view;
           let mvp;
           if (defined(vp)) {
-            mvp = Matrix4.multiply(vp, modelMatrix, scratchEdgeMVP);
+            mvp = Matrix4.multiply(vp, nodeModelMatrix, scratchEdgeMVP);
           } else {
-            mvp = Matrix4.clone(modelMatrix, scratchEdgeMVP);
+            mvp = Matrix4.clone(nodeModelMatrix, scratchEdgeMVP);
           }
           const mvpData = Matrix4.toArray(mvp, scratchEdgeMVPArray);
 
           let mv;
           if (defined(view)) {
-            mv = Matrix4.multiply(view, modelMatrix, scratchEdgeMV);
+            mv = Matrix4.multiply(view, nodeModelMatrix, scratchEdgeMV);
           } else {
-            mv = Matrix4.clone(modelMatrix, scratchEdgeMV);
+            mv = Matrix4.clone(nodeModelMatrix, scratchEdgeMV);
           }
           const mvData = Matrix4.toArray(mv, scratchEdgeMVArray);
 
-          // Edge color: prefer the extension's `materialColor` if set;
-          // otherwise default to black (matches the WebGL "edge color
-          // overrides fragment color" behavior when `v_edgeColor.a`
-          // is positive).
+          // Edge color: prefer the extension's per-primitive `materialColor`;
+          // otherwise inherit the model's base color. WebGL writes
+          // `a_edgeColor.a = -1` when no edge color is authored (see
+          // EdgeVisibilityPipelineStage.js:720-723) so its FS falls through to
+          // the surface/fragment color — NOT black. The prior black default
+          // rendered the edges invisible against a dark scene (the EDGES_ONLY
+          // "blank" the 14-batch review surfaced, alongside the
+          // nodeModelMatrix + scene-FB-pipeline fixes).
           const matColor = edgeGltfPrimitive.edgeVisibility?.materialColor;
+          const mc = model.color;
           const edgeColor =
             defined(matColor) && matColor.length >= 4
               ? {
@@ -3593,7 +3665,12 @@ function updateWebGPUModel(model, frameState) {
                   b: matColor[2],
                   a: matColor[3],
                 }
-              : { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+              : {
+                  r: mc?.red ?? 1.0,
+                  g: mc?.green ?? 1.0,
+                  b: mc?.blue ?? 1.0,
+                  a: mc?.alpha ?? 1.0,
+                };
 
           // Viewport for NDC→pixel offset math in the wide-line VS.
           const vpW = context.drawingBufferWidth ?? 1;
@@ -3638,9 +3715,31 @@ function updateWebGPUModel(model, frameState) {
           // visibility is off entirely.
           const sceneForEdge = frameState?.scene;
           const edgeVisibilityOn = sceneForEdge?._enableEdgeVisibility === true;
-          const edgePipeline = edgeVisibilityOn
-            ? cache.edgeEmitterCache.pipeline
-            : cache.edgeEmitterCache.pipelineSingleTarget;
+
+          // C-R8-EDGE-DISPLAY-MODE (§5 P2) — pick the destination pass +
+          // pipeline by mode. Mirrors WebGL's
+          // `ModelDrawCommand.pushEdgeCommands` (`ModelDrawCommand.js:250-
+          // 257`):
+          //   - EDGES_ONLY → `CESIUM_3D_TILE_EDGES_DIRECT` (Pass slot 12).
+          //     The DIRECT pass renders straight onto the SCENE
+          //     framebuffer (1 color attachment), so it ALWAYS uses the
+          //     single-target pipeline regardless of `_enableEdgeVisibility`
+          //     — the MRT pipeline's 3 color targets would mismatch the
+          //     scene render pass's single attachment and fail validation.
+          //   - SURFACES_AND_EDGES → `CESIUM_3D_TILE_EDGES` (Pass slot 4):
+          //     keep the existing MRT-vs-single selection (MRT when the
+          //     edge FBO is allocated, single-target as the fallback the
+          //     3D-tile dispatcher runs on the scene FB).
+          // (SURFACES_ONLY never reaches here — the emitter is gated off
+          // above.)
+          const edgesOnly = edgeDisplayMode === EdgeDisplayMode.EDGES_ONLY;
+          const edgePass = edgesOnly
+            ? Pass.CESIUM_3D_TILE_EDGES_DIRECT
+            : Pass.CESIUM_3D_TILE_EDGES;
+          const edgePipeline =
+            edgeVisibilityOn && !edgesOnly
+              ? cache.edgeEmitterCache.pipeline
+              : cache.edgeEmitterCache.pipelineSingleTarget;
           const edgeCmd = new WebGPUDrawCommand({
             pipeline: edgePipeline,
             bindGroups: [
@@ -3652,7 +3751,7 @@ function updateWebGPUModel(model, frameState) {
             indexCount: primCache.edgeResources.indexCount,
             indexFormat: "uint32",
             instanceCount: 1,
-            pass: Pass.CESIUM_3D_TILE_EDGES,
+            pass: edgePass,
             owner: model,
             boundingVolume: model.boundingSphere,
             modelMatrix: modelMatrix,

@@ -510,6 +510,28 @@ export function executeFrustumLoop(
       }
     }
 
+    // Pass 12: CESIUM_3D_TILE_EDGES_DIRECT (EDGES_ONLY mode).
+    // C-R8-EDGE-DISPLAY-MODE (§5 P2) — direct CAD-wireframe edges drawn
+    // straight onto the scene framebuffer ON TOP of opaque surfaces.
+    // Mirrors WebGL's `performCesium3DTileEdgesDirectPass` ordering —
+    // AFTER OPAQUE and BEFORE GAUSSIAN_SPLATS (`SceneRenderer.js:663-668`).
+    // Unlike `CESIUM_3D_TILE_EDGES` (which the 3D-tile dispatcher
+    // redirects into the MRT edge FBO for the Batch 44 composite), these
+    // commands carry the single-target edge pipeline and render on the
+    // active scene pass — no FBO redirect. Before this batch, slot-12
+    // commands were binned by the frustum sorter but never executed
+    // (the loop only ran VOXELS / OPAQUE / GAUSSIAN_SPLATS / TRANSLUCENT),
+    // so EDGES_ONLY models rendered nothing on WebGPU. `_executePassCommands`
+    // early-returns when the per-frustum slot-12 count is 0, so non-EDGES_ONLY
+    // frames pay no cost.
+    host._executePassCommands(
+      frustumCommands,
+      Pass.CESIUM_3D_TILE_EDGES_DIRECT,
+      scene,
+      context,
+      passState,
+    );
+
     // Pass 11: GAUSSIAN_SPLATS
     // GS-WSR: If OIT is available and splat commands have OIT variants,
     // defer them to the translucent OIT pass for proper weighted-sum rendering.
