@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="GeoJsonPrimitive — a lightweight GeoJSON loader that converts features directly into storage-buffer-backed BufferPoint/Polyline/PolygonCollections. Loads a mixed FeatureCollection (point, line, polygon-with-hole, MultiPolygon) on the WebGPU backend."
+    />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, DataSources"
+    />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU GeoJsonPrimitive demo.
+
+    Demonstrates `GeoJsonPrimitive` — the lightweight GeoJSON loader that, unlike
+    `GeoJsonDataSource`, does NOT create entities. Instead it parses a GeoJSON
+    object once and converts the features directly into the storage-buffer-backed
+    `BufferPointCollection`, `BufferPolylineCollection`, and
+    `BufferPolygonCollection` (Source/Scene/Buffer*Collection.js). On the WebGPU
+    backend those collections dispatch through the Buffer* feature renderers
+    (Source/Renderer/WebGPU/) in a single GPU draw per collection.
+
+    The FeatureCollection below mixes every geometry path the loader supports —
+    Point, MultiPoint, LineString, MultiLineString, a Polygon WITH A HOLE, and a
+    MultiPolygon (whose second part also has a hole). The hole + MultiPolygon
+    exercise `parseGeoJson`'s polygonVertexCount / holeCount / triangleCount
+    allocation math (GeoJsonPrimitive.js:454-467), which sizes the collection
+    capacities at L108-118. If that math under-counts, `fromGeoJson` throws
+    `BufferPrimitiveCollection capacity exceeded.` at load.
+
+    The same `GeoJsonPrimitive.fromGeoJson` call works on WebGL via the legacy
+    renderBufferPolygonCollection fallback, so this demo defaults to WebGPU to
+    showcase the buffer renderers.
+  -->
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Backend</td>
+            <td><span data-bind="text: backend"></span></td>
+          </tr>
+          <tr>
+            <td>Features</td>
+            <td><span data-bind="text: featureCount"></span></td>
+          </tr>
+          <tr>
+            <td>Points</td>
+            <td><span data-bind="text: pointCount"></span></td>
+          </tr>
+          <tr>
+            <td>Polylines</td>
+            <td><span data-bind="text: polylineCount"></span></td>
+          </tr>
+          <tr>
+            <td>Polygons</td>
+            <td><span data-bind="text: polygonCount"></span></td>
+          </tr>
+          <tr>
+            <td>Polygon holes</td>
+            <td><span data-bind="text: holeCount"></span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      /* global Cesium, Sandcastle */
+      window.startup = async function (Cesium) {
+        //Sandcastle_Begin
+
+        // Default to WebGPU; GeoJsonPrimitive works on both backends — switching
+        // the renderer is a single contextOptions change.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+
+        // Mixed FeatureCollection over the continental US. Each feature carries
+        // a "color" property used below to colorize the buffer primitives so the
+        // polygon hole and both MultiPolygon parts are visually distinct.
+        const featureCollection = {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              properties: { color: "#ff3030" },
+              geometry: { type: "Point", coordinates: [-118.24, 34.05] },
+            },
+            {
+              type: "Feature",
+              properties: { color: "#ff8c00" },
+              geometry: {
+                type: "MultiPoint",
+                coordinates: [
+                  [-112.07, 33.45],
+                  [-115.14, 36.17],
+                  [-111.89, 40.76],
+                ],
+              },
+            },
+            {
+              type: "Feature",
+              properties: { color: "#30ff30" },
+              geometry: {
+                type: "LineString",
+                coordinates: [
+                  [-122.42, 37.77],
+                  [-104.99, 39.74],
+                  [-87.65, 41.85],
+                ],
+              },
+            },
+            {
+              type: "Feature",
+              properties: { color: "#00e5ff" },
+              geometry: {
+                type: "MultiLineString",
+                coordinates: [
+                  [
+                    [-95.37, 29.76],
+                    [-90.07, 29.95],
+                  ],
+                  [
+                    [-80.19, 25.76],
+                    [-81.66, 30.33],
+                  ],
+                ],
+              },
+            },
+            {
+              // Polygon WITH A HOLE — the inner ring shows the globe through it.
+              type: "Feature",
+              properties: { color: "#ffe000" },
+              geometry: {
+                type: "Polygon",
+                coordinates: [
+                  [
+                    [-100.0, 40.0],
+                    [-94.0, 40.0],
+                    [-94.0, 45.0],
+                    [-100.0, 45.0],
+                    [-100.0, 40.0],
+                  ],
+                  [
+                    [-98.5, 41.5],
+                    [-95.5, 41.5],
+                    [-95.5, 43.5],
+                    [-98.5, 43.5],
+                    [-98.5, 41.5],
+                  ],
+                ],
+              },
+            },
+            {
+              // MultiPolygon — two parts; the second part also has a hole.
+              type: "Feature",
+              properties: { color: "#c030ff" },
+              geometry: {
+                type: "MultiPolygon",
+                coordinates: [
+                  [
+                    [
+                      [-90.0, 32.0],
+                      [-85.0, 32.0],
+                      [-85.0, 36.0],
+                      [-90.0, 36.0],
+                      [-90.0, 32.0],
+                    ],
+                  ],
+                  [
+                    [
+                      [-83.0, 33.0],
+                      [-78.0, 33.0],
+                      [-78.0, 37.0],
+                      [-83.0, 37.0],
+                      [-83.0, 33.0],
+                    ],
+                    [
+                      [-81.5, 34.2],
+                      [-79.5, 34.2],
+                      [-79.5, 35.8],
+                      [-81.5, 35.8],
+                      [-81.5, 34.2],
+                    ],
+                  ],
+                ],
+              },
+            },
+          ],
+        };
+
+        // One call parses the GeoJSON and builds the three buffer collections,
+        // sized exactly from the per-feature vertex/hole/triangle counts.
+        const loader = Cesium.GeoJsonPrimitive.fromGeoJson(featureCollection);
+        viewer.scene.primitives.add(loader);
+
+        // Colorize each loaded primitive from its source feature's "color"
+        // property. setMaterial copies the material into the packed buffer, so a
+        // reusable scratch primitive per collection is enough.
+        function colorize(collection, PrimitiveClass, MaterialClass) {
+          if (!Cesium.defined(collection)) {
+            return;
+          }
+          const scratch = new PrimitiveClass();
+          for (let i = 0; i < collection.primitiveCount; i++) {
+            const prim = collection.get(i, scratch);
+            const props = loader.getProperties(prim.featureId);
+            const css = (props && props.color) || "#ffffff";
+            prim.setMaterial(
+              new MaterialClass({
+                color: Cesium.Color.fromCssColorString(css),
+              }),
+            );
+          }
+        }
+        colorize(loader.points, Cesium.BufferPoint, Cesium.BufferPointMaterial);
+        colorize(
+          loader.polylines,
+          Cesium.BufferPolyline,
+          Cesium.BufferPolylineMaterial,
+        );
+        colorize(
+          loader.polygons,
+          Cesium.BufferPolygon,
+          Cesium.BufferPolygonMaterial,
+        );
+
+        const viewModel = {
+          backend: viewer.scene._context?.rendererType ?? "unknown",
+          featureCount: loader.featureCount,
+          pointCount: Cesium.defined(loader.points)
+            ? loader.points.primitiveCount
+            : 0,
+          polylineCount: Cesium.defined(loader.polylines)
+            ? loader.polylines.primitiveCount
+            : 0,
+          polygonCount: Cesium.defined(loader.polygons)
+            ? loader.polygons.primitiveCount
+            : 0,
+          holeCount: Cesium.defined(loader.polygons)
+            ? loader.polygons.holeCount
+            : 0,
+        };
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+
+        viewer.scene.skyAtmosphere.show = false;
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-98, 38, 6500000),
+          duration: 0,
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -1103,6 +1103,10 @@ const gallery_demos = [
     isNew: true,
   },
   {
+    name: "WebGPU GeoJsonPrimitive",
+    isNew: true,
+  },
+  {
     name: "WebGPU God Rays",
     isNew: true,
   },
