@@ -48,6 +48,7 @@ import {
 } from "./WebGPUBufferPrimitiveRenderer.js";
 import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import BlendOption from "../../Scene/BlendOption.js";
 import type {
   BufferPrimitiveCollection,
   CesiumPickIdRef,
@@ -76,6 +77,8 @@ export interface PolylineCache extends SharedCache {
   nextPositionLow: GPUBuffer;
   pickColor: GPUBuffer;
   showColorWidthAndTexCoord: GPUBuffer;
+  // Dedicated alpha lane (the showColorWidthAndTexCoord vec4 is saturated).
+  alpha: GPUBuffer;
   indexBuffer: GPUBuffer;
   positionHighArr: Float32Array;
   positionLowArr: Float32Array;
@@ -85,15 +88,23 @@ export interface PolylineCache extends SharedCache {
   nextPositionLowArr: Float32Array;
   pickColorArr: Uint8Array;
   showColorWidthAndTexCoordArr: Float32Array;
+  alphaArr: Float32Array;
   indexArr: Uint16Array | Uint32Array;
   indexFormat: GPUIndexFormat;
   vertexCountMax: number;
   pipeline: GPURenderPipeline;
   pickPipeline: GPURenderPipeline;
+  // OPAQUE blend variant of the color pipeline; built lazily (see polygon).
+  opaquePipeline?: GPURenderPipeline;
+  shaderModule: GPUShaderModule;
+  bgls: GPUBindGroupLayout[];
+  sampleCount: number;
+  format: GPUTextureFormat;
   bindGroup: GPUBindGroup;
   command: WebGPUDrawCommand | null;
   pickCommand: WebGPUDrawCommand | null;
   pickIds: CesiumPickIdRef[];
+  commandBlendOption?: number;
 }
 
 // ─── Pipeline builder ────────────────────────────────────────────────────────
@@ -104,6 +115,10 @@ function buildPolylinePipeline(
   bgls: GPUBindGroupLayout[],
   fragmentEntryPoint: string = "fragmentMain",
   sampleCount: number = 1,
+  // When true, build the OPAQUE color variant: blend disabled (overwrite).
+  // Default false keeps the historical TRANSLUCENT color path byte-identical.
+  // depthWriteEnabled stays true in both variants (unchanged from before).
+  opaque: boolean = false,
 ): GPURenderPipeline {
   const float3 = (loc: number): GPUVertexBufferLayout => ({
     arrayStride: 12,
@@ -138,6 +153,12 @@ function buildPolylinePipeline(
           arrayStride: 16,
           attributes: [{ shaderLocation: 7, offset: 0, format: "float32x4" }],
         },
+        // Dedicated per-vertex alpha lane (location 8). Lockstep with the
+        // CPU alphaArr (width 1) and the WGSL `alpha : f32` field.
+        {
+          arrayStride: 4,
+          attributes: [{ shaderLocation: 8, offset: 0, format: "float32" }],
+        },
       ],
     },
     // Slice 5c-B Phase 1 (Batch 109) — pick path stays single-target
@@ -152,9 +173,13 @@ function buildPolylinePipeline(
         alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
       };
       const isPick = fragmentEntryPoint === "fragmentPickMain";
+      // OPAQUE color variant: no blend (overwrite). Pick path stays blended
+      // here (unchanged — preserves the historical pick descriptor). The
+      // TRANSLUCENT color path keeps the alpha blend.
+      const colorTargetOpts = opaque ? {} : { blend };
       const targets: Array<GPUColorTargetState | null> = isPick
         ? [{ format, blend }]
-        : makeSceneFBTargets(format, { blend });
+        : makeSceneFBTargets(format, colorTargetOpts);
       return {
         module: shaderModule,
         entryPoint: fragmentEntryPoint,
@@ -196,6 +221,8 @@ function initPolylineCache(
   const nextPositionLowArr = f3();
   const pickColorArr = new Uint8Array(vertexCountMax * 4);
   const showColorWidthAndTexCoordArr = new Float32Array(vertexCountMax * 4);
+  // Per-vertex alpha [0,1], one float per (doubled) vertex.
+  const alphaArr = new Float32Array(vertexCountMax);
   const indexArr = jsModule<IndexDatatypeStatics>(
     IndexDatatype,
   ).createTypedArray(vertexCountMax, segmentCountMax * 6);
@@ -272,6 +299,7 @@ function initPolylineCache(
       showColorWidthAndTexCoordArr.byteLength,
       "lineShow",
     ),
+    alpha: createVB(device, alphaArr.byteLength, "lineAlpha"),
     indexBuffer: createIB(device, indexArr.byteLength, "lineIdx"),
     positionHighArr,
     positionLowArr,
@@ -281,11 +309,16 @@ function initPolylineCache(
     nextPositionLowArr,
     pickColorArr,
     showColorWidthAndTexCoordArr,
+    alphaArr,
     indexArr,
     indexFormat,
     vertexCountMax,
     pipeline,
     pickPipeline,
+    shaderModule,
+    bgls,
+    sampleCount,
+    format,
     bindGroup: device.createBindGroup({
       label: "BufferPolyline camera BG",
       layout: bgls[0],
@@ -341,6 +374,10 @@ function repackPolylineDirty(
     const encodedColor = AttributeCompression.encodeRGB8(
       scratchPolylineMat.color,
     );
+    // Material color.alpha [0,1] → dedicated alpha lane. The shader folds it
+    // into v_color.a so the `outColor.a < 0.005` discard is live for
+    // translucent lines. Mirrors WebGL's `alpha` attribute.
+    const colorAlpha = scratchPolylineMat.color.alpha;
     Color.fromRgba(scratchPolyline._pickId, scratchColor);
     const show = scratchPolyline.show;
     const width = scratchPolylineMat.width;
@@ -412,6 +449,7 @@ function repackPolylineDirty(
         cache.showColorWidthAndTexCoordArr[v4 + 1] = encodedColor;
         cache.showColorWidthAndTexCoordArr[v4 + 2] = width;
         cache.showColorWidthAndTexCoordArr[v4 + 3] = texCoordS + directionFrac;
+        cache.alphaArr[vOffset] = colorAlpha;
         vOffset++;
       }
     }
@@ -453,6 +491,7 @@ function uploadPolylineBuffers(device: GPUDevice, cache: PolylineCache): void {
     0,
     gpuData(cache.showColorWidthAndTexCoordArr),
   );
+  device.queue.writeBuffer(cache.alpha, 0, gpuData(cache.alphaArr));
   device.queue.writeBuffer(cache.indexBuffer, 0, gpuData(cache.indexArr));
 }
 
@@ -554,23 +593,52 @@ export function updateWebGPUBufferPolylineCollection(
     cache.nextPositionLow,
     cache.pickColor,
     cache.showColorWidthAndTexCoord,
+    // Index 8 — must match the pipeline `buffers[8]` (shaderLocation 8).
+    cache.alpha,
   ];
   const bgs = [cache.bindGroup, cache.paramsBindGroup];
 
+  // blendOption: OPAQUE (blend off, Pass.OPAQUE) vs the default TRANSLUCENT.
+  const isOpaque = collection._blendOption === BlendOption.OPAQUE;
+
   if (frameState.passes.render) {
+    if (cache.command && cache.commandBlendOption !== collection._blendOption) {
+      cache.command = null;
+    }
     if (!cache.command) {
+      let colorPipeline = cache.pipeline;
+      if (isOpaque) {
+        if (!cache.opaquePipeline) {
+          cache.opaquePipeline = buildPolylinePipeline(
+            device,
+            cache.shaderModule,
+            cache.format,
+            cache.bgls,
+            "fragmentMain",
+            cache.sampleCount,
+            true,
+          );
+        }
+        colorPipeline = cache.opaquePipeline;
+      }
       cache.command = new WebGPUDrawCommand({
-        pipeline: cache.pipeline,
+        pipeline: colorPipeline,
         bindGroups: bgs,
         vertexBuffers: vbs,
         indexBuffer: cache.indexBuffer,
         indexFormat: cache.indexFormat,
         indexCount,
-        pass: Pass.TRANSLUCENT,
+        pass: isOpaque ? Pass.OPAQUE : Pass.TRANSLUCENT,
+        boundingVolume: collection.boundingVolume,
+        debugShowBoundingVolume: collection.debugShowBoundingVolume,
       });
+      cache.commandBlendOption = collection._blendOption;
     } else {
       cache.command.indexCount = indexCount;
     }
+    cache.command.boundingVolume = collection.boundingVolume;
+    cache.command.debugShowBoundingVolume =
+      collection.debugShowBoundingVolume ?? false;
     frameState.commandList.push(cache.command);
   }
 
@@ -615,6 +683,7 @@ export function destroyWebGPUBufferPolylineCollection(
   cache.nextPositionLow.destroy();
   cache.pickColor.destroy();
   cache.showColorWidthAndTexCoord.destroy();
+  cache.alpha.destroy();
   cache.indexBuffer.destroy();
   collection._webgpuCache = undefined;
 }

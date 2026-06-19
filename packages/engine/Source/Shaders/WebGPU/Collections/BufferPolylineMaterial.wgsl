@@ -35,6 +35,12 @@ struct VertexInput {
   @location(6) pickColor        : vec4<f32>,
   @location(7) showColorWidthAndTexCoord : vec4<f32>,
   // x=show, y=encodedRGB8(color), z=width, w=texCoord(packed s + direction)
+  // The vec4 above is fully saturated (all four lanes used), so material
+  // color.alpha rides in a dedicated f32 lane. CPU pack (alphaArr, width 1),
+  // GPU layout (arrayStride 4 / float32 / shaderLocation 8) and this field
+  // are in lockstep. Mirrors the WebGL `in float alpha` attribute (the GLSL
+  // path divides by 255; here we pack normalized alpha in [0,1] directly).
+  @location(8) alpha            : f32,
 };
 
 // ── Vertex → Fragment ───────────────────────────────────────────────────────
@@ -56,7 +62,11 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
 
   // Unpack attributes
   let show = input.showColorWidthAndTexCoord.x;
-  let color = csm_decodeRGB8(input.showColorWidthAndTexCoord.y);
+  var color = csm_decodeRGB8(input.showColorWidthAndTexCoord.y);
+  // Fold material color.alpha into the RGB decode (csm_decodeRGB8 returns
+  // alpha=1). Matches WebGL's `v_color.a *= alpha` (show is applied via the
+  // degenerate-position hide below, not an alpha multiply).
+  color.a = input.alpha;
   let width = input.showColorWidthAndTexCoord.z * params.pixelRatio;
   let texCoordPacked = input.showColorWidthAndTexCoord.w;
 

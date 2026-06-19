@@ -17,7 +17,12 @@ struct VertexInput {
   @location(0) positionHigh      : vec3<f32>,
   @location(1) positionLow       : vec3<f32>,
   @location(2) pickColor         : vec4<f32>,
-  @location(3) showAndColor      : vec2<f32>, // x=show, y=encodedRGB8(color)
+  // x=show, y=encodedRGB8(color), z=color.alpha [0,1]. The alpha lane widens
+  // the historical vec2 → vec3 so translucent fills composite correctly (the
+  // `outColor.a < 0.005` discard below is now live). CPU pack + GPU
+  // arrayStride/format are in lockstep: showAndColorArr is width-3 per vertex,
+  // arrayStride 12, format float32x3.
+  @location(3) showAndColor      : vec3<f32>, // x=show, y=encodedRGB8, z=alpha
 };
 
 // ── Vertex → Fragment ───────────────────────────────────────────────────────
@@ -38,7 +43,11 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
 
   // Unpack attributes
   let show = input.showAndColor.x;
-  let color = csm_decodeRGB8(input.showAndColor.y);
+  var color = csm_decodeRGB8(input.showAndColor.y);
+  // Fold material color.alpha into the RGB decode (csm_decodeRGB8 returns
+  // alpha=1). Matches the WebGL VS `v_color.a *= alpha` (show is applied via
+  // the degenerate-position hide below, not an alpha multiply).
+  color.a = input.showAndColor.z;
 
   // RTE positioning
   let p = csm_translateRelativeToEye(

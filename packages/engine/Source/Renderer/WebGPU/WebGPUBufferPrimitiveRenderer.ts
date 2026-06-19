@@ -138,6 +138,22 @@ export interface BufferPrimitiveCollection {
   _allowPicking: boolean;
   _dirtyOffset: number;
   _dirtyCount: number;
+  // World-space bounding sphere for the whole collection (shown + hidden
+  // primitives). Scene-side `_updateBoundingVolume` keeps it current when the
+  // collection opts into auto-update, so the renderer re-reads it onto the draw
+  // command every frame. Mirrors `collection.boundingVolume` consumed by the
+  // WebGL render*Collection.js paths — drives per-frustum culling + the
+  // debugShowBoundingVolume overlay.
+  boundingVolume?: CesiumBoundingSphere;
+  // Debug-only: draw the collection bounding sphere as an overlay. Public
+  // mutable field on the collection (can flip at runtime), so the renderer
+  // refreshes it onto the command each frame rather than only at build time.
+  debugShowBoundingVolume?: boolean;
+  // Blend option (BlendOption enum value): OPAQUE (0) vs TRANSLUCENT (1).
+  // Defaults to TRANSLUCENT when absent. Selects the OPAQUE pipeline variant
+  // (blend off, depth write on) + routes the command to Pass.OPAQUE. Mirrors
+  // `collection._blendOption` read by the WebGL paths.
+  _blendOption?: number;
   // Flat interleaved [x,y,z,...] position store. DOUBLE (Float64Array) by
   // default; FLOAT (Float32Array) when the collection opts into low-precision
   // positions. For points, position index i maps to _positionView[i*3..i*3+2]

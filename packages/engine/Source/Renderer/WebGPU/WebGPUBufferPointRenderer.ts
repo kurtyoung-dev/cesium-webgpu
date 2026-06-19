@@ -49,6 +49,7 @@ import {
 } from "./WebGPUBufferPrimitiveRenderer.js";
 import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import BlendOption from "../../Scene/BlendOption.js";
 import type {
   BufferPrimitiveCollection,
   CesiumPickIdRef,
@@ -116,10 +117,17 @@ export interface PointCache extends SharedCache {
   primitiveCountMax: number;
   pipeline: GPURenderPipeline;
   pickPipeline: GPURenderPipeline;
+  // OPAQUE blend variant of the color pipeline; built lazily (see polygon).
+  opaquePipeline?: GPURenderPipeline;
+  shaderModule: GPUShaderModule;
+  bgls: GPUBindGroupLayout[];
+  sampleCount: number;
+  format: GPUTextureFormat;
   bindGroup: GPUBindGroup;
   command: WebGPUDrawCommand | null;
   pickCommand: WebGPUDrawCommand | null;
   pickIds: CesiumPickIdRef[];
+  commandBlendOption?: number;
   // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — lazily-instantiated RTE
   // bridge for the threshold-gated batch position encode. Created on the cache
   // (one per collection); `loadWasm()` is kicked off once on first use and the
@@ -149,6 +157,10 @@ function buildPointPipeline(
   bgls: GPUBindGroupLayout[],
   fragmentEntryPoint: string = "fragmentMain",
   sampleCount: number = 1,
+  // When true, build the OPAQUE color variant: blend disabled + depth write
+  // on (matches WebGL blend-off + depthTest.enabled). Default false keeps the
+  // historical TRANSLUCENT color path byte-identical (depth write off).
+  opaque: boolean = false,
 ): GPURenderPipeline {
   // Color path draws into the MSAA scene FB → sample count must match
   // `context._msaaSamples`; pick path renders into the single-sample pick FB.
@@ -181,15 +193,21 @@ function buildPointPipeline(
           stepMode: "instance",
           attributes: [{ shaderLocation: 2, offset: 0, format: "unorm8x4" }],
         },
+        // showPixelSizeAndColor: vec4 [show, pixelSize, encodedRGB8, alpha].
+        // Widened vec3 → vec4 (stride 12 → 16, float32x3 → float32x4) in
+        // lockstep with showSizeAndColorArr (width 4) + the WGSL vec4 field.
+        {
+          arrayStride: 16,
+          stepMode: "instance",
+          attributes: [{ shaderLocation: 3, offset: 0, format: "float32x4" }],
+        },
+        // outlineWidthAndOutlineColor: vec3 [outlineWidth, encodedRGB8, alpha].
+        // Widened vec2 → vec3 (stride 8 → 12, float32x2 → float32x3) in
+        // lockstep with outlineWidthAndOutlineColorArr (width 3) + WGSL vec3.
         {
           arrayStride: 12,
           stepMode: "instance",
-          attributes: [{ shaderLocation: 3, offset: 0, format: "float32x3" }],
-        },
-        {
-          arrayStride: 8,
-          stepMode: "instance",
-          attributes: [{ shaderLocation: 4, offset: 0, format: "float32x2" }],
+          attributes: [{ shaderLocation: 4, offset: 0, format: "float32x3" }],
         },
         // Per-vertex quad corner
         {
@@ -213,9 +231,11 @@ function buildPointPipeline(
         alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
       };
       const isPick = fragmentEntryPoint === "fragmentPickMain";
+      // OPAQUE color variant: no blend (overwrite). Pick path unchanged.
+      const colorTargetOpts = opaque ? {} : { blend };
       const targets: Array<GPUColorTargetState | null> = isPick
         ? [{ format, blend }]
-        : makeSceneFBTargets(format, { blend });
+        : makeSceneFBTargets(format, colorTargetOpts);
       return {
         module: shaderModule,
         entryPoint: fragmentEntryPoint,
@@ -225,7 +245,9 @@ function buildPointPipeline(
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: "depth24plus-stencil8",
-      depthWriteEnabled: false,
+      // OPAQUE color variant writes depth (correct occlusion/sort vs WebGL);
+      // TRANSLUCENT default keeps depth write off (composite back-to-front).
+      depthWriteEnabled: opaque,
       // less-equal (not less) — lets primitives that project exactly
       // onto the far plane due to FP32 rounding still pass the depth
       // test. Safe at planetary scale where the Z range is huge and
@@ -249,9 +271,11 @@ function initPointCache(
   const positionHighArr = new Float32Array(primitiveCountMax * 3);
   const positionLowArr = new Float32Array(primitiveCountMax * 3);
   const pickColorArr = new Uint8Array(primitiveCountMax * 4);
-  const showSizeAndColorArr = new Float32Array(primitiveCountMax * 3);
+  // width 4 per instance: [show, pixelSize, encodedRGB8(color), color.alpha].
+  const showSizeAndColorArr = new Float32Array(primitiveCountMax * 4);
+  // width 3 per instance: [outlineWidth, encodedRGB8(outlineColor), alpha].
   const outlineWidthAndOutlineColorArr = new Float32Array(
-    primitiveCountMax * 2,
+    primitiveCountMax * 3,
   );
 
   // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve `//>>ifdef LOG_DEPTH` against
@@ -329,6 +353,10 @@ function initPointCache(
     primitiveCountMax,
     pipeline,
     pickPipeline,
+    shaderModule,
+    bgls,
+    sampleCount,
+    format,
     bindGroup: device.createBindGroup({
       label: "BufferPoint camera BG",
       layout: bgls[0],
@@ -436,14 +464,30 @@ function repackPointDirty(
     cache.pickColorArr[i * 4 + 1] = Color.floatToByte(scratchColor.green);
     cache.pickColorArr[i * 4 + 2] = Color.floatToByte(scratchColor.blue);
     cache.pickColorArr[i * 4 + 3] = Color.floatToByte(scratchColor.alpha);
-    cache.showSizeAndColorArr[i * 3] = scratchPoint.show ? 1 : 0;
-    cache.showSizeAndColorArr[i * 3 + 1] = scratchPointMat.size;
-    cache.showSizeAndColorArr[i * 3 + 2] = AttributeCompression.encodeRGB8(
+
+    // Fill: [show, size, encodedRGB8(color), color.alpha] — width 4.
+    const s4 = i * 4;
+    cache.showSizeAndColorArr[s4] = scratchPoint.show ? 1 : 0;
+    cache.showSizeAndColorArr[s4 + 1] = scratchPointMat.size;
+    cache.showSizeAndColorArr[s4 + 2] = AttributeCompression.encodeRGB8(
       scratchPointMat.color,
     );
-    cache.outlineWidthAndOutlineColorArr[i * 2] = scratchPointMat.outlineWidth;
-    cache.outlineWidthAndOutlineColorArr[i * 2 + 1] =
-      AttributeCompression.encodeRGB8(scratchPointMat.outlineColor);
+    cache.showSizeAndColorArr[s4 + 3] = scratchPointMat.color.alpha;
+
+    // Outline: [outlineWidth, encodedRGB8(outlineColor), outlineColor.alpha]
+    // — width 3. At outlineWidth==0, substitute the fill color/alpha so the
+    // AA outer ring doesn't bleed a stale outline color (P2 fix; mirrors
+    // WebGL renderBufferPointCollection.js:237-246).
+    const hasOutline = scratchPointMat.outlineWidth > 0;
+    const o3 = i * 3;
+    cache.outlineWidthAndOutlineColorArr[o3] = scratchPointMat.outlineWidth;
+    cache.outlineWidthAndOutlineColorArr[o3 + 1] =
+      AttributeCompression.encodeRGB8(
+        hasOutline ? scratchPointMat.outlineColor : scratchPointMat.color,
+      );
+    cache.outlineWidthAndOutlineColorArr[o3 + 2] = hasOutline
+      ? scratchPointMat.outlineColor.alpha
+      : scratchPointMat.color.alpha;
 
     scratchPoint._dirty = false;
   }
@@ -583,19 +627,47 @@ export function updateWebGPUBufferPointCollection(
   ];
   const bgs = [cache.bindGroup, cache.paramsBindGroup];
 
+  // blendOption: OPAQUE (blend off, depth write on, Pass.OPAQUE) vs default
+  // TRANSLUCENT. Mirrors the WebGL RenderState/Pass branch.
+  const isOpaque = collection._blendOption === BlendOption.OPAQUE;
+
   if (frameState.passes.render) {
+    if (cache.command && cache.commandBlendOption !== collection._blendOption) {
+      cache.command = null;
+    }
     if (!cache.command) {
+      let colorPipeline = cache.pipeline;
+      if (isOpaque) {
+        if (!cache.opaquePipeline) {
+          cache.opaquePipeline = buildPointPipeline(
+            device,
+            cache.shaderModule,
+            cache.format,
+            cache.bgls,
+            "fragmentMain",
+            cache.sampleCount,
+            true,
+          );
+        }
+        colorPipeline = cache.opaquePipeline;
+      }
       cache.command = new WebGPUDrawCommand({
-        pipeline: cache.pipeline,
+        pipeline: colorPipeline,
         bindGroups: bgs,
         vertexBuffers: vbs,
         vertexCount: 6,
         instanceCount: primitiveCount,
-        pass: Pass.TRANSLUCENT,
+        pass: isOpaque ? Pass.OPAQUE : Pass.TRANSLUCENT,
+        boundingVolume: collection.boundingVolume,
+        debugShowBoundingVolume: collection.debugShowBoundingVolume,
       });
+      cache.commandBlendOption = collection._blendOption;
     } else {
       cache.command.instanceCount = primitiveCount;
     }
+    cache.command.boundingVolume = collection.boundingVolume;
+    cache.command.debugShowBoundingVolume =
+      collection.debugShowBoundingVolume ?? false;
     frameState.commandList.push(cache.command);
   }
 

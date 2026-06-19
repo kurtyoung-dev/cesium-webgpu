@@ -31,8 +31,15 @@ struct VertexInput {
   @location(0) positionHigh             : vec3<f32>,
   @location(1) positionLow              : vec3<f32>,
   @location(2) pickColor                : vec4<f32>,
-  @location(3) showPixelSizeAndColor    : vec3<f32>,  // x=show, y=pixelSize, z=encodedRGB8
-  @location(4) outlineWidthAndOutlineColor : vec2<f32>, // x=outlineWidth, y=encodedRGB8
+  // x=show, y=pixelSize, z=encodedRGB8(color), w=color.alpha [0,1]. Widened
+  // from vec3 → vec4 (CPU stride 4 floats, GPU arrayStride 16 / float32x4) so
+  // translucent fills composite correctly. Mirrors WebGL showPixelSizeColorAlpha.
+  @location(3) showPixelSizeAndColor    : vec4<f32>,
+  // x=outlineWidth, y=encodedRGB8(outlineColor), z=outlineColor.alpha [0,1].
+  // Widened from vec2 → vec3 (CPU stride 3 floats, GPU arrayStride 12 /
+  // float32x3). When outlineWidth==0 the CPU pack substitutes the fill
+  // color/alpha into y/z to stop stale-outline subpixel bleeding.
+  @location(4) outlineWidthAndOutlineColor : vec3<f32>,
   // Per-vertex quad corner (from quad geometry)
   @location(5) quadOffset               : vec2<f32>,  // [-1,1] quad corner
 };
@@ -59,9 +66,15 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   // Unpack attributes
   let show = input.showPixelSizeAndColor.x;
   let pixelSize = input.showPixelSizeAndColor.y;
-  let color = csm_decodeRGB8(input.showPixelSizeAndColor.z);
+  var color = csm_decodeRGB8(input.showPixelSizeAndColor.z);
+  // Fold fill alpha (csm_decodeRGB8 returns alpha=1).
+  color.a = input.showPixelSizeAndColor.w;
   let outlineWidth = input.outlineWidthAndOutlineColor.x;
-  let outlineColor = csm_decodeRGB8(input.outlineWidthAndOutlineColor.y);
+  var outlineColor = csm_decodeRGB8(input.outlineWidthAndOutlineColor.y);
+  // Fold outline alpha. At outlineWidth==0 the CPU pack already substituted
+  // the fill color/alpha into these lanes, so the AA outer ring no longer
+  // bleeds a stale outline color.
+  outlineColor.a = input.outlineWidthAndOutlineColor.z;
 
   let innerRadius = 0.5 * pixelSize * params.pixelRatio;
   let outerRadius = (0.5 * pixelSize + outlineWidth) * params.pixelRatio;

@@ -51,6 +51,7 @@ import {
 } from "./WebGPUBufferPrimitiveRenderer.js";
 import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import BlendOption from "../../Scene/BlendOption.js";
 import type {
   BufferPrimitiveCollection,
   CesiumPickIdRef,
@@ -79,10 +80,26 @@ export interface PolygonCache extends SharedCache {
   triangleCountMax: number;
   pipeline: GPURenderPipeline;
   pickPipeline: GPURenderPipeline;
+  // OPAQUE blend variant of the color pipeline (blend off, depth write on).
+  // Built lazily on first use when collection._blendOption === OPAQUE; the
+  // TRANSLUCENT `pipeline` stays the default. Mirrors the WebGL
+  // RenderState.fromCache({ blending: DISABLED }) branch.
+  opaquePipeline?: GPURenderPipeline;
+  // Retained build inputs so the OPAQUE color variant can be assembled
+  // lazily with the SAME shader module + bind-group layouts as the default
+  // TRANSLUCENT pipeline (no recompile, no layout drift).
+  shaderModule: GPUShaderModule;
+  bgls: GPUBindGroupLayout[];
+  sampleCount: number;
+  format: GPUTextureFormat;
   bindGroup: GPUBindGroup;
   command: WebGPUDrawCommand | null;
   pickCommand: WebGPUDrawCommand | null;
   pickIds: CesiumPickIdRef[];
+  // Blend option the cached color `command` was built for. When the live
+  // collection._blendOption differs, the command is rebuilt so the pass +
+  // pipeline track the latest setting.
+  commandBlendOption?: number;
 }
 
 // ─── Pipeline builder ────────────────────────────────────────────────────────
@@ -93,6 +110,10 @@ function buildPolygonPipeline(
   bgls: GPUBindGroupLayout[],
   fragmentEntryPoint: string = "fragmentMain",
   sampleCount: number = 1,
+  // When true, build the OPAQUE color variant: blend disabled + depth write
+  // on (matches WebGL `BlendingState.DISABLED` + `depthTest.enabled`). The
+  // default false keeps the historical TRANSLUCENT color path byte-identical.
+  opaque: boolean = false,
 ): GPURenderPipeline {
   // Pick-path entry points emit opaque pick IDs and must NOT alpha-blend
   // (blending pick IDs produces invalid intermediate values that map to
@@ -126,9 +147,12 @@ function buildPolygonPipeline(
       operation: "add",
     },
   };
+  // OPAQUE color variant: no blend (overwrite). Pick path is always opaque
+  // (discrete IDs). TRANSLUCENT color path keeps `colorBlend`.
+  const colorTargetOpts = opaque ? {} : { blend: colorBlend };
   const targets: Array<GPUColorTargetState | null> = isPick
     ? [{ format }]
-    : makeSceneFBTargets(format, { blend: colorBlend });
+    : makeSceneFBTargets(format, colorTargetOpts);
   // The color path draws into the MSAA scene framebuffer, so its pipeline
   // sample count must match `context._msaaSamples` (4 when MSAA is on) or
   // the render pass rejects it with an attachment-state mismatch. The pick
@@ -158,9 +182,13 @@ function buildPolygonPipeline(
           arrayStride: 4,
           attributes: [{ shaderLocation: 2, offset: 0, format: "unorm8x4" }],
         },
+        // showAndColor: vec3 [show, encodedRGB8, color.alpha]. Widened from
+        // vec2 (stride 8 / float32x2) to vec3 (stride 12 / float32x3) so the
+        // GPU layout stays in lockstep with the CPU showAndColorArr width-3
+        // pack and the WGSL `showAndColor : vec3<f32>` field.
         {
-          arrayStride: 8,
-          attributes: [{ shaderLocation: 3, offset: 0, format: "float32x2" }],
+          arrayStride: 12,
+          attributes: [{ shaderLocation: 3, offset: 0, format: "float32x3" }],
         },
       ],
     },
@@ -173,11 +201,12 @@ function buildPolygonPipeline(
     depthStencil: {
       format: "depth24plus-stencil8",
       // Pick path always writes depth so per-pixel pick IDs are
-      // deterministic. Color path keeps depth write off when blending
-      // translucent fragments — matches the WebGL convention and
-      // prevents alpha-blended polygons from occluding geometry
-      // behind them.
-      depthWriteEnabled: isPick,
+      // deterministic. OPAQUE color path writes depth too (correct
+      // occlusion + sort vs WebGL's `depthTest.enabled` with blend off).
+      // TRANSLUCENT color path keeps depth write off when blending
+      // fragments — matches the WebGL convention and prevents alpha-blended
+      // polygons from occluding geometry behind them.
+      depthWriteEnabled: isPick || opaque,
       // less-equal (not less) — lets primitives that project exactly
       // onto the far plane due to FP32 rounding still pass the depth
       // test. Safe at planetary scale where the Z range is huge and
@@ -202,7 +231,9 @@ function initPolygonCache(
   const positionHighArr = new Float32Array(vertexCountMax * 3);
   const positionLowArr = new Float32Array(vertexCountMax * 3);
   const pickColorArr = new Uint8Array(vertexCountMax * 4);
-  const showAndColorArr = new Float32Array(vertexCountMax * 2);
+  // width 3 per vertex: [show, encodedRGB8(color), color.alpha]. Lockstep
+  // with the float32x3 / arrayStride-12 attribute at shaderLocation 3.
+  const showAndColorArr = new Float32Array(vertexCountMax * 3);
   const indexArr = jsModule<IndexDatatypeStatics>(
     IndexDatatype,
   ).createTypedArray(vertexCountMax, triangleCountMax * 3);
@@ -260,6 +291,10 @@ function initPolygonCache(
     triangleCountMax,
     pipeline,
     pickPipeline,
+    shaderModule,
+    bgls,
+    sampleCount,
+    format,
     bindGroup: device.createBindGroup({
       label: "BufferPolygon BG",
       layout: bgls[0],
@@ -319,6 +354,10 @@ function repackPolygonDirty(
     const encodedColor = AttributeCompression.encodeRGB8(
       scratchPolygonMat.color,
     );
+    // Material fill alpha [0,1]; widens the per-vertex show/color pack so
+    // translucent polygon fills composite correctly (the shader discard at
+    // alpha < 0.005 is now live). Mirrors WebGL's `showColorAlpha.z`.
+    const colorAlpha = scratchPolygonMat.color.alpha;
     Color.fromRgba(scratchPolygon._pickId, scratchColor);
     const show = scratchPolygon.show;
 
@@ -327,7 +366,7 @@ function repackPolygonDirty(
       EncodedCartesian3.fromCartesian(scratchCart, scratchEnc);
       const v3 = vOffset * 3;
       const v4 = vOffset * 4;
-      const v2 = vOffset * 2;
+      const vsc = vOffset * 3; // showAndColor stride is 3 floats per vertex
       cache.positionHighArr[v3] = scratchEnc.high.x;
       cache.positionHighArr[v3 + 1] = scratchEnc.high.y;
       cache.positionHighArr[v3 + 2] = scratchEnc.high.z;
@@ -338,8 +377,9 @@ function repackPolygonDirty(
       cache.pickColorArr[v4 + 1] = Color.floatToByte(scratchColor.green);
       cache.pickColorArr[v4 + 2] = Color.floatToByte(scratchColor.blue);
       cache.pickColorArr[v4 + 3] = Color.floatToByte(scratchColor.alpha);
-      cache.showAndColorArr[v2] = show ? 1 : 0;
-      cache.showAndColorArr[v2 + 1] = encodedColor;
+      cache.showAndColorArr[vsc] = show ? 1 : 0;
+      cache.showAndColorArr[vsc + 1] = encodedColor;
+      cache.showAndColorArr[vsc + 2] = colorAlpha;
       vOffset++;
     }
 
@@ -444,25 +484,61 @@ export function updateWebGPUBufferPolygonCollection(
     cache.showAndColor,
   ];
 
+  // blendOption: OPAQUE (blend off, depth write on, Pass.OPAQUE) vs the
+  // default TRANSLUCENT path. Mirrors the WebGL RenderState/Pass branch.
+  const isOpaque = collection._blendOption === BlendOption.OPAQUE;
+
   if (frameState.passes.render) {
+    // Rebuild the cached command when blendOption flips so the pass +
+    // pipeline track the live setting.
+    if (cache.command && cache.commandBlendOption !== collection._blendOption) {
+      cache.command = null;
+    }
     if (!cache.command) {
-      // Buffer primitives carry per-vertex alpha in the `showAndColor`
-      // stream, so they're effectively always alpha-blended. Route to the
-      // TRANSLUCENT pass so they composite correctly against the rest of
-      // the scene (back-to-front order). Pick path stays OPAQUE because
-      // pick-ID color is discrete, not alpha-blended.
+      let colorPipeline = cache.pipeline;
+      if (isOpaque) {
+        // Lazily build + cache the OPAQUE color pipeline variant on first
+        // use, reusing the cached shader module + bind-group layouts so it is
+        // byte-identical to the TRANSLUCENT pipeline except blend/depth-write.
+        if (!cache.opaquePipeline) {
+          cache.opaquePipeline = buildPolygonPipeline(
+            device,
+            cache.shaderModule,
+            cache.format,
+            cache.bgls,
+            "fragmentMain",
+            cache.sampleCount,
+            true,
+          );
+        }
+        colorPipeline = cache.opaquePipeline;
+      }
       cache.command = new WebGPUDrawCommand({
-        pipeline: cache.pipeline,
+        pipeline: colorPipeline,
         bindGroups: [cache.bindGroup],
         vertexBuffers: vbs,
         indexBuffer: cache.indexBuffer,
         indexFormat: cache.indexFormat,
         indexCount,
-        pass: Pass.TRANSLUCENT,
+        // OPAQUE collections sort + occlude with the opaque pass; the default
+        // TRANSLUCENT path composites back-to-front. Pick path stays OPAQUE
+        // because pick-ID color is discrete, not alpha-blended.
+        pass: isOpaque ? Pass.OPAQUE : Pass.TRANSLUCENT,
+        // World-space bounding sphere → per-frustum culling + (when enabled)
+        // the debug overlay. Shared reference; refreshed below every frame.
+        boundingVolume: collection.boundingVolume,
+        debugShowBoundingVolume: collection.debugShowBoundingVolume,
       });
+      cache.commandBlendOption = collection._blendOption;
     } else {
       cache.command.indexCount = indexCount;
     }
+    // Refresh per-frame: the collection's world-space bounding sphere is
+    // auto-updated Scene-side, and debugShowBoundingVolume can toggle at
+    // runtime. Re-read both onto the command so culling + overlay track them.
+    cache.command.boundingVolume = collection.boundingVolume;
+    cache.command.debugShowBoundingVolume =
+      collection.debugShowBoundingVolume ?? false;
     frameState.commandList.push(cache.command);
   }
 
