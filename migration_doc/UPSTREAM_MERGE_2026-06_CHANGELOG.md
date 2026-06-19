@@ -215,3 +215,40 @@ Upstream merges can silently renumber enum VALUES that fork code — especially 
 ## Post-merge WebGPU-integration backlog (§5)
 
 The post-merge parity audit (new upstream v1.141–1.143 features vs WebGPU support) lives in **`WEBGPU_PARITY_AUDIT_2026-06.md`** — 15 real gaps, **0 P0**. Headline: the `BufferPrimitive` family (`color.alpha`/`blendOption`/world-space `boundingVolume`, P1, best as one coordinated batch), `EdgeDisplayMode` tri-mode incl. wiring the WebGPU `CESIUM_3D_TILE_EDGES_DIRECT` pass (P2), the voxel data path (XL scaffold). All deferred follow-ups — NOT merge blockers. To be reconciled into `FEATURE_INVENTORY.md` §C/§D + `DEFERRED_WORK.md`.
+
+## Post-merge WebGPU parity work — landed batches (v1.141–1.143)
+
+This section records which v1.141–1.143 upstream features received WebGPU parity work
+*after* the merge greened, so the merge changelog reflects parity follow-through and not
+just the conflict resolution. Each row names the upstream PR(s) that introduced the
+feature, the workflow batch id that addresses it on WebGPU, and the
+`FEATURE_INVENTORY.md` / `DEFERRED_WORK.md` tracking entry (the inventory/deferred entries
+are added by **`batch-inventory-reconcile`**, the sibling reconciliation batch — these two
+doc batches land together so the cross-links resolve). Gap detail + integration plans:
+`WEBGPU_PARITY_AUDIT_2026-06.md`.
+
+| Upstream feature (v1.141–1.143) | PR(s) | Addressing batch id | Tracking entry |
+|---|---|---|---|
+| **BufferPrimitive `color.alpha` translucency** — widen the packed color lane in all three buffer renderers (Point/Polyline/Polygon) so `material.color.alpha` reaches the WGSL `discard`; CPU pack ↔ GPU `arrayStride`/`format` ↔ WGSL struct kept in lockstep. | PR#13384 | `batch-bufferprimitive-parity` | `NEW-BUFFERPRIMITIVE-COLOR-ALPHA` (§C WIP) |
+| **BufferPrimitive `blendOption`** — OPAQUE vs TRANSLUCENT pass + pipeline-variant selection (`collection._blendOption`); routes opaque collections to `Pass.OPAQUE` with `depthWrite` on instead of the hardcoded translucent pass. Subsumes the P2 "GeoJSON opaque fills forced translucent" row. | PR#13384 | `batch-bufferprimitive-parity` | `NEW-BUFFERPRIMITIVE-BLEND-OPTION` (§C WIP) |
+| **BufferPrimitive world-space `boundingVolume` + `debugShowBoundingVolume`** — pass `collection.boundingVolume`/`debugShowBoundingVolume` to `WebGPUDrawCommand` every frame, restoring per-frustum culling + the debug overlay. | PR#13477 | `batch-bufferprimitive-parity` | `NEW-BUFFERPRIMITIVE-BOUNDING-VOLUME` (§C WIP) |
+| **`GeoJsonPrimitive`** — Playwright probe + Sandcastle demo exercising `GeoJsonPrimitive.fromGeoJson` (Point/LineString/Polygon incl. hole + MultiPolygon) on WebGL vs WebGPU; pixel-verifies the loader count-allocation math through the three Buffer\*Collection FeatureRenderers. | PR#13505 | `batch-geojson-primitive-probe` | `GeoJsonPrimitive` §A entry (parity rides on the Buffer\*Collection FeatureRenderers) |
+| **`EdgeDisplayMode` tri-mode** — SURFACES_ONLY default-suppression (one-line `model.edgeDisplayMode` guard in the WebGPU edge emitter) + EDGES_ONLY direct pass (wire `CESIUM_3D_TILE_EDGES_DIRECT` slot 12 into the WebGPU frustum loop) + the lineStrings / authored-`silhouetteNormals` / per-edge-color data paths. | v1.142 (`EXT_mesh_primitive_edge_visibility`) | `batch-edge-display-mode-tri` (+ `batch-edge-data-paths-slice`) | `NEW-EDGE-DISPLAY-MODE-WEBGPU` (§C WIP) |
+| **`EquirectangularPanorama` cull-override** — honor the appearance's `renderState.cull.enabled:false` in the WebGPU material pipeline (today `cullMode` is baked solely from `appearance.closed`, so `closed:true` hides an inside-viewed panorama on WebGPU while WebGL shows it). The `flat:true` lighting half was already `supported`. | #13369 | `batch-panorama-cull-override` | `C-R1-PRIMITIVE-DERIVED` exclusion note + `NEW-PANORAMA-CULL-OVERRIDE-WEBGPU` (§C WIP) |
+| **Buffer-collection 2D / Columbus View** (diagnostic slice) — distinct from the `Vector3DTile*` classifiers; the `BufferPolygon`/`Polyline`/`Point` family has no 2D/CV reprojected attribute buffer (Batch 180 verified SCENE3D only). Diagnostic probe documenting the wandering-points divergence. | (no single PR — fork parity gap surfaced by the merge audit) | `batch-bufferpolygon-2dcv-probe` | `NEW-BUFFERPOLYGON-2DCV-REPROJECT` (§C WIP; distinct from `NEW-CLASSIFIER-2D-CV-MORPH`) |
+| **`positionNormalized` + integer position datatypes** (diagnostic slice) — all three buffer renderers assume DOUBLE positions (float32 high/low RTE); a non-DOUBLE `positionDatatype` or `positionNormalized:true` collection is silently mis-encoded. Diagnostic probe + needs a snorm/unorm vertex-layout variant + non-RTE upload path. | PR#13384 (BufferPrimitiveMaterial datatype knobs) | `batch-bufferpoint-positionnormalized-probe` | (§D FUTURE — tracked in `WEBGPU_PARITY_AUDIT_2026-06`, positionNormalized P2 row) |
+
+> **Note on batch ids.** The `batch-*` ids above are the workflow batch identifiers for the
+> post-merge parity follow-through; they share the `batch-` prefix with this changelog batch
+> (`batch-changelog-merge-sync`). The three P1 buffer-primitive rows (alpha, blendOption,
+> boundingVolume) are intentionally one coordinated batch (`batch-bufferprimitive-parity`)
+> because they touch the same three renderers and must keep the CPU-pack / GPU-layout / WGSL-struct
+> lockstep consistent across all of them — splitting them risks a stride mismatch that compiles
+> clean but corrupts the buffer (`WEBGPU_PARITY_AUDIT_2026-06.md` §C.8 risk).
+
+> **Voxel default shader (PR#13517)** is deliberately **not** in the table above: the audit
+> classifies it XL because the entire WebGPU voxel data path is a placeholder scaffold
+> (`VoxelPrimitive.update` short-circuits, `WebGPUVoxelRenderer.ts` is a hardcoded 4×4×4-gradient
+> ray-marcher, no CustomShader→WGSL transpilation). It remains tracked as an expansion of the
+> existing SCAFFOLDED voxel entry (`FEATURE_INVENTORY.md` voxel renderer line + `C-R9-VOXEL-CELL-PICK`),
+> not as a post-merge parity batch.

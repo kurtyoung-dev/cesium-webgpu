@@ -63,6 +63,19 @@ A user reports a bug. Where do I start?
 │       templates. Picking is one of the few places where you can't
 │       probe-via-screenshot — see "Picking bugs".
 │
+├── Buffer-primitive (GeoJSON / vector-tile fill) looks opaque, mis-sorted,
+│       wandering in 2D/CV, or never culls?
+│   └── probe-geojson-primitive.mjs / probe-bufferpolygon-2dcv.mjs /
+│       probe-bufferpoint-positiondatatype.mjs. Which Pass slot did the
+│       command land in (OPAQUE vs TRANSLUCENT)? Is blendOption honored?
+│       See "Buffer-primitive translucency / sort / 2D-CV".
+│
+├── glTF edges missing (EDGES_ONLY shows surfaces, no wires) or extra
+│       (SURFACES_ONLY default still draws edges)?
+│   └── probe-edge-emitter.mjs / probe-edge-degenerate.mjs. Confirm the
+│       Pass-slot-12 (CESIUM_3D_TILE_EDGES_DIRECT) routing + SURFACES_ONLY
+│       suppression. See "glTF edge tri-mode (EdgeDisplayMode)".
+│
 ├── Need to inspect a camera, transform, or vertex attribute visually?
 │   └── DebugCameraPrimitive / DebugModelMatrixPrimitive / DebugAppearance.
 │       See "Standalone debug primitives".
@@ -137,6 +150,35 @@ Call `CesiumDebug.globeFragmentDebug()` with no args to get the live list from t
 - "The build has the fix so it should work" — grep proves bytes are present, not that the runtime path is reached.
 - "Default-camera probe was clean" — when the user reported a specific view, match it. LOD and atmosphere ramps are camera-distance-dependent.
 - "I'll just add three speculative fixes and rerun" — probe-first costs less per iteration than speculative-fix-first.
+
+---
+
+## Buffer-primitive translucency / sort / 2D-CV
+
+Buffer primitives are the shared substrate behind `GeoJsonPrimitive`, the modern glTF-vector (`CESIUM_mesh_vector`) 3D Tiles fill, and the entity bulk / compute-instance WebGL2 cpuKernel paths. They render through three FeatureRenderers — `WebGPUBufferPointRenderer.ts`, `WebGPUBufferPolygonRenderer.ts`, `WebGPUBufferPolylineRenderer.ts` (shared base `WebGPUBufferPrimitiveRenderer.ts`). The common WebGPU divergences from WebGL all live in pass/pipeline selection and the packed color lane.
+
+### Symptom → check
+
+- **Fill is fully opaque even at `color.alpha < 1`** — the renderers historically truncate color to RGB (`csm_decodeRGB8`, alpha hardcoded 1.0) so the WGSL `if (outColor.a < 0.005) discard` is dead. If alpha doesn't vary, the packed lane was never widened to carry it. The CPU pack width, the GPU `arrayStride`/`format`, and the WGSL struct field must move in lockstep — a stride mismatch is silent corruption, not a compile error.
+- **Stacked/adjacent opaque polygons show sort artifacts** — the command was pushed to `Pass.TRANSLUCENT` with `depthWriteEnabled=false` regardless of `collection._blendOption`. **Which Pass slot did the command land in?** OPAQUE collections must route to `Pass.OPAQUE` (blend off, depth-write on); a collection that defaults TRANSLUCENT (GeoJSON fills do) but is logically opaque will be order-dependently composited. Compare against WebGL's branch in `renderBufferPointCollection.js` / `renderBufferPolygonCollection.js`. Probe: `probe-geojson-primitive.mjs` (drives the full alpha / blendOption / boundingVolume chain through the loader).
+- **Every collection draws every frame / `debugShowBoundingVolume` is a no-op** — the buffer draw commands are built without `boundingVolume` / `debugShowBoundingVolume` (`WebGPUDrawCommand` supports both). No bounding volume = no per-frustum culling. The Scene-side `_boundingVolume` is world-space and auto-updates, so it must be refreshed onto the command **every frame**, not once at creation.
+- **Markers wander or vanish in SCENE2D / Columbus View** — the buffer renderers project RTE world-space ECEF via `modelViewRelativeToEye * projection` with NO 2D/CV reprojected attribute buffer (unlike the Vector3DTile classifiers' CPU-reprojected ENU buffer). SCENE3D is verified (Batch 180); 2D/CV is the open gap. Probe: `probe-bufferpolygon-2dcv.mjs`. (Distinct from `NEW-CLASSIFIER-2D-CV-MORPH`, which is the `.vctr` classifier family.)
+- **A non-DOUBLE / `positionNormalized` collection renders garbage positions** — all three renderers assume DOUBLE positions (always `float32x3` high/low RTE); an integer/normalized `positionDatatype` store is read as f64 cartesians. Probe: `probe-bufferpoint-positiondatatype.mjs`.
+
+Authoritative gap list + first-step plans: **[WEBGPU_PARITY_AUDIT_2026-06.md](WEBGPU_PARITY_AUDIT_2026-06.md)** (the buffer-primitive P1/P2 rows).
+
+## glTF edge tri-mode (EdgeDisplayMode)
+
+`EdgeDisplayMode` on glTF Models + 3D Tilesets has three modes — `SURFACES_ONLY` (default, 0), `SURFACES_AND_EDGES` (1), `EDGES_ONLY` (CAD wireframe, 2) — driven by the `EXT_mesh_primitive_edge_visibility` data path. The WebGPU emitter is `WebGPUEdgeVisibilityEmitter.ts`; dispatch + pass routing is in `WebGPUModelRenderer.js` / `WebGPUSceneRenderer3DTilePasses.ts` / `WebGPUSceneRendererFrustumLoop.ts`.
+
+### Symptom → check
+
+- **`SURFACES_ONLY` (the default) still draws edges** — the edge emitter gates only on `defined(edgeGltfPrimitive?.edgeVisibility)` and never reads `model.edgeDisplayMode`, so any edge-bearing glTF emits edges even in the default mode. **To confirm SURFACES_ONLY suppression:** verify the emitter early-returns when `model.edgeDisplayMode === EdgeDisplayMode.SURFACES_ONLY` (a one-line guard) — if edges appear in the default mode on an edge-bearing CAD/BIM asset, the guard is missing.
+- **`EDGES_ONLY` renders surfaces normally with NO edges (the inverse of intent)** — three coupled gaps: (1) the `Pass.CESIUM_3D_TILE_EDGES_DIRECT` slot (**slot 12** in `Renderer/Pass.js`) is absent from the WebGPU frustum loop, so commands binned there **silently never execute**; (2) the WebGPU model edge emitter hardcodes `Pass.CESIUM_3D_TILE_EDGES` (slot 4) instead of routing to slot 12 for EDGES_ONLY; (3) the surface command is emitted unconditionally with no EDGES_ONLY suppression. **Which Pass slot did the edge command land in?** Slot 4 (`CESIUM_3D_TILE_EDGES`) is the with-surfaces edge pass; slot 12 (`CESIUM_3D_TILE_EDGES_DIRECT`) is the EDGES_ONLY direct pass that must actually be looped over in `WebGPUSceneRendererFrustumLoop.ts`. A command in slot 12 that produces no pixels means the frustum loop has no slot-12 leg.
+- **Edges vanish near a zero-area triangle / silhouette mis-classified** — WebGPU SYNTHESIZES face normals from positions rather than reading authored `silhouetteNormals`, so a degenerate (zero-area) triangle biases the silhouette dot-product differently than WebGL's authored-normal path (PR#13421). The magnitude guard + bounds skip prevent NaN, but classification can still diverge. Probe: `probe-edge-degenerate.mjs` (matches the PR#13421 repro); general edge emission: `probe-edge-emitter.mjs`.
+- **A BENTLEY / styled-gltf-lines asset yields zero WebGPU edges** — the extractor consumes only the per-triangle 2-bit `edgeVis.visibility` encoding; explicit `lineStrings` edges, authored `silhouetteNormals` accessors, and per-edge `materialColor` overrides are not yet read (the data-path gaps tracked under `NEW-EDGE-DISPLAY-MODE-WEBGPU`).
+
+Authoritative gap list + first-step plans: **[WEBGPU_PARITY_AUDIT_2026-06.md](WEBGPU_PARITY_AUDIT_2026-06.md)** (the EdgeDisplayMode P2/P3 rows).
 
 ---
 
@@ -385,6 +427,10 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | --- | --- |
 | `probe-edge-emitter.mjs` | Edge-visibility / line-emitter |
 | `probe-bufferpolygon-vector-tile.mjs` | Modern glTF-vector (`CESIUM_mesh_vector`) BufferPolygon fill — WebGL vs WebGPU `sample-us-states` load + canvas diff + feature/geometry/error metrics |
+| `probe-geojson-primitive.mjs` | **`GeoJsonPrimitive.fromGeoJson` end-to-end gate (GeoJsonPrimitive ships in FEATURE_INVENTORY §A; this probe gates the buffer-primitive parity end-to-end through the loader).** Loads a mixed `FeatureCollection` (Point + LineString + Polygon **incl. a hole + a MultiPolygon**) on BOTH backends and canvas-diffs — exercises the `parseGeoJson` polygonVertexCount/holeCount/triangleCount → Buffer*Collection capacity allocation math (wrong capacity trips `ERR_CAPACITY` or silently truncates). Also validates the buffer-primitive `color.alpha` / `blendOption` / `boundingVolume` parity fixes end-to-end through the loader. Demo: Sandcastle "WebGPU GeoJsonPrimitive". |
+| `probe-bufferpolygon-2dcv.mjs` | **Buffer* collections in SCENE2D / Columbus View (NEW-BUFFERPOLYGON-2DCV-REPROJECT).** BufferPolygon/Polyline/Point fill at a fixed top-down view in 3D / 2D / CV, WebGL vs WebGPU coverage — surfaces the missing 2D/CV reprojected attribute buffer (buffer renderers project RTE ECEF via `modelViewRelativeToEye * projection` with NO CPU-reprojected ENU buffer, unlike the Vector3DTile classifiers), so 2D/CV markers wander or vanish. Distinct from `NEW-CLASSIFIER-2D-CV-MORPH` (that covers the `.vctr` classifiers, not the BufferPolygon family). |
+| `probe-bufferpoint-positiondatatype.mjs` | **Non-DOUBLE / `positionNormalized` BufferPoint encode gate (tracked in WEBGPU_PARITY_AUDIT_2026-06, positionNormalized P2 row).** Drives a collection with an integer/normalized `positionDatatype` (snorm/unorm) vs the default DOUBLE Float32 high/low RTE path. All three renderers currently assume DOUBLE positions (always float32x3 high/low), so a non-DOUBLE store is silently mis-encoded (integer bytes read as f64 cartesians). Run after touching the Buffer* vertex-layout/datatype variant or the non-RTE upload path. |
+| `probe-edge-degenerate.mjs` | **Degenerate-triangle glTF edge gate (NEW-UPSTREAM-EDGE-DEGENERATE-13421; PR#13421 repro).** A glTF carrying a zero-area triangle adjacent to a real silhouette edge, WebGL vs WebGPU edge-pixel coverage — confirms no NaN (magnitude guard + bounds skip) AND that the WebGPU synthesized-face-normal path classifies the silhouette like WebGL's authored-`silhouetteNormals` path (a zero-area tri biases the silhouette dot-product differently when normals are re-derived from positions). Run after touching `WebGPUEdgeVisibilityEmitter.ts`. |
 | `probe-czml-bytes.mjs` | CZML byte-level parsing |
 | `probe-png-bytes.mjs` | PNG byte-level decoding |
 | `probe-mars-diag.mjs` | Mars (alternate-ellipsoid) diagnostics |
