@@ -1355,7 +1355,23 @@ function createWebGPUCommands(
     // For non-closed appearances (Polyline, polygon outline, etc.)
     // we still pass `none` so both faces continue to render — those
     // primitives don't have a meaningful "back" face.
-    const defaultCullMode = appearance?.closed ? "back" : "none";
+    //
+    // EquirectangularPanorama cull-override (#13369): a closed appearance
+    // can still explicitly DISABLE culling via
+    // `renderState.cull.enabled: false`. WebGL honors this — its
+    // `Appearance.getDefaultRenderState(...)` runs the `closed` branch
+    // through `combine(existing, rs, true)` where the user's
+    // `cull.enabled: false` wins over the closed-default `enabled: true`.
+    // A panorama is `closed: true` (sphere) viewed from the inside, so it
+    // sets `cull.enabled: false` to keep the inner faces visible. Without
+    // this check WebGPU would back-face cull the interior and render the
+    // panorama blank. When cull is explicitly disabled we force `none`
+    // regardless of `closed`; the closed-volume two-pass cull behavior
+    // (DP-H17) below only applies on the `cull.enabled !== false` path.
+    const cullExplicitlyDisabled =
+      appearance?.renderState?.cull?.enabled === false;
+    const defaultCullMode =
+      appearance?.closed && !cullExplicitlyDisabled ? "back" : "none";
     cache.pipeline = makePipeline(
       defaultCullMode,
       `Primitive pipeline (cull=${defaultCullMode})`,
@@ -2475,6 +2491,25 @@ function createWebGPUMaterialCommands(
   // byte-identical hyperbolic path).
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
 
+  // EquirectangularPanorama cull-override (#13369): the material path
+  // (MaterialAppearance + a Material — e.g. a panorama's Image material)
+  // is what actually drives back-face culling for closed material
+  // primitives. A closed appearance can explicitly DISABLE culling via
+  // `renderState.cull.enabled: false` (WebGL honors this — the closed
+  // default `cull.enabled: true` loses to the user's `false` through
+  // `combine(existing, rs, true)` in `Appearance.getDefaultRenderState`).
+  // A panorama is `closed: true` (sphere) viewed from inside, so it sets
+  // `cull.enabled: false` to keep its inner faces visible. We fold the
+  // override into the closed signal here so the pipeline's cullMode
+  // becomes `none` and the interior renders instead of being culled blank,
+  // matching WebGL. Closed volumes WITHOUT the override (Box/Sphere/
+  // Ellipsoid/Cylinder defaults) keep `cull.enabled: true` and still
+  // back-face cull.
+  const cullExplicitlyDisabled =
+    appearance?.renderState?.cull?.enabled === false;
+  const closedAndCulled =
+    appearance?.closed === true && !cullExplicitlyDisabled;
+
   const shaderChanged = createMaterialPipelineAndCache(
     cache,
     device,
@@ -2484,7 +2519,7 @@ function createWebGPUMaterialCommands(
     isLit,
     translucent,
     matPrimitiveTopology,
-    appearance?.closed === true,
+    closedAndCulled,
     logDepthActive,
   );
 

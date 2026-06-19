@@ -196,7 +196,12 @@ export function dispatchClusteredLighting(
   const inverseProjection = uniformState?.inverseProjection;
   const viewMatrix = uniformState?.view;
   if (!inverseProjection || !viewMatrix) {
-    // Frame state not ready (e.g., empty pick pass). Skip.
+    // Frame state not ready (e.g., empty pick pass). Skip — but first
+    // resume the default canvas pass we ended at :120 above, otherwise
+    // the rest of executeCommands (shadow casts, scene render) runs with
+    // no active render pass, producing a "no active render pass"
+    // validation error and a dropped frame.
+    context.resumeDefaultRenderPass?.();
     return;
   }
 

@@ -31,6 +31,15 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderDefine.MODEL_HAS_FEATURE_ID_0).toBe(1 << 13);
       expect(ShaderDefine.MATERIAL_APPLY).toBe(1 << 14);
       expect(ShaderDefine.LOG_DEPTH).toBe(1 << 15);
+      expect(ShaderDefine.GLOBE_IMAGERY_REDUCED).toBe(1 << 16);
+    });
+
+    it("pins every declared define (no unpinned additions)", function () {
+      // The block above pins each bit by name. This count guard forces a
+      // newly-added define to come with its own explicit pin: bump the
+      // expected count here only after adding the matching expect() above.
+      // Bits 0..16 inclusive => 17 entries.
+      expect(Object.keys(ShaderDefine).length).toBe(17);
     });
 
     it("uses each bit exactly once (no aliasing)", function () {
@@ -95,6 +104,17 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderSourceId.GROUND_POLYLINE).toBe(31);
       expect(ShaderSourceId.SKY_ATMOSPHERE).toBe(32);
       expect(ShaderSourceId.ELLIPSOID_PRIMITIVE).toBe(33);
+      expect(ShaderSourceId.COMPUTE_INSTANCE_SCAFFOLD).toBe(34);
+      expect(ShaderSourceId.COMPUTE_INSTANCE_RENDER).toBe(35);
+      expect(ShaderSourceId.GAUSSIAN_SPLAT).toBe(36);
+      expect(ShaderSourceId.STAR_FIELD_CATALOG).toBe(37);
+    });
+
+    it("pins every declared source ID (no unpinned additions)", function () {
+      // As with the defines, this count guard forces a newly-added source
+      // ID to come with its own explicit pin above. IDs 1..37 with 0
+      // reserved => 37 entries.
+      expect(Object.keys(ShaderSourceId).length).toBe(37);
     });
 
     it("reserves source ID 0 (no entry uses it)", function () {
