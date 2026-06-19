@@ -64,6 +64,37 @@ function mipLevelCountFor(width: number, height: number): number {
 }
 
 /**
+ * Register (or extend) the per-imagery cleanup that drops this imagery's
+ * renderer texture-cache entry when the imagery is evicted
+ * (`Imagery.releaseReference`).
+ *
+ * The `_imageryTextureCache` outlives the imagery object: an imagery is
+ * evicted + re-created (same tile x/y/level key) many times while the cache
+ * keeps one entry per key. Without this, after the evicting imagery frees its
+ * `GPUTexture` the cache would still serve a `GPUTextureView` onto that freed
+ * texture → "Destroyed texture used in a submit". The identity guard
+ * (`cache.get(key)?.texture === texture`) ensures we only drop the entry while
+ * it still wraps the texture we cached — a re-created imagery may have already
+ * replaced it with its own.
+ */
+function registerImageryCacheCleanup(
+  imagery: CesiumReadyImagery,
+  cache: Map<string, ImageryGPUTexture>,
+  key: string,
+  texture: GPUTexture,
+): void {
+  const previous = imagery._webgpuTextureCacheCleanup;
+  imagery._webgpuTextureCacheCleanup = () => {
+    if (previous) {
+      previous();
+    }
+    if (cache.get(key)?.texture === texture) {
+      cache.delete(key);
+    }
+  };
+}
+
+/**
  * The renderer surface the texture-cache helpers reach into.
  *
  *   - `_device`: read-only.
@@ -230,6 +261,12 @@ export function getOrCreateImageryTexture(
         sourceWidth: gpuTex.width,
         sourceHeight: gpuTex.height,
       });
+      registerImageryCacheCleanup(
+        imagery,
+        host._imageryTextureCache,
+        `${baseKey}_merc`,
+        gpuTex,
+      );
       return { view, isMercator: true };
     }
     // Unreachable: the peek only returns "merc" when one of the two
@@ -250,6 +287,12 @@ export function getOrCreateImageryTexture(
         sourceWidth: gpuTex.width,
         sourceHeight: gpuTex.height,
       });
+      registerImageryCacheCleanup(
+        imagery,
+        host._imageryTextureCache,
+        baseKey,
+        gpuTex,
+      );
       return { view, isMercator: false };
     }
   }

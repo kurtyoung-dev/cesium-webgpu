@@ -72,19 +72,43 @@ class Imagery {
         this.textureWebMercator.destroy();
       }
 
-      // Batch 65 — release the WebGPU dual-texture pair. Mirrors the
-      // WebGL textureWebMercator / texture destruction above. Safe to
-      // call .destroy() on a GPUTexture even if the renderer cache
-      // still holds a view onto it; the cache entry is cleared on
-      // renderer teardown.
+      // Batch 65 — release the WebGPU dual-texture pair. Mirrors the WebGL
+      // textureWebMercator / texture destruction above. These must be
+      // DEFERRED, not freed inline: eviction can run mid-frame (LRU under
+      // memory pressure, e.g. split-screen) while the current frame's
+      // globe-tile draw still binds the texture in a not-yet-submitted
+      // command buffer. Destroying now surfaces as
+      // "Destroyed texture [ImageryMercatorSource] used in a submit".
+      // `scheduleTextureDestroy` frees the texture only after the in-flight
+      // frame's GPU work completes; fall back to an inline destroy when no
+      // context was recorded (e.g. device already torn down).
+      //
+      // FIRST drop this imagery's renderer texture-cache entries (the cache
+      // outlives the imagery object and is keyed by tile x/y/level): a
+      // re-created same-key imagery must rebuild from its own live texture
+      // rather than serve a cached view onto the texture we are about to free.
+      if (typeof this._webgpuTextureCacheCleanup === "function") {
+        this._webgpuTextureCacheCleanup();
+        this._webgpuTextureCacheCleanup = undefined;
+      }
+      const webgpuContext = this._webgpuContext;
       if (defined(this._webgpuReprojectedTexture)) {
-        this._webgpuReprojectedTexture.destroy();
+        if (defined(webgpuContext)) {
+          webgpuContext.scheduleTextureDestroy(this._webgpuReprojectedTexture);
+        } else {
+          this._webgpuReprojectedTexture.destroy();
+        }
         this._webgpuReprojectedTexture = undefined;
       }
       if (defined(this._webgpuMercatorTexture)) {
-        this._webgpuMercatorTexture.destroy();
+        if (defined(webgpuContext)) {
+          webgpuContext.scheduleTextureDestroy(this._webgpuMercatorTexture);
+        } else {
+          this._webgpuMercatorTexture.destroy();
+        }
         this._webgpuMercatorTexture = undefined;
       }
+      this._webgpuContext = undefined;
 
       destroyObject(this);
 

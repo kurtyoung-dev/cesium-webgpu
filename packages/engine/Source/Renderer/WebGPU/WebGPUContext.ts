@@ -317,6 +317,16 @@ export class WebGPUContext extends GraphicsContext {
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _options: WebGPUContextOptions;
 
+  // Deferred GPU-texture destruction. Textures the SCENE evicts mid-frame
+  // (e.g. `Imagery.releaseReference` dropping a reprojected/Mercator imagery
+  // texture under memory pressure) cannot be `.destroy()`-ed inline — the
+  // current frame's globe-tile draw may still reference them in a command
+  // buffer that has not been submitted yet, which surfaces as
+  // "Destroyed texture used in a submit". Scene code calls
+  // `scheduleTextureDestroy()` instead; `endFrame()` frees the batch only
+  // after the just-submitted GPU work completes (`onSubmittedWorkDone`).
+  private _pendingTextureDestroys: GPUTexture[] = [];
+
   // Frame state for command recording — public for cross-renderer access
   public _currentCommandEncoder: GPUCommandEncoder | null = null;
   public _currentRenderPassEncoder: GPURenderPassEncoder | null = null;
@@ -1838,6 +1848,33 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * End the current frame - ends render pass and submits commands
    */
+  /**
+   * Queues a GPUTexture for destruction after the current frame's submitted
+   * GPU work has completed. Use this — never `texture.destroy()` — for any
+   * texture that may still be referenced by an in-flight command buffer, such
+   * as scene-driven imagery eviction that runs mid-frame (before the globe
+   * draw that binds the texture has been submitted). The actual free runs from
+   * {@link WebGPUContext#endFrame} via `device.queue.onSubmittedWorkDone()`.
+   *
+   * No-op for a null/undefined texture. If the device is gone (context
+   * destroyed / lost) the texture is freed immediately — a safe no-op.
+   */
+  scheduleTextureDestroy(texture: GPUTexture | null | undefined): void {
+    if (!texture) {
+      return;
+    }
+    if (!this._device || this._isDestroyed) {
+      try {
+        texture.destroy();
+      } catch {
+        // Device already lost — GPUTexture.destroy() is a safe no-op, but
+        // guard anyway so eviction never throws during teardown.
+      }
+      return;
+    }
+    this._pendingTextureDestroys.push(texture);
+  }
+
   endFrame(): void {
     //>>includeStart('debug', pragmas.debug);
     if (this._isDestroyed) {
@@ -1858,6 +1895,30 @@ export class WebGPUContext extends GraphicsContext {
     // Submit command buffer
     const commandBuffer = this._currentCommandEncoder.finish();
     this._device.queue.submit([commandBuffer]);
+
+    // Drain deferred texture destroys: any texture the scene evicted this
+    // frame is now safe to free once the work just submitted (which may bind
+    // it) finishes on the GPU. Captured-then-cleared so a destroy enqueued
+    // after this point rides the next frame's drain instead of this one's.
+    if (this._pendingTextureDestroys.length > 0) {
+      const toDestroy = this._pendingTextureDestroys;
+      this._pendingTextureDestroys = [];
+      this._device.queue.onSubmittedWorkDone().then(
+        () => {
+          for (let i = 0; i < toDestroy.length; ++i) {
+            try {
+              toDestroy[i].destroy();
+            } catch {
+              // Device lost / already destroyed — destroy() is a safe no-op.
+            }
+          }
+        },
+        () => {
+          // onSubmittedWorkDone rejected (device lost) — the device teardown
+          // reclaims these textures; just drop our references.
+        },
+      );
+    }
 
     // Finalize ring buffer frame
     if (this._uniformAllocator) {

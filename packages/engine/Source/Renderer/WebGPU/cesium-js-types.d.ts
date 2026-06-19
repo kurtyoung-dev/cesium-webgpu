@@ -878,6 +878,11 @@ interface CesiumReadyImagery {
   level?: number;
   _webgpuReprojectedTexture?: GPUTexture;
   _webgpuMercatorTexture?: GPUTexture;
+  // Renderer-registered cleanup that drops this imagery's WebGPU
+  // texture-cache entries on eviction (Imagery.releaseReference) so a
+  // re-created same-key imagery never serves a cached view of a freed
+  // GPUTexture. Set by WebGPUGlobeSurfaceTextures.getOrCreateImageryTexture.
+  _webgpuTextureCacheCleanup?: () => void;
   _source?: CesiumOpaqueObject;
 }
 

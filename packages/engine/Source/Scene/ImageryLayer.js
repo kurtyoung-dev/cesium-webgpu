@@ -646,6 +646,12 @@ class ImageryLayer {
       );
       imagery._webgpuMercatorTexture = dual.mercator;
       imagery._webgpuReprojectedTexture = dual.reprojected;
+      // Hand the imagery the context so its eviction (Imagery.releaseReference)
+      // can DEFER these GPUTextures' destruction past the in-flight frame
+      // instead of freeing them inline (which races a still-submitted globe
+      // draw → "Destroyed texture used in a submit"). See
+      // WebGPUContext.scheduleTextureDestroy.
+      imagery._webgpuContext = context;
       // Set texture property for compatibility with existing code paths.
       imagery.texture = texture;
       // Both GPU textures own the pixel data — release the host-side

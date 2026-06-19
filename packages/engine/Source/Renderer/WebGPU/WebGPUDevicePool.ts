@@ -114,6 +114,14 @@ const ADAPTIVE_LIMIT_CAPS: Readonly<Record<string, number>> = Object.freeze({
   // compile their pipeline. WebGPU spec allows up to 16.
   maxVertexBuffers: 16,
   maxVertexAttributes: 30,
+  // High-density geometry — e.g. the 5k-instance stress scene whose
+  // WebGL-compatibility vertex buffer (`WebGLStubBuffer`) regrows past the
+  // 256 MB spec default — needs a single buffer larger than the default
+  // `maxBufferSize`. Opt up to the 2 GB adapter ceiling so buffer creation
+  // doesn't throw "Buffer size … exceeds the max buffer size limit". A high
+  // ceiling costs nothing (it's a cap, not an allocation); the negotiator
+  // still requests `min(adapter.maxBufferSize, cap)`.
+  maxBufferSize: 2147483648,
 });
 
 /**
@@ -131,6 +139,7 @@ const SPEC_DEFAULT_LIMITS: Readonly<Record<string, number>> = Object.freeze({
   maxSamplersPerShaderStage: 16,
   maxVertexBuffers: 8,
   maxVertexAttributes: 16,
+  maxBufferSize: 268435456,
 });
 
 /**
