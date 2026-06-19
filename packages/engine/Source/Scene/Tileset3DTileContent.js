@@ -8,9 +8,7 @@ import destroyObject from "../Core/destroyObject.js";
  * Implements the {@link Cesium3DTileContent} interface.
  * </p>
  *
- * @alias Tileset3DTileContent
- * @constructor
- *
+ * @implements Cesium3DTileContent
  * @private
  */
 class Tileset3DTileContent {
@@ -25,38 +23,6 @@ class Tileset3DTileContent {
     this._group = undefined;
 
     this._ready = false;
-  }
-
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Tileset3DTileContent</code>
-   * always returns <code>false</code> since a tile of this type does not have any features.
-   */
-  hasProperty(batchId, name) {
-    return false;
-  }
-
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Tileset3DTileContent</code>
-   * always returns <code>undefined</code> since a tile of this type does not have any features.
-   */
-  getFeature(batchId) {
-    return undefined;
-  }
-
-  applyDebugSettings(enabled, color) {}
-  applyStyle(style) {}
-  update(tileset, frameState) {}
-
-  pick(ray, frameState, result) {
-    return undefined;
-  }
-
-  isDestroyed() {
-    return false;
-  }
-
-  destroy() {
-    return destroyObject(this);
   }
 
   get featuresLength() {
@@ -130,22 +96,54 @@ class Tileset3DTileContent {
   set group(value) {
     this._group = value;
   }
+
+  /**
+   * Creates an instance of Tileset3DTileContent from a parsed JSON object
+   * @param {Cesium3DTileset} tileset
+   * @param {Cesium3DTile} tile
+   * @param {Resource} resource
+   * @param {object} json
+   * @returns {Tileset3DTileContent}
+   */
+  static fromJson(tileset, tile, resource, json) {
+    const content = new Tileset3DTileContent(tileset, tile, resource);
+    content._tileset.loadTileset(content._resource, json, content._tile);
+    content._ready = true;
+
+    return content;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Tileset3DTileContent</code>
+   * always returns <code>false</code> since a tile of this type does not have any features.
+   */
+  hasProperty(batchId, name) {
+    return false;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Tileset3DTileContent</code>
+   * always returns <code>undefined</code> since a tile of this type does not have any features.
+   */
+  getFeature(batchId) {
+    return undefined;
+  }
+
+  applyDebugSettings(enabled, color) {}
+  applyStyle(style) {}
+  update(tileset, frameState) {}
+
+  pick(ray, frameState, result) {
+    return undefined;
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    return destroyObject(this);
+  }
 }
-
-/**
- * Creates an instance of Tileset3DTileContent from a parsed JSON object
- * @param {Cesium3DTileset} tileset
- * @param {Cesium3DTile} tile
- * @param {Resource} resource
- * @param {object} json
- * @returns {Tileset3DTileContent}
- */
-Tileset3DTileContent.fromJson = function (tileset, tile, resource, json) {
-  const content = new Tileset3DTileContent(tileset, tile, resource);
-  content._tileset.loadTileset(content._resource, json, content._tile);
-  content._ready = true;
-
-  return content;
-};
 
 export default Tileset3DTileContent;

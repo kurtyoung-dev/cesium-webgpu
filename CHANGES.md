@@ -1,12 +1,68 @@
 # Change Log
 
-## 1.141 - 2026-05-01
+## 1.143 - 2026-07-01
 
 ### @cesium/engine
 
 #### Fixes :wrench:
 
-- Fix JSDoc for SkyBox.show to correctly declare it as a prototype property for TypeScript compatibility. [#13357](https://github.com/CesiumGS/cesium/pull/13357)
+- Fixed invalid glTF sampler wrap modes causing a `DeveloperError` to be thrown instead of falling back to `TextureWrap.REPEAT`. [#13562](https://github.com/CesiumGS/cesium/pull/13562)
+- Fixed missing `InterpolationAlgorithm` documentation page that was returning a 404. [#13550](https://github.com/CesiumGS/cesium/issues/13550)
+- Fixed `EdgeVisibilityRendering` release test failures. [#13545](https://github.com/CesiumGS/cesium/pull/13545)
+- Fix for `BufferPointCollection` preventing outlineColor from bleeding slightly into the visible area when outlineWidth=0px. [#13543](https://github.com/CesiumGS/cesium/pull/13543)
+- Fixed a bug where callbacks registered with `Scene.updateHeight` could receive positions computed for other tiles, causing clamped entities to show incorrect heights. [#12602](https://github.com/CesiumGS/cesium/issues/12602)
+
+## 1.142 - 2026-06-01
+
+### @cesium/engine
+
+#### Breaking Changes :mega:
+
+- The `boundingVolume` property on `BufferPointCollection`, `BufferPolylineCollection`, and `BufferPolygonCollection` is now defined in world space, not local/model space. [#13477](https://github.com/CesiumGS/cesium/pull/13477)
+
+#### Additions :tada:
+
+- Added `GeoJsonPrimitive` for loading GeoJSON directly into `BufferPrimitiveCollection`s, bypassing the entity/DataSource layer for significantly improved performance with large datasets. [#13505](https://github.com/CesiumGS/cesium/pull/13505)
+- Added `MVTDataProvider` for loading Mapbox Vector Tiles (MVT) directly into CesiumJS as 3D Tiles. Supports per-feature styling via `Cesium3DTileStyle`, feature picking with metadata (`getProperty`), and automatic property table encoding via `EXT_structural_metadata`. [#13404](https://github.com/CesiumGS/cesium/pull/13404)
+- Added `blendOption` constructor parameter to `BufferPointCollection`, `BufferPolylineCollection`, and `BufferPolygonCollection`, supporting `BufferPrimitiveMaterial#color.alpha`. Added support for `BufferPrimitiveMaterial#outlineColor.alpha` to `BufferPointCollection`. [#13384](https://github.com/CesiumGS/cesium/pull/13384)
+- Added experimental support for `EXT_mesh_polygon` draft glTF extension and `3DTILES_content_gltf_vector` draft 3D Tiles extension. [#13478](https://github.com/CesiumGS/cesium/pull/13478)
+- Added `boundingVolume` constructor parameter to `BufferPointCollection`, `BufferPolylineCollection`, and `BufferPolygonCollection`. For larger animated collections, providing a precomputed bounding volume can eliminate the performance cost of automatically updating the bounding volume frequently. [#13477](https://github.com/CesiumGS/cesium/pull/13477)
+- Added `EdgeDisplayMode` enum and `edgeDisplayMode` property to `Model` and `Cesium3DTileset` for controlling how edges from the [`EXT_mesh_primitive_edge_visibility`](https://github.com/KhronosGroup/glTF/pull/2479) glTF extension are rendered. Supports three modes: `SURFACES_ONLY`, `SURFACES_AND_EDGES`, and `EDGES_ONLY` (CAD-style wireframe rendering). [#13192](https://github.com/CesiumGS/cesium/pull/13192)
+- Added support for multiple key modifiers in `ScreenSpaceEventHandler.setInputAction`. [#13307](https://github.com/CesiumGS/cesium/pull/13307)
+
+#### Fixes :wrench:
+
+- Fixed a bug causing `BufferPointCollection` to not update after changes to point positions. [#13465](https://github.com/CesiumGS/cesium/pull/13465)
+- Improved the default voxel shader for common metadata types. [#13517](https://github.com/CesiumGS/cesium/pull/13517)
+
+## 1.141 - 2026-05-01
+
+### cesium
+
+#### Breaking Changes :mega:
+
+- Bumped minimum required Node version to `22.0.0`
+
+### @cesium/engine
+
+#### Breaking Changes :mega:
+
+- `BufferPrimitiveCollection` properties `modelMatrix`, `boundingVolume`, and `boundingVolumeWC` are now readonly. They may be modified, but not reassigned. [#13448](https://github.com/CesiumGS/cesium/pull/13448)
+
+#### Additions :tada:
+
+- Added support for properties (EXT_structural_metadata) in vector tilesets. [#13426](https://github.com/CesiumGS/cesium/pull/13426)
+- Added a new lint step, `npm run sg-scan`, to detect regressions related to JSDoc syntax and type definitions. [#13377](https://github.com/CesiumGS/cesium/pull/13377)
+
+#### Fixes :wrench:
+
+- Fixed a `DeveloperError` thrown when loading 3D tiles containing degenerate (zero-area) triangles with edge visibility data. [#13421](https://github.com/CesiumGS/cesium/pull/13421)
+- Refactored `pickModel` to use shared util `ModelReader`, reducing duplicated scene-graph walking and vertex-reading logic. [#13433](https://github.com/CesiumGS/cesium/pull/13433)
+- Fixed lighting affecting `EquirectangularPanorama`. [#13369](https://github.com/CesiumGS/cesium/pull/13369)
+- Fixed stale `showsUpdated` state persisting when entities are removed from ground primitive batches. [#13366](https://github.com/CesiumGS/cesium/pull/13366)
+- Fixed incorrect matrix multiplication for non worldspace instance transforms in `pickModel`. [#13433](https://github.com/CesiumGS/cesium/pull/13433)
+- Fixed incorrect argument order in `ModelReader.octDecode` for `AttributeCompression.octDecodeInRange` and `Cartesian3.pack` calls. [#13433](https://github.com/CesiumGS/cesium/pull/13433)
+- Fix JSDoc for `SkyBox.show` to correctly declare it as a prototype property for TypeScript compatibility. [#13357](https://github.com/CesiumGS/cesium/pull/13357)
 
 ## 1.140 - 2026-04-01
 
@@ -20,6 +76,7 @@
 
 - Added experimental, performance-focused vector primitive APIs: `BufferPointCollection`, `BufferPolylineCollection`, and `BufferPolygonCollection`. [#13212](https://github.com/CesiumGS/cesium/pull/13212)
 - Added support for Reality Data of type `ITwinPlatform.RealityDataType.GaussianSplat3DTiles` to `ITwinData.createTilesetForRealityDataId`. [#13208](https://github.com/CesiumGS/cesium/pull/13208)
+- Added the ability to pass `OffscreenCanvas` as `ImageryTypes`. [#13297](https://github.com/CesiumGS/cesium/pull/13297)
 - Added GetFeatureInfo support to `WebMapTileServiceImageryProvider`, enabling `WebMapTileServiceImageryProvider.pickFeatures` for both KVP and RESTful WMTS services. New class parameters include `enablePickFeatures`, `getFeatureInfoFormats`, `getFeatureInfoUrl`, and `getFeatureInfoParameters`. [#13196](https://github.com/CesiumGS/cesium/pull/13196)
 - Added limited support (via downcasting) for double-precision metadata types in custom shaders. [#13323](https://github.com/CesiumGS/cesium/pull/13323)
 - Added a new experimental property `PathGraphics.relativeTo` which allows entity `PathGraphics` to be displayed in a reference frame relative to another entity, or a different reference frame than the entity's `Position.ReferenceFrame`. [#13223](https://github.com/CesiumGS/cesium/pull/13223)

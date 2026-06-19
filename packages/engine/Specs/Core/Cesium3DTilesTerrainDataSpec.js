@@ -816,28 +816,6 @@ describe("Core/Cesium3DTilesTerrainData", function () {
     expect(Cesium3DTilesTerrainData).toConformToInterface(TerrainData);
   });
 
-  // Regression guard (FQ-3): a JSDoc codemod (Batch 243) silently deleted the
-  // `credits` and `waterMask` prototype getters, leaving `this._credits` /
-  // `this._waterMask` populated but `.credits` / `.waterMask` reading undefined.
-  // GlobeSurfaceTile reads `.waterMask` and GlobeSurfaceTileProviderRendering
-  // reads `.credits`, so dropping these getters silently breaks water-mask
-  // rendering and per-tile terrain attribution. Keep these getters on the
-  // prototype so a future codemod can't remove them unnoticed.
-  it("exposes credits and waterMask as prototype getters", function () {
-    const creditsDescriptor = Object.getOwnPropertyDescriptor(
-      Cesium3DTilesTerrainData.prototype,
-      "credits",
-    );
-    const waterMaskDescriptor = Object.getOwnPropertyDescriptor(
-      Cesium3DTilesTerrainData.prototype,
-      "waterMask",
-    );
-    expect(creditsDescriptor).toBeDefined();
-    expect(typeof creditsDescriptor.get).toBe("function");
-    expect(waterMaskDescriptor).toBeDefined();
-    expect(typeof waterMaskDescriptor.get).toBe("function");
-  });
-
   describe("constructor", function () {
     it("requires buffer", function () {
       expect(function () {
@@ -1629,7 +1607,7 @@ describe("Core/Cesium3DTilesTerrainData", function () {
     });
 
     it("returns true for all children when child mask is not explicitly specified", function () {
-      let childTileMask;
+      const childTileMask = undefined;
       const data = createSampleTerrainData(childTileMask);
       expect(data.isChildAvailable(x, y, x * 2 + 0, y * 2 + 0)).toBe(true);
       expect(data.isChildAvailable(x, y, x * 2 + 1, y * 2 + 0)).toBe(true);

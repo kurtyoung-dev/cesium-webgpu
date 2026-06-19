@@ -9,9 +9,7 @@ import DeveloperError from "../Core/DeveloperError.js";
  * Implements the {@link Cesium3DTileContent} interface.
  * </p>
  *
- * @alias Empty3DTileContent
- * @constructor
- *
+ * @implements Cesium3DTileContent
  * @private
  */
 class Empty3DTileContent {
@@ -20,38 +18,6 @@ class Empty3DTileContent {
     this._tile = tile;
 
     this.featurePropertiesDirty = false;
-  }
-
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Empty3DTileContent</code>
-   * always returns <code>false</code> since a tile of this type does not have any features.
-   */
-  hasProperty(batchId, name) {
-    return false;
-  }
-
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Empty3DTileContent</code>
-   * always returns <code>undefined</code> since a tile of this type does not have any features.
-   */
-  getFeature(batchId) {
-    return undefined;
-  }
-
-  applyDebugSettings(enabled, color) {}
-  applyStyle(style) {}
-  update(tileset, frameState) {}
-
-  pick(ray, frameState, result) {
-    return undefined;
-  }
-
-  isDestroyed() {
-    return false;
-  }
-
-  destroy() {
-    return destroyObject(this);
   }
 
   get featuresLength() {
@@ -128,6 +94,38 @@ class Empty3DTileContent {
     //>>includeStart('debug', pragmas.debug);
     throw new DeveloperError("Empty3DTileContent cannot have group metadata");
     //>>includeEnd('debug');
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Empty3DTileContent</code>
+   * always returns <code>false</code> since a tile of this type does not have any features.
+   */
+  hasProperty(batchId, name) {
+    return false;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Empty3DTileContent</code>
+   * always returns <code>undefined</code> since a tile of this type does not have any features.
+   */
+  getFeature(batchId) {
+    return undefined;
+  }
+
+  applyDebugSettings(enabled, color) {}
+  applyStyle(style) {}
+  update(tileset, frameState) {}
+
+  pick(ray, frameState, result) {
+    return undefined;
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    return destroyObject(this);
   }
 }
 

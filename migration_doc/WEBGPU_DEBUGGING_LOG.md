@@ -24,6 +24,18 @@
 
 ---
 
+## Upstream v1.142 Merge — "globe-black" was a PROBE ARTIFACT + a latent clustered-lighting render-pass leak (2026-06-17)
+
+**Context:** During the supervised v1.141–1.143 upstream merge, the WebGPU default-CesiumViewer globe appeared BLACK in an ad-hoc `probe-globe-check.mjs`. A long investigation chased it as a merge regression (Matrix4 depth-graft, render-flow, depth-range, clustered-lighting, Hi-Z, log-depth, even a pre-merge worktree bisect — every commit built black).
+
+**Root cause — NOT a real bug (probe artifact):** `CesiumViewer?renderer=webgpu` runs with `scene.requestRenderMode = true` (the CesiumViewer default). In that mode `Scene.render()` is a **no-op unless a render is requested**, so the probe's manual `scene.render()` loop never actually rendered → black canvas. It reproduced at *every* commit (pre-merge HEAD 314, 305, 248, 212, merge) because every probe shared the same flaw. The canonical gate `probe-globe-bindgroup-cache.mjs` sets `scene.requestRenderMode = false` AND waits for the async globe pipelines to materialize (not just `tilesLoaded`) — it **PASSES on the merge** (nonBlack 30.9%, 349 color buckets). With `requestRenderMode=false` + a wait-until-painted loop, the same default-viewer probe renders at nonBlack 23.7% (globe screenshot confirmed). **The merge never broke the globe.**
+
+**PROBE RULE (load-bearing):** Any WebGPU globe/scene probe driving `CesiumViewer` MUST set `scene.requestRenderMode = false` before the manual `scene.render()` loop, AND wait for the globe pipelines to materialize (poll non-black, or the `__webgpuGlobeBindGroupCache` request counter) — NOT just `globe.tilesLoaded`, which is vacuously true during async imagery init + pipeline materialization. Validate any new globe probe against `probe-globe-bindgroup-cache.mjs` before trusting a black result.
+
+**Latent bug surfaced (real, deferred — NOT in the merge):** `WebGPUSceneRendererClusteredLighting.ts#dispatchClusteredLighting` (Batch 310 extraction) calls `context.endCurrentRenderPass()` unconditionally every frame — even when `scene.clusteredLightingEnabled === false` (the default) — then relies on `resumeDefaultRenderPass()` to restore it. The `inverseProjection`/`view`-missing early-return ("frame state not ready", ~line 200) returns WITHOUT resuming, unlike the no-encoder guard which does. When clustered lighting is ENABLED and frame state is momentarily absent (e.g. an empty pick pass), this leaks the ended pass → `WebGPUSceneRenderer.ts#executeWebGPUCommand`'s `if (renderPass)` guard silently skips every subsequent draw → whole-scene-black, no validation error. Disabled-by-default so latent. **Fix (deferred):** early-return before `endCurrentRenderPass` when disabled (no compute to dispatch → don't touch the pass) and `resumeDefaultRenderPass()` before the frame-state early-return. Tracked for a follow-up batch.
+
+---
+
 ## Batch 314 — TS-convert WebGPUStarFieldRenderer (NEW-TS-CONVERT-JS-RENDERERS, first slice) (2026-06-16)
 
 **Item:** NEW-TS-CONVERT-JS-RENDERERS — convert one substantial JS WebGPU renderer to TypeScript with ZERO behavior change. Model renderer (`WebGPUModelRenderer.js`, 3802 LOC) was too entangled for a single safe zero-behavior pass; converted the freshly-landed `WebGPUStarFieldRenderer` (622 LOC, Batch 313) instead — self-contained, module-level functions (no `@private` cross-module method trap), all imported deps already TS.

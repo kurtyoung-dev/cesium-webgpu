@@ -1,7 +1,24 @@
+// @ts-check
+
 import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
 import PrimitiveType from "../Core/PrimitiveType.js";
 
+/** @import Context from "./Context.js"; */
+/** @import Framebuffer from "./Framebuffer.js"; */
+/** @import Matrix4 from "../Core/Matrix4.js"; */
+/** @import OrientedBoundingBox from "../Core/OrientedBoundingBox.js"; */
+/** @import Pass from "./Pass.js"; */
+/** @import PassState from "./PassState.js"; */
+/** @import PickedMetadataInfo from "../Scene/PickedMetadataInfo.js"; */
+/** @import RenderState from "./RenderState.js"; */
+/** @import ShaderProgram from "./ShaderProgram.js"; */
+/** @import VertexArray from "./VertexArray.js"; */
+
+/**
+ * @enum {number}
+ * @ignore
+ */
 const Flags = {
   CULL: 1,
   OCCLUDE: 2,
@@ -13,41 +30,79 @@ const Flags = {
   DEPTH_FOR_TRANSLUCENT_CLASSIFICATION: 128,
 };
 
-function hasFlag(command, flag) {
-  return (command._flags & flag) === flag;
-}
-
-function setFlag(command, flag, value) {
-  if (value) {
-    command._flags |= flag;
-  } else {
-    command._flags &= ~flag;
-  }
-}
+/**
+ * @typedef {object} DrawCommandOptions
+ * @property {object} [boundingVolume]
+ * @property {OrientedBoundingBox} [orientedBoundingBox]
+ * @property {Matrix4} [modelMatrix]
+ * @property {PrimitiveType} [primitiveType=PrimitiveType.TRIANGLES]
+ * @property {VertexArray} [vertexArray]
+ * @property {number} [count]
+ * @property {number} [offset]
+ * @property {number} [instanceCount]
+ * @property {ShaderProgram} [shaderProgram]
+ * @property {object} [uniformMap]
+ * @property {RenderState} [renderState]
+ * @property {Framebuffer} [framebuffer]
+ * @property {Pass} [pass]
+ * @property {object} [owner]
+ * @property {string} [pickId]
+ * @property {boolean} [pickMetadataAllowed=false]
+ * @property {boolean} [cull=true]
+ * @property {boolean} [occlude=true]
+ * @property {boolean} [executeInClosestFrustum=false]
+ * @property {boolean} [debugShowBoundingVolume=false]
+ * @property {boolean} [castShadows=false]
+ * @property {boolean} [receiveShadows=false]
+ * @property {boolean} [pickOnly=false]
+ * @property {boolean} [depthForTranslucentClassification=false]
+ * @property {number} [sortKey]
+ * @property {number} [sortLayer]
+ * @property {number} [sortPriority]
+ * @property {number} [materialSortId]
+ * @property {number} [visibilityMask]
+ * @property {boolean} [isTransmissive]
+ *
+ * @ignore
+ */
 
 /**
  * Represents a command to the renderer for drawing.
  *
- * @alias DrawCommand
  * @private
  */
 class DrawCommand {
-  constructor(options) {
-    options = options ?? Frozen.EMPTY_OBJECT;
-
+  /**
+   * @param {DrawCommandOptions} [options]
+   */
+  constructor(options = Frozen.EMPTY_OBJECT) {
+    /** @private */
     this._boundingVolume = options.boundingVolume;
+    /** @private */
     this._orientedBoundingBox = options.orientedBoundingBox;
+    /** @private */
     this._modelMatrix = options.modelMatrix;
+    /** @private */
     this._primitiveType = options.primitiveType ?? PrimitiveType.TRIANGLES;
+    /** @private */
     this._vertexArray = options.vertexArray;
+    /** @private */
     this._count = options.count;
+    /** @private */
     this._offset = options.offset ?? 0;
+    /** @private */
     this._instanceCount = options.instanceCount ?? 0;
+    /** @private */
     this._shaderProgram = options.shaderProgram;
+    /** @private */
     this._uniformMap = options.uniformMap;
+    /** @private */
     this._renderState = options.renderState;
+    /** @private */
     this._framebuffer = options.framebuffer;
+    /** @private */
     this._pass = options.pass;
+    /** @private */
     this._owner = options.owner;
 
     /**
@@ -101,9 +156,16 @@ class DrawCommand {
      */
     this.isTransmissive = options.isTransmissive ?? false;
 
+    /** @private */
     this._debugOverlappingFrustums = 0;
+    /** @private */
     this._pickId = options.pickId;
+    /** @private */
     this._pickMetadataAllowed = options.pickMetadataAllowed === true;
+    /**
+     * @type {PickedMetadataInfo|undefined}
+     * @private
+     */
     this._pickedMetadataInfo = undefined;
 
     // Set initial flags.
@@ -502,7 +564,7 @@ class DrawCommand {
 
   /**
    * Used to implement Scene.debugShowFrustums.
-   * @private
+   * @ignore
    */
   get debugOverlappingFrustums() {
     return this._debugOverlappingFrustums;
@@ -600,16 +662,9 @@ class DrawCommand {
   }
 
   /**
-   * Executes the draw command.
-   *
-   * @param {Context} context The renderer context in which to draw.
-   * @param {PassState} [passState] The state for the current render pass.
-   */
-  execute(context, passState) {
-    context.draw(this, passState);
-  }
-
-  /**
+   * @param {DrawCommand} command
+   * @param {DrawCommand} result
+   * @returns {DrawCommand}
    * @private
    */
   static shallowClone(command, result) {
@@ -650,6 +705,43 @@ class DrawCommand {
     result.lastDirtyTime = 0;
 
     return result;
+  }
+
+  /**
+   * Executes the draw command.
+   *
+   * @param {Context} context The renderer context in which to draw.
+   * @param {PassState} [passState] The state for the current render pass.
+   */
+  execute(context, passState) {
+    context.draw(
+      /** @type {CesiumDrawCommand} */ (/** @type {unknown} */ (this)),
+      passState,
+    );
+  }
+}
+
+/**
+ * @param {DrawCommand} command
+ * @param {Flags} flag
+ * @returns {boolean}
+ * @ignore
+ */
+function hasFlag(command, flag) {
+  return (command._flags & flag) === flag;
+}
+
+/**
+ * @param {DrawCommand} command
+ * @param {Flags} flag
+ * @param {boolean} value
+ * @ignore
+ */
+function setFlag(command, flag, value) {
+  if (value) {
+    command._flags |= flag;
+  } else {
+    command._flags &= ~flag;
   }
 }
 

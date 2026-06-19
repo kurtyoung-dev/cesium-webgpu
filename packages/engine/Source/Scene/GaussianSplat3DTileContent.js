@@ -9,14 +9,15 @@ import ModelUtility from "./Model/ModelUtility.js";
 import VertexAttributeSemantic from "./VertexAttributeSemantic.js";
 import deprecationWarning from "../Core/deprecationWarning.js";
 
+/** @import Cesium3DTileContent from "./Cesium3DTileContent.js"; */
+
 /**
  * Represents the contents of a glTF or glb using the {@link https://github.com/CesiumGS/glTF/tree/draft-splat-spz/extensions/2.0/Khronos/KHR_gaussian_splatting | KHR_gaussian_splatting} and {@link https://github.com/CesiumGS/glTF/tree/draft-splat-spz/extensions/2.0/Khronos/KHR_gaussian_splatting_compression_spz_2 | KHR_gaussian_splatting_compression_spz_2} extensions.
  * <p>
  * Implements the {@link Cesium3DTileContent} interface.
  * </p>
  *
- * @alias GaussianSplat3DTileContent
- * @constructor
+ * @implements Cesium3DTileContent
  */
 class GaussianSplat3DTileContent {
   constructor(loader, tileset, tile, resource) {
@@ -120,6 +121,339 @@ class GaussianSplat3DTileContent {
      * @private
      */
     this._lastSplatTransform = undefined;
+  }
+
+  /**
+   * Performs checks to ensure that the provided tileset has the Gaussian Splatting extensions.
+   *
+   * @param {Cesium3DTileset} tileset The tileset to check for the extensions.
+   * @returns {boolean} Returns <code>true</code> if the necessary extensions are included in the tileset.
+   * @static
+   */
+  static tilesetRequiresGaussianSplattingExt(tileset) {
+    let hasGaussianSplatExtension = false;
+    if (tileset.isGltfExtensionRequired instanceof Function) {
+      hasGaussianSplatExtension =
+        tileset.isGltfExtensionRequired("KHR_gaussian_splatting") &&
+        tileset.isGltfExtensionRequired(
+          "KHR_gaussian_splatting_compression_spz_2",
+        );
+
+      if (
+        tileset.isGltfExtensionRequired("KHR_spz_gaussian_splats_compression")
+      ) {
+        deprecationWarning(
+          "KHR_spz_gaussian_splats_compression",
+          "Support for the original KHR_spz_gaussian_splats_compression extension has been removed in favor " +
+            "of the up to date KHR_gaussian_splatting and KHR_gaussian_splatting_compression_spz_2 extensions" +
+            "\n\nPlease retile your tileset with the KHR_gaussian_splatting and " +
+            "KHR_gaussian_splatting_compression_spz_2 extensions.",
+        );
+      }
+    }
+
+    return hasGaussianSplatExtension;
+  }
+
+  /**
+   * Gets the number of features in the tile. Currently this is always zero.
+   *
+   *
+   * @type {number}
+   * @readonly
+   */
+  get featuresLength() {
+    return 0;
+  }
+
+  /**
+   * Equal to the number of Gaussian splats in the tile. Each splat is represented by a median point and a set of attributes, so we can
+   * treat this as the number of points in the tile.
+   *
+   *
+   * @type {number}
+   * @readonly
+   */
+  get pointsLength() {
+    return this.gltfPrimitive.attributes[0].count;
+  }
+
+  /**
+   * Gets the number of triangles in the tile. Currently this is always zero because Gaussian splats are not represented as triangles in the tile content.
+   * <p>
+   *
+   * @type {number}
+   * @readonly
+   */
+  get trianglesLength() {
+    return 0;
+  }
+
+  /**
+   * The number of bytes used by the geometry attributes of this content.
+   * <p>
+   * @type {number}
+   * @readonly
+   */
+  get geometryByteLength() {
+    return 0;
+  }
+
+  /**
+   * The number of bytes used by the textures of this content.
+   * <p>
+   * @type {number}
+   * @readonly
+   */
+  get texturesByteLength() {
+    const primitive = this._tileset?.gaussianSplatPrimitive;
+    if (!defined(primitive)) {
+      return 0;
+    }
+    const texture = primitive.gaussianSplatTexture;
+    const selectedTileLength = primitive.selectedTileLength;
+    if (!defined(texture) || selectedTileLength === 0) {
+      return 0;
+    }
+    return texture.sizeInBytes / selectedTileLength;
+  }
+
+  /**
+   * Gets the amount of memory used by the batch table textures and any binary
+   * metadata properties not accounted for in geometryByteLength or
+   * texturesByteLength
+   * <p>
+   *
+   * @type {number}
+   * @readonly
+   */
+  get batchTableByteLength() {
+    return 0;
+  }
+
+  /**
+   * Gets the array of {@link Cesium3DTileContent} objects for contents that contain other contents, such as composite tiles. The inner contents may in turn have inner contents, such as a composite tile that contains a composite tile.
+   *
+   * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/TileFormats/Composite|Composite specification}
+   *
+   *
+   * @type {Array}
+   * @readonly
+   */
+  get innerContents() {
+    return undefined;
+  }
+
+  /**
+   * Returns true when the tile's content is ready to render; otherwise false
+   *
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  get ready() {
+    return this._ready;
+  }
+
+  /**
+   * Returns true when the tile's content is transformed to world coordinates; otherwise false
+   * <p>
+   * @type {boolean}
+   * @readonly
+   */
+  get transformed() {
+    return this._transformed;
+  }
+
+  /**
+   * The tileset that this content belongs to.
+   * <p>
+   * @type {Cesium3DTileset}
+   * @readonly
+   */
+  get tileset() {
+    return this._tileset;
+  }
+
+  /**
+   * The tile that this content belongs to.
+   * <p>
+   * @type {Cesium3DTile}
+   * @readonly
+   */
+  get tile() {
+    return this._tile;
+  }
+
+  /**
+   * The resource that this content was loaded from.
+   * <p>
+   * @type {string}
+   * @readonly
+   */
+  get url() {
+    return this._resource.getUrlComponent(true);
+  }
+
+  /**
+   * Gets the batch table for this content.
+   * <p>
+   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
+   * not part of the public Cesium API.
+   * </p>
+   *
+   * @type {Cesium3DTileBatchTable}
+   * @readonly
+   *
+   * @private
+   */
+  get batchTable() {
+    return undefined;
+  }
+
+  /**
+   * Gets the metadata for this content, whether it is available explicitly or via
+   * implicit tiling. If there is no metadata, this property should be undefined.
+   * <p>
+   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
+   * not part of the public Cesium API.
+   * </p>
+   *
+   * @type {ImplicitMetadataView|undefined}
+   *
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  get metadata() {
+    return this._metadata;
+  }
+
+  set metadata(value) {
+    this._metadata = value;
+  }
+
+  /**
+   * Gets the group for this content if the content has metadata (3D Tiles 1.1) or
+   * if it uses the <code>3DTILES_metadata</code> extension. If neither are present,
+   * this property should be undefined.
+   * <p>
+   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
+   * not part of the public Cesium API.
+   * </p>
+   *
+   * @type {Cesium3DContentGroup|undefined}
+   *
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  get group() {
+    return this._group;
+  }
+
+  set group(value) {
+    this._group = value;
+  }
+
+  /**
+   * Get the transformed positions of this tile's Gaussian splats.
+   * @type {undefined|Float32Array}
+   * @private
+   */
+  get positions() {
+    return this._positions;
+  }
+
+  /**
+   * Get the transformed rotations of this tile's Gaussian splats.
+   * @type {undefined|Float32Array}
+   * @private
+   */
+  get rotations() {
+    return this._rotations;
+  }
+
+  /**
+   * Get the transformed scales of this tile's Gaussian splats.
+   * @type {undefined|Float32Array}
+   * @private
+   */
+  get scales() {
+    return this._scales;
+  }
+
+  /**
+   * The number of spherical harmonic coefficients used for the Gaussian splats.
+   * @type {number}
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  get sphericalHarmonicsCoefficientCount() {
+    return this._sphericalHarmonicsCoefficientCount;
+  }
+
+  /**
+   * The degree of the spherical harmonics used for the Gaussian splats.
+   * @type {number}
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  get sphericalHarmonicsDegree() {
+    return this._sphericalHarmonicsDegree;
+  }
+
+  /**
+   * The packed spherical harmonic data for the Gaussian splats for use a shader or texture.
+   * @type {number}
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  get packedSphericalHarmonicsData() {
+    return this._packedSphericalHarmonicsData;
+  }
+
+  /**
+   * Creates a new instance of {@link GaussianSplat3DTileContent} from a glTF or glb resource.
+   *
+   * @param {Cesium3DTileset} tileset - The tileset that this content belongs to.
+   * @param {Cesium3DTile} tile - The tile that this content belongs to.
+   * @param {Resource|string} resource - The resource or URL of the glTF or glb file.
+   * @param {object|Uint8Array} gltf - The glTF JSON object or a Uint8Array containing the glb binary data.
+   * @returns {GaussianSplat3DTileContent} A new GaussianSplat3DTileContent instance.
+   * @throws {RuntimeError} If the glTF or glb fails to load.
+   * @private
+   */
+  static async fromGltf(tileset, tile, resource, gltf) {
+    const basePath = resource;
+    const baseResource = Resource.createIfNeeded(basePath);
+
+    const loaderOptions = {
+      releaseGltfJson: false,
+      upAxis: Axis.Y,
+      forwardAxis: Axis.Z,
+    };
+
+    if (defined(gltf.asset)) {
+      loaderOptions.gltfJson = gltf;
+      loaderOptions.baseResource = baseResource;
+      loaderOptions.gltfResource = baseResource;
+    } else if (gltf instanceof Uint8Array) {
+      loaderOptions.typedArray = gltf;
+      loaderOptions.baseResource = baseResource;
+      loaderOptions.gltfResource = baseResource;
+    } else {
+      loaderOptions.gltfResource = Resource.createIfNeeded(gltf);
+    }
+
+    const loader = new GltfLoader(loaderOptions);
+
+    try {
+      await loader.load();
+    } catch (error) {
+      loader.destroy();
+      throw new RuntimeError(`Failed to load glTF: ${error.message}`);
+    }
+
+    return new GaussianSplat3DTileContent(loader, tileset, tile, resource);
   }
 
   /**
@@ -294,297 +628,7 @@ class GaussianSplat3DTileContent {
 
     return destroyObject(this);
   }
-
-  /**
-   * Gets the number of features in the tile. Currently this is always zero.
-   *
-   *
-   * @type {number}
-   * @readonly
-   */
-  get featuresLength() {
-    return 0;
-  }
-
-  /**
-   * Equal to the number of Gaussian splats in the tile. Each splat is represented by a median point and a set of attributes, so we can
-   * treat this as the number of points in the tile.
-   *
-   *
-   * @type {number}
-   * @readonly
-   */
-  get pointsLength() {
-    return this.gltfPrimitive.attributes[0].count;
-  }
-
-  /**
-   * Gets the number of triangles in the tile. Currently this is always zero because Gaussian splats are not represented as triangles in the tile content.
-   * <p>
-   *
-   * @type {number}
-   * @readonly
-   */
-  get trianglesLength() {
-    return 0;
-  }
-
-  /**
-   * The number of bytes used by the geometry attributes of this content.
-   * <p>
-   * @type {number}
-   * @readonly
-   */
-  get geometryByteLength() {
-    return 0;
-  }
-
-  /**
-   * The number of bytes used by the textures of this content.
-   * <p>
-   * @type {number}
-   * @readonly
-   */
-  get texturesByteLength() {
-    const primitive = this._tileset?.gaussianSplatPrimitive;
-    if (!defined(primitive)) {
-      return 0;
-    }
-    const texture = primitive.gaussianSplatTexture;
-    const selectedTileLength = primitive.selectedTileLength;
-    if (!defined(texture) || selectedTileLength === 0) {
-      return 0;
-    }
-    return texture.sizeInBytes / selectedTileLength;
-  }
-
-  /**
-   * Gets the amount of memory used by the batch table textures and any binary
-   * metadata properties not accounted for in geometryByteLength or
-   * texturesByteLength
-   * <p>
-   *
-   * @type {number}
-   * @readonly
-   */
-  get batchTableByteLength() {
-    return 0;
-  }
-
-  /**
-   * Gets the array of {@link Cesium3DTileContent} objects for contents that contain other contents, such as composite tiles. The inner contents may in turn have inner contents, such as a composite tile that contains a composite tile.
-   *
-   * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/TileFormats/Composite|Composite specification}
-   *
-   *
-   * @type {Array}
-   * @readonly
-   */
-  get innerContents() {
-    return undefined;
-  }
-
-  /**
-   * Returns true when the tile's content is ready to render; otherwise false
-   *
-   *
-   * @type {boolean}
-   * @readonly
-   */
-  get ready() {
-    return this._ready;
-  }
-
-  /**
-   * Returns true when the tile's content is transformed to world coordinates; otherwise false
-   * <p>
-   * @type {boolean}
-   * @readonly
-   */
-  get transformed() {
-    return this._transformed;
-  }
-
-  /**
-   * The tileset that this content belongs to.
-   * <p>
-   * @type {Cesium3DTileset}
-   * @readonly
-   */
-  get tileset() {
-    return this._tileset;
-  }
-
-  /**
-   * The tile that this content belongs to.
-   * <p>
-   * @type {Cesium3DTile}
-   * @readonly
-   */
-  get tile() {
-    return this._tile;
-  }
-
-  /**
-   * The resource that this content was loaded from.
-   * <p>
-   * @type {Resource}
-   * @readonly
-   */
-  get url() {
-    return this._resource.getUrlComponent(true);
-  }
-
-  /**
-   * Gets the batch table for this content.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {Cesium3DTileBatchTable}
-   * @readonly
-   *
-   * @private
-   */
-  get batchTable() {
-    return undefined;
-  }
-
-  /**
-   * Gets the metadata for this content, whether it is available explicitly or via
-   * implicit tiling. If there is no metadata, this property should be undefined.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {ImplicitMetadataView|undefined}
-   *
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  get metadata() {
-    return this._metadata;
-  }
-
-  set metadata(value) {
-    this._metadata = value;
-  }
-
-  /**
-   * Gets the group for this content if the content has metadata (3D Tiles 1.1) or
-   * if it uses the <code>3DTILES_metadata</code> extension. If neither are present,
-   * this property should be undefined.
-   * <p>
-   * This is used to implement the <code>Cesium3DTileContent</code> interface, but is
-   * not part of the public Cesium API.
-   * </p>
-   *
-   * @type {Cesium3DContentGroup|undefined}
-   *
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  get group() {
-    return this._group;
-  }
-
-  set group(value) {
-    this._group = value;
-  }
-
-  /**
-   * Get the transformed positions of this tile's Gaussian splats.
-   * @type {undefined|Float32Array}
-   * @private
-   */
-  get positions() {
-    return this._positions;
-  }
-
-  /**
-   * Get the transformed rotations of this tile's Gaussian splats.
-   * @type {undefined|Float32Array}
-   * @private
-   */
-  get rotations() {
-    return this._rotations;
-  }
-
-  /**
-   * Get the transformed scales of this tile's Gaussian splats.
-   * @type {undefined|Float32Array}
-   * @private
-   */
-  get scales() {
-    return this._scales;
-  }
-
-  /**
-   * The number of spherical harmonic coefficients used for the Gaussian splats.
-   * @type {number}
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  get sphericalHarmonicsCoefficientCount() {
-    return this._sphericalHarmonicsCoefficientCount;
-  }
-
-  /**
-   * The degree of the spherical harmonics used for the Gaussian splats.
-   * @type {number}
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  get sphericalHarmonicsDegree() {
-    return this._sphericalHarmonicsDegree;
-  }
-
-  /**
-   * The packed spherical harmonic data for the Gaussian splats for use a shader or texture.
-   * @type {number}
-   * @private
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  get packedSphericalHarmonicsData() {
-    return this._packedSphericalHarmonicsData;
-  }
 }
-
-/**
- * Performs checks to ensure that the provided tileset has the Gaussian Splatting extensions.
- *
- * @param {Cesium3DTileset} tileset The tileset to check for the extensions.
- * @returns {boolean} Returns <code>true</code> if the necessary extensions are included in the tileset.
- * @static
- */
-GaussianSplat3DTileContent.tilesetRequiresGaussianSplattingExt = function (
-  tileset,
-) {
-  let hasGaussianSplatExtension = false;
-  if (tileset.isGltfExtensionRequired instanceof Function) {
-    hasGaussianSplatExtension =
-      tileset.isGltfExtensionRequired("KHR_gaussian_splatting") &&
-      tileset.isGltfExtensionRequired(
-        "KHR_gaussian_splatting_compression_spz_2",
-      );
-
-    if (
-      tileset.isGltfExtensionRequired("KHR_spz_gaussian_splats_compression")
-    ) {
-      deprecationWarning(
-        "KHR_spz_gaussian_splats_compression",
-        "Support for the original KHR_spz_gaussian_splats_compression extension has been removed in favor " +
-          "of the up to date KHR_gaussian_splatting and KHR_gaussian_splatting_compression_spz_2 extensions" +
-          "\n\nPlease retile your tileset with the KHR_gaussian_splatting and " +
-          "KHR_gaussian_splatting_compression_spz_2 extensions.",
-      );
-    }
-  }
-
-  return hasGaussianSplatExtension;
-};
 
 function getShAttributePrefix(attribute) {
   const prefix = attribute.startsWith("KHR_gaussian_splatting:")
@@ -730,55 +774,5 @@ function packSphericalHarmonicsData(tileContent) {
   }
   return packedData;
 }
-
-/**
- * Creates a new instance of {@link GaussianSplat3DTileContent} from a glTF or glb resource.
- *
- * @param {Cesium3DTileset} tileset - The tileset that this content belongs to.
- * @param {Cesium3DTile} tile - The tile that this content belongs to.
- * @param {Resource|string} resource - The resource or URL of the glTF or glb file.
- * @param {object|Uint8Array} gltf - The glTF JSON object or a Uint8Array containing the glb binary data.
- * @returns {GaussianSplat3DTileContent} A new GaussianSplat3DTileContent instance.
- * @throws {RuntimeError} If the glTF or glb fails to load.
- * @private
- */
-GaussianSplat3DTileContent.fromGltf = async function (
-  tileset,
-  tile,
-  resource,
-  gltf,
-) {
-  const basePath = resource;
-  const baseResource = Resource.createIfNeeded(basePath);
-
-  const loaderOptions = {
-    releaseGltfJson: false,
-    upAxis: Axis.Y,
-    forwardAxis: Axis.Z,
-  };
-
-  if (defined(gltf.asset)) {
-    loaderOptions.gltfJson = gltf;
-    loaderOptions.baseResource = baseResource;
-    loaderOptions.gltfResource = baseResource;
-  } else if (gltf instanceof Uint8Array) {
-    loaderOptions.typedArray = gltf;
-    loaderOptions.baseResource = baseResource;
-    loaderOptions.gltfResource = baseResource;
-  } else {
-    loaderOptions.gltfResource = Resource.createIfNeeded(gltf);
-  }
-
-  const loader = new GltfLoader(loaderOptions);
-
-  try {
-    await loader.load();
-  } catch (error) {
-    loader.destroy();
-    throw new RuntimeError(`Failed to load glTF: ${error.message}`);
-  }
-
-  return new GaussianSplat3DTileContent(loader, tileset, tile, resource);
-};
 
 export default GaussianSplat3DTileContent;

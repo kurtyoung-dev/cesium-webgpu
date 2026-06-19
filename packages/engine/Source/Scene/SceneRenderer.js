@@ -277,6 +277,24 @@ function performCesium3DTileEdgesPass(scene, passState, frustumCommands) {
   passState.framebuffer = originalFramebuffer;
 }
 
+// EDGES_ONLY 3D-Tile edge rendering: ported from upstream Scene.js during the
+// v1.142 merge (Scene.js was decomposed into this module, so upstream's new
+// direct-edge pass had to be re-homed here). Unlike performCesium3DTileEdgesPass
+// (which renders into the MRT edge framebuffer for compositing), this draws the
+// CESIUM_3D_TILE_EDGES_DIRECT commands straight to the main framebuffer, on top
+// of opaque surfaces — used by Model/Tileset edgeDisplayMode === EDGES_ONLY.
+function performCesium3DTileEdgesDirectPass(scene, passState, frustumCommands) {
+  scene.context.uniformState.updatePass(Pass.CESIUM_3D_TILE_EDGES_DIRECT);
+
+  const commands = frustumCommands.commands[Pass.CESIUM_3D_TILE_EDGES_DIRECT];
+  const commandCount =
+    frustumCommands.indices[Pass.CESIUM_3D_TILE_EDGES_DIRECT];
+
+  for (let j = 0; j < commandCount; ++j) {
+    executeCommand(commands[j], scene, passState);
+  }
+}
+
 /**
  * The core multi-frustum command execution loop. Iterates frustums far-to-near,
  * executing all render passes (globe, terrain classification, 3D tiles, opaque,
@@ -602,6 +620,7 @@ function executeCommands(scene, passState) {
       const opaqueClassificationFramebuffer = passState.framebuffer;
       passState.framebuffer = scene._invertClassification._fbo.framebuffer;
 
+      // Draw normally
       commandCount = performPass(frustumCommands, Pass.CESIUM_3D_TILE);
 
       if (useGlobeDepthFramebuffer) {
@@ -642,6 +661,9 @@ function executeCommands(scene, passState) {
     performVoxelsPass(scene, passState, frustumCommands);
 
     performPass(frustumCommands, Pass.OPAQUE);
+
+    // Draw direct edges (EDGES_ONLY mode) after opaque surfaces
+    performCesium3DTileEdgesDirectPass(scene, passState, frustumCommands);
 
     performGaussianSplatPass(scene, passState, frustumCommands);
 

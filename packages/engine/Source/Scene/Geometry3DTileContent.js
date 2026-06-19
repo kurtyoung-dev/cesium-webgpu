@@ -13,9 +13,7 @@ import Vector3DTileGeometry from "./Vector3DTileGeometry.js";
  * Implements the {@link Cesium3DTileContent} interface.
  * </p>
  *
- * @alias Geometry3DTileContent
- * @constructor
- *
+ * @implements Cesium3DTileContent
  * @private
  */
 class Geometry3DTileContent {
@@ -39,66 +37,6 @@ class Geometry3DTileContent {
     this._ready = false;
 
     initialize(this, arrayBuffer, byteOffset);
-  }
-
-  hasProperty(batchId, name) {
-    return this._batchTable.hasProperty(batchId, name);
-  }
-
-  getFeature(batchId) {
-    //>>includeStart('debug', pragmas.debug);
-    const featuresLength = this.featuresLength;
-    if (!defined(batchId) || batchId < 0 || batchId >= featuresLength) {
-      throw new DeveloperError(
-        `batchId is required and between zero and featuresLength - 1 (${
-          featuresLength - 1
-        }).`,
-      );
-    }
-    //>>includeEnd('debug');
-
-    createFeatures(this);
-    return this._features[batchId];
-  }
-
-  applyDebugSettings(enabled, color) {
-    if (defined(this._geometries)) {
-      this._geometries.applyDebugSettings(enabled, color);
-    }
-  }
-
-  applyStyle(style) {
-    createFeatures(this);
-    if (defined(this._geometries)) {
-      this._geometries.applyStyle(style, this._features);
-    }
-  }
-
-  update(tileset, frameState) {
-    if (defined(this._geometries)) {
-      this._geometries.classificationType = this._tileset.classificationType;
-      this._geometries.debugWireframe = this._tileset.debugWireframe;
-      this._geometries.update(frameState);
-    }
-
-    if (defined(this._batchTable) && this._geometries.ready) {
-      this._batchTable.update(tileset, frameState);
-      this._ready = true;
-    }
-  }
-
-  pick(ray, frameState, result) {
-    return undefined;
-  }
-
-  isDestroyed() {
-    return false;
-  }
-
-  destroy() {
-    this._geometries = this._geometries && this._geometries.destroy();
-    this._batchTable = this._batchTable && this._batchTable.destroy();
-    return destroyObject(this);
   }
 
   get featuresLength() {
@@ -179,6 +117,66 @@ class Geometry3DTileContent {
 
   set group(value) {
     this._group = value;
+  }
+
+  hasProperty(batchId, name) {
+    return this._batchTable.hasProperty(batchId, name);
+  }
+
+  getFeature(batchId) {
+    //>>includeStart('debug', pragmas.debug);
+    const featuresLength = this.featuresLength;
+    if (!defined(batchId) || batchId < 0 || batchId >= featuresLength) {
+      throw new DeveloperError(
+        `batchId is required and between zero and featuresLength - 1 (${
+          featuresLength - 1
+        }).`,
+      );
+    }
+    //>>includeEnd('debug');
+
+    createFeatures(this);
+    return this._features[batchId];
+  }
+
+  applyDebugSettings(enabled, color) {
+    if (defined(this._geometries)) {
+      this._geometries.applyDebugSettings(enabled, color);
+    }
+  }
+
+  applyStyle(style) {
+    createFeatures(this);
+    if (defined(this._geometries)) {
+      this._geometries.applyStyle(style, this._features);
+    }
+  }
+
+  update(tileset, frameState) {
+    if (defined(this._geometries)) {
+      this._geometries.classificationType = this._tileset.classificationType;
+      this._geometries.debugWireframe = this._tileset.debugWireframe;
+      this._geometries.update(frameState);
+    }
+
+    if (defined(this._batchTable) && this._geometries.ready) {
+      this._batchTable.update(tileset, frameState);
+      this._ready = true;
+    }
+  }
+
+  pick(ray, frameState, result) {
+    return undefined;
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    this._geometries = this._geometries && this._geometries.destroy();
+    this._batchTable = this._batchTable && this._batchTable.destroy();
+    return destroyObject(this);
   }
 }
 

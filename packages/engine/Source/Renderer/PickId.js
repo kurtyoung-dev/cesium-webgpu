@@ -1,3 +1,8 @@
+// @ts-check
+
+/** @import Color from "../Core/Color.js"; */
+/** @import {Destroyable} from "../Core/globalTypes.js"; */
+
 /**
  * Represents a unique pick identifier for an object in the scene.
  *
@@ -14,7 +19,9 @@
  * Pick IDs are allocated by {@link GraphicsContext.createPickId} and stored
  * in the base class's `_pickObjects` Map.
  *
+ * @implements {Destroyable}
  * @private
+ * @ignore
  */
 class PickId {
   /**
@@ -28,7 +35,11 @@ class PickId {
   constructor(pickObjects, key, color, pickKinds) {
     this._pickObjects = pickObjects;
     this._pickKinds = pickKinds;
+
+    /** @type {number} */
     this.key = key;
+
+    /** @type {Color} */
     this.color = color;
 
     // Pre-compute normalized RGBA for WebGPU (little-endian RGB encoding)
@@ -55,7 +66,7 @@ class PickId {
    * Remove this pick ID from the map, freeing the association.
    * Deletes from both the target map and the parallel kind map so
    * neither accumulates orphan entries across the scene's lifetime.
-   * @returns {undefined}
+   * @returns {void}
    */
   destroy() {
     this._pickObjects.delete(this.key);

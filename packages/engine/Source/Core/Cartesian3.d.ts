@@ -217,6 +217,8 @@ declare class Cartesian3 {
   static readonly UNIT_X: Cartesian3;
   static readonly UNIT_Y: Cartesian3;
   static readonly UNIT_Z: Cartesian3;
+  /** Cached radiiSquared of the default ellipsoid; written by Ellipsoid.setDefault. */
+  static _ellipsoidRadiiSquared: Cartesian3;
 }
 
 export default Cartesian3;

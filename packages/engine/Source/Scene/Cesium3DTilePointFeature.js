@@ -4,6 +4,19 @@ import defined from "../Core/defined.js";
 import Cesium3DTileFeature from "./Cesium3DTileFeature.js";
 import createBillboardPointCallback from "./createBillboardPointCallback.js";
 
+/** @import Billboard from "./Billboard.js"; */
+/** @import Cesium3DTileContent from "./Cesium3DTileContent.js"; */
+/** @import Cesium3DTileset from "./Cesium3DTileset.js"; */
+/** @import DistanceDisplayCondition from "../Core/DistanceDisplayCondition.js"; */
+/** @import HorizontalOrigin from "./HorizontalOrigin.js"; */
+/** @import Label from "./Label.js"; */
+/** @import NearFarScalar from "../Core/NearFarScalar.js"; */
+/** @import Polyline from "./Polyline.js"; */
+/** @import VerticalOrigin from "./VerticalOrigin.js"; */
+
+/** @ignore */
+const scratchCartographic = new Cartographic();
+
 /**
  * A point feature of a {@link Cesium3DTileset}.
  * <p>
@@ -20,9 +33,6 @@ import createBillboardPointCallback from "./createBillboardPointCallback.js";
  * Do not construct this directly.  Access it through {@link Cesium3DTileContent#getFeature}
  * or picking using {@link Scene#pick} and {@link Scene#pickPosition}.
  * </p>
- *
- * @alias Cesium3DTilePointFeature
- * @constructor
  *
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  *
@@ -41,6 +51,18 @@ import createBillboardPointCallback from "./createBillboardPointCallback.js";
  * }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
  */
 class Cesium3DTilePointFeature {
+  static defaultColor = Color.WHITE;
+  static defaultPointOutlineColor = Color.BLACK;
+  static defaultPointOutlineWidth = 0.0;
+  static defaultPointSize = 8.0;
+
+  /**
+   * @param {Cesium3DTileContent} content
+   * @param {number} batchId
+   * @param {Billboard} billboard
+   * @param {Label} label
+   * @param {Polyline} polyline
+   */
   constructor(content, batchId, billboard, label, polyline) {
     this._content = content;
     this._billboard = billboard;
@@ -63,6 +85,475 @@ class Cesium3DTilePointFeature {
     this._pickIds = new Array(3);
 
     setBillboardImage(this);
+  }
+
+  /**
+   * Gets or sets if the feature will be shown. This is set for all features
+   * when a style's show is evaluated.
+   *
+   * @type {boolean}
+   *
+   * @default true
+   */
+  get show() {
+    return this._label.show;
+  }
+
+  set show(value) {
+    this._label.show = value;
+    this._billboard.show = value;
+    this._polyline.show = value;
+  }
+
+  /**
+   * Gets or sets the color of the point of this feature.
+   * <p>
+   * Only applied when <code>image</code> is <code>undefined</code>.
+   * </p>
+   *
+   * @type {Color}
+   */
+  get color() {
+    return this._color;
+  }
+
+  set color(value) {
+    this._color = Color.clone(value, this._color);
+    setBillboardImage(this);
+  }
+
+  /**
+   * Gets or sets the point size of this feature.
+   * <p>
+   * Only applied when <code>image</code> is <code>undefined</code>.
+   * </p>
+   *
+   * @type {number}
+   */
+  get pointSize() {
+    return this._pointSize;
+  }
+
+  set pointSize(value) {
+    this._pointSize = value;
+    setBillboardImage(this);
+  }
+
+  /**
+   * Gets or sets the point outline color of this feature.
+   * <p>
+   * Only applied when <code>image</code> is <code>undefined</code>.
+   * </p>
+   *
+   * @type {Color}
+   */
+  get pointOutlineColor() {
+    return this._pointOutlineColor;
+  }
+
+  set pointOutlineColor(value) {
+    this._pointOutlineColor = Color.clone(value, this._pointOutlineColor);
+    setBillboardImage(this);
+  }
+
+  /**
+   * Gets or sets the point outline width in pixels of this feature.
+   * <p>
+   * Only applied when <code>image</code> is <code>undefined</code>.
+   * </p>
+   *
+   * @type {number}
+   */
+  get pointOutlineWidth() {
+    return this._pointOutlineWidth;
+  }
+
+  set pointOutlineWidth(value) {
+    this._pointOutlineWidth = value;
+    setBillboardImage(this);
+  }
+
+  /**
+   * Gets or sets the label color of this feature.
+   * <p>
+   * The color will be applied to the label if <code>labelText</code> is defined.
+   * </p>
+   *
+   * @type {Color}
+   */
+  get labelColor() {
+    return this._label.fillColor;
+  }
+
+  set labelColor(value) {
+    this._label.fillColor = value;
+    this._polyline.show = this._label.show && value.alpha > 0.0;
+  }
+
+  /**
+   * Gets or sets the label outline color of this feature.
+   * <p>
+   * The outline color will be applied to the label if <code>labelText</code> is defined.
+   * </p>
+   *
+   * @type {Color}
+   */
+  get labelOutlineColor() {
+    return this._label.outlineColor;
+  }
+
+  set labelOutlineColor(value) {
+    this._label.outlineColor = value;
+  }
+
+  /**
+   * Gets or sets the outline width in pixels of this feature.
+   * <p>
+   * The outline width will be applied to the point if <code>labelText</code> is defined.
+   * </p>
+   *
+   * @type {number}
+   */
+  get labelOutlineWidth() {
+    return this._label.outlineWidth;
+  }
+
+  set labelOutlineWidth(value) {
+    this._label.outlineWidth = value;
+  }
+
+  /**
+   * Gets or sets the font of this feature.
+   * <p>
+   * Only applied when the <code>labelText</code> is defined.
+   * </p>
+   *
+   * @type {string}
+   */
+  get font() {
+    return this._label.font;
+  }
+
+  set font(value) {
+    this._label.font = value;
+  }
+
+  /**
+   * Gets or sets the fill and outline style of this feature.
+   * <p>
+   * Only applied when <code>labelText</code> is defined.
+   * </p>
+   *
+   * @type {LabelStyle}
+   */
+  get labelStyle() {
+    return this._label.style;
+  }
+
+  set labelStyle(value) {
+    this._label.style = value;
+  }
+
+  /**
+   * Gets or sets the text for this feature.
+   *
+   * @type {string}
+   */
+  get labelText() {
+    return this._label.text;
+  }
+
+  set labelText(value) {
+    if (!defined(value)) {
+      value = "";
+    }
+    this._label.text = value;
+  }
+
+  /**
+   * Gets or sets the background color of the text for this feature.
+   * <p>
+   * Only applied when <code>labelText</code> is defined.
+   * </p>
+   *
+   * @type {Color}
+   */
+  get backgroundColor() {
+    return this._label.backgroundColor;
+  }
+
+  set backgroundColor(value) {
+    this._label.backgroundColor = value;
+  }
+
+  /**
+   * Gets or sets the background padding of the text for this feature.
+   * <p>
+   * Only applied when <code>labelText</code> is defined.
+   * </p>
+   *
+   * @type {Cartesian2}
+   */
+  get backgroundPadding() {
+    return this._label.backgroundPadding;
+  }
+
+  set backgroundPadding(value) {
+    this._label.backgroundPadding = value;
+  }
+
+  /**
+   * Gets or sets whether to display the background of the text for this feature.
+   * <p>
+   * Only applied when <code>labelText</code> is defined.
+   * </p>
+   *
+   * @type {boolean}
+   */
+  get backgroundEnabled() {
+    return this._label.showBackground;
+  }
+
+  set backgroundEnabled(value) {
+    this._label.showBackground = value;
+  }
+
+  /**
+   * Gets or sets the near and far scaling properties for this feature.
+   *
+   * @type {NearFarScalar}
+   */
+  get scaleByDistance() {
+    return this._label.scaleByDistance;
+  }
+
+  set scaleByDistance(value) {
+    this._label.scaleByDistance = value;
+    this._billboard.scaleByDistance = value;
+  }
+
+  /**
+   * Gets or sets the near and far translucency properties for this feature.
+   *
+   * @type {NearFarScalar}
+   */
+  get translucencyByDistance() {
+    return this._label.translucencyByDistance;
+  }
+
+  set translucencyByDistance(value) {
+    this._label.translucencyByDistance = value;
+    this._billboard.translucencyByDistance = value;
+  }
+
+  /**
+   * Gets or sets the condition specifying at what distance from the camera that this feature will be displayed.
+   *
+   * @type {DistanceDisplayCondition}
+   */
+  get distanceDisplayCondition() {
+    return this._label.distanceDisplayCondition;
+  }
+
+  set distanceDisplayCondition(value) {
+    this._label.distanceDisplayCondition = value;
+    this._polyline.distanceDisplayCondition = value;
+    this._billboard.distanceDisplayCondition = value;
+  }
+
+  /**
+   * Gets or sets the height offset in meters of this feature.
+   *
+   * @type {number}
+   */
+  get heightOffset() {
+    return this._heightOffset;
+  }
+
+  set heightOffset(value) {
+    const offset = this._heightOffset ?? 0.0;
+
+    const ellipsoid = this._content.tileset.ellipsoid;
+    const cart = ellipsoid.cartesianToCartographic(
+      this._billboard.position,
+      scratchCartographic,
+    );
+    cart.height = cart.height - offset + value;
+    const newPosition = ellipsoid.cartographicToCartesian(cart);
+
+    this._billboard.position = newPosition;
+    this._label.position = this._billboard.position;
+    this._polyline.positions = [this._polyline.positions[0], newPosition];
+
+    this._heightOffset = value;
+  }
+
+  /**
+   * Gets or sets whether the anchor line is displayed.
+   * <p>
+   * Only applied when <code>heightOffset</code> is defined.
+   * </p>
+   *
+   * @type {boolean}
+   */
+  get anchorLineEnabled() {
+    return this._polyline.show;
+  }
+
+  set anchorLineEnabled(value) {
+    this._polyline.show = value;
+  }
+
+  /**
+   * Gets or sets the color for the anchor line.
+   * <p>
+   * Only applied when <code>heightOffset</code> is defined.
+   * </p>
+   *
+   * @type {Color}
+   */
+  get anchorLineColor() {
+    return this._polyline.material.uniforms.color;
+  }
+
+  set anchorLineColor(value) {
+    this._polyline.material.uniforms.color = Color.clone(
+      value,
+      this._polyline.material.uniforms.color,
+    );
+  }
+
+  /**
+   * Gets or sets the image of this feature.
+   *
+   * @type {string}
+   */
+  get image() {
+    return this._billboardImage;
+  }
+
+  set image(value) {
+    const imageChanged = this._billboardImage !== value;
+    this._billboardImage = value;
+    if (imageChanged) {
+      setBillboardImage(this);
+    }
+  }
+
+  /**
+   * Gets or sets the distance where depth testing will be disabled.
+   *
+   * @type {number}
+   */
+  get disableDepthTestDistance() {
+    return this._label.disableDepthTestDistance;
+  }
+
+  set disableDepthTestDistance(value) {
+    this._label.disableDepthTestDistance = value;
+    this._billboard.disableDepthTestDistance = value;
+  }
+
+  /**
+   * Gets or sets the horizontal origin of this point, which determines if the point is
+   * to the left, center, or right of its anchor position.
+   *
+   * @type {HorizontalOrigin}
+   */
+  get horizontalOrigin() {
+    return this._billboard.horizontalOrigin;
+  }
+
+  set horizontalOrigin(value) {
+    this._billboard.horizontalOrigin = value;
+  }
+
+  /**
+   * Gets or sets the vertical origin of this point, which determines if the point is
+   * to the bottom, center, or top of its anchor position.
+   *
+   * @type {VerticalOrigin}
+   */
+  get verticalOrigin() {
+    return this._billboard.verticalOrigin;
+  }
+
+  set verticalOrigin(value) {
+    this._billboard.verticalOrigin = value;
+  }
+
+  /**
+   * Gets or sets the horizontal origin of this point's text, which determines if the point's text is
+   * to the left, center, or right of its anchor position.
+   *
+   * @type {HorizontalOrigin}
+   */
+  get labelHorizontalOrigin() {
+    return this._label.horizontalOrigin;
+  }
+
+  set labelHorizontalOrigin(value) {
+    this._label.horizontalOrigin = value;
+  }
+
+  /**
+   * Get or sets the vertical origin of this point's text, which determines if the point's text is
+   * to the bottom, center, top, or baseline of it's anchor point.
+   *
+   * @type {VerticalOrigin}
+   */
+  get labelVerticalOrigin() {
+    return this._label.verticalOrigin;
+  }
+
+  set labelVerticalOrigin(value) {
+    this._label.verticalOrigin = value;
+  }
+
+  /**
+   * Gets the content of the tile containing the feature.
+   *
+   * @type {Cesium3DTileContent}
+   *
+   * @readonly
+   * @private
+   */
+  get content() {
+    return this._content;
+  }
+
+  /**
+   * Gets the tileset containing the feature.
+   *
+   * @type {Cesium3DTileset}
+   *
+   * @readonly
+   */
+  get tileset() {
+    return this._content.tileset;
+  }
+
+  /**
+   * All objects returned by {@link Scene#pick} have a <code>primitive</code> property. This returns
+   * the tileset containing the feature.
+   *
+   * @type {Cesium3DTileset}
+   *
+   * @readonly
+   */
+  get primitive() {
+    return this._content.tileset;
+  }
+
+  /**
+   * @private
+   */
+  get pickIds() {
+    const ids = this._pickIds;
+    ids[0] = this._billboard.pickId;
+    ids[1] = this._label.pickId;
+    ids[2] = this._polyline.pickId;
+    return ids;
   }
 
   /**
@@ -213,513 +704,12 @@ class Cesium3DTilePointFeature {
   getExactClassName() {
     return this._content.batchTable.getExactClassName(this._batchId);
   }
-
-  /**
-   * Gets or sets if the feature will be shown. This is set for all features
-   * when a style's show is evaluated.
-   *
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
-  get show() {
-    return this._label.show;
-  }
-
-  set show(value) {
-    this._label.show = value;
-    this._billboard.show = value;
-    this._polyline.show = value;
-  }
-
-  /**
-   * Gets or sets the color of the point of this feature.
-   * <p>
-   * Only applied when <code>image</code> is <code>undefined</code>.
-   * </p>
-   *
-   *
-   * @type {Color}
-   */
-  get color() {
-    return this._color;
-  }
-
-  set color(value) {
-    this._color = Color.clone(value, this._color);
-    setBillboardImage(this);
-  }
-
-  /**
-   * Gets or sets the point size of this feature.
-   * <p>
-   * Only applied when <code>image</code> is <code>undefined</code>.
-   * </p>
-   *
-   *
-   * @type {number}
-   */
-  get pointSize() {
-    return this._pointSize;
-  }
-
-  set pointSize(value) {
-    this._pointSize = value;
-    setBillboardImage(this);
-  }
-
-  /**
-   * Gets or sets the point outline color of this feature.
-   * <p>
-   * Only applied when <code>image</code> is <code>undefined</code>.
-   * </p>
-   *
-   *
-   * @type {Color}
-   */
-  get pointOutlineColor() {
-    return this._pointOutlineColor;
-  }
-
-  set pointOutlineColor(value) {
-    this._pointOutlineColor = Color.clone(value, this._pointOutlineColor);
-    setBillboardImage(this);
-  }
-
-  /**
-   * Gets or sets the point outline width in pixels of this feature.
-   * <p>
-   * Only applied when <code>image</code> is <code>undefined</code>.
-   * </p>
-   *
-   *
-   * @type {number}
-   */
-  get pointOutlineWidth() {
-    return this._pointOutlineWidth;
-  }
-
-  set pointOutlineWidth(value) {
-    this._pointOutlineWidth = value;
-    setBillboardImage(this);
-  }
-
-  /**
-   * Gets or sets the label color of this feature.
-   * <p>
-   * The color will be applied to the label if <code>labelText</code> is defined.
-   * </p>
-   *
-   *
-   * @type {Color}
-   */
-  get labelColor() {
-    return this._label.fillColor;
-  }
-
-  set labelColor(value) {
-    this._label.fillColor = value;
-    this._polyline.show = this._label.show && value.alpha > 0.0;
-  }
-
-  /**
-   * Gets or sets the label outline color of this feature.
-   * <p>
-   * The outline color will be applied to the label if <code>labelText</code> is defined.
-   * </p>
-   *
-   *
-   * @type {Color}
-   */
-  get labelOutlineColor() {
-    return this._label.outlineColor;
-  }
-
-  set labelOutlineColor(value) {
-    this._label.outlineColor = value;
-  }
-
-  /**
-   * Gets or sets the outline width in pixels of this feature.
-   * <p>
-   * The outline width will be applied to the point if <code>labelText</code> is defined.
-   * </p>
-   *
-   *
-   * @type {number}
-   */
-  get labelOutlineWidth() {
-    return this._label.outlineWidth;
-  }
-
-  set labelOutlineWidth(value) {
-    this._label.outlineWidth = value;
-  }
-
-  /**
-   * Gets or sets the font of this feature.
-   * <p>
-   * Only applied when the <code>labelText</code> is defined.
-   * </p>
-   *
-   *
-   * @type {string}
-   */
-  get font() {
-    return this._label.font;
-  }
-
-  set font(value) {
-    this._label.font = value;
-  }
-
-  /**
-   * Gets or sets the fill and outline style of this feature.
-   * <p>
-   * Only applied when <code>labelText</code> is defined.
-   * </p>
-   *
-   *
-   * @type {LabelStyle}
-   */
-  get labelStyle() {
-    return this._label.style;
-  }
-
-  set labelStyle(value) {
-    this._label.style = value;
-  }
-
-  /**
-   * Gets or sets the text for this feature.
-   *
-   *
-   * @type {string}
-   */
-  get labelText() {
-    return this._label.text;
-  }
-
-  set labelText(value) {
-    if (!defined(value)) {
-      value = "";
-    }
-    this._label.text = value;
-  }
-
-  /**
-   * Gets or sets the background color of the text for this feature.
-   * <p>
-   * Only applied when <code>labelText</code> is defined.
-   * </p>
-   *
-   *
-   * @type {Color}
-   */
-  get backgroundColor() {
-    return this._label.backgroundColor;
-  }
-
-  set backgroundColor(value) {
-    this._label.backgroundColor = value;
-  }
-
-  /**
-   * Gets or sets the background padding of the text for this feature.
-   * <p>
-   * Only applied when <code>labelText</code> is defined.
-   * </p>
-   *
-   *
-   * @type {Cartesian2}
-   */
-  get backgroundPadding() {
-    return this._label.backgroundPadding;
-  }
-
-  set backgroundPadding(value) {
-    this._label.backgroundPadding = value;
-  }
-
-  /**
-   * Gets or sets whether to display the background of the text for this feature.
-   * <p>
-   * Only applied when <code>labelText</code> is defined.
-   * </p>
-   *
-   *
-   * @type {boolean}
-   */
-  get backgroundEnabled() {
-    return this._label.showBackground;
-  }
-
-  set backgroundEnabled(value) {
-    this._label.showBackground = value;
-  }
-
-  /**
-   * Gets or sets the near and far scaling properties for this feature.
-   *
-   *
-   * @type {NearFarScalar}
-   */
-  get scaleByDistance() {
-    return this._label.scaleByDistance;
-  }
-
-  set scaleByDistance(value) {
-    this._label.scaleByDistance = value;
-    this._billboard.scaleByDistance = value;
-  }
-
-  /**
-   * Gets or sets the near and far translucency properties for this feature.
-   *
-   *
-   * @type {NearFarScalar}
-   */
-  get translucencyByDistance() {
-    return this._label.translucencyByDistance;
-  }
-
-  set translucencyByDistance(value) {
-    this._label.translucencyByDistance = value;
-    this._billboard.translucencyByDistance = value;
-  }
-
-  /**
-   * Gets or sets the condition specifying at what distance from the camera that this feature will be displayed.
-   *
-   *
-   * @type {DistanceDisplayCondition}
-   */
-  get distanceDisplayCondition() {
-    return this._label.distanceDisplayCondition;
-  }
-
-  set distanceDisplayCondition(value) {
-    this._label.distanceDisplayCondition = value;
-    this._polyline.distanceDisplayCondition = value;
-    this._billboard.distanceDisplayCondition = value;
-  }
-
-  /**
-   * Gets or sets the height offset in meters of this feature.
-   *
-   *
-   * @type {number}
-   */
-  get heightOffset() {
-    return this._heightOffset;
-  }
-
-  set heightOffset(value) {
-    const offset = this._heightOffset ?? 0.0;
-
-    const ellipsoid = this._content.tileset.ellipsoid;
-    const cart = ellipsoid.cartesianToCartographic(
-      this._billboard.position,
-      scratchCartographic,
-    );
-    cart.height = cart.height - offset + value;
-    const newPosition = ellipsoid.cartographicToCartesian(cart);
-
-    this._billboard.position = newPosition;
-    this._label.position = this._billboard.position;
-    this._polyline.positions = [this._polyline.positions[0], newPosition];
-
-    this._heightOffset = value;
-  }
-
-  /**
-   * Gets or sets whether the anchor line is displayed.
-   * <p>
-   * Only applied when <code>heightOffset</code> is defined.
-   * </p>
-   *
-   *
-   * @type {boolean}
-   */
-  get anchorLineEnabled() {
-    return this._polyline.show;
-  }
-
-  set anchorLineEnabled(value) {
-    this._polyline.show = value;
-  }
-
-  /**
-   * Gets or sets the color for the anchor line.
-   * <p>
-   * Only applied when <code>heightOffset</code> is defined.
-   * </p>
-   *
-   *
-   * @type {Color}
-   */
-  get anchorLineColor() {
-    return this._polyline.material.uniforms.color;
-  }
-
-  set anchorLineColor(value) {
-    this._polyline.material.uniforms.color = Color.clone(
-      value,
-      this._polyline.material.uniforms.color,
-    );
-  }
-
-  /**
-   * Gets or sets the image of this feature.
-   *
-   *
-   * @type {string}
-   */
-  get image() {
-    return this._billboardImage;
-  }
-
-  set image(value) {
-    const imageChanged = this._billboardImage !== value;
-    this._billboardImage = value;
-    if (imageChanged) {
-      setBillboardImage(this);
-    }
-  }
-
-  /**
-   * Gets or sets the distance where depth testing will be disabled.
-   *
-   *
-   * @type {number}
-   */
-  get disableDepthTestDistance() {
-    return this._label.disableDepthTestDistance;
-  }
-
-  set disableDepthTestDistance(value) {
-    this._label.disableDepthTestDistance = value;
-    this._billboard.disableDepthTestDistance = value;
-  }
-
-  /**
-   * Gets or sets the horizontal origin of this point, which determines if the point is
-   * to the left, center, or right of its anchor position.
-   *
-   *
-   * @type {HorizontalOrigin}
-   */
-  get horizontalOrigin() {
-    return this._billboard.horizontalOrigin;
-  }
-
-  set horizontalOrigin(value) {
-    this._billboard.horizontalOrigin = value;
-  }
-
-  /**
-   * Gets or sets the vertical origin of this point, which determines if the point is
-   * to the bottom, center, or top of its anchor position.
-   *
-   *
-   * @type {VerticalOrigin}
-   */
-  get verticalOrigin() {
-    return this._billboard.verticalOrigin;
-  }
-
-  set verticalOrigin(value) {
-    this._billboard.verticalOrigin = value;
-  }
-
-  /**
-   * Gets or sets the horizontal origin of this point's text, which determines if the point's text is
-   * to the left, center, or right of its anchor position.
-   *
-   *
-   * @type {HorizontalOrigin}
-   */
-  get labelHorizontalOrigin() {
-    return this._label.horizontalOrigin;
-  }
-
-  set labelHorizontalOrigin(value) {
-    this._label.horizontalOrigin = value;
-  }
-
-  /**
-   * Get or sets the vertical origin of this point's text, which determines if the point's text is
-   * to the bottom, center, top, or baseline of it's anchor point.
-   *
-   *
-   * @type {VerticalOrigin}
-   */
-  get labelVerticalOrigin() {
-    return this._label.verticalOrigin;
-  }
-
-  set labelVerticalOrigin(value) {
-    this._label.verticalOrigin = value;
-  }
-
-  /**
-   * Gets the content of the tile containing the feature.
-   *
-   *
-   * @type {Cesium3DTileContent}
-   *
-   * @readonly
-   * @private
-   */
-  get content() {
-    return this._content;
-  }
-
-  /**
-   * Gets the tileset containing the feature.
-   *
-   *
-   * @type {Cesium3DTileset}
-   *
-   * @readonly
-   */
-  get tileset() {
-    return this._content.tileset;
-  }
-
-  /**
-   * All objects returned by {@link Scene#pick} have a <code>primitive</code> property. This returns
-   * the tileset containing the feature.
-   *
-   *
-   * @type {Cesium3DTileset}
-   *
-   * @readonly
-   */
-  get primitive() {
-    return this._content.tileset;
-  }
-
-  /**
-   * @private
-   */
-  get pickIds() {
-    const ids = this._pickIds;
-    ids[0] = this._billboard.pickId;
-    ids[1] = this._label.pickId;
-    ids[2] = this._polyline.pickId;
-    return ids;
-  }
 }
 
-const scratchCartographic = new Cartographic();
-
-Cesium3DTilePointFeature.defaultColor = Color.WHITE;
-Cesium3DTilePointFeature.defaultPointOutlineColor = Color.BLACK;
-Cesium3DTilePointFeature.defaultPointOutlineWidth = 0.0;
-Cesium3DTilePointFeature.defaultPointSize = 8.0;
-
+/**
+ * @param {Cesium3DTilePointFeature} feature
+ * @ignore
+ */
 function setBillboardImage(feature) {
   const b = feature._billboard;
   if (defined(feature._billboardImage) && feature._billboardImage !== b.image) {

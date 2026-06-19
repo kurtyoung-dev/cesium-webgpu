@@ -1,34 +1,59 @@
+// @ts-check
+
 import Cartesian2 from "./Cartesian2.js";
+import Cartesian3 from "./Cartesian3.js";
+import Cartographic from "./Cartographic.js";
 import Frozen from "./Frozen.js";
 import defined from "./defined.js";
 import Ellipsoid from "./Ellipsoid.js";
 import Rectangle from "./Rectangle.js";
 import WebMercatorProjection from "./WebMercatorProjection.js";
 
+/** @import MapProjection from "./MapProjection.js"; */
+/** @import TilingScheme from "./TilingScheme.js"; */
+
+const southwestScratch = new Cartographic();
+const northeastScratch = new Cartographic();
+
+const southwestCartesianScratch = new Cartesian3();
+const northeastCartesianScratch = new Cartesian3();
+
 /**
  * A tiling scheme for geometry referenced to a {@link WebMercatorProjection}, EPSG:3857.  This is
  * the tiling scheme used by Google Maps, Microsoft Bing Maps, and most of ESRI ArcGIS Online.
  *
- * @alias WebMercatorTilingScheme
- * @constructor
- *
- * @param {object} [options] Object with the following properties:
- * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.default] The ellipsoid whose surface is being tiled. Defaults to
- * the default ellipsoid.
- * @param {number} [options.numberOfLevelZeroTilesX=1] The number of tiles in the X direction at level zero of
- *        the tile tree.
- * @param {number} [options.numberOfLevelZeroTilesY=1] The number of tiles in the Y direction at level zero of
- *        the tile tree.
- * @param {Cartesian2} [options.rectangleSouthwestInMeters] The southwest corner of the rectangle covered by the
- *        tiling scheme, in meters.  If this parameter or rectangleNortheastInMeters is not specified, the entire
- *        globe is covered in the longitude direction and an equal distance is covered in the latitude
- *        direction, resulting in a square projection.
- * @param {Cartesian2} [options.rectangleNortheastInMeters] The northeast corner of the rectangle covered by the
- *        tiling scheme, in meters.  If this parameter or rectangleSouthwestInMeters is not specified, the entire
- *        globe is covered in the longitude direction and an equal distance is covered in the latitude
- *        direction, resulting in a square projection.
+ * @implements {TilingScheme}
  */
 class WebMercatorTilingScheme {
+  /**
+   * @type {Cartesian2}
+   * @private
+   */
+  _rectangleSouthwestInMeters;
+
+  /**
+   * @type {Cartesian2}
+   * @private
+   */
+  _rectangleNortheastInMeters;
+
+  /**
+   * @param {object} [options] Object with the following properties:
+   * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.default] The ellipsoid whose surface is being tiled. Defaults to
+   * the default ellipsoid.
+   * @param {number} [options.numberOfLevelZeroTilesX=1] The number of tiles in the X direction at level zero of
+   *        the tile tree.
+   * @param {number} [options.numberOfLevelZeroTilesY=1] The number of tiles in the Y direction at level zero of
+   *        the tile tree.
+   * @param {Cartesian2} [options.rectangleSouthwestInMeters] The southwest corner of the rectangle covered by the
+   *        tiling scheme, in meters.  If this parameter or rectangleNortheastInMeters is not specified, the entire
+   *        globe is covered in the longitude direction and an equal distance is covered in the latitude
+   *        direction, resulting in a square projection.
+   * @param {Cartesian2} [options.rectangleNortheastInMeters] The northeast corner of the rectangle covered by the
+   *        tiling scheme, in meters.  If this parameter or rectangleSouthwestInMeters is not specified, the entire
+   *        globe is covered in the longitude direction and an equal distance is covered in the latitude
+   *        direction, resulting in a square projection.
+   */
   constructor(options) {
     options = options ?? Frozen.EMPTY_OBJECT;
 
@@ -56,18 +81,44 @@ class WebMercatorTilingScheme {
       );
     }
 
-    const southwest = this._projection.unproject(
-      this._rectangleSouthwestInMeters,
-    );
-    const northeast = this._projection.unproject(
-      this._rectangleNortheastInMeters,
-    );
+    let { x, y } = this._rectangleSouthwestInMeters;
+    Cartesian3.fromElements(x, y, 0, southwestCartesianScratch);
+    this._projection.unproject(southwestCartesianScratch, southwestScratch);
+
+    ({ x, y } = this._rectangleNortheastInMeters);
+    Cartesian3.fromElements(x, y, 0, northeastCartesianScratch);
+    this._projection.unproject(northeastCartesianScratch, northeastScratch);
+
     this._rectangle = new Rectangle(
-      southwest.longitude,
-      southwest.latitude,
-      northeast.longitude,
-      northeast.latitude,
+      southwestScratch.longitude,
+      southwestScratch.latitude,
+      northeastScratch.longitude,
+      northeastScratch.latitude,
     );
+  }
+
+  /**
+   * Gets the ellipsoid that is tiled by this tiling scheme.
+   * @type {Ellipsoid}
+   */
+  get ellipsoid() {
+    return this._ellipsoid;
+  }
+
+  /**
+   * Gets the rectangle, in radians, covered by this tiling scheme.
+   * @type {Rectangle}
+   */
+  get rectangle() {
+    return this._rectangle;
+  }
+
+  /**
+   * Gets the map projection used by this tiling scheme.
+   * @type {MapProjection}
+   */
+  get projection() {
+    return this._projection;
   }
 
   /**
@@ -123,7 +174,7 @@ class WebMercatorTilingScheme {
    * @param {number} x The integer x coordinate of the tile.
    * @param {number} y The integer y coordinate of the tile.
    * @param {number} level The tile level-of-detail.  Zero is the least detailed.
-   * @param {object} [result] The instance to which to copy the result, or undefined if a new instance
+   * @param {Rectangle} [result] The instance to which to copy the result, or undefined if a new instance
    *        should be created.
    * @returns {Rectangle} The specified 'result', or a new object containing the rectangle
    *          if 'result' is undefined.
@@ -163,7 +214,7 @@ class WebMercatorTilingScheme {
    * @param {number} x The integer x coordinate of the tile.
    * @param {number} y The integer y coordinate of the tile.
    * @param {number} level The tile level-of-detail.  Zero is the least detailed.
-   * @param {object} [result] The instance to which to copy the result, or undefined if a new instance
+   * @param {Rectangle} [result] The instance to which to copy the result, or undefined if a new instance
    *        should be created.
    * @returns {Rectangle} The specified 'result', or a new object containing the rectangle
    *          if 'result' is undefined.
@@ -173,10 +224,10 @@ class WebMercatorTilingScheme {
 
     const projection = this._projection;
     const southwest = projection.unproject(
-      new Cartesian2(nativeRectangle.west, nativeRectangle.south),
+      new Cartesian3(nativeRectangle.west, nativeRectangle.south),
     );
     const northeast = projection.unproject(
-      new Cartesian2(nativeRectangle.east, nativeRectangle.north),
+      new Cartesian3(nativeRectangle.east, nativeRectangle.north),
     );
 
     nativeRectangle.west = southwest.longitude;
@@ -238,30 +289,6 @@ class WebMercatorTilingScheme {
     result.x = xTileCoordinate;
     result.y = yTileCoordinate;
     return result;
-  }
-
-  /**
-   * Gets the ellipsoid that is tiled by this tiling scheme.
-   * @type {Ellipsoid}
-   */
-  get ellipsoid() {
-    return this._ellipsoid;
-  }
-
-  /**
-   * Gets the rectangle, in radians, covered by this tiling scheme.
-   * @type {Rectangle}
-   */
-  get rectangle() {
-    return this._rectangle;
-  }
-
-  /**
-   * Gets the map projection used by this tiling scheme.
-   * @type {MapProjection}
-   */
-  get projection() {
-    return this._projection;
   }
 }
 

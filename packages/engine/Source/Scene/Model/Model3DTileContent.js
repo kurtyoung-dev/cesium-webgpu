@@ -8,6 +8,13 @@ import Pass from "../../Renderer/Pass.js";
 import ModelAnimationLoop from "../ModelAnimationLoop.js";
 import Model from "./Model.js";
 
+/** @import Cesium3DContentGroup from "../Cesium3DContentGroup.js"; */
+/** @import Cesium3DTile from "../Cesium3DTile.js"; */
+/** @import Cesium3DTileContent from "../Cesium3DTileContent.js"; */
+/** @import Cesium3DTileset from "../Cesium3DTileset.js"; */
+/** @import ImplicitMetadataView from "../ImplicitMetadataView.js"; */
+/** @import Resource from "../../Core/Resource.js"; */
+
 /**
  * Represents the contents of a glTF, glb or
  * {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/TileFormats/Batched3DModel|Batched 3D Model}
@@ -17,20 +24,119 @@ import Model from "./Model.js";
  * </p>
  * This object is normally not instantiated directly, use {@link Model3DTileContent.fromGltf}, {@link Model3DTileContent.fromB3dm}, {@link Model3DTileContent.fromI3dm}, {@link Model3DTileContent.fromPnts}, or {@link Model3DTileContent.fromGeoJson}.
  *
- * @alias Model3DTileContent
- * @constructor
+ * @implements Cesium3DTileContent
  * @private
  */
 class Model3DTileContent {
+  /**
+   *
+   * @param {Cesium3DTileset} tileset
+   * @param {Cesium3DTile} tile
+   * @param {Resource} resource
+   */
   constructor(tileset, tile, resource) {
     this._tileset = tileset;
     this._tile = tile;
     this._resource = resource;
 
+    /** @type {Model} */
     this._model = undefined;
+    /** @type {ImplicitMetadataView|undefined} */
     this._metadata = undefined;
+    /** @type {Cesium3DContentGroup|undefined} */
     this._group = undefined;
     this._ready = false;
+  }
+
+  get featuresLength() {
+    const model = this._model;
+    const featureTables = model.featureTables;
+    const featureTableId = model.featureTableId;
+
+    if (defined(featureTables) && defined(featureTables[featureTableId])) {
+      return featureTables[featureTableId].featuresLength;
+    }
+
+    return 0;
+  }
+
+  get pointsLength() {
+    return this._model.statistics.pointsLength;
+  }
+
+  get trianglesLength() {
+    return this._model.statistics.trianglesLength;
+  }
+
+  get geometryByteLength() {
+    return this._model.statistics.geometryByteLength;
+  }
+
+  get texturesByteLength() {
+    return this._model.statistics.texturesByteLength;
+  }
+
+  get batchTableByteLength() {
+    const statistics = this._model.statistics;
+    return (
+      statistics.propertyTablesByteLength + statistics.batchTexturesByteLength
+    );
+  }
+
+  get innerContents() {
+    return undefined;
+  }
+
+  /**
+   * Returns true when the tile's content is ready to render; otherwise false
+   *
+   *
+   * @type {boolean}
+   * @readonly
+   * @private
+   */
+  get ready() {
+    return this._ready;
+  }
+
+  get tileset() {
+    return this._tileset;
+  }
+
+  get tile() {
+    return this._tile;
+  }
+
+  get url() {
+    return this._resource.getUrlComponent(true);
+  }
+
+  get batchTable() {
+    const model = this._model;
+    const featureTables = model.featureTables;
+    const featureTableId = model.featureTableId;
+
+    if (defined(featureTables) && defined(featureTables[featureTableId])) {
+      return featureTables[featureTableId];
+    }
+
+    return undefined;
+  }
+
+  get metadata() {
+    return this._metadata;
+  }
+
+  set metadata(value) {
+    this._metadata = value;
+  }
+
+  get group() {
+    return this._group;
+  }
+
+  set group(value) {
+    this._group = value;
   }
 
   /**
@@ -151,6 +257,7 @@ class Model3DTileContent {
     model.showCreditsOnScreen = tileset.showCreditsOnScreen;
     model.splitDirection = tileset.splitDirection;
     model.debugWireframe = tileset.debugWireframe;
+    model.edgeDisplayMode = tileset.edgeDisplayMode;
     model.showOutline = tileset.showOutline;
     model.outlineColor = tileset.outlineColor;
     model.pointCloudShading = tileset.pointCloudShading;
@@ -224,6 +331,124 @@ class Model3DTileContent {
     return destroyObject(this);
   }
 
+  static async fromGltf(tileset, tile, resource, gltf) {
+    const content = new Model3DTileContent(tileset, tile, resource);
+
+    const additionalOptions = {
+      gltf: gltf,
+      basePath: resource,
+    };
+
+    const modelOptions = makeModelOptions(
+      tileset,
+      tile,
+      content,
+      additionalOptions,
+    );
+
+    const classificationType = tileset.vectorClassificationOnly
+      ? undefined
+      : tileset.classificationType;
+
+    modelOptions.classificationType = classificationType;
+
+    const model = await Model.fromGltfAsync(modelOptions);
+    content._model = model;
+
+    return content;
+  }
+
+  static async fromB3dm(tileset, tile, resource, arrayBuffer, byteOffset) {
+    const content = new Model3DTileContent(tileset, tile, resource);
+
+    const additionalOptions = {
+      arrayBuffer: arrayBuffer,
+      byteOffset: byteOffset,
+      resource: resource,
+    };
+
+    const modelOptions = makeModelOptions(
+      tileset,
+      tile,
+      content,
+      additionalOptions,
+    );
+
+    const classificationType = tileset.vectorClassificationOnly
+      ? undefined
+      : tileset.classificationType;
+
+    modelOptions.classificationType = classificationType;
+
+    const model = await Model.fromB3dm(modelOptions);
+    content._model = model;
+
+    return content;
+  }
+
+  static async fromI3dm(tileset, tile, resource, arrayBuffer, byteOffset) {
+    const content = new Model3DTileContent(tileset, tile, resource);
+
+    const additionalOptions = {
+      arrayBuffer: arrayBuffer,
+      byteOffset: byteOffset,
+      resource: resource,
+    };
+
+    const modelOptions = makeModelOptions(
+      tileset,
+      tile,
+      content,
+      additionalOptions,
+    );
+
+    const model = await Model.fromI3dm(modelOptions);
+    content._model = model;
+
+    return content;
+  }
+
+  static async fromPnts(tileset, tile, resource, arrayBuffer, byteOffset) {
+    const content = new Model3DTileContent(tileset, tile, resource);
+
+    const additionalOptions = {
+      arrayBuffer: arrayBuffer,
+      byteOffset: byteOffset,
+      resource: resource,
+    };
+
+    const modelOptions = makeModelOptions(
+      tileset,
+      tile,
+      content,
+      additionalOptions,
+    );
+    const model = await Model.fromPnts(modelOptions);
+    content._model = model;
+
+    return content;
+  }
+
+  static async fromGeoJson(tileset, tile, resource, geoJson) {
+    const content = new Model3DTileContent(tileset, tile, resource);
+
+    const additionalOptions = {
+      geoJson: geoJson,
+      resource: resource,
+    };
+
+    const modelOptions = makeModelOptions(
+      tileset,
+      tile,
+      content,
+      additionalOptions,
+    );
+    const model = await Model.fromGeoJson(modelOptions);
+    content._model = model;
+
+    return content;
+  }
+
   /**
    * Find an intersection between a ray and the tile content surface that was rendered. The ray must be given in world coordinates.
    *
@@ -252,239 +477,7 @@ class Model3DTileContent {
       result,
     );
   }
-
-  get featuresLength() {
-    const model = this._model;
-    const featureTables = model.featureTables;
-    const featureTableId = model.featureTableId;
-
-    if (defined(featureTables) && defined(featureTables[featureTableId])) {
-      return featureTables[featureTableId].featuresLength;
-    }
-
-    return 0;
-  }
-
-  get pointsLength() {
-    return this._model.statistics.pointsLength;
-  }
-
-  get trianglesLength() {
-    return this._model.statistics.trianglesLength;
-  }
-
-  get geometryByteLength() {
-    return this._model.statistics.geometryByteLength;
-  }
-
-  get texturesByteLength() {
-    return this._model.statistics.texturesByteLength;
-  }
-
-  get batchTableByteLength() {
-    const statistics = this._model.statistics;
-    return (
-      statistics.propertyTablesByteLength + statistics.batchTexturesByteLength
-    );
-  }
-
-  get innerContents() {
-    return undefined;
-  }
-
-  /**
-   * Returns true when the tile's content is ready to render; otherwise false
-   *
-   *
-   * @type {boolean}
-   * @readonly
-   * @private
-   */
-  get ready() {
-    return this._ready;
-  }
-
-  get tileset() {
-    return this._tileset;
-  }
-
-  get tile() {
-    return this._tile;
-  }
-
-  get url() {
-    return this._resource.getUrlComponent(true);
-  }
-
-  get batchTable() {
-    const model = this._model;
-    const featureTables = model.featureTables;
-    const featureTableId = model.featureTableId;
-
-    if (defined(featureTables) && defined(featureTables[featureTableId])) {
-      return featureTables[featureTableId];
-    }
-
-    return undefined;
-  }
-
-  get metadata() {
-    return this._metadata;
-  }
-
-  set metadata(value) {
-    this._metadata = value;
-  }
-
-  get group() {
-    return this._group;
-  }
-
-  set group(value) {
-    this._group = value;
-  }
 }
-
-Model3DTileContent.fromGltf = async function (tileset, tile, resource, gltf) {
-  const content = new Model3DTileContent(tileset, tile, resource);
-
-  const additionalOptions = {
-    gltf: gltf,
-    basePath: resource,
-  };
-
-  const modelOptions = makeModelOptions(
-    tileset,
-    tile,
-    content,
-    additionalOptions,
-  );
-
-  const classificationType = tileset.vectorClassificationOnly
-    ? undefined
-    : tileset.classificationType;
-
-  modelOptions.classificationType = classificationType;
-
-  const model = await Model.fromGltfAsync(modelOptions);
-  content._model = model;
-
-  return content;
-};
-
-Model3DTileContent.fromB3dm = async function (
-  tileset,
-  tile,
-  resource,
-  arrayBuffer,
-  byteOffset,
-) {
-  const content = new Model3DTileContent(tileset, tile, resource);
-
-  const additionalOptions = {
-    arrayBuffer: arrayBuffer,
-    byteOffset: byteOffset,
-    resource: resource,
-  };
-
-  const modelOptions = makeModelOptions(
-    tileset,
-    tile,
-    content,
-    additionalOptions,
-  );
-
-  const classificationType = tileset.vectorClassificationOnly
-    ? undefined
-    : tileset.classificationType;
-
-  modelOptions.classificationType = classificationType;
-
-  const model = await Model.fromB3dm(modelOptions);
-  content._model = model;
-
-  return content;
-};
-
-Model3DTileContent.fromI3dm = async function (
-  tileset,
-  tile,
-  resource,
-  arrayBuffer,
-  byteOffset,
-) {
-  const content = new Model3DTileContent(tileset, tile, resource);
-
-  const additionalOptions = {
-    arrayBuffer: arrayBuffer,
-    byteOffset: byteOffset,
-    resource: resource,
-  };
-
-  const modelOptions = makeModelOptions(
-    tileset,
-    tile,
-    content,
-    additionalOptions,
-  );
-
-  const model = await Model.fromI3dm(modelOptions);
-  content._model = model;
-
-  return content;
-};
-
-Model3DTileContent.fromPnts = async function (
-  tileset,
-  tile,
-  resource,
-  arrayBuffer,
-  byteOffset,
-) {
-  const content = new Model3DTileContent(tileset, tile, resource);
-
-  const additionalOptions = {
-    arrayBuffer: arrayBuffer,
-    byteOffset: byteOffset,
-    resource: resource,
-  };
-
-  const modelOptions = makeModelOptions(
-    tileset,
-    tile,
-    content,
-    additionalOptions,
-  );
-  const model = await Model.fromPnts(modelOptions);
-  content._model = model;
-
-  return content;
-};
-
-Model3DTileContent.fromGeoJson = async function (
-  tileset,
-  tile,
-  resource,
-  geoJson,
-) {
-  const content = new Model3DTileContent(tileset, tile, resource);
-
-  const additionalOptions = {
-    geoJson: geoJson,
-    resource: resource,
-  };
-
-  const modelOptions = makeModelOptions(
-    tileset,
-    tile,
-    content,
-    additionalOptions,
-  );
-  const model = await Model.fromGeoJson(modelOptions);
-  content._model = model;
-
-  return content;
-};
 
 function makeModelOptions(tileset, tile, content, additionalOptions) {
   const mainOptions = {

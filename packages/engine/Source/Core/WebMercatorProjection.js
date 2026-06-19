@@ -1,3 +1,5 @@
+// @ts-check
+
 import Cartesian3 from "./Cartesian3.js";
 import Cartographic from "./Cartographic.js";
 import defined from "./defined.js";
@@ -5,23 +7,64 @@ import DeveloperError from "./DeveloperError.js";
 import Ellipsoid from "./Ellipsoid.js";
 import CesiumMath from "./Math.js";
 
+/** @import MapProjection from "./MapProjection.js"; */
+
 /**
  * The map projection used by Google Maps, Bing Maps, and most of ArcGIS Online, EPSG:3857.  This
  * projection use longitude and latitude expressed with the WGS84 and transforms them to Mercator using
  * the spherical (rather than ellipsoidal) equations.
  *
- * @alias WebMercatorProjection
- * @constructor
- *
- * @param {Ellipsoid} [ellipsoid=Ellipsoid.WGS84] The ellipsoid.
- *
  * @see GeographicProjection
+ *
+ * @implements MapProjection
  */
 class WebMercatorProjection {
+  /**
+   * @param {Ellipsoid} [ellipsoid=Ellipsoid.WGS84] The ellipsoid.
+   */
   constructor(ellipsoid) {
     this._ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
     this._semimajorAxis = this._ellipsoid.maximumRadius;
     this._oneOverSemimajorAxis = 1.0 / this._semimajorAxis;
+  }
+
+  /**
+   * Gets the {@link Ellipsoid}.
+   *
+   * @type {Ellipsoid}
+   * @readonly
+   */
+  get ellipsoid() {
+    return this._ellipsoid;
+  }
+
+  /**
+   * Converts a Mercator angle, in the range -PI to PI, to a geodetic latitude
+   * in the range -PI/2 to PI/2.
+   *
+   * @param {number} mercatorAngle The angle to convert.
+   * @returns {number} The geodetic latitude in radians.
+   */
+  static mercatorAngleToGeodeticLatitude(mercatorAngle) {
+    return CesiumMath.PI_OVER_TWO - 2.0 * Math.atan(Math.exp(-mercatorAngle));
+  }
+
+  /**
+   * Converts a geodetic latitude in radians, in the range -PI/2 to PI/2, to a Mercator
+   * angle in the range -PI to PI.
+   *
+   * @param {number} latitude The geodetic latitude in radians.
+   * @returns {number} The Mercator angle.
+   */
+  static geodeticLatitudeToMercatorAngle(latitude) {
+    // Clamp the latitude coordinate to the valid Mercator bounds.
+    if (latitude > WebMercatorProjection.MaximumLatitude) {
+      latitude = WebMercatorProjection.MaximumLatitude;
+    } else if (latitude < -WebMercatorProjection.MaximumLatitude) {
+      latitude = -WebMercatorProjection.MaximumLatitude;
+    }
+    const sinLatitude = Math.sin(latitude);
+    return 0.5 * Math.log((1.0 + sinLatitude) / (1.0 - sinLatitude));
   }
 
   /**
@@ -86,49 +129,7 @@ class WebMercatorProjection {
     result.height = height;
     return result;
   }
-
-  /**
-   * Gets the {@link Ellipsoid}.
-   *
-   *
-   * @type {Ellipsoid}
-   * @readonly
-   */
-  get ellipsoid() {
-    return this._ellipsoid;
-  }
 }
-
-/**
- * Converts a Mercator angle, in the range -PI to PI, to a geodetic latitude
- * in the range -PI/2 to PI/2.
- *
- * @param {number} mercatorAngle The angle to convert.
- * @returns {number} The geodetic latitude in radians.
- */
-WebMercatorProjection.mercatorAngleToGeodeticLatitude = function (
-  mercatorAngle,
-) {
-  return CesiumMath.PI_OVER_TWO - 2.0 * Math.atan(Math.exp(-mercatorAngle));
-};
-
-/**
- * Converts a geodetic latitude in radians, in the range -PI/2 to PI/2, to a Mercator
- * angle in the range -PI to PI.
- *
- * @param {number} latitude The geodetic latitude in radians.
- * @returns {number} The Mercator angle.
- */
-WebMercatorProjection.geodeticLatitudeToMercatorAngle = function (latitude) {
-  // Clamp the latitude coordinate to the valid Mercator bounds.
-  if (latitude > WebMercatorProjection.MaximumLatitude) {
-    latitude = WebMercatorProjection.MaximumLatitude;
-  } else if (latitude < -WebMercatorProjection.MaximumLatitude) {
-    latitude = -WebMercatorProjection.MaximumLatitude;
-  }
-  const sinLatitude = Math.sin(latitude);
-  return 0.5 * Math.log((1.0 + sinLatitude) / (1.0 - sinLatitude));
-};
 
 /**
  * The maximum latitude (both North and South) supported by a Web Mercator

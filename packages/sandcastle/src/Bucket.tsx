@@ -27,6 +27,7 @@ function BucketFrame({
   appendConsole,
   resetConsole,
   label,
+  onRunComplete,
 }: {
   code: string;
   html: string;
@@ -37,6 +38,7 @@ function BucketFrame({
   appendConsole: (type: ConsoleMessageType, message: string) => void;
   resetConsole: (options?: { showMessage?: boolean | undefined }) => void;
   label?: string;
+  onRunComplete?: () => void;
 }) {
   const iframeBridge = useRef<BridgeToBucket>(null);
   const lastRunNumber = useRef<number>(Number.NEGATIVE_INFINITY);
@@ -93,6 +95,8 @@ function BucketFrame({
           "warn",
           label ? `[${label}] ${message.warn}` : message.warn,
         );
+      } else if (message.type === "runComplete") {
+        onRunComplete?.();
       } else if (message.type === "highlight") {
         highlightLine(message.highlight);
       }
@@ -112,6 +116,7 @@ function BucketFrame({
     highlightLine,
     resetConsole,
     appendConsole,
+    onRunComplete,
   ]);
 
   return (
@@ -145,6 +150,7 @@ export function Bucket({
   highlightLine,
   appendConsole,
   resetConsole,
+  onRunComplete,
 }: {
   code: string;
   html: string;
@@ -154,6 +160,7 @@ export function Bucket({
   highlightLine: (lineNumber: number) => void;
   appendConsole: (type: ConsoleMessageType, message: string) => void;
   resetConsole: (options?: { showMessage?: boolean | undefined }) => void;
+  onRunComplete?: () => void;
 }) {
   if (rendererMode === "split") {
     return (
@@ -171,6 +178,7 @@ export function Bucket({
             appendConsole={appendConsole}
             resetConsole={resetConsole}
             label="WebGL"
+            onRunComplete={onRunComplete}
           />
         </div>
         <div className="bucket-split-divider" />
@@ -187,6 +195,7 @@ export function Bucket({
             appendConsole={appendConsole}
             resetConsole={resetConsole}
             label="WebGPU"
+            onRunComplete={onRunComplete}
           />
         </div>
       </div>
@@ -205,6 +214,7 @@ export function Bucket({
         highlightLine={highlightLine}
         appendConsole={appendConsole}
         resetConsole={resetConsole}
+        onRunComplete={onRunComplete}
       />
     </div>
   );

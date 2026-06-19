@@ -25,9 +25,7 @@ import decodeVectorPolylinePositions from "../Core/decodeVectorPolylinePositions
  * Implements the {@link Cesium3DTileContent} interface.
  * </p>
  *
- * @alias Vector3DTileContent
- * @constructor
- *
+ * @implements Cesium3DTileContent
  * @private
  */
 class Vector3DTileContent {
@@ -54,6 +52,100 @@ class Vector3DTileContent {
     this._ready = false;
 
     initialize(this, arrayBuffer, byteOffset);
+  }
+
+  get featuresLength() {
+    return defined(this._batchTable) ? this._batchTable.featuresLength : 0;
+  }
+
+  get pointsLength() {
+    if (defined(this._points)) {
+      return this._points.pointsLength;
+    }
+    return 0;
+  }
+
+  get trianglesLength() {
+    let trianglesLength = 0;
+    if (defined(this._polygons)) {
+      trianglesLength += this._polygons.trianglesLength;
+    }
+    if (defined(this._polylines)) {
+      trianglesLength += this._polylines.trianglesLength;
+    }
+    return trianglesLength;
+  }
+
+  get geometryByteLength() {
+    let geometryByteLength = 0;
+    if (defined(this._polygons)) {
+      geometryByteLength += this._polygons.geometryByteLength;
+    }
+    if (defined(this._polylines)) {
+      geometryByteLength += this._polylines.geometryByteLength;
+    }
+    return geometryByteLength;
+  }
+
+  get texturesByteLength() {
+    if (defined(this._points)) {
+      return this._points.texturesByteLength;
+    }
+    return 0;
+  }
+
+  get batchTableByteLength() {
+    return defined(this._batchTable)
+      ? this._batchTable.batchTableByteLength
+      : 0;
+  }
+
+  get innerContents() {
+    return undefined;
+  }
+
+  /**
+   * Returns true when the tile's content is ready to render; otherwise false
+   *
+   *
+   * @type {boolean}
+   * @readonly
+   * @private
+   */
+  get ready() {
+    return this._ready;
+  }
+
+  get tileset() {
+    return this._tileset;
+  }
+
+  get tile() {
+    return this._tile;
+  }
+
+  get url() {
+    return this._resource.getUrlComponent(true);
+  }
+
+  get metadata() {
+    return this._metadata;
+  }
+
+  set metadata(value) {
+    this._metadata = value;
+  }
+
+  get batchTable() {
+    return this._batchTable;
+  }
+
+  get group() {
+    return this._group;
+  }
+
+  set group(value) {
+    this._group = value;
   }
 
   hasProperty(batchId, name) {
@@ -154,100 +246,6 @@ class Vector3DTileContent {
     this._points = this._points && this._points.destroy();
     this._batchTable = this._batchTable && this._batchTable.destroy();
     return destroyObject(this);
-  }
-
-  get featuresLength() {
-    return defined(this._batchTable) ? this._batchTable.featuresLength : 0;
-  }
-
-  get pointsLength() {
-    if (defined(this._points)) {
-      return this._points.pointsLength;
-    }
-    return 0;
-  }
-
-  get trianglesLength() {
-    let trianglesLength = 0;
-    if (defined(this._polygons)) {
-      trianglesLength += this._polygons.trianglesLength;
-    }
-    if (defined(this._polylines)) {
-      trianglesLength += this._polylines.trianglesLength;
-    }
-    return trianglesLength;
-  }
-
-  get geometryByteLength() {
-    let geometryByteLength = 0;
-    if (defined(this._polygons)) {
-      geometryByteLength += this._polygons.geometryByteLength;
-    }
-    if (defined(this._polylines)) {
-      geometryByteLength += this._polylines.geometryByteLength;
-    }
-    return geometryByteLength;
-  }
-
-  get texturesByteLength() {
-    if (defined(this._points)) {
-      return this._points.texturesByteLength;
-    }
-    return 0;
-  }
-
-  get batchTableByteLength() {
-    return defined(this._batchTable)
-      ? this._batchTable.batchTableByteLength
-      : 0;
-  }
-
-  get innerContents() {
-    return undefined;
-  }
-
-  /**
-   * Returns true when the tile's content is ready to render; otherwise false
-   *
-   *
-   * @type {boolean}
-   * @readonly
-   * @private
-   */
-  get ready() {
-    return this._ready;
-  }
-
-  get tileset() {
-    return this._tileset;
-  }
-
-  get tile() {
-    return this._tile;
-  }
-
-  get url() {
-    return this._resource.getUrlComponent(true);
-  }
-
-  get metadata() {
-    return this._metadata;
-  }
-
-  set metadata(value) {
-    this._metadata = value;
-  }
-
-  get batchTable() {
-    return this._batchTable;
-  }
-
-  get group() {
-    return this._group;
-  }
-
-  set group(value) {
-    this._group = value;
   }
 }
 

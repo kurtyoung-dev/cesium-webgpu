@@ -12,9 +12,7 @@ import RuntimeError from "../Core/RuntimeError.js";
  * Implements the {@link Cesium3DTileContent} interface.
  * </p>
  *
- * @alias Composite3DTileContent
- * @constructor
- *
+ * @implements Cesium3DTileContent
  * @private
  */
 class Composite3DTileContent {
@@ -31,106 +29,6 @@ class Composite3DTileContent {
     this._metadata = undefined;
     this._group = undefined;
     this._ready = false;
-  }
-
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
-   * always returns <code>false</code>.  Instead call <code>hasProperty</code> for a tile in the composite.
-   */
-  hasProperty(batchId, name) {
-    return false;
-  }
-
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
-   * always returns <code>undefined</code>.  Instead call <code>getFeature</code> for a tile in the composite.
-   */
-  getFeature(batchId) {
-    return undefined;
-  }
-
-  applyDebugSettings(enabled, color) {
-    const contents = this._contents;
-    const length = contents.length;
-    for (let i = 0; i < length; ++i) {
-      contents[i].applyDebugSettings(enabled, color);
-    }
-  }
-
-  applyStyle(style) {
-    const contents = this._contents;
-    const length = contents.length;
-    for (let i = 0; i < length; ++i) {
-      contents[i].applyStyle(style);
-    }
-  }
-
-  update(tileset, frameState) {
-    const contents = this._contents;
-    const length = contents.length;
-    let ready = true;
-    for (let i = 0; i < length; ++i) {
-      contents[i].update(tileset, frameState);
-      ready = ready && contents[i].ready;
-    }
-
-    if (!this._ready && ready) {
-      this._ready = true;
-    }
-  }
-
-  /**
-   * Find an intersection between a ray and the tile content surface that was rendered. The ray must be given in world coordinates.
-   *
-   * @param {Ray} ray The ray to test for intersection.
-   * @param {FrameState} frameState The frame state.
-   * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
-   * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
-   *
-   * @private
-   */
-  pick(ray, frameState, result) {
-    if (!this._ready) {
-      return undefined;
-    }
-
-    let intersection;
-    let minDistance = Number.POSITIVE_INFINITY;
-    const contents = this._contents;
-    const length = contents.length;
-
-    for (let i = 0; i < length; ++i) {
-      const candidate = contents[i].pick(ray, frameState, result);
-
-      if (!defined(candidate)) {
-        continue;
-      }
-
-      const distance = Cartesian3.distance(ray.origin, candidate);
-      if (distance < minDistance) {
-        intersection = candidate;
-        minDistance = distance;
-      }
-    }
-
-    if (!defined(intersection)) {
-      return undefined;
-    }
-
-    return result;
-  }
-
-  isDestroyed() {
-    return false;
-  }
-
-  destroy() {
-    const contents = this._contents;
-    const length = contents.length;
-    for (let i = 0; i < length; ++i) {
-      contents[i].destroy();
-    }
-    return destroyObject(this);
   }
 
   get featurePropertiesDirty() {
@@ -274,91 +172,194 @@ class Composite3DTileContent {
       contents[i].group = value;
     }
   }
-}
 
-const sizeOfUint32 = Uint32Array.BYTES_PER_ELEMENT;
-
-Composite3DTileContent.fromTileType = async function (
-  tileset,
-  tile,
-  resource,
-  arrayBuffer,
-  byteOffset,
-  factory,
-) {
-  byteOffset = byteOffset ?? 0;
-
-  const uint8Array = new Uint8Array(arrayBuffer);
-  const view = new DataView(arrayBuffer);
-  byteOffset += sizeOfUint32; // Skip magic
-
-  const version = view.getUint32(byteOffset, true);
-  if (version !== 1) {
-    throw new RuntimeError(
-      `Only Composite Tile version 1 is supported. Version ${version} is not.`,
-    );
-  }
-  byteOffset += sizeOfUint32;
-
-  // Skip byteLength
-  byteOffset += sizeOfUint32;
-
-  const tilesLength = view.getUint32(byteOffset, true);
-  byteOffset += sizeOfUint32;
-
-  // For caching purposes, models within the composite tile must be
-  // distinguished. To do this, add a query parameter ?compositeIndex=i.
-  // Since composite tiles may contain other composite tiles, check for an
-  // existing prefix and separate them with underscores. e.g.
-  // ?compositeIndex=0_1_1
-  let prefix = resource.queryParameters.compositeIndex;
-  if (defined(prefix)) {
-    // We'll be adding another value at the end, so add an underscore.
-    prefix = `${prefix}_`;
-  } else {
-    // no prefix
-    prefix = "";
-  }
-
-  const promises = [];
-  promises.length = tilesLength;
-  for (let i = 0; i < tilesLength; ++i) {
-    const tileType = getMagic(uint8Array, byteOffset);
-
-    // Tile byte length is stored after magic and version
-    const tileByteLength = view.getUint32(byteOffset + sizeOfUint32 * 2, true);
-
-    const contentFactory = factory[tileType];
-
-    // Label which content within the composite this is
-    const compositeIndex = `${prefix}${i}`;
-    const childResource = resource.getDerivedResource({
-      queryParameters: {
-        compositeIndex: compositeIndex,
-      },
-    });
-
-    if (defined(contentFactory)) {
-      promises[i] = Promise.resolve(
-        contentFactory(tileset, tile, childResource, arrayBuffer, byteOffset),
-      );
-    } else {
-      throw new RuntimeError(
-        `Unknown tile content type, ${tileType}, inside Composite tile`,
-      );
-    }
-
-    byteOffset += tileByteLength;
-  }
-
-  const innerContents = await Promise.all(promises);
-  const content = new Composite3DTileContent(
+  static async fromTileType(
     tileset,
     tile,
     resource,
-    innerContents,
-  );
-  return content;
-};
+    arrayBuffer,
+    byteOffset,
+    factory,
+  ) {
+    byteOffset = byteOffset ?? 0;
+
+    const uint8Array = new Uint8Array(arrayBuffer);
+    const view = new DataView(arrayBuffer);
+    byteOffset += sizeOfUint32; // Skip magic
+
+    const version = view.getUint32(byteOffset, true);
+    if (version !== 1) {
+      throw new RuntimeError(
+        `Only Composite Tile version 1 is supported. Version ${version} is not.`,
+      );
+    }
+    byteOffset += sizeOfUint32;
+
+    // Skip byteLength
+    byteOffset += sizeOfUint32;
+
+    const tilesLength = view.getUint32(byteOffset, true);
+    byteOffset += sizeOfUint32;
+
+    // For caching purposes, models within the composite tile must be
+    // distinguished. To do this, add a query parameter ?compositeIndex=i.
+    // Since composite tiles may contain other composite tiles, check for an
+    // existing prefix and separate them with underscores. e.g.
+    // ?compositeIndex=0_1_1
+    let prefix = resource.queryParameters.compositeIndex;
+    if (defined(prefix)) {
+      // We'll be adding another value at the end, so add an underscore.
+      prefix = `${prefix}_`;
+    } else {
+      // no prefix
+      prefix = "";
+    }
+
+    const promises = [];
+    promises.length = tilesLength;
+    for (let i = 0; i < tilesLength; ++i) {
+      const tileType = getMagic(uint8Array, byteOffset);
+
+      // Tile byte length is stored after magic and version
+      const tileByteLength = view.getUint32(
+        byteOffset + sizeOfUint32 * 2,
+        true,
+      );
+
+      const contentFactory = factory[tileType];
+
+      // Label which content within the composite this is
+      const compositeIndex = `${prefix}${i}`;
+      const childResource = resource.getDerivedResource({
+        queryParameters: {
+          compositeIndex: compositeIndex,
+        },
+      });
+
+      if (defined(contentFactory)) {
+        promises[i] = Promise.resolve(
+          contentFactory(tileset, tile, childResource, arrayBuffer, byteOffset),
+        );
+      } else {
+        throw new RuntimeError(
+          `Unknown tile content type, ${tileType}, inside Composite tile`,
+        );
+      }
+
+      byteOffset += tileByteLength;
+    }
+
+    const innerContents = await Promise.all(promises);
+    const content = new Composite3DTileContent(
+      tileset,
+      tile,
+      resource,
+      innerContents,
+    );
+    return content;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
+   * always returns <code>false</code>.  Instead call <code>hasProperty</code> for a tile in the composite.
+   */
+  hasProperty(batchId, name) {
+    return false;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
+   * always returns <code>undefined</code>.  Instead call <code>getFeature</code> for a tile in the composite.
+   */
+  getFeature(batchId) {
+    return undefined;
+  }
+
+  applyDebugSettings(enabled, color) {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].applyDebugSettings(enabled, color);
+    }
+  }
+
+  applyStyle(style) {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].applyStyle(style);
+    }
+  }
+
+  update(tileset, frameState) {
+    const contents = this._contents;
+    const length = contents.length;
+    let ready = true;
+    for (let i = 0; i < length; ++i) {
+      contents[i].update(tileset, frameState);
+      ready = ready && contents[i].ready;
+    }
+
+    if (!this._ready && ready) {
+      this._ready = true;
+    }
+  }
+
+  /**
+   * Find an intersection between a ray and the tile content surface that was rendered. The ray must be given in world coordinates.
+   *
+   * @param {Ray} ray The ray to test for intersection.
+   * @param {FrameState} frameState The frame state.
+   * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
+   * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
+   *
+   * @private
+   */
+  pick(ray, frameState, result) {
+    if (!this._ready) {
+      return undefined;
+    }
+
+    let intersection;
+    let minDistance = Number.POSITIVE_INFINITY;
+    const contents = this._contents;
+    const length = contents.length;
+
+    for (let i = 0; i < length; ++i) {
+      const candidate = contents[i].pick(ray, frameState, result);
+
+      if (!defined(candidate)) {
+        continue;
+      }
+
+      const distance = Cartesian3.distance(ray.origin, candidate);
+      if (distance < minDistance) {
+        intersection = candidate;
+        minDistance = distance;
+      }
+    }
+
+    if (!defined(intersection)) {
+      return undefined;
+    }
+
+    return result;
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].destroy();
+    }
+    return destroyObject(this);
+  }
+}
+
+const sizeOfUint32 = Uint32Array.BYTES_PER_ELEMENT;
 
 export default Composite3DTileContent;

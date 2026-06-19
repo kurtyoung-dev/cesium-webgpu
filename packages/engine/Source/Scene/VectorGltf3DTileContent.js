@@ -10,7 +10,6 @@ import BufferPolyline from "./BufferPolyline.js";
 import BufferPolylineCollection from "./BufferPolylineCollection.js";
 import BufferPolylineMaterial from "./BufferPolylineMaterial.js";
 import Cesium3DTileStyle from "./Cesium3DTileStyle.js";
-import Color from "../Core/Color.js";
 import Matrix4 from "../Core/Matrix4.js";
 import Model from "./Model/Model.js";
 import ModelUtility from "./Model/ModelUtility.js";
@@ -18,6 +17,7 @@ import Pass from "../Renderer/Pass.js";
 import createVectorTileBuffersFromModelComponents from "./Model/createVectorTileBuffersFromModelComponents.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
+import DeveloperError from "../Core/DeveloperError.js";
 
 /** @import BufferPrimitive from "./BufferPrimitive.js"; */
 /** @import BufferPrimitiveCollection from "./BufferPrimitiveCollection.js"; */
@@ -25,8 +25,9 @@ import destroyObject from "../Core/destroyObject.js";
 /** @import Cesium3DContentGroup from "./Cesium3DContentGroup.js"; */
 /** @import Cesium3DTile from "./Cesium3DTile.js"; */
 /** @import Cesium3DTileBatchTable from "./Cesium3DTileBatchTable.js"; */
-/** @import Cesium3DTileFeature from "./Cesium3DTileFeature.js"; */
+/** @import Cesium3DTileVectorFeature from "./Cesium3DTileVectorFeature.js";*/
 /** @import Cesium3DTileset from "./Cesium3DTileset.js"; */
+/** @import Color from "../Core/Color.js"; */
 /** @import FrameState from "./FrameState.js"; */
 /** @import ImplicitMetadataView from "./ImplicitMetadataView.js"; */
 /** @import Ray from "../Core/Ray.js"; */
@@ -70,13 +71,32 @@ class VectorGltf3DTileContent {
     this._resource = resource;
 
     /** @type {Model} */
-    this._decodeModel = undefined;
+    this._model = undefined;
 
-    /** @type {Array<BufferPrimitiveCollection<BufferPrimitive>>} */
+    /**
+     * List of all vector primitive collections.
+     * @type {Array<BufferPrimitiveCollection<BufferPrimitive>>}
+     */
     this._collections = [];
 
-    /** @type {Array<Matrix4>} */
+    /**
+     * List of transform matrices for each collection; order matches 'collections'.
+     * @type {Array<Matrix4>}
+     */
     this._collectionLocalMatrices = [];
+
+    /**
+     * Maps vector primitive collection -> propertyTableId.
+     * @type {Map<BufferPrimitiveCollection<BufferPrimitive>, number>}
+     */
+    this._collectionFeatureTableIds = new Map();
+
+    /**
+     * Maps propertyTableId -> featureId -> feature. Note that Feature IDs are
+     * unique within their assigned property table, but not globally unique.
+     * @type {Map<number, Map<number, Cesium3DTileVectorFeature>>}
+     */
+    this._featuresByTableId = new Map();
 
     /** @type {ImplicitMetadataView} */
     this._metadata = undefined;
@@ -94,25 +114,27 @@ class VectorGltf3DTileContent {
   }
 
   get featuresLength() {
-    return this._collections.reduce((totalCount, collection) => {
-      return totalCount + collection.primitiveCount;
-    }, 0);
+    return this.batchTables.reduce(
+      (acc, batchTable) => acc + batchTable.featuresLength,
+      0,
+    );
   }
 
   get pointsLength() {
     return this._collections
       .filter((collection) => collection instanceof BufferPointCollection)
-      .reduce((totalPoints, collection) => {
-        return totalPoints + collection.primitiveCount;
-      }, 0);
+      .reduce((acc, collection) => acc + collection.primitiveCount, 0);
   }
 
   get trianglesLength() {
-    return this._collections
-      .filter((collection) => collection instanceof BufferPolygonCollection)
-      .reduce((totalPoints, collection) => {
-        return totalPoints + collection.triangleCount;
-      }, 0);
+    return this._collections.reduce((acc, collection) => {
+      if (collection instanceof BufferPolygonCollection) {
+        return acc + collection.triangleCount;
+      } else if (collection instanceof BufferPolylineCollection) {
+        return acc + (collection.vertexCount - collection.primitiveCount) * 2;
+      }
+      return acc;
+    }, 0);
   }
 
   get geometryByteLength() {
@@ -126,7 +148,11 @@ class VectorGltf3DTileContent {
   }
 
   get batchTableByteLength() {
-    return 0;
+    return this.batchTables.reduce(
+      // @ts-expect-error Missing types.
+      (acc, batchTable) => acc + batchTable.batchTableByteLength,
+      0,
+    );
   }
 
   /** @returns {undefined} */
@@ -150,9 +176,17 @@ class VectorGltf3DTileContent {
     return this._resource.getUrlComponent(true);
   }
 
-  /** @type {Cesium3DTileBatchTable} */
+  /** @type {Cesium3DTileBatchTable[]} */
+  get batchTables() {
+    return this._model._featureTables;
+  }
+
+  /**
+   * @type {Cesium3DTileBatchTable}
+   * @deprecated See {@link batchTables}.
+   */
   get batchTable() {
-    return undefined;
+    throw new DeveloperError("Deprecated: Use `content.batchTables`.");
   }
 
   /** @type {ImplicitMetadataView} */
@@ -174,20 +208,23 @@ class VectorGltf3DTileContent {
   }
 
   /**
-   * @param {number} _featureId
-   * @returns {Cesium3DTileFeature}
+   * @param {number} featureId
+   * @param {number} [featureTableId]
+   * @returns {Cesium3DTileVectorFeature}
    */
-  getFeature(_featureId) {
-    return undefined;
+  getFeature(featureId, featureTableId) {
+    return this._featuresByTableId.get(featureTableId)?.get(featureId);
   }
 
   /**
-   * @param {number} _featureId
-   * @param {string} _name
+   * @param {number} featureId
+   * @param {string} name
+   * @param {number} [featureTableId]
    * @returns {boolean}
    */
-  hasProperty(_featureId, _name) {
-    return false;
+  hasProperty(featureId, name, featureTableId) {
+    const feature = this.getFeature(featureId, featureTableId);
+    return feature ? feature.hasProperty(name) : false;
   }
 
   /**
@@ -195,17 +232,16 @@ class VectorGltf3DTileContent {
    * @param {Color} color
    */
   applyDebugSettings(enabled, color) {
-    color = enabled ? color : Color.WHITE;
-    this.applyStyle(new Cesium3DTileStyle({ color }));
+    const colorString = enabled
+      ? `color("${color.toCssHexString()}", 1.0)`
+      : 'color("white", 1.0)';
+    this.applyStyle(new Cesium3DTileStyle({ color: colorString }));
   }
 
   /**
    * @param {*} style
    */
   applyStyle(style) {
-    const show = style.show?.evaluate(null) ?? true;
-    const color = style.color?.evaluate(null, new Color());
-
     const isPointCollection = /** @param {unknown} c */ (c) =>
       c instanceof BufferPointCollection;
     const isPolylineCollection = /** @param {unknown} c */ (c) =>
@@ -213,33 +249,66 @@ class VectorGltf3DTileContent {
     const isPolygonCollection = /** @param {unknown} c */ (c) =>
       c instanceof BufferPolygonCollection;
 
-    Color.clone(color, pointMaterial.color);
-    pointMaterial.size = style.pointSize?.evaluate(null);
-    pointMaterial.outlineWidth = style.pointOutlineWidth?.evaluate(null);
-    style.pointOutlineColor?.evaluate(null, pointMaterial.outlineColor);
     for (const collection of this._collections.filter(isPointCollection)) {
+      const featureTableId = this._collectionFeatureTableIds.get(collection);
       for (let i = 0, il = collection.primitiveCount; i < il; i++) {
         collection.get(i, point);
-        point.show = show;
+        const feature = this.getFeature(point.featureId, featureTableId);
+
+        if (defined(style.show)) {
+          point.show = style.show.evaluate(feature);
+        }
+        if (defined(style.color)) {
+          style.color.evaluate(feature, pointMaterial.color);
+        }
+        if (defined(style.pointSize)) {
+          pointMaterial.size = style.pointSize.evaluate(feature);
+        }
+        if (defined(style.pointOutlineWidth)) {
+          pointMaterial.outlineWidth =
+            style.pointOutlineWidth.evaluate(feature);
+        }
+        if (defined(style.pointOutlineColor)) {
+          style.pointOutlineColor.evaluate(feature, pointMaterial.outlineColor);
+        }
+
         point.setMaterial(pointMaterial);
       }
     }
 
-    Color.clone(color, polylineMaterial.color);
-    polylineMaterial.width = style.lineWidth?.evaluate(null) ?? 1;
     for (const collection of this._collections.filter(isPolylineCollection)) {
+      const featureTableId = this._collectionFeatureTableIds.get(collection);
       for (let i = 0, il = collection.primitiveCount; i < il; i++) {
         collection.get(i, polyline);
-        polyline.show = show;
+        const feature = this.getFeature(polyline.featureId, featureTableId);
+
+        if (defined(style.show)) {
+          polyline.show = style.show.evaluate(feature);
+        }
+        if (defined(style.color)) {
+          style.color.evaluate(feature, polylineMaterial.color);
+        }
+        if (defined(style.lineWidth)) {
+          polylineMaterial.width = style.lineWidth.evaluate(feature);
+        }
+
         polyline.setMaterial(polylineMaterial);
       }
     }
 
-    Color.clone(color, polygonMaterial.color);
     for (const collection of this._collections.filter(isPolygonCollection)) {
+      const featureTableId = this._collectionFeatureTableIds.get(collection);
       for (let i = 0, il = collection.primitiveCount; i < il; i++) {
         collection.get(i, polygon);
-        polygon.show = show;
+        const feature = this.getFeature(polygon.featureId, featureTableId);
+
+        if (defined(style.show)) {
+          polygon.show = style.show.evaluate(feature);
+        }
+        if (defined(style.color)) {
+          style.color.evaluate(feature, polygonMaterial.color);
+        }
+
         polygon.setMaterial(polygonMaterial);
       }
     }
@@ -250,17 +319,13 @@ class VectorGltf3DTileContent {
    * @param {FrameState} frameState
    */
   update(_tileset, frameState) {
-    if (defined(this._decodeModel) && !this._ready) {
-      const model = this._decodeModel;
+    if (defined(this._model) && !this._ready) {
+      const model = this._model;
       model.modelMatrix = this._tile.computedTransform;
       model.update(frameState);
 
       if (model.ready) {
         initializeVectorPrimitives(this);
-        if (this._decodeModel) {
-          this._decodeModel.destroy();
-          this._decodeModel = undefined;
-        }
         this._ready = true;
       }
     }
@@ -296,8 +361,8 @@ class VectorGltf3DTileContent {
   }
 
   destroy() {
-    this._decodeModel?.destroy();
-    this._decodeModel = undefined;
+    this._model?.destroy();
+    this._model = undefined;
     this._collections.forEach((collection) => collection.destroy());
     this._collections.length = 0;
     return destroyObject(this);
@@ -307,15 +372,15 @@ class VectorGltf3DTileContent {
    * @param {Cesium3DTileset} tileset
    * @param {Cesium3DTile} tile
    * @param {Resource} resource
-   * @param {unknown} gltf
+   * @param {Uint8Array} glb GLB binary produced by buildVectorGltfFromMVT
    * @returns {Promise<VectorGltf3DTileContent>}
    */
-  static async fromGltf(tileset, tile, resource, gltf) {
+  static async fromGltf(tileset, tile, resource, glb) {
     const content = new VectorGltf3DTileContent(tileset, tile, resource);
-    const modelOptions = makeDecodeModelOptions(tileset, tile, content, gltf);
-    const decodeModel = await Model.fromGltfAsync(modelOptions);
-    decodeModel.show = false;
-    content._decodeModel = decodeModel;
+    const modelOptions = makeModelOptions(tileset, tile, content, glb);
+    const model = await Model.fromGltfAsync(modelOptions);
+    model.show = false;
+    content._model = model;
     return content;
   }
 }
@@ -324,13 +389,13 @@ class VectorGltf3DTileContent {
  * @param {Cesium3DTileset} tileset
  * @param {Cesium3DTile} tile
  * @param {VectorGltf3DTileContent} content
- * @param {unknown} gltf
+ * @param {Uint8Array} glb
  * @returns {*}
  * @ignore
  */
-function makeDecodeModelOptions(tileset, tile, content, gltf) {
+function makeModelOptions(tileset, tile, content, glb) {
   return {
-    gltf: gltf,
+    gltf: glb,
     basePath: content._resource,
     cull: false,
     releaseGltfJson: true,
@@ -355,7 +420,7 @@ function makeDecodeModelOptions(tileset, tile, content, gltf) {
  */
 function initializeVectorPrimitives(content) {
   // @ts-expect-error Requires Model conversion to ES6 class.
-  const components = content._decodeModel.sceneGraph.components;
+  const components = content._model.sceneGraph.components;
 
   const axisCorrection = ModelUtility.getAxisCorrectionMatrix(
     components.upAxis,
@@ -369,10 +434,15 @@ function initializeVectorPrimitives(content) {
     content._modelMatrix,
   );
 
-  const result = createVectorTileBuffersFromModelComponents(this, components);
+  const result = createVectorTileBuffersFromModelComponents(
+    content,
+    components,
+  );
 
   content._collections = result.collections;
   content._collectionLocalMatrices = result.collectionLocalMatrices;
+  content._collectionFeatureTableIds = result.collectionFeatureTableIds;
+  content._featuresByTableId = result.featuresByTableId;
 }
 
 export default VectorGltf3DTileContent;

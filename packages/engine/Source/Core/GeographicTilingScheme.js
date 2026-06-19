@@ -1,3 +1,5 @@
+// @ts-check
+
 import Cartesian2 from "./Cartesian2.js";
 import Check from "./Check.js";
 import Frozen from "./Frozen.js";
@@ -7,24 +9,28 @@ import GeographicProjection from "./GeographicProjection.js";
 import CesiumMath from "./Math.js";
 import Rectangle from "./Rectangle.js";
 
+/** @import Cartographic from "./Cartographic.js"; */
+/** @import MapProjection from "./MapProjection.js"; */
+/** @import TilingScheme from "./TilingScheme.js"; */
+
 /**
  * A tiling scheme for geometry referenced to a simple {@link GeographicProjection} where
  * longitude and latitude are directly mapped to X and Y.  This projection is commonly
  * known as geographic, equirectangular, equidistant cylindrical, or plate carrée.
  *
- * @alias GeographicTilingScheme
- * @constructor
- *
- * @param {object} [options] Object with the following properties:
- * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.default] The ellipsoid whose surface is being tiled. Defaults to
- * the default ellipsoid.
- * @param {Rectangle} [options.rectangle=Rectangle.MAX_VALUE] The rectangle, in radians, covered by the tiling scheme.
- * @param {number} [options.numberOfLevelZeroTilesX=2] The number of tiles in the X direction at level zero of
- * the tile tree.
- * @param {number} [options.numberOfLevelZeroTilesY=1] The number of tiles in the Y direction at level zero of
- * the tile tree.
+ * @implements {TilingScheme}
  */
 class GeographicTilingScheme {
+  /**
+   * @param {object} [options] Object with the following properties:
+   * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.default] The ellipsoid whose surface is being tiled. Defaults to
+   * the default ellipsoid.
+   * @param {Rectangle} [options.rectangle=Rectangle.MAX_VALUE] The rectangle, in radians, covered by the tiling scheme.
+   * @param {number} [options.numberOfLevelZeroTilesX=2] The number of tiles in the X direction at level zero of
+   * the tile tree.
+   * @param {number} [options.numberOfLevelZeroTilesY=1] The number of tiles in the Y direction at level zero of
+   * the tile tree.
+   */
   constructor(options) {
     options = options ?? Frozen.EMPTY_OBJECT;
 
@@ -33,6 +39,30 @@ class GeographicTilingScheme {
     this._projection = new GeographicProjection(this._ellipsoid);
     this._numberOfLevelZeroTilesX = options.numberOfLevelZeroTilesX ?? 2;
     this._numberOfLevelZeroTilesY = options.numberOfLevelZeroTilesY ?? 1;
+  }
+
+  /**
+   * Gets the ellipsoid that is tiled by this tiling scheme.
+   * @type {Ellipsoid}
+   */
+  get ellipsoid() {
+    return this._ellipsoid;
+  }
+
+  /**
+   * Gets the rectangle, in radians, covered by this tiling scheme.
+   * @type {Rectangle}
+   */
+  get rectangle() {
+    return this._rectangle;
+  }
+
+  /**
+   * Gets the map projection used by this tiling scheme.
+   * @type {MapProjection}
+   */
+  get projection() {
+    return this._projection;
   }
 
   /**
@@ -93,7 +123,7 @@ class GeographicTilingScheme {
    * @param {number} x The integer x coordinate of the tile.
    * @param {number} y The integer y coordinate of the tile.
    * @param {number} level The tile level-of-detail.  Zero is the least detailed.
-   * @param {object} [result] The instance to which to copy the result, or undefined if a new instance
+   * @param {Rectangle} [result] The instance to which to copy the result, or undefined if a new instance
    *        should be created.
    * @returns {Rectangle} The specified 'result', or a new object containing the rectangle
    *          if 'result' is undefined.
@@ -113,7 +143,7 @@ class GeographicTilingScheme {
    * @param {number} x The integer x coordinate of the tile.
    * @param {number} y The integer y coordinate of the tile.
    * @param {number} level The tile level-of-detail.  Zero is the least detailed.
-   * @param {object} [result] The instance to which to copy the result, or undefined if a new instance
+   * @param {Rectangle} [result] The instance to which to copy the result, or undefined if a new instance
    *        should be created.
    * @returns {Rectangle} The specified 'result', or a new object containing the rectangle
    *          if 'result' is undefined.
@@ -190,30 +220,6 @@ class GeographicTilingScheme {
     result.x = xTileCoordinate;
     result.y = yTileCoordinate;
     return result;
-  }
-
-  /**
-   * Gets the ellipsoid that is tiled by this tiling scheme.
-   * @type {Ellipsoid}
-   */
-  get ellipsoid() {
-    return this._ellipsoid;
-  }
-
-  /**
-   * Gets the rectangle, in radians, covered by this tiling scheme.
-   * @type {Rectangle}
-   */
-  get rectangle() {
-    return this._rectangle;
-  }
-
-  /**
-   * Gets the map projection used by this tiling scheme.
-   * @type {MapProjection}
-   */
-  get projection() {
-    return this._projection;
   }
 }
 

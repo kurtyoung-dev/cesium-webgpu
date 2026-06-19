@@ -27,22 +27,21 @@ import BoundingVolumeSemantics from "./BoundingVolumeSemantics.js";
  * </p>
  * This object is normally not instantiated directly, use {@link Implicit3DTileContent.fromSubtreeJson}.
  *
- * @alias Implicit3DTileContent
- * @constructor
- *
- * @param {Cesium3DTileset} tileset The tileset this content belongs to
- * @param {Cesium3DTile} tile The tile this content belongs to.
- * @param {Resource} resource The resource for the tileset
- * @param {object} [json] The JSON object containing the subtree. Mutually exclusive with arrayBuffer.
- * @param {ArrayBuffer} [arrayBuffer] The array buffer that stores the content payload. Mutually exclusive with json.
- * @param {number} [byteOffset=0] The offset into the array buffer, if one was provided
- *
- * @exception {DeveloperError} One of json and arrayBuffer must be defined.
- *
+ * @implements Cesium3DTileContent
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
 class Implicit3DTileContent {
+  /**
+   * @param {Cesium3DTileset} tileset The tileset this content belongs to
+   * @param {Cesium3DTile} tile The tile this content belongs to.
+   * @param {Resource} resource The resource for the tileset
+   * @param {object} [json] The JSON object containing the subtree. Mutually exclusive with arrayBuffer.
+   * @param {ArrayBuffer} [arrayBuffer] The array buffer that stores the content payload. Mutually exclusive with json.
+   * @param {number} [byteOffset=0] The offset into the array buffer, if one was provided
+   *
+   * @exception {DeveloperError} One of json and arrayBuffer must be defined.
+   */
   constructor(tileset, tile, resource) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("tile.implicitTileset", tile.implicitTileset);
@@ -72,42 +71,6 @@ class Implicit3DTileContent {
     this._url = subtreeResource.getUrlComponent(true);
 
     this._ready = false;
-  }
-
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Implicit3DTileContent</code>
-   * always returns <code>false</code> since a tile of this type does not have any features.
-   * @private
-   */
-  hasProperty(batchId, name) {
-    return false;
-  }
-
-  /**
-   * Part of the {@link Cesium3DTileContent} interface.  <code>Implicit3DTileContent</code>
-   * always returns <code>undefined</code> since a tile of this type does not have any features.
-   * @private
-   */
-  getFeature(batchId) {
-    return undefined;
-  }
-
-  applyDebugSettings(enabled, color) {}
-  applyStyle(style) {}
-  update(tileset, frameState) {}
-
-  pick(ray, frameState, result) {
-    return undefined;
-  }
-
-  isDestroyed() {
-    return false;
-  }
-
-  destroy() {
-    this._implicitSubtree =
-      this._implicitSubtree && this._implicitSubtree.destroy();
-    return destroyObject(this);
   }
 
   get featuresLength() {
@@ -171,7 +134,7 @@ class Implicit3DTileContent {
     return undefined;
   }
 
-  set metadata(value) {
+  set metadata(_) {
     //>>includeStart('debug', pragmas.debug);
     throw new DeveloperError("Implicit3DTileContent cannot have metadata");
     //>>includeEnd('debug');
@@ -188,65 +151,101 @@ class Implicit3DTileContent {
   set group(value) {
     this._group = value;
   }
-}
 
-/**
- * Initialize the implicit content by parsing the subtree resource and setting
- * up a promise chain to expand the immediate subtree.
- *
- * @param {Cesium3DTileset} tileset The tileset this content belongs to
- * @param {Cesium3DTile} tile The tile this content belongs to.
- * @param {Resource} resource The resource for the tileset
- * @param {object} [json] The JSON containing the subtree. Mutually exclusive with arrayBuffer.
- * @param {ArrayBuffer} [arrayBuffer] The ArrayBuffer containing a subtree binary. Mutually exclusive with json.
- * @param {number} [byteOffset=0] The byte offset into the arrayBuffer
- * @return {Promise<Implicit3DTileContent>}
- *
- * @exception {DeveloperError} One of json and arrayBuffer must be defined.
- *
- * @private
- */
-Implicit3DTileContent.fromSubtreeJson = async function (
-  tileset,
-  tile,
-  resource,
-  json,
-  arrayBuffer,
-  byteOffset,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("tile.implicitTileset", tile.implicitTileset);
-  Check.defined("tile.implicitCoordinates", tile.implicitCoordinates);
-  if (defined(json) === defined(arrayBuffer)) {
-    throw new DeveloperError("One of json and arrayBuffer must be defined.");
-  }
-  //>>includeEnd('debug');
-
-  byteOffset = byteOffset ?? 0;
-  let uint8Array;
-  if (defined(arrayBuffer)) {
-    uint8Array = new Uint8Array(arrayBuffer, byteOffset);
-  }
-
-  const implicitTileset = tile.implicitTileset;
-  const implicitCoordinates = tile.implicitCoordinates;
-
-  const subtree = await ImplicitSubtree.fromSubtreeJson(
+  /**
+   * Initialize the implicit content by parsing the subtree resource and setting
+   * up a promise chain to expand the immediate subtree.
+   *
+   * @param {Cesium3DTileset} tileset The tileset this content belongs to
+   * @param {Cesium3DTile} tile The tile this content belongs to.
+   * @param {Resource} resource The resource for the tileset
+   * @param {object} [json] The JSON containing the subtree. Mutually exclusive with arrayBuffer.
+   * @param {ArrayBuffer} [arrayBuffer] The ArrayBuffer containing a subtree binary. Mutually exclusive with json.
+   * @param {number} [byteOffset=0] The byte offset into the arrayBuffer
+   * @return {Promise<Implicit3DTileContent>}
+   *
+   * @exception {DeveloperError} One of json and arrayBuffer must be defined.
+   *
+   * @private
+   */
+  static async fromSubtreeJson(
+    tileset,
+    tile,
     resource,
     json,
-    uint8Array,
-    implicitTileset,
-    implicitCoordinates,
-  );
+    arrayBuffer,
+    byteOffset,
+  ) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("tile.implicitTileset", tile.implicitTileset);
+    Check.defined("tile.implicitCoordinates", tile.implicitCoordinates);
+    if (defined(json) === defined(arrayBuffer)) {
+      throw new DeveloperError("One of json and arrayBuffer must be defined.");
+    }
+    //>>includeEnd('debug');
 
-  const content = new Implicit3DTileContent(tileset, tile, resource);
+    byteOffset = byteOffset ?? 0;
+    let uint8Array;
+    if (defined(arrayBuffer)) {
+      uint8Array = new Uint8Array(arrayBuffer, byteOffset);
+    }
 
-  content._implicitSubtree = subtree;
-  expandSubtree(content, subtree);
-  content._ready = true;
+    const implicitTileset = tile.implicitTileset;
+    const implicitCoordinates = tile.implicitCoordinates;
 
-  return content;
-};
+    const subtree = await ImplicitSubtree.fromSubtreeJson(
+      resource,
+      json,
+      uint8Array,
+      implicitTileset,
+      implicitCoordinates,
+    );
+
+    const content = new Implicit3DTileContent(tileset, tile, resource);
+
+    content._implicitSubtree = subtree;
+    expandSubtree(content, subtree);
+    content._ready = true;
+
+    return content;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Implicit3DTileContent</code>
+   * always returns <code>false</code> since a tile of this type does not have any features.
+   * @private
+   */
+  hasProperty(batchId, name) {
+    return false;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Implicit3DTileContent</code>
+   * always returns <code>undefined</code> since a tile of this type does not have any features.
+   * @private
+   */
+  getFeature(batchId) {
+    return undefined;
+  }
+
+  applyDebugSettings(enabled, color) {}
+  applyStyle(style) {}
+  update(tileset, frameState) {}
+
+  pick(ray, frameState, result) {
+    return undefined;
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    this._implicitSubtree =
+      this._implicitSubtree && this._implicitSubtree.destroy();
+    return destroyObject(this);
+  }
+}
 
 /**
  * Expand a single subtree placeholder tile. This transcodes the subtree into

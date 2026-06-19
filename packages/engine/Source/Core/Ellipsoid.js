@@ -1,3 +1,5 @@
+// @ts-check
+
 import Cartesian2 from "./Cartesian2.js";
 import Cartesian3 from "./Cartesian3.js";
 import Cartographic from "./Cartographic.js";
@@ -7,6 +9,26 @@ import DeveloperError from "./DeveloperError.js";
 import CesiumMath from "./Math.js";
 import scaleToGeodeticSurface from "./scaleToGeodeticSurface.js";
 
+/** @import Rectangle from "./Rectangle.js"; */
+
+/**
+ * A real valued scalar function.
+ * @callback EllipsoidRealValuedScalarFunction
+ *
+ * @param {number} x The value used to evaluate the function.
+ * @returns {number} The value of the function at x.
+ *
+ * @private
+ */
+
+/**
+ * @param {Ellipsoid} ellipsoid
+ * @param {number} x
+ * @param {number} y
+ * @param {number} z
+ *
+ * @ignore
+ */
 function initialize(ellipsoid, x, y, z) {
   x = x ?? 0.0;
   y = y ?? 0.0;
@@ -59,20 +81,19 @@ function initialize(ellipsoid, x, y, z) {
  *
  * Rather than constructing this object directly, one of the provided
  * constants is normally used.
- * @alias Ellipsoid
- * @constructor
- *
- * @param {number} [x=0] The radius in the x direction.
- * @param {number} [y=0] The radius in the y direction.
- * @param {number} [z=0] The radius in the z direction.
- *
- * @exception {DeveloperError} All radii components must be greater than or equal to zero.
  *
  * @see Ellipsoid.fromCartesian3
  * @see Ellipsoid.WGS84
  * @see Ellipsoid.UNIT_SPHERE
  */
 class Ellipsoid {
+  /**
+   * @param {number} [x=0] The radius in the x direction.
+   * @param {number} [y=0] The radius in the y direction.
+   * @param {number} [z=0] The radius in the z direction.
+   *
+   * @exception {DeveloperError} All radii components must be greater than or equal to zero.
+   */
   constructor(x, y, z) {
     this._radii = undefined;
     this._radiiSquared = undefined;
@@ -88,6 +109,157 @@ class Ellipsoid {
   }
 
   /**
+   * Gets the radii of the ellipsoid.
+   * @type {Cartesian3}
+   * @readonly
+   */
+  get radii() {
+    return this._radii;
+  }
+
+  /**
+   * Gets the squared radii of the ellipsoid.
+   * @type {Cartesian3}
+   * @readonly
+   */
+  get radiiSquared() {
+    return this._radiiSquared;
+  }
+
+  /**
+   * Gets the radii of the ellipsoid raise to the fourth power.
+   * @type {Cartesian3}
+   * @readonly
+   */
+  get radiiToTheFourth() {
+    return this._radiiToTheFourth;
+  }
+
+  /**
+   * Gets one over the radii of the ellipsoid.
+   * @type {Cartesian3}
+   * @readonly
+   */
+  get oneOverRadii() {
+    return this._oneOverRadii;
+  }
+
+  /**
+   * Gets one over the squared radii of the ellipsoid.
+   * @type {Cartesian3}
+   * @readonly
+   */
+  get oneOverRadiiSquared() {
+    return this._oneOverRadiiSquared;
+  }
+
+  /**
+   * Gets the minimum radius of the ellipsoid.
+   * @type {number}
+   * @readonly
+   */
+  get minimumRadius() {
+    return this._minimumRadius;
+  }
+
+  /**
+   * Gets the maximum radius of the ellipsoid.
+   * @type {number}
+   * @readonly
+   */
+  get maximumRadius() {
+    return this._maximumRadius;
+  }
+
+  /**
+   * Duplicates an Ellipsoid instance.
+   *
+   * @param {Ellipsoid} ellipsoid The ellipsoid to duplicate.
+   * @param {Ellipsoid} [result] The object onto which to store the result, or undefined if a new
+   *                    instance should be created.
+   * @returns {Ellipsoid} The cloned Ellipsoid. (Returns undefined if ellipsoid is undefined)
+   */
+  static clone(ellipsoid, result) {
+    if (!defined(ellipsoid)) {
+      return undefined;
+    }
+    const radii = ellipsoid._radii;
+
+    if (!defined(result)) {
+      return new Ellipsoid(radii.x, radii.y, radii.z);
+    }
+
+    Cartesian3.clone(radii, result._radii);
+    Cartesian3.clone(ellipsoid._radiiSquared, result._radiiSquared);
+    Cartesian3.clone(ellipsoid._radiiToTheFourth, result._radiiToTheFourth);
+    Cartesian3.clone(ellipsoid._oneOverRadii, result._oneOverRadii);
+    Cartesian3.clone(
+      ellipsoid._oneOverRadiiSquared,
+      result._oneOverRadiiSquared,
+    );
+    result._minimumRadius = ellipsoid._minimumRadius;
+    result._maximumRadius = ellipsoid._maximumRadius;
+    result._centerToleranceSquared = ellipsoid._centerToleranceSquared;
+
+    return result;
+  }
+
+  /**
+   * Computes an Ellipsoid from a Cartesian specifying the radii in x, y, and z directions.
+   *
+   * @param {Cartesian3} [cartesian=Cartesian3.ZERO] The ellipsoid's radius in the x, y, and z directions.
+   * @param {Ellipsoid} [result] The object onto which to store the result, or undefined if a new
+   *                    instance should be created.
+   * @returns {Ellipsoid} A new Ellipsoid instance.
+   *
+   * @exception {DeveloperError} All radii components must be greater than or equal to zero.
+   *
+   * @see Ellipsoid.WGS84
+   * @see Ellipsoid.UNIT_SPHERE
+   */
+  static fromCartesian3(cartesian, result) {
+    if (!defined(result)) {
+      result = new Ellipsoid();
+    }
+
+    if (!defined(cartesian)) {
+      return result;
+    }
+
+    initialize(result, cartesian.x, cartesian.y, cartesian.z);
+    return result;
+  }
+
+  /**
+   * The default ellipsoid used when not otherwise specified.
+   * @type {Ellipsoid}
+   * @example
+   * Cesium.Ellipsoid.default = Cesium.Ellipsoid.MOON;
+   *
+   * // Apollo 11 landing site
+   * const position = Cesium.Cartesian3.fromRadians(
+   *   0.67416,
+   *   23.47315,
+   * );
+   */
+  static get default() {
+    return Ellipsoid._default;
+  }
+
+  static set default(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("value", value);
+    //>>includeEnd('debug');
+
+    Ellipsoid._default = value;
+    Cartesian3._ellipsoidRadiiSquared = value.radiiSquared;
+    Cartographic._ellipsoidOneOverRadii = value.oneOverRadii;
+    Cartographic._ellipsoidOneOverRadiiSquared = value.oneOverRadiiSquared;
+    Cartographic._ellipsoidCenterToleranceSquared =
+      value._centerToleranceSquared;
+  }
+
+  /**
    * Duplicates an Ellipsoid instance.
    *
    * @param {Ellipsoid} [result] The object onto which to store the result, or undefined if a new
@@ -96,6 +268,47 @@ class Ellipsoid {
    */
   clone(result) {
     return Ellipsoid.clone(this, result);
+  }
+
+  /**
+   * Stores the provided instance into the provided array.
+   *
+   * @param {Ellipsoid} value The value to pack.
+   * @param {number[]} array The array to pack into.
+   * @param {number} [startingIndex=0] The index into the array at which to start packing the elements.
+   *
+   * @returns {number[]} The array that was packed into
+   */
+  static pack(value, array, startingIndex) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("value", value);
+    Check.defined("array", array);
+    //>>includeEnd('debug');
+
+    startingIndex = startingIndex ?? 0;
+
+    Cartesian3.pack(value._radii, array, startingIndex);
+
+    return array;
+  }
+
+  /**
+   * Retrieves an instance from a packed array.
+   *
+   * @param {number[]} array The packed array.
+   * @param {number} [startingIndex=0] The starting index of the element to be unpacked.
+   * @param {Ellipsoid} [result] The object into which to store the result.
+   * @returns {Ellipsoid} The modified result parameter or a new Ellipsoid instance if one was not provided.
+   */
+  static unpack(array, startingIndex, result) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("array", array);
+    //>>includeEnd('debug');
+
+    startingIndex = startingIndex ?? 0;
+
+    const radii = Cartesian3.unpack(array, startingIndex);
+    return Ellipsoid.fromCartesian3(radii, result);
   }
 
   /**
@@ -493,16 +706,6 @@ class Ellipsoid {
   }
 
   /**
-   * A real valued scalar function.
-   * @callback Ellipsoid~RealValuedScalarFunction
-   *
-   * @param {number} x The value used to evaluate the function.
-   * @returns {number} The value of the function at x.
-   *
-   * @private
-   */
-
-  /**
    * Computes an approximation of the surface area of a rectangle on the surface of an ellipsoid using
    * Gauss-Legendre 10th order quadrature.
    *
@@ -548,126 +751,7 @@ class Ellipsoid {
       );
     });
   }
-
-  /**
-   * Gets the radii of the ellipsoid.
-   * @type {Cartesian3}
-   * @readonly
-   */
-  get radii() {
-    return this._radii;
-  }
-
-  /**
-   * Gets the squared radii of the ellipsoid.
-   * @type {Cartesian3}
-   * @readonly
-   */
-  get radiiSquared() {
-    return this._radiiSquared;
-  }
-
-  /**
-   * Gets the radii of the ellipsoid raise to the fourth power.
-   * @type {Cartesian3}
-   * @readonly
-   */
-  get radiiToTheFourth() {
-    return this._radiiToTheFourth;
-  }
-
-  /**
-   * Gets one over the radii of the ellipsoid.
-   * @type {Cartesian3}
-   * @readonly
-   */
-  get oneOverRadii() {
-    return this._oneOverRadii;
-  }
-
-  /**
-   * Gets one over the squared radii of the ellipsoid.
-   * @type {Cartesian3}
-   * @readonly
-   */
-  get oneOverRadiiSquared() {
-    return this._oneOverRadiiSquared;
-  }
-
-  /**
-   * Gets the minimum radius of the ellipsoid.
-   * @type {number}
-   * @readonly
-   */
-  get minimumRadius() {
-    return this._minimumRadius;
-  }
-
-  /**
-   * Gets the maximum radius of the ellipsoid.
-   * @type {number}
-   * @readonly
-   */
-  get maximumRadius() {
-    return this._maximumRadius;
-  }
 }
-
-/**
- * Duplicates an Ellipsoid instance.
- *
- * @param {Ellipsoid} ellipsoid The ellipsoid to duplicate.
- * @param {Ellipsoid} [result] The object onto which to store the result, or undefined if a new
- *                    instance should be created.
- * @returns {Ellipsoid} The cloned Ellipsoid. (Returns undefined if ellipsoid is undefined)
- */
-Ellipsoid.clone = function (ellipsoid, result) {
-  if (!defined(ellipsoid)) {
-    return undefined;
-  }
-  const radii = ellipsoid._radii;
-
-  if (!defined(result)) {
-    return new Ellipsoid(radii.x, radii.y, radii.z);
-  }
-
-  Cartesian3.clone(radii, result._radii);
-  Cartesian3.clone(ellipsoid._radiiSquared, result._radiiSquared);
-  Cartesian3.clone(ellipsoid._radiiToTheFourth, result._radiiToTheFourth);
-  Cartesian3.clone(ellipsoid._oneOverRadii, result._oneOverRadii);
-  Cartesian3.clone(ellipsoid._oneOverRadiiSquared, result._oneOverRadiiSquared);
-  result._minimumRadius = ellipsoid._minimumRadius;
-  result._maximumRadius = ellipsoid._maximumRadius;
-  result._centerToleranceSquared = ellipsoid._centerToleranceSquared;
-
-  return result;
-};
-
-/**
- * Computes an Ellipsoid from a Cartesian specifying the radii in x, y, and z directions.
- *
- * @param {Cartesian3} [cartesian=Cartesian3.ZERO] The ellipsoid's radius in the x, y, and z directions.
- * @param {Ellipsoid} [result] The object onto which to store the result, or undefined if a new
- *                    instance should be created.
- * @returns {Ellipsoid} A new Ellipsoid instance.
- *
- * @exception {DeveloperError} All radii components must be greater than or equal to zero.
- *
- * @see Ellipsoid.WGS84
- * @see Ellipsoid.UNIT_SPHERE
- */
-Ellipsoid.fromCartesian3 = function (cartesian, result) {
-  if (!defined(result)) {
-    result = new Ellipsoid();
-  }
-
-  if (!defined(cartesian)) {
-    return result;
-  }
-
-  initialize(result, cartesian.x, cartesian.y, cartesian.z);
-  return result;
-};
 
 /**
  * An Ellipsoid instance initialized to the WGS84 standard.
@@ -711,85 +795,12 @@ Ellipsoid.MOON = Object.freeze(
 Ellipsoid.MARS = Object.freeze(new Ellipsoid(3396190.0, 3396190.0, 3376200.0));
 
 Ellipsoid._default = Ellipsoid.WGS84;
-Object.defineProperties(Ellipsoid, {
-  /**
-   * The default ellipsoid used when not otherwise specified.
-   * @memberof Ellipsoid
-   * @type {Ellipsoid}
-   * @example
-   * Cesium.Ellipsoid.default = Cesium.Ellipsoid.MOON;
-   *
-   * // Apollo 11 landing site
-   * const position = Cesium.Cartesian3.fromRadians(
-   *   0.67416,
-   *   23.47315,
-   * );
-   */
-  default: {
-    get: function () {
-      return Ellipsoid._default;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.object("value", value);
-      //>>includeEnd('debug');
-
-      Ellipsoid._default = value;
-      Cartesian3._ellipsoidRadiiSquared = value.radiiSquared;
-      Cartographic._ellipsoidOneOverRadii = value.oneOverRadii;
-      Cartographic._ellipsoidOneOverRadiiSquared = value.oneOverRadiiSquared;
-      Cartographic._ellipsoidCenterToleranceSquared =
-        value._centerToleranceSquared;
-    },
-  },
-});
 
 /**
  * The number of elements used to pack the object into an array.
  * @type {number}
  */
 Ellipsoid.packedLength = Cartesian3.packedLength;
-
-/**
- * Stores the provided instance into the provided array.
- *
- * @param {Ellipsoid} value The value to pack.
- * @param {number[]} array The array to pack into.
- * @param {number} [startingIndex=0] The index into the array at which to start packing the elements.
- *
- * @returns {number[]} The array that was packed into
- */
-Ellipsoid.pack = function (value, array, startingIndex) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("value", value);
-  Check.defined("array", array);
-  //>>includeEnd('debug');
-
-  startingIndex = startingIndex ?? 0;
-
-  Cartesian3.pack(value._radii, array, startingIndex);
-
-  return array;
-};
-
-/**
- * Retrieves an instance from a packed array.
- *
- * @param {number[]} array The packed array.
- * @param {number} [startingIndex=0] The starting index of the element to be unpacked.
- * @param {Ellipsoid} [result] The object into which to store the result.
- * @returns {Ellipsoid} The modified result parameter or a new Ellipsoid instance if one was not provided.
- */
-Ellipsoid.unpack = function (array, startingIndex, result) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("array", array);
-  //>>includeEnd('debug');
-
-  startingIndex = startingIndex ?? 0;
-
-  const radii = Cartesian3.unpack(array, startingIndex);
-  return Ellipsoid.fromCartesian3(radii, result);
-};
 
 /**
  * Computes the unit vector directed from the center of this ellipsoid toward the provided Cartesian position.
@@ -824,7 +835,7 @@ const weights = [
  *
  * @param {number} a The lower bound for the integration.
  * @param {number} b The upper bound for the integration.
- * @param {Ellipsoid~RealValuedScalarFunction} func The function to integrate.
+ * @param {EllipsoidRealValuedScalarFunction} func The function to integrate.
  * @returns {number} The value of the integral of the given function over the given domain.
  *
  * @private

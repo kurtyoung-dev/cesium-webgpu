@@ -1,8 +1,12 @@
+// @ts-check
+
 import Cartesian3 from "./Cartesian3.js";
 import Cartographic from "./Cartographic.js";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 import Ellipsoid from "./Ellipsoid.js";
+
+/** @import MapProjection from "./MapProjection.js"; */
 
 /**
  * A simple map projection where longitude and latitude are linearly mapped to X and Y by multiplying
@@ -10,18 +14,28 @@ import Ellipsoid from "./Ellipsoid.js";
  * is commonly known as geographic, equirectangular, equidistant cylindrical, or plate carrée. When using the WGS84 ellipsoid, it
  * is also known as EPSG:4326.
  *
- * @alias GeographicProjection
- * @constructor
- *
- * @param {Ellipsoid} [ellipsoid=Ellipsoid.default] The ellipsoid.
- *
  * @see WebMercatorProjection
+ *
+ * @implements MapProjection
  */
 class GeographicProjection {
+  /**
+   * @param {Ellipsoid} [ellipsoid=Ellipsoid.default] The ellipsoid.
+   */
   constructor(ellipsoid) {
     this._ellipsoid = ellipsoid ?? Ellipsoid.default;
     this._semimajorAxis = this._ellipsoid.maximumRadius;
     this._oneOverSemimajorAxis = 1.0 / this._semimajorAxis;
+  }
+
+  /**
+   * Gets the {@link Ellipsoid}.
+   *
+   * @type {Ellipsoid}
+   * @readonly
+   */
+  get ellipsoid() {
+    return this._ellipsoid;
   }
 
   /**
@@ -85,17 +99,6 @@ class GeographicProjection {
     result.latitude = latitude;
     result.height = height;
     return result;
-  }
-
-  /**
-   * Gets the {@link Ellipsoid}.
-   *
-   *
-   * @type {Ellipsoid}
-   * @readonly
-   */
-  get ellipsoid() {
-    return this._ellipsoid;
   }
 }
 
