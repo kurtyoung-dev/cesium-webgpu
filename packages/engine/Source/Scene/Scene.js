@@ -5394,6 +5394,9 @@ function render(scene) {
       if (frozen) {
         taa.jitterX = 0;
         taa.jitterY = 0;
+        // Forget any captured base so re-enabling jitter re-captures from the
+        // live (un-jittered) matrix instead of reasoning about a stale base.
+        taa.resetProjectionJitter();
       } else {
         const jitter = taa.computeJitter(
           frameState.frameNumber,
@@ -5402,10 +5405,17 @@ function render(scene) {
         );
         // Apply jitter to the projection matrix (column 2, row 0 and row 1
         // in column-major layout = indices [8] and [9]).
+        //
+        // NEW-CAMERA-JITTER-ACCUMULATION — write `base + jitter` ABSOLUTELY via
+        // `applyProjectionJitter`, never `proj[8] += jitter.x`.
+        // `cam.frustum.projectionMatrix` is a dirty-cached getter: on a settled
+        // frustum it returns the SAME array every frame without recomputing, so
+        // a `+=` would stack last frame's jitter on top of the new one and
+        // proj[8]/proj[9] would drift unboundedly. The effect tracks the
+        // un-jittered base and self-heals when the frustum recomputes.
         const proj = cam.frustum.projectionMatrix;
         if (proj) {
-          proj[8] += jitter.x;
-          proj[9] += jitter.y;
+          taa.applyProjectionJitter(proj, jitter.x, jitter.y);
         }
       }
 

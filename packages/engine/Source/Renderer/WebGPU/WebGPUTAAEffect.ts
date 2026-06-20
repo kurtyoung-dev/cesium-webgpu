@@ -369,6 +369,22 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   jitterX = 0;
   jitterY = 0;
 
+  // NEW-CAMERA-JITTER-ACCUMULATION — un-jittered projection base + last
+  // applied jitter, used by `applyProjectionJitter` to write `base + jitter`
+  // ABSOLUTELY each frame instead of `+=`. `cam.frustum.projectionMatrix` is a
+  // dirty-cached getter: on a settled frustum (stable fov/aspect/near/far) it
+  // returns the SAME array every frame without recomputing, so a naive `+=`
+  // accumulates last frame's jitter on top of the new one → unbounded drift in
+  // proj[8]/proj[9]. We instead remember the base (proj[8]/[9] WITHOUT jitter)
+  // and the jitter we last added; if the live matrix value no longer equals
+  // `(base + lastJitter)` within an epsilon, the frustum recomputed to a fresh
+  // un-jittered base, so we re-capture it. NaN sentinels mark "no base captured
+  // yet" (first call / after a reset).
+  private _jitterBase8 = Number.NaN;
+  private _jitterBase9 = Number.NaN;
+  private _jitterLastX = 0;
+  private _jitterLastY = 0;
+
   /** Blend weight: fraction of current frame in the blend (0.1 = 10%). */
   blendWeight = 0.1;
 
@@ -729,6 +745,68 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     this.jitterX = (hx - 0.5) / screenWidth;
     this.jitterY = (hy - 0.5) / screenHeight;
     return { x, y };
+  }
+
+  /**
+   * NEW-CAMERA-JITTER-ACCUMULATION — apply sub-pixel jitter to the projection
+   * matrix as an ABSOLUTE `base + jitter` write rather than an accumulating
+   * `+=`. Robust to BOTH cases of `cam.frustum.projectionMatrix`:
+   *
+   *   - Settled frustum: the getter returns the SAME cached array every frame
+   *     without recomputing. A naive `proj[8] += jitter.x` would stack each
+   *     frame's jitter on top of the last, so proj[8] drifts without bound.
+   *     Here we detect that the live value still equals our last write
+   *     (`base + lastJitter`) and reuse the stored base, so the write is
+   *     `base + newJitter` — bounded at `base ± maxJitter`.
+   *   - Recomputed frustum: when fov/aspect/near/far change, the getter
+   *     recomputes the matrix to a fresh, un-jittered base. The live value no
+   *     longer matches `base + lastJitter`, so we re-capture the base from the
+   *     current (clean) matrix before adding jitter. This self-heals.
+   *
+   * Operates on column-major indices [8] (col 2, row 0) and [9] (col 2, row 1).
+   *
+   * @param proj The frustum's projection matrix (mutated in place).
+   * @param jitterX NDC-space jitter for column 2, row 0.
+   * @param jitterY NDC-space jitter for column 2, row 1.
+   */
+  applyProjectionJitter(
+    proj: Float64Array | number[],
+    jitterX: number,
+    jitterY: number,
+  ): void {
+    // Epsilon scaled to the jitter magnitude: jitter is ~1/screenWidth in NDC
+    // (sub-pixel), so even at 16K resolution it's ~1e-4. A fixed 1e-9 epsilon
+    // reliably distinguishes "still our last write" from a recomputed base
+    // (which differs by the full projection-element delta) without false-
+    // matching across a genuine frustum change.
+    const EPS = 1e-9;
+    if (
+      !Number.isFinite(this._jitterBase8) ||
+      Math.abs(proj[8] - (this._jitterBase8 + this._jitterLastX)) > EPS ||
+      Math.abs(proj[9] - (this._jitterBase9 + this._jitterLastY)) > EPS
+    ) {
+      // Either first application, or the frustum recomputed to a fresh base.
+      // Re-capture the current (un-jittered) base.
+      this._jitterBase8 = proj[8];
+      this._jitterBase9 = proj[9];
+    }
+    proj[8] = this._jitterBase8 + jitterX;
+    proj[9] = this._jitterBase9 + jitterY;
+    this._jitterLastX = jitterX;
+    this._jitterLastY = jitterY;
+  }
+
+  /**
+   * NEW-CAMERA-JITTER-ACCUMULATION — forget the captured projection base so the
+   * next `applyProjectionJitter` re-captures from the live matrix. Called when
+   * jitter is suspended (snapshot freeze) so re-enabling can't reason about a
+   * stale base.
+   */
+  resetProjectionJitter(): void {
+    this._jitterBase8 = Number.NaN;
+    this._jitterBase9 = Number.NaN;
+    this._jitterLastX = 0;
+    this._jitterLastY = 0;
   }
 
   getStatistics(): DebugStatsObject {
