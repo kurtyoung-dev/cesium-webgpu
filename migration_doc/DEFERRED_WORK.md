@@ -3268,7 +3268,23 @@ Sentinel-2 (post Batch 40):
   mid-lower Δ (   0,   0,   0)  ← bit-perfect
 ```
 
-**Residual:** ~25 px of disk-edge halo width difference at x=275 (left) and x=425 (right) in the horizontal scan probe — WebGPU's atmosphere shell renders a slightly wider faint haze ring. This is a sub-pixel rasterization / alpha-tail detail in the SkyAtmosphere shell, not the original "limb haze overbright" symptom. Track as a small follow-up only if visual review flags it. Estimated effort: ≤1 session.
+**Residual:** ~25 px of disk-edge halo width difference at x=275 (left) and x=425 (right) in the horizontal scan probe — WebGPU's atmosphere shell renders a slightly wider faint haze ring. This is a sub-pixel rasterization / alpha-tail detail in the SkyAtmosphere shell, not the original "limb haze overbright" symptom. Track as a small follow-up only if visual review flags it. Estimated effort: ≤1 session. → **Re-attributed and closed; see NEW-VR2-3b-LIMB-HALO-RESIDUAL below (Batch 327).**
+
+### NEW-VR2-3b-LIMB-HALO-RESIDUAL — ✅ SHIPPED (Batch 327, 2026-06-19) — SkyAtmosphere shell verified correct; residual re-attributed to ground-atmosphere drape
+
+**Task hypothesis:** the WGSL SkyAtmosphere *shell* alpha falloff/tail extends ~25 px farther past the limb than WebGL, widening the blue limb halo. WebGL/GLSL is the reference.
+
+**Probe-first finding (Principle 8 — DID NOT reproduce in the SkyAtmosphere shell):** A new probe, [`Tools/visual-regression/probe-limb-halo-width.mjs`](Tools/visual-regression/probe-limb-halo-width.mjs), reproduces the canonical Hello-World framing (default CesiumViewer camera, 800×600, skybox + bright-star catalog + sun/moon OFF → pure-black space) and measures the limb haze-ring width at the disk edges. Three independent isolation probes were run:
+
+1. **Shell-only isolation** (`globe.show = false`, SkyAtmosphere shell rendered alone against black, both backends, fixed clock): the top-limb halo band (Y=102→112, an 11 px band on the center column) is **byte-for-byte identical** between WebGL and WebGPU — every row matches within ±1 luminance and ±1 B−R. The bottom-limb halo is, if anything, marginally *narrower* in WebGPU (column non-black count 22 vs 27). **The shell halo width is NOT wider in WebGPU.**
+2. **Flat-gray-globe isolation** (imagery removed, `enableLighting=false`, `showGroundAtmosphere=false`, neutral 0.5 baseColor): the SkyAtmosphere shell rim over the disk edge is a **2 px band in both backends** (delta −1 px, within the ±6 px tolerance). The only shell-side difference is a single rim pixel that is slightly *darker*/more-saturated-blue in WebGPU (x=204: `(68,110,157)` vs WebGL `(99,135,164)`) — a per-fragment vs per-vertex sharpness artifact, sub-pixel and *narrower*, not wider.
+3. **SkyAtmosphere ON-vs-OFF ablation** on the gray globe: toggling `scene.skyAtmosphere.show` changes only the 2–3 px rim; the entire wide blue limb *band* (the thing that reads as "~25 px wider") is present **with the SkyAtmosphere shell OFF** — it is the **ground-atmosphere drape over the lit globe surface**, computed in `GlobeTerrain.wgsl`, NOT the SkyAtmosphere shell (`SkyAtmosphere.wgsl`).
+
+**Conclusion:** The SkyAtmosphere shell alpha tail already matches WebGL (pixel-identical in isolation). No change to `SkyAtmosphere.wgsl` is warranted — a speculative grazing-limb alpha-softening was prototyped, measured to NOT move the rim toward WebGL, and reverted (Principle 7: don't modify verified-correct code). The visible wider-limb-band residual is **re-attributed to the ground-atmosphere drape** (`GlobeTerrain.wgsl` ground-atmosphere path), a separate subsystem with its own divergence — tracked under the GroundAtmosphere drape parity work (NEW-GROUND-VIEW-ENV-DIVERGENCES family), not the SkyAtmosphere shell.
+
+**Verification:** `npx gulp build` exit 0; `npx tsc --noEmit` exit 0; SkyAtmosphere Jasmine specs 11/11 green (Edge). `probe-limb-halo-width.mjs` reports limb haze-tail width WebGL=2 px / WebGPU=1 px, delta −1 px (PASS, ≤6 px tolerance). Screenshots `Tools/visual-regression/output/probe-limb-halo-{webgl,webgpu}.png` confirm the shell rim color/hue is unchanged and the inner/day-side sky is untouched.
+
+**Next concrete work (Principle 9):** if the ground-atmosphere drape limb-band width is still flagged in visual review, the fix lives in the WGSL ground-atmosphere drape (`GlobeTerrain.wgsl` `groundAtmosphereControl` / fade path) matching `GlobeFS.glsl` + `AtmosphereCommon.glsl`, under the ground-view-env parity track — a separate, larger globe-FS change, not a SkyAtmosphere-shell edit.
 
 ### NEW-VR2-3c-DISK-EXTENT-DRIFT — FIXED 2026-05-13 (Session 65 Batch 40)
 
