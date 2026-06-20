@@ -3465,15 +3465,26 @@ class Scene {
       // the post-skyBox injection slot when a cubemap command actually
       // exists (which would otherwise wipe the binned copy). With no
       // cubemap, the binned copy alone is correct and we drop the inject.
-      const starCommand =
+      const starField =
         defined(this.skyBox) && defined(this.skyBox.starField)
-          ? this.skyBox.starField.update(frameState)
+          ? this.skyBox.starField
           : undefined;
-      environmentState.starFieldCommand = defined(
-        environmentState.skyBoxCommand,
-      )
-        ? starCommand
+      const starCommand = defined(starField)
+        ? starField.update(frameState)
         : undefined;
+      // Drop the returned command ONLY when the renderer ALSO binned a copy
+      // (WebGPU) AND there's no cubemap: in that case the binned copy alone
+      // draws the stars and routing the inject too would double-draw. When
+      // the renderer didn't bin a copy (WebGL), the returned command is the
+      // only one and must always run — even with the cubemap off. This keeps
+      // the gate backend-agnostic (reads `wasBinned`, not `isWebGPU`).
+      const dropForBinnedNoCubemap =
+        defined(starField) &&
+        starField.wasBinned &&
+        !defined(environmentState.skyBoxCommand);
+      environmentState.starFieldCommand = dropForBinnedNoCubemap
+        ? undefined
+        : starCommand;
       const sunCommands = defined(this.sun)
         ? this.sun.update(frameState, view.passState, this._hdr)
         : undefined;

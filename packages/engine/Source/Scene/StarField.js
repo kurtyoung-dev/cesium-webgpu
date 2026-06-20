@@ -17,9 +17,11 @@ import SceneMode from "./SceneMode.js";
  * This object is backend-agnostic: it owns no GPU resources and never
  * imports from `Renderer/WebGPU/`. All backend-specific work happens in
  * the {@link FeatureRendererKey.STAR_FIELD} feature renderer, accessed
- * through the {@link GraphicsContext}. On a backend with no STAR_FIELD
- * renderer registered (WebGL today), `update` is a no-op and the static
- * SkyBox cubemap stars remain the only starfield.
+ * through the {@link GraphicsContext} — `WebGPUStarFieldRenderer` (WGSL)
+ * on WebGPU and `WebGLStarFieldRenderer` (GLSL) on WebGL, both consuming
+ * the same backend-neutral catalog + math (`Scene/StarFieldMath`). On a
+ * backend with no STAR_FIELD renderer registered, `update` is a no-op and
+ * the static SkyBox cubemap stars remain the only starfield.
  *
  * Typically not constructed directly — {@link SkyBox} owns a StarField
  * instance and drives its update. Toggle via `scene.skyBox.starField.show`.
@@ -62,8 +64,13 @@ class StarField {
     this._minPointSize = 0.003;
 
     // Lazily-allocated per-backend resource cache (WebGPU feature renderer
-    // stashes its GPU buffers here). Never read by this class directly.
+    // stashes its GPU buffers here; the WebGL renderer uses `_webglCache`).
+    // Never read by this class directly.
     this._webgpuCache = undefined;
+
+    // Set each frame by `update`: true when the FR pushed a binned copy of
+    // the draw onto the command list (WebGPU), false otherwise (WebGL).
+    this._wasBinned = false;
   }
 
   /**
@@ -86,15 +93,28 @@ class StarField {
    * feature renderer; a no-op on backends that don't register one.
    *
    * Returns the backend draw command (or undefined). The caller routes it
-   * to `environmentState.starFieldCommand` so the SceneRenderer can inject
-   * it AFTER the SkyBox cubemap — the catalog augments (draws on top of)
-   * the cubemap rather than being overwritten by its alpha-over pass.
+   * to `environmentState.starFieldCommand` so it can be injected/executed
+   * AFTER the SkyBox cubemap — the catalog augments (draws on top of) the
+   * cubemap rather than being overwritten by its alpha-over pass.
+   *
+   * Backend draw-path divergence (recorded on {@link StarField#wasBinned}):
+   *   - WebGPU ALSO pushes a binned copy onto `frameState.commandList` (so
+   *     a frustum exists on sky-only views). The returned inject command is
+   *     then only needed when a cubemap command exists; otherwise the binned
+   *     copy alone draws the stars — Scene drops the inject to avoid a
+   *     double draw.
+   *   - WebGL pushes NO binned copy (environment commands run directly via
+   *     EnvironmentRenderer), so the returned command is the ONLY copy and
+   *     must always execute — even with the cubemap off. Scene reads
+   *     `wasBinned` to apply the WebGPU-only gate without branching on the
+   *     backend identity.
    *
    * @param {FrameState} frameState
    * @returns {object|undefined} The backend draw command, or undefined.
    * @private
    */
   update(frameState) {
+    this._wasBinned = false;
     if (!this.show) {
       return undefined;
     }
@@ -115,9 +135,28 @@ class StarField {
     }
     const fr = context.getFeatureRenderer(FeatureRendererKey.STAR_FIELD);
     if (defined(fr) && typeof fr.update === "function") {
-      return fr.update(this, frameState, frameState.commandList);
+      const commandList = frameState.commandList;
+      const lengthBefore = commandList.length;
+      const command = fr.update(this, frameState, commandList);
+      // A renderer that pushed a binned copy (WebGPU) grew the command
+      // list; one that didn't (WebGL) left it unchanged.
+      this._wasBinned = commandList.length > lengthBefore;
+      return command;
     }
     return undefined;
+  }
+
+  /**
+   * Whether the most recent {@link StarField#update} pushed a binned copy
+   * of the star draw onto the frame command list (WebGPU). When false
+   * (WebGL), the returned command is the only copy and must run regardless
+   * of whether a SkyBox cubemap is present.
+   * @type {boolean}
+   * @readonly
+   * @private
+   */
+  get wasBinned() {
+    return this._wasBinned === true;
   }
 
   /**

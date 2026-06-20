@@ -1,4 +1,5 @@
 import GraphicsContext from "./GraphicsContext.js";
+import FeatureRendererKey from "./FeatureRendererKey.js";
 import RendererType from "./RendererType.js";
 import Buffer from "./Buffer.js";
 import Sync from "./Sync.js";
@@ -765,6 +766,31 @@ class Context extends GraphicsContext {
     this.cache = {};
 
     RenderState.apply(gl, rs, ps);
+
+    // ── WebGL feature renderers ──
+    // The WebGL backend renders almost everything through the legacy
+    // direct-command path (no FR needed), so unlike WebGPU it registers
+    // only the handful of FRs that have a true WebGL-specific draw path.
+    //
+    // STAR_FIELD (NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK, Batch 324) —
+    // the bright-star catalog starfield. Lazily imported so the renderer
+    // module (and its GLSL shader strings) only enter the bundle when a
+    // StarField actually updates, and so Context.js stays free of a static
+    // Renderer→Scene import cycle. Until the import settles,
+    // `StarField.update` no-ops (returns undefined) and the SkyBox cubemap
+    // stars are the only starfield — same graceful warm-up as WebGPU's
+    // async pipeline cache.
+    this.registerFeatureRendererLoader(
+      FeatureRendererKey.STAR_FIELD,
+      async () => {
+        const mod = await import("./WebGLStarFieldRenderer.js");
+        this.registerFeatureRenderer(FeatureRendererKey.STAR_FIELD, {
+          update: mod.updateWebGLStarField,
+          destroy: mod.destroyWebGLStarFieldResources,
+          getStatistics: mod.getWebGLStarFieldStatistics,
+        });
+      },
+    );
 
     // Register with the global ContextRegistry (Phase B)
     this._registerWithRegistry();

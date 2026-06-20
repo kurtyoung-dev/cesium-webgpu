@@ -224,19 +224,21 @@ const FeatureRendererKey = {
   // is tracked as NEW-ENTITYCLUSTER-GPU-MERGE in DEFERRED_WORK.md.
   ENTITY_CLUSTER_GPU: 50,
 
-  // ── Bright-star catalog starfield (Track V-C, Batch 313) ──
-  // `StarField` (owned by SkyBox) routes here on WebGPU. The renderer
-  // (`WebGPUStarFieldRenderer`) uploads the Yale Bright Star Catalog
-  // subset (RA/Dec/magnitude/B−V) once to a GPU vertex buffer and draws
-  // it as HDR point sprites into the scene framebuffer with additive
-  // blend, so the existing bloom post-process makes bright stars glow.
-  // Per-star intensity follows the Pogson magnitude scale; per-star color
-  // is derived from the B−V index via a blackbody approximation. The
-  // inertial (TEME/J2000) catalog directions are rotated into the
-  // Earth-fixed frame by the same TEME→pseudo-fixed matrix SkyBox uses,
-  // so constellations land at the correct RA/Dec for the scene clock.
-  // WebGPU-only for now — the static SkyBox cubemap remains the WebGL
-  // path (NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK in DEFERRED_WORK.md).
+  // ── Bright-star catalog starfield (Track V-C, Batch 313 / 324) ──
+  // `StarField` (owned by SkyBox) routes here on BOTH backends. The
+  // renderers (`WebGPUStarFieldRenderer` for WGSL, `WebGLStarFieldRenderer`
+  // for GLSL) upload the Yale Bright Star Catalog subset (RA/Dec/magnitude/
+  // B−V) once to a per-instance vertex buffer and draw it as HDR point
+  // sprites into the scene framebuffer with premultiplied-additive blend,
+  // so the existing bloom post-process makes bright stars glow. Per-star
+  // intensity follows the Pogson magnitude scale; per-star color is derived
+  // from the B−V index via a blackbody approximation. The inertial
+  // (TEME/J2000) catalog directions are rotated into the Earth-fixed frame
+  // by the same TEME→pseudo-fixed matrix SkyBox uses, so constellations
+  // land at the correct RA/Dec for the scene clock. The catalog data +
+  // intensity/color/fade math are backend-neutral (`Scene/BrightStarCatalog`
+  // + `Scene/StarFieldMath`) and REUSED by both renderers — only the draw
+  // path differs (Batch 324, NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK).
   STAR_FIELD: 51,
 
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier

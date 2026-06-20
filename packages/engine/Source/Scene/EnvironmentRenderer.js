@@ -25,6 +25,17 @@ function renderEnvironment(scene, passState, executeCommand) {
     executeCommand(environmentState.skyBoxCommand, scene, passState);
   }
 
+  // Track V-C — bright-star catalog starfield (NEW-STARS-BRIGHT-CATALOG-
+  // WEBGL-FALLBACK). Drawn right AFTER the SkyBox cubemap so the additive
+  // HDR stars land ON TOP of the (often opaque, dark) cubemap rather than
+  // being overwritten by it, and BEFORE the sky atmosphere / sun / moon so
+  // those still occlude the stars. Gated on the cubemap existing by Scene
+  // (mirrors the WebGPU injection ordering in SceneRenderer.js). No-op when
+  // no STAR_FIELD feature renderer is registered.
+  if (defined(environmentState.starFieldCommand)) {
+    executeCommand(environmentState.starFieldCommand, scene, passState);
+  }
+
   if (environmentState.isSkyAtmosphereVisible) {
     executeCommand(environmentState.skyAtmosphereCommand, scene, passState);
   }

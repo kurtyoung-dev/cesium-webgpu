@@ -31,14 +31,18 @@
  * @private
  * @module WebGPUStarFieldRenderer
  */
-import Cartesian3 from "../../Core/Cartesian3.js";
-import CesiumMath from "../../Core/Math.js";
 import defined from "../../Core/defined.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Transforms from "../../Core/Transforms.js";
 import type JulianDate from "../../Core/JulianDate.js";
 import BrightStarCatalog from "../../Scene/BrightStarCatalog.js";
+import {
+  FLOATS_PER_STAR,
+  bvToRgb,
+  buildStarInstanceData,
+  computeStarDayFade,
+} from "../../Scene/StarFieldMath.js";
 import StarFieldShaderCode from "../../Shaders/WebGPU/Catalog/StarField.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -141,7 +145,8 @@ function getStarShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
 
 // Per-instance vertex layout (floats):
 //   directionFixed (3) + intensity (1) + color (3) + sizeBoost (1) = 8
-const FLOATS_PER_STAR = 8;
+// FLOATS_PER_STAR is imported from the backend-neutral StarFieldMath so
+// the WebGL renderer packs the identical record.
 const STAR_VERTEX_STRIDE = FLOATS_PER_STAR * 4; // 32 bytes
 // Uniform buffer: mat4 (16) + pointSize.xy (2) + intensityScale (1) +
 // minPointSize (1) = 20 floats → pad to 256 for alignment.
@@ -150,134 +155,12 @@ const STAR_UNIFORM_BUFFER_SIZE = 256;
 const scratchTemeToFixed3 = new Matrix3();
 const scratchTemeToFixed4 = new Matrix4();
 const scratchVPNoTranslation = new Matrix4();
-const scratchStarDir = new Cartesian3();
 
-/**
- * Convert a B−V color index to an approximate RGB color via a blackbody
- * temperature fit. Hot blue stars (B−V < 0) skew toward 0.6–0.8 in red
- * and ~1.0 in blue; cool red stars (B−V > 1.4) skew toward ~1.0 red and
- * low blue. Returns a normalized-ish RGB (brightest channel ≈ 1.0) so the
- * per-star Pogson intensity controls absolute brightness, not the hue.
- *
- * Ballesteros (2012): T ≈ 4600 K · (1/(0.92·BV + 1.7) + 1/(0.92·BV + 0.62)).
- * The Planckian-locus RGB below is a compact piecewise fit good enough
- * for a visual starfield (not colorimetric accuracy).
- *
- * @param {number} bv B−V color index.
- * @returns {number[]} [r, g, b] in [0, 1].
- * @private
- */
-function bvToRgb(bv: number): [number, number, number] {
-  const denomA = 0.92 * bv + 1.7;
-  const denomB = 0.92 * bv + 0.62;
-  // Guard against the (rare for real stars) pole near bv ≈ -1.8 / -0.67.
-  const t =
-    4600.0 *
-    (1.0 / (Math.abs(denomA) < 1e-3 ? 1e-3 : denomA) +
-      1.0 / (Math.abs(denomB) < 1e-3 ? 1e-3 : denomB));
-  // Clamp to a sane stellar temperature window.
-  const temp = Math.min(40000.0, Math.max(1500.0, t)) / 100.0;
-
-  let r;
-  let g;
-  let b;
-  // Tanner Helland's blackbody fit (public-domain algorithm), normalized.
-  if (temp <= 66.0) {
-    r = 255.0;
-    g = 99.4708025861 * Math.log(temp) - 161.1195681661;
-  } else {
-    r = 329.698727446 * Math.pow(temp - 60.0, -0.1332047592);
-    g = 288.1221695283 * Math.pow(temp - 60.0, -0.0755148492);
-  }
-  if (temp >= 66.0) {
-    b = 255.0;
-  } else if (temp <= 19.0) {
-    b = 0.0;
-  } else {
-    b = 138.5177312231 * Math.log(temp - 10.0) - 305.0447927307;
-  }
-  r = Math.min(255.0, Math.max(0.0, r)) / 255.0;
-  g = Math.min(255.0, Math.max(0.0, g)) / 255.0;
-  b = Math.min(255.0, Math.max(0.0, b)) / 255.0;
-  // Renormalize so the brightest channel is 1.0 — keeps absolute
-  // brightness in the Pogson intensity, not the color.
-  const peak = Math.max(r, g, b, 1e-3);
-  return [r / peak, g / peak, b / peak];
-}
-
-/**
- * Build the static per-instance star buffer from the catalog. Each star's
- * J2000 RA/Dec becomes a TEME-frame unit direction; magnitude becomes a
- * Pogson intensity; B−V becomes a blackbody RGB. The TEME→fixed rotation
- * is applied per frame in the uniform pack (NOT baked here), so the same
- * buffer is correct for every scene time.
- *
- * @private
- */
-function buildStarInstanceData(): Float32Array {
-  const cat = BrightStarCatalog.data;
-  const stride = BrightStarCatalog.STRIDE;
-  const count = BrightStarCatalog.count;
-  const out = new Float32Array(count * FLOATS_PER_STAR);
-
-  // Per-star brightness from visual magnitude (Pogson scale). The raw
-  // flux ratio across the catalog (mag −1.46 … +4.4) spans ~240×, far too
-  // wide to map linearly onto a display — the faintest stars would vanish
-  // below 1/255 while Sirius alone fills the frame. We therefore:
-  //   1) compute the true Pogson flux relative to the faint limit, then
-  //   2) gamma-compress it (exponent < 1) so the faint end lifts into
-  //      visibility, then
-  //   3) remap into a [LO, HI] band where LO keeps the faintest star a
-  //      dim-but-real point and HI lets the brightest stars overflow 1.0
-  //      (HDR) so the additive scene-FB target feeds them into bloom.
-  // This preserves the PERCEPTUAL ordering (brighter magnitude ⇒ brighter
-  // pixel ⇒ larger bloomed disc) while keeping the whole catalog visible.
-  const faintLimitMag = 4.6;
-  const brightestFlux = Math.pow(10.0, -0.4 * (-1.46 - faintLimitMag));
-  const FLUX_GAMMA = 0.38; // < 1 lifts the faint tail
-  const LO = 0.55; // faintest star brightness (clearly visible point)
-  const HI = 6.0; // brightest star brightness (overflows → bloom)
-
-  for (let i = 0; i < count; i++) {
-    const base = i * stride;
-    const raDeg = cat[base + 0];
-    const decDeg = cat[base + 1];
-    const vmag = cat[base + 2];
-    const bv = cat[base + 3];
-
-    const ra = CesiumMath.toRadians(raDeg);
-    const dec = CesiumMath.toRadians(decDeg);
-    // RA/Dec → equatorial-inertial unit vector (TEME axes: x toward
-    // vernal equinox, z toward north celestial pole).
-    const cosDec = Math.cos(dec);
-    const dx = cosDec * Math.cos(ra);
-    const dy = cosDec * Math.sin(ra);
-    const dz = Math.sin(dec);
-
-    // Pogson flux relative to the faint limit, in [~0, 1].
-    const rawFlux = Math.pow(10.0, -0.4 * (vmag - faintLimitMag));
-    const norm = Math.min(1.0, rawFlux / brightestFlux);
-    const compressed = Math.pow(norm, FLUX_GAMMA);
-    const flux = LO + compressed * (HI - LO);
-
-    const rgb = bvToRgb(bv);
-
-    // sizeBoost: brighter stars (lower magnitude) get a larger disc.
-    // Map mag −1.5 → ~1.7 boost, mag 4 → ~0 boost.
-    const sizeBoost = Math.max(0.0, (4.0 - vmag) * 0.42);
-
-    const o = i * FLOATS_PER_STAR;
-    out[o + 0] = dx;
-    out[o + 1] = dy;
-    out[o + 2] = dz;
-    out[o + 3] = flux;
-    out[o + 4] = rgb[0];
-    out[o + 5] = rgb[1];
-    out[o + 6] = rgb[2];
-    out[o + 7] = sizeBoost;
-  }
-  return out;
-}
+// `bvToRgb` + `buildStarInstanceData` (the B−V → blackbody RGB conversion
+// and the Pogson magnitude → HDR-brightness per-instance packing) live in
+// the backend-neutral `Scene/StarFieldMath` so the WebGL renderer builds
+// the byte-identical per-instance record. Imported above; re-exported at
+// the tail for backwards-compat with the prior WebGPU-local `bvToRgb`.
 
 /**
  * Pack the per-frame uniform buffer: a translation-free view-projection
@@ -342,37 +225,12 @@ function packStarUniforms(
   uniformData[17] = angularRadius * Math.abs(proj[5]);
 
   // Daytime fade: dim the stars as the sun climbs above the horizon for a
-  // surface-level camera. At altitude the sky is always black so the fade
-  // is gated by camera height. Approximate the local-up as
-  // normalize(cameraECEF); dot with the sun direction is the solar
-  // altitude sine.
-  let dayFade = 1.0;
-  const sunDir = uniformState.sunDirectionWC;
-  const camPos = frameState.camera?.positionWC;
-  if (defined(sunDir) && defined(camPos)) {
-    const camLen = Cartesian3.magnitude(camPos);
-    if (camLen > 1.0) {
-      Cartesian3.normalize(camPos, scratchStarDir);
-      const solarAltSin = Cartesian3.dot(sunDir, scratchStarDir);
-      // Full brightness when sun is > ~6° below horizon (astronomical
-      // twilight-ish), fully faded when sun is > ~3° above horizon.
-      // smoothstep over sin(altitude): [-0.10, +0.05].
-      const t = CesiumMath.clamp(
-        (solarAltSin - -0.1) / (0.05 - -0.1),
-        0.0,
-        1.0,
-      );
-      dayFade = 1.0 - t;
-      // Above ~100 km the atmosphere no longer scatters enough sunlight to
-      // wash out stars — keep them visible regardless of solar altitude.
-      // camLen is distance from Earth's center; subtract a mean Earth
-      // radius for a crude altitude (good enough to gate the fade).
-      const altitude = camLen - 6371000.0;
-      if (altitude > 100000.0) {
-        dayFade = 1.0;
-      }
-    }
-  }
+  // surface-level camera, but keep them visible above ~100 km. Shared with
+  // the WebGL renderer (Scene/StarFieldMath) so the fade matches exactly.
+  const dayFade = computeStarDayFade(
+    uniformState.sunDirectionWC,
+    frameState.camera?.positionWC,
+  );
 
   uniformData[18] = starField._intensity * dayFade;
   // Minimum NDC half-extent so faint stars stay ≥ ~1 px on a 1080p frame.
