@@ -8,12 +8,12 @@ import GroundPolylinePrimitive from "../Scene/GroundPolylinePrimitive.js";
 import GroundPrimitive from "../Scene/GroundPrimitive.js";
 import OrderedGroundPrimitiveCollection from "../Scene/OrderedGroundPrimitiveCollection.js";
 import PrimitiveCollection from "../Scene/PrimitiveCollection.js";
-import BillboardVisualizer from "./BillboardVisualizer.js";
 import BoundingSphereState from "./BoundingSphereState.js";
+import BulkBillboardVisualizer from "./BulkBillboardVisualizer.js";
+import BulkLabelVisualizer from "./BulkLabelVisualizer.js";
 import BulkPointVisualizer from "./BulkPointVisualizer.js";
 import CustomDataSource from "./CustomDataSource.js";
 import GeometryVisualizer from "./GeometryVisualizer.js";
-import LabelVisualizer from "./LabelVisualizer.js";
 import ModelVisualizer from "./ModelVisualizer.js";
 import Cesium3DTilesetVisualizer from "./Cesium3DTilesetVisualizer.js";
 import PathVisualizer from "./PathVisualizer.js";
@@ -480,14 +480,18 @@ DataSourceDisplay.defaultVisualizersCallback = function (
 ) {
   const entities = dataSource.entities;
   return [
-    new BillboardVisualizer(entityCluster, entities),
+    new BulkBillboardVisualizer(
+      entityCluster,
+      entities,
+      dataSource._primitives,
+    ),
     new GeometryVisualizer(
       scene,
       entities,
       dataSource._primitives,
       dataSource._groundPrimitives,
     ),
-    new LabelVisualizer(entityCluster, entities),
+    new BulkLabelVisualizer(entityCluster, entities, dataSource._primitives),
     new ModelVisualizer(scene, entities),
     new Cesium3DTilesetVisualizer(scene, entities),
     new BulkPointVisualizer(entityCluster, entities, dataSource._primitives),

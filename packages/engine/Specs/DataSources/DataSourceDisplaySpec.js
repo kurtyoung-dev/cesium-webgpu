@@ -10,12 +10,12 @@ import {
   GroundPolylinePrimitive,
   GroundPrimitive,
   defined,
-  BillboardVisualizer,
+  BulkBillboardVisualizer,
   GeometryVisualizer,
-  LabelVisualizer,
+  BulkLabelVisualizer,
   ModelVisualizer,
   Cesium3DTilesetVisualizer,
-  PointVisualizer,
+  BulkPointVisualizer,
   PathVisualizer,
   PolylineVisualizer,
 } from "../../index.js";
@@ -691,12 +691,12 @@ describe(
         dataSource,
       );
       expect(callback.length).toEqual(8);
-      expect(callback[0]).toBeInstanceOf(BillboardVisualizer);
+      expect(callback[0]).toBeInstanceOf(BulkBillboardVisualizer);
       expect(callback[1]).toBeInstanceOf(GeometryVisualizer);
-      expect(callback[2]).toBeInstanceOf(LabelVisualizer);
+      expect(callback[2]).toBeInstanceOf(BulkLabelVisualizer);
       expect(callback[3]).toBeInstanceOf(ModelVisualizer);
       expect(callback[4]).toBeInstanceOf(Cesium3DTilesetVisualizer);
-      expect(callback[5]).toBeInstanceOf(PointVisualizer);
+      expect(callback[5]).toBeInstanceOf(BulkPointVisualizer);
       expect(callback[6]).toBeInstanceOf(PathVisualizer);
       expect(callback[7]).toBeInstanceOf(PolylineVisualizer);
     });

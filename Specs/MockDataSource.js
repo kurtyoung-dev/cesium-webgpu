@@ -1,4 +1,9 @@
-import { Event, EntityCluster, EntityCollection } from "@cesium/engine";
+import {
+  Event,
+  EntityCluster,
+  EntityCollection,
+  PrimitiveCollection,
+} from "@cesium/engine";
 
 function MockDataSource() {
   //Values to be fiddled with by the test
@@ -12,6 +17,11 @@ function MockDataSource() {
   this.loadingEvent = new Event();
   this.destroyed = false;
   this.clustering = new EntityCluster();
+  // The bulk visualizers (point/billboard/label) add their flat-buffer
+  // collections to the DataSource's own primitives; provide one so
+  // defaultVisualizersCallback can construct them.
+  this._primitives = new PrimitiveCollection();
+  this._groundPrimitives = new PrimitiveCollection();
 }
 MockDataSource.prototype.update = function () {
   return true;
