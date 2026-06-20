@@ -283,7 +283,9 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
       });
 
       it("is labeled and has two entries", function () {
-        expect(layout.label).toBe("Globe terrain uniforms layout");
+        expect(layout.label).toBe(
+          "Globe terrain uniforms layout (dynamic offset)",
+        );
         expect(layout.entries.length).toBe(2);
       });
 

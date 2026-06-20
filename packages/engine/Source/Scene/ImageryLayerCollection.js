@@ -201,7 +201,7 @@ class ImageryLayerCollection {
    * @returns {boolean} true if the collection contains the layer, false otherwise.
    */
   contains(layer) {
-    return this.includes(layer);
+    return this.indexOf(layer) !== -1;
   }
 
   /**
