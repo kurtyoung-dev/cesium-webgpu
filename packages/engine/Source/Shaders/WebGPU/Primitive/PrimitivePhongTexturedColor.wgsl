@@ -442,16 +442,23 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let baseColor = texColor * input.color;
 
     let normal = normalize(input.worldNormal);
+    // lightDir (the sun direction in eye space) is consumed only by the CSM
+    // slope-bias / cascade-sampling path below — NOT by the diffuse term.
     let lightDir = normalize(camera.lightDirection.xyz);
-
-    let ambient = 0.15;
-    let NdotL = max(dot(normal, lightDir), 0.0);
-    let diffuse = NdotL * 0.7;
-
     let viewDir = normalize(-input.viewPosition);
-    let halfDir = normalize(lightDir + viewDir);
-    let NdotH = max(dot(normal, halfDir), 0.0);
-    let specular = pow(NdotH, 32.0) * 0.15;
+
+    // NEW-PERINSTANCE-DIFFUSE-PARITY (Batch 326) — match the GLSL reference
+    // `czm_phong` (Builtin/Functions/phong.glsl) used by the lit color/material
+    // appearances. See the matching comment in PrimitivePhongColor.wgsl for the
+    // full derivation. czm_phong (3D scene mode) computes diffuse from two
+    // FIXED eye-space light directions (+Z toward the eye, +Y up) — NOT the sun
+    // — and folds a 0.5 ambient term in:  out = color * 0.5 * (1 + diffuse).
+    // The prior ad-hoc Blinn-Phong keyed diffuse on the sun direction with a
+    // 0.15 ambient floor, rendering lit surfaces ~40% darker than WebGL.
+    // material.specular is 0 for these appearances, so the specular term is
+    // dropped to keep parity.
+    let diffuse = max(dot(normal, vec3<f32>(0.0, 0.0, 1.0)), 0.0)
+                + max(dot(normal, vec3<f32>(0.0, 1.0, 0.0)), 0.0);
 
     // CSM Slice 1 — route through the cascaded path when
     // `effects.csmControl.x > 0.5`. viewDepth = |eyePosition.z| since
@@ -481,7 +488,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     } else {
         shadowFactor = computeShadowFactor(input.eyePosition);
     }
-    let lighting = ambient + (diffuse + specular) * shadowFactor;
+    let lighting = 0.5 + 0.5 * diffuse * shadowFactor;
     // Slice 5d Batch 156 — additive Forward+ clustered lighting (eye-space
     // inputs; baseColor = textured × per-vertex color; F0/roughness neutral
     // dielectric — Phong has no PBR material). Early-outs when no lights.

@@ -469,16 +469,33 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     }
 
     let normal = normalize(input.worldNormal);
+    // lightDir (the sun direction in eye space) is consumed only by the CSM
+    // slope-bias / cascade-sampling path below — NOT by the diffuse term.
     let lightDir = normalize(camera.lightDirection.xyz);
-
-    let ambient = 0.15;
-    let NdotL = max(dot(normal, lightDir), 0.0);
-    let diffuse = NdotL * 0.7;
-
     let viewDir = normalize(-input.viewPosition);
-    let halfDir = normalize(lightDir + viewDir);
-    let NdotH = max(dot(normal, halfDir), 0.0);
-    let specular = pow(NdotH, 32.0) * 0.15;
+
+    // NEW-PERINSTANCE-DIFFUSE-PARITY (Batch 326) — match the GLSL reference
+    // `czm_phong` (Builtin/Functions/phong.glsl) used by
+    // PerInstanceColorAppearance / ColorAppearance (`PerInstanceColorAppearanceFS`).
+    // The prior ad-hoc Blinn-Phong (ambient 0.15 + 0.7·N·L_sun + 0.15·spec)
+    // diverged badly: it keyed diffuse on the SUN direction and used a 0.15
+    // ambient floor, rendering lit per-instance surfaces ~40% darker than
+    // WebGL (~92 vs ~154 surface luminance).
+    //
+    // czm_phong (3D scene mode, the renderer's dominant case) computes diffuse
+    // from two FIXED eye-space light directions — +Z (toward the eye, for
+    // top-down) and +Y (up, for 3D horizon views) — NOT the sun direction:
+    //     diffuse = max(dot(N,+Z),0) + max(dot(N,+Y),0)            (0..2)
+    // and folds a 0.5 ambient term in via `materialDiffuse = color*0.5`:
+    //     out = color*0.5 + color*0.5*diffuse*czm_lightColor + spec*...
+    //         = color * 0.5 * (1 + diffuse)        (czm_lightColor = white)
+    // For PerInstanceColor/Color the material's specular is 0, so the
+    // specular term contributes nothing — we drop it to keep parity.
+    // The shadow factor darkens only the directional (diffuse) term, leaving
+    // the 0.5 ambient floor untouched, matching how WebGL applies shadows on
+    // top of czm_phong's ambient.
+    let diffuse = max(dot(normal, vec3<f32>(0.0, 0.0, 1.0)), 0.0)
+                + max(dot(normal, vec3<f32>(0.0, 1.0, 0.0)), 0.0);
 
     // CSM Slice 2b — route through the cascaded path when
     // `effects.csmControl.x > 0.5`. viewDepth = |eyePosition.z| since
@@ -504,7 +521,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     } else {
         shadowFactor = computeShadowFactor(input.eyePosition);
     }
-    let lighting = ambient + (diffuse + specular) * shadowFactor;
+    let lighting = 0.5 + 0.5 * diffuse * shadowFactor;
     // Slice 5d Batch 156 — additive Forward+ clustered lighting (eye-space
     // inputs; baseColor = per-vertex color; F0/roughness neutral dielectric
     // — Phong has no PBR material). Early-outs when no clustered lights.
