@@ -64,7 +64,11 @@ struct CameraUniforms {
 };
 
 struct EdgeUniforms {
-  // .rgb = edge color, .a = 1 (always-on for emitter)
+  // .rgb = fallback edge color (the surface / model base color), .a = 1.
+  // Per-edge color comes from the location(7) vertex attribute; this
+  // uniform is the surface-color fallback used when an edge writes the
+  // a<0 "no override" sentinel (matches WebGL: the FS keeps the surface
+  // color when a_edgeColor.a < 0 -- EdgeVisibilityStageFS.glsl:32-36).
   color: vec4<f32>,
   // .xy = viewport (px), .z = line width (px), .w = u32 pattern bits
   // packed as f32 (emitter writes Math.fround-safe int when pattern
@@ -92,6 +96,14 @@ struct VertexInput {
   // emit time so it fits in rgba8unorm's id.g channel — saturation
   // beyond 255 is the documented C-R8-EDGE-ID-FORMAT limit.
   @location(6) featureId: f32,
+  // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU (Batch 330) -- per-edge color,
+  // the WebGPU equivalent of WebGL's a_edgeColor vertex attribute.
+  // .a >= 0 -> use this RGBA as the edge color (per-lineString /
+  // per-feature materialColor override, or a per-vertex COLOR_0 value).
+  // .a < 0 (the -1 sentinel) -> no override, fall back to edge.color
+  // (the surface / model base color). Replicated across the quad's 4
+  // vertices and interpolated flat.
+  @location(7) edgeColor: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -99,6 +111,7 @@ struct VertexOutput {
   @location(0) edgeType: f32,
   @location(1) lineCoord: f32,
   @location(2) @interpolate(flat) featureId: f32,
+  @location(3) @interpolate(flat) edgeColor: vec4<f32>,
 };
 
 const PERP_TOL: f32 = 2.5e-4;
@@ -136,6 +149,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   out.edgeType = input.edgeType;
   out.featureId = input.featureId;
+  out.edgeColor = input.edgeColor;
 
   // Base clip-space position.
   let posClip = camera.modelViewProjection * vec4<f32>(input.position, 1.0);
@@ -227,7 +241,15 @@ fn fragmentMain(input: VertexOutput) -> FragmentOutput {
   }
 
   var out: FragmentOutput;
-  out.color = edge.color;
+  // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — per-edge color override.
+  // Matches WebGL EdgeVisibilityStageFS.glsl:32-36: use the per-edge
+  // color when its alpha is non-negative, else keep the surface/model
+  // base color carried in edge.color.
+  var finalColor = edge.color;
+  if (input.edgeColor.a >= 0.0) {
+    finalColor = input.edgeColor;
+  }
+  out.color = finalColor;
   let edgeTypeInt = input.edgeType * 255.0;
   // C-R8-EDGE-ID-FORMAT (Batch 49) — 16-bit feature ID split across
   // id.g (low byte) + id.b (high byte) so tilesets with > 255
@@ -280,14 +302,20 @@ fn fragmentSceneFB(input: VertexOutput) -> FragmentSceneFBOutput {
     }
   }
   var out: FragmentSceneFBOutput;
-  out.color = edge.color;
+  // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — per-edge color override
+  // (same semantics as fragmentMain).
+  var finalColor = edge.color;
+  if (input.edgeColor.a >= 0.0) {
+    finalColor = input.edgeColor;
+  }
+  out.color = finalColor;
   out.gbuffer = vec4<f32>(0.0);
   return out;
 }
 `;
 
 interface EdgeGeometry {
-  /** Interleaved Float32Array per vertex: [pos.xyz, edgeType, normalA.xyz, normalB.xyz, otherPos.xyz, edgeOffset, featureId] (15 floats / 60 bytes). */
+  /** Interleaved Float32Array per vertex: [pos.xyz, edgeType, normalA.xyz, normalB.xyz, otherPos.xyz, edgeOffset, featureId, edgeColor.rgba] (19 floats / 76 bytes). */
   vertices: Float32Array;
   /** Uint32Array of indices: 6 per edge (2 triangles). */
   indices: Uint32Array;
@@ -303,11 +331,13 @@ interface EdgeGeometry {
   hasFeatureIds: boolean;
 }
 
-// 15 floats per vertex — added `featureId` after `edgeOffset` for the
-// C-R8-EDGE-FEATURE-ID branch. Stride bumped from 56 → 60 bytes; the
-// pipeline's vertex buffer layout below picks up the new attribute at
-// shaderLocation 6.
-const FLOATS_PER_VERTEX = 15;
+// 19 floats per vertex. `featureId` (slot 14) was added after `edgeOffset`
+// for the C-R8-EDGE-FEATURE-ID branch (stride 56 → 60). Then the per-edge
+// `edgeColor` vec4 (slots 15..18) was added for
+// NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU (Batch 330), bumping the stride
+// 60 → 76 bytes; the pipeline's vertex buffer layout below picks up the
+// new attribute at shaderLocation 7, offset 60.
+const FLOATS_PER_VERTEX = 19;
 const VERTEX_STRIDE_BYTES = FLOATS_PER_VERTEX * 4;
 const VERTICES_PER_EDGE = 4;
 const INDICES_PER_EDGE = 6;
@@ -318,6 +348,41 @@ const _scratchC = new Cartesian3();
 const _scratchE1 = new Cartesian3();
 const _scratchE2 = new Cartesian3();
 const _scratchN = new Cartesian3();
+
+// NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — an edge `materialColor` override
+// arrives either as a Cartesian4-like object (.x/.y/.z/.w) or a numeric
+// array ([r,g,b,a]), matching WebGL `createQuadEdgeGeometry`'s
+// `setColorFromOverride`, which reads both shapes.
+type EdgeColorLike =
+  | { x: number; y: number; z: number; w?: number }
+  | ArrayLike<number>;
+
+// Resolved per-edge color: [r, g, b, a] in 0..1, or null = no override.
+type EdgeColorRGBA = [number, number, number, number];
+
+/**
+ * Normalize an edge `materialColor` override (Cartesian4-like or numeric
+ * array) to an `[r, g, b, a]` tuple. Returns null when undefined. Alpha
+ * defaults to 1 when the source omits it (matching WebGL
+ * `setColorFromOverride`).
+ */
+function normalizeEdgeColor(
+  color: EdgeColorLike | undefined | null,
+): EdgeColorRGBA | null {
+  if (color === undefined || color === null) {
+    return null;
+  }
+  const c = color as { x?: number; y?: number; z?: number; w?: number };
+  const arr = color as ArrayLike<number>;
+  const r = c.x !== undefined ? c.x : arr[0];
+  const g = c.y !== undefined ? c.y : arr[1];
+  const b = c.z !== undefined ? c.z : arr[2];
+  const a = c.w !== undefined ? c.w : arr[3] !== undefined ? arr[3] : 1.0;
+  if (r === undefined || g === undefined || b === undefined) {
+    return null;
+  }
+  return [r, g, b, a];
+}
 
 /**
  * CPU-side build: face normals + edge adjacency + 4-vertex / 6-index
@@ -335,7 +400,7 @@ const _scratchN = new Cartesian3();
  *      lineString edge is EdgeVisibilityType.HARD, so it carries no
  *      face normals (the silhouette branch in the VS skips type != 1).
  *
- * Layout per vertex (15 floats, 60 bytes):
+ * Layout per vertex (19 floats, 76 bytes):
  *   [0..2]  position.xyz       — endpoint position (model space)
  *   [3]     edgeType           — 1/2/3 normalized to /255
  *   [4..6]  normalA.xyz        — first triangle's face normal (0 for lineStrings)
@@ -343,6 +408,8 @@ const _scratchN = new Cartesian3();
  *   [10..12] otherPos.xyz       — the OTHER endpoint's position
  *   [13]    edgeOffset         — -1 (left) or +1 (right) for quad expansion
  *   [14]    featureId          — per-edge FEATURE_ID_0 (0 when absent)
+ *   [15..18] edgeColor.rgba     — per-edge color override (a<0 = no override,
+ *                                fall back to the uniform surface color)
  *
  * Quad layout per edge (4 vertices indexed 0..3 within the edge,
  * absolute index = edgeIdx*4 + local):
@@ -356,16 +423,23 @@ const _scratchN = new Cartesian3();
  * the edge — they're per-edge attributes replicated per-vertex so the
  * shader doesn't need a separate per-edge lookup.
  *
+ * NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU (Batch 330) — per-edge /
+ * per-lineString `materialColor` overrides and per-vertex COLOR_0 are now
+ * carried in slots [15..18] (the WebGPU equivalent of WebGL's
+ * `a_edgeColor`). Color source priority per edge mirrors
+ * `EdgeVisibilityPipelineStage.createQuadEdgeGeometry`:
+ *   1. the edge's explicit override color (per-lineString `materialColor`,
+ *      else the primitive-level `edgeVisibility.materialColor`), else
+ *   2. the lower-index endpoint's per-vertex COLOR_0 (`vertexColors`), else
+ *   3. the `-1` alpha sentinel → no override → the WGSL FS falls back to
+ *      the uniform surface/model color.
+ *
  * DEFERRED (next slice — needs the WebGPUModelRenderer side too, so it
  * collides with batch-edge-display-mode-tri):
  *   - authored `edgeVisibility.silhouetteNormals` signed-byte accessor:
  *     WebGPU still re-derives face normals from triangle adjacency for
  *     the visibility path, so silhouette classification can diverge from
  *     WebGL's authored-normal path on meshes that ship that accessor.
- *   - per-edge / per-lineString `materialColor` overrides: the emitter
- *     applies one primitive-level edge color (no `a_edgeColor`
- *     equivalent), so the WGSL `EdgeUniforms.color` would need to become
- *     a per-edge vertex attribute + a packed-lane widening.
  */
 export function extractEdgeGeometry(
   primitive: unknown,
@@ -382,10 +456,28 @@ export function extractEdgeGeometry(
    * comes back false so callers know not to enable per-feature gating.
    */
   featureIds?: Float32Array | Uint8Array | Uint16Array | Uint32Array | null,
+  /**
+   * NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — optional per-vertex RGBA
+   * colors (from a glTF COLOR_0 attribute), packed as 4 floats per vertex
+   * in 0..1. Length is `vertexCount * 4`. Used as the per-edge color
+   * source ONLY when the edge has no explicit `materialColor` override —
+   * mirrors WebGL `createQuadEdgeGeometry`'s
+   * override → vertexColor → no-color priority. Pass `null`/omit when the
+   * primitive has no COLOR_0; edges without an override then write the
+   * `-1` alpha "no override" sentinel and the FS falls back to the
+   * surface color.
+   */
+  vertexColors?: Float32Array | null,
 ): EdgeGeometry | null {
   const p = primitive as {
     edgeVisibility?: {
       visibility?: Uint8Array;
+      // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — primitive-level edge
+      // color override (the `materialColor` global applied to every
+      // visibility-path edge; matches WebGL `edgeVisibility.materialColor`
+      // / `EdgeVisibilityPipelineStage.js:404`). Either a Cartesian4
+      // (.x/.y/.z/.w) or a numeric array ([r,g,b,a]).
+      materialColor?: EdgeColorLike;
       // C-R8-EDGE-LINESTRINGS — explicit polyline edges from the
       // EXT_mesh_primitive_edge_visibility `lineStrings` array. Each
       // entry carries a primitive-restart-delimited index list into the
@@ -394,6 +486,9 @@ export function extractEdgeGeometry(
       lineStrings?: Array<{
         indices?: Uint8Array | Uint16Array | Uint32Array;
         restartIndex?: number;
+        // Per-lineString color override (BENTLEY styled-gltf-lines).
+        // Takes precedence over the primitive-level `materialColor`.
+        materialColor?: EdgeColorLike;
       }>;
     };
     indices?: { typedArray?: Uint8Array | Uint16Array | Uint32Array };
@@ -403,6 +498,11 @@ export function extractEdgeGeometry(
   if (!edgeVis) return null;
   const visibility = edgeVis.visibility;
   const lineStrings = edgeVis.lineStrings;
+  // Primitive-level edge color override (visibility-path edges). When
+  // present it wins over per-vertex COLOR_0; when absent those edges fall
+  // back to vertex color, then to the -1 "no override" sentinel.
+  const globalColor = normalizeEdgeColor(edgeVis.materialColor);
+  const vertColors = vertexColors ?? null;
   const indices = p?.indices?.typedArray;
   const hasVisibilityData = !!visibility && !!indices && indices.length > 0;
   const hasLineStrings = !!lineStrings && lineStrings.length > 0;
@@ -514,7 +614,14 @@ export function extractEdgeGeometry(
     nBz: number,
     typeNorm: number,
     edgeFeatureId: number,
+    // Per-edge color [r,g,b,a]. a<0 = no override (FS falls back to the
+    // uniform surface color). Replicated across the quad's 4 vertices.
+    edgeColor: EdgeColorRGBA,
   ): void => {
+    const cr = edgeColor[0];
+    const cg = edgeColor[1];
+    const cb = edgeColor[2];
+    const ca = edgeColor[3];
     const pushVertex = (
       px: number,
       py: number,
@@ -540,6 +647,10 @@ export function extractEdgeGeometry(
         oz,
         offset,
         edgeFeatureId,
+        cr,
+        cg,
+        cb,
+        ca,
       );
     };
     pushVertex(ax, ay, az, bx, by, bz, -1.0); // v0 — endpoint A, left
@@ -550,6 +661,34 @@ export function extractEdgeGeometry(
     const baseV = outEdge * VERTICES_PER_EDGE;
     idx.push(baseV + 0, baseV + 1, baseV + 2, baseV + 1, baseV + 3, baseV + 2);
     outEdge++;
+  };
+
+  // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — resolve a single edge's color
+  // following WebGL `createQuadEdgeGeometry`'s priority: explicit override
+  // (per-lineString / primitive `materialColor`) → lower-index endpoint's
+  // per-vertex COLOR_0 → the -1 alpha "no override" sentinel. `lowIndex`
+  // is the lower of the edge's two endpoint indices (the vertex WebGL
+  // samples; both endpoints share a color for a single-feature edge).
+  const _noColor: EdgeColorRGBA = [0.0, 0.0, 0.0, -1.0];
+  const resolveEdgeColor = (
+    override: EdgeColorRGBA | null,
+    lowIndex: number,
+  ): EdgeColorRGBA => {
+    if (override !== null) {
+      return override;
+    }
+    if (vertColors !== null) {
+      const o = lowIndex * 4;
+      if (o + 3 < vertColors.length) {
+        return [
+          vertColors[o],
+          vertColors[o + 1],
+          vertColors[o + 2],
+          vertColors[o + 3],
+        ];
+      }
+    }
+    return _noColor;
   };
 
   // Decode visibility, dedupe, and emit 4 vertices + 6 indices per
@@ -652,6 +791,10 @@ export function extractEdgeGeometry(
         }
       }
 
+      // Per-edge color: visibility-path edges use the primitive-level
+      // `materialColor` override when present, else per-vertex COLOR_0.
+      const edgeColor = resolveEdgeColor(globalColor, Math.min(a, b));
+
       // Push 4 vertices + 6 indices for the quad.
       emitEdgeQuad(
         ax,
@@ -668,6 +811,7 @@ export function extractEdgeGeometry(
         nBz,
         typeNorm,
         edgeFeatureId,
+        edgeColor,
       );
     }
   }
@@ -688,6 +832,14 @@ export function extractEdgeGeometry(
       if (!lineIndices || lineIndices.length < 2) continue;
       const restartValue = lineString.restartIndex;
       const hasRestart = restartValue !== undefined;
+
+      // Per-lineString color override: the lineString's own `materialColor`
+      // takes precedence over the primitive-level `globalColor` (matches
+      // WebGL `EdgeVisibilityPipelineStage.js:490-492`). When both are
+      // absent the edge falls back to per-vertex COLOR_0, then the
+      // no-override sentinel.
+      const lineColor =
+        normalizeEdgeColor(lineString.materialColor) ?? globalColor;
 
       let previous: number | undefined;
       for (let j = 0; j < lineIndices.length; j++) {
@@ -746,6 +898,8 @@ export function extractEdgeGeometry(
           }
         }
 
+        const edgeColor = resolveEdgeColor(lineColor, small);
+
         emitEdgeQuad(
           ax,
           ay,
@@ -761,6 +915,7 @@ export function extractEdgeGeometry(
           0,
           HARD_TYPE_NORM,
           edgeFeatureId,
+          edgeColor,
         );
       }
     }
@@ -889,6 +1044,7 @@ export function ensureEdgeEmitterPipeline(
           { shaderLocation: 4, offset: 40, format: "float32x3" }, // otherPos
           { shaderLocation: 5, offset: 52, format: "float32" }, // edgeOffset
           { shaderLocation: 6, offset: 56, format: "float32" }, // featureId (C-R8-EDGE-FEATURE-ID)
+          { shaderLocation: 7, offset: 60, format: "float32x4" }, // edgeColor (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU)
         ],
       },
     ],

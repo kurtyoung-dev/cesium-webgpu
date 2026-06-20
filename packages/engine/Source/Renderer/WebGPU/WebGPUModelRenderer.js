@@ -1013,6 +1013,48 @@ function createVertexBuffer(device, data, label) {
   return buffer;
 }
 
+/**
+ * NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — expand a flat per-vertex color
+ * array to dense RGBA (4 floats per vertex). glTF COLOR_0 may be VEC3 (RGB,
+ * opaque) or VEC4 (RGBA); the edge emitter expects RGBA. RGB sources get an
+ * implicit alpha of 1.0 (matching WebGL `collectVertexColors`, which pads
+ * 3-component colors to opaque).
+ *
+ * @param {Float32Array} colorFloat Normalized color data (3 or 4 components per vertex).
+ * @param {number} components 3 or 4.
+ * @param {number} vertexCount Number of vertices.
+ * @returns {Float32Array|null} `vertexCount * 4` RGBA floats, or null if unusable.
+ * @private
+ */
+function expandColorsToRGBA(colorFloat, components, vertexCount) {
+  if (!defined(colorFloat) || !(components === 3 || components === 4)) {
+    return null;
+  }
+  if (!defined(vertexCount) || vertexCount === 0) {
+    return null;
+  }
+  if (colorFloat.length < vertexCount * components) {
+    return null;
+  }
+  if (components === 4) {
+    // Already RGBA — return a view sliced to the expected length to drop
+    // any trailing padding.
+    return colorFloat.length === vertexCount * 4
+      ? colorFloat
+      : colorFloat.subarray(0, vertexCount * 4);
+  }
+  const rgba = new Float32Array(vertexCount * 4);
+  for (let i = 0; i < vertexCount; i++) {
+    const src = i * 3;
+    const dst = i * 4;
+    rgba[dst] = colorFloat[src];
+    rgba[dst + 1] = colorFloat[src + 1];
+    rgba[dst + 2] = colorFloat[src + 2];
+    rgba[dst + 3] = 1.0;
+  }
+  return rgba;
+}
+
 // ─── Joint Matrix Buffer ─────────────────────────────────────────────────────
 
 /**
@@ -3589,10 +3631,31 @@ function updateWebGPUModel(model, frameState) {
               }
             }
           }
+          // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — pass per-vertex
+          // COLOR_0 (as normalized RGBA) so the emitter can resolve
+          // per-edge colors the same way WebGL does (override →
+          // vertex color → no-override sentinel). The primitive-level
+          // and per-lineString `materialColor` overrides are read inside
+          // `extractEdgeGeometry` directly off the edgeVisibility object.
+          let edgeVertexColors = null;
+          if (geometry.hasColor0 && defined(geometry.color0Data)) {
+            const colorFloat = normalizeColorData(
+              geometry.color0Data,
+              geometry.color0ComponentType,
+              geometry.color0Normalized,
+            );
+            const components = geometry.color0ComponentCount ?? 4;
+            edgeVertexColors = expandColorsToRGBA(
+              colorFloat,
+              components,
+              geometry.vertexCount,
+            );
+          }
           const edgeGeom = extractEdgeGeometry(
             edgeGltfPrimitive,
             geometry.positionData,
             edgeFeatureIdData,
+            edgeVertexColors,
           );
           if (defined(edgeGeom)) {
             primCache.edgeResources = createEdgePrimitiveResources(
@@ -3647,30 +3710,23 @@ function updateWebGPUModel(model, frameState) {
           }
           const mvData = Matrix4.toArray(mv, scratchEdgeMVArray);
 
-          // Edge color: prefer the extension's per-primitive `materialColor`;
-          // otherwise inherit the model's base color. WebGL writes
-          // `a_edgeColor.a = -1` when no edge color is authored (see
-          // EdgeVisibilityPipelineStage.js:720-723) so its FS falls through to
-          // the surface/fragment color — NOT black. The prior black default
-          // rendered the edges invisible against a dark scene (the EDGES_ONLY
-          // "blank" the 14-batch review surfaced, alongside the
-          // nodeModelMatrix + scene-FB-pipeline fixes).
-          const matColor = edgeGltfPrimitive.edgeVisibility?.materialColor;
+          // Edge color: this uniform is now the FALLBACK surface color used
+          // only when an edge writes the `a_edgeColor.a < 0` "no override"
+          // sentinel. The per-primitive `materialColor`, per-lineString
+          // `materialColor`, and per-vertex COLOR_0 overrides are now carried
+          // per-edge in the @location(7) vertex attribute
+          // (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU), matching WebGL's
+          // `a_edgeColor`. So this fallback is just the model's base color
+          // (WebGL's FS keeps the surface/fragment color when no per-edge
+          // override is authored — NOT black — see
+          // EdgeVisibilityStageFS.glsl:32-36).
           const mc = model.color;
-          const edgeColor =
-            defined(matColor) && matColor.length >= 4
-              ? {
-                  r: matColor[0],
-                  g: matColor[1],
-                  b: matColor[2],
-                  a: matColor[3],
-                }
-              : {
-                  r: mc?.red ?? 1.0,
-                  g: mc?.green ?? 1.0,
-                  b: mc?.blue ?? 1.0,
-                  a: mc?.alpha ?? 1.0,
-                };
+          const edgeColor = {
+            r: mc?.red ?? 1.0,
+            g: mc?.green ?? 1.0,
+            b: mc?.blue ?? 1.0,
+            a: mc?.alpha ?? 1.0,
+          };
 
           // Viewport for NDC→pixel offset math in the wide-line VS.
           const vpW = context.drawingBufferWidth ?? 1;
