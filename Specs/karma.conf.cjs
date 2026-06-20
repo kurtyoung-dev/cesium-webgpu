@@ -1,5 +1,7 @@
 "use strict";
 
+const os = require("os");
+
 module.exports = function (config) {
   const options = {
     // base path that will be used to resolve all patterns (eg. files, exclude)
@@ -79,6 +81,20 @@ module.exports = function (config) {
         base: "Chrome",
         flags: ["--remote-debugging-port=9333"],
       },
+      EdgeHeadlessCI: {
+        // base "Chrome" (not "ChromeHeadless") so we control the flag set
+        // fully: this Edge build only goes headless with --headless=new, and
+        // needs an isolated --user-data-dir so it doesn't forward to a running
+        // interactive Edge session and exit immediately.
+        base: "Chrome",
+        flags: [
+          "--headless=new",
+          "--no-sandbox",
+          "--disable-gpu",
+          "--disable-dev-shm-usage",
+          `--user-data-dir=${os.tmpdir()}\\karma-edge-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
+        ],
+      },
     },
 
     // Ridiculous large values because CI can be slow.
@@ -90,6 +106,9 @@ module.exports = function (config) {
     // Continuous Integration mode
     // if true, Karma captures browsers, runs the tests and exits
     singleRun: true,
+
+    // Edge consolidates into a single process; concurrent launches collide.
+    concurrency: 1,
 
     browsers: ["Chrome"],
   };

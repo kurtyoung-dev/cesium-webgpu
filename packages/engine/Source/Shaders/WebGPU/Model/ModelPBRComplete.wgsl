@@ -406,7 +406,12 @@ struct LightUniforms {
 @group(2) @binding(4) var<storage, read> previousJointMatrices: array<mat4x4<f32>>;
 
 // Morph targets (bind group 4, only used when FLAG_HAS_MORPH_TARGETS is set)
-// Storage buffer: per-target blocks of (vertexCount × vec4) position deltas
+// Storage buffer: per-target blocks of (vertexCount × 2 × vec4) — for each
+//   vertex an interleaved [positionDelta, normalDelta] pair (DP-H35, Batch 329).
+//   Index the pair via base = (t * vertexCount + vid) * 2u; positionDelta =
+//   morphDeltas[base], normalDelta = morphDeltas[base + 1u]. The CPU pack
+//   (WebGPUModelMorphTargets.js FLOATS_PER_VERTEX_PER_TARGET = 8) MUST stay
+//   byte-consistent with this *2u stride.
 // Uniform buffer: weights (2 × vec4 = 8 weights max) + targetCount + vertexCount
 struct MorphWeightsUniforms {
   weights0: vec4<f32>,    // morph weights 0-3
@@ -766,7 +771,14 @@ struct VertexOutput {
 
   // ── Morph Targets ─────────────────────────────────────────────────────────
   // Must happen BEFORE skinning per glTF spec: morph → skin → RTE.
-  // Reads weighted position deltas from storage buffer, indexed by vertex_index.
+  // Reads weighted position + normal deltas from the storage buffer, indexed by
+  // vertex_index. DP-H35 (Batch 329): the storage buffer now interleaves a
+  // [positionDelta, normalDelta] vec4 pair per vertex per target, so morphed
+  // normals re-shade the deformed surface (WebGL morphs normals via
+  // getMorphedNormal; WebGPU previously froze them at the rest pose → frozen
+  // lighting on a morph-animated mesh). Normal accumulation is ADDITIVE and a
+  // no-op for targets with no NORMAL accessor (their packed delta is zero).
+  var morphedNormal = false;
   if (hasFlag(material.materialFlags, FLAG_HAS_MORPH_TARGETS)) {
     let targetCount = u32(morphWeights.targetCount);
     let vertexCount = u32(morphWeights.vertexCount);
@@ -776,10 +788,23 @@ struct VertexOutput {
       // Weight for this target from the packed vec4 arrays
       let w = select(morphWeights.weights0[t], morphWeights.weights1[t - 4u], t >= 4u);
       if (abs(w) > 0.0001) {
-        let idx = t * vertexCount + vid;
-        let delta = morphDeltas[idx].xyz;
-        positionMC = positionMC + delta * w;
+        let base = (t * vertexCount + vid) * 2u;
+        let posDelta = morphDeltas[base].xyz;
+        let nrmDelta = morphDeltas[base + 1u].xyz;
+        positionMC = positionMC + posDelta * w;
+        normalMC = normalMC + nrmDelta * w;
+        morphedNormal = true;
       }
+    }
+  }
+  // glTF morphed normals are not guaranteed unit-length after the weighted
+  // accumulation; re-normalize so downstream lighting (and the skinning
+  // matrix3 transform below) operates on a unit normal. Guard against a
+  // degenerate (near-zero) result so we don't emit NaNs.
+  if (morphedNormal) {
+    let nlen = length(normalMC);
+    if (nlen > 1e-6) {
+      normalMC = normalMC / nlen;
     }
   }
 
@@ -875,8 +900,11 @@ struct VertexOutput {
         t >= 4u,
       );
       if (abs(w) > 0.0001) {
-        let idx = t * vertexCount + vid;
-        let delta = morphDeltas[idx].xyz;
+        // DP-H35 (Batch 329): the storage buffer is now interleaved
+        // [pos, nrm] pairs — step the same *2u stride as the current-frame
+        // block; the prev-frame velocity path only needs the POSITION delta.
+        let base = (t * vertexCount + vid) * 2u;
+        let delta = morphDeltas[base].xyz;
         prevPositionMC = prevPositionMC + delta * w;
       }
     }
