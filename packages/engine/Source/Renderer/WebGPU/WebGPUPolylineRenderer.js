@@ -74,6 +74,8 @@ import {
   beginCollectionFrame,
   endCollectionFrame,
   computeNoDepthTest,
+  validateDrawTargets,
+  validateInstancedDrawBuffer,
   makeDeviceShaderModuleCacheAccessor,
 } from "./WebGPUCollectionRendererBase.js";
 
@@ -1640,6 +1642,24 @@ async function _updateWebGPUPolylinesInner(
     // when the collection leaves blendOption unspecified is safer than
     // the previous hardcoded OPAQUE.
     if (frameState.passes.render) {
+      // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 2, null-target guard) —
+      // the segment vertex buffer must be live at the render-pass boundary.
+      if (!validateDrawTargets([cache[sbKey]], "PolylineCollection")) {
+        continue;
+      }
+      // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3, size-validation/
+      // overflow) — clamp the instanced draw to what the segment buffer
+      // holds (`BYTES_PER_SEGMENT`/instance). The buffer was grown to
+      // `segmentCount * BYTES_PER_SEGMENT` above, so this is inert on the
+      // happy path; it guards against a drift between `segmentCount` and the
+      // last grow (BUG-15 family).
+      const safeSegmentCount = validateInstancedDrawBuffer(
+        cache[sbKey],
+        segmentCount,
+        BYTES_PER_SEGMENT,
+        "PolylineCollection",
+      );
+
       const polylineBlendOpt = collection._blendOption;
       const polylinePass =
         polylineBlendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
@@ -1662,7 +1682,7 @@ async function _updateWebGPUPolylinesInner(
         bindGroupResolvers: [cameraResolver, undefined],
         vertexBuffers: [cache[sbKey]],
         vertexCount: VERTICES_PER_SEGMENT,
-        instanceCount: segmentCount,
+        instanceCount: safeSegmentCount,
         pass: polylinePass,
         owner: collection,
         boundingVolume: collection._boundingVolume,
@@ -1713,7 +1733,7 @@ async function _updateWebGPUPolylinesInner(
             bindGroups: [cache[velCamBgKey]],
             vertexBuffers: [cache[sbKey], cache[prevSbKey]],
             vertexCount: VERTICES_PER_SEGMENT,
-            instanceCount: segmentCount,
+            instanceCount: safeSegmentCount,
             pass: polylinePass,
             owner: collection,
             boundingVolume: collection._boundingVolume,
@@ -1885,12 +1905,28 @@ function _pushPolylinePickCommand(
     pickSize,
   );
 
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinels 2 + 3) — null-target +
+  // overflow guard on the pick instanced draw. The pick segment buffer is
+  // grown to `pickResult.segmentCount * BYTES_PER_SEGMENT` just above, so
+  // both are inert on the happy path.
+  if (
+    !validateDrawTargets([cache.pickSegmentBuffer], "PolylineCollection pick")
+  ) {
+    return;
+  }
+  const safePickSegmentCount = validateInstancedDrawBuffer(
+    cache.pickSegmentBuffer,
+    pickResult.segmentCount,
+    BYTES_PER_SEGMENT,
+    "PolylineCollection pick",
+  );
+
   cache.pickCommand = new WebGPUDrawCommand({
     pipeline: cache.pickPipeline,
     bindGroups: [cache.pickCameraBindGroup],
     vertexBuffers: [cache.pickSegmentBuffer],
     vertexCount: VERTICES_PER_SEGMENT,
-    instanceCount: pickResult.segmentCount,
+    instanceCount: safePickSegmentCount,
     pass: 8,
     owner: collection,
     boundingVolume: collection._boundingVolume,

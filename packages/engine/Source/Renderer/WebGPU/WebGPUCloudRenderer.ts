@@ -42,6 +42,8 @@ import type {
 import {
   beginCollectionFrame,
   endCollectionFrame,
+  validateDrawTargets,
+  validateInstancedDrawBuffer,
   makeDeviceShaderModuleCacheAccessor,
   type CollectionRenderCache,
 } from "./WebGPUCollectionRendererBase.js";
@@ -940,6 +942,32 @@ function _updateWebGPUCloudCollectionInner(
     ],
   });
 
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 2, null-target guard) — both
+  // the quad and instance vertex buffers must be live at the render-pass
+  // boundary; a null here would hand the WebGPU validation layer a draw with
+  // no vertex buffer. Skip the draw this frame instead (permanent log).
+  if (
+    !validateDrawTargets(
+      [cache.quadVertexBuffer, cache.instanceBuffer],
+      "CloudCollection",
+    )
+  ) {
+    return;
+  }
+
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3, size-validation/overflow) —
+  // each cloud instance reads 56 bytes (`arrayStride: 56`); clamp the drawn
+  // instance count to what the instance buffer physically holds so a drift
+  // between `instanceCount` and the last buffer grow can't issue an
+  // out-of-range instanced draw (BUG-15 family). On the happy path the
+  // buffer is sized for the full slot count, so this is inert.
+  const safeCloudInstanceCount = validateInstancedDrawBuffer(
+    cache.instanceBuffer,
+    cache.instanceCount,
+    56,
+    "CloudCollection",
+  );
+
   if (!cache.command) {
     cache.command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
@@ -947,7 +975,7 @@ function _updateWebGPUCloudCollectionInner(
       bindGroupResolvers: [cloudCameraResolver],
       vertexBuffers: [cache.quadVertexBuffer, cache.instanceBuffer],
       vertexCount: 6,
-      instanceCount: cache.instanceCount,
+      instanceCount: safeCloudInstanceCount,
       pass: Pass.TRANSLUCENT,
     });
   } else {
@@ -1204,6 +1232,16 @@ function attachCloudVelocityCommand(
     cache.prevInstanceBuffer &&
     cache.quadVertexBuffer
   ) {
+    // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3) — clamp the velocity
+    // instanced draw to what the current + prev instance buffers hold
+    // (each 56 B/instance). The prev buffer is grown to `instanceCount*56`
+    // just above, so this is inert on the happy path.
+    const safeVelocityInstanceCount = validateInstancedDrawBuffer(
+      cache.instanceBuffer,
+      cache.instanceCount,
+      56,
+      "CloudCollection velocity",
+    );
     (cache.command as { velocityCommand?: unknown }).velocityCommand =
       new WebGPUDrawCommand({
         pipeline: cache.velocityPipeline,
@@ -1214,7 +1252,7 @@ function attachCloudVelocityCommand(
           cache.prevInstanceBuffer,
         ],
         vertexCount: 6,
-        instanceCount: cache.instanceCount,
+        instanceCount: safeVelocityInstanceCount,
         pass: Pass.TRANSLUCENT,
       });
   } else if (cache.command) {

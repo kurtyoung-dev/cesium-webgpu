@@ -46,6 +46,12 @@ import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
+import {
+  beginCollectionFrame,
+  endCollectionFrame,
+  validateInstanceSyncResult,
+  validateInstancedDrawBuffer,
+} from "./WebGPUCollectionRendererBase.js";
 import SceneMode from "../../Scene/SceneMode.js";
 
 const SDF_EDGE = 1.0 - SDFSettings.CUTOFF; // 0.75
@@ -808,11 +814,7 @@ function tryResolveLabelSDFPipeline(device, pipelineCache, entry) {
  * @param {Array} commandList
  */
 function updateWebGPULabels(labelCollection, frameState, commandList) {
-  const context = frameState.context;
-  const device = context.device;
   const glyphCollection = labelCollection._glyphBillboardCollection;
-  const backgroundCollection = labelCollection._backgroundBillboardCollection;
-
   if (!glyphCollection || glyphCollection.length === 0) {
     return;
   }
@@ -820,6 +822,27 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   if (!defined(labelCollection._webgpuLabelCache)) {
     labelCollection._webgpuLabelCache = {};
   }
+
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1) — re-entry / infinite-loop
+  // guard around the whole (synchronous) label update. The inner build is
+  // synchronous, so the begin/end bracket it directly; the `finally` always
+  // settles the per-collection depth back to 0. Matches the Billboard /
+  // Point / Cloud / Polyline pattern.
+  beginCollectionFrame(labelCollection._webgpuLabelCache, "LabelCollection");
+  try {
+    _updateWebGPULabelsInner(labelCollection, frameState, commandList);
+  } finally {
+    endCollectionFrame(labelCollection._webgpuLabelCache);
+  }
+}
+
+function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
+  const context = frameState.context;
+  const device = context.device;
+  const glyphCollection = labelCollection._glyphBillboardCollection;
+  const backgroundCollection = labelCollection._backgroundBillboardCollection;
+
+  // Cache initialized by the outer `updateWebGPULabels` wrapper.
   const cache = labelCollection._webgpuLabelCache;
 
   // Prewarm SDF shader module variants (idempotent per device).
@@ -1169,11 +1192,30 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   // (NEW-COLLECTIONS-DIRTY-GATE step 0 — labels.)
   glyphCollection._consumeDirtyState();
 
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 2, null-target guard) —
+  // a non-zero visible glyph count with a null instance buffer means the
+  // resident manager produced an instanced draw with no vertex buffer (a
+  // hard bug); `validateInstanceSyncResult` `console.error`s (permanent) and
+  // returns false. The empty-collection case (visibleCount 0) also returns
+  // false without a log, preserving the prior early-out.
   const visibleCount = syncResult.visibleCount;
-  if (visibleCount === 0 || !defined(syncResult.buffer)) {
+  if (!validateInstanceSyncResult(syncResult, "LabelCollection")) {
     return;
   }
   cache.sdfInstanceBuffer = syncResult.buffer;
+
+  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3, size-validation/overflow) —
+  // clamp the glyph instanced draw to what the SDF instance buffer holds
+  // (`BYTES_PER_SDF_INSTANCE`/instance). The resident manager grows the
+  // buffer to the visible-glyph count, so this is inert on the happy path;
+  // it guards against a drift between `visibleCount` and the buffer capacity
+  // (BUG-15 family).
+  const safeVisibleCount = validateInstancedDrawBuffer(
+    syncResult.buffer,
+    visibleCount,
+    BYTES_PER_SDF_INSTANCE,
+    "LabelCollection",
+  );
 
   // Create SDF draw command. Labels are alpha-blended via the SDF shader, so
   // they must run in the TRANSLUCENT pass or they'll paint opaque rectangles
@@ -1205,7 +1247,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     bindGroupResolvers: [cache.cameraResolver],
     vertexBuffers: [cache.sdfInstanceBuffer],
     vertexCount: VERTICES_PER_QUAD,
-    instanceCount: visibleCount,
+    instanceCount: safeVisibleCount,
     pass: labelPass,
     owner: labelCollection,
     boundingVolume: glyphCollection._boundingVolume,
@@ -1230,7 +1272,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       bindGroups: [cache.sdfBindGroup],
       vertexBuffers: [cache.sdfInstanceBuffer, syncResult.prevBuffer],
       vertexCount: VERTICES_PER_QUAD,
-      instanceCount: visibleCount,
+      instanceCount: safeVisibleCount,
       pass: labelPass,
       owner: labelCollection,
       boundingVolume: glyphCollection._boundingVolume,

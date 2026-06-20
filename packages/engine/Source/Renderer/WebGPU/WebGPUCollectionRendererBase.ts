@@ -28,10 +28,17 @@
  *   2. Null-target guard — `validateInstanceSyncResult` `console.error`s
  *      when the resident manager returns a null buffer for a non-zero
  *      visible count (a draw command with no vertex buffer is a hard bug).
- *   3. Size-validation / overflow guard — `ensurePickInstanceBuffer`
- *      `console.error`s + clamps when the requested instance payload
- *      exceeds the allocated buffer, preventing an out-of-range
- *      `writeBuffer` / over-count instanced draw (BUG-15 family).
+ *      The explicit-buffer collections (Cloud / Polyline) that don't go
+ *      through the resident manager call `validateDrawTargets` at their
+ *      render-pass boundary for the same guarantee.
+ *   3. Size-validation / overflow guard — `ensurePickInstanceBuffer` +
+ *      `writePickInstances` `console.error` + clamp when the requested
+ *      instance payload exceeds the allocated buffer, preventing an
+ *      out-of-range `writeBuffer` / over-count instanced draw (BUG-15
+ *      family). `validateInstancedDrawBuffer` is the explicit-buffer
+ *      variant used by Cloud / Polyline / Label glyph draws: it clamps the
+ *      drawn instance count to what the vertex/instance buffer physically
+ *      holds.
  *
  * These are PERMANENT (no debug pragma) per CLAUDE.md — they indicate a
  * real bug producing broken output, so they must reach production
@@ -338,6 +345,100 @@ export function writePickInstances(
 }
 
 // =========================================================================
+// Sentinel 2 — null-target guard for explicit-buffer draws
+// =========================================================================
+
+const NULL_TARGET_LOG_THROTTLE_MS = 3000;
+const _nullTargetLastLogTime: Record<string, number> = Object.create(null);
+
+/**
+ * Sentinel 2 (null-target guard), explicit-buffer variant. The
+ * resident-instance collections (Billboard / Point / Label) use
+ * {@link validateInstanceSyncResult}; the collections that build their own
+ * vertex/instance buffers (Cloud / Polyline) call this at the render-pass
+ * boundary instead. Returns true when EVERY supplied buffer/view is set
+ * (safe to draw); when any is null/undefined it `console.error`s (throttled,
+ * keyed by `label`) and returns false so the caller skips the draw rather
+ * than handing a null vertex buffer to the WebGPU validation layer. The log
+ * is PERMANENT (no debug pragma) — a missing draw target is broken output.
+ */
+export function validateDrawTargets(
+  buffers: ReadonlyArray<object | null | undefined>,
+  label: string,
+): boolean {
+  for (let i = 0; i < buffers.length; i++) {
+    const b = buffers[i];
+    // A `WebGPUBuffer` wrapper exposes its underlying `GPUBuffer` as
+    // `.buffer` (null once destroyed); a raw `GPUBuffer` has no such field,
+    // so `(b as ...).buffer` is `undefined` and only a present-object passes.
+    const inner =
+      b === null || b === undefined ? null : (b as { buffer?: unknown }).buffer;
+    if (b === null || b === undefined || inner === null) {
+      const now =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      const last = _nullTargetLastLogTime[label];
+      if (last === undefined || now - last >= NULL_TARGET_LOG_THROTTLE_MS) {
+        _nullTargetLastLogTime[label] = now;
+        console.error(
+          `[CesiumJS:webgpu] ${label} draw target ${i} is null at the render-pass boundary — skipping draw.`,
+        );
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+// =========================================================================
+// Sentinel 3 — instanced-draw size validation for explicit-buffer draws
+// =========================================================================
+
+const DRAW_OVERFLOW_LOG_THROTTLE_MS = 3000;
+const _drawOverflowLastLogTime: Record<string, number> = Object.create(null);
+
+/**
+ * Sentinel 3 (size-validation / overflow), instanced-draw variant. Before
+ * issuing an instanced draw whose per-instance data lives in `buffer`
+ * (Cloud / Polyline / Label glyph streams), confirm the buffer is large
+ * enough for `instanceCount * bytesPerInstance`. On the happy path the
+ * buffer is grown to fit, so this is inert; on a drift (count outran the
+ * last grow, or the buffer shrank) it `console.error`s (throttled, keyed by
+ * `label`) and CLAMPS the returned instance count to what physically fits,
+ * so the caller draws a safe sub-range instead of reading out of bounds
+ * (the BUG-15 index/instance-overflow family). PERMANENT log.
+ *
+ * @returns the instance count that is safe to draw given the clamp.
+ */
+export function validateInstancedDrawBuffer(
+  buffer: { size: number } | null | undefined,
+  instanceCount: number,
+  bytesPerInstance: number,
+  label: string,
+): number {
+  if (instanceCount <= 0 || bytesPerInstance <= 0) {
+    return instanceCount > 0 ? instanceCount : 0;
+  }
+  if (buffer === null || buffer === undefined) {
+    return 0;
+  }
+  const requiredBytes = instanceCount * bytesPerInstance;
+  if (requiredBytes <= buffer.size) {
+    return instanceCount;
+  }
+  const safeCount = Math.floor(buffer.size / bytesPerInstance);
+  const now =
+    typeof performance !== "undefined" ? performance.now() : Date.now();
+  const last = _drawOverflowLastLogTime[label];
+  if (last === undefined || now - last >= DRAW_OVERFLOW_LOG_THROTTLE_MS) {
+    _drawOverflowLastLogTime[label] = now;
+    console.error(
+      `[CesiumJS:webgpu] ${label} instanced draw needs ${requiredBytes}B (${instanceCount}×${bytesPerInstance}) but buffer is ${buffer.size}B — clamping to ${safeCount} instances.`,
+    );
+  }
+  return safeCount;
+}
+
+// =========================================================================
 // Per-device shader-module cache accessor
 // =========================================================================
 
@@ -371,6 +472,8 @@ export default {
   getOrCreateInstanceManager,
   syncInstancesAndConsume,
   validateInstanceSyncResult,
+  validateDrawTargets,
+  validateInstancedDrawBuffer,
   ensurePickInstanceBuffer,
   writePickInstances,
   makeDeviceShaderModuleCacheAccessor,
