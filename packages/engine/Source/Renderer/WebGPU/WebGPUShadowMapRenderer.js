@@ -298,18 +298,34 @@ struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
   modelInstancedSB: {
     vsCode: `
 struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
+// DP-H36 (Batch 325) — per-instance element matches the color pass's
+// InstanceTransform layout: linear mat4x4 (rotation+scale, col3 zeroed)
+// + translationHigh/Low vec4. MUST stay byte-consistent with
+// FLOATS_PER_INSTANCE (WebGPUModelInstancing.js, 24 floats / 96 bytes).
+struct InstanceTransform {
+  linear: mat4x4<f32>,
+  translationHigh: vec4<f32>,
+  translationLow: vec4<f32>,
+};
 @group(0) @binding(1) var<uniform> m: ModelShadowUniforms;
-@group(0) @binding(2) var<storage, read> instanceMatrices: array<mat4x4<f32>>;
+@group(0) @binding(2) var<storage, read> instanceMatrices: array<InstanceTransform>;
 
 @vertex fn vs(
   @location(0) p: vec3<f32>,
   @builtin(instance_index) iidx: u32,
 ) -> @builtin(position) vec4<f32> {
-  // glTF instancing semantics: position goes through instance matrix
+  // glTF instancing semantics: position goes through instance transform
   // first (local → instanced-local), then through the node's model
   // matrix (instanced-local → world). Matches the color pass in
-  // WebGPUModelInstancing / ModelPBRComplete.wgsl.
-  let instancedLocal = (instanceMatrices[iidx] * vec4f(p, 1.0)).xyz;
+  // WebGPUModelInstancing / ModelPBRComplete.wgsl. The instance translation
+  // is recombined from its high/low split here; the shadow cast already
+  // does a full-magnitude world-space RTE subtract below (the depth-only
+  // pass tolerates the residual ~1 m), so the split is only needed to read
+  // the new buffer layout consistently with the color pass.
+  let inst = instanceMatrices[iidx];
+  let linear3 = mat3x3<f32>(inst.linear[0].xyz, inst.linear[1].xyz, inst.linear[2].xyz);
+  let instTranslation = inst.translationHigh.xyz + inst.translationLow.xyz;
+  let instancedLocal = linear3 * p + instTranslation;
   let worldPos = (m.modelMatrix * vec4f(instancedLocal, 1.0)).xyz;
   let rte = (worldPos - u.camH) - u.camL;
   var pos = u.lightVP * vec4f(rte, 1.0);

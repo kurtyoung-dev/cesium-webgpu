@@ -1402,12 +1402,29 @@ class WebGPUModelPipelineCache {
     device.queue.writeBuffer(this._defaultMorphWeightBuffer, 0, zeroWeights);
 
     // Identity instance transform storage.
+    // DP-H36 (Batch 325) — the per-instance element is now the 24-float / 96-byte
+    // `InstanceTransform` struct (linear mat4x4 + translationHigh/Low vec4s), so
+    // the placeholder buffer must be a full element. Identity = identity linear
+    // matrix + zero translation. FLAG_HAS_INSTANCING gates the read, so these
+    // contents are never consumed; the size just satisfies binding validation.
+    // MUST stay byte-consistent with FLOATS_PER_INSTANCE in WebGPUModelInstancing.js
+    // and the WGSL InstanceTransform struct in ModelPBRComplete.wgsl.
+    const instanceIdentityData = new Float32Array(24);
+    instanceIdentityData[0] = 1; // linear col0.x
+    instanceIdentityData[5] = 1; // linear col1.y
+    instanceIdentityData[10] = 1; // linear col2.z
+    instanceIdentityData[15] = 1; // linear col3.w
+    // floats 16..23 (translationHigh + translationLow) stay zero
     this._defaultInstancingBuffer = device.createBuffer({
       label: "default-instance-transforms",
-      size: 64,
+      size: 96,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(this._defaultInstancingBuffer, 0, identityData);
+    device.queue.writeBuffer(
+      this._defaultInstancingBuffer,
+      0,
+      instanceIdentityData,
+    );
 
     // NEW-BG-CONSOLIDATION (Batch 122) — merged group 2 default bind group.
     // Used when a primitive has none of skinning / morph / instancing.

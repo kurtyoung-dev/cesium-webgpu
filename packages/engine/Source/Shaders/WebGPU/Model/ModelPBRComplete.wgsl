@@ -420,9 +420,31 @@ struct MorphWeightsUniforms {
 @group(2) @binding(2) var<uniform> morphWeights: MorphWeightsUniforms;
 
 // Instance transforms (bind group 5, only used when FLAG_HAS_INSTANCING is set)
-// Storage buffer: array of mat4x4 — one per instance, column-major.
-// Instance transform is applied to position/normal/tangent BEFORE morph/skin/RTE.
-@group(2) @binding(3) var<storage, read> instanceTransforms: array<mat4x4<f32>>;
+// Storage buffer: array of InstanceTransform — one per instance.
+//
+// DP-H36 (Batch 325) — RTE split for the per-instance TRANSLATION. The
+// instance translation places each instance at its tile-relative ECEF
+// offset, which at Earth scale (~6.4e6 m) overflows f32's ~2^23 mantissa
+// and loses ~1 m of sub-meter precision. Packing the translation as a
+// single f32 column (the old `mat4x4` layout) and adding it to the local
+// vertex position BEFORE the RTE camera subtract destroyed those bits
+// before they could cancel — producing visible i3dm jitter under a
+// stationary camera. The fix keeps the rotation+scale linear part in f32
+// (small magnitude, no precision risk) but carries the translation as a
+// high/low pair (EncodedCartesian3 split on the CPU) so the vertex shader
+// can RTE it directly against the encoded camera via translateRelativeToEye.
+//
+// Layout (std430, 96 bytes / 24 floats per instance):
+//   linear:          mat4x4<f32>  offset 0   (rotation+scale, col3 zeroed)
+//   translationHigh: vec4<f32>    offset 64  (.xyz used, .w pad)
+//   translationLow:  vec4<f32>    offset 80  (.xyz used, .w pad)
+// CPU pack width, GPU buffer stride, and this struct MUST stay byte-consistent.
+struct InstanceTransform {
+  linear: mat4x4<f32>,
+  translationHigh: vec4<f32>,
+  translationLow: vec4<f32>,
+}
+@group(2) @binding(3) var<storage, read> instanceTransforms: array<InstanceTransform>;
 
 // NEW-TAA-MORPH-PREV (Batch 134) -- previous-frame morph weights for
 // the velocity pass. The vertex shader runs morph twice (current +
@@ -437,7 +459,7 @@ struct MorphWeightsUniforms {
 // velocity collapses to camera/model-matrix delta only. Animated
 // EXT_mesh_gpu_instancing assets would publish a separate prev
 // buffer for per-frame per-instance velocity.
-@group(2) @binding(6) var<storage, read> previousInstanceTransforms: array<mat4x4<f32>>;
+@group(2) @binding(6) var<storage, read> previousInstanceTransforms: array<InstanceTransform>;
 
 // Feature ID + batch texture (bind group 6, for per-feature styling in 3D Tiles)
 // Feature ID texture: encodes integer feature IDs in RGBA channels (EXT_mesh_features)
@@ -779,20 +801,38 @@ struct VertexOutput {
   }
 
   // ── GPU Instancing ────────────────────────────────────────────────────────
-  // When FLAG_HAS_INSTANCING is set, apply per-instance transform from the
-  // storage buffer. This positions each instance in model space.
+  // When FLAG_HAS_INSTANCING is set, apply the per-instance transform from
+  // the storage buffer. This positions each instance in model space.
   // Applied AFTER morph/skinning, BEFORE RTE (matches glTF EXT_mesh_gpu_instancing spec).
+  //
+  // DP-H36 (Batch 325) — only the LINEAR part (rotation+scale, `linear`'s
+  // col3 is zeroed on the CPU) multiplies the local vertex position here;
+  // the per-instance TRANSLATION is carried as a high/low pair and folded
+  // into the RTE subtract below instead of being added in f32. Adding the
+  // full Earth-scale translation to the local position in single precision
+  // (the old `instMat * pos` path) lost ~1 m before the camera could cancel
+  // it → stationary-camera i3dm jitter. Keeping `positionMC` at local
+  // magnitude through the RTE subtract preserves sub-meter precision.
+  var instTransHigh = vec3<f32>(0.0);
+  var instTransLow = vec3<f32>(0.0);
   if (hasFlag(material.materialFlags, FLAG_HAS_INSTANCING)) {
-    let instMat = instanceTransforms[input.instanceIndex];
-    let instMat3 = mat3x3<f32>(instMat[0].xyz, instMat[1].xyz, instMat[2].xyz);
-    positionMC = (instMat * vec4<f32>(positionMC, 1.0)).xyz;
-    normalMC = instMat3 * normalMC;
-    tangentMC = vec4<f32>(instMat3 * tangentMC.xyz, tangentMC.w);
+    let inst = instanceTransforms[input.instanceIndex];
+    let linear3 = mat3x3<f32>(inst.linear[0].xyz, inst.linear[1].xyz, inst.linear[2].xyz);
+    positionMC = linear3 * positionMC;
+    normalMC = linear3 * normalMC;
+    tangentMC = vec4<f32>(linear3 * tangentMC.xyz, tangentMC.w);
+    instTransHigh = inst.translationHigh.xyz;
+    instTransLow = inst.translationLow.xyz;
   }
 
-  // RTE in model space: camera is encoded in model coords via inverse(modelMatrix)
-  let rte = (positionMC - camera.encodedCameraPositionMCHigh)
-          + (vec3<f32>(0.0) - camera.encodedCameraPositionMCLow);
+  // RTE in model space: camera is encoded in model coords via inverse(modelMatrix).
+  // For instanced geometry the per-instance translation (high/low) is the
+  // large-magnitude term, so it is differenced against the encoded camera in
+  // the split domain (translateRelativeToEye); the local `positionMC` (linear
+  // part only) is small and added after the cancellation.
+  let rte = (instTransHigh - camera.encodedCameraPositionMCHigh)
+          + (instTransLow - camera.encodedCameraPositionMCLow)
+          + positionMC;
 
   output.position = camera.mvpRelativeToEye * vec4<f32>(rte, 1.0);
   output.positionEC = (camera.modelViewRelativeToEye * vec4<f32>(rte, 1.0)).xyz;
@@ -851,8 +891,18 @@ struct VertexOutput {
     prevPositionMC = (prevSkinMatrix * vec4<f32>(prevPositionMC, 1.0)).xyz;
   }
   if (hasFlag(material.materialFlags, FLAG_HAS_INSTANCING)) {
-    let prevInstMat = previousInstanceTransforms[input.instanceIndex];
-    prevPositionMC = (prevInstMat * vec4<f32>(prevPositionMC, 1.0)).xyz;
+    // DP-H36 (Batch 325) — reconstruct the full prev-frame model-space
+    // position from the split struct. This prev path multiplies by
+    // `previousModelMatrix` (full-magnitude, non-RTE) below, so the
+    // translation is recombined as a full f32 position here; the residual
+    // ~1 m precision loss is irrelevant for motion vectors, and for static
+    // instancing the prev buffer aliases the current one so the instancing
+    // contribution to velocity is zero regardless.
+    let prevInst = previousInstanceTransforms[input.instanceIndex];
+    let prevLinear3 = mat3x3<f32>(
+      prevInst.linear[0].xyz, prevInst.linear[1].xyz, prevInst.linear[2].xyz);
+    prevPositionMC = prevLinear3 * prevPositionMC
+                   + prevInst.translationHigh.xyz + prevInst.translationLow.xyz;
   }
 
   // TAA Slice 2c (Batch 96) -- previous- and current-frame world

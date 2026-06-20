@@ -6,17 +6,99 @@
  * from TRANSLATION/ROTATION/SCALE attributes and cached for the lifetime
  * of the model.
  *
- * Storage buffer layout: array<mat4x4<f32>>
- *   Each instance has 16 floats (a full 4x4 matrix).
+ * Storage buffer layout: array<InstanceTransform> (DP-H36, Batch 325)
+ *   Each instance is 24 floats / 96 bytes:
+ *     linear:          mat4x4<f32>  floats  0..15  (rotation+scale, col3 zeroed)
+ *     translationHigh: vec4<f32>    floats 16..19  (.xyz used, .w pad)
+ *     translationLow:  vec4<f32>    floats 20..23  (.xyz used, .w pad)
+ *
+ * RTE precision (DP-H36): the per-instance translation places each instance
+ * at its tile-relative ECEF offset, which at Earth scale (~6.4e6 m) exceeds
+ * f32's ~2^23 mantissa and loses sub-meter precision. The translation is
+ * split into high/low (EncodedCartesian3) so the vertex shader can RTE it
+ * against the encoded camera instead of adding a raw f32 column — which
+ * caused stationary-camera i3dm jitter. The linear (rotation+scale) part
+ * stays single-precision (small magnitude, no precision risk).
  *
  * The WebGL InstancingPipelineStage caches packed transforms as a 12-float
- * per-instance format (3 rows of vec4, column-major). We expand these to
- * full mat4x4 (16 floats) for the storage buffer.
+ * per-instance format (3 rows of vec4, column-major); we read column 3 as
+ * the translation and split it.
  *
  * @private
  * @module WebGPUModelInstancing
  */
 import defined from "../../Core/defined.js";
+import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+
+// DP-H36 (Batch 325) — per-instance storage stride. MUST stay byte-consistent
+// with the WGSL `InstanceTransform` struct in ModelPBRComplete.wgsl and the
+// default-buffer size in WebGPUModelPipelineCache.js.
+const FLOATS_PER_INSTANCE = 24;
+
+const scratchEncodeX = { high: 0.0, low: 0.0 };
+const scratchEncodeY = { high: 0.0, low: 0.0 };
+const scratchEncodeZ = { high: 0.0, low: 0.0 };
+
+/**
+ * Writes the linear (rotation+scale) 3x3 into the `linear` mat4x4 slot
+ * (col3 zeroed) and the high/low split of the translation into the trailing
+ * two vec4 slots.
+ *
+ * @param {Float32Array} out - destination, FLOATS_PER_INSTANCE-strided
+ * @param {number} dst - base float offset for this instance
+ * @param {number} c0x @param {number} c0y @param {number} c0z - column 0
+ * @param {number} c1x @param {number} c1y @param {number} c1z - column 1
+ * @param {number} c2x @param {number} c2y @param {number} c2z - column 2
+ * @param {number} tx @param {number} ty @param {number} tz - translation
+ * @private
+ */
+function writeInstance(
+  out,
+  dst,
+  c0x,
+  c0y,
+  c0z,
+  c1x,
+  c1y,
+  c1z,
+  c2x,
+  c2y,
+  c2z,
+  tx,
+  ty,
+  tz,
+) {
+  // linear mat4x4 (column-major); translation column zeroed — RTE handles it
+  out[dst + 0] = c0x;
+  out[dst + 1] = c0y;
+  out[dst + 2] = c0z;
+  out[dst + 3] = 0.0;
+  out[dst + 4] = c1x;
+  out[dst + 5] = c1y;
+  out[dst + 6] = c1z;
+  out[dst + 7] = 0.0;
+  out[dst + 8] = c2x;
+  out[dst + 9] = c2y;
+  out[dst + 10] = c2z;
+  out[dst + 11] = 0.0;
+  out[dst + 12] = 0.0;
+  out[dst + 13] = 0.0;
+  out[dst + 14] = 0.0;
+  out[dst + 15] = 1.0;
+
+  // translationHigh.xyz (+ pad), translationLow.xyz (+ pad)
+  EncodedCartesian3.encode(tx, scratchEncodeX);
+  EncodedCartesian3.encode(ty, scratchEncodeY);
+  EncodedCartesian3.encode(tz, scratchEncodeZ);
+  out[dst + 16] = scratchEncodeX.high;
+  out[dst + 17] = scratchEncodeY.high;
+  out[dst + 18] = scratchEncodeZ.high;
+  out[dst + 19] = 0.0;
+  out[dst + 20] = scratchEncodeX.low;
+  out[dst + 21] = scratchEncodeY.low;
+  out[dst + 22] = scratchEncodeZ.low;
+  out[dst + 23] = 0.0;
+}
 
 /**
  * Creates or retrieves cached instancing GPU resources for a runtime node.
@@ -51,27 +133,27 @@ function ensureInstancingResources(device, nodeCache, runtimeNode) {
 
   // Try the packed typed array cached by InstancingPipelineStage
   const packedData = runtimeNode.transformsTypedArray;
-  let mat4Data;
+  let instanceData;
 
   if (defined(packedData)) {
-    mat4Data = expandPackedTransforms(packedData, count);
+    instanceData = expandPackedTransforms(packedData, count);
   } else {
     // Fallback: try to read from attribute typed arrays directly
-    mat4Data = extractTransformsFromAttributes(instances, count);
+    instanceData = extractTransformsFromAttributes(instances, count);
   }
 
-  if (!defined(mat4Data)) {
+  if (!defined(instanceData)) {
     return null;
   }
 
-  // Create GPU storage buffer
-  const bufferSize = mat4Data.byteLength;
+  // Create GPU storage buffer (FLOATS_PER_INSTANCE-strided InstanceTransform)
+  const bufferSize = instanceData.byteLength;
   const storageBuffer = device.createBuffer({
     label: `Instance transforms (${count} instances)`,
     size: bufferSize,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(storageBuffer, 0, mat4Data);
+  device.queue.writeBuffer(storageBuffer, 0, instanceData);
 
   nodeCache.instancingBuffer = storageBuffer;
   nodeCache.instanceCount = count;
@@ -84,65 +166,48 @@ function ensureInstancingResources(device, nodeCache, runtimeNode) {
 
 /**
  * Expands the 12-float packed transform format (from InstancingPipelineStage)
- * into full 16-float mat4x4 for the storage buffer.
+ * into the 24-float `InstanceTransform` storage layout (DP-H36).
  *
  * Input format (per instance, 12 floats — transposed 3x4):
  *   [col0.x, col1.x, col2.x, col3.x,  // row 0
  *    col0.y, col1.y, col2.y, col3.y,  // row 1
  *    col0.z, col1.z, col2.z, col3.z]  // row 2
  *
- * Output format (per instance, 16 floats — column-major mat4x4):
- *   [col0.x, col0.y, col0.z, 0,
- *    col1.x, col1.y, col1.z, 0,
- *    col2.x, col2.y, col2.z, 0,
- *    col3.x, col3.y, col3.z, 1]
+ * Output: see writeInstance — linear mat4x4 (col3 zeroed) + split translation.
  *
  * @param {Float32Array} packed - 12 floats per instance, transposed row format
  * @param {number} count - Number of instances
- * @returns {Float32Array} 16 floats per instance, column-major mat4x4
+ * @returns {Float32Array} FLOATS_PER_INSTANCE floats per instance
  * @private
  */
 function expandPackedTransforms(packed, count) {
-  const mat4Data = new Float32Array(count * 16);
+  const data = new Float32Array(count * FLOATS_PER_INSTANCE);
   for (let i = 0; i < count; i++) {
     const src = i * 12;
-    const dst = i * 16;
+    const dst = i * FLOATS_PER_INSTANCE;
 
     // Row 0: [col0.x, col1.x, col2.x, col3.x]
     // Row 1: [col0.y, col1.y, col2.y, col3.y]
     // Row 2: [col0.z, col1.z, col2.z, col3.z]
-    //
-    // Column-major output for WGSL mat4x4:
-    // col0: (row0[0], row1[0], row2[0], 0)
-    // col1: (row0[1], row1[1], row2[1], 0)
-    // col2: (row0[2], row1[2], row2[2], 0)
-    // col3: (row0[3], row1[3], row2[3], 1)
-
-    // Column 0
-    mat4Data[dst + 0] = packed[src + 0]; // col0.x
-    mat4Data[dst + 1] = packed[src + 4]; // col0.y
-    mat4Data[dst + 2] = packed[src + 8]; // col0.z
-    mat4Data[dst + 3] = 0.0;
-
-    // Column 1
-    mat4Data[dst + 4] = packed[src + 1]; // col1.x
-    mat4Data[dst + 5] = packed[src + 5]; // col1.y
-    mat4Data[dst + 6] = packed[src + 9]; // col1.z
-    mat4Data[dst + 7] = 0.0;
-
-    // Column 2
-    mat4Data[dst + 8] = packed[src + 2]; // col2.x
-    mat4Data[dst + 9] = packed[src + 6]; // col2.y
-    mat4Data[dst + 10] = packed[src + 10]; // col2.z
-    mat4Data[dst + 11] = 0.0;
-
-    // Column 3 (translation)
-    mat4Data[dst + 12] = packed[src + 3]; // col3.x (tx)
-    mat4Data[dst + 13] = packed[src + 7]; // col3.y (ty)
-    mat4Data[dst + 14] = packed[src + 11]; // col3.z (tz)
-    mat4Data[dst + 15] = 1.0;
+    // col3 = translation (tx, ty, tz)
+    writeInstance(
+      data,
+      dst,
+      packed[src + 0], // col0.x
+      packed[src + 4], // col0.y
+      packed[src + 8], // col0.z
+      packed[src + 1], // col1.x
+      packed[src + 5], // col1.y
+      packed[src + 9], // col1.z
+      packed[src + 2], // col2.x
+      packed[src + 6], // col2.y
+      packed[src + 10], // col2.z
+      packed[src + 3], // tx (col3.x)
+      packed[src + 7], // ty (col3.y)
+      packed[src + 11], // tz (col3.z)
+    );
   }
-  return mat4Data;
+  return data;
 }
 
 /**
@@ -151,7 +216,7 @@ function expandPackedTransforms(packed, count) {
  *
  * @param {object} instances - node.instances from ModelComponents
  * @param {number} count
- * @returns {Float32Array|null} 16 floats per instance, or null
+ * @returns {Float32Array|null} FLOATS_PER_INSTANCE floats per instance, or null
  * @private
  */
 function extractTransformsFromAttributes(instances, count) {
@@ -181,10 +246,10 @@ function extractTransformsFromAttributes(instances, count) {
     return null;
   }
 
-  const mat4Data = new Float32Array(count * 16);
+  const data = new Float32Array(count * FLOATS_PER_INSTANCE);
 
   for (let i = 0; i < count; i++) {
-    const dst = i * 16;
+    const dst = i * FLOATS_PER_INSTANCE;
     const tx = defined(translationData) ? translationData[i * 3] : 0;
     const ty = defined(translationData) ? translationData[i * 3 + 1] : 0;
     const tz = defined(translationData) ? translationData[i * 3 + 2] : 0;
@@ -192,14 +257,16 @@ function extractTransformsFromAttributes(instances, count) {
     const sy = defined(scaleData) ? scaleData[i * 3 + 1] : 1;
     const sz = defined(scaleData) ? scaleData[i * 3 + 2] : 1;
 
+    // Linear (rotation+scale) part as three columns; translation is split
+    // separately inside writeInstance (DP-H36).
+    let c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z;
     if (defined(rotationData)) {
-      // Build matrix from TRS with quaternion rotation
+      // Build rotation*scale columns from quaternion (column-major)
       const qx = rotationData[i * 4];
       const qy = rotationData[i * 4 + 1];
       const qz = rotationData[i * 4 + 2];
       const qw = rotationData[i * 4 + 3];
 
-      // Rotation matrix from quaternion (column-major)
       const x2 = qx + qx,
         y2 = qy + qy,
         z2 = qz + qz;
@@ -213,42 +280,47 @@ function extractTransformsFromAttributes(instances, count) {
         wy = qw * y2,
         wz = qw * z2;
 
-      mat4Data[dst + 0] = (1 - (yy + zz)) * sx;
-      mat4Data[dst + 1] = (xy + wz) * sx;
-      mat4Data[dst + 2] = (xz - wy) * sx;
-      mat4Data[dst + 3] = 0;
-      mat4Data[dst + 4] = (xy - wz) * sy;
-      mat4Data[dst + 5] = (1 - (xx + zz)) * sy;
-      mat4Data[dst + 6] = (yz + wx) * sy;
-      mat4Data[dst + 7] = 0;
-      mat4Data[dst + 8] = (xz + wy) * sz;
-      mat4Data[dst + 9] = (yz - wx) * sz;
-      mat4Data[dst + 10] = (1 - (xx + yy)) * sz;
-      mat4Data[dst + 11] = 0;
+      c0x = (1 - (yy + zz)) * sx;
+      c0y = (xy + wz) * sx;
+      c0z = (xz - wy) * sx;
+      c1x = (xy - wz) * sy;
+      c1y = (1 - (xx + zz)) * sy;
+      c1z = (yz + wx) * sy;
+      c2x = (xz + wy) * sz;
+      c2y = (yz - wx) * sz;
+      c2z = (1 - (xx + yy)) * sz;
     } else {
       // Scale-only (no rotation)
-      mat4Data[dst + 0] = sx;
-      mat4Data[dst + 1] = 0;
-      mat4Data[dst + 2] = 0;
-      mat4Data[dst + 3] = 0;
-      mat4Data[dst + 4] = 0;
-      mat4Data[dst + 5] = sy;
-      mat4Data[dst + 6] = 0;
-      mat4Data[dst + 7] = 0;
-      mat4Data[dst + 8] = 0;
-      mat4Data[dst + 9] = 0;
-      mat4Data[dst + 10] = sz;
-      mat4Data[dst + 11] = 0;
+      c0x = sx;
+      c0y = 0;
+      c0z = 0;
+      c1x = 0;
+      c1y = sy;
+      c1z = 0;
+      c2x = 0;
+      c2y = 0;
+      c2z = sz;
     }
 
-    // Translation column
-    mat4Data[dst + 12] = tx;
-    mat4Data[dst + 13] = ty;
-    mat4Data[dst + 14] = tz;
-    mat4Data[dst + 15] = 1;
+    writeInstance(
+      data,
+      dst,
+      c0x,
+      c0y,
+      c0z,
+      c1x,
+      c1y,
+      c1z,
+      c2x,
+      c2y,
+      c2z,
+      tx,
+      ty,
+      tz,
+    );
   }
 
-  return mat4Data;
+  return data;
 }
 
 /**
