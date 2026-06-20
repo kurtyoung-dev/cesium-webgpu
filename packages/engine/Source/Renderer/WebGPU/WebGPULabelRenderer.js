@@ -44,13 +44,25 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-import { WebGPUResidentInstanceBuffer } from "./WebGPUResidentInstanceBuffer.js";
+// NEW-COLLECTION-RENDERER-BASE (Phase 11, Label finisher — Batch 332) — shared
+// per-frame plumbing (per-device shader-module cache, pipeline-format-gen
+// invalidation, 2D/CV coplanar-depth flag + pipeline-key fold,
+// resident-instance manager lazy create + the load-bearing capture→sync→
+// consume ordering) + the three permanent collection sentinels. Label keeps
+// its own SDF pack / define-scan / atlas-guid path / descriptors and the
+// deliberate full-rebuild-on-ANY-dirty gate; only the duplicated scaffolding
+// moved to the base.
 import {
   beginCollectionFrame,
   endCollectionFrame,
+  invalidatePipelinesOnSceneFormatChange,
+  computeNoDepthTest,
+  pipelineKeyWithDepthFlag,
+  getOrCreateInstanceManager,
+  syncInstancesAndConsume,
   validateInstanceSyncResult,
   validateInstancedDrawBuffer,
+  makeDeviceShaderModuleCacheAccessor,
 } from "./WebGPUCollectionRendererBase.js";
 import SceneMode from "../../Scene/SceneMode.js";
 
@@ -405,16 +417,10 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
 
 // Module-level shader-module cache keyed by GPUDevice (same pattern as
 // WebGPUBillboardRenderer). Shared across every LabelCollection.
-const _sdfShaderModuleCaches = new WeakMap();
-
-function getSDFShaderModuleCache(device) {
-  let cache = _sdfShaderModuleCaches.get(device);
-  if (!cache) {
-    cache = new WebGPUShaderModuleCache(device);
-    _sdfShaderModuleCaches.set(device, cache);
-  }
-  return cache;
-}
+// NEW-COLLECTION-RENDERER-BASE — the per-`GPUDevice` cache WeakMap + lazy
+// getter now come from the shared accessor factory (was an inline WeakMap +
+// 8-line getter, byte-identical to the Billboard/Point/Polyline fold).
+const getSDFShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 /**
  * Prewarm the SDF shader module for every define set the first 30
@@ -869,19 +875,20 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     cache.sdfVelocityPipelineEntries = new Map();
   }
   // Batch 110 — invalidate cached pipeline entries on scene format change.
-  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
-  if (cache._pipelineFormatGeneration !== sceneGen) {
-    cache.sdfPipelineEntries.clear();
-    cache.sdfVelocityPipelineEntries?.clear();
-    cache._pipelineFormatGeneration = sceneGen;
-  }
+  // NEW-COLLECTION-RENDERER-BASE — shared guard (clears the color + velocity
+  // defines→entry maps when `_scenePipelineFormatGeneration` bumps).
+  invalidatePipelinesOnSceneFormatChange(cache, context, [
+    cache.sdfPipelineEntries,
+    cache.sdfVelocityPipelineEntries,
+  ]);
   // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — settled 2D/CV draws coplanar label
   // glyphs on top of the flat map with the depth test disabled. Fold the flag
   // into the pipeline-cache key (bit 31, above every ShaderDefine bit) so 3D
-  // keeps its `less-equal` variant byte-identical.
-  const noDepthTest =
-    frameState.morphTime === 0.0 && frameState.mode !== SceneMode.SCENE3D;
-  const pipelineKey = noDepthTest ? defines | 0x80000000 : defines;
+  // keeps its `less-equal` variant byte-identical. (Shared base helpers —
+  // `computeNoDepthTest` is `morphTime === 0 && mode !== SCENE3D`,
+  // byte-identical to the prior inline derivation.)
+  const noDepthTest = computeNoDepthTest(frameState);
+  const pipelineKey = pipelineKeyWithDepthFlag(defines, noDepthTest);
   let entry = cache.sdfPipelineEntries.get(pipelineKey);
   if (!defined(entry)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
@@ -1146,17 +1153,25 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   // a SETTLED label collection (dirty list empty) uploads NOTHING, where
   // pre-Batch-232 it re-packed + re-uploaded every glyph every frame.
   const taaEnabledThisFrame = frameState.taaEnabled === true;
-  if (!defined(cache.sdfInstanceManager)) {
-    cache.sdfInstanceManager = new WebGPUResidentInstanceBuffer(
-      device,
-      "Label SDF instances",
-    );
-  }
+  // NEW-COLLECTION-RENDERER-BASE — shared lazy create of the resident
+  // instance manager (was an inline `if (!defined) new …`). Stored on
+  // `cache.instanceManager` (the base's field); `cache.sdfInstanceManager`
+  // remains a back-compat alias for any external probe that reads it.
+  const instanceManager = getOrCreateInstanceManager(
+    cache,
+    device,
+    "Label SDF instances",
+  );
+  cache.sdfInstanceManager = instanceManager;
 
   // ORDERING (load-bearing): capture the dirty state BEFORE the consume
   // call below clears it. `_createVertexArray` covers glyph add/remove/
   // mode-change; atlas-guid rotation re-shapes every packed imageRect;
   // MORPHING recomputes `_actualPosition` per frame without dirtying.
+  // GRANULARITY (Label-specific, preserved): the glyph stream takes the
+  // FULL-REBUILD path whenever ANY glyph is dirty (`glyphDirtyCount > 0`) —
+  // unlike billboards/points it does NOT partial-write, because glyph dirty
+  // granularity isn't sound for per-slot writes (see the note above).
   const glyphDirtyCount = glyphCollection._billboardsToUpdateIndex;
   const forceFullRebuild =
     glyphDirtyCount > 0 ||
@@ -1166,31 +1181,37 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     cache._instanceAtlasGuid !== atlasGuid ||
     frameState.mode === SceneMode.MORPHING;
 
-  const syncResult = cache.sdfInstanceManager.sync({
-    items: glyphCollection._billboards,
-    length: glyphCollection.length,
-    dirtyList: glyphCollection._billboardsToUpdate,
-    dirtyCount: glyphDirtyCount,
-    packInstance: packSDFGlyphInstance,
-    isVisible: isGlyphVisible,
-    floatsPerInstance: FLOATS_PER_SDF_INSTANCE,
-    bytesPerInstance: BYTES_PER_SDF_INSTANCE,
-    forceFullRebuild: forceFullRebuild,
-    mirrorPrev: taaEnabledThisFrame,
-  });
-  cache._instanceDefines = defines;
-  cache._instanceSceneMode = frameState.mode;
-  cache._instanceAtlasGuid = atlasGuid;
-
-  // Consume the glyph collection's dirty-tracking state now that this frame's
-  // SDF instance data is captured. The glyph collection is a BillboardCollection
-  // driven through `prepareForFeatureRenderer` (updateMode + readiness loop) but
-  // rendered by THIS SDF path, not the billboard FR — so without this its
+  // The capture→sync→consume ordering is enforced structurally by
+  // `syncInstancesAndConsume` (NEW-COLLECTION-RENDERER-BASE): it runs the sync
+  // against the captured dirty snapshot, THEN invokes the consume. Consuming
+  // before sync would clear `_billboardsToUpdateIndex` and never repack.
+  //
+  // The glyph collection is a BillboardCollection driven through
+  // `prepareForFeatureRenderer` (updateMode + readiness loop) but rendered by
+  // THIS SDF path, not the billboard FR — so without the consume its
   // `_createVertexArray` / per-glyph `textureDirty` stay set and every glyph is
   // re-dirtied every frame (the same per-frame re-touch fixed for billboards in
   // step 0). The background billboards already consume via the billboard FR.
   // (NEW-COLLECTIONS-DIRTY-GATE step 0 — labels.)
-  glyphCollection._consumeDirtyState();
+  const syncResult = syncInstancesAndConsume(
+    instanceManager,
+    {
+      items: glyphCollection._billboards,
+      length: glyphCollection.length,
+      dirtyList: glyphCollection._billboardsToUpdate,
+      dirtyCount: glyphDirtyCount,
+      packInstance: packSDFGlyphInstance,
+      isVisible: isGlyphVisible,
+      floatsPerInstance: FLOATS_PER_SDF_INSTANCE,
+      bytesPerInstance: BYTES_PER_SDF_INSTANCE,
+      forceFullRebuild: forceFullRebuild,
+      mirrorPrev: taaEnabledThisFrame,
+    },
+    () => glyphCollection._consumeDirtyState(),
+  );
+  cache._instanceDefines = defines;
+  cache._instanceSceneMode = frameState.mode;
+  cache._instanceAtlasGuid = atlasGuid;
 
   // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 2, null-target guard) —
   // a non-zero visible glyph count with a null instance buffer means the
