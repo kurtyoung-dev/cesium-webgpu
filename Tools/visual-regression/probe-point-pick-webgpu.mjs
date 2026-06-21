@@ -73,12 +73,42 @@ const out = await page.evaluate(async () => {
 
   // Raw PointPrimitiveCollection added directly to scene.primitives — the
   // exact reproduction from the DEFERRED_WORK entry.
+  //
+  // THREE distinct points at THREE distinct lons → three distinct screen
+  // pixels, each with a DISTINCT id. One point can't catch per-instance pick-
+  // color CROSS-WIRING (the "all points resolve to one id" regression that
+  // NEW-WEBGPU-POINT-COLLECTION-PICK rules out): we need ≥2 instances and must
+  // assert each resolves to ITS OWN id, not a shared one. pt (probe-point-1)
+  // stays the primary single-point + control reference; pt2/pt3 add the multi-
+  // instance coverage.
   const points = scene.primitives.add(new C.PointPrimitiveCollection());
   const pt = points.add({
     position: C.Cartesian3.fromDegrees(-75, 40, 1000.0),
     pixelSize: 50.0,
     color: C.Color.MAGENTA,
     id: "probe-point-1",
+  });
+  // All three points share the SAME latitude (same screen ROW) and differ only
+  // in longitude (distinct screen COLUMNS). This keeps each on the warmed sync
+  // pick-readback row: a SEPARATE, tracked gap (NEW-WEBGPU-PICK-COLD-SYNC-
+  // STALENESS) makes the one-frame-stale single-target sync pick-FBO readback
+  // MISS points that sit on a DIFFERENT row from the warmed region — verified:
+  // the point renders correctly (canvas pixel is its color) but the warmed sync
+  // pick returns undefined off-row. That row-staleness is NOT what this probe
+  // gates; the multi-instance check here targets per-instance pick-color CROSS-
+  // WIRING (all-points-resolve-to-one-id), which needs distinct ids resolved at
+  // distinct pixels, achievable on the warmed row.
+  const pt2 = points.add({
+    position: C.Cartesian3.fromDegrees(-75.02, 40, 1000.0),
+    pixelSize: 50.0,
+    color: C.Color.YELLOW,
+    id: "probe-point-2",
+  });
+  const pt3 = points.add({
+    position: C.Cartesian3.fromDegrees(-74.98, 40, 1000.0),
+    pixelSize: 50.0,
+    color: C.Color.LIME,
+    id: "probe-point-3",
   });
 
   // Side-by-side billboard control — the WORKING reference path. Placed at a
@@ -115,6 +145,14 @@ const out = await page.evaluate(async () => {
   const ptWin = C.SceneTransforms.worldToWindowCoordinates(
     scene,
     pt.position,
+  );
+  const pt2Win = C.SceneTransforms.worldToWindowCoordinates(
+    scene,
+    pt2.position,
+  );
+  const pt3Win = C.SceneTransforms.worldToWindowCoordinates(
+    scene,
+    pt3.position,
   );
   const bbWin = C.SceneTransforms.worldToWindowCoordinates(
     scene,
@@ -157,6 +195,10 @@ const out = await page.evaluate(async () => {
 
   const px = Math.round(ptWin.x);
   const py = Math.round(ptWin.y);
+  const p2x = Math.round(pt2Win.x);
+  const p2y = Math.round(pt2Win.y);
+  const p3x = Math.round(pt3Win.x);
+  const p3y = Math.round(pt3Win.y);
   const bx = Math.round(bbWin.x);
   const by = Math.round(bbWin.y);
 
@@ -171,13 +213,23 @@ const out = await page.evaluate(async () => {
   const syncBillboard = describeHit(await warmSyncPick(bx, by, 12), bb);
   const syncMiss = describeHit(await warmSyncPick(20, 20, 12), pt);
 
+  // MULTI-INSTANCE pick: warm-pick all THREE points at their THREE distinct
+  // pixels. Each must resolve to its OWN id — if per-instance pick colors are
+  // cross-wired, two or more would resolve to the same id (or to point-1).
+  const syncPoint1 = describeHit(await warmSyncPick(px, py, 12), pt);
+  const syncPoint2 = describeHit(await warmSyncPick(p2x, p2y, 12), pt2);
+  const syncPoint3 = describeHit(await warmSyncPick(p3x, p3y, 12), pt3);
+
   return {
-    coords: { px, py, bx, by },
+    coords: { px, py, p2x, p2y, p3x, p3y, bx, by },
     asyncPoint,
     asyncBillboard,
     syncPoint,
     syncBillboard,
     syncMiss,
+    syncPoint1,
+    syncPoint2,
+    syncPoint3,
     errors,
   };
 });
@@ -186,6 +238,24 @@ await browser.close();
 
 console.log(JSON.stringify(out, null, 2));
 
+// Multi-instance assertion: all THREE points round-trip to their THREE DISTINCT
+// ids (the per-instance pick-color cross-wiring check). Each must be found, be
+// the expected primitive, and carry its own id; the three ids must be distinct.
+const ids3 = [out.syncPoint1.id, out.syncPoint2.id, out.syncPoint3.id];
+const multiFound =
+  out.syncPoint1.found && out.syncPoint2.found && out.syncPoint3.found;
+const multiExpected =
+  out.syncPoint1.isExpected &&
+  out.syncPoint2.isExpected &&
+  out.syncPoint3.isExpected;
+const multiIds =
+  out.syncPoint1.id === "probe-point-1" &&
+  out.syncPoint2.id === "probe-point-2" &&
+  out.syncPoint3.id === "probe-point-3";
+const multiDistinct = new Set(ids3).size === 3;
+const multiInstancePass =
+  multiFound && multiExpected && multiIds && multiDistinct;
+
 const pass =
   out.syncPoint.found &&
   out.syncPoint.isExpected &&
@@ -193,9 +263,18 @@ const pass =
   out.syncBillboard.found &&
   out.syncBillboard.isExpected &&
   !out.syncMiss.found &&
+  multiInstancePass &&
   out.errors.length === 0 &&
   pageErrors.length === 0;
 
+console.log(
+  `multi-instance: found=${multiFound} expected=${multiExpected} ids=${JSON.stringify(ids3)} distinct=${multiDistinct} => ${multiInstancePass ? "PASS" : "FAIL"}`,
+);
+if (!multiInstancePass) {
+  console.log(
+    "  NOTE: a warmed 3-point sync pick should resolve 3 DISTINCT ids; if 2+ collapse to one id this is per-instance pick-color cross-wiring (NEW-WEBGPU-POINT-COLLECTION-PICK). If all are `undefined`, that is the tracked cold-sync-pick staleness gap (NEW-WEBGPU-PICK-COLD-SYNC-STALENESS).",
+  );
+}
 if (pageErrors.length > 0) {
   console.log("page errors:", pageErrors);
 }

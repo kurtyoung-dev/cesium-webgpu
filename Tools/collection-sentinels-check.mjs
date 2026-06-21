@@ -12,6 +12,24 @@
 //
 // Run: node Tools/collection-sentinels-check.mjs
 // Exit 0 on all-pass, 1 on any failure.
+//
+// ─── RELATIONSHIP TO THE KARMA SPEC (read before editing) ──────────────────
+// The CI SOURCE OF TRUTH for these sentinels is the Jasmine/Karma spec:
+//   packages/engine/Specs/Renderer/WebGPU/WebGPUCollectionSentinelsSpec.js
+// That spec runs in the standard `gulp test` suite and is what gates CI.
+//
+// THIS file is a COMPLEMENTARY, fast, NO-GPU SMOKE CHECK: it esbuild-transpiles
+// the real WebGPUCollectionRendererBase.ts in-memory and exercises the same
+// sentinel helpers WITHOUT a browser or GPUDevice, so it runs in <1s from a
+// plain node shell (handy during local iteration / pre-commit). It is NOT a
+// replacement for the Karma spec and is NOT wired into CI.
+//
+// MAINTENANCE-DRIFT WARNING: this duplicates the spec's coverage by design, so
+// when you change a sentinel helper SIGNATURE or behavior
+// (beginCollectionFrame / endCollectionFrame / validateInstanceSyncResult /
+// validateDrawTargets / validateInstancedDrawBuffer), UPDATE BOTH this file AND
+// WebGPUCollectionSentinelsSpec.js — otherwise the two drift apart silently.
+// ───────────────────────────────────────────────────────────────────────────
 
 import { build } from "esbuild";
 import { fileURLToPath, pathToFileURL } from "node:url";

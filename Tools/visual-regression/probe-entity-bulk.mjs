@@ -89,8 +89,19 @@ async function run(rendererArg) {
       }
 
       function findBulkVisualizer(ds) {
+        // The BulkPointVisualizer exposes a `staticCount`, but its flat-buffer
+        // `_collection` is allocated LAZILY (Batch 335) — only once a static
+        // point entity exists — so a fully-dynamic (or zero-static) data source
+        // keeps every entity in the fallback lane and never allocates a
+        // collection. Match on the VISUALIZER CLASS NAME (regex-tolerant of
+        // esbuild's `_`-prefix / numeric suffix in the bundled, unminified
+        // build), NOT on `_collection`, so the dynamic-DS visualizer is still
+        // found (dynFallback/dynStatic report correctly instead of -1/-1).
+        const re = /BulkPointVisualizer/i;
         const vis = ds._visualizers || [];
-        return vis.find((x) => typeof x.staticCount === "number");
+        return vis
+          .filter((x) => typeof x.staticCount === "number")
+          .find((x) => re.test(x.constructor.name));
       }
 
       const time = v.clock.currentTime;
