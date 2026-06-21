@@ -231,8 +231,14 @@ class BulkPointVisualizer {
     this._entityCollection = entityCollection;
     this._primitives = primitives;
 
-    // Flat-buffer collection that holds the static fast-pathed points.
-    this._collection = primitives.add(new PointPrimitiveCollection());
+    // Flat-buffer collection that holds the static fast-pathed points. Created
+    // LAZILY on the first static-lane add (see _ensureCollection) so a data
+    // source with zero static points pays no PointPrimitiveCollection allocation
+    // (flat-buffer + WASM-encode + feature-renderer infra) at all. The eager
+    // allocation cost setup at every entity count — see the 2026-06-20 bulk-vs-
+    // legacy perf benchmark (setup_delta +2-4ms at n=1 rising to +22-43ms at
+    // n=2000) — which dominated the (negligible) per-frame win at low counts.
+    this._collection = undefined;
 
     // entity.id -> { entity, pointPrimitive } for fast-pathed (static) entities.
     this._staticItems = new AssociativeArray();
@@ -326,6 +332,19 @@ class BulkPointVisualizer {
   }
 
   /**
+   * Lazily creates the flat-buffer collection on first use and adds it to the
+   * data source's primitives. Deferring this until the first static entity
+   * means a data source with no static points never allocates one.
+   * @private
+   */
+  _ensureCollection() {
+    if (!defined(this._collection)) {
+      this._collection = this._primitives.add(new PointPrimitiveCollection());
+    }
+    return this._collection;
+  }
+
+  /**
    * Adds (or re-adds) an entity to the static fast-buffer collection.
    * @private
    */
@@ -338,7 +357,7 @@ class BulkPointVisualizer {
       options.position = Cartesian3.clone(Cartesian3.ZERO);
       options.show = false;
     }
-    const pointPrimitive = this._collection.add(options);
+    const pointPrimitive = this._ensureCollection().add(options);
     this._staticItems.set(entity.id, { entity, pointPrimitive });
   }
 
@@ -346,7 +365,11 @@ class BulkPointVisualizer {
   _removeStatic(entity) {
     const item = this._staticItems.get(entity.id);
     if (defined(item)) {
-      if (defined(item.pointPrimitive) && !this._collection.isDestroyed()) {
+      if (
+        defined(item.pointPrimitive) &&
+        defined(this._collection) &&
+        !this._collection.isDestroyed()
+      ) {
         this._collection.remove(item.pointPrimitive);
       }
       this._staticItems.remove(entity.id);

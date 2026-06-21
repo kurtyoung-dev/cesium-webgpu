@@ -298,8 +298,12 @@ class BulkLabelVisualizer {
     this._entityCollection = entityCollection;
     this._primitives = primitives;
 
-    // Flat-buffer collection that holds the static fast-pathed labels.
-    this._collection = primitives.add(new LabelCollection());
+    // Flat-buffer collection that holds the static fast-pathed labels. Created
+    // LAZILY on the first static-lane add (see _ensureCollection) so a data
+    // source with zero static labels pays no LabelCollection allocation at all —
+    // see the 2026-06-20 bulk-vs-legacy perf benchmark (eager setup_delta +2-4ms
+    // at n=1 rising to +22-43ms at n=2000).
+    this._collection = undefined;
 
     // entity.id -> { entity, label } for fast-pathed (static) entities.
     this._staticItems = new AssociativeArray();
@@ -389,11 +393,24 @@ class BulkLabelVisualizer {
   }
 
   /**
+   * Lazily creates the flat-buffer collection on first use and adds it to the
+   * data source's primitives. Deferring this until the first static entity
+   * means a data source with no static labels never allocates one.
+   * @private
+   */
+  _ensureCollection() {
+    if (!defined(this._collection)) {
+      this._collection = this._primitives.add(new LabelCollection());
+    }
+    return this._collection;
+  }
+
+  /**
    * Adds an entity to the static fast-buffer collection.
    * @private
    */
   _addStatic(entity, time) {
-    const label = this._collection.add({ id: entity });
+    const label = this._ensureCollection().add({ id: entity });
     applyLabelOptions(label, entity, time);
     this._staticItems.set(entity.id, { entity, label });
   }
@@ -402,7 +419,11 @@ class BulkLabelVisualizer {
   _removeStatic(entity) {
     const item = this._staticItems.get(entity.id);
     if (defined(item)) {
-      if (defined(item.label) && !this._collection.isDestroyed()) {
+      if (
+        defined(item.label) &&
+        defined(this._collection) &&
+        !this._collection.isDestroyed()
+      ) {
         this._collection.remove(item.label);
       }
       this._staticItems.remove(entity.id);

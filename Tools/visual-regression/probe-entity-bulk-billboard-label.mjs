@@ -119,14 +119,23 @@ async function run(rendererArg) {
       }
 
       function findBulk(ds, collName) {
-        // The bulk billboard/label visualizers expose a `staticCount` and own a
-        // flat-buffer `_collection`. Distinguish billboard vs label by the
-        // collection class name (BillboardCollection / LabelCollection) — robust
-        // against esbuild's `_`-prefixing of bundled class names.
+        // The bulk billboard/label/point visualizers expose a `staticCount`.
+        // Their flat-buffer `_collection` is allocated LAZILY (Batch 335) — only
+        // once a static entity of that type exists — so it is NOT a reliable
+        // discriminator: a fully-dynamic data source keeps every entity in the
+        // fallback lane and never allocates a collection. Match on the VISUALIZER
+        // class name instead (regex-tolerant of esbuild's `_`-prefix / numeric
+        // suffix in the bundled, unminified build). collName is the collection
+        // type ("BillboardCollection" / "LabelCollection" /
+        // "PointPrimitiveCollection") → derive the Bulk*Visualizer kind.
+        const kind = collName
+          .replace(/Collection$/, "")
+          .replace(/Primitive$/, ""); // Billboard / Label / Point
+        const re = new RegExp(`Bulk${kind}Visualizer`, "i");
         const vis = ds._visualizers || [];
         return vis
-          .filter((x) => typeof x.staticCount === "number" && x._collection)
-          .find((x) => x._collection.constructor.name === collName);
+          .filter((x) => typeof x.staticCount === "number")
+          .find((x) => re.test(x.constructor.name));
       }
 
       // Warm up.
