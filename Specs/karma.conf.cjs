@@ -1,8 +1,36 @@
 "use strict";
 
 const os = require("os");
+const fs = require("fs");
+const path = require("path");
 
 module.exports = function (config) {
+  // EdgeHeadlessCI invocation contract: run with BOTH
+  //   --browsers=EdgeHeadlessCI  AND  CHROME_BIN=<path to msedge.exe>
+  // Karma's Chrome launcher honors CHROME_BIN; Edge is Chromium so it runs the
+  // Jasmine specs INCLUDING real-GPUDevice WebGPU specs (see the project's
+  // gulp-test-via-Edge note). Without CHROME_BIN it falls back to Chrome, which
+  // is not installed in this environment.
+  //
+  // Clean up stale karma-edge-* temp profiles (>1h old) left by prior runs. A
+  // surviving Edge owning an old profile is the real back-to-back "Chrome failed
+  // to start" cause; concurrency:1 only covers intra-run collisions. Best-effort:
+  // never block the run, and only touch profiles old enough that no live run owns
+  // them (the dir name carries the launch Date.now()).
+  try {
+    const tmp = os.tmpdir();
+    const STALE_MS = 60 * 60 * 1000;
+    const now = Date.now();
+    for (const name of fs.readdirSync(tmp)) {
+      const m = name.match(/^karma-edge-(\d+)-/);
+      if (m && now - Number(m[1]) > STALE_MS) {
+        fs.rmSync(path.join(tmp, name), { recursive: true, force: true });
+      }
+    }
+  } catch {
+    // best-effort cleanup; never block the test run
+  }
+
   const options = {
     // base path that will be used to resolve all patterns (eg. files, exclude)
     basePath: "..",
@@ -90,7 +118,11 @@ module.exports = function (config) {
         flags: [
           "--headless=new",
           "--no-sandbox",
-          "--disable-gpu",
+          // NOT --disable-gpu: that disables the GPU process WebGPU requires, so
+          // any real-GPUDevice WebGPU spec silently cannot run (the launcher
+          // would only be usable for webglStub specs). Enable WebGPU instead —
+          // this mirrors the Playwright probe args (channel msedge + headless).
+          "--enable-unsafe-webgpu",
           "--disable-dev-shm-usage",
           `--user-data-dir=${os.tmpdir()}\\karma-edge-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
         ],
