@@ -87,6 +87,12 @@ import PrimitivePickMatFlat from "../../Shaders/WebGPU/Primitive/PrimitivePickMa
 import PrimitivePickMatLit from "../../Shaders/WebGPU/Primitive/PrimitivePickMatLit.js";
 import PrimitivePBRSimple from "../../Shaders/WebGPU/Primitive/PrimitivePBRSimple.js";
 import PrimitivePBRTextured from "../../Shaders/WebGPU/Primitive/PrimitivePBRTextured.js";
+// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — a polyline
+// `Primitive` with `PolylineColorAppearance` over a `PolylineGeometry`.
+// The shader expands the 4 coincident quad vertices into a screen-space
+// ribbon via the ported PolylineCommon window-coordinate math.
+import PolylineColorAppearance from "../../Shaders/WebGPU/Primitive/PolylineColorAppearance.js";
+import csm_polylineCommon from "../../Shaders/WebGPU/chunks/functions/csm_polylineCommon.js";
 
 // Batch 165 — B.12 chunk extraction. Point-light cube depth comparison
 // is now a reusable WGSL function in `chunks/functions/csm_samplePointShadow`,
@@ -113,6 +119,12 @@ import csm_samplePointShadow from "../../Shaders/WebGPU/chunks/functions/csm_sam
 // (line starts with `//` after optional whitespace) so accidental matches
 // in WGSL code or string literals can't trigger injection.
 const POINT_SHADOW_MARKER_REGEX = /^\s*\/\/.*@chunk\s+csm_samplePointShadow\b/m;
+// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — PolylineColorAppearance.wgsl
+// carries `// @chunk functions/csm_polylineCommon`; prepend the ported
+// PolylineCommon window-coordinate functions when the marker is present.
+// Same comment-only matching contract as the point-shadow marker.
+const POLYLINE_COMMON_MARKER_REGEX =
+  /^\s*\/\/.*@chunk\s+functions\/csm_polylineCommon\b/m;
 function injectChunks(src) {
   if (typeof src !== "string") {
     return src;
@@ -120,6 +132,9 @@ function injectChunks(src) {
   let out = src;
   if (POINT_SHADOW_MARKER_REGEX.test(out)) {
     out = `${csm_samplePointShadow}\n${out}`;
+  }
+  if (POLYLINE_COMMON_MARKER_REGEX.test(out)) {
+    out = `${csm_polylineCommon}\n${out}`;
   }
   return out;
 }
@@ -184,6 +199,8 @@ const _shaderCache = {
   // PBR shaders
   pbrSimple: PrimitivePBRSimple,
   pbrTextured: PrimitivePBRTextured,
+  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice)
+  polylineColor: PolylineColorAppearance,
 };
 
 // Shaders are always available — no async loading needed
@@ -380,6 +397,42 @@ function getVertexLayoutForShader(shaderType, options) {
         { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
         { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
         { shaderLocation: 2, offset: 24, format: "float32x4" }, // color
+      ],
+    },
+  };
+}
+
+/**
+ * NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — vertex layout for
+ * the polyline appearance shader. arrayStride 96 = 24 floats:
+ *   loc0 positionHigh   @0   (f32x3)
+ *   loc1 positionLow    @12  (f32x3)
+ *   loc2 prevPositionHigh @24 (f32x3)
+ *   loc3 prevPositionLow  @36 (f32x3)
+ *   loc4 nextPositionHigh @48 (f32x3)
+ *   loc5 nextPositionLow  @60 (f32x3)
+ *   loc6 expandAndWidth  @72  (f32x2)
+ *   loc7 color           @80  (f32x4)
+ * Byte-locked to the packer in WebGPUPrimitiveCommands.js and the
+ * VertexInput in PolylineColorAppearance.wgsl.
+ * @returns {{ floatsPerVertex: number, stride: number, layout: GPUVertexBufferLayout }}
+ * @private
+ */
+function getPolylineAppearanceVertexLayout() {
+  return {
+    floatsPerVertex: 24,
+    stride: 96,
+    layout: {
+      arrayStride: 96,
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+        { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+        { shaderLocation: 2, offset: 24, format: "float32x3" }, // prevPositionHigh
+        { shaderLocation: 3, offset: 36, format: "float32x3" }, // prevPositionLow
+        { shaderLocation: 4, offset: 48, format: "float32x3" }, // nextPositionHigh
+        { shaderLocation: 5, offset: 60, format: "float32x3" }, // nextPositionLow
+        { shaderLocation: 6, offset: 72, format: "float32x2" }, // expandAndWidth
+        { shaderLocation: 7, offset: 80, format: "float32x4" }, // color
       ],
     },
   };
@@ -1007,6 +1060,7 @@ const WebGPUPrimitiveShaders = {
   // Per-instance color
   selectWebGPUShader,
   getVertexLayoutForShader,
+  getPolylineAppearanceVertexLayout,
   getUniformSizeForShader,
   isPhongShader,
   isTexturedShader,
@@ -1037,6 +1091,7 @@ export {
   getShaderSource,
   selectWebGPUShader,
   getVertexLayoutForShader,
+  getPolylineAppearanceVertexLayout,
   getUniformSizeForShader,
   isPhongShader,
   isTexturedShader,

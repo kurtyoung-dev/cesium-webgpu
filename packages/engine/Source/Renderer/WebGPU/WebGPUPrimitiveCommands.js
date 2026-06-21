@@ -16,6 +16,7 @@
  * @module WebGPUPrimitiveCommands
  */
 import AttributeCompression from "../../Core/AttributeCompression.js";
+import BoundingRectangle from "../../Core/BoundingRectangle.js";
 import Cartesian2 from "../../Core/Cartesian2.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import ComponentDatatype from "../../Core/ComponentDatatype.js";
@@ -39,6 +40,8 @@ import { WebGPUTexture } from "./WebGPUTexture.js";
 import {
   selectWebGPUShader,
   getVertexLayoutForShader,
+  getPolylineAppearanceVertexLayout,
+  getShaderSource,
   getPickShaderForType,
   getMaterialPickShaderForType,
   isPhongShader,
@@ -111,6 +114,24 @@ const FLAT_CAMERA_BYTES = 176; // mvpRTE(64) + camHigh(16) + camLow(16) + prevVP
 // 320-byte buffer — valid WebGPU, byte-identical behavior.
 const LIT_CAMERA_BYTES = 320; // ...prevVP(64) + logDepth(16)
 const PICK_CAMERA_BYTES = 160; // same as flat
+
+// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — the polyline
+// appearance camera UB extends the flat parity head (mvpRTE + camHigh/Low)
+// with the matrices the screen-space width-expansion math needs. Layout
+// (floats, byte-locked to CameraUniforms in PolylineColorAppearance.wgsl):
+//   0-15  mvpRelativeToEye        (parity; VS uses the ortho path)
+//   16-19 encodedCameraHigh + pad
+//   20-23 encodedCameraLow  + pad
+//   24-39 projection
+//   40-55 viewportTransformation
+//   56-71 viewportOrthographic
+//   72-87 modelViewRelativeToEye
+//   88    pixelRatio
+//   89    currentFrustumNear
+//   90-91 pad
+// 92 floats = 368 bytes; 256-aligned -> 512.
+const POLYLINE_CAMERA_BYTES = 512;
+const scratchPolylineUniformData = new Float32Array(POLYLINE_CAMERA_BYTES / 4);
 
 // Placeholder material UBO for shaders that don't use material uniforms
 // Must be at least 16 bytes (vec4) for WebGPU minimum binding size
@@ -759,6 +780,122 @@ function writePreviousViewProjection(ud, offset, uniformState) {
 // bind groups. Camera data uses writeRTEUniformsFlat; pick color goes in
 // a separate material UBO.
 
+/**
+ * NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — writes the camera
+ * UB for the polyline appearance shader. The polyline VS does its width
+ * expansion in screen space, so it needs the full projection /
+ * viewportTransformation / viewportOrthographic / modelViewRTE chain plus
+ * pixelRatio + frustum-near, on top of the flat-parity head.
+ *
+ * Layout (float offsets — byte-locked to CameraUniforms in
+ * PolylineColorAppearance.wgsl):
+ *   0-15  mvpRelativeToEye        (parity)
+ *   16-19 encodedCameraHigh + pad (parity)
+ *   20-23 encodedCameraLow  + pad (parity)
+ *   24-39 projection
+ *   40-55 viewportTransformation
+ *   56-71 viewportOrthographic
+ *   72-87 modelViewRelativeToEye
+ *   88    pixelRatio
+ *   89    currentFrustumNear
+ *   90-91 pad
+ *
+ * MUST be called after `Matrix4.setDepthRangeType("webgpu")` so the
+ * viewportOrthographic we build here uses the WebGPU-correct z mapping
+ * (computeOrthographicOffCenter's webgpu branch). The projection getter
+ * likewise reflects the active depth-range type.
+ *
+ * MISSING-FUNCTIONALITY NOTE (Principle 9): `uniformState.viewport` is only
+ * ever set by the WebGL `RenderState.applyViewport` path (it calls
+ * `gl.viewport`). The WebGPU render path never seeds it, so
+ * `uniformState.viewportOrthographic` / `.viewportTransformation` stay at
+ * IDENTITY on WebGPU — which collapsed every polyline-appearance vertex to
+ * one clip point (the original 0px symptom, take two). We therefore build
+ * both screen-space matrices from `context.drawingBufferWidth/Height` here,
+ * matching the established WebGPU collection-renderer pattern (Billboard /
+ * BufferPolyline read `context.drawingBufferWidth` directly rather than the
+ * GL-only `uniformState.viewport`). Seeding `uniformState.viewport` in the
+ * WebGPU render pass setup is the broader fix that would let the getters
+ * work for all future screen-space WebGPU shaders — tracked as follow-up.
+ * @private
+ */
+const scratchPolylineViewport = new BoundingRectangle();
+const scratchViewportTransform = new Matrix4();
+const scratchViewportOrtho = new Matrix4();
+function writeRTEUniformsPolyline(ud, rte, uniformState, context) {
+  // Parity head — mirrors writeRTEUniformsFlat's first 24 floats so the
+  // shared RTE conventions stay aligned across shader families.
+  Matrix4.pack(rte.mvpRTE, ud, 0);
+  ud[16] = rte.camHigh.x;
+  ud[17] = rte.camHigh.y;
+  ud[18] = rte.camHigh.z;
+  ud[19] = 0.0;
+  ud[20] = rte.camLow.x;
+  ud[21] = rte.camLow.y;
+  ud[22] = rte.camLow.z;
+  ud[23] = 0.0;
+
+  // Drawing-buffer dimensions for the WebGPU-correct viewport transforms.
+  const width =
+    (defined(context) ? context.drawingBufferWidth : 0) ||
+    (defined(uniformState) && defined(uniformState.viewport)
+      ? uniformState.viewport.width
+      : 0) ||
+    1;
+  const height =
+    (defined(context) ? context.drawingBufferHeight : 0) ||
+    (defined(uniformState) && defined(uniformState.viewport)
+      ? uniformState.viewport.height
+      : 0) ||
+    1;
+  scratchPolylineViewport.x = 0;
+  scratchPolylineViewport.y = 0;
+  scratchPolylineViewport.width = width;
+  scratchPolylineViewport.height = height;
+
+  // viewportTransformation: NDC -> window (pixel) coords. Depth-range
+  // agnostic (always near=0,far=1). Mirrors UniformState.cleanViewport.
+  Matrix4.computeViewportTransformation(
+    scratchPolylineViewport,
+    0.0,
+    1.0,
+    scratchViewportTransform,
+  );
+  // viewportOrthographic: window (pixel) coords -> clip. WebGPU z mapping
+  // when Matrix4._depthRangeType === "webgpu" (set by the caller).
+  Matrix4.computeOrthographicOffCenter(
+    0.0,
+    width,
+    0.0,
+    height,
+    0.0,
+    1.0,
+    scratchViewportOrtho,
+  );
+
+  // Screen-space expansion matrices.
+  Matrix4.pack(uniformState.projection, ud, 24);
+  Matrix4.pack(scratchViewportTransform, ud, 40);
+  Matrix4.pack(scratchViewportOrtho, ud, 56);
+  Matrix4.pack(rte.modelViewRTE, ud, 72);
+
+  const pixelRatio =
+    defined(uniformState) && typeof uniformState.pixelRatio === "number"
+      ? uniformState.pixelRatio
+      : defined(uniformState.frameState) &&
+          typeof uniformState.frameState.pixelRatio === "number"
+        ? uniformState.frameState.pixelRatio
+        : 1.0;
+  const frustum =
+    defined(uniformState) && defined(uniformState.currentFrustum)
+      ? uniformState.currentFrustum
+      : undefined;
+  ud[88] = pixelRatio;
+  ud[89] = defined(frustum) ? frustum.x : 0.0;
+  ud[90] = 0.0;
+  ud[91] = 0.0;
+}
+
 // =========================================================================
 // Per-Frame Primitive Effects Bind Group (Slice 2d)
 // =========================================================================
@@ -956,6 +1093,31 @@ function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
     return;
   }
 
+  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — the polyline
+  // appearance camera UB carries projection / viewport / modelViewRTE which
+  // all change per frame as the camera moves, so it MUST be re-written every
+  // frame (not just on geometry change). Depth-range type is set to webgpu by
+  // createWebGPUCommands; the viewportOrthographic getter respects it.
+  if (command._webgpuShaderType === "polylineColor") {
+    Matrix4.setDepthRangeType("webgpu");
+    const rtePoly = computeRTEMatrices(
+      context.uniformState,
+      frameState.camera,
+      modelMatrix,
+    );
+    const udPoly = scratchPolylineUniformData;
+    writeRTEUniformsPolyline(udPoly, rtePoly, context.uniformState, context);
+    device.queue.writeBuffer(
+      command._webgpuCameraBuffer,
+      0,
+      udPoly.buffer,
+      0,
+      POLYLINE_CAMERA_BYTES,
+    );
+    _refreshPrimitiveEffectsSlot(command, frameState);
+    return;
+  }
+
   const rte = computeRTEMatrices(
     context.uniformState,
     frameState.camera,
@@ -1035,6 +1197,389 @@ function updateWebGPUPickCommandUniforms(command, frameState, modelMatrix) {
 
   // Pick color is in the material buffer — only update if color changed
   // (pick colors are assigned once and don't change per frame)
+}
+
+// =========================================================================
+// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice)
+// =========================================================================
+
+/**
+ * Reads a per-vertex color attribute into RGBA floats in [0,1]. Handles the
+ * UNSIGNED_BYTE + normalize:true layout PolylineGeometry emits (values 0-255)
+ * as well as already-float color attributes (values 0-1).
+ * @private
+ */
+function readPolylineColor(colorAttr, v, out) {
+  if (!defined(colorAttr) || !defined(colorAttr.values)) {
+    out[0] = 1.0;
+    out[1] = 1.0;
+    out[2] = 1.0;
+    out[3] = 1.0;
+    return;
+  }
+  const values = colorAttr.values;
+  const cpa = colorAttr.componentsPerAttribute || 4;
+  const off = v * cpa;
+  // UNSIGNED_BYTE normalize:true -> divide by 255. A FLOAT color is already
+  // in [0,1]; the `normalize` flag distinguishes them.
+  const scale = colorAttr.normalize === true ? 1.0 / 255.0 : 1.0;
+  out[0] = values[off] * scale;
+  out[1] = values[off + 1] * scale;
+  out[2] = values[off + 2] * scale;
+  out[3] = cpa >= 4 ? values[off + 3] * scale : 1.0;
+}
+
+const scratchPolylineColor = [1.0, 1.0, 1.0, 1.0];
+
+/**
+ * Builds (and caches) the polyline appearance render pipeline. Topology is
+ * triangle-list (the geometry's index buffer triangulates the ribbon),
+ * cullMode "none" (a ribbon has no meaningful back face), MSAA matches the
+ * scene FB, targets via makeSceneFBTargets (no G-buffer emit — flat color).
+ * @private
+ */
+function createPolylineAppearancePipeline(
+  device,
+  context,
+  cache,
+  shaderModule,
+  vertexLayout,
+  translucent,
+) {
+  const cameraBGL = makeBindGroupLayout(device, "Polyline Camera BGL", [
+    uniformBuffer(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT),
+  ]);
+  const materialBGL = makeBindGroupLayout(device, "Polyline Material BGL", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+  ]);
+  const effectsBGL = getEffectsBindGroupLayout(device);
+  cache.cameraBindGroupLayout = cameraBGL;
+  cache.materialBindGroupLayout = materialBGL;
+  cache.effectsBGL = effectsBGL;
+
+  const canvasFormat =
+    context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
+
+  return device.createRenderPipeline({
+    label: "Polyline appearance pipeline",
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [cameraBGL, materialBGL, effectsBGL],
+    }),
+    vertex: {
+      module: shaderModule.module,
+      entryPoint: "vertexMain",
+      buffers: [vertexLayout.layout],
+    },
+    fragment: {
+      module: shaderModule.module,
+      entryPoint: "fragmentMain",
+      targets: makeSceneFBTargets(canvasFormat, {
+        translucent,
+        emitsGBuffer: false,
+      }),
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode: "none",
+      frontFace: "ccw",
+    },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: !translucent,
+      depthCompare: "less-equal",
+    },
+    multisample:
+      (context._msaaSamples ?? 1) > 1
+        ? { count: context._msaaSamples }
+        : undefined,
+  });
+}
+
+/**
+ * Creates WebGPU draw commands for a polyline `Primitive` with
+ * `PolylineColorAppearance` (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU, COLOR
+ * slice). Packs 24 floats/vertex (posHigh/posLow + prev/next high/low +
+ * expandAndWidth + color) and routes through the polyline appearance shader
+ * which expands the coincident quad vertices into a screen-space ribbon.
+ *
+ * Pick is not wired in this slice (color-only) — pickCommands is cleared.
+ * @private
+ */
+function createPolylineAppearanceCommands(
+  primitive,
+  appearance,
+  translucent,
+  colorCommands,
+  pickCommands,
+  frameState,
+  geometries,
+) {
+  const context = frameState.context;
+  const device = context.device;
+
+  if (!defined(primitive._webgpuPolylineCache)) {
+    primitive._webgpuPolylineCache = {
+      shaderModule: null,
+      pipeline: null,
+      translucent: null,
+      cameraBindGroupLayout: null,
+      materialBindGroupLayout: null,
+      effectsBGL: null,
+      materialBuffer: null,
+      materialBindGroup: null,
+      cameraBuffers: [],
+      cameraBindGroups: [],
+      vertexBuffers: [],
+      indexBuffers: [],
+      indexFormats: [],
+      indexCounts: [],
+      vertexCounts: [],
+    };
+  }
+  const cache = primitive._webgpuPolylineCache;
+
+  const vertexLayout = getPolylineAppearanceVertexLayout();
+  const translucentChanged = cache.translucent !== translucent;
+
+  if (!defined(cache.pipeline) || translucentChanged) {
+    cache.translucent = translucent;
+
+    // defines=0 — the polyline shader carries no //>>ifdef blocks today;
+    // route through the preprocessor for parity with the other primitive
+    // shader creation sites (and so the chunk-injected source is resolved
+    // via getShaderSource, which prepends csm_polylineCommon).
+    const code = preprocessShaderSource(getShaderSource("polylineColor"), 0);
+    cache.shaderModule = WebGPUShaderModule.create({
+      device: device,
+      code: code,
+      label: "PolylineColorAppearance Shader",
+    });
+
+    cache.pipeline = createPolylineAppearancePipeline(
+      device,
+      context,
+      cache,
+      cache.shaderModule,
+      vertexLayout,
+      translucent,
+    );
+
+    // Placeholder material UB (the polyline FS reads no material uniforms).
+    cache.materialBuffer = device.createBuffer({
+      size: PLACEHOLDER_MATERIAL_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      label: "Polyline Placeholder Material UB",
+    });
+    device.queue.writeBuffer(
+      cache.materialBuffer,
+      0,
+      new Float32Array([0, 0, 0, 0]),
+    );
+    cache.materialBindGroup = device.createBindGroup({
+      layout: cache.materialBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: cache.materialBuffer } }],
+    });
+  }
+
+  // Depth-range type MUST be webgpu before the viewportOrthographic /
+  // projection getters are read so they produce z in [0,1] (see
+  // writeRTEUniformsPolyline + the depth-range note in csm_polylineCommon.wgsl).
+  Matrix4.setDepthRangeType("webgpu");
+  const rte = computeRTEMatrices(
+    context.uniformState,
+    frameState.camera,
+    primitive.modelMatrix,
+  );
+
+  const validCommands = [];
+  const pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
+  const appearanceRS = appearance?.renderState;
+  const effectsPlaceholder = getPlaceholderEffects(device);
+
+  // Per-instance color for PolylineColorAppearance lives in the batch table
+  // (keyed by colorIndex), not on a per-vertex `color` geometry attribute —
+  // PolylineGeometry only emits a `color` attribute when constructed with
+  // explicit `colors`. Resolve the same way the basic packer does, then fall
+  // back to the geometry `color` attribute, then white.
+  const batchTable = primitive._batchTable;
+  const colorIndex = primitive._batchTableAttributeIndices?.color;
+  const hasInstanceColors = defined(batchTable) && defined(colorIndex);
+
+  for (let i = 0; i < geometries.length; i++) {
+    const geometry = geometries[i];
+    const attrs = geometry.attributes;
+
+    const posHigh = attrs.position3DHigh;
+    const posLow = attrs.position3DLow;
+    const prevHigh = attrs.prevPosition3DHigh;
+    const prevLow = attrs.prevPosition3DLow;
+    const nextHigh = attrs.nextPosition3DHigh;
+    const nextLow = attrs.nextPosition3DLow;
+    const expandAndWidth = attrs.expandAndWidth;
+    if (
+      !defined(posHigh) ||
+      !defined(posHigh.values) ||
+      !defined(prevHigh) ||
+      !defined(nextHigh) ||
+      !defined(expandAndWidth)
+    ) {
+      continue;
+    }
+
+    const posHighVals = posHigh.values;
+    const posLowVals = posLow.values;
+    const prevHighVals = prevHigh.values;
+    const prevLowVals = prevLow.values;
+    const nextHighVals = nextHigh.values;
+    const nextLowVals = nextLow.values;
+    const ewVals = expandAndWidth.values;
+    const ewCPA = expandAndWidth.componentsPerAttribute || 2;
+    const colorAttr = attrs.color;
+
+    // Resolve the per-instance color (whole-geometry) from the batch table.
+    // `null` => use the per-vertex `color` attribute (or white) instead.
+    let instanceColor = null;
+    if (hasInstanceColors && i < primitive._numberOfInstances) {
+      try {
+        const batchColor = batchTable.getBatchedAttribute(i, colorIndex);
+        if (defined(batchColor)) {
+          if (defined(batchColor.red)) {
+            instanceColor = [
+              batchColor.red,
+              batchColor.green,
+              batchColor.blue,
+              batchColor.alpha,
+            ];
+          } else if (defined(batchColor.x)) {
+            const r = batchColor.x;
+            const g = batchColor.y;
+            const b = batchColor.z;
+            const a = batchColor.w;
+            instanceColor =
+              r > 1.0 || g > 1.0 || b > 1.0 || a > 1.0
+                ? [r / 255.0, g / 255.0, b / 255.0, a / 255.0]
+                : [r, g, b, a];
+          }
+        }
+      } catch (e) {
+        // Silently fall through to the per-vertex color attribute.
+      }
+    }
+
+    const numVertices =
+      posHighVals.length / (posHigh.componentsPerAttribute || 3);
+
+    // 24 floats/vertex: posHigh(3) posLow(3) prevHigh(3) prevLow(3)
+    // nextHigh(3) nextLow(3) expandAndWidth(2) color(4)
+    const fpv = vertexLayout.floatsPerVertex;
+    const vertexData = new Float32Array(numVertices * fpv);
+    for (let v = 0; v < numVertices; v++) {
+      const p3 = v * 3;
+      const vOff = v * fpv;
+      vertexData[vOff] = posHighVals[p3];
+      vertexData[vOff + 1] = posHighVals[p3 + 1];
+      vertexData[vOff + 2] = posHighVals[p3 + 2];
+      vertexData[vOff + 3] = posLowVals[p3];
+      vertexData[vOff + 4] = posLowVals[p3 + 1];
+      vertexData[vOff + 5] = posLowVals[p3 + 2];
+      vertexData[vOff + 6] = prevHighVals[p3];
+      vertexData[vOff + 7] = prevHighVals[p3 + 1];
+      vertexData[vOff + 8] = prevHighVals[p3 + 2];
+      vertexData[vOff + 9] = prevLowVals[p3];
+      vertexData[vOff + 10] = prevLowVals[p3 + 1];
+      vertexData[vOff + 11] = prevLowVals[p3 + 2];
+      vertexData[vOff + 12] = nextHighVals[p3];
+      vertexData[vOff + 13] = nextHighVals[p3 + 1];
+      vertexData[vOff + 14] = nextHighVals[p3 + 2];
+      vertexData[vOff + 15] = nextLowVals[p3];
+      vertexData[vOff + 16] = nextLowVals[p3 + 1];
+      vertexData[vOff + 17] = nextLowVals[p3 + 2];
+      const ewOff = v * ewCPA;
+      vertexData[vOff + 18] = ewVals[ewOff];
+      vertexData[vOff + 19] = ewVals[ewOff + 1];
+      if (instanceColor !== null) {
+        vertexData[vOff + 20] = instanceColor[0];
+        vertexData[vOff + 21] = instanceColor[1];
+        vertexData[vOff + 22] = instanceColor[2];
+        vertexData[vOff + 23] = instanceColor[3];
+      } else {
+        readPolylineColor(colorAttr, v, scratchPolylineColor);
+        vertexData[vOff + 20] = scratchPolylineColor[0];
+        vertexData[vOff + 21] = scratchPolylineColor[1];
+        vertexData[vOff + 22] = scratchPolylineColor[2];
+        vertexData[vOff + 23] = scratchPolylineColor[3];
+      }
+    }
+
+    if (defined(cache.vertexBuffers[i])) {
+      cache.vertexBuffers[i].destroy();
+    }
+    cache.vertexBuffers[i] = WebGPUBuffer.createVertexBuffer(
+      device,
+      vertexData,
+      `Polyline VB ${i}`,
+    );
+
+    ensureIndexBuffer(device, geometry, cache, i);
+    cache.vertexCounts[i] = numVertices;
+
+    if (!defined(cache.cameraBuffers[i])) {
+      cache.cameraBuffers[i] = device.createBuffer({
+        size: POLYLINE_CAMERA_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: `Polyline Camera UB ${i}`,
+      });
+    }
+    const cameraData = scratchPolylineUniformData;
+    writeRTEUniformsPolyline(cameraData, rte, context.uniformState, context);
+    device.queue.writeBuffer(
+      cache.cameraBuffers[i],
+      0,
+      cameraData.buffer,
+      0,
+      POLYLINE_CAMERA_BYTES,
+    );
+
+    cache.cameraBindGroups[i] = device.createBindGroup({
+      layout: cache.cameraBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
+    });
+
+    const commandBindGroups = [
+      cache.cameraBindGroups[i],
+      cache.materialBindGroup,
+      effectsPlaceholder.bindGroup,
+    ];
+
+    const cmd = new WebGPUDrawCommand({
+      pipeline: cache.pipeline,
+      bindGroups: commandBindGroups,
+      vertexBuffer: cache.vertexBuffers[i],
+      indexBuffer: cache.indexBuffers[i],
+      indexFormat: cache.indexFormats[i],
+      vertexCount: defined(cache.indexBuffers[i])
+        ? undefined
+        : cache.vertexCounts[i],
+      indexCount: defined(cache.indexBuffers[i])
+        ? cache.indexCounts[i]
+        : undefined,
+      pass: pass,
+      owner: primitive,
+      renderState: appearanceRS,
+    });
+    cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
+    cmd._webgpuShaderType = "polylineColor";
+    cmd._label = "polyline appearance";
+    cmd.vertexStride = vertexLayout.stride;
+    validCommands.push(cmd);
+  }
+
+  colorCommands.length = validCommands.length;
+  for (let i = 0; i < validCommands.length; i++) {
+    colorCommands[i] = validCommands[i];
+  }
+  // Pick is color-only in this slice.
+  pickCommands.length = 0;
 }
 
 // =========================================================================
@@ -1132,6 +1677,34 @@ function createWebGPUCommands(
   // path (createMaterialAndQueueCommands) decodes before its selection, so
   // it was unaffected. ensureUncompressedAttributes is idempotent.
   ensureUncompressedAttributes(firstGeometry);
+
+  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — a polyline
+  // `Primitive` with `PolylineColorAppearance` over a `PolylineGeometry`.
+  // The geometry carries `expandAndWidth` + `prevPosition3DHigh`/`nextPosition3DHigh`
+  // attributes that the basic packer drops, collapsing the 4 coincident quad
+  // vertices to one clip point (0px). Route to a dedicated packer + pipeline +
+  // camera UB that consume those attributes and do the screen-space width
+  // expansion. Detected before selectWebGPUShader because that helper only
+  // inspects normal/st and would pick "basic".
+  const firstAttrs = firstGeometry.attributes;
+  const isPolylineAppearanceGeometry =
+    defined(firstAttrs.expandAndWidth) &&
+    defined(firstAttrs.expandAndWidth.values) &&
+    defined(firstAttrs.prevPosition3DHigh) &&
+    defined(firstAttrs.prevPosition3DHigh.values);
+  if (isPolylineAppearanceGeometry) {
+    createPolylineAppearanceCommands(
+      primitive,
+      appearance,
+      translucent,
+      colorCommands,
+      pickCommands,
+      frameState,
+      geometries,
+    );
+    return;
+  }
+
   const shaderInfo = selectWebGPUShader(firstGeometry.attributes);
   const vertexLayout = getVertexLayoutForShader(shaderInfo.type);
 
