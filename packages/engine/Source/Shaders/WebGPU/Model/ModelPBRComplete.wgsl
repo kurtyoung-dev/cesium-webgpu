@@ -2902,10 +2902,23 @@ struct FragOutput {
 
   // `diffuseIBL` already carries the full Fdez-Aguera diffuse term
   // (FmsEms + dielectricScattering); add it directly alongside the
-  // specular contribution as WebGL does. Keep `light.ambientColor` as a
-  // small constant floor so unconfigured lighting (placeholder cubemap)
-  // still produces a non-black ambient.
-  var ambient = diffuseIBL + specularIBL + light.ambientColor * diffuseColor * 0.05;
+  // specular contribution as WebGL does. This MUST match WebGL exactly:
+  // `ImageBasedLightingStageFS.glsl::textureIBL` returns
+  // `diffuseContribution + specularContribution` and `LightingStageFS.glsl`
+  // adds it as `color += computeIBL(...)` — there is NO separate ambient
+  // floor. WebGL's ambient IS the IBL.
+  //
+  // NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY (D2): the previous
+  // `+ light.ambientColor * diffuseColor * 0.05` term was a non-physical
+  // floor WebGL does not have; it brightened/flattened the at-rest neutral
+  // model relative to WebGL. Removed for parity. No fallback floor is needed
+  // even when IBL is unconfigured: `diffuseIBL`/`specularIBL` always sample a
+  // cubemap (the mid-grey placeholder when no environment is generated — see
+  // the placeholder IBL bind-group entries in WebGPUModelRenderer.js), so the
+  // ambient is never silently black. Gating a floor on `light.iblHasSH` would
+  // re-introduce a code path WebGL lacks and reproduce the same divergence in
+  // the SH-less case, so it is deliberately omitted.
+  var ambient = diffuseIBL + specularIBL;
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {

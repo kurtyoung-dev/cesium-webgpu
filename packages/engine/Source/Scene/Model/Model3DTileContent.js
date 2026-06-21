@@ -274,7 +274,7 @@ class Model3DTileContent {
     }
 
     const tilesetEnvironmentMapManager = tileset.environmentMapManager;
-    if (model.environmentMapManager !== tilesetClippingPlanes) {
+    if (model.environmentMapManager !== tilesetEnvironmentMapManager) {
       model._environmentMapManager = tilesetEnvironmentMapManager;
     }
 
