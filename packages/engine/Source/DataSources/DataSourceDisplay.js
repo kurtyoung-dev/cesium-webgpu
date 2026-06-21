@@ -8,15 +8,18 @@ import GroundPolylinePrimitive from "../Scene/GroundPolylinePrimitive.js";
 import GroundPrimitive from "../Scene/GroundPrimitive.js";
 import OrderedGroundPrimitiveCollection from "../Scene/OrderedGroundPrimitiveCollection.js";
 import PrimitiveCollection from "../Scene/PrimitiveCollection.js";
+import BillboardVisualizer from "./BillboardVisualizer.js";
 import BoundingSphereState from "./BoundingSphereState.js";
 import BulkBillboardVisualizer from "./BulkBillboardVisualizer.js";
 import BulkLabelVisualizer from "./BulkLabelVisualizer.js";
 import BulkPointVisualizer from "./BulkPointVisualizer.js";
 import CustomDataSource from "./CustomDataSource.js";
 import GeometryVisualizer from "./GeometryVisualizer.js";
+import LabelVisualizer from "./LabelVisualizer.js";
 import ModelVisualizer from "./ModelVisualizer.js";
 import Cesium3DTilesetVisualizer from "./Cesium3DTilesetVisualizer.js";
 import PathVisualizer from "./PathVisualizer.js";
+import PointVisualizer from "./PointVisualizer.js";
 import PolylineVisualizer from "./PolylineVisualizer.js";
 
 /**
@@ -495,6 +498,65 @@ DataSourceDisplay.defaultVisualizersCallback = function (
     new ModelVisualizer(scene, entities),
     new Cesium3DTilesetVisualizer(scene, entities),
     new BulkPointVisualizer(entityCluster, entities, dataSource._primitives),
+    new PathVisualizer(scene, entities),
+    new PolylineVisualizer(
+      scene,
+      entities,
+      dataSource._primitives,
+      dataSource._groundPrimitives,
+    ),
+    ...ExtraVisualizers.map(
+      (VisualizerClass) => new VisualizerClass(scene, entities),
+    ),
+  ];
+};
+
+/**
+ * An alternative {@link DataSourceDisplay.VisualizersCallback} that wires the
+ * per-frame LEGACY billboard / label / point visualizers instead of the bulk
+ * static-lane fast path used by {@link DataSourceDisplay.defaultVisualizersCallback}.
+ *
+ * The bulk default writes static entities once into a flat-buffer collection and
+ * skips them per frame — 50×–1400× faster per frame for long-lived scenes or
+ * large static catalogs — but pays a one-time per-data-source collection
+ * allocation (~1–8 ms, lazily on the first static entity). For workloads of MANY
+ * short-lived / transient data sources with FEW static entities each (e.g.
+ * rapidly created-and-destroyed "flash" overlays), that one-time setup is not
+ * amortized and the legacy per-frame path is faster overall. Select it explicitly
+ * via the `visualizersCallback` option:
+ *
+ * @example
+ * const display = new Cesium.DataSourceDisplay({
+ *   scene: scene,
+ *   dataSourceCollection: dataSources,
+ *   visualizersCallback: Cesium.DataSourceDisplay.legacyVisualizersCallback,
+ * });
+ *
+ * Behavior is otherwise identical to the bulk path (`scene.pick` returns the
+ * Entity, bounding spheres resolve). All other visualizers (geometry / model /
+ * 3D Tiles / path / polyline) and registered ExtraVisualizers are wired exactly
+ * as in the default callback.
+ *
+ * @type {DataSourceDisplay.VisualizersCallback}
+ */
+DataSourceDisplay.legacyVisualizersCallback = function (
+  scene,
+  entityCluster,
+  dataSource,
+) {
+  const entities = dataSource.entities;
+  return [
+    new BillboardVisualizer(entityCluster, entities),
+    new GeometryVisualizer(
+      scene,
+      entities,
+      dataSource._primitives,
+      dataSource._groundPrimitives,
+    ),
+    new LabelVisualizer(entityCluster, entities),
+    new ModelVisualizer(scene, entities),
+    new Cesium3DTilesetVisualizer(scene, entities),
+    new PointVisualizer(entityCluster, entities),
     new PathVisualizer(scene, entities),
     new PolylineVisualizer(
       scene,

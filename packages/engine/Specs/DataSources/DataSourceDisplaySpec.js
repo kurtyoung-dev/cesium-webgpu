@@ -11,11 +11,14 @@ import {
   GroundPrimitive,
   defined,
   BulkBillboardVisualizer,
+  BillboardVisualizer,
   GeometryVisualizer,
   BulkLabelVisualizer,
+  LabelVisualizer,
   ModelVisualizer,
   Cesium3DTilesetVisualizer,
   BulkPointVisualizer,
+  PointVisualizer,
   PathVisualizer,
   PolylineVisualizer,
 } from "../../index.js";
@@ -697,6 +700,30 @@ describe(
       expect(callback[3]).toBeInstanceOf(ModelVisualizer);
       expect(callback[4]).toBeInstanceOf(Cesium3DTilesetVisualizer);
       expect(callback[5]).toBeInstanceOf(BulkPointVisualizer);
+      expect(callback[6]).toBeInstanceOf(PathVisualizer);
+      expect(callback[7]).toBeInstanceOf(PolylineVisualizer);
+    });
+
+    it("legacyVisualizersCallback wires the per-frame (non-bulk) billboard/label/point visualizers", () => {
+      const dataSource = new MockDataSource();
+      const entityCluster = dataSource.clustering;
+      const callback = DataSourceDisplay.legacyVisualizersCallback(
+        scene,
+        entityCluster,
+        dataSource,
+      );
+      expect(callback.length).toEqual(8);
+      // billboard / label / point are the LEGACY per-frame visualizers, NOT the
+      // bulk static-lane fast path (the opt-in toggle for short-lived sources).
+      expect(callback[0]).toBeInstanceOf(BillboardVisualizer);
+      expect(callback[0]).not.toBeInstanceOf(BulkBillboardVisualizer);
+      expect(callback[1]).toBeInstanceOf(GeometryVisualizer);
+      expect(callback[2]).toBeInstanceOf(LabelVisualizer);
+      expect(callback[2]).not.toBeInstanceOf(BulkLabelVisualizer);
+      expect(callback[3]).toBeInstanceOf(ModelVisualizer);
+      expect(callback[4]).toBeInstanceOf(Cesium3DTilesetVisualizer);
+      expect(callback[5]).toBeInstanceOf(PointVisualizer);
+      expect(callback[5]).not.toBeInstanceOf(BulkPointVisualizer);
       expect(callback[6]).toBeInstanceOf(PathVisualizer);
       expect(callback[7]).toBeInstanceOf(PolylineVisualizer);
     });
