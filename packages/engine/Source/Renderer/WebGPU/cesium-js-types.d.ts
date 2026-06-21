@@ -329,7 +329,21 @@ interface CesiumFrameState {
   scene3DOnly: boolean;
   fog: CesiumFrameStateFog;
   atmosphere:
-    | { hueShift: number; saturationShift: number; brightnessShift: number }
+    | {
+        hueShift: number;
+        saturationShift: number;
+        brightnessShift: number;
+        // Scattering terms (Scene/Atmosphere.js) — read by the dynamic
+        // environment-map sky fill so its IBL source tracks the same
+        // per-scene atmosphere as the visible SkyAtmosphere + WebGL IBL.
+        lightIntensity?: number;
+        rayleighCoefficient?: CesiumCartesian3;
+        rayleighScaleHeight?: number;
+        mieCoefficient?: CesiumCartesian3;
+        mieScaleHeight?: number;
+        mieAnisotropy?: number;
+        dynamicLighting?: number;
+      }
     | undefined;
   atmosphericConditions:
     | {

@@ -20,6 +20,8 @@
  */
 
 import ProceduralSkyCubemapWGSL from "../../Shaders/WebGPU/Compute/ProceduralSkyCubemap.js";
+import Cartesian3 from "../../Core/Cartesian3.js";
+import Transforms from "../../Core/Transforms.js";
 import { generateIBLMaps } from "./WebGPUIBLPipeline.js";
 import type { IBLPipelineCache } from "./WebGPUIBLPipeline.js";
 
@@ -48,6 +50,13 @@ interface DynEnvMapManagerLike {
   // studio-HDR defaults (warm zenith, cool ground, white sun).
   skyColor?: { red: number; green: number; blue: number };
   groundColor?: { red: number; green: number; blue: number };
+  // NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY D1 — atmosphere-derived sky
+  // fill needs the same lighting controls the WebGL ComputeRadianceMapFS
+  // reads from the manager. These live on the upstream
+  // DynamicEnvironmentMapManager (defaults: 2.0 / 1.0 / 0.31).
+  atmosphereScatteringIntensity?: number;
+  gamma?: number;
+  groundAlbedo?: number;
 }
 
 interface DynEnvMapCache {
@@ -269,7 +278,35 @@ const SUN_REFRESH_EPSILON_SQ = 0.005 * 0.005;
 // comes from `frameState.context.uniformState.sunDirectionWC` so the
 // procedural sky tracks the scene's sun.
 
-const SKY_UNIFORM_SIZE = 64; // 4 vec4 = 64 bytes (matches SkyUniforms)
+// NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY D1 — atmosphere-derived sky
+// fill. The SkyUniforms struct is now 9 vec4 = 144 bytes. Byte-exact
+// lockstep with `ProceduralSkyCubemap.wgsl`'s SkyUniforms (WGSL uniform
+// layout: each vec3 occupies a 16-byte slot, the trailing f32 packs into
+// the slot's 4th lane). Float32Array index = byte offset / 4:
+//   0..2  positionWC      3  faceSize
+//   4..6  enuX            7  innerRadius
+//   8..10 enuY           11  outerRadius
+//   12..14 enuZ          15  intensity (atmosphere.lightIntensity)
+//   16..18 sunDirectionWC 19 gamma
+//   20..22 rayleighCoeff  23 mieAnisotropy
+//   24..26 mieCoeff       27 rayleighScaleHeight
+//   28..30 groundColor    31 mieScaleHeight
+//   32 groundAlbedo  33 dynamicLightingEnum  34 scatteringIntensity  35 _pad0
+const SKY_UNIFORM_SIZE = 144;
+const SKY_UNIFORM_FLOATS = 36;
+
+// Reused scratch so the per-fill pack does not allocate.
+const scratchPosition = new Cartesian3();
+// Default Atmosphere.js scattering terms (used when frameState.atmosphere
+// omits a field, mirroring the WebGL automatic-uniform fallbacks).
+const DEFAULT_RAYLEIGH_COEFFICIENT = { x: 5.5e-6, y: 13.0e-6, z: 28.4e-6 };
+const DEFAULT_MIE_COEFFICIENT = { x: 21e-6, y: 21e-6, z: 21e-6 };
+const DEFAULT_RAYLEIGH_SCALE_HEIGHT = 10000.0;
+const DEFAULT_MIE_SCALE_HEIGHT = 3200.0;
+const DEFAULT_MIE_ANISOTROPY = 0.9;
+const DEFAULT_LIGHT_INTENSITY = 10.0;
+// czm_computeScattering's ATMOSPHERE_THICKNESS (AtmosphereCommon.glsl).
+const ATMOSPHERE_THICKNESS = 111000.0;
 
 function runProceduralSkyFill(
   device: GPUDevice,
@@ -322,39 +359,106 @@ function runProceduralSkyFill(
     });
   }
 
-  // Pull sun direction from the frame's uniformState; default to a
-  // sensible mid-day "up and a bit east" if absent.
-  const sunDir = (
+  // ── Atmosphere-derived uniforms (mirrors ComputeRadianceMapFS) ──
+  //
+  // Sun direction: SUNLIGHT uses frameState.sunDirectionWC; SCENE_LIGHT
+  // uses uniformState.lightDirectionWC; NONE (default) resolves to the
+  // local zenith per-direction inside the shader (so sunDirectionWC is a
+  // safe placeholder on that path).
+  const uniformState = (
     frameState.context as unknown as {
-      uniformState?: { sunDirectionWC?: { x: number; y: number; z: number } };
+      uniformState?: {
+        sunDirectionWC?: { x: number; y: number; z: number };
+        lightDirectionWC?: { x: number; y: number; z: number };
+      };
     }
-  ).uniformState?.sunDirectionWC ?? { x: 0.3, y: 0.0, z: 0.95 };
+  ).uniformState;
+  const sceneLight = uniformState?.lightDirectionWC;
+  const sunDir = uniformState?.sunDirectionWC ??
+    frameState.sunDirectionWC ?? { x: 0.3, y: 0.0, z: 0.95 };
 
-  const skyColor = manager.skyColor ?? { red: 0.45, green: 0.6, blue: 0.85 };
+  const atmosphere = frameState.atmosphere;
+  const rayleighCoefficient =
+    atmosphere?.rayleighCoefficient ?? DEFAULT_RAYLEIGH_COEFFICIENT;
+  const mieCoefficient = atmosphere?.mieCoefficient ?? DEFAULT_MIE_COEFFICIENT;
+  const rayleighScaleHeight =
+    atmosphere?.rayleighScaleHeight ?? DEFAULT_RAYLEIGH_SCALE_HEIGHT;
+  const mieScaleHeight = atmosphere?.mieScaleHeight ?? DEFAULT_MIE_SCALE_HEIGHT;
+  const mieAnisotropy = atmosphere?.mieAnisotropy ?? DEFAULT_MIE_ANISOTROPY;
+  const lightIntensity = atmosphere?.lightIntensity ?? DEFAULT_LIGHT_INTENSITY;
+  const dynamicLighting = atmosphere?.dynamicLighting ?? 0;
+  // When dynamicLighting === SCENE_LIGHT, feed the scene light vector as
+  // the "sun" the shader uses; the shader's NONE/SUNLIGHT paths use the
+  // packed sunDirectionWC / local zenith respectively.
+  const lightVec = dynamicLighting === 1 && sceneLight ? sceneLight : sunDir;
+
+  // Position + ENU->fixed basis (WGS84 default, matching the WebGL
+  // DynamicEnvironmentMapManager). Inner radius = position magnitude
+  // (the model's surface radius); outer = inner + 111 km, matching
+  // czm_computeScattering's ATMOSPHERE_THICKNESS.
+  const position = manager._position;
+  scratchPosition.x = position.x;
+  scratchPosition.y = position.y;
+  scratchPosition.z = position.z;
+  const innerRadius = Cartesian3.magnitude(scratchPosition);
+  const outerRadius = innerRadius + ATMOSPHERE_THICKNESS;
+  const enu = Transforms.eastNorthUpToFixedFrame(scratchPosition);
+
+  const skyColorScattering = manager.atmosphereScatteringIntensity ?? 2.0;
+  const gamma = manager.gamma ?? 1.0;
   const groundColor = manager.groundColor ?? {
-    red: 0.18,
-    green: 0.16,
-    blue: 0.13,
+    red: 0.45,
+    green: 0.45,
+    blue: 0.27,
   };
-  const sunColor = { red: 1.0, green: 0.95, blue: 0.85 };
+  const groundAlbedo = manager.groundAlbedo ?? 0.31;
 
-  const data = new Float32Array(16);
-  data[0] = sunDir.x;
-  data[1] = sunDir.y;
-  data[2] = sunDir.z;
-  data[3] = cache.size; // faceSize
-  data[4] = skyColor.red;
-  data[5] = skyColor.green;
-  data[6] = skyColor.blue;
-  // data[7] = _pad0
-  data[8] = groundColor.red;
-  data[9] = groundColor.green;
-  data[10] = groundColor.blue;
-  data[11] = 4.0; // sunIntensity
-  data[12] = sunColor.red;
-  data[13] = sunColor.green;
-  data[14] = sunColor.blue;
-  // data[15] = _pad1
+  const data = new Float32Array(SKY_UNIFORM_FLOATS);
+  // positionWC + faceSize
+  data[0] = position.x;
+  data[1] = position.y;
+  data[2] = position.z;
+  data[3] = cache.size;
+  // enuX (column 0: East) + innerRadius
+  data[4] = enu[0];
+  data[5] = enu[1];
+  data[6] = enu[2];
+  data[7] = innerRadius;
+  // enuY (column 1: North) + outerRadius
+  data[8] = enu[4];
+  data[9] = enu[5];
+  data[10] = enu[6];
+  data[11] = outerRadius;
+  // enuZ (column 2: Up) + intensity (atmosphere.lightIntensity)
+  data[12] = enu[8];
+  data[13] = enu[9];
+  data[14] = enu[10];
+  data[15] = lightIntensity;
+  // sunDirectionWC + gamma
+  data[16] = lightVec.x;
+  data[17] = lightVec.y;
+  data[18] = lightVec.z;
+  data[19] = gamma;
+  // rayleighCoefficient + mieAnisotropy
+  data[20] = rayleighCoefficient.x;
+  data[21] = rayleighCoefficient.y;
+  data[22] = rayleighCoefficient.z;
+  data[23] = mieAnisotropy;
+  // mieCoefficient + rayleighScaleHeight
+  data[24] = mieCoefficient.x;
+  data[25] = mieCoefficient.y;
+  data[26] = mieCoefficient.z;
+  data[27] = rayleighScaleHeight;
+  // groundColor + mieScaleHeight
+  data[28] = groundColor.red;
+  data[29] = groundColor.green;
+  data[30] = groundColor.blue;
+  data[31] = mieScaleHeight;
+  // groundAlbedo, dynamicLightingEnum, scatteringIntensity, _pad0
+  data[32] = groundAlbedo;
+  data[33] = dynamicLighting;
+  data[34] = skyColorScattering;
+  data[35] = 0.0;
   device.queue.writeBuffer(cache.skyUniformBuffer, 0, data);
 
   // (Re)build bind group when the storage view changed (size change

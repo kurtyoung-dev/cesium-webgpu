@@ -26,9 +26,12 @@
  *                        is "too flat" (constant-color sky → uniform ambient),
  *                        so a LOW variance vs WebGL is the flatness gap.
  *
- * Gate (at-rest parity): webgpu-vs-webgl mean-luminance within ~10% and each
- * channel within ~10%; 0 WebGPU device errors. The gate is EXPECTED TO FAIL
- * before D1 lands (the sky term still diverges); D2+D4 shrink the gap.
+ * Gate (at-rest parity): webgpu-vs-webgl mean-luminance within ~5% and each
+ * channel within ~5%; 0 WebGPU device errors. D1 (Batch 346) closed the
+ * residual: the WebGPU dynamic env-map sky is now atmosphere-scattering-
+ * derived (a port of WebGL's ComputeRadianceMapFS) and the model IBL bind
+ * prefers that env-manager IBL over the explicit-IBL gray/black placeholder.
+ * Measured deltas fell from -7.6% lum / -8.9% blue / +10% variance to ~1%.
  *
  * Each capture uses a FRESH page load + a single Playwright element screenshot.
  * WebGPU's swapchain present detaches the canvas texture, so two successive in-
@@ -360,9 +363,14 @@ const report = {
 console.log(JSON.stringify(report, null, 2));
 
 // Gate: both ready, no WebGPU device errors, mean luminance + each channel
-// within ~10%. EXPECTED TO FAIL pre-D1 (the sky term still diverges) — the
-// purpose of this probe is to MEASURE the gap, not assert it's already closed.
-const TOL_PCT = 10.0;
+// within ~5%. TIGHTENED from 10% once D1 landed (Batch 346): the WebGPU
+// dynamic env-map sky is now atmosphere-scattering-derived (a port of
+// WebGL's ComputeRadianceMapFS), AND the model IBL bind now prefers that
+// env-manager IBL over the explicit-IBL gray/black placeholder. Measured
+// at-rest deltas dropped from -7.6% lum / -8.9% blue / +10% variance to
+// within ~1% on every channel. The 5% gate locks the improvement and will
+// catch any regression that reintroduces the flat-ambient divergence.
+const TOL_PCT = 5.0;
 const within = (p) => p !== null && Math.abs(p) <= TOL_PCT;
 const pass =
   wgl.ready &&
@@ -377,7 +385,7 @@ const pass =
 
 console.log(
   pass
-    ? "GATE PASS — WebGPU at-rest PBR matches WebGL within 10% (mean luminance + per-channel tint); 0 device errors"
-    : "GATE FAIL — at-rest PBR diverges (expected before D1 sky fix lands; see webgpuVsWebgl_pct deltas)",
+    ? "GATE PASS — WebGPU at-rest PBR matches WebGL within 5% (mean luminance + per-channel tint); 0 device errors"
+    : "GATE FAIL — at-rest PBR diverges beyond 5% (D1 atmosphere-derived env-map sky regression; see webgpuVsWebgl_pct deltas)",
 );
 process.exit(pass ? 0 : 1);

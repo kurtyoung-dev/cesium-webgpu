@@ -1598,23 +1598,45 @@ function buildModelIBLEntries(model, pipelineCache, frameState) {
   let specularView = ibl?._webgpuSpecularView;
   let diffuseView = ibl?._webgpuDiffuseView;
   let sampler = ibl?._webgpuSampler;
-  const shBuffer = ibl?._webgpuSHBuffer;
+  let shBuffer = ibl?._webgpuSHBuffer;
 
-  // Audit A.12 (Batch 131) -- when the explicit IBL hasn't generated
-  // (no `specularEnvironmentMaps` configured), fall back to the
-  // model's `environmentMapManager` procedural-sky cubemap. The
-  // manager runs a procedural sky compute pass + the same
-  // `generateIBLMaps` prefilter as explicit IBL, so the fallback views
-  // are first-class -- not a placeholder.
+  // NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY D1 (Batch 346) -- precedence
+  // fix mirroring WebGL's ImageBasedLightingPipelineStage:
+  //   specular = explicit specularEnvironmentMaps if configured,
+  //              else environmentMapManager.radianceCubeMap,
+  //              else the (black) default.
+  //   diffuse  = explicit SH if the user supplied coefficients,
+  //              else environmentMapManager irradiance / SH,
+  //              else the (low-gray) default.
+  //
+  // Previously the env-manager was used ONLY when the explicit
+  // `_webgpuSpecularView` / `_webgpuDiffuseView` were *undefined*. But
+  // `WebGPUImageBasedLighting.update` always resolves those to its 1x1
+  // BLACK specular + 30/255 GRAY diffuse PLACEHOLDERS when no explicit
+  // `specularEnvironmentMaps` is configured -- so the env-manager's real
+  // atmosphere-derived IBL was being shadowed by the placeholder. That
+  // left at-rest models with a flat gray ambient + no sky reflection,
+  // the dominant cause of the WebGPU-vs-WebGL ~7.6% luminance / ~9%
+  // blue-tint gap. We now treat the placeholder as "no explicit source"
+  // and prefer the env-manager exactly like WebGL.
+  const hasExplicitSpecular =
+    defined(ibl?._specularEnvironmentCubeMap) &&
+    (ibl._webgpuMaxMipLevel ?? 0) > 0;
+  const hasExplicitDiffuse = ibl?._webgpuHasSH === true;
+
   const envManager = model?.environmentMapManager;
   if (defined(envManager)) {
-    if (!defined(diffuseView) && defined(envManager._webgpuIBLDiffuseView)) {
+    if (!hasExplicitDiffuse && defined(envManager._webgpuIBLDiffuseView)) {
       diffuseView = envManager._webgpuIBLDiffuseView;
+      // The env-manager diffuse is an irradiance cubemap, not SH; clear
+      // any default SH so the shader samples the cubemap (its SH gate
+      // `control.w` stays 0 with the default buffer below).
+      shBuffer = undefined;
     }
-    if (!defined(specularView) && defined(envManager._webgpuIBLSpecularView)) {
+    if (!hasExplicitSpecular && defined(envManager._webgpuIBLSpecularView)) {
       specularView = envManager._webgpuIBLSpecularView;
     }
-    if (!defined(sampler) && defined(envManager._webgpuIBLSampler)) {
+    if (defined(envManager._webgpuIBLSampler)) {
       sampler = envManager._webgpuIBLSampler;
     }
   }
