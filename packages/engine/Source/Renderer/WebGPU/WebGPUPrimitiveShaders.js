@@ -93,6 +93,17 @@ import PrimitivePBRTextured from "../../Shaders/WebGPU/Primitive/PrimitivePBRTex
 // ribbon via the ported PolylineCommon window-coordinate math.
 import PolylineColorAppearance from "../../Shaders/WebGPU/Primitive/PolylineColorAppearance.js";
 import csm_polylineCommon from "../../Shaders/WebGPU/chunks/functions/csm_polylineCommon.js";
+// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice) — a polyline
+// `Primitive` with `PolylineMaterialAppearance` over a `PolylineGeometry`.
+// The shared polyline VS (color VS minus per-vertex color, plus `st`) feeds a
+// per-material-type FS (Color / Dash / Glow / Arrow / Outline). Each variant
+// carries the same `// @chunk functions/csm_polylineCommon` marker, so
+// getShaderSource prepends the (angle-capable) PolylineCommon functions.
+import PolylineMatColor from "../../Shaders/WebGPU/Primitive/PolylineMatColor.js";
+import PolylineMatDash from "../../Shaders/WebGPU/Primitive/PolylineMatDash.js";
+import PolylineMatGlow from "../../Shaders/WebGPU/Primitive/PolylineMatGlow.js";
+import PolylineMatArrow from "../../Shaders/WebGPU/Primitive/PolylineMatArrow.js";
+import PolylineMatOutline from "../../Shaders/WebGPU/Primitive/PolylineMatOutline.js";
 
 // Batch 165 — B.12 chunk extraction. Point-light cube depth comparison
 // is now a reusable WGSL function in `chunks/functions/csm_samplePointShadow`,
@@ -201,6 +212,12 @@ const _shaderCache = {
   pbrTextured: PrimitivePBRTextured,
   // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice)
   polylineColor: PolylineColorAppearance,
+  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice)
+  polylineMatColor: PolylineMatColor,
+  polylineMatDash: PolylineMatDash,
+  polylineMatGlow: PolylineMatGlow,
+  polylineMatArrow: PolylineMatArrow,
+  polylineMatOutline: PolylineMatOutline,
 };
 
 // Shaders are always available — no async loading needed
@@ -433,6 +450,90 @@ function getPolylineAppearanceVertexLayout() {
         { shaderLocation: 5, offset: 60, format: "float32x3" }, // nextPositionLow
         { shaderLocation: 6, offset: 72, format: "float32x2" }, // expandAndWidth
         { shaderLocation: 7, offset: 80, format: "float32x4" }, // color
+      ],
+    },
+  };
+}
+
+/**
+ * NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice) — selects the
+ * polyline-material FS variant for a Cesium `Material`. The shared polyline VS
+ * is the same across all variants; only the FS + MaterialUniforms struct
+ * differ. PolylineDash / PolylineGlow / PolylineArrow / PolylineOutline route
+ * to their dedicated WGSL; everything else (plain Color and any non-polyline
+ * material reaching this path) falls back to the Color FS, mirroring WebGL's
+ * default-Color fallthrough for unrecognized materials.
+ *
+ * @param {object} material - The CesiumJS Material (may be undefined).
+ * @returns {{ type: string, code: string }} Shader type + WGSL source.
+ * @private
+ */
+function selectPolylineMaterialShader(material) {
+  const materialType = defined(material) ? material.type : "Color";
+  if (materialType === "PolylineDash") {
+    return {
+      type: "polylineMatDash",
+      code: getShaderSource("polylineMatDash"),
+    };
+  }
+  if (materialType === "PolylineGlow") {
+    return {
+      type: "polylineMatGlow",
+      code: getShaderSource("polylineMatGlow"),
+    };
+  }
+  if (materialType === "PolylineArrow") {
+    return {
+      type: "polylineMatArrow",
+      code: getShaderSource("polylineMatArrow"),
+    };
+  }
+  if (materialType === "PolylineOutline") {
+    return {
+      type: "polylineMatOutline",
+      code: getShaderSource("polylineMatOutline"),
+    };
+  }
+  // Color material (default) + any material without a dedicated polyline FS.
+  return {
+    type: "polylineMatColor",
+    code: getShaderSource("polylineMatColor"),
+  };
+}
+
+/**
+ * NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice) — vertex layout for
+ * the polyline-material shaders. The COLOR-slice attributes minus `color`, plus
+ * `st` (PolylineMaterialAppearance.VERTEX_FORMAT = POSITION_AND_ST). arrayStride
+ * 88 = 22 floats:
+ *   loc0 positionHigh     @0   (f32x3)
+ *   loc1 positionLow      @12  (f32x3)
+ *   loc2 prevPositionHigh @24  (f32x3)
+ *   loc3 prevPositionLow  @36  (f32x3)
+ *   loc4 nextPositionHigh @48  (f32x3)
+ *   loc5 nextPositionLow  @60  (f32x3)
+ *   loc6 expandAndWidth   @72  (f32x2)
+ *   loc7 st               @80  (f32x2)
+ * Byte-locked to the packer in WebGPUPrimitiveCommands.js and the VertexInput
+ * in every PolylineMat*.wgsl.
+ * @returns {{ floatsPerVertex: number, stride: number, layout: GPUVertexBufferLayout }}
+ * @private
+ */
+function getPolylineMaterialVertexLayout() {
+  return {
+    floatsPerVertex: 22,
+    stride: 88,
+    layout: {
+      arrayStride: 88,
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+        { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+        { shaderLocation: 2, offset: 24, format: "float32x3" }, // prevPositionHigh
+        { shaderLocation: 3, offset: 36, format: "float32x3" }, // prevPositionLow
+        { shaderLocation: 4, offset: 48, format: "float32x3" }, // nextPositionHigh
+        { shaderLocation: 5, offset: 60, format: "float32x3" }, // nextPositionLow
+        { shaderLocation: 6, offset: 72, format: "float32x2" }, // expandAndWidth
+        { shaderLocation: 7, offset: 80, format: "float32x2" }, // st
       ],
     },
   };
@@ -1061,6 +1162,8 @@ const WebGPUPrimitiveShaders = {
   selectWebGPUShader,
   getVertexLayoutForShader,
   getPolylineAppearanceVertexLayout,
+  selectPolylineMaterialShader,
+  getPolylineMaterialVertexLayout,
   getUniformSizeForShader,
   isPhongShader,
   isTexturedShader,
@@ -1092,6 +1195,8 @@ export {
   selectWebGPUShader,
   getVertexLayoutForShader,
   getPolylineAppearanceVertexLayout,
+  selectPolylineMaterialShader,
+  getPolylineMaterialVertexLayout,
   getUniformSizeForShader,
   isPhongShader,
   isTexturedShader,

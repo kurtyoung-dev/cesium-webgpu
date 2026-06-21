@@ -41,6 +41,8 @@ import {
   selectWebGPUShader,
   getVertexLayoutForShader,
   getPolylineAppearanceVertexLayout,
+  selectPolylineMaterialShader,
+  getPolylineMaterialVertexLayout,
   getShaderSource,
   getPickShaderForType,
   getMaterialPickShaderForType,
@@ -1093,12 +1095,16 @@ function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
     return;
   }
 
-  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — the polyline
-  // appearance camera UB carries projection / viewport / modelViewRTE which
-  // all change per frame as the camera moves, so it MUST be re-written every
-  // frame (not just on geometry change). Depth-range type is set to webgpu by
-  // createWebGPUCommands; the viewportOrthographic getter respects it.
-  if (command._webgpuShaderType === "polylineColor") {
+  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — the polyline appearance camera
+  // UB carries projection / viewport / modelViewRTE which all change per frame
+  // as the camera moves, so it MUST be re-written every frame (not just on
+  // geometry change). Depth-range type is set to webgpu by the command
+  // builders; the viewportOrthographic getter respects it. Shared by both the
+  // COLOR slice (polylineColor) and the MATERIAL slice (polylineMat*), which
+  // use the identical camera UB layout — gated on `_isPolylineAppearance` so
+  // the polyline material types don't fall through to the generic flat/lit
+  // camera writers below (their UB layout differs).
+  if (command._isPolylineAppearance === true) {
     Matrix4.setDepthRangeType("webgpu");
     const rtePoly = computeRTEMatrices(
       context.uniformState,
@@ -1114,6 +1120,21 @@ function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
       0,
       POLYLINE_CAMERA_BYTES,
     );
+
+    // MATERIAL slice — re-upload the material UBO when the Material's
+    // `_uniformBuffer` is dirty (time-varying dash pattern / glow phase).
+    // COLOR-slice commands have no `_webgpuMaterialUB`, so this is a no-op
+    // there.
+    const matUB = command._webgpuMaterialUB;
+    const matBuffer = command._webgpuMaterialBuffer;
+    if (defined(matUB) && defined(matBuffer) && matUB.isDirty) {
+      const matData = matUB.gpuData;
+      if (defined(matData)) {
+        device.queue.writeBuffer(matBuffer, 0, matData);
+      }
+      matUB.clearDirty();
+    }
+
     _refreshPrimitiveEffectsSlot(command, frameState);
     return;
   }
@@ -1569,7 +1590,432 @@ function createPolylineAppearanceCommands(
     });
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
     cmd._webgpuShaderType = "polylineColor";
+    cmd._isPolylineAppearance = true;
     cmd._label = "polyline appearance";
+    cmd.vertexStride = vertexLayout.stride;
+    validCommands.push(cmd);
+  }
+
+  colorCommands.length = validCommands.length;
+  for (let i = 0; i < validCommands.length; i++) {
+    colorCommands[i] = validCommands[i];
+  }
+  // Pick is color-only in this slice.
+  pickCommands.length = 0;
+}
+
+// =========================================================================
+// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice)
+// =========================================================================
+
+const scratchPolylineST = new Cartesian2();
+
+/**
+ * Reconstruct the `st` attribute for a polyline-material geometry whose
+ * `Primitive` ran GeometryPipeline.compressVertices() and packed `st` into
+ * `compressedAttributes`.
+ *
+ * The generic `ensureUncompressedAttributes` decoder CANNOT be used here: it
+ * infers attribute identity from `compressedAttributes` magnitudes, and a
+ * polyline's first vertex has st == (0,0) which packs to 0 — failing the
+ * "> 65535 ⇒ ST" sniff, so it mis-decodes the ST slot as a `normal` and never
+ * produces `st` (Glow/Arrow/Outline then read st == (0,0) and collapse).
+ *
+ * PolylineMaterialAppearance.VERTEX_FORMAT is POSITION_AND_ST — no normal — so
+ * the polyline `compressedAttributes` is unambiguously ST-only (one packed
+ * float per vertex). Decode it directly. Idempotent: returns early if `st`
+ * already exists (uncompressed path) or there's nothing to decode.
+ * @private
+ */
+function ensurePolylineST(geometry) {
+  const attrs = geometry.attributes;
+  if (!defined(attrs)) {
+    return;
+  }
+  if (defined(attrs.st) && defined(attrs.st.values)) {
+    return;
+  }
+  const compressed = attrs.compressedAttributes;
+  if (!defined(compressed) || !defined(compressed.values)) {
+    return;
+  }
+  const values = compressed.values;
+  const cpa = compressed.componentsPerAttribute || 1;
+  const numVertices = Math.floor(values.length / cpa);
+  if (numVertices === 0) {
+    return;
+  }
+  const outST = new Float32Array(numVertices * 2);
+  for (let v = 0; v < numVertices; v++) {
+    // ST occupies the first slot of each vertex (the only slot for a
+    // POSITION_AND_ST polyline).
+    const st = AttributeCompression.decompressTextureCoordinates(
+      values[v * cpa],
+      scratchPolylineST,
+    );
+    outST[v * 2] = st.x;
+    outST[v * 2 + 1] = st.y;
+  }
+  geometry.attributes.st = new GeometryAttribute({
+    componentDatatype: ComponentDatatype.FLOAT,
+    componentsPerAttribute: 2,
+    values: outST,
+  });
+}
+
+/**
+ * Builds the polyline-material render pipeline. Identical structure to
+ * createPolylineAppearancePipeline (camera + material + effects bind groups,
+ * triangle-list, cull none, scene-FB targets) but parametrized by the
+ * per-material shader module and translucent flag, and the material BGL sized
+ * for the (variable) MaterialUniforms struct.
+ * @private
+ */
+function createPolylineMaterialPipeline(
+  device,
+  context,
+  cache,
+  shaderModule,
+  vertexLayout,
+  translucent,
+) {
+  const cameraBGL = makeBindGroupLayout(device, "Polyline Mat Camera BGL", [
+    uniformBuffer(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT),
+  ]);
+  const materialBGL = makeBindGroupLayout(device, "Polyline Mat Material BGL", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+  ]);
+  const effectsBGL = getEffectsBindGroupLayout(device);
+  cache.cameraBindGroupLayout = cameraBGL;
+  cache.materialBindGroupLayout = materialBGL;
+  cache.effectsBGL = effectsBGL;
+
+  const canvasFormat =
+    context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
+
+  return device.createRenderPipeline({
+    label: "Polyline material appearance pipeline",
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [cameraBGL, materialBGL, effectsBGL],
+    }),
+    vertex: {
+      module: shaderModule.module,
+      entryPoint: "vertexMain",
+      buffers: [vertexLayout.layout],
+    },
+    fragment: {
+      module: shaderModule.module,
+      entryPoint: "fragmentMain",
+      targets: makeSceneFBTargets(canvasFormat, {
+        translucent,
+        emitsGBuffer: false,
+      }),
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode: "none",
+      frontFace: "ccw",
+    },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: !translucent,
+      depthCompare: "less-equal",
+    },
+    multisample:
+      (context._msaaSamples ?? 1) > 1
+        ? { count: context._msaaSamples }
+        : undefined,
+  });
+}
+
+/**
+ * Creates WebGPU draw commands for a polyline `Primitive` with
+ * `PolylineMaterialAppearance` (MATERIAL slice). Packs 22 floats/vertex
+ * (posHigh/posLow + prev/next high/low + expandAndWidth + st) and routes
+ * through the per-material polyline FS (Color / Dash / Glow / Arrow / Outline).
+ * Reuses the COLOR-slice camera UB + writeRTEUniformsPolyline, and the
+ * material-path material-UB upload (material._uniformBuffer.gpuData).
+ *
+ * Pick is not wired in this slice (color-only) — pickCommands is cleared.
+ * @private
+ */
+function createPolylineMaterialAppearanceCommands(
+  primitive,
+  appearance,
+  material,
+  translucent,
+  colorCommands,
+  pickCommands,
+  frameState,
+  geometries,
+) {
+  const context = frameState.context;
+  const device = context.device;
+
+  if (!defined(primitive._webgpuPolylineMatCache)) {
+    primitive._webgpuPolylineMatCache = {
+      shaderType: null,
+      shaderModule: null,
+      pipeline: null,
+      translucent: null,
+      cameraBindGroupLayout: null,
+      materialBindGroupLayout: null,
+      effectsBGL: null,
+      materialBuffer: null,
+      materialBindGroup: null,
+      _materialBufferSize: 0,
+      cameraBuffers: [],
+      cameraBindGroups: [],
+      vertexBuffers: [],
+      indexBuffers: [],
+      indexFormats: [],
+      indexCounts: [],
+      vertexCounts: [],
+    };
+  }
+  const cache = primitive._webgpuPolylineMatCache;
+
+  const vertexLayout = getPolylineMaterialVertexLayout();
+  const shaderInfo = selectPolylineMaterialShader(material);
+
+  const shaderChanged = cache.shaderType !== shaderInfo.type;
+  const translucentChanged = cache.translucent !== translucent;
+
+  if (!defined(cache.pipeline) || shaderChanged || translucentChanged) {
+    cache.shaderType = shaderInfo.type;
+    cache.translucent = translucent;
+
+    // defines=0 — no //>>ifdef blocks in the polyline material shaders today;
+    // route through the preprocessor for parity with the other primitive
+    // shader-creation sites (getShaderSource prepends csm_polylineCommon).
+    const code = preprocessShaderSource(shaderInfo.code, 0);
+    cache.shaderModule = WebGPUShaderModule.create({
+      device: device,
+      code: code,
+      label: `${shaderInfo.type} Shader`,
+    });
+
+    cache.pipeline = createPolylineMaterialPipeline(
+      device,
+      context,
+      cache,
+      cache.shaderModule,
+      vertexLayout,
+      translucent,
+    );
+  }
+
+  // Material UBO — shared across all geometries of this primitive. Sized to
+  // the Material's packed uniform buffer (gpuData), min PLACEHOLDER_MATERIAL_BYTES.
+  const matUB = defined(material) ? material._uniformBuffer : undefined;
+  const matGpuData = defined(matUB) ? matUB.gpuData : undefined;
+  const matByteSize = defined(matGpuData)
+    ? Math.max(matGpuData.byteLength, PLACEHOLDER_MATERIAL_BYTES)
+    : PLACEHOLDER_MATERIAL_BYTES;
+
+  if (
+    !defined(cache.materialBuffer) ||
+    cache._materialBufferSize !== matByteSize
+  ) {
+    if (defined(cache.materialBuffer)) {
+      cache.materialBuffer.destroy();
+    }
+    cache.materialBuffer = device.createBuffer({
+      size: matByteSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      label: "Polyline Mat Material UB",
+    });
+    cache._materialBufferSize = matByteSize;
+    cache.materialBindGroup = null; // force rebind
+  }
+
+  if (defined(matGpuData)) {
+    if (!defined(matUB) || matUB.isDirty || !defined(cache.materialBindGroup)) {
+      device.queue.writeBuffer(cache.materialBuffer, 0, matGpuData);
+      if (defined(matUB)) {
+        matUB.clearDirty();
+      }
+    }
+  } else {
+    device.queue.writeBuffer(
+      cache.materialBuffer,
+      0,
+      new Float32Array(matByteSize / 4),
+    );
+  }
+
+  if (!defined(cache.materialBindGroup)) {
+    cache.materialBindGroup = device.createBindGroup({
+      layout: cache.materialBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: cache.materialBuffer } }],
+    });
+  }
+
+  // Depth-range type MUST be webgpu before the viewportOrthographic /
+  // projection getters are read (see csm_polylineCommon.wgsl depth note).
+  Matrix4.setDepthRangeType("webgpu");
+  const rte = computeRTEMatrices(
+    context.uniformState,
+    frameState.camera,
+    primitive.modelMatrix,
+  );
+
+  const validCommands = [];
+  const pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
+  const appearanceRS = appearance?.renderState;
+  const effectsPlaceholder = getPlaceholderEffects(device);
+
+  const fpv = vertexLayout.floatsPerVertex;
+
+  for (let i = 0; i < geometries.length; i++) {
+    const geometry = geometries[i];
+    // `Primitive` runs GeometryPipeline.compressVertices() by default, which
+    // packs `st` into `compressedAttributes` and deletes the literal `st`
+    // attribute. PolylineMaterialAppearance.VERTEX_FORMAT requests `st`, so we
+    // must reconstruct it before packing — otherwise st reads as (0,0) and the
+    // st-dependent materials (Glow/Arrow/Outline) collapse (Glow → invisible,
+    // since glowPower/abs(0-0.5)-glowPower/0.5 == 0). The polyline-specific
+    // decoder is required — the generic ensureUncompressedAttributes mis-sniffs
+    // the ST-only slot as a normal for st==(0,0) first vertices. (The COLOR
+    // slice didn't need this — PolylineColorAppearance has no st.)
+    ensurePolylineST(geometry);
+    const attrs = geometry.attributes;
+
+    const posHigh = attrs.position3DHigh;
+    const posLow = attrs.position3DLow;
+    const prevHigh = attrs.prevPosition3DHigh;
+    const prevLow = attrs.prevPosition3DLow;
+    const nextHigh = attrs.nextPosition3DHigh;
+    const nextLow = attrs.nextPosition3DLow;
+    const expandAndWidth = attrs.expandAndWidth;
+    const stAttr = attrs.st;
+    if (
+      !defined(posHigh) ||
+      !defined(posHigh.values) ||
+      !defined(prevHigh) ||
+      !defined(nextHigh) ||
+      !defined(expandAndWidth)
+    ) {
+      continue;
+    }
+
+    const posHighVals = posHigh.values;
+    const posLowVals = posLow.values;
+    const prevHighVals = prevHigh.values;
+    const prevLowVals = prevLow.values;
+    const nextHighVals = nextHigh.values;
+    const nextLowVals = nextLow.values;
+    const ewVals = expandAndWidth.values;
+    const ewCPA = expandAndWidth.componentsPerAttribute || 2;
+    const stVals =
+      defined(stAttr) && defined(stAttr.values) ? stAttr.values : null;
+    const stCPA = defined(stAttr) ? stAttr.componentsPerAttribute || 2 : 2;
+
+    const numVertices =
+      posHighVals.length / (posHigh.componentsPerAttribute || 3);
+
+    // 22 floats/vertex: posHigh(3) posLow(3) prevHigh(3) prevLow(3)
+    // nextHigh(3) nextLow(3) expandAndWidth(2) st(2)
+    const vertexData = new Float32Array(numVertices * fpv);
+    for (let v = 0; v < numVertices; v++) {
+      const p3 = v * 3;
+      const vOff = v * fpv;
+      vertexData[vOff] = posHighVals[p3];
+      vertexData[vOff + 1] = posHighVals[p3 + 1];
+      vertexData[vOff + 2] = posHighVals[p3 + 2];
+      vertexData[vOff + 3] = posLowVals[p3];
+      vertexData[vOff + 4] = posLowVals[p3 + 1];
+      vertexData[vOff + 5] = posLowVals[p3 + 2];
+      vertexData[vOff + 6] = prevHighVals[p3];
+      vertexData[vOff + 7] = prevHighVals[p3 + 1];
+      vertexData[vOff + 8] = prevHighVals[p3 + 2];
+      vertexData[vOff + 9] = prevLowVals[p3];
+      vertexData[vOff + 10] = prevLowVals[p3 + 1];
+      vertexData[vOff + 11] = prevLowVals[p3 + 2];
+      vertexData[vOff + 12] = nextHighVals[p3];
+      vertexData[vOff + 13] = nextHighVals[p3 + 1];
+      vertexData[vOff + 14] = nextHighVals[p3 + 2];
+      vertexData[vOff + 15] = nextLowVals[p3];
+      vertexData[vOff + 16] = nextLowVals[p3 + 1];
+      vertexData[vOff + 17] = nextLowVals[p3 + 2];
+      const ewOff = v * ewCPA;
+      vertexData[vOff + 18] = ewVals[ewOff];
+      vertexData[vOff + 19] = ewVals[ewOff + 1];
+      if (stVals !== null) {
+        const stOff = v * stCPA;
+        vertexData[vOff + 20] = stVals[stOff];
+        vertexData[vOff + 21] = stVals[stOff + 1];
+      } else {
+        vertexData[vOff + 20] = 0.0;
+        vertexData[vOff + 21] = 0.0;
+      }
+    }
+
+    if (defined(cache.vertexBuffers[i])) {
+      cache.vertexBuffers[i].destroy();
+    }
+    cache.vertexBuffers[i] = WebGPUBuffer.createVertexBuffer(
+      device,
+      vertexData,
+      `Polyline Mat VB ${i}`,
+    );
+
+    ensureIndexBuffer(device, geometry, cache, i);
+    cache.vertexCounts[i] = numVertices;
+
+    if (!defined(cache.cameraBuffers[i])) {
+      cache.cameraBuffers[i] = device.createBuffer({
+        size: POLYLINE_CAMERA_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: `Polyline Mat Camera UB ${i}`,
+      });
+    }
+    const cameraData = scratchPolylineUniformData;
+    writeRTEUniformsPolyline(cameraData, rte, context.uniformState, context);
+    device.queue.writeBuffer(
+      cache.cameraBuffers[i],
+      0,
+      cameraData.buffer,
+      0,
+      POLYLINE_CAMERA_BYTES,
+    );
+
+    cache.cameraBindGroups[i] = device.createBindGroup({
+      layout: cache.cameraBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
+    });
+
+    const commandBindGroups = [
+      cache.cameraBindGroups[i],
+      cache.materialBindGroup,
+      effectsPlaceholder.bindGroup,
+    ];
+
+    const cmd = new WebGPUDrawCommand({
+      pipeline: cache.pipeline,
+      bindGroups: commandBindGroups,
+      vertexBuffer: cache.vertexBuffers[i],
+      indexBuffer: cache.indexBuffers[i],
+      indexFormat: cache.indexFormats[i],
+      vertexCount: defined(cache.indexBuffers[i])
+        ? undefined
+        : cache.vertexCounts[i],
+      indexCount: defined(cache.indexBuffers[i])
+        ? cache.indexCounts[i]
+        : undefined,
+      pass: pass,
+      owner: primitive,
+      renderState: appearanceRS,
+    });
+    cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
+    cmd._webgpuShaderType = shaderInfo.type;
+    cmd._isPolylineAppearance = true;
+    // Reference the shared material UBO + wrapper so the per-frame update can
+    // re-upload when a time-varying material (flowing dash, glow phase) marks
+    // itself dirty.
+    cmd._webgpuMaterialBuffer = cache.materialBuffer;
+    cmd._webgpuMaterialUB = matUB;
+    cmd._label = "polyline material appearance";
     cmd.vertexStride = vertexLayout.stride;
     validCommands.push(cmd);
   }
@@ -3023,6 +3469,37 @@ function createWebGPUMaterialCommands(
     };
   }
   const cache = primitive._webgpuCache;
+
+  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice) — a polyline
+  // `Primitive` with `PolylineMaterialAppearance` reaches the material path
+  // (PolylineMaterialAppearance has a `material`, so PrimitiveCommandHelpers
+  // routes here, not to createWebGPUCommands). The geometry carries
+  // `expandAndWidth` + `prevPosition3DHigh`/`nextPosition3DHigh` — the same
+  // detection the COLOR slice uses. Route to a dedicated packer + per-material
+  // FS that does the screen-space width expansion and feeds v_st / v_width /
+  // v_polylineAngle to the material shader. Detected before selectMaterialShader
+  // because that helper inspects normal/st and would pick a surface material
+  // shader whose vertex layout drops the polyline attributes (collapsing the
+  // ribbon to 0px — the COLOR-slice symptom, material edition).
+  const polyAttrs = geometries[0].attributes;
+  const isPolylineMaterialGeometry =
+    defined(polyAttrs.expandAndWidth) &&
+    defined(polyAttrs.expandAndWidth.values) &&
+    defined(polyAttrs.prevPosition3DHigh) &&
+    defined(polyAttrs.prevPosition3DHigh.values);
+  if (isPolylineMaterialGeometry) {
+    createPolylineMaterialAppearanceCommands(
+      primitive,
+      appearance,
+      material,
+      translucent,
+      colorCommands,
+      pickCommands,
+      frameState,
+      geometries,
+    );
+    return;
+  }
 
   // DP-H19 — decompress every geometry's `compressedAttributes` back into
   // `normal` / `st` before any downstream read. Doing this for all

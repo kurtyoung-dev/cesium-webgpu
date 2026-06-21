@@ -105,8 +105,9 @@ fn csm_clipLineSegmentToNearPlane(
 }
 
 // Port of getPolylineWindowCoordinatesEC (PolylineCommon.glsl). The
-// POLYLINE_DASH `angle` out-param is dropped — the COLOR slice doesn't
-// need it (only material/dash does).
+// POLYLINE_DASH `angle` out-param is dropped here — the COLOR slice doesn't
+// need it. The MATERIAL slice gets the angle from the
+// `...WithAngle` variants below, which reuse this function for positionWC.
 fn csm_getPolylineWindowCoordinatesEC(
     positionEC: vec4<f32>,
     prevEC: vec4<f32>,
@@ -228,6 +229,93 @@ fn csm_getPolylineWindowCoordinates(
     let prevEC: vec4<f32> = modelViewRTE * previous;
     let nextEC: vec4<f32> = modelViewRTE * next;
     return csm_getPolylineWindowCoordinatesEC(
+        positionEC, prevEC, nextEC,
+        expandDirection, width, usePrevious,
+        projection, viewportTransformation, pixelRatio, near);
+}
+
+// ---------------------------------------------------------------------------
+// MATERIAL slice — angle-returning variants
+// ---------------------------------------------------------------------------
+//
+// The MATERIAL slice (PolylineDash, etc.) needs the screen-space polyline
+// angle that the COLOR-slice functions above intentionally dropped. Rather
+// than fork the whole expansion math, these variants reuse
+// csm_getPolylineWindowCoordinatesEC for the positionWC and only add the
+// angle computation, returning both in a struct. The angle math is a port
+// of the `#ifdef POLYLINE_DASH` block in PolylineCommon.glsl
+// getPolylineWindowCoordinatesEC: window-space line direction quantized to
+// the nearest pi/4. v_polylineAngle is consumed by the dash FS to rotate
+// gl_FragCoord so the dash pattern runs along the line.
+
+const CSM_POLYLINE_PI_OVER_FOUR: f32 = 0.785398163397448;
+// atan(1.0, 0.0) — the GLSL precomputed `1.570796327` offset.
+const CSM_POLYLINE_HALF_PI: f32 = 1.5707963267948966;
+
+struct CsmPolylineWindowResult {
+    positionWC: vec4<f32>,
+    angle: f32,
+}
+
+fn csm_getPolylineWindowCoordinatesECWithAngle(
+    positionEC: vec4<f32>,
+    prevEC: vec4<f32>,
+    nextEC: vec4<f32>,
+    expandDirection: f32,
+    width: f32,
+    usePrevious: bool,
+    projection: mat4x4<f32>,
+    viewportTransformation: mat4x4<f32>,
+    pixelRatio: f32,
+    near: f32
+) -> CsmPolylineWindowResult {
+    var result: CsmPolylineWindowResult;
+
+    // Window coords of the (unclipped) endpoints — matches the GLSL DASH
+    // block which uses czm_eyeToWindowCoordinates directly, not the
+    // near-plane-clipped positions.
+    let positionWindow: vec4<f32> =
+        csm_polylineEyeToWindow(positionEC, projection, viewportTransformation);
+    let previousWindow: vec4<f32> =
+        csm_polylineEyeToWindow(prevEC, projection, viewportTransformation);
+    let nextWindow: vec4<f32> =
+        csm_polylineEyeToWindow(nextEC, projection, viewportTransformation);
+
+    var lineDir: vec2<f32>;
+    if (usePrevious) {
+        lineDir = normalize(positionWindow.xy - previousWindow.xy);
+    } else {
+        lineDir = normalize(nextWindow.xy - positionWindow.xy);
+    }
+    var angle: f32 = atan2(lineDir.x, lineDir.y) - CSM_POLYLINE_HALF_PI;
+    // Quantize so the angle doesn't change rapidly between segments.
+    angle = floor(angle / CSM_POLYLINE_PI_OVER_FOUR + 0.5) * CSM_POLYLINE_PI_OVER_FOUR;
+    result.angle = angle;
+
+    result.positionWC = csm_getPolylineWindowCoordinatesEC(
+        positionEC, prevEC, nextEC,
+        expandDirection, width, usePrevious,
+        projection, viewportTransformation, pixelRatio, near);
+    return result;
+}
+
+fn csm_getPolylineWindowCoordinatesWithAngle(
+    position: vec4<f32>,
+    previous: vec4<f32>,
+    next: vec4<f32>,
+    expandDirection: f32,
+    width: f32,
+    usePrevious: bool,
+    modelViewRTE: mat4x4<f32>,
+    projection: mat4x4<f32>,
+    viewportTransformation: mat4x4<f32>,
+    pixelRatio: f32,
+    near: f32
+) -> CsmPolylineWindowResult {
+    let positionEC: vec4<f32> = modelViewRTE * position;
+    let prevEC: vec4<f32> = modelViewRTE * previous;
+    let nextEC: vec4<f32> = modelViewRTE * next;
+    return csm_getPolylineWindowCoordinatesECWithAngle(
         positionEC, prevEC, nextEC,
         expandDirection, width, usePrevious,
         projection, viewportTransformation, pixelRatio, near);
