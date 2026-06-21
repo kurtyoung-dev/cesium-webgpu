@@ -489,6 +489,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         shadowFactor = computeShadowFactor(input.eyePosition);
     }
     let lighting = 0.5 + 0.5 * diffuse * shadowFactor;
+    // (As in PrimitivePhongColor: the shadow factor darkens only the diffuse
+    // term; the 0.5 ambient floor stays lit even in full shadow — a known
+    // low-severity divergence from WebGL czm_shadowVisibility, which multiplies
+    // the ENTIRE phong output (ambient included) by visibility.)
     // Slice 5d Batch 156 — additive Forward+ clustered lighting (eye-space
     // inputs; baseColor = textured × per-vertex color; F0/roughness neutral
     // dielectric — Phong has no PBR material). Early-outs when no lights.

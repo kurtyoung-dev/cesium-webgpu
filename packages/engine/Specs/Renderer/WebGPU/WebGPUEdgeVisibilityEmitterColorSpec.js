@@ -181,6 +181,11 @@ describe("Renderer/WebGPU/WebGPUEdgeVisibilityEmitter per-edge color", function 
 
   it("falls back to per-vertex COLOR_0 when no override is present", function () {
     // No materialColor, but a per-vertex color array (BLUE on all 4 verts).
+    // NOTE: WebGPU samples the per-vertex COLOR at the LOWER-INDEX edge vertex;
+    // this diverges from WebGL's directed-first endpoint ONLY for a GRADIENT
+    // color (different colors at the two endpoints) — byte-identical for the
+    // uniform color used here, so this test cannot distinguish the two. The
+    // resolveEdgeColor normalize/clamp is likewise a no-op for in-range colors.
     const vertexColors = new Float32Array([
       0,
       0,

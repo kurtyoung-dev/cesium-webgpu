@@ -491,9 +491,12 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     //         = color * 0.5 * (1 + diffuse)        (czm_lightColor = white)
     // For PerInstanceColor/Color the material's specular is 0, so the
     // specular term contributes nothing — we drop it to keep parity.
-    // The shadow factor darkens only the directional (diffuse) term, leaving
-    // the 0.5 ambient floor untouched, matching how WebGL applies shadows on
-    // top of czm_phong's ambient.
+    // The shadow factor darkens only the directional (diffuse) term; the 0.5
+    // ambient floor stays lit even in full shadow. NOTE: this DIVERGES from
+    // WebGL czm_shadowVisibility, which multiplies the ENTIRE czm_phong output
+    // (ambient included) by visibility, so a fully-shadowed primitive renders
+    // darker on WebGL than here. Kept intentionally (avoids crushing shadowed
+    // primitives toward black); a known low-severity shadow-contrast residual.
     let diffuse = max(dot(normal, vec3<f32>(0.0, 0.0, 1.0)), 0.0)
                 + max(dot(normal, vec3<f32>(0.0, 1.0, 0.0)), 0.0);
 
