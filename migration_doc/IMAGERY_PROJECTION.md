@@ -132,7 +132,7 @@ adjusted    = pow(texSample.rgb, layer.oneOverGamma)
 splitMask   = (split == NONE) ? 1 : (split == LEFT && fragX < splitX) ? 1 : 0  // or RIGHT variant
 cutoutMask  = (boundsUV inside layer.cutoutRectangle) ? 0 : 1
 adjusted    = brightness × contrast × hueShift × saturation chain (BCHS)
-texCoordsMask = step(rect.xz, boundsUV.xy) × step(boundsUV.xy, rect.yw)  // alpha mask
+texCoordsMask = step(rect.xz, selV) × step(selV, rect.yw)  // alpha mask; selV = per-layer selected V (Mercator-V if useWebMercatorT else geoUV) — see "Imagery alpha-mask V-space"
 dayNightVal = mix(nightAlpha, dayAlpha, dayFade)
 effectiveAlpha = layerMask × layer.alpha × sampleAlpha × texCoordsMask × dayNightVal × splitMask × cutoutMask
 color = mix(prevColor, adjusted, effectiveAlpha)
@@ -142,6 +142,8 @@ alpha = max(prevAlpha, effectiveAlpha)
 **WebGL** runs this once per layer slot (`czm_globe_translucency_main`, looping over `TEXTURE_UNITS` constant). The number of layer slots is whatever the pipeline cache decided to compile for this tile.
 
 **WebGPU** unrolls 16 layer slots in `fragmentMain` (`GlobeTerrain.wgsl` ~lines 2308-2479) because WGSL cannot dynamically index a texture binding. The `count = u32(tile.layerCount)` gate skips inactive slots; the cost of the unused branches is one comparison plus a structurally-zero mask in the helper. **Adding a 17th layer slot requires updating both the bind-group layout and unrolling another `if (count >= 17u)` block.**
+
+> **Latent bug (latitude-gated):** the WGSL `texCoordsMask` currently tests `layer.texCoordsRect` against the geographic `geoUV`, while the *sample* uses the per-layer selected V (`selectLayerUV`). WebGL uses one selected V for both. For `useWebMercatorT=true` layers this is an internal sample-vs-test inconsistency — invisible at the equator and at base LOD, growing poleward at deep LOD. See **Imagery alpha-mask V-space** below for the canonical model + the planned fix.
 
 ### Subsequent vs first pass
 
@@ -175,6 +177,64 @@ The `fadeAmount` is a CPU-computed ramp from 0 at the fog threshold up to 1 at `
 **Batch 56 fix:** WGSL now calls `computeAtmosphereScatteringGround(positionWC, lightDir)` per-fragment inside the ground-atmosphere drape branch (matching WebGL's `PER_FRAGMENT_GROUND_ATMOSPHERE` path). The per-vertex VS computation is still wired (currently dead at orbit, kept for the close-camera optimization that re-introduces the distance gate).
 
 The drape branch ALSO runs a separate fog path (`fogDensity > 0.0`) at lower altitudes; that path uses a different formula (`czm_fog(distance, color, fogColor)`) and produces an HDR-tonemapped result that mixes by distance instead of `fadeAmount`. Per-fragment vs per-vertex distinction does NOT apply there because at fog altitudes the per-vertex variation is small.
+
+---
+
+## Imagery alpha-mask V-space — canonical coordinate-space model (CRITICAL)
+
+> **Verified 2026-06-21** against the WebGL reference, the shared CPU packer (read directly), and an empirical 4-altitude × 3-provider Playwright sweep. This section is the authoritative spec for the `texCoordsRect` alpha-mask **test** coordinate. The `applyImageryLayer` docstring at `GlobeTerrain.wgsl:1705-1717` asserting the test is *always* geographic is **stale and wrong for `useWebMercatorT=true` layers** (corrected when the fix lands).
+
+### The one law (from WebGL)
+
+WebGL's `sampleAndBlend` takes a **single** coordinate, `tileTextureCoordinates`, and uses it for **both** the `textureCoordinateRectangle` `step()` alpha-mask test (`GlobeFS.glsl:250,253`) **and** the texture sample (`GlobeFS.glsl:262`). The geographic-V-vs-Mercator-V choice is made **once**, at the call site (`GlobeSurfaceShaderSet.js:352` — `useWebMercatorT[i] ? textureCoordinates.xz : textureCoordinates.xy`). **The alpha-mask test V and the sample V are always the same per-layer V.** WGSL must honor this.
+
+`webMercatorT` (the `.z` of the tex-coord varying) is a **precomputed per-vertex attribute** (CPU-side, during terrain mesh encoding), interpolated to the fragment — *not* a Mercator formula evaluated in the shader. When a mesh lacks Mercator-Y it falls back to the geographic V. WGSL sources it the same way (`processVertex` ≡ `GlobeVS.glsl:265`), plus a polar-NaN guard (`sanitizeWebMercatorT`) with no WebGL counterpart (benign — replaces a ±90° NaN with geoV).
+
+### What space is `texCoordsRect` packed in?
+
+**Mercator-V for `useWebMercatorT=true`; geographic-V for `false`.** `createTileImagerySkeletons` converts `terrainRectangle`, `imageryRectangle`, and `clippedImageryRectangle` to **native (Mercator) coordinates in-place** when `useWebMercatorT` ([ImageryLayerHelpers.js:229-247](../packages/engine/Source/Scene/ImageryLayerHelpers.js#L229-L247)), *then* computes `minV/maxV = (clipped.south − terrain.south) / terrain.height` ([:277-281,343-347](../packages/engine/Source/Scene/ImageryLayerHelpers.js#L343-L347)) from those Mercator-Y values over the Mercator terrain height. Because Mercator-Y is **nonlinear**, the ratio does **not** cancel back to a geographic fraction — the rect is a genuine **Mercator fraction**. (A 2026-06-21 review briefly claimed the conversion "cancels in the ratio → geographic"; that is mathematically false and was rejected after reading the in-place native mutation directly.) The rect is the **identical cached `Cartesian4`** consumed by both backends (`WebGPUGlobeSurfaceTileUB.ts:191`); the backends cannot disagree on its value. Only `cutoutRectangle` is **always geographic** (packed `÷ tile.rectangle.height`).
+
+### Coordinate-space table
+
+| Coord / rect | Layer type | LOD | Space | WebGL uses | WGSL uses | Match |
+| --- | --- | --- | --- | --- | --- | --- |
+| per-vertex geoUV (`.xy`) | both | all | geographic [0,1] | `v_texCoords.xy` | `v_texCoords.xy` | ✅ |
+| per-vertex Mercator-V (`webMercatorT`, `.z`) | Web-Mercator | all | Mercator-Y [0,1] (precomputed attr; geoV fallback) | `v_texCoords.z` | `v_texCoords.z` (+NaN guard) | ✅ |
+| **texCoordsRect test** | **Web-Mercator** | **deep/interior** | **Mercator-V** | **Mercator-V (= sample)** | **`geoUV` — WRONG** | ❌ |
+| texCoordsRect test | Web-Mercator | low/base (fixup) | rect forced `(0,0,1,1)`; moot | Mercator-V | geoUV | ✅ (trivial) |
+| texCoordsRect test | geographic | all | geographic | geoUV | geoUV | ✅ |
+| texture sample | both | all | matches bound texture | `tileTexCoords` | `selectLayerUV` | ✅ |
+| cutoutRectangle test | both | all | geographic | geoUV | geoUV | ✅ |
+| textureTranslationAndScale | Web-Mercator | all | Mercator-V | Mercator-space | cached ts | ✅ |
+
+### LOD / altitude behavior — the bug is latitude-gated, NOT LOD/altitude-gated
+
+`useWebMercatorT` is a function of the tile's **latitude range, not LOD**. Two LOD bands matter for the alpha mask:
+
+- **Low LOD / base layer:** the south/north/east/west fixup (next section) forces the rect to `(0,0,1,1)` full coverage. V-space is **moot** — any V passes. (Why the current geoUV bug is invisible at base LOD and at orbit.)
+- **Deep LOD / non-base interior sub-tiles:** the rect carries genuine interior Mercator fractions (`texCoordsRect.y>0` or `.w<1`). V-space **matters** — a geographic-vs-Mercator test mismatch clips/leaks an alpha-mask edge. The discrepancy is **zero at the equator and grows poleward**.
+
+An empirical 4-altitude sweep (far-orbit / near-orbit / in-atmosphere / near-ground; ArcGIS + OSM + NaturalEarthII control; mid-latitude coastal view; PNG-confirmed) found the imagery **sample** is pixel-perfect WebGPU-vs-WebGL (0px cross-correlation, ~0.8% masked diff) at near/mid/deep LOD on both Mercator providers; the geographic control stays clean at all altitudes. **The only WebGPU-vs-WebGL divergence is at far-orbit, and it is the globe-disc-framing + atmosphere-halo gap** — the geographic control shows the *identical* 798-vs-787 px disc-width split, so it is the already-tracked **atmosphere/sky parity gap, not imagery projection.** The residual imagery defect is the latitude-gated alpha-mask **test** coordinate above, which the equator-targeted probes do not exercise.
+
+### Session-65 Batch-8 reconciliation (why geographic-V was once correct)
+
+Batch 8 switched the bounds test from Mercator-V to geographic-V to fix "dark blue at close zoom." That was correct **only under the then-current single-texture model**: Mercator imagery was reprojected into one geographic output texture, but the per-layer `useWebMercatorT` flag was still TRUE, so `selectLayerUV` fed a **Mercator-V** to the test while the bound texture (and its rect) were **geographic** → `step()` failed for the bulk of fragments → `effectiveAlpha=0` → imagery-base fallback `vec3(0.04,0.04,0.06)` = the dark blue. It was a coordinate-**space mismatch**, not a numerically-wrong Mercator-V. Batch 65's **dual-texture** model superseded that: each Mercator layer now carries both a Mercator and a reprojected texture, and the cached rect/translationAndScale track the **bound** texture's space. So the correct fix today is **not** a global flip back to Mercator-V (that re-breaks the now-common geographic/reprojected polar tiles into dark-blue) but a **per-layer projection-matched** test V — exactly `selectLayerUV`'s output — for the `texCoordsRect` test, while keeping `geoUV` for `cutoutRectangle`.
+
+### The fix (planned — not yet landed)
+
+In `applyImageryLayer` (`GlobeTerrain.wgsl`) add a rect-test UV parameter = the per-layer selected `uv`; test `texCoordsAlpha(selectedUV, layer.texCoordsRect)` while keeping `applyCutoutMask(geoUV, layer.cutoutRectangle)`. Thread the already-computed `uv` (from `selectLayerUV`, in scope at every call site) through all 16 unrolled slots. For `useWebMercatorT=false` layers `selectLayerUV` returns `geoUV`, so behavior is byte-identical to today — **dark-blue cannot return** (the polar dark-blue victims are all `useWMT=false`). Adversarially reviewed dark-blue-safe.
+
+**Edge-case caveats (probe before claiming fixed):**
+
+- **Batch-304 fall-through:** WebGPU derives `effectiveUseWebMercatorT` from which texture variant actually bound (`WebGPUGlobeSurfaceTileUB.ts:163-173`), which can diverge from WebGL's `u_dayTextureUseWebMercatorT[i]` in the Mercator→geographic cache fall-through. The fix is still safe because WebGPU's selected-V and its rect are **co-derived in the same bound-texture space** (internal consistency) — parity is "matches WebGL's intent," not "byte-identical flag."
+- **Polar NaN:** `sanitizeWebMercatorT` can shift a ±90° bounds edge vs WebGL's raw-NaN `step()`. Add a polar-tile probe.
+
+**Required new probe gates** (no equator-targeted pass-1 probe exercises the latitude-gated case):
+
+1. **Mid/high-latitude (~lat 60) deep-LOD sub-rect** view with a non-base Web-Mercator overlay (`texCoordsRect.y>0`): alpha-mask edges must match WebGL, no clipped/leaked imagery stripe.
+2. **Mid/high-latitude low-LOD/orbit** Web-Mercator view where polar-adjacent tiles take the geographic path: assert **no dark-blue fallback** pixels (`vec3(0.04,0.04,0.06)`).
+3. **Polar-tile** view (lat ≈ ±90): `sanitizeWebMercatorT` must not shift the bounds edge vs WebGL.
+4. Keep the geographic NaturalEarthII control clean at all bands.
 
 ---
 
