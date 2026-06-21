@@ -1702,24 +1702,40 @@ struct LayerComposite {
 // (multiplied by 0 in any downstream blend), and the returned alpha
 // is clamped to 0 via `max(outAlpha, 0.0)`.
 //
-// `boundsUV` is the GEOGRAPHIC tile-UV (always (u_geo, v_geo), independent
-// of the layer's `useWebMercatorT` flag). Used for the per-layer
-// `texCoordsRect` and `cutoutRectangle` bounds checks, both of which the
-// CPU packer writes in geographic tile-UV space (see
-// `createTileImagerySkeletons` in `ImageryLayerHelpers.js`, and the
-// cutout packer in `WebGPUGlobeSurfaceTileUB.ts` which divides by
-// `tile.rectangle.height` — a geographic latitude span). The legacy
-// version of this function passed only the Mercator-projected `uv` for
-// both sampling AND bounds, which silently zeroed `effectiveAlpha` on
-// every tile whose `texCoordsRect.y > 0` (= Mercator imagery covers a
-// sub-rect of a non-Mercator terrain tile), producing the wide-spread
-// "dark blue at close zoom" symptom. Session 65 Batch 8 (2026-05-12) —
-// Cluster 2 from the cross-backend sweep.
+// Two bounds coordinates, matching WebGL's `sampleAndBlend`:
+//
+// `texCoordsBoundsUV` is the per-layer SELECTED V (`selectLayerUV` output):
+// Mercator-V (`webMercatorT`) for `useWebMercatorT=true` layers, geographic
+// geoUV otherwise. It tests the `texCoordsRect` alpha mask AND is the SAME V
+// the texture sample uses — WebGL passes a single `tileTextureCoordinates`
+// (`useWebMercatorT ? .xz : .xy`, `GlobeSurfaceShaderSet.js:352`) to BOTH the
+// `step()` rect test (`GlobeFS.glsl:250,253`) and the sample (`:262`). The
+// cached `texCoordsRect` is Mercator-V for `useWebMercatorT=true` (the CPU
+// packer converts the rectangles to native/Mercator in-place before taking
+// the minV/maxV fraction — `ImageryLayerHelpers.js:229-247,343-347`), so the
+// test V MUST be the selected (Mercator) V, not geographic.
+//
+// `boundsUV` is the GEOGRAPHIC geoUV, used ONLY for the `cutoutRectangle`
+// test (the cutout packer in `WebGPUGlobeSurfaceTileUB.ts` divides by
+// `tile.rectangle.height` — a geographic latitude span).
+//
+// HISTORY: Session 65 Batch 8 fed geoUV (geographic-V) to the texCoordsRect
+// test to fix "dark blue at close zoom." That was correct ONLY under the then
+// single-texture model (one geographic reprojected texture, but
+// `useWebMercatorT` still true → Mercator-V test vs a geographic-bound rect
+// zeroed the mask → imagery-base fallback = the dark blue). Batch 65's
+// dual-texture model superseded it: the rect now tracks the bound texture's
+// space, so the correct test V is the per-layer selected V (= the sample V),
+// NOT a global geographic-V. For `useWebMercatorT=false` layers `selectLayerUV`
+// returns geoUV, so this is byte-identical to Batch-8 on the polar/reprojected
+// tiles that were the dark-blue victims — dark-blue cannot return. See
+// migration_doc/IMAGERY_PROJECTION.md "Imagery alpha-mask V-space".
 fn applyImageryLayer(
   prevColor: vec3<f32>,
   prevAlpha: f32,
   texSample: vec4<f32>,
   boundsUV: vec2<f32>,
+  texCoordsBoundsUV: vec2<f32>,
   layer: ImageryLayer,
   layerMask: f32,
   fragX: f32,
@@ -1730,7 +1746,7 @@ fn applyImageryLayer(
   // texCoordsRect bounds mask. GLSL: vec2 `step()` × textureAlpha at
   // lines 213-217 of sampleAndBlend. The mask is 0 outside the per-
   // layer rectangle, 1 inside.
-  let texCoordsMask = texCoordsAlpha(boundsUV, layer.texCoordsRect);
+  let texCoordsMask = texCoordsAlpha(texCoordsBoundsUV, layer.texCoordsRect);
 
   // Day/night alpha. GLSL gates this on `APPLY_DAY_NIGHT_ALPHA &&
   // ENABLE_DAYNIGHT_SHADING` defines (line 219-221). WGSL evaluates
@@ -2968,7 +2984,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture0, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[0].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 0);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -2987,7 +3003,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture1, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[0].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 1);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3000,7 +3016,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture2, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[1].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 2);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3013,7 +3029,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture3, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[1].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 3);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3026,7 +3042,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture4, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[2].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 4);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3039,7 +3055,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture5, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[2].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 5);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3052,7 +3068,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture6, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[3].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 6);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3065,7 +3081,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture7, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[3].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 7);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3078,7 +3094,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture8, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[4].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 8);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3091,7 +3107,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture9, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[4].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 9);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3104,7 +3120,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture10, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[5].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 10);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3117,7 +3133,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture11, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[5].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 11);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3130,7 +3146,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture12, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[6].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 12);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3143,7 +3159,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture13, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[6].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 13);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3156,7 +3172,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture14, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[7].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 14);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
@@ -3169,7 +3185,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let tex = sampleImagery(dayTexture15, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[7].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 15);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
