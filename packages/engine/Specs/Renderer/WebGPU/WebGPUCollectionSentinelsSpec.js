@@ -121,11 +121,24 @@ describe("Renderer/WebGPU/WebGPUCollectionRendererBase sentinels", function () {
       expect(console.error.calls.mostRecent().args[0]).toContain("null");
     });
 
-    it("validateDrawTargets logs + skips a destroyed WebGPUBuffer wrapper (.buffer === null)", function () {
+    it("validateDrawTargets logs + skips a destroyed WebGPUBuffer wrapper (isDestroyed === true, .buffer kept)", function () {
+      spyOn(console, "error");
+      // A real destroyed WebGPUBuffer keeps a non-null `.buffer` and flips
+      // `isDestroyed` (see WebGPUBuffer.destroy) — the guard must key off
+      // isDestroyed, not a null buffer.
+      const ok = validateDrawTargets(
+        [{ buffer: {}, isDestroyed: true }],
+        "SentinelSpecDestroyedWrapper",
+      );
+      expect(ok).toBe(false);
+      expect(console.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("validateDrawTargets logs + skips an explicitly-null inner view (.buffer === null)", function () {
       spyOn(console, "error");
       const ok = validateDrawTargets(
         [{ buffer: null }],
-        "SentinelSpecDestroyedWrapper",
+        "SentinelSpecNullInner",
       );
       expect(ok).toBe(false);
       expect(console.error).toHaveBeenCalledTimes(1);

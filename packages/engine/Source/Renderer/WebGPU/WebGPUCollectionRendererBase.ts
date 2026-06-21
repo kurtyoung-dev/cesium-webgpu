@@ -357,10 +357,11 @@ const _nullTargetLastLogTime: Record<string, number> = Object.create(null);
  * {@link validateInstanceSyncResult}; the collections that build their own
  * vertex/instance buffers (Cloud / Polyline) call this at the render-pass
  * boundary instead. Returns true when EVERY supplied buffer/view is set
- * (safe to draw); when any is null/undefined it `console.error`s (throttled,
- * keyed by `label`) and returns false so the caller skips the draw rather
- * than handing a null vertex buffer to the WebGPU validation layer. The log
- * is PERMANENT (no debug pragma) — a missing draw target is broken output.
+ * (safe to draw); when any is null/undefined, or a destroyed `WebGPUBuffer`
+ * wrapper, it `console.error`s (throttled, keyed by `label`) and returns false
+ * so the caller skips the draw rather than handing a null/destroyed vertex
+ * buffer to the WebGPU validation layer. The log is PERMANENT (no debug
+ * pragma) — a missing draw target is broken output.
  */
 export function validateDrawTargets(
   buffers: ReadonlyArray<object | null | undefined>,
@@ -368,19 +369,26 @@ export function validateDrawTargets(
 ): boolean {
   for (let i = 0; i < buffers.length; i++) {
     const b = buffers[i];
-    // A `WebGPUBuffer` wrapper exposes its underlying `GPUBuffer` as
-    // `.buffer` (null once destroyed); a raw `GPUBuffer` has no such field,
-    // so `(b as ...).buffer` is `undefined` and only a present-object passes.
+    // A `WebGPUBuffer` wrapper exposes its underlying `GPUBuffer` as `.buffer`
+    // and flips `.isDestroyed` on destroy — the `.buffer` reference is KEPT,
+    // not nulled (see WebGPUBuffer.destroy). A raw `GPUBuffer` has neither
+    // field, so `(b as ...).buffer` is `undefined`. A present object therefore
+    // passes unless it has an explicitly-null `.buffer` or is a destroyed
+    // wrapper (`isDestroyed === true`).
     const inner =
       b === null || b === undefined ? null : (b as { buffer?: unknown }).buffer;
-    if (b === null || b === undefined || inner === null) {
+    const destroyed =
+      b !== null &&
+      b !== undefined &&
+      (b as { isDestroyed?: boolean }).isDestroyed === true;
+    if (b === null || b === undefined || inner === null || destroyed) {
       const now =
         typeof performance !== "undefined" ? performance.now() : Date.now();
       const last = _nullTargetLastLogTime[label];
       if (last === undefined || now - last >= NULL_TARGET_LOG_THROTTLE_MS) {
         _nullTargetLastLogTime[label] = now;
         console.error(
-          `[CesiumJS:webgpu] ${label} draw target ${i} is null at the render-pass boundary — skipping draw.`,
+          `[CesiumJS:webgpu] ${label} draw target ${i} is null or destroyed at the render-pass boundary — skipping draw.`,
         );
       }
       return false;

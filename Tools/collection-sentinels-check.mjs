@@ -164,8 +164,14 @@ check(
 );
 resetErrors();
 check(
-  "S2 validateDrawTargets destroyed wrapper (.buffer===null) → false + error",
-  validateDrawTargets([{ buffer: null }], "Y-destroyed") === false &&
+  "S2 validateDrawTargets destroyed wrapper (isDestroyed===true, .buffer kept) → false + error",
+  validateDrawTargets([{ buffer: {}, isDestroyed: true }], "Y-destroyed") ===
+    false && errors.length === 1,
+);
+resetErrors();
+check(
+  "S2 validateDrawTargets explicit-null inner view → false + error",
+  validateDrawTargets([{ buffer: null }], "Y-nullinner") === false &&
     errors.length === 1,
 );
 
