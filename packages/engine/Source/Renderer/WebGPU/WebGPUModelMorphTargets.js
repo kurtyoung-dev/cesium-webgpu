@@ -216,6 +216,11 @@ export {
   destroyMorphTargetResources,
   MAX_MORPH_TARGETS,
   MORPH_UNIFORM_SIZE,
+  // Exported for unit-test access to the CPU pack layout. packMorphTargetDeltas
+  // + FLOATS_PER_VERTEX_PER_TARGET are the lockstep anchor that MUST stay in step
+  // with the WGSL morph indexing (base = (t*vertexCount + vid) * 2u). @private.
+  packMorphTargetDeltas,
+  FLOATS_PER_VERTEX_PER_TARGET,
 };
 export default {
   ensureMorphTargetResources,
