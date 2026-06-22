@@ -210,7 +210,15 @@ export function createCameraUniformBuffer(
     ? { center: rtc2D }
     : sceneMode === 0 /* MORPHING */
       ? { center: undefined }
-      : mesh;
+      : // SCENE3D RTC: modifiedModelViewProjection bakes view×center, and the
+        // SCENE3D vertex branch multiplies it by the tile-LOCAL position
+        // (encoding.center pre-subtracted). For out.position to land at the
+        // true world position the baked center MUST equal the vertex ENCODING
+        // center — the same center the center3D split below uses. mesh.center
+        // normally equals it but diverges for TerrainFillMesh / upsampled /
+        // cloned encodings; feed encoding.center (the authoritative encode
+        // reference), not mesh.center, so divergent tiles don't render offset.
+        { center: mesh.encoding?.center ?? mesh.center };
   const modifiedView = computeModifiedModelView(uniformState, rtcSource);
   const mv = m4Values(modifiedView);
   for (let i = 0; i < 16; i++) data[offset++] = mv[i];
@@ -312,19 +320,32 @@ export function createCameraUniformBuffer(
   // reinterpret(f32(value & ~((1<<24)-1))), low = value - high. When the
   // camera is close to the tile, both (centerH - camH) and
   // (centerL - camL) are small, so the RTE sum keeps sub-meter precision.
-  const cxF32 = Math.fround(center.x);
-  const cyF32 = Math.fround(center.y);
-  const czF32 = Math.fround(center.z);
+  // Split center3D into high/low on the FULL f64 value, matching
+  // EncodedCartesian3.encode (incl. the sign branch) and the encodedCamera
+  // side this is subtracted from in GlobeTerrain.wgsl. The prior code did
+  // Math.fround(center) FIRST — truncating to f32 and destroying the
+  // sub-meter residual that `low` must carry. That produced a per-tile
+  // world-space offset (~0.012 m near Earth radius): sub-pixel up close, but
+  // at far/orbit camera distance it threw far/limb tile vertices to garbage,
+  // squishing and TEARING the globe mesh (radial wedge-gaps → a detached
+  // floating ring). Splitting the f64 value keeps `low` to ~sub-cm before it
+  // is stored as f32. (DP — far-camera globe RTE precision fix.)
   const splitShift = 65536.0; // 2^16
-  // Canonical EncodedCartesian3 split: mask off the low ~24 bits by
-  // multiplying by 2^-16, flooring, and multiplying back. This is what
-  // `EncodedCartesian3.fromCartesian` does.
-  const cxHigh = Math.fround(Math.floor(cxF32 / splitShift) * splitShift);
-  const cyHigh = Math.fround(Math.floor(cyF32 / splitShift) * splitShift);
-  const czHigh = Math.fround(Math.floor(czF32 / splitShift) * splitShift);
-  const cxLow = Math.fround(cxF32 - cxHigh);
-  const cyLow = Math.fround(cyF32 - cyHigh);
-  const czLow = Math.fround(czF32 - czHigh);
+  const cxHigh =
+    center.x >= 0.0
+      ? Math.floor(center.x / splitShift) * splitShift
+      : -Math.floor(-center.x / splitShift) * splitShift;
+  const cyHigh =
+    center.y >= 0.0
+      ? Math.floor(center.y / splitShift) * splitShift
+      : -Math.floor(-center.y / splitShift) * splitShift;
+  const czHigh =
+    center.z >= 0.0
+      ? Math.floor(center.z / splitShift) * splitShift
+      : -Math.floor(-center.z / splitShift) * splitShift;
+  const cxLow = center.x - cxHigh;
+  const cyLow = center.y - cyHigh;
+  const czLow = center.z - czHigh;
   // center3DHigh (vec3 + pad)
   data[offset++] = cxHigh;
   data[offset++] = cyHigh;

@@ -1152,29 +1152,36 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     out.position = camera.modifiedModelViewProjection * vec4<f32>(planarPos, 1.0);
     out.v_positionEC = (camera.modifiedModelView * vec4<f32>(planarPos, 1.0)).xyz;
   } else {
-    // ── SCENE3D ── default RTE path
+    // ── SCENE3D ── RTC (Relative-To-Center) transform, mirroring WebGL
+    // getPosition3DMode (GlobeVS.glsl:122-124) and the SCENE2D/COLUMBUS
+    // branches above. The big Earth-radius center→eye offset is cancelled in
+    // f64 ON THE CPU: vertices are encoded tile-local (encoding.center
+    // pre-subtracted) and view*center is baked into the translation column of
+    // camera.modifiedModelViewProjection (computeModifiedModelView in
+    // WebGPUGlobeSurfaceCameraUB). The GPU does ONE f32 mat4×vec4 over the
+    // tile-LOCAL (exaggerated) position — no multi-megameter f32 op survives.
     //
-    // Previous implementation computed `position3DWC = exaggeratedPosition +
-    // center3D` at raw f32, which loses ~0.5 m of precision per component at
-    // Earth scale, and then fed that as `posHigh` to `translateRelativeToEye`
-    // with zero `posLow` — defeating the whole point of the split. The
-    // reconstructed-and-then-subtracted camera pair can't recover bits that
-    // were lost at the reconstruction step.
-    //
-    // Correct RTE assembly when the tile is encoded relative to a split
-    // `center3DHigh/Low` and vertex positions are tile-local:
-    //   rtePos = ((center3DHigh + center3DLow + exaggeratedPosition) - cameraWC)
-    //          = (center3DHigh - encodedCameraHigh) +
-    //            (center3DLow + exaggeratedPosition - encodedCameraLow)
-    // The second term stays small because both `center3DLow` and
-    // `encodedCameraLow` are small residuals and `exaggeratedPosition` is
-    // tile-relative (~100 m to ~50 km).
-    let rtePosition =
+    // The previous in-shader RTE assembly built `(center3DHigh-encodedCameraHigh)
+    // + (center3DLow + exaggeratedPosition - encodedCameraLow)` and fed it
+    // through `mvpRelativeToEye`. That decomposition only holds when
+    // `exaggeratedPosition` is tile-local-SMALL. On COARSE far-LOD tiles
+    // (level 0-3) the tile-local corner reaches ~5e6 m, NOT the ~50 km the old
+    // comment assumed: the big residual-term add swamped the sub-meter
+    // center3DLow/encodedCameraLow residuals (f32 ULP ~0.5 m at 5e6 m), and the
+    // ~5e6 m rtePosition then rounded inconsistently through the matrix — so
+    // adjacent coarse far/limb tiles disagreed on shared-edge clip positions
+    // and the mesh tore (radial wedge-gaps → a detached upper-hemisphere ring
+    // at 35-50 Mm). The RTC matrix moves the cancellation to f64-on-CPU.
+    // exaggeratedPosition == position when verticalExaggeration == 1.0.
+    out.position =
+      camera.modifiedModelViewProjection * vec4<f32>(exaggeratedPosition, 1.0);
+    out.v_positionEC =
+      (camera.modifiedModelView * vec4<f32>(exaggeratedPosition, 1.0)).xyz;
+    // v_positionRTE retained for CSM cascade sampling / motion-vector consumers
+    // (Principle 7 scaffolding); NOT used for out.position now.
+    out.v_positionRTE =
       (camera.center3DHigh - camera.encodedCameraHigh) +
       (camera.center3DLow + exaggeratedPosition - camera.encodedCameraLow);
-    out.position = camera.mvpRelativeToEye * vec4<f32>(rtePosition, 1.0);
-    out.v_positionEC = (camera.modifiedModelView * vec4<f32>(position, 1.0)).xyz;
-    out.v_positionRTE = rtePosition;
   }
   // 2D / Columbus / Morph fall through without touching v_positionRTE;
   // initialize it to zero so the shader stays deterministic. CSM is
@@ -1266,16 +1273,21 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   out.v_height = resolvedHeight;
 
   // ── Far-plane clip-space Z clamp (CRITICAL for orbit altitude) ──
-  // At planetary scale, FP32 rounding in `mvpRelativeToEye * rtePosition`
-  // can push clip-space z just over its w, producing an NDC z > 1 that
-  // the rasterizer clips as "behind the far plane". The fragments never
-  // reach the fragment shader and the globe disappears into whatever was
-  // drawn before it (the skybox, which paints everything with
-  // depthCompare=always). Clamping z ≤ w forces NDC z ≤ 1 exactly, so
-  // these borderline fragments survive rasterization. The paired fix is
-  // to use `depthCompare: less-equal` on the pipeline (not `less`) so
-  // that a fragment landing exactly on the far plane still passes the
-  // depth test against the cleared depth value.
+  // FP32 rounding in the SCENE3D clip transform can push a FRONT fragment's
+  // clip-space z just over its w → NDC z > 1 → the rasterizer clips it as
+  // "behind the far plane" → the globe shows radial wedge-gaps (the skybox
+  // shows through). Clamping z ≤ w forces NDC z ≤ 1 so these borderline FRONT
+  // fragments survive. Paired with `depthCompare: less-equal` so a fragment
+  // landing exactly on the far plane still passes against the cleared depth.
+  //
+  // VERIFIED LOAD-BEARING (2026-06-22): removing this clamp AFTER the SCENE3D
+  // RTC switch reintroduced the whole-globe wedge-gap tear at 12 Mm — so the
+  // RTC change did NOT eliminate the spurious overflow and the clamp is still
+  // required. (It also pins genuinely-far back-limb L0 fragments to z=1 at
+  // extreme zoom-out, a contributor to the far-cam ring residual — but it is
+  // NOT that residual's root cause: removing it leaves the ring while breaking
+  // 12 Mm, so the ring is an L0-tile vertex PRECISION warp within the frustum,
+  // tracked separately.)
   out.position.z = min(out.position.z, out.position.w);
 
   return out;
