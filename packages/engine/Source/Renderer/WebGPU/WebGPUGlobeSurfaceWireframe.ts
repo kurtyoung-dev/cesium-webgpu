@@ -247,7 +247,17 @@ export function buildWireframePipelineDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      targets: [{ format: host._canvasFormat }],
+      // Match the scene framebuffer's attachment state EXACTLY, same as the
+      // production globe pipeline (WebGPUGlobeSurfacePipelines.ts): TWO color
+      // targets — the canvas-format scene color + the rgba16float G-buffer/
+      // emissive target. With only ONE target (the prior code) the pipeline's
+      // attachment state was incompatible with the Scene Framebuffer Render
+      // Pass (which binds both attachments), so SetPipeline failed validation
+      // and the wireframe draw was dropped — the overlay rendered BLACK.
+      targets: [
+        { format: host._canvasFormat },
+        { format: "rgba16float" as GPUTextureFormat, writeMask: 0xf },
+      ],
     },
     primitive: {
       topology: "line-list",
@@ -261,6 +271,11 @@ export function buildWireframePipelineDescriptor(
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
+    // Match the scene FB sample count (MSAA) — same as the production pipeline.
+    // A sampleCount-1 pipeline is incompatible with the 4x-MSAA scene pass and
+    // would fail SetPipeline validation (the other half of the black overlay).
+    multisample:
+      (host._sampleCount ?? 1) > 1 ? { count: host._sampleCount! } : undefined,
   };
 }
 

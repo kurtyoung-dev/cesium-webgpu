@@ -1759,7 +1759,31 @@ export class WebGPUGlobeSurfaceRenderer {
     // Skip the wireframe overlay this frame; next frame it'll be ready.
     if (!pipeline) return null;
 
-    // Single pass for wireframe — no multi-pass imagery needed
+    // Wireframe parity with WebGL: WebGL's wireframe path only swaps the tile
+    // command's vertexArray to the line VA + primitiveType to LINES, keeping the
+    // full imagery uniformMap + textures, so the lines are shaded with real
+    // imagery against the black background. The WebGPU path previously fed an
+    // EMPTY layer set, so fragmentMain's imagery composite loop (gated on
+    // tile.layerCount > 0) was skipped and the lines emitted the navy base color
+    // (tile.initialColor ≈ (0,0,0.5)) — which reads as black. Feed the same
+    // ready imagery layers createTileCommands gathers (single first pass — the
+    // wireframe is a one-pass debug overlay, no multi-pass blend needed).
+    const imageryCollection = surfaceTile.imagery;
+    const readyLayers: CesiumTileImagery[] = [];
+    if (imageryCollection) {
+      for (let i = 0; i < imageryCollection.length; i++) {
+        const tileImagery = imageryCollection[i];
+        if (
+          tileImagery &&
+          tileImagery.readyImagery &&
+          tileImagery.readyImagery.imageryLayer
+        ) {
+          readyLayers.push(tileImagery);
+        }
+      }
+    }
+    const wireLayers = readyLayers.slice(0, this._imagerySlotCount);
+
     const cameraUB = createCameraUniformBufferHelper(
       this,
       device,
@@ -1777,17 +1801,18 @@ export class WebGPUGlobeSurfaceRenderer {
       tileProvider,
       frameState,
       tile,
-      [],
+      wireLayers,
       false,
     );
 
     const bg0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
 
-    // Use placeholder textures for wireframe — imagery not needed
-    const bindGroup1 = this._createTextureBindGroup(device, []);
+    // Real imagery textures (matches createTileCommands' first pass) so the
+    // wireframe lines are imagery-colored, not the base-color black.
+    const bindGroup1 = this._createTextureBindGroup(device, wireLayers);
     const bindGroup2 = this._createWaterOceanBindGroup(
       device,
-      null,
+      surfaceTile,
       tileProvider,
     );
 
