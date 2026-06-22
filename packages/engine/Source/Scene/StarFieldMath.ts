@@ -119,11 +119,17 @@ export function buildStarInstanceData(): Float32Array {
   //      (HDR) so the additive scene-FB target feeds them into bloom.
   // This preserves the PERCEPTUAL ordering (brighter magnitude ⇒ brighter
   // pixel ⇒ larger bloomed disc) while keeping the whole catalog visible.
-  const faintLimitMag = 4.6;
+  // Catalog point-sprites are limited to BRIGHT stars (mag <= cutoff). The
+  // dense faint-star background is carried by the baked SkyBox star cubemap
+  // (rendered on both backends, the same texture WebGL uses), so faint catalog
+  // points would only duplicate and over-brighten it. Fainter stars emit zero
+  // flux below (invisible); the cutoff is the single tunable. (~80 stars at 2.5.)
+  const MAG_CUTOFF = 2.5;
+  const faintLimitMag = MAG_CUTOFF;
   const brightestFlux = Math.pow(10.0, -0.4 * (-1.46 - faintLimitMag));
-  const FLUX_GAMMA = 0.38; // < 1 lifts the faint tail
-  const LO = 0.55; // faintest star brightness (clearly visible point)
-  const HI = 6.0; // brightest star brightness (overflows → bloom)
+  const FLUX_GAMMA = 0.5; // < 1 lifts the faint tail
+  const LO = 0.5; // faintest included star (dim point, no bloom)
+  const HI = 2.0; // brightest star (overflows 1.0 → SUBTLE bloom, not a blob)
 
   for (let i = 0; i < count; i++) {
     const base = i * stride;
@@ -141,17 +147,23 @@ export function buildStarInstanceData(): Float32Array {
     const dy = cosDec * Math.sin(ra);
     const dz = Math.sin(dec);
 
-    // Pogson flux relative to the faint limit, in [~0, 1].
+    // Pogson flux relative to the faint limit. Apparent magnitude already
+    // encodes luminosity / distance² (inverse-square), so this IS the
+    // distance-scaled brightness. Stars fainter than the catalog cutoff emit
+    // zero (invisible) — the baked SkyBox texture carries them instead.
     const rawFlux = Math.pow(10.0, -0.4 * (vmag - faintLimitMag));
     const norm = Math.min(1.0, rawFlux / brightestFlux);
     const compressed = Math.pow(norm, FLUX_GAMMA);
-    const flux = LO + compressed * (HI - LO);
+    const flux = vmag > MAG_CUTOFF ? 0.0 : LO + compressed * (HI - LO);
 
     const rgb = bvToRgb(bv);
 
-    // sizeBoost: brighter stars (lower magnitude) get a larger disc.
-    // Map mag −1.5 → ~1.7 boost, mag 4 → ~0 boost.
-    const sizeBoost = Math.max(0.0, (4.0 - vmag) * 0.42);
+    // Constant size: every star is a true point source (real angular size
+    // << 1 px even for the nearest/largest), so there is NO brightness→size
+    // disc boost. Brightness alone — via subtle bloom on the brightest —
+    // provides the only perceived size variation, matching how the eye and
+    // camera actually see stars.
+    const sizeBoost = 0.0;
 
     const o = i * FLOATS_PER_STAR;
     out[o + 0] = dx;

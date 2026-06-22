@@ -56,12 +56,12 @@ class StarField {
     // Angular radius of a base star point sprite, in radians. ~0.34°
     // gives a small crisp disc that bloom can spread; bright stars enlarge
     // via the per-star sizeBoost packed in the instance buffer.
-    this._pointAngularSize = 0.006;
+    this._pointAngularSize = 0.0042;
 
     // Floor on the NDC half-extent so faint stars never collapse to a
     // sub-pixel that flickers under MSAA. ~0.0030 ≈ 2.3 px on a 768-tall
     // frame.
-    this._minPointSize = 0.003;
+    this._minPointSize = 0.0022;
 
     // Lazily-allocated per-backend resource cache (WebGPU feature renderer
     // stashes its GPU buffers here; the WebGL renderer uses `_webglCache`).
