@@ -1007,6 +1007,35 @@ fn fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
   return F0 + (vec3<f32>(1.0) - F0) * (t2 * t2 * t);
 }
 
+// NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- height-correlated Smith-joint
+// visibility (Heitz 2014), byte-faithful to WebGL `pbrLighting.glsl`
+// smithVisibilityGGX. Returns Vis = G / (4·NdotL·NdotV): the 1/(4·NdotL·NdotV)
+// denominator is FOLDED IN, so callers multiply D·Vis·F with NO separate
+// /(4·NdotV·NdotL) term. `alphaRoughness` = perceptualRoughness² (the same
+// convention WebGL passes). Replaces the separable Schlick-GGX `geometrySmith`
+// on the direct-light paths (clearcoat keeps geometrySmith).
+fn smithVisibilityGGX(alphaRoughness: f32, NdotL: f32, NdotV: f32) -> f32 {
+  let aSq = alphaRoughness * alphaRoughness;
+  let GGXV = NdotL * sqrt(NdotV * NdotV * (1.0 - aSq) + aSq);
+  let GGXL = NdotV * sqrt(NdotL * NdotL * (1.0 - aSq) + aSq);
+  let GGX = GGXV + GGXL;
+  if (GGX > 0.0) {
+    return 0.5 / GGX;
+  }
+  return 0.0;
+}
+
+// NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- Fresnel-Schlick with an explicit
+// f90 reflectance, byte-faithful to WebGL `pbrLighting.glsl` fresnelSchlick2.
+// The direct-light paths pass f90 = clamp(maxComponent(F0)·25, 0, 1) so
+// near-zero-reflectance dielectrics taper their grazing response instead of
+// the bare `fresnelSchlick`'s implicit f90 = 1 (always white at grazing).
+fn fresnelSchlick2(f0: vec3<f32>, f90: vec3<f32>, VdotH: f32) -> vec3<f32> {
+  let versine = clamp(1.0 - VdotH, 0.0, 1.0);
+  let v2 = versine * versine;
+  return f0 + (f90 - f0) * (v2 * v2 * versine);
+}
+
 // Roughness-aware Fresnel for IBL specular — smoother surfaces reflect more
 fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3<f32> {
   let t = clamp(1.0 - cosTheta, 0.0, 1.0);
@@ -2404,12 +2433,21 @@ struct FragOutput {
   let NdotH = max(dot(N, H), 0.0);
   let VdotH = max(dot(V, H), 0.0);
 
+  // NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- mirror WebGL czm_pbrLighting:
+  // height-correlated Smith-joint visibility (denominator folded in) + f90
+  // Fresnel. specBRDF = F·Vis·D (NO separate /(4·NdotV·NdotL)).
+  let alphaRoughness = roughness * roughness;
   let D = distributionGGX(NdotH, roughness);
-  let G = geometrySmith(NdotV, NdotL, roughness);
-  let F = fresnelSchlick(VdotH, F0);
-  let specBRDF = D * G * F / (4.0 * NdotV * NdotL + 0.0001);
+  let Vis = smithVisibilityGGX(alphaRoughness, NdotL, NdotV);
+  let directReflectance = max(F0.r, max(F0.g, F0.b));
+  let directF90 = vec3<f32>(clamp(directReflectance * 25.0, 0.0, 1.0));
+  let F = fresnelSchlick2(F0, directF90, VdotH);
+  let specBRDF = F * Vis * D;
 
-  let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+  // diffuseColor already carries (1 - metallic) (see derivation above), so the
+  // diffuse term is (1 - F) only — matching WebGL's (1 - F)·material.diffuse.
+  // (The prior (1 - F)·(1 - metallic) double-applied the metallic factor.)
+  let kD = vec3<f32>(1.0) - F;
   var direct = (kD * diffuseColor / PI + specBRDF) * light.sunColor * light.sunIntensity * NdotL;
 
   // Slice 5d Batch 153 — Forward+ clustered lighting additive
@@ -2479,7 +2517,10 @@ struct FragOutput {
     let TdotH = dot(aniDir, H);
     let aniRough = mix(roughness, 1.0, abs(TdotH) * aniStrength);
     let Daniso = distributionGGX(NdotH, aniRough);
-    let aniBRDF = Daniso * G * F / (4.0 * NdotV * NdotL + 0.0001);
+    // NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- reuse the Smith-joint `Vis`
+    // (denominator folded in) instead of the removed separable `G` + explicit
+    // /(4·NdotV·NdotL), matching the new `specBRDF` it is differenced against.
+    let aniBRDF = Daniso * Vis * F;
     direct = direct + (aniBRDF - specBRDF) * light.sunColor *
                        light.sunIntensity * NdotL * aniStrength;
   }
@@ -2788,11 +2829,16 @@ struct FragOutput {
       let Hp = normalize(V + Lp);
       let NdotHp = max(dot(N, Hp), 0.0);
       let VdotHp = max(dot(V, Hp), 0.0);
+      // NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- same Smith-joint + f90
+      // BRDF as the sun path above, for analytic point/spot lights.
+      let alphaRoughnessP = roughness * roughness;
       let Dp = distributionGGX(NdotHp, roughness);
-      let Gp = geometrySmith(NdotV, NdotLp, roughness);
-      let Fp = fresnelSchlick(VdotHp, F0);
-      let specBRDFp = Dp * Gp * Fp / (4.0 * NdotV * NdotLp + 0.0001);
-      let kDp = (vec3<f32>(1.0) - Fp) * (1.0 - metallic);
+      let Visp = smithVisibilityGGX(alphaRoughnessP, NdotLp, NdotV);
+      let reflectanceP = max(F0.r, max(F0.g, F0.b));
+      let f90p = vec3<f32>(clamp(reflectanceP * 25.0, 0.0, 1.0));
+      let Fp = fresnelSchlick2(F0, f90p, VdotHp);
+      let specBRDFp = Fp * Visp * Dp;
+      let kDp = vec3<f32>(1.0) - Fp;
       let radiance = pl.color * pl.intensity * atten;
       direct = direct + (kDp * diffuseColor / PI + specBRDFp) * radiance * NdotLp;
     }

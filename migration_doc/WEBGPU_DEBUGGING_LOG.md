@@ -24,6 +24,20 @@
 
 ---
 
+## Batch 355 — WebGPU model direct-light BRDF parity: Smith-joint visibility + f90 (NEW-MODEL-DIRECT-BRDF-PARITY) (2026-06-22)
+
+**Item:** NEW-MODEL-DIRECT-BRDF-PARITY (QUEUE 2026-06-22 Tier-1 #1) — the WebGPU glTF model direct-light specular BRDF diverged from WebGL `czm_pbrLighting`. WebGL uses height-correlated **Smith-joint visibility** (`smithVisibilityGGX` = `0.5/(GGXV+GGXL)`, the `1/(4·NdotL·NdotV)` denominator folded in) + **f90** Fresnel (`fresnelSchlick2(F0, f90, VdotH)`, `f90 = clamp(maxComponent(F0)·25, 0, 1)`). WebGPU used the separable Schlick-GGX `geometrySmith` (k-based) with an explicit `/(4·NdotV·NdotL)` + bare `fresnelSchlick` (implicit f90 = 1).
+
+**Fix (`ModelPBRComplete.wgsl`):** added two helpers byte-faithful to `pbrLighting.glsl` — `smithVisibilityGGX(alphaRoughness, NdotL, NdotV)` and `fresnelSchlick2(f0, f90, VdotH)` — and rewrote BOTH direct-light paths (primary sun + the analytic point/spot-light loop) to `specBRDF = F · Vis · D` with f90. The D term already matched (both use perceptualRoughness⁴). Also fixed a found **diffuse energy-conservation bug**: `kD = (1-F)·(1-metallic)` double-applied `(1-metallic)` because `diffuseColor` is already `baseColor·(1-metallic)` — corrected to `kD = (1-F)` (matches WebGL's `(1-F)·material.diffuse`). The clearcoat path keeps the separable `geometrySmith`/`fresnelSchlick` (its own model), so those helpers stay live.
+
+**Bug hit + fixed during the change (probe-caught):** removing the primary path's `let G = geometrySmith(...)` broke the **anisotropy override block** (USE_ANISOTROPY, define bit 0x200), which reused `G` in `aniBRDF = Daniso * G * F / (4·NdotV·NdotL)` → WGSL `unresolved value 'G'` → the whole Model PBR pipeline for anisotropy/KHR variants (0x200/0x8200) went invalid → TestKhrSpecular rendered BLACK (`probe-model-ibl` 97% mismatch, orbit-change 0). Diagnosed with a new `Tools/visual-regression/probe-wgsl-compile-error.mjs` (hooks `createShaderModule` + dumps `getCompilationInfo()` with the offending source line) — pinpointed the exact line instead of guessing. Fixed by re-pointing the anisotropy block at the folded-in `Vis`: `aniBRDF = Daniso * Vis * F`.
+
+**Verified (Principle 8, baseline-isolated):** `probe-model-pbr-ibl-parity` (neutral Shadow_Tester, sun ON) — at-rest parity **−3.71% → −2.76%** lum (per-channel R −4.8→−3.6, B −3.91→−3.08), measured by stashing the `.wgsl` for a clean post-Batch-354 baseline; WebGPU moves toward WebGL on every channel (modest on this IBL-dominated neutral model; larger on direct-light-dominated specular surfaces). `probe-model-ibl` (KHR-specular, pure IBL) **unregressed at 1.32%/1.31%** (my direct-light change doesn't touch the IBL path). `probe-wgsl-compile-error` clean across all variants. PNGs read: WebGPU matches WebGL's Shadow_Tester scene (sphere directional shading, plane, torus/cone/box) with no artifacts.
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl`, `Tools/visual-regression/probe-wgsl-compile-error.mjs` (new diagnostic). **Probes:** `probe-model-pbr-ibl-parity.mjs`, `probe-model-ibl.mjs`, `probe-wgsl-compile-error.mjs`.
+
+---
+
 ## Batch 354 — WebGPU diffuse-IBL SH producer: the missing half of model-IBL parity (NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT) (2026-06-22)
 
 **Item:** NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT — root-caused Batch 347 as a diffuse-IBL prefilter-energy mismatch: WebGL feeds a model's diffuse IBL via 9 atmosphere-derived SH-L2 coefficients (`czm_sphericalHarmonics`), but WebGPU had **no SH producer**, so models fell back to sampling the irradiance cubemap — a ~20-30% different energy reconstruction (worst in blue). The WGSL SH *consumer* (`evalSphericalHarmonics`, `SHUniforms` @binding 36, the `sh.control.w > 0.5` gate) was already byte-identical to WebGL; only the producer was missing.
