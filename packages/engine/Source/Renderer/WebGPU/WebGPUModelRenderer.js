@@ -1628,10 +1628,20 @@ function buildModelIBLEntries(model, pipelineCache, frameState) {
   if (defined(envManager)) {
     if (!hasExplicitDiffuse && defined(envManager._webgpuIBLDiffuseView)) {
       diffuseView = envManager._webgpuIBLDiffuseView;
-      // The env-manager diffuse is an irradiance cubemap, not SH; clear
-      // any default SH so the shader samples the cubemap (its SH gate
-      // `control.w` stays 0 with the default buffer below).
-      shBuffer = undefined;
+      // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- prefer the
+      // env-manager's atmosphere-derived SH-L2 coefficients, matching
+      // WebGL's czm_sphericalHarmonics diffuse-IBL path. The SH buffer's
+      // own `control.w` gate makes the shader evaluate SH instead of
+      // sampling the irradiance cubemap (which over-brightened the diffuse
+      // by ~20-30%, worst in blue). The irradiance cubemap above stays
+      // bound as the fallback for frames before the SH projection has run.
+      if (defined(envManager._webgpuSHBuffer)) {
+        shBuffer = envManager._webgpuSHBuffer;
+      } else {
+        // No SH yet -- clear any default SH so the shader samples the
+        // irradiance cubemap (control.w stays 0 with the default buffer).
+        shBuffer = undefined;
+      }
     }
     if (!hasExplicitSpecular && defined(envManager._webgpuIBLSpecularView)) {
       specularView = envManager._webgpuIBLSpecularView;

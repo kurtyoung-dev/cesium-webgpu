@@ -20,6 +20,7 @@
  */
 
 import ProceduralSkyCubemapWGSL from "../../Shaders/WebGPU/Compute/ProceduralSkyCubemap.js";
+import ProjectRadianceToSHWGSL from "../../Shaders/WebGPU/Compute/ProjectRadianceToSH.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Transforms from "../../Core/Transforms.js";
 import { generateIBLMaps } from "./WebGPUIBLPipeline.js";
@@ -46,6 +47,12 @@ interface DynEnvMapManagerLike {
   _webgpuIBLSpecularView?: GPUTextureView | null;
   _webgpuIBLSampler?: GPUSampler | null;
   _webgpuIBLMaxMipLevel?: number;
+  // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- atmosphere-derived
+  // diffuse-IBL spherical-harmonic coefficients (9 vec4 + control vec4),
+  // projected from the radiance cube. Bound by `buildModelIBLEntries` at
+  // SHUniforms binding 36 so models evaluate SH instead of sampling the
+  // irradiance cubemap (matching WebGL's czm_sphericalHarmonics path).
+  _webgpuSHBuffer?: GPUBuffer | null;
   // Optional sky tuning. When undefined the manager uses sensible
   // studio-HDR defaults (warm zenith, cool ground, white sun).
   skyColor?: { red: number; green: number; blue: number };
@@ -94,6 +101,17 @@ interface DynEnvMapCache {
   // the prefilter runs through the same compute pipelines as
   // explicit-source IBL.
   iblCache: IBLPipelineCache | null;
+  // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- SH-L2 projection
+  // pass. Pipeline + BGL are built once; `shBuffer` (9 vec4 + control,
+  // STORAGE|UNIFORM) receives the projected coefficients and is published
+  // as `manager._webgpuSHBuffer`. `shParamBuffer` carries the
+  // atmosphereScatteringIntensity second-multiply. `shBindGroup` is reset
+  // to null on cube recreation (the cube view it references changes).
+  shPipeline: GPUComputePipeline | null;
+  shBGL: GPUBindGroupLayout | null;
+  shBuffer: GPUBuffer | null;
+  shParamBuffer: GPUBuffer | null;
+  shBindGroup: GPUBindGroup | null;
 }
 
 /**
@@ -140,6 +158,11 @@ function updateWebGPUDynamicEnvironmentMap(
       skyUniformBuffer: null,
       skyBindGroup: null,
       iblCache: null,
+      shPipeline: null,
+      shBGL: null,
+      shBuffer: null,
+      shParamBuffer: null,
+      shBindGroup: null,
     } as DynEnvMapCache;
   }
 
@@ -205,6 +228,8 @@ function updateWebGPUDynamicEnvironmentMap(
     // on size but the bind group references the storage view which DID
     // change, so rebuild it).
     cache.skyBindGroup = null;
+    // SH bind group references the recreated cube view -- rebuild it too.
+    cache.shBindGroup = null;
   }
 
   if (!cache.sampler) {
@@ -240,6 +265,10 @@ function updateWebGPUDynamicEnvironmentMap(
   if (cache.needsUpdate || sunMoved) {
     runProceduralSkyFill(device, cache, manager, frameState);
     runIBLPrefilter(device, cache, frameState);
+    // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- project the
+    // freshly-filled radiance cube to SH-L2. Submitted after the sky fill
+    // so the queue serializes the cube write before this read.
+    runSphericalHarmonicProjection(device, cache, manager);
     cache.needsUpdate = false;
     cache.lastSunDirX = sunDir.x;
     cache.lastSunDirY = sunDir.y;
@@ -258,6 +287,13 @@ function updateWebGPUDynamicEnvironmentMap(
     manager._webgpuIBLSampler = cache.iblCache.sampler;
     // RADIANCE_MIP_LEVELS = 6 in WebGPUIBLPipeline; max mip index = 5.
     manager._webgpuIBLMaxMipLevel = 5;
+  }
+  // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- expose the SH
+  // coefficient buffer for `buildModelIBLEntries`. Present once the first
+  // projection has run; the buffer's own control.w gate keeps it inert
+  // until the compute pass populates it.
+  if (cache.shBuffer) {
+    manager._webgpuSHBuffer = cache.shBuffer;
   }
 
   cache.framesSinceUpdate++;
@@ -481,6 +517,118 @@ function runProceduralSkyFill(
   pass.setPipeline(cache.skyPipeline);
   pass.setBindGroup(0, cache.skyBindGroup);
   pass.dispatchWorkgroups(groupsXY, groupsXY, 6);
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+}
+
+// ─── SH-L2 projection pass (Batch 354) ───────────────────────────────────
+//
+// NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT. Projects the freshly-filled
+// radiance cube onto 9 SH-L2 coefficients and writes them (×
+// atmosphereScatteringIntensity, WebGL's step-3 multiply) into a
+// STORAGE|UNIFORM buffer the model binds at SHUniforms binding 36. Mirrors
+// WebGL's `ComputeIrradianceFS` + `updateSphericalHarmonicCoefficients`,
+// but writes the buffer directly instead of a render-to-texture + readback.
+function runSphericalHarmonicProjection(
+  device: GPUDevice,
+  cache: DynEnvMapCache,
+  manager: DynEnvMapManagerLike,
+): void {
+  if (!cache.cubemapTextureView || !cache.sampler) {
+    return;
+  }
+
+  // Build pipeline + BGL once per cache.
+  if (!cache.shPipeline || !cache.shBGL) {
+    cache.shBGL = device.createBindGroupLayout({
+      label: "DynEnvMap SH BGL",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "cube" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "storage" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
+    const layout = device.createPipelineLayout({
+      label: "DynEnvMap SH PipelineLayout",
+      bindGroupLayouts: [cache.shBGL],
+    });
+    const module = device.createShaderModule({
+      label: "ProjectRadianceToSH",
+      code: ProjectRadianceToSHWGSL,
+    });
+    cache.shPipeline = device.createComputePipeline({
+      label: "DynEnvMap SH Pipeline",
+      layout,
+      compute: { module, entryPoint: "main" },
+    });
+  }
+
+  // SH output buffer: 9 vec4 coeffs + 1 vec4 control = 160 bytes. STORAGE
+  // for the compute write, UNIFORM so the model binds it as SHUniforms.
+  if (!cache.shBuffer) {
+    cache.shBuffer = device.createBuffer({
+      label: "DynEnvMap SH Coefficients",
+      size: 160,
+      usage:
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.UNIFORM |
+        GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  // Param uniform: atmosphereScatteringIntensity in .x (16-byte minimum).
+  if (!cache.shParamBuffer) {
+    cache.shParamBuffer = device.createBuffer({
+      label: "DynEnvMap SH Params",
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+  const intensity = manager.atmosphereScatteringIntensity ?? 2.0;
+  device.queue.writeBuffer(
+    cache.shParamBuffer,
+    0,
+    new Float32Array([intensity, 0.0, 0.0, 0.0]),
+  );
+
+  // (Re)build bind group when the cube view changed (cube recreate resets
+  // shBindGroup to null).
+  if (!cache.shBindGroup) {
+    cache.shBindGroup = device.createBindGroup({
+      label: "DynEnvMap SH BG",
+      layout: cache.shBGL,
+      entries: [
+        { binding: 0, resource: cache.cubemapTextureView },
+        { binding: 1, resource: cache.sampler },
+        { binding: 2, resource: { buffer: cache.shBuffer } },
+        { binding: 3, resource: { buffer: cache.shParamBuffer } },
+      ],
+    });
+  }
+
+  // Dispatch 1 workgroup of 9 invocations (one coefficient each).
+  const encoder = device.createCommandEncoder({ label: "DynEnvMap SH Pass" });
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(cache.shPipeline);
+  pass.setBindGroup(0, cache.shBindGroup);
+  pass.dispatchWorkgroups(1, 1, 1);
   pass.end();
   device.queue.submit([encoder.finish()]);
 }

@@ -527,7 +527,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - WebGPUClippingPolygonCollection — SDF-atlas based polygon clipping (SHIPPED)
 - WebGPUClipDistancePrecompute — precomputes distance-to-plane uniform packing (SHIPPED)
 - WebGPUImageBasedLighting — diffuse + specular IBL lookup for PBR (SHIPPED; Batch 287 completed the split-sum BRDF LUT consumption + world-fixed reference-frame reflection — see NEW-MODEL-IBL-BRDF-LUT / NEW-MODEL-IBL-REFERENCE-FRAME, now 1:1 with WebGL ImageBasedLightingStageFS::textureIBL)
-- WebGPUDynamicEnvironmentMapManager — per-position dynamic env map probes (SHIPPED)
+- WebGPUDynamicEnvironmentMapManager — per-position dynamic env map probes (SHIPPED; Batch 354 added the atmosphere-derived diffuse-IBL **SH-L2 producer** — a `ProjectRadianceToSH.wgsl` compute pass projecting the radiance cube to 9 SH coefficients into a STORAGE|UNIFORM buffer published as `_webgpuSHBuffer`, closing NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT: model diffuse IBL now matches WebGL's `czm_sphericalHarmonics` path, 56%→1.3% probe parity)
 - WebGPUBrdfLutGenerator — one-time BRDF integration LUT (compute-driven) (SHIPPED)
 - Forward+ clustered lighting — `WebGPUClusterBoundsRenderer` + `WebGPUClusterAssignRenderer` (16×9×24 grid compute passes) + `WebGPUClusteredLightingDispatcher` (per-frame orchestration) + `ClusteredLighting.wgsl` FS chunk consumed by ModelPBRComplete (group-3 effects bindings 18-22) AND all 19 primitive `Mat*Lit` material shaders (group-2 or group-3 via the `__CL_GROUP__` token substitution, Batches 154-155). Multi-light point/spot/directional per-pixel diffuse+specular beyond the single sun. Resolves FEAT-SURVEY-40. (SHIPPED Batches 153-155; Model PBR + all Lit Mat consumers live. Remaining: Phong primitive shaders + a Sandcastle demo.)
 - WebGPUIBLPipeline — irradiance + radiance prefilter compute orchestration (SHIPPED)
@@ -544,6 +544,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 
 - BrdfLutGenerate.wgsl — one-time BRDF LUT compute pass (SHIPPED)
 - IrradianceConvolution.wgsl — diffuse irradiance cubemap generation (SHIPPED)
+- ProjectRadianceToSH.wgsl — radiance cube → 9 SH-L2 coefficients for atmosphere-derived diffuse IBL (byte-faithful transcription of WebGL `ComputeIrradianceFS.glsl`; writes a STORAGE|UNIFORM SHUniforms buffer directly, no readback) (SHIPPED Batch 354 — NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT)
 - RadiancePrefilter.wgsl — specular mipchain prefilter for IBL (SHIPPED)
 - PolygonSignedDistance.wgsl — SDF atlas for clipping polygons (SHIPPED)
 - AtmosphereLUT.wgsl — precomputed transmittance + scattering LUT (SHIPPED — Phase 1.3a/1.3c wired; per-pixel ray-march fallback for orbit cameras where LUT V-coord clamps)

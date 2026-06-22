@@ -24,6 +24,25 @@
 
 ---
 
+## Batch 354 — WebGPU diffuse-IBL SH producer: the missing half of model-IBL parity (NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT) (2026-06-22)
+
+**Item:** NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT — root-caused Batch 347 as a diffuse-IBL prefilter-energy mismatch: WebGL feeds a model's diffuse IBL via 9 atmosphere-derived SH-L2 coefficients (`czm_sphericalHarmonics`), but WebGPU had **no SH producer**, so models fell back to sampling the irradiance cubemap — a ~20-30% different energy reconstruction (worst in blue). The WGSL SH *consumer* (`evalSphericalHarmonics`, `SHUniforms` @binding 36, the `sh.control.w > 0.5` gate) was already byte-identical to WebGL; only the producer was missing.
+
+**Root cause (de-risking finding):** the fix is NOT blocked on the dormant `context.computeEngine` (backlog #2). The WebGPU env-manager (`WebGPUDynamicEnvironmentMapManager.ts`) already runs its OWN compute passes via `encoder.beginComputePass()` for the procedural sky fill + IBL prefilter, and the WebGL SH producer (`DynamicEnvironmentMapManager.js:952`) is a fragment render-to-texture + `readPixels` readback, not a compute dispatch — so a self-contained WebGPU SH pass could be added standalone.
+
+**Fix:** new `Shaders/WebGPU/Compute/ProjectRadianceToSH.wgsl` — a GPU compute pass (1 workgroup × 9 invocations, coeff-per-invocation) projecting the procedural radiance cube onto 9 SH-L2 coefficients. It is a byte-faithful transcription of WebGL's `ComputeIrradianceFS.glsl` (`computeShBasis` + the 256-sample Monte-Carlo loop with `solidAngle·sinTheta` weights), writing the coeffs straight into a `STORAGE|UNIFORM` buffer (9 vec4 + control.w=1) — skipping WebGL's render-to-texture + readback entirely (the same buffer is bound as the model's SHUniforms uniform, no CPU round-trip). `WebGPUDynamicEnvironmentMapManager.ts` runs it (`runSphericalHarmonicProjection`, dispatched right after the sky fill + IBL prefilter inside the existing `needsUpdate || sunMoved` block; the queue serializes the cube write before this read) and publishes `manager._webgpuSHBuffer`. `WebGPUModelRenderer.js:1629` (`buildModelIBLEntries`) now feeds that buffer at binding 36 instead of forcing `shBuffer = undefined`.
+
+**Two intentional backend differences from WebGL** (both verified by probe, not assumed):
+
+1. **Cube lookup uses the RAW world-space direction**, NOT WebGL's `(-x, -y, z)` flip. The flip corrects WebGL's cube-sampling convention; the WebGPU radiance cube is sampled raw (per the known-good `IrradianceConvolution.wgsl` irradiance fallback that samples `sampleDir` directly), so raw keeps the SH directionally consistent with that fallback. PNGs confirm: the world-up (top) cube face stays bright on BOTH backends — no mirrored/flipped shading.
+2. **Energy mirrors WebGL's deliberate DOUBLE-apply of `atmosphereScatteringIntensity`.** The WebGPU cube already bakes it once (`ProceduralSkyCubemap.wgsl:295`), exactly as WebGL's radiance map does (`ComputeRadianceMapFS.glsl:85`, where `.w` = atmosphereScatteringIntensity per `DynamicEnvironmentMapManager.js:675`); the SH pass multiplies by it a second time, mirroring `DynamicEnvironmentMapManager.js:979`. `params.intensity` carries that second multiply.
+
+**Verified (Principle 8, baseline-isolated):** `probe-model-ibl.mjs` GATE PASS — TestKhrSpecular parity **1.32% (angle A) / 1.31% (angle B)**, down from a baseline of **56.68% / 56.01%** (GATE FAIL). The baseline was measured by surgically forcing the old cubemap-fallback path (`if (false && …)`) through the SAME build+probe pipeline, then reverting — proving the SH path is actually consumed, not a coincidental pass. Orbit delta 0.02 abs / 0.029 rel (BRDF-LUT + reference-frame cases stay green); WebGPU device-error gate armed + clean (the new compute pass + SH bind execute without validation errors). PNGs read: the WebGPU cube matches the WebGL cube's diffuse-IBL teal shading face-for-face.
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/Compute/ProjectRadianceToSH.wgsl` (new), `packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js`. **Probe:** `Tools/visual-regression/probe-model-ibl.mjs`.
+
+---
+
 ## Upstream v1.142 Merge — "globe-black" was a PROBE ARTIFACT + a latent clustered-lighting render-pass leak (2026-06-17)
 
 **Context:** During the supervised v1.141–1.143 upstream merge, the WebGPU default-CesiumViewer globe appeared BLACK in an ad-hoc `probe-globe-check.mjs`. A long investigation chased it as a merge regression (Matrix4 depth-graft, render-flow, depth-range, clustered-lighting, Hi-Z, log-depth, even a pre-merge worktree bisect — every commit built black).
