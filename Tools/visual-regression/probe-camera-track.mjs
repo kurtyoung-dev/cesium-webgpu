@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
- * Probe: CAMERA-TRACK — fly the camera along a multi-waypoint TRAJECTORY (orbit +
- * descent over varied terrain: mountains, coastline, a city) and capture a
- * screenshot at EACH waypoint on BOTH backends (WebGPU + WebGL), to surface
- * tile load/unload artifacts and cross-backend diffs ALONG MOTION.
+ * Probe: CAMERA-TRACK — fly the camera through a full ORBIT → GROUND descent that
+ * also ROTATES around the globe (deep-orbit whole-Earth disc → continental →
+ * regional terrain → coastline → city → near-ground → LITERAL GROUND LEVEL →
+ * rotate to the far side of the planet), capturing a screenshot at EACH waypoint
+ * on BOTH backends (WebGPU + WebGL) to surface tile load/unload artifacts and
+ * cross-backend diffs at every camera-distance band ALONG MOTION.
  *
  * WHY A TRACK (not a static distance sweep): static probes (probe-farcam-*) miss
  * artifacts that only appear while tiles are streaming in/out as the camera
@@ -68,29 +70,41 @@ const MAX_FRAMES = 1500; // ceiling for first-view pipeline compilation
 const REL_EPS = 0.0015; // relative signature change treated as "no change"
 
 /**
- * TRAJECTORY — a connected flight over varied terrain in the US West, chosen so
- * the path crosses MOUNTAINS (Sierra Nevada), a COASTLINE (San Francisco Bay /
- * Pacific shore), and a CITY (San Francisco). The camera starts on a high orbit
- * and DESCENDS while sweeping heading, so each waypoint streams a new LOD band.
+ * TRAJECTORY — a full ORBIT → GROUND descent that also ROTATES around the
+ * globe, so the track exercises every camera-distance band on BOTH backends:
+ *   deep orbit (whole Earth disc) → continental → regional terrain →
+ *   coastline → city → near-ground → LITERAL GROUND LEVEL (near-horizontal,
+ *   ~300 m eye height) → rotate to the far side of the planet (Himalaya).
+ *
+ * The descent is anchored on San Francisco (good global imagery + terrain), and
+ * two high-orbit waypoints over different continents (Americas, Asia) rotate the
+ * view around the globe to surface worldwide imagery/terrain streaming + fresh
+ * cold LOD pyramids. Run with PROBE_TERRAIN=1 for real elevation at ground level.
  *
  * Each waypoint is a full camera setView spec: destination lon/lat/height +
- * orientation. The sequence is ordered so consecutive views overlap (forces
- * tile reuse/eviction rather than a cold reload at every stop).
+ * orientation (heading/pitch/roll in degrees). Screenshots + a WebGPU-vs-WebGL
+ * pixel diff are captured at every waypoint.
  */
 const WAYPOINTS = [
-  // High orbit over the Sierra Nevada (mountains), looking down.
-  { name: "orbit-high-sierra", lon: -119.5, lat: 37.7, height: 900_000, heading: 0, pitch: -90, roll: 0 },
-  // Orbit sweeps west, still high, heading rotated — coastline enters frame.
-  { name: "orbit-west-coast", lon: -121.0, lat: 37.6, height: 700_000, heading: 35, pitch: -75, roll: 0 },
-  // Descend toward the Bay coastline, tilted (oblique) — land/sea boundary.
-  { name: "descend-coastline", lon: -122.0, lat: 37.7, height: 350_000, heading: 60, pitch: -55, roll: 0 },
-  // Lower, oblique over San Francisco — city + bay + hills in one frame.
-  { name: "low-oblique-sf", lon: -122.35, lat: 37.72, height: 120_000, heading: 75, pitch: -40, roll: 0 },
-  // City-level oblique over downtown SF — dense imagery LOD, coastline at left.
-  { name: "city-sf-downtown", lon: -122.42, lat: 37.77, height: 35_000, heading: 90, pitch: -35, roll: 0 },
-  // Climb back out heading east toward the mountains — tests tile EVICTION of
-  // the city LODs as the high-altitude band re-streams.
-  { name: "climbout-east", lon: -121.0, lat: 37.7, height: 500_000, heading: 110, pitch: -70, roll: 0 },
+  // 1. Deep orbit — the whole Earth disc from far out (Pacific-centered), top-down.
+  { name: "orbit-globe-pacific", lon: -150, lat: 10, height: 18_000_000, heading: 0, pitch: -90, roll: 0 },
+  // 2. Rotate east, high orbit over the Americas — continental band.
+  { name: "orbit-americas", lon: -100, lat: 35, height: 6_000_000, heading: 20, pitch: -85, roll: 0 },
+  // 3. High over the Sierra Nevada — regional terrain band.
+  { name: "descend-sierra", lon: -119.5, lat: 37.7, height: 900_000, heading: 35, pitch: -75, roll: 0 },
+  // 4. Descend toward the SF Bay coastline (land/sea boundary).
+  { name: "descend-sf-coast", lon: -122.0, lat: 37.7, height: 300_000, heading: 55, pitch: -55, roll: 0 },
+  // 5. Low oblique over San Francisco — city + bay + hills in one frame.
+  { name: "low-oblique-sf", lon: -122.35, lat: 37.74, height: 60_000, heading: 75, pitch: -40, roll: 0 },
+  // 6. City-level over downtown SF — dense imagery LOD.
+  { name: "city-sf", lon: -122.42, lat: 37.77, height: 12_000, heading: 90, pitch: -35, roll: 0 },
+  // 7. Near-ground oblique over SF — building / terrain-detail LOD band.
+  { name: "near-ground-sf", lon: -122.42, lat: 37.78, height: 2_500, heading: 100, pitch: -20, roll: 0 },
+  // 8. GROUND LEVEL — near-horizontal eye height over SF streets (the close band).
+  { name: "ground-sf", lon: -122.42, lat: 37.785, height: 300, heading: 110, pitch: -6, roll: 0 },
+  // 9. Rotate to the far side of the globe — high orbit over the Himalaya
+  //    (Everest): worldwide streaming + a fresh cold LOD pyramid + extreme terrain.
+  { name: "orbit-himalaya", lon: 86.925, lat: 27.99, height: 2_500_000, heading: 0, pitch: -80, roll: 0 },
 ];
 
 function sleep(ms) {
