@@ -297,10 +297,11 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 
     // AlphaMap fabric has no material `color` — lit base is white; the
     // alpha mask controls transparency.
-    let ambient = 0.15;
+    let ambient = 0.5;
     let baseColor = vec3<f32>(1.0);
     let ambientTerm = baseColor * ambient;
-    var directTerm = baseColor * NdotL * 0.85;
+    let diffuse = 0.5 * (max(dot(N, vec3<f32>(0.0, 0.0, 1.0)), 0.0) + max(dot(N, vec3<f32>(0.0, 1.0, 0.0)), 0.0));
+    var directTerm = baseColor * diffuse;
     var spec = vec3<f32>(specular * 0.3);
 
     // Batch 166 - point-light cube shadows take precedence over CSM.

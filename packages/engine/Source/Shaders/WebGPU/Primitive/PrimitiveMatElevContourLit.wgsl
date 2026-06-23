@@ -289,9 +289,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let NdotH = max(dot(N, H), 0.0);
     let specular = pow(NdotH, 64.0);
 
-    let ambient = 0.15;
+    let ambient = 0.5;
     let ambientTerm = material.color.rgb * ambient;
-    var directTerm = material.color.rgb * NdotL * 0.85;
+    let diffuse = 0.5 * (max(dot(N, vec3<f32>(0.0, 0.0, 1.0)), 0.0) + max(dot(N, vec3<f32>(0.0, 1.0, 0.0)), 0.0));
+    var directTerm = material.color.rgb * diffuse;
     var spec = vec3<f32>(specular * 0.3);
 
     // CSM Slice 2d — shadow direct diffuse + specular. Ambient stays unshadowed.

@@ -295,9 +295,9 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let normal = normalize(input.worldNormal);
     let lightDir = normalize(camera.lightDirection.xyz);
 
-    let ambient = 0.15;
+    let ambient = 0.5;
     let NdotL = max(dot(normal, lightDir), 0.0);
-    let diffuse = NdotL * 0.7;
+    let diffuse = 0.5 * (max(dot(normal, vec3<f32>(0.0, 0.0, 1.0)), 0.0) + max(dot(normal, vec3<f32>(0.0, 1.0, 0.0)), 0.0));
 
     let viewDir = normalize(-input.viewPosition);
     let halfDir = normalize(lightDir + viewDir);

@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 356 — WebGPU MaterialAppearance lit primitives matched to czm_phong (NEW-MATAPPEARANCE-DIFFUSE-PARITY) (2026-06-22)
+
+**Item:** NEW-MATAPPEARANCE-DIFFUSE-PARITY (QUEUE 2026-06-22 Tier-1 #2). Lit `MaterialAppearance` primitives rendered ~50% darker on WebGPU than their WebGL `czm_phong` reference. The 19 `Shaders/WebGPU/Primitive/PrimitiveMat*Lit.wgsl` shaders used an ad-hoc lighting block (scalar `ambient = 0.15` + `diffuse = NdotL * 0.7|0.85` from the ACTUAL sun direction) instead of `czm_phong` (`Builtin/Functions/phong.glsl`): `ambient = material.diffuse * 0.5` + diffuse from FIXED eye-space directions `max(dot(N,(0,0,1)),0) + max(dot(N,(0,1,0)),0)` (top-down + horizon; the sun direction drives only specular). The WGSL `worldNormal` is already eye-space (vertex transforms it via `normalMatrix`), so the fixed-direction dots apply directly.
+
+**Fix:** across all 19 Lit shaders, `ambient = 0.15` → `0.5` and the sun-direction diffuse → `0.5 * (max(dot(<normal>, vec3(0,0,1)), 0) + max(dot(<normal>, vec3(0,1,0)), 0))`, where `<normal>` is each file's in-scope eye-space normal (`normal` / `N` / `perturbedNormal` for the bump/normal-map/water variants). Net lighting becomes `ambient + direct = 0.5 + 0.5·lambert + specular` = czm_phong's `0.5·color·(1+lambert)` plus the retained specular. Specular + shadow/CSM/point-light/clustered/atmosphere wiring untouched; `NdotL`/`lightDir` declarations left intact (still feed specular/shadows).
+
+**Orchestration:** applied via a 19-agent Workflow (one agent per file, different files → no conflict), then INDEPENDENTLY VERIFIED — full `git diff` reviewed (all 19 edits uniform + correct, correct per-file normal variable, variant files correctly introduce `let diffuse` before `directTerm`), `probe-all-materials` 0 device errors (all 19 compile + render).
+
+**Verified (Principle 8, baseline-isolated):** new `Tools/visual-regression/probe-matappearance-parity.mjs` (lit extruded polygon on both backends, mean-luminance + top/bottom-shading diff over the primitive). Flat **Color** material (clean lighting test) **−54.34% → +1.35%** mean-lum, directional top/bottom ratio now 1.023 vs WebGL 1.019 (was 1.134). PNGs read: WebGPU Color polygon now visually identical to WebGL.
+
+**Separate bug surfaced (Principle 9), tracked NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING:** the probe's Grid material is informational only — its **grid LINES don't render on WebGPU** (solid green vs WebGL's grid pattern), a PRE-EXISTING material-pattern bug (baseline top/bottom ratio was already divergent before this fix), NOT the lighting. The lighting fix still brightened Grid −48.87% → +13.88%; the residual is the missing pattern darkening WebGL's mean.
+
+**Files:** the 19 `packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMat*Lit.wgsl`, `Tools/visual-regression/probe-matappearance-parity.mjs` (new). **Probe:** `probe-matappearance-parity.mjs` + `probe-all-materials.mjs` (compile sweep).
+
+---
+
 ## Batch 355 — WebGPU model direct-light BRDF parity: Smith-joint visibility + f90 (NEW-MODEL-DIRECT-BRDF-PARITY) (2026-06-22)
 
 **Item:** NEW-MODEL-DIRECT-BRDF-PARITY (QUEUE 2026-06-22 Tier-1 #1) — the WebGPU glTF model direct-light specular BRDF diverged from WebGL `czm_pbrLighting`. WebGL uses height-correlated **Smith-joint visibility** (`smithVisibilityGGX` = `0.5/(GGXV+GGXL)`, the `1/(4·NdotL·NdotV)` denominator folded in) + **f90** Fresnel (`fresnelSchlick2(F0, f90, VdotH)`, `f90 = clamp(maxComponent(F0)·25, 0, 1)`). WebGPU used the separable Schlick-GGX `geometrySmith` (k-based) with an explicit `/(4·NdotV·NdotL)` + bare `fresnelSchlick` (implicit f90 = 1).

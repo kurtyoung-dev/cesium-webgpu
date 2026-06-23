@@ -289,10 +289,11 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 
     // EmissionMap has no material `color` field — fabric only provides a
     // texture + channel swizzle ("rgb") + repeat. Lit base is white.
-    let ambient = 0.15;
+    let ambient = 0.5;
     let baseColor = vec3<f32>(1.0);
     let ambientTerm = baseColor * ambient;
-    var directTerm = baseColor * NdotL * 0.85;
+    let diffuse = 0.5 * (max(dot(N, vec3<f32>(0.0, 0.0, 1.0)), 0.0) + max(dot(N, vec3<f32>(0.0, 1.0, 0.0)), 0.0));
+    var directTerm = baseColor * diffuse;
     var spec = vec3<f32>(specular * 0.3);
 
     // Batch 167 - point-light cube shadows take precedence over CSM.

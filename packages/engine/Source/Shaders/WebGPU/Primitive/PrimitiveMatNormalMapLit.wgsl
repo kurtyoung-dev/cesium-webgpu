@@ -321,9 +321,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let NdotH = max(dot(perturbedNormal, H), 0.0);
     let specular = pow(NdotH, 64.0);
 
-    let ambient = 0.15;
+    let ambient = 0.5;
     let ambientTerm = baseDiffuse * ambient;
-    var directTerm = baseDiffuse * NdotL * 0.85;
+    let diffuse = 0.5 * (max(dot(perturbedNormal, vec3<f32>(0.0, 0.0, 1.0)), 0.0) + max(dot(perturbedNormal, vec3<f32>(0.0, 1.0, 0.0)), 0.0));
+    var directTerm = baseDiffuse * diffuse;
     var spec = vec3<f32>(specular * 0.3);
 
     // Batch 165 - point-light cube shadows take precedence over CSM.

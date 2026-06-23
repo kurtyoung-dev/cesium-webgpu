@@ -336,9 +336,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     // Specular — enhanced by specularIntensity
     let specular = pow(NdotH, 64.0) * material.specularIntensity;
 
-    let ambient = 0.15;
+    let ambient = 0.5;
     let ambientTerm = material.baseWaterColor.rgb * ambient;
-    var directTerm = material.baseWaterColor.rgb * NdotL * 0.85;
+    let diffuse = 0.5 * (max(dot(perturbedNormal, vec3<f32>(0.0, 0.0, 1.0)), 0.0) + max(dot(perturbedNormal, vec3<f32>(0.0, 1.0, 0.0)), 0.0));
+    var directTerm = material.baseWaterColor.rgb * diffuse;
     var spec = vec3<f32>(specular);
 
     // Batch 167 - point-light cube shadows take precedence over CSM.
