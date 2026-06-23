@@ -83,6 +83,30 @@ class Globe {
      */
     this.show = true;
 
+    /**
+     * DP-H44 — When <code>true</code>, the globe surface emits a pick ID so
+     * <code>scene.pick</code> over terrain returns this <code>Globe</code>.
+     * Default <code>false</code> to match WebGL, where the globe has no pick
+     * ID and <code>scene.pick</code> returns <code>undefined</code> over the
+     * surface (use <code>scene.pickPosition</code> for the terrain position).
+     * <p>
+     * Currently honored by the WebGPU backend only; the WebGL globe path has
+     * never generated pick IDs. Regardless of this flag, the globe always
+     * contributes DEPTH to the WebGPU pick pass so <code>pickPosition</code>
+     * works over terrain (matching WebGL's <code>updateForPick</code>).
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.pickable = false;
+
+    // DP-H44 — cached pick ID for the globe surface (single ID for the whole
+    // globe). Allocated lazily in `beginFrame` when `pickable` is true; its
+    // color is mirrored onto the tile provider so the WebGPU camera UB packer
+    // can write it into the pick-color tail. Destroyed in `destroy()`.
+    this._pickId = undefined;
+
     this._oceanNormalMapResourceDirty = true;
     this._oceanNormalMapResource = new Resource({
       url: buildModuleUrl("Assets/Textures/waterNormalsSmall.jpg"),
@@ -1129,6 +1153,27 @@ class Globe {
       tileProvider.showSkirts = this.showSkirts;
       tileProvider.backFaceCulling = this.backFaceCulling;
       tileProvider.vertexShadowDarkness = this.vertexShadowDarkness;
+
+      // DP-H44 — globe surface pick ID. When `pickable` is true, allocate a
+      // single pick ID for the whole globe (once, reused across frames) and
+      // mirror its color onto the tile provider; the WebGPU camera UB packer
+      // writes that color into the pick-color tail (GlobeTerrain.wgsl
+      // `fragmentPickMain`). When false, clear the mirror so the tail packs
+      // (0,0,0,0) and `scene.pick` stays undefined over the globe (WebGL
+      // parity). The pick ID itself is kept allocated once created so toggling
+      // the flag doesn't churn the pick registry. `createPickId` is the
+      // backend-agnostic `GraphicsContext` API (works on WebGL too, though the
+      // WebGL globe path never references the ID).
+      if (this.pickable) {
+        if (!defined(this._pickId) && defined(frameState.context)) {
+          this._pickId = frameState.context.createPickId({ primitive: this });
+        }
+        tileProvider._webgpuGlobePickColor = defined(this._pickId)
+          ? this._pickId.color
+          : undefined;
+      } else {
+        tileProvider._webgpuGlobePickColor = undefined;
+      }
       tileProvider.undergroundColor = this._undergroundColor;
       tileProvider.undergroundColorAlphaByDistance =
         this._undergroundColorAlphaByDistance;
@@ -1242,6 +1287,8 @@ class Globe {
     this._surface = this._surface && this._surface.destroy();
     this._oceanNormalMap =
       this._oceanNormalMap && this._oceanNormalMap.destroy();
+    // DP-H44 — release the globe pick ID's registry slot.
+    this._pickId = this._pickId && this._pickId.destroy();
     return destroyObject(this);
   }
 }

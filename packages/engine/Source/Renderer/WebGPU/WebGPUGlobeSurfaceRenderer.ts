@@ -24,6 +24,7 @@ import {
 } from "./WebGPUGlobeSurfaceWireframe.js";
 import {
   selectPipeline as selectPipelineHelper,
+  selectPickPipeline as selectPickPipelineHelper,
   selectDebugFragmentPipeline as selectDebugFragmentPipelineHelper,
   selectDepthOnlyBackFacePipeline as selectDepthOnlyBackFacePipelineHelper,
   selectTranslucentBackFacePipeline as selectTranslucentBackFacePipelineHelper,
@@ -1283,8 +1284,31 @@ export class WebGPUGlobeSurfaceRenderer {
         );
       }
 
+      // DP-H44 (Batch 360) — globe terrain pick pipeline. Select once for the
+      // PRIMARY (first) pass only; the scene adapter attaches the resulting
+      // pick command to that command's `derivedCommands.picking.pickCommand`
+      // so the WebGPU pick pass dispatches it (writes globe depth + the
+      // `camera.pickColor` tail into the pick FBO). The pick pipeline uses the
+      // SAME vertex variant (so the same bind groups + VB line up) but
+      // `fragmentPickMain`; it is independent of imagery-layer multi-pass /
+      // debug / material (those vary only the FRAGMENT of the color path), so
+      // subsequent imagery passes need no pick command. Null while the central
+      // cache materializes the variant — pick is simply absent for one frame.
+      const pickPipeline = !isSubsequentPass
+        ? selectPickPipelineHelper(
+            this,
+            gpuResources.isQuantized,
+            gpuResources.hasNormals,
+            gpuResources.hasWebMercatorT,
+            gpuResources.strideBytes,
+            useClipDistances,
+            gpuResources.hasGeodeticSurfaceNormals,
+          )
+        : null;
+
       commands.push({
         pipeline,
+        pickPipeline,
         bindGroups: [bindGroup0, bindGroup1, bindGroup2Final, bindGroup3],
         bindGroup0DynamicOffsets,
         vertexBuffer: gpuResources.vertexBuffer,

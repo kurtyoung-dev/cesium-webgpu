@@ -1074,6 +1074,61 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       );
     }
 
+    // DP-H44 (Batch 360) — globe terrain pick command. Present only on the
+    // PRIMARY pass (`cmdDesc.pickPipeline` is set by the renderer only when
+    // `!isSubsequentPass`). Reuses the SAME bind groups, VB, IB, and dynamic
+    // offsets as the color command — bind group 0's camera UB carries the pick
+    // color at its tail (zero unless `globe.pickable`, set by Globe.beginFrame).
+    // Attached to `command.derivedCommands.picking.pickCommand` so the WebGPU
+    // pick pass's `selectCommandVariant` swaps to it (writes globe DEPTH +
+    // pickColor into the single-target pick FBO). Marked `isWebGPUDrawCommand`
+    // so the pick-pass dispatcher calls `execute(pickRenderPass, context)`, and
+    // `pickOnly` so it's recognized as a dedicated pick draw whose pipeline
+    // targets the single pick attachment. Gated on `globe.pickable`
+    // (`_webgpuGlobePickColor` is set by `Globe.beginFrame` only then) — when
+    // the globe isn't pickable it stays out of the pick pass entirely (see
+    // `updateWebGPUForPick`), so foreground primitives aren't occluded by the
+    // globe's pick-pass depth and `scene.pick` returns undefined over the globe
+    // (WebGL parity). `scene.pickPosition` is unaffected either way — it reads
+    // the main-pass globe-depth texture, not the pick FBO.
+    if (cmdDesc.pickPipeline && tileProvider._webgpuGlobePickColor) {
+      const pickCommand = {
+        isWebGPUDrawCommand: true,
+        pickOnly: true,
+        _pipeline: cmdDesc.pickPipeline,
+        _bindGroups: cmdDesc.bindGroups,
+        _bindGroup0DynamicOffsets: cmdDesc.bindGroup0DynamicOffsets,
+        _vertexBuffer: cmdDesc.vertexBuffer,
+        _indexBuffer: cmdDesc.indexBuffer,
+        _indexCount: cmdDesc.indexCount,
+        _indexFormat: cmdDesc.indexFormat,
+        execute: function (renderPass) {
+          renderPass.setPipeline(this._pipeline);
+          for (let i = 0; i < this._bindGroups.length; i++) {
+            if (i === 0 && this._bindGroup0DynamicOffsets !== undefined) {
+              renderPass.setBindGroup(
+                0,
+                this._bindGroups[0],
+                this._bindGroup0DynamicOffsets,
+              );
+            } else {
+              renderPass.setBindGroup(i, this._bindGroups[i]);
+            }
+          }
+          renderPass.setVertexBuffer(0, this._vertexBuffer);
+          renderPass.setIndexBuffer(this._indexBuffer, this._indexFormat);
+          renderPass.drawIndexed(this._indexCount);
+        },
+      };
+      // Merge onto any existing derivedCommands (e.g. translucency) rather than
+      // clobbering — mirrors `attachPickToColorCommand`.
+      if (command.derivedCommands) {
+        command.derivedCommands.picking = { pickCommand };
+      } else {
+        command.derivedCommands = { picking: { pickCommand } };
+      }
+    }
+
     frameState.commandList.push(command);
   }
 }
@@ -1861,8 +1916,60 @@ function clipRectangleAntimeridian(tileRectangle, cartographicLimitRectangle) {
   return splitRectangle;
 }
 
+// DP-H44 (Batch 360) — WebGPU globe pick rebuild for the pick frame.
+//
+// `QuadtreePrimitive.render` only builds globe draw commands under
+// `passes.render`; during a pick pass it calls `tileProvider.updateForPick`,
+// which on WebGL re-pushes the cached `_drawCommands` array. The WebGPU globe
+// never populates `_drawCommands` (it pushes inline command objects straight
+// to `frameState.commandList` from `addWebGPUDrawCommandsForTile`), and its
+// camera UB is baked into a per-frame ring buffer at build time — so a render-
+// frame command can't simply be re-pushed in the pick frame (its ring slice is
+// recycled). Instead we REBUILD fresh commands for the already-selected tiles
+// in the pick frame's ring page; `addWebGPUDrawCommandsForTile` attaches the
+// pick command (writes globe depth + the pick-ID color into the pick FBO).
+//
+// Returns true when the WebGPU path handled the rebuild (so the caller skips
+// the WebGL `_drawCommands` re-push); false on WebGL so the legacy path runs.
+function updateWebGPUForPick(tileProvider, frameState) {
+  const context = frameState.context;
+  const fr = context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE);
+  if (!fr) {
+    return false;
+  }
+  // Only render the globe into the pick pass when it is pickable. WebGPU's
+  // `scene.pickPosition` reads the MAIN-pass globe-depth texture (not the pick
+  // FBO), so the globe doesn't need to contribute pick-FBO depth — leaving it
+  // out when `!pickable` preserves the pre-DP-H44 behavior (foreground
+  // primitives in front of the globe stay pickable and aren't occluded by the
+  // globe's pick-pass depth). `_webgpuGlobePickColor` is set by
+  // `Globe.beginFrame` only while `pickable` is true. Returning true still
+  // marks the WebGPU path as "handled" so the empty WebGL `_drawCommands`
+  // re-push in `updateForPick` is skipped.
+  if (!tileProvider._webgpuGlobePickColor) {
+    return true;
+  }
+  const tilesToRenderByTextureCount = tileProvider._tilesToRenderByTextureCount;
+  for (let i = 0; i < tilesToRenderByTextureCount.length; i++) {
+    const tilesToRender = tilesToRenderByTextureCount[i];
+    if (!defined(tilesToRender)) {
+      continue;
+    }
+    for (let j = 0; j < tilesToRender.length; j++) {
+      addWebGPUDrawCommandsForTile(
+        tileProvider,
+        tilesToRender[j],
+        frameState,
+        fr,
+      );
+    }
+  }
+  return true;
+}
+
 export {
   addDrawCommandsForTile,
+  updateWebGPUForPick,
   updateTileBoundingRegion,
   createTileUniformMap,
   createWireframeVertexArrayIfNecessary,

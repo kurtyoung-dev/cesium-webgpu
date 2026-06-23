@@ -51,6 +51,7 @@ import {
   DebugFragmentMode,
   type GlobePipelineEntry,
 } from "./WebGPUGlobeSurfaceTypes.js";
+import { buildPickPipelineDescriptor } from "./WebGPUPickCommandHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -625,6 +626,94 @@ export function selectPipeline(
   }
 
   return pipeline;
+}
+
+/**
+ * DP-H44 (Batch 360) — select the globe terrain PICK pipeline variant.
+ *
+ * Derives from the OPAQUE color descriptor for the same vertex variant
+ * (`buildPickPipelineDescriptor` swaps the fragment entry to
+ * `fragmentPickMain`, strips blend + the rgba16float G-buffer slot-1 target +
+ * MSAA, and forces `depthWriteEnabled: true`). The result targets the single
+ * pick-FBO color attachment (its format equals the scene color format in SDR,
+ * which is what `WebGPUPickFramebuffer` uses) and writes standard rasterizer
+ * depth, matching the model / primitive pick pipelines.
+ *
+ * Cache key shares the layout / vertex / shader-define dimensions with
+ * `selectPipeline` and adds a `_PICK` suffix so it doesn't collide. `isBlend`
+ * and `disableCulling` are hardcoded false — the pick pass is always opaque
+ * with standard back-face culling (mirrors the color first pass).
+ *
+ * Returns null while the pipeline is materializing through the central cache;
+ * the caller omits the pick command for this tile this frame (the color
+ * command still renders, so the only effect is a one-frame gap in globe
+ * pick coverage — `scene.pick` over a just-appeared tile variant).
+ */
+export function selectPickPipeline(
+  host: PipelineHost,
+  isQuantized: boolean,
+  hasNormals: boolean,
+  hasWebMercatorT: boolean,
+  strideBytes: number,
+  useClipDistances: boolean = false,
+  hasGeodeticSurfaceNormals: boolean = false,
+): GPURenderPipeline | null {
+  const cdSuffix = useClipDistances ? "_CD" : "";
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
+  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}${cdSuffix}_PICK|${defines.toString(16)}`;
+  let entry = host._pipelineCache.get(cacheKey);
+  if (!entry) {
+    const colorDescriptor = buildPipelineDescriptor(
+      host,
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      false, // isBlend — pick is opaque (depth-write)
+      strideBytes,
+      DebugFragmentMode.NONE,
+      useClipDistances,
+      hasGeodeticSurfaceNormals,
+      false, // disableCulling — standard back-face cull, matches color first pass
+    );
+    const descriptor = buildPickPipelineDescriptor(
+      colorDescriptor,
+      "fragmentPickMain",
+      {
+        name: `${colorDescriptor.name} pick`,
+        forceDepthWriteEnabled: true,
+      },
+    );
+    entry = { descriptor, pipeline: null, pending: false };
+    host._pipelineCache.set(cacheKey, entry);
+  }
+  // DP-H44 — create the pick pipeline SYNCHRONOUSLY rather than routing through
+  // the central async cache (`resolveGlobePipelineEntry`). The central cache's
+  // async `getPipeline` path silently never resolves for this pick-descriptor
+  // shape (single color target + `multisample: undefined`, derived by
+  // `buildPickPipelineDescriptor`), leaving the entry permanently null — so the
+  // globe pick command would never attach. Sync creation is the documented
+  // cache-less fallback (`resolveGlobePipelineEntry` uses the same call when no
+  // central cache is present) and is cheap here: the WGSL module is already
+  // compiled for the color pipeline (shared module), so this only assembles the
+  // pipeline object, once per variant (cached in `entry.pipeline`).
+  if (!entry.pipeline && host._device) {
+    try {
+      entry.pipeline = host._device.createRenderPipeline(
+        descriptorToGPU(entry.descriptor),
+      );
+    } catch (e) {
+      // Permanent error — a broken pick pipeline silently disables globe
+      // picking, which is a real bug a report needs to surface.
+      console.error(
+        `[CesiumJS:WebGPU] Globe pick pipeline creation failed (${cacheKey}):`,
+        e,
+      );
+    }
+  }
+  return entry.pipeline;
 }
 
 /**

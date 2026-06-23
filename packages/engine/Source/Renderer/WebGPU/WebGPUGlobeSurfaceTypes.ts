@@ -113,7 +113,10 @@ export interface GlobePipelineEntry {
 // oneOverLog2FarDepthFromNearPlusOne, reserved) — see GlobeTerrain.wgsl
 // CameraUniforms.logDepth and the renderer-wide log-depth epic (Approach A).
 // The tail carries zero until log depth activates, so the larger UB is inert.
-export const CAMERA_UNIFORM_FLOATS = 144;
+// DP-H44 (Batch 360) — +4 for the `pickColor` tail vec4 (globe pick-ID color,
+// read only by GlobeTerrain.wgsl::fragmentPickMain). Additive tail append: no
+// existing offset shifts. Carries (0,0,0,0) unless `globe.pickable` is set.
+export const CAMERA_UNIFORM_FLOATS = 148;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):
@@ -384,6 +387,16 @@ export interface ImageryGPUTexture {
 /** Descriptor for a single tile draw pass */
 export interface TileDrawDescriptor {
   pipeline: GPURenderPipeline;
+  // DP-H44 (Batch 360) — globe terrain pick pipeline (fragmentPickMain, single
+  // pick-FBO target, blend + G-buffer slot stripped, single-sample, depth-write
+  // forced on). Present ONLY on the primary first-pass color descriptor (not on
+  // the translucency depth-only / back-face pre-pass descriptors). The scene
+  // adapter (`addWebGPUDrawCommandsForTile`) builds the per-tile pick command
+  // from this + the SAME bind groups (the camera UB carries `pickColor` at its
+  // tail) and attaches it via `command.derivedCommands.picking.pickCommand`, so
+  // the WebGPU pick pass dispatches it. `null` while the pipeline is still
+  // materializing in the central cache (one-frame skip, same as `pipeline`).
+  pickPipeline?: GPURenderPipeline | null;
   bindGroups: GPUBindGroup[];
   // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — dynamic byte offsets for
   // group 0's two uniform-buffer bindings (camera UB, tile UB). The

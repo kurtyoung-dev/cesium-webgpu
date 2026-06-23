@@ -24,6 +24,26 @@
 
 ---
 
+## Batch 360 — WebGPU globe terrain picking, opt-in (DP-H44) (2026-06-23)
+
+**Item:** DP-H44 (QUEUE Tier-1 #6). Globe surface emitted no pick-ID on WebGPU → terrain invisible to `scene.pick`.
+
+**Investigation correction (critical):** the WebGL globe `DrawCommand` ALSO carries no `pickId` (`GlobeSurfaceTileProviderRendering.js:1771-1782`); `GlobeSurfaceTileProvider.updateForPick` only re-pushes the *color* commands, so WebGL `scene.pick` ALSO returns `undefined` over the globe — the re-push exists purely to populate pick-FBO DEPTH for `scene.pickPosition`. So "return the globe from `scene.pick`" is a deliberate DIVERGENCE from WebGL parity. Surfaced this to the user, who chose to gate it behind a default-`false` `Globe.pickable` flag.
+
+**Three non-obvious failure modes hit during bring-up (each cost a debug cycle — documented so the next session skips them):**
+
+1. **Central pipeline cache silently never resolves single-target / `multisample:undefined` descriptors.** `selectPickPipeline` routed the pick descriptor through `resolveGlobePipelineEntry` → `WebGPURenderPipelineCache.getPipeline` (async). It returned `null` FOREVER with NO console error and NO validation error. Direct sync `device.createRenderPipeline(descriptorToGPU(pickDescriptor))` succeeded immediately with zero validation errors — proving the descriptor is valid and the async cache path is the culprit (the ellipsoid pick uses the same helper but a different target shape). **Fix:** create the globe pick pipeline synchronously (the documented cache-less fallback; the WGSL module is already compiled for the color pipeline, so it only assembles the pipeline object, once per variant).
+
+2. **`updateForPick` re-pushes the empty WebGPU `_drawCommands`.** `QuadtreePrimitive.render` only builds globe commands under `passes.render`; during pick it calls `tileProvider.updateForPick`, which re-pushes the WebGL `_drawCommands` array — empty on WebGPU (the WebGPU globe pushes inline command objects straight to `frameState.commandList`). So the WebGPU globe was ENTIRELY ABSENT from the pick pass — the pick command's `execute` never ran. **Fix:** `updateWebGPUForPick` REBUILDS fresh commands (with the pick command attached) for the selected tiles in the pick frame's ring page; re-pushing render-frame commands is unsafe because the camera UB is ring-allocated (slice recycled by pick time).
+
+3. **"depth always" was unnecessary AND caused a foreground-occlusion regression.** Initial design always-attached the globe pick command (write depth even when `!pickable`) on the theory that `pickPosition` needs pick-FBO globe depth. But `pickPosition` worked on WebGPU BEFORE this change (it reads the MAIN-pass globe-depth texture, not the pick FBO). Always-writing globe depth made the globe occlude a foreground Point in the pick pass (multi-frustum depth) → the point became unpickable. **Fix:** gate the globe out of the pick pass entirely when `!pickable` — default behavior identical to pre-change (foreground picking intact, `scene.pick` undefined over globe, `pickPosition` unaffected).
+
+**Implementation:** `pickColor: vec4` at the camera-UB TAIL (`GlobeTerrain.wgsl` after `logDepth`, `CAMERA_UNIFORM_FLOATS` 144→148, packed in `WebGPUGlobeSurfaceCameraUB.ts`); `@fragment fn fragmentPickMain → camera.pickColor`; `selectPickPipeline` (sync); `Globe.pickable` + `createPickId` in `Globe.beginFrame`; `updateWebGPUForPick` pick-frame rebuild.
+
+**Files:** `GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceTypes.ts`, `WebGPUGlobeSurfaceCameraUB.ts`, `WebGPUGlobeSurfacePipelines.ts`, `WebGPUGlobeSurfaceRenderer.ts`, `Scene/Globe.js`, `Scene/GlobeSurfaceTileProvider.js`, `Scene/GlobeSurfaceTileProviderRendering.js`. **Probe:** `Tools/visual-regression/probe-globe-pick-h44.mjs`. Render regression `probe-camera-track.mjs` meanDiff 1.55% (== baseline).
+
+---
+
 ## Batch 359 — glTF VEC3 COLOR_0 widened to RGBA on WebGPU (DP-H37) (2026-06-22)
 
 **Item:** DP-H37 (QUEUE Tier-1; was "unverified"). The WebGPU model vertex layout slot 4 (`color0`) is `arrayStride: 16` / `format: float32x4` (`WebGPUModelPipelineCache.js:506-508`), but a glTF `COLOR_0` accessor may be **VEC3**. The main color0 buffer path (`WebGPUModelRenderer.js:1207`) called `normalizeColorData` (converts the component TYPE) but never widened the component COUNT, so a VEC3 source produced a 12-byte-stride buffer the GPU read at a 16-byte stride → progressively shifted, corrupted vertex colors. (The edge emitter already widened via `expandColorsToRGBA`; the main path didn't.)

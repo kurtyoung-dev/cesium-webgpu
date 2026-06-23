@@ -715,6 +715,38 @@ export function createCameraUniformBuffer(
   data[offset++] = ldFactor;
   data[offset++] = 0.0; // reserved
 
+  // ─── DP-H44 (Batch 360): globe pick color tail (vec4, offsets 144-147) ───
+  // Read ONLY by GlobeTerrain.wgsl::fragmentPickMain (the pick-pass entry
+  // point). `Globe.beginFrame` stashes the globe's registered pick-ID color
+  // on `tileProvider._webgpuGlobePickColor` when `globe.pickable` is true,
+  // and clears it otherwise. (0,0,0,0) → the pick FBO still receives globe
+  // DEPTH (so `scene.pickPosition` works over terrain, matching WebGL's
+  // `updateForPick` re-push) but writes a zero pick color, leaving
+  // `scene.pick` undefined over the globe (WebGL parity). A non-zero color
+  // makes `scene.pick` return the Globe. Additive tail-append — no existing
+  // offset shifts.
+  const pickColor = (
+    tileProvider as unknown as {
+      _webgpuGlobePickColor?: {
+        red: number;
+        green: number;
+        blue: number;
+        alpha: number;
+      } | null;
+    }
+  )?._webgpuGlobePickColor;
+  if (pickColor) {
+    data[offset++] = pickColor.red;
+    data[offset++] = pickColor.green;
+    data[offset++] = pickColor.blue;
+    data[offset++] = pickColor.alpha;
+  } else {
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+  }
+
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this
   // globe command log-encodes the whole depth texture against onto the SHARED
   // uniformState (the one object that crosses the GraphicsContext boundary to

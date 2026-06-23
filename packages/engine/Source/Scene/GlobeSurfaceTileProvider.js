@@ -27,6 +27,7 @@ import TerrainState from "./TerrainState.js";
 import TileSelectionResult from "./TileSelectionResult.js";
 import {
   addDrawCommandsForTile,
+  updateWebGPUForPick,
   updateTileBoundingRegion,
   pushCommand,
   isUndergroundVisible,
@@ -453,6 +454,12 @@ class GlobeSurfaceTileProvider {
    * @param {FrameState} frameState The frame state.
    */
   updateForPick(frameState) {
+    // DP-H44 — WebGPU rebuilds fresh globe commands (with the pick command
+    // attached) for the selected tiles in the pick frame; the WebGL
+    // `_drawCommands` re-push below is skipped (it's empty on WebGPU anyway).
+    if (updateWebGPUForPick(this, frameState)) {
+      return;
+    }
     const drawCommands = this._drawCommands;
     for (let i = 0, length = this._usedDrawCommands; i < length; ++i) {
       pushCommand(drawCommands[i], frameState);

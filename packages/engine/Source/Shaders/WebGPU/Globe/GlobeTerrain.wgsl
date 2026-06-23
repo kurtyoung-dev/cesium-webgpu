@@ -149,6 +149,17 @@ struct CameraUniforms {
   // LOG_DEPTH` blocks below are the only readers. Packed by
   // WebGPUGlobeSurfaceCameraUB. See WebGPULogDepth.ts.
   logDepth: vec4<f32>,
+  // ─── DP-H44 (Batch 360): globe terrain pick color ───
+  // The globe's registered pick-ID color, read ONLY by `fragmentPickMain`
+  // (the pick-pass entry point). Packed at the camera-UB TAIL by
+  // WebGPUGlobeSurfaceCameraUB so the additive layout shifts no existing
+  // offset. (0,0,0,0) unless `globe.pickable` is set — so by default the
+  // pick FBO receives globe DEPTH (matching WebGL's `updateForPick`
+  // re-push, which is what `scene.pickPosition` needs) but writes a zero
+  // pick color, leaving `scene.pick` undefined over the globe (WebGL
+  // parity). When `globe.pickable` is true this carries the real pick-ID
+  // color and `scene.pick` returns the Globe.
+  pickColor: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -2632,6 +2643,27 @@ fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
   out.depth = csm_writeLogDepth(g_fragLogDepth, camera.logDepth.z);
   //>>endif
   return out;
+}
+
+// DP-H44 (Batch 360) — globe terrain pick entry point. Outputs the globe's
+// pick color (packed at the camera-UB tail) into the single-target pick FBO.
+// Rendered by the pick-pass pick pipeline (buildPickPipelineDescriptor strips
+// the G-buffer slot-1 target + blend + MSAA from the color descriptor). Writes
+// STANDARD rasterizer depth (no @builtin(frag_depth)) so the pick FBO depth
+// stays consistent with the model / primitive pick pipelines, which also write
+// standard depth. The globe pick command is dispatched ONLY when
+// `globe.pickable` is set (the globe stays out of the pick pass otherwise — see
+// `GlobeSurfaceTileProviderRendering.updateWebGPUForPick`), so `scene.pick`
+// stays undefined over the globe by default (WebGL parity) and returns the
+// Globe only when the app opts in. `scene.pickPosition` reads the main-pass
+// globe-depth texture, not this FBO, so it works over terrain regardless.
+// NOTE: the cartographic-limit / clipping-plane discards that
+// `fragmentMain` applies are intentionally NOT mirrored here yet — globe pick
+// over a clipped/limited globe is a follow-up; the default (unclipped) globe
+// picks correctly.
+@fragment
+fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return camera.pickColor;
 }
 
 @fragment
