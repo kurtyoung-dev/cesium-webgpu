@@ -373,6 +373,25 @@ function configureWebGPUPostProcessPipeline(
   );
   pipeline.setTonemappingMode(cache.tonemapMode);
 
+  // --- Auto-exposure: match WebGL (NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY,
+  //     Batch 364) ---
+  // WebGL only runs the auto-exposure reduction when the user opts in
+  // (`PostProcessStageCollection._autoExposureEnabled`, default false).
+  // `addAutoExposure` is wired unconditionally on WebGPU (B.14) and
+  // `WebGPUAutoExposure.enabled` defaults true, and nothing here synced the
+  // flag down — so WebGPU auto-exposed EVERY frame. On a near-black HDR
+  // night sky the adaptive exposure collapsed the whole frame to black
+  // (diag-stars-hdr-autoexposure: maxLum 0 with AE-on vs 761 / 5 saturated
+  // bloom-feeding star points with AE-off), crushing the bright catalog
+  // stars and their bloom halos. Honor the same opt-in flag WebGL uses so
+  // the two backends expose identically by default; the always-on B.14
+  // behavior (SDR day/night recovery) is itself a WebGL divergence and is
+  // dropped in favor of parity. Users who set `autoExposure = true` get the
+  // adaptive path on both backends.
+  pipeline.autoExposureEnabled =
+    (collection as unknown as { _autoExposureEnabled?: boolean })
+      ._autoExposureEnabled === true;
+
   // --- Bloom: lazily initialize on first enable ---
   // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — map ALL six WebGL bloom
   // uniforms (contrast, brightness, glowOnly, delta, sigma, stepSize)

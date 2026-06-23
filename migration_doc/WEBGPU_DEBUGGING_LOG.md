@@ -24,6 +24,24 @@
 
 ---
 
+## Batch 364 — WebGPU HDR night sky crushed black by always-on auto-exposure (NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY) (2026-06-23)
+
+**Item:** NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY (QUEUE Tier-3). Under `scene.highDynamicRange = true`, the WebGPU night sky rendered dramatically under-bright vs WebGL — bright catalog stars + their bloom halos vanished. Prior re-investigation correctly localized it to the "shared HDR post-process path" but left 3 unpinned suspects (tonemap / auto-exposure / bloom) and scoped it as needing broad HDR regression.
+
+**Root cause (pinned):** auto-exposure. WebGL only runs the auto-exposure luminance reduction when the user opts in (`PostProcessStageCollection._autoExposureEnabled`, default `false`). WebGPU calls `addAutoExposure` UNCONDITIONALLY (`WebGPUSceneRendererEnsureResources.ts`, AUDIT B.14 "always-on"), `WebGPUAutoExposure.enabled` defaults `true`, and `configureWebGPUPostProcessPipeline` never synced the flag — so WebGPU auto-exposed EVERY frame. On a near-black HDR starfield the adaptive exposure collapsed the entire frame to pure black.
+
+**Decisive diagnostic (no rebuild — runtime toggle of `scene._alternateSceneRenderer._postProcess.autoExposureEnabled`):** `diag-stars-hdr-autoexposure.mjs` — AE-on → bright(>120)=0 / maxLum=**0** (black); AE-off → bright=235 / maxLum=761 / **5 saturated** bloom-feeding star points. That single toggle flips the whole bug.
+
+**Fix:** `configureWebGPUPostProcessPipeline` now sets `pipeline.autoExposureEnabled = collection._autoExposureEnabled === true` — the SAME opt-in flag WebGL honors, so both backends expose identically by default. The always-on B.14 behavior is itself a WebGL divergence (WebGL never auto-exposes by default) and is dropped for parity; `autoExposure = true` still gets the adaptive path on both backends.
+
+**Verification:** `probe-stars-hdr-autoexposure-parity.mjs` (NEW) — WebGPU HDR sky bright=231 / maxLum=756 / 4-saturated vs WebGL 282 / 717 / 0 (was 0/0/0), PNGs READ (no longer black; near-parity). **Didn't-break (shared HDR infra):** `probe-disc-size-orbit` identical to baseline (atmosphere disc 1.01%/0.01%); `probe-bloom-parity` PASS with WebGPU globe pixel `rgb(31,38,51)` == WebGL byte-for-byte + bloom ratio 1.01x; SDR night-sky control unchanged (READ — AE is a no-op in SDR). **Residual:** WebGL catalog sprites still marginally brighter (~82% bright-px) → separate `NEW-WEBGPU-STARFIELD-TUNE`.
+
+**Lesson:** when a "shared HDR" symptom has 3 suspects, a runtime toggle of each suspect (here `autoExposureEnabled`) pins the lever in one probe run with zero rebuilds — far cheaper than reading the tonemap/exposure/bloom math three times.
+
+**Files:** `WebGPUPostProcessStageCollection.ts` only. **Probes:** `diag-stars-hdr-autoexposure.mjs` (NEW, root-cause toggle), `probe-stars-hdr-autoexposure-parity.mjs` (NEW, regression gate), `probe-disc-size-orbit.mjs` + `probe-bloom-parity.mjs` (didn't-break).
+
+---
+
 ## Batch 363 — WebGPU CloudCollection volumetric raymarch port (NEW-CLOUD-IMPOSTOR-FS-PARITY) (2026-06-23)
 
 **Item:** NEW-CLOUD-IMPOSTOR-FS-PARITY (QUEUE Tier-3). The active WebGPU cloud shader (`CLOUD_WGSL`, inlined in `WebGPUCloudRenderer.ts` — NOT the unused `Shaders/WebGPU/Collections/CloudCollection.wgsl`) was a flat 2D-noise impostor: a radial smoothstep × 2D noise sample filling most of the billboard quad. WebGL's `CloudCollectionFS.glsl` raymarches a per-cloud ellipsoid volume. At 2000x1300 m / 15 km nadir the WebGPU cloud was a 282x184 px smooth blob vs WebGL's 63x53 px lumpy raymarched core (~4-5x linear / ~15x area), with `maximumSize`/`slice` ignored.
