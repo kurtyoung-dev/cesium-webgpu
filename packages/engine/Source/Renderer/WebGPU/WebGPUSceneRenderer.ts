@@ -1479,6 +1479,43 @@ export class WebGPUSceneRenderer {
       // produced a half-globe split where one frustum band rendered
       // in WebGPU range and the other in WebGL range.
       Matrix4.setDepthRangeType("webgpu");
+
+      // NEW-TAA-PROJECTION-JITTER-OVERWRITTEN (Batch 358) — re-apply the TAA
+      // sub-pixel jitter to THIS frustum's freshly-recomputed projection
+      // before `updateFrustum` captures it. `Scene.js` applies the jitter to
+      // the camera's ORIGINAL-near/far projection (`applyProjectionJitter`),
+      // but the per-frustum near/far recompute above (forced via the NaN
+      // cache-bust) discards it — so without this the GPU camera UB packs an
+      // UN-jittered projection and TAA's static-edge anti-aliasing half never
+      // runs. `proj[8]/proj[9]` are the clip-space x/y center offset (the same
+      // indices `Scene.js` writes); the offset is near/far-independent, so the
+      // same jitterX/jitterY applies to every frustum slice. `updateFrustum →
+      // setProjection` clones this into `_projection` + marks every dependent
+      // matrix (viewProjection, VP-RTE, MVP, MVP-RTE) dirty, so the jitter
+      // flows into the camera UB. Gated on `taaEnabled` (and not frozen) — a
+      // strict no-op for all non-TAA rendering.
+      const taaScene = scene as unknown as {
+        taaEnabled?: boolean;
+        _snapshotMode?: { isFrozen?: boolean };
+        _alternateSceneRenderer?: {
+          _postProcess?: { taaEffect?: { jitterX: number; jitterY: number } };
+        };
+      };
+      const taaEffect =
+        taaScene._alternateSceneRenderer?._postProcess?.taaEffect;
+      if (
+        taaScene.taaEnabled === true &&
+        taaEffect !== undefined &&
+        taaScene._snapshotMode?.isFrozen !== true
+      ) {
+        // Force the per-frustum recompute (cache NaN-busted above), then shift
+        // the clip-space center by the same jitter Scene.js computed this frame
+        // (proj[8/9] are 0 on a centered frustum, so += equals base + jitter).
+        const proj = frustum.projectionMatrix as unknown as Float64Array;
+        proj[8] += taaEffect.jitterX;
+        proj[9] += taaEffect.jitterY;
+      }
+
       uniformState.updateFrustum(frustum);
       // Restore — the frustum on the camera should stay unchanged for other systems
       frustum.near = origNear;
