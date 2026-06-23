@@ -24,6 +24,20 @@
 
 ---
 
+## Batch 359 — glTF VEC3 COLOR_0 widened to RGBA on WebGPU (DP-H37) (2026-06-22)
+
+**Item:** DP-H37 (QUEUE Tier-1; was "unverified"). The WebGPU model vertex layout slot 4 (`color0`) is `arrayStride: 16` / `format: float32x4` (`WebGPUModelPipelineCache.js:506-508`), but a glTF `COLOR_0` accessor may be **VEC3**. The main color0 buffer path (`WebGPUModelRenderer.js:1207`) called `normalizeColorData` (converts the component TYPE) but never widened the component COUNT, so a VEC3 source produced a 12-byte-stride buffer the GPU read at a 16-byte stride → progressively shifted, corrupted vertex colors. (The edge emitter already widened via `expandColorsToRGBA`; the main path didn't.)
+
+**Fix (`WebGPUModelRenderer.js`):** after `normalizeColorData`, widen RGB→RGBA (alpha=1.0) via the existing `expandColorsToRGBA` before `createVertexBuffer`. The component count is detected from the buffer length (`Math.round(colorFloat.length / geometry.vertexCount)`) because `geometry.color0ComponentCount` is never plumbed through the WebGPU path. No-op for VEC4 sources (`expandColorsToRGBA` returns the buffer unchanged).
+
+**Verified (Principle 8, baseline-isolated):** DP-H37 had **no local VEC3-`COLOR_0` asset** (BoxVertexColors + VertexColorTest are both VEC4), so I authored a synthetic regression asset `Tools/visual-regression/assets/vec3color-quad.gltf` (a lit quad with VEC3 `COLOR_0` red/green/blue/yellow corners) + `probe-vertexcolor-vec3.mjs`. **Baseline (fix stashed): WebGPU-vs-WebGL diff 77.95%** (blue crushed to 24.9 — the stride corruption). **With fix: 5.43%** (matches WebGL; the residual is the ~3-5% model lighting parity, same as the VEC4 BoxVertexColors control). PNGs read: the vertex-color gradient now matches WebGL.
+
+**Separate bug surfaced (Principle 9), tracked NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK:** a `KHR_materials_unlit` model renders **BLACK on WebGPU** (the first synthetic quad used `KHR_materials_unlit` and rendered nothing; `VertexColorTest` — also effectively unlit — likewise renders black on WebGPU while WebGL shows it). The DP-H37 asset was switched to a plain lit material to verify. Tracked in DEFERRED_WORK.
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js`, `Tools/visual-regression/probe-vertexcolor-vec3.mjs` (new), `Tools/visual-regression/assets/vec3color-quad.gltf` (new regression asset). **Probe:** `probe-vertexcolor-vec3.mjs`.
+
+---
+
 ## Batch 358 — WebGPU TAA sub-pixel jitter now reaches the GPU (NEW-TAA-PROJECTION-JITTER-OVERWRITTEN) (2026-06-22)
 
 **Item:** NEW-TAA-PROJECTION-JITTER-OVERWRITTEN (QUEUE Tier-1; Batch 357 was the camera-track tooling insert). `Scene.js` applies the TAA sub-pixel jitter to the camera projection (`applyProjectionJitter` → `proj[8/9] = base + jitter`), but the WebGPU frustum loop's `WebGPUSceneRenderer._updateFrustumUniforms` (line ~1437) calls `uniformState.updateFrustum(frustum)` which RECOMPUTES a fresh **un-jittered** projection per frustum — it even NaN-invalidates the cached projection for the WebGPU depth-range fix — so the GPU camera UB packed an un-jittered projection and TAA's static-edge anti-aliasing half never ran.

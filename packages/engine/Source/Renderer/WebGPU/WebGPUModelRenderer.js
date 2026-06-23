@@ -1210,9 +1210,27 @@ function ensurePrimitiveCache(
       geometry.color0ComponentType,
       geometry.color0Normalized,
     );
+    // DP-H37 — the slot-4 vertex layout is float32x4 (16-byte stride), but a
+    // glTF COLOR_0 accessor may be VEC3 (12-byte stride). `normalizeColorData`
+    // converts the component TYPE but preserves the component COUNT, so a VEC3
+    // source produces a 12-byte-stride buffer that the GPU reads at a 16-byte
+    // stride → progressively shifted, corrupted vertex colors. Widen RGB→RGBA
+    // (alpha = 1.0) so the stride matches the layout, mirroring the edge
+    // emitter's path; `expandColorsToRGBA` is a no-op for VEC4 sources.
+    // Component count is detected from the buffer length (the geometry's
+    // `color0ComponentCount` is not plumbed through the WebGPU path).
+    const color0Components =
+      defined(colorFloat) && geometry.vertexCount > 0
+        ? Math.round(colorFloat.length / geometry.vertexCount)
+        : 4;
+    const rgba = expandColorsToRGBA(
+      colorFloat,
+      color0Components,
+      geometry.vertexCount,
+    );
     primCache.colorBuffer = createVertexBuffer(
       device,
-      colorFloat,
+      rgba ?? colorFloat,
       `Prim color`,
     );
   }
