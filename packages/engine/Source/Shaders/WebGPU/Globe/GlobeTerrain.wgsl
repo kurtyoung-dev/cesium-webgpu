@@ -1079,65 +1079,86 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   // below consumes the split directly so it stays in the RTE domain.
   let center3D = camera.center3DHigh + camera.center3DLow;
 
-  // Vertical exaggeration (3D mode only — 2D/Columbus use raw height)
-  var exaggeratedPosition = position;
-  let exaggeration = tile.verticalExaggeration;
-  if (exaggeration != 1.0 && camera.sceneMode > 2.5) {
-    let position3D = position + center3D;
-    // DP-H25 — prefer the true geodetic surface normal (from
-    // TerrainEncoding) over `normalize(position3D)` (the ellipsocentric
-    // normal). On WGS84 the two diverge by up to 0.2° at mid-latitudes,
-    // which drifts exaggerated terrain away from the ellipsoid surface.
-    // Callers that have no geodetic normal attribute pass vec3(0) as a
-    // sentinel; dot(n, n) > 0.25 rules out the zero vector AND any
-    // non-unit debug noise without paying for a `length()`.
-    let hasGeoNormal = dot(geodeticSurfaceNormal, geodeticSurfaceNormal) > 0.25;
-    let ellipsoidNormal = select(
-      normalize(position3D),
-      geodeticSurfaceNormal,
-      hasGeoNormal,
-    );
-    let ellipsoidR = select(
-      EARTH_RADIUS_FALLBACK,
-      camera.ellipsoidRadius,
-      camera.ellipsoidRadius > 1.0,
-    );
-    let surfaceHeight = length(position3D) - ellipsoidR;
-    let relativeHeight = tile.verticalExaggerationRelativeHeight;
-    let newHeight = (surfaceHeight - relativeHeight) * exaggeration + relativeHeight;
-    let clampedHeight = max(newHeight, -ellipsoidR * 0.5);
-    let offset = ellipsoidNormal * (clampedHeight - surfaceHeight);
-    exaggeratedPosition = position + offset;
-  }
-
-  let position3DWC = exaggeratedPosition + center3D;
-
   // Scene mode branching
   let mode = camera.sceneMode;
 
-  // Resolve the height used by Morph / Columbus planar projections. Prefer
-  // the caller-supplied precomputed height (exact when quantized decodes the
-  // [minH, maxH] range, or when uncompressed carries height in position.w);
-  // fall back to `length(position3DWC) - EARTH_RADIUS` only as a last resort
-  // since that subtraction loses sub-meter precision at Earth radius.
-  let useProvidedHeight = precomputedHeight > HEIGHT_SENTINEL_UNAVAILABLE + 1.0;
+  // ── Vertical exaggeration ──
+  // MORPH-EXAG-SKIRTS (Batch 362) — WebGL applies exaggeration in ALL scene
+  // modes (GlobeVS.glsl:245-258): it exaggerates the vertex HEIGHT ATTRIBUTE
+  // (`newHeight = (height − rel)*exag + rel`), offsets the 3D position along the
+  // ellipsoid normal by `(newHeight − height)`, and feeds `newHeight` to the
+  // planar `getPositionPlanarEarth` (which uses height as the projected X axis).
+  // We mirror that exactly so SCENE3D, COLUMBUS_VIEW, and MORPHING all exaggerate
+  // CONSISTENTLY — the previous code gated the position offset to `sceneMode >
+  // 2.5` and fed the planar legs RAW height, so CV/morph terrain rendered flat
+  // and a morph would have popped between an exaggerated 3D leg and a flat planar
+  // leg. **Crux of the skirt fix:** exaggerate the ATTRIBUTE (`resolvedHeight`),
+  // NOT `length(position3D) − radius`. Skirt vertices carry a REDUCED height
+  // attribute (edgeHeight − skirtHeight, HeightmapTessellator.js:399), so the
+  // (now-taller) skirt quad still points DOWN below the surface and stays
+  // occluded by the adjacent tile exactly as in WebGL; the Batch-216 attempt
+  // exaggerated the geometric `length()` height and shattered skirts into
+  // visible vertical walls.
+  let exaggeration = tile.verticalExaggeration;
+  let exagRelativeHeight = tile.verticalExaggerationRelativeHeight;
   let fallbackEllipsoidR = select(
     EARTH_RADIUS_FALLBACK,
     camera.ellipsoidRadius,
     camera.ellipsoidRadius > 1.0,
   );
+
+  // RAW (un-exaggerated) height attribute. Prefer the caller-supplied precomputed
+  // height (exact when quantized decodes [minH,maxH], or when uncompressed
+  // carries height in position.w); fall back to `length(rawPosition3D) − R` only
+  // as a last resort (loses sub-meter precision at Earth radius). Computed from
+  // the RAW position so exaggeration never feeds back into its own input.
+  let rawPosition3D = position + center3D;
+  let useProvidedHeight = precomputedHeight > HEIGHT_SENTINEL_UNAVAILABLE + 1.0;
   let resolvedHeight = select(
-    length(position3DWC) - fallbackEllipsoidR,
+    length(rawPosition3D) - fallbackEllipsoidR,
     precomputedHeight,
     useProvidedHeight,
   );
+
+  // Exaggerated height (WebGL `newHeight`), clamped to not pass through earth
+  // center. `== resolvedHeight` when verticalExaggeration == 1.0 (byte-identical
+  // to the pre-fix path). Consumed by the planar legs AND the 3D position offset.
+  let exaggeratedHeight =
+    (resolvedHeight - exagRelativeHeight) * exaggeration + exagRelativeHeight;
+  let planarHeight = max(exaggeratedHeight, -fallbackEllipsoidR);
+
+  // 3D position offset along the (geodetic, DP-H25) ellipsoid normal. Applied
+  // whenever exaggeration is active — the SCENE3D leg and the MORPHING 3D
+  // component both consume `exaggeratedPosition`; CV/2D don't use it for
+  // out.position so the offset is harmless there.
+  var exaggeratedPosition = position;
+  if (exaggeration != 1.0) {
+    // DP-H25 — prefer the true geodetic surface normal over the ellipsocentric
+    // `normalize(rawPosition3D)` (they diverge up to 0.2° at mid-latitudes).
+    // Callers with no geodetic normal pass vec3(0); dot(n,n) > 0.25 rules out
+    // the zero vector AND non-unit debug noise without paying for a `length()`.
+    let hasGeoNormal = dot(geodeticSurfaceNormal, geodeticSurfaceNormal) > 0.25;
+    let ellipsoidNormal = select(
+      normalize(rawPosition3D),
+      geodeticSurfaceNormal,
+      hasGeoNormal,
+    );
+    // WebGL `offset = ellipsoidNormal * (newHeight − height)` — attribute-based.
+    // For non-skirt vertices this equals the prior `length()`-based offset (the
+    // attribute IS the terrain height); skirts differ but are hidden in 3D, so
+    // the SCENE3D look is unchanged.
+    exaggeratedPosition =
+      position + ellipsoidNormal * (planarHeight - resolvedHeight);
+  }
+
+  let position3DWC = exaggeratedPosition + center3D;
 
   if (mode < 0.5) {
     // ── MORPHING ── blend between 3D and 2D positions
     // Note: planar/3D positions are NOT relative-to-eye in this mode, so we
     // use modifiedModelViewProjection (matches WebGL czm_projection * modelView).
     let morphTime = camera.morphTime;
-    let planar = computePlanarPosition(resolvedHeight, textureCoordinates);
+    let planar = computePlanarPosition(planarHeight, textureCoordinates);
     let position2DWC = vec4<f32>(planar, 1.0);
     let position3DWC4 = vec4<f32>(position3DWC, 1.0);
     // Manual lerp (not the builtin `mix`) — mirrors WebGL `czm_columbusViewMorph`
@@ -1154,7 +1175,7 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     out.v_positionEC = (camera.modifiedModelView * morphPos).xyz;
   } else if (mode < 1.5) {
     // ── COLUMBUS_VIEW ── planar with terrain height
-    let planarPos = computePlanarPosition(resolvedHeight, textureCoordinates);
+    let planarPos = computePlanarPosition(planarHeight, textureCoordinates);
     out.position = camera.modifiedModelViewProjection * vec4<f32>(planarPos, 1.0);
     out.v_positionEC = (camera.modifiedModelView * vec4<f32>(planarPos, 1.0)).xyz;
   } else if (mode < 2.5) {

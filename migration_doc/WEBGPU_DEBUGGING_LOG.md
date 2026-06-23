@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 362 — WebGPU CV/morph vertical exaggeration + the skirt-wall fix (MORPH-EXAG-SKIRTS) (2026-06-23)
+
+**Item:** MORPH-EXAG-SKIRTS (QUEUE Tier-3). Vertical exaggeration was dropped in COLUMBUS_VIEW + MORPHING on WebGPU (`GlobeTerrain.wgsl` gated the exaggeration to `sceneMode > 2.5` and fed the planar legs raw height) → CV terrain rendered FLAT. A naive ungate (Batch 216, reverted) shattered skirts into vertical walls.
+
+**Root cause of the skirt walls (now understood):** skirt vertices (tile-edge geometry extruded down to hide LOD cracks) carry a REDUCED height ATTRIBUTE (`heightSample -= skirtHeight`, `HeightmapTessellator.js:399`) AND an extruded-down geometric position. The Batch-216 attempt exaggerated `length(position3D) - radius` (the GEOMETRIC height), which pushed the already-low skirts much further down as visible walls. WebGL (`GlobeVS.glsl:245-258`) instead exaggerates the height ATTRIBUTE (`newHeight = (height - rel)*exag + rel`) and feeds `newHeight` to the planar `getPositionPlanarEarth` — so the skirt's planar X stays consistent with its edge and the taller skirt remains occluded behind the adjacent tile.
+
+**Fix:** mirror WebGL exactly. Compute `resolvedHeight` from the RAW (un-exaggerated) position; `exaggeratedHeight = (resolvedHeight - rel)*exag + rel` (clamped to `-radius`); feed it to `computePlanarPosition` for CV + the morph planar leg; offset the 3D position along the geodetic ellipsoid normal by `(exaggeratedHeight - resolvedHeight)` for SCENE3D + the morph 3D leg — UN-gated from `sceneMode > 2.5` so all modes exaggerate consistently (no morph pop). `verticalExaggeration == 1.0` → byte-identical to the pre-fix path.
+
+**Two verification lessons:**
+1. **The "blue water streaks" were a red herring — baseline-isolate before blaming your change.** After the fix, WebGPU CV (and 3D) showed thin bright-blue streaks WebGL lacked. They LOOKED like a skirt/exaggeration artifact. Stashing the one-file `GlobeTerrain.wgsl` change + rebuilding + re-probing 3D exaggeration showed the streaks were ALREADY there pre-fix → a PRE-EXISTING water/lake-color parity gap (NEW-WEBGPU-EXAG-WATER-STREAKS) that exaggeration merely amplifies by deepening valleys. The fix is clean; the streaks are a separate item.
+2. **Changing a working path (the SCENE3D offset, length-based → attribute-based) needs its own didn't-break probe** (`probe-exaggeration-3d.mjs`, NEW) PLUS the exag==1.0 byte-identity check (camera-track meanDiff 1.557% == baseline).
+
+**Files:** `GlobeTerrain.wgsl` only. **Probes:** `probe-exaggeration-cv.mjs` (CV flat → matching WebGL relief), `probe-exaggeration-3d.mjs` (NEW, 3D didn't-break), `probe-camera-track.mjs` (exag==1.0 byte-identity).
+
+---
+
 ## Batch 360 — WebGPU globe terrain picking, opt-in (DP-H44) (2026-06-23)
 
 **Item:** DP-H44 (QUEUE Tier-1 #6). Globe surface emitted no pick-ID on WebGPU → terrain invisible to `scene.pick`.
