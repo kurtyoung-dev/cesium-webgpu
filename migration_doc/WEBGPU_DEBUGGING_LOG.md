@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 363 — WebGPU CloudCollection volumetric raymarch port (NEW-CLOUD-IMPOSTOR-FS-PARITY) (2026-06-23)
+
+**Item:** NEW-CLOUD-IMPOSTOR-FS-PARITY (QUEUE Tier-3). The active WebGPU cloud shader (`CLOUD_WGSL`, inlined in `WebGPUCloudRenderer.ts` — NOT the unused `Shaders/WebGPU/Collections/CloudCollection.wgsl`) was a flat 2D-noise impostor: a radial smoothstep × 2D noise sample filling most of the billboard quad. WebGL's `CloudCollectionFS.glsl` raymarches a per-cloud ellipsoid volume. At 2000x1300 m / 15 km nadir the WebGPU cloud was a 282x184 px smooth blob vs WebGL's 63x53 px lumpy raymarched core (~4-5x linear / ~15x area), with `maximumSize`/`slice` ignored.
+
+**Root cause:** two halves. (1) The FS never did the volumetric raymarch — it just faded the quad radially, so the bright footprint ≈ the whole quad (sized by `scale`) instead of the inner ellipsoid (`0.82 * maximumSize`). (2) The instance buffer never carried `maximumSize` (vec3) at all — only `scale.xy` + `slice` — so even a correct FS had no ellipsoid extent to march. The renderer also defaulted `scale` to 50/30 and `slice` to 0.0, both wrong vs `CumulusCloud` (20/12, -1.0).
+
+**Fix:** ported the full volumetric FS into `CLOUD_WGSL` — ray-vs-ellipsoid intersection (unit-sphere transform, optional `slice` plane), Gardner (1985) analytic texture `T()`, `I()` diffuse/specular/texture shading, and 3-channel worley-FBM erosion (`TR = ndDot^3 - W`, eroded by W2/W3). The worley is an inline port of `CloudNoiseFS.glsl`'s `worleyNoise`/`worleyFBMNoise` (cells from `random3`, internal `p*freq`), normalized by cloud radius (~4 cells across) — substituting WebGL's baked 3D-packed-2D noise texture (bindings 1/2 retained for the BGL + a future exact-texture pass). Wired `maximumSize` through: instance stride 56→68 (+`@location(5)` float32x3 at offset 56), velocity instance + prev strides and all `*56`/`56-byte` sentinels bumped to 68, `buildInstanceBuffer` writes `maximumSize` (default `(sx, sy, min(sx,sy)/1.5)`) and uses correct scale/slice defaults.
+
+**Verification (probe-cloud-volumetric-parity.mjs, NEW — renders the same single cloud on BOTH backends, measures bright-pixel bbox):** baseline reproduced the bug exactly (WebGL 63x53, WebGPU 282x184, area 15.5x — matching the DEFERRED_WORK measurement). After: WebGPU 103x78, **area 2.41x**. Both PNGs READ — smooth ellipse blob → lumpy worley-eroded cumulus puff. Tuning note: np frequency ×10 measured WORSE (2.94x — high-freq specks balloon the bbox); ×4 kept. **Didn't-break:** probe-cloud-property-edit PASS (68-byte stride rebuild + dirty-gate intact), probe-collections-regression PASS (cloud 131 px > 100 gate, no re-baseline needed), 0 console errors throughout.
+
+**Residual (tracked):** NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY — the inline worley leaves the cloud ~1.6x linear larger + denser/less grainy than WebGL's baked-texture worley; porting the exact `CloudNoiseFS` texture is a ~1-session follow-up.
+
+**Files:** `WebGPUCloudRenderer.ts` only. **Probes:** `probe-cloud-volumetric-parity.mjs` (NEW), `probe-cloud-property-edit.mjs` + `probe-collections-regression.mjs` (didn't-break).
+
+---
+
 ## Batch 362 — WebGPU CV/morph vertical exaggeration + the skirt-wall fix (MORPH-EXAG-SKIRTS) (2026-06-23)
 
 **Item:** MORPH-EXAG-SKIRTS (QUEUE Tier-3). Vertical exaggeration was dropped in COLUMBUS_VIEW + MORPHING on WebGPU (`GlobeTerrain.wgsl` gated the exaggeration to `sceneMode > 2.5` and fed the planar legs raw height) → CV terrain rendered FLAT. A naive ungate (Batch 216, reverted) shattered skirts into vertical walls.

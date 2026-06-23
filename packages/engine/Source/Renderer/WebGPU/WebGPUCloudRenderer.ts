@@ -147,18 +147,24 @@ struct VertexInput {
   @location(0) quadPos: vec2<f32>,
   @location(1) positionHigh: vec3<f32>,
   @location(2) positionLow: vec3<f32>,
-  @location(3) scaleAndBrightness: vec4<f32>,
+  @location(3) scaleAndBrightness: vec4<f32>, // xy=scale(m), z=brightness, w=slice
   @location(4) color: vec4<f32>,
+  // NEW-CLOUD-IMPOSTOR-FS-PARITY (Batch 363) — per-cloud ellipsoid extent
+  // (CumulusCloud.maximumSize, meters). The FS raymarches 0.82 * maximumSize.
+  @location(5) maximumSize: vec3<f32>,
 };
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
+  // Local raymarch offset in [-0.5, 0.5] (WebGL v_offset = dir - 0.5).
+  @location(0) vOffset: vec2<f32>,
   @location(1) vColor: vec4<f32>,
   @location(2) vBrightness: f32,
+  @location(3) vMaximumSize: vec3<f32>,
+  @location(4) vSlice: f32,
   //>>ifdef LOG_DEPTH
   // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
-  @location(3) v_logDepth: f32,
+  @location(5) v_logDepth: f32,
   //>>endif
 };
 
@@ -179,9 +185,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     input.quadPos.y * input.scaleAndBrightness.y * camera.projScaleY
   );
   output.position = centerClip + vec4<f32>(offset, 0.0, 0.0);
-  output.uv = input.quadPos * 0.5 + 0.5;
+  output.vOffset = input.quadPos * 0.5;
   output.vColor = input.color;
   output.vBrightness = input.scaleAndBrightness.z;
+  output.vMaximumSize = input.maximumSize;
+  output.vSlice = input.scaleAndBrightness.w;
   //>>ifdef LOG_DEPTH
   output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepth.x);
   output.position = csm_updatePositionDepth(output.position);
@@ -198,19 +206,189 @@ struct FragOutput {
   //>>endif
 };
 
+// ---- Volumetric cloud FS (NEW-CLOUD-IMPOSTOR-FS-PARITY, Batch 363) ----
+// Faithful port of CloudCollectionFS.glsl: raymarch the per-cloud ellipsoid
+// (0.82 * maximumSize) in a local eye space, shade with the Gardner (1985)
+// analytic texture function + diffuse/specular, then erode the silhouette with
+// 3-channel worley FBM (inline port of CloudNoiseFS.glsl's worley, in place of
+// the baked 3D-packed-2D noise texture — bindings 1/2 are retained for the
+// bind-group layout + a future exact-worley-texture pass). czm_epsilon2 = 0.01,
+// czm_pi = 3.141592653589793 inlined.
+
+fn csm_cloudRandom3(p: vec3<f32>) -> vec3<f32> {
+  let d1 = dot(p, vec3<f32>(127.1, 311.7, 932.8));
+  let d2 = dot(p, vec3<f32>(269.5, 183.3, 421.4));
+  return fract(vec3<f32>(sin(d1 - d2), cos(d1 * d2), d1 * d2));
+}
+
+// Worley (cellular) noise — internal "p * freq" matches CloudNoiseFS.worleyNoise.
+fn csm_cloudWorley(p: vec3<f32>, freq: f32) -> f32 {
+  let centerCell = floor(p * freq);
+  let pointInCell = fract(p * freq);
+  var shortest = 1000.0;
+  for (var z = -1.0; z <= 1.0; z = z + 1.0) {
+    for (var y = -1.0; y <= 1.0; y = y + 1.0) {
+      for (var x = -1.0; x <= 1.0; x = x + 1.0) {
+        let off = vec3<f32>(x, y, z);
+        let pt = off + csm_cloudRandom3(centerCell + off);
+        shortest = min(shortest, length(pointInCell - pt));
+      }
+    }
+  }
+  return shortest;
+}
+
+// 3-octave worley FBM (CloudNoiseFS.worleyFBMNoise, persistence 0.625).
+fn csm_cloudWorleyFBM(p: vec3<f32>, scale: f32) -> f32 {
+  var noise = 0.0;
+  var freq = 1.0;
+  var persistence = 0.625;
+  for (var i = 0; i < 3; i = i + 1) {
+    noise = noise + csm_cloudWorley(p * scale, freq * scale) * persistence;
+    persistence = persistence * 0.5;
+    freq = freq * 2.0;
+  }
+  return noise;
+}
+
+// Unit-sphere (r=0.5) intersection with optional slice plane.
+fn csm_cloudIntersectSphere(origin: vec3<f32>, dir: vec3<f32>, slice: f32,
+                            point: ptr<function, vec3<f32>>,
+                            normal: ptr<function, vec3<f32>>) -> bool {
+  let A = dot(dir, dir);
+  let B = dot(origin, dir);
+  let Cc = dot(origin, origin) - 0.25;
+  let disc = B * B - A * Cc;
+  if (disc < 0.0) { return false; }
+  let root = sqrt(disc);
+  var t = (-B - root) / A;
+  if (t < 0.0) { t = (-B + root) / A; }
+  var p = origin + t * dir;
+  if (slice >= 0.0) {
+    p.z = (slice * 0.5) - 0.5;
+    if (length(p) > 0.5) { return false; }
+  }
+  let n = normalize(p);
+  *point = p - 0.01 * n;
+  *normal = n;
+  return true;
+}
+
+// Ray vs ellipsoid: transform into unit-sphere space, intersect, transform back.
+fn csm_cloudIntersectEllipsoid(origin: vec3<f32>, dir: vec3<f32>, center: vec3<f32>,
+                               scale: vec3<f32>, slice: f32,
+                               point: ptr<function, vec3<f32>>,
+                               normal: ptr<function, vec3<f32>>) -> bool {
+  if (scale.x <= 0.01 || scale.y < 0.01 || scale.z < 0.01) { return false; }
+  let o = (origin - center) / scale;
+  let d = dir / scale;
+  var p: vec3<f32>;
+  var n: vec3<f32>;
+  let hit = csm_cloudIntersectSphere(o, d, slice, &p, &n);
+  if (hit) {
+    *point = (p * scale) + center;
+    *normal = n;
+  }
+  return hit;
+}
+
+// Gardner (1985) analytic cloud texture function.
+fn csm_cloudPhaseShift2D(p: vec2<f32>, freq: vec2<f32>) -> vec2<f32> {
+  return (3.141592653589793 / 2.0) * sin(freq.yx * p.yx);
+}
+fn csm_cloudPhaseShift3D(p: vec3<f32>, freq: vec2<f32>) -> vec2<f32> {
+  return csm_cloudPhaseShift2D(p.xy, freq)
+       + 3.141592653589793 * vec2<f32>(sin(freq.x * p.z));
+}
+fn csm_cloudT(point: vec3<f32>) -> f32 {
+  let T0 = 0.6;
+  let kk = 0.1;
+  var Ci = 0.8;
+  var FXY = vec2<f32>(0.6, 0.6);
+  var sum = vec2<f32>(0.0);
+  for (var i = 0; i < 5; i = i + 1) {
+    let PXY = csm_cloudPhaseShift3D(point, FXY);
+    Ci = Ci * 0.707;
+    FXY = FXY * 2.0;
+    let sinTerm = sin(FXY * point.xy + PXY);
+    sum = sum + Ci * sinTerm + vec2<f32>(T0);
+  }
+  return kk * sum.x * sum.y;
+}
+
+fn csm_cloudI(Id: f32, Is: f32, It: f32) -> f32 {
+  let a = 0.5; // ambient/scattered fraction
+  let t = 0.4; // texture shading fraction
+  let s = 0.25; // specular fraction
+  return (1.0 - a) * ((1.0 - t) * ((1.0 - s) * Id + s * Is) + t * It) + a;
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOutput {
-  let dist = length(input.uv - vec2<f32>(0.5));
-  let alpha = smoothstep(0.5, 0.2, dist);
-  let noise = textureSample(noiseTex, noiseSampler, input.uv * 2.0).r;
-  let cloudAlpha = alpha * (0.5 + 0.5 * noise) * input.vColor.a;
-  let cloudColor = input.vColor.rgb * input.vBrightness;
-  if (cloudAlpha < 0.01) { discard; }
   var out: FragOutput;
-  out.color = vec4<f32>(cloudColor, cloudAlpha);
   //>>ifdef LOG_DEPTH
   out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
   //>>endif
+
+  // Raycast from an arbitrarily smaller local space (WebGL parity).
+  let maxSize = input.vMaximumSize;
+  let coordinate = maxSize.xy * input.vOffset;
+  let ellipsoidScale = 0.82 * maxSize;
+  let ellipsoidCenter = vec3<f32>(0.0);
+
+  let zOffset = max(ellipsoidScale.z - 10.0, 0.0);
+  let eye = vec3<f32>(0.0, 0.0, -10.0 - zOffset);
+  let rayDir = normalize(vec3<f32>(coordinate, 1.0) - eye);
+  let rayOrigin = eye;
+
+  var cloudPoint = vec3<f32>(0.0);
+  var cloudNormal = vec3<f32>(0.0);
+  let hit = csm_cloudIntersectEllipsoid(
+    rayOrigin, rayDir, ellipsoidCenter, ellipsoidScale, input.vSlice,
+    &cloudPoint, &cloudNormal);
+  if (!hit) {
+    discard;
+    out.color = vec4<f32>(0.0);
+    return out;
+  }
+
+  let lightDir = normalize(vec3<f32>(0.2, -1.0, 0.7));
+  let Id = clamp(dot(cloudNormal, -lightDir), 0.0, 1.0);   // diffuse
+  let Is = max(pow(dot(-lightDir, -rayDir), 2.0), 0.0);     // specular
+  let It = csm_cloudT(cloudPoint);                          // texture
+  let intensity = csm_cloudI(Id, Is, It);
+  let color = vec3<f32>(intensity * clamp(input.vBrightness, 0.1, 1.0));
+
+  // Worley erosion. Normalize by cloud radius so the cell size is
+  // scale-invariant (~ a fixed number of cells across any cloud), then port
+  // the 3 channels = FBM at scales 1/2/3 (CloudCollectionFS noise.x/y/z).
+  let cloudRadius = max(ellipsoidScale.x, max(ellipsoidScale.y, ellipsoidScale.z));
+  // Frequency normalized by cloud radius (~4 cells across) — keeps the worley
+  // erosion lumpy without scattering high-freq specks that balloon the
+  // silhouette (np*10 measured worse footprint parity: 2.94x vs 2.41x area).
+  let np = cloudPoint / max(cloudRadius, 0.001) * 4.0;
+  let W  = clamp(csm_cloudWorleyFBM(np, 1.0), 0.0, 1.0);
+  let W2 = clamp(csm_cloudWorleyFBM(np, 2.0), 0.0, 1.0);
+  let W3 = clamp(csm_cloudWorleyFBM(np, 3.0), 0.0, 1.0);
+
+  let ndDot = clamp(dot(cloudNormal, -rayDir), 0.0, 1.0);
+  var TR = pow(ndDot, 3.0) - W;     // translucency
+  TR = TR * 1.3;
+  let minusDot = 0.5 - ndDot;
+  TR = TR - min(minusDot * W2, 0.0);
+  TR = TR - 0.8 * (minusDot + 0.25) * W3;
+
+  var shading = mix(1.0 - 0.8 * W * W, 1.0, Id * TR);
+  shading = clamp(shading + 0.2, 0.3, 1.0);
+
+  let finalColor = mix(vec3<f32>(0.5), shading * color, 1.15);
+  let cloud = vec4<f32>(finalColor, clamp(TR, 0.0, 1.0)) * input.vColor;
+  if (cloud.w < 0.01) {
+    discard;
+    out.color = vec4<f32>(0.0);
+    return out;
+  }
+  out.color = cloud;
   return out;
 }
 
@@ -357,8 +535,9 @@ function buildInstanceBuffer(
       instanceData: new Float32Array(0),
     };
   }
-  // Per instance: posHigh(12) + posLow(12) + scaleAndBrightness(16) + color(16) = 56 bytes
-  const data = new Float32Array(count * 14);
+  // Per instance: posHigh(12) + posLow(12) + scaleAndBrightness(16) + color(16)
+  //             + maximumSize(12) = 68 bytes (NEW-CLOUD-IMPOSTOR-FS-PARITY).
+  const data = new Float32Array(count * 17);
   let visibleCount = 0;
   for (let i = 0; i < count; i++) {
     const rawCloud =
@@ -373,6 +552,7 @@ function buildInstanceBuffer(
       brightness?: number;
       slice?: number;
       color?: CesiumColor;
+      maximumSize?: CesiumCartesian3;
     };
     // Per-cloud show flag — WebGL reads it, we previously rendered every
     // cloud regardless of show.
@@ -381,22 +561,30 @@ function buildInstanceBuffer(
     }
     const pos = cloud.position || new Cartesian3();
     EncodedCartesian3.fromCartesian(pos, scratchEncoded);
-    const off = visibleCount * 14;
+    const off = visibleCount * 17;
     data[off] = scratchEncoded.high.x;
     data[off + 1] = scratchEncoded.high.y;
     data[off + 2] = scratchEncoded.high.z;
     data[off + 3] = scratchEncoded.low.x;
     data[off + 4] = scratchEncoded.low.y;
     data[off + 5] = scratchEncoded.low.z;
-    data[off + 6] = cloud.scale?.x ?? 50.0;
-    data[off + 7] = cloud.scale?.y ?? 30.0;
+    // Defaults mirror CumulusCloud: scale (20,12), slice -1.0 (no slice plane).
+    const sx = cloud.scale?.x ?? 20.0;
+    const sy = cloud.scale?.y ?? 12.0;
+    data[off + 6] = sx;
+    data[off + 7] = sy;
     data[off + 8] = cloud.brightness ?? 1.0;
-    data[off + 9] = cloud.slice ?? 0.0;
+    data[off + 9] = cloud.slice ?? -1.0;
     const c = cloud.color;
     data[off + 10] = c?.red ?? 1.0;
     data[off + 11] = c?.green ?? 1.0;
     data[off + 12] = c?.blue ?? 1.0;
     data[off + 13] = c?.alpha ?? 0.8;
+    // maximumSize (CumulusCloud default = (scale.x, scale.y, min(sx,sy)/1.5)).
+    const ms = cloud.maximumSize;
+    data[off + 14] = ms?.x ?? sx;
+    data[off + 15] = ms?.y ?? sy;
+    data[off + 16] = ms?.z ?? Math.min(sx, sy) / 1.5;
     visibleCount++;
   }
   const buffer = device.createBuffer({
@@ -677,7 +865,7 @@ function _updateWebGPUCloudCollectionInner(
             ],
           },
           {
-            arrayStride: 56,
+            arrayStride: 68,
             stepMode: "instance" as GPUVertexStepMode,
             attributes: [
               {
@@ -699,6 +887,11 @@ function _updateWebGPUCloudCollectionInner(
                 shaderLocation: 4,
                 offset: 40,
                 format: "float32x4" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 5,
+                offset: 56,
+                format: "float32x3" as GPUVertexFormat,
               },
             ],
           },
@@ -956,7 +1149,7 @@ function _updateWebGPUCloudCollectionInner(
   }
 
   // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3, size-validation/overflow) —
-  // each cloud instance reads 56 bytes (`arrayStride: 56`); clamp the drawn
+  // each cloud instance reads 68 bytes (`arrayStride: 68`); clamp the drawn
   // instance count to what the instance buffer physically holds so a drift
   // between `instanceCount` and the last buffer grow can't issue an
   // out-of-range instanced draw (BUG-15 family). On the happy path the
@@ -964,7 +1157,7 @@ function _updateWebGPUCloudCollectionInner(
   const safeCloudInstanceCount = validateInstancedDrawBuffer(
     cache.instanceBuffer,
     cache.instanceCount,
-    56,
+    68,
     "CloudCollection",
   );
 
@@ -1045,7 +1238,7 @@ function attachCloudVelocityCommand(
     return;
   }
 
-  const requiredBytes = cache.instanceCount * 56;
+  const requiredBytes = cache.instanceCount * 68;
   if (
     !cache.prevInstanceBuffer ||
     cache.prevInstanceBuffer.size < requiredBytes
@@ -1115,7 +1308,7 @@ function attachCloudVelocityCommand(
               ],
             },
             {
-              arrayStride: 56,
+              arrayStride: 68,
               stepMode: "instance" as GPUVertexStepMode,
               attributes: [
                 {
@@ -1142,9 +1335,9 @@ function attachCloudVelocityCommand(
             },
             {
               // Prev-position stream (positions only — locs 5/6 of
-              // the same 56-byte stride; color/scale at offset 24+
-              // are ignored by the velocity VS).
-              arrayStride: 56,
+              // the same 68-byte stride; color/scale/maximumSize at offset
+              // 24+ are ignored by the velocity VS).
+              arrayStride: 68,
               stepMode: "instance" as GPUVertexStepMode,
               attributes: [
                 {
@@ -1234,12 +1427,12 @@ function attachCloudVelocityCommand(
   ) {
     // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3) — clamp the velocity
     // instanced draw to what the current + prev instance buffers hold
-    // (each 56 B/instance). The prev buffer is grown to `instanceCount*56`
+    // (each 68 B/instance). The prev buffer is grown to `instanceCount*68`
     // just above, so this is inert on the happy path.
     const safeVelocityInstanceCount = validateInstancedDrawBuffer(
       cache.instanceBuffer,
       cache.instanceCount,
-      56,
+      68,
       "CloudCollection velocity",
     );
     (cache.command as { velocityCommand?: unknown }).velocityCommand =
