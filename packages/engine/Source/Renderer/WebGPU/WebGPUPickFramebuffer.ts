@@ -142,6 +142,16 @@ export class WebGPUPickFramebuffer {
   private _stagingBuffer: GPUBuffer | null = null;
   private _stagingBufferSize: number = 0;
   private _lastReadPixels: Uint8Array | null = null;
+
+  // NEW-WEBGPU-PICK-COLD-SYNC-STALENESS (Batch 361) — one-time latch for the
+  // cold-pick guidance warning. WebGPU has no synchronous readback, so the
+  // FIRST synchronous `scene.pick()` against a fresh pick FBO returns nothing
+  // (the async readback hasn't completed; there is no previous-frame result to
+  // return). This is intrinsic, not a bug — but a one-off / click-driven sync
+  // pick that comes back undefined is confusing, so we emit a single guidance
+  // line steering callers to `scene.pickAsync` (which awaits the readback).
+  // Latched so it fires exactly once per framebuffer, never per-frame.
+  private _coldPickWarned: boolean = false;
   // True between submit-of-copyTextureToBuffer and the unmap that follows
   // mapAsync's resolution. While true, we must not encode another copy to
   // the same staging buffer or the queue will reject the submit with
@@ -363,6 +373,22 @@ export class WebGPUPickFramebuffer {
         height,
         limit,
         this._colorFormat === "bgra8unorm",
+      );
+    }
+
+    // Cold pick — no readback has completed yet. WebGPU can't read the pixels
+    // back synchronously, so the very first sync pick returns nothing. Warn
+    // once steering one-off callers to the async path. (Permanent, latched —
+    // app developers NEED this to understand why a first sync pick came back
+    // empty; it never repeats once the readback warms.)
+    if (!this._coldPickWarned) {
+      this._coldPickWarned = true;
+      console.warn(
+        "[CesiumJS:WebGPU] scene.pick() returned no result on its first call " +
+          "because WebGPU reads the pick buffer asynchronously (one-frame " +
+          "stale). This is expected for a standalone pick at a fresh location. " +
+          "Use scene.pickAsync() for one-off / click-driven picks; the " +
+          "continuous-hover scene.pick() pattern warms up after the first frame.",
       );
     }
 

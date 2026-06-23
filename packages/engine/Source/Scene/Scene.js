@@ -4045,6 +4045,18 @@ class Scene {
    * <p>
    * When a feature of a 3D Tiles tileset is picked, <code>pick</code> returns a {@link Cesium3DTileFeature} object.
    * </p>
+   * <p>
+   * <b>WebGPU note:</b> WebGPU has no synchronous GPU-to-CPU readback, so the
+   * synchronous <code>pick</code> reads back the pick buffer ASYNCHRONOUSLY and
+   * returns the PREVIOUS pick's result (one frame stale). This is transparent
+   * for the continuous-hover pattern above (the cursor barely moves frame to
+   * frame, so the prior result matches), but a <i>standalone</i>
+   * <code>pick</code> at a fresh location returns <code>undefined</code> on its
+   * first call ("cold") and resolves on a subsequent call at the same location.
+   * For one-off / click-driven picks on WebGPU, prefer {@link Scene#pickAsync},
+   * which awaits the readback and always returns the correct current-frame
+   * result. On WebGL <code>pick</code> is fully synchronous and unaffected.
+   * </p>
    *
    * @example
    * // On mouse over, color the feature yellow.
@@ -4055,6 +4067,7 @@ class Scene {
    *     }
    * }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
    *
+   * @see Scene#pickAsync
    * @param {Cartesian2} windowPosition Window coordinates to perform picking on.
    * @param {number} [width=3] Width of the pick rectangle.
    * @param {number} [height=3] Height of the pick rectangle.
