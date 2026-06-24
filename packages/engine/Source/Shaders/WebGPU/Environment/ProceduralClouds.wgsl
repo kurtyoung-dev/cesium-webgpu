@@ -47,12 +47,24 @@ struct CloudUniforms {
   // Screen info
   resolution: vec2<f32>,
   _pad2: vec2<f32>,
+  // Weather Phase 1 — weather-map seam (floats 64-79). Byte-locked to the JS
+  // packer in WebGPUProceduralCloudRenderer.ts.
+  weatherMapEnabled: f32,        // 64 — >0.5 → sample the weather map per position
+  weatherStrength: f32,          // 65 — per-cell coverage multiplier (folds in cloudCoverage)
+  _pad3: vec2<f32>,              // 66-67
+  weatherTexBounds: vec4<f32>,   // 68-71 — minLon, minLat, lonRange, latRange (radians)
+  _pad4: vec4<f32>,              // 72-79 — reserved (multi-deck etc.)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
 @group(0) @binding(1) var depthTex: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> cloud: CloudUniforms;
+// Weather Phase 1 — global lat/lon weather field (R=coverage, G=type, B=base,
+// A=density-bias). Declared texture_2d_array (depth 1) so the multi-deck slice
+// (Phase 2) can add deck layers without changing the binding.
+@group(0) @binding(4) var weatherTex: texture_2d_array<f32>;
+@group(0) @binding(5) var weatherSampler: sampler;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -142,6 +154,21 @@ fn worleyF1(p: vec3<f32>) -> f32 {
   return sqrt(min(minDistSq, 1.0));
 }
 
+// ─── ECEF world position → weather-map UV (Weather Phase 1) ───
+// Equirectangular geodetic lon/lat (spherical approximation — a coarse weather
+// field doesn't need ellipsoidal exactness). lon = atan2(y, x) ∈ [-PI, PI];
+// lat = asin(z / r). Mapped onto [0,1]² via weatherTexBounds; v is flipped so
+// texture row 0 (top) is the north pole.
+fn worldToWeatherUV(worldPos: vec3<f32>) -> vec2<f32> {
+  let r = max(length(worldPos), 1.0);
+  let lon = atan2(worldPos.y, worldPos.x);
+  let lat = asin(clamp(worldPos.z / r, -1.0, 1.0));
+  let b = cloud.weatherTexBounds;
+  let u = (lon - b.x) / b.z;
+  let v = 1.0 - (lat - b.y) / b.w;
+  return vec2<f32>(u, v);
+}
+
 // ─── Cloud density at a world-space point ───
 fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   // Animate with wind
@@ -149,12 +176,25 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
                    * cloud.windSpeed * cloud.time;
   let samplePos = (worldPos + windOffset) * 0.0003; // scale to noise space
 
+  // Weather Phase 1 (KEYSTONE) — per-position coverage from the weather map's
+  // R channel, so cloud cover varies SPATIALLY (distinct regions) instead of one
+  // global scalar. `cloud.coverage` folds into `weatherStrength` as a global
+  // multiplier. weatherMapEnabled=0 → byte-identical to the old global-scalar
+  // path. The weather UV uses the RAW world position (geographic), not the
+  // wind-scaled noise-space `samplePos`.
+  var effectiveCoverage = cloud.coverage;
+  if (cloud.weatherMapEnabled > 0.5) {
+    let wuv = worldToWeatherUV(worldPos);
+    let wsample = textureSampleLevel(weatherTex, weatherSampler, wuv, 0, 0.0);
+    effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
+  }
+
   // Base shape (large-scale FBM) — UNCHANGED value-noise base (the 379a-revert
   // lesson: do not Worley-remap the base; it over-densifies).
   var density = fbmNoise(samplePos);
 
-  // Coverage threshold — shapes the clouds
-  density = smoothstep(1.0 - cloud.coverage, 1.0, density);
+  // Coverage threshold — shapes the clouds (per-position when the weather map is on)
+  density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
 
   // Height-based shaping: rounder tops, flat bottoms (anvil shape)
   let heightGradient = smoothstep(0.0, 0.15, heightFraction)

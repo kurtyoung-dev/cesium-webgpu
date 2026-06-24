@@ -26,8 +26,12 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 
-const CLOUD_UNIFORM_FLOATS = 64; // must match CloudUniforms struct in WGSL
+// Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
+const CLOUD_UNIFORM_FLOATS = 80; // must match CloudUniforms struct in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
+// Procedural weather-map texture (coarse global coverage field).
+const WEATHER_TEX_W = 256;
+const WEATHER_TEX_H = 128;
 
 export interface CloudCache {
   pipeline: GPURenderPipeline | null;
@@ -39,6 +43,12 @@ export interface CloudCache {
   // Weather Phase 0 — clock-bind. Day-seconds of the first frame, cached so the
   // cloud `time` uniform starts near 0 (keeps the wind offset in f32 precision).
   timeEpoch: number | null;
+  // Weather Phase 1 — weather-map seam.
+  weatherTexture: GPUTexture | null; // 2d-array depth-1 coverage field
+  weatherView: GPUTextureView | null;
+  weatherFallbackView: GPUTextureView | null; // 1×1 white, bound when disabled
+  weatherSampler: GPUSampler | null;
+  weatherFilled: boolean; // procedural fill uploaded once
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -51,9 +61,137 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       uniformData: new Float32Array(CLOUD_UNIFORM_FLOATS),
       initialized: false,
       timeEpoch: null,
+      weatherTexture: null,
+      weatherView: null,
+      weatherFallbackView: null,
+      weatherSampler: null,
+      weatherFilled: false,
     };
   }
   return context._cloudCache;
+}
+
+// ─── Weather Phase 1 — procedural weather-map producer ───
+// Fills a coarse global coverage field with a value-noise FBM so the feature
+// ships with ZERO data pipeline (the historical-data ingest later writes the
+// SAME texture). R = coverage, G = cloud-type-y (mid), B = base/deck, A =
+// density-bias. Contrast-stretched so distinct cloudy regions + clear gaps form.
+function buildProceduralWeatherMap(w: number, h: number): Uint8Array {
+  const data = new Uint8Array(w * h * 4);
+  const hash = (x: number, y: number): number => {
+    const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return n - Math.floor(n);
+  };
+  const vnoise = (x: number, y: number): number => {
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    const fx = x - ix;
+    const fy = y - iy;
+    const ux = fx * fx * (3 - 2 * fx);
+    const uy = fy * fy * (3 - 2 * fy);
+    const a = hash(ix, iy);
+    const b = hash(ix + 1, iy);
+    const c = hash(ix, iy + 1);
+    const d = hash(ix + 1, iy + 1);
+    return (
+      a * (1 - ux) * (1 - uy) +
+      b * ux * (1 - uy) +
+      c * (1 - ux) * uy +
+      d * ux * uy
+    );
+  };
+  const fbm = (x: number, y: number): number => {
+    let v = 0;
+    let amp = 0.5;
+    let f = 1;
+    for (let i = 0; i < 5; i++) {
+      v += amp * vnoise(x * f, y * f);
+      f *= 2;
+      amp *= 0.5;
+    }
+    return v;
+  };
+  // smoothstep(0,1) on a normalized value.
+  const sstep = (t: number): number => {
+    const c = Math.max(0, Math.min(1, t));
+    return c * c * (3 - 2 * c);
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const u = x / w;
+      const vv = y / h;
+      // Two octaves of scale so there are continental cloudy/clear REGIONS with
+      // finer internal variation. High-contrast smoothstep so clear regions are
+      // genuinely clear (R≈0) and storm regions genuinely overcast (R≈1) —
+      // distinct weather, not a gentle wash.
+      const big = fbm(u * 6, vv * 6);
+      const fine = fbm(u * 18, vv * 18);
+      const f = big * 0.7 + fine * 0.3;
+      const coverage = sstep((f - 0.42) / 0.18);
+      const i = (y * w + x) * 4;
+      data[i] = Math.round(coverage * 255); // R coverage
+      data[i + 1] = 128; // G type-y (mid)
+      data[i + 2] = 0; // B base/deck
+      data[i + 3] = 128; // A density-bias
+    }
+  }
+  return data;
+}
+
+// Returns the weather texture VIEW to bind this frame, building (once) the
+// procedural map when enabled and a 1×1 white fallback otherwise. The bind group
+// always has a valid 2d-array texture at binding 4.
+function ensureWeatherView(
+  device: GPUDevice,
+  cache: CloudCache,
+  enabled: boolean,
+): GPUTextureView {
+  if (!cache.weatherFallbackView) {
+    const fb = device.createTexture({
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      dimension: "2d",
+      label: "WeatherMap Fallback (1x1 white)",
+    });
+    device.queue.writeTexture(
+      { texture: fb },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    cache.weatherFallbackView = fb.createView({ dimension: "2d-array" });
+  }
+  if (!enabled) {
+    return cache.weatherFallbackView;
+  }
+  if (!cache.weatherFilled) {
+    const tex = device.createTexture({
+      size: {
+        width: WEATHER_TEX_W,
+        height: WEATHER_TEX_H,
+        depthOrArrayLayers: 1,
+      },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      dimension: "2d",
+      label: "Procedural WeatherMap",
+    });
+    device.queue.writeTexture(
+      { texture: tex },
+      buildProceduralWeatherMap(WEATHER_TEX_W, WEATHER_TEX_H),
+      { bytesPerRow: WEATHER_TEX_W * 4, rowsPerImage: WEATHER_TEX_H },
+      {
+        width: WEATHER_TEX_W,
+        height: WEATHER_TEX_H,
+        depthOrArrayLayers: 1,
+      },
+    );
+    cache.weatherTexture = tex;
+    cache.weatherView = tex.createView({ dimension: "2d-array" });
+    cache.weatherFilled = true;
+  }
+  return cache.weatherView!;
 }
 
 function initializeCloudPipeline(
@@ -73,6 +211,9 @@ function initializeCloudPipeline(
     texture(1, Stage.FRAGMENT),
     sampler(2, Stage.FRAGMENT),
     uniformBuffer(3, Stage.FRAGMENT),
+    // Weather Phase 1 — weather map (2d-array depth-1) + its sampler.
+    texture(4, Stage.FRAGMENT, { viewDimension: "2d-array" }),
+    sampler(5, Stage.FRAGMENT),
   ]);
 
   const pipelineLayout = device.createPipelineLayout({
@@ -96,6 +237,15 @@ function initializeCloudPipeline(
     magFilter: "linear",
     minFilter: "linear",
     addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  });
+
+  // Weather Phase 1 — global equirect map: wrap in longitude (U), clamp at the
+  // poles (V).
+  cache.weatherSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "repeat",
     addressModeV: "clamp-to-edge",
   });
 
@@ -307,7 +457,27 @@ export function executeProceduralClouds(
   data[offset++] = 0;
   data[offset++] = 0;
 
+  // Weather Phase 1 — weather-map seam lanes (floats 64-79).
+  const weatherEnabled = globe.cloudWeatherMap === true;
+  data[offset++] = weatherEnabled ? 1.0 : 0.0; // 64 weatherMapEnabled
+  // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
+  // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
+  data[offset++] = (globe.cloudCoverage ?? 0.5) * 2.0;
+  data[offset++] = 0; // 66 pad
+  data[offset++] = 0; // 67 pad
+  // 68-71 weatherTexBounds — global equirect (radians): minLon, minLat, lonRange, latRange.
+  data[offset++] = -Math.PI;
+  data[offset++] = -Math.PI / 2.0;
+  data[offset++] = 2.0 * Math.PI;
+  data[offset++] = Math.PI;
+  // 72-79 reserved (multi-deck etc.)
+  for (let i = 72; i < CLOUD_UNIFORM_FLOATS; i++) data[offset++] = 0;
+
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
+
+  // Weather Phase 1 — resolve the weather view (procedural map when enabled,
+  // 1×1 white fallback otherwise).
+  const weatherView = ensureWeatherView(device, cache, weatherEnabled);
 
   // Create bind group
   const bindGroup = device.createBindGroup({
@@ -317,6 +487,8 @@ export function executeProceduralClouds(
       { binding: 1, resource: depthTextureView },
       { binding: 2, resource: cache.sampler! },
       { binding: 3, resource: { buffer: cache.uniformBuffer! } },
+      { binding: 4, resource: weatherView },
+      { binding: 5, resource: cache.weatherSampler! },
     ],
   });
 

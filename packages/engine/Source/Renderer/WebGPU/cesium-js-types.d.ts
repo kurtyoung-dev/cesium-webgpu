@@ -1047,6 +1047,7 @@ interface CesiumGlobe {
   cloudDensity?: number;
   cloudWindSpeed?: number;
   cloudWindDirection?: CesiumCartesian2;
+  cloudWeatherMap?: boolean;
 }
 
 // ─── FrustumCommands ─────────────────────────────────────────────────────

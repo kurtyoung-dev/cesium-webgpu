@@ -447,6 +447,21 @@ class Globe {
     this.cloudDensity = 0.3;
 
     /**
+     * Enables the data-driven weather map for the procedural volumetric clouds
+     * (WebGPU only — keystone of the weather-recreation roadmap). When
+     * <code>true</code>, the raymarcher samples a 2D lat/lon weather texture per
+     * world position so cloud coverage/type/density vary SPATIALLY (distinct
+     * cumulus regions, clear gaps, stratus sheets) instead of one global scalar;
+     * <code>cloudCoverage</code> / <code>cloudDensity</code> then act as global
+     * multipliers on the per-cell values. When <code>false</code> the clouds
+     * render exactly as before (single global coverage). Until a real weather
+     * data source is wired, the map is filled procedurally (FBM).
+     * @type {boolean}
+     * @default false
+     */
+    this.cloudWeatherMap = false;
+
+    /**
      * Number of ray march steps for cloud rendering (32-128).
      * Higher = better quality but slower. 64 is good for most cases.
      * @type {number}
