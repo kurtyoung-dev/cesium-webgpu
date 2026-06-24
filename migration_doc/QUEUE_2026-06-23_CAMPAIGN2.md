@@ -201,9 +201,17 @@ mentions + likely-stale exclusions are listed at the bottom.
   lines rest on the globe matching WebGL (0.988 / 1.002), `logDepthEnabled` true,
   PNGs READ. The effects-BG *consumption* half (shadow-receive/clipping read) is
   the lower-value remainder → deferred (clipping is a no-op in sibling shaders too).
-- **C2-14 · 376d — Textured polyline materials** (M, low) — the B344 material path
-  is UB-only; `PolylineImageMaterial`/`DiffuseMap` render untextured. Add a
-  texture+sampler bind group + a textured FS variant.
+- **C2-14 · 376d — Textured polyline materials** ✅ **DONE (Batch 383, scoped to
+  `Image`).** Was UB-only → an `Image`-material polyline rendered NOTHING on WebGPU
+  (routed to `polylineMatColor`). New `PolylineMatImage.wgsl` (+ `@group(2)`
+  sampler/texture, `textureSampleLevel(..,0.0)` to dodge thin-ribbon mip-LOD) +
+  `needsTexture` routing + a texture-group pipeline variant (no effects group) +
+  `ensureMaterialTextureBindGroup` reuse. Probe caught 2 real bugs: the per-frame
+  effects-BG swap clobbering the texture slot (gated via `_noEffectsSlot`) + the
+  command building before the async image decodes (added a per-frame texture
+  refresh). **Verified:** `probe-polyline-image-material.mjs` pixel-identical to
+  WebGL (red@x290/blue@x733), PNG READ; non-textured materials unregressed.
+  `DiffuseMap` (different fabric) = follow-up.
 
 ## Tier 4 — Volumetric cloud-layer fidelity (379 epic, sliced)
 

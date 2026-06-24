@@ -102,6 +102,9 @@ import csm_polylineCommon from "../../Shaders/WebGPU/chunks/functions/csm_polyli
 // carries the same `// @chunk functions/csm_polylineCommon` marker, so
 // getShaderSource prepends the (angle-capable) PolylineCommon functions.
 import PolylineMatColor from "../../Shaders/WebGPU/Primitive/PolylineMatColor.js";
+// 376d — textured polyline material (Image / DiffuseMap) — adds a @group(2)
+// texture+sampler the other PolylineMat* shaders lack.
+import PolylineMatImage from "../../Shaders/WebGPU/Primitive/PolylineMatImage.js";
 import PolylineMatDash from "../../Shaders/WebGPU/Primitive/PolylineMatDash.js";
 import PolylineMatGlow from "../../Shaders/WebGPU/Primitive/PolylineMatGlow.js";
 import PolylineMatArrow from "../../Shaders/WebGPU/Primitive/PolylineMatArrow.js";
@@ -218,6 +221,7 @@ const _shaderCache = {
   polylineColor: PolylineColorAppearance,
   // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice)
   polylineMatColor: PolylineMatColor,
+  polylineMatImage: PolylineMatImage,
   polylineMatDash: PolylineMatDash,
   polylineMatGlow: PolylineMatGlow,
   polylineMatArrow: PolylineMatArrow,
@@ -488,30 +492,48 @@ function selectPolylineMaterialShader(material) {
     return {
       type: "polylineMatDash",
       code: getShaderSource("polylineMatDash"),
+      needsTexture: false,
     };
   }
   if (materialType === "PolylineGlow") {
     return {
       type: "polylineMatGlow",
       code: getShaderSource("polylineMatGlow"),
+      needsTexture: false,
     };
   }
   if (materialType === "PolylineArrow") {
     return {
       type: "polylineMatArrow",
       code: getShaderSource("polylineMatArrow"),
+      needsTexture: false,
     };
   }
   if (materialType === "PolylineOutline") {
     return {
       type: "polylineMatOutline",
       code: getShaderSource("polylineMatOutline"),
+      needsTexture: false,
+    };
+  }
+  // 376d — textured Image material: sample a texture along the line via st.
+  // Scoped to `Image` ({ repeat: vec2, color: vec4 } + `image` texture).
+  // `DiffuseMap` has a DIFFERENT fabric ({ diffuse, alpha, image, repeat }) →
+  // its own uniform layout; routing it here would misread bytes, so it stays a
+  // follow-up (needs a PolylineMatDiffuseMap variant, like the surface path's
+  // separate matImageFlat vs matDiffuseMapFlat shaders).
+  if (materialType === "Image") {
+    return {
+      type: "polylineMatImage",
+      code: getShaderSource("polylineMatImage"),
+      needsTexture: true,
     };
   }
   // Color material (default) + any material without a dedicated polyline FS.
   return {
     type: "polylineMatColor",
     code: getShaderSource("polylineMatColor"),
+    needsTexture: false,
   };
 }
 

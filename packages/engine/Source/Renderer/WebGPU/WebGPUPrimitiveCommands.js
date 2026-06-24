@@ -1076,6 +1076,12 @@ function _refreshPrimitiveEffectsSlot(command, frameState) {
   if (command._isPickCommand === true) {
     return;
   }
+  // 376d — the textured polyline Image variant has its TEXTURE at the last bind
+  // group slot (no effects group on that pipeline). Swapping the shared effects
+  // BG into the last slot would clobber the texture → blank line. Skip it.
+  if (command._noEffectsSlot === true) {
+    return;
+  }
   const activeBG = _getOrCreateSharedPrimitiveEffectsBG(frameState);
   if (!defined(activeBG)) {
     // Keep whatever the command was built with (the shared placeholder).
@@ -1150,6 +1156,25 @@ function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
         device.queue.writeBuffer(matBuffer, 0, matData);
       }
       matUB.clearDirty();
+    }
+
+    // 376d — refresh the textured Image variant's texture bind group. The
+    // command is built once (usually before the async Image material decodes),
+    // so ensureMaterialTextureBindGroup must re-run until the real image is
+    // bound. It keys on `_imageSources.image` identity (undefined → image when
+    // loaded), so it rebuilds exactly once on decode, then early-returns.
+    if (command._noEffectsSlot === true && defined(command._webgpuMatCache)) {
+      ensureMaterialTextureBindGroup(
+        context,
+        device,
+        command._webgpuMaterial,
+        command._webgpuMatShaderType,
+        command._webgpuMatCache,
+      );
+      const texBG = command._webgpuMatCache.textureBindGroup;
+      if (defined(texBG) && command.bindGroups[2] !== texBG) {
+        command.bindGroups[2] = texBG;
+      }
     }
 
     _refreshPrimitiveEffectsSlot(command, frameState);
@@ -1727,6 +1752,7 @@ function createPolylineMaterialPipeline(
   shaderModule,
   vertexLayout,
   translucent,
+  needsTexture,
 ) {
   const cameraBGL = makeBindGroupLayout(device, "Polyline Mat Camera BGL", [
     uniformBuffer(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT),
@@ -1734,10 +1760,32 @@ function createPolylineMaterialPipeline(
   const materialBGL = makeBindGroupLayout(device, "Polyline Mat Material BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
-  const effectsBGL = getEffectsBindGroupLayout(device);
   cache.cameraBindGroupLayout = cameraBGL;
   cache.materialBindGroupLayout = materialBGL;
-  cache.effectsBGL = effectsBGL;
+
+  // 376d — textured Image material gets a @group(2) texture+sampler (3-binding
+  // layout matching the surface path so ensureMaterialTextureBindGroup reuses).
+  // The polyline material FS never consumes the effects group, so the textured
+  // variant has NO effects group (texture takes slot 2). Non-textured variants
+  // keep the effects placeholder at slot 2 as before.
+  let bindGroupLayouts;
+  if (needsTexture === true) {
+    cache.textureBindGroupLayout = makeBindGroupLayout(
+      device,
+      "Polyline Mat Texture BGL",
+      [
+        sampler(0, Stage.FRAGMENT),
+        texture(1, Stage.FRAGMENT),
+        texture(2, Stage.FRAGMENT),
+      ],
+    );
+    cache.effectsBGL = null;
+    bindGroupLayouts = [cameraBGL, materialBGL, cache.textureBindGroupLayout];
+  } else {
+    cache.textureBindGroupLayout = null;
+    cache.effectsBGL = getEffectsBindGroupLayout(device);
+    bindGroupLayouts = [cameraBGL, materialBGL, cache.effectsBGL];
+  }
 
   const canvasFormat =
     context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
@@ -1745,7 +1793,7 @@ function createPolylineMaterialPipeline(
   return device.createRenderPipeline({
     label: "Polyline material appearance pipeline",
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [cameraBGL, materialBGL, effectsBGL],
+      bindGroupLayouts: bindGroupLayouts,
     }),
     vertex: {
       module: shaderModule.module,
@@ -1863,7 +1911,10 @@ function createPolylineMaterialAppearanceCommands(
       cache.shaderModule,
       vertexLayout,
       translucent,
+      shaderInfo.needsTexture === true,
     );
+    // Force the texture bind group to rebuild against the new layout.
+    cache.textureBindGroup = undefined;
   }
 
   // Material UBO — shared across all geometries of this primitive. Sized to
@@ -1910,6 +1961,19 @@ function createPolylineMaterialAppearanceCommands(
       layout: cache.materialBindGroupLayout,
       entries: [{ binding: 0, resource: { buffer: cache.materialBuffer } }],
     });
+  }
+
+  // 376d — textured Image material: build/refresh the @group(2) texture bind
+  // group from the material's loaded image (reuses the surface-material helper;
+  // falls back to a 1×1 white texture until the image readies).
+  if (shaderInfo.needsTexture === true) {
+    ensureMaterialTextureBindGroup(
+      context,
+      device,
+      material,
+      shaderInfo.type,
+      cache,
+    );
   }
 
   // Depth-range type MUST be webgpu before the viewportOrthographic /
@@ -2067,10 +2131,17 @@ function createPolylineMaterialAppearanceCommands(
       entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
     });
 
+    // 376d — textured Image variant binds the texture group at slot 2 (no
+    // effects group on that pipeline); all other materials keep the effects
+    // placeholder at slot 2.
+    const slot2 =
+      shaderInfo.needsTexture === true && defined(cache.textureBindGroup)
+        ? cache.textureBindGroup
+        : effectsPlaceholder.bindGroup;
     const commandBindGroups = [
       cache.cameraBindGroups[i],
       cache.materialBindGroup,
-      effectsPlaceholder.bindGroup,
+      slot2,
     ];
 
     const cmd = new WebGPUDrawCommand({
@@ -2092,6 +2163,17 @@ function createPolylineMaterialAppearanceCommands(
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
     cmd._webgpuShaderType = shaderInfo.type;
     cmd._isPolylineAppearance = true;
+    // 376d — textured Image variant: slot 2 is the texture, NOT an effects
+    // placeholder. Flag so _refreshPrimitiveEffectsSlot doesn't clobber it,
+    // and carry the material + cache so the per-frame hook can refresh the
+    // texture bind group once the async image decodes (commands are built once,
+    // typically BEFORE the Image material's image finishes loading).
+    cmd._noEffectsSlot = shaderInfo.needsTexture === true;
+    if (shaderInfo.needsTexture === true) {
+      cmd._webgpuMatCache = cache;
+      cmd._webgpuMaterial = material;
+      cmd._webgpuMatShaderType = shaderInfo.type;
+    }
     // Reference the shared material UBO + wrapper so the per-frame update can
     // re-upload when a time-varying material (flowing dash, glow phase) marks
     // itself dirty.
