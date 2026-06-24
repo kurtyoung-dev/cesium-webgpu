@@ -110,19 +110,27 @@ mentions + likely-stale exclusions are listed at the bottom.
   bloom interaction; moon divergence noted Batch 267) below WebGL parity;
   default-visible in any globe+sky scene. New sun/moon parity probe + WGSL
   disc/glow tuning.
-- **C2-9 · NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION** (M, low) — textured
-  GroundPrimitive classification (Checkerboard) degrades to solid toward the far
-  corner: `windowToEye` reconstruction hits catastrophic cancellation near
-  `storedDepth≈0.9999997` (hyperbolic NDC). The producer-side log-depth epic is
-  now LIVE (B251/267) so the prereq is unblocked — wire the classifier
-  `windowToEye` to `csm_reverseLogDepthToEyeDistance`. **Probe:**
-  `probe-classifier-textured-materials.mjs`.
-- **C2-10 · NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING** (M, low) — grid RENDERS at
-  HEAD (the "solid green" symptom is stale), but `PrimitiveMatGrid{Flat,Lit}.wgsl`
-  use `step(uv, lineThickness)` (constant-UV-width) vs WebGL `GridMaterial.glsl`'s
-  `fwidth`-based screen-space `smoothstep` (constant-PIXEL-width, AA). Build a
-  **multi-zoom probe** to expose the divergence, then port the derivative test
-  into both WGSL grid shaders. Stripe/Checker/Dot share the pattern.
+- **C2-9 · NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION** ⏸️ **DEFERRED (verify-first,
+  Batch 375) — narrow fix already wired + goal moot.** Two findings: (1) the
+  `windowToEye` log-reverse this batch asks for ALREADY EXISTS
+  (`WebGPUGroundPrimitiveRenderer.js:921`, gated on `logDepthActive`=TRUE since
+  B251). (2) The far-corner *precision* goal is MOOT because
+  `probe-classifier-textured-materials.mjs` shows the textured classification
+  materials (Stripe/Checkerboard/Grid/Image) render **0px on WebGPU** (Color
+  renders; READ PNG = blank) — even though DEFERRED claims B185/B198 shipped them.
+  So either a regression since B185 or a probe-scene mismatch; either way the real
+  gap is "textured GroundPrimitive classification renders nothing on WebGPU,"
+  which is a separate, larger investigation than far-corner precision. Surfaced
+  as **NEW-WEBGPU-GROUNDPRIM-TEXTURED-CLASSIFICATION-ZERO** (DEFERRED). No code
+  shipped for C2-9 (no artifact to fix until textured classification renders).
+- **C2-10 · NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING** ✅ DONE (Batch 376) —
+  ported `GridMaterial.glsl`'s derivative-based constant-PIXEL-width AA into both
+  `PrimitiveMatGrid{Flat,Lit}.wgsl`. Verified `probe-grid-multizoom.mjs` (extruded
+  Grid, 2 zooms): WebGPU matches WebGL (1263≈1260 line-runs, median width 3, zoom
+  ratio 1.5), READ PNG = crisp AA grid; baseline-isolated safe (old≡new in the
+  flat scene). Surfaced **NEW-WEBGPU-FLAT-MATAPPEARANCE-POLYGON-MATERIAL-SOLID**
+  (flat height-0 polygon materials render solid on WebGPU — pre-existing st issue,
+  both old+new shader; same class as C2-5/C2-9). Stripe/Checker/Dot = follow-up.
 
 ## Tier 3 — Polyline appearance completion (376 epic, sliced)
 

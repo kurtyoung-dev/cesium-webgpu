@@ -133,10 +133,30 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     //>>ifdef LOG_DEPTH
     g_fragLogDepth = input.v_logDepth;
     //>>endif
-    let uv = fract(input.texCoord * material.lineCount - material.lineOffset);
-    let threshold = material.lineThickness;
-    let onLine = step(uv, threshold) + step(vec2<f32>(1.0) - threshold, uv);
-    let isGrid = max(onLine.x, onLine.y);
+    // GridMaterial.glsl parity (C2-10): constant-PIXEL-width antialiased grid
+    // lines via screen-space derivatives, replacing the prior constant-UV-width
+    // step() lines whose apparent thickness scaled with zoom. Mirrors
+    // Shaders/Materials/GridMaterial.glsl term-for-term (the derivative branch).
+    let st = input.texCoord;
+    // Triangle-wave distance to the nearest grid line, per axis, in [0, 0.5].
+    var scaled = fract(material.lineCount * st - material.lineOffset);
+    scaled = abs(scaled - floor(scaled + vec2<f32>(0.5)));
+    const fuzz = 1.2;
+    // lineThickness is in PIXELS (Material.js default 1.0). czm_pixelRatio is
+    // assumed 1.0 here — the grid CameraUniforms UB does not carry it and adding
+    // it is out of scope for C2-10 (single-DPR parity).
+    let thicknessPx = material.lineThickness * 1.0 - vec2<f32>(1.0);
+    // dF = per-fragment UV footprint (Cozzi & Ring, Listing 4.13). GLSL uses
+    // max(|dFdx|,|dFdy|) per axis — replicate exactly (not the fwidth sum).
+    let dxst = abs(dpdx(st));
+    let dyst = abs(dpdy(st));
+    let dF = vec2<f32>(max(dxst.x, dyst.x), max(dxst.y, dyst.y)) * material.lineCount;
+    // value = CELL weight (1 in cell, 0 on line).
+    let value = min(
+        smoothstep(dF.x * thicknessPx.x, dF.x * (fuzz + thicknessPx.x), scaled.x),
+        smoothstep(dF.y * thicknessPx.y, dF.y * (fuzz + thicknessPx.y), scaled.y),
+    );
+    let isGrid = 1.0 - value; // 1 on the line, 0 in the cell
     // Grid lines get the material color; cells get the color at cellAlpha opacity
     let cellColor = vec4<f32>(material.color.rgb, material.cellAlpha);
     var finalColor = mix(cellColor, material.color, vec4<f32>(isGrid));
