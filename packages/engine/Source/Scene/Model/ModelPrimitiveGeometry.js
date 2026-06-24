@@ -191,6 +191,7 @@ function extractPrimitiveGeometry(runtimePrimitive) {
       const morphTarget = {
         positionData: null,
         normalData: null,
+        tangentData: null,
       };
       for (let a = 0; a < targetAttrs.length; a++) {
         const tAttr = targetAttrs[a];
@@ -206,6 +207,12 @@ function extractPrimitiveGeometry(runtimePrimitive) {
           morphTarget.positionData = ensureFloat32(tData, tAttr, 3);
         } else if (tSemantic === "NORMAL") {
           morphTarget.normalData = ensureFloat32(tData, tAttr, 3);
+        } else if (tSemantic === "TANGENT") {
+          // C2-4: glTF morph TANGENT deltas are VEC3 (the .w handedness is NOT
+          // morphed), so extract 3 components — matches WebGL getMorphedTangent.
+          // Without this, a normal-mapped morphed mesh keeps its rest-pose
+          // tangent frame and the tangent-space normal drifts as it deforms.
+          morphTarget.tangentData = ensureFloat32(tData, tAttr, 3);
         }
       }
       if (defined(morphTarget.positionData)) {

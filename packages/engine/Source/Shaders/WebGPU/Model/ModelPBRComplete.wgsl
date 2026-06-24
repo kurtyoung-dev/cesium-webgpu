@@ -406,12 +406,13 @@ struct LightUniforms {
 @group(2) @binding(4) var<storage, read> previousJointMatrices: array<mat4x4<f32>>;
 
 // Morph targets (bind group 4, only used when FLAG_HAS_MORPH_TARGETS is set)
-// Storage buffer: per-target blocks of (vertexCount × 2 × vec4) — for each
-//   vertex an interleaved [positionDelta, normalDelta] pair (DP-H35, Batch 329).
-//   Index the pair via base = (t * vertexCount + vid) * 2u; positionDelta =
-//   morphDeltas[base], normalDelta = morphDeltas[base + 1u]. The CPU pack
-//   (WebGPUModelMorphTargets.js FLOATS_PER_VERTEX_PER_TARGET = 8) MUST stay
-//   byte-consistent with this *2u stride.
+// Storage buffer: per-target blocks of (vertexCount × 3 × vec4) — for each
+//   vertex an interleaved [positionDelta, normalDelta, tangentDelta] triple
+//   (DP-H35 added normal Batch 329; C2-4 added tangent Batch 373). Index via
+//   base = (t * vertexCount + vid) * 3u; positionDelta = morphDeltas[base],
+//   normalDelta = morphDeltas[base + 1u], tangentDelta = morphDeltas[base + 2u].
+//   The CPU pack (WebGPUModelMorphTargets.js FLOATS_PER_VERTEX_PER_TARGET = 12)
+//   MUST stay byte-consistent with this *3u stride.
 // Uniform buffer: weights (2 × vec4 = 8 weights max) + targetCount + vertexCount
 struct MorphWeightsUniforms {
   weights0: vec4<f32>,    // morph weights 0-3
@@ -788,11 +789,16 @@ struct VertexOutput {
       // Weight for this target from the packed vec4 arrays
       let w = select(morphWeights.weights0[t], morphWeights.weights1[t - 4u], t >= 4u);
       if (abs(w) > 0.0001) {
-        let base = (t * vertexCount + vid) * 2u;
+        let base = (t * vertexCount + vid) * 3u;
         let posDelta = morphDeltas[base].xyz;
         let nrmDelta = morphDeltas[base + 1u].xyz;
+        let tanDelta = morphDeltas[base + 2u].xyz;
         positionMC = positionMC + posDelta * w;
         normalMC = normalMC + nrmDelta * w;
+        // C2-4: accumulate the morph TANGENT delta (xyz; .w handedness preserved)
+        // so a normal-mapped morphed mesh re-derives its tangent frame, matching
+        // WebGL getMorphedTangent. Zero for targets/models without TANGENT.
+        tangentMC = vec4<f32>(tangentMC.xyz + tanDelta * w, tangentMC.w);
         morphedNormal = true;
       }
     }
@@ -900,10 +906,10 @@ struct VertexOutput {
         t >= 4u,
       );
       if (abs(w) > 0.0001) {
-        // DP-H35 (Batch 329): the storage buffer is now interleaved
-        // [pos, nrm] pairs — step the same *2u stride as the current-frame
-        // block; the prev-frame velocity path only needs the POSITION delta.
-        let base = (t * vertexCount + vid) * 2u;
+        // The storage buffer interleaves [pos, nrm, tan] triples (C2-4) — step
+        // the same *3u stride as the current-frame block; the prev-frame
+        // velocity path only needs the POSITION delta (base + 0).
+        let base = (t * vertexCount + vid) * 3u;
         let delta = morphDeltas[base].xyz;
         prevPositionMC = prevPositionMC + delta * w;
       }

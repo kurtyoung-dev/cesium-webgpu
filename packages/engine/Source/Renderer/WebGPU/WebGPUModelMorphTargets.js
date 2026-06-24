@@ -16,8 +16,8 @@
  * A morph target with no NORMAL accessor writes a zero normal delta, so the
  * WGSL normal accumulation is a no-op for it (matches the WebGL path, which
  * only emits getMorphedNormal when the target carries a NORMAL delta).
- * The CPU pack stride (FLOATS_PER_VERTEX_PER_TARGET = 8) MUST stay in lockstep
- * with the WGSL morph indexing (base = (t*vertexCount + vid) * 2u).
+ * The CPU pack stride (FLOATS_PER_VERTEX_PER_TARGET = 12) MUST stay in lockstep
+ * with the WGSL morph indexing (base = (t*vertexCount + vid) * 3u).
  *
  * Weights are packed into a vec4 array (4 weights per vec4) in a
  * uniform buffer. Max 8 morph targets supported per primitive.
@@ -132,20 +132,24 @@ function ensureMorphTargetResources(device, primCache, geometry, morphWeights) {
   };
 }
 
-// DP-H35 (Batch 329) — each vertex now carries a POSITION vec4 followed by a
-// NORMAL vec4 (8 floats), so morphed normals re-shade the deformed surface
-// (the WebGL path morphs normals via getMorphedNormal; WebGPU previously only
-// morphed the position, freezing lighting on a morph-animated mesh). This
-// constant is the lockstep anchor: it MUST match the *2u stride the WGSL morph
-// block uses to step from one vertex's [pos,nrm] pair to the next.
-const FLOATS_PER_VERTEX_PER_TARGET = 8; // POSITION vec4 (4) + NORMAL vec4 (4)
+// DP-H35 (Batch 329) added a NORMAL vec4 after POSITION so morphed normals
+// re-shade the deformed surface (WebGL morphs normals via getMorphedNormal;
+// WebGPU previously froze them at the rest pose → frozen lighting on a
+// morph-animated mesh).
+// C2-4 (Batch 373): +TANGENT vec4 — each vertex now carries POSITION, NORMAL,
+// then TANGENT (12 floats), so a normal-mapped morphed mesh keeps a correct
+// tangent frame (the WebGL path morphs tangents via getMorphedTangent). This
+// constant is the lockstep anchor: it MUST match the *3u stride the WGSL morph
+// blocks (current + TAA-prev) use to step from one vertex's [pos,nrm,tan]
+// triple to the next.
+const FLOATS_PER_VERTEX_PER_TARGET = 12; // POSITION vec4 (4) + NORMAL vec4 (4) + TANGENT vec4 (4)
 
 /**
- * Pack morph target position + normal deltas into a Float32Array for the
- * storage buffer. Layout: per-target blocks of (vertexCount × 8 floats) —
- * two vec4-padded entries per vertex (positionDelta then normalDelta).
+ * Pack morph target position + normal + tangent deltas into a Float32Array for
+ * the storage buffer. Layout: per-target blocks of (vertexCount × 12 floats) —
+ * three vec4-padded entries per vertex (positionDelta, normalDelta, tangentDelta).
  *
- * @param {object[]} morphTargets - Array of { positionData, normalData }
+ * @param {object[]} morphTargets - Array of { positionData, normalData, tangentData }
  * @param {number} targetCount
  * @param {number} vertexCount
  * @returns {Float32Array}
@@ -163,6 +167,10 @@ function packMorphTargetDeltas(morphTargets, targetCount, vertexCount) {
     // leaves the (zero-initialized) normal slot at zero, making the WGSL
     // normal accumulation a no-op for that target (parity with WebGL).
     const normalData = target.normalData;
+    // tangentData is optional per glTF — a target without a TANGENT accessor
+    // leaves the (zero-initialized) tangent slot at zero, making the WGSL
+    // tangent accumulation a no-op for that target (parity with WebGL).
+    const tangentData = target.tangentData;
     const baseOffset = t * floatsPerTarget;
 
     if (!defined(posData)) {
@@ -170,6 +178,7 @@ function packMorphTargetDeltas(morphTargets, targetCount, vertexCount) {
     }
 
     const hasNormal = defined(normalData);
+    const hasTangent = defined(tangentData);
     for (let v = 0; v < vertexCount; v++) {
       const srcIdx = v * 3;
       const dstIdx = baseOffset + v * FLOATS_PER_VERTEX_PER_TARGET;
@@ -184,6 +193,13 @@ function packMorphTargetDeltas(morphTargets, targetCount, vertexCount) {
         packed[dstIdx + 5] = normalData[srcIdx + 1]; // y
         packed[dstIdx + 6] = normalData[srcIdx + 2]; // z
         // packed[dstIdx + 7] = 0.0 (padding, already zero)
+      }
+      // TANGENT delta (vec4 2) — VEC3 (the .w handedness is not morphed)
+      if (hasTangent) {
+        packed[dstIdx + 8] = tangentData[srcIdx]; // x
+        packed[dstIdx + 9] = tangentData[srcIdx + 1]; // y
+        packed[dstIdx + 10] = tangentData[srcIdx + 2]; // z
+        // packed[dstIdx + 11] = 0.0 (padding, already zero)
       }
     }
   }
@@ -218,7 +234,7 @@ export {
   MORPH_UNIFORM_SIZE,
   // Exported for unit-test access to the CPU pack layout. packMorphTargetDeltas
   // + FLOATS_PER_VERTEX_PER_TARGET are the lockstep anchor that MUST stay in step
-  // with the WGSL morph indexing (base = (t*vertexCount + vid) * 2u). @private.
+  // with the WGSL morph indexing (base = (t*vertexCount + vid) * 3u). @private.
   packMorphTargetDeltas,
   FLOATS_PER_VERTEX_PER_TARGET,
 };
