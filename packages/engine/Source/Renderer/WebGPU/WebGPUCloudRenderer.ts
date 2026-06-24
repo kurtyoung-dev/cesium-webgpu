@@ -215,40 +215,63 @@ struct FragOutput {
 // bind-group layout + a future exact-worley-texture pass). czm_epsilon2 = 0.01,
 // czm_pi = 3.141592653589793 inlined.
 
-fn csm_cloudRandom3(p: vec3<f32>) -> vec3<f32> {
-  let d1 = dot(p, vec3<f32>(127.1, 311.7, 932.8));
-  let d2 = dot(p, vec3<f32>(269.5, 183.3, 421.4));
-  return fract(vec3<f32>(sin(d1 - d2), cos(d1 * d2), d1 * d2));
+// Baked 3-channel worley-FBM noise texture sampling — 1:1 port of
+// CloudCollectionFS.glsl's voxelToUV + sampleNoiseTexture (NEW-WEBGPU-CLOUD-
+// WORLEY-TEXTURE-PARITY). The texture is a 3D worley cube packed into a 2D
+// atlas (see createNoiseTexture); we decode the trilinear sample manually, so
+// the noise sampler MUST be NEAREST (no hardware blend across slice seams).
+// Constants mirror the CPU generator: SLICE=64 voxels, ROWS=4, DETAIL=8 (chosen
+// so a 64³ cube reproduces WebGL's 128³/detail-16 grain frequency + tile
+// period at half the gen cost).
+const NOISE_SLICE: f32 = 64.0;
+const NOISE_ROWS: f32 = 4.0;
+const NOISE_INV_ROWS: f32 = 0.25;
+const NOISE_DETAIL: f32 = 8.0;
+
+fn csm_cloudMod(x: f32, y: f32) -> f32 { return x - y * floor(x / y); }
+
+fn csm_cloudWrap(value: f32, rangeLength: f32) -> f32 {
+  if (value < 0.0) {
+    let modValue = csm_cloudMod(abs(value), rangeLength);
+    return csm_cloudMod(rangeLength - modValue, rangeLength);
+  }
+  return csm_cloudMod(value, rangeLength);
 }
 
-// Worley (cellular) noise — internal "p * freq" matches CloudNoiseFS.worleyNoise.
-fn csm_cloudWorley(p: vec3<f32>, freq: f32) -> f32 {
-  let centerCell = floor(p * freq);
-  let pointInCell = fract(p * freq);
-  var shortest = 1000.0;
-  for (var z = -1.0; z <= 1.0; z = z + 1.0) {
-    for (var y = -1.0; y <= 1.0; y = y + 1.0) {
-      for (var x = -1.0; x <= 1.0; x = x + 1.0) {
-        let off = vec3<f32>(x, y, z);
-        let pt = off + csm_cloudRandom3(centerCell + off);
-        shortest = min(shortest, length(pointInCell - pt));
-      }
-    }
-  }
-  return shortest;
+fn csm_cloudVoxelToUV(voxelIndex: vec3<f32>) -> vec2<f32> {
+  let invDims = vec2<f32>(
+    NOISE_ROWS / (NOISE_SLICE * NOISE_SLICE),
+    NOISE_INV_ROWS / NOISE_SLICE);
+  let wrapped = vec3<f32>(
+    csm_cloudWrap(voxelIndex.x, NOISE_SLICE),
+    csm_cloudWrap(voxelIndex.y, NOISE_SLICE),
+    csm_cloudWrap(voxelIndex.z, NOISE_SLICE));
+  let column = csm_cloudMod(wrapped.z, NOISE_SLICE * NOISE_INV_ROWS);
+  let row = floor(wrapped.z / NOISE_SLICE * NOISE_ROWS);
+  let xPixel = wrapped.x + column * NOISE_SLICE;
+  let yPixel = wrapped.y + row * NOISE_SLICE;
+  return vec2<f32>(xPixel, yPixel) * invDims;
 }
 
-// 3-octave worley FBM (CloudNoiseFS.worleyFBMNoise, persistence 0.625).
-fn csm_cloudWorleyFBM(p: vec3<f32>, scale: f32) -> f32 {
-  var noise = 0.0;
-  var freq = 1.0;
-  var persistence = 0.625;
-  for (var i = 0; i < 3; i = i + 1) {
-    noise = noise + csm_cloudWorley(p * scale, freq * scale) * persistence;
-    persistence = persistence * 0.5;
-    freq = freq * 2.0;
-  }
-  return noise;
+fn csm_cloudLerpSamplesX(voxelIndex: vec3<f32>, x: f32) -> vec4<f32> {
+  let uv0 = csm_cloudVoxelToUV(voxelIndex);
+  let uv1 = csm_cloudVoxelToUV(voxelIndex + vec3<f32>(1.0, 0.0, 0.0));
+  let s0 = textureSampleLevel(noiseTex, noiseSampler, uv0, 0.0);
+  let s1 = textureSampleLevel(noiseTex, noiseSampler, uv1, 0.0);
+  return mix(s0, s1, x);
+}
+
+fn csm_cloudSampleNoise(position: vec3<f32>) -> vec4<f32> {
+  let recentered = position + vec3<f32>(NOISE_SLICE / 2.0);
+  let lerpValue = fract(recentered);
+  let voxelIndex = floor(recentered);
+  let xLerp00 = csm_cloudLerpSamplesX(voxelIndex, lerpValue.x);
+  let xLerp01 = csm_cloudLerpSamplesX(voxelIndex + vec3<f32>(0.0, 0.0, 1.0), lerpValue.x);
+  let xLerp10 = csm_cloudLerpSamplesX(voxelIndex + vec3<f32>(0.0, 1.0, 0.0), lerpValue.x);
+  let xLerp11 = csm_cloudLerpSamplesX(voxelIndex + vec3<f32>(0.0, 1.0, 1.0), lerpValue.x);
+  let yLerp0 = mix(xLerp00, xLerp10, lerpValue.y);
+  let yLerp1 = mix(xLerp01, xLerp11, lerpValue.y);
+  return mix(yLerp0, yLerp1, lerpValue.z);
 }
 
 // Unit-sphere (r=0.5) intersection with optional slice plane.
@@ -359,17 +382,15 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   let intensity = csm_cloudI(Id, Is, It);
   let color = vec3<f32>(intensity * clamp(input.vBrightness, 0.1, 1.0));
 
-  // Worley erosion. Normalize by cloud radius so the cell size is
-  // scale-invariant (~ a fixed number of cells across any cloud), then port
-  // the 3 channels = FBM at scales 1/2/3 (CloudCollectionFS noise.x/y/z).
-  let cloudRadius = max(ellipsoidScale.x, max(ellipsoidScale.y, ellipsoidScale.z));
-  // Frequency normalized by cloud radius (~4 cells across) — keeps the worley
-  // erosion lumpy without scattering high-freq specks that balloon the
-  // silhouette (np*10 measured worse footprint parity: 2.94x vs 2.41x area).
-  let np = cloudPoint / max(cloudRadius, 0.001) * 4.0;
-  let W  = clamp(csm_cloudWorleyFBM(np, 1.0), 0.0, 1.0);
-  let W2 = clamp(csm_cloudWorleyFBM(np, 2.0), 0.0, 1.0);
-  let W3 = clamp(csm_cloudWorleyFBM(np, 3.0), 0.0, 1.0);
+  // Worley erosion — sample the baked 3-channel worley-FBM texture EXACTLY
+  // like WebGL (CloudCollectionFS: noise = sampleNoiseTexture(noiseDetail *
+  // cloudPoint); W/W2/W3 = noise.x/y/z), tiled + trilinear. This replaces the
+  // B363 inline-worley approximation (which, normalized by cloud radius, was
+  // ~4 cells across vs WebGL's ~8/tile × many tiles → coarser, less grainy).
+  let noise = csm_cloudSampleNoise(NOISE_DETAIL * cloudPoint);
+  let W  = noise.x;
+  let W2 = noise.y;
+  let W3 = noise.z;
 
   let ndDot = clamp(dot(cloudNormal, -rayDir), 0.0, 1.0);
   var TR = pow(ndDot, 3.0) - W;     // translucency
@@ -480,34 +501,151 @@ const scratchMVP = new Matrix4();
 // translation-free MVP correctly (must zero before projecting).
 const scratchMVRTE = new Matrix4();
 
+// NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY (Batch 365) — 3-channel worley-FBM
+// noise baked into a 3D→2D atlas, a faithful CPU port of CloudNoiseFS.glsl
+// (worley) + CloudCollection.js (packing). The cloud FS samples it at
+// `NOISE_DETAIL * cloudPoint` via the WGSL voxelToUV + manual trilinear
+// (csm_cloudSampleNoise) — exactly like WebGL — so the erosion grain matches
+// instead of the B363 inline approximation.
+//
+// SLICE=64 cube (vs WebGL's 128) + DETAIL=8 (vs 16) reproduces WebGL's grain
+// frequency (cells/tile = SLICE/DETAIL = 8) and tile period (SLICE/DETAIL = 8
+// in cloudPoint space) at 1/8 the gen cost. The packing dims MUST stay in
+// lock-step with the WGSL constants (NOISE_SLICE/ROWS/INV_ROWS/DETAIL).
+//
+// The worley cell points (`random3(cell)`) only depend on cells wrapped to
+// [0, SLICE/DETAIL) = [0, 8) per axis → 8³ = 512 unique points, precomputed
+// once so the per-voxel hot loop has NO trig (keeps the one-time generation
+// well under a frame-budget hitch even at 1024×256).
+const NOISE_TEX_SLICE = 64;
+const NOISE_TEX_ROWS = 4;
+const NOISE_TEX_DETAIL = 8.0;
+
 function createNoiseTexture(device: GPUDevice): {
   texture: GPUTexture;
   view: GPUTextureView;
 } {
-  const size = 64;
-  const data = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const idx = (y * size + x) * 4;
-      const val = Math.floor(
-        (Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 256,
+  const SLICE = NOISE_TEX_SLICE;
+  const ROWS = NOISE_TEX_ROWS;
+  const DETAIL = NOISE_TEX_DETAIL;
+  const width = (SLICE * SLICE) / ROWS; // 1024
+  const height = SLICE * ROWS; // 256
+  const invRows = 1.0 / ROWS;
+  const wrapRange = SLICE / DETAIL; // 8 — worley cell wrap period (integers)
+  const data = new Uint8Array(width * height * 4);
+
+  const fract = (x: number): number => x - Math.floor(x);
+  const glslMod = (x: number, y: number): number => x - y * Math.floor(x / y);
+  const wrap = (v: number, r: number): number => {
+    if (v < 0) {
+      const m = glslMod(Math.abs(v), r);
+      return glslMod(r - m, r);
+    }
+    return glslMod(v, r);
+  };
+
+  // Precompute random3(cell) for every wrapped integer cell in [0, wrapRange)³.
+  const wr = Math.round(wrapRange);
+  const cellPts = new Float32Array(wr * wr * wr * 3);
+  for (let cz = 0; cz < wr; cz++) {
+    for (let cy = 0; cy < wr; cy++) {
+      for (let cx = 0; cx < wr; cx++) {
+        const d1 = cx * 127.1 + cy * 311.7 + cz * 932.8;
+        const d2 = cx * 269.5 + cy * 183.3 + cz * 421.4;
+        const b = ((cz * wr + cy) * wr + cx) * 3;
+        cellPts[b] = fract(Math.sin(d1 - d2));
+        cellPts[b + 1] = fract(Math.cos(d1 * d2));
+        cellPts[b + 2] = fract(d1 * d2);
+      }
+    }
+  }
+
+  // worleyNoise(P, F): shortest distance to a feature point in the 3×3×3
+  // neighborhood, cells wrapped to [0, wrapRange). Mirrors CloudNoiseFS.
+  const worley = (px: number, py: number, pz: number, freq: number): number => {
+    const Px = px * freq;
+    const Py = py * freq;
+    const Pz = pz * freq;
+    const ccx = Math.floor(Px);
+    const ccy = Math.floor(Py);
+    const ccz = Math.floor(Pz);
+    const fx = Px - ccx;
+    const fy = Py - ccy;
+    const fz = Pz - ccz;
+    let shortest = 1000.0;
+    for (let oz = -1; oz <= 1; oz++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          const cellx = wrap(ccx + ox, wrapRange);
+          const celly = wrap(ccy + oy, wrapRange);
+          const cellz = wrap(ccz + oz, wrapRange);
+          const b = ((cellz * wr + celly) * wr + cellx) * 3;
+          const dx = fx - (ox + cellPts[b]);
+          const dy = fy - (oy + cellPts[b + 1]);
+          const dz = fz - (oz + cellPts[b + 2]);
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (d < shortest) {
+            shortest = d;
+          }
+        }
+      }
+    }
+    return shortest;
+  };
+
+  // 3-octave FBM at a given outer scale (persistence 0.625).
+  const worleyFBM = (
+    px: number,
+    py: number,
+    pz: number,
+    scale: number,
+  ): number => {
+    let noise = 0.0;
+    let freq = 1.0;
+    let persistence = 0.625;
+    for (let i = 0; i < 3; i++) {
+      noise +=
+        worley(px * scale, py * scale, pz * scale, freq * scale) * persistence;
+      persistence *= 0.5;
+      freq *= 2.0;
+    }
+    return noise;
+  };
+
+  const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+  for (let py = 0; py < height; py++) {
+    const y = glslMod(py, SLICE);
+    const sliceRow = Math.floor(py / SLICE);
+    for (let px = 0; px < width; px++) {
+      // pixel → voxel (inverse of voxelToUV / CloudNoiseFS main).
+      const x = glslMod(px, SLICE);
+      const z = Math.floor(px / SLICE) + sliceRow * invRows * SLICE;
+      const posx = x / DETAIL;
+      const posy = y / DETAIL;
+      const posz = z / DETAIL;
+      const idx = (py * width + px) * 4;
+      data[idx] = Math.round(clamp01(worleyFBM(posx, posy, posz, 1.0)) * 255);
+      data[idx + 1] = Math.round(
+        clamp01(worleyFBM(posx, posy, posz, 2.0)) * 255,
       );
-      data[idx] = Math.abs(val);
-      data[idx + 1] = Math.abs(val);
-      data[idx + 2] = Math.abs(val);
+      data[idx + 2] = Math.round(
+        clamp01(worleyFBM(posx, posy, posz, 3.0)) * 255,
+      );
       data[idx + 3] = 255;
     }
   }
+
   const texture = device.createTexture({
-    size: { width: size, height: size },
+    size: { width, height },
     format: "rgba8unorm",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
   device.queue.writeTexture(
     { texture },
     data,
-    { bytesPerRow: size * 4 },
-    { width: size, height: size },
+    { bytesPerRow: width * 4 },
+    { width, height },
   );
   return { texture, view: texture.createView() };
 }
@@ -814,11 +952,14 @@ function _updateWebGPUCloudCollectionInner(
     const noise = createNoiseTexture(device);
     cache.noiseTexture = noise.texture;
     cache.noiseTextureView = noise.view;
+    // NEAREST — the worley atlas is a 3D→2D packed cube; the FS does its own
+    // trilinear blend in csm_cloudSampleNoise, so hardware filtering would
+    // bleed across slice seams (NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY).
     cache.sampler = device.createSampler({
-      minFilter: "linear",
-      magFilter: "linear",
-      addressModeU: "repeat",
-      addressModeV: "repeat",
+      minFilter: "nearest",
+      magFilter: "nearest",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
     });
     cache.quadVertexBuffer = createQuadVB(device);
 

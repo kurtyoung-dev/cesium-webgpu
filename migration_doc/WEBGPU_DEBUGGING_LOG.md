@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 365 — WebGPU CloudCollection baked worley-texture port for grain parity (NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY) (2026-06-23)
+
+**Item:** NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY (B363 residual). B363's volumetric cloud used an inline procedural worley FBM for the W/W2/W3 erosion — coarser + smoother than WebGL's baked 3D worley texture, so the cloud was "denser/less grainy."
+
+**Fix:** ported WebGL's baked-texture path faithfully. `createNoiseTexture` (in `WebGPUCloudRenderer.ts`) now CPU-generates a 3-channel worley-FBM atlas (port of `CloudNoiseFS.glsl` worley + `CloudCollection.js`'s 3D→2D packing) and the cloud FS samples it via a WGSL `voxelToUV` + manual trilinear `csm_cloudSampleNoise` (1:1 port of `CloudCollectionFS.glsl`) at `NOISE_DETAIL * cloudPoint`, exactly like WebGL.
+
+**Key sizing trick:** SLICE=64 / DETAIL=8 (vs WebGL's 128 / 16) makes the W value at ANY cloudPoint **identical** to WebGL — both reduce to `worleyFBM(cloudPoint mod 8)` (same wrapRange=8 integer cell points from `random3`, same tile period in cloudPoint space) — at 1/8 the generation cost. The worley cell points only depend on cells wrapped to `[0, 8)³` = 512 values → precomputed once so the per-voxel hot loop has NO trig (gen <1 frame even at 1024×256). Sampler switched to NEAREST (the FS does its own trilinear over the packed atlas; hardware filtering would bleed across slice seams).
+
+**Verification (`probe-cloud-volumetric-parity.mjs`, PNGs READ):** the WebGPU cloud is now finely speckled, matching WebGL's worley grain (vs B363's smooth blob). Didn't-break: probe-cloud-property-edit PASS, probe-collections-regression PASS (cloud green 316 > 100 gate), 0 errors.
+
+**Lesson + exposed residual:** the now-faithful W erodes LESS than B363's coarse inline worley, which had been OVER-eroding and *coincidentally masking* a pre-existing size gap. With the worley correct, the cloud is now ~1.9x linear vs WebGL (was ~1.6x). Since the raymarch + Gardner + TR + color WGSL are line-by-line ALGORITHMICALLY IDENTICAL to `CloudCollectionFS.glsl` (re-verified) and W now matches exactly, the residual size/density is a NON-shader cause — tracked as **NEW-WEBGPU-CLOUD-SIZE-PARITY** (candidates: clip-space-vs-eye-space quad-offset projection, maxSize delivery, a WebGL quad-projection quirk). A "more correct" sub-fix can EXPOSE a larger residual that a wronger one was hiding — measure against the reference, not against the prior WebGPU build.
+
+**Files:** `WebGPUCloudRenderer.ts` only. **Probes:** `probe-cloud-volumetric-parity.mjs`, `probe-cloud-property-edit.mjs` + `probe-collections-regression.mjs` (didn't-break).
+
+---
+
 ## Batch 364 — WebGPU HDR night sky crushed black by always-on auto-exposure (NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY) (2026-06-23)
 
 **Item:** NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY (QUEUE Tier-3). Under `scene.highDynamicRange = true`, the WebGPU night sky rendered dramatically under-bright vs WebGL — bright catalog stars + their bloom halos vanished. Prior re-investigation correctly localized it to the "shared HDR post-process path" but left 3 unpinned suspects (tonemap / auto-exposure / bloom) and scoped it as needing broad HDR regression.
