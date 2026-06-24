@@ -12,6 +12,14 @@ CesiumJS API fit.
 
 ---
 
+> ✅ **PHASE 0 + 1 SHIPPED (2026-06-24, git Batches 384-387).** 0a clock-bind
+> (`frameState.time`), 0b the 11 WMO genera + `CloudTypeProfile.js`, 0c minimal
+> Worley erosion + normalized multi-scatter, and **Phase 1 — the weather-map seam
+> (C2-16, the keystone)**: `globe.cloudWeatherMap` samples a 2D lat/lon RGBA
+> texture per position so coverage varies spatially (probe-verified: ON carves
+> distinct cloud regions + clear gaps; PNGs READ). Ships procedural (FBM), zero
+> data pipeline. **Next: Phase 2 (multi-deck + per-type phase).**
+
 ## North star
 
 Drive the WebGPU volumetric cloud raymarcher from a **spatial, time-indexed weather field**
