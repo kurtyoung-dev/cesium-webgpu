@@ -65,6 +65,8 @@ import PrimitiveMatAlphaMapFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMa
 import PrimitiveMatAlphaMapLit from "../../Shaders/WebGPU/Primitive/PrimitiveMatAlphaMapLit.js";
 import PrimitiveMatEmissionMapFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMatEmissionMapFlat.js";
 import PrimitiveMatEmissionMapLit from "../../Shaders/WebGPU/Primitive/PrimitiveMatEmissionMapLit.js";
+import PrimitiveMatDiffuseMapFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMatDiffuseMapFlat.js";
+import PrimitiveMatDiffuseMapLit from "../../Shaders/WebGPU/Primitive/PrimitiveMatDiffuseMapLit.js";
 import PrimitiveMatSpecularMapFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMatSpecularMapFlat.js";
 import PrimitiveMatSpecularMapLit from "../../Shaders/WebGPU/Primitive/PrimitiveMatSpecularMapLit.js";
 import PrimitiveMatBumpMapFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMatBumpMapFlat.js";
@@ -186,6 +188,8 @@ const _shaderCache = {
   matAlphaMapLit: PrimitiveMatAlphaMapLit,
   matEmissionMapFlat: PrimitiveMatEmissionMapFlat,
   matEmissionMapLit: PrimitiveMatEmissionMapLit,
+  matDiffuseMapFlat: PrimitiveMatDiffuseMapFlat,
+  matDiffuseMapLit: PrimitiveMatDiffuseMapLit,
   matSpecularMapFlat: PrimitiveMatSpecularMapFlat,
   matSpecularMapLit: PrimitiveMatSpecularMapLit,
   matBumpMapFlat: PrimitiveMatBumpMapFlat,
@@ -686,7 +690,7 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
   const materialType = defined(material) ? material.type : "Color";
   const useLighting = hasNormals && !isFlat;
 
-  if (materialType === "Image" || materialType === "DiffuseMap") {
+  if (materialType === "Image") {
     if (useLighting && hasST) {
       return {
         type: "matImageLit",
@@ -697,6 +701,26 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
     return {
       type: "matImageFlat",
       code: getShaderSource("matImageFlat"),
+      needsTexture: true,
+    };
+  }
+
+  // C2-5: DiffuseMap has its OWN shader pair — its fabric is
+  // { channels:vec3, repeat:vec2 }, which does NOT match the Image shader's
+  // { repeat:vec2, color:vec4 } MaterialUniforms struct. Sharing the Image
+  // shader silently corrupted the UBO read (repeat read channels, color read
+  // repeat+pad). See PrimitiveMatDiffuseMap{Flat,Lit}.wgsl.
+  if (materialType === "DiffuseMap") {
+    if (useLighting && hasST) {
+      return {
+        type: "matDiffuseMapLit",
+        code: getShaderSource("matDiffuseMapLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matDiffuseMapFlat",
+      code: getShaderSource("matDiffuseMapFlat"),
       needsTexture: true,
     };
   }
@@ -1085,6 +1109,8 @@ function isMaterialTexturedShader(shaderType) {
     shaderType === "matAlphaMapLit" ||
     shaderType === "matEmissionMapFlat" ||
     shaderType === "matEmissionMapLit" ||
+    shaderType === "matDiffuseMapFlat" ||
+    shaderType === "matDiffuseMapLit" ||
     shaderType === "matSpecularMapFlat" ||
     shaderType === "matSpecularMapLit" ||
     shaderType === "matBumpMapFlat" ||

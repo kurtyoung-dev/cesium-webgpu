@@ -196,6 +196,51 @@ describe("Scene/MaterialUniformBuffer", function () {
     });
   });
 
+  describe("Material.DiffuseMapType layout — fabric { image, channels, repeat }", function () {
+    // C2-5 regression lock. DiffuseMap's fabric is { channels:vec3, repeat:vec2 }
+    // — IDENTICAL to EmissionMap and DIFFERENT from Image's { repeat, color }.
+    // DiffuseMap previously SHARED the Image WGSL shader, whose struct is
+    // { repeat:vec2, color:vec4 }, so `repeat` read DiffuseMap's channels and
+    // `color` read repeat+padding (silent UBO corruption). The fix is a dedicated
+    // PrimitiveMatDiffuseMap{Flat,Lit}.wgsl whose struct matches THIS layout.
+    // If this layout is ever changed, the new shader struct must change too.
+    it("places channels:vec3 at float 0 and repeat at float 4 (image is a texture)", function () {
+      const buf = new MaterialUniformBuffer({
+        image: "cesium://default",
+        channels: "rgb",
+        repeat: new Cartesian2(1, 1),
+      });
+      expect(buf.layout.get("image").offset).toBe(-1); // texture, not packed
+      expect(buf.layout.get("channels").offset).toBe(0);
+      expect(buf.layout.get("channels").size).toBe(3);
+      expect(buf.layout.get("repeat").offset).toBe(4);
+      expect(buf.gpuData[0]).toBe(0); // r
+      expect(buf.gpuData[1]).toBe(1); // g
+      expect(buf.gpuData[2]).toBe(2); // b
+      expect(buf.gpuData[4]).toBe(1);
+      expect(buf.gpuData[5]).toBe(1);
+    });
+
+    it("does NOT match the Image fabric { repeat, color } layout", function () {
+      // Concrete proof the two cannot share a shader: DiffuseMap has no `color`
+      // and Image has no `channels`, and `repeat` lands at different offsets.
+      const diffuse = new MaterialUniformBuffer({
+        image: "cesium://default",
+        channels: "rgb",
+        repeat: new Cartesian2(2, 3),
+      });
+      const image = new MaterialUniformBuffer({
+        image: "cesium://default",
+        repeat: new Cartesian2(2, 3),
+        color: new Color(1, 0, 0, 1),
+      });
+      expect(diffuse.layout.get("repeat").offset).toBe(4); // after channels vec3
+      expect(image.layout.get("repeat").offset).toBe(0); // at the head
+      expect(diffuse.layout.get("color")).toBeUndefined();
+      expect(image.layout.get("channels")).toBeUndefined();
+    });
+  });
+
   describe("non-channel strings still classify as textures", function () {
     // An asset URL or base-64 data URI must not be mistaken for a channel
     // shorthand even if its first char happens to be r/g/b/a.
