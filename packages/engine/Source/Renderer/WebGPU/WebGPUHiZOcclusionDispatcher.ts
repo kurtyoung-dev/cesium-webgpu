@@ -195,6 +195,10 @@ class WebGPUHiZOcclusionDispatcher {
   // same depth texture and can reuse the previously-built pyramid.
   // -1 sentinel means "not built yet this session".
   private _lastBuiltFrameId: number = -1;
+  // FORK-41 (C2-21) — see setDepthTexture. True = mip-0 input is a depth
+  // texture (texture_depth_2d); false = a color texture (texture_2d<f32>,
+  // the MSAA-resolved r16float depth).
+  private _mip0IsDepthFormat: boolean = true;
   // Reused scratch arrays for per-frame UBO uploads.
   private _hiZParamsScratch = new Uint32Array(8);
   private _occlusionParamsScratch = new ArrayBuffer(OCCLUSION_PARAMS_BYTES);
@@ -617,13 +621,24 @@ class WebGPUHiZOcclusionDispatcher {
    * texture, so the caller is responsible for ensuring the texture
    * stays alive for the duration of the frame.
    */
-  setDepthTexture(depthTextureView: GPUTextureView): void {
+  setDepthTexture(
+    depthTextureView: GPUTextureView,
+    mip0IsDepthFormat: boolean = true,
+  ): void {
     if (!this._resources) return;
     this._resources.boundDepthTextureView = depthTextureView;
     // The depth view passed in is expected to be a full mip-0 view
     // of the source depth texture. Store it directly — the per-mip
     // bind groups reference it.
     this._resources.depthMip0View = depthTextureView;
+    // FORK-41 (C2-21) — whether mip 0's input view is a true depth texture
+    // (`texture_depth_2d`, single-sample scene) or a color texture
+    // (`texture_2d<f32>`, e.g. the MSAA-resolved r16float depth the scene
+    // framebuffer exposes as `depthSampleableView`). The r16float resolve is
+    // NOT bindable as `texture_depth_2d`, so mip 0 must use the standard
+    // `texture_2d<f32>` pipeline in that case or the dispatch silently fails
+    // (visibility stays 0 → hitRatio 0).
+    this._mip0IsDepthFormat = mip0IsDepthFormat;
   }
 
   /**
@@ -689,7 +704,10 @@ class WebGPUHiZOcclusionDispatcher {
       // texture_depth_2d directly from the scene depth attachment). For
       // mips 1+, use the standard r32float pipeline.
       const useDepthPipeline =
-        m === 0 && r.hiZFromDepthPipeline && r.hiZFromDepthBindGroupLayout;
+        m === 0 &&
+        this._mip0IsDepthFormat &&
+        r.hiZFromDepthPipeline &&
+        r.hiZFromDepthBindGroupLayout;
       const layout = useDepthPipeline
         ? r.hiZFromDepthBindGroupLayout!
         : r.hiZBindGroupLayout;
@@ -1046,12 +1064,15 @@ function dispatchWebGPUHiZOcclusion(
     farPlane: number;
     logDepthEnabled?: boolean;
     logDepthFactor?: number;
+    // FORK-41 (C2-21) — false when `depthTextureView` is the MSAA-resolved
+    // r16float color view (must use the texture_2d<f32> mip-0 pipeline).
+    mip0IsDepthFormat?: boolean;
   },
   frameId?: number,
 ): boolean {
   const inst = _instances.get(context);
   if (!inst) return false;
-  inst.setDepthTexture(depthTextureView);
+  inst.setDepthTexture(depthTextureView, params.mip0IsDepthFormat !== false);
   const ok = inst.buildHiZPyramid(encoder, frameId ?? -1);
   if (!ok) return false;
   return inst.dispatchOcclusionTest(encoder, soa, params);

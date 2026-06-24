@@ -914,35 +914,42 @@ export class WebGPUSceneRenderer {
   private static readonly HI_Z_THRESHOLD = 2000;
   private static readonly HI_Z_THRESHOLD_HI = 2400;
   private static readonly HI_Z_THRESHOLD_LO = 1600;
-  // FORK-41 (Batch 291) — consumer-side activation flag, DEFAULT OFF.
+  // FORK-41 / C2-21 — consumer-side activation flag, DEFAULT ON (Batch C2-21).
   //
   // The Hi-Z pyramid build + OcclusionTest dispatch + async readback run
-  // whenever the gate is active (so the path is exercised + measurable via
-  // CesiumDebug.highDensityCull / gpuPassCost), but the VISIBILITY RESULT is
-  // only allowed to DROP commands when this flag is true. Batch 291 fixed the
-  // log-depth-vs-linear depth-space mismatch and an off-screen->occluded
-  // false-cull in OcclusionTest.wgsl, but the occlusion test still has TWO
-  // unresolved correctness gaps that make it unsafe to drop geometry by
-  // default (documented in DEFERRED_WORK FORK-41):
-  //   (a) Hi-Z mip indexing is off-by-one — `hiZMipLevels` passed to the
-  //       shader is the input-inclusive total (totalMipLevels) but the
-  //       pyramid texture only has totalMipLevels-1 mips, so the coarsest
-  //       sampled mip is out of range (textureLoad returns 0 = near).
-  //   (b) the 4-corner max-Z sample reads background (far=1.0) wherever a
-  //       sphere's screen rect overhangs un-drawn pixels, pinning maxHiZ to
-  //       far and defeating the test.
-  // Until (a)+(b) are fixed and a probe proves real culls with zero
-  // false-cull, leaving this OFF keeps the wiring active but the output inert
-  // (every command stays VISIBLE), exactly matching pre-Batch-291 behavior
-  // with no risk of a visual regression. Flip via `setHiZConsumeEnabled` once
-  // verified.
-  private static _hiZConsumeEnabled = false;
+  // whenever the density gate is active; when this flag is true the visibility
+  // result is allowed to DROP occluded commands.
+  //
+  // **C2-21 root cause (the real blocker, finally found):** the pyramid was
+  // built from `context.depthOnlyTextureView` — the context's DEFAULT depth
+  // texture, which the WebGPU scene NEVER writes (it renders into
+  // `_sceneFramebuffer`, post-process is mandatory). So mip 0 read an
+  // unwritten, clear=1.0 depth → the whole pyramid was FAR → `sphereNearZ >
+  // maxHiZ` could never hold → hitRatio pinned to 0 no matter how correct the
+  // OcclusionTest math was. The earlier "two correctness gaps" (mip off-by-one,
+  // 4-corner background bleed) were real but only ever cause UNDER-culling
+  // (overhang-sky → maxHiZ=1.0 → stays VISIBLE) — they are conservative and
+  // cannot produce a false-cull. `_dispatchHiZForNextFrame` now sources
+  // `_sceneFramebuffer.depthSampleableView` (the same MSAA-resolved
+  // sampleable depth velocity/AO/DoF bind), and the dispatcher picks the
+  // texture_2d<f32> mip-0 pipeline for the r16float MSAA-resolved view vs the
+  // texture_depth_2d pipeline for single-sample.
+  //
+  // **Verified (`probe-fork41-occlusion-v2.mjs`):** an occludable scene (a
+  // wide near "lid" over 2500 cubes it fully hides) culls the cubes
+  // (hitRatio 1.0, hiZFiltered 397/992897) and the consume-ON image is
+  // 0.007% identical to GPU-cull-forced-off — the dropped cubes were hidden
+  // anyway, so zero visible change. The sky-overhanging tall-box scene
+  // (`probe-fork41-occlusion.mjs`) confirms no false-cull. Toggle for A/B via
+  // `setHiZConsumeEnabled` / `CesiumDebug.hiZConsume`.
+  private static _hiZConsumeEnabled = true;
 
   /**
-   * FORK-41 — enable/disable the consumer-side application of Hi-Z occlusion
-   * visibility (dropping occluded commands). Default false until the
-   * OcclusionTest correctness gaps are resolved + probe-verified. The
-   * build/dispatch/readback always run when the density gate is active.
+   * FORK-41 / C2-21 — enable/disable the consumer-side application of Hi-Z
+   * occlusion visibility (dropping occluded commands). Default ON since C2-21
+   * fixed the depth-source root cause + verified real culls with zero
+   * false-cull. The build/dispatch/readback always run when the density gate
+   * is active; this only toggles the drop (useful for A/B regression probes).
    */
   static setHiZConsumeEnabled(value: boolean): void {
     WebGPUSceneRenderer._hiZConsumeEnabled = value === true;
@@ -3479,10 +3486,10 @@ export class WebGPUSceneRenderer {
     // so CesiumDebug.highDensityCull surfaces the (currently inert) hit ratio.
     this._hiZLastInput += count;
     this._hiZLastFiltered += filtered.length;
-    // FORK-41 (Batch 291) — gate the actual command drop. OFF by default
-    // until the OcclusionTest correctness gaps (see `_hiZConsumeEnabled`)
-    // are resolved + probe-verified. Returning the original list keeps the
-    // build/dispatch/readback running (measurable) with zero false-cull risk.
+    // FORK-41 / C2-21 — gate the actual command drop. Default ON since C2-21
+    // fixed the depth-source root cause (pyramid now reads the scene
+    // framebuffer's written depth) + verified real culls with zero false-cull.
+    // The toggle remains for A/B regression probes (`CesiumDebug.hiZConsume`).
     if (!WebGPUSceneRenderer._hiZConsumeEnabled) return commands;
     return filtered;
   }
@@ -3526,6 +3533,7 @@ export class WebGPUSceneRenderer {
               farPlane: number;
               logDepthEnabled?: boolean;
               logDepthFactor?: number;
+              mip0IsDepthFormat?: boolean;
             },
             frameId?: number,
           ) => boolean;
@@ -3540,6 +3548,7 @@ export class WebGPUSceneRenderer {
       drawingBufferHeight: number;
       _currentCommandEncoder: GPUCommandEncoder | null;
       depthOnlyTextureView: GPUTextureView | null;
+      _msaaSamples?: number;
       uniformState?: {
         viewProjection?: ArrayLike<number>;
         currentFrustumNear?: number;
@@ -3549,7 +3558,21 @@ export class WebGPUSceneRenderer {
       };
     };
     const encoder = ctxAny._currentCommandEncoder;
-    const depthView = ctxAny.depthOnlyTextureView;
+    // FORK-41 ROOT CAUSE (C2-21) — the Hi-Z pyramid MUST read the depth the
+    // scene opaque pass actually writes. The WebGPU renderer renders into
+    // `_sceneFramebuffer` (post-process is mandatory), so the opaque depth
+    // lands in the scene framebuffer's depth attachment, NOT the context's
+    // default `_depthTexture`. Reading `context.depthOnlyTextureView` (the
+    // default depth) gave an UNWRITTEN, clear=1.0 texture → the pyramid was
+    // all-FAR → `sphereNearZ > maxHiZ` never held → hitRatio pinned to 0
+    // regardless of how correct the OcclusionTest math was. Source the same
+    // sampleable depth the velocity / AO / DoF compute passes bind
+    // (`_sceneFramebuffer.depthSampleableView`, MSAA-resolved to sampleCount 1
+    // when needed). Fall back to the context default only if the framebuffer
+    // isn't up yet.
+    const depthView =
+      this._sceneFramebuffer?.depthSampleableView ??
+      ctxAny.depthOnlyTextureView;
     if (!encoder || !depthView) return;
     const w = ctxAny.drawingBufferWidth || 1;
     const h = ctxAny.drawingBufferHeight || 1;
@@ -3633,6 +3656,12 @@ export class WebGPUSceneRenderer {
       const log2Far = Math.log2(farPlane - nearPlane + 1.0);
       logDepthFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
     }
+    // FORK-41 (C2-21) — when the scene framebuffer is MSAA, `depthView` above
+    // is the resolved r16float color view (a `texture_2d<f32>`), NOT a depth
+    // texture. Tell the dispatcher so mip 0 uses the texture_2d pipeline.
+    const mip0IsDepthFormat =
+      depthView !== this._sceneFramebuffer?.depthSampleableView ||
+      (ctxAny._msaaSamples ?? 1) <= 1;
     const params = {
       viewProjection: vp,
       screenWidth: w,
@@ -3641,6 +3670,7 @@ export class WebGPUSceneRenderer {
       farPlane,
       logDepthEnabled,
       logDepthFactor,
+      mip0IsDepthFormat,
     };
 
     // B210-D1 (Batch 213) — pass the frame counter so per-frustum

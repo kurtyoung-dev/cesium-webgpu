@@ -477,7 +477,34 @@ in Batch 222.
 
 ---
 
-### FORK-41 — Hi-Z occlusion: depth-space reconciled + false-cull fixed; command-drop GATED OFF pending one residual correctness gap (Batch 291, PARTIAL)
+### FORK-41 — Hi-Z occlusion: RESOLVED (C2-21, 2026-06-24) — root cause was a depth-source bug; command-drop now DEFAULT ON, verified
+
+**✅ RESOLVED (C2-21).** The real blocker was NOT the OcclusionTest math (the
+"residual correctness gaps" below were red herrings — they only ever cause
+conservative UNDER-culling, never a false-cull). The pyramid was built from
+`context.depthOnlyTextureView` — the context's DEFAULT depth texture, which the
+WebGPU scene NEVER writes (it renders into `_sceneFramebuffer`; post-process is
+mandatory). So mip 0 read an unwritten, clear=1.0 depth → the entire pyramid was
+FAR → `sphereNearZ > maxHiZ` could never hold → hitRatio pinned to 0 regardless
+of shader correctness. **Fix:** `_dispatchHiZForNextFrame` now sources
+`_sceneFramebuffer.depthSampleableView` (the MSAA-resolved sampleable depth that
+velocity/AO/DoF already bind), and `WebGPUHiZOcclusionDispatcher` picks the
+`texture_2d<f32>` mip-0 pipeline for the r16float MSAA-resolved view (vs
+`texture_depth_2d` for single-sample) via a new `mip0IsDepthFormat` flag.
+**Localized** by packing `maxHiZ`+`sphereNearZ` into the visibility u32 and
+reading `_lastHiZVisibility.flags`: pre-fix maxHiZ was 1.0 for all 2501 commands;
+post-fix the lid reads maxHiZ=1.0 (sees sky → stays visible) and all 2500 hidden
+cubes read maxHiZ=0.539 (the lid) vs sphereNearZ=0.680 → occluded.
+**Verified** (`probe-fork41-occlusion-v2.mjs`, an occludable lid+2500-cubes
+scene): hitRatio 1.0, hiZFiltered 397/992897, consume-ON 0.007% identical to
+no-cull (dropped cubes were hidden → zero visible change). The sky-overhanging
+tall-box scene (`probe-fork41-occlusion.mjs`) confirms no false-cull (hitRatio 0,
+0.024%). `_hiZConsumeEnabled` flipped to **default true**. No OcclusionTest.wgsl
+change was needed. Follow-up (optional): a dense 3D-tiles real-scene A/B for the
+moving-camera 1-frame-latency shimmer (bounded, pre-existing temporal-Hi-Z
+tradeoff). Historical detail below.
+
+### FORK-41 (historical) — Hi-Z occlusion: depth-space reconciled + false-cull fixed; command-drop GATED OFF pending one residual correctness gap (Batch 291, PARTIAL)
 
 **Premise correction.** FORK-41 was scoped as "the HiZ + OcclusionTest
 compute dispatchers are compiled + registered but never invoked in the

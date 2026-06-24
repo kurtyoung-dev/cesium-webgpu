@@ -226,8 +226,11 @@ async function run() {
 
   const gate = await collectGateErrors(page);
   await browser.close();
+  // Known pre-existing device error unrelated to Hi-Z:
+  // NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT — the "SkyAtmosphere LUT dispatch"
+  // command buffer is invalid due to a BGL mismatch at init. Filter it.
   const newErrs = (gate.errors || []).filter(
-    (e) => !/AtmosphereLUT|default layout/.test(e),
+    (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e),
   );
 
   console.log("built:", JSON.stringify(buildInfo));
