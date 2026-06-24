@@ -2703,7 +2703,17 @@ function updateWebGPUModel(model, frameState) {
       // themselves on their next-use sites — they're already
       // undefined-tagged for re-fetch, the existing
       // `if (!defined(primCache.X))` gates handle them.
-      if (primCache._pipelineNeedsRefetch || primCache.pipeline === null) {
+      // C2-22 — also re-fetch when the cache swapped a color pipeline to its
+      // magenta error fallback (async failure detection bumps the cache's
+      // _errorSwapGeneration). primCache caches the pipeline reference, so
+      // without this the swap never reaches the built command (render-hole stays).
+      const errorSwapped =
+        primCache._fetchedErrorGen !== pipelineCache._errorSwapGeneration;
+      if (
+        primCache._pipelineNeedsRefetch ||
+        primCache.pipeline === null ||
+        errorSwapped
+      ) {
         // Batch 174 — preserve the materialDefines variant across the
         // format-change refetch.
         const md = primCache.materialDefines | 0;
@@ -2720,6 +2730,7 @@ function updateWebGPUModel(model, frameState) {
           );
         }
         primCache._pipelineNeedsRefetch = false;
+        primCache._fetchedErrorGen = pipelineCache._errorSwapGeneration;
       }
 
       // Session 65 BUG-WEBGPU-MODEL-TEXTURE-PLACEHOLDER-STUCK fix.

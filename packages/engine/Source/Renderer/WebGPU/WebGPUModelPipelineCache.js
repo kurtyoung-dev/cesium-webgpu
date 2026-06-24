@@ -29,6 +29,8 @@
  */
 
 import ModelPBRCompleteWGSL from "../../Shaders/WebGPU/Model/ModelPBRComplete.js";
+// C2-22 — flat-magenta fallback shader for failed model PBR pipelines.
+import ErrorPipelineWGSL from "../../Shaders/WebGPU/Model/ErrorPipeline.js";
 // Slice 5d Batch 153 — Forward+ clustered lighting FS chunk. Prepended
 // to the Model PBR shader source unconditionally so the @group(3)
 // binding declarations (slots 18..22) + evalClusteredLights() function
@@ -1115,6 +1117,15 @@ class WebGPUModelPipelineCache {
     // unconditionally writes the current generation without a clear.
     this._sceneFormatGeneration = -1;
     this._pipelines = new Map();
+    // C-22 — flat-magenta error pipelines (per pipeline-layout variant `md`),
+    // substituted into `_pipelines` when a color pipeline fails validation. The
+    // shared error shader module is built lazily on first failure.
+    this._errorShaderModule = null;
+    this._errorPipelines = new Map();
+    // Bumped each time a color pipeline is swapped to its magenta fallback, so
+    // the model renderer (which caches the pipeline reference per primitive) can
+    // detect the swap and re-fetch. Exceptional path — only changes on failure.
+    this._errorSwapGeneration = 0;
     // C-R9-MODEL-PICK (Batch 54) — pick pipeline cache, keyed by the same
     // (alphaMode, doubleSided) pair as `_pipelines`. Each pick pipeline
     // shares the layout + vertex stage of its color sibling and only
@@ -1569,6 +1580,18 @@ class WebGPUModelPipelineCache {
    */
   _getOrCreateShaderModule(materialDefines) {
     const key = this._normalizeMaterialDefines(materialDefines);
+    //>>includeStart('debug', pragmas.debug);
+    // C2-22 — test hook: when `globalThis.CesiumWebGPUForcePipelineError` is set,
+    // return a deliberately-invalid module (no entry points, garbage WGSL) so the
+    // downstream createRenderPipeline fails validation and the magenta error
+    // pipeline can be verified. Called inside getPipeline's error scope.
+    if (globalThis.CesiumWebGPUForcePipelineError === true) {
+      return this._device.createShaderModule({
+        label: "Model PBR FORCED-ERROR (C2-22 probe)",
+        code: "garbage_token_not_valid_wgsl",
+      });
+    }
+    //>>includeEnd('debug');
     // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the module
     // (NOT the BGL/pipeline-layout, whose bindings don't change) forks on
     // the LOG_DEPTH bit. `_logDepthEnabled` mirrors
@@ -1728,6 +1751,14 @@ class WebGPUModelPipelineCache {
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
+    // C2-22 — wrap creation in a validation error scope. Synchronous
+    // `createRenderPipeline` does NOT throw on a bad shader/layout; it returns an
+    // INVALID pipeline whose draws are silently dropped (render-hole). The scope's
+    // async resolution tells us if it failed, at which point we swap the cache
+    // entry to a flat-magenta error pipeline so the model shows magenta (the
+    // universal "shader broke" signal) instead of nothing. Frame N draws the
+    // invalid pipeline (a no-op); frame N+1 binds the magenta fallback.
+    this._device.pushErrorScope("validation");
     pipeline = createPipeline(
       this._device,
       this._getOrCreateShaderModule(md),
@@ -1741,8 +1772,77 @@ class WebGPUModelPipelineCache {
       hasFeatureId0,
       this._sampleCount,
     );
+    this._device.popErrorScope().then((error) => {
+      if (error) {
+        console.error(
+          `[CesiumJS:webgpu] Model PBR pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
+        );
+        this._pipelines.set(key, this._getOrCreateErrorPipeline(md));
+        // Signal model primitives (which cache the pipeline reference) to
+        // re-fetch so the magenta fallback reaches the already-built command.
+        this._errorSwapGeneration++;
+      }
+    });
     this._pipelines.set(key, pipeline);
     return pipeline;
+  }
+
+  /**
+   * C2-22 — builds (and caches per layout-variant `md`) a flat-magenta fallback
+   * pipeline that is a drop-in for a failed color pipeline: it reuses the
+   * variant's pipeline layout (so the command's bound bind groups stay valid —
+   * the error shader reads only @group(0) camera) and consumes only vertex
+   * slot 0 (positionMC). Matches the color pipeline's MRT targets / depth format
+   * / sample count so it binds in the same render pass.
+   * @param {number} md Normalized material-defines key.
+   * @returns {GPURenderPipeline}
+   * @private
+   */
+  _getOrCreateErrorPipeline(md) {
+    let ep = this._errorPipelines.get(md);
+    if (ep) {
+      return ep;
+    }
+    if (!this._errorShaderModule) {
+      this._errorShaderModule = this._device.createShaderModule({
+        label: "Model PBR error (magenta) shader",
+        code: ErrorPipelineWGSL,
+      });
+    }
+    ep = this._device.createRenderPipeline({
+      label: "Model PBR ERROR (magenta fallback)",
+      layout: this._getOrCreatePipelineLayout(md),
+      vertex: {
+        module: this._errorShaderModule,
+        entryPoint: "vertexMain",
+        // Only slot 0 (positionMC) — the command's other vertex buffers stay
+        // bound but unused, which is valid.
+        buffers: [
+          {
+            arrayStride: 12,
+            stepMode: "vertex",
+            attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }],
+          },
+        ],
+      },
+      fragment: {
+        module: this._errorShaderModule,
+        entryPoint: "fragmentMain",
+        targets: makeSceneFBTargets(this._presentationFormat, {
+          emitsGBuffer: true,
+        }),
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: {
+        format: this._depthFormat,
+        depthWriteEnabled: true,
+        depthCompare: "less-equal",
+      },
+      multisample:
+        this._sampleCount > 1 ? { count: this._sampleCount } : undefined,
+    });
+    this._errorPipelines.set(md, ep);
+    return ep;
   }
 
   /**
