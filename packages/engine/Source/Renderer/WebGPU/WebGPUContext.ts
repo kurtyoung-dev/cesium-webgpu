@@ -1562,6 +1562,24 @@ export class WebGPUContext extends GraphicsContext {
     // Create or recreate depth texture if needed
     this._ensureDepthTexture();
 
+    // NEW-WEBGPU-UNIFORMSTATE-VIEWPORT (Batch 368, item 371): seed
+    // uniformState.viewport once per frame. The WebGL path seeds it in
+    // RenderState.applyViewport (alongside gl.viewport); the WebGPU path never
+    // did, so uniformState.viewportOrthographic / viewportTransformation stayed
+    // at IDENTITY and every screen-space WGSL shader had to hand-build them
+    // from drawingBufferWidth/Height. Seeding here makes the canonical
+    // UniformState getters correct for ALL screen-space WebGPU shaders.
+    // ORDERING: Scene.render() calls Matrix4.setDepthRangeType("webgpu") before
+    // context.beginFrame(), so the lazy cleanViewport ortho z-mapping uses the
+    // WebGPU 0..1 branch. The setter only reads x/y/width/height, so a plain
+    // object literal suffices (no BoundingRectangle import).
+    this._uniformState.viewport = {
+      x: 0,
+      y: 0,
+      width: this.drawingBufferWidth,
+      height: this.drawingBufferHeight,
+    };
+
     // Start the default (canvas) render pass
     this._beginDefaultRenderPass();
   }
