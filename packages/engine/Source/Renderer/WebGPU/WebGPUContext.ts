@@ -24,6 +24,7 @@ import DeveloperError from "../../Core/DeveloperError.js";
 import defined from "../../Core/defined.js";
 import RuntimeError from "../../Core/RuntimeError.js";
 import createGuid from "../../Core/createGuid.js";
+import loadKTX2 from "../../Core/loadKTX2.js";
 import Color from "../../Core/Color.js";
 import UniformState from "../UniformState.js";
 import { initializeContextLimitsFromDevice } from "./WebGPUContextLimitsInit.js";
@@ -2126,6 +2127,24 @@ export class WebGPUContext extends GraphicsContext {
       this._astc = true;
       this.astc = true;
     }
+
+    // C2-1 NEW-WEBGPU-KTX2-TRANSCODER-FORMATS: register the KTX2 transcode
+    // target formats derived from the device's compression features, mirroring
+    // the WebGL Context.js init. Without this, loadKTX2() throws
+    // "supportedTargetFormats is required" on a WebGPU context (the transcoder
+    // guards on a module-level set that only the WebGL backend populated), so
+    // even an uncompressed half-float .ktx2 (e.g. an IBL env map) fails to load.
+    // WebGPU exposes no PVRTC or ETC1 device feature, so those pass false.
+    // NOTE: setKTX2SupportedFormats writes a process-global shared with WebGL
+    // (last init wins) — see loadKTX2.js. Idempotent on device-loss re-init.
+    loadKTX2.setKTX2SupportedFormats(
+      this._s3tc, // texture-compression-bc
+      this._pvrtc, // no WebGPU device feature → false
+      this._astc, // texture-compression-astc
+      this._etc, // texture-compression-etc2
+      this._etc1, // no WebGPU device feature → false
+      this._bc7, // texture-compression-bc
+    );
   }
 
   /**
