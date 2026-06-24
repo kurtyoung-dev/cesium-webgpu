@@ -440,11 +440,15 @@ function getVertexLayoutForShader(shaderType, options) {
  * @private
  */
 function getPolylineAppearanceVertexLayout() {
+  // 376b — 2D/CV/Morph: loc8-13 carry the projected 2D positions
+  // (position2DHigh/Low + prev/next 2D) so the VS can blend 3D↔2D by morphTime.
+  // Stride 96→168 (24→42 floats). In scene3DOnly mode these attrs are absent in
+  // the geometry; the packer zero-fills them and morphTime stays 1.0 (3D path).
   return {
-    floatsPerVertex: 24,
-    stride: 96,
+    floatsPerVertex: 42,
+    stride: 168,
     layout: {
-      arrayStride: 96,
+      arrayStride: 168,
       attributes: [
         { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
         { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
@@ -454,6 +458,12 @@ function getPolylineAppearanceVertexLayout() {
         { shaderLocation: 5, offset: 60, format: "float32x3" }, // nextPositionLow
         { shaderLocation: 6, offset: 72, format: "float32x2" }, // expandAndWidth
         { shaderLocation: 7, offset: 80, format: "float32x4" }, // color
+        { shaderLocation: 8, offset: 96, format: "float32x3" }, // position2DHigh
+        { shaderLocation: 9, offset: 108, format: "float32x3" }, // position2DLow
+        { shaderLocation: 10, offset: 120, format: "float32x3" }, // prevPosition2DHigh
+        { shaderLocation: 11, offset: 132, format: "float32x3" }, // prevPosition2DLow
+        { shaderLocation: 12, offset: 144, format: "float32x3" }, // nextPosition2DHigh
+        { shaderLocation: 13, offset: 156, format: "float32x3" }, // nextPosition2DLow
       ],
     },
   };
@@ -524,11 +534,13 @@ function selectPolylineMaterialShader(material) {
  * @private
  */
 function getPolylineMaterialVertexLayout() {
+  // 376b — loc8-13 carry the projected 2D positions (see the appearance layout).
+  // Stride 88→160 (22→40 floats).
   return {
-    floatsPerVertex: 22,
-    stride: 88,
+    floatsPerVertex: 40,
+    stride: 160,
     layout: {
-      arrayStride: 88,
+      arrayStride: 160,
       attributes: [
         { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
         { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
@@ -538,6 +550,12 @@ function getPolylineMaterialVertexLayout() {
         { shaderLocation: 5, offset: 60, format: "float32x3" }, // nextPositionLow
         { shaderLocation: 6, offset: 72, format: "float32x2" }, // expandAndWidth
         { shaderLocation: 7, offset: 80, format: "float32x2" }, // st
+        { shaderLocation: 8, offset: 88, format: "float32x3" }, // position2DHigh
+        { shaderLocation: 9, offset: 100, format: "float32x3" }, // position2DLow
+        { shaderLocation: 10, offset: 112, format: "float32x3" }, // prevPosition2DHigh
+        { shaderLocation: 11, offset: 124, format: "float32x3" }, // prevPosition2DLow
+        { shaderLocation: 12, offset: 136, format: "float32x3" }, // nextPosition2DHigh
+        { shaderLocation: 13, offset: 148, format: "float32x3" }, // nextPosition2DLow
       ],
     },
   };

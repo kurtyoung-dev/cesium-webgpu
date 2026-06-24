@@ -178,10 +178,16 @@ mentions + likely-stale exclusions are listed at the bottom.
   MVP). Fix path + the verified-correct pick code are documented in DEFERRED under
   NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU follow-up (a). Reproduction harness
   `probe-polyline-appearance-pick.mjs` committed (RED, gates the fix).
-- **C2-12 · 376b — Polyline appearance 2D/CV/Morph** (M, med) — 3D-only today.
-  Plumb `position2DHigh/Low` + `morphTime` lerp into `csm_polylineCommon.wgsl`
-  screen-space expansion (mirror `PolylineCommon.glsl` 2D path + the
-  globe/billboard morph-lerp convention).
+- **C2-12 · 376b — Polyline appearance 2D/CV/Morph** ✅ **DONE (Batch 382).** Was
+  3D-only → `PolylineColorAppearance`/`PolylineMaterialAppearance` Primitives
+  rendered **0px in 2D + Columbus View** on WebGPU. Added `csm_computePolylinePosition`
+  (WGSL port of `czm_computePosition`) to `csm_polylineCommon.wgsl` — blends the 3D +
+  projected-2D RTE positions by `morphTime` with the `.zxy` CV-frame swizzle; plumbed
+  the 2D positions (`loc8-13`, stride +18 floats, both packers zero-fill in scene3DOnly)
+  + a `morph: vec4` UB lane (float 96 = `frameState.morphTime`) into all 6 shaders.
+  No 2D-frame RTE special-casing needed (`camera.positionWC` is CV-frame in 2D/CV).
+  **Verified:** `probe-polyline-appearance-2d.mjs` — COLOR 3D/CV/2D + Glow material 2D
+  all **pixel-perfect 1.000** (centroidΔ=0), PNGs READ; 3D unregressed.
 - **C2-13 · 376c — Polyline appearance effects + log-depth** ✅ **DONE (Batch 381,
   scoped to log-depth — the high-value half).** All 6 polyline appearance/material
   shaders now write LOGARITHMIC `@builtin(frag_depth)` matching the WebGPU globe

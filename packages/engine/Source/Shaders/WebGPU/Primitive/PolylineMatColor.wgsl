@@ -33,6 +33,13 @@ struct VertexInput {
     @location(5) nextPositionLow: vec3<f32>,
     @location(6) expandAndWidth: vec2<f32>,
     @location(7) st: vec2<f32>,
+    // 376b — projected 2D positions (blended with 3D by camera.morph.x).
+    @location(8) position2DHigh: vec3<f32>,
+    @location(9) position2DLow: vec3<f32>,
+    @location(10) prevPosition2DHigh: vec3<f32>,
+    @location(11) prevPosition2DLow: vec3<f32>,
+    @location(12) nextPosition2DHigh: vec3<f32>,
+    @location(13) nextPosition2DLow: vec3<f32>,
 }
 
 struct VertexOutput {
@@ -62,6 +69,8 @@ struct CameraUniforms {
     _pad2: vec2<f32>,
     // 376c — logDepth (near, far, factor, reserved) @ floats 92-95.
     logDepth: vec4<f32>,
+    // 376b — morph.x = morphTime (3D=1, 2D/CV=0) @ float 96.
+    morph: vec4<f32>,
 }
 
 // Color material — uniform color (vec4). Byte-locked to the Color material's
@@ -90,12 +99,19 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     let width: f32 = abs(input.expandAndWidth.y) + 0.5;
     let usePrev: bool = input.expandAndWidth.y < 0.0;
 
-    let p: vec4<f32> =
-        translateRelativeToEye(input.positionHigh, input.positionLow);
-    let prev: vec4<f32> =
-        translateRelativeToEye(input.prevPositionHigh, input.prevPositionLow);
-    let next: vec4<f32> =
-        translateRelativeToEye(input.nextPositionHigh, input.nextPositionLow);
+    // 376b — czm_computePosition: blend 3D↔2D positions by morphTime.
+    let p: vec4<f32> = csm_computePolylinePosition(
+        input.positionHigh, input.positionLow,
+        input.position2DHigh, input.position2DLow,
+        camera.encodedCameraHigh, camera.encodedCameraLow, camera.morph.x);
+    let prev: vec4<f32> = csm_computePolylinePosition(
+        input.prevPositionHigh, input.prevPositionLow,
+        input.prevPosition2DHigh, input.prevPosition2DLow,
+        camera.encodedCameraHigh, camera.encodedCameraLow, camera.morph.x);
+    let next: vec4<f32> = csm_computePolylinePosition(
+        input.nextPositionHigh, input.nextPositionLow,
+        input.nextPosition2DHigh, input.nextPosition2DLow,
+        camera.encodedCameraHigh, camera.encodedCameraLow, camera.morph.x);
 
     let win: CsmPolylineWindowResult = csm_getPolylineWindowCoordinatesWithAngle(
         p, prev, next,

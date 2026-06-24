@@ -322,6 +322,46 @@ fn csm_getPolylineWindowCoordinatesWithAngle(
 }
 
 // ---------------------------------------------------------------------------
+// Scene-mode position blend (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — 376b)
+// ---------------------------------------------------------------------------
+//
+// WGSL port of czm_computePosition (PrimitiveShaderHelpers.modifyShaderPosition):
+// blend the 3D and 2D RTE positions by morphTime — 3D at morphTime==1, 2D/CV at
+// morphTime==0, a Columbus-View lerp in between. The 2D attributes are
+// .zxy-swizzled into the Columbus-View frame (the projection stores
+// (easting, northing, height); CV wants (height, easting, northing)), exactly
+// as the WebGL appearance VS does. In 2D/CV mode camera.encodedCameraHigh/Low
+// already hold the CV-frame camera position (camera.positionWC is CV-frame
+// there), so the SAME RTE subtract serves both branches.
+fn csm_polylineRTE(
+    high: vec3<f32>, low: vec3<f32>,
+    camHigh: vec3<f32>, camLow: vec3<f32>
+) -> vec4<f32> {
+    var highDiff = high - camHigh;
+    if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
+    return vec4<f32>(highDiff + (low - camLow), 1.0);
+}
+
+fn csm_computePolylinePosition(
+    high3D: vec3<f32>, low3D: vec3<f32>,
+    high2D: vec3<f32>, low2D: vec3<f32>,
+    camHigh: vec3<f32>, camLow: vec3<f32>,
+    morphTime: f32
+) -> vec4<f32> {
+    let p3D = csm_polylineRTE(high3D, low3D, camHigh, camLow);
+    if (morphTime >= 1.0) {
+        return p3D;
+    }
+    let p2D = csm_polylineRTE(high2D.zxy, low2D.zxy, camHigh, camLow);
+    if (morphTime <= 0.0) {
+        return p2D;
+    }
+    // Manual lerp (matches csm_columbusViewMorph — avoids mix() endpoint jitter).
+    let pm = p2D.xyz * (1.0 - morphTime) + p3D.xyz * morphTime;
+    return vec4<f32>(pm, 1.0);
+}
+
+// ---------------------------------------------------------------------------
 // Log-depth helpers (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — 376c)
 // ---------------------------------------------------------------------------
 //

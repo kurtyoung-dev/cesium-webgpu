@@ -901,6 +901,18 @@ function writeRTEUniformsPolyline(ud, rte, uniformState, context) {
   // material polyline pipelines; the shader reads `camera.logDepth` only
   // inside //>>ifdef LOG_DEPTH. 512B UB has room (96 floats = 384 bytes).
   writeLogDepthTail(ud, 92, uniformState);
+
+  // 376b — morphTime (vec4 morph, .x) at float 96. 3D=1.0, 2D/CV=0.0,
+  // 0..1 while morphing. The VS blends position3D↔position2D by this. Default
+  // 1.0 (3D) so a missing frameState is the safe 3D path.
+  const fsMorph = defined(uniformState) ? uniformState.frameState : undefined;
+  ud[96] =
+    defined(fsMorph) && typeof fsMorph.morphTime === "number"
+      ? fsMorph.morphTime
+      : 1.0;
+  ud[97] = 0.0;
+  ud[98] = 0.0;
+  ud[99] = 0.0;
 }
 
 // =========================================================================
@@ -1472,6 +1484,17 @@ function createPolylineAppearanceCommands(
     const ewCPA = expandAndWidth.componentsPerAttribute || 2;
     const colorAttr = attrs.color;
 
+    // 376b — projected 2D positions for the morph blend. Absent in scene3DOnly
+    // viewers → zero-fill; morphTime stays 1.0 so the VS uses the 3D path.
+    const p2dH = attrs.position2DHigh;
+    const p2dL = attrs.position2DLow;
+    const pv2dH = attrs.prevPosition2DHigh;
+    const pv2dL = attrs.prevPosition2DLow;
+    const nx2dH = attrs.nextPosition2DHigh;
+    const nx2dL = attrs.nextPosition2DLow;
+    const has2D =
+      defined(p2dH) && defined(p2dH.values) && defined(pv2dH) && defined(nx2dH);
+
     // Resolve the per-instance color (whole-geometry) from the batch table.
     // `null` => use the per-vertex `color` attribute (or white) instead.
     let instanceColor = null;
@@ -1544,6 +1567,17 @@ function createPolylineAppearanceCommands(
         vertexData[vOff + 21] = scratchPolylineColor[1];
         vertexData[vOff + 22] = scratchPolylineColor[2];
         vertexData[vOff + 23] = scratchPolylineColor[3];
+      }
+      // 376b — 2D positions @ floats 24-41 (loc8-13). Zero when absent.
+      if (has2D) {
+        for (let c = 0; c < 3; c++) {
+          vertexData[vOff + 24 + c] = p2dH.values[p3 + c];
+          vertexData[vOff + 27 + c] = p2dL.values[p3 + c];
+          vertexData[vOff + 30 + c] = pv2dH.values[p3 + c];
+          vertexData[vOff + 33 + c] = pv2dL.values[p3 + c];
+          vertexData[vOff + 36 + c] = nx2dH.values[p3 + c];
+          vertexData[vOff + 39 + c] = nx2dL.values[p3 + c];
+        }
       }
     }
 
@@ -1938,11 +1972,21 @@ function createPolylineMaterialAppearanceCommands(
       defined(stAttr) && defined(stAttr.values) ? stAttr.values : null;
     const stCPA = defined(stAttr) ? stAttr.componentsPerAttribute || 2 : 2;
 
+    // 376b — projected 2D positions for the morph blend (see the COLOR packer).
+    const p2dH = attrs.position2DHigh;
+    const p2dL = attrs.position2DLow;
+    const pv2dH = attrs.prevPosition2DHigh;
+    const pv2dL = attrs.prevPosition2DLow;
+    const nx2dH = attrs.nextPosition2DHigh;
+    const nx2dL = attrs.nextPosition2DLow;
+    const has2D =
+      defined(p2dH) && defined(p2dH.values) && defined(pv2dH) && defined(nx2dH);
+
     const numVertices =
       posHighVals.length / (posHigh.componentsPerAttribute || 3);
 
-    // 22 floats/vertex: posHigh(3) posLow(3) prevHigh(3) prevLow(3)
-    // nextHigh(3) nextLow(3) expandAndWidth(2) st(2)
+    // 40 floats/vertex: posHigh(3) posLow(3) prevHigh(3) prevLow(3)
+    // nextHigh(3) nextLow(3) expandAndWidth(2) st(2) + 2D positions(18) [376b]
     const vertexData = new Float32Array(numVertices * fpv);
     for (let v = 0; v < numVertices; v++) {
       const p3 = v * 3;
@@ -1975,6 +2019,17 @@ function createPolylineMaterialAppearanceCommands(
       } else {
         vertexData[vOff + 20] = 0.0;
         vertexData[vOff + 21] = 0.0;
+      }
+      // 376b — 2D positions @ floats 22-39 (loc8-13). Zero when absent.
+      if (has2D) {
+        for (let c = 0; c < 3; c++) {
+          vertexData[vOff + 22 + c] = p2dH.values[p3 + c];
+          vertexData[vOff + 25 + c] = p2dL.values[p3 + c];
+          vertexData[vOff + 28 + c] = pv2dH.values[p3 + c];
+          vertexData[vOff + 31 + c] = pv2dL.values[p3 + c];
+          vertexData[vOff + 34 + c] = nx2dH.values[p3 + c];
+          vertexData[vOff + 37 + c] = nx2dL.values[p3 + c];
+        }
       }
     }
 
