@@ -115,6 +115,33 @@ fn fbmNoise(p: vec3<f32>) -> f32 {
   return val;
 }
 
+// ─── Worley (cellular) noise 3D — F1 distance (379a, minimal re-land) ───
+// Distance to the nearest feature point (one per cell, hashed) over the 3×3×3
+// neighborhood. HIGH between cells, low at feature points — so subtracting it
+// carves the inter-lobe gaps, leaving rounded cauliflower lobes (the billowy
+// cloud-edge character value-noise can't produce). 27 taps; reuses hash33.
+//
+// NOTE on the prior 379a revert: that attempt remapped the BASE shape by Worley
+// (`remap(perlin, worleyLow-1, 1, 0, 1)`), which raised the density floor and
+// over-densified the clouds. This re-land swaps ONLY the subtractive erosion —
+// it can carve detail but never ADD density, so it cannot reproduce that failure.
+fn worleyF1(p: vec3<f32>) -> f32 {
+  let id = floor(p);
+  let fd = fract(p);
+  var minDistSq: f32 = 1.0;
+  for (var x: i32 = -1; x <= 1; x++) {
+    for (var y: i32 = -1; y <= 1; y++) {
+      for (var z: i32 = -1; z <= 1; z++) {
+        let offset = vec3<f32>(f32(x), f32(y), f32(z));
+        let featurePoint = offset + hash33(id + offset);
+        let diff = featurePoint - fd;
+        minDistSq = min(minDistSq, dot(diff, diff));
+      }
+    }
+  }
+  return sqrt(min(minDistSq, 1.0));
+}
+
 // ─── Cloud density at a world-space point ───
 fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   // Animate with wind
@@ -122,7 +149,8 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
                    * cloud.windSpeed * cloud.time;
   let samplePos = (worldPos + windOffset) * 0.0003; // scale to noise space
 
-  // Base shape (large-scale FBM)
+  // Base shape (large-scale FBM) — UNCHANGED value-noise base (the 379a-revert
+  // lesson: do not Worley-remap the base; it over-densifies).
   var density = fbmNoise(samplePos);
 
   // Coverage threshold — shapes the clouds
@@ -133,9 +161,12 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
                      * smoothstep(1.0, 0.7, heightFraction);
   density *= heightGradient;
 
-  // Detail erosion (smaller-scale noise)
-  let detailNoise = valueNoise(samplePos * 6.0 + windOffset * 0.001);
-  density -= detailNoise * 0.15 * (1.0 - heightFraction);
+  // 379a (minimal) — high-frequency WORLEY edge erosion (was value-noise).
+  // Subtractive only: carves billowy cauliflower lobes into the cloud edges
+  // without raising the density floor. Erosion fades toward the cloud top so
+  // bases stay detailed while tops round off.
+  let worleyDetail = worleyF1(samplePos * 5.0 + windOffset * 0.001);
+  density -= worleyDetail * 0.18 * (1.0 - heightFraction);
   density = max(density, 0.0);
 
   return density * cloud.densityMultiplier;
@@ -191,6 +222,29 @@ fn beerPowder(opticalDepth: f32, powder: f32) -> f32 {
   let beer = exp(-opticalDepth * cloud.absorptionCoeff);
   let powderEffect = 1.0 - exp(-opticalDepth * cloud.absorptionCoeff * 2.0);
   return mix(beer, beer * powderEffect, powder);
+}
+
+// ─── Cheap multi-octave multi-scatter (379c) ───
+// Schneider/Nubis approximation: sum N Beer-Powder octaves with progressively
+// LESS extinction and lower contribution, so deep cloud interiors receive a soft
+// residual glow instead of going pure black (single-scatter Beer alone). The sum
+// is NORMALIZED by the total contribution so a THIN cloud (every octave ≈ 1)
+// returns ≈ 1.0 — this CANNOT over-brighten (the analogue of the 379a
+// over-densification failure); it only lifts the dark deep-cloud tail.
+fn multiScatterLight(opticalDepth: f32, powder: f32) -> f32 {
+  var luminance: f32 = 0.0;
+  var total: f32 = 0.0;
+  var atten: f32 = 1.0;   // extinction multiplier per octave (×0.5 each)
+  var contrib: f32 = 1.0; // contribution per octave (×0.5 each)
+  for (var i: i32 = 0; i < 3; i++) {
+    let beer = exp(-opticalDepth * cloud.absorptionCoeff * atten);
+    let powderEffect = 1.0 - exp(-opticalDepth * cloud.absorptionCoeff * 2.0 * atten);
+    luminance += contrib * mix(beer, beer * powderEffect, powder);
+    total += contrib;
+    atten *= 0.5;
+    contrib *= 0.5;
+  }
+  return luminance / total;
 }
 
 // ─── Reconstruct world-space ray from UV ───
@@ -273,9 +327,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let density = cloudDensity(samplePos, heightFraction);
     if (density <= 0.001) { continue; }
 
-    // Light contribution at this point
+    // Light contribution at this point — 379c cheap multi-scatter (was a single
+    // Beer-Powder octave) so deep cloud interiors keep a soft glow.
     let lightOpticalDepth = lightMarch(samplePos, heightFraction);
-    let lightTransmittance = beerPowder(lightOpticalDepth, 0.5);
+    let lightTransmittance = multiScatterLight(lightOpticalDepth, 0.5);
 
     // Silver lining: enhanced scattering at cloud edges
     let silverLining = cloud.silverLiningIntensity
