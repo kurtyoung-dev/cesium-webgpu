@@ -3,15 +3,12 @@
  *
  * NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU (item 375).
  *
- * STATUS (Batch 369): SCAFFOLDING — intentionally uncalled. This producer is
- * verified-correct (builds clean, the rgba16float 8-bpp face upload is right),
- * but the FR wiring that calls it was REVERTED because authored KTX2 IBL on
- * WebGPU is blocked one level deeper: `loadKTX2()` throws "supportedTargetFormats
- * is required" on a WebGPUContext (the KTX2 transcoder's GPU-format registration,
- * done during WebGL Context init, is never set up for WebGPU). Re-wire this from
- * `WebGPUImageBasedLighting.ensureWebGPUSpecularSource` once
- * NEW-WEBGPU-KTX2-TRANSCODER-FORMATS lands. See DEFERRED_WORK.md. Do NOT delete
- * as "dead code" — it is the ready-to-wire half of a documented two-part fix.
+ * STATUS (Batch 371, C2-2): LIVE — wired from
+ * `WebGPUImageBasedLighting.ensureWebGPUSpecularSource` now that C2-1
+ * (NEW-WEBGPU-KTX2-TRANSCODER-FORMATS) lets `loadKTX2()` resolve on a
+ * WebGPUContext. The upload is format-adaptive: it honors the KTX2's actual
+ * datatype (UNSIGNED_BYTE → rgba8unorm 4 bpp, HALF_FLOAT → rgba16float 8 bpp,
+ * FLOAT → rgba32float 16 bpp) and computes the writeTexture stride as w*bpp.
  *
  * The Scene-side `SpecularEnvironmentCubeMap` builds a WebGL `CubeMap` whose
  * texture never carries a `_webgpuTexture`, so on a WebGPU context the model
@@ -99,10 +96,15 @@ export function buildWebGPUSpecularCubeFromKTX2Buffers(
     return null;
   }
 
-  // Datatype is defined when KTX2 carried a normalized float type; otherwise
-  // default to half-float (matches SpecularEnvironmentCubeMap.js convention).
+  // Respect the KTX2's ACTUAL pixel datatype — IBL env maps ship as UNSIGNED_BYTE
+  // (rgba8unorm, e.g. the kiara sample), HALF_FLOAT, or FLOAT. Only fall back to
+  // half-float when the buffer carried no datatype at all (matches
+  // SpecularEnvironmentCubeMap.js's undefined-datatype convention). The earlier
+  // "force half-float unless float" branch corrupted RGBA8 maps: it built an
+  // rgba16float (8 bpp) cube but the face buffer is a 4 bpp Uint8Array, so the
+  // writeTexture stride (w*bpp) overran the source rows.
   let pixelDatatype = baseFace.pixelDatatype;
-  if (pixelDatatype !== PD_FLOAT && pixelDatatype !== PD_HALF_FLOAT_OES) {
+  if (pixelDatatype === undefined || pixelDatatype === null) {
     pixelDatatype = PD_HALF_FLOAT_OES;
   }
 

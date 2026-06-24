@@ -26,6 +26,9 @@ import {
 
 import type { IBLPipelineCache } from "./WebGPUIBLPipeline.js";
 
+import loadKTX2 from "../../Core/loadKTX2.js";
+import { buildWebGPUSpecularCubeFromKTX2Buffers } from "./WebGPUSpecularEnvironmentCubeMap.js";
+
 interface IBLCache extends IBLPipelineCache {
   brdfLutGenerated: boolean;
   defaultSpecularTexture: GPUTexture | null;
@@ -148,6 +151,110 @@ function initCache(device: GPUDevice): IBLCache {
 }
 
 /**
+ * Ensure the authored `specularEnvironmentMaps` KTX2 cube is loaded + uploaded
+ * to a WebGPU cube texture, then present it to the IBL consumer below in the
+ * exact shape it reads (`specEnvMap.ready` + `_texture._webgpuTexture.view` +
+ * `_version`). On WebGL this is `SpecularEnvironmentCubeMap.update()`, but that
+ * builds a WebGL-only `CubeMap`; on WebGPU `ImageBasedLighting.update()`
+ * FR-routes past it, so we own `_specularEnvironmentCubeMap` here.
+ *
+ * Idempotent + load-once: the KTX2 fetch/transcode runs a single time per URL.
+ * A hard failure latches `_webgpuSpecularKTX2Failed` so it does NOT retry every
+ * frame (the failure-retry spam loop that forced the Batch 369 revert).
+ */
+function ensureWebGPUSpecularSource(
+  ibl: CesiumImageBasedLighting,
+  device: GPUDevice,
+): void {
+  const url = ibl._specularEnvironmentMaps;
+
+  // No authored map (or it was cleared) — tear down any prior cube + reset.
+  if (!url) {
+    if (ibl._webgpuSpecularCube) {
+      ibl._webgpuSpecularCube.destroy();
+      ibl._webgpuSpecularCube = undefined;
+    }
+    ibl._specularEnvironmentCubeMap = undefined;
+    ibl._webgpuSpecularKTX2Buffers = undefined;
+    ibl._webgpuSpecularKTX2Url = undefined;
+    ibl._webgpuSpecularKTX2Loading = false;
+    ibl._webgpuSpecularKTX2Failed = false;
+    return;
+  }
+
+  // URL changed — reset so the new map loads.
+  if (
+    ibl._webgpuSpecularKTX2Url !== undefined &&
+    ibl._webgpuSpecularKTX2Url !== url
+  ) {
+    if (ibl._webgpuSpecularCube) {
+      ibl._webgpuSpecularCube.destroy();
+      ibl._webgpuSpecularCube = undefined;
+    }
+    ibl._specularEnvironmentCubeMap = undefined;
+    ibl._webgpuSpecularKTX2Buffers = undefined;
+    ibl._webgpuSpecularKTX2Loading = false;
+    ibl._webgpuSpecularKTX2Failed = false;
+  }
+  ibl._webgpuSpecularKTX2Url = url;
+
+  // Already built — nothing to do.
+  if (ibl._webgpuSpecularCube) {
+    return;
+  }
+
+  // Kick off the KTX2 load exactly once (and never again after a hard failure).
+  if (
+    !ibl._webgpuSpecularKTX2Buffers &&
+    !ibl._webgpuSpecularKTX2Loading &&
+    !ibl._webgpuSpecularKTX2Failed
+  ) {
+    ibl._webgpuSpecularKTX2Loading = true;
+    loadKTX2(url)
+      .then((buffers: unknown) => {
+        ibl._webgpuSpecularKTX2Buffers = buffers;
+        ibl._webgpuSpecularKTX2Loading = false;
+      })
+      .catch((error: unknown) => {
+        ibl._webgpuSpecularKTX2Loading = false;
+        ibl._webgpuSpecularKTX2Failed = true; // latch — no per-frame retry
+        console.error(
+          `[CesiumJS:webgpu] Failed to load specular environment KTX2 "${url}": ${String(
+            error,
+          )}`,
+        );
+      });
+  }
+
+  // Buffers ready, cube not built yet — build the on-device cube + publish it.
+  if (ibl._webgpuSpecularKTX2Buffers && !ibl._webgpuSpecularCube) {
+    const wrapper = buildWebGPUSpecularCubeFromKTX2Buffers(
+      device,
+      ibl._webgpuSpecularKTX2Buffers,
+    );
+    if (wrapper) {
+      ibl._webgpuSpecularCube = wrapper;
+      const version = (ibl._webgpuSpecularVersion =
+        (ibl._webgpuSpecularVersion ?? 0) + 1);
+      // Minimal SpecularEnvironmentCubeMap-shaped object the consumer reads.
+      ibl._specularEnvironmentCubeMap = {
+        _texture: wrapper, // wrapper._webgpuTexture.view → cube view
+        ready: true,
+        _version: version,
+        _maximumMipmapLevel: wrapper.maximumMipmapLevel,
+        url: url,
+        isDestroyed: () => false,
+        destroy: () => {},
+      };
+    } else {
+      // Unbuildable payload (e.g. GPU-compressed) — don't retry every frame.
+      ibl._webgpuSpecularKTX2Buffers = undefined;
+      ibl._webgpuSpecularKTX2Failed = true;
+    }
+  }
+}
+
+/**
  * Update IBL resources for WebGPU rendering.
  * Called from ImageBasedLighting.update() when context.isWebGPU.
  */
@@ -207,6 +314,10 @@ function updateWebGPUImageBasedLighting(
     cache.hasSH = false;
   }
 
+  // C2-2 NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU: load + upload the authored KTX2
+  // specular env map into a WebGPU cube and publish it as _specularEnvironmentCubeMap.
+  ensureWebGPUSpecularSource(ibl, device);
+
   // Check if specular environment map has changed
   const specEnvMap = ibl._specularEnvironmentCubeMap;
   if (specEnvMap && specEnvMap.ready) {
@@ -259,6 +370,17 @@ function destroyWebGPUImageBasedLightingResources(
   if (cache.irradianceTexture) cache.irradianceTexture.destroy();
   if (cache.radianceTexture) cache.radianceTexture.destroy();
   if (cache.shBuffer) cache.shBuffer.destroy();
+
+  // C2-2: tear down the authored KTX2 specular cube + reset the load latches.
+  if (ibl._webgpuSpecularCube) {
+    ibl._webgpuSpecularCube.destroy();
+    ibl._webgpuSpecularCube = undefined;
+  }
+  ibl._specularEnvironmentCubeMap = undefined;
+  ibl._webgpuSpecularKTX2Buffers = undefined;
+  ibl._webgpuSpecularKTX2Url = undefined;
+  ibl._webgpuSpecularKTX2Loading = false;
+  ibl._webgpuSpecularKTX2Failed = false;
 
   ibl._webgpuCache = undefined;
   ibl._webgpuSpecularView = undefined;

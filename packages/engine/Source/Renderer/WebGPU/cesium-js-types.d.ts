@@ -844,13 +844,20 @@ interface CesiumShadowMapWebGPUCache {
 interface CesiumImageBasedLighting {
   imageBasedLightingFactor: CesiumCartesian2;
   sphericalHarmonicCoefficients: CesiumCartesian3[] | undefined;
+  // Either the WebGL SpecularEnvironmentCubeMap instance, or the lightweight
+  // WebGPU stand-in published by WebGPUImageBasedLighting.ensureWebGPUSpecularSource
+  // (C2-2). All fields optional so both shapes assign without casts.
   _specularEnvironmentCubeMap:
     | {
-        ready: boolean;
-        texture: CesiumOpaqueTexture | undefined;
-        maximumMipmapLevel: number;
+        ready?: boolean;
+        texture?: CesiumOpaqueTexture | undefined;
+        maximumMipmapLevel?: number;
         _texture?: { _webgpuTexture?: { view?: GPUTextureView } };
         _version?: number;
+        _maximumMipmapLevel?: number;
+        url?: string;
+        isDestroyed?: () => boolean;
+        destroy?: () => void;
       }
     | undefined;
   _previousFrameNumber: number;
@@ -864,6 +871,18 @@ interface CesiumImageBasedLighting {
   _webgpuHasSH?: boolean;
   _webgpuMaxMipLevel?: number;
   _webgpuIBLFactor?: Float32Array | number;
+  // C2-2 authored-KTX2 specular env-map sidecar state
+  _specularEnvironmentMaps?: string;
+  _webgpuSpecularKTX2Buffers?: unknown;
+  _webgpuSpecularKTX2Loading?: boolean;
+  _webgpuSpecularKTX2Failed?: boolean;
+  _webgpuSpecularKTX2Url?: string;
+  _webgpuSpecularVersion?: number;
+  _webgpuSpecularCube?: {
+    destroy(): void;
+    maximumMipmapLevel: number;
+    _webgpuTexture: { view: GPUTextureView };
+  };
 }
 
 // ─── Imagery (readyImagery sub-object) ──────────────────────────────────
