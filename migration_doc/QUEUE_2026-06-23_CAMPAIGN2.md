@@ -115,10 +115,21 @@ mentions + likely-stale exclusions are listed at the bottom.
   errors (BGL fixed), globe scene intact (READ PNG), inert-safe by construction.
   Probe `probe-pointcloud-logdepth.mjs` kept (asserts ready+mem; will gate the
   sorting once content-load lands).
-- **C2-8 · NEW-SUN-MOON-FIDELITY** (M, med) — sun/moon disc fidelity (glow, size,
-  bloom interaction; moon divergence noted Batch 267) below WebGL parity;
-  default-visible in any globe+sky scene. New sun/moon parity probe + WGSL
-  disc/glow tuning.
+- **C2-8 · NEW-SUN-MOON-FIDELITY** ✅ DONE (Batch 378, verify-first — claimed gap
+  STALE) — the dominant claimed gap ("sun bloom absent on WebGPU") does NOT
+  reproduce. `probe-sun-pixel-check.mjs` (sun-facing camera) quantifies: WebGPU
+  glow-halo bbox (lum≥40) 834×339 / **3036px** vs WebGL 834×339 / **3056px**
+  (<1% delta), disc extent identical, centerMeanLum 52.5≈53.7 — READ both PNGs:
+  visually indistinguishable (disc + soft glow + cross lens-flare). The baked sun
+  texture's glow+flare already matches WebGL's SunPostProcess bloom; the
+  FramebufferOrchestrator WebGL-only gate is fine because the WebGPU sun bakes its
+  own glow. Moon: the plan's full read confirms `Moon.wgsl` is a faithful
+  `EllipsoidFS.glsl` port + the Batch-267 note is depth-only (not appearance), so
+  parity by analysis. **Residuals DEFERRED** (real but minor, own probes):
+  NEW-WEBGPU-SUN-GLOWFACTOR-IGNORED (`sun.glowFactor` hardcoded 1.0 in
+  createSunTexture + packSunUniforms → app-customized glow ignored) + HDR-only
+  sun `czm_gammaCorrect` (no-op in default non-HDR). No code change for the
+  default-parity case.
 - **C2-9 · NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION** ⏸️ **DEFERRED (verify-first,
   Batch 375) — narrow fix already wired + goal moot.** Two findings: (1) the
   `windowToEye` log-reverse this batch asks for ALREADY EXISTS
