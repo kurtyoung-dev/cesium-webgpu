@@ -93,13 +93,16 @@ mentions + likely-stale exclusions are listed at the bottom.
 
 ## Tier 2 — Visual-parity holes
 
-- **C2-6 · NEW-WEBGPU-EXAG-WATER-STREAKS** (M, med) — glacial-lake/water fragments
-  render bright-blue on WebGPU under high vertical exaggeration where WebGL mutes
-  them. Already investigated (Batch 365): water-color (`computeEnhancedOcean`) +
-  WebGPU-side atmosphere ruled out — resume with the **2×2 webgl/webgpu × atmo-on/off**
-  diagnostic to test whether WebGL's atmosphere/fog is the muting agent, then
-  match the divergent globe-FS lighting/material water-fragment term.
-  **Probe:** `probe-exaggeration-3d.mjs` + extend `diag-exag-water-streaks-source.mjs`.
+- **C2-6 · NEW-WEBGPU-EXAG-WATER-STREAKS** 🔬 DIAGNOSED + DEFERRED (Batch 379) —
+  the gated investigation is DONE: `diag-exag-water-streaks-2x2.mjs` (NEW) ran the
+  2×2 + tile-level dump and **definitively localized** it: NOT terrain-LOD (tile
+  levels identical), NOT atmosphere (WebGPU lakes stay blue `meanRGB(18,17,123)`
+  with atmo OFF while WebGL goes grey `(167,176,198)`). It's a **globe-FS
+  water-fragment color/saturation divergence** (WebGPU renders glacial lakes vivid
+  saturated blue vs WebGL muted) — READ the 4 PNGs. The exact-term fix
+  (`computeWaterColor` / imagery saturation chain / DP-H24 hue-sat shift in
+  `GlobeTerrain.wgsl`, isolated via `CesiumDebug.globeFragmentDebug`) is a focused
+  ~1-session follow-up, deferred with precise findings in DEFERRED.
 - **C2-7 · NEW-LOG-DEPTH-POINTCLOUD-PRODUCER** ✅ DONE (Batch 377, producer correct
   but consumer-gated) — added the established log-depth recipe (csm_vertexLogDepth/
   csm_writeLogDepth + a `logDepth: vec4` UB lane w/ a `useLog` w-flag → inert when
