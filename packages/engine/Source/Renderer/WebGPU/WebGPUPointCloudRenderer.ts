@@ -27,6 +27,7 @@ import {
   getPlaceholderEffects,
 } from "./WebGPUEffectsBindGroup.js";
 import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 // Slice 5c-B Phase 1 (Batch 112) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
@@ -202,6 +203,9 @@ struct VertexOutput {
   // for the aerial-perspective fog block. Per-quad-vertex spread is
   // tiny (~point size in pixels) relative to fog scale.
   @location(2) worldPos: vec3<f32>,
+  // C2-7 — interpolated linear depthFromNearPlusOne (point CENTER) for the
+  // renderer-wide log-depth frag_depth write.
+  @location(3) vLogDepth: f32,
 };
 
 struct Uniforms {
@@ -222,9 +226,26 @@ struct Uniforms {
   // directly; static for typical 3D-Tiles content (modelMatrix locked
   // at tile-content load) so velocity stays at zero in the common case.
   modelMatrix: mat4x4<f32>,
+  // C2-7 NEW-LOG-DEPTH-POINTCLOUD-PRODUCER. x=frustum near, y=frustum far,
+  // z=oneOverLog2FarDepthFromNearPlusOne, w=useLogDepth flag (1.0 active,
+  // 0.0 inert → byte-identical to the prior hyperbolic-z behavior).
+  logDepth: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+
+// C2-7 — renderer-wide log depth (Approach A); mirrors PrimitiveBasicColor.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var c = clipPosition;
+  c.z = clamp(c.z / c.w, 0.0, 1.0) * c.w;
+  return c;
+}
+fn csm_writeLogDepth(d: f32, factor: f32) -> f32 {
+  return log2(d) * factor;
+}
 
 // FEAT-GAP-09 (Batch 103 audit fix; original Batch 102 modified the
 // dead standalone Advanced/PointCloud.wgsl). Same EffectsUniforms
@@ -264,11 +285,22 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.pointUV = input.quadVertex;
   // FEAT-GAP-09 (Batch 103) — point-center RTE for fog block.
   output.worldPos = posRTE;
+  // C2-7 — log depth from the point CENTER (clipPos, not the spread corner);
+  // clamp the final clip-z so the FS-written log depth isn't pre-empted.
+  output.vLogDepth = csm_vertexLogDepth(clipPos, u.logDepth.x);
+  if (u.logDepth.w > 0.5) {
+    output.position = csm_updatePositionDepth(output.position);
+  }
   return output;
 }
 
+struct FragOut {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+}
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOut {
   let dist = length(input.pointUV);
   if (dist > 1.0) { discard; }
   let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
@@ -310,7 +342,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     }
   }
 
-  return finalColor;
+  // C2-7 — write renderer-wide log depth when active; otherwise reproduce the
+  // rasterizer's interpolated hyperbolic z (byte-identical to before).
+  var fragDepth = input.position.z;
+  if (u.logDepth.w > 0.5) {
+    fragDepth = csm_writeLogDepth(input.vLogDepth, u.logDepth.z);
+  }
+  return FragOut(finalColor, fragDepth);
 }
 
 // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
@@ -399,6 +437,8 @@ struct VertexOutput {
   // FEAT-GAP-09 (Batch 104) — point-center RTE position for the
   // aerial-perspective fog block.
   @location(2) worldPos: vec3<f32>,
+  // C2-7 — interpolated linear depthFromNearPlusOne (point CENTER).
+  @location(3) vLogDepth: f32,
 };
 
 struct Uniforms {
@@ -416,6 +456,9 @@ struct Uniforms {
   // velocity VS (Batch 169) to lift prev model-space positions to
   // world space; the regular LOD VS doesn't read it.
   modelMatrix: mat4x4<f32>,
+  // C2-7 NEW-LOG-DEPTH-POINTCLOUD-PRODUCER — x=near, y=far, z=factor,
+  // w=useLogDepth flag. Matches the default-path UBO layout.
+  logDepth: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -456,6 +499,19 @@ struct EffectsUniforms {
 @group(2) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(2) @binding(9) var atmosphereLutSampler: sampler;
 
+// C2-7 — renderer-wide log depth (Approach A); mirrors PrimitiveBasicColor.wgsl.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var c = clipPosition;
+  c.z = clamp(c.z / c.w, 0.0, 1.0) * c.w;
+  return c;
+}
+fn csm_writeLogDepth(d: f32, factor: f32) -> f32 {
+  return log2(d) * factor;
+}
+
 @vertex
 fn vertexMainLOD(
   @builtin(instance_index) iidx: u32,
@@ -494,11 +550,21 @@ fn vertexMainLOD(
   output.pointUV = quadVertex;
   // FEAT-GAP-09 (Batch 104) — point-center RTE for fog block.
   output.worldPos = posRTE;
+  // C2-7 — log depth from the point CENTER; clamp the final clip-z when active.
+  output.vLogDepth = csm_vertexLogDepth(clipPos, u.logDepth.x);
+  if (u.logDepth.w > 0.5) {
+    output.position = csm_updatePositionDepth(output.position);
+  }
   return output;
 }
 
+struct FragOut {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+}
+
 @fragment
-fn fragmentMainLOD(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMainLOD(input: VertexOutput) -> FragOut {
   let dist = length(input.pointUV);
   if (dist > 1.0) { discard; }
   let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
@@ -541,7 +607,12 @@ fn fragmentMainLOD(input: VertexOutput) -> @location(0) vec4<f32> {
     }
   }
 
-  return finalColor;
+  // C2-7 — log depth when active; else the rasterizer's hyperbolic z (no-op).
+  var fragDepth = input.position.z;
+  if (u.logDepth.w > 0.5) {
+    fragDepth = csm_writeLogDepth(input.vLogDepth, u.logDepth.z);
+  }
+  return FragOut(finalColor, fragDepth);
 }
 
 // Batch 169 - B.10 NEW-ADVANCED-MOTION-VECTORS LOD velocity emission.
@@ -676,7 +747,10 @@ function buildPipelineDescriptor(
     "PointCloud shader",
   );
   const bgl = makeBindGroupLayout(device, "PointCloud BGL", [
-    uniformBuffer(0, Stage.VERTEX),
+    // C2-7 — VERTEX_FRAGMENT (was VERTEX): the FS now reads u.logDepth.z/.w for
+    // the renderer-wide log frag_depth write, so binding 0 must be visible to the
+    // fragment stage too (same class as the Batch-253 depth-plane [ld] BGL fix).
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
   // FEAT-GAP-09 (Batch 102) — append the shared effects BGL at slot 1
   // so the WGSL fog block at @group(1) resolves. Shared layout
@@ -1033,12 +1107,14 @@ function buildInstanceBuffer(
 function packUniforms(
   uniformState: CesiumUniformState,
   modelMatrix: Matrix4 | CesiumMatrix4,
+  logActive: boolean,
 ): Float32Array {
   // Batch 168 - bumped from 44 → 60 floats (240 bytes) to fit the
   // trailing `modelMatrix: mat4x4<f32>` used by the velocity VS to
-  // lift prev model-space positions to world space. UBO is allocated
-  // at 256 bytes; still fits with 16 spare bytes.
-  const data = new Float32Array(60);
+  // lift prev model-space positions to world space. C2-7 - bumped to
+  // 64 floats (256 bytes — a perfect fit for the already-256-byte UBO)
+  // for the trailing `logDepth: vec4<f32>` (near/far/factor/useFlag).
+  const data = new Float32Array(64);
   const view = uniformState.view;
   const projection = uniformState.projection;
 
@@ -1115,6 +1191,28 @@ function packUniforms(
   // `pointCloud.modelMatrix` directly (no translation zeroing - the
   // velocity path needs the full transform, not the RTE-zeroed one).
   Matrix4.pack(modelMatrix as Matrix4, data, 44);
+
+  // C2-7 NEW-LOG-DEPTH-POINTCLOUD-PRODUCER — log-depth lanes at floats 60..63.
+  // near/far from the current frustum; factor = oneOverLog2FarDepthFromNearPlusOne
+  // (derived if UniformState doesn't expose it); w = the per-frame active flag
+  // (mirrors isWebGPULogDepthActive). When w==0 the shaders fall back to the
+  // rasterizer's hyperbolic z, so this is inert unless the master switch is on.
+  const frustum = (
+    uniformState as { currentFrustum?: { x: number; y: number } }
+  ).currentFrustum;
+  const near = frustum?.x ?? 0.0;
+  const far = frustum?.y ?? 0.0;
+  let factor =
+    (uniformState as { oneOverLog2FarDepthFromNearPlusOne?: number })
+      .oneOverLog2FarDepthFromNearPlusOne ?? 0.0;
+  if (!(factor > 0.0) && far > near) {
+    const l = Math.log2(far - near + 1.0);
+    factor = l > 0.0 ? 1.0 / l : 0.0;
+  }
+  data[60] = near;
+  data[61] = far;
+  data[62] = factor;
+  data[63] = logActive ? 1.0 : 0.0;
   return data;
 }
 
@@ -1319,7 +1417,8 @@ function updateWebGPUPointCloud(
   }
 
   // Per-frame uniforms
-  const uniforms = packUniforms(context.uniformState, modelMatrix);
+  const logActive = isWebGPULogDepthActive(context, frameState);
+  const uniforms = packUniforms(context.uniformState, modelMatrix, logActive);
   device.queue.writeBuffer(cache.uniformBuffer!, 0, gpuData(uniforms));
 
   // ── Fast path: opt-in + above threshold + processor ready ──
@@ -1958,7 +2057,9 @@ function _buildLODPipelineDescriptor(
     "PointCloud LOD shader",
   );
   const bgl = makeBindGroupLayout(device, "PointCloud LOD uniform BGL", [
-    uniformBuffer(0, Stage.VERTEX),
+    // C2-7 — VERTEX_FRAGMENT: fragmentMainLOD now reads u.logDepth (see the
+    // default-path PointCloud BGL fix).
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
   // Storage bind group — we use the helpers' storageBuffer readOnly
   // shape so the layout matches `var<storage, read>`.

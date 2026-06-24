@@ -100,12 +100,21 @@ mentions + likely-stale exclusions are listed at the bottom.
   diagnostic to test whether WebGL's atmosphere/fog is the muting agent, then
   match the divergent globe-FS lighting/material water-fragment term.
   **Probe:** `probe-exaggeration-3d.mjs` + extend `diag-exag-water-streaks-source.mjs`.
-- **C2-7 · NEW-LOG-DEPTH-POINTCLOUD-PRODUCER** (M, med) — the standalone
-  `WebGPUPointCloudRenderer` (3D-Tiles PNTS / EDL) is the last opaque producer
-  NOT writing log depth (grep-confirmed 0 `frag_depth`/`LOG_DEPTH`) → mis-sorts vs
-  log geometry at FAR range. Apply the established producer recipe; the EDL
-  neighbor-depth compare must reverse log first. **Probe:** PNTS at far range,
-  WebGL-vs-WebGPU sort parity.
+- **C2-7 · NEW-LOG-DEPTH-POINTCLOUD-PRODUCER** ✅ DONE (Batch 377, producer correct
+  but consumer-gated) — added the established log-depth recipe (csm_vertexLogDepth/
+  csm_writeLogDepth + a `logDepth: vec4` UB lane w/ a `useLog` w-flag → inert when
+  the master switch is off) to BOTH color shaders in `WebGPUPointCloudRenderer.ts`,
+  faithful to `PrimitiveBasicColor.wgsl`. **Probe caught a real self-introduced BGL
+  bug** (FS now reads `u` → widened the uniform BGL to `VERTEX_FRAGMENT` on both the
+  default + LOD pipelines; same class as the B253 depth-plane fix). Adversarial
+  correction: PNTS routes through the MODEL pipeline (already log-depth); the
+  standalone renderer's ONLY consumer is `TimeDynamicPointCloud`. EDL is a no-op
+  stub → out of scope (defer to C-P14). **Sorting NOT visually verified** because
+  `TimeDynamicPointCloud` loads 0 content on WebGPU (mem:0; pre-existing →
+  NEW-WEBGPU-TIMEDYNAMIC-POINTCLOUD-CONTENT-LOAD-ZERO). Verified: builds, 0 device
+  errors (BGL fixed), globe scene intact (READ PNG), inert-safe by construction.
+  Probe `probe-pointcloud-logdepth.mjs` kept (asserts ready+mem; will gate the
+  sorting once content-load lands).
 - **C2-8 · NEW-SUN-MOON-FIDELITY** (M, med) — sun/moon disc fidelity (glow, size,
   bloom interaction; moon divergence noted Batch 267) below WebGL parity;
   default-visible in any globe+sky scene. New sun/moon parity probe + WGSL
