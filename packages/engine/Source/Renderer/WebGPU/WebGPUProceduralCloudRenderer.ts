@@ -36,6 +36,9 @@ export interface CloudCache {
   sampler: GPUSampler | null;
   uniformData: Float32Array;
   initialized: boolean;
+  // Weather Phase 0 — clock-bind. Day-seconds of the first frame, cached so the
+  // cloud `time` uniform starts near 0 (keeps the wind offset in f32 precision).
+  timeEpoch: number | null;
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -47,6 +50,7 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       sampler: null,
       uniformData: new Float32Array(CLOUD_UNIFORM_FLOATS),
       initialized: false,
+      timeEpoch: null,
     };
   }
   return context._cloudCache;
@@ -214,7 +218,24 @@ export function executeProceduralClouds(
   data[offset++] = camPos?.x ?? 0;
   data[offset++] = camPos?.y ?? 0;
   data[offset++] = camPos?.z ?? 0;
-  data[offset++] = performance.now() / 1000.0; // time
+  // Weather Phase 0 — clock-bind cloud motion. Derive `time` (seconds) from
+  // `frameState.time` (the scene-clock JulianDate) instead of wall-clock
+  // performance.now(), so wind/advection scrubs with the timeline, pauses when
+  // `clock.shouldAnimate` is false, and scales with `clock.multiplier`. The
+  // day-seconds are computed in f64 and the first-frame epoch is subtracted
+  // BEFORE the f32 store (raw day-seconds ~1.9e14 would destroy f32 precision).
+  const jd = frameState.time as unknown as
+    | { dayNumber: number; secondsOfDay: number }
+    | undefined;
+  if (jd && typeof jd.dayNumber === "number") {
+    const seconds = jd.dayNumber * 86400.0 + jd.secondsOfDay;
+    if (cache.timeEpoch === null) {
+      cache.timeEpoch = seconds;
+    }
+    data[offset++] = seconds - cache.timeEpoch;
+  } else {
+    data[offset++] = performance.now() / 1000.0; // fallback (no clock)
+  }
 
   // sunDirection (vec3 + intensity)
   const sunDir = us?.sunDirectionWC ?? us?.sunDirectionEC;
