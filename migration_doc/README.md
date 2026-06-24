@@ -18,6 +18,8 @@ _Currency sweep 2026-06-15 (Batch 303): indexed six docs added since the reorg �
 | [`WEBGPU_MIGRATION_BACKLOG.md`](WEBGPU_MIGRATION_BACKLOG.md) | Older remaining-work backlog (body stops ~Batch 64; see EXECUTION_ROADMAP for the current frontier). |
 | [`WEBGPU_EXECUTION_ROADMAP.md`](WEBGPU_EXECUTION_ROADMAP.md) | Current outstanding-work roadmap + critical path (log-depth epic spine). |
 | [`CAMPAIGN_ROADMAP_2026-06.md`](CAMPAIGN_ROADMAP_2026-06.md) | **Active multi-phase execution plan** (June 2026 onward) — phase-by-phase walk through `DEFERRED_WORK.md`; the current per-workflow stage source. Phases 1–5 DONE; 9–11 in flight. |
+| [`QUEUE_2026-06-23_CAMPAIGN2.md`](QUEUE_2026-06-23_CAMPAIGN2.md) | **Current 25-batch execution queue** (Campaign 2, successor to `QUEUE_2026-06-22.md`). 6 tiers, git batches continue from 370. Built by 6-source parallel extraction + manual verify. Start here for "what's next". |
+| [`QUEUE_2026-06-22.md`](QUEUE_2026-06-22.md) | Prior 25-batch queue (Batches 355–369 — Tiers 1–3 cleared). Superseded by Campaign 2. |
 | [`NEXT_SESSION_HANDOFF.md`](NEXT_SESSION_HANDOFF.md) | Append-only session handoff log; top section is the latest. |
 | [`WEBGPU_DEBUGGING_LOG.md`](WEBGPU_DEBUGGING_LOG.md) | Chronological bug log (append-only). Search before debugging a new artifact. |
 
