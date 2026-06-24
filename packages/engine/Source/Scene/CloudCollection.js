@@ -256,13 +256,16 @@ class CloudCollection {
     }
     //>>includeEnd('debug');
 
-    let cloud;
-    if (cloudType === CloudType.CUMULUS) {
-      cloud = new CumulusCloud(options, this);
-      cloud._index = this._clouds.length;
-      this._clouds.push(cloud);
-      this._createVertexArray = true;
-    }
+    // The billboard collection renders every genus as a cumulus-style puff —
+    // per-genus billboard geometry is future work, and the WMO genus is consumed
+    // by the volumetric raymarcher / weather-map path, not here. `validate`
+    // above already rejected out-of-range types, so any validated genus creates
+    // a puff (previously only CUMULUS did, silently returning undefined for the
+    // rest — now that CloudType spans 11 genera that would be a footgun).
+    const cloud = new CumulusCloud(options, this);
+    cloud._index = this._clouds.length;
+    this._clouds.push(cloud);
+    this._createVertexArray = true;
 
     return cloud;
   }
