@@ -220,6 +220,15 @@ mentions + likely-stale exclusions are listed at the bottom.
 > "multi-scatter" as the cheap Schneider approximation, not the research-grade
 > froxel non-goal.
 
+> ⏸️ **TIER 4 SCOUTED + DEFERRED (2026-06-24).** Raymarcher confirmed functional
+> on WebGPU (`probe-volumetric-clouds.mjs`, NEW). **379a ATTEMPTED → REVERTED**
+> (Perlin-Worley over-densified vs the value-noise baseline — READ the PNGs; the
+> baseline is a credible cloud field so the margin is subtle + needs careful
+> tuning). **379c HALF-STALE** (`cloudPhase` already has dual-lobe HG; only the
+> multi-octave multi-scatter in `beerPowder` remains). Full findings +
+> fix-paths: DEFERRED_WORK `NEW-WEBGPU-PROCEDURAL-CLOUD-FIDELITY`. These are
+> subtle per-PNG-judgment upgrades → a fresh dedicated session, not tail-of-context.
+
 - **C2-15 · 379a — Perlin-Worley cloud noise** (M, med) — `ProceduralClouds.wgsl`
   uses only value-noise FBM (no Worley). Add the Schneider/Nubis Perlin-Worley
   remap: low-freq Perlin-Worley FBM base shape + high-freq Worley FBM edge
