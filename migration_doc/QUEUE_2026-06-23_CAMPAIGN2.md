@@ -52,6 +52,11 @@ mentions + likely-stale exclusions are listed at the bottom.
 
 ## Tier 1 — Functional bugs + the KTX2-IBL unblock (do first)
 
+> ✅ **TIER 1 COMPLETE (2026-06-24)** — all 5 batches landed + pushed, git Batches
+> 370–374: C2-1 (370, ae21c21603), C2-2 (371, 9fae6c1c7e), C2-3 (372, 53b8d9b30d),
+> C2-4 (373, 909a0a5ee7), C2-5 (374, 075824a871). Surfaced
+> NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT (tracked in DEFERRED). Next: Tier 2 (C2-6).
+
 - **C2-1 · NEW-WEBGPU-KTX2-TRANSCODER-FORMATS** (M, high) — `loadKTX2()` throws
   `"supportedTargetFormats is required"` on a `WebGPUContext` for ANY KTX2 (even
   uncompressed): the transcoder's module-level supported-format set, populated
