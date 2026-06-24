@@ -80,6 +80,7 @@ import {
 // FORK-2 fix: WebGPUResourceManager and WebGPUPickManager were unused imports — removed.
 // They can be re-added when their intended usage is implemented.
 import { WebGPURenderBundleManager } from "./WebGPURenderBundleManager.js";
+import WebGPUComputeEngine from "./WebGPUComputeEngine.js";
 import { WebGPUTimestampProfiler } from "./WebGPUTimestampProfiler.js";
 import { WebGPUStorageBufferPool } from "./WebGPUStorageBufferPool.js";
 import { WebGPUIndirectDrawManager } from "./WebGPUIndirectDrawManager.js";
@@ -4109,6 +4110,11 @@ export class WebGPUContext extends GraphicsContext {
   // ====================================================================================
 
   private _renderBundleManager: WebGPURenderBundleManager | null = null;
+  // NEW-WEBGPU-COMPUTE-ENGINE-WIRING (Batch 367, item 370) — general-purpose
+  // compute dispatch engine. Lazy-initialized via the `computeEngine` getter
+  // so contexts that never run compute pay zero cost. Dropped on device loss
+  // (caches dead GPUComputePipelines). Mirrors `_renderBundleManager`.
+  private _computeEngine: WebGPUComputeEngine | null = null;
   private _timestampProfiler: WebGPUTimestampProfiler | null = null;
   private _storageBufferPool: WebGPUStorageBufferPool | null = null;
   private _indirectDrawManager: WebGPUIndirectDrawManager | null = null;
@@ -4255,6 +4261,33 @@ export class WebGPUContext extends GraphicsContext {
       });
     }
     return this._renderBundleManager;
+  }
+
+  /**
+   * NEW-WEBGPU-COMPUTE-ENGINE-WIRING (Batch 367, item 370) — general-purpose
+   * WebGPU compute engine. Until this getter existed, `WebGPUContext.computeEngine`
+   * was `undefined`, so every `WebGPUPerformanceManager.dispatchCompute()` call
+   * (atmosphere LUT bake, frustum cull, point-cloud sort/LOD, GPU sort keys,
+   * Hi-Z, normal-from-depth, polygon SDF) returned early as a silent no-op.
+   * Lazy-initialized on first access once the device exists; returns `null`
+   * during early bring-up. Wired to the per-context central compute-pipeline
+   * cache (cross-instance dedup for layout-explicit callers) and the
+   * async-resource monitor (the `createPipelineAsync` path). Dropped on device
+   * loss — it caches GPUComputePipelines invalid after the device is recreated.
+   */
+  get computeEngine(): WebGPUComputeEngine | null {
+    if (!this._computeEngine && this._device) {
+      this._computeEngine = new WebGPUComputeEngine(
+        this._device,
+        this.webgpuComputePipelineCache ?? undefined,
+      );
+      this._computeEngine.asyncResourceMonitor = this.asyncResources;
+      this.onDeviceInvalidated(() => {
+        this._computeEngine?.destroy();
+        this._computeEngine = null;
+      });
+    }
+    return this._computeEngine;
   }
 
   /**
@@ -5237,6 +5270,10 @@ export class WebGPUContext extends GraphicsContext {
       .register("renderBundleManager", () => {
         this._renderBundleManager?.destroy();
         this._renderBundleManager = null;
+      })
+      .register("computeEngine", () => {
+        this._computeEngine?.destroy();
+        this._computeEngine = null;
       })
       .register("storageBufferPool", () => {
         this._storageBufferPool?.destroy?.();
