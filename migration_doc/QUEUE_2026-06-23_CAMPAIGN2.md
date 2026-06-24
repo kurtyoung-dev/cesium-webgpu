@@ -273,13 +273,20 @@ mentions + likely-stale exclusions are listed at the bottom.
   highlighting of occluded primitives is broken. Build the depth-fail pipeline
   variant (reversed depth test) + twin fragment + uniform wiring, mirroring the
   color-appearance twin pass.
-- **C2-24 · WEBGPU-COLLECTIONS-FAR-SURFACE-DEPTH** (L, high) — after the B218-219
-  close-camera fixes, FAR-camera billboard/point/label are still 0px: depth-test
-  OCCLUSION (not clipping) — the collection writes a depth that doesn't match the
-  globe's per-slice depth encoding at the same surface point. Mirror the globe's
-  per-slice depth write/encode in the collection pipelines (OR formally document
-  `disableDepthTestDistance` as the supported path). Multi-part. **Probe:**
-  `probe-billboard-2d-debug.mjs` (3D mode).
+- **C2-24 · WEBGPU-COLLECTIONS-FAR-SURFACE-DEPTH** ✅ **STALE — ALREADY SHIPPED
+  (Batches 249-251), verified GREEN at HEAD 2026-06-24.** The Tier-5/6
+  investigation workflow caught that this was already fixed: the collection
+  shaders write logarithmic `@builtin(frag_depth)` matching the globe
+  (`BillboardCollection.wgsl:639/777` + `PointPrimitiveColor.wgsl` `out.depth =
+  csm_writeLogDepth(...)`), and `_logDepthWriteEnabled` defaults TRUE
+  (`WebGPULogDepth.ts`, Batch 251), so both encode against the same stashed
+  full-frustum near/far. **Re-verified:** `probe-collections-far-camera.mjs`
+  PASS at HEAD — far markers @220km bb(magenta)=7450 / pt(cyan)=5286 visible
+  (not globe-occluded), below-ground negative control red=0, 0 errors. The
+  original B218-220 diagnosis predates the B249-251 fix. **Residual (low):** the
+  far-camera probe gates billboard+point but not the LABEL leg (same SDF
+  frag_depth path) — a one-line probe extension if label far-depth ever needs a
+  gate. No code work.
 - **C2-25 · NEW-DYNAMIC-ENVMAP-FULL-SCENE** (L, med — headline) — the procedural-sky
   env map ships, but reflections don't include real scene content (terrain, 3D
   Tiles, glTF). Add sky/space/sun renderers accepting arbitrary view matrices +
