@@ -101,6 +101,19 @@ pixel-safe — else keep gated. (Default conservative per FORK-41 guidance.)
 **Still relevant:** YES (0 `depthFailColor`/`depthFail*` refs in WebGPU renderer/shaders;
 `createWebGPUCommands`/`createWebGPUMaterialCommands` never read `primitive._depthFailAppearance`).
 
+**Scope re-verified against live code 2026-06-24** (deferred for a fresh-context implementation —
+it's a multi-edit in the critical, heavily-used `createWebGPUCommands` builder, not safe to rush
+at tail-of-context): the clone source `PrimitiveBasicColor.wgsl` is a flat RTE-color VS + a
+clip/atmosphere FS that returns the interpolated vertex `color` — the depth-fail twin keeps the
+identical VS (so it reuses the main color command's vertex buffer) and only changes
+`MaterialUniforms` to `{ depthFailColor: vec4 }` + the FS to return `material.depthFailColor`
+(after the clip discard, with the LOG_DEPTH FragOut branch preserved). The per-instance depthFail
+color is read from `batchTable.getBatchedAttribute(i, primitive._batchTableAttributeIndices.depthFailColor)`
+(mirrors the existing main-color read). The depth-fail pipeline twin is the same descriptor as the
+color pipeline with `depthStencil.depthCompare:'greater'` + `depthWriteEnabled:false`; emit one
+depth-fail command per geometry right AFTER its main command, bound to `[camera, depthFailMaterialUB,
+effects]`. `_depthFailAppearance` is set on the primitive (`Primitive.js:158/515`).
+
 **Mirror (WebGL twin fully exists):** `PrimitiveCommandHelpers.js:40-82` (createRenderStates —
 `depthTest.func=GREATER`, twoPasses front/back cull), `:84-143` (`_spDepthFail`), `:204-303`
 (twin command emit, `*=2` multiplier), `PrimitiveShaderHelpers.js:141-184` (depthFailColor swap)
