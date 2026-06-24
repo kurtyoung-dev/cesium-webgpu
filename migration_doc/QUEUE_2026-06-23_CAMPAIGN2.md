@@ -93,6 +93,15 @@ mentions + likely-stale exclusions are listed at the bottom.
 
 ## Tier 2 — Visual-parity holes
 
+> ✅ **TIER 2 COMPLETE (2026-06-24)** — git Batches 375–379. C2-7 shipped (377,
+> pointcloud log-depth + a real BGL fix the probe caught), C2-10 shipped (376, grid
+> AA). C2-8 (378) + C2-9 (375) verify-first STALE/already-done; C2-6 (379) diagnosed
+> + localized (globe-FS water-fragment color, NOT atmo/LOD) + deferred. Surfaced +
+> tracked: ATMOSPHERE-LUT-BGL-INCOMPAT, TIMEDYNAMIC-POINTCLOUD-CONTENT-LOAD-ZERO,
+> GROUNDPRIM-TEXTURED-CLASSIFICATION-ZERO, FLAT-MATAPPEARANCE-MATERIAL-SOLID,
+> SUN-GLOWFACTOR-IGNORED. **Lesson: probe-FIRST — 3/5 had stale premises.**
+> Next: Tier 3 (376a-d).
+
 - **C2-6 · NEW-WEBGPU-EXAG-WATER-STREAKS** 🔬 DIAGNOSED + DEFERRED (Batch 379) —
   the gated investigation is DONE: `diag-exag-water-streaks-2x2.mjs` (NEW) ran the
   2×2 + tile-level dump and **definitively localized** it: NOT terrain-LOD (tile
