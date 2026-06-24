@@ -67,6 +67,12 @@ import {
 // (2 = no texture, 3 = textured) and gain evalClusteredLights().
 import ClusteredLightingChunk from "../../Shaders/WebGPU/chunks/structs/ClusteredLighting.js";
 import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.js";
+// DP-H18 / C2-23 — depthFailAppearance twin shader (flat RTE color VS, FS
+// returns the per-instance depthFail color from the material UB). Paired with a
+// depthCompare:'greater' / depthWriteEnabled:false pipeline in
+// createWebGPUCommands so it shades only fragments that fail the normal depth
+// test. Mirrors the WebGL twin in PrimitiveCommandHelpers.js.
+import PrimitiveDepthFailColorSource from "../../Shaders/WebGPU/Primitive/PrimitiveDepthFailColor.js";
 // Slice 5c-B Phase 1 (Batch 105) — centralized scene-FB fragment-target
 // builder. Returns a 1-target array today (mrtMode default off); when
 // the Phase 2 atomic batch flips `setSceneFBMrtMode(true)`, every
@@ -2237,6 +2243,17 @@ function createWebGPUCommands(
   const colorIndex = primitive._batchTableAttributeIndices?.color;
   const hasInstanceColors = defined(batchTable) && defined(colorIndex);
 
+  // DP-H18 / C2-23 — depthFailAppearance: when set, every main color command
+  // gets a twin "depth-fail" command (depthCompare 'greater', no depth write)
+  // that shades the per-instance depthFail color where the primitive is hidden
+  // behind nearer geometry. Mirrors the WebGL twin (PrimitiveCommandHelpers.js
+  // `_spDepthFail` / `_frontFaceDepthFailRS`). The depthFail color is a
+  // per-instance batch attribute (`depthFailColor`), read CPU-side like `color`.
+  const depthFailAppearance = primitive._depthFailAppearance;
+  const hasDepthFail = defined(depthFailAppearance);
+  const depthFailColorIndex =
+    primitive._batchTableAttributeIndices?.depthFailColor;
+
   const allowPicking = primitive._allowPicking;
   const pickIds = primitive._pickIds;
   const hasPickIds = allowPicking && defined(pickIds) && pickIds.length > 0;
@@ -2559,6 +2576,79 @@ function createWebGPUCommands(
       defaultCullMode,
       `Primitive pipeline (cull=${defaultCullMode})`,
     );
+
+    // DP-H18 / C2-23 — depthFailAppearance twin pipeline. Always a FLAT shader
+    // ([camera, material, effects] — 3 groups, no texture) regardless of the
+    // main appearance, so its bind-group layout is independent of `needsTexture`.
+    // Same vertex layout + targets + MSAA as the main pipeline (reuses the main
+    // color command's vertex buffer); differs only in the fragment module (returns
+    // the uniform depthFail color) + depthStencil (greater compare, no write).
+    if (hasDepthFail) {
+      cache.depthFailShaderModule = WebGPUShaderModule.create({
+        device: device,
+        code: preprocessShaderSource(
+          PrimitiveDepthFailColorSource,
+          shaderDefines,
+        ),
+        label: "PrimitiveDepthFailColor Shader",
+      });
+      const depthFailLayouts = [
+        cache.cameraBindGroupLayout,
+        cache.materialBindGroupLayout,
+        cache.effectsBGL,
+      ];
+      const makeDepthFailPipeline = (cullMode, label) =>
+        device.createRenderPipeline({
+          label,
+          layout: device.createPipelineLayout({
+            bindGroupLayouts: depthFailLayouts,
+          }),
+          vertex: {
+            module: cache.depthFailShaderModule.module,
+            entryPoint: "vertexMain",
+            buffers: [vertexLayout.layout],
+          },
+          fragment: {
+            module: cache.depthFailShaderModule.module,
+            entryPoint: "fragmentMain",
+            targets: makeSceneFBTargets(canvasFormat, {
+              translucent,
+              emitsGBuffer: false,
+            }),
+          },
+          primitive: {
+            topology: primitiveTopology,
+            cullMode: primitiveTopology.startsWith("line") ? "none" : cullMode,
+            frontFace: "ccw",
+          },
+          depthStencil: {
+            format: "depth24plus-stencil8",
+            // DP-H18 — only shade fragments BEHIND existing depth, and never
+            // overwrite it (the highlight must not occlude later geometry).
+            depthWriteEnabled: false,
+            depthCompare: "greater",
+          },
+          multisample:
+            (context._msaaSamples ?? 1) > 1
+              ? { count: context._msaaSamples }
+              : undefined,
+        });
+      // DP-H18 — the depth-fail pass renders with NO face culling (matching
+      // WebGL's depthFail render state, which inherits the flat depthFail
+      // appearance's cull-disabled default). For a closed volume this lets the
+      // BACK faces (farther) pass the 'greater' test against the front faces and
+      // show through as the depth-fail color — the canonical "x-ray" look — and
+      // for a partially-occluded primitive it shades every fragment behind the
+      // occluder. Using the main `defaultCullMode` ("back" for closed shapes)
+      // would cull exactly those faces and render nothing.
+      cache.depthFailPipeline = makeDepthFailPipeline(
+        "none",
+        `DepthFail pipeline (cull=none)`,
+      );
+    } else {
+      cache.depthFailShaderModule = null;
+      cache.depthFailPipeline = null;
+    }
     // DP-H17 — closed translucent volumes need two draw calls with
     // opposite cull modes so back faces composite before front faces.
     // Build both variants up-front (they share everything except
@@ -2907,6 +2997,55 @@ function createWebGPUCommands(
       entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
     });
 
+    // DP-H18 / C2-23 — per-geometry depthFail material UB (16 bytes: the
+    // per-instance depthFail color). Read CPU-side from the batch table like
+    // the main `color`; default opaque red when no `depthFailColor` attribute
+    // is present (a visible sentinel, not silent).
+    if (hasDepthFail) {
+      let dfColor = [1.0, 0.0, 0.0, 1.0];
+      if (defined(depthFailColorIndex) && i < primitive._numberOfInstances) {
+        try {
+          const c = batchTable.getBatchedAttribute(i, depthFailColorIndex);
+          if (defined(c)) {
+            if (defined(c.red)) {
+              dfColor = [c.red, c.green, c.blue, c.alpha];
+            } else if (defined(c.x)) {
+              const over =
+                c.x > 1.0 || c.y > 1.0 || c.z > 1.0 || c.w > 1.0 ? 255.0 : 1.0;
+              dfColor = [c.x / over, c.y / over, c.z / over, c.w / over];
+            }
+          }
+        } catch (e) {
+          // keep the default sentinel color
+        }
+      }
+      if (!defined(cache.depthFailMaterialBuffers)) {
+        cache.depthFailMaterialBuffers = [];
+        cache.depthFailMaterialBindGroups = [];
+      }
+      if (!defined(cache.depthFailMaterialBuffers[i])) {
+        cache.depthFailMaterialBuffers[i] = device.createBuffer({
+          label: `DepthFail Material UB ${i}`,
+          size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+      }
+      device.queue.writeBuffer(
+        cache.depthFailMaterialBuffers[i],
+        0,
+        new Float32Array(dfColor),
+      );
+      cache.depthFailMaterialBindGroups[i] = device.createBindGroup({
+        layout: cache.materialBindGroupLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: { buffer: cache.depthFailMaterialBuffers[i] },
+          },
+        ],
+      });
+    }
+
     const pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
 
     // Build bind group array: [camera, material, texture?, effects]
@@ -2986,6 +3125,41 @@ function createWebGPUCommands(
       );
     } else {
       validCommands.push(makeCommand(cache.pipeline, "single-pass"));
+    }
+
+    // DP-H18 / C2-23 — depth-fail twin command, emitted AFTER the main
+    // command(s) so the main pass has written depth first; the greater/no-write
+    // pipeline then shades only the occluded fragments. Reuses the main vertex
+    // buffer; binds [camera, depthFailMaterial, effects] (the depth-fail shader
+    // is flat — no texture group). Mirrors the WebGL twin's interleaved emit.
+    if (hasDepthFail && defined(cache.depthFailPipeline)) {
+      const depthFailBindGroups = [
+        cache.cameraBindGroups[i],
+        cache.depthFailMaterialBindGroups[i],
+        effectsPlaceholder.bindGroup,
+      ];
+      const dfCmd = new WebGPUDrawCommand({
+        pipeline: cache.depthFailPipeline,
+        bindGroups: depthFailBindGroups,
+        vertexBuffer: cache.vertexBuffers[i],
+        indexBuffer: cache.indexBuffers[i],
+        indexFormat: cache.indexFormats[i],
+        vertexCount: defined(cache.indexBuffers[i])
+          ? undefined
+          : cache.vertexCounts[i],
+        indexCount: defined(cache.indexBuffers[i])
+          ? cache.indexCounts[i]
+          : undefined,
+        pass: pass,
+        owner: primitive,
+        renderState: appearanceRS,
+      });
+      dfCmd._webgpuCameraBuffer = cache.cameraBuffers[i];
+      dfCmd._webgpuShaderType = "primitiveDepthFailColor";
+      dfCmd._label = "depth-fail pass";
+      dfCmd._shadowCastLayout = "rte24";
+      dfCmd.vertexStride = fpv * 4;
+      validCommands.push(dfCmd);
     }
 
     // ── Pick command (split camera/material bind groups) ──
