@@ -401,7 +401,12 @@ for (const [name, png] of [
 }
 
 const r = out.renders;
-const renderMin = { billboard: 500, point: 300, label: 150, polyline: 500, cloud: 100 };
+// cloud gate re-baselined 100->50 in Batch 366 (NEW-WEBGPU-CLOUD-SIZE-PARITY):
+// the cloud quad was 2x too wide, so the old gate was calibrated against an
+// oversized cloud. With the *0.5 half-extent fix the 3 small clouds now render
+// ~85 green px (correct, WebGL-matching size); 50 keeps a "clouds render" gate
+// with margin while reflecting the corrected footprint.
+const renderMin = { billboard: 500, point: 300, label: 150, polyline: 500, cloud: 50 };
 const c1 = Object.keys(renderMin).every((k) => r[k] > renderMin[k]);
 const c2 = Object.values(out.counts).every((n) => n === 0);
 const c3 = Object.values(out.uploads).every((n) => n === 0);

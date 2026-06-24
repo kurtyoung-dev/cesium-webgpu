@@ -24,6 +24,22 @@
 
 ---
 
+## Batch 366 — WebGPU cloud quad 2× too wide; `*0.5` half-extent fix (NEW-WEBGPU-CLOUD-SIZE-PARITY) (2026-06-23)
+
+**Item:** NEW-WEBGPU-CLOUD-SIZE-PARITY — the B365 residual: with the worley grain finally matching WebGL, the WebGPU CloudCollection cloud was still ~1.9× linear larger than WebGL at the same maximumSize+camera. B365 had (correctly) ruled out the noise and verified the raymarch/Gardner/TR/color WGSL line-by-line identical, hypothesizing a "non-shader cause."
+
+**Root cause (pinned by the backlog-triage workflow):** the quad-offset **half-extent**. The cloud quad VB spans `quadPos ∈ [-1,1]` (half-extent 1.0), and `vertexMain` scaled the FULL `quadPos` by `scale * projScale`. WebGL's quad uses `offset = dir - 0.5 ∈ [-0.5,0.5]` (half-extent 0.5; `CloudCollectionVS.glsl:34` adds `scale * offset` in eye space). So the WebGPU quad was exactly **2× too wide**. The raymarch varying `vOffset = quadPos*0.5` was ALREADY correctly halved, which is why the noise/shape/grain all matched while only the SIZE was off — the ellipsoid filled a 2×-oversized quad.
+
+**Fix:** a single `* 0.5` on the quad offset in `vertexMain` AND `vertexVelocityMain` (so velocity covers the same fragments). The raymarch coordinate (`vOffset`) is untouched.
+
+**Verification (`probe-cloud-volumetric-parity.mjs`, PNGs READ):** WebGPU filled-px **7746 → 1947 vs WebGL 1797 (4.3× → 1.08×)**, area ratio **2.41× → 0.99×**; the WebGL and WebGPU clouds are now visually near-identical (same ~63 px grainy core, same deterministic specks). Didn't-break: probe-cloud-property-edit PASS; probe-collections-regression cloud gate re-baselined 100→50 (the 3 small clouds now correctly render ~85 green px at the corrected half-size, the anticipated re-baseline), PASS.
+
+**Lessons:** (1) a "more-correct" sub-fix (B365 worley) un-masked a separate residual that a wronger one had been hiding — and the residual turned out to be a *different* one-liner. (2) The backlog-triage workflow pinned this exact `*0.5` from a read-only pass in minutes, where B365's inline investigation had only narrowed it to "non-shader." Parallel read-only triage is the right tool for *finding* the lever; serial build/probe/READ is the right tool for *landing* it. **Completes the cloud trilogy:** B363 shape + B365 grain + B366 size.
+
+**Files:** `WebGPUCloudRenderer.ts` + the collections-regression cloud-gate re-baseline.
+
+---
+
 ## Batch 365 — WebGPU CloudCollection baked worley-texture port for grain parity (NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY) (2026-06-23)
 
 **Item:** NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY (B363 residual). B363's volumetric cloud used an inline procedural worley FBM for the W/W2/W3 erosion — coarser + smoother than WebGL's baked 3D worley texture, so the cloud was "denser/less grainy."

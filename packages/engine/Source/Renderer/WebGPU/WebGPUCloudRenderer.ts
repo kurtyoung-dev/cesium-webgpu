@@ -180,9 +180,16 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // /viewportSize*2*w form sized the quad in screen PIXELS, blowing a
   // 2000 m cloud up to full-screen at any camera distance
   // (NEW-CLOUD-SCALE-METERS, Batch 253).
+  // NEW-WEBGPU-CLOUD-SIZE-PARITY (Batch 366) — the quad VB spans quadPos in
+  // [-1,1] (half-extent 1.0), but WebGL's quad uses offset = dir-0.5 in
+  // [-0.5,0.5] (half-extent 0.5; CloudCollectionVS.glsl:34 does
+  // "positionEC.xy += scale * offset"). Scaling the FULL quadPos here made the WebGPU cloud quad
+  // 2x too wide → the raymarched cloud rendered ~1.9x WebGL's size. The *0.5
+  // matches WebGL's eye-space half-extent; vOffset below is ALREADY halved,
+  // so the raymarch coordinate (maxSize*vOffset) is unchanged.
   let offset = vec2<f32>(
-    input.quadPos.x * input.scaleAndBrightness.x * camera.projScaleX,
-    input.quadPos.y * input.scaleAndBrightness.y * camera.projScaleY
+    input.quadPos.x * 0.5 * input.scaleAndBrightness.x * camera.projScaleX,
+    input.quadPos.y * 0.5 * input.scaleAndBrightness.y * camera.projScaleY
   );
   output.position = centerClip + vec4<f32>(offset, 0.0, 0.0);
   output.vOffset = input.quadPos * 0.5;
@@ -454,10 +461,11 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   let prevCenterClip = camera.prevViewProjection * prevWorldPos;
   // Rasterize quad at the current center. Meters-based sizing — must
   // match vertexMain exactly so velocity covers the same fragments
-  // (NEW-CLOUD-SCALE-METERS, Batch 253).
+  // (NEW-CLOUD-SCALE-METERS, Batch 253; *0.5 half-extent NEW-WEBGPU-CLOUD-
+  // SIZE-PARITY, Batch 366).
   let offset = vec2<f32>(
-    input.quadPos.x * input.scaleAndBrightness.x * camera.projScaleX,
-    input.quadPos.y * input.scaleAndBrightness.y * camera.projScaleY
+    input.quadPos.x * 0.5 * input.scaleAndBrightness.x * camera.projScaleX,
+    input.quadPos.y * 0.5 * input.scaleAndBrightness.y * camera.projScaleY
   );
   output.position = currCenterClip + vec4<f32>(offset, 0.0, 0.0);
   output.currCenterClip = currCenterClip;
