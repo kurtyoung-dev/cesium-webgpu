@@ -182,9 +182,19 @@ mentions + likely-stale exclusions are listed at the bottom.
   Plumb `position2DHigh/Low` + `morphTime` lerp into `csm_polylineCommon.wgsl`
   screen-space expansion (mirror `PolylineCommon.glsl` 2D path + the
   globe/billboard morph-lerp convention).
-- **C2-13 · 376c — Polyline appearance effects + log-depth** (S, low) — appearance
-  pipelines have no effects bind group (shadow-receive/clipping) and no log-depth
-  write. Add the czm log-depth write + wire the shared effects bind group.
+- **C2-13 · 376c — Polyline appearance effects + log-depth** ✅ **DONE (Batch 381,
+  scoped to log-depth — the high-value half).** All 6 polyline appearance/material
+  shaders now write LOGARITHMIC `@builtin(frag_depth)` matching the WebGPU globe
+  (was hyperbolic → surface lines z-fought/sank at far cameras). Added the csm
+  log-depth recipe (`logDepth: vec4` UB lane @ floats 92-95 + `//>>ifdef LOG_DEPTH`
+  VS/FS blocks + the 3 helpers in `csm_polylineCommon.wgsl`) + a `ShaderDefine.LOG_DEPTH`
+  define-flip in both command builders. Camera BGL was already `VERTEX|FRAGMENT` (no
+  BGL fix, unlike C2-7). **Verified:** existing color/material probes unregressed
+  (cyan 12584≡12584, Dash 0.999, Glow 1.000 with LOG_DEPTH active) + NEW
+  `probe-polyline-appearance-logdepth.mjs` (globe ON, FAR camera) GREEN — WebGPU
+  lines rest on the globe matching WebGL (0.988 / 1.002), `logDepthEnabled` true,
+  PNGs READ. The effects-BG *consumption* half (shadow-receive/clipping read) is
+  the lower-value remainder → deferred (clipping is a no-op in sibling shaders too).
 - **C2-14 · 376d — Textured polyline materials** (M, low) — the B344 material path
   is UB-only; `PolylineImageMaterial`/`DiffuseMap` render untextured. Add a
   texture+sampler bind group + a textured FS variant.

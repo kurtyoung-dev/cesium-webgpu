@@ -320,3 +320,34 @@ fn csm_getPolylineWindowCoordinatesWithAngle(
         expandDirection, width, usePrevious,
         projection, viewportTransformation, pixelRatio, near);
 }
+
+// ---------------------------------------------------------------------------
+// Log-depth helpers (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — 376c)
+// ---------------------------------------------------------------------------
+//
+// Renderer-wide logarithmic depth for the polyline appearance/material path.
+// Canonical inline copies; see chunks/functions/csm_{vertexLogDepth,
+// writeLogDepth}.wgsl and the identical block in Collections/
+// PolylineCollection.wgsl (lines 48-62). Gated by `//>>ifdef LOG_DEPTH` so the
+// non-log variant (defines=0) is byte-identical to the historical path — these
+// functions don't exist in the compiled module unless the master switch is on.
+//
+// The appearance VS multiplies its screen-space window position by
+// `viewportOrthographic`, whose bottom row is [0,0,0,1]; because
+// `csm_getPolylineWindowCoordinates*` re-homogenizes by the eye-space clip-w,
+// the resulting `output.position.w` equals that clip-w (the positive eye
+// distance) — exactly what `csm_vertexLogDepth` expects (mirrors WebGL's
+// `czm_vertexLogDepth()` reading `gl_Position.w` after `czm_viewportOrthographic`).
+//>>ifdef LOG_DEPTH
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+    return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+    var coords = clipPosition;
+    coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+    return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+    return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif

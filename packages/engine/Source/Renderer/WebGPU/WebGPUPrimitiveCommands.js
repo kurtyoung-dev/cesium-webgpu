@@ -896,6 +896,11 @@ function writeRTEUniformsPolyline(ud, rte, uniformState, context) {
   ud[89] = defined(frustum) ? frustum.x : 0.0;
   ud[90] = 0.0;
   ud[91] = 0.0;
+  // 376c — log-depth tail (near, far, factor, reserved) at floats 92-95.
+  // Inert until the LOG_DEPTH pipeline define is set on the appearance /
+  // material polyline pipelines; the shader reads `camera.logDepth` only
+  // inside //>>ifdef LOG_DEPTH. 512B UB has room (96 floats = 384 bytes).
+  writeLogDepthTail(ud, 92, uniformState);
 }
 
 // =========================================================================
@@ -1361,15 +1366,25 @@ function createPolylineAppearanceCommands(
 
   const vertexLayout = getPolylineAppearanceVertexLayout();
   const translucentChanged = cache.translucent !== translucent;
+  // 376c — renderer-wide log depth. Flip the LOG_DEPTH define on the
+  // appearance pipeline when the master switch + per-frame flag are on, so
+  // the polyline writes hyperbolic @builtin(frag_depth) and z-fights terrain
+  // correctly. Defaults FALSE → defines=0 → byte-identical historical path.
+  // `logDepthChanged` forces a shader-module + pipeline rebuild on toggle.
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
+  const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
 
-  if (!defined(cache.pipeline) || translucentChanged) {
+  if (!defined(cache.pipeline) || translucentChanged || logDepthChanged) {
     cache.translucent = translucent;
+    cache.logDepthEnabled = logDepthActive;
 
-    // defines=0 — the polyline shader carries no //>>ifdef blocks today;
-    // route through the preprocessor for parity with the other primitive
-    // shader creation sites (and so the chunk-injected source is resolved
-    // via getShaderSource, which prepends csm_polylineCommon).
-    const code = preprocessShaderSource(getShaderSource("polylineColor"), 0);
+    // Route through the preprocessor so the chunk-injected source is resolved
+    // via getShaderSource (prepends csm_polylineCommon) and the //>>ifdef
+    // LOG_DEPTH blocks resolve. defines=0 reproduces the pre-376c path.
+    const code = preprocessShaderSource(
+      getShaderSource("polylineColor"),
+      logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
+    );
     cache.shaderModule = WebGPUShaderModule.create({
       device: device,
       code: code,
@@ -1780,15 +1795,27 @@ function createPolylineMaterialAppearanceCommands(
 
   const shaderChanged = cache.shaderType !== shaderInfo.type;
   const translucentChanged = cache.translucent !== translucent;
+  // 376c — log-depth define-flip (see the COLOR builder for the rationale).
+  const logDepthActive = isWebGPULogDepthActive(context, frameState);
+  const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
 
-  if (!defined(cache.pipeline) || shaderChanged || translucentChanged) {
+  if (
+    !defined(cache.pipeline) ||
+    shaderChanged ||
+    translucentChanged ||
+    logDepthChanged
+  ) {
     cache.shaderType = shaderInfo.type;
     cache.translucent = translucent;
+    cache.logDepthEnabled = logDepthActive;
 
-    // defines=0 — no //>>ifdef blocks in the polyline material shaders today;
-    // route through the preprocessor for parity with the other primitive
-    // shader-creation sites (getShaderSource prepends csm_polylineCommon).
-    const code = preprocessShaderSource(shaderInfo.code, 0);
+    // Route through the preprocessor so getShaderSource's csm_polylineCommon
+    // injection + the //>>ifdef LOG_DEPTH blocks resolve. defines=0 reproduces
+    // the pre-376c byte-identical path.
+    const code = preprocessShaderSource(
+      shaderInfo.code,
+      logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
+    );
     cache.shaderModule = WebGPUShaderModule.create({
       device: device,
       code: code,

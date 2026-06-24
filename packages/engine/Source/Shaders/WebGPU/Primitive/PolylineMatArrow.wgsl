@@ -26,6 +26,9 @@ struct VertexOutput {
     @location(0) v_st: vec2<f32>,
     @location(1) v_width: f32,
     @location(2) v_polylineAngle: f32,
+    //>>ifdef LOG_DEPTH
+    @location(3) v_logDepth: f32,
+    //>>endif
 }
 
 struct CameraUniforms {
@@ -41,6 +44,8 @@ struct CameraUniforms {
     pixelRatio: f32,
     currentFrustumNear: f32,
     _pad2: vec2<f32>,
+    // 376c — logDepth (near, far, factor, reserved) @ floats 92-95.
+    logDepth: vec4<f32>,
 }
 
 // PolylineArrow uniforms — byte-locked to the material's `_uniformBuffer.gpuData`:
@@ -108,11 +113,24 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.v_st = input.st;
     output.v_width = width;
     output.v_polylineAngle = win.angle;
+
+    //>>ifdef LOG_DEPTH
+    output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepth.x);
+    output.position = csm_updatePositionDepth(output.position);
+    //>>endif
+
     return output;
 }
 
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    //>>ifdef LOG_DEPTH
+    @builtin(frag_depth) depth: f32,
+    //>>endif
+}
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
     let st: vec2<f32> = input.v_st;
 
     let base: f32 = 1.0 - abs(fwidth(st.x)) * 10.0 * camera.pixelRatio;
@@ -154,5 +172,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // material.diffuse = outColor.rgb; material.alpha = outColor.a;
     // out_FragColor = vec4(diffuse + emission(0), alpha).
-    return outColor;
+    var out: FragOutput;
+    out.color = outColor;
+    //>>ifdef LOG_DEPTH
+    out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
+    //>>endif
+    return out;
 }

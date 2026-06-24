@@ -38,6 +38,10 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    //>>ifdef LOG_DEPTH
+    // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
+    @location(1) v_logDepth: f32,
+    //>>endif
 }
 
 // CameraUniforms — extends the flat camera layout with the matrices the
@@ -54,6 +58,8 @@ struct VertexOutput {
 //   float 88    pixelRatio
 //   float 89    currentFrustumNear
 //   float 90-91 pad
+//   float 92-95 logDepth (near, far, factor, reserved) — 376c, packed by
+//               writeLogDepthTail; read only inside //>>ifdef LOG_DEPTH
 struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
@@ -67,6 +73,7 @@ struct CameraUniforms {
     pixelRatio: f32,
     currentFrustumNear: f32,
     _pad2: vec2<f32>,
+    logDepth: vec4<f32>,
 }
 
 struct MaterialUniforms {
@@ -114,11 +121,34 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
     output.position = camera.viewportOrthographic * positionWC;
     output.color = input.color;
+
+    //>>ifdef LOG_DEPTH
+    // Renderer-wide log depth — output.position.w carries the eye-space
+    // clip-w (see csm_polylineCommon log-depth note), so the standard recipe
+    // applies directly with no DISABLE_DEPTH_DISTANCE / hide-collapse cases
+    // (the appearance VS never pushes z to the far plane).
+    output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepth.x);
+    output.position = csm_updatePositionDepth(output.position);
+    //>>endif
+
     return output;
 }
 
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    //>>ifdef LOG_DEPTH
+    // frag_depth so the translucent polyline pass tests against log depth too.
+    @builtin(frag_depth) depth: f32,
+    //>>endif
+}
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> FragOutput {
     // PerInstanceFlatColorAppearanceFS — emit the interpolated (flat) color.
-    return input.color;
+    var out: FragOutput;
+    out.color = input.color;
+    //>>ifdef LOG_DEPTH
+    out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
+    //>>endif
+    return out;
 }
