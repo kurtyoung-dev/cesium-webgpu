@@ -166,11 +166,18 @@ mentions + likely-stale exclusions are listed at the bottom.
 
 ## Tier 3 — Polyline appearance completion (376 epic, sliced)
 
-- **C2-11 · 376a — Polyline appearance PICK** (M, med) — COLOR (B343) + MATERIAL
-  (B344) slices ship but both clear pickCommands → appearance polylines are
-  unpickable. Add a pick VS+FS (per-instance pick color from the batch table) +
-  a slot-0-only blend-stripped pick pipeline in
-  `createPolyline*AppearanceCommands`.
+- **C2-11 · 376a — Polyline appearance PICK** ⏸️ **ATTEMPTED Batch 380, REVERTED —
+  root cause PINNED, fix is a fresh-context follow-up.** Full pick path implemented
+  (pick VS/FS + 2-bind-group blend-stripped pipeline + per-`_pickIds[i]` command +
+  the `updateWebGPUPickCommandUniforms` 512B-polyline-UB routing branch). Builds,
+  pick command created (`pickCmds=1`), color render unregressed, 0 errors — but
+  `scene.pick` returns undefined. **The polyline VS does VIEWPORT-DEPENDENT
+  screen-space ribbon expansion while `scene.pick` uses a NARROW PICK FRUSTUM** →
+  the pick-frustum projection + main-canvas viewport transforms mismatch → ribbon
+  misplaced in the pick FBO (geometry pick works because it's a viewport-independent
+  MVP). Fix path + the verified-correct pick code are documented in DEFERRED under
+  NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU follow-up (a). Reproduction harness
+  `probe-polyline-appearance-pick.mjs` committed (RED, gates the fix).
 - **C2-12 · 376b — Polyline appearance 2D/CV/Morph** (M, med) — 3D-only today.
   Plumb `position2DHigh/Low` + `morphTime` lerp into `csm_polylineCommon.wgsl`
   screen-space expansion (mirror `PolylineCommon.glsl` 2D path + the
