@@ -547,6 +547,29 @@ assert `hitRatio>0` with the pixel match still holding (occlusion only removes
 provably-hidden geometry → pixels must stay identical). Then flip
 `_hiZConsumeEnabled` default to true.
 
+**C2-21 ATTEMPT (2026-06-24) — footprint+background fix is NECESSARY-BUT-NOT-SUFFICIENT;
+the real blocker is DEEPER. REVERTED, re-deferred with a sharper finding.** Implemented
+exactly the "NEXT CONCRETE WORK" above in `OcclusionTest.wgsl`: replaced the 4-corner
+`max` with a 4×4 footprint grid (mip biased one finer) + an `anyBackground` flag
+(texel ≥ FAR_EPS 0.9999) → "any background texel → visible". It is SAFE (no false-cull;
+`probe-fork41-occlusion.mjs` SAFE-default still 0.019% mismatch). BUT `hitRatio` STAYED
+**0** — and a NEW purpose-built **guaranteed-occlusion** scene proves the blocker is not
+the footprint sampling: `probe-fork41-occlusion-v2.mjs` (committed) renders a big near
+"lid" (140 km wide flat box at 60 km) over **2500 small cubes at 30 km** that the lid
+fully covers — the depth pass confirms they're hidden (consume-ON is 0.008% identical to
+no-cull → the cubes never render), yet the OcclusionTest flags **all 992 897 of them
+VISIBLE** (`hiZInput === hiZFiltered`, hitRatio 0). So the test never returns `occluded`
+even for depth-pass-confirmed-occluded geometry. The footprint fix was reverted (it
+didn't move hitRatio, so shipping it would imply false progress). **Real suspects to
+investigate next (with the v2 harness):** (1) the Hi-Z pyramid built from the dense-cull
+set's PRIOR-frame depth may be MAX-reduced over a depth attachment that already contains
+the tested box itself (or the lid is in a different per-frustum Hi-Z than the box's test
+frustum) → maxHiZ ≥ sphereNearZ always; (2) a log-depth near/far/factor mismatch between
+the box's test frustum `params` and the frustum the Hi-Z depth was written with; (3) the
+SOA bounding-sphere center/radius feeding the test. Add WGSL debug-output (write
+`footprintMax`/`sphereNearZ`/`anyBackground` to a scratch storage buffer for the first N
+commands) to localize which of the three fails. Flag stays GATED.
+
 **Files:** `Shaders/WebGPU/Compute/OcclusionTest.wgsl`,
 `Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts`,
 `Renderer/WebGPU/WebGPUSceneRenderer.ts`, `Scene/CesiumDebug.js`,
