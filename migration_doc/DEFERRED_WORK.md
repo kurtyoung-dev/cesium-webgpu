@@ -4249,7 +4249,13 @@ These are areas the webgpu-morph-review audit did NOT examine — flagged as lik
 
 ---
 
-## NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK — KHR_materials_unlit models render black on WebGPU (2026-06-22)
+## ✅ RESOLVED (Batch 372, C2-3) — NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK — KHR_materials_unlit models render black on WebGPU (2026-06-22)
+
+**RESOLUTION (2026-06-23):** Not a real unlit-path gap. The WebGPU unlit path has existed end-to-end since git Batch 119 (`GltfLoader` sets `material.unlit`; `ModelMaterialInfo` computes `IS_UNLIT` — also forced when a primitive has no NORMAL; `WebGPUModelRenderer` plumbs `FLAG_IS_UNLIT`; `ModelPBRComplete.wgsl` has the unlit early-out outputting `baseColor*vertexColor`). The B359 "black" was a **symptom of DP-H37**: the original repro asset relies on a VEC3 `COLOR_0` gradient, and unlit output is `baseColor·vertexColor`, so the DP-H37 VEC3-COLOR_0 mis-read produced black with no lighting to mask it. DP-H37's fix (B359, widen VEC3→RGBA) resolved both. Verified Batch 372 via the new permanent regression probe `Tools/visual-regression/probe-unlit-vertexcolor.mjs` + asset `Tools/visual-regression/assets/unlit-vec3color-quad.gltf`: WebGPU unlit renders the full gradient (lum 441.5, not black), matches WebGL within 11.1/channel — READ both PNGs. The probe is a regression sentinel (nonzero exit if WebGPU ever goes black again). **No code change.**
+
+---
+
+### (Original report, kept for trace)
 
 **Surfaced** verifying the Batch-359 DP-H37 fix. A glTF model whose material uses **`KHR_materials_unlit`** renders **BLACK (nothing) on WebGPU** while WebGL renders it correctly. Found when the first synthetic DP-H37 asset (`vec3color-quad.gltf` with `KHR_materials_unlit`) rendered black on WebGPU (`ready:true`, mean color 0,0,0) but 65.6 on WebGL; the Khronos `VertexColorTest` (also effectively unlit) likewise renders black on WebGPU. Switching the DP-H37 asset to a plain lit `pbrMetallicRoughness` material made it render on both backends, isolating this as a distinct unlit-material bug (NOT DP-H37). **Likely cause:** the WebGPU model pipeline / `computeMaterialDefines` has no `KHR_materials_unlit` path (the unlit flag that skips lighting + outputs baseColor·vertexColor directly is unhandled → the fragment shader produces black, or the material variant isn't built). **Next step:** check `WebGPUModelRenderer.js` / `ModelPBRComplete.wgsl` for an unlit (`FLAG_IS_UNLIT`) branch and whether `KHR_materials_unlit` sets it; mirror WebGL's `LightingPipelineStage` UNLIT path. **Repro:** load any `KHR_materials_unlit` glTF on `?renderer=webgpu` (e.g. `Tools/visual-regression/assets/` — author an unlit variant). **Files:** `Renderer/WebGPU/WebGPUModelRenderer.js`, `Shaders/WebGPU/Model/ModelPBRComplete.wgsl`. **Trace:** Batch 359.
 

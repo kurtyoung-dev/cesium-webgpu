@@ -67,13 +67,13 @@ mentions + likely-stale exclusions are listed at the bottom.
   once C2-1 lands, re-wire `ensureWebGPUSpecularSource` in
   `WebGPUImageBasedLighting.ts` (the reverted Batch-369 diff). **Probe:**
   `probe-model-ktx2-ibl.mjs` (3-way: webgl-KTX2 / webgpu-KTX2 / webgpu-procedural).
-- **C2-3 · NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK** (M, high) — `KHR_materials_unlit`
-  glTF models render **black** on WebGPU (no unlit path; `VertexColorTest` also
-  black). Add a `FLAG_IS_UNLIT` branch in `WebGPUModelRenderer.js`/
-  `computeMaterialDefines` + `ModelPBRComplete.wgsl` that skips lighting and
-  outputs `baseColor·vertexColor`, mirroring WebGL `LightingPipelineStage` UNLIT.
-  Common authoring case. **Probe:** author an unlit-variant glTF; WebGL-vs-WebGPU
-  parity.
+- **C2-3 · NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK** ✅ DONE (Batch 372) — **stale
+  bug.** The WebGPU unlit path has shipped since git Batch 119; the B359 "black"
+  was a DP-H37 (VEC3 COLOR_0) symptom (unlit outputs `baseColor·vertexColor`),
+  fixed by DP-H37's B359 widen-to-RGBA. Verified + locked with a permanent
+  regression probe (`probe-unlit-vertexcolor.mjs`) + asset
+  (`unlit-vec3color-quad.gltf`): WebGPU renders the gradient (not black), matches
+  WebGL within 11.1/channel (READ both PNGs). No code change.
 - **C2-4 · NEW-MODEL-MORPH-TANGENT-DELTAS** (S, low) — WebGPU morph interleaves
   only POSITION+NORMAL deltas; a normal-mapped morphed mesh keeps its rest-pose
   tangent → tangent-space normal drifts as it deforms. Mirror the shipped
