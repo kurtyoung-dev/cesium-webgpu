@@ -109,6 +109,17 @@ This is the most common case and the one with the strongest workflow. **Never** 
 - A probe that records `meanBrightnessRatio: 1.0` and `mismatchPct < 5` is parity; anything else is a real delta worth bisecting.
 - Canvas readback returns all-zeros in headless mode (preserveDrawingBuffer footgun). The PNG screenshots are the source of truth; the in-page `getImageData` numbers are not.
 
+#### Cross-backend capture pitfalls (learned the hard way, 2026-06-25)
+
+A whole-day mis-diagnosis (`probe-confirm-inspector-sky.mjs`, sky investigation in [WEBGPU_DEBUGGING_LOG.md](WEBGPU_DEBUGGING_LOG.md)) traced to capture-method bugs, not the renderer. Use this checklist for any WebGL-vs-WebGPU or ground-view grab:
+
+- **`canvas.toDataURL()` LIES on both backends.** On a **WebGL** canvas without `preserveDrawingBuffer` it returns a **black buffer** (post-present clear). On a **WebGPU** canvas it can come back **Y-flipped** and, at non-power-of-two canvas sizes, **diagonally skewed** (row-stride mismatch) — a black/torn triangle that looks like a render bug but is a readback bug. **Use Playwright element/page `screenshot()` (compositor read) for cross-backend captures**, not `toDataURL`. Let the viewer's OWN render loop run + settle, then screenshot; don't drive `s.render()` manually + `toDataURL`.
+- **`armWebGPUDevices(page)` is REQUIRED** (from `lib/webgpu-error-gate.mjs`) for the WebGPU scene — incl. the sky atmosphere — to actually render in a probe. A quick probe that skips it renders nothing on WebGPU and your diagnostic logs never fire (you'll chase "the code path isn't reached" when really the device was never armed).
+- **Apples-to-apples or it's worthless.** WebGPU-only features (`globe.showProceduralClouds`, `cloudWeatherMap`, volumetric fog, enhanced ocean) are silent no-ops on WebGL. A naive "WebGL vs WebGPU same config" diff with one of these ON compares different scenes. Add a toggle (e.g. `CLOUDS=on|off`) and confirm the variable in isolation before blaming a subsystem.
+- **One-shot diag logs fire on the WRONG frame.** A `if (!global.__once)` log in a per-frame packer fires on the FIRST frame — which for a CesiumViewer app is the **default home camera (~17,000 km orbital)**, not your `setView` target. Gate it on the actual state you care about (`camera.positionCartographic.height < 5000`) so it captures the ground-view frame. Also assert capture-time camera height in the probe (`viewer.camera.positionCartographic.height`) — don't assume `setView` stuck.
+- **"Is geometry even rasterizing here?" test:** put `return vec4(1,0,1,1);` (magenta) at the VERY FIRST line of the fragment shader (before any `discard`). If the region is still black, no triangle covers those pixels → it's a vertex/raster/clip/cull/projection issue, not the fragment math. Then bisect: `cullMode:"none"`, far-plane pin `output.position.z = output.position.w` (near/far clip), check `currentFrustum`/`off.near`/`proj0`/`proj5` for the actual projection. (This exact ladder ruled out everything but a still-unexplained shell-coverage gap — see the deferred BUG-WEBGPU-SKY-GROUNDVIEW-HIGH-ELEVATION-BLACK entry.)
+- **A "parity gate" can be blind to the artifact.** `probe-ground-view-env.mjs` reports ground-sky parity 0.99× yet the high-elevation sky is black on WebGPU — because it samples the horizon band, not the zenith. When a gate is green but the eyes say otherwise, check WHICH pixels the gate samples.
+
 ### 3. Bisect — fragment-stage debug modes
 
 When the artifact is in the globe fragment shader pipeline (imagery composite, ground atmosphere, fog, HSB), use `CesiumDebug.globeFragmentDebug(name)` to short-circuit `fragmentMain` and visualize one intermediate. Registry: **[WebGPUGlobeFragmentDebug.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeFragmentDebug.ts)**.
@@ -380,6 +391,8 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | --- | --- |
 | `probe-ground-view-env.mjs` | **Regression gate for the three ground-level environment divergences (Batch 247, NEW-GROUND-VIEW-ENV-DIVERGENCES), webgl-vs-webgpu same-scene numeric.** (1) ground-sky brightness — mean-luminance + HSB-value ratio over the top sky band, band [0.8, 1.25] (post-fix 0.99x/0.99x; pre-fix 1.73x/1.46x — caught the over-converged quadrature + non-WebGL shell geometry + LUT azimuth bug); (2) sun disk at a sun-aimed ground view — bright-pixel count within 180 px of frame center, atmosphere ON must keep the disk (caught the binned-sun-under-injected-skyAtmosphere ordering bug) with an atmosphere-OFF control; (3) no-imagery globe baseColor — exact pixel vs `globe.baseColor` rgb(31,38,51) (caught the hardcoded WGSL base). Writes `output/ground-view-env/{basecolor,sky,sun-atmo-on,sun-atmo-off}.png` per backend. Run after any change near SkyAtmosphere, Sun, the env-command injection (SceneRenderer.js), or the globe first-pass base color. |
 | `probe-ground-atmosphere.mjs` | Globe ground-atmosphere drape (the inscatter-LUT FOG-drape consumer): groundAtmosphere ON vs OFF with skyAtmosphere hidden, non-black + ON/OFF-diff pixel gates; also asserts retired `FeatureRendererKey` 29 stays `undefined`. The LUT bake is still alive even though the SKY shader's LUT consumption is gated off (Batch 247) — this probe is the LUT's live regression guard. |
+| `probe-confirm-inspector-sky.mjs` | **Cross-backend ground-view sky comparison.** `RENDERER=webgl\|webgpu` + `CLOUDS=on\|off`, applies a 650 m ground config (`skyAtmosphere.show`), compositor `page.screenshot` (NOT toDataURL), asserts capture-time camera height = 650 m, measures **upper-center sky mean RGB**. Surfaced BUG-WEBGPU-SKY-GROUNDVIEW-HIGH-ELEVATION-BLACK: WebGPU upper sky `(1,1,1)` black vs WebGL `(75,123,176)` blue, identical with clouds on/off. **The harness template for the deferred sky-shell-coverage fix** — extend it to sample multiple elevations (the existing `probe-ground-view-env` gate only samples the horizon band and is blind to the zenith blackness). |
+| `probe-weather-inspector.mjs` | End-to-end gate for the `WebGPU Weather Inspector` gallery demo: boots the gallery `.html` standalone (see the gallery-demo boot recipe under Cross-backend / Sandcastle), drives real DOM sliders + a preset button, compositor-screenshots, asserts the panel builds + Coverage drives the deck + a preset refreshes the UI + 0 errors. |
 
 ### Post-process / effects
 
@@ -470,6 +483,19 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | `cross-backend-sandcastle-runner.mjs` | Runs Sandcastle demos on both backends, diffs results |
 | `sandcastle-batch-66-runner.mjs` / `-final-runner.mjs` / `-end-of-session-runner.mjs` | Batch-specific Sandcastle runners |
 | `analyze-cross-backend-report.mjs` | Post-process the cross-backend report |
+
+#### Booting a gallery demo standalone in a probe
+
+Gallery `.html` files (`Apps/Sandcastle/gallery/*.html`) reference `../Sandcastle-header.js`, `../load-cesium-es6.js`, and `../templates/bucket.css`, which **404 when served standalone on :8080** (they only exist inside the Sandcastle2 build context, which extracts the `//Sandcastle_Begin…End` block and runs it in a booted iframe). So a demo's own `window.startup` is defined but never auto-called, and `cross-backend-sandcastle-runner.mjs` times out on the canvas wait. To verify a demo in a custom probe, replicate the boot (see `probe-weather-inspector.mjs`):
+
+1. `page.addInitScript` a minimal `window.Sandcastle` stub whose `finishedLoading()` clears `document.body.classList.remove("sandcastle-loading")` + hides `#loadingOverlay` (bucket.css is 404, so do it directly).
+2. `goto` the demo URL, then `page.addStyleTag` the sizing bucket.css normally provides: `#cesiumContainer{position:absolute;top:0;left:0;width:100%;height:100%}`.
+3. `page.evaluate`: `const C = await import("/Build/CesiumUnminified/index.js"); window.Cesium = C; await window.startup(C);` — call the demo's OWN startup with the injected Cesium.
+4. `armWebGPUDevices(page)`, wait for `window.viewer`, let the render loop settle, then **compositor `page.screenshot`** (not toDataURL — see the cross-backend capture pitfalls in the Visual artifact playbook).
+
+Note: `sandcastle-smoke.mjs` loads 3 renderer-pinned WebGPU demos at their standalone URLs successfully without this shim (it patches `GPUAdapter.requestDevice` for the error gate) — those demos happen to bootstrap; use it as the reference for the demos it covers, and the recipe above for new demos that don't.
+
+Gallery demo `.html` is eslint-linted **as a module**: no top-level `"use strict"`, add `/* global Cesium, Sandcastle */`, `eqeqeq` (no `== null`), `prefer-template`. The old committed demos are grandfathered; new ones must pass.
 
 ---
 

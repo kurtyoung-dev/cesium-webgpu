@@ -12799,3 +12799,25 @@ Two bugs caught by running the FULL standing-gate matrix against the post-log-de
 **Verification (Principle 8):** `probe-atmo-lut-no-device-error.mjs` — `skyAtmosphere` ON, steps the sun across a day to force repeated LUT recompute, asserts **0** GPU errors with **no** atmosphere filter (was the `computeTransmittance` error pre-fix). READ `atmo-lut-sky.png` — lit globe + clean blue atmosphere limb halo, no artifact. **Build green** (`gulp build` exit 0, 0 TS errors). The existing cloud probes keep their now-vestigial `/Atmosphere…/` filter (they disable `skyAtmosphere`, and it also masks an unrelated "default layout" class out of V0 scope); new V0+ probes do not filter.
 
 **Files modified:** `WebGPUAtmosphereLUT.ts`, `WebGPUPerformanceManager.ts`. Probe: `probe-atmo-lut-no-device-error.mjs` (new).
+
+## INVESTIGATION (DEFERRED, no fix shipped) — WebGPU sky-atmosphere renders BLACK above the horizon band at ground level (BUG-WEBGPU-SKY-GROUNDVIEW-HIGH-ELEVATION-BLACK) (2026-06-25)
+
+**Symptom:** with a ground-level camera (650 m, looking ~+16° up) and `skyAtmosphere.show=true`, the WebGPU sky renders a thin BLUE band at the horizon and PURE BLACK above it; WebGL renders blue across the whole sky. Surfaced while "confirming" the Weather Inspector demo's grey sky — it is NOT a harness artifact and NOT the clouds.
+
+**Hard evidence (`probe-confirm-inspector-sky.mjs`, compositor `page.screenshot`):** upper-center sky mean RGB — WebGPU clouds-OFF `(1,1,1)`, WebGPU clouds-ON `(1,1,1)` (identical → clouds irrelevant), WebGL `(75,123,176)` blue. Capture-time camera height asserted = 650 m on both backends (the camera IS at ground level when screenshotted; a one-shot diag that fired on the orbital first-frame at 17,190 km was a red herring — gate such logs on `camH < 5000`).
+
+**Causes RULED OUT (each a no-effect build test — ~15 build/probe cycles):**
+
+1. **Clouds** — measured identical sky with `showProceduralClouds` on/off; cloud passthrough (`return sceneColor`) and `cloudAlpha`-viz confirmed clear-sky gaps have alpha 0 (sceneColor passes through).
+2. **near/far z-clipping** — pinned the shell to the far plane (`output.position.z = output.position.w`, the same `clip-z=clip-w` trick `WebGPUEnvironmentRenderer` SUN_SHADER_WGSL uses) → no change.
+3. **face culling** — `cullMode: "none"` → no change.
+4. **fragment discards** — `return magenta` at the very FIRST line of `SkyAtmosphere.wgsl::fragmentMain` (before any `discard`) → still black above the horizon band.
+5. **FOV / projection / multi-frustum** — ground-level diag showed `isOffCenter=true, off.near=0.1, off.far=1e10, currentFrustum=0,1e10` (**SINGLE frustum**, not multi), `proj0=1.7321 / proj5=2.3094` (a correct symmetric ~47° vFOV perspective). The earlier "rendered on the far multi-frustum band, overhead fragments clipped by the band near plane" theory was **WRONG**.
+
+**Where it stands (the smoking gun):** earliest-possible magenta is STILL black above the horizon band → **no shell triangle rasterizes to the upper-sky pixels at all, despite a geometrically-correct full-FOV projection.** The shell mesh is a full earth-centered ellipsoid (`generateAtmosphereGeometry`, radii × 1.025 ≈ 160 km), the camera at 650 m is well inside it, and reasoning says the overhead inner surface should cover the upper hemisphere — yet it doesn't project there. Remaining hypotheses (untested, need GPU-level inspection): RTE precision on the overhead vertices; a scissor/viewport limiting the draw; geometry winding interacting with this specific view; or a separate clip plane. **Possible broader clue:** the WebGPU globe LIMB looks curved/orbital at 650 m while WebGL is flat-ground — the issue may not be sky-specific (the globe transform at this view may also be off), or it's a thumbnail misread.
+
+**Why the existing gate missed it:** `probe-ground-view-env.mjs` (Batch 247) reports ground-sky brightness PARITY (0.99×) because it measures the **top sky band near the horizon** — which IS blue on WebGPU. It does not sample the high-elevation/zenith sky, so the black upper sky slips through. **Any real fix must extend that probe to measure high-elevation sky, not just the horizon band.**
+
+**DEFERRED — needs RenderDoc / GPU frame capture** to inspect the actual transformed shell vertex positions (why correct-looking geometry doesn't rasterize above the horizon). Build-and-probe iteration cannot see this. Engine fully reverted to a clean baseline — **no fix shipped, no regression.** Secondary parity nits found but NOT the cause (don't fix the black): `WebGPUSkyAtmosphereRenderer.js:71` `DEFAULT_RAYLEIGH_COEFFICIENT` blue `22.4e-6` should be `28.4e-6`; `:73-74` scale heights `8500/1200` should be `10000/3200`; `GlobeTerrain.wgsl` `computeAtmosphereColor` fallback (~L2335) lacks `* atmosphereLightIntensity`.
+
+**Files modified:** none (all attempts reverted). Probe: `probe-confirm-inspector-sky.mjs` (committed — `RENDERER=webgl|webgpu`, `CLOUDS=on|off`, capture-time camH assert, upper-center sky RGB). Tooling lesson, below, folded into DEBUGGING_GUIDE.
