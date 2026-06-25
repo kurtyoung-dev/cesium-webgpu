@@ -51,9 +51,12 @@ WGSL struct and the JS packer move **byte-identically**. vec3 fields start on
 | 68–71 | `weatherTexBounds` (vec4) | W-P1 | unchanged |
 | 72 | `phaseG1` (fwd-lobe g) | **W1** | was `_pad4` lane 0 |
 | 73 | `ambientIntensity` | **W2** | pad lane |
-| 74–75 | `curlAmplitude`, `curlFrequency` | **W9** | pad lanes |
-| 76 | `frameCounter` (jitter/temporal) | **W8** | claims `_padA` lane 0 (reconciliation) |
-| 77–79 | `_padA` reserve | — | aligned reserve |
+| 74 | `qualityFlags` (tier bitfield) | **V1** (C3 v2) | was `_pad4b`; **ratifies D-2** |
+| 75 | `curlAmplitude` | **V8** (C3 v2; was W9) | was `_pad4c` |
+| 76 | `frameCounter` (jitter/temporal) | **V6** (C3 v2; was W8) | `_padA` lane 0 |
+| 77 | `curlFrequency` | **V8** (C3 v2; was W9) | `_padA` lane 1 |
+| 78 | `lightSampleScale` | **V5** (C3 v2) | `_padA` lane 2 |
+| 79 | `_padA.w` reserve | — | aligned reserve |
 | 80–83 | `skyAmbientColor` (vec3 + pad) | **W2** | new vec4 slot |
 | 84–87 | `groundAmbientColor` (vec3 + pad) | **W2** | new vec4 slot |
 | 88–91 | `sunLightColor` (vec3) + `aerialStrength` (w) | **W3 / W4** | W3 rgb, W4 .w |

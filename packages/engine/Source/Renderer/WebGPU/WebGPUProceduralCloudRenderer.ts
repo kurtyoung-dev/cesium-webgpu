@@ -25,6 +25,10 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import {
+  resolveCloudPreset,
+  CLOUD_QF_OCTAVES_SHIFT,
+} from "./WebGPUCloudTierPresets.js";
 
 // Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
 const CLOUD_UNIFORM_FLOATS = 96; // must match CloudUniforms struct in WGSL
@@ -420,13 +424,20 @@ export function executeProceduralClouds(
     cloudQuality?: number;
   };
   const cameraHeightM = frameState.camera?.positionCartographic?.height ?? 0;
-  const qualityResolved = resolveCloudQuality({
+  const qualityInputs = {
     preset: globeForQuality.cloudVolumetricQuality,
     rawCloudQuality: globeForQuality.cloudQuality,
     cameraHeightMeters: cameraHeightM,
     enableAltitudeMeters: atmoClouds?.volumetricEnableAltitude ?? 50_000,
     disableAltitudeMeters: atmoClouds?.volumetricDisableAltitude ?? 100_000,
-  });
+  };
+  // maxSteps/lightSteps stay on the legacy resolver verbatim (byte-identity).
+  const qualityResolved = resolveCloudQuality(qualityInputs);
+  // V1 — tier preset for the qualityFlags@74 lane. No shader reads qualityFlags
+  // yet (inert spine), so this is byte-identical; feature batches make the WGSL
+  // consume each bit in turn (V3 noiseSource, V5 octaves, V6 jitter, V9 halfRes,
+  // V10 temporal, V11 profile).
+  const cloudPreset = resolveCloudPreset(qualityInputs);
   data[offset++] = qualityResolved.maxSteps;
   data[offset++] = qualityResolved.lightSteps;
   data[offset++] = globe.cloudDensity ?? 0.3;
@@ -476,7 +487,13 @@ export function executeProceduralClouds(
   data[offset++] = 0.85; // 72 phaseG1
   // 73 — W2 ambient intensity (sky/ground fill on the shadow side).
   data[offset++] = 1.5; // 73 ambientIntensity
-  data[offset++] = 0; // 74 reserved (W9)
+  // 74 — V1 qualityFlags bitfield. Feature bits (noiseSource/halfRes/temporal/
+  // jitter/profile) stay 0 until their batch makes the WGSL read them; the
+  // octaves bits carry the preset value but the live march still hardcodes its
+  // 3-octave loop, so V1 is byte-identical. See WebGPUCloudTierPresets.
+  data[offset++] =
+    (Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
+    CLOUD_QF_OCTAVES_SHIFT; // 74 qualityFlags
   data[offset++] = 0; // 75 reserved (W9)
   data[offset++] = 0; // 76 reserved (W8 frameCounter)
   data[offset++] = 0; // 77 reserved

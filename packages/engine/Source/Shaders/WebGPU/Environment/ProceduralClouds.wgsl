@@ -58,8 +58,8 @@ struct CloudUniforms {
   // 16-byte alignment and would jump to float 76, breaking the packer lock.
   phaseG1: f32,                  // 72 — W1 dual-lobe forward-scatter g (silver lining)
   ambientIntensity: f32,         // 73 — W2 sky/ground ambient intensity
-  _pad4b: f32,                   // 74 — reserved (W9 curlAmplitude)
-  _pad4c: f32,                   // 75 — reserved (W9 curlFrequency)
+  qualityFlags: f32,             // 74 — V1 tier bitfield (read via u32(); no path reads it yet)
+  _pad4c: f32,                   // 75 — reserved (V8 curlAmplitude)
   _padA: vec4<f32>,              // 76-79 — reserved (W8 frameCounter@76)
   skyAmbientColor: vec3<f32>,    // 80-82 — W2 blue-sky ambient (lights cloud tops)
   _padB: f32,                    // 83
@@ -91,6 +91,16 @@ const PI: f32 = 3.14159265358979;
 // against sunIntensity~10 + the dual-lobe forward peak so the silver lining is a
 // gradient, not a white-out. (A future batch may promote this to a uniform.)
 const CLOUD_EXPOSURE: f32 = 0.22;
+
+// V1 — `qualityFlags`@74 bit layout (declared; no path reads them yet — feature
+// batches wire each: V3 noiseSource, V9 halfRes, V10 temporal, V6 jitter, V5
+// octaves, V11 profile). Unpack with `u32(cloud.qualityFlags)`.
+const QF_NOISE_BAKED: u32 = 1u;     // bit 0
+const QF_HALF_RES: u32 = 2u;        // bit 1
+const QF_TEMPORAL: u32 = 4u;        // bit 2
+const QF_JITTER: u32 = 8u;          // bit 3
+const QF_OCTAVES_SHIFT: u32 = 4u;   // bits 4-6
+const QF_PROFILE_ON: u32 = 128u;    // bit 7
 
 // ─── Full-screen triangle ───
 @vertex
