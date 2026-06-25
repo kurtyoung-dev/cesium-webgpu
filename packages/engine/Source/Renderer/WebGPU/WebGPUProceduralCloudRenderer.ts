@@ -29,6 +29,8 @@ import {
   resolveCloudPreset,
   CLOUD_QF_OCTAVES_SHIFT,
 } from "./WebGPUCloudTierPresets.js";
+import { buildCloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
+import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 
 // Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
 const CLOUD_UNIFORM_FLOATS = 96; // must match CloudUniforms struct in WGSL
@@ -53,6 +55,12 @@ export interface CloudCache {
   weatherFallbackView: GPUTextureView | null; // 1×1 white, bound when disabled
   weatherSampler: GPUSampler | null;
   weatherFilled: boolean; // procedural fill uploaded once
+  // V2 — 3D noise bake (bound at 6/7/8; INERT until V3 samples it).
+  noise: CloudNoiseResources | null;
+  noiseBaked: boolean;
+  noiseFallbackTexture: GPUTexture | null;
+  noiseFallbackView: GPUTextureView | null; // 1×1×1 white 3D, bound until baked
+  noiseFallbackSampler: GPUSampler | null;
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -70,6 +78,11 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       weatherFallbackView: null,
       weatherSampler: null,
       weatherFilled: false,
+      noise: null,
+      noiseBaked: false,
+      noiseFallbackTexture: null,
+      noiseFallbackView: null,
+      noiseFallbackSampler: null,
     };
   }
   return context._cloudCache;
@@ -198,6 +211,64 @@ function ensureWeatherView(
   return cache.weatherView!;
 }
 
+// ─── V2 — 3D noise bake ───
+// Ensure the shape/detail noise textures are baked ONCE and return the views to
+// bind at 6/7/8. INERT in V2: the bind group must supply valid 3D views (the BGL
+// declares them), but the shader keeps `noiseSource = 0` and never samples them,
+// so the live march produces every pixel → byte-identical. A 1×1×1 white 3D
+// fallback keeps the bind group valid if the bake is unavailable. V3 flips
+// `cloudDensity`/`cloudBaseDensity` to sample these.
+function ensureNoiseBaked(
+  device: GPUDevice,
+  cache: CloudCache,
+): {
+  shapeView: GPUTextureView;
+  detailView: GPUTextureView;
+  sampler: GPUSampler;
+} {
+  if (!cache.noiseFallbackView) {
+    const fb = device.createTexture({
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: "rgba8unorm",
+      dimension: "3d",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      label: "CloudNoise Fallback (1x1x1 white)",
+    });
+    device.queue.writeTexture(
+      { texture: fb },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    cache.noiseFallbackTexture = fb;
+    cache.noiseFallbackView = fb.createView({ dimension: "3d" });
+    cache.noiseFallbackSampler = device.createSampler({
+      label: "CloudNoise Fallback Sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+    });
+  }
+  if (!cache.noiseBaked) {
+    const res = buildCloudNoiseResources(device, 128, 32);
+    if (res) {
+      cache.noise = res;
+      cache.noiseBaked = true;
+    }
+  }
+  if (cache.noiseBaked && cache.noise) {
+    return {
+      shapeView: cache.noise.shapeSampleView,
+      detailView: cache.noise.detailSampleView,
+      sampler: cache.noise.sampler3d,
+    };
+  }
+  return {
+    shapeView: cache.noiseFallbackView!,
+    detailView: cache.noiseFallbackView!,
+    sampler: cache.noiseFallbackSampler!,
+  };
+}
+
 function initializeCloudPipeline(
   device: GPUDevice,
   cache: CloudCache,
@@ -218,6 +289,11 @@ function initializeCloudPipeline(
     // Weather Phase 1 — weather map (2d-array depth-1) + its sampler.
     texture(4, Stage.FRAGMENT, { viewDimension: "2d-array" }),
     sampler(5, Stage.FRAGMENT),
+    // V2 — 3D noise textures (shape + detail) + sampler. Bound but NOT sampled
+    // until V3 (noiseSource stays 0); the live march still produces every pixel.
+    texture(6, Stage.FRAGMENT, { viewDimension: "3d" }),
+    texture(7, Stage.FRAGMENT, { viewDimension: "3d" }),
+    sampler(8, Stage.FRAGMENT),
   ]);
 
   const pipelineLayout = device.createPipelineLayout({
@@ -546,6 +622,9 @@ export function executeProceduralClouds(
   // Weather Phase 1 — resolve the weather view (procedural map when enabled,
   // 1×1 white fallback otherwise).
   const weatherView = ensureWeatherView(device, cache, weatherEnabled);
+  // V2 — bake (once) + resolve the 3D noise views to bind at 6/7/8. INERT until
+  // V3 samples them (noiseSource stays 0 → byte-identical).
+  const noise = ensureNoiseBaked(device, cache);
 
   // Create bind group
   const bindGroup = device.createBindGroup({
@@ -557,6 +636,9 @@ export function executeProceduralClouds(
       { binding: 3, resource: { buffer: cache.uniformBuffer! } },
       { binding: 4, resource: weatherView },
       { binding: 5, resource: cache.weatherSampler! },
+      { binding: 6, resource: noise.shapeView },
+      { binding: 7, resource: noise.detailView },
+      { binding: 8, resource: noise.sampler },
     ],
   });
 

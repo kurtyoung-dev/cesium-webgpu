@@ -80,6 +80,12 @@ struct CloudUniforms {
 // (Phase 2) can add deck layers without changing the binding.
 @group(0) @binding(4) var weatherTex: texture_2d_array<f32>;
 @group(0) @binding(5) var weatherSampler: sampler;
+// V2 — baked 3D noise (shape 128³ + detail 32³) + sampler. DECLARED but NOT
+// sampled yet (no path reads them → byte-identical); V3 switches cloudDensity /
+// cloudBaseDensity to sample these instead of the live fbmNoise/worleyF1.
+@group(0) @binding(6) var cloudShapeTex: texture_3d<f32>;
+@group(0) @binding(7) var cloudDetailTex: texture_3d<f32>;
+@group(0) @binding(8) var cloudNoiseSampler: sampler;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
