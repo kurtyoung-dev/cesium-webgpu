@@ -144,6 +144,7 @@ Allocation (all offsets are float indices; ×4 = byte offset):
 ---
 
 ### W2 — Sky-ambient gradient + ground bounce
+- **EXECUTION NOTE (SHIPPED Batch 392):** implemented as specced (CloudUniforms 80→88: ambientIntensity@73, skyAmbientColor@80-82, groundAmbientColor@84-86; per-step ambient folded into the tone-mapped radiance; old hardcoded ambient deleted). Probe metric adjusted: the camera frames the layer from BELOW (sees cloud undersides = ground-bounce), so the blue-top-vs-warm-bottom row gradient isn't in frame — verified the core (shadow p10 lifted to 0.298 off near-black + lit-to-shadow range 0.263 preserved) numerically, the blue/warm gradient by PNG read. ambientIntensity=1.5.
 - Goal: Add a height-fraction ambient term (blue sky on tops, ground-albedo on bottoms) so the shadow side of clouds is no longer near-black.
 - Bundled work (single commit):
   - WGSL: add `skyAmbientColor`, `groundAmbientColor` (vec3 each) + `ambientIntensity` (f32) to struct; add an ambient lerp by `heightFraction` inside the march accumulation; replace the existing hardcoded `ambientColor` block (lines 396-402) with uniform-driven values.

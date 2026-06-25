@@ -27,7 +27,7 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 
 // Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
-const CLOUD_UNIFORM_FLOATS = 80; // must match CloudUniforms struct in WGSL
+const CLOUD_UNIFORM_FLOATS = 88; // must match CloudUniforms struct in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -474,8 +474,24 @@ export function executeProceduralClouds(
   // 72 — W1 forward-scatter g. Sharper than the old hardcoded 0.8 for a stronger
   // silver lining toward the sun (HG forward peak at g=0.85 is ~1.8x g=0.8).
   data[offset++] = 0.85; // 72 phaseG1
-  // 73-79 reserved (multi-deck etc.)
-  for (let i = 73; i < CLOUD_UNIFORM_FLOATS; i++) data[offset++] = 0;
+  // 73 — W2 ambient intensity (sky/ground fill on the shadow side).
+  data[offset++] = 1.5; // 73 ambientIntensity
+  data[offset++] = 0; // 74 reserved (W9)
+  data[offset++] = 0; // 75 reserved (W9)
+  data[offset++] = 0; // 76 reserved (W8 frameCounter)
+  data[offset++] = 0; // 77 reserved
+  data[offset++] = 0; // 78 reserved
+  data[offset++] = 0; // 79 reserved
+  // 80-83 — W2 sky ambient (blue, lights cloud tops).
+  data[offset++] = 0.5; // 80
+  data[offset++] = 0.65; // 81
+  data[offset++] = 0.95; // 82
+  data[offset++] = 0; // 83 pad
+  // 84-87 — W2 ground-bounce ambient (warm grey, lights cloud bottoms).
+  data[offset++] = 0.35; // 84
+  data[offset++] = 0.34; // 85
+  data[offset++] = 0.3; // 86
+  data[offset++] = 0; // 87 pad
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

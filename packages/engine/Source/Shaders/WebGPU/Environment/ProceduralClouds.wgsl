@@ -57,9 +57,14 @@ struct CloudUniforms {
   // NOTE: scalar pads (NOT a vec3) so 72-75 stay byte-exact — a vec3 here has
   // 16-byte alignment and would jump to float 76, breaking the packer lock.
   phaseG1: f32,                  // 72 — W1 dual-lobe forward-scatter g (silver lining)
-  _pad4a: f32,                   // 73 — reserved (W2 ambientIntensity)
+  ambientIntensity: f32,         // 73 — W2 sky/ground ambient intensity
   _pad4b: f32,                   // 74 — reserved (W9 curlAmplitude)
   _pad4c: f32,                   // 75 — reserved (W9 curlFrequency)
+  _padA: vec4<f32>,              // 76-79 — reserved (W8 frameCounter@76)
+  skyAmbientColor: vec3<f32>,    // 80-82 — W2 blue-sky ambient (lights cloud tops)
+  _padB: f32,                    // 83
+  groundAmbientColor: vec3<f32>, // 84-86 — W2 ground-bounce ambient (lights cloud bottoms)
+  _padC: f32,                    // 87
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -399,20 +404,18 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let sampleTransmittance = exp(-density * stepSize * cloud.absorptionCoeff);
     let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
 
-    weightedColor += cloudColor * scatteredLight * sampleWeight;
+    // W2 — sky-ambient gradient + ground bounce. The blue sky lights the cloud
+    // TOPS (heightFraction -> 1) and the warm ground bounce lights the BOTTOMS
+    // (-> 0), so the anti-sun shadow side reads as soft grey-blue instead of
+    // near-black. Part of the HDR radiance, so it tone-maps with the sun term.
+    let ambient = mix(cloud.groundAmbientColor, cloud.skyAmbientColor, heightFraction)
+                * cloud.ambientIntensity;
+
+    weightedColor += (cloudColor * scatteredLight + ambient) * sampleWeight;
     lightEnergy += scatteredLight * sampleWeight;
     totalDensity += density * stepSize;
     transmittance *= sampleTransmittance;
   }
-
-  // Ambient light contribution (sky color bleeding through)
-  let ambientColor = mix(
-    vec3<f32>(0.4, 0.5, 0.7),  // blue sky ambient
-    vec3<f32>(0.9, 0.5, 0.2),  // sunset ambient
-    pow(max(1.0 - sunDir.y, 0.0), 3.0)
-  );
-  let ambientContribution = ambientColor * (1.0 - transmittance) * 0.15;
-  weightedColor += ambientContribution;
 
   // W1 — HDR tone-map the accumulated cloud radiance before compositing. The
   // dual-lobe phase peaks ~6x at the forward lobe and is multiplied by
