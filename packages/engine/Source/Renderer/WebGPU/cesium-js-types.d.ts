@@ -1049,6 +1049,13 @@ interface CesiumGlobe {
   cloudWindDirection?: CesiumCartesian2;
   cloudWeatherMap?: boolean;
   cloudAerialStrength?: number;
+  // Live-tweakable appearance dials (undefined → renderer default applies).
+  cloudSilverLiningIntensity?: number;
+  cloudPhaseForwardG?: number;
+  cloudPhaseBackG?: number;
+  cloudPhaseBlend?: number;
+  cloudAmbientIntensity?: number;
+  cloudErosionStrength?: number;
 }
 
 // ─── FrustumCommands ─────────────────────────────────────────────────────

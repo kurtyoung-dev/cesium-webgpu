@@ -532,7 +532,8 @@ export function executeProceduralClouds(
   data[offset++] = windDir?.x ?? 0.7;
   data[offset++] = windDir?.y ?? 0.3;
   data[offset++] = globe.cloudWindSpeed ?? 15.0;
-  data[offset++] = 0.8; // silverLiningIntensity
+  // Config — silver-lining intensity (live via atmosphericConditions.clouds.silverLining).
+  data[offset++] = globe.cloudSilverLiningIntensity ?? 0.8; // silverLiningIntensity
 
   // cloudBaseColor (vec3 + pad)
   data[offset++] = 0.65;
@@ -558,9 +559,10 @@ export function executeProceduralClouds(
   // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
   // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
   data[offset++] = (globe.cloudCoverage ?? 0.5) * 2.0;
-  // 66/67 — W1 dual-lobe phase: back-scatter g + forward/back blend.
-  data[offset++] = -0.3; // 66 phaseG2
-  data[offset++] = 0.7; // 67 phaseBlend
+  // 66/67 — W1 dual-lobe phase: back-scatter g + forward/back blend. Config —
+  // live via atmosphericConditions.clouds.phaseBackG / .phaseBlend.
+  data[offset++] = globe.cloudPhaseBackG ?? -0.3; // 66 phaseG2
+  data[offset++] = globe.cloudPhaseBlend ?? 0.7; // 67 phaseBlend
   // 68-71 weatherTexBounds — global equirect (radians): minLon, minLat, lonRange, latRange.
   data[offset++] = -Math.PI;
   data[offset++] = -Math.PI / 2.0;
@@ -568,9 +570,9 @@ export function executeProceduralClouds(
   data[offset++] = Math.PI;
   // 72 — W1 forward-scatter g. Sharper than the old hardcoded 0.8 for a stronger
   // silver lining toward the sun (HG forward peak at g=0.85 is ~1.8x g=0.8).
-  data[offset++] = 0.85; // 72 phaseG1
-  // 73 — W2 ambient intensity (sky/ground fill on the shadow side).
-  data[offset++] = 1.5; // 73 ambientIntensity
+  data[offset++] = globe.cloudPhaseForwardG ?? 0.85; // 72 phaseG1 (config: .phaseForwardG)
+  // 73 — W2 ambient intensity (sky/ground fill on the shadow side; config: .ambientIntensity).
+  data[offset++] = globe.cloudAmbientIntensity ?? 1.5; // 73 ambientIntensity
   // 74 — qualityFlags bitfield. V3 sets bit 0 (noiseSource) when the tier wants
   // the baked 3D-texture core AND the bake actually succeeded — SELF-HEALING:
   // if the bake is unavailable (cache.noise null), the bit stays 0 and the WGSL
@@ -597,7 +599,9 @@ export function executeProceduralClouds(
       : 0.5; // 78 lightSampleScale
   // 79 — V4 mean-preserving erosion floor (BAKED path only; the live march
   // ignores it). Low tier = fibrous (0.10), high/cinematic = puffy (0.18).
-  data[offset++] = cloudPreset.tier <= 1 ? 0.1 : 0.18; // 79 erosionStrength
+  // Config — explicit override wins; else the tier default (low fibrous / high puffy).
+  data[offset++] =
+    globe.cloudErosionStrength ?? (cloudPreset.tier <= 1 ? 0.1 : 0.18); // 79 erosionStrength
   // 80-83 — W2 sky ambient (blue, lights cloud tops).
   data[offset++] = 0.5; // 80
   data[offset++] = 0.65; // 81

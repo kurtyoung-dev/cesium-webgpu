@@ -828,6 +828,72 @@ function buildClouds(globe) {
         globe.cloudVolumetricQuality = v;
       },
     },
+    // ── Live appearance dials (weather-configurability surface) ──
+    // Each proxies to a `globe.cloud*` field; setting it re-packs next frame
+    // (no rebuild). `undefined` means "use the renderer's built-in default".
+    aerialStrength: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudAerialStrength;
+      },
+      set: function (v) {
+        globe.cloudAerialStrength = v;
+      },
+    },
+    silverLining: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudSilverLiningIntensity;
+      },
+      set: function (v) {
+        globe.cloudSilverLiningIntensity = v;
+      },
+    },
+    phaseForwardG: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudPhaseForwardG;
+      },
+      set: function (v) {
+        globe.cloudPhaseForwardG = v;
+      },
+    },
+    phaseBackG: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudPhaseBackG;
+      },
+      set: function (v) {
+        globe.cloudPhaseBackG = v;
+      },
+    },
+    phaseBlend: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudPhaseBlend;
+      },
+      set: function (v) {
+        globe.cloudPhaseBlend = v;
+      },
+    },
+    ambientIntensity: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudAmbientIntensity;
+      },
+      set: function (v) {
+        globe.cloudAmbientIntensity = v;
+      },
+    },
+    erosionStrength: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudErosionStrength;
+      },
+      set: function (v) {
+        globe.cloudErosionStrength = v;
+      },
+    },
   });
   return leaf;
 }

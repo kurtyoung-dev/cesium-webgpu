@@ -457,6 +457,42 @@ class Globe {
      */
     this.cloudAerialStrength = 1.0;
 
+    // ── Live-tweakable cloud appearance dials (WebGPU procedural clouds) ──
+    // Each is `undefined` by default so the renderer's built-in value applies;
+    // set any of them (directly, or via `scene.globe.atmosphericConditions.clouds.*`)
+    // to override live — no rebuild. Part of the weather-configurability surface.
+
+    /**
+     * Silver-lining (forward-scatter rim) intensity. Higher = brighter sun-facing
+     * cloud edges. Renderer default 0.8.
+     * @type {number|undefined}
+     */
+    this.cloudSilverLiningIntensity = undefined;
+
+    /**
+     * Dual-lobe phase: forward-scatter g (silver lining sharpness, ~0.85),
+     * back-scatter g (anti-sun fill, ~-0.3), and the forward/back blend (~0.7).
+     * @type {number|undefined}
+     */
+    this.cloudPhaseForwardG = undefined;
+    /** @type {number|undefined} */
+    this.cloudPhaseBackG = undefined;
+    /** @type {number|undefined} */
+    this.cloudPhaseBlend = undefined;
+
+    /**
+     * Sky/ground ambient fill intensity on the shadow side. Renderer default 1.5.
+     * @type {number|undefined}
+     */
+    this.cloudAmbientIntensity = undefined;
+
+    /**
+     * Edge-erosion strength (detail carving). Overrides the per-tier default
+     * (low ≈ 0.10 fibrous, high ≈ 0.18 puffy) when set.
+     * @type {number|undefined}
+     */
+    this.cloudErosionStrength = undefined;
+
     /**
      * Enables the data-driven weather map for the procedural volumetric clouds
      * (WebGPU only — keystone of the weather-recreation roadmap). When
