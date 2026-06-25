@@ -589,7 +589,12 @@ export function executeProceduralClouds(
   data[offset++] = 0; // 75 reserved (V8 curlAmplitude)
   data[offset++] = 0; // 76 reserved (V6 frameCounter)
   data[offset++] = 0; // 77 reserved (V8 curlFrequency)
-  data[offset++] = 0; // 78 reserved (V5 lightSampleScale)
+  // 78 — V5 light-march step scale. LIVE/escape + T3 keep 1.0 (full light march,
+  // unchanged); the lower baked tiers march at 0.5 for cheaper shadowing.
+  data[offset++] =
+    cloudPreset.noiseSource === CloudNoiseSource.LIVE || cloudPreset.tier >= 3
+      ? 1.0
+      : 0.5; // 78 lightSampleScale
   // 79 — V4 mean-preserving erosion floor (BAKED path only; the live march
   // ignores it). Low tier = fibrous (0.10), high/cinematic = puffy (0.18).
   data[offset++] = cloudPreset.tier <= 1 ? 0.1 : 0.18; // 79 erosionStrength

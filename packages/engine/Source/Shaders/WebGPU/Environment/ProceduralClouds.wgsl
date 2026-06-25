@@ -367,7 +367,11 @@ fn cloudPhase(cosTheta: f32) -> f32 {
 // ─── Light march: compute optical depth toward sun ───
 fn lightMarch(pos: vec3<f32>, heightFraction: f32) -> f32 {
   let sunDir = normalize(cloud.sunDirection);
-  let steps = i32(cloud.lightSteps);
+  // V5 — scale the light-march step count by the tier's lightSampleScale (T3 = 1.0
+  // → unchanged; lower tiers march fewer, bigger steps for ~the same optical depth
+  // at lower cost). lightSteps is the EXPONENTIAL cost knob, so this is the cheap
+  // lever for the low tiers.
+  let steps = max(1, i32(cloud.lightSteps * cloud.lightSampleScale));
   let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
   let outerR = cloud.planetRadius + cloud.cloudLayerTop;
   let layerThickness = outerR - innerR;
@@ -400,20 +404,38 @@ fn beerPowder(opticalDepth: f32, powder: f32) -> f32 {
 // is NORMALIZED by the total contribution so a THIN cloud (every octave ≈ 1)
 // returns ≈ 1.0 — this CANNOT over-brighten (the analogue of the 379a
 // over-densification failure); it only lifts the dark deep-cloud tail.
-fn multiScatterLight(opticalDepth: f32, powder: f32) -> f32 {
+// V5 — Frostbite art-directable multiple scattering. N octaves with GEOMETRIC
+// decay of scattering (a^i), extinction (b^i), and phase eccentricity (c^i), with
+// the dual-lobe phase FOLDED PER-OCTAVE: deeper octaves are dimmer, less
+// extinguished (so interiors keep a residual glow instead of going black), AND
+// more ISOTROPIC (the phase peak relaxes) — the soft lit-from-within look. The
+// returned value already includes the phase (the caller no longer multiplies by
+// it). Normalized by the scattering sum so a THIN cloud returns ≈ the phase
+// (cannot over-brighten). `octaves` is tier-driven (qualityFlags bits 4-6).
+fn multiScatterLight(opticalDepth: f32, cosTheta: f32, powder: f32, octaves: i32) -> f32 {
+  let a = 0.5;  // MS_SCATTER_DECAY  — contribution per octave
+  let b = 0.5;  // MS_EXTINCTION_DECAY — extinction per octave
+  let c = 0.85; // MS_PHASE_DECAY — eccentricity per octave (gentle: keeps T3 ≈ prior)
+  let n = max(octaves, 1);
   var luminance: f32 = 0.0;
   var total: f32 = 0.0;
-  var atten: f32 = 1.0;   // extinction multiplier per octave (×0.5 each)
-  var contrib: f32 = 1.0; // contribution per octave (×0.5 each)
-  for (var i: i32 = 0; i < 3; i++) {
-    let beer = exp(-opticalDepth * cloud.absorptionCoeff * atten);
-    let powderEffect = 1.0 - exp(-opticalDepth * cloud.absorptionCoeff * 2.0 * atten);
-    luminance += contrib * mix(beer, beer * powderEffect, powder);
-    total += contrib;
-    atten *= 0.5;
-    contrib *= 0.5;
+  var scat: f32 = 1.0;
+  var ext: f32 = 1.0;
+  var ecc: f32 = 1.0;
+  for (var i: i32 = 0; i < n; i = i + 1) {
+    let beer = exp(-opticalDepth * cloud.absorptionCoeff * ext);
+    let powderEffect = 1.0 - exp(-opticalDepth * cloud.absorptionCoeff * 2.0 * ext);
+    let bp = mix(beer, beer * powderEffect, powder);
+    let ph = mix(hgPhase(cosTheta, cloud.phaseG2 * ecc),
+                 hgPhase(cosTheta, cloud.phaseG1 * ecc),
+                 cloud.phaseBlend);
+    luminance += scat * bp * ph;
+    total += scat;
+    scat = scat * a;
+    ext = ext * b;
+    ecc = ecc * c;
   }
-  return luminance / total;
+  return luminance / max(total, 1e-6);
 }
 
 // ─── Reconstruct world-space ray from UV ───
@@ -474,7 +496,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let steps = i32(cloud.maxSteps);
   let sunDir = normalize(cloud.sunDirection);
   let cosTheta = dot(rayDir, sunDir);
-  let phase = cloudPhase(cosTheta);
+  // V5 — multi-scatter octave count from qualityFlags bits 4-6 (tier-driven:
+  // T1=2, T2/T3=3). The dual-lobe phase is now folded PER-OCTAVE inside
+  // multiScatterLight, so it is no longer applied separately here.
+  let msOctaves = i32((u32(cloud.qualityFlags) >> QF_OCTAVES_SHIFT) & 7u);
   let layerThickness = cloud.cloudLayerTop - cloud.cloudLayerBottom;
 
   // W5 — adaptive coarse→fine march (empty-space skipping). A CHEAP, smooth,
@@ -556,17 +581,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // pocket (full density 0) contributes nothing but keeps us in the fine phase.
     let density = cloudDensity(samplePos, heightFraction);
     if (density > 0.001) {
-      // Light contribution at this point — 379c cheap multi-scatter (was a single
-      // Beer-Powder octave) so deep cloud interiors keep a soft glow.
+      // Light contribution. V5 — Frostbite multi-scatter octaves with the phase
+      // folded per-octave (softer lit-from-within interiors; deeper octaves more
+      // isotropic) so the returned value already carries the phase.
       let lightOpticalDepth = lightMarch(samplePos, heightFraction);
-      let lightTransmittance = multiScatterLight(lightOpticalDepth, 0.5);
+      let msLight = multiScatterLight(lightOpticalDepth, cosTheta, 0.5, msOctaves);
 
       // Silver lining: enhanced scattering at cloud edges
       let silverLining = cloud.silverLiningIntensity
                        * pow(clamp(1.0 - density * 3.0, 0.0, 1.0), 2.0);
 
-      let scatteredLight = (lightTransmittance * phase + silverLining)
-                         * cloud.sunIntensity;
+      let scatteredLight = (msLight + silverLining) * cloud.sunIntensity;
 
       // Height-based color gradient (darker base, brighter top)
       let cloudColor = mix(cloud.cloudBaseColor, cloud.cloudTopColor, heightFraction);
