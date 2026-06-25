@@ -105,25 +105,58 @@ around it.
    (impostors, Gaussian splats, neural) — confirm/deny raymarch-with-3D-textures
    as the core; planet-scale LOD (flight-sim / globe engines).
 
-## Decisions pending (after research returns)
+## Research synthesis (all 3 agents in, 2026-06-25 — convergent)
 
-- [ ] Adopt precomputed 3D Perlin-Worley textures as the core density source?
-      (expected: yes — both faster + better-looking)
-- [ ] The tier model: how many tiers, what each changes (step count, render-res
-      scale, temporal on/off, 3D-tex res, light steps). Map to the existing
-      `globe.cloudVolumetricQuality` (`low|medium|high|auto`) dial.
-- [ ] Re-order / re-scope Campaign 3 W6–W14 around the new core (W6 half-res, W7
-      temporal, W8 blue-noise are reconstruction wins that survive the rearchitecture;
-      W9–W11 shape/detail change if the noise moves to textures).
-- [ ] Whether the 3D-texture core is a NEW opt-in "high/ultra" tier alongside the
-      current live-noise march (kept as "low/medium"), or a replacement.
+1. **No architectural pivot.** Raymarch-with-3D-textures on a spherical shell is
+   still the correct core (2024–2026). Gaussian-splat / NeRF / neural are **not**
+   viable for animated, dynamically-lit participating media (no multiple-scatter
+   model). Our shell march is already planet-scale-correct.
+2. **The one change that wins BOTH axes: precomputed 3D noise textures.** Bake a
+   low-freq **128³ RGBA8** Perlin-Worley + Worley "shape" texture and a high-freq
+   **32³ RGBA8** Worley "detail" texture once at init (WGSL compute → `texture_storage_3d`);
+   replace our ~30 live FBM+Worley evals/sample with **one trilinear fetch + a curl
+   offset**. ~8 MB + 0.1 MB. Simultaneously the biggest **perf** win (1 fetch vs N
+   evals) and the biggest **quality** win (true Perlin-Worley vs lumpy value-noise).
+   *This is the headline.*
+3. **Lighting wins (per cost):** energy-conserving analytic in-scatter integration
+   `S_int=(S−S·exp(−σₑds))/σₑ`; **multiple-scattering octaves** (N≈3, geometric
+   a/b/c decay, reuses one light march) — the biggest *visual* realism jump;
+   sun-side-only powder + isotropic floor + ambient sky term.
+4. **Perf/reconstruction (per cost):** half-res + **depth-aware joint-bilateral**
+   upscale (log-space transmittance blend) ~4× (weBIGeo: ~2.25 ms in WebGPU);
+   animated **IGN** ray-start jitter → halve steps; **temporal reprojection**
+   (Schneider 1/16 over 16 frames) with absorption-position motion vectors + wind +
+   neighborhood-clip + ghosting toggle. **Skip froxels**; defer 2D impostors to Ultra.
+5. **Tier model = exactly the directive.** One `quality` enum → preset struct;
+   **Tier 0 = cheap WebGL-parity default**, Tiers 1–3 opt-in volumetric.
 
-## Plan while research runs
+## Decisions (resolved by research)
 
-- **Background:** 3 research agents (above).
-- **Main loop (workflow keeps running):** continue **W6 (half-res cloud pass +
-  bilateral upscale)** — it is a reconstruction win **orthogonal** to the noise
-  representation, so it is valid regardless of the noise-texture decision and is
-  not wasted work.
-- **On research return:** synthesize → update this doc's "Decisions pending" →
-  re-plan the remainder of Campaign 3 around the chosen tier model.
+- ✅ **Adopt the precomputed 3D Perlin-Worley texture core** — unanimous #1, wins
+  quality + perf. Keep the live-noise march as the Tier-0/low fallback so the
+  default is preserved and W5's `cloudBaseDensity` skip-oracle still has a base.
+- ✅ **Tier model: 4 tiers** (Baseline/Low/High/Cinematic), one enum → preset
+  struct, mapped onto the existing `globe.cloudVolumetricQuality`. Knobs:
+  `primarySteps, lightSteps (exponential — keep small low), renderResScale,
+  temporal{updateFraction}, noiseTexRes, light/shadow/reflectionSampleScale,
+  farRepresentation`.
+- ✅ **3D-texture core is a NEW opt-in tier**, not a forced replacement — the
+  live-noise path stays as the cheap tier (zero-regression to W1–W5).
+- ✅ **Re-scoped sequence:** noise-texture core + tier scaffold FIRST (everything
+  gates on them) → reconstruction (half-res/IGN/temporal — W6–W8 survive, refined)
+  → lighting/density (MS octaves, energy-conserving integration, anvil/curl) →
+  far-field/impostor → parity (P) batches. **W9–W11 shape/detail rebase onto the
+  baked textures.**
+
+## Plan (research complete → execution re-plan in flight)
+
+- A **code-grounded planning workflow** (`campaign3v2-cloud-replan`, run
+  `wf_825ad58f-3e8`) is generating the execution-ready packed plan: 5 architects
+  design each workstream grounded in the actual `ProceduralClouds.wgsl` /
+  `WebGPUProceduralCloudRenderer.ts` / `WebGPUVolumetricFogRenderer.ts` / `Globe.js`,
+  a synthesizer orders them by dependency, and an adversarial reviewer checks
+  default-preservation, W1–W5 non-regression, byte-locking, probe-verifiability,
+  and VRAM budget. Output → `QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md`.
+- **W6 (half-res + bilateral) is confirmed** as the first reconstruction batch and
+  survives the rearchitecture intact — with two research refinements baked in
+  (depth-weighted upscale taps, log-space transmittance blend).
