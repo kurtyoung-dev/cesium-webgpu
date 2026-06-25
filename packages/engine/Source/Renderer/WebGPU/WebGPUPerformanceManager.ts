@@ -63,6 +63,7 @@ interface PerformanceManagerContext {
       cacheKey: string,
       source: string,
       entryPoint: string,
+      bindGroupLayouts?: GPUBindGroupLayout[],
     ): GPUComputePipeline | null;
     [key: string]: ((...args: unknown[]) => unknown) | null | string;
   } | null;
@@ -1278,6 +1279,7 @@ export class WebGPUPerformanceManager {
     workgroupsY: number = 1,
     workgroupsZ: number = 1,
     entryPoint: string = "computeMain",
+    bindGroupLayouts?: GPUBindGroupLayout[],
   ): void {
     const computeEngine = this._context.computeEngine;
     if (!computeEngine) return;
@@ -1290,12 +1292,19 @@ export class WebGPUPerformanceManager {
 
     const WebGPUComputeCommand = this._context._computeCommandClass;
 
-    // Use ComputeEngine's pipeline caching via getOrCreatePipeline
+    // Use ComputeEngine's pipeline caching via getOrCreatePipeline. When the
+    // caller supplies explicit bindGroupLayouts (V0 — the atmosphere extended
+    // passes), the pipeline is built with that explicit layout instead of
+    // layout:"auto", so a full bind group with bindings the kernel doesn't
+    // statically use stays valid. The layout is keyed by entryPoint, so the two
+    // extended kernels (which share a layout) cache independently of the
+    // auto-layout LUT kernels.
     const cacheKey = `perfmgr:${label}:${entryPoint}`;
     const pipeline = computeEngine.getOrCreatePipeline(
       cacheKey,
       source,
       entryPoint,
+      bindGroupLayouts,
     );
 
     // Create and dispatch compute pass

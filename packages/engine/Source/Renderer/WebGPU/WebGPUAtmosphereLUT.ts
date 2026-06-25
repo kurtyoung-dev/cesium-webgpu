@@ -64,6 +64,15 @@ export interface AtmosphereLUTResources {
   extendedSampler: GPUSampler | null;
   extendedBindGroupLayout: GPUBindGroupLayout | null;
   extendedBindGroup: GPUBindGroup | null;
+  // V0 — explicit EMPTY group-0 layout + bind group. The extended compute
+  // pipelines must use an explicit pipeline layout (group 0 empty, group 1 = the
+  // full 6-binding extended layout) instead of layout:"auto": auto derives a
+  // SUBSET group-1 layout per kernel (each kernel writes only one of the two
+  // storage textures), which is incompatible with the full 6-binding
+  // extendedBindGroup → the "SkyAtmosphere LUT dispatch" invalid-command-buffer
+  // device error. Providing the explicit layout makes the 6-binding group valid.
+  emptyGroup0BindGroupLayout: GPUBindGroupLayout | null;
+  emptyGroup0BindGroup: GPUBindGroup | null;
   width: number;
   inscatterHeight: number;
   transmittanceHeight: number;
@@ -90,6 +99,7 @@ export interface AtmosphereLUTHost {
     workgroupCountY: number,
     workgroupCountZ: number,
     entryPoint?: string,
+    bindGroupLayouts?: GPUBindGroupLayout[],
   ): void;
 }
 
@@ -205,6 +215,8 @@ export function ensureAtmosphereLUTResources(
     extendedSampler: null,
     extendedBindGroupLayout: null,
     extendedBindGroup: null,
+    emptyGroup0BindGroupLayout: null,
+    emptyGroup0BindGroup: null,
     width,
     transmittanceHeight,
     inscatterHeight,
@@ -316,6 +328,11 @@ export function dispatchAtmosphereLUT(
   const wgsT = Math.ceil(lut.transmittanceHeight / 16);
   const wgsI = Math.ceil(lut.inscatterHeight / 16);
 
+  // V0 — build the base LUT pipelines with the EXPLICIT group-0 layout instead of
+  // layout:"auto". The sun/moon bind groups are created from `AtmosphereLUT_BGL`;
+  // an auto-layout pipeline derives its own (different) BGL and rejects them
+  // ("bind group ... was not created by the pipeline" → invalid command buffer).
+  const baseLayouts = [lut.bindGroupLayout];
   host.dispatchCompute(
     encoder,
     ComputeTaskType.ATMOSPHERE_LUT,
@@ -324,6 +341,7 @@ export function dispatchAtmosphereLUT(
     wgsT,
     1,
     "computeTransmittance",
+    baseLayouts,
   );
   host.dispatchCompute(
     encoder,
@@ -333,6 +351,7 @@ export function dispatchAtmosphereLUT(
     wgsI,
     1,
     "computeInscatter",
+    baseLayouts,
   );
 
   return true;
@@ -405,29 +424,58 @@ export function dispatchAtmosphereExtendedLUT(
     });
   }
 
+  // V0 — empty group-0 layout + bind group so the pipeline can be built with an
+  // EXPLICIT layout [emptyGroup0, extended] (group 1 = the full 6-binding
+  // extended layout). Without this the kernels build layout:"auto", which derives
+  // a per-kernel SUBSET group-1 layout (each writes only one storage texture) and
+  // rejects the full 6-binding extendedBindGroup at dispatch.
+  if (!lut.emptyGroup0BindGroupLayout) {
+    lut.emptyGroup0BindGroupLayout = device.createBindGroupLayout({
+      label: "AtmosphereLUT_EmptyGroup0_BGL",
+      entries: [],
+    });
+  }
+  if (!lut.emptyGroup0BindGroup) {
+    lut.emptyGroup0BindGroup = device.createBindGroup({
+      label: "AtmosphereLUT_EmptyGroup0_BG",
+      layout: lut.emptyGroup0BindGroupLayout,
+      entries: [],
+    });
+  }
+
   const wgsX = Math.ceil(lut.width / 16);
   const wgsMS = Math.ceil(lut.inscatterHeight / 16);
   const wgsIrr = Math.ceil(lut.transmittanceHeight / 16);
 
-  // Both extended kernels bind their resources at group index 1 (group 0 is
-  // unused → the auto layout has no group-0 entry to satisfy).
+  // Both extended kernels bind their resources at group index 1; group 0 is an
+  // empty bind group satisfying the explicit pipeline layout.
+  const extendedLayouts = [
+    lut.emptyGroup0BindGroupLayout,
+    lut.extendedBindGroupLayout,
+  ];
+  const extendedGroups = [
+    { index: 0, bindGroup: lut.emptyGroup0BindGroup },
+    { index: 1, bindGroup: lut.extendedBindGroup },
+  ];
   host.dispatchCompute(
     encoder,
     ComputeTaskType.ATMOSPHERE_LUT,
-    [{ index: 1, bindGroup: lut.extendedBindGroup }],
+    extendedGroups,
     wgsX,
     wgsMS,
     1,
     "computeMultipleScattering",
+    extendedLayouts,
   );
   host.dispatchCompute(
     encoder,
     ComputeTaskType.ATMOSPHERE_LUT,
-    [{ index: 1, bindGroup: lut.extendedBindGroup }],
+    extendedGroups,
     wgsX,
     wgsIrr,
     1,
     "computeIrradiance",
+    extendedLayouts,
   );
 
   return true;
