@@ -51,9 +51,15 @@ struct CloudUniforms {
   // packer in WebGPUProceduralCloudRenderer.ts.
   weatherMapEnabled: f32,        // 64 — >0.5 → sample the weather map per position
   weatherStrength: f32,          // 65 — per-cell coverage multiplier (folds in cloudCoverage)
-  _pad3: vec2<f32>,              // 66-67
+  phaseG2: f32,                  // 66 — W1 dual-lobe back-scatter g
+  phaseBlend: f32,               // 67 — W1 forward/back lobe blend weight
   weatherTexBounds: vec4<f32>,   // 68-71 — minLon, minLat, lonRange, latRange (radians)
-  _pad4: vec4<f32>,              // 72-79 — reserved (multi-deck etc.)
+  // NOTE: scalar pads (NOT a vec3) so 72-75 stay byte-exact — a vec3 here has
+  // 16-byte alignment and would jump to float 76, breaking the packer lock.
+  phaseG1: f32,                  // 72 — W1 dual-lobe forward-scatter g (silver lining)
+  _pad4a: f32,                   // 73 — reserved (W2 ambientIntensity)
+  _pad4b: f32,                   // 74 — reserved (W9 curlAmplitude)
+  _pad4c: f32,                   // 75 — reserved (W9 curlFrequency)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -72,6 +78,10 @@ struct VertexOutput {
 };
 
 const PI: f32 = 3.14159265358979;
+// W1 — exposure feeding the Reinhard tone-map at the cloud composite. Calibrated
+// against sunIntensity~10 + the dual-lobe forward peak so the silver lining is a
+// gradient, not a white-out. (A future batch may promote this to a uniform.)
+const CLOUD_EXPOSURE: f32 = 0.22;
 
 // ─── Full-screen triangle ───
 @vertex
@@ -229,10 +239,13 @@ fn hgPhase(cosTheta: f32, g: f32) -> f32 {
 }
 
 // ─── Dual-lobe phase function (forward + back scatter) ───
+// W1 — uniform-driven so the lobes are tunable (and W3 can modulate them by
+// time-of-day). The forward lobe (phaseG1) is the silver lining toward the sun;
+// the back lobe (phaseG2) fills the anti-sun side; phaseBlend mixes them.
 fn cloudPhase(cosTheta: f32) -> f32 {
-  let forward = hgPhase(cosTheta, 0.8);  // strong forward scattering
-  let back = hgPhase(cosTheta, -0.3);     // slight back scattering
-  return mix(back, forward, 0.7);
+  let forward = hgPhase(cosTheta, cloud.phaseG1);
+  let back = hgPhase(cosTheta, cloud.phaseG2);
+  return mix(back, forward, cloud.phaseBlend);
 }
 
 // ─── Light march: compute optical depth toward sun ───
@@ -401,9 +414,19 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let ambientContribution = ambientColor * (1.0 - transmittance) * 0.15;
   weightedColor += ambientContribution;
 
+  // W1 — HDR tone-map the accumulated cloud radiance before compositing. The
+  // dual-lobe phase peaks ~6x at the forward lobe and is multiplied by
+  // sunIntensity (~10), so the radiance is HDR (peaks ~20-30) and was clipping
+  // EVERY cloud to flat white — hiding the silver lining and, more importantly,
+  // every lighting term the rest of Arc A adds (ambient, time-of-day, aerial).
+  // Exposure + Reinhard maps it to [0,1) so the bright sun-facing edges read as
+  // a rim over a darker body (the silver lining) instead of a white-out.
+  let exposed = weightedColor * CLOUD_EXPOSURE;
+  let toneMapped = exposed / (exposed + vec3<f32>(1.0));
+
   // Composite clouds over scene
   let cloudAlpha = 1.0 - transmittance;
-  let finalColor = mix(sceneColor.rgb, weightedColor, cloudAlpha);
+  let finalColor = mix(sceneColor.rgb, toneMapped, cloudAlpha);
 
   return vec4<f32>(finalColor, sceneColor.a);
 }

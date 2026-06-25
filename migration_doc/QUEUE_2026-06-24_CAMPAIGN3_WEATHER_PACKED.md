@@ -127,6 +127,7 @@ Allocation (all offsets are float indices; ×4 = byte offset):
 ---
 
 ### W1 — Dual-lobe (two-term) Henyey-Greenstein phase
+- **EXECUTION NOTE (SHIPPED Batch 391):** the phase change alone was VISUALLY INERT — the probe + PNG read showed the clouds clip to flat pure-white (HDR radiance: forward phase peak ~6 × sunIntensity ~10 ≫ 1, no tone-mapping), so no silver lining could read. Folded in the real unblock: a **Reinhard tone-map + exposure (`CLOUD_EXPOSURE=0.22`) at the composite** (`ProceduralClouds.wgsl` end of `raymarchClouds`). Result: clouds went from flat-white blobs to shaded volumetric puffs with tonal range + a backlit silver lining — and this unblocks ALL of Arc A (W2/W3/W4 lighting terms were equally invisible under saturation). `CLOUD_EXPOSURE` is a const for now (a later batch may promote it to a uniform; NO CloudUniforms layout change here).
 - Goal: Replace the hardcoded `cloudPhase` constants with uniform-driven dual-lobe HG so a tunable silver-lining rim appears toward the sun.
 - Bundled work (single commit):
   - WGSL: rewrite `cloudPhase(cosTheta)` (lines 232-236) to `dualLobeHG(cosTheta, g1, g2, w)` reading `cloud.phaseG1/phaseG2/phaseBlend`; keep `hgPhase` helper as-is.

@@ -463,15 +463,19 @@ export function executeProceduralClouds(
   // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
   // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
   data[offset++] = (globe.cloudCoverage ?? 0.5) * 2.0;
-  data[offset++] = 0; // 66 pad
-  data[offset++] = 0; // 67 pad
+  // 66/67 — W1 dual-lobe phase: back-scatter g + forward/back blend.
+  data[offset++] = -0.3; // 66 phaseG2
+  data[offset++] = 0.7; // 67 phaseBlend
   // 68-71 weatherTexBounds — global equirect (radians): minLon, minLat, lonRange, latRange.
   data[offset++] = -Math.PI;
   data[offset++] = -Math.PI / 2.0;
   data[offset++] = 2.0 * Math.PI;
   data[offset++] = Math.PI;
-  // 72-79 reserved (multi-deck etc.)
-  for (let i = 72; i < CLOUD_UNIFORM_FLOATS; i++) data[offset++] = 0;
+  // 72 — W1 forward-scatter g. Sharper than the old hardcoded 0.8 for a stronger
+  // silver lining toward the sun (HG forward peak at g=0.85 is ~1.8x g=0.8).
+  data[offset++] = 0.85; // 72 phaseG1
+  // 73-79 reserved (multi-deck etc.)
+  for (let i = 73; i < CLOUD_UNIFORM_FLOATS; i++) data[offset++] = 0;
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
