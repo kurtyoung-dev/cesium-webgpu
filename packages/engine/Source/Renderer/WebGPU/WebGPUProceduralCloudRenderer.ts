@@ -586,11 +586,13 @@ export function executeProceduralClouds(
     noiseBakedBit |
     ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
       CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
-  data[offset++] = 0; // 75 reserved (W9)
-  data[offset++] = 0; // 76 reserved (W8 frameCounter)
-  data[offset++] = 0; // 77 reserved
-  data[offset++] = 0; // 78 reserved
-  data[offset++] = 0; // 79 reserved
+  data[offset++] = 0; // 75 reserved (V8 curlAmplitude)
+  data[offset++] = 0; // 76 reserved (V6 frameCounter)
+  data[offset++] = 0; // 77 reserved (V8 curlFrequency)
+  data[offset++] = 0; // 78 reserved (V5 lightSampleScale)
+  // 79 — V4 mean-preserving erosion floor (BAKED path only; the live march
+  // ignores it). Low tier = fibrous (0.10), high/cinematic = puffy (0.18).
+  data[offset++] = cloudPreset.tier <= 1 ? 0.1 : 0.18; // 79 erosionStrength
   // 80-83 — W2 sky ambient (blue, lights cloud tops).
   data[offset++] = 0.5; // 80
   data[offset++] = 0.65; // 81

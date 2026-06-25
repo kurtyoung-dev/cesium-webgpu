@@ -58,9 +58,14 @@ struct CloudUniforms {
   // 16-byte alignment and would jump to float 76, breaking the packer lock.
   phaseG1: f32,                  // 72 — W1 dual-lobe forward-scatter g (silver lining)
   ambientIntensity: f32,         // 73 — W2 sky/ground ambient intensity
-  qualityFlags: f32,             // 74 — V1 tier bitfield (read via u32(); no path reads it yet)
+  qualityFlags: f32,             // 74 — V1 tier bitfield (read via u32())
   _pad4c: f32,                   // 75 — reserved (V8 curlAmplitude)
-  _padA: vec4<f32>,              // 76-79 — reserved (W8 frameCounter@76)
+  // 76-79 — split from the old `_padA` vec4 (byte-identical: 4 scalars on the
+  // same 16-byte stride). Each named per the ratified D-2 table.
+  frameCounter: f32,             // 76 — reserved (V6 jitter/temporal)
+  curlFrequency: f32,            // 77 — reserved (V8 curl)
+  lightSampleScale: f32,         // 78 — reserved (V5 lighting)
+  erosionStrength: f32,          // 79 — V4 mean-preserving erosion strength
   skyAmbientColor: vec3<f32>,    // 80-82 — W2 blue-sky ambient (lights cloud tops)
   _padB: f32,                    // 83
   groundAmbientColor: vec3<f32>, // 84-86 — W2 ground-bounce ambient (lights cloud bottoms)
@@ -272,21 +277,26 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
                      * smoothstep(1.0, 0.7, heightFraction);
   density *= heightGradient;
 
-  // High-frequency WORLEY edge erosion — subtractive ONLY (carves billowy lobes
-  // without raising the floor; fades toward the top). V3 — BAKED: the detail
-  // texture's R is INVERTED Worley (high AT features), so `1 - detail.r` is the
-  // Worley DISTANCE (high BETWEEN features), matching the live erosion sense.
-  // This is a LITERAL SUBTRACTION, NOT a remap — a remap would raise mid-range
-  // densities and break W5's `base >= full` (the W5/379a-revert lesson).
-  var worleyDetail: f32;
+  // High-frequency WORLEY edge erosion (carves billowy lobes; fades toward the top).
   if (noiseBakedEnabled()) {
+    // V4 — MEAN-PRESERVING erosion remap (Nubis). The detail texture's R is
+    // INVERTED Worley (high AT features), so `1 - detail.r` is the Worley DISTANCE
+    // (high BETWEEN features). `remap(density, erosionLo, 1, 0, 1)` carves where
+    // density falls below the erosion floor but stretches the survivors back up,
+    // so dense cloud CORES stay solid (no lumpy-with-holes deck at high coverage —
+    // the V3 dapple) while edges still erode. remap(v, lo, 1, 0, 1) <= v for
+    // v in [0,1], lo >= 0, so cloudDensity <= cloudBaseDensity (W5 `base >= full`)
+    // STILL holds — the oracle just omits this erosion step entirely.
     let detail = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, samplePos * 5.0, 0.0);
-    worleyDetail = 1.0 - detail.r;
+    let worleyDetail = 1.0 - detail.r;
+    let erosionLo = worleyDetail * cloud.erosionStrength * (1.0 - heightFraction);
+    density = clamp(remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0);
   } else {
-    worleyDetail = worleyF1(samplePos * 5.0 + windOffset * 0.001);
+    // LIVE path FROZEN (W5): literal subtractive erosion, unchanged.
+    let worleyDetail = worleyF1(samplePos * 5.0 + windOffset * 0.001);
+    density -= worleyDetail * 0.18 * (1.0 - heightFraction);
+    density = max(density, 0.0);
   }
-  density -= worleyDetail * 0.18 * (1.0 - heightFraction);
-  density = max(density, 0.0);
 
   return density * cloud.densityMultiplier;
 }
