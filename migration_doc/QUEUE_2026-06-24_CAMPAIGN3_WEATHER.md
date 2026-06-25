@@ -1,5 +1,9 @@
 # Campaign 3 — Weather "far far better" + parity sweep (25 batches)
 
+> **Live progress / what's next:** see
+> **[CAMPAIGN3_PROGRESS.md](CAMPAIGN3_PROGRESS.md)** (the dashboard — shipped
+> batches, commits, up-next).
+>
 > **Execution-ready detail:** see the companion
 > **[QUEUE_2026-06-24_CAMPAIGN3_WEATHER_PACKED.md](QUEUE_2026-06-24_CAMPAIGN3_WEATHER_PACKED.md)**
 > — each batch packed with all its bundled work (exact files, byte-locked

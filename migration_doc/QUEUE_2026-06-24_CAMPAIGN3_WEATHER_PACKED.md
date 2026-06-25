@@ -1,5 +1,8 @@
 # Campaign 3 — PACKED execution specs (25 batches, ready to go)
 
+**Live progress / what's shipped / what's next:**
+[CAMPAIGN3_PROGRESS.md](CAMPAIGN3_PROGRESS.md) (the dashboard).
+
 Companion to **QUEUE_2026-06-24_CAMPAIGN3_WEATHER.md** (the why + arc overview).
 This file is the **execution-ready** detail: each batch bundles everything that
 must ship in one atomic commit (shader + JS packer + BGL + new files + probe +
