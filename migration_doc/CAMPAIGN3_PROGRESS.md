@@ -7,6 +7,8 @@ next.
 - **Why + arc overview:** [QUEUE_2026-06-24_CAMPAIGN3_WEATHER.md](QUEUE_2026-06-24_CAMPAIGN3_WEATHER.md)
 - **Execution-ready per-batch specs (exact files, byte-locked offsets, probes):**
   [QUEUE_2026-06-24_CAMPAIGN3_WEATHER_PACKED.md](QUEUE_2026-06-24_CAMPAIGN3_WEATHER_PACKED.md)
+- **Rendering-technique strategy + the open architectural question (3D-noise-texture
+  core, quality tiers, research-in-flight):** [CLOUD_RENDERING_STRATEGY.md](CLOUD_RENDERING_STRATEGY.md)
 - **Resume state in memory:** `memory/project_campaign3_execution.md`
 
 ## Status at a glance
