@@ -148,15 +148,36 @@ around it.
   far-field/impostor → parity (P) batches. **W9–W11 shape/detail rebase onto the
   baked textures.**
 
-## Plan (research complete → execution re-plan in flight)
+## Plan (research complete → execution-ready re-plan DELIVERED)
 
-- A **code-grounded planning workflow** (`campaign3v2-cloud-replan`, run
-  `wf_825ad58f-3e8`) is generating the execution-ready packed plan: 5 architects
-  design each workstream grounded in the actual `ProceduralClouds.wgsl` /
-  `WebGPUProceduralCloudRenderer.ts` / `WebGPUVolumetricFogRenderer.ts` / `Globe.js`,
-  a synthesizer orders them by dependency, and an adversarial reviewer checks
-  default-preservation, W1–W5 non-regression, byte-locking, probe-verifiability,
-  and VRAM budget. Output → `QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md`.
-- **W6 (half-res + bilateral) is confirmed** as the first reconstruction batch and
-  survives the rearchitecture intact — with two research refinements baked in
-  (depth-weighted upscale taps, log-space transmittance blend).
+The execution-ready packed plan is
+**[QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md](QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md)**
+— produced by the `campaign3v2-cloud-replan` workflow (run `wf_825ad58f-3e8`):
+5 architects grounded in the live code, a lead synthesizer dependency-ordered them,
+and an adversarial principal-engineer pass reviewed. **Verdict: GO-WITH-FIXES** —
+architecture sound, byte-lock correct, default-off genuinely preserved; no redesign.
+
+**Re-scoped to 28 batches (V0–V28)**, dependency-ordered. The safe spine:
+
+- **V0** fix the SkyAtmosphere-LUT device error (so every later probe asserts *zero*
+  errors, not a filter).
+- **V1** tier-preset struct + `qualityFlags`@74 lane — **inert spine, 0.00% A/B**.
+- **V2** bake the 128³ + 32³ 3D noise textures, bind them **inert** (`noiseSource=0`)
+  — byte-identical.
+- **V3 (KEYSTONE)** flip `cloudDensity`/`cloudBaseDensity` to the baked textures;
+  guarded by a full **W1–W5 metric re-run**, not a single luma diff.
+- **V4–V8** morphology remap · energy-conserving integration + multi-scatter octaves
+  · IGN jitter · powder/floor · curl.
+- **V9–V10** half-res + log-space joint-bilateral upscale · temporal reprojection
+  (the old W6/W7, re-scoped with the research refinements).
+- **V11–V17** per-genus profiles · multi-deck · cloud shadows · god-rays · precip ·
+  far-field/impostor. **V18–V28** tier closeout + the P-parity tail.
+
+**Top-3 must-fixes from the review (fold in at their batch):** (1) V3's baked
+erosion must use literal subtraction, NOT a remap (a remap raises mid-densities and
+breaks W5's `base ≥ full` — the W5 lesson, caught pre-ship) + a numeric
+oracle-conservatism assertion; (2) V9 is a real render-target change (in-place
+`loadOp:"load"` composite) → split into V9a offscreen-plumbing + V9b half-res; (3)
+V10 must source VP matrices from `UniformState` into a separate `ReprojectUniforms`
+buffer (clouds don't carry `previousViewProjection` today) + a *panning* probe to
+catch the sign/flip trap. Full list in the queue doc's review section.

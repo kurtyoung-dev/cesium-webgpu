@@ -7,9 +7,18 @@ next.
 - **Why + arc overview:** [QUEUE_2026-06-24_CAMPAIGN3_WEATHER.md](QUEUE_2026-06-24_CAMPAIGN3_WEATHER.md)
 - **Execution-ready per-batch specs (exact files, byte-locked offsets, probes):**
   [QUEUE_2026-06-24_CAMPAIGN3_WEATHER_PACKED.md](QUEUE_2026-06-24_CAMPAIGN3_WEATHER_PACKED.md)
-- **Rendering-technique strategy + the open architectural question (3D-noise-texture
-  core, quality tiers, research-in-flight):** [CLOUD_RENDERING_STRATEGY.md](CLOUD_RENDERING_STRATEGY.md)
+- **Rendering-technique strategy + research synthesis (3D-noise-texture core, quality
+  tiers):** [CLOUD_RENDERING_STRATEGY.md](CLOUD_RENDERING_STRATEGY.md)
+- **▶ Re-scoped execution plan (28 batches V0–V28, supersedes the cloud arc below):**
+  [QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md](QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md)
 - **Resume state in memory:** `memory/project_campaign3_execution.md`
+
+> **2026-06-25 — Campaign 3 RE-SCOPED.** W1–W5 shipped (below) are the frozen
+> baseline. The remaining cloud work (W6–W14) is superseded by the v2 plan above:
+> a tiered architecture built on a precomputed 3D-noise-texture core (both
+> better-looking *and* better-performing). **Next batch = V0** (fix the
+> SkyAtmosphere-LUT device error), then V1/V2 (inert tier scaffold + noise bake),
+> then V3 (keystone: flip the density core to baked textures).
 
 ## Status at a glance
 
