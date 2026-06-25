@@ -231,6 +231,35 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   return density * cloud.densityMultiplier;
 }
 
+// ─── W5: cheap low-detail presence test for empty-space skipping ───
+// Returns the cloud BASE shape (fbm + coverage threshold + height gradient)
+// WITHOUT the 27-tap Worley erosion or detail. Two properties make it the right
+// skip oracle: (1) CONSERVATIVE — Worley only SUBTRACTS from density, so
+// base >= full everywhere; base ≈ 0 guarantees full ≈ 0, so the coarse phase
+// never skips real cloud. (2) SMOOTH — no internal erosion pockets, so the
+// coarse→fine handoff never false-triggers inside a cloud the way the eroded
+// full density does. And it is much cheaper (no Worley, no detail), so coarse
+// probing of empty space is a real tap-cost win, not just a step-count one.
+fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
+  let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
+                   * cloud.windSpeed * cloud.time;
+  let samplePos = (worldPos + windOffset) * 0.0003;
+
+  var effectiveCoverage = cloud.coverage;
+  if (cloud.weatherMapEnabled > 0.5) {
+    let wuv = worldToWeatherUV(worldPos);
+    let wsample = textureSampleLevel(weatherTex, weatherSampler, wuv, 0, 0.0);
+    effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
+  }
+
+  var density = fbmNoise(samplePos);
+  density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
+  let heightGradient = smoothstep(0.0, 0.15, heightFraction)
+                     * smoothstep(1.0, 0.7, heightFraction);
+  density *= heightGradient;
+  return density * cloud.densityMultiplier;
+}
+
 // ─── Ray-sphere intersection ───
 fn raySphereIntersect(ro: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
   let b = dot(ro, rd);
@@ -365,63 +394,127 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // Cloud march
   let steps = i32(cloud.maxSteps);
-  let stepSize = (tEnd - tStart) / f32(steps);
   let sunDir = normalize(cloud.sunDirection);
   let cosTheta = dot(rayDir, sunDir);
   let phase = cloudPhase(cosTheta);
   let layerThickness = cloud.cloudLayerTop - cloud.cloudLayerBottom;
+
+  // W5 — adaptive coarse→fine march (empty-space skipping). A CHEAP, smooth,
+  // conservative low-detail density (`cloudBaseDensity` — no Worley, no detail)
+  // is the skip oracle: march coarse jumps through empty space probing ONLY the
+  // base shape; on the first base hit, back up one coarse step and refine to
+  // FINE_RATIO-smaller steps; snap back to coarse only once the BASE shape is
+  // gone — never inside an erosion pocket (where full density is 0 but the cloud
+  // continues), which is what truncated clouds when a full-density test drove the
+  // skip. Fine samples integrate the FULL eroded density at the SAME cadence and
+  // grid as the old fixed march (fineStep == old stepSize, and the back-up keeps
+  // the fine grid aligned to tStart + k·fineStep), so the image is preserved; the
+  // win is replacing full taps over empty space with cheap base taps at 1/4 the
+  // count. `maxSteps` still governs the fine budget.
+  let fineStep = (tEnd - tStart) / f32(steps); // == old fixed stepSize (preserves image)
+  let coarseStep = fineStep * 4.0;             // FINE_RATIO = 4
 
   var transmittance: f32 = 1.0;
   var lightEnergy: f32 = 0.0;
   var weightedColor = vec3<f32>(0.0);
   var totalDensity: f32 = 0.0;
 
-  for (var i: i32 = 0; i < steps; i++) {
-    if (transmittance < 0.01) { break; }
+  var t: f32 = tStart;
+  var tProcessed: f32 = tStart; // furthest point already examined at fine resolution
+  var fine: bool = false;
+  var emptyRun: i32 = 0;
+  var guard: i32 = 0;
+  let maxIter: i32 = steps * 3; // permanent loop sentinel (coarse skips + fine)
 
-    let t = tStart + (f32(i) + 0.5) * stepSize;
-    let samplePos = rayOrigin + rayDir * t;
+  loop {
+    if (t >= tEnd) { break; }
+    if (transmittance < 0.01) { break; }
+    guard = guard + 1;
+    if (guard > maxIter) { break; }
+
+    let curStep = select(coarseStep, fineStep, fine);
+    let samplePos = rayOrigin + rayDir * (t + 0.5 * curStep);
     let altitude = length(samplePos) - cloud.planetRadius;
     let heightFraction = clamp(
       (altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0
     );
 
+    // Cheap conservative presence test (base >= full, so this never skips real
+    // cloud) drives the coarse/fine state.
+    let base = cloudBaseDensity(samplePos, heightFraction);
+
+    if (!fine) {
+      // Coarse skip. On the first base hit, step back one coarse step (clamped to
+      // tStart so the near cloud edge isn't read before the layer) and refine.
+      if (base > 0.0001) {
+        fine = true;
+        emptyRun = 0;
+        // Back up one coarse step to catch the cloud edge the coarse sample
+        // stepped over — but never below tProcessed, so the march can't stall by
+        // re-entering an already-examined span (the cause of early-out + empty).
+        t = max(t - coarseStep, tProcessed);
+        continue;
+      }
+      t = t + coarseStep;
+      continue;
+    }
+
+    // Fine phase. Snap back to coarse only once the BASE shape has been gone for
+    // EMPTY_RUN samples — base is smooth, so this fires when we truly leave the
+    // cloud, not inside an erosion pocket (base>0, full density 0).
+    if (base <= 0.0001) {
+      emptyRun = emptyRun + 1;
+      if (emptyRun >= 2) { // EMPTY_RUN = 2 (base is reliable; no long confirm needed)
+        fine = false;
+        emptyRun = 0;
+      }
+      t = t + fineStep;
+      tProcessed = t;
+      continue;
+    }
+    emptyRun = 0;
+
+    // Inside the cloud shape — integrate the FULL (eroded) density. An erosion
+    // pocket (full density 0) contributes nothing but keeps us in the fine phase.
     let density = cloudDensity(samplePos, heightFraction);
-    if (density <= 0.001) { continue; }
+    if (density > 0.001) {
+      // Light contribution at this point — 379c cheap multi-scatter (was a single
+      // Beer-Powder octave) so deep cloud interiors keep a soft glow.
+      let lightOpticalDepth = lightMarch(samplePos, heightFraction);
+      let lightTransmittance = multiScatterLight(lightOpticalDepth, 0.5);
 
-    // Light contribution at this point — 379c cheap multi-scatter (was a single
-    // Beer-Powder octave) so deep cloud interiors keep a soft glow.
-    let lightOpticalDepth = lightMarch(samplePos, heightFraction);
-    let lightTransmittance = multiScatterLight(lightOpticalDepth, 0.5);
+      // Silver lining: enhanced scattering at cloud edges
+      let silverLining = cloud.silverLiningIntensity
+                       * pow(clamp(1.0 - density * 3.0, 0.0, 1.0), 2.0);
 
-    // Silver lining: enhanced scattering at cloud edges
-    let silverLining = cloud.silverLiningIntensity
-                     * pow(clamp(1.0 - density * 3.0, 0.0, 1.0), 2.0);
+      let scatteredLight = (lightTransmittance * phase + silverLining)
+                         * cloud.sunIntensity;
 
-    let scatteredLight = (lightTransmittance * phase + silverLining)
-                       * cloud.sunIntensity;
+      // Height-based color gradient (darker base, brighter top)
+      let cloudColor = mix(cloud.cloudBaseColor, cloud.cloudTopColor, heightFraction);
 
-    // Height-based color gradient (darker base, brighter top)
-    let cloudColor = mix(cloud.cloudBaseColor, cloud.cloudTopColor, heightFraction);
+      // Accumulate
+      let sampleTransmittance = exp(-density * fineStep * cloud.absorptionCoeff);
+      let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
 
-    // Accumulate
-    let sampleTransmittance = exp(-density * stepSize * cloud.absorptionCoeff);
-    let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
+      // W2 — sky-ambient gradient + ground bounce. The blue sky lights the cloud
+      // TOPS (heightFraction -> 1) and the warm ground bounce lights the BOTTOMS
+      // (-> 0), so the anti-sun shadow side reads as soft grey-blue instead of
+      // near-black. Part of the HDR radiance, so it tone-maps with the sun term.
+      let ambient = mix(cloud.groundAmbientColor, cloud.skyAmbientColor, heightFraction)
+                  * cloud.ambientIntensity;
 
-    // W2 — sky-ambient gradient + ground bounce. The blue sky lights the cloud
-    // TOPS (heightFraction -> 1) and the warm ground bounce lights the BOTTOMS
-    // (-> 0), so the anti-sun shadow side reads as soft grey-blue instead of
-    // near-black. Part of the HDR radiance, so it tone-maps with the sun term.
-    let ambient = mix(cloud.groundAmbientColor, cloud.skyAmbientColor, heightFraction)
-                * cloud.ambientIntensity;
+      // W3 — tint the direct-sun term by the time-of-day sun color (warm near the
+      // horizon, neutral at noon). Ambient keeps its own sky/ground color.
+      weightedColor += (cloudColor * cloud.sunLightColor * scatteredLight + ambient)
+                     * sampleWeight;
+      lightEnergy += scatteredLight * sampleWeight;
+      totalDensity += density * fineStep;
+      transmittance *= sampleTransmittance;
+    }
 
-    // W3 — tint the direct-sun term by the time-of-day sun color (warm near the
-    // horizon, neutral at noon). Ambient keeps its own sky/ground color.
-    weightedColor += (cloudColor * cloud.sunLightColor * scatteredLight + ambient)
-                   * sampleWeight;
-    lightEnergy += scatteredLight * sampleWeight;
-    totalDensity += density * stepSize;
-    transmittance *= sampleTransmittance;
+    t = t + fineStep;
+    tProcessed = t;
   }
 
   // W1 — HDR tone-map the accumulated cloud radiance before compositing. The

@@ -13,9 +13,9 @@ next.
 
 | | |
 |---|---|
-| **Batches shipped** | **4 / 25** (Arc A lighting: **4 / 4 ✅ COMPLETE**) |
-| **Latest commit** | Batch 394 (W4 — aerial-perspective blend) |
-| **▶ Up next** | **W5 — adaptive coarse→fine raymarch (Arc B perf)** |
+| **Batches shipped** | **5 / 25** (Arc A: 4/4 ✅ · Arc B: 1/4) |
+| **Latest commit** | Batch 395 (W5 — adaptive raymarch, ×1.39 faster, image identical) |
+| **▶ Up next** | **W6 — half-resolution cloud pass + bilateral upscale** |
 | **`CloudUniforms` size** | 96 floats (started at 80) |
 | **New globe control** | `globe.cloudAerialStrength` (0–1, default 1.0) — W4 |
 | **Branch** | `main` (trunk-only, clean) |
@@ -50,8 +50,8 @@ Legend: ✅ shipped · ▶ next · ⬜ pending
 
 | ID | Title | Status | Note |
 |---|---|---|---|
-| W5 | Adaptive coarse→fine raymarch (empty-space skip) | ▶ | no CloudUniforms change |
-| W6 | Half-res cloud pass + bilateral upscale | ⬜ | new `CloudUpscale.wgsl` + half-res target |
+| W5 | Adaptive coarse→fine raymarch (empty-space skip) | ✅ | 395 — new `cloudBaseDensity` skip oracle (conservative base≥full, smooth); `tProcessed` monotonic progress. **0.00% image mismatch vs fixed, ×1.39 faster** (sparse sky). No CloudUniforms change |
+| W6 | Half-res cloud pass + bilateral upscale | ▶ | new `CloudUpscale.wgsl` + half-res target |
 | W7 | Temporal reprojection + accumulation | ⬜ | reuse `previousViewProjection`; history buffer |
 | W8 | Blue-noise / IGN ray-start jitter + dither | ⬜ | `frameCounter@76` (reserved in layout) |
 
@@ -87,14 +87,24 @@ Legend: ✅ shipped · ▶ next · ⬜ pending
 | P10 | Feature-renderer onboarding doc | ⬜ | new `FEATURE_RENDERER_ONBOARDING.md` |
 | P11 | Weather baselines + inventory/roadmap reconcile | ⬜ | capture baselines, move shipped to §B |
 
-## ▶ Up next — W5 (adaptive coarse→fine raymarch) — Arc A complete
+## ▶ Up next — W6 (half-res cloud pass + bilateral upscale)
 
-**Arc A (cloud lighting) is done** — clouds went from flat-white blobs to shaded,
-time-of-day-lit, aerially-receding volumetrics. **W5 opens Arc B (perf headroom):**
-empty-space skipping — march coarse steps until density is hit, then refine, so
-the step budget concentrates where clouds actually are (no `CloudUniforms` change).
-Full spec: packed-doc **W5**. This buys the budget that W6 (half-res) and W7
-(temporal reprojection) build on.
+Render the raymarch into a half-resolution `rgba16float` cloud target, then
+composite onto the canvas with a depth-aware joint-bilateral upscale so cloud/sky
+and cloud/terrain edges stay crisp at ~4× fewer rays. New `CloudUpscale.wgsl` +
+a half-res render target + the bilateral composite. Combined with W5's per-ray
+savings, this is the big Arc-B headroom for W7 (temporal reprojection). Full spec:
+packed-doc **W6**.
+
+**W5 verification note (reusable technique):** the rigorous perf+quality proof was
+a **true A/B vs the pre-W5 build** — since W5 was uncommitted, `git stash` of just
+`ProceduralClouds.wgsl` reverts to the W4-committed fixed march; build + capture a
+reference, pop, build + capture adaptive, diff image + GPU-synced frame time (via
+`s.context.device.queue.onSubmittedWorkDone()`). Result: 0.00% mismatch, ×1.39
+faster. The key design lesson: drive empty-space skipping off a CHEAP, SMOOTH,
+CONSERVATIVE low-detail density (`base ≥ full`), never the eroded full density —
+and floor the edge back-up at `tProcessed` so the march can't stall. See
+`probe-cloud-perf.mjs`.
 
 **W4 verification note (reusable technique):** in-frame near/far cloud bands are
 unreliable for distance tests — the **hard diagonal frustum-edge artifact** + the
