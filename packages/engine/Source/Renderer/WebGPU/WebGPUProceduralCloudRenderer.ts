@@ -27,7 +27,7 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 
 // Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
-const CLOUD_UNIFORM_FLOATS = 92; // must match CloudUniforms struct in WGSL
+const CLOUD_UNIFORM_FLOATS = 96; // must match CloudUniforms struct in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -511,7 +511,18 @@ export function executeProceduralClouds(
   data[offset++] = 1.0 + (1.0 - 1.0) * todT; // 88 R (warm 1.0 -> noon 1.0)
   data[offset++] = 0.55 + (1.0 - 0.55) * todT; // 89 G (warm 0.55 -> noon 1.0)
   data[offset++] = 0.25 + (0.98 - 0.25) * todT; // 90 B (warm 0.25 -> noon 0.98)
-  data[offset++] = 1.0; // 91 aerialStrength (W4)
+  // 91 — W4 aerial-perspective strength (1.0 = full horizon haze at the 60 km
+  // scale baked into the shader; 0 disables). Dialable via globe.cloudAerialStrength.
+  data[offset++] = globe.cloudAerialStrength ?? 1.0; // 91 aerialStrength
+  // 92-94 — W4 horizon inscatter haze tint. Distant clouds blend toward this so
+  // they fade into the sky instead of popping. Keyed on the same local sun
+  // elevation (todT) as the sun color: warm orange-grey at the horizon (twilight
+  // band) -> desaturated sky-blue at day. This roughly tracks the rendered sky's
+  // horizon color so far clouds dissolve into it rather than a fixed blue.
+  data[offset++] = 0.8 + (0.62 - 0.8) * todT; // 92 R (warm 0.80 -> day 0.62)
+  data[offset++] = 0.62 + (0.72 - 0.62) * todT; // 93 G (warm 0.62 -> day 0.72)
+  data[offset++] = 0.5 + (0.85 - 0.5) * todT; // 94 B (warm 0.50 -> day 0.85)
+  data[offset++] = 0; // 95 pad
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

@@ -447,6 +447,17 @@ class Globe {
     this.cloudDensity = 0.3;
 
     /**
+     * Aerial-perspective strength for distant procedural clouds (WebGPU only).
+     * Distant clouds blend toward a time-of-day horizon-haze tint by view
+     * distance so they desaturate into the horizon instead of popping.
+     * <code>1.0</code> = full haze at the ~60 km horizon scale baked into the
+     * raymarcher; <code>0.0</code> disables it (far clouds keep their lit color).
+     * @type {number}
+     * @default 1.0
+     */
+    this.cloudAerialStrength = 1.0;
+
+    /**
      * Enables the data-driven weather map for the procedural volumetric clouds
      * (WebGPU only — keystone of the weather-recreation roadmap). When
      * <code>true</code>, the raymarcher samples a 2D lat/lon weather texture per

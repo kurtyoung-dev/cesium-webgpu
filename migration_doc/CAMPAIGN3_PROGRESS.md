@@ -13,10 +13,11 @@ next.
 
 | | |
 |---|---|
-| **Batches shipped** | **3 / 25** (Arc A lighting: 3 / 4) |
-| **Latest commit** | `b9c8f8f7bc` (Batch 393, W3) |
-| **▶ Up next** | **W4 — aerial-perspective blend** |
-| **`CloudUniforms` size** | 92 floats (started at 80) |
+| **Batches shipped** | **4 / 25** (Arc A lighting: **4 / 4 ✅ COMPLETE**) |
+| **Latest commit** | Batch 394 (W4 — aerial-perspective blend) |
+| **▶ Up next** | **W5 — adaptive coarse→fine raymarch (Arc B perf)** |
+| **`CloudUniforms` size** | 96 floats (started at 80) |
+| **New globe control** | `globe.cloudAerialStrength` (0–1, default 1.0) — W4 |
 | **Branch** | `main` (trunk-only, clean) |
 
 **Per-batch protocol** (each batch = one atomic commit): implement all bundled
@@ -43,13 +44,13 @@ Legend: ✅ shipped · ▶ next · ⬜ pending
 | W1 | Dual-lobe HG phase **+ HDR tone-map** | ✅ | 391 / `08d9dbd5f9` — phase alone was invisible (clipped to white); tone-map was the real unblock → clouds got form + silver lining |
 | W2 | Sky-ambient gradient + ground bounce | ✅ | 392 / `3cc1c9d51e` — shadow side lifted off black, form preserved |
 | W3 | Time-of-day sun color | ✅ | 393 / `b9c8f8f7bc` — warm dawn/dusk, neutral noon (local-elevation keyed) |
-| W4 | Aerial-perspective blend on distant clouds | ▶ | `aerialStrength@91` already reserved/packed=1.0; add `aerialColor@92-94` (92→96 floats) |
+| W4 | Aerial-perspective blend on distant clouds | ✅ | 394 — `aerialColor@92-94` (struct 92→96); new `globe.cloudAerialStrength` (0–1, def 1.0); distance-graded (two-layer A/B: deck 1.5→28 km away, haze 0.41→0.57) |
 
 ### Arc B — Performance headroom
 
 | ID | Title | Status | Note |
 |---|---|---|---|
-| W5 | Adaptive coarse→fine raymarch (empty-space skip) | ⬜ | no CloudUniforms change |
+| W5 | Adaptive coarse→fine raymarch (empty-space skip) | ▶ | no CloudUniforms change |
 | W6 | Half-res cloud pass + bilateral upscale | ⬜ | new `CloudUpscale.wgsl` + half-res target |
 | W7 | Temporal reprojection + accumulation | ⬜ | reuse `previousViewProjection`; history buffer |
 | W8 | Blue-noise / IGN ray-start jitter + dither | ⬜ | `frameCounter@76` (reserved in layout) |
@@ -86,15 +87,22 @@ Legend: ✅ shipped · ▶ next · ⬜ pending
 | P10 | Feature-renderer onboarding doc | ⬜ | new `FEATURE_RENDERER_ONBOARDING.md` |
 | P11 | Weather baselines + inventory/roadmap reconcile | ⬜ | capture baselines, move shipped to §B |
 
-## ▶ Up next — W4 (aerial-perspective blend)
+## ▶ Up next — W5 (adaptive coarse→fine raymarch) — Arc A complete
 
-Blend distant cloud color toward an atmosphere-haze color by view distance so far
-clouds desaturate into the horizon instead of popping. **Half-ready:**
-`aerialStrength@91` is already declared in the struct + packed `1.0` (W3 reserved
-it). This batch: add `aerialColor` (vec3) @92-94 (`CLOUD_UNIFORM_FLOATS` 92→96),
-lerp the composite toward `aerialColor` by a march-distance factor × `aerialStrength`.
-Full spec + the `tStart`-near-nadir gotcha: packed-doc **W4**. Reuse the
-sun-control technique below for the probe.
+**Arc A (cloud lighting) is done** — clouds went from flat-white blobs to shaded,
+time-of-day-lit, aerially-receding volumetrics. **W5 opens Arc B (perf headroom):**
+empty-space skipping — march coarse steps until density is hit, then refine, so
+the step budget concentrates where clouds actually are (no `CloudUniforms` change).
+Full spec: packed-doc **W5**. This buys the budget that W6 (half-res) and W7
+(temporal reprojection) build on.
+
+**W4 verification note (reusable technique):** in-frame near/far cloud bands are
+unreliable for distance tests — the **hard diagonal frustum-edge artifact** + the
+**Y-flipped canvas** + grazing-ray dominance all confound them. The robust proof
+was a **two-layer-altitude A/B**: fix the camera, move the deck (1.5 km → 28 km up)
+to change cloud distance, A/B `cloudAerialStrength` 0/1 per layer, compare the
+whole-frame aerial coefficient. Artifact- and flip-immune. See
+`probe-cloud-aerial.mjs`.
 
 ## Resume essentials
 

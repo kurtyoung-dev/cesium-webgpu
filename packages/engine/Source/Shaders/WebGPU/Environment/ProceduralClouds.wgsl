@@ -66,7 +66,9 @@ struct CloudUniforms {
   groundAmbientColor: vec3<f32>, // 84-86 — W2 ground-bounce ambient (lights cloud bottoms)
   _padC: f32,                    // 87
   sunLightColor: vec3<f32>,      // 88-90 — W3 time-of-day sun color (warm low / neutral noon)
-  aerialStrength: f32,           // 91 — W4 aerial-perspective strength (W3 packs 1.0)
+  aerialStrength: f32,           // 91 — W4 aerial-perspective strength
+  aerialColor: vec3<f32>,        // 92-94 — W4 horizon inscatter haze tint (time-of-day keyed)
+  _padD: f32,                    // 95
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -432,9 +434,21 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let exposed = weightedColor * CLOUD_EXPOSURE;
   let toneMapped = exposed / (exposed + vec3<f32>(1.0));
 
+  // W4 — aerial perspective. Distant clouds lose contrast and tint toward the
+  // atmosphere inscatter color; without it far clouds keep their full white and
+  // "pop" against the hazed horizon. Key the haze on the march MIDPOINT distance
+  // (tStart + 0.5*(tEnd-tStart)), NOT tStart alone: from below the layer tStart
+  // collapses to ~0 for every pixel, so keying on it would haze by view angle
+  // rather than true range. Both operands are LDR (post-tonemap color vs the
+  // packed horizon tint), so the lerp stays in display space. 60 km ≈ horizon
+  // haze scale; cap at 0.85 so the densest near clouds never fully dissolve.
+  let midDist = tStart + 0.5 * (tEnd - tStart);
+  let aerial = clamp(midDist / 60000.0 * cloud.aerialStrength, 0.0, 0.85);
+  let hazed = mix(toneMapped, cloud.aerialColor, aerial);
+
   // Composite clouds over scene
   let cloudAlpha = 1.0 - transmittance;
-  let finalColor = mix(sceneColor.rgb, toneMapped, cloudAlpha);
+  let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
 
   return vec4<f32>(finalColor, sceneColor.a);
 }
