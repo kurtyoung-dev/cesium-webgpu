@@ -234,8 +234,15 @@ fn bakedBase(samplePos: vec3<f32>) -> f32 {
   // (Normally the spatially-varying weather map masks the repeat; this keeps it
   // hidden when the weather map is off.) Warp preserves the single-sample
   // contrast — no octave-blend smoothing — so the billowy puffs survive.
-  let w = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, samplePos * 0.15, 0.0).rgb;
-  let uvw = samplePos + (w - vec3<f32>(0.5)) * 0.9;
+  // SHAPE_SCALE < 1 enlarges the base puffs (the texture covers more world per
+  // tile) so the default deck reads as bigger, fluffier cumulus instead of fine
+  // dapple; the detail erosion (cloudDensity, samplePos*5) stays fine, giving big
+  // lobes with cauliflower edges. Warp + warp-sample scale track SHAPE_SCALE so
+  // the de-tiling stays proportional.
+  let SHAPE_SCALE = 0.45;
+  let s = samplePos * SHAPE_SCALE;
+  let w = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, s * 0.32, 0.0).rgb;
+  let uvw = s + (w - vec3<f32>(0.5)) * 0.5;
   return textureSampleLevel(cloudShapeTex, cloudNoiseSampler, uvw, 0.0).r;
 }
 
