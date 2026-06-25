@@ -23,7 +23,8 @@ import {
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const RENDERER = process.env.RENDERER || "webgpu";
 const CLOUDS = (process.env.CLOUDS ?? "on") !== "off";
-const TAG = `${RENDERER}-clouds${CLOUDS ? "on" : "off"}`;
+const SKY = (process.env.SKY ?? "on") !== "off";
+const TAG = `${RENDERER}-clouds${CLOUDS ? "on" : "off"}${SKY ? "" : "-skyoff"}`;
 const W = 1024,
   H = 768;
 const OUT = "Tools/visual-regression/output";
@@ -38,7 +39,10 @@ const SETUP = async (cfg) => {
   g.showProceduralClouds = cfg.clouds;
   g.cloudCoverage = 0.45;
   g.cloudDensity = 0.3;
-  s.skyAtmosphere.show = true; // the thing under test
+  s.skyAtmosphere.show = cfg.sky; // the thing under test
+  if (!cfg.sky) {
+    s.backgroundColor = C.Color.DARKSLATEGRAY; // non-black bg so globe edge reads
+  }
   v.camera.setView({
     destination: C.Cartesian3.fromDegrees(-95.0, 39.0, 650.0),
     orientation: {
@@ -125,7 +129,7 @@ async function run() {
   });
   await page.waitForFunction(() => !!window.viewer, null, { timeout: 60000 });
   await armWebGPUDevices(page);
-  await page.evaluate(SETUP, { clouds: CLOUDS });
+  await page.evaluate(SETUP, { clouds: CLOUDS, sky: SKY });
 
   // Let the viewer's own render loop present + settle, then compositor-screenshot
   // (reliable for BOTH WebGL and WebGPU — no toDataURL black-buffer / Y-flip issues).
