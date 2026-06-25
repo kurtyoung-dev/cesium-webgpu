@@ -27,7 +27,9 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import {
   resolveCloudPreset,
+  CloudNoiseSource,
   CLOUD_QF_OCTAVES_SHIFT,
+  CLOUD_QF_NOISE_BAKED,
 } from "./WebGPUCloudTierPresets.js";
 import { buildCloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
@@ -422,6 +424,12 @@ export function executeProceduralClouds(
   const cache = ensureCloudCache(context);
   initializeCloudPipeline(device, cache, context._canvasFormat || "bgra8unorm");
 
+  // V2/V3 — bake (once) + resolve the 3D noise views, BEFORE packing so the
+  // qualityFlags noiseSource bit can reflect the same-frame baked state (no
+  // one-frame-late flip). The bake's one-shot submit runs before this frame's
+  // cloud pass, so the textures are populated when sampled.
+  const noise = ensureNoiseBaked(device, cache);
+
   // Pack uniforms
   const data = cache.uniformData;
   const us = frameState.context?.uniformState ?? context.uniformState;
@@ -563,13 +571,21 @@ export function executeProceduralClouds(
   data[offset++] = 0.85; // 72 phaseG1
   // 73 — W2 ambient intensity (sky/ground fill on the shadow side).
   data[offset++] = 1.5; // 73 ambientIntensity
-  // 74 — V1 qualityFlags bitfield. Feature bits (noiseSource/halfRes/temporal/
-  // jitter/profile) stay 0 until their batch makes the WGSL read them; the
-  // octaves bits carry the preset value but the live march still hardcodes its
-  // 3-octave loop, so V1 is byte-identical. See WebGPUCloudTierPresets.
+  // 74 — qualityFlags bitfield. V3 sets bit 0 (noiseSource) when the tier wants
+  // the baked 3D-texture core AND the bake actually succeeded — SELF-HEALING:
+  // if the bake is unavailable (cache.noise null), the bit stays 0 and the WGSL
+  // falls back to the live march. (halfRes/temporal/jitter/profile bits land in
+  // V9/V10/V6/V11; the octaves bits carry the preset value, read by V5.)
+  const noiseBakedBit =
+    cloudPreset.noiseSource === CloudNoiseSource.BAKED &&
+    cache.noiseBaked &&
+    cache.noise !== null
+      ? CLOUD_QF_NOISE_BAKED
+      : 0;
   data[offset++] =
-    (Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
-    CLOUD_QF_OCTAVES_SHIFT; // 74 qualityFlags
+    noiseBakedBit |
+    ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
+      CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
   data[offset++] = 0; // 75 reserved (W9)
   data[offset++] = 0; // 76 reserved (W8 frameCounter)
   data[offset++] = 0; // 77 reserved
@@ -622,9 +638,8 @@ export function executeProceduralClouds(
   // Weather Phase 1 — resolve the weather view (procedural map when enabled,
   // 1×1 white fallback otherwise).
   const weatherView = ensureWeatherView(device, cache, weatherEnabled);
-  // V2 — bake (once) + resolve the 3D noise views to bind at 6/7/8. INERT until
-  // V3 samples them (noiseSource stays 0 → byte-identical).
-  const noise = ensureNoiseBaked(device, cache);
+  // `noise` (the 3D shape/detail views + sampler) was resolved up-front so the
+  // qualityFlags noiseSource bit reflects the same-frame baked state.
 
   // Create bind group
   const bindGroup = device.createBindGroup({

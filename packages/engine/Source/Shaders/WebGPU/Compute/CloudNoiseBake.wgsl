@@ -26,14 +26,17 @@ fn pmod3(a: vec3<f32>, m: f32) -> vec3<f32> {
   return a - floor(a / m) * m;
 }
 
-// Gradient hash → vec3 in [-1,1] for a (wrapped) integer lattice point.
+// Gradient hash → UNIT vec3 for a (wrapped) integer lattice point. Normalizing
+// keeps the Perlin output range predictable (~±0.7 per octave) so the [0,1]
+// remap below is calibrated, not guessed.
 fn gradHash(p: vec3<f32>) -> vec3<f32> {
   let q = vec3<f32>(
     dot(p, vec3<f32>(127.1, 311.7, 74.7)),
     dot(p, vec3<f32>(269.5, 183.3, 246.1)),
     dot(p, vec3<f32>(113.5, 271.9, 124.6)),
   );
-  return -1.0 + 2.0 * fract(sin(q) * 43758.5453123);
+  let g = -1.0 + 2.0 * fract(sin(q) * 43758.5453123);
+  return g / max(length(g), 1e-3);
 }
 
 // Feature-point hash → vec3 in [0,1] (offset within a Worley cell).
@@ -114,12 +117,51 @@ fn perlinFBM(P: vec3<f32>, freq: f32) -> f32 {
     f = f * 2.0;
     amp = amp * 0.5;
   }
-  // amp sum 0.875; map [-0.875,0.875] → [0,1].
-  return clamp(v / 1.75 + 0.5, 0.0, 1.0);
+  // Normalized gradients → ~±0.6 over 3 octaves; map to [0,1].
+  return clamp(v / 1.2 + 0.5, 0.0, 1.0);
 }
 
 fn remap(v: f32, lo: f32, hi: f32, a: f32, b: f32) -> f32 {
   return a + (v - lo) * (b - a) / (hi - lo);
+}
+
+// Periodic value-noise hash → [0,1] for a (wrapped) integer lattice point.
+fn valueHashP(p: vec3<f32>) -> f32 {
+  return fract(sin(dot(p, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453123);
+}
+
+// Periodic value noise in [0,1] (trilinear interp of corner hashes, lattice
+// wrapped mod freq). Broader/sharper distribution than gradient Perlin — this is
+// the live base type, the one that carves big puffs + clear gaps under coverage.
+fn valueNoisePeriodic(P: vec3<f32>, freq: f32) -> f32 {
+  let pp = P * freq;
+  let pi = floor(pp);
+  let pf = fract(pp);
+  let u = pf * pf * (3.0 - 2.0 * pf);
+  var total: f32 = 0.0;
+  for (var c: i32 = 0; c < 8; c = c + 1) {
+    let cx = f32(c & 1);
+    let cy = f32((c >> 1) & 1);
+    let cz = f32((c >> 2) & 1);
+    let corner = vec3<f32>(cx, cy, cz);
+    let h = valueHashP(pmod3(pi + corner, freq));
+    let w = mix(1.0 - u.x, u.x, cx) * mix(1.0 - u.y, u.y, cy) * mix(1.0 - u.z, u.z, cz);
+    total = total + w * h;
+  }
+  return total;
+}
+
+// 4-octave periodic value fBM in [0,1].
+fn valueFBM(P: vec3<f32>, freq: f32) -> f32 {
+  var v: f32 = 0.0;
+  var amp: f32 = 0.5;
+  var f: f32 = freq;
+  for (var i: i32 = 0; i < 4; i = i + 1) {
+    v = v + amp * valueNoisePeriodic(P, f);
+    f = f * 2.0;
+    amp = amp * 0.5;
+  }
+  return v / 0.9375; // amp sum
 }
 
 @compute @workgroup_size(4, 4, 4)
@@ -128,18 +170,20 @@ fn bakeShape(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= dims.x || gid.y >= dims.y || gid.z >= dims.z) { return; }
   let p = (vec3<f32>(gid) + 0.5) / vec3<f32>(dims); // voxel center in [0,1)
 
-  // R — Perlin-Worley billow (Schneider remap: erode the Perlin base by the
-  // low-freq Worley fBm so the base reads connected-yet-billowy).
-  let pfbm = perlinFBM(p, 4.0);
-  let wfbmBase = worleyFBM(p, 4.0);
-  let pw = clamp(remap(pfbm, wfbmBase - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0);
+  // R — the cloud BASE shape: a periodic VALUE-noise fBM (the live base type —
+  // broad/sharp enough that the coverage gate carves big distinct puffs + clear
+  // gaps, which smooth gradient-Perlin could not). Base freq 2 → ~1.7 km features
+  // (skips the freq-1 octave that would tile too obviously). NOT Worley-remapped
+  // (that over-densifies — the 379a-revert lesson); Worley only ERODES edges via
+  // the detail texture. V4 will refine the morphology toward Perlin-Worley.
+  let base = valueFBM(p, 2.0);
 
-  // G/B/A — inverted Worley at increasing frequency (the erosion fBm V3 combines).
+  // G/B/A — inverted Worley at increasing frequency (erosion fBm, for V4 morphology).
   let g = worleyInv(p, 4.0);
   let b = worleyInv(p, 8.0);
   let a = worleyInv(p, 16.0);
 
-  textureStore(shapeTex, vec3<i32>(gid), vec4<f32>(pw, g, b, a));
+  textureStore(shapeTex, vec3<i32>(gid), vec4<f32>(base, g, b, a));
 }
 
 @compute @workgroup_size(4, 4, 4)

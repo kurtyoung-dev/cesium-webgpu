@@ -205,6 +205,35 @@ fn worldToWeatherUV(worldPos: vec3<f32>) -> vec2<f32> {
 }
 
 // ─── Cloud density at a world-space point ───
+fn remap(v: f32, lo: f32, hi: f32, a: f32, b: f32) -> f32 {
+  return a + (v - lo) * (b - a) / (hi - lo);
+}
+
+// V3 — is the baked-3D-texture density core active? (qualityFlags bit 0)
+fn noiseBakedEnabled() -> bool {
+  return (u32(cloud.qualityFlags) & QF_NOISE_BAKED) != 0u;
+}
+
+// V3 — baked cloud BASE shape (one trilinear fetch of the shape texture's R: the
+// contrast-stretched Perlin fBM the bake wrote). Drop-in for the live `fbmNoise`
+// base — NOT Worley-remapped (a remap raises the mean + over-densifies, the
+// 379a-revert lesson the live code warns about); the Worley stays SUBTRACTIVE
+// erosion via the detail texture in cloudDensity. SHARED by cloudDensity + the
+// cloudBaseDensity skip-oracle so they stay identical BEFORE erosion — that
+// preserves W5's `base >= full` invariant (cloudDensity subtracts erosion; the
+// oracle does not). The `repeat` sampler tiles the periodic bake through world space.
+fn bakedBase(samplePos: vec3<f32>) -> f32 {
+  // Domain-warp the lookup by a SLOW low-frequency offset (sampled from the
+  // detail texture at a large period) so the baked texture's ~3.3 km tiling grid
+  // bends into organic shapes instead of reading as an obvious repeating lattice.
+  // (Normally the spatially-varying weather map masks the repeat; this keeps it
+  // hidden when the weather map is off.) Warp preserves the single-sample
+  // contrast — no octave-blend smoothing — so the billowy puffs survive.
+  let w = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, samplePos * 0.15, 0.0).rgb;
+  let uvw = samplePos + (w - vec3<f32>(0.5)) * 0.9;
+  return textureSampleLevel(cloudShapeTex, cloudNoiseSampler, uvw, 0.0).r;
+}
+
 fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   // Animate with wind
   let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
@@ -224,9 +253,16 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
     effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
   }
 
-  // Base shape (large-scale FBM) — UNCHANGED value-noise base (the 379a-revert
-  // lesson: do not Worley-remap the base; it over-densifies).
-  var density = fbmNoise(samplePos);
+  // Base shape. V3 — BAKED: the Nubis Perlin-Worley combine from the baked 3D
+  // shape texture (one trilinear fetch + remap — better-looking AND cheaper than
+  // the ~30 live evals). LIVE: the historical value-noise FBM (kept as the
+  // fallback / low tier so the default never regresses).
+  var density: f32;
+  if (noiseBakedEnabled()) {
+    density = bakedBase(samplePos);
+  } else {
+    density = fbmNoise(samplePos);
+  }
 
   // Coverage threshold — shapes the clouds (per-position when the weather map is on)
   density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
@@ -236,11 +272,19 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
                      * smoothstep(1.0, 0.7, heightFraction);
   density *= heightGradient;
 
-  // 379a (minimal) — high-frequency WORLEY edge erosion (was value-noise).
-  // Subtractive only: carves billowy cauliflower lobes into the cloud edges
-  // without raising the density floor. Erosion fades toward the cloud top so
-  // bases stay detailed while tops round off.
-  let worleyDetail = worleyF1(samplePos * 5.0 + windOffset * 0.001);
+  // High-frequency WORLEY edge erosion — subtractive ONLY (carves billowy lobes
+  // without raising the floor; fades toward the top). V3 — BAKED: the detail
+  // texture's R is INVERTED Worley (high AT features), so `1 - detail.r` is the
+  // Worley DISTANCE (high BETWEEN features), matching the live erosion sense.
+  // This is a LITERAL SUBTRACTION, NOT a remap — a remap would raise mid-range
+  // densities and break W5's `base >= full` (the W5/379a-revert lesson).
+  var worleyDetail: f32;
+  if (noiseBakedEnabled()) {
+    let detail = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, samplePos * 5.0, 0.0);
+    worleyDetail = 1.0 - detail.r;
+  } else {
+    worleyDetail = worleyF1(samplePos * 5.0 + windOffset * 0.001);
+  }
   density -= worleyDetail * 0.18 * (1.0 - heightFraction);
   density = max(density, 0.0);
 
@@ -268,7 +312,15 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
     effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
   }
 
-  var density = fbmNoise(samplePos);
+  // SAME base as cloudDensity (baked or live), then coverage + height gradient,
+  // and crucially NO erosion — so this oracle is >= cloudDensity everywhere
+  // (W5's conservative `base >= full` invariant), in both the baked and live paths.
+  var density: f32;
+  if (noiseBakedEnabled()) {
+    density = bakedBase(samplePos);
+  } else {
+    density = fbmNoise(samplePos);
+  }
   density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
   let heightGradient = smoothstep(0.0, 0.15, heightFraction)
                      * smoothstep(1.0, 0.7, heightFraction);
