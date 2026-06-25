@@ -4348,7 +4348,11 @@ These are areas the webgpu-morph-review audit did NOT examine — flagged as lik
 
 ---
 
-## BUG-WEBGPU-SKY-GROUNDVIEW-HIGH-ELEVATION-BLACK — WebGPU sky renders black above the horizon band at ground level (2026-06-25)
+## BUG-WEBGPU-SKY-GROUNDVIEW-HIGH-ELEVATION-BLACK — ✅ RESOLVED (commit b3a55ebae7) — it was the SKYBOX over the atmosphere, NOT shell coverage (2026-06-25)
+
+**RESOLVED.** The dark daytime sky was the skyBox cubemap + starField being composited OVER the atmosphere (injected commands APPEND after the binned SkyAtmosphere) and erasing it — NOT the sky-shell coverage theory below (that was a phantom; the shell renders the full sky). Fix: `SceneRenderer.js` ~L370 PREPENDS skyBox+starField ahead of the binned atmosphere. Full WebGL parity day/night, static/dynamic. Depth answer: neither writes depth (background layers occluded by globe via depth-test; atmosphere depthWrite would erase the sun/moon drawn after it). Full writeup in [WEBGPU_DEBUGGING_LOG.md](WEBGPU_DEBUGGING_LOG.md). Also shipped the fullscreen-sky option. The original (incorrect) report is kept below for the trail.
+
+### (Original — INCORRECT shell-coverage theory, superseded)
 
 **Surfaced** confirming the Weather Inspector demo's grey sky. At a 650 m ground camera with `skyAtmosphere.show=true`, the WebGPU sky renders a thin BLUE band at the horizon and PURE BLACK above it; WebGL is blue across the whole sky (upper-center sky RGB WebGPU `(1,1,1)` vs WebGL `(75,123,176)`; identical with `showProceduralClouds` on/off → NOT the clouds). This is the dominant visible weather/atmosphere gap on WebGPU at ground level and likely the same residual that shows as red in the atmosphere/sky band of the `capture-and-diff` globe-horizon diff PNGs.
 
