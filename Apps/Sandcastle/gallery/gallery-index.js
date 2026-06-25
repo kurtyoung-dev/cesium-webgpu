@@ -1155,6 +1155,10 @@ const gallery_demos = [
     isNew: true,
   },
   {
+    name: "WebGPU Weather Inspector",
+    isNew: true,
+  },
+  {
     name: "WebGPU Weather Particles",
     isNew: true,
   },

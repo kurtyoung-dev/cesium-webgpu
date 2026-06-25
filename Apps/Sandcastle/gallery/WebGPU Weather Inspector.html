@@ -1,0 +1,663 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Live weather inspector — drive the WebGPU procedural-cloud + atmosphere dials in real time. Tweak coverage, density, layer heights, silver-lining, phase, ambient, wind, sky and fog, or apply a named sky preset (clear / fair-weather cumulus / overcast / stormy / hazy). Every control writes a live globe.atmosphericConditions property; the sky updates next frame."
+    />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, Atmosphere"
+    />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Weather Inspector demo.
+
+    A live control panel over the fork's fully-configurable weather surface.
+    Every slider/toggle writes a property exposed on `globe` or
+    `scene.globe.atmosphericConditions.*` (the live config facade landed in the
+    Campaign-3 weather-config work) and the procedural-cloud raymarcher re-packs
+    those uniforms next frame — no rebuild, no reload.
+
+    The dials are declared once in the GROUPS array and the panel is generated
+    from it, so presets just set the same paths and refresh the UI. Cloud dials
+    that default to `undefined` (silver-lining, phase, ambient, erosion) leave the
+    renderer's built-in value in place until you move them.
+
+    WebGPU-only: procedural volumetric clouds + the weather-config dials only
+    exist on the WebGPU backend; the Viewer is pinned to it via contextOptions.
+  -->
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
+    <style>
+      @import url(../templates/bucket.css);
+
+      #weatherPanel {
+        position: absolute;
+        top: 5px;
+        left: 5px;
+        max-height: calc(100% - 20px);
+        overflow-y: auto;
+        width: 270px;
+        padding: 8px 10px 10px;
+        background: rgba(28, 30, 34, 0.88);
+        border-radius: 6px;
+        color: #eee;
+        font-family: sans-serif;
+        font-size: 12px;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+      }
+      #weatherPanel h2 {
+        margin: 0 0 6px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      #weatherPanel .presets {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-bottom: 8px;
+      }
+      #weatherPanel .presets button {
+        flex: 1 0 auto;
+        font-size: 11px;
+        padding: 4px 6px;
+        border: none;
+        border-radius: 3px;
+        background: #3a6ea5;
+        color: #fff;
+        cursor: pointer;
+      }
+      #weatherPanel .presets button:hover {
+        background: #4d86c4;
+      }
+      #weatherPanel fieldset {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 4px;
+        margin: 6px 0;
+        padding: 4px 8px 6px;
+      }
+      #weatherPanel legend {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        color: #9ec5ff;
+        padding: 0 4px;
+      }
+      #weatherPanel .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 3px 0;
+      }
+      #weatherPanel .row label {
+        flex: 1 1 auto;
+        margin-right: 6px;
+      }
+      #weatherPanel .row input[type="range"] {
+        width: 96px;
+        vertical-align: middle;
+      }
+      #weatherPanel .row input[type="checkbox"] {
+        margin-right: 26px;
+      }
+      #weatherPanel .row select {
+        width: 96px;
+      }
+      #weatherPanel .row .val {
+        display: inline-block;
+        min-width: 38px;
+        text-align: right;
+        margin-left: 6px;
+        color: #cfe3ff;
+        font-variant-numeric: tabular-nums;
+      }
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="weatherPanel"></div>
+    <div id="toolbar"></div>
+    <script id="cesium_sandcastle_script">
+      /* global Cesium, Sandcastle */
+      window.startup = async function (Cesium) {
+        //Sandcastle_Begin
+
+        // Procedural clouds + the live weather-config dials are WebGPU-only,
+        // so pin the backend.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+        const scene = viewer.scene;
+        const globe = scene.globe;
+        window.viewer = viewer; // expose for console tinkering
+
+        // A fair-weather starting sky so the panel has something to act on.
+        globe.showProceduralClouds = true;
+        globe.cloudCoverage = 0.45;
+        globe.cloudDensity = 0.3;
+        scene.skyAtmosphere.show = true;
+
+        // Near-ground view looking up at the cloud deck. The camera sits below
+        // even the lowest preset cloud base (Stormy = 800 m) so it always sees
+        // the ceiling from underneath — never embedded in the volume — and the
+        // upper frame fills with cloud while gaps show blue sky. Coverage,
+        // density and the lighting dials all read clearly from here.
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(-95.0, 39.0, 650.0),
+          orientation: {
+            heading: Cesium.Math.toRadians(90.0),
+            pitch: Cesium.Math.toRadians(16.0),
+            roll: 0.0,
+          },
+        });
+
+        // ── path get/set over { scene, globe, viewer } ──────────────────────
+        const rootObj = { scene, globe, viewer };
+        function getByPath(path) {
+          return path
+            .split(".")
+            .reduce(
+              (o, k) => (o === undefined || o === null ? undefined : o[k]),
+              rootObj,
+            );
+        }
+        function setByPath(path, value) {
+          const parts = path.split(".");
+          const last = parts.pop();
+          let o = rootObj;
+          for (const k of parts) {
+            if (o === undefined || o === null) {
+              return;
+            }
+            o = o[k];
+          }
+          if (o !== undefined && o !== null) {
+            o[last] = value;
+          }
+        }
+
+        // Time-of-day (UTC hour) is special: it drives the clock, not a property.
+        function setHourUtc(hour) {
+          const h = Math.floor(hour);
+          const m = Math.round((hour - h) * 60);
+          const iso = `2026-06-21T${String(h).padStart(2, "0")}:${String(
+            m,
+          ).padStart(2, "0")}:00Z`;
+          const t = Cesium.JulianDate.fromIso8601(iso);
+          viewer.clock.currentTime = t.clone();
+          viewer.clock.shouldAnimate = false;
+        }
+        // Wind direction is a vec2 driven by two sliders.
+        const windDir = { x: 0.7, y: 0.3 };
+        function applyWind() {
+          globe.cloudWindDirection = { x: windDir.x, y: windDir.y };
+        }
+
+        // ── dial declarations (the full live weather surface) ───────────────
+        // type: "range" | "toggle" | "select" | "hour" | "windX" | "windY"
+        const GROUPS = [
+          {
+            title: "Time",
+            dials: [
+              {
+                label: "Time of day (UTC h)",
+                type: "hour",
+                min: 0,
+                max: 24,
+                step: 0.25,
+                def: 18,
+              },
+            ],
+          },
+          {
+            title: "Clouds · shape",
+            dials: [
+              {
+                label: "Show clouds",
+                type: "toggle",
+                path: "globe.showProceduralClouds",
+              },
+              {
+                label: "Coverage",
+                type: "range",
+                path: "globe.cloudCoverage",
+                min: 0,
+                max: 1,
+                step: 0.02,
+              },
+              {
+                label: "Density",
+                type: "range",
+                path: "globe.cloudDensity",
+                min: 0.05,
+                max: 1,
+                step: 0.05,
+              },
+              {
+                label: "Erosion",
+                type: "range",
+                path: "globe.cloudErosionStrength",
+                min: 0.05,
+                max: 0.25,
+                step: 0.01,
+                def: 0.18,
+              },
+              {
+                label: "Weather map",
+                type: "toggle",
+                path: "globe.cloudWeatherMap",
+              },
+            ],
+          },
+          {
+            title: "Clouds · layer",
+            dials: [
+              {
+                label: "Base (m)",
+                type: "range",
+                path: "globe.cloudLayerBottom",
+                min: 0,
+                max: 12000,
+                step: 100,
+              },
+              {
+                label: "Top (m)",
+                type: "range",
+                path: "globe.cloudLayerTop",
+                min: 500,
+                max: 16000,
+                step: 100,
+              },
+            ],
+          },
+          {
+            title: "Clouds · lighting",
+            dials: [
+              {
+                label: "Silver lining",
+                type: "range",
+                path: "globe.cloudSilverLiningIntensity",
+                min: 0,
+                max: 2,
+                step: 0.05,
+                def: 0.8,
+              },
+              {
+                label: "Phase fwd g",
+                type: "range",
+                path: "globe.cloudPhaseForwardG",
+                min: 0.5,
+                max: 0.95,
+                step: 0.01,
+                def: 0.85,
+              },
+              {
+                label: "Phase back g",
+                type: "range",
+                path: "globe.cloudPhaseBackG",
+                min: -0.5,
+                max: 0,
+                step: 0.01,
+                def: -0.3,
+              },
+              {
+                label: "Phase blend",
+                type: "range",
+                path: "globe.cloudPhaseBlend",
+                min: 0,
+                max: 1,
+                step: 0.05,
+                def: 0.7,
+              },
+              {
+                label: "Ambient",
+                type: "range",
+                path: "globe.cloudAmbientIntensity",
+                min: 0.5,
+                max: 3,
+                step: 0.1,
+                def: 1.5,
+              },
+              {
+                label: "Aerial haze",
+                type: "range",
+                path: "globe.cloudAerialStrength",
+                min: 0,
+                max: 1,
+                step: 0.05,
+                def: 1.0,
+              },
+            ],
+          },
+          {
+            title: "Clouds · quality",
+            dials: [
+              {
+                label: "Quality",
+                type: "select",
+                path: "globe.cloudVolumetricQuality",
+                options: ["low", "medium", "high", "auto"],
+              },
+            ],
+          },
+          {
+            title: "Wind",
+            dials: [
+              {
+                label: "Speed (m/s)",
+                type: "range",
+                path: "globe.cloudWindSpeed",
+                min: 0,
+                max: 50,
+                step: 0.5,
+              },
+              {
+                label: "Dir east",
+                type: "windX",
+                min: -1,
+                max: 1,
+                step: 0.05,
+                def: 0.7,
+              },
+              {
+                label: "Dir north",
+                type: "windY",
+                min: -1,
+                max: 1,
+                step: 0.05,
+                def: 0.3,
+              },
+            ],
+          },
+          {
+            title: "Sky / atmosphere",
+            dials: [
+              {
+                label: "Light intensity",
+                type: "range",
+                path: "globe.atmosphereLightIntensity",
+                min: 0,
+                max: 20,
+                step: 0.5,
+              },
+              {
+                label: "Hue shift",
+                type: "range",
+                path: "globe.atmosphereHueShift",
+                min: -1,
+                max: 1,
+                step: 0.05,
+              },
+              {
+                label: "Saturation",
+                type: "range",
+                path: "globe.atmosphereSaturationShift",
+                min: -1,
+                max: 1,
+                step: 0.05,
+              },
+              {
+                label: "Brightness",
+                type: "range",
+                path: "globe.atmosphereBrightnessShift",
+                min: -1,
+                max: 1,
+                step: 0.05,
+              },
+            ],
+          },
+          {
+            title: "Fog",
+            dials: [
+              {
+                label: "Fog enabled",
+                type: "toggle",
+                path: "scene.fog.enabled",
+              },
+              {
+                label: "Fog density",
+                type: "range",
+                path: "scene.fog.density",
+                min: 0,
+                max: 0.001,
+                step: 0.00002,
+                def: 0.0002,
+              },
+            ],
+          },
+        ];
+
+        // ── named sky presets (path → value; richer than the sliders) ───────
+        const PRESETS = {
+          Clear: {
+            "globe.showProceduralClouds": false,
+            "globe.cloudCoverage": 0.1,
+            "scene.fog.enabled": false,
+            "globe.atmosphereLightIntensity": 10.0,
+            "globe.atmosphereSaturationShift": 0.0,
+            "globe.atmosphereBrightnessShift": 0.0,
+          },
+          Cumulus: {
+            "globe.showProceduralClouds": true,
+            "globe.cloudCoverage": 0.35,
+            "globe.cloudDensity": 0.25,
+            "globe.cloudLayerBottom": 1500,
+            "globe.cloudLayerTop": 4000,
+            "globe.cloudVolumetricQuality": "medium",
+            "globe.cloudSilverLiningIntensity": 0.9,
+            "globe.cloudAerialStrength": 0.8,
+            "globe.cloudWeatherMap": false,
+            "scene.fog.enabled": true,
+            "scene.fog.density": 0.0001,
+            "globe.atmosphereLightIntensity": 10.0,
+          },
+          Overcast: {
+            "globe.showProceduralClouds": true,
+            "globe.cloudCoverage": 0.78,
+            "globe.cloudDensity": 0.42,
+            "globe.cloudLayerBottom": 1000,
+            "globe.cloudLayerTop": 3500,
+            "globe.cloudVolumetricQuality": "high",
+            "globe.cloudWeatherMap": true,
+            "globe.cloudAmbientIntensity": 1.8,
+            "scene.fog.enabled": true,
+            "scene.fog.density": 0.0003,
+            "globe.atmosphereLightIntensity": 7.0,
+          },
+          Stormy: {
+            "globe.showProceduralClouds": true,
+            "globe.cloudCoverage": 0.95,
+            "globe.cloudDensity": 0.65,
+            "globe.cloudLayerBottom": 800,
+            "globe.cloudLayerTop": 6000,
+            "globe.cloudVolumetricQuality": "high",
+            "globe.cloudWeatherMap": true,
+            "globe.cloudPhaseBackG": -0.5,
+            "globe.cloudAmbientIntensity": 0.9,
+            "globe.cloudAerialStrength": 0.6,
+            "globe.cloudWindSpeed": 28.0,
+            "scene.fog.enabled": true,
+            "scene.fog.density": 0.0004,
+            "globe.atmosphereLightIntensity": 5.0,
+            "globe.atmosphereBrightnessShift": -0.1,
+          },
+          Hazy: {
+            "globe.showProceduralClouds": true,
+            "globe.cloudCoverage": 0.5,
+            "globe.cloudDensity": 0.3,
+            "globe.cloudVolumetricQuality": "medium",
+            "scene.fog.enabled": true,
+            "scene.fog.density": 0.0005,
+            "globe.atmosphereLightIntensity": 8.0,
+            "globe.atmosphereSaturationShift": -0.3,
+            "globe.atmosphereBrightnessShift": -0.08,
+          },
+        };
+
+        // ── build the panel from GROUPS ─────────────────────────────────────
+        const panel = document.getElementById("weatherPanel");
+        const refreshers = []; // () => void, re-reads scene state into the UI
+
+        const heading = document.createElement("h2");
+        heading.textContent = "Weather Inspector";
+        panel.appendChild(heading);
+
+        const presetBar = document.createElement("div");
+        presetBar.className = "presets";
+        Object.keys(PRESETS).forEach((name) => {
+          const b = document.createElement("button");
+          b.textContent = name;
+          b.id = `wi-preset-${name}`;
+          b.addEventListener("click", () => applyPreset(name));
+          presetBar.appendChild(b);
+        });
+        panel.appendChild(presetBar);
+
+        function idFor(dial) {
+          return `wi-${dial.path || dial.type}-${dial.label}`;
+        }
+
+        function makeRow(dial) {
+          const row = document.createElement("div");
+          row.className = "row";
+          const label = document.createElement("label");
+          label.textContent = dial.label;
+          row.appendChild(label);
+
+          if (dial.type === "toggle") {
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.id = idFor(dial);
+            input.checked = Boolean(getByPath(dial.path));
+            input.addEventListener("change", () => {
+              setByPath(dial.path, input.checked);
+              scene.requestRender();
+            });
+            row.appendChild(input);
+            refreshers.push(() => {
+              input.checked = Boolean(getByPath(dial.path));
+            });
+          } else if (dial.type === "select") {
+            const sel = document.createElement("select");
+            sel.id = idFor(dial);
+            dial.options.forEach((opt) => {
+              const o = document.createElement("option");
+              o.value = opt;
+              o.textContent = opt;
+              sel.appendChild(o);
+            });
+            sel.value = getByPath(dial.path);
+            sel.addEventListener("change", () => {
+              setByPath(dial.path, sel.value);
+              scene.requestRender();
+            });
+            row.appendChild(sel);
+            refreshers.push(() => {
+              sel.value = getByPath(dial.path);
+            });
+          } else {
+            // range-like: range, hour, windX, windY
+            const input = document.createElement("input");
+            input.type = "range";
+            input.id = idFor(dial);
+            input.min = dial.min;
+            input.max = dial.max;
+            input.step = dial.step;
+            const val = document.createElement("span");
+            val.className = "val";
+
+            const decimals = dial.step < 0.01 ? 5 : dial.step < 1 ? 2 : 0;
+            const readCurrent = () => {
+              if (dial.type === "windX") {
+                return windDir.x;
+              }
+              if (dial.type === "windY") {
+                return windDir.y;
+              }
+              if (dial.type === "hour") {
+                return dial.def;
+              }
+              const v = getByPath(dial.path);
+              return v === undefined || v === null ? dial.def : v;
+            };
+            const setUI = () => {
+              const v = readCurrent();
+              input.value = v;
+              val.textContent = Number(v).toFixed(decimals);
+            };
+            setUI();
+
+            input.addEventListener("input", () => {
+              const v = Number(input.value);
+              val.textContent = v.toFixed(decimals);
+              if (dial.type === "windX") {
+                windDir.x = v;
+                applyWind();
+              } else if (dial.type === "windY") {
+                windDir.y = v;
+                applyWind();
+              } else if (dial.type === "hour") {
+                setHourUtc(v);
+              } else {
+                setByPath(dial.path, v);
+              }
+              scene.requestRender();
+            });
+            row.appendChild(input);
+            row.appendChild(val);
+            refreshers.push(setUI);
+          }
+          return row;
+        }
+
+        GROUPS.forEach((group) => {
+          const fs = document.createElement("fieldset");
+          const lg = document.createElement("legend");
+          lg.textContent = group.title;
+          fs.appendChild(lg);
+          group.dials.forEach((dial) => fs.appendChild(makeRow(dial)));
+          panel.appendChild(fs);
+        });
+
+        function refreshUI() {
+          refreshers.forEach((fn) => fn());
+        }
+
+        function applyPreset(name) {
+          const preset = PRESETS[name];
+          Object.keys(preset).forEach((path) => setByPath(path, preset[path]));
+          refreshUI();
+          scene.requestRender();
+        }
+        window.__weatherInspector = { applyPreset, refreshUI, GROUPS, PRESETS };
+
+        setHourUtc(18);
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>
