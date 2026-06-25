@@ -1,5 +1,12 @@
 # Campaign 3 — Weather "far far better" + parity sweep (25 batches)
 
+> **Execution-ready detail:** see the companion
+> **[QUEUE_2026-06-24_CAMPAIGN3_WEATHER_PACKED.md](QUEUE_2026-06-24_CAMPAIGN3_WEATHER_PACKED.md)**
+> — each batch packed with all its bundled work (exact files, byte-locked
+> `CloudUniforms`/`EffectsUniforms` offsets, BGL bindings, probe thresholds,
+> dependencies), grounded in the real code by a 5-architect design workflow.
+> This file is the why + arc overview.
+
 Authored 2026-06-24 (git Batches 391+). Sequenced for a workflow to execute one
 batch at a time: **implement → `npx gulp build` → Playwright probe (Edge, dev
 server :8080) → READ the PNGs → commit + push as kurtyoung-dev**. Each batch is a
