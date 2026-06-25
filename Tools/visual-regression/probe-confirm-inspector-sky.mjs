@@ -130,6 +130,10 @@ async function run() {
   // Let the viewer's own render loop present + settle, then compositor-screenshot
   // (reliable for BOTH WebGL and WebGPU — no toDataURL black-buffer / Y-flip issues).
   await page.waitForTimeout(9000);
+  const capCamH = await page.evaluate(() =>
+    window.viewer.camera.positionCartographic.height.toFixed(0),
+  );
+  console.log(`[${TAG}] capture-time camera height = ${capCamH} m`);
   await page.screenshot({ path: `${OUT}/confirm-inspector-sky-${TAG}.png` });
 
   // Measure the upper-center sky region (clear of the left panel + right help).
