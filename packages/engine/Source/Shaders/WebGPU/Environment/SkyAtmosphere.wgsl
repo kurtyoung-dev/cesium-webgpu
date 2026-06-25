@@ -180,6 +180,12 @@ struct Uniforms {
   // layout stable when those phases land so SkyAtmosphere bind groups
   // don't need to be rebuilt later.
   windDirectionAndSpeed: vec4<f32>,
+  // Fullscreen-sky path (view-independent sky option). The shell-mesh path
+  // ignores these; the fullscreen path reconstructs the per-pixel world ray
+  // from screen UV with them (mirrors the cloud renderer's getWorldRay). Packed
+  // at float offsets 68 (inverseProjection) and 84 (inverseView).
+  inverseProjection: mat4x4<f32>,
+  inverseView: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -209,7 +215,20 @@ struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) worldPosition: vec3<f32>,
   @location(1) cameraToVertex: vec3<f32>,
+  @location(2) uv: vec2<f32>, // fullscreen-path screen UV (shell path leaves 0)
 };
+
+// Reconstruct the world-space view ray from screen UV (fullscreen sky path).
+// Mirror of the cloud renderer's getWorldRay (ProceduralClouds.wgsl) — the proven
+// on-backend per-pixel ray reconstruction. NDC z=1 (far) so the inverse projection
+// yields a far-plane point; w-zeroed before the inverse view to get a direction.
+fn getWorldRay(uv: vec2<f32>) -> vec3<f32> {
+  let ndc = vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0);
+  var viewDir = u.inverseProjection * ndc;
+  viewDir.w = 0.0;
+  let worldDir = u.inverseView * viewDir;
+  return normalize(worldDir.xyz);
+}
 
 // Translate Relative To Eye for 64-bit precision
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
@@ -232,6 +251,26 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // positionRTE` is the cheapest safe placeholder.
   output.cameraToVertex = positionRTE;
   output.worldPosition = u.cameraPositionWC + positionRTE;
+  output.uv = vec2<f32>(0.0, 0.0);
+  return output;
+}
+
+// Fullscreen-triangle vertex for the view-independent sky path. No vertex
+// buffer — the 3 verts come from @builtin(vertex_index). Pinned to the far
+// plane (z=w → NDC z=1) so the globe occludes it via the pipeline's less-equal
+// depth compare (depthWrite=false). The fragment reconstructs the per-pixel ray
+// from uv, so this path has none of the shell mesh's ground-view coverage gap.
+@vertex
+fn vertexMainFullscreen(@builtin(vertex_index) vid: u32) -> VertexOutput {
+  var output: VertexOutput;
+  // Oversized single triangle covering all of NDC [-1,1] (verts (-1,-1),(3,-1),
+  // (-1,3)) — full coverage with 3 verts, draw(3), triangle-list.
+  let tx = f32((vid << 1u) & 2u); // 0, 2, 0
+  let ty = f32(vid & 2u); // 0, 0, 2
+  output.position = vec4<f32>(tx * 2.0 - 1.0, ty * 2.0 - 1.0, 1.0, 1.0); // z=1 far
+  output.uv = vec2<f32>(tx, ty); // uv*2-1 == NDC; getWorldRay reconstructs the ray
+  output.cameraToVertex = vec3<f32>(0.0, 0.0, 1.0); // unused on this path
+  output.worldPosition = u.cameraPositionWC;
   return output;
 }
 
@@ -521,23 +560,25 @@ fn pbrNeutralTonemapSky(color: vec3<f32>) -> vec3<f32> {
   return mix(c, vec3<f32>(newPeak), vec3<f32>(g));
 }
 
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+// Shared sky scattering for one camera ray. Used by BOTH the shell-mesh path
+// (fragmentMain, rayDir from the interpolated shell vertex) and the fullscreen
+// path (fragmentMainFullscreen, rayDir from getWorldRay(uv)). The math is
+// identical; only the ray SOURCE differs. Rays that miss the atmosphere or whose
+// segment is degenerate return a fully-transparent color (alpha 0) — equivalent
+// to the old `discard` under the alpha-over blend, but a function can't discard.
+fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   let innerRadius = u.radiiAndDynamicAtmosphere.x;
   let outerRadius = u.radiiAndDynamicAtmosphere.y;
-
-  let rayDir = normalize(input.cameraToVertex);
   // Batch 247 — WebGL-convention camera height (eyeHeight + adjusted
   // inner radius, packed CPU-side) for the altitude-opacity ramp;
   // |cameraPositionWC| differs from it by the WebGL radiusAdjust.
   let cameraHeight = u.radiiAndDynamicAtmosphere.w;
 
-  // Determine ray origin and intersections
-  var rayOrigin = u.cameraPositionWC;
+  // Determine ray intersections
   let atmosphereIntersect = raySphereIntersect(rayOrigin, rayDir, outerRadius);
 
   if (atmosphereIntersect.y < 0.0) {
-    discard;
+    return vec4<f32>(0.0);
   }
 
   let earthIntersect = raySphereIntersect(rayOrigin, rayDir, innerRadius);
@@ -551,8 +592,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   let rayLength = rayEnd - rayStart;
   if (rayLength <= 0.0) {
-    discard;
+    return vec4<f32>(0.0);
   }
+
+  // The sky point along this ray (rayDir is unit, so distance == rayEnd). Used
+  // for the "lit from above" light dir, the primary ray length, and the
+  // day/night term — replaces the shell path's per-vertex worldPosition.
+  let skyPoint = rayOrigin + rayDir * rayEnd;
 
   // Tier 1 debug: bypass scattering and emit diagnostic magenta. Lets you
   // see the atmosphere shell's geometric coverage without scattering math
@@ -614,7 +660,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let isNoneCase = dynamicLighting < 0.5;
   var lightDirWC: vec3<f32>;
   if (isNoneCase) {
-    lightDirWC = normalize(input.worldPosition);
+    lightDirWC = normalize(skyPoint);
   } else {
     lightDirWC = u.sunDirectionWC;
   }
@@ -646,7 +692,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     color = computeScattering(
       u.cameraPositionWC,
       rayDir,
-      length(input.cameraToVertex),
+      rayEnd,
       lightDirWC,
       innerRadius,
       outerRadius,
@@ -707,10 +753,22 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let isDynamic = u.radiiAndDynamicAtmosphere.z != 0.0;
   let nightAlpha = select(
     1.0,
-    clamp(dot(normalize(input.worldPosition), lightDirWC), 0.0, 1.0),
+    clamp(dot(normalize(skyPoint), lightDirWC), 0.0, 1.0),
     isDynamic,
   );
   let opacity = altitudeOpacity * pow(nightAlpha, 0.5);
   let alpha = mix(finalColor.b, 1.0, opacity);
   return vec4<f32>(finalColor, alpha);
+}
+
+// Shell-mesh path entry — ray from the interpolated shell vertex.
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  return skyColorForRay(u.cameraPositionWC, normalize(input.cameraToVertex));
+}
+
+// Fullscreen path entry — ray reconstructed per pixel from screen UV.
+@fragment
+fn fragmentMainFullscreen(input: VertexOutput) -> @location(0) vec4<f32> {
+  return skyColorForRay(u.cameraPositionWC, getWorldRay(input.uv));
 }

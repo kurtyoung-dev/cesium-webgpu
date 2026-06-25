@@ -367,14 +367,38 @@ function executeCommands(scene, passState) {
           }
         };
 
-        maybeInject(envState.skyBoxCommand, "skyBox");
-        // Track V-C — bright-star catalog starfield. Injected right AFTER
-        // the skyBox cubemap so the additive HDR stars draw ON TOP of the
-        // (often opaque, dark) cubemap rather than being overwritten by
-        // its alpha-over pass. Distinct command instance from any binned
-        // ENVIRONMENT command, so the maybeInject identity-dedup does not
-        // skip it.
-        maybeInject(envState.starFieldCommand, "starField");
+        // Background layers (skyBox cubemap + bright-star starfield) must draw
+        // BEHIND the atmosphere. SkyAtmosphere (and Sun) use the dual-path
+        // convention — they're already BINNED into envCmds[0..envIdx) from
+        // frameState.commandList — and maybeInject only APPENDS, so injecting
+        // the skyBox here would put it AFTER the atmosphere. Its alpha-over pass
+        // (the daytime atmosphere is ~opaque) then erased the blue sky, leaving
+        // the dark cubemap. WebGL draws the skyBox first; match that by PREPENDING
+        // the background commands ahead of the binned atmosphere (starfield right
+        // after the cubemap so its additive HDR stars sit on top of it). Order
+        // becomes: skyBox, starField, [atmosphere, sun] (binned), moon, panoramas.
+        const bgEnv = [];
+        if (
+          defined(envState.skyBoxCommand) &&
+          typeof envState.skyBoxCommand.execute === "function"
+        ) {
+          bgEnv.push(envState.skyBoxCommand);
+        }
+        if (
+          defined(envState.starFieldCommand) &&
+          typeof envState.starFieldCommand.execute === "function"
+        ) {
+          bgEnv.push(envState.starFieldCommand);
+        }
+        if (bgEnv.length > 0) {
+          for (let c = envIdx - 1; c >= 0; c--) {
+            envCmds[c + bgEnv.length] = envCmds[c];
+          }
+          for (let b = 0; b < bgEnv.length; b++) {
+            envCmds[b] = bgEnv[b];
+          }
+          envIdx += bgEnv.length;
+        }
         if (envState.isSkyAtmosphereVisible) {
           maybeInject(envState.skyAtmosphereCommand, "skyAtmosphere");
         }

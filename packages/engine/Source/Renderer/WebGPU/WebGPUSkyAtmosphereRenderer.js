@@ -47,7 +47,13 @@ function getSkyAtmosphereShaderCache(device) {
 // buffer sizes to be a multiple of 16 bytes; 272 = 17 × 16 satisfies
 // that. No bind-group layout change needed (the layout's minBindingSize
 // is what matters and it sizes from this constant).
-const UNIFORM_BUFFER_SIZE = 272;
+//
+// Fullscreen-sky path — bumped 272 → 400 to append `inverseProjection` +
+// `inverseView` (two mat4 = 128 bytes) at float offsets 68/84, used by the
+// view-independent fullscreen sky option to reconstruct the per-pixel world ray.
+// 400 = 25 × 16. The shell-mesh path packs them too but the shell shader ignores
+// them.
+const UNIFORM_BUFFER_SIZE = 400;
 
 // Default atmosphere parameters
 // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — the SKY shader's
@@ -154,7 +160,16 @@ function generateAtmosphereGeometry(ellipsoid, scale, slices, stacks) {
  * Creates the render pipeline for sky atmosphere.
  * @private
  */
-function createPipeline(device, shaderCode, format, depthFormat, sampleCount) {
+function createPipeline(
+  device,
+  shaderCode,
+  format,
+  depthFormat,
+  sampleCount,
+  fullscreen = false,
+  reuseBgl = undefined,
+  reuseLutBgl = undefined,
+) {
   const shaderModule = getSkyAtmosphereShaderCache(device).getOrCreate(
     ShaderSourceId.SKY_ATMOSPHERE,
     shaderCode,
@@ -162,11 +177,14 @@ function createPipeline(device, shaderCode, format, depthFormat, sampleCount) {
     "SkyAtmosphere shader",
   );
 
-  const bindGroupLayout = makeBindGroupLayout(
-    device,
-    "SkyAtmosphere bind group layout",
-    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
-  );
+  // Reuse the shell's layouts for the fullscreen pipeline so the SAME bind
+  // groups (built from the shell's bindGroupLayout) are valid on it — otherwise
+  // WebGPU rejects the setBindGroup/draw as group-incompatible.
+  const bindGroupLayout =
+    reuseBgl ??
+    makeBindGroupLayout(device, "SkyAtmosphere bind group layout", [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    ]);
 
   // Group 1 holds the precomputed atmosphere LUTs. Bound unconditionally so
   // the pipeline layout never changes — when the LUT compute path is
@@ -176,17 +194,15 @@ function createPipeline(device, shaderCode, format, depthFormat, sampleCount) {
   // Phase 1.3c — bindings 3 and 4 hold the moon LUT pair. They're bound
   // unconditionally too, falling back to the same placeholder when
   // dual-light scattering isn't active so the layout stays constant.
-  const lutBindGroupLayout = makeBindGroupLayout(
-    device,
-    "SkyAtmosphere LUT bind group layout",
-    [
+  const lutBindGroupLayout =
+    reuseLutBgl ??
+    makeBindGroupLayout(device, "SkyAtmosphere LUT bind group layout", [
       sampler(0, Stage.FRAGMENT),
       texture(1, Stage.FRAGMENT),
       texture(2, Stage.FRAGMENT),
       texture(3, Stage.FRAGMENT),
       texture(4, Stage.FRAGMENT),
-    ],
-  );
+    ]);
 
   const pipelineLayout = device.createPipelineLayout({
     label: "SkyAtmosphere pipeline layout",
@@ -194,24 +210,31 @@ function createPipeline(device, shaderCode, format, depthFormat, sampleCount) {
   });
 
   const pipeline = device.createRenderPipeline({
-    label: "SkyAtmosphere pipeline",
+    label: fullscreen
+      ? "SkyAtmosphere fullscreen pipeline"
+      : "SkyAtmosphere pipeline",
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
-      entryPoint: "vertexMain",
-      buffers: [
-        {
-          arrayStride: 24, // 6 floats
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x3" }, // posHigh
-            { shaderLocation: 1, offset: 12, format: "float32x3" }, // posLow
+      // Fullscreen path drives a 3-vert oversized triangle from
+      // @builtin(vertex_index) — no vertex buffers; the shell path reads
+      // posHigh/posLow from the ellipsoid mesh.
+      entryPoint: fullscreen ? "vertexMainFullscreen" : "vertexMain",
+      buffers: fullscreen
+        ? []
+        : [
+            {
+              arrayStride: 24, // 6 floats
+              attributes: [
+                { shaderLocation: 0, offset: 0, format: "float32x3" }, // posHigh
+                { shaderLocation: 1, offset: 12, format: "float32x3" }, // posLow
+              ],
+            },
           ],
-        },
-      ],
     },
     fragment: {
       module: shaderModule,
-      entryPoint: "fragmentMain",
+      entryPoint: fullscreen ? "fragmentMainFullscreen" : "fragmentMain",
       // Slice 5c-B Phase 1 (Batch 106) — scene-FB target. Standard
       // alpha-over blend for the sky atmosphere layer.
       targets: makeSceneFBTargets(format, {
@@ -231,7 +254,9 @@ function createPipeline(device, shaderCode, format, depthFormat, sampleCount) {
     },
     primitive: {
       topology: "triangle-list",
-      cullMode: "front", // Front-face culling for atmosphere
+      // Shell: front-cull (render the inner/back faces from inside the shell).
+      // Fullscreen: no cull (a single screen-covering triangle).
+      cullMode: fullscreen ? "none" : "front",
     },
     depthStencil: {
       format: depthFormat,
@@ -872,6 +897,21 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   uniformData[65] = windDir?.y ?? 0.0;
   uniformData[66] = windDir?.z ?? 1.0;
   uniformData[67] = acWeather?.windSpeed ?? 0.0;
+
+  // Fullscreen-sky path — inverseProjection @68, inverseView @84. Same source
+  // the cloud renderer's getWorldRay uses (uniformState), so the reconstructed
+  // ray matches that proven path. Identity fallback on the first frame.
+  const us2 = frameState.context?.uniformState;
+  if (defined(us2?.inverseProjection)) {
+    Matrix4.pack(us2.inverseProjection, uniformData, 68);
+  } else {
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 68);
+  }
+  if (defined(us2?.inverseView)) {
+    Matrix4.pack(us2.inverseView, uniformData, 84);
+  } else {
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 84);
+  }
 }
 
 /**
@@ -932,10 +972,12 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     cache._pipelineFormatGeneration !== currentGen
   ) {
     cache.pipeline = undefined;
+    cache.fullscreenPipeline = undefined;
     cache._pipelineFailed = false;
     // The cached `WebGPUDrawCommand` carries a direct reference to
     // the OLD pipeline. Drop it so it rebuilds with the new pipeline.
     cache.command = undefined;
+    cache.fullscreenCommand = undefined;
     // The bind groups were built against the OLD bindGroupLayout
     // (which is recreated alongside the pipeline). Forcing a rebuild
     // by clearing the BGL refs below makes the existing bind-group
@@ -962,6 +1004,21 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
       cache.pipeline = result.pipeline;
       cache.bindGroupLayout = result.bindGroupLayout;
       cache.lutBindGroupLayout = result.lutBindGroupLayout;
+      // Fullscreen-sky pipeline (view-independent option). Same shader module +
+      // bind group layouts (makeBindGroupLayout dedupes identical descriptors, so
+      // the shell's bind groups bind here too); differs only in vertex/fragment
+      // entry points, no vertex buffers, and no face cull.
+      const resultFs = createPipeline(
+        device,
+        shaderCode,
+        format,
+        depthFmt,
+        sampleCount,
+        true,
+        result.bindGroupLayout, // reuse so the shell's bind groups bind here
+        result.lutBindGroupLayout,
+      );
+      cache.fullscreenPipeline = resultFs.pipeline;
       cache._pipelineFormatGeneration = currentGen;
     } catch (e) {
       console.error(
@@ -1045,6 +1102,31 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     0,
     UNIFORM_BUFFER_SIZE,
   );
+
+  // View-independent fullscreen-sky option. When `skyAtmosphere._webgpuFullscreen`
+  // is set, push a fullscreen-triangle command (no vertex buffer, draw 3) that
+  // reconstructs the per-pixel ray in the shader — covers the whole sky at any
+  // altitude, sidestepping the shell mesh's ground-view coverage gap. Same
+  // uniform buffer + LUT bind group as the shell path.
+  if (
+    skyAtmosphere._webgpuFullscreen === true &&
+    defined(cache.fullscreenPipeline)
+  ) {
+    if (!defined(cache.fullscreenCommand)) {
+      cache.fullscreenCommand = new WebGPUDrawCommand({
+        pipeline: cache.fullscreenPipeline,
+        bindGroups: [cache.bindGroup, lutInfo.bindGroup],
+        vertexBuffers: [], // verts come from @builtin(vertex_index)
+        vertexCount: 3,
+        pass: 0, // Pass.ENVIRONMENT
+        owner: skyAtmosphere,
+      });
+    } else if (cache.fullscreenCommand.bindGroups[1] !== lutInfo.bindGroup) {
+      cache.fullscreenCommand.bindGroups[1] = lutInfo.bindGroup;
+    }
+    commandList.push(cache.fullscreenCommand);
+    return cache.fullscreenCommand;
+  }
 
   // Create or reuse command. Group 1 (LUTs) may swap from placeholder to
   // real after the first dispatch — keep the command in sync.

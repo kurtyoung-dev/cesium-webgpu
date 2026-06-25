@@ -24,7 +24,8 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const RENDERER = process.env.RENDERER || "webgpu";
 const CLOUDS = (process.env.CLOUDS ?? "on") !== "off";
 const SKY = (process.env.SKY ?? "on") !== "off";
-const TAG = `${RENDERER}-clouds${CLOUDS ? "on" : "off"}${SKY ? "" : "-skyoff"}`;
+const FS = process.env.FS === "on"; // fullscreen WebGPU sky option
+const TAG = `${RENDERER}-clouds${CLOUDS ? "on" : "off"}${SKY ? "" : "-skyoff"}${FS ? "-fs" : ""}`;
 const W = 1024,
   H = 768;
 const OUT = "Tools/visual-regression/output";
@@ -40,20 +41,34 @@ const SETUP = async (cfg) => {
   g.cloudCoverage = 0.45;
   g.cloudDensity = 0.3;
   s.skyAtmosphere.show = cfg.sky; // the thing under test
+  if (cfg.noSkybox && s.skyBox) {
+    s.skyBox.show = false; // test: does the skybox overwrite the upper sky?
+  }
+  if (cfg.fs) {
+    s.skyAtmosphere._webgpuFullscreen = true; // fullscreen WebGPU sky option
+  }
   if (!cfg.sky) {
     s.backgroundColor = C.Color.DARKSLATEGRAY; // non-black bg so globe edge reads
   }
   v.camera.setView({
-    destination: C.Cartesian3.fromDegrees(-95.0, 39.0, 650.0),
+    destination: C.Cartesian3.fromDegrees(-95.0, 39.0, cfg.alt ?? 650.0),
     orientation: {
       heading: C.Math.toRadians(90.0),
       pitch: C.Math.toRadians(16.0),
       roll: 0.0,
     },
   });
-  const t = C.JulianDate.fromIso8601("2026-06-21T18:00:00Z");
+  // Noon-ish local at lon -95 ≈ 18:00 UTC; local midnight ≈ 06:00 UTC.
+  const t = C.JulianDate.fromIso8601(cfg.iso ?? "2026-06-21T18:00:00Z");
   v.clock.currentTime = t.clone();
   v.clock.shouldAnimate = false;
+  if (cfg.lighting) {
+    g.enableLighting = true;
+    g.dynamicAtmosphereLighting = true;
+    if (s.atmosphere) {
+      s.atmosphere.dynamicLighting = 2; // SUNLIGHT — does the sky read this?
+    }
+  }
   return { ok: true };
 };
 
@@ -129,7 +144,15 @@ async function run() {
   });
   await page.waitForFunction(() => !!window.viewer, null, { timeout: 60000 });
   await armWebGPUDevices(page);
-  await page.evaluate(SETUP, { clouds: CLOUDS, sky: SKY });
+  await page.evaluate(SETUP, {
+    clouds: CLOUDS,
+    sky: SKY,
+    fs: FS,
+    noSkybox: process.env.NOSKYBOX === "on",
+    alt: process.env.ALT ? Number(process.env.ALT) : undefined,
+    iso: process.env.ISO,
+    lighting: process.env.LIGHTING === "on",
+  });
 
   // Let the viewer's own render loop present + settle, then compositor-screenshot
   // (reliable for BOTH WebGL and WebGPU — no toDataURL black-buffer / Y-flip issues).
