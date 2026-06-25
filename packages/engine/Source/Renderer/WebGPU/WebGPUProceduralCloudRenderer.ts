@@ -27,7 +27,7 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 
 // Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
-const CLOUD_UNIFORM_FLOATS = 88; // must match CloudUniforms struct in WGSL
+const CLOUD_UNIFORM_FLOATS = 92; // must match CloudUniforms struct in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -492,6 +492,26 @@ export function executeProceduralClouds(
   data[offset++] = 0.34; // 85
   data[offset++] = 0.3; // 86
   data[offset++] = 0; // 87 pad
+  // 88-90 — W3 time-of-day sun color. Keyed on the LOCAL sun elevation
+  // (sunDir · local-up at the camera), NOT raw ECEF Y: warm orange near the
+  // horizon, neutral white by ~20deg up. 91 — W4 aerialStrength (1.0 = neutral).
+  let sinElev = 0.5;
+  if (camPos && sunDir) {
+    const len = Math.hypot(camPos.x, camPos.y, camPos.z) || 1.0;
+    sinElev = Math.max(
+      0.0,
+      Math.min(
+        1.0,
+        (sunDir.x * camPos.x + sunDir.y * camPos.y + sunDir.z * camPos.z) / len,
+      ),
+    );
+  }
+  const e = Math.max(0.0, Math.min(1.0, sinElev / 0.35));
+  const todT = e * e * (3.0 - 2.0 * e); // smoothstep(0, 0.35, sinElev)
+  data[offset++] = 1.0 + (1.0 - 1.0) * todT; // 88 R (warm 1.0 -> noon 1.0)
+  data[offset++] = 0.55 + (1.0 - 0.55) * todT; // 89 G (warm 0.55 -> noon 1.0)
+  data[offset++] = 0.25 + (0.98 - 0.25) * todT; // 90 B (warm 0.25 -> noon 0.98)
+  data[offset++] = 1.0; // 91 aerialStrength (W4)
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

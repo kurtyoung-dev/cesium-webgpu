@@ -65,6 +65,8 @@ struct CloudUniforms {
   _padB: f32,                    // 83
   groundAmbientColor: vec3<f32>, // 84-86 — W2 ground-bounce ambient (lights cloud bottoms)
   _padC: f32,                    // 87
+  sunLightColor: vec3<f32>,      // 88-90 — W3 time-of-day sun color (warm low / neutral noon)
+  aerialStrength: f32,           // 91 — W4 aerial-perspective strength (W3 packs 1.0)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -411,7 +413,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = mix(cloud.groundAmbientColor, cloud.skyAmbientColor, heightFraction)
                 * cloud.ambientIntensity;
 
-    weightedColor += (cloudColor * scatteredLight + ambient) * sampleWeight;
+    // W3 — tint the direct-sun term by the time-of-day sun color (warm near the
+    // horizon, neutral at noon). Ambient keeps its own sky/ground color.
+    weightedColor += (cloudColor * cloud.sunLightColor * scatteredLight + ambient)
+                   * sampleWeight;
     lightEnergy += scatteredLight * sampleWeight;
     totalDensity += density * stepSize;
     transmittance *= sampleTransmittance;

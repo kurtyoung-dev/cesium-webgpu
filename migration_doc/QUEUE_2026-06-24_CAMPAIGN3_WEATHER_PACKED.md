@@ -160,6 +160,7 @@ Allocation (all offsets are float indices; ×4 = byte offset):
 ---
 
 ### W3 — Time-of-day cloud color from the atmosphere LUT
+- **EXECUTION NOTE (SHIPPED Batch 393):** CloudUniforms 88→92 (sunLightColor@88-90, aerialStrength@91 packed 1.0 for W4). Corrected the elevation keying — the spec's raw `sunDir.y` is ECEF Y, not local elevation; keyed instead on `dot(sunDir, normalize(camPos))` (true local sin-elevation) so the warm/neutral ramp tracks the actual sun height. **Sun-control technique for cloud probes (W4 reuses):** the RAF render path ignores the clock; set `viewer.useDefaultRenderLoop=false` then `scene.render(jd)` to make the sun follow a JulianDate. Verified dawn 6.9°→R/B 1.32, noon 74.6°→0.96, dusk 5.7°→1.44; PNGs READ (dusk orange, noon white-grey). GREEN.
 - Goal: Drive the cloud direct-sun color (and tint the sky-ambient) warm at low sun / neutral at noon, from the atmosphere transmittance.
 - Bundled work (single commit):
   - JS: CPU-side sample the atmosphere transmittance along the sun zenith (cheapest correct path — no new BGL binding into the cloud pipeline) and pack a `sunLightColor` vec3; multiply it into the sun term in WGSL.
