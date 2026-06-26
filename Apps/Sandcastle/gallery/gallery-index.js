@@ -1103,6 +1103,10 @@ const gallery_demos = [
     isNew: true,
   },
   {
+    name: "WebGPU Fullscreen Sky",
+    isNew: true,
+  },
+  {
     name: "WebGPU GeoJsonPrimitive",
     isNew: true,
   },
