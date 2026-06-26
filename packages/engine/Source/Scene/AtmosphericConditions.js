@@ -60,6 +60,7 @@ class AtmosphericConditions {
     this._clouds = buildClouds(globe);
     this._weather = buildWeather(scene, globe);
     this._night = buildNight(globe);
+    this._effects = buildEffects();
   }
 
   /**
@@ -193,6 +194,23 @@ class AtmosphericConditions {
    */
   get night() {
     return this._night;
+  }
+
+  /**
+   * Unified atmospheric EFFECTS hierarchy (Phase B+). Nests the screen-space /
+   * overlay effects (`shimmer`, `groundFog`, `optics`, `precipitation`) that the
+   * weather {@link AtmosphericConditions#weather} drives. The master `auto` flag,
+   * when true, makes {@link applyAtmosphericConditions} derive each effect's
+   * `enabled` + intensity from the conditions (temperature / dew-point spread /
+   * precipitation). Off by default so existing scenes are byte-neutral until
+   * opted in. Each effect leaf is plain state (no legacy backing); a backend
+   * (e.g. the WebGPU heat-shimmer post-process) reads it via the scene flags
+   * the auto-apply pushes.
+   * @type {object}
+   * @readonly
+   */
+  get effects() {
+    return this._effects;
   }
 }
 
@@ -1036,6 +1054,30 @@ function buildWeather(scene, globe) {
     },
   });
   return leaf;
+}
+
+function buildEffects() {
+  // Phase B+ — the unified conditions→effects hierarchy. `auto` is the master
+  // switch: when true, applyAtmosphericConditions() derives each effect's
+  // enabled + intensity from the weather conditions; when false the effects are
+  // whatever the app set them to. Default auto=false + all effects off → the
+  // facade is byte-neutral until a user opts in (Principle: no surprise change).
+  //
+  //   shimmer       — heat-haze screen-space UV warp (Phase B, SHIPPED). Gated
+  //                   on high temperature.
+  //   groundFog     — low-altitude mist (Phase C scaffold). Gated on a small
+  //                   temperature−dewpoint spread (near-surface saturation).
+  //   optics        — cold-air ice-crystal sky overlay: 22° halo / sun-dogs /
+  //                   pillars (Phase D scaffold). Gated on sub-freezing temps.
+  //   precipitation — rain/snow/hail particles (Phase E scaffold). Driven by
+  //                   weather.type / weather.intensity.
+  return {
+    auto: false,
+    shimmer: { enabled: false, intensity: 0.6 },
+    groundFog: { enabled: false, intensity: 0.0 },
+    optics: { enabled: false, halo: 0.0, sunDogs: 0.0, pillar: 0.0 },
+    precipitation: { enabled: false, type: 0, intensity: 0.0 },
+  };
 }
 
 function buildNight(globe) {
