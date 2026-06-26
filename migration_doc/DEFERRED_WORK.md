@@ -4362,7 +4362,11 @@ These are areas the webgpu-morph-review audit did NOT examine — flagged as lik
 
 ---
 
-## NEW-WEBGPU-CLOUD-DEPTH-OCCLUSION — clouds march THROUGH the globe (sceneDepth sampled but unused) (2026-06-26)
+## NEW-WEBGPU-CLOUD-DEPTH-OCCLUSION — ✅ RESOLVED (Batch 409, commit c71856e071, 2026-06-26)
+
+**RESOLVED.** Implemented per the recipe below: inline `logDepthToEyeDistance` (byte-compatible with `csm_reverseLogDepthToEyeDistance`) reverses the renderer-wide log depth to an along-ray eye distance, and the march clamps `tEnd = min(tEnd, tSceneHit)` after the tStart/tEnd block (sky pixels >= 0.999999 → no-op). `nearPlane@105`/`farPlane@106` added by renaming the Batch-408 reserved pads (add-only, struct stays 108). Verified: sky view unchanged (`probe-cloud-diagonal` GREEN — a wrong reconstruction would clip the sky too), git-stash A/B (`probe-cloud-depth-occlusion.mjs`) confirms the fix is active. RTE + culling (below) remain open. Original entry kept for the trail.
+
+### (Original)
 
 **Surfaced** by the cloud-coverage/RTE investigation workflow (after Batch 406 made clouds fill the whole screen). `ProceduralClouds.wgsl:461` samples `sceneDepth` but **never uses it** — the march (the loop ~L539-628) terminates only on the cloud-shell sphere intersections + transmittance, so volumetric clouds composite **over the globe/terrain that should occlude them**. Visible when looking DOWN at terrain with clouds beyond/below; mild in the demo's straight-up view.
 
