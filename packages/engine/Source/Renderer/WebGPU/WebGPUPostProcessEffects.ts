@@ -154,3 +154,6 @@ export type { DepthOfFieldConfig } from "./WebGPUDepthOfFieldEffect.js";
 
 export { GodRayEffect } from "./WebGPUGodRayEffect.js";
 export type { GodRayConfig } from "./WebGPUGodRayEffect.js";
+
+export { HeatShimmerEffect } from "./WebGPUHeatShimmerEffect.js";
+export type { HeatShimmerConfig } from "./WebGPUHeatShimmerEffect.js";

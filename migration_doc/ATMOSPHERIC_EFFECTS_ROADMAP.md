@@ -80,14 +80,24 @@ no-op on WebGL, like the procedural clouds).
 
 ## Phased plan
 
-- **Phase A — Conditions→knobs mapper (no new renderer).** An `AtmosphericEffects` module mapping
-  `{T, Td, RH, visibility}` → fog density/tint + atmosphere sat/brightness + `cloudType`/`cloudLayerBottom`
-  bias. Drives the *existing* WebGL+WebGPU knobs. Unit-tested pure mapping; depends only on the weather
-  scalars (works with the existing `weather.humidity` today, richer once ingest lands). Cheapest, highest
-  ratio of realism-per-effort. (~2-3 days.)
-- **Phase B — Heat shimmer (WebGPU screen-space).** `WebGPUHeatShimmerEffect` — animated UV-warp
-  refraction near the ground, amplitude from surface temp, faded by depth/altitude. Probe-verified
-  (Principle 8). (~3-4 days.)
+> **STATUS:** Phase A **SHIPPED** (Batch 415). The **unified conditions→effects hierarchy + auto master**
+> **SHIPPED** (Batch 417a) — `atmosphericConditions.effects.{shimmer,groundFog,optics,precipitation}` nested
+> with a master `effects.auto` that derives every effect from the weather (`computeAtmosphericEffects`);
+> off by default (byte-neutral). Phase B **SHIPPED** (Batch 417b). Phases C–E remain (C/D/E now plug into the
+> 417a hierarchy as their backend).
+
+- **Phase A — Conditions→knobs mapper (no new renderer). [SHIPPED Batch 415]** An `AtmosphericEffects` module
+  mapping `{T, Td, RH, visibility}` → fog density/tint + atmosphere sat/brightness + `cloudType`/
+  `cloudLayerBottom` bias. Drives the *existing* WebGL+WebGPU knobs. Cheapest, highest ratio of
+  realism-per-effort.
+- **Phase B — Heat shimmer (WebGPU screen-space). [SHIPPED Batch 417b]** `WebGPUHeatShimmerEffect` — a
+  single-pass screen-space animated value-noise UV-warp, band-concentrated to the lower frame (hot ground),
+  gated on `scene.heatShimmerEnabled` (the 417a auto-master sets it from temperature 25→45 °C; manual
+  override works), intensity from `scene.heatShimmerIntensity`. Mirrors the GodRay post-process pattern
+  (effect class + WGSL + pipeline/stage-collection wiring); inserted pre-TAA/pre-tonemap; time fed as
+  `performance.now()` epoch-elapsed seconds (f32-safe); `requestRender` each frame while enabled. Probe-
+  verified (Principle 8): `probe-heat-shimmer.mjs` — lower-frame warp 79% vs sky 0%, animated 14.7%/350 ms,
+  off-stable 0%; lower-frame crop reads as a gentle wavy heat-haze at default intensity.
 - **Phase C — Ground-fog volumetric.** A low-altitude volumetric mist (thin cloud-raymarcher variant or
   `WebGPUVolumetricFogRenderer` extension) driven by dew-point spread. (~4-6 days.)
 - **Phase D — Cold optics (halo / sun-dogs / pillars).** Ice-crystal sky overlay gated on sub-freezing T

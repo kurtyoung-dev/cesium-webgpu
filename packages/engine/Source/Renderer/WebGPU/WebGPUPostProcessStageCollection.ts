@@ -48,6 +48,14 @@ export interface PostProcessCache {
   // viewProjection.
   godRayEnabled: boolean;
   godRayInitialized: boolean;
+  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer (animated
+  // screen-space UV-warp) post-process. Activated via
+  // `scene.heatShimmerEnabled = true`, intensity via
+  // `scene.heatShimmerIntensity` (ad-hoc scene flags pushed by the
+  // atmospheric auto-master in 417a). The per-frame configure pass pushes
+  // the elapsed-seconds clock + intensity and keeps the scene rendering.
+  heatShimmerEnabled: boolean;
+  heatShimmerInitialized: boolean;
   // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
   // atmosphere. Activated via `scene.aerialPerspective = true` (optional
   // `scene.aerialPerspectiveConfig`). The per-frame configure pass pushes
@@ -133,6 +141,8 @@ function getDefaultCache(): PostProcessCache {
     depthOfFieldEnabled: false,
     godRayEnabled: false,
     godRayInitialized: false,
+    heatShimmerEnabled: false,
+    heatShimmerInitialized: false,
     aerialPerspectiveEnabled: false,
     aerialPerspectiveInitialized: false,
     bloomInitialized: false,
@@ -304,6 +314,13 @@ function configureWebGPUPostProcessPipeline(
   // addition). Mirrors the `scene.taaEnabled` pattern.
   cache.godRayEnabled =
     (scene as unknown as { godRayEnabled?: boolean })?.godRayEnabled === true;
+
+  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer enabled flag,
+  // scene-level (ad-hoc `scene.heatShimmerEnabled`, pushed by the 417a
+  // atmospheric auto-master). Mirrors the godRay scene-flag read.
+  cache.heatShimmerEnabled =
+    (scene as unknown as { heatShimmerEnabled?: boolean })
+      ?.heatShimmerEnabled === true;
 
   // --- TAA (controlled by scene.taaEnabled, not the collection) ---
   // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — lazily add the effect on
@@ -648,6 +665,25 @@ function configureWebGPUPostProcessPipeline(
     pipeline.godRayEffect.enabled = false;
   }
 
+  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer lazy init +
+  // per-frame clock / intensity / continuous-render drive. Config can be
+  // supplied via `scene.heatShimmerConfig` (optional).
+  if (cache.heatShimmerEnabled && !cache.heatShimmerInitialized) {
+    const cfg = (
+      scene as unknown as {
+        heatShimmerConfig?: import("./WebGPUHeatShimmerEffect.js").HeatShimmerConfig;
+      }
+    )?.heatShimmerConfig;
+    pipeline.addHeatShimmer(device, canvasFormat, cfg);
+    cache.heatShimmerInitialized = true;
+  }
+  if (cache.heatShimmerEnabled && pipeline.heatShimmerEffect) {
+    pipeline.heatShimmerEffect.enabled = true;
+    updateHeatShimmerFrameData(pipeline, scene);
+  } else if (pipeline.heatShimmerEffect) {
+    pipeline.heatShimmerEffect.enabled = false;
+  }
+
   // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified aerial-
   // perspective atmosphere. Scene-level flag (`scene.aerialPerspective`), no
   // upstream PostProcessStageCollection slot. Lazy-init on first enable;
@@ -850,6 +886,62 @@ function updateGodRaySunUV(
   _godRayScratchClip[0] = cx;
 }
 
+// Atmospheric Effects Phase B (Batch 417b) -- monotonic epoch for the
+// shimmer animation clock. Captured on first use so the shader receives a
+// SMALL elapsed-seconds value: a raw `performance.now()` (or a JulianDate)
+// loses f32 precision in the WGSL noise field and freezes the animation.
+let _heatShimmerEpochMs = -1;
+
+/**
+ * Atmospheric Effects Phase B (Batch 417b) -- push the per-frame HeatShimmer
+ * uniforms (elapsed-seconds clock + intensity + frustum near/far for the
+ * optional depth fade) and keep the scene rendering.
+ *
+ * `requestRenderMode` scenes only render when something requests a frame; an
+ * animated warp must advance every frame, so while the effect is enabled we
+ * call `scene.requestRender()` each frame (the same mechanism TAA-style
+ * continuous effects rely on). Without it the warp would freeze on a settled
+ * camera under `requestRenderMode`.
+ */
+function updateHeatShimmerFrameData(
+  pipeline: WebGPUPostProcessPipeline,
+  scene?: CesiumScene,
+): void {
+  const fx = pipeline.heatShimmerEffect;
+  if (!fx) return;
+
+  // Elapsed seconds since first enable — small magnitude keeps f32 precision.
+  const nowMs =
+    typeof performance !== "undefined" ? performance.now() : Date.now();
+  if (_heatShimmerEpochMs < 0) {
+    _heatShimmerEpochMs = nowMs;
+  }
+  fx.setTime((nowMs - _heatShimmerEpochMs) / 1000);
+
+  // Intensity from the ad-hoc scene flag pushed in 417a; fall back to the
+  // effect's config default (0.6) when unset.
+  const intensity = (scene as unknown as { heatShimmerIntensity?: number })
+    ?.heatShimmerIntensity;
+  if (typeof intensity === "number") {
+    fx.setIntensity(intensity);
+  }
+
+  // Frustum near/far for the optional depth fade (no-op when depthFadeFar<=0).
+  const cam = (
+    scene as unknown as {
+      camera?: { frustum?: { near?: number; far?: number } };
+    }
+  )?.camera;
+  const near = cam?.frustum?.near;
+  const far = cam?.frustum?.far;
+  if (typeof near === "number" && typeof far === "number" && far > near) {
+    fx.setFrustum(near, far);
+  }
+
+  // Keep `requestRenderMode` scenes rendering so the warp animates.
+  (scene as unknown as { requestRender?: () => void })?.requestRender?.();
+}
+
 /**
  * Destroy WebGPU post-process resources.
  */
@@ -876,6 +968,7 @@ function hasActiveWebGPUPostProcessStages(
     cache.bloomEnabled ||
     cache.depthOfFieldEnabled ||
     cache.godRayEnabled ||
+    cache.heatShimmerEnabled ||
     cache.aerialPerspectiveEnabled
   );
 }

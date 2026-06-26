@@ -75,6 +75,12 @@ import { WebGPUTAAEffect } from "./WebGPUTAAEffect.js";
 import { WebGPUUserPostProcessStage } from "./WebGPUUserPostProcessStage.js";
 // Audit A.11 (Batch 133) -- pipeline-level GodRay registration.
 import { GodRayEffect, type GodRayConfig } from "./WebGPUGodRayEffect.js";
+// Atmospheric Effects Phase B (Batch 417b) -- pipeline-level HeatShimmer
+// registration. Single-pass animated UV-warp; mirrors the GodRay touchpoints.
+import {
+  HeatShimmerEffect,
+  type HeatShimmerConfig,
+} from "./WebGPUHeatShimmerEffect.js";
 // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
 // atmosphere over the whole scene.
 import {
@@ -100,6 +106,8 @@ export type {
   DepthOfFieldConfig,
   AutoExposureConfig,
   AerialPerspectiveConfig,
+  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer config.
+  HeatShimmerConfig,
 };
 
 /** Tonemapping operator modes */
@@ -269,6 +277,12 @@ export class WebGPUPostProcessPipeline {
   // sync; per-frame sun screen UV updated via
   // `setSunScreenUV` from the scene-level configure pass.
   private _godRayEffect: GodRayEffect | null = null;
+  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer (animated
+  // screen-space UV-warp) post-process. Activated through `addHeatShimmer`
+  // + the configure-pipeline sync; per-frame elapsed-seconds clock + intensity
+  // pushed by the scene-level configure pass. Sized/formatted against the
+  // intermediate format (HDR-aware), so the recreate-reset block drops it.
+  private _heatShimmerEffect: HeatShimmerEffect | null = null;
   // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
   // atmosphere. Runs FIRST in the depth-dependent chain (before AO/bloom) so
   // the haze participates in bloom + tonemap, matching how WebGL applies the
@@ -311,6 +325,7 @@ export class WebGPUPostProcessPipeline {
     if (this._aoEffect?.enabled) return true;
     if (this._dofEffect?.enabled) return true;
     if (this._godRayEffect?.enabled) return true;
+    if (this._heatShimmerEffect?.enabled) return true;
     if (this._aerialPerspectiveEffect?.enabled) return true;
     // NEW-POSTPROCESS-USER-WGSL (Batch 198) — user-supplied WGSL stages.
     if (this._userStages.some((s) => s.enabled)) return true;
@@ -336,6 +351,15 @@ export class WebGPUPostProcessPipeline {
   /** Audit A.11 (Batch 133) -- GodRay effect or null if not added. */
   get godRayEffect(): GodRayEffect | null {
     return this._godRayEffect;
+  }
+
+  /**
+   * Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer effect or null
+   * if not added. The configure pass uses this to push the per-frame elapsed-
+   * seconds clock + intensity.
+   */
+  get heatShimmerEffect(): HeatShimmerEffect | null {
+    return this._heatShimmerEffect;
   }
 
   /**
@@ -398,6 +422,12 @@ export class WebGPUPostProcessPipeline {
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
+    // Atmospheric Effects Phase B (Batch 417b) — HeatShimmer's output texture
+    // is sized + formatted against `_intermediateFormat`, so a resize / HDR
+    // toggle must drop it too. The configure pass lazily re-adds it on the
+    // same frame when `scene.heatShimmerEnabled` is on (gate checks the live
+    // slot).
+    this._heatShimmerEffect?.destroy();
     // Track V-A2 — aerial-perspective output texture is sized + formatted
     // against `_intermediateFormat`, so a resize / HDR toggle must drop it
     // too. The configure pass lazily re-adds it on the same frame when
@@ -407,6 +437,7 @@ export class WebGPUPostProcessPipeline {
     this._aoEffect = null;
     this._dofEffect = null;
     this._godRayEffect = null;
+    this._heatShimmerEffect = null;
     this._aerialPerspectiveEffect = null;
     // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — TAA joins the recreate
     // reset list: its history textures + pipeline target are sized and
@@ -943,6 +974,29 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
+   * Atmospheric Effects Phase B (Batch 417b) -- Add the HeatShimmer effect
+   * (single-pass animated UV-warp). The configure pass pushes the per-frame
+   * elapsed-seconds clock via `pipeline.heatShimmerEffect.setTime(...)` and
+   * the intensity via `setIntensity(...)`. Depth is optional (the warp is
+   * depth-independent by default); the effect tolerates a null depth view.
+   */
+  addHeatShimmer(
+    device: GPUDevice,
+    canvasFormat: GPUTextureFormat,
+    config?: HeatShimmerConfig,
+  ): void {
+    if (this._heatShimmerEffect) return;
+    this._heatShimmerEffect = new HeatShimmerEffect(config);
+    // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
+    this._heatShimmerEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
+  }
+
+  /**
    * Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — add the unified
    * aerial-perspective atmosphere effect. Runs first in the depth-dependent
    * chain so the haze participates in bloom + tonemap. Requires the scene
@@ -1179,6 +1233,22 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       }
     }
 
+    // 3.7 HeatShimmer (Atmospheric Effects Phase B, Batch 417b) — animated
+    // screen-space UV-warp. Placed AFTER aerial-perspective / AO / bloom /
+    // godray / DoF / user stages but BEFORE TAA + tonemap, so the warp lives
+    // in the HDR scene color and participates in temporal AA + the tone
+    // curve (a warp applied post-tonemap would shimmer the SDR signal and
+    // miss TAA accumulation). Depth is passed through but tolerated as null —
+    // the warp is depth-independent unless the depth fade is configured.
+    if (this._heatShimmerEffect?.enabled) {
+      currentView = this._heatShimmerEffect.execute(
+        encoder,
+        currentView,
+        depth,
+        this._sampler!,
+      );
+    }
+
     // AUDIT_2026_05_02 B.16 (Batch 155 clarity refactor; Batch 157
     // comment correction) — push order of `singlePassStages` now
     // matches GPU command stream order. The actual execution order
@@ -1300,6 +1370,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect?.resize(width, height);
     this._dofEffect?.resize(width, height);
     this._godRayEffect?.resize(width, height);
+    this._heatShimmerEffect?.resize(width, height);
     this._aerialPerspectiveEffect?.resize(width, height);
 
     // Update FXAA texel size
@@ -1601,6 +1672,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
+    this._heatShimmerEffect?.destroy();
     this._aerialPerspectiveEffect?.destroy();
     this._autoExposure?.destroy();
     // Batch 244 — TAA was missing from teardown (the effect was never
@@ -1612,6 +1684,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect = null;
     this._dofEffect = null;
     this._godRayEffect = null;
+    this._heatShimmerEffect = null;
     this._aerialPerspectiveEffect = null;
     this._autoExposure = null;
     this._taaEffect = null;
