@@ -12829,3 +12829,33 @@ Two bugs caught by running the FULL standing-gate matrix against the post-log-de
 **DEFERRED — needs RenderDoc / GPU frame capture** to inspect the actual transformed shell vertex positions (why correct-looking geometry doesn't rasterize above the horizon). Build-and-probe iteration cannot see this. Engine fully reverted to a clean baseline — **no fix shipped, no regression.** Secondary parity nits found but NOT the cause (don't fix the black): `WebGPUSkyAtmosphereRenderer.js:71` `DEFAULT_RAYLEIGH_COEFFICIENT` blue `22.4e-6` should be `28.4e-6`; `:73-74` scale heights `8500/1200` should be `10000/3200`; `GlobeTerrain.wgsl` `computeAtmosphereColor` fallback (~L2335) lacks `* atmosphereLightIntensity`.
 
 **Files modified:** none (all attempts reverted). Probe: `probe-confirm-inspector-sky.mjs` (committed — `RENDERER=webgl|webgpu`, `CLOUDS=on|off`, capture-time camH assert, upper-center sky RGB). Tooling lesson, below, folded into DEBUGGING_GUIDE.
+
+---
+
+## Bug C3.406 — WebGPU procedural clouds only rasterized the lower-left HALF of the screen (non-oversized fullscreen triangle) (2026-06-26)
+
+**Symptom.** Clouds filled the bottom-left of the screen behind a hard corner-to-corner diagonal; the upper-right was clear sky. Long misfiled as a "hard diagonal frustum-edge artifact" in CAMPAIGN3_PROGRESS.md.
+
+**Root cause.** `ProceduralClouds.wgsl::vertexMain` emitted an EXACT-FIT fullscreen triangle: `x = (vid&1)*2-1`, `y = (vid>>1)*2-1` → vertices `(-1,-1),(+1,-1),(-1,+1)` — three NDC corners. That triangle only covers the half-plane `x+y<=0` (the lower-left), so the upper-right half was never shaded and kept the scene color. Every cloud render to date (W1-W5 lighting included) was half-screen.
+
+**Diagnosis.** A multi-agent investigation workflow + adversarial verification. The RTE-precision / horizon / ray-quantization hypotheses were ruled out (they produce a CURVED/ragged edge, never a clean corner-to-corner line through the exact NDC corners). The geometry is verifiable arithmetic: 3 NDC corners ⇒ half coverage.
+
+**Fix.** The canonical OVERSIZED triangle — `x = f32((vid<<1)&2)*2-1`, `y = f32(vid&2)*2-1` → `(-1,-1),(3,-1),(-1,3)` so `[-1,1]²` sits fully inside. `uv` is an affine function of clip xy so it interpolates 0..1 across the visible square unchanged. Still `draw(3)`.
+
+**Verification.** `probe-cloud-diagonal.mjs` (OVC St ground view): pre-fix bottom-right ~0% deck, post-fix bottom-left 91.7% ≈ bottom-right 91.2% (left-right symmetric, no diagonal). READ the PNG — deck fills the full sky. Commit `470ec37c60` (Batch 406).
+
+**File:** `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl` (vertexMain).
+
+---
+
+## Bug C3.405 — enabling `cloudWeatherMap` EMPTIES the cloud deck (unpopulated C2-16 weather-map seam) (2026-06-25)
+
+**Symptom.** High-coverage presets (OVC, Cb) rendered an empty blue sky when `cloudWeatherMap=true`, despite `cloudCoverage` 0.9-1.0. The visible "change" from the preset was only fog + atmosphere dimming, not clouds.
+
+**Root cause.** `ProceduralClouds.wgsl` `cloudDensity`/`cloudBaseDensity`: when `weatherMapEnabled > 0.5`, `effectiveCoverage = clamp(wsample.r * weatherStrength, 0, 1)` — coverage is read from the weather-map texture's R channel. The C2-16 weather-map seam is filled only PROCEDURALLY and reads ~0 at the demo location, so effective coverage collapsed to ~0 regardless of `cloudCoverage`.
+
+**Fix (for now).** The standards-keyed presets keep `cloudWeatherMap` OFF (the working global-`cloudCoverage` scalar path). Documented in the demo so a future session doesn't re-enable it before the seam is populated. **The real fix is the weather-data-ingest pipeline** (migration_doc/WEATHER_DATA_INGEST_ROADMAP.md) — overwrite the R channel with decoded cloud-cover, then `weatherMap=true` becomes the data-driven path.
+
+**Verification.** `probe-weather-presets.mjs` + the clip-zoom read that caught the empty deck (a whole-frame diff was nonzero from fog/atmosphere even with the deck empty — only the 1:1 clip-zoom showed the empty sky). Commit `e36eadedb5` (Batch 405).
+
+**Files:** `Apps/Sandcastle/gallery/WebGPU Weather Inspector.html` (presets), `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl` (the wsample.r reads — unchanged, documented).
