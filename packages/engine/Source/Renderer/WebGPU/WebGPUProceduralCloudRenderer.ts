@@ -669,8 +669,10 @@ export function executeProceduralClouds(
     profile.shape === CloudTypeProfile.CloudHeightGradientShape.TOWERING_ANVIL
       ? 1.0
       : 0.0; // 104 anvilBias
-  data[offset++] = 0; // 105 pad
-  data[offset++] = 0; // 106 pad
+  // ── Batch 409 — depth occlusion: camera near/far so the shader can reverse
+  // the renderer-wide log depth (same source as AerialPerspective).
+  data[offset++] = frameState.camera?.frustum?.near ?? 1.0; // 105 nearPlane
+  data[offset++] = frameState.camera?.frustum?.far ?? 1e8; // 106 farPlane
   data[offset++] = 0; // 107 pad
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);

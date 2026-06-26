@@ -90,8 +90,9 @@ struct CloudUniforms {
   profileDensityScale: f32,      // 102 — per-genus density vs CUMULUS (1.0 = neutral)
   profileExtinction: f32,        // 103 — per-genus optical extinction (scaffolding; not yet sampled)
   anvilBias: f32,                // 104 — TOWERING_ANVIL upper-flare bias (0 = none)
-  _pad408a: f32,                 // 105
-  _pad408b: f32,                 // 106
+  // ── Batch 409 (depth occlusion; slots 105-106 were Batch-408 pads) ──
+  nearPlane: f32,                // 105 — camera frustum near (reverse the log depth)
+  farPlane: f32,                 // 106 — camera frustum far
   _pad408c: f32,                 // 107
 };
 
@@ -507,6 +508,15 @@ fn getWorldRay(uv: vec2<f32>) -> vec3<f32> {
   return normalize(worldDir.xyz);
 }
 
+// Batch 409 — reverse the renderer-wide LOGARITHMIC depth to a positive
+// eye-space distance along the view ray (metres). Byte-compatible with
+// csm_reverseLogDepthToEyeDistance / AerialPerspective.wgsl::logDepthToEyeDistance.
+fn logDepthToEyeDistance(logZ: f32, near: f32, far: f32) -> f32 {
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  return depthFromNear + near;
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let uv = input.uv;
@@ -546,6 +556,19 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Inside cloud layer
     tStart = 0.0;
     tEnd = tOuter.y;
+  }
+
+  // Batch 409 — DEPTH OCCLUSION. Stop the march at opaque scene geometry (the
+  // globe / terrain / tiles) so clouds don't render THROUGH the Earth. sceneDepth
+  // is the renderer-wide log depth; reverse it to an along-ray eye distance and
+  // clamp tEnd. Sky pixels carry the cleared far depth (>= skyCutoff) → tSceneHit
+  // ≈ far → no clamp, so the full sky shell still marches. If terrain sits in
+  // front of the whole layer, tEnd clamps below tStart and the early-out below
+  // returns the unmodified scene (clouds fully occluded). No depth WRITE — clouds
+  // are a translucent over-composite.
+  if (sceneDepth < 0.999999) {
+    let tSceneHit = logDepthToEyeDistance(sceneDepth, cloud.nearPlane, cloud.farPlane);
+    tEnd = min(tEnd, tSceneHit);
   }
 
   if (tStart >= tEnd || tEnd <= 0.0) {
