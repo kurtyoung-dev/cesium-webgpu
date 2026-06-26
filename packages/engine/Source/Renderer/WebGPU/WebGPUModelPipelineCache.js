@@ -1871,6 +1871,12 @@ class WebGPUModelPipelineCache {
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
+    // C2-22 (Batch 418) — the depth-write variant draws into the SAME scene FB
+    // MRT targets as `getPipeline` (`createPipeline` with forceDepthWrite=true
+    // only flips `depthWriteEnabled`), so the flat-magenta error pipeline is a
+    // valid drop-in here too. Wrap the create in the validation error scope and
+    // swap to magenta on failure, mirroring `getPipeline`.
+    this._device.pushErrorScope("validation");
     pipeline = createPipeline(
       this._device,
       this._getOrCreateShaderModule(md),
@@ -1884,6 +1890,15 @@ class WebGPUModelPipelineCache {
       hasFeatureId0,
       this._sampleCount,
     );
+    this._device.popErrorScope().then((error) => {
+      if (error) {
+        console.error(
+          `[CesiumJS:webgpu] Model PBR depth-write pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
+        );
+        this._depthWritePipelines.set(key, this._getOrCreateErrorPipeline(md));
+        this._errorSwapGeneration++;
+      }
+    });
     this._depthWritePipelines.set(key, pipeline);
     return pipeline;
   }
@@ -1914,6 +1929,10 @@ class WebGPUModelPipelineCache {
       return pipeline;
     }
 
+    // TODO(C2-22 follow-up): extend error-pipeline to pick/velocity/classification.
+    // The flat-magenta error pipeline emits the scene-FB G-buffer target shape and
+    // can't be a drop-in here (pick draws into the single-target pick FBO); a pick
+    // error fallback needs its own pick-FBO-shaped error pipeline.
     pipeline = createPickPipeline(
       this._device,
       this._getOrCreateShaderModule(md),
@@ -2065,6 +2084,9 @@ class WebGPUModelPipelineCache {
     if (pipeline) {
       return pipeline;
     }
+    // TODO(C2-22 follow-up): extend error-pipeline to pick/velocity/classification.
+    // The velocity pass targets `rg16float`, not the scene-FB G-buffer, so the
+    // flat-magenta error pipeline can't be a drop-in fallback here.
     pipeline = createVelocityPipeline(
       this._device,
       this._getOrCreateShaderModule(md),
@@ -2107,6 +2129,9 @@ class WebGPUModelPipelineCache {
     if (pipeline) {
       return pipeline;
     }
+    // TODO(C2-22 follow-up): extend error-pipeline to pick/velocity/classification.
+    // The classification pass has its own target/blend/stencil state, so the
+    // scene-FB flat-magenta error pipeline can't be a drop-in fallback here.
     pipeline = createClassificationPipeline(
       this._device,
       this._getOrCreateShaderModule(md),

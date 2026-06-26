@@ -19,9 +19,20 @@ Residual (low): the probe gates billboard+point, not the label leg (same SDF pat
 
 ---
 
-## C2-22 — MAINT-ERROR-PIPELINE-FALLBACK (QUICK WIN — do first) — S/M, 1 session
+## C2-22 — MAINT-ERROR-PIPELINE-FALLBACK — ✅ RESOLVED (core Batch 388 `2a85a37112`; color-pass extended Batch 418)
 
-**Still relevant:** YES (no `_createErrorPipeline`/`errorPipeline` in code or git history).
+**RESOLUTION:** This plan's premise ("no `errorPipeline` in code or git history") was **STALE** — the
+core shipped as **Batch 388**: `ErrorPipeline.wgsl`/`.js`, `_getOrCreateErrorPipeline(md)`, the
+`pushErrorScope("validation")` wrap on `getPipeline` (→ swaps the cache entry to a flat-magenta
+pipeline on failure), the `globalThis.CesiumWebGPUForcePipelineError` debug hook, and
+`probe-error-pipeline.mjs` (GREEN). **Batch 418** closed the remaining gap: extended the same
+error-scope wrap to **`getDepthWritePipeline`** (same scene-FB MRT targets, valid drop-in) and added
+`// TODO(C2-22 follow-up)` notes at the pick / velocity / classification create sites (NOT drop-ins —
+each has its own target/blend/stencil shape). Re-verified `probe-error-pipeline.mjs` GREEN (NORMAL: 0
+magenta / no regression; FORCED: 71 748 magenta px dominate the model). Pick/velocity/classification
+fallbacks remain a deferred follow-up. **Original (stale) plan kept below for reference.**
+
+**Still relevant (STALE — see resolution above):** ~~YES~~.
 
 **Root cause (queue premise corrected):** model PBR pipelines build **synchronously** via
 `device.createRenderPipeline` (`WebGPUModelPipelineCache.js:614`, returned through
