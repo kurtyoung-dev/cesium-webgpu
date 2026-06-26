@@ -11,9 +11,11 @@
  * (slider input events + a preset button click) and screenshots each state.
  *
  * Claims:
- *   (1) the demo boots on WebGPU, builds the panel, and renders clouds — 0 errors;
+ *   (1) the demo boots on WebGPU, builds the panel + 8 standards-keyed presets,
+ *       and renders clouds — 0 errors;
  *   (2) the Coverage slider is wired (0.45 -> 0.95 raises cloud coverage + moves the image);
- *   (3) the Stormy preset changes the sky AND refreshes the slider UI (coverage reads ~0.95).
+ *   (3) the OVC St (overcast, 8/8 oktas) preset changes the sky AND refreshes the
+ *       slider UI (coverage reads ~0.98).
  *
  * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-weather-inspector.mjs
  */
@@ -217,13 +219,13 @@ async function run() {
   const covDiff = await diff(page, defDU, covDU);
   console.log("coverage0.95", JSON.stringify(covStats), "diff", covDiff, "set", JSON.stringify(setCov));
 
-  // 3) Stormy preset (button click) — and confirm UI refresh
-  await page.evaluate(CLICK, { id: "wi-preset-Stormy" });
+  // 3) OVC St preset (button click) — overcast 8/8, and confirm UI refresh
+  await page.evaluate(CLICK, { id: "wi-preset-OVCst" });
   await page.waitForTimeout(3500);
-  const stormDU = await shot("weather-inspector-stormy");
+  const stormDU = await shot("weather-inspector-ovc-st");
   const stormyDiff = await diff(page, defDU, stormDU);
   const covAfterPreset = await page.evaluate(READ_SLIDER, { id: covId });
-  console.log("stormy diff", stormyDiff, "coverageUI", covAfterPreset);
+  console.log("OVC St diff", stormyDiff, "coverageUI", covAfterPreset);
 
   const gate = await collectGateErrors(page);
   const newErrs = (gate.errors || [])
@@ -231,11 +233,11 @@ async function run() {
     .filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon|bucket\.css|Sandcastle-header|load-cesium-es6/i.test(e));
 
   const checks = [
-    ["demo booted on WebGPU + panel built (8 groups, 5 presets)", panelInfo.rows >= 15 && panelInfo.presets === 5 && panelInfo.groups >= 7],
+    ["demo booted on WebGPU + panel built (8 groups, 8 presets)", panelInfo.rows >= 15 && panelInfo.presets === 8 && panelInfo.groups >= 7],
     [`clouds render in default sky (cloudPct ${defStats.cloudPct} > 2)`, defStats.cloudPct > 2],
     [`Coverage slider wired (set ok, diff ${covDiff} > 0.5)`, setCov.ok && covDiff > 0.5],
-    [`Stormy preset changes sky (diff ${stormyDiff} > 1.0)`, stormyDiff > 1.0],
-    [`Stormy preset refreshes UI (coverage slider ${covAfterPreset} ~ 0.95)`, covAfterPreset != null && covAfterPreset > 0.9],
+    [`OVC St preset changes sky (diff ${stormyDiff} > 1.0)`, stormyDiff > 1.0],
+    [`OVC St preset refreshes UI (coverage slider ${covAfterPreset} ~ 0.98)`, covAfterPreset != null && covAfterPreset > 0.9],
     [`no NEW device/runtime errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");
