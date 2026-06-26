@@ -1163,6 +1163,10 @@ const gallery_demos = [
     isNew: true,
   },
   {
+    name: "WebGPU Live Weather (EDR)",
+    isNew: true,
+  },
+  {
     name: "WebGPU Weather Particles",
     isNew: true,
   },

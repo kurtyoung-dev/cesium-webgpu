@@ -396,6 +396,60 @@ const throttle = (callback) => {
     app.use("/Build/CesiumUnminified", express.static("Build/CesiumDev"));
   }
 
+  // Dev-only same-origin proxy for the weather-data ingest (live OGC API-EDR and
+  // friends). The browser fetches an external open-weather feed via
+  // `/proxy?url=<encoded>` from the app's own origin, so CORS on the upstream
+  // can't block it. ALLOWLISTED to a few known public weather hosts — this is
+  // NOT an open proxy, and it only exists on the dev server (never shipped).
+  // See migration_doc/WEATHER_DATA_INGEST_ROADMAP.md + Scene/Weather/EdrWeatherSource.
+  const WEATHER_PROXY_ALLOW = [
+    "data-api.mdl.nws.noaa.gov",
+    "edr-api-c.mdl.nws.noaa.gov",
+    "api.weather.gc.ca",
+    "geo.weather.gc.ca",
+    "aviationweather.gov",
+  ];
+  app.get("/proxy", async function (req, res) {
+    const target = req.query.url;
+    if (typeof target !== "string" || !/^https?:\/\//i.test(target)) {
+      res
+        .status(400)
+        .json({ error: "proxy: ?url= must be an absolute http(s) URL" });
+      return;
+    }
+    let host;
+    try {
+      host = new URL(target).host;
+    } catch {
+      res.status(400).json({ error: "proxy: malformed url" });
+      return;
+    }
+    const allowed = WEATHER_PROXY_ALLOW.some(
+      (h) => host === h || host.endsWith(`.${h}`),
+    );
+    if (!allowed) {
+      res.status(403).json({ error: `proxy: host not allowlisted: ${host}` });
+      return;
+    }
+    try {
+      const upstream = await fetch(target, {
+        signal: AbortSignal.timeout(25000),
+        headers: { Accept: req.headers.accept || "application/json" },
+      });
+      res.status(upstream.status);
+      const ct = upstream.headers.get("content-type");
+      if (ct) {
+        res.set("content-type", ct);
+      }
+      res.set("access-control-allow-origin", "*");
+      res.send(Buffer.from(await upstream.arrayBuffer()));
+    } catch (e) {
+      res
+        .status(502)
+        .json({ error: `proxy upstream failed: ${String(e?.message ?? e)}` });
+    }
+  });
+
   app.use(express.static(path.resolve(".")));
 
   const server = app.listen(

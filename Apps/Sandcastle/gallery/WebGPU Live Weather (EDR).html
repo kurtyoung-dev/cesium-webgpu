@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Drive the WebGPU procedural clouds with REAL weather. A WeatherProvider pulls live total-cloud-cover from NOAA's GFS model via OGC API-EDR (CoverageJSON) and bakes it into the cloud renderer's weather-map texture, so the deck reflects actual conditions. Uses the dev server's same-origin /proxy to sidestep CORS. WebGPU only; falls back to the procedural weather map when the feed is unreachable."
+    />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, Atmosphere"
+    />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Live Weather (EDR) demo.
+
+    The fork's weather-ingest layer (Scene/Weather/) is backend-agnostic:
+      • WeatherSource  — a swappable data backend. EdrWeatherSource fetches an
+        OGC API-EDR `cube` query (NOAA GFS, total cloud cover) as CoverageJSON —
+        compact JSON, parsed natively, no GRIB2/NetCDF binary decode.
+      • WeatherTexPacker — resamples the field into the cloud renderer's 256x128
+        weather-map texture (R = coverage).
+      • WeatherProvider  — fetches async, caches, and exposes a sync accessor the
+        cloud renderer reads each frame; the weather map AUTO-ENABLES once data
+        arrives. A failed fetch leaves the procedural map in place (no flash).
+
+    CORS: the NOAA dev-lab endpoint's CORS headers are not guaranteed, so this
+    routes through the dev server's same-origin `/proxy?url=` (allowlisted to a
+    few public weather hosts; dev-only). In a networked browser the deck reflects
+    live cloud cover; offline / blocked, it falls back to the procedural map and
+    the panel shows the fetch error.
+
+    WebGPU-only: procedural volumetric clouds are a WebGPU feature; the Viewer is
+    pinned to it via contextOptions.
+  -->
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
+    <style>
+      @import url(../templates/bucket.css);
+
+      #wxPanel {
+        position: absolute;
+        top: 5px;
+        left: 5px;
+        width: 280px;
+        padding: 8px 10px 10px;
+        background: rgba(28, 30, 34, 0.88);
+        border-radius: 6px;
+        color: #eee;
+        font-family: sans-serif;
+        font-size: 12px;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+      }
+      #wxPanel h2 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      #wxPanel .status {
+        margin: 6px 0;
+        padding: 6px 8px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.3);
+        line-height: 1.4;
+      }
+      #wxPanel .ok {
+        color: #8fd98f;
+      }
+      #wxPanel .warn {
+        color: #ffcf6b;
+      }
+      #wxPanel .err {
+        color: #ff8f8f;
+      }
+      #wxPanel button {
+        font-size: 11px;
+        padding: 4px 8px;
+        border: none;
+        border-radius: 3px;
+        background: #3a6ea5;
+        color: #fff;
+        cursor: pointer;
+        margin-top: 6px;
+      }
+      #wxPanel .hint {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #9ec5ff;
+        line-height: 1.35;
+      }
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="wxPanel"></div>
+    <div id="toolbar"></div>
+    <script id="cesium_sandcastle_script">
+      /* global Cesium, Sandcastle */
+      window.startup = async function (Cesium) {
+        //Sandcastle_Begin
+
+        // Procedural clouds + the weather-ingest layer are WebGPU-only.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+        });
+        const scene = viewer.scene;
+        const globe = scene.globe;
+        window.viewer = viewer; // expose for console tinkering
+
+        globe.showProceduralClouds = true;
+        globe.cloudCoverage = 0.5; // weatherStrength 1.0 → effectiveCoverage = map R
+        globe.cloudDensity = 0.4;
+        scene.skyAtmosphere.show = true;
+
+        // ── Live weather: NOAA GFS total cloud cover via OGC API-EDR ──────────
+        // Routed through the dev server's same-origin /proxy (CORS-safe).
+        const source = new Cesium.EdrWeatherSource({
+          proxy: "/proxy?url=",
+          // collection / parameterName default to NOAA GFS / TCDC; override here
+          // once the live /collections list confirms the exact ids.
+        });
+        const provider = new Cesium.WeatherProvider(source);
+        globe.weatherProvider = provider;
+
+        // High view over North America so a continental cloud field reads.
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(-95.0, 38.0, 9.0e6),
+        });
+
+        // ── status panel (plain DOM) ─────────────────────────────────────────
+        const panel = document.getElementById("wxPanel");
+        const heading = document.createElement("h2");
+        heading.textContent = "Live Weather (EDR)";
+        panel.appendChild(heading);
+
+        const status = document.createElement("div");
+        status.className = "status";
+        panel.appendChild(status);
+
+        const refreshBtn = document.createElement("button");
+        refreshBtn.textContent = "Refresh feed";
+        refreshBtn.addEventListener("click", () => {
+          provider.refresh();
+          scene.requestRender();
+        });
+        panel.appendChild(refreshBtn);
+
+        const hint = document.createElement("div");
+        hint.className = "hint";
+        hint.textContent =
+          "Pulls NOAA GFS cloud cover (OGC API-EDR / CoverageJSON) and bakes it " +
+          "into the cloud deck. If the feed is blocked, the procedural map is " +
+          "used and the error shows above.";
+        panel.appendChild(hint);
+
+        // The source's first fetch is kicked by the renderer reading the
+        // provider; poll the provider's state for the panel.
+        function renderStatus() {
+          const src = provider.getSource();
+          const cap = src && src.getCapabilities ? src.getCapabilities() : null;
+          const label = cap ? cap.label : "feed";
+          let html;
+          if (provider.hasData) {
+            const valid = provider.validTime
+              ? `<br/>valid: ${provider.validTime}`
+              : "";
+            html = `<span class="ok">● LIVE</span> — ${label}${valid}`;
+          } else if (provider.lastError) {
+            html = `<span class="err">● feed unavailable</span><br/>${provider.lastError}<br/><span class="warn">showing procedural map</span>`;
+          } else {
+            html = `<span class="warn">● connecting…</span> ${label}`;
+          }
+          status.innerHTML = html;
+        }
+        renderStatus();
+        setInterval(renderStatus, 1000);
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>
