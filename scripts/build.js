@@ -486,19 +486,24 @@ export async function createCesiumJs(variant = "dual") {
   // upstream `Scene/Light.js` already occupies that name and serves as
   // an abstract type marker. Users construct concrete subclasses; they
   // don't reference the base directly.
+  // Re-export via the BARE '@scope/engine' specifier (not a deep
+  // '@scope/engine/Source/...' path): the engine package main already re-exports
+  // all of these, esbuild resolves the bare form identically when bundling the
+  // variant barrels (byte-identical output — it dedupes to the same module), AND
+  // the Sandcastle dev runner loads Source/Cesium.js raw via an import map that
+  // maps the exact '@cesium/engine' but NOT deep subpaths, so a deep specifier
+  // here throws "Failed to resolve module specifier" in the browser. The only
+  // deep specifier that MUST stay deep is '@cesium/engine/index-wgsl.js' below
+  // (variant-gated WebGPU exports the main barrel can't carry).
   contents +=
     `\n// Slice 5d step 2 — multi-light public API (Batch 142).\n` +
-    `export { LightCollection, PointLight, SpotLight, LightType } from '@${scope}/engine/Source/Scene/LightTypes.js';\n`;
+    `export { LightCollection, PointLight, SpotLight, LightType } from '@${scope}/engine';\n`;
   // Weather ingest public API (Phase 1) — real EDR/etc. weather -> the WebGPU
   // procedural-cloud weather map. See WEATHER_DATA_INGEST_ROADMAP.md.
   contents +=
     `\n// Weather data ingest public API (Batch 410).\n` +
-    `export { WeatherProvider } from '@${scope}/engine/Source/Scene/Weather/WeatherProvider.js';\n` +
-    `export { EdrWeatherSource } from '@${scope}/engine/Source/Scene/Weather/EdrWeatherSource.js';\n` +
-    `export { SyntheticWeatherSource } from '@${scope}/engine/Source/Scene/Weather/SyntheticWeatherSource.js';\n` +
-    `export { packWeatherField, CLOUD_BASE_NORM_METERS } from '@${scope}/engine/Source/Scene/Weather/WeatherTexPacker.js';\n` +
-    `export { GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine/Source/Scene/Weather/WeatherTypes.js';\n` +
-    `export { computeAtmosphericKnobs, applyAtmosphericConditions } from '@${scope}/engine/Source/Scene/AtmosphericEffects.js';\n`;
+    `export { WeatherProvider, EdrWeatherSource, SyntheticWeatherSource, packWeatherField, CLOUD_BASE_NORM_METERS, GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine';\n` +
+    `export { computeAtmosphericKnobs, applyAtmosphericConditions } from '@${scope}/engine';\n`;
   // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
   // Batches 147–150) are now gated below with the other WebGPU-source
   // re-exports — they import from `index-wgsl.js` and are skipped for the
@@ -562,6 +567,8 @@ export async function createCesiumJs(variant = "dual") {
  * @param {boolean} [options.sourcemap=false] true if an external sourcemap should be generated
  * @param {boolean} [options.incremental=false] true if build output should be cached for repeated builds
  * @param {boolean} [options.write=true] true if build output should be written to disk. If false, the files that would have been written as in-memory buffers
+ * @param {string} [options.outFileName="index.js"] output file name within outputDirectory (lets one workspace emit a second entry, e.g. index-wgsl.js)
+ * @param {string[]} [options.external] esbuild `external` overrides; defaults to externalizing @cesium/engine for non-engine entries
  */
 export async function bundleIndexJs(options) {
   /** @type {esbuild.BuildOptions} */
@@ -588,9 +595,14 @@ export async function bundleIndexJs(options) {
   const esm = await build({
     ...buildConfig,
     format: "esm",
-    outfile: path.join(options.outputDirectory, "index.js"),
+    outfile: path.join(
+      options.outputDirectory,
+      options.outFileName ?? "index.js",
+    ),
     // NOTE: doing this requires an importmap defined in the browser but avoids multiple CesiumJS instances
-    external: options.entryPoint.includes("engine") ? [] : ["@cesium/engine"],
+    external:
+      options.external ??
+      (options.entryPoint.includes("engine") ? [] : ["@cesium/engine"]),
   });
 
   if (incremental) {
@@ -1658,17 +1670,38 @@ export const buildEngine = async (options) => {
   // Create index.js
   await createIndexJs("engine");
 
+  const outputDirectory = path.join(
+    `packages/engine/Build`,
+    `${!minify ? "Unminified" : "Minified"}`,
+  );
+
   const contexts = await bundleIndexJs({
     minify: minify,
     incremental: incremental,
     sourcemap: true,
     removePragmas: false,
-    outputDirectory: path.join(
-      `packages/engine/Build`,
-      `${!minify ? "Unminified" : "Minified"}`,
-    ),
+    outputDirectory,
     write: write,
     entryPoint: `packages/engine/index.js`,
+  });
+
+  // Also emit a browser-loadable `index-wgsl.js` ESM bundle. The combined
+  // Cesium barrel (createCesiumJs / Source/Cesium.js) re-exports the
+  // variant-gated WebGPU cluster + WGSL symbols via `@cesium/engine/index-wgsl.js`
+  // (they can't be flattened to the bare package — the webgl-only variant strips
+  // them). Sandcastle loads Source/Cesium.js raw with an import map, so that deep
+  // specifier needs a real file to resolve to. `@cesium/engine` is marked external
+  // so this bundle shares the main engine instance via the import map rather than
+  // duplicating it. (NEW-SANDCASTLE2-INDEX-WGSL-IMPORTMAP.)
+  await bundleIndexJs({
+    minify: minify,
+    incremental: incremental,
+    sourcemap: true,
+    removePragmas: false,
+    outputDirectory,
+    write: write,
+    entryPoint: `packages/engine/index-wgsl.js`,
+    outFileName: "index-wgsl.js",
   });
 
   // Build workers.

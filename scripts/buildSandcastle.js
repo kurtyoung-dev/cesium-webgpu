@@ -71,6 +71,14 @@ export async function buildSandcastleApp({
           path: "/js/engine/index.js",
           typesPath: "/js/engine/index.d.ts",
         },
+        // Source/Cesium.js re-exports the variant-gated WebGPU cluster symbols via
+        // the deep '@cesium/engine/index-wgsl.js' specifier (it can't be flattened
+        // to the bare package — webgl-only strips it). Resolve it to the dedicated
+        // index-wgsl.js bundle. (NEW-SANDCASTLE2-INDEX-WGSL-IMPORTMAP.)
+        "@cesium/engine/index-wgsl.js": {
+          path: "/js/engine/index-wgsl.js",
+          typesPath: "/js/engine/index.d.ts",
+        },
         "@cesium/widgets": {
           path: "/js/widgets/index.js",
           typesPath: "/js/widgets/index.d.ts",
@@ -104,6 +112,14 @@ export async function buildSandcastleApp({
           rename: { stripBase: true },
         },
         {
+          src: join(
+            __dirname,
+            "../packages/engine/Build/Unminified/index-wgsl.js",
+          ),
+          dest: "js/engine",
+          rename: { stripBase: true },
+        },
+        {
           src: join(__dirname, "../packages/widgets/index.d.ts"),
           dest: "js/widgets",
           rename: { stripBase: true },
@@ -133,6 +149,13 @@ export async function buildSandcastleApp({
         },
         "@cesium/engine": {
           path: "../../../packages/engine/Build/Unminified/index.js",
+          typesPath: "../../packages/engine/index.d.ts",
+        },
+        // See the matching entry above — resolves the deep
+        // '@cesium/engine/index-wgsl.js' specifier in Source/Cesium.js to the
+        // dedicated WebGPU-exports bundle. (NEW-SANDCASTLE2-INDEX-WGSL-IMPORTMAP.)
+        "@cesium/engine/index-wgsl.js": {
+          path: "../../../packages/engine/Build/Unminified/index-wgsl.js",
           typesPath: "../../packages/engine/index.d.ts",
         },
         "@cesium/widgets": {
