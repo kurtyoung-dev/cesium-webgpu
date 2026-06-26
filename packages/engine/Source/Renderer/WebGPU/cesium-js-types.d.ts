@@ -1062,6 +1062,8 @@ interface CesiumGlobe {
   cloudMsDecayScatter?: number;
   cloudMsDecayExtinction?: number;
   cloudMsDecayPhase?: number;
+  // Batch 408 — V11 per-genus cloud type (CloudType index 0..10; undefined → CUMULUS).
+  cloudType?: number;
 }
 
 // ─── FrustumCommands ─────────────────────────────────────────────────────

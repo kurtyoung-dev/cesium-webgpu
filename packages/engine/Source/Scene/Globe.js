@@ -529,6 +529,15 @@ class Globe {
     this.cloudMsDecayPhase = undefined;
 
     /**
+     * Cloud genus (V11) — a {@link CloudType} index (CUMULUS=0 .. CUMULONIMBUS=10)
+     * selecting the per-genus vertical density profile (flat stratus / billowy
+     * cumulus / towering cumulonimbus). WebGPU procedural clouds only.
+     * Undefined → CUMULUS (byte-identical to the historical look).
+     * @type {number|undefined}
+     */
+    this.cloudType = undefined;
+
+    /**
      * Enables the data-driven weather map for the procedural volumetric clouds
      * (WebGPU only — keystone of the weather-recreation roadmap). When
      * <code>true</code>, the raymarcher samples a 2D lat/lon weather texture per

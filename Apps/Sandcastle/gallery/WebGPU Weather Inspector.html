@@ -242,6 +242,29 @@
                 path: "globe.showProceduralClouds",
               },
               {
+                // V11 — per-genus vertical density profile (WMO genus -> CloudType
+                // index). Stores a NUMBER (coerceNumber) so CloudTypeProfile.get
+                // resolves; the order groups low / mid / high genera.
+                label: "Genus (V11)",
+                type: "select",
+                path: "globe.cloudType",
+                coerceNumber: true,
+                options: [
+                  "Cumulus",
+                  "Stratus",
+                  "Stratocumulus",
+                  "Congestus",
+                  "Cumulonimbus",
+                  "Nimbostratus",
+                  "Altostratus",
+                  "Altocumulus",
+                  "Cirrus",
+                  "Cirrostratus",
+                  "Cirrocumulus",
+                ],
+                optionValues: [0, 7, 8, 9, 10, 6, 4, 5, 1, 2, 3],
+              },
+              {
                 label: "Coverage",
                 type: "range",
                 path: "globe.cloudCoverage",
@@ -763,20 +786,33 @@
           } else if (dial.type === "select") {
             const sel = document.createElement("select");
             sel.id = idFor(dial);
-            dial.options.forEach((opt) => {
+            // `optionValues` lets a select store something other than the label
+            // (e.g. a numeric CloudType enum for the genus dial); `coerceNumber`
+            // converts the chosen value back to a number on assignment.
+            const values = dial.optionValues || dial.options;
+            dial.options.forEach((opt, i) => {
               const o = document.createElement("option");
-              o.value = opt;
+              o.value = String(values[i]);
               o.textContent = opt;
               sel.appendChild(o);
             });
-            sel.value = getByPath(dial.path);
+            const readSel = () => {
+              const cur = getByPath(dial.path);
+              return cur === undefined || cur === null
+                ? String(values[0])
+                : String(cur);
+            };
+            sel.value = readSel();
             sel.addEventListener("change", () => {
-              setByPath(dial.path, sel.value);
+              setByPath(
+                dial.path,
+                dial.coerceNumber ? Number(sel.value) : sel.value,
+              );
               scene.requestRender();
             });
             row.appendChild(sel);
             refreshers.push(() => {
-              sel.value = getByPath(dial.path);
+              sel.value = readSel();
             });
           } else {
             // range-like: range, hour, windX, windY

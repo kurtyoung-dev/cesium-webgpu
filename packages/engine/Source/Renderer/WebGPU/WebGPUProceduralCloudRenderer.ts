@@ -33,9 +33,13 @@ import {
 } from "./WebGPUCloudTierPresets.js";
 import { buildCloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
+// V11 (Batch 408) — per-genus vertical-density profiles. Backend-neutral Scene
+// data (the WGSL just reads the packed profile floats).
+import CloudTypeProfile from "../../Scene/CloudTypeProfile.js";
+import CloudType from "../../Scene/CloudType.js";
 
 // Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
-const CLOUD_UNIFORM_FLOATS = 104; // must match CloudUniforms struct in WGSL (Batch 407: +96-103)
+const CLOUD_UNIFORM_FLOATS = 108; // must match CloudUniforms struct in WGSL (Batch 408: +104-107)
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -652,9 +656,22 @@ export function executeProceduralClouds(
   data[offset++] = globe.cloudMsDecayScatter ?? 0.5; // 98 msDecayA
   data[offset++] = globe.cloudMsDecayExtinction ?? 0.5; // 99 msDecayB
   data[offset++] = globe.cloudMsDecayPhase ?? 0.85; // 100 msDecayC
-  data[offset++] = 0; // 101 pad (V11 profileShape)
-  data[offset++] = 0; // 102 pad (V11 profileBaseDensity)
-  data[offset++] = 0; // 103 pad (V11 profileExtinction)
+  // ── Batch 408 — V11 per-genus vertical-density profile. globe.cloudType
+  // (default CUMULUS) selects a CloudTypeProfile; CUMULUS → shape BILLOWY(1) +
+  // densityScale 1.0, so the default render is byte-identical (the WGSL BILLOWY
+  // branch is the literal old gradient).
+  const profile = CloudTypeProfile.get(globe.cloudType ?? CloudType.CUMULUS);
+  const cumulusBase = CloudTypeProfile.get(CloudType.CUMULUS).baseDensity; // 0.7
+  data[offset++] = profile.shape; // 101 profileShape (0 SLAB / 1 BILLOWY / 2 TOWER)
+  data[offset++] = cumulusBase > 0 ? profile.baseDensity / cumulusBase : 1.0; // 102 profileDensityScale (CUMULUS=1.0)
+  data[offset++] = profile.extinction; // 103 profileExtinction (scaffolding; not yet sampled)
+  data[offset++] =
+    profile.shape === CloudTypeProfile.CloudHeightGradientShape.TOWERING_ANVIL
+      ? 1.0
+      : 0.0; // 104 anvilBias
+  data[offset++] = 0; // 105 pad
+  data[offset++] = 0; // 106 pad
+  data[offset++] = 0; // 107 pad
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

@@ -82,9 +82,17 @@ struct CloudUniforms {
   msDecayA: f32,                 // 98 — MS_SCATTER_DECAY (per-octave contribution)
   msDecayB: f32,                 // 99 — MS_EXTINCTION_DECAY (per-octave extinction)
   msDecayC: f32,                 // 100 — MS_PHASE_DECAY (per-octave eccentricity)
-  _pad406a: f32,                 // 101 — reserved (V11 profileShape)
-  _pad406b: f32,                 // 102 — reserved (V11 profileBaseDensity)
-  _pad406c: f32,                 // 103 — reserved (V11 profileExtinction)
+  // ── Batch 408 (V11 per-genus vertical-density profile; slots 101-103 were the
+  // Batch-407 reserved pads, renamed in place — add-only). Default CUMULUS keeps
+  // the render byte-identical: profileShape=BILLOWY uses the LITERAL original
+  // height gradient and profileDensityScale=1.0. ──
+  profileShape: f32,             // 101 — 0=SLAB / 1=BILLOWY / 2=TOWERING_ANVIL
+  profileDensityScale: f32,      // 102 — per-genus density vs CUMULUS (1.0 = neutral)
+  profileExtinction: f32,        // 103 — per-genus optical extinction (scaffolding; not yet sampled)
+  anvilBias: f32,                // 104 — TOWERING_ANVIL upper-flare bias (0 = none)
+  _pad408a: f32,                 // 105
+  _pad408b: f32,                 // 106
+  _pad408c: f32,                 // 107
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -266,6 +274,29 @@ fn bakedBase(samplePos: vec3<f32>) -> f32 {
   return textureSampleLevel(cloudShapeTex, cloudNoiseSampler, uvw, 0.0).r;
 }
 
+// V11 — per-genus vertical density gradient. Replaces the single hardcoded
+// `smoothstep(0,0.15,h)*smoothstep(1,0.7,h)` so genera read as different SHAPES,
+// not just different coverage: SLAB = flat sheet (stratus/altostratus/cirro-
+// stratus), BILLOWY = rounded cumulus (the historical default), TOWERING_ANVIL =
+// tall convective column that flares near the top (congestus/cumulonimbus).
+// CRITICAL: BILLOWY returns the EXACT original expression so the default CUMULUS
+// path is byte-identical; and this is called IDENTICALLY in cloudDensity and the
+// cloudBaseDensity oracle so the W5 `base >= full` invariant is preserved.
+fn heightGradientFor(h: f32, shape: f32, anvil: f32) -> f32 {
+  if (shape < 0.5) {
+    // SLAB — fills most of the layer; thin soft edges top and bottom.
+    return smoothstep(0.0, 0.08, h) * smoothstep(1.0, 0.92, h);
+  } else if (shape < 1.5) {
+    // BILLOWY — the literal historical gradient (keep byte-identical).
+    return smoothstep(0.0, 0.15, h) * smoothstep(1.0, 0.7, h);
+  }
+  // TOWERING_ANVIL — rounded base, broad high shoulder; anvil widens the top
+  // (higher anvil → density stays high through more of the column before flaring).
+  let base = smoothstep(0.0, 0.12, h);
+  let anvilTop = smoothstep(1.0, mix(0.85, 0.6, clamp(anvil, 0.0, 1.0)), h);
+  return base * anvilTop;
+}
+
 fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   // Animate with wind
   let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
@@ -299,9 +330,8 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   // Coverage threshold — shapes the clouds (per-position when the weather map is on)
   density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
 
-  // Height-based shaping: rounder tops, flat bottoms (anvil shape)
-  let heightGradient = smoothstep(0.0, 0.15, heightFraction)
-                     * smoothstep(1.0, 0.7, heightFraction);
+  // V11 — per-genus vertical gradient (default CUMULUS=BILLOWY == the old expr).
+  let heightGradient = heightGradientFor(heightFraction, cloud.profileShape, cloud.anvilBias);
   density *= heightGradient;
 
   // High-frequency WORLEY edge erosion (carves billowy lobes; fades toward the top).
@@ -325,7 +355,9 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
     density = max(density, 0.0);
   }
 
-  return density * cloud.densityMultiplier;
+  // V11 — per-genus density scale (CUMULUS = 1.0, so default is byte-identical;
+  // cirrus thins, nimbostratus thickens). Applied identically in the oracle below.
+  return density * cloud.densityMultiplier * cloud.profileDensityScale;
 }
 
 // ─── W5: cheap low-detail presence test for empty-space skipping ───
@@ -359,10 +391,11 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
     density = fbmNoise(samplePos);
   }
   density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
-  let heightGradient = smoothstep(0.0, 0.15, heightFraction)
-                     * smoothstep(1.0, 0.7, heightFraction);
+  // V11 — IDENTICAL per-genus gradient + density scale as cloudDensity (no
+  // erosion here), so the W5 `base >= full` invariant still holds per-genus.
+  let heightGradient = heightGradientFor(heightFraction, cloud.profileShape, cloud.anvilBias);
   density *= heightGradient;
-  return density * cloud.densityMultiplier;
+  return density * cloud.densityMultiplier * cloud.profileDensityScale;
 }
 
 // ─── Ray-sphere intersection ───

@@ -939,6 +939,15 @@ function buildClouds(globe) {
         globe.cloudMsDecayPhase = v;
       },
     },
+    cloudType: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudType;
+      },
+      set: function (v) {
+        globe.cloudType = v;
+      },
+    },
   });
   return leaf;
 }
