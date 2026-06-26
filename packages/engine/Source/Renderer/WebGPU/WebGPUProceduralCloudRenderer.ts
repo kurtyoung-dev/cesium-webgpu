@@ -450,6 +450,25 @@ export function executeProceduralClouds(
   const device = context._device;
   if (!device) return;
 
+  // Frustum cull (Batch 413) — the cloud shell is a sphere at the planet origin
+  // (radius = planetRadius + cloudLayerTop). Skip the full-screen raymarch
+  // entirely when that sphere is outside the view frustum (e.g. the globe panned
+  // off-screen in space). For a sphere centered at the world origin the signed
+  // distance to each frustum plane is just `plane.w` (dot(normal, 0) + w), so the
+  // shell is OUTSIDE iff some plane has w < -outerR — matching Cesium
+  // BoundingSphere.intersectPlane (OUTSIDE when distanceToPlane < -radius).
+  // Perf-only: ZERO visual change while any of the shell is in view (so the
+  // cloud probes, which all look at the globe, stay green).
+  const planes = frameState.cullingVolume?.planes;
+  if (planes !== undefined && planes.length > 0) {
+    const outerR = 6378137.0 + (globe.cloudLayerTop ?? 4000.0);
+    for (let p = 0; p < planes.length; p++) {
+      if (planes[p].w < -outerR) {
+        return; // shell entirely outside the frustum — nothing to draw
+      }
+    }
+  }
+
   const cache = ensureCloudCache(context);
   initializeCloudPipeline(device, cache, context._canvasFormat || "bgra8unorm");
 
