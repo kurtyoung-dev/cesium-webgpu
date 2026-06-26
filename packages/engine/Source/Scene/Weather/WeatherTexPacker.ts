@@ -78,10 +78,10 @@ export function packWeatherField(
       out[i] = Math.round(
         clamp01(bilinear(field.coverage, gw, gh, fx, fy)) * 255,
       );
-      // G: cloud type index (0..10) -> 0..255 by *? keep raw index<<? MVP packs
-      // type/255 so the shader can recover round(G/255*?)... store index scaled
-      // to the 0..255 range by index*23 (~255/11). Scaffolding until the shader
-      // reads G. Default 128 (mid) when no type provided — matches the procedural map.
+      // G: cloud-type index (CloudType 0..10) packed as index/10 → 0..255, so the
+      // shader recovers the genus via round(G/255 * 10). Scaffolding until the
+      // shader reads G; default 128 (mid) when no type is provided (matches the
+      // procedural map's G).
       out[i + 1] = hasType
         ? Math.round(
             clamp01(

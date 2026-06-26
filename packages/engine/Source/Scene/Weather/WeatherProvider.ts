@@ -24,6 +24,10 @@ export class WeatherProvider {
   private _fetching = false;
   private _lastError: string | null = null;
   private _validTime: string | undefined = undefined;
+  // Bumped ONLY by setSource/setRequest/refresh (NOT by a successful fetch). An
+  // in-flight fetch captures it and discards its result if it changed mid-flight,
+  // so swapping the source during a slow (network) fetch can't apply stale data.
+  private _invalidation = 0;
 
   constructor(
     source: WeatherSource | null = null,
@@ -55,6 +59,7 @@ export class WeatherProvider {
     this._source = source;
     this._packed = null;
     this._lastError = null;
+    this._invalidation++;
     this._version++;
   }
 
@@ -62,12 +67,14 @@ export class WeatherProvider {
   setRequest(request: WeatherFieldRequest): void {
     this._request = request;
     this._packed = null;
+    this._invalidation++;
     this._version++;
   }
 
   /** Force a re-fetch (e.g. a live-refresh tick). */
   refresh(): void {
     this._packed = null;
+    this._invalidation++;
     this._version++;
   }
 
@@ -89,16 +96,28 @@ export class WeatherProvider {
       return;
     }
     this._fetching = true;
+    // Capture the source/request/generation NOW; a setSource/setRequest/refresh
+    // during the await must NOT have its result clobbered by this in-flight one.
+    const gen = this._invalidation;
+    const source = this._source;
+    const request = this._request;
     try {
-      const field = await this._source.fetchField(this._request);
-      this._packed = packWeatherField(field, texW, texH);
-      this._validTime = field.validTime;
-      this._lastError = null;
-      this._version++;
+      const field = await source.fetchField(request);
+      if (this._invalidation === gen) {
+        this._packed = packWeatherField(field, texW, texH);
+        this._validTime = field.validTime;
+        this._lastError = null;
+        this._version++;
+      }
+      // else: superseded — drop the stale result; the next getPackedTexture()
+      // sees _packed === null and kicks a fresh fetch with the new source.
     } catch (e) {
-      this._lastError = (e as Error)?.message ?? String(e);
+      if (this._invalidation === gen) {
+        this._lastError = (e as Error)?.message ?? String(e);
+      }
       // leave _packed null → renderer falls back to the procedural map
     } finally {
+      // Always release the lock so a superseding source can fetch next frame.
       this._fetching = false;
     }
   }

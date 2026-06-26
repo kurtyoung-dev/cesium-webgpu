@@ -155,9 +155,14 @@ async function run() {
   // + READ the depth-occ-*.png) + the sky-view-unchanged check (probe-cloud-
   // diagonal stays GREEN: sky pixels carry far depth so the tEnd clamp is a no-op
   // there). A wrong reconstruction would clip the sky clouds too — it doesn't.
+  // SMOKE TEST only (single run cannot prove occlusion without a baseline): the
+  // cloud pass still renders with the depth fix + 0 errors. OCCLUSION itself is
+  // proven by the git-stash A/B (TAG=withfix vs TAG=nofix + READ depth-occ-*.png)
+  // and the sky-view-unchanged check (probe-cloud-diagonal stays GREEN). Do NOT
+  // read a GREEN here as "occlusion verified".
   const checks = [
-    [`clouds render over the lit globe (full ${frac.full}% > 0.3)`, frac.full > 0.3],
-    [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
+    [`[smoke] clouds render over the lit globe (full ${frac.full}% > 0.3)`, frac.full > 0.3],
+    [`[smoke] no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   let pass = true;
   for (const [n, ok] of checks) {
@@ -166,7 +171,9 @@ async function run() {
       pass = false;
     }
   }
-  console.log(`RESULT: ${pass ? "GREEN" : "RED"}`);
+  console.log(
+    `RESULT (smoke, not an occlusion proof): ${pass ? "GREEN" : "RED"}`,
+  );
   await browser.close();
   process.exitCode = pass ? 0 : 1;
 }

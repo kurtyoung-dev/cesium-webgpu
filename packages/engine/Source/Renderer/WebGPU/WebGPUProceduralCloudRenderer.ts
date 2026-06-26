@@ -38,8 +38,10 @@ import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import CloudTypeProfile from "../../Scene/CloudTypeProfile.js";
 import CloudType from "../../Scene/CloudType.js";
 
-// Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
-const CLOUD_UNIFORM_FLOATS = 108; // must match CloudUniforms struct in WGSL (Batch 408: +104-107)
+// CloudUniforms float count — grown ADD-ONLY: 64→80 (weather seam) → 96 (W1-W8
+// lighting) → 104 (Batch 407 dials 96-103) → 108 (Batch 408 V11 profile 104-107;
+// Batch 409 renamed pads 105-106 → nearPlane/farPlane, no count change).
+const CLOUD_UNIFORM_FLOATS = 108; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -60,7 +62,6 @@ export interface CloudCache {
   weatherView: GPUTextureView | null;
   weatherFallbackView: GPUTextureView | null; // 1×1 white, bound when disabled
   weatherSampler: GPUSampler | null;
-  weatherFilled: boolean; // procedural fill uploaded once
   // Weather ingest (Phase 1) — which bytes the weatherTexture currently holds:
   // -2 = nothing, -1 = procedural map, >=0 = WeatherProvider.version uploaded.
   weatherProviderVersion: number;
@@ -86,7 +87,6 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       weatherView: null,
       weatherFallbackView: null,
       weatherSampler: null,
-      weatherFilled: false,
       weatherProviderVersion: -2,
       noise: null,
       noiseBaked: false,
@@ -229,7 +229,6 @@ function ensureWeatherView(
     if (cache.weatherProviderVersion !== providerVersion) {
       device.queue.writeTexture(dst, providerBytes, layout, size);
       cache.weatherProviderVersion = providerVersion;
-      cache.weatherFilled = true;
     }
   } else if (cache.weatherProviderVersion !== -1) {
     device.queue.writeTexture(
@@ -239,7 +238,6 @@ function ensureWeatherView(
       size,
     );
     cache.weatherProviderVersion = -1;
-    cache.weatherFilled = true;
   }
   return cache.weatherView!;
 }
