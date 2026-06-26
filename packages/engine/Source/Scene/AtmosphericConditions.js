@@ -960,6 +960,11 @@ function buildWeather(scene, globe) {
   //                because the consumers map (0.5 + humidity) to a
   //                multiplier (0.5..1.5×) and 0.5+0.5 = 1.0.
   //   airQuality — 1=clean, <1=dust/haze, >1=very clean. Default 1.0.
+  //   temperature — air temperature, °C. Default 15 (mild). Feeds the Phase-A
+  //                atmospheric-effects mapper (cold-dry = crisp; warm-moist =
+  //                hazy) via {@link AtmosphericEffects}.
+  //   dewpoint    — dew point, °C. Default 5. The temperature−dewpoint spread
+  //                drives fog/mist formation in the mapper.
   //   cloudCover — 0..1, fraction of sky covered by clouds. Delegates to
   //                `globe.cloudCoverage` so the procedural cloud renderer
   //                and the star occlusion path stay in sync (single
@@ -967,6 +972,8 @@ function buildWeather(scene, globe) {
   const leaf = {
     humidity: 0.5,
     airQuality: 1.0,
+    temperature: 15.0,
+    dewpoint: 5.0,
   };
   Object.defineProperties(leaf, {
     cloudCover: {

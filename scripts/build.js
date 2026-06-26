@@ -497,7 +497,8 @@ export async function createCesiumJs(variant = "dual") {
     `export { EdrWeatherSource } from '@${scope}/engine/Source/Scene/Weather/EdrWeatherSource.js';\n` +
     `export { SyntheticWeatherSource } from '@${scope}/engine/Source/Scene/Weather/SyntheticWeatherSource.js';\n` +
     `export { packWeatherField, CLOUD_BASE_NORM_METERS } from '@${scope}/engine/Source/Scene/Weather/WeatherTexPacker.js';\n` +
-    `export { GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine/Source/Scene/Weather/WeatherTypes.js';\n`;
+    `export { GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine/Source/Scene/Weather/WeatherTypes.js';\n` +
+    `export { computeAtmosphericKnobs, applyAtmosphericConditions } from '@${scope}/engine/Source/Scene/AtmosphericEffects.js';\n`;
   // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
   // Batches 147–150) are now gated below with the other WebGPU-source
   // re-exports — they import from `index-wgsl.js` and are skipped for the
@@ -1392,7 +1393,8 @@ export async function createIndexJs(workspace) {
       `export { EdrWeatherSource } from './Source/Scene/Weather/EdrWeatherSource.js';${EOL}` +
       `export { SyntheticWeatherSource } from './Source/Scene/Weather/SyntheticWeatherSource.js';${EOL}` +
       `export { packWeatherField, CLOUD_BASE_NORM_METERS } from './Source/Scene/Weather/WeatherTexPacker.js';${EOL}` +
-      `export { GLOBAL_WEATHER_BOUNDS } from './Source/Scene/Weather/WeatherTypes.js';${EOL}`;
+      `export { GLOBAL_WEATHER_BOUNDS } from './Source/Scene/Weather/WeatherTypes.js';${EOL}` +
+      `export { computeAtmosphericKnobs, applyAtmosphericConditions } from './Source/Scene/AtmosphericEffects.js';${EOL}`;
     // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
     // Batches 147–150) used to live here in the MAIN index.js, but they
     // reference `Source/Renderer/WebGPU/*` which the webgl-only variant alias
