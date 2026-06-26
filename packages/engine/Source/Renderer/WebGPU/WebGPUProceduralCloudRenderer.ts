@@ -35,7 +35,7 @@ import { buildCloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 
 // Weather Phase 1 grew the struct 64→80 (added the weather-map seam lanes).
-const CLOUD_UNIFORM_FLOATS = 96; // must match CloudUniforms struct in WGSL
+const CLOUD_UNIFORM_FLOATS = 104; // must match CloudUniforms struct in WGSL (Batch 407: +96-103)
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -643,6 +643,18 @@ export function executeProceduralClouds(
   data[offset++] = 0.62 + (0.72 - 0.62) * todT; // 93 G (warm 0.62 -> day 0.72)
   data[offset++] = 0.5 + (0.85 - 0.5) * todT; // 94 B (warm 0.50 -> day 0.85)
   data[offset++] = 0; // 95 pad
+  // ── Batch 407 — promoted shader consts → live dials (96-100) + V11-reserved
+  // pads (101-103). The ?? defaults EXACTLY match the former WGSL consts
+  // (SHAPE_SCALE 0.45, CLOUD_EXPOSURE 0.22, MS a/b/c 0.5/0.5/0.85), so with the
+  // globe fields unset this is byte-identical to the pre-407 render.
+  data[offset++] = globe.cloudPuffSize ?? 0.45; // 96 puffSize (was SHAPE_SCALE)
+  data[offset++] = globe.cloudExposure ?? 0.22; // 97 exposure (was CLOUD_EXPOSURE)
+  data[offset++] = globe.cloudMsDecayScatter ?? 0.5; // 98 msDecayA
+  data[offset++] = globe.cloudMsDecayExtinction ?? 0.5; // 99 msDecayB
+  data[offset++] = globe.cloudMsDecayPhase ?? 0.85; // 100 msDecayC
+  data[offset++] = 0; // 101 pad (V11 profileShape)
+  data[offset++] = 0; // 102 pad (V11 profileBaseDensity)
+  data[offset++] = 0; // 103 pad (V11 profileExtinction)
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

@@ -894,6 +894,51 @@ function buildClouds(globe) {
         globe.cloudErosionStrength = v;
       },
     },
+    puffSize: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudPuffSize;
+      },
+      set: function (v) {
+        globe.cloudPuffSize = v;
+      },
+    },
+    exposure: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudExposure;
+      },
+      set: function (v) {
+        globe.cloudExposure = v;
+      },
+    },
+    msDecayScatter: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudMsDecayScatter;
+      },
+      set: function (v) {
+        globe.cloudMsDecayScatter = v;
+      },
+    },
+    msDecayExtinction: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudMsDecayExtinction;
+      },
+      set: function (v) {
+        globe.cloudMsDecayExtinction = v;
+      },
+    },
+    msDecayPhase: {
+      enumerable: true,
+      get: function () {
+        return globe.cloudMsDecayPhase;
+      },
+      set: function (v) {
+        globe.cloudMsDecayPhase = v;
+      },
+    },
   });
   return leaf;
 }

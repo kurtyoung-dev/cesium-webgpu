@@ -74,6 +74,17 @@ struct CloudUniforms {
   aerialStrength: f32,           // 91 — W4 aerial-perspective strength
   aerialColor: vec3<f32>,        // 92-94 — W4 horizon inscatter haze tint (time-of-day keyed)
   _padD: f32,                    // 95
+  // ── Batch 407 (promoted shader consts → live dials; all scalar f32, one
+  // 16-byte row 96-99 + a second 100-103). Default-byte-identical: the JS packer
+  // writes the former const values, so an unset dial reproduces today's render. ──
+  puffSize: f32,                 // 96 — promoted SHAPE_SCALE (baked base puff size)
+  exposure: f32,                 // 97 — promoted CLOUD_EXPOSURE (Reinhard tone-map)
+  msDecayA: f32,                 // 98 — MS_SCATTER_DECAY (per-octave contribution)
+  msDecayB: f32,                 // 99 — MS_EXTINCTION_DECAY (per-octave extinction)
+  msDecayC: f32,                 // 100 — MS_PHASE_DECAY (per-octave eccentricity)
+  _pad406a: f32,                 // 101 — reserved (V11 profileShape)
+  _pad406b: f32,                 // 102 — reserved (V11 profileBaseDensity)
+  _pad406c: f32,                 // 103 — reserved (V11 profileExtinction)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -100,8 +111,8 @@ struct VertexOutput {
 const PI: f32 = 3.14159265358979;
 // W1 — exposure feeding the Reinhard tone-map at the cloud composite. Calibrated
 // against sunIntensity~10 + the dual-lobe forward peak so the silver lining is a
-// gradient, not a white-out. (A future batch may promote this to a uniform.)
-const CLOUD_EXPOSURE: f32 = 0.22;
+// gradient, not a white-out. Promoted to the `cloud.exposure` uniform (Batch 407,
+// default 0.22) so it can be tuned live; the const is gone.
 
 // V1 — `qualityFlags`@74 bit layout (declared; no path reads them yet — feature
 // batches wire each: V3 noiseSource, V9 halfRes, V10 temporal, V6 jitter, V5
@@ -248,7 +259,7 @@ fn bakedBase(samplePos: vec3<f32>) -> f32 {
   // dapple; the detail erosion (cloudDensity, samplePos*5) stays fine, giving big
   // lobes with cauliflower edges. Warp + warp-sample scale track SHAPE_SCALE so
   // the de-tiling stays proportional.
-  let SHAPE_SCALE = 0.45;
+  let SHAPE_SCALE = cloud.puffSize; // Batch 407 dial (default 0.45)
   let s = samplePos * SHAPE_SCALE;
   let w = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, s * 0.32, 0.0).rgb;
   let uvw = s + (w - vec3<f32>(0.5)) * 0.5;
@@ -429,9 +440,9 @@ fn beerPowder(opticalDepth: f32, powder: f32) -> f32 {
 // it). Normalized by the scattering sum so a THIN cloud returns ≈ the phase
 // (cannot over-brighten). `octaves` is tier-driven (qualityFlags bits 4-6).
 fn multiScatterLight(opticalDepth: f32, cosTheta: f32, powder: f32, octaves: i32) -> f32 {
-  let a = 0.5;  // MS_SCATTER_DECAY  — contribution per octave
-  let b = 0.5;  // MS_EXTINCTION_DECAY — extinction per octave
-  let c = 0.85; // MS_PHASE_DECAY — eccentricity per octave (gentle: keeps T3 ≈ prior)
+  let a = cloud.msDecayA; // MS_SCATTER_DECAY — contribution per octave (Batch 407 dial, default 0.5)
+  let b = cloud.msDecayB; // MS_EXTINCTION_DECAY — extinction per octave (default 0.5)
+  let c = cloud.msDecayC; // MS_PHASE_DECAY — eccentricity per octave (default 0.85, gentle: keeps T3 ≈ prior)
   let n = max(octaves, 1);
   var luminance: f32 = 0.0;
   var total: f32 = 0.0;
@@ -643,7 +654,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // every lighting term the rest of Arc A adds (ambient, time-of-day, aerial).
   // Exposure + Reinhard maps it to [0,1) so the bright sun-facing edges read as
   // a rim over a darker body (the silver lining) instead of a white-out.
-  let exposed = weightedColor * CLOUD_EXPOSURE;
+  let exposed = weightedColor * cloud.exposure;
   let toneMapped = exposed / (exposed + vec3<f32>(1.0));
 
   // W4 — aerial perspective. Distant clouds lose contrast and tint toward the

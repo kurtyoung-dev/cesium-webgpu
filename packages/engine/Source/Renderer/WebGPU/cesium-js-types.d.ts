@@ -1056,6 +1056,12 @@ interface CesiumGlobe {
   cloudPhaseBlend?: number;
   cloudAmbientIntensity?: number;
   cloudErosionStrength?: number;
+  // Batch 407 — promoted shader-const dials (undefined → former const default).
+  cloudPuffSize?: number;
+  cloudExposure?: number;
+  cloudMsDecayScatter?: number;
+  cloudMsDecayExtinction?: number;
+  cloudMsDecayPhase?: number;
 }
 
 // ─── FrustumCommands ─────────────────────────────────────────────────────

@@ -494,6 +494,41 @@ class Globe {
     this.cloudErosionStrength = undefined;
 
     /**
+     * Baked-base puff size (promoted SHAPE_SCALE). Lower = larger, fluffier
+     * cumulus masses; higher = finer dapple. WebGPU only. Undefined → 0.45.
+     * @type {number|undefined}
+     */
+    this.cloudPuffSize = undefined;
+
+    /**
+     * Reinhard tone-map exposure at the cloud composite (promoted CLOUD_EXPOSURE).
+     * Higher = brighter, more saturated silver lining. WebGPU only. Undefined → 0.22.
+     * @type {number|undefined}
+     */
+    this.cloudExposure = undefined;
+
+    /**
+     * Multi-scatter per-octave scattering-contribution decay (Frostbite octaves).
+     * WebGPU only. Undefined → 0.5.
+     * @type {number|undefined}
+     */
+    this.cloudMsDecayScatter = undefined;
+
+    /**
+     * Multi-scatter per-octave extinction decay (deeper octaves see less). WebGPU
+     * only. Undefined → 0.5.
+     * @type {number|undefined}
+     */
+    this.cloudMsDecayExtinction = undefined;
+
+    /**
+     * Multi-scatter per-octave phase-eccentricity decay (deeper octaves more
+     * isotropic). WebGPU only. Undefined → 0.85.
+     * @type {number|undefined}
+     */
+    this.cloudMsDecayPhase = undefined;
+
+    /**
      * Enables the data-driven weather map for the procedural volumetric clouds
      * (WebGPU only — keystone of the weather-recreation roadmap). When
      * <code>true</code>, the raymarcher samples a 2D lat/lon weather texture per
