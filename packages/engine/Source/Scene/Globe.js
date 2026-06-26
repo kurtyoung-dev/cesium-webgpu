@@ -538,6 +538,17 @@ class Globe {
     this.cloudType = undefined;
 
     /**
+     * Real-weather ingest provider (Phase 1). When set to a
+     * {@link WeatherProvider}, it fetches a cloud-cover field from an open data
+     * source (OGC API-EDR etc.) and bakes it into the WebGPU procedural-cloud
+     * weather-map texture, auto-enabling the data-driven path once data arrives.
+     * Undefined → the procedural weather map. WebGPU only.
+     * See migration_doc/WEATHER_DATA_INGEST_ROADMAP.md.
+     * @type {object|undefined}
+     */
+    this.weatherProvider = undefined;
+
+    /**
      * Enables the data-driven weather map for the procedural volumetric clouds
      * (WebGPU only — keystone of the weather-recreation roadmap). When
      * <code>true</code>, the raymarcher samples a 2D lat/lon weather texture per

@@ -61,6 +61,9 @@ export interface CloudCache {
   weatherFallbackView: GPUTextureView | null; // 1×1 white, bound when disabled
   weatherSampler: GPUSampler | null;
   weatherFilled: boolean; // procedural fill uploaded once
+  // Weather ingest (Phase 1) — which bytes the weatherTexture currently holds:
+  // -2 = nothing, -1 = procedural map, >=0 = WeatherProvider.version uploaded.
+  weatherProviderVersion: number;
   // V2 — 3D noise bake (bound at 6/7/8; INERT until V3 samples it).
   noise: CloudNoiseResources | null;
   noiseBaked: boolean;
@@ -84,6 +87,7 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       weatherFallbackView: null,
       weatherSampler: null,
       weatherFilled: false,
+      weatherProviderVersion: -2,
       noise: null,
       noiseBaked: false,
       noiseFallbackTexture: null,
@@ -168,6 +172,8 @@ function ensureWeatherView(
   device: GPUDevice,
   cache: CloudCache,
   enabled: boolean,
+  providerBytes: Uint8Array | null,
+  providerVersion: number,
 ): GPUTextureView {
   if (!cache.weatherFallbackView) {
     const fb = device.createTexture({
@@ -188,7 +194,8 @@ function ensureWeatherView(
   if (!enabled) {
     return cache.weatherFallbackView;
   }
-  if (!cache.weatherFilled) {
+  // Allocate the 256x128 weather texture once.
+  if (!cache.weatherTexture) {
     const tex = device.createTexture({
       size: {
         width: WEATHER_TEX_W,
@@ -198,20 +205,40 @@ function ensureWeatherView(
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       dimension: "2d",
-      label: "Procedural WeatherMap",
+      label: "WeatherMap",
     });
-    device.queue.writeTexture(
-      { texture: tex },
-      buildProceduralWeatherMap(WEATHER_TEX_W, WEATHER_TEX_H),
-      { bytesPerRow: WEATHER_TEX_W * 4, rowsPerImage: WEATHER_TEX_H },
-      {
-        width: WEATHER_TEX_W,
-        height: WEATHER_TEX_H,
-        depthOrArrayLayers: 1,
-      },
-    );
     cache.weatherTexture = tex;
     cache.weatherView = tex.createView({ dimension: "2d-array" });
+    cache.weatherProviderVersion = -2; // nothing uploaded yet
+  }
+  const dst = { texture: cache.weatherTexture };
+  const layout = {
+    bytesPerRow: WEATHER_TEX_W * 4,
+    rowsPerImage: WEATHER_TEX_H,
+  };
+  const size = {
+    width: WEATHER_TEX_W,
+    height: WEATHER_TEX_H,
+    depthOrArrayLayers: 1,
+  };
+  // Weather ingest (Phase 1) — real data from a WeatherProvider wins; (re)upload
+  // only when its version changes. Otherwise fall back to the procedural map
+  // (uploaded once, sentinel -1). Switching back from provider to procedural
+  // re-uploads the procedural fill.
+  if (providerBytes !== null) {
+    if (cache.weatherProviderVersion !== providerVersion) {
+      device.queue.writeTexture(dst, providerBytes, layout, size);
+      cache.weatherProviderVersion = providerVersion;
+      cache.weatherFilled = true;
+    }
+  } else if (cache.weatherProviderVersion !== -1) {
+    device.queue.writeTexture(
+      dst,
+      buildProceduralWeatherMap(WEATHER_TEX_W, WEATHER_TEX_H),
+      layout,
+      size,
+    );
+    cache.weatherProviderVersion = -1;
     cache.weatherFilled = true;
   }
   return cache.weatherView!;
@@ -558,7 +585,16 @@ export function executeProceduralClouds(
   data[offset++] = 0;
 
   // Weather Phase 1 — weather-map seam lanes (floats 64-79).
-  const weatherEnabled = globe.cloudWeatherMap === true;
+  // Ingest (Phase 1): if a WeatherProvider has real data, use it AND auto-enable
+  // the weather map (so real cloud-cover drives the deck without the user setting
+  // cloudWeatherMap). getPackedTexture returns null until the async fetch lands —
+  // until then the renderer keeps the procedural map (no overcast-everywhere flash).
+  const weatherProvider = globe.weatherProvider;
+  const providerBytes =
+    weatherProvider?.getPackedTexture(WEATHER_TEX_W, WEATHER_TEX_H) ?? null;
+  const providerVersion = weatherProvider?.version ?? -1;
+  const weatherEnabled =
+    globe.cloudWeatherMap === true || providerBytes !== null;
   data[offset++] = weatherEnabled ? 1.0 : 0.0; // 64 weatherMapEnabled
   // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
   // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
@@ -679,7 +715,13 @@ export function executeProceduralClouds(
 
   // Weather Phase 1 — resolve the weather view (procedural map when enabled,
   // 1×1 white fallback otherwise).
-  const weatherView = ensureWeatherView(device, cache, weatherEnabled);
+  const weatherView = ensureWeatherView(
+    device,
+    cache,
+    weatherEnabled,
+    providerBytes,
+    providerVersion,
+  );
   // `noise` (the 3D shape/detail views + sampler) was resolved up-front so the
   // qualityFlags noiseSource bit reflects the same-frame baked state.
 

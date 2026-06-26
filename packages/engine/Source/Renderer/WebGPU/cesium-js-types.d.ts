@@ -1064,6 +1064,12 @@ interface CesiumGlobe {
   cloudMsDecayPhase?: number;
   // Batch 408 — V11 per-genus cloud type (CloudType index 0..10; undefined → CUMULUS).
   cloudType?: number;
+  // Weather ingest (Phase 1) — a WeatherProvider drives the weather-map texture
+  // from real data. Structural to keep this .d.ts decoupled from Scene/Weather.
+  weatherProvider?: {
+    getPackedTexture(texW: number, texH: number): Uint8Array | null;
+    readonly version: number;
+  };
 }
 
 // ─── FrustumCommands ─────────────────────────────────────────────────────

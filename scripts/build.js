@@ -489,6 +489,15 @@ export async function createCesiumJs(variant = "dual") {
   contents +=
     `\n// Slice 5d step 2 — multi-light public API (Batch 142).\n` +
     `export { LightCollection, PointLight, SpotLight, LightType } from '@${scope}/engine/Source/Scene/LightTypes.js';\n`;
+  // Weather ingest public API (Phase 1) — real EDR/etc. weather -> the WebGPU
+  // procedural-cloud weather map. See WEATHER_DATA_INGEST_ROADMAP.md.
+  contents +=
+    `\n// Weather data ingest public API (Batch 410).\n` +
+    `export { WeatherProvider } from '@${scope}/engine/Source/Scene/Weather/WeatherProvider.js';\n` +
+    `export { EdrWeatherSource } from '@${scope}/engine/Source/Scene/Weather/EdrWeatherSource.js';\n` +
+    `export { SyntheticWeatherSource } from '@${scope}/engine/Source/Scene/Weather/SyntheticWeatherSource.js';\n` +
+    `export { packWeatherField, CLOUD_BASE_NORM_METERS } from '@${scope}/engine/Source/Scene/Weather/WeatherTexPacker.js';\n` +
+    `export { GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine/Source/Scene/Weather/WeatherTypes.js';\n`;
   // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
   // Batches 147–150) are now gated below with the other WebGPU-source
   // re-exports — they import from `index-wgsl.js` and are skipped for the
@@ -1377,7 +1386,13 @@ export async function createIndexJs(workspace) {
       // construct concrete subclasses (PointLight / SpotLight /
       // DirectionalLight) via `scene.lights.add(...)`. Backend-agnostic
       // so always included regardless of variant.
-      `export { LightCollection, PointLight, SpotLight, LightType } from './Source/Scene/LightTypes.js';${EOL}`;
+      `export { LightCollection, PointLight, SpotLight, LightType } from './Source/Scene/LightTypes.js';${EOL}` +
+      // Weather data ingest public API (Batch 410) — backend-agnostic Scene data.
+      `export { WeatherProvider } from './Source/Scene/Weather/WeatherProvider.js';${EOL}` +
+      `export { EdrWeatherSource } from './Source/Scene/Weather/EdrWeatherSource.js';${EOL}` +
+      `export { SyntheticWeatherSource } from './Source/Scene/Weather/SyntheticWeatherSource.js';${EOL}` +
+      `export { packWeatherField, CLOUD_BASE_NORM_METERS } from './Source/Scene/Weather/WeatherTexPacker.js';${EOL}` +
+      `export { GLOBAL_WEATHER_BOUNDS } from './Source/Scene/Weather/WeatherTypes.js';${EOL}`;
     // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
     // Batches 147–150) used to live here in the MAIN index.js, but they
     // reference `Source/Renderer/WebGPU/*` which the webgl-only variant alias
