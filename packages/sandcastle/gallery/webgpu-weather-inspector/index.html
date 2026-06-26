@@ -1,0 +1,88 @@
+<style>
+  @import url(../templates/bucket.css);
+
+  #weatherPanel {
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    max-height: calc(100% - 20px);
+    overflow-y: auto;
+    width: 270px;
+    padding: 8px 10px 10px;
+    background: rgba(28, 30, 34, 0.88);
+    border-radius: 6px;
+    color: #eee;
+    font-family: sans-serif;
+    font-size: 12px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  }
+  #weatherPanel h2 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  #weatherPanel .presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  #weatherPanel .presets button {
+    flex: 1 0 auto;
+    font-size: 11px;
+    padding: 4px 6px;
+    border: none;
+    border-radius: 3px;
+    background: #3a6ea5;
+    color: #fff;
+    cursor: pointer;
+  }
+  #weatherPanel .presets button:hover {
+    background: #4d86c4;
+  }
+  #weatherPanel fieldset {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+    margin: 6px 0;
+    padding: 4px 8px 6px;
+  }
+  #weatherPanel legend {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #9ec5ff;
+    padding: 0 4px;
+  }
+  #weatherPanel .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 3px 0;
+  }
+  #weatherPanel .row label {
+    flex: 1 1 auto;
+    margin-right: 6px;
+  }
+  #weatherPanel .row input[type="range"] {
+    width: 96px;
+    vertical-align: middle;
+  }
+  #weatherPanel .row input[type="checkbox"] {
+    margin-right: 26px;
+  }
+  #weatherPanel .row select {
+    width: 96px;
+  }
+  #weatherPanel .row .val {
+    display: inline-block;
+    min-width: 38px;
+    text-align: right;
+    margin-left: 6px;
+    color: #cfe3ff;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="weatherPanel"></div>
+<div id="toolbar"></div>

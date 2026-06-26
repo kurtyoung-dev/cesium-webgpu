@@ -1,0 +1,796 @@
+import * as Cesium from "cesium";
+
+// Backend is selectable via ?renderer= (default webgpu) so a user can
+// exercise the WebGL2 CPU-kernel fallback (cpuKernel below) straight
+// from the demo — on WebGL2 the engine runs the JS SGP4 update each
+// frame instead of the WGSL compute kernel.
+const requestedRenderer =
+  new URLSearchParams(window.location.search).get("renderer") || "webgpu";
+const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+  contextOptions: { renderer: requestedRenderer },
+  shouldAnimate: true,
+});
+const scene = viewer.scene;
+
+// ─────────────────────────────────────────────────────────────────
+//  Near-earth SGP4 — CPU FP64 pre-conditioning (Vallado, WGS-72).
+//  All TIME-INDEPENDENT constants are computed here in JS double
+//  precision; only the per-frame update runs on the GPU.
+// ─────────────────────────────────────────────────────────────────
+const MU = 398600.8;
+const RADIUSEARTHKM = 6378.135;
+const XKE = 60.0 / Math.sqrt(RADIUSEARTHKM ** 3 / MU);
+const J2 = 0.001082616;
+const J3 = -0.00000253881;
+const J4 = -0.00000165597;
+const J3OJ2 = J3 / J2;
+const X2O3 = 2.0 / 3.0;
+const TWOPI = 2.0 * Math.PI;
+const DEG2RAD = Math.PI / 180.0;
+const EARTH_ROT_HI = 7.2921159e-5; // rad/s
+const EARTH_ROT_LO = -1.60853e-12;
+
+function gstime(jdut1) {
+  const t = (jdut1 - 2451545.0) / 36525.0;
+  let s =
+    -6.2e-6 * t * t * t +
+    0.093104 * t * t +
+    (876600.0 * 3600 + 8640184.812866) * t +
+    67310.54841;
+  s = ((s * DEG2RAD) / 240.0) % TWOPI;
+  return s < 0 ? s + TWOPI : s;
+}
+
+function parseAssumedDecimal(str) {
+  str = str.trim();
+  if (str === "" || str === "00000-0" || str === "00000+0") {
+    return 0.0;
+  }
+  const sign = str[0] === "-" ? -1 : 1;
+  const body = str.replace(/^[+-]/, "");
+  const m = body.match(/^(\d+)([+-]\d)$/);
+  if (!m) {
+    return sign * (parseFloat(`0.${body}`) || 0.0);
+  }
+  return sign * parseFloat(`0.${m[1]}`) * Math.pow(10, parseInt(m[2], 10));
+}
+
+function jdayFromYearDoy(year, doy) {
+  const jan1 =
+    367.0 * year -
+    Math.floor((7 * (year + Math.floor(10 / 12))) / 4) +
+    Math.floor((275 * 1) / 9) +
+    1 +
+    1721013.5;
+  const jd = jan1 - 1.0;
+  const whole = Math.floor(doy);
+  return { jd: jd + whole, jdFrac: doy - whole };
+}
+
+function df64Split(x) {
+  const hi = Math.fround(x);
+  return [hi, x - hi];
+}
+
+// sgp4init: returns the per-object constants + a deep-space flag.
+function sgp4init(line1, line2) {
+  const epochStr = line1.substring(18, 32).trim();
+  const yy = parseInt(epochStr.substring(0, 2), 10);
+  const days = parseFloat(epochStr.substring(2));
+  const year = yy < 57 ? yy + 2000 : yy + 1900;
+  const bstar = parseAssumedDecimal(line1.substring(53, 61));
+  const inclo = parseFloat(line2.substring(8, 16)) * DEG2RAD;
+  const nodeo = parseFloat(line2.substring(17, 25)) * DEG2RAD;
+  const ecco = parseFloat(`0.${line2.substring(26, 33).trim()}`);
+  const argpo = parseFloat(line2.substring(34, 42)) * DEG2RAD;
+  const mo = parseFloat(line2.substring(43, 51)) * DEG2RAD;
+  const noKozai = (parseFloat(line2.substring(52, 63)) * TWOPI) / 1440.0;
+  const { jd, jdFrac } = jdayFromYearDoy(year, days);
+
+  const cosio = Math.cos(inclo);
+  const sinio = Math.sin(inclo);
+  const cosio2 = cosio * cosio;
+  const eccsq = ecco * ecco;
+  const omeosq = 1.0 - eccsq;
+  const rteosq = Math.sqrt(omeosq);
+
+  const ak = Math.pow(XKE / noKozai, X2O3);
+  const d1 = (0.75 * J2 * (3.0 * cosio2 - 1.0)) / (rteosq * omeosq);
+  let del = d1 / (ak * ak);
+  const adel =
+    ak * (1.0 - del * del - del * (1.0 / 3.0 + (134.0 * del * del) / 81.0));
+  del = d1 / (adel * adel);
+  const noU = noKozai / (1.0 + del);
+  const ao = Math.pow(XKE / noU, X2O3);
+  const po = ao * omeosq;
+  const con42 = 1.0 - 5.0 * cosio2;
+  const con41 = -con42 - cosio2 - cosio2;
+  const x1mth2 = 1.0 - cosio2;
+  const x7thm1 = 7.0 * cosio2 - 1.0;
+
+  const periodMin = TWOPI / noU;
+  const isDeepSpace = periodMin >= 225.0;
+
+  const rp = ao * (1.0 - ecco);
+  const perigeeKm = (rp - 1.0) * RADIUSEARTHKM;
+  let sfour = 78.0 / RADIUSEARTHKM + 1.0;
+  let qzms24 = Math.pow((120.0 - 78.0) / RADIUSEARTHKM, 4.0);
+  if (perigeeKm < 156.0) {
+    sfour = perigeeKm - 78.0;
+    if (perigeeKm < 98.0) {
+      sfour = 20.0;
+    }
+    qzms24 = Math.pow((120.0 - sfour) / RADIUSEARTHKM, 4.0);
+    sfour = sfour / RADIUSEARTHKM + 1.0;
+  }
+  const pinvsq = 1.0 / (po * po);
+  const tsi = 1.0 / (ao - sfour);
+  const eta = ao * ecco * tsi;
+  const etasq = eta * eta;
+  const eeta = ecco * eta;
+  const psisq = Math.abs(1.0 - etasq);
+  const coef = qzms24 * Math.pow(tsi, 4.0);
+  const coef1 = coef / Math.pow(psisq, 3.5);
+  const cc2 =
+    coef1 *
+    noU *
+    (ao * (1.0 + 1.5 * etasq + eeta * (4.0 + etasq)) +
+      ((0.375 * J2 * tsi) / psisq) *
+        con41 *
+        (8.0 + 3.0 * etasq * (8.0 + etasq)));
+  const cc1 = bstar * cc2;
+  let cc3 = 0.0;
+  if (ecco > 1.0e-4) {
+    cc3 = (-2.0 * coef * tsi * J3OJ2 * noU * sinio) / ecco;
+  }
+  const cc4 =
+    2.0 *
+    noU *
+    coef1 *
+    ao *
+    omeosq *
+    (eta * (2.0 + 0.5 * etasq) +
+      ecco * (0.5 + 2.0 * etasq) -
+      ((J2 * tsi) / (ao * psisq)) *
+        (-3.0 * con41 * (1.0 - 2.0 * eeta + etasq * (1.5 - 0.5 * eeta)) +
+          0.75 *
+            x1mth2 *
+            (2.0 * etasq - eeta * (1.0 + etasq)) *
+            Math.cos(2.0 * argpo)));
+  const cc5 =
+    2.0 * coef1 * ao * omeosq * (1.0 + 2.75 * (etasq + eeta) + eeta * etasq);
+
+  const cosio4 = cosio2 * cosio2;
+  const temp1 = 1.5 * J2 * pinvsq * noU;
+  const temp2 = 0.5 * temp1 * J2 * pinvsq;
+  const temp3 = -0.46875 * J4 * pinvsq * pinvsq * noU;
+  const mdot =
+    noU +
+    0.5 * temp1 * rteosq * con41 +
+    0.0625 * temp2 * rteosq * (13.0 - 78.0 * cosio2 + 137.0 * cosio4);
+  const argpdot =
+    -0.5 * temp1 * con42 +
+    0.0625 * temp2 * (7.0 - 114.0 * cosio2 + 395.0 * cosio4) +
+    temp3 * (3.0 - 36.0 * cosio2 + 49.0 * cosio4);
+  const xhdot1 = -temp1 * cosio;
+  const nodedot =
+    xhdot1 +
+    (0.5 * temp2 * (4.0 - 19.0 * cosio2) + 2.0 * temp3 * (3.0 - 7.0 * cosio2)) *
+      cosio;
+  const omgcof = bstar * cc3 * Math.cos(argpo);
+  let xmcof = 0.0;
+  if (ecco > 1.0e-4) {
+    xmcof = (-X2O3 * coef * bstar) / eeta;
+  }
+  const nodecf = 3.5 * omeosq * xhdot1 * cc1;
+  const t2cof = 1.5 * cc1;
+  let xlcof;
+  if (Math.abs(cosio + 1.0) > 1.5e-12) {
+    xlcof = (-0.25 * J3OJ2 * sinio * (3.0 + 5.0 * cosio)) / (1.0 + cosio);
+  } else {
+    xlcof = (-0.25 * J3OJ2 * sinio * (3.0 + 5.0 * cosio)) / 1.5e-12;
+  }
+  const aycof = -0.5 * J3OJ2 * sinio;
+  const delmo = Math.pow(1.0 + eta * Math.cos(mo), 3.0);
+  const sinmao = Math.sin(mo);
+
+  let isimp = 0;
+  let d2 = 0.0,
+    d3 = 0.0,
+    d4 = 0.0,
+    t3cof = 0.0,
+    t4cof = 0.0,
+    t5cof = 0.0;
+  if ((rp - 1.0) * RADIUSEARTHKM < 220.0) {
+    isimp = 1;
+  } else {
+    const cc1sq = cc1 * cc1;
+    d2 = 4.0 * ao * tsi * cc1sq;
+    const temp = (d2 * tsi * cc1) / 3.0;
+    d3 = (17.0 * ao + sfour) * temp;
+    d4 = 0.5 * temp * ao * tsi * (221.0 * ao + 31.0 * sfour) * cc1;
+    t3cof = d2 + 2.0 * cc1sq;
+    t4cof = 0.25 * (3.0 * d3 + cc1 * (12.0 * d2 + 10.0 * cc1sq));
+    t5cof =
+      0.2 *
+      (3.0 * d4 +
+        12.0 * cc1 * d3 +
+        6.0 * d2 * d2 +
+        15.0 * cc1sq * (2.0 * d3 + cc1sq));
+  }
+  const gsto = gstime(jd + jdFrac);
+
+  return {
+    ecco,
+    inclo,
+    nodeo,
+    argpo,
+    mo,
+    bstar,
+    noU,
+    con41,
+    x1mth2,
+    x7thm1,
+    aycof,
+    xlcof,
+    cc1,
+    cc4,
+    cc5,
+    omgcof,
+    xmcof,
+    eta,
+    delmo,
+    sinmao,
+    t2cof,
+    t3cof,
+    t4cof,
+    t5cof,
+    d2,
+    d3,
+    d4,
+    isimp,
+    nodecf,
+    gsto,
+    cosio,
+    sinio,
+    mdot,
+    argpdot,
+    nodedot,
+    jd,
+    jdFrac,
+    isDeepSpace,
+    periodMin,
+  };
+}
+
+// Demo-owned param lane layout (42 lanes). Must match the kernel.
+const FLOATS_PER_INSTANCE = 42;
+function packInstance(s, color, pixelSize) {
+  const [mdotHi, mdotLo] = df64Split(s.mdot);
+  const [argpdotHi, argpdotLo] = df64Split(s.argpdot);
+  const [nodedotHi, nodedotLo] = df64Split(s.nodedot);
+  return [
+    s.ecco,
+    s.inclo,
+    s.nodeo,
+    s.argpo,
+    s.mo,
+    s.bstar,
+    s.noU,
+    s.con41,
+    s.x1mth2,
+    s.x7thm1,
+    s.aycof,
+    s.xlcof,
+    s.cc1,
+    s.cc4,
+    s.cc5,
+    s.omgcof,
+    s.xmcof,
+    s.eta,
+    s.delmo,
+    s.sinmao,
+    s.t2cof,
+    s.t3cof,
+    s.t4cof,
+    s.t5cof,
+    s.d2,
+    s.d3,
+    s.d4,
+    s.isimp,
+    s.nodecf,
+    s.gsto,
+    s.cosio,
+    s.sinio,
+    mdotHi,
+    mdotLo,
+    argpdotHi,
+    argpdotLo,
+    nodedotHi,
+    nodedotLo,
+    color[0],
+    color[1],
+    color[2],
+    pixelSize,
+  ];
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  GPU df64 SGP4 update kernel (the time-dependent half only).
+//  `time` is MINUTES since the catalog epoch. Ported 1:1 from the
+//  validated JS FP64 sgp4() (probe-orbital-sgp4.mjs).
+// ─────────────────────────────────────────────────────────────────
+const sgp4Kernel = `
+  const SGP4_XKE: f32 = ${XKE};
+  const SGP4_J2: f32 = ${J2};
+  const SGP4_X2O3: f32 = ${X2O3};
+  const SGP4_RE_KM: f32 = ${RADIUSEARTHKM};
+  const SGP4_TWOPI: f32 = 6.2831853071795864;
+  const SGP4_EARTH_ROT: vec2<f32> = vec2<f32>(${EARTH_ROT_HI}, ${EARTH_ROT_LO});
+
+  fn csm_computeInstance(index: u32, time: f32) -> ComputeInstanceOut {
+    let base = index * FLOATS_PER_INSTANCE;
+    let ecco   = params[base + 0u];
+    let inclo  = params[base + 1u];
+    let nodeo  = params[base + 2u];
+    let argpo  = params[base + 3u];
+    let mo     = params[base + 4u];
+    let bstar  = params[base + 5u];
+    let noU    = params[base + 6u];
+    let con41  = params[base + 7u];
+    let x1mth2 = params[base + 8u];
+    let x7thm1 = params[base + 9u];
+    let aycof  = params[base + 10u];
+    let xlcof  = params[base + 11u];
+    let cc1    = params[base + 12u];
+    let cc4    = params[base + 13u];
+    let cc5    = params[base + 14u];
+    let omgcof = params[base + 15u];
+    let xmcof  = params[base + 16u];
+    let eta    = params[base + 17u];
+    let delmo  = params[base + 18u];
+    let sinmao = params[base + 19u];
+    let t2cof  = params[base + 20u];
+    let t3cof  = params[base + 21u];
+    let t4cof  = params[base + 22u];
+    let t5cof  = params[base + 23u];
+    let d2     = params[base + 24u];
+    let d3     = params[base + 25u];
+    let d4     = params[base + 26u];
+    let isimp  = params[base + 27u];
+    let nodecf = params[base + 28u];
+    let gsto   = params[base + 29u];
+    let cosio  = params[base + 30u];
+    let sinio  = params[base + 31u];
+    let mdot     = vec2<f32>(params[base + 32u], params[base + 33u]);
+    let argpdot  = vec2<f32>(params[base + 34u], params[base + 35u]);
+    let nodedot  = vec2<f32>(params[base + 36u], params[base + 37u]);
+
+    // Engine passes SECONDS since epoch; SGP4 works in minutes.
+    let tsince = time / 60.0;
+
+    let xmdf64   = csm_df64_add_f32(csm_df64_mul_f32(mdot, tsince), mo);
+    let argpdf64 = csm_df64_add_f32(csm_df64_mul_f32(argpdot, tsince), argpo);
+    let nodedf64 = csm_df64_add_f32(csm_df64_mul_f32(nodedot, tsince), nodeo);
+    let xmdf   = xmdf64.x + xmdf64.y;
+    let argpdf = argpdf64.x + argpdf64.y;
+    let t2 = tsince * tsince;
+    let nodem64 = csm_df64_add_f32(nodedf64, nodecf * t2);
+
+    var argpm = argpdf;
+    var mm = xmdf;
+    var tempa = 1.0 - cc1 * tsince;
+    var tempe = bstar * cc4 * tsince;
+    var templ = t2cof * t2;
+    if (isimp < 0.5) {
+      let delomg = omgcof * tsince;
+      let dmtemp = 1.0 + eta * cos(xmdf);
+      let delm = xmcof * (dmtemp * dmtemp * dmtemp - delmo);
+      let tempd = delomg + delm;
+      mm = xmdf + tempd;
+      argpm = argpdf - tempd;
+      let t3 = t2 * tsince;
+      let t4 = t3 * tsince;
+      tempa = tempa - d2 * t2 - d3 * t3 - d4 * t4;
+      tempe = tempe + bstar * cc5 * (sin(mm) - sinmao);
+      templ = templ + t3cof * t3 + t4 * (t4cof + tsince * t5cof);
+    }
+
+    let nm = noU;
+    var em = ecco - tempe;
+    let inclm = inclo;
+    let am = pow(SGP4_XKE / nm, SGP4_X2O3) * tempa * tempa;
+    if (em < 1.0e-6) { em = 1.0e-6; }
+
+    mm = mm + noU * templ;
+    let nodemRed = csm_df64_reducePi(nodem64).x;
+    var xlm = mm + argpm + nodemRed;
+    argpm = argpm - SGP4_TWOPI * floor(argpm / SGP4_TWOPI);
+    xlm = xlm - SGP4_TWOPI * floor(xlm / SGP4_TWOPI);
+    mm = xlm - argpm - nodemRed;
+
+    let sinim = sin(inclm);
+    let cosim = cos(inclm);
+    let ep = em;
+    let xincp = inclm;
+    let argpp = argpm;
+    let nodep = nodemRed;
+    let mp = mm;
+    let sinip = sinim;
+    let cosip = cosim;
+
+    let axnl = ep * cos(argpp);
+    let tempLP = 1.0 / (am * (1.0 - ep * ep));
+    let aynl = ep * sin(argpp) + tempLP * aycof;
+    let xl = mp + argpp + nodep + tempLP * xlcof * axnl;
+
+    var u = (xl - nodep);
+    u = u - SGP4_TWOPI * floor(u / SGP4_TWOPI);
+    var eo1 = u;
+    var tem5 = 9999.9;
+    var sineo1 = 0.0;
+    var coseo1 = 0.0;
+    var ktr = 0;
+    loop {
+      if (abs(tem5) < 1.0e-12 || ktr >= 10) { break; }
+      sineo1 = sin(eo1);
+      coseo1 = cos(eo1);
+      tem5 = 1.0 - coseo1 * axnl - sineo1 * aynl;
+      tem5 = (u - aynl * coseo1 + axnl * sineo1 - eo1) / tem5;
+      var t5 = tem5;
+      if (abs(t5) >= 0.95) {
+        if (t5 > 0.0) { t5 = 0.95; } else { t5 = -0.95; }
+      }
+      eo1 = eo1 + t5;
+      ktr = ktr + 1;
+    }
+
+    let ecose = axnl * coseo1 + aynl * sineo1;
+    let esine = axnl * sineo1 - aynl * coseo1;
+    let el2 = axnl * axnl + aynl * aynl;
+    let pl = am * (1.0 - el2);
+    let rl = am * (1.0 - ecose);
+    let betal = sqrt(1.0 - el2);
+    let tempSU = esine / (1.0 + betal);
+    let sinu = (am / rl) * (sineo1 - aynl - axnl * tempSU);
+    let cosu = (am / rl) * (coseo1 - axnl + aynl * tempSU);
+    var su = atan2(sinu, cosu);
+    let sin2u = (cosu + cosu) * sinu;
+    let cos2u = 1.0 - 2.0 * sinu * sinu;
+    let tempB = 1.0 / pl;
+    let temp1 = 0.5 * SGP4_J2 * tempB;
+    let temp2 = temp1 * tempB;
+    let mrt = rl * (1.0 - 1.5 * temp2 * betal * con41) + 0.5 * temp1 * x1mth2 * cos2u;
+    su = su - 0.25 * temp2 * x7thm1 * sin2u;
+    let xnode = nodep + 1.5 * temp2 * cosip * sin2u;
+    let xinc = xincp + 1.5 * temp2 * cosip * sinip * cos2u;
+
+    let sinsu = sin(su);
+    let cossu = cos(su);
+    let snod = sin(xnode);
+    let cnod = cos(xnode);
+    let sini = sin(xinc);
+    let cosi = cos(xinc);
+    let ux = (-snod * cosi) * sinsu + cnod * cossu;
+    let uy = (cnod * cosi) * sinsu + snod * cossu;
+    let uz = sini * sinsu;
+    let rkm = mrt * SGP4_RE_KM;
+    let xTeme = rkm * ux;
+    let yTeme = rkm * uy;
+    let zTeme = rkm * uz;
+
+    let gmst64 = csm_df64_add_f32(
+      csm_df64_mul_f32(csm_df64_mul_f32(SGP4_EARTH_ROT, 60.0), tsince), gsto);
+    let cg = csm_df64_cos(gmst64);
+    let sg = csm_df64_sin(gmst64);
+    let xEcefKm = csm_df64_add(csm_df64_mul_f32(csm_df64(cg), xTeme),
+                               csm_df64_mul_f32(csm_df64(sg), yTeme));
+    let yEcefKm = csm_df64_add(csm_df64_mul_f32(csm_df64(-sg), xTeme),
+                               csm_df64_mul_f32(csm_df64(cg), yTeme));
+    let zEcefKm = csm_df64(zTeme);
+    let xEcef = csm_df64_mul_f32(xEcefKm, 1000.0);
+    let yEcef = csm_df64_mul_f32(yEcefKm, 1000.0);
+    let zEcef = csm_df64_mul_f32(zEcefKm, 1000.0);
+
+    var out = csm_emitDF64(xEcef, yEcef, zEcef);
+    out.color = vec4<f32>(params[base + 38u], params[base + 39u], params[base + 40u], 1.0);
+    out.pixelSize = params[base + 41u];
+    return out;
+  }`;
+
+// ── WebGL2 CPU fallback kernel (NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK) ──
+// WebGL2 has no compute shaders, so the WGSL `sgp4Kernel` above cannot
+// run there. This JS kernel is the SAME time-dependent SGP4 update
+// expressed for the CPU, reading the SAME packed param lanes (the
+// packInstance layout); on a WebGL2 context the engine runs it over all
+// objects each frame, RTE-splits the positions, and instanced-draws
+// them — landing satellites at the same screen positions as the WebGPU
+// leg. On WebGPU this is ignored (the GPU kernel runs instead). All math
+// is FP64 on the CPU; the df64 (hi,lo) rate pairs reconstruct as hi+lo.
+// (probe-compute-instance-webgl2-sgp4.mjs imports the same algorithm
+// from sgp4-cpu-kernel.mjs and asserts WebGL ~ WebGPU on screen.)
+const SGP4_EARTH_ROT_FP64 = EARTH_ROT_HI + EARTH_ROT_LO;
+function reduceToPi(angle) {
+  let r = angle - TWOPI * Math.round(angle / TWOPI);
+  if (r > Math.PI) {
+    r -= TWOPI;
+  } else if (r < -Math.PI) {
+    r += TWOPI;
+  }
+  return r;
+}
+function sgp4CpuKernel(out, index, timeSeconds, params) {
+  const base = index * FLOATS_PER_INSTANCE;
+  const ecco = params[base + 0];
+  const inclo = params[base + 1];
+  const nodeo = params[base + 2];
+  const argpo = params[base + 3];
+  const mo = params[base + 4];
+  const bstar = params[base + 5];
+  const noU = params[base + 6];
+  const con41 = params[base + 7];
+  const x1mth2 = params[base + 8];
+  const x7thm1 = params[base + 9];
+  const aycof = params[base + 10];
+  const xlcof = params[base + 11];
+  const cc1 = params[base + 12];
+  const cc4 = params[base + 13];
+  const cc5 = params[base + 14];
+  const omgcof = params[base + 15];
+  const xmcof = params[base + 16];
+  const eta = params[base + 17];
+  const delmo = params[base + 18];
+  const sinmao = params[base + 19];
+  const t2cof = params[base + 20];
+  const t3cof = params[base + 21];
+  const t4cof = params[base + 22];
+  const t5cof = params[base + 23];
+  const d2 = params[base + 24];
+  const d3 = params[base + 25];
+  const d4 = params[base + 26];
+  const isimp = params[base + 27];
+  const nodecf = params[base + 28];
+  const gsto = params[base + 29];
+  const mdot = params[base + 32] + params[base + 33]; // df64 hi+lo
+  const argpdot = params[base + 34] + params[base + 35];
+  const nodedot = params[base + 36] + params[base + 37];
+
+  const tsince = timeSeconds / 60.0; // engine SECONDS -> SGP4 minutes
+
+  const xmdf = mo + mdot * tsince;
+  const argpdf = argpo + argpdot * tsince;
+  const nodedf = nodeo + nodedot * tsince;
+  const t2 = tsince * tsince;
+  const nodem = nodedf + nodecf * t2;
+
+  let argpm = argpdf;
+  let mm = xmdf;
+  let tempa = 1.0 - cc1 * tsince;
+  let tempe = bstar * cc4 * tsince;
+  let templ = t2cof * t2;
+
+  if (isimp < 0.5) {
+    const delomg = omgcof * tsince;
+    const dmtemp = 1.0 + eta * Math.cos(xmdf);
+    const delm = xmcof * (dmtemp * dmtemp * dmtemp - delmo);
+    const tempd = delomg + delm;
+    mm = xmdf + tempd;
+    argpm = argpdf - tempd;
+    const t3 = t2 * tsince;
+    const t4 = t3 * tsince;
+    tempa = tempa - d2 * t2 - d3 * t3 - d4 * t4;
+    tempe = tempe + bstar * cc5 * (Math.sin(mm) - sinmao);
+    templ = templ + t3cof * t3 + t4 * (t4cof + tsince * t5cof);
+  }
+
+  const nm = noU;
+  let em = ecco - tempe;
+  const inclm = inclo;
+  const am = Math.pow(XKE / nm, X2O3) * tempa * tempa;
+  if (em < 1.0e-6) {
+    em = 1.0e-6;
+  }
+
+  mm = mm + noU * templ;
+  const nodemRed = reduceToPi(nodem);
+  let xlm = mm + argpm + nodemRed;
+  argpm = argpm - TWOPI * Math.floor(argpm / TWOPI);
+  xlm = xlm - TWOPI * Math.floor(xlm / TWOPI);
+  mm = xlm - argpm - nodemRed;
+
+  const ep = em;
+  const xincp = inclm;
+  const argpp = argpm;
+  const nodep = nodemRed;
+  const mp = mm;
+  const sinip = Math.sin(inclm);
+  const cosip = Math.cos(inclm);
+
+  const axnl = ep * Math.cos(argpp);
+  const tempLP = 1.0 / (am * (1.0 - ep * ep));
+  const aynl = ep * Math.sin(argpp) + tempLP * aycof;
+  const xl = mp + argpp + nodep + tempLP * xlcof * axnl;
+
+  let u = xl - nodep;
+  u = u - TWOPI * Math.floor(u / TWOPI);
+  let eo1 = u;
+  let tem5 = 9999.9;
+  let sineo1 = 0.0;
+  let coseo1 = 0.0;
+  let ktr = 0;
+  while (Math.abs(tem5) >= 1.0e-12 && ktr < 10) {
+    sineo1 = Math.sin(eo1);
+    coseo1 = Math.cos(eo1);
+    tem5 = 1.0 - coseo1 * axnl - sineo1 * aynl;
+    tem5 = (u - aynl * coseo1 + axnl * sineo1 - eo1) / tem5;
+    let t5 = tem5;
+    if (Math.abs(t5) >= 0.95) {
+      t5 = t5 > 0.0 ? 0.95 : -0.95;
+    }
+    eo1 = eo1 + t5;
+    ktr = ktr + 1;
+  }
+
+  const ecose = axnl * coseo1 + aynl * sineo1;
+  const esine = axnl * sineo1 - aynl * coseo1;
+  const el2 = axnl * axnl + aynl * aynl;
+  const pl = am * (1.0 - el2);
+  const rl = am * (1.0 - ecose);
+  const betal = Math.sqrt(1.0 - el2);
+  const tempSU = esine / (1.0 + betal);
+  const sinu = (am / rl) * (sineo1 - aynl - axnl * tempSU);
+  const cosu = (am / rl) * (coseo1 - axnl + aynl * tempSU);
+  let su = Math.atan2(sinu, cosu);
+  const sin2u = (cosu + cosu) * sinu;
+  const cos2u = 1.0 - 2.0 * sinu * sinu;
+  const tempB = 1.0 / pl;
+  const temp1 = 0.5 * J2 * tempB;
+  const temp2 = temp1 * tempB;
+
+  const mrt =
+    rl * (1.0 - 1.5 * temp2 * betal * con41) + 0.5 * temp1 * x1mth2 * cos2u;
+  su = su - 0.25 * temp2 * x7thm1 * sin2u;
+  const xnode = nodep + 1.5 * temp2 * cosip * sin2u;
+  const xinc = xincp + 1.5 * temp2 * cosip * sinip * cos2u;
+
+  const sinsu = Math.sin(su);
+  const cossu = Math.cos(su);
+  const snod = Math.sin(xnode);
+  const cnod = Math.cos(xnode);
+  const sini = Math.sin(xinc);
+  const cosi = Math.cos(xinc);
+  const ux = -snod * cosi * sinsu + cnod * cossu;
+  const uy = cnod * cosi * sinsu + snod * cossu;
+  const uz = sini * sinsu;
+  const rkm = mrt * RADIUSEARTHKM;
+  const xTeme = rkm * ux;
+  const yTeme = rkm * uy;
+  const zTeme = rkm * uz;
+
+  const gmst = gsto + SGP4_EARTH_ROT_FP64 * 60.0 * tsince;
+  const cg = Math.cos(gmst);
+  const sg = Math.sin(gmst);
+  out.position.x = (cg * xTeme + sg * yTeme) * 1000.0;
+  out.position.y = (-sg * xTeme + cg * yTeme) * 1000.0;
+  out.position.z = zTeme * 1000.0;
+  out.color.red = params[base + 38];
+  out.color.green = params[base + 39];
+  out.color.blue = params[base + 40];
+  out.color.alpha = 1.0;
+  out.pixelSize = params[base + 41];
+}
+
+// A representative real-TLE catalog (epoch 2024-001). Mix of LEO
+// (drawn) + a GPS/GEO deep-space pair (skipped to prove the guard).
+// Color by regime: ISS-like cyan, sun-sync green, Starlink-ish white,
+// deep-space would-be red (never drawn).
+const TLES = [
+  [
+    "ISS",
+    [0, 1, 1],
+    "1 25544U 98067A   24001.50000000  .00016717  00000-0  10270-3 0  9999",
+    "2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.50125623 18883",
+  ],
+  [
+    "NOAA-19",
+    [0, 1, 0.2],
+    "1 33591U 09005A   24001.45833333  .00000089  00000-0  72940-4 0  9991",
+    "2 33591  99.1888  10.2222 0013570 200.5556 159.5000 14.12501077767777",
+  ],
+  [
+    "Starlink",
+    [0.8, 0.9, 1],
+    "1 44713U 19074A   24001.50000000  .00002182  00000-0  15211-3 0  9994",
+    "2 44713  53.0533  92.9000 0001434  90.0000 270.0000 15.06398804230000",
+  ],
+  [
+    "GPS (deep)",
+    [1, 0.2, 0.2],
+    "1 24876U 97035A   24001.00000000 -.00000027  00000-0  00000-0 0  9999",
+    "2 24876  55.4000 100.0000 0100000 200.0000 160.0000  2.00561000 99999",
+  ],
+];
+
+// Synthesize a denser near-earth shell from the LEO seeds so the demo
+// looks like a real catalog: jitter RAAN / mean anomaly per copy. The
+// jitter is applied to the RAW elements BEFORE sgp4init so each copy is
+// a fully independent SGP4 object.
+function jitterLine2(line2, dNodeDeg, dMdeg) {
+  const n0 = (parseFloat(line2.substring(17, 25)) + dNodeDeg + 360) % 360;
+  const m0 = (parseFloat(line2.substring(43, 51)) + dMdeg + 360) % 360;
+  const node = n0.toFixed(4).padStart(8);
+  const mAn = m0.toFixed(4).padStart(8);
+  return (
+    line2.substring(0, 17) +
+    node +
+    line2.substring(25, 43) +
+    mAn +
+    line2.substring(51)
+  );
+}
+
+const catalog = scene.primitives.add(
+  new Cesium.ComputeInstanceCollection({
+    kernel: sgp4Kernel,
+    // WebGL2 fallback (ignored on WebGPU) — same SGP4 update on CPU.
+    cpuKernel: sgp4CpuKernel,
+    floatsPerInstance: FLOATS_PER_INSTANCE,
+    boundingSphere: new Cesium.BoundingSphere(Cesium.Cartesian3.ZERO, 1.0e7),
+  }),
+);
+
+// Anchor the collection epoch to the SGP4 TLE epoch (2024-001). The
+// engine passes the kernel `time` = sim SECONDS since this epoch each
+// frame; the kernel converts to SGP4 minutes (tsince = time/60). So
+// driving the scene clock forward from the TLE epoch IS the SGP4
+// propagation time — no extra bookkeeping.
+const tleEpoch = Cesium.JulianDate.fromIso8601("2024-01-01T12:00:00Z");
+catalog.epoch = tleEpoch;
+viewer.clock.currentTime = Cesium.JulianDate.clone(tleEpoch);
+viewer.clock.startTime = Cesium.JulianDate.clone(tleEpoch);
+
+let drawn = 0;
+let skippedCount = 0;
+const COPIES_PER_LEO = 60; // synthesize a shell from each LEO seed
+for (const [, color, l1, l2] of TLES) {
+  const probe = sgp4init(l1, l2);
+  if (probe.isDeepSpace) {
+    skippedCount++;
+    continue; // deep-space: SDP4 not implemented — skip, never draw
+  }
+  for (let c = 0; c < COPIES_PER_LEO; c++) {
+    const jl2 = jitterLine2(l2, (c * 360) / COPIES_PER_LEO, c * 37.0);
+    const s = sgp4init(l1, jl2);
+    if (s.isDeepSpace) {
+      skippedCount++;
+      continue;
+    }
+    catalog.addInstance(packInstance(s, color, 4.0));
+    drawn++;
+  }
+}
+
+const viewModel = {
+  clockMultiplier: 60,
+  status: `${drawn} near-earth drawn, ${skippedCount} deep-space skipped`,
+};
+Cesium.knockout.track(viewModel);
+const toolbar = document.getElementById("toolbar");
+Cesium.knockout.applyBindings(viewModel, toolbar);
+Cesium.knockout
+  .getObservable(viewModel, "clockMultiplier")
+  .subscribe(function (value) {
+    viewer.clock.multiplier = Number(value);
+  });
+viewer.clock.multiplier = 60;
+
+viewer.camera.setView({
+  destination: new Cesium.Cartesian3(2.4e7, 0.0, 1.2e7),
+  orientation: {
+    direction: Cesium.Cartesian3.normalize(
+      new Cesium.Cartesian3(-2.4, 0.0, -1.2),
+      new Cesium.Cartesian3(),
+    ),
+    up: new Cesium.Cartesian3(0.0, 0.0, 1.0),
+  },
+});

@@ -1,0 +1,80 @@
+<style>
+  @import url(../templates/bucket.css);
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <table>
+    <tbody>
+      <tr>
+        <td>Enable SSR</td>
+        <td><input type="checkbox" data-bind="checked: enabled" /></td>
+      </tr>
+      <tr>
+        <td>Max Distance</td>
+        <td>
+          <input
+            type="range"
+            min="10"
+            max="200"
+            step="1"
+            data-bind="value: maxDistance, valueUpdate: 'input'"
+          />
+          <span data-bind="text: maxDistance"></span>
+        </td>
+      </tr>
+      <tr>
+        <td>Thickness</td>
+        <td>
+          <input
+            type="range"
+            min="0.05"
+            max="2.0"
+            step="0.01"
+            data-bind="value: thickness, valueUpdate: 'input'"
+          />
+          <span data-bind="text: thickness"></span>
+        </td>
+      </tr>
+      <tr>
+        <td>Max Steps</td>
+        <td>
+          <input
+            type="range"
+            min="16"
+            max="128"
+            step="1"
+            data-bind="value: maxSteps, valueUpdate: 'input'"
+          />
+          <span data-bind="text: maxSteps"></span>
+        </td>
+      </tr>
+      <tr>
+        <td>Stride</td>
+        <td>
+          <input
+            type="range"
+            min="1"
+            max="8"
+            step="0.1"
+            data-bind="value: stride, valueUpdate: 'input'"
+          />
+          <span data-bind="text: stride"></span>
+        </td>
+      </tr>
+      <tr>
+        <td>Reflection Strength</td>
+        <td>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            data-bind="value: reflectionStrength, valueUpdate: 'input'"
+          />
+          <span data-bind="text: reflectionStrength"></span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>

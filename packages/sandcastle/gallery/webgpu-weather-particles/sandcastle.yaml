@@ -1,0 +1,7 @@
+legacyId: WebGPU Weather Particles.html
+title: WebGPU Weather Particles
+description: "GPU-computed weather particles (rain, snow, fog, hail) on the WebGPU backend with tunable intensity and wind."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

@@ -1,0 +1,7 @@
+legacyId: WebGPU Depth of Field.html
+title: WebGPU Depth of Field
+description: "WebGPU Depth-of-Field demo. Wires the upstream DoF stage through the WebGPU PostProcess pipeline (Batch 98 detection fix)."
+labels:
+  - WebGPU
+  - Post Processing
+thumbnail: thumbnail.jpg

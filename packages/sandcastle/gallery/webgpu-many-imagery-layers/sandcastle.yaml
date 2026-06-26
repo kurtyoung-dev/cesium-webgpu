@@ -1,0 +1,7 @@
+legacyId: WebGPU Many Imagery Layers.html
+title: WebGPU Many Imagery Layers
+description: "Eight imagery layers stacked on the WebGPU globe; per-layer hue / gamma / alpha verification."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

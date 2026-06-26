@@ -1,0 +1,8 @@
+legacyId: WebGPU God Rays.html
+title: WebGPU God Rays
+description: "Volumetric god-ray (light-shaft) post-process. Tunable density, decay, weight, exposure, sample count."
+labels:
+  - WebGPU
+  - Showcases
+  - Post Processing
+thumbnail: thumbnail.jpg

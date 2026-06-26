@@ -1,0 +1,7 @@
+legacyId: WebGPU Point Light Shadows.html
+title: WebGPU Point Light Shadows
+description: "Point-light cube-shadow casting + receiving on the WebGPU backend; toggle 5-tap PCF softness."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

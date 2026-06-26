@@ -1,0 +1,7 @@
+legacyId: WebGPU Async Resource Monitor.html
+title: WebGPU Async Resource Monitor
+description: "Live view of the WebGPU AsyncResourceMonitor — pipeline cooks, image decodes, p50/p95/p99 latency, peak inflight, and warm-on-suspicion."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

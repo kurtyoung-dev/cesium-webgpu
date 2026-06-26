@@ -1,0 +1,52 @@
+<style>
+  @import url(../templates/bucket.css);
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <table>
+    <tbody>
+      <tr>
+        <td>Weather enabled</td>
+        <td><input type="checkbox" data-bind="checked: enabled" /></td>
+      </tr>
+      <tr>
+        <td>Type</td>
+        <td>
+          <select data-bind="value: weatherType">
+            <option value="0">Rain</option>
+            <option value="1">Snow</option>
+            <option value="2">Fog</option>
+            <option value="3">Hail</option>
+          </select>
+        </td>
+      </tr>
+      <tr>
+        <td>Intensity</td>
+        <td>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            data-bind="value: intensity, valueUpdate: 'input'"
+          />
+          <span data-bind="text: intensity"></span>
+        </td>
+      </tr>
+      <tr>
+        <td>Wind Speed</td>
+        <td>
+          <input
+            type="range"
+            min="0"
+            max="40"
+            step="0.5"
+            data-bind="value: windSpeed, valueUpdate: 'input'"
+          />
+          <span data-bind="text: windSpeed"></span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>

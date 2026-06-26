@@ -1,0 +1,57 @@
+<style>
+  @import url(../templates/bucket.css);
+  #toolbar {
+    background: rgba(42, 42, 42, 0.85);
+    padding: 6px 10px;
+    border-radius: 4px;
+    color: white;
+    font-family: sans-serif;
+    max-width: 360px;
+  }
+  #toolbar select {
+    margin: 2px 0;
+    width: 100%;
+  }
+  #metrics {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(20, 22, 28, 0.88);
+    color: #e6e6e6;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 10px 14px;
+    border-radius: 6px;
+    border: 1px solid rgba(120, 200, 255, 0.25);
+    min-width: 250px;
+    pointer-events: none;
+  }
+  #metrics .hdr {
+    font-weight: bold;
+    color: #64d2ff;
+    border-bottom: 1px solid rgba(120, 200, 255, 0.25);
+    padding-bottom: 4px;
+    margin-bottom: 4px;
+  }
+  #metrics .k {
+    color: #9aa3ad;
+  }
+  #metrics .v {
+    color: #ffd60a;
+    float: right;
+  }
+  #metrics .row {
+    clear: both;
+  }
+  #metrics .mode-bulk {
+    color: #34c759;
+  }
+  #metrics .mode-legacy {
+    color: #ff9f0a;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar"></div>
+<div id="metrics">starting…</div>

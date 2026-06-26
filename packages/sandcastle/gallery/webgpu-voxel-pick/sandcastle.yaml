@@ -1,0 +1,8 @@
+legacyId: WebGPU Voxel Pick.html
+title: WebGPU Voxel Pick
+description: "Pick a VoxelPrimitive on the WebGPU backend; verify scene.pick returns the volume."
+labels:
+  - WebGPU
+  - Showcases
+  - Voxels
+thumbnail: thumbnail.jpg

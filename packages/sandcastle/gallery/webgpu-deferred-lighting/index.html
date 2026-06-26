@@ -1,0 +1,37 @@
+<style>
+  @import url(../templates/bucket.css);
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <table>
+    <tbody>
+      <tr>
+        <td>Deferred lighting</td>
+        <td>
+          <input type="checkbox" data-bind="checked: deferredEnabled" />
+          <span style="color: #aaa">(Phase 8a G-buffer)</span>
+        </td>
+      </tr>
+      <tr>
+        <td>SSAO (consumer)</td>
+        <td>
+          <input type="checkbox" data-bind="checked: ssaoEnabled" />
+          <span style="color: #aaa"
+            >(reads G-buffer normals when deferred is ON)</span
+          >
+        </td>
+      </tr>
+      <tr>
+        <td>Show G-buffer normals</td>
+        <td>
+          <input type="checkbox" data-bind="checked: showGBufferNormals" />
+          <span style="color: #aaa"
+            >(CesiumDebug overlay; replaces production post-process with the
+            normal-map visualization)</span
+          >
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>

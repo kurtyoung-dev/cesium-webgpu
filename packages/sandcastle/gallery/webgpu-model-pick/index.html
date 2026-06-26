@@ -1,0 +1,22 @@
+<style>
+  @import url(../templates/bucket.css);
+  #pickReadout {
+    background: rgba(42, 42, 42, 0.85);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 13px;
+    max-width: 420px;
+  }
+  #pickReadout .label {
+    color: #ffcc00;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <div id="pickReadout">
+    Click a model to pick it. <span id="pickResult">(nothing picked yet)</span>
+  </div>
+</div>

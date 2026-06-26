@@ -1,0 +1,8 @@
+legacyId: WebGPU Fullscreen Sky.html
+title: WebGPU Fullscreen Sky
+description: "WebGPU view-independent fullscreen sky atmosphere. Toggle between the ellipsoid-shell sky (WebGL-parity default) and a fullscreen-pass sky that reconstructs the per-pixel view ray, and sweep the time of day to watch the atmosphere go from blue day to dark night with the stars showing through. WebGPU only."
+labels:
+  - WebGPU
+  - Showcases
+  - Atmosphere
+thumbnail: thumbnail.jpg

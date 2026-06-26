@@ -1,0 +1,8 @@
+legacyId: WebGPU Deferred Lighting.html
+title: WebGPU Deferred Lighting
+description: "Toggle scene.deferredLighting to enable the Phase 8a G-buffer producer. SSAO + SSR consumers read surface normals from the G-buffer instead of reconstructing them from depth, yielding sharper edges at silhouettes."
+labels:
+  - WebGPU
+  - Showcases
+  - Lighting
+thumbnail: thumbnail.jpg

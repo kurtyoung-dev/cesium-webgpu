@@ -1,0 +1,8 @@
+legacyId: WebGPU Bulk vs Legacy Visualizers.html
+title: WebGPU Bulk vs Legacy Visualizers
+description: "Live comparison of the Entity bulk static-lane fast-path vs the legacy per-frame visualizers across object count, static/dynamic, data-source lifetime, and object type."
+labels:
+  - WebGPU
+  - DataSources
+  - Showcases
+thumbnail: thumbnail.jpg

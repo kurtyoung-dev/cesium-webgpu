@@ -1,0 +1,35 @@
+<style>
+  @import url(../templates/bucket.css);
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <table>
+    <tbody>
+      <tr>
+        <td>Backend</td>
+        <td><span data-bind="text: backend"></span></td>
+      </tr>
+      <tr>
+        <td>Features</td>
+        <td><span data-bind="text: featureCount"></span></td>
+      </tr>
+      <tr>
+        <td>Points</td>
+        <td><span data-bind="text: pointCount"></span></td>
+      </tr>
+      <tr>
+        <td>Polylines</td>
+        <td><span data-bind="text: polylineCount"></span></td>
+      </tr>
+      <tr>
+        <td>Polygons</td>
+        <td><span data-bind="text: polygonCount"></span></td>
+      </tr>
+      <tr>
+        <td>Polygon holes</td>
+        <td><span data-bind="text: holeCount"></span></td>
+      </tr>
+    </tbody>
+  </table>
+</div>

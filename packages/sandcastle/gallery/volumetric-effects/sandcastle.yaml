@@ -1,0 +1,7 @@
+legacyId: Volumetric Effects.html
+title: Volumetric Effects
+description: "Toggle the WebGPU-only volumetric fog (Phase 5a-5d), volumetric clouds (Phase 6 raymarcher), and cloud shadows cast into the fog (Phase 6c). All three are off by default; turning them on stacks into a unified atmospheric system."
+labels:
+  - Showcases
+  - WebGPU
+thumbnail: thumbnail.jpg

@@ -1,0 +1,7 @@
+legacyId: WebGPU Temporal Anti-Aliasing.html
+title: WebGPU Temporal Anti-Aliasing
+description: "Toggle WebGPU Temporal Anti-Aliasing (TAA) to compare smooth motion blur vs. aliased static rendering."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

@@ -1,0 +1,51 @@
+<style>
+  @import url(../templates/bucket.css);
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <table>
+    <tbody>
+      <tr>
+        <td>DoF</td>
+        <td><input type="checkbox" data-bind="checked: show" /></td>
+      </tr>
+      <tr>
+        <td>Focal distance (m)</td>
+        <td>
+          <input
+            type="range"
+            min="1"
+            max="200"
+            step="0.5"
+            data-bind="value: focalDistance, valueUpdate: 'input'"
+          />
+        </td>
+      </tr>
+      <tr>
+        <td>Delta</td>
+        <td>
+          <input
+            type="range"
+            min="0.1"
+            max="5"
+            step="0.05"
+            data-bind="value: delta, valueUpdate: 'input'"
+          />
+        </td>
+      </tr>
+      <tr>
+        <td>Sigma</td>
+        <td>
+          <input
+            type="range"
+            min="1"
+            max="20"
+            step="0.1"
+            data-bind="value: sigma, valueUpdate: 'input'"
+          />
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>

@@ -1,0 +1,8 @@
+legacyId: WebGPU GeoJsonPrimitive.html
+title: WebGPU GeoJsonPrimitive
+description: "GeoJsonPrimitive — a lightweight GeoJSON loader that converts features directly into storage-buffer-backed BufferPoint/Polyline/PolygonCollections. Loads a mixed FeatureCollection (point, line, polygon-with-hole, MultiPolygon) on the WebGPU backend."
+labels:
+  - WebGPU
+  - Showcases
+  - DataSources
+thumbnail: thumbnail.jpg

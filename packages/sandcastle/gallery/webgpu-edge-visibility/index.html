@@ -1,0 +1,54 @@
+<style>
+  @import url(../templates/bucket.css);
+  #toolbar {
+    background: rgba(42, 42, 42, 0.8);
+    padding: 6px;
+    border-radius: 4px;
+    color: white;
+    font-family: sans-serif;
+  }
+  #toolbar table td {
+    padding: 2px 6px;
+  }
+  #toolbar input[type="range"] {
+    vertical-align: middle;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <table>
+    <tbody>
+      <tr>
+        <td>Edge color</td>
+        <td>
+          <input type="color" id="edgeColor" value="#ffcc00" />
+        </td>
+      </tr>
+      <tr>
+        <td>Line width</td>
+        <td>
+          <input
+            type="range"
+            id="lineWidth"
+            min="1"
+            max="6"
+            step="1"
+            value="2"
+          />
+          <span id="lineWidthLabel">2</span>
+        </td>
+      </tr>
+      <tr>
+        <td>Line pattern</td>
+        <td>
+          <select id="linePattern">
+            <option value="65535" selected>Solid (0xFFFF)</option>
+            <option value="43690">Dashed (0xAAAA)</option>
+            <option value="61680">Dot-dash (0xF0F0)</option>
+          </select>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>

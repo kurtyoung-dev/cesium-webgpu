@@ -1,0 +1,8 @@
+legacyId: WebGPU Weather Inspector.html
+title: WebGPU Weather Inspector
+description: "Live weather inspector — drive the WebGPU procedural-cloud + atmosphere dials in real time. Tweak coverage, density, layer heights, silver-lining, phase, ambient, wind, sky and fog, or apply an industry-standard preset keyed to METAR oktas + WMO cloud genera (SKC / FEW Cu / SCT Cu / BKN Sc / OVC St / Ns rain / Cb storm / Ci). Every control writes a live globe.atmosphericConditions property; the sky updates next frame."
+labels:
+  - WebGPU
+  - Showcases
+  - Atmosphere
+thumbnail: thumbnail.jpg

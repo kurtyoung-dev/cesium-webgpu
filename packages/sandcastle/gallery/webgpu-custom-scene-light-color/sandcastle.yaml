@@ -1,0 +1,8 @@
+legacyId: WebGPU Custom Scene Light Color.html
+title: WebGPU Custom Scene Light Color
+description: "Custom scene-light color (czm_lightColor) propagates to the globe Lambert path on WebGPU. Tint the globe with a custom directional light — sunset orange, blue moon, or any color — and the Lambert diffuse picks up the tint."
+labels:
+  - WebGPU
+  - Showcases
+  - Lighting
+thumbnail: thumbnail.jpg

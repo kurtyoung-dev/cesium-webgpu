@@ -1,0 +1,7 @@
+legacyId: WebGPU Orbital Catalog.html
+title: WebGPU Orbital Catalog
+description: "GPU-resident orbital catalog: thousands of objects propagated each frame by a user-supplied WGSL compute kernel — positions never leave the GPU."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

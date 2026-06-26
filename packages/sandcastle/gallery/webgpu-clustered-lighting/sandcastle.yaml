@@ -1,0 +1,7 @@
+legacyId: WebGPU Clustered Lighting.html
+title: WebGPU Clustered Lighting
+description: "Forward+ clustered lighting on the WebGPU backend: many scene point lights illuminating glTF models + lit primitives per-pixel, beyond the single sun."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

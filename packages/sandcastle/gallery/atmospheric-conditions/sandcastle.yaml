@@ -1,0 +1,7 @@
+legacyId: Atmospheric Conditions.html
+title: Atmospheric Conditions
+description: "Tune the AtmosphericConditions weather inputs: humidity (mie + fog density), airQuality (rayleigh), cloudCover (star occlusion), and wind state. WebGPU-only API shipped in Session 65 Batches 29 + 42."
+labels:
+  - Showcases
+  - WebGPU
+thumbnail: thumbnail.jpg

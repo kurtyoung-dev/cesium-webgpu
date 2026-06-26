@@ -1,0 +1,7 @@
+legacyId: WebGPU Edge Visibility.html
+title: WebGPU Edge Visibility
+description: "Render a glTF model with EXT_mesh_primitive_edge_visibility on the WebGPU backend; toggle edge color and line width to exercise the inline edge stage."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

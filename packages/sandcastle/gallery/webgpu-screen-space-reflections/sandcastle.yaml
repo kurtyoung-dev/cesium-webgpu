@@ -1,0 +1,8 @@
+legacyId: WebGPU Screen Space Reflections.html
+title: WebGPU Screen Space Reflections
+description: "WebGPU screen-space reflections (SSR). Tunable max distance, thickness, ray-march steps, stride, and reflection strength."
+labels:
+  - WebGPU
+  - Showcases
+  - Post Processing
+thumbnail: thumbnail.jpg

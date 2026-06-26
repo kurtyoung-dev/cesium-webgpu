@@ -1,0 +1,8 @@
+legacyId: WebGPU Translucent Classification.html
+title: WebGPU Translucent Classification
+description: "Translucent 3D Tile classification on the WebGPU backend; toggle between MSAA-on and MSAA-off configurations."
+labels:
+  - WebGPU
+  - Showcases
+  - 3D Tiles
+thumbnail: thumbnail.jpg

@@ -1,0 +1,7 @@
+legacyId: WebGPU Model Pick.html
+title: WebGPU Model Pick
+description: "Pick glTF Models on the WebGPU backend at primitive granularity."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

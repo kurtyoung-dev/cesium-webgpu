@@ -1,0 +1,108 @@
+<style>
+  @import url(../templates/bucket.css);
+
+  #monitorPanel {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 360px;
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
+    background: rgba(20, 20, 24, 0.92);
+    border: 1px solid #444;
+    padding: 10px 12px;
+    font-family: "Consolas", monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    z-index: 10;
+    color: #ddd;
+  }
+  #monitorPanel h3 {
+    margin: 0 0 6px 0;
+    font-size: 12px;
+    color: #4af;
+    font-family: sans-serif;
+  }
+  #monitorPanel h4 {
+    margin: 8px 0 4px 0;
+    font-size: 11px;
+    color: #8c8;
+    font-family: sans-serif;
+  }
+  #monitorPanel table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10px;
+  }
+  #monitorPanel td {
+    padding: 1px 4px;
+  }
+  #monitorPanel td.k {
+    color: #888;
+  }
+  #monitorPanel td.v {
+    text-align: right;
+    font-weight: bold;
+  }
+  #monitorPanel .hi {
+    color: #fa5;
+  }
+  #monitorPanel .ok {
+    color: #5f5;
+  }
+  #eventLog {
+    font-size: 10px;
+    max-height: 180px;
+    overflow-y: auto;
+    background: #111;
+    border: 1px solid #333;
+    padding: 4px;
+    margin-top: 4px;
+  }
+  #eventLog div {
+    padding: 1px 0;
+  }
+  #eventLog .ev-started {
+    color: #fa5;
+  }
+  #eventLog .ev-resolved {
+    color: #5f5;
+  }
+  #eventLog .ev-rejected {
+    color: #f44;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar"></div>
+<div id="monitorPanel">
+  <h3>Async Resource Monitor</h3>
+  <table id="aggregateTable">
+    <tr>
+      <td class="k">currentInflight</td>
+      <td class="v" id="aggCurrent">0</td>
+    </tr>
+    <tr>
+      <td class="k">peakInflight</td>
+      <td class="v" id="aggPeak">0</td>
+    </tr>
+    <tr>
+      <td class="k">resolved</td>
+      <td class="v ok" id="aggResolved">0</td>
+    </tr>
+    <tr>
+      <td class="k">rejected</td>
+      <td class="v" id="aggRejected">0</td>
+    </tr>
+    <tr>
+      <td class="k">mean ms</td>
+      <td class="v" id="aggMean">0</td>
+    </tr>
+  </table>
+  <h4>Per-kind (resolved · p50 · p95 · p99)</h4>
+  <table id="kindTable">
+    <tbody></tbody>
+  </table>
+  <h4>Live event log</h4>
+  <div id="eventLog"></div>
+</div>

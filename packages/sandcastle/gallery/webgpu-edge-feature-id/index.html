@@ -1,0 +1,41 @@
+<style>
+  @import url(../templates/bucket.css);
+  #toolbar {
+    background: rgba(42, 42, 42, 0.8);
+    padding: 6px;
+    border-radius: 4px;
+    color: white;
+    font-family: sans-serif;
+  }
+  #toolbar table td {
+    padding: 2px 6px;
+  }
+  #status {
+    margin-top: 6px;
+    font-size: 12px;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <table>
+    <tbody>
+      <tr>
+        <td>Highlight feature ID</td>
+        <td>
+          <input
+            type="number"
+            id="featureIdInput"
+            value="3"
+            min="0"
+            max="255"
+            style="width: 60px"
+          />
+          <button id="applyHighlight" class="cesium-button">Highlight</button>
+          <button id="clearHighlight" class="cesium-button">Clear</button>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <div id="status">Loading model...</div>
+</div>

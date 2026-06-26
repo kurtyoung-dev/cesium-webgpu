@@ -1,0 +1,7 @@
+legacyId: WebGPU Edge Feature ID.html
+title: WebGPU Edge Feature ID
+description: "Per-feature edge gating on the WebGPU backend: highlight a single feature and verify edges still render correctly across all features."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

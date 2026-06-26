@@ -1,0 +1,7 @@
+legacyId: WebGPU Keyframe Catalog.html
+title: WebGPU Keyframe Catalog
+description: "GPU-resident keyframe catalog: thousands of time-dynamic objects whose (time, position) samples are interpolated each frame by a GPU kernel — the GPU analogue of SampledPositionProperty."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

@@ -1,0 +1,8 @@
+legacyId: WebGPU Dual-Light Atmosphere.html
+title: WebGPU Dual-Light Atmosphere
+description: "Dual-light atmospheric scattering — the WebGPU sky atmosphere shader samples a SECOND inscatter LUT for the moon in addition to the sun, scaled by moon-phase fraction. Toggle dual-light + moon intensity to see the moon contribution at night-side viewpoints."
+labels:
+  - WebGPU
+  - Showcases
+  - Atmosphere
+thumbnail: thumbnail.jpg

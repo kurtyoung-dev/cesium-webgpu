@@ -1,0 +1,8 @@
+legacyId: WebGPU Live Weather (EDR).html
+title: WebGPU Live Weather (EDR)
+description: "Drive the WebGPU procedural clouds with REAL weather. A WeatherProvider pulls live total-cloud-cover from NOAA's GFS model via OGC API-EDR (CoverageJSON) and bakes it into the cloud renderer's weather-map texture, so the deck reflects actual conditions. Uses the dev server's same-origin /proxy to sidestep CORS. WebGPU only; falls back to the procedural weather map when the feed is unreachable."
+labels:
+  - WebGPU
+  - Showcases
+  - Atmosphere
+thumbnail: thumbnail.jpg

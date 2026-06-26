@@ -1,0 +1,750 @@
+import * as Cesium from "cesium";
+
+// Procedural clouds + the live weather-config dials are WebGPU-only,
+// so pin the backend.
+const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+  contextOptions: { renderer: "webgpu" },
+});
+const scene = viewer.scene;
+const globe = scene.globe;
+window.viewer = viewer; // expose for console tinkering
+
+// A fair-weather starting sky so the panel has something to act on.
+globe.showProceduralClouds = true;
+globe.cloudCoverage = 0.45;
+globe.cloudDensity = 0.3;
+scene.skyAtmosphere.show = true;
+
+// Near-ground view looking up at the cloud deck. The camera sits below
+// even the lowest preset cloud base (1300 m) so it always sees
+// the ceiling from underneath — never embedded in the volume — and the
+// upper frame fills with cloud while gaps show blue sky. Coverage,
+// density and the lighting dials all read clearly from here.
+viewer.camera.setView({
+  destination: Cesium.Cartesian3.fromDegrees(-95.0, 39.0, 650.0),
+  orientation: {
+    heading: Cesium.Math.toRadians(90.0),
+    pitch: Cesium.Math.toRadians(16.0),
+    roll: 0.0,
+  },
+});
+
+// ── path get/set over { scene, globe, viewer } ──────────────────────
+const rootObj = { scene, globe, viewer };
+function getByPath(path) {
+  return path
+    .split(".")
+    .reduce(
+      (o, k) => (o === undefined || o === null ? undefined : o[k]),
+      rootObj,
+    );
+}
+function setByPath(path, value) {
+  const parts = path.split(".");
+  const last = parts.pop();
+  let o = rootObj;
+  for (const k of parts) {
+    if (o === undefined || o === null) {
+      return;
+    }
+    o = o[k];
+  }
+  if (o !== undefined && o !== null) {
+    o[last] = value;
+  }
+}
+
+// Time-of-day (UTC hour) is special: it drives the clock, not a property.
+function setHourUtc(hour) {
+  const h = Math.floor(hour);
+  const m = Math.round((hour - h) * 60);
+  const iso = `2026-06-21T${String(h).padStart(2, "0")}:${String(m).padStart(
+    2,
+    "0",
+  )}:00Z`;
+  const t = Cesium.JulianDate.fromIso8601(iso);
+  viewer.clock.currentTime = t.clone();
+  viewer.clock.shouldAnimate = false;
+}
+// Wind direction is a vec2 driven by two sliders.
+const windDir = { x: 0.7, y: 0.3 };
+function applyWind() {
+  globe.cloudWindDirection = { x: windDir.x, y: windDir.y };
+}
+
+// ── dial declarations (the full live weather surface) ───────────────
+// type: "range" | "toggle" | "select" | "hour" | "windX" | "windY"
+const GROUPS = [
+  {
+    title: "Time",
+    dials: [
+      {
+        label: "Time of day (UTC h)",
+        type: "hour",
+        min: 0,
+        max: 24,
+        step: 0.25,
+        def: 18,
+      },
+    ],
+  },
+  {
+    title: "Clouds · shape",
+    dials: [
+      {
+        label: "Show clouds",
+        type: "toggle",
+        path: "globe.showProceduralClouds",
+      },
+      {
+        // V11 — per-genus vertical density profile (WMO genus -> CloudType
+        // index). Stores a NUMBER (coerceNumber) so CloudTypeProfile.get
+        // resolves; the order groups low / mid / high genera.
+        label: "Genus (V11)",
+        type: "select",
+        path: "globe.cloudType",
+        coerceNumber: true,
+        options: [
+          "Cumulus",
+          "Stratus",
+          "Stratocumulus",
+          "Congestus",
+          "Cumulonimbus",
+          "Nimbostratus",
+          "Altostratus",
+          "Altocumulus",
+          "Cirrus",
+          "Cirrostratus",
+          "Cirrocumulus",
+        ],
+        optionValues: [0, 7, 8, 9, 10, 6, 4, 5, 1, 2, 3],
+      },
+      {
+        label: "Coverage",
+        type: "range",
+        path: "globe.cloudCoverage",
+        min: 0,
+        max: 1,
+        step: 0.02,
+      },
+      {
+        label: "Density",
+        type: "range",
+        path: "globe.cloudDensity",
+        min: 0.05,
+        max: 1,
+        step: 0.05,
+      },
+      {
+        label: "Erosion",
+        type: "range",
+        path: "globe.cloudErosionStrength",
+        min: 0.05,
+        max: 0.25,
+        step: 0.01,
+        def: 0.18,
+      },
+      {
+        label: "Weather map",
+        type: "toggle",
+        path: "globe.cloudWeatherMap",
+      },
+    ],
+  },
+  {
+    title: "Clouds · layer",
+    dials: [
+      {
+        label: "Base (m)",
+        type: "range",
+        path: "globe.cloudLayerBottom",
+        min: 0,
+        max: 12000,
+        step: 100,
+      },
+      {
+        label: "Top (m)",
+        type: "range",
+        path: "globe.cloudLayerTop",
+        min: 500,
+        max: 16000,
+        step: 100,
+      },
+    ],
+  },
+  {
+    title: "Clouds · lighting",
+    dials: [
+      {
+        label: "Silver lining",
+        type: "range",
+        path: "globe.cloudSilverLiningIntensity",
+        min: 0,
+        max: 2,
+        step: 0.05,
+        def: 0.8,
+      },
+      {
+        label: "Phase fwd g",
+        type: "range",
+        path: "globe.cloudPhaseForwardG",
+        min: 0.5,
+        max: 0.95,
+        step: 0.01,
+        def: 0.85,
+      },
+      {
+        label: "Phase back g",
+        type: "range",
+        path: "globe.cloudPhaseBackG",
+        min: -0.5,
+        max: 0,
+        step: 0.01,
+        def: -0.3,
+      },
+      {
+        label: "Phase blend",
+        type: "range",
+        path: "globe.cloudPhaseBlend",
+        min: 0,
+        max: 1,
+        step: 0.05,
+        def: 0.7,
+      },
+      {
+        label: "Ambient",
+        type: "range",
+        path: "globe.cloudAmbientIntensity",
+        min: 0.5,
+        max: 3,
+        step: 0.1,
+        def: 1.5,
+      },
+      {
+        label: "Aerial haze",
+        type: "range",
+        path: "globe.cloudAerialStrength",
+        min: 0,
+        max: 1,
+        step: 0.05,
+        def: 1.0,
+      },
+    ],
+  },
+  {
+    title: "Clouds · tuning",
+    dials: [
+      {
+        label: "Puff size",
+        type: "range",
+        path: "globe.cloudPuffSize",
+        min: 0.2,
+        max: 0.7,
+        step: 0.01,
+        def: 0.45,
+      },
+      {
+        label: "Exposure",
+        type: "range",
+        path: "globe.cloudExposure",
+        min: 0.1,
+        max: 0.5,
+        step: 0.01,
+        def: 0.22,
+      },
+      {
+        label: "MS scatter decay",
+        type: "range",
+        path: "globe.cloudMsDecayScatter",
+        min: 0.3,
+        max: 0.8,
+        step: 0.01,
+        def: 0.5,
+      },
+      {
+        label: "MS extinction decay",
+        type: "range",
+        path: "globe.cloudMsDecayExtinction",
+        min: 0.3,
+        max: 0.8,
+        step: 0.01,
+        def: 0.5,
+      },
+      {
+        label: "MS phase decay",
+        type: "range",
+        path: "globe.cloudMsDecayPhase",
+        min: 0.7,
+        max: 0.95,
+        step: 0.01,
+        def: 0.85,
+      },
+    ],
+  },
+  {
+    title: "Clouds · quality",
+    dials: [
+      {
+        label: "Quality",
+        type: "select",
+        path: "globe.cloudVolumetricQuality",
+        options: ["low", "medium", "high", "auto"],
+      },
+    ],
+  },
+  {
+    title: "Wind",
+    dials: [
+      {
+        label: "Speed (m/s)",
+        type: "range",
+        path: "globe.cloudWindSpeed",
+        min: 0,
+        max: 50,
+        step: 0.5,
+      },
+      {
+        label: "Dir east",
+        type: "windX",
+        min: -1,
+        max: 1,
+        step: 0.05,
+        def: 0.7,
+      },
+      {
+        label: "Dir north",
+        type: "windY",
+        min: -1,
+        max: 1,
+        step: 0.05,
+        def: 0.3,
+      },
+    ],
+  },
+  {
+    title: "Sky / atmosphere",
+    dials: [
+      {
+        label: "Light intensity",
+        type: "range",
+        path: "globe.atmosphereLightIntensity",
+        min: 0,
+        max: 20,
+        step: 0.5,
+      },
+      {
+        label: "Hue shift",
+        type: "range",
+        path: "globe.atmosphereHueShift",
+        min: -1,
+        max: 1,
+        step: 0.05,
+      },
+      {
+        label: "Saturation",
+        type: "range",
+        path: "globe.atmosphereSaturationShift",
+        min: -1,
+        max: 1,
+        step: 0.05,
+      },
+      {
+        label: "Brightness",
+        type: "range",
+        path: "globe.atmosphereBrightnessShift",
+        min: -1,
+        max: 1,
+        step: 0.05,
+      },
+    ],
+  },
+  {
+    title: "Fog",
+    dials: [
+      {
+        label: "Fog enabled",
+        type: "toggle",
+        path: "scene.fog.enabled",
+      },
+      {
+        label: "Fog density",
+        type: "range",
+        path: "scene.fog.density",
+        min: 0,
+        max: 0.001,
+        step: 0.00002,
+        def: 0.0002,
+      },
+    ],
+  },
+];
+
+// ── standards-keyed weather presets ─────────────────────────────────
+// Keyed to real aviation/meteorology codes instead of invented "moods":
+//   • COVERAGE   → METAR oktas (eighths of sky): SKC 0, FEW 1–2,
+//     SCT 3–4, BKN 5–7, OVC 8 — mapped to our 0–1 cloudCoverage.
+//   • CLOUD TYPE → WMO genera (Code Table 0500): Cu cumulus, Sc
+//     stratocumulus, St stratus, Ns nimbostratus, Cb cumulonimbus,
+//     Ci cirrus — driving the layer altitude band + morphology dials.
+//   • LAYER BASE → genus-typical height ORDER (Cu/Sc/St low, Ns/Cb deep,
+//     Ci high), lifted into ~1.3–2 km so the deck reads as an overhead
+//     ceiling from the fixed 650 m camera rather than a grazing horizon
+//     sliver (real METAR bases run lower; demo-tuned for legibility).
+//     Every base stays ≥ 1300 m so the camera is always underneath.
+//   • PRECIP/FOG → WMO present-weather `ww` codes (Table 4677): Ns rain
+//     (ww 60s), Cb thunderstorm (ww 95) get heavier fog + darker light.
+// NOTE: per-genus cloud *shape* (true cumulus tower vs flat stratus
+// sheet) lands with the V11/V12 per-genus density profiles; today the
+// presets differentiate by coverage, altitude, density, erosion,
+// lighting and fog — which already reads as distinctly different skies.
+// The presets keep `cloudWeatherMap` OFF: that path reads coverage from
+// the (still-unpopulated) weather-map texture seam (C2-16), which
+// collapses effective coverage to ~0 and empties the deck. The global
+// `cloudCoverage` scalar is the working path — switch presets to the
+// weather map only once C2-16 actually bakes a populated map.
+const PRESETS = [
+  {
+    key: "SKC",
+    label: "SKC",
+    title: "Sky clear — 0/8 oktas. No clouds; deep blue daytime sky.",
+    values: {
+      "globe.showProceduralClouds": false,
+      "globe.cloudCoverage": 0.0,
+      "scene.fog.enabled": false,
+      "globe.cloudWindSpeed": 6.0,
+      "globe.atmosphereLightIntensity": 10.0,
+      "globe.atmosphereSaturationShift": 0.0,
+      "globe.atmosphereBrightnessShift": 0.0,
+    },
+  },
+  {
+    key: "FEWcu",
+    label: "FEW Cu",
+    title:
+      "Few cumulus — 1–2/8 oktas. Fair-weather low cumulus, isolated puffs over deep-blue gaps (base ~1.2 km).",
+    values: {
+      "globe.showProceduralClouds": true,
+      "globe.cloudCoverage": 0.15,
+      "globe.cloudDensity": 0.22,
+      "globe.cloudLayerBottom": 1500,
+      "globe.cloudLayerTop": 3000,
+      "globe.cloudErosionStrength": 0.16,
+      "globe.cloudVolumetricQuality": "medium",
+      "globe.cloudSilverLiningIntensity": 0.95,
+      "globe.cloudAerialStrength": 0.7,
+      "globe.cloudWeatherMap": false,
+      "globe.cloudWindSpeed": 6.0,
+      "scene.fog.enabled": false,
+      "globe.atmosphereLightIntensity": 10.0,
+      "globe.atmosphereSaturationShift": 0.0,
+      "globe.atmosphereBrightnessShift": 0.0,
+    },
+  },
+  {
+    key: "SCTcu",
+    label: "SCT Cu",
+    title:
+      "Scattered cumulus — 3–4/8 oktas. Building fair-weather cumulus, sky roughly half covered (base ~1.2 km, tops ~3.5 km).",
+    values: {
+      "globe.showProceduralClouds": true,
+      "globe.cloudCoverage": 0.45,
+      "globe.cloudDensity": 0.3,
+      "globe.cloudLayerBottom": 1500,
+      "globe.cloudLayerTop": 3800,
+      "globe.cloudErosionStrength": 0.17,
+      "globe.cloudVolumetricQuality": "medium",
+      "globe.cloudSilverLiningIntensity": 0.9,
+      "globe.cloudAerialStrength": 0.8,
+      "globe.cloudWeatherMap": false,
+      "globe.cloudWindSpeed": 8.0,
+      "scene.fog.enabled": true,
+      "scene.fog.density": 0.0001,
+      "globe.atmosphereLightIntensity": 10.0,
+      "globe.atmosphereSaturationShift": 0.0,
+      "globe.atmosphereBrightnessShift": 0.0,
+    },
+  },
+  {
+    key: "BKNsc",
+    label: "BKN Sc",
+    title:
+      "Broken stratocumulus — 5–7/8 oktas. Low, lumpy, mostly-covered deck with a few breaks (base ~0.9 km).",
+    values: {
+      "globe.showProceduralClouds": true,
+      "globe.cloudCoverage": 0.75,
+      "globe.cloudDensity": 0.42,
+      "globe.cloudLayerBottom": 1300,
+      "globe.cloudLayerTop": 2600,
+      "globe.cloudErosionStrength": 0.13,
+      "globe.cloudVolumetricQuality": "high",
+      "globe.cloudWeatherMap": false,
+      "globe.cloudAmbientIntensity": 1.6,
+      "globe.cloudAerialStrength": 0.7,
+      "globe.cloudWindSpeed": 12.0,
+      "scene.fog.enabled": true,
+      "scene.fog.density": 0.0002,
+      "globe.atmosphereLightIntensity": 8.0,
+      "globe.atmosphereSaturationShift": -0.05,
+      "globe.atmosphereBrightnessShift": -0.05,
+    },
+  },
+  {
+    key: "OVCst",
+    label: "OVC St",
+    title:
+      "Overcast stratus — 8/8 oktas. Uniform grey low ceiling, no breaks (low flat deck just above the camera).",
+    values: {
+      "globe.showProceduralClouds": true,
+      "globe.cloudCoverage": 0.98,
+      "globe.cloudDensity": 0.45,
+      "globe.cloudLayerBottom": 1300,
+      "globe.cloudLayerTop": 2400,
+      "globe.cloudErosionStrength": 0.1,
+      "globe.cloudVolumetricQuality": "high",
+      "globe.cloudWeatherMap": false,
+      "globe.cloudAmbientIntensity": 1.9,
+      "globe.cloudAerialStrength": 0.7,
+      "globe.cloudWindSpeed": 10.0,
+      "scene.fog.enabled": true,
+      "scene.fog.density": 0.0003,
+      "globe.atmosphereLightIntensity": 6.5,
+      "globe.atmosphereSaturationShift": -0.15,
+      "globe.atmosphereBrightnessShift": -0.08,
+    },
+  },
+  {
+    key: "Ns",
+    label: "Ns Rain",
+    title:
+      "Nimbostratus — 8/8 oktas, ww 60s (rain). Thick, dark, rain-bearing layer; heavy haze, dim flat light.",
+    values: {
+      "globe.showProceduralClouds": true,
+      "globe.cloudCoverage": 1.0,
+      "globe.cloudDensity": 0.6,
+      "globe.cloudLayerBottom": 1300,
+      "globe.cloudLayerTop": 5000,
+      "globe.cloudErosionStrength": 0.12,
+      "globe.cloudVolumetricQuality": "high",
+      "globe.cloudWeatherMap": false,
+      "globe.cloudPhaseBackG": -0.4,
+      "globe.cloudAmbientIntensity": 1.0,
+      "globe.cloudAerialStrength": 0.6,
+      "globe.cloudWindSpeed": 18.0,
+      "scene.fog.enabled": true,
+      "scene.fog.density": 0.0005,
+      "globe.atmosphereLightIntensity": 5.0,
+      "globe.atmosphereSaturationShift": -0.25,
+      "globe.atmosphereBrightnessShift": -0.15,
+    },
+  },
+  {
+    key: "Cb",
+    label: "Cb Storm",
+    title:
+      "Cumulonimbus — TCU/CB, ww 95 (thunderstorm). Deep convective tower, dark base, strong wind.",
+    values: {
+      "globe.showProceduralClouds": true,
+      "globe.cloudCoverage": 0.9,
+      "globe.cloudDensity": 0.68,
+      "globe.cloudLayerBottom": 1300,
+      "globe.cloudLayerTop": 9000,
+      "globe.cloudErosionStrength": 0.15,
+      "globe.cloudVolumetricQuality": "high",
+      "globe.cloudWeatherMap": false,
+      "globe.cloudPhaseBackG": -0.5,
+      "globe.cloudAmbientIntensity": 0.9,
+      "globe.cloudAerialStrength": 0.6,
+      "globe.cloudWindSpeed": 30.0,
+      "scene.fog.enabled": true,
+      "scene.fog.density": 0.0004,
+      "globe.atmosphereLightIntensity": 5.0,
+      "globe.atmosphereSaturationShift": -0.1,
+      "globe.atmosphereBrightnessShift": -0.12,
+    },
+  },
+  {
+    key: "Ci",
+    label: "Ci",
+    title:
+      "Cirrus — high cloud, 2–4/8 oktas. Thin, wispy ice cloud well above the camera (base ~7 km); blue sky shows through.",
+    values: {
+      "globe.showProceduralClouds": true,
+      "globe.cloudCoverage": 0.4,
+      "globe.cloudDensity": 0.12,
+      "globe.cloudLayerBottom": 7000,
+      "globe.cloudLayerTop": 9000,
+      "globe.cloudErosionStrength": 0.22,
+      "globe.cloudVolumetricQuality": "medium",
+      "globe.cloudSilverLiningIntensity": 1.2,
+      "globe.cloudAerialStrength": 0.9,
+      "globe.cloudWeatherMap": false,
+      "globe.cloudWindSpeed": 14.0,
+      "scene.fog.enabled": false,
+      "globe.atmosphereLightIntensity": 11.0,
+      "globe.atmosphereSaturationShift": 0.0,
+      "globe.atmosphereBrightnessShift": 0.03,
+    },
+  },
+];
+
+// ── build the panel from GROUPS ─────────────────────────────────────
+const panel = document.getElementById("weatherPanel");
+const refreshers = []; // () => void, re-reads scene state into the UI
+
+const heading = document.createElement("h2");
+heading.textContent = "Weather Inspector";
+panel.appendChild(heading);
+
+const presetNote = document.createElement("div");
+presetNote.style.cssText =
+  "font-size:11px;color:#9ec5ff;margin:-2px 0 6px;line-height:1.3;";
+presetNote.textContent =
+  "Presets keyed to METAR oktas + WMO genera (hover for the code).";
+panel.appendChild(presetNote);
+
+const presetBar = document.createElement("div");
+presetBar.className = "presets";
+PRESETS.forEach((preset) => {
+  const b = document.createElement("button");
+  b.textContent = preset.label;
+  b.title = preset.title; // METAR/WMO meaning on hover
+  b.id = `wi-preset-${preset.key}`;
+  b.addEventListener("click", () => applyPreset(preset.key));
+  presetBar.appendChild(b);
+});
+panel.appendChild(presetBar);
+
+function idFor(dial) {
+  return `wi-${dial.path || dial.type}-${dial.label}`;
+}
+
+function makeRow(dial) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const label = document.createElement("label");
+  label.textContent = dial.label;
+  row.appendChild(label);
+
+  if (dial.type === "toggle") {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = idFor(dial);
+    input.checked = Boolean(getByPath(dial.path));
+    input.addEventListener("change", () => {
+      setByPath(dial.path, input.checked);
+      scene.requestRender();
+    });
+    row.appendChild(input);
+    refreshers.push(() => {
+      input.checked = Boolean(getByPath(dial.path));
+    });
+  } else if (dial.type === "select") {
+    const sel = document.createElement("select");
+    sel.id = idFor(dial);
+    // `optionValues` lets a select store something other than the label
+    // (e.g. a numeric CloudType enum for the genus dial); `coerceNumber`
+    // converts the chosen value back to a number on assignment.
+    const values = dial.optionValues || dial.options;
+    dial.options.forEach((opt, i) => {
+      const o = document.createElement("option");
+      o.value = String(values[i]);
+      o.textContent = opt;
+      sel.appendChild(o);
+    });
+    const readSel = () => {
+      const cur = getByPath(dial.path);
+      return cur === undefined || cur === null
+        ? String(values[0])
+        : String(cur);
+    };
+    sel.value = readSel();
+    sel.addEventListener("change", () => {
+      setByPath(dial.path, dial.coerceNumber ? Number(sel.value) : sel.value);
+      scene.requestRender();
+    });
+    row.appendChild(sel);
+    refreshers.push(() => {
+      sel.value = readSel();
+    });
+  } else {
+    // range-like: range, hour, windX, windY
+    const input = document.createElement("input");
+    input.type = "range";
+    input.id = idFor(dial);
+    input.min = dial.min;
+    input.max = dial.max;
+    input.step = dial.step;
+    const val = document.createElement("span");
+    val.className = "val";
+
+    const decimals = dial.step < 0.01 ? 5 : dial.step < 1 ? 2 : 0;
+    const readCurrent = () => {
+      if (dial.type === "windX") {
+        return windDir.x;
+      }
+      if (dial.type === "windY") {
+        return windDir.y;
+      }
+      if (dial.type === "hour") {
+        return dial.def;
+      }
+      const v = getByPath(dial.path);
+      return v === undefined || v === null ? dial.def : v;
+    };
+    const setUI = () => {
+      const v = readCurrent();
+      input.value = v;
+      val.textContent = Number(v).toFixed(decimals);
+    };
+    setUI();
+
+    input.addEventListener("input", () => {
+      const v = Number(input.value);
+      val.textContent = v.toFixed(decimals);
+      if (dial.type === "windX") {
+        windDir.x = v;
+        applyWind();
+      } else if (dial.type === "windY") {
+        windDir.y = v;
+        applyWind();
+      } else if (dial.type === "hour") {
+        setHourUtc(v);
+      } else {
+        setByPath(dial.path, v);
+      }
+      scene.requestRender();
+    });
+    row.appendChild(input);
+    row.appendChild(val);
+    refreshers.push(setUI);
+  }
+  return row;
+}
+
+GROUPS.forEach((group) => {
+  const fs = document.createElement("fieldset");
+  const lg = document.createElement("legend");
+  lg.textContent = group.title;
+  fs.appendChild(lg);
+  group.dials.forEach((dial) => fs.appendChild(makeRow(dial)));
+  panel.appendChild(fs);
+});
+
+function refreshUI() {
+  refreshers.forEach((fn) => fn());
+}
+
+function applyPreset(key) {
+  const preset = PRESETS.find((p) => p.key === key);
+  if (preset === undefined) {
+    return;
+  }
+  Object.keys(preset.values).forEach((path) =>
+    setByPath(path, preset.values[path]),
+  );
+  refreshUI();
+  scene.requestRender();
+}
+window.__weatherInspector = { applyPreset, refreshUI, GROUPS, PRESETS };
+
+setHourUtc(18);

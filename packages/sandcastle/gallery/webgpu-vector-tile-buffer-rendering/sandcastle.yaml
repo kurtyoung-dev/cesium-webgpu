@@ -1,0 +1,7 @@
+legacyId: WebGPU Vector Tile Buffer Rendering.html
+title: WebGPU Vector Tile Buffer Rendering
+description: "Storage-buffer-backed vector primitive rendering. 50K points rendered through WebGPUBufferPointRenderer with single-draw GPU dispatch."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

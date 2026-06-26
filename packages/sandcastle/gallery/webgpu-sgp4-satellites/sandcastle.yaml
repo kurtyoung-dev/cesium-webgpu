@@ -1,0 +1,7 @@
+legacyId: WebGPU SGP4 Satellites.html
+title: WebGPU SGP4 Satellites
+description: "Real near-earth satellites propagated each frame on the GPU by a df64 SGP4 compute kernel — TLEs in, GPU-resident positions out, no CPU round-trip."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg
