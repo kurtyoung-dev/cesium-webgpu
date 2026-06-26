@@ -1,12 +1,25 @@
 # Weather Data Ingest Roadmap — real weather → the cloud renderer (C2-16 seam)
 
 **Status:** P0+P1 SHIPPED (Batch 410 `f047c29f32`; audit fixes Batch 411 `1f83a48c7c`).
-Synthetic-verified end-to-end (real `WeatherField` → packer → C2-16 weatherTex → deck,
-map auto-enables). **Live EDR (the real feed) is wired (`EdrWeatherSource`) but NOT yet
-validated against the live endpoint** — the dev sandbox has no outbound network to
-external hosts (CLI `curl` → `http=000`, browser `fetch` → timeout), so the live call +
-CORS + the guessed collection id `automated_gfs` must be confirmed in a networked browser.
-Phases P2–P4 remain. (Original research+design below, 2026-06-26.)
+**P2 (time model) SHIPPED — Batch 416.** Synthetic-verified end-to-end (real
+`WeatherField` → packer → C2-16 weatherTex → deck, map auto-enables). **Live EDR (the
+real feed) is wired (`EdrWeatherSource`) but NOT yet validated against the live
+endpoint** — the dev sandbox has no outbound network to external hosts (CLI `curl` →
+`http=000`, browser `fetch` → timeout), so the live call + CORS + the guessed collection
+id `automated_gfs` must be confirmed in a networked browser.
+Phases P3–P4 remain. (Original research+design below, 2026-06-26.)
+
+**P2 — TIME MODEL (SHIPPED Batch 416).** `WeatherProvider` gained `WeatherTimeMode`
+(`live`/`historical`/`projected`) + `setTimeMode`/`setTime`/`setForecastOffsetHours`/
+`setQuantizeHours`/`tick(now)`. It resolves a quantized time SLICE each frame, holds an
+LRU cache of packed slices (scrubbing reuses fetched data), and bumps `version` ONLY when
+the active slice's bytes change (not every tick). `WeatherFieldRequest.time` (`Date |
+"latest"`) carries the instant to the source. `SyntheticWeatherSource("drift")` is a
+deterministic time-varying field (a longitude band that phases with `request.time`,
+24 h period) so the whole model is verified offline by
+`Tools/visual-regression/probe-weather-time.mjs` (9/9 GREEN — no network, no WebGPU). The
+legacy single-request (`timeMode === null` → `"latest"`) path is byte-identical. Real
+historical/projected EDR validation inherits the live-network blocker.
 **Goal (user):** ingest **historical, live, or projected** weather from **open** sources and
 **swap between them** at runtime, to drive the WebGPU procedural clouds with *real*
 conditions — in addition to the METAR/WMO preset vocabulary already shipped (Batch 405).

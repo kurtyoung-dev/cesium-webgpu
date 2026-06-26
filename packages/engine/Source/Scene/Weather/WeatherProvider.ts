@@ -1,11 +1,20 @@
 /**
- * Orchestrates weather ingest (Phase 1): holds the active {@link WeatherSource},
- * fetches a {@link WeatherField} asynchronously, bakes it into the weather-map
- * bytes via {@link packWeatherField}, and exposes a SYNCHRONOUS accessor the
- * WebGPU cloud renderer calls each frame. A cache miss kicks a background fetch
- * and returns null (the renderer keeps its procedural map until data arrives, so
- * there's no overcast-everywhere flash). Swapping the source is how the user
- * switches between open data sources at runtime.
+ * Orchestrates weather ingest: holds the active {@link WeatherSource}, fetches a
+ * {@link WeatherField} asynchronously, bakes it into the weather-map bytes via
+ * {@link packWeatherField}, and exposes a SYNCHRONOUS accessor the WebGPU cloud
+ * renderer calls each frame. A cache miss kicks a background fetch and returns
+ * null (the renderer keeps its procedural map until data arrives, so there's no
+ * overcast-everywhere flash). Swapping the source is how the user switches
+ * between open data sources at runtime.
+ *
+ * Phase 2 — TIME MODEL. By default the provider serves a single request
+ * (`time: "latest"`, the legacy behavior). Engaging a {@link WeatherTimeMode}
+ * (`setTimeMode` / `setTime` / `setForecastOffsetHours`) makes it resolve a
+ * quantized time SLICE each frame: `live` = the latest analysis advanced by
+ * `tick(now)`, `historical` = a fixed past instant, `projected` = `now + offset`.
+ * Slices are quantized (default 1 h) + held in a small LRU cache so scrubbing
+ * reuses already-fetched data, and `version` bumps ONLY when the active slice's
+ * bytes change (not every tick) so the renderer re-uploads only when needed.
  *
  * Set it on `globe.weatherProvider`; the renderer auto-enables the weather map
  * once real bytes are ready.
@@ -14,7 +23,9 @@
  */
 import { packWeatherField } from "./WeatherTexPacker.js";
 import type { WeatherSource } from "./WeatherSource.js";
-import type { WeatherFieldRequest } from "./WeatherTypes.js";
+import type { WeatherFieldRequest, WeatherTimeMode } from "./WeatherTypes.js";
+
+const HOUR_MS = 3600000;
 
 export class WeatherProvider {
   private _source: WeatherSource | null;
@@ -29,12 +40,28 @@ export class WeatherProvider {
   // so swapping the source during a slow (network) fetch can't apply stale data.
   private _invalidation = 0;
 
+  // --- Phase 2 time model (entirely inactive while _timeMode === null) ---
+  private _timeMode: WeatherTimeMode | null = null;
+  private _explicitTime: Date | null = null;
+  private _forecastOffsetMs = 0;
+  private _quantizeMs = HOUR_MS;
+  private _nowMs: number;
+  private _effectiveKey: string | null = null;
+  private _effectiveTime: Date | "latest" = "latest";
+  // LRU cache of packed slices keyed by quantized-time. Scrubbing historical /
+  // projected times reuses already-fetched+packed slices instead of re-fetching.
+  private readonly _cache = new Map<string, Uint8Array>();
+  private _cacheLimit = 8;
+  private _cacheW = 0;
+  private _cacheH = 0;
+
   constructor(
     source: WeatherSource | null = null,
     request: WeatherFieldRequest = { time: "latest" },
   ) {
     this._source = source;
     this._request = request;
+    this._nowMs = Date.now();
   }
 
   /** Bumps whenever the packed bytes change — the renderer re-uploads on change. */
@@ -53,12 +80,22 @@ export class WeatherProvider {
   getSource(): WeatherSource | null {
     return this._source;
   }
+  /** The active time stance, or null in the legacy single-request mode. */
+  getTimeMode(): WeatherTimeMode | null {
+    return this._timeMode;
+  }
+  /** The resolved instant of the active slice (a Date), or `"latest"` in legacy mode. */
+  getEffectiveTime(): Date | "latest" {
+    return this._effectiveTime;
+  }
 
   /** Swap the active source (runtime source-switch). Drops the cache. */
   setSource(source: WeatherSource | null): void {
     this._source = source;
     this._packed = null;
     this._lastError = null;
+    this._cache.clear();
+    this._effectiveKey = null;
     this._invalidation++;
     this._version++;
   }
@@ -67,15 +104,69 @@ export class WeatherProvider {
   setRequest(request: WeatherFieldRequest): void {
     this._request = request;
     this._packed = null;
+    this._cache.clear();
+    this._effectiveKey = null;
     this._invalidation++;
     this._version++;
   }
 
-  /** Force a re-fetch (e.g. a live-refresh tick). */
+  /** Force a re-fetch (e.g. a live-refresh tick). Drops the cache. */
   refresh(): void {
     this._packed = null;
+    this._cache.clear();
+    this._effectiveKey = null;
     this._invalidation++;
     this._version++;
+  }
+
+  // ── Phase 2 time-model controls ──────────────────────────────────────────
+
+  /** Engage live / historical / projected time resolution. */
+  setTimeMode(mode: WeatherTimeMode): void {
+    if (mode === this._timeMode) {
+      return;
+    }
+    this._timeMode = mode;
+    this._effectiveKey = null;
+    this._refreshSlice();
+  }
+
+  /** Set the historical instant (also switches to `historical` if in legacy mode). */
+  setTime(date: Date): void {
+    this._explicitTime = date;
+    if (this._timeMode === null) {
+      this._timeMode = "historical";
+    }
+    this._effectiveKey = null;
+    this._refreshSlice();
+  }
+
+  /** Set the projected forecast offset in hours (switches to `projected` if legacy). */
+  setForecastOffsetHours(hours: number): void {
+    this._forecastOffsetMs = hours * HOUR_MS;
+    if (this._timeMode === null) {
+      this._timeMode = "projected";
+    }
+    this._effectiveKey = null;
+    this._refreshSlice();
+  }
+
+  /** Slice quantization in hours (default 1). Smaller = finer scrubbing, more fetches. */
+  setQuantizeHours(hours: number): void {
+    this._quantizeMs = hours > 0 ? hours * HOUR_MS : 0;
+    this._effectiveKey = null;
+    this._refreshSlice();
+  }
+
+  /**
+   * Advance "now" for `live` + `projected` modes (the app calls this on a timer;
+   * a test passes a controlled value). No-op in `historical` / legacy mode.
+   */
+  tick(nowMs: number = Date.now()): void {
+    this._nowMs = nowMs;
+    if (this._timeMode === "live" || this._timeMode === "projected") {
+      this._refreshSlice();
+    }
   }
 
   /**
@@ -84,6 +175,19 @@ export class WeatherProvider {
    * this null and records {@link lastError}.
    */
   getPackedTexture(texW: number, texH: number): Uint8Array | null {
+    // In time-model mode a texture-size change invalidates the cached slices.
+    if (
+      this._timeMode !== null &&
+      (this._cacheW !== texW || this._cacheH !== texH) &&
+      (this._cacheW !== 0 || this._cacheH !== 0)
+    ) {
+      this._cache.clear();
+      this._packed = null;
+      this._effectiveKey = null;
+      this._cacheW = texW;
+      this._cacheH = texH;
+      this._refreshSlice();
+    }
     if (this._packed) {
       return this._packed;
     }
@@ -91,34 +195,112 @@ export class WeatherProvider {
     return null;
   }
 
+  /** Resolve the effective slice for the current state; swap from cache or flag a fetch. */
+  private _refreshSlice(): void {
+    if (this._timeMode === null) {
+      return; // legacy path is untouched
+    }
+    const { time, key } = this._resolveEffectiveTime(this._nowMs);
+    if (key === this._effectiveKey) {
+      return; // same slice → no byte change, no version bump
+    }
+    this._effectiveKey = key;
+    this._effectiveTime = time;
+    const cached = this._cache.get(key);
+    if (cached) {
+      this._cache.delete(key);
+      this._cache.set(key, cached); // LRU bump
+      this._packed = cached;
+      this._validTime = time instanceof Date ? time.toISOString() : undefined;
+      this._version++;
+    } else {
+      this._packed = null; // miss → getPackedTexture() kicks the fetch
+    }
+  }
+
+  private _resolveEffectiveTime(nowMs: number): {
+    time: Date | "latest";
+    key: string;
+  } {
+    if (this._timeMode === null) {
+      return { time: this._request.time ?? "latest", key: "latest" };
+    }
+    let ms: number;
+    if (this._timeMode === "historical") {
+      ms = this._explicitTime ? this._explicitTime.getTime() : nowMs;
+    } else if (this._timeMode === "projected") {
+      ms = nowMs + this._forecastOffsetMs;
+    } else {
+      ms = nowMs; // live
+    }
+    const q =
+      this._quantizeMs > 0
+        ? Math.floor(ms / this._quantizeMs) * this._quantizeMs
+        : ms;
+    return { time: new Date(q), key: String(q) };
+  }
+
   private async _ensureFetch(texW: number, texH: number): Promise<void> {
     if (this._fetching || !this._source) {
       return;
     }
     this._fetching = true;
-    // Capture the source/request/generation NOW; a setSource/setRequest/refresh
-    // during the await must NOT have its result clobbered by this in-flight one.
+    // Capture the source/request/generation/slice NOW; a setSource/setRequest/
+    // refresh during the await must NOT have its result clobbered, and a slice
+    // scrub must not mis-activate this slice's bytes.
     const gen = this._invalidation;
     const source = this._source;
-    const request = this._request;
+    const timed = this._timeMode !== null;
+    const key = this._effectiveKey;
+    const request: WeatherFieldRequest = timed
+      ? { ...this._request, time: this._effectiveTime }
+      : this._request;
     try {
       const field = await source.fetchField(request);
-      if (this._invalidation === gen) {
-        this._packed = packWeatherField(field, texW, texH);
-        this._validTime = field.validTime;
-        this._lastError = null;
-        this._version++;
+      if (this._invalidation !== gen) {
+        return; // superseded by a source/request swap — drop it
       }
-      // else: superseded — drop the stale result; the next getPackedTexture()
-      // sees _packed === null and kicks a fresh fetch with the new source.
+      const packed = packWeatherField(field, texW, texH);
+      if (!timed) {
+        this._packed = packed;
+        this._validTime = field.validTime;
+        this._version++;
+      } else {
+        if (key !== null) {
+          this._cache.set(key, packed);
+          this._evictLru();
+          this._cacheW = texW;
+          this._cacheH = texH;
+        }
+        // Activate only if this is still the live slice (the user may have scrubbed).
+        if (key === this._effectiveKey) {
+          this._packed = packed;
+          this._validTime =
+            field.validTime ??
+            (this._effectiveTime instanceof Date
+              ? this._effectiveTime.toISOString()
+              : undefined);
+          this._version++;
+        }
+      }
+      this._lastError = null;
     } catch (e) {
       if (this._invalidation === gen) {
         this._lastError = (e as Error)?.message ?? String(e);
       }
       // leave _packed null → renderer falls back to the procedural map
     } finally {
-      // Always release the lock so a superseding source can fetch next frame.
       this._fetching = false;
+    }
+  }
+
+  private _evictLru(): void {
+    while (this._cache.size > this._cacheLimit) {
+      const oldest = this._cache.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this._cache.delete(oldest);
     }
   }
 }

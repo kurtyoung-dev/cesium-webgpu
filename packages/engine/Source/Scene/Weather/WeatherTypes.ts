@@ -54,6 +54,16 @@ export interface WeatherField {
   attribution?: string;
 }
 
+/**
+ * The temporal stance the {@link WeatherProvider} takes when resolving a slice
+ * (Phase 2). `null` (the provider default) = the legacy single-request behavior
+ * (whatever `WeatherFieldRequest.time` holds, usually `"latest"`).
+ *   - `"live"`       : the latest analysis, advanced by `tick(now)`.
+ *   - `"historical"` : a fixed past instant set via `setTime(date)`.
+ *   - `"projected"`  : `now + forecastOffset`, advanced by `tick(now)`.
+ */
+export type WeatherTimeMode = "live" | "historical" | "projected";
+
 /** What a {@link WeatherSource} is asked to return. */
 export interface WeatherFieldRequest {
   /** `"latest"` analysis, or a specific instant (historical / projected). */
