@@ -399,14 +399,33 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   return density * cloud.densityMultiplier * cloud.profileDensityScale;
 }
 
-// ─── Ray-sphere intersection ───
+// ─── Ray-sphere intersection (sphere centered at the planet origin) ───
+// RTE precision (Batch 412). The naive form `c = dot(ro,ro) - radius*radius`
+// subtracts two ~4e13 f32 values (camera + shell are both ~6.4e6 m from the
+// planet center), so the discriminant loses ~7 significant digits — a fuzzy /
+// shimmering cloud-layer silhouette at grazing angles from altitude. This stable
+// form (Haines et al., "Precision Improvements for Ray/Sphere Intersection",
+// Ray Tracing Gems ch. 7) builds the closest-approach (perpendicular) vector
+// FIRST and squares THAT, so dot(cp,cp) carries the small perpendicular distance
+// without the big-number cancellation; the roots come back as tClosest ±
+// halfChord (no -b + sqrtD cancellation). It returns the IDENTICAL (near, far)
+// pair as the old form, just computed more precisely — every grazing ray wins,
+// no view regresses.
+//
+// RESIDUAL (deferred): for near-RADIAL rays the geometry still needs
+// `radius - |ro|` (a ~1e3 m difference of two ~6.4e6 m magnitudes), which f32
+// can't fully resolve — removing THAT needs RTE high/low camera (DP emulation in
+// WGSL). The residual is ~1 m and not visibly observed, so the full DP path
+// stays deferred (NEW-WEBGPU-CLOUD-RTE) until a shimmer artifact is seen.
 fn raySphereIntersect(ro: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
-  let b = dot(ro, rd);
-  let c = dot(ro, ro) - radius * radius;
-  let discriminant = b * b - c;
-  if (discriminant < 0.0) { return vec2<f32>(-1.0); }
-  let sqrtD = sqrt(discriminant);
-  return vec2<f32>(-b - sqrtD, -b + sqrtD);
+  let tClosest = -dot(ro, rd);
+  let cp = ro + rd * tClosest; // closest point on the ray to the planet center
+  let halfChordSq = radius * radius - dot(cp, cp);
+  if (halfChordSq < 0.0) {
+    return vec2<f32>(-1.0);
+  }
+  let halfChord = sqrt(halfChordSq);
+  return vec2<f32>(tClosest - halfChord, tClosest + halfChord);
 }
 
 // ─── Henyey-Greenstein phase function ───
