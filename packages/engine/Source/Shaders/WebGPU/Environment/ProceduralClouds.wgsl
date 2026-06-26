@@ -117,8 +117,17 @@ const QF_PROFILE_ON: u32 = 128u;    // bit 7
 @vertex
 fn vertexMain(@builtin(vertex_index) vid: u32) -> VertexOutput {
   var out: VertexOutput;
-  let x = f32(i32(vid & 1u) * 2 - 1);
-  let y = f32(i32(vid >> 1u) * 2 - 1);
+  // OVERSIZED fullscreen triangle — verts (-1,-1), (3,-1), (-1,3) so the whole
+  // [-1,1] clip square sits INSIDE the triangle and every screen pixel is shaded.
+  // The previous exact-fit triangle (-1,-1),(1,-1),(-1,1) coincided with three
+  // NDC corners and covered ONLY the lower-left half (x+y<=0) — the upper-right
+  // half was never rasterized, so clouds appeared only in the bottom-left of the
+  // screen behind a hard corner-to-corner diagonal. (That diagonal was long
+  // misfiled as a "frustum-edge artifact"; it was a non-oversized fullscreen
+  // triangle.) `uv` is an affine function of the clip xy, so it still
+  // interpolates 0..1 across the visible square unchanged.
+  let x = f32((vid << 1u) & 2u) * 2.0 - 1.0;
+  let y = f32(vid & 2u) * 2.0 - 1.0;
   out.position = vec4<f32>(x, y, 0.0, 1.0);
   out.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
   return out;
