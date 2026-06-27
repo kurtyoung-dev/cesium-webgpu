@@ -357,7 +357,12 @@ export function buildVolumetricFogResources(
       uniformBuffer(0, Stage.VERTEX_FRAGMENT),
       sampler(1, Stage.FRAGMENT),
       texture(2, Stage.FRAGMENT),
-      texture(3, Stage.FRAGMENT, { sampleType: "depth" }),
+      // Batch 420 — LATENT FIX. Was `{ sampleType: "depth" }`, but the
+      // renderer binds the FLOAT depth-resolve texture here (sample type
+      // Float), so the depth sampleType made the bind group invalid the
+      // first time ground fog activated this composite. Plain float texture
+      // matches the bound view + the WGSL `texture_2d<f32>` declaration.
+      texture(3, Stage.FRAGMENT),
       texture(4, Stage.FRAGMENT, { viewDimension: "3d" }),
     ],
   );

@@ -271,9 +271,18 @@ export function executeEnvironmentalEffects(
   // Gated on `atmosphericConditions.volumetricFog.enabled` (B18:
   // default FALSE) — the entire path is skipped when the toggle is
   // off, so unsubscribed users pay zero cost.
+  //
+  // Batch 420 — GROUND FOG owns its own activation path: when
+  // `atmosphericConditions.effects.groundFog.enabled` is true the froxel
+  // fog must run (to render the near-surface mist) EVEN IF the general
+  // `volumetricFog.enabled` master is off (ground fog implies fog). So the
+  // call-site gate fires on EITHER condition; the renderer's `update()` /
+  // `composite()` apply the same OR-gate internally and supply base-fog
+  // defaults when only ground fog is driving.
   const ac = frameState.atmosphericConditions;
   const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
-  if (vf?.enabled === true) {
+  const groundFogActive = ac?.effects?.groundFog?.enabled === true;
+  if (vf?.enabled === true || groundFogActive) {
     const fogFR = context.getFeatureRenderer(FeatureRendererKey.VOLUMETRIC_FOG);
     if (fogFR?.update) {
       try {

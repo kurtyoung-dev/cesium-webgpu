@@ -366,6 +366,14 @@ interface CesiumFrameState {
           | number
           | { enabled?: boolean; noiseScale?: number; noiseStrength?: number };
         weather?: CesiumWeatherConfig;
+        // Phase B+ unified atmospheric-effects hierarchy. Batch 420 wires
+        // `effects.groundFog` into the WebGPU froxel fog renderer (a
+        // near-surface mist density boost). The other leaves are consumed
+        // by their own backends (shimmer → heat-shimmer post-process).
+        effects?: {
+          auto?: boolean;
+          groundFog?: { enabled?: boolean; intensity?: number };
+        };
       }
     | undefined;
   verticalExaggeration: number;

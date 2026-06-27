@@ -221,17 +221,25 @@ export function executePostFrustumChain(
     _enableWeather?: boolean;
     globe?: { showProceduralClouds?: boolean };
     _frameState?: {
-      atmosphericConditions?: { volumetricFog?: { enabled?: boolean } };
+      atmosphericConditions?: {
+        volumetricFog?: { enabled?: boolean };
+        // Batch 420 — ground fog reuses the froxel composite, which samples
+        // this snapshot copy of the scene color. Include it in the
+        // any-effect gate so the copy isn't skipped when ground fog is the
+        // sole driver (volumetricFog master off).
+        effects?: { groundFog?: { enabled?: boolean } };
+      };
     };
   };
+  const _acForCopy = _sceneAny._frameState?.atmosphericConditions;
   const _anyEnvEffectEnabled =
     !!_sceneAny._enableSSR ||
     !!_sceneAny._enableNPROutlines ||
     !!_sceneAny._enableContactShadows ||
     !!_sceneAny._enableWeather ||
     !!_sceneAny.globe?.showProceduralClouds ||
-    _sceneAny._frameState?.atmosphericConditions?.volumetricFog?.enabled ===
-      true;
+    _acForCopy?.volumetricFog?.enabled === true ||
+    _acForCopy?.effects?.groundFog?.enabled === true;
   const _ppCtx = context as unknown as {
     _currentTextureView?: GPUTextureView | null;
     _currentCommandEncoder?: GPUCommandEncoder | null;

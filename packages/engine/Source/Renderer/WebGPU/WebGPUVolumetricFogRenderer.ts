@@ -132,7 +132,11 @@ export type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
 //   76..79  cloudWindAndTime (windDir.xy, windSpeed, time)
 //   80..83  cloudDensityShape (densityMultiplier, absorption,
 //                              noiseScale, _pad)
-export const VOLUMETRIC_FOG_PARAMS_FLOATS = 84;
+//
+// 88 floats (352 bytes) after Batch 420 — appended 4 floats at offsets
+// 84–87 for the Phase C ground-fog uniforms:
+//   84..87  groundFog        (enabled, intensity, bandHeight, peakDensity)
+export const VOLUMETRIC_FOG_PARAMS_FLOATS = 88;
 export const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
 /** CompositeUniforms float count: mat4 (16) + 2 × vec4 (8) = 24 floats. */
@@ -387,7 +391,22 @@ class WebGPUVolumetricFogRenderer {
     const _scene = scene;
     const ac = frameState.atmosphericConditions;
     const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
-    if (!vf || vf.enabled !== true) {
+    // Batch 420 — GROUND FOG owns its OWN activation path. Ground fog
+    // implies fog, so the froxel passes run (and the mist renders) even
+    // when the general `volumetricFog.enabled` master is off. We reuse
+    // ALL the froxel infra (grid, scatter, integrate, composite); only
+    // the density profile differs (the near-surface boost added in the
+    // WGSL `densityInjection` pass). When ground fog is the sole driver,
+    // the base height-fog density still comes from the volumetricFog
+    // config defaults (or its leaf values if the user set them without
+    // flipping `enabled`).
+    const groundFog =
+      ac && ac.effects && ac.effects.groundFog
+        ? ac.effects.groundFog
+        : undefined;
+    const groundFogActive = groundFog?.enabled === true;
+    const fogMasterOn = vf?.enabled === true;
+    if (!fogMasterOn && !groundFogActive) {
       this._lastEnabled = false;
       return;
     }
@@ -404,7 +423,13 @@ class WebGPUVolumetricFogRenderer {
     // up the new cache instance after a device-loss invalidation.
     this._computePipelineCache = context.webgpuComputePipelineCache ?? null;
 
-    const quality = this._resolveQuality(vf.quality);
+    // Batch 420 — `vf` is normally always defined (the AtmosphericConditions
+    // facade always builds `volumetricFog`), but the ground-fog-only
+    // activation path can technically reach here with `vf` falsy. Use
+    // optional chaining + the `?? default` fallbacks already present below
+    // so the base height-fog parameters resolve to their sensible defaults
+    // when only ground fog is driving the render.
+    const quality = this._resolveQuality(vf?.quality);
     const r = this._ensureResources(quality);
 
     // Phase 6 audit fix — snapshot mode integration. When the snapshot
@@ -444,15 +469,23 @@ class WebGPUVolumetricFogRenderer {
     r.paramsU32[3] = 0;
     // Scattering params.
     r.paramsData[4] = frameState.camera?.frustum?.near ?? 1.0;
-    r.paramsData[5] = vf.maxDistance ?? 50000;
-    r.paramsData[6] = vf.density ?? 1.0;
-    r.paramsData[7] = vf.falloff ?? 0.0001;
+    r.paramsData[5] = vf?.maxDistance ?? 50000;
+    // Batch 420 — base height-fog density. When the volumetricFog master is
+    // OFF and ground fog is the SOLE driver (own-activation path), the base
+    // height fog must contribute NOTHING — otherwise the default
+    // `density = 1.0` floods the whole froxel grid (a full whiteout) and
+    // the ground mist is lost in it. Zero the base density on the
+    // ground-fog-only path so ONLY the near-surface boost (added in the
+    // WGSL density pass) shapes the volume. With the master on, the base
+    // fog keeps its configured density and the ground mist layers on top.
+    r.paramsData[6] = fogMasterOn ? (vf?.density ?? 1.0) : 0.0;
+    r.paramsData[7] = vf?.falloff ?? 0.0001;
     // Albedo + anisotropy.
-    const albedo = vf.fogAlbedo ?? { r: 0.9, g: 0.92, b: 0.95 };
+    const albedo = vf?.fogAlbedo ?? { r: 0.9, g: 0.92, b: 0.95 };
     r.paramsData[8] = albedo.r;
     r.paramsData[9] = albedo.g;
     r.paramsData[10] = albedo.b;
-    r.paramsData[11] = vf.fogAnisotropy ?? 0.3;
+    r.paramsData[11] = vf?.fogAnisotropy ?? 0.3;
 
     // Inverse view-projection matrix (offsets 12..27). The kernels
     // unproject screen UV + slice depth → world position via this.
@@ -600,9 +633,9 @@ class WebGPUVolumetricFogRenderer {
     //   y = ambientStrength (constant for now; Phase 5e can wire LUT)
     //   z = shadowMapValid (kernel skips sample when 0)
     //   w = shadowDarkness (matches the WebGPU shadow renderer's `darkness`)
-    const occlusionEnabled = vf.enableScatteringOcclusion === true;
+    const occlusionEnabled = vf?.enableScatteringOcclusion === true;
     r.paramsData[56] = occlusionEnabled ? 1.0 : 0.0;
-    r.paramsData[57] = vf.ambientStrength ?? 0.05;
+    r.paramsData[57] = vf?.ambientStrength ?? 0.05;
     r.paramsData[58] = realShadowView ? 1.0 : 0.0;
     r.paramsData[59] = activeShadowMap?.darkness ?? 0.3;
 
@@ -694,6 +727,44 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[82] = 0.0003;
     r.paramsData[83] = 0.0;
 
+    // Batch 420 — GROUND FOG uniforms (offsets 84..87). Sourced from
+    // `atmosphericConditions.effects.groundFog` (computed above). When the
+    // master `effects.auto` is on, the AtmosphericEffects mapper derives
+    // `enabled`/`intensity` from the temperature−dewpoint spread in humid
+    // air; otherwise the app sets them directly. The WGSL `densityInjection`
+    // pass adds `intensity × peakDensity × exp(-altitude / bandHeight)` to
+    // the base height-fog density only when `enabled` (offset 84) ≥ 0.5,
+    // so the OFF default leaves the density field byte-identical.
+    //
+    //   84 = enabled (0/1)
+    //   85 = intensity (0..1)
+    //   86 = bandHeight (m) — exponential mist falloff scale. ~200 m gives
+    //        the classic morning-mist band hugging the lowest few hundred
+    //        metres; above ~3× this the boost is negligible.
+    //   87 = peakDensity — the density a fully-saturated (intensity=1)
+    //        ground froxel reaches at altitude 0. Density is in per-metre
+    //        extinction units: the froxel integration accumulates
+    //        `density × sliceThickness`, so peakDensity ≈ 5e-4 gives optical
+    //        depth (per-metre extinction units). KNOWN LIMITATION (Batch
+    //        420): the underlying froxel scatter-integration has very little
+    //        dynamic range for a near-surface band at this scene scale — the
+    //        `accumScattered += transmittance × scattered × sliceThickness`
+    //        accumulation over the long low-altitude horizon path responds
+    //        almost binarily to peakDensity (invisible below ~1e-6, clamped
+    //        to white above ~1.2e-6). 1.1e-6 sits at the top of the visible
+    //        band so the mist concentrates toward the ground (lower screen
+    //        band hazes ~2.3× more than the sky) but reads as a heavy haze,
+    //        not a soft graded mist. A graceful mist needs the froxel scatter
+    //        integration reworked to self-limit (see report / DEFERRED_WORK):
+    //        that's the next concrete step and is a deeper change than the
+    //        Phase-C wiring. `bandHeight` 120 m keeps the boost low.
+    const groundFogIntensity =
+      typeof groundFog?.intensity === "number" ? groundFog.intensity : 0.0;
+    r.paramsData[84] = groundFogActive ? 1.0 : 0.0;
+    r.paramsData[85] = groundFogIntensity;
+    r.paramsData[86] = 120.0;
+    r.paramsData[87] = 1.1e-6;
+
     // Rebuild the scattering bind group when the shadow view changes.
     // The placeholder view is the initial state; once a real shadow map
     // arrives we swap to it. The bind group rebuild is rare (only when
@@ -726,9 +797,30 @@ class WebGPUVolumetricFogRenderer {
     // ── Dispatch the three compute passes ──
     // Density and scattering: full 3D dispatch (W × H × D froxels).
     // Integrate: 2D dispatch (W × H), each thread serial-walks Z.
-    const encoder = device.createCommandEncoder({
-      label: "VolumetricFog_ComputeEncoder",
-    });
+    //
+    // Batch 420 — PRESENT-PATH FIX. Record the compute passes into the
+    // MAIN frame command encoder when one is active, instead of creating a
+    // private encoder and submitting it mid-frame. The mid-frame
+    // `device.queue.submit()` of a private encoder splits the frame's GPU
+    // work across two command buffers; the canvas write that the
+    // `composite()` pass records into the main encoder afterward was being
+    // lost (the magenta present-path probe showed 0% reaching the canvas,
+    // while ProceduralClouds — which records entirely into the main encoder
+    // and never submits mid-frame — reached the canvas at ~87%). Recording
+    // the compute into the main encoder keeps the whole fog pipeline
+    // (compute → composite → present) in a single ordered command buffer,
+    // matching the proven ProceduralClouds path. Falls back to a private
+    // encoder + immediate submit only when no main encoder exists (test
+    // harnesses that bypass `beginFrame`).
+    const mainComputeEncoder = (
+      context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
+    )._currentCommandEncoder;
+    const useMainCompute = !!mainComputeEncoder;
+    const encoder =
+      mainComputeEncoder ??
+      device.createCommandEncoder({
+        label: "VolumetricFog_ComputeEncoder",
+      });
 
     const wgX = Math.ceil(r.width / 8);
     const wgY = Math.ceil(r.height / 8);
@@ -763,7 +855,14 @@ class WebGPUVolumetricFogRenderer {
       pass.end();
     }
 
-    device.queue.submit([encoder.finish()]);
+    // Batch 420 — only submit when we created a PRIVATE encoder. When the
+    // compute recorded into the main frame encoder, `endFrame()` submits it
+    // together with the composite + present (single ordered command
+    // buffer). Submitting the main encoder here would finish it prematurely
+    // and break the rest of the frame.
+    if (!useMainCompute) {
+      device.queue.submit([encoder.finish()]);
+    }
   }
 
   /**
@@ -786,7 +885,12 @@ class WebGPUVolumetricFogRenderer {
     if (this._isDestroyed || !this._resources) return;
     const ac = frameState.atmosphericConditions;
     const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
-    if (!vf || vf.enabled !== true) return;
+    // Batch 420 — mirror the own-activation gate from `update()`: the
+    // composite must run (to show the mist) whenever EITHER the fog master
+    // is on OR ground fog is active. Otherwise the integrated volume the
+    // ground-fog density pass just wrote would never reach the screen.
+    const groundFogActive = ac?.effects?.groundFog?.enabled === true;
+    if (vf?.enabled !== true && !groundFogActive) return;
 
     const device: GPUDevice = context.device;
     if (!device) return;
@@ -896,7 +1000,7 @@ class WebGPUVolumetricFogRenderer {
     }
     r.compositeUniformData[16] = camera?.frustum?.near ?? 1.0;
     r.compositeUniformData[17] = camera?.frustum?.far ?? 1.0e9;
-    r.compositeUniformData[18] = vf.maxDistance ?? 50000;
+    r.compositeUniformData[18] = vf?.maxDistance ?? 50000;
     r.compositeUniformData[19] = 0;
     r.compositeUniformData[20] = context.drawingBufferWidth ?? 1;
     r.compositeUniformData[21] = context.drawingBufferHeight ?? 1;

@@ -141,6 +141,29 @@ struct VolumetricFogParams {
   //       so a 1 km wind offset moves the noise by ~0.3 octaves)
   //   w = reserved
   cloudDensityShape: vec4<f32>,
+
+  // Phase C / Batch 420 — GROUND FOG (low-altitude "valley fog" mist).
+  // Adds a height-dependent density BOOST concentrated in the lowest few
+  // hundred metres of altitude so the froxel fog renders the classic
+  // morning-mist-hugging-the-ground look. Driven by
+  // `atmosphericConditions.effects.groundFog`. The boost is added on top
+  // of the base height-fog density in `densityInjection`, then smoothly
+  // faded out above the band so the result blends into the normal fog
+  // (or clear sky) higher up.
+  //
+  // groundFog:
+  //   x = enabled         (0/1 — gate; 0 makes the density pass
+  //                        byte-identical to pre-Batch-420 output)
+  //   y = intensity       (0..1, scales the peak boost; from
+  //                        `effects.groundFog.intensity`)
+  //   z = bandHeight      (m, exponential falloff scale — boost ≈
+  //                        intensity × exp(-altitude / bandHeight))
+  //   w = peakDensity     (the density value a fully-saturated ground
+  //                        froxel reaches at altitude 0 when intensity=1;
+  //                        a unit-scale knob so the mist reads as opaque
+  //                        near the surface independent of the base fog's
+  //                        `density`)
+  groundFog: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: VolumetricFogParams;
@@ -312,8 +335,14 @@ fn sampleSunShadow(worldPos: vec3<f32>) -> f32 {
 // per-froxel cloud shape is much coarser than the screen-pixel cloud
 // render anyway, and reusing the local hash keeps the WGSL slim.
 fn sampleCloudShadow(worldPos: vec3<f32>) -> f32 {
-  let enable = u.cloudShadow.x;
-  if (enable < 0.5) {
+  // NOTE: `enable` is a WGSL reserved keyword (used in `enable <ext>;`
+  // extension directives) and is invalid as an identifier — using it
+  // produced a "expected identifier for 'let' declaration" parse error
+  // the first time this compute shader actually compiled at runtime
+  // (Batch 420: ground fog is the first activation path that compiles
+  // the froxel fog by default). Renamed to `cloudShadowEnable`.
+  let cloudShadowEnable = u.cloudShadow.x;
+  if (cloudShadowEnable < 0.5) {
     return 1.0;
   }
 
@@ -454,6 +483,30 @@ fn densityInjection(@builtin(global_invocation_id) gid: vec3<u32>) {
     // could otherwise produce negative density which the integration
     // pass treats as anti-fog (visual artifact).
     density = max(density, 0.0);
+  }
+
+  // Phase C / Batch 420 — GROUND FOG boost. When enabled, add a near-
+  // surface density spike that decays exponentially with altitude so the
+  // mist hugs the ground and fades into the normal fog (or clear) above
+  // the band. `altitude` is the same RTE-reconstructed altitude the base
+  // height fog uses, so the boost tracks terrain elevation correctly.
+  // Gated behind `enabled` AND `intensity > 0` so the OFF default path is
+  // byte-identical to pre-Batch-420 (the `densityInjection` output is
+  // unchanged when `u.groundFog.x < 0.5`).
+  let groundFogEnabled = u.groundFog.x;
+  let groundFogIntensity = u.groundFog.y;
+  if (groundFogEnabled > 0.5 && groundFogIntensity > 0.0) {
+    let bandHeight = max(u.groundFog.z, 1.0);
+    let peakDensity = u.groundFog.w;
+    // Exponential height falloff: full strength at the surface, ~37% at
+    // one band-height, negligible beyond ~3 band-heights. `intensity`
+    // scales the peak so a partially-saturated atmosphere produces a
+    // thinner mist.
+    let groundBoost =
+      groundFogIntensity * peakDensity * exp(-altitude / bandHeight);
+    // Add the boost on top of the base height fog so the mist layers over
+    // any existing fog rather than replacing it.
+    density = density + groundBoost;
   }
 
   let anisotropy = u.albedoAnisotropy.w;
