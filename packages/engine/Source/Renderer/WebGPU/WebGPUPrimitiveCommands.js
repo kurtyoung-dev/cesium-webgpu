@@ -3319,13 +3319,43 @@ function getTextureUniformName(shaderType) {
  * @returns {boolean} true if a valid texture bind group exists
  * @private
  */
+// NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — field-key sets so the texture
+// bind-group helper can target EITHER the main material cache slots or the
+// depthFail twin's `df*` slots without forking a parallel copy. The main path
+// uses MAIN_MAT_TEX_KEYS (historical field names, byte-identical behavior); the
+// depthFail twin passes DF_MAT_TEX_KEYS.
+const MAIN_MAT_TEX_KEYS = {
+  bindGroup: "textureBindGroup",
+  layout: "textureBindGroupLayout",
+  primarySource: "_matPrimarySource",
+  secondarySource: "_matSecondarySource",
+  sampler: "_matSampler",
+  samplerAddressU: "_matSamplerAddressU",
+  samplerAddressV: "_matSamplerAddressV",
+  gpuTexturePrimary: "_matGpuTexturePrimary",
+  gpuTextureSecondary: "_matGpuTextureSecondary",
+};
+const DF_MAT_TEX_KEYS = {
+  bindGroup: "dfTextureBindGroup",
+  layout: "dfTextureBindGroupLayout",
+  primarySource: "_dfMatPrimarySource",
+  secondarySource: "_dfMatSecondarySource",
+  sampler: "_dfMatSampler",
+  samplerAddressU: "_dfMatSamplerAddressU",
+  samplerAddressV: "_dfMatSamplerAddressV",
+  gpuTexturePrimary: "_dfMatGpuTexturePrimary",
+  gpuTextureSecondary: "_dfMatGpuTextureSecondary",
+};
+
 function ensureMaterialTextureBindGroup(
   context,
   device,
   material,
   shaderType,
   cache,
+  keys,
 ) {
+  const k = keys ?? MAIN_MAT_TEX_KEYS;
   const slots = getTextureUniformName(shaderType);
   const imageSources = defined(material) ? material._imageSources : undefined;
   const primarySource = defined(imageSources)
@@ -3338,9 +3368,9 @@ function ensureMaterialTextureBindGroup(
 
   // Check if cached texture is still current (both slots unchanged)
   if (
-    defined(cache.textureBindGroup) &&
-    cache._matPrimarySource === primarySource &&
-    cache._matSecondarySource === secondarySource
+    defined(cache[k.bindGroup]) &&
+    cache[k.primarySource] === primarySource &&
+    cache[k.secondarySource] === secondarySource
   ) {
     return true;
   }
@@ -3388,22 +3418,22 @@ function ensureMaterialTextureBindGroup(
   // samplers are lightweight and we only rebuild on the actual
   // change path.
   if (
-    !defined(cache._matSampler) ||
-    cache._matSamplerAddressU !== addressModeU ||
-    cache._matSamplerAddressV !== addressModeV
+    !defined(cache[k.sampler]) ||
+    cache[k.samplerAddressU] !== addressModeU ||
+    cache[k.samplerAddressV] !== addressModeV
   ) {
-    cache._matSampler = device.createSampler({
+    cache[k.sampler] = device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
       mipmapFilter: "linear",
       addressModeU,
       addressModeV,
     });
-    cache._matSamplerAddressU = addressModeU;
-    cache._matSamplerAddressV = addressModeV;
+    cache[k.samplerAddressU] = addressModeU;
+    cache[k.samplerAddressV] = addressModeV;
     // Invalidate the bind group so it picks up the new sampler on
     // the next frame.
-    cache.textureBindGroup = undefined;
+    cache[k.bindGroup] = undefined;
   }
 
   // Resolve the fallback 1×1 placeholder view once — used for either slot
@@ -3438,17 +3468,17 @@ function ensureMaterialTextureBindGroup(
       true,
     );
     if (defined(gpuTex)) {
-      if (defined(cache._matGpuTexturePrimary)) {
-        cache._matGpuTexturePrimary.destroy();
+      if (defined(cache[k.gpuTexturePrimary])) {
+        cache[k.gpuTexturePrimary].destroy();
       }
-      cache._matGpuTexturePrimary = gpuTex;
+      cache[k.gpuTexturePrimary] = gpuTex;
       primaryView = gpuTex.view;
     }
   }
   if (!defined(primaryView)) {
     primaryView = getPlaceholderView();
   }
-  cache._matPrimarySource = primarySource;
+  cache[k.primarySource] = primarySource;
 
   // Build / rebuild slot 2 (secondary). Always bind SOMETHING so the
   // bind group layout stays satisfied; when the material has no
@@ -3461,28 +3491,51 @@ function ensureMaterialTextureBindGroup(
       true,
     );
     if (defined(gpuTex2)) {
-      if (defined(cache._matGpuTextureSecondary)) {
-        cache._matGpuTextureSecondary.destroy();
+      if (defined(cache[k.gpuTextureSecondary])) {
+        cache[k.gpuTextureSecondary].destroy();
       }
-      cache._matGpuTextureSecondary = gpuTex2;
+      cache[k.gpuTextureSecondary] = gpuTex2;
       secondaryView = gpuTex2.view;
     }
   }
   if (!defined(secondaryView)) {
     secondaryView = getPlaceholderView();
   }
-  cache._matSecondarySource = secondarySource;
+  cache[k.secondarySource] = secondarySource;
 
-  cache.textureBindGroup = device.createBindGroup({
-    layout: cache.textureBindGroupLayout,
+  cache[k.bindGroup] = device.createBindGroup({
+    layout: cache[k.layout],
     entries: [
-      { binding: 0, resource: cache._matSampler },
+      { binding: 0, resource: cache[k.sampler] },
       { binding: 1, resource: primaryView },
       { binding: 2, resource: secondaryView },
     ],
   });
 
   return true;
+}
+
+/**
+ * NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — thin wrapper that builds the
+ * depthFail twin's texture bind group into the `df*` cache slots, reusing
+ * `ensureMaterialTextureBindGroup` with the DF field-key set.
+ * @private
+ */
+function ensureDepthFailMaterialTextureBindGroup(
+  context,
+  device,
+  material,
+  shaderType,
+  cache,
+) {
+  return ensureMaterialTextureBindGroup(
+    context,
+    device,
+    material,
+    shaderType,
+    cache,
+    DF_MAT_TEX_KEYS,
+  );
 }
 
 // =========================================================================
@@ -3676,6 +3729,178 @@ function createMaterialPipelineAndCache(
 }
 
 // =========================================================================
+// NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — depthFail twin material pipeline
+// =========================================================================
+
+/**
+ * Builds (or rebuilds, when the cached signature changed) the depthFail twin
+ * material pipeline + bind-group layouts in the `df*` sub-cache namespace.
+ *
+ * This is the MATERIAL mirror of the COLOR depthFail twin in
+ * `createWebGPUCommands`: it reuses the SAME material shader the main path would
+ * select for the depthFail material (so the occluded region shows the real
+ * depthFail appearance — Color, Stripe, Grid, etc.), bound into a pipeline that
+ * differs from the main material pipeline ONLY in its depth state and cull mode:
+ *   - depthCompare: 'greater'      → shade only fragments BEHIND existing depth
+ *   - depthWriteEnabled: false     → never overwrite depth (the highlight must
+ *                                     not occlude later geometry)
+ *   - cullMode: derived from the DEPTHFAIL appearance's `closed` / explicit
+ *                                  `renderState.cull` — NOT hardcoded. WebGL's
+ *                                  depthFail render state IS the depthFail
+ *                                  appearance's own render state
+ *                                  (`_depthFailAppearance.getRenderState()`,
+ *                                  PrimitiveCommandHelpers.createRenderStates
+ *                                  line 65) with only `depthTest.func` swapped to
+ *                                  GREATER. So a `closed:true` depthFail
+ *                                  appearance back-face culls (depthFail shows
+ *                                  only where genuinely occluded — the un-occluded
+ *                                  main pass survives), and a non-closed one uses
+ *                                  cull-none (the back face shows through as the
+ *                                  canonical x-ray look). Hardcoding 'none' made
+ *                                  WebGPU ignore the depthFail appearance's cull
+ *                                  and diverge from WebGL for `closed:true`.
+ *
+ * `dfCullMode` is the already-derived cull string ('back' | 'none') the caller
+ * computed from the depthFail appearance (mirroring the main pipeline's
+ * `closedAndCulled` derivation). Line topologies are forced to 'none' here (no
+ * front/back faces).
+ *
+ * Returns `true` when the pipeline (re)built this call (so callers force a
+ * vertex-buffer rebuild), `false` when the cached pipeline is still valid.
+ * @private
+ */
+function createMaterialDepthFailPipeline(
+  cache,
+  device,
+  shaderInfo,
+  vertexLayout,
+  context,
+  isLit,
+  translucent,
+  primitiveTopology,
+  logDepthActive,
+  dfCullMode,
+) {
+  const topology = primitiveTopology ?? "triangle-list";
+  const logDepth = logDepthActive === true;
+  const cullMode = topology.startsWith("line") ? "none" : dfCullMode;
+  if (
+    cache.dfShaderType === shaderInfo.type &&
+    cache.dfTranslucent === translucent &&
+    cache.dfPrimitiveTopology === topology &&
+    cache.dfLogDepthEnabled === logDepth &&
+    cache.dfCullMode === cullMode &&
+    defined(cache.dfPipeline)
+  ) {
+    return false;
+  }
+  cache.dfShaderType = shaderInfo.type;
+  cache.dfTranslucent = translucent;
+  cache.dfPrimitiveTopology = topology;
+  cache.dfLogDepthEnabled = logDepth;
+  cache.dfCullMode = cullMode;
+  cache.dfNeedsTexture = shaderInfo.needsTexture === true;
+  cache.dfIsLit = isLit;
+
+  // Same clustered-lighting prepend the main material path applies, so a Lit
+  // depthFail material that calls evalClusteredLights compiles identically.
+  let materialCode = shaderInfo.code;
+  if (
+    isMaterialLitShader(shaderInfo.type) &&
+    materialCode.includes("evalClusteredLights(")
+  ) {
+    const clGroup = shaderInfo.needsTexture ? 3 : 2;
+    const clChunk = substituteClusteredLightingGroup(
+      ClusteredLightingChunk,
+      clGroup,
+    );
+    materialCode = `${clChunk}\n${materialCode}`;
+  }
+  const shaderDefines = logDepth ? ShaderDefine.LOG_DEPTH : 0;
+  cache.dfShaderModule = WebGPUShaderModule.create({
+    device: device,
+    code: preprocessShaderSource(materialCode, shaderDefines),
+    label: `${shaderInfo.type} DepthFail Material Shader`,
+  });
+
+  cache.dfCameraBindGroupLayout = makeBindGroupLayout(
+    device,
+    "MatDepthFail Camera BGL",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
+  cache.dfMaterialBindGroupLayout = makeBindGroupLayout(
+    device,
+    "MatDepthFail Material BGL",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
+
+  const bindGroupLayouts = [
+    cache.dfCameraBindGroupLayout,
+    cache.dfMaterialBindGroupLayout,
+  ];
+
+  if (shaderInfo.needsTexture) {
+    cache.dfTextureBindGroupLayout = makeBindGroupLayout(
+      device,
+      "MatDepthFail Texture BGL",
+      [
+        sampler(0, Stage.FRAGMENT),
+        texture(1, Stage.FRAGMENT),
+        texture(2, Stage.FRAGMENT),
+      ],
+    );
+    bindGroupLayouts.push(cache.dfTextureBindGroupLayout);
+  } else {
+    cache.dfTextureBindGroupLayout = null;
+  }
+
+  // Trailing effects BGL — matches the main material pipeline layout so the
+  // shared placeholder/active effects bind group slots line up.
+  const dfEffectsBGL = getEffectsBindGroupLayout(device);
+  bindGroupLayouts.push(dfEffectsBGL);
+  cache.dfEffectsBGL = dfEffectsBGL;
+
+  const canvasFormat =
+    context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
+  cache.dfPipeline = device.createRenderPipeline({
+    label: `${shaderInfo.type} DepthFail pipeline (cull=${cullMode})`,
+    layout: device.createPipelineLayout({ bindGroupLayouts }),
+    vertex: {
+      module: cache.dfShaderModule.module,
+      entryPoint: "vertexMain",
+      buffers: [vertexLayout.layout],
+    },
+    fragment: {
+      module: cache.dfShaderModule.module,
+      entryPoint: "fragmentMain",
+      targets: makeSceneFBTargets(canvasFormat, { translucent }),
+    },
+    primitive: {
+      topology,
+      // Cull derived from the DEPTHFAIL appearance (see docstring): 'back' for a
+      // closed depthFail appearance (depthFail only where occluded → un-occluded
+      // main pass survives), 'none' otherwise (back face shows through as x-ray).
+      // Lines forced to 'none' (no front/back faces).
+      cullMode,
+      frontFace: "ccw",
+    },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      // DP-H18 / NEW-WEBGPU-DEPTHFAIL-MATERIAL — shade only fragments BEHIND
+      // existing depth, and never overwrite it.
+      depthWriteEnabled: false,
+      depthCompare: "greater",
+    },
+    multisample:
+      (context._msaaSamples ?? 1) > 1
+        ? { count: context._msaaSamples }
+        : undefined,
+  });
+
+  return true;
+}
+
+// =========================================================================
 // Material Vertex Data Builder — RTE (posHigh + posLow)
 // =========================================================================
 
@@ -3804,6 +4029,35 @@ function createWebGPUMaterialCommands(
       pickCameraBindGroups: [],
       pickMaterialBuffers: [],
       pickMaterialBindGroups: [],
+      // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — depthFail twin sub-cache.
+      // Mirrors the main material cache (own shader module, pipeline, material
+      // UB + bind group, per-geometry vertex/camera buffers) but the pipeline
+      // is built with depthCompare 'greater' + depthWriteEnabled false +
+      // cullMode 'none'. Populated only when the primitive has a material-based
+      // depthFailAppearance; left null otherwise.
+      dfShaderType: null,
+      dfShaderModule: null,
+      dfPipeline: null,
+      dfCameraBindGroupLayout: null,
+      dfMaterialBindGroupLayout: null,
+      dfTextureBindGroupLayout: null,
+      dfTextureBindGroup: null,
+      dfEffectsBGL: null,
+      dfMaterialBuffer: null,
+      dfMaterialBindGroup: null,
+      dfCameraBuffers: [],
+      dfCameraBindGroups: [],
+      dfVertexBuffers: [],
+      dfTranslucent: undefined,
+      dfPrimitiveTopology: undefined,
+      dfClosed: undefined,
+      dfCullMode: undefined,
+      dfLogDepthEnabled: false,
+      dfNeedsTexture: false,
+      dfIsLit: false,
+      _dfMaterialBufferSize: 0,
+      _dfMatPrimarySource: undefined,
+      _dfMatSecondarySource: undefined,
     };
   }
   const cache = primitive._webgpuCache;
@@ -3923,6 +4177,128 @@ function createWebGPUMaterialCommands(
       shaderInfo.type,
       cache,
     );
+  }
+
+  // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — material-based depthFailAppearance.
+  // The MATERIAL mirror of the COLOR depthFail twin in createWebGPUCommands:
+  // when the primitive has a `depthFailAppearance` whose appearance carries a
+  // Material (Entity polygon/box `depthFailMaterial`, MaterialAppearance,
+  // GroundPrimitive), build a twin material command per geometry — same RTE
+  // material shader/UB the main path uses, bound into a greater-compare /
+  // no-write / cull-none pipeline so the depthFail material shows where the
+  // primitive is occluded. The COLOR-appearance depthFail slice is handled in
+  // createWebGPUCommands (PerInstanceColor reaches THAT path); this branch is
+  // additive and only fires when a depthFail MATERIAL is present.
+  const depthFailAppearance = primitive._depthFailAppearance;
+  const depthFailMaterial = primitive._depthFailMaterial;
+  const hasDepthFailMaterial =
+    defined(depthFailAppearance) && defined(depthFailMaterial);
+  let dfShaderInfo;
+  let dfIsLit = false;
+  let dfVertexLayout;
+  let dfCameraBufferSize = FLAT_CAMERA_BYTES;
+  if (hasDepthFailMaterial) {
+    // The depthFail appearance picks its own flat/lit + material shader. It
+    // shares the geometry's normal/st presence with the main appearance, so the
+    // depthFail shader's vertex layout is built from the SAME attribute set —
+    // but we build a DEDICATED depthFail vertex buffer per geometry (the
+    // depthFail shader may be flat while the main is lit, or vice versa, giving
+    // a different stride; reusing the main VB across a stride mismatch would
+    // misread the layout — the safe faithful mirror is its own VB).
+    const dfIsFlat = defined(depthFailAppearance.flat)
+      ? depthFailAppearance.flat
+      : false;
+    dfShaderInfo = selectMaterialShader(
+      depthFailMaterial,
+      dfIsFlat,
+      hasNormals,
+      hasST,
+    );
+    dfIsLit =
+      isMaterialLitShader(dfShaderInfo.type) || isPBRShader(dfShaderInfo.type);
+    dfVertexLayout = getMaterialVertexLayout(dfShaderInfo.type);
+    dfCameraBufferSize = dfIsLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
+
+    // Derive the depthFail cull mode from the DEPTHFAIL appearance — NOT the
+    // main appearance, NOT hardcoded. This mirrors WebGL exactly: the depthFail
+    // render state IS `_depthFailAppearance.getRenderState()` (with depthTest.func
+    // → GREATER), so its cull comes from the depthFail appearance's `closed`
+    // flag via Appearance.getDefaultRenderState. Same shape as the main material
+    // pipeline's `closedAndCulled`: a `closed:true` depthFail appearance back-face
+    // culls (depthFail shows only where genuinely occluded → the un-occluded main
+    // pass survives), an explicit `cull.enabled:false` forces 'none' (panorama-
+    // style interior), and a non-closed default is 'none' (x-ray back face).
+    const dfCullExplicitlyDisabled =
+      depthFailAppearance?.renderState?.cull?.enabled === false;
+    const dfCullMode =
+      depthFailAppearance?.closed === true && !dfCullExplicitlyDisabled
+        ? "back"
+        : "none";
+
+    const dfShaderChanged = createMaterialDepthFailPipeline(
+      cache,
+      device,
+      dfShaderInfo,
+      dfVertexLayout,
+      context,
+      dfIsLit,
+      translucent,
+      matPrimitiveTopology,
+      logDepthActive,
+      dfCullMode,
+    );
+
+    // Bind the depthFail material texture (if its shader is textured) into the
+    // df texture slot. Called every build so async-loaded textures are picked
+    // up; the helper keys on image identity (keeps a separate cache namespace
+    // is unnecessary — we pass the df sub-cache fields via a thin adapter).
+    if (dfShaderInfo.needsTexture && defined(cache.dfTextureBindGroupLayout)) {
+      ensureDepthFailMaterialTextureBindGroup(
+        context,
+        device,
+        depthFailMaterial,
+        dfShaderInfo.type,
+        cache,
+      );
+    }
+
+    // Build / upload the depthFail material UB from its packed gpuData.
+    const dfMatUB = depthFailMaterial._uniformBuffer;
+    const dfMatGpuData = defined(dfMatUB) ? dfMatUB.gpuData : undefined;
+    const dfMatByteSize = defined(dfMatGpuData)
+      ? Math.max(dfMatGpuData.byteLength, PLACEHOLDER_MATERIAL_BYTES)
+      : PLACEHOLDER_MATERIAL_BYTES;
+    if (
+      !defined(cache.dfMaterialBuffer) ||
+      cache._dfMaterialBufferSize !== dfMatByteSize ||
+      dfShaderChanged
+    ) {
+      if (defined(cache.dfMaterialBuffer)) {
+        cache.dfMaterialBuffer.destroy();
+      }
+      cache.dfMaterialBuffer = device.createBuffer({
+        size: dfMatByteSize,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: "MatDepthFail Material UB",
+      });
+      cache._dfMaterialBufferSize = dfMatByteSize;
+      cache.dfMaterialBindGroup = null;
+    }
+    if (defined(dfMatGpuData)) {
+      device.queue.writeBuffer(cache.dfMaterialBuffer, 0, dfMatGpuData);
+    } else {
+      device.queue.writeBuffer(
+        cache.dfMaterialBuffer,
+        0,
+        new Float32Array(dfMatByteSize / 4),
+      );
+    }
+    if (!defined(cache.dfMaterialBindGroup)) {
+      cache.dfMaterialBindGroup = device.createBindGroup({
+        layout: cache.dfMaterialBindGroupLayout,
+        entries: [{ binding: 0, resource: { buffer: cache.dfMaterialBuffer } }],
+      });
+    }
   }
 
   // Pick support (split camera/material bind groups)
@@ -4159,6 +4535,95 @@ function createWebGPUMaterialCommands(
     cmd._shadowCastLayout = "rte24";
     cmd.vertexStride = (isLit ? 11 : 8) * 4;
     validCommands.push(cmd);
+
+    // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — emit the depthFail twin
+    // command AFTER the main material command so the main pass writes depth
+    // first; the greater/no-write pipeline then shades the depthFail material
+    // only where the primitive is occluded. Its own RTE vertex buffer (the
+    // depthFail shader's flat/lit layout may differ from the main shader's),
+    // own camera UB, and own [camera, material, texture?, effects] bind groups
+    // built from the `df*` sub-cache. Tagged with the real `mat*` df shader type
+    // so the per-frame `updateWebGPUMaterialCommandUniforms` dispatch in
+    // PrimitiveCommandHelpers (st.startsWith("mat")) keeps its camera + material
+    // UBs current and refreshes the effects slot — no extra plumbing needed.
+    if (hasDepthFailMaterial && defined(cache.dfPipeline)) {
+      const dfVertexData = buildMaterialVertexData(
+        posHighValues,
+        posLowValues,
+        normals,
+        uvs,
+        numVertices,
+        dfIsLit,
+        nCPA,
+        sCPA,
+      );
+      if (!defined(cache.dfVertexBuffers[i]) || shaderChanged) {
+        if (defined(cache.dfVertexBuffers[i])) {
+          cache.dfVertexBuffers[i].destroy();
+        }
+        cache.dfVertexBuffers[i] = WebGPUBuffer.createVertexBuffer(
+          device,
+          dfVertexData,
+          `MatDepthFail VB ${i}`,
+        );
+      }
+
+      if (!defined(cache.dfCameraBuffers[i])) {
+        cache.dfCameraBuffers[i] = device.createBuffer({
+          size: dfCameraBufferSize,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          label: `MatDepthFail Camera UB ${i}`,
+        });
+      }
+      const dfCameraData = new Float32Array(dfCameraBufferSize / 4);
+      if (dfIsLit) {
+        writeRTEUniformsLit(dfCameraData, rte, context.uniformState);
+      } else {
+        writeRTEUniformsFlat(dfCameraData, rte, context.uniformState);
+      }
+      device.queue.writeBuffer(cache.dfCameraBuffers[i], 0, dfCameraData);
+      cache.dfCameraBindGroups[i] = device.createBindGroup({
+        layout: cache.dfCameraBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: cache.dfCameraBuffers[i] } },
+        ],
+      });
+
+      const dfBGs = [cache.dfCameraBindGroups[i], cache.dfMaterialBindGroup];
+      if (cache.dfNeedsTexture && defined(cache.dfTextureBindGroup)) {
+        dfBGs.push(cache.dfTextureBindGroup);
+      }
+      const dfEffectsPlaceholder = getPlaceholderEffects(device);
+      dfBGs.push(dfEffectsPlaceholder.bindGroup);
+
+      const dfCmd = new WebGPUDrawCommand({
+        pipeline: cache.dfPipeline,
+        bindGroups: dfBGs,
+        vertexBuffer: cache.dfVertexBuffers[i],
+        indexBuffer: cache.indexBuffers[i],
+        indexFormat: cache.indexFormats[i],
+        vertexCount: defined(cache.indexBuffers[i]) ? undefined : numVertices,
+        indexCount: defined(cache.indexBuffers[i])
+          ? cache.indexCounts[i]
+          : undefined,
+        pass,
+        owner: primitive,
+        renderState: depthFailAppearance?.renderState,
+      });
+      dfCmd._webgpuCameraBuffer = cache.dfCameraBuffers[i];
+      // Real `mat*`/`pbr*` type → per-frame update dispatch + material re-upload.
+      dfCmd._webgpuShaderType = dfShaderInfo.type;
+      dfCmd._webgpuMaterialBuffer = cache.dfMaterialBuffer;
+      dfCmd._webgpuMaterialUB = depthFailMaterial._uniformBuffer;
+      // 376d-style flag — when the df shader is textured, its TEXTURE occupies
+      // the last bind-group slot (no effects group is consumed there), so the
+      // effects-slot refresh must skip it (else it clobbers the texture).
+      dfCmd._noEffectsSlot = cache.dfNeedsTexture === true;
+      dfCmd._label = "depth-fail material pass";
+      dfCmd._shadowCastLayout = "rte24";
+      dfCmd.vertexStride = (dfIsLit ? 11 : 8) * 4;
+      validCommands.push(dfCmd);
+    }
 
     // Pick command (split camera/material bind groups)
     if (hasPickIds && i < pickIds.length && defined(cache.pickPipeline)) {

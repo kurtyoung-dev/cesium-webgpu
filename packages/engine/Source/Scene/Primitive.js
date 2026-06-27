@@ -532,6 +532,18 @@ class Primitive {
       this._material.update(context);
     }
 
+    // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — the depthFail material also
+    // needs per-frame `update()` so its `_uniformBuffer.gpuData` is populated/
+    // refreshed for the WebGPU material twin (greater-depth pass). WebGL pulls
+    // the depthFail uniforms through `getUniforms(_depthFailAppearance, …)` each
+    // frame; the WebGPU path reads `material._uniformBuffer.gpuData` directly, so
+    // the depthFail material must be `update()`-ed here just like `_material`.
+    // No-op for the COLOR-appearance depthFail slice (no material) and benign on
+    // WebGL (Material.update is backend-neutral).
+    if (defined(this._depthFailMaterial)) {
+      this._depthFailMaterial.update(context);
+    }
+
     const twoPasses = appearance.closed && translucent;
 
     // For alternate renderers, skip WebGL-specific render state and shader program creation
