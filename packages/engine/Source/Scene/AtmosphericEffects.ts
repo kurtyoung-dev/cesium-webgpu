@@ -16,6 +16,95 @@
  */
 import CloudType from "./CloudType.js";
 
+/**
+ * Precipitation genus index used by the unified effects hierarchy
+ * (`atmosphericConditions.effects.precipitation.type`). This is the SINGLE
+ * canonical index→string mapping for precipitation across the fork — both the
+ * 417a auto-master (this module) and the WebGPU weather-particle dispatch route
+ * through {@link precipitationTypeToString} so the string the renderer's
+ * `WEATHER_TYPES` table consumes is defined in one place.
+ *
+ * `NONE = 0` is first so a default-constructed effects leaf (`type: 0`) reads as
+ * "no precipitation". The remaining order matches the renderer's particle
+ * profiles (rain / snow / fog / hail).
+ *
+ * Note: this is DISTINCT from the legacy flat `scene.weatherType` convention
+ * (`0=rain, 1=snow, 2=fog, 3=hail`), which predates the hierarchy and has no
+ * `none` slot. {@link weatherTypeIndexToPrecipitationType} bridges the two so
+ * the manual facade path (`scene.weatherType`) and the auto path stay in sync.
+ *
+ * @enum {number}
+ */
+export const PrecipitationType = {
+  NONE: 0,
+  RAIN: 1,
+  SNOW: 2,
+  FOG: 3,
+  HAIL: 4,
+} as const;
+
+/** The particle-type string the WebGPU weather renderer's `WEATHER_TYPES` consumes. */
+export type WeatherTypeString = "rain" | "snow" | "fog" | "hail";
+
+const PRECIP_STRINGS: readonly (WeatherTypeString | "none")[] = [
+  "none",
+  "rain",
+  "snow",
+  "fog",
+  "hail",
+];
+
+/**
+ * Map a {@link PrecipitationType} index to the renderer's particle-type string.
+ * Out-of-range / `NONE` → `"none"` (the renderer treats anything that isn't a
+ * known particle type as disabled). This is the ONE place the index→string
+ * mapping lives.
+ *
+ * @param type A {@link PrecipitationType} index.
+ * @returns The lowercase particle-type string.
+ */
+export function precipitationTypeToString(
+  type: number,
+): WeatherTypeString | "none" {
+  return PRECIP_STRINGS[type] ?? "none";
+}
+
+/**
+ * Bridge the legacy flat `scene.weatherType` index (`0=rain, 1=snow, 2=fog,
+ * 3=hail`) into a {@link PrecipitationType} index (`0=none, 1=rain, …`). Used by
+ * the auto-master so the conditions passthrough writes the hierarchy leaf in the
+ * hierarchy's own convention rather than the legacy one.
+ *
+ * @param weatherTypeIndex The legacy `scene.weatherType` value.
+ * @returns The equivalent {@link PrecipitationType} index.
+ */
+export function weatherTypeIndexToPrecipitationType(
+  weatherTypeIndex: number | undefined,
+): number {
+  // rain(0)→RAIN(1), snow(1)→SNOW(2), fog(2)→FOG(3), hail(3)→HAIL(4).
+  const idx = (weatherTypeIndex ?? 0) + 1;
+  return idx >= PrecipitationType.RAIN && idx <= PrecipitationType.HAIL
+    ? idx
+    : PrecipitationType.NONE;
+}
+
+/**
+ * Inverse of {@link weatherTypeIndexToPrecipitationType}: map a
+ * {@link PrecipitationType} index back to the legacy flat `scene.weatherType`
+ * index the renderer-dispatch + facade consume. `NONE` clamps to `rain(0)` (the
+ * flat field has no "none" — the separate `scene.enableWeather` flag carries
+ * on/off), so callers MUST gate on `enabled` independently.
+ *
+ * @param precipType A {@link PrecipitationType} index.
+ * @returns The legacy `scene.weatherType` index (0=rain … 3=hail).
+ */
+export function precipitationTypeToWeatherTypeIndex(
+  precipType: number,
+): number {
+  const idx = precipType - 1;
+  return idx >= 0 && idx <= 3 ? idx : 0;
+}
+
 /** Weather conditions consumed by the mapper. All optional → sensible defaults. */
 export interface AtmosphericConditionsInput {
   /** 0 = dry desert … 0.5 = neutral … 1 = saturated. */
@@ -155,14 +244,22 @@ export function computeAtmosphericEffects(
     clamp((4.0 - spread) / 4.0, 0, 1) * clamp((humidity - 0.4) / 0.6, 0, 1);
   const cold = clamp(-tempC / 15.0, 0, 1); // 0 → −15 °C
   const precipIntensity = clamp(input.precipIntensity ?? 0, 0, 1);
+  // `input.precipType` arrives in the legacy flat `scene.weatherType` convention
+  // (0=rain, 1=snow, 2=fog, 3=hail); the hierarchy leaf carries the
+  // PrecipitationType convention (0=none, 1=rain, …) so its `type` is
+  // self-describing. When there's no precip the leaf reads NONE.
+  const precipEnabled = precipIntensity > 0;
+  const precipType = precipEnabled
+    ? weatherTypeIndexToPrecipitationType(input.precipType)
+    : PrecipitationType.NONE;
 
   return {
     shimmer: { enabled: shimmer > 0.001, intensity: shimmer },
     groundFog: { enabled: fog > 0.05, intensity: fog },
     optics: { enabled: cold > 0.001, halo: cold },
     precipitation: {
-      enabled: precipIntensity > 0,
-      type: input.precipType ?? 0,
+      enabled: precipEnabled,
+      type: precipType,
       intensity: precipIntensity,
     },
   };
@@ -177,6 +274,17 @@ interface AtmosphericSceneLike {
   /** Ad-hoc scene flags the WebGPU cold-optics post-process reads (Phase D). */
   coldOpticsEnabled?: boolean;
   coldOpticsIntensity?: number;
+  /**
+   * Flat weather fields the WebGPU weather-particle renderer reads (Phase E).
+   * These are the SAME fields the `atmosphericConditions.weather` facade writes
+   * (`weather.enabled→scene.enableWeather`, `weather.type→scene.weatherType`,
+   * `weather.intensity→scene.weatherIntensity`), so the auto-master and the
+   * manual facade path both drive the renderer through one control surface.
+   * `weatherType` is the legacy index (0=rain, 1=snow, 2=fog, 3=hail).
+   */
+  enableWeather?: boolean;
+  weatherType?: number;
+  weatherIntensity?: number;
   globe?: {
     atmosphereSaturationShift?: number;
     atmosphereBrightnessShift?: number;
@@ -268,5 +376,20 @@ export function applyAtmosphericConditions(scene: AtmosphericSceneLike): void {
     // `optics` leaf (enabled + halo strength), mirroring the shimmer block.
     scene.coldOpticsEnabled = state.optics.enabled;
     scene.coldOpticsIntensity = state.optics.halo;
+    // Phase E (Batch 423): precipitation → the WebGPU weather-particle renderer.
+    // The renderer reads the flat `scene.enableWeather` / `weatherType` /
+    // `weatherIntensity` fields (the same ones the `weather` facade writes), so
+    // we push the derived `precipitation` leaf there, converting the leaf's
+    // PrecipitationType index back to the legacy flat `weatherType` convention.
+    // When the auto-derived precip is off we leave `weatherType` /
+    // `weatherIntensity` untouched (only flip `enableWeather` off) so a value an
+    // app set manually survives a no-precip frame.
+    scene.enableWeather = state.precipitation.enabled;
+    if (state.precipitation.enabled) {
+      scene.weatherType = precipitationTypeToWeatherTypeIndex(
+        state.precipitation.type,
+      );
+      scene.weatherIntensity = state.precipitation.intensity;
+    }
   }
 }

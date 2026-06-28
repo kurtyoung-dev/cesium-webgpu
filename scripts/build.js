@@ -503,7 +503,10 @@ export async function createCesiumJs(variant = "dual") {
   contents +=
     `\n// Weather data ingest public API (Batch 410).\n` +
     `export { WeatherProvider, EdrWeatherSource, SyntheticWeatherSource, packWeatherField, CLOUD_BASE_NORM_METERS, GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine';\n` +
-    `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from '@${scope}/engine';\n`;
+    `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from '@${scope}/engine';\n` +
+    // Phase E (Batch 423) — precipitation-type enum + index↔string mapping that
+    // drives the WebGPU weather particles through the effects hierarchy.
+    `export { PrecipitationType, precipitationTypeToString } from '@${scope}/engine';\n`;
   // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
   // Batches 147–150) are now gated below with the other WebGPU-source
   // re-exports — they import from `index-wgsl.js` and are skipped for the
@@ -1406,7 +1409,9 @@ export async function createIndexJs(workspace) {
       `export { SyntheticWeatherSource } from './Source/Scene/Weather/SyntheticWeatherSource.js';${EOL}` +
       `export { packWeatherField, CLOUD_BASE_NORM_METERS } from './Source/Scene/Weather/WeatherTexPacker.js';${EOL}` +
       `export { GLOBAL_WEATHER_BOUNDS } from './Source/Scene/Weather/WeatherTypes.js';${EOL}` +
-      `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from './Source/Scene/AtmosphericEffects.js';${EOL}`;
+      `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from './Source/Scene/AtmosphericEffects.js';${EOL}` +
+      // Phase E (Batch 423) — precipitation-type enum + index↔string mapping.
+      `export { PrecipitationType, precipitationTypeToString } from './Source/Scene/AtmosphericEffects.js';${EOL}`;
     // NOTE: the WebGPU cluster renderer + lighting re-exports (Slice 5d,
     // Batches 147–150) used to live here in the MAIN index.js, but they
     // reference `Source/Renderer/WebGPU/*` which the webgl-only variant alias

@@ -24,6 +24,28 @@
 
 ---
 
+## Batch 423 — Weather particles never rendered: two latent gaps closed by the Phase E wiring (2026-06-28)
+
+**Item:** Atmospheric Effects Phase E (wiring slice) — drive `effects.precipitation` into the existing `WebGPUWeatherRenderer`. While wiring it I found the renderer was effectively dormant: the GPU compute simulation ran every frame, but NO particles were ever drawn.
+
+**Root cause (two stacked bugs):**
+1. **Control-surface disconnect.** The env-effects dispatch (`WebGPUSceneRendererEnvironmentalEffects.ts`) passed `scene` directly as the 3rd arg to `updateWeatherParticles(context, frameState, weatherConfig)`. The renderer reads its config off that object (`weatherConfig.enabled/type/intensity/…`), but `scene` has NO `.enabled`/`.type`/`.intensity` — only the flat `_enableWeather`/`weatherType`/`weatherIntensity` fields (the `atmosphericConditions.weather` facade writes those). So `weatherConfig.type`/`intensity`/`wind` silently fell back to defaults and `weatherConfig.enabled` was `undefined`.
+2. **Render half never reached + 2-target pipeline.** Env effects run AFTER post-process (Batch 127); the post-frustum chain ENDS the active render pass before the chain runs (the snapshot `copyTextureToTexture` at `WebGPUSceneRendererPostFrustumChain.ts:255` fires whenever any env effect — including weather — is enabled). So `context.currentRenderPassEncoder` was null in the weather block and the render half was skipped (`renderInitialized` stayed false forever). Even once forced to run, the weather render pipeline used `makeSceneFBTargets(...)` which (MRT mode on globally) produced a 2-target `[bgra8unorm, rgba16float]` descriptor — incompatible with the 1-attachment canvas default pass → "Attachment state not compatible" validation error.
+
+**Fix:**
+- Dispatch builds a real `CesiumWeatherConfig` from the flat `scene.weather*` fields (`buildWeatherConfig`), mapping the numeric `weatherType` → renderer string. These are the SAME fields the facade writes and the 417a auto-master pushes → one control surface for manual + automatic precip.
+- Weather render half resumes the default canvas pass (`context.resumeDefaultRenderPass()`, loadOp:"load") when no pass is active, and draws the particles on top of the post-processed scene.
+- Weather render pipeline now declares a SINGLE canvas-format alpha-over target (not the scene-FB MRT layout); format keys off `presentationFormat` (canvas) not `scenePipelineFormat` (HDR scene FB).
+- `applyAtmosphericConditions` pushes `effects.precipitation.{enabled,type,intensity}` to the flat scene fields under `effects.auto`. New `PrecipitationType` enum (`0=none,1=rain,2=snow,3=fog,4=hail`) + `precipitationTypeToString` is the single index→string home.
+
+**Verification (`probe-precip-wiring.mjs`, WebGPU-only, PNGs READ):** drove precip through BOTH the auto hierarchy and the direct facade. Snow renders strongly (4272-px union footprint vs a 0-px auto-off control), rain renders subtly (~1000 px) but cleanly beats the zero control, rain ≠ snow (1059-px delta), 0 device errors. Snow PNG shows white flakes distributed across sky + bay + city; OFF baseline has none.
+
+**Files:** `WebGPUSceneRendererEnvironmentalEffects.ts`, `WebGPUWeatherRenderer.ts`, `Scene/AtmosphericEffects.ts`, `Renderer/WebGPU/cesium-js-types.d.ts`, `scripts/build.js`, `Tools/visual-regression/probe-precip-wiring.mjs`.
+
+**Lessons:** a feature can be "SHIPPED" in the inventory (the particle system, Session 62) yet have a dead consumer path. The compute-runs-but-nothing-draws shape is exactly the Principle-7 anti-pattern ("called every frame but produces no visible output → the consumer half is missing") — here the consumer (render pass) genuinely WAS missing its pass, so it was a real gap to finish, not scaffolding to leave alone.
+
+---
+
 ## Batch 366 — WebGPU cloud quad 2× too wide; `*0.5` half-extent fix (NEW-WEBGPU-CLOUD-SIZE-PARITY) (2026-06-23)
 
 **Item:** NEW-WEBGPU-CLOUD-SIZE-PARITY — the B365 residual: with the worley grain finally matching WebGL, the WebGPU CloudCollection cloud was still ~1.9× linear larger than WebGL at the same maximumSize+camera. B365 had (correctly) ruled out the noise and verified the raymarch/Gardner/TR/color WGSL line-by-line identical, hypothesizing a "non-shader cause."

@@ -39,6 +39,55 @@ import FeatureRendererKey from "../FeatureRendererKey.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 
 /**
+ * Legacy flat `scene.weatherType` index → renderer particle-type string. Matches
+ * the documented `0=rain, 1=snow, 2=fog, 3=hail` convention (see `Scene.js`
+ * `weatherType` JSDoc) and the renderer's own `WEATHER_TYPES` map. Out-of-range
+ * → `"rain"` (the renderer's own fallback). Kept local because it's the legacy
+ * flat-field convention; the hierarchy's `PrecipitationType` (0=none) mapping
+ * lives in `AtmosphericEffects.ts`.
+ */
+const WEATHER_TYPE_STRINGS: readonly string[] = ["rain", "snow", "fog", "hail"];
+
+/**
+ * Build the WebGPU weather renderer's `CesiumWeatherConfig` from the flat
+ * `scene.weather*` fields (Phase E, Batch 423). These are the fields the
+ * `atmosphericConditions.weather` facade writes and the 417a auto-master pushes,
+ * so this is the single control surface that drives the particle renderer for
+ * both the manual and automatic precipitation paths.
+ *
+ * @param scene - The Cesium scene carrying the flat weather fields.
+ * @returns A `CesiumWeatherConfig` the renderer can read directly.
+ */
+function buildWeatherConfig(
+  scene: WebGPURenderFrameConfig["scene"],
+): CesiumWeatherConfig {
+  const typeIndex = scene.weatherType ?? 0;
+  const wind = scene.weatherWindDirection;
+  return {
+    enabled: scene._enableWeather === true,
+    type: WEATHER_TYPE_STRINGS[typeIndex] ?? "rain",
+    intensity: scene.weatherIntensity ?? 0.5,
+    windSpeed: scene.weatherWindSpeed ?? 10.0,
+    windDirection: {
+      x: wind?.x ?? 1,
+      y: wind?.y ?? 0,
+      z: wind?.z ?? 0,
+    } as CesiumCartesian3,
+    // Remaining tuning fields keep the renderer's built-in defaults — the flat
+    // scene surface only exposes type/intensity/wind today. The renderer applies
+    // its own `?? default` for every field below, so leaving them at their
+    // defaults here is intentional (and matches the pre-Phase-E config shape).
+    maxParticles: 50000,
+    particleLifetime: 5.0,
+    particleSize: 1.0,
+    turbulence: 0.3,
+    spawnRadius: 500,
+    groundAltitude: 0,
+    humidity: 0.5,
+  };
+}
+
+/**
  * Run the environmental-effects chain for the current frame.
  *
  * @param config - The render-frame config emitted by `executeCommands`.
@@ -244,14 +293,38 @@ export function executeEnvironmentalEffects(
     );
     if (weatherFR?.update) {
       try {
-        // Compute simulation (needs own command encoder)
-        weatherFR.update(context, frameState, scene);
+        // Phase E (Batch 423) — build the renderer's `CesiumWeatherConfig` from
+        // the flat `scene.weather*` fields. The renderer reads its config off the
+        // object passed here (`weatherConfig.enabled/type/intensity/…`); the flat
+        // fields are the SAME ones the `atmosphericConditions.weather` facade
+        // writes (and the auto-master pushes), so this is the single control
+        // surface for both the manual and automatic precip paths. Passing `scene`
+        // directly (pre-Batch-423) read `scene.enabled`/`scene.type` — which
+        // don't exist — so the renderer's `enabled` gate always returned early
+        // and no particles ever rendered.
+        const weatherConfig = buildWeatherConfig(scene);
 
-        // Render particles into the current scene render pass
+        // Compute simulation (needs own command encoder)
+        weatherFR.update(context, frameState, weatherConfig);
+
+        // Render particles into the default (canvas) render pass. Phase E
+        // (Batch 423): env effects run AFTER post-process (Batch 127), and the
+        // post-frustum chain ENDS the active render pass before this chain runs
+        // (the snapshot copyTextureToTexture at PostFrustumChain:255 fires
+        // whenever any env effect — including weather — is enabled). So
+        // `currentRenderPassEncoder` is null here; the weather render half must
+        // OPEN its own pass like the other compositing effects do. We resume the
+        // default canvas pass with loadOp:"load" (preserving the post-processed
+        // scene) and draw the camera-relative particle quads on top. Without
+        // this, the compute simulation ran every frame but nothing was ever
+        // drawn (renderInitialized stayed false).
         if (weatherFR.render) {
-          const passEncoder = context.currentRenderPassEncoder;
+          let passEncoder = context.currentRenderPassEncoder;
+          if (!passEncoder) {
+            passEncoder = context.resumeDefaultRenderPass?.() ?? null;
+          }
           if (passEncoder) {
-            weatherFR.render(context, frameState, scene, passEncoder);
+            weatherFR.render(context, frameState, weatherConfig, passEncoder);
           }
         }
       } catch (e: unknown) {

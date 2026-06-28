@@ -84,7 +84,9 @@ no-op on WebGL, like the procedural clouds).
 > **SHIPPED** (Batch 417a) — `atmosphericConditions.effects.{shimmer,groundFog,optics,precipitation}` nested
 > with a master `effects.auto` that derives every effect from the weather (`computeAtmosphericEffects`);
 > off by default (byte-neutral). Phase B **SHIPPED** (Batch 417b). Phase C **SHIPPED** (Batch 420 wiring +
-> 421 scatter rework). Phase D **SHIPPED** (Batch 422 — 22° halo + sun-dogs). Phase E (precip) remains.
+> 421 scatter rework). Phase D **SHIPPED** (Batch 422 — 22° halo + sun-dogs). Phase E **WIRING SHIPPED**
+> (Batch 423 — `effects.precipitation` → the existing WebGPU weather-particle renderer; data-driven WMO
+> weather-code selection from ingest is deferred).
 
 - **Phase A — Conditions→knobs mapper (no new renderer). [SHIPPED Batch 415]** An `AtmosphericEffects` module
   mapping `{T, Td, RH, visibility}` → fog density/tint + atmosphere sat/brightness + `cloudType`/
@@ -119,8 +121,23 @@ no-op on WebGL, like the procedural clouds).
   Probe-verified (Principle 8): `probe-cold-optics.mjs` — a complete circular ring centred on the sun (read
   the PNG: textbook 22° halo + the two sun-dogs, sky-only, terrain not overdrawn), 5/8 sectors lit, ring
   brighter than interior, OFF-stable, 0 device errors. **Light pillars** remain a deferred follow-up.
-- **Phase E — Precip + snow.** Precip-type → rain/snow particles + optional ground accumulation. Larger;
-  schedule after the optics. (~1-2 weeks.)
+- **Phase E — Precip + snow. [WIRING SHIPPED Batch 423]** Connected the unified `effects.precipitation`
+  leaf (and the `atmosphericConditions.weather` facade) to the existing `WebGPUWeatherRenderer` particle
+  system (rain/snow/fog/hail already shipped). Three pieces: (1) the env-effects dispatch now builds the
+  renderer's `CesiumWeatherConfig` from the flat `scene.weather*` fields (the SAME fields the facade writes)
+  instead of passing `scene` raw — pre-Batch-423 it read `scene.enabled`/`.type` which don't exist, so the
+  renderer's `enabled` gate always returned early and NO particles ever rendered; (2) the render half now
+  resumes the default canvas pass (env effects run after post-process, Batch 127, which ends the active
+  pass) and the weather render pipeline declares a single canvas-format alpha target instead of the 2-target
+  scene-FB MRT layout (the phantom rgba16float slot-1 made the pipeline incompatible with the 1-attachment
+  canvas pass → "attachment state not compatible", the latent reason the render never drew); (3) the 417a
+  auto-master pushes `effects.precipitation.{enabled,type,intensity}` to the flat scene fields. New
+  `PrecipitationType` enum (`0=none,1=rain,2=snow,3=fog,4=hail`) + `precipitationTypeToString` in
+  `AtmosphericEffects.ts` is the single home for the index→string mapping. Default OFF / byte-neutral.
+  Probe-verified (Principle 8): `probe-precip-wiring.mjs` — drives precip through BOTH the auto hierarchy and
+  the direct facade; snow renders strongly (4272-px union footprint), rain renders subtly (≈1000 px) but
+  clearly beats the 0-px auto-off control; rain ≠ snow; 0 device errors. **Deferred:** data-driven WMO
+  weather-code → precip-type selection from the weather-ingest cube, and optional ground accumulation.
 
 ## Dependencies + sequencing
 

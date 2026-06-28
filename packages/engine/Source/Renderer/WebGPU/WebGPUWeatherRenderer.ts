@@ -31,8 +31,6 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-// Slice 5c-B Phase 1 (Batch 107) — scene-FB target helper.
-import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -439,9 +437,33 @@ function initializeRenderPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 107) — scene-FB target via the
-      // helper. Standard alpha-over (helper's `translucent` default).
-      targets: makeSceneFBTargets(format, { translucent: true }),
+      // Phase E (Batch 423) — weather particles are a COMPOSITING effect: the
+      // env-effects chain runs AFTER post-process (Batch 127) and draws onto the
+      // CANVAS default render pass, which has a single color attachment. So the
+      // pipeline declares ONE alpha-over target in the canvas format — NOT the
+      // 2-target scene-FB MRT layout `makeSceneFBTargets` produces (MRT mode is
+      // on globally; using that helper gave the pipeline a phantom rgba16float
+      // slot-1 the canvas pass doesn't have → "attachment state not compatible"
+      // validation error, which is why the render half silently never drew).
+      // `WebGPUSceneFBTargetHelpers`' own docstring forbids the helper for
+      // non-scene-FB targets (restriction §, line 46).
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -545,12 +567,18 @@ export function renderWeatherParticles(
   if (!device || !cache?.initialized || !cache.particleBuffer) return;
   if (!weatherConfig?.enabled) return;
 
-  // Batch 110 — weather particles draw into scene FB; use scenePipelineFormat
-  // and invalidate cache on format change.
+  // Phase E (Batch 423) — weather particles composite onto the CANVAS default
+  // render pass (env effects run after post-process, Batch 127), so the pipeline
+  // color format must be the canvas presentation format, NOT the HDR scene-FB
+  // format. (They're usually both bgra8unorm, but key off presentationFormat so
+  // an HDR scene FB doesn't make the pipeline incompatible with the canvas pass.)
+  // The generation-based cache invalidation below still keys off the scene-FB
+  // generation, which bumps on any swap-chain reconfigure (canvas resize), so a
+  // canvas-format change rebuilds the pipeline.
   const format: GPUTextureFormat =
+    context.presentationFormat ??
     (context as unknown as { scenePipelineFormat?: GPUTextureFormat })
       .scenePipelineFormat ??
-    context.presentationFormat ??
     "bgra8unorm";
   const depthFormat: GPUTextureFormat =
     context.depthFormat ?? "depth24plus-stencil8";

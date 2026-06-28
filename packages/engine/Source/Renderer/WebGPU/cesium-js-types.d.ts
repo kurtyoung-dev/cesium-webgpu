@@ -1003,6 +1003,15 @@ interface CesiumScene {
   _globeTranslucencyState: CesiumGlobeTranslucencyState;
   _environmentState: CesiumEnvironmentState;
   _enableWeather: boolean;
+  // Flat weather-particle config fields (Phase E, Batch 423). The
+  // `atmosphericConditions.weather` facade + the auto-master both write these;
+  // the environmental-effects dispatch reads them to build the renderer's
+  // `CesiumWeatherConfig`. `weatherType` is the legacy index (0=rain … 3=hail).
+  enableWeather: boolean;
+  weatherType: number;
+  weatherIntensity: number;
+  weatherWindSpeed: number;
+  weatherWindDirection: { x: number; y: number; z?: number };
   _enableSSR: boolean;
   invertClassification: boolean;
   opaqueFrustumNearOffset: number;
