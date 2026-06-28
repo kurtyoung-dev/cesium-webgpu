@@ -174,6 +174,9 @@ interface AtmosphericSceneLike {
   /** Ad-hoc scene flags the WebGPU heat-shimmer post-process reads (godRay precedent). */
   heatShimmerEnabled?: boolean;
   heatShimmerIntensity?: number;
+  /** Ad-hoc scene flags the WebGPU cold-optics post-process reads (Phase D). */
+  coldOpticsEnabled?: boolean;
+  coldOpticsIntensity?: number;
   globe?: {
     atmosphereSaturationShift?: number;
     atmosphereBrightnessShift?: number;
@@ -261,5 +264,9 @@ export function applyAtmosphericConditions(scene: AtmosphericSceneLike): void {
     // Scene flags the WebGPU post-process effects consume (Phase B: heat shimmer).
     scene.heatShimmerEnabled = state.shimmer.enabled;
     scene.heatShimmerIntensity = state.shimmer.intensity;
+    // Phase D: cold optics (ice-crystal sky halos) — driven by the sub-freezing
+    // `optics` leaf (enabled + halo strength), mirroring the shimmer block.
+    scene.coldOpticsEnabled = state.optics.enabled;
+    scene.coldOpticsIntensity = state.optics.halo;
   }
 }

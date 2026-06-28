@@ -81,6 +81,13 @@ import {
   HeatShimmerEffect,
   type HeatShimmerConfig,
 } from "./WebGPUHeatShimmerEffect.js";
+// Atmospheric Effects Phase D (Batch 422) -- pipeline-level ColdOptics
+// (22 ice-crystal halo + sun-dogs) registration. Single-pass sky overlay;
+// mirrors the HeatShimmer touchpoints.
+import {
+  ColdOpticsEffect,
+  type ColdOpticsConfig,
+} from "./WebGPUColdOpticsEffect.js";
 // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
 // atmosphere over the whole scene.
 import {
@@ -108,6 +115,8 @@ export type {
   AerialPerspectiveConfig,
   // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer config.
   HeatShimmerConfig,
+  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics config.
+  ColdOpticsConfig,
 };
 
 /** Tonemapping operator modes */
@@ -283,6 +292,12 @@ export class WebGPUPostProcessPipeline {
   // pushed by the scene-level configure pass. Sized/formatted against the
   // intermediate format (HDR-aware), so the recreate-reset block drops it.
   private _heatShimmerEffect: HeatShimmerEffect | null = null;
+  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics (22 ice-crystal
+  // halo + sun-dogs) sky overlay. Activated through `addColdOptics` + the
+  // configure-pipeline sync; per-frame camera/sun/inverse-matrix uniforms
+  // pushed by the scene-level configure pass. Sized/formatted against the
+  // intermediate format (HDR-aware), so the recreate-reset block drops it.
+  private _coldOpticsEffect: ColdOpticsEffect | null = null;
   // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
   // atmosphere. Runs FIRST in the depth-dependent chain (before AO/bloom) so
   // the haze participates in bloom + tonemap, matching how WebGL applies the
@@ -326,6 +341,7 @@ export class WebGPUPostProcessPipeline {
     if (this._dofEffect?.enabled) return true;
     if (this._godRayEffect?.enabled) return true;
     if (this._heatShimmerEffect?.enabled) return true;
+    if (this._coldOpticsEffect?.enabled) return true;
     if (this._aerialPerspectiveEffect?.enabled) return true;
     // NEW-POSTPROCESS-USER-WGSL (Batch 198) — user-supplied WGSL stages.
     if (this._userStages.some((s) => s.enabled)) return true;
@@ -360,6 +376,15 @@ export class WebGPUPostProcessPipeline {
    */
   get heatShimmerEffect(): HeatShimmerEffect | null {
     return this._heatShimmerEffect;
+  }
+
+  /**
+   * Atmospheric Effects Phase D (Batch 422) -- ColdOptics effect or null if
+   * not added. The configure pass uses this to push the per-frame camera/sun/
+   * inverse-matrix uniforms.
+   */
+  get coldOpticsEffect(): ColdOpticsEffect | null {
+    return this._coldOpticsEffect;
   }
 
   /**
@@ -428,6 +453,12 @@ export class WebGPUPostProcessPipeline {
     // same frame when `scene.heatShimmerEnabled` is on (gate checks the live
     // slot).
     this._heatShimmerEffect?.destroy();
+    // Atmospheric Effects Phase D (Batch 422) — ColdOptics' output texture is
+    // sized + formatted against `_intermediateFormat`, so a resize / HDR
+    // toggle must drop it too. The configure pass lazily re-adds it on the
+    // same frame when `scene.coldOpticsEnabled` is on (gate checks the live
+    // slot).
+    this._coldOpticsEffect?.destroy();
     // Track V-A2 — aerial-perspective output texture is sized + formatted
     // against `_intermediateFormat`, so a resize / HDR toggle must drop it
     // too. The configure pass lazily re-adds it on the same frame when
@@ -438,6 +469,7 @@ export class WebGPUPostProcessPipeline {
     this._dofEffect = null;
     this._godRayEffect = null;
     this._heatShimmerEffect = null;
+    this._coldOpticsEffect = null;
     this._aerialPerspectiveEffect = null;
     // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — TAA joins the recreate
     // reset list: its history textures + pipeline target are sized and
@@ -997,6 +1029,30 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
+   * Atmospheric Effects Phase D (Batch 422) -- Add the ColdOptics effect
+   * (single-pass 22 halo + sun-dogs sky overlay). The configure pass pushes
+   * the per-frame camera/sun/inverse-matrix uniforms via
+   * `pipeline.coldOpticsEffect.setFrameData(...)`. Reads depth to gate the
+   * draw to sky pixels (tolerates a null depth view — the optics simply
+   * don't draw without depth).
+   */
+  addColdOptics(
+    device: GPUDevice,
+    canvasFormat: GPUTextureFormat,
+    config?: ColdOpticsConfig,
+  ): void {
+    if (this._coldOpticsEffect) return;
+    this._coldOpticsEffect = new ColdOpticsEffect(config);
+    // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
+    this._coldOpticsEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
+  }
+
+  /**
    * Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — add the unified
    * aerial-perspective atmosphere effect. Runs first in the depth-dependent
    * chain so the haze participates in bloom + tonemap. Requires the scene
@@ -1249,6 +1305,21 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
+    // 3.8 ColdOptics (Atmospheric Effects Phase D, Batch 422) — 22 ice-
+    // crystal halo + sun-dogs sky overlay. Placed alongside the other sky/
+    // atmosphere overlays, AFTER aerial-perspective / heat-shimmer but BEFORE
+    // TAA + tonemap, so the additive halo lives in the HDR scene color and
+    // participates in temporal AA + the tone curve. Reads depth to draw only
+    // on sky pixels (geometry passes through); tolerates a null depth view.
+    if (this._coldOpticsEffect?.enabled) {
+      currentView = this._coldOpticsEffect.execute(
+        encoder,
+        currentView,
+        depth,
+        this._sampler!,
+      );
+    }
+
     // AUDIT_2026_05_02 B.16 (Batch 155 clarity refactor; Batch 157
     // comment correction) — push order of `singlePassStages` now
     // matches GPU command stream order. The actual execution order
@@ -1371,6 +1442,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._dofEffect?.resize(width, height);
     this._godRayEffect?.resize(width, height);
     this._heatShimmerEffect?.resize(width, height);
+    this._coldOpticsEffect?.resize(width, height);
     this._aerialPerspectiveEffect?.resize(width, height);
 
     // Update FXAA texel size
@@ -1673,6 +1745,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
     this._heatShimmerEffect?.destroy();
+    this._coldOpticsEffect?.destroy();
     this._aerialPerspectiveEffect?.destroy();
     this._autoExposure?.destroy();
     // Batch 244 — TAA was missing from teardown (the effect was never
@@ -1685,6 +1758,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._dofEffect = null;
     this._godRayEffect = null;
     this._heatShimmerEffect = null;
+    this._coldOpticsEffect = null;
     this._aerialPerspectiveEffect = null;
     this._autoExposure = null;
     this._taaEffect = null;

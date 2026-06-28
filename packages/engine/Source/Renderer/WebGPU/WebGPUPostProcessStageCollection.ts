@@ -56,6 +56,14 @@ export interface PostProcessCache {
   // the elapsed-seconds clock + intensity and keeps the scene rendering.
   heatShimmerEnabled: boolean;
   heatShimmerInitialized: boolean;
+  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics (22 ice-crystal
+  // halo + sun-dogs) sky overlay. Activated via `scene.coldOpticsEnabled =
+  // true`, intensity via `scene.coldOpticsIntensity` (ad-hoc scene flags
+  // pushed by the atmospheric auto-master in 417a from sub-freezing
+  // temperature). The per-frame configure pass pushes the camera/sun/inverse-
+  // matrix uniforms and keeps the scene rendering.
+  coldOpticsEnabled: boolean;
+  coldOpticsInitialized: boolean;
   // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
   // atmosphere. Activated via `scene.aerialPerspective = true` (optional
   // `scene.aerialPerspectiveConfig`). The per-frame configure pass pushes
@@ -143,6 +151,8 @@ function getDefaultCache(): PostProcessCache {
     godRayInitialized: false,
     heatShimmerEnabled: false,
     heatShimmerInitialized: false,
+    coldOpticsEnabled: false,
+    coldOpticsInitialized: false,
     aerialPerspectiveEnabled: false,
     aerialPerspectiveInitialized: false,
     bloomInitialized: false,
@@ -321,6 +331,14 @@ function configureWebGPUPostProcessPipeline(
   cache.heatShimmerEnabled =
     (scene as unknown as { heatShimmerEnabled?: boolean })
       ?.heatShimmerEnabled === true;
+
+  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics enabled flag,
+  // scene-level (ad-hoc `scene.coldOpticsEnabled`, pushed by the 417a
+  // atmospheric auto-master from sub-freezing temperature). Mirrors the
+  // heatShimmer scene-flag read.
+  cache.coldOpticsEnabled =
+    (scene as unknown as { coldOpticsEnabled?: boolean })?.coldOpticsEnabled ===
+    true;
 
   // --- TAA (controlled by scene.taaEnabled, not the collection) ---
   // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — lazily add the effect on
@@ -684,6 +702,25 @@ function configureWebGPUPostProcessPipeline(
     pipeline.heatShimmerEffect.enabled = false;
   }
 
+  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics lazy init +
+  // per-frame camera/sun/inverse-matrix push. Config can be supplied via
+  // `scene.coldOpticsConfig` (optional).
+  if (cache.coldOpticsEnabled && !cache.coldOpticsInitialized) {
+    const cfg = (
+      scene as unknown as {
+        coldOpticsConfig?: import("./WebGPUColdOpticsEffect.js").ColdOpticsConfig;
+      }
+    )?.coldOpticsConfig;
+    pipeline.addColdOptics(device, canvasFormat, cfg);
+    cache.coldOpticsInitialized = true;
+  }
+  if (cache.coldOpticsEnabled && pipeline.coldOpticsEffect) {
+    pipeline.coldOpticsEffect.enabled = true;
+    updateColdOpticsFrameData(pipeline, scene);
+  } else if (pipeline.coldOpticsEffect) {
+    pipeline.coldOpticsEffect.enabled = false;
+  }
+
   // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified aerial-
   // perspective atmosphere. Scene-level flag (`scene.aerialPerspective`), no
   // upstream PostProcessStageCollection slot. Lazy-init on first enable;
@@ -942,6 +979,76 @@ function updateHeatShimmerFrameData(
   (scene as unknown as { requestRender?: () => void })?.requestRender?.();
 }
 
+// Atmospheric Effects Phase D (Batch 422) — WGS84 max radius (metres),
+// matches Cartesian3.maximumComponent(WGS84.radii). Used as the inner radius
+// for the world-up reconstruction; the effect only needs the ellipsoid scale
+// to form local up from the camera position.
+const COLD_OPTICS_INNER_RADIUS = 6378137.0;
+
+/**
+ * Atmospheric Effects Phase D (Batch 422) — push the per-frame camera / sun /
+ * inverse-matrix uniforms into the ColdOptics effect and keep the scene
+ * rendering. Reads the camera world position, inverse projection, inverse
+ * view, and sun direction from `uniformState` (the SAME sources as
+ * `updateAerialPerspectiveFrameData`), plus the intensity from the ad-hoc
+ * `scene.coldOpticsIntensity` flag (417a auto-master). Mirrors the godRay /
+ * heat-shimmer per-frame setters.
+ *
+ * `requestRenderMode` scenes only render on demand; the sun position drifts
+ * with the clock, so while the effect is enabled we request a frame each pass
+ * so the halo tracks the sun (same mechanism the heat-shimmer clock relies on).
+ */
+function updateColdOpticsFrameData(
+  pipeline: WebGPUPostProcessPipeline,
+  scene?: CesiumScene,
+): void {
+  const fx = pipeline.coldOpticsEffect;
+  if (!fx) return;
+
+  const sceneAny = scene as unknown as {
+    context?: {
+      uniformState?: {
+        cameraPosition?: { x: number; y: number; z: number };
+        sunDirectionWC?: { x: number; y: number; z: number };
+        inverseProjection?: number[] | Float64Array;
+        inverseView?: number[] | Float64Array;
+      };
+    };
+    camera?: { frustum?: { near?: number; far?: number } };
+    coldOpticsIntensity?: number;
+  };
+
+  const us = sceneAny?.context?.uniformState;
+  if (!us || !us.cameraPosition || !us.inverseProjection || !us.inverseView) {
+    return;
+  }
+
+  // Intensity from the ad-hoc scene flag pushed in 417a; fall back to the
+  // effect's config default (1.0) when unset.
+  const intensity = sceneAny?.coldOpticsIntensity;
+  if (typeof intensity === "number") {
+    fx.setIntensity(intensity);
+  }
+
+  const cam = us.cameraPosition;
+  const sun = us.sunDirectionWC ?? { x: 0, y: 0, z: 1 };
+  const near = sceneAny?.camera?.frustum?.near ?? 1.0;
+  const far = sceneAny?.camera?.frustum?.far ?? 1e8;
+
+  fx.setFrameData({
+    cameraPositionWC: [cam.x, cam.y, cam.z],
+    innerRadius: COLD_OPTICS_INNER_RADIUS,
+    sunDirectionWC: [sun.x, sun.y, sun.z],
+    near,
+    far,
+    inverseProjection: us.inverseProjection,
+    inverseView: us.inverseView,
+  });
+
+  // Keep `requestRenderMode` scenes rendering so the halo tracks the sun.
+  (scene as unknown as { requestRender?: () => void })?.requestRender?.();
+}
+
 /**
  * Destroy WebGPU post-process resources.
  */
@@ -969,6 +1076,7 @@ function hasActiveWebGPUPostProcessStages(
     cache.depthOfFieldEnabled ||
     cache.godRayEnabled ||
     cache.heatShimmerEnabled ||
+    cache.coldOpticsEnabled ||
     cache.aerialPerspectiveEnabled
   );
 }

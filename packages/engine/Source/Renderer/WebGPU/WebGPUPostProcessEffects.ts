@@ -157,3 +157,6 @@ export type { GodRayConfig } from "./WebGPUGodRayEffect.js";
 
 export { HeatShimmerEffect } from "./WebGPUHeatShimmerEffect.js";
 export type { HeatShimmerConfig } from "./WebGPUHeatShimmerEffect.js";
+
+export { ColdOpticsEffect } from "./WebGPUColdOpticsEffect.js";
+export type { ColdOpticsConfig } from "./WebGPUColdOpticsEffect.js";

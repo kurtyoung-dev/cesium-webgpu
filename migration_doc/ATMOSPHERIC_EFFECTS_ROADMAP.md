@@ -84,7 +84,7 @@ no-op on WebGL, like the procedural clouds).
 > **SHIPPED** (Batch 417a) — `atmosphericConditions.effects.{shimmer,groundFog,optics,precipitation}` nested
 > with a master `effects.auto` that derives every effect from the weather (`computeAtmosphericEffects`);
 > off by default (byte-neutral). Phase B **SHIPPED** (Batch 417b). Phase C **SHIPPED** (Batch 420 wiring +
-> 421 scatter rework). Phases D–E remain (D/E plug into the 417a hierarchy as their backend).
+> 421 scatter rework). Phase D **SHIPPED** (Batch 422 — 22° halo + sun-dogs). Phase E (precip) remains.
 
 - **Phase A — Conditions→knobs mapper (no new renderer). [SHIPPED Batch 415]** An `AtmosphericEffects` module
   mapping `{T, Td, RH, visibility}` → fog density/tint + atmosphere sat/brightness + `cloudType`/
@@ -109,8 +109,16 @@ no-op on WebGL, like the procedural clouds).
   Probe-verified (Principle 8): `probe-ground-fog.mjs` — graded valley mist (terrain visible through the
   haze, not a whiteout), ground-concentrated, intensity 0.3/0.6/1.0 monotonic, 0 device errors, default off
   byte-neutral. This rework unblocked WebGPU volumetric fog generally, not just ground fog.
-- **Phase D — Cold optics (halo / sun-dogs / pillars).** Ice-crystal sky overlay gated on sub-freezing T
-  + cirrus. The high-wow "this looks like a real cold sky" effect. (~4-6 days.)
+- **Phase D — Cold optics (halo / sun-dogs). [SHIPPED Batch 422]** `WebGPUColdOpticsEffect` — a single-pass
+  screen-space sky overlay (mirrors the heat-shimmer/godRay pattern) drawing the **22° halo** (gaussian ring,
+  warm-red inner → blue-white outer) + **sun-dogs/parhelia** (brighter spots at ±22° on the parhelic circle).
+  Reconstructs the per-pixel world view ray (FP32-safe, AerialPerspective method) + reads
+  `uniformState.sunDirectionWC`; angle `θ = acos(ray·sun)`; sky-only via the depth gate; faded out when the
+  sun is below the horizon; additive in HDR pre-tonemap. Gated on `scene.coldOpticsEnabled`/`Intensity` —
+  the 417a auto-master pushes them from `effects.optics` (sub-freezing T). Default OFF, byte-neutral.
+  Probe-verified (Principle 8): `probe-cold-optics.mjs` — a complete circular ring centred on the sun (read
+  the PNG: textbook 22° halo + the two sun-dogs, sky-only, terrain not overdrawn), 5/8 sectors lit, ring
+  brighter than interior, OFF-stable, 0 device errors. **Light pillars** remain a deferred follow-up.
 - **Phase E — Precip + snow.** Precip-type → rain/snow particles + optional ground accumulation. Larger;
   schedule after the optics. (~1-2 weeks.)
 
