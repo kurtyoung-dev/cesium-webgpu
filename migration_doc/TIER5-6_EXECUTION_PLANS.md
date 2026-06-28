@@ -223,11 +223,11 @@ until it lands), or plan+execute prereq+consumer as one large item? And is a loc
 
 ## Open decisions for the user (consolidated)
 
-1. **C2-22:** color pass only (MVP) or all pipeline variants? (recommend color-only first)
-2. **C2-21:** keep `_hiZConsumeEnabled` gated if the consume-on probe can't meet the ≤1.5% pixel budget?
-   (recommend yes — ship the math fix, gate the flag)
-3. **C2-25:** reuse SkyAtmosphereRenderer for the cube sky, or keep the compute sky + render geometry over it?
-   (recommend keep compute for Slice 1)
-4. **DP-H46:** scope as a NEW-WEBGPU-MODEL-STRUCTURAL-METADATA epic; pick the first consumer
-   (CustomShader-on-WebGPU vs pickMetadata); decide WGSL per-model codegen vs fixed static carrier;
-   provision a local `EXT_structural_metadata` test asset or use ion.
+1. **C2-22:** ✅ RESOLVED — color-pass MVP (shipped 388/418).
+2. **C2-21:** ✅ RESOLVED — feature shipped + verified (HiZ flip landed under the ≤1.5% budget); doc cleanup only.
+3. **C2-25:** keep compute sky for Slice 1 (recommend) vs reuse SkyAtmosphereRenderer — **user decision pending at C2-25.**
+4. **DP-H46:** ✅ APPROACH DECIDED (user, 2026-06-26) — **per-model WGSL codegen, mirroring WebGL's dynamic
+   GLSL path** (templated at pipeline-build). The epic is otherwise DEFERRED behind the lighter features
+   (Phase D/E, C2-25, Weather P3). When it lands: build the per-model WGSL codegen subsystem FIRST (the
+   gate), then DP-H46a/b on top, then the DP-H46c pickMetadata consumer; provision a local
+   `EXT_structural_metadata` test asset (network-free probe per Principle 8).

@@ -469,7 +469,19 @@ class WebGPUVolumetricFogRenderer {
     r.paramsU32[3] = 0;
     // Scattering params.
     r.paramsData[4] = frameState.camera?.frustum?.near ?? 1.0;
-    r.paramsData[5] = vf?.maxDistance ?? 50000;
+    // Batch 421 — froxel march distance. The energy-conserving single-scatter
+    // integration is BOUNDED (no whiteout overflow) but its dynamic range
+    // over a 50 km march is compressed: a low grazing/horizon ray stays in
+    // the ground band for tens of km, so even a thin band accumulates enough
+    // optical depth to drive transmittance → 0 (opaque) on those rays — the
+    // foreground terrain we want to see *through* the mist gets buried in
+    // horizon haze. Capping the march to a few km for the ground-fog mist
+    // keeps the near terrain see-through (short path = modest optical depth)
+    // while still hazing the mid-distance, giving the graded look. The base
+    // height-fog (master-on) path keeps the full configured distance so
+    // distance haze still reaches the horizon.
+    const froxelMaxDistance = vf?.maxDistance ?? 50000;
+    r.paramsData[5] = froxelMaxDistance;
     // Batch 420 — base height-fog density. When the volumetricFog master is
     // OFF and ground fog is the SOLE driver (own-activation path), the base
     // height fog must contribute NOTHING — otherwise the default
@@ -635,7 +647,24 @@ class WebGPUVolumetricFogRenderer {
     //   w = shadowDarkness (matches the WebGPU shadow renderer's `darkness`)
     const occlusionEnabled = vf?.enableScatteringOcclusion === true;
     r.paramsData[56] = occlusionEnabled ? 1.0 : 0.0;
-    r.paramsData[57] = vf?.ambientStrength ?? 0.05;
+    // Batch 421 — ground mist is dominated by sky/ambient in-scatter (it is
+    // lit by the whole sky dome far more than by direct forward sun-scatter),
+    // so a higher ambient floor makes the energy-conserving mist read as a
+    // believable milky fill rather than a dim grey. The base height-fog path
+    // keeps the dimmer 0.05 default. This only runs when fog/ground fog is
+    // active, so the OFF default is unchanged.
+    // Batch 421 — ground mist is dominated by sky/ambient in-scatter: it is
+    // lit by the whole sky dome far more than by direct forward sun-scatter.
+    // A bright ambient floor makes the energy-conserving mist read as a
+    // believable MILKY fill that roughly replaces the scene luminance the
+    // transmittance removes (so a thin mist hazes rather than darkens). The
+    // base height-fog (master-on) path keeps the dimmer configured value.
+    // This branch only runs when fog/ground fog is active, so the OFF default
+    // is unchanged.
+    const ambientStrengthValue = groundFogActive
+      ? Math.max(vf?.ambientStrength ?? 0, 0.7)
+      : (vf?.ambientStrength ?? 0.05);
+    r.paramsData[57] = ambientStrengthValue;
     r.paramsData[58] = realShadowView ? 1.0 : 0.0;
     r.paramsData[59] = activeShadowMap?.darkness ?? 0.3;
 
@@ -738,32 +767,35 @@ class WebGPUVolumetricFogRenderer {
     //
     //   84 = enabled (0/1)
     //   85 = intensity (0..1)
-    //   86 = bandHeight (m) — exponential mist falloff scale. ~200 m gives
-    //        the classic morning-mist band hugging the lowest few hundred
+    //   86 = bandHeight (m) — exponential mist falloff scale. 120 m gives
+    //        the classic morning-mist band hugging the lowest couple hundred
     //        metres; above ~3× this the boost is negligible.
-    //   87 = peakDensity — the density a fully-saturated (intensity=1)
-    //        ground froxel reaches at altitude 0. Density is in per-metre
-    //        extinction units: the froxel integration accumulates
-    //        `density × sliceThickness`, so peakDensity ≈ 5e-4 gives optical
-    //        depth (per-metre extinction units). KNOWN LIMITATION (Batch
-    //        420): the underlying froxel scatter-integration has very little
-    //        dynamic range for a near-surface band at this scene scale — the
-    //        `accumScattered += transmittance × scattered × sliceThickness`
-    //        accumulation over the long low-altitude horizon path responds
-    //        almost binarily to peakDensity (invisible below ~1e-6, clamped
-    //        to white above ~1.2e-6). 1.1e-6 sits at the top of the visible
-    //        band so the mist concentrates toward the ground (lower screen
-    //        band hazes ~2.3× more than the sky) but reads as a heavy haze,
-    //        not a soft graded mist. A graceful mist needs the froxel scatter
-    //        integration reworked to self-limit (see report / DEFERRED_WORK):
-    //        that's the next concrete step and is a deeper change than the
-    //        Phase-C wiring. `bandHeight` 120 m keeps the boost low.
+    //   87 = peakDensity — the per-metre extinction a fully-saturated
+    //        (intensity=1) ground froxel reaches at altitude 0.
+    //
+    //        Batch 421 — ENERGY-CONSERVING re-tune (graded mist, no whiteout).
+    //        The froxel scatter integration is now energy-conserving
+    //        single-scatter (per slice `inscatter = sourceRadiance ×
+    //        (1 - exp(-σ·Δz))`, accumulated transmittance-weighted), so
+    //        density maps to OPACITY via a smooth Beer-Lambert rolloff
+    //        (`transmittance = exp(-Σσ·Δz)`). The actual whiteout ROOT CAUSE
+    //        was the Henyey-Greenstein forward-scatter peak overflowing f16
+    //        (the per-froxel `sourceRadiance` hit 65504), now fixed by a
+    //        clamped HG in VolumetricFog.wgsl. With sourceRadiance bounded
+    //        (~0.2 phase + 0.7 ambient floor for the milky fill) peakDensity
+    //        is a real per-metre extinction: over the slant path through the
+    //        ground band a fully-saturated froxel accumulates optical depth
+    //        ~1 → transmittance ~0.1–0.5, a near-opaque-but-still-see-through
+    //        mist at the surface that fades with altitude. The old ~1e-6
+    //        binary cliff is gone; intensity now sweeps a usable 0..1
+    //        mist-thickness range (probe-verified 0.3 / 0.6 / 1.0). See
+    //        NEW-WEBGPU-FROXEL-FOG-SCATTER-DYNAMIC-RANGE.
     const groundFogIntensity =
       typeof groundFog?.intensity === "number" ? groundFog.intensity : 0.0;
     r.paramsData[84] = groundFogActive ? 1.0 : 0.0;
     r.paramsData[85] = groundFogIntensity;
     r.paramsData[86] = 120.0;
-    r.paramsData[87] = 1.1e-6;
+    r.paramsData[87] = 1.2e-4;
 
     // Rebuild the scattering bind group when the shadow view changes.
     // The placeholder view is the initial state; once a real shadow map
@@ -1000,6 +1032,11 @@ class WebGPUVolumetricFogRenderer {
     }
     r.compositeUniformData[16] = camera?.frustum?.near ?? 1.0;
     r.compositeUniformData[17] = camera?.frustum?.far ?? 1.0e9;
+    // Batch 421 — MUST match the compute pass's `froxelMaxDistance` so the
+    // composite samples the integrated volume at the same depth slicing the
+    // integrate pass wrote. The ground-fog-only path shortens the march to
+    // keep near terrain see-through (see the `froxelMaxDistance` comment in
+    // `update()`); mirror that here.
     r.compositeUniformData[18] = vf?.maxDistance ?? 50000;
     r.compositeUniformData[19] = 0;
     r.compositeUniformData[20] = context.drawingBufferWidth ?? 1;

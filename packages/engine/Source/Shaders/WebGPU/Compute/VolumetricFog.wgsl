@@ -212,10 +212,27 @@ fn froxelWorldPosition(gid: vec3<u32>) -> vec3<f32> {
 }
 
 // Henyey-Greenstein phase function. cosθ is dot(viewDir, lightDir).
+//
+// Batch 421 — the forward-scatter peak of HG is a near-singularity as
+// g → 1 and cosθ → 1 (denom → (1-g)²). With the old `max(denom, 1e-4)`
+// floor and a strongly-forward g the function spiked to ~7e4, which the
+// fog's single-scatter source-radiance term carried straight into f16
+// overflow (65504) — the froxel whiteout. Clamp the anisotropy to a
+// stable range and floor the denominator at the physical (1-|g|)² so the
+// peak stays finite, then clamp the phase to a sane maximum. A fog mist
+// only needs a gentle forward bias; the raw glory-peak is not wanted here
+// and would alias into fireflies anyway at froxel resolution.
 fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
-  let g2 = g * g;
-  let denom = 1.0 + g2 - 2.0 * g * cosTheta;
-  return (1.0 - g2) / (4.0 * PI * pow(max(denom, 1e-4), 1.5));
+  let gc = clamp(g, -0.95, 0.95);
+  let g2 = gc * gc;
+  // Physical minimum of the denominator is (1-|g|)² (at cosθ=1); never let
+  // it drop below that, and keep a small absolute floor for safety.
+  let physMin = (1.0 - abs(gc)) * (1.0 - abs(gc));
+  let denom = max(1.0 + g2 - 2.0 * gc * cosTheta, max(physMin, 1e-3));
+  let phase = (1.0 - g2) / (4.0 * PI * pow(denom, 1.5));
+  // Clamp the phase so the forward peak can't dominate the in-scatter
+  // source radiance (energy-conserving fog wants a bounded source).
+  return min(phase, 4.0);
 }
 
 // View direction at this froxel = normalized(worldPos - cameraPos)
@@ -599,18 +616,27 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ambientStrength = u.occlusion.y;
   let ambientTerm = ambientStrength;
 
-  // In-scattered radiance per unit length:
-  //   direct contribution = albedo × density × (sun + moon scatter)
-  //   ambient contribution = albedo × density × ambient
-  let scatteredRGB =
-    albedo * density * (sunScatter + moonScatter + ambientTerm);
+  // ENERGY-CONSERVING SINGLE-SCATTER (Batch 421).
+  //
+  // This is the *source radiance* the slice would scatter toward the eye
+  // if it were fully opaque — it is DENSITY-INDEPENDENT (no `× density`
+  // factor here). The integrate pass turns this into the actual in-scatter
+  // contribution by weighting it with the slice's absorption fraction
+  // `(1 - exp(-σ·Δz))`, which is bounded to ≤ 1. That keeps the total
+  // accumulated in-scatter ≤ the source radiance (energy-conserving) and
+  // gives a smooth Beer-Lambert rolloff instead of the unbounded
+  // `density × thickness` accumulation that whited out over the long
+  // horizon path (NEW-WEBGPU-FROXEL-FOG-SCATTER-DYNAMIC-RANGE).
+  //
+  // Density is still packed in `.a` because the integrate pass needs it to
+  // compute the per-slice optical depth `σ·Δz`.
+  let sourceRadiance =
+    albedo * (sunScatter + moonScatter + ambientTerm);
 
-  // Pack scatter + density. The integrate pass uses density to compute
-  // extinction, and the scatter directly for the alpha-over composite.
   textureStore(
     scatteringOut,
     vec3<i32>(gid),
-    vec4<f32>(scatteredRGB, density),
+    vec4<f32>(sourceRadiance, density),
   );
 }
 
@@ -639,26 +665,40 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var k: u32 = 0u; k < depthCount; k = k + 1u) {
     let coord = vec3<i32>(i32(gid.x), i32(gid.y), i32(k));
     let s = textureLoad(scatteringIn, coord);
-    let scattered = s.rgb;
+    // `sourceRadiance` is the DENSITY-INDEPENDENT in-scatter source the
+    // scattering pass wrote (albedo × phase-weighted light + ambient).
+    let sourceRadiance = s.rgb;
     let density = s.a;
 
     let curDepth = sliceToLinearDepth(f32(k) + 1.0, res.z);
     let sliceThickness = max(curDepth - prevDepth, 0.0);
     prevDepth = curDepth;
 
-    let extinction = max(density * sliceThickness, 0.0);
-    let sliceTransmittance = exp(-extinction);
+    // ENERGY-CONSERVING SINGLE-SCATTER (Batch 421).
+    //
+    // Optical depth of this slice and its Beer-Lambert transmittance:
+    //   tau               = σ_t · Δz
+    //   sliceTransmittance = exp(-tau)
+    //
+    // The analytic transmittance-weighted in-scatter integral over the
+    // slice is `sourceRadiance · (1 - sliceTransmittance)` — the fraction
+    // of light the slice absorbs is exactly the fraction it scatters back
+    // toward the eye (albedo folded into `sourceRadiance`). This is
+    // BOUNDED to ≤ sourceRadiance per slice, so accumulating it across the
+    // whole march can never exceed the source radiance no matter how long
+    // the low-altitude horizon path is. That replaces the prior unbounded
+    // `sourceRadiance · density · Δz` term that blew past the 1.0 display
+    // clamp across a <1.2× density window (the whiteout cliff).
+    let tau = max(density * sliceThickness, 0.0);
+    let sliceTransmittance = exp(-tau);
+    let inscatter = sourceRadiance * (1.0 - sliceTransmittance);
 
-    // Standard Beer-Lambert front-to-back integration. The
-    // `(1 - sliceTransmittance) / extinction` factor handles the
-    // case where extinction → 0 (gives the limit, which is the slice
-    // thickness — no division blow-up).
-    let scatterIntegral = select(
-      scattered * sliceThickness,
-      scattered * (1.0 - sliceTransmittance) / max(extinction, 1e-6),
-      extinction > 1e-6,
-    );
-    accumScattered = accumScattered + transmittance * scatterIntegral;
+    // Front-to-back: weight each slice's in-scatter by the transmittance
+    // accumulated from the camera up to this slice, then attenuate the
+    // running transmittance by this slice. `transmittance` is the SAME
+    // energy-conserving product the composite multiplies the scene color
+    // by, so opacity and in-scatter color stay consistent.
+    accumScattered = accumScattered + transmittance * inscatter;
     transmittance = transmittance * sliceTransmittance;
 
     textureStore(

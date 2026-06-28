@@ -83,8 +83,8 @@ no-op on WebGL, like the procedural clouds).
 > **STATUS:** Phase A **SHIPPED** (Batch 415). The **unified conditions→effects hierarchy + auto master**
 > **SHIPPED** (Batch 417a) — `atmosphericConditions.effects.{shimmer,groundFog,optics,precipitation}` nested
 > with a master `effects.auto` that derives every effect from the weather (`computeAtmosphericEffects`);
-> off by default (byte-neutral). Phase B **SHIPPED** (Batch 417b). Phases C–E remain (C/D/E now plug into the
-> 417a hierarchy as their backend).
+> off by default (byte-neutral). Phase B **SHIPPED** (Batch 417b). Phase C **SHIPPED** (Batch 420 wiring +
+> 421 scatter rework). Phases D–E remain (D/E plug into the 417a hierarchy as their backend).
 
 - **Phase A — Conditions→knobs mapper (no new renderer). [SHIPPED Batch 415]** An `AtmosphericEffects` module
   mapping `{T, Td, RH, visibility}` → fog density/tint + atmosphere sat/brightness + `cloudType`/
@@ -98,8 +98,17 @@ no-op on WebGL, like the procedural clouds).
   `performance.now()` epoch-elapsed seconds (f32-safe); `requestRender` each frame while enabled. Probe-
   verified (Principle 8): `probe-heat-shimmer.mjs` — lower-frame warp 79% vs sky 0%, animated 14.7%/350 ms,
   off-stable 0%; lower-frame crop reads as a gentle wavy heat-haze at default intensity.
-- **Phase C — Ground-fog volumetric.** A low-altitude volumetric mist (thin cloud-raymarcher variant or
-  `WebGPUVolumetricFogRenderer` extension) driven by dew-point spread. (~4-6 days.)
+- **Phase C — Ground-fog volumetric. [SHIPPED Batch 420 + 421]** Extended `WebGPUVolumetricFogRenderer` with
+  a near-surface density band (`intensity·peakDensity·exp(-altitude/bandHeight)`) gated on
+  `effects.groundFog` (417a auto-master derives it from the dew-point spread); own-activation path (runs even
+  with the fog master off). Landing it ran the froxel renderer's compute+composite for the FIRST time,
+  surfacing + fixing a chain of latent bugs (Batch 420: WGSL reserved words `enable`/`out`, composite depth
+  sample-type + log-depth decode, a degenerate fullscreen-triangle composite vertex shader) AND the real
+  dynamic-range blocker (Batch 421: Henyey-Greenstein forward-peak overflowing f16 → whiteout; fixed via
+  HG clamping + an energy-conserving single-scatter integration `inscatter = source·(1-exp(-σ·d))`).
+  Probe-verified (Principle 8): `probe-ground-fog.mjs` — graded valley mist (terrain visible through the
+  haze, not a whiteout), ground-concentrated, intensity 0.3/0.6/1.0 monotonic, 0 device errors, default off
+  byte-neutral. This rework unblocked WebGPU volumetric fog generally, not just ground fog.
 - **Phase D — Cold optics (halo / sun-dogs / pillars).** Ice-crystal sky overlay gated on sub-freezing T
   + cirrus. The high-wow "this looks like a real cold sky" effect. (~4-6 days.)
 - **Phase E — Precip + snow.** Precip-type → rain/snow particles + optional ground accumulation. Larger;
