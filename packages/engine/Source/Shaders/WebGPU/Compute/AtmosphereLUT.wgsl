@@ -25,7 +25,10 @@
 // LUT dimensions:
 //   Transmittance:       256×64  (cosZenith × altitude)
 //   Inscatter (single):  256×128 (cosViewZenith × altitude, sun baked per UB)
-//   MultipleScattering:  256×128 (same parameterization as inscatter)
+//   MultipleScattering:  256×128 (Batch 429: sun-relative sky-view domain —
+//                                 relAzimuth × Hillaire-warped view-zenith,
+//                                 same as SkyView; was cosViewZenith × altitude)
+//   SkyView (single):    256×128 (relAzimuth × Hillaire-warped view-zenith)
 //   Irradiance:          256×64  (cosSunZenith × altitude)
 //
 // Dispatch: ceil(width/16) × ceil(height/16) workgroups of 16×16 threads.
@@ -43,9 +46,12 @@
 const PI: f32 = 3.141592653589793;
 const NUM_OPTICAL_DEPTH_SAMPLES: u32 = 16u;
 const NUM_INSCATTER_SAMPLES: u32 = 32u;
-// Multiple-scattering: directions sampled over the gather sphere and steps
-// taken along the view ray when accumulating higher orders. Kept modest so
-// the whole LUT (256×128) precomputes in one dispatch without timing out.
+// Multiple-scattering: legacy gather-sphere sampling constants. Batch 429
+// replaced the isotropic second-order gather with the directional Hillaire
+// "f_ms · single-scatter" proportional model (computeMultipleScattering now
+// reuses the single-scatter inscatter march over NUM_INSCATTER_SAMPLES), so
+// these are no longer consumed by that kernel. Retained (not removed) so any
+// future return to an explicit gather model has its sampling budget on hand.
 const NUM_MS_GATHER_DIRS: u32 = 32u;
 const NUM_MS_RAY_SAMPLES: u32 = 16u;
 // Irradiance: hemisphere directions integrated for the diffuse-sky term.
@@ -331,18 +337,65 @@ fn sampleSingleScatter(altitude: f32, cosViewZenith: f32) -> vec3<f32> {
   return textureSampleLevel(singleScatterTex, lutSampler, vec2<f32>(u, v), 0.0).rgb;
 }
 
+// Build an orthonormal basis (tangent, bitangent, up) around an up vector so
+// the sky-view azimuth can be measured in the local horizon plane. Shared by
+// computeMultipleScattering (Batch 429) and computeSkyView (Batch 428) — both
+// place the sun on the +tangent meridian and sweep the view by relative
+// azimuth. Declared here (above its first caller) per WGSL's order rule.
+fn skyViewBasis(up: vec3<f32>) -> mat3x3<f32> {
+  // Pick a reference axis least aligned with `up` to avoid a degenerate cross.
+  let ref0 = select(
+    vec3<f32>(0.0, 0.0, 1.0),
+    vec3<f32>(1.0, 0.0, 0.0),
+    abs(up.z) > 0.999,
+  );
+  let tangent = normalize(cross(ref0, up));
+  let bitangent = cross(up, tangent);
+  return mat3x3<f32>(tangent, bitangent, up);
+}
+
 // ═══════════════════════════════════════════════════════════
 // MULTIPLE-SCATTERING LUT — higher scattering orders
 // ═══════════════════════════════════════════════════════════
 //
-// Same (cosViewZenith × altitude) parameterization as the single-scatter
-// inscatter LUT. At each step along the view ray we GATHER the already-
-// computed single-scattering radiance arriving from all directions (the
-// in-scattered light field), weight it by the scattering phase + density,
-// and integrate. This is the Bruneton "computeMultipleScattering" gather:
-// the radiance scattered a second+ time toward the viewer. Adding it to the
-// single-scattering term brightens the sky — most visibly near the horizon
-// and on the shadowed limb where single scattering bottoms out.
+// Batch 429 (A-LUT-REPARAM follow-up / SKY-MS all-azimuth) — re-parameterized
+// onto the SAME sun-relative sky-view domain `computeSkyView` uses (Hillaire
+// 2020), so the multiple-scattering add carries a view↔sun AZIMUTH axis and
+// lifts the sky at ALL azimuths, not just the sun meridian.
+//
+//   U axis = relative azimuth between the view direction and the sun,
+//            [0, π] → [0, 1] (the sky is mirror-symmetric about the sun
+//            meridian, so the half-plane covers every azimuth). U=0 looks
+//            toward the sun's azimuth, U=1 anti-sun.
+//   V axis = view zenith with the Hillaire horizon warp
+//              l = cosViewZenith ; V = 0.5 + 0.5*sign(l)*sqrt(|l|)
+//            V=0 down, V=0.5 horizon, V=1 zenith.
+//
+// PREVIOUSLY this table used the inscatter LUT's azimuth-FLAT
+// (cosViewZenith × altitude) mapping with the sun baked into a synthetic Y-up
+// frame, AND an isotropic second-order sphere gather. Both flattened the
+// azimuth signal — the SKY-MS add (Batch 427) was directionally flat (the 427
+// agent measured ~zero off-meridian lift at twilight; a direct LUT readback
+// confirmed max/min ≈ 1.05 across the azimuth axis vs ≈ 22 for the single-
+// scatter sky-view LUT). Two changes fix it:
+//
+//   1. DOMAIN: re-parameterized onto the sky-view (relAzimuth × Hillaire-warped
+//      view-zenith) domain above, with the sun on the canonical meridian at
+//      the observer-relative zenith — so the table now HAS a view↔sun axis.
+//   2. MODEL: replaced the isotropic sphere gather (which integrated the phase
+//      over the whole sphere and averaged the azimuth signal away) with the
+//      directional Hillaire "multiple scattering ≈ f_ms · single scatter"
+//      proportional model. The MS radiance is a BOUNDED multiple of the SAME
+//      single-scatter inscatter integral computeSkyView/computeInscatter use,
+//      evaluated along THIS azimuth-aware view ray. It therefore inherits the
+//      sky-view LUT's azimuth shape EXACTLY (strong toward the sun, weak to the
+//      side, mild back-scatter anti-sun) and — being proportional to the
+//      single-scatter field — is stable across sun elevations instead of
+//      collapsing to zero at a high sun and exploding into a white veil at a
+//      low one (the failure mode of an unbounded explicit second-order gather).
+//
+// Baked at a ground-level observer to match `computeSkyView` (off-meridian MS
+// matters most at ground level, the sky shader's parity reference).
 
 @compute @workgroup_size(16, 16, 1)
 fn computeMultipleScattering(
@@ -361,16 +414,34 @@ fn computeMultipleScattering(
     (f32(gid.y) + 0.5) / f32(dims.y),
   );
 
-  let thickness = extParams.outerRadius - extParams.innerRadius;
-  let cosViewZenith = uv.x * 2.0 - 1.0;
-  let altitude = uv.y * thickness;
+  // Decode the sky-view domain (identical to computeSkyView):
+  //   U → relative azimuth [0, π]
+  //   V → cosViewZenith via the Hillaire warp inverse
+  //         m = 2*V - 1 ; l = sign(m) * m*m
+  let relAzimuth = uv.x * PI;
+  let m = uv.y * 2.0 - 1.0;
+  let cosViewZenith = sign(m) * m * m;
+  let sinViewZenith = sqrt(max(0.0, 1.0 - cosViewZenith * cosViewZenith));
 
+  // Ground-level observer (altitude 0), matching computeSkyView. The synthetic
+  // local-horizon frame: up = +Y, the sun placed on the +tangent meridian at
+  // the observer-relative sun zenith, the view swept by `relAzimuth`. Only the
+  // relative (view, sun) geometry matters for the scattering integral
+  // (rotational symmetry about `up`), so a canonical meridian + view sweep
+  // captures every world azimuth.
+  let altitude = 0.0;
   let origin = vec3<f32>(0.0, extParams.innerRadius + altitude, 0.0);
-  let viewDir = vec3<f32>(
-    sqrt(max(0.0, 1.0 - cosViewZenith * cosViewZenith)),
-    cosViewZenith,
-    0.0,
-  );
+  let up = vec3<f32>(0.0, 1.0, 0.0);
+  let basis = skyViewBasis(up);
+  let tangent = basis[0];
+  let bitangent = basis[1];
+
+  let cosSunZenith = clamp(extParams.sunCosZenith, -1.0, 1.0);
+  let sinSunZenith = sqrt(max(0.0, 1.0 - cosSunZenith * cosSunZenith));
+  let sunDir = normalize(up * cosSunZenith + tangent * sinSunZenith);
+
+  let viewHoriz = tangent * cos(relAzimuth) + bitangent * sin(relAzimuth);
+  let viewDir = normalize(up * cosViewZenith + viewHoriz * sinViewZenith);
 
   let hit = raySphereIntersect(origin, viewDir, extParams.outerRadius);
   if (hit.y < 0.0) {
@@ -383,67 +454,79 @@ fn computeMultipleScattering(
     rayLength = earthHit.x;
   }
 
-  let stepSize = rayLength / f32(NUM_MS_RAY_SAMPLES);
-  let sunDir = extParams.sunDirection;
+  let stepSize = rayLength / f32(NUM_INSCATTER_SAMPLES);
+  // View↔sun scattering cosine — the SAME quantity the single-scatter sky-view
+  // integral uses, so the MS field is directional along the identical azimuth
+  // axis (strongest toward the sun, weak to the side, mild back-scatter anti-
+  // sun). This single per-pixel cosine — rather than an isotropic sphere gather
+  // — is why the re-param now produces a directional all-azimuth MS LUT instead
+  // of the flat veil the pre-429 gather did (the gather integrated the phase
+  // over the whole sphere and averaged the azimuth signal away).
+  let cosViewSun = dot(viewDir, sunDir);
+  let rayleighPhaseVal = rayleighPhase(cosViewSun);
+  let miePhaseVal = miePhase(cosViewSun, extParams.mieAnisotropy);
 
-  // Uniform-ish set of gather directions over the sphere (Fibonacci sphere).
-  // The gather solid-angle weight is 4π / N for an isotropic sample set.
-  let gatherWeight = (4.0 * PI) / f32(NUM_MS_GATHER_DIRS);
-  let golden = PI * (3.0 - sqrt(5.0));
-
-  var accum = vec3<f32>(0.0);
+  // ── Single-scatter inscatter along THIS (azimuth-aware) view ray ──
+  // Re-uses the same Beer-Lambert single-scattering integral as computeSkyView
+  // / computeInscatter: at each step accumulate the sun-attenuated medium
+  // density, then phase-combine. The result inherits the sky-view LUT's azimuth
+  // shape exactly. The multiple-scattering radiance is then a BOUNDED multiple
+  // of this single-scatter field (the Hillaire "multiple scattering ≈ f_ms ·
+  // single scatter" approximation) — which is inherently directional AND stable
+  // across sun elevations (it tracks how bright/dark the single-scatter sky
+  // already is per azimuth, instead of exploding at a low sun the way an
+  // unbounded second-order gather did).
+  var totalRayleigh = vec3<f32>(0.0);
+  var totalMie = vec3<f32>(0.0);
   var rayleighODSum: f32 = 0.0;
   var mieODSum: f32 = 0.0;
 
-  for (var i = 0u; i < NUM_MS_RAY_SAMPLES; i++) {
+  for (var i = 0u; i < NUM_INSCATTER_SAMPLES; i++) {
     let t = (f32(i) + 0.5) * stepSize;
     let point = origin + viewDir * t;
-    let r = length(point);
-    let height = max(0.0, r - extParams.innerRadius);
-    let up = point / max(r, 1.0);
+    let height = max(0.0, length(point) - extParams.innerRadius);
 
     let rayleighDensity = densityAtHeight(height, extParams.rayleighScaleHeight) * stepSize;
     let mieDensity = densityAtHeight(height, extParams.mieScaleHeight) * stepSize;
     rayleighODSum += rayleighDensity;
     mieODSum += mieDensity;
 
-    // Transmittance back to the viewer along the segment travelled so far.
-    let viewAtten = exp(
-      -(extParams.rayleighCoefficient * rayleighODSum + extParams.mieCoefficient * mieODSum)
-    );
+    let sunHit = raySphereIntersect(point, sunDir, extParams.outerRadius);
+    if (sunHit.y > 0.0) {
+      let sunRayLength = sunHit.y;
+      let sunOptDepthR = opticalDepth(point, sunDir, sunRayLength, extParams.rayleighScaleHeight, extParams.innerRadius);
+      let sunOptDepthM = opticalDepth(point, sunDir, sunRayLength, extParams.mieScaleHeight, extParams.innerRadius);
 
-    // Gather the single-scattered radiance arriving at `point` from a
-    // sphere of directions. Each contribution is the single-scattering LUT
-    // value for (this altitude, the incoming direction's zenith) phased by
-    // the angle between the incoming direction and the view direction.
-    var gathered = vec3<f32>(0.0);
-    for (var k = 0u; k < NUM_MS_GATHER_DIRS; k++) {
-      let fk = f32(k) + 0.5;
-      let cz = 1.0 - 2.0 * fk / f32(NUM_MS_GATHER_DIRS); // [-1, 1]
-      let sr = sqrt(max(0.0, 1.0 - cz * cz));
-      let phi = golden * fk;
-      let dir = vec3<f32>(sr * cos(phi), sr * sin(phi), cz);
+      let attenuation = exp(
+        -(extParams.rayleighCoefficient * (rayleighODSum + sunOptDepthR) +
+          extParams.mieCoefficient * (mieODSum + sunOptDepthM))
+      );
 
-      let cosIncZenith = dot(dir, up);
-      let incoming = sampleSingleScatter(height, cosIncZenith);
-
-      // Phase from incoming → view direction (combined Rayleigh + Mie).
-      let cosScatter = dot(dir, viewDir);
-      let phase = rayleighPhase(cosScatter) + miePhase(cosScatter, extParams.mieAnisotropy);
-      gathered += incoming * phase;
+      totalRayleigh += rayleighDensity * attenuation;
+      totalMie += mieDensity * attenuation;
     }
-    gathered *= gatherWeight;
-
-    // Re-scatter the gathered field at the local medium and attenuate back.
-    let localScatter =
-      extParams.rayleighCoefficient * rayleighDensity + extParams.mieCoefficient * mieDensity;
-    accum += gathered * localScatter * viewAtten;
   }
 
-  accum *= extParams.intensity;
+  let rayleighColor = totalRayleigh * extParams.rayleighCoefficient * rayleighPhaseVal;
+  let mieColor = totalMie * extParams.mieCoefficient * miePhaseVal;
+  let singleScatter = rayleighColor + mieColor;
 
-  let msLuminance = dot(accum, vec3<f32>(0.2126, 0.7152, 0.0722));
-  textureStore(multipleScatterOutput, vec2<i32>(gid.xy), vec4<f32>(accum, msLuminance));
+  // Bounded multiple-scattering factor (f_ms). Multiple scattering adds a
+  // fraction of the single-scatter radiance back as higher-order light — large
+  // enough to lift the too-dark single-scatter horizon/limb, small enough that
+  // it never overpowers the single-scatter sky (which would read as a flat
+  // white veil). 0.5 is a perceptual constant in the Hillaire f_ms band; the
+  // final on-screen strength is set by the sky shader's MS_SCALE.
+  let F_MS: f32 = 0.5;
+  let accum = singleScatter * F_MS * extParams.intensity;
+
+  // Clamp before the rgba16float store so no Inf/NaN (or a >f16-max radiance
+  // near the sun, where intensity × single-scatter can be large) reaches the
+  // f16 path. Matches computeSkyView's [0, 60000] guard (rgba16float max finite
+  // ≈ 65504, generous margin).
+  let safe = clamp(accum, vec3<f32>(0.0), vec3<f32>(60000.0));
+  let msLuminance = dot(safe, vec3<f32>(0.2126, 0.7152, 0.0722));
+  textureStore(multipleScatterOutput, vec2<i32>(gid.xy), vec4<f32>(safe, msLuminance));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -541,20 +624,11 @@ fn computeIrradiance(
 // sees Inf/NaN. RGB = combined Rayleigh+Mie inscatter (intensity baked in, to
 // match the single-scatter LUT's convention); A = Mie luminance (unused for
 // now, kept for layout symmetry with the inscatter LUT).
-
-// Build an orthonormal basis (tangent, bitangent, up) around an up vector so
-// the sky-view azimuth can be measured in the local horizon plane.
-fn skyViewBasis(up: vec3<f32>) -> mat3x3<f32> {
-  // Pick a reference axis least aligned with `up` to avoid a degenerate cross.
-  let ref0 = select(
-    vec3<f32>(0.0, 0.0, 1.0),
-    vec3<f32>(1.0, 0.0, 0.0),
-    abs(up.z) > 0.999,
-  );
-  let tangent = normalize(cross(ref0, up));
-  let bitangent = cross(up, tangent);
-  return mat3x3<f32>(tangent, bitangent, up);
-}
+//
+// `skyViewBasis` (the local-horizon orthonormal basis used to place the sun on
+// its canonical meridian and sweep the view azimuth) is declared above the
+// multiple-scattering pass — both kernels share the same sky-view domain
+// (Batch 429), and WGSL requires the helper to be declared before its first use.
 
 @compute @workgroup_size(16, 16, 1)
 fn computeSkyView(

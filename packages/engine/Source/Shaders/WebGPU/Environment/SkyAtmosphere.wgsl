@@ -218,15 +218,19 @@ struct Uniforms {
 @group(1) @binding(2) var inscatterLut: texture_2d<f32>;
 @group(1) @binding(3) var moonTransmittanceLut: texture_2d<f32>;
 @group(1) @binding(4) var moonInscatterLut: texture_2d<f32>;
-// Batch 427 (SKY-MS) — multiple-scattering LUT (256×128, same
-// (cosViewZenith × altitude) parameterization as the single-scatter inscatter
-// LUT). Baked by AtmosphereLUT.wgsl::computeMultipleScattering whenever the sun
-// direction changes (chained after the single-scatter bake). Bound
-// unconditionally so the pipeline layout never changes; the fragment shader
-// only ADDS its contribution when `u.debug.y > 0.5` (the opt-in
-// `skyAtmosphere.multipleScattering` flag, set by the renderer only when the
-// MS LUT is actually baked). With the flag off the texture is never sampled,
-// so the default sky is byte-identical to the single-scatter result.
+// Batch 427 (SKY-MS) + Batch 429 (A-LUT-REPARAM follow-up) — multiple-scattering
+// LUT (256×128). As of Batch 429 it is baked on the SAME sun-relative sky-view
+// domain as the sky-view LUT (binding 6): relative view↔sun azimuth × Hillaire-
+// warped view-zenith — NOT the old azimuth-flat (cosViewZenith × altitude)
+// inscatter mapping. That gives the MS add a view–sun azimuth axis so it lifts
+// the sky at ALL azimuths, closing the off-meridian gap the 427 add had. Baked
+// by AtmosphereLUT.wgsl::computeMultipleScattering whenever the sun direction
+// changes (chained after the single-scatter bake). Bound unconditionally so the
+// pipeline layout never changes; the fragment shader only ADDS its contribution
+// (via `sampleMultipleScatterLut`, same UV mapping as the sky-view sample) when
+// `u.debug.y > 0.5` (the opt-in `skyAtmosphere.multipleScattering` flag, set by
+// the renderer only when the MS LUT is actually baked). With the flag off the
+// texture is never sampled, so the default sky is byte-identical.
 @group(1) @binding(5) var multipleScatterLut: texture_2d<f32>;
 // Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sun-relative
 // sky-view LUT (256×128). Parameterized by (relative view↔sun azimuth ×
@@ -581,6 +585,45 @@ fn sampleSkyViewLut(
   return max(s.rgb, vec3<f32>(0.0));
 }
 
+// Batch 429 (A-LUT-REPARAM follow-up / SKY-MS all-azimuth) — sample the
+// multiple-scattering LUT, which is now baked on the SAME sun-relative sky-view
+// domain as `computeSkyView` (relative view↔sun azimuth × Hillaire-warped
+// view-zenith) instead of the old azimuth-flat (cosViewZenith × altitude)
+// inscatter mapping. The (U, V) derivation here is IDENTICAL to
+// `sampleSkyViewLut` so the MS add agrees directionally with the single-scatter
+// sky-view fast-path: the MS lift is now strongest toward the bright sky and
+// correct at every azimuth, closing the off-meridian gap that left the SKY-MS
+// add (Batch 427) directionally flat. Returns the baked MS radiance (intensity
+// already applied at bake time, matching the inscatter/sky-view convention).
+fn sampleMultipleScatterLut(
+  up: vec3<f32>,
+  rayDir: vec3<f32>,
+  sunDir: vec3<f32>,
+) -> vec3<f32> {
+  let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
+  let vCoord = clamp(
+    0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)),
+    0.0,
+    1.0,
+  );
+
+  let viewHoriz = rayDir - up * cosViewZenith;
+  let sunHoriz = sunDir - up * dot(sunDir, up);
+  let vhLen = length(viewHoriz);
+  let shLen = length(sunHoriz);
+  var cosRelAzimuth: f32 = 1.0;
+  if (vhLen > 1e-4 && shLen > 1e-4) {
+    cosRelAzimuth = clamp(dot(viewHoriz, sunHoriz) / (vhLen * shLen), -1.0, 1.0);
+  }
+  let relAzimuth = acos(cosRelAzimuth); // [0, π]
+  let uCoord = clamp(relAzimuth * (1.0 / PI), 0.0, 1.0);
+
+  let s = textureSampleLevel(
+    multipleScatterLut, lutSampler, vec2<f32>(uCoord, vCoord), 0.0,
+  );
+  return max(s.rgb, vec3<f32>(0.0));
+}
+
 // HSB shift for color correction
 fn rgbToHsb(c: vec3<f32>) -> vec3<f32> {
   let maxC = max(c.r, max(c.g, c.b));
@@ -798,37 +841,48 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     );
   }
 
-  // Batch 427 (SKY-MS) — opt-in multiple-scattering add (Hillaire 2020 /
-  // Bruneton MS). `u.debug.y > 0.5` is the renderer's gated
-  // `skyAtmosphere.multipleScattering` flag (only set when the MS LUT is
-  // baked). The MS LUT shares the single-scatter inscatter (cosViewZenith ×
-  // altitude) parameterization and has the atmosphere `intensity` already
-  // baked in, so we sample it through the same helper as the inscatter LUT
-  // (which does NOT re-apply `u.intensity`) and ADD the linear-radiance result
-  // to the single-scatter color BEFORE tonemapping. This lifts the horizon and
-  // shadowed-limb radiance that single scattering alone leaves too dark, while
-  // the shared tonemap shoulder keeps the zenith from blowing out. The MS LUT
-  // parameterization is sun-relative-imperfect (the full re-param is the
-  // separate keystone item 1.1 / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — this is a
-  // conservative additive term, not a physically exact MS solution. With the
-  // flag off (default) the texture is never sampled and the sky is unchanged.
+  // Batch 427 (SKY-MS) + Batch 429 (A-LUT-REPARAM follow-up) — opt-in
+  // multiple-scattering add (Hillaire 2020 / Bruneton MS). `u.debug.y > 0.5` is
+  // the renderer's gated `skyAtmosphere.multipleScattering` flag (only set when
+  // the MS LUT is baked). As of Batch 429 the MS LUT is baked on the SAME
+  // sun-relative sky-view domain (relative view↔sun azimuth × Hillaire-warped
+  // view-zenith) as `computeSkyView`, so it now carries a view–sun azimuth axis
+  // and lifts the sky at ALL azimuths — not just the meridian. We sample it
+  // through `sampleMultipleScatterLut`, whose (U, V) derivation is identical to
+  // `sampleSkyViewLut`, so the MS add agrees directionally with the
+  // single-scatter sky-view fast-path. The result has `intensity` already baked
+  // in (it is NOT re-applied here) and is ADDED to the single-scatter color
+  // BEFORE tonemapping — lifting the horizon and shadowed-limb radiance that
+  // single scattering alone leaves too dark, while the shared tonemap shoulder
+  // keeps the zenith from blowing out. The off-meridian directional lift the
+  // 427 add was missing is now closed by the re-param. With the flag off
+  // (default) the texture is never sampled and the sky is byte-identical.
   if (u.debug.y > 0.5) {
-    let msColor = sampleScatteringLut(
-      multipleScatterLut, startPoint, rayDir, innerRadius, outerRadius,
-    );
-    // Conservative scale. The baked MS gather (NUM_MS_GATHER_DIRS over the
-    // full sphere × NUM_MS_RAY_SAMPLES) over-estimates the higher-order
-    // radiance, and the LUT is sun-relative-imperfect (no view–sun azimuth
-    // axis — the full re-param is keystone item 1.1 /
-    // NEW-ATMOSPHERE-LUT-SUN-RELATIVE), so it adds a roughly view-uniform
-    // veil rather than a directional limb glow. Added raw it washes the sky
-    // toward white near sunset; even 0.35× over-veils and desaturates the
-    // blue. 0.18× lands the lift in the "tasteful" band — a measurable
-    // deepening of the horizon/limb radiance (single scatter leaves it too
-    // dark) that still preserves the blue hue and the warm sunset band,
-    // reading as a richer atmosphere rather than haze. Perceptual constant,
-    // not physical; the sun-relative re-param would let it climb toward 1.0.
-    const MS_SCALE: f32 = 0.18;
+    // Local vertical at the observer (LUT baked at ground level → up ≈ the
+    // normalized camera position); rayDir + the SUN direction give the azimuth.
+    // The MS LUT was baked against the WORLD sun (frameState.sunDirectionWC),
+    // so the azimuth reference MUST be `u.sunDirectionWC` — NOT `lightDirWC`,
+    // which in the NONE dynamic-lighting mode (the default) is the per-fragment
+    // `normalize(skyPoint)` "lit from above" direction. Using lightDirWC there
+    // measures the azimuth against the wrong vector and flattens the MS add to a
+    // view-uniform veil even though the LUT itself is fully directional. The
+    // sky-view fast-path above sidesteps this because it is gated to non-NONE
+    // lighting (where lightDirWC == u.sunDirectionWC); the MS add is NOT so
+    // gated, so it must reference the sun explicitly.
+    let upDir = normalize(u.cameraPositionWC);
+    let msColor = sampleMultipleScatterLut(upDir, rayDir, u.sunDirectionWC);
+    // Conservative scale. As of Batch 429 the MS LUT carries the FULL single-
+    // scatter sky-view radiance × f_ms (0.5) — i.e. it is now a sizeable
+    // fraction of the sky's own brightness, not the tiny gather output the 427
+    // LUT held. So the perceptual scale here is correspondingly smaller: at the
+    // old 0.18 the add lifted the zenith by ~14% (over-bright veil). 0.02× lands
+    // the lift back in the "tasteful" band — a measurable, now-DIRECTIONAL
+    // deepening of the horizon/limb radiance (clearly stronger toward the bright
+    // sky thanks to the sky-view re-param, see the 22.6× azimuth spread in the
+    // MS LUT) that still preserves the blue hue and the warm sunset band,
+    // reading as a richer all-around atmosphere rather than a flat veil.
+    // Perceptual constant, not physical.
+    const MS_SCALE: f32 = 0.06;
     color = color + max(msColor, vec3<f32>(0.0)) * MS_SCALE;
   }
 
