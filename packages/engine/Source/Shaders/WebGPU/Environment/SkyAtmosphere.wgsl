@@ -154,7 +154,14 @@ struct Uniforms {
   //       dark. The renderer sets this only when the user opt-in
   //       `skyAtmosphere.multipleScattering` is on AND the MS LUT is baked, so
   //       the default (0) is byte-identical to single scatter.
-  //   z = forceSunDirOverride — reserved (Tier 3 sun override)
+  //   z = useSkyViewLut (Batch 428 A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-
+  //       RELATIVE) — when > 0.5 the fragment shader REPLACES the inline
+  //       czm_computeScattering march with a single sample of the sun-relative
+  //       sky-view LUT (Hillaire 2020), which is correct at ANY view azimuth
+  //       relative to the sun (the old inscatter LUT could only represent the
+  //       sun meridian). The renderer sets this only when the user opt-in
+  //       `skyAtmosphere.useScatteringLut` is on AND the sky-view LUT is baked,
+  //       so the default (0) keeps the inline march — byte-identical to today.
   //   w = unused
   debug: vec4<f32>,
   // Phase 1.3c — Dual-light atmosphere scattering. The moon LUT is
@@ -221,6 +228,17 @@ struct Uniforms {
 // MS LUT is actually baked). With the flag off the texture is never sampled,
 // so the default sky is byte-identical to the single-scatter result.
 @group(1) @binding(5) var multipleScatterLut: texture_2d<f32>;
+// Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sun-relative
+// sky-view LUT (256×128). Parameterized by (relative view↔sun azimuth ×
+// Hillaire-warped view-zenith) at a baked ground-level observer, so it can
+// represent sky radiance at ANY view azimuth relative to the sun — unlike the
+// inscatter LUT (binding 2) whose (cosViewZenith × altitude) mapping only
+// covers the sun meridian. Baked by AtmosphereLUT.wgsl::computeSkyView. Bound
+// unconditionally so the pipeline layout never changes; only sampled when
+// `u.debug.z > 0.5` (the opt-in `skyAtmosphere.useScatteringLut` flag, set by
+// the renderer only when the LUT is baked). With the flag off the texture is
+// never sampled → byte-identical to the inline-march sky.
+@group(1) @binding(6) var skyViewLut: texture_2d<f32>;
 
 struct VertexInput {
   @location(0) positionHigh: vec3<f32>,
@@ -517,6 +535,52 @@ fn sampleScatteringLut(
   return s.rgb * orbitFalloff;
 }
 
+// Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sample the
+// sun-relative sky-view LUT. Inverts the parameterization that
+// AtmosphereLUT.wgsl::computeSkyView laid out:
+//   U = relativeAzimuth(viewDir, sunDir) / π     (sky symmetric about the
+//       sun meridian → half-plane [0, π] covers all azimuths)
+//   V = 0.5 + 0.5 * sign(cosViewZenith) * sqrt(|cosViewZenith|)
+//         (Hillaire non-linear horizon warp — concentrates texels at the
+//          horizon band where the sky gradient is steepest)
+// `up` is the local vertical at the observer; `rayDir` and `sunDir` are unit
+// world vectors. Returns the baked combined Rayleigh+Mie inscatter (intensity
+// already applied at bake time, matching the inscatter LUT convention), so the
+// result drops straight into the tonemap like sampleScatteringLut.
+fn sampleSkyViewLut(
+  up: vec3<f32>,
+  rayDir: vec3<f32>,
+  sunDir: vec3<f32>,
+) -> vec3<f32> {
+  let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
+  // Hillaire horizon warp (forward map matching the bake's inverse).
+  let vCoord = clamp(
+    0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)),
+    0.0,
+    1.0,
+  );
+
+  // Relative azimuth between the view and the sun, measured in the horizon
+  // plane (project both onto the plane ⟂ up). Robust near the zenith where the
+  // horizontal projections shrink: fall back to azimuth 0 (toward sun) so the
+  // sample stays continuous rather than spinning.
+  let viewHoriz = rayDir - up * cosViewZenith;
+  let sunHoriz = sunDir - up * dot(sunDir, up);
+  let vhLen = length(viewHoriz);
+  let shLen = length(sunHoriz);
+  var cosRelAzimuth: f32 = 1.0;
+  if (vhLen > 1e-4 && shLen > 1e-4) {
+    cosRelAzimuth = clamp(dot(viewHoriz, sunHoriz) / (vhLen * shLen), -1.0, 1.0);
+  }
+  let relAzimuth = acos(cosRelAzimuth); // [0, π]
+  let uCoord = clamp(relAzimuth * (1.0 / PI), 0.0, 1.0);
+
+  let s = textureSampleLevel(
+    skyViewLut, lutSampler, vec2<f32>(uCoord, vCoord), 0.0,
+  );
+  return max(s.rgb, vec3<f32>(0.0));
+}
+
 // HSB shift for color correction
 fn rgbToHsb(c: vec3<f32>) -> vec3<f32> {
   let maxC = max(c.r, max(c.g, c.b));
@@ -686,8 +750,27 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     u.useLut > 0.5 &&
     cameraHeightAboveShell < (outerRadius - innerRadius) * 2.0;
 
+  // Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sun-relative
+  // sky-view LUT fast-path. Opt-in via `skyAtmosphere.useScatteringLut`
+  // (renderer packs it into `u.debug.z` only when the LUT is baked). Unlike the
+  // inscatter LUT (`useLutPath`), the sky-view LUT carries a view↔sun azimuth
+  // axis, so it is correct off the sun meridian. Gated to NON-NONE dynamic-
+  // lighting (the LUT bakes a single light direction) and to cameras near/inside
+  // the shell (same orbit crossover as the inscatter LUT — above that the inline
+  // march handles camera-outside geometry). Highest priority so the user opt-in
+  // wins over the inscatter fast-path when both happen to be enabled.
+  let useSkyViewLut =
+    !isNoneCase &&
+    u.debug.z > 0.5 &&
+    cameraHeightAboveShell < (outerRadius - innerRadius) * 2.0;
+
   var color: vec3<f32>;
-  if (useLutPath) {
+  if (useSkyViewLut) {
+    // Local vertical at the observer (LUT baked at ground level → up ≈ the
+    // normalized camera position). rayDir + sun direction give the azimuth.
+    let up = normalize(u.cameraPositionWC);
+    color = sampleSkyViewLut(up, rayDir, lightDirWC);
+  } else if (useLutPath) {
     color = sampleScatteringLut(
       inscatterLut, startPoint, rayDir, innerRadius, outerRadius,
     );

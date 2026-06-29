@@ -71,7 +71,12 @@ struct AtmosphereParams {
   _pad1: f32,
   // Sun direction for inscatter LUT
   sunDirection: vec3<f32>,
-  _pad2: f32,
+  // Batch 428 (A-LUT-REPARAM) — cosine of the sun's zenith angle relative to
+  // the OBSERVER's local up. Used by computeSkyView to place the sun on its
+  // canonical synthetic-frame meridian at the correct elevation. The other
+  // kernels bake the sun's elevation implicitly via sunDirection and ignore
+  // this field (previously the `_pad2` padding slot).
+  sunCosZenith: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: AtmosphereParams;
@@ -93,6 +98,11 @@ struct AtmosphereParams {
 @group(1) @binding(3) var singleScatterTex: texture_2d<f32>;
 @group(1) @binding(4) var multipleScatterOutput: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(5) var irradianceOutput: texture_storage_2d<rgba16float, write>;
+// Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sky-view LUT
+// output. Written by `computeSkyView` only; declared on the SAME group-1
+// layout as the MS/irradiance passes so it rides the existing extended bind
+// group. See `computeSkyView` for the parameterization.
+@group(1) @binding(6) var skyViewOutput: texture_storage_2d<rgba16float, write>;
 
 // Density at a given altitude using exponential falloff
 fn densityAtHeight(height: f32, scaleHeight: f32) -> f32 {
@@ -494,4 +504,173 @@ fn computeIrradiance(
   let irradiance = direct + diffuse;
   let irrLuminance = dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722));
   textureStore(irradianceOutput, vec2<i32>(gid.xy), vec4<f32>(irradiance, irrLuminance));
+}
+
+// ═══════════════════════════════════════════════════════════
+// SKY-VIEW LUT — sun-relative all-azimuth sky radiance (Hillaire 2020)
+// ═══════════════════════════════════════════════════════════
+//
+// Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE). The original
+// single-scatter inscatter LUT (computeInscatter, above) parameterizes only
+// (cosViewZenith × altitude) and bakes the sun direction into a SYNTHETIC
+// Y-up frame — so it carries no view↔sun azimuth axis and CANNOT represent
+// sky color off the sun meridian. That table stays untouched (the globe /
+// voxel / splat / point-cloud fog-drape paths sample it directly and are
+// tuned against its mapping). This NEW table adds the missing azimuth axis.
+//
+// Parameterization (Hillaire 2020 "A Scalable and Production Ready Sky and
+// Atmosphere Rendering Technique", sky-view LUT):
+//   U axis = relative azimuth between the view direction and the sun, mapped
+//            [0, π] → [0, 1]. The sky is mirror-symmetric about the sun
+//            meridian, so the half-plane [0, π] covers every azimuth (a view
+//            and its mirror across the meridian share the same radiance).
+//            U=0 looks toward the sun's azimuth, U=1 looks anti-sun.
+//   V axis = view zenith with the Hillaire non-linear horizon warp so the
+//            thin bright horizon band gets resolution:
+//              l = cosViewZenith               (signed, [-1, 1])
+//              V = 0.5 + 0.5 * sign(l) * sqrt(|l|)
+//            V=0 looks straight down, V=0.5 is the horizon, V=1 is the zenith.
+// Sun zenith + altitude are baked from the uniform (params.sunDirection and a
+// fixed ground-level observer altitude — the off-meridian effect matters most
+// at ground level, which is also where the sky shader's non-LUT fallback is
+// the parity reference). The bake re-runs on every sun-direction change via
+// the same dirty gate as the single-scatter LUT.
+//
+// Storage is rgba16float (atmosphere radiance can be large near the sun): the
+// accumulated RGB is clamped before the store so an f16 path downstream never
+// sees Inf/NaN. RGB = combined Rayleigh+Mie inscatter (intensity baked in, to
+// match the single-scatter LUT's convention); A = Mie luminance (unused for
+// now, kept for layout symmetry with the inscatter LUT).
+
+// Build an orthonormal basis (tangent, bitangent, up) around an up vector so
+// the sky-view azimuth can be measured in the local horizon plane.
+fn skyViewBasis(up: vec3<f32>) -> mat3x3<f32> {
+  // Pick a reference axis least aligned with `up` to avoid a degenerate cross.
+  let ref0 = select(
+    vec3<f32>(0.0, 0.0, 1.0),
+    vec3<f32>(1.0, 0.0, 0.0),
+    abs(up.z) > 0.999,
+  );
+  let tangent = normalize(cross(ref0, up));
+  let bitangent = cross(up, tangent);
+  return mat3x3<f32>(tangent, bitangent, up);
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn computeSkyView(
+  @builtin(global_invocation_id) gid: vec3<u32>,
+) {
+  // Self-bound against the storage target's own dimensions (256×128) rather
+  // than params.lutHeight (the shared uniform carries the transmittance height).
+  let dims = textureDimensions(skyViewOutput);
+  if (gid.x >= dims.x || gid.y >= dims.y) {
+    return;
+  }
+
+  let uv = vec2<f32>(
+    (f32(gid.x) + 0.5) / f32(dims.x),
+    (f32(gid.y) + 0.5) / f32(dims.y),
+  );
+
+  // Decode U → relative azimuth [0, π]; V → cosViewZenith via the Hillaire
+  // horizon warp inverse: V = 0.5 + 0.5*sign(l)*sqrt(|l|)  ⇒  given V,
+  //   m = 2*V - 1        (in [-1, 1])
+  //   l = sign(m) * m*m  (cosViewZenith)
+  let relAzimuth = uv.x * PI;
+  let m = uv.y * 2.0 - 1.0;
+  let cosViewZenith = sign(m) * m * m;
+  let sinViewZenith = sqrt(max(0.0, 1.0 - cosViewZenith * cosViewZenith));
+
+  // Ground-level observer (altitude 0): the off-meridian sky differences this
+  // table exists to capture are dominated by the ground/low-altitude view, and
+  // the sky shader's parity reference (inline czm march) is the ground sky.
+  let altitude = 0.0;
+  let origin = vec3<f32>(0.0, extParams.innerRadius + altitude, 0.0);
+  let up = vec3<f32>(0.0, 1.0, 0.0);
+
+  // Place the sun in the local horizon frame at the same zenith as the world
+  // sun, on the +tangent meridian (azimuth 0). The view direction is then built
+  // at `relAzimuth` from that meridian. Only the relative geometry matters for
+  // the scattering integral (rotational symmetry about `up`), so baking the sun
+  // on a canonical meridian and sweeping the view azimuth fully captures the
+  // (view, sun) relationship for any world azimuth.
+  let basis = skyViewBasis(up);
+  let tangent = basis[0];
+  let bitangent = basis[1];
+
+  // The observer-relative sun zenith cosine is packed by JS (dot of the world
+  // sun direction with the observer's local up). The synthetic-frame `up` is
+  // (0,1,0), so dot(sunDirection, up) would only be correct if the sun happened
+  // to share this frame's vertical — which it doesn't for a ground observer at
+  // arbitrary lat/lon. Use the explicit observer-relative cosine instead.
+  let cosSunZenith = clamp(extParams.sunCosZenith, -1.0, 1.0);
+  let sinSunZenith = sqrt(max(0.0, 1.0 - cosSunZenith * cosSunZenith));
+  // Sun on the +tangent meridian (azimuth 0).
+  let sunDir = normalize(up * cosSunZenith + tangent * sinSunZenith);
+
+  // View direction at `relAzimuth` measured from the sun meridian, around `up`.
+  let viewHoriz = tangent * cos(relAzimuth) + bitangent * sin(relAzimuth);
+  let viewDir = normalize(up * cosViewZenith + viewHoriz * sinViewZenith);
+
+  // Intersect the view ray with the atmosphere; clip at the planet surface.
+  let hit = raySphereIntersect(origin, viewDir, extParams.outerRadius);
+  if (hit.y < 0.0) {
+    textureStore(skyViewOutput, vec2<i32>(gid.xy), vec4<f32>(0.0, 0.0, 0.0, 0.0));
+    return;
+  }
+  let earthHit = raySphereIntersect(origin, viewDir, extParams.innerRadius);
+  var rayLength = hit.y;
+  if (earthHit.x > 0.0) {
+    rayLength = earthHit.x;
+  }
+
+  let stepSize = rayLength / f32(NUM_INSCATTER_SAMPLES);
+  let cosScatterAngle = dot(viewDir, sunDir);
+
+  var totalRayleigh = vec3<f32>(0.0);
+  var totalMie = vec3<f32>(0.0);
+  var rayleighODSum: f32 = 0.0;
+  var mieODSum: f32 = 0.0;
+
+  for (var i = 0u; i < NUM_INSCATTER_SAMPLES; i++) {
+    let t = (f32(i) + 0.5) * stepSize;
+    let point = origin + viewDir * t;
+    let height = max(0.0, length(point) - extParams.innerRadius);
+
+    let rayleighDensity = densityAtHeight(height, extParams.rayleighScaleHeight) * stepSize;
+    let mieDensity = densityAtHeight(height, extParams.mieScaleHeight) * stepSize;
+
+    rayleighODSum += rayleighDensity;
+    mieODSum += mieDensity;
+
+    // Sun ray optical depth from the sample point to the top of atmosphere.
+    let sunHit = raySphereIntersect(point, sunDir, extParams.outerRadius);
+    if (sunHit.y > 0.0) {
+      let sunRayLength = sunHit.y;
+      let sunOptDepthR = opticalDepth(point, sunDir, sunRayLength, extParams.rayleighScaleHeight, extParams.innerRadius);
+      let sunOptDepthM = opticalDepth(point, sunDir, sunRayLength, extParams.mieScaleHeight, extParams.innerRadius);
+
+      let attenuation = exp(
+        -(extParams.rayleighCoefficient * (rayleighODSum + sunOptDepthR) +
+          extParams.mieCoefficient * (mieODSum + sunOptDepthM))
+      );
+
+      totalRayleigh += rayleighDensity * attenuation;
+      totalMie += mieDensity * attenuation;
+    }
+  }
+
+  let rayleighPhaseVal = rayleighPhase(cosScatterAngle);
+  let miePhaseVal = miePhase(cosScatterAngle, extParams.mieAnisotropy);
+
+  let rayleighColor = extParams.intensity * totalRayleigh * extParams.rayleighCoefficient * rayleighPhaseVal;
+  let mieColor = extParams.intensity * totalMie * extParams.mieCoefficient * miePhaseVal;
+
+  let combined = rayleighColor + mieColor;
+  let mieLuminance = dot(mieColor, vec3<f32>(0.2126, 0.7152, 0.0722));
+
+  // Clamp before the rgba16float store so no Inf/NaN reaches an f16 path.
+  // rgba16float max finite ≈ 65504; keep a generous margin.
+  let safe = clamp(combined, vec3<f32>(0.0), vec3<f32>(60000.0));
+  textureStore(skyViewOutput, vec2<i32>(gid.xy), vec4<f32>(safe, mieLuminance));
 }

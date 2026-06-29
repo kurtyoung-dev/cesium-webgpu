@@ -59,6 +59,15 @@ export interface AtmosphereLUTResources {
   multipleScatterView: GPUTextureView;
   irradiance: GPUTexture;
   irradianceView: GPUTextureView;
+  // ── Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) ──
+  // Sun-relative sky-view LUT (Hillaire 2020). Shares the inscatter (256×128)
+  // dimensions but a DIFFERENT parameterization (relative-azimuth × warped
+  // view-zenith) so it can represent sky color at any view azimuth relative to
+  // the sun. Written by AtmosphereLUT.wgsl::computeSkyView, sampled by the sky
+  // fragment shader only when `skyAtmosphere.useScatteringLut` is on (opt-in;
+  // default off keeps the inline march, byte-identical to today).
+  skyView: GPUTexture;
+  skyViewView: GPUTextureView;
   // Sampler + group-1 bind group for the extended passes (read single-scatter
   // + transmittance as sampled inputs, write multiple-scatter + irradiance).
   extendedSampler: GPUSampler | null;
@@ -115,6 +124,9 @@ export function ensureAtmosphereLUTResources(
   // dispatchAtmosphereExtendedLUT's computeMultipleScattering pass, surfaced
   // so the sky fragment shader can sample it (opt-in, default off).
   multipleScatterView: GPUTextureView;
+  // Batch 428 (A-LUT-REPARAM) — sun-relative sky-view LUT view, surfaced so
+  // the sky fragment shader can sample it when `useScatteringLut` is on.
+  skyViewView: GPUTextureView;
 } | null {
   if (host._atmosphereLutResources) {
     return {
@@ -123,6 +135,7 @@ export function ensureAtmosphereLUTResources(
       moonTransmittanceView: host._atmosphereLutResources.moonTransmittanceView,
       moonInscatterView: host._atmosphereLutResources.moonInscatterView,
       multipleScatterView: host._atmosphereLutResources.multipleScatterView,
+      skyViewView: host._atmosphereLutResources.skyViewView,
     };
   }
 
@@ -183,6 +196,15 @@ export function ensureAtmosphereLUTResources(
     format: "rgba16float",
     usage,
   });
+  // Batch 428 (A-LUT-REPARAM) — sun-relative sky-view LUT (same 256×128 dims as
+  // the inscatter LUT, different parameterization). Same usage flags so probes
+  // can read it back and the sky shader can sample it.
+  const skyView = device.createTexture({
+    label: "AtmosphereLUT_Sun_SkyView",
+    size: { width, height: inscatterHeight },
+    format: "rgba16float",
+    usage,
+  });
 
   const paramsData = new Float32Array(20);
   const paramsBuffer = device.createBuffer({
@@ -217,6 +239,8 @@ export function ensureAtmosphereLUTResources(
     multipleScatterView: multipleScatter.createView(),
     irradiance,
     irradianceView: irradiance.createView(),
+    skyView,
+    skyViewView: skyView.createView(),
     extendedSampler: null,
     extendedBindGroupLayout: null,
     extendedBindGroup: null,
@@ -233,6 +257,7 @@ export function ensureAtmosphereLUTResources(
     moonTransmittanceView: host._atmosphereLutResources.moonTransmittanceView,
     moonInscatterView: host._atmosphereLutResources.moonInscatterView,
     multipleScatterView: host._atmosphereLutResources.multipleScatterView,
+    skyViewView: host._atmosphereLutResources.skyViewView,
   };
 }
 
@@ -250,6 +275,14 @@ export function dispatchAtmosphereLUT(
     rayleighCoefficient: [number, number, number];
     mieCoefficient: [number, number, number];
     sunDirection: [number, number, number];
+    // Batch 428 (A-LUT-REPARAM) — cosine of the sun's zenith angle relative to
+    // the OBSERVER's local up (dot(sunDir, normalize(cameraWC))). The
+    // single-scatter/MS/irradiance bakes use the synthetic Y-up frame where the
+    // sun's elevation is implicit; the sky-view bake (computeSkyView) needs the
+    // true observer-relative sun zenith to place the sun on its canonical
+    // meridian at the correct elevation. Optional — defaults to sunDirection[1]
+    // (the legacy synthetic-frame behavior) for callers that don't supply it.
+    sunCosZenith?: number;
   },
   target: "sun" | "moon" = "sun",
 ): boolean {
@@ -284,6 +317,13 @@ export function dispatchAtmosphereLUT(
   f[16] = params.sunDirection[0];
   f[17] = params.sunDirection[1];
   f[18] = params.sunDirection[2];
+  // Batch 428 (A-LUT-REPARAM) — observer-relative sun zenith cosine in the
+  // _pad2 slot (f[19]). Consumed only by computeSkyView; the other kernels
+  // ignore it. Default to sunDirection[1] (synthetic-frame .y) when omitted.
+  f[19] =
+    params.sunCosZenith !== undefined
+      ? params.sunCosZenith
+      : params.sunDirection[1];
 
   device.queue.writeBuffer(
     paramsBuffer,
@@ -411,6 +451,8 @@ export function dispatchAtmosphereExtendedLUT(
         texture(3, Stage.COMPUTE),
         storageTexture(4, Stage.COMPUTE, "rgba16float"),
         storageTexture(5, Stage.COMPUTE, "rgba16float"),
+        // Batch 428 (A-LUT-REPARAM) — sky-view LUT storage output.
+        storageTexture(6, Stage.COMPUTE, "rgba16float"),
       ],
     );
   }
@@ -426,6 +468,7 @@ export function dispatchAtmosphereExtendedLUT(
         { binding: 3, resource: lut.inscatterView },
         { binding: 4, resource: lut.multipleScatterView },
         { binding: 5, resource: lut.irradianceView },
+        { binding: 6, resource: lut.skyViewView },
       ],
     });
   }
@@ -481,6 +524,24 @@ export function dispatchAtmosphereExtendedLUT(
     wgsIrr,
     1,
     "computeIrradiance",
+    extendedLayouts,
+  );
+
+  // Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sun-relative
+  // sky-view LUT (Hillaire 2020). Same 256×128 dims as the inscatter LUT, so it
+  // dispatches over the inscatter-height workgroup grid. Reads the transmittance
+  // LUT + scattering constants from the shared group-1 extended bind group;
+  // writes binding 6. Opt-in consumer (`skyAtmosphere.useScatteringLut`) — the
+  // bake runs whenever the extended pass runs but is visually inert until the
+  // sky shader's flag is on.
+  host.dispatchCompute(
+    encoder,
+    ComputeTaskType.ATMOSPHERE_LUT,
+    extendedGroups,
+    wgsX,
+    wgsMS,
+    1,
+    "computeSkyView",
     extendedLayouts,
   );
 

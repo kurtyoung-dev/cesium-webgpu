@@ -74,6 +74,21 @@ class SkyAtmosphere {
      */
     this.multipleScattering = false;
 
+    /**
+     * Replaces the per-pixel sky scattering march with a single sample of a
+     * sun-relative sky-view LUT (Hillaire 2020). Unlike the legacy inscatter
+     * LUT, the sky-view LUT carries a view&ndash;sun azimuth axis, so it is
+     * correct at any view azimuth relative to the sun (warm near the sun,
+     * cooler anti-sun) rather than only on the sun meridian. WebGPU only &mdash;
+     * the WebGL backend has no compute path to bake the LUT, so this flag is a
+     * no-op there. Defaults to <code>false</code>, which keeps the inline
+     * scattering march (byte-identical to the non-LUT sky).
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.useScatteringLut = false;
+
     this._ellipsoid = ellipsoid;
 
     const outerEllipsoidScale = 1.025;

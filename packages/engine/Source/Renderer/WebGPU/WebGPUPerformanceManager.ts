@@ -736,6 +736,9 @@ export class WebGPUPerformanceManager {
     // Batch 427 (SKY-MS) — surfaced so the sky renderer can bind the
     // multiple-scattering LUT at group(1) without a separate accessor call.
     multipleScatterView: GPUTextureView;
+    // Batch 428 (A-LUT-REPARAM) — sun-relative sky-view LUT, surfaced so the
+    // sky renderer can bind it for the opt-in `useScatteringLut` fast-path.
+    skyViewView: GPUTextureView;
   } | null {
     return ensureAtmosphereLUTResourcesHelper(this, device);
   }
@@ -762,12 +765,14 @@ export class WebGPUPerformanceManager {
   getAtmosphereExtendedLUTViews(): {
     multipleScatterView: GPUTextureView;
     irradianceView: GPUTextureView;
+    skyViewView: GPUTextureView;
   } | null {
     const lut = this._atmosphereLutResources;
     if (!lut) return null;
     return {
       multipleScatterView: lut.multipleScatterView,
       irradianceView: lut.irradianceView,
+      skyViewView: lut.skyViewView,
     };
   }
 

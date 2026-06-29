@@ -44,7 +44,7 @@ These build the shared substrate every later item consumes. Do them first.
 
 ---
 
-#### 1.1 — Sun-relative sky/inscatter LUT re-parameterization (`A-LUT-REPARAM`) — **P0, effort L**
+#### 1.1 — Sun-relative sky/inscatter LUT re-parameterization (`A-LUT-REPARAM`) — **P0, effort L** — ✅ SHIPPED Batch 428 (new sky-view LUT; MS-LUT re-param onto the sky-view domain is the remaining follow-up for all-azimuth SKY-MS)
 
 **Merges:** Sky "Sun-relative inscatter LUT + re-enable fast-path" + Reflections "Multi-scatter sky source" + Aerial "froxel LUT" share the *same* re-parameterized table.
 

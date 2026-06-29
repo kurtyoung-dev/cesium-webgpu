@@ -24,6 +24,20 @@
 
 ---
 
+## Batch 428 — A-LUT-REPARAM: sun-relative sky-view LUT keystone (NEW-ATMOSPHERE-LUT-SUN-RELATIVE) (2026-06-29)
+
+**Item:** Phase-1 keystone (P0) — the root blocker `NEW-ATMOSPHERE-LUT-SUN-RELATIVE`. The old WebGPU atmosphere inscatter bake (`AtmosphereLUT.wgsl::computeInscatter`) parameterizes only `(cosViewZenith × altitude)` in a synthetic Y-up frame, so it carries no view↔sun azimuth axis and cannot represent sky color off the sun meridian. That is why `ENABLE_SKY_INSCATTER_LUT=false` and why SKY-MS (Batch 427) gets no directional lift.
+
+**Approach:** Added a NEW sun-relative **sky-view LUT** (Hillaire 2020) rather than re-parameterizing the existing inscatter LUT in place — the inscatter LUT is sampled directly by the globe/voxel/splat/point-cloud + primitive fog-drape paths (`sampleAtmosphereFogLut`, gated on `effects.atmosphereLutControl.x > 0.5`, which is true whenever the perf manager has LUT resources), so re-paramming it would break their output and violate flag-off parity. New table: `computeSkyView` writes a 256×128 rgba16float texture, U = relative view↔sun azimuth `[0,π]`, V = Hillaire horizon-warped view-zenith. Rides the existing group-1 extended bind group (added binding 6), dispatched chained after the single-scatter bake.
+
+**Bug found during bring-up:** first flag-on capture was ~37× too dark (lum 6 vs inline 223) despite correct directionality. Root cause: `computeSkyView` derived the sun's elevation as `dot(sunDirection, (0,1,0)) = sunDir.y` — but `sunDirection` is the WORLD sun direction, whose `.y` is unrelated to the observer's local sun zenith at an arbitrary lat/lon. **Fix:** thread the observer-relative sun-zenith cosine (`dot(sunDir, normalize(cameraWC))`) through the params `_pad2`→`sunCosZenith` slot and place the synthetic-frame sun at that elevation. After the fix: meridian horizon lum 205.8 vs inline 223.1 (close), strong correct azimuthal variation (warm/bright near the sun → cool/dim anti-sun), no seams/banding/f16-blowout.
+
+**Opt-in + parity:** `skyAtmosphere.useScatteringLut` (default false) → `u.debug.z`. Flag-off byte-identical to pre-change (stash-baseline diff **0.0000% mismatch, maxDelta 0**) — the default path never samples the new LUT; the new bake writes a texture nothing reads.
+
+**Files:** `Shaders/WebGPU/Compute/AtmosphereLUT.wgsl` (computeSkyView + sunCosZenith param), `Renderer/WebGPU/WebGPUAtmosphereLUT.ts` (sky-view texture + bind group binding 6 + dispatch + sunCosZenith pack), `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` (skyViewLut binding 6 + sampleSkyViewLut + debug.z path), `Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js` (flag thread + skyViewReady + sunCosZenith bake input + binding 6), `Renderer/WebGPU/WebGPUPerformanceManager.ts` (skyViewView passthrough), `Scene/SkyAtmosphere.js` (`useScatteringLut` property), `Tools/visual-regression/probe-sky-view-lut.mjs` (NEW).
+
+---
+
 ## Batch 423 — Weather particles never rendered: two latent gaps closed by the Phase E wiring (2026-06-28)
 
 **Item:** Atmospheric Effects Phase E (wiring slice) — drive `effects.precipitation` into the existing `WebGPUWeatherRenderer`. While wiring it I found the renderer was effectively dormant: the GPU compute simulation ran every frame, but NO particles were ever drawn.

@@ -208,6 +208,11 @@ function createPipeline(
       // it has. The fragment shader only ADDS the term when the opt-in flag is
       // set, so an empty/placeholder binding is harmless on the default path.
       texture(5, Stage.FRAGMENT),
+      // Batch 428 (A-LUT-REPARAM) — sun-relative sky-view LUT. Same
+      // unconditional-binding rationale: placeholder until the extended bake
+      // runs, real view after; only sampled when the opt-in
+      // `useScatteringLut` flag is set.
+      texture(6, Stage.FRAGMENT),
     ]);
 
   const pipelineLayout = device.createPipelineLayout({
@@ -335,10 +340,17 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           // only when the opt-in flag is set, which the renderer clears
           // whenever compute (and thus the MS bake) is unavailable.
           { binding: 5, resource: cache.placeholderLutView },
+          // Batch 428 (A-LUT-REPARAM) — sky-view placeholder. Same gating.
+          { binding: 6, resource: cache.placeholderLutView },
         ],
       });
     }
-    return { bindGroup: cache.lutBindGroup, useLut: false, msReady: false };
+    return {
+      bindGroup: cache.lutBindGroup,
+      useLut: false,
+      msReady: false,
+      skyViewReady: false,
+    };
   }
 
   // Detect sun-direction change beyond a small threshold so we don't
@@ -434,10 +446,17 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           { binding: 4, resource: cache.placeholderLutView },
           // Batch 427 (SKY-MS) — multiple-scattering placeholder.
           { binding: 5, resource: cache.placeholderLutView },
+          // Batch 428 (A-LUT-REPARAM) — sky-view placeholder.
+          { binding: 6, resource: cache.placeholderLutView },
         ],
       });
     }
-    return { bindGroup: cache.lutBindGroup, useLut: false, msReady: false };
+    return {
+      bindGroup: cache.lutBindGroup,
+      useLut: false,
+      msReady: false,
+      skyViewReady: false,
+    };
   }
 
   // (Re)build the real bind group when the LUT views change. The views
@@ -447,13 +466,18 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
   // exists; otherwise keep the 1×1 placeholder so the layout stays constant
   // on perf-manager stubs that predate the extended LUT.
   const msView = res.multipleScatterView ?? cache.placeholderLutView;
+  // Batch 428 (A-LUT-REPARAM) — bind the real sky-view view when present;
+  // otherwise the 1×1 placeholder so the layout stays constant on perf-manager
+  // stubs that predate the sky-view LUT.
+  const skyViewView = res.skyViewView ?? cache.placeholderLutView;
   if (
     !defined(cache.lutBindGroup) ||
     cache.lutTransmittanceView !== res.transmittanceView ||
     cache.lutInscatterView !== res.inscatterView ||
     cache.lutMoonTransmittanceView !== res.moonTransmittanceView ||
     cache.lutMoonInscatterView !== res.moonInscatterView ||
-    cache.lutMultipleScatterView !== msView
+    cache.lutMultipleScatterView !== msView ||
+    cache.lutSkyViewView !== skyViewView
   ) {
     cache.lutBindGroup = device.createBindGroup({
       label: "SkyAtmosphere LUT bind group",
@@ -465,6 +489,7 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
         { binding: 3, resource: res.moonTransmittanceView },
         { binding: 4, resource: res.moonInscatterView },
         { binding: 5, resource: msView },
+        { binding: 6, resource: skyViewView },
       ],
     });
     cache.lutTransmittanceView = res.transmittanceView;
@@ -472,6 +497,7 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     cache.lutMoonTransmittanceView = res.moonTransmittanceView;
     cache.lutMoonInscatterView = res.moonInscatterView;
     cache.lutMultipleScatterView = msView;
+    cache.lutSkyViewView = skyViewView;
   }
 
   // If the LUT is dirty (first frame, or sun direction moved), dispatch
@@ -493,6 +519,24 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     const innerRadius = Cartesian3.maximumComponent(ellipsoid.radii);
     const outerRadius = innerRadius * ATMOSPHERE_SCALE;
     const intensity = skyAtmosphere.atmosphereLightIntensity || 50.0;
+
+    // Batch 428 (A-LUT-REPARAM) — the sun's zenith cosine relative to the
+    // CAMERA's local up. The single-scatter bake places the sun in a synthetic
+    // Y-up frame where its elevation is implicit, but the sky-view bake
+    // (computeSkyView) needs the true observer-relative sun elevation to place
+    // the sun on its canonical meridian. Computed from the world sun direction
+    // and the camera position. Falls back to the sun's z when the camera
+    // position is degenerate (first frame).
+    const camPos = frameState.camera?.positionWC;
+    let sunCosZenith = sunDir.z;
+    if (defined(camPos)) {
+      const camMag = Cartesian3.magnitude(camPos);
+      if (camMag > 1.0) {
+        sunCosZenith =
+          (sunDir.x * camPos.x + sunDir.y * camPos.y + sunDir.z * camPos.z) /
+          camMag;
+      }
+    }
 
     // Phase 1.4 — atmospheric conditions modulate the scattering
     // coefficients before the LUT compute pass:
@@ -548,6 +592,10 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           rayleighCoefficient,
           mieCoefficient,
           sunDirection: [sunDir.x, sunDir.y, sunDir.z],
+          // Batch 428 (A-LUT-REPARAM) — observer-relative sun zenith for the
+          // chained sky-view bake (computeSkyView). Ignored by the single-
+          // scatter / MS / irradiance kernels.
+          sunCosZenith,
         },
         "sun",
       );
@@ -605,10 +653,20 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     cache.lutReady === true &&
     defined(res.multipleScatterView) &&
     cache.lutMultipleScatterView === res.multipleScatterView;
+  // Batch 428 (A-LUT-REPARAM) — sky-view LUT is "ready" once the sun bake
+  // (which chains computeSkyView via the extended pass) has run AND the real
+  // sky-view view is bound (not the placeholder). Independent of `useLut`: the
+  // sky-view fast-path works even while the inscatter LUT fast-path stays
+  // disabled (ENABLE_SKY_INSCATTER_LUT).
+  const skyViewReady =
+    cache.lutReady === true &&
+    defined(res.skyViewView) &&
+    cache.lutSkyViewView === res.skyViewView;
   return {
     bindGroup: cache.lutBindGroup,
     useLut: cache.lutReady === true,
     msReady,
+    skyViewReady,
   };
 }
 
@@ -622,6 +680,7 @@ function packUniforms(
   skyAtmosphere,
   useLut,
   multipleScatteringEnabled = false,
+  useSkyViewLut = false,
 ) {
   const camera = frameState.camera;
 
@@ -884,7 +943,10 @@ function packUniforms(
   //   z/w: reserved for Tier 3 (LUT inspector, sun-dir override)
   uniformData[52] = frameState.debugDisableAtmosphereScattering ? 1.0 : 0.0;
   uniformData[53] = multipleScatteringEnabled ? 1.0 : 0.0;
-  uniformData[54] = 0.0;
+  // Batch 428 (A-LUT-REPARAM) — debug.z = useSkyViewLut. Set only when the user
+  // opt-in `skyAtmosphere.useScatteringLut` is on AND the sky-view LUT is baked;
+  // default 0 keeps the inline march (byte-identical to today).
+  uniformData[54] = useSkyViewLut ? 1.0 : 0.0;
   uniformData[55] = 0.0;
 
   // Phase 1.3c — Dual-light atmosphere scattering inputs.
@@ -1139,12 +1201,20 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
   // single-scattering sky (the shader skips the add).
   const multipleScatteringEnabled =
     skyAtmosphere.multipleScattering === true && lutInfo.msReady === true;
+  // Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — opt-in
+  // sun-relative sky-view LUT fast-path. Only enabled when the user flips
+  // `skyAtmosphere.useScatteringLut` on AND the extended bake has produced a
+  // real sky-view LUT (skyViewReady). Default-false → byte-identical to the
+  // inline-march sky (the shader's `u.debug.z` stays 0).
+  const useSkyViewLut =
+    skyAtmosphere.useScatteringLut === true && lutInfo.skyViewReady === true;
   packUniforms(
     cache.uniformData,
     frameState,
     skyAtmosphere,
     ENABLE_SKY_INSCATTER_LUT && lutInfo.useLut,
     multipleScatteringEnabled,
+    useSkyViewLut,
   );
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
