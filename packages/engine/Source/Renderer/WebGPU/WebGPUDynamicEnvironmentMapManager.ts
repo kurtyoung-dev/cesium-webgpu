@@ -135,6 +135,12 @@ interface DynEnvMapCache {
   // frame after the first fill), force a re-fill so the cube isn't stuck on the
   // wrong path on a static (non-sun-moving) scene.
   lastUsedMultiScatterLut: boolean;
+  // Item 4.2 (CLOUD-IBL, Batch 441) — the effective cloud coverage the LAST sky
+  // fill was packed with. The update gate re-fills when the live coverage moves
+  // by more than `CLOUD_COVERAGE_REFRESH_EPSILON` so a static (non-sun-moving)
+  // scene still re-darkens its IBL when cloud cover changes. NaN sentinel forces
+  // the first-frame run (same convention as `lastSunDir*`).
+  lastCloudCoverage: number;
 }
 
 /**
@@ -192,6 +198,7 @@ function updateWebGPUDynamicEnvironmentMap(
       lutSkyViewView: null,
       lutMsView: null,
       lastUsedMultiScatterLut: false,
+      lastCloudCoverage: NaN,
     } as DynEnvMapCache;
   }
 
@@ -334,7 +341,21 @@ function updateWebGPUDynamicEnvironmentMap(
       .envMapMultiScatter === true &&
     (frameState.atmosphere?.dynamicLighting ?? 0) !== 0;
   const lutPathChanged = wantLut !== cache.lastUsedMultiScatterLut;
-  if (cache.needsUpdate || sunMoved || lutPathChanged) {
+  // Item 4.2 (CLOUD-IBL, Batch 441) — re-fill when the live cloud coverage moved
+  // (so a static scene re-darkens its IBL as cloud cover changes). The published
+  // coverage is already 0 when the cloud-IBL flags are off, so the off path's
+  // `cloudCoverage` is a constant 0 → this never trips → byte-identical gating.
+  const liveCloudCoverage =
+    (
+      frameState.context as unknown as {
+        _cloudCache?: { iblCoverage?: number };
+      }
+    )._cloudCache?.iblCoverage ?? 0.0;
+  const cloudCoverageMoved = !(
+    Math.abs(liveCloudCoverage - cache.lastCloudCoverage) <
+    CLOUD_COVERAGE_REFRESH_EPSILON
+  );
+  if (cache.needsUpdate || sunMoved || lutPathChanged || cloudCoverageMoved) {
     runProceduralSkyFill(device, cache, manager, frameState);
     runIBLPrefilter(device, cache, frameState);
     // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- project the
@@ -345,6 +366,8 @@ function updateWebGPUDynamicEnvironmentMap(
     cache.lastSunDirX = sunDir.x;
     cache.lastSunDirY = sunDir.y;
     cache.lastSunDirZ = sunDir.z;
+    // Item 4.2 (CLOUD-IBL, Batch 441) — record the coverage this fill used.
+    cache.lastCloudCoverage = liveCloudCoverage;
   }
 
   // Expose cubemap + prefiltered IBL views for shader consumption.
@@ -378,6 +401,12 @@ function updateWebGPUDynamicEnvironmentMap(
 // IBL prefilter on every frame.
 const SUN_REFRESH_EPSILON_SQ = 0.005 * 0.005;
 
+// Item 4.2 (CLOUD-IBL, Batch 441) — minimum cloud-coverage change that triggers
+// an env-cube re-fill. 1/256 ~ one rgba8 quantization step on the cube, so
+// smaller moves are visually imperceptible after the SH projection. NaN-against-
+// anything coerces > epsilon, so the first frame always runs.
+const CLOUD_COVERAGE_REFRESH_EPSILON = 1.0 / 256.0;
+
 // ─── Procedural sky compute pass (Audit A.12, Batch 131) ─────────────────
 //
 // Builds (lazily) and dispatches the procedural sky shader to fill the
@@ -399,9 +428,13 @@ const SUN_REFRESH_EPSILON_SQ = 0.005 * 0.005;
 //   20..22 rayleighCoeff  23 mieAnisotropy
 //   24..26 mieCoeff       27 rayleighScaleHeight
 //   28..30 groundColor    31 mieScaleHeight
-//   32 groundAlbedo  33 dynamicLightingEnum  34 scatteringIntensity  35 _pad0
-const SKY_UNIFORM_SIZE = 144;
-const SKY_UNIFORM_FLOATS = 36;
+//   32 groundAlbedo  33 dynamicLightingEnum  34 scatteringIntensity  35 useMultiScatterLut
+//   36 cloudCoverage  37 cloudPad0  38 cloudPad1  39 cloudPad2
+// Item 4.2 (CLOUD-IBL, Batch 441) grew the struct 144→160 bytes (one new vec4
+// slot) for the effective cloud-coverage scalar. Add-only; the off path packs
+// cloudCoverage = 0 → the WGSL overcast blend is skipped → byte-identical.
+const SKY_UNIFORM_SIZE = 160;
+const SKY_UNIFORM_FLOATS = 40;
 
 // Reused scratch so the per-fill pack does not allocate.
 const scratchPosition = new Cartesian3();
@@ -638,6 +671,17 @@ function runProceduralSkyFill(
   // when the real LUT views are bound; 0 (default / LUTs unbaked) → the inline
   // march, byte-identical parity.
   data[35] = useMultiScatterLut ? 1.0 : 0.0;
+  // Item 4.2 (CLOUD-IBL, Batch 441) — effective cloud coverage [0,1]. The cloud
+  // renderer publishes it onto `context._cloudCache.iblCoverage` every frame,
+  // already gated to 0 unless BOTH `globe.showProceduralClouds` AND
+  // `globe.cloudContributesIBL` are on. 0 (default) → the WGSL overcast blend is
+  // skipped → byte-identical fill. cloudPad0..2 (37..39) stay 0.
+  data[36] =
+    (
+      frameState.context as unknown as {
+        _cloudCache?: { iblCoverage?: number };
+      }
+    )._cloudCache?.iblCoverage ?? 0.0;
   device.queue.writeBuffer(cache.skyUniformBuffer, 0, data);
 
   // Item 2.2 (ENV-AERIAL-MS, Batch 430) — LUT sampler + 1×1 white placeholder

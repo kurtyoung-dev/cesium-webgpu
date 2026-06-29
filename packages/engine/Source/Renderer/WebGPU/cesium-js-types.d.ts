@@ -1082,6 +1082,10 @@ interface CesiumGlobe {
   cloudLayerBottom?: number;
   cloudLayerTop?: number;
   cloudCoverage?: number;
+  // Item 4.2 (CLOUD-IBL, Batch 441) — fold procedural cloud cover into the
+  // dynamic-env-map IBL/SH ambient (overcast → dim, flat lit models / fog
+  // ambient). Default false → byte-identical clear-sky env source.
+  cloudContributesIBL?: boolean;
   cloudQuality?: number;
   cloudDensity?: number;
   cloudWindSpeed?: number;

@@ -176,7 +176,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Default-off → no shadow texture rendered; all consumers read a 1×1 white (no-shadow) fallback → byte-unchanged.
 - **Files:** `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`, `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`, `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`, `Shaders/WebGPU/PostProcess/AerialPerspective.wgsl`, `Shaders/WebGPU/Compute/VolumetricFog.wgsl`, `Renderer/WebGPU/WebGPUVolumetricFogResources.ts`.
 
-#### 4.2 — Cloud-aware dynamic IBL / SH feedback (`CLOUD-IBL`) — **P2, effort L**
+#### 4.2 — Cloud-aware dynamic IBL / SH feedback (`CLOUD-IBL`) — **P2, effort L** — ✅ SHIPPED Batch 441 (globe.cloudContributesIBL; coarse coverage-driven env-cube darkening → SH; full per-face march deferred as CLOUD-IBL-FULL)
 
 **Merges:** Sky "cloud-aware dynamic IBL", cloud "contributes IBL", fog "dynamic sky probe", reflections "clouds folded into env map". All four are the same coupling: fold rendered sky+cloud radiance into the SH-L2 / IBL path so overcast scenes get flat, dim ambient.
 

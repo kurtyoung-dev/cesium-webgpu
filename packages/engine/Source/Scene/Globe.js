@@ -411,6 +411,20 @@ class Globe {
     this.cloudCoverage = 0.5;
 
     /**
+     * When true (and {@link Globe#showProceduralClouds} is on), the WebGPU
+     * dynamic environment map folds the procedural cloud cover into its IBL /
+     * spherical-harmonic ambient: an overcast sky darkens AND flattens the
+     * ambient that lights glTF models / 3D tiles (via the SH-L2 projection of
+     * the env cube) and the sky-LUT-derived fog ambient — like real overcast
+     * light. WebGPU only; a coarse coverage-driven darkening (not a per-face
+     * cloud raymarch). When <code>false</code> (default) the env-map sky fill is
+     * byte-identical to the clear-sky atmosphere source.
+     * @type {boolean}
+     * @default false
+     */
+    this.cloudContributesIBL = false;
+
+    /**
      * Bottom altitude of the cloud layer in meters above sea level.
      * @type {number}
      * @default 1500.0

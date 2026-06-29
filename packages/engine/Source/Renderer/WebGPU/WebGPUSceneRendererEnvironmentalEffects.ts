@@ -36,6 +36,7 @@
  */
 
 import FeatureRendererKey from "../FeatureRendererKey.js";
+import { publishCloudIblCoverage } from "./WebGPUProceduralCloudRenderer.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 
 /**
@@ -99,6 +100,23 @@ export function executeEnvironmentalEffects(
 ): void {
   const { scene, context } = config;
   const globe = scene.globe;
+
+  // Item 4.2 (CLOUD-IBL, Batch 441) — publish the effective cloud coverage the
+  // dynamic-env-map sky fill darkens + flattens its radiance toward. Done FIRST,
+  // before the view-availability early-return and the cloud-render gate, so it
+  // tracks the globe's flags every frame (resets to 0 when clouds /
+  // cloudContributesIBL are off → the env fill stays byte-identical).
+  publishCloudIblCoverage(
+    context,
+    globe as unknown as
+      | {
+          showProceduralClouds?: boolean;
+          cloudContributesIBL?: boolean;
+          cloudCoverage?: number;
+          cloudDensity?: number;
+        }
+      | undefined,
+  );
 
   // Get texture views needed by all environmental effects.
   //

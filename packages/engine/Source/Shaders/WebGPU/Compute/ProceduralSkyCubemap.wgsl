@@ -80,6 +80,23 @@ struct SkyUniforms {
   // (default) the LUT views are bound to a 1x1 placeholder, never sampled, and
   // the fill is byte-identical to the inline march.
   useMultiScatterLut: f32,
+  // Item 4.2 (CLOUD-IBL, Batch 441). EFFECTIVE cloud coverage in [0, 1] that
+  // the env-cube sky radiance is darkened + flattened toward, so an overcast
+  // procedural-cloud sky produces a dim, flat ambient (the SH-L2 projection +
+  // IBL prefilter that read this cube then carry the overcast look into lit
+  // glTF models / 3D tiles, and into the sky-LUT-derived fog ambient that
+  // shares the same atmosphere source). Driven by `globe.cloudCoverage` ×
+  // `globe.cloudDensity`-derived term, gated ON only when BOTH
+  // `globe.showProceduralClouds` AND `globe.cloudContributesIBL` are true; the
+  // renderer packs 0.0 otherwise. With 0.0 (default) the overcast blend below
+  // is skipped entirely → byte-identical to the pre-4.2 fill. This is a COARSE
+  // coverage-driven darkening (a single global scalar lerps the per-texel sky
+  // toward a grey overcast luminance + flattens the sun-relative directionality);
+  // a true per-face cloud raymarch into the cube is deferred (CLOUD-IBL-FULL).
+  cloudCoverage: f32,
+  cloudPad0: f32,
+  cloudPad1: f32,
+  cloudPad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: SkyUniforms;
@@ -376,6 +393,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let lutSky = sampleSkyViewLut(up, dir, sunLocal);
     let lutMs = sampleMultipleScatterLut(up, dir, sunLocal);
     skyColor = lutSky + lutMs * MS_SCALE;
+  }
+
+  // Item 4.2 (CLOUD-IBL, Batch 441) — coarse overcast darkening + flattening.
+  // OFF (u.cloudCoverage == 0, default): this whole block is a no-op
+  // (`coverage` is 0 → both lerps are identity) → byte-identical sky radiance.
+  // ON: an overcast sky scatters the sun into a diffuse grey dome — it is
+  // DIMMER and far less directional than clear sky. We model that as a SINGLE
+  // coverage-driven lerp of the per-texel sky radiance toward a flat, DIMMED
+  // overcast grey BEFORE the sky/ground composite, so the SH projection that
+  // integrates this cube reconstructs a dimmer, flatter ambient (the L1/L2
+  // directional bands collapse → flat; the L0 DC band drops → dim).
+  //
+  // The overcast target is a flat grey (this texel's own luminance, which after
+  // the collapse is the same grey across the whole dome) scaled by a coverage
+  // transmittance well below 1. The transmittance must be aggressive: a flat
+  // grey dome of luminance L deposits MORE irradiance on a vertical facet than
+  // the clear directional sky (whose high radiance is confined to the upper
+  // hemisphere), so a mild scale would let the shadow-fill on the model's side
+  // facets out-weigh the darkening and read BRIGHTER. A dense storm deck
+  // physically transmits only ~10-15% of clear-sky illuminance, so we drive the
+  // full-coverage transmittance to ~0.12 — the integrated ambient then lands
+  // unambiguously DIMMER than clear AND flat (the L1/L2 directional bands
+  // collapse). coverage≈0.5 reads as a hazy bright-overcast (partial collapse
+  // toward a lightly-dimmed grey); coverage→1 as a dim, shadowless storm deck.
+  let coverage = clamp(u.cloudCoverage, 0.0, 1.0);
+  if (coverage > 0.0) {
+    let lum = dot(skyColor, vec3<f32>(0.2126, 0.7152, 0.0722));
+    // Transmittance: clear (1.0) → ~0.12 at full coverage. Applied to the grey
+    // TARGET so the flattened dome is much dimmer than the texel it replaces
+    // (the lerp moves toward this dimmed grey, never above it).
+    let transmit = mix(1.0, 0.12, coverage);
+    let dimGrey = vec3<f32>(lum) * transmit;
+    // How strongly the texel collapses to the dim grey. At full coverage the
+    // sky is almost entirely the flat dim dome (0.95), so directionality + the
+    // bright sun-relative chroma are nearly gone.
+    let blend = coverage * 0.95;
+    skyColor = mix(skyColor, dimGrey, blend);
   }
 
   // 1:1 with ComputeRadianceMapFS: the sky is `skyColor * intensity` and the

@@ -148,6 +148,16 @@ export interface CloudCache {
   shadowSunViewVP: Float32Array; // 16 floats, column-major world→sun-clip
   shadowActive: boolean; // true when the real map was rendered this frame
   shadowAbsorption: number; // absorptionCoeff used so consumers' exp() matches
+  // Item 4.2 (CLOUD-IBL, Batch 441) — effective cloud coverage in [0, 1] that
+  // the dynamic-env-map sky fill darkens + flattens its radiance toward, so an
+  // overcast procedural-cloud sky yields a dim, flat ambient on lit glTF models
+  // / 3D tiles (via the SH-L2 projection of the env cube) and the sky-LUT fog
+  // ambient. Published every frame by the environmental-effects dispatch
+  // (`publishCloudIblCoverage`) — REGARDLESS of frustum culling or whether the
+  // cloud raymarch ran — so toggling `showProceduralClouds` / `cloudContributesIBL`
+  // off resets it to 0 (no staleness). 0 (default / both flags off) → the env
+  // fill's overcast blend is skipped → byte-identical to the pre-4.2 cube.
+  iblCoverage: number;
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -208,9 +218,64 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       shadowSunViewVP: new Float32Array(16),
       shadowActive: false,
       shadowAbsorption: 0.04,
+      iblCoverage: 0.0,
     };
   }
   return context._cloudCache;
+}
+
+/**
+ * Item 4.2 (CLOUD-IBL, Batch 441) — publish the effective cloud coverage the
+ * dynamic-env-map sky fill uses to darken + flatten its radiance. Called every
+ * frame from the environmental-effects dispatch (NOT from the culled raymarch),
+ * so flipping `showProceduralClouds` / `cloudContributesIBL` off immediately
+ * resets the published coverage to 0 (the env fill's overcast blend is then
+ * skipped → byte-identical to the pre-4.2 cube).
+ *
+ * The coverage is a COARSE global scalar: `globe.cloudCoverage` modulated by a
+ * mild `cloudDensity` term (a thin high-coverage haze dims/flattens less than a
+ * dense deck). This is deliberately not a per-face cloud raymarch — that is
+ * deferred (CLOUD-IBL-FULL). Returns 0 unless BOTH `showProceduralClouds` AND
+ * `cloudContributesIBL` are true.
+ */
+export function publishCloudIblCoverage(
+  context: CesiumGraphicsContext,
+  globe:
+    | {
+        showProceduralClouds?: boolean;
+        cloudContributesIBL?: boolean;
+        cloudCoverage?: number;
+        cloudDensity?: number;
+      }
+    | undefined,
+): void {
+  const cache = ensureCloudCache(context);
+  if (
+    !globe ||
+    globe.showProceduralClouds !== true ||
+    globe.cloudContributesIBL !== true
+  ) {
+    cache.iblCoverage = 0.0;
+    return;
+  }
+  const coverage = clampUnit(globe.cloudCoverage ?? 0.5);
+  const density = clampUnit(globe.cloudDensity ?? 0.3);
+  // Density biases the effective coverage modestly: a dense deck reads as
+  // ~fully overcast; a wispy layer at the same coverage transmits more sky.
+  // Map density [0,1] → multiplier [0.7, 1.0] so the floor never erases a
+  // genuinely high coverage.
+  const densityWeight = 0.7 + 0.3 * density;
+  cache.iblCoverage = clampUnit(coverage * densityWeight);
+}
+
+function clampUnit(v: number): number {
+  if (v < 0.0) {
+    return 0.0;
+  }
+  if (v > 1.0) {
+    return 1.0;
+  }
+  return v;
 }
 
 // ── Batch 437 (CLOUD-SHADOWS) — beer-shadow-map constants ──
