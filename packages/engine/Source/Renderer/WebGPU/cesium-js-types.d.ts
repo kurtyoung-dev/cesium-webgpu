@@ -367,6 +367,12 @@ interface CesiumFrameState {
           // noise jitter accumulation for the froxel integrate pass. Default
           // false skips the resolve pass + history blend (byte-identical).
           temporal?: boolean;
+          // Batch 437 (CLOUD-SHADOWS) — opt-in hi-fi cloud shadow in fog. When
+          // true AND `globe.cloudCastShadows` is on, the fog scattering pass
+          // samples the procedural cloud renderer's beer shadow map instead of
+          // the cheap 1-sample local-fbm `sampleCloudShadow`. Default false keeps
+          // the local-fbm path verbatim (byte-identical).
+          cloudShadowHiFi?: boolean;
         };
         lighting?: { enabled?: boolean; moonIntensity?: number };
         varyingAtmosphereDensity?:
@@ -1073,6 +1079,12 @@ interface CesiumGlobe {
   cloudWindDirection?: CesiumCartesian2;
   cloudWeatherMap?: boolean;
   cloudAerialStrength?: number;
+  // Batch 437 (CLOUD-SHADOWS) — opt-in volumetric cloud shadows. When true (and
+  // showProceduralClouds is on), the renderer rasterizes the cloud optical depth
+  // from the sun's ortho view into a beer shadow map sampled by the globe/aerial/
+  // fog/env consumers. Default false → no shadow map, 1x1-white placeholder,
+  // byte-identical.
+  cloudCastShadows?: boolean;
   // Live-tweakable appearance dials (undefined → renderer default applies).
   cloudSilverLiningIntensity?: number;
   cloudPhaseForwardG?: number;

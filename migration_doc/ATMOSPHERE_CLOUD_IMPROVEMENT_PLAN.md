@@ -167,7 +167,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 
 ---
 
-#### 4.1 — Volumetric cloud shadows onto scene + aerial perspective (`CLOUD-SHADOWS`) — **P1, effort L**
+#### 4.1 — Volumetric cloud shadows onto scene + aerial perspective (`CLOUD-SHADOWS`) — **P1, effort L** — ✅ SHIPPED Batch 437 (512² r16float sun-view beer shadow map → terrain + aerial + fog; env-map term deferred as NEW-CLOUD-SHADOW-ENVMAP)
 
 **Merges:** cloud-subsystem "cast shadows", fog "cloud-shadow hi-fi", reflections "screen-space cloud shadows". One coarse cloud-transmittance map serves all three consumers.
 

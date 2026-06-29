@@ -190,6 +190,14 @@ export class WebGPUGlobeSurfaceRenderer {
   public _effectsBGL: GPUBindGroupLayout | null = null;
   public _placeholderEffectsBG: GPUBindGroup | null = null;
   public _oceanNormalSampler: GPUSampler | null = null;
+  // Batch 437 (CLOUD-SHADOWS) — the sun-view beer shadow map view + sampler to bind
+  // at group 2 / bindings 9-10 this frame. Captured each frame from
+  // `context._cloudCache` in `createTileCommands`; null → the group-2 bind group
+  // uses the renderer's own 1×1 placeholder (`_placeholderView` + `_sampler`,
+  // optical depth/white → transmittance 1). Their identity is folded into the
+  // group-2 bind-group cache key so a real-vs-placeholder swap rebuilds the group.
+  private _cloudShadowView: GPUTextureView | null = null;
+  private _cloudShadowSampler: GPUSampler | null = null;
   private _oceanNormalMapCache: Map<string, ImageryGPUTexture> = new Map();
   public _pipelineLayout: GPUPipelineLayout | null = null;
   // Session 65 Cluster 3 — material lives at @group(2) bindings 4-8
@@ -564,6 +572,34 @@ export class WebGPUGlobeSurfaceRenderer {
     // when it already exists. Without this touch the allocator would never
     // initialize and BUG-9's per-frame buffer leak would re-emerge.
     void frameState.context?.uniformAllocator;
+
+    // Batch 437 (CLOUD-SHADOWS) — capture the sun-view beer shadow map view +
+    // sampler from the procedural cloud renderer's cache for the group-2 bind
+    // group. The cloud renderer runs AFTER the globe terrain pass, so this reads
+    // LAST frame's map (one frame late — fine for a slow, soft cloud shadow). When
+    // the feature is off (the default) the cache has no real shadow view, so null
+    // here → the bind group falls back to the renderer's 1×1 placeholder
+    // (transmittance 1, no shadow) → byte-identical.
+    const cloudCacheForShadow = (
+      frameState.context as unknown as {
+        _cloudCache?: {
+          shadowActive?: boolean;
+          shadowView?: GPUTextureView | null;
+          shadowSampler?: GPUSampler | null;
+        };
+      }
+    )?._cloudCache;
+    if (
+      cloudCacheForShadow?.shadowActive === true &&
+      cloudCacheForShadow.shadowView
+    ) {
+      this._cloudShadowView = cloudCacheForShadow.shadowView;
+      this._cloudShadowSampler =
+        cloudCacheForShadow.shadowSampler ?? this._sampler;
+    } else {
+      this._cloudShadowView = null;
+      this._cloudShadowSampler = null;
+    }
 
     // C-R7-RENDERER-MIGRATION (Batch 75) — capture the central pipeline
     // cache from the context. The select methods consult `this._centralPipelineCache`
@@ -1686,10 +1722,19 @@ export class WebGPUGlobeSurfaceRenderer {
     // the per-pass double-create (`bindGroup2` for the translucency
     // pre-passes + `bindGroup2Final` for the color pass resolve to the
     // same key when their resolved resources match).
+    // Batch 437 (CLOUD-SHADOWS) — bindings 9/10: the sun-view beer shadow map +
+    // sampler, captured this frame from the cloud cache (real map when
+    // globe.cloudCastShadows is on, else the renderer's 1×1 placeholder →
+    // transmittance 1, no shadow). Folded into the cache key so a real-vs-
+    // placeholder swap rebuilds the group.
+    const cloudShadowView = this._cloudShadowView ?? this._placeholderView!;
+    const cloudShadowSampler = this._cloudShadowSampler ?? this._sampler!;
+
     const cache = this._bindGroupCache;
     const key =
       `2|${cache.idOf(waterMaskView)}|${cache.idOf(normalMapView)}|` +
-      `${cache.idOf(matUBO)}|${cache.idOf(matImage)}|${cache.idOf(matHeights)}`;
+      `${cache.idOf(matUBO)}|${cache.idOf(matImage)}|${cache.idOf(matHeights)}|` +
+      `${cache.idOf(cloudShadowView)}`;
     return cache.getOrCreate(key, () =>
       device.createBindGroup({
         layout: this._bindGroupLayout2!,
@@ -1703,6 +1748,8 @@ export class WebGPUGlobeSurfaceRenderer {
           { binding: 6, resource: this._sampler! },
           { binding: 7, resource: matHeights },
           { binding: 8, resource: this._sampler! },
+          { binding: 9, resource: cloudShadowView },
+          { binding: 10, resource: cloudShadowSampler },
         ],
       }),
     );

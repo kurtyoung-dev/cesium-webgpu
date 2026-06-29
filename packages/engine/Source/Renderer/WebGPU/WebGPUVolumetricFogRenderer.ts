@@ -152,7 +152,16 @@ export type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
 // to the slice depth, so the OFF default integrate output is byte-identical
 // to pre-Batch-435 (the jitter is the ONLY thing offsets 92–95 drive, and
 // it is gated to zero on the parity path).
-export const VOLUMETRIC_FOG_PARAMS_FLOATS = 96;
+//
+// 116 floats (464 bytes) after Batch 437 (CLOUD-SHADOWS) — appended 20 floats
+// at offsets 96–115 for the HI-FI cloud shadow (sample the beer shadow map
+// instead of the local-fbm approximation):
+//   96..99   cloudShadowHiFi      (enable, absorption, strength, _pad)
+//   100..115 cloudShadowSunViewVP (mat4 — world ECEF → sun ortho clip)
+// When `enable` (offset 96) < 0.5 the scattering kernel's `sampleCloudShadow`
+// takes the existing local-fbm branch byte-for-byte, so the OFF default
+// consumes NONE of these floats → byte-identical to pre-Batch-437.
+export const VOLUMETRIC_FOG_PARAMS_FLOATS = 116;
 export const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
 /** CompositeUniforms float count: mat4 (16) + 2 × vec4 (8) = 24 floats. */
@@ -295,6 +304,15 @@ export interface VolumetricFogResources {
   // bind group. Tracked so the rebuild only fires on an actual change.
   scatteringBoundTransmittanceView: GPUTextureView | null;
   scatteringBoundShBuffer: GPUBuffer | null;
+  // Batch 437 (CLOUD-SHADOWS) — beer shadow map (binding 11) + sampler (12).
+  // The placeholder (1×1 zero r16float → transmittance 1) is bound when the hi-fi
+  // flag is off; the real cloud beer shadow map is bound when on. `scatteringBound
+  // BeerShadowView` tracks the currently-bound view so the rebuild only fires on a
+  // change.
+  beerShadowPlaceholderTexture: GPUTexture;
+  beerShadowPlaceholderView: GPUTextureView;
+  beerShadowSampler: GPUSampler;
+  scatteringBoundBeerShadowView: GPUTextureView | null;
 
   // Params uniform for the compute passes.
   paramsBuffer: GPUBuffer;
@@ -481,6 +499,8 @@ class WebGPUVolumetricFogRenderer {
     // Batch 431 (FOG-IBL-AMBIENT) — release the sky-LUT / IBL placeholders.
     r.iblTransmittancePlaceholderTexture.destroy();
     r.iblShPlaceholderBuffer.destroy();
+    // Batch 437 (CLOUD-SHADOWS) — release the beer-shadow-map placeholder.
+    r.beerShadowPlaceholderTexture.destroy();
     // Batch 435 (FOG-TEMPORAL) — release the temporal ping-pong history pair +
     // placeholder + uniform buffer.
     r.temporalHistoryTexture[0]?.destroy();
@@ -1064,6 +1084,43 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[94] = 0.0;
     r.paramsData[95] = 0.0;
 
+    // Batch 437 (CLOUD-SHADOWS) — HI-FI cloud shadow uniforms (offsets 96..115).
+    // Gated to "vf.cloudShadowHiFi AND the cloud renderer rendered a real beer
+    // shadow map this frame (globe.cloudCastShadows on)". When off, offset 96 is
+    // 0.0 → the scattering kernel's `sampleCloudShadow` takes the legacy local-fbm
+    // branch byte-for-byte (parity default). The cloud renderer runs in the same
+    // frame's environmental-effects chain BEFORE the fog, so the map + matrix are
+    // current.
+    const cloudCacheForFog = (
+      frameState.context as unknown as {
+        _cloudCache?: {
+          shadowActive?: boolean;
+          shadowView?: GPUTextureView | null;
+          shadowSunViewVP?: Float32Array;
+          shadowAbsorption?: number;
+        };
+      }
+    )?._cloudCache;
+    const cloudShadowHiFiOn =
+      vf?.cloudShadowHiFi === true &&
+      cloudCacheForFog?.shadowActive === true &&
+      !!cloudCacheForFog.shadowView;
+    r.paramsData[96] = cloudShadowHiFiOn ? 1.0 : 0.0;
+    r.paramsData[97] = cloudCacheForFog?.shadowAbsorption ?? 0.04;
+    r.paramsData[98] = 1.0; // strength
+    r.paramsData[99] = 0.0;
+    if (cloudShadowHiFiOn && cloudCacheForFog?.shadowSunViewVP) {
+      const vp = cloudCacheForFog.shadowSunViewVP;
+      for (let i = 0; i < 16; i++) r.paramsData[100 + i] = vp[i];
+    } else {
+      // Identity (never used when the gate is off).
+      for (let i = 0; i < 16; i++)
+        r.paramsData[100 + i] = i % 5 === 0 ? 1.0 : 0.0;
+    }
+    const desiredBeerShadowView = cloudShadowHiFiOn
+      ? cloudCacheForFog!.shadowView!
+      : r.beerShadowPlaceholderView;
+
     // Rebuild the scattering bind group when the shadow view changes OR
     // (Batch 431) when the IBL transmittance LUT view / SH buffer changes.
     // The placeholder views are the initial state; once a real shadow map
@@ -1079,7 +1136,8 @@ class WebGPUVolumetricFogRenderer {
     if (
       r.scatteringBoundShadowView !== desiredShadowView ||
       r.scatteringBoundTransmittanceView !== desiredTransmittanceView ||
-      r.scatteringBoundShBuffer !== desiredShBuffer
+      r.scatteringBoundShBuffer !== desiredShBuffer ||
+      r.scatteringBoundBeerShadowView !== desiredBeerShadowView
     ) {
       r.scatteringBindGroup = device.createBindGroup({
         label: "VolumetricFog_ScatteringBindGroup",
@@ -1094,11 +1152,15 @@ class WebGPUVolumetricFogRenderer {
           { binding: 8, resource: desiredTransmittanceView },
           { binding: 9, resource: r.iblLutSampler },
           { binding: 10, resource: { buffer: desiredShBuffer } },
+          // Batch 437 (CLOUD-SHADOWS) — beer shadow map + sampler.
+          { binding: 11, resource: desiredBeerShadowView },
+          { binding: 12, resource: r.beerShadowSampler },
         ],
       });
       r.scatteringBoundShadowView = desiredShadowView;
       r.scatteringBoundTransmittanceView = desiredTransmittanceView;
       r.scatteringBoundShBuffer = desiredShBuffer;
+      r.scatteringBoundBeerShadowView = desiredBeerShadowView;
     }
 
     device.queue.writeBuffer(

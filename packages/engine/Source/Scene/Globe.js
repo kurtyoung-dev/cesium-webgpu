@@ -457,6 +457,20 @@ class Globe {
      */
     this.cloudAerialStrength = 1.0;
 
+    /**
+     * When true (and {@link Globe#showProceduralClouds} is on), the WebGPU
+     * procedural cloud renderer rasterizes the cloud layer's optical depth from
+     * the SUN's orthographic view into a low-res "beer shadow map" and samples it
+     * to darken lit ground, attenuate aerial-perspective inscatter, and (with the
+     * fog hi-fi sub-flag) shade volumetric fog beneath the clouds. Opt-in. WebGPU
+     * only. Default <code>false</code> renders NO shadow map and every consumer
+     * reads a 1x1-white (transmittance=1) placeholder, so the default is
+     * byte-identical to leaving this off.
+     * @type {boolean}
+     * @default false
+     */
+    this.cloudCastShadows = false;
+
     // ── Live-tweakable cloud appearance dials (WebGPU procedural clouds) ──
     // Each is `undefined` by default so the renderer's built-in value applies;
     // set any of them (directly, or via `scene.globe.atmosphericConditions.clouds.*`)

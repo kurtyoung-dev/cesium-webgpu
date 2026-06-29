@@ -160,6 +160,18 @@ struct CameraUniforms {
   // parity). When `globe.pickable` is true this carries the real pick-ID
   // color and `scene.pick` returns the Globe.
   pickColor: vec4<f32>,
+  // ─── Batch 437 (CLOUD-SHADOWS): sun-view beer shadow map projection ───
+  // `cloudShadowVP` maps a WORLD (ECEF) position into the sun's orthographic clip
+  // space; the FS projects the fragment, reads the cloud OPTICAL DEPTH column from
+  // `cloudShadowMap` (group 2 binding 9), and darkens the lit ground by
+  // transmittance = exp(-depth·absorption). `cloudShadowControl`: x = enabled
+  // (1.0 when globe.cloudCastShadows AND a real map was rendered), y =
+  // absorptionCoeff (so exp() matches the cloud render), z = strength (0..1
+  // darkening scale), w = reserved. Additive tail-append — no existing offset
+  // shifts; (identity, 0,0,0,0) by default so the FS gate (`x > 0.5`) stays closed
+  // and the render is byte-identical.
+  cloudShadowVP: mat4x4<f32>,
+  cloudShadowControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -338,6 +350,14 @@ struct TileUniforms {
 @group(2) @binding(1) var waterMaskSampler: sampler;
 @group(2) @binding(2) var oceanNormalMap: texture_2d<f32>;
 @group(2) @binding(3) var oceanNormalSampler: sampler;
+// ─── Batch 437 (CLOUD-SHADOWS): sun-view beer shadow map (Group 2, 9/10) ───
+// Single-channel cloud OPTICAL DEPTH rendered from the sun's ortho view. Bound
+// UNCONDITIONALLY (the TS layout always declares 9/10) so the pipeline layout never
+// forks; a 1×1 zero placeholder (optical depth 0 → transmittance 1, no shadow) is
+// bound when globe.cloudCastShadows is off. Sampled only inside the
+// `cloudShadowControl.x > 0.5` gate, so the off path never reads it.
+@group(2) @binding(9) var cloudShadowMap: texture_2d<f32>;
+@group(2) @binding(10) var cloudShadowSampler: sampler;
 
 // ─── Effects bind group: shadow receive + clipping planes (Group 3) ───
 // Phase 5 WGF-1: trailing two vec4 slots hold the precomputed
@@ -1900,6 +1920,33 @@ fn applyImageryLayer(
 // ─── Perceptual luminance ───
 fn luminance(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// ─── Batch 437 (CLOUD-SHADOWS): sample the sun-view beer shadow map ───
+// Projects the fragment's WORLD (ECEF) position into the sun's ortho clip space,
+// reads the cloud OPTICAL DEPTH column (the cloud thickness between the fragment and
+// the sun), and returns a transmittance multiplier `mix(1, exp(-depth·absorption),
+// strength)` in [0,1]. Returns 1.0 (no shadow) when: the feature is off
+// (`cloudShadowControl.x <= 0.5`), or the fragment projects outside the shadow map
+// footprint (far terrain) — soft local effect, no hard cutoff. The off path never
+// calls this (the call site gates on `cloudShadowControl.x > 0.5`), so the 1×1 zero
+// placeholder is never read in the default render.
+fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
+  let clip = camera.cloudShadowVP * vec4<f32>(worldPos, 1.0);
+  // Ortho VP → w is 1, but guard anyway.
+  let ndc = clip.xyz / max(abs(clip.w), 1e-6);
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    return 1.0; // outside the footprint — no shadow
+  }
+  let opticalDepth = textureSampleLevel(cloudShadowMap, cloudShadowSampler, uv, 0.0).r;
+  let absorption = camera.cloudShadowControl.y;
+  let strength = camera.cloudShadowControl.z;
+  // Beer-Lambert transmittance, floored so even a fully overcast column reads as a
+  // realistic shadow (~0.35) rather than pure black — real cloud shadows still let
+  // ambient/skylight through. `strength` scales the darkening 0..1.
+  let transmittance = max(exp(-opticalDepth * absorption), 0.35);
+  return mix(1.0, transmittance, clamp(strength, 0.0, 1.0));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -3508,6 +3555,14 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   // when directional lighting is off. `shadowFactor` is 1.0 (no-op) when no
   // shadow mode is active, so lighting-only scenes are unchanged.
   color = color * shadowFactor;
+
+  // Batch 437 (CLOUD-SHADOWS) — darken lit ground under the procedural clouds by
+  // the sun-view beer shadow map. Gated on `cloudShadowControl.x` so the default
+  // (globe.cloudCastShadows off) leaves `color` byte-identical (the placeholder is
+  // never read). `v_positionMC` is the fragment's full ECEF world position.
+  if (camera.cloudShadowControl.x > 0.5) {
+    color = color * sampleCloudGroundShadow(input.v_positionMC);
+  }
 
   // ┌─────────────────────────────────────────────────────────────────────┐
   // │ PAIR-SECTION: Ground Atmosphere + Fog (WGSL) ↔ GLSL                  │

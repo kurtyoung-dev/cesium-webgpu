@@ -840,6 +840,27 @@ function updateAerialPerspectiveFrameData(
   const lightIntensity =
     sceneAny?.skyAtmosphere?.atmosphereLightIntensity ?? 50.0;
 
+  // Batch 437 (CLOUD-SHADOWS) — feed the sun-view beer shadow map + its world→
+  // sun-clip matrix from the procedural cloud renderer's cache so the inscatter
+  // dims under the clouds. The cloud renderer runs in the same frame's
+  // environmental-effects chain (BEFORE post-process), so the map + matrix are
+  // current. When globe.cloudCastShadows is off, `shadowActive` is false → the
+  // effect binds the placeholder + the disabled control → byte-identical.
+  const cloudCache = (
+    scene as unknown as {
+      context?: {
+        _cloudCache?: {
+          shadowActive?: boolean;
+          shadowView?: GPUTextureView | null;
+          shadowSunViewVP?: Float32Array;
+          shadowAbsorption?: number;
+        };
+      };
+    }
+  )?.context?._cloudCache;
+  const csActive = cloudCache?.shadowActive === true && !!cloudCache.shadowView;
+  fx.setCloudShadowView(csActive ? cloudCache!.shadowView! : null);
+
   fx.setFrameData({
     cameraPositionWC: [cam.x, cam.y, cam.z],
     innerRadius: AP_WGS84_MAX_RADIUS,
@@ -855,6 +876,9 @@ function updateAerialPerspectiveFrameData(
     atmosphereThickness: AP_ATMOSPHERE_THICKNESS,
     inverseProjection: us.inverseProjection,
     inverseView: us.inverseView,
+    cloudShadowVP: csActive ? cloudCache!.shadowSunViewVP : undefined,
+    cloudShadowActive: csActive,
+    cloudShadowAbsorption: cloudCache?.shadowAbsorption ?? 0.04,
   });
 }
 

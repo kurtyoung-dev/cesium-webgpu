@@ -116,7 +116,15 @@ export interface GlobePipelineEntry {
 // DP-H44 (Batch 360) — +4 for the `pickColor` tail vec4 (globe pick-ID color,
 // read only by GlobeTerrain.wgsl::fragmentPickMain). Additive tail append: no
 // existing offset shifts. Carries (0,0,0,0) unless `globe.pickable` is set.
-export const CAMERA_UNIFORM_FLOATS = 148;
+// Batch 437 (CLOUD-SHADOWS) — +20 for the sun-view beer shadow map:
+//   cloudShadowVP (mat4, offsets 148-163) — world ECEF → sun ortho clip
+//   cloudShadowControl (vec4, offsets 164-167) — x=enabled, y=absorption,
+//     z=strength, w=reserved.
+// Additive tail-append (no existing offset shifts). Carries (identity, 0,0,0,0)
+// unless `globe.cloudCastShadows` is set AND the cloud renderer rendered a map,
+// so the FS gate (`cloudShadowControl.x > 0.5`) stays closed by default → the
+// shadow sample is skipped and the render is byte-identical.
+export const CAMERA_UNIFORM_FLOATS = 168;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):
@@ -212,16 +220,17 @@ export const MAX_IMAGERY_LAYERS = 16;
 // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — fragment-stage
 // sampled textures the globe terrain pipeline layout needs BESIDES the
 // group-1 imagery slots:
-//   group 2 (4): water mask, ocean normal, material image, material heights
+//   group 2 (5): water mask, ocean normal, material image, material heights,
+//     cloud shadow map (Batch 437, binding 9)
 //   group 3 effects (11): shadow depth, clipping planes, polygon SDF,
 //     2× atmosphere LUT, CSM cascade array, 4× edge/globe-depth, point-
 //     light cube depth (see WebGPUEffectsBindGroup.js bindings 1/3/5/7/8/
 //     11/12-15/17 — the effects BGL is shared with model/primitive
 //     pipelines and is NOT reducible per-consumer).
-// Full layout total = 15 + MAX_IMAGERY_LAYERS = 31. Keep this in sync
+// Full layout total = 16 + MAX_IMAGERY_LAYERS = 32. Keep this in sync
 // when adding sampled textures to group 2 or the effects BGL — drift
 // here silently re-breaks default-limit adapters.
-export const GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES = 15;
+export const GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES = 16;
 
 /**
  * Per-device imagery slot count for the globe terrain layout.

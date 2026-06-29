@@ -125,6 +125,29 @@ export interface CloudCache {
   lutPlaceholderTexture: GPUTexture | null;
   lutPlaceholderView: GPUTextureView | null; // 1×1 black, bound when off/unbaked
   lutSampler: GPUSampler | null;
+  // ── Batch 437 (CLOUD-SHADOWS) — sun-view "beer shadow map" ──
+  // Allocated ONLY when `globe.cloudCastShadows` is on; otherwise everything here
+  // stays null and consumers read the shared 1×1-white placeholder
+  // (`shadowPlaceholderView`, optical depth 0 → transmittance 1). The map stores the
+  // cloud optical depth (Σ density·length) along the sun ray, rasterized from the
+  // sun's orthographic view by the `cloudShadowMain` entry point. `shadowSunViewVP`
+  // is the world→sun-clip matrix consumers project a world point through to read the
+  // column's optical depth; `shadowActive` is the per-frame "real map is bound" flag
+  // (consumers gate on it so the off path never samples a stale map).
+  shadowTexture: GPUTexture | null;
+  shadowView: GPUTextureView | null; // r16float, sun-view optical depth
+  shadowPlaceholderTexture: GPUTexture | null;
+  shadowPlaceholderView: GPUTextureView | null; // 1×1 r16float zero (no shadow)
+  shadowSampler: GPUSampler | null; // linear clamp
+  shadowPipeline: GPURenderPipeline | null;
+  shadowBindGroupLayout: GPUBindGroupLayout | null;
+  shadowUniformBuffer: GPUBuffer | null; // CloudShadowUniforms (binding 13)
+  shadowUniformData: Float32Array;
+  shadowSize: number; // current square shadow-map resolution
+  // Stashed each frame for the consumers (globe terrain / aerial / fog / env):
+  shadowSunViewVP: Float32Array; // 16 floats, column-major world→sun-clip
+  shadowActive: boolean; // true when the real map was rendered this frame
+  shadowAbsorption: number; // absorptionCoeff used so consumers' exp() matches
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -172,10 +195,41 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       lutPlaceholderTexture: null,
       lutPlaceholderView: null,
       lutSampler: null,
+      shadowTexture: null,
+      shadowView: null,
+      shadowPlaceholderTexture: null,
+      shadowPlaceholderView: null,
+      shadowSampler: null,
+      shadowPipeline: null,
+      shadowBindGroupLayout: null,
+      shadowUniformBuffer: null,
+      shadowUniformData: new Float32Array(CLOUD_SHADOW_UNIFORM_FLOATS),
+      shadowSize: 0,
+      shadowSunViewVP: new Float32Array(16),
+      shadowActive: false,
+      shadowAbsorption: 0.04,
     };
   }
   return context._cloudCache;
 }
+
+// ── Batch 437 (CLOUD-SHADOWS) — beer-shadow-map constants ──
+// CloudShadowUniforms = sunViewInvVP(16) + sunDirAndSteps(4) = 20 floats.
+const CLOUD_SHADOW_UNIFORM_FLOATS = 20;
+const CLOUD_SHADOW_UNIFORM_BYTES = CLOUD_SHADOW_UNIFORM_FLOATS * 4;
+// Square low-res shadow map. 512² is plenty for the soft, slowly-moving cloud
+// shadow; the bilinear sampler + the cloud's own softness hide the resolution.
+const CLOUD_SHADOW_SIZE = 512;
+// r16float: a single optical-depth channel, filterable, half the bandwidth of rgba.
+const CLOUD_SHADOW_FORMAT: GPUTextureFormat = "r16float";
+// Sun-view ortho footprint half-extent (metres) centered on the camera ground
+// point. Covers the near visible terrain where cast shadows read; far terrain
+// falls outside and reads "no shadow" (transmittance 1) — acceptable for a soft
+// local effect (the alternative, a planet-wide ortho, would blur every shadow to
+// nothing at this resolution).
+const CLOUD_SHADOW_FOOTPRINT_M = 60000.0;
+// Light-march steps for the optical-depth accumulation along the sun ray.
+const CLOUD_SHADOW_LIGHT_STEPS = 16;
 
 // V9 (Batch 432) — half-res target format. rgba16float so the premultiplied HDR
 // cloud radiance survives the bilateral interpolation without banding.
@@ -838,6 +892,304 @@ function resolveCloudQuality(inputs: QualityResolverInputs): {
   return { maxSteps: 48, lightSteps: 4 };
 }
 
+// ─── Batch 437 (CLOUD-SHADOWS) — small column-major mat4 helpers ───
+// Self-contained (no Core import in this hot file). All matrices are length-16
+// Float32Array in Cesium's COLUMN-MAJOR convention (the same convention the WGSL
+// `mat4x4` + every other cloud-renderer pack uses).
+
+// result = a × b (both column-major).
+function mul4(a: Float32Array, b: Float32Array, out: Float32Array): void {
+  for (let c = 0; c < 4; c++) {
+    const b0 = b[c * 4 + 0];
+    const b1 = b[c * 4 + 1];
+    const b2 = b[c * 4 + 2];
+    const b3 = b[c * 4 + 3];
+    for (let r = 0; r < 4; r++) {
+      out[c * 4 + r] =
+        a[0 * 4 + r] * b0 +
+        a[1 * 4 + r] * b1 +
+        a[2 * 4 + r] * b2 +
+        a[3 * 4 + r] * b3;
+    }
+  }
+}
+
+// Invert a column-major 4×4 (general; the sun-view VP is affine·ortho so it always
+// inverts). Returns false (identity-filled) on a singular matrix.
+function invert4(m: Float32Array, out: Float32Array): boolean {
+  const m0 = m[0],
+    m1 = m[1],
+    m2 = m[2],
+    m3 = m[3];
+  const m4 = m[4],
+    m5 = m[5],
+    m6 = m[6],
+    m7 = m[7];
+  const m8 = m[8],
+    m9 = m[9],
+    m10 = m[10],
+    m11 = m[11];
+  const m12 = m[12],
+    m13 = m[13],
+    m14 = m[14],
+    m15 = m[15];
+  const b00 = m0 * m5 - m1 * m4;
+  const b01 = m0 * m6 - m2 * m4;
+  const b02 = m0 * m7 - m3 * m4;
+  const b03 = m1 * m6 - m2 * m5;
+  const b04 = m1 * m7 - m3 * m5;
+  const b05 = m2 * m7 - m3 * m6;
+  const b06 = m8 * m13 - m9 * m12;
+  const b07 = m8 * m14 - m10 * m12;
+  const b08 = m8 * m15 - m11 * m12;
+  const b09 = m9 * m14 - m10 * m13;
+  const b10 = m9 * m15 - m11 * m13;
+  const b11 = m10 * m15 - m11 * m14;
+  let det =
+    b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (det === 0) {
+    out.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    return false;
+  }
+  det = 1.0 / det;
+  out[0] = (m5 * b11 - m6 * b10 + m7 * b09) * det;
+  out[1] = (m2 * b10 - m1 * b11 - m3 * b09) * det;
+  out[2] = (m13 * b05 - m14 * b04 + m15 * b03) * det;
+  out[3] = (m10 * b04 - m9 * b05 - m11 * b03) * det;
+  out[4] = (m6 * b08 - m4 * b11 - m7 * b07) * det;
+  out[5] = (m0 * b11 - m2 * b08 + m3 * b07) * det;
+  out[6] = (m14 * b02 - m12 * b05 - m15 * b01) * det;
+  out[7] = (m8 * b05 - m10 * b02 + m11 * b01) * det;
+  out[8] = (m4 * b10 - m5 * b08 + m7 * b06) * det;
+  out[9] = (m1 * b08 - m0 * b10 - m3 * b06) * det;
+  out[10] = (m12 * b04 - m13 * b02 + m15 * b00) * det;
+  out[11] = (m9 * b02 - m8 * b04 - m11 * b00) * det;
+  out[12] = (m5 * b07 - m4 * b09 - m6 * b06) * det;
+  out[13] = (m0 * b09 - m1 * b07 + m2 * b06) * det;
+  out[14] = (m13 * b01 - m12 * b03 - m14 * b00) * det;
+  out[15] = (m8 * b03 - m9 * b01 + m10 * b00) * det;
+  return true;
+}
+
+// Build the sun-view ORTHOGRAPHIC view-projection (world → sun-clip, column-major)
+// covering a square footprint of half-extent `halfExtent` centered on `center`
+// (the camera ground point), looking ALONG -sunDir (sun behind the eye). WebGPU
+// clip z ∈ [0,1]. The lookAt eye is pushed `dist` up the sun ray so the whole
+// shell is between the near/far planes; near/far bracket [0, 2·dist].
+//
+// RTE: the lookAt translation cancels the large `center` magnitude, so the
+// world→eye product for points NEAR the footprint stays small (f32-safe). The
+// shell radius (~6.4e6 m) only enters via `center` (the surface point), not as a
+// raw coordinate in the matrix product the consumers evaluate.
+function buildSunViewOrthoVP(
+  center: [number, number, number],
+  sunDir: [number, number, number],
+  halfExtent: number,
+  out: Float32Array,
+  invOut: Float32Array,
+): void {
+  // Normalize sun dir.
+  let sx = sunDir[0],
+    sy = sunDir[1],
+    sz = sunDir[2];
+  const sl = Math.hypot(sx, sy, sz) || 1.0;
+  sx /= sl;
+  sy /= sl;
+  sz /= sl;
+  // Distance to push the eye up the sun ray — comfortably above the shell top so
+  // the ortho near plane sits above the clouds and far plane below the surface.
+  const dist = halfExtent * 2.0 + 12000.0;
+  const eye: [number, number, number] = [
+    center[0] + sx * dist,
+    center[1] + sy * dist,
+    center[2] + sz * dist,
+  ];
+  // Forward = (center - eye) normalized = -sunDir.
+  const fx = -sx,
+    fy = -sy,
+    fz = -sz;
+  // Up reference: avoid degeneracy when the sun is near the world Z axis.
+  let upx = 0,
+    upy = 0,
+    upz = 1;
+  if (Math.abs(fz) > 0.99) {
+    upx = 0;
+    upy = 1;
+    upz = 0;
+  }
+  // right = normalize(cross(forward, up)).
+  let rx = fy * upz - fz * upy;
+  let ry = fz * upx - fx * upz;
+  let rz = fx * upy - fy * upx;
+  const rl = Math.hypot(rx, ry, rz) || 1.0;
+  rx /= rl;
+  ry /= rl;
+  rz /= rl;
+  // trueUp = cross(right, forward).
+  const ux = ry * fz - rz * fy;
+  const uy = rz * fx - rx * fz;
+  const uz = rx * fy - ry * fx;
+  // View matrix (column-major). Rows are right/up/-forward; translation = -R·eye.
+  const tx = -(rx * eye[0] + ry * eye[1] + rz * eye[2]);
+  const ty = -(ux * eye[0] + uy * eye[1] + uz * eye[2]);
+  const tz = rx * 0; // placeholder, replaced below
+  // Standard right-handed lookAt: z-axis points back along +forward·(-1).
+  // view = [ right.x  right.y  right.z  tx
+  //          up.x     up.y     up.z     ty
+  //         -fwd.x   -fwd.y   -fwd.z    tz
+  //          0        0        0        1 ]
+  const zx = -fx,
+    zy = -fy,
+    zz = -fz;
+  const tzz = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+  const view = new Float32Array([
+    rx,
+    ux,
+    zx,
+    0,
+    ry,
+    uy,
+    zy,
+    0,
+    rz,
+    uz,
+    zz,
+    0,
+    tx,
+    ty,
+    tzz,
+    1,
+  ]);
+  void tz;
+  // Orthographic projection (WebGPU z ∈ [0,1]). Symmetric L/R/B/T = ±halfExtent.
+  const near = 1.0;
+  const far = dist * 2.0;
+  const invR = 1.0 / halfExtent; // 1/(right) with left=-right
+  const invT = 1.0 / halfExtent;
+  const invFN = 1.0 / (far - near);
+  // Column-major ortho: x' = x/halfExtent, y' = y/halfExtent,
+  // z' = (near - z_eye)/(far-near) mapped to [0,1] for a -z forward eye space.
+  const proj = new Float32Array([
+    invR,
+    0,
+    0,
+    0,
+    0,
+    invT,
+    0,
+    0,
+    0,
+    0,
+    -invFN,
+    0,
+    0,
+    0,
+    -near * invFN,
+    1,
+  ]);
+  mul4(proj, view, out);
+  invert4(out, invOut);
+}
+
+// (Re)allocate the shadow map + pipeline + uniform buffer + placeholder. Builds the
+// dedicated shadow BGL (only the bindings `cloudShadowMain` references: CloudUniforms
+// at 3, weather 4/5, noise 6/7/8, CloudShadowUniforms at 13). Returns false (caller
+// falls back to the placeholder) if anything can't allocate. Size validation per
+// CLAUDE.md: the placeholder is built once; the map is fixed-size (re-create only
+// guarded by `shadowSize`).
+function ensureShadowResources(device: GPUDevice, cache: CloudCache): boolean {
+  // 1×1 r16float ZERO placeholder (optical depth 0 → transmittance 1 = no shadow).
+  if (!cache.shadowPlaceholderView) {
+    const ph = device.createTexture({
+      label: "CloudShadow Placeholder (1x1 zero r16float)",
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: CLOUD_SHADOW_FORMAT,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // f16(0.0) = 0x0000.
+    device.queue.writeTexture(
+      { texture: ph },
+      new Uint16Array([0]),
+      { bytesPerRow: 2, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    cache.shadowPlaceholderTexture = ph;
+    cache.shadowPlaceholderView = ph.createView();
+  }
+  if (!cache.shadowSampler) {
+    cache.shadowSampler = device.createSampler({
+      label: "CloudShadow Sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+  // The shadow target (square, fixed size).
+  if (!cache.shadowTexture || cache.shadowSize !== CLOUD_SHADOW_SIZE) {
+    cache.shadowTexture?.destroy();
+    cache.shadowTexture = device.createTexture({
+      label: "CloudShadow Map (sun-view optical depth)",
+      size: {
+        width: CLOUD_SHADOW_SIZE,
+        height: CLOUD_SHADOW_SIZE,
+        depthOrArrayLayers: 1,
+      },
+      format: CLOUD_SHADOW_FORMAT,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    cache.shadowView = cache.shadowTexture.createView();
+    cache.shadowSize = CLOUD_SHADOW_SIZE;
+  }
+  if (!cache.shadowUniformBuffer) {
+    cache.shadowUniformBuffer = device.createBuffer({
+      label: "CloudShadow UB",
+      size: Math.max(CLOUD_SHADOW_UNIFORM_BYTES, 256),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+  if (!cache.shadowPipeline) {
+    cache.shadowBindGroupLayout = makeBindGroupLayout(
+      device,
+      "CloudShadow BGL",
+      [
+        uniformBuffer(3, Stage.FRAGMENT), // CloudUniforms (shell/wind/density)
+        texture(4, Stage.FRAGMENT, { viewDimension: "2d-array" }), // weather
+        sampler(5, Stage.FRAGMENT),
+        texture(6, Stage.FRAGMENT, { viewDimension: "3d" }), // shape noise
+        texture(7, Stage.FRAGMENT, { viewDimension: "3d" }), // detail noise
+        sampler(8, Stage.FRAGMENT),
+        uniformBuffer(13, Stage.FRAGMENT), // CloudShadowUniforms (sun-view)
+      ],
+    );
+    const shaderModule = device.createShaderModule({
+      label: "ProceduralClouds shader (shadow pass)",
+      code: ProceduralCloudsWGSL,
+    });
+    cache.shadowPipeline = device.createRenderPipeline({
+      label: "CloudShadow pipeline",
+      layout: device.createPipelineLayout({
+        label: "CloudShadow pipeline layout",
+        bindGroupLayouts: [cache.shadowBindGroupLayout],
+      }),
+      vertex: { module: shaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: shaderModule,
+        entryPoint: "cloudShadowMain",
+        targets: [{ format: CLOUD_SHADOW_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+  }
+  return (
+    !!cache.shadowView &&
+    !!cache.shadowPipeline &&
+    !!cache.shadowBindGroupLayout &&
+    !!cache.shadowUniformBuffer
+  );
+}
+
 /**
  * Execute the procedural cloud rendering pass.
  * Called after globe rendering, before post-processing.
@@ -1302,6 +1654,91 @@ export function executeProceduralClouds(
     mainEncoder ??
     device.createCommandEncoder({ label: "ProceduralClouds (orphan)" });
 
+  // ── Batch 437 (CLOUD-SHADOWS) — render the sun-view beer shadow map ──
+  // Opt-in via `globe.cloudCastShadows`. Default OFF → `shadowActive` stays false,
+  // the real map is never rendered, and consumers read the 1×1-white placeholder
+  // (transmittance 1, no shadow) → byte-identical. When ON we rasterize the cloud
+  // optical depth from the sun's ortho view into `cache.shadowView` using the SAME
+  // CloudUniforms + weather/noise the visible march uses, so the cast shadow tracks
+  // the rendered cloud field exactly. The sun-view ortho VP is stashed on the cache
+  // for the consumers (globe terrain reads last frame's; aerial/fog this frame's).
+  cache.shadowActive = false;
+  if (globe.cloudCastShadows === true) {
+    const shadowOk = ensureShadowResources(device, cache);
+    if (!shadowOk) {
+      // Permanent null-target sentinel (CLAUDE.md): the feature is on but the map
+      // couldn't allocate — fall back to the placeholder (no shadow). Real bug.
+      console.error(
+        `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow map allocation failed; falling back to no-shadow placeholder.`,
+      );
+    } else {
+      // Footprint center = camera ground point (camera position projected to the
+      // ellipsoid surface along its own radial). Sun-relative ortho keeps the
+      // matrix product f32-safe near the footprint.
+      const cpx = camPos?.x ?? 0;
+      const cpy = camPos?.y ?? 0;
+      const cpz = camPos?.z ?? 0;
+      const camLen = Math.hypot(cpx, cpy, cpz) || 1.0;
+      const surf = 6378137.0;
+      const groundCenter: [number, number, number] = [
+        (cpx / camLen) * surf,
+        (cpy / camLen) * surf,
+        (cpz / camLen) * surf,
+      ];
+      const sdx = sunDir?.x ?? 0;
+      const sdy = sunDir?.y ?? 1;
+      const sdz = sunDir?.z ?? 0;
+      buildSunViewOrthoVP(
+        groundCenter,
+        [sdx, sdy, sdz],
+        CLOUD_SHADOW_FOOTPRINT_M,
+        cache.shadowSunViewVP,
+        cache.shadowUniformData, // first 16 floats = sunViewInvVP
+      );
+      // CloudShadowUniforms: [0..15] inverse VP (written by buildSunViewOrthoVP into
+      // shadowUniformData), [16..19] sunDir + light steps.
+      cache.shadowUniformData[16] = sdx;
+      cache.shadowUniformData[17] = sdy;
+      cache.shadowUniformData[18] = sdz;
+      cache.shadowUniformData[19] = CLOUD_SHADOW_LIGHT_STEPS;
+      device.queue.writeBuffer(
+        cache.shadowUniformBuffer!,
+        0,
+        cache.shadowUniformData,
+      );
+      cache.shadowAbsorption = 0.04; // matches CloudUniforms.absorptionCoeff
+
+      const shadowBindGroup = device.createBindGroup({
+        layout: cache.shadowBindGroupLayout!,
+        entries: [
+          { binding: 3, resource: { buffer: cache.uniformBuffer! } },
+          { binding: 4, resource: weatherView },
+          { binding: 5, resource: cache.weatherSampler! },
+          { binding: 6, resource: noise.shapeView },
+          { binding: 7, resource: noise.detailView },
+          { binding: 8, resource: noise.sampler },
+          { binding: 13, resource: { buffer: cache.shadowUniformBuffer! } },
+        ],
+      });
+      const shadowPass = encoder.beginRenderPass({
+        label: "CloudShadow map pass",
+        colorAttachments: [
+          {
+            view: cache.shadowView!,
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      });
+      shadowPass.setPipeline(cache.shadowPipeline!);
+      shadowPass.setBindGroup(0, shadowBindGroup);
+      shadowPass.draw(3);
+      shadowPass.end();
+      cache.shadowActive = true;
+    }
+  }
+
   if (
     halfResActive &&
     cache.halfView &&
@@ -1532,6 +1969,20 @@ export function destroyProceduralCloudResources(
     cache.lutPlaceholderTexture = null;
     cache.lutPlaceholderView = null;
     cache.lutSampler = null;
+    // Batch 437 (CLOUD-SHADOWS) — release the beer-shadow-map resources.
+    cache.shadowTexture?.destroy();
+    cache.shadowTexture = null;
+    cache.shadowView = null;
+    cache.shadowPlaceholderTexture?.destroy();
+    cache.shadowPlaceholderTexture = null;
+    cache.shadowPlaceholderView = null;
+    cache.shadowSampler = null;
+    cache.shadowPipeline = null;
+    cache.shadowBindGroupLayout = null;
+    cache.shadowUniformBuffer?.destroy();
+    cache.shadowUniformBuffer = null;
+    cache.shadowSize = 0;
+    cache.shadowActive = false;
     cache.initialized = false;
     context._cloudCache = undefined;
   }

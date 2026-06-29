@@ -143,6 +143,23 @@ struct CloudUniforms {
 @group(0) @binding(10) var cloudMultipleScatterLut: texture_2d<f32>;
 @group(0) @binding(11) var cloudTransmittanceLut: texture_2d<f32>;
 @group(0) @binding(12) var cloudLutSampler: sampler;
+// Batch 437 (CLOUD-SHADOWS) — sun-view "beer shadow map" pass uniforms. Bound ONLY
+// in the dedicated shadow pipeline's bind group (binding 13); the main cloud color
+// pass never declares it (a fragment that doesn't reference a binding doesn't need
+// it in the pipeline layout, WebGPU validates per-entry-point). The shadow pass
+// reuses the SAME `CloudUniforms` (binding 3) + weather/noise bindings (4-8) so its
+// `cloudDensity`/`cloudBaseDensity` oracle is byte-identical to the visible march —
+// the cast shadow therefore tracks exactly the rendered cloud field.
+struct CloudShadowUniforms {
+  // Inverse of the sun-view orthographic view-projection (clip → world). Used to
+  // reconstruct, for each shadow-map texel, the world point on the shell mid-plane
+  // that the column passes through; the march walks the sun ray from that point.
+  sunViewInvVP: mat4x4<f32>,
+  // xyz = normalized sun direction (world); w = light-march step count for the
+  // optical-depth accumulation along the sun ray (kept low — this is a coarse map).
+  sunDirAndSteps: vec4<f32>,
+};
+@group(0) @binding(13) var<uniform> cloudShadow: CloudShadowUniforms;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -1140,4 +1157,66 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Full-res path — UNCHANGED legacy composite (byte-identical to pre-V9).
   let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
   return vec4<f32>(finalColor, sceneColor.a);
+}
+
+// ─── Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map ───
+// Rasterized from the SUN's orthographic view into a low-res single-channel target.
+// For each shadow-map texel we reconstruct the world point on the cloud-shell
+// MID plane that the texel's column passes through (via the sun-view inverse VP),
+// then march the cloud DENSITY along the sun ray across the full shell thickness,
+// accumulating OPTICAL DEPTH (Σ density·stepSize). Consumers project a world point
+// into this map and read transmittance = exp(-opticalDepth·absorption): the cloud
+// thickness between that point and the sun. Reuses `cloudDensity` so the cast
+// shadow tracks the EXACT rendered cloud field (no separate fbm approximation).
+//
+// Clamp the accumulated optical depth (f16 target — keep it well under 65504 and in
+// a range that exp() resolves; absorption is applied in the consumers so this stores
+// the raw density·length integral).
+@fragment
+fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
+  let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
+  let outerR = cloud.planetRadius + cloud.cloudLayerTop;
+  let layerThickness = max(outerR - innerR, 1.0);
+
+  // Reconstruct the shell mid-plane world point this shadow texel covers. NDC z=0
+  // is an arbitrary plane in the ortho frustum; we only need a ray ORIGIN on the
+  // column, then we re-anchor it onto the shell by intersecting the sun ray with
+  // the outer shell sphere. UV (0..1) → NDC (-1..1), WebGPU y-down → flip.
+  let ndc = vec3<f32>(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0, 0.0);
+  let worldH = cloudShadow.sunViewInvVP * vec4<f32>(ndc, 1.0);
+  let columnPoint = worldH.xyz / worldH.w;
+
+  let sunDir = normalize(cloudShadow.sunDirAndSteps.xyz);
+  // The sun ray travels TOWARD the surface as -sunDir (sunDir points to the sun).
+  // March from the column's entry at the OUTER shell down through to the INNER shell.
+  let rayDir = -sunDir;
+  let tOuter = raySphereIntersect(columnPoint, rayDir, outerR);
+  let tInner = raySphereIntersect(columnPoint, rayDir, innerR);
+  if (tOuter.y < 0.0) {
+    // Column misses the shell entirely (sun grazing past the limb) — no shadow.
+    return 0.0;
+  }
+  // Enter at the near outer-shell crossing (clamped to in-front), exit at the far
+  // outer crossing OR the near inner crossing if the ray dips below the inner shell.
+  var tStart = max(tOuter.x, 0.0);
+  var tEnd = tOuter.y;
+  if (tInner.x > 0.0) { tEnd = min(tEnd, tInner.x); }
+  if (tEnd <= tStart) {
+    return 0.0;
+  }
+
+  let steps = max(2, i32(cloudShadow.sunDirAndSteps.w));
+  let stepSize = (tEnd - tStart) / f32(steps);
+  var opticalDepth: f32 = 0.0;
+  for (var i: i32 = 0; i < steps; i = i + 1) {
+    let t = tStart + (f32(i) + 0.5) * stepSize;
+    let samplePos = columnPoint + rayDir * t;
+    let altitude = length(samplePos) - cloud.planetRadius;
+    let hf = clamp((altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
+    opticalDepth += cloudDensity(samplePos, hf) * stepSize;
+  }
+  // Clamp to keep the f16 store finite and the consumer's exp() in range. The
+  // raw integral over a dense ~2.5 km shell with densityMultiplier~0.3 is O(10²-10³);
+  // cap well under f16 max so a runaway density can't NaN the map.
+  return clamp(opticalDepth, 0.0, 8000.0);
 }

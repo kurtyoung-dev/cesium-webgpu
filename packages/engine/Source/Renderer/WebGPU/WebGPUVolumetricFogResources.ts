@@ -188,6 +188,12 @@ export function buildVolumetricFogResources(
       texture(8, Stage.COMPUTE, { sampleType: "float" }),
       sampler(9, Stage.COMPUTE),
       uniformBuffer(10, Stage.COMPUTE),
+      // Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 11) + a
+      // linear sampler (binding 12). Bound unconditionally (1×1 zero placeholder
+      // when the hi-fi flag is off → the legacy local-fbm path runs) so the layout
+      // never forks; the WGSL samples them only inside `cloudShadowHiFi.x >= 0.5`.
+      texture(11, Stage.COMPUTE, { sampleType: "float" }),
+      sampler(12, Stage.COMPUTE),
     ],
   );
 
@@ -380,6 +386,35 @@ export function buildVolumetricFogResources(
   // backends that don't zero-init new buffers (160 bytes = 40 floats).
   device.queue.writeBuffer(iblShPlaceholderBuffer, 0, new Float32Array(40));
 
+  // Batch 437 (CLOUD-SHADOWS) — 1×1 ZERO r16float beer-shadow-map placeholder
+  // (optical depth 0 → transmittance 1, no shadow) + a linear sampler. Bound at
+  // bindings 11/12 when the hi-fi flag is off (the WGSL `sampleCloudShadow` then
+  // takes the legacy local-fbm branch and never reads these). The real beer map is
+  // swapped in by the renderer's per-frame bind-group rebuild when hi-fi is on.
+  const beerShadowPlaceholderTexture = device.createTexture({
+    label: "VolumetricFog_BeerShadowPlaceholder",
+    size: { width: 1, height: 1 },
+    format: "r16float",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  // f16(0.0) = 0x0000.
+  device.queue.writeTexture(
+    { texture: beerShadowPlaceholderTexture },
+    new Uint16Array([0]),
+    { bytesPerRow: 2 },
+    { width: 1, height: 1 },
+  );
+  const beerShadowPlaceholderView = beerShadowPlaceholderTexture.createView({
+    label: "VolumetricFog_BeerShadowPlaceholder_View",
+  });
+  const beerShadowSampler = device.createSampler({
+    label: "VolumetricFog_BeerShadowSampler",
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  });
+
   const scatteringBindGroup = device.createBindGroup({
     label: "VolumetricFog_ScatteringBindGroup",
     layout: scatteringBindGroupLayout,
@@ -393,6 +428,9 @@ export function buildVolumetricFogResources(
       { binding: 8, resource: iblTransmittancePlaceholderView },
       { binding: 9, resource: iblLutSampler },
       { binding: 10, resource: { buffer: iblShPlaceholderBuffer } },
+      // Batch 437 — beer shadow map placeholder until hi-fi flag turns it on.
+      { binding: 11, resource: beerShadowPlaceholderView },
+      { binding: 12, resource: beerShadowSampler },
     ],
   });
 
@@ -617,6 +655,11 @@ export function buildVolumetricFogResources(
     iblShPlaceholderBuffer,
     scatteringBoundTransmittanceView: iblTransmittancePlaceholderView,
     scatteringBoundShBuffer: iblShPlaceholderBuffer,
+    // Batch 437 (CLOUD-SHADOWS) — beer shadow map placeholder + sampler.
+    beerShadowPlaceholderTexture,
+    beerShadowPlaceholderView,
+    beerShadowSampler,
+    scatteringBoundBeerShadowView: beerShadowPlaceholderView,
     paramsBuffer,
     paramsData,
     paramsU32,

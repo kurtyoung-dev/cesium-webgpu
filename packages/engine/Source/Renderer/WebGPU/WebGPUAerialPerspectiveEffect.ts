@@ -88,6 +88,15 @@ export interface AerialPerspectiveFrameData {
    * rotation is used (eye→world); the translation column is ignored.
    */
   inverseView: ArrayLike<number>;
+  /**
+   * Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map world→sun-clip matrix
+   * (column-major mat4). Undefined → identity + disabled (no inscatter shadow).
+   */
+  cloudShadowVP?: ArrayLike<number>;
+  /** True when globe.cloudCastShadows is on AND a real shadow map was rendered. */
+  cloudShadowActive?: boolean;
+  /** Cloud absorptionCoeff so the inscatter shadow exp() matches the cloud render. */
+  cloudShadowAbsorption?: number;
 }
 
 export interface AerialPerspectiveConfig {
@@ -113,9 +122,12 @@ export interface AerialPerspectiveConfig {
 }
 
 // Float layout of the WGSL `AerialUniforms` struct (std140-ish, all vec4 +
-// two mat4). 6 vec4 (24 floats) + 2×16 mat4 = 56 floats = 224 bytes. WebGPU
-// pads the UBO binding up to 256 internally.
-const UNIFORM_FLOATS = 56;
+// two mat4). 6 vec4 (24 floats) + 2×16 mat4 = 56 floats = 224 bytes.
+// Batch 437 (CLOUD-SHADOWS) — +16 for cloudShadowVP (mat4) + 4 for
+// cloudShadowControl (vec4) = 76 floats = 304 bytes (still WebGPU-padded to 320).
+// Appended add-only; defaults (identity + disabled) leave the inscatter untouched
+// → byte-identical when globe.cloudCastShadows is off.
+const UNIFORM_FLOATS = 76;
 
 export class AerialPerspectiveEffect implements PostProcessEffect {
   readonly name = "AerialPerspective";
@@ -147,6 +159,10 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
   private _multipleScatterView: GPUTextureView | null = null;
   private _placeholderTex: GPUTexture | null = null;
   private _placeholderView: GPUTextureView | null = null;
+  // Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map view (binding 7). Pushed
+  // per-frame from the cloud cache; null → the white placeholder is bound (never
+  // sampled when cloudShadowControl.x is 0 → byte-identical parity).
+  private _cloudShadowView: GPUTextureView | null = null;
 
   // Cached bind group; invalidated when the source view, depth view, or LUT
   // view changes (per-frame ping/pong rotates the source).
@@ -156,6 +172,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
   private _cachedLutView: GPUTextureView | null = null;
   private _cachedSkyViewView: GPUTextureView | null = null;
   private _cachedMsView: GPUTextureView | null = null;
+  private _cachedCloudShadowView: GPUTextureView | null = null;
 
   private _config: Required<AerialPerspectiveConfig>;
 
@@ -200,6 +217,16 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
 
   setMultipleScatterView(view: GPUTextureView | null): void {
     this._multipleScatterView = view;
+  }
+
+  /**
+   * Batch 437 (CLOUD-SHADOWS) — push the sun-view beer shadow map view the
+   * effect samples to attenuate the inscatter under the clouds. From
+   * `context._cloudCache.shadowView`; null → the white placeholder is bound and
+   * (with the gate off) never sampled → byte-identical parity.
+   */
+  setCloudShadowView(view: GPUTextureView | null): void {
+    this._cloudShadowView = view;
   }
 
   /**
@@ -263,6 +290,42 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     for (let i = 0; i < 16; i++) {
       f[o++] = iv[i];
     }
+    // Batch 437 (CLOUD-SHADOWS) — cloudShadowVP (mat4, 16) + cloudShadowControl
+    // (vec4). Identity + disabled when no real map → byte-identical default.
+    const csVP = d.cloudShadowVP;
+    const csActive =
+      d.cloudShadowActive === true && !!csVP && csVP.length >= 16;
+    if (csActive && csVP) {
+      for (let i = 0; i < 16; i++) {
+        f[o++] = csVP[i];
+      }
+      f[o++] = 1.0; // x = enabled
+      f[o++] = d.cloudShadowAbsorption ?? 0.04; // y = absorption
+      f[o++] = 1.0; // z = strength
+      f[o++] = 0.0; // w = reserved
+    } else {
+      // Identity matrix + disabled.
+      f[o++] = 1;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 1;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 1;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 1;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+    }
     this._device.queue.writeBuffer(
       this._uniforms,
       0,
@@ -322,6 +385,10 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       // constant; only sampled when params1.z (useMultiScatterLut) is on.
       texture(5, Stage.FRAGMENT), // sky-view LUT
       texture(6, Stage.FRAGMENT), // multiple-scattering LUT
+      // Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 7). Bound
+      // unconditionally (white placeholder when off) so the layout never forks;
+      // sampled only inside the cloudShadowControl.x gate.
+      texture(7, Stage.FRAGMENT),
     ]);
 
     this._pipeline = createFullscreenPipeline(
@@ -377,6 +444,9 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     // until baked. With params1.z off they are never sampled (parity).
     const skyViewView = this._skyViewView ?? this._placeholderView!;
     const msView = this._multipleScatterView ?? this._placeholderView!;
+    // Batch 437 (CLOUD-SHADOWS) — real beer shadow map when active, else the white
+    // placeholder (never sampled with the gate off → parity).
+    const cloudShadowView = this._cloudShadowView ?? this._placeholderView!;
 
     if (
       !this._cachedBindGroup ||
@@ -384,7 +454,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       this._cachedDepthView !== depthView ||
       this._cachedLutView !== lutView ||
       this._cachedSkyViewView !== skyViewView ||
-      this._cachedMsView !== msView
+      this._cachedMsView !== msView ||
+      this._cachedCloudShadowView !== cloudShadowView
     ) {
       this._cachedBindGroup = this._device.createBindGroup({
         label: "AerialPerspective-BG",
@@ -397,6 +468,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
           { binding: 4, resource: { buffer: this._uniforms! } },
           { binding: 5, resource: skyViewView },
           { binding: 6, resource: msView },
+          { binding: 7, resource: cloudShadowView },
         ],
       });
       this._cachedSourceView = sourceView;
@@ -404,6 +476,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       this._cachedLutView = lutView;
       this._cachedSkyViewView = skyViewView;
       this._cachedMsView = msView;
+      this._cachedCloudShadowView = cloudShadowView;
     }
 
     executePass(

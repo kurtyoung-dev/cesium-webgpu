@@ -94,6 +94,16 @@ struct AerialUniforms {
   // translation column is ignored (the camera world position is supplied
   // separately via cameraPositionWC).
   inverseViewRotation: mat4x4<f32>,
+  // ── Batch 437 (CLOUD-SHADOWS): sun-view beer shadow map projection ──
+  // `cloudShadowVP` maps a WORLD (ECEF) fragment position into the sun's ortho
+  // clip space; the FS reads the cloud OPTICAL DEPTH column from `cloudShadowTex`
+  // (binding 7) and ATTENUATES the inscatter by transmittance = exp(-depth·
+  // absorption) so the air-light dims under the clouds. `cloudShadowControl`:
+  // x = enabled (1.0 when globe.cloudCastShadows + a real map rendered), y =
+  // absorption, z = strength, w = reserved. Appended add-only; (identity, 0,0,0,0)
+  // by default → the FS gate (`x > 0.5`) stays closed → byte-identical.
+  cloudShadowVP: mat4x4<f32>,
+  cloudShadowControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var sceneColorTex: texture_2d<f32>;
@@ -101,6 +111,11 @@ struct AerialUniforms {
 @group(0) @binding(2) var transmittanceTex: texture_2d<f32>;
 @group(0) @binding(3) var texSampler: sampler;
 @group(0) @binding(4) var<uniform> uniforms: AerialUniforms;
+// Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 7). Bound
+// UNCONDITIONALLY (1×1 zero placeholder when globe.cloudCastShadows is off →
+// transmittance 1, no attenuation) so the layout never forks. Reuses `texSampler`
+// (linear clamp). Sampled only inside the `cloudShadowControl.x > 0.5` gate.
+@group(0) @binding(7) var cloudShadowTex: texture_2d<f32>;
 // Item 2.2 (ENV-AERIAL-MS, Batch 430). Sun-relative sky-view LUT (256x128) +
 // multiple-scattering LUT (256x128) — the SAME tables the visible
 // SkyAtmosphere samples (baked by AtmosphereLUT.wgsl computeSkyView /
@@ -166,6 +181,27 @@ fn sampleTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
   let u = clamp(cosZenith * 0.5 + 0.5, 0.0, 1.0);
   let v = clamp(altitude / max(thickness, 1.0), 0.0, 1.0);
   return textureSampleLevel(transmittanceTex, texSampler, vec2<f32>(u, v), 0.0).rgb;
+}
+
+// Batch 437 (CLOUD-SHADOWS) — sample the sun-view beer shadow map at a WORLD
+// (ECEF) position and return the cloud transmittance (0..1) used to attenuate the
+// inscatter under the clouds. Returns 1.0 (no attenuation) outside the shadow-map
+// footprint. Only called inside the `cloudShadowControl.x > 0.5` gate, so the
+// placeholder is never read on the default path. Mirrors GlobeTerrain's
+// `sampleCloudGroundShadow` (same projection + Beer-Lambert + 0.35 floor) so the
+// ground shadow and the air-light dimming agree.
+fn sampleCloudInscatterShadow(worldPos: vec3<f32>) -> f32 {
+  let clip = uniforms.cloudShadowVP * vec4<f32>(worldPos, 1.0);
+  let ndc = clip.xyz / max(abs(clip.w), 1e-6);
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    return 1.0;
+  }
+  let opticalDepth = textureSampleLevel(cloudShadowTex, texSampler, uv, 0.0).r;
+  let absorption = uniforms.cloudShadowControl.y;
+  let strength = uniforms.cloudShadowControl.z;
+  let transmittance = max(exp(-opticalDepth * absorption), 0.35);
+  return mix(1.0, transmittance, clamp(strength, 0.0, 1.0));
 }
 
 // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sample the sun-relative sky-view LUT.
@@ -388,6 +424,16 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     let distanceRamp = clamp(segment / max(thickness, 1.0), 0.0, 1.0);
     inscatter = (lutSky + lutMs * MS_SCALE)
               * (inscatterScale * hazeIntensity * distanceRamp);
+  }
+
+  // Batch 437 (CLOUD-SHADOWS) — attenuate the inscatter (air light) where the
+  // fragment sits under the procedural clouds. Project `fragWC` into the sun-view
+  // beer shadow map and scale the inscatter by the cloud transmittance, so the
+  // distance haze dims under the clouds like real shadowed air. Gated so the
+  // default (globe.cloudCastShadows off) leaves `inscatter` untouched → byte-
+  // identical (the placeholder is never read).
+  if (uniforms.cloudShadowControl.x > 0.5) {
+    inscatter = inscatter * sampleCloudInscatterShadow(fragWC);
   }
 
   // Camera→fragment transmittance from the marched optical depth (Beer-

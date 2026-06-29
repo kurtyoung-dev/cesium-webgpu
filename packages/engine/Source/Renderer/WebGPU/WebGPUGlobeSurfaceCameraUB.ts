@@ -747,6 +747,55 @@ export function createCameraUniformBuffer(
     data[offset++] = 0.0;
   }
 
+  // ─── Batch 437 (CLOUD-SHADOWS): sun-view beer shadow map tail ───
+  // cloudShadowVP (mat4, offsets 148-163) + cloudShadowControl (vec4, 164-167).
+  // The procedural cloud renderer stashes the world→sun-clip matrix + an "active"
+  // flag on `context._cloudCache` after rendering the map (which happens AFTER the
+  // globe terrain pass in the frame, so terrain reads LAST frame's matrix — fine for
+  // a slow, soft cloud shadow). When inactive (the default, or the very first frame
+  // before the cloud renderer runs), write IDENTITY + control.x=0 so the FS gate
+  // stays closed and the render is byte-identical.
+  const cloudCache = (
+    frameState?.context as unknown as {
+      _cloudCache?: {
+        shadowActive?: boolean;
+        shadowSunViewVP?: Float32Array;
+        shadowAbsorption?: number;
+      };
+    }
+  )?._cloudCache;
+  const shadowActive = cloudCache?.shadowActive === true;
+  const shadowVP = cloudCache?.shadowSunViewVP;
+  if (shadowActive && shadowVP && shadowVP.length >= 16) {
+    for (let i = 0; i < 16; i++) data[offset++] = shadowVP[i];
+    data[offset++] = 1.0; // x = enabled
+    data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
+    data[offset++] = 1.0; // z = strength (full)
+    data[offset++] = 0.0; // w = reserved
+  } else {
+    // Identity matrix + disabled control (byte-identical default).
+    data[offset++] = 1.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 1.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 1.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 1.0;
+    data[offset++] = 0.0; // x = disabled
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+  }
+
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this
   // globe command log-encodes the whole depth texture against onto the SHARED
   // uniformState (the one object that crosses the GraphicsContext boundary to

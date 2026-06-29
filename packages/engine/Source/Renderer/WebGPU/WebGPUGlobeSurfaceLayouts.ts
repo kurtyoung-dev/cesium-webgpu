@@ -152,6 +152,13 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
       sampler(6, Stage.FRAGMENT),
       texture(7, Stage.FRAGMENT),
       sampler(8, Stage.FRAGMENT),
+      // Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 9) + its
+      // linear sampler (binding 10). Bound UNCONDITIONALLY so the layout never
+      // forks; the renderer binds the real map when globe.cloudCastShadows is on,
+      // else a 1×1 zero placeholder (optical depth 0 → transmittance 1). The WGSL
+      // samples it only inside the `cloudShadowControl.x > 0.5` gate.
+      texture(9, Stage.FRAGMENT),
+      sampler(10, Stage.FRAGMENT),
     ],
   );
 

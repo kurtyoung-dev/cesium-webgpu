@@ -198,6 +198,25 @@ struct VolumetricFogParams {
   //   z = reserved
   //   w = reserved
   temporal: vec4<f32>,
+
+  // Batch 437 (CLOUD-SHADOWS) — opt-in HI-FI cloud shadow. When the
+  // `cloudShadowHiFi` sub-flag is on (AND globe.cloudCastShadows is on), the
+  // scattering pass samples the procedural cloud renderer's beer SHADOW MAP
+  // (the ACTUAL rendered cloud optical depth from the sun's view) instead of the
+  // cheap 1-sample local-fbm `sampleCloudShadow`. Default OFF keeps the local-fbm
+  // path verbatim (byte-identical).
+  //
+  // cloudShadowHiFi:
+  //   x = enable (0/1) — gate. < 0.5 → the legacy local-fbm sampleCloudShadow
+  //       runs unchanged (parity default).
+  //   y = absorption — so the map's optical depth → transmittance matches the
+  //       cloud render's exp(-depth·absorption).
+  //   z = strength (0..1 darkening scale).
+  //   w = reserved.
+  cloudShadowHiFi: vec4<f32>,
+  // World ECEF → sun ortho clip matrix (column-major) for the beer-shadow-map
+  // lookup. Identity when the hi-fi flag is off (never used then).
+  cloudShadowSunViewVP: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: VolumetricFogParams;
@@ -400,6 +419,27 @@ fn sampleSunShadow(worldPos: vec3<f32>) -> f32 {
 // per-froxel cloud shape is much coarser than the screen-pixel cloud
 // render anyway, and reusing the local hash keeps the WGSL slim.
 fn sampleCloudShadow(worldPos: vec3<f32>) -> f32 {
+  // Batch 437 (CLOUD-SHADOWS) — HI-FI path. When the opt-in `cloudShadowHiFi`
+  // sub-flag is on, REPLACE the cheap local-fbm approximation below with a sample
+  // of the procedural cloud renderer's beer SHADOW MAP (the ACTUAL rendered cloud
+  // optical depth from the sun's view), so the fog shadow tracks the visible cloud
+  // field exactly. The legacy local-fbm path runs verbatim when the flag is off
+  // (parity default).
+  if (u.cloudShadowHiFi.x >= 0.5) {
+    let clip = u.cloudShadowSunViewVP * vec4<f32>(worldPos, 1.0);
+    let ndc = clip.xyz / max(abs(clip.w), 1e-6);
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+      return 1.0;
+    }
+    let opticalDepth = textureSampleLevel(
+      cloudShadowMapTex, cloudShadowMapSampler, uv, 0.0).r;
+    let absorption = u.cloudShadowHiFi.y;
+    let strength = u.cloudShadowHiFi.z;
+    let transmittance = max(exp(-opticalDepth * absorption), 0.35);
+    return mix(1.0, transmittance, clamp(strength, 0.0, 1.0));
+  }
+
   // NOTE: `enable` is a WGSL reserved keyword (used in `enable <ext>;`
   // extension directives) and is invalid as an identifier — using it
   // produced a "expected identifier for 'let' declaration" parse error
@@ -503,6 +543,13 @@ fn sampleCloudShadow(worldPos: vec3<f32>) -> f32 {
 // flat constant.
 @group(0) @binding(8) var fogTransmittanceLut: texture_2d<f32>;
 @group(0) @binding(9) var fogLutSampler: sampler;
+// Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 11) + a linear
+// sampler (binding 12), used by the lightScattering pass only. Bound
+// UNCONDITIONALLY (1×1 zero placeholder when the hi-fi flag is off → the legacy
+// local-fbm path runs) so the BGL never forks. Sampled only inside the
+// `cloudShadowHiFi.x >= 0.5` branch of `sampleCloudShadow`.
+@group(0) @binding(11) var cloudShadowMapTex: texture_2d<f32>;
+@group(0) @binding(12) var cloudShadowMapSampler: sampler;
 // SHUniforms layout (matches ModelPBRComplete.wgsl::SHUniforms + the
 // DynEnvMap SH buffer): 9 vec4 L2 coefficients + 1 vec4 control slot
 // (control.w == 1.0 when the SH projection has populated real data).
