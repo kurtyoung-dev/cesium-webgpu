@@ -485,6 +485,24 @@ class Globe {
      */
     this.cloudCastShadows = false;
 
+    /**
+     * When true (and {@link Globe#showProceduralClouds} is on), the WebGPU
+     * procedural cloud renderer marches ONE cloud shell PER ACTIVE DECK
+     * (LOW cumulus/stratus, MID altocumulus, HIGH cirrus — bounds from
+     * {@link CloudTypeProfile}) and composites them FRONT-TO-BACK with
+     * premultiplied alpha, so a low cumulus layer can render BENEATH a high
+     * cirrus veil (item 4.9 — CLOUD-MULTIDECK, Batch 443). Opt-in. WebGPU only.
+     * Default <code>false</code> marches EXACTLY ONE shell with today's
+     * <code>cloudLayerBottom</code>/<code>cloudLayerTop</code> bounds + today's
+     * composite, so the default is byte-identical to leaving this off. Note:
+     * with N active decks the raymarch cost is ~N× (each deck is a full shell
+     * march) — the flag is the opt-in so that's an accepted trade. Empty decks
+     * (zero weather-map deck coverage) early-out and cost nothing.
+     * @type {boolean}
+     * @default false
+     */
+    this.cloudMultiDeck = false;
+
     // ── Live-tweakable cloud appearance dials (WebGPU procedural clouds) ──
     // Each is `undefined` by default so the renderer's built-in value applies;
     // set any of them (directly, or via `scene.globe.atmosphericConditions.clouds.*`)

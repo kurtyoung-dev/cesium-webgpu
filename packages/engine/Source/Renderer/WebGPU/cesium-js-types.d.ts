@@ -1098,6 +1098,11 @@ interface CesiumGlobe {
   // fog/env consumers. Default false → no shadow map, 1x1-white placeholder,
   // byte-identical.
   cloudCastShadows?: boolean;
+  // Item 4.9 (CLOUD-MULTIDECK, Batch 443) — march one shell per active deck
+  // (LOW/MID/HIGH bounds from CloudTypeProfile), composited front-to-back driven
+  // by the weather map's B (deck) channel. Default false → exactly one shell with
+  // today's bounds + composite, byte-identical. ~N× march cost when on.
+  cloudMultiDeck?: boolean;
   // Live-tweakable appearance dials (undefined → renderer default applies).
   cloudSilverLiningIntensity?: number;
   cloudPhaseForwardG?: number;

@@ -116,6 +116,19 @@ struct CloudUniforms {
   ambientLutMode: f32,           // 109 — 0 constant / 1 sky-LUT (MS sky LUT up/down hemispheres)
   atmosphereThickness: f32,      // 110 — m; MUST equal the LUT bake's ATMOSPHERE_THICKNESS (111e3)
   _padE: f32,                    // 111 — pad to the 16-byte row
+  // ── Batch 443 (4.9 CLOUD-MULTIDECK) — multi-deck shell march. Slots 112-119 are
+  // two new 16-byte rows, appended ADD-ONLY. Default OFF is byte-identical: when
+  // multiDeck=0 the fragment marches EXACTLY ONE shell with cloudLayerBottom/Top
+  // (today's bounds + composite), and these deck-bounds floats are never read.
+  // When >0 the fragment marches up to 3 shells (LOW/MID/HIGH) from these bounds
+  // and composites them FRONT-TO-BACK (near deck over far deck, premultiplied).
+  // Bounds source: CloudTypeProfile.CloudDeck.bounds (LOW [0,2km], MID [2,7km],
+  // HIGH [5,13km]) packed by the JS renderer. ──
+  multiDeck: f32,                // 112 — 0 single shell (default) / >0 march LOW/MID/HIGH
+  _padF: f32,                    // 113 — pad
+  deckBoundsLow: vec2<f32>,      // 114-115 — LOW deck [bottom, top] (m above surface)
+  deckBoundsMid: vec2<f32>,      // 116-117 — MID deck [bottom, top]
+  deckBoundsHigh: vec2<f32>,     // 118-119 — HIGH deck [bottom, top]
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -195,6 +208,7 @@ const QF_PROFILE_ON: u32 = 128u;    // bit 7
 const QF_AERIAL_LUT: u32 = 256u;    // bit 8 — 3.3 physical aerial (sky-view + transmittance)
 const QF_AMBIENT_LUT: u32 = 512u;   // bit 9 — 3.4 sky-LUT cloud ambient (MS sky LUT)
 const QF_LIGHT_CONE: u32 = 1024u;   // bit 10 — 3.6 cone-sampled light march (Batch 436)
+const QF_MULTI_DECK: u32 = 2048u;   // bit 11 — 4.9 multi-deck shell march (Batch 443)
 
 // V9 (Batch 432) — ordered 4×4 Bayer matrix (normalized 0..1, the standard
 // recursive dither pattern). Used to JITTER the half-res sample point by a
@@ -439,7 +453,7 @@ struct WeatherChannels {
   baseShiftFrac: f32,
   perGenusShape: f32,
 };
-fn decodeWeatherChannels(gba: vec3<f32>) -> WeatherChannels {
+fn decodeWeatherChannels(gba: vec3<f32>, deckThickness: f32) -> WeatherChannels {
   let s = cloud.weatherChannelStrength;
   // A — density bias (0.5 neutral). Remap to a multiplier around 1.0: A=0.5→1.0,
   // A=1→1+s, A=0→1-s. Clamp at 0 so a fully-thin cell can't drive density negative.
@@ -447,8 +461,11 @@ fn decodeWeatherChannels(gba: vec3<f32>) -> WeatherChannels {
   // B — cloud base, normalized over CLOUD_BASE_NORM_METERS (12 km). 0 neutral. The
   // raw value is base-metres/12000; convert to a fraction of the cloud SHELL
   // thickness so the height gradient lifts off that base. layerThickness is the
-  // shell span (top-bottom). B=0 → no shift → today's behaviour.
-  let layerThickness = max(cloud.cloudLayerTop - cloud.cloudLayerBottom, 1.0);
+  // shell span (top-bottom). B=0 → no shift → today's behaviour. Batch 443 — the
+  // active DECK's thickness is passed in so per-deck base shifts stay in the deck's
+  // own shell fraction; the default single-shell call passes cloudLayerTop-Bottom
+  // so the value is byte-identical to pre-443.
+  let layerThickness = max(deckThickness, 1.0);
   let baseShiftFrac = clamp(
     gba.y * CLOUD_BASE_NORM_METERS / layerThickness * s, 0.0, 0.9);
   // G — genus/type index packed as genus/10 (0..1 → 0..10). 0.5 (the packer's
@@ -463,7 +480,12 @@ fn decodeWeatherChannels(gba: vec3<f32>) -> WeatherChannels {
   return WeatherChannels(densityScale, baseShiftFrac, perGenusShape);
 }
 
-fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
+// Batch 443 (4.9 CLOUD-MULTIDECK) — `deckBottom`/`deckTop` are the active deck's
+// shell bounds (m above surface). The default single-shell call passes
+// cloud.cloudLayerBottom/Top, so the weather-base-shift fraction (the only place
+// the bounds enter cloudDensity) is byte-identical to pre-443; multi-deck calls
+// pass each deck's own bounds so per-deck base shifts stay in that deck's fraction.
+fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
   // Animate with wind
   let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
                    * cloud.windSpeed * cloud.time;
@@ -483,7 +505,7 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
     let wuv = worldToWeatherUV(worldPos);
     let wsample = textureSampleLevel(weatherTex, weatherSampler, wuv, 0, 0.0);
     effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
-    wch = decodeWeatherChannels(wsample.gba);
+    wch = decodeWeatherChannels(wsample.gba, deckTop - deckBottom);
   }
 
   // Base shape. V3 — BAKED: the Nubis Perlin-Worley combine from the baked 3D
@@ -562,7 +584,7 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
 // coarse→fine handoff never false-triggers inside a cloud the way the eroded
 // full density does. And it is much cheaper (no Worley, no detail), so coarse
 // probing of empty space is a real tap-cost win, not just a step-count one.
-fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
+fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
   let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
                    * cloud.windSpeed * cloud.time;
   let samplePos = (worldPos + windOffset) * 0.0003;
@@ -576,7 +598,7 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
     let wuv = worldToWeatherUV(worldPos);
     let wsample = textureSampleLevel(weatherTex, weatherSampler, wuv, 0, 0.0);
     effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
-    wch = decodeWeatherChannels(wsample.gba);
+    wch = decodeWeatherChannels(wsample.gba, deckTop - deckBottom);
   }
 
   // SAME base as cloudDensity (baked or live), then coverage + height gradient,
@@ -688,10 +710,10 @@ fn coneJitter(pos: vec3<f32>) -> vec3<f32> {
 // beer-powder / multi-scatter / HG lighting model unchanged — only the SAMPLING
 // PATTERN differs. ~½ the cost: 6 taps (5 full + 1 cheap) vs the straight march's
 // `lightSteps` full taps per cone radius.
-fn lightMarchCone(pos: vec3<f32>, heightFraction: f32) -> f32 {
+fn lightMarchCone(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
   let sunDir = normalize(cloud.sunDirection);
-  let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
-  let outerR = cloud.planetRadius + cloud.cloudLayerTop;
+  let innerR = cloud.planetRadius + deckBottom;
+  let outerR = cloud.planetRadius + deckTop;
   let layerThickness = outerR - innerR;
 
   // Base step toward the sun. The straight march walked `steps` of `layerThickness/
@@ -718,10 +740,10 @@ fn lightMarchCone(pos: vec3<f32>, heightFraction: f32) -> f32 {
     let lateral = (k.x * tangent + k.y * bitangent) * coneRadius;
     let samplePos = pos + sunDir * marchDist + lateral;
     let altitude = length(samplePos) - cloud.planetRadius;
-    let hf = clamp((altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
+    let hf = clamp((altitude - deckBottom) / layerThickness, 0.0, 1.0);
     // Weight each tap by its marched extent so the summed optical depth is
     // dimensionally the same as the straight march's Σ density·stepSize.
-    opticalDepth += cloudDensity(samplePos, hf) * coneStepBase;
+    opticalDepth += cloudDensity(samplePos, hf, deckBottom, deckTop) * coneStepBase;
   }
 
   // ONE LONG FAR TAP — captures distant self-shadowing the short cone can't reach,
@@ -731,8 +753,8 @@ fn lightMarchCone(pos: vec3<f32>, heightFraction: f32) -> f32 {
   let farDist = layerThickness * 1.5;
   let farPos = pos + sunDir * farDist;
   let farAlt = length(farPos) - cloud.planetRadius;
-  let farHf = clamp((farAlt - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
-  opticalDepth += cloudBaseDensity(farPos, farHf) * coneStepBase * 3.0;
+  let farHf = clamp((farAlt - deckBottom) / layerThickness, 0.0, 1.0);
+  opticalDepth += cloudBaseDensity(farPos, farHf, deckBottom, deckTop) * coneStepBase * 3.0;
 
   return opticalDepth;
 }
@@ -741,9 +763,9 @@ fn lightMarchCone(pos: vec3<f32>, heightFraction: f32) -> f32 {
 // Batch 436 — dispatch: the cone path (T1/T2) when QF_LIGHT_CONE is set, else the
 // STRAIGHT N-step march below, kept VERBATIM so the default / cinematic / escape
 // hatch render byte-identical to pre-436.
-fn lightMarch(pos: vec3<f32>, heightFraction: f32) -> f32 {
+fn lightMarch(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
   if (lightConeEnabled()) {
-    return lightMarchCone(pos, heightFraction);
+    return lightMarchCone(pos, heightFraction, deckBottom, deckTop);
   }
   let sunDir = normalize(cloud.sunDirection);
   // V5 — scale the light-march step count by the tier's lightSampleScale (T3 = 1.0
@@ -751,8 +773,8 @@ fn lightMarch(pos: vec3<f32>, heightFraction: f32) -> f32 {
   // at lower cost). lightSteps is the EXPONENTIAL cost knob, so this is the cheap
   // lever for the low tiers.
   let steps = max(1, i32(cloud.lightSteps * cloud.lightSampleScale));
-  let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
-  let outerR = cloud.planetRadius + cloud.cloudLayerTop;
+  let innerR = cloud.planetRadius + deckBottom;
+  let outerR = cloud.planetRadius + deckTop;
   let layerThickness = outerR - innerR;
 
   // March toward sun through remaining cloud
@@ -762,8 +784,8 @@ fn lightMarch(pos: vec3<f32>, heightFraction: f32) -> f32 {
   for (var i: i32 = 0; i < steps; i++) {
     let samplePos = pos + sunDir * f32(i + 1) * stepSize;
     let altitude = length(samplePos) - cloud.planetRadius;
-    let hf = clamp((altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
-    opticalDepth += cloudDensity(samplePos, hf) * stepSize;
+    let hf = clamp((altitude - deckBottom) / layerThickness, 0.0, 1.0);
+    opticalDepth += cloudDensity(samplePos, hf, deckBottom, deckTop) * stepSize;
   }
 
   return opticalDepth;
@@ -900,45 +922,47 @@ fn cloudLutLuminance(c: vec3<f32>) -> f32 {
   return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  // V9 (Batch 432) — half-res jitter. In the half-res path each output texel
-  // covers a 2×2 full-res block; offset the marched ray within that texel by a
-  // per-frame Bayer pattern so consecutive frames (and neighbouring half-res
-  // texels via the bilateral upscale) sample DIFFERENT sub-pixel positions,
-  // decorrelating the under-sampling. `cloud.resolution` here is the HALF-RES
-  // target size, so one texel = (1/halfW, 1/halfH) in UV; the Bayer offset stays
-  // within ±0.5 texel. Full-res path: no jitter (resolution = full canvas, bit
-  // clear), so `uv` is byte-identical to the legacy `input.uv`.
-  var uv = input.uv;
-  if (halfResEnabled()) {
-    let bIndex = u32(cloud.frameCounter) & 15u;
-    let bx = BAYER4[bIndex] - 0.5;            // -0.5..+0.46875 within the texel
-    let by = BAYER4[(bIndex + 5u) & 15u] - 0.5; // decorrelated second axis
-    let texel = vec2<f32>(1.0, 1.0) / max(cloud.resolution, vec2<f32>(1.0));
-    uv = uv + vec2<f32>(bx, by) * texel;
-  }
-  let sceneColor = textureSample(colorTex, texSampler, uv);
-  let sceneDepth = textureSampleLevel(depthTex, texSampler, uv, 0.0).r;
+// Batch 443 (4.9 CLOUD-MULTIDECK) — per-deck march result. `hazed` is the LDR
+// tone-mapped + aerial-hazed cloud color for THIS deck; `alpha` = 1 - transmittance
+// (the deck's coverage). For the default single shell these are byte-identical to
+// the legacy fragmentMain locals of the same name; the front-to-back composite then
+// reproduces the legacy `mix(sceneColor, hazed, cloudAlpha)` exactly.
+struct DeckResult {
+  hazed: vec3<f32>,
+  alpha: f32,
+};
 
-  let rayOrigin = cloud.cameraPosition;
-  let rayDir = getWorldRay(uv);
+// Batch 443 — march ONE cloud shell [deckBottom, deckTop] along the view ray and
+// return its tone-mapped + aerial-hazed color + alpha. This is the LEGACY
+// fragmentMain march body, verbatim, with the hardcoded `cloud.cloudLayerBottom/
+// Top` replaced by the `deckBottom/Top` parameters (so a call with the default
+// bounds is byte-identical to pre-443) and the scene-composite tail lifted out to
+// the caller (the caller composites — single shell or front-to-back). A ray that
+// misses the shell, or whose layer is fully occluded by depth, returns alpha 0
+// (transparent → contributes nothing to the composite).
+fn marchDeck(
+  rayOrigin: vec3<f32>,
+  rayDir: vec3<f32>,
+  sceneDepth: f32,
+  deckBottom: f32,
+  deckTop: f32,
+  msOctaves: i32,
+) -> DeckResult {
+  var result: DeckResult;
+  result.hazed = vec3<f32>(0.0);
+  result.alpha = 0.0;
 
   // Cloud shell radii
-  let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
-  let outerR = cloud.planetRadius + cloud.cloudLayerTop;
+  let innerR = cloud.planetRadius + deckBottom;
+  let outerR = cloud.planetRadius + deckTop;
 
   // Intersect ray with cloud shell
   let tInner = raySphereIntersect(rayOrigin, rayDir, innerR);
   let tOuter = raySphereIntersect(rayOrigin, rayDir, outerR);
 
-  // No intersection with cloud shell. V9 — in the half-res path the target is the
-  // cloud-only buffer, so "no cloud" must emit TRANSPARENT (vec4(0)) rather than
-  // the opaque scene color (which would wipe the scene at the upscale composite);
-  // full-res keeps the byte-identical `return sceneColor`.
+  // No intersection with the shell — transparent (no contribution).
   if (tOuter.x < 0.0 && tOuter.y < 0.0) {
-    if (halfResEnabled()) { return vec4<f32>(0.0); }
-    return sceneColor;
+    return result;
   }
 
   // Determine march start/end
@@ -946,11 +970,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   var tStart: f32;
   var tEnd: f32;
 
-  if (cameraAltitude < cloud.cloudLayerBottom) {
+  if (cameraAltitude < deckBottom) {
     // Below clouds: start at inner sphere, end at outer
     tStart = max(tInner.y, 0.0);
     tEnd = tOuter.y;
-  } else if (cameraAltitude > cloud.cloudLayerTop) {
+  } else if (cameraAltitude > deckTop) {
     // Above clouds: start at outer sphere front, end at inner
     tStart = max(tOuter.x, 0.0);
     tEnd = tInner.x;
@@ -966,27 +990,22 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // clamp tEnd. Sky pixels carry the cleared far depth (>= skyCutoff) → tSceneHit
   // ≈ far → no clamp, so the full sky shell still marches. If terrain sits in
   // front of the whole layer, tEnd clamps below tStart and the early-out below
-  // returns the unmodified scene (clouds fully occluded). No depth WRITE — clouds
-  // are a translucent over-composite.
+  // returns transparent (clouds fully occluded). No depth WRITE — clouds are a
+  // translucent over-composite.
   if (sceneDepth < 0.999999) {
     let tSceneHit = logDepthToEyeDistance(sceneDepth, cloud.nearPlane, cloud.farPlane);
     tEnd = min(tEnd, tSceneHit);
   }
 
   if (tStart >= tEnd || tEnd <= 0.0) {
-    if (halfResEnabled()) { return vec4<f32>(0.0); }
-    return sceneColor;
+    return result; // transparent (this deck contributes nothing)
   }
 
   // Cloud march
   let steps = i32(cloud.maxSteps);
   let sunDir = normalize(cloud.sunDirection);
   let cosTheta = dot(rayDir, sunDir);
-  // V5 — multi-scatter octave count from qualityFlags bits 4-6 (tier-driven:
-  // T1=2, T2/T3=3). The dual-lobe phase is now folded PER-OCTAVE inside
-  // multiScatterLight, so it is no longer applied separately here.
-  let msOctaves = i32((u32(cloud.qualityFlags) >> QF_OCTAVES_SHIFT) & 7u);
-  let layerThickness = cloud.cloudLayerTop - cloud.cloudLayerBottom;
+  let layerThickness = deckTop - deckBottom;
 
   // W5 — adaptive coarse→fine march (empty-space skipping). A CHEAP, smooth,
   // conservative low-detail density (`cloudBaseDensity` — no Worley, no detail)
@@ -1025,12 +1044,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let samplePos = rayOrigin + rayDir * (t + 0.5 * curStep);
     let altitude = length(samplePos) - cloud.planetRadius;
     let heightFraction = clamp(
-      (altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0
+      (altitude - deckBottom) / layerThickness, 0.0, 1.0
     );
 
     // Cheap conservative presence test (base >= full, so this never skips real
     // cloud) drives the coarse/fine state.
-    let base = cloudBaseDensity(samplePos, heightFraction);
+    let base = cloudBaseDensity(samplePos, heightFraction, deckBottom, deckTop);
 
     if (!fine) {
       // Coarse skip. On the first base hit, step back one coarse step (clamped to
@@ -1065,12 +1084,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Inside the cloud shape — integrate the FULL (eroded) density. An erosion
     // pocket (full density 0) contributes nothing but keeps us in the fine phase.
-    let density = cloudDensity(samplePos, heightFraction);
+    let density = cloudDensity(samplePos, heightFraction, deckBottom, deckTop);
     if (density > 0.001) {
       // Light contribution. V5 — Frostbite multi-scatter octaves with the phase
       // folded per-octave (softer lit-from-within interiors; deeper octaves more
       // isotropic) so the returned value already carries the phase.
-      let lightOpticalDepth = lightMarch(samplePos, heightFraction);
+      let lightOpticalDepth = lightMarch(samplePos, heightFraction, deckBottom, deckTop);
       let msLight = multiScatterLight(lightOpticalDepth, cosTheta, 0.5, msOctaves);
 
       // Silver lining: enhanced scattering at cloud edges
@@ -1199,21 +1218,133 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     }
   }
 
-  // Composite clouds over scene.
-  let cloudAlpha = 1.0 - transmittance;
+  result.hazed = hazed;
+  result.alpha = 1.0 - transmittance;
+  return result;
+}
 
-  // V9 (Batch 432) — half-res path: do NOT composite over the scene here. Emit the
-  // PREMULTIPLIED cloud radiance (`hazed * cloudAlpha`) + alpha into the rgba16float
-  // half-res target; the bilateral upscale pass does the depth-aware over-composite
-  // against full-res scene color. Premultiplied so the bilateral interpolation of
-  // partially-covered edge texels stays energy-correct (a straight-alpha blend of
-  // neighbouring texels with very different alphas would dark-fringe the silhouette).
+// Batch 443 (4.9 CLOUD-MULTIDECK) — is the multi-deck shell march active?
+// (qualityFlags bit 11). When clear (DEFAULT), fragmentMain marches EXACTLY ONE
+// shell with cloud.cloudLayerBottom/Top + the legacy composite → byte-identical.
+fn multiDeckEnabled() -> bool {
+  return (u32(cloud.qualityFlags) & QF_MULTI_DECK) != 0u;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  // V9 (Batch 432) — half-res jitter. In the half-res path each output texel
+  // covers a 2×2 full-res block; offset the marched ray within that texel by a
+  // per-frame Bayer pattern so consecutive frames (and neighbouring half-res
+  // texels via the bilateral upscale) sample DIFFERENT sub-pixel positions,
+  // decorrelating the under-sampling. `cloud.resolution` here is the HALF-RES
+  // target size, so one texel = (1/halfW, 1/halfH) in UV; the Bayer offset stays
+  // within ±0.5 texel. Full-res path: no jitter (resolution = full canvas, bit
+  // clear), so `uv` is byte-identical to the legacy `input.uv`.
+  var uv = input.uv;
   if (halfResEnabled()) {
-    return vec4<f32>(hazed * cloudAlpha, cloudAlpha);
+    let bIndex = u32(cloud.frameCounter) & 15u;
+    let bx = BAYER4[bIndex] - 0.5;            // -0.5..+0.46875 within the texel
+    let by = BAYER4[(bIndex + 5u) & 15u] - 0.5; // decorrelated second axis
+    let texel = vec2<f32>(1.0, 1.0) / max(cloud.resolution, vec2<f32>(1.0));
+    uv = uv + vec2<f32>(bx, by) * texel;
+  }
+  let sceneColor = textureSample(colorTex, texSampler, uv);
+  let sceneDepth = textureSampleLevel(depthTex, texSampler, uv, 0.0).r;
+
+  let rayOrigin = cloud.cameraPosition;
+  let rayDir = getWorldRay(uv);
+
+  // V5 — multi-scatter octave count from qualityFlags bits 4-6 (tier-driven:
+  // T1=2, T2/T3=3). The dual-lobe phase is folded PER-OCTAVE inside
+  // multiScatterLight, so it is not applied separately in the march.
+  let msOctaves = i32((u32(cloud.qualityFlags) >> QF_OCTAVES_SHIFT) & 7u);
+
+  if (!multiDeckEnabled()) {
+    // ── DEFAULT single-shell path — byte-identical to pre-443. March exactly ONE
+    // shell with today's bounds, then run the LEGACY composite verbatim. ──
+    let r = marchDeck(
+      rayOrigin, rayDir, sceneDepth,
+      cloud.cloudLayerBottom, cloud.cloudLayerTop, msOctaves,
+    );
+    let cloudAlpha = r.alpha;
+    let hazed = r.hazed;
+
+    // V9 (Batch 432) — half-res path: emit PREMULTIPLIED cloud radiance + alpha.
+    if (halfResEnabled()) {
+      return vec4<f32>(hazed * cloudAlpha, cloudAlpha);
+    }
+    // Full-res path — UNCHANGED legacy composite (byte-identical to pre-V9/443).
+    let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
+    return vec4<f32>(finalColor, sceneColor.a);
   }
 
-  // Full-res path — UNCHANGED legacy composite (byte-identical to pre-V9).
-  let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
+  // ── Batch 443 multi-deck path — march up to 3 shells (LOW/MID/HIGH) and
+  // composite FRONT-TO-BACK with premultiplied alpha so the NEAR deck occludes the
+  // FAR one (a low cumulus layer reads BENEATH a high cirrus veil). The decks are
+  // ordered by their MEAN ALTITUDE relative to the camera height (front = closest
+  // to the camera's vertical position) so the ordering is correct whether the
+  // camera is below all decks (looking up: LOW first), between them, or above
+  // (looking down: HIGH first). Front-to-back accumulation with an opaque
+  // early-terminate (accAlpha >= 0.995) keeps the worst case at 3 marches and the
+  // common case (a clear far deck, or full near coverage) far cheaper. The B (deck)
+  // weather channel can later gate empty decks; for now each deck early-outs inside
+  // marchDeck when the shell is missed / fully thin (alpha 0 → no contribution). ──
+  let camAlt = length(rayOrigin) - cloud.planetRadius;
+  let midLow = 0.5 * (cloud.deckBoundsLow.x + cloud.deckBoundsLow.y);
+  let midMid = 0.5 * (cloud.deckBoundsMid.x + cloud.deckBoundsMid.y);
+  let midHigh = 0.5 * (cloud.deckBoundsHigh.x + cloud.deckBoundsHigh.y);
+
+  // Distance of each deck's mid-altitude from the camera altitude = front-to-back
+  // sort key (smaller = nearer the camera's vertical band = composited FIRST).
+  let dLow = abs(camAlt - midLow);
+  let dMid = abs(camAlt - midMid);
+  let dHigh = abs(camAlt - midHigh);
+
+  // Bounds + sort keys packed per deck so we can order them without dynamic arrays
+  // of structs. index 0 = LOW, 1 = MID, 2 = HIGH.
+  var bottoms = array<f32, 3>(cloud.deckBoundsLow.x, cloud.deckBoundsMid.x, cloud.deckBoundsHigh.x);
+  var tops = array<f32, 3>(cloud.deckBoundsLow.y, cloud.deckBoundsMid.y, cloud.deckBoundsHigh.y);
+  var keys = array<f32, 3>(dLow, dMid, dHigh);
+  // Insertion-sort order[] by key ascending (front-to-back). 3 elements → trivial.
+  var order = array<i32, 3>(0, 1, 2);
+  for (var i: i32 = 1; i < 3; i = i + 1) {
+    let oi = order[i];
+    let ki = keys[oi];
+    var j: i32 = i - 1;
+    loop {
+      if (j < 0) { break; }
+      if (keys[order[j]] <= ki) { break; }
+      order[j + 1] = order[j];
+      j = j - 1;
+    }
+    order[j + 1] = oi;
+  }
+
+  // Front-to-back premultiplied accumulation: C = Σ Tᵢ·αᵢ·colorᵢ, A = Σ Tᵢ·αᵢ,
+  // with running transmittance T *= (1-αᵢ). Premultiplied so a far deck seen
+  // THROUGH a partly-covered near deck is attenuated by exactly (1 - nearAlpha) —
+  // no double-darkening seam at the deck boundary.
+  var accColor = vec3<f32>(0.0);
+  var accAlpha: f32 = 0.0;
+  var trans: f32 = 1.0;
+  for (var k: i32 = 0; k < 3; k = k + 1) {
+    if (trans < 0.005) { break; } // opaque — far decks fully occluded, early-out
+    let di = order[k];
+    let r = marchDeck(rayOrigin, rayDir, sceneDepth, bottoms[di], tops[di], msOctaves);
+    if (r.alpha <= 0.0) { continue; } // empty deck (missed shell / fully thin) — skip
+    accColor += trans * r.alpha * r.hazed;
+    accAlpha += trans * r.alpha;
+    trans = trans * (1.0 - r.alpha);
+  }
+
+  // V9 (Batch 432) — half-res path: emit the PREMULTIPLIED multi-deck radiance +
+  // composited alpha (same contract as the single-shell path; the bilateral
+  // upscale over-composites against the scene). accColor is already premultiplied.
+  if (halfResEnabled()) {
+    return vec4<f32>(accColor, accAlpha);
+  }
+  // Full-res path — over-composite the premultiplied cloud stack onto the scene.
+  let finalColor = sceneColor.rgb * (1.0 - accAlpha) + accColor;
   return vec4<f32>(finalColor, sceneColor.a);
 }
 
@@ -1271,7 +1402,10 @@ fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
     let samplePos = columnPoint + rayDir * t;
     let altitude = length(samplePos) - cloud.planetRadius;
     let hf = clamp((altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
-    opticalDepth += cloudDensity(samplePos, hf) * stepSize;
+    // Batch 443 — the shadow map stays SINGLE-SHELL (the cast shadow tracks the
+    // primary cloud layer). Pass cloudLayerBottom/Top as the deck bounds so the
+    // density evaluation is byte-identical to the pre-443 hardcoded call.
+    opticalDepth += cloudDensity(samplePos, hf, cloud.cloudLayerBottom, cloud.cloudLayerTop) * stepSize;
   }
   // Clamp to keep the f16 store finite and the consumer's exp() in range. The
   // raw integral over a dense ~2.5 km shell with densityMultiplier~0.3 is O(10²-10³);

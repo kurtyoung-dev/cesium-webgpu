@@ -227,7 +227,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Default keeps the existing valueFBM bake output; PW variant is a separate baked texture.
 - **Files:** `Shaders/WebGPU/Compute/CloudNoiseBake.wgsl`, `Renderer/WebGPU/WebGPUCloudNoiseResources.ts`.
 
-#### 4.9 — Multi-deck cloud march (`CLOUD-MULTIDECK`, Phase 2) — **P2, effort L**
+#### 4.9 — Multi-deck cloud march (`CLOUD-MULTIDECK`, Phase 2) — **P2, effort L** — ✅ SHIPPED Batch 443 (globe.cloudMultiDeck; up to 3 LOW/MID/HIGH decks, camera-band-sorted front-to-back premult composite; single shell byte-identical off)
 
 - **Technique:** March one shell per active `CloudDeck` (LOW/MID/HIGH bounds already in `CloudTypeProfile`), composite front-to-back, driven by the weather map's deck channel (B).
 - **Opt-in flag:** `globe.cloudMultiDeck` (default `false` → single shell as today).

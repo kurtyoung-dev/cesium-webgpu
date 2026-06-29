@@ -214,3 +214,7 @@ export const CLOUD_QF_AMBIENT_LUT = 1 << 9; // 3.4 sky-LUT cloud ambient (MS sky
 // the escape hatch leave it clear → the WGSL takes the verbatim straight light
 // march → byte-identical to pre-436.
 export const CLOUD_QF_LIGHT_CONE = 1 << 10; // 3.6 cone-sampled light march
+// Batch 443 (4.9 CLOUD-MULTIDECK) — add-only. Set by the renderer ONLY when
+// globe.cloudMultiDeck is opted in; the default leaves it clear → the WGSL marches
+// exactly one shell with cloudLayerBottom/Top + the legacy composite, byte-identical.
+export const CLOUD_QF_MULTI_DECK = 1 << 11; // 4.9 multi-deck shell march

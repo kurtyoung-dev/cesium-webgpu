@@ -35,6 +35,7 @@ import {
   CLOUD_QF_AERIAL_LUT,
   CLOUD_QF_AMBIENT_LUT,
   CLOUD_QF_LIGHT_CONE,
+  CLOUD_QF_MULTI_DECK,
 } from "./WebGPUCloudTierPresets.js";
 // V9 (Batch 432) — half-res bilateral-upscale composite shader.
 import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
@@ -50,8 +51,9 @@ import CloudType from "../../Scene/CloudType.js";
 // CloudUniforms float count — grown ADD-ONLY: 64→80 (weather seam) → 96 (W1-W8
 // lighting) → 104 (Batch 407 dials 96-103) → 108 (Batch 408 V11 profile 104-107;
 // Batch 409 renamed pads 105-106 → nearPlane/farPlane, no count change) → 112
-// (Batch 434 atmosphere-LUT coupling: aerialLutMode/ambientLutMode/atmosphereThickness/pad 108-111).
-const CLOUD_UNIFORM_FLOATS = 112; // MUST equal the CloudUniforms struct length in WGSL
+// (Batch 434 atmosphere-LUT coupling: aerialLutMode/ambientLutMode/atmosphereThickness/pad 108-111)
+// → 120 (Batch 443 multi-deck: multiDeck/pad + deckBoundsLow/Mid/High vec2 112-119).
+const CLOUD_UNIFORM_FLOATS = 120; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -1690,6 +1692,24 @@ export function executeProceduralClouds(
   data[offset++] = 111000.0; // 110 atmosphereThickness (matches the LUT bake)
   data[offset++] = 0.0; // 111 pad
 
+  // ── Batch 443 (4.9 CLOUD-MULTIDECK) — multi-deck shell march. Slots 112-119.
+  // Default OFF (multiDeck=0) → the WGSL marches exactly ONE shell with
+  // cloudLayerBottom/Top + the legacy composite, and these deck-bounds floats are
+  // never read → byte-identical. Opt-in via `globe.cloudMultiDeck`. The deck bounds
+  // come from CloudTypeProfile.CloudDeck.bounds (LOW/MID/HIGH; JS-authoritative —
+  // the same table the per-genus deck assignment uses). ──
+  const multiDeckOn =
+    (globe as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck === true;
+  const deckBounds = CloudTypeProfile.CloudDeck.bounds as number[][];
+  data[offset++] = multiDeckOn ? 1.0 : 0.0; // 112 multiDeck
+  data[offset++] = 0.0; // 113 pad
+  data[offset++] = deckBounds[0][0]; // 114 deckBoundsLow.x  (LOW bottom)
+  data[offset++] = deckBounds[0][1]; // 115 deckBoundsLow.y  (LOW top)
+  data[offset++] = deckBounds[1][0]; // 116 deckBoundsMid.x  (MID bottom)
+  data[offset++] = deckBounds[1][1]; // 117 deckBoundsMid.y  (MID top)
+  data[offset++] = deckBounds[2][0]; // 118 deckBoundsHigh.x (HIGH bottom)
+  data[offset++] = deckBounds[2][1]; // 119 deckBoundsHigh.y (HIGH top)
+
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render
   // leaves them clear → the WGSL gates stay closed → byte-identical.
@@ -1698,6 +1718,12 @@ export function executeProceduralClouds(
     if (aerialLutOn) qf = qf | CLOUD_QF_AERIAL_LUT;
     if (ambientLutOn) qf = qf | CLOUD_QF_AMBIENT_LUT;
     data[74] = qf;
+  }
+  // Batch 443 — fold the multi-deck bit (11) into qualityFlags. Set ONLY when
+  // opted in so the default leaves it clear → the WGSL takes the single-shell
+  // branch → byte-identical.
+  if (multiDeckOn) {
+    data[74] = data[74] | CLOUD_QF_MULTI_DECK;
   }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
