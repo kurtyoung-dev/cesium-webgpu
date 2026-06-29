@@ -1,0 +1,61 @@
+{
+  "type": "Coverage",
+  "domain": {
+    "type": "Domain",
+    "domainType": "Grid",
+    "axes": {
+      "x": {
+        "start": -180,
+        "stop": 180,
+        "num": 12
+      },
+      "y": {
+        "start": 90,
+        "stop": -90,
+        "num": 6
+      }
+    },
+    "referencing": [
+      {
+        "coordinates": ["x", "y"],
+        "system": {
+          "type": "GeographicCRS",
+          "id": "http://www.opengis.net/def/crs/EPSG/0/4326"
+        }
+      }
+    ]
+  },
+  "parameters": {
+    "TCDC": {
+      "type": "Parameter",
+      "description": { "en": "Total cloud cover (GDPS)" },
+      "unit": {
+        "label": { "en": "percent" },
+        "symbol": {
+          "value": "%",
+          "type": "http://www.opengis.net/def/uom/UCUM/"
+        }
+      },
+      "observedProperty": {
+        "id": "TCDC",
+        "label": { "en": "Total Cloud Cover" }
+      }
+    }
+  },
+  "ranges": {
+    "TCDC": {
+      "type": "NdArray",
+      "dataType": "float",
+      "axisNames": ["y", "x"],
+      "shape": [6, 12],
+      "values": [
+        5, 12, 20, 28, 36, 44, 52, 60, 68, 78, 88, 98,
+        4, 11, 19, 27, 35, 43, 51, 59, 67, 77, 87, 97,
+        3, 10, 18, 26, 34, 42, 50, 58, 66, 76, 86, 96,
+        3, 10, 18, 26, 34, 42, 50, 58, 66, 76, 86, 96,
+        4, 11, 19, 27, 35, 43, 51, 59, 67, 77, 87, 97,
+        5, 12, 20, 28, 36, 44, 52, 60, 68, 78, 88, 98
+      ]
+    }
+  }
+}

@@ -474,6 +474,50 @@ const throttle = (callback) => {
     });
   });
 
+  // Dev-only mock METAR endpoint (Weather Phase 3 — Batch 425). Serves the
+  // committed station-obs fixture for ANY `/mock-metar/...` path so a probe can
+  // point `new MetarWeatherSource({ url: "<origin>/mock-metar" })` at it and
+  // exercise the parse + IDW rasterize + full-RGBA pack chain WITHOUT the live
+  // (CORS-uncertain) aviationweather.gov feed. Never shipped (dev server only).
+  //eslint-disable-next-line no-unused-vars
+  app.get(/^\/mock-metar(\/.*)?$/, function (req, res) {
+    const fixturePath = path.resolve(
+      "Tools/visual-regression/fixtures/metar-stations.json",
+    );
+    res.set("access-control-allow-origin", "*");
+    res.set("content-type", "application/json");
+    res.sendFile(fixturePath, function (err) {
+      if (err) {
+        res
+          .status(500)
+          .json({ error: `mock-metar: fixture read failed: ${String(err)}` });
+      }
+    });
+  });
+
+  // Dev-only mock OGC API-Coverages (MSC GeoMet / "WCS") endpoint (Weather Phase
+  // 3 — Batch 425). Serves the committed CoverageJSON coverage fixture for ANY
+  // `/mock-wcs/...` path so a probe can point a `WcsCoveragesWeatherSource` at it
+  // — `buildUrl` appends `/collections/<id>/coverage?...`, which this route
+  // ignores and answers with the fixture. Proves the OGC Coverages fetch ->
+  // CoverageJSON parse (shared with EDR) -> packer -> clouds chain WITHOUT the
+  // live (CORS-uncertain) network. Never shipped (dev server only).
+  //eslint-disable-next-line no-unused-vars
+  app.get(/^\/mock-wcs(\/.*)?$/, function (req, res) {
+    const fixturePath = path.resolve(
+      "Tools/visual-regression/fixtures/wcs-coverage.json",
+    );
+    res.set("access-control-allow-origin", "*");
+    res.set("content-type", "application/prs.coverage+json");
+    res.sendFile(fixturePath, function (err) {
+      if (err) {
+        res
+          .status(500)
+          .json({ error: `mock-wcs: fixture read failed: ${String(err)}` });
+      }
+    });
+  });
+
   app.use(express.static(path.resolve(".")));
 
   const server = app.listen(

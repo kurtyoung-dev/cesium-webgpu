@@ -502,7 +502,7 @@ export async function createCesiumJs(variant = "dual") {
   // procedural-cloud weather map. See WEATHER_DATA_INGEST_ROADMAP.md.
   contents +=
     `\n// Weather data ingest public API (Batch 410).\n` +
-    `export { WeatherProvider, EdrWeatherSource, SyntheticWeatherSource, packWeatherField, CLOUD_BASE_NORM_METERS, GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine';\n` +
+    `export { WeatherProvider, EdrWeatherSource, SyntheticWeatherSource, MetarWeatherSource, WcsCoveragesWeatherSource, packWeatherField, CLOUD_BASE_NORM_METERS, GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine';\n` +
     `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from '@${scope}/engine';\n` +
     // Phase E (Batch 423) — precipitation-type enum + index↔string mapping that
     // drives the WebGPU weather particles through the effects hierarchy.
@@ -1407,6 +1407,8 @@ export async function createIndexJs(workspace) {
       `export { WeatherProvider } from './Source/Scene/Weather/WeatherProvider.js';${EOL}` +
       `export { EdrWeatherSource } from './Source/Scene/Weather/EdrWeatherSource.js';${EOL}` +
       `export { SyntheticWeatherSource } from './Source/Scene/Weather/SyntheticWeatherSource.js';${EOL}` +
+      `export { MetarWeatherSource } from './Source/Scene/Weather/MetarWeatherSource.js';${EOL}` +
+      `export { WcsCoveragesWeatherSource } from './Source/Scene/Weather/WcsCoveragesWeatherSource.js';${EOL}` +
       `export { packWeatherField, CLOUD_BASE_NORM_METERS } from './Source/Scene/Weather/WeatherTexPacker.js';${EOL}` +
       `export { GLOBAL_WEATHER_BOUNDS } from './Source/Scene/Weather/WeatherTypes.js';${EOL}` +
       `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from './Source/Scene/AtmosphericEffects.js';${EOL}` +

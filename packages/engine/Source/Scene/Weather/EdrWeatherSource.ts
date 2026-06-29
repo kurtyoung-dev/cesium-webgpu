@@ -17,11 +17,11 @@
 import type { WeatherSource } from "./WeatherSource.js";
 import {
   GLOBAL_WEATHER_BOUNDS,
-  type WeatherBounds,
   type WeatherCapabilities,
   type WeatherField,
   type WeatherFieldRequest,
 } from "./WeatherTypes.js";
+import { type CoverageJSON, parseCoverageJson } from "./CoverageJsonParser.js";
 
 export interface EdrWeatherSourceOptions {
   /** EDR API base, e.g. "https://data-api.mdl.nws.noaa.gov/EDR-API". */
@@ -45,20 +45,6 @@ const DEFAULTS: Required<Omit<EdrWeatherSourceOptions, "proxy">> = {
   coverageUnits: "percent",
   resolution: { x: 96, y: 48 },
 };
-
-interface CovJsonAxis {
-  values?: number[];
-  start?: number;
-  stop?: number;
-  num?: number;
-}
-
-interface CoverageJSON {
-  domain?: {
-    axes?: { x?: CovJsonAxis; y?: CovJsonAxis };
-  };
-  ranges?: Record<string, { values?: (number | null)[]; shape?: number[] }>;
-}
 
 export class EdrWeatherSource implements WeatherSource {
   private readonly _opt: Required<Omit<EdrWeatherSourceOptions, "proxy">> & {
@@ -118,79 +104,13 @@ export class EdrWeatherSource implements WeatherSource {
       throw new Error(`EDR fetch failed: ${res.status} ${res.statusText}`);
     }
     const cov = (await res.json()) as CoverageJSON;
-    return this._parse(cov, request.bounds ?? GLOBAL_WEATHER_BOUNDS);
+    const caps = this.getCapabilities();
+    return parseCoverageJson(cov, {
+      parameterName: this._opt.parameterName,
+      units: this._opt.coverageUnits === "percent" ? "percent" : "fraction",
+      bounds: request.bounds ?? GLOBAL_WEATHER_BOUNDS,
+      source: caps.id,
+      attribution: caps.attribution,
+    });
   }
-
-  /** Parse CoverageJSON into a normalized WeatherField (row0=north, col0=west). */
-  private _parse(cov: CoverageJSON, bounds: WeatherBounds): WeatherField {
-    const xAxis = cov.domain?.axes?.x;
-    const yAxis = cov.domain?.axes?.y;
-    const xs = axisValues(xAxis);
-    const ys = axisValues(yAxis);
-    if (!xs || !ys || xs.length === 0 || ys.length === 0) {
-      throw new Error("EDR CoverageJSON: missing x/y axis values");
-    }
-    const range =
-      cov.ranges?.[this._opt.parameterName] ??
-      (cov.ranges ? cov.ranges[Object.keys(cov.ranges)[0]] : undefined);
-    const values = range?.values;
-    if (!values) {
-      throw new Error("EDR CoverageJSON: missing range values");
-    }
-    const gw = xs.length;
-    const gh = ys.length;
-    if (values.length < gw * gh) {
-      throw new Error(
-        `EDR CoverageJSON: range ${values.length} < grid ${gw}x${gh}`,
-      );
-    }
-    // Orient so row 0 = north (lat descending), col 0 = west (lon ascending).
-    const yDescending = ys[0] > ys[ys.length - 1];
-    const xAscending = xs[0] < xs[xs.length - 1];
-    const norm = this._opt.coverageUnits === "percent" ? 1 / 100 : 1;
-    const coverage = new Float32Array(gw * gh);
-    for (let oy = 0; oy < gh; oy++) {
-      const sy = yDescending ? oy : gh - 1 - oy; // source row for north-first output
-      for (let ox = 0; ox < gw; ox++) {
-        const sx = xAscending ? ox : gw - 1 - ox;
-        const v = values[sy * gw + sx];
-        coverage[oy * gw + ox] =
-          v === null || v === undefined
-            ? 0
-            : Math.max(0, Math.min(1, v * norm));
-      }
-    }
-    return {
-      gridWidth: gw,
-      gridHeight: gh,
-      coverage,
-      bounds,
-      source: this.getCapabilities().id,
-      attribution: this.getCapabilities().attribution,
-    };
-  }
-}
-
-/** Resolve a CoverageJSON axis to an explicit value list (handles start/stop/num). */
-function axisValues(axis: CovJsonAxis | undefined): number[] | null {
-  if (!axis) {
-    return null;
-  }
-  if (axis.values && axis.values.length > 0) {
-    return axis.values;
-  }
-  if (
-    typeof axis.start === "number" &&
-    typeof axis.stop === "number" &&
-    typeof axis.num === "number" &&
-    axis.num > 0
-  ) {
-    const out: number[] = [];
-    const step = axis.num > 1 ? (axis.stop - axis.start) / (axis.num - 1) : 0;
-    for (let i = 0; i < axis.num; i++) {
-      out.push(axis.start + i * step);
-    }
-    return out;
-  }
-  return null;
 }

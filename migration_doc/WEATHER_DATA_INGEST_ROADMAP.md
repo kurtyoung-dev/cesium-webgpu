@@ -11,8 +11,18 @@ Phase-1 pipeline verification** the live network had blocked (fetch→CoverageJS
 parse→packer→weatherTex→deck, no fallback). Verified: `probe-weather-channels.mjs`
 (east dense-overcast vs west thin-stratiform at the SAME R coverage — PNGs read) +
 `probe-weather-edr-mock.mjs` (fixture clear-NW→overcast-SE ramp reaches the deck).
-**P3-SOURCES remain (Batch 425): WCS (MSC GeoMet) + METAR backends** (parser-testable vs
-mock fixtures; live fetch network-gated). Follow-up (Principle 9): `profileExtinction`
+**P3-SOURCES SHIPPED (Batch 425): `MetarWeatherSource` + `WcsCoveragesWeatherSource`.**
+METAR parses station cloud groups (FEW/SCT/BKN/OVC + ceiling + CB/TCU genus) and
+IDW-rasterizes them into a FULL-RGBA field (R cover, G genus, B base, A density) — the
+one source that exercises the whole G/B/A path from a real format. WCS uses MSC GeoMet's
+OGC API-Coverages → CoverageJSON (R coverage; binary GeoTIFF/NetCDF decode deferred). A
+shared `CoverageJsonParser.ts` was extracted (EdrWeatherSource now delegates to it; its
+regression probe stayed GREEN). Verified offline via `/mock-metar` + `/mock-wcs` fixtures:
+`probe-weather-metar.mjs` (OVC overcast deck vs SKC clear, G/B/A channels shift the deck —
+PNG read), `probe-weather-wcs.mjs` (east overcast → west clear). **Phase 3 is COMPLETE
+offline; the only network-gated residual is the live endpoint confirm (collection ids +
+CORS) per source.** P4 (binary GRIB2/NetCDF behind WASM) remains the deferred high-fidelity
+tier. Follow-up (Principle 9): `profileExtinction`
 (slot 103) still scaffolding — G biases shape/density but not yet per-position optical
 extinction. **Live EDR (the real feed) is wired (`EdrWeatherSource`) but the LIVE call +
 CORS + the guessed collection id `automated_gfs` still need confirming in a networked
