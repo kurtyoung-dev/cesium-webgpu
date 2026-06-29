@@ -485,6 +485,39 @@ export interface GraphicsContextOptions {
    * Only relevant when renderer is "webgpu" or "webgpu-compat".
    */
   featureLevel?: "core" | "compatibility";
+
+  /**
+   * WebGPU-renderer-specific opt-in quality options. Every field here
+   * defaults to the WebGL-parity behavior — the off path is byte-neutral.
+   * See `migration_doc/ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md`.
+   */
+  webgpu?: WebGPURendererOptions;
+}
+
+/**
+ * Opt-in WebGPU renderer quality flags. Defaults reproduce today's
+ * WebGL-parity pixels exactly (Batch 426, atmosphere/cloud plan Phase 1).
+ */
+export interface WebGPURendererOptions {
+  /**
+   * Item 1.2 (IBL-HDR). When true, the dynamic environment-map cube and
+   * its procedural-sky storage texture are allocated as `rgba16float`
+   * instead of `rgba8unorm`, so the HDR sun disc + bright sky survive
+   * into the GGX prefilter. Default `false` keeps the LDR `rgba8unorm`
+   * source (byte-identical to the shipped parity path).
+   * @default false
+   */
+  hdrEnvironmentMap?: boolean;
+
+  /**
+   * Item 1.3 (IBL-PREFILTER-HQ). `'parity'` (default) samples the source
+   * env cube at mip 0 in the radiance prefilter exactly as shipped.
+   * `'high'` pre-generates a mip chain on the source cube and samples it
+   * at a GGX-pdf-derived LOD (Karis/UE4), killing bright-sun firefly
+   * aliasing at high roughness.
+   * @default 'parity'
+   */
+  iblPrefilterQuality?: "parity" | "high";
 }
 
 // ═══════════════════════════════════════════════════════════

@@ -1283,6 +1283,26 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Item 1.2 (IBL-HDR, Batch 426). When true, the dynamic environment
+   * map allocates its source cube + procedural-sky storage texture as
+   * `rgba16float`. Default `false` → `rgba8unorm` (WebGL-parity, byte-
+   * identical). Read by `WebGPUDynamicEnvironmentMapManager`.
+   */
+  get hdrEnvironmentMap(): boolean {
+    return this._options.webgpu?.hdrEnvironmentMap ?? false;
+  }
+
+  /**
+   * Item 1.3 (IBL-PREFILTER-HQ, Batch 426). `'parity'` (default) samples
+   * the source cube at mip 0 in the radiance prefilter; `'high'` builds a
+   * source mip chain and samples a GGX-pdf-derived LOD. Read by
+   * `WebGPUDynamicEnvironmentMapManager` / `WebGPUIBLPipeline`.
+   */
+  get iblPrefilterQuality(): "parity" | "high" {
+    return this._options.webgpu?.iblPrefilterQuality ?? "parity";
+  }
+
+  /**
    * The canvas element associated with this context
    */
   get canvas(): HTMLCanvasElement {

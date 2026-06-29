@@ -78,6 +78,12 @@ interface DynEnvMapCache {
   sampler: GPUSampler | null;
   size: number;
   mipmapLevels: number;
+  // Item 1.2 (IBL-HDR, Batch 426) — the env-cube texture format the
+  // current resources were built against. `undefined` until the first
+  // create; flipping `hdrEnvironmentMap` changes this, triggering a full
+  // texture + sky-pipeline + sky-BGL rebuild (the format token is baked
+  // into all three). Parity default is "rgba8unorm".
+  cubemapFormat?: GPUTextureFormat;
   needsUpdate: boolean;
   framesSinceUpdate: number;
   // Audit re-review (Batch 134) -- last sun direction the procedural
@@ -170,8 +176,31 @@ function updateWebGPUDynamicEnvironmentMap(
   const size = manager._cubemapSize || 256;
   const mipmapLevels = manager._mipmapLevels || 1;
 
-  // Create/recreate cubemap if size changed
-  if (cache.size !== size || cache.mipmapLevels !== mipmapLevels) {
+  // Item 1.2 (IBL-HDR, Batch 426) — opt-in HDR env cube. Default false →
+  // `rgba8unorm` (WebGL-parity, byte-identical). True → `rgba16float` so
+  // the HDR sun disc + bright sky survive into the GGX prefilter. Read
+  // off the WebGPU context's `hdrEnvironmentMap` getter (threaded from
+  // `contextOptions.webgpu.hdrEnvironmentMap`). rgba16float is in core
+  // WebGPU's storage-write-capable + render-attachment list, so the same
+  // STORAGE_BINDING | RENDER_ATTACHMENT usage stays valid.
+  const hdrEnvironmentMap =
+    (
+      context as unknown as {
+        hdrEnvironmentMap?: boolean;
+      }
+    ).hdrEnvironmentMap === true;
+  const cubemapFormat: GPUTextureFormat = hdrEnvironmentMap
+    ? "rgba16float"
+    : "rgba8unorm";
+
+  // Create/recreate cubemap if size changed OR the HDR-format flag flipped.
+  // The format is baked into the texture, the sky storage BGL, and the sky
+  // pipeline's shader-module format token, so all three rebuild together.
+  if (
+    cache.size !== size ||
+    cache.mipmapLevels !== mipmapLevels ||
+    cache.cubemapFormat !== cubemapFormat
+  ) {
     if (cache.cubemapTexture) {
       cache.cubemapTexture.destroy();
     }
@@ -180,7 +209,7 @@ function updateWebGPUDynamicEnvironmentMap(
 
     cache.cubemapTexture = device.createTexture({
       size: { width: size, height: size, depthOrArrayLayers: 6 },
-      format: "rgba8unorm",
+      format: cubemapFormat,
       mipLevelCount,
       // Audit A.12 (Batch 131) -- adds STORAGE_BINDING so the
       // procedural sky compute pass can write directly into the
@@ -223,6 +252,15 @@ function updateWebGPUDynamicEnvironmentMap(
 
     cache.size = size;
     cache.mipmapLevels = mipmapLevels;
+    // Item 1.2 (Batch 426) — if the HDR format flipped, the sky storage
+    // BGL + pipeline encode the storage-texture format token, so force a
+    // full pipeline rebuild (not just the bind group). The recreate
+    // condition above already covers the format-change case.
+    if (cache.cubemapFormat !== cubemapFormat) {
+      cache.skyPipeline = null;
+      cache.skyBGL = null;
+    }
+    cache.cubemapFormat = cubemapFormat;
     cache.needsUpdate = true;
     // Force pipeline rebuild on size change (BGL/pipeline don't depend
     // on size but the bind group references the storage view which DID
@@ -352,6 +390,16 @@ function runProceduralSkyFill(
 ): void {
   // Build pipeline + BGL once per cache.
   if (!cache.skyPipeline || !cache.skyBGL) {
+    // Item 1.2 (IBL-HDR, Batch 426) — the storage-texture format token
+    // must match the env-cube texture format. Parity default
+    // "rgba8unorm" → byte-identical BGL + the unmodified
+    // `ProceduralSkyCubemap.wgsl` string (which declares `rgba8unorm`).
+    // HDR-on → "rgba16float" in the BGL AND a single in-place swap of the
+    // WGSL `texture_storage_2d_array<...>` format token (the storage
+    // format is a static token; the `//>>ifdef` preprocessor only gates
+    // executable lines, not the storage decl, so a scoped string replace
+    // is the correct lever here).
+    const storageFormat: GPUTextureFormat = cache.cubemapFormat ?? "rgba8unorm";
     cache.skyBGL = device.createBindGroupLayout({
       label: "DynEnvMap Sky BGL",
       entries: [
@@ -365,7 +413,7 @@ function runProceduralSkyFill(
           visibility: GPUShaderStage.COMPUTE,
           storageTexture: {
             access: "write-only",
-            format: "rgba8unorm",
+            format: storageFormat,
             viewDimension: "2d-array",
           },
         },
@@ -375,9 +423,16 @@ function runProceduralSkyFill(
       label: "DynEnvMap Sky PipelineLayout",
       bindGroupLayouts: [cache.skyBGL],
     });
+    const skyCode =
+      storageFormat === "rgba8unorm"
+        ? ProceduralSkyCubemapWGSL
+        : ProceduralSkyCubemapWGSL.replace(
+            "texture_storage_2d_array<rgba8unorm, write>",
+            "texture_storage_2d_array<rgba16float, write>",
+          );
     const module = device.createShaderModule({
       label: "ProceduralSkyCubemap",
-      code: ProceduralSkyCubemapWGSL,
+      code: skyCode,
     });
     cache.skyPipeline = device.createComputePipeline({
       label: "DynEnvMap Sky Pipeline",
@@ -665,6 +720,26 @@ function runIBLPrefilter(
   // destroys the old irradiance + radiance textures before recreating
   // them, so re-running prefilter on each sun-direction refresh does
   // not leak GPU memory.
+  // Item 1.3 (IBL-PREFILTER-HQ, Batch 426) — opt-in high-quality prefilter.
+  // Default 'parity' → pass `undefined` so `generateIBLMaps` takes the
+  // byte-identical mip-0 path (no source-mip pass, `main` entry point).
+  // 'high' → pass the source cube + format so the prefilter box-downsamples
+  // the source mip chain and samples a GGX-pdf-derived LOD (`mainHQ`).
+  const quality =
+    (
+      frameState.context as unknown as {
+        iblPrefilterQuality?: "parity" | "high";
+      }
+    ).iblPrefilterQuality ?? "parity";
+  const hqOptions =
+    quality === "high"
+      ? {
+          quality: "high" as const,
+          sourceCube: cache.cubemapTexture,
+          sourceFormat:
+            cache.cubemapFormat ?? ("rgba8unorm" as GPUTextureFormat),
+        }
+      : undefined;
   generateIBLMaps(
     device,
     cache.iblCache,
@@ -674,6 +749,7 @@ function runIBLPrefilter(
         webgpuComputePipelineCache?: import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache;
       }
     ).webgpuComputePipelineCache ?? null,
+    hqOptions,
   );
 }
 

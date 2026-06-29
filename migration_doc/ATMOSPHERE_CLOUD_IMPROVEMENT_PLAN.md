@@ -53,14 +53,14 @@ These build the shared substrate every later item consumes. Do them first.
 - **Parity impact:** Default-off keeps `ENABLE_SKY_INSCATTER_LUT=false`; the inline `czm_computeScattering` port is byte-unchanged. The re-baked LUT replaces the existing one only on the bake path (already gated by sun-delta threshold) — and is currently sampled only by fog drape, which gets *more correct* but stays behind its own flags.
 - **Files:** `Shaders/WebGPU/Compute/AtmosphereLUT.wgsl`, `Renderer/WebGPU/WebGPUAtmosphereLUT.ts`, `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl`, `Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js`.
 
-#### 1.2 — HDR env cube (`IBL-HDR`) — **P0, effort S** *(quick win)*
+#### 1.2 — HDR env cube (`IBL-HDR`) — **P0, effort S** *(quick win)* — ✅ SHIPPED Batch 426
 
 - **Technique:** Promote the dynamic env cube + `ProceduralSkyCubemap` storage texture from `rgba8unorm` → `rgba16float` so the HDR sun disc + bright sky survive into the GGX prefilter (Karis split-sum wants HDR radiance). Prefilter + SH already run rgba16float — only the *source* is LDR.
 - **Opt-in flag:** `contextOptions.webgpu.hdrEnvironmentMap` (default `false`).
 - **Parity impact:** Default-false keeps rgba8unorm + identical SkyUniforms pack → `probe-model-ibl` byte-unchanged. Flag true swaps only the texture format + storage-texture access decl.
 - **Files:** `Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`, `Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl`.
 
-#### 1.3 — Roughness-correct prefilter mip-source + LOD bias (`IBL-PREFILTER-HQ`) — **P0, effort M**
+#### 1.3 — Roughness-correct prefilter mip-source + LOD bias (`IBL-PREFILTER-HQ`) — **P0, effort M** — ✅ SHIPPED Batch 426
 
 - **Technique:** Karis/UE4 prefilter: pre-generate a mip chain on the source env cube and, in `RadiancePrefilter.wgsl`, sample the source at a LOD derived from the GGX pdf vs texel solid angle (`saSample/saTexel`) instead of always mip0 (line 104). Kills bright-sun firefly aliasing at high roughness.
 - **Opt-in flag:** `contextOptions.webgpu.iblPrefilterQuality` (`'parity' | 'high'`, default `'parity'`).
