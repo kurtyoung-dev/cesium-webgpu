@@ -34,6 +34,7 @@ import {
   CLOUD_QF_TEMPORAL,
   CLOUD_QF_AERIAL_LUT,
   CLOUD_QF_AMBIENT_LUT,
+  CLOUD_QF_LIGHT_CONE,
 } from "./WebGPUCloudTierPresets.js";
 // V9 (Batch 432) — half-res bilateral-upscale composite shader.
 import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
@@ -1113,10 +1114,16 @@ export function executeProceduralClouds(
   // the half-res target; it stays clear on the default / cinematic / escape-hatch
   // path. Carried for flag self-consistency with the tier presets + future readers.
   const temporalBit = temporalActive ? CLOUD_QF_TEMPORAL : 0;
+  // Batch 436 (3.6 CLOUD-CONE-LIGHT) — set bit 10 (QF_LIGHT_CONE) when the resolved
+  // tier wants the cone-sampled light march (T1 low / T2 medium). T3 cinematic + the
+  // escape hatch have `lightConeSampling=false` → the bit stays clear → the WGSL
+  // takes the verbatim straight light march → byte-identical to pre-436.
+  const lightConeBit = cloudPreset.lightConeSampling ? CLOUD_QF_LIGHT_CONE : 0;
   data[offset++] =
     noiseBakedBit |
     halfResBit |
     temporalBit |
+    lightConeBit |
     ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
       CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
   data[offset++] = 0; // 75 reserved (V8 curlAmplitude)

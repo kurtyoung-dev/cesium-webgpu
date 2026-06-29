@@ -173,6 +173,7 @@ const QF_PROFILE_ON: u32 = 128u;    // bit 7
 // gates each on a non-zero LUT radiance (unbaked LUT → legacy fallback).
 const QF_AERIAL_LUT: u32 = 256u;    // bit 8 — 3.3 physical aerial (sky-view + transmittance)
 const QF_AMBIENT_LUT: u32 = 512u;   // bit 9 — 3.4 sky-LUT cloud ambient (MS sky LUT)
+const QF_LIGHT_CONE: u32 = 1024u;   // bit 10 — 3.6 cone-sampled light march (Batch 436)
 
 // V9 (Batch 432) — ordered 4×4 Bayer matrix (normalized 0..1, the standard
 // recursive dither pattern). Used to JITTER the half-res sample point by a
@@ -570,8 +571,105 @@ fn cloudPhase(cosTheta: f32) -> f32 {
   return mix(back, forward, cloud.phaseBlend);
 }
 
+// Batch 436 (3.6 CLOUD-CONE-LIGHT) — is the Schneider/Nubis cone-sampled light
+// march active? (qualityFlags bit 10). T1/T2 set it; T3 cinematic + the escape
+// hatch leave it clear → the straight march below runs verbatim (byte-identical).
+fn lightConeEnabled() -> bool {
+  return (u32(cloud.qualityFlags) & QF_LIGHT_CONE) != 0u;
+}
+
+// Batch 436 — fixed 6-tap cone kernel (Schneider, "Real-Time Volumetric
+// Cloudscapes of Horizon Zero Dawn", SIGGRAPH 2015 / Nubis 2017). Five short
+// taps marching toward the sun, each pushed sideways by a UNIT offset so the
+// sampled positions FAN OUT into a cone — the cone captures more of the occluding
+// cloud body (the parts that shadow the sample but don't lie on the exact
+// sun ray) with far fewer taps than a dense straight march. The offsets are a
+// small irregular set on the unit sphere; they're scaled per-tap by an
+// increasing radius and jittered per-pixel (see lightMarchCone) so the sparse
+// taps don't band. The 6th step is ONE LONG far tap (handled separately) using
+// the cheap `cloudBaseDensity` oracle to fold in distant self-shadowing.
+const CONE_KERNEL: array<vec3<f32>, 5> = array<vec3<f32>, 5>(
+  vec3<f32>( 0.38051787,  0.92453268,  0.02111722),
+  vec3<f32>( 0.35578787, -0.55155486, -0.75555583),
+  vec3<f32>(-0.52047277,  0.05818154,  0.65454095),
+  vec3<f32>( 0.11607481, -0.81293669,  0.51585301),
+  vec3<f32>(-0.85181792, -0.15296098,  0.34155418)
+);
+
+// Batch 436 — per-pixel/per-frame cone jitter. Pairs cleanly with the half-res
+// temporal accumulation: rotating the cone slightly each frame (frameCounter) and
+// per screen position decorrelates the sparse 5-tap pattern so the temporal
+// resolve averages out the under-sampling instead of locking in a fixed bias.
+// Returns a small unit-length vector used to perturb the kernel offsets.
+fn coneJitter(pos: vec3<f32>) -> vec3<f32> {
+  let seed = pos * 0.013 + vec3<f32>(cloud.frameCounter * 0.61803399);
+  return hash33(seed) - vec3<f32>(0.5);
+}
+
+// Batch 436 — Schneider 6-tap cone light march. Sums optical depth from 5 short
+// cone-offset taps (full eroded `cloudDensity`) plus 1 long far tap (cheap
+// `cloudBaseDensity` oracle) toward the sun. Returns an optical depth in the SAME
+// units as the straight march (density × marched-length), so it feeds the SAME
+// beer-powder / multi-scatter / HG lighting model unchanged — only the SAMPLING
+// PATTERN differs. ~½ the cost: 6 taps (5 full + 1 cheap) vs the straight march's
+// `lightSteps` full taps per cone radius.
+fn lightMarchCone(pos: vec3<f32>, heightFraction: f32) -> f32 {
+  let sunDir = normalize(cloud.sunDirection);
+  let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
+  let outerR = cloud.planetRadius + cloud.cloudLayerTop;
+  let layerThickness = outerR - innerR;
+
+  // Base step toward the sun. The straight march walked `steps` of `layerThickness/
+  // steps`; the cone covers the same near-shadow span with 5 geometrically-growing
+  // steps. lightSampleScale stays the tier cost lever (T1/T2 = 0.5 → tighter cone).
+  let coneStepBase = layerThickness * 0.16 * cloud.lightSampleScale;
+  // Build a sun-aligned basis so the kernel's lateral component fans across the
+  // sun ray (kernel.z rides along the sun direction; x/y spread the cone).
+  var tangent = normalize(cross(sunDir, vec3<f32>(0.0, 0.0, 1.0)));
+  if (!(dot(tangent, tangent) > 0.5)) {
+    tangent = normalize(cross(sunDir, vec3<f32>(1.0, 0.0, 0.0)));
+  }
+  let bitangent = cross(sunDir, tangent);
+  let jit = coneJitter(pos);
+
+  var opticalDepth: f32 = 0.0;
+  // 5 short cone taps. Step distance and cone radius BOTH grow with i, so the taps
+  // sweep a widening cone toward the sun. Each tap reads the FULL density.
+  for (var i: i32 = 0; i < 5; i = i + 1) {
+    let fi = f32(i);
+    let marchDist = coneStepBase * (fi + 1.0);
+    let k = CONE_KERNEL[i] + jit * 0.4;          // per-pixel jittered offset
+    let coneRadius = coneStepBase * (fi + 0.5);  // widening cone
+    let lateral = (k.x * tangent + k.y * bitangent) * coneRadius;
+    let samplePos = pos + sunDir * marchDist + lateral;
+    let altitude = length(samplePos) - cloud.planetRadius;
+    let hf = clamp((altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
+    // Weight each tap by its marched extent so the summed optical depth is
+    // dimensionally the same as the straight march's Σ density·stepSize.
+    opticalDepth += cloudDensity(samplePos, hf) * coneStepBase;
+  }
+
+  // ONE LONG FAR TAP — captures distant self-shadowing the short cone can't reach,
+  // using the CHEAP base-density oracle (no Worley / detail fetches). `cloudBaseDensity`
+  // is conservative (base >= full), so this slightly OVER-shadows the far term —
+  // exactly the desired soft far self-occlusion at a fraction of a full tap's cost.
+  let farDist = layerThickness * 1.5;
+  let farPos = pos + sunDir * farDist;
+  let farAlt = length(farPos) - cloud.planetRadius;
+  let farHf = clamp((farAlt - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
+  opticalDepth += cloudBaseDensity(farPos, farHf) * coneStepBase * 3.0;
+
+  return opticalDepth;
+}
+
 // ─── Light march: compute optical depth toward sun ───
+// Batch 436 — dispatch: the cone path (T1/T2) when QF_LIGHT_CONE is set, else the
+// STRAIGHT N-step march below, kept VERBATIM so the default / cinematic / escape
+// hatch render byte-identical to pre-436.
 fn lightMarch(pos: vec3<f32>, heightFraction: f32) -> f32 {
+  if (lightConeEnabled()) {
+    return lightMarchCone(pos, heightFraction);
+  }
   let sunDir = normalize(cloud.sunDirection);
   // V5 — scale the light-march step count by the tier's lightSampleScale (T3 = 1.0
   // → unchanged; lower tiers march fewer, bigger steps for ~the same optical depth

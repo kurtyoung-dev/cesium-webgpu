@@ -34,6 +34,14 @@ export interface CloudTierPreset {
   jitterEnabled: boolean;
   /** Light-march sample-count scale vs the camera budget (V5). */
   lightSampleScale: number;
+  /**
+   * Batch 436 (3.6 CLOUD-CONE-LIGHT) — when true, the light march toward the sun
+   * uses the Schneider/Nubis 6-tap JITTERED CONE sampling (5 cone taps + 1 long
+   * far tap on the cheap `cloudBaseDensity` oracle) instead of the straight N-step
+   * march. ~½ the light-march cost at equal visual quality. T1/T2 SET it; T3
+   * cinematic + the `cloudQuality` escape hatch keep the straight march (parity).
+   */
+  lightConeSampling: boolean;
   multiScatterOctaves: number;
   powderStrength: number;
   isotropicFloor: number;
@@ -69,6 +77,7 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     temporalUpdateFraction: 0,
     jitterEnabled: false,
     lightSampleScale: 1.0,
+    lightConeSampling: false,
     multiScatterOctaves: 0,
     powderStrength: 0,
     isotropicFloor: 0,
@@ -86,6 +95,7 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     temporalUpdateFraction: 1 / 16,
     jitterEnabled: true,
     lightSampleScale: 0.5,
+    lightConeSampling: true,
     multiScatterOctaves: 2,
     powderStrength: 0,
     isotropicFloor: 0,
@@ -103,6 +113,7 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     temporalUpdateFraction: 1 / 8,
     jitterEnabled: true,
     lightSampleScale: 0.5,
+    lightConeSampling: true,
     multiScatterOctaves: 3,
     powderStrength: 0.4,
     isotropicFloor: 0.02,
@@ -120,6 +131,8 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     temporalUpdateFraction: 0,
     jitterEnabled: true,
     lightSampleScale: 1.0,
+    // T3 cinematic keeps the STRAIGHT N-step light march (full quality, parity).
+    lightConeSampling: false,
     multiScatterOctaves: 3,
     powderStrength: 0.7,
     isotropicFloor: 0.04,
@@ -164,6 +177,8 @@ export function resolveCloudPreset(
       temporalUpdateFraction: 0,
       jitterEnabled: false,
       lightSampleScale: 1.0,
+      // Escape hatch keeps the STRAIGHT light march (parity with today's power-user path).
+      lightConeSampling: false,
       multiScatterOctaves: 3,
       powderStrength: 0,
       isotropicFloor: 0,
@@ -185,3 +200,8 @@ export const CLOUD_QF_PROFILE_ON = 1 << 7; // V11
 // matching globe.cloud* mode is opted in; the default render leaves them clear.
 export const CLOUD_QF_AERIAL_LUT = 1 << 8; // 3.3 physical aerial (sky-view + transmittance)
 export const CLOUD_QF_AMBIENT_LUT = 1 << 9; // 3.4 sky-LUT cloud ambient (MS sky LUT)
+// Batch 436 (3.6 CLOUD-CONE-LIGHT) — add-only. Set by the renderer ONLY when the
+// resolved tier's `lightConeSampling` is true (T1 low / T2 medium); T3 cinematic +
+// the escape hatch leave it clear → the WGSL takes the verbatim straight light
+// march → byte-identical to pre-436.
+export const CLOUD_QF_LIGHT_CONE = 1 << 10; // 3.6 cone-sampled light march

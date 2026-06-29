@@ -154,7 +154,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Default-off skips reprojection + history blend (history texture only allocated when set); integrate pass byte-identical.
 - **Files:** `Shaders/WebGPU/Compute/VolumetricFog.wgsl`, `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`, `Renderer/WebGPU/WebGPUVolumetricFogResources.ts`.
 
-#### 3.6 — Cone-sampled cloud light march (`CLOUD-CONE-LIGHT`) — **P2, effort M**
+#### 3.6 — Cone-sampled cloud light march (`CLOUD-CONE-LIGHT`) — **P2, effort M** — ✅ SHIPPED Batch 436 (6-tap cone + cheap far-tap oracle; T1/T2; ~44% light-march cost drop at equal quality; byte-identical-by-construction off)
 
 - **Technique:** Replace the straight N-step `lightMarch` (re-evaluates full `cloudDensity` incl. weather + 3D fetches per step) with the Schneider 6-tap cone-sampled light march (jittered toward-sun samples + one long far tap), reusing the cheap `cloudBaseDensity` oracle for far taps. ~½ light-march cost at equal quality.
 - **Opt-in flag:** new preset `lightConeSampling` (T1/T2 set; T3/escape-hatch straight march), gated by a `qualityFlags` bit.
