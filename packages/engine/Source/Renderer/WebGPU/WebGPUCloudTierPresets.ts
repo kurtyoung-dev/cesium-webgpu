@@ -181,3 +181,7 @@ export const CLOUD_QF_TEMPORAL = 1 << 2; // V10
 export const CLOUD_QF_JITTER = 1 << 3; // V6
 export const CLOUD_QF_OCTAVES_SHIFT = 4; // bits 4-6
 export const CLOUD_QF_PROFILE_ON = 1 << 7; // V11
+// Batch 434 — atmosphere-LUT coupling (add-only). Set by the renderer ONLY when the
+// matching globe.cloud* mode is opted in; the default render leaves them clear.
+export const CLOUD_QF_AERIAL_LUT = 1 << 8; // 3.3 physical aerial (sky-view + transmittance)
+export const CLOUD_QF_AMBIENT_LUT = 1 << 9; // 3.4 sky-LUT cloud ambient (MS sky LUT)

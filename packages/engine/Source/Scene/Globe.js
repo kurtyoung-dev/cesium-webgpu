@@ -599,6 +599,40 @@ class Globe {
     this.cloudVolumetricQuality = "auto";
 
     /**
+     * Aerial-perspective MODE for distant procedural clouds (Batch 434 — item 3.3,
+     * WebGPU only). <code>"heuristic"</code> (default) keeps the legacy ~60 km LDR
+     * lerp toward a packed time-of-day <code>cloudAerialColor</code> tint scaled by
+     * <code>cloudAerialStrength</code> — byte-identical to the pre-434 render.
+     * <code>"physical"</code> instead couples the clouds to the precomputed
+     * atmosphere LUTs: the cloud color is attenuated by the Bruneton TRANSMITTANCE
+     * LUT over the march-midpoint range and the in-between air light is added from
+     * the sun-relative SKY-VIEW inscatter LUT, so distant clouds fog toward the
+     * REAL sky color (warm toward a low sun, cooler away) rather than a flat tint.
+     * Self-healing: if the atmosphere LUTs are not baked yet (e.g.
+     * <code>skyAtmosphere.show = false</code>) the shader falls back to the
+     * heuristic path for that frame.
+     * @type {string}
+     * @default "heuristic"
+     */
+    this.cloudAerialMode = "heuristic";
+
+    /**
+     * Cloud AMBIENT source (Batch 434 — item 3.4, WebGPU only).
+     * <code>"constant"</code> (default) lights the cloud shadow side with the fixed
+     * blue-sky / warm-ground-bounce ambient lerp (<code>skyAmbientColor</code> /
+     * <code>groundAmbientColor</code>) — byte-identical to the pre-434 render.
+     * <code>"sky-lut"</code> instead samples the precomputed sun-relative
+     * multiple-scattering sky LUT at the cloud altitude — the UP hemisphere for the
+     * top (sky) ambient and the DOWN hemisphere for the bottom (ground bounce) — so
+     * the cloud ambient tracks the true time-of-day sky radiance (warm at sunset,
+     * blue at noon). Reuses the same LUT binding as <code>cloudAerialMode</code>.
+     * Self-healing: falls back to the constant ambient when the LUTs are unbaked.
+     * @type {string}
+     * @default "constant"
+     */
+    this.cloudAmbientSource = "constant";
+
+    /**
      * True if primitives such as billboards, polylines, labels, etc. should be depth-tested
      * against the terrain surface, or false if such primitives should always be drawn on top
      * of terrain unless they're on the opposite side of the globe.  The disadvantage of depth

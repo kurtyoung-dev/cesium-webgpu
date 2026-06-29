@@ -32,6 +32,8 @@ import {
   CLOUD_QF_NOISE_BAKED,
   CLOUD_QF_HALF_RES,
   CLOUD_QF_TEMPORAL,
+  CLOUD_QF_AERIAL_LUT,
+  CLOUD_QF_AMBIENT_LUT,
 } from "./WebGPUCloudTierPresets.js";
 // V9 (Batch 432) — half-res bilateral-upscale composite shader.
 import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
@@ -46,8 +48,9 @@ import CloudType from "../../Scene/CloudType.js";
 
 // CloudUniforms float count — grown ADD-ONLY: 64→80 (weather seam) → 96 (W1-W8
 // lighting) → 104 (Batch 407 dials 96-103) → 108 (Batch 408 V11 profile 104-107;
-// Batch 409 renamed pads 105-106 → nearPlane/farPlane, no count change).
-const CLOUD_UNIFORM_FLOATS = 108; // MUST equal the CloudUniforms struct length in WGSL
+// Batch 409 renamed pads 105-106 → nearPlane/farPlane, no count change) → 112
+// (Batch 434 atmosphere-LUT coupling: aerialLutMode/ambientLutMode/atmosphereThickness/pad 108-111).
+const CLOUD_UNIFORM_FLOATS = 112; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -112,6 +115,15 @@ export interface CloudCache {
   temporalUniformBuffer: GPUBuffer | null;
   temporalUniformData: Float32Array;
   temporalSampler: GPUSampler | null;
+  // Batch 434 (3.3 + 3.4) — atmosphere-LUT coupling. The cloud BGL ALWAYS declares
+  // the three LUT textures (sky-view / MS / transmittance) + a linear sampler at
+  // bindings 9-12 so the pipeline layout never forks. When the modes are off (or the
+  // LUTs aren't baked) a 1×1 BLACK rgba16float placeholder is bound — the WGSL gates
+  // each LUT sample on its mode bit AND a non-zero radiance, so a black placeholder
+  // is the same as "unbaked" and the legacy heuristic/constant path runs.
+  lutPlaceholderTexture: GPUTexture | null;
+  lutPlaceholderView: GPUTextureView | null; // 1×1 black, bound when off/unbaked
+  lutSampler: GPUSampler | null;
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -156,6 +168,9 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       temporalUniformBuffer: null,
       temporalUniformData: new Float32Array(TEMPORAL_UNIFORM_FLOATS),
       temporalSampler: null,
+      lutPlaceholderTexture: null,
+      lutPlaceholderView: null,
+      lutSampler: null,
     };
   }
   return context._cloudCache;
@@ -526,6 +541,91 @@ function ensureWeatherView(
   return cache.weatherView!;
 }
 
+// ─── Batch 434 (3.3 + 3.4) — atmosphere-LUT view resolver ───
+// Returns the three LUT views to bind at 9/10/11 this frame. The 1×1 black
+// placeholder is built once (lazily) and bound when EITHER mode is off OR the
+// atmosphere LUTs haven't been allocated. When at least one mode is on AND the
+// perfManager has the LUT resources, the REAL sky-view / MS / transmittance views
+// are bound. The WGSL still gates each sample on its mode bit + a non-zero radiance,
+// so a real-but-unbaked LUT (all-zero textures before SkyAtmosphere dispatches the
+// bake) self-heals to the legacy heuristic/constant path (mirrors the globe fog
+// drape's "bind whatever's there, let the shader's luminance test decide" pattern).
+interface CloudLutViews {
+  skyView: GPUTextureView;
+  multipleScatter: GPUTextureView;
+  transmittance: GPUTextureView;
+}
+function ensureCloudLutViews(
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  cache: CloudCache,
+  wantLut: boolean,
+): CloudLutViews {
+  if (!cache.lutPlaceholderView) {
+    // 1×1 BLACK rgba16float (float16 zero = 8 zero bytes). Black == "no radiance"
+    // == the unbaked-LUT sentinel, so a bound placeholder is safe even if a mode
+    // bit is set: the WGSL luminance test fails and the legacy branch runs.
+    const ph = device.createTexture({
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: "rgba16float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      dimension: "2d",
+      label: "ProceduralClouds LUT placeholder (1x1 black)",
+    });
+    device.queue.writeTexture(
+      { texture: ph },
+      new Uint8Array(8), // 4 channels × f16(0.0)
+      { bytesPerRow: 8, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    cache.lutPlaceholderTexture = ph;
+    cache.lutPlaceholderView = ph.createView();
+  }
+  const placeholder = cache.lutPlaceholderView;
+  if (!wantLut) {
+    return {
+      skyView: placeholder,
+      multipleScatter: placeholder,
+      transmittance: placeholder,
+    };
+  }
+  // Resolve the real LUT views from the performance manager (same accessor the
+  // sky / fog / globe-fog batches use; allocate-only — the textures stay all-zero
+  // until SkyAtmosphere dispatches the bake, which the WGSL luminance gate handles).
+  const perfMgr = (
+    context as unknown as {
+      performanceManager?: {
+        ensureAtmosphereLUTResources?: (d: GPUDevice) => {
+          skyViewView?: GPUTextureView;
+          multipleScatterView?: GPUTextureView;
+          transmittanceView?: GPUTextureView;
+        } | null;
+      };
+    }
+  ).performanceManager;
+  if (perfMgr?.ensureAtmosphereLUTResources) {
+    const res = perfMgr.ensureAtmosphereLUTResources(device);
+    if (
+      res &&
+      res.skyViewView &&
+      res.multipleScatterView &&
+      res.transmittanceView
+    ) {
+      return {
+        skyView: res.skyViewView,
+        multipleScatter: res.multipleScatterView,
+        transmittance: res.transmittanceView,
+      };
+    }
+  }
+  // No LUT resources (non-compute device, or not allocated yet) — placeholders.
+  return {
+    skyView: placeholder,
+    multipleScatter: placeholder,
+    transmittance: placeholder,
+  };
+}
+
 // ─── V2 — 3D noise bake ───
 // Ensure the shape/detail noise textures are baked ONCE and return the views to
 // bind at 6/7/8. INERT in V2: the bind group must supply valid 3D views (the BGL
@@ -609,6 +709,13 @@ function initializeCloudPipeline(
     texture(6, Stage.FRAGMENT, { viewDimension: "3d" }),
     texture(7, Stage.FRAGMENT, { viewDimension: "3d" }),
     sampler(8, Stage.FRAGMENT),
+    // Batch 434 (3.3 + 3.4) — atmosphere LUTs (sky-view / MS / transmittance) +
+    // a linear sampler. Bound UNCONDITIONALLY (1×1 black placeholders when off /
+    // unbaked) so the BGL never forks; the WGSL gates the samples on the mode bits.
+    texture(9, Stage.FRAGMENT),
+    texture(10, Stage.FRAGMENT),
+    texture(11, Stage.FRAGMENT),
+    sampler(12, Stage.FRAGMENT),
   ]);
 
   const pipelineLayout = device.createPipelineLayout({
@@ -641,6 +748,17 @@ function initializeCloudPipeline(
     magFilter: "linear",
     minFilter: "linear",
     addressModeU: "repeat",
+    addressModeV: "clamp-to-edge",
+  });
+
+  // Batch 434 (3.3 + 3.4) — linear clamp sampler for the atmosphere LUTs (matches
+  // SkyAtmosphere's lutSampler / AerialPerspective's texSampler conventions so the
+  // cloud air-light / ambient sample the LUTs identically to the visible sky).
+  cache.lutSampler = device.createSampler({
+    label: "ProceduralClouds LUT Sampler",
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
   });
 
@@ -1093,6 +1211,33 @@ export function executeProceduralClouds(
   // weatherMapEnabled=0 reproduces today's pixels. `globe.cloudWeatherChannelStrength`
   // tunes it live (0 = legacy R-only).
   data[offset++] = globe.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
+  // ── Batch 434 (3.3 CLOUD-AERIAL-LUT + 3.4 CLOUD-AMBIENT-LUT) — atmosphere-LUT
+  // coupling modes (108-111). Both default to the legacy path: 'heuristic' aerial +
+  // 'constant' ambient → mode floats 0 → the WGSL takes the verbatim legacy branch,
+  // byte-identical. The qualityFlags bits (8/9) carry the same on/off below; the
+  // mode floats are belt-and-suspenders for shader readers. atmosphereThickness MUST
+  // match the LUT bake (ATMOSPHERE_THICKNESS = 111e3) so the transmittance v-lookup
+  // lands on the right row.
+  const globeForLut = globe as unknown as {
+    cloudAerialMode?: string;
+    cloudAmbientSource?: string;
+  };
+  const aerialLutOn = globeForLut.cloudAerialMode === "physical";
+  const ambientLutOn = globeForLut.cloudAmbientSource === "sky-lut";
+  data[offset++] = aerialLutOn ? 1.0 : 0.0; // 108 aerialLutMode
+  data[offset++] = ambientLutOn ? 1.0 : 0.0; // 109 ambientLutMode
+  data[offset++] = 111000.0; // 110 atmosphereThickness (matches the LUT bake)
+  data[offset++] = 0.0; // 111 pad
+
+  // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
+  // above). Add-only bits 8/9; set ONLY when the mode is on so the default render
+  // leaves them clear → the WGSL gates stay closed → byte-identical.
+  if (aerialLutOn || ambientLutOn) {
+    let qf = data[74];
+    if (aerialLutOn) qf = qf | CLOUD_QF_AERIAL_LUT;
+    if (ambientLutOn) qf = qf | CLOUD_QF_AMBIENT_LUT;
+    data[74] = qf;
+  }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
@@ -1108,6 +1253,16 @@ export function executeProceduralClouds(
   // `noise` (the 3D shape/detail views + sampler) was resolved up-front so the
   // qualityFlags noiseSource bit reflects the same-frame baked state.
 
+  // Batch 434 (3.3 + 3.4) — resolve the atmosphere-LUT views (real when a mode is
+  // on AND the LUTs are allocated, 1×1 black placeholders otherwise). Bound
+  // unconditionally at 9/10/11 so the BGL never forks; the WGSL gates the samples.
+  const lutViews = ensureCloudLutViews(
+    device,
+    context,
+    cache,
+    aerialLutOn || ambientLutOn,
+  );
+
   // Create bind group
   const bindGroup = device.createBindGroup({
     layout: cache.bindGroupLayout!,
@@ -1121,6 +1276,10 @@ export function executeProceduralClouds(
       { binding: 6, resource: noise.shapeView },
       { binding: 7, resource: noise.detailView },
       { binding: 8, resource: noise.sampler },
+      { binding: 9, resource: lutViews.skyView },
+      { binding: 10, resource: lutViews.multipleScatter },
+      { binding: 11, resource: lutViews.transmittance },
+      { binding: 12, resource: cache.lutSampler! },
     ],
   });
 
@@ -1360,6 +1519,12 @@ export function destroyProceduralCloudResources(
     cache.temporalPipeline = null;
     cache.temporalBindGroupLayout = null;
     cache.temporalSampler = null;
+    // Batch 434 (3.3 + 3.4) — release the LUT placeholder + sampler. The real LUT
+    // textures are owned by the performance manager, not this cache.
+    cache.lutPlaceholderTexture?.destroy();
+    cache.lutPlaceholderTexture = null;
+    cache.lutPlaceholderView = null;
+    cache.lutSampler = null;
     cache.initialized = false;
     context._cloudCache = undefined;
   }

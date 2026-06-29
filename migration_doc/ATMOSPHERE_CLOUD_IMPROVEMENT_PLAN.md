@@ -131,14 +131,14 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Byte-neutral default — no history buffer allocated, single-pass march byte-identical. First-frame writes identity history (TAA/CSM convention).
 - **Files:** `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`, `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`, `Renderer/WebGPU/WebGPUCloudTierPresets.ts`.
 
-#### 3.3 — Aerial-perspective LUT coupling for clouds (`CLOUD-AERIAL-LUT`) — **P1, effort M**
+#### 3.3 — Aerial-perspective LUT coupling for clouds (`CLOUD-AERIAL-LUT`) — **P1, effort M** — ✅ SHIPPED Batch 434 (globe.cloudAerialMode 'physical'; samples the shipped sky-view + transmittance LUTs directly since the 2.3 froxel is deferred)
 
 - **Technique:** Sample the aerial-perspective froxel LUT (from **2.3**) at the cloud march midpoint to fog distant clouds with the *physical* inscatter+transmittance, replacing the hardcoded 60km LDR lerp toward a packed tint.
 - **Opt-in flag:** `globe.cloudAerialMode` (`'heuristic'` default = today's path; opt-in `'physical'`); a `qualityFlags` bit gates the LUT sample.
 - **Parity impact:** Byte-neutral default — the existing `aerialStrength/aerialColor` midpoint lerp runs verbatim; LUT binding dead unless set.
 - **Files:** `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`, `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`.
 
-#### 3.4 — Sky/atmosphere-coupled cloud ambient (`CLOUD-AMBIENT-LUT`) — **P1, effort M**
+#### 3.4 — Sky/atmosphere-coupled cloud ambient (`CLOUD-AMBIENT-LUT`) — **P1, effort M** — ✅ SHIPPED Batch 434 (globe.cloudAmbientSource 'sky-lut'; MS sky LUT up/down at cloud altitude, chroma-only so no blowout)
 
 - **Technique:** Drive `skyAmbientColor`/`groundAmbientColor` from the MS sky LUT sampled at cloud altitude (up/down hemispheres) instead of the constant blue/grey lerp, so cloud ambient tracks true time-of-day sky radiance. Reuses the LUT binding from 3.3.
 - **Opt-in flag:** `globe.cloudAmbientSource` (`'constant'` default; opt-in `'sky-lut'`).

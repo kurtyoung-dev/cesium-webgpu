@@ -100,6 +100,18 @@ struct CloudUniforms {
   // is a no-op at ANY strength, so weatherMapEnabled=0 OR a neutral map is
   // byte-identical to the pre-424 render. ──
   weatherChannelStrength: f32,   // 107 — G/B/A influence scale (0 = R-only legacy)
+  // ── Batch 434 (3.3 CLOUD-AERIAL-LUT + 3.4 CLOUD-AMBIENT-LUT) — atmosphere-LUT
+  // coupling. Slots 108-111 are one new 16-byte row, appended ADD-ONLY. All four
+  // default to the legacy path so an unset render is byte-identical:
+  //   aerialLutMode=0  → heuristic ~60 km LDR aerial lerp (unchanged)
+  //   ambientLutMode=0 → constant sky/ground ambient lerp (unchanged)
+  // Both also self-heal: even with the mode flag set, the WGSL falls back to the
+  // legacy branch when the sampled LUT radiance is ~0 (the LUTs are unbaked, e.g.
+  // skyAtmosphere off), so a stray "physical" flag never blacks-out the clouds. ──
+  aerialLutMode: f32,            // 108 — 0 heuristic / 1 physical (sky-view inscatter + transmittance)
+  ambientLutMode: f32,           // 109 — 0 constant / 1 sky-LUT (MS sky LUT up/down hemispheres)
+  atmosphereThickness: f32,      // 110 — m; MUST equal the LUT bake's ATMOSPHERE_THICKNESS (111e3)
+  _padE: f32,                    // 111 — pad to the 16-byte row
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -117,6 +129,20 @@ struct CloudUniforms {
 @group(0) @binding(6) var cloudShapeTex: texture_3d<f32>;
 @group(0) @binding(7) var cloudDetailTex: texture_3d<f32>;
 @group(0) @binding(8) var cloudNoiseSampler: sampler;
+// Batch 434 (3.3 + 3.4) — precomputed atmosphere LUTs (shared with SkyAtmosphere).
+// Bound UNCONDITIONALLY so the pipeline/BGL never forks; the renderer binds 1×1
+// placeholders when the LUTs aren't allocated. The shader only samples them when
+// the corresponding mode flag is set AND the sampled radiance is non-zero (the
+// unbaked LUTs read all-zero → the legacy fallback runs). Same 256×128 sun-relative
+// sky-view domain as SkyAtmosphere's bindings 5/6; the transmittance LUT is 256×64.
+//   9  — sun-relative SKY-VIEW single-scatter inscatter (3.3 air light)
+//   10 — sun-relative MULTIPLE-SCATTERING sky radiance (3.4 ambient hemispheres)
+//   11 — TRANSMITTANCE (altitude × cosZenith) for the 3.3 cloud-color attenuation
+//   12 — linear LUT sampler (clamp-to-edge)
+@group(0) @binding(9) var cloudSkyViewLut: texture_2d<f32>;
+@group(0) @binding(10) var cloudMultipleScatterLut: texture_2d<f32>;
+@group(0) @binding(11) var cloudTransmittanceLut: texture_2d<f32>;
+@group(0) @binding(12) var cloudLutSampler: sampler;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -142,6 +168,11 @@ const QF_TEMPORAL: u32 = 4u;        // bit 2
 const QF_JITTER: u32 = 8u;          // bit 3
 const QF_OCTAVES_SHIFT: u32 = 4u;   // bits 4-6
 const QF_PROFILE_ON: u32 = 128u;    // bit 7
+// Batch 434 — atmosphere-LUT coupling (add-only). The JS renderer sets these only
+// when the corresponding mode flag is 'physical'/'sky-lut'; the shader additionally
+// gates each on a non-zero LUT radiance (unbaked LUT → legacy fallback).
+const QF_AERIAL_LUT: u32 = 256u;    // bit 8 — 3.3 physical aerial (sky-view + transmittance)
+const QF_AMBIENT_LUT: u32 = 512u;   // bit 9 — 3.4 sky-LUT cloud ambient (MS sky LUT)
 
 // V9 (Batch 432) — ordered 4×4 Bayer matrix (normalized 0..1, the standard
 // recursive dither pattern). Used to JITTER the half-res sample point by a
@@ -631,6 +662,71 @@ fn logDepthToEyeDistance(logZ: f32, near: f32, far: f32) -> f32 {
   return depthFromNear + near;
 }
 
+// ─── Batch 434 — atmosphere-LUT coupling helpers ───
+// 3.3 + 3.4 sample the SAME precomputed LUTs the SkyAtmosphere shader uses, with
+// the IDENTICAL (U, V) parameterization (so the cloud air-light / ambient agree
+// with the visible sky dome). The two sky-domain helpers are copied verbatim from
+// SkyAtmosphere.wgsl::sampleSkyViewLut / sampleMultipleScatterLut; the transmittance
+// helper mirrors AerialPerspective.wgsl::sampleTransmittance.
+
+// 3.3 physical aerial — sun-relative SKY-VIEW single-scatter inscatter (the
+// in-between air light). U = relativeAzimuth(view, sun)/π; V = Hillaire horizon
+// warp of cosViewZenith. `up` is the local vertical at the sample point.
+fn cloudSampleSkyViewLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
+  let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
+  let vCoord = clamp(0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)), 0.0, 1.0);
+  let viewHoriz = rayDir - up * cosViewZenith;
+  let sunHoriz = sunDir - up * dot(sunDir, up);
+  let vhLen = length(viewHoriz);
+  let shLen = length(sunHoriz);
+  var cosRelAzimuth: f32 = 1.0;
+  if (vhLen > 1e-4 && shLen > 1e-4) {
+    cosRelAzimuth = clamp(dot(viewHoriz, sunHoriz) / (vhLen * shLen), -1.0, 1.0);
+  }
+  let relAzimuth = acos(cosRelAzimuth); // [0, π]
+  let uCoord = clamp(relAzimuth * (1.0 / PI), 0.0, 1.0);
+  let s = textureSampleLevel(cloudSkyViewLut, cloudLutSampler, vec2<f32>(uCoord, vCoord), 0.0);
+  return max(s.rgb, vec3<f32>(0.0));
+}
+
+// 3.4 sky-coupled ambient — sun-relative MULTIPLE-SCATTERING sky radiance, same
+// sun-relative sky-view domain as cloudSampleSkyViewLut (Batch 429 re-baked the MS
+// LUT onto that domain). Sampling the UP hemisphere gives the diffuse sky fill that
+// lights cloud TOPS; the DOWN hemisphere gives the ground-bounce fill for BOTTOMS.
+fn cloudSampleMultipleScatterLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
+  let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
+  let vCoord = clamp(0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)), 0.0, 1.0);
+  let viewHoriz = rayDir - up * cosViewZenith;
+  let sunHoriz = sunDir - up * dot(sunDir, up);
+  let vhLen = length(viewHoriz);
+  let shLen = length(sunHoriz);
+  var cosRelAzimuth: f32 = 1.0;
+  if (vhLen > 1e-4 && shLen > 1e-4) {
+    cosRelAzimuth = clamp(dot(viewHoriz, sunHoriz) / (vhLen * shLen), -1.0, 1.0);
+  }
+  let relAzimuth = acos(cosRelAzimuth); // [0, π]
+  let uCoord = clamp(relAzimuth * (1.0 / PI), 0.0, 1.0);
+  let s = textureSampleLevel(cloudMultipleScatterLut, cloudLutSampler, vec2<f32>(uCoord, vCoord), 0.0);
+  return max(s.rgb, vec3<f32>(0.0));
+}
+
+// 3.3 transmittance — Bruneton TRANSMITTANCE LUT (altitude × cosZenith). Mirrors
+// AerialPerspective.wgsl::sampleTransmittance: u = (cosZenith+1)/2, v = altitude /
+// thickness. Returns the multiplicative extinction along the path to the top of
+// atmosphere from a point at `altitude` looking along `cosZenith` (cos angle to up).
+fn cloudSampleTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
+  let thickness = cloud.atmosphereThickness;
+  let u = clamp(cosZenith * 0.5 + 0.5, 0.0, 1.0);
+  let v = clamp(altitude / max(thickness, 1.0), 0.0, 1.0);
+  return textureSampleLevel(cloudTransmittanceLut, cloudLutSampler, vec2<f32>(u, v), 0.0).rgb;
+}
+
+// Cheap luminance — used as the unbaked-LUT sentinel (an all-zero LUT reads ~0, so
+// the physical/sky-LUT branches self-heal to the legacy path).
+fn cloudLutLuminance(c: vec3<f32>) -> f32 {
+  return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // V9 (Batch 432) — half-res jitter. In the half-res path each output texel
@@ -821,7 +917,40 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       // TOPS (heightFraction -> 1) and the warm ground bounce lights the BOTTOMS
       // (-> 0), so the anti-sun shadow side reads as soft grey-blue instead of
       // near-black. Part of the HDR radiance, so it tone-maps with the sun term.
-      let ambient = mix(cloud.groundAmbientColor, cloud.skyAmbientColor, heightFraction)
+      //
+      // Batch 434 (3.4 CLOUD-AMBIENT-LUT) — when `ambientLutMode` is set AND the MS
+      // sky LUT is baked, REPLACE the constant blue/grey lerp with the real
+      // time-of-day sky radiance: sample the multiple-scattering sky LUT in the UP
+      // hemisphere for the sky fill (cloud tops) and the DOWN hemisphere for the
+      // ground bounce (cloud bottoms), then lerp by heightFraction exactly as the
+      // constant path does. Self-heals to the constant lerp when the LUT reads ~0.
+      var skyAmbColor = cloud.skyAmbientColor;
+      var groundAmbColor = cloud.groundAmbientColor;
+      if ((u32(cloud.qualityFlags) & QF_AMBIENT_LUT) != 0u) {
+        let localUp = normalize(samplePos);
+        // Total sky radiance in each hemisphere = sun-relative single-scatter
+        // sky-view + the multiple-scattering residual (both share the same
+        // sky-view domain). The single-scatter term carries the WARM sunset / cool
+        // noon color; MS adds the diffuse fill. The UP hemisphere lights the cloud
+        // TOPS, DOWN the ground-bounce BOTTOMS.
+        let skyHDR =
+          cloudSampleSkyViewLut(localUp, localUp, sunDir)
+          + cloudSampleMultipleScatterLut(localUp, localUp, sunDir);
+        let skyLum = cloudLutLuminance(skyHDR);
+        if (skyLum > 1e-5) {
+          let groundHDR =
+            cloudSampleSkyViewLut(localUp, -localUp, sunDir)
+            + cloudSampleMultipleScatterLut(localUp, -localUp, sunDir);
+          let groundLum = max(cloudLutLuminance(groundHDR), 1e-5);
+          // Replace ONLY the ambient COLOR (hue/chroma) with the real sky's, keeping
+          // each constant ambient's nominal BRIGHTNESS — so `ambientIntensity` stays
+          // the magnitude knob (no blowout, parity-preserving energy) while the tint
+          // tracks the true time-of-day sky: warm undersides at sunset, blue at noon.
+          skyAmbColor = (skyHDR / skyLum) * cloudLutLuminance(cloud.skyAmbientColor);
+          groundAmbColor = (groundHDR / groundLum) * cloudLutLuminance(cloud.groundAmbientColor);
+        }
+      }
+      let ambient = mix(groundAmbColor, skyAmbColor, heightFraction)
                   * cloud.ambientIntensity;
 
       // W3 — tint the direct-sun term by the time-of-day sun color (warm near the
@@ -857,7 +986,45 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // haze scale; cap at 0.85 so the densest near clouds never fully dissolve.
   let midDist = tStart + 0.5 * (tEnd - tStart);
   let aerial = clamp(midDist / 60000.0 * cloud.aerialStrength, 0.0, 0.85);
-  let hazed = mix(toneMapped, cloud.aerialColor, aerial);
+  // Legacy heuristic haze — the default ('heuristic') path runs this VERBATIM.
+  var hazed = mix(toneMapped, cloud.aerialColor, aerial);
+
+  // Batch 434 (3.3 CLOUD-AERIAL-LUT) — PHYSICAL aerial perspective. When
+  // `aerialLutMode` is set AND the atmosphere LUTs are baked, replace the flat-tint
+  // lerp with a real inscatter + transmittance lookup at the march MIDPOINT:
+  //   - transmittance(midpoint altitude, view cosZenith) ATTENUATES the cloud color
+  //     toward the horizon (distant clouds dim + redden like real aerial perspective),
+  //   - the sun-relative SKY-VIEW inscatter LUT adds the in-between AIR LIGHT (warm
+  //     toward a low sun, cooler away), scaled by the same midpoint-range fraction as
+  //     the heuristic so the near deck stays crisp and the far deck dissolves into
+  //     the true sky color.
+  // Self-heals to the heuristic `hazed` when the sky-view LUT reads ~0 (unbaked).
+  if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u) {
+    let midPos = rayOrigin + rayDir * midDist;
+    let midUp = normalize(midPos);
+    let inscatterHDR = cloudSampleSkyViewLut(midUp, rayDir, sunDir);
+    if (cloudLutLuminance(inscatterHDR) > 1e-5) {
+      let midAltitude = length(midPos) - cloud.planetRadius;
+      let midCosZenith = dot(rayDir, midUp);
+      let trans = cloudSampleTransmittance(max(midAltitude, 0.0), midCosZenith);
+      // The sky-view LUT radiance is in the SAME pre-tonemap HDR space the sky dome
+      // uses (SkyAtmosphere tone-maps it AFTER sampling). The cloud's `toneMapped`
+      // is already LDR, so bring the inscatter into the cloud's display space with
+      // the SAME Reinhard+exposure operator before compositing — otherwise the HDR
+      // air light blows the far clouds to white. (Hue ratios survive Reinhard, so
+      // the warm-toward-sun / cool-away directionality — the whole point — is kept.)
+      let inscatterExposed = inscatterHDR * cloud.exposure;
+      let inscatterLDR = inscatterExposed / (inscatterExposed + vec3<f32>(1.0));
+      // Energy-correct aerial perspective: the air light FILLS exactly the fraction
+      // of cloud radiance lost to extinction (avgTrans), so the far target is a
+      // convex blend of attenuated cloud + sky air light — BOUNDED in [0,1], never a
+      // white-out. `aerial` (the same 0..0.85 midpoint-range fraction the heuristic
+      // uses) ramps from crisp near cloud to fully-fogged far cloud.
+      let avgTrans = (trans.r + trans.g + trans.b) / 3.0;
+      let farTarget = toneMapped * trans + inscatterLDR * (1.0 - avgTrans);
+      hazed = mix(toneMapped, farTarget, aerial);
+    }
+  }
 
   // Composite clouds over scene.
   let cloudAlpha = 1.0 - transmittance;
