@@ -185,7 +185,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Default-off keeps `ProceduralSkyCubemap` emitting clear-sky analytic atmosphere → IBL byte-unchanged; cloud injection gated.
 - **Files:** `Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl`, `Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`, `Shaders/WebGPU/Compute/ProjectRadianceToSH.wgsl`, `Renderer/WebGPU/WebGPUModelRenderer.ts`.
 
-#### 4.3 — Multiple-scattering in the fog integrate pass (`FOG-MS`) — **P2, effort M**
+#### 4.3 — Multiple-scattering in the fog integrate pass (`FOG-MS`) — **P2, effort M** — ✅ SHIPPED Batch 440 (volumetricFog.multiScatter; N-octave Beer-sum gain clamped [1,2], double-gated identity off)
 
 - **Technique:** Wrenninge/Hillaire energy-conserving MS octaves on top of the Batch-421 single-scatter term, mirroring the cloud renderer's shipped `multiScatterLight`. Dense valley mist reads as a lit volume, no second march.
 - **Opt-in flag:** `atmosphericConditions.volumetricFog.multiScatter` (default `false`; `msOctaves` slot default 1).

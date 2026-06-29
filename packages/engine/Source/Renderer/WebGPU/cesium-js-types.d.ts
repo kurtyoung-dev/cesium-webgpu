@@ -373,6 +373,15 @@ interface CesiumFrameState {
           // the cheap 1-sample local-fbm `sampleCloudShadow`. Default false keeps
           // the local-fbm path verbatim (byte-identical).
           cloudShadowHiFi?: boolean;
+          // Batch 440 (FOG-MS) — opt-in multiple-scattering octaves in the fog
+          // light-scattering pass. When true AND `msOctaves` > 1, the in-scatter
+          // sun/moon term is replaced by a Frostbite multi-octave sum so a dense
+          // mist reads as a lit volume. Default false (or octaves 1) keeps the
+          // single-scatter term byte-identical.
+          multiScatter?: boolean;
+          // Number of MS octaves (renderer-clamped to [1, 8]). 1 == single-
+          // scatter (parity). Only consumed when `multiScatter` is true.
+          msOctaves?: number;
         };
         lighting?: { enabled?: boolean; moonIntensity?: number };
         varyingAtmosphereDensity?:

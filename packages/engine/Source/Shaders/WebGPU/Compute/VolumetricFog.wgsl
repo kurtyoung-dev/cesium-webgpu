@@ -217,6 +217,42 @@ struct VolumetricFogParams {
   // World ECEF → sun ortho clip matrix (column-major) for the beer-shadow-map
   // lookup. Identity when the hi-fi flag is off (never used then).
   cloudShadowSunViewVP: mat4x4<f32>,
+
+  // Batch 440 (FOG-MS) — opt-in MULTIPLE-SCATTERING octaves in the
+  // lightScattering pass. When the `multiScatter` sub-flag is on AND
+  // `msOctaves` > 1, the in-scatter source radiance's directional sun/moon
+  // term is replaced by a Frostbite multi-octave sum (`multiScatterFog`):
+  // each octave scales the contribution (a^i), the directional occlusion bleed
+  // (b^i), and the HG phase eccentricity (c^i) by geometric factors, summed and
+  // NORMALIZED by the contribution total. A dense valley mist then reads as a
+  // LIT VOLUME (light bleeds into the dense core) instead of a flat dark mass,
+  // without blowing out (the normalization caps a thin layer at the
+  // single-scatter value). Mirrors ProceduralClouds.wgsl::multiScatterLight.
+  //
+  // multiScatter:
+  //   x = enable (0/1) — gate. < 0.5 → the existing single HG-phase term runs
+  //       byte-for-byte (parity default).
+  //   y = octaves (>= 1). At 1 the MS gain collapses to 1 (no-op) and the caller
+  //       SKIPS the function → byte-identical to the single-scatter term. The
+  //       octave loop only contributes a lift at >= 2.
+  //   z = decayA — contribution per octave (default 0.5).
+  //   w = decayB — Beer extinction per octave (default 0.5).
+  multiScatter: vec4<f32>,
+  // multiScatterPhase:
+  //   x = decayC — HG phase eccentricity per octave (default 0.5; smaller =
+  //       deeper octaves relax to isotropic faster → softer core fill).
+  //   y = maxGain — upper clamp on the MS lift multiplier (default 2.0). The MS
+  //       term only ADDS light (gain in [1, maxGain]); this caps the dense-core
+  //       brightening so it stays energy-conserving (no blowout).
+  //   z = opticalDepthScale — converts the per-froxel base-density multiplier
+  //       into a well-conditioned MS optical depth. CPU-tuned so a froxel at the
+  //       CONFIGURED base density lands at optical depth ~3 (deep enough that the
+  //       octave-0 Beer is dark and deeper octaves visibly lift it), regardless
+  //       of the absolute density value. Thinner (higher-altitude) froxels scale
+  //       down proportionally → gain ~1 there (no change), so MS only bites the
+  //       dense core.
+  //   w = reserved.
+  multiScatterPhase: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: VolumetricFogParams;
@@ -286,6 +322,67 @@ fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
   // Clamp the phase so the forward peak can't dominate the in-scatter
   // source radiance (energy-conserving fog wants a bounded source).
   return min(phase, 4.0);
+}
+
+// Batch 440 (FOG-MS) — Frostbite/Wrenninge energy-conserving MULTIPLE-SCATTERING
+// octaves. Mirrors the OCTAVE STRUCTURE of ProceduralClouds.wgsl::multiScatterLight
+// (an N-octave geometric-decay loop with per-octave contribution a^i, Beer
+// extinction b^i, and HG phase eccentricity c^i) but returns a MULTIPLIER (>= 1)
+// applied to the fog's existing single-scatter term, rather than a raw radiance.
+//
+// Why a multiplier: the cloud's octave-0 term IS the cloud single-scatter
+// (`beerPowder(opticalDepth)·phase`), so its octave loop directly produces the lit
+// radiance. The fog's single-scatter is DENSITY-INDEPENDENT (Batch 421 moved
+// extinction to the integrate pass), so it has NO Beer term — folding a raw Beer
+// octave-0 in would DARKEN it. Instead we compute the multi-octave Beer sum AND the
+// octave-0-only Beer reference, and return their RATIO: the relative multi-scatter
+// LIFT. In a DENSE core octave 0's Beer is small (dark) while deeper octaves
+// penetrate more (brighter), so the ratio > 1 → the dense core is LIT from within.
+// In THIN fog every octave's Beer ≈ 1 so the ratio ≈ 1 (no change). Clamped to
+// [1, msMaxGain] so MS only ADDS light and can never blow out (energy-conserving).
+//
+// Per octave i (0-based), with scat = a^i, ext = b^i, ecc = c^i:
+//   beer_i  = exp(-opticalDepth * ext)                 // deeper octaves penetrate more
+//   phase_i = henyeyGreenstein(cosTheta, g * ecc)      // relaxes toward isotropic
+//   msSum  += scat * phase_i * beer_i ;  total += scat
+//   octave0Ref = phase_0 * beer_0   (octave-0-only)
+//   gain    = (msSum / total) / octave0Ref
+// Returns clamp(gain, 1.0, msMaxGain). The caller multiplies the single-scatter
+// `HG(cosθ,g)·occlusion` by this so the occlusion (god-ray shadow) is preserved.
+//
+// PARITY: the caller skips this function entirely when octaves <= 1, so the OFF
+// path (or octaves 1) is byte-for-byte the single-scatter term. (Even if called
+// at octaves == 1, msSum == ref·total → gain == 1 → multiplier 1, a no-op.)
+fn multiScatterFog(
+  cosTheta: f32, g: f32, opticalDepth: f32, octaves: i32
+) -> f32 {
+  let a = u.multiScatter.z;       // contribution decay per octave
+  let b = u.multiScatter.w;       // Beer extinction decay per octave
+  let c = u.multiScatterPhase.x;  // phase eccentricity decay per octave
+  let maxGain = max(u.multiScatterPhase.y, 1.0);  // upper clamp on the MS lift
+  let n = max(octaves, 1);
+
+  let phase0 = henyeyGreenstein(cosTheta, g);
+  let beer0 = exp(-opticalDepth);
+  let octave0Ref = max(phase0 * beer0, 1e-6);
+
+  var msSum: f32 = 0.0;
+  var total: f32 = 0.0;
+  var scat: f32 = 1.0;
+  var ext: f32 = 1.0;
+  var ecc: f32 = 1.0;
+  for (var i: i32 = 0; i < n; i = i + 1) {
+    let beer = exp(-opticalDepth * ext);
+    let ph = henyeyGreenstein(cosTheta, g * ecc);
+    msSum = msSum + scat * ph * beer;
+    total = total + scat;
+    scat = scat * a;
+    ext = ext * b;
+    ecc = ecc * c;
+  }
+  // Average per-octave radiance vs the octave-0-only reference → relative lift.
+  let gain = (msSum / max(total, 1e-6)) / octave0Ref;
+  return clamp(gain, 1.0, maxGain);
 }
 
 // View direction at this froxel = normalized(worldPos - cameraPos)
@@ -747,6 +844,25 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   let cloudShadowFactor = sampleCloudShadow(worldPos);
   let effectiveSunShadow = sunShadowFactor * cloudShadowFactor;
 
+  // Batch 440 (FOG-MS) — decide once whether the multi-octave path runs.
+  // It requires the flag AND octaves > 1; at octaves == 1 the multi-scatter
+  // sum reduces to the single-scatter term, so we take the cheaper single
+  // branch (which is ALSO the byte-identical parity default when the flag is
+  // off). `i32(... + 0.5)` rounds the f32 octave count to an integer.
+  let msEnabled = u.multiScatter.x >= 0.5;
+  let msOctaves = i32(u.multiScatter.y + 0.5);
+  let useMS = msEnabled && msOctaves > 1;
+  // Local froxel OPTICAL DEPTH for the MS Beer octaves. The denser the froxel,
+  // the higher the optical depth, so the per-octave `exp(-opticalDepth·b^i)`
+  // makes the dense core's deeper octaves the ones that lift it (lit volume).
+  // `density` is the base fog-density multiplier (Batch 421, dimensionless) and
+  // the ENERGY-CONSERVING fog spreads opacity across many individually-THIN
+  // froxels, so a per-froxel `density` is small even where the column is opaque.
+  // `opticalDepthScale` (CPU-tuned to the configured base density) maps the base
+  // density to optical depth ~3 so the dense-core lift is well-conditioned; the
+  // clamp keeps a runaway density from pushing every octave's Beer to 0.
+  let msOpticalDepth = clamp(density * u.multiScatterPhase.z, 0.0, 4.0);
+
   // Sun contribution. The shadow factor cuts the sun term to zero
   // (or to `darkness × sunTerm`) inside terrain shadow volumes,
   // producing visible god rays where the lit and shadowed regions
@@ -754,19 +870,34 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   let sunDir = u.sunDirectionAndIntensity.xyz;
   let sunIntensity = u.sunDirectionAndIntensity.w;
   let cosThetaSun = dot(viewDir, sunDir);
+  // Single-scatter term (parity default), optionally lifted by the MS gain. The
+  // MS gain is a multiplier (>= 1) that brightens the dense-core forward scatter
+  // (lit volume); it multiplies the EXISTING `phaseSun * effectiveSunShadow`
+  // product, so the god-ray occlusion is preserved. At octaves <= 1 `useMS` is
+  // false and the term is byte-identical to the single-scatter default.
   let phaseSun = henyeyGreenstein(cosThetaSun, g);
-  let sunScatter = sunIntensity * phaseSun * effectiveSunShadow;
+  var sunMSGain: f32 = 1.0;
+  if (useMS) {
+    sunMSGain = multiScatterFog(cosThetaSun, g, msOpticalDepth, msOctaves);
+  }
+  let sunScatter = sunIntensity * phaseSun * effectiveSunShadow * sunMSGain;
 
   // Moon contribution. The .w slot is already (phase × intensity), so
   // a new moon (phase=0) zeroes the moon term naturally — no extra
   // branch needed. Phase 5c does NOT sample a moon shadow map (the
   // moon is dim enough that shadow precision wouldn't be visible);
-  // a future Phase 5e could add it if motivated.
+  // a future Phase 5e could add it if motivated. The moon has no shadow
+  // term, so the MS path passes occlusion = 1.0 (fully lit) — at octaves == 1
+  // that returns exactly `henyeyGreenstein(cosThetaMoon, g)` (parity).
   let moonDir = u.moonDirectionAndScale.xyz;
   let moonScale = u.moonDirectionAndScale.w;
   let cosThetaMoon = dot(viewDir, moonDir);
   let phaseMoon = henyeyGreenstein(cosThetaMoon, g);
-  let moonScatter = moonScale * phaseMoon;
+  var moonMSGain: f32 = 1.0;
+  if (useMS) {
+    moonMSGain = multiScatterFog(cosThetaMoon, g, msOpticalDepth, msOctaves);
+  }
+  let moonScatter = moonScale * phaseMoon * moonMSGain;
 
   // Phase 5c — ambient term. Without this, occlusion-cut shadow
   // volumes become hard-edged + over-dark. The DEFAULT (parity) path uses

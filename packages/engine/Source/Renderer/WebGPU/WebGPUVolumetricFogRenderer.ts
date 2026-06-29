@@ -161,7 +161,16 @@ export type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
 // When `enable` (offset 96) < 0.5 the scattering kernel's `sampleCloudShadow`
 // takes the existing local-fbm branch byte-for-byte, so the OFF default
 // consumes NONE of these floats → byte-identical to pre-Batch-437.
-export const VOLUMETRIC_FOG_PARAMS_FLOATS = 116;
+//
+// 124 floats (496 bytes) after Batch 440 (FOG-MS) — appended 8 floats at
+// offsets 116–123 for the opt-in MULTIPLE-SCATTERING octaves:
+//   116..119 multiScatter      (enable, octaves, decayA, decayB)
+//   120..123 multiScatterPhase (decayC, _pad, _pad, _pad)
+// When `enable` (offset 116) < 0.5 OR `octaves` (offset 117) <= 1, the
+// scattering kernel takes the existing single HG-phase term byte-for-byte
+// (octave 1 == single-scatter), so the OFF default consumes NONE of these
+// floats → byte-identical to pre-Batch-440.
+export const VOLUMETRIC_FOG_PARAMS_FLOATS = 124;
 export const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
 /** CompositeUniforms float count: mat4 (16) + 2 × vec4 (8) = 24 floats. */
@@ -1120,6 +1129,53 @@ class WebGPUVolumetricFogRenderer {
     const desiredBeerShadowView = cloudShadowHiFiOn
       ? cloudCacheForFog!.shadowView!
       : r.beerShadowPlaceholderView;
+
+    // Batch 440 (FOG-MS) — MULTIPLE-SCATTERING octave uniforms (offsets
+    // 116..123). Gated to "vf.multiScatter AND msOctaves > 1". When off, offset
+    // 116 is 0.0 AND/OR offset 117 is 1.0 → the scattering kernel takes the
+    // single HG-phase term byte-for-byte (octave 1 == single-scatter), so the
+    // OFF default is byte-identical to pre-Batch-440. The a/b/c geometric-decay
+    // factors mirror the cloud renderer's defaults (msDecayA/B 0.5); decayC is
+    // 0.5 here (a bit stronger isotropy relaxation than the cloud's 0.85) so the
+    // deeper fog octaves fill the dense core softly. The MS term returns a gain
+    // multiplier (>= 1) on the single-scatter forward term, capped by the slot-121
+    // clamp so the dense-core lift can't blow out. This branch only runs when fog
+    // is active, so the OFF default path is unchanged.
+    const multiScatterEnabled = vf?.multiScatter === true;
+    // Clamp octaves to [1, 8]: 1 == single-scatter (parity); beyond ~4 the
+    // geometric decay makes octaves negligible, and 8 caps the loop cost.
+    const rawOctaves =
+      typeof vf?.msOctaves === "number" ? Math.round(vf.msOctaves) : 1;
+    const msOctaves = Math.max(1, Math.min(8, rawOctaves));
+    r.paramsData[116] = multiScatterEnabled ? 1.0 : 0.0;
+    r.paramsData[117] = msOctaves;
+    r.paramsData[118] = 0.5; // decayA — contribution per octave
+    r.paramsData[119] = 0.5; // decayB — Beer extinction per octave
+    r.paramsData[120] = 0.5; // decayC — HG phase eccentricity per octave
+    // decayD slot reused as the MS lift CLAMP. The MS term only ADDS light
+    // (gain >= 1); this caps how bright the dense-core lift gets so it stays
+    // energy-conserving (a tasteful lit volume, not a blowout). 2.0 = at most
+    // double the single-scatter forward term in the densest core.
+    r.paramsData[121] = 2.0;
+    // opticalDepthScale (offset 122) — maps the per-froxel density value the
+    // `densityInjection` pass writes into a well-conditioned MS optical depth.
+    // The energy-conserving fog spreads opacity over many individually-thin
+    // froxels, so per-froxel density is small even in an opaque column; we tune
+    // the scale so the DENSEST froxel (the near-surface, full-strength fog) lands
+    // at optical depth ~3 (octave-0 Beer dark, deeper octaves lift it). The
+    // densest froxel ≈ the base height-fog `density` (master path) or the ground-
+    // fog `peakDensity × intensity` (ground-fog-only path — a much smaller
+    // per-metre scale). Reference whichever drives the densest froxel so the
+    // optical depth is well-conditioned in both modes; thinner (higher-altitude)
+    // froxels scale down → gain ~1 (no MS there), so the lift bites only the core.
+    const msGroundPeak = groundFogActive ? 1.2e-4 * groundFogIntensity : 0.0;
+    const msBaseDensity = Math.max(
+      fogMasterOn ? (vf?.density ?? 1.0) : 0.0,
+      msGroundPeak,
+      1e-4,
+    );
+    r.paramsData[122] = 3.0 / msBaseDensity;
+    r.paramsData[123] = 0.0;
 
     // Rebuild the scattering bind group when the shadow view changes OR
     // (Batch 431) when the IBL transmittance LUT view / SH buffer changes.

@@ -745,6 +745,27 @@ function buildVolumetricFog() {
     // bind-group layout from forking). Fast camera motion is handled by a
     // neighborhood clamp + disocclusion reject so the volume doesn't ghost.
     temporal: false,
+    // Batch 440 (FOG-MS, improvement-plan 4.3) — opt-in MULTIPLE-SCATTERING
+    // octaves in the light-scattering (in-scatter source) pass. When TRUE (and
+    // `msOctaves` > 1), the scattering kernel sums Frostbite-style multi-octave
+    // in-scatter on top of the existing energy-conserving SINGLE-scatter term:
+    // each octave scales the contribution, the directional-occlusion bleed, and
+    // the Henyey-Greenstein phase eccentricity by geometric factors (a/b/c ~
+    // 0.5), summed and NORMALIZED by the contribution total — mirroring the
+    // procedural cloud renderer's `multiScatterLight`. A dense valley mist then
+    // reads as a LIT VOLUME (the sun light bleeds deeper into the dense core)
+    // instead of a flat dark mass — without blowing out (the normalization caps
+    // a thin layer at the single-scatter value, so it CANNOT over-brighten).
+    // DEFAULT FALSE keeps the existing single-scatter term byte-identical: at
+    // `msOctaves` 1 the octave loop's single iteration with a/b/c scale = 1 IS
+    // the current single-scatter, and the kernel simply skips the loop when
+    // `msOctaves` <= 1 — so the OFF default is byte-identical to pre-Batch-440.
+    multiScatter: false,
+    // Number of multiple-scattering octaves (Frostbite). Clamped to [1, 8] by
+    // the renderer. 1 == single-scatter (parity). 2-3 give the lit-volume look
+    // for thick mist; beyond ~4 the geometric decay makes added octaves
+    // negligible. Only consumed when `multiScatter` is TRUE.
+    msOctaves: 1,
   };
 }
 
