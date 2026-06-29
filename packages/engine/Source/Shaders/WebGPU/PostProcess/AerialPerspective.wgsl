@@ -74,7 +74,12 @@ struct AerialUniforms {
   params0: vec4<f32>,
   // .x = haze intensity (master multiplier 0..N, default 1),
   // .y = inscatter intensity scale,
-  // .z = max haze distance fade exponent lever (unused reserve = 1),
+  // .z = Item 2.2 (ENV-AERIAL-MS, Batch 430) useMultiScatterLut flag — when
+  //      > 0.5 the in-scatter term is sourced from the sun-relative sky-view
+  //      LUT (+ MS LUT add), the SAME tables the visible SkyAtmosphere samples,
+  //      so the haze color matches the visible MS sky. When <= 0.5 (default)
+  //      the analytic single-scatter march below runs verbatim (byte-identical
+  //      parity). (Replaces the prior unused-reserve=1 slot.)
   // .w = sky-depth cutoff fraction (depths >= far*this are sky → skipped).
   params1: vec4<f32>,
   // Inverse projection — recovers the EYE-space ray direction for a pixel
@@ -96,6 +101,16 @@ struct AerialUniforms {
 @group(0) @binding(2) var transmittanceTex: texture_2d<f32>;
 @group(0) @binding(3) var texSampler: sampler;
 @group(0) @binding(4) var<uniform> uniforms: AerialUniforms;
+// Item 2.2 (ENV-AERIAL-MS, Batch 430). Sun-relative sky-view LUT (256x128) +
+// multiple-scattering LUT (256x128) — the SAME tables the visible
+// SkyAtmosphere samples (baked by AtmosphereLUT.wgsl computeSkyView /
+// computeMultipleScattering). Bound UNCONDITIONALLY so the bind-group layout
+// never changes; the effect binds the white 1x1 transmittance placeholder to
+// these slots until the real LUTs arrive, and the `useMultiScatterLut` flag
+// (params1.z) keeps them unsampled (passthrough to the analytic march) when off
+// → byte-identical parity.
+@group(0) @binding(5) var skyViewTex: texture_2d<f32>;
+@group(0) @binding(6) var multipleScatterTex: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -152,6 +167,64 @@ fn sampleTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
   let v = clamp(altitude / max(thickness, 1.0), 0.0, 1.0);
   return textureSampleLevel(transmittanceTex, texSampler, vec2<f32>(u, v), 0.0).rgb;
 }
+
+// Item 2.2 (ENV-AERIAL-MS, Batch 430) — sample the sun-relative sky-view LUT.
+// COPIED VERBATIM (same UV/basis derivation) from SkyAtmosphere.wgsl's
+// `sampleSkyViewLut` so the aerial haze color agrees with the visible sky:
+//   U = relativeAzimuth(rayDir, sunDir) / π   (sky symmetric about the sun
+//       meridian → [0, π] covers all azimuths)
+//   V = 0.5 + 0.5 * sign(cosViewZenith) * sqrt(|cosViewZenith|)  (Hillaire warp)
+// `up` is the local vertical at the camera; `rayDir`/`sunDir` are unit world
+// vectors. Returns the baked combined Rayleigh+Mie inscatter (intensity already
+// applied at bake time).
+fn sampleSkyViewLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
+  let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
+  let vCoord = clamp(
+    0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)),
+    0.0,
+    1.0,
+  );
+  let viewHoriz = rayDir - up * cosViewZenith;
+  let sunHoriz = sunDir - up * dot(sunDir, up);
+  let vhLen = length(viewHoriz);
+  let shLen = length(sunHoriz);
+  var cosRelAzimuth: f32 = 1.0;
+  if (vhLen > 1e-4 && shLen > 1e-4) {
+    cosRelAzimuth = clamp(dot(viewHoriz, sunHoriz) / (vhLen * shLen), -1.0, 1.0);
+  }
+  let relAzimuth = acos(cosRelAzimuth); // [0, π]
+  let uCoord = clamp(relAzimuth * (1.0 / PI), 0.0, 1.0);
+  let s = textureSampleLevel(skyViewTex, texSampler, vec2<f32>(uCoord, vCoord), 0.0);
+  return max(s.rgb, vec3<f32>(0.0));
+}
+
+// Item 2.2 — sample the multiple-scattering LUT (same sun-relative sky-view
+// domain). Identical (U, V) derivation to sampleSkyViewLut so the MS add agrees
+// directionally with the single-scatter sky-view sample.
+fn sampleMultipleScatterLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
+  let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
+  let vCoord = clamp(
+    0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)),
+    0.0,
+    1.0,
+  );
+  let viewHoriz = rayDir - up * cosViewZenith;
+  let sunHoriz = sunDir - up * dot(sunDir, up);
+  let vhLen = length(viewHoriz);
+  let shLen = length(sunHoriz);
+  var cosRelAzimuth: f32 = 1.0;
+  if (vhLen > 1e-4 && shLen > 1e-4) {
+    cosRelAzimuth = clamp(dot(viewHoriz, sunHoriz) / (vhLen * shLen), -1.0, 1.0);
+  }
+  let relAzimuth = acos(cosRelAzimuth); // [0, π]
+  let uCoord = clamp(relAzimuth * (1.0 / PI), 0.0, 1.0);
+  let s = textureSampleLevel(multipleScatterTex, texSampler, vec2<f32>(uCoord, vCoord), 0.0);
+  return max(s.rgb, vec3<f32>(0.0));
+}
+
+// Mirror of SkyAtmosphere.wgsl's MS_SCALE — the perceptual on-screen strength
+// of the MS add. Same constant so the aerial haze matches the visible sky.
+const MS_SCALE: f32 = 0.06;
 
 @fragment
 fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -286,7 +359,36 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let mPhase = miePhase(cosAngle, mieG);
   let rayleighColor = rayleighCoeff * rayleighAccum * rPhase;
   let mieColor = mieCoeff * mieAccum * mPhase;
-  let inscatter = (rayleighColor + mieColor) * lightIntensity * inscatterScale * hazeIntensity;
+  // Analytic single-scatter in-scatter (default / parity path).
+  let analyticInscatter =
+    (rayleighColor + mieColor) * lightIntensity * inscatterScale * hazeIntensity;
+
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — in-scatter source select. OFF
+  // (params1.z <= 0.5, default): the analytic march result verbatim →
+  // byte-identical. ON: source the in-scattered sky radiance from the
+  // sun-relative sky-view LUT (+ MS add) — the SAME tables the visible
+  // SkyAtmosphere samples — so the distance haze color matches the visible MS
+  // sky (richer, directional, off-meridian-correct). The LUT already carries
+  // the atmosphere intensity at bake time, so we do NOT re-multiply
+  // `lightIntensity` (that would double-apply it); we DO carry the
+  // `inscatterScale * hazeIntensity` master + a distance ramp so near-field
+  // pixels stay clear and distant pixels approach the full sky radiance,
+  // matching the analytic term's grow-with-distance shape. `up` is the local
+  // vertical at the camera (the LUT's ground-observer convention); `rayDir` +
+  // `sunDir` give the azimuth.
+  var inscatter = analyticInscatter;
+  if (uniforms.params1.z > 0.5) {
+    let up = normalize(cameraWC);
+    let lutSky = sampleSkyViewLut(up, rayDir, sunDir);
+    let lutMs = sampleMultipleScatterLut(up, rayDir, sunDir);
+    // Distance ramp: 0 at the camera → 1 across one atmosphere thickness, so
+    // the haze builds up with distance like the marched term (which grows with
+    // the in-scattered segment length) rather than slamming the full sky color
+    // onto every pixel.
+    let distanceRamp = clamp(segment / max(thickness, 1.0), 0.0, 1.0);
+    inscatter = (lutSky + lutMs * MS_SCALE)
+              * (inscatterScale * hazeIntensity * distanceRamp);
+  }
 
   // Camera→fragment transmittance from the marched optical depth (Beer-
   // Lambert over exactly the segment we in-scattered along). Distant pixels

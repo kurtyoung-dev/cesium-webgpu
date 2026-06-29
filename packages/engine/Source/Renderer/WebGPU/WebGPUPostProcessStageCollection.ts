@@ -790,8 +790,18 @@ function updateAerialPerspectiveFrameData(
         inverseView?: number[] | Float64Array;
       };
       performanceManager?: {
-        _atmosphereLutResources?: { transmittanceView?: GPUTextureView } | null;
+        _atmosphereLutResources?: {
+          transmittanceView?: GPUTextureView;
+          // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sun-relative sky-view + MS
+          // LUT views shared with the visible SkyAtmosphere.
+          skyViewView?: GPUTextureView;
+          multipleScatterView?: GPUTextureView;
+        } | null;
       };
+      // Item 2.2 (ENV-AERIAL-MS, Batch 430) — opt-in flag (default false) read
+      // off the WebGPU context's getter (threaded from
+      // `contextOptions.webgpu.envMapMultiScatter`).
+      envMapMultiScatter?: boolean;
     };
     camera?: { frustum?: { near?: number; far?: number } };
     skyAtmosphere?: { atmosphereLightIntensity?: number };
@@ -811,6 +821,17 @@ function updateAerialPerspectiveFrameData(
   const lut =
     sceneAny?.context?.performanceManager?._atmosphereLutResources ?? null;
   fx.setTransmittanceView(lut?.transmittanceView ?? null);
+
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — opt-in sky-view-LUT in-scatter
+  // source. Default false → the analytic single-scatter march (byte-identical
+  // parity). When on, push the sun-relative sky-view + MS LUT views (the SAME
+  // tables the visible SkyAtmosphere samples) so the distance haze matches the
+  // visible MS sky. The views/flag are pushed every frame; the effect binds the
+  // white placeholder + keeps params1.z off until both are present.
+  const envMapMultiScatter = sceneAny?.context?.envMapMultiScatter === true;
+  fx.setSkyViewView(lut?.skyViewView ?? null);
+  fx.setMultipleScatterView(lut?.multipleScatterView ?? null);
+  fx.setUseMultiScatterLut(envMapMultiScatter);
 
   const cam = us.cameraPosition;
   const sun = us.sunDirectionWC ?? { x: 0, y: 0, z: 1 };

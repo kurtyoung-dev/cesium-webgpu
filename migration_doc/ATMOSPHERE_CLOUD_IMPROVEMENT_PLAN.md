@@ -82,7 +82,9 @@ These finish the Bruneton/Hillaire consumers that are *baked-but-unwired today* 
 - **Parity impact:** Default-off binds the existing 1×1 placeholder + skips the add → byte-identical sky. Zero new per-frame cost when off (bake already runs).
 - **Files:** `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl`, `Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js`, `Renderer/WebGPU/WebGPUAtmosphereLUT.ts`.
 
-#### 2.2 — Multi-scatter sky as the env-map + aerial-perspective source (`ENV-AERIAL-MS`) — **P1, effort M**
+#### 2.2 — Multi-scatter sky as the env-map + aerial-perspective source (`ENV-AERIAL-MS`) — **P1, effort M** — ✅ SHIPPED (Batch 430)
+
+**SHIPPED (Batch 430):** `contextOptions.webgpu.envMapMultiScatter` (default `false`) routes BOTH the env-cube procedural sky fill (`ProceduralSkyCubemap.wgsl`, sky color from `sampleSkyViewLut` + MS add for sky-facing texels, gated to non-NONE dynamic lighting) AND the aerial-perspective in-scatter (`AerialPerspective.wgsl`, `params1.z` flag) to the sun-relative sky-view + MS LUTs — the same tables the visible SkyAtmosphere samples (same UV/basis helpers copied from `SkyAtmosphere.wgsl`). Off path = the inline single-scatter ports verbatim; the LUT views bind to a 1×1 placeholder when off (descriptor-stable) so the off output is **byte-identical to main** (verified: env-cube radiance checksum + aerial canvas checksum both unchanged with a pinned sun). Flag-on: env reflections warm toward the sun (per-face R/B rises ~0.66→0.76 … 0.86→0.98) and the aerial haze matches the visible sky color. `WebGPUDynamicEnvironmentMapManager.ts` fetches the LUT views via `context.performanceManager.ensureAtmosphereLUTResources`; `WebGPUPostProcessStageCollection.ts` pushes them to `AerialPerspectiveEffect`. Probe: `Tools/visual-regression/probe-env-aerial-ms.mjs`.
 
 **Merges:** Reflections "Multi-scatter sky source" + Sky/Aerial reuse. Once **2.1** validates the MS add visually, route the *same* LUT into the env-cube fill and the aerial march so reflected/hazed sky matches the visible sky.
 

@@ -70,11 +70,29 @@ struct SkyUniforms {
   // which is atmosphere.lightIntensity baked into the phase-weighted
   // scattering, matching ComputeRadianceMapFS).
   scatteringIntensity: f32,
-  _pad0: f32,
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430). When > 0.5 the sky color for each
+  // sky-facing texel is sourced from the sun-relative sky-view LUT (+ the
+  // multiple-scattering LUT add) — the SAME tables the visible SkyAtmosphere
+  // samples — instead of the inline czm_computeScattering march below, so the
+  // reflected env sky matches the visible MS sky (richer, directional, warmer
+  // toward the sun). Opt-in via `contextOptions.webgpu.envMapMultiScatter`;
+  // the renderer packs this only when the LUTs are baked. With the flag 0
+  // (default) the LUT views are bound to a 1x1 placeholder, never sampled, and
+  // the fill is byte-identical to the inline march.
+  useMultiScatterLut: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: SkyUniforms;
 @group(0) @binding(1) var outputTexture: texture_storage_2d_array<rgba8unorm, write>;
+// Item 2.2 (ENV-AERIAL-MS, Batch 430). Sun-relative sky-view LUT (256x128) +
+// multiple-scattering LUT (256x128) baked by AtmosphereLUT.wgsl
+// (computeSkyView / computeMultipleScattering) and shared with the visible
+// SkyAtmosphere. Bound UNCONDITIONALLY so the pipeline layout never changes;
+// the renderer binds a 1x1 placeholder when `useMultiScatterLut` is off (so the
+// off path's descriptor set is identical and these are never sampled).
+@group(0) @binding(2) var lutSampler: sampler;
+@group(0) @binding(3) var skyViewLut: texture_2d<f32>;
+@group(0) @binding(4) var multipleScatterLut: texture_2d<f32>;
 
 const ATMOSPHERE_THICKNESS: f32 = 111000.0;
 const PRIMARY_STEPS_MAX: i32 = 16;
@@ -226,6 +244,65 @@ fn computeAtmosphereColor(
   return vec4<f32>(color, s.opacity);
 }
 
+// Item 2.2 (ENV-AERIAL-MS, Batch 430) — sample the sun-relative sky-view LUT.
+// COPIED VERBATIM (same UV/basis derivation) from SkyAtmosphere.wgsl's
+// `sampleSkyViewLut` so the reflected env sky agrees with the visible sky:
+//   U = relativeAzimuth(rayDir, sunDir) / PI   (sky symmetric about the sun
+//       meridian → [0, π] covers all azimuths)
+//   V = 0.5 + 0.5 * sign(cosViewZenith) * sqrt(|cosViewZenith|)  (Hillaire warp)
+// `up` is the local vertical at the (synthetic, ground-level) observer; in the
+// env-cube frame that is the local +Y zenith. Returns the baked combined
+// Rayleigh+Mie inscatter (intensity already applied at bake time).
+fn sampleSkyViewLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
+  let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
+  let vCoord = clamp(
+    0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)),
+    0.0,
+    1.0,
+  );
+  let viewHoriz = rayDir - up * cosViewZenith;
+  let sunHoriz = sunDir - up * dot(sunDir, up);
+  let vhLen = length(viewHoriz);
+  let shLen = length(sunHoriz);
+  var cosRelAzimuth: f32 = 1.0;
+  if (vhLen > 1e-4 && shLen > 1e-4) {
+    cosRelAzimuth = clamp(dot(viewHoriz, sunHoriz) / (vhLen * shLen), -1.0, 1.0);
+  }
+  let relAzimuth = acos(cosRelAzimuth); // [0, π]
+  let uCoord = clamp(relAzimuth * (1.0 / PI), 0.0, 1.0);
+  let s = textureSampleLevel(skyViewLut, lutSampler, vec2<f32>(uCoord, vCoord), 0.0);
+  return max(s.rgb, vec3<f32>(0.0));
+}
+
+// Item 2.2 — sample the multiple-scattering LUT (same sun-relative sky-view
+// domain as the sky-view LUT). Identical (U, V) derivation to sampleSkyViewLut
+// so the MS add agrees directionally with the single-scatter sky-view sample.
+fn sampleMultipleScatterLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
+  let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
+  let vCoord = clamp(
+    0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)),
+    0.0,
+    1.0,
+  );
+  let viewHoriz = rayDir - up * cosViewZenith;
+  let sunHoriz = sunDir - up * dot(sunDir, up);
+  let vhLen = length(viewHoriz);
+  let shLen = length(sunHoriz);
+  var cosRelAzimuth: f32 = 1.0;
+  if (vhLen > 1e-4 && shLen > 1e-4) {
+    cosRelAzimuth = clamp(dot(viewHoriz, sunHoriz) / (vhLen * shLen), -1.0, 1.0);
+  }
+  let relAzimuth = acos(cosRelAzimuth); // [0, π]
+  let uCoord = clamp(relAzimuth * (1.0 / PI), 0.0, 1.0);
+  let s = textureSampleLevel(multipleScatterLut, lutSampler, vec2<f32>(uCoord, vCoord), 0.0);
+  return max(s.rgb, vec3<f32>(0.0));
+}
+
+// Mirror of SkyAtmosphere.wgsl's MS_SCALE — the perceptual on-screen strength
+// of the MS add. Same constant so the env reflection matches the visible sky.
+const MS_SCALE: f32 = 0.06;
+const PI: f32 = 3.14159265358979323846;
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let size = u32(u.faceSize);
@@ -282,21 +359,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let up = vec3<f32>(0.0, 1.0, 0.0);
   let upDot = dir.y;
 
-  // 1:1 with ComputeRadianceMapFS: the sky is `atmosphereColor.rgb *
-  // intensity` and the ground reuses that intensity for the reflected-
-  // light occlusion term. `intensity` here is the manager's
-  // atmosphereScatteringIntensity (matches the FS's
-  // u_brightnessSaturationGammaIntensity.w). `atmosphereColor` already
-  // carries atmosphere.lightIntensity (u.intensity) from
-  // computeAtmosphereColor.
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — the per-texel sky radiance. OFF
+  // (default): the inline czm_computeScattering/computeAtmosphereColor result
+  // (`atmosphereColor.rgb`) verbatim → byte-identical. ON: the sun-relative
+  // sky-view LUT (+ the MS add) — the SAME tables the visible SkyAtmosphere
+  // samples — so reflected sky matches the visible MS sky. The LUT carries the
+  // atmosphere intensity already (matching the inscatter-LUT convention), so it
+  // drops in where `atmosphereColor.rgb` was. The sky-view LUT is sun-relative
+  // and azimuth-aware, so the env-cube's local-frame `sunLocal` + the texel's
+  // `dir` reproduce the directional (warm-toward-sun) sky the visible shell
+  // shows. Gated to non-NONE dynamic lighting (the LUT bakes a single light
+  // direction, like the visible sky's sky-view fast-path); the smooth NONE
+  // ambient keeps the inline radially-symmetric march.
+  var skyColor = atmosphereColor.rgb;
+  if (u.useMultiScatterLut > 0.5 && enumVal >= 0.5) {
+    let lutSky = sampleSkyViewLut(up, dir, sunLocal);
+    let lutMs = sampleMultipleScatterLut(up, dir, sunLocal);
+    skyColor = lutSky + lutMs * MS_SCALE;
+  }
+
+  // 1:1 with ComputeRadianceMapFS: the sky is `skyColor * intensity` and the
+  // ground reuses that intensity for the reflected-light occlusion term.
+  // `intensity` here is the manager's atmosphereScatteringIntensity (matches
+  // the FS's u_brightnessSaturationGammaIntensity.w). `skyColor` already
+  // carries atmosphere.lightIntensity (u.intensity) — from
+  // computeAtmosphereColor on the off path, from the LUT bake on the on path.
   let scatteringIntensity = u.scatteringIntensity;
   var color: vec3<f32>;
   if (upDot >= 0.0) {
-    color = atmosphereColor.rgb * scatteringIntensity;
+    color = skyColor * scatteringIntensity;
   } else {
     let occlusion = max(dot(lightDir, up), 0.05);
     color = u.groundColor * u.groundAlbedo
-          * (vec3<f32>(scatteringIntensity * occlusion) + atmosphereColor.rgb);
+          * (vec3<f32>(scatteringIntensity * occlusion) + skyColor);
   }
 
   // Gamma (kept even at 1.0 to match the WebGL transmittance-precision

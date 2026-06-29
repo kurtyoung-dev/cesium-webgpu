@@ -101,6 +101,15 @@ export interface AerialPerspectiveConfig {
    * log-depth sky sits at the very top of the [0,1] range.
    */
   skyCutoff?: number;
+  /**
+   * Item 2.2 (ENV-AERIAL-MS, Batch 430). When true, the in-scatter term is
+   * sourced from the sun-relative sky-view + multiple-scattering LUTs (the
+   * same tables the visible SkyAtmosphere samples) instead of the analytic
+   * single-scatter march, so the distance haze matches the visible MS sky.
+   * Default false → analytic march (byte-identical parity). Set per-frame by
+   * the configure pass from `contextOptions.webgpu.envMapMultiScatter`.
+   */
+  useMultiScatterLut?: boolean;
 }
 
 // Float layout of the WGSL `AerialUniforms` struct (std140-ish, all vec4 +
@@ -130,6 +139,12 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
   // effect binds a placeholder so the layout is stable, and `execute` no-ops
   // the haze (passthrough) until a real LUT arrives.
   private _transmittanceView: GPUTextureView | null = null;
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430). Sun-relative sky-view + MS LUT views
+  // (group 0, bindings 5/6). Pushed per-frame; null until baked → the white
+  // placeholder is bound so the layout is stable and (with the flag off) they
+  // are never sampled.
+  private _skyViewView: GPUTextureView | null = null;
+  private _multipleScatterView: GPUTextureView | null = null;
   private _placeholderTex: GPUTexture | null = null;
   private _placeholderView: GPUTextureView | null = null;
 
@@ -139,6 +154,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
   private _cachedSourceView: GPUTextureView | null = null;
   private _cachedDepthView: GPUTextureView | null = null;
   private _cachedLutView: GPUTextureView | null = null;
+  private _cachedSkyViewView: GPUTextureView | null = null;
+  private _cachedMsView: GPUTextureView | null = null;
 
   private _config: Required<AerialPerspectiveConfig>;
 
@@ -147,6 +164,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       intensity: config.intensity ?? 1.0,
       inscatterScale: config.inscatterScale ?? 1.0,
       skyCutoff: config.skyCutoff ?? 0.999999,
+      useMultiScatterLut: config.useMultiScatterLut ?? false,
     };
   }
 
@@ -167,6 +185,30 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
    */
   setTransmittanceView(view: GPUTextureView | null): void {
     this._transmittanceView = view;
+  }
+
+  /**
+   * Item 2.2 (ENV-AERIAL-MS, Batch 430). Push the sun-relative sky-view + MS
+   * LUT views the effect samples for in-scatter when `useMultiScatterLut` is
+   * on. Both come from `WebGPUAtmosphereLUT` (perf manager) and are stable for
+   * the device lifetime, so the bind-group cache invalidates at most once.
+   * Null until the LUTs are baked → the white placeholder is bound.
+   */
+  setSkyViewView(view: GPUTextureView | null): void {
+    this._skyViewView = view;
+  }
+
+  setMultipleScatterView(view: GPUTextureView | null): void {
+    this._multipleScatterView = view;
+  }
+
+  /**
+   * Item 2.2. Enable/disable the sky-view-LUT in-scatter source at runtime
+   * (cheap — next frame's pack flips `params1.z`). Default false (analytic
+   * march, byte-identical parity).
+   */
+  setUseMultiScatterLut(enabled: boolean): void {
+    this._config.useMultiScatterLut = enabled;
   }
 
   /**
@@ -203,10 +245,13 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     f[o++] = d.near;
     f[o++] = d.far;
     f[o++] = d.atmosphereThickness;
-    // params1: intensity, inscatterScale, reserved=1, skyCutoff
+    // params1: intensity, inscatterScale, useMultiScatterLut flag, skyCutoff.
+    // Item 2.2 (ENV-AERIAL-MS, Batch 430) — params1.z is the LUT-inscatter
+    // gate (replaces the prior unused-reserve=1 slot). 0 (default) → analytic
+    // march (byte-identical parity); 1 → sky-view + MS LUT in-scatter.
     f[o++] = this._config.intensity;
     f[o++] = this._config.inscatterScale;
-    f[o++] = 1.0;
+    f[o++] = this._config.useMultiScatterLut ? 1.0 : 0.0;
     f[o++] = this._config.skyCutoff;
     // inverseProjection mat4 (column-major, 16 floats)
     const ip = d.inverseProjection;
@@ -272,6 +317,11 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       texture(2, Stage.FRAGMENT), // transmittance LUT
       samplerEntry(3, Stage.FRAGMENT),
       uniformBuffer(4, Stage.FRAGMENT),
+      // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sun-relative sky-view + MS LUTs.
+      // Bound unconditionally (placeholder until baked) so the layout is
+      // constant; only sampled when params1.z (useMultiScatterLut) is on.
+      texture(5, Stage.FRAGMENT), // sky-view LUT
+      texture(6, Stage.FRAGMENT), // multiple-scattering LUT
     ]);
 
     this._pipeline = createFullscreenPipeline(
@@ -303,6 +353,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     this._cachedSourceView = null;
     this._cachedDepthView = null;
     this._cachedLutView = null;
+    this._cachedSkyViewView = null;
+    this._cachedMsView = null;
     this.initialize(this._device, width, height, this._format);
   }
 
@@ -321,12 +373,18 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     if (!lutView) {
       return sourceView;
     }
+    // Item 2.2 (ENV-AERIAL-MS) — sky-view + MS LUT views, white placeholder
+    // until baked. With params1.z off they are never sampled (parity).
+    const skyViewView = this._skyViewView ?? this._placeholderView!;
+    const msView = this._multipleScatterView ?? this._placeholderView!;
 
     if (
       !this._cachedBindGroup ||
       this._cachedSourceView !== sourceView ||
       this._cachedDepthView !== depthView ||
-      this._cachedLutView !== lutView
+      this._cachedLutView !== lutView ||
+      this._cachedSkyViewView !== skyViewView ||
+      this._cachedMsView !== msView
     ) {
       this._cachedBindGroup = this._device.createBindGroup({
         label: "AerialPerspective-BG",
@@ -337,11 +395,15 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
           { binding: 2, resource: lutView },
           { binding: 3, resource: sampler },
           { binding: 4, resource: { buffer: this._uniforms! } },
+          { binding: 5, resource: skyViewView },
+          { binding: 6, resource: msView },
         ],
       });
       this._cachedSourceView = sourceView;
       this._cachedDepthView = depthView;
       this._cachedLutView = lutView;
+      this._cachedSkyViewView = skyViewView;
+      this._cachedMsView = msView;
     }
 
     executePass(
@@ -365,10 +427,14 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     this._placeholderTex = null;
     this._placeholderView = null;
     this._transmittanceView = null;
+    this._skyViewView = null;
+    this._multipleScatterView = null;
     this._cachedBindGroup = null;
     this._cachedSourceView = null;
     this._cachedDepthView = null;
     this._cachedLutView = null;
+    this._cachedSkyViewView = null;
+    this._cachedMsView = null;
     this._device = null;
   }
 }

@@ -118,6 +118,23 @@ interface DynEnvMapCache {
   shBuffer: GPUBuffer | null;
   shParamBuffer: GPUBuffer | null;
   shBindGroup: GPUBindGroup | null;
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sun-relative sky-view + MS LUT
+  // sampler + a 1×1 white placeholder texture/view. The sky compute pass binds
+  // the real LUT views (shared from the perf manager) when `envMapMultiScatter`
+  // is on; otherwise it binds the placeholder so the BGL + bind group stay
+  // constant (and the WGSL `useMultiScatterLut` flag keeps them unsampled →
+  // byte-identical parity). The LUT views the bind group was last built against
+  // are tracked so it rebuilds when they first appear / change.
+  lutSampler: GPUSampler | null;
+  lutPlaceholderTex: GPUTexture | null;
+  lutPlaceholderView: GPUTextureView | null;
+  lutSkyViewView: GPUTextureView | null;
+  lutMsView: GPUTextureView | null;
+  // Item 2.2 — whether the LAST sky fill used the LUT path. When the effective
+  // LUT-path availability flips (flag toggled, or the LUTs finished baking a
+  // frame after the first fill), force a re-fill so the cube isn't stuck on the
+  // wrong path on a static (non-sun-moving) scene.
+  lastUsedMultiScatterLut: boolean;
 }
 
 /**
@@ -169,6 +186,12 @@ function updateWebGPUDynamicEnvironmentMap(
       shBuffer: null,
       shParamBuffer: null,
       shBindGroup: null,
+      lutSampler: null,
+      lutPlaceholderTex: null,
+      lutPlaceholderView: null,
+      lutSkyViewView: null,
+      lutMsView: null,
+      lastUsedMultiScatterLut: false,
     } as DynEnvMapCache;
   }
 
@@ -300,7 +323,18 @@ function updateWebGPUDynamicEnvironmentMap(
   // NaN-against-anything is NaN -> coerces > epsilon, so the first
   // frame always runs.
   const sunMoved = !(dx * dx + dy * dy + dz * dz < SUN_REFRESH_EPSILON_SQ);
-  if (cache.needsUpdate || sunMoved) {
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — re-fill when the effective LUT-path
+  // availability flips so a static (non-sun-moving) scene isn't stuck on the
+  // wrong path. `wantLut` mirrors the predicate `runProceduralSkyFill` uses
+  // (context flag on AND dynamic lighting non-NONE); if the LUTs aren't baked
+  // yet the fill falls back to the placeholder and leaves `lastUsed...` false,
+  // so this keeps re-trying until the LUTs land, then settles.
+  const wantLut =
+    (frameState.context as unknown as { envMapMultiScatter?: boolean })
+      .envMapMultiScatter === true &&
+    (frameState.atmosphere?.dynamicLighting ?? 0) !== 0;
+  const lutPathChanged = wantLut !== cache.lastUsedMultiScatterLut;
+  if (cache.needsUpdate || sunMoved || lutPathChanged) {
     runProceduralSkyFill(device, cache, manager, frameState);
     runIBLPrefilter(device, cache, frameState);
     // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- project the
@@ -417,6 +451,24 @@ function runProceduralSkyFill(
             viewDimension: "2d-array",
           },
         },
+        // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sun-relative sky-view + MS LUT
+        // sampler + textures. Bound unconditionally (placeholder when off) so
+        // the BGL/pipeline layout never changes.
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
       ],
     });
     const layout = device.createPipelineLayout({
@@ -504,6 +556,39 @@ function runProceduralSkyFill(
   };
   const groundAlbedo = manager.groundAlbedo ?? 0.31;
 
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — opt-in: source the sky color from
+  // the sun-relative sky-view + MS LUTs (the SAME tables the visible
+  // SkyAtmosphere samples) instead of the inline march, so reflected env sky
+  // matches the visible MS sky. Read off the context's getter (threaded from
+  // `contextOptions.webgpu.envMapMultiScatter`). The LUT path is gated in the
+  // shader to non-NONE dynamic lighting (it bakes a single light direction);
+  // when dynamicLighting is NONE (the default smooth ambient) we leave the flag
+  // off so the radially-symmetric inline march keeps the at-rest IBL look.
+  const ctx = frameState.context as unknown as {
+    envMapMultiScatter?: boolean;
+    performanceManager?: {
+      ensureAtmosphereLUTResources?: (d: GPUDevice) => {
+        skyViewView?: GPUTextureView;
+        multipleScatterView?: GPUTextureView;
+      } | null;
+    };
+  };
+  let lutSkyViewView: GPUTextureView | null = null;
+  let lutMsView: GPUTextureView | null = null;
+  if (ctx.envMapMultiScatter === true && dynamicLighting !== 0) {
+    const lutRes =
+      ctx.performanceManager?.ensureAtmosphereLUTResources?.(device);
+    lutSkyViewView = lutRes?.skyViewView ?? null;
+    lutMsView = lutRes?.multipleScatterView ?? null;
+  }
+  // The shader path is active only when both real LUT views are bound. When off
+  // (or the LUTs aren't baked yet) the 1×1 placeholder is bound and the flag is
+  // 0 → byte-identical inline march.
+  const useMultiScatterLut = lutSkyViewView !== null && lutMsView !== null;
+  // Record the effective path so the update gate re-fills when it flips (e.g.
+  // the LUTs finish baking a frame after the first fill on a static scene).
+  cache.lastUsedMultiScatterLut = useMultiScatterLut;
+
   const data = new Float32Array(SKY_UNIFORM_FLOATS);
   // positionWC + faceSize
   data[0] = position.x;
@@ -545,24 +630,70 @@ function runProceduralSkyFill(
   data[29] = groundColor.green;
   data[30] = groundColor.blue;
   data[31] = mieScaleHeight;
-  // groundAlbedo, dynamicLightingEnum, scatteringIntensity, _pad0
+  // groundAlbedo, dynamicLightingEnum, scatteringIntensity, useMultiScatterLut
   data[32] = groundAlbedo;
   data[33] = dynamicLighting;
   data[34] = skyColorScattering;
-  data[35] = 0.0;
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — the WGSL flag (was _pad0). 1 only
+  // when the real LUT views are bound; 0 (default / LUTs unbaked) → the inline
+  // march, byte-identical parity.
+  data[35] = useMultiScatterLut ? 1.0 : 0.0;
   device.queue.writeBuffer(cache.skyUniformBuffer, 0, data);
 
-  // (Re)build bind group when the storage view changed (size change
-  // resets `skyBindGroup` to null in the texture-create path).
-  if (!cache.skyBindGroup) {
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — LUT sampler + 1×1 white placeholder
+  // (built once). The placeholder backs bindings 3/4 whenever the real sky-view
+  // / MS LUT views aren't available, keeping the bind group valid + constant.
+  if (!cache.lutSampler) {
+    cache.lutSampler = device.createSampler({
+      label: "DynEnvMap LUT Sampler",
+      minFilter: "linear",
+      magFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+  if (!cache.lutPlaceholderView) {
+    cache.lutPlaceholderTex = device.createTexture({
+      label: "DynEnvMap LUT Placeholder",
+      size: { width: 1, height: 1 },
+      format: "rgba16float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // rgba16float black (0) — never sampled when the flag is off, so the value
+    // is irrelevant to parity; zero is the safe inert default.
+    const zero = new Uint16Array([0, 0, 0, 0]);
+    device.queue.writeTexture(
+      { texture: cache.lutPlaceholderTex },
+      zero,
+      { bytesPerRow: 8 },
+      { width: 1, height: 1 },
+    );
+    cache.lutPlaceholderView = cache.lutPlaceholderTex.createView();
+  }
+  const boundSkyView = lutSkyViewView ?? cache.lutPlaceholderView;
+  const boundMsView = lutMsView ?? cache.lutPlaceholderView;
+
+  // (Re)build bind group when the storage view changed (size change resets
+  // `skyBindGroup` to null in the texture-create path) OR when the bound LUT
+  // views change (they first appear once the atmosphere LUTs are baked).
+  if (
+    !cache.skyBindGroup ||
+    cache.lutSkyViewView !== boundSkyView ||
+    cache.lutMsView !== boundMsView
+  ) {
     cache.skyBindGroup = device.createBindGroup({
       label: "DynEnvMap Sky BG",
       layout: cache.skyBGL,
       entries: [
         { binding: 0, resource: { buffer: cache.skyUniformBuffer } },
         { binding: 1, resource: cache.storageView! },
+        { binding: 2, resource: cache.lutSampler },
+        { binding: 3, resource: boundSkyView },
+        { binding: 4, resource: boundMsView },
       ],
     });
+    cache.lutSkyViewView = boundSkyView;
+    cache.lutMsView = boundMsView;
   }
 
   // Dispatch: workgroup_size(8, 8, 1); grid covers face × face × 6.
@@ -769,6 +900,12 @@ function destroyWebGPUDynamicEnvironmentMapResources(
   }
   if (cache.skyUniformBuffer) {
     cache.skyUniformBuffer.destroy();
+  }
+  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — the manager owns only the 1×1 LUT
+  // placeholder; the real sky-view / MS LUT textures are owned by the perf
+  // manager and must NOT be destroyed here.
+  if (cache.lutPlaceholderTex) {
+    cache.lutPlaceholderTex.destroy();
   }
   if (cache.iblCache) {
     if (cache.iblCache.irradianceTexture) {

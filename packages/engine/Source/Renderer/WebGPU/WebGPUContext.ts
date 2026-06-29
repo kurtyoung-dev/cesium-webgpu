@@ -1303,6 +1303,21 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Item 2.2 (ENV-AERIAL-MS, Batch 430). When true, the dynamic
+   * environment-map procedural sky fill AND the aerial-perspective
+   * post-process source their sky radiance from the sun-relative sky-view +
+   * multiple-scattering LUTs (the same tables the visible SkyAtmosphere
+   * samples) instead of their own inline single-scatter approximations, so
+   * reflected sky (env cube → model IBL) and hazed distance (aerial
+   * perspective) match the visible MS sky. Default `false` keeps both
+   * shaders' inline ports verbatim (byte-identical). Read by
+   * `WebGPUDynamicEnvironmentMapManager` + `WebGPUPostProcessStageCollection`.
+   */
+  get envMapMultiScatter(): boolean {
+    return this._options.webgpu?.envMapMultiScatter ?? false;
+  }
+
+  /**
    * The canvas element associated with this context
    */
   get canvas(): HTMLCanvasElement {

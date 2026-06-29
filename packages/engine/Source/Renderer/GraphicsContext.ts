@@ -518,6 +518,22 @@ export interface WebGPURendererOptions {
    * @default 'parity'
    */
   iblPrefilterQuality?: "parity" | "high";
+
+  /**
+   * Item 2.2 (ENV-AERIAL-MS). When true, BOTH the dynamic-environment-map
+   * procedural sky fill AND the aerial-perspective post-process source their
+   * sky radiance from the sun-relative sky-view + multiple-scattering LUTs
+   * (the same tables the visible SkyAtmosphere samples) instead of their own
+   * inline single-scatter approximations. Reflected sky (env cube → model IBL)
+   * and hazed distance (aerial perspective) then MATCH the visible MS sky —
+   * richer, directional (warmer toward the sun), off-meridian-correct. Default
+   * `false` keeps both shaders' inline single-scatter ports verbatim
+   * (byte-identical to the shipped parity path). Read by
+   * `WebGPUDynamicEnvironmentMapManager` (env cube) and
+   * `WebGPUPostProcessStageCollection` (aerial perspective).
+   * @default false
+   */
+  envMapMultiScatter?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════
