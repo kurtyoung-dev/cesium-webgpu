@@ -31,9 +31,12 @@ import {
   CLOUD_QF_OCTAVES_SHIFT,
   CLOUD_QF_NOISE_BAKED,
   CLOUD_QF_HALF_RES,
+  CLOUD_QF_TEMPORAL,
 } from "./WebGPUCloudTierPresets.js";
 // V9 (Batch 432) — half-res bilateral-upscale composite shader.
 import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
+// V10 (Batch 433) — temporal reprojection + accumulation resolve shader.
+import CloudTemporalResolveWGSL from "../../Shaders/WebGPU/Environment/CloudTemporalResolve.js";
 import { buildCloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 // V11 (Batch 408) — per-genus vertical-density profiles. Backend-neutral Scene
@@ -90,6 +93,25 @@ export interface CloudCache {
   upscaleUniformData: Float32Array;
   upscaleSampler: GPUSampler | null;
   frameCounter: number; // per-frame Bayer index for the half-res jitter
+  // V10 (Batch 433) — temporal reprojection + accumulation. ALL null on the
+  // default / cinematic / escape-hatch path (temporal OFF → byte-identical). The
+  // history is DOUBLE-BUFFERED (ping-pong) at HALF-RES (it accumulates the
+  // premultiplied half-res cloud): `temporalHistory[read]` is reprojected + blended
+  // with this frame's freshly-marched `halfTexture` by the resolve pass, which
+  // writes `temporalHistory[write]`; the upscale pass then reads that written
+  // history instead of `halfTexture`. Re-created on canvas/half-res resize. `temporalFirstFrame`
+  // forces an identity-history seed (no startup flash, TAA/CSM first-frame convention).
+  temporalHistory: [GPUTexture | null, GPUTexture | null];
+  temporalHistoryView: [GPUTextureView | null, GPUTextureView | null];
+  temporalWidth: number;
+  temporalHeight: number;
+  temporalRead: number; // ping-pong index (0/1) of the history to READ this frame
+  temporalFirstFrame: boolean;
+  temporalPipeline: GPURenderPipeline | null; // reproject + clamp + blend → new history
+  temporalBindGroupLayout: GPUBindGroupLayout | null;
+  temporalUniformBuffer: GPUBuffer | null;
+  temporalUniformData: Float32Array;
+  temporalSampler: GPUSampler | null;
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -123,6 +145,17 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       upscaleUniformData: new Float32Array(UPSCALE_UNIFORM_FLOATS),
       upscaleSampler: null,
       frameCounter: 0,
+      temporalHistory: [null, null],
+      temporalHistoryView: [null, null],
+      temporalWidth: 0,
+      temporalHeight: 0,
+      temporalRead: 0,
+      temporalFirstFrame: true,
+      temporalPipeline: null,
+      temporalBindGroupLayout: null,
+      temporalUniformBuffer: null,
+      temporalUniformData: new Float32Array(TEMPORAL_UNIFORM_FLOATS),
+      temporalSampler: null,
     };
   }
   return context._cloudCache;
@@ -139,6 +172,107 @@ const UPSCALE_UNIFORM_BYTES = UPSCALE_UNIFORM_FLOATS * 4;
 // the far-side taps (crisp silhouette) but not so small that cloud interiors over
 // a smooth depth gradient lose all four taps.
 const CLOUD_UPSCALE_DEPTH_SIGMA = 5.0e-3;
+// V10 (Batch 433) — temporal history format MUST match the half-res target
+// (rgba16float, premultiplied HDR cloud) since the history accumulates that buffer.
+const CLOUD_TEMPORAL_FORMAT: GPUTextureFormat = CLOUD_HALF_FORMAT;
+// TemporalUniforms float count — MUST equal the WGSL struct length
+// (CloudTemporalResolve.wgsl): prevVP(16) + invProj(16) + invView(16) +
+// cameraPositionAndBlend(4) + shellRadiiAndRes(4) + firstFrameFlags(4) = 60.
+const TEMPORAL_UNIFORM_FLOATS = 60;
+const TEMPORAL_UNIFORM_BYTES = TEMPORAL_UNIFORM_FLOATS * 4;
+
+/**
+ * V10 (Batch 433) — (re)allocate the DOUBLE-BUFFERED (ping-pong) half-res cloud
+ * HISTORY targets + the reproject/clamp/blend resolve pipeline. Called ONLY when a
+ * temporal tier is active (T1 low / T2 medium); T3 cinematic + the escape hatch keep
+ * temporal OFF so none of this allocates → byte-identical default. The history pair
+ * is sized to the HALF-RES target (it accumulates the premultiplied half-res cloud)
+ * and re-created on resize (size validation per CLAUDE.md). On (re)allocation the
+ * first-frame flag is reset so the next resolve seeds identity history (no flash).
+ * Returns false (caller falls back to plain half-res) if anything can't build.
+ */
+function ensureTemporalResources(
+  device: GPUDevice,
+  cache: CloudCache,
+  halfW: number,
+  halfH: number,
+): boolean {
+  // (Re)allocate the ping-pong history pair on first use or half-res resize.
+  if (
+    !cache.temporalHistory[0] ||
+    !cache.temporalHistory[1] ||
+    cache.temporalWidth !== halfW ||
+    cache.temporalHeight !== halfH
+  ) {
+    cache.temporalHistory[0]?.destroy();
+    cache.temporalHistory[1]?.destroy();
+    for (let i = 0; i < 2; i++) {
+      const tex = device.createTexture({
+        label: `ProceduralClouds Temporal History ${i}`,
+        size: { width: halfW, height: halfH, depthOrArrayLayers: 1 },
+        format: CLOUD_TEMPORAL_FORMAT,
+        usage:
+          GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      cache.temporalHistory[i] = tex;
+      cache.temporalHistoryView[i] = tex.createView();
+    }
+    cache.temporalWidth = halfW;
+    cache.temporalHeight = halfH;
+    cache.temporalRead = 0;
+    // History contents are undefined after (re)allocation — seed identity next frame.
+    cache.temporalFirstFrame = true;
+  }
+
+  if (!cache.temporalPipeline) {
+    cache.temporalBindGroupLayout = makeBindGroupLayout(
+      device,
+      "CloudTemporalResolve BGL",
+      [
+        texture(0, Stage.FRAGMENT), // current freshly-marched half-res cloud
+        texture(1, Stage.FRAGMENT), // previous accumulated history
+        sampler(2, Stage.FRAGMENT),
+        uniformBuffer(3, Stage.FRAGMENT),
+      ],
+    );
+    const resolveModule = device.createShaderModule({
+      label: "CloudTemporalResolve shader",
+      code: CloudTemporalResolveWGSL,
+    });
+    cache.temporalPipeline = device.createRenderPipeline({
+      label: "CloudTemporalResolve pipeline",
+      layout: device.createPipelineLayout({
+        label: "CloudTemporalResolve pipeline layout",
+        bindGroupLayouts: [cache.temporalBindGroupLayout],
+      }),
+      vertex: { module: resolveModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: resolveModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: CLOUD_TEMPORAL_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    cache.temporalUniformBuffer = device.createBuffer({
+      label: "CloudTemporalResolve UB",
+      size: Math.max(TEMPORAL_UNIFORM_BYTES, 256),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    cache.temporalSampler = device.createSampler({
+      label: "CloudTemporalResolve Sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+
+  return (
+    !!cache.temporalHistoryView[0] &&
+    !!cache.temporalHistoryView[1] &&
+    !!cache.temporalPipeline
+  );
+}
 
 /**
  * V9 (Batch 432) — (re)allocate the half-res cloud target at `floor(w·scale) ×
@@ -751,6 +885,32 @@ export function executeProceduralClouds(
     }
     halfResActive = allocated;
   }
+  // V10 (Batch 433) — temporal gate. A tier with `temporalEnabled` (T1 low / T2
+  // medium) layers temporal reprojection/accumulation ON TOP of the half-res march:
+  // the history accumulates the premultiplied half-res cloud and is reprojected via
+  // `previousViewProjection` + neighborhood-clamped each frame. T3 cinematic and the
+  // cloudQuality escape hatch keep `temporalEnabled=false` → NO history allocates →
+  // byte-identical. Temporal REQUIRES the half-res path (the history is half-res), so
+  // it is additionally gated on `halfResActive`; self-healing: if the history pair /
+  // resolve pipeline can't allocate we fall back to plain half-res (no accumulation).
+  let temporalActive = cloudPreset.temporalEnabled && halfResActive;
+  if (temporalActive) {
+    const tAllocated = ensureTemporalResources(
+      device,
+      cache,
+      cache.halfWidth,
+      cache.halfHeight,
+    );
+    if (!tAllocated) {
+      // Permanent sentinel (CLAUDE.md null-target guard): the tier asked for
+      // temporal but the history/resolve couldn't allocate — fall back to plain
+      // half-res so the clouds still render. Real bug → no pragma.
+      console.error(
+        `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud temporal history/pipeline allocation failed (${cache.halfWidth}x${cache.halfHeight}); falling back to half-res (no accumulation).`,
+      );
+    }
+    temporalActive = tAllocated;
+  }
   data[offset++] = qualityResolved.maxSteps;
   data[offset++] = qualityResolved.lightSteps;
   data[offset++] = globe.cloudDensity ?? 0.3;
@@ -829,9 +989,16 @@ export function executeProceduralClouds(
   // premultiplied-emit + jitter branch on this bit; the full-res tiers leave it
   // clear → byte-identical legacy composite.
   const halfResBit = halfResActive ? CLOUD_QF_HALF_RES : 0;
+  // V10 (Batch 433) — set bit 2 (QF_TEMPORAL) when temporal accumulation is active.
+  // The raymarch shader's emit is IDENTICAL whether or not this is set (temporal
+  // adds a separate resolve pass, not a march-branch), so it's byte-irrelevant to
+  // the half-res target; it stays clear on the default / cinematic / escape-hatch
+  // path. Carried for flag self-consistency with the tier presets + future readers.
+  const temporalBit = temporalActive ? CLOUD_QF_TEMPORAL : 0;
   data[offset++] =
     noiseBakedBit |
     halfResBit |
+    temporalBit |
     ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
       CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
   data[offset++] = 0; // 75 reserved (V8 curlAmplitude)
@@ -997,7 +1164,104 @@ export function executeProceduralClouds(
     halfPass.draw(3); // full-screen triangle
     halfPass.end();
 
-    // Pass 2: depth-aware bilateral upscale + composite over the scene → canvas.
+    // V10 (Batch 433) — TEMPORAL RESOLVE (optional, between raymarch and upscale).
+    // Reproject the previous accumulated history via `previousViewProjection`,
+    // neighborhood-clamp it to the current 3×3 freshly-marched AABB (ghost rejection),
+    // and blend → write the new accumulated history. The upscale then reads THAT
+    // history instead of the raw half-res march. When temporal is OFF (default /
+    // cinematic / escape hatch) this whole block is skipped → byte-identical.
+    let upscaleSourceView: GPUTextureView = cache.halfView;
+    if (
+      temporalActive &&
+      cache.temporalPipeline &&
+      cache.temporalBindGroupLayout &&
+      cache.temporalUniformBuffer &&
+      cache.temporalSampler &&
+      cache.temporalHistoryView[0] &&
+      cache.temporalHistoryView[1]
+    ) {
+      const readIdx = cache.temporalRead & 1;
+      const writeIdx = readIdx ^ 1;
+      const readView = cache.temporalHistoryView[readIdx]!;
+      const writeView = cache.temporalHistoryView[writeIdx]!;
+
+      // Pack TemporalUniforms (60 floats — byte-locked to CloudTemporalResolve.wgsl).
+      const td = cache.temporalUniformData;
+      let to = 0;
+      // previousViewProjection (mat4, 16) — column-major, same as the cloud packer.
+      const prevVP = us?.previousViewProjection;
+      if (prevVP) {
+        for (let i = 0; i < 16; i++) td[to++] = prevVP[i];
+      } else {
+        to += 16;
+      }
+      // inverseProjection (mat4, 16) — current frame.
+      if (invProj) {
+        for (let i = 0; i < 16; i++) td[to++] = invProj[i];
+      } else {
+        to += 16;
+      }
+      // inverseView (mat4, 16) — current frame.
+      if (invView) {
+        for (let i = 0; i < 16; i++) td[to++] = invView[i];
+      } else {
+        to += 16;
+      }
+      // cameraPositionAndBlend (vec4): camera world pos + per-frame blend weight.
+      td[to++] = camPos?.x ?? 0;
+      td[to++] = camPos?.y ?? 0;
+      td[to++] = camPos?.z ?? 0;
+      td[to++] = Math.max(
+        1 / 16,
+        Math.min(1, cloudPreset.temporalUpdateFraction || 1 / 8),
+      );
+      // shellRadiiAndRes (vec4): inner/outer shell radius + half-res target size.
+      const innerR = 6378137.0 + (globe.cloudLayerBottom ?? 1500.0);
+      const outerR = 6378137.0 + (globe.cloudLayerTop ?? 4000.0);
+      td[to++] = innerR;
+      td[to++] = outerR;
+      td[to++] = cache.halfWidth;
+      td[to++] = cache.halfHeight;
+      // firstFrameFlags (vec4): x=1 on the first temporal frame (seed identity).
+      td[to++] = cache.temporalFirstFrame ? 1.0 : 0.0;
+      td[to++] = 0;
+      td[to++] = 0;
+      td[to++] = 0;
+      device.queue.writeBuffer(cache.temporalUniformBuffer, 0, td);
+
+      const temporalBindGroup = device.createBindGroup({
+        layout: cache.temporalBindGroupLayout,
+        entries: [
+          { binding: 0, resource: cache.halfView }, // current freshly-marched
+          { binding: 1, resource: readView }, // previous accumulated history
+          { binding: 2, resource: cache.temporalSampler },
+          { binding: 3, resource: { buffer: cache.temporalUniformBuffer } },
+        ],
+      });
+      const temporalPass = encoder.beginRenderPass({
+        label: "CloudTemporalResolve pass",
+        colorAttachments: [
+          {
+            view: writeView,
+            // No clear: the shader writes every texel (full-screen triangle).
+            loadOp: "load",
+            storeOp: "store",
+          },
+        ],
+      });
+      temporalPass.setPipeline(cache.temporalPipeline);
+      temporalPass.setBindGroup(0, temporalBindGroup);
+      temporalPass.draw(3);
+      temporalPass.end();
+
+      // The upscale reads the freshly-written, accumulated history.
+      upscaleSourceView = writeView;
+      // Ping-pong: next frame reads what we just wrote.
+      cache.temporalRead = writeIdx;
+      cache.temporalFirstFrame = false;
+    }
+
+    // Pass 2/3: depth-aware bilateral upscale + composite over the scene → canvas.
     const ud = cache.upscaleUniformData;
     ud[0] = canvasW; // fullResolution.x
     ud[1] = canvasH; // fullResolution.y
@@ -1016,7 +1280,7 @@ export function executeProceduralClouds(
     const upscaleBindGroup = device.createBindGroup({
       layout: cache.upscaleBindGroupLayout,
       entries: [
-        { binding: 0, resource: cache.halfView },
+        { binding: 0, resource: upscaleSourceView },
         { binding: 1, resource: colorTextureView },
         { binding: 2, resource: depthTextureView },
         { binding: 3, resource: cache.upscaleSampler },
@@ -1082,6 +1346,20 @@ export function destroyProceduralCloudResources(
     cache.upscalePipeline = null;
     cache.upscaleBindGroupLayout = null;
     cache.upscaleSampler = null;
+    // V10 (Batch 433) — release the temporal ping-pong history + resolve resources.
+    cache.temporalHistory[0]?.destroy();
+    cache.temporalHistory[1]?.destroy();
+    cache.temporalHistory = [null, null];
+    cache.temporalHistoryView = [null, null];
+    cache.temporalWidth = 0;
+    cache.temporalHeight = 0;
+    cache.temporalRead = 0;
+    cache.temporalFirstFrame = true;
+    cache.temporalUniformBuffer?.destroy();
+    cache.temporalUniformBuffer = null;
+    cache.temporalPipeline = null;
+    cache.temporalBindGroupLayout = null;
+    cache.temporalSampler = null;
     cache.initialized = false;
     context._cloudCache = undefined;
   }

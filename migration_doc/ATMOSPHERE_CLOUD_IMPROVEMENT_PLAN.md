@@ -122,7 +122,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Byte-neutral default — T3/escape-hatch keep full-res `draw(3)→canvas` unchanged; only opt-in tiers allocate the half-res target.
 - **Files:** `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`, `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`, `Renderer/WebGPU/WebGPUCloudTierPresets.ts`.
 
-#### 3.2 — Temporal reprojection / accumulation for clouds (`CLOUD-TEMPORAL`, activate V10) — **P0, effort L**
+#### 3.2 — Temporal reprojection / accumulation for clouds (`CLOUD-TEMPORAL`, activate V10) — **P0, effort L** — ✅ SHIPPED Batch 433 (CloudTemporalResolve.wgsl reproject+3×3 neighborhood-clamp; T1/T2 temporal, T3/escape-hatch byte-identical; no-ghost verified moving-camera)
 
 **Pairs with 3.1.** Shares the temporal pattern with **3.5** (fog temporal) and **3.7** (env-cube temporal).
 
