@@ -115,7 +115,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 
 ---
 
-#### 3.1 — Half-resolution render target + spatial upsample (`CLOUD-HALFRES`, activate V9) — **P0, effort M**
+#### 3.1 — Half-resolution render target + spatial upsample (`CLOUD-HALFRES`, activate V9) — **P0, effort M** — ✅ SHIPPED Batch 432 (CloudUpscale.wgsl joint-bilateral upsample; low/medium/auto-far → 0.5×, cinematic/escape-hatch byte-identical full-res)
 
 - **Technique:** Render the cloud march into a 0.5× (`renderResScale`) offscreen RGBA16F target with Bayer/blue-noise 4×4 pixel jitter (Wronski), then depth-aware bilateral upsample to canvas. Reuses the allocated `QF_HALF_RES` bit + preset `renderResScale`.
 - **Opt-in flag:** low/medium/auto-far tiers resolve `renderResScale<1` + set `QF_HALF_RES`; cinematic + the `cloudQuality` escape hatch keep `renderResScale=1.0`.

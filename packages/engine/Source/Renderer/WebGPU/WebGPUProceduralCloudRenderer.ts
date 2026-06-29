@@ -30,7 +30,10 @@ import {
   CloudNoiseSource,
   CLOUD_QF_OCTAVES_SHIFT,
   CLOUD_QF_NOISE_BAKED,
+  CLOUD_QF_HALF_RES,
 } from "./WebGPUCloudTierPresets.js";
+// V9 (Batch 432) — half-res bilateral-upscale composite shader.
+import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
 import { buildCloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 // V11 (Batch 408) — per-genus vertical-density profiles. Backend-neutral Scene
@@ -71,6 +74,22 @@ export interface CloudCache {
   noiseFallbackTexture: GPUTexture | null;
   noiseFallbackView: GPUTextureView | null; // 1×1×1 white 3D, bound until baked
   noiseFallbackSampler: GPUSampler | null;
+  // V9 (Batch 432) — half-res cloud target + bilateral-upscale pass. ALL null on
+  // the default full-res path (allocated lazily only when a tier resolves
+  // renderResScale<1). `halfPipeline` renders the raymarch into `halfView`
+  // (rgba16float); `upscalePipeline` reads it + full-res scene/depth and
+  // composites to the canvas. The half-res target is re-created on canvas resize.
+  halfTexture: GPUTexture | null;
+  halfView: GPUTextureView | null;
+  halfWidth: number;
+  halfHeight: number;
+  halfPipeline: GPURenderPipeline | null; // raymarch → rgba16float half target
+  upscalePipeline: GPURenderPipeline | null;
+  upscaleBindGroupLayout: GPUBindGroupLayout | null;
+  upscaleUniformBuffer: GPUBuffer | null;
+  upscaleUniformData: Float32Array;
+  upscaleSampler: GPUSampler | null;
+  frameCounter: number; // per-frame Bayer index for the half-res jitter
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -93,9 +112,140 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       noiseFallbackTexture: null,
       noiseFallbackView: null,
       noiseFallbackSampler: null,
+      halfTexture: null,
+      halfView: null,
+      halfWidth: 0,
+      halfHeight: 0,
+      halfPipeline: null,
+      upscalePipeline: null,
+      upscaleBindGroupLayout: null,
+      upscaleUniformBuffer: null,
+      upscaleUniformData: new Float32Array(UPSCALE_UNIFORM_FLOATS),
+      upscaleSampler: null,
+      frameCounter: 0,
     };
   }
   return context._cloudCache;
+}
+
+// V9 (Batch 432) — half-res target format. rgba16float so the premultiplied HDR
+// cloud radiance survives the bilateral interpolation without banding.
+const CLOUD_HALF_FORMAT: GPUTextureFormat = "rgba16float";
+// UpscaleUniforms float count — MUST equal the WGSL struct length (CloudUpscale.wgsl).
+const UPSCALE_UNIFORM_FLOATS = 16;
+const UPSCALE_UNIFORM_BYTES = UPSCALE_UNIFORM_FLOATS * 4;
+// Bilateral depth-similarity falloff, tuned in the renderer-wide NONLINEAR log
+// depth space ([0,1], NOT metres). Small enough that a cloud/terrain edge rejects
+// the far-side taps (crisp silhouette) but not so small that cloud interiors over
+// a smooth depth gradient lose all four taps.
+const CLOUD_UPSCALE_DEPTH_SIGMA = 5.0e-3;
+
+/**
+ * V9 (Batch 432) — (re)allocate the half-res cloud target at `floor(w·scale) ×
+ * floor(h·scale)`. Re-created on canvas resize (size validation per CLAUDE.md). A
+ * null device or a zero size is a no-op (the caller falls back to full-res). The
+ * half-res pipeline + the upscale pipeline/BGL/UBO/sampler are built once, lazily.
+ */
+function ensureHalfResResources(
+  device: GPUDevice,
+  cache: CloudCache,
+  fullWidth: number,
+  fullHeight: number,
+  scale: number,
+  canvasFormat: GPUTextureFormat,
+): boolean {
+  const halfW = Math.max(1, Math.floor(fullWidth * scale));
+  const halfH = Math.max(1, Math.floor(fullHeight * scale));
+
+  // (Re)allocate the half-res color target on first use or canvas resize.
+  if (
+    !cache.halfTexture ||
+    cache.halfWidth !== halfW ||
+    cache.halfHeight !== halfH
+  ) {
+    cache.halfTexture?.destroy();
+    cache.halfTexture = device.createTexture({
+      label: "ProceduralClouds Half-Res Target",
+      size: { width: halfW, height: halfH, depthOrArrayLayers: 1 },
+      format: CLOUD_HALF_FORMAT,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    cache.halfView = cache.halfTexture.createView();
+    cache.halfWidth = halfW;
+    cache.halfHeight = halfH;
+  }
+
+  // The raymarch-into-half pipeline reuses the cloud shader + BGL but targets the
+  // rgba16float half-res attachment (the full-res pipeline targets canvasFormat).
+  if (!cache.halfPipeline && cache.bindGroupLayout) {
+    const shaderModule = device.createShaderModule({
+      label: "ProceduralClouds shader (half-res)",
+      code: ProceduralCloudsWGSL,
+    });
+    const layout = device.createPipelineLayout({
+      label: "ProceduralClouds half-res pipeline layout",
+      bindGroupLayouts: [cache.bindGroupLayout],
+    });
+    cache.halfPipeline = device.createRenderPipeline({
+      label: "ProceduralClouds half-res pipeline",
+      layout,
+      vertex: { module: shaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: CLOUD_HALF_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+  }
+
+  // The bilateral-upscale composite pipeline (new shader).
+  if (!cache.upscalePipeline) {
+    cache.upscaleBindGroupLayout = makeBindGroupLayout(
+      device,
+      "CloudUpscale BGL",
+      [
+        texture(0, Stage.FRAGMENT), // half-res cloud (premultiplied)
+        texture(1, Stage.FRAGMENT), // full-res scene color
+        texture(2, Stage.FRAGMENT), // full-res scene depth
+        sampler(3, Stage.FRAGMENT),
+        uniformBuffer(4, Stage.FRAGMENT),
+      ],
+    );
+    const upscaleModule = device.createShaderModule({
+      label: "CloudUpscale shader",
+      code: CloudUpscaleWGSL,
+    });
+    cache.upscalePipeline = device.createRenderPipeline({
+      label: "CloudUpscale pipeline",
+      layout: device.createPipelineLayout({
+        label: "CloudUpscale pipeline layout",
+        bindGroupLayouts: [cache.upscaleBindGroupLayout],
+      }),
+      vertex: { module: upscaleModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: upscaleModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    cache.upscaleUniformBuffer = device.createBuffer({
+      label: "CloudUpscale UB",
+      size: Math.max(UPSCALE_UNIFORM_BYTES, 256),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    cache.upscaleSampler = device.createSampler({
+      label: "CloudUpscale Sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+
+  return !!cache.halfView && !!cache.halfPipeline && !!cache.upscalePipeline;
 }
 
 // ─── Weather Phase 1 — procedural weather-map producer ───
@@ -570,6 +720,37 @@ export function executeProceduralClouds(
   // consume each bit in turn (V3 noiseSource, V5 octaves, V6 jitter, V9 halfRes,
   // V10 temporal, V11 profile).
   const cloudPreset = resolveCloudPreset(qualityInputs);
+  // V9 (Batch 432) — half-res gate. A tier that resolves renderResScale<1 (T1 low
+  // / T2 high / auto-far) renders the raymarch into a 0.5× target + bilateral
+  // upscale; the cinematic tier (T3) and the cloudQuality escape hatch keep
+  // renderResScale=1.0 → the legacy full-res draw(3)→canvas composite, BYTE-
+  // IDENTICAL. `halfResActive` is also gated on the half-res resources actually
+  // allocating (self-healing: if the target/pipeline can't be built we fall back
+  // to full-res rather than skip the clouds).
+  const canvasW = context._canvas?.width ?? 1920;
+  const canvasH = context._canvas?.height ?? 1080;
+  let halfResActive =
+    cloudPreset.renderResScale < 1.0 && cloudPreset.renderResScale > 0.0;
+  if (halfResActive) {
+    const allocated = ensureHalfResResources(
+      device,
+      cache,
+      canvasW,
+      canvasH,
+      cloudPreset.renderResScale,
+      context._canvasFormat || "bgra8unorm",
+    );
+    if (!allocated) {
+      // Permanent sentinel (CLAUDE.md null-target guard): the tier asked for the
+      // half-res path but the target/pipelines couldn't allocate — fall back to
+      // the full-res composite so the clouds still render (degraded, not absent).
+      // Real bug → no pragma; the user needs to see it.
+      console.error(
+        `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud half-res target/pipeline allocation failed (${canvasW}x${canvasH} @${cloudPreset.renderResScale}); falling back to full-res.`,
+      );
+    }
+    halfResActive = allocated;
+  }
   data[offset++] = qualityResolved.maxSteps;
   data[offset++] = qualityResolved.lightSteps;
   data[offset++] = globe.cloudDensity ?? 0.3;
@@ -594,10 +775,12 @@ export function executeProceduralClouds(
   data[offset++] = 0.97;
   data[offset++] = 0;
 
-  // resolution + pad
-  const canvas = context._canvas;
-  data[offset++] = canvas?.width ?? 1920;
-  data[offset++] = canvas?.height ?? 1080;
+  // resolution + pad. V9 (Batch 432) — when half-res is active this is the HALF-RES
+  // target size so the shader's Bayer jitter step (1/resolution) is one half-res
+  // texel; the full-res path keeps the canvas size (jitter branch is skipped, so
+  // the value is byte-irrelevant there but stays the canvas size as before).
+  data[offset++] = halfResActive ? cache.halfWidth : canvasW;
+  data[offset++] = halfResActive ? cache.halfHeight : canvasH;
   data[offset++] = 0;
   data[offset++] = 0;
 
@@ -641,12 +824,23 @@ export function executeProceduralClouds(
     cache.noise !== null
       ? CLOUD_QF_NOISE_BAKED
       : 0;
+  // V9 (Batch 432) — set bit 1 (QF_HALF_RES) ONLY when the half-res path is active
+  // (tier renderResScale<1 AND the target/pipelines allocated). The shader keys its
+  // premultiplied-emit + jitter branch on this bit; the full-res tiers leave it
+  // clear → byte-identical legacy composite.
+  const halfResBit = halfResActive ? CLOUD_QF_HALF_RES : 0;
   data[offset++] =
     noiseBakedBit |
+    halfResBit |
     ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
       CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
   data[offset++] = 0; // 75 reserved (V8 curlAmplitude)
-  data[offset++] = 0; // 76 reserved (V6 frameCounter)
+  // 76 — V9 frameCounter (Bayer jitter index for the half-res sub-pixel offset).
+  // Only consumed when QF_HALF_RES is set; full-res ignores it (jitter branch
+  // skipped), so writing it is byte-irrelevant on the default path. Wraps at 16
+  // (the Bayer LUT length) to keep the f32 store exact.
+  cache.frameCounter = (cache.frameCounter + 1) & 15;
+  data[offset++] = halfResActive ? cache.frameCounter : 0; // 76 frameCounter
   data[offset++] = 0; // 77 reserved (V8 curlFrequency)
   // 78 — V5 light-march step scale. LIVE/escape + T3 keep 1.0 (full light march,
   // unchanged); the lower baked tiers march at 0.5 for cheaper shadowing.
@@ -774,20 +968,93 @@ export function executeProceduralClouds(
   const encoder =
     mainEncoder ??
     device.createCommandEncoder({ label: "ProceduralClouds (orphan)" });
-  const pass = encoder.beginRenderPass({
-    label: "ProceduralClouds pass",
-    colorAttachments: [
-      {
-        view: outputView,
-        loadOp: "load",
-        storeOp: "store",
-      },
-    ],
-  });
-  pass.setPipeline(cache.pipeline!);
-  pass.setBindGroup(0, bindGroup);
-  pass.draw(3); // full-screen triangle
-  pass.end();
+
+  if (
+    halfResActive &&
+    cache.halfView &&
+    cache.halfPipeline &&
+    cache.upscalePipeline &&
+    cache.upscaleBindGroupLayout &&
+    cache.upscaleUniformBuffer &&
+    cache.upscaleSampler
+  ) {
+    // ── V9 (Batch 432) — HALF-RES PATH ──
+    // Pass 1: raymarch into the 0.5× rgba16float target (CLEAR to transparent so
+    // non-cloud texels stay 0; the shader emits premultiplied cloud + alpha).
+    const halfPass = encoder.beginRenderPass({
+      label: "ProceduralClouds half-res pass",
+      colorAttachments: [
+        {
+          view: cache.halfView,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+    });
+    halfPass.setPipeline(cache.halfPipeline);
+    halfPass.setBindGroup(0, bindGroup);
+    halfPass.draw(3); // full-screen triangle
+    halfPass.end();
+
+    // Pass 2: depth-aware bilateral upscale + composite over the scene → canvas.
+    const ud = cache.upscaleUniformData;
+    ud[0] = canvasW; // fullResolution.x
+    ud[1] = canvasH; // fullResolution.y
+    ud[2] = 1.0 / Math.max(canvasW, 1); // invFullResolution.x
+    ud[3] = 1.0 / Math.max(canvasH, 1); // invFullResolution.y
+    ud[4] = cache.halfWidth; // halfResolution.x
+    ud[5] = cache.halfHeight; // halfResolution.y
+    ud[6] = 1.0 / Math.max(cache.halfWidth, 1); // invHalfResolution.x
+    ud[7] = 1.0 / Math.max(cache.halfHeight, 1); // invHalfResolution.y
+    ud[8] = CLOUD_UPSCALE_DEPTH_SIGMA; // depthSigma
+    ud[9] = 0;
+    ud[10] = 0;
+    ud[11] = 0;
+    device.queue.writeBuffer(cache.upscaleUniformBuffer, 0, ud);
+
+    const upscaleBindGroup = device.createBindGroup({
+      layout: cache.upscaleBindGroupLayout,
+      entries: [
+        { binding: 0, resource: cache.halfView },
+        { binding: 1, resource: colorTextureView },
+        { binding: 2, resource: depthTextureView },
+        { binding: 3, resource: cache.upscaleSampler },
+        { binding: 4, resource: { buffer: cache.upscaleUniformBuffer } },
+      ],
+    });
+    const upscalePass = encoder.beginRenderPass({
+      label: "CloudUpscale composite pass",
+      colorAttachments: [
+        {
+          view: outputView,
+          loadOp: "load",
+          storeOp: "store",
+        },
+      ],
+    });
+    upscalePass.setPipeline(cache.upscalePipeline);
+    upscalePass.setBindGroup(0, upscaleBindGroup);
+    upscalePass.draw(3);
+    upscalePass.end();
+  } else {
+    // ── Full-res path (default / cinematic / escape hatch) — UNCHANGED ──
+    const pass = encoder.beginRenderPass({
+      label: "ProceduralClouds pass",
+      colorAttachments: [
+        {
+          view: outputView,
+          loadOp: "load",
+          storeOp: "store",
+        },
+      ],
+    });
+    pass.setPipeline(cache.pipeline!);
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(3); // full-screen triangle
+    pass.end();
+  }
+
   if (!useMain) {
     device.queue.submit([encoder.finish()]);
   }
@@ -803,6 +1070,18 @@ export function destroyProceduralCloudResources(
     cache.uniformBuffer = null;
     cache.bindGroupLayout = null;
     cache.sampler = null;
+    // V9 (Batch 432) — release the half-res target + upscale resources.
+    cache.halfTexture?.destroy();
+    cache.halfTexture = null;
+    cache.halfView = null;
+    cache.halfWidth = 0;
+    cache.halfHeight = 0;
+    cache.halfPipeline = null;
+    cache.upscaleUniformBuffer?.destroy();
+    cache.upscaleUniformBuffer = null;
+    cache.upscalePipeline = null;
+    cache.upscaleBindGroupLayout = null;
+    cache.upscaleSampler = null;
     cache.initialized = false;
     context._cloudCache = undefined;
   }

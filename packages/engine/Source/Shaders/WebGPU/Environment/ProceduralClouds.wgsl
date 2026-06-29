@@ -143,6 +143,21 @@ const QF_JITTER: u32 = 8u;          // bit 3
 const QF_OCTAVES_SHIFT: u32 = 4u;   // bits 4-6
 const QF_PROFILE_ON: u32 = 128u;    // bit 7
 
+// V9 (Batch 432) — ordered 4×4 Bayer matrix (normalized 0..1, the standard
+// recursive dither pattern). Used to JITTER the half-res sample point by a
+// sub-pixel offset within each 2×2 full-res footprint, cycled per frame on
+// `cloud.frameCounter` (float 76). Decorrelating the half-res grid per Wronski
+// ("Volumetric Atmospheric Scattering", GDC 2014; "Temporal Supersampling")
+// breaks up the blocky 2× under-sampling so the bilateral upscale reconstructs
+// soft volumetric forms instead of a hard checkerboard. The 16-tap LUT is a const
+// array indexed by `(frameCounter mod 16)`.
+const BAYER4: array<f32, 16> = array<f32, 16>(
+   0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0,
+  12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0,
+   3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0,
+  15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0
+);
+
 // ─── Full-screen triangle ───
 @vertex
 fn vertexMain(@builtin(vertex_index) vid: u32) -> VertexOutput {
@@ -256,6 +271,17 @@ fn remap(v: f32, lo: f32, hi: f32, a: f32, b: f32) -> f32 {
 // V3 — is the baked-3D-texture density core active? (qualityFlags bit 0)
 fn noiseBakedEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_NOISE_BAKED) != 0u;
+}
+
+// V9 (Batch 432) — is the half-res render path active? (qualityFlags bit 1). When
+// set, the raymarch renders into a 0.5× rgba16float offscreen target and emits
+// PREMULTIPLIED cloud radiance + alpha (NO scene-color composite — that moves to
+// the bilateral upscale pass). When clear, the legacy full-res draw(3)→canvas
+// composite runs UNCHANGED (byte-identical). The qualityFlags bit gates which
+// return branch fragmentMain takes; the JS renderer also keys the pipeline's
+// color-target format (canvasFormat vs rgba16float) on the same tier resolve.
+fn halfResEnabled() -> bool {
+  return (u32(cloud.qualityFlags) & QF_HALF_RES) != 0u;
 }
 
 // V3 — baked cloud BASE shape (one trilinear fetch of the shape texture's R: the
@@ -607,7 +633,22 @@ fn logDepthToEyeDistance(logZ: f32, near: f32, far: f32) -> f32 {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let uv = input.uv;
+  // V9 (Batch 432) — half-res jitter. In the half-res path each output texel
+  // covers a 2×2 full-res block; offset the marched ray within that texel by a
+  // per-frame Bayer pattern so consecutive frames (and neighbouring half-res
+  // texels via the bilateral upscale) sample DIFFERENT sub-pixel positions,
+  // decorrelating the under-sampling. `cloud.resolution` here is the HALF-RES
+  // target size, so one texel = (1/halfW, 1/halfH) in UV; the Bayer offset stays
+  // within ±0.5 texel. Full-res path: no jitter (resolution = full canvas, bit
+  // clear), so `uv` is byte-identical to the legacy `input.uv`.
+  var uv = input.uv;
+  if (halfResEnabled()) {
+    let bIndex = u32(cloud.frameCounter) & 15u;
+    let bx = BAYER4[bIndex] - 0.5;            // -0.5..+0.46875 within the texel
+    let by = BAYER4[(bIndex + 5u) & 15u] - 0.5; // decorrelated second axis
+    let texel = vec2<f32>(1.0, 1.0) / max(cloud.resolution, vec2<f32>(1.0));
+    uv = uv + vec2<f32>(bx, by) * texel;
+  }
   let sceneColor = textureSample(colorTex, texSampler, uv);
   let sceneDepth = textureSampleLevel(depthTex, texSampler, uv, 0.0).r;
 
@@ -622,8 +663,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let tInner = raySphereIntersect(rayOrigin, rayDir, innerR);
   let tOuter = raySphereIntersect(rayOrigin, rayDir, outerR);
 
-  // No intersection with cloud shell
+  // No intersection with cloud shell. V9 — in the half-res path the target is the
+  // cloud-only buffer, so "no cloud" must emit TRANSPARENT (vec4(0)) rather than
+  // the opaque scene color (which would wipe the scene at the upscale composite);
+  // full-res keeps the byte-identical `return sceneColor`.
   if (tOuter.x < 0.0 && tOuter.y < 0.0) {
+    if (halfResEnabled()) { return vec4<f32>(0.0); }
     return sceneColor;
   }
 
@@ -660,6 +705,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   if (tStart >= tEnd || tEnd <= 0.0) {
+    if (halfResEnabled()) { return vec4<f32>(0.0); }
     return sceneColor;
   }
 
@@ -813,9 +859,20 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let aerial = clamp(midDist / 60000.0 * cloud.aerialStrength, 0.0, 0.85);
   let hazed = mix(toneMapped, cloud.aerialColor, aerial);
 
-  // Composite clouds over scene
+  // Composite clouds over scene.
   let cloudAlpha = 1.0 - transmittance;
-  let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
 
+  // V9 (Batch 432) — half-res path: do NOT composite over the scene here. Emit the
+  // PREMULTIPLIED cloud radiance (`hazed * cloudAlpha`) + alpha into the rgba16float
+  // half-res target; the bilateral upscale pass does the depth-aware over-composite
+  // against full-res scene color. Premultiplied so the bilateral interpolation of
+  // partially-covered edge texels stays energy-correct (a straight-alpha blend of
+  // neighbouring texels with very different alphas would dark-fringe the silhouette).
+  if (halfResEnabled()) {
+    return vec4<f32>(hazed * cloudAlpha, cloudAlpha);
+  }
+
+  // Full-res path — UNCHANGED legacy composite (byte-identical to pre-V9).
+  let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
   return vec4<f32>(finalColor, sceneColor.a);
 }
