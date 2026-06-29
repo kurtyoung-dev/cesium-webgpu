@@ -87,6 +87,11 @@ no-op on WebGL, like the procedural clouds).
 > 421 scatter rework). Phase D **SHIPPED** (Batch 422 — 22° halo + sun-dogs). Phase E **WIRING SHIPPED**
 > (Batch 423 — `effects.precipitation` → the existing WebGPU weather-particle renderer; data-driven WMO
 > weather-code selection from ingest is deferred).
+>
+> **Forward-looking quality roadmap:** the opt-in (parity-default) improvement plan for the sky / cloud /
+> fog / reflections subsystems — including the deferred cube-sky / dynamic scene-content env map (C2-25) —
+> lives in [ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md](ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md). This roadmap (A–E)
+> is shipped; that doc is what to build next, each item behind a flag so WebGL parity stays the default.
 
 - **Phase A — Conditions→knobs mapper (no new renderer). [SHIPPED Batch 415]** An `AtmosphericEffects` module
   mapping `{T, Td, RH, visibility}` → fog density/tint + atmosphere sat/brightness + `cloudType`/
