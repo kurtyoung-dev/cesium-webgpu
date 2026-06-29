@@ -717,6 +717,17 @@ function buildVolumetricFog() {
     // proper sample of the SkyAtmosphere inscatter LUT at
     // `(altitude, up direction)` for physically motivated ambient.
     ambientStrength: 0.05,
+    // Batch 431 (FOG-IBL-AMBIENT, improvement-plan 2.4) — opt-in
+    // sky-LUT / IBL-driven fog ambient. When TRUE, the scattering
+    // kernel replaces the flat-constant `ambientStrength` ambient with
+    // an altitude- + time-of-day-correct ambient: a sample of the
+    // Bruneton TRANSMITTANCE LUT at `(froxel altitude, view-up)` tinted
+    // by the atmosphere-derived SH-L2 irradiance probe
+    // (`environmentMapManager._webgpuSHBuffer`). Result: at sunset the
+    // fog picks up warm sky color low + cool zenith ambient instead of
+    // a flat grey. DEFAULT FALSE keeps the existing constant ambient
+    // byte-identical (B18-style opt-in; no perf/visual regression).
+    iblAmbient: false,
   };
 }
 

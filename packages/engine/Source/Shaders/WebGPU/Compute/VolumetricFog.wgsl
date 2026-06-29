@@ -164,6 +164,24 @@ struct VolumetricFogParams {
   //                        near the surface independent of the base fog's
   //                        `density`)
   groundFog: vec4<f32>,
+
+  // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL fog ambient.
+  // Replaces the flat-constant `ambientTerm = u.occlusion.y` (used by the
+  // lightScattering pass) with an altitude- + time-of-day-correct ambient:
+  // a sample of the Bruneton TRANSMITTANCE LUT at `(froxel altitude,
+  // view-up)` tinted by the atmosphere-derived SH-L2 irradiance probe
+  // (`fogSH`). Sunset fog picks up warm sky color low + cool zenith ambient
+  // instead of a flat grey.
+  //
+  // iblAmbient:
+  //   x = enable (0/1) — gate. When < 0.5 the scattering kernel takes the
+  //       existing constant branch byte-for-byte (parity default).
+  //   y = atmosphereThickness (m) — MUST match the value the transmittance
+  //       LUT was baked with (SkyAtmosphere ATMOSPHERE_THICKNESS = 111e3)
+  //       so the LUT `v = altitude / thickness` lookup is correct.
+  //   z = ambientScale — reuses `ambientStrength` as the brightness knob.
+  //   w = reserved.
+  iblAmbient: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: VolumetricFogParams;
@@ -445,6 +463,74 @@ fn sampleCloudShadow(worldPos: vec3<f32>) -> f32 {
 @group(0) @binding(6) var sunShadowMap: texture_depth_2d;
 @group(0) @binding(7) var sunShadowSampler: sampler_comparison;
 
+// Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient bindings, used by
+// the lightScattering pass only. The renderer binds the real atmosphere
+// TRANSMITTANCE LUT (binding 8) + a linear sampler (binding 9) + the
+// atmosphere-derived SH-L2 irradiance buffer (binding 10) once they're
+// available, or white/zero placeholders otherwise. The kernel only samples
+// these when `u.iblAmbient.x >= 0.5`; with the flag off the placeholders
+// are never touched and the ambient term is byte-identical to the prior
+// flat constant.
+@group(0) @binding(8) var fogTransmittanceLut: texture_2d<f32>;
+@group(0) @binding(9) var fogLutSampler: sampler;
+// SHUniforms layout (matches ModelPBRComplete.wgsl::SHUniforms + the
+// DynEnvMap SH buffer): 9 vec4 L2 coefficients + 1 vec4 control slot
+// (control.w == 1.0 when the SH projection has populated real data).
+struct FogSHUniforms {
+  c0: vec4<f32>,
+  c1: vec4<f32>,
+  c2: vec4<f32>,
+  c3: vec4<f32>,
+  c4: vec4<f32>,
+  c5: vec4<f32>,
+  c6: vec4<f32>,
+  c7: vec4<f32>,
+  c8: vec4<f32>,
+  control: vec4<f32>,
+};
+@group(0) @binding(10) var<uniform> fogSH: FogSHUniforms;
+
+// Batch 431 (FOG-IBL-AMBIENT) — evaluate the L2 spherical-harmonic
+// irradiance probe along direction `N`. Mirrors
+// ModelPBRComplete.wgsl::evalSphericalHarmonics EXACTLY (same coefficient
+// order + basis polynomials) so the fog ambient matches the model diffuse
+// IBL — the SH set is the SAME atmosphere-derived buffer. `control.w` is
+// 0 on the placeholder / before the projection runs, which scales the
+// whole result to 0 so an unpopulated SH contributes nothing (fall back
+// to the transmittance-only tint).
+fn evalFogSH(N: vec3<f32>) -> vec3<f32> {
+  var c = fogSH.c0.xyz;
+  c = c + fogSH.c1.xyz * N.y;
+  c = c + fogSH.c2.xyz * N.z;
+  c = c + fogSH.c3.xyz * N.x;
+  c = c + fogSH.c4.xyz * (N.x * N.y);
+  c = c + fogSH.c5.xyz * (N.y * N.z);
+  c = c + fogSH.c6.xyz * (3.0 * N.z * N.z - 1.0);
+  c = c + fogSH.c7.xyz * (N.z * N.x);
+  c = c + fogSH.c8.xyz * (N.x * N.x - N.y * N.y);
+  // Gate on control.w (1.0 = SH active). max() clamps negative lobes (the
+  // SH reconstruction can ring slightly below 0 at grazing directions).
+  return max(c, vec3<f32>(0.0)) * fogSH.control.w;
+}
+
+// Sample the atmosphere TRANSMITTANCE LUT for the optical path from a
+// point at `altitude` (m above the inner radius) looking along `cosZenith`
+// (cos of the angle between the ray and local up) to the top of
+// atmosphere. Mirrors AtmosphereLUT.wgsl::computeTransmittance's UV layout
+// EXACTLY (and AerialPerspective.wgsl::sampleTransmittance):
+//   u = (cosZenith + 1) / 2 ,  v = altitude / thickness .
+// This is the warm-low / cool-high sky color the fog ambient picks up:
+// near the horizon at sunset the path-to-TOA transmittance is reddened
+// (blue scattered out), high up it stays bluer.
+fn sampleFogTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
+  let thickness = u.iblAmbient.y;
+  let uvx = clamp(cosZenith * 0.5 + 0.5, 0.0, 1.0);
+  let uvy = clamp(altitude / max(thickness, 1.0), 0.0, 1.0);
+  return textureSampleLevel(
+    fogTransmittanceLut, fogLutSampler, vec2<f32>(uvx, uvy), 0.0
+  ).rgb;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Pass 1 — Density injection
 // ─────────────────────────────────────────────────────────────────────
@@ -606,13 +692,9 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   let moonScatter = moonScale * phaseMoon;
 
   // Phase 5c — ambient term. Without this, occlusion-cut shadow
-  // volumes become hard-edged + over-dark. Real engines sample the
-  // atmosphere inscatter LUT at (altitude, up direction) to get a
-  // physically motivated ambient color (Hillaire 2020 / Frostbite).
-  // For now we use a simple constant tinted by the fog albedo so
-  // shadowed froxels still receive a soft fill.
-  // Future Phase 5e can swap this for an actual LUT sample once the
-  // SkyAtmosphere LUT views are wired through to this renderer.
+  // volumes become hard-edged + over-dark. The DEFAULT (parity) path uses
+  // a flat constant tinted by the fog albedo so shadowed froxels still
+  // receive a soft fill.
   let ambientStrength = u.occlusion.y;
   let ambientTerm = ambientStrength;
 
@@ -630,8 +712,61 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   //
   // Density is still packed in `.a` because the integrate pass needs it to
   // compute the per-slice optical depth `σ·Δz`.
-  let sourceRadiance =
-    albedo * (sunScatter + moonScatter + ambientTerm);
+  //
+  // Batch 431 (FOG-IBL-AMBIENT) — when the opt-in flag is on, replace the
+  // flat-constant ambient with a sky-LUT / IBL ambient COLOR. The OFF path
+  // below is BYTE-IDENTICAL to pre-Batch-431 (same scalar `ambientTerm`,
+  // same `albedo * (sunScatter + moonScatter + ambientTerm)` expression);
+  // the flag-on path takes a separate branch so the parity-default
+  // float arithmetic is untouched.
+  var sourceRadiance: vec3<f32>;
+  if (u.iblAmbient.x < 0.5) {
+    sourceRadiance = albedo * (sunScatter + moonScatter + ambientTerm);
+  } else {
+    // ── Sky-LUT / IBL fog ambient ──
+    // 1) Reconstruct the froxel altitude (same RTE 2nd-order Taylor
+    //    expansion densityInjection uses — see cameraAltitudeRTE).
+    let camUp = u.cameraAltitudeRTE.xyz;
+    let camAlt = u.cameraAltitudeRTE.w;
+    let invDenom = u.altitudeCurvature.x;
+    let froxelOffset = worldPos - u.cameraAndPlanet.xyz;
+    let dLen = length(froxelOffset);
+    let cosGamma = select(
+      dot(froxelOffset, camUp) / max(dLen, 1e-6), 0.0, dLen < 1e-6
+    );
+    let altitude = max(
+      0.0,
+      camAlt + dLen * cosGamma
+        + dLen * dLen * (1.0 - cosGamma * cosGamma) * invDenom
+    );
+
+    // 2) Sky tint from the TRANSMITTANCE LUT along the SUN direction at this
+    //    altitude. cosZenith = dot(localUp, sunDir): at sunset the sun is
+    //    near the horizon (cosZenith ≈ 0 → long, reddened path) so the
+    //    ambient warms; at noon (cosZenith ≈ 1 → short white path) it stays
+    //    neutral. The result tracks time of day. Scaled by sun intensity so
+    //    night fog isn't lit by a stale daytime tint.
+    let cosSunZenith = dot(camUp, sunDir);
+    let skyTint = sampleFogTransmittance(altitude, cosSunZenith)
+                  * max(sunIntensity, 0.0);
+
+    // 3) Cool zenith ambient from the SH-L2 irradiance probe evaluated
+    //    along local up. Zero when the SH buffer is a placeholder
+    //    (control.w == 0) → transmittance-only ambient in that case.
+    let shAmbient = evalFogSH(camUp);
+
+    // 4) Blend: Hillaire sky-view transmittance × ambient-probe SH. The
+    //    skyTint carries the low-warm / high-cool gradient; the SH adds the
+    //    directional zenith fill. Both scaled by `ambientStrength` (the same
+    //    knob the constant path uses) so brightness stays user-controllable.
+    //    Bounded by the same implicit energy budget — skyTint <= 1 and the
+    //    SH ambient is clamped non-negative, so the source radiance can't
+    //    blow out.
+    let ambientScale = u.iblAmbient.z;
+    let iblAmbientColor = (skyTint + shAmbient) * ambientScale;
+    sourceRadiance =
+      albedo * (sunScatter + moonScatter) + albedo * iblAmbientColor;
+  }
 
   textureStore(
     scatteringOut,

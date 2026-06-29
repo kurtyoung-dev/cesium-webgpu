@@ -360,6 +360,9 @@ interface CesiumFrameState {
           fogAnisotropy?: number;
           ambientStrength?: number;
           enableScatteringOcclusion?: boolean;
+          // Batch 431 (FOG-IBL-AMBIENT) — opt-in sky-LUT/IBL fog ambient.
+          // Default false keeps the flat-constant ambient byte-identical.
+          iblAmbient?: boolean;
         };
         lighting?: { enabled?: boolean; moonIntensity?: number };
         varyingAtmosphereDensity?:

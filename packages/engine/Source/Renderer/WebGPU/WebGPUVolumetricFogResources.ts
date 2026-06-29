@@ -177,6 +177,15 @@ export function buildVolumetricFogResources(
       // Phase 5c — sun shadow map (depth texture + comparison sampler).
       texture(6, Stage.COMPUTE, { sampleType: "depth" }),
       sampler(7, Stage.COMPUTE, "comparison"),
+      // Batch 431 (FOG-IBL-AMBIENT) — atmosphere TRANSMITTANCE LUT
+      // (rgba16float, filterable) + a linear (non-comparison) sampler for
+      // the (cosZenith, altitude) lookup + the atmosphere-derived SH-L2
+      // irradiance buffer (SHUniforms, 160 bytes). Bound unconditionally
+      // (placeholders by default) so the layout never forks; the WGSL only
+      // samples them when `u.iblAmbient.x >= 0.5`.
+      texture(8, Stage.COMPUTE, { sampleType: "float" }),
+      sampler(9, Stage.COMPUTE),
+      uniformBuffer(10, Stage.COMPUTE),
     ],
   );
 
@@ -318,6 +327,57 @@ export function buildVolumetricFogResources(
     addressModeV: "clamp-to-edge",
   });
 
+  // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient placeholders.
+  // The scattering pass binds the atmosphere TRANSMITTANCE LUT (binding 8)
+  // + a linear sampler (binding 9) + the atmosphere-derived SH-L2 buffer
+  // (binding 10) UNCONDITIONALLY so the BGL is constant. Until the real
+  // resources arrive (and on the OFF default forever), placeholders keep
+  // the bind group valid. Mirrors AerialPerspectiveEffect's placeholder
+  // pattern. The WGSL only samples them when `u.iblAmbient.x >= 0.5`, so
+  // the placeholders are never read in the parity-default path.
+  //
+  // 1×1 white transmittance LUT — white = no extinction (so a stray read
+  // can't darken anything). rgba16float white = 0x3C00 per channel.
+  const iblTransmittancePlaceholderTexture = device.createTexture({
+    label: "VolumetricFog_IBLTransmittancePlaceholder",
+    size: { width: 1, height: 1 },
+    format: "rgba16float",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  {
+    const white = new Uint16Array([0x3c00, 0x3c00, 0x3c00, 0x3c00]);
+    device.queue.writeTexture(
+      { texture: iblTransmittancePlaceholderTexture },
+      white,
+      { bytesPerRow: 8 },
+      { width: 1, height: 1 },
+    );
+  }
+  const iblTransmittancePlaceholderView =
+    iblTransmittancePlaceholderTexture.createView({
+      label: "VolumetricFog_IBLTransmittancePlaceholder_View",
+    });
+  // Non-comparison linear sampler for the transmittance LUT lookup.
+  const iblLutSampler = device.createSampler({
+    label: "VolumetricFog_IBLLutSampler",
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  });
+  // 160-byte zero-filled SH placeholder (9 vec4 coeffs + control vec4).
+  // control.w = 0 (zero-filled) → the WGSL `evalFogSH` returns 0, so a
+  // stray read contributes nothing. Real buffer is the scene env-manager's
+  // `_webgpuSHBuffer` (same 160-byte UNIFORM layout — SHUniforms).
+  const iblShPlaceholderBuffer = device.createBuffer({
+    label: "VolumetricFog_IBLSHPlaceholder",
+    size: 160,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  // Explicitly zero the placeholder so control.w starts at 0 even on
+  // backends that don't zero-init new buffers (160 bytes = 40 floats).
+  device.queue.writeBuffer(iblShPlaceholderBuffer, 0, new Float32Array(40));
+
   const scatteringBindGroup = device.createBindGroup({
     label: "VolumetricFog_ScatteringBindGroup",
     layout: scatteringBindGroupLayout,
@@ -327,6 +387,10 @@ export function buildVolumetricFogResources(
       { binding: 3, resource: scatteringView },
       { binding: 6, resource: shadowPlaceholderView },
       { binding: 7, resource: shadowComparisonSampler },
+      // Batch 431 — sky-LUT / IBL ambient (placeholders until real arrive).
+      { binding: 8, resource: iblTransmittancePlaceholderView },
+      { binding: 9, resource: iblLutSampler },
+      { binding: 10, resource: { buffer: iblShPlaceholderBuffer } },
     ],
   });
 
@@ -439,6 +503,13 @@ export function buildVolumetricFogResources(
     shadowPlaceholderTexture,
     shadowPlaceholderView,
     shadowComparisonSampler,
+    // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient resources.
+    iblTransmittancePlaceholderTexture,
+    iblTransmittancePlaceholderView,
+    iblLutSampler,
+    iblShPlaceholderBuffer,
+    scatteringBoundTransmittanceView: iblTransmittancePlaceholderView,
+    scatteringBoundShBuffer: iblShPlaceholderBuffer,
     paramsBuffer,
     paramsData,
     paramsU32,

@@ -136,7 +136,15 @@ export type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
 // 88 floats (352 bytes) after Batch 420 — appended 4 floats at offsets
 // 84–87 for the Phase C ground-fog uniforms:
 //   84..87  groundFog        (enabled, intensity, bandHeight, peakDensity)
-export const VOLUMETRIC_FOG_PARAMS_FLOATS = 88;
+//
+// 92 floats (368 bytes) after Batch 431 (FOG-IBL-AMBIENT) — appended 4
+// floats at offsets 88–91 for the sky-LUT / IBL fog-ambient uniforms:
+//   88..91  iblAmbient       (enable, atmosphereThickness, scale, _pad)
+// When `enable` (offset 88) < 0.5 the scattering kernel takes the
+// existing `ambientTerm = u.occlusion.y` branch byte-for-byte, so the
+// OFF default consumes NONE of these floats — flag-off output is
+// byte-identical to pre-Batch-431.
+export const VOLUMETRIC_FOG_PARAMS_FLOATS = 92;
 export const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
 /** CompositeUniforms float count: mat4 (16) + 2 × vec4 (8) = 24 floats. */
@@ -195,6 +203,28 @@ export interface VolumetricFogResources {
   shadowPlaceholderTexture: GPUTexture;
   shadowPlaceholderView: GPUTextureView;
   shadowComparisonSampler: GPUSampler;
+
+  // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient resources for the
+  // scattering pass. Bound UNCONDITIONALLY (placeholders until the real
+  // atmosphere TRANSMITTANCE LUT + atmosphere-derived SH buffer arrive)
+  // so the scattering BGL never forks; the WGSL only samples them when the
+  // `u.iblAmbient.x` flag is set (default 0 → byte-identical flat-constant
+  // ambient).
+  //   - 1×1 white rgba16float transmittance placeholder + a linear
+  //     sampler for the (cosZenith, altitude) LUT lookup.
+  //   - 160-byte zero-filled SH placeholder buffer (9 vec4 coeffs +
+  //     control vec4 with control.w = 0 → SH contributes nothing). The
+  //     real buffer is the scene env-manager's `_webgpuSHBuffer`.
+  // The scattering bind group is rebuilt (alongside the shadow-view
+  // rebuild) whenever the bound transmittance view or SH buffer changes.
+  iblTransmittancePlaceholderTexture: GPUTexture;
+  iblTransmittancePlaceholderView: GPUTextureView;
+  iblLutSampler: GPUSampler;
+  iblShPlaceholderBuffer: GPUBuffer;
+  // The transmittance view + SH buffer currently bound in the scattering
+  // bind group. Tracked so the rebuild only fires on an actual change.
+  scatteringBoundTransmittanceView: GPUTextureView | null;
+  scatteringBoundShBuffer: GPUBuffer | null;
 
   // Params uniform for the compute passes.
   paramsBuffer: GPUBuffer;
@@ -367,6 +397,9 @@ class WebGPUVolumetricFogRenderer {
     r.scatteringTexture.destroy();
     r.integratedTexture.destroy();
     r.shadowPlaceholderTexture.destroy();
+    // Batch 431 (FOG-IBL-AMBIENT) — release the sky-LUT / IBL placeholders.
+    r.iblTransmittancePlaceholderTexture.destroy();
+    r.iblShPlaceholderBuffer.destroy();
     r.paramsBuffer.destroy();
     r.compositeUniformBuffer.destroy();
     this._resources = null;
@@ -797,13 +830,89 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[86] = 120.0;
     r.paramsData[87] = 1.2e-4;
 
-    // Rebuild the scattering bind group when the shadow view changes.
-    // The placeholder view is the initial state; once a real shadow map
-    // arrives we swap to it. The bind group rebuild is rare (only when
-    // the active shadow map's texture changes — typically once per
-    // viewer session) so the cost is amortized to zero.
+    // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL fog-ambient uniforms
+    // (offsets 88..91). When `iblAmbient` is on, the scattering kernel
+    // replaces the flat-constant `ambientTerm = u.occlusion.y` with an
+    // altitude- + time-of-day-correct ambient: a sample of the Bruneton
+    // TRANSMITTANCE LUT at `(froxel altitude, view-up)` tinted by the
+    // atmosphere-derived SH-L2 irradiance probe. Gated by offset 88; when
+    // < 0.5 the WGSL takes the existing constant branch byte-for-byte, so
+    // the OFF default is byte-identical to pre-Batch-431 (no float here
+    // affects the flag-off output path).
+    //
+    //   88 = enable (0/1) — also implicitly 0 when no real transmittance
+    //        LUT is bound yet (the placeholder is white = passthrough, so
+    //        a stray sample can't darken; but we gate on the flag anyway).
+    //   89 = atmosphereThickness (m) — MUST match the value the
+    //        TRANSMITTANCE LUT was baked with (SkyAtmosphere's
+    //        ATMOSPHERE_THICKNESS = 111e3) so the LUT `v = altitude /
+    //        thickness` lookup lands on the right row.
+    //   90 = ambient scale — reuses `ambientStrength` so the IBL ambient
+    //        respects the same brightness knob as the constant path.
+    //   91 = reserved (pad).
+    const iblAmbientEnabled = vf?.iblAmbient === true;
+    // Resolve the real transmittance LUT view + atmosphere-derived SH
+    // buffer. Both are optional: the LUT exists once SkyAtmosphere has
+    // baked it (compute-capable contexts), the SH buffer exists once a
+    // model/tileset env-manager has run its SH projection. When either is
+    // missing the placeholder stays bound and that term degrades to a
+    // passthrough (white transmittance / zero SH) — the feature simply
+    // produces a paler ambient, never an error.
+    let realTransmittanceView: GPUTextureView | null = null;
+    if (iblAmbientEnabled) {
+      const perfMgr = (
+        context as unknown as {
+          performanceManager?: {
+            ensureAtmosphereLUTResources?: (d: GPUDevice) => {
+              transmittanceView?: GPUTextureView;
+            } | null;
+          };
+        }
+      ).performanceManager;
+      if (perfMgr?.ensureAtmosphereLUTResources) {
+        const res = perfMgr.ensureAtmosphereLUTResources(device);
+        if (res?.transmittanceView) {
+          realTransmittanceView = res.transmittanceView;
+        }
+      }
+    }
+    // Atmosphere-derived SH-L2 irradiance buffer from the scene's
+    // environment-map manager (the same `_webgpuSHBuffer` the model PBR
+    // path samples for diffuse IBL — Principle 9: it's baked but nothing
+    // on the fog path read it until now). Optional; placeholder otherwise.
+    let realShBuffer: GPUBuffer | null = null;
+    if (iblAmbientEnabled) {
+      const envManager = (
+        scene as unknown as {
+          environmentMapManager?: { _webgpuSHBuffer?: GPUBuffer | null };
+        }
+      ).environmentMapManager;
+      if (envManager?._webgpuSHBuffer) {
+        realShBuffer = envManager._webgpuSHBuffer;
+      }
+    }
+    r.paramsData[88] = iblAmbientEnabled ? 1.0 : 0.0;
+    r.paramsData[89] = 111000.0; // ATMOSPHERE_THICKNESS (matches the LUT bake)
+    r.paramsData[90] = ambientStrengthValue;
+    r.paramsData[91] = 0.0;
+
+    // Rebuild the scattering bind group when the shadow view changes OR
+    // (Batch 431) when the IBL transmittance LUT view / SH buffer changes.
+    // The placeholder views are the initial state; once a real shadow map
+    // / atmosphere LUT / atmosphere SH buffer arrives we swap to it. The
+    // bind group rebuild is rare (only when a bound resource's identity
+    // changes — typically once per viewer session) so the cost is
+    // amortized to zero. When `iblAmbient` is off, the placeholder views
+    // stay bound and the WGSL never samples them (flag-gated → parity).
     const desiredShadowView = realShadowView ?? r.shadowPlaceholderView;
-    if (r.scatteringBoundShadowView !== desiredShadowView) {
+    const desiredTransmittanceView =
+      realTransmittanceView ?? r.iblTransmittancePlaceholderView;
+    const desiredShBuffer = realShBuffer ?? r.iblShPlaceholderBuffer;
+    if (
+      r.scatteringBoundShadowView !== desiredShadowView ||
+      r.scatteringBoundTransmittanceView !== desiredTransmittanceView ||
+      r.scatteringBoundShBuffer !== desiredShBuffer
+    ) {
       r.scatteringBindGroup = device.createBindGroup({
         label: "VolumetricFog_ScatteringBindGroup",
         layout: r.scatteringBindGroupLayout,
@@ -813,9 +922,15 @@ class WebGPUVolumetricFogRenderer {
           { binding: 3, resource: r.scatteringView },
           { binding: 6, resource: desiredShadowView },
           { binding: 7, resource: r.shadowComparisonSampler },
+          // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient.
+          { binding: 8, resource: desiredTransmittanceView },
+          { binding: 9, resource: r.iblLutSampler },
+          { binding: 10, resource: { buffer: desiredShBuffer } },
         ],
       });
       r.scatteringBoundShadowView = desiredShadowView;
+      r.scatteringBoundTransmittanceView = desiredTransmittanceView;
+      r.scatteringBoundShBuffer = desiredShBuffer;
     }
 
     device.queue.writeBuffer(

@@ -100,7 +100,7 @@ These finish the Bruneton/Hillaire consumers that are *baked-but-unwired today* 
 - **Parity impact:** Both flags default off → no aerial perspective at all in the parity default (as today). Froxel path replaces the analytic march only when explicitly enabled.
 - **Files:** `Shaders/WebGPU/PostProcess/AerialPerspective.wgsl`, `Renderer/WebGPU/WebGPUAerialPerspectiveEffect.ts`, `Shaders/WebGPU/Compute/AtmosphereLUT.wgsl`.
 
-#### 2.4 — Sky-LUT / IBL-driven fog ambient (`FOG-IBL-AMBIENT`) — **P1 (P0 within fog), effort M**
+#### 2.4 — Sky-LUT / IBL-driven fog ambient (`FOG-IBL-AMBIENT`) — **P1 (P0 within fog), effort M** — ✅ SHIPPED Batch 431
 
 - **Technique:** Replace `ambientTerm = u.occlusion.y` (flat constant) in `VolumetricFog.wgsl` `lightScattering` with a sample of the re-parameterized transmittance LUT at `(froxel altitude, view-up)` blended with an SH-L2 eval of the existing `_webgpuSHBuffer` — Hillaire sky-view + ambient-probe. Altitude- and time-of-day-correct fog ambient.
 - **Opt-in flag:** `atmosphericConditions.volumetricFog.iblAmbient` (default `false`).
