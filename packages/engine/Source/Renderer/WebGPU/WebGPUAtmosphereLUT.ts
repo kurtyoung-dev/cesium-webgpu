@@ -206,13 +206,17 @@ export function ensureAtmosphereLUTResources(
     usage,
   });
 
-  const paramsData = new Float32Array(20);
+  // Batch 438 (4.5 SKY-OZONE) — bumped 20 → 24 floats to carry
+  // `ozoneCoefficient: vec3<f32>` (+ pad) appended after `sunCosZenith`. The
+  // vec3 lands on the next 16-byte boundary (float offset 20). The buffer is
+  // still padded to 256 bytes, so the GPU-side size is unchanged.
+  const paramsData = new Float32Array(24);
   const paramsBuffer = device.createBuffer({
     label: "AtmosphereLUT_Sun_Params",
     size: Math.max(paramsData.byteLength, 256),
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  const moonParamsData = new Float32Array(20);
+  const moonParamsData = new Float32Array(24);
   const moonParamsBuffer = device.createBuffer({
     label: "AtmosphereLUT_Moon_Params",
     size: Math.max(moonParamsData.byteLength, 256),
@@ -283,6 +287,11 @@ export function dispatchAtmosphereLUT(
     // meridian at the correct elevation. Optional — defaults to sunDirection[1]
     // (the legacy synthetic-frame behavior) for callers that don't supply it.
     sunCosZenith?: number;
+    // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
+    // (per-metre, RGB). Pure absorber added to the extinction term of every
+    // Beer-Lambert factor in the bake. Optional — defaults to [0, 0, 0]
+    // (exp(-0) = identity → byte-identical bake) when omitted.
+    ozoneCoefficient?: [number, number, number];
   },
   target: "sun" | "moon" = "sun",
 ): boolean {
@@ -324,6 +333,14 @@ export function dispatchAtmosphereLUT(
     params.sunCosZenith !== undefined
       ? params.sunCosZenith
       : params.sunDirection[1];
+  // Batch 438 (4.5 SKY-OZONE) — ozone coefficient (vec3) at float offset 20
+  // (next 16-byte boundary after sunCosZenith at f[19]). Default [0,0,0] →
+  // identity extinction in the bake. f[23] is _pad3.
+  const ozone = params.ozoneCoefficient;
+  f[20] = ozone !== undefined ? ozone[0] : 0.0;
+  f[21] = ozone !== undefined ? ozone[1] : 0.0;
+  f[22] = ozone !== undefined ? ozone[2] : 0.0;
+  f[23] = 0.0;
 
   device.queue.writeBuffer(
     paramsBuffer,

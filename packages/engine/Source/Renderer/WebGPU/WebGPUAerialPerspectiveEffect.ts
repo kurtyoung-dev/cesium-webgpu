@@ -97,6 +97,15 @@ export interface AerialPerspectiveFrameData {
   cloudShadowActive?: boolean;
   /** Cloud absorptionCoeff so the inscatter shadow exp() matches the cloud render. */
   cloudShadowAbsorption?: number;
+  /**
+   * Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
+   * (per-metre RGB). Added to the analytic march's extinction so distance haze
+   * extinction matches the visible sky's ozone deepening. Undefined → disabled
+   * (identity extinction, byte-identical).
+   */
+  ozoneCoefficient?: [number, number, number];
+  /** True when skyAtmosphere.ozone is on (gates the ozone extinction term). */
+  ozoneEnabled?: boolean;
 }
 
 export interface AerialPerspectiveConfig {
@@ -127,7 +136,10 @@ export interface AerialPerspectiveConfig {
 // cloudShadowControl (vec4) = 76 floats = 304 bytes (still WebGPU-padded to 320).
 // Appended add-only; defaults (identity + disabled) leave the inscatter untouched
 // → byte-identical when globe.cloudCastShadows is off.
-const UNIFORM_FLOATS = 76;
+// Batch 438 (4.5 SKY-OZONE) — +4 for ozoneCoefficient (vec4) = 80 floats = 320
+// bytes. Appended add-only; default (0,0,0,0) → identity extinction → byte-
+// identical when skyAtmosphere.ozone is off.
+const UNIFORM_FLOATS = 80;
 
 export class AerialPerspectiveEffect implements PostProcessEffect {
   readonly name = "AerialPerspective";
@@ -321,6 +333,21 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       f[o++] = 0;
       f[o++] = 0;
       f[o++] = 1;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+      f[o++] = 0;
+    }
+    // Batch 438 (4.5 SKY-OZONE) — ozoneCoefficient (vec4): xyz = per-metre RGB,
+    // w = enabled. Default (0,0,0,0) → identity extinction → byte-identical.
+    const ozone = d.ozoneCoefficient;
+    const ozoneOn = d.ozoneEnabled === true && !!ozone;
+    if (ozoneOn && ozone) {
+      f[o++] = ozone[0];
+      f[o++] = ozone[1];
+      f[o++] = ozone[2];
+      f[o++] = 1.0;
+    } else {
       f[o++] = 0;
       f[o++] = 0;
       f[o++] = 0;

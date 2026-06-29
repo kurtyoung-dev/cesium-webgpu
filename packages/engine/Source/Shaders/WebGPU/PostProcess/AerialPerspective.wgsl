@@ -104,6 +104,13 @@ struct AerialUniforms {
   // by default → the FS gate (`x > 0.5`) stays closed → byte-identical.
   cloudShadowVP: mat4x4<f32>,
   cloudShadowControl: vec4<f32>,
+  // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
+  // (per-metre). xyz = RGB coefficient; w = enabled (1.0 when skyAtmosphere.ozone
+  // is on AND aerial perspective is active). Pure absorber added to the analytic
+  // march's extinction term so the distance-haze extinction matches the visible
+  // sky's ozone deepening. Appended add-only; default (0,0,0,0) → exp(-0) =
+  // identity → byte-identical when ozone is off.
+  ozoneCoefficient: vec4<f32>,
 };
 
 @group(0) @binding(0) var sceneColorTex: texture_2d<f32>;
@@ -169,6 +176,16 @@ fn miePhase(cosAngle: f32, g: f32) -> f32 {
   let g2 = g * g;
   let denom = 1.0 + g2 - 2.0 * g * cosAngle;
   return (1.0 - g2) / (4.0 * PI * pow(max(denom, 1e-4), 1.5));
+}
+
+// Batch 438 (4.5 SKY-OZONE) — ozone tent-profile relative density (matches
+// AtmosphereLUT.wgsl / SkyAtmosphere.wgsl exactly: peak 1.0 at 25 km, 0 at 10/40
+// km). Pure absorber; supplies the unit-less density, the per-metre coefficient
+// supplies the magnitude.
+fn ozoneDensity(height: f32) -> f32 {
+  let center = 25000.0;
+  let halfWidth = 15000.0;
+  return max(0.0, 1.0 - abs(height - center) / halfWidth);
 }
 
 // Sample the transmittance LUT for the optical path from a point at
@@ -353,6 +370,11 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   var mieAccum = vec3<f32>(0.0);
   var rOpticalDepth = 0.0;
   var mOpticalDepth = 0.0;
+  // Batch 438 (4.5 SKY-OZONE) — ozone extinction along the camera→fragment
+  // segment. Gated by ozoneCoefficient.w; default 0 → identity.
+  let ozoneEnabled = uniforms.ozoneCoefficient.w > 0.5;
+  let ozoneCoeff = select(vec3<f32>(0.0), uniforms.ozoneCoefficient.xyz, ozoneEnabled);
+  var oOpticalDepth = 0.0;
 
   if (segment > 0.0) {
     let stepLen = segment / f32(INSCATTER_STEPS);
@@ -365,6 +387,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
       let mDensity = exp(-h / mieScaleH) * stepLen;
       rOpticalDepth = rOpticalDepth + rDensity;
       mOpticalDepth = mOpticalDepth + mDensity;
+      oOpticalDepth = oOpticalDepth + ozoneDensity(h) * stepLen;
 
       // Optical depth from the sample to the sun (to the top of atmosphere).
       let sunHit = raySphereIntersect(samplePos, sunDir, outerRadius);
@@ -374,15 +397,18 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
         let lightStep = sunLen / f32(lightSteps);
         var rSunOD = 0.0;
         var mSunOD = 0.0;
+        var oSunOD = 0.0;
         for (var j = 0u; j < lightSteps; j = j + 1u) {
           let lp = samplePos + sunDir * (f32(j) + 0.5) * lightStep;
           let lh = max(length(lp) - innerRadius, 0.0);
           rSunOD = rSunOD + exp(-lh / rayleighScaleH) * lightStep;
           mSunOD = mSunOD + exp(-lh / mieScaleH) * lightStep;
+          oSunOD = oSunOD + ozoneDensity(lh) * lightStep;
         }
         let attenuation = exp(
           -(rayleighCoeff * (rOpticalDepth + rSunOD) +
-            mieCoeff * (mOpticalDepth + mSunOD))
+            mieCoeff * (mOpticalDepth + mSunOD) +
+            ozoneCoeff * (oOpticalDepth + oSunOD))
         );
         rayleighAccum = rayleighAccum + rDensity * attenuation;
         mieAccum = mieAccum + mDensity * attenuation;
@@ -440,7 +466,8 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   // Lambert over exactly the segment we in-scattered along). Distant pixels
   // accumulate more optical depth → lower transmittance → dimmer + redder.
   let extinction = exp(
-    -(rayleighCoeff * rOpticalDepth + mieCoeff * mOpticalDepth)
+    -(rayleighCoeff * rOpticalDepth + mieCoeff * mOpticalDepth +
+      ozoneCoeff * oOpticalDepth)
   );
   // Blend extinction strength by the master haze intensity (0 → no dimming,
   // 1 → full physical extinction).

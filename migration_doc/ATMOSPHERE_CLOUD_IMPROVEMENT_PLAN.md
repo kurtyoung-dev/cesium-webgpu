@@ -192,21 +192,21 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Octave count 1 reproduces single-scatter exactly; loop only runs when `msOctaves>1`.
 - **Files:** `Shaders/WebGPU/Compute/VolumetricFog.wgsl`, `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`.
 
-#### 4.4 — Activate dual-light moon scattering on the inline march (`SKY-MOON`) — **P2, effort M**
+#### 4.4 — Activate dual-light moon scattering on the inline march (`SKY-MOON`) — **P2, effort M** — ✅ SHIPPED Batch 438 (skyAtmosphere.dualLightInline; +Scene.js Moon.update-before-sky ordering fix)
 
 - **Technique:** Move the sun+moon dual-light combine out of the gated `useLut` branch into `computeScattering` (second analytic march or scaled moon-transmittance term), so moon glow works on the parity ray-march path. Reuses the already-baked moon LUT.
 - **Opt-in flag:** new `skyAtmosphere.dualLightInline` (default `false`).
 - **Parity impact:** Default-false → inline march stays single-light (WebGL parity); moon term only sums when opted in.
 - **Files:** `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl`, `Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js`, `Scene/AtmosphericConditions.js`.
 
-#### 4.5 — Ozone Chappuis absorption layer (`SKY-OZONE`) — **P2, effort M**
+#### 4.5 — Ozone Chappuis absorption layer (`SKY-OZONE`) — **P2, effort M** — ✅ SHIPPED Batch 438 (skyAtmosphere.ozone; tent-profile extinction in LUT+inline+aerial; coeff 0 = identity)
 
 - **Technique:** Add the Bruneton/Hillaire ozone tent-profile absorption (~25–30km) to the transmittance + inscatter integrands. The Chappuis band is what gives real twilight its deep blue/violet zenith — Rayleigh+Mie-only skies are too cyan at dusk.
 - **Opt-in flag:** `skyAtmosphere.ozone` (default `false`; coefficient 0 = identity).
 - **Parity impact:** Coefficient 0 → `exp(-0)` identity in LUT bake + inline march → numerically identical.
 - **Files:** `Shaders/WebGPU/Compute/AtmosphereLUT.wgsl`, `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl`, `Shaders/WebGPU/PostProcess/AerialPerspective.wgsl`, `Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js`.
 
-#### 4.6 — Improved energy-conserving Mie phase (`MIE-PHASE`, Jendersie–d'Eon 2023) — **P2, effort M**
+#### 4.6 — Improved energy-conserving Mie phase (`MIE-PHASE`, Jendersie–d'Eon 2023) — **P2, effort M** — ✅ SHIPPED Batch 438 (skyAtmosphere.improvedMiePhase; HG+Draine blend; flag≤0.5 = HG identity)
 
 - **Technique:** Replace single-g HG Mie in sky/aerial/cloud with the Jendersie & d'Eon 2023 droplet phase (or Draine approximation) for a physically-grounded forward peak + backscatter — better sun-halo and glory.
 - **Opt-in flag:** `skyAtmosphere.improvedMiePhase` (default `false`).

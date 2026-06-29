@@ -53,7 +53,16 @@ function getSkyAtmosphereShaderCache(device) {
 // view-independent fullscreen sky option to reconstruct the per-pixel world ray.
 // 400 = 25 × 16. The shell-mesh path packs them too but the shell shader ignores
 // them.
-const UNIFORM_BUFFER_SIZE = 400;
+//
+// Batch 438 — bumped 400 → 464 to append four opt-in atmosphere-physics vec4s
+// after `inverseView` (float offset 100):
+//   atmosControl       @100 (improvedMiePhase / dualLightInline / ozoneEnabled)
+//   ozoneCoefficient   @104 (+ pad @107)
+//   moonLightDirWC     @108 (+ pad @111)
+//   moonControl        @112 (phaseFraction / intensityScale)
+// 464 = 29 × 16. ALL default-zero so the sky stays byte-identical with every
+// flag off.
+const UNIFORM_BUFFER_SIZE = 464;
 
 // Default atmosphere parameters
 // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — the SKY shader's
@@ -76,6 +85,14 @@ const ENABLE_SKY_INSCATTER_LUT = false;
 
 const DEFAULT_RAYLEIGH_COEFFICIENT = new Cartesian3(5.5e-6, 13.0e-6, 22.4e-6);
 const DEFAULT_MIE_COEFFICIENT = new Cartesian3(21e-6, 21e-6, 21e-6);
+// Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
+// (per-metre, RGB). Bruneton/Hillaire-derived: peak absorption in green/red
+// (the Chappuis band), almost transparent in blue — this is the spectral shape
+// that deepens twilight toward blue/violet at the zenith. Magnitude scaled to
+// sit alongside the Rayleigh coefficient at the ~25 km tent peak. Only applied
+// when `skyAtmosphere.ozone` is on; default is OFF (coefficient zeroed) so the
+// sky is byte-identical.
+const DEFAULT_OZONE_COEFFICIENT = new Cartesian3(0.65e-6, 1.881e-6, 0.085e-6);
 const DEFAULT_RAYLEIGH_SCALE_HEIGHT = 8500.0;
 const DEFAULT_MIE_SCALE_HEIGHT = 1200.0;
 const DEFAULT_MIE_ANISOTROPY = 0.758;
@@ -401,12 +418,18 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     weatherCheck && typeof weatherCheck.airQuality === "number"
       ? weatherCheck.airQuality
       : 1.0;
+  // Batch 438 (4.5 SKY-OZONE) — re-bake the LUTs when the ozone flag toggles, so
+  // the LUT-sampled paths pick up (or drop) the ozone extinction. Treated as a
+  // bake-input change exactly like humidity/airQuality above.
+  const ozoneNow = skyAtmosphere.ozone === true;
   if (
     cache.lastHumidity !== humidityNow ||
-    cache.lastAirQuality !== airQualityNow
+    cache.lastAirQuality !== airQualityNow ||
+    cache.lastOzone !== ozoneNow
   ) {
     cache.lastHumidity = humidityNow;
     cache.lastAirQuality = airQualityNow;
+    cache.lastOzone = ozoneNow;
     perfMgr.invalidateAtmosphereLUT();
     if (enableDualLight) {
       perfMgr.invalidateMoonAtmosphereLUT();
@@ -572,6 +595,17 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
       DEFAULT_MIE_COEFFICIENT.y * mieScale,
       DEFAULT_MIE_COEFFICIENT.z * mieScale,
     ];
+    // Batch 438 (4.5 SKY-OZONE) — bake ozone into the LUTs (transmittance /
+    // inscatter / sky-view / MS) when `skyAtmosphere.ozone` is on, so the
+    // LUT-sampled paths (sky-view fast-path, aerial perspective, fog drape)
+    // get the same ozone deepening as the inline march. OFF → [0,0,0] →
+    // exp(-0) = identity bake → byte-identical.
+    const ozoneOn = skyAtmosphere.ozone === true;
+    const ozoneCoefSrc =
+      skyAtmosphere.atmosphereOzoneCoefficient ?? DEFAULT_OZONE_COEFFICIENT;
+    const ozoneCoefficient = ozoneOn
+      ? [ozoneCoefSrc.x, ozoneCoefSrc.y, ozoneCoefSrc.z]
+      : [0.0, 0.0, 0.0];
 
     const encoder = device.createCommandEncoder({
       label: "SkyAtmosphere LUT dispatch",
@@ -596,6 +630,8 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           // chained sky-view bake (computeSkyView). Ignored by the single-
           // scatter / MS / irradiance kernels.
           sunCosZenith,
+          // Batch 438 (4.5 SKY-OZONE) — ozone extinction baked into the LUTs.
+          ozoneCoefficient,
         },
         "sun",
       );
@@ -632,6 +668,8 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           rayleighCoefficient,
           mieCoefficient,
           sunDirection: [moonDir.x, moonDir.y, moonDir.z],
+          // Batch 438 (4.5 SKY-OZONE) — same ozone extinction for the moon LUT.
+          ozoneCoefficient,
         },
         "moon",
       );
@@ -681,6 +719,9 @@ function packUniforms(
   useLut,
   multipleScatteringEnabled = false,
   useSkyViewLut = false,
+  improvedMiePhase = false,
+  dualLightInline = false,
+  ozoneEnabled = false,
 ) {
   const camera = frameState.camera;
 
@@ -1018,6 +1059,56 @@ function packUniforms(
   } else {
     Matrix4.pack(Matrix4.IDENTITY, uniformData, 84);
   }
+
+  // Batch 438 — three opt-in atmosphere-physics flags + their inputs.
+  // atmosControl @100: x=improvedMiePhase, y=dualLightInline, z=ozoneEnabled, w=0.
+  // ALL default 0 → every gated WGSL branch stays closed → byte-identical.
+  uniformData[100] = improvedMiePhase ? 1.0 : 0.0;
+  uniformData[101] = dualLightInline ? 1.0 : 0.0;
+  uniformData[102] = ozoneEnabled ? 1.0 : 0.0;
+  uniformData[103] = 0.0;
+
+  // ozoneCoefficient @104 (+ pad @107). Only non-zero when the inline ozone
+  // gate (atmosControl.z) is on; zeroed otherwise so the inline march's
+  // extinction exp() is identity even if the flag word were misread.
+  const ozoneCoef = ozoneEnabled
+    ? (skyAtmosphere.atmosphereOzoneCoefficient ?? DEFAULT_OZONE_COEFFICIENT)
+    : Cartesian3.ZERO;
+  uniformData[104] = ozoneCoef.x;
+  uniformData[105] = ozoneCoef.y;
+  uniformData[106] = ozoneCoef.z;
+  uniformData[107] = 0.0;
+
+  // moonLightDirWC @108 (+ pad @111). The moon direction for the inline
+  // dual-light march. Reuse the same frameState.moonDirectionWC the LUT
+  // dual-light path used; safe (0,0,1) placeholder before Moon.update ticks.
+  const moonDirInline = defined(frameState.moonDirectionWC)
+    ? frameState.moonDirectionWC
+    : { x: 0, y: 0, z: 1 };
+  uniformData[108] = moonDirInline.x;
+  uniformData[109] = moonDirInline.y;
+  uniformData[110] = moonDirInline.z;
+  uniformData[111] = 0.0;
+
+  // moonControl @112: x=moonPhaseFraction, y=moonIntensityScale, z/w reserved.
+  // When dualLightInline is off the WGSL gate (atmosControl.y) ignores these.
+  // The moon march reuses computeScattering with the full atmosphereLightIntensity
+  // (~50) baked in, so the intensity scale is the FRACTION of a daytime sky the
+  // moonlit sky shows. The default 0.12 reads as a gentle, clearly-visible blue
+  // moonglow over a dark night sky (a literal ~0.05 sun-fraction is photometric
+  // but rounds toward black in 8-bit). Overridable via
+  // atmosphericConditions.lighting.moonIntensity.
+  const acMoon =
+    frameState.atmosphericConditions &&
+    frameState.atmosphericConditions.lighting
+      ? frameState.atmosphericConditions.lighting
+      : undefined;
+  uniformData[112] = dualLightInline
+    ? (frameState.moonPhaseFraction ?? 1.0)
+    : 0.0;
+  uniformData[113] = acMoon?.moonIntensity ?? 0.12;
+  uniformData[114] = 0.0;
+  uniformData[115] = 0.0;
 }
 
 /**
@@ -1208,6 +1299,12 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
   // inline-march sky (the shader's `u.debug.z` stays 0).
   const useSkyViewLut =
     skyAtmosphere.useScatteringLut === true && lutInfo.skyViewReady === true;
+  // Batch 438 — three opt-in atmosphere-physics flags. Each defaults false; the
+  // packed uniform stays 0 and the corresponding WGSL gate is closed → the sky
+  // is byte-identical with all three off.
+  const improvedMiePhase = skyAtmosphere.improvedMiePhase === true;
+  const dualLightInline = skyAtmosphere.dualLightInline === true;
+  const ozoneEnabled = skyAtmosphere.ozone === true;
   packUniforms(
     cache.uniformData,
     frameState,
@@ -1215,6 +1312,9 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     ENABLE_SKY_INSCATTER_LUT && lutInfo.useLut,
     multipleScatteringEnabled,
     useSkyViewLut,
+    improvedMiePhase,
+    dualLightInline,
+    ozoneEnabled,
   );
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,

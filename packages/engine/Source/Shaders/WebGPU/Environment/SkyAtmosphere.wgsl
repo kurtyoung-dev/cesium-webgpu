@@ -199,6 +199,34 @@ struct Uniforms {
   // at float offsets 68 (inverseProjection) and 84 (inverseView).
   inverseProjection: mat4x4<f32>,
   inverseView: mat4x4<f32>,
+  // Batch 438 — three opt-in atmosphere-physics flags packed into one vec4.
+  // ALL default 0, so every gate below stays closed and the sky is
+  // byte-identical to the historical single-light HG/no-ozone path.
+  //   x = improvedMiePhase (4.6 MIE-PHASE) — when > 0.5 the Mie phase uses the
+  //       Jendersie & d'Eon 2023 droplet approximation (Draine + forward delta)
+  //       instead of single-g Henyey-Greenstein. Off → exact historical HG.
+  //   y = dualLightInline (4.4 SKY-MOON) — when > 0.5 the inline ray-march path
+  //       ADDS a second analytic moon-light scattering march so moonglow appears
+  //       on the parity (non-LUT) path. Off → single-light inline march.
+  //   z = ozoneEnabled (4.5 SKY-OZONE) — when > 0.5 the inline march applies the
+  //       ozone Chappuis-band extinction (using `ozoneCoefficient`). Off → no
+  //       ozone term. (The LUT bake is gated CPU-side by zeroing the coefficient,
+  //       so it needs no shader flag; this flag only gates the inline path.)
+  //   w = reserved
+  atmosControl: vec4<f32>,
+  // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
+  // (per-metre, RGB). Pure absorber; consumed only by the inline march's
+  // extinction term when atmosControl.z > 0.5. Default (0,0,0) → identity.
+  ozoneCoefficient: vec3<f32>,
+  _pad8: f32,
+  // Batch 438 (4.4 SKY-MOON) — moon scattering inputs for the inline dual-light
+  // path. moonLightDirWC is the moon direction in world coords; moonControl
+  // packs x = moonPhaseFraction (0..1), y = moonIntensityScale, z/w reserved.
+  // Only read when atmosControl.y > 0.5. Defaults are harmless when the gate is
+  // closed.
+  moonLightDirWC: vec3<f32>,
+  _pad9: f32,
+  moonControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -350,8 +378,61 @@ fn miePhaseFunction(cosAngle: f32, g: f32) -> f32 {
   return num / max(denom, 0.0001);
 }
 
+// Batch 438 (4.6 MIE-PHASE) — Draine phase function (Jendersie & d'Eon 2023,
+// "An Approximate Mie Scattering Function for Fog and Cloud Rendering"). A
+// one-parameter (g, α) generalization of Henyey-Greenstein that adds a physical
+// forward peak + a soft back-scatter lobe — closer to true Mie droplet
+// scattering than single-g HG, giving a more realistic sun aureole and glory.
+//   p(θ) = (1-g²) / (4π · (1 + α·(1+2g²)/3)) ·
+//          (1 + α·cosθ²) / (1 + g² - 2g·cosθ)^(3/2)
+// α = 0 collapses EXACTLY to HG; the droplet-water value α ≈ 1 adds the
+// Cornette-Shanks-style (1 + α·cos²θ) angular term. We use α = 1.
+fn drainePhaseFunction(cosAngle: f32, g: f32, alpha: f32) -> f32 {
+  let g2 = g * g;
+  let denom = pow(max(1.0 + g2 - 2.0 * g * cosAngle, 1e-4), 1.5);
+  let norm = 4.0 * PI * (1.0 + alpha * (1.0 + 2.0 * g2) / 3.0);
+  return ((1.0 - g2) / norm) * (1.0 + alpha * cosAngle * cosAngle) / denom;
+}
+
+// Jendersie & d'Eon 2023 approximate Mie phase: a weighted blend of a strongly
+// forward HG lobe (large g_hg) and a Draine lobe (smaller g_d, α). The blend
+// weight w and the two g's are the paper's droplet-size fit; we use a fixed
+// mid-droplet parameterization (the published d≈10µm fit) that yields a tight
+// forward peak plus a mild back-scatter rise — a clearly more physical aureole
+// than single-g HG without needing a per-droplet-radius uniform.
+fn improvedMiePhaseFunction(cosAngle: f32) -> f32 {
+  let gHG: f32 = 0.85;   // forward HG lobe
+  let gD: f32 = 0.35;    // Draine lobe asymmetry
+  let alpha: f32 = 1.0;  // Draine angular term (Cornette-Shanks-like)
+  let w: f32 = 0.4;      // blend weight toward the Draine lobe
+  let hg = miePhaseFunction(cosAngle, gHG);
+  let draine = drainePhaseFunction(cosAngle, gD, alpha);
+  return mix(hg, draine, w);
+}
+
+// Batch 438 (4.6 MIE-PHASE) — dispatch on the runtime flag. atmosControl.x <= 0.5
+// (default) returns the EXACT historical single-g HG, so the default sky is
+// byte-identical. > 0.5 returns the improved droplet phase.
+fn miePhaseSelected(cosAngle: f32, g: f32) -> f32 {
+  if (u.atmosControl.x > 0.5) {
+    return improvedMiePhaseFunction(cosAngle);
+  }
+  return miePhaseFunction(cosAngle, g);
+}
+
 fn densityAtHeight(height: f32, scaleHeight: f32) -> f32 {
   return exp(-height / scaleHeight);
+}
+
+// Batch 438 (4.5 SKY-OZONE) — ozone tent-profile relative density (matches
+// AtmosphereLUT.wgsl::ozoneDensity exactly so the inline march and the LUT bake
+// agree). Ozone concentrates near ~25 km; modelled as a symmetric linear tent
+// (1.0 at the 25 km peak, 0 at 10 km and 40 km). Unit-less [0, 1]; the per-metre
+// ozone coefficient supplies the extinction magnitude. Pure absorber.
+fn ozoneDensityAtHeight(height: f32) -> f32 {
+  let center = 25000.0;
+  let halfWidth = 15000.0;
+  return max(0.0, 1.0 - abs(height - center) / halfWidth);
 }
 
 fn raySphereIntersect(origin: vec3<f32>, dir: vec3<f32>, radius: f32) -> vec2<f32> {
@@ -420,6 +501,15 @@ fn computeScattering(
   var opticalDepth = vec2<f32>(0.0);
   let heightScale = vec2<f32>(u.rayleighScaleHeight, u.mieScaleHeight);
 
+  // Batch 438 (4.5 SKY-OZONE) — ozone extinction along the view + light rays.
+  // Gated on atmosControl.z; with the flag off `ozoneExt` is the zero vector so
+  // the attenuation term is byte-identical to the historical Rayleigh+Mie-only
+  // exp(). Ozone is a pure absorber — it appears in the Beer-Lambert exponent
+  // only, never in `rayleighAccumulation`/`mieAccumulation` (no scatter source).
+  let ozoneEnabled = u.atmosControl.z > 0.5;
+  let ozoneCoeff = select(vec3<f32>(0.0), u.ozoneCoefficient, ozoneEnabled);
+  var ozoneOpticalDepth: f32 = 0.0;
+
   for (var i: i32 = 0; i < PRIMARY_STEPS_MAX; i++) {
     if (i >= primarySteps) {
       break;
@@ -431,12 +521,14 @@ fn computeScattering(
     let sampleHeight = length(samplePosition) - innerRadius;
     let sampleDensity = exp(-sampleHeight / heightScale) * rayStepLength;
     opticalDepth += sampleDensity;
+    ozoneOpticalDepth += ozoneDensityAtHeight(sampleHeight) * rayStepLength;
 
     // Light ray from the sample to the outer ring of the atmosphere.
     let lightIntersect = raySphereIntersect(samplePosition, sunDir, outerRadius);
     let lightStepLength = lightIntersect.y / f32(lightSteps);
     var lightPositionLength = 0.0;
     var lightOpticalDepth = vec2<f32>(0.0);
+    var lightOzoneOpticalDepth: f32 = 0.0;
 
     for (var j: i32 = 0; j < LIGHT_STEPS_MAX; j++) {
       if (j >= lightSteps) {
@@ -446,12 +538,14 @@ fn computeScattering(
         sunDir * (lightPositionLength + lightStepLength * 0.5);
       let lightHeight = length(lightPosition) - innerRadius;
       lightOpticalDepth += exp(-lightHeight / heightScale) * lightStepLength;
+      lightOzoneOpticalDepth += ozoneDensityAtHeight(lightHeight) * lightStepLength;
       lightPositionLength += lightStepLength;
     }
 
     let attenuation = exp(
       -((u.mieCoefficient * (opticalDepth.y + lightOpticalDepth.y)) +
-        (u.rayleighCoefficient * (opticalDepth.x + lightOpticalDepth.x)))
+        (u.rayleighCoefficient * (opticalDepth.x + lightOpticalDepth.x)) +
+        (ozoneCoeff * (ozoneOpticalDepth + lightOzoneOpticalDepth)))
     );
 
     rayleighAccumulation += sampleDensity.x * attenuation;
@@ -468,7 +562,9 @@ fn computeScattering(
   // overwrites it with the altitude ramp — mirrored in fragmentMain.)
   let cosAngle = dot(rayDir, sunDir);
   let rayleighPhase = rayleighPhaseFunction(cosAngle);
-  let miePhase = miePhaseFunction(cosAngle, u.mieAnisotropy);
+  // Batch 438 (4.6 MIE-PHASE) — improved droplet phase when atmosControl.x > 0.5,
+  // else the exact historical HG. miePhaseSelected dispatches on the flag.
+  let miePhase = miePhaseSelected(cosAngle, u.mieAnisotropy);
 
   return u.intensity * (
     rayleighPhase * u.rayleighCoefficient * rayleighAccumulation +
@@ -839,6 +935,29 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
       innerRadius,
       outerRadius,
     );
+
+    // Batch 438 (4.4 SKY-MOON) — dual-light on the INLINE (parity) march. The
+    // prior dual-light path summed a moon contribution only inside the gated LUT
+    // fast-path (which is disabled by default, ENABLE_SKY_INSCATTER_LUT), so
+    // moonglow never appeared on the inline ray-march that the default sky
+    // actually takes — a night sky was pure black. When `atmosControl.y > 0.5`
+    // (the opt-in `dualLightInline` flag) we run a SECOND analytic
+    // `computeScattering` along the moon direction and add it, scaled by the
+    // moon phase fraction × the moon intensity. Same scattering medium → same
+    // function; only the light direction differs. With the flag off this whole
+    // block is skipped → byte-identical single-light parity.
+    if (u.atmosControl.y > 0.5 && u.moonControl.x > 0.001) {
+      let moonColor = computeScattering(
+        u.cameraPositionWC,
+        rayDir,
+        rayEnd,
+        normalize(u.moonLightDirWC),
+        innerRadius,
+        outerRadius,
+      );
+      let moonScale = u.moonControl.x * u.moonControl.y;
+      color = color + moonColor * moonScale;
+    }
   }
 
   // Batch 427 (SKY-MS) + Batch 429 (A-LUT-REPARAM follow-up) — opt-in
@@ -938,11 +1057,24 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   // nightAlpha: 1.0 on day side, 0.0 on night side. Only applied when
   // dynamic atmosphere lighting is enabled (radiiAndDynamicAtmosphere.z != 0).
   let isDynamic = u.radiiAndDynamicAtmosphere.z != 0.0;
-  let nightAlpha = select(
+  var nightAlpha = select(
     1.0,
     clamp(dot(normalize(skyPoint), lightDirWC), 0.0, 1.0),
     isDynamic,
   );
+  // Batch 438 (4.4 SKY-MOON) — when the inline dual-light moon march is active,
+  // the moon must also lift the night-side opacity: with only the sun's
+  // nightAlpha, a moonlit sky (sun down) is alpha≈0 and the moon glow never
+  // shows over the black background even though the moon color is summed into
+  // `color`. Take the max with a moon-side day/night term (scaled by the moon's
+  // dimness) so the alpha follows whichever body is up. Gated on atmosControl.y;
+  // with the flag off this whole term is skipped → byte-identical.
+  if (u.atmosControl.y > 0.5 && u.moonControl.x > 0.001) {
+    let moonNight =
+      clamp(dot(normalize(skyPoint), normalize(u.moonLightDirWC)), 0.0, 1.0) *
+      u.moonControl.x;
+    nightAlpha = max(nightAlpha, moonNight);
+  }
   let opacity = altitudeOpacity * pow(nightAlpha, 0.5);
   let alpha = mix(finalColor.b, 1.0, opacity);
   return vec4<f32>(finalColor, alpha);

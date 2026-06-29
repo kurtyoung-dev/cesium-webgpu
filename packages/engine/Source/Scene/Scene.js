@@ -3422,6 +3422,21 @@ class Scene {
       environmentState.sunComputeCommand = undefined;
       environmentState.moonCommand = undefined;
     } else {
+      // Batch 438 (4.4 SKY-MOON) — publish the moon ephemeris BEFORE the sky
+      // atmosphere update. `Moon.update` is what writes `frameState.moonDirectionWC`
+      // + `frameState.moonPhaseFraction`; previously it ran AFTER
+      // `skyAtmosphere.update` (further below), so the sky's inline dual-light
+      // moon march read a one-frame-stale (and, before ICRF settled, plain wrong)
+      // moon direction — the moon glow never matched the actual moon position.
+      // The moon DRAW command is still stored in environmentState and executed
+      // later in the render pipeline; only the ephemeris publish is hoisted, which
+      // is strictly better for every consumer (sky, fog, night lighting). The sun
+      // direction is unaffected (the sky reads it from uniformState, updated even
+      // earlier).
+      environmentState.moonCommand = defined(this.moon)
+        ? this.moon.update(frameState)
+        : undefined;
+
       if (defined(skyAtmosphere)) {
         if (defined(globe)) {
           skyAtmosphere.setDynamicLighting(
@@ -3494,9 +3509,9 @@ class Scene {
       environmentState.sunComputeCommand = defined(sunCommands)
         ? sunCommands.computeCommand
         : undefined;
-      environmentState.moonCommand = defined(this.moon)
-        ? this.moon.update(frameState)
-        : undefined;
+      // Batch 438 — `environmentState.moonCommand` is now assigned ABOVE (the
+      // Moon.update call was hoisted before skyAtmosphere.update so the sky reads
+      // a current-frame moon direction). Not re-run here.
     }
 
     const clearGlobeDepth = (environmentState.clearGlobeDepth =

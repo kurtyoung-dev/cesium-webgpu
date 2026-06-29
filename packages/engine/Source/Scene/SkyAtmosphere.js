@@ -89,6 +89,45 @@ class SkyAtmosphere {
      */
     this.useScatteringLut = false;
 
+    /**
+     * Adds ozone Chappuis-band absorption to the atmosphere (Bruneton/Hillaire
+     * tent-profile, peaking near ~25&nbsp;km). Ozone is a pure absorber whose
+     * green/red absorption deepens twilight toward a richer blue/violet zenith
+     * &mdash; Rayleigh+Mie-only skies are too cyan at dusk. WebGPU only. Defaults
+     * to <code>false</code>, where the ozone coefficient is zero so the bake and
+     * the inline march are byte-identical to the non-ozone sky.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.ozone = false;
+
+    /**
+     * Replaces the single-parameter Henyey-Greenstein Mie phase with the
+     * Jendersie &amp; d'Eon 2023 droplet (Draine) phase &mdash; a physically
+     * grounded forward peak plus a soft back-scatter lobe, giving a more
+     * realistic sun aureole and glory. WebGPU only. Defaults to
+     * <code>false</code>, which keeps the exact historical HG phase
+     * (byte-identical).
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.improvedMiePhase = false;
+
+    /**
+     * Sums a second analytic moon-light scattering march into the inline
+     * (parity) ray-march path so moonglow appears on a moonlit night sky. The
+     * previous dual-light path only summed the moon inside the gated inscatter-
+     * LUT fast-path (disabled by default), so the night inline sky was dark.
+     * WebGPU only. Defaults to <code>false</code>, where the inline march stays
+     * single-light (byte-identical to the sun-only sky).
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.dualLightInline = false;
+
     this._ellipsoid = ellipsoid;
 
     const outerEllipsoidScale = 1.025;

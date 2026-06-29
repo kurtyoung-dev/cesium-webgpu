@@ -818,6 +818,12 @@ export class WebGPUPerformanceManager {
       rayleighCoefficient: [number, number, number];
       mieCoefficient: [number, number, number];
       sunDirection: [number, number, number];
+      // Batch 428 (A-LUT-REPARAM) — observer-relative sun zenith for the chained
+      // sky-view bake. Optional; forwarded to the helper.
+      sunCosZenith?: number;
+      // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
+      // (per-metre RGB) baked into the LUT extinction. Optional; default [0,0,0].
+      ozoneCoefficient?: [number, number, number];
     },
     target: "sun" | "moon" = "sun",
   ): boolean {

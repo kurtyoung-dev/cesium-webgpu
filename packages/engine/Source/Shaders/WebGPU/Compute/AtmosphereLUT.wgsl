@@ -83,6 +83,16 @@ struct AtmosphereParams {
   // kernels bake the sun's elevation implicitly via sunDirection and ignore
   // this field (previously the `_pad2` padding slot).
   sunCosZenith: f32,
+  // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
+  // (per-metre, RGB). Ozone is a PURE ABSORBER (no scattering) concentrated in
+  // a tent profile around ~25 km; its Chappuis-band absorption (peaking in the
+  // green/red) is what deepens real twilight toward blue/violet at the zenith.
+  // Added to the EXTINCTION term of every Beer-Lambert factor in the LUT bake
+  // (transmittance + every inscatter march) so it darkens the long sunset light
+  // path. DEFAULT (0,0,0): exp(-(... + 0)) = identity → byte-identical bake. The
+  // renderer packs the real coefficient only when `skyAtmosphere.ozone` is on.
+  ozoneCoefficient: vec3<f32>,
+  _pad3: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: AtmosphereParams;
@@ -142,6 +152,40 @@ fn opticalDepth(
     let point = origin + dir * t;
     let height = max(0.0, length(point) - planetRadius);
     sum += densityAtHeight(height, scaleHeight) * stepSize;
+  }
+  return sum;
+}
+
+// Batch 438 (4.5 SKY-OZONE) — ozone number-density tent profile (Bruneton /
+// Hillaire). Ozone is NOT exponential like Rayleigh/Mie; it sits in a layer
+// centred near ~25 km, modelled here as a symmetric linear tent: density 1.0 at
+// the 25 km peak, falling linearly to 0 at 0 km below and ~40 km above (the
+// 15 km half-width matches the Hillaire / Bruneton ozone layer). Returns a unit-
+// less relative density in [0, 1]; the ozone coefficient supplies the per-metre
+// extinction magnitude. Pure absorption — used in extinction (Beer-Lambert)
+// terms only, never in a phase/scatter accumulation.
+fn ozoneDensity(height: f32) -> f32 {
+  let center = 25000.0;
+  let halfWidth = 15000.0;
+  return max(0.0, 1.0 - abs(height - center) / halfWidth);
+}
+
+// Ozone optical depth along a ray (same quadrature as `opticalDepth`, but with
+// the tent profile instead of an exponential). Multiplied by the ozone
+// coefficient at the call site to form the extinction contribution.
+fn ozoneOpticalDepth(
+  origin: vec3<f32>,
+  dir: vec3<f32>,
+  rayLength: f32,
+  planetRadius: f32,
+) -> f32 {
+  let stepSize = rayLength / f32(NUM_OPTICAL_DEPTH_SAMPLES);
+  var sum: f32 = 0.0;
+  for (var i = 0u; i < NUM_OPTICAL_DEPTH_SAMPLES; i++) {
+    let t = (f32(i) + 0.5) * stepSize;
+    let point = origin + dir * t;
+    let height = max(0.0, length(point) - planetRadius);
+    sum += ozoneDensity(height) * stepSize;
   }
   return sum;
 }
@@ -206,10 +250,14 @@ fn computeTransmittance(
   // Compute optical depths along the ray
   let rayleighOD = opticalDepth(origin, dir, rayLength, params.rayleighScaleHeight, params.innerRadius);
   let mieOD = opticalDepth(origin, dir, rayLength, params.mieScaleHeight, params.innerRadius);
+  // Batch 438 (4.5 SKY-OZONE) — ozone absorption (extinction only). Default
+  // coefficient 0 → adds exp(-0) = identity, byte-identical.
+  let ozoneOD = ozoneOpticalDepth(origin, dir, rayLength, params.innerRadius);
 
   // Transmittance = Beer-Lambert attenuation
   let transmittance = exp(
-    -(params.rayleighCoefficient * rayleighOD + params.mieCoefficient * mieOD)
+    -(params.rayleighCoefficient * rayleighOD + params.mieCoefficient * mieOD +
+      params.ozoneCoefficient * ozoneOD)
   );
 
   textureStore(transmittanceOutput, vec2<i32>(gid.xy), vec4<f32>(transmittance, 1.0));
@@ -271,6 +319,9 @@ fn computeInscatter(
   var totalMie = vec3<f32>(0.0);
   var rayleighODSum: f32 = 0.0;
   var mieODSum: f32 = 0.0;
+  // Batch 438 (4.5 SKY-OZONE) — accumulate ozone (tent profile) optical depth
+  // along the view ray alongside Rayleigh/Mie. Default coefficient 0 → identity.
+  var ozoneODSum: f32 = 0.0;
 
   for (var i = 0u; i < NUM_INSCATTER_SAMPLES; i++) {
     let t = (f32(i) + 0.5) * stepSize;
@@ -282,6 +333,7 @@ fn computeInscatter(
 
     rayleighODSum += rayleighDensity;
     mieODSum += mieDensity;
+    ozoneODSum += ozoneDensity(height) * stepSize;
 
     // Sun ray optical depth from sample point to top of atmosphere
     let sunHit = raySphereIntersect(point, sunDir, params.outerRadius);
@@ -289,10 +341,12 @@ fn computeInscatter(
       let sunRayLength = sunHit.y;
       let sunOptDepthR = opticalDepth(point, sunDir, sunRayLength, params.rayleighScaleHeight, params.innerRadius);
       let sunOptDepthM = opticalDepth(point, sunDir, sunRayLength, params.mieScaleHeight, params.innerRadius);
+      let sunOptDepthO = ozoneOpticalDepth(point, sunDir, sunRayLength, params.innerRadius);
 
       let attenuation = exp(
         -(params.rayleighCoefficient * (rayleighODSum + sunOptDepthR) +
-          params.mieCoefficient * (mieODSum + sunOptDepthM))
+          params.mieCoefficient * (mieODSum + sunOptDepthM) +
+          params.ozoneCoefficient * (ozoneODSum + sunOptDepthO))
       );
 
       totalRayleigh += rayleighDensity * attenuation;
@@ -480,6 +534,8 @@ fn computeMultipleScattering(
   var totalMie = vec3<f32>(0.0);
   var rayleighODSum: f32 = 0.0;
   var mieODSum: f32 = 0.0;
+  // Batch 438 (4.5 SKY-OZONE) — ozone extinction along the view ray.
+  var ozoneODSum: f32 = 0.0;
 
   for (var i = 0u; i < NUM_INSCATTER_SAMPLES; i++) {
     let t = (f32(i) + 0.5) * stepSize;
@@ -490,16 +546,19 @@ fn computeMultipleScattering(
     let mieDensity = densityAtHeight(height, extParams.mieScaleHeight) * stepSize;
     rayleighODSum += rayleighDensity;
     mieODSum += mieDensity;
+    ozoneODSum += ozoneDensity(height) * stepSize;
 
     let sunHit = raySphereIntersect(point, sunDir, extParams.outerRadius);
     if (sunHit.y > 0.0) {
       let sunRayLength = sunHit.y;
       let sunOptDepthR = opticalDepth(point, sunDir, sunRayLength, extParams.rayleighScaleHeight, extParams.innerRadius);
       let sunOptDepthM = opticalDepth(point, sunDir, sunRayLength, extParams.mieScaleHeight, extParams.innerRadius);
+      let sunOptDepthO = ozoneOpticalDepth(point, sunDir, sunRayLength, extParams.innerRadius);
 
       let attenuation = exp(
         -(extParams.rayleighCoefficient * (rayleighODSum + sunOptDepthR) +
-          extParams.mieCoefficient * (mieODSum + sunOptDepthM))
+          extParams.mieCoefficient * (mieODSum + sunOptDepthM) +
+          extParams.ozoneCoefficient * (ozoneODSum + sunOptDepthO))
       );
 
       totalRayleigh += rayleighDensity * attenuation;
@@ -705,6 +764,10 @@ fn computeSkyView(
   var totalMie = vec3<f32>(0.0);
   var rayleighODSum: f32 = 0.0;
   var mieODSum: f32 = 0.0;
+  // Batch 438 (4.5 SKY-OZONE) — ozone extinction along the view ray. This is
+  // the table the visible sky samples on the sky-view fast-path, so the ozone
+  // twilight-blue deepening lands here too. Default coefficient 0 → identity.
+  var ozoneODSum: f32 = 0.0;
 
   for (var i = 0u; i < NUM_INSCATTER_SAMPLES; i++) {
     let t = (f32(i) + 0.5) * stepSize;
@@ -716,6 +779,7 @@ fn computeSkyView(
 
     rayleighODSum += rayleighDensity;
     mieODSum += mieDensity;
+    ozoneODSum += ozoneDensity(height) * stepSize;
 
     // Sun ray optical depth from the sample point to the top of atmosphere.
     let sunHit = raySphereIntersect(point, sunDir, extParams.outerRadius);
@@ -723,10 +787,12 @@ fn computeSkyView(
       let sunRayLength = sunHit.y;
       let sunOptDepthR = opticalDepth(point, sunDir, sunRayLength, extParams.rayleighScaleHeight, extParams.innerRadius);
       let sunOptDepthM = opticalDepth(point, sunDir, sunRayLength, extParams.mieScaleHeight, extParams.innerRadius);
+      let sunOptDepthO = ozoneOpticalDepth(point, sunDir, sunRayLength, extParams.innerRadius);
 
       let attenuation = exp(
         -(extParams.rayleighCoefficient * (rayleighODSum + sunOptDepthR) +
-          extParams.mieCoefficient * (mieODSum + sunOptDepthM))
+          extParams.mieCoefficient * (mieODSum + sunOptDepthM) +
+          extParams.ozoneCoefficient * (ozoneODSum + sunOptDepthO))
       );
 
       totalRayleigh += rayleighDensity * attenuation;
