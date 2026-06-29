@@ -733,6 +733,9 @@ export class WebGPUPerformanceManager {
     inscatterView: GPUTextureView;
     moonTransmittanceView: GPUTextureView;
     moonInscatterView: GPUTextureView;
+    // Batch 427 (SKY-MS) — surfaced so the sky renderer can bind the
+    // multiple-scattering LUT at group(1) without a separate accessor call.
+    multipleScatterView: GPUTextureView;
   } | null {
     return ensureAtmosphereLUTResourcesHelper(this, device);
   }

@@ -202,6 +202,12 @@ function createPipeline(
       texture(2, Stage.FRAGMENT),
       texture(3, Stage.FRAGMENT),
       texture(4, Stage.FRAGMENT),
+      // Batch 427 (SKY-MS) — multiple-scattering LUT. Bound unconditionally
+      // so the pipeline layout never changes; the shell binds the 1×1
+      // placeholder when the extended bake hasn't run, the real MS view once
+      // it has. The fragment shader only ADDS the term when the opt-in flag is
+      // set, so an empty/placeholder binding is harmless on the default path.
+      texture(5, Stage.FRAGMENT),
     ]);
 
   const pipelineLayout = device.createPipelineLayout({
@@ -325,10 +331,14 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           // sampled in this code path.
           { binding: 3, resource: cache.placeholderLutView },
           { binding: 4, resource: cache.placeholderLutView },
+          // Batch 427 (SKY-MS) — multiple-scattering placeholder. Sampled
+          // only when the opt-in flag is set, which the renderer clears
+          // whenever compute (and thus the MS bake) is unavailable.
+          { binding: 5, resource: cache.placeholderLutView },
         ],
       });
     }
-    return { bindGroup: cache.lutBindGroup, useLut: false };
+    return { bindGroup: cache.lutBindGroup, useLut: false, msReady: false };
   }
 
   // Detect sun-direction change beyond a small threshold so we don't
@@ -422,21 +432,28 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           { binding: 2, resource: cache.placeholderLutView },
           { binding: 3, resource: cache.placeholderLutView },
           { binding: 4, resource: cache.placeholderLutView },
+          // Batch 427 (SKY-MS) — multiple-scattering placeholder.
+          { binding: 5, resource: cache.placeholderLutView },
         ],
       });
     }
-    return { bindGroup: cache.lutBindGroup, useLut: false };
+    return { bindGroup: cache.lutBindGroup, useLut: false, msReady: false };
   }
 
   // (Re)build the real bind group when the LUT views change. The views
   // come from the perf manager's cached textures and are stable for the
   // lifetime of the device, so this happens at most once.
+  // Batch 427 (SKY-MS) — bind the real multiple-scattering view when it
+  // exists; otherwise keep the 1×1 placeholder so the layout stays constant
+  // on perf-manager stubs that predate the extended LUT.
+  const msView = res.multipleScatterView ?? cache.placeholderLutView;
   if (
     !defined(cache.lutBindGroup) ||
     cache.lutTransmittanceView !== res.transmittanceView ||
     cache.lutInscatterView !== res.inscatterView ||
     cache.lutMoonTransmittanceView !== res.moonTransmittanceView ||
-    cache.lutMoonInscatterView !== res.moonInscatterView
+    cache.lutMoonInscatterView !== res.moonInscatterView ||
+    cache.lutMultipleScatterView !== msView
   ) {
     cache.lutBindGroup = device.createBindGroup({
       label: "SkyAtmosphere LUT bind group",
@@ -447,12 +464,14 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
         { binding: 2, resource: res.inscatterView },
         { binding: 3, resource: res.moonTransmittanceView },
         { binding: 4, resource: res.moonInscatterView },
+        { binding: 5, resource: msView },
       ],
     });
     cache.lutTransmittanceView = res.transmittanceView;
     cache.lutInscatterView = res.inscatterView;
     cache.lutMoonTransmittanceView = res.moonTransmittanceView;
     cache.lutMoonInscatterView = res.moonInscatterView;
+    cache.lutMultipleScatterView = msView;
   }
 
   // If the LUT is dirty (first frame, or sun direction moved), dispatch
@@ -576,14 +595,34 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     }
   }
 
-  return { bindGroup: cache.lutBindGroup, useLut: cache.lutReady === true };
+  // Batch 427 (SKY-MS) — MS is "ready" once the sun bake (which chains the
+  // computeMultipleScattering extended pass) has run AND the real MS view is
+  // bound (not the placeholder). `useLut` independently gates the inscatter
+  // fast-path; MS readiness is tracked separately so the opt-in MS add works
+  // even while the inscatter LUT fast-path stays disabled
+  // (ENABLE_SKY_INSCATTER_LUT).
+  const msReady =
+    cache.lutReady === true &&
+    defined(res.multipleScatterView) &&
+    cache.lutMultipleScatterView === res.multipleScatterView;
+  return {
+    bindGroup: cache.lutBindGroup,
+    useLut: cache.lutReady === true,
+    msReady,
+  };
 }
 
 /**
  * Packs atmosphere uniform data.
  * @private
  */
-function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
+function packUniforms(
+  uniformData,
+  frameState,
+  skyAtmosphere,
+  useLut,
+  multipleScatteringEnabled = false,
+) {
   const camera = frameState.camera;
 
   // Session 65 (2026-05-11): build the projection matrix in WebGPU NDC
@@ -837,9 +876,14 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   // so a single property toggle on Scene flips the diagnostic on. Layout
   // matches the WGSL `debug: vec4<f32>` field — see SkyAtmosphere.wgsl.
   //   x: disableScattering — bypass Rayleigh+Mie, emit flat magenta
-  //   y/z/w: reserved for Tier 3 (LUT inspector, sun-dir override)
+  //   y: multipleScatteringEnabled (Batch 427 SKY-MS) — when > 0.5 the
+  //      fragment shader ADDS the precomputed multiple-scattering LUT term to
+  //      the single-scatter result. Renderer only sets this when the user's
+  //      `skyAtmosphere.multipleScattering` opt-in is on AND the MS LUT is
+  //      baked; default 0 keeps the sky byte-identical to single scatter.
+  //   z/w: reserved for Tier 3 (LUT inspector, sun-dir override)
   uniformData[52] = frameState.debugDisableAtmosphereScattering ? 1.0 : 0.0;
-  uniformData[53] = 0.0;
+  uniformData[53] = multipleScatteringEnabled ? 1.0 : 0.0;
   uniformData[54] = 0.0;
   uniformData[55] = 0.0;
 
@@ -1089,11 +1133,18 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
   // off (ENABLE_SKY_INSCATTER_LUT) — see the constant's doc block; the
   // bake itself still runs above because the globe fog drape consumes
   // the same inscatter texture.
+  // Batch 427 (SKY-MS) — opt-in multiple-scattering add. Only enabled when the
+  // user flips `skyAtmosphere.multipleScattering` on AND the extended bake has
+  // produced a real MS LUT (msReady). Default-false → byte-identical to the
+  // single-scattering sky (the shader skips the add).
+  const multipleScatteringEnabled =
+    skyAtmosphere.multipleScattering === true && lutInfo.msReady === true;
   packUniforms(
     cache.uniformData,
     frameState,
     skyAtmosphere,
     ENABLE_SKY_INSCATTER_LUT && lutInfo.useLut,
+    multipleScatteringEnabled,
   );
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,

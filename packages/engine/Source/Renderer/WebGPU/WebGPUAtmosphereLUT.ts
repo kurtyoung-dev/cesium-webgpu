@@ -111,6 +111,10 @@ export function ensureAtmosphereLUTResources(
   inscatterView: GPUTextureView;
   moonTransmittanceView: GPUTextureView;
   moonInscatterView: GPUTextureView;
+  // Batch 427 (SKY-MS) — the multiple-scattering view produced by
+  // dispatchAtmosphereExtendedLUT's computeMultipleScattering pass, surfaced
+  // so the sky fragment shader can sample it (opt-in, default off).
+  multipleScatterView: GPUTextureView;
 } | null {
   if (host._atmosphereLutResources) {
     return {
@@ -118,6 +122,7 @@ export function ensureAtmosphereLUTResources(
       inscatterView: host._atmosphereLutResources.inscatterView,
       moonTransmittanceView: host._atmosphereLutResources.moonTransmittanceView,
       moonInscatterView: host._atmosphereLutResources.moonInscatterView,
+      multipleScatterView: host._atmosphereLutResources.multipleScatterView,
     };
   }
 
@@ -227,6 +232,7 @@ export function ensureAtmosphereLUTResources(
     inscatterView: host._atmosphereLutResources.inscatterView,
     moonTransmittanceView: host._atmosphereLutResources.moonTransmittanceView,
     moonInscatterView: host._atmosphereLutResources.moonInscatterView,
+    multipleScatterView: host._atmosphereLutResources.multipleScatterView,
   };
 }
 

@@ -60,6 +60,20 @@ class SkyAtmosphere {
      */
     this.perFragmentAtmosphere = false;
 
+    /**
+     * Adds the precomputed multiple-scattering term to the sky color
+     * (Hillaire 2020 / Bruneton multiple scattering). Single scattering alone
+     * leaves the horizon and shadowed limb too dark; multiple scattering lifts
+     * them toward a richer atmosphere. WebGPU only — the WebGL backend has no
+     * compute path to bake the multiple-scattering LUT, so this flag is a no-op
+     * there. Defaults to <code>false</code>, which is byte-identical to the
+     * single-scattering sky.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.multipleScattering = false;
+
     this._ellipsoid = ellipsoid;
 
     const outerEllipsoidScale = 1.025;

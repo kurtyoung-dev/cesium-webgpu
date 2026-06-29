@@ -147,7 +147,13 @@ struct Uniforms {
   //       color. Lets you isolate scattering math bugs from LUT/composite
   //       errors. Magenta is intentional — picks up immediately on a blue
   //       sky and is unmistakable for any natural sky color.
-  //   y = showLutOnly — reserved (Tier 3 LUT inspector)
+  //   y = multipleScatteringEnabled (Batch 427 SKY-MS) — when > 0.5 the
+  //       fragment shader ADDS the precomputed multiple-scattering LUT term to
+  //       the single-scatter sky color (Hillaire 2020 / Bruneton MS). Raises
+  //       the horizon + shadowed-limb radiance that single scatter leaves too
+  //       dark. The renderer sets this only when the user opt-in
+  //       `skyAtmosphere.multipleScattering` is on AND the MS LUT is baked, so
+  //       the default (0) is byte-identical to single scatter.
   //   z = forceSunDirOverride — reserved (Tier 3 sun override)
   //   w = unused
   debug: vec4<f32>,
@@ -205,6 +211,16 @@ struct Uniforms {
 @group(1) @binding(2) var inscatterLut: texture_2d<f32>;
 @group(1) @binding(3) var moonTransmittanceLut: texture_2d<f32>;
 @group(1) @binding(4) var moonInscatterLut: texture_2d<f32>;
+// Batch 427 (SKY-MS) — multiple-scattering LUT (256×128, same
+// (cosViewZenith × altitude) parameterization as the single-scatter inscatter
+// LUT). Baked by AtmosphereLUT.wgsl::computeMultipleScattering whenever the sun
+// direction changes (chained after the single-scatter bake). Bound
+// unconditionally so the pipeline layout never changes; the fragment shader
+// only ADDS its contribution when `u.debug.y > 0.5` (the opt-in
+// `skyAtmosphere.multipleScattering` flag, set by the renderer only when the
+// MS LUT is actually baked). With the flag off the texture is never sampled,
+// so the default sky is byte-identical to the single-scatter result.
+@group(1) @binding(5) var multipleScatterLut: texture_2d<f32>;
 
 struct VertexInput {
   @location(0) positionHigh: vec3<f32>,
@@ -697,6 +713,40 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
       innerRadius,
       outerRadius,
     );
+  }
+
+  // Batch 427 (SKY-MS) — opt-in multiple-scattering add (Hillaire 2020 /
+  // Bruneton MS). `u.debug.y > 0.5` is the renderer's gated
+  // `skyAtmosphere.multipleScattering` flag (only set when the MS LUT is
+  // baked). The MS LUT shares the single-scatter inscatter (cosViewZenith ×
+  // altitude) parameterization and has the atmosphere `intensity` already
+  // baked in, so we sample it through the same helper as the inscatter LUT
+  // (which does NOT re-apply `u.intensity`) and ADD the linear-radiance result
+  // to the single-scatter color BEFORE tonemapping. This lifts the horizon and
+  // shadowed-limb radiance that single scattering alone leaves too dark, while
+  // the shared tonemap shoulder keeps the zenith from blowing out. The MS LUT
+  // parameterization is sun-relative-imperfect (the full re-param is the
+  // separate keystone item 1.1 / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — this is a
+  // conservative additive term, not a physically exact MS solution. With the
+  // flag off (default) the texture is never sampled and the sky is unchanged.
+  if (u.debug.y > 0.5) {
+    let msColor = sampleScatteringLut(
+      multipleScatterLut, startPoint, rayDir, innerRadius, outerRadius,
+    );
+    // Conservative scale. The baked MS gather (NUM_MS_GATHER_DIRS over the
+    // full sphere × NUM_MS_RAY_SAMPLES) over-estimates the higher-order
+    // radiance, and the LUT is sun-relative-imperfect (no view–sun azimuth
+    // axis — the full re-param is keystone item 1.1 /
+    // NEW-ATMOSPHERE-LUT-SUN-RELATIVE), so it adds a roughly view-uniform
+    // veil rather than a directional limb glow. Added raw it washes the sky
+    // toward white near sunset; even 0.35× over-veils and desaturates the
+    // blue. 0.18× lands the lift in the "tasteful" band — a measurable
+    // deepening of the horizon/limb radiance (single scatter leaves it too
+    // dark) that still preserves the blue hue and the warm sunset band,
+    // reading as a richer atmosphere rather than haze. Perceptual constant,
+    // not physical; the sun-relative re-param would let it climb toward 1.0.
+    const MS_SCALE: f32 = 0.18;
+    color = color + max(msColor, vec3<f32>(0.0)) * MS_SCALE;
   }
 
   // Session 65 Batch 27 (NEW-VR2-3b limb halo fix) — match WebGL's

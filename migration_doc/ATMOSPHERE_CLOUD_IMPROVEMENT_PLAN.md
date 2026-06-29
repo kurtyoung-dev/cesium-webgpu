@@ -75,7 +75,7 @@ These finish the Bruneton/Hillaire consumers that are *baked-but-unwired today* 
 
 ---
 
-#### 2.1 — Multiple-scattering term in the visible sky (`SKY-MS`) — **P1, effort M**
+#### 2.1 — Multiple-scattering term in the visible sky (`SKY-MS`) — **P1, effort M** — ✅ SHIPPED Batch 427 (consumer wired; full lift gated on the 1.1 LUT re-param at some sun angles)
 
 - **Technique:** Hillaire 2020 / Bruneton 2008 MS: bind the already-running `multipleScatterView` LUT as a sampled input on `group(1)` of `SkyAtmosphere.wgsl` and **add** the MS term to the single-scatter result (raises horizon + shadowed-limb radiance that single-scatter leaves too dark). The compute pass already runs every sun-move — only the sampler binding + add are missing.
 - **Opt-in flag:** `skyAtmosphere.multipleScattering` (default `false`).
