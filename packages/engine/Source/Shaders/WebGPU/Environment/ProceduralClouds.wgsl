@@ -93,7 +93,13 @@ struct CloudUniforms {
   // ── Batch 409 (depth occlusion; slots 105-106 were Batch-408 pads) ──
   nearPlane: f32,                // 105 — camera frustum near (reverse the log depth)
   farPlane: f32,                 // 106 — camera frustum far
-  _pad408c: f32,                 // 107
+  // ── Batch 424 (Weather Phase 3 — weather-map G/B/A channel reads). Slot 107
+  // was the Batch-409 reserved pad, renamed in place (add-only). Scales how
+  // strongly the weather map's G (genus), B (base) and A (density-bias) channels
+  // modulate the cloud model. Default 1.0; a NEUTRAL map cell (G=0.5, B=0, A=0.5)
+  // is a no-op at ANY strength, so weatherMapEnabled=0 OR a neutral map is
+  // byte-identical to the pre-424 render. ──
+  weatherChannelStrength: f32,   // 107 — G/B/A influence scale (0 = R-only legacy)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -118,6 +124,10 @@ struct VertexOutput {
 };
 
 const PI: f32 = 3.14159265358979;
+// Weather Phase 3 — cloud-base normalization band (MUST equal CLOUD_BASE_NORM_METERS
+// in WeatherTexPacker.ts). The packer stores B = baseMetres / 12000; the shader
+// reverses it to metres before converting to a shell-thickness fraction.
+const CLOUD_BASE_NORM_METERS: f32 = 12000.0;
 // W1 — exposure feeding the Reinhard tone-map at the cloud composite. Calibrated
 // against sunIntensity~10 + the dual-lobe forward peak so the silver lining is a
 // gradient, not a white-out. Promoted to the `cloud.exposure` uniform (Batch 407,
@@ -298,6 +308,44 @@ fn heightGradientFor(h: f32, shape: f32, anvil: f32) -> f32 {
   return base * anvilTop;
 }
 
+// ─── Weather Phase 3 — per-position G/B/A channel decode ───
+// Decodes the weather sample's three scaffolding channels into model-space
+// modifiers, NEUTRAL-SAFE: a neutral cell (G=0.5, B=0, A=0.5) yields the
+// identity (densityScale=1, baseShift=0, shape=cloud.profileShape) at ANY
+// `weatherChannelStrength`, so existing R-only maps + weatherMapEnabled=0 stay
+// byte-identical. Returns:
+//   .x = densityScale      — A density-bias multiplier (1.0 neutral)
+//   .y = baseShiftFrac     — B cloud-base height shift in shell fractions (0 neutral)
+//   .z = perGenusShape     — G-biased height-gradient shape index (cloud.profileShape neutral)
+struct WeatherChannels {
+  densityScale: f32,
+  baseShiftFrac: f32,
+  perGenusShape: f32,
+};
+fn decodeWeatherChannels(gba: vec3<f32>) -> WeatherChannels {
+  let s = cloud.weatherChannelStrength;
+  // A — density bias (0.5 neutral). Remap to a multiplier around 1.0: A=0.5→1.0,
+  // A=1→1+s, A=0→1-s. Clamp at 0 so a fully-thin cell can't drive density negative.
+  let densityScale = max(0.0, 1.0 + (gba.z - 0.5) * 2.0 * s);
+  // B — cloud base, normalized over CLOUD_BASE_NORM_METERS (12 km). 0 neutral. The
+  // raw value is base-metres/12000; convert to a fraction of the cloud SHELL
+  // thickness so the height gradient lifts off that base. layerThickness is the
+  // shell span (top-bottom). B=0 → no shift → today's behaviour.
+  let layerThickness = max(cloud.cloudLayerTop - cloud.cloudLayerBottom, 1.0);
+  let baseShiftFrac = clamp(
+    gba.y * CLOUD_BASE_NORM_METERS / layerThickness * s, 0.0, 0.9);
+  // G — genus/type index packed as genus/10 (0..1 → 0..10). 0.5 (the packer's
+  // neutral mid, genus≈5) → no change: blend the GLOBAL cloud.profileShape toward
+  // SLAB(0) below mid and TOWERING_ANVIL(2) above mid by the signed deviation, so
+  // a low-G cell flattens (stratus-like) and a high-G cell towers (cumulonimbus-
+  // like). |G-0.5| small → ≈ the global shape. This is a best-effort shape bias,
+  // not a full per-pixel genus profile.
+  let gDev = (gba.x - 0.5) * 2.0 * s; // -s..+s, 0 at neutral
+  let genusTarget = select(0.0, 2.0, gDev > 0.0); // SLAB below mid, TOWER above
+  let perGenusShape = mix(cloud.profileShape, genusTarget, clamp(abs(gDev), 0.0, 1.0));
+  return WeatherChannels(densityScale, baseShiftFrac, perGenusShape);
+}
+
 fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   // Animate with wind
   let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
@@ -310,11 +358,15 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   // multiplier. weatherMapEnabled=0 → byte-identical to the old global-scalar
   // path. The weather UV uses the RAW world position (geographic), not the
   // wind-scaled noise-space `samplePos`.
+  // Weather Phase 3 — G/B/A channels (genus, base, density-bias). Neutral
+  // (G=0.5,B=0,A=0.5) → identity, so the R-only / disabled paths stay byte-exact.
   var effectiveCoverage = cloud.coverage;
+  var wch = WeatherChannels(1.0, 0.0, cloud.profileShape);
   if (cloud.weatherMapEnabled > 0.5) {
     let wuv = worldToWeatherUV(worldPos);
     let wsample = textureSampleLevel(weatherTex, weatherSampler, wuv, 0, 0.0);
     effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
+    wch = decodeWeatherChannels(wsample.gba);
   }
 
   // Base shape. V3 — BAKED: the Nubis Perlin-Worley combine from the baked 3D
@@ -332,7 +384,12 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
 
   // V11 — per-genus vertical gradient (default CUMULUS=BILLOWY == the old expr).
-  let heightGradient = heightGradientFor(heightFraction, cloud.profileShape, cloud.anvilBias);
+  // Weather B/G — shift the height-gradient base up by baseShiftFrac (B) and use
+  // the per-position genus shape (G). At neutral both collapse to the old call.
+  let hForGradient = clamp(
+    (heightFraction - wch.baseShiftFrac) / max(1.0 - wch.baseShiftFrac, 1e-3),
+    0.0, 1.0);
+  let heightGradient = heightGradientFor(hForGradient, wch.perGenusShape, cloud.anvilBias);
   density *= heightGradient;
 
   // High-frequency WORLEY edge erosion (carves billowy lobes; fades toward the top).
@@ -358,7 +415,9 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
 
   // V11 — per-genus density scale (CUMULUS = 1.0, so default is byte-identical;
   // cirrus thins, nimbostratus thickens). Applied identically in the oracle below.
-  return density * cloud.densityMultiplier * cloud.profileDensityScale;
+  // Weather A — per-position density-bias multiplier (1.0 neutral) folded last so
+  // the deck is visibly denser/thinner where the map's A varies.
+  return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale;
 }
 
 // ─── W5: cheap low-detail presence test for empty-space skipping ───
@@ -375,11 +434,16 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
                    * cloud.windSpeed * cloud.time;
   let samplePos = (worldPos + windOffset) * 0.0003;
 
+  // Weather Phase 3 — decode G/B/A IDENTICALLY to cloudDensity so the oracle's
+  // density scale + base/genus shaping match, preserving W5's `base >= full`
+  // invariant per-position (the oracle just omits the Worley erosion).
   var effectiveCoverage = cloud.coverage;
+  var wch = WeatherChannels(1.0, 0.0, cloud.profileShape);
   if (cloud.weatherMapEnabled > 0.5) {
     let wuv = worldToWeatherUV(worldPos);
     let wsample = textureSampleLevel(weatherTex, weatherSampler, wuv, 0, 0.0);
     effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
+    wch = decodeWeatherChannels(wsample.gba);
   }
 
   // SAME base as cloudDensity (baked or live), then coverage + height gradient,
@@ -394,9 +458,14 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
   // V11 — IDENTICAL per-genus gradient + density scale as cloudDensity (no
   // erosion here), so the W5 `base >= full` invariant still holds per-genus.
-  let heightGradient = heightGradientFor(heightFraction, cloud.profileShape, cloud.anvilBias);
+  // Weather B/G — same base-shift + genus shape as cloudDensity.
+  let hForGradient = clamp(
+    (heightFraction - wch.baseShiftFrac) / max(1.0 - wch.baseShiftFrac, 1e-3),
+    0.0, 1.0);
+  let heightGradient = heightGradientFor(hForGradient, wch.perGenusShape, cloud.anvilBias);
   density *= heightGradient;
-  return density * cloud.densityMultiplier * cloud.profileDensityScale;
+  // Weather A — same per-position density scale as cloudDensity.
+  return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale;
 }
 
 // ─── Ray-sphere intersection (sphere centered at the planet origin) ───

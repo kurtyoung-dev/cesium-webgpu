@@ -538,6 +538,18 @@ class Globe {
     this.cloudType = undefined;
 
     /**
+     * Weather Phase 3 — how strongly the weather map's G/B/A channels (cloud
+     * genus, cloud base, density bias) modulate the WebGPU procedural clouds, in
+     * addition to the R coverage channel. A NEUTRAL map cell (G=0.5, B=0, A=0.5)
+     * is a no-op at any strength, so an R-only map or a disabled weather map is
+     * unaffected. <code>0</code> reproduces the legacy R-only behaviour; higher
+     * values exaggerate the per-position genus/base/density variation. WebGPU only.
+     * @type {number|undefined}
+     * @default undefined (1.0)
+     */
+    this.cloudWeatherChannelStrength = undefined;
+
+    /**
      * Real-weather ingest provider (Phase 1). When set to a
      * {@link WeatherProvider}, it fetches a cloud-cover field from an open data
      * source (OGC API-EDR etc.) and bakes it into the WebGPU procedural-cloud

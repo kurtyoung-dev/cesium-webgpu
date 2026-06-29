@@ -450,6 +450,30 @@ const throttle = (callback) => {
     }
   });
 
+  // Dev-only mock OGC API-EDR endpoint (Weather Phase 3 — offline pipeline test).
+  // Serves the committed CoverageJSON fixture for ANY `/mock-edr/...` path, so a
+  // probe can point `new EdrWeatherSource({ baseUrl: "<origin>/mock-edr", ... })`
+  // at it — `buildUrl` appends `/collections/<id>/cube?...`, all of which this
+  // route ignores and answers with the fixture. This proves the EDR fetch ->
+  // CoverageJSON parse -> packer -> weatherTex -> clouds chain WITHOUT the live
+  // (CORS-uncertain, dev-lab) network, which retroactively completes Phase 1's
+  // end-to-end verification. Never shipped (dev server only).
+  //eslint-disable-next-line no-unused-vars
+  app.get(/^\/mock-edr(\/.*)?$/, function (req, res) {
+    const fixturePath = path.resolve(
+      "Tools/visual-regression/fixtures/edr-cube-tcc.json",
+    );
+    res.set("access-control-allow-origin", "*");
+    res.set("content-type", "application/prs.coverage+json");
+    res.sendFile(fixturePath, function (err) {
+      if (err) {
+        res
+          .status(500)
+          .json({ error: `mock-edr: fixture read failed: ${String(err)}` });
+      }
+    });
+  });
+
   app.use(express.static(path.resolve(".")));
 
   const server = app.listen(

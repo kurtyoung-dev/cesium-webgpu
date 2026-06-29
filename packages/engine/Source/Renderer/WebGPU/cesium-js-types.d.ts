@@ -1081,6 +1081,9 @@ interface CesiumGlobe {
   cloudMsDecayPhase?: number;
   // Batch 408 — V11 per-genus cloud type (CloudType index 0..10; undefined → CUMULUS).
   cloudType?: number;
+  // Batch 424 — Weather Phase 3: weather-map G/B/A channel influence (genus, base,
+  // density-bias). Undefined → 1.0; 0 = legacy R-only.
+  cloudWeatherChannelStrength?: number;
   // Weather ingest (Phase 1) — a WeatherProvider drives the weather-map texture
   // from real data. Structural to keep this .d.ts decoupled from Scene/Weather.
   weatherProvider?: {

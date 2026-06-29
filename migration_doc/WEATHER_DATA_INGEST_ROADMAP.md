@@ -1,12 +1,24 @@
 # Weather Data Ingest Roadmap — real weather → the cloud renderer (C2-16 seam)
 
 **Status:** P0+P1 SHIPPED (Batch 410 `f047c29f32`; audit fixes Batch 411 `1f83a48c7c`).
-**P2 (time model) SHIPPED — Batch 416.** Synthetic-verified end-to-end (real
-`WeatherField` → packer → C2-16 weatherTex → deck, map auto-enables). **Live EDR (the
-real feed) is wired (`EdrWeatherSource`) but NOT yet validated against the live
-endpoint** — the dev sandbox has no outbound network to external hosts (CLI `curl` →
-`http=000`, browser `fetch` → timeout), so the live call + CORS + the guessed collection
-id `automated_gfs` must be confirmed in a networked browser.
+**P2 (time model) SHIPPED — Batch 416. P3-CORE SHIPPED — Batch 424:** the FIRST
+weather→WGSL G/B/A channel reads (clouds respond to density-bias **A**, cloud-base **B**,
+genus **G** — not just coverage **R**; neutral G=0.5/B=0/A=0.5 is byte-identical, gated by
+`weatherChannelStrength`, default off-equivalent) + a **MOCK-EDR fixture harness**
+(`Tools/visual-regression/fixtures/edr-cube-tcc.json` + a dev-server `/mock-edr` route)
+that drives `EdrWeatherSource` end-to-end OFFLINE — which **retroactively completes the
+Phase-1 pipeline verification** the live network had blocked (fetch→CoverageJSON
+parse→packer→weatherTex→deck, no fallback). Verified: `probe-weather-channels.mjs`
+(east dense-overcast vs west thin-stratiform at the SAME R coverage — PNGs read) +
+`probe-weather-edr-mock.mjs` (fixture clear-NW→overcast-SE ramp reaches the deck).
+**P3-SOURCES remain (Batch 425): WCS (MSC GeoMet) + METAR backends** (parser-testable vs
+mock fixtures; live fetch network-gated). Follow-up (Principle 9): `profileExtinction`
+(slot 103) still scaffolding — G biases shape/density but not yet per-position optical
+extinction. **Live EDR (the real feed) is wired (`EdrWeatherSource`) but the LIVE call +
+CORS + the guessed collection id `automated_gfs` still need confirming in a networked
+browser** — the dev sandbox has no outbound network to external hosts (CLI `curl` →
+`http=000`, browser `fetch` → timeout); the mock harness now covers everything except that
+last live hop.
 Phases P3–P4 remain. (Original research+design below, 2026-06-26.)
 
 **P2 — TIME MODEL (SHIPPED Batch 416).** `WeatherProvider` gained `WeatherTimeMode`

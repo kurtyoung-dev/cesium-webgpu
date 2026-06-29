@@ -726,7 +726,12 @@ export function executeProceduralClouds(
   // the renderer-wide log depth (same source as AerialPerspective).
   data[offset++] = frameState.camera?.frustum?.near ?? 1.0; // 105 nearPlane
   data[offset++] = frameState.camera?.frustum?.far ?? 1e8; // 106 farPlane
-  data[offset++] = 0; // 107 pad
+  // ── Batch 424 — Weather Phase 3: how strongly the weather map's G/B/A channels
+  // (genus, base, density-bias) modulate the cloud model. Default 1.0; a NEUTRAL
+  // map cell (G=0.5,B=0,A=0.5) is a no-op at ANY strength, so an R-only map or
+  // weatherMapEnabled=0 reproduces today's pixels. `globe.cloudWeatherChannelStrength`
+  // tunes it live (0 = legacy R-only).
+  data[offset++] = globe.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
