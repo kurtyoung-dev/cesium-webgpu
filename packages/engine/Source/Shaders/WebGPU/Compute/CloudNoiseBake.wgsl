@@ -121,6 +121,22 @@ fn perlinFBM(P: vec3<f32>, freq: f32) -> f32 {
   return clamp(v / 1.2 + 0.5, 0.0, 1.0);
 }
 
+// Batch 439 (4.8) — SIGNED 3-octave Perlin fBm in ~[-0.5, 0.5] (no [0,1] recenter).
+// The Nubis Perlin-Worley remap needs the SIGNED base so it stretches symmetrically
+// around 0 rather than double-lifting an already-recentered value (which floods the
+// coverage gate into flat overcast — the 379a over-densify failure).
+fn perlinFBMSigned(P: vec3<f32>, freq: f32) -> f32 {
+  var v: f32 = 0.0;
+  var amp: f32 = 0.5;
+  var f: f32 = freq;
+  for (var i: i32 = 0; i < 3; i = i + 1) {
+    v = v + amp * perlinPeriodic(P, f);
+    f = f * 2.0;
+    amp = amp * 0.5;
+  }
+  return clamp(v / 1.2, -0.5, 0.5);
+}
+
 fn remap(v: f32, lo: f32, hi: f32, a: f32, b: f32) -> f32 {
   return a + (v - lo) * (b - a) / (hi - lo);
 }
@@ -179,6 +195,48 @@ fn bakeShape(@builtin(global_invocation_id) gid: vec3<u32>) {
   let base = valueFBM(p, 2.0);
 
   // G/B/A — inverted Worley at increasing frequency (erosion fBm, for V4 morphology).
+  let g = worleyInv(p, 4.0);
+  let b = worleyInv(p, 8.0);
+  let a = worleyInv(p, 16.0);
+
+  textureStore(shapeTex, vec3<i32>(gid), vec4<f32>(base, g, b, a));
+}
+
+// Batch 439 (4.8 CLOUD-PW-NOISE) — Perlin-Worley SHAPE variant. A SEPARATE entry
+// point writing a SEPARATE texture (the renderer allocates + dispatches this only
+// when `noiseMorphology = 'perlin-worley'`), so the default `bakeShape` output is
+// never disturbed — the two variants coexist and the renderer binds whichever the
+// flag selects. R is the true Schneider/Nubis Perlin-Worley REMAP: the Perlin fBm
+// base remapped by the low-band inverted-Worley so connected, billowy cores form
+// where the Worley billow is high and cauliflower gaps form where it is low —
+// `remap(perlin, worleyLow - 1, 1, 0, 1)` clamped to [0,1]. This raises the
+// structural connectivity of the base shape vs the broad/sharp value-FBM (whose
+// puffs are more isolated blobs). G/B/A keep the same erosion-fBm channels as the
+// value bake so the downstream erosion path is identical.
+@compute @workgroup_size(4, 4, 4)
+fn bakeShapePW(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let dims = textureDimensions(shapeTex);
+  if (gid.x >= dims.x || gid.y >= dims.y || gid.z >= dims.z) { return; }
+  let p = (vec3<f32>(gid) + 0.5) / vec3<f32>(dims);
+
+  // SIGNED Perlin fBm base (~[-0.5,0.5]) — symmetric around 0 so the remap doesn't
+  // double-lift (the over-densify failure). Same freq band as the value bake.
+  let perlin = perlinFBMSigned(p, 2.0);
+  // Low-band inverted-Worley billow ∈ [0,1] (high AT feature points = cloud cores).
+  let worleyLow = worleyFBM(p, 3.0);
+  // Schneider/Nubis Perlin-Worley remap: `remap(perlin, worleyLow-1, 1, 0, 1)`.
+  // worleyLow-1 ∈ [-1,0] is the low edge — where the Worley billow is HIGH (cores)
+  // the floor lifts so connected billowy cores form; where it is LOW the floor
+  // drops so the Perlin valleys carve cauliflower gaps.
+  let pw = clamp(remap(perlin, worleyLow - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0);
+  // LEVEL-MATCH to the value-FBM base (mean ~0.5) so the SAME coverage gate carves
+  // distinct connected cumulus instead of either a flat overcast (too high) or thin
+  // wisps (too low). The raw remap centers ~0.33; lift+scale to cores ~0.7 /
+  // valleys ~0.36 (center ~0.48), matching the value bake's effective coverage
+  // behaviour while keeping the PW connectivity/cauliflower structure.
+  let base = clamp(pw * 0.9 + 0.18, 0.0, 1.0);
+
+  // G/B/A — IDENTICAL erosion fBm channels to the value bake (so erosion matches).
   let g = worleyInv(p, 4.0);
   let b = worleyInv(p, 8.0);
   let a = worleyInv(p, 16.0);

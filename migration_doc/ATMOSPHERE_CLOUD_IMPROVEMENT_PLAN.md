@@ -213,14 +213,14 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** `//>>ifdef` default 0 emits the historical HG branch → byte-identical.
 - **Files:** `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl`, `Shaders/WebGPU/Compute/AtmosphereLUT.wgsl`, `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`.
 
-#### 4.7 — Curl-noise edge distortion (`CLOUD-CURL`, activate slots 75/77) — **P2, effort M**
+#### 4.7 — Curl-noise edge distortion (`CLOUD-CURL`, activate slots 75/77) — **P2, effort M** — ✅ SHIPPED Batch 439 (globe.cloudCurlAmplitude; analytic curl warp on detail erosion; amplitude 0 = identity; W5 oracle invariant preserved)
 
 - **Technique:** Curl-noise domain warp on the detail erosion (Schneider/Nubis wispy edges + turbulent advection), driving the reserved `curlAmplitude@75`/`curlFrequency@77` + preset field. Bake a curl vector field into spare detail-texture channels.
 - **Opt-in flag:** `globe.cloudCurlAmplitude` (default undefined → packs 0.0) + tier `curlAmplitude` (0 for T0/T1).
 - **Parity impact:** Amplitude 0 → no-op warp → current edge morphology exactly.
 - **Files:** `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`, `Shaders/WebGPU/Compute/CloudNoiseBake.wgsl`, `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`.
 
-#### 4.8 — Perlin-Worley base-shape bake (`CLOUD-PW-NOISE`, finish V4) — **P2, effort M**
+#### 4.8 — Perlin-Worley base-shape bake (`CLOUD-PW-NOISE`, finish V4) — **P2, effort M** — ✅ SHIPPED Batch 439 (globe.cloudNoiseMorphology 'perlin-worley'; separate bakeShapePW texture; default 'value' bake byte-identical)
 
 - **Technique:** Re-bake shape texture R as a true Perlin-Worley remap (Schneider: remap Perlin by Worley low-band) for connected billowy cores + cauliflower edges, instead of value-noise FBM. Add as a *second* bake variant chosen by flag so the current bake is preserved.
 - **Opt-in flag:** preset `noiseMorphology` (`'value'` default; `'perlin-worley'` opt-in).

@@ -59,11 +59,15 @@ struct CloudUniforms {
   phaseG1: f32,                  // 72 — W1 dual-lobe forward-scatter g (silver lining)
   ambientIntensity: f32,         // 73 — W2 sky/ground ambient intensity
   qualityFlags: f32,             // 74 — V1 tier bitfield (read via u32())
-  _pad4c: f32,                   // 75 — reserved (V8 curlAmplitude)
+  // Batch 439 (4.7 CLOUD-CURL) — reserved slot 75 ACTIVATED in place (add-only;
+  // byte-layout unchanged). 0 → the BAKED-path detail-erosion curl warp is
+  // skipped entirely (default render byte-identical). >0 → amplitude of the
+  // analytic curl-noise domain warp on the detail sample position.
+  curlAmplitude: f32,            // 75 — 4.7 curl warp amplitude (0 = off, default)
   // 76-79 — split from the old `_padA` vec4 (byte-identical: 4 scalars on the
   // same 16-byte stride). Each named per the ratified D-2 table.
   frameCounter: f32,             // 76 — reserved (V6 jitter/temporal)
-  curlFrequency: f32,            // 77 — reserved (V8 curl)
+  curlFrequency: f32,            // 77 — 4.7 curl-noise swirl wavelength (noise-space scale)
   lightSampleScale: f32,         // 78 — reserved (V5 lighting)
   erosionStrength: f32,          // 79 — V4 mean-preserving erosion strength
   skyAmbientColor: vec3<f32>,    // 80-82 — W2 blue-sky ambient (lights cloud tops)
@@ -297,6 +301,44 @@ fn worleyF1(p: vec3<f32>) -> f32 {
   return sqrt(min(minDistSq, 1.0));
 }
 
+// ─── Batch 439 (4.7 CLOUD-CURL) — analytic curl-noise domain warp ───
+// Curl of a 3-component value-noise vector potential, evaluated analytically by
+// central differences. curl(F) = (∂Fz/∂y − ∂Fy/∂z, ∂Fx/∂z − ∂Fz/∂x,
+// ∂Fy/∂x − ∂Fx/∂y) is DIVERGENCE-FREE, so warping a sample position by it produces
+// the swirling, incompressible, tendril-like advection that gives Schneider/Nubis
+// cloud edges their wispy, turbulent character (instead of fbm's blobby erosion).
+// The potential is `valueNoise` (already periodic-friendly here) offset by large
+// constants per component so the three scalar fields decorrelate. Computed ONLY
+// when curlAmplitude>0 (the call site guards it), so the default path never runs
+// this — and at amplitude 0 the warp offset is exactly vec3(0) anyway.
+fn curlPotential(p: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    valueNoise(p),
+    valueNoise(p + vec3<f32>(31.41, 17.27, 47.53)),
+    valueNoise(p + vec3<f32>(-19.13, 83.71, -5.29)),
+  );
+}
+
+fn curlNoise3(p: vec3<f32>) -> vec3<f32> {
+  let e = 0.35; // finite-difference epsilon (noise-space units)
+  let dx = vec3<f32>(e, 0.0, 0.0);
+  let dy = vec3<f32>(0.0, e, 0.0);
+  let dz = vec3<f32>(0.0, 0.0, e);
+  let px0 = curlPotential(p - dx);
+  let px1 = curlPotential(p + dx);
+  let py0 = curlPotential(p - dy);
+  let py1 = curlPotential(p + dy);
+  let pz0 = curlPotential(p - dz);
+  let pz1 = curlPotential(p + dz);
+  let inv2e = 1.0 / (2.0 * e);
+  let curl = vec3<f32>(
+    (py1.z - py0.z) - (pz1.y - pz0.y),
+    (pz1.x - pz0.x) - (px1.z - px0.z),
+    (px1.y - px0.y) - (py1.x - py0.x),
+  ) * inv2e;
+  return curl;
+}
+
 // ─── ECEF world position → weather-map UV (Weather Phase 1) ───
 // Equirectangular geodetic lon/lat (spherical approximation — a coarse weather
 // field doesn't need ellipsoidal exactness). lon = atan2(y, x) ∈ [-PI, PI];
@@ -477,7 +519,23 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
     // the V3 dapple) while edges still erode. remap(v, lo, 1, 0, 1) <= v for
     // v in [0,1], lo >= 0, so cloudDensity <= cloudBaseDensity (W5 `base >= full`)
     // STILL holds — the oracle just omits this erosion step entirely.
-    let detail = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, samplePos * 5.0, 0.0);
+    // Batch 439 (4.7 CLOUD-CURL) — curl-noise domain warp on the DETAIL erosion
+    // lookup. The divergence-free curl field swirls the high-frequency Worley
+    // erosion sample into turbulent, advected filaments — wispy tendril edges
+    // (Schneider/Nubis) instead of the static dapple. GUARDED on curlAmplitude>0
+    // so the default render skips the curl evaluation AND the warp entirely; at
+    // amplitude 0 the warp offset is exactly vec3(0) → the detail sample position
+    // is byte-identical to pre-439. curlFrequency scales the swirl wavelength.
+    var detailPos = samplePos * 5.0;
+    if (cloud.curlAmplitude > 0.0) {
+      // The detail lookup lives in `samplePos*5` space; the analytic curl is ~O(1)
+      // per component. A gain of ~2 makes the dial's nominal 1.0 read as a clear,
+      // tendril-forming swirl in that space (still bounded — the warp only moves
+      // WHERE the subtractive erosion samples, never adds density).
+      let warp = curlNoise3(samplePos * cloud.curlFrequency) * (cloud.curlAmplitude * 2.0);
+      detailPos = detailPos + warp;
+    }
+    let detail = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, detailPos, 0.0);
     let worleyDetail = 1.0 - detail.r;
     let erosionLo = worleyDetail * cloud.erosionStrength * (1.0 - heightFraction);
     density = clamp(remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0);

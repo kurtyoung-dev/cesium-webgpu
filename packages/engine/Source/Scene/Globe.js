@@ -508,6 +508,40 @@ class Globe {
     this.cloudErosionStrength = undefined;
 
     /**
+     * Curl-noise edge-distortion amplitude (Batch 439 — item 4.7, WebGPU baked
+     * tier only). Domain-warps the detail-erosion lookup by a divergence-free curl
+     * field so cloud edges gain wispy, turbulent, advected filaments (Schneider /
+     * Nubis) instead of static dapple. <code>undefined</code> → <code>0.0</code>
+     * → the warp is skipped entirely (byte-identical to the pre-439 render); a
+     * small value (≈ 0.5–1.5) adds tendrils, larger values shred the edges.
+     * @type {number|undefined}
+     * @default undefined (0.0 — off)
+     */
+    this.cloudCurlAmplitude = undefined;
+
+    /**
+     * Curl-noise swirl wavelength for {@link Globe#cloudCurlAmplitude} (Batch 439
+     * — item 4.7). Lower = broader swirls, higher = finer turbulence. Has no effect
+     * when <code>cloudCurlAmplitude</code> is 0. WebGPU only.
+     * @type {number|undefined}
+     * @default undefined (2.0)
+     */
+    this.cloudCurlFrequency = undefined;
+
+    /**
+     * Baked cloud-shape noise morphology (Batch 439 — item 4.8, WebGPU baked tier
+     * only). <code>"value"</code> (default) bakes the historical value-noise FBM
+     * base shape — byte-identical to the pre-439 render. <code>"perlin-worley"</code>
+     * instead bakes a Schneider Perlin-Worley remap (the Perlin base remapped by the
+     * low-band Worley) for connected, billowy cloud cores with cauliflower edges.
+     * The two variants are baked into SEPARATE textures; switching only changes
+     * which one is sampled, so the default 'value' output is never disturbed.
+     * @type {string|undefined}
+     * @default undefined ("value")
+     */
+    this.cloudNoiseMorphology = undefined;
+
+    /**
      * Baked-base puff size (promoted SHAPE_SCALE). Lower = larger, fluffier
      * cumulus masses; higher = finer dapple. WebGPU only. Undefined → 0.45.
      * @type {number|undefined}

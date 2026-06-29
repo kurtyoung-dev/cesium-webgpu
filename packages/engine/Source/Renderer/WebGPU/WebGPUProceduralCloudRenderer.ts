@@ -691,6 +691,7 @@ function ensureCloudLutViews(
 function ensureNoiseBaked(
   device: GPUDevice,
   cache: CloudCache,
+  perlinWorley: boolean,
 ): {
   shapeView: GPUTextureView;
   detailView: GPUTextureView;
@@ -718,16 +719,33 @@ function ensureNoiseBaked(
       minFilter: "linear",
     });
   }
-  if (!cache.noiseBaked) {
-    const res = buildCloudNoiseResources(device, 128, 32);
+  // Batch 439 (4.8 CLOUD-PW-NOISE) — (re)bake when not yet baked OR when the PW
+  // variant is requested for the first time (the initial bake may have been
+  // value-only). The default value `shapeTexture` is always baked identically, so a
+  // re-bake to add the PW variant doesn't change the default output. We re-bake by
+  // destroying the prior resources (one-shot upgrade; the flag rarely toggles).
+  const needPW =
+    perlinWorley && !(cache.noise && cache.noise.shapePWSampleView);
+  if (!cache.noiseBaked || needPW) {
+    if (needPW && cache.noise) {
+      cache.noise.shapeTexture.destroy();
+      cache.noise.shapePWTexture?.destroy();
+      cache.noise.detailTexture.destroy();
+    }
+    const res = buildCloudNoiseResources(device, 128, 32, perlinWorley);
     if (res) {
       cache.noise = res;
       cache.noiseBaked = true;
     }
   }
   if (cache.noiseBaked && cache.noise) {
+    // Select the PW shape view when requested AND it baked; else the value shape.
+    const useShapeView =
+      perlinWorley && cache.noise.shapePWSampleView
+        ? cache.noise.shapePWSampleView
+        : cache.noise.shapeSampleView;
     return {
-      shapeView: cache.noise.shapeSampleView,
+      shapeView: useShapeView,
       detailView: cache.noise.detailSampleView,
       sampler: cache.noise.sampler3d,
     };
@@ -1231,7 +1249,14 @@ export function executeProceduralClouds(
   // qualityFlags noiseSource bit can reflect the same-frame baked state (no
   // one-frame-late flip). The bake's one-shot submit runs before this frame's
   // cloud pass, so the textures are populated when sampled.
-  const noise = ensureNoiseBaked(device, cache);
+  // Batch 439 (4.8 CLOUD-PW-NOISE) — 'perlin-worley' selects the PW shape variant
+  // (a separate baked texture); 'value'/undefined keeps the value-FBM bake (default,
+  // byte-identical). The flag drives the bake (alloc the PW texture) AND which shape
+  // view binds at 6.
+  const perlinWorley =
+    (globe as unknown as { cloudNoiseMorphology?: string })
+      .cloudNoiseMorphology === "perlin-worley";
+  const noise = ensureNoiseBaked(device, cache, perlinWorley);
 
   // Pack uniforms
   const data = cache.uniformData;
@@ -1478,14 +1503,26 @@ export function executeProceduralClouds(
     lightConeBit |
     ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
       CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
-  data[offset++] = 0; // 75 reserved (V8 curlAmplitude)
+  // 75 — Batch 439 (4.7 CLOUD-CURL) curl-warp amplitude. Default undefined →
+  // packs 0.0 → the BAKED-path detail-erosion curl warp is SKIPPED in WGSL (the
+  // `if (curlAmplitude > 0.0)` guard), so the default render is byte-identical.
+  // `globe.cloudCurlAmplitude` is the sole opt-in (the tier preset's curlAmplitude
+  // stays 0 so every DEFAULT tier renders byte-identically — the flag, not the
+  // tier, turns curl on). The warp only perturbs where the detail texture is
+  // SAMPLED (subtractive erosion), so it can carve wispier edges but never add
+  // density — same safety property as the live-path Worley erosion.
+  data[offset++] = globe.cloudCurlAmplitude ?? 0.0; // 75 curlAmplitude
   // 76 — V9 frameCounter (Bayer jitter index for the half-res sub-pixel offset).
   // Only consumed when QF_HALF_RES is set; full-res ignores it (jitter branch
   // skipped), so writing it is byte-irrelevant on the default path. Wraps at 16
   // (the Bayer LUT length) to keep the f32 store exact.
   cache.frameCounter = (cache.frameCounter + 1) & 15;
   data[offset++] = halfResActive ? cache.frameCounter : 0; // 76 frameCounter
-  data[offset++] = 0; // 77 reserved (V8 curlFrequency)
+  // 77 — Batch 439 (4.7 CLOUD-CURL) curl-noise swirl wavelength (noise-space
+  // scale). Byte-irrelevant when curlAmplitude is 0 (the warp is guarded off), so
+  // writing the default frequency on the default path is a no-op. Dialable via
+  // `globe.cloudCurlFrequency`; default 2.0 ≈ the base-shape feature scale.
+  data[offset++] = globe.cloudCurlFrequency ?? 2.0; // 77 curlFrequency
   // 78 — V5 light-march step scale. LIVE/escape + T3 keep 1.0 (full light march,
   // unchanged); the lower baked tiers march at 0.5 for cheaper shadowing.
   data[offset++] =

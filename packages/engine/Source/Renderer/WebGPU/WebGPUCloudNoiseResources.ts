@@ -28,6 +28,12 @@ import CloudNoiseBakeSource from "../../Shaders/WebGPU/Compute/CloudNoiseBake.js
 export interface CloudNoiseResources {
   shapeTexture: GPUTexture;
   shapeSampleView: GPUTextureView; // texture_3d<f32> for the cloud FS
+  // Batch 439 (4.8 CLOUD-PW-NOISE) — the Perlin-Worley SHAPE variant. Baked into a
+  // SEPARATE texture only when `perlinWorley` is requested (else null); the renderer
+  // binds this view at binding 6 instead of `shapeSampleView` when the flag is on,
+  // so the default value-FBM bake output is never disturbed.
+  shapePWTexture: GPUTexture | null;
+  shapePWSampleView: GPUTextureView | null;
   detailTexture: GPUTexture;
   detailSampleView: GPUTextureView;
   sampler3d: GPUSampler; // linear + repeat (tileable)
@@ -40,11 +46,19 @@ export interface CloudNoiseResources {
  * cube edge lengths (full = 128 / 32; low band = 64 / 16). Returns null if the
  * device can't be used (caller falls back to the 1×1×1 white view + keeps the
  * live-noise march).
+ *
+ * Batch 439 (4.8 CLOUD-PW-NOISE) — when `perlinWorley` is true, a SECOND shape
+ * texture is allocated and baked via the `bakeShapePW` entry point (Schneider
+ * Perlin-Worley remap). The default value-FBM `shapeTexture` is ALWAYS baked
+ * identically regardless of this flag, so the byte-for-byte default output is
+ * preserved; the renderer chooses which view to bind. The PW texture is allocated
+ * ONLY when requested (no cost on the default path).
  */
 export function buildCloudNoiseResources(
   device: GPUDevice,
   shapeRes: number = 128,
   detailRes: number = 32,
+  perlinWorley: boolean = false,
 ): CloudNoiseResources | null {
   const usage =
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
@@ -139,6 +153,45 @@ export function buildCloudNoiseResources(
     compute: { module, entryPoint: "bakeDetail" },
   });
 
+  // Batch 439 (4.8 CLOUD-PW-NOISE) — allocate + bake the Perlin-Worley shape
+  // variant into a SEPARATE texture only when requested. Reuses the same BGL/layout
+  // (binding 0 = its own storage view; binding 1 keeps the detail target the entry
+  // point ignores). The default value bake above is untouched either way.
+  let shapePWTexture: GPUTexture | null = null;
+  let shapePWSampleView: GPUTextureView | null = null;
+  let shapePWPipeline: GPUComputePipeline | null = null;
+  let shapePWBindGroup: GPUBindGroup | null = null;
+  if (perlinWorley) {
+    shapePWTexture = device.createTexture({
+      label: "CloudNoise_ShapePW",
+      size: { width: shapeRes, height: shapeRes, depthOrArrayLayers: shapeRes },
+      format: "rgba8unorm",
+      dimension: "3d",
+      usage,
+    });
+    const shapePWStorageView = shapePWTexture.createView({
+      label: "CloudNoise_ShapePW_StorageView",
+      dimension: "3d",
+    });
+    shapePWSampleView = shapePWTexture.createView({
+      label: "CloudNoise_ShapePW_SampleView",
+      dimension: "3d",
+    });
+    shapePWBindGroup = device.createBindGroup({
+      label: "CloudNoise_BakePWBindGroup",
+      layout: bakeBGL,
+      entries: [
+        { binding: 0, resource: shapePWStorageView },
+        { binding: 1, resource: detailStorageView }, // ignored by bakeShapePW
+      ],
+    });
+    shapePWPipeline = device.createComputePipeline({
+      label: "CloudNoise_BakeShapePWPipeline",
+      layout: bakeLayout,
+      compute: { module, entryPoint: "bakeShapePW" },
+    });
+  }
+
   // One-shot bake (workgroup_size 4³ → ceil(res/4) groups per axis).
   const wgShape = Math.ceil(shapeRes / 4);
   const wgDetail = Math.ceil(detailRes / 4);
@@ -150,6 +203,11 @@ export function buildCloudNoiseResources(
   pass.setPipeline(detailPipeline);
   pass.setBindGroup(0, bakeBindGroup);
   pass.dispatchWorkgroups(wgDetail, wgDetail, wgDetail);
+  if (shapePWPipeline && shapePWBindGroup) {
+    pass.setPipeline(shapePWPipeline);
+    pass.setBindGroup(0, shapePWBindGroup);
+    pass.dispatchWorkgroups(wgShape, wgShape, wgShape);
+  }
   pass.end();
   device.queue.submit([encoder.finish()]);
 
@@ -167,6 +225,8 @@ export function buildCloudNoiseResources(
   return {
     shapeTexture,
     shapeSampleView,
+    shapePWTexture,
+    shapePWSampleView,
     detailTexture,
     detailSampleView,
     sampler3d,

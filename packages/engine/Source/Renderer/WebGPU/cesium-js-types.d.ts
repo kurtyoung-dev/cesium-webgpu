@@ -1103,6 +1103,15 @@ interface CesiumGlobe {
   // Batch 424 — Weather Phase 3: weather-map G/B/A channel influence (genus, base,
   // density-bias). Undefined → 1.0; 0 = legacy R-only.
   cloudWeatherChannelStrength?: number;
+  // Batch 439 (4.7 CLOUD-CURL) — curl-noise domain warp on the baked detail
+  // erosion. Undefined → 0.0 (warp skipped → byte-identical). >0 → wispy turbulent
+  // edges. cloudCurlFrequency tunes the swirl wavelength (undefined → 2.0).
+  cloudCurlAmplitude?: number;
+  cloudCurlFrequency?: number;
+  // Batch 439 (4.8 CLOUD-PW-NOISE) — baked SHAPE-texture R morphology. 'value'
+  // (undefined) keeps the value-FBM bake byte-identical; 'perlin-worley' bakes the
+  // Schneider Perlin-Worley remap variant (connected billowy cores).
+  cloudNoiseMorphology?: string;
   // Weather ingest (Phase 1) — a WeatherProvider drives the weather-map texture
   // from real data. Structural to keep this .d.ts decoupled from Scene/Weather.
   weatherProvider?: {

@@ -46,6 +46,13 @@ export interface CloudTierPreset {
   powderStrength: number;
   isotropicFloor: number;
   ambientFloor: number;
+  /**
+   * Batch 439 (4.7 CLOUD-CURL) — per-tier DEFAULT curl-warp amplitude scaffolding.
+   * Held at 0 on EVERY tier so the default render stays byte-identical: curl is
+   * opted in solely through `globe.cloudCurlAmplitude` (the renderer packs that
+   * field, not this preset value). This field remains as the slot for a future
+   * per-tier curl default once the morphology is dialed in.
+   */
   curlAmplitude: number;
 }
 
@@ -118,7 +125,8 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     powderStrength: 0.4,
     isotropicFloor: 0.02,
     ambientFloor: 0.05,
-    curlAmplitude: 1.0,
+    // Batch 439 — held at 0 (parity-default; curl opts in via globe.cloudCurlAmplitude).
+    curlAmplitude: 0,
   },
   // T3 Cinematic
   {
@@ -137,7 +145,8 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     powderStrength: 0.7,
     isotropicFloor: 0.04,
     ambientFloor: 0.08,
-    curlAmplitude: 1.0,
+    // Batch 439 — held at 0 (parity-default; curl opts in via globe.cloudCurlAmplitude).
+    curlAmplitude: 0,
   },
 ];
 
