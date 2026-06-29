@@ -234,7 +234,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Default marches exactly one shell with today's bounds; extra decks purely additive.
 - **Files:** `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`, `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`, `Scene/CloudTypeProfile.js`.
 
-#### 4.10 — Physically-parameterized cold optics (`COLD-OPTICS-HQ`) — **P2, effort M**
+#### 4.10 — Physically-parameterized cold optics (`COLD-OPTICS-HQ`) — **P2, effort M** — ✅ SHIPPED Batch 442 (effects.optics.advanced; 22°+46° dispersed halos + upper-tangent arc + LIGHT PILLARS; closes the deferred light-pillars item)
 
 - **Technique:** Extend `ColdOptics.wgsl` from the hand-tuned 22° gaussian to ice-crystal-habit minimum-deviation angles for 22° + 46° halos with spectral dispersion (red inner/blue outer), upper-tangent arc + light pillars from plate-crystal orientation, gated on cirrus presence + sub-freezing temp.
 - **Opt-in flag:** `atmosphericConditions.effects.optics.advanced` (default `false`).

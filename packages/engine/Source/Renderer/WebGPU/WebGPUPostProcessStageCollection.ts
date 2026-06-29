@@ -1061,6 +1061,7 @@ function updateColdOpticsFrameData(
     };
     camera?: { frustum?: { near?: number; far?: number } };
     coldOpticsIntensity?: number;
+    coldOpticsAdvanced?: boolean;
   };
 
   const us = sceneAny?.context?.uniformState;
@@ -1074,6 +1075,12 @@ function updateColdOpticsFrameData(
   if (typeof intensity === "number") {
     fx.setIntensity(intensity);
   }
+
+  // COLD-OPTICS-HQ (Batch 442): the advanced opt-in from `effects.optics.advanced`
+  // (pushed as `scene.coldOpticsAdvanced`). Drives the shader's advanced branch
+  // (22+46 dispersed halos + tangent arc + light pillars). Default-off keeps
+  // the legacy halo + sun-dogs path byte-identical.
+  fx.setAdvanced(sceneAny?.coldOpticsAdvanced === true);
 
   const cam = us.cameraPosition;
   const sun = us.sunDirectionWC ?? { x: 0, y: 0, z: 1 };

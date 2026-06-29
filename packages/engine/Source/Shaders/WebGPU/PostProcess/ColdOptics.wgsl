@@ -33,6 +33,28 @@
 //
 // Single fullscreen pass, mirrors HeatShimmer's structure (one output
 // texture, one pipeline, scene-color + depth + sampler + uniforms bindings).
+//
+// COLD-OPTICS-HQ (Batch 442) — opt-in ADVANCED branch, gated on
+// `params1.w > 0.5` (driven by `effects.optics.advanced`). When OFF the legacy
+// 22 halo + sun-dogs above run UNCHANGED (byte-identical). When ON, the same
+// per-pixel  is fed through a physically-parameterized ice-crystal model:
+//   - 22 HALO — random-oriented hexagonal columns, 60 prism, minimum
+//     deviation; SPECTRAL DISPERSION shifts the red ray to ~21.5 and the
+//     blue ray to ~22.5, so the halo has a reddish inner rim fading to
+//     bluish outward (sampled as three offset gaussians: R/G/B).
+//   - 46 HALO — 90 prism faces; minimum deviation ~46 with the same
+//     dispersion (red ~45.7, blue ~46.5). Fainter than the 22 halo.
+//   - UPPER TANGENT ARC — column crystals, tangent to the 22 halo directly
+//     ABOVE the sun; a brightening of the 22 ring weighted toward the top,
+//     bowing outward away from the zenith.
+//   - LIGHT PILLARS — plate crystals reflecting off their horizontal basal
+//     faces produce a VERTICAL column of light through the sun, brightest at
+//     the sun and fading with vertical distance (and with horizontal offset
+//     so it stays a column, not a glow). Strongest when the sun is LOW.
+// All advanced features share the legacy sky-only + sun-up gates and the
+// master intensity, and are ADDITIVE + energy-reasonable (subtle brightenings,
+// not opaque rings). This also covers the separately-deferred light-pillars
+// item from the atmospheric-effects roadmap.
 
 const PI: f32 = 3.141592653589793;
 const DEG2RAD: f32 = 0.017453292519943295;
@@ -54,7 +76,10 @@ struct ColdOpticsUniforms {
   params0: vec4<f32>,
   // .x = skyCutoff (raw depths >= this are sky), .y = dogRadiusRad
   // (radians(22) — parhelia horizontal offset), .z = dogSigmaRad (angular
-  // spread of each dog), .w = reserved (=1).
+  // spread of each dog), .w = ADVANCED flag (0 = legacy 22 halo + sun-dogs
+  // only — byte-identical to Batch 422; >0.5 = the COLD-OPTICS-HQ branch:
+  // physically-derived 22+46 halos with spectral dispersion, an upper
+  // tangent arc, and light pillars). Default 0 keeps the legacy path.
   params1: vec4<f32>,
   // Inverse projection — recovers the EYE-space ray direction from NDC.
   inverseProjection: mat4x4<f32>,
@@ -66,6 +91,134 @@ struct ColdOpticsUniforms {
 @group(0) @binding(1) var sceneDepthTex: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: ColdOpticsUniforms;
+
+// ── COLD-OPTICS-HQ helpers (advanced branch only) ───────────────────────────
+//
+// A spectrally-dispersed gaussian RING. The ice-crystal minimum-deviation
+// angle depends on wavelength (the prism disperses sunlight), so the R/G/B
+// channels peak at slightly DIFFERENT radii: red on the INNER edge, blue on
+// the OUTER edge. We evaluate three offset gaussians — one per channel —
+// centred at radiusR/radiusG/radiusB, all sharing the ring sigma. The result
+// is a ring whose inner rim is reddish and whose outer rim fades bluish, the
+// signature look of the real 22 / 46 halos.
+fn dispersedRing(
+  theta: f32,
+  radiusR: f32,
+  radiusG: f32,
+  radiusB: f32,
+  sigma: f32
+) -> vec3<f32> {
+  let dR = (theta - radiusR) / sigma;
+  let dG = (theta - radiusG) / sigma;
+  let dB = (theta - radiusB) / sigma;
+  return vec3<f32>(exp(-dR * dR), exp(-dG * dG), exp(-dB * dB));
+}
+
+// The physically-parameterized cold-optics features: 22 + 46 dispersed
+// halos, the upper tangent arc, and light pillars. Returns the ADDITIVE RGB
+// contribution BEFORE the master intensity / sun-up scaling (the caller
+// applies those). `theta` is the angular separation from the sun (radians);
+// `haloRadius` / `haloWidth` are the legacy 22 radius + ring sigma reused as
+// the dispersion centre + width so the advanced 22 halo lines up with the
+// legacy one. `rayDir` / `sunDir` / `up` are the world-space view ray, sun
+// direction, and local up.
+fn coldOpticsAdvanced(
+  theta: f32,
+  haloRadius: f32,
+  haloWidth: f32,
+  rayDir: vec3<f32>,
+  sunDir: vec3<f32>,
+  up: vec3<f32>
+) -> vec3<f32> {
+  // Minimum-deviation angles. The 22 halo (60 prism) disperses red ~21.5
+  // -> blue ~22.5; the 46 halo (90 prism faces) disperses red ~45.7 ->
+  // blue ~46.5. Centre the 22 dispersion on the legacy radius so the
+  // advanced ring sits exactly where the legacy ring did.
+  let r22R = haloRadius - 0.5 * DEG2RAD; // red inner
+  let r22G = haloRadius;                 // green centre
+  let r22B = haloRadius + 0.5 * DEG2RAD; // blue outer
+  let r46R = 45.7 * DEG2RAD;
+  let r46G = 46.0 * DEG2RAD;
+  let r46B = 46.5 * DEG2RAD;
+
+  // 22 halo — dispersed ring, inner suppression so it reads as a ring.
+  let ring22 = dispersedRing(theta, r22R, r22G, r22B, haloWidth);
+  let inner22 = smoothstep(
+    haloRadius - 0.5 * DEG2RAD - haloWidth,
+    haloRadius - 0.5 * DEG2RAD,
+    theta
+  );
+  // 46 halo — wider sigma (it's a softer, fainter feature) + inner cut.
+  let sigma46 = haloWidth * 1.6;
+  let ring46 = dispersedRing(theta, r46R, r46G, r46B, sigma46);
+  let inner46 = smoothstep(
+    r46R - sigma46,
+    r46R,
+    theta
+  );
+
+  // Build the sun-local frame for the tangent arc + pillars. right is
+  // horizontal-ish (sun x up); sunLocalUp completes a right-handed basis.
+  // Guard the degenerate sun-straight-up case.
+  var arcAmt = 0.0;
+  var pillarAmt = 0.0;
+  let crossLen = length(cross(sunDir, up));
+  if (crossLen > 0.05) {
+    let sunRight = cross(sunDir, up) / crossLen;
+    let sunLocalUp = normalize(cross(sunRight, sunDir));
+    let vRight = dot(rayDir, sunRight);
+    let vUp = dot(rayDir, sunLocalUp);
+    let vFwd = dot(rayDir, sunDir);
+
+    // ── UPPER TANGENT ARC ───────────────────────────────────────────────
+    // Column crystals (long axis horizontal) refract light into an arc
+    // TANGENT to the 22 halo directly ABOVE the sun. Approximate it as a
+    // brightening of the 22 ring weighted toward the TOP of the ring
+    // (vUp > 0) that bows slightly OUTWARD (its effective radius grows a
+    // touch with azimuth away from straight-up). topWeight peaks at the
+    // top and falls off to the sides; outwardBow nudges the matched radius
+    // out so the arc kisses the halo at the apex and flares above it.
+    let aboveGate = smoothstep(0.0, 0.25, vUp);
+    let topAzimuth = clamp(vUp / max(0.05, sqrt(vUp * vUp + vRight * vRight)), 0.0, 1.0);
+    let topWeight = topAzimuth * topAzimuth * aboveGate;
+    let outwardBow = (1.0 - topWeight) * 1.4 * DEG2RAD;
+    let arcRadius = haloRadius + outwardBow;
+    let dArc = (theta - arcRadius) / (haloWidth * 1.3);
+    arcAmt = exp(-dArc * dArc) * topWeight * smoothstep(0.0, 0.15, vFwd);
+
+    // ── LIGHT PILLARS ──────────────────────────────────────────────────
+    // Plate crystals (basal faces horizontal) act as tiny mirrors,
+    // reflecting the sun into a VERTICAL column through it. Brightest AT
+    // the sun, fading with vertical distance; narrow horizontally so it
+    // stays a column, not a glow. Strongest when the sun is LOW (plate
+    // reflections graze the horizon) — fade with sun elevation.
+    let pillarHalfWidth = 1.2 * DEG2RAD;   // horizontal narrowness
+    let pillarHeight = 11.0 * DEG2RAD;     // vertical extent (1/e)
+    let horizTerm = vRight / pillarHalfWidth;
+    let vertTerm = vUp / pillarHeight;
+    // Gaussian-narrow horizontally, exponential vertical falloff (soft, long
+    // tail upward + a shorter sub-sun pillar below). Forward hemisphere only.
+    let pillarShape = exp(-horizTerm * horizTerm) * exp(-abs(vertTerm));
+    let lowSun = 1.0 - smoothstep(0.10, 0.55, dot(sunDir, up)); // strong when low
+    pillarAmt = pillarShape * smoothstep(0.0, 0.10, vFwd) * lowSun;
+  }
+
+  // Colours. The dispersed rings already carry their own R/G/B weighting, so
+  // tint them only lightly (warm overall). The tangent arc shares the 22
+  // ring's warm-inner lean. Pillars take the sun's own warm-white.
+  let warm = vec3<f32>(1.0, 0.82, 0.62);
+  let pillarColor = vec3<f32>(1.0, 0.86, 0.66);
+
+  // Energy budget: the 22 halo is the brightest advanced feature but still
+  // subtle; the 46 halo is markedly fainter (it really is in the sky); the
+  // tangent arc is a localised brightening; pillars are soft.
+  let halo22 = ring22 * inner22 * warm * 0.55;
+  let halo46 = ring46 * inner46 * warm * 0.22;
+  let arc = warm * arcAmt * 0.6;
+  let pillar = pillarColor * pillarAmt * 0.5;
+
+  return halo22 + halo46 + arc + pillar;
+}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -189,12 +342,25 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   // Sun-dogs are warmer + brighter than the ring; same dispersion lean.
   let dogColor = vec3<f32>(1.0, 0.78, 0.55);
 
-  // ── Compose ──────────────────────────────────────────────────────────
+  // ── Compose (legacy) ─────────────────────────────────────────────────
   // The halo is the fainter feature; the sun-dogs are brighter. Both fade
   // with the sun-up gate and scale with the master intensity. Additive.
   let haloContribution = haloColor * haloAmt * 0.7;
   let dogContribution = dogColor * dogAmt * 1.5;
   let glow = (haloContribution + dogContribution) * intensity * sunUp;
 
-  return vec4<f32>(sceneColor.rgb + glow, sceneColor.a);
+  // ── COLD-OPTICS-HQ (advanced) ────────────────────────────────────────
+  // Gated on params1.w. When OFF this whole block is skipped and the return
+  // below adds only the legacy `glow` — byte-identical to Batch 422. When ON
+  // it ADDS the dispersed 22/46 halos, the upper tangent arc, and light
+  // pillars on top of the legacy contribution.
+  var advGlow = vec3<f32>(0.0, 0.0, 0.0);
+  let advanced = uniforms.params1.w;
+  if (advanced > 0.5) {
+    advGlow = coldOpticsAdvanced(
+      theta, haloRadius, haloWidth, rayDir, sunDir, up
+    ) * intensity * sunUp;
+  }
+
+  return vec4<f32>(sceneColor.rgb + glow + advGlow, sceneColor.a);
 }

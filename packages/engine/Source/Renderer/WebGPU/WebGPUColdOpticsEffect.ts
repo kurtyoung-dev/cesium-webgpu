@@ -21,6 +21,13 @@
  * auto-master gates them from sub-freezing temperature); there is no
  * temperature logic in this file.
  *
+ * COLD-OPTICS-HQ (Batch 442) adds an opt-in `advanced` config flag (carried in
+ * `ColdOpticsUniforms.params1.w`, default 0). When OFF the legacy 22 halo +
+ * sun-dogs render byte-identically; when ON the shader's advanced branch ALSO
+ * draws physically-parameterized 22+46 dispersed halos, an upper tangent arc,
+ * and light pillars. The flag is pushed from `effects.optics.advanced` via the
+ * ad-hoc `scene.coldOpticsAdvanced` scene flag (mirrors the intensity path).
+ *
  * @module WebGPUColdOpticsEffect
  */
 
@@ -59,6 +66,14 @@ export interface ColdOpticsConfig {
    * 0.999999 — the log-depth sky sits at the very top of [0,1].
    */
   skyCutoff?: number;
+  /**
+   * COLD-OPTICS-HQ (Batch 442). When `false` (default) ONLY the legacy 22
+   * halo + sun-dogs render — byte-identical to Batch 422. When `true` the
+   * shader's advanced branch ALSO draws the physically-parameterized 22+46
+   * dispersed halos, the upper tangent arc, and light pillars. Carried in
+   * `ColdOpticsUniforms.params1.w` (0 / 1).
+   */
+  advanced?: boolean;
 }
 
 /**
@@ -135,6 +150,7 @@ export class ColdOpticsEffect implements PostProcessEffect {
       dogRadiusDeg: config.dogRadiusDeg ?? 22.0,
       dogSigmaDeg: config.dogSigmaDeg ?? 1.6,
       skyCutoff: config.skyCutoff ?? 0.999999,
+      advanced: config.advanced ?? false,
     };
   }
 
@@ -157,6 +173,15 @@ export class ColdOpticsEffect implements PostProcessEffect {
       this._config.dogSigmaDeg = config.dogSigmaDeg;
     if (config.skyCutoff !== undefined)
       this._config.skyCutoff = config.skyCutoff;
+    if (config.advanced !== undefined) this._config.advanced = config.advanced;
+  }
+
+  /**
+   * Toggle the COLD-OPTICS-HQ advanced branch at runtime (folded into the next
+   * pack). `false` (default) keeps the byte-identical legacy halo + sun-dogs.
+   */
+  setAdvanced(advanced: boolean): void {
+    this._config.advanced = advanced;
   }
 
   /**
@@ -184,11 +209,14 @@ export class ColdOpticsEffect implements PostProcessEffect {
     f[o++] = this._config.haloWidthDeg * DEG2RAD;
     f[o++] = d.near;
     f[o++] = d.far;
-    // params1: skyCutoff, dogRadiusRad, dogSigmaRad, reserved=1
+    // params1: skyCutoff, dogRadiusRad, dogSigmaRad, advanced flag (0/1).
+    // COLD-OPTICS-HQ (Batch 442): .w drives the shader's advanced branch.
+    // 0 (default) keeps the legacy halo + sun-dogs byte-identical; the WGSL
+    // never reads .w in the legacy path, so off==off is bit-stable.
     f[o++] = this._config.skyCutoff;
     f[o++] = this._config.dogRadiusDeg * DEG2RAD;
     f[o++] = this._config.dogSigmaDeg * DEG2RAD;
-    f[o++] = 1.0;
+    f[o++] = this._config.advanced ? 1.0 : 0.0;
     // inverseProjection mat4 (column-major, 16 floats)
     const ip = d.inverseProjection;
     for (let i = 0; i < 16; i++) {

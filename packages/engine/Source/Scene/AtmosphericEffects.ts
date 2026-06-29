@@ -275,6 +275,13 @@ interface AtmosphericSceneLike {
   coldOpticsEnabled?: boolean;
   coldOpticsIntensity?: number;
   /**
+   * COLD-OPTICS-HQ (Batch 442) opt-in. Pushed from
+   * `effects.optics.advanced`; when true the cold-optics shader draws the
+   * advanced 22+46 dispersed halos, upper tangent arc, and light pillars.
+   * Default-off keeps the legacy halo + sun-dogs byte-identical.
+   */
+  coldOpticsAdvanced?: boolean;
+  /**
    * Flat weather fields the WebGPU weather-particle renderer reads (Phase E).
    * These are the SAME fields the `atmosphericConditions.weather` facade writes
    * (`weather.enabled→scene.enableWeather`, `weather.type→scene.weatherType`,
@@ -302,7 +309,7 @@ interface AtmosphericSceneLike {
         auto?: boolean;
         shimmer?: { enabled: boolean; intensity: number };
         groundFog?: { enabled: boolean; intensity: number };
-        optics?: { enabled: boolean; halo: number };
+        optics?: { enabled: boolean; halo: number; advanced?: boolean };
         precipitation?: { enabled: boolean; type: number; intensity: number };
       };
     };
@@ -376,6 +383,11 @@ export function applyAtmosphericConditions(scene: AtmosphericSceneLike): void {
     // `optics` leaf (enabled + halo strength), mirroring the shimmer block.
     scene.coldOpticsEnabled = state.optics.enabled;
     scene.coldOpticsIntensity = state.optics.halo;
+    // COLD-OPTICS-HQ (Batch 442): the `advanced` sub-flag is a USER opt-in (not
+    // auto-derived from temperature), so it passes straight through from the
+    // hierarchy leaf to the scene flag the cold-optics post-process reads. When
+    // unset it reads false — the legacy halo + sun-dogs path (byte-identical).
+    scene.coldOpticsAdvanced = effects.optics?.advanced === true;
     // Phase E (Batch 423): precipitation → the WebGPU weather-particle renderer.
     // The renderer reads the flat `scene.enableWeather` / `weatherType` /
     // `weatherIntensity` fields (the same ones the `weather` facade writes), so

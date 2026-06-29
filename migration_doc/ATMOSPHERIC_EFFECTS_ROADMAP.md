@@ -125,7 +125,7 @@ no-op on WebGL, like the procedural clouds).
   the 417a auto-master pushes them from `effects.optics` (sub-freezing T). Default OFF, byte-neutral.
   Probe-verified (Principle 8): `probe-cold-optics.mjs` — a complete circular ring centred on the sun (read
   the PNG: textbook 22° halo + the two sun-dogs, sky-only, terrain not overdrawn), 5/8 sectors lit, ring
-  brighter than interior, OFF-stable, 0 device errors. **Light pillars** remain a deferred follow-up.
+  brighter than interior, OFF-stable, 0 device errors. **Light pillars SHIPPED Batch 442** (COLD-OPTICS-HQ, improvement-plan 4.10): plate-crystal vertical pillars through the sun + sun-dogs, behind `effects.optics.advanced` (default off), alongside 22°+46° spectrally-dispersed halos + upper-tangent arc.
 - **Phase E — Precip + snow. [WIRING SHIPPED Batch 423]** Connected the unified `effects.precipitation`
   leaf (and the `atmosphericConditions.weather` facade) to the existing `WebGPUWeatherRenderer` particle
   system (rain/snow/fog/hail already shipped). Three pieces: (1) the env-effects dispatch now builds the
