@@ -363,6 +363,10 @@ interface CesiumFrameState {
           // Batch 431 (FOG-IBL-AMBIENT) — opt-in sky-LUT/IBL fog ambient.
           // Default false keeps the flat-constant ambient byte-identical.
           iblAmbient?: boolean;
+          // Batch 435 (FOG-TEMPORAL) — opt-in temporal reprojection + blue-
+          // noise jitter accumulation for the froxel integrate pass. Default
+          // false skips the resolve pass + history blend (byte-identical).
+          temporal?: boolean;
         };
         lighting?: { enabled?: boolean; moonIntensity?: number };
         varyingAtmosphereDensity?:

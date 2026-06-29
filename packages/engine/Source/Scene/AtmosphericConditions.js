@@ -728,6 +728,23 @@ function buildVolumetricFog() {
     // a flat grey. DEFAULT FALSE keeps the existing constant ambient
     // byte-identical (B18-style opt-in; no perf/visual regression).
     iblAmbient: false,
+    // Batch 435 (FOG-TEMPORAL, improvement-plan 3.5) — opt-in temporal
+    // reprojection + blue-noise jitter for the froxel integrate pass. When
+    // TRUE, the integrate pass jitters each ray's slice-depth phase by blue
+    // noise per frame, reprojects the PREVIOUS frame's integrated 3D
+    // scattering volume via `previousViewProjection`, and exponentially
+    // blends (alpha ~0.05) the current march with the neighborhood-clamped
+    // reprojected history. This amortizes the volume integration across
+    // frames — each frame only needs a fraction of the samples — so the
+    // grazing-ray march cap (Batch 421) is lifted on the temporal path
+    // (the jitter + accumulation reconstruct the full march over N frames).
+    // The history is a DOUBLE-BUFFERED (ping-pong) 3D froxel texture pair,
+    // allocated ONLY when this flag is set; DEFAULT FALSE skips the
+    // reprojection + history blend entirely and leaves the integrate pass
+    // BYTE-IDENTICAL to pre-Batch-435 (the placeholder 1×1 history keeps the
+    // bind-group layout from forking). Fast camera motion is handled by a
+    // neighborhood clamp + disocclusion reject so the volume doesn't ghost.
+    temporal: false,
   };
 }
 

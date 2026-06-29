@@ -33,6 +33,8 @@ import {
   VOLUMETRIC_FOG_PARAMS_BYTES,
   COMPOSITE_UNIFORMS_FLOATS,
   COMPOSITE_UNIFORMS_BYTES,
+  FOG_TEMPORAL_UNIFORMS_FLOATS,
+  FOG_TEMPORAL_UNIFORMS_BYTES,
   getVolumetricFogShaderModuleCache,
 } from "./WebGPUVolumetricFogRenderer.js";
 import type {
@@ -404,6 +406,89 @@ export function buildVolumetricFogResources(
     ],
   });
 
+  // ── Batch 435 (FOG-TEMPORAL) — temporal resolve pass resources ──
+  // The resolve pass reprojects the previous frame's integrated volume,
+  // neighborhood-clamps it, exponentially blends with the current march, and
+  // writes the new history. It is dispatched ONLY when temporal is on; on the
+  // default path the placeholder 1×1×1 history below keeps the BGL valid and
+  // the pass is never recorded (so the integrate output reaches the composite
+  // unchanged → byte-identical parity).
+  //
+  // 1×1×1 placeholder history (storage write + filterable sample) — bound on
+  // the OFF path so the resolve BGL is constant and never forks. Tiny; never
+  // sampled in the parity-default path (the resolve pass doesn't run).
+  const temporalPlaceholderTexture = device.createTexture({
+    label: "VolumetricFog_TemporalPlaceholder",
+    size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+    format: "rgba16float",
+    dimension: "3d",
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const temporalPlaceholderStorageView = temporalPlaceholderTexture.createView({
+    label: "VolumetricFog_TemporalPlaceholder_StorageView",
+    dimension: "3d",
+  });
+  const temporalPlaceholderSampleView = temporalPlaceholderTexture.createView({
+    label: "VolumetricFog_TemporalPlaceholder_SampleView",
+    dimension: "3d",
+  });
+
+  // Linear (non-comparison) sampler for the 3D reprojection lookup — clamps
+  // out-of-grid reprojections to the edge (disocclusion is handled in WGSL by
+  // a UV-range reject, but clamp keeps the sample valid in all cases).
+  const temporalSampler = device.createSampler({
+    label: "VolumetricFog_TemporalSampler",
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+    addressModeW: "clamp-to-edge",
+  });
+
+  // Resolve BGL: temporal uniforms + current integrated (sample) + history
+  // read (sample) + sampler + history write (storage).
+  const temporalResolveBindGroupLayout = makeBindGroupLayout(
+    device,
+    "VolumetricFog_TemporalResolveBGL",
+    [
+      uniformBuffer(0, Stage.COMPUTE),
+      texture(1, Stage.COMPUTE, { viewDimension: "3d" }), // current integrated
+      texture(2, Stage.COMPUTE, { viewDimension: "3d" }), // previous history
+      sampler(3, Stage.COMPUTE),
+      {
+        binding: 4,
+        visibility: Stage.COMPUTE,
+        storageTexture: writeStorageEntry, // new history out (3d rgba16float)
+      },
+    ],
+  );
+
+  const temporalResolveLayout = device.createPipelineLayout({
+    label: "VolumetricFog_TemporalResolveLayout",
+    bindGroupLayouts: [temporalResolveBindGroupLayout],
+  });
+  let temporalResolvePipeline: GPUComputePipeline;
+  if (computeCache) {
+    temporalResolvePipeline = computeCache.getOrCreateSync({
+      name: "VolumetricFog_TemporalResolvePipeline",
+      layout: temporalResolveLayout,
+      compute: { module: computeShaderModule, entryPoint: "temporalResolve" },
+    });
+  } else {
+    temporalResolvePipeline = device.createComputePipeline({
+      label: "VolumetricFog_TemporalResolvePipeline",
+      layout: temporalResolveLayout,
+      compute: { module: computeShaderModule, entryPoint: "temporalResolve" },
+    });
+  }
+
+  const temporalUniformData = new Float32Array(FOG_TEMPORAL_UNIFORMS_FLOATS);
+  const temporalUniformBuffer = device.createBuffer({
+    label: "VolumetricFog_TemporalUniforms",
+    size: Math.max(FOG_TEMPORAL_UNIFORMS_BYTES, 256),
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
   // ── Composite pass resources ──
   // C-R7-SHADER-MODULE-DEDUP (Batch 74) — route the composite shader
   // through the per-device module cache.
@@ -500,6 +585,28 @@ export function buildVolumetricFogResources(
     integrateBindGroupLayout,
     integratePipeline,
     integrateBindGroup,
+    // Batch 435 (FOG-TEMPORAL) — temporal resolve resources. History pair is
+    // NOT allocated here (only when the flag is set, in the renderer); the
+    // placeholder + resolve pipeline are built up-front (cheap) so enabling
+    // temporal at runtime doesn't need a full resource rebuild.
+    temporalHistoryAllocated: false,
+    temporalHistoryTexture: [null, null],
+    temporalHistoryStorageView: [null, null],
+    temporalHistorySampleView: [null, null],
+    temporalRead: 0,
+    temporalFirstFrame: true,
+    temporalPlaceholderTexture,
+    temporalPlaceholderStorageView,
+    temporalPlaceholderSampleView,
+    temporalResolveBindGroupLayout,
+    temporalResolvePipeline,
+    temporalUniformBuffer,
+    temporalUniformData,
+    temporalSampler,
+    temporalResolveBindGroup: null,
+    temporalBoundCurrentView: null,
+    temporalBoundReadView: null,
+    temporalBoundWriteView: null,
     shadowPlaceholderTexture,
     shadowPlaceholderView,
     shadowComparisonSampler,
@@ -524,5 +631,6 @@ export function buildVolumetricFogResources(
     compositeBoundColorView: null,
     compositeBoundDepthView: null,
     compositeBoundOutputFormat: null,
+    compositeBoundFogSourceView: null,
   };
 }

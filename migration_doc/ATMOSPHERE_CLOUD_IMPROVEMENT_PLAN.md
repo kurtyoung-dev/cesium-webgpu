@@ -145,7 +145,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Byte-neutral default — JS packer writes existing ambient floats, WGSL lerp unchanged, LUT sample gated off.
 - **Files:** `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`, `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`.
 
-#### 3.5 — Temporal reprojection + blue-noise jitter for froxel fog (`FOG-TEMPORAL`) — **P1, effort L**
+#### 3.5 — Temporal reprojection + blue-noise jitter for froxel fog (`FOG-TEMPORAL`) — **P1, effort L** — ✅ SHIPPED Batch 435 (3D froxel-volume reproject + 3×3×3 clamp + IGN jitter; no-ghost verified; converges to 0-drift ground truth)
 
 **Shares the temporal pattern with 3.2.**
 

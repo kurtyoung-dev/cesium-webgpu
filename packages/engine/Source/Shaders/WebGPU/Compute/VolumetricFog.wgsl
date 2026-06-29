@@ -182,6 +182,22 @@ struct VolumetricFogParams {
   //   z = ambientScale — reuses `ambientStrength` as the brightness knob.
   //   w = reserved.
   iblAmbient: vec4<f32>,
+
+  // Batch 435 (FOG-TEMPORAL) — blue-noise jitter for the integrate pass.
+  // When `enableJitter` is on, the integrate march offsets each ray's
+  // slice-depth phase by a per-(pixel, frame) blue-noise value so successive
+  // frames sample DIFFERENT depths along the ray; the temporal resolve pass
+  // then accumulates those jittered marches into a stable, high-sample-count
+  // result (amortizing the full march across frames → the grazing-ray cap is
+  // lifted). When `enableJitter` < 0.5 the integrate pass adds NO offset and
+  // is byte-identical to pre-Batch-435.
+  //
+  // temporal:
+  //   x = enableJitter (0/1)
+  //   y = frameIndex (monotonic frame counter, used as the blue-noise seed)
+  //   z = reserved
+  //   w = reserved
+  temporal: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: VolumetricFogParams;
@@ -310,6 +326,20 @@ fn fbm3d(p: vec3<f32>) -> f32 {
     freq = freq * 2.0;
   }
   return (sum / norm) * 2.0 - 1.0;  // Remap [0, 1] → [-1, 1]
+}
+
+// Batch 435 (FOG-TEMPORAL) — interleaved-gradient noise (Jimenez 2014),
+// the de-facto blue-noise dither used for TAA/temporal jitter. Returns a
+// value in [0, 1) that is spatially low-discrepancy (blue-noise-like) across
+// the (px, py) grid and decorrelated frame-to-frame by the frameIndex phase.
+// Cheaper than a precomputed blue-noise texture and good enough to break up
+// the slice-depth banding so the temporal accumulation can average it away.
+fn interleavedGradientNoise(px: f32, py: f32, frameIndex: f32) -> f32 {
+  // Golden-ratio frame rotation so each frame's pattern is a fresh rotation
+  // of the IGN field (the standard "animated blue noise" trick).
+  let x = px + 5.588238 * fract(frameIndex * 0.6180339887);
+  let y = py + 5.588238 * fract(frameIndex * 0.6180339887);
+  return fract(52.9829189 * fract(0.06711056 * x + 0.00583715 * y));
 }
 
 // Phase 5c — sample the sun shadow map at a world-space position.
@@ -793,9 +823,27 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
   var accumScattered = vec3<f32>(0.0);
   var transmittance = 1.0;
 
+  // Batch 435 (FOG-TEMPORAL) — per-(pixel, frame) blue-noise slice-depth
+  // jitter. When the temporal flag is OFF, `jitterPhase` is exactly 0.0 so
+  // the depth slicing below is byte-identical to pre-Batch-435. When ON, each
+  // frame offsets every slice's sampled depth by a fractional [-0.5, 0.5)
+  // sub-slice amount, so successive jittered marches sample different points
+  // along the ray; the temporal resolve pass accumulates them into a clean,
+  // high-effective-sample-count volume (the grazing-ray cap is lifted because
+  // a single frame no longer has to resolve the whole march).
+  var jitterPhase = 0.0;
+  if (u.temporal.x > 0.5) {
+    let ign = interleavedGradientNoise(
+      f32(gid.x), f32(gid.y), u.temporal.y
+    );
+    jitterPhase = ign - 0.5;
+  }
+
   // Pre-compute the previous slice's depth so we can take the slice
   // thickness for extinction. The first slice spans (near, depth(1)).
-  var prevDepth = u.scattering.x; // near plane
+  // The jitter shifts the slice boundaries coherently so the per-slice
+  // thickness stays positive and the march still covers (near, far).
+  var prevDepth = sliceToLinearDepth(jitterPhase, res.z);
 
   for (var k: u32 = 0u; k < depthCount; k = k + 1u) {
     let coord = vec3<i32>(i32(gid.x), i32(gid.y), i32(k));
@@ -805,7 +853,7 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sourceRadiance = s.rgb;
     let density = s.a;
 
-    let curDepth = sliceToLinearDepth(f32(k) + 1.0, res.z);
+    let curDepth = sliceToLinearDepth(f32(k) + 1.0 + jitterPhase, res.z);
     let sliceThickness = max(curDepth - prevDepth, 0.0);
     prevDepth = curDepth;
 
@@ -842,4 +890,173 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
       vec4<f32>(accumScattered, transmittance),
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Pass 4 — Temporal reprojection + accumulation (Batch 435, FOG-TEMPORAL)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Hillaire/Frostbite froxel temporal accumulation. The integrate pass writes
+// the FRESHLY-MARCHED (blue-noise-jittered) current volume to
+// `integratedCurrent`. This pass reprojects the PREVIOUS frame's accumulated
+// history (`temporalHistoryIn`) into the current froxel grid via
+// `previousViewProjection`, neighborhood-clamps it to reject ghosting (Karis
+// 2014), and exponentially blends `mix(clampedHistory, current, alpha)` with a
+// small alpha (~0.05) so the effective sample count is ~1/alpha marches. The
+// result (the new accumulated history) is what the composite samples.
+//
+// This pass is dispatched ONLY when temporal is on; on the parity-default path
+// it is never recorded and the composite samples the raw integrated volume.
+
+struct TemporalUniforms {
+  // Previous-frame world→clip matrix (UniformState.previousViewProjection),
+  // column-major. Reprojects the current froxel world anchor into last frame.
+  previousViewProjection: mat4x4<f32>,
+  // Current-frame inverse view-projection (unproject froxel UV + slice depth →
+  // world position; SAME convention as `froxelWorldPosition`).
+  invViewProj: mat4x4<f32>,
+  // xyz = current camera world position; w = planet inner radius.
+  cameraAndInner: vec4<f32>,
+  // xyz = grid resolution (W, H, D) as f32; w = pad.
+  gridParams: vec4<f32>,
+  // x = nearPlane, y = froxelMaxDistance, z = blend alpha (new-sample weight),
+  // w = firstFrame flag (1.0 → emit current only, identity history seed).
+  depthParams: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> t: TemporalUniforms;
+@group(0) @binding(1) var integratedCurrent: texture_3d<f32>;
+@group(0) @binding(2) var temporalHistoryIn: texture_3d<f32>;
+@group(0) @binding(3) var temporalSampler: sampler;
+@group(0) @binding(4) var temporalHistoryOut: texture_storage_3d<rgba16float, write>;
+
+// Slice index → linear depth (matches `sliceToLinearDepth`, but reads the
+// temporal uniform's near/far so the resolve agrees with the integrate march).
+fn tSliceToLinearDepth(k: f32, slices: f32) -> f32 {
+  let near = t.depthParams.x;
+  let far = t.depthParams.y;
+  let tt = k / max(slices, 1.0);
+  return near * pow(far / max(near, 1e-3), tt);
+}
+
+// Inverse of tSliceToLinearDepth: linear depth → fractional slice index in
+// [0, D]. Used to find which previous-frame slice a reprojected depth lands in.
+fn tLinearDepthToSlice(depth: f32, slices: f32) -> f32 {
+  let near = t.depthParams.x;
+  let far = t.depthParams.y;
+  let ratio = far / max(near, 1e-3);
+  let logR = log(max(ratio, 1.0 + 1e-6));
+  let frac = log(max(depth, 1e-3) / max(near, 1e-3)) / max(logR, 1e-6);
+  return clamp(frac, 0.0, 1.0) * slices;
+}
+
+// Reconstruct the world-space position at a froxel center using the current
+// frame's invViewProj (mirrors `froxelWorldPosition`).
+fn tFroxelWorldPosition(gid: vec3<u32>, res: vec3<f32>) -> vec3<f32> {
+  let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / res.xy;
+  let ndcXY = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  let clipNear = vec4<f32>(ndcXY, 0.0, 1.0);
+  let clipFar = vec4<f32>(ndcXY, 1.0, 1.0);
+  let worldNear4 = t.invViewProj * clipNear;
+  let worldFar4 = t.invViewProj * clipFar;
+  let worldNear = worldNear4.xyz / worldNear4.w;
+  let worldFar = worldFar4.xyz / worldFar4.w;
+  let rayDir = normalize(worldFar - worldNear);
+  let linearDepth = tSliceToLinearDepth(f32(gid.z) + 0.5, res.z);
+  return t.cameraAndInner.xyz + rayDir * linearDepth;
+}
+
+// Sample the current integrated volume at an integer froxel (point — the grid
+// IS the data, so a load-equivalent at slice center).
+fn tSampleCurrent(coord: vec3<f32>, res: vec3<f32>) -> vec4<f32> {
+  let uvw = (coord + vec3<f32>(0.5)) / res;
+  return textureSampleLevel(integratedCurrent, temporalSampler, uvw, 0.0);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn temporalResolve(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let res = t.gridParams.xyz;
+  if (gid.x >= u32(res.x) || gid.y >= u32(res.y) || gid.z >= u32(res.z)) {
+    return;
+  }
+  let coordF = vec3<f32>(gid);
+  let coordI = vec3<i32>(gid);
+
+  // Current freshly-marched (jittered) froxel value.
+  let current = tSampleCurrent(coordF, res);
+
+  // FIRST FRAME — history is invalid; write the current sample as the
+  // identity history (no startup flash; TAA/CSM first-frame convention).
+  if (t.depthParams.w > 0.5) {
+    textureStore(temporalHistoryOut, coordI, current);
+    return;
+  }
+
+  // ── 3×3×3 neighborhood AABB of the CURRENT (freshly-marched) volume ──
+  // The reprojected history is clamped into this box to reject ghosting: a
+  // stale history value that disagrees with the current neighborhood (a
+  // freshly-revealed/occluded region under camera motion) is snapped onto the
+  // box so it cannot smear last frame's fog across the new frame.
+  var nMin = current;
+  var nMax = current;
+  for (var dz: i32 = -1; dz <= 1; dz = dz + 1) {
+    for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
+      for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
+        if (dx == 0 && dy == 0 && dz == 0) { continue; }
+        let nc = coordF + vec3<f32>(f32(dx), f32(dy), f32(dz));
+        // Skip out-of-grid neighbors (clamp-to-edge would just duplicate the
+        // edge froxel — harmless, but explicit skip keeps the AABB tight).
+        if (nc.x < 0.0 || nc.y < 0.0 || nc.z < 0.0 ||
+            nc.x >= res.x || nc.y >= res.y || nc.z >= res.z) {
+          continue;
+        }
+        let sN = tSampleCurrent(nc, res);
+        nMin = min(nMin, sN);
+        nMax = max(nMax, sN);
+      }
+    }
+  }
+
+  // ── Reproject this froxel's world anchor into the previous frame ──
+  let worldAnchor = tFroxelWorldPosition(gid, res);
+  let prevClip = t.previousViewProjection * vec4<f32>(worldAnchor, 1.0);
+  // Behind the previous camera (w <= 0) → no valid reprojection; current only.
+  if (prevClip.w <= 0.0) {
+    textureStore(temporalHistoryOut, coordI, current);
+    return;
+  }
+  let prevNdc = prevClip.xyz / prevClip.w;
+  // NDC → UV (same v-flip as the forward froxel reconstruction).
+  let prevUV = vec2<f32>(prevNdc.x * 0.5 + 0.5, 1.0 - (prevNdc.y * 0.5 + 0.5));
+
+  // DISOCCLUSION — reprojected off-screen last frame → no history to blend;
+  // the current freshly-marched sample shows immediately (no trailing hole).
+  if (prevUV.x < 0.0 || prevUV.x > 1.0 || prevUV.y < 0.0 || prevUV.y > 1.0) {
+    textureStore(temporalHistoryOut, coordI, current);
+    return;
+  }
+
+  // Find the previous-frame slice this froxel reprojects to from its depth in
+  // the previous camera's eye space (distance along the previous view ray ≈
+  // distance from the previous camera to the anchor — the froxel grid is
+  // camera-relative so this is the right depth key).
+  let prevCamDist = length(worldAnchor - t.cameraAndInner.xyz);
+  let prevSliceF = tLinearDepthToSlice(prevCamDist, res.z);
+  let prevW = clamp((prevSliceF) / res.z, 0.0, 1.0);
+
+  // Sample history at the reprojected (uv, slice). Trilinear via the 3D
+  // sampler. Then neighborhood-CLAMP into the current 3×3×3 AABB.
+  let prevUVW = vec3<f32>(prevUV.x, prevUV.y, prevW);
+  let historyRaw = textureSampleLevel(
+    temporalHistoryIn, temporalSampler, prevUVW, 0.0
+  );
+  let history = clamp(historyRaw, nMin, nMax);
+
+  // Exponential accumulation: blend the clamped history with the new sample by
+  // the per-frame alpha (history keeps 1-alpha). Holding the camera still,
+  // repeated jittered marches converge to a clean image; under motion the
+  // clamp keeps it crisp.
+  let alpha = clamp(t.depthParams.z, 0.01, 1.0);
+  let result = mix(history, current, alpha);
+  textureStore(temporalHistoryOut, coordI, result);
 }

@@ -144,12 +144,43 @@ export type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
 // existing `ambientTerm = u.occlusion.y` branch byte-for-byte, so the
 // OFF default consumes NONE of these floats — flag-off output is
 // byte-identical to pre-Batch-431.
-export const VOLUMETRIC_FOG_PARAMS_FLOATS = 92;
+//
+// 96 floats (384 bytes) after Batch 435 (FOG-TEMPORAL) — appended 4 floats
+// at offsets 92–95 for the integrate-pass blue-noise jitter:
+//   92..95  temporal (enableJitter, frameIndex, _pad, _pad)
+// When `enableJitter` (offset 92) < 0.5 the integrate pass adds NO jitter
+// to the slice depth, so the OFF default integrate output is byte-identical
+// to pre-Batch-435 (the jitter is the ONLY thing offsets 92–95 drive, and
+// it is gated to zero on the parity path).
+export const VOLUMETRIC_FOG_PARAMS_FLOATS = 96;
 export const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
 /** CompositeUniforms float count: mat4 (16) + 2 × vec4 (8) = 24 floats. */
 export const COMPOSITE_UNIFORMS_FLOATS = 24;
 export const COMPOSITE_UNIFORMS_BYTES = COMPOSITE_UNIFORMS_FLOATS * 4;
+
+/**
+ * Batch 435 (FOG-TEMPORAL) — TemporalUniforms float count for the resolve
+ * pass. MUST equal the WGSL `TemporalUniforms` struct length:
+ *   previousViewProjection (mat4, 16) + invViewProj current (mat4, 16) +
+ *   cameraAndInner (4) + resolution+near+far (vec4 ×… see below):
+ *     0..15   previousViewProjection
+ *     16..31  invViewProj (current frame — reconstruct froxel world pos)
+ *     32..35  cameraAndInner   (camera.xyz, innerRadius)
+ *     36..39  gridParams       (width, height, depth, _pad)  [as f32]
+ *     40..43  depthParams      (near, far/maxDist, alpha, firstFrame)
+ *   = 44 floats.
+ */
+export const FOG_TEMPORAL_UNIFORMS_FLOATS = 44;
+export const FOG_TEMPORAL_UNIFORMS_BYTES = FOG_TEMPORAL_UNIFORMS_FLOATS * 4;
+
+/**
+ * Batch 435 (FOG-TEMPORAL) — per-frame exponential-accumulation blend alpha
+ * (the fraction of the NEW jittered march folded in each frame; history keeps
+ * 1−alpha). ~0.05 → ~20-frame effective history, enough to fully resolve the
+ * jittered march while the neighborhood clamp keeps motion crisp.
+ */
+export const FOG_TEMPORAL_BLEND_ALPHA = 0.05;
 
 /**
  * GPU resources owned by one VolumetricFog renderer instance. Allocated
@@ -194,6 +225,45 @@ export interface VolumetricFogResources {
   integrateBindGroupLayout: GPUBindGroupLayout;
   integratePipeline: GPUComputePipeline;
   integrateBindGroup: GPUBindGroup;
+
+  // Batch 435 (FOG-TEMPORAL) — DOUBLE-BUFFERED (ping-pong) 3D froxel HISTORY
+  // pair + the reproject/clamp/blend resolve pipeline. ALL of this is the
+  // OPT-IN path: on the default (temporal OFF) the history textures are a
+  // shared 1×1×1 PLACEHOLDER (so the resolve BGL never forks and the
+  // integrate pass output is byte-identical), the resolve pass is NEVER
+  // dispatched, and the composite samples `integratedSampleView` exactly as
+  // before. When temporal is ON the full-resolution history pair is
+  // allocated lazily on first use, the integrate pass writes the raw current
+  // march to `integratedTexture`, the resolve pass reprojects the previous
+  // history + blends + writes the new history, and the composite samples the
+  // freshly-written history instead.
+  //
+  // The history matches the froxel volume format/dims (rgba16float, W×H×D)
+  // because it accumulates the integrated 3D scattering volume directly.
+  // `temporalHistoryAllocated` is false until the real pair is built.
+  temporalHistoryAllocated: boolean;
+  temporalHistoryTexture: [GPUTexture | null, GPUTexture | null];
+  temporalHistoryStorageView: [GPUTextureView | null, GPUTextureView | null];
+  temporalHistorySampleView: [GPUTextureView | null, GPUTextureView | null];
+  temporalRead: number; // ping-pong index (0/1) of the history to READ this frame
+  temporalFirstFrame: boolean;
+  // 1×1×1 placeholder history (storage + sample views) bound on the OFF path
+  // so the resolve BGL stays constant and nothing forks.
+  temporalPlaceholderTexture: GPUTexture;
+  temporalPlaceholderStorageView: GPUTextureView;
+  temporalPlaceholderSampleView: GPUTextureView;
+  temporalResolveBindGroupLayout: GPUBindGroupLayout;
+  temporalResolvePipeline: GPUComputePipeline;
+  temporalUniformBuffer: GPUBuffer;
+  temporalUniformData: Float32Array;
+  temporalSampler: GPUSampler;
+  // The resolve bind group is rebuilt only when the read/write history view
+  // identities change (ping-pong flip / (re)allocation), so steady-state
+  // cost is zero.
+  temporalResolveBindGroup: GPUBindGroup | null;
+  temporalBoundCurrentView: GPUTextureView | null;
+  temporalBoundReadView: GPUTextureView | null;
+  temporalBoundWriteView: GPUTextureView | null;
 
   // Phase 5c — sun shadow map placeholder + comparison sampler.
   // The placeholder is a 1×1 depth32float texture cleared to 1.0
@@ -256,6 +326,11 @@ export interface VolumetricFogResources {
   compositeBoundColorView: GPUTextureView | null;
   compositeBoundDepthView: GPUTextureView | null;
   compositeBoundOutputFormat: GPUTextureFormat | null;
+  // Batch 435 (FOG-TEMPORAL) — the 3D fog volume view currently bound at
+  // composite binding 4 (raw integrated volume on the parity path, or the
+  // resolved history view on the temporal path). Part of the bind-group cache
+  // key so the bind group rebuilds when the ping-pong flips / temporal toggles.
+  compositeBoundFogSourceView: GPUTextureView | null;
 }
 
 /**
@@ -292,6 +367,12 @@ class WebGPUVolumetricFogRenderer {
   private _updatesSkippedFrozen = 0;
   private _composites = 0;
   private _lastEnabled = false;
+  // Batch 435 (FOG-TEMPORAL) — monotonic frame counter feeding the
+  // integrate-pass blue-noise jitter seed, and the per-frame "was the resolve
+  // pass run this frame" flag the composite reads to decide which 3D view to
+  // sample (resolved history vs raw integrated volume).
+  private _temporalFrameIndex = 0;
+  private _temporalResolvedThisFrame = false;
 
   constructor(device: GPUDevice) {
     this._device = device;
@@ -400,9 +481,82 @@ class WebGPUVolumetricFogRenderer {
     // Batch 431 (FOG-IBL-AMBIENT) — release the sky-LUT / IBL placeholders.
     r.iblTransmittancePlaceholderTexture.destroy();
     r.iblShPlaceholderBuffer.destroy();
+    // Batch 435 (FOG-TEMPORAL) — release the temporal ping-pong history pair +
+    // placeholder + uniform buffer.
+    r.temporalHistoryTexture[0]?.destroy();
+    r.temporalHistoryTexture[1]?.destroy();
+    r.temporalPlaceholderTexture.destroy();
+    r.temporalUniformBuffer.destroy();
     r.paramsBuffer.destroy();
     r.compositeUniformBuffer.destroy();
     this._resources = null;
+  }
+
+  /**
+   * Batch 435 (FOG-TEMPORAL) — lazily (re)allocate the DOUBLE-BUFFERED
+   * (ping-pong) 3D froxel HISTORY pair, sized to the current froxel volume
+   * (W×H×D, rgba16float — it accumulates the integrated volume). Re-created
+   * when the dimensions change (quality switch rebuilds the whole resource set
+   * so this only re-fires on the FIRST temporal frame after a rebuild). On
+   * (re)allocation the first-frame flag is reset so the next resolve seeds an
+   * identity history (no startup flash). Returns false (caller falls back to
+   * the non-temporal path → raw integrate result) if anything can't build.
+   */
+  private _ensureTemporalHistory(r: VolumetricFogResources): boolean {
+    if (
+      r.temporalHistoryAllocated &&
+      r.temporalHistoryTexture[0] &&
+      r.temporalHistoryTexture[1]
+    ) {
+      return true;
+    }
+    try {
+      const usage =
+        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
+      for (let i = 0; i < 2; i++) {
+        const tex = this._device.createTexture({
+          label: `VolumetricFog_TemporalHistory_${i}`,
+          size: {
+            width: r.width,
+            height: r.height,
+            depthOrArrayLayers: r.depth,
+          },
+          format: "rgba16float",
+          dimension: "3d",
+          usage,
+        });
+        r.temporalHistoryTexture[i] = tex;
+        r.temporalHistoryStorageView[i] = tex.createView({
+          label: `VolumetricFog_TemporalHistory_${i}_StorageView`,
+          dimension: "3d",
+        });
+        r.temporalHistorySampleView[i] = tex.createView({
+          label: `VolumetricFog_TemporalHistory_${i}_SampleView`,
+          dimension: "3d",
+        });
+      }
+      r.temporalRead = 0;
+      r.temporalFirstFrame = true;
+      r.temporalResolveBindGroup = null;
+      r.temporalHistoryAllocated = true;
+      return true;
+    } catch (e) {
+      // Permanent sentinel (CLAUDE.md null-target guard): the flag asked for
+      // temporal but the history pair couldn't allocate — fall back to the
+      // raw integrate result so the fog still renders. Real failure → no
+      // pragma.
+      console.error(
+        `[CesiumJS:webgpu:ctx-?] VolumetricFog temporal history allocation failed (${r.width}x${r.height}x${r.depth}); falling back to non-temporal.`,
+        e,
+      );
+      r.temporalHistoryTexture[0]?.destroy();
+      r.temporalHistoryTexture[1]?.destroy();
+      r.temporalHistoryTexture = [null, null];
+      r.temporalHistoryStorageView = [null, null];
+      r.temporalHistorySampleView = [null, null];
+      r.temporalHistoryAllocated = false;
+      return false;
+    }
   }
 
   /**
@@ -896,6 +1050,20 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[90] = ambientStrengthValue;
     r.paramsData[91] = 0.0;
 
+    // Batch 435 (FOG-TEMPORAL) — integrate-pass blue-noise jitter uniforms
+    // (offsets 92..95). The flag is gated to "fog active AND vf.temporal".
+    // When off, offset 92 is 0.0 → the integrate march adds NO jitter and is
+    // byte-identical to pre-Batch-435 (the jitter is the ONLY consumer of
+    // these floats). `frameIndex` is a monotonic counter feeding the
+    // interleaved-gradient blue-noise seed (golden-ratio frame rotation in
+    // WGSL). This branch only runs when fog is active, so the OFF default is
+    // unchanged.
+    const temporalEnabled = vf?.temporal === true;
+    r.paramsData[92] = temporalEnabled ? 1.0 : 0.0;
+    r.paramsData[93] = this._temporalFrameIndex % 64;
+    r.paramsData[94] = 0.0;
+    r.paramsData[95] = 0.0;
+
     // Rebuild the scattering bind group when the shadow view changes OR
     // (Batch 431) when the IBL transmittance LUT view / SH buffer changes.
     // The placeholder views are the initial state; once a real shadow map
@@ -1001,6 +1169,123 @@ class WebGPUVolumetricFogRenderer {
       pass.dispatchWorkgroups(wgX, wgY, 1);
       pass.end();
     }
+
+    // ── Batch 435 (FOG-TEMPORAL) — temporal reprojection + accumulation ──
+    // Dispatched ONLY when `vf.temporal` is on. Reprojects the previous
+    // accumulated history via `previousViewProjection`, neighborhood-clamps it
+    // (ghost rejection), and exponentially blends with the freshly-marched
+    // (blue-noise-jittered) integrate result → writes the new history, which
+    // the composite then samples. When off this whole block is skipped, the
+    // composite samples the raw integrated volume, and the integrate output
+    // (no jitter) is byte-identical to pre-Batch-435.
+    this._temporalResolvedThisFrame = false;
+    if (temporalEnabled && this._ensureTemporalHistory(r)) {
+      const readIdx = r.temporalRead & 1;
+      const writeIdx = readIdx ^ 1;
+      const readSampleView = r.temporalHistorySampleView[readIdx];
+      const writeStorageView = r.temporalHistoryStorageView[writeIdx];
+      if (readSampleView && writeStorageView) {
+        // Pack TemporalUniforms (44 floats — byte-locked to the WGSL struct).
+        const td = r.temporalUniformData;
+        // previousViewProjection (mat4, 16) — column-major, from UniformState.
+        const us = (
+          context as unknown as {
+            uniformState?: { previousViewProjection?: ArrayLike<number> };
+          }
+        ).uniformState;
+        const prevVP = us?.previousViewProjection;
+        if (prevVP) {
+          for (let i = 0; i < 16; i++) td[i] = prevVP[i];
+        } else {
+          // Identity fallback (first frame before UniformState has a prior VP).
+          for (let i = 0; i < 16; i++) td[i] = i % 5 === 0 ? 1.0 : 0.0;
+        }
+        // invViewProj current (mat4, 16) — reuse the same matrix the integrate
+        // march used so the resolve reconstructs identical froxel world pos.
+        if (invVP) {
+          for (let i = 0; i < 16; i++) td[16 + i] = invVP[i];
+        } else {
+          for (let i = 0; i < 16; i++) td[16 + i] = i % 5 === 0 ? 1.0 : 0.0;
+        }
+        // cameraAndInner (camera.xyz, innerRadius).
+        td[32] = cx;
+        td[33] = cy;
+        td[34] = cz;
+        td[35] = innerRadius;
+        // gridParams (W, H, D as f32, pad).
+        td[36] = r.width;
+        td[37] = r.height;
+        td[38] = r.depth;
+        td[39] = 0.0;
+        // depthParams (near, far/maxDist, alpha, firstFrame).
+        td[40] = frameState.camera?.frustum?.near ?? 1.0;
+        td[41] = froxelMaxDistance;
+        td[42] = FOG_TEMPORAL_BLEND_ALPHA;
+        td[43] = r.temporalFirstFrame ? 1.0 : 0.0;
+        device.queue.writeBuffer(
+          r.temporalUniformBuffer,
+          0,
+          td.buffer,
+          td.byteOffset,
+          td.byteLength,
+        );
+
+        // Rebuild the resolve bind group when the read/write history view
+        // identities change (ping-pong flip / (re)allocation). Steady state
+        // alternates between two cached configurations.
+        if (
+          r.temporalResolveBindGroup === null ||
+          r.temporalBoundCurrentView !== r.integratedSampleView ||
+          r.temporalBoundReadView !== readSampleView ||
+          r.temporalBoundWriteView !== writeStorageView
+        ) {
+          r.temporalResolveBindGroup = device.createBindGroup({
+            label: "VolumetricFog_TemporalResolveBindGroup",
+            layout: r.temporalResolveBindGroupLayout,
+            entries: [
+              { binding: 0, resource: { buffer: r.temporalUniformBuffer } },
+              { binding: 1, resource: r.integratedSampleView },
+              { binding: 2, resource: readSampleView },
+              { binding: 3, resource: r.temporalSampler },
+              { binding: 4, resource: writeStorageView },
+            ],
+          });
+          r.temporalBoundCurrentView = r.integratedSampleView;
+          r.temporalBoundReadView = readSampleView;
+          r.temporalBoundWriteView = writeStorageView;
+        }
+
+        const tPass = encoder.beginComputePass({
+          label: "VolumetricFog_TemporalResolvePass",
+        });
+        tPass.setPipeline(r.temporalResolvePipeline);
+        tPass.setBindGroup(0, r.temporalResolveBindGroup);
+        // Full 3D dispatch over the froxel volume.
+        tPass.dispatchWorkgroups(wgX, wgY, wgZ);
+        tPass.end();
+
+        // Ping-pong: next frame reads what we just wrote. Mark resolved so the
+        // composite samples the freshly-written history view.
+        r.temporalRead = writeIdx;
+        r.temporalFirstFrame = false;
+        this._temporalResolvedThisFrame = true;
+      }
+    } else if (!temporalEnabled && r.temporalHistoryAllocated) {
+      // Flag was turned OFF after being on — free the history pair so the OFF
+      // path goes back to zero extra memory (and re-seeds identity if it's
+      // turned back on later).
+      r.temporalHistoryTexture[0]?.destroy();
+      r.temporalHistoryTexture[1]?.destroy();
+      r.temporalHistoryTexture = [null, null];
+      r.temporalHistoryStorageView = [null, null];
+      r.temporalHistorySampleView = [null, null];
+      r.temporalHistoryAllocated = false;
+      r.temporalResolveBindGroup = null;
+      r.temporalBoundReadView = null;
+      r.temporalBoundWriteView = null;
+    }
+
+    this._temporalFrameIndex++;
 
     // Batch 420 — only submit when we created a PRIVATE encoder. When the
     // compute recorded into the main frame encoder, `endFrame()` submits it
@@ -1167,16 +1452,33 @@ class WebGPUVolumetricFogRenderer {
       r.compositeUniformData.byteLength,
     );
 
-    // (Re)build the composite bind group when the input views change.
-    // The output format check is informational only — the composite
-    // pipeline was created with bgra8unorm; if the actual output format
-    // differs the renderpass would fail. Phase 5b can rebuild the
-    // pipeline on demand to match the actual format.
+    // Batch 435 (FOG-TEMPORAL) — the composite samples the 3D fog volume at
+    // binding 4. When temporal resolved this frame, that source is the
+    // freshly-written history (the accumulated, reprojected, clamped result);
+    // otherwise it's the raw integrated volume (parity-default path). The
+    // resolve writes history index `temporalRead` (it flipped at the end of
+    // `update()`, so `temporalRead` now points at the JUST-WRITTEN buffer).
+    let fogSourceView: GPUTextureView = r.integratedSampleView;
+    if (this._temporalResolvedThisFrame) {
+      const writtenIdx = r.temporalRead & 1;
+      const hv = r.temporalHistorySampleView[writtenIdx];
+      if (hv) {
+        fogSourceView = hv;
+      }
+    }
+
+    // (Re)build the composite bind group when the input views change. The fog
+    // source view is part of the cache key so the bind group rebuilds when the
+    // temporal ping-pong flips (or temporal toggles on/off). The output format
+    // check is informational only — the composite pipeline was created with
+    // bgra8unorm; if the actual output format differs the renderpass would
+    // fail (rebuilt in `composite()` above).
     if (
       r.compositeBindGroup === null ||
       r.compositeBoundColorView !== colorView ||
       r.compositeBoundDepthView !== depthView ||
-      r.compositeBoundOutputFormat !== outputFormat
+      r.compositeBoundOutputFormat !== outputFormat ||
+      r.compositeBoundFogSourceView !== fogSourceView
     ) {
       r.compositeBindGroup = device.createBindGroup({
         label: "VolumetricFog_CompositeBindGroup",
@@ -1186,12 +1488,13 @@ class WebGPUVolumetricFogRenderer {
           { binding: 1, resource: r.compositeSampler },
           { binding: 2, resource: colorView },
           { binding: 3, resource: depthView },
-          { binding: 4, resource: r.integratedSampleView },
+          { binding: 4, resource: fogSourceView },
         ],
       });
       r.compositeBoundColorView = colorView;
       r.compositeBoundDepthView = depthView;
       r.compositeBoundOutputFormat = outputFormat;
+      r.compositeBoundFogSourceView = fogSourceView;
     }
 
     // Slice 5c-B Batch 130 — record into the main frame encoder so the
