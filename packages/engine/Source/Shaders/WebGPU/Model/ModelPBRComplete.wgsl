@@ -750,6 +750,20 @@ struct VertexInput {
   //>>ifdef MODEL_HAS_FEATURE_ID_0
   @location(8) featureId0: f32,
   //>>endif
+  // DP-H46a (first increment of the DP-H46 metadata epic) — scalar
+  // property-ATTRIBUTE value from EXT_structural_metadata, uploaded by
+  // `WebGPUModelMetadata.ensureMetadataResources` into vertex buffer
+  // slot 9. Variant-conditional on MODEL_HAS_METADATA so non-metadata
+  // models never allocate the slot (keeps the common-case layout under
+  // Edge's `maxVertexBuffers = 8` cap). The renderer extracts the .x
+  // component of the first GPU-compatible property attribute (normalized
+  // integers are already decoded to f32 on the CPU side per the glTF
+  // `accessor.normalized` rule) and packs it per-vertex. DP-H46b
+  // replaces this single-scalar transport with a generated Metadata
+  // struct populated by codegen.
+  //>>ifdef MODEL_HAS_METADATA
+  @location(9) metadataValue: f32,
+  //>>endif
 };
 
 struct VertexOutput {
@@ -787,7 +801,42 @@ struct VertexOutput {
   // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
   @location(11) v_logDepth: f32,
   //>>endif
+  // DP-H46a — flat-interpolated scalar metadata value carried VS→FS.
+  // @interpolate(flat) matches property-attribute semantics (a metadata
+  // value is per-vertex; flat picks the provoking vertex). Location 12
+  // sits above featureId0 (10) and v_logDepth (11). Variant-conditional
+  // so the OFF path is byte-identical.
+  //>>ifdef MODEL_HAS_METADATA
+  @location(12) @interpolate(flat) metadataValue: f32,
+  //>>endif
 };
+
+// DP-H46a — STUB Metadata struct + no-op initializer (the de-risking
+// scaffold for the DP-H46 metadata epic). In this increment the struct
+// carries a single proven scalar field plus a placeholder; DP-H46b's
+// `MetadataWGSLPipelineStage` replaces this declaration wholesale with a
+// generated chunk (one field per property + a real `initializeMetadata`
+// that samples property textures / reads varyings / `textureLoad`s the
+// property table). The generated chunk is prepended at the single
+// injection point in `WebGPUModelPipelineCache._getOrCreateShaderModule`
+// and supersedes this stub. Behind MODEL_HAS_METADATA so non-metadata
+// models strip it entirely (byte-identical OFF path).
+//>>ifdef MODEL_HAS_METADATA
+struct Metadata {
+  _placeholder: f32,
+  // Proven scalar property-ATTRIBUTE value (DP-H46a deliverable). The
+  // codegen in DP-H46b will name this field after the actual metadata
+  // property; for the de-risk batch it holds the raw attribute scalar.
+  scalarValue: f32,
+};
+
+fn initializeMetadata(metadataValue: f32) -> Metadata {
+  var metadata: Metadata;
+  metadata._placeholder = 0.0;
+  metadata.scalarValue = metadataValue;
+  return metadata;
+}
+//>>endif
 
 @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
@@ -993,6 +1042,13 @@ struct VertexOutput {
   output.featureId0 = input.featureId0;
   //>>else
   output.featureId0 = 0.0;
+  //>>endif
+
+  // DP-H46a — forward the per-vertex scalar metadata value to the FS.
+  // The OFF path strips this entirely (no `output.metadataValue`
+  // member exists when MODEL_HAS_METADATA is clear).
+  //>>ifdef MODEL_HAS_METADATA
+  output.metadataValue = input.metadataValue;
   //>>endif
 
   //>>ifdef LOG_DEPTH
@@ -1359,6 +1415,12 @@ struct FragmentInput {
   @location(10) @interpolate(flat) featureId0: f32,
   //>>ifdef LOG_DEPTH
   @location(11) v_logDepth: f32,
+  //>>endif
+  // DP-H46a — interpolated (flat) scalar metadata value. Stripped when
+  // MODEL_HAS_METADATA is clear so the FragmentInput layout is
+  // byte-identical for non-metadata models.
+  //>>ifdef MODEL_HAS_METADATA
+  @location(12) @interpolate(flat) metadataValue: f32,
   //>>endif
   @builtin(front_facing) frontFacing: bool,
 };
@@ -3235,6 +3297,23 @@ struct FragOutput {
   //     consumers (SSR) need this for proper specular response.
   var out: FragOutput;
   out.color = finalColor;
+  // DP-H46a — metadata data-path proof. When MODEL_HAS_METADATA is set
+  // AND the per-model debug toggle is enabled (`material.motionFlags.z >
+  // 0.5`, driven by `globalThis.CesiumWebGPUMetadataDebug` on the JS
+  // side), override the fragment color with the scalar metadata value so
+  // a Playwright probe can confirm the property-ATTRIBUTE value reached
+  // the shader. The value is read through `initializeMetadata` (the
+  // stub) rather than the varying directly so the proof exercises the
+  // struct/initializer path DP-H46b will replace. The debug toggle keeps
+  // the lit appearance intact when off — the metadata path is purely
+  // additive. DP-H46b/c/d feed the value into the real
+  // `CustomShader`/styling consumer instead of the fragment color.
+  //>>ifdef MODEL_HAS_METADATA
+  if (material.motionFlags.z > 0.5) {
+    let metadata = initializeMetadata(input.metadataValue);
+    out.color = vec4<f32>(metadata.scalarValue, 0.0, 1.0 - metadata.scalarValue, 1.0);
+  }
+  //>>endif
   //>>ifdef CAPTURE_MODE
   //>>else
   out.normalRoughness = vec4<f32>(N, roughness);

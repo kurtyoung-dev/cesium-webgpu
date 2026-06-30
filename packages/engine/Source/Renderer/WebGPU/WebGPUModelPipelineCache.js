@@ -159,6 +159,13 @@ const MATERIAL_DEFINE_MASK = (() => {
   // vertex buffer layout (slot 8 present vs absent) needs its own
   // pipeline variant.
   m |= ShaderDefine.MODEL_HAS_FEATURE_ID_0;
+  // DP-H46a — MODEL_HAS_METADATA adds vertex slot 9 (property-ATTRIBUTE
+  // scalar) AND forks the shader module (struct Metadata + initializer +
+  // the metadataValue varying behind the ifdef). Distinct vertex layout
+  // + distinct module → its own pipeline + shader-module variant, the
+  // same way MODEL_HAS_FEATURE_ID_0 does. Folded into the mask only here;
+  // for non-metadata models the bit is never set so the key is unchanged.
+  m |= ShaderDefine.MODEL_HAS_METADATA;
   return m;
 })();
 
@@ -477,7 +484,11 @@ function _mapGLWrap(glEnum) {
  * @param {boolean} [hasTexCoord1=true] — when false, slot 7 is omitted.
  * @param {boolean} [hasFeatureId0=true] — when false, slot 8 is omitted.
  */
-function createVertexBufferLayout(hasTexCoord1 = true, hasFeatureId0 = true) {
+function createVertexBufferLayout(
+  hasTexCoord1 = true,
+  hasFeatureId0 = true,
+  hasMetadata = false,
+) {
   const layout = [
     // Slot 0: positionMC (vec3<f32>) — ALWAYS present, vertex step
     {
@@ -554,6 +565,24 @@ function createVertexBufferLayout(hasTexCoord1 = true, hasFeatureId0 = true) {
       attributes: [{ shaderLocation: 8, offset: 0, format: "float32" }],
     });
   }
+  if (hasMetadata) {
+    // Slot 9: metadataValue (f32) — DP-H46a. Per-vertex scalar from an
+    // EXT_structural_metadata property ATTRIBUTE. Variant-conditional on
+    // MODEL_HAS_METADATA so non-metadata models never allocate it; the
+    // shader's `//>>ifdef MODEL_HAS_METADATA` block strips the matching
+    // `@location(9)` declaration when the flag is unset. The
+    // BoxTexturedWithPropertyAttributes proof model uses 0..6 + this slot
+    // = 8 buffers (no texCoord1, no featureId0), fitting Edge's
+    // `maxVertexBuffers = 8` cap. A primitive that simultaneously carries
+    // texCoord1 + featureId0 + metadata would need 10 slots — out of
+    // scope for DP-H46a (no such test asset); DP-H46b's generated path
+    // can pack metadata into fewer slots if that combination arises.
+    layout.push({
+      arrayStride: 4,
+      stepMode: "vertex",
+      attributes: [{ shaderLocation: 9, offset: 0, format: "float32" }],
+    });
+  }
   return layout;
 }
 
@@ -583,6 +612,9 @@ function createPipeline(
   // pre-bridge behavior; when the bridge re-enables this gets the
   // current `context._msaaSamples` value baked into the pipeline.
   sampleCount = 1,
+  // DP-H46a — metadata vertex slot 9. Default false keeps every existing
+  // caller's layout unchanged.
+  hasMetadata = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
 
@@ -619,7 +651,11 @@ function createPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
     },
     fragment: {
       module: shaderModule,
@@ -688,6 +724,7 @@ function createPickPipeline(
   doubleSided,
   hasTexCoord1,
   hasFeatureId0,
+  hasMetadata = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. Translucent
@@ -725,7 +762,11 @@ function createPickPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
     },
     fragment: {
       module: shaderModule,
@@ -778,6 +819,7 @@ function createCapturePipeline(
   doubleSided,
   hasTexCoord1,
   hasFeatureId0,
+  hasMetadata = false,
 ) {
   return device.createRenderPipeline({
     label: `Model PBR capture [face=${faceFormat},ds=${doubleSided}]`,
@@ -785,7 +827,11 @@ function createCapturePipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
     },
     fragment: {
       module: shaderModule,
@@ -827,6 +873,7 @@ function createPickHoverPipeline(
   doubleSided,
   hasTexCoord1,
   hasFeatureId0,
+  hasMetadata = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-hover [BLEND,ds=${doubleSided}]`;
@@ -836,7 +883,11 @@ function createPickHoverPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
     },
     fragment: {
       module: shaderModule,
@@ -876,6 +927,7 @@ function createPickPrecisePass1Pipeline(
   doubleSided,
   hasTexCoord1,
   hasFeatureId0,
+  hasMetadata = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-precise pass1 [BLEND,ds=${doubleSided}]`;
@@ -907,7 +959,11 @@ function createPickPrecisePass1Pipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
     },
     fragment: {
       module: shaderModule,
@@ -953,6 +1009,7 @@ function createPickPrecisePass2Pipeline(
   doubleSided,
   hasTexCoord1,
   hasFeatureId0,
+  hasMetadata = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-precise pass2 [BLEND,ds=${doubleSided}]`;
@@ -983,7 +1040,11 @@ function createPickPrecisePass2Pipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
     },
     fragment: {
       module: shaderModule,
@@ -1034,6 +1095,8 @@ function createVelocityPipeline(
   // pipeline as of Batch 143; signature kept for back-compat with the
   // pipeline-cache call site. See multisample comment below.
   sampleCount = 1,
+  // DP-H46a — metadata vertex slot 9.
+  hasMetadata = false,
 ) {
   void sampleCount;
   const cullMode = doubleSided ? "none" : "back";
@@ -1044,7 +1107,11 @@ function createVelocityPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
     },
     fragment: {
       module: shaderModule,
@@ -1108,6 +1175,8 @@ function createClassificationPipeline(
   hasFeatureId0,
   // Session 65 Batch 28 — MSAA sample count.
   sampleCount = 1,
+  // DP-H46a — metadata vertex slot 9.
+  hasMetadata = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model classification [alpha=${alphaMode},ds=${doubleSided}]`;
@@ -1129,7 +1198,11 @@ function createClassificationPipeline(
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
     },
     fragment: {
       module: shaderModule,
@@ -1699,7 +1772,24 @@ class WebGPUModelPipelineCache {
     // buffers or the dispatcher's live buffers, and the FS chunk gates
     // its evaluation on `clusterParams.activeLightCount.x`.
     const clChunk = substituteClusteredLightingGroup(ClusteredLightingChunk, 3);
-    const fullSource = `${clChunk}\n${ModelPBRCompleteWGSL}`;
+    // DP-H46a — metadata WGSL injection seam (first increment of DP-H46).
+    // DP-H46b's `MetadataWGSLPipelineStage` will stash a generated chunk
+    // (the real `struct Metadata` + `initializeMetadata`) on the model's
+    // render resources; it is prepended here at the SAME single injection
+    // point — the same fork pattern as `clChunk` / CAPTURE_MODE — and
+    // REPLACES the stub that lives behind `//>>ifdef MODEL_HAS_METADATA`
+    // in `ModelPBRComplete.wgsl`. In DP-H46a there is no generated chunk
+    // yet (the stub is class-INDEPENDENT — one `_placeholder` + one proven
+    // scalar field — so two metadata models with different classes share
+    // the same compiled module without aliasing), so the prepend is the
+    // empty string and `fullSource` is character-for-character identical
+    // to today for BOTH metadata and non-metadata models. When the
+    // generated chunk lands, the cache key (`effectiveDefines`) must
+    // additionally fold a metadata-class/schema hash ONLY when the bit is
+    // set, so two classes don't alias one module — that hash is deferred
+    // to DP-H46b along with the codegen that makes it necessary.
+    const metadataChunk = this._metadataWGSL ?? "";
+    const fullSource = `${clChunk}\n${metadataChunk}${ModelPBRCompleteWGSL}`;
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
       fullSource,
@@ -1839,6 +1929,8 @@ class WebGPUModelPipelineCache {
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
+    // DP-H46a — metadata vertex slot 9 variant.
+    const hasMetadata = (md & ShaderDefine.MODEL_HAS_METADATA) !== 0;
     // C2-22 — wrap creation in a validation error scope. Synchronous
     // `createRenderPipeline` does NOT throw on a bad shader/layout; it returns an
     // INVALID pipeline whose draws are silently dropped (render-hole). The scope's
@@ -1859,6 +1951,7 @@ class WebGPUModelPipelineCache {
       hasTexCoord1,
       hasFeatureId0,
       this._sampleCount,
+      hasMetadata,
     );
     this._device.popErrorScope().then((error) => {
       if (error) {
@@ -1959,6 +2052,8 @@ class WebGPUModelPipelineCache {
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
+    // DP-H46a — metadata vertex slot 9 variant.
+    const hasMetadata = (md & ShaderDefine.MODEL_HAS_METADATA) !== 0;
     // C2-22 (Batch 418) — the depth-write variant draws into the SAME scene FB
     // MRT targets as `getPipeline` (`createPipeline` with forceDepthWrite=true
     // only flips `depthWriteEnabled`), so the flat-magenta error pipeline is a
@@ -1977,6 +2072,7 @@ class WebGPUModelPipelineCache {
       hasTexCoord1,
       hasFeatureId0,
       this._sampleCount,
+      hasMetadata,
     );
     this._device.popErrorScope().then((error) => {
       if (error) {
@@ -2031,6 +2127,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
     );
     this._pickPipelines.set(key, pipeline);
     return pipeline;
@@ -2073,6 +2170,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
     );
     this._pickHoverPipelines.set(key, pipeline);
     return pipeline;
@@ -2110,6 +2208,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
     );
     this._pickPrecisePass1Pipelines.set(key, pipeline);
     return pipeline;
@@ -2145,6 +2244,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
     );
     this._pickPrecisePass2Pipelines.set(key, pipeline);
     return pipeline;
@@ -2185,6 +2285,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._sampleCount,
+      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
     );
     this._velocityPipelines.set(key, pipeline);
     return pipeline;
@@ -2231,6 +2332,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._sampleCount,
+      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
     );
     this._classificationPipelines.set(key, pipeline);
     return pipeline;
@@ -2294,6 +2396,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
     );
     this._capturePipelines.set(key, pipeline);
     return pipeline;

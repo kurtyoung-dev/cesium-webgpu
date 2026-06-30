@@ -405,6 +405,43 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `GlobeTerrain.wgsl` (FragOutput / makeFragOutput).
    */
   CAPTURE_MODE: 1 << 17,
+
+  /**
+   * Model has EXT_structural_metadata that maps to the shader (DP-H46a,
+   * first increment of the DP-H46 metadata epic). When set,
+   * `ModelPBRComplete.wgsl` activates the `//>>ifdef MODEL_HAS_METADATA`
+   * blocks: a `struct Metadata` declaration, a `fn initializeMetadata()`
+   * initializer, a flat-interpolated `metadataValue` varying carrying a
+   * scalar property-attribute value from the vertex stage to the
+   * fragment stage, and (when `material.metadataDebug != 0`) a debug
+   * fragment-color override that paints the scalar metadata value so the
+   * data path is visually verifiable. When clear, every one of those
+   * blocks is stripped at preprocess time and the shader is
+   * byte-identical to the pre-DP-H46a source — the `//>>else` branches
+   * are empty / the historical (absent) code, so a non-metadata model's
+   * compiled module hash is unchanged.
+   *
+   * In DP-H46a this is the STUB increment: the struct is a single
+   * `_placeholder` plus the proven scalar field, and `initializeMetadata`
+   * is a no-op pass-through of the varying. DP-H46b replaces the stub
+   * with a generated WGSL chunk (one field per property + a real
+   * `initializeMetadata` that samples textures / reads varyings /
+   * `textureLoad`s the property-table). The generated chunk is prepended
+   * at the single injection point in
+   * `WebGPUModelPipelineCache._getOrCreateShaderModule` and REPLACES the
+   * stub only when this bit is set.
+   *
+   * Per-primitive selection: `WebGPUModelRenderer` sets this bit only
+   * when `model.structuralMetadata` is defined AND the primitive maps to
+   * at least one property-ATTRIBUTE (the same presence predicate
+   * `MetadataPipelineStage` uses for property attributes). The bit also
+   * discriminates the vertex layout (an extra metadata vertex slot at
+   * `shaderLocation = 9`), so it participates in the model pipeline cache
+   * key the same way `MODEL_HAS_FEATURE_ID_0` does.
+   *
+   * Consumer: `ModelPBRComplete.wgsl`.
+   */
+  MODEL_HAS_METADATA: 1 << 18,
 } as const);
 
 /**

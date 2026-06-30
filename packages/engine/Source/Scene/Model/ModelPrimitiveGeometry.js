@@ -449,7 +449,12 @@ function getComponentTypeName(data) {
   return "FLOAT";
 }
 
-export { extractPrimitiveGeometry, normalizeColorData, AttributeSemantic };
+export {
+  extractPrimitiveGeometry,
+  normalizeColorData,
+  ensureFloat32,
+  AttributeSemantic,
+};
 export default {
   extractPrimitiveGeometry,
   normalizeColorData,

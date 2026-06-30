@@ -53,6 +53,11 @@ import {
   destroyFeatureIdResources,
   synthesizeImplicitFeatureIdData,
 } from "./WebGPUModelFeatureId.js";
+import {
+  ensureMetadataResources,
+  destroyMetadataResources,
+  resolveMetadataAttributeData,
+} from "./WebGPUModelMetadata.js";
 import Pass from "../Pass.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -744,7 +749,15 @@ function packMaterialUniforms(
   //   z, w: reserved (sky reprojection / disocclusion params, slice 2d)
   data[172] = motionEnabled ? 1.0 : 0.0;
   data[173] = 1.0;
-  data[174] = 0;
+  // DP-H46a — motionFlags.z doubles as the metadata-debug toggle. When
+  // the test hook `globalThis.CesiumWebGPUMetadataDebug` is set, flip it
+  // to 1.0 so the `MODEL_HAS_METADATA` fragment branch paints the scalar
+  // metadata value to the fragment color (the de-risking proof that the
+  // property-ATTRIBUTE value reached the shader). The WGSL branch is
+  // stripped for non-metadata models, so setting this globally is safe —
+  // only metadata models react. Reusing the reserved slot avoids growing
+  // the material UBO (which would break non-metadata byte-identity).
+  data[174] = globalThis.CesiumWebGPUMetadataDebug === true ? 1.0 : 0.0;
   data[175] = 0;
 
   // C-R1-TILE-BATCH (Batch 100) — tileBatchFlags (slot 176-179):
@@ -1351,6 +1364,11 @@ function ensurePrimitiveCache(
     jointsBuffer: null,
     weightsBuffer: null,
     featureIdBuffer: null,
+    // DP-H46a — per-vertex scalar metadata buffer (EXT_structural_metadata
+    // property ATTRIBUTE), bound at vertex slot 9 when MODEL_HAS_METADATA
+    // is set. Created from `geometry.metadataData` below; owned by
+    // `WebGPUModelMetadata.ensureMetadataResources` for the GPU upload.
+    _metadataBuffer: null,
     indexBuffer: null,
     indexCount: 0,
     indexFormat: "uint16",
@@ -1482,6 +1500,18 @@ function ensurePrimitiveCache(
     );
   }
 
+  // DP-H46a — EXT_structural_metadata property-ATTRIBUTE vertex buffer
+  // (slot 9). `geometry.metadataData` is the per-vertex scalar resolved
+  // at the extractPrimitiveGeometry call site; the GPU upload is owned by
+  // `WebGPUModelMetadata.ensureMetadataResources` (parallel to how the
+  // featureId path splits buffer ownership). Only present when the model
+  // has structural metadata mapping to this primitive — otherwise
+  // `geometry.metadataData` is undefined and slot 9 is omitted from the
+  // layout, keeping non-metadata models byte-identical.
+  if (geometry.hasMetadata && defined(geometry.metadataData)) {
+    ensureMetadataResources(device, primCache, geometry.metadataData);
+  }
+
   // Index buffer
   if (defined(geometry.indexData)) {
     primCache.indexFormat =
@@ -1544,6 +1574,16 @@ function ensurePrimitiveCache(
   }
   if (geometry.hasFeatureId0) {
     materialDefines |= ShaderDefine.MODEL_HAS_FEATURE_ID_0;
+  }
+  // DP-H46a — presence gate. Flip MODEL_HAS_METADATA only when the
+  // primitive actually carries a property-ATTRIBUTE scalar (resolved into
+  // `geometry.metadataData` upstream + uploaded above). This adds vertex
+  // slot 9 to the layout + activates the WGSL metadata ifdef blocks. When
+  // unset (the common case), the bit is absent, the layout omits slot 9,
+  // the WGSL preprocessor strips every metadata block, and the model is
+  // byte-identical to the pre-DP-H46a path.
+  if (geometry.hasMetadata && defined(primCache._metadataBuffer)) {
+    materialDefines |= ShaderDefine.MODEL_HAS_METADATA;
   }
   primCache.materialDefines = materialDefines;
   primCache.pipeline = pipelineCache.getPipeline(
@@ -2914,6 +2954,28 @@ function updateWebGPUModel(model, frameState) {
           geometry.hasFeatureId0 = true;
         }
       }
+      // DP-H46a (first increment of the DP-H46 metadata epic) — resolve
+      // the primitive's EXT_structural_metadata property-ATTRIBUTE scalar
+      // here (model + glTFPrimitive in scope), and stash it on `geometry`
+      // so `ensurePrimitiveCache` can upload it into vertex slot 9 + flip
+      // the MODEL_HAS_METADATA variant — exactly mirroring how
+      // `featureId0Data` threads through to slot 8. Resolution is gated on
+      // `model.structuralMetadata` being defined AND the primitive mapping
+      // to a property attribute with readable per-vertex data, so
+      // non-metadata models leave `geometry.metadataData` null and stay
+      // byte-identical. `resolveMetadataAttributeData` short-circuits when
+      // structural metadata is absent (the common case), so the per-frame
+      // cost on non-metadata models is one `defined()` check.
+      if (defined(glTFPrimitive)) {
+        const metadataScalar = resolveMetadataAttributeData(
+          model,
+          glTFPrimitive,
+        );
+        if (defined(metadataScalar)) {
+          geometry.metadataData = metadataScalar.data;
+          geometry.hasMetadata = true;
+        }
+      }
       const material = glTFPrimitive?.material;
       const matInfo = extractMaterialInfo(
         material,
@@ -3221,6 +3283,11 @@ function updateWebGPUModel(model, frameState) {
         (primCache.materialDefines & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
       const hasFeatureId0 =
         (primCache.materialDefines & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
+      // DP-H46a — slot 9 (metadata scalar) is present only on metadata
+      // models. The vertexBuffers array must match the pipeline layout's
+      // slot count exactly or `setVertexBuffer` errors.
+      const hasMetadata =
+        (primCache.materialDefines & ShaderDefine.MODEL_HAS_METADATA) !== 0;
       const vertexBuffers = [
         primCache.positionBuffer,
         primCache.normalBuffer || pipelineCache.defaultNormalBuffer,
@@ -3240,6 +3307,21 @@ function updateWebGPUModel(model, frameState) {
       if (hasFeatureId0) {
         vertexBuffers.push(
           primCache.featureIdBuffer || pipelineCache.defaultFeatureIdBuffer,
+        );
+      }
+      // DP-H46a — metadata scalar at slot 9. Pushed LAST so the array
+      // index matches the layout's final buffer slot. The
+      // `createVertexBufferLayout(... hasMetadata)` declares
+      // `shaderLocation = 9` for this slot regardless of the array
+      // position (WebGPU keys slots by array index, not shaderLocation),
+      // and the renderer keeps the push order in lockstep with the
+      // layout's conditional appends. Falls back to the default
+      // single-element feature-ID buffer (a 1-vertex f32) only as a
+      // never-reached guard — the presence gate guarantees
+      // `_metadataBuffer` exists when this bit is set.
+      if (hasMetadata) {
+        vertexBuffers.push(
+          primCache._metadataBuffer || pipelineCache.defaultFeatureIdBuffer,
         );
       }
 
@@ -4255,6 +4337,9 @@ function destroyWebGPUModelResources(model) {
 
     // Destroy feature ID resources
     destroyFeatureIdResources(pc);
+
+    // DP-H46a — destroy metadata GPU resources (slot-9 vertex buffer).
+    destroyMetadataResources(pc);
 
     // C-R8-EDGE-EMITTER (Batch 45) — destroy per-primitive edge
     // buffers. `edgeResources === false` is the sentinel for
