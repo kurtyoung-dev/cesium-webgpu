@@ -811,32 +811,19 @@ struct VertexOutput {
   //>>endif
 };
 
-// DP-H46a — STUB Metadata struct + no-op initializer (the de-risking
-// scaffold for the DP-H46 metadata epic). In this increment the struct
-// carries a single proven scalar field plus a placeholder; DP-H46b's
-// `MetadataWGSLPipelineStage` replaces this declaration wholesale with a
-// generated chunk (one field per property + a real `initializeMetadata`
-// that samples property textures / reads varyings / `textureLoad`s the
-// property table). The generated chunk is prepended at the single
-// injection point in `WebGPUModelPipelineCache._getOrCreateShaderModule`
-// and supersedes this stub. Behind MODEL_HAS_METADATA so non-metadata
-// models strip it entirely (byte-identical OFF path).
-//>>ifdef MODEL_HAS_METADATA
-struct Metadata {
-  _placeholder: f32,
-  // Proven scalar property-ATTRIBUTE value (DP-H46a deliverable). The
-  // codegen in DP-H46b will name this field after the actual metadata
-  // property; for the de-risk batch it holds the raw attribute scalar.
-  scalarValue: f32,
-};
-
-fn initializeMetadata(metadataValue: f32) -> Metadata {
-  var metadata: Metadata;
-  metadata._placeholder = 0.0;
-  metadata.scalarValue = metadataValue;
-  return metadata;
-}
-//>>endif
+// DP-H46b — the REAL `struct Metadata` + `fn initializeMetadata(...)` +
+// `fn metadataDebugScalar(...)` are now GENERATED per metadata class by
+// `Scene/Model/MetadataWGSLPipelineStage.generateMetadataWGSL` and PREPENDED
+// at the single injection point in
+// `WebGPUModelPipelineCache._getOrCreateShaderModule`. The declarations no
+// longer live here (removing the DP-H46a stub avoids a double-declaration of
+// `struct Metadata`). Only the CALL SITE remains — gated by
+// `//>>ifdef MODEL_HAS_METADATA` so:
+//   • metadata model:    generated chunk prepended → struct/initializer/
+//     accessor exist → the gated call site uses them.
+//   • non-metadata model: bit clear → the prepended chunk is the empty string
+//     AND the ifdef call site is stripped → preprocessed WGSL is
+//     byte-identical to the pre-metadata path (same compiled module).
 
 @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
@@ -3297,21 +3284,25 @@ struct FragOutput {
   //     consumers (SSR) need this for proper specular response.
   var out: FragOutput;
   out.color = finalColor;
-  // DP-H46a — metadata data-path proof. When MODEL_HAS_METADATA is set
-  // AND the per-model debug toggle is enabled (`material.motionFlags.z >
-  // 0.5`, driven by `globalThis.CesiumWebGPUMetadataDebug` on the JS
-  // side), override the fragment color with the scalar metadata value so
-  // a Playwright probe can confirm the property-ATTRIBUTE value reached
-  // the shader. The value is read through `initializeMetadata` (the
-  // stub) rather than the varying directly so the proof exercises the
-  // struct/initializer path DP-H46b will replace. The debug toggle keeps
-  // the lit appearance intact when off — the metadata path is purely
-  // additive. DP-H46b/c/d feed the value into the real
+  // DP-H46b — metadata data-path proof, now through GENERATED codegen.
+  // When MODEL_HAS_METADATA is set AND the per-model debug toggle is enabled
+  // (`material.motionFlags.z > 0.5`, driven by
+  // `globalThis.CesiumWebGPUMetadataDebug` on the JS side), override the
+  // fragment color with the scalar metadata value so a Playwright probe can
+  // confirm the property-ATTRIBUTE value reached the shader. The value flows
+  // through the GENERATED `struct Metadata` + `initializeMetadata` (named
+  // after the real metadata property + applies the class offset/scale) and
+  // the generated `metadataDebugScalar` accessor (which recovers the RAW
+  // transported scalar in [0,1] so the debug gradient matches DP-H46a's stub
+  // output exactly — now proving the codegen path, not a hand-written stub).
+  // The debug toggle keeps the lit appearance intact when off — the metadata
+  // path is purely additive. DP-H46c/d feed the value into the real
   // `CustomShader`/styling consumer instead of the fragment color.
   //>>ifdef MODEL_HAS_METADATA
   if (material.motionFlags.z > 0.5) {
     let metadata = initializeMetadata(input.metadataValue);
-    out.color = vec4<f32>(metadata.scalarValue, 0.0, 1.0 - metadata.scalarValue, 1.0);
+    let metaScalar = metadataDebugScalar(metadata);
+    out.color = vec4<f32>(metaScalar, 0.0, 1.0 - metaScalar, 1.0);
   }
   //>>endif
   //>>ifdef CAPTURE_MODE

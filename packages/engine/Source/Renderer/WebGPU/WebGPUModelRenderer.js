@@ -58,6 +58,7 @@ import {
   destroyMetadataResources,
   resolveMetadataAttributeData,
 } from "./WebGPUModelMetadata.js";
+import { generateMetadataWGSL } from "../../Scene/Model/MetadataWGSLPipelineStage.js";
 import Pass from "../Pass.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -471,6 +472,17 @@ function getOrCreateModelCaptureCommands(
       rec.materialDefines,
       frameState,
     );
+    // DP-H46b — feed the published metadata chunk before building the capture
+    // pipeline so a MODEL_HAS_METADATA capture variant compiles with its
+    // generated `struct Metadata`. Clears for non-metadata records.
+    if (defined(rec.metadataWGSL)) {
+      pipelineCache.setMetadataWGSL(
+        rec.metadataWGSL,
+        rec.metadataClassHash | 0,
+      );
+    } else {
+      pipelineCache.clearMetadataWGSL();
+    }
     const pipeline = pipelineCache.getCapturePipeline(
       rec.alphaMode,
       rec.doubleSided,
@@ -1340,6 +1352,30 @@ function ensurePrevJointMatricesBuffer(device, nodeCache) {
 // ─── Per-Primitive Cache ─────────────────────────────────────────────────────
 
 /**
+ * DP-H46b — push a primitive's generated metadata WGSL chunk + class hash
+ * into the (per-Model) pipeline cache immediately before any `getPipeline*`
+ * build, so the compiled module prepends the right `struct Metadata` and is
+ * keyed by the right class. For non-metadata primitives this CLEARS the
+ * cache's metadata state so a stale chunk from a sibling metadata primitive
+ * can't leak in. Cheap (two field writes); must run before every pipeline
+ * (re)build that could compile a fresh module for this primitive.
+ *
+ * @param {WebGPUModelPipelineCache} pipelineCache
+ * @param {object} primCache per-primitive cache slot
+ * @private
+ */
+function applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache) {
+  if (defined(primCache?._metadataWGSL)) {
+    pipelineCache.setMetadataWGSL(
+      primCache._metadataWGSL,
+      primCache._metadataClassHash | 0,
+    );
+  } else {
+    pipelineCache.clearMetadataWGSL();
+  }
+}
+
+/**
  * Creates or retrieves cached GPU resources for a single primitive.
  * @private
  */
@@ -1510,6 +1546,14 @@ function ensurePrimitiveCache(
   // layout, keeping non-metadata models byte-identical.
   if (geometry.hasMetadata && defined(geometry.metadataData)) {
     ensureMetadataResources(device, primCache, geometry.metadataData);
+    // DP-H46b — persist the generated WGSL chunk + class hash on the
+    // primitive cache so every pipeline (re)build for this primitive (color /
+    // pick / depth-write / velocity / classification) prepends the same chunk
+    // and keys its module by the same class. The renderer feeds them to the
+    // pipeline cache via `setMetadataWGSL` immediately before each
+    // `getPipeline*` call below.
+    primCache._metadataWGSL = geometry.metadataWGSL;
+    primCache._metadataClassHash = geometry.metadataClassHash | 0;
   }
 
   // Index buffer
@@ -1586,6 +1630,9 @@ function ensurePrimitiveCache(
     materialDefines |= ShaderDefine.MODEL_HAS_METADATA;
   }
   primCache.materialDefines = materialDefines;
+  // DP-H46b — feed the generated metadata chunk + class hash to the pipeline
+  // cache before the build (no-op clear for non-metadata primitives).
+  applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache);
   primCache.pipeline = pipelineCache.getPipeline(
     matInfo.alphaMode,
     matInfo.isDoubleSided,
@@ -2974,6 +3021,20 @@ function updateWebGPUModel(model, frameState) {
         if (defined(metadataScalar)) {
           geometry.metadataData = metadataScalar.data;
           geometry.hasMetadata = true;
+          // DP-H46b — generate the per-class WGSL chunk (real `struct
+          // Metadata` + `initializeMetadata` + `metadataDebugScalar`) for
+          // this primitive. The codegen resolves the SAME first GPU-compatible
+          // property attribute the scalar transport above carries, so the
+          // generated field + the slot-9 value agree. `generateMetadataWGSL`
+          // returns undefined for non-metadata primitives (already gated by
+          // the `defined(metadataScalar)` branch here). Stash the chunk + its
+          // class hash on `geometry` so `ensurePrimitiveCache` can persist them
+          // on `primCache` + feed the pipeline cache.
+          const metadataCodegen = generateMetadataWGSL(model, glTFPrimitive);
+          if (defined(metadataCodegen)) {
+            geometry.metadataWGSL = metadataCodegen.wgsl;
+            geometry.metadataClassHash = metadataCodegen.classHash;
+          }
         }
       }
       const material = glTFPrimitive?.material;
@@ -2992,6 +3053,12 @@ function updateWebGPUModel(model, frameState) {
         geometry,
         matInfo,
       );
+
+      // DP-H46b — set the pipeline cache's metadata chunk for THIS primitive
+      // before any subsequent pipeline (re)build in this loop iteration
+      // (refetch / depth-write / pick / velocity / classification / translucent
+      // all reuse this primCache). No-op clear for non-metadata primitives.
+      applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache);
 
       // Batch 110 — re-fetch the primary color pipeline when the
       // scene pipeline format generation has bumped since this
@@ -3518,6 +3585,14 @@ function updateWebGPUModel(model, frameState) {
           alphaMode: matInfo.alphaMode,
           doubleSided: matInfo.isDoubleSided,
           materialDefines: primCache.materialDefines | 0,
+          // DP-H46b — carry the generated metadata chunk + class hash so the
+          // capture replay (`getOrCreateModelCaptureCommands`) can prepend the
+          // same `struct Metadata` before building the capture pipeline.
+          // Otherwise a metadata model in the env-capture set would compile a
+          // MODEL_HAS_METADATA module with no `initializeMetadata` declared.
+          // undefined for non-metadata primitives (capture build clears).
+          metadataWGSL: primCache._metadataWGSL,
+          metadataClassHash: primCache._metadataClassHash | 0,
           materialBuffer: primCache.materialBuffer,
           lightBuffer: primCache.lightBuffer,
           textureEntries: primCache.textureEntries,

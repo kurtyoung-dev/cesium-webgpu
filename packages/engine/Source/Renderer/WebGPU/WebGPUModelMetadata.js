@@ -210,6 +210,10 @@ function destroyMetadataResources(primCache) {
     primCache._metadataBuffer.destroy();
     primCache._metadataBuffer = undefined;
   }
+  // DP-H46b — drop the cached generated WGSL chunk + class hash (plain
+  // references, no GPU resource to destroy).
+  primCache._metadataWGSL = undefined;
+  primCache._metadataClassHash = 0;
 }
 
 export {

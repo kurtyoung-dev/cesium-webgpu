@@ -1351,6 +1351,23 @@ class WebGPUModelPipelineCache {
     this._pipelineLayoutCache = new Map();
     this._shaderModuleCache = new Map();
 
+    // DP-H46b — per-metadata-class shader-module cache. The generated
+    // metadata WGSL chunk (`MetadataWGSLPipelineStage.generateMetadataWGSL`)
+    // is class-dependent, so two primitives whose metadata classes differ
+    // must NOT share one compiled module. When MODEL_HAS_METADATA is set,
+    // `_getOrCreateShaderModule` keys here by `${effectiveDefines}:${hash}`
+    // (the class hash supplied by the renderer via `setMetadataWGSL`) instead
+    // of the bitmask-only `_shaderModuleCache`. Non-metadata primitives never
+    // touch this map → their module hash + cache key are unchanged (parity).
+    this._metadataShaderModuleCache = new Map();
+    // The generated chunk + its hash for the primitive whose pipeline is
+    // currently being (re)built. The renderer sets these via `setMetadataWGSL`
+    // immediately before each metadata `getPipeline*` call and clears them
+    // (`clearMetadataWGSL`) for non-metadata primitives so a stale chunk can't
+    // leak into a non-metadata module.
+    this._metadataWGSL = "";
+    this._metadataClassHash = 0;
+
     // Eagerly build the basic variant (materialDefines = 0). Most
     // scenes have at least one non-KHR primitive and the basic layout
     // doubles as a `materialBGL_basic` accessor for renderer code that
@@ -1759,7 +1776,23 @@ class WebGPUModelPipelineCache {
         captureBit |
         (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
-    let module = this._shaderModuleCache.get(effectiveDefines);
+    // DP-H46b — the generated metadata chunk is class-dependent, so when
+    // MODEL_HAS_METADATA is set the module varies by `_metadataClassHash`
+    // (a fingerprint of the generated WGSL) in addition to `effectiveDefines`.
+    // Key the per-cache map (and, below, the device-level Tier-1 cache) by a
+    // STRING composite ONLY in that case; non-metadata modules keep the
+    // numeric `effectiveDefines` key → byte-identical to the pre-metadata
+    // path (same module hash + cache key for plain glTF). The renderer sets
+    // `_metadataWGSL` + `_metadataClassHash` immediately before the metadata
+    // `getPipeline*` call and clears them for non-metadata primitives.
+    const hasMetadata =
+      (effectiveDefines & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+    const metadataClassHash = hasMetadata ? this._metadataClassHash >>> 0 : 0;
+    const moduleKey =
+      metadataClassHash === 0
+        ? effectiveDefines
+        : `${effectiveDefines}#${metadataClassHash}`;
+    let module = this._shaderModuleCache.get(moduleKey);
     if (module) {
       return module;
     }
@@ -1772,32 +1805,73 @@ class WebGPUModelPipelineCache {
     // buffers or the dispatcher's live buffers, and the FS chunk gates
     // its evaluation on `clusterParams.activeLightCount.x`.
     const clChunk = substituteClusteredLightingGroup(ClusteredLightingChunk, 3);
-    // DP-H46a — metadata WGSL injection seam (first increment of DP-H46).
-    // DP-H46b's `MetadataWGSLPipelineStage` will stash a generated chunk
-    // (the real `struct Metadata` + `initializeMetadata`) on the model's
-    // render resources; it is prepended here at the SAME single injection
+    // DP-H46b — metadata WGSL injection seam. `MetadataWGSLPipelineStage`
+    // stashes the generated chunk (the real `struct Metadata` +
+    // `initializeMetadata` + `metadataDebugScalar`, named after the real
+    // metadata class with offset/scale baked) on the cache via
+    // `setMetadataWGSL`; it is prepended here at the SAME single injection
     // point — the same fork pattern as `clChunk` / CAPTURE_MODE — and
-    // REPLACES the stub that lives behind `//>>ifdef MODEL_HAS_METADATA`
-    // in `ModelPBRComplete.wgsl`. In DP-H46a there is no generated chunk
-    // yet (the stub is class-INDEPENDENT — one `_placeholder` + one proven
-    // scalar field — so two metadata models with different classes share
-    // the same compiled module without aliasing), so the prepend is the
-    // empty string and `fullSource` is character-for-character identical
-    // to today for BOTH metadata and non-metadata models. When the
-    // generated chunk lands, the cache key (`effectiveDefines`) must
-    // additionally fold a metadata-class/schema hash ONLY when the bit is
-    // set, so two classes don't alias one module — that hash is deferred
-    // to DP-H46b along with the codegen that makes it necessary.
-    const metadataChunk = this._metadataWGSL ?? "";
+    // SUPERSEDES the (now-removed) DP-H46a stub: `ModelPBRComplete.wgsl`
+    // keeps only the `//>>ifdef MODEL_HAS_METADATA` CALL SITE.
+    //   • metadata primitive:    `metadataChunk` is the generated string →
+    //     `fullSource` declares the real struct, the gated call site uses it.
+    //   • non-metadata primitive: `_metadataWGSL` is "" (the renderer clears
+    //     it before the call) AND the bit is clear → the prepend is empty AND
+    //     the ifdef call site is stripped → `fullSource` is
+    //     character-for-character identical to the pre-metadata path.
+    // The class hash (`metadataClassHash`) is passed as the device-level
+    // cache's `keySalt` ONLY when the bit is set, so two metadata classes
+    // sharing `(sourceId, defines)` get distinct compiled modules (no
+    // aliasing); for non-metadata callers `keySalt === 0` → the device cache
+    // key is unchanged.
+    const metadataChunk = hasMetadata ? (this._metadataWGSL ?? "") : "";
     const fullSource = `${clChunk}\n${metadataChunk}${ModelPBRCompleteWGSL}`;
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
       fullSource,
       effectiveDefines,
-      `Model PBR ShaderModule [defines=${variantHex}]`,
+      `Model PBR ShaderModule [defines=${variantHex}${
+        metadataClassHash !== 0
+          ? ` meta=0x${metadataClassHash.toString(16)}`
+          : ""
+      }]`,
+      metadataClassHash,
     );
-    this._shaderModuleCache.set(effectiveDefines, module);
+    this._shaderModuleCache.set(moduleKey, module);
     return module;
+  }
+
+  /**
+   * DP-H46b — set the generated metadata WGSL chunk + its class hash for the
+   * NEXT `getPipeline*` call. The renderer calls this immediately before
+   * (re)building a metadata primitive's pipelines so
+   * `_getOrCreateShaderModule` prepends the right chunk and keys the module by
+   * the right class. Idempotent; the chunk is consumed by every variant
+   * (color / pick / depth-write / velocity / classification) built for that
+   * primitive in the same pass.
+   *
+   * @param {string} wgsl the generated metadata chunk
+   * @param {number} classHash a stable fingerprint of the generated chunk
+   * @private
+   */
+  setMetadataWGSL(wgsl, classHash) {
+    this._metadataWGSL = wgsl ?? "";
+    this._metadataClassHash = (classHash | 0) >>> 0;
+  }
+
+  /**
+   * DP-H46b — clear the generated metadata WGSL so a subsequent non-metadata
+   * primitive (sharing this per-Model cache) can't inherit a stale chunk. The
+   * MODEL_HAS_METADATA bit gates whether the chunk is prepended at all, so
+   * this is belt-and-suspenders, but it keeps `_metadataClassHash` from
+   * leaking into a metadata primitive of a DIFFERENT class that forgot to set
+   * it. Resets to the byte-identical non-metadata defaults.
+   *
+   * @private
+   */
+  clearMetadataWGSL() {
+    this._metadataWGSL = "";
+    this._metadataClassHash = 0;
   }
 
   /**

@@ -48,7 +48,15 @@ import { preprocess } from "./WebGPUShaderPreprocessor.js";
 
 export class WebGPUShaderModuleCache {
   private _device: GPUDevice;
-  private _modules = new Map<number, GPUShaderModule>();
+  // Keys are numeric (`(sourceId & 0xff) | ((defines & 0xffffff) << 8)`) for
+  // the common, source-stable path. DP-H46b — when a caller passes a non-zero
+  // `keySalt` (a per-source content fingerprint, e.g. the metadata-class hash
+  // for the GENERATED `struct Metadata` chunk), the key becomes the STRING
+  // `"<numericKey>#<salt>"` so two callers that share `(sourceId, defines)`
+  // but supply DIFFERENT source content don't alias one compiled module.
+  // `keySalt === 0` (the default) keeps the numeric key byte-identical to the
+  // pre-DP-H46b path → parity for every non-metadata caller.
+  private _modules = new Map<number | string, GPUShaderModule>();
 
   constructor(device: GPUDevice) {
     this._device = device;
@@ -71,14 +79,22 @@ export class WebGPUShaderModuleCache {
    * @param label Devtools label for `createShaderModule`. Callers
    *   should include the define set in the label (see `prewarm`) for
    *   easier browser-side diagnostic output.
+   * @param keySalt DP-H46b — optional per-source content fingerprint. When
+   *   non-zero, it's folded into the cache key so two callers that share
+   *   `(sourceId, defines)` but pass DIFFERENT `source` strings (e.g. two
+   *   metadata classes whose generated `Metadata` chunk differs) get
+   *   distinct compiled modules. Defaults to `0` → numeric key unchanged
+   *   (parity for all existing callers).
    */
   getOrCreate(
     sourceId: number,
     source: string,
     defines: number,
     label: string,
+    keySalt = 0,
   ): GPUShaderModule {
-    const key = (sourceId & 0xff) | ((defines & 0xffffff) << 8);
+    const numericKey = (sourceId & 0xff) | ((defines & 0xffffff) << 8);
+    const key = keySalt === 0 ? numericKey : `${numericKey}#${keySalt >>> 0}`;
     let module = this._modules.get(key);
     if (module !== undefined) return module;
 
