@@ -57,6 +57,9 @@ import {
   ensureMetadataResources,
   destroyMetadataResources,
   resolveMetadataAttributeData,
+  // DP-H46c — property TEXTURES.
+  resolvePropertyTextureLayout,
+  ensurePropertyTextureResources,
 } from "./WebGPUModelMetadata.js";
 import { generateMetadataWGSL } from "../../Scene/Model/MetadataWGSLPipelineStage.js";
 import Pass from "../Pass.js";
@@ -1405,6 +1408,11 @@ function ensurePrimitiveCache(
     // is set. Created from `geometry.metadataData` below; owned by
     // `WebGPUModelMetadata.ensureMetadataResources` for the GPU upload.
     _metadataBuffer: null,
+    // DP-H46c — property-texture bind-group entries (bindings 39..),
+    // resolved + uploaded by `ensurePropertyTextureResources`. Spliced into
+    // the merged group-1 bind group when MODEL_HAS_PROPERTY_TEXTURES is set.
+    _propertyTextureResources: null,
+    propertyTextureEntries: null,
     indexBuffer: null,
     indexCount: 0,
     indexFormat: "uint16",
@@ -1546,12 +1554,39 @@ function ensurePrimitiveCache(
   // layout, keeping non-metadata models byte-identical.
   if (geometry.hasMetadata && defined(geometry.metadataData)) {
     ensureMetadataResources(device, primCache, geometry.metadataData);
-    // DP-H46b — persist the generated WGSL chunk + class hash on the
-    // primitive cache so every pipeline (re)build for this primitive (color /
-    // pick / depth-write / velocity / classification) prepends the same chunk
-    // and keys its module by the same class. The renderer feeds them to the
-    // pipeline cache via `setMetadataWGSL` immediately before each
-    // `getPipeline*` call below.
+  }
+  // DP-H46c — property-TEXTURE GPU resources. Upload each unique physical
+  // property texture (sourced from the glTF texture reader, like PBR
+  // textures) + the shared property sampler, producing the bind-group entries
+  // spliced into group 1 below. Only when the primitive maps ≥1 property
+  // texture; non-property-texture models leave `propertyTextureEntries` null
+  // and stay byte-identical.
+  if (geometry.hasPropertyTextures && defined(geometry.propertyTextureLayout)) {
+    const ptResources = ensurePropertyTextureResources(
+      device,
+      primCache,
+      geometry.propertyTextureLayout,
+      (reader) => createGPUTextureFromReader(device, reader, "linear"),
+      pipelineCache.defaultPropertyTexture,
+      pipelineCache.propertyTextureSampler,
+    );
+    if (defined(ptResources)) {
+      // Pad to the full MAX_PROPERTY_TEXTURES BGL slot count with placeholders.
+      primCache.propertyTextureEntries = pipelineCache.propertyTextureEntries(
+        ptResources.entries,
+      );
+    }
+  }
+  // DP-H46b/c — persist the generated WGSL chunk + class hash on the primitive
+  // cache so every pipeline (re)build for this primitive (color / pick /
+  // depth-write / velocity / classification) prepends the same chunk and keys
+  // its module by the same class. The renderer feeds them to the pipeline
+  // cache via `setMetadataWGSL` immediately before each `getPipeline*` call
+  // below. Persisted when the primitive has EITHER attributes or textures.
+  if (
+    (geometry.hasMetadata || geometry.hasPropertyTextures) &&
+    defined(geometry.metadataWGSL)
+  ) {
     primCache._metadataWGSL = geometry.metadataWGSL;
     primCache._metadataClassHash = geometry.metadataClassHash | 0;
   }
@@ -1628,6 +1663,20 @@ function ensurePrimitiveCache(
   // byte-identical to the pre-DP-H46a path.
   if (geometry.hasMetadata && defined(primCache._metadataBuffer)) {
     materialDefines |= ShaderDefine.MODEL_HAS_METADATA;
+  }
+  // DP-H46c — presence gate. Flip MODEL_HAS_PROPERTY_TEXTURES only when the
+  // primitive actually maps ≥1 GPU-compatible property texture AND its
+  // bind-group entries resolved. This selects the property-texture materialBGL
+  // variant (extra sampled-texture bindings 39..) + activates the generated
+  // chunk's binding/sampling code. Independent of MODEL_HAS_METADATA (a model
+  // can have property textures without property attributes, and vice versa).
+  // When unset (the common case), the bit is absent, the minimal materialBGL
+  // is used, and the model is byte-identical to the pre-DP-H46c path.
+  if (
+    geometry.hasPropertyTextures &&
+    defined(primCache.propertyTextureEntries)
+  ) {
+    materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES;
   }
   primCache.materialDefines = materialDefines;
   // DP-H46b — feed the generated metadata chunk + class hash to the pipeline
@@ -1813,6 +1862,20 @@ function getModelTextureEntries(primCache, refractionView, materialDefines) {
         resource: refractionView ?? v.refractionPlaceholder,
       },
     );
+  }
+
+  // 39..: DP-H46c — property-texture block. The renderer resolved + padded
+  // these to the full MAX_PROPERTY_TEXTURES slot count (real textures + 1×1
+  // placeholders) in `ensurePrimitiveCache`. Emitted only when the variant
+  // includes MODEL_HAS_PROPERTY_TEXTURES so non-property-texture models keep
+  // the minimal entry list matching their materialBGL.
+  if (
+    (materialDefines & ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES) !== 0 &&
+    defined(primCache.propertyTextureEntries)
+  ) {
+    for (let i = 0; i < primCache.propertyTextureEntries.length; i++) {
+      entries.push(primCache.propertyTextureEntries[i]);
+    }
   }
 
   return entries;
@@ -3021,15 +3084,30 @@ function updateWebGPUModel(model, frameState) {
         if (defined(metadataScalar)) {
           geometry.metadataData = metadataScalar.data;
           geometry.hasMetadata = true;
-          // DP-H46b — generate the per-class WGSL chunk (real `struct
-          // Metadata` + `initializeMetadata` + `metadataDebugScalar`) for
-          // this primitive. The codegen resolves the SAME first GPU-compatible
-          // property attribute the scalar transport above carries, so the
-          // generated field + the slot-9 value agree. `generateMetadataWGSL`
-          // returns undefined for non-metadata primitives (already gated by
-          // the `defined(metadataScalar)` branch here). Stash the chunk + its
-          // class hash on `geometry` so `ensurePrimitiveCache` can persist them
-          // on `primCache` + feed the pipeline cache.
+        }
+        // DP-H46c — resolve the property-TEXTURE layout (the shared structure
+        // both the binding side here and the codegen consume). Present when
+        // the model maps ≥1 GPU-compatible property texture to this primitive.
+        const propertyTextureLayout = resolvePropertyTextureLayout(
+          model,
+          glTFPrimitive,
+        );
+        if (defined(propertyTextureLayout)) {
+          geometry.propertyTextureLayout = propertyTextureLayout;
+          geometry.hasPropertyTextures = true;
+        }
+        // DP-H46b/c — generate the per-class WGSL chunk (real `struct
+        // Metadata` + `initializeMetadata` + `metadataDebugScalar`, plus
+        // DP-H46c property-texture binding declarations + sampling) for this
+        // primitive. The codegen resolves the SAME first GPU-compatible
+        // property attribute the scalar transport above carries AND the SAME
+        // property-texture layout resolved here, so the generated fields,
+        // the slot-9 value, and the property-texture binding numbers all
+        // agree. `generateMetadataWGSL` returns undefined for primitives with
+        // neither attributes nor textures (plain glTF) → no chunk. Stash the
+        // chunk + class hash on `geometry` so `ensurePrimitiveCache` persists
+        // them on `primCache` + feeds the pipeline cache.
+        if (geometry.hasMetadata || geometry.hasPropertyTextures) {
           const metadataCodegen = generateMetadataWGSL(model, glTFPrimitive);
           if (defined(metadataCodegen)) {
             geometry.metadataWGSL = metadataCodegen.wgsl;

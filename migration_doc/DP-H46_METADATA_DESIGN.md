@@ -4,6 +4,16 @@
 codegen mirroring WebGL's dynamic GLSL generation. Display side (a–d) ships independently
 before the pick producer (e). Derived from the `dp-h46-metadata-design` workflow (2026-06-30).
 
+**Increment progress:** ✅ **DP-H46a SHIPPED** Batch 454 (upload scaffolding + `MODEL_HAS_METADATA`
+bit 1<<18 + stub) · ✅ **DP-H46b SHIPPED** Batch 455 (`MetadataWGSLPipelineStage` codegen for
+property-ATTRIBUTES + `WebGPUShaderModuleCache.keySalt` class-hash) · ✅ **DP-H46c SHIPPED**
+Batch 457 (property-TEXTURE read: `MODEL_HAS_PROPERTY_TEXTURES` bit 1<<19, `buildMaterialBGL`
+variant w/ 4 textures @39-42 + shared sampler @43, `textureSampleLevel` accessors, KHR_texture_transform
+baked, budget-checked). **Remaining:** d (property-TABLES + Metadata*Class/Statistics structs),
+e (pickMetadata producer), f (parity probe + Sandcastle + doc reconcile). Follow-up carried from b:
+full multi-component ATTRIBUTE transport (today only the first scalar over `@location(9)`); from c:
+multi-byte component (UINT16/32) channel-packing (today first-channel scalar; UINT8 corpus covered).
+
 ## Goal
 Port the glTF/3D-Tiles structural-metadata-in-shader pipeline (`EXT_structural_metadata` /
 `EXT_mesh_features`) from GLSL to WGSL so the WebGPU model shader can read metadata properties

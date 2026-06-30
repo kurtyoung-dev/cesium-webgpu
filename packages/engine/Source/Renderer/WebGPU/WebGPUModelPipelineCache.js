@@ -28,6 +28,7 @@
  * @module WebGPUModelPipelineCache
  */
 
+import defined from "../../Core/defined.js";
 import ModelPBRCompleteWGSL from "../../Shaders/WebGPU/Model/ModelPBRComplete.js";
 // C2-22 — flat-magenta fallback shader for failed model PBR pipelines.
 import ErrorPipelineWGSL from "../../Shaders/WebGPU/Model/ErrorPipeline.js";
@@ -57,6 +58,13 @@ import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.j
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// DP-H46c — property-texture binding base + cap, shared with the codegen +
+// renderer so the BGL, shader, and bind-group entries all agree.
+import {
+  PROPERTY_TEXTURE_BINDING_BASE,
+  PROPERTY_TEXTURE_SAMPLER_BINDING,
+  MAX_PROPERTY_TEXTURES,
+} from "./WebGPUModelMetadata.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 162) — per-device shader-module cache so
 // every `WebGPUModelPipelineCache` (one per `Model`) on the same `GPUDevice`
@@ -166,6 +174,13 @@ const MATERIAL_DEFINE_MASK = (() => {
   // same way MODEL_HAS_FEATURE_ID_0 does. Folded into the mask only here;
   // for non-metadata models the bit is never set so the key is unchanged.
   m |= ShaderDefine.MODEL_HAS_METADATA;
+  // DP-H46c — MODEL_HAS_PROPERTY_TEXTURES adds the property-texture
+  // (texture, sampler) binding block (39..) to the material BGL +
+  // pipeline layout AND the generated chunk's binding/sampling code. It's
+  // a NEW materialBGL variant (more sampled textures) + a distinct module,
+  // so it participates in the key the same way MODEL_HAS_KHR_TEXTURES does.
+  // For non-property-texture models the bit is never set → key unchanged.
+  m |= ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES;
   return m;
 })();
 
@@ -293,6 +308,23 @@ function buildMaterialBGL(device, materialDefines) {
     sampler(38, Stage.FRAGMENT, "non-filtering"),
   );
 
+  // 39..: DP-H46c — property-texture block. Gated on
+  // MODEL_HAS_PROPERTY_TEXTURES. When set, append `MAX_PROPERTY_TEXTURES`
+  // texture bindings (39 + k) + ONE shared sampler binding
+  // (PROPERTY_TEXTURE_SAMPLER_BINDING). The generated metadata chunk declares
+  // only the texture bindings it actually samples (≤ the cap); the extra BGL
+  // entries are bound to a 1×1 placeholder by the renderer (a pipeline is
+  // allowed to use a subset of its layout's bindings, but the bind group must
+  // satisfy every BGL entry). Fragment-stage only — property textures are
+  // sampled at the interpolated fragment texCoord. ONE sampler (not one per
+  // texture) keeps the per-stage sampler count under the spec floor of 16.
+  if ((materialDefines & ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES) !== 0) {
+    for (let k = 0; k < MAX_PROPERTY_TEXTURES; k++) {
+      entries.push(texture(PROPERTY_TEXTURE_BINDING_BASE + k, Stage.FRAGMENT));
+    }
+    entries.push(sampler(PROPERTY_TEXTURE_SAMPLER_BINDING, Stage.FRAGMENT));
+  }
+
   // ── Capability check ──
   // Count sampled textures in the assembled layout and compare against
   // the device's reported limit. Fires LOUDLY (a permanent error log
@@ -319,8 +351,29 @@ function buildMaterialBGL(device, materialDefines) {
     throw new Error(msg);
   }
 
+  // DP-H46c — also bound the SAMPLER count. The property-texture block uses one
+  // shared sampler, but the cross-stage `maxSamplersPerShaderStage` limit (16)
+  // counts samplers across ALL bind groups (group 1 here + the effects group
+  // 3). This local check fires if THIS BGL's samplers alone exceed the floor;
+  // the device's pipeline-creation validation is the cross-group backstop.
+  let samplerCount = 0;
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].sampler) {
+      samplerCount++;
+    }
+  }
+  const samplerLimit = device.limits?.maxSamplersPerShaderStage ?? 16;
+  if (samplerCount > samplerLimit) {
+    const variantHex = `0x${(materialDefines >>> 0).toString(16)}`;
+    const msg =
+      `[WebGPU:Model:BGL] materialBGL variant ${variantHex} requires ` +
+      `${samplerCount} samplers but the device only supports ${samplerLimit}.`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+
   const variantHex = `0x${(materialDefines >>> 0).toString(16)}`;
-  const label = `Model Material+Textures+Feature BGL [defines=${variantHex} sampled=${sampledTextureCount}]`;
+  const label = `Model Material+Textures+Feature BGL [defines=${variantHex} sampled=${sampledTextureCount} samplers=${samplerCount}]`;
   return makeBindGroupLayout(device, label, entries);
 }
 
@@ -1502,6 +1555,39 @@ class WebGPUModelPipelineCache {
       addressModeV: "clamp-to-edge",
     });
 
+    // DP-H46c — placeholder property-texture (1×1 black, rgba8unorm/linear)
+    // + a clamp-to-edge sampler. Property metadata values are raw byte
+    // channels, never gamma-encoded, so the placeholder + sampler stay
+    // linear. The placeholder fills the MAX_PROPERTY_TEXTURES BGL slots the
+    // generated shader does NOT sample (a pipeline may use a subset of its
+    // layout's bindings, but the bind group must satisfy every entry), AND
+    // backs a property texture whose glTF image hasn't resolved yet.
+    this._defaultPropertyTexture = device.createTexture({
+      label: "default-property-texture",
+      size: [1, 1],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: this._defaultPropertyTexture },
+      new Uint8Array([0, 0, 0, 255]),
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 },
+    );
+    this._defaultPropertyTextureView =
+      this._defaultPropertyTexture.createView();
+    // glTF property textures default to NEAREST sampling in the corpus
+    // (SimplePropertyTexture's sampler is magFilter/minFilter NEAREST), and
+    // metadata sampling must NOT interpolate raw byte values across texels —
+    // nearest is the correct default for data textures.
+    this._propertyTextureSampler = device.createSampler({
+      label: "property-texture-sampler",
+      magFilter: "nearest",
+      minFilter: "nearest",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+
     // Per-textureInfo sampler cache. glTF textures each carry a
     // `sampler` object with magFilter / minFilter / wrapS / wrapT values;
     // creating a new GPUSampler per distinct combination and reusing it
@@ -1776,17 +1862,22 @@ class WebGPUModelPipelineCache {
         captureBit |
         (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
-    // DP-H46b — the generated metadata chunk is class-dependent, so when
-    // MODEL_HAS_METADATA is set the module varies by `_metadataClassHash`
-    // (a fingerprint of the generated WGSL) in addition to `effectiveDefines`.
-    // Key the per-cache map (and, below, the device-level Tier-1 cache) by a
-    // STRING composite ONLY in that case; non-metadata modules keep the
-    // numeric `effectiveDefines` key → byte-identical to the pre-metadata
-    // path (same module hash + cache key for plain glTF). The renderer sets
+    // DP-H46b/c — the generated metadata chunk is class-dependent, so when
+    // MODEL_HAS_METADATA (property attributes) OR MODEL_HAS_PROPERTY_TEXTURES
+    // (DP-H46c) is set the module varies by `_metadataClassHash` (a
+    // fingerprint of the generated WGSL — which folds in the property-texture
+    // binding numbers too) in addition to `effectiveDefines`. Key the
+    // per-cache map (and, below, the device-level Tier-1 cache) by a STRING
+    // composite ONLY in that case; non-metadata modules keep the numeric
+    // `effectiveDefines` key → byte-identical to the pre-metadata path (same
+    // module hash + cache key for plain glTF). The renderer sets
     // `_metadataWGSL` + `_metadataClassHash` immediately before the metadata
     // `getPipeline*` call and clears them for non-metadata primitives.
     const hasMetadata =
-      (effectiveDefines & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+      (effectiveDefines &
+        (ShaderDefine.MODEL_HAS_METADATA |
+          ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES)) !==
+      0;
     const metadataClassHash = hasMetadata ? this._metadataClassHash >>> 0 : 0;
     const moduleKey =
       metadataClassHash === 0
@@ -2646,6 +2737,62 @@ class WebGPUModelPipelineCache {
   /** @returns {GPUSampler} Non-filtering sampler for the rg32float BRDF LUT. */
   get defaultBrdfLutSampler() {
     return this._defaultBrdfLutSampler;
+  }
+
+  /** @returns {GPUTextureView} DP-H46c 1×1 black placeholder property texture. */
+  get defaultPropertyTextureView() {
+    return this._defaultPropertyTextureView;
+  }
+
+  /** @returns {GPUTexture} DP-H46c 1×1 black placeholder property texture (raw). */
+  get defaultPropertyTexture() {
+    return this._defaultPropertyTexture;
+  }
+
+  /** @returns {GPUSampler} DP-H46c nearest/clamp sampler for property textures. */
+  get propertyTextureSampler() {
+    return this._propertyTextureSampler;
+  }
+
+  /**
+   * DP-H46c — build the full set of `MAX_PROPERTY_TEXTURES` (texture,
+   * sampler) bind-group entries for the property-texture block (bindings
+   * 39..). `realEntries` supplies the resolved physical textures + samplers
+   * (from `WebGPUModelMetadata.ensurePropertyTextureResources`); any slot the
+   * primitive doesn't use is filled with the 1×1 placeholder + the shared
+   * property sampler so the bind group satisfies every BGL entry. The
+   * generated shader only samples the real slots, so the placeholders are
+   * never read.
+   *
+   * @param {Array<GPUBindGroupEntry>} [realEntries] resolved property-texture
+   *   entries; missing bindings get the placeholder.
+   * @returns {Array<GPUBindGroupEntry>}
+   */
+  propertyTextureEntries(realEntries) {
+    const byBinding = new Map();
+    if (defined(realEntries)) {
+      for (let i = 0; i < realEntries.length; i++) {
+        byBinding.set(realEntries[i].binding, realEntries[i]);
+      }
+    }
+    const entries = [];
+    for (let k = 0; k < MAX_PROPERTY_TEXTURES; k++) {
+      const textureBinding = PROPERTY_TEXTURE_BINDING_BASE + k;
+      entries.push(
+        byBinding.get(textureBinding) ?? {
+          binding: textureBinding,
+          resource: this._defaultPropertyTextureView,
+        },
+      );
+    }
+    // Single shared sampler binding.
+    entries.push(
+      byBinding.get(PROPERTY_TEXTURE_SAMPLER_BINDING) ?? {
+        binding: PROPERTY_TEXTURE_SAMPLER_BINDING,
+        resource: this._propertyTextureSampler,
+      },
+    );
+    return entries;
   }
 
   /**

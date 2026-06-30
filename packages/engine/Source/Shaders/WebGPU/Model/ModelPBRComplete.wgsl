@@ -3298,12 +3298,46 @@ struct FragOutput {
   // The debug toggle keeps the lit appearance intact when off — the metadata
   // path is purely additive. DP-H46c/d feed the value into the real
   // `CustomShader`/styling consumer instead of the fragment color.
+  //
+  // DP-H46c — property TEXTURES also flow through the GENERATED
+  // `initializeMetadata`, which now takes the interpolated texCoords so it can
+  // `textureSample` each property texture. The generated `metadataDebugScalar`
+  // prefers the attribute scalar when present, else the first property-texture
+  // property's value — so a property-texture-only model paints a value that
+  // VARIES across the surface with the sampled metadata. The texCoord1 arg
+  // falls back to texCoord0 when the primitive lacks TEXCOORD_1.
+  //
+  // Exactly one path emits (nested ifdef): MODEL_HAS_METADATA passes the real
+  // `input.metadataValue` attribute scalar; its `//>>else` covers the
+  // property-texture-ONLY case (no attribute vertex slot → pass 0.0). A model
+  // carrying BOTH bits takes the attribute branch — `metadataDebugScalar`
+  // prefers the attribute scalar there, so the texture fields are still
+  // sampled by `initializeMetadata` but the proof gradient stays attribute-
+  // sourced. No double-paint.
   //>>ifdef MODEL_HAS_METADATA
   if (material.motionFlags.z > 0.5) {
-    let metadata = initializeMetadata(input.metadataValue);
+    //>>ifdef MODEL_HAS_TEXCOORD_1
+    let metaTC1 = input.texCoord1;
+    //>>else
+    let metaTC1 = input.texCoord0;
+    //>>endif
+    let metadata = initializeMetadata(input.metadataValue, input.texCoord0, metaTC1);
     let metaScalar = metadataDebugScalar(metadata);
     out.color = vec4<f32>(metaScalar, 0.0, 1.0 - metaScalar, 1.0);
   }
+  //>>else
+  //>>ifdef MODEL_HAS_PROPERTY_TEXTURES
+  if (material.motionFlags.z > 0.5) {
+    //>>ifdef MODEL_HAS_TEXCOORD_1
+    let metaTC1 = input.texCoord1;
+    //>>else
+    let metaTC1 = input.texCoord0;
+    //>>endif
+    let metadata = initializeMetadata(0.0, input.texCoord0, metaTC1);
+    let metaScalar = metadataDebugScalar(metadata);
+    out.color = vec4<f32>(metaScalar, 0.0, 1.0 - metaScalar, 1.0);
+  }
+  //>>endif
   //>>endif
   //>>ifdef CAPTURE_MODE
   //>>else

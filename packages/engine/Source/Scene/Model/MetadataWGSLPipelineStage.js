@@ -16,33 +16,49 @@
  * an asset-independent accessor the codegen emits — so the proof exercises
  * the GENERATED struct/initializer, not a hand-written stub.
  *
- * Scope (DP-H46b): property-ATTRIBUTES only. Property TEXTURES (DP-H46c)
- * and property TABLES (DP-H46d) are not yet generated. Transport is the
- * DP-H46a single-scalar vertex path (`@location(9) metadataValue: f32`):
- * the `.x` (first) component of the first GPU-compatible property attribute
- * reaches the shader. The generated struct names its field after the REAL
- * resolved property and applies the property's offset/scale via baked WGSL
- * constants (mirroring `czm_valueTransform`). Multi-component / full-vector
- * transport over additional vertex slots is later work (see the open issue
- * in DP-H46_METADATA_DESIGN.md — the single-scalar slot is a DP-H46a
- * limitation, not a DP-H46b regression).
+ * Scope: property-ATTRIBUTES (DP-H46b) + property TEXTURES (DP-H46c).
+ * Property TABLES (DP-H46d) are not yet generated.
+ *
+ * Property ATTRIBUTES (DP-H46b): transport is the DP-H46a single-scalar
+ * vertex path (`@location(9) metadataValue: f32`): the `.x` (first) component
+ * of the first GPU-compatible property attribute reaches the shader. The
+ * generated struct names its field after the REAL resolved property and
+ * applies the property's offset/scale via baked WGSL constants (mirroring
+ * `czm_valueTransform`). Multi-component / full-vector transport over
+ * additional vertex slots is later work (see DP-H46_METADATA_DESIGN.md).
+ *
+ * Property TEXTURES (DP-H46c): sampled in the FRAGMENT stage at the property's
+ * interpolated `texCoord`. The chunk declares one (texture, sampler) binding
+ * pair per UNIQUE physical property texture — binding numbers from the SHARED
+ * `WebGPUModelMetadata.resolvePropertyTextureLayout`, so they match the BGL
+ * manifest the renderer allocates — and `initializeMetadata` does
+ * `textureSample(...)` at the property's texCoord (optional baked
+ * KHR_texture_transform 3×3 multiply, skipped for identity), channel swizzle,
+ * `unpackTextureInShader`-equivalent unpacking, then offset/scale. Mirrors
+ * `MetadataPipelineStage.addPropertyTexturePropertyMetadata` (:622).
  *
  * Parity: this module runs ONLY when the primitive maps to ≥1 property
- * attribute with readable per-vertex data (the same predicate DP-H46a uses
- * to flip `MODEL_HAS_METADATA`). For non-metadata models it returns
- * `undefined`, no chunk is prepended, the bit stays clear, and the
- * preprocessed WGSL is byte-identical to the pre-metadata path.
+ * attribute with readable per-vertex data OR ≥1 GPU-compatible property
+ * texture (the same predicates DP-H46a/c use to flip `MODEL_HAS_METADATA` /
+ * `MODEL_HAS_PROPERTY_TEXTURES`). For non-metadata models (and attribute-only
+ * models w.r.t. the property-texture path) it returns `undefined` / emits no
+ * property-texture bindings, no chunk is prepended where unneeded, the bit
+ * stays clear, and the preprocessed WGSL is byte-identical to the pre-metadata
+ * path.
  *
  * @private
  * @module MetadataWGSLPipelineStage
  */
 import defined from "../../Core/defined.js";
 import ModelUtility from "./ModelUtility.js";
+import { resolvePropertyTextureLayout } from "../../Renderer/WebGPU/WebGPUModelMetadata.js";
 import {
   getWgslType,
   isWgslCompatible,
   applyValueTransform,
   hashStringFNV1a,
+  buildTexCoordExpr,
+  buildPropertyTextureUnpack,
 } from "./MetadataWGSLHelpers.js";
 
 /**
@@ -187,55 +203,156 @@ function firstComponentExpr(fieldExpr, wgslType) {
 }
 
 /**
- * Generate the WGSL metadata chunk for a primitive, or `undefined` when the
- * primitive carries no GPU-compatible property attribute.
- *
- * The generated chunk:
- *   1. `struct Metadata { <field per property> }`
- *   2. `fn initializeMetadata(metadataValue: f32) -> Metadata` — assigns the
- *      transported scalar (offset/scale applied) to the FIRST property's
- *      field; remaining fields are zero-initialized (their per-vertex data is
- *      not transported in DP-H46b).
- *   3. `fn metadataDebugScalar(metadata: Metadata) -> f32` — returns the RAW
- *      transported scalar in `[0,1]` (the same value DP-H46a's stub proved),
- *      so the `MODEL_HAS_METADATA` debug fragment-color override renders the
- *      identical gradient — now sourced through the generated struct.
+ * DP-H46c — build the per-property-TEXTURE accessor info the codegen needs:
+ * the resolved WGSL type, sanitized field name, and the shared layout entry
+ * (binding numbers, channels, texCoord, transform). The layout is
+ * {@link resolvePropertyTextureLayout}, the SAME structure the binding side
+ * consumes, so the generated `@binding` numbers match the BGL exactly.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
- * @returns {{ wgsl: string, classHash: number, fields: object[] }|undefined}
+ * @param {Set<string>} usedFieldNames field names already taken by property
+ *   attributes (so a texture property colliding on its sanitized name is
+ *   disambiguated)
+ * @returns {{ layout: object, fields: object[] }|undefined}
  * @private
  */
-function generateMetadataWGSL(model, primitive) {
-  const fields = getPropertyAttributeFields(model, primitive);
+function getPropertyTextureFields(model, primitive, usedFieldNames) {
+  const layout = resolvePropertyTextureLayout(model, primitive);
+  if (!defined(layout)) {
+    return undefined;
+  }
+  const fields = [];
+  for (let i = 0; i < layout.properties.length; i++) {
+    const prop = layout.properties[i];
+    const wgslType = getWgslType(prop.classProperty);
+    if (!defined(wgslType)) {
+      continue;
+    }
+    let fieldName = ModelUtility.sanitizeGlslIdentifier(prop.propertyId);
+    if (usedFieldNames.has(fieldName)) {
+      fieldName = `${fieldName}_pt_${i}`;
+    }
+    usedFieldNames.add(fieldName);
+    fields.push({
+      propertyId: prop.propertyId,
+      fieldName,
+      classProperty: prop.classProperty,
+      wgslType,
+      textureBinding: prop.textureBinding,
+      samplerBinding: prop.samplerBinding,
+      channels: prop.channels,
+      texCoord: prop.texCoord,
+      transform: prop.transform,
+      hasTransform: prop.hasTransform,
+    });
+  }
   if (fields.length === 0) {
     return undefined;
   }
+  return { layout, fields };
+}
 
-  // The transported property is the FIRST resolvable field — matches
-  // `WebGPUModelMetadata.resolveMetadataAttributeData`, which extracts the
-  // `.x` of the first GPU-compatible property attribute into vertex slot 9.
-  const transported = fields[0];
+/**
+ * Generate the WGSL metadata chunk for a primitive, or `undefined` when the
+ * primitive carries no GPU-compatible property attribute OR property texture.
+ *
+ * The generated chunk:
+ *   1. (DP-H46c) `@group(1) @binding(N) var propTexK: texture_2d<f32>;` +
+ *      sampler declarations for each unique physical property TEXTURE — the
+ *      binding numbers match the BGL manifest the renderer allocates.
+ *   2. `struct Metadata { <field per property attribute + per property texture> }`
+ *   3. `fn initializeMetadata(metadataValue: f32, texCoord0: vec2<f32>,
+ *      texCoord1: vec2<f32>) -> Metadata` — assigns the property-ATTRIBUTE
+ *      transported scalar (offset/scale applied), and SAMPLES each property
+ *      TEXTURE at its texCoord (optional KHR_texture_transform), swizzles the
+ *      channels, unpacks, and applies offset/scale (DP-H46c).
+ *   4. `fn metadataDebugScalar(metadata: Metadata) -> f32` — returns a scalar
+ *      proof value in `[0,1]`: the RAW transported attribute scalar when a
+ *      property attribute exists, else the first property-texture property's
+ *      first component (so the `MODEL_HAS_PROPERTY_TEXTURES` debug override
+ *      renders a value that VARIES with the sampled metadata).
+ *
+ * @param {Model} model
+ * @param {ModelComponents.Primitive} primitive
+ * @returns {{ wgsl: string, classHash: number, fields: object[],
+ *   propertyTextureLayout: object|undefined }|undefined}
+ * @private
+ */
+function generateMetadataWGSL(model, primitive) {
+  const attributeFields = getPropertyAttributeFields(model, primitive);
+  const usedFieldNames = new Set(attributeFields.map((f) => f.fieldName));
+  const textureResult = getPropertyTextureFields(
+    model,
+    primitive,
+    usedFieldNames,
+  );
+  const textureFields = textureResult?.fields ?? [];
+  const propertyTextureLayout = textureResult?.layout;
+
+  if (attributeFields.length === 0 && textureFields.length === 0) {
+    return undefined;
+  }
+
+  // The transported attribute property is the FIRST resolvable attribute field
+  // — matches `WebGPUModelMetadata.resolveMetadataAttributeData`, which
+  // extracts the `.x` of the first GPU-compatible property attribute into
+  // vertex slot 9. May be undefined for texture-only models.
+  const transported =
+    attributeFields.length > 0 ? attributeFields[0] : undefined;
 
   const lines = [];
   lines.push(
-    "// DP-H46b — GENERATED structural-metadata chunk (property attributes).",
+    "// DP-H46b/c — GENERATED structural-metadata chunk (property attributes + textures).",
   );
   lines.push("// Replaces the DP-H46a stub; declared real per metadata class.");
+
+  // 1. Property-texture binding declarations (DP-H46c). One texture per unique
+  //    physical property texture + ONE shared sampler — binding numbers come
+  //    from the shared layout so they match the BGL the renderer allocates.
+  if (defined(propertyTextureLayout)) {
+    for (let i = 0; i < propertyTextureLayout.textures.length; i++) {
+      const t = propertyTextureLayout.textures[i];
+      lines.push(
+        `@group(1) @binding(${t.textureBinding}) var metadataPropertyTexture${i}: texture_2d<f32>;`,
+      );
+    }
+    // Single shared sampler for every property texture (all share the same
+    // samplerBinding from the layout).
+    const samplerBinding = propertyTextureLayout.textures[0].samplerBinding;
+    lines.push(
+      `@group(1) @binding(${samplerBinding}) var metadataPropertySampler: sampler;`,
+    );
+    lines.push("");
+  }
+
+  // 2. struct Metadata — attribute fields first, then texture fields.
   lines.push("struct Metadata {");
-  for (let i = 0; i < fields.length; i++) {
-    const f = fields[i];
-    lines.push(`  ${f.fieldName}: ${f.wgslType},`);
+  for (let i = 0; i < attributeFields.length; i++) {
+    lines.push(
+      `  ${attributeFields[i].fieldName}: ${attributeFields[i].wgslType},`,
+    );
+  }
+  for (let i = 0; i < textureFields.length; i++) {
+    lines.push(
+      `  ${textureFields[i].fieldName}: ${textureFields[i].wgslType},`,
+    );
   }
   lines.push("};");
   lines.push("");
-  lines.push("fn initializeMetadata(metadataValue: f32) -> Metadata {");
+
+  // 3. initializeMetadata. Texture sampling needs the interpolated texCoords,
+  //    so the signature always carries texCoord0 + texCoord1 (texCoord1 falls
+  //    back to texCoord0 at the call site when the primitive lacks TEXCOORD_1).
+  //    `metadataValue` is the attribute vertex scalar (0.0 for texture-only).
+  lines.push(
+    "fn initializeMetadata(metadataValue: f32, metadataTexCoord0: vec2<f32>, metadataTexCoord1: vec2<f32>) -> Metadata {",
+  );
   lines.push("  var metadata: Metadata;");
-  for (let i = 0; i < fields.length; i++) {
-    const f = fields[i];
+  // Attribute fields.
+  for (let i = 0; i < attributeFields.length; i++) {
+    const f = attributeFields[i];
     if (f === transported) {
-      // Apply the property's offset/scale to the transported scalar, then
-      // widen it into the field's vector/matrix shape (first component).
       const transformed = applyValueTransform(
         "metadataValue",
         "f32",
@@ -244,27 +361,66 @@ function generateMetadataWGSL(model, primitive) {
       const constructed = constructFromScalar(f.wgslType, `(${transformed})`);
       lines.push(`  metadata.${f.fieldName} = ${constructed};`);
     } else {
-      // Non-transported fields zero-initialize (per-vertex data not carried
-      // in DP-H46b's single-scalar path).
       lines.push(`  metadata.${f.fieldName} = ${zeroLiteral(f.wgslType)};`);
     }
+  }
+  // Texture fields (DP-H46c) — sample → swizzle/unpack → offset/scale.
+  for (let i = 0; i < textureFields.length; i++) {
+    const f = textureFields[i];
+    const slot = textureSlotForBinding(propertyTextureLayout, f.textureBinding);
+    const rawTexCoord =
+      f.texCoord === 1 ? "metadataTexCoord1" : "metadataTexCoord0";
+    const texCoordExpr = buildTexCoordExpr(rawTexCoord, f.transform);
+    // `textureSampleLevel(..., 0.0)` (explicit LOD 0, no implicit derivatives)
+    // instead of `textureSample`: (1) WGSL forbids `textureSample` outside
+    // UNIFORM control flow — the metadata debug call site (and any future
+    // styling/CustomShader consumer) samples inside conditional branches, which
+    // is non-uniform; (2) metadata is DATA, not color — mipmapping a packed
+    // byte texture would corrupt the value, so the base level is the correct
+    // (and only sane) sample. Matches WebGL's effective behaviour (property
+    // textures use NEAREST + no mip in the GLSL path).
+    const sampleExpr = `textureSampleLevel(metadataPropertyTexture${slot}, metadataPropertySampler, ${texCoordExpr}, 0.0)`;
+    const unpacked = buildPropertyTextureUnpack(
+      `(${sampleExpr})`,
+      f.channels,
+      f.classProperty,
+      f.wgslType,
+    );
+    const transformed = applyValueTransform(
+      unpacked,
+      f.wgslType,
+      f.classProperty,
+    );
+    lines.push(`  metadata.${f.fieldName} = ${transformed};`);
   }
   lines.push("  return metadata;");
   lines.push("}");
   lines.push("");
-  // Asset-independent proof accessor — returns the RAW transported scalar
-  // (pre-transform), matching DP-H46a's stub output so the debug PNG is
-  // directly comparable. The body still reads through the generated struct
-  // field to prove the codegen wired the value end-to-end.
-  const rawScalar = firstComponentExpr(
-    `metadata.${transported.fieldName}`,
-    transported.wgslType,
-  );
-  // Recover the raw [0,1] value by inverting the (baked) offset/scale so the
-  // debug gradient is identical to DP-H46a regardless of the property's
-  // offset/scale. When the property has no transform, this is the value
-  // directly.
-  const debugBody = invertValueTransform(rawScalar, transported.classProperty);
+
+  // 4. metadataDebugScalar — prefer the attribute scalar (DP-H46a/b parity);
+  //    else the first texture property's first component (recovered to [0,1]).
+  let debugBody;
+  if (defined(transported)) {
+    const rawScalar = firstComponentExpr(
+      `metadata.${transported.fieldName}`,
+      transported.wgslType,
+    );
+    debugBody = invertValueTransform(rawScalar, transported.classProperty);
+  } else {
+    const tex0 = textureFields[0];
+    const rawScalar = firstComponentExpr(
+      `metadata.${tex0.fieldName}`,
+      tex0.wgslType,
+    );
+    // Recover the raw [0,1] proof value by inverting the baked offset/scale.
+    // For the float family (normalized) this is already in [0,1]; for the
+    // integer family the raw byte is rescaled back to [0,1] for the gradient.
+    const inverted = invertValueTransform(rawScalar, tex0.classProperty);
+    const isFloat = tex0.wgslType.indexOf("f32") !== -1;
+    debugBody = isFloat
+      ? inverted
+      : `clamp(f32(${inverted}) / 255.0, 0.0, 1.0)`;
+  }
   lines.push("fn metadataDebugScalar(metadata: Metadata) -> f32 {");
   lines.push(`  return ${debugBody};`);
   lines.push("}");
@@ -273,12 +429,38 @@ function generateMetadataWGSL(model, primitive) {
   const wgsl = lines.join("\n");
 
   // The cache-key hash keys the equivalence class of generated modules. The
-  // generated WGSL string is the canonical, complete fingerprint (it folds
-  // in every field name, type, and baked transform), so hashing it is both
-  // stable and exact: identical WGSL ⇒ identical compiled module.
+  // generated WGSL string is the canonical, complete fingerprint (it folds in
+  // every field name, type, baked transform, AND the property-texture binding
+  // numbers), so hashing it is both stable and exact: identical WGSL ⇒
+  // identical compiled module.
   const classHash = hashStringFNV1a(wgsl);
 
-  return { wgsl, classHash, fields };
+  return {
+    wgsl,
+    classHash,
+    fields: attributeFields,
+    propertyTextureLayout,
+  };
+}
+
+/**
+ * Map a property-texture binding number back to its slot index (0..N-1) in the
+ * layout's `textures` array, so the generated sampling code references the
+ * matching `metadataPropertyTexture${slot}` / `metadataPropertySampler${slot}`
+ * declaration.
+ *
+ * @param {object} layout the property-texture layout
+ * @param {number} textureBinding the property's texture binding number
+ * @returns {number}
+ * @private
+ */
+function textureSlotForBinding(layout, textureBinding) {
+  for (let i = 0; i < layout.textures.length; i++) {
+    if (layout.textures[i].textureBinding === textureBinding) {
+      return i;
+    }
+  }
+  return 0;
 }
 
 /**
@@ -346,8 +528,8 @@ function floatLit(n) {
 
 /**
  * Returns `true` when the primitive maps to ≥1 GPU-compatible property
- * attribute (the codegen would produce a chunk). Cheap presence predicate
- * for callers that only need the gate.
+ * attribute OR property texture (the codegen would produce a chunk). Cheap
+ * presence predicate for callers that only need the gate.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
@@ -355,16 +537,21 @@ function floatLit(n) {
  * @private
  */
 function primitiveHasMetadataWGSL(model, primitive) {
-  return getPropertyAttributeFields(model, primitive).length > 0;
+  if (getPropertyAttributeFields(model, primitive).length > 0) {
+    return true;
+  }
+  return defined(resolvePropertyTextureLayout(model, primitive));
 }
 
 export {
   generateMetadataWGSL,
   getPropertyAttributeFields,
+  getPropertyTextureFields,
   primitiveHasMetadataWGSL,
 };
 export default {
   generateMetadataWGSL,
   getPropertyAttributeFields,
+  getPropertyTextureFields,
   primitiveHasMetadataWGSL,
 };

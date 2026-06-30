@@ -442,6 +442,41 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `ModelPBRComplete.wgsl`.
    */
   MODEL_HAS_METADATA: 1 << 18,
+
+  /**
+   * Model has EXT_structural_metadata property TEXTURES that map to the
+   * shader (DP-H46c). When set, the model material BGL gains a contiguous
+   * block of property-texture (sampled `texture_2d<f32>`) + sampler
+   * bindings starting at group-1 binding 39 (the
+   * `PROPERTY_TEXTURE_BINDING_BASE` in `WebGPUModelPipelineCache`), and the
+   * GENERATED metadata WGSL chunk
+   * (`MetadataWGSLPipelineStage.generateMetadataWGSL`) declares those
+   * bindings + emits `textureSample(...)` accessors inside
+   * `initializeMetadata` for each GPU-compatible property-texture property
+   * (channel swizzle + `czm_unpackTexture*` unpack + class offset/scale,
+   * mirroring `MetadataPipelineStage.addPropertyTexturePropertyMetadata`).
+   *
+   * Unlike property ATTRIBUTES (`MODEL_HAS_METADATA`, vertex-buffer
+   * transport), property textures are sampled in the FRAGMENT stage at the
+   * property's interpolated `texCoord` — so this bit changes only the
+   * material BGL / pipeline layout (a NEW `materialBGL` variant) + the
+   * fragment-stage codegen, NOT the vertex layout. Non-property-texture
+   * models (plain glTF OR attribute-only-metadata) never set the bit, keep
+   * the minimal BGL, and stay byte-identical: the `//>>else` of every gated
+   * block is the historical (absent) code, and the prepended chunk declares
+   * no property-texture bindings.
+   *
+   * Per-primitive selection: `WebGPUModelRenderer` sets this bit only when
+   * `model.structuralMetadata` is defined AND the primitive maps to ≥1
+   * GPU-compatible property-texture property (the same predicate
+   * `MetadataPipelineStage.getPropertyTexturesInfo` uses). The bit
+   * participates in the model material BGL / pipeline / shader-module cache
+   * key (folded into `MATERIAL_DEFINE_MASK`).
+   *
+   * Consumers: `ModelPBRComplete.wgsl` (metadata debug call site) + the
+   * GENERATED metadata chunk.
+   */
+  MODEL_HAS_PROPERTY_TEXTURES: 1 << 19,
 } as const);
 
 /**

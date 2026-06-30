@@ -28,6 +28,7 @@
  * @module MetadataWGSLHelpers
  */
 import defined from "../../Core/defined.js";
+import Matrix3 from "../../Core/Matrix3.js";
 import MetadataComponentType from "../MetadataComponentType.js";
 import MetadataType from "../MetadataType.js";
 
@@ -207,6 +208,127 @@ function applyValueTransform(valueExpression, wgslType, classProperty) {
 }
 
 /**
+ * DP-H46c — build a WGSL `vec2<f32>` texture-coordinate expression for a
+ * property TEXTURE, applying an optional KHR_texture_transform 3×3 matrix as a
+ * baked compile-time constant (NOT an injected identity matrix — callers skip
+ * this entirely when the transform is identity). Mirrors the GLSL
+ * `vec2(transform * vec3(texCoord, 1.0))` path in
+ * `MetadataPipelineStage.addPropertyTexturePropertyMetadata` (:673).
+ *
+ * The 3×3 transform is a `Core/Matrix3` stored COLUMN-major (`m[col*3+row]`).
+ * WGSL `mat3x3<f32>` constructors also take columns, so the 9 values map
+ * directly column-by-column.
+ *
+ * @param {string} texCoordExpr a WGSL `vec2<f32>` expression (the raw uv)
+ * @param {Matrix3|undefined} transform the KHR_texture_transform matrix, or
+ *   undefined / identity to skip
+ * @returns {string} a WGSL `vec2<f32>` expression
+ * @private
+ */
+function buildTexCoordExpr(texCoordExpr, transform) {
+  if (!defined(transform) || Matrix3.equals(transform, Matrix3.IDENTITY)) {
+    return texCoordExpr;
+  }
+  // Matrix3 is column-major: index = column*3 + row.
+  const c = [];
+  for (let i = 0; i < 9; i++) {
+    c.push(wgslFloat(transform[i]));
+  }
+  const matLiteral = `mat3x3<f32>(${c[0]}, ${c[1]}, ${c[2]}, ${c[3]}, ${c[4]}, ${c[5]}, ${c[6]}, ${c[7]}, ${c[8]})`;
+  return `(${matLiteral} * vec3<f32>(${texCoordExpr}, 1.0)).xy`;
+}
+
+/**
+ * DP-H46c — build a WGSL expression that unpacks a sampled property-TEXTURE
+ * value into the property's WGSL type. WGSL texture sampling of an
+ * `rgba8unorm` texture returns normalized `[0,1]` floats, exactly like GLSL
+ * `texture()`. This is the WGSL sibling of
+ * `MetadataClassProperty.unpackTextureInShader` / `unpackTextureInShaderWebGL2`:
+ *
+ *   - normalized integer / float component types → the sampled normalized
+ *     channels ARE the value (`[0,1]`); just swizzle + construct the vecN.
+ *   - unnormalized integer component types → rescale each channel to its raw
+ *     byte (`u32(channel * 255.0 + 0.5)`) and cast to the WGSL int/uint type.
+ *
+ * The property's component count drives how many channels feed each component
+ * (mirrors `channelsPerComponent` in the GLSL unpacker). DP-H46c supports the
+ * common single-byte-per-component case (1 channel per scalar component),
+ * which covers every UINT8 property texture in the test corpus; multi-byte
+ * components (UINT16/UINT32 packed across channels) are not yet emitted (the
+ * `isGpuCompatible` predicate already permits them, but the GLSL-style
+ * little-endian channel packing is follow-up — see the open issue in
+ * DP-H46_METADATA_DESIGN.md). For those the value falls back to the
+ * first-channel scalar so the model still renders.
+ *
+ * @param {string} sampleExpr a WGSL `vec4<f32>` expression (the texture sample)
+ * @param {string} channels the channel swizzle string, e.g. "r", "rg", "rgb"
+ * @param {MetadataClassProperty} classProperty supplies type + normalized flag
+ * @param {string} wgslType the resolved WGSL type for the property
+ * @returns {string} a WGSL expression of type `wgslType`
+ * @private
+ */
+function buildPropertyTextureUnpack(
+  sampleExpr,
+  channels,
+  classProperty,
+  wgslType,
+) {
+  const numChannels = channels.length;
+  const componentCount = getComponentCount(classProperty);
+  const isFloatFamily = wgslType.indexOf("f32") !== -1;
+
+  // Per-component channel slice (matches GLSL channelsPerComponent). When
+  // there's exactly one channel per component (the common UINT8 case) each
+  // component reads a single swizzled channel.
+  const channelsPerComponent = Math.floor(numChannels / componentCount) || 1;
+
+  // The sampled, swizzled channels as a float scalar / vecN.
+  const swizzle = `${sampleExpr}.${channels}`;
+
+  if (isFloatFamily) {
+    // Normalized or float property: the normalized [0,1] sample IS the value.
+    if (wgslType === "f32") {
+      return `${swizzle}`;
+    }
+    // vecN<f32> — construct from the swizzle (already a vecN<f32>).
+    return `${wgslType}(${swizzle})`;
+  }
+
+  // Integer family (unnormalized int/uint). Rescale each channel back to its
+  // raw byte value, then cast. Single channel-per-component fast path.
+  if (channelsPerComponent <= 1) {
+    if (componentCount === 1) {
+      // Scalar: u32/i32(channel * 255.0 + 0.5)
+      return `${wgslType}(${swizzle} * 255.0 + 0.5)`;
+    }
+    // vecN<int>: round each channel then construct. Build the vecN<f32> of
+    // raw bytes, then cast component-wise via the WGSL vector constructor.
+    return `${wgslType}(${swizzle} * 255.0 + ${vecSplat(componentCount, "0.5")})`;
+  }
+
+  // Multi-byte component (follow-up). Fall back to the first channel's byte
+  // so the model renders; flagged as an open issue in the design doc.
+  const first = `${sampleExpr}.${channels.charAt(0)}`;
+  if (componentCount === 1) {
+    return `${wgslType}(${first} * 255.0 + 0.5)`;
+  }
+  return `${wgslType}()`;
+}
+
+/**
+ * WGSL `vecN<f32>` splat literal of a single scalar (e.g.
+ * `vec3<f32>(0.5, 0.5, 0.5)`), used to add a per-component rounding bias.
+ *
+ * @param {number} n component count (2..4)
+ * @param {string} scalar a WGSL f32 literal
+ * @returns {string}
+ * @private
+ */
+function vecSplat(n, scalar) {
+  return `vec${n}<f32>(${Array(n).fill(scalar).join(", ")})`;
+}
+
+/**
  * Compute a stable 32-bit hash of a string (FNV-1a). Used to fold the
  * generated-metadata-WGSL (which is class/schema dependent) into the
  * WebGPU shader-module cache key so two models with different metadata
@@ -236,6 +358,9 @@ export {
   wgslVectorLiteral,
   wgslFloat,
   hashStringFNV1a,
+  // DP-H46c — property-texture WGSL builders.
+  buildTexCoordExpr,
+  buildPropertyTextureUnpack,
   floatTypesByComponentCount,
   intTypesByComponentCount,
   uintTypesByComponentCount,
@@ -249,4 +374,6 @@ export default {
   wgslVectorLiteral,
   wgslFloat,
   hashStringFNV1a,
+  buildTexCoordExpr,
+  buildPropertyTextureUnpack,
 };
