@@ -477,6 +477,47 @@ export const ShaderDefine = Object.freeze({
    * GENERATED metadata chunk.
    */
   MODEL_HAS_PROPERTY_TEXTURES: 1 << 19,
+
+  /**
+   * Model has EXT_structural_metadata property TABLES that map to the shader
+   * (DP-H46d). A property table packs each GPU-compatible class property into
+   * one ROW of a tightly-packed RGBA8 texture (built once by the loader,
+   * `parseStructuralMetadata.createTextureForPropertyTable`): row =
+   * `propertyInfoIndex` (index among GPU-compatible class properties), column =
+   * feature ID. When set, the model material BGL gains ONE sampled
+   * `texture_2d<f32>` binding for the table at group-1 binding
+   * {@link PROPERTY_TABLE_BINDING} (in `WebGPUModelMetadata` /
+   * `WebGPUModelPipelineCache`), and the GENERATED metadata WGSL chunk
+   * (`MetadataWGSLPipelineStage.generateMetadataWGSL`) emits a
+   * `textureLoad(propertyTableTexture, vec2<i32>(featureId, propertyInfoIndex), 0)`
+   * accessor inside `initializeMetadata` for each GPU-compatible property
+   * (RGBA→u32 little-endian unpack + bit-reinterpret/normalize + class
+   * offset/scale, mirroring
+   * `MetadataPipelineStage.addPropertyTablePropertyMetadata`). The feature ID is
+   * the per-vertex `_FEATURE_ID_0` attribute (flat-interpolated to the FS) — the
+   * SAME variable `MODEL_HAS_FEATURE_ID_0` carries, so a property-table primitive
+   * also sets `MODEL_HAS_FEATURE_ID_0`.
+   *
+   * Like property TEXTURES (`MODEL_HAS_PROPERTY_TEXTURES`), this bit changes
+   * only the material BGL / pipeline layout (a NEW `materialBGL` variant: one
+   * extra sampled texture + one shared sampler) + the codegen, NOT the vertex
+   * layout (the feature-ID slot is owned by `MODEL_HAS_FEATURE_ID_0`).
+   * Non-property-table models (plain glTF, attribute-only, OR
+   * property-texture-only metadata) never set the bit, keep the minimal BGL, and
+   * stay byte-identical: the prepended chunk declares no table binding and emits
+   * no `textureLoad`, and the gated material-BGL block is absent.
+   *
+   * Per-primitive selection: `WebGPUModelRenderer` sets this bit only when
+   * `model.structuralMetadata` is defined AND the primitive maps to ≥1
+   * GPU-compatible property-table property reachable via a feature-ID set (the
+   * same predicate `MetadataPipelineStage.getPropertyTablesInfo` uses). The bit
+   * participates in the model material BGL / pipeline / shader-module cache key
+   * (folded into `MATERIAL_DEFINE_MASK`).
+   *
+   * Consumers: `ModelPBRComplete.wgsl` (metadata debug call site) + the
+   * GENERATED metadata chunk.
+   */
+  MODEL_HAS_PROPERTY_TABLES: 1 << 20,
 } as const);
 
 /**

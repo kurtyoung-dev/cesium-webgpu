@@ -195,7 +195,7 @@ function createTextureForPropertyTable(
     magnificationFilter: TextureMagnificationFilter.NEAREST,
   });
 
-  return Texture.create({
+  const texture = Texture.create({
     context: context,
     pixelFormat: PixelFormat.RGBA,
     pixelDatatype: PixelDatatype.UNSIGNED_BYTE,
@@ -207,6 +207,25 @@ function createTextureForPropertyTable(
       arrayBufferView: packedBufferView,
     },
   });
+
+  // DP-H46d — the WebGPU backend cannot read pixels back out of a Cesium
+  // (WebGL-stub) Texture, and the source buffer views are freed right after
+  // this call (GltfStructuralMetadataLoader.unloadBufferViews). Retain the
+  // packed RGBA8 bytes + dimensions on the Texture object so
+  // `WebGPUModelMetadata.ensurePropertyTableResources` can re-upload them into
+  // a GPUTexture (mirrors how BatchTexture keeps `_batchValues`). WebGL ignores
+  // this field — it samples the GL texture directly via `texelFetch`. The
+  // ROW order matches the GLSL `propertyInfoIndex` cursor (one row per
+  // GPU-compatible class property, in class-definition order).
+  if (defined(texture)) {
+    texture._propertyTableTextureData = {
+      width: numFeatures,
+      height: numGpuCompatibleProperties,
+      data: packedBufferView,
+    };
+  }
+
+  return texture;
 }
 
 function collectGpuCompatiblePropertyInfo(

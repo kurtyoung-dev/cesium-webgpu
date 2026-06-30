@@ -51,7 +51,11 @@
  */
 import defined from "../../Core/defined.js";
 import ModelUtility from "./ModelUtility.js";
-import { resolvePropertyTextureLayout } from "../../Renderer/WebGPU/WebGPUModelMetadata.js";
+import MetadataType from "../MetadataType.js";
+import {
+  resolvePropertyTextureLayout,
+  resolvePropertyTableLayout,
+} from "../../Renderer/WebGPU/WebGPUModelMetadata.js";
 import {
   getWgslType,
   isWgslCompatible,
@@ -59,6 +63,7 @@ import {
   hashStringFNV1a,
   buildTexCoordExpr,
   buildPropertyTextureUnpack,
+  buildPropertyTableUnpack,
 } from "./MetadataWGSLHelpers.js";
 
 /**
@@ -254,29 +259,87 @@ function getPropertyTextureFields(model, primitive, usedFieldNames) {
 }
 
 /**
+ * DP-H46d — build the per-property-TABLE accessor info the codegen needs: the
+ * resolved WGSL type, sanitized field name, and the shared layout entry
+ * (texture binding, per-property `propertyInfoIndex` row, feature-ID variable).
+ * The layout is {@link resolvePropertyTableLayout}, the SAME structure the
+ * binding side consumes, so the generated `@binding` number + `propertyInfoIndex`
+ * rows match the packed texture exactly.
+ *
+ * @param {Model} model
+ * @param {ModelComponents.Primitive} primitive
+ * @param {Set<string>} usedFieldNames field names already taken by property
+ *   attributes / textures (so a table property colliding on its sanitized name
+ *   is disambiguated)
+ * @returns {{ layout: object, fields: object[] }|undefined}
+ * @private
+ */
+function getPropertyTableFields(model, primitive, usedFieldNames) {
+  const layout = resolvePropertyTableLayout(model, primitive);
+  if (!defined(layout)) {
+    return undefined;
+  }
+  const fields = [];
+  for (let i = 0; i < layout.properties.length; i++) {
+    const prop = layout.properties[i];
+    const wgslType = getWgslType(prop.classProperty);
+    if (!defined(wgslType)) {
+      continue;
+    }
+    let fieldName = ModelUtility.sanitizeGlslIdentifier(prop.propertyId);
+    if (usedFieldNames.has(fieldName)) {
+      fieldName = `${fieldName}_tbl_${i}`;
+    }
+    usedFieldNames.add(fieldName);
+    fields.push({
+      propertyId: prop.propertyId,
+      fieldName,
+      classProperty: prop.classProperty,
+      // The property whose offset/scale value-transform should apply — the
+      // per-table-property instance when present, else the class property
+      // (mirrors GLSL `property ?? classProperty`).
+      transformProperty: prop.transformProperty ?? prop.classProperty,
+      wgslType,
+      propertyInfoIndex: prop.propertyInfoIndex,
+    });
+  }
+  if (fields.length === 0) {
+    return undefined;
+  }
+  return { layout, fields };
+}
+
+/**
  * Generate the WGSL metadata chunk for a primitive, or `undefined` when the
- * primitive carries no GPU-compatible property attribute OR property texture.
+ * primitive carries no GPU-compatible property attribute OR property texture
+ * OR property table.
  *
  * The generated chunk:
  *   1. (DP-H46c) `@group(1) @binding(N) var propTexK: texture_2d<f32>;` +
- *      sampler declarations for each unique physical property TEXTURE — the
+ *      sampler declarations for each unique physical property TEXTURE; and
+ *      (DP-H46d) `@group(1) @binding(44) var metadataPropertyTableTexture:
+ *      texture_2d<f32>;` for the single tightly-packed property TABLE — the
  *      binding numbers match the BGL manifest the renderer allocates.
- *   2. `struct Metadata { <field per property attribute + per property texture> }`
+ *   2. `<type>MetadataClass` / `<type>MetadataStatistics` structs (DP-H46d) for
+ *      each distinct property type (mirrors `declareMetadataTypeStructs`), then
+ *      `struct Metadata { <field per property attribute + texture + table> }`.
  *   3. `fn initializeMetadata(metadataValue: f32, texCoord0: vec2<f32>,
- *      texCoord1: vec2<f32>) -> Metadata` — assigns the property-ATTRIBUTE
- *      transported scalar (offset/scale applied), and SAMPLES each property
- *      TEXTURE at its texCoord (optional KHR_texture_transform), swizzles the
- *      channels, unpacks, and applies offset/scale (DP-H46c).
+ *      texCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata` — assigns the
+ *      property-ATTRIBUTE transported scalar (offset/scale applied), SAMPLES
+ *      each property TEXTURE at its texCoord (DP-H46c), and `textureLoad`s each
+ *      property TABLE row at `(featureId, propertyInfoIndex)` then unpacks +
+ *      offset/scales (DP-H46d).
  *   4. `fn metadataDebugScalar(metadata: Metadata) -> f32` — returns a scalar
  *      proof value in `[0,1]`: the RAW transported attribute scalar when a
- *      property attribute exists, else the first property-texture property's
- *      first component (so the `MODEL_HAS_PROPERTY_TEXTURES` debug override
- *      renders a value that VARIES with the sampled metadata).
+ *      property attribute exists, else the first property-texture/-table
+ *      property's first component (so the debug override renders a value that
+ *      VARIES with the metadata).
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
  * @returns {{ wgsl: string, classHash: number, fields: object[],
- *   propertyTextureLayout: object|undefined }|undefined}
+ *   propertyTextureLayout: object|undefined,
+ *   propertyTableLayout: object|undefined }|undefined}
  * @private
  */
 function generateMetadataWGSL(model, primitive) {
@@ -289,27 +352,36 @@ function generateMetadataWGSL(model, primitive) {
   );
   const textureFields = textureResult?.fields ?? [];
   const propertyTextureLayout = textureResult?.layout;
+  // DP-H46d — property TABLES. Resolved AFTER attributes + textures so the
+  // table field names disambiguate against any earlier collision.
+  const tableResult = getPropertyTableFields(model, primitive, usedFieldNames);
+  const tableFields = tableResult?.fields ?? [];
+  const propertyTableLayout = tableResult?.layout;
 
-  if (attributeFields.length === 0 && textureFields.length === 0) {
+  if (
+    attributeFields.length === 0 &&
+    textureFields.length === 0 &&
+    tableFields.length === 0
+  ) {
     return undefined;
   }
 
   // The transported attribute property is the FIRST resolvable attribute field
   // — matches `WebGPUModelMetadata.resolveMetadataAttributeData`, which
   // extracts the `.x` of the first GPU-compatible property attribute into
-  // vertex slot 9. May be undefined for texture-only models.
+  // vertex slot 9. May be undefined for texture-/table-only models.
   const transported =
     attributeFields.length > 0 ? attributeFields[0] : undefined;
 
   const lines = [];
   lines.push(
-    "// DP-H46b/c — GENERATED structural-metadata chunk (property attributes + textures).",
+    "// DP-H46b/c/d — GENERATED structural-metadata chunk (property attributes + textures + tables).",
   );
   lines.push("// Replaces the DP-H46a stub; declared real per metadata class.");
 
-  // 1. Property-texture binding declarations (DP-H46c). One texture per unique
-  //    physical property texture + ONE shared sampler — binding numbers come
-  //    from the shared layout so they match the BGL the renderer allocates.
+  // 1a. Property-texture binding declarations (DP-H46c). One texture per unique
+  //     physical property texture + ONE shared sampler — binding numbers come
+  //     from the shared layout so they match the BGL the renderer allocates.
   if (defined(propertyTextureLayout)) {
     for (let i = 0; i < propertyTextureLayout.textures.length; i++) {
       const t = propertyTextureLayout.textures[i];
@@ -326,7 +398,32 @@ function generateMetadataWGSL(model, primitive) {
     lines.push("");
   }
 
-  // 2. struct Metadata — attribute fields first, then texture fields.
+  // 1b. Property-TABLE binding declaration (DP-H46d). ONE tightly-packed RGBA8
+  //     texture (rows = properties, columns = features). Read via `textureLoad`
+  //     (no sampler), but the BGL also binds a sampler placeholder at the next
+  //     slot — declare it so the binding shape matches (the FS never samples it).
+  if (defined(propertyTableLayout)) {
+    lines.push(
+      `@group(1) @binding(${propertyTableLayout.textureBinding}) var metadataPropertyTableTexture: texture_2d<f32>;`,
+    );
+    lines.push(
+      `@group(1) @binding(${propertyTableLayout.samplerBinding}) var metadataPropertyTableSampler: sampler;`,
+    );
+    lines.push("");
+  }
+
+  // 2a. <type>MetadataClass / <type>MetadataStatistics structs (DP-H46d).
+  //     Scaffolding for the CustomShader / pickMetadata consumers (DP-H46e/f);
+  //     declared now so the generated module already carries them. Mirrors
+  //     `MetadataPipelineStage.declareMetadataTypeStructs` (field renamings
+  //     noData/default→noData/defaultValue, min/max→minValue/maxValue, and the
+  //     int→float statistics fields).
+  const allClassFields = attributeFields
+    .concat(textureFields)
+    .concat(tableFields);
+  emitMetadataTypeStructs(lines, allClassFields);
+
+  // 2b. struct Metadata — attribute fields, then texture fields, then table.
   lines.push("struct Metadata {");
   for (let i = 0; i < attributeFields.length; i++) {
     lines.push(
@@ -338,15 +435,20 @@ function generateMetadataWGSL(model, primitive) {
       `  ${textureFields[i].fieldName}: ${textureFields[i].wgslType},`,
     );
   }
+  for (let i = 0; i < tableFields.length; i++) {
+    lines.push(`  ${tableFields[i].fieldName}: ${tableFields[i].wgslType},`);
+  }
   lines.push("};");
   lines.push("");
 
   // 3. initializeMetadata. Texture sampling needs the interpolated texCoords,
-  //    so the signature always carries texCoord0 + texCoord1 (texCoord1 falls
-  //    back to texCoord0 at the call site when the primitive lacks TEXCOORD_1).
-  //    `metadataValue` is the attribute vertex scalar (0.0 for texture-only).
+  //    so the signature carries texCoord0 + texCoord1 (texCoord1 falls back to
+  //    texCoord0 at the call site when the primitive lacks TEXCOORD_1).
+  //    `metadataValue` is the attribute vertex scalar (0.0 for texture-/table-
+  //    only). `metadataFeatureId` is the per-vertex feature ID (flat) that
+  //    indexes the property-table COLUMN (0.0 when the primitive has no table).
   lines.push(
-    "fn initializeMetadata(metadataValue: f32, metadataTexCoord0: vec2<f32>, metadataTexCoord1: vec2<f32>) -> Metadata {",
+    "fn initializeMetadata(metadataValue: f32, metadataTexCoord0: vec2<f32>, metadataTexCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata {",
   );
   lines.push("  var metadata: Metadata;");
   // Attribute fields.
@@ -393,12 +495,39 @@ function generateMetadataWGSL(model, primitive) {
     );
     lines.push(`  metadata.${f.fieldName} = ${transformed};`);
   }
+  // Table fields (DP-H46d) — textureLoad(table, (featureId, row)) → RGBA→u32
+  // little-endian unpack → bit-reinterpret/normalize → offset/scale.
+  if (defined(propertyTableLayout) && tableFields.length > 0) {
+    // The feature ID indexes the table COLUMN; the row is the per-property
+    // `propertyInfoIndex`. `textureLoad` ignores filtering (raw texel fetch),
+    // matching the GLSL `texelFetch(table, ivec2(featureId, propertyInfoIndex))`.
+    lines.push("  let metadataTableCol = i32(metadataFeatureId);");
+    for (let i = 0; i < tableFields.length; i++) {
+      const f = tableFields[i];
+      const loadExpr = `textureLoad(metadataPropertyTableTexture, vec2<i32>(metadataTableCol, ${f.propertyInfoIndex}), 0)`;
+      const unpacked = buildPropertyTableUnpack(
+        `(${loadExpr})`,
+        f.classProperty,
+        f.wgslType,
+      );
+      // Value transform from the per-table-property instance (overrides the
+      // class offset/scale), matching GLSL `property ?? classProperty`.
+      const transformed = applyValueTransform(
+        unpacked,
+        f.wgslType,
+        f.transformProperty,
+      );
+      lines.push(`  metadata.${f.fieldName} = ${transformed};`);
+    }
+  }
   lines.push("  return metadata;");
   lines.push("}");
   lines.push("");
 
   // 4. metadataDebugScalar — prefer the attribute scalar (DP-H46a/b parity);
-  //    else the first texture property's first component (recovered to [0,1]).
+  //    else the first texture property, else the first table property. The
+  //    result is mapped to [0,1] so the FS debug override paints a gradient
+  //    that VARIES with the resolved metadata value.
   let debugBody;
   if (defined(transported)) {
     const rawScalar = firstComponentExpr(
@@ -406,20 +535,34 @@ function generateMetadataWGSL(model, primitive) {
       transported.wgslType,
     );
     debugBody = invertValueTransform(rawScalar, transported.classProperty);
-  } else {
-    const tex0 = textureFields[0];
+  } else if (textureFields.length > 0) {
+    const proofField = textureFields[0];
     const rawScalar = firstComponentExpr(
-      `metadata.${tex0.fieldName}`,
-      tex0.wgslType,
+      `metadata.${proofField.fieldName}`,
+      proofField.wgslType,
     );
-    // Recover the raw [0,1] proof value by inverting the baked offset/scale.
-    // For the float family (normalized) this is already in [0,1]; for the
-    // integer family the raw byte is rescaled back to [0,1] for the gradient.
-    const inverted = invertValueTransform(rawScalar, tex0.classProperty);
-    const isFloat = tex0.wgslType.indexOf("f32") !== -1;
+    // Property-TEXTURE float values are normalized samples already in [0,1];
+    // integer values are the raw byte → rescale to [0,1] for the gradient.
+    const inverted = invertValueTransform(rawScalar, proofField.classProperty);
+    const isFloat = proofField.wgslType.indexOf("f32") !== -1;
     debugBody = isFloat
       ? inverted
       : `clamp(f32(${inverted}) / 255.0, 0.0, 1.0)`;
+  } else {
+    // Property-TABLE proof. Unlike property textures, table float values are
+    // the RAW property value (e.g. building heights 78..86), not normalized —
+    // so map them into a visible [0,1] gradient with `fract(abs(...))` (per-
+    // feature distinct values → distinct fractional parts → distinct colors).
+    // Integers are taken modulo 256 → [0,1] the same way the texture path does.
+    const proofField = tableFields[0];
+    const rawScalar = firstComponentExpr(
+      `metadata.${proofField.fieldName}`,
+      proofField.wgslType,
+    );
+    const isFloat = proofField.wgslType.indexOf("f32") !== -1;
+    debugBody = isFloat
+      ? `fract(abs(${rawScalar}))`
+      : `clamp(f32(${rawScalar} % 256) / 255.0, 0.0, 1.0)`;
   }
   lines.push("fn metadataDebugScalar(metadata: Metadata) -> f32 {");
   lines.push(`  return ${debugBody};`);
@@ -430,9 +573,9 @@ function generateMetadataWGSL(model, primitive) {
 
   // The cache-key hash keys the equivalence class of generated modules. The
   // generated WGSL string is the canonical, complete fingerprint (it folds in
-  // every field name, type, baked transform, AND the property-texture binding
-  // numbers), so hashing it is both stable and exact: identical WGSL ⇒
-  // identical compiled module.
+  // every field name, type, baked transform, the property-texture binding
+  // numbers, AND the property-table rows), so hashing it is both stable and
+  // exact: identical WGSL ⇒ identical compiled module.
   const classHash = hashStringFNV1a(wgsl);
 
   return {
@@ -440,7 +583,116 @@ function generateMetadataWGSL(model, primitive) {
     classHash,
     fields: attributeFields,
     propertyTextureLayout,
+    propertyTableLayout,
   };
+}
+
+/**
+ * DP-H46d — field renamings + statistics fields for the `<type>MetadataClass` /
+ * `<type>MetadataStatistics` structs, mirroring
+ * `MetadataPipelineStage.METADATA_CLASS_FIELDS` / `METADATA_STATISTICS_FIELDS`.
+ * `floatStat: true` marks a statistics field that is ALWAYS float-component even
+ * for integer property types (mean / standardDeviation / variance).
+ * @private
+ */
+const METADATA_CLASS_FIELD_NAMES = [
+  "noData",
+  "defaultValue",
+  "minValue",
+  "maxValue",
+];
+const METADATA_STATISTICS_FIELD_DEFS = [
+  { name: "minValue", floatStat: false },
+  { name: "maxValue", floatStat: false },
+  { name: "mean", floatStat: true },
+  { name: "median", floatStat: false },
+  { name: "standardDeviation", floatStat: true },
+  { name: "variance", floatStat: true },
+  { name: "sum", floatStat: false },
+];
+
+/**
+ * DP-H46d — convert a WGSL type with integer components to the float-component
+ * type of the same dimension (mirrors `convertToFloatComponents`), used for the
+ * always-float MetadataStatistics fields. f32 / vecN<f32> pass through.
+ * @param {string} wgslType
+ * @returns {string}
+ * @private
+ */
+function wgslToFloatComponents(wgslType) {
+  if (wgslType === "i32" || wgslType === "u32") {
+    return "f32";
+  }
+  const m = /^vec([234])<[iu]32>$/.exec(wgslType);
+  if (m) {
+    return `vec${m[1]}<f32>`;
+  }
+  return wgslType;
+}
+
+/**
+ * DP-H46d — build a WGSL-safe struct-name fragment from a WGSL type (e.g.
+ * `f32` → `f32`, `vec3<u32>` → `vec3u32`, `mat2x2<f32>` → `mat2x2f32`). The
+ * angle brackets are stripped so the result is a valid identifier prefix for
+ * the `<type>MetadataClass` / `<type>MetadataStatistics` struct names.
+ * @param {string} wgslType
+ * @returns {string}
+ * @private
+ */
+function wgslTypeTag(wgslType) {
+  return wgslType.replace(/[<>]/g, "");
+}
+
+/**
+ * DP-H46d — emit `<type>MetadataClass` + `<type>MetadataStatistics` struct
+ * declarations for each DISTINCT property type across all property infos,
+ * mirroring `MetadataPipelineStage.declareMetadataTypeStructs`. These are
+ * scaffolding for the CustomShader / pickMetadata consumers (DP-H46e/f) — the
+ * display proof reads `Metadata` directly — but the generated module declares
+ * them now so the consumer half has the struct types available. Statistics
+ * structs are emitted only for non-ENUM types (ENUMs carry an unimplemented
+ * "occurrences" statistic in the GLSL path too).
+ *
+ * @param {string[]} lines the WGSL line buffer to append to
+ * @param {object[]} propertyInfos all property infos (attribute + texture +
+ *   table) — each carries `{ wgslType, classProperty }`
+ * @private
+ */
+function emitMetadataTypeStructs(lines, propertyInfos) {
+  const classTypes = new Set();
+  const statisticsTypes = new Set();
+  for (let i = 0; i < propertyInfos.length; i++) {
+    const info = propertyInfos[i];
+    const wgslType = info.wgslType;
+    classTypes.add(wgslType);
+    // ENUM properties don't get a statistics struct (matches the GLSL path).
+    if (info.classProperty.type !== MetadataType.ENUM) {
+      statisticsTypes.add(wgslType);
+    }
+  }
+
+  for (const wgslType of classTypes) {
+    const structName = `${wgslTypeTag(wgslType)}MetadataClass`;
+    lines.push(`struct ${structName} {`);
+    for (let i = 0; i < METADATA_CLASS_FIELD_NAMES.length; i++) {
+      lines.push(`  ${METADATA_CLASS_FIELD_NAMES[i]}: ${wgslType},`);
+    }
+    lines.push("};");
+    lines.push("");
+  }
+
+  for (const wgslType of statisticsTypes) {
+    const structName = `${wgslTypeTag(wgslType)}MetadataStatistics`;
+    const floatType = wgslToFloatComponents(wgslType);
+    lines.push(`struct ${structName} {`);
+    for (let i = 0; i < METADATA_STATISTICS_FIELD_DEFS.length; i++) {
+      const f = METADATA_STATISTICS_FIELD_DEFS[i];
+      const fieldType = f.floatStat ? floatType : wgslType;
+      lines.push(`  ${f.name}: ${fieldType},`);
+    }
+    lines.push("};");
+    lines.push("");
+  }
 }
 
 /**
@@ -528,8 +780,8 @@ function floatLit(n) {
 
 /**
  * Returns `true` when the primitive maps to ≥1 GPU-compatible property
- * attribute OR property texture (the codegen would produce a chunk). Cheap
- * presence predicate for callers that only need the gate.
+ * attribute OR property texture OR property table (the codegen would produce a
+ * chunk). Cheap presence predicate for callers that only need the gate.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
@@ -540,18 +792,23 @@ function primitiveHasMetadataWGSL(model, primitive) {
   if (getPropertyAttributeFields(model, primitive).length > 0) {
     return true;
   }
-  return defined(resolvePropertyTextureLayout(model, primitive));
+  if (defined(resolvePropertyTextureLayout(model, primitive))) {
+    return true;
+  }
+  return defined(resolvePropertyTableLayout(model, primitive));
 }
 
 export {
   generateMetadataWGSL,
   getPropertyAttributeFields,
   getPropertyTextureFields,
+  getPropertyTableFields,
   primitiveHasMetadataWGSL,
 };
 export default {
   generateMetadataWGSL,
   getPropertyAttributeFields,
   getPropertyTextureFields,
+  getPropertyTableFields,
   primitiveHasMetadataWGSL,
 };

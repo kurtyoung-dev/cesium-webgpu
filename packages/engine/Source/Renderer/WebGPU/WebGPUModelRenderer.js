@@ -60,6 +60,9 @@ import {
   // DP-H46c — property TEXTURES.
   resolvePropertyTextureLayout,
   ensurePropertyTextureResources,
+  // DP-H46d — property TABLES.
+  resolvePropertyTableLayout,
+  ensurePropertyTableResources,
 } from "./WebGPUModelMetadata.js";
 import { generateMetadataWGSL } from "../../Scene/Model/MetadataWGSLPipelineStage.js";
 import Pass from "../Pass.js";
@@ -1413,6 +1416,11 @@ function ensurePrimitiveCache(
     // the merged group-1 bind group when MODEL_HAS_PROPERTY_TEXTURES is set.
     _propertyTextureResources: null,
     propertyTextureEntries: null,
+    // DP-H46d — property-table bind-group entries (bindings 44-45), resolved +
+    // uploaded by `ensurePropertyTableResources`. Spliced into the merged
+    // group-1 bind group when MODEL_HAS_PROPERTY_TABLES is set.
+    _propertyTableResources: null,
+    propertyTableEntries: null,
     indexBuffer: null,
     indexCount: 0,
     indexFormat: "uint16",
@@ -1577,6 +1585,25 @@ function ensurePrimitiveCache(
       );
     }
   }
+  // DP-H46d — property-TABLE GPU resources. Re-upload the loader's retained
+  // packed RGBA8 bytes into ONE rgba8unorm GPUTexture (rows = properties,
+  // columns = features), producing the (texture, sampler) bind-group entries
+  // spliced into group 1 below. Only when the primitive maps a GPU-compatible
+  // property table via an attribute feature-ID set; non-property-table models
+  // leave `propertyTableEntries` null and stay byte-identical.
+  if (geometry.hasPropertyTables && defined(geometry.propertyTableLayout)) {
+    const tblResources = ensurePropertyTableResources(
+      device,
+      primCache,
+      geometry.propertyTableLayout,
+      pipelineCache.propertyTextureSampler,
+    );
+    if (defined(tblResources)) {
+      primCache.propertyTableEntries = pipelineCache.propertyTableEntries(
+        tblResources.entries,
+      );
+    }
+  }
   // DP-H46b/c — persist the generated WGSL chunk + class hash on the primitive
   // cache so every pipeline (re)build for this primitive (color / pick /
   // depth-write / velocity / classification) prepends the same chunk and keys
@@ -1584,7 +1611,9 @@ function ensurePrimitiveCache(
   // cache via `setMetadataWGSL` immediately before each `getPipeline*` call
   // below. Persisted when the primitive has EITHER attributes or textures.
   if (
-    (geometry.hasMetadata || geometry.hasPropertyTextures) &&
+    (geometry.hasMetadata ||
+      geometry.hasPropertyTextures ||
+      geometry.hasPropertyTables) &&
     defined(geometry.metadataWGSL)
   ) {
     primCache._metadataWGSL = geometry.metadataWGSL;
@@ -1677,6 +1706,16 @@ function ensurePrimitiveCache(
     defined(primCache.propertyTextureEntries)
   ) {
     materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES;
+  }
+  // DP-H46d — presence gate. Flip MODEL_HAS_PROPERTY_TABLES only when the
+  // primitive maps a GPU-compatible property table AND its bind-group entries
+  // resolved. This selects the property-table materialBGL variant (extra
+  // sampled-texture binding 44 + sampler 45) + activates the generated chunk's
+  // textureLoad code. Independent of the attribute/texture metadata bits. When
+  // unset (the common case), the bit is absent, the minimal materialBGL is
+  // used, and the model is byte-identical to the pre-DP-H46d path.
+  if (geometry.hasPropertyTables && defined(primCache.propertyTableEntries)) {
+    materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
   }
   primCache.materialDefines = materialDefines;
   // DP-H46b — feed the generated metadata chunk + class hash to the pipeline
@@ -1875,6 +1914,18 @@ function getModelTextureEntries(primCache, refractionView, materialDefines) {
   ) {
     for (let i = 0; i < primCache.propertyTextureEntries.length; i++) {
       entries.push(primCache.propertyTextureEntries[i]);
+    }
+  }
+
+  // 44-45: DP-H46d — property-table block (texture + sampler). Emitted only when
+  // the variant includes MODEL_HAS_PROPERTY_TABLES so non-property-table models
+  // keep the minimal entry list matching their materialBGL.
+  if (
+    (materialDefines & ShaderDefine.MODEL_HAS_PROPERTY_TABLES) !== 0 &&
+    defined(primCache.propertyTableEntries)
+  ) {
+    for (let i = 0; i < primCache.propertyTableEntries.length; i++) {
+      entries.push(primCache.propertyTableEntries[i]);
     }
   }
 
@@ -3096,18 +3147,38 @@ function updateWebGPUModel(model, frameState) {
           geometry.propertyTextureLayout = propertyTextureLayout;
           geometry.hasPropertyTextures = true;
         }
-        // DP-H46b/c — generate the per-class WGSL chunk (real `struct
+        // DP-H46d — resolve the property-TABLE layout (the shared structure
+        // both the binding side here and the codegen consume). Present when the
+        // model maps a GPU-compatible property table to this primitive via an
+        // attribute feature-ID set. The table is indexed by the per-vertex
+        // `_FEATURE_ID_0` attribute, so a table primitive ALSO carries that
+        // feature ID (the renderer already sets `geometry.hasFeatureId0`).
+        const propertyTableLayout = resolvePropertyTableLayout(
+          model,
+          glTFPrimitive,
+        );
+        if (defined(propertyTableLayout)) {
+          geometry.propertyTableLayout = propertyTableLayout;
+          geometry.hasPropertyTables = true;
+        }
+        // DP-H46b/c/d — generate the per-class WGSL chunk (real `struct
         // Metadata` + `initializeMetadata` + `metadataDebugScalar`, plus
-        // DP-H46c property-texture binding declarations + sampling) for this
-        // primitive. The codegen resolves the SAME first GPU-compatible
-        // property attribute the scalar transport above carries AND the SAME
-        // property-texture layout resolved here, so the generated fields,
-        // the slot-9 value, and the property-texture binding numbers all
-        // agree. `generateMetadataWGSL` returns undefined for primitives with
-        // neither attributes nor textures (plain glTF) → no chunk. Stash the
-        // chunk + class hash on `geometry` so `ensurePrimitiveCache` persists
-        // them on `primCache` + feeds the pipeline cache.
-        if (geometry.hasMetadata || geometry.hasPropertyTextures) {
+        // DP-H46c property-texture binding declarations + sampling AND DP-H46d
+        // property-table binding + textureLoad accessors) for this primitive.
+        // The codegen resolves the SAME first GPU-compatible property attribute
+        // the scalar transport above carries, the SAME property-texture layout,
+        // and the SAME property-table layout resolved here, so the generated
+        // fields, the slot-9 value, the texture binding numbers, and the table
+        // rows all agree. `generateMetadataWGSL` returns undefined for
+        // primitives with no attributes/textures/tables (plain glTF) → no
+        // chunk. Stash the chunk + class hash on `geometry` so
+        // `ensurePrimitiveCache` persists them on `primCache` + feeds the
+        // pipeline cache.
+        if (
+          geometry.hasMetadata ||
+          geometry.hasPropertyTextures ||
+          geometry.hasPropertyTables
+        ) {
           const metadataCodegen = generateMetadataWGSL(model, glTFPrimitive);
           if (defined(metadataCodegen)) {
             geometry.metadataWGSL = metadataCodegen.wgsl;

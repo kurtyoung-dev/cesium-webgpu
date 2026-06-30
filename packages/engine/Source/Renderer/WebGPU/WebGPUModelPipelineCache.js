@@ -58,12 +58,14 @@ import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.j
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-// DP-H46c — property-texture binding base + cap, shared with the codegen +
-// renderer so the BGL, shader, and bind-group entries all agree.
+// DP-H46c/d — property-texture + property-table binding numbers, shared with
+// the codegen + renderer so the BGL, shader, and bind-group entries all agree.
 import {
   PROPERTY_TEXTURE_BINDING_BASE,
   PROPERTY_TEXTURE_SAMPLER_BINDING,
   MAX_PROPERTY_TEXTURES,
+  PROPERTY_TABLE_BINDING,
+  PROPERTY_TABLE_SAMPLER_BINDING,
 } from "./WebGPUModelMetadata.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 162) — per-device shader-module cache so
@@ -181,6 +183,13 @@ const MATERIAL_DEFINE_MASK = (() => {
   // so it participates in the key the same way MODEL_HAS_KHR_TEXTURES does.
   // For non-property-texture models the bit is never set → key unchanged.
   m |= ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES;
+  // DP-H46d — MODEL_HAS_PROPERTY_TABLES adds the property-table (texture,
+  // sampler) binding block (44..45) to the material BGL + pipeline layout AND
+  // the generated chunk's textureLoad code. A NEW materialBGL variant + a
+  // distinct module, so it participates in the key like
+  // MODEL_HAS_PROPERTY_TEXTURES. For non-property-table models the bit is never
+  // set → key unchanged.
+  m |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
   return m;
 })();
 
@@ -323,6 +332,19 @@ function buildMaterialBGL(device, materialDefines) {
       entries.push(texture(PROPERTY_TEXTURE_BINDING_BASE + k, Stage.FRAGMENT));
     }
     entries.push(sampler(PROPERTY_TEXTURE_SAMPLER_BINDING, Stage.FRAGMENT));
+  }
+
+  // 44-45: DP-H46d — property-table block. Gated on MODEL_HAS_PROPERTY_TABLES.
+  // ONE sampled `texture_2d<f32>` (the tightly-packed RGBA8 table, rows =
+  // properties, columns = features) + ONE sampler (a placeholder — the shader
+  // reads via `textureLoad`, which ignores filtering, but the BGL binds a
+  // sampler to keep the declaration shape uniform with the property-texture
+  // block). Fragment-stage only — the metadata debug / styling consumer reads
+  // the table in the FS at the per-fragment feature ID. Independent of the
+  // property-texture block (a model can have tables without textures).
+  if ((materialDefines & ShaderDefine.MODEL_HAS_PROPERTY_TABLES) !== 0) {
+    entries.push(texture(PROPERTY_TABLE_BINDING, Stage.FRAGMENT));
+    entries.push(sampler(PROPERTY_TABLE_SAMPLER_BINDING, Stage.FRAGMENT));
   }
 
   // ── Capability check ──
@@ -1876,7 +1898,8 @@ class WebGPUModelPipelineCache {
     const hasMetadata =
       (effectiveDefines &
         (ShaderDefine.MODEL_HAS_METADATA |
-          ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES)) !==
+          ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES |
+          ShaderDefine.MODEL_HAS_PROPERTY_TABLES)) !==
       0;
     const metadataClassHash = hasMetadata ? this._metadataClassHash >>> 0 : 0;
     const moduleKey =
@@ -2793,6 +2816,38 @@ class WebGPUModelPipelineCache {
       },
     );
     return entries;
+  }
+
+  /**
+   * DP-H46d — build the (texture, sampler) bind-group entries for the
+   * property-TABLE block (bindings 44-45). `realEntries` supplies the resolved
+   * table texture view + sampler (from
+   * `WebGPUModelMetadata.ensurePropertyTableResources`); if a binding is
+   * missing it is filled with the 1×1 placeholder + the shared property sampler
+   * so the bind group satisfies every BGL entry. The shader reads the table via
+   * `textureLoad` (the sampler placeholder is never sampled).
+   *
+   * @param {Array<GPUBindGroupEntry>} [realEntries] resolved property-table
+   *   entries; missing bindings get the placeholder.
+   * @returns {Array<GPUBindGroupEntry>}
+   */
+  propertyTableEntries(realEntries) {
+    const byBinding = new Map();
+    if (defined(realEntries)) {
+      for (let i = 0; i < realEntries.length; i++) {
+        byBinding.set(realEntries[i].binding, realEntries[i]);
+      }
+    }
+    return [
+      byBinding.get(PROPERTY_TABLE_BINDING) ?? {
+        binding: PROPERTY_TABLE_BINDING,
+        resource: this._defaultPropertyTextureView,
+      },
+      byBinding.get(PROPERTY_TABLE_SAMPLER_BINDING) ?? {
+        binding: PROPERTY_TABLE_SAMPLER_BINDING,
+        resource: this._propertyTextureSampler,
+      },
+    ];
   }
 
   /**

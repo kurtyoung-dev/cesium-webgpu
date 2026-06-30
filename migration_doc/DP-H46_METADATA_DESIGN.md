@@ -9,10 +9,20 @@ bit 1<<18 + stub) · ✅ **DP-H46b SHIPPED** Batch 455 (`MetadataWGSLPipelineSta
 property-ATTRIBUTES + `WebGPUShaderModuleCache.keySalt` class-hash) · ✅ **DP-H46c SHIPPED**
 Batch 457 (property-TEXTURE read: `MODEL_HAS_PROPERTY_TEXTURES` bit 1<<19, `buildMaterialBGL`
 variant w/ 4 textures @39-42 + shared sampler @43, `textureSampleLevel` accessors, KHR_texture_transform
-baked, budget-checked). **Remaining:** d (property-TABLES + Metadata*Class/Statistics structs),
-e (pickMetadata producer), f (parity probe + Sandcastle + doc reconcile). Follow-up carried from b:
-full multi-component ATTRIBUTE transport (today only the first scalar over `@location(9)`); from c:
-multi-byte component (UINT16/32) channel-packing (today first-channel scalar; UINT8 corpus covered).
+baked, budget-checked). · ✅ **DP-H46d IMPLEMENTED** (uncommitted — display-side parity CLOSED):
+property-TABLE read (`MODEL_HAS_PROPERTY_TABLES` bit 1<<20, `buildMaterialBGL` variant w/ table texture
+@44 + sampler @45, `textureLoad(table, vec2<i32>(featureId, propertyInfoIndex), 0)` accessors with
+RGBA→u32 little-endian unpack + bit-reinterpret/normalize + baked offset/scale, `propertyInfoIndex`
+cursor incremented per GPU-compatible class property, `<type>MetadataClass`/`MetadataStatistics` structs
+emitted). Feature-ID source = the per-vertex `_FEATURE_ID_0` attribute (`input.featureId0`). Loader
+retains the packed RGBA8 bytes on the table Texture (`_propertyTableTextureData`) so the WebGPU backend
+can re-upload them. Verified on BuildingsMetadata (per-feature `height` paints distinct colors; plain +
+attribute-only + property-texture-only stay table-path-inactive; 0 device/console errors).
+**Remaining:** e (pickMetadata producer), f (parity probe + Sandcastle + doc reconcile). Follow-up
+carried from b: full multi-component ATTRIBUTE transport (today only the first scalar over
+`@location(9)`); from c: multi-byte component (UINT16/32) channel-packing for property TEXTURES; from d:
+TEXTURE-sourced + instance/implicit feature-ID property TABLES (only the ATTRIBUTE feature-ID path is
+wired today — the dominant b3dm/BuildingsMetadata case); VS-stage table reads (today FS-only display).
 
 ## Goal
 Port the glTF/3D-Tiles structural-metadata-in-shader pipeline (`EXT_structural_metadata` /

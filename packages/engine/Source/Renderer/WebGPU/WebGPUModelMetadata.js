@@ -25,7 +25,10 @@
  *     property) + the real `initializeMetadata` (replaces the stub in
  *     ModelPBRComplete.wgsl); multi-component / vec property attributes.
  *   - DP-H46c (NOW LANDED below): property-TEXTURE sampler+texture bind slots.
- *   - DP-H46d: property-TABLE tightly-packed RGBA texture.
+ *   - DP-H46d (NOW LANDED below): property-TABLE tightly-packed RGBA texture
+ *     (`resolvePropertyTableLayout` + `ensurePropertyTableResources` —
+ *     re-uploads the loader's retained packed bytes into one rgba8unorm
+ *     GPUTexture, indexed by `(featureId, propertyInfoIndex)` via textureLoad).
  *
  * DP-H46c additions (property TEXTURES):
  *   - `resolvePropertyTextureLayout(model, primitive, maxTextures)` — the
@@ -54,6 +57,7 @@
 import defined from "../../Core/defined.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import AttributeType from "../../Scene/AttributeType.js";
+import ModelComponents from "../../Scene/ModelComponents.js";
 import ModelUtility from "../../Scene/Model/ModelUtility.js";
 import { ensureFloat32 } from "../../Scene/Model/ModelPrimitiveGeometry.js";
 
@@ -105,6 +109,38 @@ const MAX_PROPERTY_TEXTURES = 4;
  */
 const PROPERTY_TEXTURE_SAMPLER_BINDING =
   PROPERTY_TEXTURE_BINDING_BASE + MAX_PROPERTY_TEXTURES;
+
+/**
+ * DP-H46d — group-1 binding of the SINGLE property-TABLE texture. It sits just
+ * past the property-texture block (the textures 39..42 + their shared sampler
+ * 43), so the fixed material bindings, the property-texture block, and the
+ * property-table block never collide. A primitive maps to at most ONE property
+ * table (the EXT_mesh_features mapping is 1:1 within a primitive), and all of
+ * that table's GPU-compatible properties are packed into ROWS of this single
+ * RGBA8 texture — so one binding suffices.
+ *
+ * The codegen (`MetadataWGSLPipelineStage`) declares
+ * `@group(1) @binding(44) var metadataPropertyTableTexture: texture_2d<f32>;`
+ * and reads it via `textureLoad(..., vec2<i32>(featureId, propertyInfoIndex), 0)`
+ * — no sampler is needed (texel fetch ignores filtering), but the BGL still
+ * binds a non-filtering sampler placeholder at the NEXT slot to keep the
+ * declaration shape uniform with the property-texture block and satisfy any
+ * future sampled-read path.
+ *
+ * @private
+ */
+const PROPERTY_TABLE_BINDING = PROPERTY_TEXTURE_SAMPLER_BINDING + 1;
+
+/**
+ * DP-H46d — group-1 binding of the property-table's (unused) sampler. Present
+ * only to round out the table block; `textureLoad` does not sample, so this is
+ * never read by the shader. Kept so the BGL/bind-group/codegen all agree on a
+ * stable two-binding table block (texture + sampler), mirroring the
+ * property-texture block's (texture, sampler) shape.
+ *
+ * @private
+ */
+const PROPERTY_TABLE_SAMPLER_BINDING = PROPERTY_TABLE_BINDING + 1;
 
 /**
  * Resolve the first GPU-compatible scalar-capable property ATTRIBUTE on a
@@ -491,6 +527,256 @@ function ensurePropertyTextureResources(
   return resources;
 }
 
+// DP-H46d — always 4 channels (RGBA8) for property-table textures, matching
+// `parseStructuralMetadata.NUM_CHANNELS`. Used by `isGpuCompatible` so the
+// per-row cursor stays aligned with `collectGpuCompatiblePropertyInfo`.
+const PROPERTY_TABLE_NUM_CHANNELS = 4;
+
+/**
+ * DP-H46d — resolve which property TABLE (if any) the primitive's selected
+ * feature ID references, and the WGSL feature-ID variable that indexes it.
+ *
+ * Mirrors `MetadataPipelineStage.mapPropertyTablesToFeatureIdSets` for the
+ * single-primitive case: a primitive's feature ID set carries a
+ * `propertyTableId`; the table whose `id` matches is the one this primitive
+ * reads. DP-H46d supports the ATTRIBUTE feature-ID path (the dominant b3dm /
+ * BuildingsMetadata case) — the WGSL FS carries the `_FEATURE_ID_0` attribute
+ * (flat-interpolated) as `input.featureId0`, so that is the index variable.
+ * Texture / instance / implicit feature-ID sources are deferred (the codegen
+ * needs the matching WGSL feature-ID variable wired through first).
+ *
+ * @param {Model} model
+ * @param {ModelComponents.Primitive} primitive
+ * @returns {{ propertyTable: PropertyTable, featureIdWgslVariable: string }|undefined}
+ * @private
+ */
+function findPropertyTableForPrimitive(model, primitive) {
+  const structuralMetadata = model.structuralMetadata;
+  if (!defined(structuralMetadata)) {
+    return undefined;
+  }
+  const propertyTables = structuralMetadata.propertyTables;
+  if (!defined(propertyTables) || propertyTables.length === 0) {
+    return undefined;
+  }
+  if (!defined(primitive) || !defined(primitive.featureIds)) {
+    return undefined;
+  }
+
+  const primitiveFeatureIds = primitive.featureIds;
+  for (let i = 0; i < primitiveFeatureIds.length; i++) {
+    const featureIds = primitiveFeatureIds[i];
+    if (!defined(featureIds)) {
+      continue;
+    }
+    const propertyTableId = featureIds.propertyTableId;
+    if (!defined(propertyTableId)) {
+      continue;
+    }
+    // DP-H46d scope: only the per-vertex ATTRIBUTE feature-ID path is wired to
+    // a WGSL variable (`input.featureId0`). A texture-sourced feature ID
+    // (`featureIds.textureReader`) needs its own FS resolution (deferred).
+    const isAttribute =
+      featureIds instanceof ModelComponents.FeatureIdAttribute;
+    if (!isAttribute) {
+      continue;
+    }
+    // Locate the matching property table by id.
+    for (let t = 0; t < propertyTables.length; t++) {
+      const propertyTable = propertyTables[t];
+      if (
+        defined(propertyTable.class) &&
+        String(propertyTable.id) === String(propertyTableId)
+      ) {
+        return {
+          propertyTable,
+          // The WGSL FS exposes the `_FEATURE_ID_0` attribute as
+          // `input.featureId0` (flat-interpolated f32) — the codegen casts it
+          // to i32 for the table column index.
+          featureIdWgslVariable: "featureId0",
+        };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * DP-H46d — resolve the SHARED property-TABLE layout for a primitive. Both the
+ * binding side ({@link ensurePropertyTableResources} + the renderer's
+ * bind-group splice) and the codegen
+ * (`MetadataWGSLPipelineStage.generateMetadataWGSL`) consume this identical
+ * structure, so the generated `@binding(N)` numbers + per-property
+ * `propertyInfoIndex` rows match the texture the loader packed.
+ *
+ * Mirrors `MetadataPipelineStage.getPropertyTableInfo` (:289): iterates the
+ * table's CLASS-DEFINITION properties (NOT the property-table properties) in
+ * order, keeping only GPU-compatible ones, and assigns each a `propertyInfoIndex`
+ * (its texture ROW). **The cursor increments ONLY for GPU-compatible
+ * properties** — a non-GPU-compatible class property (STRING / variable-length
+ * array / 64-bit-vec / BOOLEAN) consumes NO row and is skipped before the
+ * increment, exactly as `collectGpuCompatiblePropertyInfo` packs the texture.
+ * (Unlike the GLSL stage we do NOT skip used-by-other-stages: the WGSL display
+ * proof reads every property, so every GPU-compatible row gets a struct field —
+ * and the cursor stays aligned regardless.)
+ *
+ * @param {Model} model
+ * @param {ModelComponents.Primitive} primitive
+ * @returns {{
+ *   propertyTable: PropertyTable,
+ *   textureData: { width: number, height: number, data: Uint8Array },
+ *   featureIdWgslVariable: string,
+ *   textureBinding: number,
+ *   samplerBinding: number,
+ *   properties: {
+ *     propertyId: string,
+ *     classProperty: MetadataClassProperty,
+ *     propertyInfoIndex: number,
+ *   }[],
+ * }|undefined}
+ * @private
+ */
+function resolvePropertyTableLayout(model, primitive) {
+  const match = findPropertyTableForPrimitive(model, primitive);
+  if (!defined(match)) {
+    return undefined;
+  }
+  const { propertyTable, featureIdWgslVariable } = match;
+
+  // The loader packs ONE RGBA8 texture per table (rows = GPU-compatible class
+  // properties, columns = features). WebGPU re-uploads its retained bytes.
+  const texture = propertyTable.texture;
+  if (!defined(texture) || !defined(texture._propertyTableTextureData)) {
+    return undefined;
+  }
+  const textureData = texture._propertyTableTextureData;
+
+  const classDefinition = propertyTable.class;
+  const classProperties = classDefinition?.properties;
+  if (!defined(classProperties)) {
+    return undefined;
+  }
+
+  // The per-instance property values (a `MetadataTableProperty` per propertyId),
+  // present when this property table actually carries the property. Its
+  // offset/scale OVERRIDE the class defaults (the spec allows per-table-property
+  // value transforms), matching GLSL's `property ?? classProperty` in
+  // `addPropertyTablePropertyMetadata`.
+  const tableProperties = propertyTable.properties;
+
+  const properties = [];
+  // Per-table index of the property's ROW in the texture (the texelFetch Y).
+  let propertyInfoIndex = 0;
+  const entries = Object.entries(classProperties);
+  for (let i = 0; i < entries.length; i++) {
+    const [propertyId, classProperty] = entries[i];
+    // Skip BEFORE incrementing the cursor — non-GPU-compatible properties have
+    // NO row in the packed texture (matches collectGpuCompatiblePropertyInfo).
+    if (!classProperty.isGpuCompatible(PROPERTY_TABLE_NUM_CHANNELS)) {
+      continue;
+    }
+    // The per-instance property (if this table carries it) supplies the
+    // value transform that should win; fall back to the class property.
+    const tableProperty = defined(tableProperties)
+      ? tableProperties[propertyId]
+      : undefined;
+    properties.push({
+      propertyId,
+      classProperty,
+      // Use the table-property instance for the value transform when present
+      // (it overrides the class offset/scale), else the class property.
+      transformProperty: defined(tableProperty) ? tableProperty : classProperty,
+      propertyInfoIndex,
+    });
+    propertyInfoIndex++;
+  }
+
+  if (properties.length === 0) {
+    return undefined;
+  }
+
+  return {
+    propertyTable,
+    textureData,
+    featureIdWgslVariable,
+    textureBinding: PROPERTY_TABLE_BINDING,
+    samplerBinding: PROPERTY_TABLE_SAMPLER_BINDING,
+    properties,
+  };
+}
+
+/**
+ * Returns true when the primitive maps to a GPU-compatible property TABLE
+ * reachable via an attribute feature-ID set. Cheap presence predicate for the
+ * renderer's `MODEL_HAS_PROPERTY_TABLES` gate.
+ *
+ * @param {Model} model
+ * @param {ModelComponents.Primitive} primitive
+ * @returns {boolean}
+ * @private
+ */
+function primitiveHasPropertyTable(model, primitive) {
+  return defined(resolvePropertyTableLayout(model, primitive));
+}
+
+/**
+ * DP-H46d — create (or return cached) GPU resources for the property-TABLE
+ * block on a primitive: ONE `rgba8unorm` GPUTexture (the tightly-packed table,
+ * rows = properties, columns = features) + one non-filtering sampler
+ * placeholder. The packed bytes come from the retained
+ * `texture._propertyTableTextureData` (stashed by
+ * `parseStructuralMetadata.createTextureForPropertyTable` — the source buffer
+ * views are freed after load, so this retained copy is the only readable
+ * source on WebGPU). Idempotent (stamps `primCache._propertyTableResources`).
+ *
+ * The table is `rgba8unorm` (NOT `-srgb`) — the packed property bytes are raw
+ * little-endian data, never gamma-encoded — so `textureLoad` returns the
+ * normalized channels the codegen reassembles into the raw value.
+ *
+ * @param {GPUDevice} device
+ * @param {object} primCache per-primitive cache slot
+ * @param {object} layout the layout from {@link resolvePropertyTableLayout}
+ * @param {GPUSampler} sampler a non-filtering sampler (shared, unused by
+ *   textureLoad but bound to satisfy the BGL)
+ * @returns {{ entries: {binding:number, resource:GPUTextureView|GPUSampler}[] }|undefined}
+ * @private
+ */
+function ensurePropertyTableResources(device, primCache, layout, sampler) {
+  if (!defined(layout) || !defined(layout.textureData)) {
+    return undefined;
+  }
+  if (defined(primCache._propertyTableResources)) {
+    return primCache._propertyTableResources;
+  }
+
+  const { width, height, data } = layout.textureData;
+  if (!(width > 0) || !(height > 0) || !defined(data)) {
+    return undefined;
+  }
+
+  const gpuTexture = device.createTexture({
+    label: `Property table texture ${width}x${height}`,
+    size: [width, height, 1],
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture: gpuTexture },
+    data,
+    { bytesPerRow: width * 4, rowsPerImage: height },
+    { width, height, depthOrArrayLayers: 1 },
+  );
+
+  const entries = [
+    { binding: layout.textureBinding, resource: gpuTexture.createView() },
+    { binding: layout.samplerBinding, resource: sampler },
+  ];
+
+  const resources = { entries, gpuTexture };
+  primCache._propertyTableResources = resources;
+  return resources;
+}
+
 /**
  * Destroys metadata GPU resources on a primitive cache.
  * @param {object} primCache
@@ -511,6 +797,15 @@ function destroyMetadataResources(primCache) {
   if (defined(primCache._propertyTextureResources)) {
     primCache._propertyTextureResources = undefined;
   }
+  // DP-H46d — the property-table GPUTexture IS allocated here (re-uploaded from
+  // the loader's retained bytes), so destroy it.
+  if (defined(primCache._propertyTableResources)) {
+    const gpuTexture = primCache._propertyTableResources.gpuTexture;
+    if (defined(gpuTexture)) {
+      gpuTexture.destroy();
+    }
+    primCache._propertyTableResources = undefined;
+  }
 }
 
 export {
@@ -525,6 +820,12 @@ export {
   PROPERTY_TEXTURE_BINDING_BASE,
   PROPERTY_TEXTURE_SAMPLER_BINDING,
   MAX_PROPERTY_TEXTURES,
+  // DP-H46d — property TABLES.
+  resolvePropertyTableLayout,
+  primitiveHasPropertyTable,
+  ensurePropertyTableResources,
+  PROPERTY_TABLE_BINDING,
+  PROPERTY_TABLE_SAMPLER_BINDING,
 };
 export default {
   ensureMetadataResources,
@@ -537,4 +838,9 @@ export default {
   PROPERTY_TEXTURE_BINDING_BASE,
   PROPERTY_TEXTURE_SAMPLER_BINDING,
   MAX_PROPERTY_TEXTURES,
+  resolvePropertyTableLayout,
+  primitiveHasPropertyTable,
+  ensurePropertyTableResources,
+  PROPERTY_TABLE_BINDING,
+  PROPERTY_TABLE_SAMPLER_BINDING,
 };

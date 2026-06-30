@@ -29,7 +29,9 @@
  */
 import defined from "../../Core/defined.js";
 import Matrix3 from "../../Core/Matrix3.js";
-import MetadataComponentType from "../MetadataComponentType.js";
+import MetadataComponentType, {
+  ScalarCategories,
+} from "../MetadataComponentType.js";
 import MetadataType from "../MetadataType.js";
 
 // Float-component WGSL types indexed by component count (1..4). Index 0 is
@@ -329,6 +331,125 @@ function vecSplat(n, scalar) {
 }
 
 /**
+ * DP-H46d — build a WGSL expression that reassembles `channelCount` normalized
+ * `[0,1]` float channels of an `rgba8unorm` sample back into the raw little-
+ * endian `u32` bit pattern they encode. This is the WGSL sibling of
+ * `czm_unpackTexture(...)`: `byte_k = round(channel_k * 255)` and the bytes
+ * combine LSB-first (`byte0 | (byte1<<8) | ...`). Self-contained (no shader
+ * chunk dependency) so the generated property-table chunk stands alone.
+ *
+ * @param {string} channelsExpr a WGSL `f32` / `vec2..4<f32>` expression (the
+ *   sampled channel slice in [0,1])
+ * @param {number} channelCount how many channels `channelsExpr` carries (1..4)
+ * @returns {string} a WGSL `u32` expression
+ * @private
+ */
+function buildUnpackBitsExpr(channelsExpr, channelCount) {
+  if (channelCount <= 1) {
+    // Single channel — `channelsExpr` is already a scalar f32.
+    return `u32((${channelsExpr}) * 255.0 + 0.5)`;
+  }
+  // Multi-channel — `channelsExpr` is a vecN<f32>. Extract each byte LSB-first
+  // and OR-shift. WGSL has no expression-scoped `let`, so the byte extraction is
+  // repeated per term (the compiler CSEs the duplicate vector evaluation).
+  const perTerm = [];
+  for (let i = 0; i < channelCount; i++) {
+    const comp = "xyzw".charAt(i);
+    const byteExpr = `u32((${channelsExpr}).${comp} * 255.0 + 0.5)`;
+    perTerm.push(i === 0 ? byteExpr : `(${byteExpr} << ${i * 8}u)`);
+  }
+  return `(${perTerm.join(" | ")})`;
+}
+
+/**
+ * DP-H46d — build a WGSL expression that unpacks a property-TABLE
+ * `textureLoad` sample (a `vec4<f32>` of normalized rgba8 channels) into the
+ * property's WGSL type. This is the WGSL sibling of
+ * `MetadataClassProperty.unpackTextureInShader`: the packed bytes are
+ * reassembled into a `u32` per component (little-endian), then
+ * bit-reinterpreted to the scalar category and optionally normalized.
+ *
+ *   - FLOAT component types            → `bitcast<f32>(rawBits)`
+ *   - signed-integer component types   → `bitcast<i32>(rawBits)`
+ *   - unsigned-integer component types → `rawBits` (already u32)
+ *   - normalized integer               → `f32(value) / maxValue` (→ float family)
+ *
+ * Per-component channel slicing matches the GLSL unpacker
+ * (`channelsPerComponent = floor(4 / componentCount)`): a scalar reads all 4
+ * channels (a 32-bit value), a vec3 reads one channel per component (three
+ * 8-bit values), etc.
+ *
+ * @param {string} sampleExpr a WGSL `vec4<f32>` expression (the table texel,
+ *   `textureLoad(...)`)
+ * @param {MetadataClassProperty} classProperty supplies type + normalized flag
+ * @param {string} wgslType the resolved WGSL type for the property
+ * @returns {string} a WGSL expression of type `wgslType`
+ * @private
+ */
+function buildPropertyTableUnpack(sampleExpr, classProperty, wgslType) {
+  // Always 4 channels for property-table textures (NUM_CHANNELS = 4).
+  const numChannels = 4;
+  const componentCount = getComponentCount(classProperty);
+  const channelsPerComponent = Math.floor(numChannels / componentCount) || 1;
+  const isNormalized = classProperty.normalized === true;
+  // Downcast the source value type the same way the loader packs the texture
+  // (gpuComponentType: INT64→INT32, etc.) so the bit-reinterpret + normalization
+  // max value match the bytes actually stored.
+  const gpuValueType = MetadataComponentType.gpuComponentType(
+    classProperty.valueType,
+  );
+  const category = MetadataComponentType.category(gpuValueType);
+
+  const channelNames = ["x", "y", "z", "w"];
+
+  // Build the per-component scalar expression (already cast/normalized).
+  const componentExprs = [];
+  for (let c = 0; c < componentCount; c++) {
+    const sliceComps = [];
+    for (let k = 0; k < channelsPerComponent; k++) {
+      sliceComps.push(channelNames[c * channelsPerComponent + k]);
+    }
+    // The channel slice as an f32 scalar or vecN<f32>.
+    let channelExpr;
+    if (sliceComps.length === 1) {
+      channelExpr = `(${sampleExpr}).${sliceComps[0]}`;
+    } else {
+      channelExpr = `vec${sliceComps.length}<f32>(${sliceComps
+        .map((s) => `(${sampleExpr}).${s}`)
+        .join(", ")})`;
+    }
+    const rawBits = buildUnpackBitsExpr(channelExpr, sliceComps.length);
+
+    let scalarExpr;
+    if (isNormalized) {
+      // Normalized integer → float in [0,1] (unsigned) / [-1,1] (signed).
+      const maxValue = Number(MetadataComponentType.getMaximum(gpuValueType));
+      const inv = maxValue !== 0 ? 1.0 / maxValue : 0.0;
+      if (category === ScalarCategories.UNSIGNED_INTEGER) {
+        scalarExpr = `(f32(${rawBits}) * ${wgslFloat(inv)})`;
+      } else {
+        // Signed: reinterpret then normalize.
+        scalarExpr = `(f32(bitcast<i32>(${rawBits})) * ${wgslFloat(inv)})`;
+      }
+    } else if (category === ScalarCategories.FLOAT) {
+      scalarExpr = `bitcast<f32>(${rawBits})`;
+    } else if (category === ScalarCategories.UNSIGNED_INTEGER) {
+      scalarExpr = `${rawBits}`;
+    } else {
+      // Signed integer — bit-reinterpret the u32 pattern as i32.
+      scalarExpr = `bitcast<i32>(${rawBits})`;
+    }
+    componentExprs.push(scalarExpr);
+  }
+
+  if (componentCount === 1) {
+    return componentExprs[0];
+  }
+  // vecN<...> — construct from the per-component scalars.
+  return `${wgslType}(${componentExprs.join(", ")})`;
+}
+
+/**
  * Compute a stable 32-bit hash of a string (FNV-1a). Used to fold the
  * generated-metadata-WGSL (which is class/schema dependent) into the
  * WebGPU shader-module cache key so two models with different metadata
@@ -361,6 +482,8 @@ export {
   // DP-H46c — property-texture WGSL builders.
   buildTexCoordExpr,
   buildPropertyTextureUnpack,
+  // DP-H46d — property-table WGSL unpacker.
+  buildPropertyTableUnpack,
   floatTypesByComponentCount,
   intTypesByComponentCount,
   uintTypesByComponentCount,
@@ -376,4 +499,5 @@ export default {
   hashStringFNV1a,
   buildTexCoordExpr,
   buildPropertyTextureUnpack,
+  buildPropertyTableUnpack,
 };
