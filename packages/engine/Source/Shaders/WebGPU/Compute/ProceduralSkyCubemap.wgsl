@@ -94,9 +94,33 @@ struct SkyUniforms {
   // toward a grey overcast luminance + flattens the sun-relative directionality);
   // a true per-face cloud raymarch into the cube is deferred (CLOUD-IBL-FULL).
   cloudCoverage: f32,
-  cloudPad0: f32,
-  cloudPad1: f32,
-  cloudPad2: f32,
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450). The two coarse-path pads (37, 38)
+  // are repurposed (add-only — byte offsets unchanged) into the full per-face
+  // cloud-march controls. cloudMarch is the gate: 0 (default) → the march is
+  // skipped ENTIRELY (the whole block below is guarded on it) AND the
+  // bindings 5/6/7 are placeholder 1×1×1 textures → byte-identical to the 4.2
+  // fill. >0 → run the low-res per-face cloud raymarch + composite OVER the sky.
+  cloudMarch: f32,         // 37 — 0 off (default) / >0 run the full per-face march
+  cloudPlanetRadius: f32,  // 38 — DEAD (Batch 450, FIX 4): the march uses the
+                           //      passed `innerR`/`u.innerRadius`, never this slot.
+                           //      Kept add-only so the 160-byte 4.2 row layout +
+                           //      all later offsets stay stable; packed as
+                           //      innerRadius for documentation only.
+  cloudPad2: f32,          // 39 — reserved (kept so the 160-byte 4.2 layout holds)
+  // Item 3-C — cloud-march params. Appended ADD-ONLY (new 16-byte rows). NEVER
+  // read when cloudMarch == 0 (the march block is fully guarded), so the bytes
+  // are inert on the default path. The cloud sun direction is in the SAME local
+  // (Y-up) reference frame as `dir` (the JS packer rotates the world sun into it
+  // via the ENU basis, like `sunLocal`), so the beer's-law light term is
+  // consistent with the face directions the cube is filled along.
+  cloudSunLocal: vec3<f32>,   // 40-42 — sun direction in the IBL local frame
+  cloudDeckBottom: f32,       // 43 — deck bottom (m above surface)
+  cloudWindAndTime: vec3<f32>,// 44-46 — wind.xz (m/s components) packed; .z = time(s)
+  cloudDeckTop: f32,          // 47 — deck top (m above surface)
+  cloudBaseColor: vec3<f32>,  // 48-50 — beer's-law lit base (shadowed) cloud tint
+  cloudDensityMult: f32,      // 51 — density scale (globe.cloudDensity-derived)
+  cloudTopColor: vec3<f32>,   // 52-54 — sun-lit cloud tint (silver edge)
+  cloudPuffSize: f32,         // 55 — baked-shape SHAPE_SCALE (puff size dial)
 };
 
 @group(0) @binding(0) var<uniform> u: SkyUniforms;
@@ -110,6 +134,16 @@ struct SkyUniforms {
 @group(0) @binding(2) var lutSampler: sampler;
 @group(0) @binding(3) var skyViewLut: texture_2d<f32>;
 @group(0) @binding(4) var multipleScatterLut: texture_2d<f32>;
+// Item 3-C (CLOUD-IBL-FULL, Batch 450) — the baked cloud noise the visible
+// volumetric clouds sample (shape = Perlin-Worley billow, detail = high-freq
+// Worley), SHARED from the cloud renderer's `_cloudCache.noise`. Bound
+// UNCONDITIONALLY so the BGL/pipeline layout never forks; the JS renderer binds
+// a 1×1×1 placeholder when `cloudMarch` is off (mirrors the LUT placeholder
+// pattern at bindings 3/4), and the per-face march below is fully gated on
+// `cloudMarch > 0`, so the textures are NEVER sampled on the default path.
+@group(0) @binding(5) var cloudShapeTex: texture_3d<f32>;
+@group(0) @binding(6) var cloudDetailTex: texture_3d<f32>;
+@group(0) @binding(7) var cloudNoiseSampler: sampler;
 
 const ATMOSPHERE_THICKNESS: f32 = 111000.0;
 const PRIMARY_STEPS_MAX: i32 = 16;
@@ -320,6 +354,153 @@ fn sampleMultipleScatterLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>)
 const MS_SCALE: f32 = 0.06;
 const PI: f32 = 3.14159265358979323846;
 
+// ─── Item 3-C (CLOUD-IBL-FULL, Batch 450) — low-res per-face cloud march ───
+//
+// A DELIBERATELY COARSE port of ProceduralClouds.wgsl's `cloudDensity` +
+// `marchDeck`: it samples the SAME baked shape/detail noise the visible clouds
+// use (so the reflected cloud field tracks the rendered one), but with a small
+// fixed step count, a SINGLE simplified deck, and a cheap 1-tap beer's-law sun
+// shadow. The prefilter + SH that read this cube blur out high-frequency detail,
+// so a low-res march is sufficient — and is the whole point of "low-res per
+// face". The entire path is reached ONLY when `u.cloudMarch > 0` AND
+// `u.cloudCoverage > 0`; otherwise it is never called (bindings 5/6/7 are
+// placeholders) → byte-identical default parity.
+
+// Baked cloud BASE shape — a stripped `bakedBase` from ProceduralClouds.wgsl:
+// one trilinear shape fetch warped by a slow detail offset (de-tiles the bake).
+// `samplePos` is in the same 0.0003-scaled noise space the visible march uses.
+fn cloudBakedBaseIBL(samplePos: vec3<f32>) -> f32 {
+  let s = samplePos * u.cloudPuffSize;
+  let w = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, s * 0.32, 0.0).rgb;
+  let uvw = s + (w - vec3<f32>(0.5)) * 0.5;
+  return textureSampleLevel(cloudShapeTex, cloudNoiseSampler, uvw, 0.0).r;
+}
+
+// Cloud density at a world-frame point on the deck. Mirrors the BAKED branch of
+// `cloudDensity`: baked base → coverage threshold → BILLOWY height gradient →
+// subtractive Worley detail erosion. No weather map, no per-genus profile (this
+// is a coarse IBL field, not the cinematic march).
+fn cloudDensityIBL(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
+  let windOffset = vec3<f32>(u.cloudWindAndTime.x, 0.0, u.cloudWindAndTime.y)
+                   * u.cloudWindAndTime.z;
+  let samplePos = (worldPos + windOffset) * 0.0003;
+
+  var density = cloudBakedBaseIBL(samplePos);
+  let coverage = clamp(u.cloudCoverage, 0.0, 1.0);
+  density = smoothstep(1.0 - coverage, 1.0, density);
+
+  // BILLOWY vertical gradient (the historical cumulus profile).
+  let hg = smoothstep(0.0, 0.15, heightFraction) * smoothstep(1.0, 0.7, heightFraction);
+  density *= hg;
+
+  // High-frequency Worley detail erosion (fades toward the deck top).
+  let detail = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, samplePos * 5.0, 0.0);
+  let worleyDetail = 1.0 - detail.r;
+  density -= worleyDetail * 0.35 * (1.0 - heightFraction);
+  density = max(density, 0.0);
+
+  return density * u.cloudDensityMult;
+}
+
+// Ray / sphere far-hit in the local frame (origin not at the planet center).
+// Closest-point form (Haines), same as ProceduralClouds.wgsl's intersect.
+fn cloudShellIntersect(ro: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
+  let tClosest = -dot(ro, rd);
+  let cp = ro + rd * tClosest;
+  let half2 = radius * radius - dot(cp, cp);
+  if (half2 < 0.0) {
+    return vec2<f32>(-1.0);
+  }
+  let h = sqrt(half2);
+  return vec2<f32>(tClosest - h, tClosest + h);
+}
+
+// Cheap 3-tap beer's-law sun shadow toward `u.cloudSunLocal`. Returns
+// transmittance in [0,1] — 1 = fully lit, →0 = deeply shadowed.
+fn cloudLightIBL(pos: vec3<f32>, innerR: f32, deckBottom: f32, deckTop: f32) -> f32 {
+  let layerThickness = deckTop - deckBottom;
+  let stepLen = layerThickness * 0.33;
+  var opticalDepth: f32 = 0.0;
+  for (var i = 0; i < 3; i = i + 1) {
+    let sp = pos + u.cloudSunLocal * (stepLen * f32(i + 1));
+    let altitude = length(sp) - innerR;
+    let hf = clamp((altitude - deckBottom) / max(layerThickness, 1.0), 0.0, 1.0);
+    opticalDepth += cloudDensityIBL(sp, hf) * stepLen;
+  }
+  return exp(-opticalDepth * 0.04);
+}
+
+// Low-res cloud raymarch along the face direction `dir` from the local view
+// origin. Returns premultiplied cloud color in .rgb and coverage alpha in .a.
+// `innerR` is the reference-frame surface radius (== u.innerRadius); the deck
+// shell sits at [innerR+deckBottom, innerR+deckTop].
+fn marchCloudFaceIBL(
+  viewOrigin: vec3<f32>,
+  dir: vec3<f32>,
+  innerR: f32,
+  skyColor: vec3<f32>,
+) -> vec4<f32> {
+  let deckBottom = u.cloudDeckBottom;
+  let deckTop = u.cloudDeckTop;
+  let innerShell = innerR + deckBottom;
+  let outerShell = innerR + deckTop;
+
+  let hitInner = cloudShellIntersect(viewOrigin, dir, innerShell);
+  let hitOuter = cloudShellIntersect(viewOrigin, dir, outerShell);
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450, FIX 2) — the view origin sits at the
+  // planet surface (radius innerR), BELOW both cloud shells, so this is the
+  // below-deck case (mirrors ProceduralClouds.wgsl marchDeck's `cameraAltitude
+  // < deckBottom` branch): march the deck itself — enter at the inner-shell FAR
+  // hit (deck bottom) and exit at the outer-shell FAR hit (deck top). The prior
+  // code started at the outer NEAR hit (`hitOuter.x`, behind the surface) and
+  // tried to clip at the inner NEAR hit (`hitInner.x`, always < 0 from below →
+  // dead clip), so it wasted ~5 of 12 steps in the empty sub-deck region. A ray
+  // that misses the deck (`hitInner.y < 0`) yields tStart=0,tEnd<0 → early-out.
+  var tStart = max(hitInner.y, 0.0);
+  var tEnd = hitOuter.y;
+  if (tEnd <= tStart) {
+    return vec4<f32>(0.0);
+  }
+
+  // Cap the marched span so a grazing ray doesn't run a huge segment at low res.
+  let maxSpan = (deckTop - deckBottom) * 6.0;
+  tEnd = min(tEnd, tStart + maxSpan);
+
+  let STEPS = 12;
+  let stepLen = (tEnd - tStart) / f32(STEPS);
+  let layerThickness = max(deckTop - deckBottom, 1.0);
+
+  var transmittance: f32 = 1.0;
+  var accumColor = vec3<f32>(0.0);
+  var t = tStart + stepLen * 0.5;
+  for (var i = 0; i < STEPS; i = i + 1) {
+    let p = viewOrigin + dir * t;
+    let altitude = length(p) - innerR;
+    let hf = clamp((altitude - deckBottom) / layerThickness, 0.0, 1.0);
+    let density = cloudDensityIBL(p, hf);
+    if (density > 0.001) {
+      let light = cloudLightIBL(p, innerR, deckBottom, deckTop);
+      // Sun-lit tint toward `cloudTopColor`, shadowed toward `cloudBaseColor`,
+      // and pick up the local sky as fill so the reflected deck doesn't read as
+      // a flat grey card. Scaled by the env scattering intensity for exposure.
+      let lit = mix(u.cloudBaseColor, u.cloudTopColor, light);
+      let sample = (lit * u.scatteringIntensity + skyColor * 0.3);
+      let stepDensity = density * stepLen * 0.02;
+      let stepTrans = exp(-stepDensity);
+      // Energy-conserving front-to-back composite (premultiplied).
+      accumColor += transmittance * (1.0 - stepTrans) * sample;
+      transmittance *= stepTrans;
+      if (transmittance < 0.02) {
+        break;
+      }
+    }
+    t += stepLen;
+  }
+
+  let alpha = clamp(1.0 - transmittance, 0.0, 1.0);
+  return vec4<f32>(accumColor, alpha);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let size = u32(u.faceSize);
@@ -417,8 +598,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // unambiguously DIMMER than clear AND flat (the L1/L2 directional bands
   // collapse). coverage≈0.5 reads as a hazy bright-overcast (partial collapse
   // toward a lightly-dimmed grey); coverage→1 as a dim, shadowless storm deck.
+  //
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — when the full per-face march is ON
+  // (`u.cloudMarch > 0`) it REPLACES this coarse darkening (the march composites
+  // real cloud structure over the sky below, which is a strictly richer overcast
+  // model), so the 4.2 lerp is skipped to avoid double-darkening. The coarse
+  // path therefore runs ONLY when the march is off (the 4.2 fallback for
+  // `cloudContributesIBL` without `cloudsInReflections`).
   let coverage = clamp(u.cloudCoverage, 0.0, 1.0);
-  if (coverage > 0.0) {
+  if (coverage > 0.0 && u.cloudMarch <= 0.0) {
     let lum = dot(skyColor, vec3<f32>(0.2126, 0.7152, 0.0722));
     // Transmittance: clear (1.0) → ~0.12 at full coverage. Applied to the grey
     // TARGET so the flattened dome is much dimmer than the texel it replaces
@@ -430,6 +618,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // bright sun-relative chroma are nearly gone.
     let blend = coverage * 0.95;
     skyColor = mix(skyColor, dimGrey, blend);
+  }
+
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — full low-res per-face cloud march.
+  // OFF (`u.cloudMarch == 0`, default): never entered → byte-identical (the
+  // bindings 5/6/7 are placeholders and nothing samples them). ON (+ a non-zero
+  // coverage): march the cloud deck along this face's `dir` from the local view
+  // origin and composite the premultiplied result OVER the (clear or LUT) sky.
+  // Clouds occlude the sky behind them (`sky*(1-a) + cloudPremult`), and the
+  // sky/ground composite below then carries the cloudier radiance into the SH +
+  // prefilter, so a reflective surface shows genuine cloud structure rather than
+  // the 4.2 flat darkening. Only the upper hemisphere is marched (the deck sits
+  // above the surface; down-facing texels use the ground term unchanged).
+  if (u.cloudMarch > 0.0 && coverage > 0.0 && upDot > 0.0) {
+    let cloud = marchCloudFaceIBL(viewOrigin, dir, u.innerRadius, skyColor);
+    skyColor = skyColor * (1.0 - cloud.a) + cloud.rgb;
   }
 
   // 1:1 with ComputeRadianceMapFS: the sky is `skyColor * intensity` and the

@@ -119,6 +119,11 @@ export function executeEnvironmentalEffects(
           cloudContributesIBL?: boolean;
           cloudCoverage?: number;
           cloudDensity?: number;
+          cloudLayerBottom?: number;
+          cloudLayerTop?: number;
+          cloudWindDirection?: { x?: number; y?: number };
+          cloudWindSpeed?: number;
+          cloudNoiseMorphology?: string;
         }
       | undefined,
   );

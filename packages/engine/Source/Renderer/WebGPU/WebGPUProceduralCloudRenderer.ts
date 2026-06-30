@@ -170,6 +170,23 @@ export interface CloudCache {
   // off resets it to 0 (no staleness). 0 (default / both flags off) → the env
   // fill's overcast blend is skipped → byte-identical to the pre-4.2 cube.
   iblCoverage: number;
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — the real visible-cloud march params,
+  // published every frame alongside `iblCoverage` from the env-effects dispatch
+  // (where `scene.globe` is genuinely in scope). The dynamic-env-map manager
+  // reads THESE (not the nonexistent `frameState.globe`) so the reflected IBL
+  // cloud deck tracks the user's live cloud customization (deck altitude, wind,
+  // density) instead of frozen constructor defaults. `iblPWActive` mirrors the
+  // visible renderer's `cloudNoiseMorphology === "perlin-worley"` decision so
+  // the IBL march samples the SAME baked base shape view the visible deck does.
+  // These are inert on the OFF path — the manager only consumes them when the
+  // `cloudsInReflections` flag is on AND coverage > 0 (the march gate).
+  iblDeckBottom: number;
+  iblDeckTop: number;
+  iblWindX: number;
+  iblWindY: number;
+  iblWindSpeed: number;
+  iblDensity: number;
+  iblPWActive: boolean;
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -231,6 +248,15 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       shadowActive: false,
       shadowAbsorption: 0.04,
       iblCoverage: 0.0,
+      // Item 3-C (CLOUD-IBL-FULL, Batch 450) — seed with the Globe constructor
+      // defaults so a pre-publish read still matches the visible defaults.
+      iblDeckBottom: 1500.0,
+      iblDeckTop: 4000.0,
+      iblWindX: 0.7,
+      iblWindY: 0.3,
+      iblWindSpeed: 15.0,
+      iblDensity: 0.3,
+      iblPWActive: false,
     };
   }
   return context._cloudCache;
@@ -249,6 +275,15 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
  * dense deck). This is deliberately not a per-face cloud raymarch — that is
  * deferred (CLOUD-IBL-FULL). Returns 0 unless BOTH `showProceduralClouds` AND
  * `cloudContributesIBL` are true.
+ *
+ * Item 3-C (CLOUD-IBL-FULL, Batch 450) — ALSO publishes the real deck altitude,
+ * wind dir+speed, density, and the PW-shape-active state onto `_cloudCache`, so
+ * the dynamic-env-map manager's per-face cloud march reads the user's live cloud
+ * customization (`scene.globe` is in scope HERE; it is NOT a `FrameState` field).
+ * These extra fields are inert on the OFF path (the manager gates its march on
+ * `cloudsInReflections` AND coverage > 0); they always reflect the current globe
+ * so a customization shows up in the reflected deck the same frame it shows up in
+ * the visible deck.
  */
 export function publishCloudIblCoverage(
   context: CesiumGraphicsContext,
@@ -258,10 +293,27 @@ export function publishCloudIblCoverage(
         cloudContributesIBL?: boolean;
         cloudCoverage?: number;
         cloudDensity?: number;
+        cloudLayerBottom?: number;
+        cloudLayerTop?: number;
+        cloudWindDirection?: { x?: number; y?: number };
+        cloudWindSpeed?: number;
+        cloudNoiseMorphology?: string;
       }
     | undefined,
 ): void {
   const cache = ensureCloudCache(context);
+  // Item 3-C — publish the real march params unconditionally (so a clear-flag
+  // toggle never leaves a stale deck). These match the Globe constructor
+  // defaults when unset, which equals the visible renderer's fallback.
+  cache.iblDeckBottom = globe?.cloudLayerBottom ?? 1500.0;
+  cache.iblDeckTop = globe?.cloudLayerTop ?? 4000.0;
+  cache.iblWindX = globe?.cloudWindDirection?.x ?? 0.7;
+  cache.iblWindY = globe?.cloudWindDirection?.y ?? 0.3;
+  cache.iblWindSpeed = globe?.cloudWindSpeed ?? 15.0;
+  cache.iblDensity = globe?.cloudDensity ?? 0.3;
+  // Mirror WebGPUProceduralCloudRenderer's PW selection so the IBL march binds
+  // the SAME base shape view (PW vs value-FBM) the visible deck samples.
+  cache.iblPWActive = globe?.cloudNoiseMorphology === "perlin-worley";
   if (
     !globe ||
     globe.showProceduralClouds !== true ||

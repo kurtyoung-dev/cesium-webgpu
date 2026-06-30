@@ -152,6 +152,21 @@ interface DynEnvMapCache {
   // scene still re-darkens its IBL when cloud cover changes. NaN sentinel forces
   // the first-frame run (same convention as `lastSunDir*`).
   lastCloudCoverage: number;
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — full per-face cloud march. A 1×1×1
+  // white 3D placeholder + sampler back bindings 5/6/7 whenever the march is off
+  // (or the cloud noise hasn't baked), mirroring the LUT placeholder. The bound
+  // cloud-noise views/sampler the bind group was last built against are tracked
+  // so it rebuilds when they first appear / flip with the march activation.
+  cloudPlaceholderTex: GPUTexture | null;
+  cloudPlaceholderView: GPUTextureView | null;
+  cloudPlaceholderSampler: GPUSampler | null;
+  cloudShapeBoundView: GPUTextureView | null;
+  cloudDetailBoundView: GPUTextureView | null;
+  cloudSamplerBound: GPUSampler | null;
+  // Whether the LAST sky fill used the full cloud march. When this flips (flag
+  // toggled, cloud noise finished baking, or coverage crossed 0) force a re-fill
+  // so a static (non-sun-moving) scene isn't stuck on the wrong path.
+  lastUsedCloudMarch: boolean;
   // C2-25 ENV-SCENE-CAPTURE (Batch 446) — transient `size×size` depth target
   // shared across the 6 capture face passes (cleared per face). Lazily
   // allocated INSIDE `runSceneCapture` (OFF allocates nothing) and reallocated
@@ -273,6 +288,15 @@ function updateWebGPUDynamicEnvironmentMap(
       lutMsView: null,
       lastUsedMultiScatterLut: false,
       lastCloudCoverage: NaN,
+      // Item 3-C (CLOUD-IBL-FULL, Batch 450) — cloud-march placeholder + bound
+      // views (all null until the first fill builds the placeholder).
+      cloudPlaceholderTex: null,
+      cloudPlaceholderView: null,
+      cloudPlaceholderSampler: null,
+      cloudShapeBoundView: null,
+      cloudDetailBoundView: null,
+      cloudSamplerBound: null,
+      lastUsedCloudMarch: false,
       // C2-25 ENV-SCENE-CAPTURE (Batch 446) — lazy capture-depth + debounce.
       captureDepthTexture: null,
       captureDepthView: null,
@@ -480,6 +504,18 @@ function updateWebGPUDynamicEnvironmentMap(
     Math.abs(liveCloudCoverage - cache.lastCloudCoverage) <
     CLOUD_COVERAGE_REFRESH_EPSILON
   );
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — re-fill when the full cloud-march
+  // path becomes available/unavailable (flag toggled, or the cloud noise just
+  // finished baking) so a static scene doesn't stay on the wrong path. `wantMarch`
+  // mirrors the predicate the fill uses (context flag on AND a non-zero published
+  // coverage); the fill self-heals to the placeholder if the noise isn't baked
+  // yet and leaves `lastUsedCloudMarch` false, so this keeps re-trying until the
+  // noise lands, then settles. When the flag is off, `wantMarch` is a constant
+  // false → this never trips → byte-identical gating.
+  const wantMarch =
+    (frameState.context as unknown as { cloudsInReflections?: boolean })
+      .cloudsInReflections === true && liveCloudCoverage > 0.0;
+  const cloudMarchPathChanged = wantMarch !== cache.lastUsedCloudMarch;
   // C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture refresh gate. `wantCapture`
   // is the double opt-in + SCENE3D check (cheap; no GPU). When OFF the whole
   // block below is byte-identical (wantCapture false → captureRefresh false →
@@ -515,6 +551,7 @@ function updateWebGPUDynamicEnvironmentMap(
     sunMoved ||
     lutPathChanged ||
     cloudCoverageMoved ||
+    cloudMarchPathChanged ||
     captureRefresh
   ) {
     runProceduralSkyFill(device, cache, manager, frameState);
@@ -930,12 +967,19 @@ function runEnvCubeTemporalBlend(
 //   24..26 mieCoeff       27 rayleighScaleHeight
 //   28..30 groundColor    31 mieScaleHeight
 //   32 groundAlbedo  33 dynamicLightingEnum  34 scatteringIntensity  35 useMultiScatterLut
-//   36 cloudCoverage  37 cloudPad0  38 cloudPad1  39 cloudPad2
+//   36 cloudCoverage  37 cloudMarch  38 cloudPlanetRadius  39 cloudPad2
+//   40..42 cloudSunLocal     43 cloudDeckBottom
+//   44..46 cloudWindAndTime  47 cloudDeckTop
+//   48..50 cloudBaseColor    51 cloudDensityMult
+//   52..54 cloudTopColor     55 cloudPuffSize
 // Item 4.2 (CLOUD-IBL, Batch 441) grew the struct 144→160 bytes (one new vec4
-// slot) for the effective cloud-coverage scalar. Add-only; the off path packs
-// cloudCoverage = 0 → the WGSL overcast blend is skipped → byte-identical.
-const SKY_UNIFORM_SIZE = 160;
-const SKY_UNIFORM_FLOATS = 40;
+// slot) for the effective cloud-coverage scalar. Item 3-C (CLOUD-IBL-FULL,
+// Batch 450) grew it 160→224 bytes (four new vec4 rows) for the full per-face
+// cloud-march controls. Add-only; the off path packs cloudMarch = 0 → the WGSL
+// march branch is skipped + the noise bindings are 1×1×1 placeholders →
+// byte-identical to the 4.2 fill.
+const SKY_UNIFORM_SIZE = 224;
+const SKY_UNIFORM_FLOATS = 56;
 
 // Reused scratch so the per-fill pack does not allocate.
 const scratchPosition = new Cartesian3();
@@ -1002,6 +1046,24 @@ function runProceduralSkyFill(
           binding: 4,
           visibility: GPUShaderStage.COMPUTE,
           texture: { sampleType: "float", viewDimension: "2d" },
+        },
+        // Item 3-C (CLOUD-IBL-FULL, Batch 450) — baked cloud shape + detail 3D
+        // noise + sampler, bound unconditionally (placeholder when the march is
+        // off) so the BGL/pipeline layout never forks.
+        {
+          binding: 5,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "3d" },
+        },
+        {
+          binding: 6,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "3d" },
+        },
+        {
+          binding: 7,
+          visibility: GPUShaderStage.COMPUTE,
+          sampler: { type: "filtering" },
         },
       ],
     });
@@ -1176,13 +1238,123 @@ function runProceduralSkyFill(
   // renderer publishes it onto `context._cloudCache.iblCoverage` every frame,
   // already gated to 0 unless BOTH `globe.showProceduralClouds` AND
   // `globe.cloudContributesIBL` are on. 0 (default) → the WGSL overcast blend is
-  // skipped → byte-identical fill. cloudPad0..2 (37..39) stay 0.
-  data[36] =
-    (
-      frameState.context as unknown as {
-        _cloudCache?: { iblCoverage?: number };
-      }
-    )._cloudCache?.iblCoverage ?? 0.0;
+  // skipped → byte-identical fill.
+  const cloudCache = (
+    frameState.context as unknown as {
+      _cloudCache?: {
+        iblCoverage?: number;
+        // Item 3-C (CLOUD-IBL-FULL, Batch 450) — the real visible-cloud march
+        // params, published every frame from the env-effects dispatch (where
+        // `scene.globe` is in scope). Read HERE instead of the nonexistent
+        // `frameState.globe`, so the reflected deck tracks live customization.
+        iblDeckBottom?: number;
+        iblDeckTop?: number;
+        iblWindX?: number;
+        iblWindY?: number;
+        iblWindSpeed?: number;
+        iblDensity?: number;
+        iblPWActive?: boolean;
+        noise?: {
+          shapeSampleView?: GPUTextureView;
+          shapePWSampleView?: GPUTextureView | null;
+          detailSampleView?: GPUTextureView;
+          sampler3d?: GPUSampler;
+        } | null;
+      };
+    }
+  )._cloudCache;
+  data[36] = cloudCache?.iblCoverage ?? 0.0;
+
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — the full per-face cloud march. Gated
+  // on the `cloudsInReflections` context flag AND the baked cloud noise actually
+  // existing on `_cloudCache.noise` (the cloud renderer bakes it once the
+  // volumetric clouds run). When EITHER is missing the march flag is 0 → the
+  // WGSL march branch is never taken + the 1×1×1 placeholder noise is bound →
+  // byte-identical to the 4.2 path. `wantCloudMarch` is also AND-ed with a
+  // non-zero published coverage so a flag set on a clear scene stays inert.
+  const ctxClouds = frameState.context as unknown as {
+    cloudsInReflections?: boolean;
+  };
+  const cloudNoise = cloudCache?.noise ?? null;
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450, FIX 3) — match the visible renderer's
+  // PW-shape selection: only sample the Perlin-Worley base shape view when the
+  // visible clouds are in PW morphology AND it actually baked; otherwise sample
+  // the value-FBM shape view (the visible default). This keeps the reflected
+  // clouds on the SAME base shape as the rendered clouds instead of always
+  // preferring the PW view when present.
+  const usePWShape =
+    cloudCache?.iblPWActive === true && !!cloudNoise?.shapePWSampleView;
+  const cloudNoiseShapeView =
+    (usePWShape
+      ? cloudNoise?.shapePWSampleView
+      : cloudNoise?.shapeSampleView) ?? null;
+  const cloudNoiseDetailView = cloudNoise?.detailSampleView ?? null;
+  const cloudNoiseSampler = cloudNoise?.sampler3d ?? null;
+  const cloudMarchActive =
+    ctxClouds.cloudsInReflections === true &&
+    (cloudCache?.iblCoverage ?? 0.0) > 0.0 &&
+    cloudNoiseShapeView !== null &&
+    cloudNoiseDetailView !== null &&
+    cloudNoiseSampler !== null;
+  // Record the effective march path so the update gate re-fills when it flips
+  // (e.g. the cloud noise finishes baking a frame after the first sky fill, or
+  // the flag toggles on a static scene).
+  cache.lastUsedCloudMarch = cloudMarchActive;
+
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450, FIX 1) — cloud-march params read from
+  // `_cloudCache` (the SAME channel as `iblCoverage`), published every frame by
+  // the cloud renderer's `publishCloudIblCoverage` where `scene.globe` is in
+  // scope. `FrameState` has NO `globe` field, so the prior `frameState.globe`
+  // cast always read undefined and every param froze at the constructor default
+  // — silently decoupling the reflected deck from any user cloud customization.
+  // The cache seeds with the Globe constructor defaults, so the OFF/pre-publish
+  // value still equals the visible default. All inert when `cloudMarch` is 0.
+  const deckBottom = cloudCache?.iblDeckBottom ?? 1500.0;
+  const deckTop = cloudCache?.iblDeckTop ?? 4000.0;
+  const cloudDensity = cloudCache?.iblDensity ?? 0.3;
+  const windX = cloudCache?.iblWindX ?? 0.7;
+  const windY = cloudCache?.iblWindY ?? 0.3;
+  const windSpeed = cloudCache?.iblWindSpeed ?? 15.0;
+  // Animate the noise with the same wind*speed*time the visible march uses, so
+  // the reflected deck drifts. A coarse time (perf clock) is fine — the IBL is
+  // re-filled only on coverage/sun moves, so frame-exact time isn't required.
+  const cloudTime = cloudMarchActive ? performance.now() / 1000.0 : 0.0;
+  // Sun direction in the IBL LOCAL frame (same basis rotation as the shader's
+  // `sunLocal`): East→localX, Up→localY, North→localZ.
+  const sunLocalX =
+    lightVec.x * enu[0] + lightVec.y * enu[1] + lightVec.z * enu[2];
+  const sunLocalY =
+    lightVec.x * enu[8] + lightVec.y * enu[9] + lightVec.z * enu[10];
+  const sunLocalZ =
+    lightVec.x * enu[4] + lightVec.y * enu[5] + lightVec.z * enu[6];
+  const sunLocalLen = Math.hypot(sunLocalX, sunLocalY, sunLocalZ) || 1.0;
+
+  data[37] = cloudMarchActive ? 1.0 : 0.0;
+  // data[38] cloudPlanetRadius — DEAD (Batch 450, FIX 4): the WGSL march uses the
+  // passed `innerR`/`u.innerRadius`, never this slot. Packed for documentation
+  // only; kept add-only so the row layout + later offsets stay stable.
+  data[38] = innerRadius;
+  // data[39] cloudPad2 stays 0.
+  // 40..42 cloudSunLocal (normalized) + 43 cloudDeckBottom
+  data[40] = sunLocalX / sunLocalLen;
+  data[41] = sunLocalY / sunLocalLen;
+  data[42] = sunLocalZ / sunLocalLen;
+  data[43] = deckBottom;
+  // 44..46 cloudWindAndTime (wind.x, wind.y folded with speed, time) + 47 deckTop
+  data[44] = windX * windSpeed;
+  data[45] = windY * windSpeed;
+  data[46] = cloudTime;
+  data[47] = deckTop;
+  // 48..50 cloudBaseColor (shadowed deck tint) + 51 cloudDensityMult
+  data[48] = 0.45;
+  data[49] = 0.47;
+  data[50] = 0.52;
+  data[51] = cloudDensity;
+  // 52..54 cloudTopColor (sun-lit tint) + 55 cloudPuffSize
+  data[52] = 0.95;
+  data[53] = 0.95;
+  data[54] = 0.98;
+  data[55] = 0.45; // SHAPE_SCALE default (matches cloud renderer puffSize)
   device.queue.writeBuffer(cache.skyUniformBuffer, 0, data);
 
   // Item 2.2 (ENV-AERIAL-MS, Batch 430) — LUT sampler + 1×1 white placeholder
@@ -1218,13 +1390,65 @@ function runProceduralSkyFill(
   const boundSkyView = lutSkyViewView ?? cache.lutPlaceholderView;
   const boundMsView = lutMsView ?? cache.lutPlaceholderView;
 
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — 1×1×1 white 3D placeholder + sampler
+  // (built once). Backs bindings 5/6/7 whenever the cloud march is off (or the
+  // cloud noise hasn't baked), keeping the bind group valid + constant; the WGSL
+  // `cloudMarch` flag keeps them unsampled → byte-identical parity.
+  if (!cache.cloudPlaceholderView) {
+    cache.cloudPlaceholderTex = device.createTexture({
+      label: "DynEnvMap Cloud Noise Placeholder",
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: "rgba8unorm",
+      dimension: "3d",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // White (255) — never sampled when the march is off; the value is irrelevant
+    // to parity, white is the inert "no erosion / full shape" default.
+    const white = new Uint8Array([255, 255, 255, 255]);
+    device.queue.writeTexture(
+      { texture: cache.cloudPlaceholderTex },
+      white,
+      { bytesPerRow: 4, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    cache.cloudPlaceholderView = cache.cloudPlaceholderTex.createView({
+      dimension: "3d",
+    });
+  }
+  if (!cache.cloudPlaceholderSampler) {
+    cache.cloudPlaceholderSampler = device.createSampler({
+      label: "DynEnvMap Cloud Noise Placeholder Sampler",
+      minFilter: "linear",
+      magFilter: "linear",
+      addressModeU: "repeat",
+      addressModeV: "repeat",
+      addressModeW: "repeat",
+    });
+  }
+  // Bind the REAL baked cloud noise (shared from the cloud renderer) only when
+  // the march is active; otherwise the placeholder. The shape view prefers the
+  // Perlin-Worley variant (the cloud renderer's own preference) when present.
+  const boundCloudShapeView = cloudMarchActive
+    ? (cloudNoiseShapeView ?? cache.cloudPlaceholderView)
+    : cache.cloudPlaceholderView;
+  const boundCloudDetailView = cloudMarchActive
+    ? (cloudNoiseDetailView ?? cache.cloudPlaceholderView)
+    : cache.cloudPlaceholderView;
+  const boundCloudSampler = cloudMarchActive
+    ? (cloudNoiseSampler ?? cache.cloudPlaceholderSampler)
+    : cache.cloudPlaceholderSampler;
+
   // (Re)build bind group when the storage view changed (size change resets
-  // `skyBindGroup` to null in the texture-create path) OR when the bound LUT
-  // views change (they first appear once the atmosphere LUTs are baked).
+  // `skyBindGroup` to null in the texture-create path) OR when the bound LUT /
+  // cloud-noise views change (they first appear once the LUTs / cloud noise are
+  // baked, and flip with `cloudMarchActive`).
   if (
     !cache.skyBindGroup ||
     cache.lutSkyViewView !== boundSkyView ||
-    cache.lutMsView !== boundMsView
+    cache.lutMsView !== boundMsView ||
+    cache.cloudShapeBoundView !== boundCloudShapeView ||
+    cache.cloudDetailBoundView !== boundCloudDetailView ||
+    cache.cloudSamplerBound !== boundCloudSampler
   ) {
     cache.skyBindGroup = device.createBindGroup({
       label: "DynEnvMap Sky BG",
@@ -1235,10 +1459,16 @@ function runProceduralSkyFill(
         { binding: 2, resource: cache.lutSampler },
         { binding: 3, resource: boundSkyView },
         { binding: 4, resource: boundMsView },
+        { binding: 5, resource: boundCloudShapeView },
+        { binding: 6, resource: boundCloudDetailView },
+        { binding: 7, resource: boundCloudSampler },
       ],
     });
     cache.lutSkyViewView = boundSkyView;
     cache.lutMsView = boundMsView;
+    cache.cloudShapeBoundView = boundCloudShapeView;
+    cache.cloudDetailBoundView = boundCloudDetailView;
+    cache.cloudSamplerBound = boundCloudSampler;
   }
 
   // Dispatch: workgroup_size(8, 8, 1); grid covers face × face × 6.
@@ -1462,6 +1692,12 @@ function destroyWebGPUDynamicEnvironmentMapResources(
   // manager and must NOT be destroyed here.
   if (cache.lutPlaceholderTex) {
     cache.lutPlaceholderTex.destroy();
+  }
+  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — the manager owns only the 1×1×1 cloud
+  // noise placeholder; the real baked cloud noise is owned by the cloud renderer
+  // (`_cloudCache.noise`) and must NOT be destroyed here.
+  if (cache.cloudPlaceholderTex) {
+    cache.cloudPlaceholderTex.destroy();
   }
   if (cache.iblCache) {
     if (cache.iblCache.irradianceTexture) {

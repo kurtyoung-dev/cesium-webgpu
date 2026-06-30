@@ -567,6 +567,28 @@ export interface WebGPURendererOptions {
    * @default false
    */
   envMapTemporalAccumulation?: boolean;
+
+  /**
+   * C2-25 item 3-C ENV-CLOUDS / CLOUD-IBL-FULL (Batch 450). When true, the
+   * dynamic environment cube's procedural sky fill runs a LOW-RES per-face
+   * procedural cloud raymarch (reusing the baked cloud shape/detail noise +
+   * the same `cloudDensity` model the visible volumetric clouds use) and
+   * composites it OVER the sky BEFORE the IBL prefilter + SH projection. An
+   * overcast / cloudy sky then produces a genuinely cloudier reflection +
+   * diffuse IBL (visible cloud structure carried into model / water
+   * reflections), not just the coarse coverage-driven darkening shipped in
+   * 4.2 ({@link Globe#cloudContributesIBL}). The march is intentionally coarse
+   * (few steps, single simplified deck, cheap beer's-law sun light) because
+   * the prefilter + SH blur the high-frequency detail. It is the noisy,
+   * expensive consumer {@link WebGPURendererOptions#envMapTemporalAccumulation}
+   * is designed to smooth — enabling both accumulates the march cleanly over
+   * frames. Default `false` binds 1×1×1 placeholder noise, never takes the
+   * march branch (gated on the runtime flag AND a non-zero coverage), and
+   * leaves the sky fill byte-identical to the shipped parity path. Read by
+   * `WebGPUDynamicEnvironmentMapManager`.
+   * @default false
+   */
+  cloudsInReflections?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════

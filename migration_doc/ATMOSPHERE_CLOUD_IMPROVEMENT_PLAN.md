@@ -282,7 +282,7 @@ This is the headline reflections epic and is sequenced **late** because it depen
 - **Parity impact:** Default-false = current single-frame debounced refresh. Pure history buffer + blend.
 - **Files:** `Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`, `Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl`.
 
-#### 3-C — Clouds folded into the reflection env map (`ENV-CLOUDS`) — **P2, effort L**
+#### 3-C — Clouds folded into the reflection env map (`ENV-CLOUDS`, closes CLOUD-IBL-FULL) — ✅ SHIPPED Batch 450 (opt-in `contextOptions.webgpu.cloudsInReflections`; 12-step low-res per-face cloud march composited over the env-sky faces in `ProceduralSkyCubemap.wgsl`, 3-tap beer light, premult OVER, upDot>0 nadir-skip; deck/wind/density flow via the `_cloudCache` publish channel (NOT frameState.globe), PW shape view matches the visible renderer; replaces the 4.2 coarse darkening when on, 4.2 stays the fallback. OFF byte-identical (cloudMarch=0, 1×1×1 placeholder noise, march branch dead). Amortized by 3-B temporal. Adversarial audit GO post-fix; custom-config probe proves params drive the IBL clouds)
 
 - **Technique:** Composite the procedural cloud raymarch over the env-sky faces before prefilter (low-res per face, amortized via 3-B), so overcast skies produce diffuse low-contrast IBL. **This is the same coupling as 4.2** — implement once, expose via both the IBL feedback flag and the env-map flag.
 - **Opt-in flag:** `contextOptions.webgpu.cloudsInReflections` (default `false`).

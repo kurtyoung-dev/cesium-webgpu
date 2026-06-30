@@ -1345,6 +1345,20 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * C2-25 item 3-C ENV-CLOUDS / CLOUD-IBL-FULL (Batch 450). When true, the
+   * dynamic env cube's procedural sky fill runs a LOW-RES per-face procedural
+   * cloud raymarch and composites it over the sky before the IBL prefilter, so
+   * a cloudy/overcast sky produces a genuinely cloudier reflection + diffuse
+   * IBL (visible cloud structure), not just the 4.2 coarse darkening. Pairs
+   * with `envMapTemporalAccumulation` to smooth the march over frames. Default
+   * `false` binds placeholder noise and never takes the march branch
+   * (byte-identical). Read by `WebGPUDynamicEnvironmentMapManager`.
+   */
+  get cloudsInReflections(): boolean {
+    return this._options.webgpu?.cloudsInReflections ?? false;
+  }
+
+  /**
    * The canvas element associated with this context
    */
   get canvas(): HTMLCanvasElement {
