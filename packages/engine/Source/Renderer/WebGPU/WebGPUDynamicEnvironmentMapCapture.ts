@@ -106,6 +106,36 @@ interface SceneCaptureSources {
   };
 }
 
+/** A single-target model capture command (subset built by the model renderer). */
+interface ModelCaptureCommand {
+  pipeline: GPURenderPipeline;
+  bindGroups: GPUBindGroup[];
+  vertexBuffers: GPUBuffer[];
+  indexBuffer: GPUBuffer;
+  indexCount: number;
+  indexFormat: GPUIndexFormat;
+  instanceCount: number;
+}
+
+/**
+ * C2-25 ENV-SCENE-CAPTURE (Batch 447) — published per-frame by the WebGPU model
+ * feature renderer (`updateWebGPUModel`) when `context.sceneCaptureReflections`
+ * is true. Carries the visible models' camera-independent draw records plus the
+ * builder that turns them into per-face single-target draw descriptors. glTF +
+ * 3D Tiles BOTH flow through the model renderer, so this covers both in one
+ * producer.
+ */
+interface SceneCaptureModels {
+  frameNumber: number;
+  models: unknown[];
+  buildCaptureCommands(
+    entry: unknown,
+    device: GPUDevice,
+    frameState: CesiumFrameState,
+    faceFormat: GPUTextureFormat,
+  ): ModelCaptureCommand[];
+}
+
 // A ShadowMapCamera-shaped object the capture loop hands to
 // `uniformState.updateCamera`. Reused across the 6 faces (and the snapshot) so
 // the per-capture pack does not allocate.
@@ -266,6 +296,7 @@ export function runSceneCapture(
   const ctx = frameState.context as unknown as {
     sceneCaptureReflections?: boolean;
     _webgpuSceneCaptureSources?: SceneCaptureSources | null;
+    _webgpuSceneCaptureModels?: SceneCaptureModels | null;
     uniformState?: {
       updateCamera(camera: unknown): void;
     };
@@ -327,6 +358,20 @@ export function runSceneCapture(
   const near = 1.0;
   const far = radius * 2.5;
 
+  // C2-25 ENV-SCENE-CAPTURE (Batch 447) — model / 3D-Tiles capture sources
+  // published by the WebGPU model FR last frame (frame-stable refs). When
+  // capture is OFF the model FR never publishes (byte-identical), so this is
+  // null and the model replay below is skipped — globe-only capture (Batch 446)
+  // is unchanged.
+  const modelSources = ctx._webgpuSceneCaptureModels ?? null;
+  const captureModels =
+    modelSources &&
+    modelSources.models &&
+    modelSources.models.length > 0 &&
+    typeof modelSources.buildCaptureCommands === "function"
+      ? modelSources
+      : null;
+
   const encoder = device.createCommandEncoder({
     label: "DynEnvMap Scene Capture",
   });
@@ -369,6 +414,27 @@ export function runSceneCapture(
         }
       }
 
+      // C2-25 (Batch 447) — build this face's MODEL / 3D-Tiles commands AFTER
+      // repointing uniformState (so the per-face camera UB bakes the FACE-camera
+      // RTE eye via the ring allocator). Replayed AFTER the globe in the SAME
+      // pass on the shared depth target: globe depth-writes first, models
+      // depth-test+write over it (model occludes globe, globe occludes sky).
+      const modelCommands: ModelCaptureCommand[] = [];
+      if (captureModels) {
+        const pubModels = captureModels.models;
+        for (let m = 0; m < pubModels.length; m++) {
+          const cmds = captureModels.buildCaptureCommands(
+            pubModels[m],
+            device,
+            frameState,
+            faceFormat,
+          );
+          for (let c = 0; c < cmds.length; c++) {
+            modelCommands.push(cmds[c]);
+          }
+        }
+      }
+
       // Open the per-face pass on the cube face (loadOp 'load' preserves the
       // compute sky the globe composites OVER); globe writes LINEAR.
       const pass = encoder.beginRenderPass({
@@ -405,6 +471,24 @@ export function runSceneCapture(
         pass.setVertexBuffer(0, cmd.vertexBuffer);
         pass.setIndexBuffer(cmd.indexBuffer, cmd.indexFormat);
         pass.drawIndexed(cmd.indexCount);
+      }
+
+      // C2-25 (Batch 447) — replay the MODEL / 3D-Tiles commands AFTER the globe
+      // so the shared depth buffer occludes correctly (model over globe, globe
+      // over sky). Each model command carries its own 4 bind groups (per-face
+      // camera + neutral-IBL material + instance + effects) and full vertex
+      // buffer list (no group-0 dynamic offsets).
+      for (let i = 0; i < modelCommands.length; i++) {
+        const cmd = modelCommands[i];
+        pass.setPipeline(cmd.pipeline);
+        for (let bg = 0; bg < cmd.bindGroups.length; bg++) {
+          pass.setBindGroup(bg, cmd.bindGroups[bg]);
+        }
+        for (let vb = 0; vb < cmd.vertexBuffers.length; vb++) {
+          pass.setVertexBuffer(vb, cmd.vertexBuffers[vb]);
+        }
+        pass.setIndexBuffer(cmd.indexBuffer, cmd.indexFormat);
+        pass.drawIndexed(cmd.indexCount, cmd.instanceCount);
       }
       pass.end();
     }

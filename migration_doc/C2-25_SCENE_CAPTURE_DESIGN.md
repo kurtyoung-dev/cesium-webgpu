@@ -147,6 +147,55 @@ a bug.
     `WEBGPU_DEBUGGING_LOG.md`, `DEFERRED_WORK.md` (face-order remap + deferred per-face
     re-selection).
 
+## Batch 447 — Model / 3D-Tiles capture (chosen design)
+
+**3D Tiles + glTF both flow through `Model.update → updateWebGPUModel`** (3D Tiles via
+`Model3DTileContent.update → this._model.update`), so capturing the model renderer covers
+BOTH in one slice — 447 builds the infra; 448 is verification/demo for standalone glTF.
+
+**Approach A (chosen) — unify the model camera with the globe (parity-neutral swap).**
+`packCameraUniforms` (`WebGPUModelRenderer.js:267`) packs view/proj from `uniformState` but
+reads `frameState.camera.positionWC` directly at ~293/308 for the encoded eye — so the globe's
+pure `updateCamera` override doesn't reach the model eye. Fix: swap those two reads to
+`uniformState.cameraPosition`. **Proven parity-neutral**: `UniformState.update` calls
+`updateCamera(frameState.camera)` every frame → `setCamera` clones `camera.positionWC` into
+`_cameraPosition`, so `uniformState.cameraPosition === frameState.camera.positionWC` bit-for-bit
+in every scene mode. After the swap, the model camera is fully `uniformState`-driven (like the
+globe), so the EXISTING `runSceneCapture` per-face `updateCamera` + finally-restore drive the
+model eye for free. **CRITICAL NUANCE:** keep the existing `inverse(modelMatrix)*eyeWC` math —
+only change which `eyeWC` it consumes; do NOT substitute `uniformState.encodedCameraPositionMC`
+(that's the ellipsoid-ENU encode, wrong frame).
+
+**Grafts from B:** (1) write the per-face capture camera UB through the per-frame ring allocator
+(`writeUniformSlice`), NEVER `cache.cameraBuffer`/`nc.cameraBuffer` (the main pass reads those
+later this frame — capture precedes main render). (2) One-pass-per-face depth share: globe then
+models in ONE `beginRenderPass` on the shared `captureDepthView` (globe depth-writes, models
+depth-test+write after) — keeps the globe pass `depthStoreOp:'discard'` untouched.
+
+**Mandatory net-new:** `CAPTURE_MODE` (1<<17, already exists) single-location FragOutput variant
+of `ModelPBRComplete.wgsl` — wrap the `@location(1) normalRoughness` field (~2078) AND its **3**
+write sites (~2139, 2235, 3108) in `//>>ifdef CAPTURE_MODE`/`//>>else`/`//>>endif` (else
+byte-identical; 4 sites vs the globe's 1). Separate model `_capturePipelineCache` (sync build,
+face format + depth24plus no-stencil + sampleCount=1 + CAPTURE_MODE + disableCulling), never
+touching `_sceneFormatGeneration`. Bind a NEUTRAL IBL in the capture material BG (avoid 1-frame
+recursive self-reflection); captured radiance LINEAR.
+
+**Ordered steps:** (1) swap the 2 eye reads in `packCameraUniforms` [only on-screen edit]; (2)
+camera-parity probe assertion (`Cartesian3.equals(uniformState.cameraPosition, camera.positionWC)`
+across SCENE3D/2D/CV + multi-view); (3) flag-gated publish `context._webgpuSceneCaptureModels` in
+`updateWebGPUModel`; (4) CAPTURE_MODE ifdef ×4 in ModelPBRComplete.wgsl; (5)
+`WebGPUModelPipelineCache.getCapturePipeline` + separate cache (sync); (6)
+`getOrCreateModelCaptureCommands` (ring-allocator camera UB, neutral IBL, single-target
+descriptors); (7) extend `runSceneCapture` (one-pass-per-face: globe then models, shared depth);
+(8) model SceneCaptureSources typing; (9) build+tsc; (10) OFF-parity probe + camera-parity; (11)
+ON reflection probe (model in reflection, read PNGs); (12) doc updates.
+
+**447 open risks:** the `packCameraUniforms` swap is the only on-screen edit — probe-lock across
+scene modes + the node-level call site (~2600, writes `nc.cameraBuffer`) + articulated models;
+ring-allocator camera UB (never the shared buffers); MRT mismatch is a HARD validation error;
+4 ifdef sites (miss one → compile error under CAPTURE_MODE); one-pass reorder must keep globe
+FIRST; neutral IBL for self-reflection; guard replay on `!model.destroyed`.
+
 ## Open risks (carry into 447/448)
 
 - **Face-order basis remap** — top correctness bug; mirrored/rotated reflections look plausible.

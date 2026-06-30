@@ -56,6 +56,11 @@ import Pass from "../Pass.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+// C2-25 ENV-SCENE-CAPTURE (Batch 447) — per-frame uniform ring allocator. The
+// capture pass packs a face-camera UB per visible primitive per face; it MUST
+// ride the ring (not `cache.cameraBuffer`/`nc.cameraBuffer`, which the main
+// pass reads later this same frame) because capture precedes the main render.
+import { writeUniformSlice } from "./WebGPUGlobeSurfaceCameraUB.js";
 import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
 import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
@@ -236,6 +241,12 @@ const scratchEncodedCamera = new EncodedCartesian3();
 // before consuming, equivalent to using `runtimeNode.computedTransform`.
 const scratchNodeModelMatrix = new Matrix4();
 
+// C2-25 ENV-SCENE-CAPTURE (Batch 447) — reused per-primitive-per-face capture
+// camera UB staging buffer. The pack writes into this, the ring allocator
+// copies the bytes to a per-frame slice, so a single module-scope scratch
+// suffices for all 6 faces × N primitives.
+const captureCameraData = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
+
 // AUDIT_2026_05_02 B.8 — cheap "is identity" check used to skip per-node
 // camera resource allocation when the node has no parent-chain transform
 // (the common case for single-node models). Inlined comparison avoids the
@@ -286,13 +297,22 @@ function packCameraUniforms(data, frameState, modelMatrix) {
   Matrix4.pack(scratchNormal, data, 32); // [32-47]
 
   // Camera position in MODEL coordinates (key RTE fix!)
-  // inverse(model) * cameraPositionWC → camera in model space
+  // inverse(model) * cameraPositionWC → camera in model space.
+  //
+  // C2-25 ENV-SCENE-CAPTURE (Batch 447) — read the eye from
+  // `uniformState.cameraPosition` instead of `frameState.camera.positionWC`
+  // so the model eye is fully `uniformState`-driven (like the globe). This is
+  // PARITY-NEUTRAL on-screen: `UniformState.update` calls
+  // `updateCamera(frameState.camera)` every frame, which clones
+  // `camera.positionWC` into `_cameraPosition`, so the two are bit-for-bit
+  // identical in every scene mode. The payoff: the env scene-capture pass's
+  // per-face `uniformState.updateCamera(faceCamera)` + finally-restore now
+  // repoint the model eye for free, exactly as they already do for the globe.
+  // KEEP the `inverse(model) * eyeWC` math — do NOT substitute
+  // `encodedCameraPositionMC` (that's the ellipsoid-ENU encode, wrong frame).
+  const eyeWC = uniformState.cameraPosition;
   Matrix4.inverse(modelMatrix, scratchInverseModel);
-  Matrix4.multiplyByPoint(
-    scratchInverseModel,
-    frameState.camera.positionWC,
-    scratchCameraMC,
-  );
+  Matrix4.multiplyByPoint(scratchInverseModel, eyeWC, scratchCameraMC);
   EncodedCartesian3.fromCartesian(scratchCameraMC, scratchEncodedCamera);
 
   data[48] = scratchEncodedCamera.high.x;
@@ -304,8 +324,10 @@ function packCameraUniforms(data, frameState, modelMatrix) {
   data[54] = scratchEncodedCamera.low.z;
   data[55] = 0.0;
 
-  // Camera position WC (for specular/IBL effects)
-  const camWC = frameState.camera.positionWC;
+  // Camera position WC (for specular/IBL effects). Same `uniformState`-driven
+  // eye as the MC encode above (C2-25 Batch 447) — parity-neutral on-screen,
+  // and face-camera-aware during env scene capture.
+  const camWC = eyeWC;
   data[56] = camWC.x;
   data[57] = camWC.y;
   data[58] = camWC.z;
@@ -343,6 +365,114 @@ function packCameraUniforms(data, frameState, modelMatrix) {
     data[74] = 0;
     data[75] = 1;
   }
+}
+
+// ─── C2-25 ENV-SCENE-CAPTURE (Batch 447) — Model capture command builder ──────
+
+/**
+ * C2-25 ENV-SCENE-CAPTURE (Batch 447) — turns one published model entry's
+ * per-primitive draw records into single-target capture draw descriptors for
+ * the current cube face. Invoked by `WebGPUDynamicEnvironmentMapCapture.run-
+ * SceneCapture` (via the published `buildCaptureCommands` slot) AFTER it has
+ * repointed `uniformState` to the face camera — so the per-primitive camera UB
+ * packed here bakes the FACE-camera RTE eye.
+ *
+ * Per record:
+ *   - pack the face-camera UB into the per-frame ring (`writeUniformSlice`),
+ *     NEVER `cache.cameraBuffer`/`nc.cameraBuffer` — the main pass reads those
+ *     later this same frame, and capture precedes the main render.
+ *   - build a fresh group-0 camera bind group on the ring slice.
+ *   - rebuild the material bind group with a NEUTRAL IBL (`iblEntries = null` →
+ *     `defaultIBLEntries`) to avoid a 1-frame recursive self-reflection (the
+ *     model sampling the env cube it is being captured INTO).
+ *   - fetch the single-target `CAPTURE_MODE` pipeline (`getCapturePipeline`).
+ *   - reuse the record's already-built merged instance + effects bind groups
+ *     and vertex/index buffers (camera-independent).
+ *
+ * Returns single-target `ModelCaptureCommand`s matching the consumer contract
+ * in `WebGPUDynamicEnvironmentMapCapture.ts`. Guarded on `model.isDestroyed()`
+ * (the publish carries last-frame refs; the model may have been torn down).
+ *
+ * @param {object} entry published model entry `{ model, pipelineCache, records }`
+ * @param {GPUDevice} device
+ * @param {object} frameState
+ * @param {GPUTextureFormat} faceFormat env-cube face color attachment format
+ * @returns {object[]} single-target capture draw descriptors
+ * @private
+ */
+function getOrCreateModelCaptureCommands(
+  entry,
+  device,
+  frameState,
+  faceFormat,
+) {
+  const model = entry.model;
+  if (!model || model.isDestroyed?.() === true) {
+    return [];
+  }
+  const pipelineCache = entry.pipelineCache;
+  const records = entry.records;
+  if (!pipelineCache || !records || records.length === 0) {
+    return [];
+  }
+  const commands = [];
+  for (let r = 0; r < records.length; r++) {
+    const rec = records[r];
+    if (!rec.indexBuffer || rec.indexCount === 0) {
+      continue;
+    }
+    // Pack the FACE-camera UB against the record's snapshot model matrix. The
+    // eye-swap (uniformState.cameraPosition) means the repointed face camera
+    // reaches the model eye automatically.
+    packCameraUniforms(captureCameraData, frameState, rec.nodeModelMatrix);
+    const slice = writeUniformSlice(
+      device,
+      frameState,
+      captureCameraData,
+      CAMERA_UNIFORM_SIZE,
+      "Model capture camera",
+    );
+    const cameraBG = device.createBindGroup({
+      layout: pipelineCache.cameraBGL,
+      entries: [
+        {
+          binding: 0,
+          resource: {
+            buffer: slice.buffer,
+            offset: slice.offset,
+            size: slice.size,
+          },
+        },
+      ],
+    });
+    const materialBG = buildMergedMaterialBindGroup(
+      device,
+      pipelineCache,
+      rec.materialBuffer,
+      rec.lightBuffer,
+      rec.textureEntries,
+      rec.featureIdEntries,
+      null, // neutral IBL — no recursive self-reflection
+      rec.materialDefines,
+      frameState,
+    );
+    const pipeline = pipelineCache.getCapturePipeline(
+      rec.alphaMode,
+      rec.doubleSided,
+      rec.materialDefines,
+      faceFormat,
+    );
+    commands.push({
+      pipeline,
+      bindGroups: [cameraBG, materialBG, rec.mergedInstanceBG, rec.effectsBG],
+      vertexBuffers: rec.vertexBuffers,
+      indexBuffer: rec.indexBuffer,
+      indexCount: rec.indexCount,
+      indexFormat: rec.indexFormat,
+      instanceCount: rec.instanceCount || 1,
+    });
+  }
+  return commands;
 }
 
 // ─── Material Uniform Packing ────────────────────────────────────────────────
@@ -2165,6 +2295,38 @@ function updateWebGPUModel(model, frameState) {
     cache.pipelineCache = new WebGPUModelPipelineCache(device, fmt, depthFmt);
   }
   const pipelineCache = cache.pipelineCache;
+
+  // C2-25 ENV-SCENE-CAPTURE (Batch 447) — publish this model's camera-
+  // independent draw records so the dynamic-environment-map capture pass can
+  // replay it into the 6 cube faces next frame. GATED on the context flag
+  // (`context.sceneCaptureReflections`); when OFF, nothing is published and
+  // `_webgpuSceneCaptureModels` stays null → the capture pass's model replay is
+  // a no-op (byte-identical to globe-only Batch 446). The publish object is
+  // RESET once per frame (frameNumber guard) and APPENDED to for every model
+  // the FR processes this frame; `buildCaptureCommands` is a stable function
+  // ref so the capture pass can build per-face descriptors without a static
+  // import of this renderer (avoids a circular import).
+  const wantCapturePublish = context.sceneCaptureReflections === true;
+  let captureRecords = null;
+  if (wantCapturePublish) {
+    const frameNumber = frameState.frameNumber ?? 0;
+    let pub = context._webgpuSceneCaptureModels;
+    if (!pub || pub.frameNumber !== frameNumber) {
+      pub = {
+        frameNumber,
+        models: [],
+        buildCaptureCommands: getOrCreateModelCaptureCommands,
+      };
+      context._webgpuSceneCaptureModels = pub;
+    }
+    captureRecords = [];
+    pub.models.push({
+      model,
+      pipelineCache,
+      records: captureRecords,
+    });
+  }
+
   // Batch 110 — drop per-primitive pipeline refs when the scene
   // pipeline format generation bumps (HDR toggle, MSAA toggle). The
   // pipelineCache wipes its own cache via maybeUpdateForSceneFormat;
@@ -3174,6 +3336,50 @@ function updateWebGPUModel(model, frameState) {
         classificationDepthPipeline: primCache.depthWritePipeline,
       };
       const webgpuCmd = new WebGPUDrawCommand(webgpuCmdArgs);
+
+      // C2-25 ENV-SCENE-CAPTURE (Batch 447) — collect this primitive's
+      // camera-independent draw resources so the env-map capture pass can
+      // replay it per cube face. Skips:
+      //   - classifiers (`isClassifier`): they draw via globe-depth sampling,
+      //     not as reflective surfaces.
+      //   - edge-only suppressed surfaces (`suppressSurfaceForEdgesOnly`): the
+      //     surface command exists only to seed edges, not to be reflected.
+      //   - translucent (BLEND) primitives (audit fix): the capture pipeline is
+      //     OPAQUE (no blend state) + depth-write, so a translucent surface
+      //     captured opaquely would write a wrong, fully-opaque reflection and
+      //     occlude geometry behind it. Reflecting translucency correctly needs
+      //     a blended capture variant — deferred.
+      if (
+        captureRecords !== null &&
+        !isClassifier &&
+        !suppressSurfaceForEdgesOnly &&
+        matInfo.alphaMode !== AlphaModes.BLEND
+      ) {
+        captureRecords.push({
+          alphaMode: matInfo.alphaMode,
+          doubleSided: matInfo.isDoubleSided,
+          materialDefines: primCache.materialDefines | 0,
+          materialBuffer: primCache.materialBuffer,
+          lightBuffer: primCache.lightBuffer,
+          textureEntries: primCache.textureEntries,
+          featureIdEntries,
+          mergedInstanceBG,
+          effectsBG: cache.effectsBG,
+          vertexBuffers,
+          indexBuffer: primCache.indexBuffer || undefined,
+          indexCount: primCache.indexCount || 0,
+          indexFormat: primCache.indexFormat || "uint16",
+          vertexCount: primCache.vertexCount || 0,
+          instanceCount,
+          // The model-matrix this primitive's camera UB was packed against
+          // (model-level, or per-runtime-node when computedTransform != I).
+          // CLONE: for non-identity nodes `nodeModelMatrix` aliases the shared
+          // `scratchNodeModelMatrix`, overwritten on the next node iteration —
+          // and capture runs NEXT frame (reads last frame's published refs), so
+          // a live reference would be stale. The clone is a stable snapshot.
+          nodeModelMatrix: Matrix4.clone(nodeModelMatrix),
+        });
+      }
 
       // ── Shadow cast tagging ──
       //

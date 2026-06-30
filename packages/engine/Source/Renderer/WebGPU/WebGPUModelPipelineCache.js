@@ -745,6 +745,69 @@ function createPickPipeline(
 }
 
 /**
+ * C2-25 ENV-SCENE-CAPTURE (Batch 447) — model CAPTURE pipeline. Renders the
+ * model's lit `fragmentMain` into ONE cube-face color attachment (no MRT
+ * slot-1), a transient no-stencil `depth24plus` depth target, and NO MSAA —
+ * matching the `WebGPUDynamicEnvironmentMapCapture` per-face render pass shape.
+ * The `CAPTURE_MODE` shader define (folded into the module fetched by the
+ * caller) drops the `@location(1) normalRoughness` output so the fragment stage
+ * matches the single target (a MRT/target-count mismatch would be a HARD WebGPU
+ * validation error).
+ *
+ * Differences from the on-screen color pipeline (`createPipeline`):
+ *   - single color target = `faceFormat` (no G-buffer slot 1)
+ *   - `depthFormat = depth24plus` (no stencil)
+ *   - `sampleCount = 1` (no MSAA)
+ *   - `cullMode = "none"` (disableCulling): the 6 ENU cube-face cameras render
+ *     left-handed for the screen-matched basis, which flips triangle winding;
+ *     rather than fight the winding sign per face the capture pass disables
+ *     culling and lets the depth test pick the nearest surface (correct for a
+ *     reflection source — mirrors the globe capture pipeline).
+ *
+ * Opaque write (no blend): the per-face pass composites the model OVER the
+ * already-captured globe + sky via the render pass `loadOp: 'load'` and the
+ * shared depth buffer (model depth-tests against globe), not a blend op.
+ *
+ * @private
+ */
+function createCapturePipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  faceFormat,
+  doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
+) {
+  return device.createRenderPipeline({
+    label: `Model PBR capture [face=${faceFormat},ds=${doubleSided}]`,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(hasTexCoord1, hasFeatureId0),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentMain",
+      // CAPTURE_MODE module emits FragOutput { @location(0) color } only.
+      targets: [{ format: faceFormat, writeMask: 0xf }],
+    },
+    primitive: {
+      topology: "triangle-list",
+      // disableCulling — cube-face render is left-handed; depth picks nearest.
+      cullMode: "none",
+    },
+    depthStencil: {
+      format: "depth24plus",
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+    },
+    // Always single-sample (no MSAA) for the capture pass.
+  });
+}
+
+/**
  * C-R9-MODEL-PICK-TRANSLUCENT Option D (Batch 192) — hover-pick
  * pipeline variant for BLEND primitives. Uses `fragmentPickHoverMain`
  * which discards translucent fragments stochastically via Interleaved
@@ -1175,6 +1238,19 @@ class WebGPUModelPipelineCache {
     this._pickPrecisePass1Pipelines = new Map();
     this._pickPrecisePass2Pipelines = new Map();
 
+    // C2-25 ENV-SCENE-CAPTURE (Batch 447) — model scene-capture pipeline cache.
+    // Keyed by `(alphaMode, doubleSided, materialDefines, faceFormat)`; built
+    // SYNCHRONOUSLY on first miss (the capture pass is debounced + the env-cube
+    // sky fill rewrites the whole cube each refresh, so an async-pending frame
+    // would read back as a permanently-flat sky-only reflection — same rationale
+    // as the globe's `resolveCapturePipelineEntrySync`). DELIBERATELY separate
+    // from `_pipelines`: a capture build NEVER touches the on-screen color
+    // pipeline cache or `_sceneFormatGeneration`, and is NOT wiped by
+    // `maybeUpdateForSceneFormat` (its target is the env-cube face format, not
+    // the scene FB format). Lazily populated only when capture is active →
+    // default-OFF byte-identical (no allocation, no creation).
+    this._capturePipelines = new Map();
+
     // Create shared bind group layouts (NEW-BG-CONSOLIDATION, 4 groups).
     const bgls = createBindGroupLayouts(device);
     this._cameraBGL = bgls.cameraBGL;
@@ -1596,8 +1672,20 @@ class WebGPUModelPipelineCache {
     // (NOT the BGL/pipeline-layout, whose bindings don't change) forks on
     // the LOG_DEPTH bit. `_logDepthEnabled` mirrors
     // isWebGPULogDepthActive() via maybeUpdateForLogDepth() each frame.
+    //
+    // C2-25 (Batch 447) — CAPTURE_MODE is a render-mode bit like LOG_DEPTH,
+    // intentionally OUTSIDE MATERIAL_DEFINE_MASK, so `_normalizeMaterialDefines`
+    // above strips it. Preserve it from the raw arg here so the env scene-capture
+    // single-target FragOutput variant (drops `@location(1) normalRoughness`)
+    // actually compiles — otherwise the capture pipeline gets the 2-MRT module
+    // and createCapturePipeline's single color target fails WebGPU validation.
+    // On-screen callers never set CAPTURE_MODE, so their module hash is unchanged.
+    const captureBit = (materialDefines & ShaderDefine.CAPTURE_MODE) >>> 0;
     const effectiveDefines =
-      (key | (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>> 0;
+      (key |
+        captureBit |
+        (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
+      0;
     let module = this._shaderModuleCache.get(effectiveDefines);
     if (module) {
       return module;
@@ -2145,6 +2233,69 @@ class WebGPUModelPipelineCache {
       this._sampleCount,
     );
     this._classificationPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * C2-25 ENV-SCENE-CAPTURE (Batch 447) — gets or creates the model CAPTURE
+   * pipeline for the dynamic-environment-map scene-capture pass. Renders the
+   * model's lit `fragmentMain` into ONE cube-face color attachment
+   * (`faceFormat`), a transient no-stencil `depth24plus` depth target, and no
+   * MSAA. The `CAPTURE_MODE` shader define drops the G-buffer slot-1 output so
+   * the fragment stage matches the single target.
+   *
+   * Routes through the SEPARATE `_capturePipelines` cache so it never collides
+   * with — and a capture build never invalidates — the on-screen color
+   * pipelines. The key includes `faceFormat` (an HDR env cube gets its own
+   * variant) plus the same `(alphaMode, doubleSided, materialDefines)` identity
+   * as the color pipeline so the capture command pairs with the SAME per-variant
+   * pipeline layout and merged bind groups at draw time.
+   *
+   * Built SYNCHRONOUSLY on first miss (the capture pass is debounced + the sky
+   * fill rewrites the cube each refresh, so an async-pending frame would read
+   * back as a flat sky-only reflection). Shares the device's WGSL module cache,
+   * so a face format change only re-runs the cheap pipeline create, not the WGSL
+   * compile.
+   *
+   * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @param {number} materialDefines see {@link WebGPUModelPipelineCache#getPipeline}
+   * @param {GPUTextureFormat} faceFormat env-cube face color attachment format
+   * @returns {GPURenderPipeline}
+   */
+  getCapturePipeline(alphaMode, doubleSided, materialDefines, faceFormat) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    // C2-25 (Batch 447) — the capture module forks on LOG_DEPTH downstream in
+    // `_getOrCreateShaderModule` (from the live `_logDepthEnabled`), but
+    // `_capturePipelines` is deliberately NOT wiped by `maybeUpdateForLogDepth`
+    // (so on-screen format churn can't invalidate capture). Mirror the globe
+    // capture key (WebGPUGlobeSurfacePipelines selectCapturePipeline): fold the
+    // effective log-depth bit into the key so a runtime log-depth toggle rebuilds
+    // the capture pipeline instead of serving a stale-depth-encoding variant
+    // (which would break model↔globe occlusion in the shared face depth buffer).
+    const key = `${computeKey(alphaMode, doubleSided, md)}_${faceFormat}_${
+      this._logDepthEnabled ? 1 : 0
+    }`;
+    let pipeline = this._capturePipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    // CAPTURE_MODE folded into the module fetch → the single-target FragOutput
+    // variant (drops `@location(1) normalRoughness`). The module cache dedupes
+    // across all models on the device.
+    const captureModule = this._getOrCreateShaderModule(
+      (md | ShaderDefine.CAPTURE_MODE) >>> 0,
+    );
+    pipeline = createCapturePipeline(
+      this._device,
+      captureModule,
+      this._getOrCreatePipelineLayout(md),
+      faceFormat,
+      doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+    );
+    this._capturePipelines.set(key, pipeline);
     return pipeline;
   }
 

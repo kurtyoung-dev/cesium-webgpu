@@ -12907,3 +12907,17 @@ Two bugs caught by running the FULL standing-gate matrix against the post-log-de
 **Verification.** `probe-scene-capture-cardinal.mjs` (eye at Big Sur): nadir face std-dev 0.00 → **23.63**, captured color matches the top-down ground truth (California coast, ocean-west/land-east — confirms the face-basis E/W mapping is correct). OFF-parity probe still inert. **Known V1 limit (not this bug):** side faces looking outward still show coarse/flat terrain toward the horizon because capture reuses the main-camera tile set — tracked as `ENV-CAPTURE-PER-FACE-LOD` (needs per-face quadtree re-selection).
 
 **Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts` (sync capture resolver). Batch 446.
+
+## Bug 447 — model CAPTURE_MODE define silently stripped by the material-define mask (2026-06-30)
+
+**Symptom.** The model/3D-Tiles env scene-capture (Batch 447) built a single-color-target capture pipeline, but the fetched shader module was the 2-MRT on-screen variant (still wrote `@location(1) normalRoughness`) → a latent WebGPU validation error (fragment output with no matching color target). On Dawn it rendered anyway (the `@location(0)` color is identical between variants, so the extra output was dropped) — masking the bug, so the ON probe falsely passed.
+
+**Root cause.** `getCapturePipeline` ORs `CAPTURE_MODE` (1<<17) into the arg passed to `_getOrCreateShaderModule`, but that function's FIRST line re-runs `_normalizeMaterialDefines`, whose `MATERIAL_DEFINE_MASK` (KHR gate bits | `MODEL_HAS_TEXCOORD_1` | `MODEL_HAS_FEATURE_ID_0`) does NOT include bit 17 → CAPTURE_MODE masked to 0 before the module fetch. The globe path avoids this because `getProductionShaderModule` passes defines straight through with NO re-normalization. **General trap:** the model module path treats render-mode bits (LOG_DEPTH, CAPTURE_MODE) differently from material bits — render-mode bits must be preserved PAST the material mask (LOG_DEPTH already was; CAPTURE_MODE was added to the same special-case).
+
+**Fix.** In `_getOrCreateShaderModule`, preserve `CAPTURE_MODE` from the raw arg into `effectiveDefines` exactly like `LOG_DEPTH` (`const captureBit = materialDefines & CAPTURE_MODE`). On-screen callers never set it → module hash unchanged (parity-safe).
+
+**Companion bug (same batch).** The model `_capturePipelines` cache key omitted the LOG_DEPTH bit that the built module forks on (and `maybeUpdateForLogDepth` deliberately doesn't wipe the capture cache) → a mid-session log-depth flip serves a stale capture pipeline writing an incompatible depth encoding into the SHARED face depth buffer → broken model↔globe occlusion. Fix: fold `_logDepthEnabled` into the `getCapturePipeline` key (mirrors the globe capture key).
+
+**Process note.** Both bugs were caught by the adversarial parity-audit workflow (probes had passed — Dawn leniency hid bug 1). Also during this batch an audit subagent reverted the entire producer half (`WebGPUModelRenderer.js`) via a stray `git restore`; recovered from the unminified `Build/CesiumUnminified/index.js`. See the audit-subagent-git-revert memory.
+
+**Files:** `WebGPUModelPipelineCache.js` (captureBit + log-depth key), `WebGPUModelRenderer.js` (producer), `ModelPBRComplete.wgsl` (4 CAPTURE_MODE ifdef sites). Batch 447.

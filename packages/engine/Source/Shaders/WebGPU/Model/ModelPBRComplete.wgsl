@@ -2075,7 +2075,10 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
 // need slot 1 declarations.
 struct FragOutput {
   @location(0) color: vec4<f32>,
+  //>>ifdef CAPTURE_MODE
+  //>>else
   @location(1) normalRoughness: vec4<f32>,
+  //>>endif
   //>>ifdef LOG_DEPTH
   // Written for the depth TEST as well (frag_depth replaces rasterized z)
   // so translucent model passes test correctly against log scene depth.
@@ -2136,7 +2139,10 @@ struct FragOutput {
       // of the placeholder is negligible.
       var out: FragOutput;
       out.color = effects.clippingEdgeColor;
+      //>>ifdef CAPTURE_MODE
+      //>>else
       out.normalRoughness = vec4<f32>(geomNormalEC, 0.5);
+      //>>endif
       //>>ifdef LOG_DEPTH
       out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
       //>>endif
@@ -2232,7 +2238,10 @@ struct FragOutput {
     // roughness 0.5 placeholder since unlit has no material spec.
     var out: FragOutput;
     out.color = unlitWithEdge;
+    //>>ifdef CAPTURE_MODE
+    //>>else
     out.normalRoughness = vec4<f32>(geomNormalEC, 0.5);
+    //>>endif
     //>>ifdef LOG_DEPTH
     out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
     //>>endif
@@ -3105,7 +3114,10 @@ struct FragOutput {
   //     consumers (SSR) need this for proper specular response.
   var out: FragOutput;
   out.color = finalColor;
+  //>>ifdef CAPTURE_MODE
+  //>>else
   out.normalRoughness = vec4<f32>(N, roughness);
+  //>>endif
   //>>ifdef LOG_DEPTH
   out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
   //>>endif
