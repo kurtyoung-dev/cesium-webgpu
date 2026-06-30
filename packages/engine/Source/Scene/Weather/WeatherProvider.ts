@@ -23,7 +23,12 @@
  */
 import { packWeatherField } from "./WeatherTexPacker.js";
 import type { WeatherSource } from "./WeatherSource.js";
-import type { WeatherFieldRequest, WeatherTimeMode } from "./WeatherTypes.js";
+import type {
+  WeatherField,
+  WeatherFieldRequest,
+  WeatherPresentWeather,
+  WeatherTimeMode,
+} from "./WeatherTypes.js";
 
 const HOUR_MS = 3600000;
 
@@ -35,6 +40,12 @@ export class WeatherProvider {
   private _fetching = false;
   private _lastError: string | null = null;
   private _validTime: string | undefined = undefined;
+  // PRECIP-DATA (Batch 444) — the aggregate present-weather read of the LAST
+  // successfully-applied field. `applyAtmosphericConditions` reads this (when the
+  // data-driven precip flag is set) to override the precip type/intensity. Null
+  // until the first field carrying `representativeWw` lands; stays null for
+  // coverage-only sources so the data-driven override is a no-op for them.
+  private _presentWeather: WeatherPresentWeather | null = null;
   // Bumped ONLY by setSource/setRequest/refresh (NOT by a successful fetch). An
   // in-flight fetch captures it and discards its result if it changed mid-flight,
   // so swapping the source during a slow (network) fetch can't apply stale data.
@@ -80,6 +91,16 @@ export class WeatherProvider {
   getSource(): WeatherSource | null {
     return this._source;
   }
+  /**
+   * PRECIP-DATA (Batch 444) — the aggregate present-weather (dominant WMO `ww` +
+   * visibility) of the active field, or null if the active source carries none.
+   * The data-driven precipitation path reads this to override precip
+   * type/intensity. Returns null in legacy / coverage-only setups, so the
+   * override is a no-op and the manual/auto precip selection stands.
+   */
+  getPresentWeather(): WeatherPresentWeather | null {
+    return this._presentWeather;
+  }
   /** The active time stance, or null in the legacy single-request mode. */
   getTimeMode(): WeatherTimeMode | null {
     return this._timeMode;
@@ -93,6 +114,7 @@ export class WeatherProvider {
   setSource(source: WeatherSource | null): void {
     this._source = source;
     this._packed = null;
+    this._presentWeather = null;
     this._lastError = null;
     this._cache.clear();
     this._effectiveKey = null;
@@ -261,9 +283,11 @@ export class WeatherProvider {
         return; // superseded by a source/request swap — drop it
       }
       const packed = packWeatherField(field, texW, texH);
+      const present = extractPresentWeather(field);
       if (!timed) {
         this._packed = packed;
         this._validTime = field.validTime;
+        this._presentWeather = present;
         this._version++;
       } else {
         if (key !== null) {
@@ -275,6 +299,7 @@ export class WeatherProvider {
         // Activate only if this is still the live slice (the user may have scrubbed).
         if (key === this._effectiveKey) {
           this._packed = packed;
+          this._presentWeather = present;
           this._validTime =
             field.validTime ??
             (this._effectiveTime instanceof Date
@@ -303,4 +328,36 @@ export class WeatherProvider {
       this._cache.delete(oldest);
     }
   }
+}
+
+/**
+ * PRECIP-DATA (Batch 444) — distill a field's present-weather into the aggregate
+ * the data-driven precip path reads. Prefers the field-level `representativeWw`;
+ * if absent but a per-cell `ww` grid is present, picks the cell with the
+ * STRONGEST precip `ww` (the max code among precip ranges 50..99) so a sparse but
+ * intense system still registers. Returns null when no present-weather is carried
+ * (coverage-only sources) so the override stays a no-op for them.
+ */
+function extractPresentWeather(
+  field: WeatherField,
+): WeatherPresentWeather | null {
+  let ww = field.representativeWw;
+  if (ww === undefined && field.ww && field.ww.length > 0) {
+    let best = NaN;
+    for (let i = 0; i < field.ww.length; i++) {
+      const c = field.ww[i];
+      // Precip codes are 40..99 (fog/precip/showers/thunderstorm); pick the max
+      // so the most significant present weather drives the single global type.
+      if (Number.isFinite(c) && c >= 40 && (Number.isNaN(best) || c > best)) {
+        best = c;
+      }
+    }
+    if (Number.isFinite(best)) {
+      ww = best;
+    }
+  }
+  if (ww === undefined && field.visibilityKm === undefined) {
+    return null;
+  }
+  return { ww, visibilityKm: field.visibilityKm };
 }

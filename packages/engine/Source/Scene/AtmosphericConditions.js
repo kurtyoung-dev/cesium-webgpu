@@ -1119,13 +1119,28 @@ function buildEffects() {
   //   optics        — cold-air ice-crystal sky overlay: 22° halo / sun-dogs /
   //                   pillars (Phase D scaffold). Gated on sub-freezing temps.
   //   precipitation — rain/snow/hail particles (Phase E scaffold). Driven by
-  //                   weather.type / weather.intensity.
+  //                   weather.type / weather.intensity. PRECIP-DATA (Batch 444)
+  //                   adds the opt-in `dataDriven` flag: when true AND a
+  //                   `globe.weatherProvider` reporting present-weather is
+  //                   attached, applyAtmosphericConditions() overrides the precip
+  //                   type/intensity from the ingest field's WMO `ww` code (and
+  //                   scales density by visibility). `snowAccumulation` (also
+  //                   opt-in) time-integrates a ground `snowCover` scalar (0..1)
+  //                   that ramps under snow + melts otherwise. Both default
+  //                   FALSE so the precip path is byte-identical until opted in.
   return {
     auto: false,
     shimmer: { enabled: false, intensity: 0.6 },
     groundFog: { enabled: false, intensity: 0.0 },
     optics: { enabled: false, halo: 0.0, sunDogs: 0.0, pillar: 0.0 },
-    precipitation: { enabled: false, type: 0, intensity: 0.0 },
+    precipitation: {
+      enabled: false,
+      type: 0,
+      intensity: 0.0,
+      dataDriven: false,
+      snowAccumulation: false,
+      snowCover: 0.0,
+    },
   };
 }
 

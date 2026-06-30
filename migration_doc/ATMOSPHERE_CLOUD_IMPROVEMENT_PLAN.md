@@ -241,7 +241,7 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Default-off runs the current single 22° gaussian ring + sun-dogs unchanged.
 - **Files:** `Shaders/WebGPU/PostProcess/ColdOptics.wgsl`, `Renderer/WebGPU/WebGPUColdOpticsEffect.ts`, `Scene/AtmosphericEffects.ts`.
 
-#### 4.11 — Data-driven precipitation (WMO ww → type/intensity) + ground accumulation (`PRECIP-DATA`) — **P2, effort L**
+#### 4.11 — Data-driven precipitation (WMO ww → type/intensity) + ground accumulation (`PRECIP-DATA`) — ✅ SHIPPED Batch 444 (double-gated dataDriven+provider; `precipFromWmoCode` Table-4677 map, `updateSnowAccumulation` ramp/melt scalar, `densityScaleFromVisibility` 1.0→2.5×; ground snow-albedo shader consumer deferred)
 
 - **Technique:** Map the weather-ingest cube's WMO `ww` code to `PrecipitationType` + intensity (deferred Batch 423), add optional snow ground accumulation, couple particle density to the fog/visibility field.
 - **Opt-in flag:** `atmosphericConditions.effects.precipitation.dataDriven` (default `false`).

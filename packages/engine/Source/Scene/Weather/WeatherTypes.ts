@@ -45,6 +45,30 @@ export interface WeatherField {
   baseMeters?: Float32Array;
   /** Optional density bias per cell in [0,1] (0.5 = neutral). */
   densityBias?: Float32Array;
+  /**
+   * Optional PRESENT-WEATHER code per cell, WMO Table 4677 `ww` (00..99). Drives
+   * the data-driven precipitation path (PRECIP-DATA, Batch 444): the cell's `ww`
+   * code maps to a {@link PrecipitationType} + intensity. NaN / undefined cell →
+   * "no observation" (treated as no precipitation). Optional so the legacy
+   * coverage-only field is unchanged when a source doesn't carry it.
+   */
+  ww?: Float32Array;
+  /**
+   * Optional aggregate horizontal VISIBILITY of the field, KILOMETRES. Couples to
+   * particle density / fog in the data-driven precip path (low visibility → denser
+   * particles). A field-level scalar (not per-cell) because the precip override is
+   * an aggregate present-weather read; sources without it leave it undefined and
+   * the visibility coupling is a no-op (multiplier 1).
+   */
+  visibilityKm?: number;
+  /**
+   * Optional aggregate / representative PRESENT-WEATHER code (WMO `ww`, 00..99)
+   * for the whole field. The data-driven precip override reads THIS scalar (a
+   * single dominant `ww`) rather than re-sampling the per-cell `ww` grid at the
+   * camera — the particle system is a single global type/intensity. Sources that
+   * fill the per-cell `ww` grid should also set this to the dominant code.
+   */
+  representativeWw?: number;
   bounds: WeatherBounds;
   /** ISO-8601 valid time of the data (for caching / display). */
   validTime?: string;
@@ -72,6 +96,21 @@ export interface WeatherFieldRequest {
   bounds?: WeatherBounds;
   /** Abort an in-flight fetch (page nav, source swap). */
   signal?: AbortSignal;
+}
+
+/**
+ * Aggregate present-weather read the {@link WeatherProvider} exposes for the
+ * data-driven precipitation path (PRECIP-DATA, Batch 444). A single dominant
+ * `ww` code + an aggregate visibility describe the field's precipitation as one
+ * global type/intensity (the particle system isn't per-cell). `ww` undefined →
+ * the active field carries no present-weather → the data-driven override is a
+ * no-op and the manual/auto precip selection stands.
+ */
+export interface WeatherPresentWeather {
+  /** Dominant WMO Table 4677 `ww` code (00..99), or undefined if not carried. */
+  ww?: number;
+  /** Aggregate horizontal visibility, KILOMETRES, or undefined if not carried. */
+  visibilityKm?: number;
 }
 
 /** Capability advertisement so the provider can gate time/region requests. */

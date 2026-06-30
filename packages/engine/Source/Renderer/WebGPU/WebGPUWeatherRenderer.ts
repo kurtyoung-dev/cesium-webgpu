@@ -96,6 +96,13 @@ export interface WeatherCache {
   // off a stable shape.
   renderPipelineRequestPending: boolean;
   renderPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
+  // PRECIP-DATA (Batch 444) — the latest data-driven ground snow-cover scalar
+  // (0..1) the JS integrator (`updateSnowAccumulation`) produced, mirrored here so
+  // a future ground-shader snow-albedo consumer can read it via
+  // `getWeatherSnowCover(context)`. SHIPPED: the scalar is integrated + threaded
+  // through to the renderer; FOLLOW-UP: a ground-shader pass that samples it to
+  // paint white snow albedo on terrain (out of scope for this batch — see report).
+  snowCover: number;
 }
 
 function ensureWeatherCache(context: CesiumGraphicsContext): WeatherCache {
@@ -121,6 +128,7 @@ function ensureWeatherCache(context: CesiumGraphicsContext): WeatherCache {
       renderInitialized: false,
       renderPipelineRequestPending: false,
       renderPipelineDescriptor: null,
+      snowCover: 0,
     };
   }
   return context._weatherCache;
@@ -255,6 +263,10 @@ export function updateWeatherParticles(
 
   const maxParticles = weatherConfig.maxParticles ?? 50000;
   const cache = ensureWeatherCache(context);
+  // PRECIP-DATA (Batch 444) — mirror the data-driven ground snow-cover scalar so
+  // a future ground-shader snow-albedo pass can read it (`getWeatherSnowCover`).
+  // Undefined in the manual/auto path (`?? 0`), so this is inert when off.
+  cache.snowCover = weatherConfig.snowCover ?? 0;
   initializeWeatherPipelines(
     device,
     cache,
@@ -324,7 +336,20 @@ export function updateWeatherParticles(
   const typeStr = weatherConfig.type ?? "rain";
   const typeId = WEATHER_TYPES[typeStr as keyof typeof WEATHER_TYPES] ?? 0;
   data[offset++] = typeId;
-  data[offset++] = weatherConfig.intensity ?? 0.5;
+  // PRECIP-DATA (Batch 444) — the EMISSION probability in the compute shader is
+  // `typeParams.y * dt * 10` (intensity drives spawn rate), so scaling the
+  // effective intensity by the data-driven visibility multiplier makes heavy
+  // precip (low visibility) spawn DENSER particles. `densityScale` is undefined in
+  // the manual/auto path (`?? 1`), so the OFF behavior is byte-identical. Clamp to
+  // [0,1] — the emit probability saturates at 1 anyway, so an over-1 intensity
+  // can't break the budget; clamping keeps the value well-defined.
+  const baseIntensity = weatherConfig.intensity ?? 0.5;
+  const densityScale = weatherConfig.densityScale ?? 1.0;
+  const effectiveIntensity = Math.min(
+    1.0,
+    Math.max(0.0, baseIntensity * densityScale),
+  );
+  data[offset++] = effectiveIntensity;
   data[offset++] = weatherConfig.particleLifetime ?? 5.0;
   data[offset++] = weatherConfig.particleSize ?? 1.0;
 
@@ -385,6 +410,18 @@ export function getWeatherParticleBuffer(
 export function getWeatherMaxParticles(context: CesiumGraphicsContext): number {
   const cache = context._weatherCache;
   return cache?.maxParticles ?? 0;
+}
+
+/**
+ * PRECIP-DATA (Batch 444) — the data-driven ground snow-cover scalar (0..1) the
+ * JS integrator produced, mirrored on the weather cache. Returns 0 when the
+ * data-driven snow-accumulation path is off (the default). SHIPPED as the
+ * consumable scalar; the ground-shader snow-albedo pass that samples it to paint
+ * terrain white is a follow-up (see Batch 444 report).
+ */
+export function getWeatherSnowCover(context: CesiumGraphicsContext): number {
+  const cache = context._weatherCache;
+  return cache?.snowCover ?? 0;
 }
 
 /**
@@ -732,6 +769,7 @@ export function destroyWeatherResources(context: CesiumGraphicsContext): void {
     cache.renderUniformBuffer?.destroy();
     cache.renderUniformBuffer = null;
     cache.renderInitialized = false;
+    cache.snowCover = 0;
     context._weatherCache = undefined;
   }
 }

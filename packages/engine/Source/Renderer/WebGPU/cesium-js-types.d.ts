@@ -250,6 +250,13 @@ interface CesiumWeatherConfig {
   spawnRadius: number;
   groundAltitude: number;
   humidity: number;
+  // PRECIP-DATA (Batch 444) — optional data-driven extras. `densityScale` (≥1)
+  // multiplies the effective particle density (heavy precip = lower visibility =
+  // denser particles); `snowCover` (0..1) is the time-integrated ground
+  // snow-cover scalar. Both optional → renderer applies `?? 1` / `?? 0`, so the
+  // pre-444 config shape and OFF behavior are unchanged.
+  densityScale?: number;
+  snowCover?: number;
 }
 
 // ─── Environment state ──────────────────────────────────────────────────
@@ -1034,6 +1041,12 @@ interface CesiumScene {
   weatherIntensity: number;
   weatherWindSpeed: number;
   weatherWindDirection: { x: number; y: number; z?: number };
+  // PRECIP-DATA (Batch 444) — data-driven precip extras pushed by
+  // applyAtmosphericConditions when the `effects.precipitation.dataDriven` flag is
+  // set. Optional → undefined in the default (manual/auto) path; the
+  // environmental-effects dispatch reads them as `?? 0` / `?? 1`.
+  weatherSnowCover?: number;
+  weatherDensityScale?: number;
   _enableSSR: boolean;
   invertClassification: boolean;
   opaqueFrustumNearOffset: number;

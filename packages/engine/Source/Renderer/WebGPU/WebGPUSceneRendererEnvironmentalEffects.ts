@@ -85,6 +85,11 @@ function buildWeatherConfig(
     spawnRadius: 500,
     groundAltitude: 0,
     humidity: 0.5,
+    // PRECIP-DATA (Batch 444) — data-driven extras. Undefined in the manual/auto
+    // path (applyAtmosphericConditions only sets these when the `dataDriven` flag
+    // is on); the renderer reads `?? 1` / `?? 0`, so the OFF path is unchanged.
+    densityScale: scene.weatherDensityScale,
+    snowCover: scene.weatherSnowCover,
   };
 }
 

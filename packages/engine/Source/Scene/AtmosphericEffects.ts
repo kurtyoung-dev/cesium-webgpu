@@ -105,6 +105,214 @@ export function precipitationTypeToWeatherTypeIndex(
   return idx >= 0 && idx <= 3 ? idx : 0;
 }
 
+/**
+ * Result of the WMO present-weather → precipitation mapping
+ * ({@link precipFromWmoCode}). `type` is a {@link PrecipitationType} index;
+ * `intensity` is 0..1.
+ */
+export interface PrecipFromWmo {
+  type: number;
+  intensity: number;
+}
+
+/**
+ * Map a WMO Table 4677 present-weather `ww` code (00..99) to a
+ * {@link PrecipitationType} + an intensity 0..1. PURE + deterministic
+ * (unit-testable). The keystone of the data-driven precipitation path
+ * (PRECIP-DATA, Batch 444): an ingest field's dominant `ww` selects the particle
+ * type the WebGPU weather renderer dispatches.
+ *
+ * Code-range → type (WMO Table 4677, abbreviated to the renderer's 4 particle
+ * profiles — there is no separate sleet profile, so freezing/mixed precip maps to
+ * SNOW, the closest visual, and convective hail/thunder maps to HAIL):
+ *   - 00..39 → NONE   (clear / haze / smoke / dust — no precipitation reaching ground)
+ *   - 40..49 → FOG    (fog / ice fog)
+ *   - 50..59 → RAIN   (drizzle — light streaks)
+ *   - 60..65 → RAIN   (rain, not freezing)
+ *   - 66..69 → SNOW   (freezing rain 66-67 + rain-and-snow mixed 68-69 ≈ sleet → SNOW)
+ *   - 70..79 → SNOW   (snow / ice crystals / ice pellets)
+ *   - 80..82 → RAIN   (rain showers)
+ *   - 83..84 → SNOW   (rain-and-snow showers → SNOW)
+ *   - 85..86 → SNOW   (snow showers)
+ *   - 87..90 → HAIL   (showers of snow pellets / hail / small hail)
+ *   - 91..94 → RAIN   (recent thunderstorm, currently rain/snow at obs)
+ *   - 95..99 → HAIL   (thunderstorm; 96/99 with hail — HAIL profile reads as heavy convective)
+ *
+ * Intensity within a band: many WMO sub-ranges encode slight→moderate→heavy in
+ * their last digit. We derive a 0.35→1.0 ramp from the in-band position so a
+ * "heavy" code yields denser particles than a "slight" one. NaN / out-of-range →
+ * NONE at 0.
+ *
+ * @param ww The WMO present-weather code (00..99).
+ * @returns The precipitation type index + intensity 0..1.
+ */
+export function precipFromWmoCode(ww: number): PrecipFromWmo {
+  if (!Number.isFinite(ww) || ww < 0 || ww > 99) {
+    return { type: PrecipitationType.NONE, intensity: 0 };
+  }
+  const code = Math.floor(ww);
+
+  // No precipitation reaching the ground (clear / haze / smoke / dust / blowing).
+  if (code < 40) {
+    return { type: PrecipitationType.NONE, intensity: 0 };
+  }
+
+  // Fog (40..49): "intensity" reads as fog density; thicker for the higher codes.
+  if (code <= 49) {
+    return {
+      type: PrecipitationType.FOG,
+      intensity: rampInBand(code, 40, 49, 0.4, 1.0),
+    };
+  }
+
+  // Drizzle (50..59) → RAIN, lighter than rain proper.
+  if (code <= 59) {
+    return {
+      type: PrecipitationType.RAIN,
+      intensity: rampInBand(code, 50, 59, 0.3, 0.7),
+    };
+  }
+
+  // Rain (60..65) not freezing.
+  if (code <= 65) {
+    return {
+      type: PrecipitationType.RAIN,
+      intensity: rampInBand(code, 60, 65, 0.45, 1.0),
+    };
+  }
+
+  // Freezing rain (66..67) + rain-and-snow mixed (68..69) ≈ sleet → SNOW.
+  if (code <= 69) {
+    return {
+      type: PrecipitationType.SNOW,
+      intensity: rampInBand(code, 66, 69, 0.5, 0.85),
+    };
+  }
+
+  // Snow / ice crystals / ice pellets (70..79).
+  if (code <= 79) {
+    return {
+      type: PrecipitationType.SNOW,
+      intensity: rampInBand(code, 70, 79, 0.4, 1.0),
+    };
+  }
+
+  // Rain showers (80..82).
+  if (code <= 82) {
+    return {
+      type: PrecipitationType.RAIN,
+      intensity: rampInBand(code, 80, 82, 0.6, 1.0),
+    };
+  }
+
+  // Rain-and-snow showers (83..84) → SNOW.
+  if (code <= 84) {
+    return {
+      type: PrecipitationType.SNOW,
+      intensity: rampInBand(code, 83, 84, 0.6, 0.9),
+    };
+  }
+
+  // Snow showers (85..86).
+  if (code <= 86) {
+    return {
+      type: PrecipitationType.SNOW,
+      intensity: rampInBand(code, 85, 86, 0.6, 1.0),
+    };
+  }
+
+  // Showers of snow pellets / hail / small hail (87..90).
+  if (code <= 90) {
+    return {
+      type: PrecipitationType.HAIL,
+      intensity: rampInBand(code, 87, 90, 0.6, 1.0),
+    };
+  }
+
+  // Recent / non-hail thunderstorm at observation (91..94) → RAIN.
+  if (code <= 94) {
+    return {
+      type: PrecipitationType.RAIN,
+      intensity: rampInBand(code, 91, 94, 0.7, 1.0),
+    };
+  }
+
+  // Thunderstorm (95..99) — heavy convective; 96/99 carry hail → HAIL.
+  return {
+    type: PrecipitationType.HAIL,
+    intensity: rampInBand(code, 95, 99, 0.8, 1.0),
+  };
+}
+
+/** Linear ramp of `v` across `[lo, hi]` mapped to `[outLo, outHi]`, clamped. */
+function rampInBand(
+  v: number,
+  lo: number,
+  hi: number,
+  outLo: number,
+  outHi: number,
+): number {
+  const t = hi > lo ? clamp((v - lo) / (hi - lo), 0, 1) : 0;
+  return outLo + (outHi - outLo) * t;
+}
+
+/**
+ * Time-integrate a ground SNOW-COVER coverage scalar (0..1). Ramps UP while snow
+ * is falling (accumulation) and melts DOWN otherwise. PURE + deterministic so the
+ * ramp/melt is unit-testable. The renderer (and a future ground-shader snow
+ * albedo consumer) reads the returned scalar.
+ *
+ * Rates are per-second fractions; `dt` is the frame's delta time (seconds). When
+ * snow falls the cover gains `accumRate * intensity * dt`; otherwise it loses
+ * `meltRate * dt`. Result clamped to [0, 1].
+ *
+ * @param prev The previous cover scalar (0..1).
+ * @param snowing True when the active precip is snow (drives accumulation).
+ * @param intensity Precip intensity 0..1 (scales the accumulation rate).
+ * @param dt Frame delta time, SECONDS.
+ * @param accumRate Per-second accumulation fraction at full intensity (default 0.02).
+ * @param meltRate Per-second melt fraction when not snowing (default 0.005).
+ * @returns The updated cover scalar 0..1.
+ */
+export function updateSnowAccumulation(
+  prev: number,
+  snowing: boolean,
+  intensity: number,
+  dt: number,
+  accumRate = 0.02,
+  meltRate = 0.005,
+): number {
+  const p = clamp(prev, 0, 1);
+  const step = clamp(dt, 0, 1); // guard pauses / huge first-frame dt
+  if (snowing) {
+    return clamp(p + accumRate * clamp(intensity, 0, 1) * step, 0, 1);
+  }
+  return clamp(p - meltRate * step, 0, 1);
+}
+
+/**
+ * Map an aggregate horizontal visibility (KILOMETRES) to a particle-density
+ * MULTIPLIER. PURE. Heavy precip lowers visibility, so low visibility scales the
+ * particle density up: at ≥10 km the multiplier is 1.0 (no change), ramping to a
+ * cap (default 2.5×) as visibility falls toward 0. `undefined` visibility → 1.0
+ * (no coupling). Used by the data-driven path to make heavy precip read as denser
+ * particles + lower visibility together.
+ *
+ * @param visibilityKm The visibility in km, or undefined for no coupling.
+ * @param maxScale The density multiplier at zero visibility (default 2.5).
+ * @returns A density multiplier ≥ 1.
+ */
+export function densityScaleFromVisibility(
+  visibilityKm: number | undefined,
+  maxScale = 2.5,
+): number {
+  if (visibilityKm === undefined || !Number.isFinite(visibilityKm)) {
+    return 1.0;
+  }
+  const t = clamp((10 - visibilityKm) / 10, 0, 1); // 0 at ≥10 km, 1 at 0 km
+  return 1.0 + (maxScale - 1.0) * t;
+}
+
 /** Weather conditions consumed by the mapper. All optional → sensible defaults. */
 export interface AtmosphericConditionsInput {
   /** 0 = dry desert … 0.5 = neutral … 1 = saturated. */
@@ -292,10 +500,35 @@ interface AtmosphericSceneLike {
   enableWeather?: boolean;
   weatherType?: number;
   weatherIntensity?: number;
+  /**
+   * PRECIP-DATA (Batch 444) — ground snow-cover scalar (0..1) the data-driven
+   * path time-integrates and the WebGPU weather renderer consumes. Default-off
+   * leaves it untouched (undefined → renderer reads 0).
+   */
+  weatherSnowCover?: number;
+  /**
+   * PRECIP-DATA (Batch 444) — particle-density multiplier (≥1) derived from the
+   * ingest field's visibility. Default-off leaves it untouched (undefined →
+   * renderer reads 1.0).
+   */
+  weatherDensityScale?: number;
+  /** Per-frame delta time (seconds) — drives the snow-accumulation integrator. */
+  _frameState?: { deltaTime?: number };
   globe?: {
     atmosphereSaturationShift?: number;
     atmosphereBrightnessShift?: number;
     cloudType?: number;
+    /**
+     * PRECIP-DATA (Batch 444) — the weather-ingest provider. When the
+     * data-driven precip flag is set AND this exposes `getPresentWeather()`
+     * returning a `ww`, it overrides the precip type/intensity.
+     */
+    weatherProvider?: {
+      getPresentWeather?: () => {
+        ww?: number;
+        visibilityKm?: number;
+      } | null;
+    };
     atmosphericConditions?: {
       weather?: {
         humidity?: number;
@@ -310,7 +543,26 @@ interface AtmosphericSceneLike {
         shimmer?: { enabled: boolean; intensity: number };
         groundFog?: { enabled: boolean; intensity: number };
         optics?: { enabled: boolean; halo: number; advanced?: boolean };
-        precipitation?: { enabled: boolean; type: number; intensity: number };
+        precipitation?: {
+          enabled: boolean;
+          type: number;
+          intensity: number;
+          /**
+           * PRECIP-DATA (Batch 444) opt-in. When TRUE AND a weather-ingest
+           * provider with present-weather is attached, the precip type/intensity
+           * are OVERRIDDEN from the ingest field's WMO `ww` code (and density is
+           * scaled by visibility). Default FALSE keeps the manual/auto selection.
+           */
+          dataDriven?: boolean;
+          /**
+           * PRECIP-DATA (Batch 444) opt-in. When TRUE, a ground snow-cover scalar
+           * ramps up under snow and melts otherwise (`snowCover`). Flag-gated +
+           * default FALSE so the integrator is inert unless requested.
+           */
+          snowAccumulation?: boolean;
+          /** PRECIP-DATA (Batch 444) — the integrated snow-cover scalar (0..1). */
+          snowCover?: number;
+        };
       };
     };
   };
@@ -403,5 +655,70 @@ export function applyAtmosphericConditions(scene: AtmosphericSceneLike): void {
       );
       scene.weatherIntensity = state.precipitation.intensity;
     }
+  }
+
+  // ── PRECIP-DATA (Batch 444) — data-driven precipitation override ──────────
+  // Runs INDEPENDENTLY of the `auto` master, AFTER the manual/auto selection
+  // above, so it overrides only the precip type/intensity (everything else the
+  // user/auto chose stands). HARD GATE: it does nothing unless BOTH
+  //   (a) `effects.precipitation.dataDriven === true`, and
+  //   (b) an ingest provider is attached AND reports present-weather with a `ww`.
+  // When either is false the entire block is skipped → the precip path is
+  // byte-identical to the pre-444 manual/auto behavior.
+  applyDataDrivenPrecip(scene, effects);
+}
+
+/**
+ * PRECIP-DATA (Batch 444) — override precip type/intensity from the weather-ingest
+ * field's WMO `ww` when the data-driven flag is set and a provider with
+ * present-weather is attached. Also couples particle density to visibility and
+ * (flag-gated) integrates the ground snow-cover scalar. No-op otherwise.
+ */
+function applyDataDrivenPrecip(
+  scene: AtmosphericSceneLike,
+  effects: NonNullable<
+    NonNullable<AtmosphericSceneLike["globe"]>["atmosphericConditions"]
+  >["effects"],
+): void {
+  const precip = effects?.precipitation;
+  if (precip?.dataDriven !== true) {
+    return; // gate (a): flag off → no override, manual/auto selection stands.
+  }
+  const provider = scene.globe?.weatherProvider;
+  const present = provider?.getPresentWeather?.();
+  if (!present || present.ww === undefined) {
+    return; // gate (b): no ingest present-weather → no override.
+  }
+
+  const mapped = precipFromWmoCode(present.ww);
+  // Visibility coupling: heavy precip (low visibility) → denser particles.
+  const densityScale = densityScaleFromVisibility(present.visibilityKm);
+  scene.weatherDensityScale = densityScale;
+
+  // Write the override into BOTH the hierarchy leaf (so UI reflects it) and the
+  // flat scene fields the renderer consumes.
+  precip.enabled =
+    mapped.type !== PrecipitationType.NONE && mapped.intensity > 0;
+  precip.type = mapped.type;
+  precip.intensity = mapped.intensity;
+  scene.enableWeather = precip.enabled;
+  if (precip.enabled) {
+    scene.weatherType = precipitationTypeToWeatherTypeIndex(mapped.type);
+    scene.weatherIntensity = mapped.intensity;
+  }
+
+  // Flag-gated ground snow accumulation: ramp up under snow, melt otherwise.
+  if (precip.snowAccumulation === true) {
+    const snowing = mapped.type === PrecipitationType.SNOW && precip.enabled;
+    const dt = scene._frameState?.deltaTime ?? 0.016;
+    const prevCover = precip.snowCover ?? 0;
+    const cover = updateSnowAccumulation(
+      prevCover,
+      snowing,
+      mapped.intensity,
+      dt,
+    );
+    precip.snowCover = cover;
+    scene.weatherSnowCover = cover;
   }
 }
