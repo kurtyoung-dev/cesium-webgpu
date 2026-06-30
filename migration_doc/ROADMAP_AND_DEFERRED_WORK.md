@@ -316,18 +316,19 @@ the last big visual-parity hole; SCENE2D collections still blocked).
 CSM cast + globe-receive are **fixed** (Batches 296-298); soft-shadow PCF ships (289/297);
 cascade-ground-fit ships (306). Open:
 
-- **`NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS` — soft-shadow PCF globe-receive blocker** (HIGH) — the 3×3
-  PCF box kernel (matching WebGL `czm_shadowVisibility`) shipped Batch 289 and is **VERIFIED on
-  primitive self-shadow edges** (Batch 297 retest: `probe-csm-soft-shadow.mjs` A-vs-B hard-vs-soft diff
-  rose 0.000%→6.551%, proving the radius reaches the runtime with zero device errors). But the
-  end-to-end **globe-terrain receiver** is still BLOCKED: the 6.5% diff is entirely the kernel softening
-  the caster wall's own self-shadow edge (the appearance-primitive receiver self-shadows correctly), NOT
-  a softened **ground cast shadow** — the output PNGs show the WebGPU globe ground uniformly bright with
-  NO cast shadow while the WebGL reference shows the large dark ground shadow. Root cause: the
-  globe-terrain receiver is missing the caster's stored depth at its projected cascade UV. The cast side
-  is green (`probe-csm-cast-dispatch.mjs` PASS, 584 dispatches); `probe-csm-soft-shadow.mjs` goes green
-  with NO probe changes once the receive projection is fixed. **No workaround until the receive
-  projection lands. P1 for CSM closure.** See `CSM_DESIGN.md` (Soft-shadow PCF / verification status).
+- **`NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS`** — ✅ **RESOLVED (Batch 298, `509168f10b`).** (Round-2 doc
+  review correction: round-1 lifted a "still BLOCKED" framing from `CSM_DESIGN.md` that predated the fix
+  by one batch.) The globe-terrain receiver was missing ground cast shadows — the 3×3 PCF box kernel
+  (matching WebGL `czm_shadowVisibility`, Batch 289) verified on primitive self-shadow edges (Batch 297,
+  `probe-csm-soft-shadow.mjs` 0.000%→6.551%), but the WebGPU globe ground stayed uniformly bright while
+  WebGL showed the cast shadow. **Root cause:** `WebGPUCSMRenderer._computeCascadeVPMatrix` placed the
+  cascade light-eye at `center − lightDir*2r` (the ANTI-sun side), so the shadow mirrored about the
+  cascade center and a ground point's projected UV read the cleared (lit) depth — self-shadowing
+  primitives tolerated the mirror (caster+receiver share a texel), cross-object globe receive did not.
+  **Fix:** `eye = center + lightDir*2r` (sun-side). **Verified:** `probe-csm-globe-receive-trace.mjs`
+  313/961 ground points now correctly occluded (was ~0); `probe-csm-soft-shadow.mjs` renders the cast
+  shadow; 5/6 sub-checks PASS, 0 device errors. **Residual:** `NEW-CSM-CASCADE-GROUND-FIT` (cascade
+  edge-sharpness, Batch 306). See `CSM_DESIGN.md` (Soft-shadow PCF / verification status).
 - **CSM Slice 3 — altitude-adaptive splits** — at orbital altitude λ=0.7 wastes 3/4 cascades on empty
   near-space; collapse/refit above ~500 km. **P2** (no log-depth dep). **(status: verify — defined in
   `CSM_DESIGN.md` as a planned Slice 3 item [Space/orbital-camera column: "above ~500 km collapse to one
@@ -549,17 +550,19 @@ The fork ships several **GPU-compute substrates wired as threshold-gated consume
 - **Atmosphere multi-scatter + irradiance LUTs** — infrastructure ✅ SHIPPED (Batch 306,
   `AtmosphereLUT.wgsl` + `WebGPUAtmosphereLUT.ts`): the extended `computeMultipleScattering` +
   `computeIrradiance` entry points + group-1 bind groups are wired. Now that the compute engine is live
-  (Batch 367), the runtime dispatch is no longer gated on a missing engine — but it remains blocked by
-  `NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT` (below). Batch 311 (AerialPerspective) works around the
-  unrun LUT by using analytic marching instead of LUT reads.
-- **`NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT`** (M) — the `SkyAtmosphere` LUT dispatch throws an
-  invalid-command-buffer **device error** when the atmosphere LUTs are wired into the effects BGL (every
-  WebGPU probe currently filters the known `/Atmosphere ?LUT|SkyAtmosphere/i` device error, per
-  `CAMPAIGN3_PROGRESS.md`). A genuine device error, not cosmetic. Not yet root-caused — likely a
-  bind-group-descriptor capacity conflict in the effects BGL or a pre-flip flag mismatch. **Blocks** the
-  Bruneton full-LUT compute passes (Batch 306 infrastructure) from actually running. **Verify:** re-run
-  any probe WITHOUT the `Atmosphere ?LUT` filter and assert zero device errors; READ a sky frame for no
-  regression. **P1/P2.**
+  (Batch 367) **and** the `NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT` device error is fixed (Batch 396,
+  below), the runtime LUT dispatch runs without device errors. (Batch 311 AerialPerspective still uses
+  analytic marching rather than LUT reads — folding that path onto the now-running LUTs is a follow-up.)
+- **`NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT`** — ✅ **RESOLVED (Batch 396, `b5bdc9e59c`).** (Round-2 doc
+  review correction: round-1 lifted the "still blocked / not root-caused" framing from
+  `CAMPAIGN3_PROGRESS.md`, which predated the fix.) The `SkyAtmosphere` LUT dispatch raised an
+  invalid-command-buffer **device error** on every sun-LUT recompute. **Root cause:** the atmosphere-LUT
+  compute pipelines were built `layout:"auto"`, which derives a pipeline-owned bind-group layout and
+  rejected the explicit `AtmosphereLUT_BGL` ("was not created by the pipeline"). **Fix:** thread optional
+  `bindGroupLayouts` through `computeEngine.getOrCreatePipeline` (base dispatch `[lut.bindGroupLayout]`,
+  extended `[emptyGroup0BGL, extendedBindGroupLayout]`). **Verified:** new
+  `probe-atmo-lut-no-device-error.mjs` asserts 0 GPU errors (was filtered `/Atmosphere ?LUT|SkyAtmosphere/`
+  pre-fix); the Bruneton full-LUT compute passes (Batch 306 infrastructure) now run.
 
 **Open perf items** (`CAMPAIGN_ROADMAP` Phase 8 continuation): `NEW-RENDERBUNDLE-AGING-DECOUPLE`
 (aging-from-frame-tick decouple; LRU + age eviction already exist), `NEW-RESOURCEMANAGER-KEY-EVICTION`
