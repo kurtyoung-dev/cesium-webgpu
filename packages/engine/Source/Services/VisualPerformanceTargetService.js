@@ -97,6 +97,13 @@ class VisualPerformanceTargetService {
     // Reserved for the auto-tuner — populated in a future phase.
     this._lastEvaluationFrameNumber = -1;
     this._evaluationIntervalFrames = 60; // re-evaluate roughly once per second
+
+    // One-shot init capability tier (Batch 445, 4.13 FOG-AUTO-VPT). Computed once
+    // from the GPUDevice limits by {@link #resolveInitialQualityTier} and cached
+    // here so repeat calls (per-frame from a `quality:'auto'` consumer) are O(1)
+    // and deterministic. null until first resolved.
+    /** @type {("low"|"medium"|"high")|null} */
+    this._initialTier = null;
   }
 
   /**
@@ -201,9 +208,86 @@ class VisualPerformanceTargetService {
       snapshotMode: this._snapshotMode,
       probeCount: this._probes.size,
       sinkCount: this._sinks.size,
+      initialTier: this._initialTier,
       probes,
       sinks,
     };
+  }
+
+  /**
+   * Resolve a hardware-appropriate INITIAL quality tier (`"low" | "medium" |
+   * "high"`) from the GPU device capabilities — a one-shot, deterministic
+   * classification used by features whose quality dial is set to `"auto"`
+   * (e.g. volumetric fog, and later clouds / shadows) to pick a sensible
+   * starting band BEFORE any frame-time measurement exists.
+   *
+   * This is the static "init benchmark" half of the VPT: it inspects
+   * `device.limits` (which scale with the GPU's real capability — a discrete
+   * desktop GPU advertises limits far above the WebGPU baseline mins, a
+   * low-power integrated/mobile adapter sits at or near them) and buckets the
+   * device into a tier. It is intentionally NOT the continuous frame-budget
+   * auto-tuner (that stays deferred to a future phase) — it never measures a
+   * frame and never changes after the first call. The result is cached on the
+   * instance so repeat calls (a `quality:'auto'` consumer may call it every
+   * frame) are O(1).
+   *
+   * Thresholds are conservative and keyed WELL ABOVE the WebGPU baseline
+   * required minimums (`maxBufferSize` 256 MiB, `maxStorageBufferBindingSize`
+   * 128 MiB, `maxComputeWorkgroupStorageSize` 16 KiB,
+   * `maxComputeInvocationsPerWorkgroup` 256) so a baseline / unknown adapter
+   * falls through to `"low"` and only adapters that clearly exceed the mins on
+   * EVERY axis earn `"medium"` / `"high"`.
+   *
+   * @param {GPUDevice} [device] The WebGPU device. When null/undefined (no
+   *   device, e.g. WebGL backend or a unit test) the method returns `"low"`.
+   * @returns {"low"|"medium"|"high"} The resolved initial quality tier.
+   */
+  resolveInitialQualityTier(device) {
+    if (this._initialTier !== null) {
+      return this._initialTier;
+    }
+    const limits = device && device.limits ? device.limits : undefined;
+    if (!defined(limits)) {
+      this._initialTier = "low";
+      return this._initialTier;
+    }
+
+    // Read the four capability axes, defaulting any missing value to 0 so a
+    // partial/odd adapter can never spuriously promote to a higher tier.
+    const maxBufferSize = limits.maxBufferSize ?? 0;
+    const maxStorageBinding = limits.maxStorageBufferBindingSize ?? 0;
+    const maxWorkgroupStorage = limits.maxComputeWorkgroupStorageSize ?? 0;
+    const maxInvocations = limits.maxComputeInvocationsPerWorkgroup ?? 0;
+
+    // HIGH — discrete-GPU class: every axis comfortably above the baseline mins.
+    //   buffer ≥ 1 GiB, storage binding ≥ 512 MiB, workgroup storage ≥ 32 KiB,
+    //   invocations ≥ 512.
+    if (
+      maxBufferSize >= 1073741824 &&
+      maxStorageBinding >= 536870912 &&
+      maxWorkgroupStorage >= 32768 &&
+      maxInvocations >= 512
+    ) {
+      this._initialTier = "high";
+      return this._initialTier;
+    }
+
+    // MEDIUM — capable mid-range / better-integrated: above the mins but short
+    //   of the high bar. buffer ≥ 512 MiB, storage binding ≥ 256 MiB,
+    //   workgroup storage ≥ 16 KiB, invocations ≥ 256.
+    if (
+      maxBufferSize >= 536870912 &&
+      maxStorageBinding >= 268435456 &&
+      maxWorkgroupStorage >= 16384 &&
+      maxInvocations >= 256
+    ) {
+      this._initialTier = "medium";
+      return this._initialTier;
+    }
+
+    // Baseline / unknown → conservative low.
+    this._initialTier = "low";
+    return this._initialTier;
   }
 
   /**
@@ -323,6 +407,7 @@ class VisualPerformanceTargetService {
   destroy() {
     this._probes.clear();
     this._sinks.clear();
+    this._initialTier = null;
   }
 }
 

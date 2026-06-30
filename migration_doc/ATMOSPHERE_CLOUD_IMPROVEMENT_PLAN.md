@@ -248,14 +248,14 @@ The cloud tier spine is the single biggest perf+quality lever still unbuilt (ful
 - **Parity impact:** Default-off keeps manual/auto-master precip selection; data-driven only when an ingest provider is attached + flag set.
 - **Files:** `Scene/AtmosphericEffects.ts`, `Renderer/WebGPU/WebGPUWeatherRenderer.ts`.
 
-#### 4.12 — Full RTE camera-relative cloud march (`CLOUD-RTE`, close NEW-WEBGPU-CLOUD-RTE) — **P2, effort M**
+#### 4.12 — Full RTE camera-relative cloud march (`CLOUD-RTE`, close NEW-WEBGPU-CLOUD-RTE) — ✅ SHIPPED Batch 445 (opt-in `globe.cloudHighPrecision`; `CLOUD_QF_HIGH_PRECISION`=1<<12, cloud UB 120→128 floats packing `encodedCameraHigh/Low`, camera-relative shell intersection + radial-distance helpers; default-off = verbatim Haines f32 form, off/on probe diff 0px)
 
 - **Technique:** Pack `encodedCameraHigh/Low` (EncodedCartesian3); do shell intersection + sample positions in camera-relative coords (sphere center = −cameraPos), removing the residual near-radial f32 cancellation.
 - **Opt-in flag:** `qualityFlags` bit `cloudHighPrecision` (default off; ~1m wobble currently unobserved).
 - **Parity impact:** Haines closest-point form stays default; DP-emulated path gated off.
 - **Files:** `Shaders/WebGPU/Environment/ProceduralClouds.wgsl`, `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`.
 
-#### 4.13 — Wire the `auto` fog-quality VPT benchmark (`FOG-AUTO-VPT`) — **P2, effort S** *(quick win)*
+#### 4.13 — Wire the `auto` fog-quality VPT benchmark (`FOG-AUTO-VPT`) — ✅ SHIPPED Batch 445 (built the missing init benchmark: `VisualPerformanceTargetService.resolveInitialQualityTier(device)` one-shot device-limits classifier; fog `_resolveQuality('auto')` consults it only when `visualPerformanceTarget.enabled`; default VPT-disabled → `auto`→`low` verbatim. Continuous frame-budget auto-tuner stays Phase-1+ deferred)
 
 - **Technique:** Connect `VisualPerformanceTargetService`'s init benchmark to `_resolveQuality` so `auto` upgrades low→medium→high on capable hardware (and downgrades under frame-budget pressure) instead of the hard `auto`→low.
 - **Opt-in flag:** `volumetricFog.quality='auto'` (already opt-in; benchmark gated behind VPT availability).

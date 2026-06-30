@@ -36,7 +36,12 @@ import {
   CLOUD_QF_AMBIENT_LUT,
   CLOUD_QF_LIGHT_CONE,
   CLOUD_QF_MULTI_DECK,
+  CLOUD_QF_HIGH_PRECISION,
 } from "./WebGPUCloudTierPresets.js";
+// Batch 445 (4.12 CLOUD-RTE) — RTE high/low camera split for the camera-relative
+// high-precision cloud march. Only the encoded floats (slots 120-127) are sourced
+// from this; the WGSL reads them solely inside the CLOUD_QF_HIGH_PRECISION branch.
+import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 // V9 (Batch 432) — half-res bilateral-upscale composite shader.
 import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
 // V10 (Batch 433) — temporal reprojection + accumulation resolve shader.
@@ -52,12 +57,17 @@ import CloudType from "../../Scene/CloudType.js";
 // lighting) → 104 (Batch 407 dials 96-103) → 108 (Batch 408 V11 profile 104-107;
 // Batch 409 renamed pads 105-106 → nearPlane/farPlane, no count change) → 112
 // (Batch 434 atmosphere-LUT coupling: aerialLutMode/ambientLutMode/atmosphereThickness/pad 108-111)
-// → 120 (Batch 443 multi-deck: multiDeck/pad + deckBoundsLow/Mid/High vec2 112-119).
-const CLOUD_UNIFORM_FLOATS = 120; // MUST equal the CloudUniforms struct length in WGSL
+// → 120 (Batch 443 multi-deck: multiDeck/pad + deckBoundsLow/Mid/High vec2 112-119)
+// → 128 (Batch 445 CLOUD-RTE: encodedCameraHigh.xyz+pad 120-123, encodedCameraLow.xyz+pad 124-127).
+const CLOUD_UNIFORM_FLOATS = 128; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
 const WEATHER_TEX_H = 128;
+// Batch 445 (4.12 CLOUD-RTE) — reused EncodedCartesian3 result for the per-frame
+// camera high/low split (avoids a per-frame allocation). Only written when the
+// camera position is defined; read into the cloud UB slots 120-127.
+const scratchEncodedCamera = new EncodedCartesian3();
 
 export interface CloudCache {
   pipeline: GPURenderPipeline | null;
@@ -1710,6 +1720,41 @@ export function executeProceduralClouds(
   data[offset++] = deckBounds[2][0]; // 118 deckBoundsHigh.x (HIGH bottom)
   data[offset++] = deckBounds[2][1]; // 119 deckBoundsHigh.y (HIGH top)
 
+  // ── Batch 445 (4.12 CLOUD-RTE) — camera-relative high-precision march. Slots
+  // 120-127: the RTE high/low split of the SAME camera world position that feeds
+  // `cloud.cameraPosition` (slots ~50-52 above). These 8 floats are written EVERY
+  // frame but the WGSL READS them ONLY inside the CLOUD_QF_HIGH_PRECISION branch —
+  // so growing the UB does NOT change rendered output when the flag is off (the
+  // OFF path never touches these floats → byte-identical canvas). Opt-in via
+  // `globe.cloudHighPrecision`. ──
+  const highPrecisionOn =
+    (globe as unknown as { cloudHighPrecision?: boolean })
+      .cloudHighPrecision === true;
+  // Encode the camera world position into a high/low f32 pair so the WGSL can
+  // subtract the large `high` term before the small `low` refinement (cancellation
+  // reduction). `camPos` is the same `frameState.camera.positionWC` packed above.
+  if (camPos !== undefined) {
+    const enc = EncodedCartesian3.fromCartesian(camPos, scratchEncodedCamera);
+    data[offset++] = enc.high.x; // 120 encodedCameraHigh.x
+    data[offset++] = enc.high.y; // 121 encodedCameraHigh.y
+    data[offset++] = enc.high.z; // 122 encodedCameraHigh.z
+    data[offset++] = 0.0; // 123 pad
+    data[offset++] = enc.low.x; // 124 encodedCameraLow.x
+    data[offset++] = enc.low.y; // 125 encodedCameraLow.y
+    data[offset++] = enc.low.z; // 126 encodedCameraLow.z
+    data[offset++] = 0.0; // 127 pad
+  } else {
+    // No camera — leave the split zeroed (off path never reads it anyway).
+    data[offset++] = 0.0; // 120
+    data[offset++] = 0.0; // 121
+    data[offset++] = 0.0; // 122
+    data[offset++] = 0.0; // 123 pad
+    data[offset++] = 0.0; // 124
+    data[offset++] = 0.0; // 125
+    data[offset++] = 0.0; // 126
+    data[offset++] = 0.0; // 127 pad
+  }
+
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render
   // leaves them clear → the WGSL gates stay closed → byte-identical.
@@ -1724,6 +1769,12 @@ export function executeProceduralClouds(
   // branch → byte-identical.
   if (multiDeckOn) {
     data[74] = data[74] | CLOUD_QF_MULTI_DECK;
+  }
+  // Batch 445 — fold the high-precision bit (12) into qualityFlags. Set ONLY when
+  // opted in so the default leaves it clear → the WGSL takes the verbatim
+  // closest-point f32 shell/altitude math → byte-identical.
+  if (highPrecisionOn) {
+    data[74] = data[74] | CLOUD_QF_HIGH_PRECISION;
   }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);

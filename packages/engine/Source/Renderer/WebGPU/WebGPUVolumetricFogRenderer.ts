@@ -463,19 +463,45 @@ class WebGPUVolumetricFogRenderer {
 
   /**
    * Resolve the active quality band from `atmosphericConditions.volumetricFog.quality`.
-   * "auto" maps to "low" until the VisualPerformanceTargetService wires
-   * its init benchmark in (Phase 0.4 skeleton; benchmark is a future
-   * follow-up).
+   *
+   * An explicit `"low" | "medium" | "high"` is returned verbatim. For
+   * `"auto"` (or unknown):
+   *   - When the scene's VisualPerformanceTargetService is ENABLED
+   *     (`scene.visualPerformanceTarget.enabled === true`, opt-in), resolve to
+   *     the device-appropriate INIT tier via
+   *     {@link VisualPerformanceTargetService#resolveInitialQualityTier}
+   *     (4.13 FOG-AUTO-VPT, Batch 445). This is the one-shot capability
+   *     classification — NOT the continuous frame-budget auto-tuner, which
+   *     stays deferred.
+   *   - Otherwise (VPT disabled — the default) → `"low"`, byte-identical to the
+   *     pre-445 behavior.
    */
-  private _resolveQuality(quality: string | undefined): QualityKey {
+  private _resolveQuality(
+    quality: string | undefined,
+    scene: CesiumScene | undefined,
+  ): QualityKey {
     if (quality === "high" || quality === "medium" || quality === "low") {
       return quality;
     }
-    // "auto" or unknown → conservative default. The VPT auto-tune is
-    // designed to UPGRADE this from low to medium on capable hardware
-    // (or downgrade if frame budget is exceeded), but the benchmark
-    // hookup is queued behind Phase 5b's actual rendering work — there's
-    // nothing to measure until the compute kernels do real work.
+    // "auto" or unknown. Only consult the VPT init benchmark when VPT is
+    // explicitly enabled (opt-in); the default (VPT disabled) stays "low".
+    const vpt = (
+      scene as unknown as {
+        visualPerformanceTarget?: {
+          enabled?: boolean;
+          resolveInitialQualityTier?: (
+            device: GPUDevice,
+          ) => "low" | "medium" | "high";
+        };
+      }
+    )?.visualPerformanceTarget;
+    if (
+      vpt?.enabled === true &&
+      typeof vpt.resolveInitialQualityTier === "function"
+    ) {
+      return vpt.resolveInitialQualityTier(this._device);
+    }
+    // VPT disabled (default) → conservative low, verbatim pre-445 behavior.
     return "low";
   }
 
@@ -645,7 +671,7 @@ class WebGPUVolumetricFogRenderer {
     // optional chaining + the `?? default` fallbacks already present below
     // so the base height-fog parameters resolve to their sensible defaults
     // when only ground fog is driving the render.
-    const quality = this._resolveQuality(vf?.quality);
+    const quality = this._resolveQuality(vf?.quality, scene);
     const r = this._ensureResources(quality);
 
     // Phase 6 audit fix — snapshot mode integration. When the snapshot
