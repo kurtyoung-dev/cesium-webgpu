@@ -13,22 +13,31 @@ next.
   [QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md](QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md)
 - **Resume state in memory:** `memory/project_campaign3_execution.md`
 
-> **2026-06-25 — Campaign 3 RE-SCOPED.** W1–W5 shipped (below) are the frozen
-> baseline. The remaining cloud work (W6–W14) is superseded by the v2 plan above:
-> a tiered architecture built on a precomputed 3D-noise-texture core (both
-> better-looking *and* better-performing). **Next batch = V0** (fix the
-> SkyAtmosphere-LUT device error), then V1/V2 (inert tier scaffold + noise bake),
-> then V3 (keystone: flip the density core to baked textures).
+> **2026-06-25 — Campaign 3 RE-SCOPED** to the v2 tiered plan (V0–V28).
+>
+> **2026-06-30 — RECONCILED: Campaign 3 v2 (Tiered Clouds, V0–V16) is FUNCTIONALLY
+> COMPLETE.** The tiered-cloud features all shipped — but under the **improvement-plan
+> naming** (the atmosphere/cloud arc, batches 437–452), NOT the V0–V18 numbering, so
+> this tracker drifted. Verified against live code (2026-06-30): the baked 3D-noise
+> core keystone (`CloudNoiseBake.wgsl` + `WebGPUCloudNoiseResources.ts`, `cloudDensity`
+> samples `cloudShapeTex`/`cloudDetailTex` with the live `fbmNoise` else-branch fallback),
+> the `qualityFlags@74` tier lane, half-res (CLOUD-HALFRES), temporal (CLOUD-TEMPORAL),
+> IGN jitter, curl (439), MS-octave geometric decay (`msDecayA/B/C`), per-genus profiles +
+> `profileExtinction` (452), multi-deck (443), shadows (437), god-rays, precip (444), the
+> transmittance early-out + adaptive coarse→fine march, and the `cloudVolumetricQuality`
+> dial (`Globe.js`) all exist. `CloudUniforms` is at **128 floats**. **Only V17
+> (baked-impostor far-field) remains — deferred as speculative Ultra-only research.**
+> The campaign is CLOSED; next major work pivots to the **DP-H46 metadata epic**.
 
 ## Status at a glance
 
 | | |
 |---|---|
-| **Batches shipped** | **5 / 25** (Arc A: 4/4 ✅ · Arc B: 1/4) |
-| **Latest commit** | Batch 395 (W5 — adaptive raymarch, ×1.39 faster, image identical) |
-| **▶ Up next** | **W6 — half-resolution cloud pass + bilateral upscale** |
-| **`CloudUniforms` size** | 96 floats (started at 80) |
-| **New globe control** | `globe.cloudAerialStrength` (0–1, default 1.0) — W4 |
+| **Tiered-cloud features (V0–V16)** | **COMPLETE** (shipped under improvement-plan naming, batches 437–452) |
+| **Deferred** | V17 baked-impostor far-field (speculative Ultra-only research) |
+| **Latest cloud commit** | Batch 452 (profileExtinction — per-genus optical density) |
+| **`CloudUniforms` size** | **128 floats** (started at 80) |
+| **Public dial** | `globe.cloudVolumetricQuality` (`low/medium/high/auto`) + `cloudQuality` escape hatch |
 | **Branch** | `main` (trunk-only, clean) |
 
 **Per-batch protocol** (each batch = one atomic commit): implement all bundled
