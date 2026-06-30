@@ -111,19 +111,27 @@ License note (still load-bearing): the repo is **MIT**, the atmosphere model is 
 | 3 | NEW-ATMO-DERIVED-LIGHTING + MIXED-MASK (SunDirectionalLight + sky-irradiance SH + terrain-Lambertian/model-PBR mask) | **SHIPPED** | Batch 312 (`805436397c`) Track V-A3 |
 | 4 | NEW-VOLUMETRIC-CLOUD-LAYERS (Perlin-Worley + weather map + Beer-powder + dual-lobe HG + multi-scatter) | **SHIPPED** | Campaign 3 v2 V0–V8 (Batches 396–408) + improvement-plan Phase 3/4; **precomputed 3D-noise core is the keystone** (see §4) |
 | 5 | NEW-CLOUD-BSM-TEMPORAL (Beer Shadow Map + temporal filter) | **SHIPPED (opt-in)** | Batch 437 (`f517becc44`) improvement-plan 4.1 CLOUD-SHADOWS (BSM → terrain + aerial + fog) |
-| 6 | NEW-CLOUD-TAAU (half-res + temporal upscale) | **SHIPPED (opt-in)** | Batch 432 (`8e4bd340c8`) CLOUD-HALFRES half-res + bilateral upsample; Batch 433 CLOUD-TEMPORAL reprojection. *(Whether the full Schneider 1/16-over-16 + blue-noise variant landed vs. a coarser half-res+temporal — status: verify against `ProceduralClouds.wgsl`.)* |
+| 6 | NEW-CLOUD-TAAU (half-res + temporal upscale) | **SHIPPED (opt-in) — coarser variant confirmed** | Batch 432 (`8e4bd340c8`) CLOUD-HALFRES half-res + bilateral upsample; Batch 433 (`5f2459a82c`) CLOUD-TEMPORAL reprojection + accumulation (`CloudTemporalResolve.wgsl`). **Verified:** what shipped is half-res + bilateral + temporal, **NOT** the full 1/16-over-16 blue-noise Schneider variant — the `Schneider` strings in `ProceduralClouds.wgsl` are technique-attribution comments (Horizon/Nubis cone-light, FBM octaves), not the interleaved-reconstruction path. The simpler variant is the chosen path (ships as V10–V16 tiers); the full Schneider TAAU is deferred/speculative, not a TODO in the code. |
 | 7 | NEW-STARS-BRIGHT-CATALOG (Yale Bright Star Catalog point starfield) | **SHIPPED (both backends)** | Batch 313 (`9b562e8ed2`) WebGPU; Batch 324 (`bb58a62571`) WebGL fallback for parity; Batch 352 tune. Residual: HDR-SkyBox faint-star parity tracked deferred (`NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY`). |
-| 8 | NEW-SUN-MOON-FIDELITY (physical sun disc/limb + atmosphere glow + lens glare; moon phase PBR + earthshine) | **SHIPPED / verify-first** | Batch 378 (`9880fb7b32`) "sun/moon fidelity — verify-first, claimed gap STALE" + Batch 438 SKY-MOON + Batch 442 COLD-OPTICS-HQ halos/light-pillars. The headline sun/moon gap was found already-closed; lens-glare specifics **status: verify**. |
-| 9 | NEW-EFFECTS-LIGHTSHAFTS-LENSGLARE (crepuscular rays / god-rays / lens glare) | **PARTIALLY SHIPPED** | `WebGPUGodRayEffect.ts` exists; A.11 GodRay wired (Batch 133 follow-up audit); Batch 442 added LIGHT PILLARS. Atmosphere/cloud-aware god-ray *extension* + geometry lens-glare **status: verify** — may be partial. |
+| 8 | NEW-SUN-MOON-FIDELITY (physical sun disc/limb + atmosphere glow + lens glare; moon phase PBR + earthshine) | **PARTIALLY SHIPPED — headline gap closed, lens-glare OPEN** | Batch 378 (`9880fb7b32`) "sun/moon fidelity — verify-first, claimed gap STALE" (physical sun disc + limb darkening + atmosphere glow) + Batch 438 (`0d8e5d2489`) SKY-MOON + Batch 442 (`7e132e0d06`) COLD-OPTICS-HQ halos/light-pillars. **Verified:** the headline "faint sun/moon" gap is genuinely closed (Batch 378) — that portion is **SHIPPED**. Sun/moon are rendered by `WebGPUEnvironmentRenderer.js` (there is **no** `WebGPUSunRenderer.ts` / `WebGPUMoonRenderer.ts`). **OPEN:** geometry lens-glare (caustic/refraction glow around the disc) — no lens-glare code is present in `WebGPUEnvironmentRenderer.js`; treat as an open backlog item. |
+| 9 | NEW-EFFECTS-LIGHTSHAFTS-LENSGLARE (crepuscular rays / god-rays / lens glare) | **PARTIALLY SHIPPED — cloud-aware extension OPEN** | `WebGPUGodRayEffect.ts` exists and is wired (A.11 GodRay, Batch 133 follow-up audit); Batch 442 (`7e132e0d06`) added LIGHT PILLARS (COLD-OPTICS-HQ, a cloud-coupled optical effect). **Verified:** base god-rays + light pillars work. **OPEN:** the cloud-aware god-ray extension (sampling cloud *transmittance*, not just depth) is not present — `WebGPUGodRayEffect.ts` carries no cloud reference; geometry lens-glare is likewise unshipped. These are the open fill-ins. |
 | 10 | NEW-MULTIBODY-ATMOSPHERE (parameterize LUT pipeline for Mars / airless bodies) | **OPEN** | No fork batch parameterizing the atmosphere LUT for Mars. (The Mars hits in git are upstream Sandcastle demos, not a multi-body atmosphere config.) Remaining greenfield item from this track. |
 
 ### What's left from the Takram track
 
 - **Item 10 (multi-body atmosphere)** is the main un-started item — a `CelestialBodyAtmosphere` parameter set (Mars: thin CO₂/dust Rayleigh/Mie/ozone + ground albedo; airless: skip-atmosphere) on the already-parameterized LUT pipeline. **Triage: Plan.**
-- **Items 6, 8, 9** have **status: verify** sub-pieces (exact TAAU variant, lens-glare geometry, cloud-aware god-rays). Confirm against the live shaders before declaring 100%.
+- **Items 6, 8, 9** had **status: verify** sub-pieces that are now **resolved** (see the table above): item 6 shipped the *coarser* half-res+temporal variant (not full Schneider 1/16); item 8's headline sun/moon gap is closed but **geometry lens-glare is OPEN**; item 9 ships base god-rays + light pillars but the **cloud-aware god-ray extension is OPEN**.
 - The two atmosphere campaigns that absorbed this track are tracked in `ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md` (Phases 1–4, Batches 427–452, including A-LUT-REPARAM sun-relative sky-view LUT keystone, SKY-MS/ENV-AERIAL-MS multi-scatter, SKY-OZONE, MIE-PHASE, env-map/IBL reflection capture C2-25 epic) and `CAMPAIGN3_PROGRESS.md` / `QUEUE_2026-06-25_CAMPAIGN3v2_TIERED_CLOUDS.md`. **Those are the live trackers; this section is the research-origin record.**
 
 *Source: `RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md`. Bruneton 4-LUT, aerial-perspective post, Bright Star Catalog, physical sun/moon, and the Takram "three inputs" (atmosphere LUT lighting / mixed mask / volumetric clouds) are all addressed above.*
+
+### Celestial / atmosphere design-doc deferrals (`CELESTIAL_ATMOSPHERE_DESIGN.md`)
+
+Open follow-ups carried forward from the celestial/atmosphere design that are *not* part of the Takram 10-item roadmap above:
+
+- **Higher-resolution moon texture — OPEN (deferred, NEW-6).** Current `moonSmall.jpg` is adequate from Earth-distance views but blurry at close range (lunar-orbit camera). Fix: source a high-resolution lunar-surface texture + alpha-blend between resolutions per altitude. ~0.5–1 session; deferred from Phase 2 (Sun/Moon sync). Tracked as **NEW-6** in `SESSION_2026-04-08_RESEARCH_REPORT.md` §10 and `CELESTIAL_ATMOSPHERE_DESIGN.md` §4.2. **Triage: Watch (low).**
+- **Temporal reprojection polish for volumetric fog — Phase 5f (optional, per B11).** Phase 5a–5d deliver the froxel grid *without* temporal-history reprojection; low-resolution grids shimmer during camera motion (density-sampling aliasing). Phase 5b's mitigation is temporal **blue-noise jitter** on density sampling; full **TAA-style history-buffer reprojection (Phase 5f, ~0.5 session)** is a future polish step **only if jitter alone proves insufficient**. The **B11 locked decision** defers it. See `CELESTIAL_ATMOSPHERE_DESIGN.md` §4.8 / §6 Phase 5f. **Triage: Prototype (gated on observing shimmer post-5d).**
+- **Per-pixel varying-atmosphere-density fallback — RESEARCH TOPIC (intentionally not implemented, per B21).** Per the **B21 locked decision**, when `enableVolumetricFog = false`, `enableVaryingAtmosphereDensity = true` is a **silent no-op** — the froxel grid is the only supported density-modulation path. The design *explicitly* states the per-pixel sky-atmosphere ray-march fallback (sampling 3D noise at each Nishita ray step) is **NOT implemented**. Open research question if demand warrants it: medium shader complexity. **Document the limitation; do not silently route around it.** See `CELESTIAL_ATMOSPHERE_DESIGN.md` §4.9. **Triage: Watch (demand-gated).**
 
 ---
 
@@ -142,7 +150,7 @@ Applied: WebGL has only billboard/2D clouds (`CloudCollection`); the WebGPU volu
 1. **No architectural pivot.** Raymarch-with-3D-textures on a spherical shell is the correct core (2024–2026). Gaussian-splat / NeRF / neural are **not** viable for animated, dynamically-lit participating media (no multiple-scatter model). **Confirmed** — the fork did not pivot.
 2. **The one change that wins BOTH perf and quality: precomputed 3D noise textures.** Bake a low-freq **128³ RGBA8** Perlin-Worley + high-freq **32³ RGBA8** Worley once at init (WGSL compute → `texture_storage_3d`), replacing ~30 live FBM+Worley evals/sample with one trilinear fetch + curl offset (~8 MB). **SHIPPED** — `CloudNoise.wgsl` + `WebGPUCloudNoiseResources.ts` exist; Batch 398 (`2ac70f0ffd`) baked the textures inert, Batch 399 (`4e53a7575d`, the **KEYSTONE V3**) flipped the density core to the baked textures.
 3. **Lighting wins (per cost):** energy-conserving analytic in-scatter integration; **multiple-scattering octaves** (N≈3, geometric decay); sun-side powder + isotropic floor + ambient sky term. **SHIPPED** — Batch 401 (V5) Frostbite multi-scatter octaves; improvement-plan Phase 3 (Batches 428–436) energy-conserving + cone-light march.
-4. **Perf/reconstruction (per cost):** half-res + depth-aware joint-bilateral upscale; animated IGN ray-start jitter; temporal reprojection with motion vectors + wind + neighborhood-clip. Skip froxels; defer 2D impostors to Ultra. **SHIPPED (opt-in)** — Batch 432 CLOUD-HALFRES, Batch 433 CLOUD-TEMPORAL. *(IGN jitter / exact reprojection variant — status: verify.)*
+4. **Perf/reconstruction (per cost):** half-res + depth-aware joint-bilateral upscale; animated IGN ray-start jitter; temporal reprojection with motion vectors + wind + neighborhood-clip. Skip froxels; defer 2D impostors to Ultra. **SHIPPED (opt-in)** — Batch 432 CLOUD-HALFRES (half-res march + bilateral upsample), Batch 433 CLOUD-TEMPORAL (`CloudTemporalResolve.wgsl`, reprojection + accumulation). **Verified:** the shipped path is the **coarser half-res + bilateral + temporal** model, **not** the full Schneider 1/16-over-16 blue-noise interleaved-reconstruction variant (deferred/speculative). The `Schneider`/`Nubis` strings in the cloud shaders are technique-attribution comments, not the interleaved path.
 5. **Tier model = the directive.** One `quality` enum → preset struct; **Tier 0 = cheap WebGL-parity default**, Tiers 1–3 opt-in volumetric. **SHIPPED** — Batch 397 (V1) `qualityFlags@74` tier-preset scaffold (inert spine), mapped onto `globe.cloudVolumetricQuality`.
 
 ### The W5 cautionary lesson (preserved — still load-bearing)
@@ -165,8 +173,8 @@ The source doc (`FUTURE_RESEARCH_2026_05_01.md` §R-4) proposed a fork-built `Ma
 
 **Re-triage:** the *raster-basemap-gap* premise is **partially closed** by the upstream MVT loader. What remains genuinely open and fork-relevant:
 
-- Whether the WebGPU backend renders the MVT-derived glTF nodes at parity (it should, via the Model FR — **status: verify** with a Sandcastle/probe).
-- The Rust/WASM off-thread *parse+tessellate* performance angle (the original R-4 motivation) is moot now that decode is a worker in the upstream loader — **status: verify** whether decode is already off-thread.
+- **WebGPU render parity of MVT-derived glTF nodes — UNCONFIRMED (recommend a probe).** The MVT loader (`MVTDataProvider.js` → `buildVectorGltfFromMVT.js` → `VectorGltf3DTileContent`) emits glTF that SHOULD route through the WebGPU Model FR at parity — the data ingest is backend-agnostic and no MVT-specific WebGPU bug is filed. But it has never been exercised by a regression probe. **Next step:** load an MVT-based datasource under WebGPU + WebGL and pixel-diff. If they match → RESOLVED; if they diverge → surface the specific mismatch as a Model-renderer parity issue (not an MVT issue).
+- **Off-thread decode — UNCONFIRMED, and current evidence says decode is SYNCHRONOUS, not off-thread.** Verified: `MVTDataProvider.js` calls `decodeMVT(arrayBuffer)` **synchronously** in the content-fetch path, and `decodeMVT.js` carries no `Worker` / `TaskProcessor` / `postMessage`. So the original R-4 Rust/WASM off-thread *parse+tessellate* motivation is **not** already satisfied by the upstream loader — it remains an open optimization angle (PBF decode + tessellation on the main thread). Revisit only if a profile shows decode cost on the main thread is material; the upstream loader is otherwise functionally complete.
 - A Mapbox-GL-Style paint-property subset (the styling half) is still not first-class.
 
 **Action:** demote R-4 from "Plan (build it)" to "verify upstream MVT covers the use case; only build the fork-specific styling/perf delta if a gap remains."
@@ -179,7 +187,7 @@ The source doc (`FUTURE_RESEARCH_2026_05_01.md` §R-4) proposed a fork-built `Ma
 
 1. **Environment** sun/moon/stars (`WebGPUEnvironmentRenderer.js`) — recorded once, replayed every frame.
 2. **Volumetric fog** (`WebGPUVolumetricFogRenderer.ts`) — `asFreezable()` pattern.
-3. **Globe** path (`WebGPUSceneRendererGlobePass.ts`) — **NUANCE:** the source doc lists globe opaque terrain as a bundled site, but **Batch 292 (`2ba80374e9`) dropped the inline globe render bundle** in favor of a group-0 dynamic-offset UBO (`NEW-GLOBE-DYNAMIC-OFFSET-UBO` / `NEW-GLOBE-RENDERBUNDLE-CACHE`). The manager hook is still referenced; whether globe still *uses* a bundle vs. dynamic-offset UBO is **status: verify**. This is a real divergence from the stale doc.
+3. **Globe** path (`WebGPUSceneRendererGlobePass.ts`) — **ARCHITECTURE CHANGED (resolved):** the source doc lists globe opaque terrain as a bundled site, but **Batch 292 (`2ba80374e9`) dropped the inline globe render bundle** in favor of a group-0 dynamic-offset UBO (`NEW-GLOBE-DYNAMIC-OFFSET-UBO` / `NEW-GLOBE-RENDERBUNDLE-CACHE`; the commit rewrites `WebGPUSceneRendererGlobePass.ts`, −89 net lines around the bundle path). The `WebGPURenderBundleManager` hook is still *referenced*, but globe **no longer uses a bundle** — per-tile uniform updates now ride a dynamic-offset UBO, which is cheaper than re-recording a bundle on every camera/animation change (the ROI inverts on a high-churn list). **Update to the source doc's performance assumption:** globe is no longer a bundled site; treat the substitution as the chosen path, not pending work. No functional change implied.
 
 **Untapped expansion candidates** (source-doc ROI order, all still OPEN): R-7a 3D-Tiles opaque models (low risk, likely highest ROI), R-7b translucent/OIT collect (low risk, bundle-friendly today), R-7e Vector 3D Tiles, R-7f buffer primitives. **Don't bundle** R-7c pick (on-demand, not per-frame) or R-7d shadow cast (amortizes only on a still camera) without a profile.
 
@@ -189,8 +197,8 @@ The source doc (`FUTURE_RESEARCH_2026_05_01.md` §R-4) proposed a fork-built `Ma
 
 From `audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md`, the long-tail research / structural items that are research-shaped rather than mechanical:
 
-- **WGSL preprocessor v2 with boolean operators** (`(A && B) || (!A && C)`). The current `//>>ifdef` is flag-only; once 10+ define bits are in play (driven by Model KHR-extension shaders) the inability to express boolean combinations forces enumerating all permutations as separate source IDs. **Plan a v2 before Model PBR extensions land** — cheap since the preprocessor is a pure function. **status: verify** how many define bits are now in use (was 4 active / 24 max at Batch 116).
-- **Render pipeline cache eviction (LRU at ~1024 entries).** No size cap today; long 3D-Tiles sessions grow the cache monotonically. Research-light, mostly a policy decision. **status: verify** whether eviction has since been added.
+- **WGSL preprocessor v2 with boolean operators** (`(A && B) || (!A && C)`) — **UNSTARTED, low priority (bit count resolved).** The current `//>>ifdef` is flag-only (verified: `WebGPUShaderPreprocessor.preprocess` accepts a single flag name per directive, no `&&`/`||`/`!`); once many define bits are in play (driven by Model KHR-extension + metadata shaders) the inability to express boolean combinations forces enumerating permutations as separate source IDs or pre-OR'd bits. **Verified bit count: 22 define bits are now in use** (`ShaderDefine` bits `0…21`, up from 4 active at Batch 116), against a 24-bit cache-key field — i.e. ~92% of capacity but each bit is still individually manageable. **Recommendation: defer the v2 design spike** until one of two triggers: (a) a single complex condition becomes unmaintainable in a source shader, or (b) the bit count approaches 24 (the Uint32 cache-key capacity). Cheap to build when triggered since the preprocessor is a pure function. No action needed today.
+- **Render pipeline cache eviction (LRU at ~1024 entries)** — **CONFIRMED SHIPPED (Batch 293, `3986f7a89b`, `NEW-BINDGROUPCACHE-EVICTION`).** Both `WebGPUBindGroupCache.ts` (bounded `maxEntries`, default 1024, LRU + optional age eviction, `evictions` stat) and `WebGPURenderPipelineCache.ts` (`evictIfNeeded()` LRU cap, `evicted` stat, configurable `maxSize`) now bound their growth and evict the least-recently-used entry on insertion. This resolves the "unbounded growth in long 3D-Tiles sessions" concern. No further action.
 - **Subgroups / cooperative-matrix (`subgroup_matrix`)** — the same browser gate as R-1 Inference-on-Sample. Watch gpuweb#4195. Independently useful for any compute-heavy long-tail (reductions, prefix sums).
 - **f16 storage/compute** — narrower-precision compute paths (cloud noise, LUT bake, reductions) where a half-precision variant would halve bandwidth. Workload-gated; **Watch**.
 
@@ -210,7 +218,43 @@ Render NATO/DoD military symbology glyphs (unit markers, equipment icons, contro
 
 ---
 
-## 7. Scene-in-Worker Research (Option B)
+## 7. Water-Rendering Research (`WATER_RENDERING_DESIGN.md`)
+
+The water design is a phased plan: **v1 = Phases 1–7** (terrain water mesh + Gerstner waves + screen-space refraction + sky-cubemap reflection + river classification via OSM/HydroRIVERS WASM rasterization + underwater + spatial regions). Everything below is **explicitly-deferred Phase 8+ future work** carried out of that design's phase inventory — none is on the active roadmap yet. All gate on the v1 water foundation (Phases 1–3) landing and being validated first.
+
+### Phase 1 validation gate (the decision driver) — **OPEN (high priority once v1 ships)**
+
+After Phases 1–3 ship, run **Option A water classification on representative datasets** (OSM-sourced rivers, terrain tiles carrying a water mask) and **profile**: (1) CPU cost of WASM rasterization per tile, (2) GPU cost of the water pass vs baseline, (3) visual correctness on rivers (width inference, flow direction). If profiling shows **>10% frame regression** or accuracy issues, revisit the WASM-vs-JS fallback trade-off. **This smoke-test + profiling pass is the prerequisite gate** for every scaling decision below — Option A is deliberately a "try before Option B" phase, and the format-version-bump decision (below) explicitly requires **6–12 months of real-world Option A usage** before it can be made. See `WATER_RENDERING_DESIGN.md` §9.1.
+
+### Phase 8+ — visual-fidelity upgrades (all future, deferred pending Phase 1–3 validation)
+
+- **FFT ocean upgrade (~2–3 sessions).** Replace the Gerstner sum-of-waves model with **Tessendorf FFT-based** ocean-surface generation for higher fidelity at distance. Depends on the Phase 1–3 water foundation. See `WATER_RENDERING_DESIGN.md` §6 Phase 8+ + Tessendorf, *"Simulating Ocean Water."*
+- **Wave particles for boat wakes (~2–3 sessions).** Localized wave-disturbance propagation (Frostbite/Sea-of-Thieves-style **Wave Particles**, Jeschke) layered on the base Gerstner field, so boats displace the surface realistically. Needs the base wave field (Phase 2) first; disturbance injection + composite. See the design doc's §2 Prior Art + the Phase 8+ inventory.
+- **Planar reflection probes (~1–2 sessions).** Replace the sky-cubemap reflection *approximation* with dynamic **planar reflections** of nearby geometry (buildings, terrain). Risk: the extra render pass may not pay off on mobile. The design doc's §4.6 explicitly defers this to Phase 8, noting screen-space refraction is already available as a cheap approximation.
+- **ML-segmented water from imagery (research-grade).** Use satellite-imagery segmentation (Sentinel-2 Water Index / **NDWI**) to detect water pixels offline and bake them into a 3D-Tiles overlay tileset — improves classification accuracy for small water bodies. Deferred pending Option A (OSM-based) validation. See the design doc's §4.1.1.
+- **Seasonal / ephemeral water (JRC GSW).** Integrate the **JRC Global Surface Water** dataset to capture seasonal/ephemeral rivers and floods absent from OSM vector data — improves coverage for monsoon regions + inundation modeling. Complements the Option A pipeline; deferred pending Phase 1 validation. See the design doc's §4.1.1.
+
+### Phase 9+ — quantized-mesh format version bump (Option B, long-term direction) — **deferred (ecosystem-coordination-gated)**
+
+Once there's **~6–12 months of real-world Option A usage**, the long-term direction is to promote the water-classification fields from the optional additive extension (**extension ID 0x05**, `waterType` / `flowVector` as optional buffers) to **first-class quantized-mesh format fields** via a coordinated **format version bump**. This is the cleaner wire format (fixed offsets, constant-time parse, room for higher-precision flow magnitudes + multi-band depth/turbidity + per-texel wave amplitude) but requires coordinating with **cesium-native, Cesium for Unreal, and third-party tilers** (Mapbox, Felt, MapTiler, …). **Decision: ship Option A now** (additive, backward-compatible, zero break) and **defer Option B to Phase 9+** pending usage validation. Migration sequence: survey real-world usage → refine the field set → propose the version bump → 18–24-month deprecation window for Option A → ship Option B as canonical with dual-parser support. See `WATER_RENDERING_DESIGN.md` §9.2.
+
+**Triage:** the Phase 1 validation gate is **Plan (high)** once v1 lands; every Phase 8+/9+ item is **Watch/deferred** behind it. *Source: `WATER_RENDERING_DESIGN.md`.*
+
+---
+
+## 8. Vegetation-System Research (`VEGETATION_SYSTEM_DESIGN.md`)
+
+The vegetation design proposes a tiered scatter/LOD system (V1–V5 core: instanced scatter + impostors + HLOD clumps + cheap backface-dot SSS + slope/landcover-driven density). The items below are **explicitly-deferred open questions / risks** from that design's §7–§9 — not part of the V1–V5 core. Do **not** gate the core on any of them.
+
+- **Full subsurface scattering for vegetation — OPEN (deferred from v1, medium).** Current state: a `FLAG_HAS_VOLUME` **Beer–Lambert approximation** (WGSL) + a **backface-dot glow fallback** (WebGL2). Physically-correct SSS needs multi-bounce simulation or a specialized thin-membrane BRDF plus a **post-process MRT scene-color capture** for true KHR_materials_transmission — and that **refraction MRT infrastructure is not yet built** (`ModelPBRComplete.wgsl:356` placeholder). Ship the cheap backface-dot SSS for V4; **defer full SSS to a post-v1 phase** after the core lands. Cost: ~3–4 sessions (BRDF + MRT capture). Tracked as `BACKLOG-§9` in `FEATURE_INVENTORY.md`. See `VEGETATION_SYSTEM_DESIGN.md` §9 item 2. **Triage: Plan (post-v1).**
+- **GPU-sort consumer integration — OPEN (profiling-gated, medium).** `WebGPUGPUSortKeysDispatcher` (compute shader) exists but has **no shader consumer anywhere** — the JS comparator is faster below ~50K elements. Wiring a consumer would batch vegetation by material/LOD to minimize pipeline-state changes. **Do not gate V1–V5 on this**; it's opportunistic **V6** work, taken only if a profile shows >50K per-frame vegetation sorts. Cost: ~1–2 sessions once instancing is live. See §7 item ("GPU sort … consumer wiring still pending — opportunistic") + the §8/gap-analysis table (consumer integration pending fork-wide) + §9 item 6. **Triage: Watch (profile-driven).**
+- **Hydrological routing for density-map provenance — FUTURE RESEARCH (low).** The design derives density maps from OSM forest polygons + imagery landcover + a simple slope-rejection mask (§9 item 7, *"Density/biome map provenance"* — flagged as a pending **data-pipeline** gap). A richer, real-world-accurate approach would integrate **hydrological routing** to predict vegetation distribution from water availability: (1) build a flow-accumulation grid from terrain, (2) couple vegetation density to flow accumulation + lithology/watershed affinity. This is **beyond v1 scope** (a data-science gap, not engine work) but is a genuine need for forest modeling. Cost: research-grade, ~3–5 sessions for the hydro compute + density-field coupling. See `VEGETATION_SYSTEM_DESIGN.md` §9 item 7. **Triage: Watch (research).**
+
+*Source: `VEGETATION_SYSTEM_DESIGN.md` §7–§9.*
+
+---
+
+## 9. Scene-in-Worker Research (Option B)
 
 `OPTION_B_SCENE_IN_WORKER.md` answers "what would it take to run a full Cesium `Scene` inside a Web Worker?" **Status: design / blocker inventory; implementation deferred to a focused multi-week effort. Still OPEN as a full migration** — but the spike's scaffolding landed and the original hard blocker shifted.
 
@@ -249,7 +293,7 @@ Full migration estimate: **9–13 weeks** for one full-time engineer (Phase 1 un
 
 ---
 
-## 8. Research-to-Roadmap Crosswalk
+## 10. Research-to-Roadmap Crosswalk
 
 Snapshot of every register entry vs. its live status and where the active tracking lives. **Re-verified against code + git log at HEAD ~Batch 455.**
 
@@ -262,7 +306,7 @@ Snapshot of every register entry vs. its live status and where the active tracki
 | R-2b | Unified feature-id texture | Plan | **OPEN** | depends on Batch-133 pick pass |
 | R-2c | GPU-driven cross-source LOD | Plan (research) | **OPEN** | 5+ sessions, thesis-shaped |
 | R-3 | WebNN imagery super-resolution | Prototype | **OPEN** (Chrome-only) | no super-res renderer |
-| R-4 | Rust/WASM MVT vector basemap | Plan | **SUPERSEDED** | upstream `MVTDataProvider.js` merged; verify WebGPU parity + styling delta |
+| R-4 | Rust/WASM MVT vector basemap | Plan | **SUPERSEDED** (loader); WebGPU parity UNCONFIRMED; decode is SYNC | upstream `MVTDataProvider.js` merged; `decodeMVT` synchronous (off-thread angle still open); parity probe + styling delta remain |
 | R-5 | Single-buffer GPU picking | Watch | **OPEN (do-not-pursue)** | negative ROI; pick pass stays |
 | R-6 | MIL-STD-2525 symbology | Watch | **OPEN** (demand-gated) | no `milsymbol` dep |
 | R-7 | Expand GPURenderBundle coverage | Plan (profile-gated) | **OPEN**; profiler **SHIPPED** | `WebGPUCpuPassProfiler.ts`; 3 sites (globe site nuance: Batch 292) |
@@ -271,19 +315,32 @@ Snapshot of every register entry vs. its live status and where the active tracki
 | Takram 3 | Atmosphere-derived lighting + mask | Ship | **SHIPPED** | Batch 312 |
 | Takram 4 | Volumetric cloud layers | Ship | **SHIPPED** | C3v2 V0–V8; improvement-plan Ph3/4 |
 | Takram 5 | Cloud BSM + temporal | Ship | **SHIPPED (opt-in)** | Batch 437 |
-| Takram 6 | Cloud TAAU / half-res | Ship | **SHIPPED (opt-in)**; exact variant verify | Batch 432/433 |
+| Takram 6 | Cloud TAAU / half-res | Ship | **SHIPPED (opt-in)** — coarser variant (NOT full Schneider 1/16) | Batch 432/433; `CloudTemporalResolve.wgsl` |
 | Takram 7 | Bright Star Catalog starfield | Ship | **SHIPPED (both backends)** | Batch 313/324; HDR faint-star parity deferred |
-| Takram 8 | Physical sun/moon fidelity | Ship | **SHIPPED / verify-first** | Batch 378 (gap was stale) + 438/442 |
-| Takram 9 | Light shafts / lens glare | Ship | **PARTIAL** | `WebGPUGodRayEffect.ts` + Batch 442; cloud-aware + lens-glare verify |
+| Takram 8 | Physical sun/moon fidelity | Ship | **SHIPPED** (disc/limb/glow); lens-glare **OPEN** | Batch 378 (gap was stale) + 438/442; rendered in `WebGPUEnvironmentRenderer.js` |
+| Takram 9 | Light shafts / lens glare | Ship | **PARTIAL**; cloud-aware god-ray + lens-glare **OPEN** | `WebGPUGodRayEffect.ts` + Batch 442 pillars; no cloud-transmittance coupling |
 | Takram 10 | Multi-body atmosphere (Mars) | Plan | **OPEN** | main un-started Takram item |
 | Cloud-arch | Precomputed 3D Perlin-Worley core | Ship | **SHIPPED (KEYSTONE)** | Batch 398/399; `CloudNoise.wgsl` + `WebGPUCloudNoiseResources.ts` |
 | Cloud-arch | 4-tier quality preset model | Ship | **SHIPPED** | Batch 397 `qualityFlags@74` |
 | Cloud-tax | 11 WMO genera + per-genus profiles | Ship | **SHIPPED** | Batch 385/408/452 |
 | Cloud-tax | Exotic forms (mammatus / lenticular / NLC…) | Plan | **OPEN** | `CLOUD_TAXONOMY_ROADMAP.md` Tiers E1–E3 |
-| Long-tail | WGSL preprocessor v2 (boolean ops) | Plan | **OPEN**; verify bit count | architecture audit §2d |
-| Long-tail | Pipeline-cache LRU eviction | Plan | **OPEN**; verify if added | architecture audit §2b |
+| Long-tail | WGSL preprocessor v2 (boolean ops) | Plan | **OPEN / low-pri** — 22 of 24 define bits in use | architecture audit §2d; flag-only preprocessor confirmed |
+| Long-tail | Pipeline-cache LRU eviction | — | **SHIPPED** (Batch 293) | `WebGPUBindGroupCache.ts` + `WebGPURenderPipelineCache.ts` LRU |
 | Long-tail | subgroups / f16 | Watch | **OPEN** | shares R-1 browser gate |
 | Option B | Full Scene-in-Worker | Watch/deferred | **OPEN** (spike landed, blockers remain) | `OPTION_B_SCENE_IN_WORKER.md`; ECS-worker spike was NO-GO (Batch 305) |
+| Water | Phase 1 validation smoke-test + profiling | Plan (post-v1) | **OPEN** (gates all scaling decisions) | `WATER_RENDERING_DESIGN.md` §9.1 |
+| Water | FFT ocean (Tessendorf) | Watch | **OPEN** (Phase 8+) | §6 Phase 8+ |
+| Water | Wave particles (boat wakes) | Watch | **OPEN** (Phase 8+) | §2 Prior Art |
+| Water | Planar reflection probes | Watch | **OPEN** (Phase 8+) | §4.6 |
+| Water | ML-segmented water (NDWI) | Watch | **OPEN** (Phase 8+) | §4.1.1 |
+| Water | Seasonal water (JRC GSW) | Watch | **OPEN** (Phase 8+) | §4.1.1 |
+| Water | Quantized-mesh Option B version bump | Watch/deferred | **OPEN** (Phase 9+, ecosystem-gated) | §9.2 |
+| Vegetation | Full SSS (refraction MRT) | Plan (post-v1) | **OPEN** | `VEGETATION_SYSTEM_DESIGN.md` §9.2; `ModelPBRComplete.wgsl:356` |
+| Vegetation | GPU-sort consumer integration | Watch (profile) | **OPEN** (V6 opportunistic) | §9 item 6; gap-analysis table |
+| Vegetation | Hydrological routing (density provenance) | Watch (research) | **OPEN** | §9 item 7 |
+| Celestial | High-res moon texture (NEW-6) | Watch | **OPEN** (deferred) | `CELESTIAL_ATMOSPHERE_DESIGN.md` §4.2 |
+| Celestial | Volumetric-fog temporal reprojection (Phase 5f) | Prototype | **OPEN** (optional, per B11) | §4.8 / §6 Phase 5f |
+| Celestial | Per-pixel varying-density fallback | Watch (research) | **OPEN** (intentionally unimplemented, per B21) | §4.9 |
 
 ### Standing rule
 

@@ -5,7 +5,7 @@
 > **Review-in-progress.** This is the master capability catalog: what this fork *is*, every improvement beyond upstream, and the **live** ship-status of each.
 
 > [!IMPORTANT]
-> **Status accuracy note.** The source docs this consolidates were last refreshed between roughly Batch 56 and Batch 185; `HEAD` is **Batch 455** (`3b146e42a8`). Every headline status below was **re-verified against the live code + git log** at consolidation time. Where the source docs carried a stale SHIPPED/WIP tag that the live code contradicts, this doc carries the corrected status and flags it. A handful of items are marked **`status: verify`** where the live state could not be confirmed from a quick grep — treat those as the maintainer's review targets, not assertions.
+> **Status accuracy note.** The source docs this consolidates were last refreshed between roughly Batch 56 and Batch 185; `HEAD` is **Batch 460** (`061f6914f0`). Every headline status below was **re-verified against the live code + git log** at consolidation time. Where the source docs carried a stale SHIPPED/WIP tag that the live code contradicts, this doc carries the corrected status and flags it. A handful of items are marked **`status: verify`** where the live state could not be confirmed from a quick grep — treat those as the maintainer's review targets, not assertions.
 
 ---
 
@@ -13,7 +13,9 @@
 
 CesiumJS WebGPU is a fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) (`kurtyoung-dev/cesium-webgpu`) that adds a **second, parallel rendering backend (WebGPU)** alongside the existing WebGL2 renderer, behind a single backend-agnostic scene layer. The same `Viewer` / `Scene` / primitive / entity APIs drive **either** backend; the backend is chosen at `Viewer` construction (`contextOptions.renderer: 'webgl' | 'webgpu' | 'auto'`) with feature-detection fallback to WebGL when WebGPU is unavailable.
 
-**Parity figure (re-verified):** the fork tracks **~93% WebGL *feature* parity** — i.e. ~93% of the ~290 upstream-inherited + ~200 fork-added features have a working WebGPU code path (`WEBGPU_MIGRATION_STATUS.md`). This is **feature-coverage**, *not* a single pixel-level visual-parity number: the globe surface + imagery render at visual parity, while some atmosphere/sky-limb and model/primitive shading deltas remain open and are tracked per-feature via `Tools/visual-regression` probes + `DEFERRED_WORK.md`. The older "~60%" figure that appears in archived docs is a stale early-session reading, not a competing visual number.
+**Parity figure (re-verified, code-grounded):** the fork tracks **~91% weighted WebGL feature parity** — **86% fully-shipped + 9% partial (work-for-the-common-case with a documented hole)**, per the Batch 459 code-grounded survey (`WEBGPU_PARITY_REPORT_2026-06-30.md`). Excluding 8 deferred-by-design items (VSM/ESM, linear-depth cast, INTERSECTION-mode clipping, virtual-texture terrain, water-classification research, etc.) the weighted figure rises to **~94%**. The **"~93%"** figure cited in archived docs is the *optimistic upper-middle* of the defensible band — it aligns with the **adjusted-weighted** reading (93.7%) when partials get half-credit *and* the 8 by-design items are dropped from the denominator. The honest headline is ~91% on the full surface; readers should not interpret "93%" as "93% feature-complete" (only **86%** are fully shipped).
+
+For precision, the survey enumerates **220 fully-shipped + 23 partial + 4 stub + 8 missing** across **~255** features. This is **feature-coverage**, *not* a single pixel-level visual-parity number: the globe surface + imagery render at visual parity, while some atmosphere/sky-limb and model/primitive shading deltas remain open and are tracked per-feature via `Tools/visual-regression` probes + `DEFERRED_WORK.md`. The code-grounded breakdown in `WEBGPU_PARITY_REPORT_2026-06-30.md` is authoritative for subsystem-level parity; the older "~60%" figure that appears in archived docs is a stale early-session reading, not a competing visual number.
 
 ### Design Principles (1–9)
 
@@ -131,7 +133,7 @@ Re-verified against git log. These are the marquee capabilities the WebGPU backe
 | **Snapshot mode** | SHIPPED | `Services/SnapshotModeService.js`; `scene.snapshotMode` freeze/auto-thaw for deterministic capture. |
 | **Compute pipeline** | SHIPPED | 32 compute kernels (frustum cull, Hi-Z occlusion, GPU sort keys / BitonicSortU64, point-cloud sort + LOD, mipmap gen, entity-cluster grid, atmosphere LUTs, volumetric fog, radiance→SH, weather sim). Hi-Z occlusion consumer fully fixed (Batches 212–213). |
 
-Other notable NEW features: structural-metadata GPU upload + per-model WGSL metadata codegen (**DP-H46 a/b, Batches 454–455, opt-in/parity-default** — `pickMetadata` epic in progress), point-light soft shadows, OIT (weighted-blended), heat-shimmer/contact-shadows effects, and a complete debug/visual-regression tooling stack (`CesiumDebug.*`, `Tools/visual-regression`). 28+ fork demos are ported to the Sandcastle2 gallery (323 gallery folders total).
+Other notable NEW features: structural-metadata GPU upload + per-model WGSL metadata codegen + GPU-side metadata read (property-texture + property-table) + metadata picking (**DP-H46 a/b/c/d/e, Batches 454–460, opt-in/parity-default**; the DP-H46f demo-gallery/probe-suite artifact is still in progress — probes `probe-dp46c/d/e` exist but no Sandcastle entry yet), point-light soft shadows, OIT (weighted-blended), heat-shimmer/contact-shadows effects, and a complete debug/visual-regression tooling stack (`CesiumDebug.*`, `Tools/visual-regression`). 28+ fork demos are ported to the Sandcastle2 gallery (323 gallery folders total).
 
 ---
 
@@ -143,7 +145,7 @@ Per-renderer status, re-verified at HEAD (supersedes the maturity grades in `aud
 `WebGPUGlobeSurfaceRenderer` (~3900 LOC, decomposed into 9 helpers) — quantized + uncompressed terrain, multi-pass for >4 imagery layers (16-layer single-pass on capable adapters, 1-layer reduced fallback for SwiftShader/low-end), water mask, day/night, fog/atmosphere/Lambert, hardware clip distances (globe path), Hi-Z occlusion. **SHIPPED.** Ground atmosphere is shaded in-`GlobeTerrain.wgsl` (the separate-pass renderer was deleted Batch 239 as a parity misread). The historical "globe never rasterizes / canvas black" framing is **resolved** (Batches 93 + 200).
 
 ### 5.2 3D Tiles
-B3DM/I3DM/PNTS/CMPT render on WebGPU; per-feature pick returns `Cesium3DTileFeature`/`ModelFeature` at parity (Batch 209). **Voxels are SCAFFOLDED only** — `WebGPUVoxelRenderer` is a hardcoded RGB-density ray-marcher on a 4×4×4 gradient; `VoxelPrimitive.update()` short-circuits so provider/megatexture/octree traversal and CustomShader→WGSL transpilation are unimplemented (upstream PR#13517 default voxel shader is unreachable). Gaussian splats render with back-to-front sort + log frag_depth (multi-frustum compose is a tracked follow-up).
+B3DM/I3DM/PNTS/CMPT render on WebGPU; per-feature pick returns `Cesium3DTileFeature`/`ModelFeature` at parity (Batch 209). **Voxels (CRITICAL CAP — XL effort):** the entire WebGPU voxel **data path** is unimplemented — `WebGPUVoxelRenderer.ts` is a hardcoded RGB-density ray-marcher on a 4×4×4 gradient placeholder, and `VoxelPrimitive.update()` short-circuits. Missing: `VoxelPrimitive` provider / megatexture / octree traversal, `CustomShader`→WGSL transpilation, and per-cell pick coordinate buffering. Upstream PR#13517's default voxel shader is unreachable. This is the **single largest remaining parity gap** — one of only four `stub` items in the 2026-06-30 survey, and ranked **#1 in effort** (XL) at the top of the "genuine port work" queue (`WEBGPU_PARITY_REPORT_2026-06-30.md` §5.2 / §6). See `ROADMAP_AND_DEFERRED_WORK.md` §4.2 (Voxels epic). Gaussian splats render with back-to-front sort + log frag_depth (multi-frustum compose is a tracked follow-up).
 
 ### 5.3 glTF Models + KHR
 `WebGPUModelRenderer` (~2300 LOC) — full PBR (metallic-roughness + spec-gloss + unlit), all alpha modes, double-sided, vertex colors, normal mapping, model-space RTE, skinning, GPU instancing, morph targets, IBL factor + SH. `KHR_materials_*` (clearcoat/specular/anisotropy/iridescence/sheen/volume/transmission) ship as **bit-flagged paths inside `ModelPBRComplete.wgsl`** (bits 19–25), not separate full-BRDF shader bodies; `KHR_texture_transform`, `KHR_mesh_quantization`, transmission MRT capture are live. Iridescence uses the Belcour-2017 analytic thin-film integral (already shipped — the "hue-shift approximation" doc was stale). Full per-extension BRDF bodies are gated on the Phase 8a shader strategy (§D.3).
@@ -185,11 +187,11 @@ These are multi-session epics with their own canonical design docs (which remain
 
 ## 7. Reference Statistics
 
-Verified at HEAD (`3b146e42a8`, Batch 455) unless noted.
+Verified at HEAD (`061f6914f0`, Batch 460) unless noted.
 
 | Metric | Value | Source |
 |---|---|---|
-| WebGL feature parity | ~93% (feature-coverage, not pixel-parity) | `WEBGPU_MIGRATION_STATUS.md` |
+| WebGL feature parity | ~91% weighted (86% fully-shipped + 9% partial); ~94% excluding 8 deferred-by-design items. The archived "~93%" = adjusted-weighted (93.7%) upper bound | `WEBGPU_PARITY_REPORT_2026-06-30.md` (Batch 459) |
 | Upstream-inherited features (§A) | ~290 | `FEATURE_INVENTORY.md` |
 | Fork-added features (§B) | ~200 | `FEATURE_INVENTORY.md` |
 | WIP entries (§C) | ~85 | `FEATURE_INVENTORY.md` |
@@ -199,7 +201,8 @@ Verified at HEAD (`3b146e42a8`, Batch 455) unless noted.
 | WGSL shader files | 293 (incl. 32 compute, 97 fn chunks) | `find …/Shaders/WebGPU` (verified) |
 | WebGPU renderer files | 208 entries (~180 `.ts` + 27 `.js`) | `…/Renderer/WebGPU/` (verified) |
 | WebGPU renderer LOC | ~146K | `wc -l` (verified) |
-| `ShaderSourceId` registrations | 33 (highest `ELLIPSOID_PRIMITIVE:33`) | `FEATURE_INVENTORY.md` §B.2 (`status: verify` — re-count vs live `WebGPUShaderDefines.ts`) |
+| `ShaderDefine` bits (live) | **22** active bits (`1<<0` … `1<<21`, contiguous, no gaps) | `WebGPUShaderDefines.ts` (verified — `grep ': 1 <<'` = 22) |
+| `ShaderSourceId` registrations | 37 (contiguous `1`…`37`, highest `STAR_FIELD_CATALOG:37`) — *a source-file ID, distinct from the 22 define bits* | `WebGPUShaderDefines.ts` (verified) |
 | WASM bridges shipped | Draco, Basis/KTX2, naga-wasm, splats, zip | `…/ThirdParty` (verified) |
 | Sandcastle gallery folders | 323 (28+ fork WebGPU demos) | `packages/sandcastle/gallery` (verified) |
 | Build variant sizes (min. IIFE) | dual 7.1 MB / webgl-only 5.6 MB / webgpu-only 6.4 MB | `CLAUDE.md` / `BUILD_AND_VARIANTS.md` |
@@ -234,7 +237,8 @@ Verified at HEAD (`3b146e42a8`, Batch 455) unless noted.
 
 ### Consolidation notes (for the maintainer's review)
 
-- Headline ship-status for C2-25 (Batch 451), clouds/atmosphere improvement plan (Batches 426–445), tiered clouds (Batch 453), DP-H46 a/b (Batches 454–455), and the resolved historical blockers were all **re-verified against git log**, not lifted from the stale source tags.
+- Headline ship-status for C2-25 (Batch 451), clouds/atmosphere improvement plan (Batches 426–445), tiered clouds (Batch 453), DP-H46 a/b/c/d/e (Batches 454–460), and the resolved historical blockers were all **re-verified against git log**, not lifted from the stale source tags.
 - Feature-renderer counts (52 slots / 61 registrations), WGSL count (293), renderer file/LOC counts (208 / ~146K), and the Sandcastle folder count (323) were **re-counted against live code** and supersede the older doc figures.
-- One stat is marked **`status: verify`**: the `ShaderSourceId` registration count (cited as 33 in the inventory) — re-count against the live `WebGPUShaderDefines.ts` before relying on it.
+- The `status: verify` flag on the `ShaderDefine`/`ShaderSourceId` count is **resolved**: the live `WebGPUShaderDefines.ts` carries **22** active `ShaderDefine` bits (`1<<0` … `1<<21`, contiguous) and **37** contiguous `ShaderSourceId` registrations (`1`…`37`, highest `STAR_FIELD_CATALOG:37`, ID `0` reserved) — two separate registries. (An earlier draft cited `ELLIPSOID_PRIMITIVE:33` as the highest source ID; that was stale — `COMPUTE_INSTANCE_*`, `GAUSSIAN_SPLAT:36`, and `STAR_FIELD_CATALOG:37` extend past it.)
+- The parity headline is now the **code-grounded** Batch 459 survey (`WEBGPU_PARITY_REPORT_2026-06-30.md`): ~91% weighted (86% fully-shipped + 9% partial), ~94% excluding deferred-by-design items. The archived "~93%" maps to the adjusted-weighted upper bound, not the median.
 - The per-line feature catalog (§A/§B/§C/§D) is summarized here; `FEATURE_INVENTORY.md` remains the authoritative line-item source until archival. The §A/§B/§C/§D anchors are preserved so existing `CLAUDE.md` deep-links resolve.

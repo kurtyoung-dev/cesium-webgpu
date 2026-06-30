@@ -154,7 +154,8 @@ Three accessors:
 
 Most renderers (21 of 28 per the `CollectionRenderer` docstring) implement a
 per-frame `update()`; others expose `execute()` / `render()` / `composite()` and
-callers duck-type-dispatch by checking existence.
+callers duck-type-dispatch by checking existence (see §3.1 for the full
+vocabulary).
 
 ### Scene Logic Extractor rule — CRITICAL for Collections
 
@@ -164,6 +165,100 @@ mode updates, bounding-volume work) MUST run **before** the
 handle only GPU resource creation, draw-command emission, and backend
 optimizations — they do **not** re-implement shared scene logic. Putting shared
 logic behind the branch silently desyncs the two backends.
+
+### 3.1 Lifecycle method vocabulary (duck-typed)
+
+The FR registry is **duck-typed**: callers check for a method's existence before
+calling it, so an FR only implements the subset it needs — **there is no required
+method.** The base `FeatureRenderer` interface plus three sub-type interfaces in
+`GraphicsContext.ts` define the vocabulary:
+
+- **`update(collection, frameState, ...args)`** — `CollectionRenderer`. The
+  per-frame entry point and by far the most common (collections, environment,
+  model, clipping, post-process). Builds resources and pushes draw commands.
+- **`createCommands(...)` / `updateCommandUniforms(...)` / `createMaterial…` /
+  `updatePickCommandUniforms(...)`** — `PrimitiveCommandRenderer` (the `PRIMITIVE`
+  command factory and the ground / vector-tile classifiers).
+- **`execute(...)`** — full-screen / post-process effects (SSR, NPR outlines,
+  contact shadows, procedural clouds).
+- **`composite(...)`** — a second pass run later in the frame (volumetric fog
+  populates with `update`, then `composite`s into scene color).
+- **`init(...)` / `dispatch(...)` / `readback(...)` / `getStatistics(...)`** —
+  compute / system renderers (Hi-Z occlusion, GPU sort keys, shadow map, imagery
+  reprojection).
+- **`RendererClass` + `_instance`** — Shape B constructor pattern (§3.2).
+- **`destroy(collection?)`** — tear down GPU resources. During *context*
+  destruction, device teardown frees GPU resources automatically and
+  `_destroyFeatureRenderers()` just nulls the slots; per-object cleanup (e.g.
+  destroying a collection) is what calls `destroy` with the scene object.
+- **`name`** — optional debug label; also used by **marker FRs** (§3.3).
+
+### 3.2 Two implementation shapes
+
+- **Shape A — free functions (most common).** Export `update` / `destroy` (and
+  optionally `execute`, `composite`, `createCommands`, `init`, `getStatistics`,
+  …) and register them as a plain object. Example:
+  `WebGPUEllipsoidPrimitiveRenderer.ts`.
+- **Shape B — `RendererClass` constructor.** For stateful system renderers
+  (globe, scene orchestration), register a `RendererClass` constructor that the
+  context instantiates on first touch and caches on `_instance` (e.g.
+  `GLOBE_SURFACE` → `WebGPUGlobeSurfaceRenderer`, `SCENE_RENDERER` →
+  `WebGPUSceneRenderer`).
+
+### 3.3 Registration: eager vs lazy + marker FRs
+
+All registration runs in `registerWebGPUFeatureRenderers(context)`
+(`WebGPUFeatureRenderers.ts`), which `WebGPUContext` calls once during init:
+
+- **`registerFeatureRenderer(key, renderer)` — EAGER.** For small / core-path
+  renderers (collections, primitive, globe, model, clipping, IBL, environment).
+  The module is statically imported, so it lands in the main bundle. Calling this
+  also clears any pending loader and flips status to `"loaded"`.
+- **`registerFeatureRendererLoader(key, loader)` — LAZY.** For heavy code (large
+  WGSL, compute pipelines) that should download on first use. The loader
+  dynamic-imports the module and then calls `registerFeatureRenderer` itself;
+  until it resolves, `getFeatureRenderer(key)` returns `undefined` and the scene
+  falls back to WebGL for a frame or two. The loader fires once (in-flight calls
+  coalesced); a failed load is retried on the next access. Current lazy entries:
+  Gaussian splat, point cloud, point-cloud EDL, voxel, SSR, NPR outlines, contact
+  shadows, weather particles, procedural clouds. **Rule of thumb:** opt-in /
+  rarely-used / heavy-WGSL → lazy; always-on / core / tiny → eager.
+- **Marker FRs.** Some keys register a **marker** carrying only `name` (optionally
+  a `createCommands` alias). The renderer runs elsewhere or doesn't exist yet, but
+  the marker lets the scene file use the FR-key check instead of an `isWebGPU`
+  branch (e.g. `DEPTH_PLANE`, handled inside `WebGPUSceneRenderer`, not the
+  FR-dispatch loop; `CLASSIFICATION_PRIMITIVE`). Use this **only** to retire a
+  Principle-2 violation when a full renderer isn't ready — and track the real
+  renderer in `DEFERRED_WORK.md` per CLAUDE.md Principle 9.
+
+### 3.4 Registry data model + onboarding checklist
+
+`GraphicsContext` stores three parallel arrays indexed by the numeric key (O(1),
+no hashing): `_featureRenderers[key]` (the FR object or `undefined`),
+`_featureRendererLoaders[key]` (a lazy `() => Promise<void>`), and
+`_featureRendererStatus[key]` (`registered | loading | loaded | failed`). The
+enum's `COUNT` pre-sizes these arrays and MUST equal `highest key + 1`.
+
+Adding a new feature renderer (canonical 8-step checklist, from
+`FEATURE_RENDERER_ONBOARDING.md`):
+
+1. **Append** a `FeatureRendererKey` enum entry and **bump `COUNT`**
+   (append-only — never reorder/renumber; mirrors the `ShaderDefine` rule).
+2. Write the renderer module under `packages/engine/Source/Renderer/WebGPU/`
+   (RTE precision; TS preferred).
+3. Implement only the lifecycle methods you need (§3.1).
+4. Register in `registerWebGPUFeatureRenderers` — eager for core/small, lazy for
+   heavy/opt-in (§3.3).
+5. Consume from Scene via `getFeatureRenderer(key)`; run shared logic **before**
+   the branch; WebGL is the fallback. No WebGPU imports, no `isWebGPU` checks.
+6. Add a `WEBGPU_COMPAT_EXEMPTIONS` entry **only** if the file is backend-neutral
+   (a translator / pluggable registry — not an actual GPU renderer; see §4 and
+   `Build`/variant docs). Ordinary feature renderers stay stubbed.
+7. Add specs under `packages/engine/Specs/Renderer/WebGPU/`.
+8. Update `FEATURE_INVENTORY.md` and (for visible output) verify via a Playwright
+   WebGL-vs-WebGPU pixel-diff probe (Principle 8).
+
+See `FEATURE_RENDERER_ONBOARDING.md` for worked examples of each step.
 
 ---
 
@@ -182,10 +277,19 @@ do **not** have to import either `DrawCommand` (WebGL) or `WebGPUDrawCommand`
    the context builds and executes the native command in one step.
 
 New Scene features SHOULD prefer `RenderCommand` over importing a backend-
-specific command class. (Note: the file lives under `Renderer/WebGPU/` but is a
-backend-neutral abstraction — `status: verify` whether it is on the
-`WEBGPU_COMPAT_EXEMPTIONS` list if it must be consumable from a webgl-only
-build.)
+specific command class. The file lives under `Renderer/WebGPU/` but is a
+backend-neutral abstraction. **Verified at HEAD:** `RenderCommand` is **not** on
+the `WEBGPU_COMPAT_EXEMPTIONS` list in `scripts/bundleVariantPlugin.js` — that
+list holds only `WebGLCompatibilityStub`, `WebGPUShaderTranslator`,
+`WebGLStubPipelineExtractor`, and `WebGPUNagaTranspiler`. In the **webgl-only**
+build variant, every file under `Source/Renderer/WebGPU/**` (including
+`RenderCommand.js`) is redirected to an empty stub, so a webgl-only bundle does
+not import it. This is by design: WebGL Scene paths construct `DrawCommand`
+directly and never touch `RenderCommand`; only the dual and webgpu-only builds
+exercise the `RenderCommand` deferred/immediate code paths. If a future
+backend-neutral consumer needs `RenderCommand` in a webgl-only bundle, add its
+path to `WEBGPU_COMPAT_EXEMPTIONS` then (and ensure its runtime paths are safe
+without a `GPUDevice`).
 
 ---
 
@@ -221,6 +325,90 @@ via `camera.previousViewProjection`. Confirmed present across many renderers
 (`WebGPUGlobeSurfaceCameraUB.ts`, `WebGPUCloudRenderer.ts`,
 `WebGPUGaussianSplatRenderer.ts`, classifiers, etc.).
 
+### 5.1 CSM cascade VPs must be RTE-aware (cast AND receive)
+
+Cascaded Shadow Maps are a direct corollary of the RTE rule above: a cascade
+view-projection is just another MVP, so it is subject to the same f32-at-Earth-
+radius failure. The CSM renderer applies RTE encoding to cascade VPs on **both**
+the cast and receive sides. At Earth radius (FP32 ULP ≈ 0.76 m), reconstructing
+`worldPos = positionHigh + positionLow` and multiplying by a world-space cascade
+VP quantizes to sub-meter acne on cascade 0 (10 m extent); the cast side had a
+matching bug (`ShadowMap.wgsl` multiplies its `lightViewProjection` field by an
+RTE-*relative* vector, but a world-space VP was being written into that slot,
+producing empty cascade textures).
+
+The fix (Slice 1, Session 33, **shipped**) is the
+`applyCameraTranslationToVP(vpWorld, cameraWC) → VP_RTE` helper in
+`WebGPUCSMRenderer.ts`, which composes `VP_RTE = VP_world * T(+cameraWC)` in FP64
+*before any FP32 storage* (the camera translation cancels cleanly into VP's
+translation column). Every cascade carries both `viewProjection` (world-space,
+for diagnostics) and `viewProjectionRTE` (the value uploaded to **both** cast +
+receive UBOs). Receive shaders feed the RTE-precise camera-relative position
+directly (`GlobeTerrain.wgsl` `v_positionRTE`; `PrimitivePhongTexturedColor.wgsl`
+reuses the `eyePosition` varying). Result: ~1 m FP32 reconstruction error drops
+to sub-micrometer. **All CSM consumers must respect this** — never feed a
+world-space cascade VP into a cast or receive UBO.
+
+### 5.2 CSM per-cascade slope-scaled depth bias
+
+A hardcoded depth bias (the original `0.005` placeholder) only works at one
+cascade scale — it acnes at near range and peter-pans at far range because the
+cascades span tens of meters (cascade 0) to kilometers (cascade 3). CSM ships
+(Slice 1, Session 33) a per-cascade slope-scaled bias instead:
+
+```wgsl
+let nDotL = clamp(dot(normalize(N), normalize(L)), 0.0, 1.0);
+let bias  = max(cascadeMinBias[i], cascadeMaxSlopeBias[i] * (1.0 - nDotL));
+let biasedDepth = ndc.z - bias;
+```
+
+`CSMParams` carries `cascadeMinBias: vec4<f32>` + `cascadeMaxSlopeBias: vec4<f32>`
+(packed per the layout at `WebGPUCSMRenderer.ts:300-305`). Per-cascade constants
+scale **linearly with `sphereRadius[i] / sphereRadius[0]`** so the NDC bias
+tracks each cascade's orthographic depth range. Base values: `minBias = 5e-5`,
+`maxSlopeBias = 5e-4`; cascade 3 (km-scale) scales up proportionally. This is not
+optional tuning — it is the principled formulation that makes a single bias work
+across all four cascades.
+
+### 5.3 CSM texel-snap stabilization
+
+To kill shadow-texel shimmer under camera motion, the cascade sphere center is
+snapped to the shadow-texel grid in **world-grid-locked light space** (Slice 2b,
+**shipped**). The `snapToTexelGrid(center, radius, lightDir, resolution, result)`
+helper in `WebGPUCSMRenderer.ts` builds a light-space basis that depends **only**
+on `lightDir` + a world-up fallback (not on the camera — this is what makes the
+grid stable across camera motion), projects the center onto the (side, up) axes,
+rounds each coordinate to the nearest multiple of `texelWorld = 2 * radius /
+resolution`, then re-expresses the result in world space. The cascade sphere then
+drifts only in integer-texel increments regardless of camera position.
+Integrated in `computeCascadeVPs` between `_fitBoundingSphere` and
+`_computeCascadeVPMatrix`, with a per-call scratch `Float64Array(3)` (no
+per-frame allocation). `WebGPUCSMRendererSpec.js` verifies idempotence and that
+bounding coverage is preserved; an Earth-scale sanity run confirms two raw
+centers offset by 0.1 and 0.2 texel both snap to the *same* world position at
+planetary radius.
+
+### 5.4 Ellipsoid-aware RTE — a known correctness gap (deferred)
+
+The RTE producers (`encodedCameraHigh` / `encodedCameraLow` + `mvpRelativeToEye`)
+currently assume **WGS84**. For non-Earth bodies (Mars, Moon) and multi-ellipsoid
+scenes the camera-encoding and tile-height math use hardcoded Earth radius
+constants, so **non-WGS84 tilesets render with position jitter / are positionally
+wrong** (verified: no ellipsoid parameter threads through the `encodedCamera*`
+path at HEAD). The fix is an **ellipsoid-aware RTE audit** — route the tileset's
+ellipsoid (not a hardcoded WGS84) through every `encodedCamera*` /
+`mvpRelativeToEye` producer.
+
+This is **deferred, not a regression in working code** (CLAUDE.md Principle 9).
+It is the Phase 8a Foundation-layer item that unblocks planet-scale GPU tiling
+for other bodies (`PHASE_8_GPU_RESIDENT_TILES_DESIGN.md` §3 "Foundation layer",
+item 4; §5 roadmap "Ellipsoid-aware RTE audit + fix"). It is tracked as
+**`FEAT-3DT2-03`** in `FEATURE_INVENTORY.md` / `FORK_OVERVIEW` / the parity report
+(`partial` — "WGS84 radius constants hardcoded; non-WGS84 tilesets positionally
+wrong"); a related shader-side gap is logged as `H-P7` in the
+`PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16` review. The audit + fix are
+unstarted. Until they land, Mars/Moon tilesets are at risk.
+
 ---
 
 ## 6. WGSL Shader Pipeline — Defines, Preprocessor, Module Cache
@@ -238,7 +426,8 @@ referencing the bit. Deprecated entries stay with a comment marker.
 
 > **CLAUDE.md is stale here.** CLAUDE.md lists only the first 4 bits
 > (`GEODETIC_NORMAL … COMPRESSED_VERTICES`). The live registry has grown to
-> **17 active bits** (re-verified). Current bits:
+> **22 active bits** (`1<<0` … `1<<21`, re-verified against `: 1 <<` in
+> `WebGPUShaderDefines.ts`). Current bits:
 >
 > | Bit | Name | Gates |
 > |---|---|---|
@@ -251,18 +440,24 @@ referencing the bit. Deprecated entries stay with a comment marker.
 > | `1<<6` | `EYE_DISTANCE_PIXEL_OFFSET` | eye-distance pixel offset |
 > | `1<<7` | `EYE_DISTANCE_SCALING` | eye-distance scaling |
 > | `1<<8` | `VS_THREE_POINT_DEPTH_CHECK` | 3-point VS depth check |
-> | `1<<9` | `MODEL_HAS_KHR_TEXTURES` | model KHR texture path |
+> | `1<<9` | `MODEL_HAS_KHR_TEXTURES` | model basic/full KHR texture path (the coarse pipeline-family gate — see §6.4) |
 > | `1<<10` | `STOCHASTIC_DITHER_ALPHA` | stochastic alpha dither |
 > | `1<<11` | `STENCIL_PICK_WINNER` | stencil pick winner |
+> | `1<<12` | `MODEL_HAS_TEXCOORD_1` | model second UV set |
+> | `1<<13` | `MODEL_HAS_FEATURE_ID_0` | model feature-ID-0 path |
 > | `1<<14` | `MATERIAL_APPLY` | material apply path |
 > | `1<<15` | `LOG_DEPTH` | logarithmic depth |
 > | `1<<16` | `GLOBE_IMAGERY_REDUCED` | reduced globe imagery |
 > | `1<<17` | `CAPTURE_MODE` | scene-capture mode |
 > | `1<<18` | `MODEL_HAS_METADATA` | per-model structural-metadata path (DP-H46) |
+> | `1<<19` | `MODEL_HAS_PROPERTY_TEXTURES` | model property-texture sampling |
+> | `1<<20` | `MODEL_HAS_PROPERTY_TABLES` | model property-table sampling |
+> | `1<<21` | `METADATA_PICKING_ENABLED` | metadata pick path |
 >
-> Bits `1<<12` / `1<<13` are not currently defined (gaps are expected under the
-> add-only rule and must be left as gaps). `status: verify` the exact gate text
-> for any bit before relying on it — read the JSDoc in `WebGPUShaderDefines.ts`.
+> The registry is contiguous through `1<<21` at HEAD (no gaps); the add-only rule
+> still mandates that if a bit's last consumer disappears the slot is *retained*
+> as a gap rather than renumbered. `status: verify` the exact gate text for any
+> bit before relying on it — read the JSDoc in `WebGPUShaderDefines.ts`.
 
 `ShaderSourceId` (same file, same add-only rules) gives each source file a stable
 8-bit numeric identity. **Source ID 0 is reserved.**
@@ -313,6 +508,34 @@ moving 10–20 ms of shader compile off the render path. The list is each
 renderer's own responsibility — no central heuristic. `prewarm` auto-includes
 the defines bitmask hex in the devtools label.
 
+### 6.4 glTF model shader-variant strategy — planned ~20-family table vs shipped binary split
+
+The Phase 8 shader strategy (decided Batch 80, `PHASE_8_SHADER_STRATEGY.md`)
+proposed a **~20 material-family pipeline table** keyed on
+`{material family} × alphaMode × doubleSided`, with one pipeline per BRDF
+(MR / SG / clearcoat / sheen / anisotropy / transmission) plus a tileset-manifest
+pre-warm. **Implementation diverged.** What actually shipped (Batches 162/174+)
+is a **binary basic/full split** keyed on a single `ShaderDefine` bit —
+`MODEL_HAS_KHR_TEXTURES (1<<9)`, selected per-primitive by
+`computeMaterialDefines()` in `WebGPUModelRenderer.js` — *not* a per-family table:
+
+- **full** (`MODEL_HAS_KHR_TEXTURES` set) declares all 14 KHR texture/sampler
+  slots and pairs with the 37-binding `materialBGL`; **basic** is the lean path.
+- The KHR BRDFs (`clearcoat`, `sheen`, `anisotropy`, `iridescence`,
+  `transmission`, `volume`, `KHR_materials_specular`, plus `KHR_texture_transform`)
+  are **wired inside the full variant**, each gated by a `FLAG_HAS_*` material
+  flag in `ModelPBRComplete.wgsl` — no longer "silently dropped" on the WebGPU
+  path (the pre-Batch-174 state). `alphaMode`/`doubleSided` stay in the
+  GPU-state cache key (`WebGPUModelPipelineCache.computeKey`,
+  `alphaMode | (doubleSided ? 4 : 0) | (materialDefines << 3)`).
+
+The per-family table + per-extension `ShaderDefine` bits remain a **documented
+future refinement** (`computeMaterialDefines` JSDoc notes the architecture
+supports a granular per-KHR-extension split without further refactoring; the
+tileset pre-warm hook is not yet wired). Treat the historical "3-bit key / at
+most 6 variants" framing as superseded. See `PHASE_8_SHADER_STRATEGY.md`
+"What actually shipped" for the full reconciliation with code line refs.
+
 ---
 
 ## 7. Monorepo File-Placement Rules
@@ -340,6 +563,18 @@ All WebGPU renderer code lives in `packages/engine/Source/Renderer/WebGPU/`
 CLAUDE.md sets a **<1000-LOC per file** decomposition goal (math/enum/pure-data
 files exempt). The picture at HEAD (re-measured — **the source decomposition plan
 is stale and undercounts**):
+
+> **Strategy framing (decomposition plan, Batch 127).** The <1000-LOC threshold
+> is a standing **design target**, deliberately positioned *upstream of*
+> greenfield-feature work: a file that has re-grown past the line is a signal to
+> extract before piling on, not a hard blocker. Extractions are **staged
+> mechanical-candidates-first** — the self-contained helpers (limits init,
+> device-loss bus, frame statistics, post-process pipeline, pick pass) come out
+> before the harder residual orchestration, because each mechanical move is a
+> clean one-batch change that bisects trivially. Both `WebGPUContext` and
+> `WebGPUSceneRenderer` re-grew despite their extractions (§8.1) — feature growth
+> outruns decomposition — so the residual orchestration extraction is the
+> genuinely-unfinished work, not the mechanical candidates.
 
 ### 8.1 The core files have continued to GROW
 
@@ -475,8 +710,93 @@ overflow) failure classes without deep debugging.
 > (`_execDebugLogged`, `_globePassRPLogged`, `_diagTileCount`,
 > `_postInitDebugLogged`, …) are correct individually and pragma-stripped from
 > prod, but collectively add un-reset state that raises code-reading cost. A
-> unified `LogThrottle` helper is a recommended (not yet shipped) consolidation —
-> `status: verify` whether one has landed since the audit.
+> unified `LogThrottle` helper was a recommended consolidation. **Verified at
+> HEAD: NOT SHIPPED** — no `LogThrottle` exists in the codebase; the individual
+> latches remain scattered across `Renderer/WebGPU/`. This is **low-priority
+> cleanup, not a bug**: the ~67 pragma-wrapped sites work correctly and are
+> already stripped from production builds, so the consolidation would be a
+> readability convenience. Defer until a maintainer judges the cognitive load
+> high enough to warrant it.
+
+---
+
+## 10. Toward GPU-Resident Tiling (Phase 8b Design)
+
+This is **forward-looking architecture**, not yet built — but it is the frame the
+3D Tiles renderer is heading toward, so it belongs in the architecture reference.
+Full design + dependency DAG: `migration_doc/PHASE_8_GPU_RESIDENT_TILES_DESIGN.md`
+(supersedes the Phase 7 backlog prioritization).
+
+### 10.1 The central insight
+
+> **The destination is a GPU-resident octree of tiles where the per-frame CPU
+> cost is O(camera-delta), not O(visible-tiles).**
+
+3D Tiles' primary data property is that **tile content is mostly static across
+frames; the camera moves.** The right abstraction is therefore a persistent
+GPU-side tile cache (**`TileStoreGPU`**) where the CPU's only per-frame job is
+deciding "which tiles, which LOD" — culling, styling, draw-command building,
+per-feature coloring, and occlusion all run on the GPU against durable buffers.
+This is Unreal Nanite / Unity GPU-Resident-Drawer paradigm adapted for planetary
+scale; 3D Tiles is *structurally* favorable to it (stable octree keys, rare
+mutation, fixed per-tile schema, hot/cold property split, explicit streaming
+lifecycle — games get none of these reliably).
+
+### 10.2 Three independent audits, one conclusion
+
+Three parallel investigations converged on the same architecture from different
+angles:
+
+1. **Agent 1** (feature survey) flagged the **normal G-buffer + depth prepass**
+   as the single highest-leverage infra gap (unblocks GTAO, SSR quality, contact
+   shadows, planar reflections, motion blur, SSGI).
+2. **Agent 2** (3D Tiles implementation audit) flagged the **MegaBuffer +
+   Resident Drawer + sharedSourceBuffer** stack as the top bottleneck — today's
+   path allocates per-tile and emits 1k–10k draw calls/frame with no cross-frame
+   persistence.
+3. **Agent 3** (3D Tiles 2.0 spec research) flagged the **WGSL styling-expression
+   compiler + property-texture sampling + ellipsoid-aware RTE** (§5.4) as the
+   spec-level gaps — tile metadata is evaluated CPU-side every frame and
+   re-uploaded on every style change.
+
+All three are facets of the **same** persistent-GPU-tile-cache architecture.
+
+### 10.3 Phase 8b is ONE storage layer, not six features
+
+The six Phase-8b items are **not** independent — assembled, they form a single
+data-oriented `TileStoreGPU` storage layer (SoA per-tile arrays + content-
+addressable mega-buffers + a feature-style buffer) with Cesium API facades on
+top. Treating them as six isolated features under-counts the compounding benefit
+and over-counts the per-item effort (most plumbing is shared):
+
+| Phase 8b item | Role in `TileStoreGPU` |
+|---|---|
+| MegaBuffer mesh atlas (`firstIndex`/`baseVertex`) | `vertexMegaBuffer` + `indexMegaBuffer` + `tileMeshRefs` (one VB/IB for many meshes; one indirect draw) |
+| Resident Drawer / persistent instance table | the per-tile SoA arrays themselves (`tileTransforms`, `tileBoundingSpheres`, …) living across frames |
+| sharedSourceBuffer compute-cull fanout | one visibility stream fanned out to color / CSM-cascade / TAA-history / depth-prepass / shadow-caster passes |
+| dynamic-offset UBO + indirect dispatch | the orchestration pattern binding per-material-family UBOs by offset |
+| WGSL styling-expression compiler | compute pass writing `featureStyleOutput` from a compiled style expression against `featureProperties` (the biggest 3D-Tiles perf lever) |
+| property-texture + feature-ID WGSL audit | the draw-path side — sample per-feature properties, not just feature IDs |
+
+### 10.4 The per-frame CPU collapse
+
+For ~10,000 tiles in a planetary view, the per-frame CPU work goes from O(visible-
+tiles) to O(camera-delta):
+
+- **Today:** walk the tile tree; per tile compute SSE + frustum + fog; per
+  primitive allocate a `DrawCommand`; per command write a UBO slot; `sort` the
+  command list by eye distance; issue 1k–10k draws; on style change walk every
+  feature on CPU and re-upload the batch texture.
+- **After Phase 8b:** (1) one small camera-UBO write; (2) traversal emits one
+  `Uint32Array visibleTileIDs`; (3) one compute dispatch culls + builds indirect
+  draws; (4) submit indirect draws. **No per-tile `DrawCommand` objects, no
+  per-tile per-frame uniform writes, no CPU command-sort, no CPU style
+  re-evaluation.**
+
+**Status:** the Phase 8a foundation is largely shipped (the glTF shader-variant
+strategy landed — see §6.4); the Phase 8b GPU-resident stack (`TileStoreGPU`,
+MegaBuffer, Resident Drawer, sharedSourceBuffer fanout, WGSL styling compiler) is
+**genuinely unbuilt**. §3.5 of the design doc remains the live blueprint.
 
 ---
 
@@ -493,3 +813,11 @@ overflow) failure classes without deep debugging.
   `FORK_OVERVIEW`.
 - **Deferred / WIP scaffolding:** `migration_doc/DEFERRED_WORK.md`.
 - **Debugging entry point:** `migration_doc/DEBUGGING_GUIDE.md`.
+- **Feature Renderer onboarding (worked checklist + lifecycle vocabulary):**
+  `migration_doc/FEATURE_RENDERER_ONBOARDING.md` (source for §3.1–§3.4).
+- **CSM precision/stabilization detail (slices, specs, math):**
+  `migration_doc/CSM_DESIGN.md` (source for §5.1–§5.3).
+- **GPU-resident tiling design + dependency DAG:**
+  `migration_doc/PHASE_8_GPU_RESIDENT_TILES_DESIGN.md` (source for §5.4 + §10).
+- **glTF shader-variant strategy reconciliation:**
+  `migration_doc/PHASE_8_SHADER_STRATEGY.md` (source for §6.4).

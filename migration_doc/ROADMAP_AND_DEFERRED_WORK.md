@@ -160,8 +160,13 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   **P2** (none break the default scene).
 - **`NEW-WEBGPU-EXAG-WATER-STREAKS`** (Batch 362) — under high vertical exaggeration over mountainous
   terrain with glacial lakes (Himalayas, EXAG=10), WebGPU renders thin BRIGHT-BLUE water streaks WebGL
-  lacks. Pre-existing ocean/water-tint parity gap, amplified by exaggeration. **P2.** Probe:
-  `probe-exaggeration-3d.mjs`.
+  lacks. **Root-cause isolation (2026-06-23) RULED OUT atmosphere, fog, and ground-atmosphere drape**
+  (zeroing `computeEnhancedOcean`'s `oceanContribution` left the blue unchanged → not the water-color
+  function; disabling fog + ground-atmosphere + sky-atmosphere left it unchanged → not atmosphere/fog).
+  The true cause is **globe lighting/material water-fragment parity** — turquoise lake imagery survives
+  on WebGPU where WebGL's `czm_phong` + `materialInput.waterMask` mutes it. A pre-existing, non-default
+  (extreme EXAG over glacial-lake terrain), LOW-priority globe-lighting parity gap (broad blast radius),
+  NOT a water-color pipeline issue. **P2.** Probe: `probe-exaggeration-3d.mjs` / `diag-exag-water-streaks-source.mjs`.
 - **`NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH`** (S–M, Batch 327) — the WGSL ground-atmosphere drape's
   limb-width/falloff differs from WebGL's `GlobeFS.glsl` + `AtmosphereCommon.glsl` ground-atmo path
   (the SkyAtmosphere shell itself is at parity). Cosmetic limb-width at full-disc framing. **P2.**
@@ -181,10 +186,13 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   silhouette classification can diverge). Per-edge `materialColor` override ✅ SHIPPED (Batch 330). **P2.**
 - **`NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION`** — Model3DTileContent class-converted on both fork and
   upstream; needs a double-conversion reconciliation strategy at merge time. **P2** (merge bookkeeping).
-- **EquirectangularPanorama cull-override** (from `WEBGPU_PARITY_AUDIT`) — the material pipeline bakes
-  `cullMode` from `appearance.closed` only, ignoring `renderState.cull.enabled:false`; a panorama viewed
-  from inside shows back-faces or vanishes. Untracked (C-R1-PRIMITIVE-DERIVED excludes pipeline-cull).
-  **P2** — needs a new ID + `WebGPUPrimitiveCommands.js` fix. **(status: verify — re-confirm against HEAD.)**
+- **EquirectangularPanorama cull-override** (from `WEBGPU_PARITY_AUDIT`) — ✅ **RESOLVED (Batch 317,
+  `2ee9421571`).** Verified at HEAD: `WebGPUPrimitiveCommands.js` now reads `cullExplicitlyDisabled =
+  appearance?.renderState?.cull?.enabled === false` and forces `cullMode: "none"` regardless of
+  `appearance.closed` when cull is explicitly disabled (so a closed-sphere panorama viewed from inside
+  keeps its inner faces visible, matching WebGL's `combine(existing, rs, true)` precedence; the issue
+  references upstream #13369). The earlier "(status: verify)" flag is cleared — the parity report's
+  2026-06-30 "partial" row predates the fix; **code is the source of truth, this is closed.**
 
 > **Note on the v1.141-1.143 parity-audit P1s:** the BufferPrimitive family `color.alpha` translucency,
 > `blendOption` pass selection, and world-space `boundingVolume`/`debugShowBoundingVolume` were **all
@@ -212,10 +220,28 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
   `CustomShaderPipelineStage` (WebGPU is a one-time-warning no-op). **Hard blockers** (verified): bind-
   group 1 is full (0-36), `maxBindGroups=4` maxed; numeric module cache key can't hold per-Model WGSL
   text; varying exhaustion (TAA uses @location 9-10). **P2** — ship a minimal fragment-only slice first.
-- **`MORPH-MODEL-PROJECT2D`** — glTF Model accurate-2D (`projectTo2D:true`) has no WGSL equivalent. **P2.**
+- **`WGF-1-EXPAND` — clipping planes on primitives + models** (M) — globe terrain supports hardware
+  `@builtin(clip_distances)`, but **primitives and models do NOT**. All renderers declare clip-distance
+  uniforms + struct fields, yet the WGSL never writes `@builtin(clip_distances)` (primitive shaders =
+  **stub**; `WebGPUModelRenderer.js` wires no clip-distance variant = **missing**). Affects all ~23
+  primitive lit shaders (`Mat*Lit`), `Material`-derived primitives, the Ellipsoid primitive, all Model
+  PBR variants, and the advanced classifiers. **Proof:** a `ClippingPlaneCollection` on a Primitive/Model
+  silently fails on WebGPU. Bundles with `NEW-MATERIAL-PER-BACKEND-SHADER-SOURCE` (§4.8) to avoid Material
+  hardcoding per backend; distinct from the WGF-1 base feature (§4.8 Phase 5). **P1, effort M.**
+- **`MORPH-MODEL-PROJECT2D`** — glTF Model accurate-2D (`projectTo2D:true`) has no WGSL equivalent (a
+  morphable + 2D-projected model keeps its 3D bounding volume instead of morphing into a 2D-clipped ortho
+  box). Part of the Collections 2DCV morph picture (§4.4) but applies to Models too. **P2.**
 - **`NEW-MATAPPEARANCE-DIFFUSE-PARITY`** is ✅ SHIPPED (Batch 356); surfaced separately:
-  **`NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING`** — grid lines don't render on WebGPU (a pattern bug, not
-  lighting). **P2.**
+  **`NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING`** — **SYMPTOM NOT REPRODUCED (2026-06-23).** Reading the
+  Batch-356 probe PNGs, the grid LINES render correctly on grazing faces matching WebGL; the original
+  "lines don't render" note is stale. The real latent nuance (LOW priority, unverifiable at a single
+  fixed view): both WGSL grid shaders use UV-space `step(uv, lineThickness)` width vs WebGL's
+  derivative-based constant-PIXEL width. A multi-zoom grid probe would be needed to expose and fix it; as
+  it stands no fix is required. **P2** (if pursued, low-priority tuning only).
+- **`NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK`** (surfaced Batch 359, during DP-H37 fix validation) — glTF
+  models with `KHR_materials_unlit` render as pure black on WebGPU while WebGL renders them correctly.
+  Root cause not yet identified; appears related to the VEC3 `COLOR_0` widening fix but may be
+  independent. **P2.**
 - **`KHR_BINDING_MANIFEST` follow-up** — per-extension granular pipeline split (the coarse
   `MODEL_HAS_KHR_TEXTURES` family gate ships; finer per-extension variants are the documented follow-up).
   **P2** (Phase-8 shader strategy).
@@ -227,6 +253,18 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
   + coplanar billboard/point/label (Slices 2/2b, 2026-06-13); **SCENE2D collections still all-zero**,
   root-caused to a globe-pass issue. **P1.** Reproducer: `probe-collections-2dcv-morph.mjs`. Slice 3
   (morph `position2D`/`position3D` × `czm_morphTime` blend) also pending.
+- **`C-R8-SCENE2D-JITTER`** ✅ **VERIFIED STALE/RESOLVED (2026-06-23, no code).** Collections render at
+  WebGL parity in 2D AND Columbus View (billboard 2D 0.99 / CV 0.99; point/polyline/label all render
+  correctly). Resolved by the documented Slice 1-4 chain (Batch 261 per-frustum camera-UB resolver →
+  Batch 263 projected-frame RTE per-slice repack → Batch 263 coplanar depth → Batches 268/269 globe-pass
+  2D BV → Batch 275 size parity). **Do NOT list this as open** in any roadmap. _(The SCENE2D
+  `NEW-COLLECTIONS-2DCV-*` block above tracks the distinct billboard/point/label all-zero issue, which is
+  separate from this resolved jitter finding.)_
+- **`NEW-WEBGL-CV-POINT-ZERO`** (anomaly, not a WebGPU defect) — WebGL renders **0 yellow points** in
+  Columbus View while rendering 284 in 2D and 316 in 3D; WebGPU renders 231 consistently across all
+  modes (the more-correct side — points should appear identically in every view mode). This is a WebGL
+  rendering bug, not a fork parity gap. Verified by re-running `probe-collections-2dcv-morph` at Batch
+  364 (CV point GL=0 GPU=231). **P2** (WebGL fix only, no WebGPU work).
 - **`NEW-COLLECTIONS-DIRTY-GATE`** — Billboard/Label rebuild + full-upload the entire instance buffer
   every frame. **ATTEMPTED + REVERTED (Batch 226)** — the dirty re-arm is entangled with the WebGL
   vertex-build reset sequence (a correct gate must replicate `_dirty` + `_createVertexArray` +
@@ -241,14 +279,30 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
 - **`NEW-ORBITAL-INVENTORY-TRACK`** (S) — add `NEW-ORBITAL-GPU-RESIDENT` to DEFERRED_WORK +
   FEATURE_INVENTORY (regime currently untracked). **P2** (bookkeeping).
 
+**2D / Columbus-View / morph batch canvas** (`PLAN_2DCV_MORPH_BATCHES.md`, 2026-06-07 workflow). The
+epic was scoped into 3 batches + a 7-item backlog. Batch 1 (globe morph endpoint stability + Web
+Mercator `instanceof` detection) shipped Batch 217 and **unblocks Batch 3** (the manual-lerp blend is
+reused by the polyline morph port). Batch 3 (PolylineCollection 2D/CV/morph port) shipped at Phase 3
+Slice 4 (2026-06-13). **Batch 2 produced the CRITICAL FINDING** that promoted collections to a
+high-visibility parity hole: billboard/point/label rendered **nothing on WebGPU in all modes** (a
+structurally-correct code-read that didn't match runtime — the classic trap), tracked as the
+`NEW-COLLECTIONS-2DCV-*` cluster above. The 7 backlog items still pending scoping: exaggeration-skirts
+(✅ shipped Batch 362), classifier 2D/CV, morph review gaps, ground-primitive 2D precision, model
+`projectTo2D` (`MORPH-MODEL-PROJECT2D`, §4.3), `MORPH-TAA-PREVVP` (mid-morph polyline velocity), and the
+disputed `_previousMode` typo (`MORPH-PREVMODE-TYPO`, §12 — do NOT blind-rename). **P1** (the cluster is
+the last big visual-parity hole; SCENE2D collections still blocked).
+
 ### 4.5 Picking
 
 - **`DP-H46c` pickMetadata producer** (L) — **CRITICAL-PATH** (§3). Consumer half + WGSL structural-
   metadata codegen prereq (DP-H46a/b) shipped (Batches 454/455). `DerivedCommand.createPickMetadata
   DerivedCommand` still short-circuits WebGPU; per-pick specialization must be data-driven (WGSL has no
   string-replace defines). **Asset gap:** needs a local `EXT_structural_metadata` test asset. **P1.**
-- **`C-R9-VOXEL-CELL-PICK`** — blocked behind the real-voxel-data port (§4 3D Tiles); cell-pick is a
-  1-2-session rider on it. **P2/blocked.**
+- **`C-R9-VOXEL-CELL-PICK`** — picking a voxel returns the primitive handle but not the individual 3D
+  cell coordinate (i, j, k). Cell coords don't fit in the standard 4-byte `pickColor`; the fix needs an
+  out-of-band cell-coordinate buffer + a separate resolve. **Blocked by** the real voxel data path
+  (§4.2): once `VoxelPrimitive`'s provider/megatexture lands, this becomes a 1–2-session rider on that
+  work. Primitive-level voxel pick already works. **P2/blocked.**
 - **arbitrary-ray `pickFromRay` position** — returns the hit object but no position (`oneTimeWarning`,
   no throw). Needs an offscreen GlobeDepth pack + per-view readback. **P2** (deferred until a consumer
   needs it).
@@ -262,8 +316,23 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
 CSM cast + globe-receive are **fixed** (Batches 296-298); soft-shadow PCF ships (289/297);
 cascade-ground-fit ships (306). Open:
 
+- **`NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS` — soft-shadow PCF globe-receive blocker** (HIGH) — the 3×3
+  PCF box kernel (matching WebGL `czm_shadowVisibility`) shipped Batch 289 and is **VERIFIED on
+  primitive self-shadow edges** (Batch 297 retest: `probe-csm-soft-shadow.mjs` A-vs-B hard-vs-soft diff
+  rose 0.000%→6.551%, proving the radius reaches the runtime with zero device errors). But the
+  end-to-end **globe-terrain receiver** is still BLOCKED: the 6.5% diff is entirely the kernel softening
+  the caster wall's own self-shadow edge (the appearance-primitive receiver self-shadows correctly), NOT
+  a softened **ground cast shadow** — the output PNGs show the WebGPU globe ground uniformly bright with
+  NO cast shadow while the WebGL reference shows the large dark ground shadow. Root cause: the
+  globe-terrain receiver is missing the caster's stored depth at its projected cascade UV. The cast side
+  is green (`probe-csm-cast-dispatch.mjs` PASS, 584 dispatches); `probe-csm-soft-shadow.mjs` goes green
+  with NO probe changes once the receive projection is fixed. **No workaround until the receive
+  projection lands. P1 for CSM closure.** See `CSM_DESIGN.md` (Soft-shadow PCF / verification status).
 - **CSM Slice 3 — altitude-adaptive splits** — at orbital altitude λ=0.7 wastes 3/4 cascades on empty
-  near-space; collapse/refit above ~500 km. **P2** (no log-depth dep). **(status: verify — not found in git.)**
+  near-space; collapse/refit above ~500 km. **P2** (no log-depth dep). **(status: verify — defined in
+  `CSM_DESIGN.md` as a planned Slice 3 item [Space/orbital-camera column: "above ~500 km collapse to one
+  planet-scale cascade covering the visible spherical cap"], but no git batch matches "altitude-adaptive
+  splits" — treat as UNVERIFIED/UNSTARTED, not OPEN, until formally opened against the design's Slice 3.)**
 - **CSM Slice 3 — moon dual-light** — single-sun CSM end-to-end; effects BGL is saturated (no room for a
   2nd CSM params UBO). Recommend night-only light-direction switch (Option C). **P2.**
 - **VSM (variance shadow maps)** — `CSM_DESIGN.md` Slice; not started. **P2.**
@@ -285,7 +354,43 @@ cascade-ground-fit ships (306). Open:
   Batches 446-451). **Residual:** `ENV-CAPTURE-PER-FACE-LOD` (side-face outward terrain needs per-face
   quadtree re-selection) + `NEW-CLOUD-SHADOW-ENVMAP` (env-map ground cloud-shadow term). **P2** (§9).
 - **`NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY`** (Batch, 2026-06-22) — the baked starfield is dimmer than
-  WebGL under HDR. **P2.**
+  WebGL under HDR. **P2.** _Note: root-caused (Batch 364) to always-on auto-exposure crushing the
+  near-black HDR night sky to pure black; fixed by honoring `collection._autoExposureEnabled`. Residual
+  = `NEW-WEBGPU-STARFIELD-TUNE` catalog-sprite brightness (assessed LOW-VALUE / acceptable-as-is — the
+  sprites were intentionally tuned subtler in Batch 352; a blind re-tune risks regressing near-parity)._
+
+#### TAA design rationale + open slice (carry-forward from `TAA_DESIGN.md`)
+
+TAA Slice 1 (camera jitter + history blend) shipped at Batch 34; Slice 2a (sky reprojection + teleport
+invalidation) followed in the same session. The architectural decisions are load-bearing for any future
+motion-vector work:
+
+- **Architecture: Option C (depth reprojection) chosen over Option A (MRT) / Option B (separate
+  motion-vector pass).** The v1 plan was MRT motion vectors emitted as a second color attachment from
+  every primary shader (globe/primitive/model/billboard/polyline) — high coverage, but every shader +
+  framebuffer format needs changing. The Slice-1 audit chose **Option C**: motion vectors reconstructed
+  in the TAA shader from `{currentMvpRTE, previousMvpRTE, cameraDelta}` with the already-bound depth
+  texture — **zero new render targets, zero changes to the main-scene render path.** This gives correct
+  motion for the entire static scene (terrain, static buildings, ground primitives) and treats
+  skinned/morphed/instanced geometry as static (a narrow Slice-2b refinement, not a global MRT refactor).
+  This decision unblocked Slice 1 shipping at Batch 34 alone.
+- **RTE-corrected motion-vector math (planetary scale).** At Earth radius (6.37M m, ~0.76 m FP32 ULP)
+  the textbook `worldPos = inverse(currVP)·ndc; prevNdc = prevVP·worldPos` loses precision at the
+  world-space reconstruction step — multi-pixel motion error during orbital fly-to, exactly when TAA
+  matters most. Shipped fix: reproject in **eye-relative space** with a `cameraDelta = currWC − prevWC`
+  computed in FP64 on the CPU (the 6.37M-magnitude camera positions cancel cleanly before down-cast to
+  FP32 for the GPU). Formula: `eyePosCurr = inverse(currentVpRte)·ndc; eyePosPrev = eyePosCurr +
+  cameraDelta; ndcPrev = previousVpRte·eyePosPrev`. `UniformState` snapshots
+  `previousViewProjectionRelativeToEye` + `previousCameraPosition` at the top of `update()` before
+  `updateCamera` runs. Precision drops from ~1 m FP32 error to sub-micrometer (Node script confirms
+  `VP_RTE·eyePos ≡ VP_world·worldPos` bit-exact at the camera position).
+- **`TAA-SLICE-2B` per-model MRT motion vectors** (open) — depth reprojection treats skinned/morphed/
+  instanced geometry as static, causing ghosting across frames. Slice 2b adds a second MRT color
+  attachment to model pipelines emitting per-pixel velocity `(currentClip − previousClip)` with matching
+  prev-frame joint/morph/instance UBOs, and teaches the TAA shader to prefer MRT samples when available.
+  Touches every model pipeline + the model UBO layout + the TAA shader. Meaningful infrastructure;
+  deferred beyond Slice 2a. **P2.** (Also see `MORPH-TAA-PREVVP` / `MORPH-MODEL-VS-MOTION-GATE` for the
+  morph-side motion couplings.)
 
 ### 4.8 Build / Infra / Architecture
 
@@ -311,11 +416,76 @@ cascade-ground-fit ships (306). Open:
 - **`NEW-SG-SCAN-ADOPT`** — upstream's `sg-scan` JSDoc/type lint; adoption needs `@ast-grep/cli` + 7
   rule files tuned to upstream's class conventions (several would flag our intentionally-diverged files).
   **P2 — revisit alongside the next upstream merge.**
-- **ES6 modernization remaining** — `var`/`indexOf` done in production source; remaining = ES6 prototype-
-  class conversion (~52 files). Do NOT bulk-sweep (a prior bulk sweep shipped HIGH-severity BUGs). **P2.**
+- **ES6 / TypeScript modernization remaining** (`ES6_MODERNIZATION_STATUS.md`, re-verified at HEAD) — the
+  codebase is bifurcated: the **WebGPU renderer is ~87% TS** (171 `.ts` files, full ES2022); **Core /
+  Scene / DataSources are ~0% TS** (~950 ES6-class JS files where every remaining legacy idiom lives).
+  Prototype-as-class is essentially eliminated (**zero `X.prototype =` reassignments**; the 4
+  `Object.create(...)` chains in `Scene/TilePathResolver.js` are legitimate abstract bases). Remaining
+  pre-ES6 surface: ~99–107 `Object.defineProperties` getter/setter blocks (heaviest in
+  `DataSources/*Graphics.js` + `Entity.js`), ~4,530 `this._private` assignments (only **1** `#private`
+  field exists tree-wide — converting is a breaking change, **do NOT**), ~319 `.prototype.method =`
+  attachments on internal helper structs (~54 files), scattered `.apply()`/`.bind()` (~29 files), ~193
+  `=== undefined` coexisting with `defined()`, ~101 `hasOwnProperty` (zero `Object.hasOwn`). There is
+  **no remaining `var` in actual JavaScript** — all grep hits are WGSL `var<…>` inside shader-string
+  template literals (not modernizable). Highest-value **on-touch** targets: `Scene.js`,
+  `Cesium3DTileset.js`, the DataSources `*Graphics` classes. Conversions are **opportunistic on-touch
+  only** (CLAUDE.md Principle: never modernize a file you're not otherwise touching); do NOT bulk-sweep
+  (a prior bulk sweep shipped HIGH-severity BUGs). **P2.**
 - **`NEW-CAMERA-UPDATEVIEWMATRIX-REVERT` / `NEW-FORK-MODERNIZATION-REVERT`** — merge-conflict-surface
   reverts; matter only at upstream-merge time. **P2 (merge-time).** (`NEW-FORK-MODERNIZATION-REVERT` is
   ⛔ DECLINED per owner 2026-06-11.)
+
+#### Dynamic Objects & Update Regimes (`LARGE_DYNAMIC_OBJECTS_DESIGN.md`)
+
+The owner-directed architecture (2026-06-11): there is **no single "large dynamic objects" system** —
+pick the update regime by **cardinality + derivability**, and fill the same per-instance buffer four
+different ways. Every regime ends at the same render primitive (an instanced point/billboard draw over a
+per-instance buffer); they differ only in *how the buffer gets filled*, which is what makes them
+composable rather than competing. The `_consumeDirtyState` side-effect discipline (Phase 0) is a
+prerequisite for all four. Phases 1–3 core SHIPPED (Batches 270–283); Phase 4 spike CLOSED NO-GO
+(Batch 305).
+
+| Regime | Update profile | Fill strategy | Phase / status |
+|---|---|---|---|
+| **1 — Static / sparse** | up to ~50k, ~tens changed/frame | resident CPU instance array + per-instance partial `writeBuffer`, O(changed) | **Phase 1 — ✅ SHIPPED** |
+| **2 — Dense / arbitrary** | 10k–100k, bulk re-set/frame, not derivable | flat SoA `Buffer*` collections + WASM RTE-encode kernel, threshold-gated; both backends WASM-on-main-thread | **Phase 2 — ✅ SHIPPED** |
+| **3 — Dense / derivable (orbital)** | 10k–1M, all move/frame, closed-form of element set + time | GPU compute propagator → storage buffer, positions never leave GPU; instanced draw vertex-pulls by `instance_index`; WebGL2 = SGP4-on-worker WASM fallback | **Phase 3 — ✅ SHIPPED** ⭐ |
+| **4 — Hundreds-of-thousands, arbitrary** | 100k+, too heavy for main-thread encode | ECS-in-WASM-on-worker → packed buffer → upload | **Phase 4 — ❌ NO-GO (Batch 305)** |
+
+Open residuals on the shipped regimes:
+
+- **`NEW-WASM-BRIDGE-BUNDLE-LOAD`** (§6.2) — the WASM RTE-encode kernel still doesn't load in-bundle; the
+  JS `fround` twin runs instead, so the SIMD win is dormant (the flat-buffer position-encode-hoist win
+  stands regardless). **P2.**
+- **`NEW-ENTITY-GPU-KEYFRAME-KERNEL`** (§4.4) — the time-dynamic regime-3 second kernel family
+  (`SampledPositionProperty`/Clock → GPU keyframe interpolation). **P2.**
+- **`NEW-ORBITAL-GPU-RESIDENT` / `NEW-ORBITAL-INVENTORY-TRACK`** — the regime-3 GPU-resident path is
+  currently untracked in `DEFERRED_WORK` + `FEATURE_INVENTORY`; add the bookkeeping rows. **P2.**
+- **Phase 4 re-open criteria** — explicit user demand for >189k arbitrary dynamic objects @30 fps AND
+  proof that regime 3 (GPU-compute) doesn't fit the use case. The Batch-305 gate spike measured the
+  main-thread flat-buffer encode ceiling at ~89k @60 fps / ~187k @30 fps on WebGPU (~77k / ~154k on
+  WebGL) with arbitrary per-frame updates — which covers the "tens of thousands of arbitrary updates"
+  target on both backends with no worker. All `NEW-ECS-*` IDs + `NEW-COOP-COEP-SAB-ENABLE` are CLOSED as
+  not-needed (see §11). **P2/closed.**
+
+#### Phase 5 — Modern WebGPU feature adoption (WGF-1…5)
+
+Capability detection landed 2026-04-09 (`scene.getDebugSnapshot().renderer.capabilities` exposes
+`hasShaderF16` / `hasDualSourceBlending` / `hasClipDistances` / `hasIndirectFirstInstance` / …); the
+per-feature consumers are **deferred**. Full design in `PHASE_5_MODERN_WEBGPU_DESIGN.md`. Recommended
+order — the low-risk first three, then the workload-gated pair:
+
+- **`WGF-4` uniform-buffer standard layout** — drop the hand-rolled std140 padding for the WebGPU
+  standard layout. Mechanical, immediate win. **~3–5 days total. P2 (do first).**
+- **`WGF-1` clip-distances** — replace stencil-based clipping with hardware `@builtin(clip_distances)`
+  (10–15% fragment perf win). Globe terrain already uses it; primitives + models do not (see
+  `WGF-1-EXPAND` in §4.3). **1–2 days. P2.**
+- **`WGF-3` shader-f16 for post-process** — opt-in f16 ALU in ColorGrading/FXAA/bloom-HDR (20–40% ALU
+  saving). **2–3 days. P2** (overlaps §6.3's WGF-3 note).
+- **`WGF-2` dual-source-blending OIT** — 30–50% OIT cost reduction; currently MRT-fallback-only. **Defer**
+  pending a real translucent workload. **2–3 days. P2.**
+- **`WGF-5` indirect-first-instance + multi-draw-indirect** — scene-dependent, massively parallel.
+  **Defer** pending a real batched workload. **3–4 days. P2.**
 
 ---
 
@@ -329,7 +499,7 @@ The **remaining parity gaps** (all P2 / doc-drift), de-duplicated against §4:
 |---|---|---|
 | BufferPolygon-family 2D/CV reprojection | open, needs its own ID | §4 3D Tiles |
 | `positionNormalized` + integer position datatypes | open, needs its own ID | §4 3D Tiles |
-| EquirectangularPanorama cull-override | open, untracked | §4 3D Tiles (status: verify) |
+| EquirectangularPanorama cull-override | ✅ RESOLVED (Batch 317) | §4 3D Tiles |
 | Edge `lineStrings` + authored `silhouetteNormals` data paths | open | §4 3D Tiles |
 | Voxel default-shader (PR#13517) | blocked behind the voxel-data port | §4 3D Tiles |
 | `GeoJsonPrimitive` inventory entry (§A) | doc-drift | reconcile in `FEATURE_INVENTORY.md` |
@@ -339,6 +509,27 @@ The **remaining parity gaps** (all P2 / doc-drift), de-duplicated against §4:
 `NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION`, `NEW-SG-SCAN-ADOPT`, `NEW-WEBGL-REPROJECT-BASELINE`,
 `NEW-SYNC-MOVEMAP` (runbook). Adopt `EXT_structural_metadata` vector tiles + OffscreenCanvas imagery at
 the next merge.
+
+### 5.1 Cross-reference against `WEBGPU_PARITY_REPORT_2026-06-30.md` §5 (35 not-`full` gaps)
+
+The 2026-06-30 parity report enumerates **35 not-`full` items** (23 partial + 4 stub + 8 missing) across
+7 subsystems. Each is routed into this doc (or an explicitly by-design deferral) so none falls through
+archival:
+
+| Report §5 subsystem | Items | Where covered here |
+|---|---|---|
+| 5.1 Globe & Imagery (3 partial, 1 stub, 3 missing) | panorama cull-override (✅ RESOLVED B317, above), clip-distances expansion + clipping-planes-on-primitives stub (→ `WGF-1-EXPAND`, §4.3 + §4.8), GlobeWater facade (§10.1, by-design), point/cube-light shadow (functionally resolved B108/B190 — reconcile inventory), water-classification/WebNN super-res (by-design, §11) | §4.1, §4.3, §4.8, §10.1, §11 |
+| 5.2 3D Tiles (6 partial, 1 stub, 1 missing) | voxels stub (§4.2), ClassificationPrimitive `CLASS-GPRIM-WEBGPU`, EXT_structural_metadata DP-H46b/FEAT-3DT2-02, edge `silhouetteNormals`, GeoJsonPrimitive probe debt, Buffer\* 2D/CV, Hi-Z tile bounds (§6.1), per-tile CSM cull (§4.6), FEAT-3DT2-03 ellipsoid-aware RTE, BufferPrimitive integer/normalized (§4.2) | §4.2, §4.6, §6.1 |
+| 5.3 glTF (2 partial) | CustomShader WGSL (`NEW-MODEL-WGSL-CUSTOM-SHADER`, §4.3), model metadata pick DP-H46 producer (§3, §4.5) | §4.3, §4.5 |
+| 5.4 Geometry & Collections (6 partial) | Polyline/GroundPolyline 2D/CV, Buffer{Point,Polyline,Polygon} 2D/CV + polygon outline, GeoJsonPrimitive | §4.2, §4.4 |
+| 5.5 Picking/Shadows/Lighting (3 partial, 1 stub, 4 missing) | voxel cell-pick `C-R9` (§4.5), metadata pick DP-H46 (§3/§4.5), CSM altitude-splits + moon dual-light (§4.6), PCSS/VSM/linear-depth-cast/WSM (§4.6, mostly by-design) | §4.5, §4.6 |
+| 5.6 Post-process (2 partial, 1 stub) | user-WGSL-stage transpile (`NEW-VR-USER-POSTPROCESSSTAGE-WGSL-MISSING`), GPU-sort phase-3 (`NEW-GPU-SORT-PIPELINE-PHASE-3`), normal-G-buffer validation (§7) | §4.7, §7 |
+| 5.7 Entity (1 partial) | GeoJsonPrimitive pixel-verification debt | §4.2 / `ISSUES_AND_FIXED_BUGS.md` |
+
+**Note on the report's labels:** the report uses `DP-H46e` for the pickMetadata producer where this doc
+uses `DP-H46c` (§3, §4.5) — same producer, divergent letter; the doc's `DP-H46c` is canonical here. The
+report's "EquirectangularPanorama partial" + "GlobeWater partial" rows are **stale against HEAD** (panorama
+fixed B317; GlobeWater facade is intentionally Phase-0.3-scoped, §10.1) — code is the source of truth.
 
 ---
 
@@ -353,7 +544,22 @@ The fork ships several **GPU-compute substrates wired as threshold-gated consume
 - **FORK-41 HiZ occlusion command-drop** ✅ now DEFAULT ON (C2-21) — the "5-20× on dense 3D Tiles left on
   the floor" is **reclaimed**.
 - **`WebGPUComputeEngine`** ✅ wired into `WebGPUContext` (Batch 367, `NEW-WEBGPU-COMPUTE-ENGINE-WIRING`)
-  — this had been the dormant-dispatch blocker for the atmosphere LUTs; now live.
+  — this had been the dormant-dispatch blocker for the atmosphere LUTs; now live (verified at HEAD: the
+  `WebGPUContext.computeEngine` getter lazily instantiates `WebGPUComputeEngine`).
+- **Atmosphere multi-scatter + irradiance LUTs** — infrastructure ✅ SHIPPED (Batch 306,
+  `AtmosphereLUT.wgsl` + `WebGPUAtmosphereLUT.ts`): the extended `computeMultipleScattering` +
+  `computeIrradiance` entry points + group-1 bind groups are wired. Now that the compute engine is live
+  (Batch 367), the runtime dispatch is no longer gated on a missing engine — but it remains blocked by
+  `NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT` (below). Batch 311 (AerialPerspective) works around the
+  unrun LUT by using analytic marching instead of LUT reads.
+- **`NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT`** (M) — the `SkyAtmosphere` LUT dispatch throws an
+  invalid-command-buffer **device error** when the atmosphere LUTs are wired into the effects BGL (every
+  WebGPU probe currently filters the known `/Atmosphere ?LUT|SkyAtmosphere/i` device error, per
+  `CAMPAIGN3_PROGRESS.md`). A genuine device error, not cosmetic. Not yet root-caused — likely a
+  bind-group-descriptor capacity conflict in the effects BGL or a pre-flip flag mismatch. **Blocks** the
+  Bruneton full-LUT compute passes (Batch 306 infrastructure) from actually running. **Verify:** re-run
+  any probe WITHOUT the `Atmosphere ?LUT` filter and assert zero device errors; READ a sky frame for no
+  regression. **P1/P2.**
 
 **Open perf items** (`CAMPAIGN_ROADMAP` Phase 8 continuation): `NEW-RENDERBUNDLE-AGING-DECOUPLE`
 (aging-from-frame-tick decouple; LRU + age eviction already exist), `NEW-RESOURCEMANAGER-KEY-EVICTION`
@@ -413,10 +619,20 @@ scale.
 
 ### 8.1 What shipped (verified against git)
 
-- **Tiered clouds V0-V16** ✅ functionally COMPLETE (Batch 453 reconcile). V0 (LUT auto-layout fix) →
-  V1 (quality-tier preset scaffold) → V2/V3 (baked 3D Perlin-Worley + flip density core to baked
-  textures, KEYSTONE) → V4 (mean-preserving erosion + `erosionStrength`) → V5 (Frostbite multi-scatter
-  octaves) → V11 (per-genus vertical density profiles). Batches 396-408.
+- **Tiered clouds V0-V16** ✅ functionally COMPLETE (2026-06-30 reconcile, `CAMPAIGN3_PROGRESS.md`). V0
+  (LUT auto-layout fix) → V1 (quality-tier preset scaffold, `qualityFlags@74` lane) → V2/V3 (baked 3D
+  Perlin-Worley + flip density core to baked textures, KEYSTONE, Batches 396-408) → V4 (mean-preserving
+  erosion + `erosionStrength`) → V5 (Frostbite multi-scatter octaves, `msDecayA/B/C` geometric decay) →
+  half-res march (`CLOUD-HALFRES`, Batch 432) → temporal reprojection (`CLOUD-TEMPORAL`, Batch 433) →
+  IGN jitter → curl (Batch 439) → per-genus vertical profiles + `profileExtinction` (V11, Batch 452) →
+  multi-deck (Batch 443) → cloud shadows (Batch 437) → god-rays → precip (Batch 444). The tiered-cloud
+  features all shipped under the **improvement-plan naming** (atmosphere/cloud arc, Batches 437-452), NOT
+  the V0-V18 numbering, which is why the v2 tracker drifted. **`CloudUniforms` is 128 floats** (grew
+  add-only: 64→80→96→128, verified `CLOUD_UNIFORM_FLOATS` in `WebGPUProceduralCloudRenderer.ts`). Public
+  dial: `globe.cloudVolumetricQuality` ∈ `'low'|'medium'|'high'|'auto'` + escape hatch
+  `globe.cloudQuality` (raw `maxSteps` int, default 64). **Only V17 (baked-impostor far-field) remains —
+  deferred as speculative Ultra-only research.** Campaign 3 v2 is CLOSED; next major work = the DP-H46
+  metadata epic.
 - **Weather recreation Phase 0-1** ✅ (Batches 384-387): clock-bind motion, 11 WMO genera +
   `CloudTypeProfile.js`, Worley erosion + multi-scatter, **the weather-map seam C2-16 (the keystone)**.
 - **Weather data ingest Phase 0-3** ✅: MVP EDR→weatherTex R-only (Batch 410), P2 time model
@@ -426,27 +642,47 @@ scale.
 - **Weather config + Weather Inspector demo** (Batches 403-405); standards-keyed METAR/WMO presets.
 - **Atmospheric effects A-E** wired, including `effects.precipitation`→WebGPU weather particles
   (Batch 423).
+- **Cloud parity trilogy** ✅ (B363 shape + B365 grain + B366 size = WebGL parity):
+  - **`NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY`** ✅ SHIPPED (Batch 365) — volumetric clouds were using
+    inline worley-FBM (grain-less vs WebGL's baked texture); fixed with a pre-computed 512-point worley
+    cell atlas (3-channel, NEAREST-sampled) so the baked texture matches WebGL's grain exactly.
+  - **`NEW-WEBGPU-CLOUD-SIZE-PARITY`** ✅ SHIPPED (Batch 366) — the cloud quad VB spans `quadPos[-1,1]`
+    but the VS scaled the FULL quadPos, making clouds ~2× too wide. A single `*0.5` on the quad offset in
+    `vertexMain`+velocity fixed it (filled-px 4.3×→1.08×, area 2.41×→0.99×). A vertex-buffer geometry
+    bug, **not** a shader-math root cause.
 
 ### 8.2 Open cloud/weather tail (the frontier)
 
 - **Weather Phase 4 — direct GRIB2/NetCDF behind WASM** — **CRITICAL-PATH item** (§3). The high-fidelity
-  NODD-S3 (HRRR/GFS/NBM) tier: `Grib2FileWeatherSource` decoding in a Worker/WASM. **Requires a
-  same-origin proxy** (S3 NODD has no CORS) + Lambert-Conformal→equirect reprojection in the packer.
-  **P2, ~1-2 wk.**
+  NODD-S3 (HRRR/GFS/NBM) tier requires: (a) a **same-origin proxy** to work around the S3 NODD CORS
+  restriction, (b) GRIB2 file parsing in a Worker/WASM (`Grib2FileWeatherSource`), (c) Lambert-Conformal→
+  equirect reprojection in the packer before upload to the weather texture. **Soft dependency on the
+  proxy:** it is not built, so the data sources cannot be tested until a proxy is available. **P2,
+  ~1-2 wk.**
 - **Live EDR network confirm** — `EdrWeatherSource` is wired but the LIVE call + CORS + the guessed
   collection id (`automated_gfs`) need confirming in a networked browser (the dev sandbox has no
   outbound network). **P1 (blocked on environment).**
 - **`profileExtinction` (slot 103)** — activated Batch 452, but Principle-9 follow-up: G biases shape/
   density; full **per-position optical extinction** is the remaining fill-in. **P2.**
-- **WeatherSystem / WeatherDataProvider public API** (`WEATHER_RECREATION_ROADMAP` Phase 3) — the
-  `scene.weather` stateful owner + abstract provider interface + explicit WebGL degradation ladder
-  (equirect imagery overlay / billboard CloudCollection). The data core is backend-neutral; volumetric
-  = WebGPU-only by design. **P2** — formalize the public contract. **(status: verify — partial source
-  classes exist; the public `scene.weather` facade may not be wired.)**
-- **Cloud perf — two-tier 3D bake** (`WEATHER_RECREATION_ROADMAP` Phase 6) — small global 2D weather map
-  (Tier 1, resident) + view-local 3D density bake (Tier 2, camera-anchored cascaded clipmap). NEVER a
-  uniform fine global 3D grid (~0.5 GB, infeasible). Modeled on `WebGPUVolumetricFogRenderer`. **P2, own
-  campaign.**
+- **WeatherSystem / WeatherDataProvider public API** (`WEATHER_RECREATION_ROADMAP` Phase 3) —
+  **PARTIALLY WIRED (re-verified at HEAD).** The backend-neutral data core exists: `packages/engine/Source/
+  Scene/Weather/` ships `WeatherProvider.ts`, `WeatherSource.ts`, `EdrWeatherSource.ts`,
+  `MetarWeatherSource.ts`, `WcsCoveragesWeatherSource.ts`, `CoverageJsonParser.ts` (abstract provider +
+  concrete EDR/METAR/WCS sources), and **`globe.weatherProvider` IS wired and functional** (set via
+  `globe.weatherProvider = <WeatherProvider>`). What is **NOT** present is a top-level **`scene.weather`
+  facade** consolidating clouds/weather/atmospheric-conditions under one stateful owner — today the
+  weather-access point is `globe.atmosphericConditions` + `globe.weatherProvider`, and `Scene.js` exposes
+  no `scene.weather` property. Still to do: the explicit WebGL degradation ladder (equirect imagery
+  overlay / billboard CloudCollection — volumetric is WebGPU-only by design) and the consolidated public
+  contract. **P2** — formalize the `scene.weather` facade + dispatcher; the data sources + `weatherProvider`
+  dial already work.
+- **Cloud perf — Tier-2 3D bake (view-local cascaded clipmap)** (`WEATHER_RECREATION_ROADMAP` Phase 6) —
+  the production path for volumetric clouds: a **small resident global 2D weather map** (Tier 1) feeding
+  a **view-local camera-anchored 3D density bake** (Tier 2, a cascaded clipmap like volumetric fog)
+  updated per frame as the camera moves. This avoids the infeasible uniform fine global 3D grid
+  (~0.5 GB). The main volumetric raymarcher today is **Tier 1 only** — it samples the 2D map directly
+  per ray; Tier 2 is explicitly deferred to a separate **post-core campaign** and modeled on
+  `WebGPUVolumetricFogRenderer`. **P2, own campaign.**
 - **Temporal interpolation + advection** (`WEATHER_RECREATION_ROADMAP` Phase 5) — A/B keyframe lerp +
   per-cell U/V wind advection between sparse data frames. **P2.** _Note: cloud-render temporal
   reprojection (V10/3.2) already shipped (Batch 433); this is the DATA-keyframe lerp._
@@ -550,6 +786,50 @@ Items 1-7 of the Takram research track shipped (Track V + Campaign 3). **Open:**
 - **`NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK`** — WebGL keeps cubemap-only stars; the bright-star catalog
   is WebGPU-only. **P2** (deferred).
 
+### 9.4 Atmosphere / celestial design rationale (carry-forward from `CELESTIAL_ATMOSPHERE_DESIGN.md`)
+
+These decisions underpin the shipped atmosphere/cloud/fog stack and are load-bearing for any future
+multi-light, multi-body, or quality-tier work. Detail lives in `CELESTIAL_ATMOSPHERE_DESIGN.md`
+(decisions B1–B23 locked 2026-04-08).
+
+- **Canonical home — `scene.globe.atmosphericConditions.*`.** The original v2 design proposed toggles
+  scattered across `scene.atmosphere.*`, `globe.atmosphere*`, and `scene.fog.*`. The Phase 0 prep PR
+  (shared with the water design) introduced the nested canonical home `scene.globe.atmosphericConditions.*`
+  consolidating all atmospheric state (lighting, skyAtmosphere, groundAtmosphere, fog, volumetricFog,
+  varyingAtmosphereDensity, clouds, night, weather, effects). Every legacy scattered location
+  (`scene.atmosphere`, `scene.fog`, `globe.enableLighting`, …) becomes a delegating getter/setter shell
+  over the canonical home, so existing apps keep working unchanged; new toggles go under the canonical
+  nested tree (§3 of the design doc lists the full structure).
+- **Multi-light atmosphere — Option A (two LUTs per frame) chosen over Option B (light-direction-
+  independent LUT).** To add moon scattering to the Nishita atmosphere, two paths were surveyed.
+  **Option A** (shipped): recompute the inscatter LUT when the sun moves, then compute a second LUT with
+  the moon as light when it is above horizon, scaled by moon intensity × phase fraction; the runtime
+  shader samples both LUTs and sums (`SkyAtmosphere.wgsl` dual-LUT path, Batch 438 `SKY-MOON`). Cost: 2×
+  LUT compute (~786K shader invocations per LUT, <1 ms on a modern GPU). **Option B** (deferred): a
+  single light-direction-independent LUT (larger table, bigger startup compute, scales to N lights) — a
+  migration target if N-light or perf demands it. Both documented in design §4.3.
+- **Volumetric fog froxel resolution bands** (B7/B17). Three tunable grids: **Low** 80×45×64 (230K
+  froxels, ~0.5 ms), **Medium** 160×90×128 (1.8M froxels, ~2.7 ms on RTX 3060), **High** 240×135×192
+  (6.2M froxels, ~9 ms). Each froxel stores scattered-light + transmittance (rgba16float; ~58 MB at
+  Medium). Mobile defaults to Low, desktop to Medium, High is opt-in for high-end; the dial
+  `atmosphericConditions.volumetricFog.quality` ∈ `'low'|'medium'|'high'|'auto'` ('auto' adapts via the
+  VisualPerformanceTargetService, §11). Three-pass pipeline (density injection → light scattering →
+  ray-march integration) in `WebGPUVolumetricFogRenderer.ts`; **default OFF per B18** (opt-in, byte-zero
+  when disabled).
+- **Atmospheric effects auto-master (`atmosphericConditions.effects.auto`).** An effects layer maps
+  `{temperature, dewpoint, RH, visibility}` → fog density/tint, atmosphere saturation/brightness, and
+  cloudType/cloudLayerBottom bias. The auto-master toggle (**default OFF per B9**) derives every effect's
+  enabled+intensity from the weather when on; each effect (`shimmer`, `groundFog`, `optics`,
+  `precipitation`) is independently toggleable, and when `auto` is true `applyAtmosphericConditions()`
+  overwrites them from the weather scalar field. Per the B9 silent-gating rule, scattering-occlusion +
+  varying-atmosphere-density have no visible effect when `volumetricFog` is disabled (no participating
+  media to scatter through). The shipped effects land under the improvement-plan naming — heat shimmer,
+  ground-fog volumetric, cold optics (22° halo + sun-dogs + light pillars, `COLD-OPTICS-HQ` Batch 442),
+  precipitation wiring (`PRECIP-DATA` Batch 444) — all OFF + `auto` false by default (byte-neutral).
+  _(Note: the standalone `ATMOSPHERIC_EFFECTS_ROADMAP.md` is a later 2026-06-26 planning doc whose
+  "no effect modules built yet" front matter predates the improvement-plan effect batches recorded in
+  §9.1; trust §9.1's shipped batches over that doc's status line.)_
+
 ---
 
 ## 10. Water / Vegetation Build Plans
@@ -564,10 +844,47 @@ delegating to the legacy `showWaterEffect`/`oceanNormalMapUrl`/enhanced-ocean fi
 UNBUILT** — no `WaterClassificationProvider`, Gerstner surface shader, bathymetry, foam, caustics, river
 pipeline, or `WaterRegion` collection exists.
 
-- **Phases 0-2 (Gerstner + imagery-tint, depth-independent)** — buildable in parallel now. **P2.**
-- **Phase 1 classification** — can use an OSM-vector WaterRegion API. **P2.**
-- **Phase 3 bathymetry** — samples scene depth = the renderer-wide depth contract. **Now UNBLOCKED** (the
-  log-depth epic it was gated on shipped at Batch 251). **P2.**
+**Canonical-home refinement (Phase 0.3) — `scene.globe.water`, NOT `scene.water`.** The original
+2026-04-08 design planned `scene.water.*` as the namespace; Phase 0.3 refined this to **`scene.globe.water.*`**
+for three reasons: (1) every existing water property already lives on `Globe` (`showWaterEffect`,
+`oceanNormalMapUrl`, `enableEnhancedOcean`, the ocean tunables); (2) water is rendered as part of terrain
+via the water mask, so it conceptually belongs to the globe; (3) it pairs symmetrically with
+`scene.globe.atmosphericConditions`. The facade is live (`Globe.get water()` → `this._water`, a
+`GlobeWater` instance wired by `Scene` after construction). Every planned toggle in
+`WATER_RENDERING_DESIGN.md` §5 is accessed through the **`scene.globe.water.*`** home; backward-compat
+shells preserve the legacy `showWaterEffect`/`oceanNormalMapUrl`/`waterEffectsEnabled` leaves as
+delegating getters/setters over the canonical home. _(Verified: `GlobeWater.js` exists; `Globe.js`
+`get water()` returns `this._water`. The design doc's `Globe.js:560` line cite is stale — the getter is
+near `Globe.js:826` at HEAD — but the facade itself is live.)_
+
+**Phases 1–9 build sequence** (`WATER_RENDERING_DESIGN.md` §6) — each phase is 0.5–2 sessions; total v1
+effort est. ~8.5 + 1–2 prep sessions. Design decisions C1–C14 are locked (2026-04-08 research report):
+
+- **Phase 1 — classification provider:** `WaterClassificationProvider` skeleton, RGBA mask texture,
+  `WaterRegion` API (can use an OSM-vector source). **P2.**
+- **Phases 0-2 — Gerstner surface v1 (depth-independent):** Gerstner shader + type LUT + imagery-tinted
+  base color + Fresnel reflection. Buildable in parallel now. **P2.**
+- **Phase 3 — bathymetry & depth:** water datum mesh, depth-buffer sampling, Beer-Lambert attenuation,
+  refraction. Samples scene depth = the renderer-wide depth contract; **now UNBLOCKED** (the log-depth
+  epic it was gated on shipped at Batch 251). **P2.**
+- **Phase 4 — foam & caustics. Phase 5 — rivers** (flow pipeline, OSM/HydroRIVERS classification).
+  **Phase 6 — underwater & god rays** (optional froxel integration). **Phase 7 — spatial control** via
+  `WaterRegion`. **Phases 8–9 — FFT ocean, ML-segmented water, quantized-mesh Option B version bump**
+  (6–12 months after Option A production experience). **All P2.**
+
+**Quantized-mesh water extension — Option A (ships now) vs Option B (Phase 9+)** (`WATER_RENDERING_DESIGN.md`
+§9; decision C11 chose Option A per the research report §8.3):
+
+- **Option A (additive, opt-in):** extension ID `0x05` appends RGBA texel buffers (waterType +
+  flowVector) AFTER the existing 1-bit water mask, skipped by old clients via the length prefix. Optional
+  payload: `texelCount` (1 uniform or 256×256 per-texel), `waterType[texelCount]` (enum 0–8),
+  `flowVectorX/Y` (int16, optional). **Zero coordination required with existing producers** — they emit
+  ID `0x02` (water mask only) and the system falls back to the legacy path. Rationale: additive + opt-in
+  lets us iterate on the wire format with real-world data first.
+- **Option B (deferred to Phase 9+):** a formal quantized-mesh format version bump promoting water fields
+  to first-class status, adding higher-precision flow + per-texel depth/turbidity. Sequenced AFTER
+  ecosystem coordination (cesium-native, Cesium for Unreal, third-party tilers). **P2.**
+
 - **`NEW-WEBGPU-EXAG-WATER-STREAKS`** (§4 Globe) is the nearest live water-parity bug. **P2.**
 
 ### 10.2 Vegetation (`VEGETATION_SYSTEM_DESIGN.md`, design/survey, no code)
@@ -617,12 +934,18 @@ items are tracked as scheduled work in §9.3, not research.
 Cross-referenced with `WEBGPU_DEBUGGING_LOG.md` (the chronological bug log — search it before debugging
 a new artifact). The **active minor bugs** not already covered above:
 
-- **`DP-H47`** (czm_atmosphere auto-uniform suite) — every WebGPU atmosphere renderer hand-rolls its
-  `frameState.atmosphericConditions` pull; there's no shared `csm_atmosphere*` auto-uniform block.
-  Confirmed real (Batch 304 re-triage); scoped as a multi-renderer uniform-architecture change, NOT a
-  bug-bash partial. **P2.**
-- **`NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING`** — grid-material lines don't render on WebGPU (pattern
-  bug, surfaced by the Batch-356 MaterialAppearance parity work). **P2.**
+- **`DP-H47`** (czm_atmosphere auto-uniform suite) — the root cause is architectural: every WebGPU
+  atmosphere renderer (`SkyAtmosphere`, Clouds, GlobeGroundAtmosphere, ModelAtmosphere — **four
+  renderers**) hand-rolls its own `frameState.atmosphericConditions` pull into local UBO/shader
+  variables; there is **no shared `csm_atmosphere*` auto-uniform suite**, so a custom `scene.atmosphere`
+  parameter set once applies in one renderer and is silently defaulted in the others. The fix is a
+  unified atmosphere-uniform architecture spanning all four (a multi-renderer uniform-layout change, NOT
+  a bug-bash partial). Confirmed real (Batch 304 re-triage). **P2.**
+- **`NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING`** — **symptom not reproduced (2026-06-23):** the grid
+  LINES render correctly on grazing faces matching WebGL (Batch-356 probe PNGs read). Residual latent
+  nuance only: UV-space `step` line-width vs WebGL's derivative-based constant-pixel width (needs a
+  multi-zoom probe to expose). No fix required. **P2** (see §4.3). _(was: "grid lines don't render on
+  WebGPU" — that note is stale.)_
 - **`NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY`** — baked starfield dimmer than WebGL under HDR. **P2.**
 - **`MORPH-COMPLETION-POP` / `MORPH-CAMERA-FRUSTUM` / `MORPH-MULTIVIEW` / `MORPH-PREVMODE-TYPO`** — a
   cluster of **unverified** scene-mode-morph findings (one-frame completion pop, animated-FOV frustum/
@@ -653,9 +976,10 @@ a new artifact). The **active minor bugs** not already covered above:
 
 **Items I marked "(status: verify)" — could not confirm from git/code read alone:**
 
-- EquirectangularPanorama cull-override (§4 3D Tiles) — re-confirm against HEAD `WebGPUPrimitiveCommands.js`.
-- CSM Slice-3 altitude-adaptive splits (§4 Shadows) — no git match found; may be unstarted or named
-  differently.
+- ~~EquirectangularPanorama cull-override (§4 3D Tiles)~~ — **RESOLVED on re-check: fixed at Batch 317**
+  (`WebGPUPrimitiveCommands.js` honors `renderState.cull.enabled:false`). No longer a verify item.
+- CSM Slice-3 altitude-adaptive splits (§4 Shadows) — **defined in `CSM_DESIGN.md` as a planned Slice 3
+  item, but no git batch matches "altitude-adaptive splits"** → UNVERIFIED/UNSTARTED, not OPEN.
 - WGF-1..5 perf variants (§6.3) — stale execution-roadmap shorthand; re-scope if revived.
 - WeatherSystem/`scene.weather` public facade (§8.2) — partial source classes exist; the public facade
   wiring is unconfirmed.

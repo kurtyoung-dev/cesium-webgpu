@@ -15,7 +15,7 @@
 > Sandcastle demo that exercises each feature.
 >
 > **Accuracy note:** statuses below were re-verified against the live code and
-> `git log` at HEAD ≈ Batch 455 (2026-06-30), NOT lifted from the (up-to-300-batch-
+> `git log` at HEAD ≈ Batch 460 (2026-06-30), NOT lifted from the (up-to-300-batch-
 > stale) source docs. Items I could not fully confirm are marked **(status: verify)**.
 
 ---
@@ -286,22 +286,42 @@ radiance cube → 9 SH-L2 coefficients.
   not just the sky.
 - **Mechanism:** a per-face override-camera capture pass (generalizes the CSM
   override-camera mechanism to color) into the 6 `cache.faceViews`, behind a mandatory
-  add-only `CAPTURE_MODE` ShaderDefine bit (`1<<4`) that selects a single-location
-  `FragOutput` variant; a SEPARATE `_capturePipelineCache` that never bumps the
-  on-screen pipeline generation; a transient shared depth target; sky preserved via
-  `loadOp:'load'`.
+  add-only `CAPTURE_MODE` ShaderDefine bit (`1<<17`, verified in `WebGPUShaderDefines.ts`)
+  that selects a single-location `FragOutput` variant (the on-screen globe emits a
+  2-location MRT `{ @location(0) color, @location(1) normalRoughness }`; the capture pass
+  has only a single color attachment, and an MRT mismatch is a HARD WebGPU validation
+  error); a SEPARATE `_capturePipelineCache` that never bumps the on-screen pipeline
+  generation; a transient shared depth target; sky preserved via `loadOp:'load'`. The
+  globe writes **LINEAR** radiance into the cube (no tonemap is reached at capture time),
+  so the captured face feeds the IBL prefilter + SH projection tail consistently with the
+  procedural-sky fill.
 - **Increments (all shipped):** Batch 446 globe slice → 447 model/3D-Tiles slice → 448
   3D Tileset verified + demo → 449 3-B ENV-TEMPORAL (temporal env-cube accumulation) →
   450 3-C ENV-CLOUDS / CLOUD-IBL-FULL (clouds folded into the reflection env map) →
   **451 3-D ENV-PARALLAX (Lagarde parallax-corrected localized reflections) — closes
   the epic.**
-- **Opt-in:** `DynamicEnvironmentMapManager.enableSceneCapture = true` +
-  `contextOptions.webgpu.sceneCaptureReflections`. WebGPU only. Default OFF is
-  byte-identical (probe-proven `probe-scene-capture-off.mjs`).
+- **Opt-in (double flag):** `DynamicEnvironmentMapManager.enableSceneCapture = true`
+  AND the context option `contextOptions.webgpu.sceneCaptureReflections` (surfaced at
+  runtime as the `context.sceneCaptureReflections` getter on `WebGPUContext`). Both must
+  be true for the capture pass to run. WebGPU only.
+- **Parity gate (byte-identical OFF):** with the flags off, `runProceduralSkyFill` stays
+  the sole face writer, the cube is byte-identical, and — because `CAPTURE_MODE` is
+  add-only — `defines=0` emits the `//>>else` branch byte-for-byte equal to today, so the
+  **on-screen shader-module hash is unchanged → no on-screen pipeline rebuild**. The
+  off-state is probe-proven by `probe-scene-capture-off.mjs`.
 - **Known V1 limitation (documented, not a bug):** capture reuses the main-camera-
   selected visible tile set, so faces pointing away from the main view get
-  coarse/absent tiles. Per-face quadtree re-selection is explicitly deferred.
-- **Demo:** *WebGPU Scene Capture Reflections* (legacy gallery).
+  coarse/absent tiles. Per-face quadtree re-selection (6× `GlobeSurfaceTileProvider` with
+  override frustums) is explicitly deferred as a much larger follow-up.
+- **Demo:** *WebGPU Scene Capture Reflections* (legacy gallery) — probe a high-metalness
+  model against captured terrain and assert the geometry appears in the reflection.
+  Probes MUST read the output PNGs: the face-order **basis remap** is the top correctness
+  bug (a mirrored/rotated reflection still looks plausible at a glance).
+- **Architectural deep-dive:** `C2-25_SCENE_CAPTURE_DESIGN.md` is the authoritative
+  reference — face-camera ENU basis remap, the single-target vs MRT variant, the on-cost
+  debounce strategy (behind the flag so the OFF gate stays byte-identical), and why
+  per-face-LOD re-selection is deferred. Read it before any future enhancement to this
+  high-risk path (face basis + MRT variants are where the bugs live).
 
 ---
 
@@ -330,11 +350,57 @@ radiance cube → 9 SH-L2 coefficients.
   + a lit ground plane). Also *WebGPU Custom Scene Light Color* (custom `czm_lightColor`
   → globe Lambert).
 
+#### Cluster grid, the two compute passes, and the caps
+
+- **Grid:** the deployed cluster grid is **16×9×24 = 3456 clusters** (matched to the
+  toji Forward+ reference), with **exponential depth slicing** between near and far so
+  on-screen cluster density stays uniform across the frustum.
+  `WebGPUClusterBoundsRenderer.ts` (Batch 147) runs the **cluster-bounds** compute pass
+  (`ClusterBounds.wgsl`): it writes a per-cluster AABB
+  (`array<ClusterAABB, 3456>`, 32 B/cluster = 110 592 B) into a storage buffer.
+  `WebGPUClusterAssignRenderer.ts` (Batch 148) runs the **light-to-cluster assignment**
+  compute pass (`ClusterAssign.wgsl`): it tests sphere-vs-AABB per (cluster, light) and
+  writes per-cluster light-index lists. Directional lights always overlap all clusters;
+  point/spot lights are tested by range². Each pass has its own end-to-end probe
+  (Batches 147/148).
+- **Caps:** `CLUSTER_MAX_LIGHTS = 1024` total lights per scene and
+  `CLUSTER_MAX_LIGHTS_PER_CLUSTER = 256` lights per cluster (both in
+  `WebGPUClusterAssignRenderer.ts`). The scene-level `LightCollection` enforces a tighter
+  `LightCollection.MAX_LIGHTS = 8` (`LightTypes.ts`); the compute kernel's 1024 cap is the
+  hard upper bound the assignment buffers are sized for.
+- **RTE precision:** cluster bounds are computed in **eye-space** (already small enough
+  for FP32, unlike world-space), so they do not need the RTE positionHigh/Low split.
+- **Off-state cost:** when clustered lighting is disabled, the per-pixel cost is a single
+  uniform-branch gate — the cluster bindings are present but the shader skips the loop.
+
+#### Bind-group integration — group 3 (effects), bindings 18..22
+
+The 5 clustered-lighting bindings — `clusterLights` (18), `clusterAABBs` (19),
+`perClusterLightCount` (20), `perClusterLightIndices` (21), `clusterParams` (22) — live
+in **group 3 (the effects BGL)**, NOT a separate group 4. The `@group(4)` approach was
+blocked by the confirmed Chromium-on-Windows `maxBindGroups: 4` ceiling (D3D12 + Vulkan).
+`WebGPUEffectsBindGroup.js` was extended to spread the 5 new entries into the effects
+BGL; `WebGPUClusteredLightingBGL.ts` provides the entry-list + bind-group helpers. The
+`ClusteredLighting.wgsl` chunk declares the `@group(__CL_GROUP__) @binding(18..22)` slots
+plus the `evalClusteredLights(...)` helper (Lambert + Cook-Torrance GGX with
+KHR_lights_punctual smooth falloff). Because Model PBR (group 3) and primitive material
+pipelines can resolve the cluster bindings under different group indices, the group index
+is a literal **`__CL_GROUP__` token substituted per-pipeline** (`CLUSTERED_LIGHTING_GROUP_TOKEN`
+in `WebGPUClusteredLightingBGL.ts`) at shader-build time — Model PBR uses group 3. All
+**21 Lit-Mat shader sources** (= the 19 primitive `Mat*Lit` shaders + Model PBR + the
+Phong primitives) get the same chunk prepend with the token resolved for their layout.
+Verified end-to-end across Batches 153–158.
+
 ### Shadows
 
-- **CSM (cascaded shadow maps):** cast pass + math shipped (CSM_DESIGN.md). Used by the
-  override-camera capture precedent. **(status: verify — confirm consumer wiring depth
-  against CSM_DESIGN before quoting "complete".)**
+- **CSM (cascaded shadow maps):** SHIPPED end-to-end (verified `git log`). The consumer
+  wiring is complete: cast commands reach the cast pass (Batch 296, `fef60c639b`,
+  full RTE math in the cast pipeline), soft-shadow PCF on the receive side (Batches
+  289/297), globe terrain RECEIVES the cast (Batch 298, fixed the cascade light-eye
+  side), and the cascade fit is ground-clamped to sharpen the globe cast-shadow edge to
+  WebGL parity (Batch 306, `86554cf227` — "CSM soft-shadows COMPLETE"). `WebGPUCSMRenderer`
+  does real per-cascade fitting; the override-camera mechanism it established is the
+  precedent C2-25 scene-capture generalizes to color. Authoritative source: `CSM_DESIGN.md`.
 - **Point-light cube shadows:** SHIPPED (Batch 165). Toggle 5-tap PCF softness.
   **Demo:** *WebGPU Point Light Shadows*.
 
@@ -350,13 +416,18 @@ radiance cube → 9 SH-L2 coefficients.
   `FEATURE_INVENTORY.md §3` for the per-extension SHIPPED/WIP grid (do not quote a
   single status here — the per-extension state is what matters).
 
-### Metadata-in-shader + pickMetadata (DP-H46 — IN PROGRESS)
+### Metadata-in-shader + pickMetadata (DP-H46 — display + pick SHIPPED, demo remains)
 
-> **Status (verified `git log`): the DP-H46 epic is the ACTIVE work at HEAD.** DP-H46a
-> (GPU upload + binding scaffolding, Batch 454) and DP-H46b (per-model WGSL metadata
-> codegen — property-attribute struct + `initializeMetadata`, Batch 455) have SHIPPED,
-> both opt-in / parity-default. DP-H46c (property textures), DP-H46d (property tables),
-> DP-H46e (`scene.pickMetadata` producer), and DP-H46f (parity probe + demo) remain.
+> **Status (verified `git log` at HEAD ≈ Batch 460):** the DP-H46 epic is all but
+> complete — display AND pick are SHIPPED, each opt-in / parity-default.
+> **DP-H46a** (GPU upload + binding scaffolding, property-attribute path, Batch 454) +
+> **DP-H46b** (per-model WGSL metadata codegen — property-attribute `struct Metadata` +
+> `initializeMetadata`, Batch 455) + **DP-H46c** (property-TEXTURE read in the WGSL model
+> shader, Batch 457 `df1e271533`) + **DP-H46d** (property-TABLE read, closing display-side
+> parity, Batch 458 `baa3f62d43`) + **DP-H46e** (`scene.pickMetadata` WebGPU producer —
+> color + regular-pick byte-identical, Batch 460 `061f6914f0`) have all landed. The single
+> remaining slice is **DP-H46f (parity probe + demo)**: display + pick are done; the
+> epic's full pickup is deferred only on the verification demo + probe.
 
 - **Goal:** port the `EXT_structural_metadata` / `EXT_mesh_features` metadata-in-shader
   pipeline from GLSL to WGSL so the WebGPU model shader can read metadata properties,
@@ -461,25 +532,84 @@ Performance / async dials worth knowing:
 
 ---
 
+## 9a. Vegetation System (design-stage — no code shipped yet)
+
+> **Status:** design / survey, **no code shipped**. Single source of truth:
+> `VEGETATION_SYSTEM_DESIGN.md` (consolidates 8 research strands, 2026-06-05). Each slice
+> is independently shippable and Playwright-probe-verifiable (CLAUDE.md Principle 8). This
+> entry exists so the epic is tracked here too — link the V1–V5 demo probes once they land.
+
+- **Feasibility verdict:** ultra-performant planetary vegetation (trees, grass,
+  rocks/sparse-arid) on the globe + draped on 3D Tiles is **FEASIBLE**, WebGPU-first with
+  a degraded-but-correct WebGL2 fallback. The fork already ships ~80% of the hard
+  infrastructure (GPU compute culling, indirect draw, point-cloud LOD, render bundles,
+  bitonic sort, RTE precision, I3DM/PNTS instancing, the full PBR shader pair, stochastic
+  alpha-test dither). The missing piece is *vegetation-specific glue*.
+- **5-slice roadmap (§8 of the design doc):**
+  - **V1 — scatter foundation:** `VegetationScatterCollection` + compute placement
+    (WebGPU) / CPU placement (WebGL2). Poisson/blue-noise scatter on globe terrain +
+    draped on 3D Tiles, RTE-encoded instance buffer, behind a
+    `FeatureRendererKey.VEGETATION_SCATTER`.
+  - **V2 — mesh-LOD chain:** the 4-stage chain + GPU-driven LOD selection (the fork has
+    tile-LOD and point-LOD but **no per-Model mesh-LOD chain** today — `Model.js` has only
+    `distanceDisplayCondition`, a binary cull). Reuses `WebGPUGPUCuller` +
+    `WebGPUIndirectDrawManager`; CPU per-instance LOD on WebGL2.
+  - **V3 — impostor bake/sample:** the missing octahedral-impostor pipeline (`FEAT-GAP-07`);
+    offline/lazy bake to atlas, fragment-shader octahedral sampling (portable, no compute).
+  - **V4 — PBR shaders:** a `VegetationPBR` WGSL+GLSL pair (two-sided leaf translucency,
+    wind vertex animation, alpha-to-coverage, canopy AO, impostor sampling) extending
+    `ModelPBRComplete.wgsl` with new `ShaderDefine` bits.
+  - **V5 — grass/rocks:** GPU-instanced grass + density-imposter + terrain detail-albedo
+    (a separate path from trees), plus rocks/sparse-arid as a third tuning profile.
+- **Three data models:** (1) authored / streamed 3D Tiles **I3DM** + `EXT_structural_metadata`
+  (the zero-new-loader path, recommended for real datasets); (2) procedural **scatter**
+  (V1); (3) far-field **terrain detail-albedo fallback** (no instances at all — vegetation
+  baked into terrain albedo / flat green tint, sharing the globe mesh, near-zero cost).
+- **4-stage LOD per asset class:** trees go mesh → octahedral impostor → clump-proxy →
+  detail-albedo; grass goes blades → density-imposter → detail-albedo. Cross-fade via the
+  already-shipped stochastic dither (`csm_stochasticDither.wgsl`, TAA-converging).
+- **Dual-backend story:** WebGPU-first (compute scatter + GPU-driven LOD selection);
+  WebGL2 gets a correct fallback (CPU scatter/cull + tile-granular, not per-instance, LOD)
+  — WebGL2 has no compute and no GPU-driven indirect-arg generation, the recurring deficit.
+- **Performance target:** vegetation ≤ ~12–25% of a 16.7 ms frame at planetary scale.
+
+---
+
 ## 10. Snapshot Mode & Headless
 
-> **(status: verify)** There is **no dedicated standalone "snapshot mode" public API**
-> surfaced in the docs reviewed. The relevant facts confirmed in code:
+> **Resolved (verified against live code at HEAD):** "snapshot" is overloaded across
+> three unrelated things. There IS a public `scene.snapshotMode` API — but it is a
+> **render-performance** service, NOT a screenshot/headless-capture API. The three
+> distinct meanings:
 
+- **`scene.snapshotMode` — a real public API, but a performance "FAST/inspection mode."**
+  It returns the `SnapshotModeService` (`packages/engine/Source/Services/SnapshotModeService.js`,
+  wired in `Scene.js` at `this._snapshotMode = new SnapshotModeService()`, exposed via the
+  `get snapshotMode()` accessor). When enabled (`scene.snapshotMode.enabled = true`, OFF by
+  default) and frozen, it tells registered "freezables" (notably `WebGPURenderBundleManager`)
+  to treat their cache as frozen so static scenes reuse cached render bundles instead of
+  re-encoding draw commands (~30–60% of per-frame CPU). It composes with — and is
+  complementary to — `Scene.requestRenderMode` (skip idle frames) and
+  `VisualPerformanceTargetService` (quality auto-tuning). It auto-thaws on
+  `scene._snapshotVersion` bumps and significant camera motion. **Phase-0.7 status:** the
+  registration skeleton is wired; per-subsystem freeze/thaw logic lands in Phase 1+. It is
+  backend-neutral (WebGL has no bundles to freeze, so its freezables are typically no-ops).
+  This is **not** a "take a snapshot image" API.
 - **`AtmosphericConditions.clone()`** returns a JSON-serializable snapshot of facade
   state (currently scattering-only; full structured snapshot is a TODO Phase 2).
 - **Scene-capture "snapshot"** in C2-25 refers to the per-face camera snapshot/restore
   invariant inside `runSceneCapture` (try/finally around the 6-face loop), NOT a
   user-facing screenshot API.
+
+There is **no user-facing standalone screenshot / "capture this frame to PNG" API**
+beyond the canvas itself. For automated capture, the project standard is the **Playwright
+probe harness** (`Tools/visual-regression/`, Edge/Chromium) — see CLAUDE.md Principle 8
+and §12.
+
 - **Headless / worker:** `OPTION_B_SCENE_IN_WORKER.md` (scene-in-worker via
   OffscreenCanvas) is **research-stage / DOM-blocked**, not shipped. The headless
   `TaskProcessor` worker path is used for compute kernels (Regime 4 spike), not for
   scene rendering.
-- For automated capture, the project standard is the **Playwright probe harness**
-  (`Tools/visual-regression/`, Edge/Chromium) — see CLAUDE.md Principle 8 and §12.
-
-If a maintainer-known snapshot/headless API exists beyond the above, fill it in during
-review — this section is the least-confirmed.
 
 ---
 
@@ -580,7 +710,11 @@ Full procedures + the probe inventory live in
 
 - **Opt-in / parity-default** — OFF by default; byte-identical to the pre-feature
   render when off (the fork's governing contract).
-- **(status: verify)** — I could not fully confirm this against live code at HEAD;
-  maintainer should check during review. Used sparingly (CSM consumer wiring depth §6;
-  snapshot/headless API §10; live-weather network hop §4).
-- Batch numbers cite `git log` commit headers (HEAD ≈ Batch 455, 2026-06-30).
+- **(status: verify)** — could not be fully confirmed against live code at HEAD;
+  maintainer should check during review. The CSM consumer-wiring (§6) and
+  snapshot-mode (§10) flags have since been **RESOLVED** against live code (CSM is
+  SHIPPED end-to-end through Batch 306; `scene.snapshotMode` exists but is a
+  performance service, not a capture API). The one remaining unverified item is the
+  **live-weather network hop (§4)** — wired but unconfirmed against a real server because
+  the dev sandbox has no outbound network.
+- Batch numbers cite `git log` commit headers (HEAD ≈ Batch 460, 2026-06-30).

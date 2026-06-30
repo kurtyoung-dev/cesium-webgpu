@@ -6,7 +6,7 @@
 
 # Issues & Fixed-Bugs Register — CesiumJS WebGPU Fork
 
-**HEAD at consolidation:** `3b146e42a8` (Batch 455). **Last full audit sweep:** `audits/2026-06-11_ULTRA_REVIEW.md` (HEAD `f6fd367827`, Batch 220).
+**HEAD at consolidation:** `3b146e42a8` (Batch 455). **Last full audit sweep:** `audits/2026-06-11_ULTRA_REVIEW.md` (HEAD `f6fd367827`, Batch 220). **Newest parity snapshot folded in:** `WEBGPU_PARITY_REPORT_2026-06-30.md` (HEAD `baa3f62d43`, Batch 458) — the source of the three §3.2 parity-residual entries (FEAT-3DT2-03, panorama cull-override, GeoJsonPrimitive verification debt).
 
 > ⚠️ **CRITICAL ACCURACY NOTE FOR REVIEWERS.** The primary source audits are **stale by ~230–300 batches**. The 2026-06-11 ultra-review was taken at Batch 220; the per-feature review at Batch ~56; the cross-coupling audit at Batch ~159. **HEAD is Batch 455.** When this consolidation re-verified each headline status against the live code + `git log`, the overwhelming majority of the audits' "open CRITICAL/HIGH" findings had **already shipped** (Batches 221–360). This register reflects the **re-verified live state**, not the stale source tags. Where a status could not be confirmed against the current tree, it is marked **`status: verify`** rather than asserted. **Section 2 (open CRITICAL) is nearly empty for exactly this reason** — that is the correct, re-verified result, not an oversight.
 
@@ -71,6 +71,7 @@ Re-verification collapsed almost the entire 2026-06-11 HIGH list into §6 (Fixed
 | `NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH` | HIGH (parity) | Ground-atmosphere drape limb width diverges from WebGL at the horizon limb (surfaced Batch 327, `a2af8490d9`). | **OPEN / WIP.** Live home: the atmosphere/sky parity backlog. Not a regression — a residual parity gap in the atmosphere rewrite. |
 | `NEW-WEBGL-REPROJECT-BASELINE` (B5) | HIGH (guard-gap) | Our WebGL imagery reprojection was forked from a 64-row grid to a 4-vertex quad + per-fragment Mercator — this **forks WebGL pixel output from upstream** with no regression baseline guard. | **OPEN.** Deliberate fork (documented in `IMAGERY_PROJECTION.md`); the missing piece is a visual-regression tolerance baseline so accidental drift on top of the intentional change is caught. `status: verify` whether a baseline has since been added. |
 | `NEW-TS-CONVERT-JS-RENDERERS` | HIGH (maintainability) | 25 untyped `.js` feature renderers ≈ 35K LOC; the largest/most-complex renderers (Model, GroundPolyline, PrimitiveCommands, GroundPrimitive, ModelPipelineCache) are the least type-safe — inverse of where `noImplicitAny` is most valuable (A16.3). | **OPEN / first slice shipped** (Batch 314 TS-converted `WebGPUStarFieldRenderer`, `14f1369c73`). Long tail remains. |
+| `FEAT-3DT2-03` (parity report 2026-06-30 §5.2) | HIGH (silent correctness on non-Earth bodies) | Ellipsoid-aware RTE is only *partial*: the RTE-assembly path keys off WGS84 radius constants (Earth ~6378137 m equatorial), so non-WGS84 tilesets (Mars ~3396190 m, Moon ~1737400 m) encode ECEF relative to **their** body's ellipsoid and render with positional errors from 10s of km up to full off-globe displacement. | **OPEN** (re-verified: radius is uploaded as the `innerRadius`/ellipsoid uniform from Earth-keyed CPU constants; no per-tileset ellipsoid plumbing). See §3.2. |
 
 ### 3.1 Open MEDIUM/LOW carried from the 2026-06-11 ultra-review
 
@@ -88,6 +89,33 @@ These were catalogued in the ultra-review MEDIUM/LOW (23) bucket and **left open
 | `NEW-COLLECTION-RENDERER-BASE` (A5.3) | MEDIUM | Four collection renderers duplicate ~3000 LOC of pipeline-cache/shader-module/placeholder/velocity plumbing with no shared base — and the duplication demonstrably drifts (Point gained `needsRebuild`; Billboard/Label had to be fixed separately). |
 | `NEW-CAMERA-UPDATEVIEWMATRIX-REVERT` (B2) | LOW | Ctor `updateViewMatrix`→`updateMembers` swap. **DECLINED as a revert** (§7) but flagged to verify it isn't a functional view-matrix-seeding regression. `status: verify`. |
 | `NEW-SYNC-MOVEMAP`, `NEW-CAPABILITY-GETTER-CODIFY`, `NEW-SG-SCAN-ADOPT` | LOW/process | Sync-runbook MOVE-MAP, codify the capability-getter convention, adopt upstream `sg-scan` JSDoc lint. `NEW-SG-SCAN-ADOPT` = **DEFERRED**. |
+
+### 3.2 Parity-residuals from the 2026-06-30 parity report (newly tracked)
+
+These three surfaced in `WEBGPU_PARITY_REPORT_2026-06-30.md` (Batch 458) — newer than every audit folded into §2 / §3.1 — and were not previously catalogued here. Each is a *partial* feature with a documented gap, not a regression.
+
+#### FEAT-3DT2-03 — Mars/Moon tilesets render with large position errors (hardcoded WGS84 radius)
+
+- **Severity:** HIGH (silent correctness loss on non-Earth planetary bodies).
+- **Root cause:** the RTE assembly path keys off Earth ellipsoid radius constants (6378137 m equatorial). The body radius is fed into the globe/atmosphere shaders as the `innerRadius`/ellipsoid uniform from Earth-keyed CPU constants; non-WGS84 tilesets (Mars ~3396190 m, Moon ~1737400 m) encode ECEF positions relative to **their** body's ellipsoid, so rendering them in WebGPU against Earth-radius RTE produces positional errors of 10s of km up to full off-globe displacement.
+- **Status:** OPEN (re-verified: no per-tileset ellipsoid plumbing in the RTE path; the radius is a scene-global Earth-keyed value).
+- **Fix scope:** parameterize ellipsoid radius + semi-minor axis into a per-tile bind group or scene-global UBO; accept values from tileset metadata or an explicit scene binding. A proof-of-concept exists in the globe terrain code. **Priority P1, effort S–M.** Blocking: no test asset exists (needs a Mars/Moon sample tileset or a scaled-ellipsoid mock).
+- **Probe:** mock a tileset with an intentionally-scaled ellipsoid (e.g. 1000× radius) and diff positions WebGL vs WebGPU. (Cross-ref the parity report's "Hi-Z tile-bounding-volume integration + ellipsoid-aware RTE" item, §5.2 / roadmap line 216.)
+
+#### C-R1-PRIMITIVE-DERIVED-PANORAMA-CULLMODE — EquirectangularPanorama viewed from inside shows back-faces
+
+- **Severity:** MEDIUM (visual correctness in a niche use case).
+- **Root cause:** `WebGPUPrimitiveCommands.js` bakes `cullMode` from `appearance.closed` alone and ignores `renderState.cull.enabled:false`. A panorama viewed from *inside* should set `renderState.cull = {enabled:false}` to render the interior surface; instead the material pipeline hard-derives the cull mode from the Appearance flag, so back-faces show (or the interior vanishes).
+- **Status:** OPEN (re-verified: the `renderState.cull` override is not threaded into the pipeline-variant selector). Promotes the `(status: verify)` / untracked note in `ROADMAP_AND_DEFERRED_WORK.md` to a tracked entry.
+- **Fix scope:** thread `renderState.cull` through to the shader pipeline-variant selector so the render state can override the appearance-derived default. **Priority P2, effort S.** Separate from the broader WGF-1 clip-distance work. Alias: `WGF-1 / C-R1-PRIMITIVE-DERIVED`.
+- **Probe:** Sandcastle `Panorama` example; toggle the camera position inside the panorama sphere.
+
+#### GeoJsonPrimitive — visual-parity probe missing (verification debt, not a feature gap)
+
+- **Severity:** MEDIUM (feature works in common cases; verification gap only).
+- **Description:** `GeoJsonPrimitive` shipped on both backends (Batches 315–318), riding the Buffer* family (BufferPoint/Polyline/Polygon collections). No automated Playwright regression probe pixel-verifies that MultiPolygon triangle-winding, interior-ring (hole) rendering, and hole/MultiPolygon triangle-count match WebGL output. Manual testing shows visual correctness; the automated gate is missing. `debugShowBoundingVolume` is also a no-op on this path.
+- **Status:** OPEN (test-infrastructure gap, not a code gap). The parity report lists this row in three subsystems (§5.2 / §5.4 / §5.7) — consolidate under Collections or cross-reference; it is also flagged as a doc-drift `§A` inventory entry.
+- **Fix scope:** create `probe-geojson-holes.mjs` (Playwright pixel-diff a complex MultiPolygon + interior rings against the WebGL baseline). **Priority P2, effort S.** Can bundle with other geometry verification probes (cf. the edge degenerate-triangle PR#13421 repro, similar verification-only debt).
 
 ---
 
