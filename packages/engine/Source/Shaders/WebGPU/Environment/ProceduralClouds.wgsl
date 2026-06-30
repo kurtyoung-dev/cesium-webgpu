@@ -92,7 +92,7 @@ struct CloudUniforms {
   // height gradient and profileDensityScale=1.0. ──
   profileShape: f32,             // 101 — 0=SLAB / 1=BILLOWY / 2=TOWERING_ANVIL
   profileDensityScale: f32,      // 102 — per-genus density vs CUMULUS (1.0 = neutral)
-  profileExtinction: f32,        // 103 — per-genus optical extinction (scaffolding; not yet sampled)
+  profileExtinction: f32,        // 103 — per-genus optical extinction scale vs CUMULUS (1.0 = neutral); scales absorptionCoeff in the light march + view-ray transmittance
   anvilBias: f32,                // 104 — TOWERING_ANVIL upper-flare bias (0 = none)
   // ── Batch 409 (depth occlusion; slots 105-106 were Batch-408 pads) ──
   nearPlane: f32,                // 105 — camera frustum near (reverse the log depth)
@@ -854,10 +854,26 @@ fn lightMarch(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32
   return opticalDepth;
 }
 
+// Batch 408 V11 — per-genus optical extinction coefficient. The base
+// `cloud.absorptionCoeff` is the global Beer-Lambert extinction; `profileExtinction`
+// (slot 103, normalized so the DEFAULT genus CUMULUS = 1.0) scales it so denser
+// genera (cumulonimbus ~1.58x) absorb more light → darker, more opaque cores, while
+// thin genera (cirrus ~0.17x) absorb less → wispier, more translucent. Applied
+// CONSISTENTLY at every optical-density site (the light-march beer/powder + the
+// view-ray sample transmittance) so a genus is uniformly denser or thinner.
+// GUARD: a zero/unset scaffolding slot (profileExtinction <= 0) falls back to 1.0
+// (no scaling), so a stray zero-packed uniform never zeroes the absorption (which
+// would make the clouds vanish — exp(0)=1, fully transparent).
+fn effectiveAbsorption() -> f32 {
+  let scale = select(1.0, cloud.profileExtinction, cloud.profileExtinction > 0.0);
+  return cloud.absorptionCoeff * scale;
+}
+
 // ─── Beer-Powder approximation for cloud lighting ───
 fn beerPowder(opticalDepth: f32, powder: f32) -> f32 {
-  let beer = exp(-opticalDepth * cloud.absorptionCoeff);
-  let powderEffect = 1.0 - exp(-opticalDepth * cloud.absorptionCoeff * 2.0);
+  let absorb = effectiveAbsorption();
+  let beer = exp(-opticalDepth * absorb);
+  let powderEffect = 1.0 - exp(-opticalDepth * absorb * 2.0);
   return mix(beer, beer * powderEffect, powder);
 }
 
@@ -881,14 +897,16 @@ fn multiScatterLight(opticalDepth: f32, cosTheta: f32, powder: f32, octaves: i32
   let b = cloud.msDecayB; // MS_EXTINCTION_DECAY — extinction per octave (default 0.5)
   let c = cloud.msDecayC; // MS_PHASE_DECAY — eccentricity per octave (default 0.85, gentle: keeps T3 ≈ prior)
   let n = max(octaves, 1);
+  // V11 — per-genus extinction scale (CUMULUS = 1.0 neutral; guarded zero→1.0).
+  let absorb = effectiveAbsorption();
   var luminance: f32 = 0.0;
   var total: f32 = 0.0;
   var scat: f32 = 1.0;
   var ext: f32 = 1.0;
   var ecc: f32 = 1.0;
   for (var i: i32 = 0; i < n; i = i + 1) {
-    let beer = exp(-opticalDepth * cloud.absorptionCoeff * ext);
-    let powderEffect = 1.0 - exp(-opticalDepth * cloud.absorptionCoeff * 2.0 * ext);
+    let beer = exp(-opticalDepth * absorb * ext);
+    let powderEffect = 1.0 - exp(-opticalDepth * absorb * 2.0 * ext);
     let bp = mix(beer, beer * powderEffect, powder);
     let ph = mix(hgPhase(cosTheta, cloud.phaseG2 * ecc),
                  hgPhase(cosTheta, cloud.phaseG1 * ecc),
@@ -1192,8 +1210,11 @@ fn marchDeck(
       // Height-based color gradient (darker base, brighter top)
       let cloudColor = mix(cloud.cloudBaseColor, cloud.cloudTopColor, heightFraction);
 
-      // Accumulate
-      let sampleTransmittance = exp(-density * fineStep * cloud.absorptionCoeff);
+      // Accumulate. V11 — scale the view-ray extinction by the per-genus
+      // profileExtinction (CUMULUS = 1.0 neutral) so the SAME genus that absorbs
+      // more in the light march is also more opaque along the view ray — denser
+      // genera read consistently darker AND more opaque, thin genera wispier.
+      let sampleTransmittance = exp(-density * fineStep * effectiveAbsorption());
       let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
 
       // W2 — sky-ambient gradient + ground bounce. The blue sky lights the cloud

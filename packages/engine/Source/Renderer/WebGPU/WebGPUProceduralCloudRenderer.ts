@@ -1718,10 +1718,19 @@ export function executeProceduralClouds(
   // densityScale 1.0, so the default render is byte-identical (the WGSL BILLOWY
   // branch is the literal old gradient).
   const profile = CloudTypeProfile.get(globe.cloudType ?? CloudType.CUMULUS);
-  const cumulusBase = CloudTypeProfile.get(CloudType.CUMULUS).baseDensity; // 0.7
+  const cumulusProfile = CloudTypeProfile.get(CloudType.CUMULUS);
+  const cumulusBase = cumulusProfile.baseDensity; // 0.7
+  const cumulusExtinction = cumulusProfile.extinction; // 0.6
   data[offset++] = profile.shape; // 101 profileShape (0 SLAB / 1 BILLOWY / 2 TOWER)
   data[offset++] = cumulusBase > 0 ? profile.baseDensity / cumulusBase : 1.0; // 102 profileDensityScale (CUMULUS=1.0)
-  data[offset++] = profile.extinction; // 103 profileExtinction (scaffolding; not yet sampled)
+  // 103 profileExtinction — per-genus optical extinction NORMALIZED against the
+  // DEFAULT genus (CUMULUS, extinction 0.6) so CUMULUS → 1.0 (the WGSL multiplies
+  // cloud.absorptionCoeff by this, so a value of 1.0 is byte-identical to the
+  // pre-activation render). Mirrors profileDensityScale@102's CUMULUS-relative
+  // normalization. Thin genera (cirrus 0.1 → 0.167x) absorb less → wispier; dense
+  // genera (cumulonimbus 0.95 → 1.583x) absorb more → darker/more opaque cores.
+  data[offset++] =
+    cumulusExtinction > 0 ? profile.extinction / cumulusExtinction : 1.0; // 103 profileExtinction (CUMULUS=1.0)
   data[offset++] =
     profile.shape === CloudTypeProfile.CloudHeightGradientShape.TOWERING_ANVIL
       ? 1.0
