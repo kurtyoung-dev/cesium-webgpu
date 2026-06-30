@@ -2375,10 +2375,24 @@ C-P17 path) all wired. Models with no explicit
 manager's prefiltered views via `buildModelIBLEntries` in
 `WebGPUModelRenderer`.
 
-**What remains:** True scene-capture path. The procedural sky now
-correctly captures atmosphere + sun, but doesn't include OTHER scene
-content (terrain elevation, 3D Tiles buildings, glTF model geometry).
-Useful when reflections must show the scene's actual surroundings.
+**What remains (updated Batch 446):** The GLOBE slice of scene capture
+SHIPPED in Batch 446 (`ENV-SCENE-CAPTURE` globe V1) — opt-in
+`sceneCaptureReflections` + `enableSceneCapture` render the globe surface
+from 6 ENU face cameras into the env-cube faceViews over the compute sky,
+feeding the existing mip→prefilter→SH→model tail. The nadir hemisphere
+captures textured terrain with verified-correct E/W. THREE pieces remain:
+
+1. `ENV-CAPTURE-PER-FACE-LOD` — the capture reuses the main-camera-selected
+   tile set, so side faces looking outward get no tiles toward the horizon
+   (flat/coarse band). Fixing this needs per-face quadtree re-selection
+   (6× `GlobeSurfaceTileProvider` selection with the override face frustums).
+   This is the next concrete globe-capture step.
+2. 3D Tiles geometry capture into the cube faces (Batch 447 target).
+3. glTF model geometry capture into the cube faces (Batch 448 target).
+
+See `migration_doc/C2-25_SCENE_CAPTURE_DESIGN.md` for the mechanism. The
+sky-only "what remains" below is now historical — the sky was already
+captured (Batch 346/430); the globe producer is what Batch 446 added.
 
 **Why deferred:** Real ~250 LOC feature requiring:
 

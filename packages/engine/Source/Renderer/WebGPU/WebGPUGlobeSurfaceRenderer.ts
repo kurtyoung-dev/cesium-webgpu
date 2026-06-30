@@ -28,6 +28,7 @@ import {
   selectDebugFragmentPipeline as selectDebugFragmentPipelineHelper,
   selectDepthOnlyBackFacePipeline as selectDepthOnlyBackFacePipelineHelper,
   selectTranslucentBackFacePipeline as selectTranslucentBackFacePipelineHelper,
+  selectCapturePipeline as selectCapturePipelineHelper,
   buildPipelineDescriptor,
   descriptorToGPU,
 } from "./WebGPUGlobeSurfacePipelines.js";
@@ -163,6 +164,16 @@ export class WebGPUGlobeSurfaceRenderer {
   // Public underscore: shared with the pipeline helpers (Batch 150).
   public _debugFragmentPipelineCache: Map<string, GlobePipelineEntry> =
     new Map();
+  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — SEPARATE cache for single-target
+  // scene-capture pipeline variants (keyed on face format + CAPTURE_MODE +
+  // vertex shape). Deliberately NOT wiped by the
+  // `_scenePipelineFormatGeneration` reset in `createTileCommands` — the
+  // capture target format follows the env cube, not the canvas, so a
+  // canvas-format / MSAA flip must not invalidate it; and a capture build must
+  // not bump the on-screen generation (which would rebuild every on-screen
+  // globe pipeline each frame capture runs). Public underscore: shared with the
+  // capture-pipeline helper.
+  public _capturePipelineCache: Map<string, GlobePipelineEntry> = new Map();
   // Phase 5 WGF-1: hardware clip-distances shader variant. Built lazily
   // by string-augmenting a preprocessed `_shaderCode` to (a) declare the
   // `@builtin(clip_distances)` vertex output and (b) compute it from the
@@ -1901,6 +1912,158 @@ export class WebGPUGlobeSurfaceRenderer {
         indexBuffer: wireIB.buffer,
         indexCount: wireIB.count,
         indexFormat: wireIB.format,
+        boundingVolume:
+          (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
+          surfaceTile.boundingSphere3D,
+        isSubsequentPass: false,
+      },
+    ];
+  }
+
+  /**
+   * C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture sibling of
+   * `createTileCommands`. Builds ONE single-color-target draw command for a
+   * tile, for rendering the opaque globe surface into a dynamic-environment-map
+   * cube face. The caller (`runSceneCapture` in
+   * `WebGPUDynamicEnvironmentMapManager`) has already repointed
+   * `uniformState` at the active cube-face camera via
+   * `uniformState.updateCamera(faceCamera)`, so `createCameraUniformBufferHelper`
+   * packs the FACE-camera RTE matrices for free — the same override-camera seam
+   * the WebGL shadow loop uses.
+   *
+   * Crucially this does NOT run the on-screen `createTileCommands`
+   * `_scenePipelineFormatGeneration` reset (which wipes `_pipelineCache`): the
+   * capture pipeline lives in the SEPARATE `_capturePipelineCache`, so a capture
+   * build never invalidates the on-screen globe pipelines (no per-frame FPS
+   * regression while capture is active). Reuses the standard group 0/1/2 bind
+   * groups + the placeholder effects group; the single imagery pass is enough
+   * for a reflection source (no multi-layer blend, no material, no debug, no
+   * translucency).
+   *
+   * @param faceFormat the cube-face color attachment format (`rgba8unorm` /
+   *   `rgba16float`) — keys the capture pipeline variant.
+   * @returns one capture command, or null while the pipeline is still
+   *   materializing (the tile is simply omitted from this capture frame) or the
+   *   tile has no renderable mesh.
+   */
+  getOrCreateCaptureTileCommands(
+    tile: {
+      level: number;
+      x: number;
+      y: number;
+      rectangle: CesiumRectangle;
+      boundingVolume?: CesiumBoundingSphere;
+    },
+    surfaceTile: CesiumGlobeSurfaceTile,
+    tileProvider: CesiumGlobeTileProvider,
+    frameState: CesiumFrameState,
+    uniformState: CesiumUniformState,
+    faceFormat: GPUTextureFormat,
+  ): TileDrawDescriptor[] | null {
+    if (!this._isInitialized || !this._device) return null;
+
+    if (!this._centralPipelineCache) {
+      this._centralPipelineCache =
+        (
+          frameState.context as unknown as {
+            webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+          }
+        ).webgpuPipelineCache ?? null;
+    }
+
+    // Mirror the on-screen log-depth + imagery-reduced state so the capture
+    // pipeline's shader-define set lines up with the bind-group layout. (The
+    // on-screen `createTileCommands` sets `_logDepthEnabled` each frame; capture
+    // runs in `primitives.update`, BEFORE `globe.render`, so read the master
+    // switch directly here to stay in sync on the first capture of the frame.)
+    this._logDepthEnabled =
+      (frameState.context as unknown as { _logDepthWriteEnabled?: boolean })
+        ._logDepthWriteEnabled ?? false;
+
+    const device = this._device;
+    const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
+    if (!mesh) return null;
+
+    this._bindGroupCache.beginFrame(frameState.frameNumber ?? 0);
+
+    const tileKey = getTileKeyHelper(tile);
+    const gpuResources = getOrCreateTileBuffersHelper(this, tileKey, mesh);
+    if (!gpuResources) return null;
+
+    const pipeline = selectCapturePipelineHelper(
+      this,
+      gpuResources.isQuantized,
+      gpuResources.hasNormals,
+      gpuResources.hasWebMercatorT,
+      gpuResources.strideBytes,
+      faceFormat,
+      gpuResources.hasGeodeticSurfaceNormals,
+    );
+    // `selectCapturePipeline` resolves synchronously, so this is null only if
+    // the device is unavailable — skip the tile this capture frame.
+    if (!pipeline) return null;
+
+    // First imagery pass only — the reflection source needs real imagery color,
+    // but not the multi-layer blend or material/debug variants.
+    const imageryCollection = surfaceTile.imagery;
+    const readyLayers: CesiumTileImagery[] = [];
+    if (imageryCollection) {
+      for (let i = 0; i < imageryCollection.length; i++) {
+        const tileImagery = imageryCollection[i];
+        if (
+          tileImagery &&
+          tileImagery.readyImagery &&
+          tileImagery.readyImagery.imageryLayer
+        ) {
+          readyLayers.push(tileImagery);
+        }
+      }
+    }
+    const captureLayers = readyLayers.slice(0, this._imagerySlotCount);
+
+    const cameraUB = createCameraUniformBufferHelper(
+      this,
+      device,
+      uniformState,
+      surfaceTile,
+      tileProvider,
+      mesh,
+      frameState,
+      tile,
+    );
+    const tileUB = createTileUniformBufferHelper(
+      this,
+      device,
+      surfaceTile,
+      tileProvider,
+      frameState,
+      tile,
+      captureLayers,
+      false,
+    );
+
+    const bg0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
+    const bindGroup1 = this._createTextureBindGroup(device, captureLayers);
+    const bindGroup2 = this._createWaterOceanBindGroup(
+      device,
+      surfaceTile,
+      tileProvider,
+    );
+
+    return [
+      {
+        pipeline,
+        bindGroups: [
+          bg0.bindGroup,
+          bindGroup1,
+          bindGroup2,
+          this._placeholderEffectsBG!,
+        ],
+        bindGroup0DynamicOffsets: bg0.dynamicOffsets,
+        vertexBuffer: gpuResources.vertexBuffer,
+        indexBuffer: gpuResources.indexBuffer,
+        indexCount: gpuResources.indexCount,
+        indexFormat: gpuResources.indexFormat,
         boundingVolume:
           (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
           surfaceTile.boundingSphere3D,

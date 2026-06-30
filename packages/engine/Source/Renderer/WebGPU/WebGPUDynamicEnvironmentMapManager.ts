@@ -25,6 +25,11 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import Transforms from "../../Core/Transforms.js";
 import { generateIBLMaps } from "./WebGPUIBLPipeline.js";
 import type { IBLPipelineCache } from "./WebGPUIBLPipeline.js";
+import {
+  runSceneCapture,
+  type SceneCaptureCache,
+  type SceneCaptureManager,
+} from "./WebGPUDynamicEnvironmentMapCapture.js";
 
 /** Minimal interface for the upstream DynamicEnvironmentMapManager. */
 interface DynEnvMapManagerLike {
@@ -53,6 +58,11 @@ interface DynEnvMapManagerLike {
   // SHUniforms binding 36 so models evaluate SH instead of sampling the
   // irradiance cubemap (matching WebGL's czm_sphericalHarmonics path).
   _webgpuSHBuffer?: GPUBuffer | null;
+  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — opt-in (WebGPU only). When true AND
+  // `context.sceneCaptureReflections` is true, `runSceneCapture` renders the
+  // opaque globe surface into the env cube's 6 faces so terrain reflects in
+  // water / PBR models. Default false → no capture pass (byte-identical).
+  enableSceneCapture?: boolean;
   // Optional sky tuning. When undefined the manager uses sensible
   // studio-HDR defaults (warm zenith, cool ground, white sun).
   skyColor?: { red: number; green: number; blue: number };
@@ -141,6 +151,23 @@ interface DynEnvMapCache {
   // scene still re-darkens its IBL when cloud cover changes. NaN sentinel forces
   // the first-frame run (same convention as `lastSunDir*`).
   lastCloudCoverage: number;
+  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — transient `size×size` depth target
+  // shared across the 6 capture face passes (cleared per face). Lazily
+  // allocated INSIDE `runSceneCapture` (OFF allocates nothing) and reallocated
+  // when `size` changes. Format `depth24plus` (no stencil) — matches the
+  // capture pipeline variant, deliberately different from the on-screen
+  // `depth24plus-stencil8`.
+  captureDepthTexture: GPUTexture | null;
+  captureDepthView: GPUTextureView | null;
+  captureDepthSize: number;
+  // C2-25 — frames since the last capture pass ran, for the every-K-frames
+  // debounce (behind the capture flags, so OFF gating is byte-identical).
+  framesSinceCapture: number;
+  // C2-25 — world-space eye the last capture was run from, for the
+  // camera-translation debounce. NaN sentinel forces the first capture.
+  lastCaptureCameraX: number;
+  lastCaptureCameraY: number;
+  lastCaptureCameraZ: number;
 }
 
 /**
@@ -199,6 +226,14 @@ function updateWebGPUDynamicEnvironmentMap(
       lutMsView: null,
       lastUsedMultiScatterLut: false,
       lastCloudCoverage: NaN,
+      // C2-25 ENV-SCENE-CAPTURE (Batch 446) — lazy capture-depth + debounce.
+      captureDepthTexture: null,
+      captureDepthView: null,
+      captureDepthSize: 0,
+      framesSinceCapture: 0,
+      lastCaptureCameraX: NaN,
+      lastCaptureCameraY: NaN,
+      lastCaptureCameraZ: NaN,
     } as DynEnvMapCache;
   }
 
@@ -355,8 +390,61 @@ function updateWebGPUDynamicEnvironmentMap(
     Math.abs(liveCloudCoverage - cache.lastCloudCoverage) <
     CLOUD_COVERAGE_REFRESH_EPSILON
   );
-  if (cache.needsUpdate || sunMoved || lutPathChanged || cloudCoverageMoved) {
+  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture refresh gate. `wantCapture`
+  // is the double opt-in + SCENE3D check (cheap; no GPU). When OFF the whole
+  // block below is byte-identical (wantCapture false → captureRefresh false →
+  // no extra gate term, and `runSceneCapture` is never reached). When ON, a
+  // moving eye or every-K-frames re-runs the FULL refresh — because each
+  // `runProceduralSkyFill` rewrites the whole cube (erasing last capture's
+  // terrain), so the terrain composite (`runSceneCapture`, below) must re-run
+  // whenever the sky is re-filled, and conversely a camera move must force a
+  // sky-fill + re-composite so the reflection tracks the eye.
+  const wantCapture =
+    (frameState.context as unknown as { sceneCaptureReflections?: boolean })
+      .sceneCaptureReflections === true &&
+    manager.enableSceneCapture === true &&
+    frameState.mode === 3; /* SceneMode.SCENE3D */
+  cache.framesSinceCapture++;
+  let captureRefresh = false;
+  if (wantCapture) {
+    const px = manager._position;
+    const cdx = px.x - cache.lastCaptureCameraX;
+    const cdy = px.y - cache.lastCaptureCameraY;
+    const cdz = px.z - cache.lastCaptureCameraZ;
+    // NaN (first capture) coerces > threshold → captures on the first eligible
+    // frame; otherwise re-capture on >500 m eye move OR every K frames.
+    const captureMoved = !(
+      cdx * cdx + cdy * cdy + cdz * cdz <
+      CAPTURE_CAMERA_MOVE_SQ
+    );
+    captureRefresh =
+      captureMoved || cache.framesSinceCapture >= CAPTURE_EVERY_K_FRAMES;
+  }
+  if (
+    cache.needsUpdate ||
+    sunMoved ||
+    lutPathChanged ||
+    cloudCoverageMoved ||
+    captureRefresh
+  ) {
     runProceduralSkyFill(device, cache, manager, frameState);
+    // C2-25 — composite the opaque globe surface over the just-filled sky, in
+    // all 6 faces, BEFORE the IBL prefilter + SH projection read the cube — so
+    // terrain (not just sky) flows into model / water reflections. No-op when
+    // capture is OFF (the function self-gates). Records its own bookkeeping
+    // (framesSinceCapture / lastCaptureCamera*) only when it actually ran.
+    if (wantCapture) {
+      runSceneCapture(
+        device,
+        cache as unknown as SceneCaptureCache,
+        manager as unknown as SceneCaptureManager,
+        frameState,
+      );
+      cache.framesSinceCapture = 0;
+      cache.lastCaptureCameraX = manager._position.x;
+      cache.lastCaptureCameraY = manager._position.y;
+      cache.lastCaptureCameraZ = manager._position.z;
+    }
     runIBLPrefilter(device, cache, frameState);
     // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- project the
     // freshly-filled radiance cube to SH-L2. Submitted after the sky fill
@@ -406,6 +494,13 @@ const SUN_REFRESH_EPSILON_SQ = 0.005 * 0.005;
 // smaller moves are visually imperceptible after the SH projection. NaN-against-
 // anything coerces > epsilon, so the first frame always runs.
 const CLOUD_COVERAGE_REFRESH_EPSILON = 1.0 / 256.0;
+
+// C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture debounce (behind the double
+// flag, so OFF gating is byte-identical). Re-capture when the reflective owner's
+// eye moves > 500 m, OR at least every K frames so a slow drift / sun-static
+// scene still keeps the reflected terrain fresh. Caps the 6-pass capture cost.
+const CAPTURE_CAMERA_MOVE_SQ = 500.0 * 500.0;
+const CAPTURE_EVERY_K_FRAMES = 8;
 
 // ─── Procedural sky compute pass (Audit A.12, Batch 131) ─────────────────
 //

@@ -381,6 +381,30 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `GlobeTerrain.wgsl`.
    */
   GLOBE_IMAGERY_REDUCED: 1 << 16,
+
+  /**
+   * C2-25 ENV-SCENE-CAPTURE (Batch 446). Single-color-target globe fragment
+   * variant for the dynamic-environment-map scene-capture pass. The on-screen
+   * globe pipeline emits a 2-location `FragOutput { @location(0) color,
+   * @location(1) normalRoughness }` into the scene G-buffer (color + MRT
+   * normal). A capture pass renders one cube face into a SINGLE `rgba8unorm` /
+   * `rgba16float` color attachment (no G-buffer slot-1, no MSAA, no stencil) —
+   * declaring the slot-1 `@location(1)` output without a matching target would
+   * be a WebGPU validation error, and vice-versa. When this bit is set,
+   * `GlobeTerrain.wgsl`'s `FragOutput` struct + `makeFragOutput` helper drop the
+   * `@location(1) normalRoughness` member so the fragment stage matches the
+   * single-target capture pipeline.
+   *
+   * Per-pass selection: only the capture sibling
+   * (`getOrCreateCaptureTileCommands` → the capture pipeline branch in
+   * `WebGPUGlobeSurfacePipelines`) ORs this bit in; the on-screen pipeline never
+   * does. So at `defines=0` (and every on-screen variant) the preprocessor emits
+   * the `//>>else` branch byte-for-byte equal to today's source → the on-screen
+   * shader-module hash is unchanged → no on-screen pipeline rebuild.
+   *
+   * Consumer: `GlobeTerrain.wgsl` (FragOutput / makeFragOutput).
+   */
+  CAPTURE_MODE: 1 << 17,
 } as const);
 
 /**

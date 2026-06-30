@@ -12895,3 +12895,15 @@ Two bugs caught by running the FULL standing-gate matrix against the post-log-de
 **Verification.** `probe-weather-presets.mjs` + the clip-zoom read that caught the empty deck (a whole-frame diff was nonzero from fog/atmosphere even with the deck empty — only the 1:1 clip-zoom showed the empty sky). Commit `e36eadedb5` (Batch 405).
 
 **Files:** `Apps/Sandcastle/gallery/WebGPU Weather Inspector.html` (presets), `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl` (the wsample.r reads — unchanged, documented).
+
+## Bug 446 — C2-25 globe scene-capture rendered FLAT olive (async capture-pipeline starvation) (2026-06-29)
+
+**Symptom.** With `sceneCaptureReflections` ON, the globe captured into the env-cube faces showed a flat olive fill (mean `[72,73,46]`, nadir face pixel std-dev **0.00**) instead of textured terrain — so a reflective surface reflected flat color, not ground. The `[72,73,46]` was the procedural sky's nadir-fill showing through.
+
+**Root cause (instrumented).** The globe geometry was NOT drawing into the faces. Pragma-wrapped diagnostics over one capture run: tiles were available + iterated (`tilesAvailable:6, tilesIter:36, withReadyImagery:6`) but `cmdsBuilt:0, draws:0, nullCmds:36`, all because `selectCapturePipeline` returned null. `resolveDiag: { capKickoff:1, capResolved:1, capPendingReturn:180, capSyncHit:0 }`, `pipeErrors:null` — the capture pipeline was kicked off via `createRenderPipelineAsync`, resolved fine, but `resolveGlobePipelineEntry` returns null-while-pending, and the every-8-frames capture debounce + `runProceduralSkyFill` rewriting the whole cube each refresh meant any async-pending capture frame read back permanently flat. Confirming test: 250 capture frames flipped `noPipeline → ok:864` and terrain appeared. The capture path was correct but **starved by async pipeline materialization**.
+
+**Fix.** Added `resolveCapturePipelineEntrySync()` (WebGPUGlobeSurfacePipelines.ts): on a `_capturePipelineCache` miss it builds the single capture-variant pipeline **synchronously** via `device.createRenderPipeline` (one-time compile stall for an opt-in, debounced pass — far better than flat reflections). `selectCapturePipeline` calls the sync resolver; `resolveGlobePipelineEntry` (used by the on-screen path) restored byte-for-byte to async. Reachable only via the double-flag-gated capture path → OFF parity unaffected.
+
+**Verification.** `probe-scene-capture-cardinal.mjs` (eye at Big Sur): nadir face std-dev 0.00 → **23.63**, captured color matches the top-down ground truth (California coast, ocean-west/land-east — confirms the face-basis E/W mapping is correct). OFF-parity probe still inert. **Known V1 limit (not this bug):** side faces looking outward still show coarse/flat terrain toward the horizon because capture reuses the main-camera tile set — tracked as `ENV-CAPTURE-PER-FACE-LOD` (needs per-face quadtree re-selection).
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts` (sync capture resolver). Batch 446.

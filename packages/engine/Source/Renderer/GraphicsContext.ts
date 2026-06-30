@@ -534,6 +534,20 @@ export interface WebGPURendererOptions {
    * @default false
    */
   envMapMultiScatter?: boolean;
+
+  /**
+   * C2-25 ENV-SCENE-CAPTURE (Batch 446). When true, AND a
+   * {@link DynamicEnvironmentMapManager} has `enableSceneCapture = true`, the
+   * dynamic environment cube is refreshed each update by rendering the opaque
+   * globe surface (later: 3D Tiles + glTF) into its 6 faces from 6 ENU
+   * cube-face cameras centered on the reflective owner — so terrain shows up in
+   * water / PBR reflections rather than only the procedural sky. Default
+   * `false` runs ZERO extra GPU passes and leaves the env cube filled solely by
+   * the procedural sky (byte-identical to the shipped parity path). Read by
+   * `WebGPUDynamicEnvironmentMapManager`.
+   * @default false
+   */
+  sceneCaptureReflections?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════

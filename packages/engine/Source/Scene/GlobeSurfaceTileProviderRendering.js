@@ -865,6 +865,21 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     _webgpuGlobeRenderers.set(device, _webgpuGlobeRenderer);
   }
 
+  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — publish the per-device globe renderer
+  // + tile provider so the dynamic-environment-map scene-capture pass
+  // (`runSceneCapture`, which runs in `primitives.update`, BEFORE this globe
+  // render path) can build its own per-face globe commands from the SAME
+  // visible tile set (`tileProvider._quadtree._tilesToRender`). It therefore
+  // reads LAST frame's published refs — fine, since the renderer instance is
+  // frame-stable and the visible tile set barely changes per frame. Gated on
+  // the context flag so OFF (the default) publishes nothing → byte-identical.
+  if (context.sceneCaptureReflections === true) {
+    context._webgpuSceneCaptureSources = {
+      globeRenderer: _webgpuGlobeRenderer,
+      tileProvider: tileProvider,
+    };
+  }
+
   const uniformState = context.uniformState;
 
   // Wireframe debug mode uses line-list topology pipelines

@@ -1318,6 +1318,19 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * C2-25 ENV-SCENE-CAPTURE (Batch 446). When true (AND a
+   * `DynamicEnvironmentMapManager` opts in via `enableSceneCapture`), the
+   * dynamic env cube refresh renders the opaque globe surface into its 6 faces
+   * from 6 ENU cube-face cameras so terrain reflects in water / PBR models.
+   * Default `false` keeps the env cube filled by the procedural sky alone
+   * (byte-identical to the shipped parity path; zero extra GPU passes). Read by
+   * `WebGPUDynamicEnvironmentMapManager`.
+   */
+  get sceneCaptureReflections(): boolean {
+    return this._options.webgpu?.sceneCaptureReflections ?? false;
+  }
+
+  /**
    * The canvas element associated with this context
    */
   get canvas(): HTMLCanvasElement {

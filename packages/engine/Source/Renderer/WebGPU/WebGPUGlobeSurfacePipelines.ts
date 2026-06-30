@@ -69,6 +69,18 @@ export interface PipelineHost extends ShaderFactoryHost {
   readonly _pipelineCache: Map<string, GlobePipelineEntry>;
   readonly _debugFragmentPipelineCache: Map<string, GlobePipelineEntry>;
   /**
+   * C2-25 ENV-SCENE-CAPTURE (Batch 446) — SEPARATE cache for the single-target
+   * scene-capture pipeline variants, keyed on
+   * `faceFormat + captureDepthFormat + sampleCount=1 + CAPTURE_MODE`. It is
+   * INTENTIONALLY disjoint from `_pipelineCache` and is NEVER wiped by the
+   * on-screen `createTileCommands` `_scenePipelineFormatGeneration` reset — the
+   * capture format is fixed by the env cube (`rgba8unorm` / `rgba16float`), not
+   * the canvas, so a canvas-format / MSAA flip must not invalidate it, and a
+   * capture build must not bump the on-screen generation (which would force a
+   * full on-screen globe pipeline rebuild every frame capture is active).
+   */
+  readonly _capturePipelineCache: Map<string, GlobePipelineEntry>;
+  /**
    * Read+write — the central pipeline cache reference. Captured lazily
    * by `createTileCommands` from `frameState.context`; this module never
    * writes it (the renderer's outer code does the lazy capture).
@@ -132,6 +144,15 @@ export function buildPipelineDescriptor(
   // front-to-back ordering through the translucent planet instead of
   // the unsorted single-pass alpha blend used pre-Batch-182.
   translucentBackFace: boolean = false,
+  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — when set to a cube-face texture
+  // format, builds the SINGLE-color-target scene-capture variant: ORs
+  // `ShaderDefine.CAPTURE_MODE` into the defines (the production module then
+  // drops the G-buffer slot-1 `@location(1)` output), emits ONE color target
+  // (`{format: captureFaceFormat}`, no MRT slot-1), a no-stencil `depth24plus`
+  // depth target, and NO MSAA — matching the transient per-face capture render
+  // pass into `cache.faceViews[face]`. `undefined` (the default, every
+  // on-screen call site) is byte-identical to the pre-446 descriptor.
+  captureFaceFormat?: GPUTextureFormat,
 ): WebGPURenderPipelineDescriptor {
   let vertexBuffers: GPUVertexBufferLayout[];
   let entryPoint: string;
@@ -283,10 +304,14 @@ export function buildPipelineDescriptor(
   // with the pipeline's vertex buffer layout. Batch 246 — the reduced-
   // imagery bit rides along on default-limit devices so the module's
   // group-1 declarations match the 1-slot pipeline layout.
+  const isCapture = captureFaceFormat !== undefined;
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
-    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0) |
+    // C2-25 (Batch 446) — capture variant drops the G-buffer slot-1 output so
+    // the fragment stage matches the single-color-target capture pipeline.
+    (isCapture ? ShaderDefine.CAPTURE_MODE : 0);
   const productionModule = getProductionShaderModuleHelper(host, defines);
   // Phase 5 WGF-1: when the hardware clip-distances variant is requested,
   // both stages must come from the augmented module — the vertex stage
@@ -384,8 +409,15 @@ export function buildPipelineDescriptor(
   // GPUColorWrite.NONE and validates against the canvas format.
   const colorWriteMask: GPUColorWriteFlags = depthOnlyBackFace ? 0 : 0xf;
 
+  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — the capture variant renders into a
+  // single cube-face color attachment (no MRT slot-1), a no-stencil
+  // `depth24plus` depth target, and NO MSAA. The CAPTURE_MODE shader define
+  // (folded into `defines` above) drops the `@location(1)` output so the
+  // fragment stage matches the single target. The `_cap_<format>` name suffix
+  // keeps the capture pipeline distinct in any shared cache.
+  const capLabel = isCapture ? `, capture ${captureFaceFormat}` : "";
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${tbfLabel}${imgLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${tbfLabel}${imgLabel}${capLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,
@@ -414,17 +446,27 @@ export function buildPipelineDescriptor(
       // real geometry whose normals should populate the G-buffer for
       // any consumer that needs them). If a follow-up needs to mask
       // slot 1 too, gate `gbufferWriteMask` on `depthOnlyBackFace`.
-      targets: [
-        {
-          format: host._canvasFormat,
-          blend: effectiveBlend,
-          writeMask: colorWriteMask,
-        },
-        {
-          format: "rgba16float" as GPUTextureFormat,
-          writeMask: 0xf,
-        },
-      ],
+      targets: isCapture
+        ? // C2-25 (Batch 446) — single cube-face color target, no MRT slot-1.
+          // Opaque write (no blend; the per-face pass composites globe OVER the
+          // compute sky via the render-pass `loadOp: 'load'`, not a blend op).
+          [
+            {
+              format: captureFaceFormat!,
+              writeMask: 0xf,
+            },
+          ]
+        : [
+            {
+              format: host._canvasFormat,
+              blend: effectiveBlend,
+              writeMask: colorWriteMask,
+            },
+            {
+              format: "rgba16float" as GPUTextureFormat,
+              writeMask: 0xf,
+            },
+          ],
     },
     primitive: {
       topology: "triangle-list",
@@ -439,7 +481,14 @@ export function buildPipelineDescriptor(
       frontFace: "ccw",
     },
     depthStencil: {
-      format: "depth24plus-stencil8",
+      // C2-25 (Batch 446) — capture uses a transient no-stencil `depth24plus`
+      // target (deliberately different from the on-screen
+      // `depth24plus-stencil8`, which is precisely WHY the capture pipeline
+      // variant is mandatory — a single-target/no-stencil mismatch against the
+      // on-screen pipeline would be a WebGPU validation error).
+      format: isCapture
+        ? ("depth24plus" as GPUTextureFormat)
+        : "depth24plus-stencil8",
       depthWriteEnabled,
       // ALWAYS use less-equal (not less), even for the first pass.
       // Planetary-scale FP32 precision can push the globe's clip-space
@@ -450,9 +499,12 @@ export function buildPipelineDescriptor(
       // cleared depth buffer (which starts at 1.0).
       depthCompare: "less-equal",
     },
-    // Session 65 Batch 32 — match scene FB sample count.
+    // Session 65 Batch 32 — match scene FB sample count. C2-25 (Batch 446) —
+    // the capture pass is always single-sample (no MSAA), so force `undefined`.
     multisample:
-      (host._sampleCount ?? 1) > 1 ? { count: host._sampleCount! } : undefined,
+      !isCapture && (host._sampleCount ?? 1) > 1
+        ? { count: host._sampleCount! }
+        : undefined,
   };
 }
 
@@ -526,6 +578,53 @@ export function resolveGlobePipelineEntry(
   }
   // Fallback — direct synchronous creation.
   entry.pipeline = host._device!.createRenderPipeline(
+    descriptorToGPU(entry.descriptor),
+  );
+  entry.pending = false;
+  return entry.pipeline;
+}
+
+/**
+ * C2-25 ENV-SCENE-CAPTURE (Batch 446) — SYNCHRONOUS resolve for the scene-capture
+ * pipeline. Unlike {@link resolveGlobePipelineEntry} (which returns null while
+ * `createRenderPipelineAsync` cooks), this creates the pipeline synchronously via
+ * `device.createRenderPipeline` on the first miss so the very FIRST capture pass
+ * renders terrain — there is no "render every frame so a 1-frame pipeline delay
+ * is invisible" cover for the capture path: the capture pass runs at most every
+ * K frames AND `runProceduralSkyFill` rewrites the whole cube each refresh, so a
+ * missed terrain composite leaves the face showing pure sky until the NEXT
+ * refresh. A handful of async-pending capture frames therefore reads back as a
+ * permanently flat (sky-only) reflection in any short-lived / debounced capture
+ * window. The one-time synchronous compile stall (one variant per face format,
+ * realistically one) is acceptable for an opt-in, debounced pass and is far
+ * preferable to flat reflections.
+ *
+ * Still seeds the central cache's async path (so later frames + any on-screen
+ * sibling that happens to want the same key hit the cache) but does NOT depend on
+ * it for correctness.
+ */
+export function resolveCapturePipelineEntrySync(
+  host: PipelineHost,
+  entry: GlobePipelineEntry,
+): GPURenderPipeline | null {
+  if (entry.pipeline) {
+    return entry.pipeline;
+  }
+  const pipelineCache = host._centralPipelineCache;
+  if (pipelineCache) {
+    // Prefer a cached pipeline (e.g. a prior frame already built it async).
+    const sync = pipelineCache.getPipelineSync(entry.descriptor);
+    if (sync) {
+      entry.pipeline = sync;
+      entry.pending = false;
+      return sync;
+    }
+  }
+  // Not cached → build synchronously so this capture frame can draw terrain.
+  if (!host._device) {
+    return null;
+  }
+  entry.pipeline = host._device.createRenderPipeline(
     descriptorToGPU(entry.descriptor),
   );
   entry.pending = false;
@@ -626,6 +725,77 @@ export function selectPipeline(
   }
 
   return pipeline;
+}
+
+/**
+ * C2-25 ENV-SCENE-CAPTURE (Batch 446) — select the single-color-target globe
+ * terrain CAPTURE pipeline variant for the dynamic-environment-map scene-capture
+ * pass. Renders the opaque globe surface into ONE cube-face color attachment
+ * (`captureFaceFormat`), a transient no-stencil `depth24plus` depth target, and
+ * no MSAA. The CAPTURE_MODE shader define drops the G-buffer slot-1 output so
+ * the fragment stage matches the single target.
+ *
+ * Routes through the SEPARATE `_capturePipelineCache` so it never collides with
+ * — and a capture build never invalidates — the on-screen `_pipelineCache`. The
+ * cache key includes the face format (so an HDR env cube gets its own pipeline)
+ * plus the standard vertex / shader-define dimensions; `isBlend` is hardcoded
+ * false (capture is opaque, depth-write, single-pass).
+ *
+ * Culling is DISABLED (`cullMode: "none"`). The 6 ENU cube-face cameras are
+ * built with a screen-matched basis (camera-right = +∂s, camera-up = −∂t of the
+ * cube's `faceUvToDirection` convention) so the rendered texel lands exactly
+ * where the sky fill + IBL prefilter sample it back — a cube render is inherently
+ * left-handed under that convention, which flips triangle winding. Rather than
+ * fight the winding sign per face, the capture pass disables culling and lets the
+ * depth test pick the nearest surface (correct for a reflection source). See
+ * `WebGPUDynamicEnvironmentMapCapture.buildCubeFaceCamera`.
+ *
+ * Resolves the pipeline SYNCHRONOUSLY (see `resolveCapturePipelineEntrySync`) so
+ * the very first capture pass draws terrain: the capture pass is debounced + the
+ * sky fill rewrites the whole cube each refresh, so an async-pending capture
+ * frame would read back as a permanently-flat (sky-only) reflection. Returns null
+ * only if the device is unavailable (then the caller omits this tile this frame).
+ */
+export function selectCapturePipeline(
+  host: PipelineHost,
+  isQuantized: boolean,
+  hasNormals: boolean,
+  hasWebMercatorT: boolean,
+  strideBytes: number,
+  captureFaceFormat: GPUTextureFormat,
+  hasGeodeticSurfaceNormals: boolean = false,
+): GPURenderPipeline | null {
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0) |
+    ShaderDefine.CAPTURE_MODE;
+  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}_CAP_${captureFaceFormat}|${defines.toString(16)}`;
+  let entry = host._capturePipelineCache.get(cacheKey);
+  if (!entry) {
+    const descriptor = buildPipelineDescriptor(
+      host,
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      false, // isBlend — capture is opaque (depth-write)
+      strideBytes,
+      DebugFragmentMode.NONE,
+      false, // useClipDistances
+      hasGeodeticSurfaceNormals,
+      true, // disableCulling — cube-face render is left-handed; depth picks nearest
+      false, // depthOnlyBackFace
+      false, // translucentBackFace
+      captureFaceFormat, // → single-target capture variant
+    );
+    entry = { descriptor, pipeline: null, pending: false };
+    host._capturePipelineCache.set(cacheKey, entry);
+  }
+  // Synchronous resolve (NOT the async `resolveGlobePipelineEntry`): the capture
+  // pass is debounced + sky-rewrites each refresh, so an async-pending frame
+  // reads back as a permanently-flat (sky-only) reflection. Build the one capture
+  // variant synchronously on first miss so the first capture draws terrain.
+  return resolveCapturePipelineEntrySync(host, entry);
 }
 
 /**

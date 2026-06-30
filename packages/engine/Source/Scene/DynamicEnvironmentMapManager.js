@@ -201,6 +201,21 @@ class DynamicEnvironmentMapManager {
      * @default 0.31
      */
     this.groundAlbedo = options.groundAlbedo ?? 0.31;
+
+    /**
+     * C2-25 ENV-SCENE-CAPTURE (Batch 446, WebGPU only) — opt-in flag that, when
+     * paired with the context option <code>contextOptions.webgpu.sceneCaptureReflections</code>,
+     * renders the opaque globe surface (later: 3D Tiles + glTF) into the dynamic
+     * environment cube's 6 faces from 6 ENU cube-face cameras, so terrain
+     * appears in water / PBR reflections instead of just procedural sky.
+     * Default <code>false</code> — both this flag AND the context option must be
+     * true for any capture pass to run; when either is false the env cube is
+     * filled only by the procedural sky (byte-identical to the shipped path).
+     * Ignored on WebGL.
+     * @type {boolean}
+     * @default false
+     */
+    this.enableSceneCapture = options.enableSceneCapture ?? false;
   }
 
   /**

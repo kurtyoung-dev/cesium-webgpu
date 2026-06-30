@@ -2687,7 +2687,10 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
 // Batch 116 postmortem).
 struct FragOutput {
   @location(0) color: vec4<f32>,
+  //>>ifdef CAPTURE_MODE
+  //>>else
   @location(1) normalRoughness: vec4<f32>,
+  //>>endif
   //>>ifdef LOG_DEPTH
   @builtin(frag_depth) depth: f32,
   //>>endif
@@ -2702,7 +2705,10 @@ struct FragOutput {
 fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
   var out: FragOutput;
   out.color = color;
+  //>>ifdef CAPTURE_MODE
+  //>>else
   out.normalRoughness = vec4<f32>(normalEC, 0.5);
+  //>>endif
   //>>ifdef LOG_DEPTH
   // Write logarithmic frag depth. g_fragLogDepth (the interpolated
   // depthFromNearPlusOne) is stashed at the top of fragmentMain so every
