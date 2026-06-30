@@ -518,6 +518,38 @@ export const ShaderDefine = Object.freeze({
    * GENERATED metadata chunk.
    */
   MODEL_HAS_PROPERTY_TABLES: 1 << 20,
+
+  /**
+   * Metadata-pick producer for `scene.pickMetadata` on WebGPU (DP-H46e). This
+   * is the WGSL sibling of the GLSL `MetadataPickingPipelineStage` +
+   * `DerivedCommand.createPickMetadataDerivedCommand`. When set,
+   * `ModelPBRComplete.wgsl` activates its `//>>ifdef METADATA_PICKING_ENABLED`
+   * fragment entry (`fragmentPickMetadataMain`), which calls the GENERATED
+   * `metadataPickingStage(metadata)` — appended to the metadata WGSL chunk by
+   * `MetadataWGSLPipelineStage.generateMetadataPickWGSL` — and writes the
+   * selected property's components (offset/scale + normalization UN-applied,
+   * mirroring `getSourceValueStringComponent`) into the pick-FBO RGBA8 channels
+   * that `MetadataPicking.decodeMetadataValues` decodes back to the value.
+   *
+   * Like `CAPTURE_MODE` and `LOG_DEPTH`, this bit is a render-MODE bit
+   * intentionally OUTSIDE `MATERIAL_DEFINE_MASK`: it does NOT add a material
+   * binding, change the vertex layout, or alter the pipeline layout — it only
+   * forks the shader MODULE (the extra fragment entry + the appended
+   * `metadataPickingStage`). `WebGPUModelPipelineCache._getOrCreateShaderModule`
+   * preserves it from the raw `materialDefines` arg (like the capture bit) so
+   * the pick-metadata pipeline gets a module that compiles the entry, while
+   * on-screen / display callers never set it and keep a byte-identical module.
+   *
+   * The pick-metadata module is additionally keyed by a hash that folds in the
+   * picked property name (via `_metadataClassHash`), so the module is cached
+   * per (base-class, picked-property) — a single compiled module serves every
+   * pick of that property regardless of pick coordinate (no per-component
+   * pipeline explosion).
+   *
+   * Consumers: `ModelPBRComplete.wgsl` (`fragmentPickMetadataMain`) + the
+   * GENERATED metadata-pick chunk.
+   */
+  METADATA_PICKING_ENABLED: 1 << 21,
 } as const);
 
 /**

@@ -3578,6 +3578,75 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   return material.pickColor;
 }
 
+// DP-H46e — metadata-pick fragment entry (scene.pickMetadata producer). The
+// WGSL sibling of the GLSL `metadataPickingStage` path in `ModelFS.glsl` (the
+// `#ifdef METADATA_PICKING_ENABLED` branch that sets `color = metadataValues`).
+//
+// Gated by `//>>ifdef METADATA_PICKING_ENABLED` so the entry only compiles in
+// the pick-metadata module variant — that's the only module where the GENERATED
+// metadata-pick chunk (which appends `fn metadataPickingStage(metadata) ->
+// vec4<f32>`) is prepended. Display / on-screen / regular-pick modules never set
+// the bit, so this entire entry is stripped at preprocess time and their module
+// is byte-identical (the bit is also OUTSIDE MATERIAL_DEFINE_MASK, so it never
+// touches the BGL / pipeline layout / vertex layout).
+//
+// It populates `metadata` exactly as the display path does (the SAME
+// `initializeMetadata` from the generated chunk, reading the attribute scalar /
+// property textures / property-table row), then `metadataPickingStage` packs the
+// picked property's components — offset/scale + normalization UN-applied — into
+// the RGBA8 pick-FBO channels that `MetadataPicking.decodeMetadataValues` reads
+// back. No lighting / PBR / IBL is evaluated (the pick FBO only carries the
+// metadata bytes). Alpha-mask + blend discards still run so masked / fully
+// transparent fragments don't claim the metadata pick (parity with
+// fragmentPickMain / the GLSL metadata pick).
+//>>ifdef METADATA_PICKING_ENABLED
+@fragment fn fragmentPickMetadataMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  let flags = material.materialFlags;
+
+  // Resolve baseColor.a for the mask / blend discards (same minimal path as
+  // fragmentPickMain — the metadata pass doesn't need full shading).
+  var baseColor = material.baseColorFactor;
+  if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
+    baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
+                          material.diffuseFactor_b, material.diffuseFactor_a);
+    if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
+      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+      baseColor = baseColor * tc;
+    }
+  } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
+    let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+    baseColor = baseColor * tc;
+  }
+  if (hasFlag(flags, FLAG_HAS_VERTEX_COLORS)) {
+    baseColor = baseColor * input.color0;
+  }
+  if (hasFlag(flags, FLAG_ALPHA_MODE_MASK)) {
+    if (baseColor.a < material.alphaCutoff) { discard; }
+  }
+  if (hasFlag(flags, FLAG_ALPHA_MODE_BLEND)) {
+    if (baseColor.a < 0.004) { discard; }
+  }
+
+  // Populate the metadata exactly as the display path does. The texCoord1 arg
+  // falls back to texCoord0 when the primitive lacks TEXCOORD_1 (same as the
+  // display call site). `input.metadataValue` carries the attribute scalar when
+  // MODEL_HAS_METADATA is set; for texture-/table-only models it's 0.0 and the
+  // generated initializer ignores it.
+  //>>ifdef MODEL_HAS_TEXCOORD_1
+  let metaPickTC1 = input.texCoord1;
+  //>>else
+  let metaPickTC1 = input.texCoord0;
+  //>>endif
+  //>>ifdef MODEL_HAS_METADATA
+  let pickMetadata = initializeMetadata(input.metadataValue, input.texCoord0, metaPickTC1, input.featureId0);
+  //>>else
+  let pickMetadata = initializeMetadata(0.0, input.texCoord0, metaPickTC1, input.featureId0);
+  //>>endif
+
+  return metadataPickingStage(pickMetadata);
+}
+//>>endif
+
 // TAA Slice 2e (Batch 106) — velocity-only fragment entry. Writes per-
 // pixel screen-space motion to a single rg16float color attachment
 // (the scene-FB velocity texture allocated by `ensureVelocityTexture`,

@@ -50,7 +50,11 @@
  * @private
  */
 
-import type { PickKind, PickTarget } from "../GraphicsContext.js";
+import type {
+  PickKind,
+  PickTarget,
+  PickTargetField,
+} from "../GraphicsContext.js";
 import type { WebGPURenderPipelineDescriptor } from "./WebGPURenderPipelineCache.js";
 
 /**
@@ -142,11 +146,22 @@ export function ensurePickId(
     allowAllocate?: boolean;
     idKey?: string;
     kind?: PickKind;
+    /**
+     * DP-H46e — optional `detail` payload folded into the pick object so the
+     * backend-agnostic `Scene.pickMetadata` orchestration (which reads
+     * `pickedObject.detail.model.structuralMetadata`) and any other
+     * detail-consuming caller see the SAME shape WebGL's
+     * `PickingPipelineStage.buildPickObject` produces (`{ primitive, detail: {
+     * model, node, primitive } }`). Omitted by every existing caller so the
+     * pick object is byte-identical (`{ primitive, id }`) for them.
+     */
+    detail?: Record<string, PickTargetField>;
   },
 ): CesiumPickId | undefined {
   const allowAllocate = options?.allowAllocate ?? true;
   const idKey = options?.idKey;
   const kind: PickKind = options?.kind ?? "primitive";
+  const detail = options?.detail;
 
   if (idKey !== undefined) {
     const multi = cache as MultiPickIdCache;
@@ -163,10 +178,10 @@ export function ensurePickId(
     if (!allowAllocate) {
       return undefined;
     }
-    const created = context.createPickId(
-      { primitive: target, id: idKey },
-      kind,
-    );
+    const pickObject: PickTarget = detail
+      ? { primitive: target, id: idKey, detail }
+      : { primitive: target, id: idKey };
+    const created = context.createPickId(pickObject, kind);
     multi.pickIds[idKey] = created;
     return created;
   }
@@ -389,6 +404,12 @@ export interface DrawCommandWithDerivedSlot {
       pickPrecisePass1Command?: unknown;
       pickPrecisePass2Command?: unknown;
     };
+    // DP-H46e — metadata-pick slot. Materialized only during a
+    // `scene.pickMetadata` pass (frameState.pickingMetadata true); the
+    // dispatcher returns `pickMetadataCommand` ahead of the regular pick slot.
+    pickingMetadata?: {
+      pickMetadataCommand?: unknown;
+    };
   } & Record<string, unknown>;
 }
 
@@ -468,4 +489,30 @@ export function attachPickVariantsToColorCommand<TPick>(
   if (variants.precisePass2 !== undefined) {
     picking.pickPrecisePass2Command = variants.precisePass2;
   }
+}
+
+/**
+ * DP-H46e — wire a metadata-pick command onto the color command's
+ * `derivedCommands.pickingMetadata.pickMetadataCommand` slot so the
+ * `selectCommandVariant` dispatcher (in `WebGPUSceneRenderer.ts`) returns it
+ * during a `scene.pickMetadata` pass (`frameState.pickingMetadata === true`).
+ *
+ * Idempotent — replaces the slot on each call so a re-pick of a different
+ * property updates the command.
+ *
+ * @param colorCommand - The base color command emitted into the command list.
+ * @param pickMetadataCommand - The metadata-pick variant (pickOnly: true).
+ *
+ * @private
+ */
+export function attachPickMetadataToColorCommand<TPick>(
+  colorCommand: DrawCommandWithDerivedSlot,
+  pickMetadataCommand: TPick,
+): void {
+  let derived = colorCommand.derivedCommands;
+  if (!derived) {
+    derived = {};
+    colorCommand.derivedCommands = derived;
+  }
+  derived.pickingMetadata = { pickMetadataCommand };
 }

@@ -18,7 +18,28 @@ emitted). Feature-ID source = the per-vertex `_FEATURE_ID_0` attribute (`input.f
 retains the packed RGBA8 bytes on the table Texture (`_propertyTableTextureData`) so the WebGPU backend
 can re-upload them. Verified on BuildingsMetadata (per-feature `height` paints distinct colors; plain +
 attribute-only + property-texture-only stay table-path-inactive; 0 device/console errors).
-**Remaining:** e (pickMetadata producer), f (parity probe + Sandcastle + doc reconcile). Follow-up
+· ✅ **DP-H46e IMPLEMENTED** (uncommitted — `scene.pickMetadata` PRODUCER on WebGPU): new
+`METADATA_PICKING_ENABLED` ShaderDefine bit `1<<21` (render-MODE bit, OUTSIDE `MATERIAL_DEFINE_MASK`
+like `CAPTURE_MODE`/`LOG_DEPTH`), `fragmentPickMetadataMain` WGSL entry (populates metadata via the same
+`initializeMetadata`, calls the GENERATED `metadataPickingStage(metadata)→vec4`), `generateMetadataPickWGSL`
+codegen (appends `metadataPickingStage` that reads the picked property's field + UN-applies offset/scale +
+normalization per `buildPickSourceComponent`, mirroring `getSourceValueStringComponent`, and packs into the
+pick-FBO RGBA8 — module cached per (base-class, picked-property) via a property-folded hash). Renderer builds
+`derivedCommands.pickingMetadata.pickMetadataCommand` only during a metadata-pick pass; `getPickMetadataPipeline`
++ `createPickMetadataPipeline` + `setMetadataPickWGSL` on the pipeline cache. **Also fixed a blocking gap:** the
+WebGPU model pick object lacked `detail.model`, so `Scene.pickMetadata`'s `pickedObject.detail.model.structuralMetadata`
+guard bailed before reaching ANY producer — `ensurePickId` now folds `detail: { model }` into the pick payload
+(WebGL parity via `PickingPipelineStage.buildPickObject`). Verified on SimplePropertyTexture (property TEXTURE,
+class `buildingComponents`): WebGPU `scene.pickMetadata` returns non-null, pixel-varying decoded values that fall
+100% within the WebGL decoded range + ~91-100% exact value-set overlap (insideTemperature/outsideTemperature
+UINT8, insulation normalized-UINT8); 0 device/console errors; color render unchanged.
+**KNOWN UPSTREAM LIMIT:** `Scene/getMetadataProperty.js` resolves ONLY property TEXTURES (it explicitly bails for
+attributes/tables — cesium issue #12225), so `scene.pickMetadata` reaches the producer only for property textures
+on BOTH backends today; the WebGPU producer reads attributes+tables too (codegen is type-agnostic) but the
+orchestration's property resolver gates it. Also: non-normalized FLOAT32/INT16/INT32 scalars are lossy through the
+RGBA8 byte pick path on BOTH backends (`getSourceValueString` divides by the type max → ~0 byte) — a shared WebGL
+limitation, not a WebGPU gap.
+**Remaining:** f (parity probe + Sandcastle + doc reconcile). Follow-up
 carried from b: full multi-component ATTRIBUTE transport (today only the first scalar over
 `@location(9)`); from c: multi-byte component (UINT16/32) channel-packing for property TEXTURES; from d:
 TEXTURE-sourced + instance/implicit feature-ID property TABLES (only the ATTRIBUTE feature-ID path is

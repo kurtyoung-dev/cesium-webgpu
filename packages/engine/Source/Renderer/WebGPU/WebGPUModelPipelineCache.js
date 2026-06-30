@@ -861,6 +861,61 @@ function createPickPipeline(
 }
 
 /**
+ * DP-H46e — model metadata-PICK pipeline (`scene.pickMetadata` producer). Same
+ * vertex stage / layout / single-target pick FBO color attachment / depth state
+ * as {@link createPickPipeline}; the ONLY difference is the fragment entry
+ * (`fragmentPickMetadataMain`, which writes the picked property's components into
+ * the RGBA8 pick FBO via the GENERATED `metadataPickingStage`). The depth setup
+ * matches the regular pick pipeline so the VISIBLE surface's metadata wins
+ * (depth-write on for opaque/mask, off for blend, less-equal compare) — the
+ * picked pixel is the same surface a regular pick would select.
+ *
+ * @private
+ */
+function createPickMetadataPipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  presentationFormat,
+  depthFormat,
+  alphaMode,
+  doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
+  hasMetadata = false,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  const isBlend = alphaMode === 2;
+  return device.createRenderPipeline({
+    label: `Model PBR pick-metadata [alpha=${alphaMode},ds=${doubleSided}]`,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentPickMetadataMain",
+      targets: [{ format: presentationFormat }],
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode,
+    },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: !isBlend,
+      depthCompare: "less-equal",
+    },
+  });
+}
+
+/**
  * C2-25 ENV-SCENE-CAPTURE (Batch 447) — model CAPTURE pipeline. Renders the
  * model's lit `fragmentMain` into ONE cube-face color attachment (no MRT
  * slot-1), a transient no-stencil `depth24plus` depth target, and NO MSAA —
@@ -1398,6 +1453,12 @@ class WebGPUModelPipelineCache {
     // the scene FB format). Lazily populated only when capture is active →
     // default-OFF byte-identical (no allocation, no creation).
     this._capturePipelines = new Map();
+    // DP-H46e — metadata-PICK pipelines (scene.pickMetadata producer). Keyed by
+    // `(alphaMode, doubleSided, materialDefines)` × the picked-property class
+    // hash (so a re-pick of a DIFFERENT property gets its own pipeline+module).
+    // Lazily populated only during a metadata-pick pass → default-OFF
+    // byte-identical (no allocation when pickMetadata is never called).
+    this._pickMetadataPipelines = new Map();
 
     // Create shared bind group layouts (NEW-BG-CONSOLIDATION, 4 groups).
     const bgls = createBindGroupLayouts(device);
@@ -1442,6 +1503,15 @@ class WebGPUModelPipelineCache {
     // leak into a non-metadata module.
     this._metadataWGSL = "";
     this._metadataClassHash = 0;
+    // DP-H46e — the metadata-PICK chunk (display chunk + the appended
+    // `metadataPickingStage` for the currently-picked property) + its hash. Set
+    // by the renderer via `setMetadataPickWGSL` immediately before building the
+    // metadata-pick pipeline, consumed by `_getOrCreateShaderModule` when the
+    // METADATA_PICKING_ENABLED bit is set. Independent of `_metadataWGSL` so the
+    // display module and the pick module of the same primitive don't clobber each
+    // other within one frame.
+    this._metadataPickWGSL = "";
+    this._metadataPickClassHash = 0;
 
     // Eagerly build the basic variant (materialDefines = 0). Most
     // scenes have at least one non-KHR primitive and the basic layout
@@ -1879,9 +1949,18 @@ class WebGPUModelPipelineCache {
     // and createCapturePipeline's single color target fails WebGPU validation.
     // On-screen callers never set CAPTURE_MODE, so their module hash is unchanged.
     const captureBit = (materialDefines & ShaderDefine.CAPTURE_MODE) >>> 0;
+    // DP-H46e — METADATA_PICKING_ENABLED is a render-MODE bit (like CAPTURE_MODE
+    // / LOG_DEPTH) intentionally OUTSIDE MATERIAL_DEFINE_MASK, so the
+    // `_normalizeMaterialDefines` above strips it. Preserve it from the raw arg
+    // so the metadata-pick pipeline gets a module that compiles
+    // `fragmentPickMetadataMain` + the GENERATED `metadataPickingStage`. On-screen
+    // / display / regular-pick callers never set it → their module hash unchanged.
+    const metadataPickBit =
+      (materialDefines & ShaderDefine.METADATA_PICKING_ENABLED) >>> 0;
     const effectiveDefines =
       (key |
         captureBit |
+        metadataPickBit |
         (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
     // DP-H46b/c — the generated metadata chunk is class-dependent, so when
@@ -1901,7 +1980,17 @@ class WebGPUModelPipelineCache {
           ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES |
           ShaderDefine.MODEL_HAS_PROPERTY_TABLES)) !==
       0;
-    const metadataClassHash = hasMetadata ? this._metadataClassHash >>> 0 : 0;
+    // DP-H46e — when the metadata-pick bit is set, the prepended chunk is the
+    // PICK chunk (display chunk + the appended `metadataPickingStage`) and the
+    // class hash folds in the picked property — so the pick module is cached
+    // distinctly from the display module AND per picked property. Otherwise the
+    // display chunk + class hash apply (DP-H46b/c/d, unchanged).
+    const isMetadataPick = metadataPickBit !== 0 && hasMetadata;
+    const metadataClassHash = !hasMetadata
+      ? 0
+      : isMetadataPick
+        ? this._metadataPickClassHash >>> 0
+        : this._metadataClassHash >>> 0;
     const moduleKey =
       metadataClassHash === 0
         ? effectiveDefines
@@ -1938,7 +2027,11 @@ class WebGPUModelPipelineCache {
     // sharing `(sourceId, defines)` get distinct compiled modules (no
     // aliasing); for non-metadata callers `keySalt === 0` → the device cache
     // key is unchanged.
-    const metadataChunk = hasMetadata ? (this._metadataWGSL ?? "") : "";
+    const metadataChunk = !hasMetadata
+      ? ""
+      : isMetadataPick
+        ? (this._metadataPickWGSL ?? this._metadataWGSL ?? "")
+        : (this._metadataWGSL ?? "");
     const fullSource = `${clChunk}\n${metadataChunk}${ModelPBRCompleteWGSL}`;
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
@@ -1986,6 +2079,34 @@ class WebGPUModelPipelineCache {
   clearMetadataWGSL() {
     this._metadataWGSL = "";
     this._metadataClassHash = 0;
+  }
+
+  /**
+   * DP-H46e — set the generated metadata-PICK chunk + its (property-folded) hash
+   * for the NEXT metadata-pick `getPickMetadataPipeline` call. The chunk is the
+   * display chunk PLUS the appended `fn metadataPickingStage(metadata) ->
+   * vec4<f32>` for the currently-picked property (built by
+   * `MetadataWGSLPipelineStage.generateMetadataPickWGSL`).
+   *
+   * @param {string} wgsl the generated metadata-pick chunk
+   * @param {number} classHash a stable fingerprint folding in the picked property
+   * @private
+   */
+  setMetadataPickWGSL(wgsl, classHash) {
+    this._metadataPickWGSL = wgsl ?? "";
+    this._metadataPickClassHash = (classHash | 0) >>> 0;
+  }
+
+  /**
+   * DP-H46e — clear the generated metadata-pick chunk so a later non-pick build
+   * can't inherit a stale chunk. The METADATA_PICKING_ENABLED bit gates whether
+   * the pick chunk is consumed at all, so this is belt-and-suspenders.
+   *
+   * @private
+   */
+  clearMetadataPickWGSL() {
+    this._metadataPickWGSL = "";
+    this._metadataPickClassHash = 0;
   }
 
   /**
@@ -2053,6 +2174,8 @@ class WebGPUModelPipelineCache {
     this._pickHoverPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
     this._pickPrecisePass2Pipelines.clear();
+    // DP-H46e — metadata-pick pipelines bake the depth format / sample count too.
+    this._pickMetadataPipelines.clear();
     // Refresh the eager compatibility module fields so legacy callers
     // never see a stale-variant module after a flip.
     this._shaderModule_basic = this._getOrCreateShaderModule(0);
@@ -2092,6 +2215,8 @@ class WebGPUModelPipelineCache {
     this._pickHoverPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
     this._pickPrecisePass2Pipelines.clear();
+    // DP-H46e — metadata-pick pipelines bake the presentation format too.
+    this._pickMetadataPipelines.clear();
   }
 
   /**
@@ -2318,6 +2443,58 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
     );
     this._pickPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * DP-H46e — gets or creates a metadata-PICK pipeline for `scene.pickMetadata`.
+   * Same layout + vertex stage + vertex buffers + bind groups as the color /
+   * pick pipeline; only the fragment entry differs (`fragmentPickMetadataMain`,
+   * which writes the picked property's components into the pick-FBO RGBA8). The
+   * module is fetched with the METADATA_PICKING_ENABLED bit folded into the raw
+   * `materialDefines` so `_getOrCreateShaderModule` compiles that entry + the
+   * GENERATED `metadataPickingStage` chunk (which the renderer set via
+   * `setMetadataPickWGSL` immediately before this call).
+   *
+   * Keyed by `(alphaMode, doubleSided, materialDefines)` × the picked-property
+   * class hash so a re-pick of a DIFFERENT property builds a distinct
+   * pipeline+module rather than serving a stale one.
+   *
+   * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @param {number} materialDefines see {@link WebGPUModelPipelineCache#getPipeline}
+   * @returns {GPURenderPipeline}
+   */
+  getPickMetadataPipeline(alphaMode, doubleSided, materialDefines) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    // Fold in the picked-property hash so a different picked property (same
+    // material variant) doesn't collide on the cache key.
+    const key = `${computeKey(alphaMode, doubleSided, md)}_${
+      this._metadataPickClassHash >>> 0
+    }`;
+    let pipeline = this._pickMetadataPipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    // The module compiles `fragmentPickMetadataMain` only when the pick bit is
+    // present in the raw arg (it's stripped from `md` but preserved in the
+    // module fetch — see `_getOrCreateShaderModule`).
+    const pickModule = this._getOrCreateShaderModule(
+      (md | ShaderDefine.METADATA_PICKING_ENABLED) >>> 0,
+    );
+    pipeline = createPickMetadataPipeline(
+      this._device,
+      pickModule,
+      this._getOrCreatePipelineLayout(md),
+      this._presentationFormat,
+      this._depthFormat,
+      alphaMode,
+      doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+    );
+    this._pickMetadataPipelines.set(key, pipeline);
     return pipeline;
   }
 

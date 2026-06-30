@@ -64,6 +64,8 @@ import {
   buildTexCoordExpr,
   buildPropertyTextureUnpack,
   buildPropertyTableUnpack,
+  buildPickSourceComponent,
+  getComponentCount,
 } from "./MetadataWGSLHelpers.js";
 
 /**
@@ -588,6 +590,174 @@ function generateMetadataWGSL(model, primitive) {
 }
 
 /**
+ * DP-H46e — resolve the combined ordered field list a primitive's generated
+ * `struct Metadata` declares (property ATTRIBUTES, then TEXTURES, then TABLE),
+ * with the SAME field-name disambiguation {@link generateMetadataWGSL} uses, so
+ * the metadata-pick stage references the exact field names the display chunk
+ * emitted. Returns `[]` for non-metadata primitives.
+ *
+ * @param {Model} model
+ * @param {ModelComponents.Primitive} primitive
+ * @returns {{ propertyId: string, fieldName: string,
+ *   classProperty: MetadataClassProperty, wgslType: string }[]}
+ * @private
+ */
+function getAllMetadataFields(model, primitive) {
+  const attributeFields = getPropertyAttributeFields(model, primitive);
+  const usedFieldNames = new Set(attributeFields.map((f) => f.fieldName));
+  const textureResult = getPropertyTextureFields(
+    model,
+    primitive,
+    usedFieldNames,
+  );
+  const tableResult = getPropertyTableFields(model, primitive, usedFieldNames);
+  return attributeFields
+    .concat(textureResult?.fields ?? [])
+    .concat(tableResult?.fields ?? []);
+}
+
+/**
+ * DP-H46e — generate the WGSL metadata chunk for `scene.pickMetadata` on
+ * WebGPU. This is the GENERATED-codegen sibling of the GLSL
+ * `MetadataPickingPipelineStage` + `DerivedCommand.getPickMetadataShaderProgram`
+ * (`DerivedCommand.js:561/664`).
+ *
+ * It produces the SAME display chunk as {@link generateMetadataWGSL} (so the
+ * pick variant declares the identical `struct Metadata` + `initializeMetadata`,
+ * meaning the pick command reuses the populated metadata exactly) and APPENDS a
+ *
+ *   fn metadataPickingStage(metadata: Metadata) -> vec4<f32>
+ *
+ * that reads the picked property's field, un-applies its offset/scale +
+ * normalization per component (mirroring `getSourceValueStringComponent`/
+ * `getSourceValueStringScalar` — see {@link buildPickSourceComponent}), and
+ * packs the [0,1] component values into the RGBA channels the pick FBO encodes
+ * as bytes. `MetadataPicking.decodeMetadataValues` re-applies the transform on
+ * readback, so the round-trip matches the WebGL byte path exactly.
+ *
+ * The picked property is resolved by name against the SAME combined field list
+ * the display chunk emits. When the property is absent (e.g. a non-GPU-compatible
+ * STRING property, or a class with no GPU-readable property of that name) the
+ * stage writes `vec4<f32>(0.0)` so the pick decodes to a benign zero rather than
+ * failing — matching the GLSL default (`metadataValues = vec4(0.0)`).
+ *
+ * The returned `classHash` folds in the picked property name so the pick module
+ * is cached PER (base-module-class, picked-property) — a single compiled module
+ * serves every pick of that property regardless of pick coordinate, with no
+ * per-component pipeline explosion (the design's runtime-UBO goal is met by
+ * baking the property-specific packing into one per-property module, which the
+ * WGSL module cache keys distinctly via this hash).
+ *
+ * @param {Model} model
+ * @param {ModelComponents.Primitive} primitive
+ * @param {string} propertyName the picked metadata property name (class property id)
+ * @returns {{ wgsl: string, classHash: number, found: boolean }|undefined}
+ *   `undefined` when the primitive carries no GPU-readable metadata at all.
+ * @private
+ */
+function generateMetadataPickWGSL(model, primitive, propertyName) {
+  const display = generateMetadataWGSL(model, primitive);
+  if (!defined(display)) {
+    return undefined;
+  }
+
+  // Resolve the picked property to its generated struct field.
+  const allFields = getAllMetadataFields(model, primitive);
+  let picked;
+  for (let i = 0; i < allFields.length; i++) {
+    if (allFields[i].propertyId === propertyName) {
+      picked = allFields[i];
+      break;
+    }
+  }
+
+  const lines = [];
+  lines.push("");
+  lines.push(
+    "// DP-H46e — GENERATED metadata-pick stage (scene.pickMetadata producer).",
+  );
+  lines.push(
+    `// Picked property: ${propertyName}${defined(picked) ? "" : " (NOT GPU-readable — writes 0)"}`,
+  );
+  lines.push("fn metadataPickingStage(metadata: Metadata) -> vec4<f32> {");
+  lines.push("  var metadataValues = vec4<f32>(0.0, 0.0, 0.0, 0.0);");
+
+  if (defined(picked)) {
+    const fieldExpr = `metadata.${picked.fieldName}`;
+    const wgslType = picked.wgslType;
+    const componentCount = getComponentCount(picked.classProperty);
+    const channelNames = ["x", "y", "z", "w"];
+    if (componentCount <= 1) {
+      // Scalar — pack into channel x (mirrors getSourceValueStringScalar +
+      // `metadataValues.x = ...`). The field value's first scalar drives it.
+      const scalarExpr = firstComponentExpr(fieldExpr, wgslType);
+      const packed = buildPickSourceComponent(
+        picked.classProperty,
+        0,
+        scalarExpr,
+      );
+      lines.push(`  metadataValues.x = ${packed};`);
+    } else {
+      // Vector/matrix — pack up to 4 components into x/y/z/w (mirrors the
+      // componentNames loop in getPickMetadataShaderProgram). WGSL vec/mat
+      // index syntax: vecN uses `.x/.y/...`; matrices are flattened column-major
+      // into the [0..componentCount) components the readback DataView expects.
+      const n = Math.min(componentCount, 4);
+      for (let c = 0; c < n; c++) {
+        const compExpr = componentAccessExpr(fieldExpr, wgslType, c);
+        const packed = buildPickSourceComponent(
+          picked.classProperty,
+          c,
+          compExpr,
+        );
+        lines.push(`  metadataValues.${channelNames[c]} = ${packed};`);
+      }
+    }
+  }
+
+  lines.push("  return metadataValues;");
+  lines.push("}");
+  lines.push("");
+
+  const wgsl = display.wgsl + lines.join("\n");
+  // Fold the picked property into the cache key so the pick module is distinct
+  // from the display module AND from a different picked property's module.
+  const classHash = hashStringFNV1a(`${wgsl}::pick::${propertyName}`);
+
+  return { wgsl, classHash, found: defined(picked) };
+}
+
+/**
+ * DP-H46e — WGSL expression reading the `componentIndex`-th scalar component of
+ * a value of `wgslType` as an `f32`. Vectors index by `.x/.y/.z/.w`; matrices
+ * are read column-major (component k → `[k/rows][k%rows]`), matching the
+ * array-based component order `MetadataPicking.decodeRawMetadataValues` expects.
+ * Integer fields are cast to `f32` (the pick packing operates in float space).
+ *
+ * @param {string} fieldExpr e.g. `metadata.color`
+ * @param {string} wgslType
+ * @param {number} componentIndex 0-based
+ * @returns {string} a WGSL `f32` expression
+ * @private
+ */
+function componentAccessExpr(fieldExpr, wgslType, componentIndex) {
+  const vecMatch = /^vec([234])<([fiu]32)>$/.exec(wgslType);
+  if (vecMatch) {
+    const comp = ["x", "y", "z", "w"][componentIndex];
+    return `f32(${fieldExpr}.${comp})`;
+  }
+  const matMatch = /^mat([234])x\1<f32>$/.exec(wgslType);
+  if (matMatch) {
+    const dim = parseInt(matMatch[1], 10);
+    const col = Math.floor(componentIndex / dim);
+    const row = componentIndex % dim;
+    return `f32(${fieldExpr}[${col}][${row}])`;
+  }
+  // Scalar fallback.
+  return `f32(${fieldExpr})`;
+}
+
+/**
  * DP-H46d — field renamings + statistics fields for the `<type>MetadataClass` /
  * `<type>MetadataStatistics` structs, mirroring
  * `MetadataPipelineStage.METADATA_CLASS_FIELDS` / `METADATA_STATISTICS_FIELDS`.
@@ -800,6 +970,7 @@ function primitiveHasMetadataWGSL(model, primitive) {
 
 export {
   generateMetadataWGSL,
+  generateMetadataPickWGSL,
   getPropertyAttributeFields,
   getPropertyTextureFields,
   getPropertyTableFields,
@@ -807,6 +978,7 @@ export {
 };
 export default {
   generateMetadataWGSL,
+  generateMetadataPickWGSL,
   getPropertyAttributeFields,
   getPropertyTextureFields,
   getPropertyTableFields,

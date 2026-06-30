@@ -450,6 +450,74 @@ function buildPropertyTableUnpack(sampleExpr, classProperty, wgslType) {
 }
 
 /**
+ * DP-H46e — index a possibly-array offset/scale by component (`x`/`y`/`z`/`w`).
+ * In the `MetadataClassProperty`, offset/scale are stored array-based (a flat
+ * `number[]`), so component `i` is `value[i]`; a scalar `number` indexes to
+ * itself. Mirrors the way `getSourceValueStringComponent` reads
+ * `metadataProperty.offset[componentName]` (where the metadata property stores
+ * them as object types) — but here we drive off the CLASS property's array form,
+ * which is the canonical, always-present representation
+ * (`MetadataClassProperty.offset`/`scale` default to per-component arrays).
+ *
+ * @param {number|number[]|undefined} value
+ * @param {number} componentIndex 0..3
+ * @returns {number}
+ * @private
+ */
+function transformComponentAt(value, componentIndex) {
+  if (Array.isArray(value)) {
+    if (value.length === 1) {
+      return value[0];
+    }
+    return componentIndex < value.length ? value[componentIndex] : 0;
+  }
+  return defined(value) ? value : 0;
+}
+
+/**
+ * DP-H46e — build the WGSL `f32` expression that mirrors the GLSL
+ * `getSourceValueStringComponent` / `getSourceValueStringScalar`
+ * (`DerivedCommand.js:486/514`): given a raw in-shader metadata component value
+ * `valueExpr`, UN-apply the property's offset/scale value transform and
+ * UN-normalize it back into the [0,1] range the pick FBO byte channel encodes —
+ * the exact inverse of what `MetadataPicking.decodeMetadataValues` re-applies on
+ * readback, so the round-trip matches WebGL byte-for-byte.
+ *
+ *   inverse offset/scale:  `(value - offset) / scale`     (hasValueTransform)
+ *   inverse normalization: `value / max(componentType)`   (!classProperty.normalized)
+ *
+ * `valueExpr` MUST already be an `f32` (the caller casts integer fields with
+ * `f32(...)`). Returns the component's [0,1] channel expression.
+ *
+ * @param {MetadataClassProperty} classProperty
+ * @param {number} componentIndex 0..3 — the component to read from offset/scale
+ * @param {string} valueExpr a WGSL `f32` expression (the raw component value)
+ * @returns {string} a WGSL `f32` expression in [0,1]
+ * @private
+ */
+function buildPickSourceComponent(classProperty, componentIndex, valueExpr) {
+  let result = `f32(${valueExpr})`;
+  if (classProperty.hasValueTransform) {
+    const offset = transformComponentAt(classProperty.offset, componentIndex);
+    const scale = transformComponentAt(classProperty.scale, componentIndex);
+    // Mirror GLSL `unapplyValueTransform`: ((value - offset) / scale).
+    result = `((${result} - ${wgslFloat(offset)}) / ${wgslFloat(scale)})`;
+  }
+  if (!classProperty.normalized) {
+    // Mirror GLSL `unnormalize`: value / max(componentType). For FLOAT the max
+    // is huge (3.4e38) → the byte path is inherently lossy for large floats,
+    // EXACTLY as in WebGL, so parity holds. The classProperty.componentType is
+    // the un-gpu-downcast type the readback DataView interprets, matching
+    // `getMaximum` in the GLSL `unnormalize`.
+    const max = Number(
+      MetadataComponentType.getMaximum(classProperty.componentType),
+    );
+    result = `(${result} / ${wgslFloat(max)})`;
+  }
+  return result;
+}
+
+/**
  * Compute a stable 32-bit hash of a string (FNV-1a). Used to fold the
  * generated-metadata-WGSL (which is class/schema dependent) into the
  * WebGPU shader-module cache key so two models with different metadata
@@ -484,6 +552,8 @@ export {
   buildPropertyTextureUnpack,
   // DP-H46d — property-table WGSL unpacker.
   buildPropertyTableUnpack,
+  // DP-H46e — metadata-pick inverse-transform component builder.
+  buildPickSourceComponent,
   floatTypesByComponentCount,
   intTypesByComponentCount,
   uintTypesByComponentCount,
@@ -500,4 +570,5 @@ export default {
   buildTexCoordExpr,
   buildPropertyTextureUnpack,
   buildPropertyTableUnpack,
+  buildPickSourceComponent,
 };

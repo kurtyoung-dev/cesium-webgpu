@@ -64,7 +64,10 @@ import {
   resolvePropertyTableLayout,
   ensurePropertyTableResources,
 } from "./WebGPUModelMetadata.js";
-import { generateMetadataWGSL } from "../../Scene/Model/MetadataWGSLPipelineStage.js";
+import {
+  generateMetadataWGSL,
+  generateMetadataPickWGSL,
+} from "../../Scene/Model/MetadataWGSLPipelineStage.js";
 import Pass from "../Pass.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -84,6 +87,7 @@ import {
 import {
   attachPickToColorCommand,
   attachPickVariantsToColorCommand,
+  attachPickMetadataToColorCommand,
   destroyPickIds,
   ensurePickId,
 } from "./WebGPUPickCommandHelpers.js";
@@ -3370,6 +3374,18 @@ function updateWebGPUModel(model, frameState) {
       const modelPickId = ensurePickId(model, context, cache, {
         idKey: primKey,
         allowAllocate,
+        // DP-H46e — fold a `detail.model` into the pick object so the
+        // backend-agnostic `Scene.pickMetadata` orchestration (which reads
+        // `pickedObject.detail.model.structuralMetadata` — see
+        // `Scene.pickMetadata`/`Scene.pickMetadataSchema`) resolves the model's
+        // structural metadata on WebGPU exactly as it does for WebGL's
+        // `PickingPipelineStage.buildPickObject` (`{ primitive, detail: { model,
+        // node, primitive } }`). Without this, `scene.pick` on WebGPU returns
+        // `{ primitive: model }` with no `.detail.model`, so `pickMetadata` bails
+        // out at the `detail?.model?.structuralMetadata` guard before reaching
+        // the WebGPU metadata-pick producer. Only `model` is needed by the
+        // metadata path; node/primitive are omitted (no consumer on WebGPU yet).
+        detail: { model: model },
       });
       const pickColor = modelPickId?.color;
 
@@ -3962,6 +3978,72 @@ function updateWebGPUModel(model, frameState) {
             precisePass1: precisePass1Cmd,
             precisePass2: precisePass2Cmd,
           });
+        }
+      }
+
+      // DP-H46e — metadata-pick command (scene.pickMetadata producer). Built
+      // ONLY during a metadata-pick pass (`frameState.pickingMetadata`) AND only
+      // for a metadata-bearing, non-classifier primitive. The
+      // `selectCommandVariant` dispatcher returns this command from
+      // `derivedCommands.pickingMetadata.pickMetadataCommand` when
+      // `frameState.pickingMetadata` is set. It reuses the SAME bind groups +
+      // vertex buffers + index buffer as the color/pick command (no new pipeline
+      // layout); only the pipeline (its fragment writes the metadata RGBA) and
+      // the prepended GENERATED metadata-pick chunk differ. Gated tightly so a
+      // normal render / regular pick pass is byte-identical (the block is never
+      // entered unless pickMetadata is actively running).
+      const pickedMetadataInfo = frameState.pickedMetadataInfo;
+      const primitiveHasMetadata =
+        (primCache.materialDefines &
+          (ShaderDefine.MODEL_HAS_METADATA |
+            ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES |
+            ShaderDefine.MODEL_HAS_PROPERTY_TABLES)) !==
+        0;
+      if (
+        frameState.pickingMetadata === true &&
+        defined(pickedMetadataInfo) &&
+        primitiveHasMetadata &&
+        !isClassifier &&
+        defined(glTFPrimitive) &&
+        defined(primCache._metadataWGSL)
+      ) {
+        const pickWGSL = generateMetadataPickWGSL(
+          model,
+          glTFPrimitive,
+          pickedMetadataInfo.propertyName,
+        );
+        if (defined(pickWGSL)) {
+          // Publish the pick chunk + its (property-folded) hash so the pipeline
+          // cache prepends it + keys the pick module per picked property.
+          pipelineCache.setMetadataPickWGSL(pickWGSL.wgsl, pickWGSL.classHash);
+          const pickMetadataPipeline = pipelineCache.getPickMetadataPipeline(
+            matInfo.alphaMode,
+            matInfo.isDoubleSided,
+            primCache.materialDefines | 0,
+          );
+          const pickMetadataCmd = new WebGPUDrawCommand({
+            bindGroups: [
+              nodeCameraBG,
+              mergedMaterialBG,
+              mergedInstanceBG,
+              cache.effectsBG,
+            ],
+            vertexBuffers: vertexBuffers,
+            indexBuffer: primCache.indexBuffer || undefined,
+            indexCount: primCache.indexCount || 0,
+            indexFormat: primCache.indexFormat || "uint16",
+            vertexCount: primCache.vertexCount || 0,
+            instanceCount: instanceCount,
+            pass: primaryPass,
+            owner: model,
+            boundingVolume: model.boundingSphere,
+            modelMatrix: modelMatrix,
+            cull: model._cull ?? true,
+            renderState: modelRenderState,
+            pickOnly: true,
+            pipeline: pickMetadataPipeline,
+          });
+          attachPickMetadataToColorCommand(webgpuCmd, pickMetadataCmd);
         }
       }
 
