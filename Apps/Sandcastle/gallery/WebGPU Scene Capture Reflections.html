@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="WebGPU dynamic scene-capture reflections (C2-25). The opaque globe terrain AND nearby 3D Tiles / glTF models render into a model's dynamic environment cube, so they appear in its reflective PBR surface instead of just procedural sky."
+    />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, 3D Tiles"
+    />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Scene-Capture Reflections demo (C2-25 ENV-SCENE-CAPTURE).
+
+    Demonstrates the dynamic-environment scene-capture path: with
+    `contextOptions.webgpu.sceneCaptureReflections = true` and a model's
+    `environmentMapManager.enableSceneCapture = true`, the WebGPU renderer
+    re-renders the opaque globe terrain AND nearby opaque 3D Tiles / glTF
+    models into the 6 faces of that model's dynamic environment cube (from 6
+    ENU cube-face cameras at the model's position). A low-roughness, high-
+    metalness PBR surface then samples that cube for its image-based-lighting
+    reflections — so it mirrors the real terrain + the batched-building
+    tileset standing beside it, not just the procedural atmosphere.
+
+    The checkbox toggles `enableSceneCapture`:
+      ON  → terrain + buildings reflected in the mirror surface.
+      OFF → sky-only procedural environment (upstream behavior).
+
+    WebGPU-exclusive: the capture pass + CAPTURE_MODE pipeline have no WebGL
+    equivalent. Globe capture shipped in Batch 446; model + 3D-Tiles capture
+    (this demo's headline) shipped in Batches 447-448.
+  -->
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
+    <style>
+      @import url(../templates/bucket.css);
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Capture scene into reflections</td>
+            <td>
+              <input type="checkbox" data-bind="checked: captureEnabled" />
+            </td>
+          </tr>
+          <tr>
+            <td>Mirror roughness</td>
+            <td>
+              <input
+                type="range"
+                min="0.02"
+                max="1.0"
+                step="0.01"
+                data-bind="value: roughness, valueUpdate: 'input'"
+              />
+              <span data-bind="text: roughness"></span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      /*global Cesium, Sandcastle*/
+      window.startup = async function (Cesium) {
+        //Sandcastle_Begin
+
+        // ── WebGPU viewer with scene-capture reflections enabled ──
+        // `sceneCaptureReflections` is the context-level master switch; without
+        // it the per-model `enableSceneCapture` flag below is a no-op.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+          contextOptions: {
+            renderer: "webgpu",
+            webgpu: { sceneCaptureReflections: true },
+          },
+        });
+        const scene = viewer.scene;
+
+        // A clear, bright sun so the terrain + buildings are well-lit in the
+        // captured cube faces (and therefore visible in the reflection).
+        scene.light = new Cesium.SunLight();
+
+        // ── A batched-building 3D Tileset — the geometry we want reflected ──
+        // Routes through Model3DTileContent → Model → WebGPUModelRenderer, the
+        // same producer glTF models use, so it publishes capture records too.
+        const tileset = await Cesium.Cesium3DTileset.fromUrl(
+          "../../SampleData/Cesium3DTiles/Tilesets/Tileset/tileset.json",
+          { maximumScreenSpaceError: 4 },
+        );
+        scene.primitives.add(tileset);
+
+        // ── A reflective "mirror" model placed beside the buildings ──
+        // We force a near-mirror PBR surface with a CustomShader (metalness 1,
+        // low roughness) so its image-based-lighting reflection is dominated by
+        // the captured environment cube — the easiest way to SEE the feature.
+        const mirrorShader = makeMirrorShader(0.06);
+
+        const lon = -75.6121;
+        const lat = 40.0425;
+        const mirrorPos = Cesium.Cartesian3.fromDegrees(lon - 0.0006, lat, 40);
+        const mirror = scene.primitives.add(
+          await Cesium.Model.fromGltfAsync({
+            url: "../../SampleData/models/CesiumBalloon/CesiumBalloon.glb",
+            modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(mirrorPos),
+            scale: 25.0,
+            customShader: mirrorShader,
+          }),
+        );
+
+        // Drive the capture from the mirror model's own environment manager.
+        const manager = mirror.environmentMapManager;
+        manager.enableSceneCapture = true;
+        manager.enabled = true;
+
+        // Frame the mirror sphere with the buildings + terrain behind it, so the
+        // captured terrain reads in the reflection on the side facing the
+        // tileset.
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(
+            lon - 0.0022,
+            lat - 0.0004,
+            95,
+          ),
+          orientation: {
+            heading: Cesium.Math.toRadians(70),
+            pitch: Cesium.Math.toRadians(-8),
+            roll: 0,
+          },
+        });
+
+        // ── UI ──
+        const viewModel = {
+          captureEnabled: true,
+          roughness: 0.06,
+        };
+
+        function makeMirrorShader(roughness) {
+          return new Cesium.CustomShader({
+            fragmentShaderText: `
+              void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material)
+              {
+                // Near-mirror metal: reflection comes almost entirely from the
+                // (captured) environment cube via image-based lighting.
+                material.diffuse = vec3(0.02);
+                material.specular = vec3(0.95);
+                material.roughness = ${roughness.toFixed(3)};
+              }
+            `,
+          });
+        }
+
+        function apply() {
+          manager.enableSceneCapture = Boolean(viewModel.captureEnabled);
+          // Rebuild the mirror shader when roughness changes (CustomShader is
+          // immutable; swap the whole shader on the model).
+          mirror.customShader = makeMirrorShader(Number(viewModel.roughness));
+          // Force the env cube to refresh so the toggle is visible immediately.
+          manager.reset();
+          scene.requestRender();
+        }
+
+        Cesium.knockout.track(viewModel);
+        const toolbar = document.getElementById("toolbar");
+        Cesium.knockout.applyBindings(viewModel, toolbar);
+        for (const name in viewModel) {
+          if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
+            Cesium.knockout.getObservable(viewModel, name).subscribe(apply);
+          }
+        }
+        apply();
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>
