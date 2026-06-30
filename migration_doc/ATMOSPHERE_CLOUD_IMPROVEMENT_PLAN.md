@@ -289,7 +289,7 @@ This is the headline reflections epic and is sequenced **late** because it depen
 - **Parity impact:** Default-false → env-sky faces cloud-free.
 - **Files:** `Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl`, `Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`, `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`.
 
-#### 3-D — Parallax-corrected localized reflections (`ENV-PARALLAX`) — **P2, effort M**
+#### 3-D — Parallax-corrected localized reflections (`ENV-PARALLAX`) — ✅ SHIPPED Batch 451 (opt-in `DynamicEnvironmentMapManager.reflectionProxy` box/sphere; Lagarde box-slab + ray-sphere re-projection of the specular-IBL reflection vector in `ModelPBRComplete.wgsl`, LightUniforms add-only 768→864 with mat3x3 column-padded pack, camera-relative-world intersection (FP32-safe at Earth scale), specular-only. OFF: mode 0 → raw-R verbatim, appended bytes unread → byte-identical (adversarial audit GO, 4 lenses 0 findings). **Closes the C2-25 reflections epic** — 3-A capture (446–448) + 3-B temporal (449) + 3-C clouds (450) + 3-D parallax (451), per-face-LOD deferred)
 
 - **Technique:** Lagarde box/sphere reflection proxy: intersect the reflection ray with a per-manager bounding proxy and re-project the cube fetch, so near geometry/interiors reflect plausibly instead of an infinitely-distant cube.
 - **Opt-in flag:** `DynamicEnvironmentMapManager.reflectionProxy` (default undefined/off).

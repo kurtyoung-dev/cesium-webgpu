@@ -43,6 +43,17 @@ import ConvolveSpecularMapVS from "../Shaders/ConvolveSpecularMapVS.js";
  * @property {number} [saturation=1.0] The saturation of the light emitted from the environment. 1.0 uses the unmodified emitted environment color. Less than 1.0 reduces the saturation while greater than 1.0 increases it.
  * @property {Color} [groundColor=DynamicEnvironmentMapManager.AVERAGE_EARTH_GROUND_COLOR] Solid color used to represent the ground.
  * @property {number} [groundAlbedo=0.31] The percentage of light reflected from the ground. The average earth albedo is 0.31.
+ * @property {DynamicEnvironmentMapManager.ReflectionProxy} [reflectionProxy] WebGPU only. Opt-in bounding proxy (box or sphere) for Lagarde parallax-corrected localized reflections. Default <code>undefined</code> (raw infinitely-distant cube).
+ */
+
+/**
+ * @typedef {object} DynamicEnvironmentMapManager.ReflectionProxy
+ * A bounding proxy used by the WebGPU model renderer to parallax-correct
+ * specular IBL reflections (Lagarde box/sphere projection).
+ * @property {string} type Either <code>"box"</code> or <code>"sphere"</code>.
+ * @property {Cartesian3} center World-space (ECEF) proxy center, in meters.
+ * @property {Cartesian3} [halfExtents] World-axis-aligned half-extents, in meters. Required for <code>type: "box"</code>.
+ * @property {number} [radius] Proxy radius, in meters. Required for <code>type: "sphere"</code>.
  */
 
 /**
@@ -216,6 +227,39 @@ class DynamicEnvironmentMapManager {
      * @default false
      */
     this.enableSceneCapture = options.enableSceneCapture ?? false;
+
+    /**
+     * C2-25 ENV-PARALLAX (Batch 451, WebGPU only) — opt-in localized-reflection
+     * proxy for Lagarde box/sphere parallax correction. When set, models lit by
+     * this manager's environment map intersect their specular-IBL reflection ray
+     * with this bounding proxy and re-project the cube fetch as
+     * <code>normalize(P - center)</code>, so nearby geometry / interiors reflect
+     * at the correct parallax instead of as an infinitely-distant cube. When
+     * <code>undefined</code> (the default) the raw reflection vector is used —
+     * byte-identical to the shipped path. Ignored on WebGL.
+     *
+     * The proxy is an object of the form:
+     * <pre><code>
+     * // Box proxy (world-axis-aligned):
+     * { type: "box", center: Cartesian3, halfExtents: Cartesian3 }
+     * // Sphere proxy:
+     * { type: "sphere", center: Cartesian3, radius: Number }
+     * </code></pre>
+     * <code>center</code> and <code>halfExtents</code> are world-space
+     * (ECEF) Cartesian3 in meters; <code>radius</code> is meters.
+     *
+     * @type {DynamicEnvironmentMapManager.ReflectionProxy|undefined}
+     * @default undefined
+     *
+     * @example
+     * // Reflect a nearby wall plausibly in a metallic model sitting in front of it
+     * model.environmentMapManager.reflectionProxy = {
+     *   type: "box",
+     *   center: Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 5.0),
+     *   halfExtents: new Cesium.Cartesian3(10.0, 10.0, 10.0),
+     * };
+     */
+    this.reflectionProxy = options.reflectionProxy ?? undefined;
   }
 
   /**

@@ -24,6 +24,7 @@
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import {
@@ -159,9 +160,18 @@ const MATERIAL_UNIFORM_SIZE = 768;
 //   bytes 720-767: iblReferenceFrameMatrix (mat3x3) — NEW-MODEL-IBL-
 //                  REFERENCE-FRAME (Batch 287). 3 vec4-padded columns:
 //                  col0 @ floats 180-182, col1 @ 184-186, col2 @ 188-190.
-// Total: 64 + 656 + 48 = 768 bytes. Keep in sync with struct
+//   bytes 768-863: C2-25 ENV-PARALLAX (Batch 451) — reflection proxy block.
+//                  - 768-783 (floats 192-195) reflectionProxyControl (vec4):
+//                       x=mode (0 off / 1 box / 2 sphere), y=sphere radius, zw pad
+//                  - 784-799 (floats 196-198+pad) proxyCenter (vec3) — camera-
+//                       relative world (centerWC - cameraWC), meters
+//                  - 800-815 (floats 200-202+pad) proxyHalfExtents (vec3) —
+//                       world-axis-aligned box half-extents, meters
+//                  - 816-863 (floats 204-215) eyeToWorldRotation (mat3x3):
+//                       3 vec4-padded columns @ floats 204-206 / 208-210 / 212-214
+// Total: 64 + 656 + 48 + 96 = 864 bytes. Keep in sync with struct
 // LightUniforms in ModelPBRComplete.wgsl.
-const LIGHT_UNIFORM_SIZE = 768;
+const LIGHT_UNIFORM_SIZE = 864;
 
 // materialFlags bit for skinning (bit 13 = 8192)
 const FLAG_HAS_SKINNING = 8192;
@@ -916,6 +926,73 @@ function packLightUniforms(data, frameState, model) {
   // Defaults to identity (Matrix3.IDENTITY clone) so a model without IBL
   // configured samples the placeholder cubemap unrotated.
   packIBLReferenceFrame(data, 180, model);
+
+  // C2-25 ENV-PARALLAX (Batch 451) — reflection proxy block (floats 192-215).
+  // Always writes mode (float 192); defaults to 0 (raw reflection vector) so
+  // the shader takes the byte-identical pre-451 path and stale proxy data from
+  // a prior frame can't leak when the proxy is cleared.
+  packReflectionProxy(data, 192, frameState, model);
+}
+
+// C2-25 ENV-PARALLAX (Batch 451) — pack the per-manager reflection proxy into
+// the LightUniforms tail. Reads `model.environmentMapManager.reflectionProxy`
+// (the opt-in box/sphere proxy). Center + half-extents are converted to
+// CAMERA-RELATIVE world space (proxy minus camera position) so the WGSL box
+// intersection runs in the same frame as the fragment's camera-relative world
+// position, preserving f32 precision at Earth scale. Also packs the eye→world
+// rotation (`uniformState.inverseViewRotation`) the shader uses to lift the
+// eye-space reflection into world space. When no proxy is configured, writes
+// mode 0 and zeroes the block (the shader never reads the rest).
+const scratchProxyCenterRel = new Cartesian3();
+function packReflectionProxy(data, floatOffset, frameState, model) {
+  // Zero the whole 24-float block first (mode 0 + clean slate).
+  for (let i = 0; i < 24; i++) {
+    data[floatOffset + i] = 0.0;
+  }
+
+  const proxy = model?.environmentMapManager?.reflectionProxy;
+  if (!defined(proxy) || !defined(proxy.center)) {
+    return;
+  }
+
+  const mode = proxy.type === "sphere" ? 2.0 : 1.0;
+  data[floatOffset + 0] = mode; // control.x = mode
+  data[floatOffset + 1] = mode === 2.0 ? (proxy.radius ?? 0.0) : 0.0; // control.y = radius
+  // control.z / control.w stay 0.
+
+  // Camera-relative world center (centerWC - cameraWC).
+  const uniformState = frameState.context.uniformState;
+  const cameraWC = uniformState.cameraPosition;
+  Cartesian3.subtract(proxy.center, cameraWC, scratchProxyCenterRel);
+  data[floatOffset + 4] = scratchProxyCenterRel.x; // proxyCenter.xyz @ 196-198
+  data[floatOffset + 5] = scratchProxyCenterRel.y;
+  data[floatOffset + 6] = scratchProxyCenterRel.z;
+  // float 199 = pad
+
+  if (mode === 1.0) {
+    const he = proxy.halfExtents;
+    data[floatOffset + 8] = he?.x ?? 0.0; // proxyHalfExtents.xyz @ 200-202
+    data[floatOffset + 9] = he?.y ?? 0.0;
+    data[floatOffset + 10] = he?.z ?? 0.0;
+  }
+  // float 203 = pad
+
+  // eyeToWorldRotation (mat3x3, 3 vec4-padded columns @ floats 204-214).
+  // `inverseViewRotation` is the orthonormal eye→world rotation (Matrix3,
+  // column-major: m[0..2]=col0, m[3..5]=col1, m[6..8]=col2).
+  const m = uniformState.inverseViewRotation ?? Matrix3.IDENTITY;
+  data[floatOffset + 12] = m[0];
+  data[floatOffset + 13] = m[1];
+  data[floatOffset + 14] = m[2];
+  // float 207 = pad (col0)
+  data[floatOffset + 16] = m[3];
+  data[floatOffset + 17] = m[4];
+  data[floatOffset + 18] = m[5];
+  // float 211 = pad (col1)
+  data[floatOffset + 20] = m[6];
+  data[floatOffset + 21] = m[7];
+  data[floatOffset + 22] = m[8];
+  // float 215 = pad (col2)
 }
 
 // NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — writes the model's

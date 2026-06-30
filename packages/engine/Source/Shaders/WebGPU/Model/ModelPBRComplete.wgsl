@@ -337,6 +337,32 @@ struct LightUniforms {
   // Identity when no IBL is configured (FS still samples the placeholder
   // cubemap, which is rotation-invariant grey).
   iblReferenceFrameMatrix: mat3x3<f32>,
+  // C2-25 ENV-PARALLAX (Batch 451) — Lagarde box/sphere parallax-corrected
+  // localized reflections. Opt-in via
+  // `DynamicEnvironmentMapManager.reflectionProxy`; when unset, `control.x`
+  // (mode) packs to 0.0 and the specular-IBL path takes the raw reflection
+  // vector verbatim (byte-identical to the pre-451 behavior — the bytes below
+  // are written but never read when mode == 0). When set, the reflection ray
+  // (fragment world position + reflection vector R) is intersected with a
+  // per-manager bounding proxy and the cube sample direction is re-projected
+  // as `normalize(P - proxyCenter)`, so nearby geometry/interiors reflect at
+  // the correct parallax instead of as an infinitely-distant cube.
+  //   control.x : mode (0 = off / raw R, 1 = box, 2 = sphere)
+  //   control.y : sphere radius (meters); unused for box
+  //   control.z,w : reserved
+  // `proxyCenter` and `proxyHalfExtents` are CAMERA-RELATIVE WORLD-space
+  // (proxy minus camera position), in the same frame as the fragment's
+  // camera-relative world position `rteWC = modelMatrix * vec4(rteMC, 0)`.
+  // The box is world-axis-aligned (matching the Cartesian3 center/halfExtents
+  // the user supplies). `eyeToWorldRotation` is the eye→world rotation
+  // (UniformState.inverseViewRotation) used to lift the eye-space reflection
+  // R into world space for the intersection, then transposed to push the
+  // corrected world direction back to eye space so the existing
+  // `iblReferenceFrameMatrix * dir` cube-sample path is reused unchanged.
+  reflectionProxyControl: vec4<f32>,
+  reflectionProxyCenter: vec3<f32>,
+  reflectionProxyHalfExtents: vec3<f32>,
+  eyeToWorldRotation: mat3x3<f32>,
 };
 
 // ─── Bind Groups ─────────────────────────────────────────────────────────────
@@ -1048,6 +1074,71 @@ fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3
   let t2 = t * t;
   let oneMinusRoughness = vec3<f32>(1.0 - roughness);
   return F0 + (max(oneMinusRoughness, F0) - F0) * (t2 * t2 * t);
+}
+
+// C2-25 ENV-PARALLAX (Batch 451) — Lagarde box/sphere parallax correction.
+// Given a fragment world position `originWC` (camera-relative world space)
+// and a world-space reflection direction `dirWC`, intersect the reflection
+// ray with the per-manager bounding proxy and return the re-projected cube
+// sample direction `normalize(P - proxyCenter)`. `mode` is 1 for box, 2 for
+// sphere. The proxy center + half-extents (camera-relative world) live in the
+// same frame as `originWC`. Falls back to the raw `dirWC` when the ray misses
+// the proxy or the geometry degenerates, so a mis-placed proxy can never
+// produce a NaN sample direction. Box uses the standard slab method; sphere
+// uses the analytic ray-sphere far hit (the reflection always exits the
+// proxy in front of the surface).
+fn parallaxCorrectReflection(
+  originWC: vec3<f32>,
+  dirWC: vec3<f32>,
+  mode: f32,
+  proxyCenter: vec3<f32>,
+  proxyHalfExtents: vec3<f32>,
+  proxyRadius: f32,
+) -> vec3<f32> {
+  if (mode < 1.5) {
+    // Box proxy — slab method. Guard against a zero reflection component so
+    // 1/dir doesn't yield Inf; a near-zero lane simply contributes no bound.
+    let safeDir = vec3<f32>(
+      select(dirWC.x, 1.0e-5, abs(dirWC.x) < 1.0e-5),
+      select(dirWC.y, 1.0e-5, abs(dirWC.y) < 1.0e-5),
+      select(dirWC.z, 1.0e-5, abs(dirWC.z) < 1.0e-5),
+    );
+    let invDir = vec3<f32>(1.0) / safeDir;
+    let boxMin = proxyCenter - proxyHalfExtents;
+    let boxMax = proxyCenter + proxyHalfExtents;
+    let t1 = (boxMin - originWC) * invDir;
+    let t2 = (boxMax - originWC) * invDir;
+    let tMaxV = max(t1, t2);
+    // Nearest positive exit distance along the reflection ray.
+    let tHit = min(min(tMaxV.x, tMaxV.y), tMaxV.z);
+    if (tHit <= 0.0) {
+      return dirWC;
+    }
+    let hitP = originWC + dirWC * tHit;
+    let corrected = hitP - proxyCenter;
+    if (dot(corrected, corrected) < 1.0e-12) {
+      return dirWC;
+    }
+    return normalize(corrected);
+  }
+  // Sphere proxy — analytic ray-sphere, take the far (exit) intersection.
+  let oc = originWC - proxyCenter;
+  let b = dot(oc, dirWC);
+  let c = dot(oc, oc) - proxyRadius * proxyRadius;
+  let disc = b * b - c;
+  if (disc <= 0.0) {
+    return dirWC;
+  }
+  let tHit = -b + sqrt(disc);
+  if (tHit <= 0.0) {
+    return dirWC;
+  }
+  let hitP = originWC + dirWC * tHit;
+  let corrected = hitP - proxyCenter;
+  if (dot(corrected, corrected) < 1.0e-12) {
+    return dirWC;
+  }
+  return normalize(corrected);
 }
 
 // Audit A.9 (Batch 130) -- L2 spherical-harmonic irradiance.
@@ -2948,10 +3039,40 @@ struct FragOutput {
     R = reflect(-V, bentNormal);
   }
   //>>endif
+  // C2-25 ENV-PARALLAX (Batch 451) — Lagarde box/sphere parallax correction.
+  // Default (no `reflectionProxy` configured) → mode 0 → the `else` branch is
+  // taken and `Rcube` is the verbatim eye-space reflection `R`, so the cube
+  // sample below is byte-identical to the pre-451 path. When a proxy is set,
+  // the eye-space reflection is lifted to world space, intersected with the
+  // proxy, and the corrected world direction pushed back to eye space so the
+  // existing `iblReferenceFrameMatrix * dir` sample is reused unchanged. The
+  // diffuse irradiance/SH path above is intentionally left untouched —
+  // parallax only re-projects the mirror-like specular reflection vector.
+  var Rcube = R;
+  let reflectionProxyMode = light.reflectionProxyControl.x;
+  if (reflectionProxyMode > 0.5) {
+    // Camera-relative world fragment position (same frame as the proxy
+    // center/extents). Mirrors the point-light / CSM `rteWC` reconstruction.
+    let fragRteWC = (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
+    // Eye-space reflection → world space via the eye→world rotation.
+    let Rworld = light.eyeToWorldRotation * R;
+    let correctedWorld = parallaxCorrectReflection(
+      fragRteWC,
+      Rworld,
+      reflectionProxyMode,
+      light.reflectionProxyCenter,
+      light.reflectionProxyHalfExtents,
+      light.reflectionProxyControl.y,
+    );
+    // World direction → eye space (transpose of the orthonormal eye→world
+    // rotation) so the unchanged `iblReferenceFrameMatrix * dir` cube sample
+    // below maps it into the environment frame exactly as the raw path does.
+    Rcube = transpose(light.eyeToWorldRotation) * correctedWorld;
+  }
   // Rotate the eye-space reflection into the fixed IBL reference frame so
   // the prefiltered-radiance sample stays world-anchored as the camera
   // orbits (matches WebGL `reflectMC = iblReferenceFrameMatrix * reflectEC`).
-  let Ribl = normalize(light.iblReferenceFrameMatrix * R);
+  let Ribl = normalize(light.iblReferenceFrameMatrix * Rcube);
   let specLod = roughness * light.iblMaxMipLevel;
   let radiance = textureSampleLevel(
     iblSpecularTexture, iblSampler, Ribl, specLod
