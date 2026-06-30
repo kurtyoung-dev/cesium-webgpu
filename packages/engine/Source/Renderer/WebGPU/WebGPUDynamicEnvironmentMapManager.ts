@@ -21,6 +21,7 @@
 
 import ProceduralSkyCubemapWGSL from "../../Shaders/WebGPU/Compute/ProceduralSkyCubemap.js";
 import ProjectRadianceToSHWGSL from "../../Shaders/WebGPU/Compute/ProjectRadianceToSH.js";
+import EnvCubeTemporalBlendWGSL from "../../Shaders/WebGPU/Compute/EnvCubeTemporalBlend.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Transforms from "../../Core/Transforms.js";
 import { generateIBLMaps } from "./WebGPUIBLPipeline.js";
@@ -168,6 +169,52 @@ interface DynEnvMapCache {
   lastCaptureCameraX: number;
   lastCaptureCameraY: number;
   lastCaptureCameraZ: number;
+  // C2-25 ENV-TEMPORAL (Batch 449) — temporal-accumulation resources. ALL of
+  // these stay null/0 when `envMapTemporalAccumulation` is OFF (the lazy
+  // allocation lives entirely inside `runEnvCubeTemporalBlend`, which is only
+  // reached on the ON path) → byte-identical default parity.
+  //
+  // Temporal accumulation uses THREE same-format/size 2d cube textures plus the
+  // main cube, with NO texture read+written in the same pass (WebGPU forbids
+  // aliasing a writable storage binding with a sampled binding on the same
+  // subresource):
+  //   • main cube (`cubemapTexture`) — the freshly-captured "current", read
+  //     SAMPLED only by the blend (never written by it).
+  //   • `historyCube` — LAST frame's accumulated cube, read SAMPLED only.
+  //   • `accumCube` — the blend's WRITE target (STORAGE). After the pass it is
+  //     copied → main cube (so prefilter/SH read the accumulated cube) AND →
+  //     history cube (next frame's history).
+  historyCube: GPUTexture | null;
+  historyArrayView: GPUTextureView | null; // 2d-array SAMPLED view of historyCube
+  currentArrayView: GPUTextureView | null; // 2d-array SAMPLED view of the main cube
+  accumCube: GPUTexture | null;
+  accumStorageView: GPUTextureView | null; // 2d-array STORAGE write view of accumCube
+  blendPipeline: GPUComputePipeline | null;
+  blendBGL: GPUBindGroupLayout | null;
+  blendUniformBuffer: GPUBuffer | null;
+  blendBindGroup: GPUBindGroup | null;
+  blendSampler: GPUSampler | null;
+  // The cube format the temporal resources were built against — the storage
+  // token in the blend shader is baked per-format, so a format flip rebuilds
+  // the pipeline (mirrors `cubemapFormat` on the sky pipeline).
+  blendFormat?: GPUTextureFormat;
+  // True once the history cube holds a valid accumulated frame. False on first
+  // ON frame OR after a cube recreate → the blend runs with alpha=1 (current
+  // only, no smear) and seeds history. Also forced true→reset on large
+  // sun/camera deltas via the gate below.
+  historyValid: boolean;
+  // Monotonic frame index for the per-face Hammersley jitter rotation.
+  temporalFrameIndex: number;
+  // Eye the LAST accumulated frame was blended from, for the large-camera-delta
+  // history reset (distinct from the capture debounce, which is coarser).
+  lastBlendCameraX: number;
+  lastBlendCameraY: number;
+  lastBlendCameraZ: number;
+  // Sun direction the LAST accumulated frame was blended against, for the
+  // large-sun-delta history reset. NaN sentinel forces a reset on the first run.
+  lastBlendSunX: number;
+  lastBlendSunY: number;
+  lastBlendSunZ: number;
 }
 
 /**
@@ -234,6 +281,25 @@ function updateWebGPUDynamicEnvironmentMap(
       lastCaptureCameraX: NaN,
       lastCaptureCameraY: NaN,
       lastCaptureCameraZ: NaN,
+      // C2-25 ENV-TEMPORAL (Batch 449) — temporal accumulation (all inert OFF).
+      historyCube: null,
+      historyArrayView: null,
+      currentArrayView: null,
+      accumCube: null,
+      accumStorageView: null,
+      blendPipeline: null,
+      blendBGL: null,
+      blendUniformBuffer: null,
+      blendBindGroup: null,
+      blendSampler: null,
+      historyValid: false,
+      temporalFrameIndex: 0,
+      lastBlendCameraX: NaN,
+      lastBlendCameraY: NaN,
+      lastBlendCameraZ: NaN,
+      lastBlendSunX: NaN,
+      lastBlendSunY: NaN,
+      lastBlendSunZ: NaN,
     } as DynEnvMapCache;
   }
 
@@ -333,6 +399,30 @@ function updateWebGPUDynamicEnvironmentMap(
     cache.skyBindGroup = null;
     // SH bind group references the recreated cube view -- rebuild it too.
     cache.shBindGroup = null;
+    // C2-25 ENV-TEMPORAL (Batch 449) — the history cube + the cached 2d-array
+    // views reference the old (now-destroyed) cube AND are sized/formatted to
+    // the old config. Drop the history texture + all blend bind state so the
+    // ON path lazily reallocates against the new cube; mark history invalid so
+    // the next blend seeds (alpha=1) instead of mixing a stale frame.
+    if (cache.historyCube) {
+      cache.historyCube.destroy();
+      cache.historyCube = null;
+    }
+    if (cache.accumCube) {
+      cache.accumCube.destroy();
+      cache.accumCube = null;
+    }
+    cache.historyArrayView = null;
+    cache.currentArrayView = null;
+    cache.accumStorageView = null;
+    cache.blendBindGroup = null;
+    cache.historyValid = false;
+    // A format flip also invalidates the blend pipeline (the storage token is
+    // baked per-format), mirroring the sky-pipeline rebuild above.
+    if (cache.blendFormat !== cubemapFormat) {
+      cache.blendPipeline = null;
+      cache.blendBGL = null;
+    }
   }
 
   if (!cache.sampler) {
@@ -445,6 +535,23 @@ function updateWebGPUDynamicEnvironmentMap(
       cache.lastCaptureCameraY = manager._position.y;
       cache.lastCaptureCameraZ = manager._position.z;
     }
+    // C2-25 ENV-TEMPORAL (Batch 449) — temporally accumulate the just-captured
+    // cube BEFORE the prefilter + SH read it, so the prefiltered IBL + SH see
+    // the accumulated (crossfaded) cube. OFF (default) this is a no-op: the
+    // function self-gates on `envMapTemporalAccumulation`, allocating nothing
+    // and running no pass, so the freshly-captured cube flows straight to the
+    // prefilter byte-identically. ON, it blends the new cube with the history
+    // cube (EMA) and copies the result back to history for next frame; on a
+    // large sun/camera delta it resets (alpha=1) so the env map can't smear.
+    const wantTemporal =
+      (
+        frameState.context as unknown as {
+          envMapTemporalAccumulation?: boolean;
+        }
+      ).envMapTemporalAccumulation === true;
+    if (wantTemporal) {
+      runEnvCubeTemporalBlend(device, cache, manager, sunDir);
+    }
     runIBLPrefilter(device, cache, frameState);
     // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- project the
     // freshly-filled radiance cube to SH-L2. Submitted after the sky fill
@@ -501,6 +608,305 @@ const CLOUD_COVERAGE_REFRESH_EPSILON = 1.0 / 256.0;
 // scene still keeps the reflected terrain fresh. Caps the 6-pass capture cost.
 const CAPTURE_CAMERA_MOVE_SQ = 500.0 * 500.0;
 const CAPTURE_EVERY_K_FRAMES = 8;
+
+// C2-25 ENV-TEMPORAL (Batch 449) — temporal-accumulation tuning.
+//
+// Per-frame EMA blend fraction of the freshly-captured cube folded in (history
+// keeps 1-α). 0.15 ≈ a ~6-frame e-folding time: fast enough to track a moving
+// sun without visible lag, slow enough to crossfade smoothly between the
+// debounced single-frame refreshes. The fixed point of the EMA for a CONSTANT
+// (static-scene) capture is that constant → the accumulated cube converges to
+// the same look as the OFF single-frame cube.
+const ENV_TEMPORAL_ALPHA = 0.15;
+// Large sun-direction delta (unit-sphere squared distance) that RESETS the
+// history so a day→night-scale jump doesn't smear. (0.05)^2 ≈ 2.9° — an order
+// of magnitude above the per-frame `SUN_REFRESH_EPSILON_SQ` refresh threshold,
+// so ordinary smooth sun progression accumulates while a large jump snaps.
+const ENV_TEMPORAL_SUN_RESET_SQ = 0.05 * 0.05;
+// Large camera/eye-translation delta (m^2) that RESETS the history. 2 km — well
+// above the 500 m capture-refresh debounce, so a small drift accumulates while
+// a teleport-scale move snaps the env map to the new view (no smear).
+const ENV_TEMPORAL_CAMERA_RESET_SQ = 2000.0 * 2000.0;
+
+// ─── Temporal env-cube accumulation pass (ENV-TEMPORAL, Batch 449) ────────
+//
+// Inserted between the cube capture and the IBL prefilter ONLY on the
+// `envMapTemporalAccumulation` ON path (the caller gates the whole call). It:
+//
+//   1. Lazily allocates the history cube (same format/size as the main cube)
+//      + the blend pipeline / bind state INSIDE this function — OFF allocates
+//      nothing (the function is never reached).
+//   2. Decides α: 1.0 on the first ON frame, after a cube recreate, or on a
+//      LARGE sun/camera delta (history reset → current only, no smear);
+//      otherwise `ENV_TEMPORAL_ALPHA` (EMA crossfade).
+//   3. Runs a compute pass: out = mix(history, current_jittered, α), writing
+//      the blended result into the MAIN cube's storage view (so the prefilter
+//      + SH downstream read the accumulated cube).
+//   4. Copies the accumulated main cube → history for next frame.
+function runEnvCubeTemporalBlend(
+  device: GPUDevice,
+  cache: DynEnvMapCache,
+  manager: DynEnvMapManagerLike,
+  sunDir: { x: number; y: number; z: number },
+): void {
+  if (!cache.cubemapTexture) {
+    return;
+  }
+  const format: GPUTextureFormat = cache.cubemapFormat ?? "rgba8unorm";
+
+  // ── Lazy history cube (same format/size as the main cube) ──
+  // The main cube + history cube are read SAMPLED by the blend; the WRITE
+  // target is the SEPARATE accumCube. No texture is both read and written in
+  // the pass (WebGPU usage-scope hazard avoided).
+  if (!cache.historyCube) {
+    cache.historyCube = device.createTexture({
+      label: "DynEnvMap History Cube",
+      size: { width: cache.size, height: cache.size, depthOrArrayLayers: 6 },
+      format,
+      mipLevelCount: 1,
+      // SAMPLED (blend reads it) + COPY_DST (JS copies the accumulated cube
+      // into it each frame).
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      dimension: "2d",
+    });
+    cache.historyArrayView = cache.historyCube.createView({
+      dimension: "2d-array",
+      baseArrayLayer: 0,
+      arrayLayerCount: 6,
+      baseMipLevel: 0,
+      mipLevelCount: 1,
+    });
+    // First history allocation → no valid accumulated frame yet.
+    cache.historyValid = false;
+    cache.blendBindGroup = null;
+  }
+
+  // ── Lazy accumulation cube (the blend's STORAGE write target) ──
+  if (!cache.accumCube) {
+    cache.accumCube = device.createTexture({
+      label: "DynEnvMap Accum Cube",
+      size: { width: cache.size, height: cache.size, depthOrArrayLayers: 6 },
+      format,
+      mipLevelCount: 1,
+      // STORAGE (blend writes it) + COPY_SRC (copied → main cube + history).
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+      dimension: "2d",
+    });
+    cache.accumStorageView = cache.accumCube.createView({
+      dimension: "2d-array",
+      baseArrayLayer: 0,
+      arrayLayerCount: 6,
+      baseMipLevel: 0,
+      mipLevelCount: 1,
+    });
+    cache.blendBindGroup = null;
+  }
+
+  // 2d-array SAMPLED view of the MAIN cube (the just-captured "current"). The
+  // existing `storageView` is the 2d-array WRITE target; a sampled texture
+  // binding needs a non-storage view, so cache a dedicated one.
+  if (!cache.currentArrayView) {
+    cache.currentArrayView = cache.cubemapTexture.createView({
+      dimension: "2d-array",
+      baseArrayLayer: 0,
+      arrayLayerCount: 6,
+      baseMipLevel: 0,
+      mipLevelCount: 1,
+    });
+    cache.blendBindGroup = null;
+  }
+
+  // ── Blend pipeline + BGL (once per cache; rebuilt on format flip) ──
+  if (!cache.blendPipeline || !cache.blendBGL) {
+    cache.blendBGL = device.createBindGroupLayout({
+      label: "DynEnvMap Temporal Blend BGL",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "2d-array" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "2d-array" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          storageTexture: {
+            access: "write-only",
+            format,
+            viewDimension: "2d-array",
+          },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
+    const layout = device.createPipelineLayout({
+      label: "DynEnvMap Temporal Blend PipelineLayout",
+      bindGroupLayouts: [cache.blendBGL],
+    });
+    // The WGSL declares `rgba16float`; swap to `rgba8unorm` for the LDR parity
+    // cube (same lever as the sky pipeline + EnvCubeMipDownsample).
+    const blendCode =
+      format === "rgba16float"
+        ? EnvCubeTemporalBlendWGSL
+        : EnvCubeTemporalBlendWGSL.replace(
+            "texture_storage_2d_array<rgba16float, write>",
+            "texture_storage_2d_array<rgba8unorm, write>",
+          );
+    const module = device.createShaderModule({
+      label: "EnvCubeTemporalBlend",
+      code: blendCode,
+    });
+    cache.blendPipeline = device.createComputePipeline({
+      label: "DynEnvMap Temporal Blend Pipeline",
+      layout,
+      compute: { module, entryPoint: "main" },
+    });
+    cache.blendFormat = format;
+    cache.blendBindGroup = null;
+  }
+
+  if (!cache.blendSampler) {
+    cache.blendSampler = device.createSampler({
+      label: "DynEnvMap Temporal Blend Sampler",
+      minFilter: "linear",
+      magFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+
+  if (!cache.blendUniformBuffer) {
+    cache.blendUniformBuffer = device.createBuffer({
+      label: "DynEnvMap Temporal Blend Uniforms",
+      // BlendParams: 2 vec4 = 32 bytes.
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  // ── Decide α (reset vs EMA) ──
+  // Reset when: no valid history yet (first ON frame / post-recreate), OR a
+  // large sun delta, OR a large camera/eye translation. Reset → α=1 (current
+  // only; history is seeded by the copy below) so a big change can't smear.
+  const sdx = sunDir.x - cache.lastBlendSunX;
+  const sdy = sunDir.y - cache.lastBlendSunY;
+  const sdz = sunDir.z - cache.lastBlendSunZ;
+  // NaN (first run) coerces > threshold → reset on the first run.
+  const sunReset = !(
+    sdx * sdx + sdy * sdy + sdz * sdz <
+    ENV_TEMPORAL_SUN_RESET_SQ
+  );
+  const px = manager._position;
+  const cdx = px.x - cache.lastBlendCameraX;
+  const cdy = px.y - cache.lastBlendCameraY;
+  const cdz = px.z - cache.lastBlendCameraZ;
+  const cameraReset = !(
+    cdx * cdx + cdy * cdy + cdz * cdz <
+    ENV_TEMPORAL_CAMERA_RESET_SQ
+  );
+  const reset = !cache.historyValid || sunReset || cameraReset;
+  const alpha = reset ? 1.0 : ENV_TEMPORAL_ALPHA;
+
+  // ── Per-face Hammersley-rotated sub-texel jitter ──
+  // Radical-inverse (base 2) of the frame index gives a low-discrepancy 1-D
+  // sequence; pair it with the golden-ratio fractional sequence for the second
+  // axis → a Hammersley-like 2-D point, recentred to [-0.5,0.5] texels. Subtle
+  // for the deterministic capture; load-bearing for the future stochastic
+  // cloud-in-IBL consumer (3-C). Zeroed on reset (current is sampled exactly).
+  let jx = 0.0;
+  let jy = 0.0;
+  if (!reset) {
+    const i = cache.temporalFrameIndex >>> 0;
+    // Van der Corput radical inverse, base 2.
+    let bits = i;
+    bits = ((bits & 0x55555555) << 1) | ((bits & 0xaaaaaaaa) >>> 1);
+    bits = ((bits & 0x33333333) << 2) | ((bits & 0xcccccccc) >>> 2);
+    bits = ((bits & 0x0f0f0f0f) << 4) | ((bits & 0xf0f0f0f0) >>> 4);
+    bits = ((bits & 0x00ff00ff) << 8) | ((bits & 0xff00ff00) >>> 8);
+    bits = (bits << 16) | (bits >>> 16);
+    const vdc = (bits >>> 0) * 2.3283064365386963e-10; // / 2^32, in [0,1)
+    const golden = (i * 0.6180339887498949) % 1.0; // golden-ratio low-discrepancy
+    jx = vdc - 0.5;
+    jy = golden - 0.5;
+  }
+  cache.temporalFrameIndex = (cache.temporalFrameIndex + 1) >>> 0;
+
+  const params = new Float32Array(8);
+  params[0] = alpha;
+  params[1] = cache.size;
+  // params[2], params[3] reserved (0).
+  params[4] = jx;
+  params[5] = jy;
+  // params[6], params[7] reserved (0).
+  device.queue.writeBuffer(cache.blendUniformBuffer, 0, params);
+
+  if (!cache.blendBindGroup) {
+    cache.blendBindGroup = device.createBindGroup({
+      label: "DynEnvMap Temporal Blend BG",
+      layout: cache.blendBGL,
+      entries: [
+        { binding: 0, resource: cache.currentArrayView! },
+        { binding: 1, resource: cache.historyArrayView! },
+        { binding: 2, resource: cache.blendSampler },
+        { binding: 3, resource: cache.accumStorageView! },
+        { binding: 4, resource: { buffer: cache.blendUniformBuffer } },
+      ],
+    });
+  }
+
+  const groupsXY = Math.ceil(cache.size / 8);
+  const encoder = device.createCommandEncoder({
+    label: "DynEnvMap Temporal Blend Pass",
+  });
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(cache.blendPipeline);
+  pass.setBindGroup(0, cache.blendBindGroup);
+  pass.dispatchWorkgroups(groupsXY, groupsXY, 6);
+  pass.end();
+  // Copy the accumulated cube → the MAIN cube (so the downstream prefilter + SH
+  // read the accumulated result) AND → the history cube (next frame's history).
+  // Both are same-format/size 2d textures with 6 array layers. Done outside the
+  // compute pass (copy commands are encoder-level), so no read/write alias with
+  // the blend dispatch's storage write.
+  encoder.copyTextureToTexture(
+    { texture: cache.accumCube!, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+    {
+      texture: cache.cubemapTexture,
+      mipLevel: 0,
+      origin: { x: 0, y: 0, z: 0 },
+    },
+    { width: cache.size, height: cache.size, depthOrArrayLayers: 6 },
+  );
+  encoder.copyTextureToTexture(
+    { texture: cache.accumCube!, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+    { texture: cache.historyCube!, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+    { width: cache.size, height: cache.size, depthOrArrayLayers: 6 },
+  );
+  device.queue.submit([encoder.finish()]);
+
+  // Record the eye + sun this accumulated frame was blended from, and mark the
+  // history valid so subsequent frames EMA-blend (until the next reset).
+  cache.historyValid = true;
+  cache.lastBlendCameraX = px.x;
+  cache.lastBlendCameraY = px.y;
+  cache.lastBlendCameraZ = px.z;
+  cache.lastBlendSunX = sunDir.x;
+  cache.lastBlendSunY = sunDir.y;
+  cache.lastBlendSunZ = sunDir.z;
+}
 
 // ─── Procedural sky compute pass (Audit A.12, Batch 131) ─────────────────
 //
@@ -1039,6 +1445,17 @@ function destroyWebGPUDynamicEnvironmentMapResources(
   }
   if (cache.skyUniformBuffer) {
     cache.skyUniformBuffer.destroy();
+  }
+  // C2-25 ENV-TEMPORAL (Batch 449) — release the history + accum cubes + blend
+  // uniform buffer (all null on the OFF path → branches skip).
+  if (cache.historyCube) {
+    cache.historyCube.destroy();
+  }
+  if (cache.accumCube) {
+    cache.accumCube.destroy();
+  }
+  if (cache.blendUniformBuffer) {
+    cache.blendUniformBuffer.destroy();
   }
   // Item 2.2 (ENV-AERIAL-MS, Batch 430) — the manager owns only the 1×1 LUT
   // placeholder; the real sky-view / MS LUT textures are owned by the perf

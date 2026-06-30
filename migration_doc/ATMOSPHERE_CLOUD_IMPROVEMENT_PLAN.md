@@ -275,7 +275,7 @@ This is the headline reflections epic and is sequenced **late** because it depen
 - **Parity impact:** Default-false leaves procedural-sky fill as the sole source (current parity). `faceViews` + STORAGE|RENDER_ATTACHMENT cube already exist; enabling adds render passes only when set. WebGL lacks this → additive-only.
 - **Files:** `Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`, `Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js`, `Scene/DynamicEnvironmentMapManager.js`, `Renderer/WebGPU/WebGPUIBLPipeline.ts`.
 
-#### 3-B — Temporal env-cube accumulation / reprojection (`ENV-TEMPORAL`) — **P2, effort M**
+#### 3-B — Temporal env-cube accumulation / reprojection (`ENV-TEMPORAL`) — ✅ SHIPPED Batch 449 (opt-in `contextOptions.webgpu.envMapTemporalAccumulation`; history+accum cube, EMA blend α=0.15 via new `EnvCubeTemporalBlend.wgsl` between capture and prefilter, Hammersley per-face jitter, sun/camera-delta history reset; third `accumCube` avoids WebGPU read+write aliasing. OFF allocates nothing → byte-identical; ON converges to OFF look on static scenes (max delta 0), smooth crossfade + clean reset verified)
 
 - **Technique:** History cube + per-face Hammersley-rotated jitter + exponential blend, invalidate on large sun/camera deltas. Lets scene-capture + clouds-in-IBL run within budget. Shares the temporal accumulation pattern with **3.2** (clouds) and **3.5** (fog).
 - **Opt-in flag:** `contextOptions.webgpu.envMapTemporalAccumulation` (default `false`).

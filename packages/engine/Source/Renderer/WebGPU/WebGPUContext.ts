@@ -1331,6 +1331,20 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * C2-25 ENV-TEMPORAL (Batch 449). When true, the dynamic env cube refresh
+   * temporally accumulates: a history cube + an exponential-moving-average
+   * blend pass is inserted between the cube capture and the IBL prefilter, so
+   * the env map crossfades smoothly on small sun/camera change and the 6-face
+   * capture amortizes across frames (resetting history on a large sun/camera
+   * delta so it can't smear). Default `false` allocates no history cube and
+   * runs no blend pass — byte-identical to the shipped parity path. Read by
+   * `WebGPUDynamicEnvironmentMapManager`.
+   */
+  get envMapTemporalAccumulation(): boolean {
+    return this._options.webgpu?.envMapTemporalAccumulation ?? false;
+  }
+
+  /**
    * The canvas element associated with this context
    */
   get canvas(): HTMLCanvasElement {

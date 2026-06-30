@@ -548,6 +548,25 @@ export interface WebGPURendererOptions {
    * @default false
    */
   sceneCaptureReflections?: boolean;
+
+  /**
+   * C2-25 ENV-TEMPORAL (Batch 449). When true, the dynamic environment cube is
+   * temporally accumulated: a history cube + an exponential-moving-average
+   * blend pass is inserted between the cube capture (procedural sky +
+   * optional scene-capture composite) and the IBL mip/prefilter + SH
+   * projection. The env map then crossfades smoothly on small sun/camera
+   * change (no popping between debounced refreshes) and amortizes the 6-face
+   * capture across frames — the temporal SUBSTRATE that later makes
+   * clouds-in-reflections (3-C) affordable. On a LARGE sun or camera delta the
+   * history is reset (blend α=1 that frame) so the env map can't smear across
+   * a big change. A static scene converges to the same look as OFF (the EMA
+   * fixed point of the deterministic capture). Default `false` allocates NO
+   * history cube and runs NO blend pass — the cube flows straight to the
+   * prefilter (byte-identical to the shipped parity path). Read by
+   * `WebGPUDynamicEnvironmentMapManager`.
+   * @default false
+   */
+  envMapTemporalAccumulation?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════
