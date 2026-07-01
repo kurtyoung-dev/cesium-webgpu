@@ -29,6 +29,62 @@ import defined from "../Core/defined.js";
  * @constructor
  * @private
  */
+/**
+ * Resolve the center Cartesian3 of a bounding volume. BoundingSphere and
+ * OrientedBoundingBox both expose `.center` directly. Tile wrappers
+ * (TileOrientedBoundingBox / TileBoundingSphere / TileBoundingRegion) do
+ * NOT — they expose the underlying volume via `.boundingVolume`, so unwrap
+ * one level when `.center` is absent.
+ *
+ * @param {object} bv A bounding volume or tile-volume wrapper.
+ * @returns {Cartesian3|undefined} The center, or undefined if unresolvable.
+ * @private
+ */
+function boundingVolumeCenter(bv) {
+  if (defined(bv.center)) {
+    return bv.center;
+  }
+  if (defined(bv.boundingVolume) && defined(bv.boundingVolume.center)) {
+    return bv.boundingVolume.center;
+  }
+  return undefined;
+}
+
+/**
+ * Derive an enclosing-sphere radius for a bounding volume.
+ *
+ * - BoundingSphere: returns `.radius` directly.
+ * - OrientedBoundingBox: no `.radius` field — computes the half-diagonal
+ *   length `|u + v + w|` where u,v,w are the box's three half-axis columns
+ *   (the tight enclosing-sphere radius). This matches the convention used
+ *   by {@link BoundingSphere.fromOrientedBoundingBox}.
+ * - Tile-volume wrappers: unwrap one level to the underlying volume.
+ *
+ * @param {object} bv A bounding volume or tile-volume wrapper.
+ * @returns {number} The enclosing-sphere radius, or NaN if unresolvable.
+ * @private
+ */
+function boundingVolumeRadius(bv) {
+  if (typeof bv.radius === "number") {
+    return bv.radius;
+  }
+  const halfAxes = bv.halfAxes;
+  if (defined(halfAxes)) {
+    // Matrix3 is column-major, 9 elements: column0 = [0,1,2],
+    // column1 = [3,4,5], column2 = [6,7,8]. The half-diagonal is the
+    // vector sum of the three half-axis columns.
+    const sx = halfAxes[0] + halfAxes[3] + halfAxes[6];
+    const sy = halfAxes[1] + halfAxes[4] + halfAxes[7];
+    const sz = halfAxes[2] + halfAxes[5] + halfAxes[8];
+    return Math.sqrt(sx * sx + sy * sy + sz * sz);
+  }
+  // Tile-volume wrapper — unwrap one level and retry on the underlying volume.
+  if (defined(bv.boundingVolume) && bv.boundingVolume !== bv) {
+    return boundingVolumeRadius(bv.boundingVolume);
+  }
+  return NaN;
+}
+
 class SOABoundingSphereLayout {
   constructor(capacity, useSharedMemory) {
     /**
@@ -115,8 +171,22 @@ class SOABoundingSphereLayout {
         continue;
       }
 
-      const center = cmd.boundingVolume.center;
-      const r = cmd.boundingVolume.radius;
+      // The bounding volume may be a BoundingSphere (has `.center` +
+      // `.radius`) or an OrientedBoundingBox (has `.center` + `.halfAxes`,
+      // NO `.radius`). 3D-tile DrawCommands frequently carry the raw
+      // OrientedBoundingBox — reading `.radius` off it yields `undefined`,
+      // which stores as NaN in the Float32Array and NaN-propagates through
+      // the Hi-Z occlusion test (silent mis-cull / never-cull). Derive an
+      // enclosing-sphere radius for OBBs to match WebGL's screen-space
+      // culling behavior.
+      const center = boundingVolumeCenter(cmd.boundingVolume);
+      const r = boundingVolumeRadius(cmd.boundingVolume);
+      if (center === undefined || !isFinite(r)) {
+        // Unknown/degenerate bounding volume — skip rather than poison
+        // the SOA with NaN. The command stays conservative-visible via
+        // the "no bounding volume" fallback path in OcclusionCulling.
+        continue;
+      }
 
       this.centerX[writeIndex] = center.x;
       this.centerY[writeIndex] = center.y;
