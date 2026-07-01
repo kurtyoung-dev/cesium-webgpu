@@ -68,6 +68,16 @@ import {
   generateMetadataWGSL,
   generateMetadataPickWGSL,
 } from "../../Scene/Model/MetadataWGSLPipelineStage.js";
+// PARITY-CUSTOM-SHADER-WGSL — native-WGSL customShader codegen + uniform packing
+// + shared binding numbers.
+import {
+  generateCustomShaderWGSL,
+  packUniformBuffer,
+  CUSTOM_SHADER_UBO_BINDING,
+  CUSTOM_SHADER_TEXTURE_BINDING_BASE,
+  CUSTOM_SHADER_SAMPLER_BINDING,
+  MAX_CUSTOM_TEXTURES,
+} from "../../Scene/Model/CustomShaderWGSLPipelineStage.js";
 import Pass from "../Pass.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -1383,6 +1393,142 @@ function applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache) {
   } else {
     pipelineCache.clearMetadataWGSL();
   }
+  // PARITY-CUSTOM-SHADER-WGSL — set/clear the customShader chunk the same way so
+  // `_getOrCreateShaderModule` prepends it + keys the module by the customShader
+  // class for every pipeline (re)build of this primitive.
+  if (defined(primCache?._customShaderWGSL)) {
+    pipelineCache.setCustomShaderWGSL(
+      primCache._customShaderWGSL,
+      primCache._customShaderClassHash | 0,
+    );
+  } else {
+    pipelineCache.clearCustomShaderWGSL();
+  }
+}
+
+/**
+ * PARITY-CUSTOM-SHADER-WGSL — (re)build the model-level native-WGSL customShader
+ * resources onto `cache._customShader`:
+ *   - `chunk` / `classHash` — the generated WGSL (prepended per-primitive).
+ *   - `defines` — MODEL_HAS_WGSL_CUSTOM_SHADER (+ _VERTEX) OR-mask.
+ *   - `uboBuffer` — the packed uniforms UBO (refreshed every frame from the
+ *     customShader's live uniform values, so `setUniform` takes effect).
+ *   - `textureFields` — resolved custom-texture uniform fields.
+ *
+ * The generated chunk is rebuilt only when the customShader reference (or its
+ * WGSL class hash) changes; the UBO contents are re-uploaded every frame (cheap:
+ * a handful of vec4s). When the model has no native-WGSL customShader, clears
+ * the slot so `defines === 0` and every primitive stays byte-identical.
+ *
+ * @private
+ */
+function ensureModelCustomShaderResources(device, model, cache, pipelineCache) {
+  const customShader = model.customShader;
+  const hasWgsl =
+    defined(customShader) &&
+    (defined(customShader.wgslFragmentShaderText) ||
+      defined(customShader.wgslVertexShaderText));
+  if (!hasWgsl) {
+    // Release any prior resources (customShader removed / swapped to GLSL-only).
+    if (defined(cache._customShader?.uboBuffer)) {
+      cache._customShader.uboBuffer.destroy();
+    }
+    cache._customShader = null;
+    return;
+  }
+
+  let cs = cache._customShader;
+  // Rebuild the generated chunk when the customShader reference changes.
+  if (!defined(cs) || cs.customShader !== customShader) {
+    const generated = generateCustomShaderWGSL(customShader);
+    if (!defined(generated)) {
+      // Native-WGSL vertex-only without a fragment body isn't supported by the
+      // generator (needs a fragment body); fall back to no customShader.
+      if (defined(cs?.uboBuffer)) {
+        cs.uboBuffer.destroy();
+      }
+      cache._customShader = null;
+      return;
+    }
+    if (defined(cs?.uboBuffer)) {
+      cs.uboBuffer.destroy();
+    }
+    let defines = ShaderDefine.MODEL_HAS_WGSL_CUSTOM_SHADER;
+    if (generated.hasVertex) {
+      defines |= ShaderDefine.MODEL_HAS_WGSL_CUSTOM_VERTEX;
+    }
+    cs = {
+      customShader,
+      chunk: generated.wgsl,
+      classHash: generated.classHash | 0,
+      defines,
+      uboFields: generated.uboFields,
+      textureFields: generated.textureFields,
+      uboBuffer: null,
+      uboByteLength: 0,
+    };
+    cache._customShader = cs;
+  }
+
+  // (Re)pack + upload the uniforms UBO from the live uniform values every frame.
+  const packed = packUniformBuffer(cs.uboFields, customShader);
+  if (!defined(cs.uboBuffer) || cs.uboByteLength !== packed.byteLength) {
+    if (defined(cs.uboBuffer)) {
+      cs.uboBuffer.destroy();
+    }
+    cs.uboBuffer = device.createBuffer({
+      label: "CustomShader uniforms UBO",
+      size: packed.byteLength,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    cs.uboByteLength = packed.byteLength;
+  }
+  device.queue.writeBuffer(cs.uboBuffer, 0, packed);
+}
+
+/**
+ * PARITY-CUSTOM-SHADER-WGSL — build the customShader group-1 bind-group entries
+ * (UBO at binding 50 + `MAX_CUSTOM_TEXTURES` texture/sampler pairs at 51+). Real
+ * custom textures are resolved from the customShader's TextureManager (WebGPU
+ * view); unused / not-yet-loaded slots fall back to the pipeline cache's 1×1
+ * white placeholder + default sampler so every BGL entry is satisfied. Returns
+ * `[]` when the model has no native-WGSL customShader (so the entry list matches
+ * the minimal materialBGL).
+ *
+ * @private
+ */
+function getCustomShaderEntries(cache, pipelineCache) {
+  const cs = cache._customShader;
+  if (!defined(cs) || !defined(cs.uboBuffer)) {
+    return [];
+  }
+  const entries = [
+    { binding: CUSTOM_SHADER_UBO_BINDING, resource: { buffer: cs.uboBuffer } },
+  ];
+  const placeholderView = pipelineCache.defaultWhiteTexture.createView();
+  const textureFields = cs.textureFields ?? [];
+  for (let k = 0; k < MAX_CUSTOM_TEXTURES; k++) {
+    let view = placeholderView;
+    if (k < textureFields.length) {
+      const tex = cs.customShader._textureManager?.getTexture(
+        textureFields[k].uniformName,
+      );
+      const wgpuView = tex?._webgpuTexture?.view;
+      if (defined(wgpuView)) {
+        view = wgpuView;
+      }
+    }
+    entries.push({
+      binding: CUSTOM_SHADER_TEXTURE_BINDING_BASE + k,
+      resource: view,
+    });
+  }
+  // ONE shared sampler for all custom textures.
+  entries.push({
+    binding: CUSTOM_SHADER_SAMPLER_BINDING,
+    resource: pipelineCache.defaultSampler,
+  });
+  return entries;
 }
 
 /**
@@ -1721,6 +1867,17 @@ function ensurePrimitiveCache(
   if (geometry.hasPropertyTables && defined(primCache.propertyTableEntries)) {
     materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
   }
+  // PARITY-CUSTOM-SHADER-WGSL — OR in the model-level customShader defines
+  // (MODEL_HAS_WGSL_CUSTOM_SHADER + optional _VERTEX) + stash the generated
+  // chunk/hash on the primitive so every pipeline (re)build for this primitive
+  // prepends it and keys its module by the customShader class. When the model
+  // has no native-WGSL customShader, `cache._customShader` is null → no bits,
+  // no chunk, byte-identical.
+  if (defined(cache._customShader)) {
+    materialDefines |= cache._customShader.defines;
+    primCache._customShaderWGSL = cache._customShader.chunk;
+    primCache._customShaderClassHash = cache._customShader.classHash | 0;
+  }
   primCache.materialDefines = materialDefines;
   // DP-H46b — feed the generated metadata chunk + class hash to the pipeline
   // cache before the build (no-op clear for non-metadata primitives).
@@ -1824,6 +1981,7 @@ function ensurePrimitiveCache(
     primCache,
     null,
     materialDefines,
+    getCustomShaderEntries(cache, pipelineCache),
   );
   primCache.refractionViewBound = null;
 
@@ -1858,7 +2016,12 @@ function ensurePrimitiveCache(
  *   ShaderDefine bits). When `MODEL_HAS_KHR_TEXTURES` is set, the
  *   KHR slots (12-25) are emitted; when clear they're omitted.
  */
-function getModelTextureEntries(primCache, refractionView, materialDefines) {
+function getModelTextureEntries(
+  primCache,
+  refractionView,
+  materialDefines,
+  customShaderEntries,
+) {
   const v = primCache.textureViews;
   const s = primCache.textureSamplers;
   const entries = [
@@ -1930,6 +2093,20 @@ function getModelTextureEntries(primCache, refractionView, materialDefines) {
   ) {
     for (let i = 0; i < primCache.propertyTableEntries.length; i++) {
       entries.push(primCache.propertyTableEntries[i]);
+    }
+  }
+
+  // 50+: PARITY-CUSTOM-SHADER-WGSL — customShader UBO + custom texture pairs.
+  // Emitted only when the variant includes MODEL_HAS_WGSL_CUSTOM_SHADER so
+  // non-customShader models keep the minimal entry list matching their
+  // materialBGL. `customShaderEntries` is built per-frame by
+  // `getCustomShaderEntries` (references the live UBO + resolved texture views).
+  if (
+    (materialDefines & ShaderDefine.MODEL_HAS_WGSL_CUSTOM_SHADER) !== 0 &&
+    defined(customShaderEntries)
+  ) {
+    for (let i = 0; i < customShaderEntries.length; i++) {
+      entries.push(customShaderEntries[i]);
     }
   }
 
@@ -2536,14 +2713,34 @@ function updateWebGPUModel(model, frameState) {
   // alert users instead of letting the feature appear "working" when it
   // silently no-ops.
   //>>includeStart('debug', pragmas.debug);
-  if (defined(model.customShader)) {
+  // PARITY-CUSTOM-SHADER-WGSL — a customShader with native WGSL text runs the
+  // real native-WGSL path below; only a GLSL-only customShader (no
+  // `wgslFragmentShaderText`) still warns + no-ops on WebGPU (transpile
+  // deferred by design).
+  if (
+    defined(model.customShader) &&
+    !defined(model.customShader.wgslFragmentShaderText) &&
+    !defined(model.customShader.wgslVertexShaderText)
+  ) {
     oneTimeWarning(
       "WebGPUModel.customShader",
-      "Model.customShader is not yet supported on the WebGPU backend. " +
-        "User-supplied GLSL is silently ignored on WebGPU; the model will " +
-        "render with the standard PBR pipeline. Track AUDIT_2026_05_02 A.7.",
+      "Model.customShader with GLSL-only text is not supported on the WebGPU " +
+        "backend (GLSL→WGSL transpile is deferred). Supply " +
+        "wgslFragmentShaderText / wgslVertexShaderText for a native-WGSL " +
+        "customShader. The GLSL is ignored; the model renders with the " +
+        "standard PBR pipeline. Track PARITY-CUSTOM-SHADER-WGSL.",
     );
   }
+  //>>includeEnd('debug');
+
+  // PARITY-CUSTOM-SHADER-WGSL — compute (or refresh) the model-level native-WGSL
+  // customShader resources: the generated WGSL chunk + class hash, the packed
+  // uniforms UBO, and the resolved custom-texture bind-group entries. Stored on
+  // the model cache below so every primitive of this model prepends the same
+  // chunk and binds the same UBO/textures. Rebuilt when the customShader
+  // reference changes; the UBO contents are refreshed every frame (cheap) so
+  // `setUniform` updates take effect.
+  //>>includeStart('debug', pragmas.debug);
   // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER — resolved):
   // model.classificationType now routes through
   // `pipelineCache.getClassificationPipeline` and emits at the matching
@@ -2577,6 +2774,10 @@ function updateWebGPUModel(model, frameState) {
     cache.pipelineCache = new WebGPUModelPipelineCache(device, fmt, depthFmt);
   }
   const pipelineCache = cache.pipelineCache;
+
+  // PARITY-CUSTOM-SHADER-WGSL — (re)build the model-level native-WGSL
+  // customShader resources.
+  ensureModelCustomShaderResources(device, model, cache, pipelineCache);
 
   // C2-25 ENV-SCENE-CAPTURE (Batch 447) — publish this model's camera-
   // independent draw records so the dynamic-environment-map capture pass can
@@ -3288,6 +3489,7 @@ function updateWebGPUModel(model, frameState) {
             primCache,
             currentRefractionView,
             primCache.materialDefines | 0,
+            getCustomShaderEntries(cache, pipelineCache),
           );
           primCache.refractionViewBound = currentRefractionView;
         }
@@ -3304,6 +3506,7 @@ function updateWebGPUModel(model, frameState) {
           primCache,
           primCache.refractionViewBound ?? null,
           primCache.materialDefines | 0,
+          getCustomShaderEntries(cache, pipelineCache),
         );
       }
 

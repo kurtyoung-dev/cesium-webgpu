@@ -1048,6 +1048,24 @@ struct VertexOutput {
   output.position = csm_updatePositionDepth(output.position);
   //>>endif
 
+  // PARITY-CUSTOM-SHADER-WGSL — native-WGSL customShader vertex hook. Only
+  // emitted when the customShader supplies `wgslVertexShaderText` (the generated
+  // chunk defines `czm_customVertexMain`); the JS side never sets
+  // MODEL_HAS_WGSL_CUSTOM_VERTEX otherwise, so this block is stripped and the
+  // vertex stage is byte-identical for fragment-only + non-customShader models.
+  //>>ifdef MODEL_HAS_WGSL_CUSTOM_VERTEX
+  {
+    var csVsInput: czm_customVertexInput;
+    csVsInput.attributes.positionMC = positionMC;
+    csVsInput.attributes.normalEC = output.normalEC;
+    csVsInput.attributes.texCoord_0 = output.texCoord0;
+    csVsInput.attributes.color_0 = output.color0;
+    var csVsOutput: czm_customVertexOutput;
+    csVsOutput.positionMC = positionMC;
+    czm_customVertexMain(csVsInput, &csVsOutput);
+  }
+  //>>endif
+
   return output;
 }
 
@@ -3284,6 +3302,32 @@ struct FragOutput {
   //     consumers (SSR) need this for proper specular response.
   var out: FragOutput;
   out.color = finalColor;
+
+  // PARITY-CUSTOM-SHADER-WGSL — native-WGSL customShader fragment hook. When
+  // MODEL_HAS_WGSL_CUSTOM_SHADER is set, build a `czm_customModelMaterial`
+  // bridge seeded from the computed lit color, hand the user's inlined
+  // `czm_customFragmentMain` the fragment attributes, then fold its returned
+  // diffuse/alpha back into the output color. When clear, this whole block is
+  // stripped at preprocess time → byte-identical to the pre-customShader path.
+  //>>ifdef MODEL_HAS_WGSL_CUSTOM_SHADER
+  {
+    var csMaterial: czm_customModelMaterial;
+    csMaterial.diffuse = out.color.rgb;
+    csMaterial.specular = vec3<f32>(0.04, 0.04, 0.04);
+    csMaterial.roughness = roughness;
+    csMaterial.emissive = emissive;
+    csMaterial.alpha = out.color.a;
+    var csInput: czm_customFragmentInput;
+    csInput.attributes.positionMC = input.rteMC;
+    csInput.attributes.positionEC = input.positionEC;
+    csInput.attributes.normalEC = N;
+    csInput.attributes.texCoord_0 = input.texCoord0;
+    csInput.attributes.color_0 = input.color0;
+    czm_customFragmentMain(csInput, &csMaterial);
+    out.color = vec4<f32>(csMaterial.diffuse, csMaterial.alpha);
+  }
+  //>>endif
+
   // DP-H46b — metadata data-path proof, now through GENERATED codegen.
   // When MODEL_HAS_METADATA is set AND the per-model debug toggle is enabled
   // (`material.motionFlags.z > 0.5`, driven by

@@ -67,6 +67,15 @@ import {
   PROPERTY_TABLE_BINDING,
   PROPERTY_TABLE_SAMPLER_BINDING,
 } from "./WebGPUModelMetadata.js";
+// PARITY-CUSTOM-SHADER-WGSL — customShader UBO + custom-texture binding numbers,
+// shared with the codegen (`CustomShaderWGSLPipelineStage`) + renderer so the
+// BGL, shader, and bind-group entries all agree.
+import {
+  CUSTOM_SHADER_UBO_BINDING,
+  CUSTOM_SHADER_TEXTURE_BINDING_BASE,
+  CUSTOM_SHADER_SAMPLER_BINDING,
+  MAX_CUSTOM_TEXTURES,
+} from "../../Scene/Model/CustomShaderWGSLPipelineStage.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 162) — per-device shader-module cache so
 // every `WebGPUModelPipelineCache` (one per `Model`) on the same `GPUDevice`
@@ -190,6 +199,15 @@ const MATERIAL_DEFINE_MASK = (() => {
   // MODEL_HAS_PROPERTY_TEXTURES. For non-property-table models the bit is never
   // set → key unchanged.
   m |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
+  // PARITY-CUSTOM-SHADER-WGSL — MODEL_HAS_WGSL_CUSTOM_SHADER (+ the optional
+  // vertex sibling) adds the customShader UBO (binding 50) + custom texture
+  // (texture, sampler) pairs (51+) to the material BGL + pipeline layout AND the
+  // generated chunk's uniform/texture declarations + inlined user body. A NEW
+  // materialBGL variant + a distinct module, so it participates in the key like
+  // MODEL_HAS_PROPERTY_TEXTURES. For non-customShader (and GLSL-only) models the
+  // bits are never set → key unchanged.
+  m |= ShaderDefine.MODEL_HAS_WGSL_CUSTOM_SHADER;
+  m |= ShaderDefine.MODEL_HAS_WGSL_CUSTOM_VERTEX;
   return m;
 })();
 
@@ -345,6 +363,28 @@ function buildMaterialBGL(device, materialDefines) {
   if ((materialDefines & ShaderDefine.MODEL_HAS_PROPERTY_TABLES) !== 0) {
     entries.push(texture(PROPERTY_TABLE_BINDING, Stage.FRAGMENT));
     entries.push(sampler(PROPERTY_TABLE_SAMPLER_BINDING, Stage.FRAGMENT));
+  }
+
+  // 50+: PARITY-CUSTOM-SHADER-WGSL — customShader block. Gated on
+  // MODEL_HAS_WGSL_CUSTOM_SHADER (fragment) — the vertex sibling shares the same
+  // BGL (only the module differs). ONE uniform buffer (visible to VERTEX+FRAGMENT
+  // so a vertex customShader can read the same uniforms) at binding 50, then
+  // `MAX_CUSTOM_TEXTURES` (texture, sampler) pairs at 51+ (fragment-stage). The
+  // generated chunk declares only the textures it actually uses (≤ the cap); the
+  // extra BGL entries are bound to a 1×1 placeholder by the renderer so the bind
+  // group satisfies every BGL entry (a pipeline may use a subset of its layout).
+  if ((materialDefines & ShaderDefine.MODEL_HAS_WGSL_CUSTOM_SHADER) !== 0) {
+    entries.push(
+      uniformBuffer(CUSTOM_SHADER_UBO_BINDING, Stage.VERTEX_FRAGMENT),
+    );
+    for (let k = 0; k < MAX_CUSTOM_TEXTURES; k++) {
+      entries.push(
+        texture(CUSTOM_SHADER_TEXTURE_BINDING_BASE + k, Stage.FRAGMENT),
+      );
+    }
+    // ONE shared sampler for every custom texture (keeps the per-stage sampler
+    // count under the spec floor of 16).
+    entries.push(sampler(CUSTOM_SHADER_SAMPLER_BINDING, Stage.FRAGMENT));
   }
 
   // ── Capability check ──
@@ -1513,6 +1553,16 @@ class WebGPUModelPipelineCache {
     this._metadataPickWGSL = "";
     this._metadataPickClassHash = 0;
 
+    // PARITY-CUSTOM-SHADER-WGSL — the generated customShader chunk + its class
+    // hash for the primitive whose pipeline is currently being (re)built. Set by
+    // the renderer via `setCustomShaderWGSL` immediately before each customShader
+    // `getPipeline*` call, cleared (`clearCustomShaderWGSL`) for non-customShader
+    // primitives so a stale chunk can't leak. Prepended at the SAME injection
+    // point as the metadata chunk; folded into the module cache key when
+    // MODEL_HAS_WGSL_CUSTOM_SHADER / _VERTEX is set.
+    this._customShaderWGSL = "";
+    this._customShaderClassHash = 0;
+
     // Eagerly build the basic variant (materialDefines = 0). Most
     // scenes have at least one non-KHR primitive and the basic layout
     // doubles as a `materialBGL_basic` accessor for renderer code that
@@ -1991,10 +2041,23 @@ class WebGPUModelPipelineCache {
       : isMetadataPick
         ? this._metadataPickClassHash >>> 0
         : this._metadataClassHash >>> 0;
+    // PARITY-CUSTOM-SHADER-WGSL — the generated customShader chunk is
+    // model-dependent (uniforms + inlined user body), so when
+    // MODEL_HAS_WGSL_CUSTOM_SHADER (fragment) OR _VERTEX is set the module varies
+    // by `_customShaderClassHash` too. Non-customShader modules keep
+    // `customShaderClassHash === 0` → their key is unchanged (parity).
+    const hasCustomShader =
+      (effectiveDefines &
+        (ShaderDefine.MODEL_HAS_WGSL_CUSTOM_SHADER |
+          ShaderDefine.MODEL_HAS_WGSL_CUSTOM_VERTEX)) !==
+      0;
+    const customShaderClassHash = !hasCustomShader
+      ? 0
+      : this._customShaderClassHash >>> 0;
     const moduleKey =
-      metadataClassHash === 0
+      metadataClassHash === 0 && customShaderClassHash === 0
         ? effectiveDefines
-        : `${effectiveDefines}#${metadataClassHash}`;
+        : `${effectiveDefines}#${metadataClassHash}#${customShaderClassHash}`;
     let module = this._shaderModuleCache.get(moduleKey);
     if (module) {
       return module;
@@ -2032,7 +2095,21 @@ class WebGPUModelPipelineCache {
       : isMetadataPick
         ? (this._metadataPickWGSL ?? this._metadataWGSL ?? "")
         : (this._metadataWGSL ?? "");
-    const fullSource = `${clChunk}\n${metadataChunk}${ModelPBRCompleteWGSL}`;
+    // PARITY-CUSTOM-SHADER-WGSL — prepend the generated customShader chunk at the
+    // SAME injection point, after the metadata chunk. Empty (and the gated call
+    // sites stripped) for non-customShader models → byte-identical source.
+    const customShaderChunk = !hasCustomShader
+      ? ""
+      : (this._customShaderWGSL ?? "");
+    const fullSource = `${clChunk}\n${metadataChunk}${customShaderChunk}${ModelPBRCompleteWGSL}`;
+    // The device-level Tier-1 cache keys by (sourceId, defines, keySalt). Fold
+    // BOTH the metadata + customShader class hashes into one salt so two models
+    // sharing (sourceId, defines) but differing in either generated chunk get
+    // distinct compiled modules. Zero for the plain path → device key unchanged.
+    const keySalt =
+      customShaderClassHash === 0
+        ? metadataClassHash
+        : (metadataClassHash ^ customShaderClassHash) >>> 0;
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
       fullSource,
@@ -2041,8 +2118,12 @@ class WebGPUModelPipelineCache {
         metadataClassHash !== 0
           ? ` meta=0x${metadataClassHash.toString(16)}`
           : ""
+      }${
+        customShaderClassHash !== 0
+          ? ` cs=0x${customShaderClassHash.toString(16)}`
+          : ""
       }]`,
-      metadataClassHash,
+      keySalt,
     );
     this._shaderModuleCache.set(moduleKey, module);
     return module;
@@ -2107,6 +2188,35 @@ class WebGPUModelPipelineCache {
   clearMetadataPickWGSL() {
     this._metadataPickWGSL = "";
     this._metadataPickClassHash = 0;
+  }
+
+  /**
+   * PARITY-CUSTOM-SHADER-WGSL — set the generated customShader WGSL chunk + its
+   * class hash for the NEXT `getPipeline*` call. The renderer calls this
+   * immediately before (re)building a customShader model's pipelines so
+   * `_getOrCreateShaderModule` prepends the right chunk and keys the module by
+   * the right customShader class.
+   *
+   * @param {string} wgsl the generated customShader chunk
+   * @param {number} classHash a stable fingerprint of the generated chunk
+   * @private
+   */
+  setCustomShaderWGSL(wgsl, classHash) {
+    this._customShaderWGSL = wgsl ?? "";
+    this._customShaderClassHash = (classHash | 0) >>> 0;
+  }
+
+  /**
+   * PARITY-CUSTOM-SHADER-WGSL — clear the generated customShader WGSL so a
+   * subsequent non-customShader primitive (sharing this per-Model cache) can't
+   * inherit a stale chunk. The MODEL_HAS_WGSL_CUSTOM_SHADER bit gates whether the
+   * chunk is prepended at all, so this is belt-and-suspenders.
+   *
+   * @private
+   */
+  clearCustomShaderWGSL() {
+    this._customShaderWGSL = "";
+    this._customShaderClassHash = 0;
   }
 
   /**

@@ -170,6 +170,42 @@ class CustomShader {
     this.fragmentShaderText = options.fragmentShaderText;
 
     /**
+     * PARITY-CUSTOM-SHADER-WGSL — the user-defined NATIVE WGSL code for the
+     * vertex shader, used ONLY by the WebGPU backend. When present, the WebGPU
+     * model renderer runs the native-WGSL customShader path
+     * ({@link CustomShaderWGSLPipelineStage}) instead of warning + no-op. It
+     * must define <code>fn czm_customVertexMain(vsInput: czm_customVertexInput,
+     * vsOutput: ptr&lt;function, czm_customVertexOutput&gt;)</code>. Optional —
+     * a WGSL customShader may supply only <code>wgslFragmentShaderText</code>.
+     * The WebGL backend ignores this field entirely (it uses the GLSL
+     * <code>vertexShaderText</code>).
+     *
+     * @type {string|undefined}
+     * @readonly
+     * @experimental
+     */
+    this.wgslVertexShaderText = options.wgslVertexShaderText;
+
+    /**
+     * PARITY-CUSTOM-SHADER-WGSL — the user-defined NATIVE WGSL code for the
+     * fragment shader, used ONLY by the WebGPU backend. When present, the
+     * WebGPU model renderer runs the native-WGSL customShader path
+     * ({@link CustomShaderWGSLPipelineStage}) — the generated chunk declares the
+     * customShader uniforms + textures and inlines this body at the material
+     * hook. It must define <code>fn czm_customFragmentMain(fsInput:
+     * czm_customFragmentInput, material: ptr&lt;function,
+     * czm_customModelMaterial&gt;)</code>. A GLSL-only <code>CustomShader</code>
+     * (no <code>wgslFragmentShaderText</code>) still warns + no-ops on WebGPU —
+     * GLSL→WGSL transpile is deferred by design. The WebGL backend ignores this
+     * field entirely.
+     *
+     * @type {string|undefined}
+     * @readonly
+     * @experimental
+     */
+    this.wgslFragmentShaderText = options.wgslFragmentShaderText;
+
+    /**
      * The translucency mode, which determines how the custom shader will be applied. If the value is
      * CustomShaderTransulcencyMode.OPAQUE or CustomShaderTransulcencyMode.TRANSLUCENT, the custom shader
      * will override settings from the model's material. If the value isCustomShaderTransulcencyMode.INHERIT,

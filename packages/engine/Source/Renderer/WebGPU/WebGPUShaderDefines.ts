@@ -579,6 +579,58 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `PointCloud/PointCloudEDLDepth.wgsl`.
    */
   POINT_CLOUD_EDL_DEPTH: 1 << 22,
+
+  /**
+   * Model has a NATIVE-WGSL {@link CustomShader} (PARITY-CUSTOM-SHADER-WGSL).
+   * When set, `ModelPBRComplete.wgsl` activates its `//>>ifdef
+   * MODEL_HAS_WGSL_CUSTOM_SHADER` blocks: the fragment stage builds a
+   * `czm_customModelMaterial` bridge from the computed lit color, calls the
+   * GENERATED `czm_customFragmentMain` (the user's inlined
+   * `wgslFragmentShaderText`), and writes the returned diffuse/alpha back into
+   * the output color. The GENERATED chunk
+   * (`CustomShaderWGSLPipelineStage.generateCustomShaderWGSL`) — declaring the
+   * `CustomShaderUniforms` UBO (group-1 binding 50), any custom texture/sampler
+   * pairs (bindings 51+), the bridge structs, and the inlined user body — is
+   * prepended at the SAME single injection point in
+   * `WebGPUModelPipelineCache._getOrCreateShaderModule` that the metadata chunk
+   * uses.
+   *
+   * Like `MODEL_HAS_PROPERTY_TEXTURES`, this bit adds material-BGL bindings (the
+   * customShader UBO + custom textures) and a distinct module, so it
+   * participates in the model material BGL / pipeline / shader-module cache key
+   * (folded into `MATERIAL_DEFINE_MASK`). When clear (the common case, and every
+   * GLSL-only or no-customShader model), the `//>>else` of each gated block is
+   * the historical (absent) code, the prepended chunk is empty, and the
+   * preprocessed WGSL + compiled-module hash are byte-identical to the
+   * pre-customShader path.
+   *
+   * Per-model selection: `WebGPUModelRenderer` sets this bit only when
+   * `model.customShader` is defined AND carries `wgslFragmentShaderText` (a
+   * GLSL-only customShader keeps the warn + no-op path — WGSL transpile is
+   * deferred by design).
+   *
+   * Consumer: `ModelPBRComplete.wgsl`.
+   */
+  MODEL_HAS_WGSL_CUSTOM_SHADER: 1 << 23,
+
+  /**
+   * Model's NATIVE-WGSL {@link CustomShader} additionally supplies
+   * `wgslVertexShaderText` (PARITY-CUSTOM-SHADER-WGSL). Independent of
+   * `MODEL_HAS_WGSL_CUSTOM_SHADER` (fragment): a WGSL customShader may supply
+   * only a fragment body, only a vertex body, or both. When set,
+   * `ModelPBRComplete.wgsl` activates its `//>>ifdef MODEL_HAS_WGSL_CUSTOM_VERTEX`
+   * block in `vertexMain`, which calls the GENERATED `czm_customVertexMain` (the
+   * user's inlined `wgslVertexShaderText`). When clear, the block is stripped →
+   * the vertex stage is byte-identical for fragment-only + non-customShader
+   * models.
+   *
+   * Set by `WebGPUModelRenderer` only when `model.customShader.wgslVertexShaderText`
+   * is defined. Folded into `MATERIAL_DEFINE_MASK` alongside the fragment bit so
+   * distinct vertex bodies get distinct pipelines/modules.
+   *
+   * Consumer: `ModelPBRComplete.wgsl` (`vertexMain`).
+   */
+  MODEL_HAS_WGSL_CUSTOM_VERTEX: 1 << 24,
 } as const);
 
 /**
