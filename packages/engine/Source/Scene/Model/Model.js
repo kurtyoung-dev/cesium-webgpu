@@ -2422,6 +2422,18 @@ function updateClippingPlanes(model, frameState) {
   let currentClippingPlanesState = 0;
   if (model.isClippingEnabled()) {
     if (model._clippingPlanes.owner === model) {
+      // PARITY-CLIP-PLANES — hand the WebGPU clip-plane packer the model's
+      // world reference matrix so model-local planes get transformed
+      // `model-local → world → eye` (matching WebGL's
+      // `inverseTranspose(view3D · referenceMatrix · cp.modelMatrix)` at
+      // `updateReferenceMatrices`). The WebGL path ignores this field; it
+      // is read only by `updateWebGPUClippingPlanes`. Set every frame so
+      // camera / model-matrix animation stays correct.
+      const clampedOrModelMatrix = defined(model._clampedModelMatrix)
+        ? model._clampedModelMatrix
+        : model.modelMatrix;
+      model._clippingPlanes._webgpuOwnerMatrix =
+        model.referenceMatrix ?? clampedOrModelMatrix;
       model._clippingPlanes.update(frameState);
     }
     currentClippingPlanesState = model._clippingPlanes.clippingPlanesState;

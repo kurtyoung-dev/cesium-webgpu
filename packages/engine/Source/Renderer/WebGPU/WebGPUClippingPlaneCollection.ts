@@ -9,6 +9,11 @@
  * @module WebGPUClippingPlaneCollection
  */
 
+import Matrix4 from "../../Core/Matrix4.js";
+
+/** Column-major Matrix4 read as a flat 16-number array. */
+type Mat4Like = ArrayLike<number>;
+
 /** Minimal interface for the upstream ClippingPlaneCollection. */
 interface ClippingPlaneCollectionLike {
   length: number;
@@ -19,6 +24,25 @@ interface ClippingPlaneCollectionLike {
   _unionClippingRegions?: number | boolean;
   _webgpuCache?: ClippingPlaneCache;
   _clippingPlanesTexture?: CesiumOpaqueTexture;
+  /**
+   * The collection's own additional transform (model-local → the owner's
+   * reference frame). Identity by default. Mirrors the WebGL packer which
+   * folds `collection.modelMatrix` into the per-fragment plane transform.
+   */
+  modelMatrix?: Mat4Like;
+  /**
+   * PARITY-CLIP-PLANES — owner world matrix stashed by the owning renderer
+   * each frame. For the globe this is absent (planes are authored in
+   * world/ECEF space, so the world→eye `inverseViewTranspose` alone is
+   * correct). For a {@link Model} the owning renderer sets this to the
+   * model's world transform so the plane is taken `model-local → world →
+   * eye`, matching WebGL's `inverseTranspose(view3D · referenceMatrix ·
+   * clippingPlanes.modelMatrix)` in `Model.updateClippingPlanes`.
+   *
+   * When absent (or identity) the behavior is byte-identical to the
+   * pre-parity `inverseViewTranspose`-only path.
+   */
+  _webgpuOwnerMatrix?: Mat4Like;
 }
 
 interface ClippingPlaneCache {
@@ -28,6 +52,40 @@ interface ClippingPlaneCache {
   textureWidth: number;
   textureHeight: number;
   revision: number;
+}
+
+// PARITY-CLIP-PLANES — reused scratch matrices for the owner/collection
+// plane-transform fold. Module-scoped (single-threaded JS) so the per-frame
+// packer stays allocation-free.
+const _scratchPlaneM = new Matrix4();
+const _scratchPlaneInvT = new Matrix4();
+
+/**
+ * Cheap identity test for a column-major mat4 array. Used to keep the
+ * globe / world-space-authored path byte-identical: when the owner matrix
+ * and the collection modelMatrix are both identity we never build the
+ * combined transform and fall through to the original
+ * `inverseViewTranspose` fast path.
+ */
+function isIdentityMat4(m: Mat4Like): boolean {
+  return (
+    m[0] === 1 &&
+    m[1] === 0 &&
+    m[2] === 0 &&
+    m[3] === 0 &&
+    m[4] === 0 &&
+    m[5] === 1 &&
+    m[6] === 0 &&
+    m[7] === 0 &&
+    m[8] === 0 &&
+    m[9] === 0 &&
+    m[10] === 1 &&
+    m[11] === 0 &&
+    m[12] === 0 &&
+    m[13] === 0 &&
+    m[14] === 0 &&
+    m[15] === 1
+  );
 }
 
 /**
@@ -119,7 +177,46 @@ function updateWebGPUClippingPlanes(
   // is negligible bandwidth.
   const uniformState = frameState.context.uniformState;
   const view = uniformState.view;
-  const invViewT = uniformState.inverseViewTranspose;
+  let invViewT: Mat4Like | undefined =
+    uniformState.inverseViewTranspose as unknown as Mat4Like | undefined;
+
+  // PARITY-CLIP-PLANES — fold the owner world transform (and the
+  // collection's own `modelMatrix`) into the eye-space plane transform so
+  // model-local clipping planes clip in the correct frame. WebGL does this
+  // per-fragment via `inverseTranspose(view3D · referenceMatrix ·
+  // clippingPlanes.modelMatrix)` (`Model.updateClippingPlanes`); we bake
+  // the same matrix on the CPU here because we transform the plane once at
+  // upload time rather than per fragment.
+  //
+  // Byte-identical fast path: when there is no owner matrix AND the
+  // collection modelMatrix is identity (the globe case, and any
+  // world-space authored collection), keep the pre-parity
+  // `inverseViewTranspose`-only transform untouched.
+  const ownerMatrix = collection._webgpuOwnerMatrix;
+  const collectionModelMatrix = collection.modelMatrix;
+  const hasOwnerMatrix =
+    ownerMatrix !== undefined && !isIdentityMat4(ownerMatrix);
+  const hasCollectionMatrix =
+    collectionModelMatrix !== undefined &&
+    !isIdentityMat4(collectionModelMatrix);
+  if ((hasOwnerMatrix || hasCollectionMatrix) && view) {
+    // M = view · ownerMatrix · collectionModelMatrix
+    let m = Matrix4.clone(view as Matrix4, _scratchPlaneM);
+    if (hasOwnerMatrix) {
+      m = Matrix4.multiply(m, ownerMatrix as Matrix4, _scratchPlaneM);
+    }
+    if (hasCollectionMatrix) {
+      m = Matrix4.multiply(m, collectionModelMatrix as Matrix4, _scratchPlaneM);
+    }
+    // Plane transform = inverseTranspose(M). Matches `czm_transformPlane`'s
+    // use of the inverse-transpose so the plane normal survives non-uniform
+    // scale / rotation and the offset stays consistent.
+    invViewT = Matrix4.inverseTranspose(
+      m as Matrix4,
+      _scratchPlaneInvT,
+    ) as unknown as Mat4Like;
+  }
+
   const data = new Float32Array(planeCount * 4);
   for (let i = 0; i < planeCount; i++) {
     const plane = collection.get(i);

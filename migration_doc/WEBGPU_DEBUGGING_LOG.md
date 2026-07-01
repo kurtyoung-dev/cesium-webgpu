@@ -24,6 +24,24 @@
 
 ---
 
+## PARITY-CLIP-PLANES — model clipping planes clipped the wrong space on WebGPU (2026-06-30)
+
+**Files affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUClippingPlaneCollection.ts`, `packages/engine/Source/Scene/Model/Model.js`, `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl`.
+
+**Symptom:** `model.clippingPlanes = new ClippingPlaneCollection({ planes: [new ClippingPlane(new Cartesian3(1,0,0), 0)] })` clipped the correct half on WebGL but had **no visible effect on WebGPU** — the full model rendered. (A position-independent plane such as `normal=(0,0,0), distance=-1` *did* clip everything, proving the bind-group wiring + `modelClipByPlanes` discard were live; only the position-dependent test was wrong.)
+
+**Root cause:** `updateWebGPUClippingPlanes` bakes the per-plane eye-space equation on the CPU using **only** `uniformState.inverseViewTranspose` (world→eye). That is correct for the **globe** (planes are authored in world/ECEF space) but wrong for a **Model**: a model's clipping planes are authored in **model-local** space and must be taken `model-local → world → eye`. WebGL does exactly that per-fragment via `model._clippingPlanesMatrix = inverseTranspose(view3D · referenceMatrix · clippingPlanes.modelMatrix)` (`Model.updateReferenceMatrices`) fed to `czm_transformPlane`. The WebGPU packer skipped the `referenceMatrix · collection.modelMatrix` factor entirely, so the plane `(1,0,0,0)` in the model's ENU frame was treated as an ECEF plane and clipped nothing in view.
+
+**Fix:**
+
+1. `WebGPUClippingPlaneCollection.ts` — fold an optional owner world matrix (`collection._webgpuOwnerMatrix`) **and** the collection's own `modelMatrix` into the eye-space transform: `planeTransform = inverseTranspose(view · ownerMatrix · collection.modelMatrix)`. Byte-identical fast path preserved: when both are identity (globe / any world-space-authored collection) the code never builds the combined matrix and falls through to the original `inverseViewTranspose`-only transform (guarded by an `isIdentityMat4` check).
+2. `Model.js::updateClippingPlanes` — stash `model.referenceMatrix ?? modelMatrix` on `_clippingPlanes._webgpuOwnerMatrix` each frame before `.update(frameState)`. WebGL ignores this transient field; only the WebGPU packer reads it.
+3. `ModelPBRComplete.wgsl::fragmentPickMain` — added the same runtime-gated `modelClipByPlanes` / `modelClipByPolygon` discards the color path already has, so clipped-away geometry is not pickable (matching WebGL). Runtime-gated on `effects.clippingPlaneCount > 0u` (no new ShaderDefine; consistent with the existing color-path clipping and byte-identical when count=0).
+
+**Verification:** `Tools/visual-regression/probe-clipping-planes-parity.mjs` (new). WebGL vs WebGPU on a CesiumMilkTruck glTF with a +X-half clip: visual mismatch **16.36% → 2.35%** (residual is help-overlay/logo AA edges); WebGPU PNG read confirms the model is now clipped to the same half as WebGL. Off-gate: a no-clip model render is byte-identical (full truck, both backends). `npx gulp build` + `npx tsc --noEmit` clean.
+
+**Known remaining gap (pre-existing, NOT clipping-related):** WebGPU `scene.pick` returns `undefined` for a standalone `Model.fromGltfAsync` model in this scene (0 hits with clipping OFF too), so the pick-parity leg of the probe cannot pass yet. This is a separate WebGPU model-pick gap; the pick-shader clip discard added here is correct and will take effect once that gap is closed. Surfaced per Principle 9.
+
 ## Batch 428 — A-LUT-REPARAM: sun-relative sky-view LUT keystone (NEW-ATMOSPHERE-LUT-SUN-RELATIVE) (2026-06-29)
 
 **Item:** Phase-1 keystone (P0) — the root blocker `NEW-ATMOSPHERE-LUT-SUN-RELATIVE`. The old WebGPU atmosphere inscatter bake (`AtmosphereLUT.wgsl::computeInscatter`) parameterizes only `(cosViewZenith × altitude)` in a synthetic Y-up frame, so it carries no view↔sun azimuth axis and cannot represent sky color off the sun meridian. That is why `ENABLE_SKY_INSCATTER_LUT=false` and why SKY-MS (Batch 427) gets no directional lift.

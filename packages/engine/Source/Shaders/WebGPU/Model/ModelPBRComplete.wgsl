@@ -3478,6 +3478,22 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 @fragment fn fragmentPickMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
 
+  // PARITY-CLIP-PLANES — clipped geometry must not be pickable. Mirror the
+  // color path's `modelClipByPlanes` / `modelClipByPolygon` discards at the
+  // top of the pick entry so a pick ray through a clipped-away region
+  // returns undefined (matching WebGL, where the clip discard runs before
+  // the pick-color write). Position-independent when `clippingPlaneCount`
+  // is 0 — the loop early-returns 1.0 and no texture is sampled, so
+  // unclipped models pick exactly as before.
+  if (effects.clippingPlaneCount > 0u) {
+    if (modelClipByPlanes(input.positionEC) < 0.0) { discard; }
+  }
+  if (effects.clippingPolygonCount > 0u) {
+    let worldPos = camera.cameraPositionWC
+      + (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
+    if (modelClipByPolygon(worldPos)) { discard; }
+  }
+
   // Resolve baseColor.a only — that's all the alpha-mask path needs.
   // Skip every PBR / lighting / IBL / fog / edge stage; the pick FBO
   // doesn't care about anything but `material.pickColor` post-discard.
