@@ -128,6 +128,21 @@ async function capture(renderer) {
         renderer: scene.context.rendererType || null,
         usingRealData: cache ? cache.usingRealData === true : null,
         uploadPhase: du ? du.phase : null,
+        // PARITY-VOXEL-COLOR-PARITY — confirm the COLOR pipeline was swapped to
+        // the customShader-parity variant (the label carries the define) and
+        // the drawn command is bound to it. `cmdPipelineIsColor === false`
+        // would mean the command is still on the stale placeholder pipeline
+        // (the raw-texel green path).
+        colorDescName:
+          cache && cache.colorDescriptor ? cache.colorDescriptor.name : null,
+        cmdPipelineLabel:
+          cache && cache.command && cache.command.pipeline
+            ? cache.command.pipeline.label || "no-label"
+            : null,
+        cmdPipelineIsColor:
+          cache && cache.command && cache.pipeline
+            ? cache.command.pipeline === cache.pipeline
+            : null,
         obb: prim.orientedBoundingBox
           ? {
               cx: prim.orientedBoundingBox.center.x,
@@ -296,7 +311,30 @@ const footprintMatch = iou >= 0.85;
 const noErrors =
   webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0;
 
-const pass = bothRender && bounded && footprintMatch && noErrors;
+// PARITY-VOXEL-COLOR-PARITY — COLOR is now a HARD gate. The WebGPU ray-march
+// applies the default voxel customShader colour mapping + WebGL-matching
+// front-to-back accumulation, so the mean colour of the voxel footprint must
+// match WebGL's within a tolerance (gray box on BOTH backends, not gray-vs-
+// green). Tolerance is generous — WebGL runs the full octree megatexture while
+// the WebGPU path uploads only the ROOT tile, so per-voxel sampling differs
+// slightly — but a raw-texel green/teal (the pre-fix defect, colorL1 ~433)
+// blows well past it while a matched gray sits comfortably under.
+const COLOR_L1_TOLERANCE = 90;
+const colorMatch = colorL1 <= COLOR_L1_TOLERANCE;
+// Also require the WebGPU box to be near-gray (r≈g≈b) — the pre-fix defect was
+// a strong green cast (g >> r, b). Max pairwise channel spread guards hue.
+const bc2 = webgpu.px.avgColor;
+const webgpuChannelSpread =
+  Math.max(bc2[0], bc2[1], bc2[2]) - Math.min(bc2[0], bc2[1], bc2[2]);
+const webgpuNeutral = webgpuChannelSpread <= 40;
+
+const pass =
+  bothRender &&
+  bounded &&
+  footprintMatch &&
+  noErrors &&
+  colorMatch &&
+  webgpuNeutral;
 console.log("---");
 console.log("bothRender:", bothRender);
 console.log(
@@ -305,9 +343,10 @@ console.log(
 );
 console.log("footprintMatch (IoU>=0.85):", footprintMatch);
 console.log("noErrors:", noErrors);
+console.log(`colorMatch (colorL1 ${colorL1} <= ${COLOR_L1_TOLERANCE}):`, colorMatch);
 console.log(
-  "colorL1 (informational — WebGL colormap vs WebGPU raw RGBA, separate increment):",
-  colorL1,
+  `webgpuNeutral (channel spread ${webgpuChannelSpread} <= 40, not green-cast):`,
+  webgpuNeutral,
 );
 console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");
 

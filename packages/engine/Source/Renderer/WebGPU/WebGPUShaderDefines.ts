@@ -631,6 +631,36 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `ModelPBRComplete.wgsl` (`vertexMain`).
    */
   MODEL_HAS_WGSL_CUSTOM_VERTEX: 1 << 24,
+
+  /**
+   * Voxel ray-march applies the voxel {@link CustomShader} colour mapping +
+   * WebGL-matching front-to-back accumulation (PARITY-VOXEL-COLOR-PARITY).
+   * When set, `WebGPUVoxelRenderer`'s inline `VOXEL_WGSL` fragment stage
+   * activates its `//>>ifdef VOXEL_CUSTOM_SHADER_COLOR` block: instead of the
+   * historical "output the raw sampled RGBA scaled by `s.a * stepSize`"
+   * accumulation, each ray-march sample is turned into a `material.diffuse` /
+   * `material.alpha` pair via the DEFAULT voxel customShader mapping (the same
+   * `material.diffuse = property.rgb; material.alpha = property.a` that
+   * `buildVoxelCustomShader`'s VEC4 branch emits for an un-styled
+   * VoxelBox3DTiles), then blended with Cesium's premultiplied-alpha
+   * front-to-back integral (`colorAccum += (1 - colorAccum.a) *
+   * vec4(diffuse * alpha, alpha)`) and normalised by `ALPHA_ACCUM_MAX = 0.98`
+   * exactly as `Shaders/Voxels/VoxelFS.glsl` does. This makes an un-styled
+   * WebGPU voxel box match the WebGL colour (gray for VoxelBox3DTiles) instead
+   * of the previous raw-texel green/teal.
+   *
+   * Per-primitive selection: `WebGPUVoxelRenderer` ORs this bit into the COLOR
+   * pipeline's shader-module + pipeline cache keys ONLY when a real voxel
+   * provider's root tile has been uploaded (`cache.usingRealData === true`).
+   * The pick + velocity pipelines never set it. When clear (the placeholder /
+   * no-provider off-gate, and every pick/velocity variant) the `//>>else`
+   * branch of the gated block is the historical accumulation source
+   * byte-for-byte, so `preprocess(VOXEL_WGSL, 0)` is unchanged and the
+   * placeholder module hash + off-gate render are byte-identical to Batch 475.
+   *
+   * Consumer: `WebGPUVoxelRenderer.ts` (inline `VOXEL_WGSL` fragmentMain).
+   */
+  VOXEL_CUSTOM_SHADER_COLOR: 1 << 25,
 } as const);
 
 /**

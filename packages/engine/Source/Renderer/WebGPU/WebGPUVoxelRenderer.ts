@@ -38,7 +38,7 @@ import {
   ensurePickId,
   type SinglePickIdCache,
 } from "./WebGPUPickCommandHelpers.js";
-import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import {
   getEffectsBindGroupLayout,
@@ -119,6 +119,16 @@ interface VoxelCache {
   // Retained so the real-data bind group can be rebuilt (same layout, new
   // texture view at binding 1) once the root tile finishes uploading.
   bindGroupLayout: GPUBindGroupLayout | null;
+
+  // PARITY-VOXEL-COLOR-PARITY — retained so the COLOR pipeline can be rebuilt
+  // with the VOXEL_CUSTOM_SHADER_COLOR define once the real root tile uploads
+  // (the placeholder path stays byte-identical at defines=0). The pipeline
+  // layout is the same for the placeholder + real-data color module (same
+  // BGLs), so we reuse it; only the fragment module source (preprocessed WGSL)
+  // differs. `pipelineLayout` is captured at init; `colorModuleCustomShader`
+  // is the lazily-built defines=VOXEL_CUSTOM_SHADER_COLOR module.
+  pipelineLayout: GPUPipelineLayout | null;
+  colorModuleCustomShader: GPUShaderModule | null;
 }
 
 const VOXEL_WGSL = `
@@ -154,6 +164,18 @@ struct Uniforms {
   // velocity VS can lift model-space cube vertices to world space
   // before applying prevViewProjection. UBO grows 224 → 288 bytes.
   modelMatrix: mat4x4<f32>,
+  // PARITY-VOXEL-COLOR-PARITY — sun light direction transformed into the box's
+  // MODEL/local frame (floats 72..74) + a lighting-enabled flag (float 75).
+  // The default voxel customShader (VoxelPrimitive.DefaultCustomShader) shades
+  // each voxel gray by \`0.5 + 0.5 * max(0, dot(voxelNormalEC, lightDirEC))\`;
+  // because the entry-face normal is axis-aligned in the box-local frame and
+  // \`dot(czm_normal * nLocal, lightEC) == dot(nLocal, czm_normal^T * lightEC)\`,
+  // passing the light direction pre-transformed into model space lets the WGSL
+  // do the same dot without a full normal matrix. Zero when the parity path is
+  // inactive (only written when the color pipeline carries the define), so the
+  // off-gate placeholder never reads meaningful data here.
+  lightDirectionModel: vec3<f32>,
+  voxelLightingEnabled: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -243,6 +265,56 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   var accumC = vec3<f32>(0.0);
   var accumA: f32 = 0.0;
   let maxI = i32(u.maxSteps);
+//>>ifdef VOXEL_CUSTOM_SHADER_COLOR
+  // PARITY-VOXEL-COLOR-PARITY — WebGL-matching front-to-back accumulation using
+  // the DEFAULT voxel customShader (VoxelPrimitive.DefaultCustomShader):
+  //   material.diffuse = vec3(0.5 + 0.5 * max(0, dot(voxelNormalEC, lightEC)));
+  //   material.alpha   = 1.0;
+  // i.e. a GRAY box shaded by the voxel-face normal · sun direction — the
+  // property colour is NOT used for diffuse in the default shader (it only
+  // gates density). Mirrors Shaders/Voxels/VoxelFS.glsl's premultiplied
+  // front-to-back integral (\`colorAccum += (1 - colorAccum.a) *
+  // vec4(diffuse * alpha, alpha)\`) saturating at ALPHA_ACCUM_MAX (0.98) then
+  // normalising alpha back to [0,1]. An opaque (alpha == 1) front voxel wins,
+  // so the visible colour is the gray lighting at the entry face — the same
+  // gray WebGL produces, instead of the raw-texel green/teal the historical
+  // else-branch integral yields.
+  let ALPHA_ACCUM_MAX: f32 = 0.98;
+  // Entry-face normal in the box-LOCAL frame: the AABB slab whose tMin equals
+  // the entry t (tr.x). \`step()\` picks the axis; the sign is opposite the ray
+  // direction (we enter through the face the ray points INTO).
+  let t1n = (u.minBounds - u.cameraPositionEC) * invDir;
+  let t2n = (u.maxBounds - u.cameraPositionEC) * invDir;
+  let tMinV = min(t1n, t2n);
+  let entryAxis = step(vec3<f32>(tr.x) - vec3<f32>(1e-4), tMinV);
+  // Normalize the selector so exactly one axis contributes even if two slabs
+  // coincide, then orient it against the ray.
+  let axisSum = max(entryAxis.x + entryAxis.y + entryAxis.z, 1.0);
+  let entryNormalLocal = -sign(rayDir) * entryAxis / axisSum;
+  // Default-shader gray lighting: 0.5 + 0.5 * max(0, dot(n, lightDirModel)).
+  let ndotl = max(0.0, dot(normalize(entryNormalLocal), u.lightDirectionModel));
+  let lighting = 0.5 + 0.5 * ndotl;
+  let matDiffuse = vec3<f32>(lighting);
+  for (var i = 0; i < maxI; i = i + 1) {
+    let t = tS + f32(i) * u.stepSize;
+    if (t > tE || accumA > ALPHA_ACCUM_MAX) { break; }
+    let p = u.cameraPositionEC + rayDir * t;
+    let uvw = (p - u.minBounds) / (u.maxBounds - u.minBounds);
+    if (any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0))) { continue; }
+    let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
+    if (s.a > u.densityThreshold) {
+      // Default voxel customShader material: gray lighting, opaque.
+      let matAlpha = 1.0;
+      accumC = accumC + (1.0 - accumA) * matDiffuse * matAlpha;
+      accumA = accumA + (1.0 - accumA) * matAlpha;
+    }
+  }
+  accumA = min(accumA, ALPHA_ACCUM_MAX);
+  // Convert the alpha from [0, ALPHA_ACCUM_MAX] back to [0, 1] (WebGL).
+  accumA = accumA / ALPHA_ACCUM_MAX;
+  if (accumA < 0.01) { discard; return vec4<f32>(0.0); }
+  var finalColor = vec4<f32>(accumC, accumA);
+//>>else
   for (var i = 0; i < maxI; i = i + 1) {
     let t = tS + f32(i) * u.stepSize;
     if (t > tE || accumA > 0.99) { break; }
@@ -266,6 +338,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (accumA < 0.01) { discard; return vec4<f32>(0.0); }
   var finalColor = vec4<f32>(accumC, accumA);
+//>>endif
 
   // FEAT-GAP-09 (Batch 103) — Aerial-perspective fog blend. Mirrors
   // PrimitiveBasicColor.wgsl::fragmentMain. The inline VOXEL_WGSL
@@ -415,6 +488,18 @@ fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
   return curNdc - prevNdc;
 }
 `;
+
+// PARITY-VOXEL-COLOR-PARITY — distinct pipeline-cache name for the color
+// pipeline once it's rebuilt with the VOXEL_CUSTOM_SHADER_COLOR define. The
+// central pipeline cache keys on `descriptor.name`, so this must differ from
+// the placeholder "Voxel color pipeline" name to avoid a cache collision.
+const VOXEL_COLOR_PARITY_PIPELINE_NAME = "Voxel color pipeline (customShader)";
+
+// PARITY-VOXEL-COLOR-PARITY scratches for the model-space light-direction pack.
+const scratchMVNormal = new Matrix4();
+const scratchMV3 = new Matrix3();
+const scratchMV3Inv = new Matrix3();
+const scratchLightModel = new Cartesian3();
 
 const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
 const scratchMVP = new Matrix4();
@@ -742,6 +827,9 @@ function updateWebGPUVoxelPrimitive(
       dataUpload: null,
       usingRealData: false,
       bindGroupLayout: null,
+      // PARITY-VOXEL-COLOR-PARITY — color-parity pipeline rebuild slots.
+      pipelineLayout: null,
+      colorModuleCustomShader: null,
     } as VoxelCache;
   }
 
@@ -851,6 +939,9 @@ function updateWebGPUVoxelPrimitive(
     const pipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [bgl, effectsBGL],
     });
+    // PARITY-VOXEL-COLOR-PARITY — retain for the color-parity pipeline rebuild
+    // once the real root tile uploads (same BGLs → same layout).
+    cache.pipelineLayout = pipelineLayout;
 
     // Shared vertex stage — color + pick run identical vertex work
     // (RTE box vertex transform). Only the fragment entry differs.
@@ -1031,6 +1122,61 @@ function updateWebGPUVoxelPrimitive(
     }
   }
 
+  // PARITY-VOXEL-COLOR-PARITY — once a REAL voxel provider's root tile is
+  // bound, the COLOR pipeline must use the VOXEL_CUSTOM_SHADER_COLOR define so
+  // the ray-march applies the default voxel customShader colour mapping +
+  // WebGL-matching front-to-back accumulation (matching the gray
+  // VoxelBox3DTiles appearance) instead of the raw-texel integral. The pick +
+  // velocity pipelines keep defines=0 (they don't colour-accumulate), and the
+  // placeholder / no-provider path never sets `usingRealData` so its module
+  // stays defines=0 → off-gate byte-identical. Applied here (not inside the
+  // one-shot upload block) so a mid-session format/MSAA rebuild — which resets
+  // `colorDescriptor` back to the base module — re-patches to the parity
+  // module. The name check makes it idempotent + zero-cost per steady frame.
+  if (
+    cache.usingRealData &&
+    cache.colorDescriptor &&
+    cache.colorDescriptor.name !== VOXEL_COLOR_PARITY_PIPELINE_NAME
+  ) {
+    const moduleCache = getVoxelShaderModuleCache(device);
+    const colorModule =
+      cache.colorModuleCustomShader ??
+      moduleCache.getOrCreate(
+        ShaderSourceId.VOXEL_PRIMITIVE,
+        VOXEL_WGSL,
+        ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR,
+        "VoxelPrimitive (VOXEL_CUSTOM_SHADER_COLOR)",
+        // The module-cache numeric key masks defines to 24 bits
+        // (`(defines & 0xffffff) << 8`), so VOXEL_CUSTOM_SHADER_COLOR (bit 25)
+        // would alias the defines=0 (placeholder) module and return the
+        // raw-texel shader. A non-zero keySalt forces a distinct cache entry;
+        // the preprocessor still receives the UNMASKED defines and emits the
+        // parity branch. (The salt value is arbitrary but stable.)
+        ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR,
+      );
+    cache.colorModuleCustomShader = colorModule;
+    // Re-point the color descriptor's vertex + fragment stages at the
+    // custom-shader module. The vertex entry (`vertexMain`) preprocesses
+    // identically (no gated vertex code), so reusing the same module for both
+    // stages keeps the pipeline single-module.
+    cache.colorDescriptor.vertex.module = colorModule;
+    if (cache.colorDescriptor.fragment) {
+      cache.colorDescriptor.fragment.module = colorModule;
+    }
+    // The central pipeline cache keys on `descriptor.name` (+ format/MSAA), NOT
+    // on the shader-module identity — so the patched-module descriptor MUST get
+    // a distinct name or it would collide with the placeholder "Voxel color
+    // pipeline" entry and be served the old raw-texel pipeline.
+    cache.colorDescriptor.name = VOXEL_COLOR_PARITY_PIPELINE_NAME;
+    // Force the color pipeline to re-resolve from the patched descriptor, and
+    // drop the cached draw command so it's rebuilt referencing the NEW pipeline
+    // (the command captures `cache.pipeline` at construction — leaving it stale
+    // would keep drawing with the old raw-texel pipeline).
+    cache.pipeline = null;
+    cache.pipelineRequestPending = false;
+    cache.command = null;
+  }
+
   // C-R7-RENDERER-MIGRATION (Batch 72) — resolve color + pick pipelines
   // through the central cache. Skip the draw on not-yet-ready frames so
   // we never enqueue commands with null pipelines.
@@ -1103,7 +1249,9 @@ function updateWebGPUVoxelPrimitive(
   //   [36..39] pickColor               (C-R9-VOXEL-PICK, Batch 53)
   //   [40..55] prevViewProjection      (B.9, Batch 153 — DP-H41)
   //   [56..71] modelMatrix              (Batch 173 — B.10 voxel velocity)
-  const data = new Float32Array(72);
+  //   [72..74] lightDirectionModel      (PARITY-VOXEL-COLOR-PARITY)
+  //   [75]     voxelLightingEnabled     (PARITY-VOXEL-COLOR-PARITY)
+  const data = new Float32Array(80);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -1176,6 +1324,35 @@ function updateWebGPUVoxelPrimitive(
   // primitive's modelMatrix directly (no translation zeroing — the
   // velocity path needs the full transform, not the RTE-zeroed one).
   Matrix4.pack(modelMatrix, data, 56);
+
+  // PARITY-VOXEL-COLOR-PARITY — transform the sun light direction (EC) into the
+  // box's MODEL/local frame so the WGSL default-shader gray lighting
+  // (0.5 + 0.5 * max(0, dot(entryNormalLocal, lightDirModel))) reproduces
+  // WebGL's `dot(czm_normal * nLocal, czm_lightDirectionEC)`. Since
+  // `dot(czm_normal * n, lEC) == dot(n, czm_normal^T * lEC)` and
+  // `czm_normal = inverseTranspose(modelView3x3)`, the light direction in model
+  // space is `czm_normal^T * lEC = inverse(modelView3x3) * lEC`. Only written
+  // when the color-parity pipeline is active (real data); the off-gate
+  // placeholder writes the historical 72-float layout implicitly zero-padded
+  // here (`data` is zero-initialised past 71), so `voxelLightingEnabled` stays
+  // 0 and the raw-texel else-branch never reads these floats.
+  if (cache.usingRealData) {
+    const mvForNormal = Matrix4.multiply(view, modelMatrix, scratchMVNormal);
+    Matrix4.getMatrix3(mvForNormal, scratchMV3);
+    const invMV3 = Matrix3.inverse(scratchMV3, scratchMV3Inv);
+    const lightEC = context.uniformState.lightDirectionEC;
+    const lightModel = Matrix3.multiplyByVector(
+      invMV3,
+      lightEC,
+      scratchLightModel,
+    );
+    Cartesian3.normalize(lightModel, lightModel);
+    data[72] = lightModel.x;
+    data[73] = lightModel.y;
+    data[74] = lightModel.z;
+    data[75] = 1;
+  }
+
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
   // FEAT-GAP-09 (Batch 100) — per-frame effects BG refresh. The
@@ -1201,6 +1378,14 @@ function updateWebGPUVoxelPrimitive(
       cache.bindGroup,
       effectsBG,
     ];
+    // PARITY-VOXEL-COLOR-PARITY — the color pipeline is swapped from the
+    // placeholder (defines=0) to the customShader-parity pipeline once real
+    // voxel data uploads and resolves ASYNCHRONOUSLY. The command may have been
+    // created earlier bound to the placeholder pipeline; re-point it at the
+    // current `cache.pipeline` so the drawn command uses the parity shader
+    // rather than the stale raw-texel one. Idempotent (a no-op once equal).
+    (cache.command as { pipeline?: GPURenderPipeline | null }).pipeline =
+      cache.pipeline;
   }
 
   // Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS attach. Voxel
