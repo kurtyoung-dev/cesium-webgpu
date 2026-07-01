@@ -25,6 +25,7 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import AttributeCompression from "../../Core/AttributeCompression.js";
 import IndexDatatype from "../../Core/IndexDatatype.js";
+import SceneMode from "../../Scene/SceneMode.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { gpuData, jsModule, numericArray } from "./webgpuTypeHelpers.js";
@@ -45,12 +46,15 @@ import {
   createIB,
   destroyPickIds,
   getBufferPrimitiveShaderCache,
+  projectBufferPositionForMode,
+  bufferModeNeedsRepack,
   scratchColor,
   scratchCart,
   scratchEnc,
 } from "./WebGPUBufferPrimitiveRenderer.js";
 import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import { computeNoDepthTest } from "./WebGPUCollectionRendererBase.js";
 import BlendOption from "../../Scene/BlendOption.js";
 import type {
   BufferPrimitiveCollection,
@@ -85,6 +89,13 @@ export interface PolygonCache extends SharedCache {
   // TRANSLUCENT `pipeline` stays the default. Mirrors the WebGL
   // RenderState.fromCache({ blending: DISABLED }) branch.
   opaquePipeline?: GPURenderPipeline;
+  // PARITY-BUFFER-2DCV — settled-2D/CV coplanar-depth variants (depth test
+  // "always", no depth write). Built lazily on first non-3D settled frame;
+  // the TRANSLUCENT + OPAQUE 3D pipelines above stay byte-identical.
+  noDepthTestPipeline?: GPURenderPipeline;
+  noDepthTestOpaquePipeline?: GPURenderPipeline;
+  // noDepthTest the cached color `command` was built for; rebuild on change.
+  commandNoDepthTest?: boolean;
   // Retained build inputs so the OPAQUE color variant can be assembled
   // lazily with the SAME shader module + bind-group layouts as the default
   // TRANSLUCENT pipeline (no recompile, no layout drift).
@@ -114,6 +125,12 @@ function buildPolygonPipeline(
   // on (matches WebGL `BlendingState.DISABLED` + `depthTest.enabled`). The
   // default false keeps the historical TRANSLUCENT color path byte-identical.
   opaque: boolean = false,
+  // PARITY-BUFFER-2DCV — when true, build the settled-2D/CV coplanar variant:
+  // depth test disabled (compare "always") + no depth write, so the flat-map
+  // reprojected fill draws on top instead of z-fighting the coplanar map.
+  // Mirrors the collection renderers' NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH.
+  // Default false keeps the historical depth-tested path byte-identical.
+  noDepthTest: boolean = false,
 ): GPURenderPipeline {
   // Pick-path entry points emit opaque pick IDs and must NOT alpha-blend
   // (blending pick IDs produces invalid intermediate values that map to
@@ -206,12 +223,14 @@ function buildPolygonPipeline(
       // TRANSLUCENT color path keeps depth write off when blending
       // fragments — matches the WebGL convention and prevents alpha-blended
       // polygons from occluding geometry behind them.
-      depthWriteEnabled: isPick || opaque,
+      // PARITY-BUFFER-2DCV: the coplanar-2D/CV variant never writes depth.
+      depthWriteEnabled: !noDepthTest && (isPick || opaque),
       // less-equal (not less) — lets primitives that project exactly
       // onto the far plane due to FP32 rounding still pass the depth
       // test. Safe at planetary scale where the Z range is huge and
-      // precision collapses near z=1.
-      depthCompare: "less-equal",
+      // precision collapses near z=1. In settled 2D/CV the coplanar fill
+      // uses "always" so it draws over the flat map without z-fighting.
+      depthCompare: noDepthTest ? "always" : "less-equal",
     },
   });
 }
@@ -311,6 +330,11 @@ function repackPolygonDirty(
   collection: BufferPrimitiveCollection,
   cache: PolygonCache,
   context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  // PARITY-BUFFER-2DCV — see WebGPUBufferPointRenderer.repackPointDirty. `force`
+  // re-processes every polygon in the dirty range when the scene-mode
+  // projection frame changed with no per-primitive edits.
+  force: boolean,
 ): void {
   const dirtyOffset: number = collection._dirtyOffset;
   const dirtyCount: number = collection._dirtyCount;
@@ -318,9 +342,14 @@ function repackPolygonDirty(
     return;
   }
   const allowPicking: boolean = collection._allowPicking;
+  // PARITY-BUFFER-2DCV — reproject each ECEF vertex into the scene-mode frame in
+  // 2D/CV/Morph (per-vertex, preserving the triangulation topology). No-op in
+  // SCENE3D (byte-identical raw-ECEF encode).
+  const reproject = frameState.mode !== SceneMode.SCENE3D;
+  const modelMatrix = collection.modelMatrix ?? Matrix4.IDENTITY;
   for (let i = dirtyOffset; i < dirtyOffset + dirtyCount; i++) {
     collection.get(i, scratchPolygon);
-    if (!scratchPolygon._dirty) {
+    if (!scratchPolygon._dirty && !force) {
       continue;
     }
 
@@ -363,6 +392,14 @@ function repackPolygonDirty(
 
     for (let j = 0, jl = scratchPolygon.vertexCount; j < jl; j++) {
       Cartesian3.fromArray(numericArray(positions), j * 3, scratchCart);
+      if (reproject) {
+        projectBufferPositionForMode(
+          scratchCart,
+          frameState,
+          modelMatrix,
+          scratchCart,
+        );
+      }
       EncodedCartesian3.fromCartesian(scratchCart, scratchEnc);
       const v3 = vOffset * 3;
       const v4 = vOffset * 4;
@@ -454,8 +491,16 @@ export function updateWebGPUBufferPolygonCollection(
     collection._dirtyCount = collection.primitiveCount;
   }
 
+  // PARITY-BUFFER-2DCV — force a full re-pack when the scene-mode projection
+  // frame changed (no-op in the SCENE3D steady state).
+  const modeRepack = bufferModeNeedsRepack(cache, frameState);
+  if (modeRepack) {
+    collection._dirtyOffset = 0;
+    collection._dirtyCount = collection.primitiveCount;
+  }
+
   if (collection._dirtyCount > 0) {
-    repackPolygonDirty(collection, cache, context);
+    repackPolygonDirty(collection, cache, context, frameState, modeRepack);
     uploadPolygonBuffers(device, cache);
     cache.command = null;
     cache.pickCommand = null;
@@ -487,16 +532,55 @@ export function updateWebGPUBufferPolygonCollection(
   // blendOption: OPAQUE (blend off, depth write on, Pass.OPAQUE) vs the
   // default TRANSLUCENT path. Mirrors the WebGL RenderState/Pass branch.
   const isOpaque = collection._blendOption === BlendOption.OPAQUE;
+  // PARITY-BUFFER-2DCV — settled 2D/CV: draw the coplanar reprojected fill on
+  // top (no depth test/write) so it doesn't z-fight the flat map. False in 3D
+  // and mid-morph → the historical depth-tested pipeline (byte-identical).
+  const noDepthTest = computeNoDepthTest(frameState);
 
   if (frameState.passes.render) {
-    // Rebuild the cached command when blendOption flips so the pass +
-    // pipeline track the live setting.
-    if (cache.command && cache.commandBlendOption !== collection._blendOption) {
+    // Rebuild the cached command when blendOption or the coplanar-depth flag
+    // flips so the pass + pipeline track the live setting.
+    if (
+      cache.command &&
+      (cache.commandBlendOption !== collection._blendOption ||
+        cache.commandNoDepthTest !== noDepthTest)
+    ) {
       cache.command = null;
     }
     if (!cache.command) {
-      let colorPipeline = cache.pipeline;
-      if (isOpaque) {
+      let colorPipeline;
+      if (noDepthTest) {
+        // Coplanar 2D/CV variant (built lazily per blend mode).
+        if (isOpaque) {
+          if (!cache.noDepthTestOpaquePipeline) {
+            cache.noDepthTestOpaquePipeline = buildPolygonPipeline(
+              device,
+              cache.shaderModule,
+              cache.format,
+              cache.bgls,
+              "fragmentMain",
+              cache.sampleCount,
+              true,
+              true,
+            );
+          }
+          colorPipeline = cache.noDepthTestOpaquePipeline;
+        } else {
+          if (!cache.noDepthTestPipeline) {
+            cache.noDepthTestPipeline = buildPolygonPipeline(
+              device,
+              cache.shaderModule,
+              cache.format,
+              cache.bgls,
+              "fragmentMain",
+              cache.sampleCount,
+              false,
+              true,
+            );
+          }
+          colorPipeline = cache.noDepthTestPipeline;
+        }
+      } else if (isOpaque) {
         // Lazily build + cache the OPAQUE color pipeline variant on first
         // use, reusing the cached shader module + bind-group layouts so it is
         // byte-identical to the TRANSLUCENT pipeline except blend/depth-write.
@@ -512,6 +596,8 @@ export function updateWebGPUBufferPolygonCollection(
           );
         }
         colorPipeline = cache.opaquePipeline;
+      } else {
+        colorPipeline = cache.pipeline;
       }
       cache.command = new WebGPUDrawCommand({
         pipeline: colorPipeline,
@@ -530,6 +616,7 @@ export function updateWebGPUBufferPolygonCollection(
         debugShowBoundingVolume: collection.debugShowBoundingVolume,
       });
       cache.commandBlendOption = collection._blendOption;
+      cache.commandNoDepthTest = noDepthTest;
     } else {
       cache.command.indexCount = indexCount;
     }

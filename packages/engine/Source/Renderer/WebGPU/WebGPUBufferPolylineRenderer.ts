@@ -24,6 +24,7 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import AttributeCompression from "../../Core/AttributeCompression.js";
 import IndexDatatype from "../../Core/IndexDatatype.js";
+import SceneMode from "../../Scene/SceneMode.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { gpuData, jsModule, numericArray } from "./webgpuTypeHelpers.js";
@@ -42,12 +43,15 @@ import {
   createIB,
   destroyPickIds,
   getBufferPrimitiveShaderCache,
+  projectBufferPositionForMode,
+  bufferModeNeedsRepack,
   scratchColor,
   scratchCart,
   scratchEnc,
 } from "./WebGPUBufferPrimitiveRenderer.js";
 import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import { computeNoDepthTest } from "./WebGPUCollectionRendererBase.js";
 import BlendOption from "../../Scene/BlendOption.js";
 import type {
   BufferPrimitiveCollection,
@@ -76,9 +80,10 @@ export interface PolylineCache extends SharedCache {
   nextPositionHigh: GPUBuffer;
   nextPositionLow: GPUBuffer;
   pickColor: GPUBuffer;
+  // PARITY-BUFFER-2DCV — interleaved buffer carrying loc7 (vec4
+  // showColorWidthAndTexCoord) + loc8 (f32 alpha) so the polyline pipeline
+  // stays within WebGPU's 8-vertex-buffer limit. Array is width-5 per vertex.
   showColorWidthAndTexCoord: GPUBuffer;
-  // Dedicated alpha lane (the showColorWidthAndTexCoord vec4 is saturated).
-  alpha: GPUBuffer;
   indexBuffer: GPUBuffer;
   positionHighArr: Float32Array;
   positionLowArr: Float32Array;
@@ -88,7 +93,6 @@ export interface PolylineCache extends SharedCache {
   nextPositionLowArr: Float32Array;
   pickColorArr: Uint8Array;
   showColorWidthAndTexCoordArr: Float32Array;
-  alphaArr: Float32Array;
   indexArr: Uint16Array | Uint32Array;
   indexFormat: GPUIndexFormat;
   vertexCountMax: number;
@@ -96,6 +100,10 @@ export interface PolylineCache extends SharedCache {
   pickPipeline: GPURenderPipeline;
   // OPAQUE blend variant of the color pipeline; built lazily (see polygon).
   opaquePipeline?: GPURenderPipeline;
+  // PARITY-BUFFER-2DCV — settled-2D/CV coplanar-depth variants (lazy).
+  noDepthTestPipeline?: GPURenderPipeline;
+  noDepthTestOpaquePipeline?: GPURenderPipeline;
+  commandNoDepthTest?: boolean;
   shaderModule: GPUShaderModule;
   bgls: GPUBindGroupLayout[];
   sampleCount: number;
@@ -119,6 +127,9 @@ function buildPolylinePipeline(
   // Default false keeps the historical TRANSLUCENT color path byte-identical.
   // depthWriteEnabled stays true in both variants (unchanged from before).
   opaque: boolean = false,
+  // PARITY-BUFFER-2DCV — settled-2D/CV coplanar variant: depth test "always" +
+  // no depth write. Default false keeps the historical path byte-identical.
+  noDepthTest: boolean = false,
 ): GPURenderPipeline {
   const float3 = (loc: number): GPUVertexBufferLayout => ({
     arrayStride: 12,
@@ -149,15 +160,22 @@ function buildPolylinePipeline(
           arrayStride: 4,
           attributes: [{ shaderLocation: 6, offset: 0, format: "unorm8x4" }],
         },
+        // PARITY-BUFFER-2DCV (vertex-buffer-count fix) — loc7 (vec4
+        // showColorWidthAndTexCoord) + loc8 (f32 alpha) now share ONE
+        // interleaved buffer (stride 20: vec4 at offset 0, f32 at offset 16).
+        // This drops the polyline pipeline from 9 vertex buffers to 8 — the
+        // 9-buffer layout exceeded WebGPU's guaranteed `maxVertexBuffers` (8),
+        // so `createRenderPipeline` returned an INVALID pipeline and every
+        // frame containing a BufferPolyline was dropped with a validation
+        // error (pre-existing; blocked all BufferPolyline rendering on WebGPU).
+        // WGSL is unchanged — the `@location(7)`/`@location(8)` attributes just
+        // read from the same GPUBuffer at different offsets now.
         {
-          arrayStride: 16,
-          attributes: [{ shaderLocation: 7, offset: 0, format: "float32x4" }],
-        },
-        // Dedicated per-vertex alpha lane (location 8). Lockstep with the
-        // CPU alphaArr (width 1) and the WGSL `alpha : f32` field.
-        {
-          arrayStride: 4,
-          attributes: [{ shaderLocation: 8, offset: 0, format: "float32" }],
+          arrayStride: 20,
+          attributes: [
+            { shaderLocation: 7, offset: 0, format: "float32x4" },
+            { shaderLocation: 8, offset: 16, format: "float32" },
+          ],
         },
       ],
     },
@@ -189,12 +207,14 @@ function buildPolylinePipeline(
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: "depth24plus-stencil8",
-      depthWriteEnabled: true,
+      // PARITY-BUFFER-2DCV: the coplanar-2D/CV variant never writes depth.
+      depthWriteEnabled: !noDepthTest,
       // less-equal (not less) — lets primitives that project exactly
       // onto the far plane due to FP32 rounding still pass the depth
       // test. Safe at planetary scale where the Z range is huge and
-      // precision collapses near z=1.
-      depthCompare: "less-equal",
+      // precision collapses near z=1. In settled 2D/CV the coplanar line
+      // uses "always" so it draws over the flat map without z-fighting.
+      depthCompare: noDepthTest ? "always" : "less-equal",
     },
   });
 }
@@ -220,9 +240,8 @@ function initPolylineCache(
   const nextPositionHighArr = f3();
   const nextPositionLowArr = f3();
   const pickColorArr = new Uint8Array(vertexCountMax * 4);
-  const showColorWidthAndTexCoordArr = new Float32Array(vertexCountMax * 4);
-  // Per-vertex alpha [0,1], one float per (doubled) vertex.
-  const alphaArr = new Float32Array(vertexCountMax);
+  // PARITY-BUFFER-2DCV — width 5 (vec4 + interleaved alpha at offset 16).
+  const showColorWidthAndTexCoordArr = new Float32Array(vertexCountMax * 5);
   const indexArr = jsModule<IndexDatatypeStatics>(
     IndexDatatype,
   ).createTypedArray(vertexCountMax, segmentCountMax * 6);
@@ -299,7 +318,6 @@ function initPolylineCache(
       showColorWidthAndTexCoordArr.byteLength,
       "lineShow",
     ),
-    alpha: createVB(device, alphaArr.byteLength, "lineAlpha"),
     indexBuffer: createIB(device, indexArr.byteLength, "lineIdx"),
     positionHighArr,
     positionLowArr,
@@ -309,7 +327,6 @@ function initPolylineCache(
     nextPositionLowArr,
     pickColorArr,
     showColorWidthAndTexCoordArr,
-    alphaArr,
     indexArr,
     indexFormat,
     vertexCountMax,
@@ -341,6 +358,11 @@ function repackPolylineDirty(
   collection: BufferPrimitiveCollection,
   cache: PolylineCache,
   context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  // PARITY-BUFFER-2DCV — see WebGPUBufferPointRenderer.repackPointDirty. `force`
+  // re-processes every polyline in the dirty range when the scene-mode
+  // projection frame changed with no per-primitive edits.
+  force: boolean,
 ): void {
   const dirtyOffset: number = collection._dirtyOffset;
   const dirtyCount: number = collection._dirtyCount;
@@ -348,9 +370,15 @@ function repackPolylineDirty(
     return;
   }
   const allowPicking: boolean = collection._allowPicking;
+  // PARITY-BUFFER-2DCV — in 2D/CV/Morph, project each raw ECEF position into the
+  // scene-mode frame BEFORE the endpoint prev/next extrapolation, so the miter
+  // adjacency is computed in the projected frame (mirrors WebGL's per-vertex
+  // projection). No-op in SCENE3D (byte-identical raw-ECEF encode).
+  const reproject = frameState.mode !== SceneMode.SCENE3D;
+  const modelMatrix = collection.modelMatrix ?? Matrix4.IDENTITY;
   for (let i = dirtyOffset; i < dirtyOffset + dirtyCount; i++) {
     collection.get(i, scratchPolyline);
-    if (!scratchPolyline._dirty) {
+    if (!scratchPolyline._dirty && !force) {
       continue;
     }
 
@@ -389,17 +417,55 @@ function repackPolylineDirty(
       const isFirst = j === 0;
       const isLast = j === jl - 1;
       Cartesian3.fromArray(numericArray(positions), j * 3, scratchCart);
+      if (reproject) {
+        projectBufferPositionForMode(
+          scratchCart,
+          frameState,
+          modelMatrix,
+          scratchCart,
+        );
+      }
       if (isFirst) {
         Cartesian3.fromArray(numericArray(positions), (j + 1) * 3, scratchNext);
+        if (reproject) {
+          projectBufferPositionForMode(
+            scratchNext,
+            frameState,
+            modelMatrix,
+            scratchNext,
+          );
+        }
         Cartesian3.subtract(scratchCart, scratchNext, scratchPrev);
         Cartesian3.add(scratchCart, scratchPrev, scratchPrev);
       } else if (isLast) {
         Cartesian3.fromArray(numericArray(positions), (j - 1) * 3, scratchPrev);
+        if (reproject) {
+          projectBufferPositionForMode(
+            scratchPrev,
+            frameState,
+            modelMatrix,
+            scratchPrev,
+          );
+        }
         Cartesian3.subtract(scratchCart, scratchPrev, scratchNext);
         Cartesian3.add(scratchCart, scratchNext, scratchNext);
       } else {
         Cartesian3.fromArray(numericArray(positions), (j - 1) * 3, scratchPrev);
         Cartesian3.fromArray(numericArray(positions), (j + 1) * 3, scratchNext);
+        if (reproject) {
+          projectBufferPositionForMode(
+            scratchPrev,
+            frameState,
+            modelMatrix,
+            scratchPrev,
+          );
+          projectBufferPositionForMode(
+            scratchNext,
+            frameState,
+            modelMatrix,
+            scratchNext,
+          );
+        }
       }
 
       if (!isLast) {
@@ -420,6 +486,10 @@ function repackPolylineDirty(
       for (let k = 0; k < 2; k++) {
         const v3 = vOffset * 3;
         const v4 = vOffset * 4;
+        // PARITY-BUFFER-2DCV — showColorWidthAndTexCoord widened to width 5
+        // (vec4 + alpha) so the alpha lane shares the loc7 buffer (drops the
+        // 9th vertex buffer). pickColor stays width 4 (`v4`).
+        const v5 = vOffset * 5;
         cache.positionHighArr[v3] = scratchEnc.high.x;
         cache.positionHighArr[v3 + 1] = scratchEnc.high.y;
         cache.positionHighArr[v3 + 2] = scratchEnc.high.z;
@@ -445,11 +515,12 @@ function repackPolylineDirty(
         // Pack texCoord with direction in fractional bits: integer = s, fractional = direction
         // The shader unpacks: floor() = s, sign(fract() - 0.5) = direction
         const directionFrac = k === 0 ? 0.25 : 0.75; // -1 / +1 after sign(fract-0.5)
-        cache.showColorWidthAndTexCoordArr[v4] = show ? 1 : 0;
-        cache.showColorWidthAndTexCoordArr[v4 + 1] = encodedColor;
-        cache.showColorWidthAndTexCoordArr[v4 + 2] = width;
-        cache.showColorWidthAndTexCoordArr[v4 + 3] = texCoordS + directionFrac;
-        cache.alphaArr[vOffset] = colorAlpha;
+        cache.showColorWidthAndTexCoordArr[v5] = show ? 1 : 0;
+        cache.showColorWidthAndTexCoordArr[v5 + 1] = encodedColor;
+        cache.showColorWidthAndTexCoordArr[v5 + 2] = width;
+        cache.showColorWidthAndTexCoordArr[v5 + 3] = texCoordS + directionFrac;
+        // alpha shares the loc7 interleaved buffer (offset 16 = 5th float).
+        cache.showColorWidthAndTexCoordArr[v5 + 4] = colorAlpha;
         vOffset++;
       }
     }
@@ -491,7 +562,6 @@ function uploadPolylineBuffers(device: GPUDevice, cache: PolylineCache): void {
     0,
     gpuData(cache.showColorWidthAndTexCoordArr),
   );
-  device.queue.writeBuffer(cache.alpha, 0, gpuData(cache.alphaArr));
   device.queue.writeBuffer(cache.indexBuffer, 0, gpuData(cache.indexArr));
 }
 
@@ -547,8 +617,16 @@ export function updateWebGPUBufferPolylineCollection(
     collection._dirtyCount = collection.primitiveCount;
   }
 
+  // PARITY-BUFFER-2DCV — force a full re-pack when the scene-mode projection
+  // frame changed (no-op in the SCENE3D steady state).
+  const modeRepack = bufferModeNeedsRepack(cache, frameState);
+  if (modeRepack) {
+    collection._dirtyOffset = 0;
+    collection._dirtyCount = collection.primitiveCount;
+  }
+
   if (collection._dirtyCount > 0) {
-    repackPolylineDirty(collection, cache, context);
+    repackPolylineDirty(collection, cache, context, frameState, modeRepack);
     uploadPolylineBuffers(device, cache);
     cache.command = null;
     cache.pickCommand = null;
@@ -592,22 +670,58 @@ export function updateWebGPUBufferPolylineCollection(
     cache.nextPositionHigh,
     cache.nextPositionLow,
     cache.pickColor,
+    // Slot 7 carries loc7 (showColorWidthAndTexCoord vec4) + loc8 (alpha f32)
+    // interleaved — 8 vertex buffers total (was 9, over the WebGPU limit).
     cache.showColorWidthAndTexCoord,
-    // Index 8 — must match the pipeline `buffers[8]` (shaderLocation 8).
-    cache.alpha,
   ];
   const bgs = [cache.bindGroup, cache.paramsBindGroup];
 
   // blendOption: OPAQUE (blend off, Pass.OPAQUE) vs the default TRANSLUCENT.
   const isOpaque = collection._blendOption === BlendOption.OPAQUE;
+  // PARITY-BUFFER-2DCV — settled 2D/CV coplanar-depth flag (no-op in 3D/morph).
+  const noDepthTest = computeNoDepthTest(frameState);
 
   if (frameState.passes.render) {
-    if (cache.command && cache.commandBlendOption !== collection._blendOption) {
+    if (
+      cache.command &&
+      (cache.commandBlendOption !== collection._blendOption ||
+        cache.commandNoDepthTest !== noDepthTest)
+    ) {
       cache.command = null;
     }
     if (!cache.command) {
-      let colorPipeline = cache.pipeline;
-      if (isOpaque) {
+      let colorPipeline;
+      if (noDepthTest) {
+        if (isOpaque) {
+          if (!cache.noDepthTestOpaquePipeline) {
+            cache.noDepthTestOpaquePipeline = buildPolylinePipeline(
+              device,
+              cache.shaderModule,
+              cache.format,
+              cache.bgls,
+              "fragmentMain",
+              cache.sampleCount,
+              true,
+              true,
+            );
+          }
+          colorPipeline = cache.noDepthTestOpaquePipeline;
+        } else {
+          if (!cache.noDepthTestPipeline) {
+            cache.noDepthTestPipeline = buildPolylinePipeline(
+              device,
+              cache.shaderModule,
+              cache.format,
+              cache.bgls,
+              "fragmentMain",
+              cache.sampleCount,
+              false,
+              true,
+            );
+          }
+          colorPipeline = cache.noDepthTestPipeline;
+        }
+      } else if (isOpaque) {
         if (!cache.opaquePipeline) {
           cache.opaquePipeline = buildPolylinePipeline(
             device,
@@ -620,6 +734,8 @@ export function updateWebGPUBufferPolylineCollection(
           );
         }
         colorPipeline = cache.opaquePipeline;
+      } else {
+        colorPipeline = cache.pipeline;
       }
       cache.command = new WebGPUDrawCommand({
         pipeline: colorPipeline,
@@ -633,6 +749,7 @@ export function updateWebGPUBufferPolylineCollection(
         debugShowBoundingVolume: collection.debugShowBoundingVolume,
       });
       cache.commandBlendOption = collection._blendOption;
+      cache.commandNoDepthTest = noDepthTest;
     } else {
       cache.command.indexCount = indexCount;
     }
@@ -683,7 +800,6 @@ export function destroyWebGPUBufferPolylineCollection(
   cache.nextPositionLow.destroy();
   cache.pickColor.destroy();
   cache.showColorWidthAndTexCoord.destroy();
-  cache.alpha.destroy();
   cache.indexBuffer.destroy();
   collection._webgpuCache = undefined;
 }

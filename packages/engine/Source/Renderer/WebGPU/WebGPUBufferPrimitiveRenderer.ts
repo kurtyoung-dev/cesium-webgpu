@@ -21,10 +21,13 @@
 
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Color from "../../Core/Color.js";
+import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import AttributeCompression from "../../Core/AttributeCompression.js";
 import IndexDatatype from "../../Core/IndexDatatype.js";
+import SceneMode from "../../Scene/SceneMode.js";
+import SceneTransforms from "../../Scene/SceneTransforms.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
@@ -181,6 +184,12 @@ export const CAMERA_UBO_FLOATS = CAMERA_UBO_BYTES / 4;
 export interface SharedCache {
   cameraUBO: GPUBuffer;
   cameraData: Float32Array;
+  // PARITY-BUFFER-2DCV — scene-mode/morph state consumed by
+  // `bufferModeNeedsRepack` to force a re-pack when the projection frame
+  // changes. Optional so cache-construction sites don't have to seed them
+  // (undefined → first non-3D frame re-packs, which is the desired behavior).
+  _lastPackMode?: number;
+  _lastPackMorphTime?: number;
 }
 
 // ─── Scratch ─────────────────────────────────────────────────────────────────
@@ -188,6 +197,93 @@ export interface SharedCache {
 export const scratchColor = new Color();
 export const scratchCart = new Cartesian3();
 export const scratchEnc = { high: new Cartesian3(), low: new Cartesian3() };
+
+// ─── Scene-mode position reprojection (PARITY-BUFFER-2DCV) ────────────────────
+
+const scratchProjectModelPoint = new Cartesian3();
+
+/**
+ * PARITY-BUFFER-2DCV — map an ECEF (world) position into the active scene
+ * mode's render frame, mirroring the already-shipped WebGPUPolylineRenderer /
+ * PolylineCollection 2D/CV convention.
+ *
+ *   SCENE3D        — byte-identical: returns the raw ECEF position (a clone).
+ *                    The mode-aware `mvpRelativeToEye` built from
+ *                    `uniformState.view/projection` already folds in the
+ *                    collection modelMatrix, so the un-transformed ECEF position
+ *                    is what the 3D encode path has always fed.
+ *   2D / CV / Morph — projects the modelMatrix-applied world position through
+ *                    `SceneTransforms.computeActualEllipsoidPosition`, which
+ *                    applies the `.zxy` swizzle for Columbus View, the
+ *                    `(0, x, y)` collapse for 2D, and the CPU-side per-vertex
+ *                    lerp by `frameState.morphTime` for MORPHING.
+ *
+ * `modelMatrix` is the collection's modelMatrix (identity in the common case,
+ * where the multiply is a no-op clone). Returns `result` (a Cartesian3).
+ * @private
+ */
+export function projectBufferPositionForMode(
+  position: Cartesian3,
+  frameState: CesiumFrameState,
+  modelMatrix: CesiumMatrix4,
+  result: Cartesian3,
+): Cartesian3 {
+  if (frameState.mode === SceneMode.SCENE3D) {
+    return Cartesian3.clone(position, result);
+  }
+  // 2D / CV / Morph: project the modelMatrix-applied world position.
+  Matrix4.multiplyByPoint(
+    modelMatrix as unknown as Matrix4,
+    position,
+    scratchProjectModelPoint,
+  );
+  const actual = SceneTransforms.computeActualEllipsoidPosition(
+    frameState,
+    scratchProjectModelPoint,
+    result,
+  ) as Cartesian3 | undefined;
+  // `computeActualEllipsoidPosition` returns undefined when the point has no
+  // valid cartographic (e.g. exactly at the ellipsoid center). Fall back to the
+  // world point so the vertex still carries finite data.
+  return defined(actual)
+    ? actual
+    : Cartesian3.clone(scratchProjectModelPoint, result);
+}
+
+/**
+ * PARITY-BUFFER-2DCV — returns true when the cached positions must be fully
+ * re-packed because the scene-mode projection frame changed since the last
+ * pack. In non-3D modes the packed positions depend on `frameState.mode` and
+ * (during MORPHING) `frameState.morphTime`; the Buffer* collections use
+ * persistent GPU buffers with dirty-range tracking, so a mode/morph change with
+ * no primitive edits would otherwise leave stale positions on the GPU. Updates
+ * the tracked `_lastPack*` state on the cache as a side effect.
+ *
+ * SCENE3D is a no-op: it returns false and leaves `_lastPackMode` at 3 without
+ * touching morphTime, so a pure-3D collection never triggers a forced re-pack
+ * (byte-identical to the pre-reprojection behavior). The first non-3D frame
+ * always re-packs because the tracked mode transitions away from SCENE3D.
+ * @private
+ */
+export function bufferModeNeedsRepack(
+  cache: SharedCache,
+  frameState: CesiumFrameState,
+): boolean {
+  const mode = frameState.mode;
+  if (mode === SceneMode.SCENE3D) {
+    const changed = cache._lastPackMode !== SceneMode.SCENE3D;
+    cache._lastPackMode = SceneMode.SCENE3D;
+    return changed;
+  }
+  // Non-3D: morphTime only varies during MORPHING; in settled 2D/CV it is a
+  // fixed 0.0, so the comparison naturally stops forcing re-packs once settled.
+  const morphTime = frameState.morphTime;
+  const changed =
+    cache._lastPackMode !== mode || cache._lastPackMorphTime !== morphTime;
+  cache._lastPackMode = mode;
+  cache._lastPackMorphTime = morphTime;
+  return changed;
+}
 
 // ─── Camera UBO packing ──────────────────────────────────────────────────────
 
