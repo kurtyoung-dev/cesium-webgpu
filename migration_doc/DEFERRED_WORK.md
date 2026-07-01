@@ -3021,19 +3021,25 @@ These two changes ship together — the depth-write fix would still let near-tra
 
 **Trace:** Batch 186 first slice; Batch 192 dual-path second slice. `Scene.pickHoverAsync` / `Scene.pickPreciseAsync` in `Scene.js`; `Picking._pickAsyncWithMode` + coalesce/defer in `Picking.js`; `fragmentPickHoverMain` + `getPickHoverPipeline` / `getPickPrecisePass{1,2}Pipeline` factories; dispatcher routing in `WebGPUSceneRenderer.selectCommandVariant`; pass-2 follow-up in `WebGPUSceneRendererPickPass`. Earlier work: PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Translucent-with-OIT pick").
 
-### C-R9-VOXEL-CELL-PICK
+### C-R9-VOXEL-CELL-PICK — BLOCKED (wiring PROTOTYPED then REVERTED; exact cell parity blocked on shape-space axis convention)
 
-**What:** Per-cell granularity for voxel pick. `scene.pick()` returns the primitive; per-cell pick needs cell coords (3 x u32) packed into pickColor or out-of-band.
+**Prototyped then REVERTED (this pass, Batch 476 follow-up):** a full per-cell pick pipeline was built end-to-end on WebGPU and proven to run (decodable in-dims cells, 0 errors) but was **reverted** because it returned **Y/Z-wrong cells** — a plausible-but-incorrect result is worse than the honest `undefined` the un-wired path returns. The design below is preserved verbatim as the blueprint for when the shape-UV convention fix (the real blocker) lands. It was SEPARATE from the object-pick path so regular `scene.pick` over a voxel stayed byte-identical (`fragmentPickMain` unchanged, object pick still returns the `VoxelPrimitive`):
 
-**Why deferred:** Voxel cell coords don't fit in 4-byte pickColor - needs separate buffer/texture + different resolve path.
+- New WGSL entry `fragmentPickVoxelMain` (`WebGPUVoxelRenderer.ts`) packs the first-hit cell EXACTLY like WebGL's `Shaders/Voxels/VoxelFS.glsl` `PICKING_VOXEL` branch: `R,G = packIntToVec2(megatextureIndex)`, `B,A = packIntToVec2(sampleIndex)` with `sampleIndex = x + dimX*(y + dimY*z)`, so `Scene.pickVoxel`'s `255*R+G` / `255*B+A` decode recovers `{tileIndex, sampleIndex}` unchanged. Cell coords pack into RGBA8 for typical small dims (test asset 2×4×3 → sampleIndex ≤ 23).
+- New UBO tail fields `voxelDimensions` (floats 76-79) + `cameraPositionModel` (floats 80-83); UBO grew 320 → 384 B. Written only during the pickVoxel pass; zero on the placeholder/off-gate path.
+- New `pickVoxelPipeline` + `pickVoxelCommand`, attached onto `derivedCommands.picking.pickVoxelCommand`; `selectCommandVariant` (`WebGPUSceneRenderer.ts`) routes to it ONLY when `passes.pickVoxel` (additive branch; non-voxel commands never set the slot, so their dispatch is unchanged). Built lazily only when real voxel data is present (`usingRealData`).
+- The pick FS uses a PHYSICALLY-correct ray (real model-space camera origin + real ±0.5 box) rather than the color path's camera-relative-origin AABB approximation (which fills the screen footprint correctly but samples voxel data centered on the camera → wrong depth).
+- Acceptance `probe-voxel-cell-pick.mjs` (NEW): dims match (2×4×3), both backends decode valid in-dims cells, off-box → cleared (no cell) on both, 0 device errors. Color path unregressed (`probe-voxel-parity` PASS).
 
-**Prerequisites:** None.
+**Remaining blocker (exact cell parity):** the decoded cell does NOT yet match WebGL exactly. X agrees; Y/Z diverge (WebGL center-pixel cell `(1,2,0)` vs WebGPU `(1,3,2)`). A 5-pixel solve proved this is NOT a clean axis permutation/flip — the two backends compute genuinely DIFFERENT first-hit cells. Root cause: the WebGPU voxel proxy-cube ray frame does not physically coincide with WebGL's shape-space traversal. WebGL derives the sample coordinate through `convertLocalToBoxUv.glsl`'s `u_boxEcToXyz` (= `getMatrix3(inverse(shapeTransform)) · inverseViewRotation`) + `boxLocalToShapeUvScale`, a chain that encodes a handedness/axis convention the WGSL ray-march (which maps model-space `uvw = p + 0.5` off the OBB-derived proxy frame) does not reproduce. `getBoxChunkObb` shows OBB == `_shapeTransform` for default bounds, so the divergence is specifically in the shapeUv convention, NOT the OBB placement.
 
-**Estimated effort:** 1-2 sessions.
+**Next concrete step (to finish parity):** plumb WebGL's box shapeUv convention through to the WGSL sample-coordinate derivation — i.e. transform the pick sample point through the SAME `world→shapeUv` (`_shapeTransform` inverse + `boxLocalToShapeUvScale`/translate) WebGL uses in `convertLocalToShapeUvSpace`, instead of the model-space `p + 0.5` shortcut. This is the same internal-sampling-convention gap PARITY-VOXEL-SHAPE-PARITY left (it fixed the screen FOOTPRINT, not the per-cell sampling frame). NOT an asset-specific hardcoded flip — a hack there breaks under other box orientations/bounds (Principle 7 & 9).
 
-**Impact:** Voxel hover/click selection of individual cells doesn't work. Coarse primitive-level pick works.
+**Prerequisites:** shipped ray-march (B474-476) — done. Shape-space uv convention plumbing — the open item above.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:222 (Batch 53 "Per-cell / per-tile pick is out of scope").
+**Impact:** `scene.pickVoxel` returns a cell coordinate on WebGPU (previously undefined — the pass didn't reach the cell path), but the returned cell is not yet WebGL-identical on the Y/Z axes. Coarse primitive-level `scene.pick` works and is unchanged.
+
+**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:222 (Batch 53 "Per-cell / per-tile pick is out of scope"); NEW-PICK-METADATA-READBACK (Batch 285, readback infra); this pass (wiring + physical ray + object/cell command split + surfaced convention blocker).
 
 ---
 
