@@ -1,0 +1,34 @@
+<style>
+  @import url(../templates/bucket.css);
+  #metaReadout {
+    background: rgba(42, 42, 42, 0.85);
+    color: white;
+    padding: 10px 14px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 13px;
+    max-width: 460px;
+    line-height: 1.5;
+  }
+  #metaReadout .label {
+    color: #ffcc00;
+  }
+  #metaReadout .val {
+    color: #66e0ff;
+  }
+  #metaReadout .hint {
+    color: #aaa;
+    font-size: 12px;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <div id="metaReadout">
+    <b>WebGPU structural-metadata pick.</b><br />
+    Click the textured plane to read its per-texel
+    <code>EXT_structural_metadata</code> values via
+    <code>scene.pickMetadata</code>.<br />
+    <span id="metaResult" class="hint">(nothing picked yet)</span>
+  </div>
+</div>

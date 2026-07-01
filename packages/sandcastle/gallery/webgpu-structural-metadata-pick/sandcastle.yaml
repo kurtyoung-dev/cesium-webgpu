@@ -1,0 +1,8 @@
+legacyId: WebGPU Structural Metadata Pick.html
+title: WebGPU Structural Metadata Pick
+description: "Read per-texel EXT_structural_metadata via scene.pickMetadata on the WebGPU backend (DP-H46)."
+labels:
+  - WebGPU
+  - 3D Tiles
+  - Showcases
+thumbnail: thumbnail.jpg

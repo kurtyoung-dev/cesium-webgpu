@@ -416,18 +416,20 @@ Verified end-to-end across Batches 153–158.
   `FEATURE_INVENTORY.md §3` for the per-extension SHIPPED/WIP grid (do not quote a
   single status here — the per-extension state is what matters).
 
-### Metadata-in-shader + pickMetadata (DP-H46 — display + pick SHIPPED, demo remains)
+### Metadata-in-shader + pickMetadata (DP-H46 — epic CLOSED, a–f SHIPPED)
 
-> **Status (verified `git log` at HEAD ≈ Batch 460):** the DP-H46 epic is all but
-> complete — display AND pick are SHIPPED, each opt-in / parity-default.
+> **Status (verified `git log` at HEAD ≈ Batch 463):** the DP-H46 epic is **complete** —
+> display AND pick SHIPPED, each opt-in / parity-default.
 > **DP-H46a** (GPU upload + binding scaffolding, property-attribute path, Batch 454) +
 > **DP-H46b** (per-model WGSL metadata codegen — property-attribute `struct Metadata` +
 > `initializeMetadata`, Batch 455) + **DP-H46c** (property-TEXTURE read in the WGSL model
 > shader, Batch 457 `df1e271533`) + **DP-H46d** (property-TABLE read, closing display-side
 > parity, Batch 458 `baa3f62d43`) + **DP-H46e** (`scene.pickMetadata` WebGPU producer —
-> color + regular-pick byte-identical, Batch 460 `061f6914f0`) have all landed. The single
-> remaining slice is **DP-H46f (parity probe + demo)**: display + pick are done; the
-> epic's full pickup is deferred only on the verification demo + probe.
+> color + regular-pick byte-identical, Batch 460 `061f6914f0`) + **DP-H46f** (Sandcastle
+> demo + consolidated verification probe + doc reconcile, Batch 463) have all landed.
+> Remaining slices are **post-epic follow-ups** (multi-component attribute transport,
+> UINT16/32 texture packing, TEXTURE-sourced tables) tracked in `ROADMAP_AND_DEFERRED_WORK.md`,
+> plus the upstream `getMetadataProperty` limit (attributes/tables via `pickMetadata`, cesium #12225).
 
 - **Goal:** port the `EXT_structural_metadata` / `EXT_mesh_features` metadata-in-shader
   pipeline from GLSL to WGSL so the WebGPU model shader can read metadata properties,
@@ -439,7 +441,12 @@ Verified end-to-end across Batches 153–158.
 - **Parity guard:** codegen runs ONLY when the model has structural metadata AND the
   primitive maps to ≥1 property-attribute/-texture/-table; otherwise the prepend is an
   empty string and the bit is not set → byte-identical module + cache key.
-- **No demo yet** (lands in DP-H46f).
+- **Demo:** *WebGPU Structural Metadata Pick* (`packages/sandcastle/gallery/webgpu-structural-metadata-pick/`)
+  — loads `SimplePropertyTexture` (an `EXT_structural_metadata` property-texture class) on the WebGPU
+  backend; click the textured plane → `scene.pickMetadata` decodes the per-texel `buildingComponents`
+  scalars into the readout panel. **Verified:** `Tools/visual-regression/probe-dp46f-metadata-demo.mjs`
+  (asset serves + WebGPU render + pick decode, screenshot read); byte-exact WebGL↔WebGPU parity by
+  `probe-dp46e-pick-metadata.mjs` (insulation 11/11 exact, temperatures in-range).
 
 ---
 
@@ -619,8 +626,9 @@ and §12.
 > - **Legacy gallery** — `Apps/Sandcastle/gallery/WebGPU *.html` (28 files). This is
 >   the complete set where fork WebGPU demos historically live.
 > - **New gallery** — `packages/sandcastle/gallery/<kebab>/` (folder with `index.html`
->   + `main.js` + `sandcastle.yaml` + thumbnail), served by Sandcastle2. 26 `webgpu-*`
->   folders + 2 atmosphere demos are ported here.
+>   + `main.js` + `sandcastle.yaml` + thumbnail), served by Sandcastle2. 27 `webgpu-*`
+>   folders (26 ported + the fork-original `webgpu-structural-metadata-pick`) + 2
+>   atmosphere demos live here.
 >
 > Enumerated from the repo (not invented). `webgpu-scene-capture-reflections` exists
 > only in the legacy gallery so far; the rest are in both.
@@ -659,9 +667,11 @@ and §12.
 
 ### 11b. New gallery (`packages/sandcastle/gallery/<kebab>/`) — fork demos
 
-The 26 `webgpu-*` folders mirror the legacy demos above (same titles/descriptions),
-**minus** `WebGPU Scene Capture Reflections` (legacy-only at HEAD). Plus two
-atmosphere demos that live only in the new gallery:
+The 27 `webgpu-*` folders: 26 mirror the legacy demos above (same
+titles/descriptions), **minus** `WebGPU Scene Capture Reflections` (legacy-only at
+HEAD), **plus** the new-gallery-only `webgpu-structural-metadata-pick` (DP-H46f,
+Batch 463 — no legacy counterpart). Plus two atmosphere demos that live only in
+the new gallery:
 
 | Folder | Shows / verifies |
 |---|---|
@@ -678,7 +688,8 @@ The 26 ported `webgpu-*` folders: `webgpu-async-resource-monitor`,
 `webgpu-screen-space-reflections`, `webgpu-sgp4-satellites`,
 `webgpu-temporal-anti-aliasing`, `webgpu-translucent-classification`,
 `webgpu-vector-tile-buffer-rendering`, `webgpu-voxel-pick`, `webgpu-weather-inspector`,
-`webgpu-weather-particles`.
+`webgpu-weather-particles`. Plus the fork-original `webgpu-structural-metadata-pick`
+(DP-H46f — WebGPU `EXT_structural_metadata` property-texture read + `scene.pickMetadata`).
 
 > **Keeping the index current:** new demos go in `packages/sandcastle/gallery/<kebab>/`
 > (folder form) and are rebuilt with `npm run build-sandcastle`. The legacy

@@ -133,7 +133,7 @@ Re-verified against git log. These are the marquee capabilities the WebGPU backe
 | **Snapshot mode** | SHIPPED | `Services/SnapshotModeService.js`; `scene.snapshotMode` freeze/auto-thaw for deterministic capture. |
 | **Compute pipeline** | SHIPPED | 32 compute kernels (frustum cull, Hi-Z occlusion, GPU sort keys / BitonicSortU64, point-cloud sort + LOD, mipmap gen, entity-cluster grid, atmosphere LUTs, volumetric fog, radiance→SH, weather sim). Hi-Z occlusion consumer fully fixed (Batches 212–213). |
 
-Other notable NEW features: structural-metadata GPU upload + per-model WGSL metadata codegen + GPU-side metadata read (property-texture + property-table) + metadata picking (**DP-H46 a/b/c/d/e, Batches 454–460, opt-in/parity-default**; the DP-H46f demo-gallery/probe-suite artifact is still in progress — probes `probe-dp46c/d/e` exist but no Sandcastle entry yet), point-light soft shadows, OIT (weighted-blended), heat-shimmer/contact-shadows effects, and a complete debug/visual-regression tooling stack (`CesiumDebug.*`, `Tools/visual-regression`). 28+ fork demos are ported to the Sandcastle2 gallery (323 gallery folders total).
+Other notable NEW features: structural-metadata GPU upload + per-model WGSL metadata codegen + GPU-side metadata read (property-texture + property-table) + metadata picking (**DP-H46 a/b/c/d/e/f, Batches 454–463, opt-in/parity-default — epic CLOSED**; `webgpu-structural-metadata-pick` gallery demo + `probe-dp46c/d/e/f` verify display + pick), point-light soft shadows, OIT (weighted-blended), heat-shimmer/contact-shadows effects, and a complete debug/visual-regression tooling stack (`CesiumDebug.*`, `Tools/visual-regression`). 28+ fork demos are ported to the Sandcastle2 gallery (324 gallery folders total).
 
 ---
 
@@ -204,7 +204,7 @@ Verified at HEAD (`061f6914f0`, Batch 460) unless noted.
 | `ShaderDefine` bits (live) | **22** active bits (`1<<0` … `1<<21`, contiguous, no gaps) | `WebGPUShaderDefines.ts` (verified — `grep ': 1 <<'` = 22) |
 | `ShaderSourceId` registrations | 37 (contiguous `1`…`37`, highest `STAR_FIELD_CATALOG:37`) — *a source-file ID, distinct from the 22 define bits* | `WebGPUShaderDefines.ts` (verified) |
 | WASM bridges shipped | Draco, Basis/KTX2, naga-wasm, splats, zip | `…/ThirdParty` (verified) |
-| Sandcastle gallery folders | 323 (28+ fork WebGPU demos) | `packages/sandcastle/gallery` (verified) |
+| Sandcastle gallery folders | 324 (28+ fork WebGPU demos, incl. `webgpu-structural-metadata-pick`) | `packages/sandcastle/gallery` (verified) |
 | Build variant sizes (min. IIFE) | dual 7.1 MB / webgl-only 5.6 MB / webgpu-only 6.4 MB | `CLAUDE.md` / `BUILD_AND_VARIANTS.md` |
 
 > Older docs cite "143 renderer files / 259 WGSL / 45 FR slots" (Batch 116 audit) or "48 FR / 49 keys" (Batch 185 status). Those are stale; the verified figures above supersede them.
@@ -237,8 +237,8 @@ Verified at HEAD (`061f6914f0`, Batch 460) unless noted.
 
 ### Consolidation notes (for the maintainer's review)
 
-- Headline ship-status for C2-25 (Batch 451), clouds/atmosphere improvement plan (Batches 426–445), tiered clouds (Batch 453), DP-H46 a/b/c/d/e (Batches 454–460), and the resolved historical blockers were all **re-verified against git log**, not lifted from the stale source tags.
-- Feature-renderer counts (52 slots / 61 registrations), WGSL count (293), renderer file/LOC counts (208 / ~146K), and the Sandcastle folder count (323) were **re-counted against live code** and supersede the older doc figures.
+- Headline ship-status for C2-25 (Batch 451), clouds/atmosphere improvement plan (Batches 426–445), tiered clouds (Batch 453), DP-H46 a/b/c/d/e/f (Batches 454–463, epic closed), and the resolved historical blockers were all **re-verified against git log**, not lifted from the stale source tags.
+- Feature-renderer counts (52 slots / 61 registrations), WGSL count (293), renderer file/LOC counts (208 / ~146K), and the Sandcastle folder count (324) were **re-counted against live code** and supersede the older doc figures.
 - The `status: verify` flag on the `ShaderDefine`/`ShaderSourceId` count is **resolved**: the live `WebGPUShaderDefines.ts` carries **22** active `ShaderDefine` bits (`1<<0` … `1<<21`, contiguous) and **37** contiguous `ShaderSourceId` registrations (`1`…`37`, highest `STAR_FIELD_CATALOG:37`, ID `0` reserved) — two separate registries. (An earlier draft cited `ELLIPSOID_PRIMITIVE:33` as the highest source ID; that was stale — `COMPUTE_INSTANCE_*`, `GAUSSIAN_SPLAT:36`, and `STAR_FIELD_CATALOG:37` extend past it.)
 - The parity headline is now the **code-grounded** Batch 459 survey (`WEBGPU_PARITY_REPORT_2026-06-30.md`): ~91% weighted (86% fully-shipped + 9% partial), ~94% excluding deferred-by-design items. The archived "~93%" maps to the adjusted-weighted upper bound, not the median.
 - The per-line feature catalog (§A/§B/§C/§D) is summarized here; `FEATURE_INVENTORY.md` remains the authoritative line-item source until archival. The §A/§B/§C/§D anchors are preserved so existing `CLAUDE.md` deep-links resolve.

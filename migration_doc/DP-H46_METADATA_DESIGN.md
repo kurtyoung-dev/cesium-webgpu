@@ -39,11 +39,22 @@ on BOTH backends today; the WebGPU producer reads attributes+tables too (codegen
 orchestration's property resolver gates it. Also: non-normalized FLOAT32/INT16/INT32 scalars are lossy through the
 RGBA8 byte pick path on BOTH backends (`getSourceValueString` divides by the type max → ~0 byte) — a shared WebGL
 limitation, not a WebGPU gap.
-**Remaining:** f (parity probe + Sandcastle + doc reconcile). Follow-up
-carried from b: full multi-component ATTRIBUTE transport (today only the first scalar over
-`@location(9)`); from c: multi-byte component (UINT16/32) channel-packing for property TEXTURES; from d:
+**f — SHIPPED (Batch 463).** Consolidated verification probe
+`Tools/visual-regression/probe-dp46f-metadata-demo.mjs` (confirms the demo's copied SampleData asset
+serves, the property-texture model renders on WebGPU — screenshot read — and `scene.pickMetadata`
+converges to plausible decoded values for all three `buildingComponents` scalars, 0 device/console
+errors) + the `webgpu-structural-metadata-pick` Sandcastle demo (`packages/sandcastle/gallery/`, loads
+`SimplePropertyTexture` on the WebGPU backend, click → `pickMetadata` → decoded readout) + this doc
+reconcile. Byte-exact WebGL↔WebGPU parity is proven separately by `probe-dp46e-pick-metadata.mjs`.
+**The DP-H46 epic (a–f) is closed.**
+
+**Remaining follow-ups (post-epic, tracked in `ROADMAP_AND_DEFERRED_WORK.md`, not blocking):**
+from b — full multi-component ATTRIBUTE transport (today only the first scalar over `@location(9)`);
+from c — multi-byte component (UINT16/32) channel-packing for property TEXTURES; from d —
 TEXTURE-sourced + instance/implicit feature-ID property TABLES (only the ATTRIBUTE feature-ID path is
-wired today — the dominant b3dm/BuildingsMetadata case); VS-stage table reads (today FS-only display).
+wired today — the dominant b3dm/BuildingsMetadata case) and VS-stage table reads (today FS-only display);
+from e — `scene.pickMetadata` reaching attributes/tables is gated on upstream `getMetadataProperty`
+(cesium #12225), and non-normalized FLOAT/INT scalars are lossy through the RGBA8 pick path on BOTH backends.
 
 ## Goal
 Port the glTF/3D-Tiles structural-metadata-in-shader pipeline (`EXT_structural_metadata` /
