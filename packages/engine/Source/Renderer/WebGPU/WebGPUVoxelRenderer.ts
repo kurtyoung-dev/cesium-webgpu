@@ -41,6 +41,13 @@ import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+// PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — real root-tile data upload
+// that replaces the placeholder gradient when a voxel provider is present.
+import {
+  createVoxelDataUploadState,
+  tryUploadRootVoxelTile,
+  type VoxelDataUploadState,
+} from "./WebGPUVoxelDataUpload.js";
 
 // Per-device shader module cache so multiple VoxelPrimitives sharing the
 // same GPUDevice reuse a single compiled `GPUShaderModule`.
@@ -88,6 +95,20 @@ interface VoxelCache {
   velocityPipeline: GPURenderPipeline | null;
   velocityDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
+
+  // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — one-time async state
+  // machine that requests the ROOT voxel tile and uploads its real property
+  // data into a 3D texture, replacing the placeholder gradient. Null until the
+  // first frame; when `phase === 'done'` the bind group is rebuilt to point at
+  // `dataUpload.view`. Stays untouched (placeholder retained) when no provider
+  // is present — the off-gate byte-identical case.
+  dataUpload: VoxelDataUploadState | null;
+  // True once the bind group has been re-pointed at the uploaded real-data
+  // texture, so we only rebuild it once.
+  usingRealData: boolean;
+  // Retained so the real-data bind group can be rebuilt (same layout, new
+  // texture view at binding 1) once the root tile finishes uploading.
+  bindGroupLayout: GPUBindGroupLayout | null;
 }
 
 const VOXEL_WGSL = `
@@ -615,6 +636,10 @@ function updateWebGPUVoxelPrimitive(
       velocityPipeline: null,
       velocityDescriptor: null,
       velocityPipelineRequestPending: false,
+      // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — real-data upload state.
+      dataUpload: null,
+      usingRealData: false,
+      bindGroupLayout: null,
     } as VoxelCache;
   }
 
@@ -711,6 +736,8 @@ function updateWebGPUVoxelPrimitive(
       textureEntry(1, Stage.FRAGMENT, { viewDimension: "3d" }),
       sampler(2, Stage.FRAGMENT),
     ]);
+    // Retain for the real-data bind-group rebuild once the root tile uploads.
+    cache.bindGroupLayout = bgl;
 
     // FEAT-GAP-09 (Batch 100) — append the shared effects bind group
     // layout so the WGSL fog block at `@group(1)` resolves to the same
@@ -860,6 +887,46 @@ function updateWebGPUVoxelPrimitive(
     )._pipelineSampleCount = sceneSampleCount;
 
     cache.initialized = true;
+  }
+
+  // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — drive the one-time root
+  // voxel-tile upload. When no provider is present this returns false every
+  // frame and the placeholder gradient stays bound (off-gate byte-identical).
+  // When the root tile finishes uploading, swap binding 1 to the real-data
+  // texture view and re-point every cached command's bind group. The
+  // ray-march WGSL is unchanged — only the 3D texture SOURCE changes.
+  if (!cache.usingRealData) {
+    if (!cache.dataUpload) {
+      cache.dataUpload = createVoxelDataUploadState();
+    }
+    const uploaded = tryUploadRootVoxelTile(
+      device,
+      primitive,
+      frameState,
+      cache.dataUpload,
+    );
+    if (
+      uploaded &&
+      cache.dataUpload.view &&
+      cache.bindGroupLayout &&
+      cache.uniformBuffer &&
+      cache.sampler
+    ) {
+      cache.voxelTextureView = cache.dataUpload.view;
+      cache.bindGroup = device.createBindGroup({
+        label: "Voxel bind group (real data)",
+        layout: cache.bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: cache.uniformBuffer } },
+          { binding: 1, resource: cache.dataUpload.view },
+          { binding: 2, resource: cache.sampler },
+        ],
+      });
+      // Force the cached commands to pick up the rebuilt bind group at slot 0.
+      cache.command = null;
+      cache.pickCommand = null;
+      cache.usingRealData = true;
+    }
   }
 
   // C-R7-RENDERER-MIGRATION (Batch 72) — resolve color + pick pipelines
@@ -1164,6 +1231,9 @@ function destroyWebGPUVoxelResources(
   cache.vertexBuffer?.destroy();
   cache.indexBuffer?.destroy();
   cache.voxelTexture?.destroy();
+  // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — release the real-data
+  // texture (distinct from the placeholder `voxelTexture`).
+  cache.dataUpload?.texture?.destroy();
 
   // C-R9-VOXEL-PICK (Batch 53 / refactored Batch 59) — release the pick
   // ID so the registry slot is reclaimed and the next VoxelPrimitive
