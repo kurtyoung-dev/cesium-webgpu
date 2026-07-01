@@ -389,38 +389,34 @@ function configureWebGPUPostProcessPipeline(
   pipeline.setStageEnabled("FXAA", fxaaEnabled);
 
   // --- Tonemapping ---
-  // HDR-DISPLAY (Batch 200; Batch 205 audit fix B200-D1 + D2) — skip
-  // SDR-only post-process stages when the user opts into wide-gamut
-  // HDR canvas output. On HDR-capable displays, the OS / display
-  // handles the gamut + tone curve; running tonemap / colorGrading /
-  // FXAA (all SDR-tuned) would corrupt the HDR signal:
+  // HDR-DISPLAY (Batch 200; Batch 205 audit fix B200-D1 + D2) +
+  // PARITY-HDR-PP-MATH — HDR canvas output mode. When the user opts
+  // into wide-gamut HDR canvas output, the OS / display handles the
+  // gamut + tone curve, so:
   //
-  // - tonemap compresses HDR → SDR (defeats the whole point)
-  // - colorGrading curves are calibrated for [0,1] SDR; HDR values >1
-  //   produce wrong saturation/lift/gain
-  // - FXAA edge-detection thresholds assume SDR; HDR highlights
-  //   over-trigger as edges
+  // - tonemap is bypassed (compressing HDR → SDR defeats the point)
+  // - colorGrading + FXAA now KEEP RUNNING with HDR-aware math: the
+  //   pipeline's setHDROutputMode() flips each stage's `hdrMode`
+  //   uniform so the shaders grade / edge-detect in a Reinhard-
+  //   compressed [0, 1) working space and emit linear HDR (previously
+  //   both stages were skipped outright — users lost grading + AA
+  //   entirely in HDR mode).
   //
-  // Skip is opt-in via `scene.useHDRCanvasOutput = true` AND requires
-  // `scene.highDynamicRange = true` (the latter ensures the scene
-  // framebuffer is rgba16float so the HDR data actually exists to
-  // forward). Falls through to standard SDR pipeline when either
-  // gate is off — backwards-compatible by default.
-  //
-  // The per-frame skip flag lives on the pipeline (read by `execute()`'s
-  // single-pass chain assembly) so colorGrading / FXAA enabled state
-  // set programmatically elsewhere is preserved when HDR-skip toggles
-  // off — we don't permanently mutate their enabled flags.
+  // HDR mode is opt-in via `scene.useHDRCanvasOutput = true` AND
+  // requires `scene.highDynamicRange = true` (the latter ensures the
+  // scene framebuffer is rgba16float so the HDR data actually exists
+  // to forward). Falls through to the standard SDR pipeline when
+  // either gate is off — backwards-compatible by default.
   const sceneAny = scene as
     | { useHDRCanvasOutput?: boolean; highDynamicRange?: boolean }
     | undefined;
-  const skipSDRStagesForHDR =
+  const hdrOutputMode =
     sceneAny?.useHDRCanvasOutput === true &&
     sceneAny?.highDynamicRange === true;
-  pipeline.setSkipSDRStagesForHDR(skipSDRStagesForHDR);
+  pipeline.setHDROutputMode(hdrOutputMode);
   pipeline.setStageEnabled(
     "Tonemap",
-    cache.tonemappingEnabled && !skipSDRStagesForHDR,
+    cache.tonemappingEnabled && !hdrOutputMode,
   );
   pipeline.setTonemappingMode(cache.tonemapMode);
 

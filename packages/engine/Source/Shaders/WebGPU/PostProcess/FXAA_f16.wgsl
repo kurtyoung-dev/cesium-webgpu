@@ -9,6 +9,14 @@
 // the wrong texels and shift the AA pattern). The per-sample luminance
 // comparison and the final color blends are done in F16: inputs are SDR
 // [0, 1] so every intermediate is inside the f16 normal range.
+//
+// PARITY-HDR-PP-MATH — HDR (tonemap-bypass) mode, mirrored from the f32
+// reference: when `params.hdrMode > 0.5` the edge-detection luminance is
+// computed on a Reinhard-compressed value (c / (1 + c)). The compression
+// runs in F32 — an f16 `1 + c` overflows to inf at the rgba16float peak
+// (65504) — and the compressed [0, 1) result converts back to f16 for
+// the luma dot. Color blends stay on the raw HDR samples. hdrMode == 0
+// (default) is bit-for-bit the historical SDR path.
 
 enable f16;
 
@@ -19,7 +27,8 @@ struct VertexOutput {
 
 struct FXAAUniforms {
   texelSize: vec2<f32>,
-  _pad0: f32,
+  // 0 = SDR luma (historical, default), 1 = HDR tonemap-bypass mode.
+  hdrMode: f32,
   _pad1: f32,
 };
 
@@ -41,9 +50,16 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-// Luminance in f16 (inputs are SDR).
+// Edge-detection luminance in f16. In HDR mode the color is Reinhard-
+// compressed first (in F32 — see the header) so the SDR-tuned FXAA
+// thresholds see a bounded [0, 1) signal.
 fn luminance16(color: vec3<f16>) -> f16 {
-  return dot(color, vec3<f16>(0.299h, 0.587h, 0.114h));
+  var c = color;
+  if (params.hdrMode > 0.5) {
+    let cf = max(vec3<f32>(color), vec3<f32>(0.0));
+    c = vec3<f16>(cf / (1.0 + cf));
+  }
+  return dot(c, vec3<f16>(0.299h, 0.587h, 0.114h));
 }
 
 @fragment

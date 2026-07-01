@@ -171,7 +171,8 @@ export interface ColorGradingConfig {
  *
  * Layout (20 floats = 80 bytes):
  *   [0..3]:  exposure, brightness, contrast, saturation
- *   [4..7]:  temperature, tint, gamma, _pad
+ *   [4..7]:  temperature, tint, gamma, hdrMode (pipeline-managed —
+ *            always packed 0 here; see setHDROutputMode)
  *   [8..11]: shadows tint RGBA
  *   [12..15]: midtones tint RGBA
  *   [16..19]: highlights tint RGBA
@@ -185,7 +186,7 @@ export function packColorGradingUniforms(c: ColorGradingConfig): Float32Array {
   u[4] = c.temperature ?? 0.0;
   u[5] = c.tint ?? 0.0;
   u[6] = c.gamma ?? 1.0;
-  u[7] = 0.0; // pad
+  u[7] = 0.0; // hdrMode — pipeline-managed, callers overwrite after packing
   const s = c.shadowsTint ?? { r: 0, g: 0, b: 0, w: 0 };
   u[8] = s.r;
   u[9] = s.g;
@@ -325,13 +326,17 @@ export class WebGPUPostProcessPipeline {
   // losing the user's bias.
   private _manualExposure: number = 1.0;
 
-  // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) — when the canvas is
-  // configured for HDR output (extended dynamic range), tonemapping is
-  // skipped so the swap chain receives the raw HDR signal. ColorGrading
-  // and FXAA both implicitly assume SDR-mapped input (LDR contrast curves
-  // and luminance-keyed edge detection), so they must be skipped too.
-  // Driven per-frame by `WebGPUPostProcessStageCollection.update()`.
-  private _skipSDRStagesForHDR = false;
+  // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix; PARITY-HDR-PP-MATH) —
+  // when the canvas is configured for HDR output (extended dynamic
+  // range), tonemapping is skipped so the swap chain receives the raw
+  // HDR signal. ColorGrading and FXAA used to be skipped outright too
+  // (their SDR-tuned pivots/thresholds misbehave on unbounded HDR);
+  // they now RUN in HDR mode with HDR-aware math, switched by an
+  // `hdrMode` uniform (Reinhard-compressed working space — see
+  // ColorGrading.wgsl / FXAA.wgsl headers). False (default) leaves the
+  // SDR path bit-for-bit unchanged. Driven per-frame by
+  // `WebGPUPostProcessStageCollection.update()`.
+  private _hdrOutputMode = false;
 
   private _isDestroyed = false;
 
@@ -707,6 +712,10 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     if (this._colorGradingStage) return;
     const c = config ?? {};
     const uniforms = packColorGradingUniforms(c);
+    // PARITY-HDR-PP-MATH — seed the pipeline-managed hdrMode flag (float
+    // index 7; the packer always writes 0 there) so a stage added while
+    // HDR canvas output is already active starts in HDR-aware mode.
+    uniforms[7] = this._hdrOutputMode ? 1.0 : 0.0;
     const stageFormat = this._intermediateFormat || canvasFormat;
     // PARITY-F16-POSTPROCESS — pick the f16 variant when opted in; the
     // f32 source is passed as the _compileStage fallback so a driver
@@ -731,6 +740,10 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   updateColorGradingUniforms(config: ColorGradingConfig): void {
     if (!this._colorGradingStage?.uniformBuffer || !this._device) return;
     const uniforms = packColorGradingUniforms(config);
+    // PARITY-HDR-PP-MATH — preserve the pipeline-managed hdrMode flag
+    // (float index 7); the packer writes 0 there and a full-block write
+    // must not silently drop the stage out of HDR-aware mode.
+    uniforms[7] = this._hdrOutputMode ? 1.0 : 0.0;
     this._device.queue.writeBuffer(
       this._colorGradingStage.uniformBuffer,
       0,
@@ -766,10 +779,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     useShaderF16: boolean = false,
   ): void {
     if (this._fxaaStage) return;
+    // Float index 2 is FXAAUniforms.hdrMode (PARITY-HDR-PP-MATH; it was
+    // an unread pad that happened to carry the width). Index 3 stays an
+    // unread pad carrying the height.
     const texelSize = new Float32Array([
       1.0 / this._width,
       1.0 / this._height,
-      this._width,
+      this._hdrOutputMode ? 1.0 : 0.0,
       this._height,
     ]);
     const stageFormat = this._intermediateFormat || canvasFormat;
@@ -1389,16 +1405,16 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // 4. Tonemapping + ColorGrading + Custom stages + FXAA (single-pass chain)
     const singlePassStages: CompiledStage[] = [];
     if (this._tonemapStage?.enabled) singlePassStages.push(this._tonemapStage);
-    // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) — when the canvas is
-    // configured for HDR output, ColorGrading and FXAA are dropped from
-    // the chain. Both stages assume SDR-mapped input: the grading curves
-    // (gamma, lift/gain/gamma) are calibrated for [0,1] and the FXAA
-    // luma derivation + edge-detection thresholds are tuned for an
-    // ~SRGB-perceptual signal. Running either on raw HDR produces
-    // washed-out colors and missed edges. The collection still flags
-    // them as `enabled` so the user-facing toggles work in SDR mode;
-    // the gate here makes the active chain HDR-correct.
-    if (this._colorGradingStage?.enabled && !this._skipSDRStagesForHDR) {
+    // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) + PARITY-HDR-PP-MATH —
+    // when the canvas is configured for HDR output, ColorGrading and FXAA
+    // used to be dropped from the chain entirely (their SDR-calibrated
+    // grading pivots and luma thresholds misbehave on raw HDR). They now
+    // stay in the chain in HDR mode: `setHDROutputMode()` flips each
+    // stage's `hdrMode` uniform so the shaders switch to a Reinhard-
+    // compressed working space (grade pivots / FXAA edge luma operate on
+    // [0, 1) again, output stays linear HDR). Tonemap remains bypassed —
+    // that gate lives in the collection's enabled sync.
+    if (this._colorGradingStage?.enabled) {
       // Phase 4 — runs after tonemap (so it sees SDR) and before custom
       // stages + FXAA (so the AA pass smooths any contrast-boosted edges).
       singlePassStages.push(this._colorGradingStage);
@@ -1407,7 +1423,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     for (const s of this._customStages) {
       if (s.enabled) singlePassStages.push(s);
     }
-    if (this._fxaaStage?.enabled && !this._skipSDRStagesForHDR) {
+    if (this._fxaaStage?.enabled) {
       singlePassStages.push(this._fxaaStage);
     }
 
@@ -1477,12 +1493,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._coldOpticsEffect?.resize(width, height);
     this._aerialPerspectiveEffect?.resize(width, height);
 
-    // Update FXAA texel size
+    // Update FXAA texel size (index 2 = hdrMode, PARITY-HDR-PP-MATH —
+    // preserve it across the full-block resize write).
     if (this._fxaaStage?.uniformBuffer && this._device) {
       const texelSize = new Float32Array([
         1.0 / width,
         1.0 / height,
-        width,
+        this._hdrOutputMode ? 1.0 : 0.0,
         height,
       ]);
       this._device.queue.writeBuffer(
@@ -1523,15 +1540,37 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix). When set to true,
-   * `execute()` skips the ColorGrading and FXAA stages even if they are
-   * marked enabled, because both assume SDR-mapped input. Tonemap is
-   * already gated separately by the SDR-stage cache. Driven per-frame
-   * from `WebGPUPostProcessStageCollection.update()` based on the scene
-   * `useHDRCanvasOutput` + `highDynamicRange` pair.
+   * HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) + PARITY-HDR-PP-MATH.
+   * When true (HDR canvas output active, tonemap bypassed), ColorGrading
+   * and FXAA keep running but switch to their HDR-aware math via the
+   * `hdrMode` uniform each shader carries (Reinhard-compressed working
+   * space — see the WGSL headers). When false (default) the uniform is 0
+   * and both stages run the historical SDR path bit-for-bit. Tonemap is
+   * still gated separately by the collection's enabled sync. Driven
+   * per-frame from `WebGPUPostProcessStageCollection.update()` based on
+   * the scene `useHDRCanvasOutput` + `highDynamicRange` pair.
    */
-  setSkipSDRStagesForHDR(skip: boolean): void {
-    this._skipSDRStagesForHDR = skip;
+  setHDROutputMode(enabled: boolean): void {
+    if (this._hdrOutputMode === enabled) return;
+    this._hdrOutputMode = enabled;
+    if (!this._device) return;
+    const mode = new Float32Array([enabled ? 1.0 : 0.0]);
+    // ColorGradingUniforms.hdrMode — float index 7 (byte offset 28).
+    if (this._colorGradingStage?.uniformBuffer) {
+      this._device.queue.writeBuffer(
+        this._colorGradingStage.uniformBuffer,
+        28,
+        mode as Float32Array<ArrayBuffer>,
+      );
+    }
+    // FXAAUniforms.hdrMode — float index 2 (byte offset 8).
+    if (this._fxaaStage?.uniformBuffer) {
+      this._device.queue.writeBuffer(
+        this._fxaaStage.uniformBuffer,
+        8,
+        mode as Float32Array<ArrayBuffer>,
+      );
+    }
   }
 
   /**

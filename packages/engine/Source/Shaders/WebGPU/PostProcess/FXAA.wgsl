@@ -1,5 +1,17 @@
 // FXAA (Fast Approximate Anti-Aliasing) post-process shader for WebGPU
 // Based on FXAA 3.11 by Timothy Lottes (NVIDIA)
+//
+// PARITY-HDR-PP-MATH — HDR (tonemap-bypass) mode. The FXAA_REDUCE_* /
+// FXAA_SPAN_MAX constants and the luma-keyed edge detection are tuned
+// for an SDR [0, 1] signal; on unbounded linear HDR a single bright
+// highlight dominates every luminance delta and the filter misfires.
+// When `params.hdrMode > 0.5` the luminance used for edge detection is
+// computed on a Reinhard-compressed value (c / (1 + c), the standard
+// HDR-resolve weighting) so the thresholds see a [0, 1) signal again.
+// The COLOR blends still operate on the raw HDR samples — only the
+// edge metric is compressed, so the output stays linear HDR. With
+// hdrMode == 0 (the default) the math is bit-for-bit the historical
+// SDR path.
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -8,7 +20,10 @@ struct VertexOutput {
 
 struct FXAAUniforms {
   texelSize: vec2<f32>, // 1.0 / textureSize
-  _pad0: f32,
+  // 0 = SDR luma (historical, default), 1 = HDR tonemap-bypass mode
+  // (edge-detection luma computed on Reinhard-compressed color).
+  // Driven by the pipeline's setHDROutputMode().
+  hdrMode: f32,
   _pad1: f32,
 };
 
@@ -30,8 +45,16 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
+// Edge-detection luminance. In HDR mode the color is Reinhard-compressed
+// first so the SDR-tuned thresholds below see a bounded [0, 1) signal;
+// in SDR mode (hdrMode == 0) this is the historical plain luma dot.
 fn luminance(color: vec3<f32>) -> f32 {
-  return dot(color, vec3<f32>(0.299, 0.587, 0.114));
+  var c = color;
+  if (params.hdrMode > 0.5) {
+    c = max(c, vec3<f32>(0.0));
+    c = c / (1.0 + c);
+  }
+  return dot(c, vec3<f32>(0.299, 0.587, 0.114));
 }
 
 @fragment

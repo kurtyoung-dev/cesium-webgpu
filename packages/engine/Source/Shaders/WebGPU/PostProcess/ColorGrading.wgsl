@@ -18,6 +18,19 @@
 // chunk of work. When a 3D LUT is wanted the shader can be extended
 // with a `texture_3d` at @binding(3) + a uniform flag to select
 // between the procedural path and the LUT lookup.
+//
+// PARITY-HDR-PP-MATH — HDR (tonemap-bypass) mode. When the scene runs
+// with `useHDRCanvasOutput` the tonemap stage is bypassed and this
+// stage receives unbounded linear HDR in [0, ∞), where the SDR-tuned
+// pivots (contrast around 0.5, luminance windows over [0, 1], final
+// [0, 1] clamp) are wrong. `params.hdrMode > 0.5` switches the stage
+// to a reversible Reinhard working space: after the linear exposure
+// gain the color is compressed with w = c / (1 + c) (maps [0, ∞) →
+// [0, 1)), the whole grade + gamma runs on w exactly as in SDR, then
+// the result is decompressed with c = w / (1 - w) instead of the SDR
+// clamp (w capped just below 1 so the inversion stays finite). With
+// hdrMode == 0 (the default written by packColorGradingUniforms) the
+// math below is bit-for-bit the historical SDR path.
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -30,11 +43,14 @@ struct ColorGradingUniforms {
   brightness: f32,
   contrast: f32,
   saturation: f32,
-  // pack 1: temperature (-1..1), tint (-1..1), gamma, _pad
+  // pack 1: temperature (-1..1), tint (-1..1), gamma, hdrMode
   temperature: f32,
   tint: f32,
   gamma: f32,
-  _pad0: f32,
+  // 0 = SDR (historical path, default), 1 = HDR tonemap-bypass mode
+  // (grade in Reinhard-compressed working space). Driven by the
+  // pipeline's setHDROutputMode(); packColorGradingUniforms writes 0.
+  hdrMode: f32,
   // pack 2: shadows tint RGB + strength
   shadowsTint: vec4<f32>,
   // pack 3: midtones tint RGB + strength
@@ -46,6 +62,11 @@ struct ColorGradingUniforms {
 @group(0) @binding(0) var inputTexture: texture_2d<f32>;
 @group(0) @binding(1) var inputSampler: sampler;
 @group(0) @binding(2) var<uniform> params: ColorGradingUniforms;
+
+// HDR working-space cap: compressed values are clamped just below 1 so
+// the w / (1 - w) inversion stays finite. 0.99995 → decompressed max
+// ≈ 2e4, comfortably inside rgba16float range (max 65504).
+const HDR_COMPRESS_MAX: f32 = 0.99995;
 
 // Fullscreen triangle — no vertex buffer needed.
 @vertex
@@ -126,9 +147,20 @@ fn applyColorBalance(
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   var color = textureSample(inputTexture, inputSampler, input.uv).rgb;
+  let hdrMode = params.hdrMode > 0.5;
 
-  // Exposure in f-stops (2^exposure).
+  // Exposure in f-stops (2^exposure). A linear-light gain, so it is
+  // applied BEFORE the HDR range compression — it means the same thing
+  // in both modes.
   color = color * exp2(params.exposure);
+
+  // HDR mode: compress [0, ∞) → [0, 1) so the SDR-calibrated pivots
+  // (contrast mid-gray 0.5, luminance windows, additive tints) operate
+  // on a bounded perceptual-ish signal instead of raw HDR.
+  if (hdrMode) {
+    let c = max(color, vec3<f32>(0.0));
+    color = c / (1.0 + c);
+  }
 
   // Per-channel brightness / contrast / saturation.
   color = applyBCS(color, params.brightness, params.contrast, params.saturation);
@@ -147,9 +179,18 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Output gamma correction (gamma = 1 for identity).
   color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / max(params.gamma, 0.0001)));
 
-  // Clamp to SDR range — color grading can produce out-of-range values
-  // when the contrast/saturation sliders push the pixel past white.
-  color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+  if (hdrMode) {
+    // Invert the range compression instead of clamping to SDR — the
+    // graded result goes back to unbounded linear HDR for the canvas.
+    // The cap just below 1 keeps the inversion finite when the grade
+    // pushed a compressed value to (or past) white.
+    let w = clamp(color, vec3<f32>(0.0), vec3<f32>(HDR_COMPRESS_MAX));
+    color = w / (1.0 - w);
+  } else {
+    // Clamp to SDR range — color grading can produce out-of-range values
+    // when the contrast/saturation sliders push the pixel past white.
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+  }
 
   return vec4<f32>(color, 1.0);
 }

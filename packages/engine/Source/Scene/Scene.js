@@ -2604,8 +2604,10 @@ class Scene {
    * `GPUCanvasContext` with `format: 'rgba16float' + colorSpace:
    * 'display-p3' + toneMapping: { mode: 'extended' }` so the browser
    * forwards extended-range values to HDR-capable displays.
-   * ColorGrading and FXAA are also skipped under HDR (they assume
-   * SDR-mapped input).
+   * ColorGrading and FXAA keep running under HDR with HDR-aware math
+   * (PARITY-HDR-PP-MATH): both stages switch to a Reinhard-compressed
+   * working space so the grade pivots and AA edge thresholds behave,
+   * and their output stays linear HDR.
    *
    * @type {boolean}
    * @default false

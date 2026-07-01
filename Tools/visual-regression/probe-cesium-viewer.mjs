@@ -62,7 +62,7 @@ const result = await page.evaluate(() => {
     tonemap: pp._tonemapStage?.enabled,
     colorGrading: pp._colorGradingStage?.enabled,
     fxaa: pp._fxaaStage?.enabled,
-    skipSDRStagesForHDR: pp._skipSDRStagesForHDR,
+    hdrOutputMode: pp._hdrOutputMode,
     width: pp._width,
     height: pp._height,
     intermediateFormat: pp._intermediateFormat,

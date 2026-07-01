@@ -10,7 +10,8 @@ import { packColorGradingUniforms } from "../../../Source/Renderer/WebGPU/WebGPU
 //
 // The layout is:
 //   [0..3]:  exposure, brightness, contrast, saturation
-//   [4..7]:  temperature, tint, gamma, _pad
+//   [4..7]:  temperature, tint, gamma, hdrMode (pipeline-managed —
+//            the packer ALWAYS writes 0; setHDROutputMode owns it)
 //   [8..11]: shadows tint RGBA
 //   [12..15]: midtones tint RGBA
 //   [16..19]: highlights tint RGBA
@@ -58,7 +59,9 @@ describe("Renderer/WebGPU/packColorGradingUniforms", function () {
     expect(u[4]).toBeCloseTo(-0.2, 5);
     expect(u[5]).toBeCloseTo(0.15, 5);
     expect(u[6]).toBeCloseTo(2.2, 5);
-    // _pad is always 0.
+    // hdrMode slot is always packed 0 (PARITY-HDR-PP-MATH: the pipeline
+    // overwrites it after packing; a stray non-zero here would silently
+    // flip the shader into HDR working-space math on the SDR path).
     expect(u[7]).toBe(0);
   });
 
