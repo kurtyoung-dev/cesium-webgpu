@@ -1,8 +1,12 @@
 // @ts-check
 
+import Color from "../Core/Color.js";
 import defined from "../Core/defined.js";
 import BufferPrimitiveCollection from "./BufferPrimitiveCollection.js";
 import BufferPolygon from "./BufferPolygon.js";
+import BufferPolyline from "./BufferPolyline.js";
+import BufferPolylineCollection from "./BufferPolylineCollection.js";
+import BufferPolylineMaterial from "./BufferPolylineMaterial.js";
 import Frozen from "../Core/Frozen.js";
 import assert from "../Core/assert.js";
 import IndexDatatype from "../Core/IndexDatatype.js";
@@ -12,12 +16,21 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /** @import BlendOption from "./BlendOption.js"; */
 /** @import BoundingSphere from "../Core/BoundingSphere.js"; */
-/** @import { TypedArray } from "../Core/globalTypes.js"; */
+/** @import { TypedArray, TypedArrayConstructor } from "../Core/globalTypes.js"; */
 /** @import Matrix4 from "../Core/Matrix4.js"; */
 /** @import FrameState from "./FrameState.js" */
 /** @import ComponentDatatype from "../Core/ComponentDatatype.js"; */
+/** @import { FeatureRenderer } from "../Renderer/GraphicsContext.js"; */
 
 const { ERR_CAPACITY } = BufferPrimitiveCollection.Error;
+
+// FEAT-BUFFERPOLYGON-OUTLINE — module-level scratch for the outline sync
+// (flyweight pattern; the sync is single-threaded per frame and never
+// re-enters).
+const scratchOutlinePolygon = new BufferPolygon();
+const scratchOutlinePolygonMaterial = new BufferPolygonMaterial();
+const scratchOutlinePolyline = new BufferPolyline();
+const scratchOutlinePolylineMaterial = new BufferPolylineMaterial();
 
 /**
  * @typedef {object} BufferPolygonOptions
@@ -135,6 +148,33 @@ class BufferPolygonCollection extends BufferPrimitiveCollection {
      * @ignore
      */
     this._triangleIndexView = null;
+
+    /**
+     * FEAT-BUFFERPOLYGON-OUTLINE — internal stroke collection rendering
+     * polygon outlines (material `outlineWidth > 0`) as closed
+     * {@link BufferPolyline} rings: one polyline per outer ring plus one per
+     * hole. Reusing the BufferPolyline stroke path keeps outline rendering
+     * consistent across backends (WebGL + WebGPU) and scene modes without any
+     * new shader code. Stays <code>null</code> while no polygon in the
+     * collection has an outline, so the default (outlineWidth = 0) path
+     * allocates nothing and renders identically to a collection without
+     * outline support.
+     *
+     * @type {BufferPolylineCollection|null}
+     * @ignore
+     */
+    this._outlineCollection = null;
+
+    /**
+     * Backend feature renderer last used to render
+     * <code>_outlineCollection</code>, captured so teardown can release the
+     * internal collection's backend cache (mirrors the `_featureRenderer`
+     * pattern used by other collections).
+     *
+     * @type {FeatureRenderer|undefined}
+     * @ignore
+     */
+    this._outlineFeatureRenderer = undefined;
 
     this._allocateHoleIndexBuffer();
     this._allocateTriangleIndexBuffer();
@@ -308,6 +348,11 @@ class BufferPolygonCollection extends BufferPrimitiveCollection {
 
     const passes = frameState.passes;
     if (this.show && (passes.render || passes.pick)) {
+      // FEAT-BUFFERPOLYGON-OUTLINE — sync + render outline strokes BEFORE the
+      // fill renderer below consumes (and resets) the collection's dirty
+      // range. No-op while every polygon material has outlineWidth = 0.
+      this._updateOutlines(frameState);
+
       const fr = frameState.context.getFeatureRenderer(
         FeatureRendererKey.BUFFER_POLYGON_COLLECTION,
       );
@@ -321,6 +366,183 @@ class BufferPolygonCollection extends BufferPrimitiveCollection {
         this._renderContext,
       );
     }
+  }
+
+  /**
+   * Synchronizes and renders the outline stroke collection. Outlines reuse
+   * the BufferPolyline stroke path (shipped + parity-verified on both
+   * backends) rather than a polygon-shader edge factor: each ring of a
+   * polygon whose material has <code>outlineWidth &gt; 0</code> is stroked as
+   * one closed polyline in <code>outlineColor</code> at
+   * <code>outlineWidth</code> px.
+   *
+   * @param {FrameState} frameState
+   * @private
+   * @ignore
+   */
+  _updateOutlines(frameState) {
+    if (this._dirtyCount > 0) {
+      this._syncOutlines();
+    }
+
+    const outlines = this._outlineCollection;
+    if (!defined(outlines)) {
+      return;
+    }
+
+    // Remember the backend renderer the internal collection's update() will
+    // dispatch to, so _destroyOutlineCollection() can release its backend
+    // cache (BufferPrimitiveCollection#destroy only releases the WebGL
+    // renderContext).
+    this._outlineFeatureRenderer = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.BUFFER_POLYLINE_COLLECTION,
+    );
+
+    outlines.update(frameState);
+  }
+
+  /**
+   * Rebuilds the internal outline stroke collection from the current polygon
+   * materials and ring topology.
+   *
+   * <p>Batch granularity (honest): outlines are derived data — ANY dirty
+   * polygon rebuilds ALL outline strokes (reallocation + full re-upload).
+   * Per-polygon outline settings are honored (each ring carries its owning
+   * polygon's <code>outlineColor</code>/<code>outlineWidth</code>), but edits
+   * are coarser-grained than the fill path's dirty-range updates. Incremental
+   * per-ring updates can be added later without changing the API.</p>
+   *
+   * @private
+   * @ignore
+   */
+  _syncOutlines() {
+    const primitiveCount = this.primitiveCount;
+
+    // Pass 1 — measure: closed rings to stroke and their total vertex count
+    // (ring vertices + 1 closing vertex each).
+    let ringCount = 0;
+    let ringVertexCount = 0;
+    for (let i = 0; i < primitiveCount; i++) {
+      this.get(i, scratchOutlinePolygon);
+      scratchOutlinePolygon.getMaterial(scratchOutlinePolygonMaterial);
+      if (scratchOutlinePolygonMaterial.outlineWidth <= 0) {
+        continue;
+      }
+      const ringTotal = scratchOutlinePolygon.holeCount + 1;
+      for (let r = 0; r < ringTotal; r++) {
+        const count =
+          r === 0
+            ? scratchOutlinePolygon.outerVertexCount
+            : scratchOutlinePolygon.getHoleVertexCount(r - 1);
+        if (count < 2) {
+          // Degenerate ring — nothing to stroke.
+          continue;
+        }
+        ringCount++;
+        ringVertexCount += count + 1;
+      }
+    }
+
+    // Default / all-outlines-off path: allocate nothing, render nothing.
+    if (ringCount === 0) {
+      this._destroyOutlineCollection();
+      return;
+    }
+
+    // Full rebuild — see the batch-granularity note in the JSDoc above.
+    this._destroyOutlineCollection();
+    const outlines = new BufferPolylineCollection({
+      primitiveCountMax: ringCount,
+      vertexCountMax: ringVertexCount,
+      positionDatatype: this._positionDatatype,
+      positionNormalized: this._positionNormalized,
+      modelMatrix: this._modelMatrix,
+      blendOption: this._blendOption,
+      // Outline strokes are not independently pickable — picking a polygon
+      // hits its fill.
+      allowPicking: false,
+    });
+
+    // Pass 2 — one closed polyline per ring, in the owning polygon's outline
+    // color/width.
+    for (let i = 0; i < primitiveCount; i++) {
+      this.get(i, scratchOutlinePolygon);
+      scratchOutlinePolygon.getMaterial(scratchOutlinePolygonMaterial);
+      const outlineWidth = scratchOutlinePolygonMaterial.outlineWidth;
+      if (outlineWidth <= 0) {
+        continue;
+      }
+
+      Color.clone(
+        scratchOutlinePolygonMaterial.outlineColor,
+        scratchOutlinePolylineMaterial.color,
+      );
+      scratchOutlinePolylineMaterial.width = outlineWidth;
+
+      const show = scratchOutlinePolygon.show;
+      const featureId = scratchOutlinePolygon.featureId;
+      const ringTotal = scratchOutlinePolygon.holeCount + 1;
+      for (let r = 0; r < ringTotal; r++) {
+        const ring =
+          r === 0
+            ? scratchOutlinePolygon.getOuterPositions()
+            : scratchOutlinePolygon.getHolePositions(r - 1);
+        const count = ring.length / 3;
+        if (count < 2) {
+          continue;
+        }
+        const RingArray = /** @type {TypedArrayConstructor} */ (
+          ring.constructor
+        );
+        const closed = new RingArray((count + 1) * 3);
+        closed.set(ring);
+        // Repeat the first vertex so the stroke closes the ring.
+        closed[count * 3] = ring[0];
+        closed[count * 3 + 1] = ring[1];
+        closed[count * 3 + 2] = ring[2];
+        outlines.add(
+          {
+            positions: closed,
+            material: scratchOutlinePolylineMaterial,
+            show,
+            featureId,
+          },
+          scratchOutlinePolyline,
+        );
+      }
+    }
+
+    this._outlineCollection = outlines;
+  }
+
+  /**
+   * Destroys the internal outline stroke collection, releasing both the
+   * WebGL render context (via the collection's own destroy()) and any
+   * backend feature-renderer cache.
+   *
+   * @private
+   * @ignore
+   */
+  _destroyOutlineCollection() {
+    const outlines = this._outlineCollection;
+    if (!defined(outlines)) {
+      return;
+    }
+    const fr = this._outlineFeatureRenderer;
+    if (defined(fr) && defined(fr.destroy)) {
+      fr.destroy(outlines);
+    }
+    outlines.destroy();
+    this._outlineCollection = null;
+  }
+
+  /**
+   * Destroys collection and its GPU resources.
+   * @override
+   */
+  destroy() {
+    this._destroyOutlineCollection();
+    super.destroy();
   }
 
   /////////////////////////////////////////////////////////////////////////////

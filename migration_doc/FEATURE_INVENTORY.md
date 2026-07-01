@@ -207,6 +207,7 @@ These features ship in upstream CesiumJS and are inherited by this fork. Many ha
 - EntityCluster — billboard/label/point clustering
 - BufferPointCollection / BufferPolylineCollection / BufferPolygonCollection / BufferPrimitiveCollection — GPU-instanced buffer-based collections
 - renderBufferPointCollection / renderBufferPolylineCollection / renderBufferPolygonCollection — render helpers
+- BufferPolygon outline rendering (FEAT-BUFFERPOLYGON-OUTLINE, SHIPPED 2026-07-01) — the declared-but-previously-unrendered `BufferPolygonMaterial.outlineColor`/`outlineWidth` API now renders on BOTH backends: `BufferPolygonCollection` owns an internal non-pickable `BufferPolylineCollection` that strokes each ring (outer + holes, first vertex repeated to close) as a closed polyline in the owning polygon's outline color/width, so WebGL + WebGPU + scene modes reuse the shipped polyline parity surface with zero new shader code. Default `outlineWidth=0` allocates nothing (probe-verified pixel-identical off-gate). Batch granularity: any dirty polygon rebuilds all outline strokes (documented in `_syncOutlines`). Probe: `Tools/visual-regression/probe-bufferpolygon-outline.mjs`.
 - VoxelBoundsCollection — voxel grid bounds visualization
 
 ### A.6 Entity / DataSource API
