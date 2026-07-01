@@ -11,7 +11,17 @@
 
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Matrix3 from "../../Core/Matrix3.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
+// PARITY-VOXEL-SHAPE-PARITY (increment 2) — shape/OBB scene-level transform
+// helpers. Run BEFORE the backend branch (Scene Logic Extractor pattern) so the
+// VoxelPrimitive's shape OBB is current on the WebGPU path (the WebGPU feature
+// renderer returns from VoxelPrimitive.update BEFORE the WebGL body that
+// normally refreshes it).
+import {
+  checkTransformAndBounds,
+  updateShapeAndTransforms,
+} from "../../Scene/VoxelPrimitiveHelpers.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
@@ -411,6 +421,98 @@ const scratchMVP = new Matrix4();
 // RTE scratch: view×model with translation column zeroed, used to
 // build MVP correctly (must zero before projecting).
 const scratchMVRTE = new Matrix4();
+
+// PARITY-VOXEL-SHAPE-PARITY (increment 2) scratches for building the effective
+// model matrix from the shape's oriented bounding box.
+const scratchObbHalfAxes = new Matrix3();
+const scratchObbCenter = new Cartesian3();
+const scratchEffModel = new Matrix4();
+
+/**
+ * Structural view of the parts of a {@link VoxelBoxShape}'s oriented bounding
+ * box the ray-march placement needs. `center` is the box centre in world
+ * (ECEF) coordinates; `halfAxes` is a {@link Matrix3} whose columns are the box
+ * half-extent vectors (rotation × scale), so a point `p ∈ [-1, +1]^3` maps to
+ * world via `center + halfAxes * p`.
+ */
+interface VoxelShapeLike {
+  orientedBoundingBox?: {
+    center?: Cartesian3;
+    halfAxes?: Matrix3;
+  };
+}
+
+/**
+ * PARITY-VOXEL-SHAPE-PARITY (increment 2).
+ *
+ * Compute the effective model matrix that places the ray-march proxy cube at
+ * the voxel volume's correct WORLD position, orientation, and extent — mirroring
+ * the WebGL VoxelBoxShape convention.
+ *
+ * WebGL derives the shape's oriented bounding box from the compound model
+ * matrix `globalTransform × modelMatrix × shapeTransform` (see
+ * {@link updateShapeAndTransforms}). The box spans local `[-1, +1]^3`
+ * (VoxelBoxShape.DefaultMin/MaxBounds), and the OBB maps that local box to world
+ * via `world = center + halfAxes * localPos`.
+ *
+ * The WebGPU ray-march proxy cube is `[-0.5, +0.5]^3` (see
+ * {@link createBoxGeometry}) and the shader normalises samples over
+ * `minBounds = -0.5 … maxBounds = +0.5`. So to map the `[-0.5, +0.5]` cube onto
+ * the same world box we scale the OBB half-axes by 2:
+ *   `effModel = fromRotationTranslation(2 × halfAxes, center)`.
+ *
+ * This is the ONLY change from the Batch 474 data-upload path — the shader math,
+ * the `[-0.5, +0.5]` cube geometry, and the `[-0.5, +0.5]` bounds are all
+ * unchanged; only the model matrix fed into the existing RTE MVP + camera-to-
+ * model transform changes. When no shape/OBB is available (no provider — the
+ * placeholder gradient path), this returns the primitive's raw `modelMatrix`
+ * unchanged, keeping the off-gate byte-identical with Batch 474.
+ *
+ * @returns the effective model matrix (scratch — do not retain across calls).
+ */
+function computeVoxelEffectiveModelMatrix(
+  primitive: CesiumObjectWithWebGPUCache,
+): Matrix4 {
+  const rawModelMatrix =
+    (primitive as unknown as { modelMatrix?: Matrix4 }).modelMatrix ??
+    Matrix4.IDENTITY;
+
+  const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
+  const provider = (primitive as unknown as { _provider?: unknown })._provider;
+  // Off-gate: no shape or no provider → keep the raw modelMatrix so the
+  // placeholder path is byte-identical with Batch 474.
+  if (!shape || !provider) {
+    return rawModelMatrix;
+  }
+
+  // Scene Logic Extractor pattern — refresh the shape OBB from the current
+  // modelMatrix / bounds BEFORE reading it. The WebGPU feature-renderer path
+  // returns from VoxelPrimitive.update before the WebGL body runs these, so the
+  // OBB would otherwise only reflect construction-time state.
+  try {
+    checkTransformAndBounds(primitive);
+    updateShapeAndTransforms(primitive);
+  } catch {
+    // Shape update can throw if the volume is degenerate (zero scale, inverted
+    // bounds). Fall back to the raw modelMatrix rather than crashing the frame.
+    return rawModelMatrix;
+  }
+
+  const obb = shape.orientedBoundingBox;
+  if (!obb || !obb.center || !obb.halfAxes) {
+    return rawModelMatrix;
+  }
+
+  // Scale the half-axes by 2 so the [-0.5, +0.5] proxy cube spans the same
+  // world box the [-1, +1] shape space maps to.
+  const halfAxes2 = Matrix3.multiplyByScalar(
+    obb.halfAxes,
+    2.0,
+    scratchObbHalfAxes,
+  );
+  const center = Cartesian3.clone(obb.center, scratchObbCenter);
+  return Matrix4.fromRotationTranslation(halfAxes2, center, scratchEffModel);
+}
 
 function createBoxGeometry(device: GPUDevice): {
   vertexBuffer: GPUBuffer;
@@ -954,7 +1056,12 @@ function updateWebGPUVoxelPrimitive(
   // depth-mapping term, producing incorrect NDC depth. See
   // `UniformStateComputations.cleanModelViewProjectionRelativeToEye`.
   const us = context.uniformState;
-  const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
+  // PARITY-VOXEL-SHAPE-PARITY (increment 2) — use the shape/OBB-derived
+  // effective model matrix so the proxy cube is placed at the voxel volume's
+  // correct world position/orientation/extent (mirrors WebGL VoxelBoxShape).
+  // Falls back to the raw modelMatrix in the off-gate (no provider) case, which
+  // keeps the placeholder path byte-identical with Batch 474.
+  const modelMatrix = computeVoxelEffectiveModelMatrix(primitive);
   const view = us.view;
   const projection = us.projection;
   const mvRte = Matrix4.multiply(view, modelMatrix, scratchMVRTE);
