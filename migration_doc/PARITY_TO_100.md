@@ -134,23 +134,13 @@ These are intentionally parked. Each is behind a feature flag with a byte-identi
 
 The gap closes fastest by unblocking the shared-infrastructure roots first, then fanning out to adopters. Four independent spines run in parallel; the longest (voxel) sets the schedule.
 
-**Spine A — Clipping planes (primitives + models + pick):**
-```
-PARITY-CLIP-PRIMITIVE-THREAD-BG (S)
-        └─► PARITY-CLIP-PRIMITIVE-VS-PRODUCER (M) ─┐
-PARITY-CLIP-MODEL-RENDERER-WIRING (M) ⇄ PARITY-CLIP-MODEL-VS-PRODUCER (M) ─┤
-                                                    └─► PARITY-CLIP-PICK-SHADER-COVERAGE (S→M)
-```
-The BG-threading task (S) is the root — it unblocks the primitive VS producer. Model wiring and model VS producer are mutually dependent (do together). Pick coverage is the leaf.
+**Spine A — Clipping planes (models):** ✅ **SHIPPED (Batch 466)** — with a **scope correction**: (1) "clipping planes on **primitives**" is a NON-issue — Cesium's generic geometry `Primitive`/`Appearance` have no `clippingPlanes` API (upstream WebGL doesn't clip generic primitives either; clipping applies to Globe/3DTiles/Model/PointCloud/Voxels only), so `PARITY-CLIP-PRIMITIVE-*` are dropped. (2) The real defect was **model** clipping: it was ineffective on WebGPU not for a missing hardware `clip_distances` path (the discard path already existed) but a **wrong-eye-space-transform bug** — `WebGPUClippingPlaneCollection.ts` baked the eye-space plane with `inverseViewTranspose` only, ignoring the model→world transform. Fixed by folding the model world reference matrix + collection.modelMatrix into the CPU plane transform (`isIdentityMat4`-gated so globe stays byte-identical). Probe `probe-clipping-planes-parity.mjs` 16.4%→2.4% mismatch, PNGs read, off-gate proven. Pick-shader clip discards added (Principle 7 scaffolding left in place).
 
-**Spine B — Scene-mode 2D/CV pillar (Buffer* collections):**
-```
-PARITY-SCENE-MODE-BUFFER-INFRA (S, shared helper)
-        ├─► PARITY-BUFFERPOINT-2DCV (M)
-        ├─► PARITY-BUFFERPOLYLINE-2DCV (M)
-        └─► PARITY-BUFFERPOLYGON-2DCV (M)   [BufferPolygon outline (M) is independent]
-```
-The shared reprojection helper (extracted from the already-shipped PolylineRenderer) is the single root; the three Buffer adopters are parallel leaves. **Polyline / GroundPolyline 2D-CV already SHIPPED** (Batches 343–344 + post-report) — only the three Buffer* collections remain from the pillar.
+> **Newly-surfaced follow-up (Principle 9):** WebGPU `scene.pick` returns **undefined for standalone `Model.fromGltfAsync` models** (0 hits even with clipping off) — masks the model clip-pick leg. Add `PARITY-STANDALONE-MODEL-PICK` (S/M, M-tail) — standalone models don't register a pick id like entity/3D-Tiles models do.
+
+**Spine B — Scene-mode 2D/CV pillar (Buffer\* collections):** ✅ **SHIPPED (Batch 467)** — shared `projectBufferPositionForMode` helper wired into all three Buffer\* renderers; points+polyline+polygon reproject correctly in 3D + Columbus View, points+polygon in 2D. **Bonus bug fix:** BufferPolyline declared 9 vertex buffers (> WebGPU's max 8) → INVALID pipeline (blank + validation error) → fixed by interleaving alpha into loc7 (8 buffers). Off-gate proven (3D byte-identical, WebGL untouched, regression probes pass). NOTE: WebGL BufferPrimitive itself renders **misplaced** in CV (no correct WebGL reference), so WebGPU now **exceeds** WebGL here; probe asserts via signature-color counts.
+
+> **Residual (tracked `NEW-BUFFERPOLYLINE-2D-EXTRUSION` in DEFERRED_WORK):** BufferPolyline is blank in **SCENE2D only** — screen-space extrusion collapses when all reprojected verts are coplanar at projected x=0 (the polyline VS lacks the 2D camera-axis convention). Same root class as the deferred Polyline-2D planar-shader gap. S follow-up.
 
 **Spine C — Point Cloud EDL:** ✅ **SHIPPED (Batch 465)** — all 8 sub-tasks landed as one composite implementation via the `parity-to-100` workflow (verify→landed): full EDL data path (offscreen FBO + dual-output depth-writing point variant behind add-only `POINT_CLOUD_EDL_DEPTH` 1<<22 + neighbor-depth blend matching WebGL), off-gate proven, probe `probe-pointcloud-edl-parity.mjs` PASS. **Bonus:** the run also fixed the WebGPU **standalone point-cloud renderer**, which was entirely non-functional (attribute-wrapper unwrap + POSITION_QUANTIZED dequantize + `_ready`/boundingSphere + MSAA sample-count + effective point size + `TimeDynamicPointCloud` mis-delegation) — this unblocked point clouds on WebGPU generally, not just EDL.
 ```
