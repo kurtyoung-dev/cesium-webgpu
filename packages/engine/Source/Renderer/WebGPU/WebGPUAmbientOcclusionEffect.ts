@@ -12,6 +12,12 @@ import AmbientOcclusionGenerateWGSL from "../../Shaders/WebGPU/PostProcess/Ambie
 import AmbientOcclusionModulateWGSL from "../../Shaders/WebGPU/PostProcess/AmbientOcclusionModulate.js";
 import GTAOGenerateWGSL from "../../Shaders/WebGPU/PostProcess/GTAOGenerate.js";
 import GaussianBlur1DWGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D.js";
+// PARITY-F16-POSTPROCESS — f16 variants, selected when `useShaderF16`.
+// Note: GTAO has no f16 variant (its horizon-search is precision-critical);
+// the "gtao" algorithm keeps the f32 generate shader even when f16 is on.
+import AmbientOcclusionGenerateF16WGSL from "../../Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate_f16.js";
+import AmbientOcclusionModulateF16WGSL from "../../Shaders/WebGPU/PostProcess/AmbientOcclusionModulate_f16.js";
+import GaussianBlur1DF16WGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D_f16.js";
 import {
   makeBindGroupLayout,
   sampler,
@@ -56,6 +62,10 @@ export interface AmbientOcclusionConfig {
 export class AmbientOcclusionEffect implements PostProcessEffect {
   readonly name = "AmbientOcclusion";
   enabled = true;
+
+  // PARITY-F16-POSTPROCESS — set by the pipeline before initialize().
+  // Default false = byte-identical f32 path.
+  useShaderF16 = false;
 
   private _device: GPUDevice | null = null;
   private _width = 0;
@@ -364,10 +374,20 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     // Select generation shader by algorithm. Both variants share the
     // same bind group layout + output format, so swapping the shader is
     // all it takes — no plumbing changes downstream.
+    const f16 = this.useShaderF16;
+    // GTAO stays f32 (no f16 variant); the HBAO generate has a
+    // conservative f16 variant (geometry stays f32, only the AO scalar
+    // narrows).
     const generateShader =
       this._config.algorithm === "gtao"
         ? GTAOGenerateWGSL
-        : AmbientOcclusionGenerateWGSL;
+        : f16
+          ? AmbientOcclusionGenerateF16WGSL
+          : AmbientOcclusionGenerateWGSL;
+    const blurSrc = f16 ? GaussianBlur1DF16WGSL : GaussianBlur1DWGSL;
+    const modulateSrc = f16
+      ? AmbientOcclusionModulateF16WGSL
+      : AmbientOcclusionModulateWGSL;
     this._generatePipeline = createFullscreenPipeline(
       device,
       `AO-Generate-${this._config.algorithm}`,
@@ -378,21 +398,21 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     this._blurHPipeline = createFullscreenPipeline(
       device,
       "AO-BlurH",
-      GaussianBlur1DWGSL,
+      blurSrc,
       format,
       this._blurLayout,
     );
     this._blurVPipeline = createFullscreenPipeline(
       device,
       "AO-BlurV",
-      GaussianBlur1DWGSL,
+      blurSrc,
       format,
       this._blurLayout,
     );
     this._modulatePipeline = createFullscreenPipeline(
       device,
       "AO-Modulate",
-      AmbientOcclusionModulateWGSL,
+      modulateSrc,
       format,
       this._modulateLayout,
     );

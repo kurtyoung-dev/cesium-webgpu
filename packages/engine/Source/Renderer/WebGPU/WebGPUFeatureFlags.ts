@@ -119,6 +119,17 @@ export class WebGPUFeatureFlags {
     return this._enabled.has(featureName);
   }
 
+  /**
+   * Convenience predicate for the `shader-f16` device feature. The
+   * post-process f16 shader variants (PARITY-F16-POSTPROCESS) gate their
+   * selection on this — when false, the f32 shaders are always chosen and
+   * every `_f16.wgsl` file is inert. Equivalent to `has('shader-f16')`
+   * but reads clearer at the f16-selection call sites.
+   */
+  get hasShaderF16(): boolean {
+    return this._enabled.has("shader-f16");
+  }
+
   /** All currently-enabled feature names, in arbitrary order. */
   get enabledList(): string[] {
     return Array.from(this._enabled);

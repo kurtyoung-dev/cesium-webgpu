@@ -11,6 +11,12 @@
 import BloomCompositeWGSL from "../../Shaders/WebGPU/PostProcess/BloomComposite.js";
 import BrightPassWGSL from "../../Shaders/WebGPU/PostProcess/BrightPass.js";
 import GaussianBlur1DWGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D.js";
+// PARITY-F16-POSTPROCESS — hand-tuned f16 variants, selected when the
+// effect's `useShaderF16` flag is set by the pipeline (opt-in + device
+// `shader-f16`). Default false → the f32 shaders above are used unchanged.
+import BloomCompositeF16WGSL from "../../Shaders/WebGPU/PostProcess/BloomComposite_f16.js";
+import BrightPassF16WGSL from "../../Shaders/WebGPU/PostProcess/BrightPass_f16.js";
+import GaussianBlur1DF16WGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D_f16.js";
 import {
   makeBindGroupLayout,
   sampler,
@@ -106,6 +112,12 @@ export interface BloomConfig {
 export class BloomEffect implements PostProcessEffect {
   readonly name = "Bloom";
   enabled = true;
+
+  // PARITY-F16-POSTPROCESS — when true, `_createPipelines` compiles the
+  // `_f16` shader variants. Set by the pipeline before `initialize()`
+  // (gated on context.useShaderF16 + device shader-f16). Default false =
+  // byte-identical f32 path.
+  useShaderF16 = false;
 
   private _device: GPUDevice | null = null;
   private _width = 0;
@@ -396,31 +408,35 @@ export class BloomEffect implements PostProcessEffect {
       uniformBuffer(3, Stage.FRAGMENT),
     ]);
 
+    const f16 = this.useShaderF16;
+    const brightSrc = f16 ? BrightPassF16WGSL : BrightPassWGSL;
+    const blurSrc = f16 ? GaussianBlur1DF16WGSL : GaussianBlur1DWGSL;
+    const compositeSrc = f16 ? BloomCompositeF16WGSL : BloomCompositeWGSL;
     this._brightPassPipeline = createFullscreenPipeline(
       device,
       "Bloom-BrightPass",
-      BrightPassWGSL,
+      brightSrc,
       format,
       this._singleTexLayout,
     );
     this._blurHPipeline = createFullscreenPipeline(
       device,
       "Bloom-BlurH",
-      GaussianBlur1DWGSL,
+      blurSrc,
       format,
       this._singleTexLayout,
     );
     this._blurVPipeline = createFullscreenPipeline(
       device,
       "Bloom-BlurV",
-      GaussianBlur1DWGSL,
+      blurSrc,
       format,
       this._singleTexLayout,
     );
     this._compositePipeline = createFullscreenPipeline(
       device,
       "Bloom-Composite",
-      BloomCompositeWGSL,
+      compositeSrc,
       format,
       this._compositeLayout,
     );

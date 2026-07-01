@@ -10,6 +10,9 @@
 
 import GodRayCompositeWGSL from "../../Shaders/WebGPU/PostProcess/GodRayComposite.js";
 import GodRayGenerateWGSL from "../../Shaders/WebGPU/PostProcess/GodRayGenerate.js";
+// PARITY-F16-POSTPROCESS — f16 variants, selected when `useShaderF16`.
+import GodRayCompositeF16WGSL from "../../Shaders/WebGPU/PostProcess/GodRayComposite_f16.js";
+import GodRayGenerateF16WGSL from "../../Shaders/WebGPU/PostProcess/GodRayGenerate_f16.js";
 import {
   makeBindGroupLayout,
   sampler,
@@ -75,6 +78,10 @@ export interface GodRayConfig {
 export class GodRayEffect implements PostProcessEffect {
   readonly name = "GodRay";
   enabled = true;
+
+  // PARITY-F16-POSTPROCESS — set by the pipeline before initialize().
+  // Default false = byte-identical f32 path.
+  useShaderF16 = false;
 
   private _device: GPUDevice | null = null;
   private _width = 0;
@@ -178,17 +185,20 @@ export class GodRayEffect implements PostProcessEffect {
       ],
     );
 
+    const f16 = this.useShaderF16;
+    const generateSrc = f16 ? GodRayGenerateF16WGSL : GodRayGenerateWGSL;
+    const compositeSrc = f16 ? GodRayCompositeF16WGSL : GodRayCompositeWGSL;
     this._generatePipeline = createFullscreenPipeline(
       device,
       "GodRay-Generate",
-      GodRayGenerateWGSL,
+      generateSrc,
       format,
       this._generateLayout,
     );
     this._compositePipeline = createFullscreenPipeline(
       device,
       "GodRay-Composite",
-      GodRayCompositeWGSL,
+      compositeSrc,
       format,
       this._compositeLayout,
     );

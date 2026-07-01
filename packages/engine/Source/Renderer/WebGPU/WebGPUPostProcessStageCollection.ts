@@ -319,6 +319,22 @@ function configureWebGPUPostProcessPipeline(
   const cache = (collection._webgpuCache ??
     getDefaultCache()) as PostProcessCache;
 
+  // PARITY-F16-POSTPROCESS — resolve the f16 post-process opt-in once.
+  // True only when the scene's context both opted in (`useShaderF16`) and
+  // the device granted `shader-f16`. Threaded into the multi-pass effects'
+  // add* methods so they compile the hand-tuned f16 shader variants.
+  // Default false → the f32 shaders are selected unchanged (byte-identical
+  // off-gate). Effects are only initialized once (guarded by their
+  // `*Initialized` cache flags), so flipping this after init requires a
+  // pipeline rebuild — matching how every other stage-shape choice works.
+  const f16Context = (
+    scene as unknown as {
+      context?: { useShaderF16?: boolean; hasFeature?: (n: string) => boolean };
+    }
+  )?.context;
+  const useShaderF16 =
+    !!f16Context?.useShaderF16 && !!f16Context?.hasFeature?.("shader-f16");
+
   // Audit A.11 (Batch 133) -- GodRay enabled flag, scene-level (no
   // upstream PostProcessStageCollection slot exists for this fork
   // addition). Mirrors the `scene.taaEnabled` pattern.
@@ -437,15 +453,20 @@ function configureWebGPUPostProcessPipeline(
   // lever); 1.0 matches WebGL's plain `bloom + color` composite.
   if (cache.bloomEnabled && !cache.bloomInitialized) {
     const bloom = collection.bloom;
-    pipeline.addBloom(device, canvasFormat, {
-      contrast: numU(bloom?.uniforms?.contrast, 128.0),
-      brightness: numU(bloom?.uniforms?.brightness, -0.3),
-      delta: numU(bloom?.uniforms?.delta, 1.0),
-      sigma: numU(bloom?.uniforms?.sigma, 2.0),
-      stepSize: numU(bloom?.uniforms?.stepSize, 1.0),
-      glowOnly: Boolean(bloom?.uniforms?.glowOnly ?? false),
-      intensity: 1.0,
-    });
+    pipeline.addBloom(
+      device,
+      canvasFormat,
+      {
+        contrast: numU(bloom?.uniforms?.contrast, 128.0),
+        brightness: numU(bloom?.uniforms?.brightness, -0.3),
+        delta: numU(bloom?.uniforms?.delta, 1.0),
+        sigma: numU(bloom?.uniforms?.sigma, 2.0),
+        stepSize: numU(bloom?.uniforms?.stepSize, 1.0),
+        glowOnly: Boolean(bloom?.uniforms?.glowOnly ?? false),
+        intensity: 1.0,
+      },
+      useShaderF16,
+    );
     cache.bloomInitialized = true;
   }
   pipeline.setStageEnabled("Bloom", cache.bloomEnabled);
@@ -495,17 +516,22 @@ function configureWebGPUPostProcessPipeline(
     const rawAlgo = ao?.uniforms?.algorithm;
     const algorithm: "gtao" | "hbao" =
       rawAlgo === "gtao" || rawAlgo === "hbao" ? rawAlgo : "hbao";
-    pipeline.addAmbientOcclusion(device, canvasFormat, {
-      algorithm,
-      intensity: numU(ao?.uniforms?.intensity, 3.0),
-      bias: numU(ao?.uniforms?.bias, 0.1),
-      lengthCap: numU(ao?.uniforms?.lengthCap, 0.26),
-      stepCount: numU(ao?.uniforms?.stepSize, 4),
-      directionCount: numU(ao?.uniforms?.directionCount, 4),
-      ambientOcclusionOnly: Boolean(
-        ao?.uniforms?.ambientOcclusionOnly ?? false,
-      ),
-    });
+    pipeline.addAmbientOcclusion(
+      device,
+      canvasFormat,
+      {
+        algorithm,
+        intensity: numU(ao?.uniforms?.intensity, 3.0),
+        bias: numU(ao?.uniforms?.bias, 0.1),
+        lengthCap: numU(ao?.uniforms?.lengthCap, 0.26),
+        stepCount: numU(ao?.uniforms?.stepSize, 4),
+        directionCount: numU(ao?.uniforms?.directionCount, 4),
+        ambientOcclusionOnly: Boolean(
+          ao?.uniforms?.ambientOcclusionOnly ?? false,
+        ),
+      },
+      useShaderF16,
+    );
     cache.aoInitialized = true;
   }
   pipeline.setStageEnabled("AmbientOcclusion", cache.ambientOcclusionEnabled);
@@ -516,11 +542,16 @@ function configureWebGPUPostProcessPipeline(
   // `collection._depthOfField` slot.
   if (cache.depthOfFieldEnabled && !cache.dofInitialized) {
     const dof = findDepthOfFieldStage(collection);
-    pipeline.addDepthOfField(device, canvasFormat, {
-      focalDistance: numU(dof?.uniforms?.focalDistance, 50.0),
-      focalRange: numU(dof?.uniforms?.delta, 20.0),
-      blurSigma: numU(dof?.uniforms?.sigma, 4.0),
-    });
+    pipeline.addDepthOfField(
+      device,
+      canvasFormat,
+      {
+        focalDistance: numU(dof?.uniforms?.focalDistance, 50.0),
+        focalRange: numU(dof?.uniforms?.delta, 20.0),
+        blurSigma: numU(dof?.uniforms?.sigma, 4.0),
+      },
+      useShaderF16,
+    );
     cache.dofInitialized = true;
   }
   pipeline.setStageEnabled("DepthOfField", cache.depthOfFieldEnabled);
@@ -667,7 +698,7 @@ function configureWebGPUPostProcessPipeline(
         godRayConfig?: import("./WebGPUGodRayEffect.js").GodRayConfig;
       }
     )?.godRayConfig;
-    pipeline.addGodRay(device, canvasFormat, cfg);
+    pipeline.addGodRay(device, canvasFormat, cfg, useShaderF16);
     cache.godRayInitialized = true;
   }
   // Audit re-review (Batch 134) -- GodRay enable rides

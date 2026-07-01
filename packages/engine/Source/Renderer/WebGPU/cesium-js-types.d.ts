@@ -609,6 +609,14 @@ interface CesiumGraphicsContext {
   readonly presentationFormat?: GPUTextureFormat;
   readonly depthFormat?: GPUTextureFormat;
   useHardwareClipDistances?: boolean;
+  /** WebGPU-only: opt-in flag selecting the hand-tuned f16 post-process
+   *  shader variants (PARITY-F16-POSTPROCESS). Default false. Only takes
+   *  effect when the device also granted `shader-f16`
+   *  (`hasFeature('shader-f16')`). Absent on WebGL. */
+  useShaderF16?: boolean;
+  /** WebGPU-only: check whether a device feature was granted (e.g.
+   *  `'shader-f16'`). Absent on WebGL. */
+  hasFeature?(featureName: string): boolean;
   /** WebGPU-only: lazy-initialized ring buffer for per-frame uniform
    *  uploads. Present as `object | null` on WebGPUContext; absent on
    *  WebGL Context. Touched eagerly by GlobeSurfaceRenderer to force

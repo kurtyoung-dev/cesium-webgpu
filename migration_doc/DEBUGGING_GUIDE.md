@@ -408,6 +408,8 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | `probe-bloom-no-globe.mjs` / `-no-msaa.mjs` / `-no-pp.mjs` / `-no-sky.mjs` / `-side-by-side.mjs` / `-tile-state.mjs` | Bloom bisection variants |
 | `probe-msaa-comparison.mjs` | MSAA on vs off |
 | `probe-tonemap.mjs` / `-gamma-chain.mjs` | Tonemap + gamma chain |
+| `probe-postprocess-f16.mjs` | **f16 post-process opt-in gate (PARITY-F16-POSTPROCESS).** Two WebGPU passes (default vs `scene.context.useShaderF16 = true` set BEFORE enabling the lazy effects), per-effect captures for bloom/AO/DoF/god-rays/SSR. Hooks `GPUDevice.createShaderModule` to detect `enable f16` modules: OFF pass must compile ZERO (byte-identical off-gate), ON pass must compile all lazily-wired f16 variants when the device grants `shader-f16`, or ZERO (graceful f32 double-gate) when it doesn't. Per-effect off-vs-on closeness (meanAbs < 2.5, >12-diff fraction < 2%), 0 console/GPU errors, no "f16 variant rejected" fallback. |
+| `validate-f16-wgsl.mjs` | Static naga (wgsl-in + validator) check of every `PostProcess/*_f16.wgsl` — the compile-verification companion to `probe-postprocess-f16.mjs` for GPUs without `shader-f16` (e.g. NVIDIA Pascal), where the browser can never compile the f16 variants at runtime. |
 | `probe-post-process.mjs` | Post-process pipeline state |
 | `probe-volcloud-toggle.mjs` | Volumetric clouds toggle |
 

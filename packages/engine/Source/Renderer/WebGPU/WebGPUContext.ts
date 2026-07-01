@@ -574,16 +574,19 @@ export class WebGPUContext extends GraphicsContext {
   public useHardwareClipDistances: boolean = false;
 
   /**
-   * Phase 5 WGF-3: when `true`, post-process pipeline stages that have
-   * a hand-tuned f16 variant compile and use the half-precision source
-   * instead of the f32 source. Auto-set to `true` by
-   * `_updateFeatureFlags()` when the device grants the `shader-f16`
-   * feature; consumers can flip it off for visual diffing against the
-   * f32 reference. Today only the Tonemapping stage has an f16 variant
-   * shipped — additional post-process stages (color grading, FXAA, bloom
-   * helpers) are queued as incremental follow-ups gated on visual
-   * validation. The flag also gates any future scene-side f16 use, but
-   * RTE / depth / globe-UV math must always stay f32 (see CLAUDE.md).
+   * Phase 5 WGF-3 / PARITY-F16-POSTPROCESS: when `true`, post-process
+   * pipeline stages that have a hand-tuned f16 variant compile and use
+   * the half-precision source instead of the f32 source. This is an
+   * OPT-IN that defaults to `false` (it is NOT auto-set) and every
+   * selection site additionally double-gates on the device actually
+   * granting the `shader-f16` feature — on a non-granting device the
+   * f32 shaders are selected unchanged and every `_f16.wgsl` module is
+   * inert. All post-process stages now ship f16 variants (Tonemapping,
+   * ColorGrading, FXAA, BrightPass/BloomComposite/GaussianBlur1D, AO
+   * generate/modulate, DepthOfField, GodRay generate/composite,
+   * ScreenSpaceReflections). The flag also gates any future scene-side
+   * f16 use, but RTE / depth / globe-UV math must always stay f32 (see
+   * CLAUDE.md).
    */
   public useShaderF16: boolean = false;
   public s3tc: CesiumCompressedTextureExtension = null;

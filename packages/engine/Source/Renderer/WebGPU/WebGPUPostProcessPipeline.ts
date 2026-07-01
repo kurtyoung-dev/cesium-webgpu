@@ -62,6 +62,13 @@ import TonemappingF16WGSL from "../../Shaders/WebGPU/PostProcess/Tonemapping_f16
 // Phase 4 — color grading LUT post-process. See ColorGrading.wgsl.
 import ColorGradingWGSL from "../../Shaders/WebGPU/PostProcess/ColorGrading.js";
 import FXAAWGSL from "../../Shaders/WebGPU/PostProcess/FXAA.js";
+// PARITY-F16-POSTPROCESS — hand-tuned f16 variants for the two
+// single-pass stages compiled directly by _compileStage (the multi-pass
+// effects select their own f16 variants via the effect classes'
+// `useShaderF16` flag). Selected when useShaderF16 is passed through the
+// add* methods (opt-in + device shader-f16); default f32.
+import ColorGradingF16WGSL from "../../Shaders/WebGPU/PostProcess/ColorGrading_f16.js";
+import FXAAF16WGSL from "../../Shaders/WebGPU/PostProcess/FXAA_f16.js";
 import {
   type PostProcessEffect,
   BloomEffect,
@@ -695,17 +702,23 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     device: GPUDevice,
     canvasFormat: GPUTextureFormat,
     config?: ColorGradingConfig,
+    useShaderF16: boolean = false,
   ): void {
     if (this._colorGradingStage) return;
     const c = config ?? {};
     const uniforms = packColorGradingUniforms(c);
     const stageFormat = this._intermediateFormat || canvasFormat;
+    // PARITY-F16-POSTPROCESS — pick the f16 variant when opted in; the
+    // f32 source is passed as the _compileStage fallback so a driver
+    // that rejects the f16 module recovers gracefully. Byte-identical f32
+    // path when useShaderF16 is false (fallback arg is undefined).
     this._colorGradingStage = this._compileStage(
       device,
-      "ColorGrading",
-      ColorGradingWGSL,
+      useShaderF16 ? "ColorGrading (f16)" : "ColorGrading",
+      useShaderF16 ? ColorGradingF16WGSL : ColorGradingWGSL,
       stageFormat,
       uniforms,
+      useShaderF16 ? ColorGradingWGSL : undefined,
     );
   }
 
@@ -747,7 +760,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   /**
    * Add built-in FXAA stage using external FXAA.wgsl shader.
    */
-  addFXAA(device: GPUDevice, canvasFormat: GPUTextureFormat): void {
+  addFXAA(
+    device: GPUDevice,
+    canvasFormat: GPUTextureFormat,
+    useShaderF16: boolean = false,
+  ): void {
     if (this._fxaaStage) return;
     const texelSize = new Float32Array([
       1.0 / this._width,
@@ -756,12 +773,14 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       this._height,
     ]);
     const stageFormat = this._intermediateFormat || canvasFormat;
+    // PARITY-F16-POSTPROCESS — f16 variant with f32 fallback. Default f32.
     this._fxaaStage = this._compileStage(
       device,
-      "FXAA",
-      FXAAWGSL,
+      useShaderF16 ? "FXAA (f16)" : "FXAA",
+      useShaderF16 ? FXAAF16WGSL : FXAAWGSL,
       stageFormat,
       texelSize,
+      useShaderF16 ? FXAAWGSL : undefined,
     );
   }
 
@@ -858,9 +877,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     device: GPUDevice,
     canvasFormat: GPUTextureFormat,
     config?: BloomConfig,
+    useShaderF16: boolean = false,
   ): void {
     if (this._bloomEffect) return;
     this._bloomEffect = new BloomEffect(config);
+    // PARITY-F16-POSTPROCESS — flag before initialize() so _createPipelines
+    // compiles the f16 variants. Default false = byte-identical f32.
+    this._bloomEffect.useShaderF16 = useShaderF16;
     // Use the intermediate format (rgba16float in HDR) so bloom's bright-pass +
     // blur chain preserves HDR highlights instead of clamping at 8-bit
     // (NEW-POSTPROCESS-HDR-INTERMEDIATES). In SDR this equals canvasFormat.
@@ -880,9 +903,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     device: GPUDevice,
     canvasFormat: GPUTextureFormat,
     config?: AmbientOcclusionConfig,
+    useShaderF16: boolean = false,
   ): void {
     if (this._aoEffect) return;
     this._aoEffect = new AmbientOcclusionEffect(config);
+    // PARITY-F16-POSTPROCESS — default false = byte-identical f32.
+    this._aoEffect.useShaderF16 = useShaderF16;
     // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
     this._aoEffect.initialize(
       device,
@@ -968,9 +994,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     device: GPUDevice,
     canvasFormat: GPUTextureFormat,
     config?: DepthOfFieldConfig,
+    useShaderF16: boolean = false,
   ): void {
     if (this._dofEffect) return;
     this._dofEffect = new DepthOfFieldEffect(config);
+    // PARITY-F16-POSTPROCESS — default false = byte-identical f32.
+    this._dofEffect.useShaderF16 = useShaderF16;
     // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
     this._dofEffect.initialize(
       device,
@@ -993,9 +1022,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     device: GPUDevice,
     canvasFormat: GPUTextureFormat,
     config?: GodRayConfig,
+    useShaderF16: boolean = false,
   ): void {
     if (this._godRayEffect) return;
     this._godRayEffect = new GodRayEffect(config);
+    // PARITY-F16-POSTPROCESS — default false = byte-identical f32.
+    this._godRayEffect.useShaderF16 = useShaderF16;
     // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
     this._godRayEffect.initialize(
       device,

@@ -28,6 +28,9 @@
  * @private
  */
 import SSRShaderWGSL from "../../Shaders/WebGPU/PostProcess/ScreenSpaceReflections.js";
+// PARITY-F16-POSTPROCESS — hand-tuned f16 variant, selected when the
+// context opts in via `useShaderF16` AND the device granted `shader-f16`.
+import SSRShaderF16WGSL from "../../Shaders/WebGPU/PostProcess/ScreenSpaceReflections_f16.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -78,12 +81,18 @@ function initializeSSRPipeline(
   device: GPUDevice,
   cache: SSRCache,
   canvasFormat: GPUTextureFormat,
+  useShaderF16: boolean = false,
 ): void {
   if (cache.initialized) return;
 
+  // PARITY-F16-POSTPROCESS — pick the f16 variant only when the caller
+  // confirmed both the opt-in flag and device support. The f16 SSR keeps
+  // the entire ray-march + reconstruction in f32 (precision-critical) and
+  // only narrows the final color blend, so output stays f32-identical
+  // within tolerance. Default path (useShaderF16 false) is byte-identical.
   const shaderModule = device.createShaderModule({
-    label: "SSR shader",
-    code: SSRShaderWGSL,
+    label: useShaderF16 ? "SSR shader (f16)" : "SSR shader",
+    code: useShaderF16 ? SSRShaderF16WGSL : SSRShaderWGSL,
   });
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "SSR BGL", [
@@ -165,7 +174,14 @@ export function executeSSR(
   if (!device) return;
 
   const cache = ensureSSRCache(context);
-  initializeSSRPipeline(device, cache, context._canvasFormat || "bgra8unorm");
+  // PARITY-F16-POSTPROCESS — f16 only when opted in AND device-supported.
+  const useF16 = !!context.useShaderF16 && !!context.hasFeature?.("shader-f16");
+  initializeSSRPipeline(
+    device,
+    cache,
+    context._canvasFormat || "bgra8unorm",
+    useF16,
+  );
 
   const canvas = context._canvas;
   const w = canvas?.width ?? 1920;

@@ -10,6 +10,9 @@
 
 import DepthOfFieldWGSL from "../../Shaders/WebGPU/PostProcess/DepthOfField.js";
 import GaussianBlur1DWGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D.js";
+// PARITY-F16-POSTPROCESS — f16 variants, selected when `useShaderF16`.
+import DepthOfFieldF16WGSL from "../../Shaders/WebGPU/PostProcess/DepthOfField_f16.js";
+import GaussianBlur1DF16WGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D_f16.js";
 import {
   makeBindGroupLayout,
   sampler,
@@ -35,6 +38,10 @@ export interface DepthOfFieldConfig {
 export class DepthOfFieldEffect implements PostProcessEffect {
   readonly name = "DepthOfField";
   enabled = true;
+
+  // PARITY-F16-POSTPROCESS — set by the pipeline before initialize().
+  // Default false = byte-identical f32 path.
+  useShaderF16 = false;
 
   private _device: GPUDevice | null = null;
   private _width = 0;
@@ -203,24 +210,27 @@ export class DepthOfFieldEffect implements PostProcessEffect {
       uniformBuffer(4, Stage.FRAGMENT),
     ]);
 
+    const f16 = this.useShaderF16;
+    const blurSrc = f16 ? GaussianBlur1DF16WGSL : GaussianBlur1DWGSL;
+    const dofSrc = f16 ? DepthOfFieldF16WGSL : DepthOfFieldWGSL;
     this._blurHPipeline = createFullscreenPipeline(
       device,
       "DoF-BlurH",
-      GaussianBlur1DWGSL,
+      blurSrc,
       format,
       this._blurLayout,
     );
     this._blurVPipeline = createFullscreenPipeline(
       device,
       "DoF-BlurV",
-      GaussianBlur1DWGSL,
+      blurSrc,
       format,
       this._blurLayout,
     );
     this._dofPipeline = createFullscreenPipeline(
       device,
       "DoF-Composite",
-      DepthOfFieldWGSL,
+      dofSrc,
       format,
       this._dofLayout,
     );

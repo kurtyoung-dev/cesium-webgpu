@@ -421,23 +421,32 @@ export function ensureResources(
     // was a mathematical no-op.
     host._postProcess.initialize(device, width, height, canvasFormat, hdr);
     // Add default stages
-    // Phase 5 WGF-3: pass the context f16 flag so the tonemap stage
-    // selects the hand-tuned half-precision variant when the device
-    // granted shader-f16. Default mode/exposure/gamma are unchanged.
+    // Phase 5 WGF-3 / PARITY-F16-POSTPROCESS: resolve the f16 opt-in
+    // once, double-gated like the multi-pass effects — the opt-in flag
+    // AND the device actually granting `shader-f16`. Single-gating on
+    // the flag alone made a non-granting device rely on the async
+    // _compileStage fallback; the double gate selects f32 up front.
+    const useShaderF16 = !!(
+      context &&
+      context.useShaderF16 &&
+      context.hasFeature("shader-f16")
+    );
+    // Tonemap stage selects the hand-tuned half-precision variant when
+    // opted in. Default mode/exposure/gamma are unchanged.
     host._postProcess.addTonemapping(
       device,
       canvasFormat,
       undefined,
       undefined,
       undefined,
-      !!(context && context.useShaderF16),
+      useShaderF16,
     );
     // TAA is added lazily when scene.taaEnabled = true (not default) —
     // the lazy-add lives in `configureWebGPUPostProcessPipeline` below,
     // gated on the live `pipeline.taaEffect` slot (Batch 244,
     // NEW-TAA-EFFECT-NEVER-ADDED; this comment used to describe a
     // lazy-add that didn't exist anywhere).
-    host._postProcess.addFXAA(device, canvasFormat);
+    host._postProcess.addFXAA(device, canvasFormat, useShaderF16);
     // AUDIT_2026_05_02 B.14 — auto-exposure was previously gated behind
     // `if (hdr)` only, but SDR scenes still need adaptive exposure for
     // day/night cycles (the moon → sun → night transition can take
