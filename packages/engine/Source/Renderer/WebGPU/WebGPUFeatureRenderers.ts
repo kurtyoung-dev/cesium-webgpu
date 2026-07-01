@@ -669,7 +669,11 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       const mod = await import("./WebGPUPointCloudEyeDomeLighting.js");
       context.registerFeatureRenderer(FeatureRendererKey.POINT_CLOUD_EDL, {
         update: mod.updateWebGPUPointCloudEDL,
-        destroy: mod.destroyWebGPUPointCloudEDLResources,
+        // PARITY-PC-EDL — the WebGL processor's `destroy` calls
+        // `fr.destroy(this)`; bind the context so the renderer can release
+        // its per-context off-screen framebuffer + pipelines.
+        destroy: (processor) =>
+          mod.destroyWebGPUPointCloudEDLResources(processor, context),
       });
     },
   );

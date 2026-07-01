@@ -152,7 +152,7 @@ PARITY-SCENE-MODE-BUFFER-INFRA (S, shared helper)
 ```
 The shared reprojection helper (extracted from the already-shipped PolylineRenderer) is the single root; the three Buffer adopters are parallel leaves. **Polyline / GroundPolyline 2D-CV already SHIPPED** (Batches 343–344 + post-report) — only the three Buffer* collections remain from the pillar.
 
-**Spine C — Point Cloud EDL:**
+**Spine C — Point Cloud EDL:** ✅ **SHIPPED (Batch 465)** — all 8 sub-tasks landed as one composite implementation via the `parity-to-100` workflow (verify→landed): full EDL data path (offscreen FBO + dual-output depth-writing point variant behind add-only `POINT_CLOUD_EDL_DEPTH` 1<<22 + neighbor-depth blend matching WebGL), off-gate proven, probe `probe-pointcloud-edl-parity.mjs` PASS. **Bonus:** the run also fixed the WebGPU **standalone point-cloud renderer**, which was entirely non-functional (attribute-wrapper unwrap + POSITION_QUANTIZED dequantize + `_ready`/boundingSphere + MSAA sample-count + effective point size + `TimeDynamicPointCloud` mis-delegation) — this unblocked point clouds on WebGPU generally, not just EDL.
 ```
 PARITY-PC-EDL-OFFSCREEN-FB (S) ─► PARITY-PC-EDL-DEPTH-VARIANT (S) ─► PARITY-PC-EDL-HIJACK-COMMANDS (M)
         ├─► PARITY-PC-EDL-CLEAR-COMMAND (S)                                     └─► PARITY-PC-EDL-BLEND-PASS (M)
@@ -160,6 +160,8 @@ PARITY-PC-EDL-OFFSCREEN-FB (S) ─► PARITY-PC-EDL-DEPTH-VARIANT (S) ─► PAR
                                                                                         └─► PARITY-PC-EDL-VISUAL-REGRESSION-PROBE (M)
 ```
 Offscreen FB is the root; blend pass is the payoff; probe is the leaf.
+
+> **Newly-surfaced parity item (from the EDL probe):** WebGPU renders **round** points where WebGL renders **square** 8px points (`probe-pc-edl` residual ~44% pixel diff is dominated by this, NOT an EDL gap). Add `PARITY-POINT-SPRITE-SHAPE` (S) — match the WebGL point-sprite shape/size convention in the WebGPU point + point-cloud shaders. Independent M-tail item.
 
 **Spine D — f16 post-process expansion:**
 ```

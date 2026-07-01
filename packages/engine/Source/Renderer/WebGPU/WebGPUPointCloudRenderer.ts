@@ -734,6 +734,7 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
 function buildPipelineDescriptor(
   device: GPUDevice,
   format: GPUTextureFormat,
+  sampleCount: number,
 ): {
   descriptor: WebGPURenderPipelineDescriptor;
   shaderModule: GPUShaderModule;
@@ -758,7 +759,7 @@ function buildPipelineDescriptor(
   // since they reuse this descriptor's `layout` field.
   const effectsBGL = getEffectsBindGroupLayout(device);
   const descriptor: WebGPURenderPipelineDescriptor = {
-    name: `PointCloud pipeline [${format}]`,
+    name: `PointCloud pipeline [${format}/ms=${sampleCount}]`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [bgl, effectsBGL],
     }),
@@ -822,6 +823,11 @@ function buildPipelineDescriptor(
       // less-equal for planetary-scale precision robustness.
       depthCompare: "less-equal",
     },
+    // Match the scene framebuffer's MSAA sample count. Without this the
+    // pipeline is single-sample and WebGPU rejects it as attachment-state
+    // incompatible with the (MSAA) Scene Framebuffer Render Pass, silently
+    // dropping every point-cloud draw.
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
   return { descriptor, shaderModule, bgl };
 }
@@ -1027,9 +1033,57 @@ function buildInstanceBuffer(
     };
   }
 
-  const positions = parsedContent.positions;
-  const colors = parsedContent.colors;
+  // `_parsedContent.positions` / `.colors` are the attribute wrappers produced
+  // by `PntsParser.parse` — `{ typedArray, isQuantized, quantized*, ... }` for
+  // positions and `{ typedArray, componentDatatype, isRGB565 }` for colors —
+  // NOT raw arrays. Unwrap `.typedArray` (with a defensive fall-through for the
+  // legacy raw-array shape) so this decode works against the current parser
+  // output. Also honour POSITION_QUANTIZED (16-bit dequantize with volume
+  // scale/offset) and the RTC center so quantized clouds land in the right
+  // place instead of at the ellipsoid origin.
+  const posAttr = parsedContent.positions as unknown as {
+    typedArray?: ArrayLike<number>;
+    length?: number;
+    isQuantized?: boolean;
+    quantizedVolumeScale?: { x: number; y: number; z: number };
+    quantizedVolumeOffset?: { x: number; y: number; z: number };
+    quantizedRange?: number;
+  };
+  const positions: ArrayLike<number> =
+    posAttr.typedArray ?? (parsedContent.positions as ArrayLike<number>);
+  const colorAttr = parsedContent.colors as unknown as {
+    typedArray?: ArrayLike<number>;
+    componentDatatype?: number;
+  } | null;
+  const colors: ArrayLike<number> | null | undefined =
+    colorAttr?.typedArray ??
+    (parsedContent.colors as ArrayLike<number> | null | undefined);
+  const colorsAreBytes =
+    colors instanceof Uint8Array ||
+    colors instanceof Uint8ClampedArray ||
+    (colorAttr != null && colorAttr.componentDatatype === 5121); // UNSIGNED_BYTE
+
   const pointCount = positions.length / 3;
+
+  // Quantized-position dequantize parameters (POSITION_QUANTIZED). When not
+  // quantized these stay inert (scale=1, offset=0, range=1) so the raw f32
+  // positions pass through unchanged.
+  const isQuantized = posAttr.isQuantized === true;
+  const qScale = posAttr.quantizedVolumeScale ?? { x: 1, y: 1, z: 1 };
+  const qOffset = posAttr.quantizedVolumeOffset ?? { x: 0, y: 0, z: 0 };
+  const qRange =
+    posAttr.quantizedRange && posAttr.quantizedRange > 0
+      ? posAttr.quantizedRange
+      : (1 << 16) - 1;
+
+  // RTC center — quantized/local point positions are relative to this ECEF
+  // anchor. Added after dequantize, BEFORE the model-matrix transform.
+  const rtc = (parsedContent as unknown as { rtcCenter?: CesiumCartesian3 })
+    .rtcCenter;
+  const rtcX = rtc?.x ?? 0;
+  const rtcY = rtc?.y ?? 0;
+  const rtcZ = rtc?.z ?? 0;
+
   // 40 bytes per instance: posHigh(12) + posLow(12) + colorAndSize(16)
   const data = new Float32Array(pointCount * 10);
 
@@ -1044,9 +1098,17 @@ function buildInstanceBuffer(
   const srcPosScratch = new Cartesian3();
 
   for (let i = 0; i < pointCount; i++) {
-    srcPosScratch.x = positions[i * 3];
-    srcPosScratch.y = positions[i * 3 + 1];
-    srcPosScratch.z = positions[i * 3 + 2];
+    let sx = positions[i * 3];
+    let sy = positions[i * 3 + 1];
+    let sz = positions[i * 3 + 2];
+    if (isQuantized) {
+      sx = (sx / qRange) * qScale.x + qOffset.x;
+      sy = (sy / qRange) * qScale.y + qOffset.y;
+      sz = (sz / qRange) * qScale.z + qOffset.z;
+    }
+    srcPosScratch.x = sx + rtcX;
+    srcPosScratch.y = sy + rtcY;
+    srcPosScratch.z = sz + rtcZ;
 
     // Transform to world space
     Matrix4.multiplyByPoint(modelMatrix, srcPosScratch, worldPosScratch);
@@ -1068,7 +1130,7 @@ function buildInstanceBuffer(
 
     // Color (normalized) + size
     if (colors && colors.length >= pointCount * 3) {
-      const cn = colors instanceof Uint8Array ? 1.0 / 255.0 : 1.0;
+      const cn = colorsAreBytes ? 1.0 / 255.0 : 1.0;
       data[off + 6] = colors[i * 3] * cn;
       data[off + 7] = colors[i * 3 + 1] * cn;
       data[off + 8] = colors[i * 3 + 2] * cn;
@@ -1077,7 +1139,10 @@ function buildInstanceBuffer(
       data[off + 7] = 1.0;
       data[off + 8] = 1.0;
     }
-    data[off + 9] = 3.0; // default point size
+    // Effective per-point size published by `PointCloud.update` (style
+    // pointSize or attenuation max, scaled by pixelRatio). Falls back to a
+    // reasonable default when the standalone renderer path didn't set it.
+    data[off + 9] = (pointCloud._webgpuPointSize as number | undefined) ?? 3.0;
   }
 
   // When GPU LOD might activate, OR in STORAGE usage so the same buffer
@@ -1317,7 +1382,11 @@ function updateWebGPUPointCloud(
 
     // C-R7 (Batch 74) — descriptor + central pipeline cache. Two
     // PointCloud instances at the same canvas format share one pipeline.
-    const built = buildPipelineDescriptor(device, canvasFormat);
+    const built = buildPipelineDescriptor(
+      device,
+      canvasFormat,
+      (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1,
+    );
     cache.pipelineEntry = {
       descriptor: built.descriptor,
       pipeline: null,
@@ -1485,7 +1554,39 @@ function updateWebGPUPointCloud(
     canvasFormat,
   );
 
+  // PARITY-PC-EDL — tag the color command with the raw GPU resources the
+  // Eye-Dome-Lighting feature renderer needs to re-draw these points into its
+  // off-screen depth framebuffer. This is a plain reference assignment with no
+  // behavior change; the EDL renderer only reads it when the user has turned
+  // `pointCloudShading.eyeDomeLighting` on (default off), so the default draw
+  // path is byte-identical whether or not this tag is present.
+  (cache.command as { _edlSource?: PointCloudEDLSource })._edlSource = {
+    uniformBuffer: cache.uniformBuffer,
+    quadVertexBuffer: cache.quadVertexBuffer,
+    instanceBuffer: cache.instanceBuffer,
+    instanceCount: cache.instanceCount,
+  };
+  // Re-enable the cached command every frame. The EDL renderer disables it
+  // (sets `.enabled = false`) when it hijacks the draw into its off-screen
+  // FBO; without this reset a point cloud would stay invisible after EDL is
+  // toggled back off (the command object is reused across frames).
+  (cache.command as { enabled?: boolean }).enabled = true;
+
   commandList.push(cache.command);
+}
+
+/**
+ * PARITY-PC-EDL — the raw GPU resources tagged onto a point-cloud color
+ * command so `WebGPUPointCloudEyeDomeLighting` can re-issue the same instanced
+ * point draw into its off-screen (color + packed-depth) framebuffer using the
+ * dual-output depth shader. All fields alias the live `PointCloudCache`
+ * buffers — the EDL renderer never mutates them.
+ */
+export interface PointCloudEDLSource {
+  uniformBuffer: GPUBuffer | null;
+  quadVertexBuffer: GPUBuffer | null;
+  instanceBuffer: GPUBuffer | null;
+  instanceCount: number;
 }
 
 /**
@@ -1680,7 +1781,11 @@ function _runGPULODPath(
   // not-ready behavior below (one-frame visual gap, recovers next
   // frame).
   if (!cache.lodPipelineEntry) {
-    const built = _buildLODPipelineDescriptor(device, canvasFormat);
+    const built = _buildLODPipelineDescriptor(
+      device,
+      canvasFormat,
+      (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1,
+    );
     cache.lodPipelineEntry = {
       descriptor: built.descriptor,
       pipeline: null,
@@ -2044,6 +2149,7 @@ function attachLODPointCloudVelocityCommand(
 function _buildLODPipelineDescriptor(
   device: GPUDevice,
   format: GPUTextureFormat,
+  sampleCount: number,
 ): {
   descriptor: WebGPURenderPipelineDescriptor;
   bgl: GPUBindGroupLayout;
@@ -2085,7 +2191,7 @@ function _buildLODPipelineDescriptor(
   // own pipeline layout from a different storageBGL).
   const effectsBGL = getEffectsBindGroupLayout(device);
   const descriptor: WebGPURenderPipelineDescriptor = {
-    name: `PointCloud LOD Pipeline [${format}]`,
+    name: `PointCloud LOD Pipeline [${format}/ms=${sampleCount}]`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [bgl, storageBGL, effectsBGL],
     }),
@@ -2127,6 +2233,8 @@ function _buildLODPipelineDescriptor(
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
+    // Match the scene framebuffer's MSAA sample count (see buildPipelineDescriptor).
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
   return { descriptor, bgl, storageBGL };
 }

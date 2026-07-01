@@ -15,7 +15,6 @@ import PointCloudEyeDomeLighting from "./PointCloudEyeDomeLighting.js";
 import PointCloudShading from "./PointCloudShading.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMode from "./ShadowMode.js";
-import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import WasmPointCloudBridge from "./WasmPointCloudBridge.js";
 
 /**
@@ -224,15 +223,16 @@ class TimeDynamicPointCloud {
    * @private
    */
   update(frameState) {
-    // Backend-specific rendering path — delegate to feature renderer if available
-    const fr = frameState.context.getFeatureRenderer(
-      FeatureRendererKey.POINT_CLOUD,
-    );
-    if (fr) {
-      fr.update(this, frameState);
-      return;
-    }
-
+    // NOTE: unlike `PointCloud.update`, this method does NOT delegate to the
+    // POINT_CLOUD feature renderer. `TimeDynamicPointCloud` is a *manager* of
+    // time-keyed `PointCloud` frames — it is not itself a renderable point
+    // cloud and carries no `_parsedContent`. The per-frame `PointCloud.update`
+    // (called from `renderFrame` below) performs the backend delegation for
+    // the frame that is actually displayed. A previous short-circuit here
+    // delegated `this` to the WebGPU point-cloud renderer, which found no
+    // parsed content, produced zero instances, and skipped the whole
+    // frame-management path — so WebGPU time-dynamic point clouds rendered
+    // nothing. The frame loop below runs identically on both backends.
     if (frameState.mode === SceneMode.MORPHING) {
       return;
     }

@@ -1,7 +1,18 @@
-// Point Cloud Eye-Dome Lighting (EDL) shader for WebGPU
-// Applies eye-dome lighting as a post-process to point cloud rendering.
-// EDL enhances depth perception by darkening edges based on depth discontinuities.
-// Reference: "Eye-Dome Lighting: A Non-Photorealistic Shading Technique" (Boucheny, 2009)
+// Point Cloud Eye-Dome Lighting (EDL) blend/composite shader for WebGPU
+// (PARITY-PC-EDL). Applies eye-dome lighting as a post-process over the
+// point-cloud off-screen framebuffer: darkens edges based on depth
+// discontinuities, then writes the darkened point color back to the scene
+// framebuffer (alpha-blended so non-point pixels are untouched).
+// Reference: "Eye-Dome Lighting: A Non-Photorealistic Shading Technique"
+// (Boucheny, 2009) and Scene/PointCloudEyeDomeLighting.js (WebGL parity).
+//
+// Inputs (from the off-screen FBO written by PointCloudEDLDepth.wgsl):
+//   colorTexture — point color (slot 0)
+//   depthTexture — r32float raw eye-space depth in metres (slot 1); 0 = background
+//
+// The eye depth is read directly and fed through the neighbor-depth EDL
+// response identical in spirit to the WebGL PointCloudEyeDomeLighting.glsl
+// (log-space depth difference, exp darkening scaled by u_distanceAndEdlStrength).
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -10,8 +21,8 @@ struct VertexOutput {
 
 struct EDLUniforms {
   texelSize: vec2<f32>,   // 1.0 / textureSize
-  strength: f32,          // EDL strength (typically 1.0-5.0)
-  radius: f32,            // Sample radius in pixels (typically 1.0-3.0)
+  strength: f32,          // EDL strength (pointCloudShading.eyeDomeLightingStrength)
+  radius: f32,            // Sample radius in pixels (eyeDomeLightingRadius * pixelRatio)
   nearPlane: f32,
   farPlane: f32,
   _pad0: f32,
@@ -33,61 +44,53 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-// Convert depth buffer value to linear eye-space depth
-fn linearizeDepth(depth: f32) -> f32 {
-  let near = params.nearPlane;
-  let far = params.farPlane;
-  // WebGPU depth range is [0, 1]
-  return near * far / (far - depth * (far - near));
-}
-
-// Compute log2 of the linear depth for EDL
-fn logDepth(uv: vec2<f32>) -> f32 {
-  let depth = textureSample(depthTexture, edlSampler, uv).r;
-  if (depth >= 1.0) {
-    return 0.0; // Background
+// Neighbor EDL contribution — mirrors the WebGL `neighborContribution`
+// (PointCloudEyeDomeLighting.glsl). Returns (response, count): a BACKGROUND
+// neighbor (eye depth 0) contributes (0, 0) so it is excluded from the
+// average, exactly like WebGL's clear-depth guard. A valid neighbor
+// contributes (max(0, centerLog2 - neighborLog2), 1). This is what keeps
+// isolated / silhouette points from being crushed to black — background
+// around a point is NOT treated as an infinitely-near occluder.
+//
+// `depthTexture` is the r32float eye-space-depth attachment written by
+// PointCloudEDLDepth.wgsl — `.r` is the raw positive eye depth in metres.
+fn neighborContribution(centerLog2: f32, uv: vec2<f32>) -> vec2<f32> {
+  let d = textureSampleLevel(depthTexture, edlSampler, uv, 0.0).r;
+  if (d <= 0.0) {
+    return vec2<f32>(0.0, 0.0); // background — ignore (clear-depth guard)
   }
-  let linear = linearizeDepth(depth);
-  return log2(max(linear, 0.001));
+  let neighborLog2 = log2(max(d, 0.001));
+  return vec2<f32>(max(0.0, centerLog2 - neighborLog2), 1.0);
 }
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let color = textureSample(colorTexture, edlSampler, input.uv);
-  let centerDepth = textureSample(depthTexture, edlSampler, input.uv).r;
-
-  // Skip background pixels
-  if (centerDepth >= 1.0) {
-    return color;
+  // Background pixels contribute nothing — return fully transparent so the
+  // alpha-blend against the scene FB is a no-op there (WebGL discards).
+  let centerDepth = textureSampleLevel(depthTexture, edlSampler, input.uv, 0.0).r;
+  if (centerDepth <= 0.0) {
+    return vec4<f32>(0.0);
   }
 
-  let centerLogDepth = logDepth(input.uv);
+  let color = textureSampleLevel(colorTexture, edlSampler, input.uv, 0.0);
+  let centerLog2 = log2(max(centerDepth, 0.001));
 
-  // 8-neighbor EDL sampling pattern
-  let offsets = array<vec2<f32>, 8>(
-    vec2<f32>(-1.0,  0.0),
-    vec2<f32>( 1.0,  0.0),
-    vec2<f32>( 0.0, -1.0),
-    vec2<f32>( 0.0,  1.0),
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>( 1.0, -1.0),
-    vec2<f32>(-1.0,  1.0),
-    vec2<f32>( 1.0,  1.0),
-  );
+  // Sample the 4 axial neighbors (left/right/down/up) — matches WebGL.
+  let tx = params.texelSize.x * params.radius;
+  let ty = params.texelSize.y * params.radius;
+  var responseAndCount = vec2<f32>(0.0, 0.0);
+  responseAndCount += neighborContribution(centerLog2, input.uv + vec2<f32>(-tx, 0.0));
+  responseAndCount += neighborContribution(centerLog2, input.uv + vec2<f32>( tx, 0.0));
+  responseAndCount += neighborContribution(centerLog2, input.uv + vec2<f32>(0.0, -ty));
+  responseAndCount += neighborContribution(centerLog2, input.uv + vec2<f32>(0.0,  ty));
 
-  var response: f32 = 0.0;
-  for (var i = 0u; i < 8u; i = i + 1u) {
-    let sampleUV = input.uv + offsets[i] * params.texelSize * params.radius;
-    let neighborLogDepth = logDepth(sampleUV);
-    // EDL response: max(0, centerLogDepth - neighborLogDepth)
-    response = response + max(0.0, centerLogDepth - neighborLogDepth);
-  }
-
-  // Average the response over 8 neighbors
-  response = response / 8.0;
-
-  // Apply EDL shading: darken based on depth discontinuity
+  // Average over the VALID (non-background) neighbor count. When every
+  // neighbor is background (a fully isolated point) count is 0 → no
+  // darkening, matching WebGL where the same fragment has no valid
+  // neighbors and `response` stays 0.
+  let response = responseAndCount.x / max(responseAndCount.y, 1.0);
   let shade = exp(-response * 300.0 * params.strength);
 
+  // Alpha-blended composite back to the scene FB: shaded color, original alpha.
   return vec4<f32>(color.rgb * shade, color.a);
 }

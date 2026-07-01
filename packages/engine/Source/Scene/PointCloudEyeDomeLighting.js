@@ -49,23 +49,29 @@ class PointCloudEyeDomeLighting {
   }
 
   update(frameState, commandStart, pointCloudShading, boundingVolume) {
+    // Capture the user-configured EDL controls up front so both the WebGPU
+    // feature-renderer path and the WebGL path below read the same values.
+    // (WebGPU's `WebGPUPointCloudEyeDomeLighting` reads `_strength`/`_radius`
+    // off this processor.)
+    this._strength = pointCloudShading.eyeDomeLightingStrength;
+    this._radius =
+      pointCloudShading.eyeDomeLightingRadius * frameState.pixelRatio;
+
     // Backend-specific rendering path — delegate to feature renderer if available
     const fr = frameState.context.getFeatureRenderer(
       FeatureRendererKey.POINT_CLOUD_EDL,
     );
     if (fr) {
       this._featureRenderer = fr;
-      fr.update(this, frameState, []);
+      // PARITY-PC-EDL — pass the command-list start index so the WebGPU
+      // renderer can find (and hijack) this tileset's point-cloud commands.
+      fr.update(this, frameState, commandStart);
       return;
     }
 
     if (!isSupported(frameState.context)) {
       return;
     }
-
-    this._strength = pointCloudShading.eyeDomeLightingStrength;
-    this._radius =
-      pointCloudShading.eyeDomeLightingRadius * frameState.pixelRatio;
 
     createResources(this, frameState.context);
 

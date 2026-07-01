@@ -43,6 +43,10 @@ import type { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import type { WebGPUTranslucentTileClassification } from "./WebGPUTranslucentTileClassification.js";
 import { getInvertClassificationDepthTexture } from "./WebGPUInvertClassification.js";
 import {
+  hasWebGPUPointCloudEDL,
+  renderFrustumWebGPUPointCloudEDL,
+} from "./WebGPUPointCloudEyeDomeLighting.js";
+import {
   sortCommandsBackToFront,
   sortGaussianSplatsBackToFront,
   type WebGPURenderFrameConfig,
@@ -475,6 +479,25 @@ export function executeFrustumLoop(
     host._cpuPassProfiler.time("opaque", () =>
       host._executeOpaquePass(frustumCommands, config),
     );
+
+    // PARITY-PC-EDL — Point Cloud Eye-Dome Lighting composite. Runs right
+    // after OPAQUE (where the point-cloud color commands would have drawn —
+    // they were disabled by `WebGPUPointCloudEyeDomeLighting.update` when EDL
+    // is on). Re-renders the recorded point clouds into an off-screen
+    // (color + packed-depth) framebuffer and alpha-blends the darkened-edge
+    // result back onto the scene FB. `hasWebGPUPointCloudEDL` is a single
+    // boolean read on the off path (no EDL point clouds → no-op).
+    if (!picking && hasWebGPUPointCloudEDL(context)) {
+      renderFrustumWebGPUPointCloudEDL(
+        context,
+        scene._frameState,
+        () => {
+          host._resumeScenePass(context);
+          return context._currentRenderPassEncoder ?? null;
+        },
+        context.scenePipelineFormat,
+      );
+    }
 
     // DP-H45 (Batch 257) — re-pack scene depth after the OPAQUE pass so
     // pickPosition/pickFromRay over opaque Model/Primitive surfaces reads

@@ -165,7 +165,37 @@ class PointCloud {
     );
     if (fr) {
       this._featureRenderer = fr;
+      // The WebGPU feature renderer consumes `_parsedContent` directly and
+      // builds its own GPU resources, so the WebGL `createResources` path
+      // below (which sets `_ready` + the bounding sphere) never runs. Mark
+      // the point cloud ready and derive its bounding sphere from the parsed
+      // positions the first time we see them so that consumers
+      // (`TimeDynamicPointCloud` frame-ready gating, `Cesium3DTileset`
+      // bounding-volume, camera `zoomTo`) treat the cloud as loaded. Without
+      // this the WebGPU point cloud never reports `ready`/`boundingSphere`
+      // and the frame is never displayed.
+      if (!this._ready) {
+        computeWebGPUReadyState(this);
+      }
+      // Publish the effective per-point size (attenuation vs fixed pointSize,
+      // scaled by pixelRatio) for the WebGPU renderer, which builds its own
+      // instance buffer and has no access to the WebGL `u_pointSize` uniform.
+      // Mirrors `u_pointSizeAndTimeAndGeometricErrorAndDepthMultiplier.x`.
+      this._webgpuPointSize =
+        (this.attenuation ? this.maximumAttenuation : this._pointSize) *
+        frameState.pixelRatio;
       fr.update(this, frameState);
+      return;
+    }
+
+    // The POINT_CLOUD feature renderer is registered via a lazy loader, so on
+    // a WebGPU context `getFeatureRenderer` returns undefined for the first
+    // few frames while the dynamic import settles. Falling through to the
+    // WebGL `createResources` path here would (a) try to build WebGL vertex
+    // arrays on a WebGPU context and (b) unload `_parsedContent`, leaving the
+    // WebGPU renderer with no data once the FR does load. Wait for the FR
+    // instead — preserve `_parsedContent` and skip this frame.
+    if (frameState.context.isWebGPU) {
       return;
     }
 
@@ -452,6 +482,67 @@ function getRandomValues(samplesLength) {
     }
   }
   return randomValues;
+}
+
+/**
+ * Set the WebGPU-path `_ready` flag + bounding sphere from the parsed content.
+ * The WebGL `createResources` path does this as a side-effect of building the
+ * vertex arrays; the WebGPU feature-renderer path skips that, so we replicate
+ * the minimum a consumer needs to treat the point cloud as loaded: a world-space
+ * bounding sphere (positions dequantized + RTC-centered + model-transformed) and
+ * the `_ready` flag. Idempotent — only runs while `_parsedContent` is present.
+ *
+ * @param {PointCloud} pointCloud The point cloud to mark ready.
+ * @private
+ */
+function computeWebGPUReadyState(pointCloud) {
+  const parsedContent = pointCloud._parsedContent;
+  if (!defined(parsedContent) || !defined(parsedContent.positions)) {
+    return;
+  }
+  const posAttr = parsedContent.positions;
+  const typedArray = defined(posAttr.typedArray) ? posAttr.typedArray : posAttr;
+  const pointsLength = defined(parsedContent.pointsLength)
+    ? parsedContent.pointsLength
+    : typedArray.length / 3;
+  pointCloud._pointsLength = pointsLength;
+
+  // Dequantize a copy for the bounding-sphere sample when POSITION_QUANTIZED.
+  let samplePositions = typedArray;
+  if (posAttr.isQuantized === true) {
+    const range =
+      defined(posAttr.quantizedRange) && posAttr.quantizedRange > 0
+        ? posAttr.quantizedRange
+        : (1 << 16) - 1;
+    const scale = posAttr.quantizedVolumeScale ?? { x: 1, y: 1, z: 1 };
+    const offset = posAttr.quantizedVolumeOffset ?? { x: 0, y: 0, z: 0 };
+    const decoded = new Float32Array(typedArray.length);
+    for (let i = 0; i < pointsLength; ++i) {
+      decoded[i * 3] = (typedArray[i * 3] / range) * scale.x + offset.x;
+      decoded[i * 3 + 1] = (typedArray[i * 3 + 1] / range) * scale.y + offset.y;
+      decoded[i * 3 + 2] = (typedArray[i * 3 + 2] / range) * scale.z + offset.z;
+    }
+    samplePositions = decoded;
+  }
+
+  const boundingSphere =
+    computeApproximateBoundingSphereFromPositions(samplePositions);
+
+  // Local → world: RTC center offset then the model matrix.
+  const rtc = parsedContent.rtcCenter;
+  if (defined(rtc)) {
+    Cartesian3.add(boundingSphere.center, rtc, boundingSphere.center);
+  }
+  BoundingSphere.transform(
+    boundingSphere,
+    pointCloud.modelMatrix,
+    boundingSphere,
+  );
+  pointCloud._boundingSphere = BoundingSphere.clone(
+    boundingSphere,
+    pointCloud._boundingSphere,
+  );
+  pointCloud._ready = true;
 }
 
 function computeApproximateBoundingSphereFromPositions(positions) {

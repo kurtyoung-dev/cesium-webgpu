@@ -550,6 +550,35 @@ export const ShaderDefine = Object.freeze({
    * GENERATED metadata-pick chunk.
    */
   METADATA_PICKING_ENABLED: 1 << 21,
+
+  /**
+   * Point-cloud Eye-Dome Lighting depth-writing variant
+   * (PARITY-PC-EDL). When set, the point-cloud draw shader
+   * (`PointCloud/PointCloudEDLDepth.wgsl`) emits a SECOND color output at
+   * `@location(1)` carrying the point's linear eye-space depth packed into
+   * RGBA8 (`csm_packDepth`), in addition to the normal `@location(0)` color.
+   * This dual-output variant is compiled and rendered ONLY into the EDL
+   * off-screen framebuffer (color + packed-depth attachments) when the user
+   * turns on `pointCloudShading.eyeDomeLighting`; the neighbor-depth blend
+   * pass (`Advanced/PointCloudEDL.wgsl`) then samples the packed-depth
+   * attachment to darken depth-discontinuity edges and composites the result
+   * back to the scene framebuffer.
+   *
+   * When clear (the default, and every non-EDL point-cloud draw), the
+   * `//>>else` branch of the gated block strips the `@location(1)` output
+   * declaration + the pack-depth write so the shader is byte-identical to the
+   * single-target color shader — the off-screen framebuffer is never
+   * allocated, the depth pipeline is never built, and the blend pass never
+   * runs. So `defines=0` (and every on-screen point-cloud variant) preprocesses
+   * to the historical source and the on-screen module hash is unchanged.
+   *
+   * Per-pass selection: only `WebGPUPointCloudEyeDomeLighting` ORs this bit in
+   * when it builds the off-screen depth pipeline. The scene-FB color pipeline
+   * in `WebGPUPointCloudRenderer` never sets it.
+   *
+   * Consumer: `PointCloud/PointCloudEDLDepth.wgsl`.
+   */
+  POINT_CLOUD_EDL_DEPTH: 1 << 22,
 } as const);
 
 /**
@@ -670,6 +699,13 @@ export const ShaderSourceId = Object.freeze({
   // keeps the every-Cesium-WGSL-source-resolves-through-the-cache
   // invariant intact (closed in Batch 185).
   STAR_FIELD_CATALOG: 37,
+  // PARITY-PC-EDL. Point-cloud Eye-Dome Lighting depth-writing draw
+  // shader (`PointCloud/PointCloudEDLDepth.wgsl`, source 38) + the
+  // neighbor-depth blend/composite shader
+  // (`Advanced/PointCloudEDL.wgsl`, source 39). Both compile ONLY when
+  // the user enables `pointCloudShading.eyeDomeLighting`; add-only.
+  POINT_CLOUD_EDL_DEPTH: 38,
+  POINT_CLOUD_EDL_BLEND: 39,
 } as const);
 
 /**
