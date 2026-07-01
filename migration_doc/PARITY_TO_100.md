@@ -13,6 +13,33 @@ Remaining gap to 100% = **~7–9%**, dominated by the voxel data path (XL) and t
 
 ---
 
+## Verification sweep (post-Batch-470) — the ACTUAL remaining fire-list
+
+A read-only classification of every remaining item against live code (after several task-list premises turned out **stale** — actual parity is higher than the Batch-458 report). **Trust this over the tier tables below.**
+
+**Confirmed-real gaps worth an implementation run (in value order):**
+
+| ID | Effort | Why real | Testable? |
+| --- | --- | --- | --- |
+| `PARITY-HIZ-TILE-BOUNDING` | M | `SOABoundingSphereLayout.populate()` reads `.radius` off ANY boundingVolume, but OrientedBoundingBox has no `.radius` → NaN → occlusion test fails silently | Yes (dense tileset) |
+| `PARITY-RTE-ELLIPSOID-AWARE` (FEAT-3DT2-03) | M | `WebGPUCSMRenderer.ts` L74-79 hardcodes WGS84 radii; `tileset._ellipsoid` never threaded → non-Earth tilesets wrong | Unit-testable; pixel-verify blocked on a Mars/Moon asset (ship WGS84-safe) |
+| `PARITY-CUSTOM-SHADER-WGSL` | M/L | `WebGPUModelRenderer.js` L2539-2546 warns "customShader not supported"; GLSL is silently ignored (native-WGSL path unbuilt) | Yes |
+| `VOXEL-DATA-PATH` | XL | `WebGPUVoxelRenderer.ts` L468-499 ray-marches a hardcoded 4×4×4 gradient; no megatexture/octree. Ship megatexture+octree first (no CustomShader/cell-pick dep) | Yes (local VoxelBox3DTiles) |
+| `PARITY-POINT-SPRITE-SHAPE` | S | WebGPU round points (`PointPrimitiveColor.wgsl` soft-circle) vs WebGL square `gl_PointCoord` — but **target is ambiguous** (round arguably superior); decide match-vs-document before running | Yes |
+
+**Deferred — NOT worth an implementation run:**
+
+- `PARITY-HDR-COLORGRADING-MATH` / `PARITY-HDR-FXAA-THRESHOLDS` — **untestable**: the `_skipSDRStagesForHDR` path is only reachable with HDR canvas output, which is research-deferred (immature ANGLE/Metal/DX12 support). The math scaffolding exists; can't verify → defer with HDR-canvas-configure.
+- `PARITY-BUFFERPOLYGON-OUTLINE` — **parity-neutral**: polygon outline is unimplemented on BOTH backends → a feature gap, not a WebGL↔WebGPU divergence.
+- `PARITY-EDGE-AUTHORED-SILHOUETTE-NORMALS` — partial/niche: only affects meshes that ship an authored `silhouetteNormals` accessor (uncommon); re-derived-from-adjacency path covers the common case.
+- **f16 post-process variants** (ColorGrading/FXAA/Bloom/AO/DoF/GodRays/SSR) — perf micro-opt; f32 is **already at visual parity**. ~2 weeks of hand-tuning for <1% delta. The feature-gate infra is done (Tonemapping f16 shipped). Defer post-100%.
+
+**Already-done (stale premises — reconciled, no work needed):** ClassificationPrimitive standalone (B130, verified B469), standalone `Model.fromGltfAsync` pick (B470 probe), generic-`Primitive` clipping (not a Cesium feature).
+
+*(The DP-H46 metadata follow-ups — multicomponent attrs / UINT16-32 packing / TEXTURE-sourced tables — were not reached by the sweep; classify before running.)*
+
+---
+
 ## Closed since the report (do NOT re-open)
 
 These were flagged in the 2026-06-30 report but are resolved at Batch 463 HEAD. Verify-only; no port work.
