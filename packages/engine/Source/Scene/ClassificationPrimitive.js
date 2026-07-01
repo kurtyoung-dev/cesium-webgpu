@@ -855,12 +855,18 @@ function createShaderProgram(classificationPrimitive, frameState) {
   // bundle doesn't crash; on dual / webgl-only bundles this branch is
   // never taken.
   // Audit 2026-05-02 follow-up: now uses the FR-key check pattern.
-  // The registered CLASSIFICATION_PRIMITIVE FR is currently a MARKER
-  // (no `createCommands`) — its presence signals "skip the WebGL-only
-  // setup". A full WebGPU `WebGPUClassificationPrimitiveRenderer` is
-  // tracked in DEFERRED_WORK; until it ships, standalone
-  // ClassificationPrimitive silently renders as a no-op on WebGPU
-  // (same as the prior `isWebGPU` early-return behavior).
+  // The registered CLASSIFICATION_PRIMITIVE FR is a REAL renderer
+  // (Batch 130) — its `createCommands` is
+  // `WebGPUGroundPrimitiveRenderer.createWebGPUGroundPrimitiveCommands`,
+  // invoked in `update()` above (the depth-sample classification path that
+  // actually tints terrain / 3D Tiles on WebGPU; verified by
+  // probe-classification-primitive-parity). This early-return skips the
+  // WebGL-only `ShaderProgram.replaceCache` / `fromCache` setup below (the
+  // inner Primitive's WebGL shadow-volume shaders): on WebGPU those
+  // commands are inert (the FR-built commands are the real classification
+  // pass), and on the webgpu-only build variant the GLSL sources are
+  // aliased to empty stubs (BUILD-VAR-HAZARD-CLASSIFICATION above) which
+  // WebGL would reject. Presence of the FR is the "skip WebGL setup" signal.
   if (context.getFeatureRenderer(FeatureRendererKey.CLASSIFICATION_PRIMITIVE)) {
     return;
   }

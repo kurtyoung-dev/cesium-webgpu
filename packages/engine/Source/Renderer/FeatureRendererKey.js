@@ -167,12 +167,15 @@ const FeatureRendererKey = {
   // skip the WebGL-only `ShaderProgram.fromCache` setup without checking
   // backend identity.
   //
-  // CLASSIFICATION_PRIMITIVE: no full WebGPU renderer exists yet for
-  // standalone ClassificationPrimitive (Vector3DTile classification has
-  // its own per-tile FRs above). The marker FR is a bridge — same visual
-  // outcome as today (nothing renders standalone ClassificationPrimitive
-  // on WebGPU), but the §2 violation in `Scene/ClassificationPrimitive.js`
-  // is gone. Replace with a real renderer when ported (DEFERRED_WORK).
+  // CLASSIFICATION_PRIMITIVE (Batch 130, verified by
+  // probe-classification-primitive-parity): standalone
+  // ClassificationPrimitive is a REAL renderer now — its `createCommands`
+  // is `WebGPUGroundPrimitiveRenderer.createWebGPUGroundPrimitiveCommands`,
+  // which walks the depth-2 wrapping chain (ClassificationPrimitive →
+  // ._primitive (Primitive) → ._webgpuGeometryData) and emits the same
+  // depth-sample classification commands GroundPrimitive uses. It honors
+  // `classificationType` (TERRAIN / CESIUM_3D_TILE / BOTH). NOT a marker
+  // no-op. (Vector3DTile classification still has its own per-tile FRs above.)
   DEPTH_PLANE: 45,
   CLASSIFICATION_PRIMITIVE: 46,
 
