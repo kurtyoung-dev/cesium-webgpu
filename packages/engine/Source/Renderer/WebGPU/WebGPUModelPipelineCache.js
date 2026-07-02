@@ -1571,6 +1571,11 @@ class WebGPUModelPipelineCache {
     // Renderer-wide log depth — OFF until the renderer's first
     // maybeUpdateForLogDepth() call mirrors the live master switch.
     this._logDepthEnabled = false;
+    // WIRE-MODEL-SPLITTER — per-model split-screen discard. OFF until the
+    // renderer's first maybeUpdateForSplit() call mirrors
+    // `model.splitDirection !== SplitDirection.NONE`. This cache is
+    // per-Model, so a per-model flag is the right granularity.
+    this._splitEnabled = false;
 
     this._materialBGL_basic = this._getOrCreateMaterialBGL(0);
     this._pipelineLayout_basic = this._getOrCreatePipelineLayout(0);
@@ -2007,10 +2012,15 @@ class WebGPUModelPipelineCache {
     // / display / regular-pick callers never set it → their module hash unchanged.
     const metadataPickBit =
       (materialDefines & ShaderDefine.METADATA_PICKING_ENABLED) >>> 0;
+    // WIRE-MODEL-SPLITTER — MODEL_SPLIT_ENABLED is a render-mode bit like
+    // LOG_DEPTH (per-cache flag, no BGL/layout change). `_splitEnabled`
+    // mirrors `model.splitDirection !== NONE` via maybeUpdateForSplit().
+    const splitBit = this._splitEnabled ? ShaderDefine.MODEL_SPLIT_ENABLED : 0;
     const effectiveDefines =
       (key |
         captureBit |
         metadataPickBit |
+        splitBit |
         (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
     // DP-H46b/c — the generated metadata chunk is class-dependent, so when
@@ -2106,10 +2116,18 @@ class WebGPUModelPipelineCache {
     // BOTH the metadata + customShader class hashes into one salt so two models
     // sharing (sourceId, defines) but differing in either generated chunk get
     // distinct compiled modules. Zero for the plain path → device key unchanged.
-    const keySalt =
+    let keySalt =
       customShaderClassHash === 0
         ? metadataClassHash
         : (metadataClassHash ^ customShaderClassHash) >>> 0;
+    // WIRE-MODEL-SPLITTER — MODEL_SPLIT_ENABLED is bit 26, above the device
+    // cache's 24-bit define window (`(defines & 0xffffff) << 8`), so the bit
+    // alone would alias the non-split module. Fold it into the salt (Batch
+    // 476 keySalt pattern) so the split variant gets a distinct device-cache
+    // entry; non-split callers leave the salt untouched → key unchanged.
+    if (splitBit !== 0) {
+      keySalt = (keySalt ^ ShaderDefine.MODEL_SPLIT_ENABLED) >>> 0;
+    }
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
       fullSource,
@@ -2285,6 +2303,42 @@ class WebGPUModelPipelineCache {
     this._pickPrecisePass1Pipelines.clear();
     this._pickPrecisePass2Pipelines.clear();
     // DP-H46e — metadata-pick pipelines bake the depth format / sample count too.
+    this._pickMetadataPipelines.clear();
+    // Refresh the eager compatibility module fields so legacy callers
+    // never see a stale-variant module after a flip.
+    this._shaderModule_basic = this._getOrCreateShaderModule(0);
+    this._shaderModule = this._getOrCreateShaderModule(
+      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+    );
+    return true;
+  }
+
+  /**
+   * WIRE-MODEL-SPLITTER — mirror `model.splitDirection !== NONE` each
+   * frame (the maybeUpdateForLogDepth pattern). When the flag flips, wipe
+   * every pipeline map (cached pipelines reference modules compiled with
+   * the wrong MODEL_SPLIT_ENABLED state) and refresh the eagerly-built
+   * module fields. Cheap boolean compare on the steady path.
+   *
+   * @param {boolean} active model.splitDirection !== SplitDirection.NONE
+   * @returns {boolean} true when the flag flipped this call (callers use
+   *   this to drop per-primitive direct pipeline references, mirroring
+   *   the scene-format-generation invalidation).
+   */
+  maybeUpdateForSplit(active) {
+    const enabled = active === true;
+    if (this._splitEnabled === enabled) {
+      return false;
+    }
+    this._splitEnabled = enabled;
+    this._pipelines.clear();
+    this._pickPipelines.clear();
+    this._depthWritePipelines.clear();
+    this._velocityPipelines.clear();
+    this._classificationPipelines.clear();
+    this._pickHoverPipelines.clear();
+    this._pickPrecisePass1Pipelines.clear();
+    this._pickPrecisePass2Pipelines.clear();
     this._pickMetadataPipelines.clear();
     // Refresh the eager compatibility module fields so legacy callers
     // never see a stale-variant module after a flip.

@@ -661,6 +661,41 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `WebGPUVoxelRenderer.ts` (inline `VOXEL_WGSL` fragmentMain).
    */
   VOXEL_CUSTOM_SHADER_COLOR: 1 << 25,
+
+  /**
+   * Model split-screen rendering (WIRE-MODEL-SPLITTER) — the glTF-model
+   * sibling of the collections' `SPLIT_ENABLED` bit, matching WebGL's
+   * `ModelSplitterPipelineStage` / `ModelSplitterStageFS.glsl`. When set,
+   * `ModelPBRComplete.wgsl` activates its `//>>ifdef MODEL_SPLIT_ENABLED`
+   * fragment blocks (fragmentMain + fragmentPickMain): the FS discards
+   * fragments on the wrong side of the split slider —
+   *   `splitDirection < 0` (LEFT)  → discard when `fragCoord.x > czm_splitPosition`
+   *   `splitDirection > 0` (RIGHT) → discard when `fragCoord.x < czm_splitPosition`
+   * The two scalars ride the material UB's historical pad lanes (floats
+   * 38/39, `_pad_end2`/`_pad_end3` — splitDirection and
+   * `frameState.splitPosition * drawingBufferWidth` in framebuffer pixels),
+   * so the struct layout / BGL / pipeline layout are unchanged — this is a
+   * render-MODE bit like `LOG_DEPTH`, intentionally OUTSIDE
+   * `MATERIAL_DEFINE_MASK`.
+   *
+   * Per-model selection: `WebGPUModelRenderer` mirrors
+   * `model.splitDirection !== SplitDirection.NONE` into the per-model
+   * pipeline cache via `maybeUpdateForSplit()` (the `maybeUpdateForLogDepth`
+   * pattern — a flip wipes pipelines so modules recompile with/without the
+   * bit). When clear (the default), every gated block is stripped and the
+   * preprocessed module is byte-identical to the pre-splitter source.
+   *
+   * NOTE — bit ≥ 24: the device-level module-cache numeric key masks
+   * defines to 24 bits (`(defines & 0xffffff) << 8`), so this bit alone
+   * would alias the non-split module. `WebGPUModelPipelineCache.
+   * _getOrCreateShaderModule` folds the bit into the cache's `keySalt`
+   * when set (the Batch 476 `VOXEL_CUSTOM_SHADER_COLOR` pattern) so the
+   * split variant gets a distinct compiled module; non-split callers keep
+   * `keySalt` untouched → their device cache key is unchanged.
+   *
+   * Consumer: `ModelPBRComplete.wgsl`.
+   */
+  MODEL_SPLIT_ENABLED: 1 << 26,
 } as const);
 
 /**

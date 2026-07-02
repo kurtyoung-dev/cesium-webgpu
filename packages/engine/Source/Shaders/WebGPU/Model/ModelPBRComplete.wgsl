@@ -2246,6 +2246,16 @@ struct FragOutput {
 
 @fragment fn fragmentMain(input: FragmentInput) -> FragOutput {
   let flags = material.materialFlags;
+  //>>ifdef MODEL_SPLIT_ENABLED
+  // WIRE-MODEL-SPLITTER — model.splitDirection FS discard (WebGL
+  // `ModelSplitterStageFS.glsl` parity). The material UB pad lanes carry
+  // the two scalars: `_pad_end2` = splitDirection (-1 LEFT / +1 RIGHT),
+  // `_pad_end3` = czm_splitPosition (`frameState.splitPosition *
+  // drawingBufferWidth`, framebuffer pixels — the same space as
+  // fragCoord.x, matching WebGL's `gl_FragCoord.x > czm_splitPosition`).
+  if (material._pad_end2 < 0.0 && input.fragCoord.x > material._pad_end3) { discard; }
+  if (material._pad_end2 > 0.0 && input.fragCoord.x < material._pad_end3) { discard; }
+  //>>endif
 
   // Slice 5c-B Batch 119 — hoisted geometric normal for early-exit
   // returns (clipping edge band, unlit path). The main lit path
@@ -3521,6 +3531,14 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 
 @fragment fn fragmentPickMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
+  //>>ifdef MODEL_SPLIT_ENABLED
+  // WIRE-MODEL-SPLITTER — the hidden half of a split model must not be
+  // pickable. WebGL's derived pick command keeps the splitter stage in
+  // its FS, so mirror the fragmentMain discard here. See fragmentMain
+  // for the pad-lane convention (_pad_end2 = direction, _pad_end3 = px).
+  if (material._pad_end2 < 0.0 && input.fragCoord.x > material._pad_end3) { discard; }
+  if (material._pad_end2 > 0.0 && input.fragCoord.x < material._pad_end3) { discard; }
+  //>>endif
 
   // PARITY-CLIP-PLANES — clipped geometry must not be pickable. Mirror the
   // color path's `modelClipByPlanes` / `modelClipByPolygon` discards at the
@@ -3662,6 +3680,15 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 //>>ifdef METADATA_PICKING_ENABLED
 @fragment fn fragmentPickMetadataMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
+  //>>ifdef MODEL_SPLIT_ENABLED
+  // WIRE-MODEL-SPLITTER — the hidden half of a split model must not claim
+  // the metadata pick. WebGL's deriveMetadataPickingShader only adds
+  // defines, so the splitter FS stage stays in the derived shader; mirror
+  // the fragmentMain discard here (see fragmentMain for the pad-lane
+  // convention: _pad_end2 = direction, _pad_end3 = split position px).
+  if (material._pad_end2 < 0.0 && input.fragCoord.x > material._pad_end3) { discard; }
+  if (material._pad_end2 > 0.0 && input.fragCoord.x < material._pad_end3) { discard; }
+  //>>endif
 
   // Resolve baseColor.a for the mask / blend discards (same minimal path as
   // fragmentPickMain — the metadata pass doesn't need full shading).
@@ -3790,6 +3817,13 @@ struct VelocityFragOutput {
 // instead of a UBO field — the globe depth texture is sized to the
 // drawing buffer, identical to the fragment-coordinate space.
 @fragment fn fragmentClassificationMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  //>>ifdef MODEL_SPLIT_ENABLED
+  // WIRE-MODEL-SPLITTER — classification-model draws honor splitDirection
+  // like WebGL's stage-chained classification FS. Same pad-lane convention
+  // as fragmentMain (_pad_end2 = direction, _pad_end3 = split position px).
+  if (material._pad_end2 < 0.0 && input.fragCoord.x > material._pad_end3) { discard; }
+  if (material._pad_end2 > 0.0 && input.fragCoord.x < material._pad_end3) { discard; }
+  //>>endif
   let dims = textureDimensions(globeDepthTex);
   // FragmentInput names the @builtin(position) field `fragCoord` — the
   // earlier `input.position.xy` access didn't compile (struct member

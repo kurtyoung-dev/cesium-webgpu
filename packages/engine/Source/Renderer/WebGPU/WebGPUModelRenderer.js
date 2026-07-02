@@ -132,7 +132,10 @@ const CAMERA_UNIFORM_SIZE = 320;
 //   floats  32    : glossinessFactor
 //   floats  33-36 : diffuseFactor        (vec4)
 //   floats  37    : texCoordFlags        (u32)
-//   floats  38-39 : padding
+//   floats  38-39 : padding — reused by WIRE-MODEL-SPLITTER: 38 =
+//                   model.splitDirection (-1/0/+1), 39 = czm_splitPosition
+//                   in framebuffer pixels. Read only by the
+//                   `//>>ifdef MODEL_SPLIT_ENABLED` FS blocks.
 //   floats  40-43 : pickColor            (vec4)
 //   floats  44-55 : baseColor texture transform (3 padded vec4 cols)
 //   floats  56-67 : normal texture transform
@@ -2827,10 +2830,28 @@ function updateWebGPUModel(model, frameState) {
   const logDepthFlipped = pipelineCache.maybeUpdateForLogDepth(
     isWebGPULogDepthActive(context, frameState),
   );
+  // WIRE-MODEL-SPLITTER — mirror model.splitDirection into the per-model
+  // pipeline cache; a flip wipes pipelines so modules recompile
+  // with/without MODEL_SPLIT_ENABLED (WebGL ModelSplitterPipelineStage
+  // parity). splitDirection: -1 LEFT / 0 NONE / +1 RIGHT.
+  const modelSplitDirection =
+    typeof model.splitDirection === "number" ? model.splitDirection : 0.0;
+  const splitFlipped = pipelineCache.maybeUpdateForSplit(
+    modelSplitDirection !== 0.0,
+  );
+  // The split cutoff in framebuffer pixels — WebGL keeps this in pixel
+  // space as `czm_splitPosition` (`frameState.splitPosition *
+  // drawingBufferWidth`), and WGSL fragCoord.x is framebuffer pixels too.
+  const modelSplitPositionPx =
+    (typeof frameState?.splitPosition === "number"
+      ? frameState.splitPosition
+      : 0.0) * (context?.drawingBufferWidth ?? 0.0);
   // A log-depth flip needs the SAME per-primitive direct-reference drop as
   // a scene-format change (pc.pipeline & friends point at wiped pipelines).
   const sceneFormatChanged =
-    previousGen !== pipelineCache._sceneFormatGeneration || logDepthFlipped;
+    previousGen !== pipelineCache._sceneFormatGeneration ||
+    logDepthFlipped ||
+    splitFlipped;
   if (sceneFormatChanged) {
     const primKeys = Object.keys(cache.primitives);
     for (let i = 0; i < primKeys.length; i++) {
@@ -3637,6 +3658,14 @@ function updateWebGPUModel(model, frameState) {
         passClass,
       );
 
+      // WIRE-MODEL-SPLITTER — the split scalars ride the material UB's
+      // historical pad lanes (floats 38/39, `_pad_end2`/`_pad_end3` in
+      // ModelPBRComplete.wgsl — packMaterialUniforms zeroes them just
+      // above). Packed unconditionally (the log-depth-lane precedent);
+      // only the `//>>ifdef MODEL_SPLIT_ENABLED` FS blocks read them.
+      primCache.materialData[38] = modelSplitDirection;
+      primCache.materialData[39] = modelSplitPositionPx;
+
       // Feature ID textures + batch texture (for per-feature styling).
       // C-R9-MODEL-FEATURE-PICK (Batch 101) — threads `context` +
       // `cache` (per-model cache) + a `pickPassActive` hint so
@@ -4406,6 +4435,12 @@ function updateWebGPUModel(model, frameState) {
           motionEnabled,
           1, // passClass = translucent
         );
+        // WIRE-MODEL-SPLITTER — mirror the primary UB's split-scalar pad
+        // lanes (floats 38/39 = _pad_end2/_pad_end3); packMaterialUniforms
+        // just zeroed them, so without this the derived translucent-class
+        // command of a split batch-table model would render unsplit.
+        primCache.materialDataTranslucent[38] = modelSplitDirection;
+        primCache.materialDataTranslucent[39] = modelSplitPositionPx;
         // Mirror the post-pack instancing / featureId flag patch from
         // the primary buffer so the translucent UB observes the same
         // FLAG_HAS_INSTANCING / FLAG_HAS_FEATURE_ID_* / FLAG_HAS_BATCH_TABLE
