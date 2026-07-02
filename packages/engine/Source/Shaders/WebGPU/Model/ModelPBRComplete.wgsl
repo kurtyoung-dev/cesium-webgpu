@@ -173,6 +173,13 @@ struct MaterialUniforms {
   occlusionTextureTransform1: vec4<f32>,
   occlusionTextureTransform2: vec4<f32>,
   textureTransformFlags: u32,
+  // WIRE-MODEL-SILHOUETTE — historical pad lanes (floats 105-107), reused
+  // to carry the silhouette scalars. Read only by the `//>>ifdef
+  // MODEL_SILHOUETTE` blocks; zero-filled otherwise (packMaterialUniforms).
+  //   _pad_tt0 = expandX (proj[0][0] · silhouetteSize · pixelRatio / vpWidth)
+  //   _pad_tt1 = expandY (proj[1][1] · same scale)
+  //   _pad_tt2 = silhouette-pass flag (0 = base stencil-write pass,
+  //              1 = derived silhouette-colour pass)
   _pad_tt0: f32,
   _pad_tt1: f32,
   _pad_tt2: f32,
@@ -192,6 +199,9 @@ struct MaterialUniforms {
   //    the texture-binding follow-up slice doesn't need a re-layout)
   // w: reserved
   clearcoatFactors: vec4<f32>,
+  // WIRE-MODEL-SILHOUETTE — historical pad lane (floats 112-115), reused
+  // to carry `model.silhouetteColor` RGBA. Read only by the `//>>ifdef
+  // MODEL_SILHOUETTE` FS block; zero-filled otherwise (packMaterialUniforms).
   _pad_cc0: vec4<f32>,
   // Slice 3 — KHR_materials_specular.
   // x: specularFactor (modulates F0 intensity)
@@ -1043,6 +1053,24 @@ struct VertexOutput {
   // member exists when MODEL_HAS_METADATA is clear).
   //>>ifdef MODEL_HAS_METADATA
   output.metadataValue = input.metadataValue;
+  //>>endif
+
+  //>>ifdef MODEL_SILHOUETTE
+  // WIRE-MODEL-SILHOUETTE — the derived silhouette-colour command's
+  // material UB sets `_pad_tt2 = 1`; inflate the clip position along the
+  // eye-space normal (WebGL ModelSilhouetteStageVS.glsl parity — the
+  // helper chunk is prepended by the pipeline cache when the
+  // MODEL_SILHOUETTE bit is set). The base stencil-write command keeps
+  // `_pad_tt2 = 0` and is untouched. Uses the post-morph/skin/instance
+  // `normalMC`, matching WebGL's processed `attributes.normalMC`.
+  if (material._pad_tt2 > 0.5) {
+    output.position = modelSilhouetteStageVS(
+      output.position,
+      normalMC,
+      camera.normalMatrix,
+      vec2<f32>(material._pad_tt0, material._pad_tt1),
+    );
+  }
   //>>endif
 
   //>>ifdef LOG_DEPTH
@@ -2411,6 +2439,31 @@ struct FragOutput {
     if (baseColor.a < material.alphaCutoff) { discard; }
     baseColor = vec4<f32>(baseColor.rgb, 1.0);
   }
+
+  //>>ifdef MODEL_SILHOUETTE
+  // WIRE-MODEL-SILHOUETTE — silhouette-colour pass early-out (WebGL
+  // ModelSilhouetteStageFS.glsl parity). Placed AFTER the alpha-mask
+  // discard so a MASK model's cutout holes stay cut out of the rim, and
+  // BEFORE any lighting — the rim is a flat colour. The stencil
+  // not-equal test on the derived command's pipeline kills every
+  // fragment overlapping the base model; only the inflated rim reaches
+  // the framebuffer. The base stencil-write command keeps
+  // `_pad_tt2 = 0` and never takes this branch.
+  if (material._pad_tt2 > 0.5) {
+    var silhouetteOut: FragOutput;
+    silhouetteOut.color = modelSilhouetteStageFS(material._pad_cc0);
+    //>>ifdef CAPTURE_MODE
+    //>>else
+    // Benign G-buffer emit (geometric normal + 0.5 roughness placeholder)
+    // — same convention as the clipping-edge / unlit early-outs.
+    silhouetteOut.normalRoughness = vec4<f32>(geomNormalEC, 0.5);
+    //>>endif
+    //>>ifdef LOG_DEPTH
+    silhouetteOut.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+    //>>endif
+    return silhouetteOut;
+  }
+  //>>endif
 
   // ── Unlit early-out ───────────────────────────────────────────────────────
   if (hasFlag(flags, FLAG_IS_UNLIT)) {

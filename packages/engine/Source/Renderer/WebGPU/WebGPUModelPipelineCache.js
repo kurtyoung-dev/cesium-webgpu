@@ -30,6 +30,9 @@
 
 import defined from "../../Core/defined.js";
 import ModelPBRCompleteWGSL from "../../Shaders/WebGPU/Model/ModelPBRComplete.js";
+// WIRE-MODEL-SILHOUETTE — the inflate/colour helper chunk, prepended to
+// the module source only when the MODEL_SILHOUETTE bit is active.
+import ModelSilhouetteStageWGSL from "../../Shaders/WebGPU/Model/ModelSilhouetteStage.js";
 // C2-22 — flat-magenta fallback shader for failed model PBR pipelines.
 import ErrorPipelineWGSL from "../../Shaders/WebGPU/Model/ErrorPipeline.js";
 // Slice 5d Batch 153 — Forward+ clustered lighting FS chunk. Prepended
@@ -808,6 +811,179 @@ function createPipeline(
 }
 
 /**
+ * WIRE-MODEL-SILHOUETTE — silhouette-MODEL pipeline (WebGL
+ * `deriveSilhouetteModelCommand` parity). Identical to `createPipeline`
+ * (same module, entry points, layout, blend, depth state) plus:
+ *
+ *   - Stencil write: compare ALWAYS, zPass REPLACE (fail/zFail KEEP) on
+ *     front and back — the base draw stamps the model's stencil
+ *     reference (`model._silhouetteId % 255`, set per-draw via
+ *     `renderState.stencilTest.reference` → `setStencilReference`) into
+ *     the scene FB's stencil aspect so the derived colour pass can cut
+ *     out the body.
+ *   - `invisible = true` (WebGL `model.isInvisible()`) zeroes the color
+ *     writeMask on every target so an invisible model still writes
+ *     stencil (silhouette-only rendering) without touching color.
+ *
+ * The scene depth format is always `depth24plus-stencil8` (see
+ * `WebGPUContext._depthFormat`), so declaring stencil state here is
+ * valid; the renderer additionally guards on the format including
+ * "stencil" before requesting this variant.
+ *
+ * @private
+ */
+function createSilhouetteModelPipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  presentationFormat,
+  depthFormat,
+  alphaMode,
+  doubleSided,
+  hasTexCoord1,
+  hasFeatureId0,
+  sampleCount,
+  hasMetadata,
+  invisible,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  let blend;
+  if (alphaMode === ALPHA_BLEND) {
+    blend = {
+      color: {
+        srcFactor: "src-alpha",
+        dstFactor: "one-minus-src-alpha",
+        operation: "add",
+      },
+      alpha: {
+        srcFactor: "one",
+        dstFactor: "one-minus-src-alpha",
+        operation: "add",
+      },
+    };
+  }
+  const depthWriteEnabled = alphaMode !== ALPHA_BLEND;
+  const stencilWrite = {
+    compare: "always",
+    failOp: "keep",
+    depthFailOp: "keep",
+    passOp: "replace",
+  };
+  const targets = makeSceneFBTargets(presentationFormat, {
+    emitsGBuffer: true,
+    blend,
+    // WebGL `deriveSilhouetteModelCommand` sets colorMask false for
+    // invisible models — stencil still writes, color doesn't.
+    writeMask: invisible ? 0 : 0xf,
+  });
+  return device.createRenderPipeline({
+    label: `Model PBR silhouette-model [alpha=${alphaMode},ds=${doubleSided},inv=${invisible === true}]`,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentMain",
+      targets,
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode,
+    },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled,
+      depthCompare: "less-equal",
+      stencilFront: stencilWrite,
+      stencilBack: stencilWrite,
+    },
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
+  });
+}
+
+/**
+ * WIRE-MODEL-SILHOUETTE — silhouette-COLOR pipeline (WebGL
+ * `deriveSilhouetteColorCommand` parity). Same module / entry points /
+ * layout as the colour pipeline (the VS/FS fork on the material UB's
+ * silhouette-pass flag, not on a separate entry point) plus:
+ *
+ *   - Cull disabled (WebGL sets `renderState.cull.enabled = false` so
+ *     back-facing inflated geometry still contributes to the rim).
+ *   - Stencil test: compare NOT-EQUAL against the model's stencil
+ *     reference, all ops KEEP — only pixels NOT covered by the base
+ *     draw (the inflated rim) survive.
+ *   - `translucent = true` (command pass is TRANSLUCENT or
+ *     `silhouetteColor.alpha < 1`) adds the standard alpha blend and
+ *     disables depth write, mirroring WebGL's derived render state.
+ *
+ * @private
+ */
+function createSilhouetteColorPipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  presentationFormat,
+  depthFormat,
+  alphaMode,
+  hasTexCoord1,
+  hasFeatureId0,
+  sampleCount,
+  hasMetadata,
+  translucent,
+) {
+  const stencilNotEqual = {
+    compare: "not-equal",
+    failOp: "keep",
+    depthFailOp: "keep",
+    passOp: "keep",
+  };
+  const targets = makeSceneFBTargets(presentationFormat, {
+    emitsGBuffer: true,
+    translucent: translucent === true,
+  });
+  return device.createRenderPipeline({
+    label: `Model PBR silhouette-color [alpha=${alphaMode},t=${translucent === true}]`,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentMain",
+      targets,
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode: "none",
+    },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: translucent !== true,
+      depthCompare: "less-equal",
+      stencilFront: stencilNotEqual,
+      stencilBack: stencilNotEqual,
+      // The colour pass only READS stencil (all ops KEEP); mask writes
+      // off entirely so a driver quirk can't perturb the reference.
+      stencilWriteMask: 0,
+    },
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
+  });
+}
+
+/**
  * C-R9-MODEL-PICK (Batch 54) — pick pipeline. Mirrors `createPipeline` for
  * vertex stage, layout, and depth state, but the fragment entry is
  * `fragmentPickMain` (writes `material.pickColor`) and there's no blend
@@ -1459,6 +1635,16 @@ class WebGPUModelPipelineCache {
     // construct a classification pipeline.
     this._classificationPipelines = new Map();
 
+    // WIRE-MODEL-SILHOUETTE — silhouette two-pass pipeline caches
+    // (WebGL `deriveSilhouetteModelCommand` / `deriveSilhouetteColorCommand`
+    // parity). Keyed by `"computeKey(alphaMode, doubleSided, md):variantFlag"`
+    // strings — the variant flag is `isInvisible` for the model (stencil-
+    // write) pass and `translucent` for the colour pass. Built lazily the
+    // first frame a model with `silhouetteSize > 0` reaches the FR;
+    // models without silhouettes (the default) never construct either.
+    this._silhouetteModelPipelines = new Map();
+    this._silhouetteColorPipelines = new Map();
+
     // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — second-slice pipeline
     // slots. Built lazily; only allocated for primitives whose owning
     // app calls `scene.pickHover` or `scene.pickPrecise`. The default
@@ -1580,6 +1766,11 @@ class WebGPUModelPipelineCache {
     // renderer's first maybeUpdateForModelColor() call mirrors
     // `defined(model.color)`. Per-Model flag, same granularity as split.
     this._modelColorEnabled = false;
+    // WIRE-MODEL-SILHOUETTE — per-model silhouette state. OFF until the
+    // renderer's first maybeUpdateForSilhouette() call mirrors the WebGL
+    // `Model.hasSilhouette()` predicate. Per-Model flag, same granularity
+    // as split / model-color.
+    this._silhouetteEnabled = false;
 
     this._materialBGL_basic = this._getOrCreateMaterialBGL(0);
     this._pipelineLayout_basic = this._getOrCreatePipelineLayout(0);
@@ -2027,12 +2218,20 @@ class WebGPUModelPipelineCache {
     const modelColorBit = this._modelColorEnabled
       ? ShaderDefine.MODEL_HAS_COLOR
       : 0;
+    // WIRE-MODEL-SILHOUETTE — MODEL_SILHOUETTE is a render-mode bit like
+    // MODEL_HAS_COLOR (per-cache flag, no BGL/layout change).
+    // `_silhouetteEnabled` mirrors the WebGL `Model.hasSilhouette()`
+    // predicate via maybeUpdateForSilhouette().
+    const silhouetteBit = this._silhouetteEnabled
+      ? ShaderDefine.MODEL_SILHOUETTE
+      : 0;
     const effectiveDefines =
       (key |
         captureBit |
         metadataPickBit |
         splitBit |
         modelColorBit |
+        silhouetteBit |
         (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
     // DP-H46b/c — the generated metadata chunk is class-dependent, so when
@@ -2123,7 +2322,13 @@ class WebGPUModelPipelineCache {
     const customShaderChunk = !hasCustomShader
       ? ""
       : (this._customShaderWGSL ?? "");
-    const fullSource = `${clChunk}\n${metadataChunk}${customShaderChunk}${ModelPBRCompleteWGSL}`;
+    // WIRE-MODEL-SILHOUETTE — prepend the inflate/colour helper chunk at
+    // the SAME injection point when the bit is active. Empty (and the
+    // gated call sites stripped) for non-silhouette models →
+    // byte-identical source.
+    const silhouetteChunk =
+      silhouetteBit !== 0 ? `${ModelSilhouetteStageWGSL}\n` : "";
+    const fullSource = `${clChunk}\n${silhouetteChunk}${metadataChunk}${customShaderChunk}${ModelPBRCompleteWGSL}`;
     // The device-level Tier-1 cache keys by (sourceId, defines, keySalt). Fold
     // BOTH the metadata + customShader class hashes into one salt so two models
     // sharing (sourceId, defines) but differing in either generated chunk get
@@ -2145,6 +2350,12 @@ class WebGPUModelPipelineCache {
     // the model-colour variant gets a distinct device-cache entry.
     if (modelColorBit !== 0) {
       keySalt = (keySalt ^ ShaderDefine.MODEL_HAS_COLOR) >>> 0;
+    }
+    // WIRE-MODEL-SILHOUETTE — MODEL_SILHOUETTE is bit 28, also above the
+    // device cache's 24-bit define window; fold it into the salt the same
+    // way so the silhouette variant gets a distinct device-cache entry.
+    if (silhouetteBit !== 0) {
+      keySalt = (keySalt ^ ShaderDefine.MODEL_SILHOUETTE) >>> 0;
     }
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
@@ -2317,6 +2528,10 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
+    // WIRE-MODEL-SILHOUETTE — silhouette variants bake the same module /
+    // format / sample-count state as the colour pipeline; wipe together.
+    this._silhouetteModelPipelines.clear();
+    this._silhouetteColorPipelines.clear();
     this._pickHoverPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
     this._pickPrecisePass2Pipelines.clear();
@@ -2354,6 +2569,10 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
+    // WIRE-MODEL-SILHOUETTE — silhouette variants bake the same module /
+    // format / sample-count state as the colour pipeline; wipe together.
+    this._silhouetteModelPipelines.clear();
+    this._silhouetteColorPipelines.clear();
     this._pickHoverPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
     this._pickPrecisePass2Pipelines.clear();
@@ -2390,6 +2609,50 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
+    // WIRE-MODEL-SILHOUETTE — silhouette variants bake the same module /
+    // format / sample-count state as the colour pipeline; wipe together.
+    this._silhouetteModelPipelines.clear();
+    this._silhouetteColorPipelines.clear();
+    this._pickHoverPipelines.clear();
+    this._pickPrecisePass1Pipelines.clear();
+    this._pickPrecisePass2Pipelines.clear();
+    this._pickMetadataPipelines.clear();
+    // Refresh the eager compatibility module fields so legacy callers
+    // never see a stale-variant module after a flip.
+    this._shaderModule_basic = this._getOrCreateShaderModule(0);
+    this._shaderModule = this._getOrCreateShaderModule(
+      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+    );
+    return true;
+  }
+
+  /**
+   * WIRE-MODEL-SILHOUETTE — mirror the WebGL `Model.hasSilhouette()`
+   * predicate each frame (the maybeUpdateForModelColor pattern). When the
+   * flag flips, wipe every pipeline map (cached pipelines reference
+   * modules compiled with the wrong MODEL_SILHOUETTE state) and refresh
+   * the eagerly-built module fields. Cheap boolean compare on the steady
+   * path.
+   *
+   * @param {boolean} active silhouetteSize > 0 && silhouetteColor.alpha > 0
+   *   && !defined(model.classificationType)
+   * @returns {boolean} true when the flag flipped this call (callers use
+   *   this to drop per-primitive direct pipeline references, mirroring
+   *   the scene-format-generation invalidation).
+   */
+  maybeUpdateForSilhouette(active) {
+    const enabled = active === true;
+    if (this._silhouetteEnabled === enabled) {
+      return false;
+    }
+    this._silhouetteEnabled = enabled;
+    this._pipelines.clear();
+    this._pickPipelines.clear();
+    this._depthWritePipelines.clear();
+    this._velocityPipelines.clear();
+    this._classificationPipelines.clear();
+    this._silhouetteModelPipelines.clear();
+    this._silhouetteColorPipelines.clear();
     this._pickHoverPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
     this._pickPrecisePass2Pipelines.clear();
@@ -2429,6 +2692,10 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
+    // WIRE-MODEL-SILHOUETTE — silhouette variants bake the same module /
+    // format / sample-count state as the colour pipeline; wipe together.
+    this._silhouetteModelPipelines.clear();
+    this._silhouetteColorPipelines.clear();
     // Batch 192 — second-slice pick pipelines also wipe on format change.
     this._pickHoverPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
@@ -2615,6 +2882,130 @@ class WebGPUModelPipelineCache {
       }
     });
     this._depthWritePipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * WIRE-MODEL-SILHOUETTE — gets or creates the silhouette-MODEL (base
+   * stencil-write) pipeline variant for the given material configuration.
+   * See {@link createSilhouetteModelPipeline}. Only requested when the
+   * per-model silhouette flag is active, so the module already carries
+   * the MODEL_SILHOUETTE define.
+   *
+   * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @param {number} [materialDefines=0] see
+   *   {@link WebGPUModelPipelineCache#getPipeline}.
+   * @param {boolean} [invisible=false] WebGL `model.isInvisible()` —
+   *   zero color writeMask (stencil-only draw).
+   * @returns {GPURenderPipeline}
+   */
+  getSilhouetteModelPipeline(
+    alphaMode,
+    doubleSided,
+    materialDefines,
+    invisible,
+  ) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = `${computeKey(alphaMode, doubleSided, md)}:${invisible === true ? 1 : 0}`;
+    let pipeline = this._silhouetteModelPipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
+    const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
+    const hasMetadata = (md & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+    // Same MRT targets / layout as `getPipeline`, so the flat-magenta
+    // error pipeline is a valid drop-in here too (C2-22 pattern).
+    this._device.pushErrorScope("validation");
+    pipeline = createSilhouetteModelPipeline(
+      this._device,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
+      this._presentationFormat,
+      this._depthFormat,
+      alphaMode,
+      doubleSided,
+      hasTexCoord1,
+      hasFeatureId0,
+      this._sampleCount,
+      hasMetadata,
+      invisible === true,
+    );
+    this._device.popErrorScope().then((error) => {
+      if (error) {
+        console.error(
+          `[CesiumJS:webgpu] Model silhouette-model pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
+        );
+        this._silhouetteModelPipelines.set(
+          key,
+          this._getOrCreateErrorPipeline(md),
+        );
+        this._errorSwapGeneration++;
+      }
+    });
+    this._silhouetteModelPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * WIRE-MODEL-SILHOUETTE — gets or creates the silhouette-COLOR
+   * (stencil not-equal inflate/rim) pipeline variant. See
+   * {@link createSilhouetteColorPipeline}.
+   *
+   * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided (unused for cull — the colour pass
+   *   always disables culling — but kept in the key so it pairs 1:1
+   *   with the base variant identity)
+   * @param {number} [materialDefines=0] see
+   *   {@link WebGPUModelPipelineCache#getPipeline}.
+   * @param {boolean} [translucent=false] command pass is TRANSLUCENT or
+   *   `silhouetteColor.alpha < 1` — adds alpha blend + disables depth
+   *   write (WebGL derived-state parity).
+   * @returns {GPURenderPipeline}
+   */
+  getSilhouetteColorPipeline(
+    alphaMode,
+    doubleSided,
+    materialDefines,
+    translucent,
+  ) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const key = `${computeKey(alphaMode, doubleSided, md)}:${translucent === true ? 1 : 0}`;
+    let pipeline = this._silhouetteColorPipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
+    const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
+    const hasMetadata = (md & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+    this._device.pushErrorScope("validation");
+    pipeline = createSilhouetteColorPipeline(
+      this._device,
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
+      this._presentationFormat,
+      this._depthFormat,
+      alphaMode,
+      hasTexCoord1,
+      hasFeatureId0,
+      this._sampleCount,
+      hasMetadata,
+      translucent === true,
+    );
+    this._device.popErrorScope().then((error) => {
+      if (error) {
+        console.error(
+          `[CesiumJS:webgpu] Model silhouette-color pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
+        );
+        this._silhouetteColorPipelines.set(
+          key,
+          this._getOrCreateErrorPipeline(md),
+        );
+        this._errorSwapGeneration++;
+      }
+    });
+    this._silhouetteColorPipelines.set(key, pipeline);
     return pipeline;
   }
 

@@ -734,6 +734,50 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `ModelPBRComplete.wgsl`.
    */
   MODEL_HAS_COLOR: 1 << 27,
+
+  /**
+   * Model silhouette rendering (WIRE-MODEL-SILHOUETTE) — the WebGPU
+   * sibling of WebGL's `ModelSilhouettePipelineStage` /
+   * `ModelSilhouetteStageVS/FS.glsl` + `ModelDrawCommand`'s
+   * `deriveSilhouetteModelCommand` / `deriveSilhouetteColorCommand`
+   * stencil two-pass. When set:
+   *   - `WebGPUModelPipelineCache._getOrCreateShaderModule` prepends the
+   *     `ModelSilhouetteStage.wgsl` chunk (the inflate + colour helpers).
+   *   - `ModelPBRComplete.wgsl` activates its `//>>ifdef MODEL_SILHOUETTE`
+   *     blocks: a VS call site that inflates clip-space `position.xy`
+   *     along the eye-space normal, and an FS early-return (after the
+   *     alpha-mask discard, matching WebGL's cutout behaviour) that
+   *     emits the silhouette colour.
+   *   - Both blocks gate at runtime on `material._pad_tt2 > 0.5` (the
+   *     "silhouette pass" flag), so the BASE command (stencil-write pass,
+   *     flag 0) renders the model normally while the DERIVED colour
+   *     command (stencil not-equal pass, flag 1) draws the inflated rim.
+   *
+   * Uniform lanes (material UB historical pads — struct layout / BGL /
+   * pipeline layout unchanged; render-MODE bit like `MODEL_HAS_COLOR`,
+   * intentionally OUTSIDE `MATERIAL_DEFINE_MASK`):
+   *   - float 105 `_pad_tt0` = expandX (proj[0][0] · silhouetteSize ·
+   *     pixelRatio / drawingBufferWidth — WebGL's per-vertex scale
+   *     pre-folded on the CPU)
+   *   - float 106 `_pad_tt1` = expandY (proj[1][1] · same scale)
+   *   - float 107 `_pad_tt2` = silhouette-pass flag (0 base / 1 colour)
+   *   - floats 112-115 `_pad_cc0` = silhouetteColor RGBA
+   *
+   * Per-model selection: `WebGPUModelRenderer` mirrors the WebGL
+   * `Model.hasSilhouette()` predicate (`silhouetteSize > 0 &&
+   * silhouetteColor.alpha > 0 && !classificationType`) into the
+   * per-model pipeline cache via `maybeUpdateForSilhouette()` (the
+   * `maybeUpdateForModelColor` pattern). When clear (the default —
+   * `silhouetteSize === 0`), every gated block is stripped, the chunk
+   * is not prepended, and the preprocessed module is byte-identical to
+   * the pre-silhouette source.
+   *
+   * NOTE — bit ≥ 24: folded into the device module-cache `keySalt` when
+   * set (the Batch 476 pattern, same as `MODEL_SPLIT_ENABLED`).
+   *
+   * Consumers: `ModelPBRComplete.wgsl`, `ModelSilhouetteStage.wgsl`.
+   */
+  MODEL_SILHOUETTE: 1 << 28,
 } as const);
 
 /**

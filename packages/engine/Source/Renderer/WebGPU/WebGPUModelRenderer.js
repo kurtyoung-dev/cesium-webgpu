@@ -80,6 +80,13 @@ import {
 } from "../../Scene/Model/CustomShaderWGSLPipelineStage.js";
 import Pass from "../Pass.js";
 import ColorBlendMode from "../../Scene/ColorBlendMode.js";
+// WIRE-MODEL-SILHOUETTE — shared silhouette-ID counter (WebGL's
+// ModelSilhouettePipelineStage assigns `model._silhouetteId` from this
+// static counter; on WebGPU the same stage runs during the shared
+// scene-graph draw-command build, so we only assign here as a fallback
+// when the stage hasn't run yet — sharing the counter keeps stencil
+// references unique across both backends).
+import ModelSilhouettePipelineStage from "../../Scene/Model/ModelSilhouettePipelineStage.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -2868,13 +2875,67 @@ function updateWebGPUModel(model, frameState) {
         model.colorBlendAmount,
       ) ?? 0.0)
     : 0.0;
+  // WIRE-MODEL-SILHOUETTE — mirror WebGL's `Model.hasSilhouette()`
+  // predicate (silhouetteSize > 0 && silhouetteColor.alpha > 0 &&
+  // !classificationType && stencil support) into the per-model pipeline
+  // cache; a flip wipes pipelines so modules recompile with/without
+  // MODEL_SILHOUETTE. The scene depth format is `depth24plus-stencil8`
+  // by construction, but guard anyway so a future depth-only format
+  // can't request stencil-state pipelines.
+  const silhouetteSupported =
+    `${context.depthFormat ?? "depth24plus-stencil8"}`.includes("stencil");
+  const modelHasSilhouette =
+    silhouetteSupported &&
+    typeof model.silhouetteSize === "number" &&
+    model.silhouetteSize > 0.0 &&
+    (model.silhouetteColor?.alpha ?? 0.0) > 0.0 &&
+    !defined(model.classificationType);
+  const silhouetteFlipped =
+    pipelineCache.maybeUpdateForSilhouette(modelHasSilhouette);
+  // Per-frame silhouette scalars (WebGL ModelSilhouetteStageVS.glsl math,
+  // pre-folded on the CPU because the WGSL camera UB carries no
+  // standalone projection/viewport):
+  //   expandX/Y = proj[0][0] / proj[1][1] · silhouetteSize · pixelRatio
+  //               / drawingBufferWidth   (czm_viewport.z ≡ buffer width)
+  // Uses `context.drawingBufferWidth` directly — NOT
+  // `uniformState.viewportCartesian4`, which is zero-initialized at
+  // FR-update time (same pitfall the edge-overlay wiring hit).
+  let silhouetteStencilRef = 0;
+  let silhouetteExpandX = 0.0;
+  let silhouetteExpandY = 0.0;
+  let silhouetteTranslucent = false;
+  if (modelHasSilhouette) {
+    if (!defined(model._silhouetteId)) {
+      model._silhouetteId = ++ModelSilhouettePipelineStage.silhouettesLength;
+    }
+    // Wrap around after the 8-bit stencil limit (WebGL
+    // `deriveSilhouetteModelCommand` parity).
+    silhouetteStencilRef = model._silhouetteId % 255;
+    const silhouetteProj = context.uniformState?.projection;
+    const proj00 = defined(silhouetteProj) ? silhouetteProj[0] : 1.0;
+    const proj11 = defined(silhouetteProj) ? silhouetteProj[5] : 1.0;
+    const silhouettePixelRatio =
+      typeof frameState.pixelRatio === "number" ? frameState.pixelRatio : 1.0;
+    const silhouetteScale =
+      (model.silhouetteSize * silhouettePixelRatio) /
+      (context.drawingBufferWidth || 1);
+    silhouetteExpandX = proj00 * silhouetteScale;
+    silhouetteExpandY = proj11 * silhouetteScale;
+    silhouetteTranslucent = model.silhouetteColor.alpha < 1.0;
+  }
+  // Derived silhouette-colour commands are collected per model and
+  // pushed AFTER every base command of this model (WebGL
+  // `ModelSceneGraph.pushDrawCommands` ordering — the rim must not draw
+  // on top of the model's own later primitives).
+  const silhouetteColorCommands = [];
   // A log-depth flip needs the SAME per-primitive direct-reference drop as
   // a scene-format change (pc.pipeline & friends point at wiped pipelines).
   const sceneFormatChanged =
     previousGen !== pipelineCache._sceneFormatGeneration ||
     logDepthFlipped ||
     splitFlipped ||
-    modelColorFlipped;
+    modelColorFlipped ||
+    silhouetteFlipped;
   if (sceneFormatChanged) {
     const primKeys = Object.keys(cache.primitives);
     for (let i = 0; i < primKeys.length; i++) {
@@ -2885,6 +2946,9 @@ function updateWebGPUModel(model, frameState) {
         pc.depthWritePipeline = undefined;
         pc.velocityPipeline = undefined;
         pc.translucentPipeline = undefined;
+        // WIRE-MODEL-SILHOUETTE — direct refs into the wiped maps.
+        pc.silhouettePipeline = undefined;
+        pc.silhouetteColorPipeline = undefined;
         // Tag for the per-frame loop so it re-fetches pc.pipeline
         // before the command emission below (the initial pipeline
         // assignment lives inside ensurePrimitiveCache which only
@@ -3946,6 +4010,21 @@ function updateWebGPUModel(model, frameState) {
       // classifier. Same vertex stage / bind groups / vertex buffers /
       // index buffer; only the fragment entry differs (samples globe
       // depth, discards on sky, emits `material.baseColorFactor`).
+      // WIRE-MODEL-SILHOUETTE — when the silhouette is active, the BASE
+      // draw swaps to the stencil-write variant (WebGL
+      // `deriveSilhouetteModelCommand`: same shading, stencil ALWAYS /
+      // zPass REPLACE stamps `model._silhouetteId % 255`; invisible
+      // models zero the colour writeMask). The derived colour command is
+      // built after the primary push below. hasSilhouette() excludes
+      // classifiers, so the two branches never coincide.
+      if (modelHasSilhouette && !defined(primCache.silhouettePipeline)) {
+        primCache.silhouettePipeline = pipelineCache.getSilhouetteModelPipeline(
+          matInfo.alphaMode,
+          matInfo.isDoubleSided,
+          primCache.materialDefines | 0,
+          model.isInvisible(),
+        );
+      }
       const activePipeline = isClassifier
         ? pipelineCache.getClassificationPipeline(
             matInfo.alphaMode,
@@ -3956,7 +4035,22 @@ function updateWebGPUModel(model, frameState) {
             // constructed against.
             primCache.materialDefines | 0,
           )
-        : primCache.pipeline;
+        : modelHasSilhouette
+          ? primCache.silhouettePipeline
+          : primCache.pipeline;
+
+      // WIRE-MODEL-SILHOUETTE — the stencil-write pipeline needs the
+      // model's stencil reference set per-draw (`applyPerEncoderState`
+      // reads `renderState.stencilTest.reference` →
+      // `setStencilReference`). Shallow-merge over the forwarded WebGL
+      // renderState so its other dynamic state (viewport / scissor /
+      // blend constant) is preserved.
+      const activeRenderState = modelHasSilhouette
+        ? {
+            ...(modelRenderState ?? {}),
+            stencilTest: { reference: silhouetteStencilRef },
+          }
+        : modelRenderState;
 
       // AUDIT_2026_05_02 A.3 (Batch 146) — `passes[0]` is the primary
       // pass. The non-classifier path always has length 1, so the
@@ -3986,7 +4080,7 @@ function updateWebGPUModel(model, frameState) {
         boundingVolume: model.boundingSphere,
         modelMatrix: modelMatrix,
         cull: model._cull ?? true,
-        renderState: modelRenderState,
+        renderState: activeRenderState,
         // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — depth-write variant
         // pipeline for BLEND primitives. Only consumed when the command's
         // `depthForTranslucentClassification` flag is set (forwarded by
@@ -4417,6 +4511,108 @@ function updateWebGPUModel(model, frameState) {
       // overlay). Skip the rest of this primitive's emission.
       if (isClassifier) {
         continue;
+      }
+
+      // WIRE-MODEL-SILHOUETTE — derived silhouette-colour command (WebGL
+      // `deriveSilhouetteColorCommand` parity). Uses a SEPARATE material
+      // UB so the base command keeps `_pad_tt2 = 0` (normal shading,
+      // stencil write) while this one carries `_pad_tt2 = 1` (VS inflates
+      // clip xy along the eye-space normal, FS emits silhouetteColor) —
+      // the same one-shader-two-uniform-states trick WebGL uses via its
+      // `model_silhouettePass` uniform clone. The pipeline's stencil
+      // NOT-EQUAL test (against the same per-draw reference the base
+      // command stamped) cuts the model body out of the inflated draw so
+      // only the rim survives. Follows the batch-table translucent-class
+      // second-UB precedent below. EDGES_ONLY suppresses the surface —
+      // and therefore its rim. During pick passes the command is skipped
+      // by the FORK-34 gate (no pick variant, not pickOnly), matching
+      // WebGL's `hasSilhouette && !passes.pick`.
+      if (modelHasSilhouette && !suppressSurfaceForEdgesOnly) {
+        if (!defined(primCache.materialBufferSilhouette)) {
+          primCache.materialBufferSilhouette = WebGPUBuffer.createUniformBuffer(
+            device,
+            MATERIAL_UNIFORM_SIZE,
+            `Prim material (silhouette)`,
+          );
+          primCache.materialDataSilhouette = new Float32Array(
+            MATERIAL_UNIFORM_SIZE / 4,
+          );
+        }
+        const silData = primCache.materialDataSilhouette;
+        // Mirror the primary UB byte-for-byte (it already carries this
+        // frame's flags / split / model-color lanes), then stamp the
+        // silhouette lanes on top.
+        silData.set(primCache.materialData);
+        // No real NORMAL attribute → no inflation (WebGL strips the
+        // stage via `#ifndef HAS_NORMALS`); zero expand keeps the WGSL
+        // helper's early-return path NaN-free.
+        const silhouetteHasNormals = defined(primCache.normalBuffer);
+        silData[105] = silhouetteHasNormals ? silhouetteExpandX : 0.0;
+        silData[106] = silhouetteHasNormals ? silhouetteExpandY : 0.0;
+        silData[107] = 1.0; // silhouette-pass flag
+        const silColor = model.silhouetteColor;
+        silData[112] = silColor.red;
+        silData[113] = silColor.green;
+        silData[114] = silColor.blue;
+        silData[115] = silColor.alpha;
+        device.queue.writeBuffer(
+          primCache.materialBufferSilhouette.buffer,
+          0,
+          silData.buffer,
+          0,
+          MATERIAL_UNIFORM_SIZE,
+        );
+
+        // Render the rim in the translucent pass if either the base
+        // command or the silhouette colour is translucent (WebGL parity).
+        const silhouettePassTranslucent =
+          matInfo.alphaMode === AlphaModes.BLEND || silhouetteTranslucent;
+        if (!defined(primCache.silhouetteColorPipeline)) {
+          primCache.silhouetteColorPipeline =
+            pipelineCache.getSilhouetteColorPipeline(
+              matInfo.alphaMode,
+              matInfo.isDoubleSided,
+              primCache.materialDefines | 0,
+              silhouettePassTranslucent,
+            );
+        }
+        const mergedMaterialBGSilhouette = buildMergedMaterialBindGroup(
+          device,
+          pipelineCache,
+          primCache.materialBufferSilhouette,
+          primCache.lightBuffer,
+          primCache.textureEntries,
+          featureIdEntries,
+          iblEntries,
+          primCache.materialDefines | 0,
+          frameState,
+        );
+        const silhouetteCmd = new WebGPUDrawCommand({
+          pipeline: primCache.silhouetteColorPipeline,
+          bindGroups: [
+            nodeCameraBG,
+            mergedMaterialBGSilhouette,
+            mergedInstanceBG,
+            cache.effectsBG,
+          ],
+          vertexBuffers: vertexBuffers,
+          indexBuffer: primCache.indexBuffer || undefined,
+          indexCount: primCache.indexCount || 0,
+          indexFormat: primCache.indexFormat || "uint16",
+          vertexCount: primCache.vertexCount || 0,
+          instanceCount: instanceCount,
+          pass: silhouettePassTranslucent ? Pass.TRANSLUCENT : primaryPass,
+          owner: model,
+          boundingVolume: model.boundingSphere,
+          modelMatrix: modelMatrix,
+          cull: model._cull ?? true,
+          // Stencil reference for the NOT-EQUAL cutout — same value the
+          // base command stamped. WebGL also drops castShadows /
+          // receiveShadows on the derived command; WebGPU shadow-cast
+          // tagging is simply not attached here.
+          renderState: { stencilTest: { reference: silhouetteStencilRef } },
+        });
+        silhouetteColorCommands.push(silhouetteCmd);
       }
 
       // C-R1-TILE-BATCH (Batch 101) — dual-command emission. When the
@@ -4854,6 +5050,15 @@ function updateWebGPUModel(model, frameState) {
     }
   }
 
+  // WIRE-MODEL-SILHOUETTE — push the derived silhouette-colour commands
+  // AFTER every base command of this model (WebGL
+  // `ModelSceneGraph.pushDrawCommands` gathers them separately and
+  // appends for the same reason: the rim must not draw on top of the
+  // model's own later primitives before those have stamped stencil).
+  for (let i = 0; i < silhouetteColorCommands.length; i++) {
+    commandList.push(silhouetteColorCommands[i]);
+  }
+
   // TAA Slice 2c (Batch 96) — capture this frame's modelMatrix as
   // `prevModelMatrix` so the next frame's primitive pack reads the
   // correct previous value. Done at the END of update so every
@@ -4917,6 +5122,10 @@ function destroyWebGPUModelResources(model) {
     pc.featureIdBuffer?.destroy();
     pc.indexBuffer?.destroy();
     pc.materialBuffer?.destroy();
+    // C-R1-TILE-BATCH — translucent-class alternate material UB.
+    pc.materialBufferTranslucent?.destroy();
+    // WIRE-MODEL-SILHOUETTE — silhouette-pass alternate material UB.
+    pc.materialBufferSilhouette?.destroy();
     pc.lightBuffer?.destroy();
 
     // Destroy created GPU textures (not default ones)
