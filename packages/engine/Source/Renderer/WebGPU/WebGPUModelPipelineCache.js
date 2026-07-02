@@ -1576,6 +1576,10 @@ class WebGPUModelPipelineCache {
     // `model.splitDirection !== SplitDirection.NONE`. This cache is
     // per-Model, so a per-model flag is the right granularity.
     this._splitEnabled = false;
+    // WIRE-MODEL-COLOR — per-model model.color blend. OFF until the
+    // renderer's first maybeUpdateForModelColor() call mirrors
+    // `defined(model.color)`. Per-Model flag, same granularity as split.
+    this._modelColorEnabled = false;
 
     this._materialBGL_basic = this._getOrCreateMaterialBGL(0);
     this._pipelineLayout_basic = this._getOrCreatePipelineLayout(0);
@@ -2016,11 +2020,19 @@ class WebGPUModelPipelineCache {
     // LOG_DEPTH (per-cache flag, no BGL/layout change). `_splitEnabled`
     // mirrors `model.splitDirection !== NONE` via maybeUpdateForSplit().
     const splitBit = this._splitEnabled ? ShaderDefine.MODEL_SPLIT_ENABLED : 0;
+    // WIRE-MODEL-COLOR — MODEL_HAS_COLOR is a render-mode bit like
+    // MODEL_SPLIT_ENABLED (per-cache flag, no BGL/layout change).
+    // `_modelColorEnabled` mirrors `defined(model.color)` via
+    // maybeUpdateForModelColor().
+    const modelColorBit = this._modelColorEnabled
+      ? ShaderDefine.MODEL_HAS_COLOR
+      : 0;
     const effectiveDefines =
       (key |
         captureBit |
         metadataPickBit |
         splitBit |
+        modelColorBit |
         (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
     // DP-H46b/c — the generated metadata chunk is class-dependent, so when
@@ -2127,6 +2139,12 @@ class WebGPUModelPipelineCache {
     // entry; non-split callers leave the salt untouched → key unchanged.
     if (splitBit !== 0) {
       keySalt = (keySalt ^ ShaderDefine.MODEL_SPLIT_ENABLED) >>> 0;
+    }
+    // WIRE-MODEL-COLOR — MODEL_HAS_COLOR is bit 27, also above the device
+    // cache's 24-bit define window; fold it into the salt the same way so
+    // the model-colour variant gets a distinct device-cache entry.
+    if (modelColorBit !== 0) {
+      keySalt = (keySalt ^ ShaderDefine.MODEL_HAS_COLOR) >>> 0;
     }
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
@@ -2331,6 +2349,42 @@ class WebGPUModelPipelineCache {
       return false;
     }
     this._splitEnabled = enabled;
+    this._pipelines.clear();
+    this._pickPipelines.clear();
+    this._depthWritePipelines.clear();
+    this._velocityPipelines.clear();
+    this._classificationPipelines.clear();
+    this._pickHoverPipelines.clear();
+    this._pickPrecisePass1Pipelines.clear();
+    this._pickPrecisePass2Pipelines.clear();
+    this._pickMetadataPipelines.clear();
+    // Refresh the eager compatibility module fields so legacy callers
+    // never see a stale-variant module after a flip.
+    this._shaderModule_basic = this._getOrCreateShaderModule(0);
+    this._shaderModule = this._getOrCreateShaderModule(
+      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+    );
+    return true;
+  }
+
+  /**
+   * WIRE-MODEL-COLOR — mirror `defined(model.color)` each frame (the
+   * maybeUpdateForSplit pattern). When the flag flips, wipe every pipeline
+   * map (cached pipelines reference modules compiled with the wrong
+   * MODEL_HAS_COLOR state) and refresh the eagerly-built module fields.
+   * Cheap boolean compare on the steady path.
+   *
+   * @param {boolean} active defined(model.color)
+   * @returns {boolean} true when the flag flipped this call (callers use
+   *   this to drop per-primitive direct pipeline references, mirroring
+   *   the scene-format-generation invalidation).
+   */
+  maybeUpdateForModelColor(active) {
+    const enabled = active === true;
+    if (this._modelColorEnabled === enabled) {
+      return false;
+    }
+    this._modelColorEnabled = enabled;
     this._pipelines.clear();
     this._pickPipelines.clear();
     this._depthWritePipelines.clear();

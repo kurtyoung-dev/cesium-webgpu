@@ -79,6 +79,7 @@ import {
   MAX_CUSTOM_TEXTURES,
 } from "../../Scene/Model/CustomShaderWGSLPipelineStage.js";
 import Pass from "../Pass.js";
+import ColorBlendMode from "../../Scene/ColorBlendMode.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -161,7 +162,12 @@ const CAMERA_UNIFORM_SIZE = 320;
 //   floats 156-171: previousModelMatrix (mat4x4) — TAA Slice 2c (Batch 96)
 //   floats 172-175: motionFlags         (vec4: enabled, scale, _, _)
 //   floats 176-179: tileBatchFlags      (vec4: passClass, opaqueThreshold, _, _) — C-R1-TILE-BATCH (Batch 100)
-//   floats 180-191: reserved (texture transform extensions for KHR slots,
+//   floats 180-183: transmissionFactors  (vec4: factor, ior, _, _)
+//   floats 184-187: reserved (_pad_reserved8) — reused by WIRE-MODEL-COLOR:
+//                   model.color RGBA. Blend scalar rides motionFlags.w
+//                   (float 175). Read only by the `//>>ifdef
+//                   MODEL_HAS_COLOR` FS blocks; zero-filled otherwise.
+//   floats 188-191: reserved (texture transform extensions for KHR slots,
 //                             KHR_materials_pbrSpecularGlossiness lookups, etc.)
 const MATERIAL_UNIFORM_SIZE = 768;
 // Light uniform buffer layout (Audit B.3 -- Batch 131; Batch 134
@@ -2846,12 +2852,29 @@ function updateWebGPUModel(model, frameState) {
     (typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
       : 0.0) * (context?.drawingBufferWidth ?? 0.0);
+  // WIRE-MODEL-COLOR — mirror `defined(model.color)` into the per-model
+  // pipeline cache; a flip wipes pipelines so modules recompile
+  // with/without MODEL_HAS_COLOR (WebGL ModelColorPipelineStage parity).
+  // The blend scalar matches WebGL's `ColorBlendMode.getColorBlend`:
+  // 0 = HIGHLIGHT, 1 = REPLACE, (0,1] = MIX amount (0 reserved for
+  // HIGHLIGHT, so MIX clamps to EPSILON4).
+  const modelColor = model.color;
+  const modelHasColor = defined(modelColor);
+  const modelColorFlipped =
+    pipelineCache.maybeUpdateForModelColor(modelHasColor);
+  const modelColorBlend = modelHasColor
+    ? (ColorBlendMode.getColorBlend(
+        model.colorBlendMode,
+        model.colorBlendAmount,
+      ) ?? 0.0)
+    : 0.0;
   // A log-depth flip needs the SAME per-primitive direct-reference drop as
   // a scene-format change (pc.pipeline & friends point at wiped pipelines).
   const sceneFormatChanged =
     previousGen !== pipelineCache._sceneFormatGeneration ||
     logDepthFlipped ||
-    splitFlipped;
+    splitFlipped ||
+    modelColorFlipped;
   if (sceneFormatChanged) {
     const primKeys = Object.keys(cache.primitives);
     for (let i = 0; i < primKeys.length; i++) {
@@ -3666,6 +3689,19 @@ function updateWebGPUModel(model, frameState) {
       primCache.materialData[38] = modelSplitDirection;
       primCache.materialData[39] = modelSplitPositionPx;
 
+      // WIRE-MODEL-COLOR — model.color rides the material UB's reserved
+      // tail lane (floats 184-187, `_pad_reserved8`) and the blend scalar
+      // rides `motionFlags.w` (float 175). packMaterialUniforms zero-fills
+      // both just above, so the undefined-color default stays byte-
+      // identical; only the `//>>ifdef MODEL_HAS_COLOR` FS blocks read them.
+      if (modelHasColor) {
+        primCache.materialData[175] = modelColorBlend;
+        primCache.materialData[184] = modelColor.red;
+        primCache.materialData[185] = modelColor.green;
+        primCache.materialData[186] = modelColor.blue;
+        primCache.materialData[187] = modelColor.alpha;
+      }
+
       // Feature ID textures + batch texture (for per-feature styling).
       // C-R9-MODEL-FEATURE-PICK (Batch 101) — threads `context` +
       // `cache` (per-model cache) + a `pickPassActive` hint so
@@ -4441,6 +4477,18 @@ function updateWebGPUModel(model, frameState) {
         // command of a split batch-table model would render unsplit.
         primCache.materialDataTranslucent[38] = modelSplitDirection;
         primCache.materialDataTranslucent[39] = modelSplitPositionPx;
+        // WIRE-MODEL-COLOR — mirror the primary UB's model-colour lanes
+        // (floats 184-187 = _pad_reserved8, float 175 = motionFlags.w);
+        // packMaterialUniforms just zeroed them, so without this the
+        // derived translucent-class command of a coloured batch-table
+        // model would render untinted.
+        if (modelHasColor) {
+          primCache.materialDataTranslucent[175] = modelColorBlend;
+          primCache.materialDataTranslucent[184] = modelColor.red;
+          primCache.materialDataTranslucent[185] = modelColor.green;
+          primCache.materialDataTranslucent[186] = modelColor.blue;
+          primCache.materialDataTranslucent[187] = modelColor.alpha;
+        }
         // Mirror the post-pack instancing / featureId flag patch from
         // the primary buffer so the translucent UB observes the same
         // FLAG_HAS_INSTANCING / FLAG_HAS_FEATURE_ID_* / FLAG_HAS_BATCH_TABLE

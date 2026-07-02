@@ -696,6 +696,44 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `ModelPBRComplete.wgsl`.
    */
   MODEL_SPLIT_ENABLED: 1 << 26,
+
+  /**
+   * Model colour blend (WIRE-MODEL-COLOR) — the WebGPU sibling of WebGL's
+   * `ModelColorPipelineStage` / `ModelColorStageFS.glsl`. When set,
+   * `ModelPBRComplete.wgsl` activates its `//>>ifdef MODEL_HAS_COLOR`
+   * blocks: a module-scope `applyModelColor()` helper plus call sites in
+   * `fragmentMain` (main lit path, after the customShader hook — matching
+   * WebGL's ModelFS.glsl stage order lightingStage → cpuStylingStage →
+   * modelColorStage — and the unlit early-out) that blend `model.color`
+   * into the display-space colour with the exact GLSL math:
+   *   diffuse  = mix(diffuse, model_color.rgb, model_colorBlend);
+   *   diffuse *= mix(model_color.rgb, vec3(1.0), ceil(model_colorBlend));
+   *   alpha   *= model_color.a;
+   * where `model_colorBlend` is `ColorBlendMode.getColorBlend(mode, amount)`
+   * (0 = HIGHLIGHT, 1 = REPLACE, (0,1] = MIX amount).
+   *
+   * The two uniforms ride the material UB's historical reserved lanes
+   * (floats 184-187 `_pad_reserved8` = model.color RGBA, float 175
+   * `motionFlags.w` = colorBlend), so the struct layout / BGL / pipeline
+   * layout are unchanged — this is a render-MODE bit like
+   * `MODEL_SPLIT_ENABLED`, intentionally OUTSIDE `MATERIAL_DEFINE_MASK`.
+   *
+   * Per-model selection: `WebGPUModelRenderer` mirrors
+   * `defined(model.color)` into the per-model pipeline cache via
+   * `maybeUpdateForModelColor()` (the `maybeUpdateForSplit` pattern — a
+   * flip wipes pipelines so modules recompile with/without the bit). When
+   * clear (the default — `model.color` undefined), every gated block is
+   * stripped and the preprocessed module is byte-identical to the
+   * pre-model-color source.
+   *
+   * NOTE — bit ≥ 24: the device-level module-cache numeric key masks
+   * defines to 24 bits, so `WebGPUModelPipelineCache._getOrCreateShaderModule`
+   * folds this bit into the cache's `keySalt` when set (the Batch 476
+   * pattern, same as `MODEL_SPLIT_ENABLED`).
+   *
+   * Consumer: `ModelPBRComplete.wgsl`.
+   */
+  MODEL_HAS_COLOR: 1 << 27,
 } as const);
 
 /**

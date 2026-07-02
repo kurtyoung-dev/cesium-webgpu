@@ -240,7 +240,11 @@ struct MaterialUniforms {
   previousModelMatrix: mat4x4<f32>,
   // motionFlags.x: motion-vector output enabled (0 / 1)
   // motionFlags.y: motion vector scale (default 1.0)
-  // motionFlags.zw: reserved for slice 2d (sky reprojection / disocclusion tweaks)
+  // motionFlags.z: reserved for slice 2d — doubles as the metadata-debug
+  //   toggle (DP-H46a) when MODEL_HAS_METADATA is active.
+  // motionFlags.w: WIRE-MODEL-COLOR — `ColorBlendMode.getColorBlend(mode,
+  //   amount)` scalar (0 = HIGHLIGHT, 1 = REPLACE, (0,1] = MIX). Read only
+  //   by the `//>>ifdef MODEL_HAS_COLOR` blocks; zero otherwise.
   motionFlags: vec4<f32>,
   // C-R1-TILE-BATCH (Batch 100) — Cesium3DTileBatchTable per-feature
   // renderState support. The batch texture's per-feature RGBA carries
@@ -266,6 +270,9 @@ struct MaterialUniforms {
   //   y: ior (default 1.5 — index of refraction)
   //   z, w: reserved
   transmissionFactors: vec4<f32>,
+  // WIRE-MODEL-COLOR — historical reserved tail lane, reused to carry
+  // `model.color` RGBA. Read only by the `//>>ifdef MODEL_HAS_COLOR`
+  // blocks (applyModelColor); zero-filled otherwise.
   _pad_reserved8: vec4<f32>,
 };
 
@@ -2231,6 +2238,25 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
 // createClassificationPipeline) which build against the pick FB /
 // velocity FB / classification FB — NOT the scene FB — so they don't
 // need slot 1 declarations.
+//>>ifdef MODEL_HAS_COLOR
+// WIRE-MODEL-COLOR — model.color / colorBlendMode / colorBlendAmount blend
+// (WebGL `ModelColorStageFS.glsl` parity, exact math). The two uniforms ride
+// the material UB's historical reserved lanes (see the WIRE-MODEL-COLOR lane
+// writes in WebGPUModelRenderer.js): `_pad_reserved8` = model.color RGBA,
+// `motionFlags.w` = the `ColorBlendMode.getColorBlend(mode, amount)` scalar
+// (0 = HIGHLIGHT, 1 = REPLACE, (0,1] = MIX amount). HIGHLIGHT (blend 0) makes
+// the mix() a no-op and the ceil() select the multiply-by-colour term;
+// REPLACE/MIX (blend > 0) blend toward the colour and multiply by 1.
+fn applyModelColor(color: vec4<f32>) -> vec4<f32> {
+  let modelColor = material._pad_reserved8;
+  let colorBlend = material.motionFlags.w;
+  var diffuse = mix(color.rgb, modelColor.rgb, colorBlend);
+  let highlight = ceil(colorBlend);
+  diffuse = diffuse * mix(modelColor.rgb, vec3<f32>(1.0), highlight);
+  return vec4<f32>(diffuse, color.a * modelColor.a);
+}
+//>>endif
+
 struct FragOutput {
   @location(0) color: vec4<f32>,
   //>>ifdef CAPTURE_MODE
@@ -2406,6 +2432,12 @@ struct FragOutput {
     // roughness 0.5 placeholder since unlit has no material spec.
     var out: FragOutput;
     out.color = unlitWithEdge;
+    //>>ifdef MODEL_HAS_COLOR
+    // WIRE-MODEL-COLOR — WebGL runs modelColorStage for unlit materials too
+    // (ModelFS.glsl calls it unconditionally after lightingStage, and
+    // LIGHTING_UNLIT is just a lighting-stage mode).
+    out.color = applyModelColor(out.color);
+    //>>endif
     //>>ifdef CAPTURE_MODE
     //>>else
     out.normalRoughness = vec4<f32>(geomNormalEC, 0.5);
@@ -3336,6 +3368,14 @@ struct FragOutput {
     czm_customFragmentMain(csInput, &csMaterial);
     out.color = vec4<f32>(csMaterial.diffuse, csMaterial.alpha);
   }
+  //>>endif
+
+  //>>ifdef MODEL_HAS_COLOR
+  // WIRE-MODEL-COLOR — blend model.color into the display-space colour.
+  // Applied after the customShader hook, matching WebGL's ModelFS.glsl
+  // stage order (lightingStage → cpuStylingStage → modelColorStage); WebGL's
+  // lit colour is display-space (tonemapped) at that point too.
+  out.color = applyModelColor(out.color);
   //>>endif
 
   // DP-H46b — metadata data-path proof, now through GENERATED codegen.
