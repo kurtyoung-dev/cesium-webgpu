@@ -18,28 +18,24 @@
 //   u_southMercatorY        - precomputed `0.5 * log((1+sin(south))/(1-sin(south)))`
 //   u_oneOverMercatorHeight - `1.0 / (northMercatorY - southMercatorY)`
 //
-// CONVENTION LEDGER (see SHADER_PAIRS_LOCKSTEP.md)
-// The two backends have OPPOSITE source-texture V conventions, despite
-// both consuming the same Cesium pre-flipped ImageBitmap source:
+// CONVENTION LEDGER (see SHADER_PAIRS_LOCKSTEP.md) — corrected 2026-07-02
+// (GLOBE-POLAR-STRETCH). The two backends share the SAME source-texture V
+// convention (sampled v=0 = SOUTH of the imagery), reached by different
+// upload paths:
 //   - WebGL applies `UNPACK_FLIP_Y_WEBGL=true` at upload (Texture
-//     constructor default). Combined with the bottom-up OpenGL texture
-//     storage convention, source v=0 lands at SOUTH of the imagery.
+//     constructor default) to a pre-flipped ImageBitmap; combined with
+//     the bottom-up OpenGL texture storage convention, source v=0 lands
+//     at SOUTH of the imagery.
 //   - WebGPU applies no flip at upload (`copyExternalImageToTexture`
-//     default), and `imageOrientation:"flipY"` from createImageBitmap
-//     does NOT actually flip the underlying pixel buffer (it only
-//     changes presentation metadata, which copyExternalImageToTexture
-//     ignores). Combined with the top-down WebGPU pixel-row convention,
-//     source v=0 lands at NORTH of the imagery.
-// The downstream sampling in each FS therefore differs:
-//   - GLSL (this file): samples at (u, mercatorFraction) directly.
-//     south-target (mercatorFraction=0) → source v=0 = SOUTH content.
-//   - WGSL: samples at (u, 1 - mercatorFraction). south-target
-//     (mercatorFraction=0) → source v=1 = SOUTH content.
-// Both produce reprojected output textures whose downstream globe FS
-// sees v=0 = south. The shaders LOOK different at the final sample
-// line because the upload pipeline is different — this single
-// asymmetry is documented here and ledgered, and it's the ONLY
-// algorithmic divergence between the pair.
+//     default) to the same pre-flipped ImageBitmap; the
+//     `imageOrientation:"flipY"` IS baked into the pixels the copy
+//     consumes, so source v=0 lands at SOUTH there too (proven by the
+//     direct-Mercator-texture binding path rendering right-side-up).
+// Both FS bodies therefore sample at (u, mercatorFraction) directly and
+// are line-for-line identical. (Until 2026-07-02 the WGSL pair carried a
+// spurious double-flip based on a "flipY is metadata-only" theory; the
+// flips cancel only for equator-symmetric imagery tiles and produced the
+// far-zoom polar-stretch warp on asymmetric tiles.)
 
 uniform sampler2D u_texture;
 uniform float u_southLatitude;
@@ -69,10 +65,9 @@ void main()
     float mercatorY = 0.5 * log((1.0 + sinLat) / (1.0 - sinLat));
     float mercatorFraction = (mercatorY - u_southMercatorY) * u_oneOverMercatorHeight;
 
-    // Source v=0 holds SOUTH content on WebGL (see convention ledger
-    // above). Sample at (u, mercatorFraction) so south-target reads from
-    // source v=0 = SOUTH. WGSL counterpart computes `srcV = 1 -
-    // mercatorFraction` instead because its source v=0 = NORTH.
+    // Source v=0 holds SOUTH content on BOTH backends (see convention
+    // ledger above). Sample at (u, mercatorFraction) so south-target
+    // reads from source v=0 = SOUTH. The WGSL counterpart is identical.
     float srcV = mercatorFraction;
     out_FragColor = texture(u_texture, vec2(v_textureCoordinates.x, srcV));
 }

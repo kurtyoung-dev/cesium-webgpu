@@ -280,6 +280,7 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | Probe | What it covers |
 | --- | --- |
 | `probe-globe-underground.mjs` | **GLOBE-UNDERGROUND-COLOR acceptance + regression gate (2026-07-02).** Camera 30 km below the surface: (a) red `globe.undergroundColor` + custom `undergroundColorAlphaByDistance` ramp vs WebGL, (b) upstream-default underground look, (c) above-ground default off-gate. Judged relative to the above-default standing residual (imagery-LOD/atmosphere, ~22%). Guards the underground tint AND the Bug 487 fixes (no-cull pipeline-name aliasing, fog-off-underground, skirt suppression). |
+| `probe-globe-polar-stretch.mjs` | **GLOBE-POLAR-STRETCH acceptance + regression gate (2026-07-02).** Three zooms (mid 2 Mm / far 25 Mm / extreme 55 Mm), WebGL vs WebGPU, default viewer. Disc-normalized latitude-band metrics (ice/Greenland centroid Y, top-half land-profile shift, ice area ratio) + mismatch ceilings. Guards the `ReprojectWebMercator.wgsl` orientation fix — the far-zoom latitude-mirror warp of reprojected (useWebMercatorT=false) tiles. Run after ANY change to the reprojection chain or imagery texture variant selection. |
 | `probe-wgs84.mjs` | WGS84 ellipsoid + default imagery at orbit and 1Mm-close |
 | `probe-wgs84-quick.mjs` | Fast orbit-only diff for the catastrophic-rendering case |
 | `probe-wgs84-atmo.mjs` | Ground-atmosphere drape internals (uses globeFragmentDebug modes) |
