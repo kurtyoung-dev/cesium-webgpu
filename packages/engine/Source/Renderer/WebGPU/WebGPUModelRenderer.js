@@ -81,6 +81,7 @@ import {
 } from "../../Scene/Model/CustomShaderWGSLPipelineStage.js";
 import Pass from "../Pass.js";
 import ColorBlendMode from "../../Scene/ColorBlendMode.js";
+import SceneMode from "../../Scene/SceneMode.js";
 // WIRE-MODEL-SILHOUETTE — shared silhouette-ID counter (WebGL's
 // ModelSilhouettePipelineStage assigns `model._silhouetteId` from this
 // static counter; on WebGPU the same stage runs during the shared
@@ -3044,10 +3045,40 @@ function updateWebGPUModel(model, frameState) {
   // e.g. CesiumAir.glb collapsing to a few pixels at scale=4) and with the
   // wrong axis orientation. The same field is what the upstream WebGL
   // ModelDrawCommand uses (see ModelSceneGraph.js:823).
-  const modelMatrix =
-    model._sceneGraph?._computedModelMatrix ||
-    model.modelMatrix ||
-    Matrix4.IDENTITY;
+  // MODEL-SCENE-MODES — in SCENE2D / COLUMBUS_VIEW / MORPHING use the
+  // scene graph's projected-frame matrix instead. WebGL's
+  // ModelMatrixUpdateStage (ModelMatrixUpdateStage.js:31-39) swaps to
+  // `_computedModelMatrix2D` (Transforms.basisTo2D over the 3D matrix,
+  // computed by ModelSceneGraph.updateModelMatrix whenever the mode or
+  // model matrix changes — Model.js updateSceneMode sets
+  // `_updateModelMatrix = true` on every mode flip, so it is never stale
+  // here). All downstream consumers (packCameraUniforms RTE encode,
+  // per-node matrices, shadow-cast UB, edge-emitter MVP, TAA prev-matrix)
+  // derive from this one local, so the substitution is complete.
+  // `uniformState.view/projection/cameraPosition` are already in the same
+  // projected frame in these modes, keeping the RTE chain consistent.
+  // Known honest-partials vs WebGL (deferred, matching the WebGL opt-in
+  // surface): `projectTo2D:true` accurate-2D vertex reprojection
+  // (MORPH-MODEL-PROJECT2D) and the SCENE2D IDL-crossing duplicate
+  // command (ModelDrawCommand.derive2DCommand).
+  const use2DMatrix =
+    frameState.mode !== SceneMode.SCENE3D &&
+    defined(model._sceneGraph?._computedModelMatrix2D);
+  const modelMatrix = use2DMatrix
+    ? model._sceneGraph._computedModelMatrix2D
+    : model._sceneGraph?._computedModelMatrix ||
+      model.modelMatrix ||
+      Matrix4.IDENTITY;
+  // Command bounding volume must live in the same frame as the camera —
+  // Scene's createPotentiallyVisibleSet culls/bins by it, so an ECEF
+  // sphere under a 2D/CV culling volume would cull the model outright.
+  // WebGL's ModelDrawCommand carries a per-primitive 2D-transformed BV;
+  // the model-level `_boundingSphere2D` (computed alongside
+  // `_computedModelMatrix2D`) is the conservative equivalent.
+  const commandBoundingVolume =
+    use2DMatrix && defined(model._sceneGraph._boundingSphere2D)
+      ? model._sceneGraph._boundingSphere2D
+      : model.boundingSphere;
   packCameraUniforms(cache.cameraData, frameState, modelMatrix);
   device.queue.writeBuffer(
     cache.cameraBuffer.buffer,
@@ -4140,7 +4171,7 @@ function updateWebGPUModel(model, frameState) {
         instanceCount: instanceCount,
         pass: primaryPass,
         owner: model,
-        boundingVolume: model.boundingSphere,
+        boundingVolume: commandBoundingVolume,
         modelMatrix: modelMatrix,
         cull: model._cull ?? true,
         renderState: activeRenderState,
@@ -4296,7 +4327,7 @@ function updateWebGPUModel(model, frameState) {
           instanceCount: instanceCount,
           pass: primaryPass,
           owner: model,
-          boundingVolume: model.boundingSphere,
+          boundingVolume: commandBoundingVolume,
           modelMatrix: modelMatrix,
           cull: model._cull ?? true,
           renderState: modelRenderState,
@@ -4464,7 +4495,7 @@ function updateWebGPUModel(model, frameState) {
             instanceCount: instanceCount,
             pass: primaryPass,
             owner: model,
-            boundingVolume: model.boundingSphere,
+            boundingVolume: commandBoundingVolume,
             modelMatrix: modelMatrix,
             cull: model._cull ?? true,
             renderState: modelRenderState,
@@ -4525,7 +4556,7 @@ function updateWebGPUModel(model, frameState) {
           instanceCount: instanceCount,
           pass: primaryPass,
           owner: model,
-          boundingVolume: model.boundingSphere,
+          boundingVolume: commandBoundingVolume,
           modelMatrix: modelMatrix,
           cull: model._cull ?? true,
           renderState: modelRenderState,
@@ -4669,7 +4700,7 @@ function updateWebGPUModel(model, frameState) {
           instanceCount: instanceCount,
           pass: silhouettePassTranslucent ? Pass.TRANSLUCENT : primaryPass,
           owner: model,
-          boundingVolume: model.boundingSphere,
+          boundingVolume: commandBoundingVolume,
           modelMatrix: modelMatrix,
           cull: model._cull ?? true,
           // Stencil reference for the NOT-EQUAL cutout — same value the
@@ -4819,7 +4850,7 @@ function updateWebGPUModel(model, frameState) {
           instanceCount: instanceCount,
           pass: Pass.TRANSLUCENT,
           owner: model,
-          boundingVolume: model.boundingSphere,
+          boundingVolume: commandBoundingVolume,
           modelMatrix: modelMatrix,
           cull: model._cull ?? true,
           renderState: modelRenderState,
@@ -5089,7 +5120,7 @@ function updateWebGPUModel(model, frameState) {
             instanceCount: 1,
             pass: edgePass,
             owner: model,
-            boundingVolume: model.boundingSphere,
+            boundingVolume: commandBoundingVolume,
             modelMatrix: modelMatrix,
             cull: model._cull ?? true,
           });
