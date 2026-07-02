@@ -49,7 +49,10 @@ reconcile. Byte-exact WebGL↔WebGPU parity is proven separately by `probe-dp46e
 **The DP-H46 epic (a–f) is closed.**
 
 **Remaining follow-ups (post-epic, tracked in `ROADMAP_AND_DEFERRED_WORK.md`, not blocking):**
-from b — full multi-component ATTRIBUTE transport (today only the first scalar over `@location(9)`);
+from b — ~~full multi-component ATTRIBUTE transport~~ **CLOSED 2026-07-02 (METADATA-MULTICOMPONENT):
+`@location(9)` widened to `vec4<f32>` — up to four components per vertex (VEC2/3/4 + MAT2 full;
+MAT3/4 still first-four-only), component-wise offset/scale in `constructFromTransport`, verified by
+`probe-metadata-multicomponent.mjs` (VEC3 `BoxVec3PropertyAttributes` asset)**;
 from c — multi-byte component (UINT16/32) channel-packing for property TEXTURES; from d —
 TEXTURE-sourced + instance/implicit feature-ID property TABLES (only the ATTRIBUTE feature-ID path is
 wired today — the dominant b3dm/BuildingsMetadata case) and VS-stage table reads (today FS-only display);

@@ -3490,24 +3490,26 @@ function updateWebGPUModel(model, frameState) {
         }
       }
       // DP-H46a (first increment of the DP-H46 metadata epic) — resolve
-      // the primitive's EXT_structural_metadata property-ATTRIBUTE scalar
-      // here (model + glTFPrimitive in scope), and stash it on `geometry`
-      // so `ensurePrimitiveCache` can upload it into vertex slot 9 + flip
-      // the MODEL_HAS_METADATA variant — exactly mirroring how
-      // `featureId0Data` threads through to slot 8. Resolution is gated on
-      // `model.structuralMetadata` being defined AND the primitive mapping
-      // to a property attribute with readable per-vertex data, so
-      // non-metadata models leave `geometry.metadataData` null and stay
-      // byte-identical. `resolveMetadataAttributeData` short-circuits when
-      // structural metadata is absent (the common case), so the per-frame
-      // cost on non-metadata models is one `defined()` check.
+      // the primitive's EXT_structural_metadata property-ATTRIBUTE value
+      // (vec4-packed since METADATA-MULTICOMPONENT — up to four
+      // components per vertex) here (model + glTFPrimitive in scope), and
+      // stash it on `geometry` so `ensurePrimitiveCache` can upload it
+      // into vertex slot 9 + flip the MODEL_HAS_METADATA variant —
+      // exactly mirroring how `featureId0Data` threads through to slot 8.
+      // Resolution is gated on `model.structuralMetadata` being defined
+      // AND the primitive mapping to a property attribute with readable
+      // per-vertex data, so non-metadata models leave
+      // `geometry.metadataData` null and stay byte-identical.
+      // `resolveMetadataAttributeData` short-circuits when structural
+      // metadata is absent (the common case), so the per-frame cost on
+      // non-metadata models is one `defined()` check.
       if (defined(glTFPrimitive)) {
-        const metadataScalar = resolveMetadataAttributeData(
+        const metadataAttribute = resolveMetadataAttributeData(
           model,
           glTFPrimitive,
         );
-        if (defined(metadataScalar)) {
-          geometry.metadataData = metadataScalar.data;
+        if (defined(metadataAttribute)) {
+          geometry.metadataData = metadataAttribute.data;
           geometry.hasMetadata = true;
         }
         // DP-H46c — resolve the property-TEXTURE layout (the shared structure

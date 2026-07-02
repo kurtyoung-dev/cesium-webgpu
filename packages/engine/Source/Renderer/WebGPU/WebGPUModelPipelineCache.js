@@ -703,11 +703,14 @@ function createVertexBufferLayout(
     });
   }
   if (hasMetadata) {
-    // Slot 9: metadataValue (f32) — DP-H46a. Per-vertex scalar from an
-    // EXT_structural_metadata property ATTRIBUTE. Variant-conditional on
-    // MODEL_HAS_METADATA so non-metadata models never allocate it; the
-    // shader's `//>>ifdef MODEL_HAS_METADATA` block strips the matching
-    // `@location(9)` declaration when the flag is unset. The
+    // Slot 9: metadataValue (vec4<f32>) — DP-H46a, widened to float32x4 by
+    // METADATA-MULTICOMPONENT so VEC2/3/4 (and MAT2) property attributes
+    // transport every component (scalars zero-pad the tail; the packing is
+    // `WebGPUModelMetadata.resolvePropertyAttributeVec4`). Per-vertex value
+    // from an EXT_structural_metadata property ATTRIBUTE.
+    // Variant-conditional on MODEL_HAS_METADATA so non-metadata models never
+    // allocate it; the shader's `//>>ifdef MODEL_HAS_METADATA` block strips
+    // the matching `@location(9)` declaration when the flag is unset. The
     // BoxTexturedWithPropertyAttributes proof model uses 0..6 + this slot
     // = 8 buffers (no texCoord1, no featureId0), fitting Edge's
     // `maxVertexBuffers = 8` cap. A primitive that simultaneously carries
@@ -715,9 +718,9 @@ function createVertexBufferLayout(
     // scope for DP-H46a (no such test asset); DP-H46b's generated path
     // can pack metadata into fewer slots if that combination arises.
     layout.push({
-      arrayStride: 4,
+      arrayStride: 16,
       stepMode: "vertex",
-      attributes: [{ shaderLocation: 9, offset: 0, format: "float32" }],
+      attributes: [{ shaderLocation: 9, offset: 0, format: "float32x4" }],
     });
   }
   return layout;

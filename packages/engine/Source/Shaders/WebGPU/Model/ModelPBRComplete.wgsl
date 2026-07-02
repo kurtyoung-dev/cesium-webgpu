@@ -767,19 +767,20 @@ struct VertexInput {
   //>>ifdef MODEL_HAS_FEATURE_ID_0
   @location(8) featureId0: f32,
   //>>endif
-  // DP-H46a (first increment of the DP-H46 metadata epic) — scalar
-  // property-ATTRIBUTE value from EXT_structural_metadata, uploaded by
+  // DP-H46a (first increment of the DP-H46 metadata epic), widened to
+  // vec4 by METADATA-MULTICOMPONENT — property-ATTRIBUTE value from
+  // EXT_structural_metadata, uploaded by
   // `WebGPUModelMetadata.ensureMetadataResources` into vertex buffer
   // slot 9. Variant-conditional on MODEL_HAS_METADATA so non-metadata
   // models never allocate the slot (keeps the common-case layout under
-  // Edge's `maxVertexBuffers = 8` cap). The renderer extracts the .x
-  // component of the first GPU-compatible property attribute (normalized
-  // integers are already decoded to f32 on the CPU side per the glTF
-  // `accessor.normalized` rule) and packs it per-vertex. DP-H46b
-  // replaces this single-scalar transport with a generated Metadata
-  // struct populated by codegen.
+  // Edge's `maxVertexBuffers = 8` cap). The renderer packs up to FOUR
+  // components of the first GPU-compatible property attribute per vertex
+  // (normalized integers are already decoded to f32 on the CPU side per
+  // the glTF `accessor.normalized` rule); scalars zero-pad `.yzw`. The
+  // generated `initializeMetadata` (MetadataWGSLPipelineStage) swizzles
+  // the transported components into the property's real WGSL type.
   //>>ifdef MODEL_HAS_METADATA
-  @location(9) metadataValue: f32,
+  @location(9) metadataValue: vec4<f32>,
   //>>endif
 };
 
@@ -818,13 +819,14 @@ struct VertexOutput {
   // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
   @location(11) v_logDepth: f32,
   //>>endif
-  // DP-H46a — flat-interpolated scalar metadata value carried VS→FS.
+  // DP-H46a — flat-interpolated metadata value carried VS→FS (vec4 since
+  // METADATA-MULTICOMPONENT: up to four property components per vertex).
   // @interpolate(flat) matches property-attribute semantics (a metadata
   // value is per-vertex; flat picks the provoking vertex). Location 12
   // sits above featureId0 (10) and v_logDepth (11). Variant-conditional
   // so the OFF path is byte-identical.
   //>>ifdef MODEL_HAS_METADATA
-  @location(12) @interpolate(flat) metadataValue: f32,
+  @location(12) @interpolate(flat) metadataValue: vec4<f32>,
   //>>endif
 };
 
@@ -1456,11 +1458,11 @@ struct FragmentInput {
   //>>ifdef LOG_DEPTH
   @location(11) v_logDepth: f32,
   //>>endif
-  // DP-H46a — interpolated (flat) scalar metadata value. Stripped when
-  // MODEL_HAS_METADATA is clear so the FragmentInput layout is
-  // byte-identical for non-metadata models.
+  // DP-H46a — interpolated (flat) metadata value (vec4 since
+  // METADATA-MULTICOMPONENT). Stripped when MODEL_HAS_METADATA is clear
+  // so the FragmentInput layout is byte-identical for non-metadata models.
   //>>ifdef MODEL_HAS_METADATA
-  @location(12) @interpolate(flat) metadataValue: f32,
+  @location(12) @interpolate(flat) metadataValue: vec4<f32>,
   //>>endif
   @builtin(front_facing) frontFacing: bool,
 };
@@ -3468,6 +3470,14 @@ struct FragOutput {
   // below are mutually exclusive (nested ifdef): attribute → texture-only →
   // table-only. `metadataDebugScalar` prefers attribute, then texture, then
   // table, so each path paints a value that VARIES with the resolved metadata.
+  // METADATA-MULTICOMPONENT — the debug paint goes through the GENERATED
+  // `metadataDebugColor(metadata)` accessor: for a scalar (or matrix)
+  // transported property it emits the historical red/blue gradient
+  // `vec4(s, 0, 1-s, 1)` byte-for-byte, and for a VEC2/3/4 transported
+  // property it paints the RAW per-component values as RGB — so a
+  // Playwright probe can confirm every component round-tripped, not just
+  // `.x`. `initializeMetadata` now takes the vec4 transport (texture-/
+  // table-only branches pass a zero vec4).
   //>>ifdef MODEL_HAS_METADATA
   if (material.motionFlags.z > 0.5) {
     //>>ifdef MODEL_HAS_TEXCOORD_1
@@ -3476,8 +3486,7 @@ struct FragOutput {
     let metaTC1 = input.texCoord0;
     //>>endif
     let metadata = initializeMetadata(input.metadataValue, input.texCoord0, metaTC1, input.featureId0);
-    let metaScalar = metadataDebugScalar(metadata);
-    out.color = vec4<f32>(metaScalar, 0.0, 1.0 - metaScalar, 1.0);
+    out.color = metadataDebugColor(metadata);
   }
   //>>else
   //>>ifdef MODEL_HAS_PROPERTY_TEXTURES
@@ -3487,9 +3496,8 @@ struct FragOutput {
     //>>else
     let metaTC1 = input.texCoord0;
     //>>endif
-    let metadata = initializeMetadata(0.0, input.texCoord0, metaTC1, input.featureId0);
-    let metaScalar = metadataDebugScalar(metadata);
-    out.color = vec4<f32>(metaScalar, 0.0, 1.0 - metaScalar, 1.0);
+    let metadata = initializeMetadata(vec4<f32>(0.0), input.texCoord0, metaTC1, input.featureId0);
+    out.color = metadataDebugColor(metadata);
   }
   //>>else
   //>>ifdef MODEL_HAS_PROPERTY_TABLES
@@ -3497,9 +3505,8 @@ struct FragOutput {
     // Table-only model (no property attribute, no property texture). The table
     // is read at the per-fragment feature ID; texCoords are passed through but
     // unused by the generated table accessors.
-    let metadata = initializeMetadata(0.0, input.texCoord0, input.texCoord0, input.featureId0);
-    let metaScalar = metadataDebugScalar(metadata);
-    out.color = vec4<f32>(metaScalar, 0.0, 1.0 - metaScalar, 1.0);
+    let metadata = initializeMetadata(vec4<f32>(0.0), input.texCoord0, input.texCoord0, input.featureId0);
+    out.color = metadataDebugColor(metadata);
   }
   //>>endif
   //>>endif
@@ -3820,7 +3827,7 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   //>>ifdef MODEL_HAS_METADATA
   let pickMetadata = initializeMetadata(input.metadataValue, input.texCoord0, metaPickTC1, input.featureId0);
   //>>else
-  let pickMetadata = initializeMetadata(0.0, input.texCoord0, metaPickTC1, input.featureId0);
+  let pickMetadata = initializeMetadata(vec4<f32>(0.0), input.texCoord0, metaPickTC1, input.featureId0);
   //>>endif
 
   return metadataPickingStage(pickMetadata);

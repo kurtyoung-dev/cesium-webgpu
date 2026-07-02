@@ -19,13 +19,13 @@
  * Scope: property-ATTRIBUTES (DP-H46b) + property TEXTURES (DP-H46c).
  * Property TABLES (DP-H46d) are not yet generated.
  *
- * Property ATTRIBUTES (DP-H46b): transport is the DP-H46a single-scalar
- * vertex path (`@location(9) metadataValue: f32`): the `.x` (first) component
- * of the first GPU-compatible property attribute reaches the shader. The
- * generated struct names its field after the REAL resolved property and
- * applies the property's offset/scale via baked WGSL constants (mirroring
- * `czm_valueTransform`). Multi-component / full-vector transport over
- * additional vertex slots is later work (see DP-H46_METADATA_DESIGN.md).
+ * Property ATTRIBUTES (DP-H46b + METADATA-MULTICOMPONENT): transport is the
+ * vec4 vertex path (`@location(9) metadataValue: vec4<f32>`): up to FOUR
+ * components of the first GPU-compatible property attribute reach the shader
+ * (SCALAR pads, VEC2/3/4 and MAT2 transport fully; MAT3/MAT4 still carry only
+ * their first four elements). The generated struct names its field after the
+ * REAL resolved property and applies the property's offset/scale via baked
+ * WGSL constants component-wise (mirroring `czm_valueTransform`).
  *
  * Property TEXTURES (DP-H46c): sampled in the FRAGMENT stage at the property's
  * interpolated `texCoord`. The chunk declares one (texture, sampler) binding
@@ -77,9 +77,10 @@ import {
  * primitive AND whose class type maps to a WGSL type are included (so the
  * generated struct only declares fields the shader can populate).
  *
- * The FIRST element of the returned array is the property DP-H46a's
- * single-scalar transport actually carries (its `.x`), so the codegen and
- * the GPU upload agree on which property the `@location(9)` slot feeds.
+ * The FIRST element of the returned array is the property the vec4 vertex
+ * transport actually carries (up to four components —
+ * METADATA-MULTICOMPONENT), so the codegen and the GPU upload agree on which
+ * property the `@location(9)` slot feeds.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
@@ -147,39 +148,107 @@ function getPropertyAttributeFields(model, primitive) {
 }
 
 /**
- * Build a WGSL expression that constructs a value of `wgslType` whose FIRST
- * component is `scalarExpr` (an `f32`) and whose remaining components are
- * `0.0`. This bridges DP-H46a's single-scalar transport into the real
- * property field type: a `vec2<f32>` property is populated as
- * `vec2<f32>(scalar, 0.0)`, a `mat2x2<f32>` as `mat2x2<f32>(scalar, 0, 0, 0)`,
- * etc. Full per-component transport (additional vertex slots) is later work.
+ * METADATA-MULTICOMPONENT — index a possibly-array offset/scale by scalar
+ * component. Class-property offset/scale are stored as flat `number[]` (or a
+ * plain number for scalars); component `i` is `value[i]`. Mirrors
+ * `transformComponentAt` in MetadataWGSLHelpers (kept local — that one is
+ * private to the pick builder).
+ *
+ * @param {number|number[]|undefined} value
+ * @param {number} componentIndex
+ * @returns {number}
+ * @private
+ */
+function componentAt(value, componentIndex) {
+  if (Array.isArray(value)) {
+    if (value.length === 1) {
+      return value[0];
+    }
+    return componentIndex < value.length ? value[componentIndex] : 0;
+  }
+  return defined(value) ? value : 0;
+}
+
+/**
+ * Build a WGSL expression that constructs a value of `wgslType` from the
+ * vec4 transport (`vecExpr`, the `@location(9)` per-vertex value), applying
+ * the property's offset/scale value transform component-wise.
+ *
+ * METADATA-MULTICOMPONENT — the transport carries up to FOUR components of
+ * the property (see `WebGPUModelMetadata.resolvePropertyAttributeVec4`), so:
+ *
+ *   - `f32`        → `vecExpr.x`
+ *   - `vec2<f32>`  → `vecExpr.xy`      (both components real)
+ *   - `vec3<f32>`  → `vecExpr.xyz`
+ *   - `vec4<f32>`  → `vecExpr`
+ *   - `mat2x2<f32>`→ all four components (column-major, matching the glTF
+ *                    accessor's column-major element order)
+ *   - `mat3x3/mat4x4` → first four components, rest zero (a full matrix
+ *                    needs >1 vertex slot — still deferred)
+ *   - integer families → converted from the transported f32 numeric values
+ *                    (the CPU decode keeps unnormalized ints numeric; the
+ *                    EXT_structural_metadata spec forbids offset/scale on
+ *                    non-float-interpretable types, so no transform)
+ *
+ * The value transform (`czm_valueTransform` parity — `scale * value +
+ * offset`) is applied per component: for scalar/vecN via
+ * {@link applyValueTransform} (WGSL `*`/`+` are component-wise on vectors),
+ * and for matrices per element (WGSL `mat * mat` is a matrix product, NOT
+ * component-wise, so the transform is baked into each constructor argument).
  *
  * @param {string} wgslType
- * @param {string} scalarExpr a WGSL `f32` expression
+ * @param {string} vecExpr a WGSL `vec4<f32>` expression (the transport)
+ * @param {MetadataClassProperty} classProperty
  * @returns {string}
  * @private
  */
-function constructFromScalar(wgslType, scalarExpr) {
+function constructFromTransport(wgslType, vecExpr, classProperty) {
   if (wgslType === "f32") {
-    return scalarExpr;
+    return applyValueTransform(`${vecExpr}.x`, "f32", classProperty);
   }
-  // vecN<f32>
+  // vecN<f32> — swizzle the transported components, transform component-wise.
   const vecMatch = /^vec([234])<f32>$/.exec(wgslType);
   if (vecMatch) {
     const n = parseInt(vecMatch[1], 10);
-    const comps = [scalarExpr, ...Array(n - 1).fill("0.0")];
-    return `${wgslType}(${comps.join(", ")})`;
+    const raw = n === 4 ? vecExpr : `${vecExpr}.${"xyzw".slice(0, n)}`;
+    return applyValueTransform(raw, wgslType, classProperty);
   }
-  // matNxN<f32>
+  // Integer families — construct from the transported numeric floats. No
+  // value transform (spec forbids offset/scale on integer-valued types).
+  if (wgslType === "i32" || wgslType === "u32") {
+    return `${wgslType}(${vecExpr}.x)`;
+  }
+  const intVecMatch = /^vec([234])<[iu]32>$/.exec(wgslType);
+  if (intVecMatch) {
+    const n = parseInt(intVecMatch[1], 10);
+    const raw = n === 4 ? vecExpr : `${vecExpr}.${"xyzw".slice(0, n)}`;
+    return `${wgslType}(${raw})`;
+  }
+  // matNxN<f32> — fill the first up-to-4 elements from the transport
+  // (column-major), zero the rest; bake the per-element transform.
   const matMatch = /^mat([234])x\1<f32>$/.exec(wgslType);
   if (matMatch) {
     const n = parseInt(matMatch[1], 10);
     const total = n * n;
-    const comps = [scalarExpr, ...Array(total - 1).fill("0.0")];
+    const hasTransform = classProperty.hasValueTransform === true;
+    const comps = [];
+    for (let k = 0; k < total; k++) {
+      if (k < 4) {
+        const raw = `${vecExpr}.${"xyzw".charAt(k)}`;
+        if (hasTransform) {
+          const offset = componentAt(classProperty.offset, k);
+          const scale = componentAt(classProperty.scale, k);
+          comps.push(`(${floatLit(scale)} * ${raw} + ${floatLit(offset)})`);
+        } else {
+          comps.push(raw);
+        }
+      } else {
+        comps.push("0.0");
+      }
+    }
     return `${wgslType}(${comps.join(", ")})`;
   }
-  // Integer families (unreachable from the float-only transport path today,
-  // but keep the codegen total): construct from a converted scalar.
+  // Unknown type — zero-construct (keeps the codegen total).
   return `${wgslType}()`;
 }
 
@@ -325,17 +394,22 @@ function getPropertyTableFields(model, primitive, usedFieldNames) {
  *   2. `<type>MetadataClass` / `<type>MetadataStatistics` structs (DP-H46d) for
  *      each distinct property type (mirrors `declareMetadataTypeStructs`), then
  *      `struct Metadata { <field per property attribute + texture + table> }`.
- *   3. `fn initializeMetadata(metadataValue: f32, texCoord0: vec2<f32>,
+ *   3. `fn initializeMetadata(metadataValue: vec4<f32>, texCoord0: vec2<f32>,
  *      texCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata` — assigns the
- *      property-ATTRIBUTE transported scalar (offset/scale applied), SAMPLES
- *      each property TEXTURE at its texCoord (DP-H46c), and `textureLoad`s each
- *      property TABLE row at `(featureId, propertyInfoIndex)` then unpacks +
- *      offset/scales (DP-H46d).
+ *      property-ATTRIBUTE vec4 transport into the property's real WGSL type
+ *      (all carried components, offset/scale applied component-wise —
+ *      METADATA-MULTICOMPONENT), SAMPLES each property TEXTURE at its texCoord
+ *      (DP-H46c), and `textureLoad`s each property TABLE row at
+ *      `(featureId, propertyInfoIndex)` then unpacks + offset/scales (DP-H46d).
  *   4. `fn metadataDebugScalar(metadata: Metadata) -> f32` — returns a scalar
  *      proof value in `[0,1]`: the RAW transported attribute scalar when a
  *      property attribute exists, else the first property-texture/-table
  *      property's first component (so the debug override renders a value that
  *      VARIES with the metadata).
+ *   5. `fn metadataDebugColor(metadata: Metadata) -> vec4<f32>` — the FS debug
+ *      paint (METADATA-MULTICOMPONENT): raw per-component RGB for a VEC2/3/4
+ *      transported property; the historical `vec4(s, 0, 1-s, 1)` gradient
+ *      around `metadataDebugScalar` for every other shape.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
@@ -369,9 +443,9 @@ function generateMetadataWGSL(model, primitive) {
   }
 
   // The transported attribute property is the FIRST resolvable attribute field
-  // — matches `WebGPUModelMetadata.resolveMetadataAttributeData`, which
-  // extracts the `.x` of the first GPU-compatible property attribute into
-  // vertex slot 9. May be undefined for texture-/table-only models.
+  // — matches `WebGPUModelMetadata.resolveMetadataAttributeData`, which packs
+  // up to four components of the first GPU-compatible property attribute into
+  // vertex slot 9 (vec4). May be undefined for texture-/table-only models.
   const transported =
     attributeFields.length > 0 ? attributeFields[0] : undefined;
 
@@ -446,23 +520,26 @@ function generateMetadataWGSL(model, primitive) {
   // 3. initializeMetadata. Texture sampling needs the interpolated texCoords,
   //    so the signature carries texCoord0 + texCoord1 (texCoord1 falls back to
   //    texCoord0 at the call site when the primitive lacks TEXCOORD_1).
-  //    `metadataValue` is the attribute vertex scalar (0.0 for texture-/table-
-  //    only). `metadataFeatureId` is the per-vertex feature ID (flat) that
-  //    indexes the property-table COLUMN (0.0 when the primitive has no table).
+  //    `metadataValue` is the vec4 attribute transport — up to four components
+  //    of the first GPU-compatible property attribute (zero vec4 for texture-/
+  //    table-only). `metadataFeatureId` is the per-vertex feature ID (flat)
+  //    that indexes the property-table COLUMN (0.0 when the primitive has no
+  //    table).
   lines.push(
-    "fn initializeMetadata(metadataValue: f32, metadataTexCoord0: vec2<f32>, metadataTexCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata {",
+    "fn initializeMetadata(metadataValue: vec4<f32>, metadataTexCoord0: vec2<f32>, metadataTexCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata {",
   );
   lines.push("  var metadata: Metadata;");
-  // Attribute fields.
+  // Attribute fields. METADATA-MULTICOMPONENT — the transported property is
+  // constructed from the vec4 transport with every carried component real
+  // (offset/scale applied component-wise).
   for (let i = 0; i < attributeFields.length; i++) {
     const f = attributeFields[i];
     if (f === transported) {
-      const transformed = applyValueTransform(
+      const constructed = constructFromTransport(
+        f.wgslType,
         "metadataValue",
-        "f32",
         f.classProperty,
       );
-      const constructed = constructFromScalar(f.wgslType, `(${transformed})`);
       lines.push(`  metadata.${f.fieldName} = ${constructed};`);
     } else {
       lines.push(`  metadata.${f.fieldName} = ${zeroLiteral(f.wgslType)};`);
@@ -568,6 +645,38 @@ function generateMetadataWGSL(model, primitive) {
   }
   lines.push("fn metadataDebugScalar(metadata: Metadata) -> f32 {");
   lines.push(`  return ${debugBody};`);
+  lines.push("}");
+  lines.push("");
+
+  // 5. metadataDebugColor — the debug-paint accessor the FS call site uses
+  //    (METADATA-MULTICOMPONENT). For a VEC2/3/4 transported property it
+  //    paints the RAW per-component values as RGB (offset/scale inverted per
+  //    component) so all transported components are visually verifiable; for
+  //    every other shape it wraps `metadataDebugScalar` in the historical
+  //    red/blue gradient `vec4(s, 0, 1-s, 1)` — byte-identical paint to the
+  //    pre-multicomponent path for scalar/matrix/texture/table proofs.
+  lines.push("fn metadataDebugColor(metadata: Metadata) -> vec4<f32> {");
+  const vecMatch = defined(transported)
+    ? /^vec([234])<f32>$/.exec(transported.wgslType)
+    : null;
+  if (vecMatch) {
+    const n = parseInt(vecMatch[1], 10);
+    const comps = [];
+    for (let c = 0; c < 3; c++) {
+      if (c < n) {
+        const compExpr = `metadata.${transported.fieldName}.${"xyz".charAt(c)}`;
+        comps.push(
+          invertValueTransformComponent(compExpr, transported.classProperty, c),
+        );
+      } else {
+        comps.push("0.0");
+      }
+    }
+    lines.push(`  return vec4<f32>(${comps.join(", ")}, 1.0);`);
+  } else {
+    lines.push("  let s = metadataDebugScalar(metadata);");
+    lines.push("  return vec4<f32>(s, 0.0, 1.0 - s, 1.0);");
+  }
   lines.push("}");
   lines.push("");
 
@@ -930,6 +1039,36 @@ function invertValueTransform(valueExpr, classProperty) {
   // first scalar's inverse.
   const offset = firstScalar(classProperty.offset);
   const scale = firstScalar(classProperty.scale);
+  if (scale === 0) {
+    return valueExpr;
+  }
+  return `((${valueExpr} - ${floatLit(offset)}) / ${floatLit(scale)})`;
+}
+
+/**
+ * METADATA-MULTICOMPONENT — per-component sibling of
+ * {@link invertValueTransform}: recover the RAW transported component in
+ * `[0,1]` from a (possibly offset/scaled) field component, by inverting
+ * `czm_valueTransform` at `componentIndex` — `raw_i = (transformed_i -
+ * offset_i) / scale_i`. Used by the generated `metadataDebugColor` so a
+ * VEC2/3/4 property paints its raw per-component values as RGB.
+ *
+ * @param {string} valueExpr a WGSL `f32` (the field's `componentIndex`-th component)
+ * @param {MetadataClassProperty} classProperty
+ * @param {number} componentIndex 0..3
+ * @returns {string}
+ * @private
+ */
+function invertValueTransformComponent(
+  valueExpr,
+  classProperty,
+  componentIndex,
+) {
+  if (!classProperty.hasValueTransform) {
+    return valueExpr;
+  }
+  const offset = componentAt(classProperty.offset, componentIndex);
+  const scale = componentAt(classProperty.scale, componentIndex);
   if (scale === 0) {
     return valueExpr;
   }

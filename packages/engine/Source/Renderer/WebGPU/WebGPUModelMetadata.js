@@ -8,9 +8,11 @@
  * resolves each property's backing glTF vertex attribute (via the
  * backend-agnostic `MetadataPipelineStage.getPropertyAttributesInfo`
  * name-resolution convention — `property.attribute` is the glTF
- * attribute name, e.g. `_TEMPERATURES`), and uploads a per-vertex scalar
- * value into a dedicated vertex buffer (slot 9 in the model layout) so
- * `ModelPBRComplete.wgsl`'s `@location(9) metadataValue` input is fed.
+ * attribute name, e.g. `_TEMPERATURES`), and uploads a per-vertex vec4
+ * value (METADATA-MULTICOMPONENT — up to four components of the first
+ * GPU-compatible property attribute; scalars zero-pad) into a dedicated
+ * vertex buffer (slot 9 in the model layout) so `ModelPBRComplete.wgsl`'s
+ * `@location(9) metadataValue: vec4<f32>` input is fed.
  *
  * What ships in DP-H46a:
  *   - Property-ATTRIBUTE → GPU vertex buffer for ONE scalar value (the
@@ -143,17 +145,24 @@ const PROPERTY_TABLE_BINDING = PROPERTY_TEXTURE_SAMPLER_BINDING + 1;
 const PROPERTY_TABLE_SAMPLER_BINDING = PROPERTY_TABLE_BINDING + 1;
 
 /**
- * Resolve the first GPU-compatible scalar-capable property ATTRIBUTE on a
- * primitive and return its per-vertex scalar data (Float32Array of length
- * `vertexCount`).
+ * Resolve the first GPU-compatible property ATTRIBUTE on a primitive and
+ * return its per-vertex data packed as vec4 (Float32Array of length
+ * `vertexCount * 4`, vertex slot 9's `float32x4` layout).
  *
- * "Scalar-capable" here means: the property's backing glTF attribute
- * exists on the primitive AND its typed array survives to render time
- * (it does on WebGPU — `GltfLoader` retains every vertex attribute's
- * typed array when `context.requiresVertexTypedArrayRetention` is true).
- * The `.x` (first) component is extracted; vec/matrix property attributes
- * still resolve here (their first component is taken) — DP-H46b promotes
- * this to full per-component transport via the generated Metadata struct.
+ * METADATA-MULTICOMPONENT — up to FOUR components per vertex are
+ * transported (SCALAR pads `.yzw` with zero; VEC2/VEC3 pad the tail; VEC4
+ * and MAT2 fill all four). Properties with more than four components
+ * (MAT3/MAT4) still transport only their first four — the codegen
+ * (`MetadataWGSLPipelineStage.constructFromTransport`) zero-fills the rest.
+ * This replaces DP-H46a's single-scalar (`.x`-only) transport so VEC2/3/4
+ * property attributes round-trip every component, matching the WebGL
+ * `MetadataPipelineStage` attribute path (which reads the full glTF
+ * attribute directly).
+ *
+ * The property's backing glTF attribute must exist on the primitive AND its
+ * typed array must survive to render time (it does on WebGPU — `GltfLoader`
+ * retains every vertex attribute's typed array when
+ * `context.requiresVertexTypedArrayRetention` is true).
  *
  * Normalized-integer attributes are decoded to float per the glTF
  * `accessor.normalized` rule by `ensureFloat32`, matching the WebGL
@@ -162,10 +171,10 @@ const PROPERTY_TABLE_SAMPLER_BINDING = PROPERTY_TABLE_BINDING + 1;
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
- * @returns {{ data: Float32Array, propertyId: string, attributeName: string }|undefined}
+ * @returns {{ data: Float32Array, propertyId: string, attributeName: string, componentCount: number }|undefined}
  * @private
  */
-function resolvePropertyAttributeScalar(model, primitive) {
+function resolvePropertyAttributeVec4(model, primitive) {
   const structuralMetadata = model.structuralMetadata;
   if (!defined(structuralMetadata)) {
     return undefined;
@@ -221,16 +230,23 @@ function resolvePropertyAttributeScalar(model, primitive) {
       if (vertexCount <= 0) {
         continue;
       }
-      // Extract the .x (first) component per vertex into a tight scalar
-      // buffer the model vertex layout binds at slot 9.
-      const scalar = new Float32Array(vertexCount);
+      // METADATA-MULTICOMPONENT — pack up to four components per vertex
+      // into the vec4 (`float32x4`) buffer the model vertex layout binds
+      // at slot 9. Missing tail components stay zero (the Float32Array is
+      // zero-initialized), so a SCALAR property transports as (x,0,0,0)
+      // and a VEC3 as (x,y,z,0).
+      const transported = Math.min(componentCount, 4);
+      const packed = new Float32Array(vertexCount * 4);
       for (let v = 0; v < vertexCount; v++) {
-        scalar[v] = decoded[v * componentCount];
+        for (let c = 0; c < transported; c++) {
+          packed[v * 4 + c] = decoded[v * componentCount + c];
+        }
       }
       return {
-        data: scalar,
+        data: packed,
         propertyId: propertyId,
         attributeName: attributeName,
+        componentCount: transported,
       };
     }
   }
@@ -250,7 +266,7 @@ function resolvePropertyAttributeScalar(model, primitive) {
  * @private
  */
 function primitiveHasPropertyAttribute(model, primitive) {
-  return defined(resolvePropertyAttributeScalar(model, primitive));
+  return defined(resolvePropertyAttributeVec4(model, primitive));
 }
 
 /**
@@ -259,16 +275,16 @@ function primitiveHasPropertyAttribute(model, primitive) {
  * {@link WebGPUModelFeatureId.ensureFeatureIdResources}: idempotent,
  * stamps a per-primitive cache slot, returns the metadata vertex buffer +
  * a presence flag the renderer folds into the `MODEL_HAS_METADATA`
- * pipeline variant. The per-vertex scalar data is pre-resolved at the
+ * pipeline variant. The per-vertex vec4-packed data is pre-resolved at the
  * `extractPrimitiveGeometry` call site (via
- * {@link resolvePropertyAttributeScalar}) and threaded in as
+ * {@link resolvePropertyAttributeVec4}) and threaded in as
  * `metadataData` so this function — like the featureId-buffer creation —
  * only owns the GPU upload, keeping the heavy attribute resolution off
  * the per-frame path.
  *
  * @param {GPUDevice} device
  * @param {object} primCache - per-primitive cache slot from WebGPUModelRenderer
- * @param {Float32Array} metadataData - per-vertex scalar metadata values
+ * @param {Float32Array} metadataData - per-vertex vec4-packed metadata values
  * @returns {{ metadataBuffer: GPUBuffer, hasMetadata: boolean }|undefined}
  * @private
  */
@@ -288,7 +304,7 @@ function ensureMetadataResources(device, primCache, metadataData) {
   // 4. A Float32Array is always 4-aligned, so no padding is needed; the
   // buffer size matches the typed array's byteLength.
   const metadataBuffer = device.createBuffer({
-    label: `Model metadata attribute (slot 9)`,
+    label: `Model metadata attribute (slot 9, vec4)`,
     size: Math.max(metadataData.byteLength, 4),
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
@@ -812,7 +828,7 @@ export {
   ensureMetadataResources,
   destroyMetadataResources,
   primitiveHasPropertyAttribute,
-  resolvePropertyAttributeScalar as resolveMetadataAttributeData,
+  resolvePropertyAttributeVec4 as resolveMetadataAttributeData,
   // DP-H46c — property TEXTURES.
   resolvePropertyTextureLayout,
   primitiveHasPropertyTexture,
@@ -831,7 +847,7 @@ export default {
   ensureMetadataResources,
   destroyMetadataResources,
   primitiveHasPropertyAttribute,
-  resolveMetadataAttributeData: resolvePropertyAttributeScalar,
+  resolveMetadataAttributeData: resolvePropertyAttributeVec4,
   resolvePropertyTextureLayout,
   primitiveHasPropertyTexture,
   ensurePropertyTextureResources,

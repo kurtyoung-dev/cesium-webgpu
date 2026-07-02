@@ -1,0 +1,154 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "make_vec3_box.py (METADATA-MULTICOMPONENT probe asset)"
+  },
+  "extensionsUsed": [
+    "EXT_structural_metadata"
+  ],
+  "extensions": {
+    "EXT_structural_metadata": {
+      "schema": {
+        "id": "BoxVec3Schema",
+        "classes": {
+          "coloredBox": {
+            "properties": {
+              "faceColor": {
+                "description": "Per-face constant RGB in [0,1], authored so every component is distinct and nonzero on at least one face \u2014 proves VEC3 multi-component transport.",
+                "type": "VEC3",
+                "componentType": "FLOAT32"
+              }
+            }
+          }
+        }
+      },
+      "propertyAttributes": [
+        {
+          "class": "coloredBox",
+          "properties": {
+            "faceColor": {
+              "attribute": "_FACE_COLOR"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "_FACE_COLOR": 2
+          },
+          "indices": 3,
+          "material": 0,
+          "extensions": {
+            "EXT_structural_metadata": {
+              "propertyAttributes": [
+                0
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      }
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -0.5,
+        -0.5,
+        -0.5
+      ],
+      "max": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 288,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 576,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 864,
+      "byteLength": 72,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 936,
+      "uri": "data:application/octet-stream;base64,AAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAD8AAAA/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAvwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAD8AAAA/AAAAPwAAAD8AAAA/AAAAPwAAAD8AAAC/AAAAvwAAAL8AAAA/AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAL8AAAC/AAAAvwAAAL8AAAC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AACAP5qZmT7NzMw9AACAP5qZmT7NzMw9AACAP5qZmT7NzMw9AACAP5qZmT7NzMw9zczMPQAAgD+amZk+zczMPQAAgD+amZk+zczMPQAAgD+amZk+zczMPQAAgD+amZk+zcxMPs3MzD4AAIA/zcxMPs3MzD4AAIA/zcxMPs3MzD4AAIA/zcxMPs3MzD4AAIA/AACAPwAAgD/NzEw+AACAPwAAgD/NzEw+AACAPwAAgD/NzEw+AACAPwAAgD/NzEw+AACAP83MTD4AAIA/AACAP83MTD4AAIA/AACAP83MTD4AAIA/AACAP83MTD4AAIA/zcxMPgAAgD8AAIA/zcxMPgAAgD8AAIA/zcxMPgAAgD8AAIA/zcxMPgAAgD8AAIA/AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcA"
+    }
+  ]
+}
