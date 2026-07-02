@@ -172,6 +172,26 @@ struct CameraUniforms {
   // and the render is byte-identical.
   cloudShadowVP: mat4x4<f32>,
   cloudShadowControl: vec4<f32>,
+  // ─── GLOBE-UNDERGROUND-COLOR: underground tint (GlobeFS UNDERGROUND_COLOR) ───
+  // Mirrors WebGL's `u_undergroundColor` + `u_undergroundColorAlphaByDistance`
+  // (GlobeFS.glsl lines 123-126, applied at lines 735-744).
+  //   undergroundColor — globe.undergroundColor RGBA.
+  //   undergroundColorAlphaByDistance — NearFarScalar packed as
+  //     (near, nearValue, far, farValue).
+  //   undergroundControl:
+  //     x = show flag. Mirrors WebGL's `showUndergroundColor` compile-time
+  //         gate: isUndergroundVisible(tileProvider, frameState) && SCENE3D
+  //         && undergroundColor.alpha > 0 && (nearValue > 0 || farValue > 0).
+  //     y = max(czm_eyeHeight, 0) — camera height above the ellipsoid
+  //         (WebGL reads the `czm_eyeHeight` automatic uniform in the FS;
+  //         we pack the clamped value CPU-side).
+  //     z, w = reserved.
+  // Additive tail-append — no existing offset shifts; all-zero by default so
+  // the FS gate (`undergroundControl.x > 0.5`) stays closed and the render
+  // is byte-identical when the feature is off.
+  undergroundColor: vec4<f32>,
+  undergroundColorAlphaByDistance: vec4<f32>,
+  undergroundControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -2740,8 +2760,30 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return camera.pickColor;
 }
 
+// GLOBE-UNDERGROUND-COLOR — port of GlobeFS.glsl `interpolateByDistance`
+// (lines 159-167). nearFarScalar packs (near, nearValue, far, farValue);
+// returns the value interpolated by the clamped distance ramp. Prefixed
+// `globe_` (like globe_rgbToHsb) to avoid collisions if this shader ends up
+// in a module graph with other WGSL that ports the same GLSL helper.
+fn globe_interpolateByDistance(nearFarScalar: vec4<f32>, distance: f32) -> f32 {
+  let startDistance = nearFarScalar.x;
+  let startValue = nearFarScalar.y;
+  let endDistance = nearFarScalar.z;
+  let endValue = nearFarScalar.w;
+  let t = clamp((distance - startDistance) / (endDistance - startDistance), 0.0, 1.0);
+  return mix(startValue, endValue, t);
+}
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> FragOutput {
+fn fragmentMain(
+  input: VertexOutput,
+  // GLOBE-UNDERGROUND-COLOR — rasterizer facing (gl_FrontFacing analogue).
+  // The underground tint applies to BACK-facing fragments only (the inside
+  // of the globe seen from below), matching GlobeFS.glsl `czm_backFacing()`.
+  // The globe pipeline uses frontFace: "ccw" (WebGL default winding), so the
+  // builtin's semantics match gl_FrontFacing exactly.
+  @builtin(front_facing) frontFacing: bool,
+) -> FragOutput {
   // Slice 5c-B Batch 117 — hoisted from line 2738 so every return path
   // (including the ~30 early debug returns at the top of this function)
   // has a real eye-space normal to emit on slot 1. v_normalEC is always
@@ -3926,6 +3968,37 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
       }
       color = mix(color, draped, fadeAmount);
     }
+  }
+
+  // ─── GLOBE-UNDERGROUND-COLOR — underground tint blend ───
+  // Mirrors GlobeFS.glsl lines 735-744 (`#ifdef UNDERGROUND_COLOR`): when
+  // the camera can see under the surface and the fragment is back-facing
+  // (the inside of the globe), alpha-blend `undergroundColor` over the
+  // shaded terrain color, with the blend alpha ramped by the fragment's
+  // distance beyond the camera's height above the ellipsoid
+  // (`undergroundColorAlphaByDistance` NearFarScalar). The show flag
+  // (`undergroundControl.x`) is computed CPU-side with the exact WebGL
+  // `showUndergroundColor` condition, so above-ground / default renders
+  // never enter this branch (byte-identical off path).
+  if (camera.undergroundControl.x > 0.5 && !frontFacing) {
+    // WebGL: distanceFromEllipsoid = max(czm_eyeHeight, 0.0) — packed
+    // pre-clamped in undergroundControl.y.
+    let distanceFromEllipsoid = camera.undergroundControl.y;
+    let undergroundDistance = max(input.v_distance - distanceFromEllipsoid, 0.0);
+    let blendAmount = globe_interpolateByDistance(
+      camera.undergroundColorAlphaByDistance,
+      undergroundDistance,
+    );
+    let undergroundColor = vec4<f32>(
+      camera.undergroundColor.rgb,
+      camera.undergroundColor.a * blendAmount,
+    );
+    // czm_alphaBlend(source, dest) = source×vec4(source.aaa, 1) + dest×(1 − source.a)
+    let blended = undergroundColor * vec4<f32>(
+      undergroundColor.a, undergroundColor.a, undergroundColor.a, 1.0,
+    ) + vec4<f32>(color, alpha) * (1.0 - undergroundColor.a);
+    color = blended.rgb;
+    alpha = blended.a;
   }
 
   // DP-H24 — Globe hue / saturation / brightness shift. Matches the

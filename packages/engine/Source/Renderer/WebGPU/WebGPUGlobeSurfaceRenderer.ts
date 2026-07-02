@@ -1190,6 +1190,28 @@ export class WebGPUGlobeSurfaceRenderer {
         drawIndexCount = maxIndicesInBuffer;
       }
 
+      // GLOBE-UNDERGROUND-COLOR — skirt suppression parity. WebGL truncates
+      // the draw count to `mesh.indexCountWithoutSkirts` when
+      // `showSkirts = tileProvider.showSkirts && !cameraUnderground &&
+      // !translucent` is false (GlobeSurfaceTileProviderRendering.js:1395-1396,
+      // 1836-1839 — skirt indices sit at the tail of the index buffer, so a
+      // count truncation drops exactly the skirt walls). WebGPU previously
+      // always drew the full buffer, so underground views showed bright
+      // untinted skirt stripes across the underside that WebGL never renders.
+      // Wireframe keeps its own dedicated line-list IB (no skirt split there —
+      // matches the debug-only intent).
+      const showSkirts =
+        (tileProvider as unknown as { showSkirts?: boolean }).showSkirts !==
+          false &&
+        !cameraUnderground &&
+        !globeTranslucent;
+      if (!showSkirts && (!debugWireframe || isSubsequentPass)) {
+        const noSkirtCount = mesh.indexCountWithoutSkirts;
+        if (typeof noSkirtCount === "number" && noSkirtCount > 0) {
+          drawIndexCount = Math.min(drawIndexCount, noSkirtCount);
+        }
+      }
+
       // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only
       // back-face pre-pass for translucent globe rendering. Push BEFORE
       // the regular imagery-layer command so the scene-FB depth

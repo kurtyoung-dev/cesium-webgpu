@@ -124,7 +124,17 @@ export interface GlobePipelineEntry {
 // unless `globe.cloudCastShadows` is set AND the cloud renderer rendered a map,
 // so the FS gate (`cloudShadowControl.x > 0.5`) stays closed by default → the
 // shadow sample is skipped and the render is byte-identical.
-export const CAMERA_UNIFORM_FLOATS = 168;
+// GLOBE-UNDERGROUND-COLOR — +12 for the underground-tint tail:
+//   undergroundColor (vec4, offsets 168-171) — globe.undergroundColor RGBA
+//   undergroundColorAlphaByDistance (vec4, offsets 172-175) — NearFarScalar
+//     packed as (near, nearValue, far, farValue)
+//   undergroundControl (vec4, offsets 176-179) — x=show flag (the WebGL
+//     `showUndergroundColor` condition), y=max(eyeHeight, 0), z/w reserved.
+// Additive tail-append (no existing offset shifts). The show flag is 0 unless
+// the camera can see underground AND the underground color is visible, so the
+// FS gate (`undergroundControl.x > 0.5`) stays closed by default → the render
+// is byte-identical.
+export const CAMERA_UNIFORM_FLOATS = 180;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):

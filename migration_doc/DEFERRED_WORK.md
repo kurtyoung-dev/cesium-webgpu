@@ -4499,3 +4499,18 @@ The original C3 WebGPU demos are authored as single-file `.html` in the OLD `App
 4. **Ordering vs user WGSL stages:** intercepted library stages execute AFTER all user `wgslFragmentShader` stages (two separate pipeline arrays), not interleaved in `collection._stages` order. Matters only when a scene mixes both kinds and depends on order. S effort (merge into one ordered list) if it ever bites.
 
 **Files:** `WebGPULibraryPostProcessStage.ts` (registry + stage class), `WebGPUPostProcessStageCollection.ts` (interception + sync + compaction), `WebGPUPostProcessPipeline.ts` (chain slot), `Shaders/WebGPU/PostProcess/{BlackAndWhite,Brightness,NightVision,DepthView,EdgeDetection,Silhouette,LensFlare}.wgsl`. **Trace:** 2026-07-02.
+
+## BUG-GLOBE-PIPELINE-NAME-AXES — globe descriptor name doesn't encode all structural pipeline axes (latent central-cache aliasing) (2026-07-02)
+
+**Context.** `WebGPURenderPipelineCache.generateCacheKey` keys on `descriptor.name` (the optional `variant` arg is unused by the globe path — `resolveGlobePipelineEntry` passes only the descriptor). The convention (documented at `WebGPUGlobeSurfacePipelines.ts:371-374`) is therefore "distinct pipeline structure MUST produce a distinct name". Bug 487 (GLOBE-UNDERGROUND-COLOR) fixed the worst instance — the no-cull variant differed only in `primitive.cullMode` with an identical name, so underground tiles aliased to the cull-back pipeline and the underside never rendered (nondeterministic by creation race).
+
+**Remaining latent instances (same class).** The globe descriptor name (`Globe terrain (quant, norm, blend, …labels)`) still does NOT encode:
+
+- `strideBytes` / `hasWebMercatorT` (changes the vertex `arrayStride` + texcoord attribute format — an alias here binds the wrong vertex layout),
+- `hasGeodeticSurfaceNormals` (extra attribute + different shader module via `GEODETIC_NORMAL` define),
+- `ShaderDefine.LOG_DEPTH` / `GLOBE_IMAGERY_REDUCED` (different shader modules),
+- `_sampleCount` (multisample state — canvas-format/MSAA flips are partially covered by the `_scenePipelineFormatGeneration` LOCAL cache wipe, but the CENTRAL cache retains the old-name entry).
+
+Most combinations are coincidentally disambiguated by the existing labels (quant/norm/blend correlate with stride) or by session homogeneity (webMercatorT is uniform per imagery provider), which is why no visible artifact is currently attributed to them — but the failure mode is the Bug 487 shape: silent, race-decided, wrong-pipeline binds.
+
+**Suggested fix (S).** Fold the missing axes into the name (e.g. `, s${strideBytes}, wm${0|1}, d${defines.toString(16)}, ms${sampleCount}`) OR pass a `variant` object to the central cache. Audit the OTHER renderers that use name-keyed central caching for the same convention violation.

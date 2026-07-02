@@ -420,6 +420,15 @@ export function createTileUniformBuffer(
     const fogEnabled =
       frameState.fog.enabled !== false &&
       (frameState as { aerialPerspective?: boolean }).aerialPerspective !==
+        true &&
+      // GLOBE-UNDERGROUND-COLOR — WebGL disables terrain fog when the camera
+      // is underground (`enableFog = frameState.fog.enabled &&
+      // frameState.fog.renderable && !cameraUnderground` in
+      // GlobeSurfaceTileProviderRendering.js:1229-1230). Without this gate
+      // the WGSL fog mix saturates every underside fragment toward the
+      // (near-black) underground atmosphere color and buries the imagery +
+      // undergroundColor tint that WebGL shows.
+      (frameState as { cameraUnderground?: boolean }).cameraUnderground !==
         true;
     let density = fogEnabled ? (frameState.fog.density ?? 0.0) : 0.0;
     if (fogEnabled) {

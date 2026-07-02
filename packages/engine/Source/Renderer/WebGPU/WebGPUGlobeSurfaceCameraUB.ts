@@ -48,6 +48,11 @@
 
 import Cartographic from "../../Core/Cartographic.js";
 import WebMercatorProjection from "../../Core/WebMercatorProjection.js";
+// GLOBE-UNDERGROUND-COLOR — reuse the exact WebGL visibility predicate
+// (cameraUnderground / globe translucency / backFaceCulling off / clipping
+// planes / clipping polygons / cartographic limit) instead of replicating the
+// condition here and risking drift. Backend-neutral pure function.
+import { isUndergroundVisible } from "../../Scene/GlobeSurfaceTileProviderRendering.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
 import {
@@ -794,6 +799,60 @@ export function createCameraUniformBuffer(
     data[offset++] = 0.0;
     data[offset++] = 0.0;
     data[offset++] = 0.0;
+  }
+
+  // ─── GLOBE-UNDERGROUND-COLOR: underground tint tail (offsets 168-179) ───
+  // undergroundColor (vec4) + undergroundColorAlphaByDistance (vec4) +
+  // undergroundControl (vec4). Mirrors the WebGL uniforms
+  // `u_undergroundColor` / `u_undergroundColorAlphaByDistance` plus the
+  // `showUndergroundColor` compile-time gate from
+  // GlobeSurfaceTileProviderRendering.js:1212-1217 (the gate becomes
+  // `undergroundControl.x` since WGSL branches at runtime). `Globe.render`
+  // mirrors `globe.undergroundColor` / `globe.undergroundColorAlphaByDistance`
+  // onto the tile provider each frame (Globe.js:1420-1422).
+  // `undergroundControl.y` carries `max(czm_eyeHeight, 0)` — the FS subtracts
+  // it from `v_distance` before the NearFarScalar ramp, exactly like
+  // GlobeFS.glsl line 738. All-zero (gate closed) when the condition fails,
+  // keeping the default render byte-identical.
+  const ugTp = tileProvider as unknown as {
+    undergroundColor?: {
+      red: number;
+      green: number;
+      blue: number;
+      alpha: number;
+    };
+    undergroundColorAlphaByDistance?: {
+      near: number;
+      nearValue: number;
+      far: number;
+      farValue: number;
+    };
+  };
+  const ugColor = ugTp.undergroundColor;
+  const ugAlphaByDistance = ugTp.undergroundColorAlphaByDistance;
+  const showUndergroundColor =
+    frameState !== undefined &&
+    sceneMode === 3 /* SCENE3D */ &&
+    ugColor !== undefined &&
+    ugColor.alpha > 0.0 &&
+    ugAlphaByDistance !== undefined &&
+    (ugAlphaByDistance.nearValue > 0.0 || ugAlphaByDistance.farValue > 0.0) &&
+    isUndergroundVisible(tileProvider, frameState) === true;
+  if (showUndergroundColor && ugColor && ugAlphaByDistance) {
+    data[offset++] = ugColor.red;
+    data[offset++] = ugColor.green;
+    data[offset++] = ugColor.blue;
+    data[offset++] = ugColor.alpha;
+    data[offset++] = ugAlphaByDistance.near;
+    data[offset++] = ugAlphaByDistance.nearValue;
+    data[offset++] = ugAlphaByDistance.far;
+    data[offset++] = ugAlphaByDistance.farValue;
+    data[offset++] = 1.0; // x = show flag
+    data[offset++] = Math.max(uniformState.eyeHeight ?? 0.0, 0.0);
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+  } else {
+    for (let i = 0; i < 12; i++) data[offset++] = 0.0;
   }
 
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this

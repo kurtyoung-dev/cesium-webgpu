@@ -379,6 +379,19 @@ export function buildPipelineDescriptor(
       : disableCulling
         ? "none"
         : "back";
+  // GLOBE-UNDERGROUND-COLOR — the central pipeline cache keys on the
+  // descriptor NAME (see `generateCacheKey` in WebGPURenderPipelineCache:
+  // `parts = [descriptor.name]` when no variant is passed, and the globe's
+  // `resolveGlobePipelineEntry` passes none). The no-cull (C-R1 underground /
+  // provider-cull-off) variant previously differed ONLY in `primitive.cullMode`
+  // with an identical name, so it ALIASED to whichever same-named pipeline
+  // resolved first — usually the above-ground cull-back one. Symptom: with the
+  // camera underground the terrain-surface back-faces never rasterized (only
+  // the skirt walls, whose winding faces the camera, were visible) and the
+  // result was nondeterministic across sessions (a creation race decided which
+  // cull mode won). The `, noCull` marker keeps the central-cache key distinct,
+  // matching the dob/tbf/cd/img labels that already follow this convention.
+  const ncLabel = cullMode === "none" ? ", noCull" : "";
   const depthWriteEnabled = depthOnlyBackFace
     ? true
     : translucentBackFace
@@ -417,7 +430,7 @@ export function buildPipelineDescriptor(
   // keeps the capture pipeline distinct in any shared cache.
   const capLabel = isCapture ? `, capture ${captureFaceFormat}` : "";
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${tbfLabel}${imgLabel}${capLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,
