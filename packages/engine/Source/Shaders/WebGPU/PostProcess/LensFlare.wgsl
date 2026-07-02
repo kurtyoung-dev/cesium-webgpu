@@ -1,4 +1,23 @@
-// Lens Flare post-processing effect — WGSL equivalent of LensFlare.glsl
+// Lens Flare post-processing effect — WGSL parity twin of
+// Shaders/PostProcessStages/LensFlare.glsl (WIRE-PP-LIBRARY-BUILTINS).
+//
+// Ported 1:1 from the GLSL: the space gate (`length(czm_viewerPositionWC)
+// > 6 500 000` — flare is a pass-through below that, upstream #5932), the
+// sun-on-screen gate (NDC within ±1.1), the 4-ghost chromatic-distorted
+// chain, the halo, the earth-disk masking (isInEarth), and the
+// sun-distance weighting. The czm_* frame state (sun NDC, viewer
+// distance, earth NDC + edge) is computed CPU-side by
+// `WebGPUPostProcessStageCollection.computeLensFlareFrameContext` and
+// packed into the UBO.
+//
+// Documented parity gaps (see WebGPULibraryPostProcessStage.ts):
+//   - `dirtTexture` overlay not implemented (contributes nothing here).
+//   - `starTexture` modulation replaced by 1.0 — the burst-pattern
+//     texture detail is missing, so in-space flares are smoother and
+//     somewhat brighter than WebGL's.
+//
+// The shader works in GLSL texture coordinates (bottom-left origin) via
+// glUV/sampleGL so the math is a literal transcription.
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -6,28 +25,67 @@ struct VertexOutput {
 }
 
 struct LensFlareUniforms {
-    intensity: f32,
-    ghostDispersal: f32,
-    haloWidth: f32,
-    earthRadius: f32,
-    lightWorldDirection: vec3<f32>,
-    _pad0: f32,
-    viewport: vec4<f32>,
+    // x = intensity, y = ghostDispersal, z = haloWidth, w = distortion
+    params0: vec4<f32>,
+    // x, y = sun NDC position, z = length(czm_viewerPositionWC), w = unused
+    params1: vec4<f32>,
+    // x, y = pixelSize (czm_pixelRatio / viewport wh), z, w = earth NDC
+    params2: vec4<f32>,
+    // x = abs(earth-edge NDC x), y = viewport width, z = viewport height,
+    // w = unused
+    params3: vec4<f32>,
 }
 
 @group(0) @binding(0) var colorTexture: texture_2d<f32>;
 @group(0) @binding(1) var colorSampler: sampler;
 @group(0) @binding(2) var<uniform> uniforms: LensFlareUniforms;
 
-fn luminance(rgb: vec3<f32>) -> f32 {
-    return dot(rgb, vec3<f32>(0.2125, 0.7154, 0.0721));
+// whether it is in space or not — 6500000.0 is the upstream empirical value
+const DISTANCE_TO_SPACE: f32 = 6500000.0;
+
+// Sample in GLSL (bottom-left origin) texture coordinates.
+fn sampleGL(texcoord: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(
+        colorTexture,
+        colorSampler,
+        vec2<f32>(texcoord.x, 1.0 - texcoord.y),
+        0.0,
+    );
 }
 
-fn chromaticDistortion(texcoord: vec2<f32>, direction: vec2<f32>) -> vec3<f32> {
-    let r = textureSample(colorTexture, colorSampler, texcoord + direction * 0.01).r;
-    let g = textureSample(colorTexture, colorSampler, texcoord).g;
-    let b = textureSample(colorTexture, colorSampler, texcoord - direction * 0.01).b;
-    return vec3<f32>(r, g, b);
+// GLSL isInEarth twin. Upstream writes `clamp(0.0, 1.0, v)` (swapped
+// argument order); drivers evaluate that as min(1.0, v) — mirrored here.
+fn isInEarth(texcoord: vec2<f32>, sceneSize: vec2<f32>) -> f32 {
+    var ndc = texcoord * 2.0 - 1.0;
+    ndc -= uniforms.params2.zw;
+    let x = abs(ndc.x) * sceneSize.x;
+    let y = abs(ndc.y) * sceneSize.y;
+    let edge = max(abs(uniforms.params3.x * sceneSize.x), 1.0);
+    return min(1.0, max(sqrt(x * x + y * y) / edge - 0.8, 0.0));
+}
+
+// Chromatic-distorted sample, earth-masked when in space.
+fn textureDistorted(
+    texcoord: vec2<f32>,
+    direction: vec2<f32>,
+    distortion: vec3<f32>,
+    isSpace: bool,
+) -> vec4<f32> {
+    let sceneSize = uniforms.params3.yz;
+    var color: vec3<f32>;
+    if (isSpace) {
+        color.r = isInEarth(texcoord + direction * distortion.r, sceneSize)
+            * sampleGL(texcoord + direction * distortion.r).r;
+        color.g = isInEarth(texcoord + direction * distortion.g, sceneSize)
+            * sampleGL(texcoord + direction * distortion.g).g;
+        color.b = isInEarth(texcoord + direction * distortion.b, sceneSize)
+            * sampleGL(texcoord + direction * distortion.b).b;
+    } else {
+        color.r = sampleGL(texcoord + direction * distortion.r).r;
+        color.g = sampleGL(texcoord + direction * distortion.g).g;
+        color.b = sampleGL(texcoord + direction * distortion.b).b;
+    }
+    return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), 0.0);
 }
 
 @vertex
@@ -50,29 +108,67 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let texCoord = input.uv;
-    let originalColor = textureSample(colorTexture, colorSampler, texCoord);
+    // GLSL-space (bottom-left origin) texture coordinate.
+    let glUV = vec2<f32>(input.uv.x, 1.0 - input.uv.y);
+    let originalColor = sampleGL(glUV);
 
-    // Ghost vector toward center
-    let ghostVec = (vec2<f32>(0.5) - texCoord) * uniforms.ghostDispersal;
+    let isSpace = uniforms.params1.z > DISTANCE_TO_SPACE;
+    let sunPos = uniforms.params1.xy;
 
-    var result = vec3<f32>(0.0);
-    let numGhosts = 4;
-
-    // Sample ghosts
-    for (var i = 0; i < numGhosts; i++) {
-        let offset = fract(texCoord + ghostVec * f32(i));
-        let ghostSample = textureSample(colorTexture, colorSampler, offset);
-        let weight = length(vec2<f32>(0.5) - offset) / length(vec2<f32>(0.5));
-        let w = pow(1.0 - weight, 10.0);
-        result += ghostSample.rgb * w;
+    // If not in space or the sun is off screen, use the original color
+    // (upstream: "Lens flare is disabled when not in space until #5932").
+    if (!isSpace ||
+        !(sunPos.x >= -1.1 && sunPos.x <= 1.1 &&
+          sunPos.y >= -1.1 && sunPos.y <= 1.1)) {
+        return originalColor;
     }
 
-    // Halo
-    let haloVec = normalize(ghostVec) * uniforms.haloWidth;
-    let haloWeight = length(vec2<f32>(0.5) - fract(texCoord + haloVec)) / length(vec2<f32>(0.5));
-    let haloW = pow(1.0 - clamp(haloWeight, 0.0, 1.0), 5.0);
-    result += textureSample(colorTexture, colorSampler, texCoord + haloVec).rgb * haloW;
+    let intensity = uniforms.params0.x;
+    let ghostDispersal = uniforms.params0.y;
+    let haloWidth = uniforms.params0.z;
+    let distortionAmount = uniforms.params0.w;
 
-    return vec4<f32>(originalColor.rgb + result * uniforms.intensity, originalColor.a);
+    let texcoord = vec2<f32>(1.0) - glUV;
+    let pixelSize = uniforms.params2.xy;
+    let distortionVec = pixelSize.x
+        * vec3<f32>(-distortionAmount, 0.0, distortionAmount);
+
+    // ghost vector to image centre:
+    let ghostVec = (vec2<f32>(0.5) - texcoord) * ghostDispersal;
+    let direction = normalize(vec3<f32>(ghostVec, 0.0)).xy;
+
+    // sample ghosts:
+    var result = vec4<f32>(0.0);
+    var ghost = vec4<f32>(0.0);
+    for (var i = 0; i < 4; i++) {
+        let offset = fract(texcoord + ghostVec * f32(i));
+        ghost += textureDistorted(offset, direction, distortionVec, isSpace);
+    }
+    result += ghost;
+
+    // sample halo:
+    let haloVec = normalize(ghostVec) * haloWidth;
+    var weightForHalo = length(vec2<f32>(0.5) - fract(texcoord + haloVec))
+        / length(vec2<f32>(0.5));
+    weightForHalo = pow(1.0 - weightForHalo, 5.0);
+    result += textureDistorted(texcoord + haloVec, direction, distortionVec, isSpace)
+        * weightForHalo * 1.5;
+
+    // (dirtTexture overlay omitted — see module header.)
+
+    // Sun-distance weighting (starTexture modulation approximated as 1.0).
+    let st1 = vec2<f32>(glUV * 2.0 - vec2<f32>(1.0));
+    let weightForLensFlare = length(vec3<f32>(sunPos, 0.0));
+    let oneMinusWeightForLensFlare = max(1.0 - weightForLensFlare, 0.0);
+
+    if (!isSpace) {
+        result *= oneMinusWeightForLensFlare * intensity * 0.2;
+    } else {
+        result *= oneMinusWeightForLensFlare * intensity;
+        result *= pow(weightForLensFlare, 1.0)
+            * max(1.0 - length(vec3<f32>(st1, 0.0)), 0.0) * 2.0;
+    }
+
+    result += sampleGL(glUV);
+    return result;
 }

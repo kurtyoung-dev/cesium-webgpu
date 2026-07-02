@@ -31,6 +31,12 @@ import {
   WebGPUPostProcessPipeline,
   TonemapMode,
 } from "./WebGPUPostProcessPipeline.js";
+// WIRE-PP-LIBRARY-BUILTINS — well-known PostProcessStageLibrary stage
+// names intercepted and substituted with their WGSL twins.
+import {
+  getLibraryStageKey,
+  type LibraryStageFrameContext,
+} from "./WebGPULibraryPostProcessStage.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 
 export interface PostProcessCache {
@@ -281,6 +287,32 @@ function updateWebGPUPostProcessStages(
 ): void {
   if (!collection._webgpuCache) {
     collection._webgpuCache = getDefaultCache();
+  }
+
+  // WIRE-PP-LIBRARY-BUILTINS — compact removed stages. Upstream's
+  // `PostProcessStageCollection.update()` only runs its private
+  // `removeStages()` AFTER the feature-renderer early-return, so on
+  // WebGPU a `postProcessStages.remove(stage)` left an `undefined` hole
+  // and `_stages.length` never shrank — the length-based rebuild gate in
+  // the configure pass (Batch 290) missed removals entirely, leaking
+  // both user WGSL stages and intercepted library stages until the next
+  // ADD. Mirror the upstream compaction here (same algorithm, including
+  // the `_index` re-derivation).
+  const col = collection as unknown as {
+    _stagesRemoved?: boolean;
+    _stages?: Array<{ _index?: number } | undefined>;
+  };
+  if (col._stagesRemoved === true && Array.isArray(col._stages)) {
+    col._stagesRemoved = false;
+    const newStages: Array<{ _index?: number }> = [];
+    let j = 0;
+    for (const st of col._stages) {
+      if (st) {
+        st._index = j++;
+        newStages.push(st);
+      }
+    }
+    col._stages = newStages;
   }
 
   const cache = collection._webgpuCache as PostProcessCache;
@@ -637,6 +669,9 @@ function configureWebGPUPostProcessPipeline(
     cache._userStagesBuilt && userStageCount !== (cache._userStagesCount ?? 0);
   if (listChanged) {
     pipeline.clearUserWGSLStages();
+    // WIRE-PP-LIBRARY-BUILTINS — intercepted library stages rebuild on
+    // the same add/remove trigger as user WGSL stages.
+    pipeline.clearLibraryStages();
     cache._userStagesBuilt = false;
   }
   if (!cache._userStagesBuilt && Array.isArray(userStages)) {
@@ -657,6 +692,18 @@ function configureWebGPUPostProcessPipeline(
         stage.name === "czm_depth_of_field_blur" ||
         stage.name === "czm_depth_of_field_composite"
       ) {
+        continue;
+      }
+      // WIRE-PP-LIBRARY-BUILTINS — intercept named PostProcessStageLibrary
+      // built-ins (czm_black_and_white, czm_brightness, czm_night_vision,
+      // czm_silhouette, czm_edge_detection_*, czm_lens_flare,
+      // czm_depth_view) and substitute the pre-translated WGSL twin
+      // instead of dropping the GLSL stage. Uniforms + enabled state are
+      // synced live each frame below (syncInterceptedLibraryStages), so
+      // only registration happens here. NOT counted as GLSL-only — the
+      // stage runs natively.
+      if (getLibraryStageKey(stage.name) !== null) {
+        pipeline.addLibraryStage(device, stage.name as string);
         continue;
       }
       const wgsl = stage.uniforms?.wgslFragmentShader;
@@ -738,9 +785,20 @@ function configureWebGPUPostProcessPipeline(
     (!Array.isArray(userStages) || userStages.length === 0)
   ) {
     pipeline.clearUserWGSLStages();
+    // WIRE-PP-LIBRARY-BUILTINS — drop intercepted library stages when the
+    // user collection empties, mirroring the user-WGSL teardown.
+    pipeline.clearLibraryStages();
     cache._userStagesBuilt = false;
     cache._userStagesCount = 0;
   }
+
+  // WIRE-PP-LIBRARY-BUILTINS — per-frame sync for intercepted library
+  // built-ins. The (re)build above only fires on list-length changes, so
+  // `enabled` toggles and uniform edits on an already-added library stage
+  // (e.g. `stage.uniforms.gradations = 8`) must be pushed every frame.
+  // Cheap: a name-match walk over the (typically tiny) stage list; the
+  // uniform repack happens GPU-side only for enabled stages at execute.
+  syncInterceptedLibraryStages(pipeline, userStages, scene);
 
   // Audit A.11 (Batch 133) -- GodRay lazy init + per-frame sun UV
   // update. Config can be supplied via `scene.godRayConfig` (optional).
@@ -828,6 +886,141 @@ function configureWebGPUPostProcessPipeline(
     updateAerialPerspectiveFrameData(pipeline, scene);
   } else if (pipeline.aerialPerspectiveEffect) {
     pipeline.aerialPerspectiveEffect.enabled = false;
+  }
+}
+
+/**
+ * WIRE-PP-LIBRARY-BUILTINS — per-frame sync for intercepted
+ * PostProcessStageLibrary built-ins. Walks the live collection stage
+ * list and, for every stage whose name matches a wired library built-in,
+ * pushes its `enabled` flag + uniform values + the frame context
+ * (frameNumber for NightVision's animated noise, pixelRatio for
+ * EdgeDetection's czm_pixelRatio-scaled texel offsets) into the
+ * pipeline's matching library stage. No-op when no library stages were
+ * intercepted (the default), keeping untouched scenes byte-identical.
+ */
+function syncInterceptedLibraryStages(
+  pipeline: WebGPUPostProcessPipeline,
+  userStages: unknown[] | undefined,
+  scene?: CesiumScene,
+): void {
+  if (!Array.isArray(userStages) || userStages.length === 0) return;
+  const fs = (
+    scene as unknown as {
+      frameState?: { frameNumber?: number; pixelRatio?: number };
+    }
+  )?.frameState;
+  const frame: LibraryStageFrameContext = {
+    frameNumber: fs?.frameNumber ?? 0,
+    pixelRatio: fs?.pixelRatio ?? 1,
+  };
+  let lensFlareComputed = false;
+  for (const s of userStages) {
+    const stage = s as
+      | { name?: string; enabled?: boolean; uniforms?: Record<string, unknown> }
+      | null
+      | undefined;
+    if (!stage || typeof stage.name !== "string") continue;
+    const key = getLibraryStageKey(stage.name);
+    if (key === null) continue;
+    if (key === "lensFlare" && !lensFlareComputed) {
+      // Compute the czm_* sun/earth screen state the WebGL LensFlare
+      // shader reads from built-in uniforms. Once per frame is enough
+      // (all lens-flare stages share the camera).
+      computeLensFlareFrameContext(scene, stage.uniforms ?? {}, frame);
+      lensFlareComputed = true;
+    }
+    pipeline.syncLibraryStage(
+      stage.name,
+      stage.enabled !== false,
+      stage.uniforms ?? {},
+      frame,
+    );
+  }
+}
+
+// WGS84 maximum radius (metres) — the `earthRadius` uniform default of
+// PostProcessStageLibrary.createLensFlareStage (Ellipsoid.WGS84
+// .maximumRadius). Matches AP_WGS84_MAX_RADIUS below.
+const LENS_FLARE_WGS84_MAX_RADIUS = 6378137.0;
+
+/**
+ * WIRE-PP-LIBRARY-BUILTINS — CPU twin of the czm_* frame state the WebGL
+ * LensFlare shader reads from built-in uniforms:
+ *
+ *   - sun NDC position (czm_sunPositionWC → view → window → viewport-
+ *     orthographic in GLSL ≡ a plain viewProjection → NDC projection)
+ *   - viewer distance from the earth centre (czm_viewerPositionWC length
+ *     — the "in space" gate at 6 500 000 m)
+ *   - earth-centre NDC + the |NDC x| of an eye-space point offset by
+ *     earthRadius * 1.5 (the isInEarth disk-mask radius)
+ *
+ * Mirrors the matrix-walk pattern of `updateGodRaySunUV` (column-major
+ * flat indexing on uniformState's Matrix4s). Leaves the lens-flare
+ * fields unset when uniformState isn't ready — the shader's space gate
+ * then keeps the stage a pass-through, matching WebGL's conservative
+ * behavior.
+ */
+function computeLensFlareFrameContext(
+  scene: CesiumScene | undefined,
+  stageUniforms: Record<string, unknown>,
+  frame: LibraryStageFrameContext,
+): void {
+  const us = (
+    scene as unknown as {
+      context?: { uniformState?: unknown };
+    }
+  )?.context?.uniformState as
+    | {
+        viewProjection?: number[] | Float64Array;
+        view?: number[] | Float64Array;
+        projection?: number[] | Float64Array;
+        sunPositionWC?: { x: number; y: number; z: number };
+        cameraPosition?: { x: number; y: number; z: number };
+      }
+    | undefined;
+  if (!us?.viewProjection || !us.view || !us.projection) return;
+  const vp = us.viewProjection;
+  const view = us.view;
+  const proj = us.projection;
+
+  const cam = us.cameraPosition;
+  if (cam) {
+    frame.viewerDistance = Math.sqrt(
+      cam.x * cam.x + cam.y * cam.y + cam.z * cam.z,
+    );
+  }
+
+  // Sun NDC (viewProjection * sunPositionWC, perspective divide).
+  const sun = us.sunPositionWC;
+  if (sun) {
+    const cx = vp[0] * sun.x + vp[4] * sun.y + vp[8] * sun.z + vp[12];
+    const cy = vp[1] * sun.x + vp[5] * sun.y + vp[9] * sun.z + vp[13];
+    const cw = vp[3] * sun.x + vp[7] * sun.y + vp[11] * sun.z + vp[15];
+    if (cw !== 0 && isFinite(cw)) {
+      frame.sunNDC = [cx / cw, cy / cw];
+    }
+  }
+
+  // Earth-centre NDC (viewProjection * origin = the matrix translation
+  // column) + the isInEarth edge radius: eye-space earth centre offset
+  // by earthRadius * 1.5 along eye X, projected to NDC.
+  const ew = vp[15];
+  if (ew !== 0 && isFinite(ew)) {
+    frame.earthNDC = [vp[12] / ew, vp[13] / ew];
+  }
+  const earthRadius =
+    typeof stageUniforms.earthRadius === "number"
+      ? stageUniforms.earthRadius
+      : LENS_FLARE_WGS84_MAX_RADIUS;
+  // Eye-space earth centre = view matrix translation column.
+  const ecx = view[12] + earthRadius * 1.5;
+  const ecy = view[13];
+  const ecz = view[14];
+  const px = proj[0] * ecx + proj[4] * ecy + proj[8] * ecz + proj[12];
+  const pw = proj[3] * ecx + proj[7] * ecy + proj[11] * ecz + proj[15];
+  if (pw !== 0 && isFinite(pw)) {
+    frame.earthEdgeAbsX = Math.abs(px / pw);
   }
 }
 

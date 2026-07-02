@@ -1,20 +1,28 @@
-// Night Vision post-processing effect — WGSL equivalent of NightVision.glsl
+// Night Vision post-processing effect — WGSL parity twin of
+// Shaders/PostProcessStages/NightVision.glsl (WIRE-PP-LIBRARY-BUILTINS).
+// Matches the GLSL math exactly: animated hash noise seeded by the frame
+// number, added to the scene color, multiplied by pure green.
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
 }
 
-@group(0) @binding(0) var colorTexture: texture_2d<f32>;
-@group(0) @binding(1) var colorSampler: sampler;
-
-fn luminance(rgb: vec3<f32>) -> f32 {
-    return dot(rgb, vec3<f32>(0.2125, 0.7154, 0.0721));
+struct Uniforms {
+    // x = czm_frameNumber equivalent (frameState.frameNumber)
+    frameNumber: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
-// Simple hash-based noise
-fn noise(uv: vec2<f32>) -> f32 {
-    return fract(sin(dot(uv, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+@group(0) @binding(0) var colorTexture: texture_2d<f32>;
+@group(0) @binding(1) var colorSampler: sampler;
+@group(0) @binding(2) var<uniform> uniforms: Uniforms;
+
+// GLSL rand() twin (same constants as the upstream shader).
+fn rand(co: vec2<f32>) -> f32 {
+    return fract(sin(dot(co, vec2<f32>(12.9898, 78.233))) * 43758.5453);
 }
 
 @vertex
@@ -37,15 +45,8 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    let noiseValue = rand(input.uv + vec2<f32>(sin(uniforms.frameNumber))) * 0.1;
     let rgb = textureSample(colorTexture, colorSampler, input.uv).rgb;
-    let lum = luminance(rgb);
-
-    // Night-vision green tint
-    let greenTint = vec3<f32>(0.1, 0.95, 0.2);
-
-    // Add noise for film grain effect
-    let n = noise(input.uv * 500.0) * 0.15;
-
-    let nightVisionColor = greenTint * (lum + n);
-    return vec4<f32>(nightVisionColor, 1.0);
+    let green = vec3<f32>(0.0, 1.0, 0.0);
+    return vec4<f32>((noiseValue + rgb) * green, 1.0);
 }

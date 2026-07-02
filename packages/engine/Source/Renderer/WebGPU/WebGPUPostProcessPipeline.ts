@@ -80,6 +80,13 @@ import {
 } from "./WebGPUPostProcessEffects.js";
 import { WebGPUTAAEffect } from "./WebGPUTAAEffect.js";
 import { WebGPUUserPostProcessStage } from "./WebGPUUserPostProcessStage.js";
+// WIRE-PP-LIBRARY-BUILTINS — named PostProcessStageLibrary built-ins
+// (BlackAndWhite, Brightness, NightVision, Silhouette, EdgeDetection,
+// LensFlare, DepthView) substituted with their WGSL twins.
+import {
+  WebGPULibraryPostProcessStage,
+  getLibraryStageKey,
+} from "./WebGPULibraryPostProcessStage.js";
 // Audit A.11 (Batch 133) -- pipeline-level GodRay registration.
 import { GodRayEffect, type GodRayConfig } from "./WebGPUGodRayEffect.js";
 // Atmospheric Effects Phase B (Batch 417b) -- pipeline-level HeatShimmer
@@ -289,6 +296,11 @@ export class WebGPUPostProcessPipeline {
   // Run as a chain AFTER built-in stages but BEFORE tonemapping/FXAA
   // so user effects operate on the post-bloom/AO/DoF HDR output.
   private _userStages: WebGPUUserPostProcessStage[] = [];
+  // WIRE-PP-LIBRARY-BUILTINS — intercepted PostProcessStageLibrary
+  // built-ins (WGSL twins of the named GLSL library stages). Built by the
+  // configure pass's user-stage scan alongside `_userStages`; enabled +
+  // uniforms synced live each frame via `syncLibraryStage`.
+  private _libraryStages: WebGPULibraryPostProcessStage[] = [];
   // Audit A.11 (Batch 133) -- GodRay (volumetric light scattering)
   // post-process. Activated through `addGodRay` + the configure-pipeline
   // sync; per-frame sun screen UV updated via
@@ -357,6 +369,8 @@ export class WebGPUPostProcessPipeline {
     if (this._aerialPerspectiveEffect?.enabled) return true;
     // NEW-POSTPROCESS-USER-WGSL (Batch 198) — user-supplied WGSL stages.
     if (this._userStages.some((s) => s.enabled)) return true;
+    // WIRE-PP-LIBRARY-BUILTINS — intercepted library built-ins.
+    if (this._libraryStages.some((s) => s.enabled)) return true;
     return this._customStages.some((s) => s.enabled);
   }
 
@@ -1003,6 +1017,69 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
+   * WIRE-PP-LIBRARY-BUILTINS — add an intercepted PostProcessStageLibrary
+   * built-in by its well-known `czm_*` stage name. Returns the created
+   * stage, or null when the name isn't a recognized library built-in.
+   * Runs in the same chain slot as user WGSL stages (after the built-in
+   * multi-pass effects, before TAA + tonemap) — the same insertion point
+   * WebGL uses for `scene.postProcessStages.add(...)` stages.
+   *
+   * The stage's intermediate textures use `_intermediateFormat`
+   * (rgba16float in HDR mode) so HDR precision survives, mirroring
+   * `addUserWGSLStage`.
+   */
+  addLibraryStage(
+    device: GPUDevice,
+    name: string,
+  ): WebGPULibraryPostProcessStage | null {
+    const key = getLibraryStageKey(name);
+    if (key === null) return null;
+    const stage = new WebGPULibraryPostProcessStage(name, key);
+    stage.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat,
+    );
+    this._libraryStages.push(stage);
+    return stage;
+  }
+
+  /**
+   * WIRE-PP-LIBRARY-BUILTINS — per-frame sync for one intercepted library
+   * stage, matched by its collection-stage name. Pushes the live enabled
+   * flag, the stage's uniform values, and the frame context
+   * (czm_frameNumber / czm_pixelRatio equivalents).
+   */
+  syncLibraryStage(
+    name: string,
+    enabled: boolean,
+    uniforms: Record<string, unknown>,
+    frame: import("./WebGPULibraryPostProcessStage.js").LibraryStageFrameContext,
+  ): void {
+    for (const stage of this._libraryStages) {
+      if (stage.name === name) {
+        stage.enabled = enabled;
+        stage.setUniformValues(uniforms);
+        stage.setFrameContext(frame);
+        return;
+      }
+    }
+  }
+
+  /**
+   * WIRE-PP-LIBRARY-BUILTINS — drop all intercepted library stages.
+   * Called by the configure step alongside `clearUserWGSLStages` when the
+   * user collection's `_stages` array changes.
+   */
+  clearLibraryStages(): void {
+    for (const stage of this._libraryStages) {
+      stage.destroy();
+    }
+    this._libraryStages.length = 0;
+  }
+
+  /**
    * Add depth-of-field effect (GaussianBlur → DoF Composite).
    * Requires depth texture to function.
    */
@@ -1337,6 +1414,25 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       }
     }
 
+    // 3.65 WIRE-PP-LIBRARY-BUILTINS — intercepted PostProcessStageLibrary
+    // built-ins (BlackAndWhite / Brightness / NightVision / Silhouette /
+    // EdgeDetection / LensFlare / DepthView WGSL twins). Same chain slot
+    // as user WGSL stages: after the multi-pass effects + auto-exposure,
+    // before TAA + tonemap — matching WebGL's insertion point for
+    // `scene.postProcessStages.add(...)` stages. Depth-dependent stages
+    // (DepthView / EdgeDetection / Silhouette) pass through unchanged
+    // when the sampleable depth copy is unavailable.
+    for (const stage of this._libraryStages) {
+      if (stage.enabled) {
+        currentView = stage.execute(
+          encoder,
+          currentView,
+          depth,
+          this._sampler!,
+        );
+      }
+    }
+
     // 3.7 HeatShimmer (Atmospheric Effects Phase B, Batch 417b) — animated
     // screen-space UV-warp. Placed AFTER aerial-perspective / AO / bloom /
     // godray / DoF / user stages but BEFORE TAA + tonemap, so the warp lives
@@ -1492,6 +1588,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._heatShimmerEffect?.resize(width, height);
     this._coldOpticsEffect?.resize(width, height);
     this._aerialPerspectiveEffect?.resize(width, height);
+    // WIRE-PP-LIBRARY-BUILTINS — intercepted library built-ins own their
+    // output (and silhouette-edge) intermediates; realloc on resize.
+    for (const stage of this._libraryStages) {
+      stage.resize(width, height);
+    }
 
     // Update FXAA texel size (index 2 = hdrMode, PARITY-HDR-PP-MATH —
     // preserve it across the full-block resize write).
@@ -1824,6 +1925,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // leak was unreachable). History textures + params UBO are real
     // GPU allocations; drop them with the rest.
     this._taaEffect?.destroy();
+    // WIRE-PP-LIBRARY-BUILTINS — library-stage intermediates + UBOs.
+    this.clearLibraryStages();
     this._bloomEffect = null;
     this._aoEffect = null;
     this._dofEffect = null;

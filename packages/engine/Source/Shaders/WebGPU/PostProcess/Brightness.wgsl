@@ -37,6 +37,8 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let rgb = textureSample(colorTexture, colorSampler, input.uv).rgb;
-    let target = vec3<f32>(0.0);
-    return vec4<f32>(mix(target, rgb, uniforms.brightness), 1.0);
+    // GLSL: `vec3 target = vec3(0.0)` — renamed here because `target`
+    // is a WGSL reserved keyword.
+    let darkTarget = vec3<f32>(0.0);
+    return vec4<f32>(mix(darkTarget, rgb, uniforms.brightness), 1.0);
 }

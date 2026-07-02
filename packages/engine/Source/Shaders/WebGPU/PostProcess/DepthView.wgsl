@@ -1,11 +1,21 @@
-// Depth visualization — WGSL equivalent of DepthView.glsl
+// Depth visualization — WGSL parity twin of
+// Shaders/PostProcessStages/DepthView.glsl (WIRE-PP-LIBRARY-BUILTINS).
+//
+// The GLSL stage emits `vec4(vec3(czm_readDepth(depthTexture, uv)), 1.0)`
+// — the depth buffer value as grayscale. On WebGPU the post-process chain
+// supplies the sampleable scene-depth copy (`depthSampleableView`) as a
+// float texture, so the raw `.r` read is the direct equivalent. Encoding
+// note: WebGL's czm_readDepth reverses the log-depth encoding first;
+// WebGPU's scene depth is the conventional non-linear device depth, so
+// absolute gray levels can differ between backends while the shape of the
+// visualization (near = dark, far/sky = white) matches.
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
 }
 
-@group(0) @binding(0) var depthTexture: texture_depth_2d;
+@group(0) @binding(0) var depthTexture: texture_2d<f32>;
 @group(0) @binding(1) var depthSampler: sampler;
 
 @vertex
@@ -28,10 +38,6 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let depth = textureSample(depthTexture, depthSampler, input.uv);
-    // Linearize for visualization: map [0,1] nonlinear depth to grayscale
-    let near = 0.1;
-    let far = 1000000.0;
-    let linearDepth = (2.0 * near) / (far + near - depth * (far - near));
-    return vec4<f32>(vec3<f32>(linearDepth), 1.0);
+    let depth = textureSample(depthTexture, depthSampler, input.uv).r;
+    return vec4<f32>(vec3<f32>(depth), 1.0);
 }

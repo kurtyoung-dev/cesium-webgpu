@@ -1,5 +1,16 @@
-// EdgeDetection — Detects edges in the scene for silhouette/outline effects.
-// Uses luminance-based Sobel edge detection, matching CesiumJS GLSL EdgeDetection.
+// EdgeDetection — depth-based Sobel edge detection.
+// WGSL parity twin of Shaders/PostProcessStages/EdgeDetection.glsl
+// (WIRE-PP-LIBRARY-BUILTINS): samples the scene DEPTH buffer with the
+// upstream 3/10/3 Sobel kernel and emits
+// `vec4(color.rgb, len > length ? color.a : 0.0)` — the exact GLSL math.
+// (The pre-parity version of this file ran a luminance Sobel on the color
+// buffer; that never matched WebGL, which keys edges off depth
+// discontinuities.)
+//
+// Not ported: the CZM_SELECTED_FEATURE branch (per-feature `selected`
+// masking) — the WebGPU backend has no czm_selected equivalent yet, so
+// the stage always edges the whole frame (same as WebGL with no
+// `selected` array set).
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -7,14 +18,17 @@ struct VertexOutput {
 };
 
 struct EdgeUniforms {
-  // x = 1/width, y = 1/height, z = edgeStrength, w = unused
+  // x = padx (czm_pixelRatio / viewport width)
+  // y = pady (czm_pixelRatio / viewport height)
+  // z = length threshold (uniform `length`, default 0.25)
+  // w = unused
   params: vec4<f32>,
-  // x = edgeR, y = edgeG, z = edgeB, w = edgeA (edge color)
+  // Edge color (uniform `color`, default BLACK with alpha 1)
   edgeColor: vec4<f32>,
 };
 
-@group(0) @binding(0) var inputTexture: texture_2d<f32>;
-@group(0) @binding(1) var inputSampler: sampler;
+@group(0) @binding(0) var depthTexture: texture_2d<f32>;
+@group(0) @binding(1) var depthSampler: sampler;
 @group(0) @binding(2) var<uniform> uniforms: EdgeUniforms;
 
 @vertex
@@ -27,32 +41,33 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-fn luminance(color: vec3<f32>) -> f32 {
-  return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+fn readDepth(uv: vec2<f32>) -> f32 {
+  // textureSampleLevel — no derivatives needed, safe inside the loop.
+  return textureSampleLevel(depthTexture, depthSampler, uv, 0.0).r;
 }
 
 @fragment
 fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
-  let ts = vec2<f32>(uniforms.params.x, uniforms.params.y);
-  let strength = uniforms.params.z;
+  let padx = uniforms.params.x;
+  let pady = uniforms.params.y;
+  let threshold = uniforms.params.z;
 
-  // Sample 3x3 neighborhood luminance for Sobel operator
-  let tl = luminance(textureSample(inputTexture, inputSampler, in.uv + vec2<f32>(-ts.x,  ts.y)).rgb);
-  let tc = luminance(textureSample(inputTexture, inputSampler, in.uv + vec2<f32>( 0.0,   ts.y)).rgb);
-  let tr = luminance(textureSample(inputTexture, inputSampler, in.uv + vec2<f32>( ts.x,  ts.y)).rgb);
-  let ml = luminance(textureSample(inputTexture, inputSampler, in.uv + vec2<f32>(-ts.x,  0.0)).rgb);
-  let mr = luminance(textureSample(inputTexture, inputSampler, in.uv + vec2<f32>( ts.x,  0.0)).rgb);
-  let bl = luminance(textureSample(inputTexture, inputSampler, in.uv + vec2<f32>(-ts.x, -ts.y)).rgb);
-  let bc = luminance(textureSample(inputTexture, inputSampler, in.uv + vec2<f32>( 0.0,  -ts.y)).rgb);
-  let br = luminance(textureSample(inputTexture, inputSampler, in.uv + vec2<f32>( ts.x, -ts.y)).rgb);
+  var horizEdge = 0.0;
+  var vertEdge = 0.0;
 
-  // Sobel horizontal and vertical
-  let gx = (tl + 2.0 * ml + bl) - (tr + 2.0 * mr + br);
-  let gy = (tl + 2.0 * tc + tr) - (bl + 2.0 * bc + br);
-  let edge = sqrt(gx * gx + gy * gy);
+  // Upstream kernel: directions [-1, 0, 1], scalars [3, 10, 3].
+  for (var i = 0; i < 3; i++) {
+    let dir = f32(i - 1);
+    let scale = select(3.0, 10.0, i == 1);
 
-  // Output edge intensity as alpha for compositing
-  let edgeAmount = clamp(edge * strength, 0.0, 1.0);
+    horizEdge -= readDepth(in.uv + vec2<f32>(-padx, dir * pady)) * scale;
+    horizEdge += readDepth(in.uv + vec2<f32>(padx, dir * pady)) * scale;
 
-  return vec4<f32>(uniforms.edgeColor.rgb, edgeAmount);
+    vertEdge -= readDepth(in.uv + vec2<f32>(dir * padx, -pady)) * scale;
+    vertEdge += readDepth(in.uv + vec2<f32>(dir * padx, pady)) * scale;
+  }
+
+  let len = sqrt(horizEdge * horizEdge + vertEdge * vertEdge);
+  let alpha = select(0.0, uniforms.edgeColor.a, len > threshold);
+  return vec4<f32>(uniforms.edgeColor.rgb, alpha);
 }
