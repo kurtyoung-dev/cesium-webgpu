@@ -210,6 +210,20 @@ struct CameraUniforms {
   translucencyFrontAlphaByDistance: vec4<f32>,
   translucencyBackAlphaByDistance: vec4<f32>,
   translucencyControl: vec4<f32>,
+  // ─── GLOBE-HDR-GAMMA: czm_gammaCorrect gate for HDR canvas output ───
+  // x = 1.0 when the B479 HDR canvas-output path is active
+  //     (`scene.useHDRCanvasOutput` AND `scene.highDynamicRange`, i.e. the
+  //     same gate the post-process chain's setHDROutputMode uses — tonemap
+  //     bypassed, chain emits unbounded LINEAR HDR to the rgba16float
+  //     canvas). Under that mode `czm_gammaCorrect` must decode sRGB →
+  //     linear like WebGL's `#ifdef HDR` czm_gammaCorrect, otherwise the
+  //     globe's gamma-encoded imagery is double-bright vs the linear chain.
+  // y = czm_gamma (uniformState.gamma, default 2.2).
+  // z, w = reserved.
+  // Additive tail-append — no existing offset shifts; all-zero by default so
+  // `czm_gammaCorrect` stays the historical identity no-op and the SDR
+  // render is byte-identical.
+  hdrControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -854,10 +868,18 @@ fn czm_getDefaultMaterial(input: czm_MaterialInput) -> czm_Material {
 // — verified via probe-saved-view.mjs (meanBrightnessRatio 4.221 on
 // default-3D between WebGL and WebGPU).
 //
-// The HDR path is not yet wired through the WGSL fragment pipeline. When
-// it lands, this should switch back to `pow(c, czm_gamma)` (decode).
-// Until then, identity matches what every published WebGL view produces.
+// GLOBE-HDR-GAMMA — the WebGL `#ifdef HDR` branch is now mirrored at
+// runtime via `camera.hdrControl` (x = gate, y = czm_gamma). The gate is
+// raised ONLY on the B479 HDR canvas-output path (tonemap bypassed, the
+// post-process chain works in unbounded linear HDR — see
+// WebGPUPostProcessPipeline.setHDROutputMode), where the sRGB → linear
+// decode is required for the globe to match the rest of the linear chain.
+// On the default SDR path the gate is 0 and this stays the identity
+// no-op that matches every published WebGL SDR view.
 fn czm_gammaCorrect(color: vec3<f32>) -> vec3<f32> {
+  if (camera.hdrControl.x > 0.5) {
+    return pow(max(color, vec3<f32>(0.0)), vec3<f32>(camera.hdrControl.y));
+  }
   return color;
 }
 
@@ -1878,12 +1900,17 @@ fn applyImageryLayer(
   // `czm_gammaCorrect` (which is a no-op when HDR is off, otherwise a
   // pow(czm_gamma) — typically 2.2). `#else` → `pow(color, oneOverGamma)`
   // when per-layer gamma is set. WGSL gates on `abs(oneOverGamma - 1.0)
-  // > 0.0001` to skip the pow when at default. NOTE: WGSL currently
-  // does NOT apply czm_gammaCorrect when HDR is on; this is a known
-  // gap to be addressed when the HDR pipeline is finalized.
+  // > 0.0001` to skip the pow when at default. GLOBE-HDR-GAMMA — the
+  // default-gamma branch now routes through `czm_gammaCorrect` exactly
+  // like the GLSL `#if !defined(APPLY_GAMMA)` arm: identity on the SDR
+  // path (camera.hdrControl.x == 0), sRGB → linear decode under the B479
+  // HDR canvas-output path. GLSL's vec4 overload leaves alpha untouched,
+  // so the rgb-only call is equivalent.
   var color = texSample.rgb;
   if (abs(layer.oneOverGamma - 1.0) > 0.0001) {
     color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(layer.oneOverGamma));
+  } else {
+    color = czm_gammaCorrect(color);
   }
 
   // Split mask. GLSL line 244-254: `#ifdef APPLY_SPLIT` zeros alpha on

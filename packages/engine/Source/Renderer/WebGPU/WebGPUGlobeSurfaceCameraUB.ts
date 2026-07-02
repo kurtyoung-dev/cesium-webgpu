@@ -919,6 +919,27 @@ export function createCameraUniformBuffer(
     for (let i = 0; i < 12; i++) data[offset++] = 0.0;
   }
 
+  // ─── GLOBE-HDR-GAMMA: czm_gammaCorrect HDR gate tail (192-195) ───
+  // hdrControl (vec4). Mirrors WebGL's `#ifdef HDR` czm_gammaCorrect
+  // (gammaCorrect.glsl: sRGB → linear decode), gated on the B479 HDR
+  // canvas-output path: `frameState.useHDR` (Scene mirrors
+  // `scene.highDynamicRange`) AND `context.hdrCanvasOutput` (the canvas
+  // actually configured rgba16float/extended — tracks the Scene
+  // `useHDRCanvasOutput` setter INCLUDING the browser-fallback demotion).
+  // Same effective gate as the post-process chain's setHDROutputMode
+  // (tonemap bypassed, chain works in unbounded linear HDR), so the
+  // globe emits linear exactly when the rest of the chain does. y carries
+  // czm_gamma (uniformState.gamma, default 2.2). All-zero on the default
+  // SDR path → czm_gammaCorrect stays identity → byte-identical render.
+  const hdrCanvasEngaged =
+    (frameState?.context as { hdrCanvasOutput?: boolean } | undefined)
+      ?.hdrCanvasOutput === true &&
+    (frameState as { useHDR?: boolean } | undefined)?.useHDR === true;
+  data[offset++] = hdrCanvasEngaged ? 1.0 : 0.0;
+  data[offset++] = (uniformState as { gamma?: number }).gamma ?? 2.2;
+  data[offset++] = 0.0;
+  data[offset++] = 0.0;
+
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this
   // globe command log-encodes the whole depth texture against onto the SHARED
   // uniformState (the one object that crosses the GraphicsContext boundary to

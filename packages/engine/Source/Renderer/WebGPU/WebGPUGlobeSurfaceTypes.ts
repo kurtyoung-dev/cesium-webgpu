@@ -146,7 +146,16 @@ export interface GlobePipelineEntry {
 // Additive tail-append (no existing offset shifts). All-zero unless
 // globe.translucency is enabled, so the FS gate
 // (`translucencyControl.x > 0.5`) stays closed by default → byte-identical.
-export const CAMERA_UNIFORM_FLOATS = 192;
+// GLOBE-HDR-GAMMA — +4 for the czm_gammaCorrect HDR gate tail:
+//   hdrControl (vec4, offsets 192-195) — x = 1.0 when the B479 HDR
+//     canvas-output path is active (frameState.useHDR AND
+//     context.hdrCanvasOutput — the same effective gate the post-process
+//     chain's setHDROutputMode uses); y = czm_gamma (uniformState.gamma,
+//     default 2.2); z/w reserved.
+// Additive tail-append (no existing offset shifts). Gate is 0 unless HDR
+// canvas output is engaged, so `czm_gammaCorrect` stays the historical
+// identity no-op → byte-identical default (SDR) render.
+export const CAMERA_UNIFORM_FLOATS = 196;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):
