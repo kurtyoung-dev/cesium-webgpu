@@ -3592,6 +3592,27 @@ function updateWebGPUModel(model, frameState) {
             geometry.metadataClassHash = metadataCodegen.classHash;
           }
         }
+        // METADATA-TABLE-SOURCES — late-metadata rebuild. Structural-metadata
+        // resolution can materialize AFTER this primitive's cache froze its
+        // materialDefines on a metadata-less first build (e.g.
+        // `model.featureTableId` is assigned via a dirty flag in Model.update
+        // and its landing triggers `resetDrawCommands()` — which rebuilds
+        // WebGL's shaders but is invisible to this cache). The resolution
+        // above runs per frame; when the freshly generated metadata class
+        // hash differs from the one the cached build used, destroy + rebuild
+        // this primitive's GPU cache so the pipeline variant, generated WGSL
+        // chunk, and bind-group entries pick up the now-resolved metadata.
+        // Non-metadata primitives compare 0 === 0 every frame — no cost, no
+        // behavior change.
+        const cachedPrim = cache.primitives[primKey];
+        if (
+          defined(cachedPrim) &&
+          ((cachedPrim._metadataClassHash ?? 0) | 0) !==
+            ((geometry.metadataClassHash ?? 0) | 0)
+        ) {
+          destroyPrimitiveCacheResources(cachedPrim);
+          delete cache.primitives[primKey];
+        }
       }
       const material = glTFPrimitive?.material;
       const matInfo = extractMaterialInfo(
@@ -5181,6 +5202,61 @@ const scratchEdgeMVArray = new Float32Array(16);
 /**
  * Destroys cached WebGPU resources for a Model.
  */
+/**
+ * Destroys one primitive cache slot's GPU resources (vertex/index/material
+ * buffers, created textures, morph/featureId/metadata/edge resources).
+ * Shared by full-model teardown ({@link destroyWebGPUModelResources}) and the
+ * METADATA-TABLE-SOURCES late-metadata rebuild path (a primitive whose
+ * structural-metadata resolution materializes AFTER its cache froze a
+ * metadata-less pipeline variant is destroyed + rebuilt in place).
+ *
+ * @param {object|undefined} pc per-primitive cache slot
+ * @private
+ */
+function destroyPrimitiveCacheResources(pc) {
+  if (!defined(pc)) {
+    return;
+  }
+
+  pc.positionBuffer?.destroy();
+  pc.normalBuffer?.destroy();
+  pc.tangentBuffer?.destroy();
+  pc.uvBuffer?.destroy();
+  pc.uv1Buffer?.destroy();
+  pc.colorBuffer?.destroy();
+  pc.jointsBuffer?.destroy();
+  pc.weightsBuffer?.destroy();
+  pc.featureIdBuffer?.destroy();
+  pc.indexBuffer?.destroy();
+  pc.materialBuffer?.destroy();
+  // C-R1-TILE-BATCH — translucent-class alternate material UB.
+  pc.materialBufferTranslucent?.destroy();
+  // WIRE-MODEL-SILHOUETTE — silhouette-pass alternate material UB.
+  pc.materialBufferSilhouette?.destroy();
+  pc.lightBuffer?.destroy();
+
+  // Destroy created GPU textures (not default ones)
+  for (const tex of pc.gpuTextures) {
+    tex?.destroy();
+  }
+
+  // Destroy morph target resources
+  destroyMorphTargetResources(pc);
+
+  // Destroy feature ID resources
+  destroyFeatureIdResources(pc);
+
+  // DP-H46a — destroy metadata GPU resources (slot-9 vertex buffer).
+  destroyMetadataResources(pc);
+
+  // C-R8-EDGE-EMITTER (Batch 45) — destroy per-primitive edge
+  // buffers. `edgeResources === false` is the sentinel for
+  // "primitive had no edges"; skip in that case.
+  if (pc.edgeResources && pc.edgeResources !== false) {
+    destroyEdgePrimitiveResources(pc.edgeResources);
+  }
+}
+
 function destroyWebGPUModelResources(model) {
   const cache = model._webgpuCache;
   if (!defined(cache)) {
@@ -5203,48 +5279,7 @@ function destroyWebGPUModelResources(model) {
   // Destroy per-primitive resources
   const primKeys = Object.keys(cache.primitives);
   for (let i = 0; i < primKeys.length; i++) {
-    const pc = cache.primitives[primKeys[i]];
-    if (!defined(pc)) {
-      continue;
-    }
-
-    pc.positionBuffer?.destroy();
-    pc.normalBuffer?.destroy();
-    pc.tangentBuffer?.destroy();
-    pc.uvBuffer?.destroy();
-    pc.uv1Buffer?.destroy();
-    pc.colorBuffer?.destroy();
-    pc.jointsBuffer?.destroy();
-    pc.weightsBuffer?.destroy();
-    pc.featureIdBuffer?.destroy();
-    pc.indexBuffer?.destroy();
-    pc.materialBuffer?.destroy();
-    // C-R1-TILE-BATCH — translucent-class alternate material UB.
-    pc.materialBufferTranslucent?.destroy();
-    // WIRE-MODEL-SILHOUETTE — silhouette-pass alternate material UB.
-    pc.materialBufferSilhouette?.destroy();
-    pc.lightBuffer?.destroy();
-
-    // Destroy created GPU textures (not default ones)
-    for (const tex of pc.gpuTextures) {
-      tex?.destroy();
-    }
-
-    // Destroy morph target resources
-    destroyMorphTargetResources(pc);
-
-    // Destroy feature ID resources
-    destroyFeatureIdResources(pc);
-
-    // DP-H46a — destroy metadata GPU resources (slot-9 vertex buffer).
-    destroyMetadataResources(pc);
-
-    // C-R8-EDGE-EMITTER (Batch 45) — destroy per-primitive edge
-    // buffers. `edgeResources === false` is the sentinel for
-    // "primitive had no edges"; skip in that case.
-    if (pc.edgeResources && pc.edgeResources !== false) {
-      destroyEdgePrimitiveResources(pc.edgeResources);
-    }
+    destroyPrimitiveCacheResources(cache.primitives[primKeys[i]]);
   }
 
   // C-R8-EDGE-EMITTER (Batch 45) — destroy the shared edge pipeline

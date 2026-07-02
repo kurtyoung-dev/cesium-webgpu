@@ -549,21 +549,86 @@ function ensurePropertyTextureResources(
 const PROPERTY_TABLE_NUM_CHANNELS = 4;
 
 /**
+ * METADATA-TABLE-SOURCES — true when `featureIds` is the model's SELECTED
+ * primitive-level feature ID set (the one `model.featureIdLabel` resolves to,
+ * matching `findSelectedFeatureId` in `WebGPUModelFeatureId`). The renderer's
+ * feature-ID resources (the `featureIdTexture` GPU upload at group-1 binding
+ * 26, and the implicit-range `featureId0` vertex synthesis) are built for the
+ * SELECTED set only, so a texture-/implicit-sourced property table can key
+ * off that data ONLY when its referencing set is the selected one.
+ *
+ * @param {Model} model
+ * @param {ModelComponents.Primitive} primitive
+ * @param {object} featureIds a ModelComponents feature ID set
+ * @returns {boolean}
+ * @private
+ */
+function isSelectedPrimitiveFeatureIdSet(model, primitive, featureIds) {
+  const selected = ModelUtility.getFeatureIdsByLabel(
+    primitive.featureIds,
+    model.featureIdLabel,
+  );
+  return defined(selected) && selected === featureIds;
+}
+
+/**
+ * METADATA-TABLE-SOURCES — mirrors `ensureFeatureIdResources`' feature-table
+ * presence gate. The feature-ID GPU texture at binding 26 is only uploaded
+ * when the model carries a live feature table, so a texture-sourced table
+ * key requires it (otherwise binding 26 holds the fallback white placeholder
+ * and the unpacked ID would be garbage).
+ *
+ * @param {Model} model
+ * @returns {boolean}
+ * @private
+ */
+function modelHasFeatureTable(model) {
+  const featureTableId = model.featureTableId;
+  const featureTables = model.featureTables;
+  return (
+    defined(featureTableId) &&
+    defined(featureTables) &&
+    featureTables.length > featureTableId &&
+    featureTables[featureTableId].featuresLength > 0
+  );
+}
+
+/**
  * DP-H46d — resolve which property TABLE (if any) the primitive's selected
- * feature ID references, and the WGSL feature-ID variable that indexes it.
+ * feature ID references, and HOW the WGSL FS resolves the indexing feature ID.
  *
  * Mirrors `MetadataPipelineStage.mapPropertyTablesToFeatureIdSets` for the
  * single-primitive case: a primitive's feature ID set carries a
  * `propertyTableId`; the table whose `id` matches is the one this primitive
- * reads. DP-H46d supports the ATTRIBUTE feature-ID path (the dominant b3dm /
- * BuildingsMetadata case) — the WGSL FS carries the `_FEATURE_ID_0` attribute
- * (flat-interpolated) as `input.featureId0`, so that is the index variable.
- * Texture / instance / implicit feature-ID sources are deferred (the codegen
- * needs the matching WGSL feature-ID variable wired through first).
+ * reads. Supported feature-ID sources (METADATA-TABLE-SOURCES extends the
+ * original DP-H46d attribute-only scope):
+ *
+ *   - ATTRIBUTE (`FeatureIdAttribute`, the dominant b3dm / BuildingsMetadata
+ *     case) — the WGSL FS carries the `_FEATURE_ID_0` attribute
+ *     (flat-interpolated) as `input.featureId0`; that is the index variable.
+ *   - TEXTURE (`FeatureIdTexture`) — the generated `initializeMetadata`
+ *     samples the model's feature-ID texture (group-1 binding 26, the SAME
+ *     resource `ensureFeatureIdResources` uploads for batch styling / pick)
+ *     at the reader's texCoord and unpacks the ID with the module-scope
+ *     `unpackFeatureId`. Gated on the referencing set being the model's
+ *     SELECTED feature ID set + a live feature table — those are the
+ *     conditions under which the binding-26 texture carries THIS set's data.
+ *   - IMPLICIT (`FeatureIdImplicitRange`) — the renderer synthesizes the
+ *     per-vertex IDs (`offset + floor(vertex / repeat)`) into the same
+ *     `featureId0` vertex slot (Batch 188), so the attribute path's WGSL
+ *     variable applies. Gated on the set being SELECTED (the synthesis only
+ *     runs for the selected set).
+ *
+ * INSTANCE-sourced feature IDs remain deferred: `WebGPUModelInstancing`
+ * carries no per-instance feature-ID data to the shader yet, so there is no
+ * WGSL variable to key the table with (see DEFERRED_WORK.md,
+ * PARITY-METADATA-TABLE-INSTANCE-SOURCE).
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
- * @returns {{ propertyTable: PropertyTable, featureIdWgslVariable: string }|undefined}
+ * @returns {{ propertyTable: PropertyTable, featureIdSource: string,
+ *   featureIdWgslVariable: string, featureIdTexCoord: number,
+ *   featureIdChannelCount: number }|undefined}
  * @private
  */
 function findPropertyTableForPrimitive(model, primitive) {
@@ -589,14 +654,52 @@ function findPropertyTableForPrimitive(model, primitive) {
     if (!defined(propertyTableId)) {
       continue;
     }
-    // DP-H46d scope: only the per-vertex ATTRIBUTE feature-ID path is wired to
-    // a WGSL variable (`input.featureId0`). A texture-sourced feature ID
-    // (`featureIds.textureReader`) needs its own FS resolution (deferred).
-    const isAttribute =
-      featureIds instanceof ModelComponents.FeatureIdAttribute;
-    if (!isAttribute) {
+
+    let featureIdSource;
+    let featureIdTexCoord = 0;
+    let featureIdChannelCount = 1;
+    if (featureIds instanceof ModelComponents.FeatureIdAttribute) {
+      featureIdSource = "attribute";
+    } else if (featureIds instanceof ModelComponents.FeatureIdTexture) {
+      // METADATA-TABLE-SOURCES — texture-sourced feature IDs. The data
+      // reaches the shader only through the binding-26 feature-ID texture,
+      // which the renderer uploads for the SELECTED set of a model with a
+      // live feature table; gate on exactly those conditions.
+      const textureReader = featureIds.textureReader;
+      if (!defined(textureReader) || !defined(textureReader.texture)) {
+        continue;
+      }
+      if (
+        !isSelectedPrimitiveFeatureIdSet(model, primitive, featureIds) ||
+        !modelHasFeatureTable(model)
+      ) {
+        continue;
+      }
+      featureIdSource = "texture";
+      featureIdTexCoord = defined(textureReader.texCoord)
+        ? textureReader.texCoord
+        : 0;
+      // `channels` is an "rgba"-subset string; `unpackFeatureId` assembles
+      // little-endian from channel r upward, matching the batch-styling
+      // path's `getChannelCount` convention.
+      featureIdChannelCount =
+        defined(textureReader.channels) && textureReader.channels.length > 0
+          ? textureReader.channels.length
+          : 1;
+    } else if (featureIds instanceof ModelComponents.FeatureIdImplicitRange) {
+      // METADATA-TABLE-SOURCES — implicit-range feature IDs. The renderer
+      // synthesizes the per-vertex IDs into the `featureId0` vertex slot
+      // (Batch 188) ONLY when this set is the model's selected feature ID,
+      // so gate on that; the attribute WGSL variable then applies.
+      if (!isSelectedPrimitiveFeatureIdSet(model, primitive, featureIds)) {
+        continue;
+      }
+      featureIdSource = "implicit";
+    } else {
+      // Unknown / instance-sourced set — no shader data path yet.
       continue;
     }
+
     // Locate the matching property table by id.
     for (let t = 0; t < propertyTables.length; t++) {
       const propertyTable = propertyTables[t];
@@ -606,10 +709,14 @@ function findPropertyTableForPrimitive(model, primitive) {
       ) {
         return {
           propertyTable,
-          // The WGSL FS exposes the `_FEATURE_ID_0` attribute as
-          // `input.featureId0` (flat-interpolated f32) — the codegen casts it
-          // to i32 for the table column index.
+          featureIdSource,
+          // The WGSL FS exposes the `_FEATURE_ID_0` attribute (real or
+          // implicit-synthesized) as `input.featureId0` (flat-interpolated
+          // f32) — the codegen casts it to i32 for the table column index.
+          // Ignored by the texture source (the codegen samples instead).
           featureIdWgslVariable: "featureId0",
+          featureIdTexCoord,
+          featureIdChannelCount,
         };
       }
     }
@@ -641,7 +748,10 @@ function findPropertyTableForPrimitive(model, primitive) {
  * @returns {{
  *   propertyTable: PropertyTable,
  *   textureData: { width: number, height: number, data: Uint8Array },
+ *   featureIdSource: string,
  *   featureIdWgslVariable: string,
+ *   featureIdTexCoord: number,
+ *   featureIdChannelCount: number,
  *   textureBinding: number,
  *   samplerBinding: number,
  *   properties: {
@@ -657,7 +767,13 @@ function resolvePropertyTableLayout(model, primitive) {
   if (!defined(match)) {
     return undefined;
   }
-  const { propertyTable, featureIdWgslVariable } = match;
+  const {
+    propertyTable,
+    featureIdSource,
+    featureIdWgslVariable,
+    featureIdTexCoord,
+    featureIdChannelCount,
+  } = match;
 
   // The loader packs ONE RGBA8 texture per table (rows = GPU-compatible class
   // properties, columns = features). WebGPU re-uploads its retained bytes.
@@ -714,7 +830,10 @@ function resolvePropertyTableLayout(model, primitive) {
   return {
     propertyTable,
     textureData,
+    featureIdSource,
     featureIdWgslVariable,
+    featureIdTexCoord,
+    featureIdChannelCount,
     textureBinding: PROPERTY_TABLE_BINDING,
     samplerBinding: PROPERTY_TABLE_SAMPLER_BINDING,
     properties,

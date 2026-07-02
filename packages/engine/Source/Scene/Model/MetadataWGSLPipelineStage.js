@@ -16,8 +16,9 @@
  * an asset-independent accessor the codegen emits — so the proof exercises
  * the GENERATED struct/initializer, not a hand-written stub.
  *
- * Scope: property-ATTRIBUTES (DP-H46b) + property TEXTURES (DP-H46c).
- * Property TABLES (DP-H46d) are not yet generated.
+ * Scope: property-ATTRIBUTES (DP-H46b) + property TEXTURES (DP-H46c) +
+ * property TABLES (DP-H46d, keyed by attribute / texture / implicit
+ * feature-ID sources — METADATA-TABLE-SOURCES; instance-sourced deferred).
  *
  * Property ATTRIBUTES (DP-H46b + METADATA-MULTICOMPONENT): transport is the
  * vec4 vertex path (`@location(9) metadataValue: vec4<f32>`): up to FOUR
@@ -581,7 +582,34 @@ function generateMetadataWGSL(model, primitive) {
     // The feature ID indexes the table COLUMN; the row is the per-property
     // `propertyInfoIndex`. `textureLoad` ignores filtering (raw texel fetch),
     // matching the GLSL `texelFetch(table, ivec2(featureId, propertyInfoIndex))`.
-    lines.push("  let metadataTableCol = i32(metadataFeatureId);");
+    if (propertyTableLayout.featureIdSource === "texture") {
+      // METADATA-TABLE-SOURCES — TEXTURE-sourced feature IDs. Sample the
+      // model's feature-ID texture (the SAME group-1 binding-26 resource
+      // `ensureFeatureIdResources` uploads — declared at module scope in
+      // ModelPBRComplete.wgsl; WGSL module-scope declarations are
+      // order-independent, so this prepended chunk may reference it) at the
+      // reader's texCoord and unpack the little-endian channel ID with the
+      // module-scope `unpackFeatureId` — the same sample+unpack the FS batch
+      // path performs, keeping the two feature-ID resolutions identical.
+      // `textureSampleLevel(..., 0.0)` because initializeMetadata is called
+      // from non-uniform control flow (same rationale as property textures).
+      const tc =
+        propertyTableLayout.featureIdTexCoord === 1
+          ? "metadataTexCoord1"
+          : "metadataTexCoord0";
+      const channelCount = propertyTableLayout.featureIdChannelCount | 0;
+      lines.push(
+        `  let metadataTableFidSample = textureSampleLevel(featureIdTexture, featureIdSampler, ${tc}, 0.0);`,
+      );
+      lines.push(
+        `  let metadataTableCol = unpackFeatureId(metadataTableFidSample, ${channelCount});`,
+      );
+    } else {
+      // ATTRIBUTE / IMPLICIT — the per-vertex feature ID arrives as the
+      // flat-interpolated `metadataFeatureId` parameter (`input.featureId0`;
+      // implicit ranges are synthesized into the same vertex slot).
+      lines.push("  let metadataTableCol = i32(metadataFeatureId);");
+    }
     for (let i = 0; i < tableFields.length; i++) {
       const f = tableFields[i];
       const loadExpr = `textureLoad(metadataPropertyTableTexture, vec2<i32>(metadataTableCol, ${f.propertyInfoIndex}), 0)`;

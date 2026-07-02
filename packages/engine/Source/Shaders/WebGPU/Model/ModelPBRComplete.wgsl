@@ -3503,9 +3503,17 @@ struct FragOutput {
   //>>ifdef MODEL_HAS_PROPERTY_TABLES
   if (material.motionFlags.z > 0.5) {
     // Table-only model (no property attribute, no property texture). The table
-    // is read at the per-fragment feature ID; texCoords are passed through but
-    // unused by the generated table accessors.
-    let metadata = initializeMetadata(vec4<f32>(0.0), input.texCoord0, input.texCoord0, input.featureId0);
+    // is read at the per-fragment feature ID — either the flat-interpolated
+    // `input.featureId0` (attribute / implicit sources) or, for a
+    // TEXTURE-sourced feature ID (METADATA-TABLE-SOURCES), a feature-ID
+    // texture sample the generated chunk performs at the passed texCoords —
+    // so texCoord1 must be the real TEXCOORD_1 when the primitive carries it.
+    //>>ifdef MODEL_HAS_TEXCOORD_1
+    let metaTC1 = input.texCoord1;
+    //>>else
+    let metaTC1 = input.texCoord0;
+    //>>endif
+    let metadata = initializeMetadata(vec4<f32>(0.0), input.texCoord0, metaTC1, input.featureId0);
     out.color = metadataDebugColor(metadata);
   }
   //>>endif

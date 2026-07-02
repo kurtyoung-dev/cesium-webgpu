@@ -423,11 +423,20 @@ export class WebGPUPickFramebuffer {
     encoder.copyTextureToBuffer(
       {
         texture: this._colorTexture!,
-        // Read from the scissor region, not the top-left corner. The scene
-        // was rendered with a scissor rectangle at (pickOriginX, pickOriginY)
-        // of the specified width × height; reading from (0, 0) returns the
-        // clear value for every click except ones landing near the origin.
-        origin: [this._pickOriginX, this._pickOriginY, 0],
+        // Read from the pick region, not the top-left corner — and convert
+        // the vertical origin (METADATA-TABLE-SOURCES, same conversion as
+        // readCenterPixel / C-R9-VOXEL-CELL-PICK): the caller's rectangle is
+        // GL-convention (`y` measured from the BOTTOM, per
+        // computePickingDrawingBufferRectangle) while `_colorTexture` is
+        // stored TOP-DOWN. Copying at the unconverted `y` read the
+        // vertically MIRRORED region — center-screen picks are
+        // self-symmetric, which is how the bug hid; every off-vertical-
+        // center pick resolved the wrong object.
+        origin: [
+          this._pickOriginX,
+          this._flipPickOriginY(this._pickOriginY, height),
+          0,
+        ],
       },
       {
         buffer: this._stagingBuffer!,
@@ -470,6 +479,21 @@ export class WebGPUPickFramebuffer {
       limit,
       this._colorFormat === "bgra8unorm",
     );
+  }
+
+  /**
+   * METADATA-TABLE-SOURCES — convert the pick rectangle's GL-convention
+   * bottom-origin row (`computePickingDrawingBufferRectangle` measures `y`
+   * from the BOTTOM because WebGL's `readPixels` is bottom-origin) to the
+   * top-down row of `_colorTexture` for a copy of `height` rows. The visual
+   * region rows are `[H - (y + height), H - y)`. Clamped so a rectangle
+   * hugging the screen edge can't produce a negative / out-of-bounds copy
+   * origin. Sibling of the single-pixel conversion in
+   * {@link readCenterPixel} (C-R9-VOXEL-CELL-PICK).
+   */
+  private _flipPickOriginY(glOriginY: number, height: number): number {
+    const flipped = this._height - glOriginY - height;
+    return Math.max(0, Math.min(flipped, Math.max(0, this._height - height)));
   }
 
   /**
@@ -653,10 +677,14 @@ export class WebGPUPickFramebuffer {
     encoder.copyTextureToBuffer(
       {
         texture: this._colorTexture!,
-        // Copy from the scissor region (see the paired comment on the sync
-        // readback path above). Previously (0, 0) was used, so every click
-        // that wasn't near the top-left corner returned undefined.
-        origin: [this._pickOriginX, this._pickOriginY, 0],
+        // Copy from the pick region (see the paired comment on the async
+        // readback path above), with the same GL-bottom-origin → top-down
+        // vertical conversion (METADATA-TABLE-SOURCES).
+        origin: [
+          this._pickOriginX,
+          this._flipPickOriginY(this._pickOriginY, height),
+          0,
+        ],
       },
       {
         buffer: this._stagingBuffer!,

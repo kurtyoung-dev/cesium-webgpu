@@ -165,6 +165,19 @@ function createFeatureIdGPUTexture(device, textureReader) {
   if (!defined(cesiumTexture)) {
     return null;
   }
+  // METADATA-TABLE-SOURCES — same Session 65 stub-reuse fix as
+  // `createGPUTextureFromReader`: in WebGPU mode the CesiumJS Texture is
+  // backed by WebGLStubTexture, which uploads the image to a real GPUTexture
+  // (`texture._texture._webgpuTexture.texture`) and does NOT retain
+  // `_source`. Without this branch every glTF feature-ID texture fell back
+  // to the white placeholder (feature ID 255 for all fragments). NOTE: the
+  // returned texture is OWNED by the stub — callers must not destroy it
+  // (see destroyFeatureIdResources' ownership guard).
+  const stubWrapper = cesiumTexture._texture;
+  const stubGPU = stubWrapper && stubWrapper._webgpuTexture;
+  if (stubGPU && stubGPU.texture) {
+    return stubGPU.texture;
+  }
   const source =
     cesiumTexture._source || cesiumTexture.source || cesiumTexture._image;
   if (!defined(source)) {
@@ -409,12 +422,21 @@ function ensureFeatureIdResources(
   let channelCount = 1;
 
   // Feature ID texture path
+  let featureIdTexOwned = false;
   if (selected.isTexture) {
     const textureReader = selected.featureIds.textureReader;
     featureIdTex = createFeatureIdGPUTexture(device, textureReader);
     if (defined(featureIdTex)) {
       flags |= 0x10000; // FLAG_HAS_FEATURE_ID_TEXTURE (bit 16)
       channelCount = getChannelCount(textureReader.channels);
+      // METADATA-TABLE-SOURCES — ownership: when the texture is the
+      // WebGLStubTexture's already-uploaded GPUTexture (reused by
+      // reference), the stub owns it and destroyFeatureIdResources must
+      // NOT destroy it; only textures allocated by
+      // createFeatureIdGPUTexture itself are ours to free.
+      featureIdTexOwned =
+        textureReader?.texture?._texture?._webgpuTexture?.texture !==
+        featureIdTex;
     }
   }
 
@@ -536,12 +558,21 @@ function ensureFeatureIdResources(
   // anymore.
   const fallbackTex = pipelineCache.defaultWhiteTexture;
   const fallbackSampler = pipelineCache.defaultSampler;
+  // METADATA-TABLE-SOURCES — feature-ID textures carry INTEGER ids in their
+  // channels and MUST be sampled NEAREST: upstream GltfLoader forces
+  // `Sampler.NEAREST` for every EXT_mesh_features feature-ID texture, because
+  // linear filtering interpolates neighbouring ids into fabricated values
+  // (visible as kaleidoscope banding in the metadata debug paint, and wrong
+  // feature resolution near region boundaries in the pick FS). The pipeline
+  // cache's nearest/clamp property-texture sampler is the matching state.
+  const featureIdNearestSampler =
+    pipelineCache.propertyTextureSampler ?? fallbackSampler;
   const featureIdEntries = [
     {
       binding: 26,
       resource: (featureIdTex || fallbackTex).createView(),
     },
-    { binding: 27, resource: fallbackSampler },
+    { binding: 27, resource: featureIdNearestSampler },
     {
       binding: 28,
       resource: (batchGPUTex || fallbackTex).createView(),
@@ -563,6 +594,7 @@ function ensureFeatureIdResources(
   primCache._featureIdFlags = flags;
   primCache._featureIdEntries = featureIdEntries;
   primCache._featureIdGPUTexture = featureIdTex;
+  primCache._featureIdGPUTextureOwned = featureIdTexOwned;
   primCache._batchGPUTexture = batchGPUTex;
   primCache._featureUniformBuffer = featureUniformBuffer;
 
@@ -700,8 +732,14 @@ function ensurePerFeaturePickIds(
  */
 function destroyFeatureIdResources(primCache) {
   if (defined(primCache._featureIdGPUTexture)) {
-    primCache._featureIdGPUTexture.destroy();
+    // METADATA-TABLE-SOURCES — only destroy textures allocated by
+    // createFeatureIdGPUTexture; stub-owned reused textures are freed with
+    // the glTF texture itself.
+    if (primCache._featureIdGPUTextureOwned !== false) {
+      primCache._featureIdGPUTexture.destroy();
+    }
     primCache._featureIdGPUTexture = undefined;
+    primCache._featureIdGPUTextureOwned = undefined;
   }
   if (defined(primCache._batchGPUTexture)) {
     primCache._batchGPUTexture.destroy();
