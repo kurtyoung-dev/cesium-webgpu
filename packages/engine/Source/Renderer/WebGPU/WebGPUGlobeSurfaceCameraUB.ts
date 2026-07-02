@@ -855,6 +855,70 @@ export function createCameraUniformBuffer(
     for (let i = 0; i < 12; i++) data[offset++] = 0.0;
   }
 
+  // ─── GLOBE-TRANSLUCENCY-ALPHA: translucent-globe alpha tail (180-191) ───
+  // translucencyFrontAlphaByDistance (vec4) + translucencyBackAlphaByDistance
+  // (vec4) + translucencyControl (vec4). Mirrors the WebGL uniforms
+  // `u_frontFaceAlphaByDistance` / `u_backFaceAlphaByDistance`
+  // (GlobeSurfaceTileProviderRendering.js:1487-1509): each NearFarScalar is
+  // resolved by GlobeTranslucencyState.update (frontFaceAlpha ×
+  // frontFaceAlphaByDistance etc.), and the camera-underground front/back
+  // swap is applied CPU-side. `translucencyControl.x` mirrors the WebGL
+  // TRANSLUCENT compile-time define — emitted exactly when
+  // `globeTranslucencyState.translucent` (front faces translucent). All-zero
+  // (gate closed) when translucency is off → byte-identical default render.
+  const translucencyState = (
+    frameState as
+      | {
+          globeTranslucencyState?: {
+            translucent?: boolean;
+            frontFaceAlphaByDistance?: {
+              near: number;
+              nearValue: number;
+              far: number;
+              farValue: number;
+            };
+            backFaceAlphaByDistance?: {
+              near: number;
+              nearValue: number;
+              far: number;
+              farValue: number;
+            };
+          };
+        }
+      | undefined
+  )?.globeTranslucencyState;
+  const translucencyFront = translucencyState?.frontFaceAlphaByDistance;
+  const translucencyBack = translucencyState?.backFaceAlphaByDistance;
+  if (
+    translucencyState?.translucent === true &&
+    translucencyFront &&
+    translucencyBack
+  ) {
+    const translucencyCameraUnderground =
+      (frameState as { cameraUnderground?: boolean } | undefined)
+        ?.cameraUnderground === true;
+    const frontFinal = translucencyCameraUnderground
+      ? translucencyBack
+      : translucencyFront;
+    const backFinal = translucencyCameraUnderground
+      ? translucencyFront
+      : translucencyBack;
+    data[offset++] = frontFinal.near;
+    data[offset++] = frontFinal.nearValue;
+    data[offset++] = frontFinal.far;
+    data[offset++] = frontFinal.farValue;
+    data[offset++] = backFinal.near;
+    data[offset++] = backFinal.nearValue;
+    data[offset++] = backFinal.far;
+    data[offset++] = backFinal.farValue;
+    data[offset++] = 1.0; // x = TRANSLUCENT gate
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+  } else {
+    for (let i = 0; i < 12; i++) data[offset++] = 0.0;
+  }
+
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this
   // globe command log-encodes the whole depth texture against onto the SHARED
   // uniformState (the one object that crosses the GraphicsContext boundary to

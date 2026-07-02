@@ -76,9 +76,14 @@ import {
   HSB_SHIFT_OFFSET,
   GROUND_ATMOSPHERE_CONTROL_OFFSET,
   INITIAL_COLOR_OFFSET,
+  LOCALIZED_TRANSLUCENCY_RECT_OFFSET,
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
+// GLOBE-TRANSLUCENCY-ALPHA — reuse the exact WebGL antimeridian-clip helper
+// for the translucency rectangle instead of replicating the split logic here
+// and risking drift. Backend-neutral pure function.
+import { clipRectangleAntimeridian } from "../../Scene/GlobeSurfaceTileProviderRendering.js";
 import { writeUniformSlice } from "./WebGPUGlobeSurfaceCameraUB.js";
 import { getActiveDebugSentinel } from "./WebGPUGlobeFragmentDebug.js";
 import {
@@ -755,6 +760,46 @@ export function createTileUniformBuffer(
       data[INITIAL_COLOR_OFFSET + 2] = 0.5;
       data[INITIAL_COLOR_OFFSET + 3] = 1.0;
     }
+  }
+
+  // ─── GLOBE-TRANSLUCENCY-ALPHA: localizedTranslucencyRectangle (vec4) ───
+  // Mirrors WebGL's `u_translucencyRectangle` packing
+  // (GlobeSurfaceTileProviderRendering.js:1555-1607): antimeridian-clip
+  // `globe.translucency.rectangle` against the tile rectangle, then localize
+  // to tile-UV space (west, south, east, north). Only packed when the globe
+  // is actually translucent — the scratch's zero default is inert because
+  // the FS only reads this field inside the `camera.translucencyControl.x`
+  // gate, which is closed unless `globeTranslucencyState.translucent`.
+  const translucencyState = (
+    frameState as
+      | {
+          globeTranslucencyState?: {
+            translucent?: boolean;
+            rectangle?: CesiumRectangle;
+          };
+        }
+      | undefined
+  )?.globeTranslucencyState;
+  const translucencyRectangle = translucencyState?.rectangle;
+  if (
+    translucencyState?.translucent === true &&
+    translucencyRectangle &&
+    tile.rectangle
+  ) {
+    const clippedTranslucencyRectangle = clipRectangleAntimeridian(
+      tile.rectangle,
+      translucencyRectangle,
+    ) as CesiumRectangle;
+    const invW = 1.0 / tile.rectangle.width;
+    const invH = 1.0 / tile.rectangle.height;
+    data[LOCALIZED_TRANSLUCENCY_RECT_OFFSET + 0] =
+      (clippedTranslucencyRectangle.west - tile.rectangle.west) * invW;
+    data[LOCALIZED_TRANSLUCENCY_RECT_OFFSET + 1] =
+      (clippedTranslucencyRectangle.south - tile.rectangle.south) * invH;
+    data[LOCALIZED_TRANSLUCENCY_RECT_OFFSET + 2] =
+      (clippedTranslucencyRectangle.east - tile.rectangle.west) * invW;
+    data[LOCALIZED_TRANSLUCENCY_RECT_OFFSET + 3] =
+      (clippedTranslucencyRectangle.north - tile.rectangle.south) * invH;
   }
 
   return writeUniformSlice(

@@ -17,9 +17,9 @@
 //   `atmosphereInnerRadius` from camera height. WGSL precomputes
 //   `innerRadius` on the CPU side and passes it via the uniform; the
 //   CPU-side adjust math is in WebGPUSkyAtmosphereRenderer.
-// - GLSL has a `#ifdef GLOBE_TRANSLUCENT` brightening path; WGSL has
-//   no equivalent (translucent globe not wired through WebGPU
-//   pipeline).
+// - GLSL has a `#ifdef GLOBE_TRANSLUCENT` brightening path; WGSL ports
+//   it as a runtime gate (`u.atmosControl.w`, GLOBE-TRANSLUCENCY-ALPHA)
+//   inside `skyColorForRay`.
 // - GLSL calls `czm_raySphereIntersectionInterval` (builtin); WGSL
 //   inlines `raySphereIntersect`.
 // - GLSL calls `computeScattering` from czm_* builtin (16-step adaptive

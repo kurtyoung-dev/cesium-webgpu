@@ -153,6 +153,16 @@ export function buildPipelineDescriptor(
   // pass into `cache.faceViews[face]`. `undefined` (the default, every
   // on-screen call site) is byte-identical to the pre-446 descriptor.
   captureFaceFormat?: GPUTextureFormat,
+  // GLOBE-TRANSLUCENCY-ALPHA — depth-only FRONT-face pre-pass variant.
+  // Mirrors WebGL's DEPTH_ONLY_FRONT_FACE derived command
+  // (GlobeTranslucencyState.js getDepthOnlyFrontFaceRenderState): cull BACK
+  // faces (front faces only), colorWriteMask 0, depth-write enabled. Used
+  // when the globe is translucent with an OPAQUE back face (the default
+  // backFaceAlpha = 1): the color command switches to the depth-read-only
+  // ALPHA-blend variant, so this pre-pass is what keeps the scene depth
+  // populated with the near globe surface (sky/atmosphere gating, depth
+  // plane, later primitives, pickPosition all read it).
+  depthOnlyFrontFace: boolean = false,
 ): WebGPURenderPipelineDescriptor {
   let vertexBuffers: GPUVertexBufferLayout[];
   let entryPoint: string;
@@ -367,6 +377,7 @@ export function buildPipelineDescriptor(
   //     toggle.
   // Cache key suffixes (`_DOB`, `_TBF`) keep the three variants distinct.
   const dobLabel = depthOnlyBackFace ? ", depthOnlyBackFace" : "";
+  const dofLabel = depthOnlyFrontFace ? ", depthOnlyFrontFace" : "";
   const tbfLabel = translucentBackFace ? ", translucentBackFace" : "";
   // Batch 246 — the central pipeline cache keys on the descriptor name
   // (plus structural fields); the reduced-imagery variant has a
@@ -376,9 +387,11 @@ export function buildPipelineDescriptor(
   const cullMode: GPUCullMode =
     depthOnlyBackFace || translucentBackFace
       ? "front"
-      : disableCulling
-        ? "none"
-        : "back";
+      : depthOnlyFrontFace
+        ? "back"
+        : disableCulling
+          ? "none"
+          : "back";
   // GLOBE-UNDERGROUND-COLOR — the central pipeline cache keys on the
   // descriptor NAME (see `generateCacheKey` in WebGPURenderPipelineCache:
   // `parts = [descriptor.name]` when no variant is passed, and the globe's
@@ -392,35 +405,38 @@ export function buildPipelineDescriptor(
   // cull mode won). The `, noCull` marker keeps the central-cache key distinct,
   // matching the dob/tbf/cd/img labels that already follow this convention.
   const ncLabel = cullMode === "none" ? ", noCull" : "";
-  const depthWriteEnabled = depthOnlyBackFace
-    ? true
-    : translucentBackFace
-      ? false
-      : !isBlend;
+  const depthWriteEnabled =
+    depthOnlyBackFace || depthOnlyFrontFace
+      ? true
+      : translucentBackFace
+        ? false
+        : !isBlend;
   // Force ALPHA blend for translucent back-face regardless of `isBlend`
   // input; the variant is by-definition translucent.
-  const effectiveBlend = depthOnlyBackFace
-    ? undefined
-    : translucentBackFace
-      ? {
-          color: {
-            srcFactor: "src-alpha" as GPUBlendFactor,
-            dstFactor: "one-minus-src-alpha" as GPUBlendFactor,
-            operation: "add" as GPUBlendOperation,
-          },
-          alpha: {
-            srcFactor: "one" as GPUBlendFactor,
-            dstFactor: "one-minus-src-alpha" as GPUBlendFactor,
-            operation: "add" as GPUBlendOperation,
-          },
-        }
-      : blendState;
+  const effectiveBlend =
+    depthOnlyBackFace || depthOnlyFrontFace
+      ? undefined
+      : translucentBackFace
+        ? {
+            color: {
+              srcFactor: "src-alpha" as GPUBlendFactor,
+              dstFactor: "one-minus-src-alpha" as GPUBlendFactor,
+              operation: "add" as GPUBlendOperation,
+            },
+            alpha: {
+              srcFactor: "one" as GPUBlendFactor,
+              dstFactor: "one-minus-src-alpha" as GPUBlendFactor,
+              operation: "add" as GPUBlendOperation,
+            },
+          }
+        : blendState;
   // Mask all color writes when running the depth-only pre-pass. The
   // fragment stage is retained (rather than omitted) so the same module
   // compiles unchanged; its output is masked to nothing at the target
   // state level. WebGPU spec: `writeMask: 0` is equivalent to
   // GPUColorWrite.NONE and validates against the canvas format.
-  const colorWriteMask: GPUColorWriteFlags = depthOnlyBackFace ? 0 : 0xf;
+  const colorWriteMask: GPUColorWriteFlags =
+    depthOnlyBackFace || depthOnlyFrontFace ? 0 : 0xf;
 
   // C2-25 ENV-SCENE-CAPTURE (Batch 446) — the capture variant renders into a
   // single cube-face color attachment (no MRT slot-1), a no-stencil
@@ -430,7 +446,7 @@ export function buildPipelineDescriptor(
   // keeps the capture pipeline distinct in any shared cache.
   const capLabel = isCapture ? `, capture ${captureFaceFormat}` : "";
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,
@@ -1030,6 +1046,64 @@ export function selectDepthOnlyBackFacePipeline(
       false, // disableCulling — depth-only forces cullMode: "front"
       true, // depthOnlyBackFace
       false, // translucentBackFace
+    );
+    entry = { descriptor, pipeline: null, pending: false };
+    host._pipelineCache.set(cacheKey, entry);
+  }
+  return resolveGlobePipelineEntry(host, entry);
+}
+
+/**
+ * GLOBE-TRANSLUCENCY-ALPHA — select the depth-only FRONT-face pre-pass
+ * pipeline variant.
+ *
+ * Used by the globe surface renderer when the globe is translucent with an
+ * OPAQUE back face (the default — `backFaceAlpha = 1`). Mirrors WebGL's
+ * DEPTH_ONLY_FRONT_FACE derived command: the translucent color command runs
+ * with depth-write OFF (ALPHA blend variant), so this pre-pass is what keeps
+ * the scene-FB depth attachment populated with the NEAR globe surface —
+ * sky/atmosphere gating, the depth plane, subsequently-rendered primitives,
+ * and `pickPosition` all read that depth. Without it, the depth buffer holds
+ * no globe surface at all and the sky pass floods the planet disk.
+ *
+ * Cache key mirrors `selectDepthOnlyBackFacePipeline` with a `_DOF` suffix.
+ *
+ * @returns null while the pipeline is materializing through the central
+ *   cache; the caller skips the pre-pass command for this tile this frame
+ *   (one-frame degraded depth instead of a permanent black tile).
+ */
+export function selectDepthOnlyFrontFacePipeline(
+  host: PipelineHost,
+  isQuantized: boolean,
+  hasNormals: boolean,
+  hasWebMercatorT: boolean,
+  strideBytes: number,
+  useClipDistances: boolean = false,
+  hasGeodeticSurfaceNormals: boolean = false,
+): GPURenderPipeline | null {
+  const cdSuffix = useClipDistances ? "_CD" : "";
+  const defines =
+    (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
+  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}${cdSuffix}_DOF|${defines.toString(16)}`;
+  let entry = host._pipelineCache.get(cacheKey);
+  if (!entry) {
+    const descriptor = buildPipelineDescriptor(
+      host,
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      false, // isBlend — irrelevant for depth-only (no color writes)
+      strideBytes,
+      DebugFragmentMode.NONE,
+      useClipDistances,
+      hasGeodeticSurfaceNormals,
+      false, // disableCulling — depth-only front-face forces cullMode: "back"
+      false, // depthOnlyBackFace
+      false, // translucentBackFace
+      undefined, // captureFaceFormat
+      true, // depthOnlyFrontFace
     );
     entry = { descriptor, pipeline: null, pending: false };
     host._pipelineCache.set(cacheKey, entry);

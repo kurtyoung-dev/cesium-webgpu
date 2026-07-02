@@ -134,7 +134,19 @@ export interface GlobePipelineEntry {
 // the camera can see underground AND the underground color is visible, so the
 // FS gate (`undergroundControl.x > 0.5`) stays closed by default → the render
 // is byte-identical.
-export const CAMERA_UNIFORM_FLOATS = 180;
+// GLOBE-TRANSLUCENCY-ALPHA — +12 for the translucent-globe alpha tail:
+//   translucencyFrontAlphaByDistance (vec4, offsets 180-183) — WebGL's
+//     `u_frontFaceAlphaByDistance` NearFarScalar packed as
+//     (near, nearValue, far, farValue); camera-underground swap pre-applied
+//   translucencyBackAlphaByDistance (vec4, offsets 184-187) — WebGL's
+//     `u_backFaceAlphaByDistance`
+//   translucencyControl (vec4, offsets 188-191) — x = enable flag (mirrors
+//     the WebGL TRANSLUCENT define, i.e. globeTranslucencyState.translucent),
+//     y/z/w reserved.
+// Additive tail-append (no existing offset shifts). All-zero unless
+// globe.translucency is enabled, so the FS gate
+// (`translucencyControl.x > 0.5`) stays closed by default → byte-identical.
+export const CAMERA_UNIFORM_FLOATS = 192;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):
@@ -188,9 +200,15 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                passes leave it zeroed (transparent), matching WebGL's
 //                `otherPassesInitialColor`.
 //
-// Total = 480 floats = 1920 bytes. Well under WebGPU's
+//   480 - 483  localizedTranslucencyRectangle (vec4) — GLOBE-TRANSLUCENCY-ALPHA:
+//                WebGL's `u_translucencyRectangle` (globe.translucency.rectangle
+//                antimeridian-clipped + localized to tile UV, west/south/east/
+//                north). All-zero when translucency is off; the FS only reads
+//                it inside the `camera.translucencyControl.x > 0.5` gate.
+//
+// Total = 484 floats = 1936 bytes. Well under WebGPU's
 // `maxUniformBufferBindingSize` floor (16 KiB).
-export const TILE_UNIFORM_FLOATS = 480;
+export const TILE_UNIFORM_FLOATS = 484;
 export const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Per-layer floats: vec4 translationAndScale + vec4 texCoordsRect +
@@ -222,6 +240,7 @@ export const DEBUG_FIELDS_OFFSET = 464;
 export const HSB_SHIFT_OFFSET = 468;
 export const GROUND_ATMOSPHERE_CONTROL_OFFSET = 472;
 export const INITIAL_COLOR_OFFSET = 476;
+export const LOCALIZED_TRANSLUCENCY_RECT_OFFSET = 480;
 
 // Max imagery layers per tile in a single draw call (16 — WebGPU minimum
 // `maxSampledTexturesPerShaderStage`). Tiles exceeding this count multi-pass.

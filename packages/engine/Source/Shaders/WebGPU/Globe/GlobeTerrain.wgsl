@@ -192,6 +192,24 @@ struct CameraUniforms {
   undergroundColor: vec4<f32>,
   undergroundColorAlphaByDistance: vec4<f32>,
   undergroundControl: vec4<f32>,
+  // ─── GLOBE-TRANSLUCENCY-ALPHA: per-fragment translucent-globe alpha ───
+  // Mirrors WebGL's `u_frontFaceAlphaByDistance` / `u_backFaceAlphaByDistance`
+  // (GlobeFS.glsl lines 112-114, applied at lines 746-751 under `#ifdef
+  // TRANSLUCENT`). Each is a NearFarScalar packed (near, nearValue, far,
+  // farValue) — globe.translucency.frontFaceAlpha × frontFaceAlphaByDistance
+  // resolved CPU-side by GlobeTranslucencyState.update, with WebGL's
+  // camera-underground front/back swap pre-applied
+  // (GlobeSurfaceTileProviderRendering.js:1487-1492).
+  //   translucencyControl.x = enable flag — mirrors the WebGL TRANSLUCENT
+  //     compile-time define, emitted exactly when
+  //     `globeTranslucencyState.translucent` (front faces translucent).
+  //     y, z, w = reserved.
+  // Additive tail-append — no existing offset shifts; all-zero by default so
+  // the FS gate (`translucencyControl.x > 0.5`) stays closed and the render
+  // is byte-identical when globe.translucency is disabled.
+  translucencyFrontAlphaByDistance: vec4<f32>,
+  translucencyBackAlphaByDistance: vec4<f32>,
+  translucencyControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -328,6 +346,16 @@ struct TileUniforms {
   // (matching WebGL's `otherPassesInitialColor`). Replaces the previous
   // hardcoded vec3(0.04, 0.04, 0.06) first-pass base.
   initialColor: vec4<f32>,
+  // GLOBE-TRANSLUCENCY-ALPHA — WebGL's `u_translucencyRectangle`
+  // (GlobeFS.glsl `inTranslucencyRectangle()`): `globe.translucency.rectangle`
+  // antimeridian-clipped and localized to this tile's UV space
+  // (west, south, east, north), packed by WebGPUGlobeSurfaceTileUB. The
+  // translucency alpha multiply only applies to fragments STRICTLY inside
+  // this rectangle (matches WebGL's `>` / `<` tests). The default
+  // Rectangle.MAX_VALUE localizes to a rect containing [0,1]² so every
+  // fragment qualifies. All-zero when translucency is off — inert because
+  // the `camera.translucencyControl.x` gate is closed then anyway.
+  localizedTranslucencyRectangle: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -3999,6 +4027,27 @@ fn fragmentMain(
     ) + vec4<f32>(color, alpha) * (1.0 - undergroundColor.a);
     color = blended.rgb;
     alpha = blended.a;
+  }
+
+  // ─── GLOBE-TRANSLUCENCY-ALPHA — per-fragment translucent-globe alpha ───
+  // Mirrors GlobeFS.glsl lines 746-751 (`#ifdef TRANSLUCENT`): inside the
+  // translucency rectangle, scale the fragment's alpha by the front- or
+  // back-face NearFarScalar ramp (`interpolateByDistance`) evaluated at the
+  // fragment's eye distance. The translucent multi-pass pipelines (depth-only
+  // pre-pass + translucent back-face + translucent front-face, Batches
+  // 177/182) supply the ALPHA blend state; this alpha value is what makes the
+  // blend actually translucent. Gate is closed (control.x = 0) unless
+  // `globeTranslucencyState.translucent`, keeping the default byte-identical.
+  if (camera.translucencyControl.x > 0.5) {
+    let tRect = tile.localizedTranslucencyRectangle;
+    if (geoUV.x > tRect.x && geoUV.x < tRect.z &&
+        geoUV.y > tRect.y && geoUV.y < tRect.w) {
+      var alphaByDistance = camera.translucencyBackAlphaByDistance;
+      if (frontFacing) {
+        alphaByDistance = camera.translucencyFrontAlphaByDistance;
+      }
+      alpha = alpha * globe_interpolateByDistance(alphaByDistance, input.v_distance);
+    }
   }
 
   // DP-H24 — Globe hue / saturation / brightness shift. Matches the

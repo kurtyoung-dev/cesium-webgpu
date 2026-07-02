@@ -27,6 +27,7 @@ import {
   selectPickPipeline as selectPickPipelineHelper,
   selectDebugFragmentPipeline as selectDebugFragmentPipelineHelper,
   selectDepthOnlyBackFacePipeline as selectDepthOnlyBackFacePipelineHelper,
+  selectDepthOnlyFrontFacePipeline as selectDepthOnlyFrontFacePipelineHelper,
   selectTranslucentBackFacePipeline as selectTranslucentBackFacePipelineHelper,
   selectCapturePipeline as selectCapturePipelineHelper,
   buildPipelineDescriptor,
@@ -914,12 +915,23 @@ export class WebGPUGlobeSurfaceRenderer {
             disableCulling,
           );
       } else {
+        // GLOBE-TRANSLUCENCY-ALPHA — when the globe is translucent, the
+        // front-face color command MUST use the ALPHA-blend pipeline
+        // variant (blend src-alpha/one-minus-src-alpha, depth-write off),
+        // matching WebGL's `getTranslucentFrontFaceRenderState`
+        // (BlendingState.ALPHA_BLEND + depthMask false). Previously only
+        // subsequent imagery passes selected the blend variant, so the
+        // first-pass translucent front-face rendered OPAQUE and the
+        // per-fragment alpha from the FS was discarded by the pipeline —
+        // an enabled translucent globe still composited fully opaque.
+        // The depth-only back-face pre-pass (Batch 177) still writes the
+        // far-side depth, so the blend pass has correct occlusion.
         pipeline = selectPipelineHelper(
           this,
           gpuResources.isQuantized,
           gpuResources.hasNormals,
           gpuResources.hasWebMercatorT,
-          isSubsequentPass,
+          isSubsequentPass || globeTranslucent,
           gpuResources.strideBytes,
           useClipDistances,
           gpuResources.hasGeodeticSurfaceNormals,
@@ -1244,8 +1256,26 @@ export class WebGPUGlobeSurfaceRenderer {
       // command running with cullMode: "none" instead of "back"). The
       // `!cameraUnderground` gate keeps the underground path on the
       // legacy single-pass behavior.
+      // GLOBE-TRANSLUCENCY-ALPHA — the 3-pass see-through technique (depth-
+      // only back-face pre-pass + translucent back-face) only applies when
+      // the BACK faces are themselves translucent (backFaceAlpha < 1 or
+      // backFaceAlphaByDistance). WebGL's `getDerivedCommandTypes`
+      // (GlobeTranslucencyState.js:496-520) makes the same split: when the
+      // back face is opaque (the default — backFaceAlpha = 1), it renders
+      // DEPTH_ONLY_FRONT_FACE + OPAQUE_BACK_FACE (z-rejected behind the
+      // front depth, base depth func LESS) + TRANSLUCENT_FRONT_FACE — the
+      // net composite is JUST the alpha-blended front face over the
+      // background. Running the back-face passes in that case blends the
+      // globe underside into the destination, which WebGL never shows.
+      const backTranslucent =
+        (
+          frameState as unknown as {
+            globeTranslucencyState?: { _backFaceTranslucent?: boolean };
+          }
+        ).globeTranslucencyState?._backFaceTranslucent === true;
       if (
         globeTranslucent &&
+        backTranslucent &&
         !cameraUnderground &&
         !isSubsequentPass &&
         !debugWireframe &&
@@ -1330,6 +1360,62 @@ export class WebGPUGlobeSurfaceRenderer {
         // null pipeline → skip this command for one frame. The other
         // two commands continue to render; the missing back-face
         // contribution is invisible after the first frame.
+      }
+
+      // GLOBE-TRANSLUCENCY-ALPHA — opaque-back-face translucency (the
+      // default: backFaceAlpha = 1, frontFaceAlpha < 1). Mirrors WebGL's
+      // DEPTH_ONLY_FRONT_FACE derived command: the color command below runs
+      // on the ALPHA-blend pipeline with depth-write OFF, so without this
+      // pre-pass the scene depth would hold no globe surface at all — the
+      // sky/atmosphere pass then floods the planet disk and later
+      // depth-reading passes (depth plane, pickPosition) break. WebGL's
+      // OPAQUE_BACK_FACE sibling command is intentionally NOT mirrored: with
+      // WebGL's base depth func LESS it is z-rejected against this pre-pass
+      // depth everywhere (equal depth), so its net contribution is nothing;
+      // WebGPU's globe pipelines use less-equal, where emitting it WOULD
+      // wrongly overwrite the destination with the globe underside.
+      if (
+        globeTranslucent &&
+        !backTranslucent &&
+        !cameraUnderground &&
+        !isSubsequentPass &&
+        !debugWireframe &&
+        debugFragmentMode === DebugFragmentMode.NONE
+      ) {
+        const depthOnlyFrontPipeline = selectDepthOnlyFrontFacePipelineHelper(
+          this,
+          gpuResources.isQuantized,
+          gpuResources.hasNormals,
+          gpuResources.hasWebMercatorT,
+          gpuResources.strideBytes,
+          useClipDistances,
+          gpuResources.hasGeodeticSurfaceNormals,
+        );
+        if (depthOnlyFrontPipeline) {
+          // Reuse the regular tile bind groups — same pipeline layout,
+          // same vertex transforms, same UBs. colorWriteMask: 0 → only
+          // depth is written.
+          commands.push({
+            pipeline: depthOnlyFrontPipeline,
+            bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+            bindGroup0DynamicOffsets,
+            vertexBuffer: gpuResources.vertexBuffer,
+            indexBuffer: drawIndexBuffer,
+            indexCount: drawIndexCount,
+            indexFormat: drawIndexFormat,
+            boundingVolume:
+              (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
+              surfaceTile.boundingSphere3D,
+            isSubsequentPass: false,
+            isQuantized: gpuResources.isQuantized,
+            shadowCastTerrainUB: gpuResources.shadowCastUB,
+            hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
+            strideBytes: gpuResources.strideBytes,
+          });
+        }
+        // Null pipeline → the central cache is still materializing this
+        // variant; skip the pre-pass for one frame (same fallback
+        // semantics as the back-face pre-pass above).
       }
 
       // Cluster 3 — material slots are merged into Group 2. When a

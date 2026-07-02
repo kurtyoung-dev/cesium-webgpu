@@ -29,8 +29,8 @@
 //   gates HSB shift on |hsbShift| > 0.001 (HDR is handled via the
 //   WebGPU post-process pipeline, not the sky shader).
 // - GLSL has a `#ifdef GLOBE_TRANSLUCENT` brightening path in
-//   SkyAtmosphereCommon; WGSL has none yet (translucent globe not
-//   wired through WebGPU pipeline).
+//   SkyAtmosphereCommon; WGSL ports it as a runtime gate
+//   (`u.atmosControl.w`, GLOBE-TRANSLUCENCY-ALPHA) inside `skyColorForRay`.
 
 in vec3 v_outerPositionWC;
 

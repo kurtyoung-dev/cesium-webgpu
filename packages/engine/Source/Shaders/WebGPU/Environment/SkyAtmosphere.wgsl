@@ -92,10 +92,13 @@
 //
 // 10. **Translucent-globe brightening.** GLSL has `#ifdef
 //     GLOBE_TRANSLUCENT` path in computeAtmosphereScattering that
-//     brightens the inside-globe view when translucency is enabled.
-//     WGSL has no equivalent — globe-translucency is not yet wired
-//     through the WebGPU pipeline (deferred, tracked in
-//     DEFERRED_WORK.md as part of multi-frustum/translucent classification).
+//     substitutes a dark distance-faded horizon gradient for rays that
+//     intersect the planet when translucency is enabled. WGSL ports it
+//     as a RUNTIME gate (`u.atmosControl.w > 0.5`, packed from
+//     `frameState.globeTranslucencyState.translucent`) inside
+//     `skyColorForRay` — GLOBE-TRANSLUCENCY-ALPHA. Compile-time define
+//     vs runtime flag is the only divergence; the math matches
+//     SkyAtmosphereCommon.glsl lines 63-90.
 //
 // 11. **Ellipsoid math (uniform vs builtins).** GLSL pulls
 //     `czm_ellipsoidRadii`, `czm_ellipsoidInverseRadii`,
@@ -882,6 +885,51 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     lightDirWC = normalize(skyPoint);
   } else {
     lightDirWC = u.sunDirectionWC;
+  }
+
+  // ─── GLOBE-TRANSLUCENCY-ALPHA — translucent-globe sky path ───
+  // Port of WebGL's `#ifdef GLOBE_TRANSLUCENT` branch
+  // (SkyAtmosphereCommon.glsl lines 63-90): when the globe is translucent,
+  // sky rays that intersect the PLANET must not show the full Nishita
+  // scattering integral (which would flood the see-through planet disk with
+  // bright daylight blue); WebGL substitutes a subtle distance/angle-faded
+  // navy "horizon" gradient that darkens to black for rays passing deep
+  // through the planet. `u.atmosControl.w` mirrors the GLOBE_TRANSLUCENT
+  // compile-time define (packed by WebGPUSkyAtmosphereRenderer from
+  // `frameState.globeTranslucencyState.translucent`); 0 by default so
+  // non-translucent scenes never enter this branch (byte-identical).
+  if (u.atmosControl.w > 0.5 && earthIntersect.x > 0.0 && earthIntersect.y > 0.0) {
+    // WebGL casts a ray from the (far-side) shell fragment toward the
+    // ellipsoid centre to find the ground point under it; the far earth
+    // intersection of the view ray is that same exit point in our ray form.
+    let ugOnEarth = rayOrigin + rayDir * earthIntersect.y;
+    // interpolateByDistance(vec4(0, 1, R, 0), |camera - onEarth|):
+    // 1 at distance 0, fading to 0 at one Earth radius (clamped).
+    let ugDistance = length(rayOrigin - ugOnEarth);
+    let ugOpacity =
+      1.0 - clamp(ugDistance / max(innerRadius, 1.0), 0.0, 1.0);
+    // Camera↔exit-point central angle controls the color falloff.
+    let ugAngle = dot(normalize(rayOrigin), normalize(ugOnEarth));
+    let ugHorizonColor = vec3<f32>(0.1, 0.2, 0.3);
+    let ugRayleigh = ugHorizonColor * (exp(-ugAngle) * ugOpacity);
+    // computeAtmosphereColor with mieColor = 0 (GLSL leaves mie unset on
+    // this path): rayleighPhase × rayleighColor × lightIntensity.
+    let ugCosAngle = dot(rayDir, lightDirWC);
+    let ugPhase = 3.0 / 50.2654824574 * (1.0 + ugCosAngle * ugCosAngle);
+    var ugColor = ugPhase * ugRayleigh * u.intensity;
+    // Same post-scattering pipeline as the main path (tonemap → gamma →
+    // HSB); WebGL's FS skips ONLY the final alpha adjust when
+    // underTranslucentGlobe == 1, so alpha stays the distance-ramp opacity.
+    ugColor = pbrNeutralTonemapSky(ugColor);
+    ugColor = pow(max(ugColor, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    if (abs(u.hsbShift.x) > 0.001 || abs(u.hsbShift.y) > 0.001 || abs(u.hsbShift.z) > 0.001) {
+      var ugHsb = rgbToHsb(ugColor);
+      ugHsb.x = fract(ugHsb.x + u.hsbShift.x);
+      ugHsb.y = clamp(ugHsb.y + u.hsbShift.y, 0.0, 1.0);
+      ugHsb.z = clamp(ugHsb.z + u.hsbShift.z, 0.0, 1.0);
+      ugColor = hsbToRgb(ugHsb);
+    }
+    return vec4<f32>(ugColor, ugOpacity);
   }
 
   let useLutPath =

@@ -1061,12 +1061,23 @@ function packUniforms(
   }
 
   // Batch 438 — three opt-in atmosphere-physics flags + their inputs.
-  // atmosControl @100: x=improvedMiePhase, y=dualLightInline, z=ozoneEnabled, w=0.
-  // ALL default 0 → every gated WGSL branch stays closed → byte-identical.
+  // atmosControl @100: x=improvedMiePhase, y=dualLightInline, z=ozoneEnabled,
+  // w=globeTranslucent. ALL default 0 → every gated WGSL branch stays closed
+  // → byte-identical.
   uniformData[100] = improvedMiePhase ? 1.0 : 0.0;
   uniformData[101] = dualLightInline ? 1.0 : 0.0;
   uniformData[102] = ozoneEnabled ? 1.0 : 0.0;
-  uniformData[103] = 0.0;
+  // GLOBE-TRANSLUCENCY-ALPHA — mirrors WebGL's GLOBE_TRANSLUCENT shader
+  // define (SkyAtmosphere.js:410-412): when the globe renders translucent,
+  // sky rays that hit the planet substitute the dark distance-faded horizon
+  // gradient (SkyAtmosphereCommon.glsl lines 63-90) instead of the full
+  // scattering integral, so the see-through planet disk doesn't flood with
+  // daylight blue. 0 whenever translucency is off (the default).
+  uniformData[103] =
+    frameState.globeTranslucencyState &&
+    frameState.globeTranslucencyState.translucent
+      ? 1.0
+      : 0.0;
 
   // ozoneCoefficient @104 (+ pad @107). Only non-zero when the inline ozone
   // gate (atmosControl.z) is on; zeroed otherwise so the inline march's

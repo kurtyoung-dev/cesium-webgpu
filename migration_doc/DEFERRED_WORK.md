@@ -356,6 +356,24 @@ Batch 219 doc-sync only — code already in place.
 
 **Trace:** Batches 177, 182, 183. `WebGPUGlobeSurfaceRenderer.ts:511, 871-948`; `WebGPUGlobeSurfacePipelines.ts:buildPipelineDescriptor` (`depthOnlyBackFace`, `translucentBackFace` flags + `_DOB`/`_TBF` cache-key suffixes).
 
+### ~~GLOBE-TRANSLUCENCY-ALPHA~~ — front/back alpha + translucencyByDistance threaded into the globe FS + sky translucent path — RESOLVED (2026-07-02)
+
+**Resolution:** The 9 derived blend/cull/depth variants existed (Batches 177/182/183) but the ALPHA VALUES never reached the FS, and the front-face color command selected the OPAQUE pipeline on pass 0 — an enabled translucent globe still composited opaque. Five coordinated changes:
+
+1. **Camera UB tail (+12 floats, 180 → 192)** — `translucencyFrontAlphaByDistance` / `translucencyBackAlphaByDistance` (NearFarScalar packed `(near, nearValue, far, farValue)`, camera-underground swap pre-applied per `GlobeSurfaceTileProviderRendering.js:1487-1492`) + `translucencyControl` (x = the WebGL TRANSLUCENT define analogue). All-zero when off. `WebGPUGlobeSurfaceCameraUB.ts`, `WebGPUGlobeSurfaceTypes.ts`.
+2. **Tile UB tail (+4 floats, 480 → 484)** — `localizedTranslucencyRectangle` (antimeridian-clipped `globe.translucency.rectangle` localized to tile UV via the shared `clipRectangleAntimeridian`). `WebGPUGlobeSurfaceTileUB.ts`.
+3. **GlobeTerrain.wgsl FS** — port of GlobeFS.glsl lines 746-751: inside the rectangle, `alpha *= interpolateByDistance(frontFacing ? front : back, v_distance)`, gated on `translucencyControl.x`.
+4. **Front-face pipeline selection** — `isBlend = isSubsequentPass || globeTranslucent` in `createTileCommands` (was `isSubsequentPass` only) so the translucent front face uses the ALPHA-blend/depth-write-off variant, matching WebGL's `getTranslucentFrontFaceRenderState`. **Pass-structure split to match WebGL's `getDerivedCommandTypes`:** the DOB + TBF 3-pass now fires only when `backTranslucent` (`_backFaceTranslucent`); the default opaque-back case (backFaceAlpha = 1) instead emits a NEW depth-only FRONT-face pre-pass (`selectDepthOnlyFrontFacePipeline`, `_DOF` cache suffix — mirrors WebGL's DEPTH_ONLY_FRONT_FACE keeping scene depth populated). WebGL's OPAQUE_BACK_FACE sibling is deliberately NOT mirrored: WebGL z-rejects it everywhere (base depth func LESS at equal depth); WebGPU's less-equal would wrongly draw the globe underside.
+5. **SkyAtmosphere.wgsl** — port of the GLSL `GLOBE_TRANSLUCENT` path (SkyAtmosphereCommon.glsl:63-90) as a runtime gate on `u.atmosControl.w` (previously reserved lane; packed from `globeTranslucencyState.translucent`): planet-intersecting sky rays get the dark distance-faded navy horizon gradient instead of the full scattering integral. Without this the WGSL sky flooded the see-through planet disk with bright daylight blue (terrain scenario diff 99.8% → 22.9%).
+
+**Verify:** `Tools/visual-regression/probe-globe-translucency.mjs` (NEW, gate) — off-default (off-gate, 24.5% ≈ standing residual), translucent-space (21.2%), translucent-terrain (22.9%, below the 24.5% standing baseline). Luminance-response check: WebGPU mean lum tracks alpha like WebGL (alpha 1/0.5/0.05 → 104/53/7.7 vs WebGL 92/45/4.1; ratios 1/0.51/0.07 vs 1/0.50/0.045). `probe-globe-underground.mjs` + `probe-atmosphere-toggle.mjs` regressions green.
+
+**Residuals (minor, tracked):**
+
+- A faint tile-aligned brighter veil on parts of the WebGPU translucent terrain view — consistent with blend commands executing in BOTH frustums of the multi-frustum split (depth-write-off blend double-applies in the overlap bins; WebGL bins/splits differently). Within the standing residual; revisit if a probe isolates it above tolerance. Related: C-R8-TRANSLUCENT-MULTI-FRUSTUM.
+- The `backTranslucent` (backFaceAlpha < 1) 3-pass path now carries the alpha values but has no dedicated parity probe; WebGL uses DEPTH_ONLY_FRONT_AND_BACK_FACE there where WebGPU keeps its Batch-177 depth-only BACK pre-pass.
+- TRANSLUCENT_`*`_MANUAL_DEPTH_TEST variants (types 7/8) remain unwired (pre-existing; see C-R8-TRANSLUCENT-MULTI-FRUSTUM).
+
 ### ~~C-R1-PRIMITIVE-DERIVED~~ EFFECTIVELY RESOLVED (audit 2026-05-02)
 
 **Audit finding:**
