@@ -39,16 +39,18 @@
  * (in-shader per-fragment edge detection in every Model FS) before
  * feature-ID gating becomes implementable.
  *
- * **Edge-data parity remaining** (next slice — both need the
- * `WebGPUModelRenderer.js` side, which is owned by
- * batch-edge-display-mode-tri, so they're sequenced after it):
+ * **Edge-data parity** (both gaps now closed):
+ *   - per-edge / per-lineString `materialColor` overrides ride the
+ *     `a_edgeColor`-equivalent location(7) vertex attribute
+ *     (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU, Batch 330);
  *   - authored `edgeVisibility.silhouetteNormals` signed-byte accessor
- *     (WebGPU still re-derives face normals from adjacency → silhouette
- *     classification can diverge on meshes shipping that accessor);
- *   - per-edge / per-lineString `materialColor` overrides (the emitter
- *     applies one primitive-level edge color; matching WebGL's
- *     `a_edgeColor` needs a per-edge color vertex attribute + the
- *     packed-lane widening).
+ *     (EDGE-AUTHORED-SILHOUETTE-NORMALS) — silhouette-edge face normals
+ *     are now sourced from the accessor when the mesh authors it,
+ *     matching WebGL `EdgeVisibilityPipelineStage.generateEdgeFaceNormals`
+ *     exactly (sequential silhouette-edge pair indexing, signed-byte →
+ *     unit-float decode, zero normals for out-of-range pairs). The
+ *     adjacency-derived face normals remain the fallback when the
+ *     accessor is absent.
  *
  * @module WebGPUEdgeVisibilityEmitter
  * @private
@@ -360,6 +362,60 @@ type EdgeColorLike =
 // Resolved per-edge color: [r, g, b, a] in 0..1, or null = no override.
 type EdgeColorRGBA = [number, number, number, number];
 
+// EDGE-AUTHORED-SILHOUETTE-NORMALS — the `silhouetteNormals` accessor is
+// unpacked by `GltfLoader.loadAccessor` into an array of Cartesian3-like
+// objects whose components are RAW signed bytes (-128..127), not
+// pre-normalized floats. Entries may be undefined for malformed/sparse
+// accessors.
+type SilhouetteNormalLike = { x: number; y: number; z: number };
+
+/**
+ * EDGE-AUTHORED-SILHOUETTE-NORMALS — decode the authored signed-byte
+ * `edgeVisibility.silhouetteNormals` accessor into packed unit-float
+ * normals (3 floats per entry). Mirrors WebGL
+ * `EdgeVisibilityPipelineStage.generateEdgeFaceNormals` exactly:
+ * component map [-128, 127] → [-1, 1] via `2 * ((v + 128) / 255) - 1`,
+ * normalize, and (0, 0, 1) for zero-length (or NaN/malformed) entries.
+ * Returns null when the accessor is absent or empty so callers keep the
+ * adjacency-derived fallback path byte-identical.
+ */
+function decodeAuthoredSilhouetteNormals(
+  raw: ArrayLike<SilhouetteNormalLike | undefined> | undefined | null,
+): Float32Array | null {
+  if (raw === undefined || raw === null || raw.length === 0) {
+    return null;
+  }
+  const out = new Float32Array(raw.length * 3);
+  for (let i = 0; i < raw.length; i++) {
+    const v = raw[i];
+    let x = 0;
+    let y = 0;
+    let z = 1;
+    if (v !== undefined && v !== null) {
+      x = 2 * ((v.x + 128) / 255) - 1;
+      y = 2 * ((v.y + 128) / 255) - 1;
+      z = 2 * ((v.z + 128) / 255) - 1;
+      const magSq = x * x + y * y + z * z;
+      // NaN components fail the > 0 test and fall to the (0,0,1)
+      // default — same net result as WebGL's magnitudeSquared branch.
+      if (magSq > 0) {
+        const inv = 1 / Math.sqrt(magSq);
+        x *= inv;
+        y *= inv;
+        z *= inv;
+      } else {
+        x = 0;
+        y = 0;
+        z = 1;
+      }
+    }
+    out[i * 3] = x;
+    out[i * 3 + 1] = y;
+    out[i * 3 + 2] = z;
+  }
+  return out;
+}
+
 /**
  * Normalize an edge `materialColor` override (Cartesian4-like or numeric
  * array) to an `[r, g, b, a]` tuple. Returns null when undefined. Alpha
@@ -434,12 +490,20 @@ function normalizeEdgeColor(
  *   3. the `-1` alpha sentinel → no override → the WGSL FS falls back to
  *      the uniform surface/model color.
  *
- * DEFERRED (next slice — needs the WebGPUModelRenderer side too, so it
- * collides with batch-edge-display-mode-tri):
- *   - authored `edgeVisibility.silhouetteNormals` signed-byte accessor:
- *     WebGPU still re-derives face normals from triangle adjacency for
- *     the visibility path, so silhouette classification can diverge from
- *     WebGL's authored-normal path on meshes that ship that accessor.
+ * EDGE-AUTHORED-SILHOUETTE-NORMALS — when the primitive authors the
+ * `edgeVisibility.silhouetteNormals` signed-byte accessor (per the
+ * EXT_mesh_primitive_edge_visibility spec it MUST be present when the
+ * primitive encodes at least one silhouette edge), silhouette-edge face
+ * normals come from that accessor: silhouette edges are numbered
+ * sequentially in dedupe order (matching WebGL
+ * `EdgeVisibilityPipelineStage.extractVisibleEdges`), and edge N reads
+ * decoded pair [N*2, N*2+1]. Out-of-range pairs leave zero normals (the
+ * edge is then always drawn), matching WebGL
+ * `generateEdgeFaceNormals`'s bounds skip. Only when the accessor is
+ * ABSENT does the extractor fall back to re-deriving face normals from
+ * triangle adjacency (WebGL uses zero normals in that out-of-spec case;
+ * the derived fallback classifies real silhouettes instead of drawing
+ * every silhouette edge unconditionally).
  */
 export function extractEdgeGeometry(
   primitive: unknown,
@@ -478,6 +542,12 @@ export function extractEdgeGeometry(
       // / `EdgeVisibilityPipelineStage.js:404`). Either a Cartesian4
       // (.x/.y/.z/.w) or a numeric array ([r,g,b,a]).
       materialColor?: EdgeColorLike;
+      // EDGE-AUTHORED-SILHOUETTE-NORMALS — authored signed-byte face-
+      // normal pairs for silhouette edges (2 entries per silhouette
+      // edge, sequential in edge-extraction dedupe order). Loaded by
+      // `GltfLoader.loadAccessor` as Cartesian3-like objects carrying
+      // raw signed-byte components.
+      silhouetteNormals?: ArrayLike<SilhouetteNormalLike | undefined>;
       // C-R8-EDGE-LINESTRINGS — explicit polyline edges from the
       // EXT_mesh_primitive_edge_visibility `lineStrings` array. Each
       // entry carries a primitive-restart-delimited index list into the
@@ -528,19 +598,30 @@ export function extractEdgeGeometry(
   const seen = new Set<string>();
   let outEdge = 0;
 
+  // EDGE-AUTHORED-SILHOUETTE-NORMALS — authored signed-byte silhouette
+  // normal pairs. When present, silhouette edges read the accessor and
+  // the adjacency derivation below is skipped entirely (matching WebGL,
+  // which NEVER derives — `generateEdgeFaceNormals` reads the accessor
+  // or leaves zeros). When absent, the derived fallback is unchanged.
+  const authoredNormals = decodeAuthoredSilhouetteNormals(
+    edgeVis.silhouetteNormals,
+  );
+
   // Build per-triangle face normals + edge adjacency. `edgeMap` maps
   // an edge key ("min,max") to a small array of triangle indices that
   // contain that edge. Boundary edges have one entry; interior edges
   // have two. Only meaningful for the silhouette/HARD `visibility`
   // path — `lineStrings` edges are always HARD and carry no face
-  // normals, so this is skipped for lineStrings-only primitives.
-  const triangleCount = hasVisibilityData
+  // normals, so this is skipped for lineStrings-only primitives (and
+  // for primitives that author `silhouetteNormals`).
+  const deriveFaceNormals = hasVisibilityData && authoredNormals === null;
+  const triangleCount = deriveFaceNormals
     ? Math.floor((indices as Uint8Array | Uint16Array | Uint32Array).length / 3)
     : 0;
   const faceNormals = new Float32Array(triangleCount * 3);
   const edgeMap = new Map<string, number[]>();
 
-  if (hasVisibilityData) {
+  if (deriveFaceNormals) {
     const triIndices = indices as Uint8Array | Uint16Array | Uint32Array;
     for (let t = 0; t < triangleCount; t++) {
       const base = t * 3;
@@ -701,6 +782,11 @@ export function extractEdgeGeometry(
     ? (visibility as Uint8Array)
     : undefined;
   let edgeIndex = 0;
+  // EDGE-AUTHORED-SILHOUETTE-NORMALS — sequential silhouette-edge counter.
+  // Every newly-seen (post-dedupe) SILHOUETTE edge gets the next index
+  // into the authored `silhouetteNormals` pair list, matching WebGL
+  // `extractVisibleEdges`'s `silhouetteEdgeCount` numbering exactly.
+  let silhouetteEdgeCount = 0;
   for (
     let i = 0;
     triIndicesForEdges !== undefined &&
@@ -736,30 +822,64 @@ export function extractEdgeGeometry(
       if (seen.has(key)) continue;
       seen.add(key);
 
-      // Look up adjacent triangles for this edge to recover faceA/B.
-      const tris = edgeMap.get(key);
+      // Assign the sequential index into the authored silhouetteNormals
+      // pair list for SILHOUETTE (type 1) edges. Counted for every
+      // newly-seen silhouette edge — even ones later skipped by the
+      // position-bounds guard — so the numbering stays aligned with
+      // WebGL's `extractVisibleEdges` (which has no such guard).
+      let silhouetteEdgeIndex = -1;
+      if (v2bit === 1) {
+        silhouetteEdgeIndex = silhouetteEdgeCount;
+        silhouetteEdgeCount++;
+      }
+
       let nAx = 0,
         nAy = 0,
         nAz = 0;
       let nBx = 0,
         nBy = 0,
         nBz = 0;
-      if (tris && tris.length >= 1) {
-        const tA = tris[0] * 3;
-        nAx = faceNormals[tA];
-        nAy = faceNormals[tA + 1];
-        nAz = faceNormals[tA + 2];
-        if (tris.length >= 2) {
-          const tB = tris[1] * 3;
-          nBx = faceNormals[tB];
-          nBy = faceNormals[tB + 1];
-          nBz = faceNormals[tB + 2];
-        } else {
-          // Boundary edge — synthesize -A so the dot products always
-          // disagree (silhouette test treats this as "always visible").
-          nBx = -nAx;
-          nBy = -nAy;
-          nBz = -nAz;
+      if (authoredNormals !== null) {
+        // EDGE-AUTHORED-SILHOUETTE-NORMALS — authored path. Silhouette
+        // edge N reads decoded pair [N*2, N*2+1]; non-silhouette edges
+        // and out-of-range pairs keep zero normals (inert for HARD
+        // edges; a zero normal makes the silhouette dot products 0 →
+        // the edge is always drawn — both match WebGL
+        // `generateEdgeFaceNormals`, incl. its bounds skip).
+        if (silhouetteEdgeIndex >= 0) {
+          const pairBase = silhouetteEdgeIndex * 2;
+          if ((pairBase + 1) * 3 + 2 < authoredNormals.length) {
+            const baseA = pairBase * 3;
+            const baseB = baseA + 3;
+            nAx = authoredNormals[baseA];
+            nAy = authoredNormals[baseA + 1];
+            nAz = authoredNormals[baseA + 2];
+            nBx = authoredNormals[baseB];
+            nBy = authoredNormals[baseB + 1];
+            nBz = authoredNormals[baseB + 2];
+          }
+        }
+      } else {
+        // Derived fallback — look up adjacent triangles for this edge
+        // to recover faceA/B.
+        const tris = edgeMap.get(key);
+        if (tris && tris.length >= 1) {
+          const tA = tris[0] * 3;
+          nAx = faceNormals[tA];
+          nAy = faceNormals[tA + 1];
+          nAz = faceNormals[tA + 2];
+          if (tris.length >= 2) {
+            const tB = tris[1] * 3;
+            nBx = faceNormals[tB];
+            nBy = faceNormals[tB + 1];
+            nBz = faceNormals[tB + 2];
+          } else {
+            // Boundary edge — synthesize -A so the dot products always
+            // disagree (silhouette test treats this as "always visible").
+            nBx = -nAx;
+            nBy = -nAy;
+            nBz = -nAz;
+          }
         }
       }
 

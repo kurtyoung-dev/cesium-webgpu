@@ -22,8 +22,8 @@
 // quad whose first triangle [0,1,2] is degenerate because vertex 1 is
 // coincident with vertex 0, and whose second triangle [0,2,3] is
 // normal) and runs it through BOTH:
-//   - the WebGPU extractor (`extractEdgeGeometry`, imported from the
-//     gulp-compiled `.js` sibling — pure CPU geometry, only depends on
+//   - the WebGPU extractor (`extractEdgeGeometry`, esbuild-bundled from
+//     the `.ts` emitter on the fly — pure CPU geometry, only depends on
 //     Core/Cartesian3.js), and
 //   - a faithful mirror of the WebGL face-normal derivation
 //     (`EdgeVisibilityPipelineStage`'s degenerate handling: cross
@@ -34,9 +34,9 @@
 // It is a Node-side numeric probe (no browser / no canvas) because the
 // failure mode is a CPU-side NaN in the vertex buffer, not a pixel
 // artifact — capturing it numerically is both more sensitive and
-// deterministic than a screenshot diff would be. It runs only after
-// `gulp build` (or `npx tsc`) has emitted the `.js` sibling next to the
-// emitter `.ts`.
+// deterministic than a screenshot diff would be. No build step is
+// required: the repo tsconfig is `noEmit`, so the probe bundles the
+// `.ts` emitter itself via esbuild.
 //
 // Usage: node Tools/visual-regression/probe-edge-degenerate.mjs
 // Exit:  0 = all parity checks pass, 1 = a NaN/garbage edge or a
@@ -47,8 +47,6 @@ import path from "path";
 import fs from "fs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const toUrl = (p) => `file:///${path.join(ROOT, p).replace(/\\/g, "/")}`;
-
 const failures = [];
 const note = (ok, name, detail) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
@@ -97,22 +95,34 @@ const allFinite = (arr) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────
-// [A] WebGPU extractor — import the gulp-compiled `.js` sibling. Pure
-//     CPU geometry; the only transitive dependency is Core/Cartesian3.js.
+// [A] WebGPU extractor — the repo tsconfig is `noEmit`, so no compiled
+//     `.js` sibling exists in-tree; bundle the `.ts` emitter with esbuild
+//     to a temp module and import that (EDGE-AUTHORED-SILHOUETTE-NORMALS
+//     probe-repair: this probe previously demanded a sibling nothing
+//     emits, making it exit-2 unconditionally).
 // ─────────────────────────────────────────────────────────────────────────
-const EMITTER_JS =
-  "packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.js";
-if (!fs.existsSync(path.join(ROOT, EMITTER_JS))) {
-  console.error(
-    `\n[probe-edge-degenerate] Missing compiled module: ${EMITTER_JS}\n` +
-      `Run \`npx gulp build\` (or \`npx tsc\`) first — the .ts emitter is\n` +
-      `transpiled to a .js sibling before bundling, and this probe imports\n` +
-      `it directly.`,
-  );
-  process.exit(2);
-}
+const os = await import("os");
+const { build } = await import("esbuild");
+const EMITTER_TS = path.join(
+  ROOT,
+  "packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts",
+);
+const tmpEmitter = path.join(
+  os.tmpdir(),
+  `probe-edge-degenerate-emitter-${process.pid}.mjs`,
+);
+await build({
+  entryPoints: [EMITTER_TS],
+  bundle: true,
+  format: "esm",
+  outfile: tmpEmitter,
+  logLevel: "silent",
+});
 
-const { extractEdgeGeometry } = await import(toUrl(EMITTER_JS));
+const { extractEdgeGeometry } = await import(
+  `file:///${tmpEmitter.replace(/\\/g, "/")}`
+);
+fs.rmSync(tmpEmitter, { force: true });
 note(
   typeof extractEdgeGeometry === "function",
   "extractEdgeGeometry exported",
@@ -140,10 +150,11 @@ if (geom !== null) {
   );
 
   // Inspect the per-edge face normals packed into the vertex buffer
-  // (layout: 15 floats/vertex, normalA at [4..6], normalB at [7..9]).
-  // A degenerate face's normal must be exactly (0,0,0) (magnitude-guard
-  // result), never NaN. Scan all vertices' normals.
-  const FLOATS = 15;
+  // (layout: 19 floats/vertex since the Batch 330 per-edge-color
+  // widening — normalA at [4..6], normalB at [7..9]). A degenerate
+  // face's normal must be exactly (0,0,0) (magnitude-guard result),
+  // never NaN. Scan all vertices' normals.
+  const FLOATS = 19;
   let sawNaNNormal = false;
   let maxNormalLen = 0;
   for (let v = 0; v * FLOATS < geom.vertices.length; v++) {
