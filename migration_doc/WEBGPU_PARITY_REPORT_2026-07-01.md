@@ -241,8 +241,8 @@ Grouped by what blocks each one.
 
 | Item | Status | Subsystem(s) | What's missing |
 | --- | --- | --- | --- |
-| Voxel per-cell pick (`pickVoxelCoordinate`) | **stub** | 3D Tiles, Picking | Full pipeline was prototyped end-to-end then REVERTED (Y/Z-wrong cells). Blocked on reproducing `convertLocalToShapeUvSpace` (world→shapeUv axis convention) in the WGSL ray-march. C-R9-VOXEL-CELL-PICK, blocker doc B477. |
-| Voxel non-box shapes (ellipsoid/cylinder) | partial | 3D Tiles | OBB proxy placement works for any shape, but density sampling is box-uvw only — same shapeUv convention family as cell pick. |
+| Voxel per-cell pick (`pickVoxelCoordinate`) | **stub** | 3D Tiles, Picking | Full pipeline was prototyped end-to-end then REVERTED (Y/Z-wrong cells). **Convention blocker RESOLVED (VOXEL-SHAPEUV-CONVENTION, 2026-07-02):** the color march now samples through WebGL's shapeUv→inputCoordinate chain (`convertLocalToShapeUvSpace` + Y_UP swap/flip + input-orientation upload) with a physically-correct proxy-space ray; per-cell layout probe-verified (`probe-voxel-parity.mjs` Part B). Remaining: re-apply the reverted pick wiring on the new sample frame. C-R9-VOXEL-CELL-PICK. |
+| Voxel non-box shapes (ellipsoid/cylinder) | partial | 3D Tiles | OBB proxy placement works for any shape; BOX density sampling now uses the full shapeUv convention (VOXEL-SHAPEUV-CONVENTION, 2026-07-02) — ellipsoid/cylinder still fall back to direct box-uvw sampling (their local→uv mappings are nonlinear; separate item). |
 | BufferPolyline in SCENE2D | partial | Geometry, 3D Tiles | Blank in 2D only (3D + CV correct): `computeActualEllipsoidPosition` collapses projected x==0 and the screen-space extrusion lacks the 2D camera-axis convention. NEW-BUFFERPOLYLINE-2D-EXTRUSION. |
 | Globe clipping polygons — geodetic lon/lat | partial | Globe | FS derives SDF-lookup lon/lat from *geocentric* atan2 (GlobeTerrain.wgsl:3003-3006) while the SDF is authored geodetic → clip boundary offset ≤ ~0.19° lat on WGS84; polar edge-width is a hand-tuned 0.001. |
 

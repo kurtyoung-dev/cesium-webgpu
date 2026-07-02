@@ -229,8 +229,315 @@ async function capture(renderer) {
   return { info, px, consoleErrors, pngBytes: buf.length };
 }
 
+// ---------------------------------------------------------------------------
+// Part B — VOXEL-SHAPEUV-CONVENTION per-cell sample-frame scenario.
+//
+// Renders a CUSTOM single-tile box provider (dims 2×4×3, metadataOrder Y_UP —
+// the same glTF-order convention the 3D Tiles voxel asset uses) whose alpha
+// fills an axis-ASYMMETRIC staircase of cells:
+//   filled(x,y,z) = (x==1 && y==z && y<=2) || (x==0 && y==3 && z==1)
+// in the Z-up shape frame. Any axis swap / flip / mis-scale in the WebGPU
+// sample-coordinate derivation rearranges WHICH cells appear filled on screen,
+// so asserting the per-cell fill layout against WebGL verifies the sampled-cell
+// frame — not just the aggregate footprint.
+//
+// WebGL renders with a customShader exposing the per-cell property color +
+// alpha (its megatexture path is the ground truth). The WebGPU path renders
+// its default gray with alpha-gated density — the assertion is the per-cell
+// FILL LAYOUT (which cell regions are lit), identical on both backends.
+//
+// Expectations are derived per-ray IN-PAGE by sampling the exact camera→target
+// ray against the authored cell grid (no hand-derived visibility reasoning);
+// rays that merely graze a filled cell (<2% of in-box samples) are skipped.
+// ---------------------------------------------------------------------------
+
+const CELL_DIMS = { x: 2, y: 4, z: 3 };
+
+function cellFilled(x, y, z) {
+  return (x === 1 && y === z && y <= 2) || (x === 0 && y === 3 && z === 1);
+}
+
+async function captureCells(renderer) {
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
+  const consoleErrors = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") consoleErrors.push(m.text());
+  });
+  page.on("pageerror", (e) => consoleErrors.push(String(e)));
+
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
+    waitUntil: "networkidle",
+    timeout: 90000,
+  });
+  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+
+  const setupInfo = await page.evaluate(
+    async ({ dims, filledSrc }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const scene = v.scene;
+      // eslint-disable-next-line no-new-func
+      const filled = new Function(`return (${filledSrc});`)();
+
+      scene.globe.show = false;
+      if (scene.skyBox) scene.skyBox.show = false;
+      if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
+      if (scene.sun) scene.sun.show = false;
+      if (scene.moon) scene.moon.show = false;
+      scene.backgroundColor = C.Color.BLACK;
+      scene.fog.enabled = false;
+
+      const R = 6378137.0;
+      // Author the metadata in INPUT (glTF Y-up) order: a Z-up cell (x,y,z)
+      // lands at input cell (x, z, dimsY-1-y), i.e. index
+      // x + dimsX*(z + dimsZ*(dimsY-1-y)) — the inverse of Octree.glsl's
+      // Y_UP_METADATA_ORDER + SHAPE_BOX swap/flip.
+      const voxelCount = dims.x * dims.y * dims.z;
+      const data = new Float32Array(voxelCount * 4);
+      for (let z = 0; z < dims.z; z++) {
+        for (let y = 0; y < dims.y; y++) {
+          for (let x = 0; x < dims.x; x++) {
+            const idx = x + dims.x * (z + dims.z * (dims.y - 1 - y));
+            const d = idx * 4;
+            data[d] = 0.35 + 0.65 * x;
+            data[d + 1] = 0.15 + 0.28 * y;
+            data[d + 2] = 0.2 + 0.4 * z;
+            data[d + 3] = filled(x, y, z) ? 1.0 : 0.0;
+          }
+        }
+      }
+
+      const provider = {
+        shape: C.VoxelShapeType.BOX,
+        minBounds: new C.Cartesian3(-1, -1, -1),
+        maxBounds: new C.Cartesian3(1, 1, 1),
+        dimensions: new C.Cartesian3(dims.x, dims.y, dims.z),
+        names: ["color"],
+        types: [C.MetadataType.VEC4],
+        componentTypes: [C.MetadataComponentType.FLOAT32],
+        globalTransform: C.Matrix4.fromScale(new C.Cartesian3(R, R, R)),
+        availableLevels: 1,
+        metadataOrder: C.VoxelMetadataOrder.Y_UP,
+        requestData: function (options) {
+          if (options.tileLevel >= 1) {
+            return Promise.reject("single tile");
+          }
+          return Promise.resolve(C.VoxelContent.fromMetadataArray([data]));
+        },
+      };
+
+      // WebGL ground truth: expose the per-cell property color + alpha. The
+      // WebGPU path ignores the customShader (default gray, alpha-gated) —
+      // the comparison below is the per-cell FILL LAYOUT.
+      const customShader = new C.CustomShader({
+        fragmentShaderText: `void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material)
+{
+    material.diffuse = fsInput.metadata.color.rgb;
+    material.alpha = fsInput.metadata.color.a;
+}`,
+      });
+
+      const prim = new C.VoxelPrimitive({ provider, customShader });
+      prim.nearestSampling = true;
+      scene.primitives.add(prim);
+
+      for (let i = 0; i < 240; i++) {
+        scene.render();
+        await new Promise((r) => setTimeout(r, 8));
+      }
+
+      const cache = prim._webgpuCache || null;
+      const du = (cache && cache.dataUpload) || null;
+      window.__voxelProbe = { C, scene, prim, R, dims, filled };
+      return {
+        usingRealData: cache ? cache.usingRealData === true : null,
+        uploadPhase: du ? du.phase : null,
+        hasConvention: du ? !!du.convention : null,
+        conventionYUp:
+          du && du.convention ? du.convention.yUpBox === true : null,
+      };
+    },
+    {
+      dims: CELL_DIMS,
+      filledSrc: cellFilled.toString(),
+    },
+  );
+
+  // One view = set the camera, render, screenshot, then project each cell
+  // target to window coords and analytically ray-sample the expected fill.
+  async function captureView(name, dest, dir, up, targets) {
+    const proj = await page.evaluate(
+      async ({ dest, dir, up, targets }) => {
+        const { C, scene, R, dims, filled } = window.__voxelProbe;
+        window.viewer.camera.setView({
+          destination: new C.Cartesian3(dest[0] * R, dest[1] * R, dest[2] * R),
+          orientation: {
+            direction: new C.Cartesian3(dir[0], dir[1], dir[2]),
+            up: new C.Cartesian3(up[0], up[1], up[2]),
+          },
+        });
+        for (let i = 0; i < 40; i++) {
+          scene.render();
+          await new Promise((r) => setTimeout(r, 8));
+        }
+        const out = [];
+        for (const t of targets) {
+          const world = new C.Cartesian3(t.p[0] * R, t.p[1] * R, t.p[2] * R);
+          const win = C.SceneTransforms.worldToWindowCoordinates(scene, world);
+          // Analytic expectation: sample the camera→target ray uniformly
+          // inside the box and record the fraction of in-box samples landing
+          // in filled cells (Z-up frame).
+          const cam = window.viewer.camera.positionWC;
+          const o = [cam.x / R, cam.y / R, cam.z / R];
+          const q = [t.p[0], t.p[1], t.p[2]];
+          const dv = [q[0] - o[0], q[1] - o[1], q[2] - o[2]];
+          const len = Math.hypot(dv[0], dv[1], dv[2]);
+          const rd = [dv[0] / len, dv[1] / len, dv[2] / len];
+          let inBox = 0;
+          let inFilled = 0;
+          const S = 4000;
+          const tMax = len * 3;
+          for (let i = 0; i < S; i++) {
+            const tt = (i / S) * tMax;
+            const px = o[0] + rd[0] * tt;
+            const py = o[1] + rd[1] * tt;
+            const pz = o[2] + rd[2] * tt;
+            if (
+              px < -1 || px > 1 || py < -1 || py > 1 || pz < -1 || pz > 1
+            ) {
+              continue;
+            }
+            inBox++;
+            const cx = Math.min(dims.x - 1, Math.floor(((px + 1) / 2) * dims.x));
+            const cy = Math.min(dims.y - 1, Math.floor(((py + 1) / 2) * dims.y));
+            const cz = Math.min(dims.z - 1, Math.floor(((pz + 1) / 2) * dims.z));
+            if (filled(cx, cy, cz)) {
+              inFilled++;
+            }
+          }
+          const frac = inBox > 0 ? inFilled / inBox : 0;
+          out.push({
+            label: t.label,
+            win: win ? [win.x, win.y] : null,
+            filledFrac: frac,
+            expected: frac >= 0.02 ? "filled" : frac === 0 ? "empty" : "skip",
+          });
+        }
+        return out;
+      },
+      { dest, dir, up, targets },
+    );
+
+    const buf = await page.screenshot();
+    fs.writeFileSync(`${OUT}/probe-voxel-cells-${renderer}-${name}.png`, buf);
+    const dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
+    const samples = await page.evaluate(
+      async ({ url, points }) => {
+        const img = new Image();
+        await new Promise((r) => {
+          img.onload = r;
+          img.src = url;
+        });
+        const cv = document.createElement("canvas");
+        cv.width = img.width;
+        cv.height = img.height;
+        const ctx = cv.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        return points.map((pt) => {
+          if (!pt) {
+            return null;
+          }
+          const x = Math.round(pt[0]);
+          const y = Math.round(pt[1]);
+          const half = 3;
+          const d = ctx.getImageData(x - half, y - half, 2 * half + 1, 2 * half + 1).data;
+          let sr = 0;
+          let sg = 0;
+          let sb = 0;
+          const n = d.length / 4;
+          for (let i = 0; i < d.length; i += 4) {
+            sr += d[i];
+            sg += d[i + 1];
+            sb += d[i + 2];
+          }
+          return [Math.round(sr / n), Math.round(sg / n), Math.round(sb / n)];
+        });
+      },
+      { url: dataUrl, points: proj.map((p) => p.win) },
+    );
+
+    return proj.map((p, i) => ({ ...p, rgb: samples[i] }));
+  }
+
+  const R1 = 1.0;
+  const cy = (y) => -R1 + ((y + 0.5) * 2 * R1) / CELL_DIMS.y;
+  const cz = (z) => -R1 + ((z + 0.5) * 2 * R1) / CELL_DIMS.z;
+  const cx = (x) => -R1 + ((x + 0.5) * 2 * R1) / CELL_DIMS.x;
+
+  // Front view (+X looking −X): the Y (horizontal) × Z (vertical) cell layout.
+  const frontTargets = [];
+  for (let z = 0; z < CELL_DIMS.z; z++) {
+    for (let y = 0; y < CELL_DIMS.y; y++) {
+      frontTargets.push({ label: `y${y}z${z}`, p: [0, cy(y), cz(z)] });
+    }
+  }
+  const front = await captureView(
+    "front",
+    [4, 0, 0],
+    [-1, 0, 0],
+    [0, 0, 1],
+    frontTargets,
+  );
+
+  // Top view (+Z looking −Z): the X × Y cell layout (catches X mirroring the
+  // front view cannot see).
+  const topTargets = [];
+  for (let y = 0; y < CELL_DIMS.y; y++) {
+    for (let x = 0; x < CELL_DIMS.x; x++) {
+      topTargets.push({ label: `x${x}y${y}`, p: [cx(x), cy(y), 0] });
+    }
+  }
+  const top = await captureView(
+    "top",
+    [0, 0, 4],
+    [0, 0, -1],
+    [0, 1, 0],
+    topTargets,
+  );
+
+  await page.close();
+  return { setupInfo, front, top, consoleErrors };
+}
+
+function judgeCells(name, cells) {
+  let pass = true;
+  const rows = [];
+  for (const c of cells) {
+    const lum = c.rgb ? c.rgb[0] + c.rgb[1] + c.rgb[2] : -1;
+    let verdict = "skip";
+    if (c.expected === "filled") {
+      verdict = lum > 40 ? "ok" : "MISSING";
+    } else if (c.expected === "empty") {
+      verdict = lum < 25 ? "ok" : "SPURIOUS";
+    }
+    if (verdict === "MISSING" || verdict === "SPURIOUS") {
+      pass = false;
+    }
+    rows.push(
+      `${c.label} expect=${c.expected} rgb=${c.rgb ? c.rgb.join(",") : "?"} ${verdict}`,
+    );
+  }
+  console.log(`  [${name}] ${rows.join(" | ")}`);
+  return pass;
+}
+
 const webgl = await capture("webgl");
 const webgpu = await capture("webgpu");
+
+const cellsWebgl = await captureCells("webgl");
+const cellsWebgpu = await captureCells("webgpu");
 await browser.close();
 
 console.log("WebGL  info:", JSON.stringify(webgl.info));
@@ -328,7 +635,7 @@ const webgpuChannelSpread =
   Math.max(bc2[0], bc2[1], bc2[2]) - Math.min(bc2[0], bc2[1], bc2[2]);
 const webgpuNeutral = webgpuChannelSpread <= 40;
 
-const pass =
+const passA =
   bothRender &&
   bounded &&
   footprintMatch &&
@@ -348,6 +655,48 @@ console.log(
   `webgpuNeutral (channel spread ${webgpuChannelSpread} <= 40, not green-cast):`,
   webgpuNeutral,
 );
+console.log(passA ? "PART A (footprint+color): PASS" : "PART A: FAIL");
+
+// Part B — per-cell sample-frame verdict (VOXEL-SHAPEUV-CONVENTION).
+console.log("---");
+console.log("WebGL  cells setup:", JSON.stringify(cellsWebgl.setupInfo));
+console.log("WebGPU cells setup:", JSON.stringify(cellsWebgpu.setupInfo));
+console.log("WebGL front:");
+const glFrontOk = judgeCells("webgl-front", cellsWebgl.front);
+console.log("WebGPU front:");
+const gpFrontOk = judgeCells("webgpu-front", cellsWebgpu.front);
+console.log("WebGL top:");
+const glTopOk = judgeCells("webgl-top", cellsWebgl.top);
+console.log("WebGPU top:");
+const gpTopOk = judgeCells("webgpu-top", cellsWebgpu.top);
+const cellErrors =
+  cellsWebgl.consoleErrors.length + cellsWebgpu.consoleErrors.length;
+if (cellErrors > 0) {
+  console.log(
+    "  cell-scenario console errors:",
+    cellsWebgl.consoleErrors.slice(0, 3),
+    cellsWebgpu.consoleErrors.slice(0, 3),
+  );
+}
+const gpConventionActive =
+  cellsWebgpu.setupInfo.usingRealData === true &&
+  cellsWebgpu.setupInfo.hasConvention === true &&
+  cellsWebgpu.setupInfo.conventionYUp === true;
+const passB =
+  glFrontOk &&
+  gpFrontOk &&
+  glTopOk &&
+  gpTopOk &&
+  gpConventionActive &&
+  cellErrors === 0;
+console.log("gpConventionActive:", gpConventionActive);
+console.log(
+  passB
+    ? "PART B (per-cell sample frame): PASS"
+    : "PART B (per-cell sample frame): FAIL",
+);
+
+const pass = passA && passB;
 console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");
 
 process.exit(pass ? 0 : 1);

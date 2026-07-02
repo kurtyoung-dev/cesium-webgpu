@@ -3046,7 +3046,46 @@ These two changes ship together — the depth-write fix would still let near-tra
 
 **Trace:** Batch 186 first slice; Batch 192 dual-path second slice. `Scene.pickHoverAsync` / `Scene.pickPreciseAsync` in `Scene.js`; `Picking._pickAsyncWithMode` + coalesce/defer in `Picking.js`; `fragmentPickHoverMain` + `getPickHoverPipeline` / `getPickPrecisePass{1,2}Pipeline` factories; dispatcher routing in `WebGPUSceneRenderer.selectCommandVariant`; pass-2 follow-up in `WebGPUSceneRendererPickPass`. Earlier work: PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Translucent-with-OIT pick").
 
-### C-R9-VOXEL-CELL-PICK — BLOCKED (wiring PROTOTYPED then REVERTED; exact cell parity blocked on shape-space axis convention)
+### C-R9-VOXEL-CELL-PICK — UNBLOCKED (shapeUv convention landed, VOXEL-SHAPEUV-CONVENTION 2026-07-02; pick wiring itself still to be re-applied)
+
+**Blocker resolution (VOXEL-SHAPEUV-CONVENTION, 2026-07-02):** the shape-space
+axis convention gap below is CLOSED for the color ray-march. Two coupled fixes
+in `WebGPUVoxelRenderer.ts` / `WebGPUVoxelDataUpload.ts`:
+
+1. **World→shapeUv convention plumbed.** The parity march (the
+   `VOXEL_CUSTOM_SHADER_COLOR` branch) now derives its sample coordinate
+   through the SAME chain WebGL uses: a CPU-composed `proxyToShapeUv` mat4
+   (`scaleTranslate(convertLocalToShapeUvSpace) · shapeTransform⁻¹ · effModel`,
+   probing the shape's own `convertLocalToShapeUvSpace` so VoxelBoxShape stays
+   the single source of truth) → Octree.glsl's `tileUv · u_dimensions +
+   u_paddingBefore` + the `Y_UP_METADATA_ORDER`+`SHAPE_BOX` axis swap/flip →
+   Megatexture.glsl's texel-centre clamp. The upload now sizes the 3D texture
+   with the padded INPUT-orientation dimensions (the metadata array's own
+   layout — [2,4,3] z-up dims upload as [2,3,4] for the Y-up test asset).
+2. **Physically-correct ray origin.** The parity march intersects the REAL
+   ±0.5 proxy box from the REAL proxy-space camera (new `cameraPositionProxy`
+   UBO field) instead of the historical camera-centered phantom box (ray
+   origin `cameraPositionEC`=0 against ±0.5 bounds while `worldPos` is
+   camera-relative — correct footprint, garbage sample positions). This is the
+   same physical ray the reverted pick prototype below already used.
+
+Verified by `probe-voxel-parity.mjs` Part B (per-cell staircase asset, dims
+2×4×3 Y_UP, front + top views): the WebGPU per-cell fill layout matches WebGL
+cell-for-cell on both axes pairs, zero spurious/missing cells; Part A colorL1
+dropped 57 → 0 (identical gray — the real entry-face normal also fixed a
+lighting bias). Placeholder/pick/velocity paths byte-identical (defines=0
+module unchanged on the else-branch; off-gate crop-diff vs HEAD = same-build
+noise). `nearestSampling` is now honored (parity: WebGL's megatexture sampler
+flag). Non-box shapes keep the legacy direct sampling (fallback identity
+convention) — non-box shapeUv mapping remains a separate item.
+
+**Remaining for cell pick:** re-apply the reverted `fragmentPickVoxelMain`
+wiring below on top of the now-correct sample frame (the pick FS should reuse
+the same `proxyToShapeUv`/input-coordinate chain and derive `sampleIndex` from
+the INPUT-orientation cell — WebGL's `getSampleIndex` floors `inputCoordinate`
+over `u_inputDimensions`).
+
+#### Original blocker analysis (historical, kept for the pick re-apply)
 
 **Prototyped then REVERTED (this pass, Batch 476 follow-up):** a full per-cell pick pipeline was built end-to-end on WebGPU and proven to run (decodable in-dims cells, 0 errors) but was **reverted** because it returned **Y/Z-wrong cells** — a plausible-but-incorrect result is worse than the honest `undefined` the un-wired path returns. The design below is preserved verbatim as the blueprint for when the shape-UV convention fix (the real blocker) lands. It was SEPARATE from the object-pick path so regular `scene.pick` over a voxel stayed byte-identical (`fragmentPickMain` unchanged, object pick still returns the `VoxelPrimitive`):
 

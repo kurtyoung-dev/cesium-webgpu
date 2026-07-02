@@ -54,19 +54,13 @@ const res = await page.evaluate(async () => {
     y: provider.dimensions.y,
     z: provider.dimensions.z,
   };
-  // The WebGPU voxel renderer draws a [-0.5,0.5] proxy cube transformed by
-  // `primitive.modelMatrix` (the full shape/OBB-transform wiring is a separate
-  // WebGPU increment). To make the ray-marched REAL-data volume visible with a
-  // normal camera, place + scale the proxy cube via modelMatrix. This does NOT
-  // affect the data-upload path being tested — it only positions the cube so
-  // the ray-march has screen coverage.
-  const SCALE = 500000.0; // 500 km cube — comfortably fills the view.
-  const center = C.Cartesian3.fromDegrees(0.0, 0.0, SCALE * 0.5);
-  const enu = C.Transforms.eastNorthUpToFixedFrame(center);
-  const scaleM = C.Matrix4.fromUniformScale(SCALE, new C.Matrix4());
-  const modelMatrix = C.Matrix4.multiply(enu, scaleM, new C.Matrix4());
-
-  const prim = new C.VoxelPrimitive({ provider, modelMatrix });
+  // PARITY-VOXEL-SHAPE-PARITY (Batch 475) wired the shape/OBB transform into
+  // the ray-march: the box is now placed by the provider's own compound
+  // transform (an Earth-radius box at the origin for this asset), so the
+  // historical 500 km modelMatrix hack + fromDegrees camera no longer frame
+  // it. Use identity modelMatrix + the same fixed diagonal ECEF camera the
+  // parity probe uses.
+  const prim = new C.VoxelPrimitive({ provider });
   scene.primitives.add(prim);
 
   scene.globe.show = false;
@@ -74,10 +68,22 @@ const res = await page.evaluate(async () => {
   if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
   scene.backgroundColor = C.Color.BLACK;
 
-  // Aim the camera at the cube center from a few cube-widths away.
+  // Aim the camera at the Earth-sized box from a diagonal pose so the box
+  // reads as a bounded silhouette.
+  const dest = new C.Cartesian3(
+    6378137.0 * 6.0,
+    6378137.0 * 4.5,
+    6378137.0 * 4.0,
+  );
   v.camera.setView({
-    destination: C.Cartesian3.fromDegrees(0.0, 0.0, SCALE * 3.0),
-    orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+    destination: dest,
+    orientation: {
+      direction: C.Cartesian3.normalize(
+        C.Cartesian3.negate(dest, new C.Cartesian3()),
+        new C.Cartesian3(),
+      ),
+      up: C.Cartesian3.UNIT_Z,
+    },
   });
 
   // Render many frames so the async root-tile request → glTF process → upload
@@ -185,14 +191,18 @@ console.log("Pixel analysis:", JSON.stringify(px));
 // min[0,0,0,1]..max[1,1,1,1]) renders the actual property structure. We assert
 // the uploaded texture is the REAL tile (dims match + phase done + real-data
 // flag) AND the ray-march produced visible pixels.
+// VOXEL-SHAPEUV-CONVENTION: the texture is sized with the INPUT-orientation
+// dimensions — the metadata array's own layout (glTF Y-up for this 3D Tiles
+// box asset → provider dims [2,4,3] upload as [2,3,4]). Still a hard
+// discriminator against the 4x4x4 placeholder.
 const pass =
   !res.error &&
   res.usingRealData === true &&
   res.uploadPhase === "done" &&
   res.uploadDims &&
   res.uploadDims.w === res.providerDims.x &&
-  res.uploadDims.h === res.providerDims.y &&
-  res.uploadDims.d === res.providerDims.z &&
+  res.uploadDims.h === res.providerDims.z &&
+  res.uploadDims.d === res.providerDims.y &&
   px.nonBlackPixels > 500 &&
   consoleErrors.length === 0;
 console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");

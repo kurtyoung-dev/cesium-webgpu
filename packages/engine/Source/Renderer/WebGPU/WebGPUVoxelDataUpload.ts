@@ -31,6 +31,16 @@
 // `CesiumFrameState` is an ambient global declared in cesium-js-types.d.ts —
 // referenced without an import, matching WebGPUVoxelRenderer.ts.
 
+// VOXEL-SHAPEUV-CONVENTION — the metadata array is ordered in the INPUT
+// orientation (glTF Y-up for box/cylinder tiles from Cesium3DTilesVoxelProvider,
+// 3D Tiles Z-up otherwise) and includes padding voxels. The destination 3D
+// texture must therefore be sized with the INPUT dimensions (padded +
+// Y-up-swapped) — mirroring `initFromProvider`'s `_inputDimensions` — so a
+// straight linear copy lands every texel where WebGL's Octree.glsl
+// `inputCoordinate` mapping expects it.
+import VoxelMetadataOrder from "../../Scene/VoxelMetadataOrder.js";
+import VoxelShapeType from "../../Scene/VoxelShapeType.js";
+
 /**
  * Minimal structural view of a {@link VoxelContent}. `metadata` is an array of
  * flattened typed arrays (one per property), each ordered X, then Y, then Z.
@@ -54,6 +64,34 @@ interface VoxelProviderLike {
     keyframe: number;
   }): Promise<VoxelContentLike> | undefined;
   readonly dimensions: { x: number; y: number; z: number };
+  // VOXEL-SHAPEUV-CONVENTION — optional provider fields consumed to size the
+  // texture in the INPUT orientation and to record the sample-frame convention.
+  readonly paddingBefore?: { x: number; y: number; z: number };
+  readonly paddingAfter?: { x: number; y: number; z: number };
+  readonly metadataOrder?: number;
+  readonly shape?: string;
+}
+
+/**
+ * VOXEL-SHAPEUV-CONVENTION — the sample-frame convention the uploaded texture
+ * was laid out with, recorded so the renderer's UBO pack mirrors WebGL's
+ * shapeUv → inputCoordinate mapping (Octree.glsl) against the SAME extents the
+ * texel data was written with. `null` convention on the state means the legacy
+ * direct `uvw = p + 0.5` sampling applies (non-box shapes — unchanged path).
+ */
+export interface VoxelSampleConvention {
+  /** Unpadded tile dimensions in the Z-up shape orientation (u_dimensions). */
+  dimensions: { x: number; y: number; z: number };
+  /** Padding before the tile, Z-up orientation (u_paddingBefore). */
+  paddingBefore: { x: number; y: number; z: number };
+  /**
+   * Padded dimensions in the INPUT-data orientation (u_inputDimensions):
+   * `dimensions + paddingBefore + paddingAfter`, then Y/Z swapped when the
+   * metadata order is glTF Y-up. These are the texture extents.
+   */
+  inputDimensions: { x: number; y: number; z: number };
+  /** True when the Y-up box swap/flip (Octree.glsl Y_UP_METADATA_ORDER + SHAPE_BOX) applies. */
+  yUpBox: boolean;
 }
 
 /**
@@ -69,6 +107,13 @@ export interface VoxelDataUploadState {
   texture: GPUTexture | null;
   /** View of {@link texture} for binding into the ray-march bind group. */
   view: GPUTextureView | null;
+  /**
+   * VOXEL-SHAPEUV-CONVENTION — set at upload time. When non-null the texture
+   * is laid out in the padded INPUT orientation and the renderer must sample
+   * through the WebGL shapeUv → inputCoordinate chain; when null the texture
+   * uses the legacy unpadded Z-up extents and direct `p + 0.5` sampling.
+   */
+  convention: VoxelSampleConvention | null;
 }
 
 export function createVoxelDataUploadState(): VoxelDataUploadState {
@@ -77,6 +122,7 @@ export function createVoxelDataUploadState(): VoxelDataUploadState {
     content: null,
     texture: null,
     view: null,
+    convention: null,
   };
 }
 
@@ -233,9 +279,35 @@ export function tryUploadRootVoxelTile(
   }
 
   const dims = provider.dimensions;
-  const width = Math.max(1, Math.floor(dims.x));
-  const height = Math.max(1, Math.floor(dims.y));
-  const depth = Math.max(1, Math.floor(dims.z));
+  // VOXEL-SHAPEUV-CONVENTION — for BOX shapes, size the texture with the
+  // padded INPUT-orientation dimensions (mirrors `initFromProvider`'s
+  // `_inputDimensions`): the metadata array is ordered X, then input-Y, then
+  // input-Z INCLUDING padding voxels, and for glTF-sourced tiles the input Y/Z
+  // axes are the 3D Tiles Z/flipped-Y axes. The renderer's ray-march applies
+  // the matching shapeUv → inputCoordinate mapping (WebGL Octree.glsl).
+  // Non-box shapes keep the legacy unpadded Z-up extents + direct sampling.
+  const isBox = provider.shape === VoxelShapeType.BOX;
+  let width = Math.max(1, Math.floor(dims.x));
+  let height = Math.max(1, Math.floor(dims.y));
+  let depth = Math.max(1, Math.floor(dims.z));
+  let convention: VoxelSampleConvention | null = null;
+  if (isBox) {
+    const padB = provider.paddingBefore ?? { x: 0, y: 0, z: 0 };
+    const padA = provider.paddingAfter ?? { x: 0, y: 0, z: 0 };
+    const yUp = provider.metadataOrder === VoxelMetadataOrder.Y_UP;
+    const paddedX = Math.max(1, Math.floor(dims.x + padB.x + padA.x));
+    const paddedY = Math.max(1, Math.floor(dims.y + padB.y + padA.y));
+    const paddedZ = Math.max(1, Math.floor(dims.z + padB.z + padA.z));
+    width = paddedX;
+    height = yUp ? paddedZ : paddedY;
+    depth = yUp ? paddedY : paddedZ;
+    convention = {
+      dimensions: { x: dims.x, y: dims.y, z: dims.z },
+      paddingBefore: { x: padB.x, y: padB.y, z: padB.z },
+      inputDimensions: { x: width, y: height, z: depth },
+      yUpBox: yUp,
+    };
+  }
   const voxelCount = width * height * depth;
 
   const rgba = expandToRGBA(metadata[0], voxelCount);
@@ -260,6 +332,7 @@ export function tryUploadRootVoxelTile(
 
   state.texture = texture;
   state.view = texture.createView();
+  state.convention = convention;
   state.phase = "done";
   return true;
 }

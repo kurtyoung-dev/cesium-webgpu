@@ -176,6 +176,33 @@ struct Uniforms {
   // off-gate placeholder never reads meaningful data here.
   lightDirectionModel: vec3<f32>,
   voxelLightingEnabled: f32,
+  // VOXEL-SHAPEUV-CONVENTION — WebGL sample-frame plumbing (floats 76..103).
+  // \`proxyToShapeUv\` is the CPU-composed affine chain
+  //   scale/translate(convertLocalToShapeUvSpace) · inverse(shapeTransform) · effModel
+  // mapping a proxy-cube point p ∈ [-0.5, +0.5]^3 to the shape's UV space —
+  // the SAME world→shapeUv convention WebGL's convertLocalToBoxUv.glsl /
+  // VoxelBoxShape.convertLocalToShapeUvSpace encode. \`voxelDimensions\` /
+  // \`paddingBefore\` / \`inputDimensions\` mirror u_dimensions / u_paddingBefore
+  // / u_inputDimensions from Octree.glsl; \`metadataYUpBox\` gates the
+  // Y_UP_METADATA_ORDER + SHAPE_BOX input-axis swap/flip. Only written when
+  // the real-data color-parity pipeline is active; zero on the placeholder
+  // path (which never reads these fields — off-gate byte-identical).
+  voxelDimensions: vec3<f32>,
+  metadataYUpBox: f32,
+  proxyToShapeUv: mat4x4<f32>,
+  inputDimensions: vec3<f32>,
+  _pad2: f32,
+  paddingBefore: vec3<f32>,
+  _pad3: f32,
+  // VOXEL-SHAPEUV-CONVENTION — the REAL camera position in the proxy cube's
+  // model space (the same value the RTE encodedCamera high/low encode). The
+  // parity march needs a physically-correct ray origin: the historical path
+  // intersects a camera-CENTERED phantom box (worldPos is camera-relative and
+  // cameraPositionEC is zero), which fills the right screen footprint but
+  // samples the volume around the camera. Consumed ONLY by the
+  // VOXEL_CUSTOM_SHADER_COLOR branch; zero on the placeholder/pick paths.
+  cameraPositionProxy: vec3<f32>,
+  _pad4: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -280,13 +307,28 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // gray WebGL produces, instead of the raw-texel green/teal the historical
   // else-branch integral yields.
   let ALPHA_ACCUM_MAX: f32 = 0.98;
+  // VOXEL-SHAPEUV-CONVENTION — march the REAL proxy box with the REAL
+  // proxy-space camera origin. The shared prelude above intersects a
+  // camera-CENTERED phantom box (\`worldPos\` is camera-relative and
+  // \`u.cameraPositionEC\` is zero): that fills the correct screen footprint —
+  // the rasterized proxy geometry gates which pixels run — but its sample
+  // positions live in a volume centered on the camera, so the sampled cells
+  // were view-dependent garbage. The parity path needs physically-correct
+  // sample positions for the shapeUv chain to address the same cells WebGL's
+  // traversal reads.
+  let rayOrigin = u.cameraPositionProxy;
+  let trReal = intersectAABB(rayOrigin, invDir, u.minBounds, u.maxBounds);
+  // NEW-4-E: pair discard with a return for naga's terminator analysis.
+  if (trReal.x > trReal.y) { discard; return vec4<f32>(0.0); }
+  let tStart = max(trReal.x, 0.0) + dither * u.stepSize;
+  let tEnd = trReal.y;
   // Entry-face normal in the box-LOCAL frame: the AABB slab whose tMin equals
-  // the entry t (tr.x). \`step()\` picks the axis; the sign is opposite the ray
-  // direction (we enter through the face the ray points INTO).
-  let t1n = (u.minBounds - u.cameraPositionEC) * invDir;
-  let t2n = (u.maxBounds - u.cameraPositionEC) * invDir;
+  // the entry t (trReal.x). \`step()\` picks the axis; the sign is opposite the
+  // ray direction (we enter through the face the ray points INTO).
+  let t1n = (u.minBounds - rayOrigin) * invDir;
+  let t2n = (u.maxBounds - rayOrigin) * invDir;
   let tMinV = min(t1n, t2n);
-  let entryAxis = step(vec3<f32>(tr.x) - vec3<f32>(1e-4), tMinV);
+  let entryAxis = step(vec3<f32>(trReal.x) - vec3<f32>(1e-4), tMinV);
   // Normalize the selector so exactly one axis contributes even if two slabs
   // coincide, then orient it against the ray.
   let axisSum = max(entryAxis.x + entryAxis.y + entryAxis.z, 1.0);
@@ -296,11 +338,34 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let lighting = 0.5 + 0.5 * ndotl;
   let matDiffuse = vec3<f32>(lighting);
   for (var i = 0; i < maxI; i = i + 1) {
-    let t = tS + f32(i) * u.stepSize;
-    if (t > tE || accumA > ALPHA_ACCUM_MAX) { break; }
-    let p = u.cameraPositionEC + rayDir * t;
-    let uvw = (p - u.minBounds) / (u.maxBounds - u.minBounds);
-    if (any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0))) { continue; }
+    let t = tStart + f32(i) * u.stepSize;
+    if (t > tEnd || accumA > ALPHA_ACCUM_MAX) { break; }
+    let p = rayOrigin + rayDir * t;
+    // VOXEL-SHAPEUV-CONVENTION — derive the sample coordinate through WebGL's
+    // convention chain instead of the historical model-space \`p + 0.5\`
+    // shortcut: (1) proxy point → shapeUv via the CPU-composed
+    // convertLocalToShapeUvSpace affine (clamped like getClampedTileUv; the
+    // root tile's tileUv == shapeUv); (2) shapeUv → input-data coordinate via
+    // Octree.glsl's \`tileUv * u_dimensions + u_paddingBefore\` plus the
+    // Y_UP_METADATA_ORDER + SHAPE_BOX axis swap/flip; (3) texel-centre clamp +
+    // normalisation per Megatexture.glsl's getPropertiesFromMegatexture.
+    let shapeUv = clamp(
+      (u.proxyToShapeUv * vec4<f32>(p, 1.0)).xyz,
+      vec3<f32>(0.0),
+      vec3<f32>(1.0),
+    );
+    var inputCoord = shapeUv * u.voxelDimensions + u.paddingBefore;
+    if (u.metadataYUpBox > 0.5) {
+      let inputY = inputCoord.y;
+      inputCoord.y = inputCoord.z;
+      inputCoord.z = u.inputDimensions.z - inputY;
+    }
+    let clampedCoord = clamp(
+      inputCoord,
+      vec3<f32>(0.5),
+      u.inputDimensions - vec3<f32>(0.5),
+    );
+    let uvw = clampedCoord / u.inputDimensions;
     let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
     if (s.a > u.densityThreshold) {
       // Default voxel customShader material: gray lighting, opaque.
@@ -513,6 +578,15 @@ const scratchObbHalfAxes = new Matrix3();
 const scratchObbCenter = new Cartesian3();
 const scratchEffModel = new Matrix4();
 
+// VOXEL-SHAPEUV-CONVENTION scratches for composing the proxy→shapeUv matrix.
+const scratchShapeTransformInv = new Matrix4();
+const scratchProxyToLocal = new Matrix4();
+const scratchUvScaleTranslate = new Matrix4();
+const scratchProxyToShapeUv = new Matrix4();
+const scratchUvScale = new Cartesian3();
+const scratchConvBase = new Cartesian3();
+const scratchConvAxis = new Cartesian3();
+
 /**
  * Structural view of the parts of a {@link VoxelBoxShape}'s oriented bounding
  * box the ray-march placement needs. `center` is the box centre in world
@@ -525,6 +599,15 @@ interface VoxelShapeLike {
     center?: Cartesian3;
     halfAxes?: Matrix3;
   };
+  // VOXEL-SHAPEUV-CONVENTION — the shape's compound local frame + its OWN
+  // local→shapeUv conversion (VoxelBoxShape.convertLocalToShapeUvSpace), used
+  // to compose the proxy→shapeUv matrix with WebGL-identical semantics rather
+  // than re-deriving the boundScale formula here (single source of truth).
+  shapeTransform?: Matrix4;
+  convertLocalToShapeUvSpace?(
+    positionLocal: Cartesian3,
+    result: Cartesian3,
+  ): Cartesian3;
 }
 
 /**
@@ -597,6 +680,123 @@ function computeVoxelEffectiveModelMatrix(
   );
   const center = Cartesian3.clone(obb.center, scratchObbCenter);
   return Matrix4.fromRotationTranslation(halfAxes2, center, scratchEffModel);
+}
+
+/**
+ * VOXEL-SHAPEUV-CONVENTION — pack the WebGL sample-frame convention into UBO
+ * floats 76..103, mirroring the chain WebGL uses to derive the megatexture
+ * sample coordinate:
+ *
+ *   shapeUv = boxLocalToShapeUvScale · (shapeTransform⁻¹ · world) + translate
+ *             (VoxelBoxShape.convertLocalToShapeUvSpace / convertLocalToBoxUv.glsl)
+ *   inputCoordinate = shapeUv · u_dimensions + u_paddingBefore, then the
+ *             Y_UP_METADATA_ORDER + SHAPE_BOX axis swap/flip (Octree.glsl)
+ *
+ * The proxy→shapeUv affine is composed on the CPU as
+ * `scaleTranslate(convertLocalToShapeUvSpace) · shapeTransform⁻¹ · effModel`
+ * so the WGSL march applies ONE mat4 per sample. The scale/translate terms are
+ * probed through the shape's own `convertLocalToShapeUvSpace` (an exact
+ * componentwise affine for the box shape) so the WebGL implementation stays
+ * the single source of truth for the convention.
+ *
+ * When the uploaded texture carries no convention (non-box shapes) — or the
+ * shape transform is degenerate — falls back to the historical direct mapping
+ * (`shapeUv = p + 0.5` over the texture's own extents, no padding/swap), which
+ * is output-identical to the pre-convention sampling.
+ */
+function packVoxelSampleFrame(
+  primitive: CesiumObjectWithWebGPUCache,
+  effModel: Matrix4,
+  cache: VoxelCache,
+  data: Float32Array,
+): void {
+  const convention = cache.dataUpload?.convention ?? null;
+  const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
+
+  if (
+    convention &&
+    shape &&
+    shape.shapeTransform &&
+    typeof shape.convertLocalToShapeUvSpace === "function"
+  ) {
+    try {
+      const invShape = Matrix4.inverse(
+        shape.shapeTransform,
+        scratchShapeTransformInv,
+      );
+      const proxyToLocal = Matrix4.multiply(
+        invShape,
+        effModel,
+        scratchProxyToLocal,
+      );
+      const base = shape.convertLocalToShapeUvSpace(
+        Cartesian3.ZERO,
+        scratchConvBase,
+      );
+      const tx = base.x;
+      const ty = base.y;
+      const tz = base.z;
+      const sx =
+        shape.convertLocalToShapeUvSpace(Cartesian3.UNIT_X, scratchConvAxis).x -
+        tx;
+      const sy =
+        shape.convertLocalToShapeUvSpace(Cartesian3.UNIT_Y, scratchConvAxis).y -
+        ty;
+      const sz =
+        shape.convertLocalToShapeUvSpace(Cartesian3.UNIT_Z, scratchConvAxis).z -
+        tz;
+      const st = Matrix4.fromScale(
+        Cartesian3.fromElements(sx, sy, sz, scratchUvScale),
+        scratchUvScaleTranslate,
+      );
+      st[12] = tx;
+      st[13] = ty;
+      st[14] = tz;
+      const proxyToShapeUv = Matrix4.multiply(
+        st,
+        proxyToLocal,
+        scratchProxyToShapeUv,
+      );
+
+      data[76] = convention.dimensions.x;
+      data[77] = convention.dimensions.y;
+      data[78] = convention.dimensions.z;
+      data[79] = convention.yUpBox ? 1 : 0;
+      Matrix4.pack(proxyToShapeUv, data, 80);
+      data[96] = convention.inputDimensions.x;
+      data[97] = convention.inputDimensions.y;
+      data[98] = convention.inputDimensions.z;
+      data[100] = convention.paddingBefore.x;
+      data[101] = convention.paddingBefore.y;
+      data[102] = convention.paddingBefore.z;
+      return;
+    } catch {
+      // Degenerate shapeTransform (zero scale) — fall through to the direct
+      // mapping rather than crashing the frame.
+    }
+  }
+
+  // Fallback: direct proxy→uv mapping over the texture's own extents.
+  const tex = cache.dataUpload?.texture ?? null;
+  const w = tex ? tex.width : 1;
+  const h = tex ? tex.height : 1;
+  const d = tex ? tex.depthOrArrayLayers : 1;
+  data[76] = w;
+  data[77] = h;
+  data[78] = d;
+  data[79] = 0;
+  // Identity rotation + 0.5 translation → shapeUv = p + 0.5 (column-major).
+  data[80] = 1;
+  data[85] = 1;
+  data[90] = 1;
+  data[92] = 0.5;
+  data[93] = 0.5;
+  data[94] = 0.5;
+  data[95] = 1;
+  data[96] = w;
+  data[97] = h;
+  data[98] = d;
+  // paddingBefore stays zero.
 }
 
 function createBoxGeometry(device: GPUDevice): {
@@ -894,16 +1094,24 @@ function updateWebGPUVoxelPrimitive(
 
   if (!cache.initialized) {
     // Batch 173 - UBO grew 256 → 320 bytes to include the model matrix
-    // (floats 56-71 at byte offset 224). Used by the velocity VS to
-    // lift model-space cube vertices to world space before applying
-    // prevViewProjection. Comfortably fits with 32 spare bytes.
+    // (floats 56-71 at byte offset 224). VOXEL-SHAPEUV-CONVENTION grew it
+    // 320 → 432 bytes for the WebGL sample-frame fields (floats 76-107:
+    // dimensions + Y-up flag, proxy→shapeUv matrix, inputDimensions,
+    // paddingBefore, proxy-space camera) consumed by the real-data
+    // color-parity march.
     cache.uniformBuffer = device.createBuffer({
-      size: 320,
+      size: 432,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    // VOXEL-SHAPEUV-CONVENTION — honour VoxelPrimitive.nearestSampling
+    // (parity: WebGL selects the megatexture's nearest-vs-linear sampler from
+    // the same flag). Default is false → linear, the historical behaviour.
+    const nearestSampling =
+      (primitive as unknown as { nearestSampling?: boolean })
+        .nearestSampling === true;
     cache.sampler = device.createSampler({
-      magFilter: "linear",
-      minFilter: "linear",
+      magFilter: nearestSampling ? "nearest" : "linear",
+      minFilter: nearestSampling ? "nearest" : "linear",
     });
 
     const { texture, view } = createPlaceholderVoxelTexture(device);
@@ -1251,7 +1459,12 @@ function updateWebGPUVoxelPrimitive(
   //   [56..71] modelMatrix              (Batch 173 — B.10 voxel velocity)
   //   [72..74] lightDirectionModel      (PARITY-VOXEL-COLOR-PARITY)
   //   [75]     voxelLightingEnabled     (PARITY-VOXEL-COLOR-PARITY)
-  const data = new Float32Array(80);
+  //   [76..79] voxelDimensions + metadataYUpBox   (VOXEL-SHAPEUV-CONVENTION)
+  //   [80..95] proxyToShapeUv           (VOXEL-SHAPEUV-CONVENTION)
+  //   [96..99] inputDimensions + pad    (VOXEL-SHAPEUV-CONVENTION)
+  //   [100..103] paddingBefore + pad    (VOXEL-SHAPEUV-CONVENTION)
+  //   [104..107] cameraPositionProxy + pad (VOXEL-SHAPEUV-CONVENTION)
+  const data = new Float32Array(108);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -1351,6 +1564,19 @@ function updateWebGPUVoxelPrimitive(
     data[73] = lightModel.y;
     data[74] = lightModel.z;
     data[75] = 1;
+
+    // VOXEL-SHAPEUV-CONVENTION — pack the WebGL sample-frame convention
+    // (floats 76..103) so the parity march samples through the SAME
+    // world→shapeUv→inputCoordinate chain as WebGL. Only meaningful when the
+    // real-data pipeline (VOXEL_CUSTOM_SHADER_COLOR) is active; the
+    // placeholder path leaves these floats zero and never reads them.
+    packVoxelSampleFrame(primitive, modelMatrix, cache, data);
+    // The REAL proxy-space camera for the physically-correct parity ray
+    // origin (the placeholder/pick paths keep the historical camera-centered
+    // phantom march and never read this field).
+    data[104] = camModel.x;
+    data[105] = camModel.y;
+    data[106] = camModel.z;
   }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
