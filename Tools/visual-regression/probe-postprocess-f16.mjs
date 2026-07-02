@@ -30,9 +30,12 @@
 // compiled — the double gate), render unchanged (same closeness bounds)
 // with 0 errors; the probe reports support honestly and passes.
 //
-// NOTE (reported, not asserted): FXAA's runtime addFXAA() call and
-// ColorGrading (addColorGrading has no runtime caller) do not receive
-// the f16 flag, so those two variants are compile-verified only.
+// NOTE (reported, not asserted): FXAA's runtime addFXAA() call does not
+// receive the f16 flag, so that variant is compile-verified only.
+// ColorGrading gained a runtime caller (WIRE-COLORGRADING-CALLER, Batch
+// 482: `scene.colorGradingEnabled` + `scene.colorGradingConfig`) which
+// DOES thread useShaderF16 into addColorGrading; its runtime f16 path is
+// covered by probe-colorgrading-wired.mjs + the compile check here.
 //
 // Usage: node Tools/visual-regression/probe-postprocess-f16.mjs
 // Env:   PROBE_BASE (default http://localhost:8080)

@@ -70,6 +70,20 @@ export interface PostProcessCache {
   // camera/sun/atmosphere uniforms + the Bruneton transmittance LUT view.
   aerialPerspectiveEnabled: boolean;
   aerialPerspectiveInitialized: boolean;
+  // WIRE-COLORGRADING-CALLER (Batch 480) — ColorGrading stage, scene-level
+  // opt-in (`scene.colorGradingEnabled = true`, optional
+  // `scene.colorGradingConfig`). No upstream PostProcessStageCollection
+  // slot exists for grading (WebGL only reaches it via user-added custom
+  // stages), so this mirrors the godRay scene-flag pattern. The stage runs
+  // after Tonemap in the pipeline's single-pass chain (see the
+  // ColorGrading.wgsl header + WebGPUPostProcessPipeline.execute()).
+  colorGradingEnabled: boolean;
+  colorGradingInitialized: boolean;
+  // Last-applied config object reference — a NEW object assigned to
+  // `scene.colorGradingConfig` at runtime replaces the full uniform block
+  // via updateColorGradingUniforms() (identity check, so per-frame reads
+  // of a stable object cost nothing).
+  _colorGradingConfigRef?: object;
   // Track whether complex effects have been initialized on the pipeline
   bloomInitialized: boolean;
   aoInitialized: boolean;
@@ -155,6 +169,8 @@ function getDefaultCache(): PostProcessCache {
     coldOpticsInitialized: false,
     aerialPerspectiveEnabled: false,
     aerialPerspectiveInitialized: false,
+    colorGradingEnabled: false,
+    colorGradingInitialized: false,
     bloomInitialized: false,
     aoInitialized: false,
     dofInitialized: false,
@@ -419,6 +435,48 @@ function configureWebGPUPostProcessPipeline(
     cache.tonemappingEnabled && !hdrOutputMode,
   );
   pipeline.setTonemappingMode(cache.tonemapMode);
+
+  // --- Color grading: lazily initialize on first enable ---
+  // WIRE-COLORGRADING-CALLER (Batch 480) — scene-level opt-in
+  // (`scene.colorGradingEnabled`, optional `scene.colorGradingConfig`),
+  // mirroring the godRay scene-flag pattern. Default OFF: the stage is
+  // never compiled/added until the first enabled frame, so untouched
+  // scenes stay byte-identical. Runs after Tonemap in the pipeline's
+  // single-pass chain; under HDR canvas output the pipeline's
+  // setHDROutputMode() flips the stage into HDR-aware math
+  // (PARITY-HDR-PP-MATH, Batch 479).
+  cache.colorGradingEnabled =
+    (scene as unknown as { colorGradingEnabled?: boolean })
+      ?.colorGradingEnabled === true;
+  const colorGradingConfig = (
+    scene as unknown as {
+      colorGradingConfig?: import("./WebGPUPostProcessPipeline.js").ColorGradingConfig;
+    }
+  )?.colorGradingConfig;
+  if (cache.colorGradingEnabled && !cache.colorGradingInitialized) {
+    pipeline.addColorGrading(
+      device,
+      canvasFormat,
+      colorGradingConfig,
+      useShaderF16,
+    );
+    cache.colorGradingInitialized = true;
+    cache._colorGradingConfigRef = colorGradingConfig;
+  } else if (
+    cache.colorGradingEnabled &&
+    cache.colorGradingInitialized &&
+    colorGradingConfig !== cache._colorGradingConfigRef
+  ) {
+    // Runtime re-grade: assigning a NEW config object to
+    // `scene.colorGradingConfig` replaces the full uniform block
+    // (updateColorGradingUniforms preserves the pipeline-managed
+    // hdrMode flag). Identity comparison keeps steady-state frames free.
+    if (colorGradingConfig) {
+      pipeline.updateColorGradingUniforms(colorGradingConfig);
+    }
+    cache._colorGradingConfigRef = colorGradingConfig;
+  }
+  pipeline.setStageEnabled("ColorGrading", cache.colorGradingEnabled);
 
   // --- Auto-exposure: match WebGL (NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY,
   //     Batch 364) ---
@@ -1156,7 +1214,8 @@ function hasActiveWebGPUPostProcessStages(
     cache.godRayEnabled ||
     cache.heatShimmerEnabled ||
     cache.coldOpticsEnabled ||
-    cache.aerialPerspectiveEnabled
+    cache.aerialPerspectiveEnabled ||
+    cache.colorGradingEnabled
   );
 }
 

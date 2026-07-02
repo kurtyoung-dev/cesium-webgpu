@@ -199,14 +199,14 @@ async function runPass(hdrOn) {
       captures.default = await grab();
       const defaultLabels = await passLabelsOneFrame();
 
-      // Add ColorGrading with the fixed grade (no runtime caller adds it
-      // by default — the pipeline API is the supported entry point) and
-      // enable FXAA so both stages under test are in the chain.
-      pp.addColorGrading(
-        pp._device,
-        context.presentationFormat ?? "bgra8unorm",
-        grade,
-      );
+      // Add ColorGrading with the fixed grade via the scene-level opt-in
+      // (WIRE-COLORGRADING-CALLER, Batch 482 — the runtime caller now
+      // exists; poking pp.addColorGrading directly no longer works because
+      // the per-frame configure pass syncs the stage's enabled flag from
+      // `scene.colorGradingEnabled`) and enable FXAA so both stages under
+      // test are in the chain.
+      scene.colorGradingEnabled = true;
+      scene.colorGradingConfig = grade;
       scene.postProcessStages.fxaa.enabled = true;
       await renderFrames(5);
       captures.graded = await grab();
