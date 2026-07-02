@@ -3267,6 +3267,14 @@ export class WebGPUContext extends GraphicsContext {
           | { x: number; y: number; z: number }
           | undefined;
         const lightDir = sunDir ?? { x: 0, y: 1, z: 0 };
+        // PARITY-RTE-ELLIPSOID-AWARE (FEAT-3DT2-03) — thread the scene's
+        // actual ellipsoid into the cascade ground-clamp so non-Earth
+        // globes (Mars/Moon/scaled mocks) clamp against THEIR surface.
+        // WGS84 scenes hit the change-detected early-out inside
+        // setEllipsoid (byte-identical constants).
+        csm.setEllipsoid(
+          scene.ellipsoid?.radii ?? scene.globe?.ellipsoid?.radii,
+        );
         // NEW-CSM-CASCADE-GROUND-FIT — clamp the split distribution to the
         // visible ground depth so the near cascade fits the actual receiver
         // patch (sub-metre/texel) instead of spreading over the whole

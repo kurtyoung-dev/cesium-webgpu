@@ -978,6 +978,14 @@ interface CesiumScene {
   readonly context: CesiumGraphicsContext;
   readonly camera: CesiumCamera;
   readonly globe: CesiumGlobe | undefined;
+  /**
+   * Scene#ellipsoid getter (`options.ellipsoid ?? Ellipsoid.default`).
+   * Threaded into the CSM ground-clamp (PARITY-RTE-ELLIPSOID-AWARE /
+   * FEAT-3DT2-03) so non-WGS84 globes solve against their own radii.
+   */
+  readonly ellipsoid?: {
+    readonly radii: CesiumCartesian3;
+  };
   readonly mode: number;
   readonly postProcessStages: CesiumPostProcessStageCollection;
   readonly highDynamicRange: boolean;

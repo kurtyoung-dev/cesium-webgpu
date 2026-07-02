@@ -58,18 +58,27 @@ const DEFAULT_LAMBDA = 0.7;
 const DEFAULT_BLEND_BAND = 0.05;
 
 /**
- * WGS84 ellipsoid radii (metres). Used by the ground-clamp pass in
- * `_computeFrustumCornersWorldSpace` (NEW-CSM-CASCADE-GROUND-FIT) to pull
- * each cascade frustum-slice's far corners back to the point where the
- * corresponding view ray pierces the globe surface. Without this clamp a
- * low top-down camera's near cascade fits a multi-km bounding sphere
- * (~12 m/texel at 1024²) because the perspective frustum extends to the
- * horizon, whereas the WebGL `ShadowMap` path fits the actual visible
- * scene volume (clamps `sceneCamera.frustum.far` to `shadowState.farPlane`
- * before the cascade fit). Clamping at the ground reproduces that tight
- * fit so cascade-0 stays sub-metre/texel and the cast-shadow edge is
- * crisp instead of a 12 m-texel sawtooth. Inverse-square radii are
- * precomputed for the closed-form ray/ellipsoid solve.
+ * DEFAULT (WGS84) ellipsoid radii (metres). Used by the ground-clamp pass
+ * in `_computeFrustumCornersWorldSpace` (NEW-CSM-CASCADE-GROUND-FIT) to
+ * pull each cascade frustum-slice's far corners back to the point where
+ * the corresponding view ray pierces the globe surface. Without this
+ * clamp a low top-down camera's near cascade fits a multi-km bounding
+ * sphere (~12 m/texel at 1024²) because the perspective frustum extends
+ * to the horizon, whereas the WebGL `ShadowMap` path fits the actual
+ * visible scene volume (clamps `sceneCamera.frustum.far` to
+ * `shadowState.farPlane` before the cascade fit). Clamping at the ground
+ * reproduces that tight fit so cascade-0 stays sub-metre/texel and the
+ * cast-shadow edge is crisp instead of a 12 m-texel sawtooth.
+ * Inverse-square radii are precomputed for the closed-form
+ * ray/ellipsoid solve.
+ *
+ * PARITY-RTE-ELLIPSOID-AWARE (FEAT-3DT2-03): these are DEFAULTS, not the
+ * only radii the solve can use. `WebGPUContext.executeShadowMapCastCommands`
+ * threads the scene's actual ellipsoid in per cast frame via
+ * {@link WebGPUCSMRenderer.setEllipsoid}, so non-Earth globes (Mars, Moon,
+ * scaled mocks) clamp against THEIR surface instead of an Earth-sized
+ * phantom. For a WGS84 scene the threaded radii equal these constants and
+ * the math is byte-identical.
  */
 const WGS84_RADII_X = 6378137.0;
 const WGS84_RADII_Y = 6378137.0;
@@ -87,7 +96,9 @@ const WGS84_ONE_OVER_RADII_SQ_Z = 1.0 / (WGS84_RADII_Z * WGS84_RADII_Z);
  * precision would lose the discriminant. Mirrors the quadratic in
  * `IntersectionTests.rayEllipsoid` but inlined + scalarized to avoid the
  * per-corner `Ray`/`Cartesian3`/`Interval` allocations that helper makes
- * (this runs 4× per cascade per frame).
+ * (this runs 4× per cascade per frame). The inverse-square radii are
+ * explicit parameters (defaulting to WGS84) so the solve tracks the
+ * scene's actual ellipsoid — see PARITY-RTE-ELLIPSOID-AWARE above.
  */
 function _rayEllipsoidEntryDistance(
   ox: number,
@@ -96,19 +107,18 @@ function _rayEllipsoidEntryDistance(
   dx: number,
   dy: number,
   dz: number,
+  invRadiiSqX: number = WGS84_ONE_OVER_RADII_SQ_X,
+  invRadiiSqY: number = WGS84_ONE_OVER_RADII_SQ_Y,
+  invRadiiSqZ: number = WGS84_ONE_OVER_RADII_SQ_Z,
 ): number {
   // Scale into the unit-sphere frame where the ellipsoid becomes a sphere.
-  const oxs = ox * ox * WGS84_ONE_OVER_RADII_SQ_X;
-  const oys = oy * oy * WGS84_ONE_OVER_RADII_SQ_Y;
-  const ozs = oz * oz * WGS84_ONE_OVER_RADII_SQ_Z;
+  const oxs = ox * ox * invRadiiSqX;
+  const oys = oy * oy * invRadiiSqY;
+  const ozs = oz * oz * invRadiiSqZ;
   const odd =
-    ox * dx * WGS84_ONE_OVER_RADII_SQ_X +
-    oy * dy * WGS84_ONE_OVER_RADII_SQ_Y +
-    oz * dz * WGS84_ONE_OVER_RADII_SQ_Z;
+    ox * dx * invRadiiSqX + oy * dy * invRadiiSqY + oz * dz * invRadiiSqZ;
   const ddd =
-    dx * dx * WGS84_ONE_OVER_RADII_SQ_X +
-    dy * dy * WGS84_ONE_OVER_RADII_SQ_Y +
-    dz * dz * WGS84_ONE_OVER_RADII_SQ_Z;
+    dx * dx * invRadiiSqX + dy * dy * invRadiiSqY + dz * dz * invRadiiSqZ;
 
   const a = ddd;
   const b = 2.0 * odd;
@@ -364,6 +374,19 @@ export class WebGPUCSMRenderer {
   public _cascadeCullLastInput: number[] = [];
   public _cascadeCullLastFiltered: number[] = [];
 
+  // PARITY-RTE-ELLIPSOID-AWARE (FEAT-3DT2-03) — the ellipsoid the
+  // cascade ground-clamp solves against. Defaults to WGS84 so Earth
+  // scenes are byte-identical whether or not `setEllipsoid` runs;
+  // `WebGPUContext.executeShadowMapCastCommands` threads the scene's
+  // actual ellipsoid in once per cast frame (change-detected no-op for
+  // the steady state).
+  private _ellipsoidRadiiX = WGS84_RADII_X;
+  private _ellipsoidRadiiY = WGS84_RADII_Y;
+  private _ellipsoidRadiiZ = WGS84_RADII_Z;
+  private _oneOverRadiiSqX = WGS84_ONE_OVER_RADII_SQ_X;
+  private _oneOverRadiiSqY = WGS84_ONE_OVER_RADII_SQ_Y;
+  private _oneOverRadiiSqZ = WGS84_ONE_OVER_RADII_SQ_Z;
+
   // Scratch objects
   private static _scratchCenter = new Cartesian3();
   private static _scratchCorners = new Array(8)
@@ -483,8 +506,41 @@ export class WebGPUCSMRenderer {
   }
 
   /**
+   * Set the ellipsoid the cascade ground-clamp solves against
+   * (PARITY-RTE-ELLIPSOID-AWARE / FEAT-3DT2-03). Accepts the scene
+   * ellipsoid's `radii` (metres); `undefined`/`null` or non-positive
+   * radii reset to the WGS84 default. Change-detected — calling every
+   * frame with the same radii is three comparisons and an early-out, and
+   * for a WGS84 scene the recomputed inverse-square radii are the exact
+   * same FP64 values as the module defaults (byte-identical math).
+   */
+  setEllipsoid(radii?: { x: number; y: number; z: number } | null): void {
+    const x = radii?.x ?? WGS84_RADII_X;
+    const y = radii?.y ?? WGS84_RADII_Y;
+    const z = radii?.z ?? WGS84_RADII_Z;
+    if (!(x > 0) || !(y > 0) || !(z > 0)) {
+      // Degenerate radii (0/NaN) would poison the quadratic — keep the
+      // last valid ellipsoid rather than divide by zero.
+      return;
+    }
+    if (
+      x === this._ellipsoidRadiiX &&
+      y === this._ellipsoidRadiiY &&
+      z === this._ellipsoidRadiiZ
+    ) {
+      return;
+    }
+    this._ellipsoidRadiiX = x;
+    this._ellipsoidRadiiY = y;
+    this._ellipsoidRadiiZ = z;
+    this._oneOverRadiiSqX = 1.0 / (x * x);
+    this._oneOverRadiiSqY = 1.0 / (y * y);
+    this._oneOverRadiiSqZ = 1.0 / (z * z);
+  }
+
+  /**
    * Largest along-view distance at which any of the camera frustum's four
-   * far-edge rays pierces the WGS84 ellipsoid (NEW-CSM-CASCADE-GROUND-FIT).
+   * far-edge rays pierces the scene ellipsoid (NEW-CSM-CASCADE-GROUND-FIT).
    * This is the depth of the *visible ground patch* — clamping the split
    * distribution to it (via `computeSplits`'s `groundFar` argument) keeps
    * the cascades packed across the receivers the camera can actually see,
@@ -531,6 +587,9 @@ export class WebGPUCSMRenderer {
         dirX,
         dirY,
         dirZ,
+        this._oneOverRadiiSqX,
+        this._oneOverRadiiSqY,
+        this._oneOverRadiiSqZ,
       );
       if (Number.isFinite(t)) {
         anyHit = true;
@@ -639,6 +698,9 @@ export class WebGPUCSMRenderer {
         cascade.splitNear,
         cascade.splitFar,
         true,
+        this._oneOverRadiiSqX,
+        this._oneOverRadiiSqY,
+        this._oneOverRadiiSqZ,
       );
       const { center, radius } = _fitBoundingSphere(corners);
 
@@ -1047,7 +1109,7 @@ export class WebGPUCSMRenderer {
  *
  * @param groundClamp When true (NEW-CSM-CASCADE-GROUND-FIT), each of the
  *   four far-plane corners is pulled back along its own view ray to the
- *   point where the ray pierces the WGS84 ellipsoid. This stops a near
+ *   point where the ray pierces the scene ellipsoid. This stops a near
  *   cascade from ballooning to the horizon under a low top-down camera
  *   (where the perspective far plane is multi-km past the visible ground
  *   but the actual receivers sit just below the camera). The near plane is
@@ -1055,6 +1117,10 @@ export class WebGPUCSMRenderer {
  *   ellipsoid (looking at the sky / horizon) keep the unclamped `farDist`.
  *   Default false preserves the pre-fix behavior for specs that exercise
  *   the raw frustum.
+ * @param invRadiiSqX/Y/Z Inverse-square radii of the ellipsoid the ground
+ *   clamp solves against (PARITY-RTE-ELLIPSOID-AWARE). Default WGS84;
+ *   `WebGPUCSMRenderer.computeCascadeVPs` passes the scene's actual
+ *   ellipsoid through.
  *
  * @returns Flat Float64Array of 24 floats (8 corners × xyz).
  */
@@ -1069,12 +1135,18 @@ export function computeFrustumCornersWorldSpace(
   nearDist: number,
   farDist: number,
   groundClamp = false,
+  invRadiiSqX: number = WGS84_ONE_OVER_RADII_SQ_X,
+  invRadiiSqY: number = WGS84_ONE_OVER_RADII_SQ_Y,
+  invRadiiSqZ: number = WGS84_ONE_OVER_RADII_SQ_Z,
 ): Float64Array {
   return _computeFrustumCornersWorldSpace(
     camera,
     nearDist,
     farDist,
     groundClamp,
+    invRadiiSqX,
+    invRadiiSqY,
+    invRadiiSqZ,
   );
 }
 
@@ -1089,6 +1161,9 @@ function _computeFrustumCornersWorldSpace(
   nearDist: number,
   farDist: number,
   groundClamp = false,
+  invRadiiSqX: number = WGS84_ONE_OVER_RADII_SQ_X,
+  invRadiiSqY: number = WGS84_ONE_OVER_RADII_SQ_Y,
+  invRadiiSqZ: number = WGS84_ONE_OVER_RADII_SQ_Z,
 ): Float64Array {
   const fovy = camera.frustum.fovy ?? Math.PI / 3;
   const aspect = camera.frustum.aspectRatio ?? 1;
@@ -1123,7 +1198,17 @@ function _computeFrustumCornersWorldSpace(
     const dirX = fwd.x + sW * tanW * rt.x + sH * tanHalfFovY * up.x;
     const dirY = fwd.y + sW * tanW * rt.y + sH * tanHalfFovY * up.y;
     const dirZ = fwd.z + sW * tanW * rt.z + sH * tanHalfFovY * up.z;
-    return _rayEllipsoidEntryDistance(pos.x, pos.y, pos.z, dirX, dirY, dirZ);
+    return _rayEllipsoidEntryDistance(
+      pos.x,
+      pos.y,
+      pos.z,
+      dirX,
+      dirY,
+      dirZ,
+      invRadiiSqX,
+      invRadiiSqY,
+      invRadiiSqZ,
+    );
   };
 
   if (!groundClamp) {
