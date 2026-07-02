@@ -60,6 +60,18 @@ import {
   tryUploadChildVoxelTiles,
   type VoxelDataUploadState,
 } from "./WebGPUVoxelDataUpload.js";
+// VOXEL-USER-CUSTOMSHADER — per-primitive WGSL codegen for a USER-supplied
+// native-WGSL voxel CustomShader (the voxel sibling of the model path's
+// CustomShaderWGSLPipelineStage). GLSL-only voxel customShaders keep the
+// warn + default-gray behavior.
+import {
+  generateVoxelUserShaderChunk,
+  voxelUserShaderHasUniforms,
+  type VoxelProviderMetadataLike,
+  type VoxelUserCustomShaderLike,
+  type VoxelUserShaderInfo,
+} from "./WebGPUVoxelCustomShaderCodegen.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
 
 // Per-device shader module cache so multiple VoxelPrimitives sharing the
 // same GPUDevice reuse a single compiled `GPUShaderModule`.
@@ -131,6 +143,16 @@ interface VoxelCache {
   // is the lazily-built defines=VOXEL_CUSTOM_SHADER_COLOR module.
   pipelineLayout: GPUPipelineLayout | null;
   colorModuleCustomShader: GPUShaderModule | null;
+
+  // VOXEL-USER-CUSTOMSHADER — user native-WGSL customShader slots. The
+  // generated chunk is cached per customShader OBJECT identity (userShaderRef)
+  // so the per-frame resolve is a pointer compare; swapping / clearing the
+  // primitive's customShader mid-session invalidates it. `userShaderInfo` is
+  // null for the default shader, GLSL-only shaders (warn + default), and
+  // uniform-carrying WGSL shaders (warn + default — uniforms are a documented
+  // follow-up).
+  userShaderRef: unknown;
+  userShaderInfo: VoxelUserShaderInfo | null;
 
   // C-R9-VOXEL-CELL-PICK — dedicated per-cell pick pipeline + command for
   // the `passes.pickVoxel` pass. SEPARATE from `pickPipeline`/`pickCommand`
@@ -433,12 +455,35 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         / (u.inputDimensions.z * slotCount),
     );
     let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
+//>>ifdef VOXEL_USER_CUSTOM_SHADER
+    // VOXEL-USER-CUSTOMSHADER — run the USER's native-WGSL customShader for
+    // this sample. \`czm_voxelCustomFragmentMain\` + the bridge structs come
+    // from the GENERATED chunk prepended to this source
+    // (WebGPUVoxelCustomShaderCodegen); this branch only compiles when that
+    // chunk is present (the renderer sets the define + prepends together).
+    // Accumulation mirrors WebGL VoxelFS.glsl exactly: sanitize the material
+    // (rgb >= 0, alpha in [0,1]) then premultiplied front-to-back blend of
+    // EVERY sample — no densityThreshold gate; a sample the user leaves at
+    // the zero-initialised material (alpha 0) contributes nothing.
+    var fsInput: czm_voxelCustomFragmentInput;
+    fsInput.metadata = czm_voxelReadCustomMetadata(s);
+    fsInput.attributes.normalLocal = normalize(entryNormalLocal);
+    fsInput.attributes.lightDirectionLocal = u.lightDirectionModel;
+    fsInput.attributes.shapeUv = shapeUv;
+    var voxelMaterial: czm_voxelCustomMaterial;
+    czm_voxelCustomFragmentMain(fsInput, &voxelMaterial);
+    let userDiffuse = max(voxelMaterial.diffuse, vec3<f32>(0.0));
+    let userAlpha = clamp(voxelMaterial.alpha, 0.0, 1.0);
+    accumC = accumC + (1.0 - accumA) * userDiffuse * userAlpha;
+    accumA = accumA + (1.0 - accumA) * userAlpha;
+//>>else
     if (s.a > u.densityThreshold) {
       // Default voxel customShader material: gray lighting, opaque.
       let matAlpha = 1.0;
       accumC = accumC + (1.0 - accumA) * matDiffuse * matAlpha;
       accumA = accumA + (1.0 - accumA) * matAlpha;
     }
+//>>endif
   }
   accumA = min(accumA, ALPHA_ACCUM_MAX);
   // Convert the alpha from [0, ALPHA_ACCUM_MAX] back to [0, 1] (WebGL).
@@ -736,6 +781,91 @@ fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
 // central pipeline cache keys on `descriptor.name`, so this must differ from
 // the placeholder "Voxel color pipeline" name to avoid a cache collision.
 const VOXEL_COLOR_PARITY_PIPELINE_NAME = "Voxel color pipeline (customShader)";
+
+// VOXEL-USER-CUSTOMSHADER — pipeline-cache name for a USER native-WGSL
+// customShader color pipeline. Carries the generated chunk's hash so distinct
+// user shader bodies get distinct pipeline-cache entries (the central cache
+// keys on `descriptor.name`) while two primitives sharing the same shader
+// share one pipeline.
+function voxelUserShaderPipelineName(info: VoxelUserShaderInfo): string {
+  return `Voxel color pipeline (userCustomShader#${info.hash.toString(16)})`;
+}
+
+/**
+ * VOXEL-USER-CUSTOMSHADER — resolve (and cache, keyed by customShader object
+ * identity) the generated user-WGSL chunk for this primitive's customShader.
+ * Returns `null` when the primitive should keep the DEFAULT gray parity path:
+ * no customShader / the DefaultCustomShader, a GLSL-only customShader
+ * (warn + default — the model renderer's PARITY-CUSTOM-SHADER-WGSL policy),
+ * or a WGSL customShader with uniforms (warn + default — voxel customShader
+ * uniforms/textures are a documented follow-up).
+ * @private
+ */
+function resolveVoxelUserShaderInfo(
+  primitive: CesiumObjectWithWebGPUCache,
+  cache: VoxelCache,
+): VoxelUserShaderInfo | null {
+  const prim = primitive as unknown as {
+    customShader?: VoxelUserCustomShaderLike;
+    provider?: VoxelProviderMetadataLike;
+    constructor?: { DefaultCustomShader?: unknown };
+  };
+  const customShader = prim.customShader;
+  // VoxelPrimitive substitutes DefaultCustomShader for an unset/cleared
+  // customShader — that is the Batch 476 default gray path, not a user shader.
+  const isDefault =
+    !customShader || customShader === prim.constructor?.DefaultCustomShader;
+  if (isDefault) {
+    cache.userShaderRef = null;
+    cache.userShaderInfo = null;
+    return null;
+  }
+  if (cache.userShaderRef === customShader) {
+    return cache.userShaderInfo;
+  }
+  cache.userShaderRef = customShader;
+  cache.userShaderInfo = null;
+
+  if (
+    typeof customShader.wgslFragmentShaderText !== "string" ||
+    customShader.wgslFragmentShaderText.length === 0
+  ) {
+    // GLSL-only voxel customShader — transpile is deferred by design; keep the
+    // default gray rendering (the same policy as WebGPUModelRenderer).
+    //>>includeStart('debug', pragmas.debug);
+    oneTimeWarning(
+      "WebGPUVoxel.customShader",
+      "VoxelPrimitive.customShader with GLSL-only text is not supported on " +
+        "the WebGPU backend (GLSL→WGSL transpile is deferred). Supply " +
+        "wgslFragmentShaderText for a native-WGSL voxel customShader. The " +
+        "GLSL is ignored; the voxel renders with the default gray shading. " +
+        "Track VOXEL-USER-CUSTOMSHADER.",
+    );
+    //>>includeEnd('debug');
+    return null;
+  }
+
+  if (voxelUserShaderHasUniforms(customShader)) {
+    // Uniforms (incl. color-map SAMPLER_2D textures) need a voxel BGL /
+    // pipeline-layout variant — a documented follow-up. Warn + default so the
+    // primitive still renders (gray) rather than failing module compilation
+    // on an undeclared `czm_customUniforms` reference.
+    //>>includeStart('debug', pragmas.debug);
+    oneTimeWarning(
+      "WebGPUVoxel.customShaderUniforms",
+      "VoxelPrimitive.customShader uniforms are not supported on the WebGPU " +
+        "backend yet — the customShader is ignored and the voxel renders " +
+        "with the default gray shading. Inline constants in the WGSL body " +
+        "instead. Track VOXEL-USER-CUSTOMSHADER (uniforms follow-up).",
+    );
+    //>>includeEnd('debug');
+    return null;
+  }
+
+  cache.userShaderInfo =
+    generateVoxelUserShaderChunk(customShader, prim.provider) ?? null;
+  return cache.userShaderInfo;
+}
 
 // PARITY-VOXEL-COLOR-PARITY scratches for the model-space light-direction pack.
 const scratchMVNormal = new Matrix4();
@@ -1286,6 +1416,9 @@ function updateWebGPUVoxelPrimitive(
       // PARITY-VOXEL-COLOR-PARITY — color-parity pipeline rebuild slots.
       pipelineLayout: null,
       colorModuleCustomShader: null,
+      // VOXEL-USER-CUSTOMSHADER — user native-WGSL customShader slots.
+      userShaderRef: null,
+      userShaderInfo: null,
       // C-R9-VOXEL-CELL-PICK — per-cell pick slots (lazy, real-data only).
       pickVoxelPipeline: null,
       pickVoxelDescriptor: null,
@@ -1649,48 +1782,73 @@ function updateWebGPUVoxelPrimitive(
   // one-shot upload block) so a mid-session format/MSAA rebuild — which resets
   // `colorDescriptor` back to the base module — re-patches to the parity
   // module. The name check makes it idempotent + zero-cost per steady frame.
-  if (
-    cache.usingRealData &&
-    cache.colorDescriptor &&
-    cache.colorDescriptor.name !== VOXEL_COLOR_PARITY_PIPELINE_NAME
-  ) {
-    const moduleCache = getVoxelShaderModuleCache(device);
-    const colorModule =
-      cache.colorModuleCustomShader ??
-      moduleCache.getOrCreate(
-        ShaderSourceId.VOXEL_PRIMITIVE,
-        VOXEL_WGSL,
-        ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR,
-        "VoxelPrimitive (VOXEL_CUSTOM_SHADER_COLOR)",
-        // The module-cache numeric key masks defines to 24 bits
-        // (`(defines & 0xffffff) << 8`), so VOXEL_CUSTOM_SHADER_COLOR (bit 25)
-        // would alias the defines=0 (placeholder) module and return the
-        // raw-texel shader. A non-zero keySalt forces a distinct cache entry;
-        // the preprocessor still receives the UNMASKED defines and emits the
-        // parity branch. (The salt value is arbitrary but stable.)
-        ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR,
-      );
-    cache.colorModuleCustomShader = colorModule;
-    // Re-point the color descriptor's vertex + fragment stages at the
-    // custom-shader module. The vertex entry (`vertexMain`) preprocesses
-    // identically (no gated vertex code), so reusing the same module for both
-    // stages keeps the pipeline single-module.
-    cache.colorDescriptor.vertex.module = colorModule;
-    if (cache.colorDescriptor.fragment) {
-      cache.colorDescriptor.fragment.module = colorModule;
+  // VOXEL-USER-CUSTOMSHADER — when the primitive carries a USER native-WGSL
+  // customShader, the desired module is the generated chunk + VOXEL_WGSL with
+  // the nested VOXEL_USER_CUSTOM_SHADER define; otherwise the Batch 476
+  // default-gray parity module. The name compare keeps this idempotent +
+  // zero-cost per steady frame, and also handles a MID-SESSION customShader
+  // swap/clear (the desired name changes → re-patch in either direction).
+  if (cache.usingRealData && cache.colorDescriptor) {
+    const userInfo = resolveVoxelUserShaderInfo(primitive, cache);
+    const desiredName = userInfo
+      ? voxelUserShaderPipelineName(userInfo)
+      : VOXEL_COLOR_PARITY_PIPELINE_NAME;
+    if (cache.colorDescriptor.name !== desiredName) {
+      const moduleCache = getVoxelShaderModuleCache(device);
+      let colorModule: GPUShaderModule;
+      if (userInfo) {
+        colorModule = moduleCache.getOrCreate(
+          ShaderSourceId.VOXEL_PRIMITIVE,
+          userInfo.chunk + VOXEL_WGSL,
+          ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR |
+            ShaderDefine.VOXEL_USER_CUSTOM_SHADER,
+          `VoxelPrimitive (user customShader #${userInfo.hash.toString(16)})`,
+          // Bits ≥ 24 are masked out of the numeric cache key, so the salt is
+          // what distinguishes this module from BOTH the defines=0 placeholder
+          // and the default parity module (salt = bit-25 constant). The chunk
+          // hash also separates DIFFERENT user shader bodies (DP-H46b).
+          userInfo.hash,
+        );
+      } else {
+        colorModule =
+          cache.colorModuleCustomShader ??
+          moduleCache.getOrCreate(
+            ShaderSourceId.VOXEL_PRIMITIVE,
+            VOXEL_WGSL,
+            ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR,
+            "VoxelPrimitive (VOXEL_CUSTOM_SHADER_COLOR)",
+            // The module-cache numeric key masks defines to 24 bits
+            // (`(defines & 0xffffff) << 8`), so VOXEL_CUSTOM_SHADER_COLOR
+            // (bit 25) would alias the defines=0 (placeholder) module and
+            // return the raw-texel shader. A non-zero keySalt forces a
+            // distinct cache entry; the preprocessor still receives the
+            // UNMASKED defines and emits the parity branch. (The salt value
+            // is arbitrary but stable.)
+            ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR,
+          );
+        cache.colorModuleCustomShader = colorModule;
+      }
+      // Re-point the color descriptor's vertex + fragment stages at the
+      // custom-shader module. The vertex entry (`vertexMain`) preprocesses
+      // identically (no gated vertex code), so reusing the same module for
+      // both stages keeps the pipeline single-module.
+      cache.colorDescriptor.vertex.module = colorModule;
+      if (cache.colorDescriptor.fragment) {
+        cache.colorDescriptor.fragment.module = colorModule;
+      }
+      // The central pipeline cache keys on `descriptor.name` (+ format/MSAA),
+      // NOT on the shader-module identity — so the patched-module descriptor
+      // MUST get a distinct name or it would collide with the placeholder
+      // "Voxel color pipeline" entry and be served the old raw-texel pipeline.
+      cache.colorDescriptor.name = desiredName;
+      // Force the color pipeline to re-resolve from the patched descriptor,
+      // and drop the cached draw command so it's rebuilt referencing the NEW
+      // pipeline (the command captures `cache.pipeline` at construction —
+      // leaving it stale would keep drawing with the old raw-texel pipeline).
+      cache.pipeline = null;
+      cache.pipelineRequestPending = false;
+      cache.command = null;
     }
-    // The central pipeline cache keys on `descriptor.name` (+ format/MSAA), NOT
-    // on the shader-module identity — so the patched-module descriptor MUST get
-    // a distinct name or it would collide with the placeholder "Voxel color
-    // pipeline" entry and be served the old raw-texel pipeline.
-    cache.colorDescriptor.name = VOXEL_COLOR_PARITY_PIPELINE_NAME;
-    // Force the color pipeline to re-resolve from the patched descriptor, and
-    // drop the cached draw command so it's rebuilt referencing the NEW pipeline
-    // (the command captures `cache.pipeline` at construction — leaving it stale
-    // would keep drawing with the old raw-texel pipeline).
-    cache.pipeline = null;
-    cache.pipelineRequestPending = false;
-    cache.command = null;
   }
 
   // C-R7-RENDERER-MIGRATION (Batch 72) — resolve color + pick pipelines

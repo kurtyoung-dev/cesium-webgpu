@@ -778,6 +778,40 @@ export const ShaderDefine = Object.freeze({
    * Consumers: `ModelPBRComplete.wgsl`, `ModelSilhouetteStage.wgsl`.
    */
   MODEL_SILHOUETTE: 1 << 28,
+
+  /**
+   * Voxel ray-march runs a USER-supplied native-WGSL {@link CustomShader}
+   * (VOXEL-USER-CUSTOMSHADER) instead of the default gray mapping. When set,
+   * the `//>>ifdef VOXEL_USER_CUSTOM_SHADER` block NESTED inside
+   * `VOXEL_CUSTOM_SHADER_COLOR`'s parity march (see `WebGPUVoxelRenderer`'s
+   * inline `VOXEL_WGSL`) replaces the default-shader material derivation with
+   * a call to the GENERATED `czm_voxelCustomFragmentMain` — the user's
+   * `wgslFragmentShaderText` inlined by
+   * `WebGPUVoxelCustomShaderCodegen.generateVoxelUserShaderChunk`, which maps
+   * the sampled megatexture texel onto `fsInput.metadata.<propertyName>`
+   * (typed per the provider's first metadata property) and accumulates the
+   * user's `material.diffuse` / `material.alpha` with the SAME
+   * premultiplied-alpha front-to-back integral WebGL's VoxelFS.glsl uses.
+   *
+   * Per-primitive selection: `WebGPUVoxelRenderer` ORs this bit into the
+   * COLOR module's defines ONLY when a real voxel provider's root tile has
+   * uploaded AND the primitive carries a NON-default customShader with
+   * `wgslFragmentShaderText` and no uniforms (uniform/texture support is a
+   * documented follow-up — such shaders warn + fall back to the default gray
+   * path, as do GLSL-only voxel customShaders). When clear the nested
+   * `//>>else` branch is the Batch 476 default-gray block byte-for-byte, so
+   * both `preprocess(VOXEL_WGSL, 0)` and
+   * `preprocess(VOXEL_WGSL, VOXEL_CUSTOM_SHADER_COLOR)` are unchanged —
+   * off-gate byte-identical.
+   *
+   * NOTE — bit ≥ 24: the device module-cache numeric key masks defines to 24
+   * bits, so callers pass the generated chunk's FNV-1a hash as `keySalt`
+   * (which also disambiguates DIFFERENT user shader bodies sharing the same
+   * `(sourceId, defines)` — the DP-H46b salted-key path).
+   *
+   * Consumer: `WebGPUVoxelRenderer.ts` (inline `VOXEL_WGSL` fragmentMain).
+   */
+  VOXEL_USER_CUSTOM_SHADER: 1 << 29,
 } as const);
 
 /**

@@ -263,7 +263,7 @@ Grouped by what blocks each one.
 
 | Item | Status | Subsystem(s) | What's missing |
 | --- | --- | --- | --- |
-| Voxel user CustomShader → WGSL (metadata color) | **stub** | 3D Tiles | Only the default gray customShader is honored; user scalar-ramp/vec4 metadata color injection depends on octree traversal (§6.5 #1) landing first. PARITY-VOXEL-CUSTOM-SHADER-WGSL. |
+| Voxel user CustomShader → WGSL (metadata color) | **CLOSED 2026-07-02 (VOXEL-USER-CUSTOMSHADER)** | 3D Tiles | USER native-WGSL voxel customShaders now run on the ray-march: `WebGPUVoxelCustomShaderCodegen.ts` generates a per-shader chunk (typed `fsInput.metadata.<propertyName>` from the provider's first property + normalLocal/lightDirectionLocal/shapeUv attributes + `czm_voxelCustomMaterial`) prepended to `VOXEL_WGSL`; the call site is `VOXEL_USER_CUSTOM_SHADER` (bit 29, chunk-hash keySalt) NESTED inside the B476 parity march, accumulating the user's diffuse/alpha with VoxelFS.glsl's exact sanitize + premultiplied front-to-back integral. GLSL-only voxel customShaders keep warn+default-gray (transpile deferred by design); WGSL shaders WITH uniforms warn+default (uniforms/textures = documented follow-up, residual #1 in DEFERRED_WORK `VOXEL-USER-CUSTOMSHADER-RESIDUALS`). Probe: `probe-voxel-user-customshader.mjs` (scalar-ramp on VoxelBox3DTiles: avg-color L1 **0** vs WebGL, IoU 0.985, spread 175 ≠ gray, user pipeline name asserted); off-gate: preprocess(0)+preprocess(bit25) byte-identical vs HEAD + probe-voxel-parity/octree/cell-pick/megatexture all green. |
 
 ### 6.5 Unstarted — genuine parity debt, no external blocker
 
