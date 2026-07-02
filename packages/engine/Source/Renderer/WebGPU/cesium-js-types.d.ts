@@ -1398,6 +1398,9 @@ interface CesiumAnyDrawCommand {
       pickHoverCommand?: CesiumAnyDrawCommand;
       pickPrecisePass1Command?: CesiumAnyDrawCommand;
       pickPrecisePass2Command?: CesiumAnyDrawCommand;
+      // C-R9-VOXEL-CELL-PICK — per-cell voxel pick variant dispatched only
+      // during `passes.pickVoxel` (mirrors WebGL's _drawCommandPickVoxel).
+      pickVoxelCommand?: CesiumAnyDrawCommand;
     };
     pickingMetadata?: { pickMetadataCommand?: CesiumAnyDrawCommand };
     shadows?: { receiveCommand?: CesiumAnyDrawCommand };

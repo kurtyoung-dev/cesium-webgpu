@@ -3046,7 +3046,89 @@ These two changes ship together — the depth-write fix would still let near-tra
 
 **Trace:** Batch 186 first slice; Batch 192 dual-path second slice. `Scene.pickHoverAsync` / `Scene.pickPreciseAsync` in `Scene.js`; `Picking._pickAsyncWithMode` + coalesce/defer in `Picking.js`; `fragmentPickHoverMain` + `getPickHoverPipeline` / `getPickPrecisePass{1,2}Pipeline` factories; dispatcher routing in `WebGPUSceneRenderer.selectCommandVariant`; pass-2 follow-up in `WebGPUSceneRendererPickPass`. Earlier work: PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Translucent-with-OIT pick").
 
-### C-R9-VOXEL-CELL-PICK — UNBLOCKED (shapeUv convention landed, VOXEL-SHAPEUV-CONVENTION 2026-07-02; pick wiring itself still to be re-applied)
+### ~~C-R9-VOXEL-CELL-PICK~~ — RESOLVED (re-landed 2026-07-02, VOXEL-CELL-PICK-RELAND; per-cell decode now WebGL-byte-identical)
+
+**Resolution (VOXEL-CELL-PICK-RELAND, 2026-07-02):** the reverted pick wiring
+below was re-applied on top of the fixed shapeUv convention, plus one NEW root
+cause the reland's exact-parity probe flushed out:
+
+- **`fragmentPickVoxelMain`** (`WebGPUVoxelRenderer.ts` inline WGSL): marches
+  the SAME physically-correct ray + `proxyToShapeUv` → `inputCoordinate`
+  (dims/padding/Y-up swap) chain as the parity color march; at the first
+  density hit emits `vec4(packIntToVec2(0), packIntToVec2(sampleIndex))` with
+  WebGL's exact `getSampleIndex` math (clamp `[0, u_inputDimensions - 0.5]`,
+  floor, `x + inX*(y + inY*z)`). No ray dither (WebGL PICKING_VOXEL samples
+  exact intersections). megatextureIndex is 0 — the root-tile-only data path.
+  No new UBO fields needed — the VOXEL-SHAPEUV-CONVENTION tail (floats 76-107)
+  already carries everything the reverted prototype's `voxelDimensions` /
+  `cameraPositionModel` fields provided.
+- **`pickVoxelPipeline` / `pickVoxelCommand`** (cache slots + lazy
+  `attachVoxelCellPickCommand`, real-data path only) attached onto
+  `derivedCommands.picking.pickVoxelCommand` via the new
+  `attachPickVoxelToColorCommand` helper (`WebGPUPickCommandHelpers.ts`);
+  `selectCommandVariant` (`WebGPUSceneRenderer.ts`) routes to it ONLY when
+  `passes.pickVoxel` (additive branch ahead of the object-pick `pickCommand`).
+- **`WebGPUPickFramebuffer.readCenterPixel` vertical-mirror fix** — the
+  caller's rectangle is GL-convention (`y` from the BOTTOM,
+  `computePickingDrawingBufferRectangle`), but the WebGPU pick color texture
+  is stored TOP-DOWN; the old code used the GL row directly as the copy
+  origin, so every off-vertical-center metadata/voxel readback returned the
+  MIRRORED pixel (hidden until now because prior probes picked at the screen
+  center, which is self-symmetric). Now converts to the visual row WebGL
+  reads: `py = height - 1 - (rect.y + halfHeight)`.
+
+**Verified:** `probe-voxel-cell-pick.mjs` (NEW) — 4 filled-cell pixels decode
+byte-identical to WebGL (same `{tileIndex, sampleIndex}` → same cell x/y/z,
+including the earlier Y/Z-divergent rows), 2 empty-column + 1 off-box pixels
+cleared `[0,0,0,0]` on both, object pick still returns the `VoxelPrimitive`,
+0 errors. Off-gate: `probe-voxel-parity` (color parity Part A+B) and
+`probe-pick-basic` / `probe-pick-metadata` all PASS; `fragmentPickMain`
+(object pick) untouched; non-voxel commands never populate the
+`pickVoxelCommand` slot so their dispatch is unchanged.
+
+**Surfaced follow-ups (Principle 9 — NOT part of this reland):**
+
+1. **`scene.pickVoxel` end-to-end still throws on WebGPU** after the
+   coordinate decode: `Scene.pickVoxel` calls
+   `voxelPrimitive._traversal.findKeyframeNode(tileIndex)`, but the WebGPU
+   feature-renderer path returns from `VoxelPrimitive.update` before
+   `initFromProvider` ever creates `_traversal` → TypeError. The GPU-side
+   cell coordinate (this task) is correct; constructing the `VoxelCell`
+   result object needs the CPU-side traversal/keyframeNode metadata infra (or
+   an FR-side equivalent that can service `findKeyframeNode` + per-cell
+   property reads for the root tile). Tracked as
+   **C-R9-VOXEL-CELL-PICK-TAIL** below.
+2. **Suspected object-pick vertical mirror in `endAsync`/`_startReadback`**
+   (`WebGPUPickFramebuffer.ts`): both use the same GL-convention
+   `_pickOriginY` as a top-down `copyTextureToBuffer` origin — the same bug
+   shape `readCenterPixel` had. Masked so far because pick probes read at the
+   vertical screen center and voxel/model pick colors cover large footprints.
+   Needs a dedicated off-center object-pick probe before changing (the pick
+   render path may compensate elsewhere; verify empirically, don't fix
+   blind).
+
+### C-R9-VOXEL-CELL-PICK-TAIL — `scene.pickVoxel` VoxelCell construction on WebGPU (traversal/keyframeNode gap)
+
+**What:** `Scene.pickVoxel` = object pick (works) → `pickVoxelCoordinate`
+(works, WebGL-byte-identical since VOXEL-CELL-PICK-RELAND) →
+`voxelPrimitive._traversal.findKeyframeNode(tileIndex)` +
+`VoxelCell.fromKeyframeNode(...)` — the last step throws on WebGPU because
+`_traversal` is undefined (the WebGPU FR path never runs `initFromProvider`).
+
+**Next concrete step:** either run the CPU-side `VoxelTraversal` (or a
+root-tile-only stub exposing `findKeyframeNode(0)` + the metadata the
+`VoxelCell` property reads need) on the WebGPU path, or teach `Scene.pickVoxel`
+to build the `VoxelCell` from the FR's uploaded root-tile content. Guard the
+`_traversal` dereference either way so a missing traversal degrades to
+`undefined` instead of a TypeError.
+
+**Prerequisites:** VOXEL-CELL-PICK-RELAND (done). **Impact:** `scene.pickVoxel`
+(the public API) usable on WebGPU; today only the coordinate-level
+`pickVoxelCoordinate` parity holds.
+
+#### Historical context (original blocker analysis, resolved)
+
+Previous header: UNBLOCKED (shapeUv convention landed, VOXEL-SHAPEUV-CONVENTION 2026-07-02; pick wiring itself still to be re-applied)
 
 **Blocker resolution (VOXEL-SHAPEUV-CONVENTION, 2026-07-02):** the shape-space
 axis convention gap below is CLOSED for the color ray-march. Two coupled fixes

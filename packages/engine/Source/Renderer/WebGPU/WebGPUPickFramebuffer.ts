@@ -500,7 +500,18 @@ export class WebGPUPickFramebuffer {
     // pixel sits (halfWidth, halfHeight) inside it (matches the JS path's
     // `4 * (halfHeight * width + halfWidth)` slice into a rect-local buffer).
     const px = this._pickOriginX + halfWidth;
-    const py = this._pickOriginY + halfHeight;
+    // C-R9-VOXEL-CELL-PICK — vertical-origin conversion. The caller's
+    // rectangle comes from `computePickingDrawingBufferRectangle`, which is
+    // GL-convention (`y` measured from the BOTTOM: `drawingBufferHeight -
+    // pos.y - ...`) because WebGL's `readPixels` is bottom-origin. The WebGPU
+    // `_colorTexture` is stored TOP-DOWN (row 0 = top of the frame), so the
+    // GL row must be converted to the visual row WebGL actually reads:
+    // WebGL's readCenterPixel returns visual row `H - 1 - (rect.y +
+    // halfHeight)`, which IS the top-down texture row here. Without this
+    // flip every off-vertical-center metadata/voxel pick read the MIRRORED
+    // pixel (center-screen picks are self-symmetric, which is how the bug
+    // hid through the Batch 285 probes).
+    const py = this._height - 1 - (this._pickOriginY + halfHeight);
 
     // Arm/refresh the readback for this center pixel. The guard inside dedupes
     // overlapping requests and swallows teardown races.

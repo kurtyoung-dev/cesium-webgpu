@@ -34,6 +34,7 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import {
   attachPickToColorCommand,
+  attachPickVoxelToColorCommand,
   destroyPickIds,
   ensurePickId,
   type SinglePickIdCache,
@@ -129,6 +130,17 @@ interface VoxelCache {
   // is the lazily-built defines=VOXEL_CUSTOM_SHADER_COLOR module.
   pipelineLayout: GPUPipelineLayout | null;
   colorModuleCustomShader: GPUShaderModule | null;
+
+  // C-R9-VOXEL-CELL-PICK — dedicated per-cell pick pipeline + command for
+  // the `passes.pickVoxel` pass. SEPARATE from `pickPipeline`/`pickCommand`
+  // (the object-pick path emitting u.pickColor) so regular `scene.pick`
+  // stays byte-identical. The pipeline is only resolved on the real-data
+  // path (`usingRealData`) — the placeholder path has no cell convention to
+  // decode and must not allocate GPU resources for it.
+  pickVoxelPipeline: GPURenderPipeline | null;
+  pickVoxelDescriptor: WebGPURenderPipelineDescriptor | null;
+  pickVoxelPipelineRequestPending: boolean;
+  pickVoxelCommand: CesiumAnyDrawCommand | null;
 }
 
 const VOXEL_WGSL = `
@@ -490,6 +502,103 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
     }
   }
   // Ray traversed the whole AABB with no density hit; nothing to pick.
+  discard;
+  return vec4<f32>(0.0);
+}
+
+// C-R9-VOXEL-CELL-PICK — WebGL VoxelFS.glsl packIntToVec2: base-255 split
+// with the high byte in .x. Scene.pickVoxel decodes the readback bytes as
+// \`255 * high + low\`, so the round-trip recovers the integer exactly for
+// values < 255*255.
+fn packVoxelIntToVec2(value: f32) -> vec2<f32> {
+  let shifted = value / 255.0;
+  return vec2<f32>(floor(shifted) / 255.0, fract(shifted));
+}
+
+// C-R9-VOXEL-CELL-PICK — per-cell pick entry point (passes.pickVoxel).
+//
+// Mirrors WebGL's Shaders/Voxels/VoxelFS.glsl PICKING_VOXEL branch: march
+// the volume, and at the first sample whose accumulated alpha saturates
+// ALPHA_ACCUM_MAX emit \`vec4(packIntToVec2(megatextureIndex),
+// packIntToVec2(getSampleIndex(...)))\` so Scene.pickVoxel's \`255*R+G\` /
+// \`255*B+A\` decode recovers {tileIndex, sampleIndex} unchanged. Under the
+// WebGPU parity march model (default customShader: a sample is opaque when
+// \`s.a > densityThreshold\`, else empty — see the VOXEL_CUSTOM_SHADER_COLOR
+// branch of fragmentMain), the saturating sample is the FIRST density hit.
+//
+// The sample coordinate derives through the SAME physically-correct ray +
+// world→shapeUv→inputCoordinate chain as the parity color march
+// (VOXEL-SHAPEUV-CONVENTION): real proxy-space camera origin against the
+// real ±0.5 proxy box, then Octree.glsl's \`tileUv * u_dimensions +
+// u_paddingBefore\` + the Y_UP_METADATA_ORDER + SHAPE_BOX swap/flip. The
+// cell index floors the UNCLAMPED-to-texel-centre input coordinate exactly
+// like WebGL's getSampleIndex (clamp to [0, u_inputDimensions - 0.5], floor,
+// flatten x + inX*(y + inY*z)). No ray dither — WebGL's PICKING_VOXEL
+// samples the exact intersection positions, and a jittered start could flip
+// the decoded cell at cell boundaries.
+//
+// megatextureIndex is 0 — the single uploaded ROOT tile (the WebGPU data
+// path is root-tile-only; WebGL's root keyframeNode occupies megatexture
+// slot 0 for the same single-tile provider).
+//
+// Only ever dispatched from the dedicated pickVoxel pipeline, which is built
+// exclusively on the real-data path (usingRealData) — the placeholder path
+// never routes here, and the UBO convention fields this entry reads are only
+// written on that same path.
+@fragment
+fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  let rayDir = normalize(input.worldPos - u.cameraPositionEC);
+  let invDir = 1.0 / rayDir;
+  let rayOrigin = u.cameraPositionProxy;
+  let trReal = intersectAABB(rayOrigin, invDir, u.minBounds, u.maxBounds);
+  // NEW-4-E: pair discard with a return for naga's terminator analysis.
+  if (trReal.x > trReal.y) { discard; return vec4<f32>(0.0); }
+  let tStart = max(trReal.x, 0.0);
+  let tEnd = trReal.y;
+  let maxI = i32(u.maxSteps);
+  for (var i = 0; i < maxI; i = i + 1) {
+    let t = tStart + f32(i) * u.stepSize;
+    if (t > tEnd) { break; }
+    let p = rayOrigin + rayDir * t;
+    let shapeUv = clamp(
+      (u.proxyToShapeUv * vec4<f32>(p, 1.0)).xyz,
+      vec3<f32>(0.0),
+      vec3<f32>(1.0),
+    );
+    var inputCoord = shapeUv * u.voxelDimensions + u.paddingBefore;
+    if (u.metadataYUpBox > 0.5) {
+      let inputY = inputCoord.y;
+      inputCoord.y = inputCoord.z;
+      inputCoord.z = u.inputDimensions.z - inputY;
+    }
+    // Texel-centre clamp for the SAMPLE (Megatexture.glsl) — the march's
+    // density test must read the same texel the color march reads.
+    let clampedCoord = clamp(
+      inputCoord,
+      vec3<f32>(0.5),
+      u.inputDimensions - vec3<f32>(0.5),
+    );
+    let uvw = clampedCoord / u.inputDimensions;
+    // NEW-4-G: textureSampleLevel — see fragmentMain.
+    let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
+    if (s.a > u.densityThreshold) {
+      // WebGL getSampleIndex: clamp the raw input coordinate to
+      // [0, u_inputDimensions - 0.5] then floor (NOT the texel-centre clamp
+      // above — index derivation and texel addressing clamp differently).
+      let cell = floor(clamp(
+        inputCoord,
+        vec3<f32>(0.0),
+        u.inputDimensions - vec3<f32>(0.5),
+      ));
+      let sampleIndex =
+        cell.x + u.inputDimensions.x * (cell.y + u.inputDimensions.y * cell.z);
+      let megatextureId = packVoxelIntToVec2(0.0);
+      let sampleId = packVoxelIntToVec2(sampleIndex);
+      return vec4<f32>(megatextureId.x, megatextureId.y, sampleId.x, sampleId.y);
+    }
+  }
+  // No density hit — nothing to pick at this pixel (WebGL: colorAccum.a == 0
+  // → discard).
   discard;
   return vec4<f32>(0.0);
 }
@@ -1030,6 +1139,11 @@ function updateWebGPUVoxelPrimitive(
       // PARITY-VOXEL-COLOR-PARITY — color-parity pipeline rebuild slots.
       pipelineLayout: null,
       colorModuleCustomShader: null,
+      // C-R9-VOXEL-CELL-PICK — per-cell pick slots (lazy, real-data only).
+      pickVoxelPipeline: null,
+      pickVoxelDescriptor: null,
+      pickVoxelPipelineRequestPending: false,
+      pickVoxelCommand: null,
     } as VoxelCache;
   }
 
@@ -1084,6 +1198,11 @@ function updateWebGPUVoxelPrimitive(
     cache.velocityPipeline = null;
     cache.velocityDescriptor = null;
     cache.velocityPipelineRequestPending = false;
+    // C-R9-VOXEL-CELL-PICK — same treatment for the per-cell pick variant.
+    cache.pickVoxelPipeline = null;
+    cache.pickVoxelDescriptor = null;
+    cache.pickVoxelPipelineRequestPending = false;
+    cache.pickVoxelCommand = null;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
@@ -1239,6 +1358,35 @@ function updateWebGPUVoxelPrimitive(
       },
     };
 
+    // C-R9-VOXEL-CELL-PICK — per-cell pick descriptor. Same layout / vertex
+    // stage / depth behaviour / single-sample target as the object-pick
+    // descriptor above; the fragment entry packs {megatextureIndex,
+    // sampleIndex} per WebGL's VoxelFS.glsl PICKING_VOXEL branch instead of
+    // emitting u.pickColor. NO blending — the packed bytes must reach the
+    // pick FBO exactly for Scene.pickVoxel's 255*R+G / 255*B+A decode.
+    // Descriptor-only here (a plain object); the PIPELINE is resolved lazily
+    // and only on the real-data path (see attachVoxelCellPickCommand).
+    cache.pickVoxelDescriptor = {
+      name: "Voxel pickVoxel pipeline",
+      layout: pipelineLayout,
+      vertex: {
+        module: shaderModule,
+        entryPoint: "vertexMain",
+        buffers: vertexBuffers,
+      },
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fragmentPickVoxelMain",
+        targets: [{ format: canvasFormat }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "front" },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: false,
+        depthCompare: "less-equal",
+      },
+    };
+
     // Batch 173 - velocity descriptor. Same layout / vertex stage as
     // color (the box geometry is unchanged); different VS entry point
     // that computes curr + prev clip, and FS entry emitting
@@ -1326,6 +1474,9 @@ function updateWebGPUVoxelPrimitive(
       // Force the cached commands to pick up the rebuilt bind group at slot 0.
       cache.command = null;
       cache.pickCommand = null;
+      // C-R9-VOXEL-CELL-PICK — cannot exist before usingRealData, but reset
+      // for symmetry so a future multi-upload path rebinds it too.
+      cache.pickVoxelCommand = null;
       cache.usingRealData = true;
     }
   }
@@ -1651,6 +1802,90 @@ function updateWebGPUVoxelPrimitive(
       cache.pickCommand,
     );
   }
+
+  // C-R9-VOXEL-CELL-PICK — per-cell pick variant for `scene.pickVoxel`.
+  // Real-data path only: the placeholder gradient has no cell convention to
+  // decode, and the off-gate (no provider) must not allocate the pipeline.
+  // Attached every frame (idempotent) onto
+  // `derivedCommands.picking.pickVoxelCommand`; `selectCommandVariant`
+  // routes to it ONLY during `passes.pickVoxel`, so the color render and the
+  // regular object pick are untouched.
+  if (cache.usingRealData) {
+    attachVoxelCellPickCommand(device, context, cache);
+  }
+}
+
+/**
+ * C-R9-VOXEL-CELL-PICK — resolve the per-cell pick pipeline (lazily, through
+ * the central pipeline cache when available) and attach the pick-voxel
+ * command onto the color command's `derivedCommands.picking.pickVoxelCommand`
+ * slot. Mirrors the `attachVoxelVelocityCommand` lifecycle: called every
+ * frame on the real-data path, no-ops until the async pipeline resolves,
+ * idempotent once attached.
+ * @private
+ */
+function attachVoxelCellPickCommand(
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  cache: VoxelCache,
+): void {
+  if (!cache.pickVoxelDescriptor || !cache.command || !cache.bindGroup) {
+    return;
+  }
+
+  if (!cache.pickVoxelPipeline && !cache.pickVoxelPipelineRequestPending) {
+    const ctxAny = context as unknown as {
+      webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+    };
+    const pipelineCache = ctxAny.webgpuPipelineCache ?? null;
+    if (pipelineCache) {
+      const sync = pipelineCache.getPipelineSync(cache.pickVoxelDescriptor);
+      if (sync) {
+        cache.pickVoxelPipeline = sync;
+      } else {
+        cache.pickVoxelPipelineRequestPending = true;
+        pipelineCache
+          .getPipeline(cache.pickVoxelDescriptor)
+          .then((p) => {
+            cache.pickVoxelPipeline = p;
+            cache.pickVoxelPipelineRequestPending = false;
+          })
+          .catch(() => {
+            cache.pickVoxelPipelineRequestPending = false;
+          });
+      }
+    } else {
+      // Fallback synchronous creation when no central cache.
+      cache.pickVoxelPipeline = device.createRenderPipeline(
+        toGPUDescriptor(cache.pickVoxelDescriptor),
+      );
+    }
+  }
+
+  if (!cache.pickVoxelPipeline || !cache.vertexBuffer || !cache.indexBuffer) {
+    return;
+  }
+
+  if (!cache.pickVoxelCommand) {
+    // The pipeline layout includes the effects BGL at slot 1 (shared layout
+    // with color/pick/velocity); the pick-voxel fragment entry never samples
+    // the atmosphere bindings, so the placeholder BG is safe.
+    const pickEffectsBG = getPlaceholderEffects(device).bindGroup;
+    cache.pickVoxelCommand = new WebGPUDrawCommand({
+      pipeline: cache.pickVoxelPipeline,
+      bindGroups: [cache.bindGroup, pickEffectsBG],
+      vertexBuffers: [cache.vertexBuffer],
+      indexBuffer: cache.indexBuffer,
+      indexCount: 36,
+      pass: Pass.VOXELS,
+      pickOnly: true,
+    });
+  }
+
+  attachPickVoxelToColorCommand(
+    cache.command as CesiumAnyDrawCommand,
+    cache.pickVoxelCommand,
+  );
 }
 
 /**

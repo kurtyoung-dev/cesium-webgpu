@@ -403,6 +403,11 @@ export interface DrawCommandWithDerivedSlot {
       pickHoverCommand?: unknown;
       pickPrecisePass1Command?: unknown;
       pickPrecisePass2Command?: unknown;
+      // C-R9-VOXEL-CELL-PICK — per-cell pick variant, dispatched ONLY during
+      // `passes.pickVoxel` (Scene.pickVoxel / pickVoxelCoordinate). Only
+      // voxel primitives populate it; every other command's pick dispatch is
+      // unchanged.
+      pickVoxelCommand?: unknown;
     };
     // DP-H46e — metadata-pick slot. Materialized only during a
     // `scene.pickMetadata` pass (frameState.pickingMetadata true); the
@@ -489,6 +494,39 @@ export function attachPickVariantsToColorCommand<TPick>(
   if (variants.precisePass2 !== undefined) {
     picking.pickPrecisePass2Command = variants.precisePass2;
   }
+}
+
+/**
+ * C-R9-VOXEL-CELL-PICK — wire a per-cell voxel-pick command onto the color
+ * command's `derivedCommands.picking.pickVoxelCommand` slot so the
+ * `selectCommandVariant` dispatcher (in `WebGPUSceneRenderer.ts`) returns it
+ * during a `Scene.pickVoxel` pass (`frameState.passes.pickVoxel === true`).
+ * The variant packs {megatextureIndex, sampleIndex} per WebGL's
+ * VoxelFS.glsl PICKING_VOXEL branch — distinct from the object-pick
+ * `pickCommand` (u.pickColor), which stays untouched.
+ *
+ * Idempotent — replaces the slot on each call.
+ *
+ * @param colorCommand - The base color command emitted into the command list.
+ * @param pickVoxelCommand - The per-cell pick variant (pickOnly: true).
+ *
+ * @private
+ */
+export function attachPickVoxelToColorCommand<TPick>(
+  colorCommand: DrawCommandWithDerivedSlot,
+  pickVoxelCommand: TPick,
+): void {
+  let derived = colorCommand.derivedCommands;
+  if (!derived) {
+    derived = {};
+    colorCommand.derivedCommands = derived;
+  }
+  let picking = derived.picking;
+  if (!picking) {
+    picking = {};
+    derived.picking = picking;
+  }
+  picking.pickVoxelCommand = pickVoxelCommand;
 }
 
 /**

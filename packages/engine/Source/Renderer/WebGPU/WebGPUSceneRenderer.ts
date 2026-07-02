@@ -239,6 +239,16 @@ export function selectCommandVariant(
       const pickMode = frameState.passes.pickMode;
       if (!frameState.pickingMetadata && d?.picking) {
         const picking = d.picking;
+        // C-R9-VOXEL-CELL-PICK — a pickVoxel pass routes to the per-cell
+        // pick variant (packs {megatextureIndex, sampleIndex} like WebGL's
+        // VoxelFS.glsl PICKING_VOXEL branch) ahead of the object-pick color.
+        // Additive: only voxel commands populate the slot; every other
+        // command keeps falling through to its regular pickCommand —
+        // mirroring WebGL, where the pickVoxel pass renders non-voxel
+        // commands' regular pick IDs (SceneRenderer executeIdCommand).
+        if (passes.pickVoxel && picking.pickVoxelCommand) {
+          return picking.pickVoxelCommand;
+        }
         if (pickMode === "hover" && picking.pickHoverCommand) {
           return picking.pickHoverCommand;
         }
