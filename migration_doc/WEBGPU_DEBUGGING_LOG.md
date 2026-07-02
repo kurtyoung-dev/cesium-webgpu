@@ -24,6 +24,30 @@
 
 ---
 
+## GLOBE-CLIPPOLY-GEODETIC — clipping polygons never worked end-to-end on WebGPU (globe OR model data path) (2026-07-02)
+
+**Files affected:** `packages/engine/Source/Scene/ClippingPolygonCollection.js`, `packages/engine/Source/Renderer/WebGPU/WebGPUClippingPolygonCollection.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js`, `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`, `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`.
+
+**Symptom (task premise vs reality):** the parity report described a ~0.19° geocentric-vs-geodetic boundary offset in the globe FS SDF lookup (GlobeTerrain.wgsl). Live-code audit showed the gap was much wider — `globe.clippingPolygons` produced **no clipping at all** on WebGPU, and the Batch 160/163 model WGSL (`modelClipByPolygon`) was starving for data:
+
+1. **No CPU pack on WebGPU** — `ClippingPolygonCollection.update` early-returns into the feature renderer, skipping `packPolygonsAsFloats`, so `_extentsFloat32View` / `_extentsCount` (which `WebGPUEffectsBindGroup` packs into `clippingPolygonControl`/`clippingPolygonExtents`) were never populated → `invDim = 0` → `modelClipByPolygon` early-out.
+2. **Producer packed the wrong layout** — `updateWebGPUClippingPolygons` packed raw geodetic `(lon, lat)` pairs with **no header/extent pixels**, which the SDF compute shader (a port of `PolygonSignedDistanceFS.glsl` expecting `[header|extent×2|vertices…]` in spherical fastApproximateAtan2 coords) cannot consume.
+3. **Consumer read fields nobody wrote** — the effects bind group looked for `polyCache._signedDistanceTexture` / `._sdfSampler`; the producer stored `signedDistanceTexture`/`sampler` → `hasPolygonClipping` was permanently false, placeholder SDF always bound.
+4. **Globe renderer never passed the collection** — `WebGPUGlobeSurfaceRenderer` omitted `clippingPolygons` from `createEffectsBindGroup`, so `effects.clippingPolygonCount` stayed 0 for every globe tile.
+5. **Globe FS used the wrong convention AND wrong offsets** — the naive block derived exact geocentric `atan2` lon/lat and sampled a whole-globe equirect UV (the SDF is a per-merged-extent atlas in fastApproximateAtan2 spherical coords — upstream uses `czm_approximateSphericalCoordinates`, NOT geodetic, on both authoring and lookup sides). The globe `EffectsUniforms` struct was also missing the `edgeControl`/`edgeViewport` slots (offsets 272/288), so `pointLightControl` read offset 272 instead of 304 — a latent Batch 108 globe point-light receive misalignment, fixed as a side effect.
+
+**Fix:**
+
+1. `ClippingPolygonCollection.packDataForFeatureRenderer(maxTextureSize)` — new `@private` method running the SAME `packPolygonsAsFloats` CPU pack the WebGL path uses (scene-logic-extractor pattern: shared packing, backend-specific upload). Returns the packed texture layout.
+2. `WebGPUClippingPolygonCollection.ts` rewritten — uploads `_float32View` (rg32float, upstream `[header|extent×2|vertices…]` layout) + `_extentsFloat32View` (rgba32float merged extents), allocates the SDF atlas r32float at the upstream `max(128, ceil(4096·quality))` resolution, and dispatches the **canonical** `Shaders/WebGPU/Compute/PolygonSignedDistance.wgsl` (deleted the stale inline WGSL duplicate). Change detection mirrors upstream (totalPositions + length).
+3. `WebGPUEffectsBindGroup.js` — SDF lookup reads the fields the producer actually writes (`signedDistanceTextureView`/`sdfSampler`).
+4. `WebGPUGlobeSurfaceRenderer.ts` — passes `tileProvider.clippingPolygons` (enabled && length > 0) into `createEffectsBindGroup` + gate condition.
+5. `GlobeTerrain.wgsl` — `EffectsUniforms` grows `edgeControl`/`edgeViewport` (byte-parity padding, fixes point-light offsets) + the Batch 160 `clippingPolygonControl`/`clippingPolygonExtents` tail (offsets 336/352); the naive equirect block is replaced by `globeClipByPolygon(v_positionMC)` — a verbatim parity port of `modelClipByPolygon` (fastApproximateAtan2 spherical coords, merged-extent region select, atlas slot sample, inverse-flag handling at all early-outs). The fork-invented polygon "edge highlight" was dropped (WebGL globe has no polygon edge styling — discard only).
+
+**Verification:** `Tools/visual-regression/probe-globe-clippoly-geodetic.mjs` (new) — hexagonal clipping polygon at 45°N on a solid-color globe, top-down camera, UI hidden: hole present on BOTH backends (center 100% background), WebGL-vs-WebGPU mismatch **0.06%** (boundary aligned), PNGs read. Off-gate: WebGPU default globe (no polygons) screenshot **byte-identical** pre-change vs post-change build (determinism verified with a double-capture first). Standing `probe-clipping-planes-parity.mjs` visual diff 2.97% ≈ its recorded 2.35–2.4% UI-noise baseline (its sync-`scene.pick` section reports 0 hits on WebGPU — the known intrinsic cold-start sync-pick gap, unrelated). `npx gulp build` + `npx tsc --noEmit` clean.
+
+---
+
 ## PARITY-CLIP-PLANES — model clipping planes clipped the wrong space on WebGPU (2026-06-30)
 
 **Files affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUClippingPlaneCollection.ts`, `packages/engine/Source/Scene/Model/Model.js`, `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl`.

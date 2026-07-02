@@ -1002,10 +1002,9 @@ function createEffectsBindGroup(device, frameState, options) {
 
   if (defined(clippingPolygons) && clippingPolygons.length > 0) {
     const polyCache = clippingPolygons._webgpuCache;
-    if (defined(polyCache) && defined(polyCache._signedDistanceTexture)) {
-      const sdfTex = polyCache._signedDistanceTexture;
-      sdfTexView = sdfTex.textureView ?? sdfTex.createView?.();
-      sdfSampler = polyCache._sdfSampler;
+    if (defined(polyCache) && defined(polyCache.signedDistanceTextureView)) {
+      sdfTexView = polyCache.signedDistanceTextureView;
+      sdfSampler = polyCache.sdfSampler;
       hasPolygonClipping = true;
     }
   }

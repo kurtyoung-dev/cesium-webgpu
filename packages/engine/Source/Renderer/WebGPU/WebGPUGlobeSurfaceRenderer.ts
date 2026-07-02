@@ -1124,17 +1124,30 @@ export class WebGPUGlobeSurfaceRenderer {
             }
           : undefined;
 
+      // GLOBE-CLIPPOLY-GEODETIC — `globe.clippingPolygons`. Mirrors the
+      // model renderer's gate: only an enabled, non-empty collection
+      // activates the polygon SDF path (`effects.clippingPolygonCount`).
+      const tpClippingPolygons = tileProvider?.clippingPolygons;
+      const activeClippingPolygons =
+        tpClippingPolygons &&
+        tpClippingPolygons.enabled &&
+        tpClippingPolygons.length > 0
+          ? tpClippingPolygons
+          : undefined;
+
       let bindGroup3: GPUBindGroup;
       if (
         useClipDistances ||
         (tileProvider?.clippingPlanes &&
           tileProvider.clippingPlanes.length > 0) ||
+        activeClippingPolygons !== undefined ||
         atmosphereLutViews !== null ||
         receiveShadowMap !== undefined ||
         csmBinding !== undefined
       ) {
         const fxRes = createEffectsBindGroup(device, frameState, {
           clippingPlanes: tileProvider.clippingPlanes,
+          clippingPolygons: activeClippingPolygons,
           shadowMap: receiveShadowMap,
           csm: csmBinding,
           // Globe terrain model matrix is identity, so the camera in

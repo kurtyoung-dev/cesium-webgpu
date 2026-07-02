@@ -1,8 +1,29 @@
 /**
  * WebGPU Clipping Polygon Collection
  *
- * Packs polygon clipping data into WebGPU textures and generates a signed
- * distance field (SDF) texture via compute shader for polygon-based clipping.
+ * Feature-renderer backend for `ClippingPolygonCollection` (registered under
+ * `FeatureRendererKey.CLIPPING_POLYGONS`). Uploads the collection's CPU-packed
+ * polygon + extents data into GPU textures and generates the signed distance
+ * field (SDF) atlas via the `PolygonSignedDistance.wgsl` compute shader.
+ *
+ * Packing convention (GLOBE-CLIPPOLY-GEODETIC fix): the CPU pack is the SAME
+ * `packPolygonsAsFloats` the WebGL path uses (invoked through
+ * `ClippingPolygonCollection.packDataForFeatureRenderer`), so polygon vertices
+ * and extents are in spherical `fastApproximateAtan2` coordinates and the
+ * positions texture carries the upstream per-polygon layout the compute
+ * shader expects: 1 header pixel `(positionsLength, extentsIndex)` + 2
+ * individual-extent pixels + one pixel per vertex. The previous
+ * implementation packed raw geodetic `(lon, lat)` pairs with no headers,
+ * which the SDF compute shader (a port of `PolygonSignedDistanceFS.glsl`)
+ * could not consume — the whole WebGPU clipping-polygon path produced
+ * garbage SDF data and never activated.
+ *
+ * Consumers: `WebGPUEffectsBindGroup.createEffectsBindGroup` binds
+ * `cache.signedDistanceTextureView` + `cache.sdfSampler` at effects bindings
+ * 5/6 and packs `_extentsFloat32View` / `_extentsCount` into the
+ * `clippingPolygonControl` / `clippingPolygonExtents` UBO fields consumed by
+ * `modelClipByPolygon` (ModelPBRComplete.wgsl) and `globeClipByPolygon`
+ * (GlobeTerrain.wgsl).
  *
  * @module WebGPUClippingPolygonCollection
  */
@@ -14,30 +35,47 @@ import {
   storageTexture,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import PolygonSignedDistanceWGSL from "../../Shaders/WebGPU/Compute/PolygonSignedDistance.js";
+
+/** Packed texture layout returned by `packDataForFeatureRenderer`. */
+interface PackedPolygonLayout {
+  positionsWidth: number;
+  positionsHeight: number;
+  extentsWidth: number;
+  extentsHeight: number;
+  extentsCount: number;
+}
 
 /** Minimal interface for the upstream ClippingPolygonCollection. */
 interface ClippingPolygonCollectionLike {
   length: number;
-  get(index: number): { positions: { longitude: number; latitude: number }[] };
+  quality?: number;
+  get(index: number): { length: number };
+  packDataForFeatureRenderer(
+    maximumTextureSize: number,
+  ): PackedPolygonLayout | undefined;
+  _float32View?: Float32Array;
+  _extentsFloat32View?: Float32Array;
   _webgpuCache?: ClippingPolygonCache;
-  _clippingPolygonsTexture?: CesiumOpaqueTexture;
-  _signedDistanceTexture?: CesiumOpaqueTexture;
 }
 
 interface ClippingPolygonCache {
   positionsTexture: GPUTexture | null;
-  positionsTextureView: GPUTextureView | null;
   extentsTexture: GPUTexture | null;
-  extentsTextureView: GPUTextureView | null;
   signedDistanceTexture: GPUTexture | null;
   signedDistanceTextureView: GPUTextureView | null;
-  sampler: GPUSampler | null;
-  revision: number;
+  sdfSampler: GPUSampler | null;
+  // Change detection — mirrors the upstream heuristic (re-pack when the
+  // total number of positions or the polygon count changes; per-vertex
+  // edits with a constant count are not tracked, same as WebGL).
+  lastTotalPositions: number;
+  lastLength: number;
 }
 
 /**
  * Update WebGPU clipping polygon resources.
- * Packs polygon position and extent data into float textures.
+ * Packs polygon position and extent data into float textures and dispatches
+ * the SDF compute pass when the collection contents changed.
  */
 function updateWebGPUClippingPolygons(
   collection: ClippingPolygonCollectionLike,
@@ -50,98 +88,89 @@ function updateWebGPUClippingPolygons(
     return;
   }
 
+  let totalPositions = 0;
+  for (let i = 0; i < collection.length; i++) {
+    totalPositions += collection.get(i).length;
+  }
+
   if (!collection._webgpuCache) {
     collection._webgpuCache = {
       positionsTexture: null,
-      positionsTextureView: null,
       extentsTexture: null,
-      extentsTextureView: null,
       signedDistanceTexture: null,
       signedDistanceTextureView: null,
-      sampler: null,
-      revision: -1,
-    } as ClippingPolygonCache;
+      sdfSampler: null,
+      lastTotalPositions: -1,
+      lastLength: -1,
+    };
   }
 
-  const cache = collection._webgpuCache as ClippingPolygonCache;
-  const currentRevision = collection.length;
-
-  if (cache.revision === currentRevision && cache.positionsTexture) {
+  const cache = collection._webgpuCache;
+  if (
+    cache.lastTotalPositions === totalPositions &&
+    cache.lastLength === collection.length &&
+    cache.signedDistanceTexture !== null
+  ) {
     return;
   }
 
-  // Collect all polygon positions into a flat array
-  const allPositions: number[] = [];
-  const extents: number[] = [];
+  const maxDim = device.limits.maxTextureDimension2D;
 
-  for (let i = 0; i < collection.length; i++) {
-    const polygon = collection.get(i);
-    const positions = polygon.positions;
-
-    let minLon = Infinity,
-      minLat = Infinity;
-    let maxLon = -Infinity,
-      maxLat = -Infinity;
-
-    for (let j = 0; j < positions.length; j++) {
-      const pos = positions[j];
-      allPositions.push(pos.longitude, pos.latitude);
-      minLon = Math.min(minLon, pos.longitude);
-      minLat = Math.min(minLat, pos.latitude);
-      maxLon = Math.max(maxLon, pos.longitude);
-      maxLat = Math.max(maxLat, pos.latitude);
-    }
-
-    extents.push(minLon, minLat, maxLon, maxLat);
+  // Shared CPU pack — same spherical fastApproximateAtan2 convention +
+  // merged-extent grouping the WebGL path uploads.
+  const layout = collection.packDataForFeatureRenderer(maxDim);
+  const positionsView = collection._float32View;
+  const extentsView = collection._extentsFloat32View;
+  if (!layout || !positionsView || !extentsView) {
+    return;
   }
 
-  // Create positions texture (RG32Float, Nx1)
-  const posWidth = Math.max(1, Math.ceil(allPositions.length / 2));
+  // Positions texture (rg32float): header + individual extents + vertices.
   if (cache.positionsTexture) {
     cache.positionsTexture.destroy();
   }
   cache.positionsTexture = device.createTexture({
-    size: { width: posWidth, height: 1 },
+    label: "ClippingPolygon positions",
+    size: { width: layout.positionsWidth, height: layout.positionsHeight },
     format: "rg32float",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  cache.positionsTextureView = cache.positionsTexture.createView();
-
-  const posData = new Float32Array(posWidth * 2);
-  posData.set(allPositions);
   device.queue.writeTexture(
     { texture: cache.positionsTexture },
-    posData,
-    { bytesPerRow: posWidth * 8 },
-    { width: posWidth, height: 1 },
+    positionsView,
+    { bytesPerRow: layout.positionsWidth * 8 },
+    { width: layout.positionsWidth, height: layout.positionsHeight },
   );
 
-  // Create extents texture (RGBA32Float, Nx1)
-  const extWidth = collection.length;
+  // Merged-extents texture (rgba32float): (south, west, invLatRange,
+  // invLonRange) per merged-extent group.
   if (cache.extentsTexture) {
     cache.extentsTexture.destroy();
   }
   cache.extentsTexture = device.createTexture({
-    size: { width: extWidth, height: 1 },
+    label: "ClippingPolygon extents",
+    size: { width: layout.extentsWidth, height: layout.extentsHeight },
     format: "rgba32float",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  cache.extentsTextureView = cache.extentsTexture.createView();
-
-  const extData = new Float32Array(extents);
   device.queue.writeTexture(
     { texture: cache.extentsTexture },
-    extData,
-    { bytesPerRow: extWidth * 16 },
-    { width: extWidth, height: 1 },
+    extentsView,
+    { bytesPerRow: layout.extentsWidth * 16 },
+    { width: layout.extentsWidth, height: layout.extentsHeight },
   );
 
-  // Create signed distance texture (256x256 R32Float)
-  const sdfSize = 256;
+  // Signed distance atlas (r32float, filterable via the float32-filterable
+  // device feature the context requests at init — same assumption the
+  // effects placeholder SDF texture already makes). Size matches the
+  // upstream `getClippingDistanceTextureResolution` quality convention.
+  const quality = collection.quality ?? 1.0;
+  const sdfSize = Math.min(Math.max(128, Math.ceil(4096 * quality)), maxDim);
   if (cache.signedDistanceTexture) {
     cache.signedDistanceTexture.destroy();
   }
   cache.signedDistanceTexture = device.createTexture({
+    label: "ClippingPolygon SDF atlas",
     size: { width: sdfSize, height: sdfSize },
     format: "r32float",
     usage:
@@ -151,8 +180,10 @@ function updateWebGPUClippingPolygons(
   });
   cache.signedDistanceTextureView = cache.signedDistanceTexture.createView();
 
-  if (!cache.sampler) {
-    cache.sampler = device.createSampler({
+  if (!cache.sdfSampler) {
+    // LINEAR + CLAMP — matches the upstream WebGL signed-distance sampler.
+    cache.sdfSampler = device.createSampler({
+      label: "ClippingPolygon SDF sampler",
       minFilter: "linear",
       magFilter: "linear",
       addressModeU: "clamp-to-edge",
@@ -160,26 +191,18 @@ function updateWebGPUClippingPolygons(
     });
   }
 
-  // Expose textures for shader consumption
-  collection._signedDistanceTexture = {
-    _webgpuTexture: cache.signedDistanceTexture,
-    _webgpuTextureView: cache.signedDistanceTextureView,
-    _webgpuSampler: cache.sampler,
-    width: sdfSize,
-    height: sdfSize,
-  };
-
-  // Dispatch compute shader to generate the SDF
   computePolygonSDF(
     device,
     cache,
-    allPositions,
     collection.length,
-    posWidth,
+    layout.extentsCount,
+    layout.positionsWidth,
+    sdfSize,
     context.webgpuComputePipelineCache ?? null,
   );
 
-  cache.revision = currentRevision;
+  cache.lastTotalPositions = totalPositions;
+  cache.lastLength = collection.length;
 }
 
 // ---- SDF compute pipeline ----
@@ -195,9 +218,10 @@ let _sdfPipelineDevice: GPUDevice | null = null;
 function computePolygonSDF(
   device: GPUDevice,
   cache: ClippingPolygonCache,
-  allPositions: number[],
   polygonCount: number,
+  extentsCount: number,
   positionsWidth: number,
+  sdfSize: number,
   computePipelineCache:
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null = null,
@@ -225,10 +249,11 @@ function computePolygonSDF(
       ],
     );
 
-    // Inline the WGSL source (matches PolygonSignedDistance.wgsl)
+    // Canonical WGSL source — port of PolygonSignedDistanceFS.glsl,
+    // compiled from Shaders/WebGPU/Compute/PolygonSignedDistance.wgsl.
     const shaderModule = device.createShaderModule({
       label: "PolygonSDF-Compute",
-      code: POLYGON_SDF_WGSL,
+      code: PolygonSignedDistanceWGSL,
     });
 
     // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route through the central
@@ -252,10 +277,13 @@ function computePolygonSDF(
     }
   }
 
-  // Create uniform buffer: { polygonsLength, extentsLength, positionsWidth, pad }
+  // Uniforms: { polygonsLength, extentsLength, positionsWidth, pad }.
+  // extentsLength is the MERGED extent-group count (`_extentsCount`) —
+  // the atlas grid dimension derives from it on both the compute side
+  // and the fragment lookup side (`clippingPolygonControl.y`).
   const uniformData = new Uint32Array([
     polygonCount,
-    polygonCount, // extentsLength == polygonsLength (one extent per polygon)
+    extentsCount,
     positionsWidth,
     0, // padding
   ]);
@@ -270,14 +298,13 @@ function computePolygonSDF(
     layout: _sdfBindGroupLayout!,
     entries: [
       { binding: 0, resource: { buffer: uniformBuffer } },
-      { binding: 1, resource: cache.positionsTextureView! },
-      { binding: 2, resource: cache.extentsTextureView! },
+      { binding: 1, resource: cache.positionsTexture.createView() },
+      { binding: 2, resource: cache.extentsTexture.createView() },
       { binding: 3, resource: cache.signedDistanceTextureView! },
     ],
   });
 
   // Dispatch compute shader
-  const sdfSize = 256;
   const encoder = device.createCommandEncoder({ label: "PolygonSDF-Compute" });
   const pass = encoder.beginComputePass({ label: "PolygonSDF-Pass" });
   pass.setPipeline(_sdfComputePipeline);
@@ -289,81 +316,6 @@ function computePolygonSDF(
   // Cleanup one-shot uniform buffer
   uniformBuffer.destroy();
 }
-
-// Inline WGSL source for the SDF compute shader (avoids async shader loading)
-const POLYGON_SDF_WGSL = /* wgsl */ `
-struct PolygonParams {
-  polygonsLength: u32,
-  extentsLength: u32,
-  positionsWidth: u32,
-  _pad: u32,
-};
-
-@group(0) @binding(0) var<uniform> params: PolygonParams;
-@group(0) @binding(1) var positionsTexture: texture_2d<f32>;
-@group(0) @binding(2) var extentsTexture: texture_2d<f32>;
-@group(0) @binding(3) var outputSDF: texture_storage_2d<r32float, write>;
-
-fn getPolygonPosition(index: u32) -> vec2<f32> {
-  let width = params.positionsWidth;
-  return textureLoad(positionsTexture, vec2<u32>(index % width, index / width), 0).xy;
-}
-
-fn getExtents(index: u32) -> vec4<f32> {
-  return textureLoad(extentsTexture, vec2<u32>(index, 0u), 0);
-}
-
-@compute @workgroup_size(8, 8, 1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let outputSize = textureDimensions(outputSDF);
-  if (gid.x >= outputSize.x || gid.y >= outputSize.y) { return; }
-
-  let uv = vec2<f32>(
-    (f32(gid.x) + 0.5) / f32(outputSize.x),
-    (f32(gid.y) + 0.5) / f32(outputSize.y),
-  );
-
-  var dimension = f32(params.extentsLength);
-  if (params.extentsLength > 2u) { dimension = ceil(log2(f32(params.extentsLength))); }
-  let regionIndex = u32(floor(uv.y * dimension)) * u32(dimension) + u32(floor(uv.x * dimension));
-
-  var result = 1.0;
-  var lastIdx = 0u;
-
-  for (var pi = 0u; pi < params.polygonsLength; pi++) {
-    let header = getPolygonPosition(lastIdx);
-    let posLen = u32(header.x);
-    let extIdx = u32(header.y);
-    lastIdx += 1u;
-
-    if (extIdx == regionIndex) {
-      let ext = getExtents(extIdx);
-      let tOff = vec2<f32>(f32(extIdx % u32(dimension)), floor(f32(extIdx) / dimension)) / dimension;
-      let lUV = (uv - tOff) * dimension;
-      let p = vec2<f32>(mix(ext.x, ext.x + 1.0 / ext.z, lUV.y), mix(ext.y, ext.y + 1.0 / ext.w, lUV.x));
-
-      var clip = 1e10;
-      var s = 1.0;
-      for (var i = 0u; i < posLen; i++) {
-        let j = select(i - 1u, posLen - 1u, i == 0u);
-        let a = getPolygonPosition(lastIdx + i);
-        let b = getPolygonPosition(lastIdx + j);
-        let ab = b - a;
-        let pa = p - a;
-        let t = clamp(dot(pa, ab) / dot(ab, ab), 0.0, 1.0);
-        let d = length(pa - t * ab);
-        let c1 = p.y >= a.y; let c2 = p.y < b.y; let c3 = ab.x * pa.y > ab.y * pa.x;
-        if ((c1 && c2 && c3) || (!c1 && !c2 && !c3)) { s = -s; }
-        if (abs(d) < abs(clip)) { clip = d; }
-      }
-      result = min(result, (s * clip * length(ext.zw)) / 2.0 + 0.5);
-    }
-    lastIdx += posLen;
-  }
-
-  textureStore(outputSDF, vec2<u32>(gid.x, gid.y), vec4<f32>(result, 0.0, 0.0, 0.0));
-}
-`;
 
 /**
  * Destroy WebGPU clipping polygon resources.

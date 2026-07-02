@@ -460,6 +460,16 @@ struct EffectsUniforms {
     //   .z/.w reserved (cascade count, moon-light flag, etc).
     // Matches `CSM_CONTROL_OFFSET` on the JS side.
     csmControl: vec4<f32>,
+    // C-R8-EDGE-INLINE slots (offsets 272/288). The globe shader does NOT
+    // run the inline edge-detection stage — these two vec4s exist purely
+    // to keep byte-parity with the shared 480-byte effects UBO packed by
+    // `WebGPUEffectsBindGroup.js` (the model FS consumes them). Before
+    // GLOBE-CLIPPOLY-GEODETIC the globe struct omitted them, which made
+    // `pointLightControl` below read offset 272 (the edgeControl slot —
+    // always zero for globe bind groups) instead of 304, silently
+    // disabling Batch 108 globe point-light receive.
+    edgeControl: vec4<f32>,
+    edgeViewport: vec4<f32>,
     // C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — point-light cube
     // shadow control. Lays out IDENTICAL to the model shader's
     // EffectsUniforms tail so both shaders read the same bytes from
@@ -477,6 +487,15 @@ struct EffectsUniforms {
     // .w = PCF radius in cube-face texels (0 → hard sampling). Matches
     // model shader's `pointLightPositionWC` at offset 320.
     pointLightPositionWC: vec4<f32>,
+    // GLOBE-CLIPPOLY-GEODETIC — polygon-clipping atlas control + merged-
+    // extent UV remap (offsets 336/352, Batch 160 layout — see the model
+    // shader's EffectsUniforms tail + `WebGPUEffectsBindGroup.js`):
+    //   clippingPolygonControl = (extentsCount, 1/atlasDim, inverseFlag, _)
+    //   clippingPolygonExtents[i] = (south, west, invLatRange, invLonRange)
+    // in spherical fastApproximateAtan2 coordinates (matches the CPU pack
+    // in `ClippingPolygonCollection.packPolygonsAsFloats`).
+    clippingPolygonControl: vec4<f32>,
+    clippingPolygonExtents: array<vec4<f32>, 8>,
 }
 
 // CSM Slice 1 — cascade parameters UBO. Layout matches
@@ -2741,6 +2760,131 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
   return false;
 }
 
+// GLOBE-CLIPPOLY-GEODETIC — polygon SDF clipping, parity port of
+// `modelClipByPolygon` (ModelPBRComplete.wgsl, Batch 160/163), which in
+// turn mirrors the WebGL pipeline `GlobeVS.glsl` ENABLE_CLIPPING_POLYGONS
+// (region selection via `czm_approximateSphericalCoordinates`) +
+// `Builtin/Functions/clipPolygons.glsl` (atlas sampling) folded into a
+// single FS function.
+//
+// CRITICAL FRAME: input is the fragment's full ECEF WORLD-space position
+// (`v_positionMC`, which the vertex stage assigns from `position3DWC` —
+// same input WebGL feeds `czm_approximateSphericalCoordinates`). The
+// (lat, lon) must be computed with the SAME `fastApproximateAtan2` curve
+// the CPU pack (`ClippingPolygonCollection.packPolygonsAsFloats`) and the
+// SDF compute pass use — NOT exact `atan2`/geodetic conversion — or the
+// lookup drifts against the precomputed extents. (The pre-fix code used
+// exact geocentric `atan2` against a whole-globe equirect UV mapping,
+// which never matched the per-extent atlas the SDF is authored in.)
+
+fn czm_fastApproximateAtanScalar(x: f32) -> f32 {
+  // ShaderFastLibs Drobot atan over [0, 1]. Same coefficients as
+  // `Builtin/Functions/fastApproximateAtan.glsl`.
+  return x * (-0.1784 * x - 0.0663 * x * x + 1.0301);
+}
+
+fn czm_fastApproximateAtan2(x: f32, y: f32) -> f32 {
+  // Range-reduction matches the WebGL CG reference path; keep it bit
+  // identical to `Builtin/Functions/fastApproximateAtan.glsl` so the
+  // fragment-side (lat, lon) lines up with the CPU-packed extents.
+  let t0 = abs(x);
+  let opp0 = abs(y);
+  let adjacent = max(t0, opp0);
+  let opposite = min(t0, opp0);
+  var t = czm_fastApproximateAtanScalar(opposite / adjacent);
+  let PI_2: f32 = 1.5707963267948966;
+  let PI_F: f32 = 3.14159265358979;
+  if (abs(y) > abs(x)) { t = PI_2 - t; }
+  if (x < 0.0) { t = PI_F - t; }
+  if (y < 0.0) { t = -t; }
+  return t;
+}
+
+fn globeClipByPolygon(positionWC: vec3<f32>) -> bool {
+  let polyCount = effects.clippingPolygonCount;
+  if (polyCount == 0u) { return false; }
+  let extentsCount = u32(effects.clippingPolygonControl.x);
+  if (extentsCount == 0u) { return false; }
+  let invDim = effects.clippingPolygonControl.y;
+  if (invDim <= 0.0) { return false; }
+
+  let PI_F: f32 = 3.14159265358979;
+  let TWO_PI: f32 = 6.28318530717958;
+  // Project into plane with vertical-axis latitude — same form as
+  // `czm_approximateSphericalCoordinates` in `Builtin/Functions`.
+  let magXY = sqrt(positionWC.x * positionWC.x + positionWC.y * positionWC.y);
+  let latitudeApproximation = czm_fastApproximateAtan2(magXY, positionWC.z);
+  var longitudeApproximation = czm_fastApproximateAtan2(positionWC.x, positionWC.y);
+  // GLSL VS does `czm_branchFreeTernary(lon < pi, lon, lon - twoPi)`.
+  if (longitudeApproximation >= PI_F) {
+    longitudeApproximation = longitudeApproximation - TWO_PI;
+  }
+
+  // Iterate merged-extent groups. Mirrors the GLSL VS region selection
+  // (0.01 threshold avoids sampling on the extent boundary where the
+  // SDF generator's edge cases behave poorly).
+  var bestRegion: i32 = -1;
+  var bestRectUv: vec2<f32> = vec2<f32>(0.0, 0.0);
+  let regionCount = min(extentsCount, 8u);
+  for (var r: u32 = 0u; r < regionCount; r = r + 1u) {
+    let extents = effects.clippingPolygonExtents[r];
+    // extents.xy = (south, west); extents.zw = (invLatRange, invLonRange).
+    let rectUv = vec2<f32>(
+      (longitudeApproximation - extents.y) * extents.w,
+      (latitudeApproximation - extents.x) * extents.z,
+    );
+    let threshold: f32 = 0.01;
+    if (rectUv.x > threshold &&
+        rectUv.y > threshold &&
+        rectUv.x < (1.0 - threshold) &&
+        rectUv.y < (1.0 - threshold)) {
+      bestRegion = i32(r);
+      bestRectUv = rectUv;
+      // Merged-extent coalescing means a fragment is contained in at most
+      // one group, so first-match is equivalent to GLSL's last-match.
+      break;
+    }
+  }
+  // Fragments outside every region's bounding rectangle respect the
+  // inverse flag — matches the GLSL `czm_clipPolygons` early-return path
+  // (`#ifdef CLIPPING_INVERSE discard; #endif return;`).
+  let inverseFlagEarly = effects.clippingPolygonControl.z;
+  let invertedDiscardOutside = inverseFlagEarly >= 0.5;
+  if (bestRegion < 0) { return invertedDiscardOutside; }
+  if (bestRectUv.x <= 0.0 || bestRectUv.y <= 0.0 ||
+      bestRectUv.x >= 1.0 || bestRectUv.y >= 1.0) {
+    return invertedDiscardOutside;
+  }
+
+  // Atlas slot math — mirrors `czm_clipPolygons`:
+  //   textureOffset = (regionIndex % dim, regionIndex / dim) / dim
+  //   uv            = textureOffset + rectUv / dim
+  // `invDim = 1/dim` is precomputed on the JS side.
+  let dimF = 1.0 / invDim;
+  let regionF = f32(bestRegion);
+  let col = regionF - dimF * floor(regionF / dimF);
+  let row = floor(regionF / dimF);
+  let textureOffset = vec2<f32>(col, row) * invDim;
+  let uv = clamp(
+    textureOffset + bestRectUv * invDim,
+    vec2<f32>(0.0),
+    vec2<f32>(1.0),
+  );
+
+  let sdfValue = textureSampleLevel(
+    polygonSDFTex, polygonSDFSampler, uv, 0.0).r;
+  // SDF encoding: 0.5 = on edge, < 0.5 = inside polygon, > 0.5 = outside.
+  //   default (inverse = 0): discard inside polygon (cutout — matches
+  //     the non-`CLIPPING_INVERSE` branch of `czm_clipPolygons`);
+  //   inverse = 1: discard outside polygon (keep only inside).
+  let inverseFlag = effects.clippingPolygonControl.z;
+  let discardInside = inverseFlag < 0.5;
+  if (discardInside) {
+    return sdfValue < 0.5;
+  }
+  return sdfValue > 0.5;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Fragment Shader
 // ═══════════════════════════════════════════════════════════════════════
@@ -3090,32 +3234,14 @@ fn fragmentMain(
     }
   }
 
-  // ─── Polygon SDF clipping ───
+  // ─── Polygon SDF clipping (czm_clipPolygons parity) ───
+  // GLOBE-CLIPPOLY-GEODETIC — full atlas-aware port shared with the model
+  // path; see `globeClipByPolygon` above. `v_positionMC` is the fragment's
+  // full ECEF world position (GlobeVS feeds the same `position3DWC` into
+  // `czm_approximateSphericalCoordinates`). WebGL has no polygon edge
+  // highlight on the globe (discard only), so none is applied here.
   if (effects.clippingPolygonCount > 0u) {
-    let PI_SDF = 3.14159265358979;
-    // Convert tile UV to geographic coordinates (radians) for SDF lookup.
-    // geoUV is in [0,1] tile space — we need actual lon/lat for global SDF.
-    // For now, use the position in model coordinates to derive geographic coords.
-    let posWC = input.v_positionMC;
-    let lon = atan2(posWC.y, posWC.x);
-    let lat = atan2(posWC.z, sqrt(posWC.x * posWC.x + posWC.y * posWC.y));
-    let sdfU = (lon + PI_SDF) / (2.0 * PI_SDF);
-    let sdfV = (lat + PI_SDF * 0.5) / PI_SDF;
-    let sdfUV = clamp(vec2<f32>(sdfU, sdfV), vec2<f32>(0.0), vec2<f32>(1.0));
-    let sdfValue = textureSampleLevel(polygonSDFTex, polygonSDFSampler, sdfUV, 0.0).r;
-
-    // SDF < 0.5 = inside polygon (keep), >= 0.5 = outside (discard)
-    if (sdfValue >= 0.5) { discard; }
-
-    // Edge highlight for polygon clipping
-    if (effects.clippingEdgeWidth > 0.0) {
-      let edgeDist = abs(sdfValue - 0.5) * 2.0;
-      // Scale edge width from world to SDF space (approximate)
-      let sdfEdgeWidth = effects.clippingEdgeWidth * 0.001;
-      if (edgeDist < sdfEdgeWidth) {
-        return makeFragOutput(effects.clippingEdgeColor, normalEC);
-      }
-    }
+    if (globeClipByPolygon(input.v_positionMC)) { discard; }
   }
 
   // ─── Cartographic limit rectangle clipping ───

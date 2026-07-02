@@ -450,6 +450,56 @@ class ClippingPolygonCollection {
   }
 
   /**
+   * Packs the polygon position + extents data into the CPU-side
+   * Float32Array views (`_float32View`, `_extentsFloat32View`) without
+   * creating WebGL textures or compute commands. The WebGPU
+   * clipping-polygon feature renderer calls this, then uploads the views
+   * into GPU textures and dispatches the WGSL SDF compute pass
+   * (`PolygonSignedDistance.wgsl`) itself — the WebGL path packs the same
+   * views inside {@link ClippingPolygonCollection#update} alongside its
+   * Texture creation, so both backends share one packing convention
+   * (spherical fastApproximateAtan2 coordinates, merged-extent groups).
+   *
+   * @private
+   * @param {number} maximumTextureSize Maximum 2D texture dimension of the target device.
+   * @returns {object|undefined} The packed texture layout
+   *   `{positionsWidth, positionsHeight, extentsWidth, extentsHeight, extentsCount}`,
+   *   or <code>undefined</code> when the collection is empty.
+   */
+  packDataForFeatureRenderer(maximumTextureSize) {
+    this._totalPositions = this._polygons.reduce(
+      (totalPositions, polygon) => totalPositions + polygon.length,
+      0,
+    );
+
+    if (this.length === 0) {
+      return undefined;
+    }
+
+    const positionsPixels = this.pixelsNeededForPolygonPositions;
+    const positionsWidth = Math.min(positionsPixels, maximumTextureSize);
+    const positionsHeight = Math.ceil(positionsPixels / positionsWidth);
+    this._float32View = new Float32Array(positionsWidth * positionsHeight * 2);
+
+    const extentsPixels = this.pixelsNeededForExtents;
+    const extentsWidth = Math.min(extentsPixels, maximumTextureSize);
+    const extentsHeight = Math.ceil(extentsPixels / extentsWidth);
+    this._extentsFloat32View = new Float32Array(
+      extentsWidth * extentsHeight * 4,
+    );
+
+    packPolygonsAsFloats(this);
+
+    return {
+      positionsWidth: positionsWidth,
+      positionsHeight: positionsHeight,
+      extentsWidth: extentsWidth,
+      extentsHeight: extentsHeight,
+      extentsCount: this._extentsCount,
+    };
+  }
+
+  /**
    * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
    * build the resources for clipping polygons.
    * <p>
