@@ -103,6 +103,17 @@ function extractPrimitiveGeometry(runtimePrimitive) {
     indexCount: 0,
     indexType: null, // "UNSIGNED_SHORT" or "UNSIGNED_INT"
 
+    // GLTF-POINTS-MODE — the glTF primitive draw mode (`PrimitiveType` /
+    // WebGL enum: POINTS=0, ..., TRIANGLES=4). WebGL consumes it via
+    // `PrimitiveRenderResources.primitiveType` → `DrawCommand.primitiveType`;
+    // the WebGPU model renderer maps it to a GPUPrimitiveTopology so
+    // mode-0 POINTS primitives build point-list pipelines instead of the
+    // hardcoded triangle-list. undefined (→ triangles) when the source
+    // doesn't carry it — note POINTS is 0, so use defined() not truthiness.
+    primitiveType: defined(source.primitiveType)
+      ? source.primitiveType
+      : gltfPrim?.primitiveType,
+
     // Attribute count info
     positionComponentCount: 3,
     normalComponentCount: 3,

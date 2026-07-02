@@ -27,6 +27,7 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
+import PrimitiveType from "../../Core/PrimitiveType.js";
 import {
   extractMaterialInfo,
   AlphaModes,
@@ -519,6 +520,9 @@ function getOrCreateModelCaptureCommands(
     } else {
       pipelineCache.clearMetadataWGSL();
     }
+    // GLTF-POINTS-MODE — sticky-topology contract: set per record before the
+    // capture pipeline build (records from older publishes default triangle).
+    pipelineCache.setPrimitiveTopology(rec.topology ?? "triangle-list");
     const pipeline = pipelineCache.getCapturePipeline(
       rec.alphaMode,
       rec.doubleSided,
@@ -1400,7 +1404,34 @@ function ensurePrevJointMatricesBuffer(device, nodeCache) {
  * @param {object} primCache per-primitive cache slot
  * @private
  */
+/**
+ * GLTF-POINTS-MODE — map a glTF primitive draw mode (`PrimitiveType` WebGL
+ * enum, carried on `geometry.primitiveType` by `extractPrimitiveGeometry`)
+ * to the GPUPrimitiveTopology the model pipelines bake in.
+ *
+ * Only POINTS (mode 0) maps away from the historical triangle-list today —
+ * WebGL parity: `GeometryPipelineStage` adds `PRIMITIVE_TYPE_POINTS` and
+ * `ModelVS.glsl` emits `gl_PointSize = 1.0` for unstyled POINTS glTFs,
+ * which matches WebGPU point-list's fixed 1px rasterization. LINES /
+ * LINE_STRIP / TRIANGLE_STRIP stay on the default (strip topologies also
+ * need `stripIndexFormat` plumbing) — deferred until an asset needs them.
+ * Note POINTS === 0, so compare with the enum, never truthiness.
+ *
+ * @param {number|undefined} primitiveType `PrimitiveType` value
+ * @returns {string} GPUPrimitiveTopology
+ * @private
+ */
+function topologyForPrimitiveType(primitiveType) {
+  return primitiveType === PrimitiveType.POINTS
+    ? "point-list"
+    : "triangle-list";
+}
+
 function applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache) {
+  // GLTF-POINTS-MODE — sticky topology rides the same "set before every
+  // getPipeline* build" contract as the metadata/customShader chunks below.
+  // Defaults to triangle-list for records that predate the field.
+  pipelineCache.setPrimitiveTopology(primCache?.topology ?? "triangle-list");
   if (defined(primCache?._metadataWGSL)) {
     pipelineCache.setMetadataWGSL(
       primCache._metadataWGSL,
@@ -1591,6 +1622,10 @@ function ensurePrimitiveCache(
     indexCount: 0,
     indexFormat: "uint16",
     vertexCount: geometry.vertexCount,
+    // GLTF-POINTS-MODE — GPUPrimitiveTopology keyed off the glTF
+    // primitive.mode. Every pipeline (re)build for this primitive feeds it
+    // to the pipeline cache via `applyPrimitiveMetadataToPipelineCache`.
+    topology: topologyForPrimitiveType(geometry.primitiveType),
     materialBindGroup: null,
     textureBindGroup: null,
     pipeline: null,
@@ -1784,6 +1819,32 @@ function ensurePrimitiveCache(
   ) {
     primCache._metadataWGSL = geometry.metadataWGSL;
     primCache._metadataClassHash = geometry.metadataClassHash | 0;
+  }
+
+  // GLTF-POINTS-MODE — non-indexed POINTS primitives (the common shape for
+  // mode-0 glTFs, e.g. PointCloudWithRGBColors) synthesize sequential
+  // indices so the command takes the drawIndexed path. Rationale: WebGPU
+  // validates a non-indexed `draw(vertexCount)` CPU-side against EVERY
+  // vertex-step buffer's bound size, and the missing-attribute slots
+  // (normal/tangent/uv/joints/weights on a typical point cloud) bind the
+  // pipeline cache's 1-element default buffers — fine for `drawIndexed`,
+  // whose out-of-range vertex fetches clamp to zero via robust access
+  // (the Batch 245 BoxInstancedNoNormals precedent), but a hard
+  // validation error for `draw()` ("Vertex range requires a larger
+  // buffer"). Sequential indices are GPU-equivalent for point-list.
+  // Non-indexed TRIANGLES primitives keep the historical draw() path
+  // untouched (off-gate: topology + this synthesis key strictly off
+  // primitive.mode); they share the same validation gap when attributes
+  // are missing — tracked as follow-up, not papered over here.
+  if (!defined(geometry.indexData) && primCache.topology === "point-list") {
+    const n = geometry.vertexCount;
+    const seq = n < 65536 ? new Uint16Array(n) : new Uint32Array(n);
+    for (let i = 0; i < n; i++) {
+      seq[i] = i;
+    }
+    geometry.indexData = seq;
+    geometry.indexCount = n;
+    geometry.indexType = n < 65536 ? "UNSIGNED_SHORT" : "UNSIGNED_INT";
   }
 
   // Index buffer
@@ -4112,6 +4173,9 @@ function updateWebGPUModel(model, frameState) {
           alphaMode: matInfo.alphaMode,
           doubleSided: matInfo.isDoubleSided,
           materialDefines: primCache.materialDefines | 0,
+          // GLTF-POINTS-MODE — capture replay builds its pipeline next frame
+          // from the record alone, so carry the topology with it.
+          topology: primCache.topology,
           // DP-H46b — carry the generated metadata chunk + class hash so the
           // capture replay (`getOrCreateModelCaptureCommands`) can prepend the
           // same `struct Metadata` before building the capture pipeline.

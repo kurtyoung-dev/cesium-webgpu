@@ -237,6 +237,25 @@ function computeKey(alphaMode, doubleSided, materialDefines) {
 }
 
 /**
+ * GLTF-POINTS-MODE — folds the primitive topology into a pipeline cache
+ * key. Triangle-list (the historical default and the overwhelmingly
+ * common case) returns the key UNCHANGED — numeric for the numeric-keyed
+ * caches, string for the string-keyed ones — so pre-existing triangle
+ * pipelines keep byte-identical cache keys. Non-triangle topologies
+ * (today: "point-list" for glTF mode-0 POINTS primitives) get a distinct
+ * string key so a model mixing POINTS and TRIANGLES primitives with the
+ * same material identity builds both variants.
+ *
+ * @param {number|string} key base cache key
+ * @param {string} topology GPUPrimitiveTopology
+ * @returns {number|string}
+ * @private
+ */
+function topologyVariantKey(key, topology) {
+  return topology === "triangle-list" ? key : `${key}:${topology}`;
+}
+
+/**
  * Builds the group-1 (material + textures + feature) BGL for a given
  * variant mask. Iterates the KHR_BINDING_MANIFEST and includes only
  * entries whose `gateDefine` is set in `materialDefines`. The fixed
@@ -733,6 +752,9 @@ function createPipeline(
   // DP-H46a — metadata vertex slot 9. Default false keeps every existing
   // caller's layout unchanged.
   hasMetadata = false,
+  // GLTF-POINTS-MODE — GPUPrimitiveTopology keyed off the glTF
+  // primitive.mode. Default preserves the historical hardcoded value.
+  topology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
 
@@ -794,8 +816,10 @@ function createPipeline(
         blend,
       }),
     },
+    // cullMode has no effect for non-triangle topologies per the WebGPU
+    // spec, so forwarding it unchanged is safe for point-list.
     primitive: {
-      topology: "triangle-list",
+      topology,
       cullMode,
     },
     depthStencil: {
@@ -845,6 +869,8 @@ function createSilhouetteModelPipeline(
   sampleCount,
   hasMetadata,
   invisible,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   let blend;
@@ -894,7 +920,7 @@ function createSilhouetteModelPipeline(
       targets,
     },
     primitive: {
-      topology: "triangle-list",
+      topology,
       cullMode,
     },
     depthStencil: {
@@ -937,6 +963,8 @@ function createSilhouetteColorPipeline(
   sampleCount,
   hasMetadata,
   translucent,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   const stencilNotEqual = {
     compare: "not-equal",
@@ -966,7 +994,7 @@ function createSilhouetteColorPipeline(
       targets,
     },
     primitive: {
-      topology: "triangle-list",
+      topology,
       cullMode: "none",
     },
     depthStencil: {
@@ -1016,6 +1044,8 @@ function createPickPipeline(
   hasTexCoord1,
   hasFeatureId0,
   hasMetadata = false,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. Translucent
@@ -1065,7 +1095,7 @@ function createPickPipeline(
       targets: [{ format: presentationFormat }],
     },
     primitive: {
-      topology: "triangle-list",
+      topology,
       cullMode,
     },
     depthStencil: {
@@ -1099,6 +1129,8 @@ function createPickMetadataPipeline(
   hasTexCoord1,
   hasFeatureId0,
   hasMetadata = false,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const isBlend = alphaMode === 2;
@@ -1120,7 +1152,7 @@ function createPickMetadataPipeline(
       targets: [{ format: presentationFormat }],
     },
     primitive: {
-      topology: "triangle-list",
+      topology,
       cullMode,
     },
     depthStencil: {
@@ -1166,6 +1198,8 @@ function createCapturePipeline(
   hasTexCoord1,
   hasFeatureId0,
   hasMetadata = false,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   return device.createRenderPipeline({
     label: `Model PBR capture [face=${faceFormat},ds=${doubleSided}]`,
@@ -1186,7 +1220,7 @@ function createCapturePipeline(
       targets: [{ format: faceFormat, writeMask: 0xf }],
     },
     primitive: {
-      topology: "triangle-list",
+      topology,
       // disableCulling — cube-face render is left-handed; depth picks nearest.
       cullMode: "none",
     },
@@ -1220,6 +1254,8 @@ function createPickHoverPipeline(
   hasTexCoord1,
   hasFeatureId0,
   hasMetadata = false,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-hover [BLEND,ds=${doubleSided}]`;
@@ -1240,7 +1276,7 @@ function createPickHoverPipeline(
       entryPoint: "fragmentPickHoverMain",
       targets: [{ format: presentationFormat }],
     },
-    primitive: { topology: "triangle-list", cullMode },
+    primitive: { topology, cullMode },
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: true,
@@ -1274,6 +1310,8 @@ function createPickPrecisePass1Pipeline(
   hasTexCoord1,
   hasFeatureId0,
   hasMetadata = false,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-precise pass1 [BLEND,ds=${doubleSided}]`;
@@ -1318,7 +1356,7 @@ function createPickPrecisePass1Pipeline(
       // stencil writes apply.
       targets: [{ format: presentationFormat, writeMask: 0 }],
     },
-    primitive: { topology: "triangle-list", cullMode },
+    primitive: { topology, cullMode },
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: true,
@@ -1356,6 +1394,8 @@ function createPickPrecisePass2Pipeline(
   hasTexCoord1,
   hasFeatureId0,
   hasMetadata = false,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-precise pass2 [BLEND,ds=${doubleSided}]`;
@@ -1397,7 +1437,7 @@ function createPickPrecisePass2Pipeline(
       entryPoint: "fragmentPickMain",
       targets: [{ format: presentationFormat }],
     },
-    primitive: { topology: "triangle-list", cullMode },
+    primitive: { topology, cullMode },
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
@@ -1443,6 +1483,8 @@ function createVelocityPipeline(
   sampleCount = 1,
   // DP-H46a — metadata vertex slot 9.
   hasMetadata = false,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   void sampleCount;
   const cullMode = doubleSided ? "none" : "back";
@@ -1465,7 +1507,7 @@ function createVelocityPipeline(
       targets: [{ format: "rg16float" }],
     },
     primitive: {
-      topology: "triangle-list",
+      topology,
       cullMode,
     },
     depthStencil: {
@@ -1523,6 +1565,8 @@ function createClassificationPipeline(
   sampleCount = 1,
   // DP-H46a — metadata vertex slot 9.
   hasMetadata = false,
+  // GLTF-POINTS-MODE
+  topology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model classification [alpha=${alphaMode},ds=${doubleSided}]`;
@@ -1557,7 +1601,7 @@ function createClassificationPipeline(
       // helper. Classification draws translucent overlays into scene FB.
       targets: makeSceneFBTargets(presentationFormat, { blend }),
     },
-    primitive: { topology: "triangle-list", cullMode },
+    primitive: { topology, cullMode },
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
@@ -1748,6 +1792,15 @@ class WebGPUModelPipelineCache {
     // MODEL_HAS_WGSL_CUSTOM_SHADER / _VERTEX is set.
     this._customShaderWGSL = "";
     this._customShaderClassHash = 0;
+
+    // GLTF-POINTS-MODE — the GPUPrimitiveTopology of the primitive whose
+    // pipeline is currently being (re)built. Set by the renderer via
+    // `setPrimitiveTopology` immediately before each `getPipeline*` call
+    // (the same sticky-state pattern as the metadata/customShader chunks
+    // above — `applyPrimitiveMetadataToPipelineCache` writes all three).
+    // "triangle-list" is the historical hardcoded value; triangle
+    // primitives keep byte-identical cache keys + pipeline descriptors.
+    this._primitiveTopology = "triangle-list";
 
     // Eagerly build the basic variant (materialDefines = 0). Most
     // scenes have at least one non-KHR primitive and the basic layout
@@ -2467,6 +2520,26 @@ class WebGPUModelPipelineCache {
   }
 
   /**
+   * GLTF-POINTS-MODE — set the GPUPrimitiveTopology for the primitive whose
+   * pipeline is about to be (re)built. Same sticky-state contract as
+   * `setMetadataWGSL` / `setCustomShaderWGSL`: the renderer writes it
+   * immediately before each primitive's `getPipeline*` calls (via
+   * `applyPrimitiveMetadataToPipelineCache`), and passing anything other
+   * than a known non-triangle topology resets to the "triangle-list"
+   * default so a stale point-list can't leak into a triangle primitive.
+   *
+   * Today only "point-list" (glTF mode-0 POINTS) is supported beyond the
+   * default; LINES / LINE_STRIP / TRIANGLE_STRIP remain deferred (strip
+   * topologies additionally need `stripIndexFormat` plumbing).
+   *
+   * @param {string} topology GPUPrimitiveTopology
+   */
+  setPrimitiveTopology(topology) {
+    this._primitiveTopology =
+      topology === "point-list" ? "point-list" : "triangle-list";
+  }
+
+  /**
    * Public accessor for the per-variant materialBGL. Renderer call
    * sites should pass the primitive's normalized `materialDefines`
    * (computed from its material flags). The eagerly-built basic
@@ -2719,7 +2792,13 @@ class WebGPUModelPipelineCache {
    */
   getPipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = computeKey(alphaMode, doubleSided, md);
+    // GLTF-POINTS-MODE — snapshot the sticky topology at entry so the async
+    // error-scope callback below can't read a later primitive's value.
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      computeKey(alphaMode, doubleSided, md),
+      topology,
+    );
     let pipeline = this._pipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -2750,13 +2829,14 @@ class WebGPUModelPipelineCache {
       hasFeatureId0,
       this._sampleCount,
       hasMetadata,
+      topology,
     );
     this._device.popErrorScope().then((error) => {
       if (error) {
         console.error(
           `[CesiumJS:webgpu] Model PBR pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
         );
-        this._pipelines.set(key, this._getOrCreateErrorPipeline(md));
+        this._pipelines.set(key, this._getOrCreateErrorPipeline(md, topology));
         // Signal model primitives (which cache the pipeline reference) to
         // re-fetch so the magenta fallback reaches the already-built command.
         this._errorSwapGeneration++;
@@ -2774,11 +2854,16 @@ class WebGPUModelPipelineCache {
    * slot 0 (positionMC). Matches the color pipeline's MRT targets / depth format
    * / sample count so it binds in the same render pass.
    * @param {number} md Normalized material-defines key.
+   * @param {string} [topology="triangle-list"] GLTF-POINTS-MODE — topology of
+   *   the failed pipeline, so a failed point-list pipeline's magenta fallback
+   *   still draws points (a triangle-list fallback over point vertex data
+   *   would rasterize garbage triangles).
    * @returns {GPURenderPipeline}
    * @private
    */
-  _getOrCreateErrorPipeline(md) {
-    let ep = this._errorPipelines.get(md);
+  _getOrCreateErrorPipeline(md, topology = "triangle-list") {
+    const key = topologyVariantKey(md, topology);
+    let ep = this._errorPipelines.get(key);
     if (ep) {
       return ep;
     }
@@ -2811,7 +2896,7 @@ class WebGPUModelPipelineCache {
           emitsGBuffer: true,
         }),
       },
-      primitive: { topology: "triangle-list", cullMode: "none" },
+      primitive: { topology, cullMode: "none" },
       depthStencil: {
         format: this._depthFormat,
         depthWriteEnabled: true,
@@ -2820,7 +2905,7 @@ class WebGPUModelPipelineCache {
       multisample:
         this._sampleCount > 1 ? { count: this._sampleCount } : undefined,
     });
-    this._errorPipelines.set(md, ep);
+    this._errorPipelines.set(key, ep);
     return ep;
   }
 
@@ -2842,7 +2927,11 @@ class WebGPUModelPipelineCache {
    */
   getDepthWritePipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = computeKey(alphaMode, doubleSided, md);
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      computeKey(alphaMode, doubleSided, md),
+      topology,
+    );
     let pipeline = this._depthWritePipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -2871,13 +2960,17 @@ class WebGPUModelPipelineCache {
       hasFeatureId0,
       this._sampleCount,
       hasMetadata,
+      topology,
     );
     this._device.popErrorScope().then((error) => {
       if (error) {
         console.error(
           `[CesiumJS:webgpu] Model PBR depth-write pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
         );
-        this._depthWritePipelines.set(key, this._getOrCreateErrorPipeline(md));
+        this._depthWritePipelines.set(
+          key,
+          this._getOrCreateErrorPipeline(md, topology),
+        );
         this._errorSwapGeneration++;
       }
     });
@@ -2907,7 +3000,11 @@ class WebGPUModelPipelineCache {
     invisible,
   ) {
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = `${computeKey(alphaMode, doubleSided, md)}:${invisible === true ? 1 : 0}`;
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      `${computeKey(alphaMode, doubleSided, md)}:${invisible === true ? 1 : 0}`,
+      topology,
+    );
     let pipeline = this._silhouetteModelPipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -2931,6 +3028,7 @@ class WebGPUModelPipelineCache {
       this._sampleCount,
       hasMetadata,
       invisible === true,
+      topology,
     );
     this._device.popErrorScope().then((error) => {
       if (error) {
@@ -2939,7 +3037,7 @@ class WebGPUModelPipelineCache {
         );
         this._silhouetteModelPipelines.set(
           key,
-          this._getOrCreateErrorPipeline(md),
+          this._getOrCreateErrorPipeline(md, topology),
         );
         this._errorSwapGeneration++;
       }
@@ -2971,7 +3069,11 @@ class WebGPUModelPipelineCache {
     translucent,
   ) {
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = `${computeKey(alphaMode, doubleSided, md)}:${translucent === true ? 1 : 0}`;
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      `${computeKey(alphaMode, doubleSided, md)}:${translucent === true ? 1 : 0}`,
+      topology,
+    );
     let pipeline = this._silhouetteColorPipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -2992,6 +3094,7 @@ class WebGPUModelPipelineCache {
       this._sampleCount,
       hasMetadata,
       translucent === true,
+      topology,
     );
     this._device.popErrorScope().then((error) => {
       if (error) {
@@ -3000,7 +3103,7 @@ class WebGPUModelPipelineCache {
         );
         this._silhouetteColorPipelines.set(
           key,
-          this._getOrCreateErrorPipeline(md),
+          this._getOrCreateErrorPipeline(md, topology),
         );
         this._errorSwapGeneration++;
       }
@@ -3029,7 +3132,11 @@ class WebGPUModelPipelineCache {
    */
   getPickPipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = computeKey(alphaMode, doubleSided, md);
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      computeKey(alphaMode, doubleSided, md),
+      topology,
+    );
     let pipeline = this._pickPipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -3050,6 +3157,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      topology,
     );
     this._pickPipelines.set(key, pipeline);
     return pipeline;
@@ -3078,9 +3186,13 @@ class WebGPUModelPipelineCache {
     const md = this._normalizeMaterialDefines(materialDefines);
     // Fold in the picked-property hash so a different picked property (same
     // material variant) doesn't collide on the cache key.
-    const key = `${computeKey(alphaMode, doubleSided, md)}_${
-      this._metadataPickClassHash >>> 0
-    }`;
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      `${computeKey(alphaMode, doubleSided, md)}_${
+        this._metadataPickClassHash >>> 0
+      }`,
+      topology,
+    );
     let pipeline = this._pickMetadataPipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -3102,6 +3214,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      topology,
     );
     this._pickMetadataPipelines.set(key, pipeline);
     return pipeline;
@@ -3130,7 +3243,11 @@ class WebGPUModelPipelineCache {
       return this.getPickPipeline(alphaMode, doubleSided, materialDefines);
     }
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = computeKey(alphaMode, doubleSided, md);
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      computeKey(alphaMode, doubleSided, md),
+      topology,
+    );
     let pipeline = this._pickHoverPipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -3145,6 +3262,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      topology,
     );
     this._pickHoverPipelines.set(key, pipeline);
     return pipeline;
@@ -3168,7 +3286,11 @@ class WebGPUModelPipelineCache {
       return this.getPickPipeline(alphaMode, doubleSided, materialDefines);
     }
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = computeKey(alphaMode, doubleSided, md);
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      computeKey(alphaMode, doubleSided, md),
+      topology,
+    );
     let pipeline = this._pickPrecisePass1Pipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -3183,6 +3305,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      topology,
     );
     this._pickPrecisePass1Pipelines.set(key, pipeline);
     return pipeline;
@@ -3204,7 +3327,11 @@ class WebGPUModelPipelineCache {
       return null;
     }
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = computeKey(alphaMode, doubleSided, md);
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      computeKey(alphaMode, doubleSided, md),
+      topology,
+    );
     let pipeline = this._pickPrecisePass2Pipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -3219,6 +3346,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      topology,
     );
     this._pickPrecisePass2Pipelines.set(key, pipeline);
     return pipeline;
@@ -3241,7 +3369,11 @@ class WebGPUModelPipelineCache {
    */
   getVelocityPipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = computeKey(alphaMode, doubleSided, md);
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      computeKey(alphaMode, doubleSided, md),
+      topology,
+    );
     let pipeline = this._velocityPipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -3260,6 +3392,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._sampleCount,
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      topology,
     );
     this._velocityPipelines.set(key, pipeline);
     return pipeline;
@@ -3287,7 +3420,11 @@ class WebGPUModelPipelineCache {
    */
   getClassificationPipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
-    const key = computeKey(alphaMode, doubleSided, md);
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      computeKey(alphaMode, doubleSided, md),
+      topology,
+    );
     let pipeline = this._classificationPipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -3307,6 +3444,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._sampleCount,
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      topology,
     );
     this._classificationPipelines.set(key, pipeline);
     return pipeline;
@@ -3349,9 +3487,13 @@ class WebGPUModelPipelineCache {
     // effective log-depth bit into the key so a runtime log-depth toggle rebuilds
     // the capture pipeline instead of serving a stale-depth-encoding variant
     // (which would break model↔globe occlusion in the shared face depth buffer).
-    const key = `${computeKey(alphaMode, doubleSided, md)}_${faceFormat}_${
-      this._logDepthEnabled ? 1 : 0
-    }`;
+    const topology = this._primitiveTopology;
+    const key = topologyVariantKey(
+      `${computeKey(alphaMode, doubleSided, md)}_${faceFormat}_${
+        this._logDepthEnabled ? 1 : 0
+      }`,
+      topology,
+    );
     let pipeline = this._capturePipelines.get(key);
     if (pipeline) {
       return pipeline;
@@ -3371,6 +3513,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      topology,
     );
     this._capturePipelines.set(key, pipeline);
     return pipeline;
