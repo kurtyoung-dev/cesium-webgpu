@@ -3115,6 +3115,58 @@ cleared `[0,0,0,0]` on both, object pick still returns the `VoxelPrimitive`,
    render path may compensate elsewhere; verify empirically, don't fix
    blind).
 
+### PARITY-VOXEL-OCTREE-TRAVERSAL — octree/multi-tile LOD beyond depth 1 (depth-1 increment SHIPPED 2026-07-02, VOXEL-OCTREE-LOD)
+
+**Shipped (VOXEL-OCTREE-LOD, 2026-07-02):** the first honest increment of the
+octree traversal — a real two-level LOD path in
+`WebGPUVoxelDataUpload.ts` / `WebGPUVoxelRenderer.ts`:
+
+- **9-slot 3D atlas.** When the provider advertises `availableLevels >= 2`
+  and the BOX shapeUv convention is active, the real-data texture allocates
+  as a Z-stacked atlas (slot 0 = root, slots 1..8 = the eight level-1
+  children, childIndex = x + 2y + 4z in the Z-up shape frame — Octree.glsl's
+  `getOctreeChildData` order). Children upload asynchronously after the root
+  (`tryUploadChildVoxelTiles`, per-child idle→requesting→processing→done|failed
+  machines); an unavailable child keeps `childSlots[i] = -1`.
+- **Per-sample depth-1 traversal in the parity march.** At target level 1 the
+  WGSL selects the child octant (`floor(shapeUv·2)`), rescales to the child's
+  local tileUv, and addresses the child's atlas slab; a not-loaded child falls
+  back to sampling the ROOT with `tileUv = shapeUv` — Octree.glsl's
+  `OCTREE_FLAG_PACKED_LEAF_FROM_PARENT` semantics specialised to depth 1.
+- **SSE refine test.** CPU-side `computeVoxelTargetLevel` mirrors
+  `SpatialNode.computeScreenSpaceError`
+  (`(screenHeight/sseDenominator)·approximateVoxelSize/distance` vs
+  `primitive.screenSpaceError`) to pick level 0/1 per frame. UBO floats
+  108..119 (childSlots ×8 + slotCount + targetLevel; 432 → 480 B).
+- **Off-gate:** single-level providers keep `slotCount = 1` and the exact
+  historical texture layout + sampling math (`max(atlasInfo.x, 1)` reduces
+  every new term to identity); placeholder path packs zeros. Gates:
+  `probe-voxel-parity.mjs` (colorL1 0), `probe-voxel-cell-pick.mjs`,
+  `probe-voxel-megatexture.mjs` all green post-change.
+- **Acceptance:** `probe-voxel-octree.mjs` — two-level procedural provider
+  (fine 8³ thin diagonal vs root 4³ fat downsample): close view renders the
+  FINE diagonal on both backends (64/64 analytic per-ray cells, 8/8
+  empty-at-fine/filled-at-root discriminator cells black on WebGPU — root-only
+  sampling fails these); far view drops to targetLevel 0 with 0.02 crop diff
+  vs WebGL.
+
+**Remaining (the rest of the XL):**
+
+1. **Arbitrary-depth traversal** — port the `u_octreeInternalNodeTexture`
+   internal-node walk (`traverseOctreeDownwards` / `traverseOctreeFromExisting`)
+   so deep tilesets refine past level 1. Needs a GPU octree-node table (texture
+   or storage buffer) generated from loaded-tile state.
+2. **Dynamic megatexture slot allocator** — the fixed 9-slot atlas becomes a
+   real add/remove slot pool (Megatexture.js semantics) with LRU eviction and
+   `maximumTileCount` budgeting once tile counts exceed 9.
+3. **Non-box shapes** — cylinder/ellipsoid still use the legacy direct
+   sampling (no shapeUv convention → no refinement).
+4. **pickVoxel against refined tiles** — `fragmentPickVoxelMain` marches the
+   ROOT slab only (megatextureIndex 0); a refined render can pick a coarser
+   cell than what is displayed.
+5. **SAMPLE_COUNT > 1 level blending** (`u_octreeLeafNodeTexture` lerp) and
+   time-dynamic keyframes — untouched.
+
 ### C-R9-VOXEL-CELL-PICK-TAIL — `scene.pickVoxel` VoxelCell construction on WebGPU (traversal/keyframeNode gap)
 
 **What:** `Scene.pickVoxel` = object pick (works) → `pickVoxelCoordinate`

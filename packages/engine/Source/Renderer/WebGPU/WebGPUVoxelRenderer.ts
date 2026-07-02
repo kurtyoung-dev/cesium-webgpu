@@ -57,6 +57,7 @@ import type {
 import {
   createVoxelDataUploadState,
   tryUploadRootVoxelTile,
+  tryUploadChildVoxelTiles,
   type VoxelDataUploadState,
 } from "./WebGPUVoxelDataUpload.js";
 
@@ -215,6 +216,20 @@ struct Uniforms {
   // VOXEL_CUSTOM_SHADER_COLOR branch; zero on the placeholder/pick paths.
   cameraPositionProxy: vec3<f32>,
   _pad4: f32,
+  // VOXEL-OCTREE-LOD — depth-1 octree traversal (floats 108..119).
+  // \`childSlots0/1\`: atlas slot per level-1 child octant (Z-up shape frame,
+  // childIndex = x + 2y + 4z — Octree.glsl's getOctreeChildData order), or -1
+  // when that child tile is not uploaded, in which case the march samples the
+  // ROOT for the octant — Octree.glsl's OCTREE_FLAG_PACKED_LEAF_FROM_PARENT
+  // fallback specialised to depth 1. \`atlasInfo.x\` = tile slot count stacked
+  // along the texture's Z axis (1 = single-tile texture, historical layout);
+  // \`atlasInfo.y\` = this frame's target LOD level (0 = root, 1 = refine) from
+  // the CPU-evaluated SpatialNode.computeScreenSpaceError refine test. All
+  // zero on the placeholder path (max(atlasInfo.x, 1.0) keeps the math
+  // byte-identical there).
+  childSlots0: vec4<f32>,
+  childSlots1: vec4<f32>,
+  atlasInfo: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -366,7 +381,35 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       vec3<f32>(0.0),
       vec3<f32>(1.0),
     );
-    var inputCoord = shapeUv * u.voxelDimensions + u.paddingBefore;
+    // VOXEL-OCTREE-LOD — depth-1 octree traversal. When this frame's target
+    // level is 1 (SSE refine test, CPU-evaluated), select the level-1 child
+    // octant containing the sample (tileCoords = floor(shapeUv * 2), WebGL's
+    // shapeUv → tile convention at level 1) and rescale to that child's local
+    // tileUv (Octree.glsl getTileUv with levelDifference 0). A child whose
+    // tile is not uploaded (slot < 0) falls back to sampling the ROOT with
+    // tileUv = shapeUv — exactly getTileUv's levelDifference-1 ancestor
+    // rescale, i.e. the OCTREE_FLAG_PACKED_LEAF_FROM_PARENT path.
+    var tileUv = shapeUv;
+    var tileSlot = 0.0;
+    if (u.atlasInfo.y >= 1.0) {
+      let childCoord = clamp(
+        floor(shapeUv * 2.0),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+      );
+      let childIdx = i32(childCoord.x + 2.0 * childCoord.y + 4.0 * childCoord.z);
+      var childSlot = -1.0;
+      if (childIdx < 4) {
+        childSlot = u.childSlots0[childIdx];
+      } else {
+        childSlot = u.childSlots1[childIdx - 4];
+      }
+      if (childSlot >= 0.0) {
+        tileSlot = childSlot;
+        tileUv = clamp(shapeUv * 2.0 - childCoord, vec3<f32>(0.0), vec3<f32>(1.0));
+      }
+    }
+    var inputCoord = tileUv * u.voxelDimensions + u.paddingBefore;
     if (u.metadataYUpBox > 0.5) {
       let inputY = inputCoord.y;
       inputCoord.y = inputCoord.z;
@@ -377,7 +420,18 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       vec3<f32>(0.5),
       u.inputDimensions - vec3<f32>(0.5),
     );
-    let uvw = clampedCoord / u.inputDimensions;
+    // Atlas addressing: tiles are stacked along the texture Z axis, one
+    // inputDimensions.z-deep slab per slot. The per-tile texel-centre clamp
+    // above already prevents linear-filter bleed across slab boundaries.
+    // slotCount = 1 (single-tile texture) reduces to the historical
+    // clampedCoord / inputDimensions exactly.
+    let slotCount = max(u.atlasInfo.x, 1.0);
+    let uvw = vec3<f32>(
+      clampedCoord.x / u.inputDimensions.x,
+      clampedCoord.y / u.inputDimensions.y,
+      (clampedCoord.z + tileSlot * u.inputDimensions.z)
+        / (u.inputDimensions.z * slotCount),
+    );
     let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
     if (s.a > u.densityThreshold) {
       // Default voxel customShader material: gray lighting, opaque.
@@ -488,8 +542,14 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let t = tS + f32(i) * u.stepSize;
     if (t > tE) { break; }
     let p = u.cameraPositionEC + rayDir * t;
-    let uvw = (p - u.minBounds) / (u.maxBounds - u.minBounds);
+    var uvw = (p - u.minBounds) / (u.maxBounds - u.minBounds);
     if (any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0))) { continue; }
+    // VOXEL-OCTREE-LOD — when the bound texture is a Z-stacked tile atlas,
+    // compress z into slot 0 (the ROOT slab) so the pick march samples only
+    // root data. atlasInfo.x is 0 (placeholder) or 1 (single-tile texture)
+    // outside the atlas case, so max(x, 1.0) keeps the historical math
+    // byte-identical there.
+    uvw.z = uvw.z / max(u.atlasInfo.x, 1.0);
     // NEW-4-G (Batch 69): textureSampleLevel(..., 0.0) instead of
     // textureSample — see fragmentMain for the uniform-control-flow
     // rationale. The early-return on first hit makes the data-dependence
@@ -578,7 +638,15 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
       vec3<f32>(0.5),
       u.inputDimensions - vec3<f32>(0.5),
     );
-    let uvw = clampedCoord / u.inputDimensions;
+    // VOXEL-OCTREE-LOD — normalise z against the FULL atlas depth so the
+    // per-cell pick march stays inside slot 0 (the ROOT slab). Per-cell pick
+    // against refined level-1 tiles is a documented follow-up; single-tile
+    // textures have atlasInfo.x = 1 → byte-identical math.
+    let uvw = vec3<f32>(
+      clampedCoord.x / u.inputDimensions.x,
+      clampedCoord.y / u.inputDimensions.y,
+      clampedCoord.z / (u.inputDimensions.z * max(u.atlasInfo.x, 1.0)),
+    );
     // NEW-4-G: textureSampleLevel — see fragmentMain.
     let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
     if (s.a > u.densityThreshold) {
@@ -707,6 +775,9 @@ interface VoxelShapeLike {
   orientedBoundingBox?: {
     center?: Cartesian3;
     halfAxes?: Matrix3;
+    // VOXEL-OCTREE-LOD — OrientedBoundingBox.distanceSquaredTo, used by the
+    // SSE refine test (mirrors SpatialNode.computeScreenSpaceError).
+    distanceSquaredTo?(point: Cartesian3): number;
   };
   // VOXEL-SHAPEUV-CONVENTION — the shape's compound local frame + its OWN
   // local→shapeUv conversion (VoxelBoxShape.convertLocalToShapeUvSpace), used
@@ -906,6 +977,82 @@ function packVoxelSampleFrame(
   data[97] = h;
   data[98] = d;
   // paddingBefore stays zero.
+}
+
+// VOXEL-OCTREE-LOD scratch for the SSE refine test.
+const scratchObbScale = new Cartesian3();
+
+/**
+ * VOXEL-OCTREE-LOD — decide this frame's target octree level (0 = root,
+ * 1 = refine into the level-1 children) with WebGL's refine test: mirror
+ * {@link SpatialNode}'s `computeScreenSpaceError` for the ROOT tile —
+ *
+ *   sse = (screenHeight / sseDenominator) * (approximateVoxelSize / distance)
+ *   approximateVoxelSize = 2 * maxComponent(scale(obb.halfAxes))
+ *                        / minComponent(provider.dimensions)
+ *
+ * — and refine when `sse >= primitive.screenSpaceError` (VoxelTraversal
+ * descends exactly when the node's SSE meets the primitive's target). Only a
+ * single refine step is evaluated (this increment's traversal is depth-1).
+ * Returns 0 whenever no child tile has uploaded yet, so the march never
+ * branches into an empty atlas.
+ */
+function computeVoxelTargetLevel(
+  primitive: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+  state: VoxelDataUploadState,
+): number {
+  if (state.slotCount < 9) {
+    return 0;
+  }
+  let anyChildLoaded = false;
+  for (let i = 0; i < 8; i++) {
+    if (state.childSlots[i] >= 0) {
+      anyChildLoaded = true;
+      break;
+    }
+  }
+  if (!anyChildLoaded) {
+    return 0;
+  }
+
+  const camera = frameState.camera;
+  const sseDenominator = camera?.frustum?.sseDenominator;
+  if (!camera || typeof sseDenominator !== "number" || !(sseDenominator > 0)) {
+    return 0;
+  }
+
+  const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
+  const obb = shape?.orientedBoundingBox;
+  if (!obb || !obb.center || !obb.halfAxes) {
+    return 0;
+  }
+
+  const dims = state.convention?.dimensions;
+  const minDim = dims ? Math.min(dims.x, dims.y, dims.z) : 1;
+  const halfScale = Matrix3.getScale(obb.halfAxes, scratchObbScale);
+  const maximumScale = 2.0 * Cartesian3.maximumComponent(halfScale);
+  const approximateVoxelSize = maximumScale / Math.max(1, minDim);
+
+  const cameraWC = camera.positionWC as unknown as Cartesian3;
+  let distance;
+  if (typeof obb.distanceSquaredTo === "function") {
+    distance = Math.sqrt(obb.distanceSquaredTo(cameraWC));
+  } else {
+    distance = Cartesian3.distance(obb.center, cameraWC);
+  }
+  distance = Math.max(distance, 1e-7);
+
+  const context = frameState.context;
+  const pixelRatio = frameState.pixelRatio > 0 ? frameState.pixelRatio : 1;
+  const screenHeight = context.drawingBufferHeight / pixelRatio;
+  const sse =
+    (screenHeight / sseDenominator) * (approximateVoxelSize / distance);
+
+  const targetSse =
+    (primitive as unknown as { screenSpaceError?: number }).screenSpaceError ??
+    4.0;
+  return sse >= targetSse ? 1 : 0;
 }
 
 function createBoxGeometry(device: GPUDevice): {
@@ -1217,9 +1364,11 @@ function updateWebGPUVoxelPrimitive(
     // 320 → 432 bytes for the WebGL sample-frame fields (floats 76-107:
     // dimensions + Y-up flag, proxy→shapeUv matrix, inputDimensions,
     // paddingBefore, proxy-space camera) consumed by the real-data
-    // color-parity march.
+    // color-parity march. VOXEL-OCTREE-LOD grew it 432 → 480 bytes for the
+    // depth-1 octree fields (floats 108-119: per-child atlas slots + slot
+    // count + target LOD level).
     cache.uniformBuffer = device.createBuffer({
-      size: 432,
+      size: 480,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     // VOXEL-SHAPEUV-CONVENTION — honour VoxelPrimitive.nearestSampling
@@ -1481,6 +1630,14 @@ function updateWebGPUVoxelPrimitive(
     }
   }
 
+  // VOXEL-OCTREE-LOD — once the root is bound, drive the asynchronous level-1
+  // child-tile uploads into atlas slots 1..8. No-op for single-level providers
+  // (childPhase === "none") and once every child has settled; writes land in
+  // the already-bound atlas texture, so no bind-group rebuild is needed.
+  if (cache.usingRealData && cache.dataUpload) {
+    tryUploadChildVoxelTiles(device, primitive, frameState, cache.dataUpload);
+  }
+
   // PARITY-VOXEL-COLOR-PARITY — once a REAL voxel provider's root tile is
   // bound, the COLOR pipeline must use the VOXEL_CUSTOM_SHADER_COLOR define so
   // the ray-march applies the default voxel customShader colour mapping +
@@ -1615,7 +1772,9 @@ function updateWebGPUVoxelPrimitive(
   //   [96..99] inputDimensions + pad    (VOXEL-SHAPEUV-CONVENTION)
   //   [100..103] paddingBefore + pad    (VOXEL-SHAPEUV-CONVENTION)
   //   [104..107] cameraPositionProxy + pad (VOXEL-SHAPEUV-CONVENTION)
-  const data = new Float32Array(108);
+  //   [108..115] childSlots0/1          (VOXEL-OCTREE-LOD)
+  //   [116..119] atlasInfo: slotCount, targetLevel, pad, pad (VOXEL-OCTREE-LOD)
+  const data = new Float32Array(120);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -1728,6 +1887,22 @@ function updateWebGPUVoxelPrimitive(
     data[104] = camModel.x;
     data[105] = camModel.y;
     data[106] = camModel.z;
+
+    // VOXEL-OCTREE-LOD — per-child atlas slots + slot count + this frame's
+    // target LOD level (floats 108..119). Single-tile textures pack
+    // slotCount = 1 and targetLevel = 0, which the WGSL reduces to the exact
+    // historical sampling math (off-gate byte-identical). The placeholder
+    // path never reaches this block and leaves the floats zero.
+    const du = cache.dataUpload;
+    if (du) {
+      for (let i = 0; i < 8; i++) {
+        data[108 + i] = du.childSlots[i];
+      }
+      data[116] = du.slotCount;
+      const targetLevel = computeVoxelTargetLevel(primitive, frameState, du);
+      du.lastTargetLevel = targetLevel;
+      data[117] = targetLevel;
+    }
   }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);

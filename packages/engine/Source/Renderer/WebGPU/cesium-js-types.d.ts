@@ -488,6 +488,10 @@ interface CesiumCamera {
     fov?: number;
     aspectRatio?: number;
     projectionMatrix?: CesiumMatrix4;
+    // VOXEL-OCTREE-LOD — screen-space-error denominator (2 * tan(fovy / 2)
+    // for perspective frustums). Consumed by the WebGPU voxel SSE refine
+    // test, mirroring VoxelTraversal.js's screenSpaceErrorMultiplier.
+    sseDenominator?: number;
   };
   viewMatrix: CesiumMatrix4;
   inverseViewMatrix: CesiumMatrix4;
