@@ -270,10 +270,10 @@ console.log(
         "webgl-off": nonBlack(glOff.decoded),
       },
       // The EDL effect: how much each backend's ON darkens vs its own OFF.
-      // Absolute WebGL-vs-WebGPU pixel parity is dominated by a pre-existing
-      // point-SHAPE difference (WebGL renders square 8px points, WebGPU renders
-      // smaller round points) that is out of scope for EDL, so we compare the
-      // EDL DELTA per backend instead.
+      // Absolute WebGL-vs-WebGPU pixel parity lives in
+      // probe-point-sprite-shape.mjs (POINT-SPRITE-SHAPE fixed the
+      // round-vs-square + sizing gap); here we compare the EDL DELTA per
+      // backend, which stays robust to residual sub-pixel AA differences.
       webgpu_edl_darkening: gpuEdl,
       webgl_edl_darkening: glEdl,
       gpuOnInfo: gpuOn.info,

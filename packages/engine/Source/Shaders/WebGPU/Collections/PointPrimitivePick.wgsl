@@ -115,18 +115,25 @@ fn vertexMain(
     let camDistSq = dot(eyeRelativePos.xyz, eyeRelativePos.xyz);
     var clipPos = camera.mvpRelativeToEye * eyeRelativePos;
 
+    // POINT-SPRITE-SHAPE — same WebGL-parity sizing as the color VS
+    // (scaleByDistance on the TOTAL size, +3 AA padding, floor 1.0) so
+    // the pick footprint matches the rendered footprint.
     // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_SCALING
     // before quad expansion. Same contract as color path.
-    var pixelSize: f32 = basePixelSize;
+    var totalSize: f32 = basePixelSize + 2.0 * outlineWidth;
     //>>ifdef EYE_DISTANCE_SCALING
     let distScale = czm_nearFarScalar(scaleByDistance, camDistSq);
-    pixelSize = pixelSize * distScale;
+    totalSize = totalSize * distScale;
     if (distScale == 0.0) {
         clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     //>>endif
-
-    let totalSize = max(pixelSize + 2.0 * outlineWidth, 1.0);
+    if (totalSize > 0.0) {
+        totalSize = totalSize + 3.0;
+    }
+    if (totalSize < 1.0) {
+        totalSize = 1.0;
+    }
     let corner = QUAD_CORNERS[vertexIndex % 6u];
 
     let ndcOffset = vec2<f32>(
@@ -181,7 +188,8 @@ fn vertexMain(
 
     output.uv = corner;
     output.pickColor = pickColorIn;
-    output.pixelDistance = select(0.0, 1.0 / totalSize, totalSize > 0.0);
+    // POINT-SPRITE-SHAPE — WebGL parity: v_pixelDistance = 2 / totalSize.
+    output.pixelDistance = 2.0 / totalSize;
 
     //>>ifdef SPLIT_ENABLED
     output.splitDirection = perInstanceFlags.y;

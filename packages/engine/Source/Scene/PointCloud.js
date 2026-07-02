@@ -181,9 +181,35 @@ class PointCloud {
       // scaled by pixelRatio) for the WebGPU renderer, which builds its own
       // instance buffer and has no access to the WebGL `u_pointSize` uniform.
       // Mirrors `u_pointSizeAndTimeAndGeometricErrorAndDepthMultiplier.x`.
+      //
+      // POINT-SPRITE-SHAPE — WebGL's derived VS gives a pointSize STYLE
+      // priority over attenuation (`hasPointSizeStyle` branch wins and the
+      // attenuation clamp never runs). Mirror that: a constant style
+      // pointSize becomes the published size and disables the attenuation
+      // clamp in the WebGPU shaders. Feature-dependent (non-constant)
+      // pointSize expressions can't be evaluated CPU-side per point here —
+      // fall back to the attenuation/fixed size like before.
+      // NOTE: read the public `style` property — the WebGL-path `_style`
+      // sync lives below the early return this branch takes.
+      const activeStyle = this.style ?? this._style;
+      let stylePointSize;
+      if (defined(activeStyle) && defined(activeStyle.pointSize)) {
+        try {
+          const evaluated = activeStyle.pointSize.evaluate(undefined);
+          if (typeof evaluated === "number" && isFinite(evaluated)) {
+            stylePointSize = evaluated;
+          }
+        } catch (error) {
+          // Feature-dependent expression — keep the fallback path.
+        }
+      }
+      this._webgpuStylePointSizeActive = defined(stylePointSize);
       this._webgpuPointSize =
-        (this.attenuation ? this.maximumAttenuation : this._pointSize) *
-        frameState.pixelRatio;
+        (defined(stylePointSize)
+          ? stylePointSize
+          : this.attenuation
+            ? this.maximumAttenuation
+            : this._pointSize) * frameState.pixelRatio;
       fr.update(this, frameState);
       return;
     }
@@ -374,6 +400,16 @@ class PointCloud {
   get boundingSphere() {
     if (defined(this._drawCommand)) {
       return this._drawCommand.boundingVolume;
+    }
+    // POINT-SPRITE-SHAPE — the WebGPU feature-renderer path never creates
+    // `_drawCommand`; `computeWebGPUReadyState` computes `_boundingSphere`
+    // from the parsed positions instead. Fall back to it so consumers that
+    // derive from the bounding volume (e.g. TimeDynamicPointCloud's
+    // getGeometricError, which feeds point-size attenuation) see the same
+    // sphere the WebGL path exposes rather than `undefined` (which zeroed
+    // geometricError and disabled attenuation on WebGPU).
+    if (defined(this._boundingSphere)) {
+      return this._boundingSphere;
     }
     return undefined;
   }

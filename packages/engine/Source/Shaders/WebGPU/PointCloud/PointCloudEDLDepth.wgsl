@@ -45,7 +45,11 @@ struct Uniforms {
   _pad1: f32,
   viewportSize: vec2<f32>,
   pointSizeMultiplier: f32,
-  _pad2: f32,
+  // POINT-SPRITE-SHAPE — attenuation scale (geomError * scale *
+  // drawingBufferHeight / sseDenominator; 0 = off). Must mirror
+  // WebGPUPointCloudRenderer's Uniforms so the shared UB stays
+  // layout-identical (formerly _pad2).
+  attenuation: f32,
   prevViewProjection: mat4x4<f32>,
   modelMatrix: mat4x4<f32>,
   // x = frustum near, y = frustum far, z = log factor, w = useLogDepth flag.
@@ -60,7 +64,12 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let posRTE = (input.positionHigh - u.encodedCameraHigh)
              + (input.positionLow - u.encodedCameraLow);
   let clipPos = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
-  let pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  // POINT-SPRITE-SHAPE — same attenuation clamp as the color draw so the
+  // EDL depth attachment stays coverage-identical to the on-screen quads.
+  var pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  if (u.attenuation > 0.0) {
+    pointSize = min(u.attenuation / max(clipPos.w, 1.0e-6), pointSize);
+  }
   let px = pointSize / u.viewportSize.x * clipPos.w;
   let py = pointSize / u.viewportSize.y * clipPos.w;
   var fp = clipPos;
@@ -88,20 +97,20 @@ struct FragOut {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOut {
-  let dist = length(input.pointUV);
-  if (dist > 1.0) { discard; }
-  let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
+  // POINT-SPRITE-SHAPE — solid square to match WebGL gl_Points (the WebGL
+  // EC shader from PointCloudEyeDomeLighting keeps the default square
+  // rasterization; ModelFS only carves a circle under HAS_POINT_DIAMETER).
+  // Must stay coverage-identical to WebGPUPointCloudRenderer's color draw
+  // so the EDL depth attachment covers the same pixels.
   return FragOut(
-    vec4<f32>(input.color, alpha),
+    vec4<f32>(input.color, 1.0),
     max(input.eyeDepth, 1.0e-4),
   );
 }
 //>>else
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let dist = length(input.pointUV);
-  if (dist > 1.0) { discard; }
-  let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
-  return vec4<f32>(input.color, alpha);
+  // POINT-SPRITE-SHAPE — solid square; see the ifdef branch above.
+  return vec4<f32>(input.color, 1.0);
 }
 //>>endif

@@ -87,6 +87,12 @@ interface PointCloudLike {
   modelMatrix?: CesiumMatrix4;
   lodFarDistance?: number;
   geometricError?: number;
+  // POINT-SPRITE-SHAPE — WebGL attenuation parity inputs (PointCloud.js).
+  attenuation?: boolean;
+  geometricErrorScale?: number;
+  // True when a constant style pointSize is active — WebGL gives the style
+  // priority over attenuation, so the attenuation clamp must be disabled.
+  _webgpuStylePointSizeActive?: boolean;
   // Allow pass-through for anything else the buildInstanceBuffer /
   // frustum extraction paths read — keeps the typed surface minimal
   // while preserving the upstream escape hatch.
@@ -216,7 +222,13 @@ struct Uniforms {
   _pad1: f32,
   viewportSize: vec2<f32>,
   pointSizeMultiplier: f32,
-  _pad2: f32,
+  // POINT-SPRITE-SHAPE — WebGL attenuation parity. When > 0 this is
+  // geometricError * geometricErrorScale * (drawingBufferHeight /
+  // frustum.sseDenominator); per-point size becomes
+  // min(attenuation / eyeDepth, bakedMaxSize) exactly like the WebGL
+  // derived VS. 0 disables (2D / ortho / attenuation off) — the baked
+  // per-point size is used as-is (formerly _pad2, layout unchanged).
+  attenuation: f32,
   // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
   // tail. Consumed by Batch 168's per-particle motion-vector pass.
   prevViewProjection: mat4x4<f32>,
@@ -274,7 +286,14 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let posRTE = (input.positionHigh - u.encodedCameraHigh)
              + (input.positionLow - u.encodedCameraLow);
   let clipPos = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
-  let pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  // POINT-SPRITE-SHAPE — WebGL attenuation parity:
+  // gl_PointSize = min((u_geometricError / depth) * u_depthMultiplier,
+  // u_pointSize). clipPos.w is the positive eye depth for a standard
+  // perspective projection (= -positionEC.z in the WebGL VS).
+  var pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  if (u.attenuation > 0.0) {
+    pointSize = min(u.attenuation / max(clipPos.w, 1.0e-6), pointSize);
+  }
   let px = pointSize / u.viewportSize.x * clipPos.w;
   let py = pointSize / u.viewportSize.y * clipPos.w;
   var fp = clipPos;
@@ -301,10 +320,12 @@ struct FragOut {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOut {
-  let dist = length(input.pointUV);
-  if (dist > 1.0) { discard; }
-  let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
-  var finalColor = vec4<f32>(input.color, alpha);
+  // POINT-SPRITE-SHAPE — WebGL gl_Points rasterize as SOLID SQUARES
+  // (ModelFS.glsl only carves a circle under HAS_POINT_DIAMETER, the
+  // Bentley point-style extension, which this path doesn't implement).
+  // Fill the whole quad opaquely to match; pointUV stays in the
+  // varying contract for a future round/point-style opt-in.
+  var finalColor = vec4<f32>(input.color, 1.0);
 
   // FEAT-GAP-09 (Batch 103) — Aerial-perspective fog blend.
   if (effects.atmosphereLutControl.x > 0.5) {
@@ -391,7 +412,12 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   let prevCenterClip = u.prevViewProjection * prevWorldPos;
   // Rasterize quad at the current center using the existing pixel-size
   // expansion so the velocity texture covers the same screen pixels.
-  let pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  // POINT-SPRITE-SHAPE — same attenuation clamp as vertexMain so the
+  // velocity quad stays coverage-identical to the color quad.
+  var pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  if (u.attenuation > 0.0) {
+    pointSize = min(u.attenuation / max(currCenterClip.w, 1.0e-6), pointSize);
+  }
   let px = pointSize / u.viewportSize.x * currCenterClip.w;
   let py = pointSize / u.viewportSize.y * currCenterClip.w;
   var fp = currCenterClip;
@@ -449,7 +475,9 @@ struct Uniforms {
   _pad1: f32,
   viewportSize: vec2<f32>,
   pointSizeMultiplier: f32,
-  _pad2: f32,
+  // POINT-SPRITE-SHAPE — attenuation scale; see the default-path
+  // Uniforms comment (formerly _pad2, layout unchanged).
+  attenuation: f32,
   // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection.
   prevViewProjection: mat4x4<f32>,
   // Batch 168 - matches the default-path UBO layout. Used by the
@@ -539,7 +567,11 @@ fn vertexMainLOD(
   let posRTE = (positionHigh - u.encodedCameraHigh)
              + (positionLow - u.encodedCameraLow);
   let clipPos = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
-  let pointSize = size * u.pointSizeMultiplier;
+  // POINT-SPRITE-SHAPE — WebGL attenuation parity (see default path).
+  var pointSize = size * u.pointSizeMultiplier;
+  if (u.attenuation > 0.0) {
+    pointSize = min(u.attenuation / max(clipPos.w, 1.0e-6), pointSize);
+  }
   let px = pointSize / u.viewportSize.x * clipPos.w;
   let py = pointSize / u.viewportSize.y * clipPos.w;
   var fp = clipPos;
@@ -565,10 +597,9 @@ struct FragOut {
 
 @fragment
 fn fragmentMainLOD(input: VertexOutput) -> FragOut {
-  let dist = length(input.pointUV);
-  if (dist > 1.0) { discard; }
-  let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
-  var finalColor = vec4<f32>(input.color, alpha);
+  // POINT-SPRITE-SHAPE — solid square to match WebGL gl_Points; see
+  // fragmentMain in POINT_CLOUD_WGSL for the parity rationale.
+  var finalColor = vec4<f32>(input.color, 1.0);
 
   // FEAT-GAP-09 (Batch 104) — Aerial-perspective fog blend. Same
   // body as the default POINT_CLOUD_WGSL::fragmentMain.
@@ -674,7 +705,11 @@ fn vertexVelocityMainLOD(
 
   // Rasterize quad at the current center using the existing pixel-size
   // expansion so the velocity texture covers the same screen pixels.
-  let pointSize = size * u.pointSizeMultiplier;
+  // POINT-SPRITE-SHAPE — same attenuation clamp as vertexMainLOD.
+  var pointSize = size * u.pointSizeMultiplier;
+  if (u.attenuation > 0.0) {
+    pointSize = min(u.attenuation / max(currCenterClip.w, 1.0e-6), pointSize);
+  }
   let px = pointSize / u.viewportSize.x * currCenterClip.w;
   let py = pointSize / u.viewportSize.y * currCenterClip.w;
   var fp = currCenterClip;
@@ -1173,6 +1208,9 @@ function packUniforms(
   uniformState: CesiumUniformState,
   modelMatrix: Matrix4 | CesiumMatrix4,
   logActive: boolean,
+  drawingBufferWidth: number,
+  drawingBufferHeight: number,
+  attenuationScale: number,
 ): Float32Array {
   // Batch 168 - bumped from 44 → 60 floats (240 bytes) to fit the
   // trailing `modelMatrix: mat4x4<f32>` used by the velocity VS to
@@ -1213,14 +1251,18 @@ function packUniforms(
   data[22] = scratchEncoded.low.z;
   data[23] = 0;
 
-  const canvas = uniformState._context?._canvas || {
-    width: 1920,
-    height: 1080,
-  };
-  data[24] = canvas.width;
-  data[25] = canvas.height;
+  // POINT-SPRITE-SHAPE — viewportSize must be the REAL render-target size.
+  // The old `uniformState._context?._canvas` read was always undefined
+  // (UniformState has no `_context`), so every point cloud rendered with a
+  // phantom 1920x1080 viewport — points came out both smaller than WebGL's
+  // gl_PointSize squares AND anisotropic (16:9-squished) on non-16:9
+  // canvases. The caller passes context.drawingBufferWidth/Height.
+  data[24] = drawingBufferWidth;
+  data[25] = drawingBufferHeight;
   data[26] = 1.0; // pointSizeMultiplier
-  data[27] = 0; // pad
+  // POINT-SPRITE-SHAPE — per-point attenuation numerator (0 = disabled);
+  // the shaders clamp min(attenuation / eyeDepth, bakedMaxSize).
+  data[27] = attenuationScale;
 
   // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
   // 28..43. UniformState swaps `_previousViewProjection := viewProjection`
@@ -1487,7 +1529,41 @@ function updateWebGPUPointCloud(
 
   // Per-frame uniforms
   const logActive = isWebGPULogDepthActive(context, frameState);
-  const uniforms = packUniforms(context.uniformState, modelMatrix, logActive);
+  // POINT-SPRITE-SHAPE — WebGL attenuation parity. Mirrors PointCloud.js
+  // u_pointSizeAndTimeAndGeometricErrorAndDepthMultiplier.zw:
+  // numerator = geometricError * geometricErrorScale *
+  // (drawingBufferHeight / frustum.sseDenominator). Ortho/2D frustums have
+  // no sseDenominator — WebGL uses depthMultiplier = +Infinity there, i.e.
+  // the clamp always lands on maximumAttenuation; we pass 0 (disabled) so
+  // the shaders use the baked max size, which is the same result.
+  // A constant style pointSize overrides attenuation entirely on WebGL
+  // (hasPointSizeStyle wins in the derived VS) — keep the clamp off then.
+  let attenuationScale = 0.0;
+  if (
+    pointCloud.attenuation === true &&
+    pointCloud._webgpuStylePointSizeActive !== true
+  ) {
+    const frustum = (
+      frameState as {
+        camera?: { frustum?: { sseDenominator?: number } };
+      }
+    ).camera?.frustum;
+    const sse = frustum?.sseDenominator;
+    if (typeof sse === "number" && Number.isFinite(sse) && sse > 0) {
+      const geometricError =
+        (pointCloud.geometricError ?? 0) *
+        (pointCloud.geometricErrorScale ?? 1);
+      attenuationScale = geometricError * (context.drawingBufferHeight / sse);
+    }
+  }
+  const uniforms = packUniforms(
+    context.uniformState,
+    modelMatrix,
+    logActive,
+    context.drawingBufferWidth,
+    context.drawingBufferHeight,
+    attenuationScale,
+  );
   device.queue.writeBuffer(cache.uniformBuffer!, 0, gpuData(uniforms));
 
   // ── Fast path: opt-in + above threshold + processor ready ──

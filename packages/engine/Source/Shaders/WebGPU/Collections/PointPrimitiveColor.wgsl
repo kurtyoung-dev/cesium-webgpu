@@ -156,21 +156,36 @@ fn vertexMain(
     let camDistSq = dot(eyeRelativePos.xyz, eyeRelativePos.xyz);
     var clipPos = camera.mvpRelativeToEye * eyeRelativePos;
 
+    // POINT-SPRITE-SHAPE — mirror PointPrimitiveCollectionVS sizing
+    // exactly: outlinePercent from the UNPADDED size, scaleByDistance
+    // applied to the TOTAL size (outline included, like WebGL), +3.0
+    // anti-aliasing padding, floor at 1.0. Before this the WebGPU
+    // sprite was 3px smaller with a thinner outline ring than WebGL.
+    // (czm_pixelRatio and u_maxTotalPointSize are not plumbed into this
+    // UB; probes run at DPR 1 and WebGPU has no aliased-point clamp.)
+    let outlineBothSides = 2.0 * outlineWidth;
+    var totalSize: f32 = basePixelSize + outlineBothSides;
+    var outlinePercent: f32 = 0.0;
+    if (totalSize > 0.0) {
+        outlinePercent = outlineBothSides / totalSize;
+    }
     // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_SCALING
     // before the quad expansion so scale=0 collapses the quad to a
     // point and the DDC clip-pos override doesn't fight the size
     // calculation.
-    var pixelSize: f32 = basePixelSize;
     //>>ifdef EYE_DISTANCE_SCALING
     let distScale = czm_nearFarScalar(scaleByDistance, camDistSq);
-    pixelSize = pixelSize * distScale;
+    totalSize = totalSize * distScale;
     if (distScale == 0.0) {
         clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     //>>endif
-
-    // Total rendered size including outline on both sides
-    let totalSize = max(pixelSize + 2.0 * outlineWidth, 1.0);
+    if (totalSize > 0.0) {
+        totalSize = totalSize + 3.0; // WebGL AA padding
+    }
+    if (totalSize < 1.0) {
+        totalSize = 1.0;
+    }
 
     // Quad corner from vertex index (0-5)
     let corner = QUAD_CORNERS[vertexIndex % 6u];
@@ -248,8 +263,10 @@ fn vertexMain(
     //>>endif
     output.color = vec4<f32>(pointColor.rgb, effectiveAlpha);
     output.outlineColor = vec4<f32>(outColorAndShow.xyz, effectiveAlpha);
-    output.innerPercent = select(0.0, pixelSize / totalSize, totalSize > 0.0);
-    output.pixelDistance = select(0.0, 1.0 / totalSize, totalSize > 0.0);
+    // POINT-SPRITE-SHAPE — WebGL parity: v_innerPercent = 1 - outlinePercent,
+    // v_pixelDistance = 2 / totalSize (was 1/totalSize, halving the AA band).
+    output.innerPercent = 1.0 - outlinePercent;
+    output.pixelDistance = 2.0 / totalSize;
 
     //>>ifdef SPLIT_ENABLED
     // DP-H40 — forward split direction for per-fragment discard.
@@ -387,7 +404,15 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   // velocity texture covers the same pixels the color pass touched.
   // Same QUAD_CORNERS expansion as `vertexMain`.
   var clipPos = currentCenterClip;
-  let totalSize = max(basePixelSize + 2.0 * outlineWidth, 1.0);
+  // POINT-SPRITE-SHAPE — +3 AA padding matches the color VS so the
+  // velocity quad stays coverage-identical to the color quad.
+  var totalSize = basePixelSize + 2.0 * outlineWidth;
+  if (totalSize > 0.0) {
+    totalSize = totalSize + 3.0;
+  }
+  if (totalSize < 1.0) {
+    totalSize = 1.0;
+  }
   let corner = QUAD_CORNERS[input.vertexIndex % 6u];
   let ndcOffset = vec2<f32>(
     corner.x * totalSize * 2.0 / camera.viewportSize.x,
