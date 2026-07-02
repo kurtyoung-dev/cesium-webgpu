@@ -53,7 +53,18 @@ from b — ~~full multi-component ATTRIBUTE transport~~ **CLOSED 2026-07-02 (MET
 `@location(9)` widened to `vec4<f32>` — up to four components per vertex (VEC2/3/4 + MAT2 full;
 MAT3/4 still first-four-only), component-wise offset/scale in `constructFromTransport`, verified by
 `probe-metadata-multicomponent.mjs` (VEC3 `BoxVec3PropertyAttributes` asset)**;
-from c — multi-byte component (UINT16/32) channel-packing for property TEXTURES; from d —
+from c — ~~multi-byte component (UINT16/32) channel-packing for property TEXTURES~~ **CLOSED 2026-07-02
+(METADATA-UINT16-32): `buildPropertyTextureUnpack` now reassembles each component's channel slice
+LSB-first via `buildUnpackBitsExpr` (the `czm_unpackTexture` convention, shared with the table unpacker
+through the new `buildScalarFromRawBits`) — UINT8 emission byte-identical (`channelsPerComponent<=1`
+path untouched); the integer texture debug scalar rescales by the component-type max (still `255.0`
+for UINT8). Also fixed the WEBGL side of pickMetadata for wide unsigned types: GLSL `unnormalize`
+emitted `float(4294967295)` whose int literal overflows (ANGLE wraps to -1 → UINT32 pick decoded 0);
+now emits a float literal (`4294967295.0`). Verified by `probe-metadata-uint16.mjs` (authored asset
+`Tools/visual-regression/assets/PropertyTextureUint16.gltf`, UINT16 channels [0,1] + UINT32 channels
+[0,1,2,3]): per-stripe EXACT pick decode on BOTH backends (incl. the b0=240 low-byte proof stripe) +
+WebGPU display debug paint exact per stripe**;
+from d —
 TEXTURE-sourced + instance/implicit feature-ID property TABLES (only the ATTRIBUTE feature-ID path is
 wired today — the dominant b3dm/BuildingsMetadata case) and VS-stage table reads (today FS-only display);
 from e — `scene.pickMetadata` reaching attributes/tables is gated on upstream `getMetadataProperty`

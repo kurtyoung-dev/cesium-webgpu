@@ -253,14 +253,16 @@ function buildTexCoordExpr(texCoordExpr, transform) {
  *     byte (`u32(channel * 255.0 + 0.5)`) and cast to the WGSL int/uint type.
  *
  * The property's component count drives how many channels feed each component
- * (mirrors `channelsPerComponent` in the GLSL unpacker). DP-H46c supports the
- * common single-byte-per-component case (1 channel per scalar component),
- * which covers every UINT8 property texture in the test corpus; multi-byte
- * components (UINT16/UINT32 packed across channels) are not yet emitted (the
- * `isGpuCompatible` predicate already permits them, but the GLSL-style
- * little-endian channel packing is follow-up — see the open issue in
- * DP-H46_METADATA_DESIGN.md). For those the value falls back to the
- * first-channel scalar so the model still renders.
+ * (mirrors `channelsPerComponent` in the GLSL unpacker):
+ *
+ *   - 1 channel per component (the common UINT8 case) — each component reads a
+ *     single swizzled channel (byte-identical codegen to DP-H46c).
+ *   - multi-byte components (METADATA-UINT16-32 — UINT16/UINT32/INT16/INT32/
+ *     FLOAT32 packed across 2/4 channels) — each component's channel slice is
+ *     reassembled LSB-first into a raw `u32` bit pattern (the SAME little-endian
+ *     convention as GLSL `czm_unpackTexture`), then bit-reinterpreted to the
+ *     scalar category and optionally normalized, mirroring
+ *     `MetadataClassProperty.unpackTextureInShader` exactly.
  *
  * @param {string} sampleExpr a WGSL `vec4<f32>` expression (the texture sample)
  * @param {string} channels the channel swizzle string, e.g. "r", "rg", "rgb"
@@ -284,21 +286,21 @@ function buildPropertyTextureUnpack(
   // component reads a single swizzled channel.
   const channelsPerComponent = Math.floor(numChannels / componentCount) || 1;
 
-  // The sampled, swizzled channels as a float scalar / vecN.
-  const swizzle = `${sampleExpr}.${channels}`;
-
-  if (isFloatFamily) {
-    // Normalized or float property: the normalized [0,1] sample IS the value.
-    if (wgslType === "f32") {
-      return `${swizzle}`;
-    }
-    // vecN<f32> — construct from the swizzle (already a vecN<f32>).
-    return `${wgslType}(${swizzle})`;
-  }
-
-  // Integer family (unnormalized int/uint). Rescale each channel back to its
-  // raw byte value, then cast. Single channel-per-component fast path.
   if (channelsPerComponent <= 1) {
+    // The sampled, swizzled channels as a float scalar / vecN.
+    const swizzle = `${sampleExpr}.${channels}`;
+
+    if (isFloatFamily) {
+      // Normalized or float property: the normalized [0,1] sample IS the value.
+      if (wgslType === "f32") {
+        return `${swizzle}`;
+      }
+      // vecN<f32> — construct from the swizzle (already a vecN<f32>).
+      return `${wgslType}(${swizzle})`;
+    }
+
+    // Integer family (unnormalized int/uint). Rescale each channel back to its
+    // raw byte value, then cast.
     if (componentCount === 1) {
       // Scalar: u32/i32(channel * 255.0 + 0.5)
       return `${wgslType}(${swizzle} * 255.0 + 0.5)`;
@@ -308,13 +310,31 @@ function buildPropertyTextureUnpack(
     return `${wgslType}(${swizzle} * 255.0 + ${vecSplat(componentCount, "0.5")})`;
   }
 
-  // Multi-byte component (follow-up). Fall back to the first channel's byte
-  // so the model renders; flagged as an open issue in the design doc.
-  const first = `${sampleExpr}.${channels.charAt(0)}`;
-  if (componentCount === 1) {
-    return `${wgslType}(${first} * 255.0 + 0.5)`;
+  // METADATA-UINT16-32 — multi-byte components (UINT16/UINT32/INT16/INT32/
+  // FLOAT32 packed across 2/4 channels, keyed off the property's
+  // componentType via `channelsPerComponent > 1`). Mirrors WebGL's
+  // `MetadataClassProperty.unpackTextureInShader`: for each output component,
+  // slice its `channelsPerComponent` channels from the property's channel
+  // string, reassemble the raw bits LSB-first (`czm_unpackTexture`
+  // convention), then bit-reinterpret / normalize per the scalar category.
+  const componentExprs = [];
+  for (let c = 0; c < componentCount; c++) {
+    const slice = channels.slice(
+      c * channelsPerComponent,
+      (c + 1) * channelsPerComponent,
+    );
+    // WGSL vectors support the rgba swizzle set, so the channel-string slice
+    // is directly a swizzle (scalar for one channel, vecN<f32> for several).
+    const channelExpr = `(${sampleExpr}).${slice}`;
+    const rawBits = buildUnpackBitsExpr(channelExpr, slice.length);
+    componentExprs.push(buildScalarFromRawBits(rawBits, classProperty));
   }
-  return `${wgslType}()`;
+
+  if (componentCount === 1) {
+    return componentExprs[0];
+  }
+  // vecN<...> — construct from the per-component scalars.
+  return `${wgslType}(${componentExprs.join(", ")})`;
 }
 
 /**
@@ -362,6 +382,55 @@ function buildUnpackBitsExpr(channelsExpr, channelCount) {
 }
 
 /**
+ * METADATA-UINT16-32 — build the WGSL scalar expression that bit-reinterprets
+ * (and optionally normalizes) a reassembled raw `u32` bit pattern into the
+ * property's scalar category. Shared by the property-TEXTURE multi-byte
+ * unpacker ({@link buildPropertyTextureUnpack}) and the property-TABLE
+ * unpacker ({@link buildPropertyTableUnpack}) so both emit the identical
+ * convention (the WGSL sibling of GLSL's `uintBitsToScalarType` cast +
+ * normalize in `MetadataClassProperty.unpackTextureInShader`):
+ *
+ *   - FLOAT component types            → `bitcast<f32>(rawBits)`
+ *   - signed-integer component types   → `bitcast<i32>(rawBits)`
+ *   - unsigned-integer component types → `rawBits` (already u32)
+ *   - normalized integer               → `f32(value) * 1/maxValue` (→ float family)
+ *
+ * The value type is GPU-downcast first (`gpuComponentType`: INT64→INT32, etc.)
+ * so the reinterpretation + normalization max match the bytes actually packed.
+ *
+ * @param {string} rawBitsExpr a WGSL `u32` expression (the reassembled bits)
+ * @param {MetadataClassProperty} classProperty supplies valueType + normalized
+ * @returns {string} a WGSL scalar expression (`f32`, `i32`, or `u32`)
+ * @private
+ */
+function buildScalarFromRawBits(rawBitsExpr, classProperty) {
+  const isNormalized = classProperty.normalized === true;
+  const gpuValueType = MetadataComponentType.gpuComponentType(
+    classProperty.valueType,
+  );
+  const category = MetadataComponentType.category(gpuValueType);
+
+  if (isNormalized) {
+    // Normalized integer → float in [0,1] (unsigned) / [-1,1] (signed).
+    const maxValue = Number(MetadataComponentType.getMaximum(gpuValueType));
+    const inv = maxValue !== 0 ? 1.0 / maxValue : 0.0;
+    if (category === ScalarCategories.UNSIGNED_INTEGER) {
+      return `(f32(${rawBitsExpr}) * ${wgslFloat(inv)})`;
+    }
+    // Signed: reinterpret then normalize.
+    return `(f32(bitcast<i32>(${rawBitsExpr})) * ${wgslFloat(inv)})`;
+  }
+  if (category === ScalarCategories.FLOAT) {
+    return `bitcast<f32>(${rawBitsExpr})`;
+  }
+  if (category === ScalarCategories.UNSIGNED_INTEGER) {
+    return `${rawBitsExpr}`;
+  }
+  // Signed integer — bit-reinterpret the u32 pattern as i32.
+  return `bitcast<i32>(${rawBitsExpr})`;
+}
+
+/**
  * DP-H46d — build a WGSL expression that unpacks a property-TABLE
  * `textureLoad` sample (a `vec4<f32>` of normalized rgba8 channels) into the
  * property's WGSL type. This is the WGSL sibling of
@@ -391,14 +460,6 @@ function buildPropertyTableUnpack(sampleExpr, classProperty, wgslType) {
   const numChannels = 4;
   const componentCount = getComponentCount(classProperty);
   const channelsPerComponent = Math.floor(numChannels / componentCount) || 1;
-  const isNormalized = classProperty.normalized === true;
-  // Downcast the source value type the same way the loader packs the texture
-  // (gpuComponentType: INT64→INT32, etc.) so the bit-reinterpret + normalization
-  // max value match the bytes actually stored.
-  const gpuValueType = MetadataComponentType.gpuComponentType(
-    classProperty.valueType,
-  );
-  const category = MetadataComponentType.category(gpuValueType);
 
   const channelNames = ["x", "y", "z", "w"];
 
@@ -419,27 +480,9 @@ function buildPropertyTableUnpack(sampleExpr, classProperty, wgslType) {
         .join(", ")})`;
     }
     const rawBits = buildUnpackBitsExpr(channelExpr, sliceComps.length);
-
-    let scalarExpr;
-    if (isNormalized) {
-      // Normalized integer → float in [0,1] (unsigned) / [-1,1] (signed).
-      const maxValue = Number(MetadataComponentType.getMaximum(gpuValueType));
-      const inv = maxValue !== 0 ? 1.0 / maxValue : 0.0;
-      if (category === ScalarCategories.UNSIGNED_INTEGER) {
-        scalarExpr = `(f32(${rawBits}) * ${wgslFloat(inv)})`;
-      } else {
-        // Signed: reinterpret then normalize.
-        scalarExpr = `(f32(bitcast<i32>(${rawBits})) * ${wgslFloat(inv)})`;
-      }
-    } else if (category === ScalarCategories.FLOAT) {
-      scalarExpr = `bitcast<f32>(${rawBits})`;
-    } else if (category === ScalarCategories.UNSIGNED_INTEGER) {
-      scalarExpr = `${rawBits}`;
-    } else {
-      // Signed integer — bit-reinterpret the u32 pattern as i32.
-      scalarExpr = `bitcast<i32>(${rawBits})`;
-    }
-    componentExprs.push(scalarExpr);
+    // Shared bit-reinterpret / normalize (METADATA-UINT16-32 — same helper as
+    // the property-TEXTURE multi-byte unpacker, byte-identical emission).
+    componentExprs.push(buildScalarFromRawBits(rawBits, classProperty));
   }
 
   if (componentCount === 1) {

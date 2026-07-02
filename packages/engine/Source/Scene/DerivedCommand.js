@@ -471,7 +471,16 @@ function unapplyValueTransform(input, offset, scale) {
  */
 function unnormalize(input, componentType) {
   const max = MetadataComponentType.getMaximum(componentType);
-  return `(${input}) / float(${max})`;
+  // Emit the maximum as a GLSL FLOAT literal (METADATA-UINT16-32): the
+  // historical `float(${max})` int-constructor form overflows the GLSL
+  // signed-int literal parse for UINT32 (4294967295) and INT64/UINT64 maxima
+  // (ANGLE wraps the literal to -1), so pickMetadata of wide unsigned types
+  // decoded to 0. `4294967295.0` is a valid float literal with the identical
+  // value; integer maxima <= INT32_MAX are unchanged in float precision.
+  // FLOAT32/64 maxima already stringify with an exponent, which is float-
+  // literal syntax as-is.
+  const maxStr = /[.eE]/.test(String(max)) ? String(max) : `${max}.0`;
+  return `(${input}) / ${maxStr}`;
 }
 
 /**

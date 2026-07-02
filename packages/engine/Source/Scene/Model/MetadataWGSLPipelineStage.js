@@ -51,6 +51,7 @@
  */
 import defined from "../../Core/defined.js";
 import ModelUtility from "./ModelUtility.js";
+import MetadataComponentType from "../MetadataComponentType.js";
 import MetadataType from "../MetadataType.js";
 import {
   resolvePropertyTextureLayout,
@@ -621,12 +622,21 @@ function generateMetadataWGSL(model, primitive) {
       proofField.wgslType,
     );
     // Property-TEXTURE float values are normalized samples already in [0,1];
-    // integer values are the raw byte → rescale to [0,1] for the gradient.
+    // integer values are the raw decoded value → rescale to [0,1] by the
+    // component type's max (METADATA-UINT16-32: 255 for UINT8 — byte-identical
+    // to the historical `/ 255.0` — 65535 for UINT16, etc.) for the gradient.
     const inverted = invertValueTransform(rawScalar, proofField.classProperty);
     const isFloat = proofField.wgslType.indexOf("f32") !== -1;
+    const debugMax = Number(
+      MetadataComponentType.getMaximum(
+        MetadataComponentType.gpuComponentType(
+          proofField.classProperty.valueType,
+        ),
+      ),
+    );
     debugBody = isFloat
       ? inverted
-      : `clamp(f32(${inverted}) / 255.0, 0.0, 1.0)`;
+      : `clamp(f32(${inverted}) / ${floatLit(debugMax)}, 0.0, 1.0)`;
   } else {
     // Property-TABLE proof. Unlike property textures, table float values are
     // the RAW property value (e.g. building heights 78..86), not normalized —
