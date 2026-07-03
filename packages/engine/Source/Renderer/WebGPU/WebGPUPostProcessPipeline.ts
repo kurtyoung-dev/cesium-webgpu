@@ -6,10 +6,12 @@
  * from a source texture and writes to a destination texture (ping-pong pattern).
  *
  * Pipeline execution order:
+ * 0. Aerial Perspective (per-pixel atmosphere, depth-gated)
  * 1. Ambient Occlusion (complex multi-pass effect)
  * 2. Bloom + GodRays (complex multi-pass effects)
  * 3. Depth of Field (complex multi-pass effect, depth-gated)
  * 3.5 AutoExposure (compute, feeds Tonemap exposure uniform)
+ * 3.7 HeatShimmer + ColdOptics (single-pass overlays, linear/HDR domain)
  * 4. TAA (Audit B.16, Batch 155 — runs in linear/HDR domain BEFORE
  *    Tonemap. NEW-TAA-PIPELINE-ORDER-RECONCILE (Batch 290) — RESOLVED:
  *    pre-tonemap (linear/HDR) is the CORRECT placement and the existing
@@ -37,9 +39,16 @@
  *    History buffers therefore use `_intermediateFormat` (rgba16float
  *    in HDR) — see addTAA / NEW-POSTPROCESS-HDR-INTERMEDIATES.)
  * 5. Tonemapping / HDR (single-pass, mode-selectable operator)
- * 6. ColorGrading (single-pass LUT)
- * 7. Custom stages (user-added via addCustomStage)
- * 8. FXAA (single-pass anti-aliasing, always last)
+ * 6. User WGSL stages + intercepted library builtins
+ *    (NEW-PP-LIBRARY-TONEMAP-ORDER — POST-tonemap, matching WebGL's
+ *    PostProcessStageCollection.execute(), which runs the stages added
+ *    via `scene.postProcessStages.add(...)` on the tonemapped SDR
+ *    output, before FXAA. Under HDR canvas output the tonemap stage is
+ *    bypassed and these stages see linear HDR — that mode has no WebGL
+ *    reference.)
+ * 7. ColorGrading (single-pass LUT)
+ * 8. Custom stages (user-added via addCustomStage)
+ * 9. FXAA (single-pass anti-aliasing, always last)
  *
  * Architecture:
  * - Two ping-pong textures (A, B) alternate as source/destination
@@ -1394,44 +1403,10 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       }
     }
 
-    // 3.6 NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
-    // B198-D2 audit fix — moved from step 3.4 to here). User-supplied
-    // WGSL post-process stages run AFTER auto-exposure dispatch (so
-    // auto-exposure correctly sees the post-DoF ping/pong texture as
-    // its luminance source) but BEFORE TAA + tonemap (so user stages
-    // operate on HDR-space color and TAA accumulates the user-modified
-    // frame). Matches the WebGL backend's insertion point for custom
-    // stages. Each stage chains via the standard
-    // `execute(encoder, source, depth, sampler) → newView` contract.
-    for (const stage of this._userStages) {
-      if (stage.enabled) {
-        currentView = stage.execute(
-          encoder,
-          currentView,
-          depth,
-          this._sampler!,
-        );
-      }
-    }
-
-    // 3.65 WIRE-PP-LIBRARY-BUILTINS — intercepted PostProcessStageLibrary
-    // built-ins (BlackAndWhite / Brightness / NightVision / Silhouette /
-    // EdgeDetection / LensFlare / DepthView WGSL twins). Same chain slot
-    // as user WGSL stages: after the multi-pass effects + auto-exposure,
-    // before TAA + tonemap — matching WebGL's insertion point for
-    // `scene.postProcessStages.add(...)` stages. Depth-dependent stages
-    // (DepthView / EdgeDetection / Silhouette) pass through unchanged
-    // when the sampleable depth copy is unavailable.
-    for (const stage of this._libraryStages) {
-      if (stage.enabled) {
-        currentView = stage.execute(
-          encoder,
-          currentView,
-          depth,
-          this._sampler!,
-        );
-      }
-    }
+    // 3.6/3.65 — the user WGSL stage + library builtin loops used to run
+    // here (pre-TAA, pre-tonemap). NEW-PP-LIBRARY-TONEMAP-ORDER moved
+    // them to step 4.1/4.2 below (post-tonemap) to match WebGL's
+    // insertion point — see the comments there.
 
     // 3.7 HeatShimmer (Atmospheric Effects Phase B, Batch 417b) — animated
     // screen-space UV-warp. Placed AFTER aerial-perspective / AO / bloom /
@@ -1465,17 +1440,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     }
 
     // AUDIT_2026_05_02 B.16 (Batch 155 clarity refactor; Batch 157
-    // comment correction) — push order of `singlePassStages` now
-    // matches GPU command stream order. The actual execution order
-    // was ALREADY correct in the prior code: `_taaEffect.execute()`
-    // records GPU commands immediately at the call site below, while
-    // the `singlePassStages` loop (tonemap → colorGrading → custom →
-    // fxaa) doesn't run until further down. So TAA always operated
-    // on the pre-tonemap, linear/HDR `currentView` regardless of
-    // where the array pushes happened. This refactor is purely a
-    // clarity fix — moving the tonemap/colorGrading pushes AFTER the
-    // TAA call makes the JS read order match the GPU command order.
-    // No GPU command stream change.
+    // comment correction) — TAA executes here, BEFORE tonemap (step 4
+    // below), so it always operates on the pre-tonemap, linear/HDR
+    // `currentView`. See the module docstring for the full rationale
+    // (TAA's internal reversible Karis tonemap-weighting requires
+    // linear input).
     if (this._taaEffect?.enabled) {
       // TAA Slice 2d (Batch 104) — pass the per-pixel motion-vector
       // view through. When the SceneRenderer hasn't run a velocity
@@ -1498,9 +1467,94 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    // 4. Tonemapping + ColorGrading + Custom stages + FXAA (single-pass chain)
+    // 4. Tonemapping → user/library stages → ColorGrading + Custom + FXAA.
+    //
+    // NEW-PP-LIBRARY-TONEMAP-ORDER — the tail order matches WebGL's
+    // PostProcessStageCollection.execute(): ao/bloom → autoExposure →
+    // tonemap → added stages (`_stages`) → FXAA. Tonemap therefore
+    // executes FIRST (when enabled: HDR render, SDR canvas), so
+    // user/library stages receive the tonemapped SDR frame exactly like
+    // WebGL — historically they ran pre-TAA/pre-tonemap and read
+    // unbounded linear color, an HDR-only divergence (in SDR the tonemap
+    // stage is disabled, making this ordering pixel-identical to the old
+    // placement on the default path).
+    //
+    // Ping-pong bookkeeping spans the whole tail: `viewIndex` alternates
+    // ping/pong across tonemap + the ColorGrading/custom/FXAA chain.
+    // User/library stages own their output textures, so they don't
+    // consume a ping-pong slot (no read/write hazard either way).
+    //
+    // Batch 110 (HDR fix) — every single-pass stage's pipeline is
+    // compiled with `targets: [{ format: _intermediateFormat }]` (see
+    // `_compileStage` callers). When HDR is on, intermediateFormat is
+    // `rgba16float` while the canvas swap chain stays at the canvas
+    // format. Writing the LAST stage straight to `destView` (canvas)
+    // would produce a pipeline-vs-attachment format mismatch and the
+    // canvas would render black with a validation warning.
+    //
+    // Fix: every single-pass stage writes to a ping-pong view (which
+    // matches `_intermediateFormat`), and an extra identity-blit at
+    // the end downconverts to `destView` (canvas format). The blit is
+    // a single fullscreen-triangle pass with no uniforms — cheap. In
+    // SDR mode `_intermediateFormat === canvasFormat` so the blit is
+    // an over-call, but the cost is negligible compared to one stage's
+    // worth of fragment shading.
+    const views = [this._pingView!, this._pongView!];
+    let viewIndex = 0;
+
+    if (this._tonemapStage?.enabled) {
+      const targetView = views[viewIndex];
+      this._executeSinglePassStage(
+        encoder,
+        this._tonemapStage,
+        currentView,
+        targetView,
+      );
+      currentView = targetView;
+      viewIndex = (viewIndex + 1) % 2;
+    }
+
+    // 4.1 NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
+    // B198-D2 audit fix; NEW-PP-LIBRARY-TONEMAP-ORDER re-placement).
+    // User-supplied WGSL post-process stages run AFTER tonemap and
+    // BEFORE ColorGrading/FXAA — matching the WebGL backend's insertion
+    // point for `scene.postProcessStages.add(...)` stages
+    // (PostProcessStageCollection.execute runs `_stages` on the
+    // tonemapped output, before FXAA). Each stage chains via the
+    // standard `execute(encoder, source, depth, sampler) → newView`
+    // contract.
+    for (const stage of this._userStages) {
+      if (stage.enabled) {
+        currentView = stage.execute(
+          encoder,
+          currentView,
+          depth,
+          this._sampler!,
+        );
+      }
+    }
+
+    // 4.2 WIRE-PP-LIBRARY-BUILTINS — intercepted PostProcessStageLibrary
+    // built-ins (BlackAndWhite / Brightness / NightVision / Silhouette /
+    // EdgeDetection / LensFlare / DepthView WGSL twins). Same chain slot
+    // as user WGSL stages: post-tonemap, pre-FXAA — matching WebGL's
+    // insertion point for `scene.postProcessStages.add(...)` stages
+    // (NEW-PP-LIBRARY-TONEMAP-ORDER). Depth-dependent stages
+    // (DepthView / EdgeDetection / Silhouette) pass through unchanged
+    // when the sampleable depth copy is unavailable.
+    for (const stage of this._libraryStages) {
+      if (stage.enabled) {
+        currentView = stage.execute(
+          encoder,
+          currentView,
+          depth,
+          this._sampler!,
+        );
+      }
+    }
+
+    // 4.3 ColorGrading + Custom stages + FXAA (single-pass chain)
     const singlePassStages: CompiledStage[] = [];
-    if (this._tonemapStage?.enabled) singlePassStages.push(this._tonemapStage);
     // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) + PARITY-HDR-PP-MATH —
     // when the canvas is configured for HDR output, ColorGrading and FXAA
     // used to be dropped from the chain entirely (their SDR-calibrated
@@ -1523,34 +1577,6 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       singlePassStages.push(this._fxaaStage);
     }
 
-    if (singlePassStages.length === 0) {
-      // No single-pass stages — always copy to dest. Even if no complex
-      // effects ran (currentView === sourceView), WebGPU still needs the
-      // identity blit from scene framebuffer → canvas swap chain.
-      this._executeCopyStage(encoder, currentView, destView);
-      return;
-    }
-
-    // Ping-pong through single-pass stages.
-    //
-    // Batch 110 (HDR fix) — every single-pass stage's pipeline is
-    // compiled with `targets: [{ format: _intermediateFormat }]` (see
-    // `_compileStage` callers). When HDR is on, intermediateFormat is
-    // `rgba16float` while the canvas swap chain stays at the canvas
-    // format. Writing the LAST stage straight to `destView` (canvas)
-    // would produce a pipeline-vs-attachment format mismatch and the
-    // canvas would render black with a validation warning.
-    //
-    // Fix: every single-pass stage writes to a ping-pong view (which
-    // matches `_intermediateFormat`), and an extra identity-blit at
-    // the end downconverts to `destView` (canvas format). The blit is
-    // a single fullscreen-triangle pass with no uniforms — cheap. In
-    // SDR mode `_intermediateFormat === canvasFormat` so the blit is
-    // an over-call, but the cost is negligible compared to one stage's
-    // worth of fragment shading.
-    const views = [this._pingView!, this._pongView!];
-    let viewIndex = 0;
-
     for (let i = 0; i < singlePassStages.length; i++) {
       const stage = singlePassStages[i];
       const targetView = views[viewIndex];
@@ -1563,7 +1589,9 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
     // Final blit: ping-pong view → canvas. Uses the identity-blit
     // pipeline which is built once at `initialize()` against the
-    // canvas format.
+    // canvas format. Runs unconditionally — even when nothing past the
+    // `hasActiveStages` guard executed, WebGPU still needs the identity
+    // blit from the scene framebuffer to the canvas swap chain.
     this._executeCopyStage(encoder, currentView, destView);
   }
 

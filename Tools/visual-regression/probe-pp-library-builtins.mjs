@@ -20,6 +20,11 @@
 //       BYTE-IDENTICAL to the default capture and no LibraryPP pass is
 //       recorded.
 //   (5) zero console errors + zero GPU uncapturederrors.
+// HDR PHASE (NEW-PP-LIBRARY-TONEMAP-ORDER):
+//   (6) with scene.highDynamicRange=true (SDR canvas — tonemap RUNS on
+//       both backends), the WebGPU library builtin executes AFTER the
+//       tonemap pass (pass-label order) and its output matches WebGL's
+//       post-tonemap output within the SDR-band tolerance.
 //
 // Usage: node Tools/visual-regression/probe-pp-library-builtins.mjs
 // Env: PROBE_BASE (default http://localhost:8080)
@@ -302,6 +307,198 @@ async function runBackend(renderer) {
   return { out, consoleErrors };
 }
 
+// HDR phase (NEW-PP-LIBRARY-TONEMAP-ORDER) — separate page load with
+// `scene.highDynamicRange = true` set BEFORE the first settle so the
+// scene framebuffer + all cached pipelines are created against the HDR
+// format from the start. (Toggling highDynamicRange mid-session on
+// WebGPU currently invalidates cached primitive pipelines — a
+// pre-existing, unrelated bug; probe-hdr-pp-math takes the same
+// startup-HDR approach.) SDR canvas: the tonemap stage RUNS on both
+// backends, so the library builtin must see the tonemapped SDR frame,
+// matching WebGL's post-tonemap insertion point.
+async function runHdrBackend(renderer) {
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
+  const consoleErrors = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") consoleErrors.push(m.text());
+  });
+  page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
+    waitUntil: "networkidle",
+  });
+  await page.waitForFunction(() => !!window.viewer);
+
+  const out = await page.evaluate(
+    async ({ isWebGPU }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const scene = v.scene;
+
+      window.__passLabels = [];
+      window.__gpuErrors = [];
+      if (isWebGPU && typeof GPUCommandEncoder !== "undefined") {
+        const origBRP = GPUCommandEncoder.prototype.beginRenderPass;
+        GPUCommandEncoder.prototype.beginRenderPass = function (desc) {
+          window.__passLabels.push((desc && desc.label) || "");
+          return origBRP.call(this, desc);
+        };
+        const dev = scene.context._device || scene.context.device;
+        if (dev && dev.addEventListener) {
+          dev.addEventListener("uncapturederror", (e) => {
+            window.__gpuErrors.push(String(e.error && e.error.message));
+          });
+        }
+      }
+
+      // HDR BEFORE any scene setup / rendering we depend on.
+      scene.highDynamicRange = true;
+
+      // Deterministic WHITE-POINT scene: the HDR gate must measure the
+      // POST-PROCESS chain (tonemap order + tonemap math + the library
+      // builtin), so it deliberately excludes scene content with known
+      // scene-side cross-backend gaps that would pollute the compare —
+      // the globe (WGSL plain-HDR sRGB->linear decode is gated on HDR
+      // canvas output only; WebGL's `#ifdef HDR` engages on useHdr
+      // alone), entity boxes (WebGPU per-instance color divergence),
+      // and mid-gray point colors (WebGL's PointPrimitiveCollectionFS
+      // czm_gammaCorrect linearizes under HDR; the WGSL point renderer
+      // does not). WHITE (1.0) and the black sky (0.0) are fixed points
+      // of the gamma pow, so identical values enter the scene FB on
+      // both backends and any output delta is attributable to the PP
+      // chain. The tonemap curve still discriminates strongly: PBR
+      // Neutral maps 1.0 -> ~0.88, sRGB-encodes to ~240 (a missing
+      // tonemap shows 255), and post-tonemap BlackAndWhite posterizes
+      // ~0.94 luma to the 0.8 band (~204) while a PRE-tonemap
+      // BlackAndWhite would emit ~240.
+      scene.requestRenderMode = false;
+      v.clock.shouldAnimate = false;
+      v.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T08:00:00Z");
+      scene.fog.enabled = false;
+      if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
+      if (scene.skyBox) scene.skyBox.show = false;
+      if (scene.sun) scene.sun.show = false;
+      if (scene.moon) scene.moon.show = false;
+      scene.globe.show = false;
+      v.imageryLayers.removeAll();
+
+      const points = scene.primitives.add(new C.PointPrimitiveCollection());
+      for (let pi = 0; pi < 3; pi++) {
+        points.add({
+          position: C.Cartesian3.fromDegrees(0.45 + 0.3 * pi, 0.0, 30000.0),
+          color: C.Color.WHITE,
+          pixelSize: 130,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        });
+      }
+
+      scene.morphTo3D(0);
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(0.0, 0.0, 20000.0),
+        orientation: {
+          heading: C.Math.toRadians(90.0),
+          pitch: C.Math.toRadians(-10.0),
+          roll: 0.0,
+        },
+      });
+
+      const oncePostRender = () =>
+        new Promise((resolve) => {
+          const remove = scene.postRender.addEventListener(() => {
+            remove();
+            resolve();
+          });
+        });
+      const renderFrames = async (n) => {
+        for (let i = 0; i < n; i++) await oncePostRender();
+      };
+      const grab = () =>
+        new Promise((resolve) => {
+          const remove = scene.postRender.addEventListener(() => {
+            remove();
+            const c = scene.canvas;
+            const off = document.createElement("canvas");
+            off.width = c.width;
+            off.height = c.height;
+            const cx = off.getContext("2d");
+            cx.drawImage(c, 0, 0);
+            const u8 = new Uint8Array(
+              cx.getImageData(0, 0, c.width, c.height).data.buffer,
+            );
+            let bin = "";
+            const chunk = 0x8000;
+            for (let i = 0; i < u8.length; i += chunk) {
+              bin += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
+            }
+            resolve({
+              b64: btoa(bin),
+              png: off.toDataURL("image/png"),
+              w: c.width,
+              h: c.height,
+            });
+          });
+        });
+      const bytesEqual = (a, b) => a.b64 === b.b64;
+      // Globe is hidden — settle on byte-stable frames only (no
+      // tilesLoaded dependency).
+      const settleAndGrab = async () => {
+        let prev = await grab();
+        for (let i = 0; i < 40; i++) {
+          await renderFrames(10);
+          const cur = await grab();
+          if (bytesEqual(prev, cur)) return cur;
+          prev = cur;
+        }
+        return prev;
+      };
+      const passLabelsOneFrame = async () => {
+        await oncePostRender();
+        window.__passLabels.length = 0;
+        await oncePostRender();
+        return window.__passLabels.slice();
+      };
+
+      for (let i = 0; i < 60; i++) {
+        if (v.imageryLayers.length > 0) v.imageryLayers.removeAll();
+        await oncePostRender();
+      }
+
+      const captures = {};
+      captures.hdrBase = await settleAndGrab();
+      const bw = C.PostProcessStageLibrary.createBlackAndWhiteStage();
+      scene.postProcessStages.add(bw);
+      await renderFrames(10);
+      captures.hdrBlackAndWhite = await settleAndGrab();
+      const hdrBWLabels = await passLabelsOneFrame();
+      scene.postProcessStages.remove(bw);
+
+      return {
+        captures,
+        hdrBWLabels,
+        hdrInfo: {
+          highDynamicRangeSupported: !!scene.highDynamicRangeSupported,
+          sceneHdr: scene.highDynamicRange === true,
+          // WebGL's tonemap gate: PostProcessStageCollection.update sets
+          // `tonemapping.enabled = useHdr`. On WebGPU the equivalent
+          // evidence is the PostProcess-Tonemap pass label (asserted
+          // node-side from hdrBWLabels).
+          tonemappingEnabled: !!(
+            scene.postProcessStages &&
+            scene.postProcessStages._tonemapping &&
+            scene.postProcessStages._tonemapping.enabled
+          ),
+        },
+        gpuErrors: window.__gpuErrors,
+      };
+    },
+    { isWebGPU: renderer === "webgpu" },
+  );
+
+  await page.close();
+  return { out, consoleErrors };
+}
+
 function savePng(name, img) {
   writeFileSync(
     join(OUT_DIR, name),
@@ -334,9 +531,18 @@ console.log("=== WebGPU run ===");
 const gpu = await runBackend("webgpu");
 console.log("=== WebGL run ===");
 const gl = await runBackend("webgl");
+console.log("=== WebGPU HDR run ===");
+const gpuHdr = await runHdrBackend("webgpu");
+console.log("=== WebGL HDR run ===");
+const glHdr = await runHdrBackend("webgl");
 await browser.close();
 
-if (!gpu.out?.captures || !gl.out?.captures) {
+if (
+  !gpu.out?.captures ||
+  !gl.out?.captures ||
+  !gpuHdr.out?.captures ||
+  !glHdr.out?.captures
+) {
   console.error("FATAL: missing captures");
   process.exit(1);
 }
@@ -417,16 +623,113 @@ console.log(
 );
 pass = pass && offOK;
 
-// (5) zero errors.
-const errCount =
-  gpu.consoleErrors.length + gl.consoleErrors.length + gpu.out.gpuErrors.length;
-console.log(
-  `errors: webgpu-console=${gpu.consoleErrors.length} webgl-console=${gl.consoleErrors.length} gpu=${gpu.out.gpuErrors.length} ${errCount === 0 ? "OK" : "FAIL"}`,
+// (6) HDR phase (NEW-PP-LIBRARY-TONEMAP-ORDER): with
+// scene.highDynamicRange=true (SDR canvas) the tonemap stage runs on both
+// backends; the WebGPU library builtin must execute AFTER tonemap and its
+// output must match WebGL's post-tonemap output.
+//
+// Two-level compare:
+//  - whole-frame meanDelta (loose — black sky dominates)
+//  - MEDIAN interior value of the white discs (strict — immune to
+//    dilution by the black background and to raster edge jitter).
+//    Expected on both backends: base ~240 (PBR Neutral 1.0 -> ~0.88,
+//    sRGB-encoded), blackAndWhite ~204 (posterize band 0.8). A missing
+//    tonemap reads 255; a pre-tonemap BlackAndWhite reads ~240.
+const HDR_BW_TOL = 2; // whole-frame mean (white-only content)
+const HDR_MEDIAN_TOL = 6; // per-channel disc-interior median
+function discMedian(img) {
+  const A = Buffer.from(img.b64, "base64");
+  const vals = [];
+  for (let i = 0; i < A.length; i += 4) {
+    const l = (A[i] + A[i + 1] + A[i + 2]) / 3;
+    if (l > 40) vals.push(l); // disc interiors (sky is ~0)
+  }
+  if (vals.length === 0) return -1;
+  vals.sort((a, b) => a - b);
+  return vals[Math.floor(vals.length / 2)];
+}
+savePng("webgpu-hdrBase.png", gpuHdr.out.captures.hdrBase);
+savePng("webgl-hdrBase.png", glHdr.out.captures.hdrBase);
+savePng("webgpu-hdrBlackAndWhite.png", gpuHdr.out.captures.hdrBlackAndWhite);
+savePng("webgl-hdrBlackAndWhite.png", glHdr.out.captures.hdrBlackAndWhite);
+const glHdrEngaged =
+  !!glHdr.out.hdrInfo?.tonemappingEnabled && !!glHdr.out.hdrInfo?.sceneHdr;
+const hdrLabels = gpuHdr.out.hdrBWLabels || [];
+const tmIdx = hdrLabels.findIndex((l) => l.includes("PostProcess-Tonemap"));
+const libIdx = hdrLabels.findIndex((l) => l.startsWith("LibraryPP-"));
+const orderOK = tmIdx >= 0 && libIdx >= 0 && tmIdx < libIdx;
+const dHdrBase = diffImgs(
+  gpuHdr.out.captures.hdrBase,
+  glHdr.out.captures.hdrBase,
 );
-[...gpu.consoleErrors, ...gl.consoleErrors, ...gpu.out.gpuErrors]
-  .slice(0, 10)
-  .forEach((e) => console.log("  ERR:", String(e).slice(0, 250)));
-pass = pass && errCount === 0;
+const dHdrBW = diffImgs(
+  gpuHdr.out.captures.hdrBlackAndWhite,
+  glHdr.out.captures.hdrBlackAndWhite,
+);
+// The builtin must also visibly transform the HDR frame on both backends.
+const tHdrGPU = diffImgs(
+  gpuHdr.out.captures.hdrBlackAndWhite,
+  gpuHdr.out.captures.hdrBase,
+);
+const tHdrGL = diffImgs(
+  glHdr.out.captures.hdrBlackAndWhite,
+  glHdr.out.captures.hdrBase,
+);
+const hdrVisOK =
+  tHdrGPU.diffBytes > 5000 &&
+  tHdrGPU.maxDelta > 30 &&
+  tHdrGL.diffBytes > 5000 &&
+  tHdrGL.maxDelta > 30;
+const medBaseGPU = discMedian(gpuHdr.out.captures.hdrBase);
+const medBaseGL = discMedian(glHdr.out.captures.hdrBase);
+const medBWGPU = discMedian(gpuHdr.out.captures.hdrBlackAndWhite);
+const medBWGL = discMedian(glHdr.out.captures.hdrBlackAndWhite);
+const medOK =
+  medBaseGPU >= 0 &&
+  medBaseGL >= 0 &&
+  medBWGPU >= 0 &&
+  medBWGL >= 0 &&
+  Math.abs(medBaseGPU - medBaseGL) <= HDR_MEDIAN_TOL &&
+  Math.abs(medBWGPU - medBWGL) <= HDR_MEDIAN_TOL &&
+  // Tonemap actually engaged (an un-tonemapped white disc reads 255)
+  medBaseGPU < 250 &&
+  medBaseGL < 250 &&
+  // BlackAndWhite ran POST-tonemap (pre-tonemap would leave ~base value)
+  medBWGPU < medBaseGPU - 10 &&
+  medBWGL < medBaseGL - 10;
+const hdrOK =
+  glHdrEngaged &&
+  orderOK &&
+  hdrVisOK &&
+  medOK &&
+  dHdrBW.meanDelta <= HDR_BW_TOL &&
+  dHdrBase.meanDelta <= HDR_BW_TOL;
+console.log(
+  `HDR phase: glTonemap=${glHdrEngaged ? "Y" : "N"} ` +
+    `gpuOrder(tonemap@${tmIdx}<lib@${libIdx})=${orderOK ? "Y" : "N"} ` +
+    `vis=${hdrVisOK ? "Y" : "N"} baseMean=${dHdrBase.meanDelta.toFixed(2)} ` +
+    `bwMean=${dHdrBW.meanDelta.toFixed(2)}(tol ${HDR_BW_TOL}) ` +
+    `discMedians base=${medBaseGPU}/${medBaseGL} bw=${medBWGPU}/${medBWGL}` +
+    `(tol ${HDR_MEDIAN_TOL}) ${hdrOK ? "OK" : "FAIL"}`,
+);
+pass = pass && hdrOK;
+
+// (5) zero errors (SDR + HDR runs, both backends).
+const allErrors = [
+  ...gpu.consoleErrors,
+  ...gl.consoleErrors,
+  ...gpu.out.gpuErrors,
+  ...gpuHdr.consoleErrors,
+  ...glHdr.consoleErrors,
+  ...gpuHdr.out.gpuErrors,
+];
+console.log(
+  `errors: webgpu-console=${gpu.consoleErrors.length} webgl-console=${gl.consoleErrors.length} gpu=${gpu.out.gpuErrors.length} ` +
+    `hdr(webgpu-console=${gpuHdr.consoleErrors.length} webgl-console=${glHdr.consoleErrors.length} gpu=${gpuHdr.out.gpuErrors.length}) ` +
+    `${allErrors.length === 0 ? "OK" : "FAIL"}`,
+);
+allErrors.slice(0, 10).forEach((e) => console.log("  ERR:", String(e).slice(0, 250)));
+pass = pass && allErrors.length === 0;
 
 console.log(`PNGs: ${OUT_DIR}`);
 console.log(pass ? "PASS" : "FAIL");

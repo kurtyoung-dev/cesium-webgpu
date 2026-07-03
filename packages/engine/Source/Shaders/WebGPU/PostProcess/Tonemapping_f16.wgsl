@@ -105,23 +105,30 @@ fn modifiedReinhardTonemap(color: vec3<f16>, white: f16) -> vec3<f16> {
 }
 
 // PBR Neutral tonemapping (Khronos reference). Identical structure to
-// the f32 version with f16 types swapped in.
-fn pbrNeutralTonemap(color: vec3<f16>) -> vec3<f16> {
+// the f32 version with f16 types swapped in — EXACT port of
+// czm_pbrNeutralTonemapping (NEW-PP-LIBRARY-TONEMAP-ORDER; the old
+// per-channel soft-clamp approximation over-brightened highlights vs
+// WebGL: 1.0 -> ~0.9535 instead of the reference ~0.869).
+fn pbrNeutralTonemap(colorIn: vec3<f16>) -> vec3<f16> {
   let startCompression: f16 = 0.8h - 0.04h;
   let desaturation: f16 = 0.15h;
 
-  var x = min(color, vec3<f16>(startCompression));
-  let overshoot = max(color - vec3<f16>(startCompression), vec3<f16>(0.0h));
+  var color = colorIn;
+  let x = min(color.r, min(color.g, color.b));
+  let offset = select(0.04h, x - 6.25h * x * x, x < 0.08h);
+  color = color - vec3<f16>(offset);
 
-  // Soft-clamp overshoot region
-  x = x + overshoot / (vec3<f16>(1.0h) + overshoot);
+  let peak = max(color.r, max(color.g, color.b));
+  if (peak < startCompression) {
+    return color;
+  }
 
-  // Desaturate towards white as value increases
-  let lum = dot(x, vec3<f16>(0.2126h, 0.7152h, 0.0722h));
-  let desat = clamp((lum - startCompression) / desaturation, 0.0h, 1.0h);
-  let result = mix(x, vec3<f16>(lum), desat);
+  let d: f16 = 1.0h - startCompression;
+  let newPeak = 1.0h - d * d / (peak + d - startCompression);
+  color = color * (newPeak / peak);
 
-  return result;
+  let g = 1.0h - 1.0h / (desaturation * (peak - newPeak) + 1.0h);
+  return mix(color, vec3<f16>(newPeak), g);
 }
 
 // Gamma correction. `pow` on f16 is supported and the input/output range

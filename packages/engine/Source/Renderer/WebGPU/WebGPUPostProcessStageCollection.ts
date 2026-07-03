@@ -462,10 +462,23 @@ function configureWebGPUPostProcessPipeline(
     sceneAny?.useHDRCanvasOutput === true &&
     sceneAny?.highDynamicRange === true;
   pipeline.setHDROutputMode(hdrOutputMode);
-  pipeline.setStageEnabled(
-    "Tonemap",
-    cache.tonemappingEnabled && !hdrOutputMode,
-  );
+  // NEW-PP-LIBRARY-TONEMAP-ORDER — WebGL's PostProcessStageCollection.
+  // update() assigns `tonemapping.enabled = useHdr` every frame
+  // (PostProcessStageCollection.js ~:575), but on WebGPU that update
+  // early-returns into this feature renderer BEFORE the assignment, so
+  // the tonemap gate never engaged under `scene.highDynamicRange =
+  // true` and the un-tonemapped HDR frame reached the SDR canvas.
+  // Apply the same rule here, and mirror it onto the collection's
+  // stage object + the cache so every observer (the early sync's
+  // `_tonemapping.enabled` read, hasActiveWebGPUPostProcessStages)
+  // agrees. SDR default (`highDynamicRange === false`) keeps the
+  // historical disabled state — byte-identical off path.
+  const useHdr = sceneAny?.highDynamicRange === true;
+  if (collection._tonemapping) {
+    collection._tonemapping.enabled = useHdr;
+  }
+  cache.tonemappingEnabled = useHdr;
+  pipeline.setStageEnabled("Tonemap", useHdr && !hdrOutputMode);
   pipeline.setTonemappingMode(cache.tonemapMode);
 
   // --- Color grading: lazily initialize on first enable ---

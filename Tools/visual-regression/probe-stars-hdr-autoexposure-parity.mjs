@@ -105,10 +105,21 @@ console.log(`WebGPU HDR sky: bright(>120)=${gpu.bright}  saturated=${gpu.sat}  m
 // The fix: WebGPU must no longer be crushed to black. (Before: bright=0,
 // maxLum=0.) Gate generously — residual catalog-sprite brightness gap vs WebGL
 // is a separate item.
-const notCrushed = gpu.bright > 100 && gpu.maxL > 200 && gpu.sat > 0;
+//
+// NEW-PP-LIBRARY-TONEMAP-ORDER (2026-07-03): the old `sat > 0` clause
+// asserted a BUG — pre-fix, WebGPU never engaged the tonemap under plain
+// `highDynamicRange`, so bright star cores stayed at raw 255 (maxLum
+// ~761, per the B364 diag). Now BOTH backends tonemap (PBR Neutral
+// compresses the catalog's peaks to ~717-726) and saturation is a
+// knife-edge 0-or-1-pixel wobble. Guard the tonemap comparatively via
+// maxLum headroom instead: if the WebGPU tonemap ever goes missing
+// again, gpu.maxL jumps to ~761+ while WebGL stays ~717 and this fails.
+const notCrushed = gpu.bright > 100 && gpu.maxL > 200;
+const tonemapEngaged = gpu.maxL <= gl.maxL + 30;
 const errorsOK = gpu.errs.length === 0 && gl.errs.length === 0;
-console.log(`WebGPU not crushed (bright>100 & maxLum>200 & sat>0): ${notCrushed ? "OK" : "FAIL"}`);
+console.log(`WebGPU not crushed (bright>100 & maxLum>200): ${notCrushed ? "OK" : "FAIL"}`);
+console.log(`tonemap engaged (gpu maxLum ${gpu.maxL} <= gl ${gl.maxL}+30): ${tonemapEngaged ? "OK" : "FAIL"}`);
 console.log(`console errors: ${errorsOK ? "OK" : "FAIL"}`);
-const pass = notCrushed && errorsOK;
+const pass = notCrushed && tonemapEngaged && errorsOK;
 console.log(pass ? "PASS" : "FAIL");
 process.exit(pass ? 0 : 1);

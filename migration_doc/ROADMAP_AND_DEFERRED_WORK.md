@@ -461,17 +461,49 @@ radii; see §5.2). Open:
   flipY parity (patternCorr 1.000 aligned vs 0.122 mirrored) + default-off cloud occlusion ✅ B504;
   moon full-disc via model-space RTE ✅ B505 (was an off-screen sliver; probe asserts litRatio
   1.000 / centerDist 0.0 px).
-- **`NEW-PP-LIBRARY-TONEMAP-ORDER`** (post-campaign audit 2026-07-03) — **P2 — OPEN.** The B486
-  library builtins **and** user WGSL stages run **pre-tonemap** on WebGPU
-  (`WebGPUPostProcessPipeline.ts` user stages ~:1406 → library stages ~:1425 → tonemap ~:1503)
-  while WebGL runs added stages **post-tonemap** (`PostProcessStageCollection.js` ~:745-758 sets
-  `initialTexture` to the tonemapped SDR output before the `_stages` loop). HDR-visible ordering
-  divergence: under HDR the builtins receive unbounded linear input with no `hdrMode`
-  compensation (ColorGrading/FXAA got one in B479); the default-SDR path passed the probe
-  (9.85% cross-backend), so impact is **HDR-only today**. Fix = hdrMode compensation or
-  post-tonemap placement for library/user stages; also correct the two in-code comments
-  (~:1403/:1421) that inaccurately claim a WebGL-matching insertion point + the stale
-  stage-order header docstring (~:39-42).
+- **`NEW-PP-LIBRARY-TONEMAP-ORDER`** (post-campaign audit 2026-07-03) — **✅ RESOLVED (batch of
+  2026-07-03).** Chose the **post-tonemap placement** path (hdrMode compensation can't reach
+  user-supplied WGSL): user WGSL + library builtin stages moved from pre-TAA to AFTER the tonemap
+  single-pass in `WebGPUPostProcessPipeline.execute()` (tonemap now executes directly, then
+  user → library → ColorGrading/custom/FXAA ping-pong), matching WebGL's
+  `tonemap → _stages → fxaa` order. Landed two prerequisite parity fixes discovered en route:
+  (1) the WebGPU tonemap gate NEVER engaged under plain `scene.highDynamicRange` — WebGL's
+  `tonemapping.enabled = useHdr` assignment (PostProcessStageCollection.js:575) sits after the
+  feature-renderer early-return, so `configureWebGPUPostProcessPipeline` now applies the same
+  rule from the scene flag (mirrored onto `_tonemapping.enabled` + the cache); (2) the WGSL
+  PBR-Neutral operator in `Tonemapping.wgsl`/`Tonemapping_f16.wgsl` was a per-channel soft-clamp
+  approximation (1.0 → ~0.9535, sRGB 249) — replaced with the exact Khronos reference port
+  matching `czm_pbrNeutralTonemapping` (1.0 → ~0.869, sRGB 239; ModelPBRComplete/GlobeTerrain/
+  SkyAtmosphere already carried the exact port). Stale header docstring + the two wrong
+  "matches WebGL's insertion point" comments corrected. Probe: `probe-pp-library-builtins`
+  HDR phase (startup-HDR page, white-point scene) — tonemap pass ordered before LibraryPP pass,
+  disc medians base 238.7/239, BlackAndWhite 204/204, whole-frame mean 0.03-0.05; SDR gates
+  byte-identical off-gate + per-stage means unchanged vs pre-fix run. Scene-side plain-HDR gaps
+  discovered while isolating the gate are tracked in `NEW-PLAIN-HDR-SCENE-GAMMA-EPIC` below.
+- **`NEW-PLAIN-HDR-SCENE-GAMMA-EPIC`** (found 2026-07-03 while probing the tonemap-order fix) —
+  **P2 — OPEN.** Under plain `scene.highDynamicRange = true` (SDR canvas — now with a working
+  tonemap on both backends), WebGPU scene shaders don't mirror WebGL's `#ifdef HDR` gamma
+  handling, family of four:
+  (a) **Globe**: WGSL sRGB→linear decode (`hdrControl.x`, WebGPUGlobeSurfaceCameraUB.ts ~:943)
+  is gated on `hdrCanvasOutput && useHDR`, but WebGL's `#ifdef HDR` engages on `useHdr` alone →
+  globe renders double-bright under plain HDR (observed: ground base-color delta in
+  probe-pp-library-builtins diagnostics).
+  (b) **Points/billboards**: `PointPrimitiveCollectionFS` `czm_gammaCorrect` linearizes colors
+  under HDR; the WGSL point renderer never does (0.3 gray point → WebGL ~18/255 vs WebGPU
+  ~147/255 displayed).
+  (c) **Models**: `ModelPBRComplete.wgsl` `tonemapAndGamma` applies tonemap+gamma
+  unconditionally (its own comment: "when HDR plumbing lands, gate both on the HDR flag") →
+  models double-tonemap under plain HDR now that the PP tonemap engages.
+  (d) **Mid-session `highDynamicRange` toggle** invalidates cached scene pipelines (attachment
+  format mismatch: "Primitive pipeline (cull=back)" vs rgba16float "Scene Framebuffer Render
+  Pass", ~128 validation errors/frame observed); startup-HDR works — scene pipeline caches need
+  FB-format keying or a recreate hook on `_hdrDirty`.
+  Minor tails: `scene.postProcessStages.exposure` isn't synced to the WebGPU tonemap uniform
+  (default 1.0 path fine); the non-default WGSL operators (Reinhard/ACES/Filmic/
+  ModifiedReinhard) haven't been parity-audited against their `czm_*` references (PBR Neutral
+  now exact). Also pre-existing, seen in the same probe scene: WebGPU renders both entity boxes
+  with ONE color (per-instance color divergence — orange box drawn cornflower blue) in SDR and
+  HDR alike.
 - **`NEW-PP-F16-DEVICE-VERIFY`** — **P2.** The B478 opt-in f16 post-process variants still need an
   on-device pixel-verify on a `shader-f16`-capable (RTX-class) GPU.
 - **`NEW-ENV-MOON-CRESCENT-PROBE`** — **P2** (probe extension). `probe-env-moon` asserts only the
@@ -480,7 +512,11 @@ radii; see §5.2). Open:
   refreshed this doc wave.** Gate F fails only against the stored pre-B506 default-view baseline
   PNG (functional gates A–E pass); B506 intentionally changed default-view pixels (glint restore +
   seam fix). Refresh the stored baseline in the next write-capable wave — this is **not** a
-  color-grading bug.
+  color-grading bug. **Same condition confirmed for `probe-hdr-pp-math` gate F** (2026-07-03,
+  NEW-PP-LIBRARY-TONEMAP-ORDER regression sweep): SDR frames diff 5.8% at meanAbs 0.15 vs its
+  stored pre-B506 `baseline-sdr-*.bin` (globe/atmosphere LSB shifts + a baseline-only speck);
+  gates A–E all pass. Refresh both baselines together once the in-flight globe pixel changes
+  settle.
 
 #### TAA design rationale + open slice (carry-forward from `TAA_DESIGN.md`)
 
@@ -713,7 +749,7 @@ papered over — prioritized:
 | **P1 — FIX NOW** | `NEW-VOXEL-PICK-OCTREE-COMPOSE` | pick march lacks L1 octree traversal + hardcodes megatextureId 0 (wrong pick under refinement); same fix carries the user-customShader alpha-gate composition gap | §4.5 |
 | **P1** | `NEW-GLOBE-BELOW-SURFACE-DARKENING` | underground 12.28/22.85% vs 8 limit, translucency 25.49% vs 10.5, WebGPU uniformly darker dRGB −5.8..−8.0 — fold into the limb-ring/atmosphere-brightness epic | §4.1 |
 | **P2** | `NEW-MODEL-SCENE2D-SHADING` | 2D model olive vs blue-gray (interiorDiff 34.27); suspect SCENE2D light-direction/IBL orientation, NOT globe-related | §4.3 |
-| **P2** | `NEW-PP-LIBRARY-TONEMAP-ORDER` | library/user stages pre-tonemap on WebGPU vs post-tonemap on WebGL — HDR-visible ordering divergence | §4.7 |
+| **P2** | `NEW-PP-LIBRARY-TONEMAP-ORDER` | ✅ RESOLVED 2026-07-03 — post-tonemap placement + plain-HDR tonemap gate + exact Khronos PBR-Neutral WGSL port (see §4.7 entry; scene-side residue → `NEW-PLAIN-HDR-SCENE-GAMMA-EPIC`) | §4.7 |
 
 **Small open tail from the same audit:** `NEW-ENV-MOON-CRESCENT-PROBE` (crescent-phase probe
 extension, §4.7), `NEW-PP-F16-DEVICE-VERIFY` (on-device shader-f16 pixel-verify, RTX-class,

@@ -74,24 +74,33 @@ fn modifiedReinhardTonemap(color: vec3<f32>, white: f32) -> vec3<f32> {
   return (color * (vec3<f32>(1.0) + color / whSq)) / (vec3<f32>(1.0) + color);
 }
 
-// PBR Neutral tonemapping (Khronos reference)
-// https://modelviewer.dev/examples/tone-mapping
-fn pbrNeutralTonemap(color: vec3<f32>) -> vec3<f32> {
+// PBR Neutral tonemapping — EXACT port of the Khronos reference used by
+// WebGL's czm_pbrNeutralTonemapping (Builtin/Functions/
+// pbrNeutralTonemapping.glsl, KhronosGroup/ToneMapping PBR_Neutral).
+// NEW-PP-LIBRARY-TONEMAP-ORDER: the previous per-channel soft-clamp
+// approximation mapped 1.0 -> ~0.9535 while the reference maps
+// 1.0 -> ~0.869 (sRGB-encoded 249 vs 239) — a visible cross-backend
+// highlight mismatch under scene.highDynamicRange.
+fn pbrNeutralTonemap(colorIn: vec3<f32>) -> vec3<f32> {
   let startCompression = 0.8 - 0.04;
   let desaturation = 0.15;
 
-  var x = min(color, vec3<f32>(startCompression));
-  let overshoot = max(color - vec3<f32>(startCompression), vec3<f32>(0.0));
+  var color = colorIn;
+  let x = min(color.r, min(color.g, color.b));
+  let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+  color = color - vec3<f32>(offset);
 
-  // Soft-clamp overshoot region
-  x = x + overshoot / (vec3<f32>(1.0) + overshoot);
+  let peak = max(color.r, max(color.g, color.b));
+  if (peak < startCompression) {
+    return color;
+  }
 
-  // Desaturate towards white as value increases
-  let lum = dot(x, vec3<f32>(0.2126, 0.7152, 0.0722));
-  let desat = clamp((lum - startCompression) / desaturation, 0.0, 1.0);
-  let result = mix(x, vec3<f32>(lum), desat);
+  let d = 1.0 - startCompression;
+  let newPeak = 1.0 - d * d / (peak + d - startCompression);
+  color = color * (newPeak / peak);
 
-  return result;
+  let g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return mix(color, vec3<f32>(newPeak), g);
 }
 
 // Gamma correction (sRGB)
