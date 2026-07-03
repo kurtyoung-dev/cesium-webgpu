@@ -249,6 +249,26 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   re-deriving face normals)**. **Remaining open data path:** explicit `lineStrings` edges
   (BENTLEY/styled-gltf-lines yield zero WebGPU edges). Per-edge `materialColor` override ✅ SHIPPED
   (Batch 330). **P2.**
+- **Vector3DTile (.vctr) e2e status** — `NEW-VECTOR3DTILE-VCTR-E2E` (B8, 2026-07-03) landed the first
+  REAL .vctr pixel probe (`probe-vector3dtile-vctr.mjs`, fixtures `Specs/Data/Cesium3DTiles/Vector/**`;
+  the "no .vctr test data" blocker in FORK_OVERVIEW §8 was STALE). Verified at msaa=1: polylines-3D
+  pixel-identical (IoU 1.000), polygons-3D far-view IoU 0.904, polygons render 2D/CV on WebGPU where
+  upstream WebGL renders 0 px, polyline 2D/CV silent skip-gate intact (ISSUES A.4). The probe ALSO
+  exposed two real gaps (each reproduced + expected-fail-annotated in the probe; flip the frames to
+  hard gates when fixed):
+  - **`NEW-VECTOR3DTILE-MSAA-PIPELINE` (P1 — vector tiles are BROKEN at viewer defaults):** none of
+    the three Vector3DTile pipeline builders (`WebGPUVector3DTilePrimitiveRenderer.buildVectorTilePipelineResources`
+    ~L370, polylines / clamped-polylines equivalents) set `multisample` state; under the default
+    `scene.msaaSamples = 4` scene FB every draw raises "Attachment state ... not compatible with
+    [Scene Framebuffer Render Pass]" → invalidated command buffer → fully black frame (116 errors
+    per settle). Fix = thread `context._msaaSamples` through, mirroring
+    `WebGPUGroundPrimitiveRenderer` L1372/L2062.
+  - **`NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT` (P2):** the depth-sample classifier `fsMain` only
+    discards `surfaceDepth == 0.0` — no volume-containment test — so the classified footprint is the
+    volume's PROJECTED screen extent, inflated `h/(h-1000)` at nadir height h vs WebGL's exact
+    stencil volume∩surface (1.53x linear at 3 km, ~1.05x at 20 km). Also observed (unquantified):
+    with the polygon-classifier tileset loaded the WebGPU globe surface renders near-black instead
+    of the imagery color (possible interaction with the below-surface-darkening epic B2/B5/B6).
 - **`NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION`** — Model3DTileContent class-converted on both fork and
   upstream; needs a double-conversion reconciliation strategy at merge time. **P2** (merge bookkeeping).
 - **EquirectangularPanorama cull-override** (from `WEBGPU_PARITY_AUDIT`) — ✅ **RESOLVED (Batch 317,
