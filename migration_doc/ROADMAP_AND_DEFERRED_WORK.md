@@ -536,10 +536,12 @@ radii; see §5.2). Open:
   on-device pixel-verify on a `shader-f16`-capable (RTX-class) GPU.
 - **`NEW-ENV-MOON-CRESCENT-PROBE`** — **P2** (probe extension). `probe-env-moon` asserts only the
   full-disc case (B505); add a crescent-phase assertion.
-- **Probe housekeeping — `probe-colorgrading-wired` stored baseline refresh** — **P2, OPEN unless
-  refreshed this doc wave.** Gate F fails only against the stored pre-B506 default-view baseline
-  PNG (functional gates A–E pass); B506 intentionally changed default-view pixels (glint restore +
-  seam fix). Refresh the stored baseline in the next write-capable wave — this is **not** a
+- **Probe housekeeping — `probe-colorgrading-wired` stored baseline refresh** — **✅ RESOLVED
+  2026-07-03 (`NEW-COLORGRADING-BASELINE-REFRESH`).** The stored baseline was regenerated post-B506
+  and verified at Batch 518 HEAD: gates A–F all PASS (F byte-identical). **Still OPEN: the
+  `probe-hdr-pp-math` gate F half below.** Original condition: gate F failed only against the
+  stored pre-B506 default-view baseline PNG (functional gates A–E passed); B506 intentionally
+  changed default-view pixels (glint restore + seam fix) — this was **not** a
   color-grading bug. **Same condition confirmed for `probe-hdr-pp-math` gate F** (2026-07-03,
   NEW-PP-LIBRARY-TONEMAP-ORDER regression sweep): SDR frames diff 5.8% at meanAbs 0.15 vs its
   stored pre-B506 `baseline-sdr-*.bin` (globe/atmosphere LSB shifts + a baseline-only speck);
@@ -783,7 +785,7 @@ papered over — prioritized:
 extension, §4.7), `NEW-PP-F16-DEVICE-VERIFY` (on-device shader-f16 pixel-verify, RTX-class,
 §4.7), `NEW-VOXEL-OCTREE-DEEP-LEVELS` (octree levels beyond depth-1, §4.2),
 `NEW-BUFFERPOLYLINE-2D-EXTRUSION` (✅ closed 2026-07-03, §4.2), and the `probe-colorgrading-wired` stored
-baseline refresh (§4.7). Sweep hygiene note: `probe-collections-regression` + `probe-pick-basic`
+baseline refresh (✅ closed 2026-07-03, §4.7; the `probe-hdr-pp-math` baseline refresh remains open). Sweep hygiene note: `probe-collections-regression` + `probe-pick-basic`
 default `PROBE_BASE` to `:8134` — set `PROBE_BASE=http://localhost:8080` when re-running.
 
 ---
