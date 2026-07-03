@@ -24,6 +24,21 @@
 
 ---
 
+## ENV-SKYBOX-STARMAP — skybox star cube-map mirrored + half-dimmed on WebGPU (2026-07-02)
+
+**Files affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js` (only).
+
+**Symptom (user-reported, screenshot):** the milky-way/faint-star cube-map background no longer visible on WebGPU — only the bright catalog stars (StarField point renderer) remained. Suspected regression in Batches 482–497.
+
+**Root cause — two longstanding defects, NOT a 482–497 regression:**
+
+1. **Cube-face vertical mirror (wrong sky region).** WebGL loads skybox faces with `UNPACK_FLIP_Y_WEBGL=true` (`Renderer/loadCubeMap.js` `flipY: true`); the WebGPU panorama loader's `copyExternalImageToTexture` did not flip, so every face sampled vertically mirrored and the visible star map was a different sky region than WebGL for the same camera. Fix: `{ source, flipY: true }` in `loadCubeMap`.
+2. **Unconditional cloud-cover star occlusion at 50%.** The Phase 1.4 occlusion multiplies the cube-map color by `(1 - cloudCover)` in `CubeMapPanorama` WGSL, and the uniform pack read `atmosphericConditions.weather.cloudCover` (→ `globe.cloudCoverage`, **default 0.5**) ungated. Every default WebGPU scene dimmed the skybox to 50% — the faint texture fell below visibility while the catalog StarField (which never applied cloud cover) kept drawing: "star map gone, sparse dots remain". WebGL's `SkyBoxFS.glsl` applies no cloud occlusion. Fix: gate the packed `cloudCover` on `weather.enabled === true` (`scene.enableWeather`, default false) — the occlusion is now opt-in alongside the rest of the weather system, matching the existing default-off gate of the Phase 1.3b star-brightness modulation.
+
+**Verification:** `probe-env-skybox-stars.mjs` (new acceptance + standing gate): density ratio 0.62→0.97, luminance ratio 0.76→0.89, aligned pattern correlation 1.00 vs mirrored 0.12 (same sky region as WebGL), 0 device errors; opt-in check (weather on + `cloudCoverage=1`) still fully occludes stars and restores on disable. Standing probes for Batches 489/490 + stars-HDR pass. NOTE: `probe-colorgrading-wired` (checks D/F), `probe-pp-library-builtins` (off-gate restored-vs-default), and `probe-globe-translucency` (~22% mismatch) were verified **already failing at HEAD with identical diff numbers before this fix** — pre-existing, not caused by this change.
+
+---
+
 ## GLOBE-CLIPPOLY-GEODETIC — clipping polygons never worked end-to-end on WebGPU (globe OR model data path) (2026-07-02)
 
 **Files affected:** `packages/engine/Source/Scene/ClippingPolygonCollection.js`, `packages/engine/Source/Renderer/WebGPU/WebGPUClippingPolygonCollection.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js`, `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`, `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`.

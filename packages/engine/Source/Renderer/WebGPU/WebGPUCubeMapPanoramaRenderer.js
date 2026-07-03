@@ -504,11 +504,21 @@ export function updateUniforms(
   // `atmosphericConditions.weather.cloudCover` (which delegates to
   // `globe.cloudCoverage` in AtmosphericConditions). The shader
   // multiplies the modulated star color by `(1 - cloudCover)` so
-  // overcast skies hide stars completely. Defaults to 0 (clear sky)
-  // when no globe / weather is wired up.
+  // overcast skies hide stars completely.
+  // Gated on `weather.enabled` (scene.enableWeather, default false) for
+  // WebGL parity — ENV-SKYBOX-STARMAP (2026-07-02): globe.cloudCoverage
+  // defaults to 0.5, so an ungated read dimmed the skybox cube-map to 50%
+  // on every default scene. The faint milky-way texture fell below the
+  // visible threshold while the bright catalog stars (StarField renderer,
+  // which never applied cloud cover) kept drawing — "star map gone, sparse
+  // dots remain". WebGL's SkyBoxFS.glsl applies no cloud occlusion, so the
+  // occlusion is opt-in alongside the rest of the weather system.
   const weather = ac && ac.weather ? ac.weather : undefined;
+  const weatherEnabled = !!weather && weather.enabled === true;
   const cloudCover =
-    weather && typeof weather.cloudCover === "number" ? weather.cloudCover : 0;
+    weatherEnabled && typeof weather.cloudCover === "number"
+      ? weather.cloudCover
+      : 0;
   uniformData[55] = cloudCover;
 
   device.queue.writeBuffer(uniformBuffer, 0, uniformData);
@@ -682,7 +692,15 @@ function loadCubeMap(device, sources, state, panorama) {
 
       for (let i = 0; i < 6; i++) {
         device.queue.copyExternalImageToTexture(
-          { source: images[i] },
+          // flipY parity (ENV-SKYBOX-STARMAP): WebGL loads skybox faces with
+          // UNPACK_FLIP_Y_WEBGL=true (Renderer/loadCubeMap.js `flipY: true`;
+          // CubeMap's constructor default is also flipY=true), so each stored
+          // face row 0 is the IMAGE BOTTOM. GL and WebGPU share the same
+          // cube-face (s,t) derivation, so WebGPU must flip on upload too or
+          // every face samples vertically mirrored — the visible star map is
+          // then a different sky region than WebGL shows for the same camera
+          // (probe-env-skybox-stars caught an uncorrelated star pattern).
+          { source: images[i], flipY: true },
           { texture: texture, origin: [0, 0, i] },
           [size, size],
         );
