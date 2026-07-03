@@ -75,6 +75,8 @@ export interface LayoutsHost {
   _oceanNormalSampler: GPUSampler | null;
   _placeholderTexture: GPUTexture | null;
   _placeholderView: GPUTextureView | null;
+  _noWaterMaskTexture: GPUTexture | null;
+  _noWaterMaskView: GPUTextureView | null;
 }
 
 // ─── Bind Group Layouts ───
@@ -239,4 +241,23 @@ export function createPlaceholderTexture(host: LayoutsHost): void {
     [1, 1],
   );
   host._placeholderView = host._placeholderTexture.createView();
+
+  // NEW-GLOBE-BELOWSURFACE-FIX — dedicated 1×1 ZERO water-mask fallback.
+  // The shared white placeholder reads as waterMask=1.0 (all water),
+  // which ran the enhanced-ocean shader over entire land tiles whenever
+  // a tile's mask wasn't GPU-resident. Zero (all land) matches WebGL's
+  // convention, where an all-land tile simply has no water-mask texture.
+  host._noWaterMaskTexture = device.createTexture({
+    label: "Globe no-water mask fallback",
+    size: [1, 1],
+    format: "r8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture: host._noWaterMaskTexture },
+    new Uint8Array([0]),
+    { bytesPerRow: 1 },
+    [1, 1],
+  );
+  host._noWaterMaskView = host._noWaterMaskTexture.createView();
 }

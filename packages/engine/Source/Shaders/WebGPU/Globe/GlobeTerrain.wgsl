@@ -3672,9 +3672,14 @@ fn fragmentMain(
   //    hasWaterMask && tileProvider.showWaterEffect === true`).
   // 2. **Water-mask UV Y-flip**. GLSL applies
   //    `waterMaskTextureCoordinates.y = 1.0 - .y` after the
-  //    translation/scale (line 478). WGSL doesn't — the WebGPU
-  //    `copyExternalImageToTexture` upload path already lands the
-  //    mask data row-aligned for direct sampling at `geoUV.y`.
+  //    translation/scale (line 478). WGSL doesn't — the WebGPU upload
+  //    (WebGPUGlobeSurfaceTextures.getOrCreateWaterMaskTexture,
+  //    NEW-GLOBE-BELOWSURFACE-FIX) reverses the mask's row order at
+  //    upload (north-first source → south-first texture; `flipY: true`
+  //    for bitmap masks), which makes direct south-origin sampling at
+  //    `geoUV * wmTS.zw + wmTS.xy` byte-equivalent to WebGL's
+  //    flip-after-TS, including inherited ancestor masks (wmTS stays
+  //    south-origin in both conventions).
   // 3. **Function home**. GLSL `computeWaterColor` is hand-written in
   //    GlobeFS.glsl L777-849 behind `#ifdef SHOW_REFLECTIVE_OCEAN`.
   //    WGSL `computeEnhancedOcean` is hand-inlined in this shader

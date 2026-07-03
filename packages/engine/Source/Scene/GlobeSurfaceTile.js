@@ -137,6 +137,13 @@ class GlobeSurfaceTile {
     if (defined(this.waterMaskTexture)) {
       --this.waterMaskTexture.referenceCount;
       if (this.waterMaskTexture.referenceCount === 0) {
+        // NEW-GLOBE-BELOWSURFACE-FIX — release the WebGPU renderer's
+        // cached GPU copy of this mask (registered by
+        // WebGPUGlobeSurfaceTextures.getOrCreateWaterMaskTexture; never
+        // set on the WebGL backend).
+        if (defined(this.waterMaskTexture._webgpuTextureCacheCleanup)) {
+          this.waterMaskTexture._webgpuTextureCacheCleanup();
+        }
         this.waterMaskTexture.destroy();
       }
       this.waterMaskTexture = undefined;
@@ -879,6 +886,19 @@ function getContextWaterMaskData(context) {
       },
     });
     allWaterTexture.referenceCount = 1;
+    // NEW-GLOBE-BELOWSURFACE-FIX — retain the raw mask payload for the
+    // WebGPU backend. The WebGL Texture class does not keep its source
+    // after upload, but the WebGPU globe renderer re-uploads water masks
+    // into its own GPUTexture cache (WebGPUGlobeSurfaceTextures.
+    // getOrCreateWaterMaskTexture) and needs the texels. Without this the
+    // renderer bound a 1×1 WHITE placeholder — waterMask=1.0 everywhere —
+    // which ran the ocean shader over entire land tiles (Batch 510
+    // attribution). A reference only: no extra copy is made.
+    allWaterTexture._webgpuSource = {
+      arrayBufferView: new Uint8Array([255]),
+      width: 1,
+      height: 1,
+    };
 
     const sampler = new Sampler({
       wrapS: TextureWrap.CLAMP_TO_EDGE,
@@ -915,6 +935,11 @@ function createWaterMaskTextureIfNeeded(context, surfaceTile) {
       flipY: false,
       skipColorSpaceConversion: true,
     });
+    // NEW-GLOBE-BELOWSURFACE-FIX — see getContextWaterMaskData: the WebGPU
+    // renderer re-uploads the mask and needs the source retained. The
+    // ImageBitmap is already retained by terrainData.waterMask, so this
+    // adds a reference, not a copy.
+    texture._webgpuSource = waterMask;
   } else if (waterMaskLength === 1) {
     // Length 1 means the tile is entirely land or entirely water.
     // A value of 0 indicates entirely land, a value of 1 indicates entirely water.
@@ -940,6 +965,15 @@ function createWaterMaskTextureIfNeeded(context, surfaceTile) {
     });
 
     texture.referenceCount = 0;
+    // NEW-GLOBE-BELOWSURFACE-FIX — see getContextWaterMaskData: the WebGPU
+    // renderer re-uploads the mask and needs the source retained.
+    // `waterMask` aliases terrainData.waterMask (already retained), so
+    // this is a reference, not a copy.
+    texture._webgpuSource = {
+      width: textureSize,
+      height: textureSize,
+      arrayBufferView: waterMask,
+    };
   }
 
   ++texture.referenceCount;

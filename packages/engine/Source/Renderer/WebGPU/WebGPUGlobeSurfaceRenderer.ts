@@ -242,6 +242,12 @@ export class WebGPUGlobeSurfaceRenderer {
   > = new Map();
   public _placeholderTexture: GPUTexture | null = null;
   public _placeholderView: GPUTextureView | null = null;
+  // NEW-GLOBE-BELOWSURFACE-FIX — 1×1 r8unorm ZERO fallback bound at
+  // @group(2) @binding(0) when a tile's water mask isn't GPU-resident.
+  // The white shared placeholder read as waterMask=1.0 (all water) and
+  // ocean-shaded whole land tiles; zero = all land matches WebGL.
+  public _noWaterMaskTexture: GPUTexture | null = null;
+  public _noWaterMaskView: GPUTextureView | null = null;
   // Public underscore: shared with the wireframe helpers (Batch 149).
   public _canvasFormat: GPUTextureFormat = "bgra8unorm";
   // Session 65 Batch 32 — MSAA sample count tracked alongside format.
@@ -1766,7 +1772,9 @@ export class WebGPUGlobeSurfaceRenderer {
     material: { uniforms: Record<string, unknown> } | null,
   ): GPUBindGroup {
     const device = this._device!;
-    let waterMaskView = this._placeholderView!;
+    // Fallback is the ZERO (all-land) mask, NOT the white placeholder —
+    // white means "all water" to the shader (NEW-GLOBE-BELOWSURFACE-FIX).
+    let waterMaskView = this._noWaterMaskView!;
     let normalMapView = this._placeholderView!;
 
     if (surfaceTile) {
@@ -2292,6 +2300,12 @@ export class WebGPUGlobeSurfaceRenderer {
 
     if (this._placeholderTexture) {
       this._placeholderTexture.destroy();
+    }
+
+    if (this._noWaterMaskTexture) {
+      this._noWaterMaskTexture.destroy();
+      this._noWaterMaskTexture = null;
+      this._noWaterMaskView = null;
     }
 
     this._pipelineCache.clear();

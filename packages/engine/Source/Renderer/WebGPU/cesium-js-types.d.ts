@@ -1503,6 +1503,18 @@ interface GPUCullResults {
 
 // ─── CesiumJS Texture with source ───────────────────────────────────
 
+/**
+ * Raw luminance texel payload retained on globe water-mask Textures
+ * (GlobeSurfaceTile.js `createWaterMaskTextureIfNeeded`) so the WebGPU
+ * renderer can re-upload the mask into its own GPUTexture cache.
+ * Mirrors the WebGL `Texture` typed-array source shape.
+ */
+interface CesiumLuminanceTexelSource {
+  width: number;
+  height: number;
+  arrayBufferView: Uint8Array;
+}
+
 /** CesiumJS Texture accessed to extract the underlying image source. */
 interface CesiumTextureWithSource extends CesiumOpaqueObject {
   _source?: HTMLImageElement | HTMLCanvasElement | ImageBitmap;
@@ -1510,6 +1522,20 @@ interface CesiumTextureWithSource extends CesiumOpaqueObject {
   _id?: string | number;
   texture?: GPUTexture;
   _texture?: GPUTexture;
+  /**
+   * NEW-GLOBE-BELOWSURFACE-FIX — water-mask source retained by
+   * GlobeSurfaceTile.js at texture-creation time (the WebGL Texture class
+   * does not keep its source after upload). ImageBitmap for bitmap masks;
+   * `{width, height, arrayBufferView}` for typed-array LUMINANCE masks
+   * (including the shared 1×1 all-water texture).
+   */
+  _webgpuSource?: ImageBitmap | CesiumLuminanceTexelSource;
+  /**
+   * NEW-GLOBE-BELOWSURFACE-FIX — registered by the WebGPU water-mask
+   * uploader; invoked by GlobeSurfaceTile.freeResources when the WebGL
+   * texture's refcount hits zero, releasing the cached GPU copy.
+   */
+  _webgpuTextureCacheCleanup?: () => void;
 }
 
 // ─── Compressed texture extension stubs ─────────────────────────────

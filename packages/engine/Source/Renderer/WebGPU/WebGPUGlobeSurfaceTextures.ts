@@ -331,24 +331,147 @@ export function getOrCreateImageryTexture(
 }
 
 /**
- * Resolve a `GPUTextureView` for a water-mask texture. The water mask
- * arrives as a Cesium WebGL `Texture` object; we extract its `_source`
- * or `image` field and route it through `uploadImageSource`.
+ * Resolve a `GPUTextureView` for a water-mask texture.
+ *
+ * NEW-GLOBE-BELOWSURFACE-FIX (Batch 510 attribution → this fix). The
+ * water mask arrives as a Cesium `Texture` object whose texel payload is
+ * retained by `GlobeSurfaceTile.js` on `_webgpuSource` (the Texture class
+ * itself does not keep its source after upload — the previous
+ * `wm._source || wm.image` extraction was ALWAYS undefined, so every
+ * water-masked tile fell back to the renderer's 1×1 WHITE placeholder:
+ * `waterMask = 1.0` across the whole tile, running the enhanced-ocean
+ * shader over entire land tiles. That full-tile bluish haze was the
+ * dominant below-surface/translucency darkening term).
+ *
+ * Two source shapes (see `createWaterMaskTextureIfNeeded`):
+ *
+ *   - `{width, height, arrayBufferView}` — LUMINANCE typed array (the
+ *     quantized-mesh 256×256 mask and the shared 1×1 all-water texture).
+ *     Uploaded as single-mip `r8unorm` via `writeTexture`, with rows
+ *     REVERSED: the source is north-first (WebGL uploads it to v=0 and
+ *     applies `y = 1 - y` in GlobeFS.glsl AFTER the translation/scale),
+ *     while the WGSL samples directly at south-origin
+ *     `geoUV * wmTS.zw + wmTS.xy`. South-first rows make direct sampling
+ *     byte-equivalent to WebGL's flip-after-TS, including for inherited
+ *     ancestor masks (wmTS stays south-origin in both conventions).
+ *   - `ImageBitmap` — uploaded via `copyExternalImageToTexture` with
+ *     `flipY: true` for the same north-first → south-first conversion
+ *     (WebGL uploads bitmap masks with `flipY: false` + shader V-flip).
+ *
+ * The mask is consumed via `textureSampleLevel(…, 0.0)` so no mip chain
+ * is generated. Cached per WebGL-texture `_id`; `GlobeSurfaceTile.js`
+ * invokes the registered `_webgpuTextureCacheCleanup` when the WebGL
+ * texture's refcount hits zero so the GPU copy is released with it.
  */
 export function getOrCreateWaterMaskTexture(
   host: TextureCacheHost,
   waterMaskTex: CesiumOpaqueTexture,
 ): GPUTextureView | null {
-  // Water mask textures are WebGL Texture objects; extract the source image
   const wm = waterMaskTex as CesiumTextureWithSource;
-  const source = wm._source || wm.image;
-  if (!source) return null;
-
   const cacheKey = `wm_${wm._id || "default"}`;
   const cached = host._waterMaskTextureCache.get(cacheKey);
   if (cached) return cached.view;
 
-  return uploadImageSource(host, source, cacheKey, host._waterMaskTextureCache);
+  const source = wm._webgpuSource ?? wm._source ?? wm.image;
+  if (!source) return null;
+
+  const device = host._device!;
+  const cache = host._waterMaskTextureCache;
+  try {
+    let texture: GPUTexture;
+    let width: number;
+    let height: number;
+
+    if (
+      source instanceof ImageBitmap ||
+      source instanceof HTMLCanvasElement ||
+      source instanceof HTMLImageElement
+    ) {
+      if (source instanceof HTMLImageElement) {
+        // Same undecoded-image guard as `uploadImageSource` (C-P18).
+        if (!source.complete || source.naturalWidth === 0) return null;
+        width = source.naturalWidth || source.width;
+        height = source.naturalHeight || source.height;
+      } else {
+        width = source.width;
+        height = source.height;
+      }
+      if (width === 0 || height === 0) return null;
+      texture = device.createTexture({
+        label: `Globe ${cacheKey}`,
+        size: [width, height],
+        format: "rgba8unorm",
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      device.queue.copyExternalImageToTexture(
+        { source, flipY: true },
+        { texture, colorSpace: "srgb" },
+        [width, height],
+      );
+    } else {
+      const texels = source as CesiumLuminanceTexelSource;
+      const data = texels.arrayBufferView;
+      width = texels.width;
+      height = texels.height;
+      if (
+        !data ||
+        !(width > 0) ||
+        !(height > 0) ||
+        data.length < width * height
+      ) {
+        return null;
+      }
+      texture = device.createTexture({
+        label: `Globe ${cacheKey}`,
+        size: [width, height],
+        format: "r8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      // Reverse row order (north-first → south-first); see the function
+      // docstring for why direct south-origin sampling requires it.
+      const flipped = new Uint8Array(width * height);
+      for (let row = 0; row < height; row++) {
+        const srcStart = (height - 1 - row) * width;
+        flipped.set(data.subarray(srcStart, srcStart + width), row * width);
+      }
+      device.queue.writeTexture(
+        { texture },
+        flipped,
+        { bytesPerRow: width, rowsPerImage: height },
+        [width, height],
+      );
+    }
+
+    const view = texture.createView();
+    cache.set(cacheKey, {
+      texture,
+      view,
+      sourceWidth: width,
+      sourceHeight: height,
+    });
+    // Release the GPU copy when the owning WebGL texture is destroyed
+    // (GlobeSurfaceTile.freeResources → refcount 0). Identity-guarded so
+    // a later re-upload under a reused `_id` is not clobbered.
+    wm._webgpuTextureCacheCleanup = () => {
+      if (cache.get(cacheKey)?.texture === texture) {
+        cache.delete(cacheKey);
+        texture.destroy();
+      }
+    };
+    return view;
+  } catch (e) {
+    // Same rationale as `uploadImageSource`: a throw here is a real fault
+    // (OOM / lost device); surface it permanently and let the caller's
+    // cache-miss retry handle recoverable cases.
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(
+      `[CesiumJS:webgpu] water-mask upload failed for "${cacheKey}": ${message}`,
+    );
+    return null;
+  }
 }
 
 /**
