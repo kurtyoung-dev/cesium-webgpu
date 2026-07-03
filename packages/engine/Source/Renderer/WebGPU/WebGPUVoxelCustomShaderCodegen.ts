@@ -81,9 +81,10 @@ export interface VoxelUserShaderInfo {
 
 /**
  * FNV-1a 32-bit string hash (mirrors `CustomShaderWGSLPipelineStage`'s local
- * copy — kept local so this module stays dependency-free).
+ * copy — kept local so this module stays dependency-free). Exported for
+ * spec coverage (NEW-SPEC-VOXEL-CUSTOMSHADER-CODEGEN); not a public API.
  */
-function hashStringFNV1a(str: string): number {
+export function hashStringFNV1a(str: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
@@ -96,9 +97,10 @@ function hashStringFNV1a(str: string): number {
  * Sanitize a metadata property name to a valid WGSL identifier: leading
  * non-alpha characters get a `_` prefix, every other invalid character maps
  * to `_`. Mirrors the intent of `ModelUtility.sanitizeGlslIdentifier` without
- * pulling in the model-loader dependency graph.
+ * pulling in the model-loader dependency graph. Exported for spec coverage
+ * (NEW-SPEC-VOXEL-CUSTOMSHADER-CODEGEN); not a public API.
  */
-function sanitizeWgslIdentifier(name: string): string {
+export function sanitizeWgslIdentifier(name: string): string {
   let sanitized = name.replace(/[^0-9a-zA-Z_]/g, "_");
   if (!/^[a-zA-Z_]/.test(sanitized)) {
     sanitized = `_${sanitized}`;
