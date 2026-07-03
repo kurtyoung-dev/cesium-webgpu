@@ -8,7 +8,7 @@
 // │                   Shaders/SkyAtmosphereCommon.glsl (81 lines)        │
 // │                   Shaders/Builtin/Functions/computeScattering.glsl   │
 // │                   Shaders/Builtin/Functions/computeAtmosphereColor.glsl │
-// │ Last lockstep audit: 2026-05-19, Batch 76                            │
+// │ Last lockstep audit: 2026-07-03, Batch 513 (through-planet march)    │
 // └─────────────────────────────────────────────────────────────────────┘
 // Any change in this file MUST land with a matching change in the GLSL
 // counterparts. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
@@ -31,6 +31,14 @@
 //    sky ~1.5× brighter than the WebGL reference (the coarse GLSL
 //    quadrature undershoots the converged Rayleigh integral). See the
 //    `PRIMARY_STEPS_MAX` comment at line ~230.
+//    Batch 513 (NEW-GLOBE-DRAPE-LIMB-CLOSEOUT): planet-striking rays now
+//    march THROUGH the planet interior like WebGL (the old
+//    `rayEnd = earthIntersect.x` surface clip flooded the globe-hidden
+//    disk interior blue + truncated the limb extinction tail); the only
+//    intentional divergence is a −150 km underground sample-height
+//    floor so the extinction is deterministic — WGSL exp() overflow is
+//    indeterminate per spec, while WebGL rides f32 inf to the same
+//    visual black.
 //
 // 3. **Per-vertex vs per-fragment.** GLSL has #ifdef
 //    PER_FRAGMENT_ATMOSPHERE that decides between vertex-evaluated
@@ -521,7 +529,17 @@ fn computeScattering(
     // Sample position along the view ray — one full step from the start,
     // matching the GLSL exactly (NOT midpoint).
     let samplePosition = rayOrigin + rayDir * (rayPositionLength + rayStepLength);
-    let sampleHeight = length(samplePosition) - innerRadius;
+    // NEW-GLOBE-DRAPE-LIMB-CLOSEOUT — underground sample-height floor.
+    // Planet-striking rays now march through the planet interior (WebGL
+    // parity; see skyColorForRay). Below ~-150 km the density exp() would
+    // overflow f32 (inf → 0×inf → NaN, indeterminate per the WGSL spec);
+    // the floor keeps every term finite while still yielding an optical
+    // depth so large that attenuation underflows to exactly 0 — total
+    // extinction, identical visual result to WebGL's overflow behavior.
+    // Samples above -150 km (every above-ground sample, and the shallow
+    // sub-limb chords that form the limb's extinction tail) are
+    // bit-identical to the unclamped math.
+    let sampleHeight = max(length(samplePosition) - innerRadius, -150000.0);
     let sampleDensity = exp(-sampleHeight / heightScale) * rayStepLength;
     opticalDepth += sampleDensity;
     ozoneOpticalDepth += ozoneDensityAtHeight(sampleHeight) * rayStepLength;
@@ -539,7 +557,10 @@ fn computeScattering(
       }
       let lightPosition = samplePosition +
         sunDir * (lightPositionLength + lightStepLength * 0.5);
-      let lightHeight = length(lightPosition) - innerRadius;
+      // Same -150 km floor as the view-ray samples: light rays from
+      // underground samples (or night-side samples shadowed by the
+      // planet) must extinguish deterministically, not overflow.
+      let lightHeight = max(length(lightPosition) - innerRadius, -150000.0);
       lightOpticalDepth += exp(-lightHeight / heightScale) * lightStepLength;
       lightOzoneOpticalDepth += ozoneDensityAtHeight(lightHeight) * lightStepLength;
       lightPositionLength += lightStepLength;
@@ -805,12 +826,25 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
 
   let earthIntersect = raySphereIntersect(rayOrigin, rayDir, innerRadius);
   var rayStart = max(0.0, atmosphereIntersect.x);
-  var rayEnd = atmosphereIntersect.y;
-
-  // If ray hits the earth, stop at earth surface
-  if (earthIntersect.x > 0.0) {
-    rayEnd = earthIntersect.x;
-  }
+  // NEW-GLOBE-DRAPE-LIMB-CLOSEOUT — do NOT stop the ray at the earth
+  // surface. WebGL's SkyAtmosphereCommon.glsl passes the full camera→
+  // shell-vertex distance as `primaryRayLength` (czm_computeScattering
+  // clamps only against the OUTER-sphere exit), so `skyPoint`, the
+  // NONE-case light direction, and the night-alpha term all reference
+  // the far shell point — not the ground point — and planet-striking
+  // rays MARCH THROUGH the planet interior, where the exponentially-
+  // growing optical depth extinguishes them. That extinction is what
+  // renders the globe-hidden disk interior black and produces WebGL's
+  // limb profile: a bright grazing-ray peak plus a ~10 px extinction
+  // tail from shallow sub-limb chords. The old `rayEnd =
+  // earthIntersect.x` clip instead returned a bright camera→surface
+  // inscatter slab, flooding the see-through disk interior with a solid
+  // daylight-blue disc whenever the globe surface wasn't drawn over it
+  // (globe.show = false) and truncating the limb tail. The underground
+  // sample-height floor inside computeScattering keeps the through-
+  // planet march deterministic (WebGL rides f32 exp() overflow to the
+  // same visual result; WGSL exp() overflow is indeterminate per spec).
+  let rayEnd = atmosphereIntersect.y;
 
   let rayLength = rayEnd - rayStart;
   if (rayLength <= 0.0) {

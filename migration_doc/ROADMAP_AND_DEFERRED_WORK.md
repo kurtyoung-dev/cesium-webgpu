@@ -174,9 +174,17 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   on WebGPU where WebGL's `czm_phong` + `materialInput.waterMask` mutes it. A pre-existing, non-default
   (extreme EXAG over glacial-lake terrain), LOW-priority globe-lighting parity gap (broad blast radius),
   NOT a water-color pipeline issue. **P2.** Probe: `probe-exaggeration-3d.mjs` / `diag-exag-water-streaks-source.mjs`.
-- **`NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH`** (S–M, Batch 327) — the WGSL ground-atmosphere drape's
-  limb-width/falloff differs from WebGL's `GlobeFS.glsl` + `AtmosphereCommon.glsl` ground-atmo path
-  (the SkyAtmosphere shell itself is at parity). Cosmetic limb-width at full-disc framing. **P2.**
+- **`NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH`** — ✅ **CLOSED (Batch 513, NEW-GLOBE-DRAPE-LIMB-CLOSEOUT,
+  2026-07-03).** `probe-limb-halo-width` drape diagnostic measures WebGL=1 px vs WebGPU=1 px (delta 0)
+  at the full-disc framing — the drape band itself is at parity. The REAL residual the epic was
+  chasing lived in the SkyAtmosphere shell, not the drape: `skyColorForRay` clipped planet-striking
+  rays at the earth surface (`rayEnd = earthIntersect.x`), (a) flooding the see-through disk interior
+  with a solid daylight-blue disc whenever the globe surface didn't cover it (globe.show=false —
+  latent since the original port, unmasked by the 2026-06-25 skybox-over-atmosphere draw-order fix)
+  and (b) truncating WebGL's ~10 px limb extinction tail (shallow sub-limb chords marching through
+  the planet). Fix: march through the planet like WebGL, with a −150 km underground sample-height
+  floor in `computeScattering` so extinction is deterministic (WGSL exp() overflow is
+  spec-indeterminate). Shell gate now PASSes: WebGL 14 px vs WebGPU 16 px median (±6 px tol).
 - **`NEW-WEBGL-REPROJECT-BASELINE`** — WebGL imagery reprojection forked to per-fragment Mercator; needs
   a regression baseline. **P2** (drift bookkeeping).
 - **Campaign closures (Batches 482–506, see §5.2):** underground color ✅ B487; globe translucency
@@ -186,17 +194,16 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   parity) ✅ B494; **polar stretch** ✅ B502 (root cause: DOUBLE vertical flip in the WGSL Web
   Mercator reprojection, `ReprojectWebMercator.wgsl`) + polish ✅ B506 (dark-navy tile-seam grid
   killed + orbital ocean glint restored; `GlobeTerrain.wgsl` rework, camera-UB +fields).
-- **`NEW-GLOBE-BELOW-SURFACE-DARKENING`** (post-campaign audit 2026-07-03) — **P1 — OPEN.** WebGPU
-  renders uniformly darker than WebGL in below-surface / translucent views: `probe-globe-underground`
-  12.28% (red) / 22.85% (default) vs the 8% limit, `probe-globe-translucency` translucent-terrain
-  25.49% vs 10.5%, signed dRGB −5.8..−8.0 across the board (reproduced 3× at clean HEAD
-  `62c5bab450`). Largely a **standing** atmosphere/lighting gap — B488 itself landed at 22.9% —
-  that the campaign's default-view polish (B502/504/505/506) *exposed* by dropping the probes'
-  shared dynamic baseline ~15%→2.5% (limits are `max(8, base+2)` / `max(10, base+8)`); possibly
-  nudged ~+2.6 pp worse by B506's `GlobeFS`/`GlobeTerrain` shading changes. **Fold into the
-  limb-ring/atmosphere-brightness epic** (`NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH` above) with these
-  measured numbers; verify B506's seam/glint deltas apply symmetrically on the translucency/
-  underground paths. Do **NOT** loosen the probe limits.
+- **`NEW-GLOBE-BELOW-SURFACE-DARKENING`** — ✅ **CLOSED (epic B2/B5/B6 = Batches 510/512/513,
+  2026-07-03).** Was: a tile-aligned haze wedge on WebGPU in below-surface / translucent views
+  (`probe-globe-underground` 12.28%/22.85% vs 8% limit, `probe-globe-translucency` 25.49% vs 10.5%
+  at clean HEAD `62c5bab450`). B2 (Batch 510) attribution exonerated every named shading term and
+  root-caused the wedge to the water/reflective-ocean path; B5 (Batch 512) fixed it — water masks
+  never uploaded (`wm._source` was never retained), so every water-masked tile bound the 1×1 WHITE
+  placeholder and `computeEnhancedOcean` ocean-shaded whole land tiles. B6 (Batch 513) verified
+  under the UN-loosened dynamic limits: underground-red **1.43%** / underground-def **4.28%**
+  (limit 8), translucent-space **4.00%** / translucent-terrain **0.54%** (limit 11.9) — all PASS
+  with wide margin. Historical decomposition detail retained below.
   - **B2 decomposition result (NEW-GLOBE-BELOWSURFACE-DECOMP, 2026-07-03):** per-term A/B bypass
     instrumentation landed (`bypass-*` globe-fragment debug modes, sentinels 21e9–27e9 in
     `WebGPUGlobeFragmentDebug.ts` / `GlobeTerrain.wgsl`, production-inert; probe
@@ -747,7 +754,7 @@ papered over — prioritized:
 | Priority | ID | One-liner | Where |
 |---|---|---|---|
 | **P1 — FIX NOW** | `NEW-VOXEL-PICK-OCTREE-COMPOSE` | pick march lacks L1 octree traversal + hardcodes megatextureId 0 (wrong pick under refinement); same fix carries the user-customShader alpha-gate composition gap | §4.5 |
-| **P1** | `NEW-GLOBE-BELOW-SURFACE-DARKENING` | underground 12.28/22.85% vs 8 limit, translucency 25.49% vs 10.5, WebGPU uniformly darker dRGB −5.8..−8.0 — fold into the limb-ring/atmosphere-brightness epic | §4.1 |
+| **P1** | `NEW-GLOBE-BELOW-SURFACE-DARKENING` | ✅ RESOLVED 2026-07-03 (Batches 510/512/513): water masks never uploaded → ocean-shading over land tiles; probes now 1.43/4.28% (limit 8) + 4.00/0.54% (limit 11.9) under un-loosened limits (see §4.1 entry) | §4.1 |
 | **P2** | `NEW-MODEL-SCENE2D-SHADING` | 2D model olive vs blue-gray (interiorDiff 34.27); suspect SCENE2D light-direction/IBL orientation, NOT globe-related | §4.3 |
 | **P2** | `NEW-PP-LIBRARY-TONEMAP-ORDER` | ✅ RESOLVED 2026-07-03 — post-tonemap placement + plain-HDR tonemap gate + exact Khronos PBR-Neutral WGSL port (see §4.7 entry; scene-side residue → `NEW-PLAIN-HDR-SCENE-GAMMA-EPIC`) | §4.7 |
 
