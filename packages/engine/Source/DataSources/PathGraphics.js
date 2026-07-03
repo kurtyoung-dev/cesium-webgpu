@@ -14,10 +14,11 @@ import createPropertyDescriptor from "./createPropertyDescriptor.js";
  * @property {Property | number} [leadTime] A Property specifying the number of seconds in front the object to show.
  * @property {Property | number} [trailTime] A Property specifying the number of seconds behind of the object to show.
  * @property {Property | number} [width=1.0] A numeric Property specifying the width in pixels.
- * @property {Property | number} [resolution=60] A numeric Property specifying the maximum number of seconds to step when sampling the position.
+ * @property {Property | number} [resolution=60] A numeric Property specifying the maximum number of seconds to step when sampling the position. Fractional positive values are allowed; in PORTIONS materialMode, non-positive values fall back to the default resolution of 60 seconds.
  * @property {MaterialProperty | Color} [material=Color.WHITE] A Property specifying the material used to draw the path.
  * @property {Property | DistanceDisplayCondition} [distanceDisplayCondition] A Property specifying at what distance from the camera that this path will be displayed.
  * @property {Property | string} [relativeTo] A Property specifying the frame in which to visualize the path. Use another entity's id to visualize the path relative to that entity, or use the string values "FIXED" or "INERTIAL" to visualize the path in those reference frames.
+ * @property {Property | PathMode} [materialMode] A Property specifying how material properties are applied along the path.
  */
 
 /**
@@ -47,6 +48,8 @@ class PathGraphics {
     this._distanceDisplayConditionSubscription = undefined;
     this._relativeTo = undefined;
     this._relativeToSubscription = undefined;
+    this._materialMode = undefined;
+    this._materialModeSubscription = undefined;
 
     this.merge(options ?? Frozen.EMPTY_OBJECT);
   }
@@ -69,6 +72,7 @@ class PathGraphics {
     result.material = this.material;
     result.distanceDisplayCondition = this.distanceDisplayCondition;
     result.relativeTo = this.relativeTo;
+    result.materialMode = this.materialMode;
     return result;
   }
 
@@ -94,6 +98,7 @@ class PathGraphics {
     this.distanceDisplayCondition =
       this.distanceDisplayCondition ?? source.distanceDisplayCondition;
     this.relativeTo = this.relativeTo ?? source.relativeTo;
+    this.materialMode = this.materialMode ?? source.materialMode;
   }
 }
 
@@ -142,6 +147,7 @@ Object.defineProperties(PathGraphics.prototype, {
 
   /**
    * Gets or sets the Property specifying the maximum number of seconds to step when sampling the position.
+   * Fractional positive values are allowed; in PORTIONS materialMode, non-positive values fall back to the default resolution of 60 seconds.
    * @memberof PathGraphics.prototype
    * @type {Property|undefined}
    * @default 60
@@ -172,6 +178,7 @@ Object.defineProperties(PathGraphics.prototype, {
    * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
    */
   relativeTo: createPropertyDescriptor("relativeTo"),
+  materialMode: createPropertyDescriptor("materialMode"),
 });
 
 export default PathGraphics;

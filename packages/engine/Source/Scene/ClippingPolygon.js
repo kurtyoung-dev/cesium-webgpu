@@ -197,6 +197,7 @@ class ClippingPolygon {
  *
  * @param {Cartesian3[]|undefined} input The input array
  * @returns {Cartesian3[]|undefined} The copy
+ * @ignore
  */
 function copyArrayCartesian3(input) {
   if (!defined(input)) {
@@ -223,6 +224,7 @@ function copyArrayCartesian3(input) {
  * @param {Cartesian3[]|undefined} a The first array
  * @param {Cartesian3[]|undefined} b The second array
  * @returns {boolean} Whether the arrays are equal
+ * @ignore
  */
 function equalsArrayCartesian3(a, b) {
   if (!defined(a) && !defined(b)) {

@@ -190,133 +190,131 @@ const featureTypes = {
   Tour: processTour,
 };
 
-function DeferredLoading(dataSource) {
-  this._dataSource = dataSource;
-  this._deferred = defer();
-  this._stack = [];
-  this._promises = [];
-  this._timeoutSet = false;
-  this._used = false;
+class DeferredLoading {
+  constructor(dataSource) {
+    this._dataSource = dataSource;
+    this._deferred = defer();
+    this._stack = [];
+    this._promises = [];
+    this._timeoutSet = false;
+    this._used = false;
 
-  this._started = 0;
-  this._timeThreshold = 1000; // Initial load is 1 second
-}
-
-Object.defineProperties(DeferredLoading.prototype, {
-  dataSource: {
-    get: function () {
-      return this._dataSource;
-    },
-  },
-});
-
-DeferredLoading.prototype.addNodes = function (nodes, processingData) {
-  this._stack.push({
-    nodes: nodes,
-    index: 0,
-    processingData: processingData,
-  });
-  this._used = true;
-};
-
-DeferredLoading.prototype.addPromise = function (promise) {
-  this._promises.push(promise);
-};
-
-DeferredLoading.prototype.wait = function () {
-  // Case where we had a non-document/folder as the root
-  const deferred = this._deferred;
-  if (!this._used) {
-    deferred.resolve();
+    this._started = 0;
+    this._timeThreshold = 1000; // Initial load is 1 second
   }
 
-  return Promise.all([deferred.promise, Promise.all(this._promises)]);
-};
-
-DeferredLoading.prototype.process = function () {
-  const isFirstCall = this._stack.length === 1;
-  if (isFirstCall) {
-    this._started = KmlDataSource._getTimestamp();
+  get dataSource() {
+    return this._dataSource;
   }
 
-  return this._process(isFirstCall);
-};
-
-DeferredLoading.prototype._giveUpTime = function () {
-  if (this._timeoutSet) {
-    // Timeout was already set so just return
-    return;
+  addNodes(nodes, processingData) {
+    this._stack.push({
+      nodes: nodes,
+      index: 0,
+      processingData: processingData,
+    });
+    this._used = true;
   }
 
-  this._timeoutSet = true;
-  this._timeThreshold = 50; // After the first load lower threshold to 0.5 seconds
-  const that = this;
-  setTimeout(function () {
-    that._timeoutSet = false;
-    that._started = KmlDataSource._getTimestamp();
-    that._process(true);
-  }, 0);
-};
-
-DeferredLoading.prototype._nextNode = function () {
-  const stack = this._stack;
-  const top = stack[stack.length - 1];
-  const index = top.index;
-  const nodes = top.nodes;
-  if (index === nodes.length) {
-    return;
-  }
-  ++top.index;
-
-  return nodes[index];
-};
-
-DeferredLoading.prototype._pop = function () {
-  const stack = this._stack;
-  stack.pop();
-
-  // Return false if we are done
-  if (stack.length === 0) {
-    this._deferred.resolve();
-    return false;
+  addPromise(promise) {
+    this._promises.push(promise);
   }
 
-  return true;
-};
-
-DeferredLoading.prototype._process = function (isFirstCall) {
-  const dataSource = this.dataSource;
-  const processingData = this._stack[this._stack.length - 1].processingData;
-
-  let child = this._nextNode();
-  while (defined(child)) {
-    const featureProcessor = featureTypes[child.localName];
-    if (
-      defined(featureProcessor) &&
-      (namespaces.kml.includes(child.namespaceURI) ||
-        namespaces.gx.includes(child.namespaceURI))
-    ) {
-      featureProcessor(dataSource, child, processingData, this);
-
-      // Give up time and continue loading later
-      if (
-        this._timeoutSet ||
-        KmlDataSource._getTimestamp() > this._started + this._timeThreshold
-      ) {
-        this._giveUpTime();
-        return;
-      }
+  wait() {
+    // Case where we had a non-document/folder as the root
+    const deferred = this._deferred;
+    if (!this._used) {
+      deferred.resolve();
     }
 
-    child = this._nextNode();
+    return Promise.all([deferred.promise, Promise.all(this._promises)]);
   }
 
-  // If we are a recursive call from a subfolder, just return so the parent folder can continue processing
-  // If we aren't then make another call to processNodes because there is stuff still left in the queue
-  if (this._pop() && isFirstCall) {
-    this._process(true);
+  process() {
+    const isFirstCall = this._stack.length === 1;
+    if (isFirstCall) {
+      this._started = KmlDataSource._getTimestamp();
+    }
+
+    return this._process(isFirstCall);
   }
-};
+
+  _giveUpTime() {
+    if (this._timeoutSet) {
+      // Timeout was already set so just return
+      return;
+    }
+
+    this._timeoutSet = true;
+    this._timeThreshold = 50; // After the first load lower threshold to 0.5 seconds
+    const that = this;
+    setTimeout(function () {
+      that._timeoutSet = false;
+      that._started = KmlDataSource._getTimestamp();
+      that._process(true);
+    }, 0);
+  }
+
+  _nextNode() {
+    const stack = this._stack;
+    const top = stack[stack.length - 1];
+    const index = top.index;
+    const nodes = top.nodes;
+    if (index === nodes.length) {
+      return;
+    }
+    ++top.index;
+
+    return nodes[index];
+  }
+
+  _pop() {
+    const stack = this._stack;
+    stack.pop();
+
+    // Return false if we are done
+    if (stack.length === 0) {
+      this._deferred.resolve();
+      return false;
+    }
+
+    return true;
+  }
+
+  _process(isFirstCall) {
+    const dataSource = this.dataSource;
+    const processingData = this._stack[this._stack.length - 1].processingData;
+
+    let child = this._nextNode();
+    while (defined(child)) {
+      const featureProcessor = featureTypes[child.localName];
+      if (
+        defined(featureProcessor) &&
+        (namespaces.kml.includes(child.namespaceURI) ||
+          namespaces.gx.includes(child.namespaceURI))
+      ) {
+        featureProcessor(dataSource, child, processingData, this);
+
+        // Give up time and continue loading later
+        if (
+          this._timeoutSet ||
+          KmlDataSource._getTimestamp() > this._started + this._timeThreshold
+        ) {
+          this._giveUpTime();
+          return;
+        }
+      }
+
+      child = this._nextNode();
+    }
+
+    // If we are a recursive call from a subfolder, just return so the parent folder can continue processing
+    // If we aren't then make another call to processNodes because there is stuff still left in the queue
+    if (this._pop() && isFirstCall) {
+      this._process(true);
+    }
+  }
+}
 
 function isZipFile(blob) {
   const magicBlob = blob.slice(0, Math.min(4, blob.size));
@@ -4147,75 +4145,75 @@ function getNetworkLinkUpdateCallback(
 const entitiesToIgnore = new AssociativeArray();
 
 /**
- * Contains KML Feature data loaded into the <code>Entity.kml</code> property by {@link KmlDataSource}.
- * @alias KmlFeatureData
- * @constructor
+ * @typedef KmlFeatureData.Author
+ * @type {object}
+ * @property {string} name Gets the name.
+ * @property {string} uri Gets the URI.
+ * @property {number} age Gets the email.
  */
-function KmlFeatureData() {
-  /**
-   * @typedef KmlFeatureData.Author
-   * @type {object}
-   * @property {string} name Gets the name.
-   * @property {string} uri Gets the URI.
-   * @property {number} age Gets the email.
-   */
 
-  /**
-   * Gets the atom syndication format author field.
-   * @type {KmlFeatureData.Author}
-   */
-  this.author = {
-    name: undefined,
-    uri: undefined,
-    email: undefined,
-  };
+/**
+ * Contains KML Feature data loaded into the <code>Entity.kml</code> property by {@link KmlDataSource}.
+ */
+class KmlFeatureData {
+  constructor() {
+    /**
+     * Gets the atom syndication format author field.
+     * @type {KmlFeatureData.Author}
+     */
+    this.author = {
+      name: undefined,
+      uri: undefined,
+      email: undefined,
+    };
 
-  /**
-   * @typedef KmlFeatureData.Link
-   * @type {object}
-   * @property {string} href Gets the href.
-   * @property {string} hreflang Gets the language of the linked resource.
-   * @property {string} rel Gets the link relation.
-   * @property {string} type Gets the link type.
-   * @property {string} title Gets the link title.
-   * @property {string} length Gets the link length.
-   */
+    /**
+     * @typedef KmlFeatureData.Link
+     * @type {object}
+     * @property {string} href Gets the href.
+     * @property {string} hreflang Gets the language of the linked resource.
+     * @property {string} rel Gets the link relation.
+     * @property {string} type Gets the link type.
+     * @property {string} title Gets the link title.
+     * @property {string} length Gets the link length.
+     */
 
-  /**
-   * Gets the link.
-   * @type {KmlFeatureData.Link}
-   */
-  this.link = {
-    href: undefined,
-    hreflang: undefined,
-    rel: undefined,
-    type: undefined,
-    title: undefined,
-    length: undefined,
-  };
+    /**
+     * Gets the link.
+     * @type {KmlFeatureData.Link}
+     */
+    this.link = {
+      href: undefined,
+      hreflang: undefined,
+      rel: undefined,
+      type: undefined,
+      title: undefined,
+      length: undefined,
+    };
 
-  /**
-   * Gets the unstructured address field.
-   * @type {string}
-   */
-  this.address = undefined;
-  /**
-   * Gets the phone number.
-   * @type {string}
-   */
-  this.phoneNumber = undefined;
-  /**
-   * Gets the snippet.
-   * @type {string}
-   */
-  this.snippet = undefined;
-  /**
-   * Gets the extended data, parsed into a JSON object.
-   * Currently only the <code>Data</code> property is supported.
-   * <code>SchemaData</code> and custom data are ignored.
-   * @type {string}
-   */
-  this.extendedData = undefined;
+    /**
+     * Gets the unstructured address field.
+     * @type {string}
+     */
+    this.address = undefined;
+    /**
+     * Gets the phone number.
+     * @type {string}
+     */
+    this.phoneNumber = undefined;
+    /**
+     * Gets the snippet.
+     * @type {string}
+     */
+    this.snippet = undefined;
+    /**
+     * Gets the extended data, parsed into a JSON object.
+     * Currently only the <code>Data</code> property is supported.
+     * <code>SchemaData</code> and custom data are ignored.
+     * @type {string}
+     */
+    this.extendedData = undefined;
+  }
 }
 
 // For testing

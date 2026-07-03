@@ -98,9 +98,11 @@ class BillboardTexture {
     let index;
     const atlas = this._billboardCollection.textureAtlas;
     try {
-      index = atlas.addImage(id, image, width, height);
-      if (index instanceof Promise) {
-        index = await index;
+      const indexOrPromise = atlas.addImage(id, image, width, height);
+      if (typeof indexOrPromise === "number") {
+        index = indexOrPromise;
+      } else {
+        index = await indexOrPromise;
       }
     } catch (error) {
       // There was an error loading the image

@@ -381,6 +381,7 @@ ModelUtility.supportedExtensions = {
   KHR_materials_unlit: true,
   KHR_mesh_quantization: true,
   KHR_mesh_primitive_restart: true,
+  KHR_meshopt_compression: true,
   KHR_techniques_webgl: true,
   KHR_texture_basisu: true,
   KHR_texture_transform: true,

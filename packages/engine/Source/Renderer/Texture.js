@@ -629,7 +629,7 @@ class Texture {
   /**
    * This function is identical to using the Texture constructor except that it can be
    * replaced with a mock/spy in tests.
-   * @private
+   * @ignore
    */
   static create(options) {
     return new Texture(options);

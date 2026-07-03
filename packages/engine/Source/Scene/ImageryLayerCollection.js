@@ -424,7 +424,7 @@ class ImageryLayerCollection {
   /**
    * Updates frame state to execute any queued texture re-projections.
    *
-   * @private
+   * @ignore
    *
    * @param {FrameState} frameState The frameState.
    */
@@ -438,7 +438,7 @@ class ImageryLayerCollection {
   /**
    * Cancels re-projection commands queued for the next frame.
    *
-   * @private
+   * @ignore
    */
   cancelReprojections() {
     const layers = this._layers;

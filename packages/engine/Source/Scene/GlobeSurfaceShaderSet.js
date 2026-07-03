@@ -1,3 +1,5 @@
+// @ts-check
+
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import TerrainQuantization from "../Core/TerrainQuantization.js";
@@ -5,26 +7,86 @@ import ShaderProgram from "../Renderer/ShaderProgram.js";
 import getClippingFunction from "./getClippingFunction.js";
 import SceneMode from "./SceneMode.js";
 
-function GlobeSurfaceShader(
-  numberOfDayTextures,
-  flags,
-  material,
-  shaderProgram,
-  clippingShaderState,
-  clippingPolygonShaderState,
-) {
-  this.numberOfDayTextures = numberOfDayTextures;
-  this.flags = flags;
-  this.material = material;
-  this.shaderProgram = shaderProgram;
-  this.clippingShaderState = clippingShaderState;
-  this.clippingPolygonShaderState = clippingPolygonShaderState;
+/** @import ClippingPlaneCollection from "./ClippingPlaneCollection.js"; */
+/** @import ClippingPolygonCollection from "./ClippingPolygonCollection.js"; */
+/** @import Context from "../Renderer/Context.js"; */
+/** @import FrameState from "./FrameState.js"; */
+/** @import GlobeSurfaceTile from "./GlobeSurfaceTile.js"; */
+
+/**
+ * @ignore
+ */
+class GlobeSurfaceShader {
+  /**
+   * @param {number} numberOfDayTextures
+   * @param {number} flags
+   * @param {*} material
+   * @param {ShaderProgram} shaderProgram
+   * @param {number} clippingShaderState
+   * @param {number} clippingPolygonShaderState
+   */
+  constructor(
+    numberOfDayTextures,
+    flags,
+    material,
+    shaderProgram,
+    clippingShaderState,
+    clippingPolygonShaderState,
+  ) {
+    /** @type {number} */
+    this.numberOfDayTextures = numberOfDayTextures;
+    this.flags = flags;
+    this.material = material;
+    /** @type {ShaderProgram} */
+    this.shaderProgram = shaderProgram;
+    this.clippingShaderState = clippingShaderState;
+    this.clippingPolygonShaderState = clippingPolygonShaderState;
+  }
 }
+
+/**
+ * @typedef {object} GlobeSurfaceShaderSetOptions
+ * @property {FrameState} [frameState]
+ * @property {GlobeSurfaceTile} [surfaceTile]
+ * @property {number} [numberOfDayTextures]
+ * @property {boolean} [applyBrightness]
+ * @property {boolean} [applyContrast]
+ * @property {boolean} [applyHue]
+ * @property {boolean} [applySaturation]
+ * @property {boolean} [applyGamma]
+ * @property {boolean} [applyAlpha]
+ * @property {boolean} [applyDayNightAlpha]
+ * @property {boolean} [applySplit]
+ * @property {boolean} [hasWaterMask]
+ * @property {boolean} [showReflectiveOcean]
+ * @property {boolean} [showOceanWaves]
+ * @property {boolean} [enableLighting]
+ * @property {boolean} [dynamicAtmosphereLighting]
+ * @property {boolean} [dynamicAtmosphereLightingFromSun]
+ * @property {boolean} [showGroundAtmosphere]
+ * @property {boolean} [perFragmentGroundAtmosphere]
+ * @property {boolean} [hasVertexNormals]
+ * @property {boolean} [useWebMercatorProjection]
+ * @property {boolean} [enableFog]
+ * @property {boolean} [enableClippingPlanes]
+ * @property {ClippingPlaneCollection} [clippingPlanes]
+ * @property {boolean} [enableClippingPolygons]
+ * @property {ClippingPolygonCollection} [clippingPolygons]
+ * @property {boolean} [clippedByBoundaries]
+ * @property {boolean} [hasImageryLayerCutout]
+ * @property {boolean} [colorCorrect]
+ * @property {boolean} [highlightFillTile]
+ * @property {boolean} [colorToAlpha]
+ * @property {boolean} [hasGeodeticSurfaceNormals]
+ * @property {boolean} [hasExaggeration]
+ * @property {boolean} [showUndergroundColor]
+ * @property {boolean} [translucent]
+ * @ignore
+ */
 
 /**
  * Manages the shaders used to shade the surface of a {@link Globe}.
  *
- * @alias GlobeSurfaceShaderSet
  * @private
  */
 class GlobeSurfaceShaderSet {
@@ -32,11 +94,13 @@ class GlobeSurfaceShaderSet {
     this.baseVertexShaderSource = undefined;
     this.baseFragmentShaderSource = undefined;
 
+    /** @type {GlobeSurfaceShader[][]} */
     this._shadersByTexturesFlags = [];
 
     this.material = undefined;
   }
 
+  /** @param {GlobeSurfaceShaderSetOptions} options */
   getShaderProgram(options) {
     const frameState = options.frameState;
     const surfaceTile = options.surfaceTile;
@@ -106,50 +170,54 @@ class GlobeSurfaceShaderSet {
     // (x << 32 === x << 0 in JavaScript).
     const flags =
       ((sceneMode |
-        (applyBrightness << 2) |
-        (applyContrast << 3) |
-        (applyHue << 4) |
-        (applySaturation << 5) |
-        (applyGamma << 6) |
-        (applyAlpha << 7) |
-        (hasWaterMask << 8) |
-        (showReflectiveOcean << 9) |
-        (showOceanWaves << 10) |
-        (enableLighting << 11) |
-        (dynamicAtmosphereLighting << 12) |
-        (dynamicAtmosphereLightingFromSun << 13) |
-        (showGroundAtmosphere << 14) |
-        (perFragmentGroundAtmosphere << 15) |
-        (hasVertexNormals << 16) |
-        (useWebMercatorProjection << 17) |
-        (enableFog << 18) |
+        (+applyBrightness << 2) |
+        (+applyContrast << 3) |
+        (+applyHue << 4) |
+        (+applySaturation << 5) |
+        (+applyGamma << 6) |
+        (+applyAlpha << 7) |
+        (+hasWaterMask << 8) |
+        (+showReflectiveOcean << 9) |
+        (+showOceanWaves << 10) |
+        (+enableLighting << 11) |
+        (+dynamicAtmosphereLighting << 12) |
+        (+dynamicAtmosphereLightingFromSun << 13) |
+        (+showGroundAtmosphere << 14) |
+        (+perFragmentGroundAtmosphere << 15) |
+        (+hasVertexNormals << 16) |
+        (+useWebMercatorProjection << 17) |
+        (+enableFog << 18) |
         (quantization << 19) |
-        (applySplit << 20) |
-        (enableClippingPlanes << 21) |
-        (enableClippingPolygons << 22) |
+        (+applySplit << 20) |
+        (+enableClippingPlanes << 21) |
+        (+enableClippingPolygons << 22) |
         (cartographicLimitRectangleFlag << 23) |
         (imageryCutoutFlag << 24) |
-        (colorCorrect << 25) |
-        (highlightFillTile << 26) |
-        (colorToAlpha << 27) |
-        (hasGeodeticSurfaceNormals << 28) |
-        (hasExaggeration << 29) |
-        (showUndergroundColor << 30) |
-        (translucent << 31)) >>>
+        (+colorCorrect << 25) |
+        (+highlightFillTile << 26) |
+        (+colorToAlpha << 27) |
+        (+hasGeodeticSurfaceNormals << 28) |
+        (+hasExaggeration << 29) |
+        (+showUndergroundColor << 30) |
+        (+translucent << 31)) >>>
         0) +
       (applyDayNightAlpha ? 0x100000000 : 0);
 
     let currentClippingShaderState = 0;
+    // @ts-expect-error Missing types.
     if (defined(clippingPlanes) && clippingPlanes.length > 0) {
       currentClippingShaderState = enableClippingPlanes
-        ? clippingPlanes.clippingPlanesState
+        ? // @ts-expect-error Missing types.
+          clippingPlanes.clippingPlanesState
         : 0;
     }
 
     let currentClippingPolygonsShaderState = 0;
+    // @ts-expect-error Missing types.
     if (defined(clippingPolygons) && clippingPolygons.length > 0) {
       currentClippingPolygonsShaderState = enableClippingPolygons
-        ? clippingPolygons.clippingPolygonsState
+        ? // @ts-expect-error Missing types.
+          clippingPolygons.clippingPolygonsState
         : 0;
     }
 
@@ -299,9 +367,11 @@ class GlobeSurfaceShaderSet {
         }
 
         fs.defines.push(
+          // @ts-expect-error Missing types.
           `CLIPPING_POLYGON_REGIONS_LENGTH ${clippingPolygons.extentsCount}`,
         );
         vs.defines.push(
+          // @ts-expect-error Missing types.
           `CLIPPING_POLYGON_REGIONS_LENGTH ${clippingPolygons.extentsCount}`,
         );
       }
@@ -428,6 +498,10 @@ class GlobeSurfaceShaderSet {
   }
 }
 
+/**
+ * @param {SceneMode} sceneMode
+ * @ignore
+ */
 function getPositionMode(sceneMode) {
   const getPosition3DMode =
     "vec4 getPosition(vec3 position, float height, vec2 textureCoordinates) { return getPosition3DMode(position, height, textureCoordinates); }";
@@ -454,8 +528,13 @@ function getPositionMode(sceneMode) {
   return positionMode;
 }
 
+/**
+ * @param {Context} context
+ * @ignore
+ */
 function getPolygonClippingFunction(context) {
   // return a noop for webgl1
+  // @ts-expect-error Missing types.
   if (!context.webgl2) {
     return `void clipPolygons(highp sampler2D clippingDistance, int regionsLength, vec2 clippingPosition, int regionIndex) {
     }`;
@@ -466,8 +545,13 @@ function getPolygonClippingFunction(context) {
   }`;
 }
 
+/**
+ * @param {Context} context
+ * @ignore
+ */
 function getUnpackClippingFunction(context) {
   // return a noop for webgl1
+  // @ts-expect-error Missing types.
   if (!context.webgl2) {
     return `vec4 unpackClippingExtents(highp sampler2D extentsTexture, int index) {
       return vec4();
@@ -479,6 +563,11 @@ function getUnpackClippingFunction(context) {
   }`;
 }
 
+/**
+ * @param {boolean} useWebMercatorProjection
+ * @returns {string}
+ * @ignore
+ */
 function get2DYPositionFraction(useWebMercatorProjection) {
   const get2DYPositionFractionGeographicProjection =
     "float get2DYPositionFraction(vec2 textureCoordinates) { return get2DGeographicYPositionFraction(textureCoordinates); }";
