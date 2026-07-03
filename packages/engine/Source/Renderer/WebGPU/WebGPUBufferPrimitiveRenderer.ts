@@ -19,6 +19,7 @@
  * @module WebGPUBufferPrimitiveRenderer
  */
 
+import BoundingSphere from "../../Core/BoundingSphere.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Color from "../../Core/Color.js";
 import defined from "../../Core/defined.js";
@@ -190,6 +191,13 @@ export interface SharedCache {
   // (undefined → first non-3D frame re-packs, which is the desired behavior).
   _lastPackMode?: number;
   _lastPackMorphTime?: number;
+  // NEW-BUFFERPOLYLINE-2D-EXTRUSION — per-cache storage for the projected
+  // (2D/CV) and morph-union bounding spheres computed by
+  // `computeBufferModeBoundingVolume`. Per-cache (not module scratch) because
+  // the draw command holds the reference across the frame — a shared scratch
+  // would alias between collections updated in the same frame.
+  _modeBV?: CesiumBoundingSphere;
+  _modeBVMorph?: CesiumBoundingSphere;
 }
 
 // ─── Scratch ─────────────────────────────────────────────────────────────────
@@ -283,6 +291,61 @@ export function bufferModeNeedsRepack(
   cache._lastPackMode = mode;
   cache._lastPackMorphTime = morphTime;
   return changed;
+}
+
+/** Static-side shape of the JS-only BoundingSphere class we call through. */
+interface BoundingSphereStatics {
+  projectTo2D(
+    sphere: CesiumBoundingSphere,
+    projection: CesiumOpaqueMapProjection,
+    result?: CesiumBoundingSphere,
+  ): CesiumBoundingSphere;
+  union(
+    left: CesiumBoundingSphere,
+    right: CesiumBoundingSphere,
+    result?: CesiumBoundingSphere,
+  ): CesiumBoundingSphere;
+}
+
+/**
+ * NEW-BUFFERPOLYLINE-2D-EXTRUSION — scene-mode-aware command bounding volume.
+ *
+ * PARITY-BUFFER-2DCV reprojects the packed vertex positions into the 2D/CV
+ * render frame, but the draw command kept carrying the raw world-space (ECEF)
+ * bounding sphere. In SCENE2D the orthographic culling volume lives in the
+ * projected frame, so the ECEF sphere usually falls outside it and the whole
+ * command is frustum-culled — the polyline/polygon "absence" in 2D was a
+ * culling bug, not an extrusion bug (the screen-space quad extrusion already
+ * produces correct clip positions there; verified via cull=false probe).
+ *
+ * Mirrors upstream `PrimitiveCommandHelpers.updateAndQueueCommands`:
+ *   SCENE3D  — the collection's world-space sphere (same reference as before;
+ *              byte-identical default path).
+ *   2D / CV  — `BoundingSphere.projectTo2D(...)` (center in the (z,x,y)
+ *              swizzled render frame, matching the repacked positions).
+ *   MORPHING — union of the world-space and projected spheres, so the command
+ *              survives culling throughout the morph blend.
+ *
+ * Storage lives on the cache (`_modeBV` / `_modeBVMorph`) because the command
+ * holds the returned reference across the frame.
+ * @private
+ */
+export function computeBufferModeBoundingVolume(
+  collection: BufferPrimitiveCollection,
+  frameState: CesiumFrameState,
+  cache: SharedCache,
+): CesiumBoundingSphere | undefined {
+  const bv = collection.boundingVolume;
+  if (frameState.mode === SceneMode.SCENE3D || !defined(bv)) {
+    return bv;
+  }
+  const bs = jsModule<BoundingSphereStatics>(BoundingSphere);
+  cache._modeBV = bs.projectTo2D(bv, frameState.mapProjection, cache._modeBV);
+  if (frameState.mode === SceneMode.MORPHING) {
+    cache._modeBVMorph = bs.union(bv, cache._modeBV, cache._modeBVMorph);
+    return cache._modeBVMorph;
+  }
+  return cache._modeBV;
 }
 
 // ─── Camera UBO packing ──────────────────────────────────────────────────────

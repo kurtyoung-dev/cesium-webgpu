@@ -287,8 +287,9 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
 
 - **BufferPolygon-family 2D/CV + integer/normalized positions** — the 2D/CV reprojection half shipped
   in the 465–481 parity sprint (Buffer\* 2D/CV; re-verified by `probe-buffer-2dcv-parity`, PASS at
-  HEAD `62c5bab450`). Still open: **`NEW-BUFFERPOLYLINE-2D-EXTRUSION`** — 2D BufferPolyline
-  extrusion is absent (the probe confirms the documented expected-absence). **P2.** The
+  HEAD `62c5bab450`). **`NEW-BUFFERPOLYLINE-2D-EXTRUSION`** ✅ shipped 2026-07-03 — the 2D
+  absence was a frustum-culling bug (ECEF command BV vs reprojected positions), fixed by
+  scene-mode-aware command BVs; the probe now asserts 2D polyline presence + width. The
   integer/snorm/unorm `positionDatatype` / `positionNormalized:true` path also remains open
   (silently mis-encoded). **P2.**
 
@@ -721,8 +722,8 @@ fixed B317; GlobeWater facade is intentionally Phase-0.3-scoped, §10.1) — cod
 voxels-stub row (the real data path shipped in the 465–481 sprint; octree depth-1 + cell-pick +
 user customShader shipped 482–506, §4.2), the edge `silhouetteNormals` row (✅ B495), the voxel
 cell-pick `C-R9` row (✅ B498 — superseded by the open `NEW-VOXEL-PICK-OCTREE-COMPOSE` composition
-gap, §4.5), and the Buffer\* 2D/CV rows (sprint 465–481; residual =
-`NEW-BUFFERPOLYLINE-2D-EXTRUSION`, §4.2).
+gap, §4.5), and the Buffer\* 2D/CV rows (sprint 465–481; residual
+`NEW-BUFFERPOLYLINE-2D-EXTRUSION` ✅ closed 2026-07-03 — mode-aware command BVs, §4.2).
 
 ### 5.2 Batch 482–506 parity-campaign closure ledger + post-campaign audit (2026-07-03)
 
@@ -781,7 +782,7 @@ papered over — prioritized:
 **Small open tail from the same audit:** `NEW-ENV-MOON-CRESCENT-PROBE` (crescent-phase probe
 extension, §4.7), `NEW-PP-F16-DEVICE-VERIFY` (on-device shader-f16 pixel-verify, RTX-class,
 §4.7), `NEW-VOXEL-OCTREE-DEEP-LEVELS` (octree levels beyond depth-1, §4.2),
-`NEW-BUFFERPOLYLINE-2D-EXTRUSION` (still open, §4.2), and the `probe-colorgrading-wired` stored
+`NEW-BUFFERPOLYLINE-2D-EXTRUSION` (✅ closed 2026-07-03, §4.2), and the `probe-colorgrading-wired` stored
 baseline refresh (§4.7). Sweep hygiene note: `probe-collections-regression` + `probe-pick-basic`
 default `PROBE_BASE` to `:8134` — set `PROBE_BASE=http://localhost:8080` when re-running.
 

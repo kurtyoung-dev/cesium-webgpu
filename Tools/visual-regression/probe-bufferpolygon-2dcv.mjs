@@ -41,7 +41,7 @@ const OUT = "Tools/visual-regression/output";
 
 // scene.mode setter morphs instantly (duration 0). "3D" is the SCENE3D parity
 // baseline; "COLUMBUS_VIEW" and "SCENE2D" are the gapped modes.
-const MODES = ["3D", "COLUMBUS_VIEW", "SCENE2D"];
+const MODES = ["SCENE3D", "COLUMBUS_VIEW", "SCENE2D"];
 
 async function run(renderer) {
   const browser = await chromium.launch({
@@ -196,7 +196,7 @@ for (const mode of MODES) {
   if (fs.existsSync(a) && fs.existsSync(b)) {
     const d = await diffPngs(a, b);
     const note =
-      mode === "3D"
+      mode === "SCENE3D"
         ? "SCENE3D parity baseline (small/explainable diff expected)"
         : "2D/CV gap — wandering-points baseline (large diff EXPECTED until the renderer-side bind lands; follow-up: batch-bufferprimitive-parity)";
     console.log(`${mode}: ${JSON.stringify(d)}  // ${note}`);

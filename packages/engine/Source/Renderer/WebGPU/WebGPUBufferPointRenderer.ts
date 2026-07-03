@@ -46,6 +46,7 @@ import {
   getBufferPrimitiveShaderCache,
   projectBufferPositionForMode,
   bufferModeNeedsRepack,
+  computeBufferModeBoundingVolume,
   scratchColor,
   scratchCart,
   scratchEnc,
@@ -679,6 +680,9 @@ export function updateWebGPUBufferPointCollection(
   const isOpaque = collection._blendOption === BlendOption.OPAQUE;
   // PARITY-BUFFER-2DCV — settled 2D/CV coplanar-depth flag (no-op in 3D/morph).
   const noDepthTest = computeNoDepthTest(frameState);
+  // NEW-BUFFERPOLYLINE-2D-EXTRUSION — culling BV in the render frame the
+  // packed positions actually live in (3D → same reference, byte-identical).
+  const modeBV = computeBufferModeBoundingVolume(collection, frameState, cache);
 
   if (frameState.passes.render) {
     if (
@@ -743,7 +747,7 @@ export function updateWebGPUBufferPointCollection(
         vertexCount: 6,
         instanceCount: primitiveCount,
         pass: isOpaque ? Pass.OPAQUE : Pass.TRANSLUCENT,
-        boundingVolume: collection.boundingVolume,
+        boundingVolume: modeBV,
         debugShowBoundingVolume: collection.debugShowBoundingVolume,
       });
       cache.commandBlendOption = collection._blendOption;
@@ -751,7 +755,7 @@ export function updateWebGPUBufferPointCollection(
     } else {
       cache.command.instanceCount = primitiveCount;
     }
-    cache.command.boundingVolume = collection.boundingVolume;
+    cache.command.boundingVolume = modeBV;
     cache.command.debugShowBoundingVolume =
       collection.debugShowBoundingVolume ?? false;
     frameState.commandList.push(cache.command);

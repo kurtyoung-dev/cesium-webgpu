@@ -281,20 +281,67 @@ async function countColors(pngPath) {
   return out;
 }
 
-// Per-mode expectations for the WebGPU render. Points + polygon reproject and
-// render in ALL three modes. Polyline reprojects + renders in 3D + Columbus
-// View; in SCENE2D its screen-space segment-quad extrusion collapses because
-// every reprojected vertex is coplanar (projected x == 0) — a distinct
-// polyline-2D extrusion gap tracked as NEW-BUFFERPOLYLINE-2D-EXTRUSION (the
-// separate MV×projection path in BufferPolylineMaterial.wgsl doesn't carry the
-// 2D camera-axis convention the fused mvpRelativeToEye does). Documented, not
-// asserted, so this probe gates the shipped-and-verified surface.
+// Per-mode expectations for the WebGPU render. Points + polyline + polygon
+// reproject and render in ALL three modes.
+//
+// NEW-BUFFERPOLYLINE-2D-EXTRUSION closed the former SCENE2D polyline-absence
+// gap: the extrusion math was never the problem (the separate MV×projection
+// path produces correct clip positions in 2D — verified by replaying the
+// shader math in JS) — the draw command was frustum-CULLED because it carried
+// the raw ECEF bounding sphere while the packed positions live in the 2D
+// projected frame. The Buffer* renderers now compute a scene-mode-aware
+// command BV (BoundingSphere.projectTo2D for 2D/CV, union for MORPHING),
+// mirroring upstream PrimitiveCommandHelpers.updateAndQueueCommands. Magenta
+// presence in SCENE2D is now asserted, plus a line-thickness gate below that
+// checks the screen-space width convention (width px, matching what WebGL
+// renders in 3D) carried into 2D.
 const MIN = 60;
 const expect = {
   SCENE3D: { cyan: true, magenta: true, yellow: true },
   COLUMBUS_VIEW: { cyan: true, magenta: true, yellow: true },
-  SCENE2D: { cyan: true, magenta: false, yellow: true },
+  SCENE2D: { cyan: true, magenta: true, yellow: true },
 };
+
+// Median vertical thickness (px) of the magenta polyline: for every image
+// column containing magenta, take the longest contiguous magenta run, then
+// the median across columns. The probe polyline is near-horizontal in 2D/CV,
+// so a vertical run measures the extruded quad width directly.
+async function magentaThickness(pngPath) {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  const out = await page.evaluate(async (dataUrl) => {
+    const img = new Image();
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = rej;
+      img.src = dataUrl;
+    });
+    const cv = document.createElement("canvas");
+    cv.width = img.width;
+    cv.height = img.height;
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+    const isMag = (x, y) => {
+      const i = (y * cv.width + x) * 4;
+      return d[i] > 150 && d[i + 1] < 120 && d[i + 2] > 150;
+    };
+    const runs = [];
+    for (let x = 0; x < cv.width; x++) {
+      let best = 0;
+      let run = 0;
+      for (let y = 0; y < cv.height; y++) {
+        run = isMag(x, y) ? run + 1 : 0;
+        if (run > best) best = run;
+      }
+      if (best > 0) runs.push(best);
+    }
+    runs.sort((a, b) => a - b);
+    return runs.length > 0 ? runs[runs.length >> 1] : 0;
+  }, "data:image/png;base64," + fs.readFileSync(pngPath).toString("base64"));
+  await browser.close();
+  return out;
+}
 
 let pass = true;
 console.log("\n=== WebGPU per-mode primitive render (signature color pixels) ===");
@@ -312,20 +359,31 @@ for (const mode of MODES) {
   const pgOk = c.yellow >= MIN === e.yellow;
   const ok = ptOk && lnOk && pgOk;
   if (!ok) pass = false;
-  const note =
-    mode === "SCENE2D"
-      ? " (polyline-2D extrusion gap: magenta expected absent — see NEW-BUFFERPOLYLINE-2D-EXTRUSION)"
-      : "";
   console.log(
     `${mode}: points(cyan)=${c.cyan} polyline(magenta)=${c.magenta} ` +
-      `polygon(yellow)=${c.yellow} → ${ok ? "OK" : "FAIL"}${note}`,
+      `polygon(yellow)=${c.yellow} → ${ok ? "OK" : "FAIL"}`,
   );
 }
+
+// NEW-BUFFERPOLYLINE-2D-EXTRUSION — width gate: the SCENE2D polyline must be
+// a *wide* screen-space quad whose thickness matches the WebGL width
+// convention (material width in px + AA fringe; the probe uses width=4) and
+// stays consistent with the CV rendering of the same line.
+console.log("\n=== WebGPU polyline width (median vertical thickness, px) ===");
+const th2D = await magentaThickness(`${OUT}/_buf2dcv-webgpu-SCENE2D.png`);
+const thCV = await magentaThickness(`${OUT}/_buf2dcv-webgpu-COLUMBUS_VIEW.png`);
+// width=4 → expect ~4-6 px with AA; allow [3, 9]. Cross-mode drift ≤ 3 px.
+const widthOk = th2D >= 3 && th2D <= 9 && Math.abs(th2D - thCV) <= 3;
+if (!widthOk) pass = false;
+console.log(
+  `SCENE2D=${th2D}px COLUMBUS_VIEW=${thCV}px (material width 4px) → ` +
+    `${widthOk ? "OK" : "FAIL"}`,
+);
 
 console.log(
   "\nRESULT:",
   pass
-    ? "PASS — Buffer* reproject + render: points+polygon in 3D/CV/2D, polyline in 3D/CV (polyline-2D gap documented)"
+    ? "PASS — Buffer* reproject + render: points+polyline+polygon in 3D/CV/2D (mode-aware command BVs; polyline width carried into 2D)"
     : "FAIL",
 );
 process.exit(pass ? 0 : 1);

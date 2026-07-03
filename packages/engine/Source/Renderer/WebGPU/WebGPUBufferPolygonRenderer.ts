@@ -48,6 +48,7 @@ import {
   getBufferPrimitiveShaderCache,
   projectBufferPositionForMode,
   bufferModeNeedsRepack,
+  computeBufferModeBoundingVolume,
   scratchColor,
   scratchCart,
   scratchEnc,
@@ -536,6 +537,9 @@ export function updateWebGPUBufferPolygonCollection(
   // top (no depth test/write) so it doesn't z-fight the flat map. False in 3D
   // and mid-morph → the historical depth-tested pipeline (byte-identical).
   const noDepthTest = computeNoDepthTest(frameState);
+  // NEW-BUFFERPOLYLINE-2D-EXTRUSION — culling BV in the render frame the
+  // packed positions actually live in (3D → same reference, byte-identical).
+  const modeBV = computeBufferModeBoundingVolume(collection, frameState, cache);
 
   if (frameState.passes.render) {
     // Rebuild the cached command when blendOption or the coplanar-depth flag
@@ -610,9 +614,9 @@ export function updateWebGPUBufferPolygonCollection(
         // TRANSLUCENT path composites back-to-front. Pick path stays OPAQUE
         // because pick-ID color is discrete, not alpha-blended.
         pass: isOpaque ? Pass.OPAQUE : Pass.TRANSLUCENT,
-        // World-space bounding sphere → per-frustum culling + (when enabled)
-        // the debug overlay. Shared reference; refreshed below every frame.
-        boundingVolume: collection.boundingVolume,
+        // Scene-mode-aware bounding sphere → per-frustum culling + (when
+        // enabled) the debug overlay. Refreshed below every frame.
+        boundingVolume: modeBV,
         debugShowBoundingVolume: collection.debugShowBoundingVolume,
       });
       cache.commandBlendOption = collection._blendOption;
@@ -620,10 +624,10 @@ export function updateWebGPUBufferPolygonCollection(
     } else {
       cache.command.indexCount = indexCount;
     }
-    // Refresh per-frame: the collection's world-space bounding sphere is
-    // auto-updated Scene-side, and debugShowBoundingVolume can toggle at
-    // runtime. Re-read both onto the command so culling + overlay track them.
-    cache.command.boundingVolume = collection.boundingVolume;
+    // Refresh per-frame: the collection's bounding sphere is auto-updated
+    // Scene-side, and debugShowBoundingVolume can toggle at runtime. Re-read
+    // both onto the command so culling + overlay track them.
+    cache.command.boundingVolume = modeBV;
     cache.command.debugShowBoundingVolume =
       collection.debugShowBoundingVolume ?? false;
     frameState.commandList.push(cache.command);

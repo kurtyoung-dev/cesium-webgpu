@@ -242,7 +242,7 @@ Verified at HEAD (`62c5bab450`, Batch 506) unless noted.
 - **Limb-ring / atmosphere brightness** — the sky-limb band residual, now quantified by the below-surface darkening numbers above.
 - **f16 post-process device-verify** — the B478 opt-in f16 variants still need an on-device `shader-f16` verification pass.
 - **Deeper voxel octree levels** — B501 is depth-1 only (root + 8 L1 children); levels ≥2 unimplemented.
-- **2D `BufferPolyline` extrusion** — `NEW-BUFFERPOLYLINE-2D-EXTRUSION` (expected absence confirmed by `probe-buffer-2dcv-parity`).
+- ~~**2D `BufferPolyline` extrusion**~~ — `NEW-BUFFERPOLYLINE-2D-EXTRUSION` ✅ closed 2026-07-03: the 2D absence was a culling bug (ECEF command BV), not extrusion; fixed via scene-mode-aware command BVs, `probe-buffer-2dcv-parity` now asserts 2D presence + width.
 - **Visual parity residuals** — cloud-impostor collection appearance, some material/primitive shading deltas (tracked per-feature in the deferred-work ledger). Plus B488 residuals (faint multi-frustum double-blend veil, unprobed backTranslucent path, unwired manual depth-test variants) and B499 residuals (`projectTo2D:true` accurate-2D, SCENE2D IDL-crossing duplicate command, per-primitive 2D BVs).
 - **TAA + CSM** — production-usable but Slices 3–4 incomplete (skinned-model MRT motion, YCoCg clipping, altitude-adaptive splits, 3D-Tiles per-tile cascade, WebGL parity paths). Both default off.
 - **KHR full BRDF bodies** — clearcoat/sheen/anisotropy/iridescence are bit-flagged approximations, not full per-extension shaders (gated on Phase 8a).
