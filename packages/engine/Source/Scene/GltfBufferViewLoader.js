@@ -14,8 +14,12 @@ import ResourceLoaderState from "./ResourceLoaderState.js";
 let _meshoptDecoderPromise = null;
 function getMeshoptDecoder() {
   if (!_meshoptDecoderPromise) {
-    _meshoptDecoderPromise = import("meshoptimizer").then(
-      (mod) => mod.MeshoptDecoder,
+    // decodeGltfBuffer synchronously dereferences the WASM instance, which
+    // only exists after `MeshoptDecoder.ready` resolves. The static-import
+    // path upstream wins that race by accident (module loads at app start);
+    // the lazy path here must await it explicitly.
+    _meshoptDecoderPromise = import("meshoptimizer").then((mod) =>
+      Promise.resolve(mod.MeshoptDecoder.ready).then(() => mod.MeshoptDecoder),
     );
   }
   return _meshoptDecoderPromise;
