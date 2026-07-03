@@ -22,9 +22,25 @@
 //   stddevLum  — texture variance across lit pixels (craters ⇒ > ~6;
 //                a flat white/gray disc or missing texture ⇒ ~0)
 //   bbox       — lit-pixel bounding box (size + position parity)
+//   centroid   — lit-pixel centroid (terminator-side parity for phases)
 //   diffPct    — per-pixel RGB diff (threshold 60/765) between backends
-// PASS = litRatio(gpu/gl) in [0.8, 1.25], both stddev > 6, disc centers
-// within 40 px, diffPct < 15%.
+// Full-disc PASS = litRatio(gpu/gl) in [0.8, 1.25], both stddev > 6, disc
+// centers within 40 px, diffPct < 15%.
+//
+// Crescent-phase pass (NEW-ENV-MOON-CRESCENT-PROBE): a second capture at a
+// ~half/crescent lunar phase (clock near last quarter) verifies the B505
+// phase-terminator shading cross-backend. From the same Earth→moon vantage
+// only the sun-facing part of the disc is lit, so litCount shrinks vs the
+// full-disc pass. Gates:
+//   partialFrac = litCount(phase)/litCount(full) in (0.15, 0.85) per backend
+//     — proves a terminator exists (not a full disc, not a vanished moon);
+//   litRatio(gpu/gl) in [0.8, 1.25] — same lit area both backends;
+//   centroidDist < 25 px — terminator on the same side (lit-pixel centroid
+//     shifts toward the sunlit limb identically);
+//   diffPct < 15% on the phase crop.
+// The expected illuminated fraction k = (1+cos(phaseAngle))/2 from
+// Simon1994PlanetaryPositions is logged for context (not a hard gate — the
+// luminance threshold clips near-terminator Lambertian falloff).
 //
 // Usage: node Tools/visual-regression/probe-env-moon.mjs
 
@@ -32,13 +48,15 @@ import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 
-const BASE = "http://localhost:8080";
+const BASE = process.env.PROBE_BASE ?? "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 const ISO = "2026-07-02T16:22:00Z";
+// Near last quarter (new moon ~2026-07-14): waning ~half/crescent phase.
+const ISO_PHASE = "2026-07-08T12:00:00Z";
 const CROP = 420; // center crop size in px
 const VIEW = { width: 1280, height: 720 };
 
-async function capture(renderer) {
+async function capture(renderer, iso, tag) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
@@ -129,10 +147,37 @@ async function capture(renderer) {
       typeof v.scene.moon.getDebugStatistics === "function"
         ? v.scene.moon.getDebugStatistics(v.scene)
         : null;
-    return { moonDistanceKm: dist / 1000, debugStats: stats };
-  }, ISO);
 
-  const cropPath = path.join(OUT_DIR, `env-moon-${renderer}.png`);
+    // Expected illuminated fraction k = (1+cos(phaseAngle))/2, where the
+    // phase angle is at the moon between the sun and the Earth (the camera
+    // sits on the Earth→moon line, so Earth ≈ observer direction).
+    let illumFraction = null;
+    try {
+      const sunI =
+        C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+          t,
+          new C.Cartesian3(),
+        );
+      const moonI =
+        C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+          t,
+          new C.Cartesian3(),
+        );
+      const moonToSun = C.Cartesian3.subtract(
+        sunI,
+        moonI,
+        new C.Cartesian3(),
+      );
+      const moonToEarth = C.Cartesian3.negate(moonI, new C.Cartesian3());
+      const phaseAngle = C.Cartesian3.angleBetween(moonToSun, moonToEarth);
+      illumFraction = (1 + Math.cos(phaseAngle)) / 2;
+    } catch (e) {
+      /* logging-only metric — gates don't depend on it */
+    }
+    return { moonDistanceKm: dist / 1000, debugStats: stats, illumFraction };
+  }, iso);
+
+  const cropPath = path.join(OUT_DIR, `env-moon-${tag}${renderer}.png`);
   await page.screenshot({
     path: cropPath,
     clip: {
@@ -143,7 +188,7 @@ async function capture(renderer) {
     },
   });
   await page.screenshot({
-    path: path.join(OUT_DIR, `env-moon-${renderer}-full.png`),
+    path: path.join(OUT_DIR, `env-moon-${tag}${renderer}-full.png`),
   });
   await browser.close();
   return { info, errs, cropPath };
@@ -178,6 +223,8 @@ async function analyze(pathA, pathB) {
         let litCount = 0;
         let sum = 0;
         let sumSq = 0;
+        let sumX = 0;
+        let sumY = 0;
         let minX = im.w,
           minY = im.h,
           maxX = -1,
@@ -193,6 +240,8 @@ async function analyze(pathA, pathB) {
             sumSq += lum * lum;
             const px = (i / 4) % im.w;
             const py = Math.floor(i / 4 / im.w);
+            sumX += px;
+            sumY += py;
             if (px < minX) minX = px;
             if (px > maxX) maxX = px;
             if (py < minY) minY = py;
@@ -205,6 +254,8 @@ async function analyze(pathA, pathB) {
           litCount,
           meanLum: mean,
           stddevLum: Math.sqrt(Math.max(0, variance)),
+          centroid:
+            litCount > 0 ? { x: sumX / litCount, y: sumY / litCount } : null,
           bbox:
             maxX >= 0
               ? {
@@ -241,23 +292,23 @@ async function analyze(pathA, pathB) {
   return result;
 }
 
-(async () => {
-  if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+async function runPass(iso, tag, label) {
   const crops = {};
   for (const renderer of ["webgl", "webgpu"]) {
-    const { info, errs, cropPath } = await capture(renderer);
+    const { info, errs, cropPath } = await capture(renderer, iso, tag);
     crops[renderer] = cropPath;
     console.log(
-      `[${renderer}] moonDist=${info.moonDistanceKm.toFixed(0)}km consoleErrs=${errs.length}`,
+      `[${label}:${renderer}] moonDist=${info.moonDistanceKm.toFixed(0)}km ` +
+        `expectedIllumFrac=${info.illumFraction === null ? "n/a" : info.illumFraction.toFixed(3)} ` +
+        `consoleErrs=${errs.length}`,
     );
     if (errs.length > 0) console.log(`  first err: ${errs[0]}`);
     if (info.debugStats)
       console.log(`  debugStats: ${JSON.stringify(info.debugStats)}`);
   }
-
   const r = await analyze(crops.webgl, crops.webgpu);
   if (r.error) {
-    console.log(`analyze error: ${r.error}`);
+    console.log(`[${label}] analyze error: ${r.error}`);
     process.exit(1);
   }
   for (const [name, m] of [
@@ -265,31 +316,74 @@ async function analyze(pathA, pathB) {
     ["webgpu", r.b],
   ]) {
     const b = m.bbox;
+    const c = m.centroid;
     console.log(
-      `[${name}] lit=${m.litCount} meanLum=${m.meanLum.toFixed(1)} ` +
-        `stddev=${m.stddevLum.toFixed(1)} bbox=${b ? `${b.w}x${b.h}@(${b.minX},${b.minY})` : "none"}`,
+      `[${label}:${name}] lit=${m.litCount} meanLum=${m.meanLum.toFixed(1)} ` +
+        `stddev=${m.stddevLum.toFixed(1)} bbox=${b ? `${b.w}x${b.h}@(${b.minX},${b.minY})` : "none"} ` +
+        `centroid=${c ? `(${c.x.toFixed(1)},${c.y.toFixed(1)})` : "none"}`,
     );
   }
-  const ratio = r.a.litCount > 0 ? r.b.litCount / r.a.litCount : 0;
+  return r;
+}
+
+(async () => {
+  if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+
+  // --- Pass 1: full-disc parity (original ENV-MOON-SLIVER gates) ---
+  const full = await runPass(ISO, "", "full");
+  const ratio = full.a.litCount > 0 ? full.b.litCount / full.a.litCount : 0;
   const centerDist =
-    r.a.bbox && r.b.bbox
+    full.a.bbox && full.b.bbox
       ? Math.hypot(
-          (r.a.bbox.minX + r.a.bbox.maxX) / 2 -
-            (r.b.bbox.minX + r.b.bbox.maxX) / 2,
-          (r.a.bbox.minY + r.a.bbox.maxY) / 2 -
-            (r.b.bbox.minY + r.b.bbox.maxY) / 2,
+          (full.a.bbox.minX + full.a.bbox.maxX) / 2 -
+            (full.b.bbox.minX + full.b.bbox.maxX) / 2,
+          (full.a.bbox.minY + full.a.bbox.maxY) / 2 -
+            (full.b.bbox.minY + full.b.bbox.maxY) / 2,
         )
       : Infinity;
   console.log(
-    `\nlitRatio(gpu/gl)=${ratio.toFixed(3)} centerDist=${centerDist.toFixed(1)}px cropDiff=${r.diffPct.toFixed(2)}%`,
+    `\n[full] litRatio(gpu/gl)=${ratio.toFixed(3)} centerDist=${centerDist.toFixed(1)}px cropDiff=${full.diffPct.toFixed(2)}%`,
   );
-  const pass =
+  const fullPass =
     ratio > 0.8 &&
     ratio < 1.25 &&
-    r.a.stddevLum > 6 &&
-    r.b.stddevLum > 6 &&
+    full.a.stddevLum > 6 &&
+    full.b.stddevLum > 6 &&
     centerDist < 40 &&
-    r.diffPct < 15;
+    full.diffPct < 15;
+  console.log(fullPass ? "[full] PASS" : "[full] FAIL");
+
+  // --- Pass 2: crescent/half phase (NEW-ENV-MOON-CRESCENT-PROBE gates) ---
+  const ph = await runPass(ISO_PHASE, "crescent-", "phase");
+  const phRatio = ph.a.litCount > 0 ? ph.b.litCount / ph.a.litCount : 0;
+  const partialFracGl =
+    full.a.litCount > 0 ? ph.a.litCount / full.a.litCount : 0;
+  const partialFracGpu =
+    full.b.litCount > 0 ? ph.b.litCount / full.b.litCount : 0;
+  const centroidDist =
+    ph.a.centroid && ph.b.centroid
+      ? Math.hypot(
+          ph.a.centroid.x - ph.b.centroid.x,
+          ph.a.centroid.y - ph.b.centroid.y,
+        )
+      : Infinity;
+  console.log(
+    `\n[phase] litRatio(gpu/gl)=${phRatio.toFixed(3)} ` +
+      `partialFrac gl=${partialFracGl.toFixed(3)} gpu=${partialFracGpu.toFixed(3)} ` +
+      `centroidDist=${centroidDist.toFixed(1)}px cropDiff=${ph.diffPct.toFixed(2)}%`,
+  );
+  const phasePass =
+    phRatio > 0.8 &&
+    phRatio < 1.25 &&
+    partialFracGl > 0.15 &&
+    partialFracGl < 0.85 &&
+    partialFracGpu > 0.15 &&
+    partialFracGpu < 0.85 &&
+    centroidDist < 25 &&
+    ph.diffPct < 15;
+  console.log(phasePass ? "[phase] PASS" : "[phase] FAIL");
+
+  const pass = fullPass && phasePass;
   console.log(pass ? "PASS" : "FAIL");
   process.exit(pass ? 0 : 1);
 })();
