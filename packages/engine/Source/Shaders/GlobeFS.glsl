@@ -472,13 +472,15 @@ void main()
 // WGSL-ONLY ENHANCEMENTS (documented, not bugs)
 // - 3-octave wave-normal sampling (vs this file's 2-octave high/low
 //   altitude blend with `czm_getWaterNoise`).
-// - GGX specular distribution (vs this file's `czm_getSpecular` Phong-
-//   like model).
 // - `computeFoam` whitecaps on steep waves (no equivalent here).
-// - Orbit-altitude smoothstep specular attenuation (this file uses
-//   the same waveIntensity falloff for that role).
 // - `computeSubsurfaceScattering` helper present in WGSL but currently
 //   unused — scaffolding for future enhancement.
+//
+// SPECULAR: matched since GLOBE-POLAR-STRETCH-POLISH. The WGSL now uses
+// this file's `czm_getSpecular` Phong lobe (shininess 10) × waveIntensity-
+// modulated surfaceReflectance, unconditionally (no enableLighting gate,
+// no orbit-altitude fade). The earlier WGSL-only GGX + orbit-fade variant
+// suppressed the zoomed-out ocean sun glint this file renders at orbit.
 #if defined(HAS_WATER_MASK) && (defined(SHOW_REFLECTIVE_OCEAN) || defined(APPLY_MATERIAL))
     vec2 waterMaskTranslation = u_waterMaskTranslationAndScale.xy;
     vec2 waterMaskScale = u_waterMaskTranslationAndScale.zw;

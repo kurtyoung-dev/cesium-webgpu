@@ -538,6 +538,10 @@ export function createCameraUniformBuffer(
     // the tile provider via Globe.beginFrame.
     lambertDiffuseMultiplier?: number;
     vertexShadowDarkness?: number;
+    // GLOBE-POLAR-STRETCH-POLISH — `u_zoomedOutOceanSpecularIntensity`
+    // mirror, driven per-frame by Globe.beginFrame (0.4 with ground
+    // atmosphere, 0.5 without, 0.0 outside SCENE3D).
+    zoomedOutOceanSpecularIntensity?: number;
     // Surface terrain provider exposes `hasVertexNormals` — when true, the
     // WebGL pipeline cache enables ENABLE_VERTEX_LIGHTING; the WGSL Lambert
     // path mirrors that gate at runtime.
@@ -696,7 +700,12 @@ export function createCameraUniformBuffer(
   data[offset++] = typeof shadowDark === "number" ? shadowDark : 0.3;
   const hasNormals = !!tp.terrainProvider?.hasVertexNormals;
   data[offset++] = hasNormals ? 1.0 : 0.0;
-  data[offset++] = 0.0; // .w reserved
+  // .w — GLOBE-POLAR-STRETCH-POLISH: `u_zoomedOutOceanSpecularIntensity`
+  // mirror. Globe.beginFrame drives it per-frame (0.4 with the default
+  // showGroundAtmosphere, 0.5 without, 0.0 outside SCENE3D). Consumed by
+  // computeEnhancedOcean's specular surfaceReflectance in GlobeTerrain.wgsl.
+  const zoomedOutSpec = tp.zoomedOutOceanSpecularIntensity;
+  data[offset++] = typeof zoomedOutSpec === "number" ? zoomedOutSpec : 0.5;
 
   // ─── Renderer-wide log depth tail (vec4: near, far, factor, reserved) ───
   // Read by GlobeTerrain.wgsl's `//>>ifdef LOG_DEPTH` blocks (camera.logDepth).

@@ -138,8 +138,13 @@ struct CameraUniforms {
   //       when ≤ 0.5, the Lambert path falls back to the existing WGSL
   //       hardcoded `NdotL × 0.88 + 0.12` aesthetic that replaces
   //       WebGL's ENABLE_DAYNIGHT_SHADING path.
-  //   w = reserved (future: WebGL `fade` scalar for DAYNIGHT_SHADING path
-  //       exact-match if we ever bridge that too).
+  //   w = zoomedOutOceanSpecularIntensity (GLOBE-POLAR-STRETCH-POLISH).
+  //       Mirrors WebGL's `u_zoomedOutOceanSpecularIntensity`, which
+  //       `Globe.beginFrame` sets per-frame: 0.4 when showGroundAtmosphere
+  //       (the default), 0.5 otherwise, 0.0 outside SCENE3D. Consumed by
+  //       `computeEnhancedOcean`'s specular surfaceReflectance. (This slot
+  //       was previously reserved for a DAYNIGHT_SHADING `fade` bridge —
+  //       that would need a new pad if ever built.)
   lighting: vec4<f32>,
   // ─── Renderer-wide log depth (Approach A) ───
   //   x = frustum near, y = frustum far,
@@ -2238,7 +2243,22 @@ fn computeEnhancedOcean(
   if (showOceanWaves) {
     let t = tile.time;
     let waveN = sampleOceanWaveNormals(uv, t);
-    let waveStrength = mix(0.25, 0.05, smoothstep(10000.0, 500000.0, distance));
+    // GLOBE-POLAR-STRETCH-POLISH — fade the wave perturbation to EXACTLY
+    // zero far from the surface, matching WebGL GlobeFS.glsl L794+816:
+    //   waveIntensity = waveFade(70000, 1e6, positionToEyeECLength)
+    //                 = pow(1 - linearFade(70000, 1e6, dist), 5)
+    //   normalTangentSpace.xy *= waveIntensity
+    // The previous floor of 0.05 kept a residual tilt at orbit; the
+    // mip-averaged wave-normal bias then tilted the whole sun-glint lobe
+    // coherently (~10 px limb-ward vs WebGL at 25 Mm).
+    let waveFadeLin = clamp(
+      (length(positionEC) - 70000.0) / (1000000.0 - 70000.0),
+      0.0,
+      1.0,
+    );
+    let waveIntensityFade = pow(1.0 - waveFadeLin, 5.0);
+    let waveStrength = mix(0.25, 0.05, smoothstep(10000.0, 500000.0, distance)) *
+      waveIntensityFade;
     let enuToEye = eastNorthUpToEyeCoordinates(positionMC, normalEC);
     // ENU.up = normalEC, so `enuToEye * (0,0,1) = normalEC`. A purely
     // flat wave normal (0, 0, 1) leaves `waterNormal` equal to
@@ -2284,59 +2304,41 @@ fn computeEnhancedOcean(
     oceanContribution += nonDiffuseHighlight * waterMaskValue * highlightFade;
   }
 
-  // Specular sun-glint, only when scene lighting is enabled (matches
-  // WebGL's `czm_getSpecular(czm_lightDirectionEC, ...)`).
-  if (camera.enableLighting > 0.5) {
-    // Orbit-altitude attenuation: the specular highlight subtends < 1
-    // pixel at orbit, so fade it out smoothly above ~100 km. Without
-    // this the sun-glint patch persists as a bright limb point at orbit.
-    let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
-    let altitudeMeters = max(0.0, length(cameraWC) - 6378137.0);
-    let orbitGateMin: f32 = 100000.0;
-    let orbitGateMax: f32 = 6378137.0;
-    let orbitGateT = clamp(
-      (altitudeMeters - orbitGateMin) / max(1.0, orbitGateMax - orbitGateMin),
-      0.0, 1.0,
-    );
-    let orbitSmooth = orbitGateT * orbitGateT * (3.0 - 2.0 * orbitGateT);
-    let orbitAttenuation = 1.0 - orbitSmooth;
-
-    let halfDir = normalize(viewDir + sunDirEC);
-    let NdotH = max(dot(waterNormal, halfDir), 0.0);
-    let specular = distributionGGX(NdotH, 0.08) * NdotL;
-
-    // Batch 78 — port WebGL's `surfaceReflectance` modulation
-    // (GlobeFS.glsl L833):
-    //   surfaceReflectance = mix(0.0,
-    //     mix(u_zoomedOutOceanSpecularIntensity, oceanSpecularIntensity=0.5,
-    //         waveIntensity),
-    //     maskValue)
-    // - When waterMaskValue → 0 (land), specular → 0.
-    // - When waveIntensity → 0 (far from surface), specular uses the
-    //   zoomed-out intensity (default 0.5, matches WebGL's
-    //   `u_zoomedOutOceanSpecularIntensity` default).
-    // - When waveIntensity → 1 (close), specular uses the full
-    //   `oceanSpecularIntensity` (0.5 — same default; the WebGL
-    //   `mix(zoomedOut, ocean, waveIntensity)` collapses to a constant
-    //   when both are 0.5, which is the case in default scenes).
-    // We re-derive `waveIntensity` here from the same distance curve
-    // WebGL's `waveFade(70000, 1000000, dist)` uses, so the
-    // modulation has the same falloff. The result multiplies the
-    // existing GGX × orbitAttenuation pipeline, preserving the WGSL
-    // specular character while picking up the WebGL water-mask + wave-
-    // intensity gates.
-    let zoomedOutSpec = 0.5;
-    let nearSpec = 0.5;
-    let waveIntensity = clamp(
-      (1000000.0 - distance) / max(1.0, 1000000.0 - 70000.0),
+  // Specular sun-glint — GLOBE-POLAR-STRETCH-POLISH: ported 1:1 from WebGL
+  // GlobeFS.glsl::computeWaterColor L839-842. WebGL runs this
+  // UNCONDITIONALLY — `czm_lightDirectionEC` is always defined (the default
+  // scene light is the sun even when `globe.enableLighting` is false) — and
+  // has NO orbit-altitude attenuation: the broad Phong lobe (shininess 10)
+  // IS the zoomed-out ocean glint, modulated only by
+  // `u_zoomedOutOceanSpecularIntensity` (0.5 in SCENE3D, set by
+  // `Globe.beginFrame`). The previous WGSL shape (enableLighting gate +
+  // GGX(0.08)×NdotL + smoothstep orbit fade above 100 km) suppressed the
+  // glint entirely in default scenes; at 25 Mm the missing Pacific glint
+  // blob was 63% of the WebGL↔WebGPU far-zoom pixel mismatch.
+  //
+  //   czm_getSpecular(L, V, N, 10) = pow(max(dot(reflect(-L, N), V), 0), 10)
+  //   surfaceReflectance = mix(0, mix(zoomedOutSpec, oceanSpec, waveIntensity), mask)
+  //   waveIntensity = waveFade(70000, 1e6, |toEyeEC|) = pow(1 - linearFade(...), 5)
+  {
+    let toReflectedLight = reflect(-sunDirEC, waterNormal);
+    let specularIntensity = pow(max(dot(toReflectedLight, viewDir), 0.0), 10.0);
+    // `camera.lighting.w` mirrors WebGL's `u_zoomedOutOceanSpecularIntensity`
+    // — NOT a constant: `Globe.beginFrame` sets 0.4 when showGroundAtmosphere
+    // (the default) vs 0.5 otherwise, and 0.0 outside SCENE3D. Hardcoding 0.5
+    // here made the WebGPU orbit glint 25% brighter than WebGL's.
+    // `nearSpec` matches the GLSL const `oceanSpecularIntensity = 0.5`.
+    let zoomedOutSpec: f32 = camera.lighting.w;
+    let nearSpec: f32 = 0.5;
+    let positionToEyeECLength = length(positionEC);
+    let waveFadeY = clamp(
+      (positionToEyeECLength - 70000.0) / (1000000.0 - 70000.0),
       0.0,
       1.0,
     );
-    let surfaceReflectance = mix(zoomedOutSpec, nearSpec, waveIntensity);
-
-    oceanContribution += vec3<f32>(1.0, 0.95, 0.85) *
-      min(specular, 8.0) * orbitAttenuation * waterMaskValue *
-      surfaceReflectance;
+    let waveIntensity = pow(1.0 - waveFadeY, 5.0);
+    let surfaceReflectance =
+      mix(zoomedOutSpec, nearSpec, waveIntensity) * waterMaskValue;
+    oceanContribution += vec3<f32>(specularIntensity * surfaceReflectance);
   }
 
   // Foam: white overlay on steep wave crests (additive on top of imagery).
@@ -2990,8 +2992,20 @@ fn fragmentMain(
   // 1158) so the read is safe regardless of the hasNormals pipeline
   // variant.
   let normalEC = normalize(input.v_normalEC);
-  let geoUV = input.v_textureCoordinates.xy;
-  let webMercT = input.v_textureCoordinates.z;
+  // GLOBE-POLAR-STRETCH-POLISH — clamp the interpolated texture coordinates
+  // to [0,1], matching WebGL GlobeFS.glsl line 396:
+  //   `computeDayColor(u_initialColor, clamp(v_textureCoordinates, 0.0, 1.0), ...)`
+  // (upstream's workaround for rasterizer interpolation overshoot at tile
+  // edges: fragments on shared tile boundaries can see UVs epsilon-outside
+  // [0,1] even though the VS emits exactly 0/1). Without the clamp the
+  // overshoot fails the `texCoordsAlpha` step-mask (rect is typically
+  // (0,0,1,1)), zeroing every imagery layer for that fragment and exposing
+  // the dark-blue `initialColor` (0, 0, 0.5) — the WebGPU-only dashed
+  // tile-seam grid lines (BUG-GLOBE-TILE-SEAM-LINES, 62% of the mid-zoom
+  // WebGL↔WebGPU residual before this fix). The clamp moves UVs by at most
+  // ~1e-6, invisible everywhere except the seam mask.
+  let geoUV = clamp(input.v_textureCoordinates.xy, vec2<f32>(0.0), vec2<f32>(1.0));
+  let webMercT = clamp(input.v_textureCoordinates.z, 0.0, 1.0);
 
   //>>ifdef LOG_DEPTH
   // Stash the interpolated log-depth varying so makeFragOutput (called from
@@ -3645,10 +3659,13 @@ fn fragmentMain(
   //    direct tile UV sampling. Wave appearance differs in detail; both
   //    produce convincing ocean motion. WGSL-only enhancement: 3-octave
   //    instead of 2-octave (documented in convention ledger).
-  // 5. **Specular model**. GLSL: `czm_getSpecular` (Phong-like).
-  //    WGSL: GGX distribution (`distributionGGX`). Different specular
-  //    falloff curves; both produce sun-glint at the correct angles.
-  //    WGSL-only enhancement.
+  // 5. **Specular model**. MATCHED since GLOBE-POLAR-STRETCH-POLISH:
+  //    both backends use the `czm_getSpecular` Phong lobe
+  //    (`pow(max(dot(reflect(-L, N), V), 0), 10)`) × the waveIntensity-
+  //    modulated `surfaceReflectance`, unconditionally (no enableLighting
+  //    gate, no orbit fade). The earlier WGSL-only GGX + orbit-fade
+  //    variant suppressed the zoomed-out sun glint that WebGL shows at
+  //    orbital altitudes. `distributionGGX` remains defined but unused.
   // 6. **Foam (whitecaps)**. WGSL has `computeFoam` overlaying white
   //    pixels where wave normals are steep; GLSL has no equivalent.
   //    WGSL-only enhancement.
@@ -3663,8 +3680,24 @@ fn fragmentMain(
     let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
 
     if (waterMask > 0.01) {
+      // GLOBE-POLAR-STRETCH-POLISH — WebGL's computeWaterColor receives
+      // the ANALYTIC sphere normal, not the terrain mesh vertex normal:
+      // GlobeFS.glsl L382-383 computes
+      //   normalMC = czm_geodeticSurfaceNormal(v_positionMC, vec3(0), vec3(1))
+      //            = normalize(v_positionMC)
+      //   normalEC = czm_normal3D * normalMC
+      // and feeds THAT into the enuToEye frame + specular. Passing the
+      // interpolated mesh normal instead tilted the orbit sun-glint lobe
+      // ~10 px limb-ward vs WebGL. The upper-3x3 of modifiedModelView is
+      // the view rotation (RTE only offsets the translation column), so
+      // a w=0 transform reproduces czm_normal3D for the identity-model
+      // globe.
+      let sphereNormalMC = normalize(input.v_positionMC);
+      let oceanNormalEC = normalize(
+        (camera.modifiedModelView * vec4<f32>(sphereNormalMC, 0.0)).xyz,
+      );
       color = computeEnhancedOcean(
-        color, input.v_positionEC, input.v_positionMC, normal, sunDir,
+        color, input.v_positionEC, input.v_positionMC, oceanNormalEC, sunDir,
         geoUV, waterMask, dayFade, input.v_distance
       );
     }

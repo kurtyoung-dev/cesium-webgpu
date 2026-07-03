@@ -29,8 +29,24 @@
 //   |iceCentroidY_gl − iceCentroidY_gpu| ≤ 0.025 · discRadius
 //   ice area ratio within [0.85, 1.18]
 //   |bestTopHalfShift| ≤ 0.02 · discRadius
-//   mismatch ≤ {mid: 4%, far: 12%, extreme: 14%}   (residual = atmosphere
-//     limb brightness + WebGPU tile-seam lines, tracked separately)
+//   mismatch ≤ {mid: 0.27%, far: 3.5%, extreme: 4.5%}
+//     (limits tightened by GLOBE-POLAR-STRETCH-POLISH: the tile-seam grid
+//     lines — 62% of the mid residual — were fixed by the fragment-entry UV
+//     clamp, and the missing zoomed-out ocean sun glint — 63% of the far
+//     residual — by the czm_getSpecular Phong port. Pre-polish baseline was
+//     mid 0.27% / far 5.46%.)
+//
+// GLOBE-POLAR-STRETCH-POLISH adds a BUCKET DECOMPOSITION of the residual
+// mismatch per view (printed + written to report.json):
+//   space     — outside the globe disc (r > 1.02): stars/background
+//   limb      — 0.90 < r ≤ 1.02: atmosphere ring brightness/falloff
+//   seamThin  — interior thin structures (survive no 3x3 erosion): tile-seam
+//               lines + AA/subpixel edge noise
+//   interiorBlobGlBrighter / interiorBlobGpuBrighter — interior ≥3x3 blobs,
+//               split by which backend is brighter (imagery/lighting/ocean)
+// The seam gate additionally counts seamBlue: seamThin pixels with the
+// dark-blue initialColor signature (gpu darker AND bluer) — the
+// BUG-GLOBE-TILE-SEAM-LINES fingerprint, required ≈ 0 after the UV clamp.
 //
 // Usage: node Tools/visual-regression/probe-globe-polar-stretch.mjs
 //        (dev server on :8080; Edge/msedge required for WebGPU)
@@ -49,9 +65,9 @@ const OUT_DIR = path.join(
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 const VIEWS = [
-  { name: "mid", lon: -95, lat: 40, height: 2e6, maxMismatch: 4 },
-  { name: "far", lon: -95, lat: 40, height: 25e6, maxMismatch: 12 },
-  { name: "extreme", lon: -95, lat: 40, height: 55e6, maxMismatch: 14 },
+  { name: "mid", lon: -95, lat: 40, height: 2e6, maxMismatch: 0.27 },
+  { name: "far", lon: -95, lat: 40, height: 25e6, maxMismatch: 3.5 },
+  { name: "extreme", lon: -95, lat: 40, height: 55e6, maxMismatch: 4.5 },
 ];
 const MAX_CENTROID_SHIFT = 0.025; // disc-radius units
 const MAX_PROFILE_SHIFT = 0.02; // disc-radius units
@@ -137,6 +153,9 @@ async function analyze(pngA, pngB) {
       const CROP = { x0: 250, x1: 1010, y0: 45, y1: 640 };
       const lum = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
 
+      const cw = CROP.x1 - CROP.x0,
+        ch = CROP.y1 - CROP.y0;
+      const mmask = new Uint8Array(cw * ch); // 1 = mismatching pixel
       let mismatch = 0,
         cropPx = 0;
       for (let y = CROP.y0; y < CROP.y1; y++) {
@@ -147,7 +166,10 @@ async function analyze(pngA, pngB) {
             Math.abs(A.data[i] - B.data[i]) +
             Math.abs(A.data[i + 1] - B.data[i + 1]) +
             Math.abs(A.data[i + 2] - B.data[i + 2]);
-          if (d > 30) mismatch++;
+          if (d > 30) {
+            mismatch++;
+            mmask[(y - CROP.y0) * cw + (x - CROP.x0)] = 1;
+          }
         }
       }
       const mismatchPct = (100 * mismatch) / cropPx;
@@ -190,6 +212,118 @@ async function analyze(pngA, pngB) {
         minY: Math.max(dA.minY, dB.minY),
         maxY: Math.min(dA.maxY, dB.maxY),
       };
+
+      // ── Bucket decomposition (GLOBE-POLAR-STRETCH-POLISH) ──
+      // Morphological opening: interior blobs are pixels surviving a 3x3
+      // erosion then re-dilated; everything else interior is "thin"
+      // (seam lines + AA edge noise).
+      const morph = (m, isErode) => {
+        const o = new Uint8Array(cw * ch);
+        for (let y = 1; y < ch - 1; y++) {
+          for (let x = 1; x < cw - 1; x++) {
+            let acc = isErode ? 1 : 0;
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                const v = m[(y + dy) * cw + (x + dx)];
+                if (isErode && !v) acc = 0;
+                if (!isErode && v) acc = 1;
+              }
+            }
+            o[y * cw + x] = acc;
+          }
+        }
+        return o;
+      };
+      const blob = morph(morph(mmask, true), false);
+      const dcx = (disc.minX + disc.maxX) / 2;
+      const dcy = (disc.minY + disc.maxY) / 2;
+      const dR = (disc.maxX - disc.minX + (disc.maxY - disc.minY)) / 4;
+      const counts = {
+        space: 0,
+        limb: 0,
+        seamThin: 0,
+        interiorBlobGlBrighter: 0,
+        interiorBlobGpuBrighter: 0,
+      };
+      let seamBlue = 0;
+      const sums = {};
+      for (const k of Object.keys(counts)) sums[k] = { dr: 0, dg: 0, db: 0 };
+      const maskImg = new Uint8ClampedArray(cw * ch * 4);
+      for (let y = 0; y < ch; y++) {
+        for (let x = 0; x < cw; x++) {
+          const mi = y * cw + x;
+          const px = x + CROP.x0,
+            py = y + CROP.y0;
+          const gi = 4 * (py * W + px);
+          maskImg[4 * mi] = A.data[gi] * 0.25;
+          maskImg[4 * mi + 1] = A.data[gi + 1] * 0.25;
+          maskImg[4 * mi + 2] = A.data[gi + 2] * 0.25;
+          maskImg[4 * mi + 3] = 255;
+          if (!mmask[mi]) continue;
+          const r = Math.hypot(px - dcx, py - dcy) / dR;
+          let bucket, col;
+          if (r > 1.02) {
+            bucket = "space";
+            col = [255, 0, 255];
+          } else if (r > 0.9) {
+            bucket = "limb";
+            col = [255, 160, 0];
+          } else if (!blob[mi]) {
+            bucket = "seamThin";
+            col = [0, 255, 255];
+            // BUG-GLOBE-TILE-SEAM-LINES fingerprint: the exposed
+            // initialColor (0, 0, 0.5) makes the GPU pixel both DARKER
+            // and relatively BLUER than the GL pixel, AND absolutely dark
+            // (navy, lum < 90) — the darkness gate excludes the bright
+            // atmosphere-blue inner-limb gradient pixels that share the
+            // darker+bluer delta signature but sit at lum ≈ 200.
+            const gpuLum = lum(B.data, gi);
+            const dlum = gpuLum - lum(A.data, gi);
+            const dblue =
+              B.data[gi + 2] -
+              A.data[gi + 2] -
+              (B.data[gi] - A.data[gi] + (B.data[gi + 1] - A.data[gi + 1])) / 2;
+            if (dlum < -20 && dblue > 15 && gpuLum < 90) {
+              seamBlue++;
+              col = [0, 0, 255];
+            }
+          } else if (lum(A.data, gi) > lum(B.data, gi)) {
+            bucket = "interiorBlobGlBrighter";
+            col = [255, 0, 0];
+          } else {
+            bucket = "interiorBlobGpuBrighter";
+            col = [0, 255, 0];
+          }
+          counts[bucket]++;
+          sums[bucket].dr += B.data[gi] - A.data[gi];
+          sums[bucket].dg += B.data[gi + 1] - A.data[gi + 1];
+          sums[bucket].db += B.data[gi + 2] - A.data[gi + 2];
+          maskImg[4 * mi] = col[0];
+          maskImg[4 * mi + 1] = col[1];
+          maskImg[4 * mi + 2] = col[2];
+        }
+      }
+      const buckets = {};
+      for (const k of Object.keys(counts)) {
+        const n = counts[k];
+        buckets[k] = {
+          px: n,
+          pctOfCrop: +((100 * n) / cropPx).toFixed(3),
+          pctOfMismatch: +((100 * n) / Math.max(1, mismatch)).toFixed(1),
+          meanDelta_gpuMinusGl: n
+            ? {
+                r: +(sums[k].dr / n).toFixed(1),
+                g: +(sums[k].dg / n).toFixed(1),
+                b: +(sums[k].db / n).toFixed(1),
+              }
+            : null,
+        };
+      }
+      const mc = document.createElement("canvas");
+      mc.width = cw;
+      mc.height = ch;
+      mc.getContext("2d").putImageData(new ImageData(maskImg, cw, ch), 0, 0);
+      const maskB64 = mc.toDataURL("image/png").split(",")[1];
 
       const profile = (im) => {
         const d = im.data;
@@ -266,13 +400,16 @@ async function analyze(pngA, pngB) {
       shifts.sort((a, b) => a.err - b.err);
 
       return {
-        mismatchPct: +mismatchPct.toFixed(2),
+        mismatchPct: +mismatchPct.toFixed(3),
         discRadius: +PA.r.toFixed(1),
         icePxA: PA.icePx,
         icePxB: PB.icePx,
         iceCentroidYA: PA.iceCentroidY === null ? null : +PA.iceCentroidY.toFixed(1),
         iceCentroidYB: PB.iceCentroidY === null ? null : +PB.iceCentroidY.toFixed(1),
         bestShift_discUnits: +shifts[0].s.toFixed(3),
+        buckets,
+        seamBluePx: seamBlue,
+        maskB64,
       };
     },
     { ba, bb },
@@ -288,6 +425,13 @@ for (const view of VIEWS) {
   const gl = await capture("webgl", view);
   const gpu = await capture("webgpu", view);
   const res = await analyze(gl, gpu);
+  if (res.maskB64) {
+    fs.writeFileSync(
+      path.join(OUT_DIR, `${view.name}-bucket-mask.png`),
+      Buffer.from(res.maskB64, "base64"),
+    );
+    delete res.maskB64;
+  }
   report[view.name] = res;
 
   const checks = [];
@@ -321,12 +465,26 @@ for (const view of VIEWS) {
     ok: res.mismatchPct <= view.maxMismatch,
     limit: view.maxMismatch,
   });
+  // BUG-GLOBE-TILE-SEAM-LINES gate: dark-blue seam-fingerprint pixels must
+  // be ~eliminated by the fragment-entry UV clamp (< 0.01% of the crop).
+  checks.push({
+    name: "seam-blue px (tile-seam fingerprint)",
+    val: res.seamBluePx,
+    ok: res.seamBluePx <= 45,
+    limit: 45,
+  });
   const viewOk = checks.every((c) => c.ok);
   if (!viewOk) failed = true;
   console.log(`  ${view.name}: ${viewOk ? "PASS" : "FAIL"}`);
   for (const c of checks) {
     console.log(
       `    ${c.ok ? "ok  " : "FAIL"} ${c.name}: ${c.val} (limit ${c.limit})`,
+    );
+  }
+  console.log(`    bucket decomposition (% of mismatch | % of crop):`);
+  for (const [k, b] of Object.entries(res.buckets)) {
+    console.log(
+      `      ${k.padEnd(24)} ${String(b.pctOfMismatch).padStart(5)}% | ${b.pctOfCrop}%  meanΔ(gpu−gl)=${b.meanDelta_gpuMinusGl ? JSON.stringify(b.meanDelta_gpuMinusGl) : "-"}`,
     );
   }
 }

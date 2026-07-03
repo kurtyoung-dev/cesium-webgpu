@@ -190,6 +190,16 @@ export function createSamplers(host: LayoutsHost): void {
     mipmapFilter: "linear",
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
+    // GLOBE-POLAR-STRETCH-POLISH — WebGL imagery samplers use anisotropic
+    // filtering at the device maximum (ImageryLayer.js finalizeReprojectTexture:
+    // `maximumAnisotropy = min(ContextLimits.maximumTextureFilterAnisotropy,
+    // layer.maximumAnisotropy ?? max)`, typically 16). Without it the WebGPU
+    // globe imagery goes visibly blurry at oblique view angles (limb-adjacent
+    // terrain at orbit zoom) — measured as a broad "GPU brighter" smear over
+    // high-contrast snowy terrain in probe-globe-polar-stretch. 16 is the
+    // WebGPU spec maximum and requires all three filters to be "linear",
+    // which they are.
+    maxAnisotropy: 16,
   });
   // Water mask uses linear filtering to match WebGL — matches the WGSL's
   // `smoothstep(0.3, 0.7, waterMask)` transition, which can't smooth a
