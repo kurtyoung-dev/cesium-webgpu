@@ -197,6 +197,32 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   limb-ring/atmosphere-brightness epic** (`NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH` above) with these
   measured numbers; verify B506's seam/glint deltas apply symmetrically on the translucency/
   underground paths. Do **NOT** loosen the probe limits.
+  - **B2 decomposition result (NEW-GLOBE-BELOWSURFACE-DECOMP, 2026-07-03):** per-term A/B bypass
+    instrumentation landed (`bypass-*` globe-fragment debug modes, sentinels 21e9–27e9 in
+    `WebGPUGlobeFragmentDebug.ts` / `GlobeTerrain.wgsl`, production-inert; probe
+    `diag-globe-belowsurface-decomp.mjs`, report `output/diag-belowsurface-report.json`). The
+    attribution table **exonerates every named candidate term**: underground tint, translucency
+    alpha ramp, ground-atmosphere drape, B506 seam-clamp, B506 glint, and fog each move the
+    residual toward WebGL by ≤ +2.5 mean |signed dRGB| when bypassed (largest: glint +2.52 on
+    translucent-terrain; seam-clamp +0.1..+0.5; the big terms are parity-matched — bypassing them
+    moves WebGPU **away** from WebGL by 50–190). **Two premise corrections:** (1) the sign was
+    misread — the probes' signed dRGB is GL−GPU, so −5.8..−8.0 means WebGPU is **brighter**, not
+    darker; (2) the dominant residual is a **tile-boundary-aligned semi-transparent haze/brightening
+    wedge on WebGPU only**, pre-existing in unmodded baselines, visible in BOTH underground scenes
+    and translucent-terrain (23.18% control residual; underground-def 10.35% vs 8% limit — the
+    remaining FAIL; underground-red now PASSES at 6.75%). **B5 target = the per-tile haze wedge,
+    root-caused to the water/reflective-ocean path:** stage discrimination shows the wedge is
+    absent in `post-composite-color` (imagery composite clean) but `water-effect-trigger` renders
+    the exact wedge tiles RED — i.e. `tile.flags.x` (showReflectiveOcean) is set AND the sampled
+    water mask is > 0.01 across whole inland land tiles, so `computeEnhancedOcean` adds its
+    bluish-gray diffuse highlight (+ glint specular — the +2.52 partial recovery seen by
+    `bypass-glint`) over land imagery on WebGPU where WebGL does not. Suspects: per-tile
+    waterMask upload/`waterMaskTranslationAndScale` divergence, a placeholder all-ones mask
+    texture on tiles without real masks, or the flags.x gate. Side observations from the same
+    session: the probe severity numbers drift run-to-run (12.28→6.75 / 22.85→10.35 / 25.49→23.14),
+    and `probe-globe-polar-stretch` far/extreme currently FAIL at clean HEAD too (4.6/5.0% vs
+    3.5/4.5%, space-bucket ~60-80% i.e. star-field/space residual, mid = 0.000%) — B5's off-gate
+    should compare against a same-session clean-HEAD baseline rather than assume green.
 
 ### 4.2 3D Tiles
 

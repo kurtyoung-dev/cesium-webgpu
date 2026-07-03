@@ -2241,7 +2241,11 @@ fn computeEnhancedOcean(
   var tsPerturbationRatio: f32 = 1.0; // 1.0 = flat, 0.0 = vertical wave
   let showOceanWaves = tile.flags.z > 0.5;
   if (showOceanWaves) {
-    let t = tile.time;
+    // NEW-GLOBE-BELOWSURFACE-DECOMP — under any debug sentinel (tile.time
+    // hijacked to > 1e9) freeze the wave clock at 0 so A/B bypass captures
+    // share an identical wave phase instead of inheriting the sentinel
+    // value. Production (tile.time < 1e6) selects the real clock.
+    let t = select(tile.time, 0.0, tile.time > 1.0e9);
     let waveN = sampleOceanWaveNormals(uv, t);
     // GLOBE-POLAR-STRETCH-POLISH — fade the wave perturbation to EXACTLY
     // zero far from the surface, matching WebGL GlobeFS.glsl L794+816:
@@ -2319,7 +2323,11 @@ fn computeEnhancedOcean(
   //   czm_getSpecular(L, V, N, 10) = pow(max(dot(reflect(-L, N), V), 0), 10)
   //   surfaceReflectance = mix(0, mix(zoomedOutSpec, oceanSpec, waveIntensity), mask)
   //   waveIntensity = waveFade(70000, 1e6, |toEyeEC|) = pow(1 - linearFade(...), 5)
-  {
+  //
+  // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-glint' (26e9) skips this B506
+  // Phong sun-glint term so its share of the below-surface residual can be
+  // measured in isolation. Always taken in production (tile.time < 1e6).
+  if (!globe_debugBypassActive(26.0e9)) {
     let toReflectedLight = reflect(-sunDirEC, waterNormal);
     let specularIntensity = pow(max(dot(toReflectedLight, viewDir), 0.0), 10.0);
     // `camera.lighting.w` mirrors WebGL's `u_zoomedOutOceanSpecularIntensity`
@@ -2975,6 +2983,19 @@ fn globe_interpolateByDistance(nearFarScalar: vec4<f32>, distance: f32) -> f32 {
   return mix(startValue, endValue, t);
 }
 
+// NEW-GLOBE-BELOWSURFACE-DECOMP (B2) — debug-only per-term bypass predicate.
+// `CesiumDebug.globeFragmentDebug('bypass-*')` writes sentinels 21e9..27e9
+// into `tile.time` (registry: WebGPUGlobeFragmentDebug.ts). Unlike the
+// Batch-56 visualization modes, the bypass modes do NOT short-circuit
+// fragmentMain — the full shading path runs with exactly ONE term skipped,
+// so `diag-globe-belowsurface-decomp.mjs` can attribute the WebGL↔WebGPU
+// signed-dRGB residual per term. Production output is untouched: the
+// sentinel writer is pragma-stripped and the real `tile.time` is
+// < 1e6, so every predicate is false (one uniform compare per site).
+fn globe_debugBypassActive(sentinel: f32) -> bool {
+  return tile.time > sentinel - 0.5e9 && tile.time < sentinel + 0.5e9;
+}
+
 @fragment
 fn fragmentMain(
   input: VertexOutput,
@@ -3004,8 +3025,16 @@ fn fragmentMain(
   // tile-seam grid lines (BUG-GLOBE-TILE-SEAM-LINES, 62% of the mid-zoom
   // WebGL↔WebGPU residual before this fix). The clamp moves UVs by at most
   // ~1e-6, invisible everywhere except the seam mask.
-  let geoUV = clamp(input.v_textureCoordinates.xy, vec2<f32>(0.0), vec2<f32>(1.0));
-  let webMercT = clamp(input.v_textureCoordinates.z, 0.0, 1.0);
+  var geoUV = clamp(input.v_textureCoordinates.xy, vec2<f32>(0.0), vec2<f32>(1.0));
+  var webMercT = clamp(input.v_textureCoordinates.z, 0.0, 1.0);
+  // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-seam-clamp' (25e9) reverts to
+  // the raw (unclamped) interpolated UVs so the B506 seam-clamp delta can
+  // be measured in isolation. `tile.time` is uniform, so control flow stays
+  // uniform and the dpdx/dpdy below remain valid. Never taken in production.
+  if (globe_debugBypassActive(25.0e9)) {
+    geoUV = input.v_textureCoordinates.xy;
+    webMercT = input.v_textureCoordinates.z;
+  }
 
   //>>ifdef LOG_DEPTH
   // Stash the interpolated log-depth varying so makeFragOutput (called from
@@ -4031,7 +4060,13 @@ fn fragmentMain(
         fogColor = pbrNeutralTonemapAtmosphere(fogColor);
         fogColor = pow(max(fogColor, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
       }
-      color = mix(color, fogColor, fogAmount);
+      // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-fog' (27e9) skips the fog
+      // mix so the near-ground atmosphere term (the branch below-surface
+      // scenes actually take — v_distance is megameters underground, so
+      // fogAmount saturates) can be measured in isolation.
+      if (!globe_debugBypassActive(27.0e9)) {
+        color = mix(color, fogColor, fogAmount);
+      }
       // Alpha intentionally untouched — terrain stays opaque through fog.
     } else if (groundAtmosphereEnabled) {
       // Far-from-ground drape — mirrors the WebGL `#else` branch of
@@ -4180,7 +4215,12 @@ fn fragmentMain(
       if (tile.time > 12.5e9 && tile.time < 13.5e9) {
         return makeFragOutput(vec4<f32>(transmittance / 5.0, transmittance / 5.0, transmittance / 5.0, 1.0), normalEC);
       }
-      color = mix(color, draped, fadeAmount);
+      // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-drape' (24e9) skips the
+      // far-from-ground ground-atmosphere drape replacement so the drape /
+      // limb-width term can be measured in isolation.
+      if (!globe_debugBypassActive(24.0e9)) {
+        color = mix(color, draped, fadeAmount);
+      }
     }
   }
 
@@ -4194,7 +4234,10 @@ fn fragmentMain(
   // (`undergroundControl.x`) is computed CPU-side with the exact WebGL
   // `showUndergroundColor` condition, so above-ground / default renders
   // never enter this branch (byte-identical off path).
-  if (camera.undergroundControl.x > 0.5 && !frontFacing) {
+  // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-underground' (22e9) skips the
+  // underground tint blend so its residual share can be measured.
+  if (camera.undergroundControl.x > 0.5 && !frontFacing &&
+      !globe_debugBypassActive(22.0e9)) {
     // WebGL: distanceFromEllipsoid = max(czm_eyeHeight, 0.0) — packed
     // pre-clamped in undergroundControl.y.
     let distanceFromEllipsoid = camera.undergroundControl.y;
@@ -4224,7 +4267,12 @@ fn fragmentMain(
   // 177/182) supply the ALPHA blend state; this alpha value is what makes the
   // blend actually translucent. Gate is closed (control.x = 0) unless
   // `globeTranslucencyState.translucent`, keeping the default byte-identical.
-  if (camera.translucencyControl.x > 0.5) {
+  // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-translucency' (23e9) skips the
+  // per-fragment translucency alpha ramp so its residual share can be
+  // measured (the multi-pass blend pipelines still run; only the FS alpha
+  // multiply is bypassed).
+  if (camera.translucencyControl.x > 0.5 &&
+      !globe_debugBypassActive(23.0e9)) {
     let tRect = tile.localizedTranslucencyRectangle;
     if (geoUV.x > tRect.x && geoUV.x < tRect.z &&
         geoUV.y > tRect.y && geoUV.y < tRect.w) {

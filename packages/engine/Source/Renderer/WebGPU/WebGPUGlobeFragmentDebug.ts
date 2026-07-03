@@ -153,6 +153,53 @@ export const GLOBE_FRAGMENT_DEBUG_MODES: ReadonlyArray<GlobeFragmentDebugMode> =
       description:
         "Visualize `tile.flags.x` (showReflectiveOcean) per fragment. Red = water + reflective-ocean enabled (computeEnhancedOcean runs). Yellow = tile has water mask but fragment is land. Green = no reflective ocean.",
     },
+    // ── NEW-GLOBE-BELOWSURFACE-DECOMP (B2) bypass modes ──
+    // Unlike the visualization modes above, these do NOT short-circuit
+    // fragmentMain: the full shading path runs with exactly ONE term
+    // skipped, so `diag-globe-belowsurface-decomp.mjs` can attribute the
+    // WebGL↔WebGPU signed-dRGB residual per term. Every bypass sentinel
+    // (including 'bypass-none') also freezes the ocean wave clock at 0 so
+    // A/B captures share an identical wave phase.
+    {
+      name: "bypass-none",
+      sentinel: 21.0e9,
+      description:
+        "Control run for the bypass-* A/B set: full shading, no term skipped (wave clock frozen like every bypass mode).",
+    },
+    {
+      name: "bypass-underground",
+      sentinel: 22.0e9,
+      description: "Skip the underground tint blend (GLOBE-UNDERGROUND-COLOR).",
+    },
+    {
+      name: "bypass-translucency",
+      sentinel: 23.0e9,
+      description:
+        "Skip the per-fragment translucency alpha ramp (GLOBE-TRANSLUCENCY-ALPHA); the multi-pass blend pipelines still run.",
+    },
+    {
+      name: "bypass-drape",
+      sentinel: 24.0e9,
+      description:
+        "Skip the far-from-ground ground-atmosphere drape mix (limb-width term).",
+    },
+    {
+      name: "bypass-seam-clamp",
+      sentinel: 25.0e9,
+      description:
+        "Revert the B506 fragment-entry UV clamp to raw interpolated UVs (tile-seam term).",
+    },
+    {
+      name: "bypass-glint",
+      sentinel: 26.0e9,
+      description: "Skip the B506 Phong ocean sun-glint specular term.",
+    },
+    {
+      name: "bypass-fog",
+      sentinel: 27.0e9,
+      description:
+        "Skip the near-ground fog mix (the atmosphere branch below-surface scenes actually take).",
+    },
   ];
 
 const _MODE_BY_NAME: ReadonlyMap<string, GlobeFragmentDebugMode> = new Map(
