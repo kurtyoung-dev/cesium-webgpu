@@ -15,8 +15,10 @@
 > Sandcastle demo that exercises each feature.
 >
 > **Accuracy note:** statuses below were re-verified against the live code and
-> `git log` at HEAD ≈ Batch 460 (2026-06-30), NOT lifted from the (up-to-300-batch-
-> stale) source docs. Items I could not fully confirm are marked **(status: verify)**.
+> `git log` at HEAD ≈ Batch 506 (`62c5bab450`, 2026-07-03, post-campaign audit),
+> NOT lifted from the (up-to-300-batch-stale) source docs. Items I could not fully
+> confirm are marked **(status: verify)**. §7a covers the 25-item WebGL→WebGPU
+> parity campaign (Batches 482–506) added in this revision.
 
 ---
 
@@ -427,9 +429,11 @@ Verified end-to-end across Batches 153–158.
 > parity, Batch 458 `baa3f62d43`) + **DP-H46e** (`scene.pickMetadata` WebGPU producer —
 > color + regular-pick byte-identical, Batch 460 `061f6914f0`) + **DP-H46f** (Sandcastle
 > demo + consolidated verification probe + doc reconcile, Batch 463) have all landed.
-> Remaining slices are **post-epic follow-ups** (multi-component attribute transport,
-> UINT16/32 texture packing, TEXTURE-sourced tables) tracked in `ROADMAP_AND_DEFERRED_WORK.md`,
-> plus the upstream `getMetadataProperty` limit (attributes/tables via `pickMetadata`, cesium #12225).
+> The post-epic follow-ups have since **SHIPPED** in the Batch 482–506 parity
+> campaign: multi-component attribute transport (B492), UINT16/32 texture packing
+> (B493), and property tables for TEXTURE/IMPLICIT feature-ID sources including
+> the upstream `getMetadataProperty` / cesium #12225 parity (B500) — see §7a
+> (Metadata) for probes.
 
 - **Goal:** port the `EXT_structural_metadata` / `EXT_mesh_features` metadata-in-shader
   pipeline from GLSL to WGSL so the WebGPU model shader can read metadata properties,
@@ -447,6 +451,134 @@ Verified end-to-end across Batches 153–158.
   scalars into the readout panel. **Verified:** `Tools/visual-regression/probe-dp46f-metadata-demo.mjs`
   (asset serves + WebGPU render + pick decode, screenshot read); byte-exact WebGL↔WebGPU parity by
   `probe-dp46e-pick-metadata.mjs` (insulation 11/11 exact, temperatures in-range).
+
+---
+
+## 7a. WebGL→WebGPU Parity Campaign (Batches 482–506)
+
+The 25-item parity campaign (git `03edcf1f2e..62c5bab450`, landed 2026-07-01/03)
+closed a wide band of "works on WebGL, missing/wrong on WebGPU" gaps. These are
+**parity features, not opt-in fidelity**: each makes an existing upstream API work
+identically on the WebGPU backend, and each landed with an acceptance probe
+(`Tools/visual-regression/probe-*.mjs`) plus a byte-identical off-gate. The
+campaign added 4 tail `ShaderDefine` bits (`1<<26`…`1<<29`; bits ≥24 are
+disambiguated via the module-cache `keySalt`) and 23 new probes (441 total).
+The post-campaign audit confirmed 4 open issues — recorded honestly below, not
+papered over.
+
+### Models (glTF)
+
+- **`model.splitDirection`** (B483) — the imagery-layer split plane now applies to
+  glTF models on WebGPU: a `MODEL_SPLIT_ENABLED` define hoists a split-side discard
+  above every early-out in `ModelPBRComplete.wgsl`, mirrored into the
+  pick/velocity/classification entries so split models pick correctly too.
+  **Probe:** `probe-model-splitter` (maskDiff 0.57%, off-gate 0.25%).
+- **`model.color` / `model.colorBlendMode` / `colorBlendAmount`** (B484) — model
+  tinting with all three blend modes (`HIGHLIGHT`/`REPLACE`/`MIX`) behind a
+  `MODEL_HAS_COLOR` define; untinted models stay byte-identical.
+  **Probe:** `probe-model-color` (all 3 blend modes + untinted default).
+- **Model silhouette** (B485) — `model.silhouetteColor`/`silhouetteSize` via the
+  same stencil two-pass scheme WebGL uses (mask pass + inflated rim pass,
+  `MODEL_SILHOUETTE` define + `ModelSilhouetteStage.wgsl`); `silhouetteSize = 0`
+  is the byte-identical off-gate. **Probe:** `probe-model-silhouette`.
+- **2D / Columbus View scene modes** (B499) — models render in `SCENE2D`/CV:
+  the ECEF boundingSphere was being culled against the projected-frame culling
+  volume (fixed at all 7 command-emission sites) and `_computedModelMatrix2D` is
+  now consumed; MORPHING follows WebGL's `mode !== SCENE3D` condition.
+  **Probe:** `probe-model-scene-modes` — 3D (13.59) and CV (18.41) PASS;
+  **OPEN issue:** SCENE2D per-pixel shading tint (WebGPU olive vs WebGL blue-gray,
+  interiorDiff 34.27) — a 2D light-direction / IBL-orientation gap, geometry and
+  coverage are correct.
+- **glTF POINTS primitive mode** (B491) — mode-0 primitives draw with point-list
+  topology instead of being dropped. **Probe:** `probe-gltf-points-mode`
+  (centroidDist 1.1px).
+- **Point-sprite square parity** (B490) — point-cloud sprites render as squares
+  matching WebGL's `gl_PointSize` rasterization, including size/attenuation
+  behavior. **Probe:** `probe-point-sprite-shape`.
+
+### Post-process
+
+- **`scene.colorGradingEnabled` runtime flag** (B482) — the color-grading stage is
+  now driven by the scene-level flag at runtime (optional `scene.colorGradingConfig`),
+  read each frame by `WebGPUPostProcessStageCollection`. **Probe:**
+  `probe-colorgrading-wired` — functional gates A–E pass; its stored default-view
+  baseline PNG is stale after B506's intentional glint/seam pixel change (refresh
+  pending, not a color-grading bug).
+- **7 `PostProcessStageLibrary` builtins** (B486) — `blackAndWhite`, `brightness`,
+  `nightVision`, `silhouette`, `edgeDetection`, `lensFlare`, `depthView` all run on
+  WebGPU through the post-process chain. **Probe:** `probe-pp-library-builtins`
+  (all 7, off-gate byte-identical). **OPEN issue:** library + user WGSL stages run
+  pre-tonemap on WebGPU vs post-tonemap on WebGL — SDR output matches (9.85%),
+  but HDR canvases need an hdrMode compensation like ColorGrading/FXAA got in B479.
+
+### Globe
+
+- **`globe.undergroundColor`** (B487) — below-surface camera views composite the
+  underground color (+ `undergroundColorAlphaByDistance`) like WebGL, back-face
+  gated. **Probe:** `probe-globe-underground`.
+- **`globe.translucency`** (B488) — front/back-face alpha terrain translucency
+  (see-through planet); the WGSL SkyAtmosphere daylight flood over the disk is
+  gated on the previously-reserved `atmosControl.w` (`GLOBE_TRANSLUCENT` port).
+  **Probe:** `probe-globe-translucency`. **OPEN issue (shared with underground):**
+  a standing below-surface/limb darkening gap — WebGPU renders uniformly darker
+  (dRGB −6..−8; underground-def 22.85%, translucent-terrain 25.49%) — exposed, not
+  caused, by the campaign's default-view polish tightening the probes' dynamic
+  baselines from ~15% to ~2.5%; folded into the atmosphere-brightness follow-up.
+- **Polar stretch fix + seam/glint polish** (B502/B506) — the high-latitude imagery
+  stretch was a double vertical flip in the WGSL Web Mercator reprojection
+  (`ReprojectWebMercator.wgsl`); B506 then killed the dark-navy tile-seam grid
+  (seam UV handling) and restored the orbital ocean sun-glint in `GlobeTerrain.wgsl`.
+  **Probe:** `probe-globe-polar-stretch` (extended by B506 — worst tile 2.91% vs
+  3.5 limit, seam px 8/45). Note: B506 intentionally changed default-view pixels.
+
+### Metadata (`EXT_structural_metadata`) — the DP-H46 post-epic follow-ups, now SHIPPED
+
+- **Multi-component properties** (B492) — vec2/3/4 property-attribute transport
+  into the WGSL `Metadata` struct. **Probe:** `probe-metadata-multicomponent`.
+- **UINT16/UINT32 property textures** (B493) — WGSL multi-byte decode; the fix was
+  dual-backend (WebGL's UINT32 metadata pick was also wrong upstream-side).
+  **Probe:** `probe-metadata-uint16` (all 4 stripes).
+- **Property tables for TEXTURE + IMPLICIT feature-ID sources** (B500) — property
+  tables resolve for texture- and implicit-sourced feature IDs, including parity
+  with the upstream `getMetadataProperty` limit (cesium #12225).
+  **Probe:** `probe-metadata-table-texture`.
+
+### Voxels
+
+- **Octree LOD traversal** (B501) — depth-1 LOD: the ray-march traverses root + 8
+  level-1 child octants (child-octant selection + child-slab megatexture sampling).
+  Deeper levels are a follow-up. **Probe:** `probe-voxel-octree` (9 slots, 8/8
+  discriminators).
+- **Per-cell pick (reland)** (B498) — `scene.pick` returns the exact voxel cell,
+  relanded on the corrected world→shapeUv convention from B497 (the documented
+  B477 blocker). **Probe:** `probe-voxel-cell-pick` (7/7 pick bytes byte-equal
+  WebGL↔WebGPU). **OPEN issue:** the pick march does not yet compose with B501
+  octree LOD (samples the root slab, hardcoded megatextureId 0 → wrong pick while
+  refinement is active — the top follow-up work item) nor with B503 user
+  customShaders (pick gates on default-shader density, not user alpha).
+- **User native-WGSL customShaders** (B503) — user `CustomShader` WGSL runs inside
+  the WebGPU voxel ray-march via a codegen chunk (`WebGPUVoxelCustomShaderCodegen.ts`),
+  keyed by an FNV-1a `keySalt` under the `VOXEL_USER_CUSTOM_SHADER` define.
+  **Probe:** `probe-voxel-user-customshader` (IoU 0.987, ramp spread 174).
+
+### Environment
+
+- **Skybox star-map orientation + cloud occlusion** (B504) — the skybox cube map
+  was mirrored on WebGPU; fixed with cube-map flipY parity (patternCorr 1.000
+  aligned vs 0.122 mirrored), plus a **default-off** option for procedural clouds
+  to occlude the skybox. **Probe:** `probe-env-skybox-stars`.
+- **Moon placement** (B505) — the moon rendered as an off-screen sliver; fixed with
+  model-space RTE so it renders as a full disc at the correct position.
+  **Probe:** `probe-env-moon` (litRatio 1.000, centerDist 0.0px; crescent-phase
+  assertion is a noted follow-up).
+
+### Shadows / clipping (no user dial, parity fixes)
+
+- **CSM ellipsoid-aware cascade fit** (B496) — cascade ground-fit uses the scene
+  ellipsoid instead of hardcoded WGS84 radii.
+- **Geodetic clipping-polygon parity** (B494, `probe-globe-clippoly-geodetic`) and
+  **authored silhouette-normal edges** (B495) round out the campaign's
+  no-new-API fixes.
 
 ---
 
@@ -711,9 +843,13 @@ Full procedures + the probe inventory live in
   `gpuPassCost()` / `cpuPassCost()`, `highDensityCull()`, `globeBindGroups()`,
   `globeFragmentDebug(name)`, `tileDebugOverlay()`, `logImageryProbe()`.
 - **Visual verification is mandatory for rendering fixes** (CLAUDE.md Principle 8):
-  build a probe under `Tools/visual-regression/probe-*.mjs`, capture WebGL vs WebGPU,
-  pixel-diff, READ the PNGs. Use Edge/Chromium (Playwright's bundled Firefox has no
-  WebGPU). Run the suite with `node Tools/visual-regression/capture-and-diff.mjs`.
+  build a probe under `Tools/visual-regression/probe-*.mjs` (441 probes at HEAD;
+  23 added by the Batch 482–506 campaign), capture WebGL vs WebGPU, pixel-diff,
+  READ the PNGs. Use Edge/Chromium (Playwright's bundled Firefox has no WebGPU).
+  Run the suite with `node Tools/visual-regression/capture-and-diff.mjs`.
+  Port gotcha: `probe-collections-regression` and `probe-pick-basic` default
+  `PROBE_BASE` to `:8134` — set `PROBE_BASE=http://localhost:8080` for the
+  standard dev server.
 
 ---
 
@@ -728,4 +864,10 @@ Full procedures + the probe inventory live in
   performance service, not a capture API). The one remaining unverified item is the
   **live-weather network hop (§4)** — wired but unconfirmed against a real server because
   the dev sandbox has no outbound network.
-- Batch numbers cite `git log` commit headers (HEAD ≈ Batch 460, 2026-06-30).
+- **OPEN (post-campaign audit, 2026-07-03)** — 4 confirmed issues recorded inline in
+  §7a: voxel per-cell pick vs octree-LOD/user-customShader composition, the
+  below-surface/limb darkening gap (underground + translucency probes), the model
+  SCENE2D shading tint, and the pre- vs post-tonemap placement of PP library/user
+  stages (HDR-only today).
+- Batch numbers cite `git log` commit headers (HEAD ≈ Batch 506, `62c5bab450`,
+  2026-07-03).

@@ -7,13 +7,26 @@
  *
  * # How the cache key is packed
  *
- * The shader module cache (see `WebGPUShaderModuleCache`) keys its
- * `Map<number, GPUShaderModule>` by a Uint32 computed as
+ * The shader module cache (see `WebGPUShaderModuleCache.getOrCreate`)
+ * keys modules by a Uint32 computed as
  * `(sourceId & 0xff) | ((defines & 0xffffff) << 8)`. That gives
- * 8 bits for source IDs (256 shader files — plenty) and 24 bits for
- * active defines (24 possible defines engine-wide). If we ever approach
- * either limit we migrate the scheme, but it's comfortable for the
- * foreseeable variant space.
+ * 8 bits for source IDs (256 shader files — plenty) and 24 bits of
+ * define mask in the NUMERIC key. The registry has grown past 24
+ * defines (30 bits live as of Batch 503, `1 << 0` … `1 << 29`): the
+ * numeric key's `& 0xffffff` mask silently DROPS bits 24-31, so any
+ * define at bit >= 24 MUST be disambiguated via the cache's `keySalt`
+ * escape hatch — callers fold the high bits (or a content fingerprint
+ * such as an FNV-1a hash of a generated chunk) into `keySalt`, and
+ * `getOrCreate` switches to a distinct string key
+ * `` `${numericKey}#${keySalt}` `` whenever `keySalt !== 0`. Live
+ * examples: `WebGPUModelPipelineCache.js` XOR-folds
+ * `MODEL_SPLIT_ENABLED`/`MODEL_HAS_COLOR`/`MODEL_SILHOUETTE`
+ * (bits 26-28) into its keySalt; `WebGPUVoxelRenderer.ts` salts
+ * `VOXEL_USER_CUSTOM_SHADER` (bit 29) with the generated-chunk hash.
+ * When adding a define at bit >= 24, document the keySalt requirement
+ * in its JSDoc and make every consumer that sets the bit pass a
+ * disambiguating salt — a high bit without a salt aliases cached
+ * modules across variants.
  *
  * # Add-only rule
  *

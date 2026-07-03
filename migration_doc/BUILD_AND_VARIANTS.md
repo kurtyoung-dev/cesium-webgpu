@@ -1,6 +1,6 @@
 > **Canonical doc** (consolidation first draft, 2026 consolidation).
 > **Supersedes / folds in:** the `Build & Test Commands`, `Build Variants (Tree-Shaking)`, `Visual Regression Testing`, and `Playwright / Browser Testing` sections of `cesium-webgpu/CLAUDE.md` (those remain authoritative until this doc is promoted); plus the scattered build-variant notes in `migration_doc/WEBGPU_MIGRATION_STATUS.md`, `migration_doc/DEBUGGING_GUIDE.md`, and `Tools/visual-regression/README.md`.
-> **Review-in-progress.** Statuses re-verified against live code (`scripts/build.js`, `scripts/bundleVariantPlugin.js`, `gulpfile.js`, `packages/engine/Source/Renderer/RendererType.ts`, `package.json`, `Tools/variant-smoke-test.mjs`) and git log at HEAD ≈ Batch 460. Items I could not re-measure are flagged **`status: verify`**.
+> **Review-in-progress.** Statuses re-verified against live code (`scripts/build.js`, `scripts/bundleVariantPlugin.js`, `gulpfile.js`, `packages/engine/Source/Renderer/RendererType.ts`, `package.json`, `Tools/variant-smoke-test.mjs`) and git log at HEAD = Batch 506 (`62c5bab450`, post-parity-campaign audit 2026-07-03). Items I could not re-measure are flagged **`status: verify`**.
 
 # Build & Variants — Operational Reference
 
@@ -74,9 +74,10 @@ mapping is `variantDirSuffix()` in `scripts/build.js` (line ~1201): `webgl-only`
 The following are the sizes recorded in `CLAUDE.md`'s *Build Variants*
 section (minified IIFE `Cesium.js`). **`status: verify` — STALE** — these were
 measured at an earlier batch (the doc was last refreshed around Batches 56–185;
-HEAD is ≈460, and the WebGPU surface has grown substantially since, e.g. the
-cloud / atmosphere / env campaigns in Batches 400–453 and DP-H46 metadata in
-454–460). Treat them as the **shape** of the savings, not exact current numbers
+HEAD is 506, and the WebGPU surface has grown substantially since, e.g. the
+cloud / atmosphere / env campaigns in Batches 400–453, DP-H46 metadata in
+454–463, and the WebGL→WebGPU parity campaign in 482–506, which alone added
+~16.9K lines). Treat them as the **shape** of the savings, not exact current numbers
 — this is a snapshot-in-time metric, not a stable invariant; do not treat the
 absolute MB figures as canonical.
 
@@ -304,6 +305,9 @@ Usage: `node Tools/variant-smoke-test.mjs` (all three),
 starts its own static server on an ephemeral port — CI relies on this,
 `NEW-VARIANT-CI` follow-up, Batch 243). Uses Edge by default.
 
+Last verified green: 2026-07-03 post-campaign audit at Batch 506 HEAD — all
+three variants (dual / webgl-only / webgpu-only) passed.
+
 **Run the smoke test after any change** that touches the variant plugin, the
 exemption list, the entry-barrel generation, or `RendererType.ts`. The variant
 build + smoke job is wired into CI (Batches 242, 259); the SwiftShader WebGPU
@@ -392,9 +396,16 @@ ask the user to reload and eyeball it. The required loop:
    the artifact is gone and no new one appeared.
 5. Only then surface the probe name + mismatch delta + screenshots to the user.
 
-There are 450+ probe scripts already in `Tools/visual-regression/`; search there
-before writing a new one. The probe inventory + decision tree is maintained in
-`migration_doc/DEBUGGING_GUIDE.md`.
+There are 441 `probe-*.mjs` scripts in `Tools/visual-regression/` (counted at
+Batch 506 HEAD; the Batch 482–506 parity campaign added 23 of them); search
+there before writing a new one. The probe inventory + decision tree is
+maintained in `migration_doc/DEBUGGING_GUIDE.md`. Note two probe-harness
+gotchas surfaced by the 2026-07-03 campaign audit: `probe-collections-regression`
+and `probe-pick-basic` default `PROBE_BASE` to `:8134` — set
+`PROBE_BASE=http://localhost:8080` when running against the standard dev
+server; and `probe-colorgrading-wired`'s stored default-view baseline PNG is
+stale after Batch 506's intentional glint/seam pixel change (functional gates
+A–E pass; the baseline needs a refresh — tracked as an OPEN doc-wave follow-up).
 
 ---
 
@@ -409,7 +420,7 @@ before writing a new one. The probe inventory + decision tree is maintained in
 - **Never remove** `"./Source/Cesium*.js"` from `package.json` `sideEffects`
   without replacing the default-renderer-hint mechanism (§5).
 - **Re-measure variant sizes** (§2) before quoting them in user-facing material
-  — the recorded figures predate the Batch 400–455 WebGPU growth and are
+  — the recorded figures predate the Batch 400–506 WebGPU growth and are
   `status: verify`.
 - Keep this doc in sync with `CLAUDE.md`'s build sections; if they ever
   disagree, `CLAUDE.md` + the live scripts win until this doc is promoted.

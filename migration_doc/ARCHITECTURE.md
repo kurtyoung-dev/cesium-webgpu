@@ -8,6 +8,10 @@
 > **Review-in-progress.** Status tags re-verified against live code + git log at
 > HEAD ≈ Batch 455. Where a claim could not be confirmed it is marked
 > `status: verify`.
+> **2026-07-02 refresh (post-campaign audit, Batches 482–506, HEAD
+> `62c5bab450`):** §6.1 bit table extended to 30 bits, §6.3.1 keySalt escape
+> hatch added, §11 (PP library interception) + §12 (voxel data path) added —
+> all claims in those sections re-verified against live code at that HEAD.
 
 # ARCHITECTURE — CesiumJS WebGPU Fork
 
@@ -426,8 +430,11 @@ referencing the bit. Deprecated entries stay with a comment marker.
 
 > **CLAUDE.md is stale here.** CLAUDE.md lists only the first 4 bits
 > (`GEODETIC_NORMAL … COMPRESSED_VERTICES`). The live registry has grown to
-> **22 active bits** (`1<<0` … `1<<21`, re-verified against `: 1 <<` in
-> `WebGPUShaderDefines.ts`). Current bits:
+> **30 active bits** (`1<<0` … `1<<29`, re-verified against `: 1 <<` in
+> `WebGPUShaderDefines.ts` at HEAD ≈ Batch 506, `62c5bab450`; the campaign
+> Batches 482–506 appended exactly 4 tail bits, `1<<26`–`1<<29`). **Six bits
+> (`1<<24` … `1<<29`) live above the module cache's 24-bit define window and
+> MUST be folded via `keySalt`** — see §6.3.1. Current bits:
 >
 > | Bit | Name | Gates |
 > |---|---|---|
@@ -453,14 +460,24 @@ referencing the bit. Deprecated entries stay with a comment marker.
 > | `1<<19` | `MODEL_HAS_PROPERTY_TEXTURES` | model property-texture sampling |
 > | `1<<20` | `MODEL_HAS_PROPERTY_TABLES` | model property-table sampling |
 > | `1<<21` | `METADATA_PICKING_ENABLED` | metadata pick path |
+> | `1<<22` | `POINT_CLOUD_EDL_DEPTH` | point-cloud EDL off-screen depth pipeline (only `WebGPUPointCloudEyeDomeLighting` ORs it in) |
+> | `1<<23` | `MODEL_HAS_WGSL_CUSTOM_SHADER` | model user customShader with native `wgslFragmentShaderText` (GLSL-only customShaders keep the warn + no-op path) |
+> | `1<<24` | `MODEL_HAS_WGSL_CUSTOM_VERTEX` | model user customShader native WGSL *vertex* body — **keySalt bit** (§6.3.1) |
+> | `1<<25` | `VOXEL_CUSTOM_SHADER_COLOR` | voxel default-shader parity color march (Batch 476; `//>>else` = historical raw-texel accumulation) — **keySalt bit** |
+> | `1<<26` | `MODEL_SPLIT_ENABLED` | model split-screen discard (B483) — **keySalt bit** |
+> | `1<<27` | `MODEL_HAS_COLOR` | `model.color` tint / blend-mode path (B484) — **keySalt bit** |
+> | `1<<28` | `MODEL_SILHOUETTE` | model silhouette stencil two-pass (B485; `ModelSilhouetteStage.wgsl`) — **keySalt bit** |
+> | `1<<29` | `VOXEL_USER_CUSTOM_SHADER` | user native-WGSL voxel customShader in the ray-march (B503; generated codegen chunk) — **keySalt bit** |
 >
-> The registry is contiguous through `1<<21` at HEAD (no gaps); the add-only rule
+> The registry is contiguous through `1<<29` at HEAD (no gaps); the add-only rule
 > still mandates that if a bit's last consumer disappears the slot is *retained*
 > as a gap rather than renumbered. `status: verify` the exact gate text for any
 > bit before relying on it — read the JSDoc in `WebGPUShaderDefines.ts`.
 
 `ShaderSourceId` (same file, same add-only rules) gives each source file a stable
-8-bit numeric identity. **Source ID 0 is reserved.**
+8-bit numeric identity. **Source ID 0 is reserved.** Live count at HEAD ≈
+Batch 506: **39 registrations** (contiguous `1…39`, highest
+`POINT_CLOUD_EDL_BLEND: 39`; the 482–506 campaign added zero new source IDs).
 
 **Adding a new define bit:** (1) append the entry (never reorder); (2) document
 what it gates + which shaders consume it in the JSDoc; (3) add the
@@ -484,6 +501,9 @@ Two-tier model:
 - **Tier 1 — module dedupe (this class).** One cache per `GPUDevice`, cleared on
   device loss. Key is a Uint32 `(sourceId & 0xff) | ((defines & 0xffffff) << 8)`
   — fastest possible `Map` lookup, no string hashing on the hot path.
+  **Caution:** the `& 0xffffff` mask drops define bits ≥ 24 from the numeric
+  key — any define bit at `1<<24` or above MUST be folded into `keySalt`
+  instead (§6.3.1) or it silently aliases the variant without that bit.
 - **Tier 2 — per-renderer pipeline cache** (`_pipelineCache` /
   `_wireframePipelineCache` / `_debugFragmentPipelineCache` on each renderer),
   keyed with the defines bitmask as a `|0xNN` suffix.
@@ -500,6 +520,50 @@ byte-identical to the pre-DP-H46b numeric path → exact parity for every
 non-metadata caller. The map type is `Map<number | string, GPUShaderModule>`.
 (Shipped `3b146e42a8 "Batch 455: DP-H46b — per-model WGSL metadata codegen"`;
 consumed by `WebGPUModelPipelineCache.js`.)
+
+#### 6.3.1 The `keySalt` escape hatch — define bits ≥ 24 (Batch-476 pattern)
+
+The Tier-1 numeric key masks defines to 24 bits (`(defines & 0xffffff) << 8`),
+so **any `ShaderDefine` bit at `1<<24` or above is invisible to the numeric
+key**. Setting such a bit without compensation returns the cached module for
+the *unset* variant — a silent, wrong-shader aliasing bug. The escape hatch
+(first used for `VOXEL_CUSTOM_SHADER_COLOR` in Batch 476, hence "the Batch-476
+pattern") is to pass a **non-zero `keySalt`** whenever a bit ≥ 24 is set: in
+`WebGPUShaderModuleCache.getOrCreate` (line ~97), `keySalt !== 0` switches the
+map key to the string `` `${numericKey}#${keySalt >>> 0}` ``, forcing a
+distinct cache entry. Crucially, the **preprocessor still receives the
+unmasked defines**, so the `//>>ifdef` directives resolve correctly — only the
+cache key needed help.
+
+Six bits currently live above the window and all use the hatch (verified at
+HEAD ≈ Batch 506): `MODEL_HAS_WGSL_CUSTOM_VERTEX (1<<24)`,
+`VOXEL_CUSTOM_SHADER_COLOR (1<<25)`, `MODEL_SPLIT_ENABLED (1<<26)`,
+`MODEL_HAS_COLOR (1<<27)`, `MODEL_SILHOUETTE (1<<28)`,
+`VOXEL_USER_CUSTOM_SHADER (1<<29)`. Three salt-composition variants exist:
+
+- **Constant salt (voxel parity, Batch 476).** `WebGPUVoxelRenderer.ts` passes
+  `ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR` itself as the salt — arbitrary but
+  stable; all it must do is differ from `0` (the placeholder module's key).
+- **XOR-fold onto an existing content salt (models, B483/B484/B485).**
+  `WebGPUModelPipelineCache._getOrCreateShaderModule` (~lines 2392–2415)
+  starts from the DP-H46b content salt (`metadataClassHash ^
+  customShaderClassHash`), then conditionally XORs in each set high bit:
+  `keySalt = (keySalt ^ ShaderDefine.MODEL_SPLIT_ENABLED) >>> 0` (likewise
+  `MODEL_HAS_COLOR`, `MODEL_SILHOUETTE`). Unset bits leave the salt untouched,
+  so pre-existing callers' cache keys are byte-identical.
+- **FNV-1a chunk hash (voxel user customShader, B503).**
+  `WebGPUVoxelCustomShaderCodegen.ts` FNV-1a-hashes the *generated* WGSL chunk
+  (`hashStringFNV1a`, remapped away from `0` and from the bit-25 constant to
+  avoid colliding with the other two salt families) and the renderer passes
+  that hash as the salt. This does double duty: it disambiguates the ≥ 24 bit
+  *and* distinguishes different user shader bodies sharing the same
+  `(sourceId, defines)` — the DP-H46b salted-key path.
+
+**Rule when adding a define bit ≥ 24:** the bit's JSDoc in
+`WebGPUShaderDefines.ts` must note the keySalt requirement, and every
+`getOrCreate` call site that can set the bit must fold it (or a content hash
+covering it) into `keySalt`. There is no runtime guard — the aliasing failure
+mode is a wrong-but-valid shader, which no validation layer catches.
 
 **Prewarm.** Renderers call
 `prewarm(sourceId, source, defineSets, labelPrefix)` at the end of their
@@ -797,6 +861,128 @@ tiles) to O(camera-delta):
 strategy landed — see §6.4); the Phase 8b GPU-resident stack (`TileStoreGPU`,
 MegaBuffer, Resident Drawer, sharedSourceBuffer fanout, WGSL styling compiler) is
 **genuinely unbuilt**. §3.5 of the design doc remains the live blueprint.
+
+---
+
+## 11. PostProcessStageLibrary Named-Stage Interception (B486)
+
+`PostProcessStageLibrary` builds its stages from **GLSL** fragment shaders, so
+on the WebGPU backend a
+`scene.postProcessStages.add(PostProcessStageLibrary.createBlackAndWhiteStage())`
+used to hit the GLSL-drop warning and silently no-op. Rather than transpiling
+GLSL at runtime, the fork ships an **interception registry**
+(`packages/engine/Source/Renderer/WebGPU/WebGPULibraryPostProcessStage.ts`,
+Batch 486): when the post-process configure pass scans the user-stage list, a
+stage whose well-known `czm_*` name matches the registry is substituted with
+its pre-translated **WGSL twin** from `Shaders/WebGPU/PostProcess/`. The
+stage's WebGL uniforms are mapped 1:1 onto the twin's UBO each frame, and its
+`enabled` flag is honored live.
+
+The pattern's pieces:
+
+- **Name → key mapping.** `getLibraryStageKey(name)` maps `czm_black_and_white
+  → blackAndWhite`, `czm_brightness`, `czm_night_vision`, `czm_depth_view`,
+  `czm_lens_flare`, `czm_edge_detection_<guid>` (prefix match — the library
+  appends a GUID so multiple can be added), and `czm_silhouette` (a two-pass
+  EdgeDetection + Silhouette composite). Unmatched names return `null` and
+  keep the existing GLSL-drop behavior.
+- **Default OFF.** Nothing constructs these stages unless the user adds a
+  matching library stage — untouched scenes are byte-identical (the B486
+  off-gate; re-verified byte-identical in the 2026-07 campaign audit).
+- **Documented per-stage parity gaps** (in the module docstring, not silent):
+  LensFlare lacks the `dirtTexture`/`starTexture` overlays + sun gating;
+  EdgeDetection/Silhouette lack the `selected` feature mask; DepthView shows
+  conventional device depth rather than reversed log-depth gray levels.
+
+This is the template for future library built-ins: pre-translated WGSL twin +
+registry row + per-frame uniform sync, never runtime GLSL translation.
+
+### 11.1 OPEN — pre-tonemap ordering divergence vs WebGL
+
+**Known caveat (confirmed OPEN at the 2026-07-02 campaign audit; not yet
+fixed).** WebGPU executes the intercepted library stages *and* user WGSL
+stages **before** tonemapping (`WebGPUPostProcessPipeline.ts` execute order:
+user stages ~1406 → library stages ~1425 → TAA → tonemap ~1503 → color
+grading → FXAA), whereas WebGL's `PostProcessStageCollection` runs added
+stages **after** the tonemapping stage (`PostProcessStageCollection.js`
+~745–758 sets the tonemapped SDR output as the added stages' input). Impact
+today is **HDR-only** — the SDR cross-backend probe passed at 9.85% — but
+under an HDR canvas the builtins receive unbounded linear input with no
+`hdrMode` compensation (ColorGrading and FXAA got exactly that compensation in
+B479; the library/user stages have not). The in-code comments at ~1403/1421
+claiming a "WebGL-matching insertion point", and the header docstring's stage
+order (~lines 39–42), are **inaccurate** and slated for correction with the
+fix. Note the contrast with TAA, whose pre-tonemap placement is *correct by
+design* (Batch 290 reconciliation — TAA does its own reversible
+tonemap-weighting); the library/user-stage placement has no such justification
+yet. Follow-up: hdrMode compensation or post-tonemap placement for
+library/user stages.
+
+---
+
+## 12. Voxel Data-Path Architecture (as shipped, Batches 476–503)
+
+The WebGPU voxel renderer (`WebGPUVoxelRenderer.ts`) ray-marches a 3D texture
+through a proxy bounding box (RTE-positioned, §5). The data path from provider
+to picked cell is now a five-stage chain:
+
+1. **Upload state machine** (`WebGPUVoxelDataUpload.ts`,
+   PARITY-VOXEL-MEGATEXTURE-UPLOAD). A per-primitive lifecycle
+   `idle → requesting → processing → done | failed` drives the async
+   request-tile → glTF-loader-advance → texture-upload sequence for the root
+   tile (`tryUploadRootVoxelTile`), replacing the placeholder gradient once
+   real provider data lands. `tryUploadChildVoxelTiles` runs the same machine
+   per level-1 child *after* the root reaches `done`, filling the atlas slots.
+2. **`shapeUv` convention** (B497, VOXEL-SHAPEUV-CONVENTION). The march
+   converts proxy-space points to sample coordinates via the same
+   world→shapeUv chain as WebGL's `convertLocalToBoxUv.glsl`: a
+   **CPU-composed proxy→shapeUv affine** (built with
+   `VoxelBoxShape.convertLocalToShapeUvSpace` semantics rather than a naive
+   `p + 0.5`), then `inputCoordinate = shapeUv · u_dimensions +
+   u_paddingBefore`. Getting this convention right was the documented B477
+   blocker that gated the cell-pick reland (B498).
+3. **Depth-1 octree traversal + atlas** (B501, PARITY-VOXEL-OCTREE-LOD). Tile
+   slabs are stacked along Z in one 3D texture; `atlasInfo.x` carries the slot
+   count and `atlasInfo.y` the frame's target LOD level (0 = root, 1 =
+   refine). When refining, the color march picks the child octant
+   (`childCoord = floor(shapeUv * 2)`), maps it to its atlas slot, and
+   rescales `tileUv = shapeUv * 2 − childCoord` — WebGL's `getTileUv`
+   convention specialized to depth 1 (root + 8 level-1 children). Deeper
+   octree levels are a known follow-up, not shipped.
+4. **Cell-pick derived command** (B498 reland). A pick variant of the color
+   command (`attachPickVoxelToColorCommand`, `WebGPUPickCommandHelpers.ts`)
+   runs `fragmentPickVoxelMain`, which re-walks the same
+   world→shapeUv→inputCoordinate chain and encodes the winning sample's cell
+   index for the pick readback.
+5. **User-customShader codegen** (B503, VOXEL-USER-CUSTOMSHADER,
+   `WebGPUVoxelCustomShaderCodegen.ts`). A user-supplied **native-WGSL**
+   voxel `CustomShader` is compiled into a generated chunk
+   (`czm_voxelCustomFragmentMain` + bridge structs) prepended to the inline
+   `VOXEL_WGSL`, gated by `VOXEL_USER_CUSTOM_SHADER (1<<29)` and cached under
+   the chunk's FNV-1a hash as `keySalt` (§6.3.1). GLSL-only voxel
+   customShaders keep the warn + default-gray behavior (WGSL transpile
+   deferred by design). Mid-session shader swap/clear re-patches the module
+   idempotently via a name compare.
+
+### 12.1 OPEN — pick march does not compose with octree LOD or user shaders
+
+**Confirmed OPEN at the 2026-07-02 campaign audit (in-code-acknowledged; the
+top voxel follow-up):**
+
+- **Pick ↔ octree (HIGH).** `fragmentPickVoxelMain`
+  (`WebGPUVoxelRenderer.ts` ~664–716) never performs the level-1 child-octant
+  traversal the color march does (~416–433) — it samples the **root slab**
+  (z normalized into slot 0) and hardcodes `megatextureId =
+  packVoxelIntToVec2(0.0)` (~line 708). Whenever the frame refines to level
+  1, pick returns a root-cell index for a leaf the user actually sees. Fix =
+  add the child traversal + child-tile megatextureId to the pick march.
+- **Pick ↔ user customShader (MEDIUM).** The pick march selects its winning
+  sample with the *default-shader* gate `s.a > densityThreshold` (~697),
+  while the user-shader color march accumulates `voxelMaterial.alpha`
+  ungated for every sample (~473–478) — a user shader that remaps opacity
+  makes the WebGPU pick disagree with both the displayed surface and WebGL.
+  The natural fix rides with the octree-pick work: the pick march needs a
+  `VOXEL_USER_CUSTOM_SHADER` branch.
 
 ---
 

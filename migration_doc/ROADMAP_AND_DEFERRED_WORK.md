@@ -18,6 +18,13 @@
 > Where a source asserted "WIP"/"deferred"/"blocked" but git shows the work landed, the status is
 > corrected here. Where I could not confirm a status from git alone, it is marked **(status: verify)**.
 > When in doubt, prefer the git-log batch reference cited inline.
+>
+> **2026-07-03 addendum:** the 25-item WebGL→WebGPU parity campaign (Batches 482–506,
+> `03edcf1f2e..62c5bab450`) landed after this draft's HEAD-~455 verification pass, driven from
+> `WEBGPU_PARITY_REPORT_2026-07-01.md` §6. **§5.2 carries the full closure ledger** plus the
+> post-campaign audit's OPEN findings (four real issues — recorded honestly as OPEN, not papered
+> over); the per-section entries below carry inline `✅ (Batch 48x/50x)` corrections. §5.2 statuses
+> were verified at HEAD `62c5bab450` (probe re-runs + direct source reads).
 
 ---
 
@@ -172,18 +179,43 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   (the SkyAtmosphere shell itself is at parity). Cosmetic limb-width at full-disc framing. **P2.**
 - **`NEW-WEBGL-REPROJECT-BASELINE`** — WebGL imagery reprojection forked to per-fragment Mercator; needs
   a regression baseline. **P2** (drift bookkeeping).
+- **Campaign closures (Batches 482–506, see §5.2):** underground color ✅ B487; globe translucency
+  alpha ✅ B488 (WGSL SkyAtmosphere daylight-flooding the see-through planet disk gated on the
+  previously-reserved `atmosControl.w`; terrain diff 99.8%→22.9% at landing); HDR gamma
+  (sRGB→linear under an HDR canvas) ✅ B489; clipping-polygon geodetic (spherical fast-atan
+  parity) ✅ B494; **polar stretch** ✅ B502 (root cause: DOUBLE vertical flip in the WGSL Web
+  Mercator reprojection, `ReprojectWebMercator.wgsl`) + polish ✅ B506 (dark-navy tile-seam grid
+  killed + orbital ocean glint restored; `GlobeTerrain.wgsl` rework, camera-UB +fields).
+- **`NEW-GLOBE-BELOW-SURFACE-DARKENING`** (post-campaign audit 2026-07-03) — **P1 — OPEN.** WebGPU
+  renders uniformly darker than WebGL in below-surface / translucent views: `probe-globe-underground`
+  12.28% (red) / 22.85% (default) vs the 8% limit, `probe-globe-translucency` translucent-terrain
+  25.49% vs 10.5%, signed dRGB −5.8..−8.0 across the board (reproduced 3× at clean HEAD
+  `62c5bab450`). Largely a **standing** atmosphere/lighting gap — B488 itself landed at 22.9% —
+  that the campaign's default-view polish (B502/504/505/506) *exposed* by dropping the probes'
+  shared dynamic baseline ~15%→2.5% (limits are `max(8, base+2)` / `max(10, base+8)`); possibly
+  nudged ~+2.6 pp worse by B506's `GlobeFS`/`GlobeTerrain` shading changes. **Fold into the
+  limb-ring/atmosphere-brightness epic** (`NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH` above) with these
+  measured numbers; verify B506's seam/glint deltas apply symmetrically on the translucency/
+  underground paths. Do **NOT** loosen the probe limits.
 
 ### 4.2 3D Tiles
 
-- **Voxels** — the entire WebGPU voxel **data path** is a placeholder (`WebGPUVoxelRenderer.ts` is a
-  hardcoded RGB-density ray-marcher on a 4×4×4 gradient; `VoxelPrimitive.update` short-circuits). This
-  blocks (a) the PR#13517 default-shader, (b) `C-R9-VOXEL-CELL-PICK`, (c) live voxel-coordinate pick
-  parity. **P2/XL** — needs the real-voxel-data port as its own epic (provider/megatexture/octree +
-  WGSL CustomShader transpilation). Do **not** build inert scaffolding (untestable, Principle 8).
+- **Voxels** — the "entire data path is a placeholder" status is **STALE** (it predates the 465–481
+  parity sprint). The real single-tile data path (provider/megatexture data+shape+color parity)
+  shipped in that sprint, and the 482–506 campaign added: world→shapeUv convention fix ✅ B497
+  (unblocking the documented B477 cell-pick blocker), per-cell pick reland ✅ B498, **depth-1
+  octree LOD traversal** (root + 8 level-1 children) ✅ B501, and **native-WGSL user
+  customShaders in the ray-march** ✅ B503 (codegen chunk + FNV-1a keySalt,
+  `VOXEL_USER_CUSTOM_SHADER` 1<<29). **Remaining open:** `NEW-VOXEL-OCTREE-DEEP-LEVELS` — octree
+  levels deeper than depth-1 (**P2**); the PR#13517 default-shader rides that work; and the
+  **pick↔octree/customShader composition gap** — `NEW-VOXEL-PICK-OCTREE-COMPOSE`, **P1 fix-now**
+  (§4.5).
 - **Edge data parity** (`NEW-EDGE-DISPLAY-MODE-WEBGPU` is ✅ SHIPPED Batch 316; tri-mode core done) —
-  **remaining open data paths:** explicit `lineStrings` edges (BENTLEY/styled-gltf-lines yield zero
-  WebGPU edges), authored `silhouetteNormals` signed-byte accessor (WebGPU re-derives face normals →
-  silhouette classification can diverge). Per-edge `materialColor` override ✅ SHIPPED (Batch 330). **P2.**
+  authored `silhouetteNormals` signed-byte accessor ✅ **SHIPPED (Batch 495,
+  `EDGE-AUTHORED-SILHOUETTE-NORMALS` — WebGPU now consumes the authored accessor instead of
+  re-deriving face normals)**. **Remaining open data path:** explicit `lineStrings` edges
+  (BENTLEY/styled-gltf-lines yield zero WebGPU edges). Per-edge `materialColor` override ✅ SHIPPED
+  (Batch 330). **P2.**
 - **`NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION`** — Model3DTileContent class-converted on both fork and
   upstream; needs a double-conversion reconciliation strategy at merge time. **P2** (merge bookkeeping).
 - **EquirectangularPanorama cull-override** (from `WEBGPU_PARITY_AUDIT`) — ✅ **RESOLVED (Batch 317,
@@ -200,9 +232,12 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
 > `WEBGPU_PARITY_AUDIT_2026-06.md` P1 table is therefore **closed**. Remaining parity-audit residuals
 > are the BufferPolygon-family 2D/CV reprojection + `positionNormalized`/integer datatypes (P2, below).
 
-- **BufferPolygon-family 2D/CV + integer/normalized positions** — buffer renderers encode RTE ECEF only
-  (no 2D/CV reprojected attribute buffer; no integer/snorm/unorm path). A non-DOUBLE `positionDatatype`
-  or `positionNormalized:true` collection is silently mis-encoded. **P2** — needs its own ID.
+- **BufferPolygon-family 2D/CV + integer/normalized positions** — the 2D/CV reprojection half shipped
+  in the 465–481 parity sprint (Buffer\* 2D/CV; re-verified by `probe-buffer-2dcv-parity`, PASS at
+  HEAD `62c5bab450`). Still open: **`NEW-BUFFERPOLYLINE-2D-EXTRUSION`** — 2D BufferPolyline
+  extrusion is absent (the probe confirms the documented expected-absence). **P2.** The
+  integer/snorm/unorm `positionDatatype` / `positionNormalized:true` path also remains open
+  (silently mis-encoded). **P2.**
 
 ### 4.3 glTF Models + KHR Extensions
 
@@ -231,6 +266,8 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
 - **`MORPH-MODEL-PROJECT2D`** — glTF Model accurate-2D (`projectTo2D:true`) has no WGSL equivalent (a
   morphable + 2D-projected model keeps its 3D bounding volume instead of morphing into a 2D-clipped ortho
   box). Part of the Collections 2DCV morph picture (§4.4) but applies to Models too. **P2.**
+  _(Batch 499 shipped the base model 2D/CV render path itself — this accurate-2D residual remains a
+  B499 deferred item, along with the SCENE2D IDL-crossing duplicate command + per-primitive 2D BVs.)_
 - **`NEW-MATAPPEARANCE-DIFFUSE-PARITY`** is ✅ SHIPPED (Batch 356); surfaced separately:
   **`NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING`** — **SYMPTOM NOT REPRODUCED (2026-06-23).** Reading the
   Batch-356 probe PNGs, the grid LINES render correctly on grazing faces matching WebGL; the original
@@ -245,6 +282,21 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
 - **`KHR_BINDING_MANIFEST` follow-up** — per-extension granular pipeline split (the coarse
   `MODEL_HAS_KHR_TEXTURES` family gate ships; finer per-extension variants are the documented follow-up).
   **P2** (Phase-8 shader strategy).
+- **Campaign closures (Batches 482–506, see §5.2):** model splitter plane ✅ B483
+  (`MODEL_SPLIT_ENABLED` 1<<26); per-model `color`/`colorBlendMode` ✅ B484 (`MODEL_HAS_COLOR`
+  1<<27, all 3 blend modes probed); model silhouette ✅ B485 (stencil two-pass parity,
+  `MODEL_SILHOUETTE` 1<<28); glTF mode-0 POINTS topology ✅ B491; point-cloud square sprites +
+  size/attenuation ✅ B490; **model 2D/CV scene-mode rendering** ✅ B499 (models were invisible in
+  2D/CV — ECEF boundingSphere culled against the projected-frame culling volume at all 7 emission
+  sites + missing `_computedModelMatrix2D` consumption; MORPHING follows WebGL's
+  `mode !== SCENE3D` condition).
+- **`NEW-MODEL-SCENE2D-SHADING`** (post-campaign audit 2026-07-03) — **P2 — OPEN.** Model
+  per-pixel shading diverges in SCENE2D only: WebGPU renders the probe model olive/khaki vs
+  WebGL's blue-gray tint (`probe-model-scene-modes` 2D interiorDiff 34.27 vs 3D 13.59 / CV 18.41
+  both PASS; reproduced 3× at clean HEAD). Geometry/coverage/centroid all pass — B499's fix
+  holds. **Suspect 2D light direction / IBL orientation under `SceneMode.SCENE2D`**; verified via
+  the output PNGs to be model lighting, **NOT globe-related** (black backdrop in both captures —
+  the sweep's B502/B506 globe-shader attribution is dismissed with evidence).
 
 ### 4.4 Collections
 
@@ -298,11 +350,27 @@ the last big visual-parity hole; SCENE2D collections still blocked).
   metadata codegen prereq (DP-H46a/b) shipped (Batches 454/455). `DerivedCommand.createPickMetadata
   DerivedCommand` still short-circuits WebGPU; per-pick specialization must be data-driven (WGSL has no
   string-replace defines). **Asset gap:** needs a local `EXT_structural_metadata` test asset. **P1.**
-- **`C-R9-VOXEL-CELL-PICK`** — picking a voxel returns the primitive handle but not the individual 3D
-  cell coordinate (i, j, k). Cell coords don't fit in the standard 4-byte `pickColor`; the fix needs an
-  out-of-band cell-coordinate buffer + a separate resolve. **Blocked by** the real voxel data path
-  (§4.2): once `VoxelPrimitive`'s provider/megatexture lands, this becomes a 1–2-session rider on that
-  work. Primitive-level voxel pick already works. **P2/blocked.**
+- **`C-R9-VOXEL-CELL-PICK`** — ✅ **SHIPPED (Batch 498)** — the per-cell (i, j, k) pick RELAND on the
+  corrected world→shapeUv convention (B497 fixed the documented B477 blocker). Verified by
+  `probe-voxel-cell-pick`: 7/7 per-cell pick bytes byte-equal vs WebGL at HEAD `62c5bab450` (a
+  run-1 failure was a WebGL-side async-pick timeout flake, dismissed). The old "blocked by the
+  voxel data path" framing is superseded. **Open successor:** `NEW-VOXEL-PICK-OCTREE-COMPOSE`
+  below.
+- **`NEW-VOXEL-PICK-OCTREE-COMPOSE`** (post-campaign audit 2026-07-03) — **P1 — FIX NOW (the top
+  work item).** The B498 cell-pick march does not compose with B501 octree LOD or B503 user
+  customShaders:
+  - `fragmentPickVoxelMain` (`WebGPUVoxelRenderer.ts` ~664–716) never performs the level-1
+    child-octant traversal the color march does (~416–433) — it normalizes z into slot 0 (the
+    ROOT slab) and hardcodes `megatextureId = packVoxelIntToVec2(0.0)`. Whenever the frame
+    refines to level 1, pick returns a root-cell index for a leaf the user sees — **confirmed
+    wrong pick under refinement** (in-code-acknowledged follow-up at the pick march). Fix = the
+    child traversal + the child-tile megatextureId in the pick march.
+  - Composition with `VOXEL_USER_CUSTOM_SHADER` (B503): the pick march selects the winning sample
+    with the default-shader gate `s.a > densityThreshold` (~:697) while the user-shader color
+    march accumulates `voxelMaterial.alpha` **ungated** for every sample (~:473–478) — a user
+    shader that remaps opacity makes the WebGPU pick disagree with both the displayed surface and
+    WebGL. The pick march needs a `VOXEL_USER_CUSTOM_SHADER` branch; ride it with the octree-pick
+    fix above (one work item).
 - **arbitrary-ray `pickFromRay` position** — returns the hit object but no position (`oneTimeWarning`,
   no throw). Needs an offscreen GlobeDepth pack + per-view readback. **P2** (deferred until a consumer
   needs it).
@@ -314,7 +382,9 @@ the last big visual-parity hole; SCENE2D collections still blocked).
 ### 4.6 Shadows / Lighting
 
 CSM cast + globe-receive are **fixed** (Batches 296-298); soft-shadow PCF ships (289/297);
-cascade-ground-fit ships (306). Open:
+cascade-ground-fit ships (306) and is now **ellipsoid-aware** ✅ Batch 496
+(`PARITY-RTE-ELLIPSOID-AWARE` — the ground-fit uses the scene ellipsoid, not hardcoded WGS84
+radii; see §5.2). Open:
 
 - **`NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS`** — ✅ **RESOLVED (Batch 298, `509168f10b`).** (Round-2 doc
   review correction: round-1 lifted a "still BLOCKED" framing from `CSM_DESIGN.md` that predated the fix
@@ -359,6 +429,32 @@ cascade-ground-fit ships (306). Open:
   near-black HDR night sky to pure black; fixed by honoring `collection._autoExposureEnabled`. Residual
   = `NEW-WEBGPU-STARFIELD-TUNE` catalog-sprite brightness (assessed LOW-VALUE / acceptable-as-is — the
   sprites were intentionally tuned subtler in Batch 352; a blind re-tune risks regressing near-parity)._
+- **Campaign closures (Batches 482–506, see §5.2):** `scene.colorGradingEnabled` runtime caller
+  ✅ B482; the 7 `PostProcessStageLibrary` builtins (blackAndWhite / brightness / nightVision /
+  silhouette / edgeDetection / lensFlare / depthView WGSL twins) ✅ B486; skybox star-map cube-map
+  flipY parity (patternCorr 1.000 aligned vs 0.122 mirrored) + default-off cloud occlusion ✅ B504;
+  moon full-disc via model-space RTE ✅ B505 (was an off-screen sliver; probe asserts litRatio
+  1.000 / centerDist 0.0 px).
+- **`NEW-PP-LIBRARY-TONEMAP-ORDER`** (post-campaign audit 2026-07-03) — **P2 — OPEN.** The B486
+  library builtins **and** user WGSL stages run **pre-tonemap** on WebGPU
+  (`WebGPUPostProcessPipeline.ts` user stages ~:1406 → library stages ~:1425 → tonemap ~:1503)
+  while WebGL runs added stages **post-tonemap** (`PostProcessStageCollection.js` ~:745-758 sets
+  `initialTexture` to the tonemapped SDR output before the `_stages` loop). HDR-visible ordering
+  divergence: under HDR the builtins receive unbounded linear input with no `hdrMode`
+  compensation (ColorGrading/FXAA got one in B479); the default-SDR path passed the probe
+  (9.85% cross-backend), so impact is **HDR-only today**. Fix = hdrMode compensation or
+  post-tonemap placement for library/user stages; also correct the two in-code comments
+  (~:1403/:1421) that inaccurately claim a WebGL-matching insertion point + the stale
+  stage-order header docstring (~:39-42).
+- **`NEW-PP-F16-DEVICE-VERIFY`** — **P2.** The B478 opt-in f16 post-process variants still need an
+  on-device pixel-verify on a `shader-f16`-capable (RTX-class) GPU.
+- **`NEW-ENV-MOON-CRESCENT-PROBE`** — **P2** (probe extension). `probe-env-moon` asserts only the
+  full-disc case (B505); add a crescent-phase assertion.
+- **Probe housekeeping — `probe-colorgrading-wired` stored baseline refresh** — **P2, OPEN unless
+  refreshed this doc wave.** Gate F fails only against the stored pre-B506 default-view baseline
+  PNG (functional gates A–E pass); B506 intentionally changed default-view pixels (glint restore +
+  seam fix). Refresh the stored baseline in the next write-capable wave — this is **not** a
+  color-grading bug.
 
 #### TAA design rationale + open slice (carry-forward from `TAA_DESIGN.md`)
 
@@ -531,6 +627,74 @@ archival:
 uses `DP-H46c` (§3, §4.5) — same producer, divergent letter; the doc's `DP-H46c` is canonical here. The
 report's "EquirectangularPanorama partial" + "GlobeWater partial" rows are **stale against HEAD** (panorama
 fixed B317; GlobeWater facade is intentionally Phase-0.3-scoped, §10.1) — code is the source of truth.
+
+**2026-07-03 update:** several §5.1 rows are overtaken by the Batch 482–506 campaign (§5.2): the
+voxels-stub row (the real data path shipped in the 465–481 sprint; octree depth-1 + cell-pick +
+user customShader shipped 482–506, §4.2), the edge `silhouetteNormals` row (✅ B495), the voxel
+cell-pick `C-R9` row (✅ B498 — superseded by the open `NEW-VOXEL-PICK-OCTREE-COMPOSE` composition
+gap, §4.5), and the Buffer\* 2D/CV rows (sprint 465–481; residual =
+`NEW-BUFFERPOLYLINE-2D-EXTRUSION`, §4.2).
+
+### 5.2 Batch 482–506 parity-campaign closure ledger + post-campaign audit (2026-07-03)
+
+The 25-item WebGL→WebGPU parity campaign (driven from `WEBGPU_PARITY_REPORT_2026-07-01.md` §6)
+landed as **Batches 482–506** (`03edcf1f2e..62c5bab450`, 25 commits, 98 files, +16,875/−1,089;
+commit messages carry per-item probe evidence + off-gates). All 25 items are **CLOSED**:
+
+| Batch | Item | Subsystem | Note |
+|---|---|---|---|
+| 482 | `WIRE-COLORGRADING-CALLER` | Post-process | `scene.colorGradingEnabled` runtime flag |
+| 483 | `WIRE-MODEL-SPLITTER` | glTF Models | `MODEL_SPLIT_ENABLED` 1<<26 |
+| 484 | `WIRE-MODEL-COLOR` | glTF Models | `MODEL_HAS_COLOR` 1<<27; 3 blend modes |
+| 485 | `WIRE-MODEL-SILHOUETTE` | glTF Models | stencil two-pass parity, `MODEL_SILHOUETTE` 1<<28 |
+| 486 | `WIRE-PP-LIBRARY-BUILTINS` | Post-process | 7 library builtins (→ `NEW-PP-LIBRARY-TONEMAP-ORDER` residual, §4.7) |
+| 487 | `GLOBE-UNDERGROUND-COLOR` | Globe & Imagery | (→ `NEW-GLOBE-BELOW-SURFACE-DARKENING` residual, §4.1) |
+| 488 | `GLOBE-TRANSLUCENCY-ALPHA` | Globe & Imagery | atmosControl.w gate; landed at 22.9% diff (residual §4.1) |
+| 489 | `GLOBE-HDR-GAMMA` | Globe & Imagery | sRGB→linear under HDR canvas |
+| 490 | `POINT-SPRITE-SHAPE` | glTF Models | point-cloud square sprites + size/attenuation |
+| 491 | `GLTF-POINTS-MODE` | glTF Models | mode-0 point-list topology |
+| 492 | `METADATA-MULTICOMPONENT` | Metadata | vec4 property-attribute transport |
+| 493 | `METADATA-UINT16-32` | Metadata | WGSL decode + **dual-backend** WebGL UINT32 pick fix |
+| 494 | `GLOBE-CLIPPOLY-GEODETIC` | Globe & Imagery | spherical fast-atan parity |
+| 495 | `EDGE-AUTHORED-SILHOUETTE-NORMALS` | 3D Tiles | authored signed-byte accessor consumed |
+| 496 | `PARITY-RTE-ELLIPSOID-AWARE` | Shadows/CSM | cascade ground-fit uses scene ellipsoid |
+| 497 | `VOXEL-SHAPEUV-CONVENTION` | Voxels | world→shapeUv fix (the B477 blocker) |
+| 498 | `VOXEL-CELL-PICK-RELAND` | Voxels | closes `C-R9` (→ `NEW-VOXEL-PICK-OCTREE-COMPOSE`, §4.5) |
+| 499 | `MODEL-SCENE-MODES` | glTF Models | 2D/CV render (→ `NEW-MODEL-SCENE2D-SHADING` residual, §4.3) |
+| 500 | `METADATA-TABLE-SOURCES` | Metadata | property tables for TEXTURE + IMPLICIT feature-ID sources |
+| 501 | `PARITY-VOXEL-OCTREE-LOD` | Voxels | depth-1: root + 8 L1 children (deeper levels open, §4.2) |
+| 502 | `GLOBE-POLAR-STRETCH` | Globe & Imagery | double vertical flip in `ReprojectWebMercator.wgsl` |
+| 503 | `VOXEL-USER-CUSTOMSHADER` | Voxels | native-WGSL user shaders, `VOXEL_USER_CUSTOM_SHADER` 1<<29 |
+| 504 | `ENV-SKYBOX-STARMAP` | Environment | cube-map flipY parity + default-off cloud occlusion |
+| 505 | `ENV-MOON-SLIVER` | Environment | model-space RTE full disc |
+| 506 | `GLOBE-POLAR-STRETCH-POLISH` | Globe & Imagery | seam grid + ocean glint (stales the colorgrading baseline, §4.7) |
+
+**Registry hygiene (verified at HEAD):** the campaign added exactly 4 add-only `ShaderDefine` tail
+bits (1<<26..1<<29) → **30 live bits** (1<<0..1<<29, contiguous), of which **6 bits ≥24** live
+outside the 24-bit numeric cache window and are disambiguated via keySalt
+(`${numericKey}#${keySalt}` in `WebGPUShaderModuleCache.getOrCreate`). `ShaderSourceId` stands at
+**39 registrations** (1..39, 0 reserved) — zero new this campaign. 23 new `probe-*.mjs` (441
+total in `Tools/visual-regression`).
+
+**Post-campaign audit outcome (2026-07-03, HEAD `62c5bab450`): ISSUES-FOUND.** Probe sweep:
+20 PASS, 3 real FAIL, 1 stale-baseline FAIL (`probe-colorgrading-wired` gate F), 1 dismissed
+WebGL-side flake (`probe-voxel-cell-pick` run 1). All three user-reported bugs (polar stretch,
+skybox, moon) are verifiably fixed. The **four confirmed OPEN issues** — recorded honestly, not
+papered over — prioritized:
+
+| Priority | ID | One-liner | Where |
+|---|---|---|---|
+| **P1 — FIX NOW** | `NEW-VOXEL-PICK-OCTREE-COMPOSE` | pick march lacks L1 octree traversal + hardcodes megatextureId 0 (wrong pick under refinement); same fix carries the user-customShader alpha-gate composition gap | §4.5 |
+| **P1** | `NEW-GLOBE-BELOW-SURFACE-DARKENING` | underground 12.28/22.85% vs 8 limit, translucency 25.49% vs 10.5, WebGPU uniformly darker dRGB −5.8..−8.0 — fold into the limb-ring/atmosphere-brightness epic | §4.1 |
+| **P2** | `NEW-MODEL-SCENE2D-SHADING` | 2D model olive vs blue-gray (interiorDiff 34.27); suspect SCENE2D light-direction/IBL orientation, NOT globe-related | §4.3 |
+| **P2** | `NEW-PP-LIBRARY-TONEMAP-ORDER` | library/user stages pre-tonemap on WebGPU vs post-tonemap on WebGL — HDR-visible ordering divergence | §4.7 |
+
+**Small open tail from the same audit:** `NEW-ENV-MOON-CRESCENT-PROBE` (crescent-phase probe
+extension, §4.7), `NEW-PP-F16-DEVICE-VERIFY` (on-device shader-f16 pixel-verify, RTX-class,
+§4.7), `NEW-VOXEL-OCTREE-DEEP-LEVELS` (octree levels beyond depth-1, §4.2),
+`NEW-BUFFERPOLYLINE-2D-EXTRUSION` (still open, §4.2), and the `probe-colorgrading-wired` stored
+baseline refresh (§4.7). Sweep hygiene note: `probe-collections-regression` + `probe-pick-basic`
+default `PROBE_BASE` to `:8134` — set `PROBE_BASE=http://localhost:8080` when re-running.
 
 ---
 
