@@ -116,6 +116,11 @@ const WEBGPU_COMPAT_EXEMPTIONS = [
   "/Source/Renderer/WebGPU/WebGPUShaderTranslator",
   "/Source/Renderer/WebGPU/WebGLStubPipelineExtractor",
   "/Source/Renderer/WebGPU/WebGPUNagaTranspiler",
+  // Named layout helpers (resolvePropertyTextureLayout/-TableLayout) are
+  // statically imported by Scene/Model/MetadataWGSLPipelineStage.js (DP-H46c,
+  // Batch 457). Module top-level has no GPU access; device-touching functions
+  // only run under the WebGPU backend, which webgl-only bundles never select.
+  "/Source/Renderer/WebGPU/WebGPUModelMetadata",
 ];
 
 /**
