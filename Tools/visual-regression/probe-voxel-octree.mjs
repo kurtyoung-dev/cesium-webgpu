@@ -11,29 +11,29 @@
 //   L1 discriminators — empty at the 8^3 grid, filled at the 4^3 root:
 //     black once traversal reaches depth 1 (SHIPPED, Batch 501).
 //   L2 discriminators — empty at the 16^3 grid, filled at the 8^3 grid:
-//     black only once traversal reaches depth 2 (B17
-//     NEW-VOXEL-OCTREE-DEEP-TRAVERSAL). At HEAD the WebGPU march clamps to
-//     depth-1 (fixed 9-slot atlas, computeVoxelTargetLevel returns 0|1), so
-//     on WebGPU these read FILLED — the probe ANNOTATES that as the
-//     documented EXPECTED-FAIL rather than failing, and WebGL (full upstream
-//     traversal) proves the asset + discriminators actually discriminate.
+//     black once traversal reaches depth 2 (SHIPPED, B17
+//     NEW-VOXEL-OCTREE-DEEP-TRAVERSAL: iterative octree walk over the
+//     73-slot atlas — root + 8 level-1 + 64 level-2 tiles; the SSE refine
+//     ladder halves per level and caps at the deepest uploaded level).
+//     Deep traversal is now the DEFAULT gate; the pre-B17 depth-1-clamp
+//     annotation mode (EXPECT_L2 env toggle) is retired.
 //
 // Views + gates:
-//   CLOSE view (10R — root SSE >> screenSpaceError):
-//     * WebGPU must match the LEVEL-1 grid exactly (>=4 L1 discriminators
-//       black), internals slotCount = 9 / 8 childSlots / lastTargetLevel = 1
-//       — the shipped depth-1 gates, unchanged from the 2-level probe.
+//   CLOSE view (10R — the SSE ladder refines to level 2):
+//     * WebGPU must match the LEVEL-2 grid exactly with >= 4 L1
+//       discriminators black (empty-at-8 implies empty-at-16, so the L1
+//       family stays gated at depth 2), internals slotCount = 73 /
+//       8 childSlots + 64 l2Slots uploaded / lastTargetLevel = 2.
 //     * WebGL: upstream traversal refines PER-NODE here (mixed L1/L2 across
 //       the volume is legitimate), so each cell must merely be consistent
-//       with level 1 OR level 2 — the strict single-level WebGL gate moved
-//       to CLOSE2.
+//       with level 1 OR level 2 — the strict single-level WebGL gate lives
+//       at CLOSE2.
 //   CLOSE2 view (5R — deep enough that upstream WebGL refines to level 2):
 //     * WebGL must match the LEVEL-2 grid exactly with >= 4 L2
-//       discriminators black — this is the gate B17 must make WebGPU hit.
-//     * WebGPU at HEAD must still match LEVEL-1 (depth-1 clamp documented);
-//       its L2-discriminator spurious count is logged as EXPECTED-FAIL.
-//     * With EXPECT_L2=1 in the env (the B17 acceptance mode) WebGPU must
-//       instead match LEVEL-2 with all L2 discriminators black.
+//       discriminators black — proves the asset + discriminators
+//       discriminate.
+//     * WebGPU must match LEVEL-2 with all L2 discriminators black — the
+//       B17 acceptance gate, now standing.
 //   FAR view (120R — root SSE < screenSpaceError):
 //     * WebGPU lastTargetLevel = 0 and the WebGL/WebGPU center-crop mean
 //       diff stays small. Unchanged gate.
@@ -50,14 +50,12 @@
 // output PNGs in Tools/visual-regression/output/.
 //
 // Run:  node Tools/visual-regression/probe-voxel-octree.mjs
-//       EXPECT_L2=1 node Tools/visual-regression/probe-voxel-octree.mjs   (post-B17)
 import { chromium } from "playwright";
 import fs from "fs";
 import { createVoxelOctreeL3Provider } from "./fixtures/voxel-octree-l3.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT = "Tools/visual-regression/output";
-const EXPECT_L2 = process.env.EXPECT_L2 === "1";
 fs.mkdirSync(OUT, { recursive: true });
 
 const browser = await chromium.launch({
@@ -146,6 +144,11 @@ async function capture(renderer) {
         slotCount: du ? du.slotCount : null,
         childPhase: du ? du.childPhase : null,
         childSlots: du && du.childSlots ? Array.from(du.childSlots) : null,
+        // B17 — count of uploaded level-2 tiles (64 expected for this asset).
+        l2Uploaded:
+          du && du.l2Slots
+            ? Array.from(du.l2Slots).filter((v) => v >= 0).length
+            : null,
         lastTargetLevelClose: du ? du.lastTargetLevel : null,
       };
     },
@@ -484,33 +487,34 @@ if (webgpu.consoleErrors.length) {
   console.log("  WebGPU:", webgpu.consoleErrors.slice(0, 5).join("\n  "));
 }
 
-// --- CLOSE view (10R): the shipped depth-1 gates, unchanged semantics ---
-console.log("--- CLOSE view (10R, depth-1 refinement) ---");
-console.log("WebGPU close (must match level 1, the shipped depth-1 path):");
-const gpClose = judgeCells("webgpu-close", webgpu.close.cells, 1, "L1");
+// --- CLOSE view (10R): deep traversal refines to level 2 (B17) ---
+console.log("--- CLOSE view (10R, refines to level 2 post-B17) ---");
+console.log("WebGPU close (must match level 2; L1 discriminators stay black):");
+const gpClose = judgeCells("webgpu-close", webgpu.close.cells, 2, "L1");
 console.log(
   "WebGL close (mixed per-node refinement allowed — L1 or L2 per cell):",
 );
 const glClose = judgeCellsEither("webgl-close", webgl.close.cells);
 
-// --- CLOSE2 view (5R): the L2 discriminator gate (B17's target) ---
-console.log("--- CLOSE2 view (5R, depth-2 refinement on upstream WebGL) ---");
+// --- CLOSE2 view (5R): the L2 discriminator gate (B17 acceptance) ---
+console.log("--- CLOSE2 view (5R, depth-2 refinement on both backends) ---");
 console.log("WebGL close2 (must match level 2 — proves asset+discriminators):");
 const glClose2 = judgeCells("webgl-close2", webgl.close2.cells, 2, "L2");
-console.log("WebGPU close2 vs level 1 (the depth-1 clamp at HEAD):");
-const gpClose2L1 = judgeCells("webgpu-close2", webgpu.close2.cells, 1, "L1");
-console.log("WebGPU close2 vs level 2 (B17's acceptance target):");
+console.log("WebGPU close2 vs level 2 (the B17 deep-traversal gate):");
 const gpClose2L2 = judgeCells("webgpu-close2", webgpu.close2.cells, 2, "L2");
 
-// WebGPU internals: real refinement machinery engaged.
+// WebGPU internals: the 73-slot deep atlas fully engaged (root + 8 level-1 +
+// 64 level-2 tiles uploaded) and the SSE ladder refining to level 2 up close.
 const s = webgpu.setupInfo;
 const atlasActive =
   s.usingRealData === true &&
-  s.slotCount === 9 &&
+  s.slotCount === 73 &&
   s.childPhase === "done" &&
   Array.isArray(s.childSlots) &&
-  s.childSlots.every((v) => v >= 0);
-const refinedClose = webgpu.close.lastTargetLevel === 1;
+  s.childSlots.every((v) => v >= 0) &&
+  s.l2Uploaded === 64;
+const refinedClose =
+  webgpu.close.lastTargetLevel === 2 && webgpu.close2.lastTargetLevel === 2;
 const rootFar = webgpu.far.lastTargetLevel === 0;
 
 // FAR view: WebGL-vs-WebGPU center-crop mean abs diff (both render the ROOT
@@ -533,46 +537,37 @@ console.log(`Far-view center-crop mean abs diff: ${farDiff.toFixed(2)}`);
 const noErrors =
   webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0;
 
-// Shipped depth-1 gates (unchanged from the 2-level probe): the refinement is
-// REAL only if enough L1 discriminator cells exist and read black on WebGPU.
+// L1 family still gated at depth 2 (empty-at-8 implies empty-at-16): the
+// refinement is REAL only if enough L1 discriminator cells exist and read
+// black on WebGPU at the close view.
 const l1DiscriminatorsMeaningful =
   gpClose.discriminators >= 4 &&
   gpClose.discriminatorsOk === gpClose.discriminators;
 
-// New L2 asset gates: WebGL at close2 must render true level-2 data with
+// L2 asset gates: WebGL at close2 must render true level-2 data with
 // enough L2 discriminators black — otherwise the asset/discriminators are
-// not actually discriminating and B17 would gate on noise.
+// not actually discriminating and the WebGPU gate would run on noise.
 const webglL2Proven =
   glClose2.pass &&
   glClose2.discriminators >= 4 &&
   glClose2.discriminatorsOk === glClose2.discriminators;
 
-// WebGPU at close2: HEAD = depth-1 clamp (matches level 1; level-2
-// discriminators spurious — EXPECTED-FAIL, annotated). EXPECT_L2=1 flips the
-// requirement to full level-2 (B17 acceptance mode).
+// WebGPU at close2 must match level 2 with ALL L2 discriminators black —
+// the B17 deep-traversal acceptance gate, now the standing regression gate.
 const gpL2DiscBlack =
   gpClose2L2.discriminators >= 4 &&
   gpClose2L2.discriminatorsOk === gpClose2L2.discriminators;
-let webgpuClose2Gate;
-if (EXPECT_L2) {
-  webgpuClose2Gate = gpClose2L2.pass && gpL2DiscBlack;
-} else {
-  webgpuClose2Gate = gpClose2L1.pass;
-  if (gpL2DiscBlack) {
-    console.log(
-      "NOTE: WebGPU L2 discriminators ALREADY read black at HEAD — the depth-1 clamp premise may be stale; re-check B17.",
-    );
-  } else {
-    console.log(
-      `ANNOTATED EXPECTED-FAIL (depth-1 clamp at HEAD): WebGPU close2 L2 discriminators black ${gpClose2L2.discriminatorsOk}/${gpClose2L2.discriminators} — B17 (NEW-VOXEL-OCTREE-DEEP-TRAVERSAL) must make this ${gpClose2L2.discriminators}/${gpClose2L2.discriminators}; rerun with EXPECT_L2=1.`,
-    );
-  }
-}
+const webgpuClose2Gate = gpClose2L2.pass && gpL2DiscBlack;
 
 console.log("---");
-console.log(`mode: ${EXPECT_L2 ? "EXPECT_L2 (post-B17 acceptance)" : "HEAD (depth-1 clamp documented)"}`);
-console.log("atlasActive (slotCount=9, 8 children uploaded):", atlasActive);
-console.log("refinedClose (WebGPU targetLevel=1 at close view):", refinedClose);
+console.log(
+  "atlasActive (slotCount=73, 8 L1 + 64 L2 tiles uploaded):",
+  atlasActive,
+);
+console.log(
+  "refinedClose (WebGPU targetLevel=2 at close + close2 views):",
+  refinedClose,
+);
 console.log("rootFar (WebGPU targetLevel=0 at far view):", rootFar);
 console.log(
   `L1 discriminators (>=4, all black on WebGPU close): ${gpClose.discriminatorsOk}/${gpClose.discriminators}`,
@@ -581,15 +576,12 @@ console.log(
   `L2 discriminators on WebGL close2 (>=4, all black): ${glClose2.discriminatorsOk}/${glClose2.discriminators}`,
 );
 console.log(
-  `L2 discriminators on WebGPU close2: ${gpClose2L2.discriminatorsOk}/${gpClose2L2.discriminators}`,
+  `L2 discriminators on WebGPU close2 (>=4, all black): ${gpClose2L2.discriminatorsOk}/${gpClose2L2.discriminators}`,
 );
 console.log("webglClosePass (L1-or-L2 per cell):", glClose.pass);
 console.log("webglL2Proven (close2 matches level 2):", webglL2Proven);
-console.log("webgpuClosePass (level 1):", gpClose.pass);
-console.log(
-  `webgpuClose2Gate (${EXPECT_L2 ? "level 2 required" : "level 1 = documented clamp"}):`,
-  webgpuClose2Gate,
-);
+console.log("webgpuClosePass (level 2):", gpClose.pass);
+console.log("webgpuClose2Gate (level 2 required):", webgpuClose2Gate);
 console.log("farDiffSmall (<6):", farDiff < 6);
 console.log("noErrors:", noErrors);
 

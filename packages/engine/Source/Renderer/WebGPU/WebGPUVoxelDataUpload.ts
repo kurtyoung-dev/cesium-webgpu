@@ -21,9 +21,22 @@
  * to sampling the ROOT for that octant — the same semantics as Octree.glsl's
  * OCTREE_FLAG_PACKED_LEAF_FROM_PARENT leaf, specialised to depth 1.
  *
+ * NEW-VOXEL-OCTREE-DEEP-TRAVERSAL (increment: depth-2) — when the provider
+ * advertises `availableLevels >= 3` (and the 73-slot atlas fits the device's
+ * `maxTextureDimension3D`), the atlas grows to 73 slots: slot 0 = root,
+ * 1..8 = level-1 children, 9..72 = the 64 level-2 tiles in linear order
+ * `x + 4y + 16z` (the radix-2 extension of the level-1 octant convention,
+ * Z-up shape frame). Level-2 tiles upload asynchronously alongside the
+ * level-1 set; an unavailable level-2 tile keeps `l2Slots[i] = -1` and the
+ * WGSL walk stops at the deepest uploaded ancestor for that region.
+ *
  * What is NOT done here (honest partial — separate increments):
- *   - Octree traversal DEEPER than level 1 (needs a real megatexture slot
- *     allocator + the internal-node lookup texture from VoxelTraversal.js).
+ *   - Octree traversal DEEPER than level 2 (needs the demand-driven streaming
+ *     upload + slot allocator from NEW-VOXEL-STREAMING-UPLOAD /
+ *     NEW-VOXEL-ATLAS-LRU-EVICT — a full up-front upload of level 3+ is 512+
+ *     tiles and exceeds any fixed atlas budget). Providers deeper than 3
+ *     levels clamp to depth-2 traversal; providers whose 73-slot atlas would
+ *     exceed `maxTextureDimension3D` fall back to the 9-slot depth-1 atlas.
  *   - LOD refinement for non-BOX shapes (cylinder/ellipsoid stay root-only).
  *   - Non-VEC4 properties (VEC3/VEC2/scalar) — this increment uploads the first
  *     property expanded to RGBA. Missing channels default to 0, alpha to 1.
@@ -141,7 +154,9 @@ export interface VoxelDataUploadState {
   /**
    * VOXEL-OCTREE-LOD — number of tile slots stacked along Z in {@link texture}.
    * 1 = single-tile texture (no atlas — the historical layout, byte-identical
-   * math in the WGSL); 9 = root (slot 0) + eight level-1 children (slots 1..8).
+   * math in the WGSL); 9 = root (slot 0) + eight level-1 children (slots 1..8);
+   * 73 = the depth-2 atlas adding the 64 level-2 tiles (slots 9..72,
+   * NEW-VOXEL-OCTREE-DEEP-TRAVERSAL).
    */
   slotCount: number;
   /**
@@ -150,10 +165,24 @@ export interface VoxelDataUploadState {
    * Packed verbatim into the ray-march UBO (floats 108..115).
    */
   childSlots: Float32Array;
+  /**
+   * NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — atlas slot per level-2 tile (linear
+   * index x + 4y + 16z, Z-up shape frame; 64 entries), or -1 while that tile
+   * is not uploaded. Packed verbatim into the ray-march UBO (floats 120..183).
+   * All -1 on the 9-slot / single-tile paths (never read there — the WGSL walk
+   * only consults level 2 when the target level reaches 2, which requires an
+   * uploaded level-2 tile).
+   */
+  l2Slots: Float32Array;
   /** VOXEL-OCTREE-LOD — child-request lifecycle. "none" = single-tile path. */
   childPhase: "none" | "loading" | "done";
   /** VOXEL-OCTREE-LOD — internal per-child async states (8 entries). */
   childStates: VoxelChildTileState[];
+  /**
+   * NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — internal per-level-2-tile async states
+   * (64 entries). Only driven when {@link slotCount} is 73.
+   */
+  l2States: VoxelChildTileState[];
   /** Texture format chosen at root upload (children must match). */
   uploadFormat: GPUTextureFormat | null;
   /**
@@ -168,6 +197,10 @@ export function createVoxelDataUploadState(): VoxelDataUploadState {
   for (let i = 0; i < 8; i++) {
     childStates.push({ phase: "idle", content: null });
   }
+  const l2States: VoxelChildTileState[] = [];
+  for (let i = 0; i < 64; i++) {
+    l2States.push({ phase: "idle", content: null });
+  }
   return {
     phase: "idle",
     content: null,
@@ -176,8 +209,10 @@ export function createVoxelDataUploadState(): VoxelDataUploadState {
     convention: null,
     slotCount: 1,
     childSlots: new Float32Array([-1, -1, -1, -1, -1, -1, -1, -1]),
+    l2Slots: new Float32Array(64).fill(-1),
     childPhase: "none",
     childStates,
+    l2States,
     uploadFormat: null,
     lastTargetLevel: 0,
   };
@@ -377,16 +412,27 @@ export function tryUploadRootVoxelTile(
   // 1..8 = level-1 children (uploaded asynchronously afterwards — see
   // tryUploadChildVoxelTiles). Single-level providers keep slotCount = 1 and
   // the exact historical texture layout (off-gate byte-identical).
+  //
+  // NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — providers advertising a THIRD level get
+  // the 73-slot atlas (adds the 64 level-2 tiles at slots 9..72) when it fits
+  // the device limit; otherwise they degrade to the 9-slot depth-1 atlas
+  // (traversal clamps at level 1 — the pre-B17 behavior). Levels beyond 3 are
+  // deferred to the streaming-upload increments (fixed up-front atlases don't
+  // scale past 73 slots).
   const availableLevels = provider.availableLevels ?? 1;
   const maxDim3D = device.limits?.maxTextureDimension3D ?? 2048;
   const multiLevel =
     convention !== null && availableLevels >= 2 && depth * 9 <= maxDim3D;
-  const slotCount = multiLevel ? 9 : 1;
+  const deepLevel =
+    multiLevel && availableLevels >= 3 && depth * 73 <= maxDim3D;
+  const slotCount = deepLevel ? 73 : multiLevel ? 9 : 1;
 
   const texture = device.createTexture({
-    label: multiLevel
-      ? "Voxel real-data 3D atlas (root + level-1 tiles)"
-      : "Voxel real-data 3D texture (root tile)",
+    label: deepLevel
+      ? "Voxel real-data 3D atlas (root + level-1 + level-2 tiles)"
+      : multiLevel
+        ? "Voxel real-data 3D atlas (root + level-1 tiles)"
+        : "Voxel real-data 3D texture (root tile)",
     size: { width, height, depthOrArrayLayers: depth * slotCount },
     format,
     dimension: "3d",
@@ -413,49 +459,42 @@ export function tryUploadRootVoxelTile(
 }
 
 /**
- * VOXEL-OCTREE-LOD — drive the asynchronous level-1 child-tile uploads into
- * atlas slots 1..8. Call once per frame from the voxel renderer's update AFTER
- * the root has uploaded (`state.phase === "done"`); no-ops for single-level
- * providers (`childPhase === "none"`) and once every child has settled.
+ * Drive one level's asynchronous tile uploads into the atlas. Shared by the
+ * level-1 (slots 1..8) and level-2 (slots 9..72) sets — same idle →
+ * requesting → processing → done | failed machine per tile. Tile i at `level`
+ * maps to coordinates (x = i % edge, y = (i / edge) % edge, z = i / edge²)
+ * with `edge = 2^level` — the radix-2 extension of the Z-up shape-frame
+ * octant convention (`childIndex = z * 4 + y * 2 + x` at level 1, matching
+ * Octree.glsl's getOctreeChildData). A tile that is unavailable (provider
+ * rejects) or fails to decode keeps `slots[i] = -1`; the WGSL walk then stops
+ * at the deepest uploaded ancestor for that region.
  *
- * Child octant i maps to tile (x = i & 1, y = (i >> 1) & 1, z = (i >> 2) & 1)
- * at tileLevel 1 — the Z-up shape-frame octant convention (`childIndex =
- * z * 4 + y * 2 + x`, matching Octree.glsl's getOctreeChildData). A child that
- * is unavailable (provider rejects) or fails to decode keeps
- * `childSlots[i] = -1`; the WGSL march then samples the ROOT for that octant.
+ * @returns the number of settled (done or failed) tiles in the set.
  */
-export function tryUploadChildVoxelTiles(
+function driveTileLevelUploads(
   device: GPUDevice,
   primitive: unknown,
   frameState: CesiumFrameState,
   state: VoxelDataUploadState,
-): void {
-  if (
-    state.phase !== "done" ||
-    state.childPhase !== "loading" ||
-    !state.texture ||
-    !state.convention ||
-    state.slotCount < 9
-  ) {
-    return;
-  }
-
-  const provider = getProvider(primitive);
-  if (!provider) {
-    return;
-  }
-
-  const { inputDimensions } = state.convention;
+  provider: VoxelProviderLike,
+  level: number,
+  states: VoxelChildTileState[],
+  slots: Float32Array,
+  baseSlot: number,
+): number {
+  const { inputDimensions } = state.convention!;
   const width = inputDimensions.x;
   const height = inputDimensions.y;
   const depth = inputDimensions.z;
   const voxelCount = width * height * depth;
   const float32 = state.uploadFormat === "rgba32float";
   const bytesPerTexel = float32 ? 16 : 8;
+  const edge = 1 << level;
+  const count = edge * edge * edge;
 
   let settled = 0;
-  for (let i = 0; i < 8; i++) {
-    const child = state.childStates[i];
+  for (let i = 0; i < count; i++) {
+    const child = states[i];
     if (child.phase === "done" || child.phase === "failed") {
       settled++;
       continue;
@@ -463,10 +502,10 @@ export function tryUploadChildVoxelTiles(
 
     if (child.phase === "idle") {
       const promise = provider.requestData({
-        tileLevel: 1,
-        tileX: i & 1,
-        tileY: (i >> 1) & 1,
-        tileZ: (i >> 2) & 1,
+        tileLevel: level,
+        tileX: i % edge,
+        tileY: Math.floor(i / edge) % edge,
+        tileZ: Math.floor(i / (edge * edge)),
         keyframe: 0,
       });
       if (!promise) {
@@ -482,7 +521,7 @@ export function tryUploadChildVoxelTiles(
           }
         })
         .catch(() => {
-          // Tile not available (or failed) — root fallback for this octant.
+          // Tile not available (or failed) — ancestor fallback for this region.
           child.phase = "failed";
         });
       continue;
@@ -513,20 +552,80 @@ export function tryUploadChildVoxelTiles(
 
     const rgba = expandToRGBA(metadata[0], voxelCount);
     const data: ArrayBufferView = float32 ? rgba : toHalfFloat(rgba);
-    const slot = 1 + i;
+    const slot = baseSlot + i;
     device.queue.writeTexture(
-      { texture: state.texture, origin: { x: 0, y: 0, z: slot * depth } },
+      { texture: state.texture!, origin: { x: 0, y: 0, z: slot * depth } },
       data,
       { bytesPerRow: width * bytesPerTexel, rowsPerImage: height },
       { width, height, depthOrArrayLayers: depth },
     );
-    state.childSlots[i] = slot;
+    slots[i] = slot;
     child.content = null;
     child.phase = "done";
     settled++;
   }
 
-  if (settled === 8) {
+  return settled;
+}
+
+/**
+ * VOXEL-OCTREE-LOD — drive the asynchronous descendant-tile uploads into
+ * atlas slots 1..8 (level 1) and — on the 73-slot deep atlas
+ * (NEW-VOXEL-OCTREE-DEEP-TRAVERSAL) — slots 9..72 (level 2). Call once per
+ * frame from the voxel renderer's update AFTER the root has uploaded
+ * (`state.phase === "done"`); no-ops for single-level providers
+ * (`childPhase === "none"`) and once every tile has settled.
+ */
+export function tryUploadChildVoxelTiles(
+  device: GPUDevice,
+  primitive: unknown,
+  frameState: CesiumFrameState,
+  state: VoxelDataUploadState,
+): void {
+  if (
+    state.phase !== "done" ||
+    state.childPhase !== "loading" ||
+    !state.texture ||
+    !state.convention ||
+    state.slotCount < 9
+  ) {
+    return;
+  }
+
+  const provider = getProvider(primitive);
+  if (!provider) {
+    return;
+  }
+
+  let settled = driveTileLevelUploads(
+    device,
+    primitive,
+    frameState,
+    state,
+    provider,
+    1,
+    state.childStates,
+    state.childSlots,
+    1,
+  );
+  let total = 8;
+
+  if (state.slotCount >= 73) {
+    settled += driveTileLevelUploads(
+      device,
+      primitive,
+      frameState,
+      state,
+      provider,
+      2,
+      state.l2States,
+      state.l2Slots,
+      9,
+    );
+    total += 64;
+  }
+
+  if (settled === total) {
     state.childPhase = "done";
   }
 }

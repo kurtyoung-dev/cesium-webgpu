@@ -238,20 +238,28 @@ struct Uniforms {
   // VOXEL_CUSTOM_SHADER_COLOR branch; zero on the placeholder/pick paths.
   cameraPositionProxy: vec3<f32>,
   _pad4: f32,
-  // VOXEL-OCTREE-LOD — depth-1 octree traversal (floats 108..119).
+  // VOXEL-OCTREE-LOD — octree traversal (floats 108..119).
   // \`childSlots0/1\`: atlas slot per level-1 child octant (Z-up shape frame,
   // childIndex = x + 2y + 4z — Octree.glsl's getOctreeChildData order), or -1
   // when that child tile is not uploaded, in which case the march samples the
-  // ROOT for the octant — Octree.glsl's OCTREE_FLAG_PACKED_LEAF_FROM_PARENT
-  // fallback specialised to depth 1. \`atlasInfo.x\` = tile slot count stacked
-  // along the texture's Z axis (1 = single-tile texture, historical layout);
-  // \`atlasInfo.y\` = this frame's target LOD level (0 = root, 1 = refine) from
-  // the CPU-evaluated SpatialNode.computeScreenSpaceError refine test. All
-  // zero on the placeholder path (max(atlasInfo.x, 1.0) keeps the math
+  // deepest uploaded ancestor for the octant — Octree.glsl's
+  // OCTREE_FLAG_PACKED_LEAF_FROM_PARENT fallback. \`atlasInfo.x\` = tile slot
+  // count stacked along the texture's Z axis (1 = single-tile texture,
+  // historical layout; 9 = depth-1 atlas; 73 = depth-2 atlas);
+  // \`atlasInfo.y\` = this frame's target LOD level (0 = root, 1..2 = refine)
+  // from the CPU-evaluated SpatialNode.computeScreenSpaceError refine ladder.
+  // All zero on the placeholder path (max(atlasInfo.x, 1.0) keeps the math
   // byte-identical there).
   childSlots0: vec4<f32>,
   childSlots1: vec4<f32>,
   atlasInfo: vec4<f32>,
+  // NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — atlas slot per level-2 tile (floats
+  // 120..183): linear index x + 4y + 16z over the 4x4x4 level-2 tile grid
+  // (the radix-2 extension of the level-1 octant order), or -1 when that tile
+  // is not uploaded. Only consulted when the iterative walk descends to
+  // level 2 (target level >= 2 requires an uploaded level-2 tile CPU-side);
+  // all -1 / zero on the shallower paths.
+  l2Slots: array<vec4<f32>, 16>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -299,6 +307,52 @@ fn intersectAABB(origin: vec3<f32>, invDir: vec3<f32>,
   let tMax = max(t1, t2);
   return vec2<f32>(max(max(tMin.x, tMin.y), tMin.z),
                    min(min(tMax.x, tMax.y), tMax.z));
+}
+
+// NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — iterative octree walk (Octree.glsl-style
+// descend with per-level slot indirection), shared by the color march and the
+// per-cell pick march so the picked cell always agrees with the displayed
+// surface. Starting at the root, refine one level at a time while this
+// frame's target LOD level (u.atlasInfo.y — the CPU-evaluated SSE refine
+// ladder) demands it AND the child tile owning the sample is uploaded: at
+// level L the tile coordinate is floor(shapeUv * 2^L) (WebGL's shapeUv → tile
+// convention) and the sample's tile-local uv is shapeUv * 2^L - tileCoord
+// (Octree.glsl getTileUv, levelDifference 0). A missing tile (slot < 0) stops
+// the walk at the deepest uploaded ANCESTOR — sampling it with the ancestor's
+// tileUv is exactly getTileUv's levelDifference-N rescale, i.e. the
+// OCTREE_FLAG_PACKED_LEAF_FROM_PARENT path. Slot indirection per level:
+// level 1 reads childSlots0/1 (octant x + 2y + 4z), level 2 reads l2Slots
+// (linear x + 4y + 16z). Depth is capped at 2 — the fixed-atlas budget
+// (deeper levels arrive with NEW-VOXEL-STREAMING-UPLOAD). targetLevel 0
+// (single-tile / placeholder / far view) never enters the loop: tileUv =
+// shapeUv, slot = 0 — byte-identical to the pre-octree math.
+//
+// Returns vec4(tileUv.xyz, tileSlot).
+fn octreeDescend(shapeUv: vec3<f32>) -> vec4<f32> {
+  var tileUv = shapeUv;
+  var tileSlot = 0.0;
+  let targetLevel = min(i32(u.atlasInfo.y + 0.5), 2);
+  var n = 2.0;
+  for (var lvl = 1; lvl <= targetLevel; lvl = lvl + 1) {
+    let tc = clamp(floor(shapeUv * n), vec3<f32>(0.0), vec3<f32>(n - 1.0));
+    var slot = -1.0;
+    if (lvl == 1) {
+      let idx = i32(tc.x + 2.0 * tc.y + 4.0 * tc.z);
+      if (idx < 4) {
+        slot = u.childSlots0[idx];
+      } else {
+        slot = u.childSlots1[idx - 4];
+      }
+    } else {
+      let idx = i32(tc.x + 4.0 * tc.y + 16.0 * tc.z);
+      slot = u.l2Slots[idx / 4][idx % 4];
+    }
+    if (slot < 0.0) { break; }
+    tileSlot = slot;
+    tileUv = clamp(shapeUv * n - tc, vec3<f32>(0.0), vec3<f32>(1.0));
+    n = n * 2.0;
+  }
+  return vec4<f32>(tileUv, tileSlot);
 }
 
 // Batch 196 — IGN-based ray-start jitter for voxel ray-march. Same
@@ -403,34 +457,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       vec3<f32>(0.0),
       vec3<f32>(1.0),
     );
-    // VOXEL-OCTREE-LOD — depth-1 octree traversal. When this frame's target
-    // level is 1 (SSE refine test, CPU-evaluated), select the level-1 child
-    // octant containing the sample (tileCoords = floor(shapeUv * 2), WebGL's
-    // shapeUv → tile convention at level 1) and rescale to that child's local
-    // tileUv (Octree.glsl getTileUv with levelDifference 0). A child whose
-    // tile is not uploaded (slot < 0) falls back to sampling the ROOT with
-    // tileUv = shapeUv — exactly getTileUv's levelDifference-1 ancestor
-    // rescale, i.e. the OCTREE_FLAG_PACKED_LEAF_FROM_PARENT path.
-    var tileUv = shapeUv;
-    var tileSlot = 0.0;
-    if (u.atlasInfo.y >= 1.0) {
-      let childCoord = clamp(
-        floor(shapeUv * 2.0),
-        vec3<f32>(0.0),
-        vec3<f32>(1.0),
-      );
-      let childIdx = i32(childCoord.x + 2.0 * childCoord.y + 4.0 * childCoord.z);
-      var childSlot = -1.0;
-      if (childIdx < 4) {
-        childSlot = u.childSlots0[childIdx];
-      } else {
-        childSlot = u.childSlots1[childIdx - 4];
-      }
-      if (childSlot >= 0.0) {
-        tileSlot = childSlot;
-        tileUv = clamp(shapeUv * 2.0 - childCoord, vec3<f32>(0.0), vec3<f32>(1.0));
-      }
-    }
+    // VOXEL-OCTREE-LOD / NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — iterative octree
+    // walk to this frame's target level (see octreeDescend). Non-refined
+    // frames keep tileUv = shapeUv / tileSlot = 0 — byte-identical to the
+    // pre-octree math.
+    let descent = octreeDescend(shapeUv);
+    let tileUv = descent.xyz;
+    let tileSlot = descent.w;
     var inputCoord = tileUv * u.voxelDimensions + u.paddingBefore;
     if (u.metadataYUpBox > 0.5) {
       let inputY = inputCoord.y;
@@ -646,13 +679,16 @@ fn packVoxelIntToVec2(value: f32) -> vec2<f32> {
 // COMPOSE): 0 = the ROOT tile (WebGL's root keyframeNode occupies megatexture
 // slot 0), 1..8 = the level-1 children in child-octant order — the same
 // order WebGL's VoxelTraversal adds them to the megatexture for a
-// synchronously-resolving two-level provider.
+// synchronously-resolving two-level provider — and 9..72 = the level-2 tiles
+// in linear x + 4y + 16z order (NEW-VOXEL-OCTREE-DEEP-TRAVERSAL; deep-tree
+// slot ordering is a deterministic backend-internal handle, not byte-equal to
+// WebGL's load-order megatextureIndex).
 //
 // NEW-VOXEL-PICK-OCTREE-COMPOSE — the pick march composes with the color
-// march's depth-1 octree traversal (VOXEL-OCTREE-LOD): on refined frames
-// (atlasInfo.y >= 1) the sample descends into the level-1 child octant and
-// the emitted {megatextureIndex, sampleIndex} identify the CHILD tile + the
-// child-local cell, so the pick agrees with the displayed refined surface.
+// march's iterative octree walk (octreeDescend): on refined frames
+// (atlasInfo.y >= 1) the sample descends to the deepest uploaded tile at the
+// target level and the emitted {megatextureIndex, sampleIndex} identify THAT
+// tile + its local cell, so the pick agrees with the displayed refined surface.
 // When a USER native-WGSL customShader is active (VOXEL_USER_CUSTOM_SHADER)
 // the winner gate matches the displayed surface too: ungated accumulation of
 // the user material's alpha with WebGL's PICKING_VOXEL ALPHA_ACCUM_MAX (0.1)
@@ -704,33 +740,16 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
       vec3<f32>(0.0),
       vec3<f32>(1.0),
     );
-    // NEW-VOXEL-PICK-OCTREE-COMPOSE — the SAME depth-1 octree traversal as
-    // the color march (VOXEL-OCTREE-LOD): on refined frames select the
-    // level-1 child octant containing the sample and rescale to the child's
-    // local tileUv; a child whose tile is not uploaded (slot < 0) falls back
-    // to sampling the ROOT with tileUv = shapeUv (the PACKED_LEAF_FROM_PARENT
-    // path). Non-refined frames (atlasInfo.y < 1) keep tileUv = shapeUv and
-    // tileSlot = 0 — byte-identical to the pre-compose pick math.
-    var tileUv = shapeUv;
-    var tileSlot = 0.0;
-    if (u.atlasInfo.y >= 1.0) {
-      let childCoord = clamp(
-        floor(shapeUv * 2.0),
-        vec3<f32>(0.0),
-        vec3<f32>(1.0),
-      );
-      let childIdx = i32(childCoord.x + 2.0 * childCoord.y + 4.0 * childCoord.z);
-      var childSlot = -1.0;
-      if (childIdx < 4) {
-        childSlot = u.childSlots0[childIdx];
-      } else {
-        childSlot = u.childSlots1[childIdx - 4];
-      }
-      if (childSlot >= 0.0) {
-        tileSlot = childSlot;
-        tileUv = clamp(shapeUv * 2.0 - childCoord, vec3<f32>(0.0), vec3<f32>(1.0));
-      }
-    }
+    // NEW-VOXEL-PICK-OCTREE-COMPOSE — the SAME iterative octree walk as the
+    // color march (octreeDescend): on refined frames the sample descends to
+    // the deepest uploaded tile at the target level and the emitted
+    // {megatextureIndex, sampleIndex} identify THAT tile + its local cell, so
+    // the pick agrees with the displayed refined surface. Non-refined frames
+    // (atlasInfo.y < 1) keep tileUv = shapeUv and tileSlot = 0 —
+    // byte-identical to the pre-compose pick math.
+    let descent = octreeDescend(shapeUv);
+    let tileUv = descent.xyz;
+    let tileSlot = descent.w;
     var inputCoord = tileUv * u.voxelDimensions + u.paddingBefore;
     if (u.metadataYUpBox > 0.5) {
       let inputY = inputCoord.y;
@@ -1219,19 +1238,22 @@ function packVoxelSampleFrame(
 const scratchObbScale = new Cartesian3();
 
 /**
- * VOXEL-OCTREE-LOD — decide this frame's target octree level (0 = root,
- * 1 = refine into the level-1 children) with WebGL's refine test: mirror
- * {@link SpatialNode}'s `computeScreenSpaceError` for the ROOT tile —
+ * VOXEL-OCTREE-LOD / NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — decide this frame's
+ * target octree level (0 = root, 1..2 = refine) with WebGL's refine test:
+ * mirror {@link SpatialNode}'s `computeScreenSpaceError` for the ROOT tile —
  *
  *   sse = (screenHeight / sseDenominator) * (approximateVoxelSize / distance)
  *   approximateVoxelSize = 2 * maxComponent(scale(obb.halfAxes))
  *                        / minComponent(provider.dimensions)
  *
- * — and refine when `sse >= primitive.screenSpaceError` (VoxelTraversal
- * descends exactly when the node's SSE meets the primitive's target). Only a
- * single refine step is evaluated (this increment's traversal is depth-1).
- * Returns 0 whenever no child tile has uploaded yet, so the march never
- * branches into an empty atlas.
+ * — then walk the refinement ladder: each level halves a node's
+ * `approximateVoxelSize` (half the extent, same per-tile dimensions), so the
+ * level-L SSE is `sse / 2^L`; descend while the CURRENT level's SSE still
+ * meets `primitive.screenSpaceError` (VoxelTraversal descends exactly when a
+ * node's SSE meets the primitive's target), capped at the deepest level with
+ * ANY uploaded tile so the march never branches into an empty atlas. For
+ * depth-1 (9-slot) atlases this reduces exactly to the shipped single refine
+ * test — byte-identical behavior for `availableLevels < 3` providers.
  */
 function computeVoxelTargetLevel(
   primitive: CesiumObjectWithWebGPUCache,
@@ -1241,15 +1263,23 @@ function computeVoxelTargetLevel(
   if (state.slotCount < 9) {
     return 0;
   }
-  let anyChildLoaded = false;
+  let maxUploadedLevel = 0;
   for (let i = 0; i < 8; i++) {
     if (state.childSlots[i] >= 0) {
-      anyChildLoaded = true;
+      maxUploadedLevel = 1;
       break;
     }
   }
-  if (!anyChildLoaded) {
+  if (maxUploadedLevel === 0) {
     return 0;
+  }
+  if (state.slotCount >= 73) {
+    for (let i = 0; i < 64; i++) {
+      if (state.l2Slots[i] >= 0) {
+        maxUploadedLevel = 2;
+        break;
+      }
+    }
   }
 
   const camera = frameState.camera;
@@ -1288,7 +1318,15 @@ function computeVoxelTargetLevel(
   const targetSse =
     (primitive as unknown as { screenSpaceError?: number }).screenSpaceError ??
     4.0;
-  return sse >= targetSse ? 1 : 0;
+  // Refinement ladder: descend while the current level's SSE (halving per
+  // level) still meets the target, capped at the deepest uploaded level.
+  let level = 0;
+  let levelSse = sse;
+  while (level < maxUploadedLevel && levelSse >= targetSse) {
+    level += 1;
+    levelSse /= 2;
+  }
+  return level;
 }
 
 function createBoxGeometry(device: GPUDevice): {
@@ -1605,9 +1643,11 @@ function updateWebGPUVoxelPrimitive(
     // paddingBefore, proxy-space camera) consumed by the real-data
     // color-parity march. VOXEL-OCTREE-LOD grew it 432 → 480 bytes for the
     // depth-1 octree fields (floats 108-119: per-child atlas slots + slot
-    // count + target LOD level).
+    // count + target LOD level). NEW-VOXEL-OCTREE-DEEP-TRAVERSAL grew it
+    // 480 → 736 bytes for the 64 level-2 atlas slots (floats 120-183) read by
+    // the iterative octree walk.
     cache.uniformBuffer = device.createBuffer({
-      size: 480,
+      size: 736,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     // VOXEL-SHAPEUV-CONVENTION — honour VoxelPrimitive.nearestSampling
@@ -2081,7 +2121,8 @@ function updateWebGPUVoxelPrimitive(
   //   [104..107] cameraPositionProxy + pad (VOXEL-SHAPEUV-CONVENTION)
   //   [108..115] childSlots0/1          (VOXEL-OCTREE-LOD)
   //   [116..119] atlasInfo: slotCount, targetLevel, pad, pad (VOXEL-OCTREE-LOD)
-  const data = new Float32Array(120);
+  //   [120..183] l2Slots (64 level-2 atlas slots, NEW-VOXEL-OCTREE-DEEP-TRAVERSAL)
+  const data = new Float32Array(184);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -2209,6 +2250,13 @@ function updateWebGPUVoxelPrimitive(
       const targetLevel = computeVoxelTargetLevel(primitive, frameState, du);
       du.lastTargetLevel = targetLevel;
       data[117] = targetLevel;
+      // NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — level-2 slot indirection (-1 =
+      // not uploaded → the WGSL walk stops at the level-1 ancestor). Packed
+      // verbatim even on shallower atlases (all -1 there) so a zero-filled
+      // tail can never be misread as "level-2 tile at slot 0".
+      for (let i = 0; i < 64; i++) {
+        data[120 + i] = du.l2Slots[i];
+      }
     }
   }
 
