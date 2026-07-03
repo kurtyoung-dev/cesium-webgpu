@@ -136,17 +136,14 @@ function renderBufferPolylineCollection(collection, frameState, renderContext) {
     renderContext.attributeArrays = {
       ...(!useFloat64
         ? {
-            // @ts-expect-error https://github.com/CesiumGS/cesium/issues/13420
             position: ComponentDatatype.createTypedArray(
               collection._positionDatatype,
               vertexCountMax * 3,
             ),
-            // @ts-expect-error https://github.com/CesiumGS/cesium/issues/13420
             prevPosition: ComponentDatatype.createTypedArray(
               collection._positionDatatype,
               vertexCountMax * 3,
             ),
-            // @ts-expect-error https://github.com/CesiumGS/cesium/issues/13420
             nextPosition: ComponentDatatype.createTypedArray(
               collection._positionDatatype,
               vertexCountMax * 3,

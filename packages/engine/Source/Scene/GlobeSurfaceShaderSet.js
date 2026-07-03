@@ -204,7 +204,6 @@ class GlobeSurfaceShaderSet {
       (applyDayNightAlpha ? 0x100000000 : 0);
 
     let currentClippingShaderState = 0;
-    // @ts-expect-error Missing types.
     if (defined(clippingPlanes) && clippingPlanes.length > 0) {
       currentClippingShaderState = enableClippingPlanes
         ? // @ts-expect-error Missing types.
@@ -213,7 +212,6 @@ class GlobeSurfaceShaderSet {
     }
 
     let currentClippingPolygonsShaderState = 0;
-    // @ts-expect-error Missing types.
     if (defined(clippingPolygons) && clippingPolygons.length > 0) {
       currentClippingPolygonsShaderState = enableClippingPolygons
         ? // @ts-expect-error Missing types.
@@ -261,8 +259,16 @@ class GlobeSurfaceShaderSet {
 
       // Need to go before GlobeFS
       if (currentClippingPolygonsShaderState !== 0) {
-        fs.sources.unshift(getPolygonClippingFunction(frameState.context));
-        vs.sources.unshift(getUnpackClippingFunction(frameState.context));
+        fs.sources.unshift(
+          getPolygonClippingFunction(
+            /** @type {Context} */ (frameState.context),
+          ),
+        );
+        vs.sources.unshift(
+          getUnpackClippingFunction(
+            /** @type {Context} */ (frameState.context),
+          ),
+        );
       }
 
       vs.defines.push(quantizationDefine);
@@ -534,7 +540,6 @@ function getPositionMode(sceneMode) {
  */
 function getPolygonClippingFunction(context) {
   // return a noop for webgl1
-  // @ts-expect-error Missing types.
   if (!context.webgl2) {
     return `void clipPolygons(highp sampler2D clippingDistance, int regionsLength, vec2 clippingPosition, int regionIndex) {
     }`;
@@ -551,7 +556,6 @@ function getPolygonClippingFunction(context) {
  */
 function getUnpackClippingFunction(context) {
   // return a noop for webgl1
-  // @ts-expect-error Missing types.
   if (!context.webgl2) {
     return `vec4 unpackClippingExtents(highp sampler2D extentsTexture, int index) {
       return vec4();

@@ -154,7 +154,6 @@ function renderBufferPolygonCollection(collection, frameState, renderContext) {
       // Update vertex arrays.
       for (let j = 0, jl = polygon.vertexCount; j < jl; j++) {
         if (useFloat64) {
-          // @ts-expect-error https://github.com/CesiumGS/cesium/pull/13302
           Cartesian3.fromArray(cartesianArray, j * 3, cartesian);
           EncodedCartesian3.fromCartesian(cartesian, encodedC);
           // @ts-expect-error https://github.com/CesiumGS/cesium/pull/13302
