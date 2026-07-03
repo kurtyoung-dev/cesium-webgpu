@@ -642,9 +642,21 @@ fn packVoxelIntToVec2(value: f32) -> vec2<f32> {
 // samples the exact intersection positions, and a jittered start could flip
 // the decoded cell at cell boundaries.
 //
-// megatextureIndex is 0 — the single uploaded ROOT tile (the WebGPU data
-// path is root-tile-only; WebGL's root keyframeNode occupies megatexture
-// slot 0 for the same single-tile provider).
+// megatextureIndex is the sampled TILE's atlas slot (NEW-VOXEL-PICK-OCTREE-
+// COMPOSE): 0 = the ROOT tile (WebGL's root keyframeNode occupies megatexture
+// slot 0), 1..8 = the level-1 children in child-octant order — the same
+// order WebGL's VoxelTraversal adds them to the megatexture for a
+// synchronously-resolving two-level provider.
+//
+// NEW-VOXEL-PICK-OCTREE-COMPOSE — the pick march composes with the color
+// march's depth-1 octree traversal (VOXEL-OCTREE-LOD): on refined frames
+// (atlasInfo.y >= 1) the sample descends into the level-1 child octant and
+// the emitted {megatextureIndex, sampleIndex} identify the CHILD tile + the
+// child-local cell, so the pick agrees with the displayed refined surface.
+// When a USER native-WGSL customShader is active (VOXEL_USER_CUSTOM_SHADER)
+// the winner gate matches the displayed surface too: ungated accumulation of
+// the user material's alpha with WebGL's PICKING_VOXEL ALPHA_ACCUM_MAX (0.1)
+// instead of the raw-texel density gate.
 //
 // Only ever dispatched from the dedicated pickVoxel pipeline, which is built
 // exclusively on the real-data path (usingRealData) — the placeholder path
@@ -661,6 +673,28 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let tStart = max(trReal.x, 0.0);
   let tEnd = trReal.y;
   let maxI = i32(u.maxSteps);
+//>>ifdef VOXEL_USER_CUSTOM_SHADER
+  // NEW-VOXEL-PICK-OCTREE-COMPOSE — WebGL VoxelFS.glsl compiles the pick pass
+  // with ALPHA_ACCUM_MAX 0.1 (vs 0.98 for color): the march accumulates every
+  // sample's user-shader alpha and stops at the sample that crosses 0.1; the
+  // emitted ids belong to the sample where the loop stopped (the saturating
+  // sample, or the LAST marched sample when the ray exits unsaturated with
+  // nonzero accumulated alpha — VoxelFS.glsl emits sampleDatas[0] at loop
+  // exit and only discards at colorAccum.a == 0).
+  let PICK_ALPHA_ACCUM_MAX: f32 = 0.1;
+  // Entry-face normal in the box-LOCAL frame (same slab analysis as the
+  // color march) — the user shader may read attributes.normalLocal.
+  let t1n = (u.minBounds - rayOrigin) * invDir;
+  let t2n = (u.maxBounds - rayOrigin) * invDir;
+  let tMinV = min(t1n, t2n);
+  let entryAxis = step(vec3<f32>(trReal.x) - vec3<f32>(1e-4), tMinV);
+  let axisSum = max(entryAxis.x + entryAxis.y + entryAxis.z, 1.0);
+  let entryNormalLocal = -sign(rayDir) * entryAxis / axisSum;
+  var accumA: f32 = 0.0;
+  var winnerTileSlot: f32 = 0.0;
+  var winnerInputCoord = vec3<f32>(0.0);
+  var winnerValid = false;
+//>>endif
   for (var i = 0; i < maxI; i = i + 1) {
     let t = tStart + f32(i) * u.stepSize;
     if (t > tEnd) { break; }
@@ -670,7 +704,34 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
       vec3<f32>(0.0),
       vec3<f32>(1.0),
     );
-    var inputCoord = shapeUv * u.voxelDimensions + u.paddingBefore;
+    // NEW-VOXEL-PICK-OCTREE-COMPOSE — the SAME depth-1 octree traversal as
+    // the color march (VOXEL-OCTREE-LOD): on refined frames select the
+    // level-1 child octant containing the sample and rescale to the child's
+    // local tileUv; a child whose tile is not uploaded (slot < 0) falls back
+    // to sampling the ROOT with tileUv = shapeUv (the PACKED_LEAF_FROM_PARENT
+    // path). Non-refined frames (atlasInfo.y < 1) keep tileUv = shapeUv and
+    // tileSlot = 0 — byte-identical to the pre-compose pick math.
+    var tileUv = shapeUv;
+    var tileSlot = 0.0;
+    if (u.atlasInfo.y >= 1.0) {
+      let childCoord = clamp(
+        floor(shapeUv * 2.0),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+      );
+      let childIdx = i32(childCoord.x + 2.0 * childCoord.y + 4.0 * childCoord.z);
+      var childSlot = -1.0;
+      if (childIdx < 4) {
+        childSlot = u.childSlots0[childIdx];
+      } else {
+        childSlot = u.childSlots1[childIdx - 4];
+      }
+      if (childSlot >= 0.0) {
+        tileSlot = childSlot;
+        tileUv = clamp(shapeUv * 2.0 - childCoord, vec3<f32>(0.0), vec3<f32>(1.0));
+      }
+    }
+    var inputCoord = tileUv * u.voxelDimensions + u.paddingBefore;
     if (u.metadataYUpBox > 0.5) {
       let inputY = inputCoord.y;
       inputCoord.y = inputCoord.z;
@@ -683,17 +744,36 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
       vec3<f32>(0.5),
       u.inputDimensions - vec3<f32>(0.5),
     );
-    // VOXEL-OCTREE-LOD — normalise z against the FULL atlas depth so the
-    // per-cell pick march stays inside slot 0 (the ROOT slab). Per-cell pick
-    // against refined level-1 tiles is a documented follow-up; single-tile
-    // textures have atlasInfo.x = 1 → byte-identical math.
+    // Atlas addressing with the sampled TILE's slot (root slab 0, or the
+    // refined child's slab) — mirrors the color march exactly. Single-tile
+    // textures have tileSlot = 0 / atlasInfo.x = 1 → byte-identical math.
     let uvw = vec3<f32>(
       clampedCoord.x / u.inputDimensions.x,
       clampedCoord.y / u.inputDimensions.y,
-      clampedCoord.z / (u.inputDimensions.z * max(u.atlasInfo.x, 1.0)),
+      (clampedCoord.z + tileSlot * u.inputDimensions.z)
+        / (u.inputDimensions.z * max(u.atlasInfo.x, 1.0)),
     );
     // NEW-4-G: textureSampleLevel — see fragmentMain.
     let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
+//>>ifdef VOXEL_USER_CUSTOM_SHADER
+    // Run the USER shader for this sample (same bridge structs as
+    // fragmentMain's user branch) and accumulate its sanitized alpha —
+    // the pick winner gate must match the DISPLAYED surface, which is the
+    // ungated voxelMaterial.alpha accumulation, not the density gate.
+    var fsInput: czm_voxelCustomFragmentInput;
+    fsInput.metadata = czm_voxelReadCustomMetadata(s);
+    fsInput.attributes.normalLocal = normalize(entryNormalLocal);
+    fsInput.attributes.lightDirectionLocal = u.lightDirectionModel;
+    fsInput.attributes.shapeUv = shapeUv;
+    var voxelMaterial: czm_voxelCustomMaterial;
+    czm_voxelCustomFragmentMain(fsInput, &voxelMaterial);
+    let userAlpha = clamp(voxelMaterial.alpha, 0.0, 1.0);
+    accumA = accumA + (1.0 - accumA) * userAlpha;
+    winnerTileSlot = tileSlot;
+    winnerInputCoord = inputCoord;
+    winnerValid = true;
+    if (accumA > PICK_ALPHA_ACCUM_MAX) { break; }
+//>>else
     if (s.a > u.densityThreshold) {
       // WebGL getSampleIndex: clamp the raw input coordinate to
       // [0, u_inputDimensions - 0.5] then floor (NOT the texel-centre clamp
@@ -705,13 +785,28 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
       ));
       let sampleIndex =
         cell.x + u.inputDimensions.x * (cell.y + u.inputDimensions.y * cell.z);
-      let megatextureId = packVoxelIntToVec2(0.0);
+      let megatextureId = packVoxelIntToVec2(tileSlot);
       let sampleId = packVoxelIntToVec2(sampleIndex);
       return vec4<f32>(megatextureId.x, megatextureId.y, sampleId.x, sampleId.y);
     }
+//>>endif
   }
-  // No density hit — nothing to pick at this pixel (WebGL: colorAccum.a == 0
-  // → discard).
+//>>ifdef VOXEL_USER_CUSTOM_SHADER
+  if (winnerValid && accumA > 0.0) {
+    let cell = floor(clamp(
+      winnerInputCoord,
+      vec3<f32>(0.0),
+      u.inputDimensions - vec3<f32>(0.5),
+    ));
+    let sampleIndex =
+      cell.x + u.inputDimensions.x * (cell.y + u.inputDimensions.y * cell.z);
+    let megatextureId = packVoxelIntToVec2(winnerTileSlot);
+    let sampleId = packVoxelIntToVec2(sampleIndex);
+    return vec4<f32>(megatextureId.x, megatextureId.y, sampleId.x, sampleId.y);
+  }
+//>>endif
+  // No pickable sample — nothing to pick at this pixel (WebGL:
+  // colorAccum.a == 0 → discard).
   discard;
   return vec4<f32>(0.0);
 }
@@ -789,6 +884,17 @@ const VOXEL_COLOR_PARITY_PIPELINE_NAME = "Voxel color pipeline (customShader)";
 // share one pipeline.
 function voxelUserShaderPipelineName(info: VoxelUserShaderInfo): string {
   return `Voxel color pipeline (userCustomShader#${info.hash.toString(16)})`;
+}
+
+// NEW-VOXEL-PICK-OCTREE-COMPOSE — per-cell pick pipeline names. The base name
+// must match the init-time descriptor literal; the user variant carries the
+// generated chunk's hash (same discriminator scheme as the color pipeline) so
+// the pick winner gate is rebuilt from the user module when a native-WGSL
+// customShader is active, and reverts when it is cleared.
+const VOXEL_PICKVOXEL_PIPELINE_NAME = "Voxel pickVoxel pipeline";
+
+function voxelUserPickVoxelPipelineName(info: VoxelUserShaderInfo): string {
+  return `Voxel pickVoxel pipeline (userCustomShader#${info.hash.toString(16)})`;
 }
 
 /**
@@ -1649,7 +1755,7 @@ function updateWebGPUVoxelPrimitive(
     // Descriptor-only here (a plain object); the PIPELINE is resolved lazily
     // and only on the real-data path (see attachVoxelCellPickCommand).
     cache.pickVoxelDescriptor = {
-      name: "Voxel pickVoxel pipeline",
+      name: VOXEL_PICKVOXEL_PIPELINE_NAME,
       layout: pipelineLayout,
       vertex: {
         module: shaderModule,
@@ -1848,6 +1954,49 @@ function updateWebGPUVoxelPrimitive(
       cache.pipeline = null;
       cache.pipelineRequestPending = false;
       cache.command = null;
+    }
+
+    // NEW-VOXEL-PICK-OCTREE-COMPOSE — the per-cell pick module must carry the
+    // SAME user chunk + defines as the color module so the pick winner gate
+    // matches the displayed surface (fragmentPickVoxelMain's
+    // VOXEL_USER_CUSTOM_SHADER branch accumulates voxelMaterial.alpha; the
+    // else branch keeps the default density gate). The getOrCreate call is
+    // identical to the color one, so the module cache serves the SAME
+    // GPUShaderModule — only the pipeline (entry point) differs. Reverts to
+    // the base defines=0 module when the customShader is cleared mid-session.
+    // The name compare keeps this idempotent AND keeps the DEFAULT path
+    // untouched: with no user shader the desired name equals the init-time
+    // literal, so no patch, no pipeline churn — off-gate byte-identical.
+    if (cache.pickVoxelDescriptor && cache.shaderModule) {
+      const desiredPickName = userInfo
+        ? voxelUserPickVoxelPipelineName(userInfo)
+        : VOXEL_PICKVOXEL_PIPELINE_NAME;
+      if (cache.pickVoxelDescriptor.name !== desiredPickName) {
+        const moduleCache = getVoxelShaderModuleCache(device);
+        const pickModule = userInfo
+          ? moduleCache.getOrCreate(
+              ShaderSourceId.VOXEL_PRIMITIVE,
+              userInfo.chunk + VOXEL_WGSL,
+              ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR |
+                ShaderDefine.VOXEL_USER_CUSTOM_SHADER,
+              `VoxelPrimitive (user customShader #${userInfo.hash.toString(16)})`,
+              userInfo.hash,
+            )
+          : cache.shaderModule;
+        cache.pickVoxelDescriptor.vertex.module = pickModule;
+        if (cache.pickVoxelDescriptor.fragment) {
+          cache.pickVoxelDescriptor.fragment.module = pickModule;
+        }
+        // The central pipeline cache keys on `descriptor.name` — the patched
+        // descriptor MUST get a distinct name or it would be served the
+        // density-gate pipeline cached under the base name.
+        cache.pickVoxelDescriptor.name = desiredPickName;
+        // Re-resolve the pipeline + rebuild the command from the patched
+        // descriptor (the command captures the pipeline at construction).
+        cache.pickVoxelPipeline = null;
+        cache.pickVoxelPipelineRequestPending = false;
+        cache.pickVoxelCommand = null;
+      }
     }
   }
 

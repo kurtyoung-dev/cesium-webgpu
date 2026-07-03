@@ -27,7 +27,9 @@
  *   - LOD refinement for non-BOX shapes (cylinder/ellipsoid stay root-only).
  *   - Non-VEC4 properties (VEC3/VEC2/scalar) — this increment uploads the first
  *     property expanded to RGBA. Missing channels default to 0, alpha to 1.
- *   - Per-cell pickVoxel against refined tiles (pick marches the ROOT slab).
+ *   (Per-cell pickVoxel against refined tiles shipped in
+ *   NEW-VOXEL-PICK-OCTREE-COMPOSE — the pick march composes the same depth-1
+ *   traversal and emits the child slot as the megatexture index.)
  *
  * Off-gate: this module is only invoked when a real voxel provider + tile
  * content is available. When no provider/data is present the caller keeps the
