@@ -620,11 +620,17 @@ function _mapGLWrap(glEnum) {
  *
  * @param {boolean} [hasTexCoord1=true] — when false, slot 7 is omitted.
  * @param {boolean} [hasFeatureId0=true] — when false, slot 8 is omitted.
+ * @param {number|boolean} [metadataSlotMode=0] — 0/false: no metadata slot;
+ *   1/true: the historical single `float32x4` at shader location 9;
+ *   2: NEW-MODEL-METADATA-MAT3-MAT4 widened MAT3/MAT4 transport — ONE
+ *   buffer slot with `arrayStride = 64` carrying FOUR `float32x4`
+ *   attributes at shader locations 9-12 (buffer COUNT is unchanged vs
+ *   mode 1, so Edge's `maxVertexBuffers = 8` budget is unaffected).
  */
 function createVertexBufferLayout(
   hasTexCoord1 = true,
   hasFeatureId0 = true,
-  hasMetadata = false,
+  metadataSlotMode = 0,
 ) {
   const layout = [
     // Slot 0: positionMC (vec3<f32>) — ALWAYS present, vertex step
@@ -702,7 +708,7 @@ function createVertexBufferLayout(
       attributes: [{ shaderLocation: 8, offset: 0, format: "float32" }],
     });
   }
-  if (hasMetadata) {
+  if (metadataSlotMode) {
     // Slot 9: metadataValue (vec4<f32>) — DP-H46a, widened to float32x4 by
     // METADATA-MULTICOMPONENT so VEC2/3/4 (and MAT2) property attributes
     // transport every component (scalars zero-pad the tail; the packing is
@@ -717,11 +723,31 @@ function createVertexBufferLayout(
     // texCoord1 + featureId0 + metadata would need 10 slots — out of
     // scope for DP-H46a (no such test asset); DP-H46b's generated path
     // can pack metadata into fewer slots if that combination arises.
-    layout.push({
-      arrayStride: 16,
-      stepMode: "vertex",
-      attributes: [{ shaderLocation: 9, offset: 0, format: "float32x4" }],
-    });
+    //
+    // NEW-MODEL-METADATA-MAT3-MAT4 (mode 2) — the SAME buffer slot widens
+    // to arrayStride 64 with FOUR float32x4 attributes at shader locations
+    // 9-12 (offsets 0/16/32/48) so a MAT3/MAT4 property attribute
+    // transports all 9/16 column-major elements (MAT3 zero-pads 9..15 on
+    // the CPU pack). Mode 1 keeps the historical single-attribute layout
+    // byte-identical.
+    if (metadataSlotMode === 2) {
+      layout.push({
+        arrayStride: 64,
+        stepMode: "vertex",
+        attributes: [
+          { shaderLocation: 9, offset: 0, format: "float32x4" },
+          { shaderLocation: 10, offset: 16, format: "float32x4" },
+          { shaderLocation: 11, offset: 32, format: "float32x4" },
+          { shaderLocation: 12, offset: 48, format: "float32x4" },
+        ],
+      });
+    } else {
+      layout.push({
+        arrayStride: 16,
+        stepMode: "vertex",
+        attributes: [{ shaderLocation: 9, offset: 0, format: "float32x4" }],
+      });
+    }
   }
   return layout;
 }
@@ -1776,6 +1802,11 @@ class WebGPUModelPipelineCache {
     // leak into a non-metadata module.
     this._metadataWGSL = "";
     this._metadataClassHash = 0;
+    // NEW-MODEL-METADATA-MAT3-MAT4 — sticky per-primitive widened MAT3/MAT4
+    // transport flag (same set-before-every-getPipeline* contract as the
+    // chunk above). Drives the MODEL_METADATA_MAT_TRANSPORT preprocess bit,
+    // the mode-2 slot-9 vertex layout, and the `:m34` pipeline-key suffix.
+    this._metadataMatTransport = false;
     // DP-H46e — the metadata-PICK chunk (display chunk + the appended
     // `metadataPickingStage` for the currently-picked property) + its hash. Set
     // by the renderer via `setMetadataPickWGSL` immediately before building the
@@ -2281,6 +2312,17 @@ class WebGPUModelPipelineCache {
     const silhouetteBit = this._silhouetteEnabled
       ? ShaderDefine.MODEL_SILHOUETTE
       : 0;
+    // NEW-MODEL-METADATA-MAT3-MAT4 — the widened MAT3/MAT4 attribute
+    // transport is sticky per-primitive state (like the topology / metadata
+    // chunk), NOT a materialDefines bit: bit 30 would overflow computeKey's
+    // `md << 3` pipeline-key packing. Gated on MODEL_HAS_METADATA so the bit
+    // can never leak into a texture-/table-only module (whose call sites use
+    // the 4-arg initializeMetadata signature).
+    const metadataMatBit =
+      this._metadataMatTransport === true &&
+      (key & ShaderDefine.MODEL_HAS_METADATA) !== 0
+        ? ShaderDefine.MODEL_METADATA_MAT_TRANSPORT
+        : 0;
     const effectiveDefines =
       (key |
         captureBit |
@@ -2288,6 +2330,7 @@ class WebGPUModelPipelineCache {
         splitBit |
         modelColorBit |
         silhouetteBit |
+        metadataMatBit |
         (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
     // DP-H46b/c — the generated metadata chunk is class-dependent, so when
@@ -2413,6 +2456,13 @@ class WebGPUModelPipelineCache {
     if (silhouetteBit !== 0) {
       keySalt = (keySalt ^ ShaderDefine.MODEL_SILHOUETTE) >>> 0;
     }
+    // NEW-MODEL-METADATA-MAT3-MAT4 — bit 30, also above the 24-bit window;
+    // fold it into the salt (belt-and-suspenders: the metadata class hash
+    // already differs for MAT-transport chunks, but the Batch 476 pattern
+    // keeps every high bit explicitly salted).
+    if (metadataMatBit !== 0) {
+      keySalt = (keySalt ^ ShaderDefine.MODEL_METADATA_MAT_TRANSPORT) >>> 0;
+    }
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
       fullSource,
@@ -2443,11 +2493,17 @@ class WebGPUModelPipelineCache {
    *
    * @param {string} wgsl the generated metadata chunk
    * @param {number} classHash a stable fingerprint of the generated chunk
+   * @param {boolean} [matTransport=false] NEW-MODEL-METADATA-MAT3-MAT4 —
+   *   true when the chunk was generated with the widened four-vec4 MAT3/MAT4
+   *   transport (the codegen's `matTransport` result). Drives the
+   *   `MODEL_METADATA_MAT_TRANSPORT` preprocess bit, the widened slot-9
+   *   vertex layout (mode 2), and the `:m34` pipeline-key suffix.
    * @private
    */
-  setMetadataWGSL(wgsl, classHash) {
+  setMetadataWGSL(wgsl, classHash, matTransport) {
     this._metadataWGSL = wgsl ?? "";
     this._metadataClassHash = (classHash | 0) >>> 0;
+    this._metadataMatTransport = matTransport === true;
   }
 
   /**
@@ -2463,6 +2519,45 @@ class WebGPUModelPipelineCache {
   clearMetadataWGSL() {
     this._metadataWGSL = "";
     this._metadataClassHash = 0;
+    this._metadataMatTransport = false;
+  }
+
+  /**
+   * NEW-MODEL-METADATA-MAT3-MAT4 — the slot-9 metadata vertex-layout mode for
+   * a normalized materialDefines mask: 0 = no metadata slot, 1 = historical
+   * single float32x4 (location 9), 2 = widened MAT3/MAT4 transport (stride 64,
+   * locations 9-12). Mode 2 engages only when the sticky per-primitive
+   * `metadataMatTransport` state (set via {@link setMetadataWGSL}) is true AND
+   * the mask carries MODEL_HAS_METADATA — mirroring the module-side
+   * `metadataMatBit` gate exactly so layout and compiled module always agree.
+   *
+   * @param {number} md normalized materialDefines
+   * @returns {number} 0 | 1 | 2
+   * @private
+   */
+  _metadataSlotMode(md) {
+    if ((md & ShaderDefine.MODEL_HAS_METADATA) === 0) {
+      return 0;
+    }
+    return this._metadataMatTransport === true ? 2 : 1;
+  }
+
+  /**
+   * NEW-MODEL-METADATA-MAT3-MAT4 — appends the `:m34` discriminator to a
+   * pipeline-map key when the widened MAT3/MAT4 transport is active, so a
+   * MAT-transport primitive and a plain-metadata primitive sharing the same
+   * `(alphaMode, doubleSided, materialDefines)` identity in one per-model
+   * cache build distinct pipelines (their vertex layouts + modules differ).
+   * Off path returns the key UNCHANGED — byte-identical cache behaviour for
+   * every non-MAT-transport primitive.
+   *
+   * @param {number|string} key base pipeline cache key
+   * @param {number} md normalized materialDefines
+   * @returns {number|string}
+   * @private
+   */
+  _metadataVariantKey(key, md) {
+    return this._metadataSlotMode(md) === 2 ? `${key}:m34` : key;
   }
 
   /**
@@ -2798,9 +2893,9 @@ class WebGPUModelPipelineCache {
     // GLTF-POINTS-MODE — snapshot the sticky topology at entry so the async
     // error-scope callback below can't read a later primitive's value.
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      computeKey(alphaMode, doubleSided, md),
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
     );
     let pipeline = this._pipelines.get(key);
     if (pipeline) {
@@ -2809,8 +2904,9 @@ class WebGPUModelPipelineCache {
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
-    // DP-H46a — metadata vertex slot 9 variant.
-    const hasMetadata = (md & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+    // DP-H46a — metadata vertex slot 9 variant (mode 2 = widened MAT3/MAT4
+    // transport, NEW-MODEL-METADATA-MAT3-MAT4).
+    const metadataSlotMode = this._metadataSlotMode(md);
     // C2-22 — wrap creation in a validation error scope. Synchronous
     // `createRenderPipeline` does NOT throw on a bad shader/layout; it returns an
     // INVALID pipeline whose draws are silently dropped (render-hole). The scope's
@@ -2831,7 +2927,7 @@ class WebGPUModelPipelineCache {
       hasTexCoord1,
       hasFeatureId0,
       this._sampleCount,
-      hasMetadata,
+      metadataSlotMode,
       topology,
     );
     this._device.popErrorScope().then((error) => {
@@ -2931,9 +3027,9 @@ class WebGPUModelPipelineCache {
   getDepthWritePipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      computeKey(alphaMode, doubleSided, md),
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
     );
     let pipeline = this._depthWritePipelines.get(key);
     if (pipeline) {
@@ -2942,8 +3038,8 @@ class WebGPUModelPipelineCache {
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
-    // DP-H46a — metadata vertex slot 9 variant.
-    const hasMetadata = (md & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+    // DP-H46a — metadata vertex slot 9 variant (mode 2 = MAT3/MAT4 widened).
+    const metadataSlotMode = this._metadataSlotMode(md);
     // C2-22 (Batch 418) — the depth-write variant draws into the SAME scene FB
     // MRT targets as `getPipeline` (`createPipeline` with forceDepthWrite=true
     // only flips `depthWriteEnabled`), so the flat-magenta error pipeline is a
@@ -2962,7 +3058,7 @@ class WebGPUModelPipelineCache {
       hasTexCoord1,
       hasFeatureId0,
       this._sampleCount,
-      hasMetadata,
+      metadataSlotMode,
       topology,
     );
     this._device.popErrorScope().then((error) => {
@@ -3004,9 +3100,12 @@ class WebGPUModelPipelineCache {
   ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      `${computeKey(alphaMode, doubleSided, md)}:${invisible === true ? 1 : 0}`,
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(
+        `${computeKey(alphaMode, doubleSided, md)}:${invisible === true ? 1 : 0}`,
+        topology,
+      ),
+      md,
     );
     let pipeline = this._silhouetteModelPipelines.get(key);
     if (pipeline) {
@@ -3014,7 +3113,7 @@ class WebGPUModelPipelineCache {
     }
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
-    const hasMetadata = (md & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+    const metadataSlotMode = this._metadataSlotMode(md);
     // Same MRT targets / layout as `getPipeline`, so the flat-magenta
     // error pipeline is a valid drop-in here too (C2-22 pattern).
     this._device.pushErrorScope("validation");
@@ -3029,7 +3128,7 @@ class WebGPUModelPipelineCache {
       hasTexCoord1,
       hasFeatureId0,
       this._sampleCount,
-      hasMetadata,
+      metadataSlotMode,
       invisible === true,
       topology,
     );
@@ -3073,9 +3172,12 @@ class WebGPUModelPipelineCache {
   ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      `${computeKey(alphaMode, doubleSided, md)}:${translucent === true ? 1 : 0}`,
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(
+        `${computeKey(alphaMode, doubleSided, md)}:${translucent === true ? 1 : 0}`,
+        topology,
+      ),
+      md,
     );
     let pipeline = this._silhouetteColorPipelines.get(key);
     if (pipeline) {
@@ -3083,7 +3185,7 @@ class WebGPUModelPipelineCache {
     }
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
-    const hasMetadata = (md & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+    const metadataSlotMode = this._metadataSlotMode(md);
     this._device.pushErrorScope("validation");
     pipeline = createSilhouetteColorPipeline(
       this._device,
@@ -3095,7 +3197,7 @@ class WebGPUModelPipelineCache {
       hasTexCoord1,
       hasFeatureId0,
       this._sampleCount,
-      hasMetadata,
+      metadataSlotMode,
       translucent === true,
       topology,
     );
@@ -3136,9 +3238,9 @@ class WebGPUModelPipelineCache {
   getPickPipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      computeKey(alphaMode, doubleSided, md),
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
     );
     let pipeline = this._pickPipelines.get(key);
     if (pipeline) {
@@ -3159,7 +3261,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
-      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      this._metadataSlotMode(md),
       topology,
     );
     this._pickPipelines.set(key, pipeline);
@@ -3190,11 +3292,14 @@ class WebGPUModelPipelineCache {
     // Fold in the picked-property hash so a different picked property (same
     // material variant) doesn't collide on the cache key.
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      `${computeKey(alphaMode, doubleSided, md)}_${
-        this._metadataPickClassHash >>> 0
-      }`,
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(
+        `${computeKey(alphaMode, doubleSided, md)}_${
+          this._metadataPickClassHash >>> 0
+        }`,
+        topology,
+      ),
+      md,
     );
     let pipeline = this._pickMetadataPipelines.get(key);
     if (pipeline) {
@@ -3216,7 +3321,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
-      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      this._metadataSlotMode(md),
       topology,
     );
     this._pickMetadataPipelines.set(key, pipeline);
@@ -3247,9 +3352,9 @@ class WebGPUModelPipelineCache {
     }
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      computeKey(alphaMode, doubleSided, md),
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
     );
     let pipeline = this._pickHoverPipelines.get(key);
     if (pipeline) {
@@ -3264,7 +3369,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
-      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      this._metadataSlotMode(md),
       topology,
     );
     this._pickHoverPipelines.set(key, pipeline);
@@ -3290,9 +3395,9 @@ class WebGPUModelPipelineCache {
     }
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      computeKey(alphaMode, doubleSided, md),
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
     );
     let pipeline = this._pickPrecisePass1Pipelines.get(key);
     if (pipeline) {
@@ -3307,7 +3412,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
-      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      this._metadataSlotMode(md),
       topology,
     );
     this._pickPrecisePass1Pipelines.set(key, pipeline);
@@ -3331,9 +3436,9 @@ class WebGPUModelPipelineCache {
     }
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      computeKey(alphaMode, doubleSided, md),
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
     );
     let pipeline = this._pickPrecisePass2Pipelines.get(key);
     if (pipeline) {
@@ -3348,7 +3453,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
-      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      this._metadataSlotMode(md),
       topology,
     );
     this._pickPrecisePass2Pipelines.set(key, pipeline);
@@ -3373,9 +3478,9 @@ class WebGPUModelPipelineCache {
   getVelocityPipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      computeKey(alphaMode, doubleSided, md),
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
     );
     let pipeline = this._velocityPipelines.get(key);
     if (pipeline) {
@@ -3394,7 +3499,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._sampleCount,
-      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      this._metadataSlotMode(md),
       topology,
     );
     this._velocityPipelines.set(key, pipeline);
@@ -3424,9 +3529,9 @@ class WebGPUModelPipelineCache {
   getClassificationPipeline(alphaMode, doubleSided, materialDefines) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      computeKey(alphaMode, doubleSided, md),
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
     );
     let pipeline = this._classificationPipelines.get(key);
     if (pipeline) {
@@ -3446,7 +3551,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._sampleCount,
-      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      this._metadataSlotMode(md),
       topology,
     );
     this._classificationPipelines.set(key, pipeline);
@@ -3491,11 +3596,14 @@ class WebGPUModelPipelineCache {
     // the capture pipeline instead of serving a stale-depth-encoding variant
     // (which would break model↔globe occlusion in the shared face depth buffer).
     const topology = this._primitiveTopology;
-    const key = topologyVariantKey(
-      `${computeKey(alphaMode, doubleSided, md)}_${faceFormat}_${
-        this._logDepthEnabled ? 1 : 0
-      }`,
-      topology,
+    const key = this._metadataVariantKey(
+      topologyVariantKey(
+        `${computeKey(alphaMode, doubleSided, md)}_${faceFormat}_${
+          this._logDepthEnabled ? 1 : 0
+        }`,
+        topology,
+      ),
+      md,
     );
     let pipeline = this._capturePipelines.get(key);
     if (pipeline) {
@@ -3515,7 +3623,7 @@ class WebGPUModelPipelineCache {
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
-      (md & ShaderDefine.MODEL_HAS_METADATA) !== 0,
+      this._metadataSlotMode(md),
       topology,
     );
     this._capturePipelines.set(key, pipeline);

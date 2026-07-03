@@ -517,6 +517,7 @@ function getOrCreateModelCaptureCommands(
       pipelineCache.setMetadataWGSL(
         rec.metadataWGSL,
         rec.metadataClassHash | 0,
+        rec.metadataMatTransport === true,
       );
     } else {
       pipelineCache.clearMetadataWGSL();
@@ -1437,6 +1438,7 @@ function applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache) {
     pipelineCache.setMetadataWGSL(
       primCache._metadataWGSL,
       primCache._metadataClassHash | 0,
+      primCache._metadataMatTransport === true,
     );
   } else {
     pipelineCache.clearMetadataWGSL();
@@ -1609,6 +1611,11 @@ function ensurePrimitiveCache(
     // is set. Created from `geometry.metadataData` below; owned by
     // `WebGPUModelMetadata.ensureMetadataResources` for the GPU upload.
     _metadataBuffer: null,
+    // NEW-MODEL-METADATA-MAT3-MAT4 — true when the slot-9 buffer carries the
+    // widened 16-float MAT3/MAT4 transport (stride 64, locations 9-12).
+    // Persisted from `geometry.metadataMatTransport` below and fed to the
+    // pipeline cache's sticky state on every pipeline (re)build.
+    _metadataMatTransport: false,
     // DP-H46c — property-texture bind-group entries (bindings 39..),
     // resolved + uploaded by `ensurePropertyTextureResources`. Spliced into
     // the merged group-1 bind group when MODEL_HAS_PROPERTY_TEXTURES is set.
@@ -1820,6 +1827,10 @@ function ensurePrimitiveCache(
   ) {
     primCache._metadataWGSL = geometry.metadataWGSL;
     primCache._metadataClassHash = geometry.metadataClassHash | 0;
+    // NEW-MODEL-METADATA-MAT3-MAT4 — persist the widened-transport flag so
+    // every pipeline (re)build for this primitive feeds the pipeline cache's
+    // sticky `metadataMatTransport` state alongside the chunk.
+    primCache._metadataMatTransport = geometry.metadataMatTransport === true;
   }
 
   // GLTF-POINTS-MODE — non-indexed POINTS primitives (the common shape for
@@ -3590,6 +3601,14 @@ function updateWebGPUModel(model, frameState) {
           if (defined(metadataCodegen)) {
             geometry.metadataWGSL = metadataCodegen.wgsl;
             geometry.metadataClassHash = metadataCodegen.classHash;
+            // NEW-MODEL-METADATA-MAT3-MAT4 — true when the chunk carries the
+            // widened four-vec4 MAT3/MAT4 transport. The codegen derives it
+            // from the SAME `resolveMetadataAttributeData` pack the slot-9
+            // upload above used, so the vertex data (16 floats/vertex), the
+            // mode-2 vertex layout, and the extended `initializeMetadata`
+            // signature are always in lockstep.
+            geometry.metadataMatTransport =
+              metadataCodegen.matTransport === true;
           }
         }
         // METADATA-TABLE-SOURCES — late-metadata rebuild. Structural-metadata
@@ -4238,6 +4257,9 @@ function updateWebGPUModel(model, frameState) {
           // undefined for non-metadata primitives (capture build clears).
           metadataWGSL: primCache._metadataWGSL,
           metadataClassHash: primCache._metadataClassHash | 0,
+          // NEW-MODEL-METADATA-MAT3-MAT4 — the capture replay must rebuild
+          // its pipeline with the same widened-transport variant.
+          metadataMatTransport: primCache._metadataMatTransport === true,
           materialBuffer: primCache.materialBuffer,
           lightBuffer: primCache.lightBuffer,
           textureEntries: primCache.textureEntries,

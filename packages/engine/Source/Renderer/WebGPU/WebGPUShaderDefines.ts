@@ -12,7 +12,8 @@
  * `(sourceId & 0xff) | ((defines & 0xffffff) << 8)`. That gives
  * 8 bits for source IDs (256 shader files — plenty) and 24 bits of
  * define mask in the NUMERIC key. The registry has grown past 24
- * defines (30 bits live as of Batch 503, `1 << 0` … `1 << 29`): the
+ * defines (31 bits live as of NEW-MODEL-METADATA-MAT3-MAT4, `1 << 0` …
+ * `1 << 30`): the
  * numeric key's `& 0xffffff` mask silently DROPS bits 24-31, so any
  * define at bit >= 24 MUST be disambiguated via the cache's `keySalt`
  * escape hatch — callers fold the high bits (or a content fingerprint
@@ -21,7 +22,8 @@
  * `` `${numericKey}#${keySalt}` `` whenever `keySalt !== 0`. Live
  * examples: `WebGPUModelPipelineCache.js` XOR-folds
  * `MODEL_SPLIT_ENABLED`/`MODEL_HAS_COLOR`/`MODEL_SILHOUETTE`
- * (bits 26-28) into its keySalt; `WebGPUVoxelRenderer.ts` salts
+ * (bits 26-28) + `MODEL_METADATA_MAT_TRANSPORT` (bit 30) into its
+ * keySalt; `WebGPUVoxelRenderer.ts` salts
  * `VOXEL_USER_CUSTOM_SHADER` (bit 29) with the generated-chunk hash.
  * When adding a define at bit >= 24, document the keySalt requirement
  * in its JSDoc and make every consumer that sets the bit pass a
@@ -825,6 +827,48 @@ export const ShaderDefine = Object.freeze({
    * Consumer: `WebGPUVoxelRenderer.ts` (inline `VOXEL_WGSL` fragmentMain).
    */
   VOXEL_USER_CUSTOM_SHADER: 1 << 29,
+
+  /**
+   * Model's transported EXT_structural_metadata property ATTRIBUTE is a
+   * MAT3/MAT4 — full 9/16-component transport (NEW-MODEL-METADATA-MAT3-MAT4).
+   * The base `MODEL_HAS_METADATA` transport is ONE `float32x4` vertex
+   * attribute at shader location 9 (vertex buffer slot appended last), which
+   * carries at most four components; MAT3 (9) / MAT4 (16) properties
+   * previously zero-filled everything past the first four. When THIS bit is
+   * set (always alongside `MODEL_HAS_METADATA`), the slot-9 vertex buffer
+   * widens to `arrayStride = 64` carrying FOUR `float32x4` attributes at
+   * shader locations 9-12 (offsets 0/16/32/48 — 16 floats per vertex,
+   * column-major matrix elements, MAT3 zero-pads elements 9..15), and
+   * `ModelPBRComplete.wgsl` activates the nested
+   * `//>>ifdef MODEL_METADATA_MAT_TRANSPORT` blocks: `metadataValue1..3`
+   * vertex inputs (locations 10-12), flat varyings (locations 13-15), and the
+   * extended 7-arg `initializeMetadata(metadataValue, metadataValue1,
+   * metadataValue2, metadataValue3, texCoord0, texCoord1, featureId)` call.
+   * The GENERATED chunk (`MetadataWGSLPipelineStage.generateMetadataWGSL`)
+   * emits the matching extended signature and reassembles the full matrix in
+   * `constructFromTransport` (per-element offset/scale still baked).
+   *
+   * Per-primitive selection: `WebGPUModelRenderer` sets the pipeline cache's
+   * sticky `metadataMatTransport` state (NOT a `materialDefines` bit — bit 30
+   * would overflow `computeKey`'s `md << 3` pipeline-key packing) from the
+   * codegen's `matTransport` result, which is true only when the transported
+   * first property attribute is MAT3/MAT4 AND the CPU pack
+   * (`WebGPUModelMetadata.resolvePropertyAttributeVec4`) widened to 16
+   * floats/vertex for the SAME property — both sides derive from the same
+   * resolve, so layout and codegen can never disagree. When clear (every
+   * scalar/VEC/MAT2 metadata model and every non-metadata model), all gated
+   * blocks strip to the historical source and the module/pipeline keys are
+   * byte-identical to the pre-MAT-transport path.
+   *
+   * NOTE — bit ≥ 24: the device module-cache numeric key masks defines to 24
+   * bits. `WebGPUModelPipelineCache._getOrCreateShaderModule` folds this bit
+   * into the cache's `keySalt` when set (Batch 476 pattern; the metadata
+   * class hash already differs for MAT-transport chunks, so this is
+   * belt-and-suspenders). The pipeline maps append a `:m34` key suffix.
+   *
+   * Consumers: `ModelPBRComplete.wgsl` + the GENERATED metadata chunk.
+   */
+  MODEL_METADATA_MAT_TRANSPORT: 1 << 30,
 } as const);
 
 /**

@@ -1,0 +1,154 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "make_mat_boxes.mjs (NEW-MODEL-METADATA-MAT3-MAT4 probe asset)"
+  },
+  "extensionsUsed": [
+    "EXT_structural_metadata"
+  ],
+  "extensions": {
+    "EXT_structural_metadata": {
+      "schema": {
+        "id": "BoxMAT4Schema",
+        "classes": {
+          "matrixBox": {
+            "properties": {
+              "faceMat4": {
+                "description": "Per-face constant MAT4 whose column sums encode a distinct RGB palette — proves full 16-component transport (a zero-filled tail visibly shifts the sums).",
+                "type": "MAT4",
+                "componentType": "FLOAT32"
+              }
+            }
+          }
+        }
+      },
+      "propertyAttributes": [
+        {
+          "class": "matrixBox",
+          "properties": {
+            "faceMat4": {
+              "attribute": "_FACE_MAT4"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "_FACE_MAT4": 2
+          },
+          "indices": 3,
+          "material": 0,
+          "extensions": {
+            "EXT_structural_metadata": {
+              "propertyAttributes": [
+                0
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 1
+      }
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -0.5,
+        -0.5,
+        -0.5
+      ],
+      "max": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 24,
+      "type": "MAT4"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 288,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 576,
+      "byteLength": 1536,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 2112,
+      "byteLength": 72,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 2184,
+      "uri": "data:application/octet-stream;base64,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"
+    }
+  ]
+}

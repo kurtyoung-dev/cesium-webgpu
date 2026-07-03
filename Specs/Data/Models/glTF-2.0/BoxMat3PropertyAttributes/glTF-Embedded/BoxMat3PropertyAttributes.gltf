@@ -1,0 +1,154 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "make_mat_boxes.mjs (NEW-MODEL-METADATA-MAT3-MAT4 probe asset)"
+  },
+  "extensionsUsed": [
+    "EXT_structural_metadata"
+  ],
+  "extensions": {
+    "EXT_structural_metadata": {
+      "schema": {
+        "id": "BoxMAT3Schema",
+        "classes": {
+          "matrixBox": {
+            "properties": {
+              "faceMat3": {
+                "description": "Per-face constant MAT3 whose column sums encode a distinct RGB palette — proves full 9-component transport (a zero-filled tail visibly shifts the sums).",
+                "type": "MAT3",
+                "componentType": "FLOAT32"
+              }
+            }
+          }
+        }
+      },
+      "propertyAttributes": [
+        {
+          "class": "matrixBox",
+          "properties": {
+            "faceMat3": {
+              "attribute": "_FACE_MAT3"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "_FACE_MAT3": 2
+          },
+          "indices": 3,
+          "material": 0,
+          "extensions": {
+            "EXT_structural_metadata": {
+              "propertyAttributes": [
+                0
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 1
+      }
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -0.5,
+        -0.5,
+        -0.5
+      ],
+      "max": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 24,
+      "type": "MAT3"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 288,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 576,
+      "byteLength": 864,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1440,
+      "byteLength": 72,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 1512,
+      "uri": "data:application/octet-stream;base64,AAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAD8AAAA/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAvwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAD8AAAA/AAAAPwAAAD8AAAA/AAAAPwAAAD8AAAC/AAAAvwAAAL8AAAA/AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAAAPwAAAL8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAPwAAAD8AAAC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/ZmbmPpqZmT6amRk+mpkZPs3MzD3NzEw9zcxMPYmICD2JiIg8ZmbmPpqZmT6amRk+mpkZPs3MzD3NzEw9zcxMPYmICD2JiIg8ZmbmPpqZmT6amRk+mpkZPs3MzD3NzEw9zcxMPYmICD2JiIg8ZmbmPpqZmT6amRk+mpkZPs3MzD3NzEw9zcxMPYmICD2JiIg8zcxMPYmICD2JiIg8ZmbmPpqZmT6amRk+mpkZPs3MzD3NzEw9zcxMPYmICD2JiIg8ZmbmPpqZmT6amRk+mpkZPs3MzD3NzEw9zcxMPYmICD2JiIg8ZmbmPpqZmT6amRk+mpkZPs3MzD3NzEw9zcxMPYmICD2JiIg8ZmbmPpqZmT6amRk+mpkZPs3MzD3NzEw9zczMPYmIiD2JiAg9zcxMPomICD6JiIg9ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9zcxMPomICD6JiIg9ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9zcxMPomICD6JiIg9ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9zcxMPomICD6JiIg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+zczMPYmIiD2JiAg9ZmbmPpqZmT6amRk+ZmbmPpqZmT6amRk+AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcA"
+    }
+  ]
+}

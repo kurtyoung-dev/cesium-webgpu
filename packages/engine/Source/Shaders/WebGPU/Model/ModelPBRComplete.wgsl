@@ -781,6 +781,17 @@ struct VertexInput {
   // the transported components into the property's real WGSL type.
   //>>ifdef MODEL_HAS_METADATA
   @location(9) metadataValue: vec4<f32>,
+  // NEW-MODEL-METADATA-MAT3-MAT4 — widened transport for MAT3/MAT4 property
+  // attributes: the slot-9 vertex buffer's arrayStride grows to 64 and
+  // carries FOUR float32x4 attributes (locations 9-12, offsets 0/16/32/48;
+  // 16 column-major matrix elements per vertex, MAT3 zero-pads 9..15).
+  // Stripped for every scalar/VEC/MAT2 metadata model so the historical
+  // single-vec4 layout stays byte-identical.
+  //>>ifdef MODEL_METADATA_MAT_TRANSPORT
+  @location(10) metadataValue1: vec4<f32>,
+  @location(11) metadataValue2: vec4<f32>,
+  @location(12) metadataValue3: vec4<f32>,
+  //>>endif
   //>>endif
 };
 
@@ -827,6 +838,14 @@ struct VertexOutput {
   // so the OFF path is byte-identical.
   //>>ifdef MODEL_HAS_METADATA
   @location(12) @interpolate(flat) metadataValue: vec4<f32>,
+  // NEW-MODEL-METADATA-MAT3-MAT4 — the widened MAT3/MAT4 transport carries
+  // three more flat vec4 varyings (locations 13-15; with LOG_DEPTH active
+  // this lands exactly at the WebGPU spec-floor 16 inter-stage variables).
+  //>>ifdef MODEL_METADATA_MAT_TRANSPORT
+  @location(13) @interpolate(flat) metadataValue1: vec4<f32>,
+  @location(14) @interpolate(flat) metadataValue2: vec4<f32>,
+  @location(15) @interpolate(flat) metadataValue3: vec4<f32>,
+  //>>endif
   //>>endif
 };
 
@@ -1055,6 +1074,11 @@ struct VertexOutput {
   // member exists when MODEL_HAS_METADATA is clear).
   //>>ifdef MODEL_HAS_METADATA
   output.metadataValue = input.metadataValue;
+  //>>ifdef MODEL_METADATA_MAT_TRANSPORT
+  output.metadataValue1 = input.metadataValue1;
+  output.metadataValue2 = input.metadataValue2;
+  output.metadataValue3 = input.metadataValue3;
+  //>>endif
   //>>endif
 
   //>>ifdef MODEL_SILHOUETTE
@@ -1463,6 +1487,13 @@ struct FragmentInput {
   // so the FragmentInput layout is byte-identical for non-metadata models.
   //>>ifdef MODEL_HAS_METADATA
   @location(12) @interpolate(flat) metadataValue: vec4<f32>,
+  // NEW-MODEL-METADATA-MAT3-MAT4 — see VertexOutput; locations 13-15 carry
+  // the widened MAT3/MAT4 transport's remaining 12 matrix elements.
+  //>>ifdef MODEL_METADATA_MAT_TRANSPORT
+  @location(13) @interpolate(flat) metadataValue1: vec4<f32>,
+  @location(14) @interpolate(flat) metadataValue2: vec4<f32>,
+  @location(15) @interpolate(flat) metadataValue3: vec4<f32>,
+  //>>endif
   //>>endif
   @builtin(front_facing) frontFacing: bool,
 };
@@ -3485,7 +3516,13 @@ struct FragOutput {
     //>>else
     let metaTC1 = input.texCoord0;
     //>>endif
+    // NEW-MODEL-METADATA-MAT3-MAT4 — the MAT-transport chunk's generated
+    // `initializeMetadata` takes the three extra widened-transport vec4s.
+    //>>ifdef MODEL_METADATA_MAT_TRANSPORT
+    let metadata = initializeMetadata(input.metadataValue, input.metadataValue1, input.metadataValue2, input.metadataValue3, input.texCoord0, metaTC1, input.featureId0);
+    //>>else
     let metadata = initializeMetadata(input.metadataValue, input.texCoord0, metaTC1, input.featureId0);
+    //>>endif
     out.color = metadataDebugColor(metadata);
   }
   //>>else
@@ -3833,7 +3870,13 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   let metaPickTC1 = input.texCoord0;
   //>>endif
   //>>ifdef MODEL_HAS_METADATA
+  // NEW-MODEL-METADATA-MAT3-MAT4 — extended call for the widened MAT3/MAT4
+  // transport, matching the display call site.
+  //>>ifdef MODEL_METADATA_MAT_TRANSPORT
+  let pickMetadata = initializeMetadata(input.metadataValue, input.metadataValue1, input.metadataValue2, input.metadataValue3, input.texCoord0, metaPickTC1, input.featureId0);
+  //>>else
   let pickMetadata = initializeMetadata(input.metadataValue, input.texCoord0, metaPickTC1, input.featureId0);
+  //>>endif
   //>>else
   let pickMetadata = initializeMetadata(vec4<f32>(0.0), input.texCoord0, metaPickTC1, input.featureId0);
   //>>endif

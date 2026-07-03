@@ -57,6 +57,7 @@ import MetadataType from "../MetadataType.js";
 import {
   resolvePropertyTextureLayout,
   resolvePropertyTableLayout,
+  resolveMetadataAttributeData,
 } from "../../Renderer/WebGPU/WebGPUModelMetadata.js";
 import {
   getWgslType,
@@ -185,8 +186,13 @@ function componentAt(value, componentIndex) {
  *   - `vec4<f32>`  → `vecExpr`
  *   - `mat2x2<f32>`→ all four components (column-major, matching the glTF
  *                    accessor's column-major element order)
- *   - `mat3x3/mat4x4` → first four components, rest zero (a full matrix
- *                    needs >1 vertex slot — still deferred)
+ *   - `mat3x3/mat4x4` → NEW-MODEL-METADATA-MAT3-MAT4: when `matTransport`
+ *                    is true, ALL 9/16 elements are reassembled from the
+ *                    four-vec4 widened transport (`metadataValue` +
+ *                    `metadataValue1..3`, column-major). When false (the
+ *                    historical single-vec4 transport), first four
+ *                    components, rest zero — kept byte-identical as the
+ *                    defensive fallback.
  *   - integer families → converted from the transported f32 numeric values
  *                    (the CPU decode keeps unnormalized ints numeric; the
  *                    EXT_structural_metadata spec forbids offset/scale on
@@ -199,12 +205,22 @@ function componentAt(value, componentIndex) {
  * component-wise, so the transform is baked into each constructor argument).
  *
  * @param {string} wgslType
- * @param {string} vecExpr a WGSL `vec4<f32>` expression (the transport)
+ * @param {string} vecExpr a WGSL `vec4<f32>` expression (the transport).
+ *   When `matTransport` is true this MUST be the literal parameter name
+ *   `metadataValue` — the extended element reads derive the sibling
+ *   parameter names (`metadataValue1..3`) from it by suffixing.
  * @param {MetadataClassProperty} classProperty
+ * @param {boolean} [matTransport=false] NEW-MODEL-METADATA-MAT3-MAT4 —
+ *   true when the widened four-vec4 transport carries the full matrix.
  * @returns {string}
  * @private
  */
-function constructFromTransport(wgslType, vecExpr, classProperty) {
+function constructFromTransport(
+  wgslType,
+  vecExpr,
+  classProperty,
+  matTransport,
+) {
   if (wgslType === "f32") {
     return applyValueTransform(`${vecExpr}.x`, "f32", classProperty);
   }
@@ -226,17 +242,24 @@ function constructFromTransport(wgslType, vecExpr, classProperty) {
     const raw = n === 4 ? vecExpr : `${vecExpr}.${"xyzw".slice(0, n)}`;
     return `${wgslType}(${raw})`;
   }
-  // matNxN<f32> — fill the first up-to-4 elements from the transport
-  // (column-major), zero the rest; bake the per-element transform.
+  // matNxN<f32> — fill the elements from the transport (column-major),
+  // baking the per-element transform. NEW-MODEL-METADATA-MAT3-MAT4: with
+  // the widened transport every element is real (element k reads component
+  // k%4 of the (k/4)-th transport vec4); with the historical single-vec4
+  // transport only the first up-to-4 elements are real and the rest zero
+  // (byte-identical to the pre-MAT-transport codegen — MAT2's only path).
   const matMatch = /^mat([234])x\1<f32>$/.exec(wgslType);
   if (matMatch) {
     const n = parseInt(matMatch[1], 10);
     const total = n * n;
     const hasTransform = classProperty.hasValueTransform === true;
+    const carried = matTransport === true ? Math.min(total, 16) : 4;
     const comps = [];
     for (let k = 0; k < total; k++) {
-      if (k < 4) {
-        const raw = `${vecExpr}.${"xyzw".charAt(k)}`;
+      if (k < carried) {
+        const slot = k >> 2;
+        const vecName = slot === 0 ? vecExpr : `${vecExpr}${slot}`;
+        const raw = `${vecName}.${"xyzw".charAt(k & 3)}`;
         if (hasTransform) {
           const offset = componentAt(classProperty.offset, k);
           const scale = componentAt(classProperty.scale, k);
@@ -417,7 +440,8 @@ function getPropertyTableFields(model, primitive, usedFieldNames) {
  * @param {ModelComponents.Primitive} primitive
  * @returns {{ wgsl: string, classHash: number, fields: object[],
  *   propertyTextureLayout: object|undefined,
- *   propertyTableLayout: object|undefined }|undefined}
+ *   propertyTableLayout: object|undefined,
+ *   matTransport: boolean }|undefined}
  * @private
  */
 function generateMetadataWGSL(model, primitive) {
@@ -450,6 +474,26 @@ function generateMetadataWGSL(model, primitive) {
   // vertex slot 9 (vec4). May be undefined for texture-/table-only models.
   const transported =
     attributeFields.length > 0 ? attributeFields[0] : undefined;
+
+  // NEW-MODEL-METADATA-MAT3-MAT4 — the widened four-vec4 transport engages
+  // only when the transported property is a MAT3/MAT4 AND the CPU pack
+  // (`resolveMetadataAttributeData`) widened to 16 floats for the SAME
+  // property. Deriving both sides from the same resolve keeps the vertex
+  // layout (`arrayStride = 64`, locations 9-12) and this generated signature
+  // in lockstep — they can never disagree on a well-formed or malformed
+  // asset. Scalar/VEC/MAT2 (and texture-/table-only) models keep
+  // `matTransport === false` and a byte-identical chunk.
+  let matTransport = false;
+  if (
+    defined(transported) &&
+    /^mat[34]x[34]<f32>$/.test(transported.wgslType)
+  ) {
+    const resolvedPack = resolveMetadataAttributeData(model, primitive);
+    matTransport =
+      defined(resolvedPack) &&
+      resolvedPack.vec4Count === 4 &&
+      resolvedPack.propertyId === transported.propertyId;
+  }
 
   const lines = [];
   lines.push(
@@ -527,8 +571,16 @@ function generateMetadataWGSL(model, primitive) {
   //    table-only). `metadataFeatureId` is the per-vertex feature ID (flat)
   //    that indexes the property-table COLUMN (0.0 when the primitive has no
   //    table).
+  // NEW-MODEL-METADATA-MAT3-MAT4 — the MAT-transport variant takes three
+  // extra vec4 params (`metadataValue1..3`, the widened locations 10-12) so
+  // the full 9/16-element matrix reassembles. The historical 4-arg signature
+  // is byte-identical for every non-MAT-transport chunk, and the call sites
+  // in ModelPBRComplete.wgsl switch on `//>>ifdef MODEL_METADATA_MAT_TRANSPORT`.
+  const matParams = matTransport
+    ? "metadataValue1: vec4<f32>, metadataValue2: vec4<f32>, metadataValue3: vec4<f32>, "
+    : "";
   lines.push(
-    "fn initializeMetadata(metadataValue: vec4<f32>, metadataTexCoord0: vec2<f32>, metadataTexCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata {",
+    `fn initializeMetadata(metadataValue: vec4<f32>, ${matParams}metadataTexCoord0: vec2<f32>, metadataTexCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata {`,
   );
   lines.push("  var metadata: Metadata;");
   // Attribute fields. METADATA-MULTICOMPONENT — the transported property is
@@ -541,6 +593,7 @@ function generateMetadataWGSL(model, primitive) {
         f.wgslType,
         "metadataValue",
         f.classProperty,
+        matTransport,
       );
       lines.push(`  metadata.${f.fieldName} = ${constructed};`);
     } else {
@@ -697,7 +750,33 @@ function generateMetadataWGSL(model, primitive) {
   const vecMatch = defined(transported)
     ? /^vec([234])<f32>$/.exec(transported.wgslType)
     : null;
-  if (vecMatch) {
+  const matDebugMatch =
+    matTransport && defined(transported)
+      ? /^mat([34])x\1<f32>$/.exec(transported.wgslType)
+      : null;
+  if (matDebugMatch) {
+    // NEW-MODEL-METADATA-MAT3-MAT4 — column-sum paint over the FULL matrix
+    // (post-value-transform field, matching what WebGL's CustomShader
+    // `fsInput.metadata.<field>` exposes, so a WebGL custom shader computing
+    // the same column sums paints the identical color — the cross-backend
+    // probe readout). MAT3: rgb = fract(abs(colSum0..2)). MAT4 folds column
+    // 3 into every channel so a zero-filled tail shifts all three channels
+    // visibly. `fract(abs(...))` matches the table-proof convention for
+    // unbounded raw values.
+    const n = parseInt(matDebugMatch[1], 10);
+    const fieldExpr = `metadata.${transported.fieldName}`;
+    const colSum = (c) => {
+      const terms = [];
+      for (let r = 0; r < n; r++) {
+        terms.push(`${fieldExpr}[${c}][${r}]`);
+      }
+      return terms.join(" + ");
+    };
+    const tail = n === 4 ? ` + (${colSum(3)})` : "";
+    lines.push(
+      `  return vec4<f32>(fract(abs((${colSum(0)})${tail})), fract(abs((${colSum(1)})${tail})), fract(abs((${colSum(2)})${tail})), 1.0);`,
+    );
+  } else if (vecMatch) {
     const n = parseInt(vecMatch[1], 10);
     const comps = [];
     for (let c = 0; c < 3; c++) {
@@ -733,6 +812,11 @@ function generateMetadataWGSL(model, primitive) {
     fields: attributeFields,
     propertyTextureLayout,
     propertyTableLayout,
+    // NEW-MODEL-METADATA-MAT3-MAT4 — true when the chunk was generated with
+    // the widened four-vec4 matrix transport. The renderer forwards this to
+    // the pipeline cache's sticky `metadataMatTransport` state (vertex layout
+    // + `MODEL_METADATA_MAT_TRANSPORT` preprocess bit + `:m34` pipeline keys).
+    matTransport,
   };
 }
 

@@ -151,13 +151,18 @@ const PROPERTY_TABLE_SAMPLER_BINDING = PROPERTY_TABLE_BINDING + 1;
  *
  * METADATA-MULTICOMPONENT — up to FOUR components per vertex are
  * transported (SCALAR pads `.yzw` with zero; VEC2/VEC3 pad the tail; VEC4
- * and MAT2 fill all four). Properties with more than four components
- * (MAT3/MAT4) still transport only their first four — the codegen
- * (`MetadataWGSLPipelineStage.constructFromTransport`) zero-fills the rest.
- * This replaces DP-H46a's single-scalar (`.x`-only) transport so VEC2/3/4
- * property attributes round-trip every component, matching the WebGL
- * `MetadataPipelineStage` attribute path (which reads the full glTF
- * attribute directly).
+ * and MAT2 fill all four). This replaces DP-H46a's single-scalar
+ * (`.x`-only) transport so VEC2/3/4 property attributes round-trip every
+ * component, matching the WebGL `MetadataPipelineStage` attribute path
+ * (which reads the full glTF attribute directly).
+ *
+ * NEW-MODEL-METADATA-MAT3-MAT4 — MAT3 (9) / MAT4 (16) property attributes
+ * widen the pack to FOUR vec4s per vertex (16 floats, column-major matrix
+ * elements; MAT3 zero-pads elements 9..15). The returned `vec4Count` is 4
+ * in that case (1 otherwise) and drives the widened `arrayStride = 64`
+ * vertex layout (shader locations 9-12) plus the
+ * `MODEL_METADATA_MAT_TRANSPORT` shader variant. Every other shape keeps
+ * the single-vec4 pack byte-identical.
  *
  * The property's backing glTF attribute must exist on the primitive AND its
  * typed array must survive to render time (it does on WebGPU — `GltfLoader`
@@ -171,7 +176,7 @@ const PROPERTY_TABLE_SAMPLER_BINDING = PROPERTY_TABLE_BINDING + 1;
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
- * @returns {{ data: Float32Array, propertyId: string, attributeName: string, componentCount: number }|undefined}
+ * @returns {{ data: Float32Array, propertyId: string, attributeName: string, componentCount: number, vec4Count: number }|undefined}
  * @private
  */
 function resolvePropertyAttributeVec4(model, primitive) {
@@ -235,11 +240,23 @@ function resolvePropertyAttributeVec4(model, primitive) {
       // at slot 9. Missing tail components stay zero (the Float32Array is
       // zero-initialized), so a SCALAR property transports as (x,0,0,0)
       // and a VEC3 as (x,y,z,0).
-      const transported = Math.min(componentCount, 4);
-      const packed = new Float32Array(vertexCount * 4);
+      //
+      // NEW-MODEL-METADATA-MAT3-MAT4 — MAT3/MAT4 attributes widen the pack
+      // to FOUR vec4s per vertex (16 floats, column-major; MAT3 zero-pads
+      // elements 9..15) so the full matrix transports. Keyed strictly off
+      // the glTF attribute TYPE (not a generic componentCount > 4) so only
+      // real matrix attributes take the widened layout — the codegen's
+      // `matTransport` predicate mirrors this via the same resolve.
+      const isMatTransport =
+        modelAttribute.type === AttributeType.MAT3 ||
+        modelAttribute.type === AttributeType.MAT4;
+      const vec4Count = isMatTransport ? 4 : 1;
+      const packWidth = vec4Count * 4;
+      const transported = Math.min(componentCount, packWidth);
+      const packed = new Float32Array(vertexCount * packWidth);
       for (let v = 0; v < vertexCount; v++) {
         for (let c = 0; c < transported; c++) {
-          packed[v * 4 + c] = decoded[v * componentCount + c];
+          packed[v * packWidth + c] = decoded[v * componentCount + c];
         }
       }
       return {
@@ -247,6 +264,7 @@ function resolvePropertyAttributeVec4(model, primitive) {
         propertyId: propertyId,
         attributeName: attributeName,
         componentCount: transported,
+        vec4Count: vec4Count,
       };
     }
   }
@@ -926,6 +944,9 @@ function destroyMetadataResources(primCache) {
   // references, no GPU resource to destroy).
   primCache._metadataWGSL = undefined;
   primCache._metadataClassHash = 0;
+  // NEW-MODEL-METADATA-MAT3-MAT4 — reset the widened-transport flag so a
+  // rebuild re-derives it from the fresh codegen result.
+  primCache._metadataMatTransport = false;
   // DP-H46c — property-texture views/samplers are owned by the glTF
   // textures / stub (not allocated here), so there's nothing to destroy;
   // just drop the cached entries so a rebuild re-resolves them.
