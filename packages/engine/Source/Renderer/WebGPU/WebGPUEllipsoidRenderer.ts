@@ -190,10 +190,10 @@ export function createEllipsoidBindGroupLayout(
 //
 // Layout (offsets in floats):
 //   0..15  : mvpRelativeToEye         mat4
-//   16..19 : encodedCameraHigh + pad  vec3+pad
-//   20..23 : encodedCameraLow  + pad  vec3+pad
-//   24..27 : centerHigh        + pad  vec3+pad
-//   28..31 : centerLow         + pad  vec3+pad
+//   16..19 : encodedCameraMCHigh+pad  vec3+pad   (camera in body MODEL coords, RTE split)
+//   20..23 : encodedCameraMCLow +pad  vec3+pad
+//   24..27 : centerHigh        + pad  vec3+pad   (body center world split — informational;
+//   28..31 : centerLow         + pad  vec3+pad    the model-space RTE path doesn't read it)
 //   32..35 : ivmRow0           + pad  vec3+pad   (inverse modelView 3×3, row 0)
 //   36..39 : ivmRow1           + pad  vec3+pad
 //   40..43 : ivmRow2           + pad  vec3+pad
@@ -251,8 +251,26 @@ export function packEllipsoidBaseUniforms(
     uniformData[i] = mvpRelativeToEye[i];
   }
 
-  // RTE camera split — offsets 16..23
-  EncodedCartesian3.fromCartesian(cameraPositionWC, _scratchEncodedCamera);
+  // RTE camera split — offsets 16..23 — in body MODEL coordinates.
+  //
+  // ENV-MOON-SLIVER (2026-07-02): this split MUST be model-space, not
+  // world-space. `mvpRelativeToEye` is built from `view × model` with the
+  // translation zeroed, so its linear part is `viewRot × bodyRot`. Feeding
+  // it a world-space `(center + posMC − camWC)` offset wrongly rotates the
+  // center−camera offset by the body's orientation (the Moon's IAU rotation
+  // is large → the moon rendered far off-position, visible only as a sliver
+  // at the screen edge). The correct RTE input is `posMC − cameraMC`:
+  //   L·(posMC − R⁻¹·(camWC − t)) = L·posMC + viewRot·(t − camWC)
+  // which is exactly the eye-space position `view × model × posMC`.
+  // cameraMC is computed in double precision below and split high/low so
+  // close-range flythroughs keep sub-meter camera precision.
+  Matrix4.inverseTransformation(modelMatrix, _scratchInverseModelMatrix);
+  Matrix4.multiplyByPoint(
+    _scratchInverseModelMatrix,
+    cameraPositionWC,
+    _scratchCameraMC,
+  );
+  EncodedCartesian3.fromCartesian(_scratchCameraMC, _scratchEncodedCamera);
   uniformData[16] = _scratchEncodedCamera.high.x;
   uniformData[17] = _scratchEncodedCamera.high.y;
   uniformData[18] = _scratchEncodedCamera.high.z;
@@ -307,12 +325,7 @@ export function packEllipsoidBaseUniforms(
   uniformData[43] = 0;
 
   // Camera position in body model coordinates — offsets 44..47
-  Matrix4.inverseTransformation(modelMatrix, _scratchInverseModelMatrix);
-  Matrix4.multiplyByPoint(
-    _scratchInverseModelMatrix,
-    cameraPositionWC,
-    _scratchCameraMC,
-  );
+  // (same value as the 16..23 split, unsplit f32 — the FS ray origin).
   uniformData[44] = _scratchCameraMC.x;
   uniformData[45] = _scratchCameraMC.y;
   uniformData[46] = _scratchCameraMC.z;

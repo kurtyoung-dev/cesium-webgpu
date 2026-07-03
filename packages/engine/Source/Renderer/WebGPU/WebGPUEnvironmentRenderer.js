@@ -1076,9 +1076,9 @@ function updateWebGPUMoon(moon, frameState, commandList) {
  *
  * Layout matches the `U` struct in Moon.wgsl (Phase 1.2c v2):
  *   mvpRTE             0..15  (mat4)
- *   camH + pad         16..19
- *   camL + pad         20..23
- *   moonH + pad        24..27
+ *   camH + pad         16..19  (camera in moon MODEL coords, RTE high)
+ *   camL + pad         20..23  (camera in moon MODEL coords, RTE low)
+ *   moonH + pad        24..27  (world center split — unused by the VS)
  *   moonL + pad        28..31
  *   ivmRow0 + pad      32..35
  *   ivmRow1 + pad      36..39
@@ -1154,8 +1154,13 @@ function _packMoonUniforms(moon, frameState, cache) {
   // earthshine, useLogDepth, shininess, specularStrength — offsets 68..71
   ud[68] = earthshineOn;
   ud[69] = frameState.useLogDepth === true ? 1.0 : 0.0;
-  ud[70] = 5.0; // shininess (Phong exponent — rocky lunar surface)
-  ud[71] = 0.3; // specularStrength
+  // Parity (ENV-MOON-SLIVER): WebGL's moon material is
+  // Material.fromType(Material.ImageType) whose czm_getDefaultMaterial
+  // specular is 0.0 — the WebGL moon has NO specular highlight. Keep the
+  // shininess exponent sane but zero the strength so the disc shading
+  // matches czm_private_phong exactly.
+  ud[70] = 5.0; // shininess (Phong exponent; inert while strength is 0)
+  ud[71] = 0.0; // specularStrength — 0 to match Material.ImageType
 
   // farPlane + 3 pad — offsets 72..75
   ud[72] = defined(uniformState.currentFrustum)

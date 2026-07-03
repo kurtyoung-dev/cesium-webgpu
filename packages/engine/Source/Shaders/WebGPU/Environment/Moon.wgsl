@@ -72,9 +72,15 @@
 struct U {
   mvpRTE: mat4x4<f32>,                              // 0..63
 
-  // RTE camera split.
+  // RTE camera split — camera position in MOON MODEL coordinates
+  // (ENV-MOON-SLIVER fix: mvpRTE's linear part is viewRot×moonRot, so the
+  // RTE offset it consumes must be model-space. A world-space offset gets
+  // wrongly rotated by the moon's IAU orientation and displaces the disc).
   camH: vec3<f32>, _p0: f32,                        // 64..79
   camL: vec3<f32>, _p1: f32,                        // 80..95
+  // World-space moon center split — informational only; the VS no longer
+  // reads it (the moon center is the origin in model space). Kept for
+  // layout stability with packEllipsoidBaseUniforms offsets 24..31.
   moonH: vec3<f32>, _p2: f32,                       // 96..111
   moonL: vec3<f32>, _p3: f32,                       // 112..127
 
@@ -213,10 +219,18 @@ fn vs(i: VI) -> VO {
   // exactly this: `vec4 p = vec4(u_radii * position, 1.0)`.
   let posMC = i.cubePos * u.radii;
 
-  // RTE: the moon center is RTE-encoded as (moonH, moonL); the cube vertex
-  // position adds to that to give a world-space point in two halves. Then
-  // subtract the camera (also two halves) and sum.
-  let rte = ((u.moonH + posMC) - u.camH) + (u.moonL - u.camL);
+  // RTE in MODEL space: mvpRTE = proj × (view × model with translation
+  // zeroed), whose linear part maps model-space vectors to clip space and
+  // whose implied origin is the camera. The correct input is therefore the
+  // cube vertex relative to the camera IN MODEL COORDINATES:
+  //     rte = posMC − cameraMC
+  // with cameraMC carried as an RTE high/low split (camH, camL). This is
+  // algebraically identical to WebGL's czm_modelViewProjection × (radii ×
+  // position). The previous world-space form ((moonH + posMC) − camH) +
+  // (moonL − camL) was wrong: mvpRTE's linear part includes the moon's IAU
+  // rotation, which must not be applied to the world-space center−camera
+  // offset (ENV-MOON-SLIVER — the moon rendered as an off-screen sliver).
+  let rte = (posMC - u.camH) - u.camL;
 
   let clip = u.mvpRTE * vec4<f32>(rte, 1.0);
   // Force clip-space z/w = 1 (far plane). The moon is at lunar distance,
