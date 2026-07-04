@@ -169,15 +169,18 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
 - **`NEW-LOG-DEPTH-REMAINING-CONSUMERS`** — off-by-default depth readers (AO/DoF/SSR/contact-shadows/
   god-rays) + GroundPolyline `windowToEyeCoordinates` precision must reverse log depth when enabled.
   **P2** (none break the default scene).
-- **`NEW-WEBGPU-EXAG-WATER-STREAKS`** (Batch 362) — under high vertical exaggeration over mountainous
-  terrain with glacial lakes (Himalayas, EXAG=10), WebGPU renders thin BRIGHT-BLUE water streaks WebGL
-  lacks. **Root-cause isolation (2026-06-23) RULED OUT atmosphere, fog, and ground-atmosphere drape**
-  (zeroing `computeEnhancedOcean`'s `oceanContribution` left the blue unchanged → not the water-color
-  function; disabling fog + ground-atmosphere + sky-atmosphere left it unchanged → not atmosphere/fog).
-  The true cause is **globe lighting/material water-fragment parity** — turquoise lake imagery survives
-  on WebGPU where WebGL's `czm_phong` + `materialInput.waterMask` mutes it. A pre-existing, non-default
-  (extreme EXAG over glacial-lake terrain), LOW-priority globe-lighting parity gap (broad blast radius),
-  NOT a water-color pipeline issue. **P2.** Probe: `probe-exaggeration-3d.mjs` / `diag-exag-water-streaks-source.mjs`.
+- **`NEW-WEBGPU-EXAG-WATER-STREAKS`** — ✅ **STALE-RESOLVED (Q12, 2026-07-04, premise-verified — closed by
+  Q10 Batch 541 `NEW-GLOBE-DAYTIME-OCEAN-BRIGHTNESS`).** The bug (WebGPU rendering thin BRIGHT-BLUE water
+  streaks WebGL lacks under EXAG=10 over Himalaya glacial lakes) was a globe-FS water-fragment
+  colour/saturation divergence: Batch 379 measured that with atmosphere OFF, WebGL lakes went grey-bright
+  (~0 blue-streak px) but WebGPU lakes STAYED saturated dark-blue (2452 px @ meanRGB(18,17,123)) — the
+  blue lived in the water fragment itself. Q10 fixed exactly that path — the `GlobeTerrain.wgsl`
+  `computeEnhancedOcean` highlight taper (dayFade → `tile.groundAtmosphereControl.y` lightingFade +
+  distance-faded `tsPerturbationRatio`) — so the exaggerated-lake streaks are gone too. **Re-verified
+  probe-first (2026-07-04):** `diag-exag-water-streaks-2x2.mjs` + the new `probe-exag-water-streaks.mjs`
+  now show WebGPU tracking WebGL exactly — atmosphere OFF both 0 blue-streak px (was 2452 on WebGPU),
+  atmosphere ON both ~3500 px @ meanRGB≈(59,93,131). PNGs read: same muted turquoise lakes on both, no
+  WebGPU-only streaks. Probe: `probe-exag-water-streaks.mjs` (deterministic, pinned clock).
 - **`NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH`** — ✅ **CLOSED (Batch 513, NEW-GLOBE-DRAPE-LIMB-CLOSEOUT,
   2026-07-03).** `probe-limb-halo-width` drape diagnostic measures WebGL=1 px vs WebGPU=1 px (delta 0)
   at the full-disc framing — the drape band itself is at parity. The REAL residual the epic was
