@@ -4,12 +4,25 @@
  * generated from vector tile sources — building footprints, admin
  * boundaries, country polygons, etc.
  *
- * Architecture mirrors `WebGPUGroundPrimitiveRenderer`'s depth-sample
- * classifier (ADR-2026-04-28): the volume's rasterization handles lateral
- * coverage; the FS samples the globe depth texture and discards where the
- * surface wrote no depth (sky / nothing classifiable). The same depth-source
- * resolver is reused so per-frustum + per-frame source swaps (globe-depth ↔
- * packed-translucent-depth) take effect within a frame.
+ * Classification uses a WebGL-parity STENCIL Z-FAIL shadow volume
+ * (Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL, 2026-07-04). Per batch, per
+ * ground pass, TWO draws land in one render pass:
+ *   1. A stencil-MARK draw (colorWrite off) that counts the volume∩surface
+ *      region into the CLASSIFICATION_MASK stencil bits via
+ *      `depthFailOp` decrement-wrap (front) / increment-wrap (back)
+ *      against the BOUND scene depth — per-fragment hardware compare at
+ *      full precision, terrain compare-always / tileset compare-equal-0x80.
+ *   2. A stencil-TESTED color draw (`NOT_EQUAL 0`, depth test off) that
+ *      shades exactly that region and resets the bits (passOp zero).
+ * This mirrors `Vector3DTilePrimitive.getStencilDepthRenderState` +
+ * `colorRenderState`. It supersedes the earlier depth-SAMPLE classifier,
+ * which could only reach the volume's inflated PROJECTED silhouette and
+ * read empty globe depth at msaa=1 (the two walls documented in
+ * NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT). The mark + color pipelines use a
+ * group(0)-only layout and never sample the globe depth texture, so they
+ * are independent of `_globeDepthView` population. Pick + velocity still
+ * use the depth-sample bind group (the same per-frustum globe-depth ↔
+ * packed-translucent-depth resolver) and are skipped when it is absent.
  *
  * **Shipped (Batch 112):**
  *   - WGSL VS/FS port of `VectorTileVS.glsl` + `ShadowVolumeFS.glsl`
@@ -23,11 +36,17 @@
  *     `Pass.CESIUM_3D_TILE_CLASSIFICATION` per the WebGL parity rule.
  *
  * **Deferred to follow-up:**
- *   - Per-feature pick. WebGL writes `czm_batchTable_pickColor(batchId)`
- *     into the pick FBO; WebGPU first-cut returns no pick commands so
- *     `scene.pick()` over a vector tile primitive returns nothing. The
- *     storage-buffer pattern here will absorb pick colors trivially when
- *     wired (one extra `vec4[batchId]` storage entry).
+ *   - Pick containment. The pick path still uses the older depth-SAMPLE
+ *     `pickFS` (discards only sky), so a pick over a vector tile hits the
+ *     inflated projected silhouette rather than the stencil-clipped
+ *     surface∩volume region. Moving pick to the stencil path needs a
+ *     stencil-tested pick pipeline in the single-sample pick FB (which
+ *     carries its own depth) — the color path's mark/color split ports
+ *     over directly. Tracked with NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT.
+ *   - SCENE2D / COLUMBUS_VIEW stencil coverage
+ *     (NEW-VECTOR3DTILE-STENCIL-2DCV-COVERAGE — the reprojected-ENU map
+ *     has no clean Z-fail surface; not a WebGL parity gap since upstream
+ *     renders nothing in 2D/CV).
  *   - Per-fragment normal-from-depth-derivative + textured appearance.
  *   - `debugWireframe` mode (the WebGL flow runs a separate
  *     `LINES`-topology pipeline; trivial follow-up).
@@ -213,19 +232,39 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
   return dot(packed, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
 }
 
+// Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — WebGL-parity stencil Z-fail
+// classifier. Replaces the depth-SAMPLE containment test (which could
+// only reach the volume's PROJECTED silhouette and reads empty globe
+// depth at msaa=1). The mark FS writes no color (pipeline writeMask 0 on
+// every target); its sole side-effect is the pipeline's stencil
+// depthFailOp inc/dec against the BOUND scene depth buffer (per-fragment
+// hardware compare at full precision). Uses @group(0) only — NO
+// depth-texture sample, so it sidesteps both the exp2 precision wall and
+// the msaa=1 globe-depth-copy-empty wall documented in
+// NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT. Mirrors
+// Vector3DTilePrimitive.getStencilDepthRenderState (front zFail
+// decrement-wrap / back zFail increment-wrap).
 @fragment
-fn fsMain(i: VOut) -> @location(0) vec4<f32> {
-  // AUDIT_2026_05_02 B.1 -- per-feature Cesium3DTileFeature.show is
-  // folded into batchColors[bi].a CPU-side (uploadBatchColors). When
-  // show is false the alpha is 0; discard so hidden features dont
-  // classify against the surface.
+fn classifyMarkFS(i: VOut) -> @location(0) vec4<f32> {
+  // AUDIT_2026_05_02 B.1 — per-feature Cesium3DTileFeature.show folded
+  // into batchColors[bi].a CPU-side. Hidden features (alpha 0) discard
+  // here so they never mark stencil → the color pass draws nothing for
+  // them (stencil stays 0). Matches the WebGL show-in-color-alpha path.
   if (i.col.a < 1.0e-3) {
     discard;
   }
-  let screenUV = i.pos.xy / u.viewport.zw;
-  let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
-  let surfaceDepth = unpackDepth(packed);
-  if (surfaceDepth == 0.0) {
+  return vec4<f32>(0.0);
+}
+
+// Stencil-tested color draw. The pipeline's stencil compare
+// (not-equal 0, masked to CLASSIFICATION_MASK) gates fragments to the
+// volume∩surface region the mark pass counted; the pipeline's passOp
+// zero resets the classification bits so overlapping batches stay
+// independent (mirrors colorRenderState in Vector3DTilePrimitive.js).
+// No depth sample, no depth test.
+@fragment
+fn classifyColorFS(i: VOut) -> @location(0) vec4<f32> {
+  if (i.col.a < 1.0e-3) {
     discard;
   }
   return i.col;
@@ -364,6 +403,17 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     bindGroupLayouts: [sharedBgl, depthSampleBgl],
   });
 
+  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — the stencil mark + color
+  // pipelines need only the shared UBO/storage group; they never sample
+  // the globe-depth texture (containment is decided by the hardware
+  // stencil Z-fail against the BOUND depth buffer). A group(0)-only
+  // layout keeps them independent of `_globeDepthView` population (which
+  // is empty at msaa=1).
+  const classifyLayout = device.createPipelineLayout({
+    label: "Vector3DTilePrimitive ClassifyLayout",
+    bindGroupLayouts: [sharedBgl],
+  });
+
   const vertexBuffers = [
     {
       arrayStride: 16,
@@ -382,23 +432,96 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // (L1372). Pick renders into the single-sample pick FB and velocity
   // into the single-sample rg16float texture, so both stay count-1.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
-  const colorDescriptor = {
-    name: `Vector3DTilePrimitive color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
-    layout,
+
+  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — stencil-mark descriptor
+  // factory. Mirrors `getStencilDepthRenderState(mask3DTiles)`:
+  //   - colorMask off  → makeSceneFBTargets writeMask 0 on every slot.
+  //   - depthTest LESS_OR_EQUAL, depthMask false → depthCompare
+  //     "less-equal", depthWriteEnabled false.
+  //   - front zFail DECREMENT_WRAP / back zFail INCREMENT_WRAP → Z-fail
+  //     shadow-volume counting against the BOUND scene depth.
+  //   - stencilReadMask CESIUM_3D_TILE_MASK (0x80) for the EQUAL compare
+  //     (tileset variant); stencilWriteMask CLASSIFICATION_MASK (0x0f)
+  //     so inc/dec only touch the low 4 classification bits.
+  // `stencilCompare` = "always" for TERRAIN (mask3DTiles=false) or
+  // "equal" for 3D-Tile classification (mask3DTiles=true). The stencil
+  // reference (0x80) is supplied per-command via renderState.
+  const makeMarkDescriptor = (label, stencilCompare) => ({
+    name: `Vector3DTilePrimitive ${label} [${depthFormat}/ms=${sampleCount ?? 1}]`,
+    layout: classifyLayout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
       module: mod,
-      entryPoint: "fsMain",
-      // Slice 5c-B Phase 1 (Batch 113) — scene-FB color target via
-      // helper. Pick (L346), depth-only (L366, writeMask:0), and
-      // velocity (L406, rg16float) stay single-target.
+      entryPoint: "classifyMarkFS",
+      // Color writes off on both scene-color (slot 0) and the MRT
+      // G-buffer placeholder (slot 1) — stencil is the only output.
+      targets: makeSceneFBTargets(format, { writeMask: 0 }),
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    multisample: msState,
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+      stencilFront: {
+        compare: stencilCompare,
+        failOp: "keep",
+        depthFailOp: "decrement-wrap",
+        passOp: "keep",
+      },
+      stencilBack: {
+        compare: stencilCompare,
+        failOp: "keep",
+        depthFailOp: "increment-wrap",
+        passOp: "keep",
+      },
+      stencilReadMask: 0x80, // CESIUM_3D_TILE_MASK
+      stencilWriteMask: 0x0f, // CLASSIFICATION_MASK
+    },
+  });
+  const stencilMarkTerrainDescriptor = makeMarkDescriptor(
+    "stencil-mark terrain",
+    "always",
+  );
+  const stencilMarkTilesetDescriptor = makeMarkDescriptor(
+    "stencil-mark tileset",
+    "equal",
+  );
+
+  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — stencil-tested color draw.
+  // Mirrors `colorRenderState`: stencil NOT_EQUAL 0 (masked to
+  // CLASSIFICATION_MASK), all ops ZERO (reset classification bits after
+  // the test so overlapping batches stay independent), depth test OFF,
+  // depth write OFF, premultiplied-alpha-equivalent src-over blend. Only
+  // fragments the mark pass counted (surface∩volume) survive.
+  const colorDescriptor = {
+    name: `Vector3DTilePrimitive stencil-color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    layout: classifyLayout,
+    vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "classifyColorFS",
       targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      depthCompare: "less-equal",
+      depthCompare: "always",
+      stencilFront: {
+        compare: "not-equal",
+        failOp: "zero",
+        depthFailOp: "zero",
+        passOp: "zero",
+      },
+      stencilBack: {
+        compare: "not-equal",
+        failOp: "zero",
+        depthFailOp: "zero",
+        passOp: "zero",
+      },
+      stencilReadMask: 0x0f, // CLASSIFICATION_MASK
+      stencilWriteMask: 0x0f, // CLASSIFICATION_MASK
     },
     multisample: msState,
   };
@@ -486,6 +609,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
 
   return {
     colorDescriptor,
+    stencilMarkTerrainDescriptor,
+    stencilMarkTilesetDescriptor,
     pickDescriptor,
     stencilDescriptor,
     velocityDescriptor,
@@ -535,6 +660,50 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
           })
           .catch(() => {
             cache.colorRequestPending = false;
+          });
+      }
+    }
+    // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — the two stencil-mark
+    // pipelines (terrain compare-always / tileset compare-equal). Both
+    // must resolve before a color command is emitted (the color draw is
+    // a no-op without the preceding stencil mark). Cache miss is
+    // non-fatal per-frame — the color pass is simply skipped this frame
+    // until the async pipeline lands.
+    if (!cache.markTerrainPipeline) {
+      const s = pipelineCache.getPipelineSync(
+        resources.stencilMarkTerrainDescriptor,
+      );
+      if (s) {
+        cache.markTerrainPipeline = s;
+      } else if (!cache.markTerrainRequestPending) {
+        cache.markTerrainRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.stencilMarkTerrainDescriptor)
+          .then((p) => {
+            cache.markTerrainPipeline = p;
+            cache.markTerrainRequestPending = false;
+          })
+          .catch(() => {
+            cache.markTerrainRequestPending = false;
+          });
+      }
+    }
+    if (!cache.markTilesetPipeline) {
+      const s = pipelineCache.getPipelineSync(
+        resources.stencilMarkTilesetDescriptor,
+      );
+      if (s) {
+        cache.markTilesetPipeline = s;
+      } else if (!cache.markTilesetRequestPending) {
+        cache.markTilesetRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.stencilMarkTilesetDescriptor)
+          .then((p) => {
+            cache.markTilesetPipeline = p;
+            cache.markTilesetRequestPending = false;
+          })
+          .catch(() => {
+            cache.markTilesetRequestPending = false;
           });
       }
     }
@@ -604,6 +773,18 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
   if (!cache.colorPipeline) {
     cache.colorPipeline = device.createRenderPipeline(
       descriptorToGPU(resources.colorDescriptor),
+    );
+  }
+  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — fallback path (no central
+  // pipeline cache): build the two mark pipelines synchronously.
+  if (!cache.markTerrainPipeline) {
+    cache.markTerrainPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.stencilMarkTerrainDescriptor),
+    );
+  }
+  if (!cache.markTilesetPipeline) {
+    cache.markTilesetPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.stencilMarkTilesetDescriptor),
     );
   }
   if (!cache.pickPipeline) {
@@ -1093,6 +1274,11 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   ) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
+    // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — stencil-mark pipelines are
+    // built against the same scene format / msaa / log-depth generation,
+    // so they invalidate together with the color pipeline.
+    cache.markTerrainPipeline = undefined;
+    cache.markTilesetPipeline = undefined;
     cache.pickPipeline = undefined;
     cache.stencilPipeline = undefined;
     // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — velocity
@@ -1120,6 +1306,8 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     cache._pipelineFormatGeneration = sceneGen;
     cache._pipelineLogDepth = logDepthActive;
     cache.colorRequestPending = false;
+    cache.markTerrainRequestPending = false;
+    cache.markTilesetRequestPending = false;
     cache.pickRequestPending = false;
     cache.stencilRequestPending = false;
     // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 178) — Batch 179
@@ -1226,34 +1414,40 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   }
 
   // Depth-source resolver (per-frustum bind-group rebuild on view change).
+  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — the stencil MARK+COLOR
+  // classify path does NOT sample this texture (containment is decided by
+  // the hardware stencil Z-fail against the bound depth), so a missing
+  // globe-depth view no longer bails the whole primitive. It only gates
+  // the depth-SAMPLE consumers that remain: pick + velocity. When the
+  // view is absent (e.g. globe-depth framebuffer disabled) those two are
+  // skipped while classification still renders.
   const packedTranslucentView = context._packedTranslucentDepthView ?? null;
   const globeDepthView = context._globeDepthView ?? null;
   const depthSourceView = packedTranslucentView ?? globeDepthView;
-  if (!depthSourceView) {
-    return { colorCommands: [], pickCommands: [], ignoreShowCommands: [] };
-  }
-  if (!defined(cache.depthSampleSampler)) {
-    cache.depthSampleSampler = device.createSampler({
-      label: "Vector3DTilePrimitive depth-sample sampler",
-      magFilter: "linear",
-      minFilter: "linear",
-      addressModeU: "clamp-to-edge",
-      addressModeV: "clamp-to-edge",
-    });
-  }
-  if (
-    !defined(cache.depthSampleBindGroup) ||
-    cache.depthSampleViewRef !== depthSourceView
-  ) {
-    cache.depthSampleBindGroup = device.createBindGroup({
-      label: "Vector3DTilePrimitive depth-sample BG",
-      layout: cache._pipelineResources.depthSampleBgl,
-      entries: [
-        { binding: 0, resource: depthSourceView },
-        { binding: 1, resource: cache.depthSampleSampler },
-      ],
-    });
-    cache.depthSampleViewRef = depthSourceView;
+  if (defined(depthSourceView)) {
+    if (!defined(cache.depthSampleSampler)) {
+      cache.depthSampleSampler = device.createSampler({
+        label: "Vector3DTilePrimitive depth-sample sampler",
+        magFilter: "linear",
+        minFilter: "linear",
+        addressModeU: "clamp-to-edge",
+        addressModeV: "clamp-to-edge",
+      });
+    }
+    if (
+      !defined(cache.depthSampleBindGroup) ||
+      cache.depthSampleViewRef !== depthSourceView
+    ) {
+      cache.depthSampleBindGroup = device.createBindGroup({
+        label: "Vector3DTilePrimitive depth-sample BG",
+        layout: cache._pipelineResources.depthSampleBgl,
+        entries: [
+          { binding: 0, resource: depthSourceView },
+          { binding: 1, resource: cache.depthSampleSampler },
+        ],
+      });
+      cache.depthSampleViewRef = depthSourceView;
+    }
   }
   const resolveDepthSampleBindGroup = () => {
     const currentSource =
@@ -1337,6 +1531,19 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       vertexCount: 0,
       owner: primitive,
     };
+    // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — the stencil mark + color
+    // pipelines use the group(0)-only ClassifyLayout, so their commands
+    // bind ONLY the shared UBO/storage group (no depth-sample texture).
+    const classifyDrawArgs = {
+      bindGroups: [cache.sharedBindGroup],
+      vertexBuffers: [activeVertexBuffer],
+      indexBuffer: cache.indexGPUBuffer,
+      indexFormat: cache.indexFormat,
+      indexCount: count,
+      firstIndex: offset,
+      vertexCount: 0,
+      owner: primitive,
+    };
     // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — derive a
     // velocity command alongside the color command when TAA is on.
     // Mirrors the Voxel pattern (Batch 173) and the advanced family
@@ -1350,16 +1557,59 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
 
     for (let p = 0; p < groundPasses.length; p++) {
       const passEnum = groundPasses[p];
+      // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — WebGL-parity two-draw
+      // stencil Z-fail. Per batch, per pass: (1) a stencil-MARK draw that
+      // counts the volume∩surface region into the CLASSIFICATION_MASK
+      // bits of the BOUND scene stencil (terrain compare-always for pass
+      // 3 / tileset compare-equal-0x80 for pass 6), then (2) a
+      // stencil-TESTED color draw (NOT_EQUAL 0) that shades exactly that
+      // region and resets the bits. Both land in the SAME pass bucket
+      // (TERRAIN_CLASSIFICATION=3 or CESIUM_3D_TILE_CLASSIFICATION=6) and
+      // execute in push order within one render pass, so the stencil
+      // written by the mark is visible to the immediately-following color
+      // draw. Mirrors Vector3DTilePrimitive.createColorCommands, which
+      // interleaves commands[j*2]=stencilDepth, commands[j*2+1]=color.
+      const markPipeline =
+        passEnum === 6 ? cache.markTilesetPipeline : cache.markTerrainPipeline;
+      if (!defined(markPipeline) || !defined(cache.colorPipeline)) {
+        // Pipelines still resolving asynchronously — skip this pass's
+        // color this frame (the mark is a hard prerequisite for the
+        // stencil-tested color draw). Retried next frame.
+        continue;
+      }
+      // Stencil reference CESIUM_3D_TILE_MASK (0x80) — matches
+      // getStencilDepthRenderState's `reference`. For terrain
+      // (compare-always) it is inert; for tileset (compare-equal) it
+      // selects fragments where a 3D-tile surface set the 0x80 bit.
+      colorCommands.push(
+        new WebGPUDrawCommand({
+          ...classifyDrawArgs,
+          pipeline: markPipeline,
+          pass: passEnum,
+          renderState: { stencilTest: { reference: 0x80 } },
+        }),
+      );
       const colorCmd = new WebGPUDrawCommand({
-        ...sharedDrawArgs,
+        ...classifyDrawArgs,
         pipeline: cache.colorPipeline,
         pass: passEnum,
+        // Color compare NOT_EQUAL 0 (masked to CLASSIFICATION_MASK). The
+        // reference is irrelevant here: applyPerEncoderState skips a 0
+        // reference and the 0x80 left by the mark reads as 0 under the
+        // 0x0f readMask — either way the compare is against 0.
+        renderState: { stencilTest: { reference: 0 } },
       });
       // Attach velocity derivation to the FIRST color command for this
       // primitive (the BOTH-pass dual-emit case already covers both
       // ground passes; per-feature animation isn't possible for static
-      // classification volumes anyway).
-      if (taaEnabled && p === 0 && defined(cache.velocityPipeline)) {
+      // classification volumes anyway). Velocity uses the 2-group
+      // depth-sample layout, so it keeps `sharedDrawArgs`.
+      if (
+        taaEnabled &&
+        p === 0 &&
+        defined(cache.velocityPipeline) &&
+        defined(cache.depthSampleBindGroup)
+      ) {
         colorCmd.velocityCommand = new WebGPUDrawCommand({
           ...sharedDrawArgs,
           pipeline: cache.velocityPipeline,
@@ -1367,7 +1617,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
         });
       }
       colorCommands.push(colorCmd);
-      if (defined(cache.pickPipeline)) {
+      if (defined(cache.pickPipeline) && defined(cache.depthSampleBindGroup)) {
         pickCommands.push(
           new WebGPUDrawCommand({
             ...sharedDrawArgs,
@@ -1378,7 +1628,11 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
         );
       }
     }
-    if (emitsThreeDTileClassification && defined(cache.stencilPipeline)) {
+    if (
+      emitsThreeDTileClassification &&
+      defined(cache.stencilPipeline) &&
+      defined(cache.depthSampleBindGroup)
+    ) {
       ignoreShowCommands.push(
         new WebGPUDrawCommand({
           ...sharedDrawArgs,
