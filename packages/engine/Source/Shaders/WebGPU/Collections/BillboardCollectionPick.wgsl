@@ -95,13 +95,17 @@ const QUAD_OFFSETS = array<vec2<f32>, 6>(
   vec2<f32>(-0.5,  0.5),
 );
 
+// C4-BILLBOARD-ATLAS-VFLIP — keep the pick quad's atlas alpha-discard lookup
+// in the SAME V orientation as the color pass (BillboardCollection.wgsl) so
+// the transparent region discarded during picking matches the visible pixels.
+// See the color shader for the full derivation.
 const QUAD_UVS = array<vec2<f32>, 6>(
-  vec2<f32>(0.0, 1.0),
-  vec2<f32>(1.0, 1.0),
-  vec2<f32>(1.0, 0.0),
-  vec2<f32>(0.0, 1.0),
-  vec2<f32>(1.0, 0.0),
   vec2<f32>(0.0, 0.0),
+  vec2<f32>(1.0, 0.0),
+  vec2<f32>(1.0, 1.0),
+  vec2<f32>(0.0, 0.0),
+  vec2<f32>(1.0, 1.0),
+  vec2<f32>(0.0, 1.0),
 );
 
 @vertex

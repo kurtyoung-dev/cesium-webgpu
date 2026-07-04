@@ -205,13 +205,17 @@ const QUAD_OFFSETS = array<vec2<f32>, 6>(
   vec2<f32>(-0.5,  0.5),
 );
 
+// C4-BILLBOARD-ATLAS-VFLIP — SDF glyph atlas shares the same flipY=true upload
+// and the same WebGL bottom-left texcoord convention as image billboards, so
+// screen-bottom must sample MIN v. The prior array rendered glyphs V-flipped
+// (upside-down text). See BillboardCollection.wgsl for the full derivation.
 const QUAD_UVS = array<vec2<f32>, 6>(
-  vec2<f32>(0.0, 1.0),
-  vec2<f32>(1.0, 1.0),
-  vec2<f32>(1.0, 0.0),
-  vec2<f32>(0.0, 1.0),
-  vec2<f32>(1.0, 0.0),
   vec2<f32>(0.0, 0.0),
+  vec2<f32>(1.0, 0.0),
+  vec2<f32>(1.0, 1.0),
+  vec2<f32>(0.0, 0.0),
+  vec2<f32>(1.0, 1.0),
+  vec2<f32>(0.0, 1.0),
 );
 
 @vertex

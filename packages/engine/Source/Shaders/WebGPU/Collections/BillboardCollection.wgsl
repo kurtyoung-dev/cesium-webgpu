@@ -291,13 +291,23 @@ const QUAD_OFFSETS = array<vec2<f32>, 6>(
   vec2<f32>(-0.5,  0.5),
 );
 
+// C4-BILLBOARD-ATLAS-VFLIP — V matches WebGL's atlas convention. WebGL's
+// BillboardCollectionVS.glsl:141 computes `textureCoordinatesBottomLeft +
+// direction * range`, mapping the BOTTOM-of-screen quad corner to the atlas
+// rect's MIN v (its "bottom-left") and the TOP corner to MAX v. The atlas
+// texture in both backends is uploaded flipY=true (image bottom → v=0), so
+// screen-bottom must sample MIN v to render the image upright. The prior
+// array assigned v=1 to the bottom corner, producing a vertical flip vs WebGL
+// (red/blue swap on an asymmetric image; upside-down glyphs on labels).
+// QUAD_OFFSETS y increases upward after the positive pixelToClip.y transform,
+// so corner.y=-0.5 is screen-bottom → v=0, corner.y=+0.5 is screen-top → v=1.
 const QUAD_UVS = array<vec2<f32>, 6>(
-  vec2<f32>(0.0, 1.0),
-  vec2<f32>(1.0, 1.0),
-  vec2<f32>(1.0, 0.0),
-  vec2<f32>(0.0, 1.0),
-  vec2<f32>(1.0, 0.0),
   vec2<f32>(0.0, 0.0),
+  vec2<f32>(1.0, 0.0),
+  vec2<f32>(1.0, 1.0),
+  vec2<f32>(0.0, 0.0),
+  vec2<f32>(1.0, 1.0),
+  vec2<f32>(0.0, 1.0),
 );
 
 @vertex
