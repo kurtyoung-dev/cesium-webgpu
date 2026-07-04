@@ -967,7 +967,7 @@ function runEnvCubeTemporalBlend(
 //   24..26 mieCoeff       27 rayleighScaleHeight
 //   28..30 groundColor    31 mieScaleHeight
 //   32 groundAlbedo  33 dynamicLightingEnum  34 scatteringIntensity  35 useMultiScatterLut
-//   36 cloudCoverage  37 cloudMarch  38 cloudPlanetRadius  39 cloudPad2
+//   36 cloudCoverage  37 cloudMarch  38 cloudPlanetRadius  39 ellipsoidHeight
 //   40..42 cloudSunLocal     43 cloudDeckBottom
 //   44..46 cloudWindAndTime  47 cloudDeckTop
 //   48..50 cloudBaseColor    51 cloudDensityMult
@@ -983,6 +983,19 @@ const SKY_UNIFORM_FLOATS = 56;
 
 // Reused scratch so the per-fill pack does not allocate.
 const scratchPosition = new Cartesian3();
+const scratchSurfacePosition = new Cartesian3();
+
+// NEW-MODEL-IBL-AMBIENT (re-land of the audited-GO B3 fix) — minimal shape of
+// `frameState.mapProjection.ellipsoid` (opaque in cesium-js-types.d.ts) for
+// the WebGL-parity radii derivation (DynamicEnvironmentMapManager.js
+// `atmosphereNeedsUpdate`).
+interface EllipsoidLike {
+  scaleToGeodeticSurface?: (
+    cartesian: Cartesian3,
+    result: Cartesian3,
+  ) => Cartesian3 | undefined;
+  maximumRadius?: number;
+}
 // Default Atmosphere.js scattering terms (used when frameState.atmosphere
 // omits a field, mirroring the WebGL automatic-uniform fallbacks).
 const DEFAULT_RAYLEIGH_COEFFICIENT = { x: 5.5e-6, y: 13.0e-6, z: 28.4e-6 };
@@ -991,8 +1004,15 @@ const DEFAULT_RAYLEIGH_SCALE_HEIGHT = 10000.0;
 const DEFAULT_MIE_SCALE_HEIGHT = 3200.0;
 const DEFAULT_MIE_ANISOTROPY = 0.9;
 const DEFAULT_LIGHT_INTENSITY = 10.0;
-// czm_computeScattering's ATMOSPHERE_THICKNESS (AtmosphereCommon.glsl).
-const ATMOSPHERE_THICKNESS = 111000.0;
+// WGS84 max radius — fallback when the map projection's ellipsoid is
+// unavailable (mirrors WebGL's `ellipsoid.maximumRadius` fallback in
+// DynamicEnvironmentMapManager.js `atmosphereNeedsUpdate`).
+const DEFAULT_MAX_RADIUS = 6378137.0;
+// WebGL's outer-atmosphere shell scale (DynamicEnvironmentMapManager.js
+// `atmosphereNeedsUpdate`: `const outerEllipsoidScale = 1.025`). NOT the
+// 111 km czm_computeScattering shell — that one lives inside the WGSL
+// scattering march (ATMOSPHERE_THICKNESS in ProceduralSkyCubemap.wgsl).
+const OUTER_ELLIPSOID_SCALE = 1.025;
 
 function runProceduralSkyFill(
   device: GPUDevice,
@@ -1132,15 +1152,32 @@ function runProceduralSkyFill(
   const lightVec = dynamicLighting === 1 && sceneLight ? sceneLight : sunDir;
 
   // Position + ENU->fixed basis (WGS84 default, matching the WebGL
-  // DynamicEnvironmentMapManager). Inner radius = position magnitude
-  // (the model's surface radius); outer = inner + 111 km, matching
-  // czm_computeScattering's ATMOSPHERE_THICKNESS.
+  // DynamicEnvironmentMapManager). NEW-MODEL-IBL-AMBIENT (re-land of the
+  // audited-GO B3 fix) — radii per DynamicEnvironmentMapManager.js
+  // `atmosphereNeedsUpdate` (u_radiiAndDynamicAtmosphereColor semantics):
+  //   inner = |scaleToGeodeticSurface(position)|  (surface radius under the
+  //           model, NOT the model position's magnitude)
+  //   outer = inner × 1.025                       (NOT inner + 111 km — the
+  //           111 km shell is internal to the WGSL scattering march)
+  //   ellipsoidHeight = max(|position| − inner, 0) (slot 39; view-origin
+  //           scaling + skyAlpha / ground-blend height terms)
   const position = manager._position;
   scratchPosition.x = position.x;
   scratchPosition.y = position.y;
   scratchPosition.z = position.z;
-  const innerRadius = Cartesian3.magnitude(scratchPosition);
-  const outerRadius = innerRadius + ATMOSPHERE_THICKNESS;
+  const positionHeight = Cartesian3.magnitude(scratchPosition);
+  const ellipsoid = (
+    frameState.mapProjection as unknown as { ellipsoid?: EllipsoidLike } | null
+  )?.ellipsoid;
+  const surfacePosition = ellipsoid?.scaleToGeodeticSurface?.(
+    scratchPosition,
+    scratchSurfacePosition,
+  );
+  const innerRadius = surfacePosition
+    ? Cartesian3.magnitude(surfacePosition)
+    : (ellipsoid?.maximumRadius ?? DEFAULT_MAX_RADIUS);
+  const outerRadius = innerRadius * OUTER_ELLIPSOID_SCALE;
+  const ellipsoidHeight = Math.max(positionHeight - innerRadius, 0.0);
   const enu = Transforms.eastNorthUpToFixedFrame(scratchPosition);
 
   const skyColorScattering = manager.atmosphereScatteringIntensity ?? 2.0;
@@ -1334,7 +1371,10 @@ function runProceduralSkyFill(
   // passed `innerR`/`u.innerRadius`, never this slot. Packed for documentation
   // only; kept add-only so the row layout + later offsets stay stable.
   data[38] = innerRadius;
-  // data[39] cloudPad2 stays 0.
+  // data[39] — NEW-MODEL-IBL-AMBIENT: ellipsoidHeight (was the always-0
+  // reserved pad; a ground-level model still packs 0). View-origin scaling +
+  // skyAlpha / ground-blend height terms in the WGSL.
+  data[39] = ellipsoidHeight;
   // 40..42 cloudSunLocal (normalized) + 43 cloudDeckBottom
   data[40] = sunLocalX / sunLocalLen;
   data[41] = sunLocalY / sunLocalLen;

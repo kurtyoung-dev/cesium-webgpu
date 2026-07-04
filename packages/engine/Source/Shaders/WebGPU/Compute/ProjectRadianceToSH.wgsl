@@ -9,19 +9,22 @@
 //
 // This is a byte-faithful transcription of the WebGL projection in
 // `ComputeIrradianceFS.glsl` (computeShBasis + the 256-sample Monte-Carlo
-// loop), with two backend-specific differences that are intentional:
+// loop), INCLUDING WebGL's `(-x, -y, z)` cube-lookup flip
+// (ComputeIrradianceFS.glsl:94-95). NEW-MODEL-IBL-AMBIENT (re-land of the
+// audited-GO B3 fix): the Batch-354 claim that raw-direction sampling was
+// an intentional backend difference was NUMERICALLY DISPROVEN — a JS
+// re-projection of the live WebGPU radiance cube at the 256 Hammersley
+// directions WITH the flip reproduces WebGL's measured SH c1 blue
+// coefficient (0.151 vs 0.152), while raw sampling gives 0.029 (5x short
+// on the sky-blue directional band = the olive model tint). The flip is
+// required for parity.
 //
-//   1. Cube lookup direction is the RAW world-space sample `direction`,
-//      NOT WebGL's `(-x, -y, z)` flip. The WebGL flip corrects WebGL's
-//      cube-sampling convention; the WebGPU radiance cube is sampled in
-//      raw world space (see `IrradianceConvolution.wgsl`, the known-good
-//      irradiance fallback that samples `sampleDir` directly). Sampling
-//      raw keeps the SH directionally consistent with that fallback.
+// One backend-specific difference that IS intentional:
 //
-//   2. Output is written straight into a storage buffer (9 vec4 + a
-//      control vec4) instead of WebGL's 3×3 render-to-texture + readback.
-//      The same buffer is bound as the model's `SHUniforms` uniform
-//      (binding 36) — no CPU round-trip.
+//   Output is written straight into a storage buffer (9 vec4 + a
+//   control vec4) instead of WebGL's 3×3 render-to-texture + readback.
+//   The same buffer is bound as the model's `SHUniforms` uniform
+//   (binding 36) — no CPU round-trip.
 //
 // Energy: the WebGPU radiance cube already bakes `atmosphereScatteringIntensity`
 // (ProceduralSkyCubemap.wgsl:295), exactly as WebGL's radiance map does
@@ -117,8 +120,11 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     );
 
     let Ylm = computeShBasis(coeffIndex, direction);
-    // Raw world-space direction (no WebGL flip) — see header note 1.
-    let color = textureSampleLevel(radianceCube, radianceSampler, direction, 0.0);
+    // WebGL's cube-lookup flip (ComputeIrradianceFS.glsl:94-95):
+    // lookupDirection = -direction; lookupDirection.z = -lookupDirection.z
+    // → (-x, -y, z). Required for SH parity — see header.
+    let lookupDirection = vec3<f32>(-direction.x, -direction.y, direction.z);
+    let color = textureSampleLevel(radianceCube, radianceSampler, lookupDirection, 0.0);
 
     accum = accum + Ylm * color.rgb * SOLID_ANGLE * sinTheta;
   }

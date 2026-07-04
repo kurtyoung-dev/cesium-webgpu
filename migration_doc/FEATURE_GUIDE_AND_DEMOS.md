@@ -276,7 +276,14 @@ runSphericalHarmonicProjection (ProjectRadianceToSH)`, publishing
 `_webgpuIBLDiffuseView / _webgpuIBLSpecularView / _webgpuSHBuffer` consumed by
 `WebGPUModelRenderer` at bindings 33/34/35/36 (`WebGPUDynamicEnvironmentMapManager.ts`).
 The SH-L2 specular IBL path (`ProjectRadianceToSH.wgsl`, Batch 354) projects the
-radiance cube → 9 SH-L2 coefficients.
+radiance cube → 9 SH-L2 coefficients. NEW-MODEL-IBL-AMBIENT-RELAND (2026-07-04)
+corrected the projection to apply WebGL's `(-x, -y, z)` cube-lookup flip
+(`ComputeIrradianceFS.glsl:94-95` — the Batch-354 raw-sampling claim was
+numerically disproven; SH c1 blue now 0.151 ≈ WebGL's 0.152) and made
+`ProceduralSkyCubemap.wgsl` a faithful `czm_computeScattering` port (adaptive
+integrator, 1.025R rayLength, onEllipsoid classification, skyAlpha composite,
+ellipsoidHeight-aware origin) — this removed the olive IBL-ambient tint on
+models (worst in top-down SCENE2D).
 
 ### C2-25 — Dynamic Scene-Content Capture (the epic — CLOSED)
 

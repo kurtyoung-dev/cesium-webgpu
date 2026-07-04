@@ -28,7 +28,12 @@
 //                            frameState.atmosphere terms (so the WebGPU
 //                            sky tracks the same per-scene atmosphere as
 //                            WebGL instead of stale shader constants).
-//   - innerRadius/outerRadius: atmosphere shell radii at the position.
+//   - innerRadius/outerRadius: WebGL's u_radiiAndDynamicAtmosphereColor
+//                            semantics (DynamicEnvironmentMapManager.js:
+//                            atmosphereNeedsUpdate): inner = |scaleToGeodeticSurface(position)|
+//                            (the surface radius), outer = 1.025 × inner.
+//                            The 111 km scattering shell is internal to
+//                            computeScattering (ATMOSPHERE_THICKNESS).
 //   - intensity:             atmosphereScatteringIntensity.
 //   - gamma:                 environment gamma.
 //   - groundColor (rgb) + groundAlbedo (a): ground term for down-facing
@@ -106,7 +111,14 @@ struct SkyUniforms {
                            //      Kept add-only so the 160-byte 4.2 row layout +
                            //      all later offsets stay stable; packed as
                            //      innerRadius for documentation only.
-  cloudPad2: f32,          // 39 — reserved (kept so the 160-byte 4.2 layout holds)
+  // NEW-MODEL-IBL-AMBIENT (re-land of the audited-GO B3 fix) — the former
+  // reserved pad (39) now carries max(|position| - innerRadius, 0), the
+  // model's height above the geodetic surface. ADD-ONLY: byte offset 156
+  // unchanged; previously always packed 0, and a ground-level model still
+  // packs 0 → identical bytes for the historical common case. Mirrors
+  // ComputeRadianceMapFS's `ellipsoidHeight` (view-origin scaling +
+  // skyAlpha / ground-blend height terms).
+  ellipsoidHeight: f32,    // 39 — max(|position| - innerRadius, 0) in meters
   // Item 3-C — cloud-march params. Appended ADD-ONLY (new 16-byte rows). NEVER
   // read when cloudMarch == 0 (the march block is fully guarded), so the bytes
   // are inert on the default path. The cloud sun direction is in the SAME local
@@ -179,19 +191,49 @@ fn faceUVToLocalDir(face: u32, uv: vec2<f32>) -> vec3<f32> {
   }
 }
 
-fn raySphereExit(origin: vec3<f32>, dir: vec3<f32>, radius: f32) -> f32 {
-  let b = dot(origin, dir);
-  let c = dot(origin, origin) - radius * radius;
-  let disc = b * b - c;
-  if (disc < 0.0) {
-    return -1.0;
-  }
-  return -b + sqrt(disc);
+// Port of czm_approximateTanh (approximateTanh.glsl) — the rational
+// approximation the WebGL scattering march uses for its soft split weights.
+fn approximateTanh(x: f32) -> f32 {
+  let x2 = x * x;
+  return max(-1.0, min(1.0, x * (27.0 + x2) / (27.0 + 9.0 * x2)));
 }
 
-// Port of czm_computeScattering (AtmosphereCommon.glsl). Uses the
+// Port of czm_raySphereIntersectionInterval (raySphereIntersectionInterval.glsl,
+// including the NEW-RAYSPHERE-PRECISION-BACKPORT Batch-304 1/radius scaling so
+// the f32 discriminant stays stable at planet scale). Sphere centered at the
+// origin. Returns (t0, t1, hit): hit = 1.0 when the discriminant >= 0; both
+// t-values may be negative (behind the origin), matching the GLSL semantics
+// the callers' `start >= 0.0` tests rely on.
+fn raySphereIntersectionInterval(o: vec3<f32>, d: vec3<f32>, radius: f32) -> vec3<f32> {
+  let invR = 1.0 / max(radius, 1e-7);
+  let ocScaled = o * invR;
+  let a = dot(d, d);
+  let b = 2.0 * dot(d, o) * (invR * invR);
+  let aScaled = a * (invR * invR);
+  let c = dot(ocScaled, ocScaled) - 1.0;
+  let det = (b * b) - (4.0 * aScaled * c);
+  if (det < 0.0) {
+    return vec3<f32>(0.0, 0.0, 0.0);
+  }
+  let sqrtDet = sqrt(det);
+  let t0 = (-b - sqrtDet) / (2.0 * aScaled);
+  let t1 = (-b + sqrtDet) / (2.0 * aScaled);
+  return vec3<f32>(t0, t1, 1.0);
+}
+
+// Faithful port of czm_computeScattering (computeScattering.glsl). Uses the
 // frameState.atmosphere coefficients passed via uniforms so the WebGPU
 // sky matches the visible SkyAtmosphere + WebGL IBL exactly.
+//
+// NEW-MODEL-IBL-AMBIENT (re-land of the audited-GO B3 fix): the previous
+// port used a uniform 16-step midpoint integrator with a fixed 111 km ray
+// clamp — diverging from WebGL's ADAPTIVE scheme (tanh split weights →
+// 4 primary / 2 light steps from inside the atmosphere, growing step
+// length, full-step sample placement, and the caller-provided ray length
+// with only the shell exit as the internal clamp). The divergence skewed
+// the radiance cube's blue band and, through the SH projection, tinted
+// every model's IBL ambient olive. This body now transcribes the GLSL
+// line-for-line.
 fn computeScattering(
   rayOrigin: vec3<f32>,
   rayDir: vec3<f32>,
@@ -205,52 +247,71 @@ fn computeScattering(
   result.opacity = 0.0;
 
   let outerRadius = innerRadius + ATMOSPHERE_THICKNESS;
-  let origin = vec3<f32>(0.0);
 
   // Intersection of the primary ray with the outer atmosphere sphere.
-  let primExit = raySphereExit(rayOrigin, rayDir, outerRadius);
-  if (primExit <= 0.0) {
+  let primary = raySphereIntersectionInterval(rayOrigin, rayDir, outerRadius);
+  if (primary.z < 0.5) {
     return result;
   }
 
-  let PRIMARY_STEPS = PRIMARY_STEPS_MAX;
-  let LIGHT_STEPS = LIGHT_STEPS_MAX;
+  // Sky-vs-horizon soft split weight (czm_computeScattering:46-53).
+  let x = 1e-7 * primary.y / rayLength;
+  let wStopGtLprl = 0.5 * (1.0 + approximateTanh(x));
 
-  let rayStart = 0.0;
-  let rayStop = min(primExit, rayLength);
-  let totalRayLength = rayStop - rayStart;
-  let rayStepLength = totalRayLength / f32(PRIMARY_STEPS);
+  // Ray starts at the shell entry or the origin if inside; ends at the shell
+  // exit or the caller's ray length, whichever is smaller.
+  let start0 = primary.x;
+  let intersectStart = max(primary.x, 0.0);
+  let intersectStop = min(primary.y, rayLength);
+
+  // Inside-vs-outside atmosphere weight → adaptive step counts (4 primary /
+  // 2 light steps from inside the atmosphere; 16 / 4 from space) + the
+  // growing-step-length compensation (czm_computeScattering:61-75).
+  let xOA = start0 - ATMOSPHERE_THICKNESS;
+  let wInsideAtmosphere = 1.0 - 0.5 * (1.0 + approximateTanh(xOA));
+  let PRIMARY_STEPS = PRIMARY_STEPS_MAX - i32(wInsideAtmosphere * 12.0);
+  let LIGHT_STEPS = LIGHT_STEPS_MAX - i32(wInsideAtmosphere * 2.0);
+
+  var rayPositionLength = intersectStart;
+  let totalRayLength = intersectStop - rayPositionLength;
+  let rayStepLengthIncrease = wInsideAtmosphere *
+    ((1.0 - wStopGtLprl) * totalRayLength /
+      (f32(PRIMARY_STEPS * (PRIMARY_STEPS + 1)) / 2.0));
+  var rayStepLength = max(1.0 - wInsideAtmosphere, wStopGtLprl) *
+    totalRayLength / max(7.0 * wInsideAtmosphere, f32(PRIMARY_STEPS));
 
   var rayleighAccum = vec3<f32>(0.0);
   var mieAccum = vec3<f32>(0.0);
   var opticalDepthR = 0.0;
   var opticalDepthM = 0.0;
-  var rayPos = rayStart;
 
   for (var i = 0; i < PRIMARY_STEPS_MAX; i = i + 1) {
     if (i >= PRIMARY_STEPS) { break; }
 
-    let samplePos = rayOrigin + rayDir * (rayPos + rayStepLength * 0.5);
-    let sampleHeight = length(samplePos) - innerRadius;
+    // WebGL sample placement: a FULL step ahead of the current ray position
+    // (czm_computeScattering:92), not a midpoint.
+    let samplePosition = rayOrigin + rayDir * (rayPositionLength + rayStepLength);
+    let sampleHeight = length(samplePosition) - innerRadius;
 
     let densityR = exp(-sampleHeight / u.rayleighScaleHeight) * rayStepLength;
     let densityM = exp(-sampleHeight / u.mieScaleHeight) * rayStepLength;
     opticalDepthR = opticalDepthR + densityR;
     opticalDepthM = opticalDepthM + densityM;
 
-    let lightExit = raySphereExit(samplePos, lightDir, outerRadius);
-    let lightStepLength = lightExit / f32(LIGHT_STEPS);
+    let lightSeg = raySphereIntersectionInterval(samplePosition, lightDir, outerRadius);
+    let lightStepLength = lightSeg.y / f32(LIGHT_STEPS);
     var lightOpticalDepthR = 0.0;
     var lightOpticalDepthM = 0.0;
-    var lightPos = 0.0;
+    var lightPositionLength = 0.0;
 
     for (var j = 0; j < LIGHT_STEPS_MAX; j = j + 1) {
       if (j >= LIGHT_STEPS) { break; }
-      let lightSample = samplePos + lightDir * (lightPos + lightStepLength * 0.5);
-      let lightHeight = length(lightSample) - innerRadius;
+      // Light samples ARE midpoint-placed (czm_computeScattering:120).
+      let lightPosition = samplePosition + lightDir * (lightPositionLength + lightStepLength * 0.5);
+      let lightHeight = length(lightPosition) - innerRadius;
       lightOpticalDepthR = lightOpticalDepthR + exp(-lightHeight / u.rayleighScaleHeight) * lightStepLength;
       lightOpticalDepthM = lightOpticalDepthM + exp(-lightHeight / u.mieScaleHeight) * lightStepLength;
-      lightPos = lightPos + lightStepLength;
+      lightPositionLength = lightPositionLength + lightStepLength;
     }
 
     let attenuation = exp(
@@ -260,7 +321,11 @@ fn computeScattering(
 
     rayleighAccum = rayleighAccum + densityR * attenuation;
     mieAccum = mieAccum + densityM * attenuation;
-    rayPos = rayPos + rayStepLength;
+
+    // GLSL: rayPositionLength += (rayStepLength += rayStepLengthIncrease) —
+    // grow the step FIRST, then advance by the grown step.
+    rayStepLength = rayStepLength + rayStepLengthIncrease;
+    rayPositionLength = rayPositionLength + rayStepLength;
   }
 
   result.rayleigh = u.rayleighCoefficient * rayleighAccum;
@@ -522,15 +587,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // atmosphere coefficients/intensity/light-direction.
   let dir = faceUVToLocalDir(face, uv);
 
-  // Planet-local view origin at the surface, +Y up (the reference frame's
-  // up axis). Scattering geometry uses innerRadius for the shell.
-  let viewOrigin = vec3<f32>(0.0, u.innerRadius, 0.0);
-  let rayLength = u.outerRadius - u.innerRadius;
+  // Planet-local view origin, +Y up (the reference frame's up axis), at the
+  // model's height above the geodetic surface (ComputeRadianceMapFS:24-29:
+  // the position is scaled to `ellipsoidHeight + atmosphereInnerRadius`, so
+  // the sky is present even underground — ellipsoidHeight is pre-clamped to
+  // >= 0 on the JS side). Scattering geometry uses innerRadius for the shell.
+  let viewOrigin = vec3<f32>(0.0, u.innerRadius + u.ellipsoidHeight, 0.0);
+  let atmosphereHeight = u.outerRadius - u.innerRadius;
+
+  // onEllipsoid classification (ComputeRadianceMapFS:37-47): a primary ray
+  // that hits the inner (surface) sphere AHEAD of the origin is a ground
+  // texel and terminates at the hit; a sky ray's primary length is the outer
+  // radius VALUE itself (1.025 × surface radius — WebGL passes
+  // `atmosphereOuterRadius` as the ray length, NOT a 111 km clamp; the
+  // scattering march clamps to its own 111 km shell exit internally). This
+  // also fixes the two prior defects: down rays no longer march through the
+  // planet, and the NONE-mode light direction below is no longer the
+  // near-degenerate zenith of a 111 km-capped sky point.
+  let groundHit = raySphereIntersectionInterval(viewOrigin, dir, u.innerRadius);
+  let onEllipsoid = groundHit.z > 0.5 && groundHit.x >= 0.0;
+  let rayLength = select(u.outerRadius, groundHit.x, onEllipsoid);
   let skyLocalPos = viewOrigin + dir * rayLength;
 
   // Light direction in the local frame:
-  //   NONE (default)  -> local zenith of the sky sample (smooth radially-
-  //                      symmetric sky; matches WebGL's at-rest IBL).
+  //   NONE (default)  -> normalize(skyPositionWC) — the sky-sample point at
+  //                      the full 1.025R primary ray length, matching
+  //                      czm_getDynamicAtmosphereLightDirection's NONE path
+  //                      (czm_computeScattering sees a per-texel light that
+  //                      leans toward the view direction, NOT the near-
+  //                      degenerate zenith the old 111 km cap produced).
   //   SCENE_LIGHT/SUN -> the world sun direction rotated INTO the local
   //                      frame via the ENU basis (East->localX, Up->localY,
   //                      North->localZ), so the sun disc lands in the
@@ -635,21 +720,50 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     skyColor = skyColor * (1.0 - cloud.a) + cloud.rgb;
   }
 
-  // 1:1 with ComputeRadianceMapFS: the sky is `skyColor * intensity` and the
-  // ground reuses that intensity for the reflected-light occlusion term.
-  // `intensity` here is the manager's atmosphereScatteringIntensity (matches
-  // the FS's u_brightnessSaturationGammaIntensity.w). `skyColor` already
-  // carries atmosphere.lightIntensity (u.intensity) — from
-  // computeAtmosphereColor on the off path, from the LUT bake on the on path.
+  // 1:1 with ComputeRadianceMapFS: the sky is `skyColor * intensity` faded by
+  // skyAlpha over the background, and the ground reuses that intensity for
+  // the reflected-light occlusion term. `intensity` here is the manager's
+  // atmosphereScatteringIntensity (matches the FS's
+  // u_brightnessSaturationGammaIntensity.w). `skyColor` already carries
+  // atmosphere.lightIntensity (u.intensity) — from computeAtmosphereColor on
+  // the off path, from the LUT bake on the on path.
   let scatteringIntensity = u.scatteringIntensity;
-  var color: vec3<f32>;
-  if (upDot >= 0.0) {
-    color = skyColor * scatteringIntensity;
-  } else {
-    let occlusion = max(dot(lightDir, up), 0.05);
-    color = u.groundColor * u.groundAlbedo
-          * (vec3<f32>(scatteringIntensity * occlusion) + skyColor);
+
+  // skyAlpha composite (ComputeRadianceMapFS:77-85): above the atmosphere the
+  // scattering fades to transparent over the background — black here (the
+  // WebGPU env fill has no starmap/skybox composite; the scene default
+  // background is black, so the default-path radiance matches). Black
+  // scattering is treated as fully transparent (czm_epsilon7 test).
+  var skyAlpha = clamp(
+    (1.0 - u.ellipsoidHeight / atmosphereHeight) * atmosphereColor.a,
+    0.0,
+    1.0,
+  );
+  if (length(atmosphereColor.rgb) <= 1e-7) {
+    skyAlpha = 0.0;
   }
+  let combinedSkyColor = mix(
+    vec3<f32>(0.0),
+    skyColor * scatteringIntensity,
+    skyAlpha,
+  );
+
+  // Ground (ComputeRadianceMapFS:87-93): reflected-light term, blended toward
+  // the raw (intensity-free) atmosphere color as the origin climbs through
+  // the atmosphere shell.
+  let occlusion = max(dot(lightDir, up), 0.05);
+  let groundReflected = u.groundColor * u.groundAlbedo
+        * (vec3<f32>(scatteringIntensity * occlusion) + skyColor);
+  let blendedGroundColor = mix(
+    groundReflected,
+    skyColor,
+    clamp(u.ellipsoidHeight / atmosphereHeight, 0.0, 1.0),
+  );
+
+  // Sky vs ground by the ellipsoid hit test (WebGL's onEllipsoid ternary),
+  // not the local hemisphere sign — from altitude the horizon sits below
+  // dir.y == 0 and the classification must follow the actual surface hit.
+  var color = select(combinedSkyColor, blendedGroundColor, onEllipsoid);
 
   // Gamma (kept even at 1.0 to match the WebGL transmittance-precision
   // workaround) -- ComputeRadianceMapFS applies pow(color, gamma) then a
