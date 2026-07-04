@@ -45,8 +45,12 @@ import {
   collectGateErrors,
   attachConsoleErrorGate,
 } from "../lib/webgpu-error-gate.mjs";
+import {
+  DET_BROWSER_SETUP,
+  DETERMINISTIC_CLOCK_ISO,
+} from "./lib/determinism-kit.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8134";
+const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 // Metallic / KHR_materials_specular test asset — strong specular IBL term,
 // so the BRDF LUT + reference-frame reflection dominate the captured pixels.
 const MODEL = "/Apps/SampleData/models/TestKHRExtensions/TestKhrSpecular.gltf";
@@ -71,12 +75,20 @@ async function capture(renderer, heading, specularFactor) {
     timeout: 90000,
   });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+  // Install the determinism kit (window.__det) so we can freeze the clock:
+  // the per-model procedural sky env uses the real sun direction, so an
+  // unpinned wall-clock start makes the IBL tint (and thus the parity diff)
+  // sun-elevation dependent — the root cause of the NEW-PROBES-RED-AT-HEAD-
+  // IBL-PAIR flake. Pinning to a fixed epoch makes both backends sample the
+  // SAME sky and makes the metric reproducible.
+  await page.evaluate(DET_BROWSER_SETUP);
 
   const info = await page.evaluate(
-    async ({ modelUrl, heading, pitch, specularFactor }) => {
+    async ({ modelUrl, heading, pitch, specularFactor, iso }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
+      window.__det.pinClock(C, v, scene, iso);
 
       // Hide all viewer chrome so the canvas screenshot is pure scene
       // content (UI would dominate the non-black pixel diff otherwise).
@@ -156,7 +168,7 @@ async function capture(renderer, heading, specularFactor) {
       scene.canvas.setAttribute("data-ibl", "1");
       return { ready: !!model.ready, iblReady: !!window.__iblReady };
     },
-    { modelUrl: MODEL, heading, pitch: PITCH, specularFactor },
+    { modelUrl: MODEL, heading, pitch: PITCH, specularFactor, iso: DETERMINISTIC_CLOCK_ISO },
   );
 
   const gateArm = await armWebGPUDevices(page);

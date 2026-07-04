@@ -49,6 +49,10 @@ import {
   collectGateErrors,
   attachConsoleErrorGate,
 } from "../lib/webgpu-error-gate.mjs";
+import {
+  DET_BROWSER_SETUP,
+  DETERMINISTIC_CLOCK_ISO,
+} from "./lib/determinism-kit.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 
@@ -87,12 +91,20 @@ async function capture(renderer) {
     timeout: 90000,
   });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+  // Install the determinism kit (window.__det) and freeze the clock: the
+  // per-model procedural sky env + the punctual sun both use the real sun
+  // direction, so an unpinned wall-clock start makes the at-rest tint (and
+  // the WebGPU-vs-WebGL delta) sun-elevation dependent — the root cause of
+  // the NEW-PROBES-RED-AT-HEAD-IBL-PAIR flake. A fixed epoch makes both
+  // backends sample the SAME sky so the delta is reproducible.
+  await page.evaluate(DET_BROWSER_SETUP);
 
   const info = await page.evaluate(
-    async ({ modelCandidates, heading, pitch }) => {
+    async ({ modelCandidates, heading, pitch, iso }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
+      window.__det.pinClock(C, v, scene, iso);
 
       // Hide all viewer chrome so the canvas screenshot is pure scene content.
       for (const sel of [
@@ -181,7 +193,7 @@ async function capture(renderer) {
       scene.canvas.setAttribute("data-ibl", "1");
       return { ready: !!model.ready, usedUrl, iblReady };
     },
-    { modelCandidates: MODEL_CANDIDATES, heading: HEADING, pitch: PITCH },
+    { modelCandidates: MODEL_CANDIDATES, heading: HEADING, pitch: PITCH, iso: DETERMINISTIC_CLOCK_ISO },
   );
 
   const gateArm = await armWebGPUDevices(page);
