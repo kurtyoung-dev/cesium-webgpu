@@ -1,0 +1,7 @@
+legacyId: WebGPU Model Appearance.html
+title: WebGPU Model Appearance
+description: "Drive model.color/colorBlendMode/colorBlendAmount, silhouetteColor/silhouetteSize, and splitDirection on the WebGPU backend — the three Batch 483-485 model appearance features at parity with WebGL."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg

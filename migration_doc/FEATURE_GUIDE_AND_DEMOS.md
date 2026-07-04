@@ -809,6 +809,8 @@ the new gallery:
 |---|---|
 | `atmospheric-conditions` | Tune the `AtmosphericConditions` weather inputs — humidity (mie + fog density), airQuality (rayleigh), cloudCover (star occlusion), wind state (§3). |
 | `volumetric-effects` | Stack WebGPU volumetric fog + volumetric clouds + cloud shadows cast into the fog — all off by default, compose into one atmospheric system (§4/§8). |
+| `webgpu-model-appearance` | New-gallery-only (no legacy counterpart). Drive `model.color`/`colorBlendMode`/`colorBlendAmount` (Batch 484), `silhouetteColor`/`silhouetteSize` (Batch 485), and `splitDirection` + `scene.splitPosition` (Batch 483) interactively on the WebGPU backend via toolbar menus + sliders. Verified: `Tools/visual-regression/probe-model-appearance-demo.mjs` (signature-pixel gates per feature + byte-identical off-state). |
+| `webgpu-post-process-library` | New-gallery-only (no legacy counterpart, Batch 524). Cycle the seven `PostProcessStageLibrary` builtins natively on WebGPU (§ Post-process). Verified: `Tools/visual-regression/probe-pp-library-demo.mjs`. |
 
 The 26 ported `webgpu-*` folders: `webgpu-async-resource-monitor`,
 `webgpu-bulk-vs-legacy-visualizers`, `webgpu-clustered-lighting`,

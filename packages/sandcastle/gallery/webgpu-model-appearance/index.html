@@ -1,0 +1,90 @@
+<style>
+  @import url(../templates/bucket.css);
+  #appearancePanel {
+    background: rgba(42, 42, 42, 0.85);
+    color: white;
+    padding: 10px 14px;
+    border-radius: 4px;
+    font-size: 13px;
+    max-width: 400px;
+    line-height: 1.5;
+  }
+  #appearancePanel .sliderRow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 12px;
+  }
+  #appearancePanel .sliderRow input[type="range"] {
+    flex: 1;
+  }
+  #appearancePanel .sliderRow .sliderValue {
+    width: 34px;
+    text-align: right;
+    font-family: monospace;
+  }
+  #appearancePanel .hint {
+    color: #aaa;
+    font-size: 12px;
+  }
+  #splitLine {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: rgba(255, 255, 255, 0.6);
+    pointer-events: none;
+    display: none;
+    z-index: 5;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="splitLine"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <div id="appearancePanel">
+    <b>WebGPU model appearance.</b><br />
+    Drive <code>model.color</code> / <code>colorBlendMode</code> /
+    <code>colorBlendAmount</code>, <code>silhouetteColor</code> /
+    <code>silhouetteSize</code>, and <code>splitDirection</code> on the WebGPU
+    backend (Batches 483&ndash;485, parity with WebGL).
+    <div class="sliderRow">
+      <span>Blend amount</span>
+      <input
+        id="blendAmount"
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        value="0.5"
+      />
+      <span id="blendAmountValue" class="sliderValue">0.50</span>
+    </div>
+    <div class="sliderRow">
+      <span>Silhouette size</span>
+      <input
+        id="silhouetteSize"
+        type="range"
+        min="0"
+        max="10"
+        step="0.5"
+        value="4"
+      />
+      <span id="silhouetteSizeValue" class="sliderValue">4.0</span>
+    </div>
+    <div class="sliderRow">
+      <span>Split position</span>
+      <input
+        id="splitPosition"
+        type="range"
+        min="0"
+        max="1"
+        step="0.01"
+        value="0.5"
+      />
+      <span id="splitPositionValue" class="sliderValue">0.50</span>
+    </div>
+    <span class="hint" id="stateHint">(defaults — all three features off)</span>
+  </div>
+</div>
