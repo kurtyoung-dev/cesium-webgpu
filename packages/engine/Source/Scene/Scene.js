@@ -4177,7 +4177,11 @@ class Scene {
       height,
     );
     const tileIndex = 255 * voxelCoordinate[0] + voxelCoordinate[1];
-    const keyframeNode = voxelPrimitive._traversal.findKeyframeNode(tileIndex);
+    // Backend-agnostic keyframe-node resolve: WebGL consults the CPU-side
+    // VoxelTraversal; the WebGPU feature-renderer path (no traversal) resolves
+    // from its uploaded tile content. Guards a missing traversal so a picked
+    // tile with no resolvable node degrades to `undefined` instead of throwing.
+    const keyframeNode = voxelPrimitive._getPickKeyframeNode(tileIndex);
     if (!defined(keyframeNode)) {
       return;
     }

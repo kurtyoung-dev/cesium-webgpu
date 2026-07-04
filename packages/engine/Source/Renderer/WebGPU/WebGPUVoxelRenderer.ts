@@ -26,6 +26,9 @@ import {
 // real-intersection selection (BOX keeps intersectAABB; ELLIPSOID takes the
 // shell quadratics; CYLINDER the bounded-cylinder quadratic + height slab).
 import VoxelShapeType from "../../Scene/VoxelShapeType.js";
+// C-R9-VOXEL-CELL-PICK-TAIL — the root SpatialNode built for Scene.pickVoxel's
+// VoxelCell construction (WebGPU path has no CPU VoxelTraversal).
+import SpatialNode from "../../Scene/SpatialNode.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
@@ -3463,5 +3466,115 @@ function destroyWebGPUVoxelResources(
   primitive._webgpuCache = undefined;
 }
 
-export { updateWebGPUVoxelPrimitive, destroyWebGPUVoxelResources };
-export default { updateWebGPUVoxelPrimitive, destroyWebGPUVoxelResources };
+/**
+ * C-R9-VOXEL-CELL-PICK-TAIL — the minimal provider fields that
+ * {@link VoxelCell.fromKeyframeNode} reads (via the primitive) but that the
+ * WebGPU feature-renderer path never copies onto the primitive (initFromProvider
+ * is WebGL-only).
+ */
+interface VoxelPickProviderLike {
+  dimensions?: Cartesian3;
+  paddingBefore?: Cartesian3;
+  paddingAfter?: Cartesian3;
+}
+
+/**
+ * C-R9-VOXEL-CELL-PICK-TAIL — copy the provider-derived fields VoxelCell reads
+ * (`dimensions`, `_paddingBefore`, `_paddingAfter`) onto the primitive. On the
+ * WebGL path these are set by `initFromProvider`; the WebGPU feature-renderer
+ * path skips it, leaving them at their zero-Cartesian constructor defaults.
+ * Idempotent — mirrors `initFromProvider`'s provider-field copy exactly.
+ */
+function ensureVoxelPickPrimitiveFields(
+  primitive: CesiumObjectWithWebGPUCache,
+  provider: VoxelPickProviderLike,
+): void {
+  const p = primitive as unknown as {
+    _dimensions?: Cartesian3;
+    _paddingBefore?: Cartesian3;
+    _paddingAfter?: Cartesian3;
+  };
+  if (provider.dimensions) {
+    p._dimensions = Cartesian3.clone(provider.dimensions, p._dimensions);
+  }
+  p._paddingBefore = Cartesian3.clone(
+    provider.paddingBefore ?? Cartesian3.ZERO,
+    p._paddingBefore,
+  );
+  p._paddingAfter = Cartesian3.clone(
+    provider.paddingAfter ?? Cartesian3.ZERO,
+    p._paddingAfter,
+  );
+}
+
+/**
+ * C-R9-VOXEL-CELL-PICK-TAIL — build the keyframe-node handle `Scene.pickVoxel`
+ * needs to construct a {@link VoxelCell} from a WebGPU cell-pick readback.
+ *
+ * The WebGL path resolves the picked `tileIndex` through the CPU-side
+ * `VoxelTraversal.findKeyframeNode`, but the WebGPU feature-renderer path never
+ * runs `initFromProvider`, so `primitive._traversal` (and its keyframeNode
+ * table) is undefined. This resolver services the ROOT tile (megatextureIndex 0
+ * — the single-tile / coarse case, WebGL-byte-identical per
+ * VOXEL-CELL-PICK-RELAND) from the FR's uploaded root content: it returns a
+ * `{ spatialNode, content }` object shaped exactly like a WebGL KeyframeNode so
+ * `VoxelCell.fromKeyframeNode` reads the same per-sample metadata + OBB.
+ *
+ * Refined-tile pick (megatextureIndex >= 1 — the octree-compose follow-up
+ * NEW-VOXEL-PICK-OCTREE-COMPOSE) returns undefined here: the child-tile content
+ * is not retained CPU-side, so pickVoxel degrades to `undefined` (no throw),
+ * exactly as WebGL does when a keyframeNode is not found.
+ *
+ * @returns a KeyframeNode-like handle, or undefined when the root content is
+ * not (yet) available or the pick landed on a non-root tile.
+ */
+function getVoxelPickKeyframeNode(
+  primitive: CesiumObjectWithWebGPUCache,
+  tileIndex: number,
+):
+  | { spatialNode: unknown; content: unknown; megatextureIndex: number }
+  | undefined {
+  const cache = primitive._webgpuCache as VoxelCache | undefined;
+  const dataUpload = cache?.dataUpload ?? null;
+  // Root tile only (see docstring). Not-yet-uploaded root → no cell.
+  if (!dataUpload || dataUpload.phase !== "done" || tileIndex !== 0) {
+    return undefined;
+  }
+  const content = dataUpload.content;
+  const shape = (primitive as unknown as { _shape?: unknown })._shape;
+  const provider = (
+    primitive as unknown as { _provider?: VoxelPickProviderLike }
+  )._provider;
+  if (!content || !shape || !provider) {
+    return undefined;
+  }
+
+  ensureVoxelPickPrimitiveFields(primitive, provider);
+
+  // Refresh the shape OBB/transform so the root SpatialNode's bounding box is
+  // current (the render path does this each frame; a pick after a render is
+  // already current, but keep it robust to call order). Same guarded calls as
+  // computeVoxelEffectiveModelMatrix.
+  try {
+    checkTransformAndBounds(primitive);
+    updateShapeAndTransforms(primitive);
+  } catch {
+    // Degenerate volume — fall back to whatever OBB the shape last held.
+  }
+
+  const dimensions = (primitive as unknown as { dimensions?: Cartesian3 })
+    .dimensions;
+  const spatialNode = new SpatialNode(0, 0, 0, 0, undefined, shape, dimensions);
+  return { spatialNode, content, megatextureIndex: 0 };
+}
+
+export {
+  updateWebGPUVoxelPrimitive,
+  destroyWebGPUVoxelResources,
+  getVoxelPickKeyframeNode,
+};
+export default {
+  updateWebGPUVoxelPrimitive,
+  destroyWebGPUVoxelResources,
+  getVoxelPickKeyframeNode,
+};

@@ -687,6 +687,9 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       context.registerFeatureRenderer(FeatureRendererKey.VOXEL_PRIMITIVE, {
         update: mod.updateWebGPUVoxelPrimitive,
         destroy: mod.destroyWebGPUVoxelResources,
+        // C-R9-VOXEL-CELL-PICK-TAIL — resolves the root keyframe node for
+        // Scene.pickVoxel's VoxelCell construction (WebGPU has no CPU traversal).
+        getPickKeyframeNode: mod.getVoxelPickKeyframeNode,
       });
     },
   );

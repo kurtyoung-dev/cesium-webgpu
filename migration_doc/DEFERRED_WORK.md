@@ -3327,24 +3327,57 @@ octree traversal — a real two-level LOD path in
    handles an interior origin). Repro: probe-voxel-megatexture PART 3
    harness with `setCorner` destinations scaled to 0.55R.
 
-### C-R9-VOXEL-CELL-PICK-TAIL — `scene.pickVoxel` VoxelCell construction on WebGPU (traversal/keyframeNode gap)
+### ~~C-R9-VOXEL-CELL-PICK-TAIL~~ — RESOLVED (2026-07-04) — `scene.pickVoxel` returns a WebGL-byte-identical VoxelCell on WebGPU (root tile)
 
-**What:** `Scene.pickVoxel` = object pick (works) → `pickVoxelCoordinate`
-(works, WebGL-byte-identical since VOXEL-CELL-PICK-RELAND) →
-`voxelPrimitive._traversal.findKeyframeNode(tileIndex)` +
-`VoxelCell.fromKeyframeNode(...)` — the last step throws on WebGPU because
-`_traversal` is undefined (the WebGPU FR path never runs `initFromProvider`).
+**Resolution (2026-07-04):** `Scene.pickVoxel` now builds a `VoxelCell` on
+WebGPU for the ROOT tile, with per-cell metadata byte-identical to WebGL.
 
-**Next concrete step:** either run the CPU-side `VoxelTraversal` (or a
-root-tile-only stub exposing `findKeyframeNode(0)` + the metadata the
-`VoxelCell` property reads need) on the WebGPU path, or teach `Scene.pickVoxel`
-to build the `VoxelCell` from the FR's uploaded root-tile content. Guard the
-`_traversal` dereference either way so a missing traversal degrades to
-`undefined` instead of a TypeError.
+- **Backend-agnostic resolve.** `Scene.pickVoxel` no longer dereferences
+  `voxelPrimitive._traversal.findKeyframeNode(tileIndex)` directly; it calls a
+  new `VoxelPrimitive._getPickKeyframeNode(tileIndex)`. WebGL delegates to the
+  CPU-side `VoxelTraversal`; WebGPU delegates to the voxel feature renderer.
+  The FR is preferred when present: on WebGPU a stale empty `_traversal` can be
+  constructed during the initial frames BEFORE the lazy voxel FR finishes
+  loading (VoxelPrimitive.update runs the WebGL body once), but it is never
+  populated once the FR takes over — so `findKeyframeNode` on it would throw on
+  its undefined holes. The FR is the source of truth when it is servicing the
+  primitive.
+- **FR resolver.** `WebGPUVoxelRenderer.getVoxelPickKeyframeNode(primitive,
+  tileIndex)` returns `{ spatialNode, content, megatextureIndex: 0 }` for the
+  root tile from the FR's retained uploaded root content
+  (`_webgpuCache.dataUpload.content`). It builds the same root
+  `new SpatialNode(0,0,0,0, undefined, primitive._shape, primitive.dimensions)`
+  WebGL builds, and populates the provider-derived primitive fields VoxelCell
+  reads (`_dimensions`, `_paddingBefore`, `_paddingAfter`) that the WebGPU FR
+  path otherwise leaves at their zero-Cartesian defaults (initFromProvider is
+  WebGL-only). Registered on the FR object as `getPickKeyframeNode`; the
+  optional method was added to the `FeatureRenderer` interface.
+- **Files:** `Scene/Scene.js` (pickVoxel resolve line), `Scene/VoxelPrimitive.js`
+  (`_getPickKeyframeNode` + `_featureRenderer` init), `Renderer/WebGPU/
+  WebGPUVoxelRenderer.ts` (`getVoxelPickKeyframeNode` + `ensureVoxelPickPrimitiveFields`),
+  `Renderer/WebGPU/WebGPUFeatureRenderers.ts` (FR registration),
+  `Renderer/GraphicsContext.ts` (`FeatureRenderer.getPickKeyframeNode?`).
+- **Acceptance:** `Tools/visual-regression/probe-voxel-pick.mjs` — at each
+  filled-cell target `scene.pickVoxel(...)` returns a `VoxelCell` (no throw) on
+  both backends with byte-identical `tileIndex`/`sampleIndex`/`getProperty("color")`.
+  Standing regression `probe-voxel-cell-pick.mjs` (coordinate readback + octree
+  compose + user-shader gate) still PASS, 0 errors — the color/coordinate paths
+  are byte-unchanged (nothing runs differently unless `scene.pickVoxel` is
+  invoked).
 
-**Prerequisites:** VOXEL-CELL-PICK-RELAND (done). **Impact:** `scene.pickVoxel`
-(the public API) usable on WebGPU; today only the coordinate-level
-`pickVoxelCoordinate` parity holds.
+**Residual (separate, pre-existing — NOT this task):** over EMPTY columns and
+off-box pixels, WebGPU's OBJECT pick (`scene.pick`, which `pickVoxel` calls
+first) returns the voxel primitive across the whole box footprint, whereas
+WebGL returns undefined — so `pickVoxel` yields a spurious root cell there on
+WebGPU (before this fix those pixels THREW; now they return a valid cell, no
+throw). A cleared readback `[0,0,0,0]` is indistinguishable from a real
+tile-0/sample-0 hit on BOTH backends (WebGL relies solely on the object-pick
+gate), so this cannot be disambiguated in the cell-pick path — it is the
+object-pick-footprint follow-up. Refined-tile pick (megatextureIndex >= 1) also
+returns undefined (child content is not retained CPU-side) —
+NEW-VOXEL-PICK-OCTREE-COMPOSE tracks reaching the leaf cell.
+
+**Prerequisites:** VOXEL-CELL-PICK-RELAND (done).
 
 #### Historical context (original blocker analysis, resolved)
 

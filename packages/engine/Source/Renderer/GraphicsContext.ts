@@ -333,6 +333,14 @@ export interface FeatureRenderer {
   render?(...args: unknown[]): void;
   composite?(...args: unknown[]): void;
 
+  /**
+   * C-R9-VOXEL-CELL-PICK-TAIL — resolve a keyframe-node handle for a picked
+   * tile index. Implemented by the WebGPU voxel renderer so `Scene.pickVoxel`
+   * can build a `VoxelCell` without the CPU-side `VoxelTraversal` that only the
+   * WebGL path constructs. Returns undefined when no tile resolves.
+   */
+  getPickKeyframeNode?(primitive: unknown, tileIndex: number): unknown;
+
   /** Lazy-construction pattern: some feature renderers register a
    *  `RendererClass` constructor that gets instantiated on first touch
    *  (or via `_warmUpPipelines`) and cached on `_instance`. */
@@ -1462,9 +1470,7 @@ export abstract class GraphicsContext {
    */
   abstract createViewportQuadCommand(
     fragmentShader:
-      | string
-      | CesiumOpaqueShaderSource
-      | { readonly _wgslCode?: string },
+      string | CesiumOpaqueShaderSource | { readonly _wgslCode?: string },
     options?: ViewportQuadCommandOptionsBase,
   ): ViewportQuadCommandHandle;
 

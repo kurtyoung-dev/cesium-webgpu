@@ -62,6 +62,9 @@ class VoxelPrimitive {
     this._ready = false;
     this._provider = options.provider ?? VoxelPrimitive.DefaultProvider;
     this._traversal = undefined;
+    // Set on the WebGPU feature-renderer path (VoxelPrimitive.update) so
+    // pickVoxel can resolve a keyframe node when `_traversal` is absent.
+    this._featureRenderer = undefined;
     this._statistics = new Cesium3DTilesetStatistics();
     this._calculateStatistics = options.calculateStatistics ?? false;
     this._shape = undefined;
@@ -631,6 +634,40 @@ class VoxelPrimitive {
         : this._drawCommand;
     command.boundingVolume = this._shape.boundingSphere;
     frameState.commandList.push(command);
+  }
+
+  /**
+   * Resolve the keyframe node for a picked tile index, for {@link Scene#pickVoxel}.
+   * On the WebGL path this consults the CPU-side {@link VoxelTraversal}. On the
+   * WebGPU feature-renderer path — which returns from {@link VoxelPrimitive#update}
+   * before {@link initFromProvider} ever builds a traversal — it delegates to the
+   * renderer's uploaded-content resolver. Returns <code>undefined</code> when no
+   * tile matches (pickVoxel then yields no cell — no throw), matching the WebGL
+   * "keyframe node not found" behavior.
+   *
+   * @param {number} tileIndex The picked megatexture / tile index.
+   * @returns {KeyframeNode|undefined}
+   * @private
+   */
+  _getPickKeyframeNode(tileIndex) {
+    // Feature renderer first: on the WebGPU path a `_traversal` may have been
+    // constructed during the initial frames BEFORE the lazy voxel feature
+    // renderer finished loading (VoxelPrimitive.update ran the WebGL body once),
+    // but it is never populated once the FR takes over — its keyframeNode table
+    // is empty. When an FR is servicing this primitive it is the source of
+    // truth for pick resolution.
+    const featureRenderer = this._featureRenderer;
+    if (
+      defined(featureRenderer) &&
+      typeof featureRenderer.getPickKeyframeNode === "function"
+    ) {
+      return featureRenderer.getPickKeyframeNode(this, tileIndex);
+    }
+    const traversal = this._traversal;
+    if (defined(traversal)) {
+      return traversal.findKeyframeNode(tileIndex);
+    }
+    return undefined;
   }
 
   isDestroyed() {
