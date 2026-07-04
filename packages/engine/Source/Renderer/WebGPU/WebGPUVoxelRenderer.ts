@@ -323,7 +323,7 @@ fn intersectAABB(origin: vec3<f32>, invDir: vec3<f32>,
 // OCTREE_FLAG_PACKED_LEAF_FROM_PARENT path. Slot indirection per level:
 // level 1 reads childSlots0/1 (octant x + 2y + 4z), level 2 reads l2Slots
 // (linear x + 4y + 16z). Depth is capped at 2 — the fixed-atlas budget
-// (deeper levels arrive with NEW-VOXEL-STREAMING-UPLOAD). targetLevel 0
+// (deeper levels need the NEW-VOXEL-ATLAS-LRU-EVICT slot allocator). targetLevel 0
 // (single-tile / placeholder / far view) never enters the loop: tileUv =
 // shapeUv, slot = 0 — byte-identical to the pre-octree math.
 //
@@ -1254,32 +1254,22 @@ const scratchObbScale = new Cartesian3();
  * ANY uploaded tile so the march never branches into an empty atlas. For
  * depth-1 (9-slot) atlases this reduces exactly to the shipped single refine
  * test — byte-identical behavior for `availableLevels < 3` providers.
+ *
+ * NEW-VOXEL-STREAMING-UPLOAD splits the ladder's CAP into two callers:
+ * {@link computeVoxelTargetLevel} caps at the deepest UPLOADED level (what the
+ * WGSL march may branch into this frame) while {@link computeVoxelDemandLevel}
+ * caps at the atlas CAPACITY (what the camera is asking for — the signal that
+ * drives demand-driven descendant uploads, independent of what has streamed
+ * in so far).
  */
-function computeVoxelTargetLevel(
+function computeVoxelRefinementLevel(
   primitive: CesiumObjectWithWebGPUCache,
   frameState: CesiumFrameState,
   state: VoxelDataUploadState,
+  capLevel: number,
 ): number {
-  if (state.slotCount < 9) {
+  if (capLevel <= 0) {
     return 0;
-  }
-  let maxUploadedLevel = 0;
-  for (let i = 0; i < 8; i++) {
-    if (state.childSlots[i] >= 0) {
-      maxUploadedLevel = 1;
-      break;
-    }
-  }
-  if (maxUploadedLevel === 0) {
-    return 0;
-  }
-  if (state.slotCount >= 73) {
-    for (let i = 0; i < 64; i++) {
-      if (state.l2Slots[i] >= 0) {
-        maxUploadedLevel = 2;
-        break;
-      }
-    }
   }
 
   const camera = frameState.camera;
@@ -1319,14 +1309,79 @@ function computeVoxelTargetLevel(
     (primitive as unknown as { screenSpaceError?: number }).screenSpaceError ??
     4.0;
   // Refinement ladder: descend while the current level's SSE (halving per
-  // level) still meets the target, capped at the deepest uploaded level.
+  // level) still meets the target, capped at the caller's level cap.
   let level = 0;
   let levelSse = sse;
-  while (level < maxUploadedLevel && levelSse >= targetSse) {
+  while (level < capLevel && levelSse >= targetSse) {
     level += 1;
     levelSse /= 2;
   }
   return level;
+}
+
+/**
+ * VOXEL-OCTREE-LOD — the deepest octree level with ANY uploaded tile in the
+ * atlas (0 = root only). The WGSL march must never branch into an empty slot,
+ * so this caps the packed target level.
+ */
+function voxelMaxUploadedLevel(state: VoxelDataUploadState): number {
+  if (state.slotCount < 9) {
+    return 0;
+  }
+  let maxUploadedLevel = 0;
+  for (let i = 0; i < 8; i++) {
+    if (state.childSlots[i] >= 0) {
+      maxUploadedLevel = 1;
+      break;
+    }
+  }
+  if (maxUploadedLevel === 0) {
+    return 0;
+  }
+  if (state.slotCount >= 73) {
+    for (let i = 0; i < 64; i++) {
+      if (state.l2Slots[i] >= 0) {
+        maxUploadedLevel = 2;
+        break;
+      }
+    }
+  }
+  return maxUploadedLevel;
+}
+
+/**
+ * VOXEL-OCTREE-LOD / NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — this frame's UBO target
+ * level: the SSE ladder capped at the deepest UPLOADED level. Identical math
+ * to the pre-streaming implementation (the ladder + uploaded-cap were fused).
+ */
+function computeVoxelTargetLevel(
+  primitive: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+  state: VoxelDataUploadState,
+): number {
+  return computeVoxelRefinementLevel(
+    primitive,
+    frameState,
+    state,
+    voxelMaxUploadedLevel(state),
+  );
+}
+
+/**
+ * NEW-VOXEL-STREAMING-UPLOAD — this frame's DEMAND level: the SSE ladder
+ * capped only by the atlas CAPACITY (1 for the 9-slot depth-1 atlas, 2 for
+ * the 73-slot deep atlas), independent of which tiles have uploaded. Drives
+ * {@link tryUploadChildVoxelTiles}: descendant levels are requested/uploaded
+ * only while the camera demands them (upstream VoxelTraversal megatexture-add
+ * semantics).
+ */
+function computeVoxelDemandLevel(
+  primitive: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+  state: VoxelDataUploadState,
+): number {
+  const capacity = state.slotCount >= 73 ? 2 : state.slotCount >= 9 ? 1 : 0;
+  return computeVoxelRefinementLevel(primitive, frameState, state, capacity);
 }
 
 function createBoxGeometry(device: GPUDevice): {
@@ -1909,12 +1964,21 @@ function updateWebGPUVoxelPrimitive(
     }
   }
 
-  // VOXEL-OCTREE-LOD — once the root is bound, drive the asynchronous level-1
-  // child-tile uploads into atlas slots 1..8. No-op for single-level providers
-  // (childPhase === "none") and once every child has settled; writes land in
-  // the already-bound atlas texture, so no bind-group rebuild is needed.
+  // VOXEL-OCTREE-LOD — once the root is bound, drive the asynchronous
+  // descendant-tile uploads into atlas slots 1..8 (+9..72 on the deep atlas).
+  // No-op for single-level providers (childPhase === "none") and once every
+  // tile has settled; writes land in the already-bound atlas texture, so no
+  // bind-group rebuild is needed.
+  // NEW-VOXEL-STREAMING-UPLOAD — uploads are keyed to the camera's SSE demand
+  // level (capacity-capped, NOT uploaded-capped): a far camera keeps a
+  // root-only atlas, zooming in streams level-1 (then level-2) tiles in on
+  // demand — upstream VoxelTraversal megatexture-add semantics. `demandLevel`
+  // is recorded on the state as a probe-readable diagnostic.
   if (cache.usingRealData && cache.dataUpload) {
-    tryUploadChildVoxelTiles(device, primitive, frameState, cache.dataUpload);
+    const du = cache.dataUpload;
+    const demandLevel = computeVoxelDemandLevel(primitive, frameState, du);
+    du.demandLevel = demandLevel;
+    tryUploadChildVoxelTiles(device, primitive, frameState, du, demandLevel);
   }
 
   // PARITY-VOXEL-COLOR-PARITY — once a REAL voxel provider's root tile is

@@ -13,8 +13,23 @@
 //   3. The ray-march produces non-black pixels (the volume is visible).
 //
 // A FAIL/partial is reported honestly if only the placeholder still renders.
+//
+// PART 2 — NEW-VOXEL-STREAMING-UPLOAD (demand-driven descendant upload):
+// loads the 3-level custom box provider (voxel-octree-l3 fixture, 73-slot
+// atlas) on a fresh WebGPU page and asserts the streaming state machine:
+//   FAR view (120R, SSE demand 0): root uploads, but NO descendant tiles do
+//     (childSlots all -1, 0 l2 tiles, childPhase still "loading",
+//     demandLevel 0) — the pre-B19 eager path would have uploaded all 72.
+//   NEAR view (10R, SSE demand 2): level-1 + level-2 tiles STREAM IN on
+//     demand (8 childSlots + 64 l2Slots uploaded, childPhase "done",
+//     demandLevel 2, lastTargetLevel 2) and the refined volume renders.
+//   RETURN-FAR view: demand recedes to 0 (targetLevel back to 0) but the
+//     uploaded tiles stay RESIDENT (no eviction until
+//     NEW-VOXEL-ATLAS-LRU-EVICT) — the same steady state the eager path
+//     converged to (off-gate).
 import { chromium } from "playwright";
 import fs from "fs";
+import { createVoxelOctreeL3Provider } from "./fixtures/voxel-octree-l3.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const browser = await chromium.launch({
@@ -195,7 +210,7 @@ console.log("Pixel analysis:", JSON.stringify(px));
 // dimensions — the metadata array's own layout (glTF Y-up for this 3D Tiles
 // box asset → provider dims [2,4,3] upload as [2,3,4]). Still a hard
 // discriminator against the 4x4x4 placeholder.
-const pass =
+const passPart1 =
   !res.error &&
   res.usingRealData === true &&
   res.uploadPhase === "done" &&
@@ -205,6 +220,202 @@ const pass =
   res.uploadDims.d === res.providerDims.y &&
   px.nonBlackPixels > 500 &&
   consoleErrors.length === 0;
+console.log(
+  passPart1
+    ? "PART 1 (root megatexture upload): PASS"
+    : "PART 1 (root megatexture upload): FAIL/PARTIAL",
+);
+await page.close();
+
+// ---------------------------------------------------------------------------
+// PART 2 — NEW-VOXEL-STREAMING-UPLOAD: demand-driven descendant tile upload.
+// ---------------------------------------------------------------------------
+const page2 = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+const consoleErrors2 = [];
+page2.on("console", (m) => {
+  if (m.type() === "error") consoleErrors2.push(m.text());
+});
+page2.on("pageerror", (e) => consoleErrors2.push(String(e)));
+
+await page2.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+  waitUntil: "networkidle",
+  timeout: 90000,
+});
+await page2.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+
+const stream = await page2.evaluate(
+  async ({ providerFactorySrc }) => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const v = window.viewer;
+    const scene = v.scene;
+    // eslint-disable-next-line no-new-func
+    const makeProvider = new Function(`return (${providerFactorySrc});`)();
+
+    scene.globe.show = false;
+    if (scene.skyBox) scene.skyBox.show = false;
+    scene.skyBox = undefined;
+    if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
+    if (scene.sun) scene.sun.show = false;
+    if (scene.moon) scene.moon.show = false;
+    scene.backgroundColor = C.Color.BLACK;
+    scene.fog.enabled = false;
+
+    const R = 6378137.0;
+    const provider = makeProvider(C, R);
+    const prim = new C.VoxelPrimitive({ provider });
+    prim.nearestSampling = true;
+    scene.primitives.add(prim);
+
+    const setCam = (destX) => {
+      v.camera.setView({
+        destination: new C.Cartesian3(destX * R, 0, 0),
+        orientation: {
+          direction: new C.Cartesian3(-1, 0, 0),
+          up: new C.Cartesian3(0, 0, 1),
+        },
+      });
+    };
+    const renderFrames = async (n) => {
+      for (let i = 0; i < n; i++) {
+        scene.render();
+        await new Promise((r) => setTimeout(r, 8));
+      }
+    };
+    const snap = () => {
+      const cache = prim._webgpuCache || {};
+      const du = cache.dataUpload || {};
+      return {
+        usingRealData: cache.usingRealData === true,
+        phase: du.phase ?? null,
+        slotCount: du.slotCount ?? null,
+        childPhase: du.childPhase ?? null,
+        childUploaded: du.childSlots
+          ? Array.from(du.childSlots).filter((s) => s >= 0).length
+          : null,
+        l2Uploaded: du.l2Slots
+          ? Array.from(du.l2Slots).filter((s) => s >= 0).length
+          : null,
+        demandLevel: du.demandLevel ?? null,
+        lastTargetLevel: du.lastTargetLevel ?? null,
+      };
+    };
+
+    // FAR: root uploads; demand 0 → NO descendant tiles stream.
+    setCam(120);
+    await renderFrames(300);
+    const far = snap();
+
+    // NEAR: demand jumps to 2 → level-1 + level-2 tiles stream in. Poll
+    // until fully streamed (bounded).
+    setCam(10);
+    let near = null;
+    for (let iter = 0; iter < 40; iter++) {
+      await renderFrames(15);
+      near = snap();
+      if (near.childPhase === "done" && near.l2Uploaded === 64) {
+        break;
+      }
+    }
+    // A few extra frames so lastTargetLevel reflects the fully-uploaded atlas.
+    await renderFrames(30);
+    near = snap();
+
+    // RETURN-FAR: demand recedes; tiles stay resident (no eviction yet).
+    setCam(120);
+    await renderFrames(60);
+    const returnFar = snap();
+
+    // Back to near for the visible-pixels screenshot.
+    setCam(10);
+    await renderFrames(30);
+
+    return { far, near, returnFar };
+  },
+  { providerFactorySrc: createVoxelOctreeL3Provider.toString() },
+);
+
+console.log("PART 2 streaming states:", JSON.stringify(stream, null, 2));
+
+const buf2 = await page2.screenshot();
+fs.writeFileSync(
+  "Tools/visual-regression/output/probe-voxel-megatexture-streaming.png",
+  buf2,
+);
+const px2 = await page2.evaluate(async (url) => {
+  const img = new Image();
+  await new Promise((r) => {
+    img.onload = r;
+    img.src = url;
+  });
+  const cv = document.createElement("canvas");
+  cv.width = img.width;
+  cv.height = img.height;
+  const ctx = cv.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+  const rx = Math.floor(img.width * 0.3);
+  const ry = Math.floor(img.height * 0.3);
+  const d = ctx.getImageData(
+    rx,
+    ry,
+    Math.floor(img.width * 0.4),
+    Math.floor(img.height * 0.4),
+  ).data;
+  let nonBlack = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i] + d[i + 1] + d[i + 2] > 12) nonBlack++;
+  }
+  return { nonBlackPixels: nonBlack };
+}, `data:image/png;base64,${buf2.toString("base64")}`);
+console.log("PART 2 near-view pixels:", JSON.stringify(px2));
+console.log("PART 2 console errors:", consoleErrors2.length);
+if (consoleErrors2.length) {
+  console.log(consoleErrors2.slice(0, 8).join("\n"));
+}
+await page2.close();
+
+// FAR gate: root uploaded (real data bound) but zero descendants streamed —
+// the demand-driven discriminator against the pre-B19 eager upload.
+const farRootOnly =
+  stream.far.usingRealData === true &&
+  stream.far.phase === "done" &&
+  stream.far.slotCount === 73 &&
+  stream.far.childPhase === "loading" &&
+  stream.far.childUploaded === 0 &&
+  stream.far.l2Uploaded === 0 &&
+  stream.far.demandLevel === 0 &&
+  stream.far.lastTargetLevel === 0;
+// NEAR gate: full stream-in under demand (the eager path's steady state).
+const nearStreamed =
+  stream.near.childPhase === "done" &&
+  stream.near.childUploaded === 8 &&
+  stream.near.l2Uploaded === 64 &&
+  stream.near.demandLevel === 2 &&
+  stream.near.lastTargetLevel === 2;
+// RETURN-FAR gate: demand recedes, tiles stay resident (no eviction).
+const residentAfterRecede =
+  stream.returnFar.demandLevel === 0 &&
+  stream.returnFar.lastTargetLevel === 0 &&
+  stream.returnFar.childUploaded === 8 &&
+  stream.returnFar.l2Uploaded === 64;
+const passPart2 =
+  farRootOnly &&
+  nearStreamed &&
+  residentAfterRecede &&
+  px2.nonBlackPixels > 500 &&
+  consoleErrors2.length === 0;
+console.log("farRootOnly (demand 0 → no descendant upload):", farRootOnly);
+console.log("nearStreamed (demand 2 → 8+64 tiles stream in):", nearStreamed);
+console.log(
+  "residentAfterRecede (no eviction, targetLevel back to 0):",
+  residentAfterRecede,
+);
+console.log(
+  passPart2
+    ? "PART 2 (demand-driven streaming): PASS"
+    : "PART 2 (demand-driven streaming): FAIL/PARTIAL",
+);
+
+const pass = passPart1 && passPart2;
 console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");
 
 await browser.close();

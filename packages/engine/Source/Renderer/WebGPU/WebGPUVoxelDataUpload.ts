@@ -30,10 +30,24 @@
  * level-1 set; an unavailable level-2 tile keeps `l2Slots[i] = -1` and the
  * WGSL walk stops at the deepest uploaded ancestor for that region.
  *
+ * NEW-VOXEL-STREAMING-UPLOAD (increment: demand-driven upload) — descendant
+ * tiles are no longer uploaded eagerly the moment the root lands. Each frame
+ * the renderer evaluates the camera's SSE refinement ladder UNCAPPED by what
+ * is uploaded (capped only by the atlas capacity) and passes the resulting
+ * DEMAND level into {@link tryUploadChildVoxelTiles}: level-1 tiles are
+ * requested/uploaded only while the camera demands level >= 1, level-2 tiles
+ * only while it demands level >= 2 — mirroring upstream VoxelTraversal, which
+ * only adds a tile to the megatexture when the SSE test visits it. A far
+ * camera therefore keeps a root-only atlas; zooming in streams descendants in
+ * on demand. Scenes whose camera demands the deepest level converge to the
+ * SAME fully-uploaded steady state as the historical eager path
+ * (pixel-identical steady state — the off-gate).
+ *
  * What is NOT done here (honest partial — separate increments):
- *   - Octree traversal DEEPER than level 2 (needs the demand-driven streaming
- *     upload + slot allocator from NEW-VOXEL-STREAMING-UPLOAD /
- *     NEW-VOXEL-ATLAS-LRU-EVICT — a full up-front upload of level 3+ is 512+
+ *   - Atlas slot EVICTION (NEW-VOXEL-ATLAS-LRU-EVICT) — slots, once uploaded,
+ *     stay resident; the atlas remains bounded by the fixed 9/73-slot budget.
+ *   - Octree traversal DEEPER than level 2 (needs the slot allocator + LRU
+ *     eviction from NEW-VOXEL-ATLAS-LRU-EVICT — a full level-3 set is 512+
  *     tiles and exceeds any fixed atlas budget). Providers deeper than 3
  *     levels clamp to depth-2 traversal; providers whose 73-slot atlas would
  *     exceed `maxTextureDimension3D` fall back to the 9-slot depth-1 atlas.
@@ -190,6 +204,13 @@ export interface VoxelDataUploadState {
    * most recent frame (0 = root, 1 = refined). Diagnostic — read by probes.
    */
   lastTargetLevel: number;
+  /**
+   * NEW-VOXEL-STREAMING-UPLOAD — the camera's demanded refinement level on
+   * the most recent frame (SSE ladder capped by atlas CAPACITY, not by what
+   * is uploaded). Drives which descendant levels {@link tryUploadChildVoxelTiles}
+   * requests/uploads. Diagnostic — read by probes.
+   */
+  demandLevel: number;
 }
 
 export function createVoxelDataUploadState(): VoxelDataUploadState {
@@ -215,6 +236,7 @@ export function createVoxelDataUploadState(): VoxelDataUploadState {
     l2States,
     uploadFormat: null,
     lastTargetLevel: 0,
+    demandLevel: 0,
   };
 }
 
@@ -575,19 +597,34 @@ function driveTileLevelUploads(
  * frame from the voxel renderer's update AFTER the root has uploaded
  * (`state.phase === "done"`); no-ops for single-level providers
  * (`childPhase === "none"`) and once every tile has settled.
+ *
+ * NEW-VOXEL-STREAMING-UPLOAD — uploads are DEMAND-DRIVEN: `demandLevel` is
+ * the camera's SSE-ladder refinement level this frame (capped by atlas
+ * capacity, NOT by uploaded tiles — see the renderer's
+ * `computeVoxelDemandLevel`). Level-1 tiles are only requested/uploaded while
+ * `demandLevel >= 1`, level-2 tiles while `demandLevel >= 2` — the upstream
+ * VoxelTraversal megatexture-add analogue (tiles enter the megatexture only
+ * when the traversal's SSE test visits them). When demand recedes mid-stream,
+ * in-flight requests simply pause at their current phase and resume when the
+ * camera demands that level again; uploaded slots stay resident (eviction is
+ * NEW-VOXEL-ATLAS-LRU-EVICT). `childPhase` flips to "done" only when EVERY
+ * tile the atlas has capacity for has settled, so a scene whose camera
+ * demands the deepest level converges to the exact eager-upload steady state.
  */
 export function tryUploadChildVoxelTiles(
   device: GPUDevice,
   primitive: unknown,
   frameState: CesiumFrameState,
   state: VoxelDataUploadState,
+  demandLevel: number,
 ): void {
   if (
     state.phase !== "done" ||
     state.childPhase !== "loading" ||
     !state.texture ||
     !state.convention ||
-    state.slotCount < 9
+    state.slotCount < 9 ||
+    demandLevel < 1
   ) {
     return;
   }
@@ -611,18 +648,30 @@ export function tryUploadChildVoxelTiles(
   let total = 8;
 
   if (state.slotCount >= 73) {
-    settled += driveTileLevelUploads(
-      device,
-      primitive,
-      frameState,
-      state,
-      provider,
-      2,
-      state.l2States,
-      state.l2Slots,
-      9,
-    );
     total += 64;
+    if (demandLevel >= 2) {
+      settled += driveTileLevelUploads(
+        device,
+        primitive,
+        frameState,
+        state,
+        provider,
+        2,
+        state.l2States,
+        state.l2Slots,
+        9,
+      );
+    } else {
+      // Level 2 not demanded this frame — count (without driving) any tiles
+      // that already settled under earlier demand, so a later demand recession
+      // cannot deadlock the "done" transition after everything has settled.
+      for (let i = 0; i < 64; i++) {
+        const phase = state.l2States[i].phase;
+        if (phase === "done" || phase === "failed") {
+          settled++;
+        }
+      }
+    }
   }
 
   if (settled === total) {
