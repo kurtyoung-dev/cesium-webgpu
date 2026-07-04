@@ -12,8 +12,10 @@
  *     asset (VoxelBox3DTiles) has exactly one VEC4 FLOAT32 property `a`.
  *
  * VOXEL-OCTREE-LOD (increment: depth-1 octree traversal) — when the provider
- * advertises `availableLevels >= 2` and the shape is a BOX (the convention
- * path), the destination texture is allocated as a 9-slot 3D ATLAS stacked
+ * advertises `availableLevels >= 2` and the shape is a BOX (the sampling
+ * convention now also covers ELLIPSOID — NEW-VOXEL-ELLIPSOID-SHAPEUV — but
+ * multi-level atlases stay box-gated), the destination texture is allocated
+ * as a 9-slot 3D ATLAS stacked
  * along Z: slot 0 = root tile, slots 1..8 = the eight level-1 child tiles
  * (childIndex = x + 2y + 4z in the Z-up shape frame). Child tiles are
  * requested + uploaded asynchronously after the root; a child that is
@@ -454,13 +456,20 @@ export function tryUploadRootVoxelTile(
   // input-Z INCLUDING padding voxels, and for glTF-sourced tiles the input Y/Z
   // axes are the 3D Tiles Z/flipped-Y axes. The renderer's ray-march applies
   // the matching shapeUv → inputCoordinate mapping (WebGL Octree.glsl).
-  // Non-box shapes keep the legacy unpadded Z-up extents + direct sampling.
+  // NEW-VOXEL-ELLIPSOID-SHAPEUV — ELLIPSOID shapes carry the same padded
+  // convention (dimensions are lon/lat/height cell counts; the extent Y/Z
+  // swap for Y_UP metadata mirrors VoxelPrimitiveHelpers' inputDimensions
+  // swap) but the Octree.glsl input-axis swap/flip is SHAPE_BOX-gated
+  // upstream, so `yUpBox` stays false for ellipsoids.
+  // Other shapes (CYLINDER) keep the legacy unpadded Z-up extents + direct
+  // sampling until their shapeUv increment lands.
   const isBox = provider.shape === VoxelShapeType.BOX;
+  const isEllipsoid = provider.shape === VoxelShapeType.ELLIPSOID;
   let width = Math.max(1, Math.floor(dims.x));
   let height = Math.max(1, Math.floor(dims.y));
   let depth = Math.max(1, Math.floor(dims.z));
   let convention: VoxelSampleConvention | null = null;
-  if (isBox) {
+  if (isBox || isEllipsoid) {
     const padB = provider.paddingBefore ?? { x: 0, y: 0, z: 0 };
     const padA = provider.paddingAfter ?? { x: 0, y: 0, z: 0 };
     const yUp = provider.metadataOrder === VoxelMetadataOrder.Y_UP;
@@ -474,7 +483,7 @@ export function tryUploadRootVoxelTile(
       dimensions: { x: dims.x, y: dims.y, z: dims.z },
       paddingBefore: { x: padB.x, y: padB.y, z: padB.z },
       inputDimensions: { x: width, y: height, z: depth },
-      yUpBox: yUp,
+      yUpBox: yUp && isBox,
     };
   }
   const voxelCount = width * height * depth;
@@ -518,8 +527,12 @@ export function tryUploadRootVoxelTile(
     typeof override === "number" && override >= 1
       ? Math.min(deviceSlotCap, Math.floor(override))
       : deviceSlotCap;
+  // NEW-VOXEL-ELLIPSOID-SHAPEUV — the multi-level atlas stays BOX-gated (it
+  // was previously implied by `convention !== null`, which was box-only):
+  // non-box shapes remain root-only until their octree-refinement increment
+  // is verified, preserving the NEW-VOXEL-OCTREE-DEEP-TRAVERSAL off-gate.
   const multiLevel =
-    convention !== null && availableLevels >= 2 && slotCap >= 9;
+    isBox && convention !== null && availableLevels >= 2 && slotCap >= 9;
   const wantDeep = multiLevel && availableLevels >= 3;
   const fullDeep = wantDeep && slotCap >= 73;
   const partialDeep = wantDeep && !fullDeep && slotCap >= 10;

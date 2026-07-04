@@ -3194,19 +3194,31 @@ octree traversal — a real two-level LOD path in
    deeper levels need item 1's page-table walk, which would page per-level
    slot tables through this same pool) and there is no public
    `maximumTileCount` API — the override is fork-internal.
-3. **Non-box shapes** — cylinder/ellipsoid still use the legacy direct
-   sampling (no shapeUv convention → no refinement). PARTIAL (Batch 525,
-   NEW-VOXEL-ELLIPSOID-INTERSECT / B22): the ELLIPSOID shell GEOMETRY is now
-   correct — the parity color march + per-cell pick march intersect the
-   outer/inner ellipsoid (WebGL IntersectEllipsoid.glsl intersectHeight math,
-   shape-typed `intersectShapeReal` in `WebGPUVoxelRenderer.ts`; BOX keeps the
-   bit-identical intersectAABB branch; `probe-voxel-ellipsoid.mjs` is the
-   silhouette-IoU gate). Residuals: (a) interior sample addressing is still
-   the box-affine proxy→uv fallback → B23 NEW-VOXEL-ELLIPSOID-SHAPEUV ships
-   the radial/longitude/latitude shapeUv chain + data-upload convention;
-   (b) longitude/latitude RENDER bounds (cones/wedges/half-planes of
-   IntersectEllipsoid.glsl) are not intersected — full-shell providers only
-   until B23/B24; (c) cylinder untouched → B24 NEW-VOXEL-CYLINDER-SHAPEUV.
+3. **Non-box shapes** — cylinder still uses the legacy direct sampling (no
+   shapeUv convention → no refinement). ELLIPSOID is now feature-complete for
+   single-tile providers: B22 (Batch 525, NEW-VOXEL-ELLIPSOID-INTERSECT)
+   shipped the shell GEOMETRY — the parity color march + per-cell pick march
+   intersect the outer/inner ellipsoid (WebGL IntersectEllipsoid.glsl
+   intersectHeight math, shape-typed `intersectShapeReal` in
+   `WebGPUVoxelRenderer.ts`; BOX keeps the bit-identical intersectAABB
+   branch) — and B23 (NEW-VOXEL-ELLIPSOID-SHAPEUV, 2026-07-03) shipped
+   interior per-cell addressing: the radial/longitude/latitude shapeUv chain
+   (`ellipsoidShapeUvFromLocal` — a WGSL port of
+   VoxelEllipsoidShape.convertLocalToShapeUvSpace incl. the
+   nearest-point-on-ellipse geodetic-latitude iteration, selected by the
+   shape-typed `computeShapeUvReal` in both the color and pick marches; UBO
+   floats 208-215 carry the lon/lat/height scale/offset + shape-bounds flags
+   read from the shape's own `_shaderUniforms`) plus the data-upload sampling
+   convention for ELLIPSOID (`WebGPUVoxelDataUpload.ts`: padded
+   input-orientation extents; `yUpBox` stays BOX-only, mirroring Octree.glsl's
+   SHAPE_BOX-gated axis swap). `probe-voxel-ellipsoid.mjs` gates both the
+   silhouette IoU (B22) and per-grid-cell color parity through a
+   dual-language customShader (B23). Residuals: (a) longitude/latitude RENDER
+   bounds (cones/wedges/half-planes of IntersectEllipsoid.glsl) are not
+   intersected — full-shell providers only; (b) ellipsoid octree refinement
+   stays root-only (multi-level atlas is deliberately box-gated in
+   `WebGPUVoxelDataUpload.ts` until the non-box refinement increment is
+   verified); (c) cylinder untouched → B24 NEW-VOXEL-CYLINDER-SHAPEUV.
 4. **pickVoxel against refined tiles** — `fragmentPickVoxelMain` marches the
    ROOT slab only (megatextureIndex 0); a refined render can pick a coarser
    cell than what is displayed.

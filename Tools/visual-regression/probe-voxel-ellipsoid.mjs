@@ -1,26 +1,30 @@
-// NEW-VOXEL-ELLIPSOID-INTERSECT acceptance probe (B22, increment 1/2).
+// NEW-VOXEL-ELLIPSOID-INTERSECT (B22) + NEW-VOXEL-ELLIPSOID-SHAPEUV (B23)
+// acceptance probe.
 //
 // Renders the SAME procedural ELLIPSOID-shape VoxelPrimitive (oblate radii —
 // per-axis radii correction is part of what's under test) on BOTH the WebGL
 // and the WebGPU renderer at an identical fixed camera, then compares the
-// footprint/silhouette masks.
+// footprint/silhouette masks AND the per-cell sampled colors.
 //
 // What it verifies:
-//   * The WebGPU ray-march intersects the ELLIPSOID SHELL (outer ellipsoid at
-//     radii + maxHeight), not the box OBB proxy: pre-fix the WebGPU
-//     silhouette is the OBB box (a squarish blob ~27%+ larger than the
-//     ellipse), post-fix it is the same ellipse WebGL renders. Footprint IoU
+//   * B22 — the WebGPU ray-march intersects the ELLIPSOID SHELL (outer
+//     ellipsoid at radii + maxHeight), not the box OBB proxy: footprint IoU
 //     and coverage-area ratio are the discriminators.
-//   * Real data uploads + the color pipeline swaps to the customShader-parity
-//     variant on the WebGPU path (same plumbing as BOX providers).
+//   * B23 — interior per-cell content addressing: every voxel cell carries a
+//     DISTINCT color (R = longitude index, G = latitude index, B = height
+//     index) surfaced through a dual-language (GLSL + native-WGSL)
+//     customShader, so the rendered color pattern IS the shapeUv mapping.
+//     Pre-B23 the WebGPU sample coordinate derived through the box-affine
+//     `p + 0.5` fallback — a completely different pattern from WebGL's
+//     radial/longitude/latitude chain; post-B23 the per-grid-cell colors
+//     match. Gates: interior-cell color match fraction + a WebGL-side color
+//     variance floor proving the gate discriminates.
+//   * Real data uploads + the color pipeline swaps to the USER-customShader
+//     variant on the WebGPU path.
 //   * Zero console/device errors on both backends.
 //
-// NOT gated here (B23 NEW-VOXEL-ELLIPSOID-SHAPEUV): interior per-cell content
-// addressing — the sample coordinate still derives through the box-affine
-// fallback this increment, so interior colors are reported but not asserted.
-//
 // Reads BOTH PNGs (writes them to output/) so the operator can eyeball the
-// shell silhouette.
+// shell silhouette + the lon/lat color gradient.
 import { chromium } from "playwright";
 import fs from "fs";
 
@@ -77,15 +81,23 @@ async function capture(renderer) {
       // Procedural single-tile ELLIPSOID provider (the Sandcastle voxels-demo
       // construction): bounds are (longitude, latitude, height); the radii
       // come from the globalTransform scale. Oblate on purpose.
+      // NEW-VOXEL-ELLIPSOID-SHAPEUV — every cell gets a DISTINCT color:
+      // R encodes the longitude index, G the latitude index, B the height
+      // index. The visible outer-shell pattern is then a lon/lat gradient
+      // whose layout is exactly the shapeUv mapping under test.
       const dims = { x: 8, y: 8, z: 8 };
       const voxelCount = dims.x * dims.y * dims.z;
       const data = new Float32Array(voxelCount * 4);
-      for (let i = 0; i < voxelCount; i++) {
-        const d = i * 4;
-        data[d] = 0.5;
-        data[d + 1] = 0.55;
-        data[d + 2] = 0.6;
-        data[d + 3] = 1.0; // every cell filled — the SHELL geometry is the gate
+      for (let k = 0; k < dims.z; k++) {
+        for (let j = 0; j < dims.y; j++) {
+          for (let i = 0; i < dims.x; i++) {
+            const d = (i + dims.x * (j + dims.y * k)) * 4;
+            data[d] = i / (dims.x - 1);
+            data[d + 1] = j / (dims.y - 1);
+            data[d + 2] = k / (dims.z - 1);
+            data[d + 3] = 1.0;
+          }
+        }
       }
       const provider = {
         shape: C.VoxelShapeType.ELLIPSOID,
@@ -107,7 +119,22 @@ async function capture(renderer) {
         },
       };
 
-      const prim = new C.VoxelPrimitive({ provider });
+      // The SAME authored mapping in both languages: unlit metadata color,
+      // opaque — the rendered pattern is purely the sample-coordinate chain.
+      const customShader = new C.CustomShader({
+        fragmentShaderText: `void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material)
+{
+    material.diffuse = fsInput.metadata.color.rgb;
+    material.alpha = 1.0;
+}`,
+        wgslFragmentShaderText: `fn czm_voxelCustomFragmentMain(fsInput: czm_voxelCustomFragmentInput,
+    material: ptr<function, czm_voxelCustomMaterial>) {
+  (*material).diffuse = fsInput.metadata.color.xyz;
+  (*material).alpha = 1.0;
+}`,
+      });
+
+      const prim = new C.VoxelPrimitive({ provider, customShader });
       prim.nearestSampling = true;
       scene.primitives.add(prim);
 
@@ -156,8 +183,9 @@ async function capture(renderer) {
   const buf = await page.screenshot();
   fs.writeFileSync(`${OUT}/probe-voxel-ellipsoid-${renderer}.png`, buf);
 
-  // Decode the PNG back into the page to build a coarse non-black mask over a
-  // centered region (same harness as probe-voxel-parity.mjs).
+  // Decode the PNG back into the page to build a coarse mask + per-grid-cell
+  // color record over a centered region (same harness as
+  // probe-voxel-parity.mjs, extended with per-cell RGB for the B23 gate).
   const dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
   const px = await page.evaluate(async (url) => {
     const img = new Image();
@@ -180,6 +208,7 @@ async function capture(renderer) {
     const GW = 64;
     const GH = 48;
     const mask = new Uint8Array(GW * GH);
+    const cellRGB = new Array(GW * GH).fill(null);
     let nonBlack = 0;
     for (let gy = 0; gy < GH; gy++) {
       for (let gx = 0; gx < GW; gx++) {
@@ -188,6 +217,7 @@ async function capture(renderer) {
         const dd = ctx.getImageData(sx, sy, 1, 1).data;
         if (dd[0] + dd[1] + dd[2] > 20) {
           mask[gy * GW + gx] = 1;
+          cellRGB[gy * GW + gx] = [dd[0], dd[1], dd[2]];
           nonBlack++;
         }
       }
@@ -206,7 +236,10 @@ async function capture(renderer) {
     }
     const nn = Math.max(1, n);
     return {
+      GW,
+      GH,
       mask: Array.from(mask),
+      cellRGB,
       maskCells: nonBlack,
       avgColor: [Math.round(sr / nn), Math.round(sg / nn), Math.round(sb / nn)],
       coveragePct: (n / (d.length / 4)) * 100,
@@ -248,10 +281,9 @@ if (webgpu.consoleErrors.length) {
   console.log("  WebGPU:", webgpu.consoleErrors.slice(0, 5).join("\n  "));
 }
 
-// Footprint IoU — the primary shell-silhouette discriminator. A box OBB
-// silhouette against WebGL's ellipse lands well under the gate (the box's
-// extra corner area both shrinks the intersection share and inflates the
-// union); the fixed shell tracks the ellipse closely.
+// Footprint IoU — the primary shell-silhouette discriminator (B22 gate). A
+// box OBB silhouette against WebGL's ellipse lands well under the gate; the
+// fixed shell tracks the ellipse closely.
 let inter = 0;
 let uni = 0;
 const a = webgl.px.mask;
@@ -262,12 +294,53 @@ for (let i = 0; i < a.length; i++) {
 }
 const iou = uni > 0 ? inter / uni : 0;
 
-// Projected-area ratio — a box circumscribing the ellipse is ≥ ~27% larger
-// (4/π for a sphere; more for the oblique oblate view), so require the two
-// coverage areas to agree within 15%.
+// Projected-area ratio (B22 gate).
 const covGL = webgl.px.coveragePct;
 const covGPU = webgpu.px.coveragePct;
 const areaRatioDelta = covGL > 0 ? Math.abs(covGPU - covGL) / covGL : 1;
+
+// NEW-VOXEL-ELLIPSOID-SHAPEUV (B23) — per-grid-cell color comparison over
+// INTERIOR cells (all 4-neighbors masked in BOTH captures, keeping the
+// silhouette-edge sampling noise out of the gate). A cell matches when the
+// RGB Euclidean distance is under the tolerance; the box-affine pre-B23
+// mapping produces a wholly different lon/lat layout and fails hard.
+const GW = webgl.px.GW;
+const GH = webgl.px.GH;
+let interiorCells = 0;
+let matchedCells = 0;
+let distSum = 0;
+const glR = [];
+const glG = [];
+for (let gy = 1; gy < GH - 1; gy++) {
+  for (let gx = 1; gx < GW - 1; gx++) {
+    const idx = gy * GW + gx;
+    const nbr = [idx - 1, idx + 1, idx - GW, idx + GW];
+    const interior =
+      a[idx] &&
+      b[idx] &&
+      nbr.every((nIdx) => a[nIdx] && b[nIdx]);
+    if (!interior) continue;
+    const ca = webgl.px.cellRGB[idx];
+    const cb = webgpu.px.cellRGB[idx];
+    if (!ca || !cb) continue;
+    interiorCells++;
+    glR.push(ca[0]);
+    glG.push(ca[1]);
+    const dist = Math.hypot(ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]);
+    distSum += dist;
+    if (dist < 60) matchedCells++;
+  }
+}
+const matchFrac = interiorCells > 0 ? matchedCells / interiorCells : 0;
+const meanDist = interiorCells > 0 ? distSum / interiorCells : 999;
+const stddev = (arr) => {
+  if (arr.length === 0) return 0;
+  const m = arr.reduce((s, x) => s + x, 0) / arr.length;
+  return Math.sqrt(arr.reduce((s, x) => s + (x - m) * (x - m), 0) / arr.length);
+};
+// Variance floor: the WebGL reference itself must show the lon/lat gradient
+// (distinct R + G across the disc) or the color gate would be vacuous.
+const glSpread = stddev(glR) + stddev(glG);
 
 console.log("---");
 console.log("Footprint IoU (WebGL ∩ WebGPU):", iou.toFixed(3));
@@ -277,16 +350,31 @@ console.log(
   covGPU.toFixed(2),
   `delta ${(areaRatioDelta * 100).toFixed(1)}%`,
 );
+console.log(
+  "Per-cell colors: interior cells",
+  interiorCells,
+  "matched",
+  matchedCells,
+  `(${(matchFrac * 100).toFixed(1)}%)`,
+  "meanDist",
+  meanDist.toFixed(1),
+  "GL R+G spread",
+  glSpread.toFixed(1),
+);
 
 const bothRender = webgl.px.maskCells > 200 && webgpu.px.maskCells > 200;
 const bounded =
   covGL < 92 && covGPU < 92 && covGL > 8 && covGPU > 8;
 const footprintMatch = iou >= 0.85;
 const areaMatch = areaRatioDelta <= 0.15;
+// B23 — the color pipeline must be the USER-customShader variant (the probe
+// supplies a dual-language customShader) on real data.
 const gpuParityPipeline =
   webgpu.info.usingRealData === true &&
   typeof webgpu.info.colorDescName === "string" &&
-  webgpu.info.colorDescName.includes("customShader");
+  webgpu.info.colorDescName.includes("userCustomShader");
+const cellColorsMatch = interiorCells >= 100 && matchFrac >= 0.85;
+const colorGateDiscriminates = glSpread > 30;
 const noErrors =
   webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0;
 
@@ -295,7 +383,15 @@ console.log("bothRender:", bothRender);
 console.log("bounded (both 8%<coverage<92%):", bounded);
 console.log("footprintMatch (IoU>=0.85):", footprintMatch);
 console.log("areaMatch (|ΔA|/A<=15%):", areaMatch);
-console.log("gpuParityPipeline (real data + parity color pipeline):", gpuParityPipeline);
+console.log(
+  "gpuParityPipeline (real data + user customShader pipeline):",
+  gpuParityPipeline,
+);
+console.log(
+  "cellColorsMatch (>=100 interior cells, >=85% match):",
+  cellColorsMatch,
+);
+console.log("colorGateDiscriminates (GL R+G spread > 30):", colorGateDiscriminates);
 console.log("noErrors:", noErrors);
 
 const pass =
@@ -304,6 +400,8 @@ const pass =
   footprintMatch &&
   areaMatch &&
   gpuParityPipeline &&
+  cellColorsMatch &&
+  colorGateDiscriminates &&
   noErrors;
 console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
 process.exit(pass ? 0 : 1);

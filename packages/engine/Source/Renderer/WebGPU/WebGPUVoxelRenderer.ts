@@ -279,6 +279,19 @@ struct Uniforms {
   shapeType: f32,
   shapeHeightMinMax: vec2<f32>,
   _pad5: vec2<f32>,
+  // NEW-VOXEL-ELLIPSOID-SHAPEUV — ellipsoid shapeUv mapping terms (floats
+  // 208..215), mirroring VoxelEllipsoidShape's shader uniforms: \`...UvScale\`
+  // is u_ellipsoidLocalToShapeUvScale (x = longitude scale, y = latitude
+  // scale, z = height scale = 1/(maxHeight - minHeight)); \`...RangeOrigin\`
+  // is u_ellipsoidShapeUvLongitudeRangeOrigin; \`...UvTranslate\` carries the
+  // JS-side localToShapeUvTranslate lon/lat offsets; \`...HasShapeBounds\`
+  // packs the ELLIPSOID_HAS_SHAPE_BOUNDS_LONGITUDE / _LATITUDE defines as
+  // flags. Only written for ELLIPSOID-shape providers (the BOX/placeholder
+  // paths never read them).
+  ellipsoidLocalToShapeUvScale: vec3<f32>,
+  ellipsoidShapeUvLongitudeRangeOrigin: f32,
+  ellipsoidLocalToShapeUvTranslate: vec2<f32>,
+  ellipsoidHasShapeBounds: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -369,9 +382,9 @@ fn intersectEllipsoidHeight(originLocal: vec3<f32>, dirLocal: vec3<f32>,
 // ellipsoid (radii + minHeight) for the shell's hole interval, per WebGL
 // IntersectEllipsoid.glsl intersectShape(): the inner interval is sandwiched
 // inside the outer one (float-noise guard on planet-scale thin shells) and
-// the march SKIPS samples inside it. Longitude/latitude render bounds
-// (cones/wedges/half-planes) are a documented residual — B23
-// NEW-VOXEL-ELLIPSOID-SHAPEUV carries the ellipsoid interior work.
+// the march SKIPS samples inside it. Interior per-cell addressing ships in
+// NEW-VOXEL-ELLIPSOID-SHAPEUV (computeShapeUvReal); longitude/latitude RENDER
+// bounds (cones/wedges/half-planes) remain a documented residual.
 // Returns vec4(enter, exit, innerEnter, innerExit); enter > exit = miss.
 fn intersectShapeReal(rayOrigin: vec3<f32>, rayDir: vec3<f32>,
                       invDir: vec3<f32>) -> vec4<f32> {
@@ -421,6 +434,99 @@ fn ellipsoidEntryNormal(rayOrigin: vec3<f32>, rayDir: vec3<f32>,
                        u.proxyToLocal[1].xyz,
                        u.proxyToLocal[2].xyz);
   return transpose(m3) * dSphere;
+}
+
+// NEW-VOXEL-ELLIPSOID-SHAPEUV — nearest point on the meridional ellipse +
+// the local radius of curvature, WGSL port of WebGL's
+// convertLocalToEllipsoidUv.glsl nearestPointAndRadiusOnEllipse() /
+// VoxelEllipsoidShape.js nearestPointAndRadiusOnEllipse(): the trig-free
+// evolute iteration (3 fixed steps). \`radii\` is the OUTER ellipse
+// (outerRadii.xz); \`evoluteScale\` = (rx² - rz²)/rx, (rz² - rx²)/rz.
+// Returns vec3(nearestPoint.xy in the caller's signed quadrant, |v - evolute|).
+fn voxelNearestPointAndRadiusOnEllipse(pos: vec2<f32>, radii: vec2<f32>,
+                                       evoluteScale: vec2<f32>) -> vec3<f32> {
+  let p = abs(pos);
+  let inverseRadii = vec2<f32>(1.0) / radii;
+  var tTrigs = vec2<f32>(0.7071067811865476);
+  var v = radii * tTrigs;
+  var evolute = evoluteScale * tTrigs * tTrigs * tTrigs;
+  for (var i = 0; i < 3; i = i + 1) {
+    let q = normalize(p - evolute) * length(v - evolute);
+    tTrigs = (q + evolute) * inverseRadii;
+    tTrigs = normalize(clamp(tTrigs, vec2<f32>(0.0), vec2<f32>(1.0)));
+    v = radii * tTrigs;
+    evolute = evoluteScale * tTrigs * tTrigs * tTrigs;
+  }
+  return vec3<f32>(v * sign(pos), length(v - evolute));
+}
+
+// NEW-VOXEL-ELLIPSOID-SHAPEUV — radial/longitude/latitude shapeUv for a point
+// in the shape's ellipsoid-centered LOCAL frame (meters). WGSL port of
+// VoxelEllipsoidShape.prototype.convertLocalToShapeUvSpace (the CPU reference
+// the box path already treats as the convention's source of truth):
+//   x = (atan2(y, x) + π) / 2π, then the shape-bounds range-origin wrap +
+//       scale/offset when ELLIPSOID_HAS_SHAPE_BOUNDS_LONGITUDE;
+//   y = geodetic latitude via the nearest-point-on-ellipse normal,
+//       (lat + π/2) / π, then scale/offset when ..._HAS_SHAPE_BOUNDS_LATITUDE;
+//   z = 1 + signedHeight · heightScale, where signedHeight is measured
+//       against the OUTER ellipsoid (u.ellipsoidRadii + maxHeight — the same
+//       surface WebGL's shaderUniforms.ellipsoidRadii carries) and
+//       heightScale = 1/(maxHeight - minHeight).
+fn ellipsoidShapeUvFromLocal(pLocal: vec3<f32>) -> vec3<f32> {
+  let outerRadii = u.ellipsoidRadii + vec3<f32>(u.shapeHeightMinMax.y);
+
+  var longitude = (atan2(pLocal.y, pLocal.x) + 3.14159265358979)
+                / 6.28318530717959;
+  if (u.ellipsoidHasShapeBounds.x > 0.5) {
+    longitude = fract(longitude - u.ellipsoidShapeUvLongitudeRangeOrigin);
+    longitude = longitude * u.ellipsoidLocalToShapeUvScale.x
+              + u.ellipsoidLocalToShapeUvTranslate.x;
+  }
+
+  let distanceFromZAxis = length(pLocal.xy);
+  let posEllipse = vec2<f32>(distanceFromZAxis, pLocal.z);
+  let evoluteScale = vec2<f32>(
+    (outerRadii.x * outerRadii.x - outerRadii.z * outerRadii.z) / outerRadii.x,
+    (outerRadii.z * outerRadii.z - outerRadii.x * outerRadii.x) / outerRadii.z,
+  );
+  let spr = voxelNearestPointAndRadiusOnEllipse(
+    posEllipse, outerRadii.xz, evoluteScale);
+  let surfacePoint = spr.xy;
+  let invRadiiSq = vec2<f32>(1.0) / (outerRadii.xz * outerRadii.xz);
+  let normal2d = normalize(surfacePoint * invRadiiSq);
+  var latitude = (atan2(normal2d.y, normal2d.x) + 1.57079632679490)
+               / 3.14159265358979;
+  if (u.ellipsoidHasShapeBounds.y > 0.5) {
+    latitude = latitude * u.ellipsoidLocalToShapeUvScale.y
+             + u.ellipsoidLocalToShapeUvTranslate.y;
+  }
+
+  let heightSign = select(1.0, -1.0,
+                          length(posEllipse) < length(surfacePoint));
+  let height = heightSign * length(posEllipse - surfacePoint);
+  let z = 1.0 + height * u.ellipsoidLocalToShapeUvScale.z;
+
+  return vec3<f32>(longitude, latitude, z);
+}
+
+// NEW-VOXEL-ELLIPSOID-SHAPEUV — shape-typed sample coordinate for the REAL
+// parity marches. BOX (shapeType 0 — also the zero-filled placeholder
+// fallback) keeps the CPU-composed affine proxy→shapeUv chain verbatim
+// (bit-identical to the pre-ellipsoid path); ELLIPSOID lifts the proxy point
+// into the shape's local frame (the B22 proxyToLocal) and runs the
+// radial/longitude/latitude conversion above. Both clamp like WebGL's
+// getClampedTileUv (root tile: tileUv == shapeUv).
+fn computeShapeUvReal(p: vec3<f32>) -> vec3<f32> {
+  if (u.shapeType < 0.5) {
+    return clamp(
+      (u.proxyToShapeUv * vec4<f32>(p, 1.0)).xyz,
+      vec3<f32>(0.0),
+      vec3<f32>(1.0),
+    );
+  }
+  let pLocal = (u.proxyToLocal * vec4<f32>(p, 1.0)).xyz;
+  return clamp(ellipsoidShapeUvFromLocal(pLocal),
+               vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 // NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — iterative octree walk (Octree.glsl-style
@@ -576,17 +682,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let p = rayOrigin + rayDir * t;
     // VOXEL-SHAPEUV-CONVENTION — derive the sample coordinate through WebGL's
     // convention chain instead of the historical model-space \`p + 0.5\`
-    // shortcut: (1) proxy point → shapeUv via the CPU-composed
-    // convertLocalToShapeUvSpace affine (clamped like getClampedTileUv; the
-    // root tile's tileUv == shapeUv); (2) shapeUv → input-data coordinate via
-    // Octree.glsl's \`tileUv * u_dimensions + u_paddingBefore\` plus the
+    // shortcut: (1) proxy point → shapeUv via the shape-typed conversion
+    // (BOX: the CPU-composed convertLocalToShapeUvSpace affine; ELLIPSOID:
+    // the NEW-VOXEL-ELLIPSOID-SHAPEUV radial/longitude/latitude chain —
+    // clamped like getClampedTileUv; the root tile's tileUv == shapeUv);
+    // (2) shapeUv → input-data coordinate via Octree.glsl's
+    // \`tileUv * u_dimensions + u_paddingBefore\` plus the
     // Y_UP_METADATA_ORDER + SHAPE_BOX axis swap/flip; (3) texel-centre clamp +
     // normalisation per Megatexture.glsl's getPropertiesFromMegatexture.
-    let shapeUv = clamp(
-      (u.proxyToShapeUv * vec4<f32>(p, 1.0)).xyz,
-      vec3<f32>(0.0),
-      vec3<f32>(1.0),
-    );
+    let shapeUv = computeShapeUvReal(p);
     // VOXEL-OCTREE-LOD / NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — iterative octree
     // walk to this frame's target level (see octreeDescend). Non-refined
     // frames keep tileUv = shapeUv / tileSlot = 0 — byte-identical to the
@@ -877,11 +981,9 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // march). Empty interval for BOX — comparison never fires.
     if (t > shellReal.z && t < shellReal.w) { continue; }
     let p = rayOrigin + rayDir * t;
-    let shapeUv = clamp(
-      (u.proxyToShapeUv * vec4<f32>(p, 1.0)).xyz,
-      vec3<f32>(0.0),
-      vec3<f32>(1.0),
-    );
+    // NEW-VOXEL-ELLIPSOID-SHAPEUV — same shape-typed sample coordinate as the
+    // color march so the picked cell always agrees with the displayed one.
+    let shapeUv = computeShapeUvReal(p);
     // NEW-VOXEL-PICK-OCTREE-COMPOSE — the SAME iterative octree walk as the
     // color march (octreeDescend): on refined frames the sample descends to
     // the deepest uploaded tile at the target level and the emitted
@@ -1193,6 +1295,18 @@ interface VoxelShapeLike {
   _ellipsoid?: { radii?: Cartesian3 };
   _minimumHeight?: number;
   _maximumHeight?: number;
+  // NEW-VOXEL-ELLIPSOID-SHAPEUV — VoxelEllipsoidShape internals consumed by
+  // the shapeUv mapping uniforms. `_shaderUniforms` carries the WebGL shader
+  // uniform set (single source of truth for the lon/lat/height scale terms);
+  // `_localToShapeUvTranslate` the JS-side lon/lat offsets; `_shaderDefines`
+  // the ELLIPSOID_HAS_SHAPE_BOUNDS_* flags (value present = enabled,
+  // undefined = disabled — the upstream convention).
+  _shaderUniforms?: {
+    ellipsoidLocalToShapeUvScale?: Cartesian3;
+    ellipsoidShapeUvLongitudeRangeOrigin?: number;
+  };
+  _localToShapeUvTranslate?: Cartesian3;
+  _shaderDefines?: Record<string, unknown>;
 }
 
 /**
@@ -1298,6 +1412,37 @@ function packVoxelSampleFrame(
   const convention = cache.dataUpload?.convention ?? null;
   const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
 
+  // NEW-VOXEL-ELLIPSOID-SHAPEUV — ELLIPSOID providers carry the sampling
+  // convention (dimensions/padding/inputDimensions) but NOT the box affine:
+  // their local→shapeUv map is nonlinear (lon/lat/height), evaluated per
+  // sample in the WGSL (ellipsoidShapeUvFromLocal via the B22 proxyToLocal).
+  // Probing convertLocalToShapeUvSpace with unit axes — the box path below —
+  // would be meaningless (and NaN-prone at the origin) here, so write the
+  // convention fields + an identity proxyToShapeUv (never read on the
+  // ELLIPSOID branch of computeShapeUvReal) instead.
+  const providerShape = (
+    primitive as unknown as { _provider?: { shape?: string } }
+  )._provider?.shape;
+  if (convention && providerShape === VoxelShapeType.ELLIPSOID) {
+    data[76] = convention.dimensions.x;
+    data[77] = convention.dimensions.y;
+    data[78] = convention.dimensions.z;
+    data[79] = convention.yUpBox ? 1 : 0;
+    // Identity proxyToShapeUv (column-major diagonal) — unused by the
+    // ellipsoid sample path but kept finite for safety.
+    data[80] = 1;
+    data[85] = 1;
+    data[90] = 1;
+    data[95] = 1;
+    data[96] = convention.inputDimensions.x;
+    data[97] = convention.inputDimensions.y;
+    data[98] = convention.inputDimensions.z;
+    data[100] = convention.paddingBefore.x;
+    data[101] = convention.paddingBefore.y;
+    data[102] = convention.paddingBefore.z;
+    return;
+  }
+
   if (
     convention &&
     shape &&
@@ -1401,11 +1546,9 @@ const scratchEllProxyToLocal = new Matrix4();
  * 0 and the WGSL takes the bit-identical `intersectAABB` branch — the
  * off-gate.
  *
- * The interior sample coordinate still derives through the box-affine
- * proxy→uv fallback this increment: the shell GEOMETRY (silhouette,
- * entry/exit, inner hole) is ellipsoid-correct while per-cell content
- * addressing is a documented residual — B23 NEW-VOXEL-ELLIPSOID-SHAPEUV ships
- * the radial/longitude/latitude shapeUv chain.
+ * NEW-VOXEL-ELLIPSOID-SHAPEUV also packs the lon/lat/height shapeUv mapping
+ * terms (floats 208..215) here so per-cell content addressing runs WebGL's
+ * convertLocalToShapeUvSpace chain in the WGSL (ellipsoidShapeUvFromLocal).
  */
 function packVoxelShapeIntersect(
   primitive: CesiumObjectWithWebGPUCache,
@@ -1453,6 +1596,31 @@ function packVoxelShapeIntersect(
   data[203] = 1; // shapeType = ELLIPSOID
   data[204] = minHeight;
   data[205] = maxHeight;
+
+  // NEW-VOXEL-ELLIPSOID-SHAPEUV — lon/lat/height shapeUv mapping terms
+  // (floats 208..215), read from the shape's OWN shader-uniform state so the
+  // WebGL implementation (VoxelEllipsoidShape.update) stays the single source
+  // of truth for the scale/offset formulas. The height scale falls back to
+  // the direct 1/(maxHeight - minHeight) derivation when the shape hasn't
+  // populated its shader uniforms yet (same quantity, same clamped bounds).
+  const su = shape._shaderUniforms;
+  const uvScale = su?.ellipsoidLocalToShapeUvScale;
+  const uvTranslate = shape._localToShapeUvTranslate;
+  const defines = shape._shaderDefines;
+  const hasLonBounds =
+    defines?.["ELLIPSOID_HAS_SHAPE_BOUNDS_LONGITUDE"] !== undefined;
+  const hasLatBounds =
+    defines?.["ELLIPSOID_HAS_SHAPE_BOUNDS_LATITUDE"] !== undefined;
+  const thickness = maxHeight - minHeight;
+  const fallbackHeightScale = thickness === 0 ? 0 : 1 / thickness;
+  data[208] = uvScale ? uvScale.x : 0;
+  data[209] = uvScale ? uvScale.y : 0;
+  data[210] = uvScale ? uvScale.z : fallbackHeightScale;
+  data[211] = su?.ellipsoidShapeUvLongitudeRangeOrigin ?? 0;
+  data[212] = uvTranslate ? uvTranslate.x : 1;
+  data[213] = uvTranslate ? uvTranslate.y : 1;
+  data[214] = hasLonBounds ? 1 : 0;
+  data[215] = hasLatBounds ? 1 : 0;
 }
 
 // VOXEL-OCTREE-LOD scratch for the SSE refine test.
@@ -2049,8 +2217,10 @@ function updateWebGPUVoxelPrimitive(
     // the iterative octree walk. NEW-VOXEL-ELLIPSOID-INTERSECT grew it
     // 736 → 832 bytes for the shape-typed intersection fields (floats
     // 184-207: proxyToLocal + ellipsoidRadii/shapeType + heightMinMax).
+    // NEW-VOXEL-ELLIPSOID-SHAPEUV grew it 832 → 864 bytes for the ellipsoid
+    // lon/lat/height shapeUv mapping terms (floats 208-215).
     cache.uniformBuffer = device.createBuffer({
-      size: 832,
+      size: 864,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     // VOXEL-SHAPEUV-CONVENTION — honour VoxelPrimitive.nearestSampling
@@ -2554,7 +2724,11 @@ function updateWebGPUVoxelPrimitive(
   //   [184..199] proxyToLocal            (NEW-VOXEL-ELLIPSOID-INTERSECT)
   //   [200..203] ellipsoidRadii + shapeType (NEW-VOXEL-ELLIPSOID-INTERSECT)
   //   [204..207] shapeHeightMinMax + pad (NEW-VOXEL-ELLIPSOID-INTERSECT)
-  const data = new Float32Array(208);
+  //   [208..211] ellipsoidLocalToShapeUvScale + longitudeRangeOrigin
+  //              (NEW-VOXEL-ELLIPSOID-SHAPEUV)
+  //   [212..215] ellipsoidLocalToShapeUvTranslate + hasShapeBounds flags
+  //              (NEW-VOXEL-ELLIPSOID-SHAPEUV)
+  const data = new Float32Array(216);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
