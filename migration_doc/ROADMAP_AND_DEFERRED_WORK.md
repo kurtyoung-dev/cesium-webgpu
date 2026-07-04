@@ -262,9 +262,12 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
 - **Edge data parity** (`NEW-EDGE-DISPLAY-MODE-WEBGPU` is ✅ SHIPPED Batch 316; tri-mode core done) —
   authored `silhouetteNormals` signed-byte accessor ✅ **SHIPPED (Batch 495,
   `EDGE-AUTHORED-SILHOUETTE-NORMALS` — WebGPU now consumes the authored accessor instead of
-  re-deriving face normals)**. **Remaining open data path:** explicit `lineStrings` edges
-  (BENTLEY/styled-gltf-lines yield zero WebGPU edges). Per-edge `materialColor` override ✅ SHIPPED
-  (Batch 330). **P2.**
+  re-deriving face normals)**. Explicit `lineStrings` edges (BENTLEY/styled-gltf-lines) ✅
+  **SHIPPED (Batch 316, `C-R8-EDGE-LINESTRINGS`)** — the `NEW-EDGE-LINESTRINGS-EXPLICIT` premise
+  ("yield zero WebGPU edges") is STALE: `extractEdgeGeometry` consumes the primitive-restart-
+  delimited `lineStrings` index lists into HARD edges, deduped against the visibility path,
+  matching WebGL `extractVisibleEdges` (regression guard `probe-edge-linestrings.mjs`). Per-edge
+  `materialColor` override ✅ SHIPPED (Batch 330). **All edge data paths now closed.**
 - **Vector3DTile (.vctr) e2e status** — `NEW-VECTOR3DTILE-VCTR-E2E` (B8, 2026-07-03) landed the first
   REAL .vctr pixel probe (`probe-vector3dtile-vctr.mjs`, fixtures `Specs/Data/Cesium3DTiles/Vector/**`;
   the "no .vctr test data" blocker in FORK_OVERVIEW §8 was STALE). Verified at msaa=1: polylines-3D
@@ -771,7 +774,7 @@ The **remaining parity gaps** (all P2 / doc-drift), de-duplicated against §4:
 | BufferPolygon-family 2D/CV reprojection | open, needs its own ID | §4 3D Tiles |
 | `positionNormalized` + integer position datatypes | open, needs its own ID | §4 3D Tiles |
 | EquirectangularPanorama cull-override | ✅ RESOLVED (Batch 317) | §4 3D Tiles |
-| Edge `lineStrings` + authored `silhouetteNormals` data paths | open | §4 3D Tiles |
+| Edge `lineStrings` (B316) + authored `silhouetteNormals` (B495) data paths | ✅ RESOLVED | §4 3D Tiles |
 | Voxel default-shader (PR#13517) | blocked behind the voxel-data port | §4 3D Tiles |
 | `GeoJsonPrimitive` inventory entry (§A) | doc-drift | reconcile in `FEATURE_INVENTORY.md` |
 | Degenerate-triangle edge probe (PR#13421 repro) | open (can't confirm clean) | §4 3D Tiles |
