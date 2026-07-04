@@ -327,14 +327,22 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
   `CustomShaderPipelineStage` (WebGPU is a one-time-warning no-op). **Hard blockers** (verified): bind-
   group 1 is full (0-36), `maxBindGroups=4` maxed; numeric module cache key can't hold per-Model WGSL
   text; varying exhaustion (TAA uses @location 9-10). **P2** — ship a minimal fragment-only slice first.
-- **`WGF-1-EXPAND` — clipping planes on primitives + models** (M) — globe terrain supports hardware
-  `@builtin(clip_distances)`, but **primitives and models do NOT**. All renderers declare clip-distance
-  uniforms + struct fields, yet the WGSL never writes `@builtin(clip_distances)` (primitive shaders =
-  **stub**; `WebGPUModelRenderer.js` wires no clip-distance variant = **missing**). Affects all ~23
-  primitive lit shaders (`Mat*Lit`), `Material`-derived primitives, the Ellipsoid primitive, all Model
-  PBR variants, and the advanced classifiers. **Proof:** a `ClippingPlaneCollection` on a Primitive/Model
-  silently fails on WebGPU. Bundles with `NEW-MATERIAL-PER-BACKEND-SHADER-SOURCE` (§4.8) to avoid Material
-  hardcoding per backend; distinct from the WGF-1 base feature (§4.8 Phase 5). **P1, effort M.**
+- **`WGF-1-EXPAND` — clipping planes on primitives + models** — **PREMISE STALE for the parity surface;
+  reclassified to PERF-ONLY defer (2026-07-04, Q16-WGF1-CLIP-DISTANCES).** The original claim ("a
+  `ClippingPlaneCollection` on a Primitive/Model silently fails on WebGPU") does NOT reproduce:
+  (a) **Models already clip at parity** — B466 (`AUDIT_2026_05_02 A.6`) wired `model.clippingPlanes`
+  through `WebGPUModelRenderer` → the effects bind group, and `ModelPBRComplete.wgsl` discards via
+  `modelClipByPlanes(input.positionEC)` (eye-space, matching `WebGPUClippingPlaneCollection`'s eye-space
+  plane upload). Confirmed by `Tools/visual-regression/probe-clipping-planes-parity.mjs` (2026-07-04):
+  the CesiumMilkTruck is clipped identically on WebGL vs WebGPU. (b) **Arbitrary Primitives are NOT a
+  WebGL clipping surface** — upstream `Scene/Primitive.js` and the `Appearance`/`Material` layer have no
+  `clippingPlanes` API (only `Model`, `Cesium3DTileset`, and `Globe` own a `ClippingPlaneCollection`), so
+  the `Mat*Lit` "stub" is not a parity gap. What actually remains is the hardware `@builtin(clip_distances)`
+  variant on the model/primitive path — a **perf optimization that is byte-identical in output** to the
+  shipped fragment-discard path (globe already has both). Per §6.3, the WGF-* perf variants are
+  low-win/defer. **No shader change warranted for parity.** *Residual follow-up surfaced by the probe
+  (SEPARATE from clipping): the same probe's pick-scan shows `scene.pick` returning no hit on the model
+  under WebGPU while WebGL picks it — a Model pick-on-WebGPU discrepancy, not a clipping defect.*
 - **`MORPH-MODEL-PROJECT2D`** — glTF Model accurate-2D (`projectTo2D:true`) has no WGSL equivalent (a
   morphable + 2D-projected model keeps its 3D bounding volume instead of morphing into a 2D-clipped ortho
   box). Part of the Collections 2DCV morph picture (§4.4) but applies to Models too. **P2.**
