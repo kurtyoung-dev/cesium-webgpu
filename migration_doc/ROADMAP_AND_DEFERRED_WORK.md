@@ -255,8 +255,13 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   (unblocking the documented B477 cell-pick blocker), per-cell pick reland ✅ B498, **depth-1
   octree LOD traversal** (root + 8 level-1 children) ✅ B501, and **native-WGSL user
   customShaders in the ray-march** ✅ B503 (codegen chunk + FNV-1a keySalt,
-  `VOXEL_USER_CUSTOM_SHADER` 1<<29). **Remaining open:** `NEW-VOXEL-OCTREE-DEEP-LEVELS` — octree
-  levels deeper than depth-1 (**P2**); the PR#13517 default-shader rides that work; and the
+  `VOXEL_USER_CUSTOM_SHADER` 1<<29), depth-2 octree traversal ✅ B17 (73-slot atlas), and
+  **depth-3 octree traversal** ✅ 2026-07-04 (`NEW-VOXEL-OCTREE-DEEP-LEVELS` — static 585-slot
+  atlas: root + 8 L1 + 64 L2 + 512 L3 tiles, `l3Slots` UBO array + `octreeDescend` cap 3;
+  `probe-voxel-octree-l3plus.mjs`). **Remaining open:** octree levels DEEPER than 3 and a DYNAMIC
+  (LRU) level-3 pool for sets that do not fit the device (**P2**, the flat per-level slot arrays
+  become impractical at level 4 = 4096 slots — needs the `u_octreeInternalNodeTexture` node-table
+  walk); the PR#13517 default-shader rides that work; and the
   **pick↔octree/customShader composition gap** — `NEW-VOXEL-PICK-OCTREE-COMPOSE`, **P1 fix-now**
   (§4.5).
 - **Edge data parity** (`NEW-EDGE-DISPLAY-MODE-WEBGPU` is ✅ SHIPPED Batch 316; tri-mode core done) —
@@ -868,7 +873,7 @@ papered over — prioritized:
 
 **Small open tail from the same audit:** `NEW-ENV-MOON-CRESCENT-PROBE` (crescent-phase probe
 extension, §4.7), `NEW-PP-F16-DEVICE-VERIFY` (on-device shader-f16 pixel-verify, RTX-class,
-§4.7), `NEW-VOXEL-OCTREE-DEEP-LEVELS` (octree levels beyond depth-1, §4.2),
+§4.7), `NEW-VOXEL-OCTREE-DEEP-LEVELS` (✅ depth-3 shipped 2026-07-04; octree levels beyond depth-3 + dynamic L3 pool remain, §4.2),
 `NEW-BUFFERPOLYLINE-2D-EXTRUSION` (✅ closed 2026-07-03, §4.2), and the `probe-colorgrading-wired` stored
 baseline refresh (✅ closed 2026-07-03, §4.7; the `probe-hdr-pp-math` baseline refresh remains open). Sweep hygiene note: `probe-collections-regression` + `probe-pick-basic`
 default `PROBE_BASE` to `:8134` — set `PROBE_BASE=http://localhost:8080` when re-running.

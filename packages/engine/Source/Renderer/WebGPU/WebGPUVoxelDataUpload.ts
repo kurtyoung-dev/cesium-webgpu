@@ -63,10 +63,23 @@
  * Under-capacity scenes (the full 73-slot atlas fits and no override is set)
  * take the exact static B19 path — byte-identical (the off-gate).
  *
+ * NEW-VOXEL-OCTREE-DEEP-LEVELS (increment: depth-3) — when the provider
+ * advertises `availableLevels >= 4` AND the full 585-slot atlas fits the
+ * device (`slotCap >= 585`), the atlas grows to 585 slots: 0 = root, 1..8 =
+ * level 1, 9..72 = level 2, 73..584 = the 512 level-3 tiles in linear order
+ * `x + 8y + 64z` (the radix-2 extension of the level-2 convention). Level-3
+ * tiles upload demand-driven alongside the shallower sets (the same
+ * level-generic `driveTileLevelUploads` machine, edge = 8), and the WGSL walk
+ * (`octreeDescend`) descends to level 3 reading `l3Slots`. This is the STATIC
+ * full-atlas path only — the dynamic LRU pool is NOT yet generalized to level
+ * 3, so providers whose level-3 set does not fit the device fall back to the
+ * level-2 cap exactly as before (off-gate preserved).
+ *
  * What is NOT done here (honest partial — separate increments):
- *   - Octree traversal DEEPER than level 2 (the WGSL walk + slot indirection
- *     arrays are depth-2; a deeper walk would reuse this increment's LRU pool
- *     with a per-level page table instead of the fixed l2Slots array).
+ *   - Octree traversal DEEPER than level 3, and a DYNAMIC (LRU) level-3 pool
+ *     for level-3 sets that do not fit the device (a deeper/partial walk would
+ *     reuse this increment's LRU pool with a per-level page table instead of
+ *     the fixed l2Slots/l3Slots arrays).
  *   - LOD refinement for non-BOX shapes (cylinder/ellipsoid stay root-only).
  *   - Non-VEC4 properties (VEC3/VEC2/scalar) — this increment uploads the first
  *     property expanded to RGBA. Missing channels default to 0, alpha to 1.
@@ -212,6 +225,16 @@ export interface VoxelDataUploadState {
    * uploaded level-2 tile).
    */
   l2Slots: Float32Array;
+  /**
+   * NEW-VOXEL-OCTREE-DEEP-LEVELS — atlas slot per level-3 tile (linear index
+   * x + 8y + 64z over the 8x8x8 level-3 tile grid, Z-up shape frame; 512
+   * entries), or -1 while that tile is not uploaded. Packed verbatim into the
+   * ray-march UBO (floats 228..739). Only non-empty on the STATIC deep-3 atlas
+   * (`slotCount === 585`, base slot 73); all -1 on shallower atlases (never
+   * read there — the WGSL walk only consults level 3 when the target level
+   * reaches 3, which requires an uploaded level-3 tile CPU-side).
+   */
+  l3Slots: Float32Array;
   /** VOXEL-OCTREE-LOD — child-request lifecycle. "none" = single-tile path. */
   childPhase: "none" | "loading" | "done";
   /** VOXEL-OCTREE-LOD — internal per-child async states (8 entries). */
@@ -221,6 +244,20 @@ export interface VoxelDataUploadState {
    * (64 entries). Only driven when {@link slotCount} is 73.
    */
   l2States: VoxelChildTileState[];
+  /**
+   * NEW-VOXEL-OCTREE-DEEP-LEVELS — internal per-level-3-tile async states (512
+   * entries). Allocated lazily (empty until the static deep-3 atlas is built)
+   * and driven only when {@link slotCount} is 585.
+   */
+  l3States: VoxelChildTileState[];
+  /**
+   * NEW-VOXEL-OCTREE-DEEP-LEVELS — number of atlas slots reserved for LEVEL-3
+   * tiles: 0 (no deep-3 atlas) or 512 (static full atlas — every level-3 tile
+   * has a reserved slot 73..584). The dynamic LRU pool is NOT yet generalized
+   * to level 3 (honest partial — see the module docstring); deep-3 refinement
+   * is available only when the full 585-slot atlas fits the device.
+   */
+  l3PoolSize: number;
   /**
    * NEW-VOXEL-ATLAS-LRU-EVICT — number of atlas slots available to LEVEL-2
    * tiles: 0 (no deep atlas), 64 (static full atlas — every level-2 tile has
@@ -283,9 +320,12 @@ export function createVoxelDataUploadState(): VoxelDataUploadState {
     slotCount: 1,
     childSlots: new Float32Array([-1, -1, -1, -1, -1, -1, -1, -1]),
     l2Slots: new Float32Array(64).fill(-1),
+    l3Slots: new Float32Array(512).fill(-1),
     childPhase: "none",
     childStates,
     l2States,
+    l3States: [],
+    l3PoolSize: 0,
     l2PoolSize: 0,
     l2Dynamic: false,
     freeL2Slots: [],
@@ -540,14 +580,32 @@ export function tryUploadRootVoxelTile(
   const fullDeep = wantDeep && slotCap >= 73;
   const partialDeep = wantDeep && !fullDeep && slotCap >= 10;
   const deepLevel = fullDeep || partialDeep;
-  const slotCount = fullDeep ? 73 : partialDeep ? slotCap : multiLevel ? 9 : 1;
+  // NEW-VOXEL-OCTREE-DEEP-LEVELS — a provider advertising a FOURTH level
+  // (availableLevels >= 4) gets the 585-slot atlas (adds the 512 level-3 tiles
+  // at slots 73..584) when the full set fits the slot capacity. Only the
+  // STATIC full atlas is supported at level 3 (the dynamic LRU pool stays
+  // level-2-only for now); when the 585-slot set does not fit, traversal falls
+  // back to the level-2 cap exactly as before (off-gate preserved). fullDeep3
+  // implies fullDeep (585 > 73), so level 2 keeps its static slots too.
+  const fullDeep3 = fullDeep && availableLevels >= 4 && slotCap >= 585;
+  const slotCount = fullDeep3
+    ? 585
+    : fullDeep
+      ? 73
+      : partialDeep
+        ? slotCap
+        : multiLevel
+          ? 9
+          : 1;
 
   const texture = device.createTexture({
-    label: deepLevel
-      ? "Voxel real-data 3D atlas (root + level-1 + level-2 tiles)"
-      : multiLevel
-        ? "Voxel real-data 3D atlas (root + level-1 tiles)"
-        : "Voxel real-data 3D texture (root tile)",
+    label: fullDeep3
+      ? "Voxel real-data 3D atlas (root + level-1 + level-2 + level-3 tiles)"
+      : deepLevel
+        ? "Voxel real-data 3D atlas (root + level-1 + level-2 tiles)"
+        : multiLevel
+          ? "Voxel real-data 3D atlas (root + level-1 tiles)"
+          : "Voxel real-data 3D texture (root tile)",
     size: { width, height, depthOrArrayLayers: depth * slotCount },
     format,
     dimension: "3d",
@@ -580,6 +638,33 @@ export function tryUploadRootVoxelTile(
     for (let s = 9 + state.l2PoolSize - 1; s >= 9; s--) {
       state.freeL2Slots.push(s);
     }
+  }
+  // NEW-VOXEL-OCTREE-DEEP-LEVELS — static level-3 pool bookkeeping. Slots
+  // 73..584 are pre-assigned baseSlot + i (no free list — parallels the static
+  // full level-2 path). Level-3 tile states are allocated lazily here so
+  // shallower providers never pay for 512 unused state objects.
+  state.l3Slots.fill(-1);
+  if (fullDeep3) {
+    state.l3PoolSize = 512;
+    if (state.l3States.length !== 512) {
+      state.l3States = [];
+      for (let i = 0; i < 512; i++) {
+        state.l3States.push({
+          phase: "idle",
+          content: null,
+          lastDemandFrame: 0,
+        });
+      }
+    } else {
+      for (let i = 0; i < 512; i++) {
+        state.l3States[i].phase = "idle";
+        state.l3States[i].content = null;
+        state.l3States[i].lastDemandFrame = 0;
+      }
+    }
+  } else {
+    state.l3PoolSize = 0;
+    state.l3States = [];
   }
   state.phase = "done";
   return true;
@@ -800,6 +885,34 @@ export function tryUploadChildVoxelTiles(
       // cannot deadlock the "done" transition after everything has settled.
       for (let i = 0; i < 64; i++) {
         const phase = state.l2States[i].phase;
+        if (phase === "done" || phase === "failed") {
+          settled++;
+        }
+      }
+    }
+  }
+
+  // NEW-VOXEL-OCTREE-DEEP-LEVELS — static level-3 set (slots 73..584). Driven
+  // only when the camera demands level >= 3 (the streaming semantics — a tile
+  // enters the atlas only when the SSE ladder visits its level). Uses the same
+  // level-generic `driveTileLevelUploads` machine (edge = 2^3 = 8, count 512).
+  if (state.slotCount >= 585) {
+    total += 512;
+    if (demandLevel >= 3) {
+      settled += driveTileLevelUploads(
+        device,
+        primitive,
+        frameState,
+        state,
+        provider,
+        3,
+        state.l3States,
+        state.l3Slots,
+        73,
+      );
+    } else {
+      for (let i = 0; i < 512; i++) {
+        const phase = state.l3States[i].phase;
         if (phase === "done" || phase === "failed") {
           settled++;
         }

@@ -249,8 +249,9 @@ struct Uniforms {
   // deepest uploaded ancestor for the octant — Octree.glsl's
   // OCTREE_FLAG_PACKED_LEAF_FROM_PARENT fallback. \`atlasInfo.x\` = tile slot
   // count stacked along the texture's Z axis (1 = single-tile texture,
-  // historical layout; 9 = depth-1 atlas; 73 = depth-2 atlas);
-  // \`atlasInfo.y\` = this frame's target LOD level (0 = root, 1..2 = refine)
+  // historical layout; 9 = depth-1 atlas; 73 = depth-2 atlas; 585 = depth-3
+  // atlas, NEW-VOXEL-OCTREE-DEEP-LEVELS);
+  // \`atlasInfo.y\` = this frame's target LOD level (0 = root, 1..3 = refine)
   // from the CPU-evaluated SpatialNode.computeScreenSpaceError refine ladder.
   // All zero on the placeholder path (max(atlasInfo.x, 1.0) keeps the math
   // byte-identical there).
@@ -312,6 +313,13 @@ struct Uniforms {
   _pad7: f32,
   cylinderLocalToShapeUvTranslate: vec3<f32>,
   _pad8: f32,
+  // NEW-VOXEL-OCTREE-DEEP-LEVELS — atlas slot per level-3 tile (floats
+  // 228..739): linear index x + 8y + 64z over the 8x8x8 level-3 tile grid
+  // (the radix-2 extension of the level-2 order), or -1 when that tile is not
+  // uploaded. Only consulted when the iterative walk descends to level 3
+  // (target level >= 3 requires an uploaded level-3 tile CPU-side); all -1 /
+  // zero on the shallower paths (585-slot static atlas only).
+  l3Slots: array<vec4<f32>, 128>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -690,16 +698,18 @@ fn computeShapeUvReal(p: vec3<f32>) -> vec3<f32> {
 // tileUv is exactly getTileUv's levelDifference-N rescale, i.e. the
 // OCTREE_FLAG_PACKED_LEAF_FROM_PARENT path. Slot indirection per level:
 // level 1 reads childSlots0/1 (octant x + 2y + 4z), level 2 reads l2Slots
-// (linear x + 4y + 16z). Depth is capped at 2 — the fixed-atlas budget
-// (deeper levels need the NEW-VOXEL-ATLAS-LRU-EVICT slot allocator). targetLevel 0
-// (single-tile / placeholder / far view) never enters the loop: tileUv =
+// (linear x + 4y + 16z), and level 3 reads l3Slots (linear x + 8y + 64z —
+// NEW-VOXEL-OCTREE-DEEP-LEVELS). Depth is capped at 3 — the fixed-atlas
+// budget (the 585-slot static deep-3 atlas; deeper/partial levels need the
+// NEW-VOXEL-ATLAS-LRU-EVICT slot allocator generalized per level). targetLevel
+// 0 (single-tile / placeholder / far view) never enters the loop: tileUv =
 // shapeUv, slot = 0 — byte-identical to the pre-octree math.
 //
 // Returns vec4(tileUv.xyz, tileSlot).
 fn octreeDescend(shapeUv: vec3<f32>) -> vec4<f32> {
   var tileUv = shapeUv;
   var tileSlot = 0.0;
-  let targetLevel = min(i32(u.atlasInfo.y + 0.5), 2);
+  let targetLevel = min(i32(u.atlasInfo.y + 0.5), 3);
   var n = 2.0;
   for (var lvl = 1; lvl <= targetLevel; lvl = lvl + 1) {
     let tc = clamp(floor(shapeUv * n), vec3<f32>(0.0), vec3<f32>(n - 1.0));
@@ -711,9 +721,12 @@ fn octreeDescend(shapeUv: vec3<f32>) -> vec4<f32> {
       } else {
         slot = u.childSlots1[idx - 4];
       }
-    } else {
+    } else if (lvl == 2) {
       let idx = i32(tc.x + 4.0 * tc.y + 16.0 * tc.z);
       slot = u.l2Slots[idx / 4][idx % 4];
+    } else {
+      let idx = i32(tc.x + 8.0 * tc.y + 64.0 * tc.z);
+      slot = u.l3Slots[idx / 4][idx % 4];
     }
     if (slot < 0.0) { break; }
     tileSlot = slot;
@@ -2009,6 +2022,19 @@ function voxelMaxUploadedLevel(state: VoxelDataUploadState): number {
       }
     }
   }
+  if (maxUploadedLevel < 2) {
+    return maxUploadedLevel;
+  }
+  // NEW-VOXEL-OCTREE-DEEP-LEVELS — the static deep-3 atlas (l3PoolSize > 0)
+  // can hold level-3 tiles; if any is uploaded the walk may descend to 3.
+  if (state.l3PoolSize > 0) {
+    for (let i = 0; i < 512; i++) {
+      if (state.l3Slots[i] >= 0) {
+        maxUploadedLevel = 3;
+        break;
+      }
+    }
+  }
   return maxUploadedLevel;
 }
 
@@ -2046,7 +2072,16 @@ function computeVoxelDemandLevel(
   // NEW-VOXEL-ATLAS-LRU-EVICT — a dynamic partial atlas (slotCount 10..72,
   // l2PoolSize > 0) has level-2 CAPACITY too: demand drives tiles through the
   // LRU pool. Static atlases keep the historical 73→2 / 9→1 mapping exactly.
-  const capacity = state.l2PoolSize > 0 ? 2 : state.slotCount >= 9 ? 1 : 0;
+  // NEW-VOXEL-OCTREE-DEEP-LEVELS — the static deep-3 atlas has level-3
+  // CAPACITY (l3PoolSize = 512), so the demand ladder may ask for level 3.
+  const capacity =
+    state.l3PoolSize > 0
+      ? 3
+      : state.l2PoolSize > 0
+        ? 2
+        : state.slotCount >= 9
+          ? 1
+          : 0;
   return computeVoxelRefinementLevel(primitive, frameState, state, capacity);
 }
 
@@ -2491,9 +2526,11 @@ function updateWebGPUVoxelPrimitive(
     // NEW-VOXEL-ELLIPSOID-SHAPEUV grew it 832 → 864 bytes for the ellipsoid
     // lon/lat/height shapeUv mapping terms (floats 208-215).
     // NEW-VOXEL-CYLINDER-SHAPEUV grew it 864 → 912 bytes for the cylinder
-    // radius/angle/height terms (floats 216-227).
+    // radius/angle/height terms (floats 216-227). NEW-VOXEL-OCTREE-DEEP-LEVELS
+    // grew it 912 -> 2960 bytes for the 512 level-3 atlas slots (floats
+    // 228-739) read by the iterative octree walk when it descends to level 3.
     cache.uniformBuffer = device.createBuffer({
-      size: 912,
+      size: 2960,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     // VOXEL-SHAPEUV-CONVENTION — honour VoxelPrimitive.nearestSampling
@@ -3006,7 +3043,8 @@ function updateWebGPUVoxelPrimitive(
   //   [220..223] cylinderLocalToShapeUvScale + pad (NEW-VOXEL-CYLINDER-SHAPEUV)
   //   [224..227] cylinderLocalToShapeUvTranslate + pad
   //              (NEW-VOXEL-CYLINDER-SHAPEUV)
-  const data = new Float32Array(228);
+  //   [228..739] l3Slots (512 level-3 atlas slots, NEW-VOXEL-OCTREE-DEEP-LEVELS)
+  const data = new Float32Array(740);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -3140,6 +3178,14 @@ function updateWebGPUVoxelPrimitive(
       // tail can never be misread as "level-2 tile at slot 0".
       for (let i = 0; i < 64; i++) {
         data[120 + i] = du.l2Slots[i];
+      }
+      // NEW-VOXEL-OCTREE-DEEP-LEVELS — level-3 slot indirection (floats
+      // 228..739; -1 = not uploaded -> the walk stops at the level-2 ancestor).
+      // du.l3Slots is all -1 on shallower atlases, so this is a byte-identical
+      // zero/-1 tail there (never read: the WGSL walk only consults level 3
+      // when targetLevel reaches 3, which needs an uploaded level-3 tile).
+      for (let i = 0; i < 512; i++) {
+        data[228 + i] = du.l3Slots[i];
       }
     }
 

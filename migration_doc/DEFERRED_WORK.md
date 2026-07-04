@@ -3216,10 +3216,25 @@ octree traversal — a real two-level LOD path in
 
 **Remaining (the rest of the XL):**
 
-1. **Arbitrary-depth traversal** — port the `u_octreeInternalNodeTexture`
-   internal-node walk (`traverseOctreeDownwards` / `traverseOctreeFromExisting`)
-   so deep tilesets refine past level 1. Needs a GPU octree-node table (texture
-   or storage buffer) generated from loaded-tile state.
+1. **Arbitrary-depth traversal** — PARTIALLY SHIPPED to LEVEL 3
+   (NEW-VOXEL-OCTREE-DEEP-LEVELS, 2026-07-04): the flat-slot scheme generalized
+   one level deeper. When a provider advertises `availableLevels >= 4` AND the
+   full 585-slot atlas fits the device (`slotCap >= 585`; root + 8 L1 + 64 L2 +
+   512 L3 tiles at slots 73..584, linear `x + 8y + 64z`), the atlas allocates
+   585 slots, `l3Slots`/`l3States` stream demand-driven through the same
+   level-generic `driveTileLevelUploads` machine, and `octreeDescend` descends
+   to level 3 (cap `min(atlasInfo.y, 3)`, new `l3Slots` branch). UBO grew
+   912 → 2960 B (512 level-3 slots at floats 228..739). Gated by
+   `probe-voxel-octree-l3plus.mjs` (4-level 2³-tile fixture
+   `fixtures/voxel-octree-l4.mjs`; WebGPU renders the LEVEL-3 grid with ≥4 L3
+   discriminators black at 6R/3.5R, matching WebGL; far view de-refines to
+   root). Off-gate: `availableLevels ≤ 3` OR the 585-slot set does not fit →
+   the exact level-2-cap path (`probe-voxel-octree.mjs` still slotCount 73 /
+   cap 2). Remaining: levels DEEPER than 3, plus the general
+   `u_octreeInternalNodeTexture` internal-node walk
+   (`traverseOctreeDownwards` / `traverseOctreeFromExisting`) with a GPU
+   octree-node table — needed once the flat per-level slot arrays become
+   impractical (level 4 = 4096 slots).
 2. **Dynamic megatexture slot allocator** — SHIPPED for the level-2 set
    (NEW-VOXEL-ATLAS-LRU-EVICT, 2026-07-03): when the 73-slot atlas does not
    fit the capacity (device `maxTextureDimension3D / tileDepth`, further
@@ -3242,7 +3257,12 @@ octree traversal — a real two-level LOD path in
    tiles only (depth cap 2 —
    deeper levels need item 1's page-table walk, which would page per-level
    slot tables through this same pool) and there is no public
-   `maximumTileCount` API — the override is fork-internal.
+   `maximumTileCount` API — the override is fork-internal. UPDATE
+   (2026-07-04, NEW-VOXEL-OCTREE-DEEP-LEVELS): the STATIC full atlas now
+   reaches LEVEL 3 (585-slot atlas, item 1); the DYNAMIC LRU pool is still
+   level-2-only, so a level-3 set that does not fit the device falls back to
+   the level-2 cap. Generalizing the LRU pool to page per-level slot tables
+   through the pool remains the deeper-levels increment.
 3. **Non-box shapes** — ELLIPSOID and CYLINDER are now feature-complete for
    single-tile providers: B22 (Batch 525, NEW-VOXEL-ELLIPSOID-INTERSECT)
    shipped the shell GEOMETRY — the parity color march + per-cell pick march
