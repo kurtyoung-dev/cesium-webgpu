@@ -63,7 +63,7 @@ struct Uniforms {
   mvpRTE: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>, _p0: f32,
   encodedCameraLow: vec3<f32>, _p1: f32,
-  sunSize: vec2<f32>, glowFactor: f32, _p2: f32,
+  sunSize: vec2<f32>, glowFactor: f32, gamma: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -93,7 +93,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // replicates SunTextureFS.glsl); the previous extra exp() glow here was a
   // redundant second halo that over-brightened the (then disc-only) sun. The
   // additive blend turns the white texel * alpha into a glowing sun over the sky.
-  return textureSample(tex, samp, i.uv);
+  var color = textureSample(tex, samp, i.uv);
+  // czm_gammaCorrect parity (WebGL SunFS.glsl) — RGB→linear (pow(rgb, gamma))
+  // when HDR is active so the sun composites correctly into the linear HDR
+  // scene buffer. gamma == 1.0 (default / non-HDR) skips the branch entirely,
+  // keeping the output byte-identical to the pre-gamma path.
+  if (u.gamma != 1.0) {
+    color = vec4f(pow(color.rgb, vec3f(u.gamma)), color.a);
+  }
+  return color;
 }`;
 
 /**
@@ -192,7 +200,7 @@ const scratchEncodedPos = new EncodedCartesian3();
  * Creates sun procedural texture via CPU fallback.
  * @private
  */
-function createSunTexture(device, size) {
+function createSunTexture(device, size, glowFactor) {
   const texture = device.createTexture({
     label: "Sun procedural texture",
     size: [size, size, 1],
@@ -209,8 +217,10 @@ function createSunTexture(device, size) {
   // radius (u_radiusTS), a soft glow halo fills the rest, and six pre-rotated
   // lens-flare bursts radiate out. RGB is ~white; the disc+glow+flare shape
   // lives in alpha (and blue), so additive blending paints a glowing sun.
-  // glowLengthTS matches packSunUniforms (Sun default glowFactor=1 -> 5).
-  const glowLengthTS = 5.0;
+  // glowLengthTS mirrors WebGL Sun.update (Sun.js:182-183): glowFactor * 5,
+  // which shrinks the central disc (radiusTS) and widens the glow halo as
+  // glowFactor rises. Sun default glowFactor = 1 -> glowLengthTS = 5.
+  const glowLengthTS = glowFactor * 5.0;
   const radiusTS = 0.5 / (1.0 + 2.0 * glowLengthTS);
   const lengthScalar = 2.0 / Math.sqrt(2.0);
   const smoothstep = (e0, e1, x) => {
@@ -344,7 +354,7 @@ function createSunQuadBuffer(device, sunPosition) {
   return buffer;
 }
 
-function packSunUniforms(uniformData, frameState) {
+function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   const uniformState = frameState.context.uniformState;
   Matrix4.clone(uniformState.view, scratchModelView);
   Matrix4.clone(scratchModelView, scratchMVRTE);
@@ -378,7 +388,6 @@ function packSunUniforms(uniformData, frameState) {
   // auto-corrects aspect (proj[0] = proj[5]/aspect for a perspective frustum),
   // so the quad is circular. The texture (createSunTexture) carries the small
   // central disc + soft glow halo + lens-flare bursts across the full quad.
-  const glowFactor = 1.0; // Sun default; dynamic glowFactor is a follow-up.
   const glowLengthTS = glowFactor * 5.0;
   const sunSizeScale = 1.0 + 2.0 * glowLengthTS;
   const sunPos = uniformState.sunPositionWC;
@@ -392,7 +401,7 @@ function packSunUniforms(uniformData, frameState) {
   uniformData[24] = angHalf * Math.abs(proj[0]) * sunSizeScale; // sunSize.x
   uniformData[25] = angHalf * Math.abs(proj[5]) * sunSizeScale; // sunSize.y
   uniformData[26] = glowFactor;
-  uniformData[27] = 0.0;
+  uniformData[27] = gamma;
 }
 
 /**
@@ -410,8 +419,24 @@ function updateWebGPUSun(sun, frameState, commandList) {
   }
   const cache = sun._webgpuCache;
 
+  // Parity with WebGL Sun (Sun.js) — the user-tunable glowFactor drives both
+  // the baked texture (disc radius + glow-halo length) and the on-screen quad
+  // size. Sun.glowFactor's setter clamps to >= 0; default 1.0 reproduces the
+  // historical hardcoded bake, so default scenes stay byte-identical.
+  const glowFactor = defined(sun.glowFactor) ? sun.glowFactor : 1.0;
+
+  // Regenerate the baked texture when glowFactor changes (mirrors WebGL's
+  // _glowFactorDirty texture rebuild). Rebuild only on change to avoid a
+  // per-frame CPU bake.
+  if (defined(cache.sunTexture) && cache.lastGlowFactor !== glowFactor) {
+    cache.sunTexture.destroy();
+    cache.sunTexture = undefined;
+    cache.sunTextureView = undefined;
+  }
+
   if (!defined(cache.sunTexture)) {
-    cache.sunTexture = createSunTexture(device, 256);
+    cache.sunTexture = createSunTexture(device, 256, glowFactor);
+    cache.lastGlowFactor = glowFactor;
     cache.sunTextureView = cache.sunTexture.createView();
     cache.sampler = device.createSampler({
       minFilter: "linear",
@@ -542,7 +567,13 @@ function updateWebGPUSun(sun, frameState, commandList) {
     );
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
   }
-  packSunUniforms(cache.uniformData, frameState);
+  // czm_gammaCorrect parity: convert the sun to linear (pow(rgb, gamma)) only
+  // when the scene is HDR; otherwise gamma = 1.0 makes the FS branch a no-op.
+  const gamma =
+    frameState.useHDR === true
+      ? (frameState.context.uniformState.gamma ?? 2.2)
+      : 1.0;
+  packSunUniforms(cache.uniformData, frameState, glowFactor, gamma);
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,
