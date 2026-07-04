@@ -85,6 +85,25 @@ SceneMode2DPipelineStage.process = function (
     return;
   }
 
+  // Backend-agnostic guard (CLAUDE.md Principle 2): when the active
+  // GraphicsContext retains the source geometry typed arrays
+  // (`requiresVertexTypedArrayRetention` — true on WebGPU, which has no
+  // `getBufferData()` back-channel), that backend builds its OWN 2D / CV
+  // geometry from the CPU-side loader positions rather than the WebGL
+  // 2D vertex-buffer machinery. Skip the WebGL 2D position-buffer
+  // allocation, the source typed-array strip, and the `USE_2D_POSITIONS`
+  // shader wiring below (GeometryPipelineStage's matching `use2D` gate
+  // skips the paired `a_position2D` attribute, so the WebGL draw command
+  // built for the model — which still runs under WebGPU — does not
+  // reference an absent 2D vertex buffer). This leaves the intact source
+  // `positionAttribute.typedArray` and the computed `boundingSphere2D` as
+  // the substrate the WebGPU accurate-2D path (MORPH-MODEL-PROJECT2D /
+  // B11) consumes. WebGL (capability false) keeps its exact strip +
+  // stub-buffer behavior and byte-identical shader output.
+  if (frameState.context.requiresVertexTypedArrayRetention === true) {
+    return;
+  }
+
   // If the typed array of the position attribute exists, then
   // the positions haven't been projected to 2D yet.
   if (defined(positionAttribute.typedArray)) {

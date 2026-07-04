@@ -133,10 +133,20 @@ GeometryPipelineStage.process = function (
   }
 
   // Attributes, structs, and functions will need to be modified for 2D / CV.
+  // Backend-agnostic guard (CLAUDE.md Principle 2): when the active
+  // GraphicsContext retains source geometry typed arrays
+  // (`requiresVertexTypedArrayRetention` — true on WebGPU), it builds its
+  // own 2D / CV geometry from the CPU-side positions, and
+  // SceneMode2DPipelineStage skips allocating the WebGL `positionBuffer2D`.
+  // Skip the paired `a_position2D` attribute / struct field here too, so
+  // the WebGL draw command built for the model (still constructed under
+  // WebGPU) does not reference the absent 2D vertex buffer. WebGL
+  // (capability false) is unchanged.
   const use2D =
     frameState.mode !== SceneMode.SCENE3D &&
     !frameState.scene3DOnly &&
-    model._projectTo2D;
+    model._projectTo2D &&
+    frameState.context.requiresVertexTypedArrayRetention !== true;
 
   // If the model is instanced, the work for 2D projection will have been done
   // in InstancingPipelineStage. The attribute struct will be updated with
