@@ -43,14 +43,27 @@
  * SAME fully-uploaded steady state as the historical eager path
  * (pixel-identical steady state — the off-gate).
  *
+ * NEW-VOXEL-ATLAS-LRU-EVICT (increment: LRU slot eviction) — when the
+ * level-2 tile set does NOT fit the atlas (the device's
+ * `maxTextureDimension3D` caps the slot count below 73, or the opt-in
+ * per-primitive `_webgpuVoxelAtlasMaxSlots` override does), the level-2
+ * region of the atlas becomes a DYNAMIC slot pool (slots 9..slotCount-1)
+ * with LRU eviction — the upstream VoxelTraversal megatexture add/remove
+ * analogue. Residency follows per-tile demand (the renderer's
+ * `computeVoxelL2DemandMask`: per-tile SSE + frustum visibility): a demanded
+ * tile that is ready to upload takes a free slot, or evicts the
+ * least-recently-demanded resident that is NOT demanded this frame; if every
+ * resident is currently demanded the upload simply waits (no overflow, no
+ * thrash). An evicted tile resets to `idle` and re-requests/re-uploads the
+ * next time the camera demands it. Root (slot 0) and the eight level-1 tiles
+ * (slots 1..8) keep their static assignments and are never evicted.
+ * Under-capacity scenes (the full 73-slot atlas fits and no override is set)
+ * take the exact static B19 path — byte-identical (the off-gate).
+ *
  * What is NOT done here (honest partial — separate increments):
- *   - Atlas slot EVICTION (NEW-VOXEL-ATLAS-LRU-EVICT) — slots, once uploaded,
- *     stay resident; the atlas remains bounded by the fixed 9/73-slot budget.
- *   - Octree traversal DEEPER than level 2 (needs the slot allocator + LRU
- *     eviction from NEW-VOXEL-ATLAS-LRU-EVICT — a full level-3 set is 512+
- *     tiles and exceeds any fixed atlas budget). Providers deeper than 3
- *     levels clamp to depth-2 traversal; providers whose 73-slot atlas would
- *     exceed `maxTextureDimension3D` fall back to the 9-slot depth-1 atlas.
+ *   - Octree traversal DEEPER than level 2 (the WGSL walk + slot indirection
+ *     arrays are depth-2; a deeper walk would reuse this increment's LRU pool
+ *     with a per-level page table instead of the fixed l2Slots array).
  *   - LOD refinement for non-BOX shapes (cylinder/ellipsoid stay root-only).
  *   - Non-VEC4 properties (VEC3/VEC2/scalar) — this increment uploads the first
  *     property expanded to RGBA. Missing channels default to 0, alpha to 1.
@@ -143,6 +156,14 @@ export interface VoxelSampleConvention {
 interface VoxelChildTileState {
   phase: "idle" | "requesting" | "processing" | "done" | "failed";
   content: VoxelContentLike | null;
+  /**
+   * NEW-VOXEL-ATLAS-LRU-EVICT — the {@link VoxelDataUploadState.frameIndex}
+   * value of the most recent frame this tile was DEMANDED (per-tile SSE +
+   * frustum gate). The LRU victim is the resident tile with the smallest
+   * value that is not demanded on the current frame. Unused (stays 0) on the
+   * static full-atlas path and for level-1 tiles.
+   */
+  lastDemandFrame: number;
 }
 
 /**
@@ -197,6 +218,34 @@ export interface VoxelDataUploadState {
    * (64 entries). Only driven when {@link slotCount} is 73.
    */
   l2States: VoxelChildTileState[];
+  /**
+   * NEW-VOXEL-ATLAS-LRU-EVICT — number of atlas slots available to LEVEL-2
+   * tiles: 0 (no deep atlas), 64 (static full atlas — every level-2 tile has
+   * a reserved slot, the B17/B19 path), or 1..63 (dynamic LRU pool at slots
+   * 9..slotCount-1 when the full set does not fit the capacity).
+   */
+  l2PoolSize: number;
+  /** NEW-VOXEL-ATLAS-LRU-EVICT — true when the level-2 pool is LRU-managed. */
+  l2Dynamic: boolean;
+  /**
+   * NEW-VOXEL-ATLAS-LRU-EVICT — free slot indices of the dynamic level-2 pool
+   * (LIFO; seeded descending so pop() hands out 9, 10, ... first). Empty on
+   * the static paths.
+   */
+  freeL2Slots: number[];
+  /**
+   * NEW-VOXEL-ATLAS-LRU-EVICT — monotonic counter incremented each frame
+   * {@link tryUploadChildVoxelTiles} actively drives uploads. The LRU clock.
+   */
+  frameIndex: number;
+  /** NEW-VOXEL-ATLAS-LRU-EVICT — total evictions performed. Probe diagnostic. */
+  evictionCount: number;
+  /**
+   * NEW-VOXEL-ATLAS-LRU-EVICT — number of level-2 tiles demanded on the most
+   * recent frame with a dynamic pool (per-tile SSE + frustum mask population
+   * count). Probe diagnostic; 0 on the static paths.
+   */
+  lastL2DemandCount: number;
   /** Texture format chosen at root upload (children must match). */
   uploadFormat: GPUTextureFormat | null;
   /**
@@ -216,11 +265,11 @@ export interface VoxelDataUploadState {
 export function createVoxelDataUploadState(): VoxelDataUploadState {
   const childStates: VoxelChildTileState[] = [];
   for (let i = 0; i < 8; i++) {
-    childStates.push({ phase: "idle", content: null });
+    childStates.push({ phase: "idle", content: null, lastDemandFrame: 0 });
   }
   const l2States: VoxelChildTileState[] = [];
   for (let i = 0; i < 64; i++) {
-    l2States.push({ phase: "idle", content: null });
+    l2States.push({ phase: "idle", content: null, lastDemandFrame: 0 });
   }
   return {
     phase: "idle",
@@ -234,6 +283,12 @@ export function createVoxelDataUploadState(): VoxelDataUploadState {
     childPhase: "none",
     childStates,
     l2States,
+    l2PoolSize: 0,
+    l2Dynamic: false,
+    freeL2Slots: [],
+    frameIndex: 0,
+    evictionCount: 0,
+    lastL2DemandCount: 0,
     uploadFormat: null,
     lastTargetLevel: 0,
     demandLevel: 0,
@@ -437,17 +492,39 @@ export function tryUploadRootVoxelTile(
   //
   // NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — providers advertising a THIRD level get
   // the 73-slot atlas (adds the 64 level-2 tiles at slots 9..72) when it fits
-  // the device limit; otherwise they degrade to the 9-slot depth-1 atlas
-  // (traversal clamps at level 1 — the pre-B17 behavior). Levels beyond 3 are
-  // deferred to the streaming-upload increments (fixed up-front atlases don't
-  // scale past 73 slots).
+  // the slot capacity.
+  //
+  // NEW-VOXEL-ATLAS-LRU-EVICT — slot capacity = the device's
+  // `maxTextureDimension3D` divided by the per-tile depth, further capped by
+  // the opt-in per-primitive `_webgpuVoxelAtlasMaxSlots` override (probe/test
+  // hook + an app-level atlas memory bound; undefined by default → device
+  // capacity only, the historical budget). When the full 73-slot set fits the
+  // capacity the static tile→slot layout is used — byte-identical to the
+  // B17/B19 path (the off-gate). When it does NOT fit but at least ONE spare
+  // slot beyond the 9 static root+level-1 slots does (capacity >= 10), the
+  // level-2 region becomes a dynamic LRU pool of (slotCount - 9) slots —
+  // demand exceeding capacity streams tiles through the pool with eviction
+  // instead of clamping traversal to depth 1. Capacity < 10 keeps the 9-slot
+  // depth-1 atlas exactly as before.
   const availableLevels = provider.availableLevels ?? 1;
   const maxDim3D = device.limits?.maxTextureDimension3D ?? 2048;
+  const override = (
+    primitive as {
+      _webgpuVoxelAtlasMaxSlots?: number;
+    }
+  )._webgpuVoxelAtlasMaxSlots;
+  const deviceSlotCap = Math.floor(maxDim3D / Math.max(1, depth));
+  const slotCap =
+    typeof override === "number" && override >= 1
+      ? Math.min(deviceSlotCap, Math.floor(override))
+      : deviceSlotCap;
   const multiLevel =
-    convention !== null && availableLevels >= 2 && depth * 9 <= maxDim3D;
-  const deepLevel =
-    multiLevel && availableLevels >= 3 && depth * 73 <= maxDim3D;
-  const slotCount = deepLevel ? 73 : multiLevel ? 9 : 1;
+    convention !== null && availableLevels >= 2 && slotCap >= 9;
+  const wantDeep = multiLevel && availableLevels >= 3;
+  const fullDeep = wantDeep && slotCap >= 73;
+  const partialDeep = wantDeep && !fullDeep && slotCap >= 10;
+  const deepLevel = fullDeep || partialDeep;
+  const slotCount = fullDeep ? 73 : partialDeep ? slotCap : multiLevel ? 9 : 1;
 
   const texture = device.createTexture({
     label: deepLevel
@@ -476,6 +553,18 @@ export function tryUploadRootVoxelTile(
   state.slotCount = slotCount;
   state.uploadFormat = format;
   state.childPhase = multiLevel ? "loading" : "none";
+  // NEW-VOXEL-ATLAS-LRU-EVICT — level-2 pool bookkeeping. Static full atlas
+  // keeps an empty free list (slots are pre-assigned baseSlot + i); the
+  // dynamic pool seeds its free list descending so pop() hands out ascending
+  // slot numbers (9, 10, ...) — deterministic for probes.
+  state.l2PoolSize = fullDeep ? 64 : partialDeep ? slotCount - 9 : 0;
+  state.l2Dynamic = partialDeep;
+  state.freeL2Slots.length = 0;
+  if (partialDeep) {
+    for (let s = 9 + state.l2PoolSize - 1; s >= 9; s--) {
+      state.freeL2Slots.push(s);
+    }
+  }
   state.phase = "done";
   return true;
 }
@@ -606,10 +695,18 @@ function driveTileLevelUploads(
  * VoxelTraversal megatexture-add analogue (tiles enter the megatexture only
  * when the traversal's SSE test visits them). When demand recedes mid-stream,
  * in-flight requests simply pause at their current phase and resume when the
- * camera demands that level again; uploaded slots stay resident (eviction is
- * NEW-VOXEL-ATLAS-LRU-EVICT). `childPhase` flips to "done" only when EVERY
- * tile the atlas has capacity for has settled, so a scene whose camera
- * demands the deepest level converges to the exact eager-upload steady state.
+ * camera demands that level again; uploaded slots stay resident on the
+ * static full atlas. `childPhase` flips to "done" only when EVERY tile the
+ * atlas has capacity for has settled, so a scene whose camera demands the
+ * deepest level converges to the exact eager-upload steady state.
+ *
+ * NEW-VOXEL-ATLAS-LRU-EVICT — when the level-2 pool is DYNAMIC
+ * (`state.l2Dynamic`, capacity < 73), the level-2 set is driven by the
+ * per-tile demand mask (`l2DemandMask`, renderer-computed SSE + frustum gate)
+ * through {@link driveDynamicL2Uploads} instead: demanded tiles take free
+ * pool slots or LRU-evict a stale resident; residency follows the camera for
+ * the life of the primitive, so `childPhase` never flips to "done" on this
+ * path. Static paths ignore the mask entirely — byte-identical B19 flow.
  */
 export function tryUploadChildVoxelTiles(
   device: GPUDevice,
@@ -617,6 +714,7 @@ export function tryUploadChildVoxelTiles(
   frameState: CesiumFrameState,
   state: VoxelDataUploadState,
   demandLevel: number,
+  l2DemandMask: Uint8Array | null = null,
 ): void {
   if (
     state.phase !== "done" ||
@@ -634,6 +732,10 @@ export function tryUploadChildVoxelTiles(
     return;
   }
 
+  // NEW-VOXEL-ATLAS-LRU-EVICT — advance the LRU clock only on frames that
+  // actively drive uploads (same guard set as the drives below).
+  state.frameIndex++;
+
   let settled = driveTileLevelUploads(
     device,
     primitive,
@@ -646,6 +748,21 @@ export function tryUploadChildVoxelTiles(
     1,
   );
   let total = 8;
+
+  if (state.l2Dynamic) {
+    // NEW-VOXEL-ATLAS-LRU-EVICT — dynamic pool: residency follows demand for
+    // the life of the primitive; no terminal "done" state exists.
+    driveDynamicL2Uploads(
+      device,
+      primitive,
+      frameState,
+      state,
+      provider,
+      demandLevel,
+      l2DemandMask,
+    );
+    return;
+  }
 
   if (state.slotCount >= 73) {
     total += 64;
@@ -677,4 +794,162 @@ export function tryUploadChildVoxelTiles(
   if (settled === total) {
     state.childPhase = "done";
   }
+}
+
+/**
+ * NEW-VOXEL-ATLAS-LRU-EVICT — evict the least-recently-demanded RESIDENT
+ * level-2 tile and return its freed slot, or -1 when every resident is
+ * demanded on the current frame (nothing evictable — the caller waits).
+ * The victim resets to `idle` so a later demand re-requests + re-uploads it
+ * through the normal machine (fresh, correct cell values). Ties break to the
+ * lowest tile index — deterministic for probes.
+ */
+function evictLruL2Slot(state: VoxelDataUploadState): number {
+  let victim = -1;
+  let oldest = Infinity;
+  for (let i = 0; i < 64; i++) {
+    if (state.l2Slots[i] < 0) {
+      continue;
+    }
+    const tile = state.l2States[i];
+    if (tile.lastDemandFrame >= state.frameIndex) {
+      // Demanded this frame — protected.
+      continue;
+    }
+    if (tile.lastDemandFrame < oldest) {
+      oldest = tile.lastDemandFrame;
+      victim = i;
+    }
+  }
+  if (victim < 0) {
+    return -1;
+  }
+  const slot = state.l2Slots[victim];
+  state.l2Slots[victim] = -1;
+  const tile = state.l2States[victim];
+  tile.phase = "idle";
+  tile.content = null;
+  state.evictionCount++;
+  return slot;
+}
+
+/**
+ * NEW-VOXEL-ATLAS-LRU-EVICT — drive the level-2 uploads against the DYNAMIC
+ * slot pool. Per tile: stamp `lastDemandFrame` when demanded (per-tile SSE +
+ * frustum mask from the renderer), advance the request → process machine only
+ * for demanded tiles, and on ready-to-write allocate a slot from the free
+ * list — or LRU-evict a stale resident when the list is empty. A pool fully
+ * held by tiles demanded THIS frame yields no slot: the upload waits (no
+ * overflow, no same-frame thrash) and retries when demand shifts. Resident
+ * tiles that fall out of demand stay resident until a demanded tile needs
+ * their slot. Failed tiles never occupy a slot and are not retried (the WGSL
+ * walk falls back to the level-1 ancestor for that region — same semantics
+ * as the static path).
+ */
+function driveDynamicL2Uploads(
+  device: GPUDevice,
+  primitive: unknown,
+  frameState: CesiumFrameState,
+  state: VoxelDataUploadState,
+  provider: VoxelProviderLike,
+  demandLevel: number,
+  l2DemandMask: Uint8Array | null,
+): void {
+  const { inputDimensions } = state.convention!;
+  const width = inputDimensions.x;
+  const height = inputDimensions.y;
+  const depth = inputDimensions.z;
+  const voxelCount = width * height * depth;
+  const float32 = state.uploadFormat === "rgba32float";
+  const bytesPerTexel = float32 ? 16 : 8;
+
+  let demandCount = 0;
+  for (let i = 0; i < 64; i++) {
+    const tile = state.l2States[i];
+    const demanded =
+      demandLevel >= 2 && l2DemandMask !== null && l2DemandMask[i] !== 0;
+    if (demanded) {
+      tile.lastDemandFrame = state.frameIndex;
+      demandCount++;
+    } else {
+      // Not demanded: residents stay until evicted; in-flight requests pause
+      // at their current phase and resume under future demand.
+      continue;
+    }
+
+    if (tile.phase === "done" || tile.phase === "failed") {
+      continue;
+    }
+
+    if (tile.phase === "idle") {
+      const promise = provider.requestData({
+        tileLevel: 2,
+        tileX: i % 4,
+        tileY: Math.floor(i / 4) % 4,
+        tileZ: Math.floor(i / 16),
+        keyframe: 0,
+      });
+      if (!promise) {
+        continue;
+      }
+      tile.phase = "requesting";
+      promise
+        .then((content) => {
+          if (tile.phase === "requesting") {
+            tile.content = content;
+            tile.phase = "processing";
+          }
+        })
+        .catch(() => {
+          tile.phase = "failed";
+        });
+      continue;
+    }
+
+    if (tile.phase === "requesting") {
+      continue;
+    }
+
+    // phase === "processing" — advance the loader until the content is ready.
+    const content = tile.content;
+    if (!content) {
+      tile.phase = "failed";
+      continue;
+    }
+    content.update(primitive, frameState);
+    if (!content.ready) {
+      continue;
+    }
+    const metadata = content.metadata;
+    if (!metadata || metadata.length === 0 || !metadata[0]) {
+      tile.phase = "failed";
+      continue;
+    }
+
+    // Ready to write — allocate a slot (free list first, else LRU-evict).
+    let slot: number;
+    if (state.freeL2Slots.length > 0) {
+      slot = state.freeL2Slots.pop()!;
+    } else {
+      slot = evictLruL2Slot(state);
+    }
+    if (slot < 0) {
+      // Pool fully held by currently-demanded residents — wait, retry later.
+      continue;
+    }
+
+    const rgba = expandToRGBA(metadata[0], voxelCount);
+    const data: ArrayBufferView = float32 ? rgba : toHalfFloat(rgba);
+    device.queue.writeTexture(
+      { texture: state.texture!, origin: { x: 0, y: 0, z: slot * depth } },
+      data,
+      { bytesPerRow: width * bytesPerTexel, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: depth },
+    );
+    state.l2Slots[i] = slot;
+    tile.content = null;
+    tile.phase = "done";
+  }
+
+  state.lastL2DemandCount = demandCount;
 }

@@ -1338,7 +1338,10 @@ function voxelMaxUploadedLevel(state: VoxelDataUploadState): number {
   if (maxUploadedLevel === 0) {
     return 0;
   }
-  if (state.slotCount >= 73) {
+  // NEW-VOXEL-ATLAS-LRU-EVICT — any atlas with a level-2 pool (static 64 or
+  // dynamic 1..63) can hold level-2 tiles; scan the slot indirection either
+  // way. `slotCount >= 73` would miss the dynamic partial atlas.
+  if (state.l2PoolSize > 0) {
     for (let i = 0; i < 64; i++) {
       if (state.l2Slots[i] >= 0) {
         maxUploadedLevel = 2;
@@ -1380,8 +1383,130 @@ function computeVoxelDemandLevel(
   frameState: CesiumFrameState,
   state: VoxelDataUploadState,
 ): number {
-  const capacity = state.slotCount >= 73 ? 2 : state.slotCount >= 9 ? 1 : 0;
+  // NEW-VOXEL-ATLAS-LRU-EVICT — a dynamic partial atlas (slotCount 10..72,
+  // l2PoolSize > 0) has level-2 CAPACITY too: demand drives tiles through the
+  // LRU pool. Static atlases keep the historical 73→2 / 9→1 mapping exactly.
+  const capacity = state.l2PoolSize > 0 ? 2 : state.slotCount >= 9 ? 1 : 0;
   return computeVoxelRefinementLevel(primitive, frameState, state, capacity);
+}
+
+// NEW-VOXEL-ATLAS-LRU-EVICT scratches for the per-tile level-2 demand mask.
+const scratchL2DemandMask = new Uint8Array(64);
+const scratchL2ObbScale = new Cartesian3();
+const scratchL2TileLocal = new Cartesian3();
+const scratchL2TileCenter = new Cartesian3();
+
+/**
+ * NEW-VOXEL-ATLAS-LRU-EVICT — per-tile demand mask over the 64 level-2 tiles
+ * (linear index x + 4y + 16z, Z-up shape frame), computed only when the
+ * level-2 pool is DYNAMIC (capacity < 64 tiles) and the camera's ladder
+ * demands level 2. A tile is demanded when it passes BOTH:
+ *
+ *   1. the frustum test — the tile's bounding sphere (OBB subregion center,
+ *      conservative radius) intersects `frameState.cullingVolume`
+ *      (CullingVolume.computeVisibility's sphere-vs-plane test), and
+ *   2. the per-tile SSE gate — the level-2 ladder test with the TILE's own
+ *      distance: `(screenHeight / sseDenominator) * (tileVoxelSize / dist)
+ *      >= screenSpaceError`, where `tileVoxelSize` is the root
+ *      approximateVoxelSize quartered (two halvings) and `dist` is the
+ *      camera-to-tile-sphere distance.
+ *
+ * This mirrors upstream VoxelTraversal, which only visits (and megatexture-
+ * adds) nodes that are visible AND fail the parent's SSE test — residency in
+ * the LRU pool follows the camera. Returns null on the static paths (mask
+ * unused — byte-identical B19 flow) and an all-zero mask when the camera /
+ * shape state is unavailable.
+ */
+function computeVoxelL2DemandMask(
+  primitive: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+  state: VoxelDataUploadState,
+  demandLevel: number,
+): Uint8Array | null {
+  if (!state.l2Dynamic || demandLevel < 2) {
+    return null;
+  }
+  const mask = scratchL2DemandMask;
+  mask.fill(0);
+
+  const camera = frameState.camera;
+  const sseDenominator = camera?.frustum?.sseDenominator;
+  if (!camera || typeof sseDenominator !== "number" || !(sseDenominator > 0)) {
+    return mask;
+  }
+  const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
+  const obb = shape?.orientedBoundingBox;
+  if (!obb || !obb.center || !obb.halfAxes) {
+    return mask;
+  }
+
+  const dims = state.convention?.dimensions;
+  const minDim = dims ? Math.min(dims.x, dims.y, dims.z) : 1;
+  const halfScale = Matrix3.getScale(obb.halfAxes, scratchL2ObbScale);
+  const rootVoxelSize =
+    (2.0 * Cartesian3.maximumComponent(halfScale)) / Math.max(1, minDim);
+  // Level 2 = two halvings of the root approximateVoxelSize (same ladder as
+  // computeVoxelRefinementLevel), evaluated at the TILE's own distance.
+  const tileVoxelSize = rootVoxelSize / 4.0;
+  // Conservative bounding-sphere radius of a level-2 OBB subregion (quarter
+  // extent per axis).
+  const tileRadius = Cartesian3.magnitude(halfScale) / 4.0;
+
+  const context = frameState.context;
+  const pixelRatio = frameState.pixelRatio > 0 ? frameState.pixelRatio : 1;
+  const screenHeight = context.drawingBufferHeight / pixelRatio;
+  const targetSse =
+    (primitive as unknown as { screenSpaceError?: number }).screenSpaceError ??
+    4.0;
+  const cameraWC = camera.positionWC as unknown as Cartesian3;
+  const planes = frameState.cullingVolume?.planes;
+
+  for (let i = 0; i < 64; i++) {
+    const tx = i & 3;
+    const ty = (i >> 2) & 3;
+    const tz = (i >> 4) & 3;
+    // Tile center in the OBB's local [-1, 1]^3 frame: shapeUv (tc + 0.5) / 4
+    // mapped through uv * 2 - 1.
+    scratchL2TileLocal.x = (tx + 0.5) / 2.0 - 1.0;
+    scratchL2TileLocal.y = (ty + 0.5) / 2.0 - 1.0;
+    scratchL2TileLocal.z = (tz + 0.5) / 2.0 - 1.0;
+    const center = Matrix3.multiplyByVector(
+      obb.halfAxes,
+      scratchL2TileLocal,
+      scratchL2TileCenter,
+    );
+    Cartesian3.add(obb.center, center, center);
+
+    // Frustum gate — CullingVolume.computeVisibility's sphere test: outside
+    // when any plane's signed distance to the center is < -radius.
+    if (planes && planes.length >= 6) {
+      let outside = false;
+      for (let p = 0; p < planes.length; p++) {
+        const pl = planes[p];
+        if (
+          pl.x * center.x + pl.y * center.y + pl.z * center.z + pl.w <
+          -tileRadius
+        ) {
+          outside = true;
+          break;
+        }
+      }
+      if (outside) {
+        continue;
+      }
+    }
+
+    // Per-tile SSE gate at the tile-sphere distance.
+    const dist = Math.max(
+      Cartesian3.distance(center, cameraWC) - tileRadius,
+      1e-7,
+    );
+    const sse = (screenHeight / sseDenominator) * (tileVoxelSize / dist);
+    if (sse >= targetSse) {
+      mask[i] = 1;
+    }
+  }
+  return mask;
 }
 
 function createBoxGeometry(device: GPUDevice): {
@@ -1974,11 +2099,28 @@ function updateWebGPUVoxelPrimitive(
   // root-only atlas, zooming in streams level-1 (then level-2) tiles in on
   // demand — upstream VoxelTraversal megatexture-add semantics. `demandLevel`
   // is recorded on the state as a probe-readable diagnostic.
+  // NEW-VOXEL-ATLAS-LRU-EVICT — on a dynamic (capacity-capped) level-2 pool,
+  // the per-tile demand mask (SSE + frustum) decides WHICH tiles occupy the
+  // LRU slots; null on the static paths (mask ignored — byte-identical B19
+  // flow).
   if (cache.usingRealData && cache.dataUpload) {
     const du = cache.dataUpload;
     const demandLevel = computeVoxelDemandLevel(primitive, frameState, du);
     du.demandLevel = demandLevel;
-    tryUploadChildVoxelTiles(device, primitive, frameState, du, demandLevel);
+    const l2Mask = computeVoxelL2DemandMask(
+      primitive,
+      frameState,
+      du,
+      demandLevel,
+    );
+    tryUploadChildVoxelTiles(
+      device,
+      primitive,
+      frameState,
+      du,
+      demandLevel,
+      l2Mask,
+    );
   }
 
   // PARITY-VOXEL-COLOR-PARITY — once a REAL voxel provider's root tile is

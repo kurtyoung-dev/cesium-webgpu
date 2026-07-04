@@ -3177,9 +3177,23 @@ octree traversal — a real two-level LOD path in
    internal-node walk (`traverseOctreeDownwards` / `traverseOctreeFromExisting`)
    so deep tilesets refine past level 1. Needs a GPU octree-node table (texture
    or storage buffer) generated from loaded-tile state.
-2. **Dynamic megatexture slot allocator** — the fixed 9-slot atlas becomes a
-   real add/remove slot pool (Megatexture.js semantics) with LRU eviction and
-   `maximumTileCount` budgeting once tile counts exceed 9.
+2. **Dynamic megatexture slot allocator** — SHIPPED for the level-2 set
+   (NEW-VOXEL-ATLAS-LRU-EVICT, 2026-07-03): when the 73-slot atlas does not
+   fit the capacity (device `maxTextureDimension3D / tileDepth`, further
+   capped by the opt-in per-primitive `_webgpuVoxelAtlasMaxSlots` override),
+   slots 9..slotCount-1 become an LRU pool driven by a per-tile demand mask
+   (per-tile SSE at the tile-sphere distance + cullingVolume frustum test —
+   upstream VoxelTraversal visit semantics, `computeVoxelL2DemandMask` in
+   `WebGPUVoxelRenderer.ts`). Demanded tiles take free slots or evict the
+   least-recently-demanded stale resident (residents demanded the same frame
+   are protected — no thrash); evicted tiles reset to `idle` and re-request
+   under future demand. Root + level-1 keep static slots 0..8. Under-capacity
+   scenes take the exact static path (byte-identical off-gate;
+   `probe-voxel-megatexture.mjs` PARTs 1+2 unchanged, PART 3 is the eviction
+   gate). Honest residual: the pool covers LEVEL-2 tiles only (depth cap 2 —
+   deeper levels need item 1's page-table walk, which would page per-level
+   slot tables through this same pool) and there is no public
+   `maximumTileCount` API — the override is fork-internal.
 3. **Non-box shapes** — cylinder/ellipsoid still use the legacy direct
    sampling (no shapeUv convention → no refinement).
 4. **pickVoxel against refined tiles** — `fragmentPickVoxelMain` marches the
@@ -3187,6 +3201,17 @@ octree traversal — a real two-level LOD path in
    cell than what is displayed.
 5. **SAMPLE_COUNT > 1 level blending** (`u_octreeLeafNodeTexture` lerp) and
    time-dynamic keyframes — untouched.
+6. **NEW-VOXEL-INSIDE-CAMERA-BLACK — camera inside the voxel volume renders
+   nothing on WebGPU (WebGL renders).** Found 2026-07-03 while designing the
+   NEW-VOXEL-ATLAS-LRU-EVICT probe: with the voxel-octree-l3 box provider and
+   the camera INSIDE the proxy box (e.g. 0.55R–0.9R on the diagonal of the
+   Earth-radius box), the WebGPU frame is black while WebGL renders the
+   volume interior at every tested depth. Just outside (1.05R) both render.
+   Suspects: proxy-cube rasterization with `cullMode: "front"` vs the
+   camera-inside case (near-plane/RTE vertex path), or scene-level culling of
+   the WebGPU draw command — NOT the march itself (`tStart = max(tr.x, 0)`
+   handles an interior origin). Repro: probe-voxel-megatexture PART 3
+   harness with `setCorner` destinations scaled to 0.55R.
 
 ### C-R9-VOXEL-CELL-PICK-TAIL — `scene.pickVoxel` VoxelCell construction on WebGPU (traversal/keyframeNode gap)
 

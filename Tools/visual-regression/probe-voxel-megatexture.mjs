@@ -24,9 +24,27 @@
 //     demand (8 childSlots + 64 l2Slots uploaded, childPhase "done",
 //     demandLevel 2, lastTargetLevel 2) and the refined volume renders.
 //   RETURN-FAR view: demand recedes to 0 (targetLevel back to 0) but the
-//     uploaded tiles stay RESIDENT (no eviction until
-//     NEW-VOXEL-ATLAS-LRU-EVICT) — the same steady state the eager path
-//     converged to (off-gate).
+//     uploaded tiles stay RESIDENT (the full 73-slot atlas is UNDER capacity
+//     — no eviction pressure) — the same steady state the eager path
+//     converged to (off-gate; this is also the NEW-VOXEL-ATLAS-LRU-EVICT
+//     off-gate: under-capacity scenes keep the exact static B19 behavior).
+//
+// PART 3 — NEW-VOXEL-ATLAS-LRU-EVICT (LRU slot eviction over a capacity-
+// capped atlas): same 3-level provider, but the primitive opts into
+// `_webgpuVoxelAtlasMaxSlots = 13` → 9 static root+L1 slots + a DYNAMIC
+// 4-slot level-2 pool for the 64 level-2 tiles, plus `screenSpaceError = 100`
+// so the per-tile SSE gate only demands tiles near the camera. The camera
+// sits just OUTSIDE opposite box corners (±1.05R on the main diagonal,
+// looking at the center — the corner fills the frame) so the demand mask
+// selects disjoint corner-local tile sets (~7 tiles, > the 4-slot pool):
+//   CORNER A: demand > pool → exactly 4 tiles resident (no overflow), the
+//     lowest-indexed demanded tiles win deterministically.
+//   CORNER B: A-residents fall out of demand → LRU-EVICTED (evictionCount
+//     rises, slots 9..12 are reused by B tiles, pool never exceeds 4).
+//   RETURN TO A: the evicted A tiles re-request + re-upload into the reused
+//     slots — resident set identical to the first A visit, and the rendered
+//     frame pixel-matches the first A screenshot (correct cell values after
+//     re-upload of an evicted tile).
 import { chromium } from "playwright";
 import fs from "fs";
 import { createVoxelOctreeL3Provider } from "./fixtures/voxel-octree-l3.mjs";
@@ -415,7 +433,296 @@ console.log(
     : "PART 2 (demand-driven streaming): FAIL/PARTIAL",
 );
 
-const pass = passPart1 && passPart2;
+// ---------------------------------------------------------------------------
+// PART 3 — NEW-VOXEL-ATLAS-LRU-EVICT: LRU eviction on a capacity-capped pool.
+// ---------------------------------------------------------------------------
+const page3 = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+const consoleErrors3 = [];
+page3.on("console", (m) => {
+  if (m.type() === "error") consoleErrors3.push(m.text());
+});
+page3.on("pageerror", (e) => consoleErrors3.push(String(e)));
+
+await page3.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+  waitUntil: "networkidle",
+  timeout: 90000,
+});
+await page3.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+
+// Step 1 — set up the capped primitive, camera inside corner A, stream in.
+const evictA1 = await page3.evaluate(
+  async ({ providerFactorySrc }) => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const v = window.viewer;
+    const scene = v.scene;
+    // eslint-disable-next-line no-new-func
+    const makeProvider = new Function(`return (${providerFactorySrc});`)();
+
+    scene.globe.show = false;
+    if (scene.skyBox) scene.skyBox.show = false;
+    scene.skyBox = undefined;
+    if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
+    if (scene.sun) scene.sun.show = false;
+    if (scene.moon) scene.moon.show = false;
+    scene.backgroundColor = C.Color.BLACK;
+    scene.fog.enabled = false;
+
+    const R = 6378137.0;
+    const provider = makeProvider(C, R);
+    const prim = new C.VoxelPrimitive({ provider });
+    prim.nearestSampling = true;
+    // NEW-VOXEL-ATLAS-LRU-EVICT opt-in: cap the atlas at 13 slots — 9 static
+    // (root + 8 level-1) + a dynamic 4-slot LRU pool for the 64 level-2 tiles.
+    prim._webgpuVoxelAtlasMaxSlots = 13;
+    // Tighten the SSE target so the per-tile demand gate only passes tiles
+    // within ~1.26R of the camera — the corner-local set (~7 of 64), giving
+    // demand > pool with the camera OUTSIDE the volume (camera-inside proxy
+    // rasterization is a separate known WebGPU gap).
+    prim.screenSpaceError = 100;
+    scene.primitives.add(prim);
+    window.__evictProbe = { C, prim, R };
+
+    window.__evictProbe.setCorner = (sign) => {
+      // Just outside the ±(R,R,R) corner, looking at the box center.
+      const dir = C.Cartesian3.normalize(
+        new C.Cartesian3(-sign, -sign, -sign),
+        new C.Cartesian3(),
+      );
+      const right = C.Cartesian3.normalize(
+        C.Cartesian3.cross(dir, C.Cartesian3.UNIT_Z, new C.Cartesian3()),
+        new C.Cartesian3(),
+      );
+      const up = C.Cartesian3.cross(right, dir, new C.Cartesian3());
+      v.camera.setView({
+        destination: new C.Cartesian3(
+          1.05 * sign * R,
+          1.05 * sign * R,
+          1.05 * sign * R,
+        ),
+        orientation: { direction: dir, up },
+      });
+    };
+    window.__evictProbe.renderFrames = async (n) => {
+      for (let i = 0; i < n; i++) {
+        scene.render();
+        await new Promise((r) => setTimeout(r, 8));
+      }
+    };
+    window.__evictProbe.snap = () => {
+      const du = (prim._webgpuCache || {}).dataUpload || {};
+      const resident = [];
+      const slotsUsed = [];
+      if (du.l2Slots) {
+        for (let i = 0; i < 64; i++) {
+          if (du.l2Slots[i] >= 0) {
+            resident.push(i);
+            slotsUsed.push(du.l2Slots[i]);
+          }
+        }
+      }
+      return {
+        usingRealData: (prim._webgpuCache || {}).usingRealData === true,
+        slotCount: du.slotCount ?? null,
+        l2Dynamic: du.l2Dynamic === true,
+        l2PoolSize: du.l2PoolSize ?? null,
+        childPhase: du.childPhase ?? null,
+        childUploaded: du.childSlots
+          ? Array.from(du.childSlots).filter((s) => s >= 0).length
+          : null,
+        resident,
+        slotsUsed,
+        evictionCount: du.evictionCount ?? null,
+        demandCount: du.lastL2DemandCount ?? null,
+        demandLevel: du.demandLevel ?? null,
+        lastTargetLevel: du.lastTargetLevel ?? null,
+      };
+    };
+
+    const P = window.__evictProbe;
+    P.setCorner(1);
+    let s = null;
+    let maxResident = 0;
+    for (let iter = 0; iter < 60; iter++) {
+      await P.renderFrames(15);
+      s = P.snap();
+      maxResident = Math.max(maxResident, s.resident.length);
+      if (s.resident.length >= s.l2PoolSize && s.childUploaded === 8) break;
+    }
+    // Extra settle frames — resident set must be STABLE at the pool size.
+    await P.renderFrames(30);
+    s = P.snap();
+    maxResident = Math.max(maxResident, s.resident.length);
+    return { ...s, maxResident };
+  },
+  { providerFactorySrc: createVoxelOctreeL3Provider.toString() },
+);
+console.log("PART 3 corner A (first visit):", JSON.stringify(evictA1));
+const shotA1 = await page3.screenshot();
+fs.writeFileSync(
+  "Tools/visual-regression/output/probe-voxel-evict-cornerA1.png",
+  shotA1,
+);
+
+// Step 2 — camera to the OPPOSITE corner: A residents leave demand → evicted.
+const evictB = await page3.evaluate(async () => {
+  const P = window.__evictProbe;
+  P.setCorner(-1);
+  let s = null;
+  let maxResident = 0;
+  for (let iter = 0; iter < 60; iter++) {
+    await P.renderFrames(15);
+    s = P.snap();
+    maxResident = Math.max(maxResident, s.resident.length);
+    if (s.evictionCount >= 4 && s.resident.length >= s.l2PoolSize) break;
+  }
+  await P.renderFrames(15);
+  s = P.snap();
+  maxResident = Math.max(maxResident, s.resident.length);
+  return { ...s, maxResident };
+});
+console.log("PART 3 corner B (eviction):", JSON.stringify(evictB));
+
+// Step 3 — back to corner A: evicted tiles re-request + re-upload into the
+// reused slots; the resident set must converge to the first visit's.
+const evictA2 = await page3.evaluate(async (wantResident) => {
+  const P = window.__evictProbe;
+  P.setCorner(1);
+  let s = null;
+  let maxResident = 0;
+  const want = JSON.stringify(wantResident);
+  for (let iter = 0; iter < 60; iter++) {
+    await P.renderFrames(15);
+    s = P.snap();
+    maxResident = Math.max(maxResident, s.resident.length);
+    if (JSON.stringify(s.resident) === want) break;
+  }
+  await P.renderFrames(30);
+  s = P.snap();
+  maxResident = Math.max(maxResident, s.resident.length);
+  return { ...s, maxResident };
+}, evictA1.resident);
+console.log("PART 3 corner A (return):", JSON.stringify(evictA2));
+const shotA2 = await page3.screenshot();
+fs.writeFileSync(
+  "Tools/visual-regression/output/probe-voxel-evict-cornerA2.png",
+  shotA2,
+);
+
+// Pixel-compare the two corner-A screenshots: identical camera + identical
+// resident tile set (in possibly different slots — slot indirection makes
+// that invisible) → the re-uploaded tiles must reproduce the original frame.
+const diffA = await page3.evaluate(
+  async ({ urlA, urlB }) => {
+    const load = (u) =>
+      new Promise((r) => {
+        const img = new Image();
+        img.onload = () => r(img);
+        img.src = u;
+      });
+    const [a, b] = await Promise.all([load(urlA), load(urlB)]);
+    const cv = document.createElement("canvas");
+    cv.width = a.width;
+    cv.height = a.height;
+    const ctx = cv.getContext("2d");
+    const grab = (img) => {
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx.drawImage(img, 0, 0);
+      return ctx.getImageData(
+        Math.floor(cv.width * 0.2),
+        Math.floor(cv.height * 0.2),
+        Math.floor(cv.width * 0.6),
+        Math.floor(cv.height * 0.6),
+      ).data;
+    };
+    const da = grab(a);
+    const db = grab(b);
+    let mismatch = 0;
+    let nonBlackA = 0;
+    for (let i = 0; i < da.length; i += 4) {
+      if (da[i] + da[i + 1] + da[i + 2] > 12) nonBlackA++;
+      if (
+        Math.abs(da[i] - db[i]) > 8 ||
+        Math.abs(da[i + 1] - db[i + 1]) > 8 ||
+        Math.abs(da[i + 2] - db[i + 2]) > 8
+      ) {
+        mismatch++;
+      }
+    }
+    const total = (da.length / 4) | 0;
+    return { total, nonBlackA, mismatch, mismatchPct: (100 * mismatch) / total };
+  },
+  {
+    urlA: `data:image/png;base64,${shotA1.toString("base64")}`,
+    urlB: `data:image/png;base64,${shotA2.toString("base64")}`,
+  },
+);
+console.log("PART 3 A1-vs-A2 pixel diff:", JSON.stringify(diffA));
+
+console.log("PART 3 console errors:", consoleErrors3.length);
+if (consoleErrors3.length) {
+  console.log(consoleErrors3.slice(0, 8).join("\n"));
+}
+await page3.close();
+
+// Gates.
+const poolSlots = [9, 10, 11, 12];
+const slotsInPool = (s) => s.slotsUsed.every((x) => poolSlots.includes(x));
+// Capped atlas engaged: 13 slots, dynamic 4-slot L2 pool.
+const cappedAtlas =
+  evictA1.usingRealData === true &&
+  evictA1.slotCount === 13 &&
+  evictA1.l2Dynamic === true &&
+  evictA1.l2PoolSize === 4;
+// Corner A: demand exceeds the pool, pool fills exactly (no overflow), all
+// 8 static L1 slots also uploaded.
+const overDemandNoOverflow =
+  evictA1.demandCount > 4 &&
+  evictA1.resident.length === 4 &&
+  evictA1.maxResident <= 4 &&
+  evictA1.childUploaded === 8 &&
+  evictA1.demandLevel === 2 &&
+  slotsInPool(evictA1);
+// Corner B: LRU evicted the stale A tiles and REUSED their slots.
+const setsDiffer =
+  JSON.stringify(evictB.resident) !== JSON.stringify(evictA1.resident);
+const evicted =
+  evictB.evictionCount >= 4 &&
+  evictB.resident.length === 4 &&
+  evictB.maxResident <= 4 &&
+  setsDiffer &&
+  slotsInPool(evictB);
+// Return to A: evicted tiles re-uploaded — same resident set as the first
+// visit, more evictions counted, still no overflow.
+const reuploaded =
+  JSON.stringify(evictA2.resident) === JSON.stringify(evictA1.resident) &&
+  evictA2.evictionCount >= evictB.evictionCount + 4 &&
+  evictA2.maxResident <= 4 &&
+  slotsInPool(evictA2);
+// Re-uploaded tiles render the SAME frame as the original visit.
+const pixelsMatch =
+  diffA.nonBlackA > 500 && diffA.mismatchPct < 1.5;
+const passPart3 =
+  cappedAtlas &&
+  overDemandNoOverflow &&
+  evicted &&
+  reuploaded &&
+  pixelsMatch &&
+  consoleErrors3.length === 0;
+console.log("cappedAtlas (13 slots, dynamic 4-slot L2 pool):", cappedAtlas);
+console.log(
+  "overDemandNoOverflow (demand > pool, exactly 4 resident):",
+  overDemandNoOverflow,
+);
+console.log("evicted (LRU eviction + slot reuse at corner B):", evicted);
+console.log("reuploaded (A set restored after eviction):", reuploaded);
+console.log("pixelsMatch (re-upload reproduces original frame):", pixelsMatch);
+console.log(
+  passPart3
+    ? "PART 3 (LRU atlas eviction): PASS"
+    : "PART 3 (LRU atlas eviction): FAIL/PARTIAL",
+);
+
+const pass = passPart1 && passPart2 && passPart3;
 console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");
 
 await browser.close();
