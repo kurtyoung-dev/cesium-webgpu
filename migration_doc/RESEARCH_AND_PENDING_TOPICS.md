@@ -141,7 +141,9 @@ License note (still load-bearing): the repo is **MIT**, the atmosphere model is 
 
 *Source: `RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md`. Bruneton 4-LUT, aerial-perspective post, Bright Star Catalog, physical sun/moon, and the Takram "three inputs" (atmosphere LUT lighting / mixed mask / volumetric clouds) are all addressed above.*
 
-### Atmosphere-brightness / limb-ring parity gap (WebGPU vs WebGL) — **OPEN (Plan) — now MEASURED**
+### Atmosphere-brightness / limb-ring parity gap (WebGPU vs WebGL) — **below-surface + limb-width RESOLVED; far-zoom limb ring = surviving residual (→ Q23)**
+
+> **⚠️ RECONCILE (2026-07-04): the two "darkening" halves below are STALE — RESOLVED within days of the audit.** **Below-surface / translucency darkening = ✅ RESOLVED (Batches 510/512/513):** the "uniformly darker" framing was partly a sign misread (probes report GL−GPU); B510 decomposition exonerated the named shading terms, B512 fixed the real bug (water masks never uploaded → `computeEnhancedOcean` ocean-shaded whole land tiles), B513 verified BOTH probes PASS under the **un-loosened** limits (underground 1.43/4.28% vs 8; translucency 4.00/0.54% vs 11.9); the Q7 determinism kit (Batch 538) further stabilized them (see ISSUES §3.3 CAMPAIGN-AUDIT-2). **Limb width = ✅ RESOLVED (Batch 513, `NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH`):** through-planet march + −150 km sample-height floor, `probe-limb-halo-width` PASS. **SURVIVING residual = the thin far-zoom limb ring** (~+10 GPU-brighter, 7.5% of far-view residual / 0.169% of crop) — routed to `NEXT_QUEUE_2026-07-04.md` **Q23 (FARZOOM-INTERIOR-BLOBS)**; re-measure at clean HEAD with the determinism kit before scheduling. The measured-decomposition text below is retained for lineage only.
 
 *Status updated 2026-07-03 from the Batch 482–506 campaign audit (probe re-runs at clean HEAD `62c5bab450`). This was previously the vague "residual atmosphere/sky brightness parity" note; it now has numbers, which are the **entry criteria** for the investigation.*
 
@@ -341,7 +343,7 @@ Snapshot of every register entry vs. its live status and where the active tracki
 | R-6 | MIL-STD-2525 symbology | Watch | **OPEN** (demand-gated) | no `milsymbol` dep |
 | R-8 | Voxel deep-octree traversal + megatexture streaming/eviction | Plan | **PARTIAL** — depth-1 SHIPPED (B501); L2+ traversal + eviction OPEN | `WebGPUVoxelRenderer.ts:416-433`; `probe-voxel-octree` 8/8 |
 | R-8a | Voxel pick vs octree-LOD / customShader composition | Plan (immediate) | **OPEN** — pick samples ROOT slab, megatextureId hardcoded 0; ignores user-shader alpha | audit 2026-07-03; `WebGPUVoxelRenderer.ts:664-716` vs `:416-433`, `:697` vs `:473-478` |
-| Atmo-parity | Limb-ring / below-surface brightness gap | Plan | **OPEN — MEASURED @506**: ring +10 GPU-brighter far zoom (7.5% of residual / 0.169% of crop); dRGB −6..−8 underground/translucent | §3 entry; `probe-globe-underground` 22.85%, `probe-globe-translucency` 25.49% failing at HEAD by design |
+| Atmo-parity | Limb-ring / below-surface brightness gap | Q23 | below-surface + limb-width ✅ RESOLVED (B510/512/513; probes now PASS un-loosened); **surviving residual = far-zoom limb ring** (~+10 GPU-brighter, 7.5% of far-view residual) → Q23 FARZOOM-INTERIOR-BLOBS, re-measure w/ determinism kit | §3 entry; ISSUES §3.3 CAMPAIGN-AUDIT-2 |
 | R-7 | Expand GPURenderBundle coverage | Plan (profile-gated) | **OPEN**; profiler **SHIPPED** | `WebGPUCpuPassProfiler.ts`; 3 sites (globe site nuance: Batch 292) |
 | Takram 1 | Bruneton 4-LUT | Ship | **SHIPPED** | Batch 306 |
 | Takram 2 | Aerial-perspective post-process | Ship | **SHIPPED** | Batch 311 |

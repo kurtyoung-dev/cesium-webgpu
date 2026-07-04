@@ -86,7 +86,7 @@ These were catalogued in the ultra-review MEDIUM/LOW (23) bucket and **left open
 | `NEW-CLUSTER-MULTIFRUSTUM-BOUNDS` (A7.6) | MEDIUM | Cluster bounds computed for a single frustum; multi-frustum scenes get approximate bins. |
 | `NEW-MODEL-VS-MOTION-GATE` (A3.4) | MEDIUM | Model VS runs full prev-frame morph+skin+instance deformation unconditionally even when TAA off — should gate on `material.motionFlags.x > 0.5`. `status: verify`. |
 | `NEW-COLLECTIONS-ERROR-SENTINELS` (A5.4) | MEDIUM | No re-entry / null-target / buffer-size guards in any collection renderer despite the CLAUDE.md mandate. |
-| `NEW-COLLECTION-RENDERER-BASE` (A5.3) | MEDIUM | Four collection renderers duplicate ~3000 LOC of pipeline-cache/shader-module/placeholder/velocity plumbing with no shared base — and the duplication demonstrably drifts (Point gained `needsRebuild`; Billboard/Label had to be fixed separately). |
+| ~~`NEW-COLLECTION-RENDERER-BASE` (A5.3)~~ | MEDIUM | ✅ **RESOLVED (Batch 332 `f741aa890c`) — 5/5 collection renderers now on `WebGPUCollectionRendererBase`.** Billboard+Point folded Batch 302, Cloud+Polyline Batch 307, Label (the last) Batch 332 (`NEW-COLLECTION-RENDERER-BASE-LABEL`) — shared per-GPUDevice shader-module cache, pipeline-format invalidation, 2D/CV coplanar-depth flag, resident-instance manager, capture→sync→consume all live on the base. The ~3000 LOC duplication is gone. |
 | `NEW-CAMERA-UPDATEVIEWMATRIX-REVERT` (B2) | LOW | Ctor `updateViewMatrix`→`updateMembers` swap. **DECLINED as a revert** (§7) but flagged to verify it isn't a functional view-matrix-seeding regression. `status: verify`. |
 | `NEW-SYNC-MOVEMAP`, `NEW-CAPABILITY-GETTER-CODIFY`, `NEW-SG-SCAN-ADOPT` | LOW/process | Sync-runbook MOVE-MAP, codify the capability-getter convention, adopt upstream `sg-scan` JSDoc lint. `NEW-SG-SCAN-ADOPT` = **DEFERRED**. |
 
@@ -106,9 +106,9 @@ These three surfaced in `WEBGPU_PARITY_REPORT_2026-06-30.md` (Batch 458) — new
 
 - **Severity:** MEDIUM (visual correctness in a niche use case).
 - **Root cause:** `WebGPUPrimitiveCommands.js` bakes `cullMode` from `appearance.closed` alone and ignores `renderState.cull.enabled:false`. A panorama viewed from *inside* should set `renderState.cull = {enabled:false}` to render the interior surface; instead the material pipeline hard-derives the cull mode from the Appearance flag, so back-faces show (or the interior vanishes).
-- **Status:** OPEN (re-verified: the `renderState.cull` override is not threaded into the pipeline-variant selector). Promotes the `(status: verify)` / untracked note in `ROADMAP_AND_DEFERRED_WORK.md` to a tracked entry.
-- **Fix scope:** thread `renderState.cull` through to the shader pipeline-variant selector so the render state can override the appearance-derived default. **Priority P2, effort S.** Separate from the broader WGF-1 clip-distance work. Alias: `WGF-1 / C-R1-PRIMITIVE-DERIVED`.
-- **Probe:** Sandcastle `Panorama` example; toggle the camera position inside the panorama sphere.
+- **Status:** ✅ **RESOLVED (Batch 317 `2ee9421571`, `NEW-PANORAMA-CULL-OVERRIDE-WEBGPU`).** Re-verified in live code: `WebGPUPrimitiveCommands.js` derives `cullExplicitlyDisabled = appearance?.renderState?.cull?.enabled === false` and forces cull `none` when set, at both cull-derivation sites (`defaultCullMode = appearance?.closed && !cullExplicitlyDisabled ? "back" : "none"`), so an inside-viewed panorama renders its interior without regressing default back-face culling. Probe `probe-panorama-cull-override.mjs` added the same batch. The earlier "OPEN — not threaded into the pipeline-variant selector" note was stale.
+- **Fix (landed):** threaded `renderState.cull.enabled:false` through to the pipeline cull derivation so render state overrides the appearance-derived default. Alias: `WGF-1 / C-R1-PRIMITIVE-DERIVED`.
+- **Probe:** `probe-panorama-cull-override.mjs`; Sandcastle `Panorama` example (camera inside the sphere).
 
 #### GeoJsonPrimitive — visual-parity probe missing (verification debt, not a feature gap)
 
@@ -121,12 +121,12 @@ These three surfaced in `WEBGPU_PARITY_REPORT_2026-06-30.md` (Batch 458) — new
 
 The 25-batch parity campaign passed its structural audit (20/24 probes green, ShaderDefine hygiene clean — add-only, 4 new tail bits 1<<26..1<<29, keySalt correctly used for all 6 bits ≥24; all three user-reported bugs verifiably fixed, see §6.10). The audit nevertheless confirmed **four real open issues** by direct code reads plus clean-HEAD probe re-runs. They are recorded here as OPEN — not papered over.
 
-#### CAMPAIGN-AUDIT-1 — Voxel per-cell pick does not compose with octree LOD (HIGH)
+#### CAMPAIGN-AUDIT-1 — Voxel per-cell pick / octree LOD composition — ✅ depth-1 RESOLVED (Batch 509)
 
-- **Severity:** HIGH (confirmed wrong-pick whenever octree refinement is active).
-- **Evidence:** `fragmentPickVoxelMain` (`WebGPUVoxelRenderer.ts:664–716`) never performs the level-1 child-octant traversal the color march does (`:416–433`) — it normalizes z into slot 0 and samples the **root** slab (`:690–694`), and hardcodes `megatextureId = packVoxelIntToVec2(0.0)` (`:708`). When the frame refines to level 1 (B501), pick returns a root-cell index for a leaf the user sees. In-code-acknowledged follow-up (`:686–689`).
-- **Related composition gap (MEDIUM):** the pick march selects the winning sample with the default-shader gate `s.a > densityThreshold` (`:697`) while the `VOXEL_USER_CUSTOM_SHADER` color march (B503) accumulates `voxelMaterial.alpha` **ungated** for every sample (`:473–478`) — a user shader that remaps opacity makes the WebGPU pick disagree with both the displayed surface and WebGL.
-- **Action:** fix-now — the next immediate work item (Principle 9). Pick march needs the child traversal + child-tile megatextureId, and a `VOXEL_USER_CUSTOM_SHADER` branch. Ensure the live tracker carries a first-class entry with this exact gap.
+- **Severity:** HIGH — **the depth-1 composition + user-shader gap is FIXED (Batch 509 `1d5dde33cb`, `NEW-VOXEL-PICK-OCTREE-COMPOSE`).** The audit below predated B509.
+- **Fix:** `fragmentPickVoxelMain` now descends into the level-1 child octant on refined frames (`u.atlasInfo.y >= 1`): childCoord/childSlots0/1 lookup, tileUv rescale, atlas z-offset by tileSlot, root fallback for unloaded children, and `megatextureId = packVoxelIntToVec2(tileSlot)`. A `//>>ifdef VOXEL_USER_CUSTOM_SHADER` pick branch matches the color march, closing the ungated-`voxelMaterial.alpha` composition gap too.
+- **Original evidence (pre-B509, now stale):** the pick march normalized z into slot 0 / sampled the root slab and hardcoded `megatextureId 0`, so a refined-frame pick returned a root-cell index for a leaf the user saw.
+- **Residual (queued as Q9):** the pick march composes only to depth-1; reaching the color march's LEVEL-3 traversal (B552) + fully sharing one traversal routine is the remaining slice — tracked in `NEXT_QUEUE_2026-07-04.md` Q9, not open here.
 
 #### CAMPAIGN-AUDIT-2 — Below-surface / translucency darkening — ✅ RESOLVED 2026-07-03 (Batches 510/512/513)
 
@@ -142,17 +142,16 @@ The 25-batch parity campaign passed its structural audit (20/24 probes green, Sh
 - **Mechanism (verified):** both probes use dynamic limits keyed to the standing default-view residual (`max(8, base+2)` / `max(10, base+8)`); the campaign's default-view polish (B502/504/505/506) dropped that shared baseline ~15%→2.5%, tightening the limits onto a below-surface residual that already measured **22.9% at B488's own landing**. A standing atmosphere/lighting parity gap — possibly nudged ~+2.6pp worse by B506's GlobeFS/GlobeTerrain shading changes — not a fresh catastrophic regression. This **is** the limb-ring/atmosphere-brightness gap (§3 `NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH` family), now with numbers.
 - **Action:** fold into the atmosphere-brightness investigation with these measured numbers; verify B506's seam/glint shading deltas apply symmetrically on the translucency/underground paths. **Do NOT loosen the probe limits.**
 
-#### CAMPAIGN-AUDIT-3 — Model SCENE2D per-pixel shading tint (MEDIUM)
+#### CAMPAIGN-AUDIT-3 — Model SCENE2D per-pixel shading tint — ✅ RESOLVED (Batch 530)
 
-- **Severity:** MEDIUM. `probe-model-scene-modes` 2D interiorDiff **34.27** vs 3D 13.59 / CV 18.41 (both pass); reproduced 3×. The model renders olive/khaki on WebGPU vs blue-gray on WebGL in SCENE2D.
-- **Evidence:** verified via the output PNGs that the backdrop is black in both captures — a model lighting/environment-orientation gap specific to 2D mode, **not** the globe-shader suspect the sweep named (the B502/B506 attribution is dismissed with evidence). Geometry/coverage/centroid all pass, so B499's culling/matrix fix holds.
-- **Action:** fix-followup — investigate model light direction / IBL orientation under `SceneMode.SCENE2D`.
+- **Severity:** MEDIUM — **RESOLVED (Batch 530 `ae2f4630c5`, `NEW-MODEL-IBL-AMBIENT-RELAND`).** The audit correctly localized this to model lighting/IBL orientation (not the globe shader); B530 fixed exactly that.
+- **Fix:** re-landed the WebGL-parity radiance-cube `(-x,-y,z)` lookup flip in `ProjectRadianceToSH.wgsl` (matches `ComputeIrradianceFS.glsl:94-95`) + a faithful `czm_computeScattering` port in `ProceduralSkyCubemap.wgsl`, correcting the SH-L2 ambient orientation that produced the olive/khaki 2D tint. `probe-model-scene-modes` 2D interiorDiff **34.42 → 11.85** (GATE PASS); 3D/CV unaffected. B499's culling/matrix fix holds.
 
-#### CAMPAIGN-AUDIT-4 — PP library builtins + user WGSL stages run PRE-tonemap vs WebGL's POST-tonemap (MEDIUM, HDR-only impact today)
+#### CAMPAIGN-AUDIT-4 — PP library builtins + user WGSL stages ran PRE-tonemap vs WebGL's POST-tonemap — ✅ RESOLVED (Batch 511)
 
-- **Severity:** MEDIUM. `WebGPUPostProcessPipeline.ts` executes user stages (`:1406`) → library stages (`:1425`) → TAA → tonemap (`:1503`), while WebGL's `PostProcessStageCollection` runs the added `_stages` **after** tonemapping (`PostProcessStageCollection.js:745–758`). Under HDR the 7 library builtins (B486) receive unbounded linear input with no `hdrMode` compensation (ColorGrading/FXAA got one in B479). The default-SDR path passed its probe (9.85% cross-backend), so impact is HDR-only today.
-- **Evidence:** confirmed by direct source read. The in-code comments at `:1403`/`:1421` inaccurately claim WebGL-matching insertion; the header docstring (~`:39–42`) also states a stale stage order. (Distinct from TAA's pre-tonemap placement, which is a recorded deliberate decision — §6.5 A9.4.)
-- **Action:** fix-followup — `hdrMode` compensation or post-tonemap placement for library/user stages; correct the two inaccurate comments and the header docstring while there.
+- **Severity:** MEDIUM (HDR-only impact) — **RESOLVED (Batch 511 `afa8b97473`, `NEW-PP-LIBRARY-TONEMAP-ORDER`).** User-supplied WGSL + library builtin PP stages moved from pre-TAA to **after** the tonemap single-pass in `WebGPUPostProcessPipeline.execute()`, matching WebGL's `tonemap → _stages → fxaa` order (placement is the only correct fix since `hdrMode` compensation cannot reach user-supplied WGSL). The two inaccurate "matches WebGL's insertion point" comments + the stale header docstring were corrected in the same batch.
+- **Prerequisite parity fixes surfaced by the probe (also landed B511):** (1) the WebGPU tonemap gate never engaged under plain `scene.highDynamicRange` — `configureWebGPUPostProcessPipeline` now applies WebGL's `tonemapping.enabled = useHdr` rule; (2) the WGSL PBR-Neutral operator (f32+f16) was a soft-clamp approximation — replaced with the exact Khronos `czm_pbrNeutralTonemapping` port. **Off-gate:** with no user/library stages and HDR off, pipeline order + output byte-identical.
+- **Residual:** scene-side plain-HDR gamma/tonemap tails tracked separately as `NEW-PLAIN-HDR-SCENE-GAMMA-EPIC` (queue Q7) — distinct from this stage-order fix.
 
 **Dismissed / probe-hygiene notes from the same audit:** `probe-colorgrading-wired` gate F fails only against its stored pre-B506 default-view baseline PNG (functional gates A–E pass) — B506 intentionally changed default-view pixels (glint restore + seam fix); refresh the stored baseline, not a color-grading bug. `probe-voxel-cell-pick` run-1 failure was a WebGL-side async-pick timeout (pick bytes byte-equal both runs) — dismissed as flake. `probe-collections-regression` and `probe-pick-basic` default `PROBE_BASE` to `:8134` — set `PROBE_BASE=http://localhost:8080` in future sweeps.
 
@@ -164,7 +163,7 @@ From `AUDIT_2026_05_02.md` §C (LATENT) — the entries that remain open after r
 
 - **C.2 · `gpuCullCommands()` / HiZ / GPUSortKeys / PointCloudSort orphan dispatchers — consume-or-delete decision pending.** `WebGPUSceneRenderer.ts` defines `gpuCullCommands()` with no live caller; the cullers allocate eagerly. Tracked as `NEW-GPU-CULLER-CONSUME-OR-DELETE` + `NEW-HIZ-SORT-CONSUME-OR-DELETE`. **Architecture decision, not a bug — but see §4.1: do not delete without the dead-code audit.** Note: FORK-41 (Hi-Z occlusion) was separately *resolved* — command-drop is now DEFAULT ON (C2-21, 2026-06-24) after a depth-source bug fix; the orphan-dispatcher decision is the residual.
 - **`NEW-GPU-SORT-PIPELINE-PHASE-3`** — GPU sort-keys are produced but never consumed by `RenderScheduler` (sorted-indices readback integration). Open.
-- **`NEW-DYNAMIC-ENVMAP-FULL-SCENE`** — true scene render-to-cubemap (terrain + 3D Tiles in reflections). The procedural-sky env map shipped (A.12, Batch 131); real scene capture is the open remainder. (Note: C2-25 scene-capture work landed Batches 448–452 — `status: verify` whether this entry is now closed.)
+- **`NEW-DYNAMIC-ENVMAP-FULL-SCENE`** — ✅ **EPIC CLOSED (C2-25, Batches 446–451).** True scene render-to-cubemap shipped: globe capture (Batch 446), model/3D-Tiles capture (447), tileset capture verified (448), temporal accumulation (449), clouds-in-IBL (450), Lagarde parallax-corrected localized reflections (451, closes the epic). Opt-in, parity-default byte-identical. **ONE residual deferred:** `ENV-CAPTURE-PER-FACE-LOD` (side-face outward terrain needs per-face quadtree re-selection) — scoped in `ROADMAP_AND_DEFERRED_WORK.md` §9 + `DEFERRED_WORK.md` L2496. The earlier "real scene capture is the open remainder" framing is stale.
 
 ### 4.1 Dead-code-audit hazards (do NOT remove without cross-referencing)
 

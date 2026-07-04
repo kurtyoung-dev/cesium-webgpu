@@ -783,7 +783,7 @@ Partially shipped features with known gaps. Working code exists but the feature 
 - 3D Tiles per-tile cascade culling deferred to CSM Slice 4 (CSM-DESIGN)
 - TILE-ARCH-SHADER-STRATEGY: monolithic shader trade-off silently drops KHR extensions; gates ~30% of Phase 7 items (BACKLOG-§Phase 8)
 - FEAT-3DT2-02 property-texture + feature-ID WGSL sampling audit incomplete (FEAT-3DT2-02)
-- FEAT-3DT2-03 ellipsoid-aware RTE — non-WGS84 (Mars/Moon) tilesets are positionally wrong (FEAT-3DT2-03)
+- ~~FEAT-3DT2-03 ellipsoid-aware RTE — non-WGS84 (Mars/Moon) tilesets are positionally wrong~~ — ✅ RESOLVED (Batch 496 `PARITY-RTE-ELLIPSOID-AWARE`; premise revised Q19/Batch 549): the RTE encode is ellipsoid-independent (camera-relative ECEF, no radii), so tile positions were never displaced; the real gap was the CSM cascade ground-clamp using hardcoded WGS84 — now threads `scene.ellipsoid.radii`. See ISSUES_AND_FIXED_BUGS §3.2. (FEAT-3DT2-03)
 - FEAT-3DT2-05 Draco/KTX2/meshopt WebGPU end-to-end audit pending (FEAT-3DT2-05)
 - Tile↔Hi-Z wiring: dispatcher exists but consumes ViewportExecutor command lists, not tile bounding volumes (Phase-8a)
 
