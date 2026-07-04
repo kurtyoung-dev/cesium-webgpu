@@ -124,6 +124,14 @@ export interface PostProcessCache {
   // reaches users (and runtime WGSL stages compile). `undefined` until
   // the first build.
   _userStagesCount?: number;
+  // NEW-WEBGPU-PP-LIBRARY-DEMO — the stage INSTANCES last consumed by a
+  // (re)build. Count-only detection (above) misses a same-frame
+  // remove()+add() swap (count 1→0→1 between configure calls), which left
+  // the PREVIOUS stage's WGSL twin running — e.g. cycling library builtins
+  // via `stages.remove(old); stages.add(new)` kept rendering the old
+  // effect. Comparing element-wise identity against the live list catches
+  // any composition change at equal length. `undefined` until first build.
+  _userStagesRefs?: unknown[];
 }
 
 // Narrow a polymorphic PostProcessStage uniform value to a number for
@@ -345,6 +353,29 @@ function updateWebGPUPostProcessStages(
   cache.initialized = true;
 }
 
+// NEW-WEBGPU-PP-LIBRARY-DEMO — true when the live user-stage list differs
+// from the instances consumed by the last (re)build, element-wise by
+// identity. Catches same-frame remove()+add() swaps that leave the list
+// length unchanged (count-only detection kept the removed stage's WGSL twin
+// running). O(n) over a typically tiny list, called once per frame.
+function userStagesIdentityChanged(
+  userStages: unknown[] | undefined,
+  lastRefs: unknown[] | undefined,
+): boolean {
+  if (!Array.isArray(userStages)) {
+    return (lastRefs?.length ?? 0) > 0;
+  }
+  if (!Array.isArray(lastRefs) || lastRefs.length !== userStages.length) {
+    return true;
+  }
+  for (let i = 0; i < userStages.length; i++) {
+    if (userStages[i] !== lastRefs[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Configure the WebGPU post-process pipeline based on cached collection state.
  * Called by WebGPUSceneRenderer._ensureResources() each frame.
@@ -456,8 +487,7 @@ function configureWebGPUPostProcessPipeline(
   // to forward). Falls through to the standard SDR pipeline when
   // either gate is off — backwards-compatible by default.
   const sceneAny = scene as
-    | { useHDRCanvasOutput?: boolean; highDynamicRange?: boolean }
-    | undefined;
+    { useHDRCanvasOutput?: boolean; highDynamicRange?: boolean } | undefined;
   const hdrOutputMode =
     sceneAny?.useHDRCanvasOutput === true &&
     sceneAny?.highDynamicRange === true;
@@ -678,8 +708,13 @@ function configureWebGPUPostProcessPipeline(
   // live length against the last-built count detects both directions; on a
   // mismatch we drop the existing user-stage compiles and re-scan from
   // scratch so the (re)build below is authoritative.
+  // NEW-WEBGPU-PP-LIBRARY-DEMO — length alone misses a same-frame
+  // remove()+add() swap (net length unchanged between configure calls), so
+  // also compare element-wise stage identity against the last-built list.
   const listChanged =
-    cache._userStagesBuilt && userStageCount !== (cache._userStagesCount ?? 0);
+    cache._userStagesBuilt &&
+    (userStageCount !== (cache._userStagesCount ?? 0) ||
+      userStagesIdentityChanged(userStages, cache._userStagesRefs));
   if (listChanged) {
     pipeline.clearUserWGSLStages();
     // WIRE-PP-LIBRARY-BUILTINS — intercepted library stages rebuild on
@@ -769,6 +804,7 @@ function configureWebGPUPostProcessPipeline(
     }
     cache._userStagesBuilt = true;
     cache._userStagesCount = userStageCount;
+    cache._userStagesRefs = userStages.slice();
     // NEW-POSTPROCESS-USER-WARN-PROD (Batch 290) — this warning is
     // PERMANENT (not pragma-stripped). A user-supplied GLSL
     // PostProcessStage is silently DROPPED on the WebGPU backend (WebGPU
@@ -803,6 +839,7 @@ function configureWebGPUPostProcessPipeline(
     pipeline.clearLibraryStages();
     cache._userStagesBuilt = false;
     cache._userStagesCount = 0;
+    cache._userStagesRefs = [];
   }
 
   // WIRE-PP-LIBRARY-BUILTINS — per-frame sync for intercepted library

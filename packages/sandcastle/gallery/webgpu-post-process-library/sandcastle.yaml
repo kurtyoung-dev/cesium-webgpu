@@ -1,0 +1,8 @@
+legacyId: WebGPU Post Process Library.html
+title: WebGPU Post Process Library
+description: "Cycle the seven PostProcessStageLibrary builtins (black and white, brightness, night vision, silhouette, edge detection, lens flare, depth view) running natively on the WebGPU backend — WGSL twins, post-tonemap order, SDR parity with WebGL."
+labels:
+  - WebGPU
+  - Post Processing
+  - Showcases
+thumbnail: thumbnail.jpg

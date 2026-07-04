@@ -1,0 +1,30 @@
+<style>
+  @import url(../templates/bucket.css);
+  #ppPanel {
+    background: rgba(42, 42, 42, 0.85);
+    color: white;
+    padding: 10px 14px;
+    border-radius: 4px;
+    font-size: 13px;
+    max-width: 380px;
+    line-height: 1.5;
+  }
+  #ppPanel select,
+  #ppPanel button {
+    margin: 4px 6px 4px 0;
+  }
+  #ppPanel .hint {
+    color: #aaa;
+    font-size: 12px;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <div id="ppPanel">
+    <b>WebGPU post-process library.</b><br />
+    Cycle the seven <code>PostProcessStageLibrary</code> builtins running
+    natively on the WebGPU backend (WGSL twins, post-tonemap order, SDR parity
+    with WebGL).
+  </div>
+</div>
