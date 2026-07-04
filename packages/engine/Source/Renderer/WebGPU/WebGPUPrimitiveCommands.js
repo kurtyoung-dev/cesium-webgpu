@@ -198,6 +198,26 @@ const scratchDecompressedST = new Cartesian2();
 let _decompressMissingMetaWarned = false;
 
 /**
+ * Per-vertex slot count that `GeometryPipeline.compressVertices` produces for a
+ * given set of source attributes. Mirrors its `numCompressedComponents` formula
+ * exactly: `(hasSt && hasNormal ? 2 : 1) + (hasTangent || hasBitangent ? 1 : 0)`.
+ * Used to gate the appearance-vertexFormat hint in `ensureUncompressedAttributes`
+ * so the hint is only trusted when it's fully consistent with the actual
+ * compressed buffer width.
+ * @private
+ */
+function expectedCompressedSlots(hint) {
+  const hasSt = hint.hasSt === true;
+  const hasNormal = hint.hasNormal === true;
+  const hasTangent = hint.hasTangent === true;
+  const hasBitangent = hint.hasBitangent === true;
+  if (!hasSt && !hasNormal && !hasTangent && !hasBitangent) {
+    return 0;
+  }
+  return (hasSt && hasNormal ? 2 : 1) + (hasTangent || hasBitangent ? 1 : 0);
+}
+
+/**
  * Reconstruct `normal` + `st` attributes on a geometry whose
  * `GeometryPipeline.compressVertices()` stripped them into
  * `compressedAttributes`. Idempotent: if the geometry already has
@@ -213,9 +233,23 @@ let _decompressMissingMetaWarned = false;
  * decoded attributes; subsequent calls short-circuit.
  *
  * @param {object} geometry The geometry to inspect.
+ * @param {object} [attributeHint] Authoritative attribute-presence hint,
+ *   normally sourced from the consuming appearance's `vertexFormat`
+ *   (`{ hasSt, hasNormal, hasTangent, hasBitangent }`). When the geometry
+ *   carries no `_compressedAttributesMeta` (the metadata is dropped when
+ *   `Primitive` combines instances into a single geometry AND when the
+ *   geometry crosses the async worker boundary), this hint replaces the
+ *   fragile vertex-0 magnitude sniff. The sniff mis-classifies a
+ *   `compressTextureCoordinates`-packed ST slot as a `normal` whenever the
+ *   first vertex's ST packs to ≤ 65535 (e.g. s≈0 → `floor(t*4095) < 4096`),
+ *   which silently drops `st` for flat/lit MaterialAppearance polygons and
+ *   collapses procedural materials (Grid/Stripe/Checker/…) to a solid fill
+ *   (C4-FLAT-MATAPPEARANCE-POLYGON-SOLID). The hint is only applied when its
+ *   implied slot count matches `componentsPerAttribute`, so a geometry built
+ *   with more attributes than the appearance consumes safely falls back.
  * @private
  */
-function ensureUncompressedAttributes(geometry) {
+function ensureUncompressedAttributes(geometry, attributeHint) {
   const attrs = geometry.attributes;
   if (!defined(attrs)) {
     return;
@@ -262,6 +296,25 @@ function ensureUncompressedAttributes(geometry) {
     hasSt = meta.hasSt === true;
     hasTangent = meta.hasTangent === true;
     hasBitangent = meta.hasBitangent === true;
+  } else if (
+    defined(attributeHint) &&
+    expectedCompressedSlots(attributeHint) === componentsPerAttribute
+  ) {
+    // C4-FLAT-MATAPPEARANCE-POLYGON-SOLID — authoritative attribute-presence
+    // from the consuming appearance's `vertexFormat`. The metadata stash is
+    // dropped both when `Primitive.combineInstances` builds the combined
+    // geometry and across the async worker boundary, so the magnitude sniff
+    // below is the common path — and it mis-classifies an ST slot as a
+    // `normal` whenever the FIRST vertex's ST packs ≤ 65535 (s≈0), silently
+    // dropping `st` and collapsing procedural materials to a solid fill. When
+    // the hint's implied slot count matches the actual `componentsPerAttribute`
+    // we trust the hint exactly (ST is always slot 0 per compressVertices'
+    // canonical ordering); on any mismatch we fall through to the sniff so a
+    // geometry built with extra attributes the appearance ignores stays safe.
+    hasNormal = attributeHint.hasNormal === true;
+    hasSt = attributeHint.hasSt === true;
+    hasTangent = attributeHint.hasTangent === true;
+    hasBitangent = attributeHint.hasBitangent === true;
   } else {
     // Fallback for geometries produced without the metadata stash. The
     // metadata is dropped when `Primitive` ships the compressed geometry
@@ -4149,8 +4202,25 @@ function createWebGPUMaterialCommands(
   // attribute presence, but later draw commands iterate the full set
   // and must see the same shape. This helper is idempotent so it's
   // cheap to call repeatedly (no double-decode on subsequent frames).
+  //
+  // C4-FLAT-MATAPPEARANCE-POLYGON-SOLID — pass the consuming appearance's
+  // `vertexFormat` as an authoritative attribute-presence hint. The compressed
+  // geometry loses its `_compressedAttributesMeta` (dropped when Primitive
+  // combines instances AND across the async worker), so without this hint the
+  // decoder's vertex-0 magnitude sniff silently drops `st` for flat/lit
+  // polygons whose first vertex ST packs ≤ 65535, collapsing procedural
+  // materials (Grid/Stripe/Checker/…) to a solid fill.
+  const vf = defined(appearance) ? appearance.vertexFormat : undefined;
+  const attributeHint = defined(vf)
+    ? {
+        hasSt: vf.st === true,
+        hasNormal: vf.normal === true,
+        hasTangent: vf.tangent === true,
+        hasBitangent: vf.bitangent === true,
+      }
+    : undefined;
   for (let i = 0; i < geometries.length; i++) {
-    ensureUncompressedAttributes(geometries[i]);
+    ensureUncompressedAttributes(geometries[i], attributeHint);
   }
 
   const firstGeom = geometries[0];
