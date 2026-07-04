@@ -249,7 +249,7 @@ Verified at HEAD (`62c5bab450`, Batch 506) unless noted.
 - **Vector3DTile (.vctr)** — the old "no `.vctr` test data" blocker was STALE (Specs fixtures exist and are served); `probe-vector3dtile-vctr.mjs` (B8, 2026-07-03) now verifies e2e parity at msaa=1 (polylines-3D IoU 1.000, polygons far-view IoU 0.904, 2D/CV mode matrix + skip-gate). Two REAL gaps exposed and tracked in ROADMAP §4.2: `NEW-VECTOR3DTILE-MSAA-PIPELINE` (P1 — pipelines lack `multisample` state, black frame at the DEFAULT msaaSamples=4) and `NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT` (P2 — depth-sample classifier lacks the volume-containment test, footprint overshoots near-camera).
 - **Opt-in quality features** — C2-25 reflections, volumetric clouds/fog, atmospheric effects, structural-metadata pick (DP-H46) all default OFF and are byte-neutral when off; they LEAD WebGL when enabled but are not the parity-default path.
 - **Decomposition debt** — `WebGPUContext.ts` (~4.3K LOC) + `WebGPUSceneRenderer.ts` exceed the 1000-line guideline; decomposition in progress.
-- **Webgpu-only bundle** — only 10% smaller than dual because Scene static-imports the WebGL `Context.js`; closing the gap is a multi-day refactor (§6 / `BUILD_AND_VARIANTS.md`).
+- **Webgpu-only bundle** — smaller than dual by only ~6.5% — but the old causal claim ("because Scene static-imports the WebGL `Context.js`; closing the gap is a multi-day refactor") is **STALE per the B25 scoping spike (2026-07-03)**: the entire non-WebGPU `Source/Renderer/` directory is only 177 KB (2.2%) of the bundle; the measured strip prototype wins ≤46 KB. The refactor epic is DROPPED — see `ROADMAP_AND_DEFERRED_WORK.md` §6.5 for the measurements + the replacement increments (WGSL comment-strip is the real ~330 KB lever).
 
 ---
 

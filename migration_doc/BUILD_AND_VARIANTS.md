@@ -97,13 +97,18 @@ ls -lh Build/Cesium/Cesium.js Build/CesiumWebGL/Cesium.js Build/CesiumWebGPU/Ces
 (Those three bundle paths are the same ones the §6 smoke test loads, so a
 re-measure and a smoke run share one build.)
 
-**Why the asymmetry** (this reasoning is structural and **still holds**
-regardless of the absolute sizes): the webgl-only build strips the entire
-`Source/Renderer/WebGPU/` directory **plus** all WGSL string modules, so it
-drops more. The webgpu-only build only strips the GLSL shader-string leaves —
-the WebGL backend **classes** (`Context`, `ShaderProgram`, `Texture`, etc. under
-`Source/Renderer/`) are still pulled in by Scene files' static imports, so it
-drops less. Closing that gap is a separate refactor. The exact file/LOC counts
+**Why the asymmetry** (corrected by the B25 scoping spike, 2026-07-03 — see
+`ROADMAP_AND_DEFERRED_WORK.md` §6.5 for the measurements): the webgl-only build
+strips the entire `Source/Renderer/WebGPU/` directory **plus** all WGSL string
+modules (together ~3.5 MB minified), while the webgpu-only build only strips
+the GLSL shader-string leaves (~0.65 MB). The WebGL backend **classes**
+(`Context`, `ShaderProgram`, `Texture`, etc. under `Source/Renderer/`) ARE
+still pulled in by Scene files' static imports, but they measure only
+**177 KB minified (2.2% of the bundle)** — the asymmetry is dominated by the
+WebGPU side simply being bigger, not by the retained WebGL classes. The old
+"closing that gap is a separate multi-day refactor" framing is **DROPPED**:
+the measured strip prototype wins ≤46 KB; the real webgpu-only size lever is
+WGSL comment-stripping (~330 KB, ROADMAP §6.5 increment 1). The exact file/LOC counts
 quoted in `CLAUDE.md` — "103 files, ~45K LOC", "67 WGSL modules", "191 GLSL
 leaves" — are also **`status: verify` (STALE)**; re-count with:
 

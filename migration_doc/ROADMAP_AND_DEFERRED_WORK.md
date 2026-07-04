@@ -846,6 +846,83 @@ GPU-resident SoA tile storage / MegaBuffer / Resident Drawer / WGSL styling comp
 unbuilt**, 6-7 wk, two dependency layers deep. **P2/research** — RFC + spike first. Full architecture in
 `PHASE_8_GPU_RESIDENT_TILES_DESIGN.md` (do not duplicate here).
 
+### 6.5 Webgpu-only bundle strip — B25 scoping spike (`NEW-WEBGPUONLY-BUNDLE-SPIKE`, 2026-07-03)
+
+**Question scoped:** is the multi-campaign refactor to break Scene's static import of the WebGL
+`Renderer/Context.js` (so webgpu-only bundles can strip the WebGL backend) worth doing?
+**Measured answer: NO — the size premise is stale.** Doc-only spike; no production code changed.
+All numbers measured at HEAD `8c544b7a2c`, minified.
+
+**(a) Import-graph inventory**
+
+- Runtime static importers of `Context.js` are only **3 files**: `Scene.js:30` (fallback
+  `new Context(canvas, …)` at :182), `ContextFactory.ts:27` (`_createWebGLContext`), and
+  `SharedContext.js:4` (composition, not subclass). The other `Context.js` references in Scene
+  (`BufferPrimitiveCollection`, `GlobeSurfaceShaderSet`, `QuadtreeTileProvider`, `DrawCommand`) are
+  JSDoc `/** @import */` type comments — erased, no bundle cost.
+- The Scene layer statically imports **~39 distinct `Renderer/*` modules from ~500 sites**
+  (RenderState ×40, Pass ×38, ShaderSource ×33, DrawCommand ×31, Texture ×28, ShaderProgram ×23 …).
+  Most are **backend-shared under WebGPU** (UniformState, AutomaticUniforms, RenderState, DrawCommand,
+  ShaderBuilder/ShaderSource feed the compat/translation layer) and can never be stripped.
+- Metafile attribution of the webgpu-only ESM bundle (8.09 MB): WGSL strings **2.13 MB**, Scene
+  1.90 MB, Renderer/WebGPU 1.40 MB, Core 0.65 MB, and the **entire non-WebGPU `Source/Renderer/`
+  directory = 177.4 KB (2.2%) across 55 modules** (top: Context.js 16.2 KB, UniformState 14.3 KB,
+  AutomaticUniforms 10.8 KB, RenderState 8.3 KB, Texture 7.1 KB, ShaderProgram 6.4 KB). GLSL strings
+  contribute 0 bytes — the existing stub aliasing works.
+- Current variant sizes for context: dual 9.90 MB / webgpu-only 9.25 MB (−6.5%) / webgl-only
+  6.14 MB (−38%). The asymmetry is **dominated by the WebGPU side simply being bigger**
+  (WGSL 2.13 MB + WebGPU renderer 1.40 MB vs GLSL 0.65 MB + WebGL renderer 0.18 MB) — NOT by the
+  Scene→Context static import, which the older docs blamed.
+
+**(b) Measured prototype size deltas** (scratch esbuild config mirroring `bundleCesiumJs`,
+IIFE + minify, internally consistent; prototype plugin stubs modules via `emptyModule.js`):
+
+| Configuration | IIFE bytes | Δ vs base |
+| --- | --- | --- |
+| base (webgpu-only plugin as shipped) | 8,327,335 | — |
+| seam-1: stub `Renderer/Context.js` only (the factory boundary) | 8,309,017 | **−18.3 KB (−0.22%)** |
+| ceiling: stub 11 clearly-WebGL-only leaves¹ | 8,281,671 | **−45.7 KB (−0.55%)** |
+| absolute upper bound (all 55 modules, incl. non-strippable shared ones) | — | −177 KB (−1.9%) |
+
+¹ Context, SharedContext, WebGLStarFieldRenderer, demodernizeShader, ShaderProgram, ShaderCache,
+createUniform, createUniformArray, ComputeEngine, Sync, freezeRenderState. All three prototype
+bundles module-load cleanly in Node (no module-scope access reaches the stubs).
+
+**Runtime blockers found** (prerequisites if leaf-stripping is ever pursued):
+
+1. `scripts/stubs/emptyModule.js` is default-export-only — `Scene/ComputeInstanceCollection.js`
+   imports **named** exports from `WebGLComputeInstanceRenderer.js`, which is a hard esbuild error.
+   Needs a named-export-aware stub mechanism.
+2. The `emptyModule` Proxy get-trap returns a throwing callable for `Symbol.hasInstance`, so
+   `options.contextOptions instanceof SharedContext` (`Scene.js:177`) would **throw at Scene
+   construction even on the pure-WebGPU path**. The trap must whitelist `Symbol.hasInstance`
+   (return `undefined` so `OrdinaryHasInstance` falls through to `false`).
+
+**Bigger lever found:** bundled WGSL strings retain their comments even in minified bundles
+(16,631 `// ` occurrences in the minified IIFE). Comment + blank-line stripping across the 305
+`.wgsl` files = **330 KB (15.2% of 2.18 MB raw)** — ~7× the strip ceiling at near-zero
+architectural risk. CAUTION: any stripper MUST preserve the `//>>` directive families
+(`//>>ifdef`/`//>>else`/`//>>endif` for `WebGPUShaderPreprocessor`, `//>>includeStart`/`//>>includeEnd`
+for pragma stripping).
+
+**(c) Increment plan (batch-sized, next campaign)**
+
+1. `NEW-WGSL-STRING-COMMENT-STRIP` (P2, S/M) — strip comments/blank lines from WGSL string modules
+   in minified/variant builds (`wgslToJavaScript` minify path), preserving `//>>` directives.
+   Expected ~−330 KB on every variant including dual. Off-gate: unminified build byte-identical;
+   preprocessor spec suite green.
+2. `NEW-EMPTYMODULE-STUB-HARDENING` (P3, S) — `Symbol.hasInstance` whitelist + named-export stub
+   mechanism (runtime blockers 1+2 above). Zero effect on shipped bundles; prerequisite for 3.
+3. `NEW-WEBGPUONLY-RENDERER-LEAF-STRIP` (P3, S, after 2) — add the 11-leaf WebGL-only list to
+   `bundleVariantPlugin` for webgpu-only (−46 KB); extend `Tools/variant-smoke-test.mjs` to
+   boot-check webgpu-only and assert the stub error surfaces on a forced-WebGL request.
+   Optional hygiene — not size-driven.
+4. **EXPLICITLY DROPPED:** the original epic — dynamic-import seam for `Context.js` in
+   ContextFactory/Scene + reworking the ~500 Scene→Renderer import sites. IIFE inlines dynamic
+   imports (only plugin stubbing shrinks the IIFE), ESM-splitting builds keep `Context.js` in the
+   main chunk via Scene's static import regardless, and the whole prize is ≤177 KB (<2%). Fails
+   cost/benefit at every increment size.
+
 ---
 
 ## 7. Phase 8 — GPU-Resident Tiles (summary)
