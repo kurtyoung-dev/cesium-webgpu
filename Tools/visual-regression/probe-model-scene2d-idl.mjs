@@ -220,6 +220,17 @@ const offGate =
   gpuCenter.right === 0 &&
   errs(gpuCenter) === 0;
 
+// C-MODEL-2DSPLIT-PRIMARY-CULL parity gate: the crossing render must draw BOTH
+// halves at ~= WebGL coverage (not just >0). The Scene-level two-viewport split
+// (`execute2DViewportCommands`, backend-agnostic in ViewportExecutor.js) already
+// executes both viewport halves for WebGPU, so total crossing coverage (L+R)
+// tracks WebGL within the model-level conservative-2D-BV margin. Was ~0.48 if the
+// primary (unshifted) half were dropped; a regression there collapses this ratio.
+const gpuCrossPx = gpuIdl.left + gpuIdl.right;
+const glCrossPx = glIdl.left + glIdl.right;
+const crossRatio = glCrossPx > 0 ? gpuCrossPx / glCrossPx : 0;
+const primaryCullParity = crossRatio >= 0.9;
+
 console.log("\n--- gates ---");
 console.log(
   `GATE WebGPU crossing both edges (L=${gpuIdl.left}, R=${gpuIdl.right}): ${gpuBothEdges ? "PASS" : "FAIL"}`,
@@ -233,7 +244,11 @@ console.log(
 console.log(
   `OFF  WebGPU lon0 center-only (C=${gpuCenter.center}, L=${gpuCenter.left}, R=${gpuCenter.right}, err=${errs(gpuCenter)}): ${offGate ? "PASS" : "FAIL"}`,
 );
+console.log(
+  `GATE WebGPU crossing px ~= WebGL (ratio=${crossRatio.toFixed(3)}, gpu=${gpuCrossPx}, gl=${glCrossPx}): ${primaryCullParity ? "PASS" : "FAIL"}`,
+);
 
-const pass = gpuBothEdges && gpuClean && glBothEdges && offGate;
+const pass =
+  gpuBothEdges && gpuClean && glBothEdges && offGate && primaryCullParity;
 console.log(`\nRESULT: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);
