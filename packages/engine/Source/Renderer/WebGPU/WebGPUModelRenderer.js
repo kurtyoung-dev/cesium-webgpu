@@ -315,6 +315,11 @@ const scratchNodeModelMatrix = new Matrix4();
 const scratchProject2DWorldOrigin = new Cartesian3();
 const scratchProject2DNodeWorld = new Matrix4();
 
+// C-MODEL-2DIDL-DUPLICATE — reused scratch for the SCENE2D IDL-crossing
+// duplicate command (mirrors WebGL `ModelDrawCommand.updateModelMatrix2D` /
+// `derive2DCommand`). Only touched when `idlDuplicateActive` is armed.
+const scratchIdl2DModelMatrix = new Matrix4();
+
 // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — union the per-primitive accurate 2D
 // bounding spheres (computed by SceneMode2DPipelineStage into
 // `runtimePrimitive.boundingSphere2D`) into a single model-level 2D volume.
@@ -3213,6 +3218,14 @@ function updateWebGPUModel(model, frameState) {
 
   let modelMatrix;
   let commandBoundingVolume;
+  // C-MODEL-2DIDL-DUPLICATE — armed only for a non-projectTo2D model that
+  // crosses the antimeridian in SCENE2D (mirror of WebGL
+  // `shouldUse2DCommands`). When set, the emission loop pushes a second,
+  // y-shifted copy of each surface command so the half of the model clipped
+  // by one viewport is drawn wrapped into the other. Default-off: every other
+  // mode/position leaves this false and emits an unchanged command stream.
+  let idlDuplicateActive = false;
+  let idlShiftAmount2D = 0;
   if (projectTo2DActive) {
     // Reference = accurate CV projection of the model's ECEF world origin.
     // CV-forced (inside computeReference2DPosition) so it keeps its height and
@@ -3260,6 +3273,32 @@ function updateWebGPUModel(model, frameState) {
       use2DMatrix && defined(model._sceneGraph._boundingSphere2D)
         ? model._sceneGraph._boundingSphere2D
         : model.boundingSphere;
+
+    // C-MODEL-2DIDL-DUPLICATE — decide whether the model straddles the IDL in
+    // SCENE2D. Byte-for-byte port of WebGL `shouldUse2DCommands`
+    // (ModelDrawCommand.js): SCENE2D only, never for `projectTo2D` models,
+    // tested against the scene graph's model-level `_boundingSphere2D` (the
+    // per-command sphere is too tight to detect the crossing). `2πR` is the
+    // wrap distance the duplicate is shifted by (`updateModelMatrix2D`).
+    if (
+      frameState.mode === SceneMode.SCENE2D &&
+      use2DMatrix &&
+      defined(model._sceneGraph._boundingSphere2D) &&
+      defined(frameState.mapProjection)
+    ) {
+      const bs2D = model._sceneGraph._boundingSphere2D;
+      const left = bs2D.center.y - bs2D.radius;
+      const right = bs2D.center.y + bs2D.radius;
+      const idl2D = frameState.mapProjection.ellipsoid.maximumRadius * Math.PI;
+      if (
+        (left < idl2D && right > idl2D) ||
+        (left < -idl2D && right > -idl2D)
+      ) {
+        idlDuplicateActive = true;
+        idlShiftAmount2D =
+          2.0 * Math.PI * frameState.mapProjection.ellipsoid.maximumRadius;
+      }
+    }
   }
   packCameraUniforms(cache.cameraData, frameState, modelMatrix);
   if (projectTo2DActive) {
@@ -3667,6 +3706,70 @@ function updateWebGPUModel(model, frameState) {
         CAMERA_UNIFORM_SIZE,
       );
       nodeCameraBG = nc.cameraBG;
+    }
+
+    // C-MODEL-2DIDL-DUPLICATE — build the y-shifted camera bind group for the
+    // IDL-crossing duplicate. Mirrors WebGL `updateModelMatrix2D`: clone the
+    // matrix the primary command's camera UB was packed against
+    // (`nodeModelMatrix`) and move its translation to the opposite side of the
+    // map (`ty -= sign(ty)·2πR`), then pack an RTE camera UB from it. The bind
+    // group reuses the exact `pipelineCache.cameraBGL` the primary command
+    // uses, so the shifted copy binds into @group(0) with no pipeline change.
+    // Resources are lazy-allocated on the same cache object that owns the
+    // primary camera BG (`cache` for identity nodes, `cache.nodes[nodeIdx]`
+    // otherwise) and only when `idlDuplicateActive` — off-IDL / 3D / CV never
+    // allocate or write anything here.
+    let nodeIdlCameraBG = null;
+    let nodeIdlModelMatrix2D = null;
+    let nodeIdlBoundingSphere2D = null;
+    if (idlDuplicateActive) {
+      const idlHost = transformIsIdentity ? cache : cache.nodes[nodeIdx];
+      const idlMat = Matrix4.clone(nodeModelMatrix, scratchIdl2DModelMatrix);
+      idlMat[13] -= Math.sign(nodeModelMatrix[13]) * idlShiftAmount2D;
+      if (!defined(idlHost.cameraBuffer2DIdl)) {
+        idlHost.cameraBuffer2DIdl = WebGPUBuffer.createUniformBuffer(
+          device,
+          CAMERA_UNIFORM_SIZE,
+          "Model camera 2D-IDL",
+        );
+        idlHost.cameraData2DIdl = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
+        idlHost.cameraBG2DIdl = device.createBindGroup({
+          label: "Model camera BG 2D-IDL",
+          layout: pipelineCache.cameraBGL,
+          entries: [
+            {
+              binding: 0,
+              resource: { buffer: idlHost.cameraBuffer2DIdl.buffer },
+            },
+          ],
+        });
+      }
+      packCameraUniforms(idlHost.cameraData2DIdl, frameState, idlMat);
+      device.queue.writeBuffer(
+        idlHost.cameraBuffer2DIdl.buffer,
+        0,
+        idlHost.cameraData2DIdl.buffer,
+        0,
+        CAMERA_UNIFORM_SIZE,
+      );
+      nodeIdlCameraBG = idlHost.cameraBG2DIdl;
+      // Persist the shifted matrix + bounding volume so the per-primitive
+      // duplicate command (emitted below) holds stable references — the
+      // `scratchIdl2DModelMatrix` is reused across nodes. The bounding volume
+      // is the same model-level `_boundingSphere2D` the primary command uses,
+      // translated by the identical y offset so Scene culling keeps the
+      // wrapped copy (WebGL transforms the per-primitive sphere by
+      // `_modelMatrix2D`; the model-level sphere is the conservative match).
+      if (!defined(idlHost.idlModelMatrix2D)) {
+        idlHost.idlModelMatrix2D = new Matrix4();
+        idlHost.idlBoundingSphere2D = new BoundingSphere();
+      }
+      Matrix4.clone(idlMat, idlHost.idlModelMatrix2D);
+      BoundingSphere.clone(commandBoundingVolume, idlHost.idlBoundingSphere2D);
+      idlHost.idlBoundingSphere2D.center.y -=
+        Math.sign(nodeModelMatrix[13]) * idlShiftAmount2D;
+      nodeIdlModelMatrix2D = idlHost.idlModelMatrix2D;
+      nodeIdlBoundingSphere2D = idlHost.idlBoundingSphere2D;
     }
 
     // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — resolve the per-node
@@ -4876,6 +4979,30 @@ function updateWebGPUModel(model, frameState) {
       // below never coincides with this (classifiers don't emit edges).
       if (!suppressSurfaceForEdgesOnly) {
         commandList.push(webgpuCmd);
+      }
+
+      // C-MODEL-2DIDL-DUPLICATE — emit the wrapped copy of the surface command
+      // (WebGL `derive2DCommand`). Same pipeline / material / instance / effects
+      // bind groups and geometry as the primary command; only @group(0) (the
+      // camera UB) is swapped for the y-shifted one and the bounding volume is
+      // moved to match, so the half of the model clipped by one 2D viewport is
+      // drawn in the other. `idlDuplicateActive` is only ever true in SCENE2D
+      // for an IDL-crossing non-projectTo2D model, so this block is skipped
+      // (and no resources allocated) for every other model/mode.
+      if (
+        idlDuplicateActive &&
+        nodeIdlCameraBG !== null &&
+        !suppressSurfaceForEdgesOnly
+      ) {
+        const idlBindGroups = webgpuCmdArgs.bindGroups.slice();
+        idlBindGroups[0] = nodeIdlCameraBG;
+        const idlCmd = new WebGPUDrawCommand({
+          ...webgpuCmdArgs,
+          bindGroups: idlBindGroups,
+          boundingVolume: nodeIdlBoundingSphere2D,
+          modelMatrix: nodeIdlModelMatrix2D,
+        });
+        commandList.push(idlCmd);
       }
 
       // AUDIT_2026_05_02 A.3 (Batch 146) — for `classificationType: BOTH`
