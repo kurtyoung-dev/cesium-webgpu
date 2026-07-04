@@ -26,9 +26,22 @@
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
+import {
+  DET_BROWSER_SETUP,
+  DETERMINISTIC_CLOCK_ISO,
+  nRunMedian,
+  runCount,
+} from "./lib/determinism-kit.mjs";
 
-const BASE = "http://localhost:8080";
+const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
+// Q7-PROBE-DETERMINISM: pin the clock + settle-to-steady-state (and damp the
+// sky where stars are not the signal) so the run-to-run drift (audit:
+// translucency 25.49 vs 23.14 on unchanged builds) collapses. The
+// translucent-space scenario keeps the sky ON — the stars blending THROUGH the
+// see-through globe are its acceptance signal — but the pinned clock still
+// freezes them deterministically. PROBE_RUNS>1 medians the metric over N runs.
+const N_RUNS = runCount(1);
 
 const ENABLE_TRANSLUCENCY = `
   scene.globe.translucency.enabled = true;
@@ -50,6 +63,7 @@ const TERRAIN_CAMERA = `
 const SCENARIOS = [
   {
     name: "off-default",
+    dampSky: true,
     setup: `
       // Default everything — globe.translucency.enabled is false by default.
       // The translucency alpha gate must stay closed.
@@ -57,12 +71,17 @@ const SCENARIOS = [
   },
   {
     name: "translucent-space",
+    // Stars blending THROUGH the see-through globe are this scenario's
+    // acceptance signal, so keep the sky ON — the pinned clock still makes
+    // it deterministic.
+    dampSky: false,
     setup: `
       ${ENABLE_TRANSLUCENCY}
     `,
   },
   {
     name: "translucent-terrain",
+    dampSky: true,
     setup: `
       ${ENABLE_TRANSLUCENCY}
       ${TERRAIN_CAMERA}
@@ -94,9 +113,9 @@ async function capture(rendererArg, scenario) {
   await page.goto(url, { waitUntil: "networkidle" });
   await page.waitForFunction(() => !!window.viewer);
 
-  // Apply the scenario, then let tiles/imagery settle.
+  // Apply the scenario, then settle to a deterministic steady state.
   await page.evaluate(
-    async ({ setup }) => {
+    async ({ setup, det, iso, dampSky }) => {
       const v = window.viewer;
       const scene = v.scene;
       // Hide viewer chrome so the pixel diff measures ONLY the canvas.
@@ -107,16 +126,26 @@ async function capture(rendererArg, scenario) {
       )) {
         el.style.display = "none";
       }
+      // Q7 determinism kit: freeze the clock, optionally damp the sky, settle.
+      // eslint-disable-next-line no-new-func
+      new Function(det)();
+      const C = await import("/Build/CesiumUnminified/index.js");
+      window.__det.pinClock(C, v, scene, iso);
+      if (dampSky) window.__det.dampSky(scene);
       // eslint-disable-next-line no-new-func
       new Function("v", "scene", setup)(v, scene);
-      for (let i = 0; i < 240; i++) {
-        scene.render();
-        await new Promise((r) => requestAnimationFrame(r));
-      }
+      await window.__det.settleTiles(scene, {
+        stableFrames: 30,
+        maxFrames: 1500,
+      });
     },
-    { setup: scenario.setup },
+    {
+      setup: scenario.setup,
+      det: DET_BROWSER_SETUP,
+      iso: DETERMINISTIC_CLOCK_ISO,
+      dampSky: scenario.dampSky !== false,
+    },
   );
-  await page.waitForTimeout(1500);
 
   const out = path.join(
     OUT_DIR,
@@ -206,13 +235,21 @@ async function diffPngs(a, b) {
   let baselinePct = null;
   for (const scenario of SCENARIOS) {
     console.log(`[probe-globe-translucency] ${scenario.name}`);
-    const gpu = await capture("webgpu", scenario);
-    const gl = await capture("webgl", scenario);
-    console.log(`  webgpu: ${gpu}`);
-    console.log(`  webgl:  ${gl}`);
-    const diff = await diffPngs(gpu, gl);
-    console.log(`  diff:`, JSON.stringify(diff));
-    const pct = typeof diff.mismatchPct === "number" ? diff.mismatchPct : 100;
+    // Q7: median the cross-backend mismatch over N_RUNS. With the pinned clock
+    // + settle (+ damped sky where stars aren't the signal) the spread is near
+    // zero; PROBE_RUNS>1 tightens it further.
+    const stats = await nRunMedian(async () => {
+      const gpu = await capture("webgpu", scenario);
+      const gl = await capture("webgl", scenario);
+      const diff = await diffPngs(gpu, gl);
+      return typeof diff.mismatchPct === "number" ? diff.mismatchPct : 100;
+    }, N_RUNS);
+    const pct = stats.median;
+    console.log(
+      `  mismatch median=${pct.toFixed(2)}% runs=[${stats.values
+        .map((x) => x.toFixed(2))
+        .join(", ")}] spread=${stats.spread.toFixed(2)}pp`,
+    );
     let limit;
     if (scenario.name === "off-default") {
       baselinePct = pct;

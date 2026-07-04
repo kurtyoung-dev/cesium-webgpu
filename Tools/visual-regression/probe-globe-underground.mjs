@@ -20,9 +20,20 @@
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
+import {
+  DET_BROWSER_SETUP,
+  DETERMINISTIC_CLOCK_ISO,
+  nRunMedian,
+  runCount,
+} from "./lib/determinism-kit.mjs";
 
-const BASE = "http://localhost:8080";
+const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
+// Q7-PROBE-DETERMINISM: pin the clock + damp the sky + settle-to-steady-state
+// so the run-to-run star-twinkle / tile-LOD drift (audit: underground 12.28 vs
+// 6.75 on unchanged builds) collapses. PROBE_RUNS>1 additionally medians the
+// metric over N runs.
+const N_RUNS = runCount(1);
 
 // Camera 30 km below the surface near Philadelphia, looking gently upward
 // so the frame contains both the nearby underside of the terrain shell
@@ -41,6 +52,7 @@ const UNDERGROUND_CAMERA = `
 const SCENARIOS = [
   {
     name: "above-default",
+    dampSky: true,
     setup: `
       // Default everything — camera stays at the app's default view.
       // The underground gate must stay closed.
@@ -48,6 +60,7 @@ const SCENARIOS = [
   },
   {
     name: "underground-red",
+    dampSky: true,
     setup: `
       const g = scene.globe;
       // Mutate the live Color / NearFarScalar instances (the CesiumViewer
@@ -67,6 +80,7 @@ const SCENARIOS = [
   },
   {
     name: "underground-def",
+    dampSky: true,
     setup: `
       // Upstream defaults: black undergroundColor, NearFarScalar
       // (maxRadius/1000, 0, maxRadius/5, 1). Only the camera moves.
@@ -99,9 +113,9 @@ async function capture(rendererArg, scenario) {
   await page.goto(url, { waitUntil: "networkidle" });
   await page.waitForFunction(() => !!window.viewer);
 
-  // Apply the scenario, then let tiles/imagery settle.
+  // Apply the scenario, then settle to a deterministic steady state.
   await page.evaluate(
-    async ({ setup }) => {
+    async ({ setup, det, iso, dampSky }) => {
       const v = window.viewer;
       const scene = v.scene;
       // Hide viewer chrome (toolbar, timeline, animation widget, credits,
@@ -115,16 +129,28 @@ async function capture(rendererArg, scenario) {
       )) {
         el.style.display = "none";
       }
+      // Q7 determinism kit: freeze the clock (stops star/sun drift), damp the
+      // sky (removes the celestial cross-backend residual unrelated to the
+      // underground tint), then settle on tilesLoaded steady state.
+      // eslint-disable-next-line no-new-func
+      new Function(det)();
+      const C = await import("/Build/CesiumUnminified/index.js");
+      window.__det.pinClock(C, v, scene, iso);
+      if (dampSky) window.__det.dampSky(scene);
       // eslint-disable-next-line no-new-func
       new Function("v", "scene", setup)(v, scene);
-      for (let i = 0; i < 240; i++) {
-        scene.render();
-        await new Promise((r) => requestAnimationFrame(r));
-      }
+      await window.__det.settleTiles(scene, {
+        stableFrames: 30,
+        maxFrames: 1500,
+      });
     },
-    { setup: scenario.setup },
+    {
+      setup: scenario.setup,
+      det: DET_BROWSER_SETUP,
+      iso: DETERMINISTIC_CLOCK_ISO,
+      dampSky: scenario.dampSky !== false,
+    },
   );
-  await page.waitForTimeout(1500);
 
   const out = path.join(
     OUT_DIR,
@@ -216,13 +242,21 @@ async function diffPngs(a, b) {
   let baselinePct = null;
   for (const scenario of SCENARIOS) {
     console.log(`[probe-globe-underground] ${scenario.name}`);
-    const gpu = await capture("webgpu", scenario);
-    const gl = await capture("webgl", scenario);
-    console.log(`  webgpu: ${gpu}`);
-    console.log(`  webgl:  ${gl}`);
-    const diff = await diffPngs(gpu, gl);
-    console.log(`  diff:`, JSON.stringify(diff));
-    const pct = typeof diff.mismatchPct === "number" ? diff.mismatchPct : 100;
+    // Q7: median the cross-backend mismatch over N_RUNS so a single tile-LOD
+    // tie-break can't trip the gate. With the pinned clock + damped sky +
+    // settle, the spread is near zero; PROBE_RUNS>1 just tightens it further.
+    const stats = await nRunMedian(async () => {
+      const gpu = await capture("webgpu", scenario);
+      const gl = await capture("webgl", scenario);
+      const diff = await diffPngs(gpu, gl);
+      return typeof diff.mismatchPct === "number" ? diff.mismatchPct : 100;
+    }, N_RUNS);
+    const pct = stats.median;
+    console.log(
+      `  mismatch median=${pct.toFixed(2)}% runs=[${stats.values
+        .map((x) => x.toFixed(2))
+        .join(", ")}] spread=${stats.spread.toFixed(2)}pp`,
+    );
     let limit;
     if (scenario.name === "above-default") {
       baselinePct = pct;
