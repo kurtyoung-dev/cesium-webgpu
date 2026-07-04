@@ -707,6 +707,24 @@ function getFrameTime(uniformState) {
 }
 
 /**
+ * C4-PLAIN-HDR-GAMMA-TAILS — HDR sRGB→linear decode gate for the per-instance
+ * color shaders (basic / phong). Returns `czm_gamma` (uniformState.gamma,
+ * default 2.2) when `scene.highDynamicRange` is on (`frameState.useHDR`), else
+ * 0.0. Packed into the flat/lit CameraUniforms `_pad0`/`hdrGamma` lane (flat
+ * float 19, lit float 51). The fragment shader mirrors WebGL's
+ * PerInstanceColorAppearanceFS `czm_gammaCorrect(v_color)` (`#ifdef HDR`) when
+ * this is > 0.5. Zero on the default SDR path → byte-identical.
+ * @private
+ */
+function getHdrGammaLane(uniformState) {
+  const fs = defined(uniformState) ? uniformState.frameState : undefined;
+  if (defined(fs) && fs.useHDR === true) {
+    return typeof uniformState.gamma === "number" ? uniformState.gamma : 2.2;
+  }
+  return 0.0;
+}
+
+/**
  * Writes RTE uniform data for a flat (unlit) shader.
  * Layout: mvpRTE(16) + camHigh(3+1pad) + camLow(3+1pad) + prevVP(16)
  *       + logDepth(4) = 44 floats = 176 bytes (DP-H41 prevVP, Batch 27;
@@ -718,7 +736,10 @@ function writeRTEUniformsFlat(ud, rte, uniformState) {
   ud[16] = rte.camHigh.x;
   ud[17] = rte.camHigh.y;
   ud[18] = rte.camHigh.z;
-  ud[19] = 0.0;
+  // Float 19 = CameraUniforms `_pad0`/`hdrGamma` (after camHigh). Carries the
+  // HDR sRGB→linear decode gate for the basic per-instance-color FS. 0 on the
+  // default SDR path → byte-identical.
+  ud[19] = getHdrGammaLane(uniformState);
   ud[20] = rte.camLow.x;
   ud[21] = rte.camLow.y;
   ud[22] = rte.camLow.z;
@@ -780,7 +801,10 @@ function writeRTEUniformsLit(ud, rte, uniformState) {
   ud[48] = rte.camHigh.x;
   ud[49] = rte.camHigh.y;
   ud[50] = rte.camHigh.z;
-  ud[51] = 0.0;
+  // Float 51 = CameraUniforms `_pad0`/`hdrGamma` (after camHigh). Carries the
+  // HDR sRGB→linear decode gate for the phong per-instance-color FS. 0 on the
+  // default SDR path → byte-identical.
+  ud[51] = getHdrGammaLane(uniformState);
   ud[52] = rte.camLow.x;
   ud[53] = rte.camLow.y;
   ud[54] = rte.camLow.z;
@@ -2965,6 +2989,71 @@ function createWebGPUCommands(
       }
     }
 
+    // ── Per-VERTEX color via batchId (C4-PLAIN-HDR-GAMMA-TAILS c) ──
+    // When Cesium combines multiple PerInstanceColorAppearance instances it
+    // produces ONE geometry whose color lives in the batch TABLE, selected
+    // per-vertex by a `batchId` attribute (0 for instance 0's vertices, 1 for
+    // instance 1's, …) — exactly what WebGL's PerInstanceColorAppearanceVS
+    // resolves by sampling the batch-table texture. The single `instanceColor`
+    // above is instance `i`'s batch color, but a combined geometry has fewer
+    // geometries (often 1) than instances, so applying instance 0's color to
+    // every vertex painted BOTH boxes with one color (orange box drawn
+    // cornflower blue). Bake the per-vertex color CPU-side by looking up each
+    // vertex's `batchId` in the batch table. Fall back to a per-vertex `color`
+    // attribute (geometries built with explicit colors), then `instanceColor`.
+    // Single-instance byte-identical: batchId≡0 → instanceColors[0] equals the
+    // old getBatchedAttribute(0) value.
+    let instanceColors = null;
+    if (hasInstanceColors) {
+      const n = primitive._numberOfInstances || 0;
+      instanceColors = new Array(n);
+      for (let k = 0; k < n; k++) {
+        let col = [1.0, 1.0, 1.0, 1.0];
+        try {
+          const bc = batchTable.getBatchedAttribute(k, colorIndex);
+          if (defined(bc)) {
+            if (defined(bc.red)) {
+              col = [bc.red, bc.green, bc.blue, bc.alpha];
+            } else if (defined(bc.x)) {
+              const denorm =
+                bc.x > 1.0 || bc.y > 1.0 || bc.z > 1.0 || bc.w > 1.0;
+              col = denorm
+                ? [bc.x / 255.0, bc.y / 255.0, bc.z / 255.0, bc.w / 255.0]
+                : [bc.x, bc.y, bc.z, bc.w];
+            }
+          }
+        } catch (e) {
+          // keep white fallback
+        }
+        instanceColors[k] = col;
+      }
+    }
+    const batchIdAttr = geometry.attributes.batchId;
+    const batchIds =
+      instanceColors !== null &&
+      defined(batchIdAttr) &&
+      defined(batchIdAttr.values) &&
+      batchIdAttr.values.length >= numVertices
+        ? batchIdAttr.values
+        : null;
+
+    const colorAttr = geometry.attributes.color;
+    const perVertexColorCPA = defined(colorAttr)
+      ? colorAttr.componentsPerAttribute || 4
+      : 4;
+    const perVertexColor =
+      defined(colorAttr) &&
+      defined(colorAttr.values) &&
+      perVertexColorCPA >= 3 &&
+      colorAttr.values.length >= numVertices * perVertexColorCPA
+        ? colorAttr
+        : null;
+    // UNSIGNED_BYTE normalize:true → /255; FLOAT color is already [0,1].
+    const perVertexColorScale =
+      perVertexColor !== null && perVertexColor.normalize === true
+        ? 1.0 / 255.0
+        : 1.0;
+
     // ── Build RTE vertex data: posHigh(3) + posLow(3) + other attributes ──
     const fpv = vertexLayout.floatsPerVertex;
     const vertexData = new Float32Array(numVertices * fpv);
@@ -2981,6 +3070,32 @@ function createWebGPUCommands(
       vertexData[vOff + 3] = posLowValues[posOff];
       vertexData[vOff + 4] = posLowValues[posOff + 1];
       vertexData[vOff + 5] = posLowValues[posOff + 2];
+
+      // Resolve this vertex's color: batch-table color selected by per-vertex
+      // batchId (combined per-instance colors) first, then a per-vertex color
+      // attribute, else the single instanceColor.
+      let vcr = instanceColor[0];
+      let vcg = instanceColor[1];
+      let vcb = instanceColor[2];
+      let vca = instanceColor[3];
+      if (batchIds !== null) {
+        const col = instanceColors[batchIds[v] | 0];
+        if (defined(col)) {
+          vcr = col[0];
+          vcg = col[1];
+          vcb = col[2];
+          vca = col[3];
+        }
+      } else if (perVertexColor !== null) {
+        const cOff = v * perVertexColorCPA;
+        vcr = perVertexColor.values[cOff] * perVertexColorScale;
+        vcg = perVertexColor.values[cOff + 1] * perVertexColorScale;
+        vcb = perVertexColor.values[cOff + 2] * perVertexColorScale;
+        vca =
+          perVertexColorCPA >= 4
+            ? perVertexColor.values[cOff + 3] * perVertexColorScale
+            : 1.0;
+      }
 
       if (shaderInfo.type === "phongTextured") {
         // posHigh(3)+posLow(3)+normal(3)+uv(2)+color(4) = 15 floats
@@ -3002,10 +3117,10 @@ function createWebGPUCommands(
           vertexData[vOff + 9] = 0.0;
           vertexData[vOff + 10] = 0.0;
         }
-        vertexData[vOff + 11] = instanceColor[0];
-        vertexData[vOff + 12] = instanceColor[1];
-        vertexData[vOff + 13] = instanceColor[2];
-        vertexData[vOff + 14] = instanceColor[3];
+        vertexData[vOff + 11] = vcr;
+        vertexData[vOff + 12] = vcg;
+        vertexData[vOff + 13] = vcb;
+        vertexData[vOff + 14] = vca;
       } else if (shaderInfo.type === "basicTextured") {
         // posHigh(3)+posLow(3)+uv(2)+color(4) = 12 floats
         if (hasUV) {
@@ -3016,10 +3131,10 @@ function createWebGPUCommands(
           vertexData[vOff + 6] = 0.0;
           vertexData[vOff + 7] = 0.0;
         }
-        vertexData[vOff + 8] = instanceColor[0];
-        vertexData[vOff + 9] = instanceColor[1];
-        vertexData[vOff + 10] = instanceColor[2];
-        vertexData[vOff + 11] = instanceColor[3];
+        vertexData[vOff + 8] = vcr;
+        vertexData[vOff + 9] = vcg;
+        vertexData[vOff + 10] = vcb;
+        vertexData[vOff + 11] = vca;
       } else if (shaderInfo.type === "phong") {
         // posHigh(3)+posLow(3)+normal(3)+color(4) = 13 floats
         if (hasNormals) {
@@ -3032,16 +3147,16 @@ function createWebGPUCommands(
           vertexData[vOff + 7] = 1.0;
           vertexData[vOff + 8] = 0.0;
         }
-        vertexData[vOff + 9] = instanceColor[0];
-        vertexData[vOff + 10] = instanceColor[1];
-        vertexData[vOff + 11] = instanceColor[2];
-        vertexData[vOff + 12] = instanceColor[3];
+        vertexData[vOff + 9] = vcr;
+        vertexData[vOff + 10] = vcg;
+        vertexData[vOff + 11] = vcb;
+        vertexData[vOff + 12] = vca;
       } else {
         // basic: posHigh(3)+posLow(3)+color(4) = 10 floats
-        vertexData[vOff + 6] = instanceColor[0];
-        vertexData[vOff + 7] = instanceColor[1];
-        vertexData[vOff + 8] = instanceColor[2];
-        vertexData[vOff + 9] = instanceColor[3];
+        vertexData[vOff + 6] = vcr;
+        vertexData[vOff + 7] = vcg;
+        vertexData[vOff + 8] = vcb;
+        vertexData[vOff + 9] = vca;
       }
     }
 

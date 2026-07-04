@@ -510,6 +510,20 @@ function configureWebGPUPostProcessPipeline(
   cache.tonemappingEnabled = useHdr;
   pipeline.setStageEnabled("Tonemap", useHdr && !hdrOutputMode);
   pipeline.setTonemappingMode(cache.tonemapMode);
+  // C4-PLAIN-HDR-GAMMA-TAILS (a) — sync the user's tonemap exposure.
+  // WebGL drives its tonemap `exposure` uniform from
+  // `PostProcessStageCollection._exposure` (the `scene.postProcessStages
+  // .exposure` setter, default 1.0). Nothing synced it to the WebGPU tonemap
+  // stage, so exposure changes were a silent no-op on WebGPU. Mirror it here.
+  // Default 1.0 equals the value packed at addTonemapping → byte-identical off
+  // path. When auto-exposure is enabled the per-frame dispatch multiplies this
+  // manual base by the adaptive multiplier (see WebGPUPostProcessPipeline), so
+  // feeding the manual value keeps both paths correct.
+  const userExposure = (collection as unknown as { _exposure?: number })
+    ._exposure;
+  pipeline.setTonemappingExposure(
+    typeof userExposure === "number" ? userExposure : 1.0,
+  );
 
   // --- Color grading: lazily initialize on first enable ---
   // WIRE-COLORGRADING-CALLER (Batch 480) — scene-level opt-in

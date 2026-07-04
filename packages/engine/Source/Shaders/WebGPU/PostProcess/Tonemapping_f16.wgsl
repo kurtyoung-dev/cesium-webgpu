@@ -60,27 +60,28 @@ fn reinhardTonemap(color: vec3<f16>) -> vec3<f16> {
   return color / (color + vec3<f16>(1.0h));
 }
 
-// ACES Filmic (Stephen Hill's fit). The constants are tiny and easily
-// representable in f16. Output is clamped to [0,1] which is well inside
-// the f16 normal range.
+// ACES Filmic — EXACT port of WebGL's czm_acesTonemapping (the Narkowicz
+// fit variant Cesium ships). The constants are tiny and easily representable
+// in f16. Output is clamped to [0,1] which is well inside the f16 normal
+// range. C4-PLAIN-HDR-GAMMA-TAILS (b): matched to the f32 / GLSL reference.
 fn acesTonemap(color: vec3<f16>) -> vec3<f16> {
-  let a: f16 = 2.51h;
-  let b: f16 = 0.03h;
-  let c: f16 = 2.43h;
-  let d: f16 = 0.59h;
-  let e: f16 = 0.14h;
-  return clamp(
-    (color * (a * color + b)) / (color * (c * color + d) + e),
-    vec3<f16>(0.0h), vec3<f16>(1.0h)
-  );
+  let g: f16 = 0.985h;
+  let a: f16 = 0.065h;
+  let b: f16 = 0.0001h;
+  let c: f16 = 0.433h;
+  let d: f16 = 0.238h;
+  let mapped = (color * (color + a) - b) / (color * (g * color + c) + d);
+  return clamp(mapped, vec3<f16>(0.0h), vec3<f16>(1.0h));
 }
 
+// Uncharted 2 Filmic (John Hable) — constants matched to WebGL's
+// FilmicTonemapping.glsl. C4-PLAIN-HDR-GAMMA-TAILS (b).
 fn uc2Curve(x: vec3<f16>) -> vec3<f16> {
-  let A: f16 = 0.15h;
-  let B: f16 = 0.50h;
+  let A: f16 = 0.22h;
+  let B: f16 = 0.30h;
   let C: f16 = 0.10h;
   let D: f16 = 0.20h;
-  let E: f16 = 0.02h;
+  let E: f16 = 0.01h;
   let F: f16 = 0.30h;
   return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
 }
@@ -96,12 +97,12 @@ fn filmicTonemap(color: vec3<f16>) -> vec3<f16> {
   return mapped * whiteScale;
 }
 
-// Modified Reinhard with white point. Note: `white * white` could
-// theoretically overflow f16 if `whitePoint` were huge, but the f32
-// uniform is clamped to a sane default (4.0) by the JS packer.
+// Modified Reinhard with white point — matches WebGL's
+// ModifiedReinhardTonemapping.glsl `(color*(1+color/white))/(1+color)` with
+// the raw white-point (default (1,1,1) → identity before gamma).
+// C4-PLAIN-HDR-GAMMA-TAILS (b): divide by `white`, not `white*white`.
 fn modifiedReinhardTonemap(color: vec3<f16>, white: f16) -> vec3<f16> {
-  let whSq: f16 = white * white;
-  return (color * (vec3<f16>(1.0h) + color / whSq)) / (vec3<f16>(1.0h) + color);
+  return (color * (vec3<f16>(1.0h) + color / white)) / (vec3<f16>(1.0h) + color);
 }
 
 // PBR Neutral tonemapping (Khronos reference). Identical structure to

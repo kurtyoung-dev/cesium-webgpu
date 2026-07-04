@@ -37,26 +37,31 @@ fn reinhardTonemap(color: vec3<f32>) -> vec3<f32> {
   return color / (color + vec3<f32>(1.0));
 }
 
-// ACES Filmic (Stephen Hill's fit)
+// ACES Filmic — EXACT port of WebGL's czm_acesTonemapping
+// (Builtin/Functions/acesTonemapping.glsl, the Narkowicz fit variant Cesium
+// ships). C4-PLAIN-HDR-GAMMA-TAILS (b): the previous constants were the
+// *other* Narkowicz fit (a=2.51,b=0.03,…) which diverged from the WebGL
+// reference under `scene.postProcessStages.tonemapper = ACES`.
 fn acesTonemap(color: vec3<f32>) -> vec3<f32> {
-  let a = 2.51;
-  let b = 0.03;
-  let c = 2.43;
-  let d = 0.59;
-  let e = 0.14;
-  return clamp(
-    (color * (a * color + b)) / (color * (c * color + d) + e),
-    vec3<f32>(0.0), vec3<f32>(1.0)
-  );
+  let g = 0.985;
+  let a = 0.065;
+  let b = 0.0001;
+  let c = 0.433;
+  let d = 0.238;
+  let mapped = (color * (color + a) - b) / (color * (g * color + c) + d);
+  return clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// Uncharted 2 Filmic (John Hable)
+// Uncharted 2 Filmic (John Hable) — constants matched to WebGL's
+// FilmicTonemapping.glsl (A=0.22,B=0.30,C=0.10,D=0.20,E=0.01,F=0.30,W=11.2).
+// C4-PLAIN-HDR-GAMMA-TAILS (b): the previous A=0.15/B=0.50/E=0.02 constants
+// were a different Hable parameterization and diverged from the reference.
 fn uc2Curve(x: vec3<f32>) -> vec3<f32> {
-  let A = 0.15; // Shoulder strength
-  let B = 0.50; // Linear strength
+  let A = 0.22; // Shoulder strength
+  let B = 0.30; // Linear strength
   let C = 0.10; // Linear angle
   let D = 0.20; // Toe strength
-  let E = 0.02; // Toe numerator
+  let E = 0.01; // Toe numerator
   let F = 0.30; // Toe denominator
   return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
 }
@@ -68,10 +73,14 @@ fn filmicTonemap(color: vec3<f32>) -> vec3<f32> {
   return mapped * whiteScale;
 }
 
-// Modified Reinhard with white point (Eq. 4)
+// Modified Reinhard with white point (Eq. 4) — matches WebGL's
+// ModifiedReinhardTonemapping.glsl `(color*(1+color/white))/(1+color)`, where
+// `white` is the raw white-point (WebGL's default uniform is Color.WHITE →
+// (1,1,1), which makes the operator an identity before gamma). C4-PLAIN-HDR-
+// GAMMA-TAILS (b): the previous code divided by `white*white` (and defaulted
+// whitePoint to 4.0), squaring the reference denominator.
 fn modifiedReinhardTonemap(color: vec3<f32>, white: f32) -> vec3<f32> {
-  let whSq = white * white;
-  return (color * (vec3<f32>(1.0) + color / whSq)) / (vec3<f32>(1.0) + color);
+  return (color * (vec3<f32>(1.0) + color / white)) / (vec3<f32>(1.0) + color);
 }
 
 // PBR Neutral tonemapping — EXACT port of the Khronos reference used by

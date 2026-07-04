@@ -650,12 +650,40 @@ radii; see §5.2). Open:
   HDR never toggles (generation stable → guard inert). startup-HDR path unaffected
   (`probe-plain-hdr-gamma` unchanged). Entity/primitive standing regression (`probe-collections-entity`)
   0 errors, counts match.
-  Minor tails: `scene.postProcessStages.exposure` isn't synced to the WebGPU tonemap uniform
-  (default 1.0 path fine); the non-default WGSL operators (Reinhard/ACES/Filmic/
-  ModifiedReinhard) haven't been parity-audited against their `czm_*` references (PBR Neutral
-  now exact). Also pre-existing, seen in the same probe scene: WebGPU renders both entity boxes
-  with ONE color (per-instance color divergence — orange box drawn cornflower blue) in SDR and
-  HDR alike.
+  INCREMENT 2 — ✅ **RESOLVED 2026-07-04 (C4-PLAIN-HDR-GAMMA-TAILS, Q7).** The three minor
+  tails are closed; acceptance `probe-plain-hdr-tonemap.mjs` (per-operator + exposure +
+  two-box per-instance-color cases, orange-box tonemap Δ vs WebGL and blue-box color check).
+  (a) **Exposure sync** — `WebGPUPostProcessStageCollection.ts` now mirrors
+  `PostProcessStageCollection._exposure` (the `scene.postProcessStages.exposure` setter) onto
+  the WebGPU tonemap stage via `pipeline.setTonemappingExposure(...)` each configure pass.
+  Default 1.0 = byte-identical off; auto-exposure still multiplies the manual base. Probe:
+  exposure×2 Δ170→0, exposure×0.5 Δ… →1.
+  (b) **Non-default operator math** — `Tonemapping.wgsl` + `Tonemapping_f16.wgsl` operators
+  re-derived to match their `czm_*` GLSL references: ACES → `czm_acesTonemapping`'s Narkowicz
+  fit (g=0.985,a=0.065,b=0.0001,c=0.433,d=0.238, was the other 2.51/0.03 fit); Filmic → WebGL
+  Uncharted-2 constants (A=0.22,B=0.30,E=0.01, was 0.15/0.50/0.02); ModifiedReinhard divides by
+  `white` not `white²` with whitePoint default 1.0 (matches WebGL's Color.WHITE uniform →
+  identity). Probe: ACES Δ88→1, Filmic Δ33→1, ModReinhard Δ68→1, Reinhard Δ24→0.
+  (c) **Per-instance primitive HDR gamma decode** — the dominant residual: under plain HDR
+  WebGL sRGB-decodes the per-instance primitive color via `czm_gammaCorrect` before/instead of
+  lighting, but `PrimitiveBasicColor.wgsl` / `PrimitivePhongColor.wgsl` never did → all
+  operators (incl. PBR-Neutral) diverged in the green channel. Added an HDR-gated decode
+  carried in the flat/lit CameraUniforms `_pad0`→`hdrGamma` lane (flat float 19 / lit float 51,
+  packed in `writeRTEUniformsFlat/Lit`; 0 on SDR → byte-identical). Probe: box-hdr Δ41→0/1.
+  (c′) **Per-instance color divergence WAS REAL (not stale).** Two batched PerInstanceColor box
+  entities both rendered cornflower blue (the orange box drawn blue). Root cause: Cesium
+  combines the instances into ONE geometry whose color lives in the batch TABLE selected
+  per-vertex by a `batchId` attribute (no per-vertex `color` attribute); `WebGPUPrimitiveCommands
+  .createWebGPUCommands` baked instance-0's single batch color across every vertex of the
+  combined geometry. Fix: bake per-vertex color CPU-side by looking up each vertex's `batchId`
+  in the batch table (mirrors WebGL's PerInstanceColorAppearanceVS texture sample). Single-
+  instance byte-identical (batchId≡0). Probe: orange=[238,154,0]=WebGL, blue=[94,139,222]=WebGL
+  (both exact) vs pre-fix both-blue. Regressions green: `probe-perinstance-diffuse` ratio 1.000,
+  `probe-collections-regression` PASS, `probe-depthfail-appearance` GREEN.
+  Remaining (separate items, NOT this row): the globe-imagery/atmosphere HDR scene still shows a
+  larger residual in `probe-plain-hdr-gamma` (atmosphere/sky HDR operator gap); MaterialAppearance
+  lit `*Lit.wgsl` + PBR primitive shaders don't yet apply the HDR color decode (only basic/phong
+  per-instance-color shaders do).
 - **`NEW-PP-F16-DEVICE-VERIFY`** — **P2.** The B478 opt-in f16 post-process variants still need an
   on-device pixel-verify on a `shader-f16`-capable (RTX-class) GPU.
 - **`NEW-ENV-MOON-CRESCENT-PROBE`** — ✅ **SHIPPED (Batch 517 `cedb99efa3`).** The crescent-phase

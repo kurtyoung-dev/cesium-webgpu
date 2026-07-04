@@ -47,7 +47,11 @@ struct CameraUniforms {
     modelViewRelativeToEye: mat4x4<f32>,
     normalMatrix: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
-    _pad0: f32,
+    // C4-PLAIN-HDR-GAMMA-TAILS — czm_gamma when scene.highDynamicRange is on,
+    // else 0. Gates the per-instance base-color sRGB→linear decode (mirrors
+    // WebGL PerInstanceColorAppearanceFS `czm_gammaCorrect(v_color)`), applied
+    // BEFORE czm_phong lighting to match the WebGL order.
+    hdrGamma: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
@@ -525,15 +529,24 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         shadowFactor = computeShadowFactor(input.eyePosition);
     }
     let lighting = 0.5 + 0.5 * diffuse * shadowFactor;
+    // C4-PLAIN-HDR-GAMMA-TAILS — HDR sRGB→linear decode of the per-instance
+    // base color, mirroring WebGL PerInstanceColorAppearanceFS's
+    // `czm_gammaCorrect(v_color)` (`#ifdef HDR`). WebGL decodes BEFORE
+    // czm_phong lighting, so decode here before the lighting multiply.
+    // `camera.hdrGamma` is 0 on the default SDR path → identity → byte-identical.
+    var baseColorRgb = input.color.rgb;
+    if (camera.hdrGamma > 0.5) {
+        baseColorRgb = pow(max(baseColorRgb, vec3<f32>(0.0)), vec3<f32>(camera.hdrGamma));
+    }
     // Slice 5d Batch 156 — additive Forward+ clustered lighting (eye-space
     // inputs; baseColor = per-vertex color; F0/roughness neutral dielectric
     // — Phong has no PBR material). Early-outs when no clustered lights.
     let clusteredContrib = evalClusteredLights(
         input.viewPosition, normal, viewDir,
-        vec3<f32>(0.04), 0.5, input.color.rgb,
+        vec3<f32>(0.04), 0.5, baseColorRgb,
         input.clipPosition.xy, input.viewPosition.z,
     );
-    var finalColor = vec4<f32>(input.color.rgb * lighting + clusteredContrib, input.color.a);
+    var finalColor = vec4<f32>(baseColorRgb * lighting + clusteredContrib, input.color.a);
 
     // FEAT-GAP-09 — Aerial-perspective fog blend. Same math as the
     // PhongTexturedColor reference (Session 34): sample the pre-integrated

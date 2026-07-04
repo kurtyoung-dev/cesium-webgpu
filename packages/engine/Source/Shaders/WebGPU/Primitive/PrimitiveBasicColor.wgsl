@@ -23,7 +23,10 @@ struct VertexOutput {
 struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
-    _pad0: f32,
+    // C4-PLAIN-HDR-GAMMA-TAILS — czm_gamma when scene.highDynamicRange is on,
+    // else 0. Gates the per-instance color sRGB→linear decode in fragmentMain
+    // (mirrors WebGL PerInstanceFlatColorAppearanceFS czm_gammaCorrect).
+    hdrGamma: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     // DP-H41 (Batch 27) — previous frame's viewProjection for
@@ -183,6 +186,19 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     var finalColor = input.color;
+
+    // C4-PLAIN-HDR-GAMMA-TAILS — HDR sRGB→linear decode of the per-instance
+    // color, mirroring WebGL PerInstanceFlatColorAppearanceFS's
+    // `czm_gammaCorrect(v_color)` (`#ifdef HDR`, identity in SDR). Applied
+    // before the fork's aerial-perspective blend so both backends feed the
+    // same linear color into fog + the PP tonemapper. `camera.hdrGamma` is 0
+    // on the default SDR path → skipped → byte-identical.
+    if (camera.hdrGamma > 0.5) {
+        finalColor = vec4<f32>(
+            pow(max(finalColor.rgb, vec3<f32>(0.0)), vec3<f32>(camera.hdrGamma)),
+            finalColor.a
+        );
+    }
 
     // FEAT-GAP-09 (Batch 94) — Aerial-perspective fog blend. Mirrors the
     // pattern in PrimitiveMatColorLit.wgsl L274-310. Sample the

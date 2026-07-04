@@ -666,7 +666,10 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._tonemapStage) return;
     // Uniforms: exposure, gamma, mode, whitePoint
-    const uniforms = new Float32Array([exposure, gamma, mode, 4.0]);
+    // C4-PLAIN-HDR-GAMMA-TAILS (b) — whitePoint defaults to 1.0 to match
+    // WebGL's ModifiedReinhardTonemapping `white` uniform (Color.WHITE →
+    // (1,1,1)); the operator now divides by `white` (not white²).
+    const uniforms = new Float32Array([exposure, gamma, mode, 1.0]);
     // Phase 5 WGF-3: pick the hand-tuned f16 source when the caller has
     // confirmed the device granted `shader-f16`. The f16 variant is
     // binary-compatible with the f32 uniform layout above so the same
