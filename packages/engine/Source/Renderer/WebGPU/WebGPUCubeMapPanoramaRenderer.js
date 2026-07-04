@@ -11,6 +11,7 @@
  *   panoramaTransform:  mat4x4<f32>  (offset 128, 64 bytes)
  *   params:             vec4<f32>    (offset 192, 16 bytes) — far, morphTime, debugCubeFace, skyBrightness
  *   starModulation:     vec4<f32>    (offset 208, 16 bytes) — inflection, steepness, enableFlag, cloudCover
+ *   hdr:                vec4<f32>    (offset 224, 16 bytes) — gamma (0 when SDR), reserved, reserved, reserved
  */
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -37,8 +38,13 @@ struct CubeMapPanoramaUniforms {
   params: vec4<f32>,
   // Phase 1.3b star modulation tunables, sourced from
   // atmosphericConditions.skyAtmosphere.starModulationCurve.
-  // x = inflection, y = steepness, z = enableFlag (0/1), w = pad
+  // x = inflection, y = steepness, z = enableFlag (0/1), w = cloudCover
   starModulation: vec4<f32>,
+  // C4-CUBEMAP-PANORAMA-HDR-DECODE — HDR sRGB->linear decode gate.
+  // x = czm_gamma (uniformState.gamma, default 2.2) when HDR is active
+  // (frameState.useHDR), else 0. Zero on the default SDR path keeps the
+  // fragment output byte-identical. y/z/w reserved.
+  hdr: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: CubeMapPanoramaUniforms;
@@ -137,9 +143,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // The previous unconditional pow(color, 1/2.2) re-encoded sRGB on
   // top of sRGB, brightening dark pixels (so star backgrounds looked
   // like concrete) and washing out the visible portion of the cubemap.
-  // TODO: when HDR is on, decode sRGB -> linear here (pow(color, 2.2))
-  //       so the cubemap participates in the linear HDR pipeline
-  //       before the tonemap stage re-encodes for display.
+  // C4-CUBEMAP-PANORAMA-HDR-DECODE — when HDR is on, decode sRGB -> linear
+  // (pow(color, czm_gamma), matching czm_gammaCorrect's #ifdef HDR branch)
+  // so the cubemap participates in the linear HDR pipeline before the tonemap
+  // stage re-encodes for display. hdr.x is 0 on the SDR default path, so the
+  // branch is skipped and the output stays byte-identical.
+  let hdrGamma = uniforms.hdr.x;
+  if (hdrGamma > 0.5) {
+    modulated = pow(modulated, vec3<f32>(hdrGamma));
+  }
   return vec4<f32>(modulated, morphTime);
 }
 `;
@@ -520,6 +532,19 @@ export function updateUniforms(
       ? weather.cloudCover
       : 0;
   uniformData[55] = cloudCover;
+
+  // C4-CUBEMAP-PANORAMA-HDR-DECODE — hdr.x carries czm_gamma
+  // (uniformState.gamma, default 2.2) when HDR is active, else 0. The
+  // fragment shader mirrors WebGL SkyBoxFS.glsl's czm_gammaCorrect `#ifdef HDR`
+  // sRGB->linear decode when this is > 0.5. Zero on the default SDR path
+  // (frameState.useHDR falsy) → byte-identical output. Matches the billboard /
+  // sun / point renderers' HDR gamma gate convention.
+  uniformData[56] =
+    frameState?.useHDR === true
+      ? typeof uniformState?.gamma === "number"
+        ? uniformState.gamma
+        : 2.2
+      : 0.0;
 
   device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 }
