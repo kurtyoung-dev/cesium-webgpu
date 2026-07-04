@@ -159,8 +159,7 @@ interface PixelReadbackPBO {
 
 /** Shader source that can be a string or an object with _wgslCode. */
 type ShaderSource =
-  | string
-  | { _wgslCode?: string; sources?: string[]; defines?: string[] };
+  string | { _wgslCode?: string; sources?: string[]; defines?: string[] };
 
 /** Minimal interface for the GPU culler (lazy-loaded). */
 interface GPUCullerInstance {
@@ -536,6 +535,21 @@ export class WebGPUContext extends GraphicsContext {
   // had the canvas format baked in, producing format-mismatch
   // validation warnings + black scene FB writes when HDR toggled.
   public _scenePipelineFormatGeneration: number = 0;
+
+  /**
+   * Backend-agnostic epoch that increments whenever the scene render-target
+   * color format changes at runtime (HDR toggle, MSAA toggle, canvas-format
+   * change). Scene-level command builders that cache backend pipelines keyed
+   * to the scene FB format (e.g. `Primitive` via the PRIMITIVE feature
+   * renderer) compare this across frames and force a command rebuild when it
+   * moves, so a mid-session `scene.highDynamicRange` flip rekeys their
+   * pipelines instead of submitting a stale-format draw. The WebGL context
+   * returns a constant 0 (its FBO format never changes on HDR toggle), so
+   * consumers stay byte-identical on WebGL.
+   */
+  get renderTargetGeneration(): number {
+    return this._scenePipelineFormatGeneration;
+  }
 
   /**
    * Format that pipelines drawing into the scene framebuffer should
@@ -1480,8 +1494,7 @@ export class WebGPUContext extends GraphicsContext {
    */
   override get supportsTriangulationDebug(): boolean {
     const utils = this._primitiveIndexUtilsCache as
-      | { isSupported?: (device: GPUDevice) => boolean }
-      | undefined;
+      { isSupported?: (device: GPUDevice) => boolean } | undefined;
     return this._device !== null && utils !== undefined && !!utils.isSupported;
   }
 
@@ -3208,8 +3221,7 @@ export class WebGPUContext extends GraphicsContext {
    */
   override executeShadowMapCastCommands(scene: CesiumScene): boolean {
     const shadowFR = this.getFeatureRenderer(FeatureRendererKey.SHADOW_MAP) as
-      | import("../GraphicsContext.js").SystemRenderer
-      | undefined;
+      import("../GraphicsContext.js").SystemRenderer | undefined;
     if (!shadowFR?.renderCastPass) {
       return true; // Handled (no-op if no shadow renderer registered)
     }
@@ -3264,8 +3276,7 @@ export class WebGPUContext extends GraphicsContext {
         // surface-toward-light for the cascade VP math. Fall back to
         // sunDirectionWC when no shadow map is active.
         const sunDir = scene._context?.uniformState?.sunDirectionWC as
-          | { x: number; y: number; z: number }
-          | undefined;
+          { x: number; y: number; z: number } | undefined;
         const lightDir = sunDir ?? { x: 0, y: 1, z: 0 };
         // PARITY-RTE-ELLIPSOID-AWARE (FEAT-3DT2-03) — thread the scene's
         // actual ellipsoid into the cascade ground-clamp so non-Earth
@@ -3376,7 +3387,7 @@ export class WebGPUContext extends GraphicsContext {
       defined(globe) &&
       globe.show &&
       (!globe.depthTestAgainstTerrain ||
-        scene.mode === 2) /* SceneMode.SCENE2D */;
+        scene.mode === 2); /* SceneMode.SCENE2D */
     environmentState.useDepthPlane =
       environmentState.clearGlobeDepth &&
       scene.mode === 3 /* SceneMode.SCENE3D */ &&

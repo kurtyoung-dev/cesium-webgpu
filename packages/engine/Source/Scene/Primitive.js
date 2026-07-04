@@ -296,6 +296,12 @@ class Primitive {
 
     this._colorCommands = [];
     this._pickCommands = [];
+    // Q14-HDR-TOGGLE-INVALIDATION — last `context.renderTargetGeneration` the
+    // alternate-renderer commands were built at. `-1` forces the first build;
+    // a later mismatch (HDR toggle bumps the epoch) forces a command rebuild so
+    // the WebGPU pipelines rekey to the new scene FB format. Unused on WebGL
+    // (renderTargetGeneration is constant 0 there).
+    this._renderTargetGeneration = -1;
 
     this._createBoundingVolumeFunction = options._createBoundingVolumeFunction;
     this._createRenderStatesFunction = options._createRenderStatesFunction;
@@ -561,12 +567,29 @@ class Primitive {
       spFunc(this, frameState, appearance);
     }
 
+    // Q14-HDR-TOGGLE-INVALIDATION — an alternate renderer (WebGPU) bakes the
+    // scene render-target color format into its cached pipelines. A mid-session
+    // `scene.highDynamicRange` toggle flips that format and bumps
+    // `context.renderTargetGeneration`; when it moves we must rebuild the
+    // commands so the feature renderer rekeys its pipelines to the new format
+    // (otherwise the stale-format pipeline fails attachment validation every
+    // frame). WebGL returns a constant 0 here, so this never fires — the
+    // WebGL path stays byte-identical.
+    const renderTargetGeneration = context.renderTargetGeneration;
+    const renderTargetFormatChanged =
+      hasAlternateRenderer &&
+      this._renderTargetGeneration !== renderTargetGeneration;
+
     // For alternate renderers, always create commands when they don't exist or when appearance changes
     const needsCommands = hasAlternateRenderer
-      ? createRS || createSP || this._colorCommands.length === 0
+      ? createRS ||
+        createSP ||
+        this._colorCommands.length === 0 ||
+        renderTargetFormatChanged
       : createRS || createSP;
 
     if (needsCommands) {
+      this._renderTargetGeneration = renderTargetGeneration;
       const commandFunc = this._createCommandsFunction ?? createCommands;
       commandFunc(
         this,

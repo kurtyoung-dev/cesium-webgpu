@@ -1417,9 +1417,21 @@ function createPolylineAppearanceCommands(
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
 
-  if (!defined(cache.pipeline) || translucentChanged || logDepthChanged) {
+  // Q14-HDR-TOGGLE-INVALIDATION — rebuild the polyline-appearance pipeline
+  // when the scene FB color format flips (HDR toggle). See the main-path guard
+  // for the full rationale. Inert while HDR never toggles (byte-identical).
+  const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
+  const formatGenChanged = cache.pipelineFormatGeneration !== sceneFormatGen;
+
+  if (
+    !defined(cache.pipeline) ||
+    translucentChanged ||
+    logDepthChanged ||
+    formatGenChanged
+  ) {
     cache.translucent = translucent;
     cache.logDepthEnabled = logDepthActive;
+    cache.pipelineFormatGeneration = sceneFormatGen;
 
     // Route through the preprocessor so the chunk-injected source is resolved
     // via getShaderSource (prepends csm_polylineCommon) and the //>>ifdef
@@ -1887,15 +1899,23 @@ function createPolylineMaterialAppearanceCommands(
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
 
+  // Q14-HDR-TOGGLE-INVALIDATION — rebuild the polyline-material pipeline when
+  // the scene FB color format flips (HDR toggle). See the main-path guard for
+  // the full rationale. Inert while HDR never toggles (byte-identical).
+  const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
+  const formatGenChanged = cache.pipelineFormatGeneration !== sceneFormatGen;
+
   if (
     !defined(cache.pipeline) ||
     shaderChanged ||
     translucentChanged ||
-    logDepthChanged
+    logDepthChanged ||
+    formatGenChanged
   ) {
     cache.shaderType = shaderInfo.type;
     cache.translucent = translucent;
     cache.logDepthEnabled = logDepthActive;
+    cache.pipelineFormatGeneration = sceneFormatGen;
 
     // Route through the preprocessor so getShaderSource's csm_polylineCommon
     // injection + the //>>ifdef LOG_DEPTH blocks resolve. defines=0 reproduces
@@ -2367,17 +2387,32 @@ function createWebGPUCommands(
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
 
+  // Q14-HDR-TOGGLE-INVALIDATION — the cached pipeline bakes in the scene FB
+  // color format (`context.scenePipelineFormat`, resolved into `canvasFormat`
+  // below). A mid-session `scene.highDynamicRange` toggle flips that format
+  // (rgba8unorm ↔ rgba16float / rg11b10ufloat) and bumps
+  // `context._scenePipelineFormatGeneration`. Without this guard the stale
+  // rgba8unorm pipeline stays bound and WebGPU rejects the draw into the
+  // rgba16float scene FB ("Primitive pipeline (cull=back)" attachment-format
+  // mismatch, ~128 errors/frame). Same generation-counter precedent the
+  // GroundPrimitive / Model / globe pipelines already follow. Inert when HDR
+  // never toggles (generation never changes → byte-identical).
+  const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
+  const formatGenChanged = cache.pipelineFormatGeneration !== sceneFormatGen;
+
   if (
     shaderChanged ||
     translucentChanged ||
     twoPassesChanged ||
     topologyChanged ||
-    logDepthChanged
+    logDepthChanged ||
+    formatGenChanged
   ) {
     cache.shaderType = shaderInfo.type;
     cache.translucent = translucent;
     cache.primitiveTopology = primitiveTopology;
     cache.logDepthEnabled = logDepthActive;
+    cache.pipelineFormatGeneration = sceneFormatGen;
 
     // DP-H19-SHADER-DECODE (Batch 27) — always route through the
     // preprocessor so `//>>ifdef COMPRESSED_VERTICES` / `//>>else`
@@ -3565,12 +3600,19 @@ function createMaterialPipelineAndCache(
   // frameState.useLogDepth) rebuilds the shader module + pipeline. Mirrors the
   // logDepthChanged invalidation guard on the Phong/Basic path.
   const logDepth = logDepthActive === true;
+  // Q14-HDR-TOGGLE-INVALIDATION — rebuild when the scene FB color format
+  // changes (HDR toggle bumps the generation counter). The pipeline below
+  // bakes `context.scenePipelineFormat` into its color target; a stale-format
+  // material pipeline fails attachment validation once HDR flips the scene FB
+  // to rgba16float. Inert while HDR never toggles (byte-identical).
+  const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     cache.shaderType === shaderInfo.type &&
     cache.translucent === translucent &&
     cache.primitiveTopology === topology &&
     cache.appearanceClosed === closedClosed &&
-    cache.logDepthEnabled === logDepth
+    cache.logDepthEnabled === logDepth &&
+    cache.pipelineFormatGeneration === sceneFormatGen
   ) {
     return false;
   }
@@ -3579,6 +3621,7 @@ function createMaterialPipelineAndCache(
   cache.primitiveTopology = topology;
   cache.appearanceClosed = closedClosed;
   cache.logDepthEnabled = logDepth;
+  cache.pipelineFormatGeneration = sceneFormatGen;
 
   // Slice 5d Batch 154 — prepend the Forward+ clustered lighting chunk to
   // Mat*Lit shaders so they can additively sample scene PointLights/Spots/
@@ -3784,12 +3827,17 @@ function createMaterialDepthFailPipeline(
   const topology = primitiveTopology ?? "triangle-list";
   const logDepth = logDepthActive === true;
   const cullMode = topology.startsWith("line") ? "none" : dfCullMode;
+  // Q14-HDR-TOGGLE-INVALIDATION — depthFail material twin also bakes the scene
+  // FB color format; rebuild on HDR toggle (generation bump). Byte-identical
+  // while HDR never toggles.
+  const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     cache.dfShaderType === shaderInfo.type &&
     cache.dfTranslucent === translucent &&
     cache.dfPrimitiveTopology === topology &&
     cache.dfLogDepthEnabled === logDepth &&
     cache.dfCullMode === cullMode &&
+    cache.dfPipelineFormatGeneration === sceneFormatGen &&
     defined(cache.dfPipeline)
   ) {
     return false;
@@ -3799,6 +3847,7 @@ function createMaterialDepthFailPipeline(
   cache.dfPrimitiveTopology = topology;
   cache.dfLogDepthEnabled = logDepth;
   cache.dfCullMode = cullMode;
+  cache.dfPipelineFormatGeneration = sceneFormatGen;
   cache.dfNeedsTexture = shaderInfo.needsTexture === true;
   cache.dfIsLit = isLit;
 

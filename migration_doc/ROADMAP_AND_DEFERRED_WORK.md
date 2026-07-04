@@ -572,10 +572,25 @@ radii; see §5.2). Open:
   1.41%→1.40% (off-gate byte-identical). Residual HDR mismatch is the separate atmosphere/sky
   HDR tonemap-operator gap, not gamma. All three gates default-off byte-identical (spare/pad
   lanes, `> 0.5` shader branches).
-  (d) **Mid-session `highDynamicRange` toggle** invalidates cached scene pipelines (attachment
-  format mismatch: "Primitive pipeline (cull=back)" vs rgba16float "Scene Framebuffer Render
-  Pass", ~128 validation errors/frame observed); startup-HDR works — scene pipeline caches need
-  FB-format keying or a recreate hook on `_hdrDirty`.
+  (d) ✅ **Mid-session `highDynamicRange` toggle** (Q14-HDR-TOGGLE-INVALIDATION). Root cause: the
+  generic geometry `Primitive` pipeline caches in `WebGPUPrimitiveCommands.js` (main color,
+  material, polyline-appearance, polyline-material, depthFail-material) baked
+  `context.scenePipelineFormat` into their color target but had no format-generation guard, AND
+  `Primitive.js`'s alternate-renderer `needsCommands` gate only rebuilt on appearance/shader
+  change — so once a primitive's commands were built (for rgba8unorm) they were never
+  regenerated, leaving the stale pipeline bound when HDR flipped the scene FB to rgba16float
+  ("Primitive pipeline (cull=back)" attachment mismatch, ~284 errors/frame observed in the
+  repro). Fix: (1) added a `pipelineFormatGeneration` guard to all five caches (mirrors the
+  GroundPrimitive/Model/globe generation-counter precedent); (2) exposed a backend-agnostic
+  `context.renderTargetGeneration` getter (WebGPU returns `_scenePipelineFormatGeneration`, WebGL
+  returns constant 0) and folded it into `Primitive.js`'s `needsCommands` so a generation bump
+  forces a command rebuild. Acceptance: `probe-hdr-toggle-invalidation.mjs` — SDR→HDR→SDR→HDR
+  round-trip, 284/18/240 → **0 validation errors** in every post-toggle phase; PNGs confirm the
+  box/ellipsoid/billboard/point all render (no black scene). Off-gate: WebGL byte-identical
+  (`renderTargetGeneration`≡0, alternate-renderer branch never taken); WebGPU byte-identical when
+  HDR never toggles (generation stable → guard inert). startup-HDR path unaffected
+  (`probe-plain-hdr-gamma` unchanged). Entity/primitive standing regression (`probe-collections-entity`)
+  0 errors, counts match.
   Minor tails: `scene.postProcessStages.exposure` isn't synced to the WebGPU tonemap uniform
   (default 1.0 path fine); the non-default WGSL operators (Reinhard/ACES/Filmic/
   ModifiedReinhard) haven't been parity-audited against their `czm_*` references (PBR Neutral

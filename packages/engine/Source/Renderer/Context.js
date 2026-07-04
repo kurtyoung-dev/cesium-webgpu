@@ -809,6 +809,18 @@ class Context extends GraphicsContext {
   }
 
   /**
+   * Backend-agnostic render-target format epoch. WebGL's scene FBO color
+   * format never changes at runtime on an HDR toggle (it uses a separate
+   * float-target path), so this is a constant 0 — command builders that key a
+   * rebuild off it stay byte-identical on WebGL. The WebGPU context overrides
+   * this to increment on every scene FB color-format change.
+   * @returns {number}
+   */
+  get renderTargetGeneration() {
+    return 0;
+  }
+
+  /**
    * Get a human-readable string describing this renderer.
    * @returns {string}
    */
