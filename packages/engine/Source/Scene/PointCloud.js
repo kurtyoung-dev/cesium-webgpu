@@ -578,6 +578,46 @@ function computeWebGPUReadyState(pointCloud) {
     boundingSphere,
     pointCloud._boundingSphere,
   );
+
+  // Account the geometry byte length the same way the WebGL `createResources`
+  // path does (sum of the per-attribute vertex-buffer sizes). The WebGPU
+  // feature renderer builds its own instance buffer and never runs
+  // `createResources`, so `_geometryByteLength` would otherwise stay 0 — which
+  // leaves `TimeDynamicPointCloud.totalMemoryUsageInBytes` at 0 and disables
+  // its memory-based frame eviction (`totalMemoryUsageInBytes >
+  // maximumMemoryUsage` never trips), leaking frames over long playback. Mirror
+  // the WebGL accounting from the parsed typed arrays so both backends evict.
+  let geometryByteLength = defined(typedArray.byteLength)
+    ? typedArray.byteLength
+    : typedArray.length * typedArray.BYTES_PER_ELEMENT;
+  const addAttrBytes = (attr) => {
+    if (!defined(attr)) {
+      return;
+    }
+    const arr = defined(attr.typedArray) ? attr.typedArray : attr;
+    if (defined(arr) && defined(arr.byteLength)) {
+      geometryByteLength += arr.byteLength;
+    }
+  };
+  if (pointCloud._hasColors) {
+    addAttrBytes(parsedContent.colors);
+  }
+  if (pointCloud._hasNormals) {
+    addAttrBytes(parsedContent.normals);
+  }
+  if (pointCloud._hasBatchIds) {
+    addAttrBytes(parsedContent.batchIds);
+  }
+  const styleableProperties = parsedContent.styleableProperties;
+  if (defined(styleableProperties)) {
+    for (const name in styleableProperties) {
+      if (styleableProperties.hasOwnProperty(name)) {
+        addAttrBytes(styleableProperties[name]);
+      }
+    }
+  }
+  pointCloud._geometryByteLength = geometryByteLength;
+
   pointCloud._ready = true;
 }
 

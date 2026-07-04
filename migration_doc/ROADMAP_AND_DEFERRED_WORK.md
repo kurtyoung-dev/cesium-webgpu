@@ -158,10 +158,14 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   (PNTS/EDL) + `WebGPUGaussianSplatRenderer` still write hyperbolic z (mis-sort vs log geometry only at
   FAR range). **P2.** _Note: splat half SHIPPED Batch 288; point-cloud producer SHIPPED Batch 377 — but
   see the blocker below._
-- **`NEW-WEBGPU-TIMEDYNAMIC-POINTCLOUD-CONTENT-LOAD-ZERO`** (M, Batch 377) — `TimeDynamicPointCloud`
-  loads ZERO content on WebGPU (`boundingSphere` never ready, `totalMemoryUsageInBytes===0` after 500
-  frames) while WebGL loads at frame 1. Gates visual verification of the C2-7 log-depth producer (no
-  points render to sort). **P1.** Next: trace `_loadFrame` → pnts parse → instance upload on WebGPU.
+- **`NEW-WEBGPU-TIMEDYNAMIC-POINTCLOUD-CONTENT-LOAD-ZERO`** — ✅ **CLOSED (Q5-TIMEDYNAMIC-POINTCLOUD-ZERO,
+  2026-07-04).** Headline premise was STALE — Batch 465 already fixed the zero-content/no-boundingSphere
+  path (removed the `update` mis-delegation + added `computeWebGPUReadyState`). WebGPU now renders at
+  frame 1 with `boundingSphere` ready (radius identical to WebGL). The one real remaining gap —
+  `totalMemoryUsageInBytes` stuck at 0 (WebGPU never ran `createResources`, so `_geometryByteLength`
+  was never accounted → memory-based frame eviction never tripped) — is fixed by summing the parsed
+  typed-array byte lengths in `computeWebGPUReadyState`; WebGPU now reports `165000` at frame 1,
+  matching WebGL. Probe: `probe-timedynamic-pointcloud-load.mjs`.
 - **`NEW-LOG-DEPTH-REMAINING-CONSUMERS`** — off-by-default depth readers (AO/DoF/SSR/contact-shadows/
   god-rays) + GroundPolyline `windowToEyeCoordinates` precision must reverse log depth when enabled.
   **P2** (none break the default scene).
