@@ -3195,7 +3195,18 @@ octree traversal — a real two-level LOD path in
    slot tables through this same pool) and there is no public
    `maximumTileCount` API — the override is fork-internal.
 3. **Non-box shapes** — cylinder/ellipsoid still use the legacy direct
-   sampling (no shapeUv convention → no refinement).
+   sampling (no shapeUv convention → no refinement). PARTIAL (Batch 525,
+   NEW-VOXEL-ELLIPSOID-INTERSECT / B22): the ELLIPSOID shell GEOMETRY is now
+   correct — the parity color march + per-cell pick march intersect the
+   outer/inner ellipsoid (WebGL IntersectEllipsoid.glsl intersectHeight math,
+   shape-typed `intersectShapeReal` in `WebGPUVoxelRenderer.ts`; BOX keeps the
+   bit-identical intersectAABB branch; `probe-voxel-ellipsoid.mjs` is the
+   silhouette-IoU gate). Residuals: (a) interior sample addressing is still
+   the box-affine proxy→uv fallback → B23 NEW-VOXEL-ELLIPSOID-SHAPEUV ships
+   the radial/longitude/latitude shapeUv chain + data-upload convention;
+   (b) longitude/latitude RENDER bounds (cones/wedges/half-planes of
+   IntersectEllipsoid.glsl) are not intersected — full-shell providers only
+   until B23/B24; (c) cylinder untouched → B24 NEW-VOXEL-CYLINDER-SHAPEUV.
 4. **pickVoxel against refined tiles** — `fragmentPickVoxelMain` marches the
    ROOT slab only (megatextureIndex 0); a refined render can pick a coarser
    cell than what is displayed.

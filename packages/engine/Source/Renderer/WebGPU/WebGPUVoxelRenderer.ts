@@ -22,6 +22,9 @@ import {
   checkTransformAndBounds,
   updateShapeAndTransforms,
 } from "../../Scene/VoxelPrimitiveHelpers.js";
+// NEW-VOXEL-ELLIPSOID-INTERSECT — shape-typed real-intersection selection
+// (BOX keeps intersectAABB; ELLIPSOID takes the shell quadratics).
+import VoxelShapeType from "../../Scene/VoxelShapeType.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
@@ -260,6 +263,22 @@ struct Uniforms {
   // level 2 (target level >= 2 requires an uploaded level-2 tile CPU-side);
   // all -1 / zero on the shallower paths.
   l2Slots: array<vec4<f32>, 16>,
+  // NEW-VOXEL-ELLIPSOID-INTERSECT — shape-typed intersection fields (floats
+  // 184..207). \`proxyToLocal\` maps a proxy-cube point p ∈ [-0.5, +0.5]^3 into
+  // the shape's ellipsoid-centered LOCAL frame in meters (the frame WebGL's
+  // IntersectEllipsoid.glsl evaluates in — inverse(shapeTransform) · effModel);
+  // \`ellipsoidRadii\` is the ellipsoid's per-axis radii (the compound
+  // modelMatrix scale) and \`shapeHeightMinMax\` the min/max height bounds
+  // relative to the surface. \`shapeType\` selects the REAL-intersection branch:
+  // 0 = BOX (intersectAABB, the historical bit-identical path — also the
+  // placeholder/degenerate fallback since the fields default to zero),
+  // 1 = ELLIPSOID (outer/inner shell quadratics). Only written on the
+  // real-data path for ELLIPSOID-shape providers.
+  proxyToLocal: mat4x4<f32>,
+  ellipsoidRadii: vec3<f32>,
+  shapeType: f32,
+  shapeHeightMinMax: vec2<f32>,
+  _pad5: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -307,6 +326,101 @@ fn intersectAABB(origin: vec3<f32>, invDir: vec3<f32>,
   let tMax = max(t1, t2);
   return vec2<f32>(max(max(tMin.x, tMin.y), tMin.z),
                    min(min(tMax.x, tMax.y), tMax.z));
+}
+
+// NEW-VOXEL-ELLIPSOID-INTERSECT — ray vs the ellipsoid-at-height surface,
+// evaluated in the shape's ellipsoid-centered LOCAL frame (meters). Mirrors
+// WebGL Shaders/Voxels/IntersectEllipsoid.glsl intersectHeight(): scale the
+// ray by 1/(radii + height) so the surface becomes the unit sphere, then
+// solve the quadratic with the cancellation-avoiding second root
+// (t2 = c / (a * t1)) exactly as the GLSL does. \`dirLocal\` is intentionally
+// NOT normalized — the returned t values stay in the caller's (proxy-space)
+// ray parameterization, so they compose directly with the march's
+// \`rayOrigin + rayDir * t\`. Returns (tMin, tMax); (+BIG, -BIG) on a miss so
+// the shared \`enter > exit\` rejection test handles it.
+fn intersectEllipsoidHeight(originLocal: vec3<f32>, dirLocal: vec3<f32>,
+                            height: f32) -> vec2<f32> {
+  let miss = vec2<f32>(3.402823e+38, -3.402823e+38);
+  let radiiCorrection = vec3<f32>(1.0) / (u.ellipsoidRadii + vec3<f32>(height));
+  let position = originLocal * radiiCorrection;
+  let direction = dirLocal * radiiCorrection;
+  let a = dot(direction, direction);
+  let b = dot(direction, position);
+  let c = dot(position, position) - 1.0;
+  let determinant = b * b - a * c;
+  if (determinant < 0.0 || a <= 0.0) {
+    return miss;
+  }
+  let det = sqrt(determinant);
+  let signB = select(1.0, -1.0, b < 0.0);
+  let t1 = (-b - signB * det) / a;
+  let t2 = c / (a * t1);
+  return vec2<f32>(min(t1, t2), max(t1, t2));
+}
+
+// NEW-VOXEL-ELLIPSOID-INTERSECT — shape-typed replacement for the REAL
+// proxy-space intersection used by the parity color march + the per-cell pick
+// march. u.shapeType 0 (BOX — the default, and every zero-filled fallback)
+// returns intersectAABB's interval verbatim with an EMPTY inner-skip interval
+// (+BIG, -BIG), so the marched t values and the accumulation stay
+// bit-identical to the pre-ellipsoid path. u.shapeType 1 (ELLIPSOID)
+// transforms the ray into the ellipsoid's local frame and intersects the
+// OUTER ellipsoid (radii + maxHeight) for the march interval plus the INNER
+// ellipsoid (radii + minHeight) for the shell's hole interval, per WebGL
+// IntersectEllipsoid.glsl intersectShape(): the inner interval is sandwiched
+// inside the outer one (float-noise guard on planet-scale thin shells) and
+// the march SKIPS samples inside it. Longitude/latitude render bounds
+// (cones/wedges/half-planes) are a documented residual — B23
+// NEW-VOXEL-ELLIPSOID-SHAPEUV carries the ellipsoid interior work.
+// Returns vec4(enter, exit, innerEnter, innerExit); enter > exit = miss.
+fn intersectShapeReal(rayOrigin: vec3<f32>, rayDir: vec3<f32>,
+                      invDir: vec3<f32>) -> vec4<f32> {
+  let emptyHole = vec2<f32>(3.402823e+38, -3.402823e+38);
+  if (u.shapeType < 0.5) {
+    let tr = intersectAABB(rayOrigin, invDir, u.minBounds, u.maxBounds);
+    return vec4<f32>(tr, emptyHole);
+  }
+  let oL = (u.proxyToLocal * vec4<f32>(rayOrigin, 1.0)).xyz;
+  let dL = (u.proxyToLocal * vec4<f32>(rayDir, 0.0)).xyz;
+  let outer = intersectEllipsoidHeight(oL, dL, u.shapeHeightMinMax.y);
+  if (outer.x > outer.y) {
+    return vec4<f32>(outer, emptyHole);
+  }
+  // Inner ellipsoid only exists while radii + minHeight stays positive
+  // (VoxelEllipsoidShape clamps minHeight >= -minimumRadius; equality
+  // degenerates the inner surface to a point — no hole).
+  let minRadius = min(u.ellipsoidRadii.x,
+                      min(u.ellipsoidRadii.y, u.ellipsoidRadii.z));
+  var inner = emptyHole;
+  if (minRadius + u.shapeHeightMinMax.x > 0.0) {
+    inner = intersectEllipsoidHeight(oL, dL, u.shapeHeightMinMax.x);
+  }
+  if (inner.x > inner.y) {
+    return vec4<f32>(outer, emptyHole);
+  }
+  return vec4<f32>(outer,
+                   max(inner.x, outer.x),
+                   min(inner.y, outer.y));
+}
+
+// NEW-VOXEL-ELLIPSOID-INTERSECT — entry-face normal for the ellipsoid shell
+// in the PROXY frame (the frame u.lightDirectionModel lives in). WebGL's
+// intersectHeight() uses the spherical approximation: the unit-sphere-space
+// position at the hit IS the surface normal in the ellipsoid's local frame.
+// Normals transform between frames by the inverse-transpose; local→proxy is
+// mat3(proxyToLocal)⁻¹, so n_proxy = mat3(proxyToLocal)ᵀ · n_local. The
+// caller normalizes.
+fn ellipsoidEntryNormal(rayOrigin: vec3<f32>, rayDir: vec3<f32>,
+                        tEnter: f32) -> vec3<f32> {
+  let oL = (u.proxyToLocal * vec4<f32>(rayOrigin, 1.0)).xyz;
+  let dL = (u.proxyToLocal * vec4<f32>(rayDir, 0.0)).xyz;
+  let rc = vec3<f32>(1.0)
+         / (u.ellipsoidRadii + vec3<f32>(u.shapeHeightMinMax.y));
+  let dSphere = (oL + tEnter * dL) * rc;
+  let m3 = mat3x3<f32>(u.proxyToLocal[0].xyz,
+                       u.proxyToLocal[1].xyz,
+                       u.proxyToLocal[2].xyz);
+  return transpose(m3) * dSphere;
 }
 
 // NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — iterative octree walk (Octree.glsl-style
@@ -420,7 +534,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // sample positions for the shapeUv chain to address the same cells WebGL's
   // traversal reads.
   let rayOrigin = u.cameraPositionProxy;
-  let trReal = intersectAABB(rayOrigin, invDir, u.minBounds, u.maxBounds);
+  // NEW-VOXEL-ELLIPSOID-INTERSECT — shape-typed real intersection: BOX takes
+  // intersectAABB verbatim (bit-identical); ELLIPSOID intersects the
+  // outer/inner shell. shellReal.zw is the inner-hole interval the march
+  // skips (empty (+BIG, -BIG) for BOX and hole-less shells).
+  let shellReal = intersectShapeReal(rayOrigin, rayDir, invDir);
+  let trReal = shellReal.xy;
   // NEW-4-E: pair discard with a return for naga's terminator analysis.
   if (trReal.x > trReal.y) { discard; return vec4<f32>(0.0); }
   let tStart = max(trReal.x, 0.0) + dither * u.stepSize;
@@ -435,7 +554,14 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Normalize the selector so exactly one axis contributes even if two slabs
   // coincide, then orient it against the ray.
   let axisSum = max(entryAxis.x + entryAxis.y + entryAxis.z, 1.0);
-  let entryNormalLocal = -sign(rayDir) * entryAxis / axisSum;
+  var entryNormalLocal = -sign(rayDir) * entryAxis / axisSum;
+  // NEW-VOXEL-ELLIPSOID-INTERSECT — the shell's entry face is the outer
+  // ellipsoid, not an AABB slab; use the spherical-approximation normal
+  // (WebGL intersectHeight) transformed into the proxy frame. BOX keeps the
+  // slab normal above bit-identically.
+  if (u.shapeType > 0.5) {
+    entryNormalLocal = ellipsoidEntryNormal(rayOrigin, rayDir, trReal.x);
+  }
   // Default-shader gray lighting: 0.5 + 0.5 * max(0, dot(n, lightDirModel)).
   let ndotl = max(0.0, dot(normalize(entryNormalLocal), u.lightDirectionModel));
   let lighting = 0.5 + 0.5 * ndotl;
@@ -443,6 +569,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   for (var i = 0; i < maxI; i = i + 1) {
     let t = tStart + f32(i) * u.stepSize;
     if (t > tEnd || accumA > ALPHA_ACCUM_MAX) { break; }
+    // NEW-VOXEL-ELLIPSOID-INTERSECT — skip samples inside the shell's inner
+    // hole (the ELLIPSOID inner-ellipsoid interval). Empty for BOX
+    // (+BIG, -BIG), so the comparison never fires there.
+    if (t > shellReal.z && t < shellReal.w) { continue; }
     let p = rayOrigin + rayDir * t;
     // VOXEL-SHAPEUV-CONVENTION — derive the sample coordinate through WebGL's
     // convention chain instead of the historical model-space \`p + 0.5\`
@@ -703,7 +833,11 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let rayDir = normalize(input.worldPos - u.cameraPositionEC);
   let invDir = 1.0 / rayDir;
   let rayOrigin = u.cameraPositionProxy;
-  let trReal = intersectAABB(rayOrigin, invDir, u.minBounds, u.maxBounds);
+  // NEW-VOXEL-ELLIPSOID-INTERSECT — the pick march composes with the color
+  // march's shape-typed intersection so the picked surface agrees with the
+  // displayed one. BOX is bit-identical to the pre-ellipsoid intersectAABB.
+  let shellReal = intersectShapeReal(rayOrigin, rayDir, invDir);
+  let trReal = shellReal.xy;
   // NEW-4-E: pair discard with a return for naga's terminator analysis.
   if (trReal.x > trReal.y) { discard; return vec4<f32>(0.0); }
   let tStart = max(trReal.x, 0.0);
@@ -725,7 +859,12 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let tMinV = min(t1n, t2n);
   let entryAxis = step(vec3<f32>(trReal.x) - vec3<f32>(1e-4), tMinV);
   let axisSum = max(entryAxis.x + entryAxis.y + entryAxis.z, 1.0);
-  let entryNormalLocal = -sign(rayDir) * entryAxis / axisSum;
+  var entryNormalLocal = -sign(rayDir) * entryAxis / axisSum;
+  // NEW-VOXEL-ELLIPSOID-INTERSECT — same shape-typed entry normal as the
+  // color march so the user shader sees consistent attributes.
+  if (u.shapeType > 0.5) {
+    entryNormalLocal = ellipsoidEntryNormal(rayOrigin, rayDir, trReal.x);
+  }
   var accumA: f32 = 0.0;
   var winnerTileSlot: f32 = 0.0;
   var winnerInputCoord = vec3<f32>(0.0);
@@ -734,6 +873,9 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
   for (var i = 0; i < maxI; i = i + 1) {
     let t = tStart + f32(i) * u.stepSize;
     if (t > tEnd) { break; }
+    // NEW-VOXEL-ELLIPSOID-INTERSECT — skip inner-hole samples (see the color
+    // march). Empty interval for BOX — comparison never fires.
+    if (t > shellReal.z && t < shellReal.w) { continue; }
     let p = rayOrigin + rayDir * t;
     let shapeUv = clamp(
       (u.proxyToShapeUv * vec4<f32>(p, 1.0)).xyz,
@@ -1043,6 +1185,14 @@ interface VoxelShapeLike {
     positionLocal: Cartesian3,
     result: Cartesian3,
   ): Cartesian3;
+  // NEW-VOXEL-ELLIPSOID-INTERSECT — VoxelEllipsoidShape internals consumed by
+  // the ellipsoid shell-intersection uniforms. `_ellipsoid` carries the
+  // per-axis radii (the compound modelMatrix scale);
+  // `_minimumHeight`/`_maximumHeight` are the shape's height bounds (bounds z)
+  // relative to the ellipsoid surface.
+  _ellipsoid?: { radii?: Cartesian3 };
+  _minimumHeight?: number;
+  _maximumHeight?: number;
 }
 
 /**
@@ -1232,6 +1382,77 @@ function packVoxelSampleFrame(
   data[97] = h;
   data[98] = d;
   // paddingBefore stays zero.
+}
+
+// NEW-VOXEL-ELLIPSOID-INTERSECT scratches for composing the proxy→local
+// matrix (separate from the VOXEL-SHAPEUV-CONVENTION scratches — both packs
+// run in the same frame).
+const scratchEllShapeTransformInv = new Matrix4();
+const scratchEllProxyToLocal = new Matrix4();
+
+/**
+ * NEW-VOXEL-ELLIPSOID-INTERSECT — pack the shape-typed intersection fields
+ * (floats 184..207): `proxyToLocal` (proxy-cube point → the shape's
+ * ellipsoid-centered LOCAL frame in meters, `inverse(shapeTransform) ·
+ * effModel`), the ellipsoid's per-axis radii, and the min/max height bounds —
+ * the inputs WebGL's IntersectEllipsoid.glsl `intersectHeight()` consumes.
+ * Only written for ELLIPSOID-shape providers; BOX providers (and any
+ * degenerate/missing shape state) leave the floats zero, so `shapeType` stays
+ * 0 and the WGSL takes the bit-identical `intersectAABB` branch — the
+ * off-gate.
+ *
+ * The interior sample coordinate still derives through the box-affine
+ * proxy→uv fallback this increment: the shell GEOMETRY (silhouette,
+ * entry/exit, inner hole) is ellipsoid-correct while per-cell content
+ * addressing is a documented residual — B23 NEW-VOXEL-ELLIPSOID-SHAPEUV ships
+ * the radial/longitude/latitude shapeUv chain.
+ */
+function packVoxelShapeIntersect(
+  primitive: CesiumObjectWithWebGPUCache,
+  effModel: Matrix4,
+  data: Float32Array,
+): void {
+  const provider = (primitive as unknown as { _provider?: { shape?: string } })
+    ._provider;
+  if (!provider || provider.shape !== VoxelShapeType.ELLIPSOID) {
+    return;
+  }
+  const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
+  const radii = shape?._ellipsoid?.radii;
+  const minHeight = shape?._minimumHeight;
+  const maxHeight = shape?._maximumHeight;
+  if (
+    !shape ||
+    !shape.shapeTransform ||
+    !radii ||
+    typeof minHeight !== "number" ||
+    typeof maxHeight !== "number" ||
+    !(radii.x > 0 && radii.y > 0 && radii.z > 0)
+  ) {
+    return;
+  }
+  try {
+    const invShape = Matrix4.inverse(
+      shape.shapeTransform,
+      scratchEllShapeTransformInv,
+    );
+    const proxyToLocal = Matrix4.multiply(
+      invShape,
+      effModel,
+      scratchEllProxyToLocal,
+    );
+    Matrix4.pack(proxyToLocal, data, 184);
+  } catch {
+    // Degenerate shapeTransform — keep the zero-filled box fallback rather
+    // than crashing the frame.
+    return;
+  }
+  data[200] = radii.x;
+  data[201] = radii.y;
+  data[202] = radii.z;
+  data[203] = 1; // shapeType = ELLIPSOID
+  data[204] = minHeight;
+  data[205] = maxHeight;
 }
 
 // VOXEL-OCTREE-LOD scratch for the SSE refine test.
@@ -1825,9 +2046,11 @@ function updateWebGPUVoxelPrimitive(
     // depth-1 octree fields (floats 108-119: per-child atlas slots + slot
     // count + target LOD level). NEW-VOXEL-OCTREE-DEEP-TRAVERSAL grew it
     // 480 → 736 bytes for the 64 level-2 atlas slots (floats 120-183) read by
-    // the iterative octree walk.
+    // the iterative octree walk. NEW-VOXEL-ELLIPSOID-INTERSECT grew it
+    // 736 → 832 bytes for the shape-typed intersection fields (floats
+    // 184-207: proxyToLocal + ellipsoidRadii/shapeType + heightMinMax).
     cache.uniformBuffer = device.createBuffer({
-      size: 736,
+      size: 832,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     // VOXEL-SHAPEUV-CONVENTION — honour VoxelPrimitive.nearestSampling
@@ -2328,7 +2551,10 @@ function updateWebGPUVoxelPrimitive(
   //   [108..115] childSlots0/1          (VOXEL-OCTREE-LOD)
   //   [116..119] atlasInfo: slotCount, targetLevel, pad, pad (VOXEL-OCTREE-LOD)
   //   [120..183] l2Slots (64 level-2 atlas slots, NEW-VOXEL-OCTREE-DEEP-TRAVERSAL)
-  const data = new Float32Array(184);
+  //   [184..199] proxyToLocal            (NEW-VOXEL-ELLIPSOID-INTERSECT)
+  //   [200..203] ellipsoidRadii + shapeType (NEW-VOXEL-ELLIPSOID-INTERSECT)
+  //   [204..207] shapeHeightMinMax + pad (NEW-VOXEL-ELLIPSOID-INTERSECT)
+  const data = new Float32Array(208);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -2464,6 +2690,11 @@ function updateWebGPUVoxelPrimitive(
         data[120 + i] = du.l2Slots[i];
       }
     }
+
+    // NEW-VOXEL-ELLIPSOID-INTERSECT — shape-typed intersection fields (floats
+    // 184..207). Zero-filled (shapeType 0 = the bit-identical BOX branch)
+    // unless the provider's shape is ELLIPSOID.
+    packVoxelShapeIntersect(primitive, modelMatrix, data);
   }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
