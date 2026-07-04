@@ -21,6 +21,7 @@
  * @private
  * @module WebGPUModelRenderer
  */
+import BoundingSphere from "../../Core/BoundingSphere.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
@@ -37,6 +38,10 @@ import {
   extractPrimitiveGeometry,
   normalizeColorData,
 } from "../../Scene/Model/ModelPrimitiveGeometry.js";
+import {
+  computeReference2DPosition,
+  projectPositionsTo2D,
+} from "../../Scene/Model/SceneMode2DPipelineStage.js";
 import {
   extractSkinData,
   updatePackedJointMatrices,
@@ -290,6 +295,10 @@ const scratchNormal = new Matrix4();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
+// NEW-MODEL-PROJECT2D-BV-MORPH (B11) — scratch for the accurate-2D 3D normal
+// matrix override (see overrideProject2DNormalMatrix).
+const scratchModelView3D = new Matrix4();
+const scratchNormal3D = new Matrix4();
 // AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — per-runtime-node
 // modelMatrix scratch for `modelMatrix * runtimeNode.computedTransform`.
 // Reused per node per frame. Originally cited `transformToRoot` here, which
@@ -298,6 +307,51 @@ const scratchEncodedCamera = new EncodedCartesian3();
 // (`ModelMatrixUpdateStage.js:82-86`) multiplies in `runtimeNode.transform`
 // before consuming, equivalent to using `runtimeNode.computedTransform`.
 const scratchNodeModelMatrix = new Matrix4();
+
+// NEW-MODEL-PROJECT2D-BV-MORPH (B11) — reused per-frame scratch for the
+// accurate-2D (`projectTo2D:true`) path: the model's ECEF world origin, the
+// per-node 3D world matrix used to reproject positions, and a corner-point
+// accumulator for the morphed 2D bounding volume.
+const scratchProject2DWorldOrigin = new Cartesian3();
+const scratchProject2DNodeWorld = new Matrix4();
+
+// NEW-MODEL-PROJECT2D-BV-MORPH (B11) — union the per-primitive accurate 2D
+// bounding spheres (computed by SceneMode2DPipelineStage into
+// `runtimePrimitive.boundingSphere2D`) into a single model-level 2D volume.
+// This is the "morphed" flat bounding box the accurate-2D command culls
+// against, in the same projected frame as the camera. Returns undefined when
+// no 2D spheres are available yet (caller falls back to the ECEF sphere).
+function computeModel2DBoundingVolume(model, cache) {
+  const runtimeNodes = model._sceneGraph?._runtimeNodes;
+  if (!defined(runtimeNodes)) {
+    return undefined;
+  }
+  if (!defined(cache._project2DBoundingSphere)) {
+    cache._project2DBoundingSphere = new BoundingSphere();
+  }
+  const out = cache._project2DBoundingSphere;
+  let started = false;
+  for (let i = 0; i < runtimeNodes.length; i++) {
+    const node = runtimeNodes[i];
+    const prims = node?.runtimePrimitives;
+    if (!defined(prims)) {
+      continue;
+    }
+    for (let j = 0; j < prims.length; j++) {
+      const bs = prims[j]?.boundingSphere2D;
+      if (!defined(bs)) {
+        continue;
+      }
+      if (!started) {
+        BoundingSphere.clone(bs, out);
+        started = true;
+      } else {
+        BoundingSphere.union(out, bs, out);
+      }
+    }
+  }
+  return started ? out : undefined;
+}
 
 // C2-25 ENV-SCENE-CAPTURE (Batch 447) — reused per-primitive-per-face capture
 // camera UB staging buffer. The pack writes into this, the ring allocator
@@ -432,6 +486,26 @@ function packCameraUniforms(data, frameState, modelMatrix) {
   // post-process Tonemap stage does it once. Zero on the default SDR path →
   // byte-identical.
   data[76] = frameState.useHDR === true ? 1.0 : 0.0;
+}
+
+// NEW-MODEL-PROJECT2D-BV-MORPH (B11) — override the normal matrix (slots
+// 32-47) with the 3D normal matrix for the accurate-2D path. `packCameraUniforms`
+// derives the normal matrix from the translate(reference) 2D clip matrix, which
+// has no model orientation — so `normalEC` loses the model's world rotation and
+// diffuse lighting goes wrong. WebGL shades projectTo2D models entirely in the
+// 3D eye frame (`czm_normal3D`, ModelVS.glsl:62) while only the CLIP position is
+// remapped to 2D; the light direction the renderer packs
+// (`uniformState.lightDirectionEC`) is ALWAYS in the view3D frame
+// (UniformState.js:850 `viewRotation3D`), so `normalEC` must match it. This
+// recomputes `transpose(inverse(view3D × model3DWorld))` — the model-level 3D
+// world matrix (per-node rotation for normals is a documented B12 residual).
+// The clip position, RTE camera encode, and mvp remain the 2D values.
+function overrideProject2DNormalMatrix(data, frameState, model3DWorldMatrix) {
+  const uniformState = frameState.context.uniformState;
+  Matrix4.multiply(uniformState.view3D, model3DWorldMatrix, scratchModelView3D);
+  Matrix4.inverse(scratchModelView3D, scratchNormal3D);
+  Matrix4.transpose(scratchNormal3D, scratchNormal3D);
+  Matrix4.pack(scratchNormal3D, data, 32);
 }
 
 // ─── C2-25 ENV-SCENE-CAPTURE (Batch 447) — Model capture command builder ──────
@@ -3118,29 +3192,85 @@ function updateWebGPUModel(model, frameState) {
   // derive from this one local, so the substitution is complete.
   // `uniformState.view/projection/cameraPosition` are already in the same
   // projected frame in these modes, keeping the RTE chain consistent.
-  // Known honest-partials vs WebGL (deferred, matching the WebGL opt-in
-  // surface): `projectTo2D:true` accurate-2D vertex reprojection
-  // (MORPH-MODEL-PROJECT2D) and the SCENE2D IDL-crossing duplicate
-  // command (ModelDrawCommand.derive2DCommand).
-  const use2DMatrix =
+  // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — `projectTo2D:true` accurate-2D path.
+  // When the model opts into accurate 2D projection, WebGL bakes a per-vertex
+  // ellipsoid→projected reprojection into a dedicated position buffer and
+  // morphs the 3D bounding volume into a flat 2D box (SceneMode2DPipelineStage);
+  // critically, with `projectTo2D` set the scene graph does NOT compute
+  // `_computedModelMatrix2D` at all (Model.js:2471 resets draw commands on a
+  // mode flip instead of arming `_updateModelMatrix`), so the affine 2D path
+  // below has no matrix to use and the model would fall back to its ECEF 3D
+  // matrix under a 2D/CV camera — culled to nothing. Instead we reproject each
+  // primitive's positions on the CPU (relative to a single model-level
+  // reference point) and drive the camera UB with a pure translate(reference)
+  // matrix; the existing model-space RTE chain then resolves clip space
+  // correctly (`rte = projAbs - eyeProj`). Per-primitive reference frames +
+  // the IDL-crossing duplicate command are the B12 follow-up.
+  const projectTo2DActive =
+    model._projectTo2D === true &&
     frameState.mode !== SceneMode.SCENE3D &&
-    defined(model._sceneGraph?._computedModelMatrix2D);
-  const modelMatrix = use2DMatrix
-    ? model._sceneGraph._computedModelMatrix2D
-    : model._sceneGraph?._computedModelMatrix ||
-      model.modelMatrix ||
-      Matrix4.IDENTITY;
-  // Command bounding volume must live in the same frame as the camera —
-  // Scene's createPotentiallyVisibleSet culls/bins by it, so an ECEF
-  // sphere under a 2D/CV culling volume would cull the model outright.
-  // WebGL's ModelDrawCommand carries a per-primitive 2D-transformed BV;
-  // the model-level `_boundingSphere2D` (computed alongside
-  // `_computedModelMatrix2D`) is the conservative equivalent.
-  const commandBoundingVolume =
-    use2DMatrix && defined(model._sceneGraph._boundingSphere2D)
-      ? model._sceneGraph._boundingSphere2D
-      : model.boundingSphere;
+    defined(model._sceneGraph?._computedModelMatrix);
+
+  let modelMatrix;
+  let commandBoundingVolume;
+  if (projectTo2DActive) {
+    // Reference = accurate CV projection of the model's ECEF world origin.
+    // CV-forced (inside computeReference2DPosition) so it keeps its height and
+    // stays valid for both SCENE2D and COLUMBUS_VIEW. The per-vertex buffers
+    // built in the emission loop subtract this same point.
+    const worldOrigin = Matrix4.getTranslation(
+      model._sceneGraph._computedModelMatrix,
+      scratchProject2DWorldOrigin,
+    );
+    if (!defined(cache._project2DReference)) {
+      cache._project2DReference = new Cartesian3();
+      cache._project2DMatrix = new Matrix4();
+    }
+    const reference = computeReference2DPosition(
+      frameState,
+      worldOrigin,
+      cache._project2DReference,
+    );
+    modelMatrix = Matrix4.fromTranslation(reference, cache._project2DMatrix);
+    // Invalidate cached per-primitive 2D buffers if the reference shifted
+    // materially (e.g. the model matrix changed while in 3D, then 2D re-entry)
+    // — projectTo2D locks the matrix in 2D/CV so this is normally stable.
+    const refKey = `${reference.x.toFixed(3)}_${reference.y.toFixed(3)}_${reference.z.toFixed(3)}`;
+    cache._project2DActive = true;
+    cache._project2DRefKey = refKey;
+    commandBoundingVolume =
+      computeModel2DBoundingVolume(model, cache) ?? model.boundingSphere;
+  } else {
+    cache._project2DActive = false;
+    const use2DMatrix =
+      frameState.mode !== SceneMode.SCENE3D &&
+      defined(model._sceneGraph?._computedModelMatrix2D);
+    modelMatrix = use2DMatrix
+      ? model._sceneGraph._computedModelMatrix2D
+      : model._sceneGraph?._computedModelMatrix ||
+        model.modelMatrix ||
+        Matrix4.IDENTITY;
+    // Command bounding volume must live in the same frame as the camera —
+    // Scene's createPotentiallyVisibleSet culls/bins by it, so an ECEF
+    // sphere under a 2D/CV culling volume would cull the model outright.
+    // WebGL's ModelDrawCommand carries a per-primitive 2D-transformed BV;
+    // the model-level `_boundingSphere2D` (computed alongside
+    // `_computedModelMatrix2D`) is the conservative equivalent.
+    commandBoundingVolume =
+      use2DMatrix && defined(model._sceneGraph._boundingSphere2D)
+        ? model._sceneGraph._boundingSphere2D
+        : model.boundingSphere;
+  }
   packCameraUniforms(cache.cameraData, frameState, modelMatrix);
+  if (projectTo2DActive) {
+    // Restore the 3D-frame normal matrix so diffuse lighting keeps the model's
+    // world orientation (the translate(reference) 2D matrix has none).
+    overrideProject2DNormalMatrix(
+      cache.cameraData,
+      frameState,
+      model._sceneGraph._computedModelMatrix,
+    );
+  }
   device.queue.writeBuffer(
     cache.cameraBuffer.buffer,
     0,
@@ -3344,8 +3474,15 @@ function updateWebGPUModel(model, frameState) {
     // also a correctness fix for skinned rigs whose skin root has any
     // non-identity local OR ancestor transform.
     const computedTransform = runtimeNode.computedTransform;
-    const transformIsIdentity =
+    const computedTransformIsIdentity =
       !defined(computedTransform) || isIdentityMatrix4(computedTransform);
+    // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — in the accurate-2D path the node
+    // transform is baked per-vertex into the reprojected 2D positions, so the
+    // camera UB uses the model-level translate(reference) matrix directly and
+    // the per-node transform is collapsed to identity here (the 3D node world
+    // matrix that the reprojection consumes is captured separately below).
+    const project2DActive = cache._project2DActive === true;
+    const transformIsIdentity = project2DActive || computedTransformIsIdentity;
     const nodeModelMatrix = transformIsIdentity
       ? modelMatrix
       : Matrix4.multiplyTransformation(
@@ -3353,6 +3490,19 @@ function updateWebGPUModel(model, frameState) {
           computedTransform,
           scratchNodeModelMatrix,
         );
+    // 3D node world matrix (model 3D world × node transform), independent of
+    // the 2D camera matrix, used to reproject this node's positions into 2D.
+    let project2DNodeWorld;
+    if (project2DActive) {
+      const world3D = model._sceneGraph._computedModelMatrix;
+      project2DNodeWorld = computedTransformIsIdentity
+        ? world3D
+        : Matrix4.multiplyTransformation(
+            world3D,
+            computedTransform,
+            scratchProject2DNodeWorld,
+          );
+    }
 
     // Extract skinning data for this node (shared, renderer-agnostic)
     const skinData = extractSkinData(runtimeNode);
@@ -3721,6 +3871,34 @@ function updateWebGPUModel(model, frameState) {
         matInfo,
       );
 
+      // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — lazily build (and cache) the
+      // accurate-2D position buffer for this primitive: reproject every vertex
+      // from model space through the 3D node world matrix into the projected
+      // frame, relative to the shared model-level reference. Keyed by the
+      // reference so a reference shift (rare — projectTo2D locks the matrix in
+      // 2D/CV) rebuilds it. The 3D `positionBuffer` is retained untouched, so
+      // returning to SCENE3D is byte-identical.
+      if (project2DActive && defined(project2DNodeWorld)) {
+        if (
+          !defined(primCache.positionBuffer2D) ||
+          primCache._project2DRefKey !== cache._project2DRefKey
+        ) {
+          const projected = projectPositionsTo2D(
+            geometry.positionData,
+            project2DNodeWorld,
+            cache._project2DReference,
+            frameState,
+          );
+          primCache.positionBuffer2D?.destroy();
+          primCache.positionBuffer2D = createVertexBuffer(
+            device,
+            projected,
+            `Prim position 2D`,
+          );
+          primCache._project2DRefKey = cache._project2DRefKey;
+        }
+      }
+
       // DP-H46b — set the pipeline cache's metadata chunk for THIS primitive
       // before any subsequent pipeline (re)build in this loop iteration
       // (refetch / depth-write / pick / velocity / classification / translucent
@@ -4057,8 +4235,15 @@ function updateWebGPUModel(model, frameState) {
       // slot count exactly or `setVertexBuffer` errors.
       const hasMetadata =
         (primCache.materialDefines & ShaderDefine.MODEL_HAS_METADATA) !== 0;
+      // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — bind the reprojected accurate-2D
+      // position buffer when the model is projectTo2D-active and it has been
+      // built; otherwise the untouched 3D position buffer (byte-identical off).
+      const positionBuffer0 =
+        project2DActive && defined(primCache.positionBuffer2D)
+          ? primCache.positionBuffer2D
+          : primCache.positionBuffer;
       const vertexBuffers = [
-        primCache.positionBuffer,
+        positionBuffer0,
         primCache.normalBuffer || pipelineCache.defaultNormalBuffer,
         primCache.tangentBuffer || pipelineCache.defaultTangentBuffer,
         primCache.uvBuffer || pipelineCache.defaultUVBuffer,
@@ -5313,6 +5498,7 @@ function destroyPrimitiveCacheResources(pc) {
   }
 
   pc.positionBuffer?.destroy();
+  pc.positionBuffer2D?.destroy();
   pc.normalBuffer?.destroy();
   pc.tangentBuffer?.destroy();
   pc.uvBuffer?.destroy();

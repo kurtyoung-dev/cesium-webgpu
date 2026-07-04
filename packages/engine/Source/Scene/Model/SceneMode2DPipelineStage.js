@@ -317,4 +317,88 @@ function createPositionBufferFor2D(
   return buffer;
 }
 
+// ── WebGPU accurate-2D reuse surface (NEW-MODEL-PROJECT2D-BV-MORPH / B11) ──
+//
+// The WebGPU model renderer cannot consume the WebGL `positionBuffer2D` (it
+// builds its own GPU buffers from the retained CPU-side loader positions —
+// see the `requiresVertexTypedArrayRetention` guard in `.process` above). It
+// still needs the SAME per-vertex ellipsoid→projected reprojection WebGL bakes
+// into `positionBuffer2D`, so the two pure math helpers are exported here for
+// reuse rather than duplicated. Both force COLUMBUS_VIEW internally (matching
+// `createPositionBufferFor2D`) so the resulting projected positions keep their
+// height component and one buffer serves both SCENE2D (the ortho view drops the
+// height) and COLUMBUS_VIEW.
+
+const scratchCVProjected = new Cartesian3();
+
+/**
+ * Accurately project a world-space (ECEF) position into the 2D / CV projected
+ * frame, forcing COLUMBUS_VIEW so the height component is retained. Used by the
+ * WebGPU accurate-2D path to derive a stable per-model reference point.
+ *
+ * @param {FrameState} frameState The frame state.
+ * @param {Cartesian3} worldPosition The world-space position.
+ * @param {Cartesian3} result The object onto which to store the result.
+ * @returns {Cartesian3} The projected position.
+ *
+ * @private
+ */
+export function computeReference2DPosition(frameState, worldPosition, result) {
+  const frameStateCV = clone(frameState);
+  frameStateCV.mode = SceneMode.COLUMBUS_VIEW;
+  return SceneTransforms.computeActualEllipsoidPosition(
+    frameStateCV,
+    worldPosition,
+    result,
+  );
+}
+
+/**
+ * Accurately reproject an interleaved xyz Float32 position array (already
+ * dequantized, stride 3) from model space into the 2D / CV projected frame,
+ * relative to a shared reference point. Mirrors the per-vertex math in the
+ * WebGL `createPositionsTypedArrayFor2D` but operates on the WebGPU renderer's
+ * plain positionData typed array (no quantization / stride handling needed).
+ *
+ * @param {Float32Array} positionData Packed xyz model-space positions.
+ * @param {Matrix4} computedModelMatrix World matrix (model × node transform).
+ * @param {Cartesian3} referencePoint Projected-frame reference to subtract.
+ * @param {FrameState} frameState The frame state.
+ * @returns {Float32Array} Projected positions relative to referencePoint.
+ *
+ * @private
+ */
+export function projectPositionsTo2D(
+  positionData,
+  computedModelMatrix,
+  referencePoint,
+  frameState,
+) {
+  const frameStateCV = clone(frameState);
+  frameStateCV.mode = SceneMode.COLUMBUS_VIEW;
+  const length = positionData.length;
+  const result = new Float32Array(length);
+  for (let i = 0; i + 2 < length; i += 3) {
+    const initial = Cartesian3.fromArray(positionData, i, scratchPosition);
+    if (isNaN(initial.x) || isNaN(initial.y) || isNaN(initial.z)) {
+      continue;
+    }
+    const world = Matrix4.multiplyByPoint(
+      computedModelMatrix,
+      initial,
+      initial,
+    );
+    const projected = SceneTransforms.computeActualEllipsoidPosition(
+      frameStateCV,
+      world,
+      scratchCVProjected,
+    );
+    const relative = Cartesian3.subtract(projected, referencePoint, projected);
+    result[i] = relative.x;
+    result[i + 1] = relative.y;
+    result[i + 2] = relative.z;
+  }
+  return result;
+}
+
 export default SceneMode2DPipelineStage;

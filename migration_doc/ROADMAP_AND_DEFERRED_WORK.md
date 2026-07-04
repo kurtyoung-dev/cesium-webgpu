@@ -370,11 +370,30 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
   low-win/defer. **No shader change warranted for parity.** *Residual follow-up surfaced by the probe
   (SEPARATE from clipping): the same probe's pick-scan shows `scene.pick` returning no hit on the model
   under WebGPU while WebGL picks it — a Model pick-on-WebGPU discrepancy, not a clipping defect.*
-- **`MORPH-MODEL-PROJECT2D`** — glTF Model accurate-2D (`projectTo2D:true`) has no WGSL equivalent (a
-  morphable + 2D-projected model keeps its 3D bounding volume instead of morphing into a 2D-clipped ortho
-  box). Part of the Collections 2DCV morph picture (§4.4) but applies to Models too. **P2.**
-  _(Batch 499 shipped the base model 2D/CV render path itself — this accurate-2D residual remains a
-  B499 deferred item, along with the SCENE2D IDL-crossing duplicate command + per-primitive 2D BVs.)_
+- **`MORPH-MODEL-PROJECT2D`** — ✅ **increment 1/2 SHIPPED (NEW-MODEL-PROJECT2D-BV-MORPH / B11,
+  2026-07-04).** glTF Model accurate-2D (`projectTo2D:true`) now renders on WebGPU. Was: a
+  `projectTo2D:true` model rendered NOTHING in SCENE2D/CV on WebGPU (0 px vs WebGL's full footprint) —
+  root cause was that with `projectTo2D` set the scene graph never computes `_computedModelMatrix2D`
+  (`Model.js:2471` does `resetDrawCommands()` on a mode flip instead of arming `_updateModelMatrix`), so
+  the affine 2D path fell back to the ECEF 3D matrix under a 2D/CV camera and culled the model. Fix
+  (`WebGPUModelRenderer.js`): when `model._projectTo2D && mode !== SCENE3D`, reproject every primitive's
+  positions on the CPU into the projected frame relative to a single model-level reference point (reuses
+  the new `projectPositionsTo2D` / `computeReference2DPosition` exports on `SceneMode2DPipelineStage.js`),
+  bind that accurate-2D vertex buffer, drive the camera UB with a pure `translate(reference)` matrix, and
+  morph the command bounding volume into the flat 2D box (union of the per-primitive `boundingSphere2D`
+  the WebGL stage already computes). Shading is restored to WebGL's 3D-frame behaviour by overriding the
+  packed normal matrix with `transpose(inverse(view3D × model3DWorld))` (WebGL shades projectTo2D models
+  entirely in the view3D eye frame — `ModelVS.glsl:62` `czm_normal3D` — and the packed
+  `lightDirectionEC` is always view3D-framed, `UniformState.js:850`). Verified `probe-model-project2d.mjs`:
+  scale-9000 truck in SCENE2D/CV footprint + BV + interior shading match WebGL (2D mask 0.01%, centroid
+  identical, interiorDiff 17.8 — same band as the 3D leg; was 0-px/culled at HEAD). Off-gate
+  `probe-model-scene-modes.mjs` (projectTo2D:false) byte-identical. **Increment 2/2 residuals (B12,
+  `NEW-MODEL-SCENE2D-IDL-DUPLICATE`):** per-PRIMITIVE reference frames (B11 uses one model-level
+  reference — fine for compact models, may jitter for models whose primitives span very large arcs), the
+  SCENE2D IDL-crossing duplicate draw command, per-node normal rotation (B11 uses the model-level 3D
+  world matrix for normals), and skinned/instanced/morphed `projectTo2D` (WebGL freezes animation there).
+  Specular/IBL still read the 2D-frame `positionEC` (view vector) rather than the 3D one — a minor
+  residual folded into the same warm/cool IBL-tint band as SCENE3D. **P2.**
 - **`NEW-MATAPPEARANCE-DIFFUSE-PARITY`** is ✅ SHIPPED (Batch 356); surfaced separately:
   **`NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING`** — **SYMPTOM NOT REPRODUCED (2026-06-23).** Reading the
   Batch-356 probe PNGs, the grid LINES render correctly on grazing faces matching WebGL; the original
