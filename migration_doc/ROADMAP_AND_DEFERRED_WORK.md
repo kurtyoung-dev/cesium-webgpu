@@ -333,10 +333,14 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
   fixed view): both WGSL grid shaders use UV-space `step(uv, lineThickness)` width vs WebGL's
   derivative-based constant-PIXEL width. A multi-zoom grid probe would be needed to expose and fix it; as
   it stands no fix is required. **P2** (if pursued, low-priority tuning only).
-- **`NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK`** (surfaced Batch 359, during DP-H37 fix validation) — glTF
-  models with `KHR_materials_unlit` render as pure black on WebGPU while WebGL renders them correctly.
-  Root cause not yet identified; appears related to the VEC3 `COLOR_0` widening fix but may be
-  independent. **P2.**
+- **`NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK`** — ✅ RESOLVED (Batch 372, C2-3; reconfirmed 2026-07-04
+  Q4-KHR-UNLIT-BLACK). Not a real unlit-path gap — the WebGPU unlit path has existed end-to-end since
+  git Batch 119 (`ModelPBRComplete.wgsl` `FLAG_IS_UNLIT` early-out outputs `baseColor·vertexColor`). The
+  B359 "black" was a symptom of DP-H37: the repro asset relies on a VEC3 `COLOR_0` gradient, and the
+  DP-H37 VEC3→RGBA widening fix (B359) resolved both. Permanent regression sentinel
+  `Tools/visual-regression/probe-unlit-vertexcolor.mjs` (+ asset `unlit-vec3color-quad.gltf`): WebGPU
+  renders the full gradient (lum 440.8, not black), matches WebGL within 11.2/channel. No code change.
+  See DEFERRED_WORK.md §"RESOLVED (Batch 372, C2-3)".
 - **`KHR_BINDING_MANIFEST` follow-up** — per-extension granular pipeline split (the coarse
   `MODEL_HAS_KHR_TEXTURES` family gate ships; finer per-extension variants are the documented follow-up).
   **P2** (Phase-8 shader strategy).
