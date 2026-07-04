@@ -299,10 +299,12 @@ KHR extensions are **wired** on WebGPU (clearcoat/sheen/anisotropy/iridescence/t
 texture-transform all ship real BRDF blocks — the old "silently dropped on WebGPU" claim is STALE).
 Clustered Forward+ lighting + punctual lights also ship. Open:
 
-- **`NEW-WEBGPU-KTX2-TRANSCODER-FORMATS`** (S–M, Batch 369) — **CRITICAL-PATH** (see §3). `loadKTX2`
-  throws `"supportedTargetFormats is required"` for ANY KTX2 on a `WebGPUContext` (even uncompressed
-  RGBA-half-float). Fix: register WebGPU `GPUFeatureName`→`KTX2Transcoder` target formats during
-  `WebGPUContext` init. **P1.** Probe: `diag-ktx2-ibl-shape.mjs` + `probe-model-ktx2-ibl.mjs`.
+- **`NEW-WEBGPU-KTX2-TRANSCODER-FORMATS`** ✅ **RESOLVED (Batch 370, C2-1, ae21c21603).**
+  `WebGPUContext._updateFeatureFlags()` now calls `loadKTX2.setKTX2SupportedFormats(...)` after device
+  creation, deriving the transcode targets from the device's `texture-compression-{bc,etc2,astc}`
+  features (mirrors WebGL `Context.js` init). `loadKTX2` no longer throws `"supportedTargetFormats is
+  required"` on a `WebGPUContext`. Q1 (Campaign 3) re-verified the premise as already-closed and added
+  the standing regression guard `probe-ktx2-transcoder-formats.mjs` (GATE PASS 2026-07-04).
 - **`NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU`** (M, Batch 287) — authored KTX2 specular env maps don't load on
   WebGPU (procedural fallback used). **Blocked by** the transcoder-formats item above. **P1.**
 - **`NEW-MODEL-WGSL-CUSTOM-SHADER`** — WGSL `CustomShader` API parallel to GLSL
