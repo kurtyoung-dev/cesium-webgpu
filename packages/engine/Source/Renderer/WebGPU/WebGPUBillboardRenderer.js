@@ -759,7 +759,18 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
   uniformData[45] = splitFraction * drawingBufferWidth;
   // Log-depth factor at float 46 (previously implicit padding).
   uniformData[46] = ldFactor;
-  uniformData[47] = 0.0;
+  // Q13-PLAIN-HDR-GAMMA-CORE — HDR gamma gate at float 47 (camera.hdrGamma).
+  // Carries czm_gamma (uniformState.gamma, default 2.2) when
+  // `scene.highDynamicRange` is on (`frameState.useHDR`), else 0. The fragment
+  // shader mirrors WebGL BillboardCollectionFS.glsl's `#ifdef HDR`
+  // czm_gammaCorrect sRGB→linear decode when this is > 0.5. Zero on the default
+  // SDR path → byte-identical.
+  uniformData[47] =
+    frameState?.useHDR === true
+      ? typeof uniformState?.gamma === "number"
+        ? uniformState.gamma
+        : 2.2
+      : 0.0;
 
   // DP-H41 (Batch 27) — previousViewProjection at slots 48..63 (16 floats,
   // 64 bytes). Fits in the existing 256-byte uniform buffer — no resize.

@@ -400,8 +400,7 @@ export function createCameraUniformBuffer(
   data[offset++] = encoding?.minimumHeight ?? 0.0;
   data[offset++] = encoding?.maximumHeight ?? 0.0;
   const ell = (tileProvider?._ellipsoid ?? tileProvider?.ellipsoid) as
-    | { maximumRadius?: number }
-    | undefined;
+    { maximumRadius?: number } | undefined;
   data[offset++] = ell?.maximumRadius ?? 0.0;
   data[offset++] = 0; // reserved (future minor-axis radius)
 
@@ -930,21 +929,27 @@ export function createCameraUniformBuffer(
 
   // ─── GLOBE-HDR-GAMMA: czm_gammaCorrect HDR gate tail (192-195) ───
   // hdrControl (vec4). Mirrors WebGL's `#ifdef HDR` czm_gammaCorrect
-  // (gammaCorrect.glsl: sRGB → linear decode), gated on the B479 HDR
-  // canvas-output path: `frameState.useHDR` (Scene mirrors
-  // `scene.highDynamicRange`) AND `context.hdrCanvasOutput` (the canvas
-  // actually configured rgba16float/extended — tracks the Scene
-  // `useHDRCanvasOutput` setter INCLUDING the browser-fallback demotion).
-  // Same effective gate as the post-process chain's setHDROutputMode
-  // (tonemap bypassed, chain works in unbounded linear HDR), so the
-  // globe emits linear exactly when the rest of the chain does. y carries
-  // czm_gamma (uniformState.gamma, default 2.2). All-zero on the default
-  // SDR path → czm_gammaCorrect stays identity → byte-identical render.
-  const hdrCanvasEngaged =
-    (frameState?.context as { hdrCanvasOutput?: boolean } | undefined)
-      ?.hdrCanvasOutput === true &&
+  // (gammaCorrect.glsl: sRGB → linear decode). WebGL pushes the `HDR`
+  // define via DerivedCommand.createHdrCommand whenever `scene._hdr`
+  // (i.e. `scene.highDynamicRange`) is true — INDEPENDENT of whether the
+  // canvas is an actual HDR/rgba16float output. Q13-PLAIN-HDR-GAMMA-CORE:
+  // the gate is therefore `frameState.useHDR` alone (Scene mirrors
+  // `scene.highDynamicRange` onto it), matching (1) WebGL's single HDR
+  // define, (2) this globe's own atmosphere/fog inline-tonemap skip gate
+  // (`groundAtmosphereControl.w`, WebGPUGlobeSurfaceTileUB.ts, also
+  // `frameState.useHDR`), and (3) the WebGPU post-process Tonemap stage
+  // (`setStageEnabled("Tonemap", useHdr && !hdrOutputMode)`), which
+  // tonemaps + gamma-encodes on `scene.highDynamicRange` regardless of
+  // canvas output. The previous `context.hdrCanvasOutput && useHDR` gate
+  // left imagery UN-decoded under plain `scene.highDynamicRange = true`
+  // (SDR canvas) while the post-process Tonemap still gamma-ENCODED it —
+  // a double-gamma-encode that rendered the globe double-bright vs WebGL.
+  // y carries czm_gamma (uniformState.gamma, default 2.2). All-zero on the
+  // default SDR path (useHDR false) → czm_gammaCorrect stays identity →
+  // byte-identical render.
+  const hdrEnabled =
     (frameState as { useHDR?: boolean } | undefined)?.useHDR === true;
-  data[offset++] = hdrCanvasEngaged ? 1.0 : 0.0;
+  data[offset++] = hdrEnabled ? 1.0 : 0.0;
   data[offset++] = (uniformState as { gamma?: number }).gamma ?? 2.2;
   data[offset++] = 0.0;
   data[offset++] = 0.0;

@@ -215,14 +215,17 @@ struct CameraUniforms {
   translucencyFrontAlphaByDistance: vec4<f32>,
   translucencyBackAlphaByDistance: vec4<f32>,
   translucencyControl: vec4<f32>,
-  // ─── GLOBE-HDR-GAMMA: czm_gammaCorrect gate for HDR canvas output ───
-  // x = 1.0 when the B479 HDR canvas-output path is active
-  //     (`scene.useHDRCanvasOutput` AND `scene.highDynamicRange`, i.e. the
-  //     same gate the post-process chain's setHDROutputMode uses — tonemap
-  //     bypassed, chain emits unbounded LINEAR HDR to the rgba16float
-  //     canvas). Under that mode `czm_gammaCorrect` must decode sRGB →
-  //     linear like WebGL's `#ifdef HDR` czm_gammaCorrect, otherwise the
-  //     globe's gamma-encoded imagery is double-bright vs the linear chain.
+  // ─── GLOBE-HDR-GAMMA: czm_gammaCorrect gate (Q13-PLAIN-HDR-GAMMA-CORE) ───
+  // x = 1.0 when `scene.highDynamicRange` is on (`frameState.useHDR`),
+  //     mirroring WebGL's single `HDR` define (DerivedCommand.createHdrCommand
+  //     pushes it on `scene._hdr` alone — NOT gated on an actual HDR canvas).
+  //     Under HDR, `czm_gammaCorrect` decodes sRGB → linear like WebGL's
+  //     `#ifdef HDR` czm_gammaCorrect, so the post-process Tonemap stage
+  //     (enabled on the same `highDynamicRange` flag) can tonemap + re-encode
+  //     the linear radiance. This matches the globe's own atmosphere/fog gate
+  //     (`groundAtmosphereControl.w`, also `frameState.useHDR`). The earlier
+  //     HDR-canvas-only gate left imagery un-decoded under plain HDR while the
+  //     Tonemap still gamma-encoded it — a double-encode → double-bright globe.
   // y = czm_gamma (uniformState.gamma, default 2.2).
   // z, w = reserved.
   // Additive tail-append — no existing offset shifts; all-zero by default so
@@ -892,14 +895,14 @@ fn czm_getDefaultMaterial(input: czm_MaterialInput) -> czm_Material {
 // — verified via probe-saved-view.mjs (meanBrightnessRatio 4.221 on
 // default-3D between WebGL and WebGPU).
 //
-// GLOBE-HDR-GAMMA — the WebGL `#ifdef HDR` branch is now mirrored at
-// runtime via `camera.hdrControl` (x = gate, y = czm_gamma). The gate is
-// raised ONLY on the B479 HDR canvas-output path (tonemap bypassed, the
-// post-process chain works in unbounded linear HDR — see
-// WebGPUPostProcessPipeline.setHDROutputMode), where the sRGB → linear
-// decode is required for the globe to match the rest of the linear chain.
-// On the default SDR path the gate is 0 and this stays the identity
-// no-op that matches every published WebGL SDR view.
+// GLOBE-HDR-GAMMA (Q13-PLAIN-HDR-GAMMA-CORE) — the WebGL `#ifdef HDR`
+// branch is mirrored at runtime via `camera.hdrControl` (x = gate,
+// y = czm_gamma). The gate is raised whenever `scene.highDynamicRange`
+// is on (`frameState.useHDR`), matching WebGL's single HDR define and
+// the WebGPU post-process Tonemap stage (enabled on the same flag). Under
+// HDR the sRGB → linear decode hands linear radiance to the post-process
+// chain to tonemap + re-encode. On the default SDR path the gate is 0 and
+// this stays the identity no-op that matches every published WebGL view.
 fn czm_gammaCorrect(color: vec3<f32>) -> vec3<f32> {
   if (camera.hdrControl.x > 0.5) {
     return pow(max(color, vec3<f32>(0.0)), vec3<f32>(camera.hdrControl.y));

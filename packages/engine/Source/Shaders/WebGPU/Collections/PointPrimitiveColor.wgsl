@@ -327,6 +327,17 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     var color = mix(input.outlineColor, input.color, innerAlpha);
     color = vec4<f32>(color.rgb, color.a * wholeAlpha);
 
+    // Q13-PLAIN-HDR-GAMMA-CORE — mirror WebGL PointPrimitiveCollectionFS.glsl's
+    // `out_FragColor = czm_gammaCorrect(color)` (gated on `#ifdef HDR`, identity
+    // in SDR). `camera.logDepth.w` holds czm_gamma when `scene.highDynamicRange`
+    // is on, else 0 → skipped, so the default SDR path is byte-identical.
+    if (camera.logDepth.w > 0.5) {
+        color = vec4<f32>(
+            pow(max(color.rgb, vec3<f32>(0.0)), vec3<f32>(camera.logDepth.w)),
+            color.a
+        );
+    }
+
     if (color.a < 0.005) {
         discard;
     }

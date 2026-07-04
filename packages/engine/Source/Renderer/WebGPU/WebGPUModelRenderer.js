@@ -419,6 +419,15 @@ function packCameraUniforms(data, frameState, modelMatrix) {
     data[74] = 0;
     data[75] = 1;
   }
+
+  // Q13-PLAIN-HDR-GAMMA-CORE — HDR gate at float 76 (camera.hdrControl.x),
+  // packed into pre-existing trailing padding of the 320-byte camera UB.
+  // Mirrors WebGL's `#ifdef HDR` in LightingStageFS: when
+  // `scene.highDynamicRange` is on (`frameState.useHDR`) the model shader's
+  // `tonemapAndGamma` skips the inline tonemap + gamma encode so the
+  // post-process Tonemap stage does it once. Zero on the default SDR path →
+  // byte-identical.
+  data[76] = frameState.useHDR === true ? 1.0 : 0.0;
 }
 
 // ─── C2-25 ENV-SCENE-CAPTURE (Batch 447) — Model capture command builder ──────

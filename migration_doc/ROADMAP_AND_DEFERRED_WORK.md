@@ -550,19 +550,28 @@ radii; see §5.2). Open:
   byte-identical off-gate + per-stage means unchanged vs pre-fix run. Scene-side plain-HDR gaps
   discovered while isolating the gate are tracked in `NEW-PLAIN-HDR-SCENE-GAMMA-EPIC` below.
 - **`NEW-PLAIN-HDR-SCENE-GAMMA-EPIC`** (found 2026-07-03 while probing the tonemap-order fix) —
-  **P2 — OPEN.** Under plain `scene.highDynamicRange = true` (SDR canvas — now with a working
+  **P2 — INCREMENT 1 RESOLVED 2026-07-04 (Q13-PLAIN-HDR-GAMMA-CORE); (d) + minor tails OPEN.**
+  Under plain `scene.highDynamicRange = true` (SDR canvas — now with a working
   tonemap on both backends), WebGPU scene shaders don't mirror WebGL's `#ifdef HDR` gamma
   handling, family of four:
-  (a) **Globe**: WGSL sRGB→linear decode (`hdrControl.x`, WebGPUGlobeSurfaceCameraUB.ts ~:943)
-  is gated on `hdrCanvasOutput && useHDR`, but WebGL's `#ifdef HDR` engages on `useHdr` alone →
-  globe renders double-bright under plain HDR (observed: ground base-color delta in
-  probe-pp-library-builtins diagnostics).
-  (b) **Points/billboards**: `PointPrimitiveCollectionFS` `czm_gammaCorrect` linearizes colors
-  under HDR; the WGSL point renderer never does (0.3 gray point → WebGL ~18/255 vs WebGPU
-  ~147/255 displayed).
-  (c) **Models**: `ModelPBRComplete.wgsl` `tonemapAndGamma` applies tonemap+gamma
-  unconditionally (its own comment: "when HDR plumbing lands, gate both on the HDR flag") →
-  models double-tonemap under plain HDR now that the PP tonemap engages.
+  (a) ✅ **Globe**: WGSL sRGB→linear decode (`hdrControl.x`, WebGPUGlobeSurfaceCameraUB.ts ~:943)
+  was gated on `hdrCanvasOutput && useHDR`, but WebGL's `#ifdef HDR` engages on `useHdr` alone.
+  **FIXED** — gate is now `frameState.useHDR` alone, matching WebGL's single HDR define, the
+  globe's own atmosphere/fog gate (`groundAtmosphereControl.w`), and the PP Tonemap stage. The
+  reference matrix is: under HDR every scene shader emits LINEAR (imagery decoded, inline
+  tonemaps skipped) and the post-process Tonemap does the single tonemap + gamma-encode.
+  (b) ✅ **Points/billboards**: the WGSL point/billboard renderers now mirror WebGL's
+  `czm_gammaCorrect` sRGB→linear decode under HDR, gated on a per-frame gamma lane
+  (`camera.logDepth.w` for points / `camera.hdrGamma` float-47 for billboards; carries
+  `uniformState.gamma` when HDR on, 0 = identity when off).
+  (c) ✅ **Models**: `ModelPBRComplete.wgsl` `tonemapAndGamma` now gates on `camera.hdrControl.x`
+  (float 76, trailing camera-UB pad; `frameState.useHDR`) → skips the inline tonemap+gamma
+  under HDR so the PP Tonemap runs once (was double-tonemapping).
+  Acceptance: `probe-plain-hdr-gamma.mjs` — WebGL↔WebGPU HDR globe mismatch 92.59%→11.96%,
+  brightness ratio 0.639 (WebGPU ~1.56× brighter)→1.050 (≈ SDR's 1.051 baseline); SDR control
+  1.41%→1.40% (off-gate byte-identical). Residual HDR mismatch is the separate atmosphere/sky
+  HDR tonemap-operator gap, not gamma. All three gates default-off byte-identical (spare/pad
+  lanes, `> 0.5` shader branches).
   (d) **Mid-session `highDynamicRange` toggle** invalidates cached scene pipelines (attachment
   format mismatch: "Primitive pipeline (cull=back)" vs rgba16float "Scene Framebuffer Render
   Pass", ~128 validation errors/frame observed); startup-HDR works — scene pipeline caches need

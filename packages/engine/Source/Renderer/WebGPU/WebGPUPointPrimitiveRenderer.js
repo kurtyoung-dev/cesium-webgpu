@@ -921,7 +921,18 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[44] = ldNear;
   uniformData[45] = ldFar;
   uniformData[46] = ldFactor;
-  uniformData[47] = 0.0;
+  // Q13-PLAIN-HDR-GAMMA-CORE — HDR gamma gate at float 47 (camera.logDepth.w).
+  // Carries czm_gamma (uniformState.gamma, default 2.2) when
+  // `scene.highDynamicRange` is on (`frameState.useHDR`), else 0. The fragment
+  // shader mirrors WebGL PointPrimitiveCollectionFS.glsl's `#ifdef HDR`
+  // czm_gammaCorrect sRGB→linear decode when this is > 0.5. Zero on the default
+  // SDR path → byte-identical.
+  uniformData[47] =
+    frameState?.useHDR === true
+      ? typeof uniformState?.gamma === "number"
+        ? uniformState.gamma
+        : 2.2
+      : 0.0;
 }
 
 // =========================================================================

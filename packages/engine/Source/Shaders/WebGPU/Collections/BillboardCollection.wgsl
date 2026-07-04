@@ -68,7 +68,12 @@ struct CameraUniforms {
   // `previousViewProjection`'s 16-byte alignment, so the struct size and
   // every existing offset are unchanged.
   logDepthFactor: f32,
-  _padLog: f32,
+  // Q13-PLAIN-HDR-GAMMA-CORE — carries czm_gamma (scene.gamma, default 2.2)
+  // when `scene.highDynamicRange` is on, else 0. Repurposes the former
+  // `_padLog` at float 47 — no UBO size change. The fragment shader gates the
+  // WebGL `#ifdef HDR` czm_gammaCorrect sRGB→linear decode on `> 0.5`, so the
+  // default SDR path (0) stays the historical identity.
+  hdrGamma: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
@@ -628,8 +633,19 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   }
   //>>endif
 
-  let texColor = textureSample(atlasTexture, atlasSampler, input.texCoord);
-  let color = texColor * input.color;
+  var texColor = textureSample(atlasTexture, atlasSampler, input.texCoord);
+  var vtxColor = input.color;
+  // Q13-PLAIN-HDR-GAMMA-CORE — mirror WebGL BillboardCollectionFS.glsl's
+  // `color = czm_gammaCorrect(color); color *= czm_gammaCorrect(v_color);`
+  // (gated on `#ifdef HDR`, identity in SDR). `camera.hdrGamma` holds czm_gamma
+  // when `scene.highDynamicRange` is on, else 0 → this whole block is skipped
+  // and the result is byte-identical to the prior `texColor * input.color`.
+  if (camera.hdrGamma > 0.5) {
+    let g = vec3<f32>(camera.hdrGamma);
+    texColor = vec4<f32>(pow(max(texColor.rgb, vec3<f32>(0.0)), g), texColor.a);
+    vtxColor = vec4<f32>(pow(max(vtxColor.rgb, vec3<f32>(0.0)), g), vtxColor.a);
+  }
+  let color = texColor * vtxColor;
   if (color.a < 0.005) {
     discard;
   }

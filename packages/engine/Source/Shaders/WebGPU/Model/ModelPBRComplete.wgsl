@@ -92,6 +92,15 @@ struct CameraUniforms {
   cameraPositionWC: vec3<f32>,
   logDepthFar: f32,
     previousViewProjection: mat4x4<f32>,
+  // Q13-PLAIN-HDR-GAMMA-CORE — HDR gate at floats 76-79. These bytes were
+  // already allocated as trailing padding in the 320-byte camera UB
+  // (CAMERA_UNIFORM_SIZE; the struct declared through previousViewProjection
+  // is only 304 bytes), so this appends WITHOUT growing the buffer and stays
+  // zero (identity) on the default SDR path. x = 1.0 when
+  // `scene.highDynamicRange` is on (`frameState.useHDR`), mirroring WebGL's
+  // single `HDR` define so `tonemapAndGamma` skips the inline tonemap + gamma
+  // encode and hands linear radiance to the post-process Tonemap stage.
+  hdrControl: vec4<f32>,
 };
 
 //>>ifdef LOG_DEPTH
@@ -1310,10 +1319,18 @@ fn pbrNeutralTonemap(color: vec3<f32>) -> vec3<f32> {
 }
 
 fn tonemapAndGamma(color: vec3<f32>) -> vec3<f32> {
-  // WebGL LightingStageFS applies tonemap + linearToSrgb only when HDR
-  // is OFF (the default). HDR is currently always-off in the active
-  // WebGPU paths, so this is unconditional here. When HDR plumbing
-  // lands, gate both the tonemap and the gamma on the HDR flag.
+  // WebGL LightingStageFS applies tonemap (czm_pbrNeutralTonemapping) +
+  // linearToSrgb encode ONLY when HDR is off (`#ifndef HDR`). Under
+  // `scene.highDynamicRange` the frame buffer is linear and the
+  // post-process chain does the tonemap + gamma — so the inline pair is
+  // SKIPPED. Q13-PLAIN-HDR-GAMMA-CORE mirrors that: when `camera.hdrControl.x`
+  // is raised (`frameState.useHDR`), return the raw linear color and let the
+  // post-process Tonemap stage compress it. Without this gate the model was
+  // tonemapped twice under plain `scene.highDynamicRange = true` (inline here
+  // AND in the post-process pass). Default SDR path (gate 0) is unchanged.
+  if (camera.hdrControl.x > 0.5) {
+    return max(color, vec3<f32>(0.0));
+  }
   let mapped = pbrNeutralTonemap(max(color, vec3<f32>(0.0)));
   return pow(mapped, vec3<f32>(1.0 / 2.2));
 }
