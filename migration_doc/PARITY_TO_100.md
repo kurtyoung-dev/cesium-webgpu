@@ -22,7 +22,7 @@ A read-only classification of every remaining item against live code (after seve
 | ID | Effort | Why real | Testable? |
 | --- | --- | --- | --- |
 | `PARITY-HIZ-TILE-BOUNDING` | M | `SOABoundingSphereLayout.populate()` reads `.radius` off ANY boundingVolume, but OrientedBoundingBox has no `.radius` → NaN → occlusion test fails silently | Yes (dense tileset) |
-| `PARITY-RTE-ELLIPSOID-AWARE` (FEAT-3DT2-03) | M | `WebGPUCSMRenderer.ts` L74-79 hardcodes WGS84 radii; `tileset._ellipsoid` never threaded → non-Earth tilesets wrong | Unit-testable; pixel-verify blocked on a Mars/Moon asset (ship WGS84-safe) |
+| ~~`PARITY-RTE-ELLIPSOID-AWARE` (FEAT-3DT2-03)~~ **✅ SHIPPED (Batch 496; re-verified 2026-07-04 Q19)** | M | `WebGPUCSMRenderer.setEllipsoid` now threads `scene.ellipsoid.radii` (WGS84 default byte-identical). RTE ENCODE itself is ellipsoid-INDEPENDENT (no radii in the math), so tile positions were never off — the real gap was the CSM ground-clamp, now fixed. Feature-specific residuals in `DEFERRED_WORK.md`. | `probe-ellipsoid-rte.mjs` green (0.5×-scaled mock; groundFar relErr 0.000%, umbra IoU 0.886, WGS84 off-gate 0.0000%) |
 | `PARITY-CUSTOM-SHADER-WGSL` | M/L | `WebGPUModelRenderer.js` L2539-2546 warns "customShader not supported"; GLSL is silently ignored (native-WGSL path unbuilt) | Yes |
 | `VOXEL-DATA-PATH` | XL | `WebGPUVoxelRenderer.ts` L468-499 ray-marches a hardcoded 4×4×4 gradient; no megatexture/octree. Ship megatexture+octree first (no CustomShader/cell-pick dep) | Yes (local VoxelBox3DTiles) |
 | `PARITY-POINT-SPRITE-SHAPE` | S | WebGPU round points (`PointPrimitiveColor.wgsl` soft-circle) vs WebGL square `gl_PointCoord` — but **target is ambiguous** (round arguably superior); decide match-vs-document before running | Yes |
