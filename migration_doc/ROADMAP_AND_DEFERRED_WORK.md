@@ -92,7 +92,7 @@ live frontier (§8, §9). The table records each phase's verified disposition.
 |---|---|---|---|
 | **1** | Point/Label partial-write, Cloud gate, TAA velocity, compute-instance BV+velocity, bloom parity, globe bind-group cache, CI smoke | ✅ DONE (Batches 232–242) | all gates green |
 | **2** | **The log-depth epic** — `NEW-DERIVEDCOMMAND-VARIANT-FACTORY` + `NEW-COLLECTIONS-LOG-DEPTH` + `NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION` | ✅ SHIPPED — **master switch ON Batch 251**; geometry/opaque producer sweep Batches 264–267 | far-camera + pickPosition + collections-regression + globe probes green. **Supersedes the entire `WEBGPU_EXECUTION_ROADMAP` "spine."** Residuals: pointcloud/splat producers + off-by-default consumers (§4) |
-| **3** | 2D / Columbus View / morph collections | 🟡 **PARTIAL — active** | per-frustum camera-UB foundation (Batch 261), projected-frame RTE + log-depth-consistency (Slice 2), CV coplanar fix (Slice 2b) all landed; **SCENE2D collections still blocked** by a globe-pass issue. See `NEW-COLLECTIONS-2DCV-*` (§4 Collections) |
+| **3** | 2D / Columbus View / morph collections | 🟢 **POSITIONING RESOLVED (premise re-verified 2026-07-04)** | per-frustum camera-UB foundation (Batch 261), projected-frame RTE + log-depth-consistency (Slice 2), CV coplanar fix (Slice 2b) all landed. **The "SCENE2D collections still all-zero / globe-pass issue" premise is STALE** — `probe-collections-2dcv-morph` (2026-07-04) shows all four collections render at correct map location in 2D (billboard 0.99 / point 1.01 / polyline 0.97 / label parity vs WebGL). Residual = a mode-INDEPENDENT label/billboard atlas **vertical-flip** (see `NEW-BILLBOARD-ATLAS-VFLIP`, §4 Collections), not a 2D/globe-pass defect. See `NEW-COLLECTIONS-2DCV-*` (§4 Collections) |
 | **4** | Large Dynamic Objects — flat-buffer + WASM (regime 2) | ✅ CORE SHIPPED (Batches 270–273) | win = position-encode HOIST (not WASM SIMD); WASM kernel still doesn't load in-bundle (`NEW-WASM-BRIDGE-BUNDLE-LOAD`, §6) |
 | **5** | Orbital / compute-instance productionization | ✅ DONE (Batches 277–283) | df64 J2 15 m/30 d, SGP4 55 m/1440 min, 1,000,000-instance probe; WebGL2 CPU-kernel fallback |
 | **6** | Picking parity completion | ✅ CORE SHIPPED (Batches 284–286) | sampleHeight/clampToHeight, pick-metadata readback, compute-instance pickPosition. **Open:** arbitrary-ray `pickFromRay` position; live voxel-coordinate + metadata-over-tileset (§4 Picking) |
@@ -359,10 +359,29 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
 ### 4.4 Collections
 
 - **`NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE` / `NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH` /
-  `MORPH-COLLECTIONS-AUDIT`** — **the last big visual-parity hole** (Phase 3). CV now renders elevated
-  + coplanar billboard/point/label (Slices 2/2b, 2026-06-13); **SCENE2D collections still all-zero**,
-  root-caused to a globe-pass issue. **P1.** Reproducer: `probe-collections-2dcv-morph.mjs`. Slice 3
-  (morph `position2D`/`position3D` × `czm_morphTime` blend) also pending.
+  `MORPH-COLLECTIONS-AUDIT`** — ✅ **POSITIONING VERIFIED AT PARITY (2026-07-04, premise re-verified,
+  no code).** CV renders elevated + coplanar billboard/point/label (Slices 2/2b, 2026-06-13). **The
+  "SCENE2D collections still all-zero / globe-pass" narrowing is STALE** — `probe-collections-2dcv-morph`
+  (2026-07-04, PROBE_BASE :8080) shows all four collections render at the correct map location in SCENE2D:
+  billboard GL=131/GPU=130 (0.99), point GL=284/GPU=288 (1.01), polyline GL=1838/GPU=1790 (0.97), label
+  present at parity. Output PNGs read: `coll2dcv-2d-{webgl,webgpu}.png` — cyan polyline, yellow point,
+  magenta billboard, lime "TEST" label all present in WebGPU 2D at WebGL locations. The PROJECTED-FRAME-RTE
+  + COPLANAR-DEPTH sub-items (which are about *positioning*) are therefore effectively closed by the
+  Slice 1–4 chain. **The only residual this diagnostic surfaced is `NEW-BILLBOARD-ATLAS-VFLIP` (below), a
+  mode-INDEPENDENT texture-orientation defect, NOT a 2D/globe-pass defect.** Slice 3 (morph
+  `position2D`/`position3D` × `czm_morphTime` blend) also still pending. **P2** (down from P1 — no longer
+  a black/all-zero hole).
+- **`NEW-BILLBOARD-ATLAS-VFLIP`** — WebGPU renders billboard/label atlas content **vertically flipped**
+  vs WebGL, in **ALL scene modes (3D, 2D, CV)** — not 2D-specific. Only visible on asymmetric content:
+  the `probe-collections-2dcv-morph` "TEST" label reads upright on WebGL and upside-down/mirrored on
+  WebGPU in every mode; the symmetric magenta test billboard can't reveal it. Root cause: a mismatch
+  between the shared `TextureAtlas` GPU-texture upload orientation and the billboard UV mapping. WebGL's
+  `BillboardCollectionVS.glsl:141` maps the screen-up corner (`direction.y=1`) to atlas **V-max**;
+  `BillboardCollection.wgsl` `QUAD_UVS` (lines 289–296) maps the screen-up corner to **V=0.0**. Fix must
+  reconcile one against the other and re-verify across the main / SDF (`BillboardCollectionSDF.wgsl`) /
+  pick (`BillboardCollectionPick.wgsl`) variants, all three scene modes, AND an **asymmetric** billboard
+  image (not just the label). Reproducer: `probe-collections-2dcv-morph.mjs` (label glyph); PNGs
+  `coll2dcv-{3d,2d,cv}-webgpu.png`. **P1** (visible parity defect on every label in every mode).
 - **`C-R8-SCENE2D-JITTER`** ✅ **VERIFIED STALE/RESOLVED (2026-06-23, no code).** Collections render at
   WebGL parity in 2D AND Columbus View (billboard 2D 0.99 / CV 0.99; point/polyline/label all render
   correctly). Resolved by the documented Slice 1-4 chain (Batch 261 per-frustum camera-UB resolver →
