@@ -93,8 +93,13 @@ import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
+// NEW-LOG-DEPTH-REMAINING-CONSUMERS — the reverse helper the depth-sample
+// classifier uses to un-log the sampled globe depth before reconstructing
+// eye-space (mirrors the proven GroundPrimitive Batch-173/185 path).
+import csm_reverseLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_reverseLogDepth.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 // Slice 5c-B Phase 1 (Batch 111) — scene-FB target helper. Used only
@@ -214,6 +219,7 @@ const GEOMETRIC_TOLERANCE_OVER_METER = 1.0e-6;
 
 const SHADER_CODE = /* wgsl */ `
 ${csm_depthClamp}
+${csm_reverseLogDepth}
 struct U {
   mvRTE: mat4x4<f32>,
   proj: mat4x4<f32>,
@@ -257,7 +263,13 @@ struct U {
   materialParam0: vec4<f32>,
   materialParam1: vec4<f32>,
   materialParam2: vec4<f32>,
-  _pad: vec4<f32>,
+  // NEW-LOG-DEPTH-REMAINING-CONSUMERS (was the _pad lane) — renderer-wide
+  // log-depth reverse lanes for windowToEyeCoordinates. x = encode near, y = far
+  // (the FULL-camera frustum the globe log-encoded the shared depth texture
+  // with, stashed on uniformState._logDepthEncodeNearFar), z = logActive flag
+  // (0 = hyperbolic depth, byte-identical to the pre-batch path; 1 = reverse
+  // the log encode). All-zero when log depth is off.
+  logDepth: vec4<f32>,
   // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
   // tail. Layout-only invariant today; consumed by future motion-vector
   // pass for ground-clamped polylines.
@@ -531,6 +543,30 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
 fn windowToEyeCoordinates(fragXY: vec2<f32>, depth: f32) -> vec3<f32> {
   var ndc = (fragXY / u.viewport.zw) * 2.0 - 1.0;
   ndc.y = -ndc.y;
+  // Renderer-wide log depth (NEW-LOG-DEPTH-REMAINING-CONSUMERS). When the globe
+  // log-encodes the shared depth texture (u.logDepth.z > 0.5), the sampled
+  // depth is a 0..1 LOG value, not hyperbolic NDC z, so inverse-projecting it
+  // directly reconstructs a wildly-wrong eye point (~1e12 m) — degrading the
+  // classifier's width/plane/material-texcoord math. Reverse it exactly like
+  // WebGL's czm_screenToEyeCoordinates LOG_DEPTH path (windowToEyeCoordinates.glsl):
+  //   (1) DECODE the precise eye distance with the globe's ENCODE frustum
+  //       (u.logDepth.xy = the full-camera near/far it encoded the whole depth
+  //       texture with; log encodes clip-w = eye distance, projection-independent).
+  //   (2) RE-ENCODE that distance to hyperbolic window z with the SAME frustum
+  //       (u.invProj here is the full-camera inverse projection, packed at the
+  //       same scene-update phase, so it matches the encode frustum), unproject,
+  //       then apply the eye.w = 1/depthFromCamera precision override so the
+  //       crushed-near-1.0 window depth never limits precision. This is the
+  //       proven GroundPrimitive Batch-173/185 reverse.
+  if (u.logDepth.z > 0.5) {
+    let encNear = u.logDepth.x;
+    let encFar = u.logDepth.y;
+    let depthFromCamera = csm_reverseLogDepthToEyeDistance(depth, encNear, encFar);
+    let windowZ = encFar * (1.0 - encNear / depthFromCamera) / (encFar - encNear);
+    var q = u.invProj * vec4<f32>(ndc, windowZ, 1.0);
+    q.w = 1.0 / depthFromCamera;
+    return q.xyz / q.w;
+  }
   let clip = vec4<f32>(ndc, depth, 1.0);
   let eye = u.invProj * clip;
   return eye.xyz / eye.w;
@@ -1705,9 +1741,25 @@ function packUniforms(
     // path with the per-instance color from the batch table).
     data.fill(0.0, 88, 108);
   }
-  data[108] = 0.0;
-  data[109] = 0.0;
-  data[110] = 0.0;
+  // NEW-LOG-DEPTH-REMAINING-CONSUMERS — log-depth reverse lanes (was `_pad`).
+  // Read the globe's ENCODE frustum (the full-camera near/far it log-encoded the
+  // whole shared depth texture with, stashed by the globe camera-UB packer at
+  // scene-update) so windowToEyeCoordinates can un-log the sampled depth. Only
+  // arm the reverse when the master switch + per-frame useLogDepth are on AND a
+  // valid encode frustum has been stashed; otherwise leave the lanes zero so the
+  // FS keeps the byte-identical hyperbolic path.
+  const ctxLog = frameState.context;
+  const logActive = isWebGPULogDepthActive(ctxLog, frameState);
+  const encNF = uniformState._logDepthEncodeNearFar;
+  if (logActive && encNF && encNF[1] > encNF[0]) {
+    data[108] = encNF[0];
+    data[109] = encNF[1];
+    data[110] = 1.0;
+  } else {
+    data[108] = 0.0;
+    data[109] = 0.0;
+    data[110] = 0.0;
+  }
   data[111] = 0.0;
 
   // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats

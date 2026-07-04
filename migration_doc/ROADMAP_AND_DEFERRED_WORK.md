@@ -166,9 +166,18 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   was never accounted → memory-based frame eviction never tripped) — is fixed by summing the parsed
   typed-array byte lengths in `computeWebGPUReadyState`; WebGPU now reports `165000` at frame 1,
   matching WebGL. Probe: `probe-timedynamic-pointcloud-load.mjs`.
-- **`NEW-LOG-DEPTH-REMAINING-CONSUMERS`** — off-by-default depth readers (AO/DoF/SSR/contact-shadows/
-  god-rays) + GroundPolyline `windowToEyeCoordinates` precision must reverse log depth when enabled.
-  **P2** (none break the default scene).
+- **`NEW-LOG-DEPTH-REMAINING-CONSUMERS`** — ✅ **GroundPolyline half SHIPPED (Q18-LOGDEPTH-CONSUMERS,
+  2026-07-04).** `WebGPUGroundPolylineRenderer.js` classifier FS `windowToEyeCoordinates` now reverses
+  the log-encoded globe depth (Approach A runtime flag in the former `_pad` UB lane; encode near/far
+  from `uniformState._logDepthEncodeNearFar`) before reconstructing eye-space — a DEFAULT-scene
+  correctness fix (log depth is on by default). Verified `probe-ground-polyline-logdepth.mjs`: far
+  6000 km camera, WebGPU magenta px within 0.1% of WebGL (0.999); A/B with the flag off drops WebGPU
+  to 0 px (line vanishes) — the reverse is load-bearing. **Still open:** the off-by-default
+  post-process depth readers (AO/DoF/SSR/contact-shadows/god-rays) + HiZ projected-z + model
+  classification are BLOCKED on a prerequisite — those effects bake a placeholder near/far (0.1/10000),
+  never wired to the live camera frustum, so a log-reverse can't be correct until the driver threads
+  real per-frame frustum near/far + a logActive flag into each effect (see
+  `NEW-LOG-DEPTH-POSTPROCESS-FRUSTUM-WIRING` in DEFERRED_WORK). **P2** (none break the default scene).
 - **`NEW-WEBGPU-EXAG-WATER-STREAKS`** — ✅ **STALE-RESOLVED (Q12, 2026-07-04, premise-verified — closed by
   Q10 Batch 541 `NEW-GLOBE-DAYTIME-OCEAN-BRIGHTNESS`).** The bug (WebGPU rendering thin BRIGHT-BLUE water
   streaks WebGL lacks under EXAG=10 over Himalaya glacial lakes) was a globe-FS water-fragment
