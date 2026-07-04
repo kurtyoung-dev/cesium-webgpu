@@ -612,6 +612,80 @@ function modelHasFeatureTable(model) {
 }
 
 /**
+ * PARITY-METADATA-TABLE-INSTANCE-SOURCE — resolve the property TABLE keyed by
+ * the model's SELECTED instance feature ID set (EXT_mesh_gpu_instancing +
+ * EXT_instance_features), if the given node carries one. The renderer packs the
+ * per-instance ID into the instance transform pad slot and the VS forwards it to
+ * `featureId0`, so the codegen keys the table via the same
+ * `i32(metadataFeatureId)` path the ATTRIBUTE/IMPLICIT sources use.
+ *
+ * Gated on the node's SELECTED instance set (`model.instanceFeatureIdLabel`) —
+ * only that set's IDs are transported into the pad slot
+ * (`WebGPUModelInstancing.resolveInstanceFeatureIds`). Supported instance
+ * sources are ATTRIBUTE + IMPLICIT (a per-instance feature ID TEXTURE is not a
+ * thing in EXT_instance_features).
+ *
+ * @param {Model} model
+ * @param {ModelRuntimeNode} runtimeNode
+ * @param {PropertyTable[]} propertyTables
+ * @returns {object|undefined} the same shape `findPropertyTableForPrimitive`
+ *   returns, with `featureIdSource: "instance"`.
+ * @private
+ */
+function findInstancePropertyTable(model, runtimeNode, propertyTables) {
+  if (!defined(runtimeNode)) {
+    return undefined;
+  }
+  const node = runtimeNode.node || runtimeNode._node;
+  if (!defined(node) || !defined(node.instances)) {
+    return undefined;
+  }
+  const instanceFeatureIds = node.instances.featureIds;
+  if (!defined(instanceFeatureIds) || instanceFeatureIds.length === 0) {
+    return undefined;
+  }
+  const selected = ModelUtility.getFeatureIdsByLabel(
+    instanceFeatureIds,
+    model.instanceFeatureIdLabel,
+  );
+  if (!defined(selected)) {
+    return undefined;
+  }
+  const propertyTableId = selected.propertyTableId;
+  if (!defined(propertyTableId)) {
+    return undefined;
+  }
+  // Only ATTRIBUTE / IMPLICIT instance sources reach `featureId0` (the renderer
+  // transports exactly those). A texture-sourced instance feature ID is not a
+  // valid EXT_instance_features construct, so guard defensively.
+  if (
+    !(selected instanceof ModelComponents.FeatureIdAttribute) &&
+    !(selected instanceof ModelComponents.FeatureIdImplicitRange)
+  ) {
+    return undefined;
+  }
+
+  for (let t = 0; t < propertyTables.length; t++) {
+    const propertyTable = propertyTables[t];
+    if (
+      defined(propertyTable.class) &&
+      String(propertyTable.id) === String(propertyTableId)
+    ) {
+      return {
+        propertyTable,
+        featureIdSource: "instance",
+        // The VS forwards the per-instance ID to `input.featureId0` (flat), so
+        // the codegen's `i32(metadataFeatureId)` column index applies.
+        featureIdWgslVariable: "featureId0",
+        featureIdTexCoord: 0,
+        featureIdChannelCount: 1,
+      };
+    }
+  }
+  return undefined;
+}
+
+/**
  * DP-H46d — resolve which property TABLE (if any) the primitive's selected
  * feature ID references, and HOW the WGSL FS resolves the indexing feature ID.
  *
@@ -637,19 +711,27 @@ function modelHasFeatureTable(model) {
  *     variable applies. Gated on the set being SELECTED (the synthesis only
  *     runs for the selected set).
  *
- * INSTANCE-sourced feature IDs remain deferred: `WebGPUModelInstancing`
- * carries no per-instance feature-ID data to the shader yet, so there is no
- * WGSL variable to key the table with (see DEFERRED_WORK.md,
- * PARITY-METADATA-TABLE-INSTANCE-SOURCE).
+ * INSTANCE-sourced feature IDs (PARITY-METADATA-TABLE-INSTANCE-SOURCE): when a
+ * `runtimeNode` is supplied and its node carries the model's SELECTED instance
+ * feature ID set (EXT_mesh_gpu_instancing + EXT_instance_features), the renderer
+ * packs the per-instance ID into the instance transform's pad slot and the VS
+ * forwards it to the same flat `featureId0` varying (see
+ * `WebGPUModelInstancing.resolveInstanceFeatureIds`). Instance IDs take priority
+ * over primitive IDs (matching `model.instanceFeatureIdLabel` precedence), so
+ * they are resolved first. The codegen then keys the table exactly like the
+ * ATTRIBUTE/IMPLICIT path (`i32(metadataFeatureId)`).
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
+ * @param {ModelRuntimeNode} [runtimeNode] - the node this primitive renders
+ *   under; enables the instance-sourced path when it carries instance feature
+ *   IDs. Optional so non-instanced callers stay byte-identical.
  * @returns {{ propertyTable: PropertyTable, featureIdSource: string,
  *   featureIdWgslVariable: string, featureIdTexCoord: number,
  *   featureIdChannelCount: number }|undefined}
  * @private
  */
-function findPropertyTableForPrimitive(model, primitive) {
+function findPropertyTableForPrimitive(model, primitive, runtimeNode) {
   const structuralMetadata = model.structuralMetadata;
   if (!defined(structuralMetadata)) {
     return undefined;
@@ -658,6 +740,19 @@ function findPropertyTableForPrimitive(model, primitive) {
   if (!defined(propertyTables) || propertyTables.length === 0) {
     return undefined;
   }
+
+  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — instance-sourced feature IDs take
+  // priority (matching WebGL's instanceFeatureIdLabel precedence). Resolve the
+  // node's SELECTED instance feature ID set before the primitive sets.
+  const instanceMatch = findInstancePropertyTable(
+    model,
+    runtimeNode,
+    propertyTables,
+  );
+  if (defined(instanceMatch)) {
+    return instanceMatch;
+  }
+
   if (!defined(primitive) || !defined(primitive.featureIds)) {
     return undefined;
   }
@@ -763,6 +858,9 @@ function findPropertyTableForPrimitive(model, primitive) {
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
+ * @param {ModelRuntimeNode} [runtimeNode] - PARITY-METADATA-TABLE-INSTANCE-
+ *   SOURCE: enables the instance-sourced feature-ID path. Optional so
+ *   non-instanced callers stay byte-identical.
  * @returns {{
  *   propertyTable: PropertyTable,
  *   textureData: { width: number, height: number, data: Uint8Array },
@@ -780,8 +878,8 @@ function findPropertyTableForPrimitive(model, primitive) {
  * }|undefined}
  * @private
  */
-function resolvePropertyTableLayout(model, primitive) {
-  const match = findPropertyTableForPrimitive(model, primitive);
+function resolvePropertyTableLayout(model, primitive, runtimeNode) {
+  const match = findPropertyTableForPrimitive(model, primitive, runtimeNode);
   if (!defined(match)) {
     return undefined;
   }
@@ -865,11 +963,12 @@ function resolvePropertyTableLayout(model, primitive) {
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
+ * @param {ModelRuntimeNode} [runtimeNode]
  * @returns {boolean}
  * @private
  */
-function primitiveHasPropertyTable(model, primitive) {
-  return defined(resolvePropertyTableLayout(model, primitive));
+function primitiveHasPropertyTable(model, primitive, runtimeNode) {
+  return defined(resolvePropertyTableLayout(model, primitive, runtimeNode));
 }
 
 /**

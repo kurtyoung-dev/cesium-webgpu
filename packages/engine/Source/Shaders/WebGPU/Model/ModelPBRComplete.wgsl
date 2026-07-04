@@ -955,6 +955,11 @@ struct VertexOutput {
   // magnitude through the RTE subtract preserves sub-meter precision.
   var instTransHigh = vec3<f32>(0.0);
   var instTransLow = vec3<f32>(0.0);
+  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — per-instance feature ID transported
+  // in the translationHigh.w pad (see WebGPUModelInstancing.writeInstance). Stays
+  // 0 for non-instanced models and for instanced models without instance feature
+  // IDs, so the featureId0 varying is byte-identical there.
+  var instanceFeatureId0: f32 = 0.0;
   if (hasFlag(material.materialFlags, FLAG_HAS_INSTANCING)) {
     let inst = instanceTransforms[input.instanceIndex];
     let linear3 = mat3x3<f32>(inst.linear[0].xyz, inst.linear[1].xyz, inst.linear[2].xyz);
@@ -963,6 +968,7 @@ struct VertexOutput {
     tangentMC = vec4<f32>(linear3 * tangentMC.xyz, tangentMC.w);
     instTransHigh = inst.translationHigh.xyz;
     instTransLow = inst.translationLow.xyz;
+    instanceFeatureId0 = inst.translationHigh.w;
   }
 
   // RTE in model space: camera is encoded in model coords via inverse(modelMatrix).
@@ -1075,7 +1081,10 @@ struct VertexOutput {
   //>>ifdef MODEL_HAS_FEATURE_ID_0
   output.featureId0 = input.featureId0;
   //>>else
-  output.featureId0 = 0.0;
+  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — with no per-vertex `_FEATURE_ID_0`
+  // attribute, the feature ID for an instanced primitive comes from the
+  // per-instance pad slot (0 otherwise → identical to the historical default).
+  output.featureId0 = instanceFeatureId0;
   //>>endif
 
   // DP-H46a — forward the per-vertex scalar metadata value to the FS.

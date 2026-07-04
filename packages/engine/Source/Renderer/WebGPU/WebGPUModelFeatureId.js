@@ -64,7 +64,7 @@ function findSelectedFeatureId(model, runtimeNode, primitive) {
       model.instanceFeatureIdLabel,
     );
     if (defined(instanceFId)) {
-      return classifyFeatureId(instanceFId);
+      return classifyFeatureId(instanceFId, true);
     }
   }
 
@@ -81,15 +81,20 @@ function findSelectedFeatureId(model, runtimeNode, primitive) {
     return undefined;
   }
 
-  return classifyFeatureId(primFId);
+  return classifyFeatureId(primFId, false);
 }
 
-function classifyFeatureId(featureId) {
+function classifyFeatureId(featureId, isInstance) {
   return {
     featureIds: featureId,
     isTexture: featureId instanceof ModelComponents.FeatureIdTexture,
     isAttribute: featureId instanceof ModelComponents.FeatureIdAttribute,
     isImplicit: featureId instanceof ModelComponents.FeatureIdImplicitRange,
+    // PARITY-METADATA-TABLE-INSTANCE-SOURCE — true when the selected set comes
+    // from `node.instances.featureIds` (per-instance) rather than the primitive
+    // (per-vertex). The per-vertex implicit synthesis MUST NOT fire for it — the
+    // instance ID rides the instance-transform pad slot → `featureId0` instead.
+    isInstance: isInstance === true,
   };
 }
 
@@ -123,6 +128,14 @@ function synthesizeImplicitFeatureIdData(
   }
   const selected = findSelectedFeatureId(model, runtimeNode, primitive);
   if (!defined(selected) || !selected.isImplicit) {
+    return null;
+  }
+  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — an INSTANCE implicit range is
+  // per-instance, NOT per-vertex. Synthesizing `offset + floor(v/repeat)` over
+  // the vertex index here would set MODEL_HAS_FEATURE_ID_0 with bogus per-vertex
+  // IDs (and bypass the instance pad-slot → featureId0 path). Leave it to the
+  // instancing feature-ID transport.
+  if (selected.isInstance === true) {
     return null;
   }
   const fid = selected.featureIds;

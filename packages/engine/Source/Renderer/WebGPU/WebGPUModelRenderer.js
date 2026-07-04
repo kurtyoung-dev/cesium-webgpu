@@ -3430,7 +3430,12 @@ function updateWebGPUModel(model, frameState) {
         };
       }
       const nodeCache = cache.nodes[nodeIdx];
-      const instRes = ensureInstancingResources(device, nodeCache, runtimeNode);
+      const instRes = ensureInstancingResources(
+        device,
+        nodeCache,
+        runtimeNode,
+        model,
+      );
       if (defined(instRes)) {
         instanceCount = instRes.instanceCount;
         instanceBuffer = instRes.storageBuffer;
@@ -3580,9 +3585,14 @@ function updateWebGPUModel(model, frameState) {
         // attribute feature-ID set. The table is indexed by the per-vertex
         // `_FEATURE_ID_0` attribute, so a table primitive ALSO carries that
         // feature ID (the renderer already sets `geometry.hasFeatureId0`).
+        // PARITY-METADATA-TABLE-INSTANCE-SOURCE — pass `runtimeNode` so an
+        // instanced primitive whose table is keyed by the node's instance
+        // feature IDs resolves (the per-instance ID rides the instance-transform
+        // pad slot → `featureId0`). Non-instanced primitives ignore it.
         const propertyTableLayout = resolvePropertyTableLayout(
           model,
           glTFPrimitive,
+          runtimeNode,
         );
         if (defined(propertyTableLayout)) {
           geometry.propertyTableLayout = propertyTableLayout;
@@ -3606,7 +3616,11 @@ function updateWebGPUModel(model, frameState) {
           geometry.hasPropertyTextures ||
           geometry.hasPropertyTables
         ) {
-          const metadataCodegen = generateMetadataWGSL(model, glTFPrimitive);
+          const metadataCodegen = generateMetadataWGSL(
+            model,
+            glTFPrimitive,
+            runtimeNode,
+          );
           if (defined(metadataCodegen)) {
             geometry.metadataWGSL = metadataCodegen.wgsl;
             geometry.metadataClassHash = metadataCodegen.classHash;
@@ -4522,6 +4536,7 @@ function updateWebGPUModel(model, frameState) {
           model,
           glTFPrimitive,
           pickedMetadataInfo.propertyName,
+          runtimeNode,
         );
         if (defined(pickWGSL)) {
           // Publish the pick chunk + its (property-folded) hash so the pipeline

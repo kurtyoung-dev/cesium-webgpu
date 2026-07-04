@@ -29,6 +29,9 @@
  */
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import ModelComponents from "../../Scene/ModelComponents.js";
+import ModelUtility from "../../Scene/Model/ModelUtility.js";
+import InstanceAttributeSemantic from "../../Scene/InstanceAttributeSemantic.js";
 
 // DP-H36 (Batch 325) — per-instance storage stride. MUST stay byte-consistent
 // with the WGSL `InstanceTransform` struct in ModelPBRComplete.wgsl and the
@@ -50,6 +53,11 @@ const scratchEncodeZ = { high: 0.0, low: 0.0 };
  * @param {number} c1x @param {number} c1y @param {number} c1z - column 1
  * @param {number} c2x @param {number} c2y @param {number} c2z - column 2
  * @param {number} tx @param {number} ty @param {number} tz - translation
+ * @param {number} [featureId=0] - PARITY-METADATA-TABLE-INSTANCE-SOURCE:
+ *   the per-instance feature ID, transported in the otherwise-pad
+ *   `translationHigh.w` slot (float 19) so the vertex shader can forward it
+ *   to the flat `featureId0` varying that keys an instance-sourced property
+ *   table. `0` (the default) is byte-identical to the pre-existing pad.
  * @private
  */
 function writeInstance(
@@ -67,6 +75,7 @@ function writeInstance(
   tx,
   ty,
   tz,
+  featureId,
 ) {
   // linear mat4x4 (column-major); translation column zeroed — RTE handles it
   out[dst + 0] = c0x;
@@ -93,7 +102,12 @@ function writeInstance(
   out[dst + 16] = scratchEncodeX.high;
   out[dst + 17] = scratchEncodeY.high;
   out[dst + 18] = scratchEncodeZ.high;
-  out[dst + 19] = 0.0;
+  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — per-instance feature ID in the
+  // translationHigh.w pad. The VS reads translationHigh.xyz only (RTE), so .w
+  // is free; carrying the feature ID here avoids a new storage binding + BGL
+  // variant. `featureId` defaults to 0 → byte-identical for instanced models
+  // that carry no instance feature IDs.
+  out[dst + 19] = defined(featureId) ? featureId : 0.0;
   out[dst + 20] = scratchEncodeX.low;
   out[dst + 21] = scratchEncodeY.low;
   out[dst + 22] = scratchEncodeZ.low;
@@ -109,9 +123,12 @@ function writeInstance(
  * @param {GPUDevice} device
  * @param {object} nodeCache - Per-node cache from WebGPUModelRenderer
  * @param {object} runtimeNode - The ModelRuntimeNode
+ * @param {Model} [model] - the owning Model (PARITY-METADATA-TABLE-INSTANCE-
+ *   SOURCE: needed to resolve the SELECTED instance feature ID set). Optional
+ *   so legacy callers stay byte-identical.
  * @returns {object|null} { storageBuffer, instanceCount } or null
  */
-function ensureInstancingResources(device, nodeCache, runtimeNode) {
+function ensureInstancingResources(device, nodeCache, runtimeNode, model) {
   // Already created — return cached
   if (defined(nodeCache.instancingBuffer)) {
     return {
@@ -131,15 +148,31 @@ function ensureInstancingResources(device, nodeCache, runtimeNode) {
     return null;
   }
 
+  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — per-instance feature IDs for the
+  // model's SELECTED instance feature ID set, transported in the Instance
+  // transform's pad slot (see writeInstance). `null` when the node has no
+  // instance feature IDs referencing a property table — the pad stays 0.
+  const instanceFeatureIds = defined(model)
+    ? resolveInstanceFeatureIds(model, node, count)
+    : null;
+
   // Try the packed typed array cached by InstancingPipelineStage
   const packedData = runtimeNode.transformsTypedArray;
   let instanceData;
 
   if (defined(packedData)) {
-    instanceData = expandPackedTransforms(packedData, count);
+    instanceData = expandPackedTransforms(
+      packedData,
+      count,
+      instanceFeatureIds,
+    );
   } else {
     // Fallback: try to read from attribute typed arrays directly
-    instanceData = extractTransformsFromAttributes(instances, count);
+    instanceData = extractTransformsFromAttributes(
+      instances,
+      count,
+      instanceFeatureIds,
+    );
   }
 
   if (!defined(instanceData)) {
@@ -177,10 +210,12 @@ function ensureInstancingResources(device, nodeCache, runtimeNode) {
  *
  * @param {Float32Array} packed - 12 floats per instance, transposed row format
  * @param {number} count - Number of instances
+ * @param {Float32Array|null} [featureIds] - PARITY-METADATA-TABLE-INSTANCE-
+ *   SOURCE: per-instance feature IDs to transport in the pad slot, or null.
  * @returns {Float32Array} FLOATS_PER_INSTANCE floats per instance
  * @private
  */
-function expandPackedTransforms(packed, count) {
+function expandPackedTransforms(packed, count, featureIds) {
   const data = new Float32Array(count * FLOATS_PER_INSTANCE);
   for (let i = 0; i < count; i++) {
     const src = i * 12;
@@ -205,6 +240,7 @@ function expandPackedTransforms(packed, count) {
       packed[src + 3], // tx (col3.x)
       packed[src + 7], // ty (col3.y)
       packed[src + 11], // tz (col3.z)
+      defined(featureIds) ? featureIds[i] : 0.0,
     );
   }
   return data;
@@ -216,10 +252,12 @@ function expandPackedTransforms(packed, count) {
  *
  * @param {object} instances - node.instances from ModelComponents
  * @param {number} count
+ * @param {Float32Array|null} [featureIds] - PARITY-METADATA-TABLE-INSTANCE-
+ *   SOURCE: per-instance feature IDs to transport in the pad slot, or null.
  * @returns {Float32Array|null} FLOATS_PER_INSTANCE floats per instance, or null
  * @private
  */
-function extractTransformsFromAttributes(instances, count) {
+function extractTransformsFromAttributes(instances, count, featureIds) {
   const attrs = instances.attributes;
   let translationData = null;
   let rotationData = null;
@@ -317,10 +355,98 @@ function extractTransformsFromAttributes(instances, count) {
       tx,
       ty,
       tz,
+      defined(featureIds) ? featureIds[i] : 0.0,
     );
   }
 
   return data;
+}
+
+/**
+ * PARITY-METADATA-TABLE-INSTANCE-SOURCE — resolve the per-instance feature IDs
+ * for the model's SELECTED instance feature ID set (`model.instanceFeatureIdLabel`,
+ * default "instanceFeatureId_0"), matching WebGL's instancing feature-ID
+ * attribute pipeline. Returns a `Float32Array(count)` — implicit ranges compute
+ * `offset + floor(i / repeat)`; explicit `_FEATURE_ID_n` instance attributes are
+ * read from their retained typed array. Returns `null` when the node carries no
+ * instance feature ID set that references a property table (the only consumer
+ * today), so unaffected instanced models stay byte-identical (pad stays 0).
+ *
+ * @param {Model} model
+ * @param {object} node - the glTF node (carries `.instances`)
+ * @param {number} count - instance count
+ * @returns {Float32Array|null}
+ * @private
+ */
+function resolveInstanceFeatureIds(model, node, count) {
+  const instances = node.instances;
+  if (
+    !defined(instances) ||
+    !defined(instances.featureIds) ||
+    instances.featureIds.length === 0
+  ) {
+    return null;
+  }
+  const selected = ModelUtility.getFeatureIdsByLabel(
+    instances.featureIds,
+    model.instanceFeatureIdLabel,
+  );
+  // Only transport IDs that key a property table — the sole consumer of the
+  // instance-sourced `featureId0` varying today. Batch styling / feature pick
+  // for instanced tilesets is a future extension of this same data path.
+  if (!defined(selected) || !defined(selected.propertyTableId)) {
+    return null;
+  }
+
+  const out = new Float32Array(count);
+  if (selected instanceof ModelComponents.FeatureIdImplicitRange) {
+    // EXT_instance_features implicit range: id = offset + floor(i / repeat).
+    const offset = selected.offset ?? 0;
+    const repeat = Math.max(1, selected.repeat ?? 1);
+    for (let i = 0; i < count; i++) {
+      out[i] = offset + Math.floor(i / repeat);
+    }
+    return out;
+  }
+  if (selected instanceof ModelComponents.FeatureIdAttribute) {
+    // Explicit per-instance `_FEATURE_ID_n` attribute — find the instance
+    // attribute with the FEATURE_ID semantic at the set's setIndex and read
+    // its retained typed array.
+    const attr = findInstanceFeatureIdAttribute(instances, selected.setIndex);
+    if (!defined(attr) || !defined(attr.typedArray)) {
+      return null;
+    }
+    const values = attr.typedArray;
+    for (let i = 0; i < count; i++) {
+      out[i] = values[i];
+    }
+    return out;
+  }
+  return null;
+}
+
+/**
+ * PARITY-METADATA-TABLE-INSTANCE-SOURCE — locate the instance attribute that
+ * backs an explicit instance FeatureIdAttribute set (FEATURE_ID semantic +
+ * matching setIndex).
+ *
+ * @param {object} instances - node.instances
+ * @param {number} setIndex
+ * @returns {object|undefined}
+ * @private
+ */
+function findInstanceFeatureIdAttribute(instances, setIndex) {
+  const attrs = instances.attributes;
+  for (let i = 0; i < attrs.length; i++) {
+    const attr = attrs[i];
+    if (
+      attr.semantic === InstanceAttributeSemantic.FEATURE_ID &&
+      attr.setIndex === setIndex
+    ) {
+      return attr;
+    }
+  }
+  return undefined;
 }
 
 /**

@@ -511,7 +511,12 @@ const translationScratch = new Cartesian3();
 const rotationScratch = new Quaternion();
 const scaleScratch = new Cartesian3();
 
-function getInstanceTransformsAsMatrices(instances, count, renderResources) {
+function getInstanceTransformsAsMatrices(
+  instances,
+  count,
+  renderResources,
+  keepTypedArray,
+) {
   const transforms = new Array(count);
 
   const translationAttribute = ModelUtility.getAttributeBySemantic(
@@ -622,14 +627,27 @@ function getInstanceTransformsAsMatrices(instances, count, renderResources) {
 
   // Unload the typed arrays. These are just pointers to the arrays
   // in the vertex buffer loader.
-  if (hasTranslation) {
-    translationAttribute.typedArray = undefined;
-  }
-  if (hasRotation) {
-    rotationAttribute.typedArray = undefined;
-  }
-  if (hasScale) {
-    scaleAttribute.typedArray = undefined;
+  //
+  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — retain them when `keepTypedArray`
+  // is set. On WebGPU (no synchronous readback) the matrices path is FORCED via
+  // `keepTypedArray` even for rotation-less instancing, and a later
+  // scene-graph rebuild (e.g. structural-metadata / feature-table landing calls
+  // `resetDrawCommands`, creating fresh runtimeNodes with no
+  // `instancingTransformsBuffer`) re-enters this function. Nulling the source
+  // arrays made that rebuild read `undefined` → crash. Retaining them when the
+  // CPU copy is already being kept lets the rebuild recompute. WebGL2 keeps
+  // `keepTypedArray` false on this path (it takes the vec3 branch), so the
+  // historical free-immediately behavior there is byte-identical.
+  if (keepTypedArray !== true) {
+    if (hasTranslation) {
+      translationAttribute.typedArray = undefined;
+    }
+    if (hasRotation) {
+      rotationAttribute.typedArray = undefined;
+    }
+    if (hasScale) {
+      scaleAttribute.typedArray = undefined;
+    }
   }
 
   return transforms;
@@ -764,6 +782,7 @@ function processTransformMatrixAttributes(
       instances,
       count,
       renderResources,
+      keepTypedArray,
     );
 
     const transformsTypedArray = transformsToTypedArray(transforms);

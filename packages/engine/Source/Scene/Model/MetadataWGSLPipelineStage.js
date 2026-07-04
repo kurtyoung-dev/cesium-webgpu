@@ -18,7 +18,10 @@
  *
  * Scope: property-ATTRIBUTES (DP-H46b) + property TEXTURES (DP-H46c) +
  * property TABLES (DP-H46d, keyed by attribute / texture / implicit
- * feature-ID sources — METADATA-TABLE-SOURCES; instance-sourced deferred).
+ * feature-ID sources — METADATA-TABLE-SOURCES; INSTANCE-sourced feature IDs —
+ * EXT_mesh_gpu_instancing + EXT_instance_features — via
+ * PARITY-METADATA-TABLE-INSTANCE-SOURCE, threaded through the optional
+ * `runtimeNode` param).
  *
  * Property ATTRIBUTES (DP-H46b + METADATA-MULTICOMPONENT): transport is the
  * vec4 vertex path (`@location(9) metadataValue: vec4<f32>`): up to FOUR
@@ -367,11 +370,12 @@ function getPropertyTextureFields(model, primitive, usedFieldNames) {
  * @param {Set<string>} usedFieldNames field names already taken by property
  *   attributes / textures (so a table property colliding on its sanitized name
  *   is disambiguated)
+ * @param {ModelRuntimeNode} [runtimeNode] PARITY-METADATA-TABLE-INSTANCE-SOURCE
  * @returns {{ layout: object, fields: object[] }|undefined}
  * @private
  */
-function getPropertyTableFields(model, primitive, usedFieldNames) {
-  const layout = resolvePropertyTableLayout(model, primitive);
+function getPropertyTableFields(model, primitive, usedFieldNames, runtimeNode) {
+  const layout = resolvePropertyTableLayout(model, primitive, runtimeNode);
   if (!defined(layout)) {
     return undefined;
   }
@@ -438,13 +442,15 @@ function getPropertyTableFields(model, primitive, usedFieldNames) {
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
+ * @param {ModelRuntimeNode} [runtimeNode] PARITY-METADATA-TABLE-INSTANCE-SOURCE
+ *   — enables the instance-sourced property-table feature-ID path.
  * @returns {{ wgsl: string, classHash: number, fields: object[],
  *   propertyTextureLayout: object|undefined,
  *   propertyTableLayout: object|undefined,
  *   matTransport: boolean }|undefined}
  * @private
  */
-function generateMetadataWGSL(model, primitive) {
+function generateMetadataWGSL(model, primitive, runtimeNode) {
   const attributeFields = getPropertyAttributeFields(model, primitive);
   const usedFieldNames = new Set(attributeFields.map((f) => f.fieldName));
   const textureResult = getPropertyTextureFields(
@@ -456,7 +462,12 @@ function generateMetadataWGSL(model, primitive) {
   const propertyTextureLayout = textureResult?.layout;
   // DP-H46d — property TABLES. Resolved AFTER attributes + textures so the
   // table field names disambiguate against any earlier collision.
-  const tableResult = getPropertyTableFields(model, primitive, usedFieldNames);
+  const tableResult = getPropertyTableFields(
+    model,
+    primitive,
+    usedFieldNames,
+    runtimeNode,
+  );
   const tableFields = tableResult?.fields ?? [];
   const propertyTableLayout = tableResult?.layout;
 
@@ -833,7 +844,7 @@ function generateMetadataWGSL(model, primitive) {
  *   classProperty: MetadataClassProperty, wgslType: string }[]}
  * @private
  */
-function getAllMetadataFields(model, primitive) {
+function getAllMetadataFields(model, primitive, runtimeNode) {
   const attributeFields = getPropertyAttributeFields(model, primitive);
   const usedFieldNames = new Set(attributeFields.map((f) => f.fieldName));
   const textureResult = getPropertyTextureFields(
@@ -841,7 +852,12 @@ function getAllMetadataFields(model, primitive) {
     primitive,
     usedFieldNames,
   );
-  const tableResult = getPropertyTableFields(model, primitive, usedFieldNames);
+  const tableResult = getPropertyTableFields(
+    model,
+    primitive,
+    usedFieldNames,
+    runtimeNode,
+  );
   return attributeFields
     .concat(textureResult?.fields ?? [])
     .concat(tableResult?.fields ?? []);
@@ -882,18 +898,19 @@ function getAllMetadataFields(model, primitive) {
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
  * @param {string} propertyName the picked metadata property name (class property id)
+ * @param {ModelRuntimeNode} [runtimeNode] PARITY-METADATA-TABLE-INSTANCE-SOURCE
  * @returns {{ wgsl: string, classHash: number, found: boolean }|undefined}
  *   `undefined` when the primitive carries no GPU-readable metadata at all.
  * @private
  */
-function generateMetadataPickWGSL(model, primitive, propertyName) {
-  const display = generateMetadataWGSL(model, primitive);
+function generateMetadataPickWGSL(model, primitive, propertyName, runtimeNode) {
+  const display = generateMetadataWGSL(model, primitive, runtimeNode);
   if (!defined(display)) {
     return undefined;
   }
 
   // Resolve the picked property to its generated struct field.
-  const allFields = getAllMetadataFields(model, primitive);
+  const allFields = getAllMetadataFields(model, primitive, runtimeNode);
   let picked;
   for (let i = 0; i < allFields.length; i++) {
     if (allFields[i].propertyId === propertyName) {
@@ -1219,14 +1236,14 @@ function floatLit(n) {
  * @returns {boolean}
  * @private
  */
-function primitiveHasMetadataWGSL(model, primitive) {
+function primitiveHasMetadataWGSL(model, primitive, runtimeNode) {
   if (getPropertyAttributeFields(model, primitive).length > 0) {
     return true;
   }
   if (defined(resolvePropertyTextureLayout(model, primitive))) {
     return true;
   }
-  return defined(resolvePropertyTableLayout(model, primitive));
+  return defined(resolvePropertyTableLayout(model, primitive, runtimeNode));
 }
 
 export {

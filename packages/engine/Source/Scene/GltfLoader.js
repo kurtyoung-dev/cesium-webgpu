@@ -1522,7 +1522,21 @@ function loadInstancedAttribute(
     isTranslationAttribute &&
     (!hasTranslationMinMax || loadFor2D || loadTypedArrayForPicking);
 
-  const loadTypedArray = loadAsTypedArrayOnly || loadTranslationAsTypedArray;
+  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — WebGPU (and any backend without
+  // synchronous buffer readback) FORCES the CPU instance-matrix path in
+  // `InstancingPipelineStage` (its `keepTypedArray = !supportsSynchronousReadback`),
+  // which reads the transform attributes' typed arrays. Without this the loader
+  // skipped the typed array for a rotation-less, min/max-carrying translation
+  // (the common EXT_mesh_gpu_instancing case), so the forced matrices path read
+  // `undefined` and crashed. Keep it in lockstep with the pipeline stage. WebGL2
+  // keeps `supportsSynchronousReadback` true → this term is false → byte-identical.
+  const loadTypedArrayForWebGPUMatrices =
+    isTransformAttribute && !frameState.context.supportsSynchronousReadback;
+
+  const loadTypedArray =
+    loadAsTypedArrayOnly ||
+    loadTranslationAsTypedArray ||
+    loadTypedArrayForWebGPUMatrices;
 
   // Don't pass in primitive or draco object since instanced attributes can't be draco compressed
   return loadAttribute(
