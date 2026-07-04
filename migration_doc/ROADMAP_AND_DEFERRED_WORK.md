@@ -343,9 +343,17 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
   PNGs read — WebGPU reflective cube matches WebGL, procedural fallback is visibly flatter). Standing
   regression guard.
 - **`NEW-MODEL-WGSL-CUSTOM-SHADER`** — WGSL `CustomShader` API parallel to GLSL
-  `CustomShaderPipelineStage` (WebGPU is a one-time-warning no-op). **Hard blockers** (verified): bind-
-  group 1 is full (0-36), `maxBindGroups=4` maxed; numeric module cache key can't hold per-Model WGSL
-  text; varying exhaustion (TAA uses @location 9-10). **P2** — ship a minimal fragment-only slice first.
+  `CustomShaderPipelineStage`. **PARTIALLY SHIPPED — premise "one-time-warning no-op" is STALE.**
+  **Core native-WGSL path shipped Batch 473** (`CustomShaderWGSLPipelineStage.js`): `wgslFragmentShaderText`
+  (+ optional `wgslVertexShaderText`) inject at the metadata seam — fragment material override
+  (diffuse/specular/roughness/emissive/alpha), all non-sampler uniform types + up to 4 textures (group-1
+  bindings 50–55, no new bind group), off byte-identical. **translucencyMode shipped Q25 (2026-07-04)**:
+  `CustomShader.translucencyMode` TRANSLUCENT/OPAQUE/INHERIT now overrides the model's effective alpha mode
+  (`WebGPUModelRenderer.applyCustomShaderTranslucency` → BLEND pipeline + `Pass.TRANSLUCENT`), renderer-side,
+  no shader change; probe `probe-custom-shader-translucency.mjs` GATE PASS. **Remaining gaps** (see
+  DEFERRED_WORK NEW-MODEL-WGSL-CUSTOM-SHADER for blockers): `CustomShaderMode` MODIFY vs REPLACE + extra
+  material fields (needs a PRE-lighting injection restructure — B473 injects post-lighting), custom
+  `varyings` + extra attributes (varying-budget blocked — TAA uses @location 9-10).
 - **`WGF-1-EXPAND` — clipping planes on primitives + models** — **PREMISE STALE for the parity surface;
   reclassified to PERF-ONLY defer (2026-07-04, Q16-WGF1-CLIP-DISTANCES).** The original claim ("a
   `ClippingPlaneCollection` on a Primitive/Model silently fails on WebGPU") does NOT reproduce:

@@ -79,6 +79,10 @@ import {
   CUSTOM_SHADER_SAMPLER_BINDING,
   MAX_CUSTOM_TEXTURES,
 } from "../../Scene/Model/CustomShaderWGSLPipelineStage.js";
+// PARITY-CUSTOM-SHADER-WGSL (translucencyMode slice) — the CustomShader
+// translucency knob that WebGL's CustomShaderPipelineStage applies via
+// alphaOptions.pass. Values: INHERIT (0) / OPAQUE (1) / TRANSLUCENT (2).
+import CustomShaderTranslucencyMode from "../../Scene/Model/CustomShaderTranslucencyMode.js";
 import Pass from "../Pass.js";
 import ColorBlendMode from "../../Scene/ColorBlendMode.js";
 import SceneMode from "../../Scene/SceneMode.js";
@@ -1481,6 +1485,43 @@ function applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache) {
  *
  * @private
  */
+/**
+ * PARITY-CUSTOM-SHADER-WGSL (translucencyMode slice) — a model's
+ * {@link CustomShader#translucencyMode} overrides the primitive's effective
+ * alpha mode, matching WebGL's {@link CustomShaderPipelineStage} (which sets
+ * `alphaOptions.pass`). TRANSLUCENT forces the primitive into the blended
+ * translucent pass; OPAQUE forces the opaque pass; INHERIT (the default) leaves
+ * the glTF material's alpha mode untouched.
+ *
+ * `matInfo` is a fresh object from `extractMaterialInfo` each frame, so mutating
+ * its `alphaMode` in place is safe and cascades to EVERY downstream consumer —
+ * the color pipeline's blend state (`getPipeline(matInfo.alphaMode, ...)`), the
+ * `passClass` tile-batch scalar, the draw-pass selection (`Pass.TRANSLUCENT` vs
+ * `model.opaquePass`), and the BLEND depth-write variant — all of which read
+ * `matInfo.alphaMode` as the single source of truth.
+ *
+ * DEFAULT-OFF byte-identical: a model with no customShader, or one whose
+ * translucencyMode is INHERIT, takes the early return so matInfo is unchanged
+ * and the primitive keeps its authored alpha mode.
+ *
+ * @param {object} matInfo
+ * @param {import("../../Scene/Model/Model.js").default} model
+ * @private
+ */
+function applyCustomShaderTranslucency(matInfo, model) {
+  const customShader = model.customShader;
+  if (!defined(customShader)) {
+    return;
+  }
+  const mode = customShader.translucencyMode;
+  if (mode === CustomShaderTranslucencyMode.TRANSLUCENT) {
+    matInfo.alphaMode = AlphaModes.BLEND;
+  } else if (mode === CustomShaderTranslucencyMode.OPAQUE) {
+    matInfo.alphaMode = AlphaModes.OPAQUE;
+  }
+  // INHERIT → leave matInfo.alphaMode as extracted (byte-identical off path).
+}
+
 function ensureModelCustomShaderResources(device, model, cache, pipelineCache) {
   const customShader = model.customShader;
   const hasWgsl =
@@ -3662,6 +3703,13 @@ function updateWebGPUModel(model, frameState) {
         geometry.hasColor0,
         geometry.hasNormals,
       );
+
+      // PARITY-CUSTOM-SHADER-WGSL (translucencyMode slice) — apply the
+      // customShader translucency override BEFORE the primitive cache /
+      // pipeline is built so the forced alpha mode cascades to the pipeline
+      // blend state, passClass, and draw-pass selection. No-op (byte-identical)
+      // when the model has no customShader or translucencyMode is INHERIT.
+      applyCustomShaderTranslucency(matInfo, model);
 
       // Get or create cached GPU resources for this primitive
       const primCache = ensurePrimitiveCache(
