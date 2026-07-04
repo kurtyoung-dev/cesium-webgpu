@@ -2217,7 +2217,7 @@ fn computeEnhancedOcean(
   sunDirEC: vec3<f32>,
   uv: vec2<f32>,
   waterMaskValue: f32,
-  dayFade: f32,
+  lightingFade: f32,
   distance: f32,
 ) -> vec3<f32> {
   let viewDir = normalize(-positionEC);
@@ -2272,7 +2272,20 @@ fn computeEnhancedOcean(
     let waveNormalEC = enuToEye * waveN;
     waterNormal = normalize(mix(normalEC, waveNormalEC, waveStrength));
     foamFactor = computeFoam(waveN, distance);
-    tsPerturbationRatio = waveN.z;
+    // Q10-DAYTIME-OCEAN-BRIGHTNESS — `tsPerturbationRatio` MUST come from the
+    // DISTANCE-FADED tangent-space wave normal, matching WebGL GlobeFS.glsl
+    // L818-819: `normalTangentSpace.xy *= waveIntensity; normalize(...)` before
+    // `tsPerturbationRatio = normalTangentSpace.z` (L835). As the camera pulls
+    // away, `waveIntensityFade → 0`, so the faded normal → (0,0,1) and the
+    // ratio → 1 → `(1 - tsPerturbationRatio) → 0`, killing `nonDiffuseHighlight`
+    // at mid/orbit range exactly as WebGL does. The PRE-FIX code used the RAW
+    // `waveN.z` (never faded), so the ratio stayed < 1 at orbit and the
+    // low-light `nonDiffuseHighlight` (peaks as NdotL→0, i.e. the night side)
+    // blew the ocean out to saturated cyan once the highlight taper was
+    // corrected. Byte-identical to the raw `waveN.z` at close zoom where
+    // `waveIntensityFade ≈ 1`.
+    let tsFadedNormal = normalize(vec3<f32>(waveN.xy * waveIntensityFade, waveN.z));
+    tsPerturbationRatio = tsFadedNormal.z;
   }
 
   // Wave-highlight diffuse term — matches WebGL `waveHighlightColor *
@@ -2281,9 +2294,22 @@ fn computeEnhancedOcean(
   // narrow band of color where the surface faces the light.
   let waveHighlightColor = vec3<f32>(0.3, 0.45, 0.6);
   let NdotL = max(dot(waterNormal, sunDirEC), 0.0);
-  // `dayFade` here mirrors the WebGL `fade` scalar — at close zoom we
-  // want full highlight, at orbit the highlight tapers off.
-  let highlightFade = 1.0 - clamp(dayFade, 0.0, 1.0);
+  // Q10-DAYTIME-OCEAN-BRIGHTNESS — the highlight taper MUST use WebGL's
+  // atmosphere camera-distance `fade` (GlobeFS.glsl L428 = clamp((cameraDist
+  // - lightingFadeOut) / (lightingFadeIn - lightingFadeOut), 0, 1)), the SAME
+  // scalar passed to `computeWaterColor(..., fade)` at L502 and applied as
+  // `diffuseHighlight * (1.0 - fade)` at L830. It is 0 at close/mid range
+  // (full highlight) and ramps to 1 at orbit (highlight fades, glint takes
+  // over). The caller now passes `tile.groundAtmosphereControl.y` — the
+  // identical clamp — for `lightingFade`.
+  //
+  // PRE-FIX BUG: the caller passed `dayFade` (the day/night TERMINATOR fade),
+  // which `fragmentMain` forces to 1.0 whenever `enableLighting` is off (the
+  // default). `1.0 - 1.0 = 0` zeroed the bluish `diffuseHighlight` on EVERY
+  // daytime ocean fragment, rendering the WebGPU ocean ~4x darker than WebGL
+  // (bright blue → deep navy) at mid-range while night-side (NdotL≈0) stayed
+  // at parity. The terminator fade and the atmosphere fade are unrelated.
+  let highlightFade = 1.0 - clamp(lightingFade, 0.0, 1.0);
   let diffuseHighlight = waveHighlightColor * NdotL * waterMaskValue * highlightFade;
 
   var oceanContribution = diffuseHighlight;
@@ -3730,9 +3756,14 @@ fn fragmentMain(
       let oceanNormalEC = normalize(
         (camera.modifiedModelView * vec4<f32>(sphereNormalMC, 0.0)).xyz,
       );
+      // Q10-DAYTIME-OCEAN-BRIGHTNESS — pass WebGL's atmosphere camera-distance
+      // `fade` (packed as `groundAtmosphereControl.y` = the lightingFade clamp,
+      // identical to GlobeFS.glsl L428) for the ocean highlight taper, NOT the
+      // day/night `dayFade` (which is 1.0 when enableLighting is off → would
+      // zero the daytime diffuseHighlight). See computeEnhancedOcean header.
       color = computeEnhancedOcean(
         color, input.v_positionEC, input.v_positionMC, oceanNormalEC, sunDir,
-        geoUV, waterMask, dayFade, input.v_distance
+        geoUV, waterMask, tile.groundAtmosphereControl.y, input.v_distance
       );
     }
   }
