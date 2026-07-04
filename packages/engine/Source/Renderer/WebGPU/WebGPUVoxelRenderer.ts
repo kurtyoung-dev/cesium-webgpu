@@ -22,8 +22,9 @@ import {
   checkTransformAndBounds,
   updateShapeAndTransforms,
 } from "../../Scene/VoxelPrimitiveHelpers.js";
-// NEW-VOXEL-ELLIPSOID-INTERSECT — shape-typed real-intersection selection
-// (BOX keeps intersectAABB; ELLIPSOID takes the shell quadratics).
+// NEW-VOXEL-ELLIPSOID-INTERSECT / NEW-VOXEL-CYLINDER-SHAPEUV — shape-typed
+// real-intersection selection (BOX keeps intersectAABB; ELLIPSOID takes the
+// shell quadratics; CYLINDER the bounded-cylinder quadratic + height slab).
 import VoxelShapeType from "../../Scene/VoxelShapeType.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -292,6 +293,25 @@ struct Uniforms {
   ellipsoidShapeUvLongitudeRangeOrigin: f32,
   ellipsoidLocalToShapeUvTranslate: vec2<f32>,
   ellipsoidHasShapeBounds: vec2<f32>,
+  // NEW-VOXEL-CYLINDER-SHAPEUV — cylinder shape terms (floats 216..227),
+  // mirroring VoxelCylinderShape's shader uniforms. shapeType 2 = CYLINDER;
+  // it reuses \`proxyToLocal\` (proxy → the shape's cylinder-centered LOCAL
+  // frame) and \`shapeHeightMinMax\` (local z bounds — the renderBoundPlanes
+  // distances) from the ellipsoid block. \`...RadiusMinMax\` is
+  // u_cylinderRenderRadiusMinMax (x = inner radius → the march's hole
+  // interval, y = outer radius); \`...AngleRangeOrigin\` is
+  // u_cylinderShapeUvAngleRangeOrigin; \`...UvScale\`/\`...UvTranslate\` carry
+  // the radial/angle/height scale + offset terms of
+  // VoxelCylinderShape.convertLocalToShapeUvSpace. Only written for
+  // CYLINDER-shape providers (the BOX/ELLIPSOID/placeholder paths never
+  // read them).
+  cylinderRenderRadiusMinMax: vec2<f32>,
+  cylinderShapeUvAngleRangeOrigin: f32,
+  _pad6: f32,
+  cylinderLocalToShapeUvScale: vec3<f32>,
+  _pad7: f32,
+  cylinderLocalToShapeUvTranslate: vec3<f32>,
+  _pad8: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -371,6 +391,52 @@ fn intersectEllipsoidHeight(originLocal: vec3<f32>, dirLocal: vec3<f32>,
   return vec2<f32>(min(t1, t2), max(t1, t2));
 }
 
+// NEW-VOXEL-CYLINDER-SHAPEUV — ray vs the infinite cylinder x² + y² = r²
+// about the local z-axis, evaluated in the shape's cylinder-centered LOCAL
+// frame. Mirrors WebGL Shaders/Voxels/IntersectCylinder.glsl
+// intersectCylinder(): quadratic on the xy components. \`dirLocal\` is
+// intentionally NOT normalized so the returned t values stay in the caller's
+// proxy-space ray parameterization (same convention as
+// intersectEllipsoidHeight). A ray parallel to the axis (a ≈ 0) is
+// always-inside (-BIG, +BIG) when within the radius, else a miss
+// (+BIG, -BIG); the caller's slab clip / enter > exit test handles both.
+fn intersectInfiniteCylinder(originLocal: vec3<f32>, dirLocal: vec3<f32>,
+                             radius: f32) -> vec2<f32> {
+  let miss = vec2<f32>(3.402823e+38, -3.402823e+38);
+  let position = originLocal.xy;
+  let direction = dirLocal.xy;
+  let a = dot(direction, direction);
+  let b = dot(position, direction);
+  let c = dot(position, position) - radius * radius;
+  if (a < 1e-12) {
+    return select(miss, vec2<f32>(-3.402823e+38, 3.402823e+38), c < 0.0);
+  }
+  let determinant = b * b - a * c;
+  if (determinant < 0.0) {
+    return miss;
+  }
+  let det = sqrt(determinant);
+  return vec2<f32>((-b - det) / a, (-b + det) / a);
+}
+
+// NEW-VOXEL-CYLINDER-SHAPEUV — ray vs the cylinder's height slab
+// zMin <= z <= zMax in the LOCAL frame (WebGL's intersectBoundPlanes over the
+// two renderBoundPlanes). Same always-inside / miss convention as above for
+// rays parallel to the caps.
+fn intersectCylinderZSlab(originLocal: vec3<f32>,
+                          dirLocal: vec3<f32>) -> vec2<f32> {
+  let zMin = u.shapeHeightMinMax.x;
+  let zMax = u.shapeHeightMinMax.y;
+  if (abs(dirLocal.z) < 1e-12) {
+    let inside = originLocal.z >= zMin && originLocal.z <= zMax;
+    return select(vec2<f32>(3.402823e+38, -3.402823e+38),
+                  vec2<f32>(-3.402823e+38, 3.402823e+38), inside);
+  }
+  let t1 = (zMin - originLocal.z) / dirLocal.z;
+  let t2 = (zMax - originLocal.z) / dirLocal.z;
+  return vec2<f32>(min(t1, t2), max(t1, t2));
+}
+
 // NEW-VOXEL-ELLIPSOID-INTERSECT — shape-typed replacement for the REAL
 // proxy-space intersection used by the parity color march + the per-cell pick
 // march. u.shapeType 0 (BOX — the default, and every zero-filled fallback)
@@ -385,6 +451,14 @@ fn intersectEllipsoidHeight(originLocal: vec3<f32>, dirLocal: vec3<f32>,
 // the march SKIPS samples inside it. Interior per-cell addressing ships in
 // NEW-VOXEL-ELLIPSOID-SHAPEUV (computeShapeUvReal); longitude/latitude RENDER
 // bounds (cones/wedges/half-planes) remain a documented residual.
+// NEW-VOXEL-CYLINDER-SHAPEUV — u.shapeType 2 (CYLINDER) intersects the OUTER
+// infinite cylinder (renderRadiusMinMax.y) clipped by the height slab
+// (WebGL IntersectCylinder.glsl intersectBoundedCylinder), plus the INNER
+// infinite cylinder (renderRadiusMinMax.x > 0) as the hole interval —
+// sandwiched into the outer interval exactly like the ellipsoid shell's
+// inner hole (within the outer interval the ray is inside the height slab,
+// so the hole clip is exact). Angle RENDER bounds (wedges/half-planes)
+// remain a documented residual, mirroring the ellipsoid increment.
 // Returns vec4(enter, exit, innerEnter, innerExit); enter > exit = miss.
 fn intersectShapeReal(rayOrigin: vec3<f32>, rayDir: vec3<f32>,
                       invDir: vec3<f32>) -> vec4<f32> {
@@ -395,6 +469,26 @@ fn intersectShapeReal(rayOrigin: vec3<f32>, rayDir: vec3<f32>,
   }
   let oL = (u.proxyToLocal * vec4<f32>(rayOrigin, 1.0)).xyz;
   let dL = (u.proxyToLocal * vec4<f32>(rayDir, 0.0)).xyz;
+  if (u.shapeType > 1.5) {
+    let outerCyl = intersectInfiniteCylinder(
+      oL, dL, u.cylinderRenderRadiusMinMax.y);
+    let slab = intersectCylinderZSlab(oL, dL);
+    let outerC = vec2<f32>(max(outerCyl.x, slab.x), min(outerCyl.y, slab.y));
+    if (outerC.x > outerC.y) {
+      return vec4<f32>(outerC, emptyHole);
+    }
+    var innerC = emptyHole;
+    if (u.cylinderRenderRadiusMinMax.x > 0.0) {
+      innerC = intersectInfiniteCylinder(
+        oL, dL, u.cylinderRenderRadiusMinMax.x);
+    }
+    if (innerC.x > innerC.y) {
+      return vec4<f32>(outerC, emptyHole);
+    }
+    return vec4<f32>(outerC,
+                     max(innerC.x, outerC.x),
+                     min(innerC.y, outerC.y));
+  }
   let outer = intersectEllipsoidHeight(oL, dL, u.shapeHeightMinMax.y);
   if (outer.x > outer.y) {
     return vec4<f32>(outer, emptyHole);
@@ -434,6 +528,30 @@ fn ellipsoidEntryNormal(rayOrigin: vec3<f32>, rayDir: vec3<f32>,
                        u.proxyToLocal[1].xyz,
                        u.proxyToLocal[2].xyz);
   return transpose(m3) * dSphere;
+}
+
+// NEW-VOXEL-CYLINDER-SHAPEUV — entry-face normal for the cylinder solid in
+// the PROXY frame. The composite entry of an intersection of convex sets is
+// the LATEST of the surface entries, so when the height slab's entry t
+// coincides with the composite entry the ray came in through a CAP
+// (normal ±z, opposite the ray's z direction — WebGL intersectBoundPlanes);
+// otherwise through the SIDE surface (radial normal — WebGL
+// intersectCylinder's convex normal (position + t·direction, 0)). Same
+// inverse-transpose local→proxy lift as ellipsoidEntryNormal; the caller
+// normalizes.
+fn cylinderEntryNormal(rayOrigin: vec3<f32>, rayDir: vec3<f32>,
+                       tEnter: f32) -> vec3<f32> {
+  let oL = (u.proxyToLocal * vec4<f32>(rayOrigin, 1.0)).xyz;
+  let dL = (u.proxyToLocal * vec4<f32>(rayDir, 0.0)).xyz;
+  let slab = intersectCylinderZSlab(oL, dL);
+  var nLocal = vec3<f32>(oL.xy + tEnter * dL.xy, 0.0);
+  if (slab.x >= tEnter - 1e-4 && abs(dL.z) >= 1e-12) {
+    nLocal = vec3<f32>(0.0, 0.0, -sign(dL.z));
+  }
+  let m3 = mat3x3<f32>(u.proxyToLocal[0].xyz,
+                       u.proxyToLocal[1].xyz,
+                       u.proxyToLocal[2].xyz);
+  return transpose(m3) * nLocal;
 }
 
 // NEW-VOXEL-ELLIPSOID-SHAPEUV — nearest point on the meridional ellipse +
@@ -509,13 +627,39 @@ fn ellipsoidShapeUvFromLocal(pLocal: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(longitude, latitude, z);
 }
 
+// NEW-VOXEL-CYLINDER-SHAPEUV — radial/angle/height shapeUv for a point in
+// the shape's cylinder-centered LOCAL frame. Verbatim WGSL port of
+// VoxelCylinderShape.prototype.convertLocalToShapeUvSpace (the CPU reference
+// convention):
+//   x = length(xy) · radialScale + radialOffset;
+//   y = (atan2(y, x) + π) / 2π, wrapped past the shape-bounds angle-range
+//       origin (fract), then · angleScale + angleOffset;
+//   z = z · heightScale + heightOffset.
+// The scale/offset terms are packed from the shape's OWN shader-uniform
+// state (single source of truth) and the wrap applies unconditionally,
+// exactly as the JS does.
+fn cylinderShapeUvFromLocal(pLocal: vec3<f32>) -> vec3<f32> {
+  let radius = length(pLocal.xy) * u.cylinderLocalToShapeUvScale.x
+             + u.cylinderLocalToShapeUvTranslate.x;
+  var angle = (atan2(pLocal.y, pLocal.x) + 3.14159265358979)
+            / 6.28318530717959;
+  angle = fract(angle - u.cylinderShapeUvAngleRangeOrigin);
+  angle = angle * u.cylinderLocalToShapeUvScale.y
+        + u.cylinderLocalToShapeUvTranslate.y;
+  let height = pLocal.z * u.cylinderLocalToShapeUvScale.z
+             + u.cylinderLocalToShapeUvTranslate.z;
+  return vec3<f32>(radius, angle, height);
+}
+
 // NEW-VOXEL-ELLIPSOID-SHAPEUV — shape-typed sample coordinate for the REAL
 // parity marches. BOX (shapeType 0 — also the zero-filled placeholder
 // fallback) keeps the CPU-composed affine proxy→shapeUv chain verbatim
 // (bit-identical to the pre-ellipsoid path); ELLIPSOID lifts the proxy point
 // into the shape's local frame (the B22 proxyToLocal) and runs the
-// radial/longitude/latitude conversion above. Both clamp like WebGL's
-// getClampedTileUv (root tile: tileUv == shapeUv).
+// radial/longitude/latitude conversion above; CYLINDER
+// (NEW-VOXEL-CYLINDER-SHAPEUV, shapeType 2) runs the radial/angle/height
+// conversion. All clamp like WebGL's getClampedTileUv (root tile:
+// tileUv == shapeUv).
 fn computeShapeUvReal(p: vec3<f32>) -> vec3<f32> {
   if (u.shapeType < 0.5) {
     return clamp(
@@ -525,6 +669,10 @@ fn computeShapeUvReal(p: vec3<f32>) -> vec3<f32> {
     );
   }
   let pLocal = (u.proxyToLocal * vec4<f32>(p, 1.0)).xyz;
+  if (u.shapeType > 1.5) {
+    return clamp(cylinderShapeUvFromLocal(pLocal),
+                 vec3<f32>(0.0), vec3<f32>(1.0));
+  }
   return clamp(ellipsoidShapeUvFromLocal(pLocal),
                vec3<f32>(0.0), vec3<f32>(1.0));
 }
@@ -664,8 +812,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // NEW-VOXEL-ELLIPSOID-INTERSECT — the shell's entry face is the outer
   // ellipsoid, not an AABB slab; use the spherical-approximation normal
   // (WebGL intersectHeight) transformed into the proxy frame. BOX keeps the
-  // slab normal above bit-identically.
-  if (u.shapeType > 0.5) {
+  // slab normal above bit-identically. NEW-VOXEL-CYLINDER-SHAPEUV — the
+  // cylinder's entry face is the side surface or a cap plane.
+  if (u.shapeType > 1.5) {
+    entryNormalLocal = cylinderEntryNormal(rayOrigin, rayDir, trReal.x);
+  } else if (u.shapeType > 0.5) {
     entryNormalLocal = ellipsoidEntryNormal(rayOrigin, rayDir, trReal.x);
   }
   // Default-shader gray lighting: 0.5 + 0.5 * max(0, dot(n, lightDirModel)).
@@ -964,9 +1115,12 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let entryAxis = step(vec3<f32>(trReal.x) - vec3<f32>(1e-4), tMinV);
   let axisSum = max(entryAxis.x + entryAxis.y + entryAxis.z, 1.0);
   var entryNormalLocal = -sign(rayDir) * entryAxis / axisSum;
-  // NEW-VOXEL-ELLIPSOID-INTERSECT — same shape-typed entry normal as the
-  // color march so the user shader sees consistent attributes.
-  if (u.shapeType > 0.5) {
+  // NEW-VOXEL-ELLIPSOID-INTERSECT / NEW-VOXEL-CYLINDER-SHAPEUV — same
+  // shape-typed entry normal as the color march so the user shader sees
+  // consistent attributes.
+  if (u.shapeType > 1.5) {
+    entryNormalLocal = cylinderEntryNormal(rayOrigin, rayDir, trReal.x);
+  } else if (u.shapeType > 0.5) {
     entryNormalLocal = ellipsoidEntryNormal(rayOrigin, rayDir, trReal.x);
   }
   var accumA: f32 = 0.0;
@@ -1301,12 +1455,25 @@ interface VoxelShapeLike {
   // `_localToShapeUvTranslate` the JS-side lon/lat offsets; `_shaderDefines`
   // the ELLIPSOID_HAS_SHAPE_BOUNDS_* flags (value present = enabled,
   // undefined = disabled — the upstream convention).
+  // NEW-VOXEL-CYLINDER-SHAPEUV — the cylinder* entries are the
+  // VoxelCylinderShape analogues (radial/angle/height scale terms + render
+  // radius bounds + the angle-range wrap origin).
   _shaderUniforms?: {
     ellipsoidLocalToShapeUvScale?: Cartesian3;
     ellipsoidShapeUvLongitudeRangeOrigin?: number;
+    cylinderLocalToShapeUvScale?: Cartesian3;
+    cylinderShapeUvAngleRangeOrigin?: number;
+    cylinderRenderRadiusMinMax?: { x: number; y: number };
   };
   _localToShapeUvTranslate?: Cartesian3;
   _shaderDefines?: Record<string, unknown>;
+  // NEW-VOXEL-CYLINDER-SHAPEUV — VoxelCylinderShape's height render bounds
+  // live in its two renderBoundPlanes (plane 0: normal -z, distance =
+  // renderMinBounds.z; plane 1: normal +z, distance = -renderMaxBounds.z);
+  // `_minBounds`/`_maxBounds` are the unclipped shape bounds fallback.
+  renderBoundPlanes?: { get(index: number): { distance: number } | undefined };
+  _minBounds?: Cartesian3;
+  _maxBounds?: Cartesian3;
 }
 
 /**
@@ -1420,10 +1587,16 @@ function packVoxelSampleFrame(
   // would be meaningless (and NaN-prone at the origin) here, so write the
   // convention fields + an identity proxyToShapeUv (never read on the
   // ELLIPSOID branch of computeShapeUvReal) instead.
+  // NEW-VOXEL-CYLINDER-SHAPEUV — CYLINDER shares the same treatment: its
+  // radius/angle/height map is nonlinear too (cylinderShapeUvFromLocal).
   const providerShape = (
     primitive as unknown as { _provider?: { shape?: string } }
   )._provider?.shape;
-  if (convention && providerShape === VoxelShapeType.ELLIPSOID) {
+  if (
+    convention &&
+    (providerShape === VoxelShapeType.ELLIPSOID ||
+      providerShape === VoxelShapeType.CYLINDER)
+  ) {
     data[76] = convention.dimensions.x;
     data[77] = convention.dimensions.y;
     data[78] = convention.dimensions.z;
@@ -1549,6 +1722,13 @@ const scratchEllProxyToLocal = new Matrix4();
  * NEW-VOXEL-ELLIPSOID-SHAPEUV also packs the lon/lat/height shapeUv mapping
  * terms (floats 208..215) here so per-cell content addressing runs WebGL's
  * convertLocalToShapeUvSpace chain in the WGSL (ellipsoidShapeUvFromLocal).
+ *
+ * NEW-VOXEL-CYLINDER-SHAPEUV — CYLINDER-shape providers pack `proxyToLocal` +
+ * `shapeType = 2` the same way, reuse floats 204/205 for the height slab
+ * (the renderBoundPlanes z bounds), and add the cylinder terms at floats
+ * 216..227 (render radius min/max, angle-range origin, radial/angle/height
+ * scale + offsets) — the inputs WebGL's IntersectCylinder.glsl /
+ * VoxelCylinderShape.convertLocalToShapeUvSpace consume.
  */
 function packVoxelShapeIntersect(
   primitive: CesiumObjectWithWebGPUCache,
@@ -1557,7 +1737,15 @@ function packVoxelShapeIntersect(
 ): void {
   const provider = (primitive as unknown as { _provider?: { shape?: string } })
     ._provider;
-  if (!provider || provider.shape !== VoxelShapeType.ELLIPSOID) {
+  if (
+    !provider ||
+    (provider.shape !== VoxelShapeType.ELLIPSOID &&
+      provider.shape !== VoxelShapeType.CYLINDER)
+  ) {
+    return;
+  }
+  if (provider.shape === VoxelShapeType.CYLINDER) {
+    packVoxelCylinderIntersect(primitive, effModel, data);
     return;
   }
   const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
@@ -1621,6 +1809,89 @@ function packVoxelShapeIntersect(
   data[213] = uvTranslate ? uvTranslate.y : 1;
   data[214] = hasLonBounds ? 1 : 0;
   data[215] = hasLatBounds ? 1 : 0;
+}
+
+/**
+ * NEW-VOXEL-CYLINDER-SHAPEUV — pack the CYLINDER shape-typed fields:
+ * `proxyToLocal` (floats 184..199, shared with the ellipsoid block),
+ * `shapeType = 2` (float 203), the height slab (floats 204/205 — read back
+ * from the shape's two renderBoundPlanes, the same planes WebGL's
+ * intersectBoundPlanes clips with; falls back to the unclipped shape z
+ * bounds), and the cylinder-specific terms at floats 216..227 (render radius
+ * min/max, shapeUv angle-range origin, radial/angle/height scale + offsets
+ * from the shape's own shader-uniform state — WebGL's
+ * VoxelCylinderShape.update stays the single source of truth for the
+ * formulas). Any missing/degenerate shape state leaves the floats zero, so
+ * `shapeType` stays 0 and the WGSL takes the bit-identical BOX branch — the
+ * off-gate.
+ */
+function packVoxelCylinderIntersect(
+  primitive: CesiumObjectWithWebGPUCache,
+  effModel: Matrix4,
+  data: Float32Array,
+): void {
+  const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
+  const su = shape?._shaderUniforms;
+  const radiusMinMax = su?.cylinderRenderRadiusMinMax;
+  const uvScale = su?.cylinderLocalToShapeUvScale;
+  const uvTranslate = shape?._localToShapeUvTranslate;
+  if (
+    !shape ||
+    !shape.shapeTransform ||
+    !radiusMinMax ||
+    !uvScale ||
+    !uvTranslate ||
+    !(radiusMinMax.y > 0)
+  ) {
+    return;
+  }
+  // Height slab: renderBoundPlanes carry the RENDER (shape ∩ clip) z bounds
+  // (plane 0 distance = renderMinZ, plane 1 distance = -renderMaxZ). Fall
+  // back to the unclipped shape bounds, then the DefaultMin/MaxBounds z.
+  let zMin = shape._minBounds ? shape._minBounds.z : -1;
+  let zMax = shape._maxBounds ? shape._maxBounds.z : 1;
+  const planes = shape.renderBoundPlanes;
+  if (planes && typeof planes.get === "function") {
+    const p0 = planes.get(0);
+    const p1 = planes.get(1);
+    if (p0 && typeof p0.distance === "number") {
+      zMin = p0.distance;
+    }
+    if (p1 && typeof p1.distance === "number") {
+      zMax = -p1.distance;
+    }
+  }
+  if (!(zMax > zMin)) {
+    return;
+  }
+  try {
+    const invShape = Matrix4.inverse(
+      shape.shapeTransform,
+      scratchEllShapeTransformInv,
+    );
+    const proxyToLocal = Matrix4.multiply(
+      invShape,
+      effModel,
+      scratchEllProxyToLocal,
+    );
+    Matrix4.pack(proxyToLocal, data, 184);
+  } catch {
+    // Degenerate shapeTransform — keep the zero-filled box fallback rather
+    // than crashing the frame.
+    return;
+  }
+  data[203] = 2; // shapeType = CYLINDER
+  data[204] = zMin;
+  data[205] = zMax;
+  data[216] = radiusMinMax.x;
+  data[217] = radiusMinMax.y;
+  data[218] = su?.cylinderShapeUvAngleRangeOrigin ?? 0;
+  data[220] = uvScale.x;
+  data[221] = uvScale.y;
+  data[222] = uvScale.z;
+  data[224] = uvTranslate.x;
+  data[225] = uvTranslate.y;
+  data[226] = uvTranslate.z;
 }
 
 // VOXEL-OCTREE-LOD scratch for the SSE refine test.
@@ -2219,8 +2490,10 @@ function updateWebGPUVoxelPrimitive(
     // 184-207: proxyToLocal + ellipsoidRadii/shapeType + heightMinMax).
     // NEW-VOXEL-ELLIPSOID-SHAPEUV grew it 832 → 864 bytes for the ellipsoid
     // lon/lat/height shapeUv mapping terms (floats 208-215).
+    // NEW-VOXEL-CYLINDER-SHAPEUV grew it 864 → 912 bytes for the cylinder
+    // radius/angle/height terms (floats 216-227).
     cache.uniformBuffer = device.createBuffer({
-      size: 864,
+      size: 912,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     // VOXEL-SHAPEUV-CONVENTION — honour VoxelPrimitive.nearestSampling
@@ -2728,7 +3001,12 @@ function updateWebGPUVoxelPrimitive(
   //              (NEW-VOXEL-ELLIPSOID-SHAPEUV)
   //   [212..215] ellipsoidLocalToShapeUvTranslate + hasShapeBounds flags
   //              (NEW-VOXEL-ELLIPSOID-SHAPEUV)
-  const data = new Float32Array(216);
+  //   [216..219] cylinderRenderRadiusMinMax + angleRangeOrigin + pad
+  //              (NEW-VOXEL-CYLINDER-SHAPEUV)
+  //   [220..223] cylinderLocalToShapeUvScale + pad (NEW-VOXEL-CYLINDER-SHAPEUV)
+  //   [224..227] cylinderLocalToShapeUvTranslate + pad
+  //              (NEW-VOXEL-CYLINDER-SHAPEUV)
+  const data = new Float32Array(228);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -2865,9 +3143,10 @@ function updateWebGPUVoxelPrimitive(
       }
     }
 
-    // NEW-VOXEL-ELLIPSOID-INTERSECT — shape-typed intersection fields (floats
-    // 184..207). Zero-filled (shapeType 0 = the bit-identical BOX branch)
-    // unless the provider's shape is ELLIPSOID.
+    // NEW-VOXEL-ELLIPSOID-INTERSECT / NEW-VOXEL-CYLINDER-SHAPEUV —
+    // shape-typed intersection fields (floats 184..207 + 216..227).
+    // Zero-filled (shapeType 0 = the bit-identical BOX branch) unless the
+    // provider's shape is ELLIPSOID or CYLINDER.
     packVoxelShapeIntersect(primitive, modelMatrix, data);
   }
 

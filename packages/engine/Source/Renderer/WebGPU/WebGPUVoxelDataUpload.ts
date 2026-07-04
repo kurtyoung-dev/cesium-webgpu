@@ -13,8 +13,9 @@
  *
  * VOXEL-OCTREE-LOD (increment: depth-1 octree traversal) — when the provider
  * advertises `availableLevels >= 2` and the shape is a BOX (the sampling
- * convention now also covers ELLIPSOID — NEW-VOXEL-ELLIPSOID-SHAPEUV — but
- * multi-level atlases stay box-gated), the destination texture is allocated
+ * convention now also covers ELLIPSOID — NEW-VOXEL-ELLIPSOID-SHAPEUV — and
+ * CYLINDER — NEW-VOXEL-CYLINDER-SHAPEUV — but multi-level atlases stay
+ * box-gated), the destination texture is allocated
  * as a 9-slot 3D ATLAS stacked
  * along Z: slot 0 = root tile, slots 1..8 = the eight level-1 child tiles
  * (childIndex = x + 2y + 4z in the Z-up shape frame). Child tiles are
@@ -461,15 +462,17 @@ export function tryUploadRootVoxelTile(
   // swap for Y_UP metadata mirrors VoxelPrimitiveHelpers' inputDimensions
   // swap) but the Octree.glsl input-axis swap/flip is SHAPE_BOX-gated
   // upstream, so `yUpBox` stays false for ellipsoids.
-  // Other shapes (CYLINDER) keep the legacy unpadded Z-up extents + direct
-  // sampling until their shapeUv increment lands.
+  // NEW-VOXEL-CYLINDER-SHAPEUV — CYLINDER shapes carry the same padded
+  // convention (dimensions are radius/angle/height cell counts); like
+  // ELLIPSOID, `yUpBox` stays false (the swap/flip is SHAPE_BOX-gated).
   const isBox = provider.shape === VoxelShapeType.BOX;
   const isEllipsoid = provider.shape === VoxelShapeType.ELLIPSOID;
+  const isCylinder = provider.shape === VoxelShapeType.CYLINDER;
   let width = Math.max(1, Math.floor(dims.x));
   let height = Math.max(1, Math.floor(dims.y));
   let depth = Math.max(1, Math.floor(dims.z));
   let convention: VoxelSampleConvention | null = null;
-  if (isBox || isEllipsoid) {
+  if (isBox || isEllipsoid || isCylinder) {
     const padB = provider.paddingBefore ?? { x: 0, y: 0, z: 0 };
     const padA = provider.paddingAfter ?? { x: 0, y: 0, z: 0 };
     const yUp = provider.metadataOrder === VoxelMetadataOrder.Y_UP;

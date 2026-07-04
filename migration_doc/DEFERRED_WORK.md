@@ -3190,12 +3190,17 @@ octree traversal — a real two-level LOD path in
    under future demand. Root + level-1 keep static slots 0..8. Under-capacity
    scenes take the exact static path (byte-identical off-gate;
    `probe-voxel-megatexture.mjs` PARTs 1+2 unchanged, PART 3 is the eviction
-   gate). Honest residual: the pool covers LEVEL-2 tiles only (depth cap 2 —
+   gate). NOTE (2026-07-03, found during B24 regression sweep): PART 3's
+   final `pixelsMatch` sub-gate (re-upload reproduces the original frame)
+   FAILS at clean HEAD (Batch 526) — verified pre-existing by A/B against a
+   stashed tree; the functional sub-gates (cappedAtlas, overDemandNoOverflow,
+   evicted, reuploaded) all pass. Needs triage: stale pixel tolerance vs a
+   real re-upload rendering drift. Honest residual: the pool covers LEVEL-2
+   tiles only (depth cap 2 —
    deeper levels need item 1's page-table walk, which would page per-level
    slot tables through this same pool) and there is no public
    `maximumTileCount` API — the override is fork-internal.
-3. **Non-box shapes** — cylinder still uses the legacy direct sampling (no
-   shapeUv convention → no refinement). ELLIPSOID is now feature-complete for
+3. **Non-box shapes** — ELLIPSOID and CYLINDER are now feature-complete for
    single-tile providers: B22 (Batch 525, NEW-VOXEL-ELLIPSOID-INTERSECT)
    shipped the shell GEOMETRY — the parity color march + per-cell pick march
    intersect the outer/inner ellipsoid (WebGL IntersectEllipsoid.glsl
@@ -3213,12 +3218,27 @@ octree traversal — a real two-level LOD path in
    input-orientation extents; `yUpBox` stays BOX-only, mirroring Octree.glsl's
    SHAPE_BOX-gated axis swap). `probe-voxel-ellipsoid.mjs` gates both the
    silhouette IoU (B22) and per-grid-cell color parity through a
-   dual-language customShader (B23). Residuals: (a) longitude/latitude RENDER
-   bounds (cones/wedges/half-planes of IntersectEllipsoid.glsl) are not
-   intersected — full-shell providers only; (b) ellipsoid octree refinement
+   dual-language customShader (B23). B24 (NEW-VOXEL-CYLINDER-SHAPEUV,
+   2026-07-03) shipped CYLINDER on the same shape-typed infrastructure:
+   `shapeType = 2` selects the bounded-cylinder intersection
+   (`intersectInfiniteCylinder` outer-radius quadratic × the
+   renderBoundPlanes height slab, per WebGL IntersectCylinder.glsl
+   intersectBoundedCylinder, with a nonzero inner radius as the march's
+   hole interval) + the radial/angle/height `cylinderShapeUvFromLocal`
+   (verbatim WGSL port of VoxelCylinderShape.convertLocalToShapeUvSpace
+   incl. the angle-range-origin wrap; UBO floats 216-227 carry the render
+   radius min/max + angle origin + scale/offset terms from the shape's own
+   `_shaderUniforms`), plus the CYLINDER data-upload sampling convention
+   (`yUpBox` stays BOX-only). `probe-voxel-cylinder.mjs` gates silhouette
+   IoU + per-grid-cell color parity on a HOLLOW cylinder (inner radius 0.3,
+   exercising the hole interval and the radial offset). Residuals:
+   (a) longitude/latitude RENDER bounds for ELLIPSOID and angle RENDER
+   bounds (wedges/half-planes of IntersectCylinder.glsl) for CYLINDER are
+   not intersected — full-shell / full-angle providers only (shapeUv SHAPE
+   bounds ARE honored for both); (b) ellipsoid + cylinder octree refinement
    stays root-only (multi-level atlas is deliberately box-gated in
    `WebGPUVoxelDataUpload.ts` until the non-box refinement increment is
-   verified); (c) cylinder untouched → B24 NEW-VOXEL-CYLINDER-SHAPEUV.
+   verified).
 4. **pickVoxel against refined tiles** — `fragmentPickVoxelMain` marches the
    ROOT slab only (megatextureIndex 0); a refined render can pick a coarser
    cell than what is displayed.
