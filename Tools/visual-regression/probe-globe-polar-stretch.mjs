@@ -29,12 +29,26 @@
 //   |iceCentroidY_gl − iceCentroidY_gpu| ≤ 0.025 · discRadius
 //   ice area ratio within [0.85, 1.18]
 //   |bestTopHalfShift| ≤ 0.02 · discRadius
-//   mismatch ≤ {mid: 0.27%, far: 3.5%, extreme: 4.5%}
+//   mismatch ≤ {mid: 0.27%, far: 1.5%, extreme: 1.5%}
 //     (limits tightened by GLOBE-POLAR-STRETCH-POLISH: the tile-seam grid
 //     lines — 62% of the mid residual — were fixed by the fragment-entry UV
 //     clamp, and the missing zoomed-out ocean sun glint — 63% of the far
 //     residual — by the czm_getSpecular Phong port. Pre-polish baseline was
 //     mid 0.27% / far 5.46%.)
+//     THEN by Q9-STARFIELD-SPACE-BUCKET: the clock is now PINNED (shared Q7
+//     determinism kit) so both backend launches render the identical sky.
+//     Before pinning, the two separate browser launches happened seconds
+//     apart at wall-clock "now", so the star-field TEME rotation + skybox
+//     cubemap orientation differed a fraction of a degree between captures —
+//     speckling the whole background with >30 mismatch pixels (the "space"
+//     bucket, ~42% of the far mismatch, meanΔ≈0 = purely positional). A
+//     dedicated diagnostic proved the fix: cross-backend space mismatch
+//     6600px→102px and within-backend WebGPU→0px once pinned. That collapsed
+//     far 3.63%→0.72% / extreme 4.59%→0.58%, so the ceilings drop to 1.5%.
+//     The star renderers themselves are at parity (identical WGSL/GLSL, shared
+//     StarFieldMath); the 102 residual px are the low-value STARFIELD-TUNE
+//     sprite-brightness item, not a divergence this probe should tolerate 3%
+//     of noise to hide.
 //
 // GLOBE-POLAR-STRETCH-POLISH adds a BUCKET DECOMPOSITION of the residual
 // mismatch per view (printed + written to report.json):
@@ -55,8 +69,12 @@ import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+  DET_BROWSER_SETUP,
+  DETERMINISTIC_CLOCK_ISO,
+} from "./lib/determinism-kit.mjs";
 
-const BASE = "http://localhost:8080";
+const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "output",
@@ -65,9 +83,16 @@ const OUT_DIR = path.join(
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 const VIEWS = [
+  // Ceilings tightened by Q9-STARFIELD-SPACE-BUCKET: the far/extreme limits
+  // used to be 3.5 / 4.5 only to tolerate the unpinned-clock star jitter
+  // (~1.5% of the crop, ~42% of the far mismatch). With the clock now pinned
+  // both backends render the identical sky, so the deterministic residual is
+  // far 0.72% / extreme 0.58% (dominated by thin disc-edge AA + the high-lat
+  // ground-atmosphere blob). 1.5% leaves ~2x headroom for tile-LOD wobble
+  // while still catching a regression that re-introduces the star drift.
   { name: "mid", lon: -95, lat: 40, height: 2e6, maxMismatch: 0.27 },
-  { name: "far", lon: -95, lat: 40, height: 25e6, maxMismatch: 3.5 },
-  { name: "extreme", lon: -95, lat: 40, height: 55e6, maxMismatch: 4.5 },
+  { name: "far", lon: -95, lat: 40, height: 25e6, maxMismatch: 1.5 },
+  { name: "extreme", lon: -95, lat: 40, height: 55e6, maxMismatch: 1.5 },
 ];
 const MAX_CENTROID_SHIFT = 0.025; // disc-radius units
 const MAX_PROFILE_SHIFT = 0.02; // disc-radius units
@@ -92,10 +117,25 @@ async function capture(renderer, view) {
   });
   await page.waitForFunction(() => !!window.viewer);
   await page.evaluate(
-    async ({ lon, lat, height }) => {
+    async ({ lon, lat, height, det, iso }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
-      v.clock.shouldAnimate = false;
+      // DETERMINISM (Q9-STARFIELD-SPACE-BUCKET / NEW-STARFIELD-SPACE-BUCKET-
+      // RESIDUAL): the CesiumViewer clock starts at wall-clock "now", so the
+      // star-field TEME rotation + skybox cubemap orientation differ between
+      // the two SEPARATE browser launches (webgl vs webgpu) that this probe
+      // fires seconds apart. That rotated the whole celestial sphere a
+      // fraction of a degree between captures, speckling the entire background
+      // with >30 mismatch pixels — the "space" bucket residual (was ~42% of
+      // the far-view mismatch, meanΔ≈0 = positional, NOT a brightness bias).
+      // Pinning the clock to a fixed epoch renders the identical sky on both
+      // backends; the diagnostic measured the cross-backend space bucket
+      // collapse from 6600px to 102px (and within-backend WebGPU to 0px),
+      // proving the star renderers are at parity and the residual was probe
+      // nondeterminism. Uses the shared Q7 determinism kit.
+      // eslint-disable-next-line no-new-func
+      new Function(det)();
+      window.__det.pinClock(C, v, v.scene, iso);
       v.scene.screenSpaceCameraController.enableInputs = false;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(lon, lat, height),
@@ -107,7 +147,7 @@ async function capture(renderer, view) {
         if (v.scene.globe.tilesLoaded && i > 240) break;
       }
     },
-    view,
+    { ...view, det: DET_BROWSER_SETUP, iso: DETERMINISTIC_CLOCK_ISO },
   );
   await page.waitForTimeout(2000);
   const out = path.join(OUT_DIR, `${view.name}-${renderer}.png`);
