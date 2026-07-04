@@ -311,8 +311,15 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
   features (mirrors WebGL `Context.js` init). `loadKTX2` no longer throws `"supportedTargetFormats is
   required"` on a `WebGPUContext`. Q1 (Campaign 3) re-verified the premise as already-closed and added
   the standing regression guard `probe-ktx2-transcoder-formats.mjs` (GATE PASS 2026-07-04).
-- **`NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU`** (M, Batch 287) — authored KTX2 specular env maps don't load on
-  WebGPU (procedural fallback used). **Blocked by** the transcoder-formats item above. **P1.**
+- **`NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU`** ✅ **RESOLVED (Batch 371, C2-2, 9fae6c1c7e; re-verified Q6
+  Campaign 3, 2026-07-04).** Authored KTX2 specular env maps now load + drive WebGPU model IBL. The
+  transcoder-formats prereq above (Q1) unblocked the reverted Batch 369 wiring, which Batch 371 re-landed:
+  `WebGPUImageBasedLighting.ensureWebGPUSpecularSource` load-once-fetches the KTX2, builds an
+  `rgba16float` source cube via `buildWebGPUSpecularCubeFromKTX2Buffers`, and `generateIBLMaps` prefilters
+  it on-device. Q6 re-verified the premise as already-closed: `probe-model-ktx2-ibl.mjs` GATE PASS
+  (webgpu-KTX2 vs webgl-KTX2 parity 9.43% < 12%, consume-proof 5.26% > 3%, cube loaded, 0 device errors;
+  PNGs read — WebGPU reflective cube matches WebGL, procedural fallback is visibly flatter). Standing
+  regression guard.
 - **`NEW-MODEL-WGSL-CUSTOM-SHADER`** — WGSL `CustomShader` API parallel to GLSL
   `CustomShaderPipelineStage` (WebGPU is a one-time-warning no-op). **Hard blockers** (verified): bind-
   group 1 is full (0-36), `maxBindGroups=4` maxed; numeric module cache key can't hold per-Model WGSL
