@@ -1133,6 +1133,9 @@ function updateAerialPerspectiveFrameData(
     };
     camera?: { frustum?: { near?: number; far?: number } };
     skyAtmosphere?: { atmosphereLightIntensity?: number };
+    // Item 2.3 (AERIAL-FROXEL, Batch Q23) — opt-in froxel fast path (default
+    // false; nested under the already-opt-in `aerialPerspective`).
+    aerialPerspectiveFroxel?: boolean;
   };
 
   const us = sceneAny?.context?.uniformState;
@@ -1160,6 +1163,12 @@ function updateAerialPerspectiveFrameData(
   fx.setSkyViewView(lut?.skyViewView ?? null);
   fx.setMultipleScatterView(lut?.multipleScatterView ?? null);
   fx.setUseMultiScatterLut(envMapMultiScatter);
+
+  // Item 2.3 (AERIAL-FROXEL, Batch Q23) — opt-in froxel fast path. Default
+  // false → the analytic per-pixel march (byte-identical). When on, the effect
+  // bakes the 32³ froxel volume this frame and the fragment does one trilinear
+  // fetch. Scene-level flag (`scene.aerialPerspectiveFroxel`).
+  fx.setFroxelEnabled(sceneAny?.aerialPerspectiveFroxel === true);
 
   const cam = us.cameraPosition;
   const sun = us.sunDirectionWC ?? { x: 0, y: 0, z: 1 };

@@ -1170,6 +1170,21 @@ class Scene {
     this.aerialPerspective = options.aerialPerspective ?? false;
 
     /**
+     * Item 2.3 (AERIAL-FROXEL) — when true (WebGPU only, and only while
+     * {@link Scene#aerialPerspective} is also true), the aerial-perspective
+     * atmosphere is evaluated from a pre-baked 32³ froxel volume (one trilinear
+     * fetch per pixel, Hillaire 2020) instead of the per-pixel analytic march.
+     * Decouples the cost from screen resolution and is temporally stable. Both
+     * flags default false → no aerial perspective at all in the parity default;
+     * turning this on with {@link Scene#aerialPerspective} on swaps the analytic
+     * march for the froxel fast path. No effect on WebGL.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.aerialPerspectiveFroxel = options.aerialPerspectiveFroxel ?? false;
+
+    /**
      * MORPH-TAA-PREVVP — last frame's projection type (true = orthographic,
      * false = perspective) as seen by the TAA motion-vector path. Used to
      * detect the perspective↔orthographic flip that happens mid-morph so the

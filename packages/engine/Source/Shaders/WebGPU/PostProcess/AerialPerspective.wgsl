@@ -111,6 +111,14 @@ struct AerialUniforms {
   // sky's ozone deepening. Appended add-only; default (0,0,0,0) → exp(-0) =
   // identity → byte-identical when ozone is off.
   ozoneCoefficient: vec4<f32>,
+  // Item 2.3 (AERIAL-FROXEL, Batch Q23) — aerial-perspective froxel LUT gate.
+  // x = enabled (> 0.5 → replace the analytic per-pixel march with ONE trilinear
+  //     fetch of the pre-baked 32³ froxel volume, binding 8),
+  // y = froxel max distance (m) — the distance the last froxel slice covers
+  //     (squared slice distribution), used to invert the slice coordinate,
+  // z, w = reserved. Appended add-only; default (0,0,0,0) → the analytic march
+  // runs verbatim → byte-identical parity when the froxel path is off.
+  froxelParams: vec4<f32>,
 };
 
 @group(0) @binding(0) var sceneColorTex: texture_2d<f32>;
@@ -133,6 +141,13 @@ struct AerialUniforms {
 // → byte-identical parity.
 @group(0) @binding(5) var skyViewTex: texture_2d<f32>;
 @group(0) @binding(6) var multipleScatterTex: texture_2d<f32>;
+// Item 2.3 (AERIAL-FROXEL, Batch Q23) — the 32³ aerial-perspective froxel volume
+// (rgb = accumulated inscatter, a = mean transmittance) baked once per frame by
+// AerialPerspectiveFroxel.wgsl. Bound UNCONDITIONALLY (1×1×1 placeholder when the
+// froxel path is off) so the layout never forks; sampled only inside the
+// `froxelParams.x > 0.5` gate → byte-identical parity when off. Reuses
+// `texSampler` (linear clamp) for the trilinear fetch.
+@group(0) @binding(8) var froxelTex: texture_3d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -330,6 +345,30 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let fragWC = cameraWC + rayDir * eyeDistance;
 
   let camR = max(length(cameraWC), innerRadius);
+
+  // ── Item 2.3 (AERIAL-FROXEL, Batch Q23) — froxel fast path ──
+  // When enabled, replace the entire analytic per-pixel march below with ONE
+  // trilinear fetch of the pre-baked 32³ froxel volume. The froxel column
+  // aligns with this pixel's screen UV; the slice coordinate inverts the bake's
+  // squared distance distribution (`w = sqrt(eyeDistance / maxDistance)`). The
+  // volume stores inscatter (rgb) + mean transmittance (a) already scaled by the
+  // haze intensity / inscatter scale at bake time, so the composite is the same
+  // `scene·T + inscatter` shape as the analytic path. Cloud-shadow attenuation
+  // (if active) still applies to the fetched inscatter. Default off → this whole
+  // block is skipped and the analytic march runs verbatim (byte-identical).
+  if (uniforms.froxelParams.x > 0.5) {
+    let maxDistanceF = max(uniforms.froxelParams.y, 1.0);
+    let wCoord = sqrt(clamp(eyeDistance / maxDistanceF, 0.0, 1.0));
+    let ap = textureSampleLevel(
+      froxelTex, texSampler, vec3<f32>(uv.x, uv.y, wCoord), 0.0
+    );
+    var froxelInscatter = ap.rgb;
+    if (uniforms.cloudShadowControl.x > 0.5) {
+      froxelInscatter = froxelInscatter * sampleCloudInscatterShadow(fragWC);
+    }
+    let froxelColor = sceneColor.rgb * ap.a + froxelInscatter;
+    return vec4<f32>(froxelColor, sceneColor.a);
+  }
 
   // ── EXTINCTION + INSCATTER via one analytic single-scatter march ──
   // The camera→fragment transmittance is computed DIRECTLY from the optical

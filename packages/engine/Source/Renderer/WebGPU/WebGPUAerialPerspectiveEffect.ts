@@ -37,9 +37,11 @@
  */
 
 import AerialPerspectiveWGSL from "../../Shaders/WebGPU/PostProcess/AerialPerspective.js";
+import AerialPerspectiveFroxelWGSL from "../../Shaders/WebGPU/Compute/AerialPerspectiveFroxel.js";
 import {
   makeBindGroupLayout,
   sampler as samplerEntry,
+  storageTexture,
   texture,
   uniformBuffer,
   Stage,
@@ -106,6 +108,19 @@ export interface AerialPerspectiveFrameData {
   ozoneCoefficient?: [number, number, number];
   /** True when skyAtmosphere.ozone is on (gates the ozone extinction term). */
   ozoneEnabled?: boolean;
+  /**
+   * Item 2.3 (AERIAL-FROXEL, Batch Q23) — when true, bake the 32³ aerial-
+   * perspective froxel volume this frame and have the fragment shader do one
+   * trilinear fetch instead of the 10-step analytic march. Undefined/false →
+   * the analytic march (byte-identical default). Set per-frame from
+   * `scene.aerialPerspectiveFroxel`.
+   */
+  froxelEnabled?: boolean;
+  /**
+   * Item 2.3 — the distance (metres) the last froxel slice covers (squared
+   * slice distribution). Undefined → the effect's configured default.
+   */
+  froxelMaxDistance?: number;
 }
 
 export interface AerialPerspectiveConfig {
@@ -128,6 +143,21 @@ export interface AerialPerspectiveConfig {
    * the configure pass from `contextOptions.webgpu.envMapMultiScatter`.
    */
   useMultiScatterLut?: boolean;
+  /**
+   * Item 2.3 (AERIAL-FROXEL, Batch Q23). When true, the aerial perspective is
+   * evaluated from a pre-baked 32³ froxel volume (one trilinear fetch/pixel)
+   * instead of the per-pixel analytic march. Default false → analytic march
+   * (byte-identical parity). Set per-frame by the configure pass from
+   * `scene.aerialPerspectiveFroxel`.
+   */
+  froxel?: boolean;
+  /**
+   * Item 2.3 — the distance (metres) the last froxel slice covers. Default
+   * 1_600_000 m. Larger values spread the 32 slices over a longer range (more
+   * distant haze detail, coarser near field); smaller values pack detail near
+   * the camera. Only used when `froxel` is on.
+   */
+  froxelMaxDistance?: number;
 }
 
 // Float layout of the WGSL `AerialUniforms` struct (std140-ish, all vec4 +
@@ -139,7 +169,19 @@ export interface AerialPerspectiveConfig {
 // Batch 438 (4.5 SKY-OZONE) — +4 for ozoneCoefficient (vec4) = 80 floats = 320
 // bytes. Appended add-only; default (0,0,0,0) → identity extinction → byte-
 // identical when skyAtmosphere.ozone is off.
-const UNIFORM_FLOATS = 80;
+// Item 2.3 (AERIAL-FROXEL, Batch Q23) — +4 for froxelParams (vec4) = 84 floats =
+// 336 bytes. Appended add-only; default (0,0,0,0) → analytic march → byte-
+// identical when the froxel path is off.
+const UNIFORM_FLOATS = 84;
+
+// Froxel volume dimensions (32³ per Hillaire 2020). Small — 32³ rgba16float =
+// 256 KB. Workgroup 4×4×4 → dispatch 8×8×8.
+const FROXEL_DIM = 32;
+// Compact FroxelUniforms float count (see AerialPerspectiveFroxel.wgsl):
+// 6 vec4 + 2 mat4 + 1 vec4 = 60 floats = 240 bytes.
+const FROXEL_UNIFORM_FLOATS = 60;
+// Default froxel max slice distance (metres).
+const FROXEL_DEFAULT_MAX_DISTANCE = 1_600_000;
 
 export class AerialPerspectiveEffect implements PostProcessEffect {
   readonly name = "AerialPerspective";
@@ -186,6 +228,23 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
   private _cachedMsView: GPUTextureView | null = null;
   private _cachedCloudShadowView: GPUTextureView | null = null;
 
+  // Item 2.3 (AERIAL-FROXEL, Batch Q23) — the 32³ froxel volume + its bake
+  // compute pipeline. Lazily allocated on first froxel-enabled frame so the
+  // default-off path allocates nothing beyond the tiny 1×1×1 placeholder
+  // (bound to fragment binding 8 so the layout never forks).
+  private _froxelTex: GPUTexture | null = null;
+  private _froxelView: GPUTextureView | null = null;
+  private _froxelPipeline: GPUComputePipeline | null = null;
+  private _froxelBakeLayout: GPUBindGroupLayout | null = null;
+  private _froxelBakeBindGroup: GPUBindGroup | null = null;
+  private _froxelUniforms: GPUBuffer | null = null;
+  private _froxelUniformData = new Float32Array(FROXEL_UNIFORM_FLOATS);
+  // 1×1×1 placeholder bound to fragment binding 8 when the froxel path is off
+  // (never sampled — the `froxelParams.x` gate is closed → byte-identical).
+  private _froxelPlaceholderTex: GPUTexture | null = null;
+  private _froxelPlaceholderView: GPUTextureView | null = null;
+  private _cachedFroxelView: GPUTextureView | null = null;
+
   private _config: Required<AerialPerspectiveConfig>;
 
   constructor(config: AerialPerspectiveConfig = {}) {
@@ -194,6 +253,9 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       inscatterScale: config.inscatterScale ?? 1.0,
       skyCutoff: config.skyCutoff ?? 0.999999,
       useMultiScatterLut: config.useMultiScatterLut ?? false,
+      froxel: config.froxel ?? false,
+      froxelMaxDistance:
+        config.froxelMaxDistance ?? FROXEL_DEFAULT_MAX_DISTANCE,
     };
   }
 
@@ -248,6 +310,21 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
    */
   setUseMultiScatterLut(enabled: boolean): void {
     this._config.useMultiScatterLut = enabled;
+  }
+
+  /**
+   * Item 2.3 (AERIAL-FROXEL). Enable/disable the froxel-volume fast path at
+   * runtime (cheap — next frame's pack flips `froxelParams.x`; the 32³ volume +
+   * bake pipeline are lazily allocated on the first enabled frame). Default
+   * false (analytic march, byte-identical parity).
+   */
+  setFroxelEnabled(enabled: boolean): void {
+    this._config.froxel = enabled;
+  }
+
+  /** Item 2.3. Set the froxel max slice distance (metres) at runtime. */
+  setFroxelMaxDistance(distance: number): void {
+    this._config.froxelMaxDistance = distance;
   }
 
   /**
@@ -353,11 +430,76 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       f[o++] = 0;
       f[o++] = 0;
     }
+    // Item 2.3 (AERIAL-FROXEL, Batch Q23) — froxelParams (vec4): x = enabled,
+    // y = max slice distance, z/w = reserved. Default (0,…) → analytic march →
+    // byte-identical.
+    const froxelMaxDistance =
+      d.froxelMaxDistance ?? this._config.froxelMaxDistance;
+    f[o++] = this._config.froxel ? 1.0 : 0.0;
+    f[o++] = froxelMaxDistance;
+    f[o++] = 0;
+    f[o++] = 0;
     this._device.queue.writeBuffer(
       this._uniforms,
       0,
       f as Float32Array<ArrayBuffer>,
     );
+
+    // Item 2.3 — pack the compact FroxelUniforms buffer used by the bake
+    // compute pass. Only written/consumed when the froxel path is on, but
+    // packing it unconditionally is cheap and keeps the bake self-contained.
+    if (this._froxelUniforms) {
+      const g = this._froxelUniformData;
+      let p = 0;
+      g[p++] = d.cameraPositionWC[0];
+      g[p++] = d.cameraPositionWC[1];
+      g[p++] = d.cameraPositionWC[2];
+      g[p++] = d.innerRadius;
+      g[p++] = d.sunDirectionWC[0];
+      g[p++] = d.sunDirectionWC[1];
+      g[p++] = d.sunDirectionWC[2];
+      g[p++] = d.lightIntensity;
+      g[p++] = d.rayleighCoefficient[0];
+      g[p++] = d.rayleighCoefficient[1];
+      g[p++] = d.rayleighCoefficient[2];
+      g[p++] = d.rayleighScaleHeight;
+      g[p++] = d.mieCoefficient[0];
+      g[p++] = d.mieCoefficient[1];
+      g[p++] = d.mieCoefficient[2];
+      g[p++] = d.mieScaleHeight;
+      g[p++] = d.mieAnisotropy;
+      g[p++] = d.near;
+      g[p++] = d.far;
+      g[p++] = d.atmosphereThickness;
+      g[p++] = this._config.intensity;
+      g[p++] = this._config.inscatterScale;
+      g[p++] = froxelMaxDistance;
+      g[p++] = 0;
+      const ipF = d.inverseProjection;
+      for (let i = 0; i < 16; i++) {
+        g[p++] = ipF[i];
+      }
+      const ivF = d.inverseView;
+      for (let i = 0; i < 16; i++) {
+        g[p++] = ivF[i];
+      }
+      if (ozoneOn && ozone) {
+        g[p++] = ozone[0];
+        g[p++] = ozone[1];
+        g[p++] = ozone[2];
+        g[p++] = 1.0;
+      } else {
+        g[p++] = 0;
+        g[p++] = 0;
+        g[p++] = 0;
+        g[p++] = 0;
+      }
+      this._device.queue.writeBuffer(
+        this._froxelUniforms,
+        0,
+        g as Float32Array<ArrayBuffer>,
+      );
+    }
   }
 
   initialize(
@@ -401,6 +543,60 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       this._placeholderView = this._placeholderTex.createView();
     }
 
+    // Item 2.3 (AERIAL-FROXEL, Batch Q23) — size-independent froxel resources.
+    // Guarded so a resize (which re-enters initialize) does not recreate them
+    // or drop the lazily-allocated 32³ volume.
+    if (!this._froxelPlaceholderTex) {
+      // 1×1×1 zero placeholder bound to fragment binding 8 when the froxel path
+      // is off (never sampled — the gate is closed).
+      this._froxelPlaceholderTex = device.createTexture({
+        label: "AerialPerspective-Froxel-Placeholder",
+        size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+        dimension: "3d",
+        format: "rgba16float",
+        usage: GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this._froxelPlaceholderView = this._froxelPlaceholderTex.createView({
+        dimension: "3d",
+      });
+    }
+    if (!this._froxelUniforms) {
+      this._froxelUniforms = createUniformBuffer(
+        device,
+        "AerialPerspective-Froxel-Uniforms",
+        this._froxelUniformData,
+      );
+    }
+    if (!this._froxelBakeLayout) {
+      this._froxelBakeLayout = makeBindGroupLayout(
+        device,
+        "AerialPerspective-Froxel-Bake-BGL",
+        [
+          uniformBuffer(0, Stage.COMPUTE),
+          storageTexture(1, Stage.COMPUTE, "rgba16float", {
+            viewDimension: "3d",
+          }),
+        ],
+      );
+    }
+    if (!this._froxelPipeline) {
+      const froxelModule = device.createShaderModule({
+        label: "AerialPerspective-Froxel-Shader",
+        code: AerialPerspectiveFroxelWGSL,
+      });
+      this._froxelPipeline = device.createComputePipeline({
+        label: "AerialPerspective-Froxel-Pipeline",
+        layout: device.createPipelineLayout({
+          label: "AerialPerspective-Froxel-PipelineLayout",
+          bindGroupLayouts: [this._froxelBakeLayout],
+        }),
+        compute: {
+          module: froxelModule,
+          entryPoint: "computeAerialFroxel",
+        },
+      });
+    }
+
     this._layout = makeBindGroupLayout(device, "AerialPerspective-BGL", [
       texture(0, Stage.FRAGMENT), // scene color
       texture(1, Stage.FRAGMENT), // scene depth
@@ -416,6 +612,10 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       // unconditionally (white placeholder when off) so the layout never forks;
       // sampled only inside the cloudShadowControl.x gate.
       texture(7, Stage.FRAGMENT),
+      // Item 2.3 (AERIAL-FROXEL, Batch Q23) — 32³ froxel volume (binding 8).
+      // Bound unconditionally (1×1×1 placeholder when off) so the layout never
+      // forks; sampled only inside the froxelParams.x gate.
+      texture(8, Stage.FRAGMENT, { viewDimension: "3d" }),
     ]);
 
     this._pipeline = createFullscreenPipeline(
@@ -436,6 +636,39 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     this._cachedBindGroup = null;
   }
 
+  /**
+   * Item 2.3 (AERIAL-FROXEL). Lazily allocate the 32³ froxel volume + its bake
+   * bind group on the first froxel-enabled frame. Returns the sampleable 3D
+   * view, or null if the device is gone. Idempotent.
+   */
+  private _ensureFroxelVolume(): GPUTextureView | null {
+    if (!this._device) return null;
+    if (this._froxelView) return this._froxelView;
+    this._froxelTex = this._device.createTexture({
+      label: "AerialPerspective-Froxel-Volume",
+      size: {
+        width: FROXEL_DIM,
+        height: FROXEL_DIM,
+        depthOrArrayLayers: FROXEL_DIM,
+      },
+      dimension: "3d",
+      format: "rgba16float",
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this._froxelView = this._froxelTex.createView({ dimension: "3d" });
+    if (this._froxelBakeLayout && this._froxelUniforms) {
+      this._froxelBakeBindGroup = this._device.createBindGroup({
+        label: "AerialPerspective-Froxel-Bake-BG",
+        layout: this._froxelBakeLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this._froxelUniforms } },
+          { binding: 1, resource: this._froxelView },
+        ],
+      });
+    }
+    return this._froxelView;
+  }
+
   resize(width: number, height: number): void {
     if (!this._device || (width === this._width && height === this._height)) {
       return;
@@ -449,6 +682,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     this._cachedLutView = null;
     this._cachedSkyViewView = null;
     this._cachedMsView = null;
+    this._cachedFroxelView = null;
     this.initialize(this._device, width, height, this._format);
   }
 
@@ -475,6 +709,26 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     // placeholder (never sampled with the gate off → parity).
     const cloudShadowView = this._cloudShadowView ?? this._placeholderView!;
 
+    // Item 2.3 (AERIAL-FROXEL, Batch Q23) — when the froxel path is on, lazily
+    // allocate the 32³ volume and bake it into this frame's command encoder
+    // (BEFORE the fullscreen render pass reads it). When off, bind the 1×1×1
+    // placeholder (never sampled — the froxelParams.x gate is closed → parity).
+    let froxelView = this._froxelPlaceholderView!;
+    if (this._config.froxel && this._froxelPipeline && this._froxelBakeLayout) {
+      const volView = this._ensureFroxelVolume();
+      if (volView && this._froxelBakeBindGroup) {
+        const bakePass = encoder.beginComputePass({
+          label: "AerialPerspective-Froxel-Bake",
+        });
+        bakePass.setPipeline(this._froxelPipeline);
+        bakePass.setBindGroup(0, this._froxelBakeBindGroup);
+        const groups = Math.ceil(FROXEL_DIM / 4);
+        bakePass.dispatchWorkgroups(groups, groups, groups);
+        bakePass.end();
+        froxelView = volView;
+      }
+    }
+
     if (
       !this._cachedBindGroup ||
       this._cachedSourceView !== sourceView ||
@@ -482,7 +736,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       this._cachedLutView !== lutView ||
       this._cachedSkyViewView !== skyViewView ||
       this._cachedMsView !== msView ||
-      this._cachedCloudShadowView !== cloudShadowView
+      this._cachedCloudShadowView !== cloudShadowView ||
+      this._cachedFroxelView !== froxelView
     ) {
       this._cachedBindGroup = this._device.createBindGroup({
         label: "AerialPerspective-BG",
@@ -496,6 +751,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
           { binding: 5, resource: skyViewView },
           { binding: 6, resource: msView },
           { binding: 7, resource: cloudShadowView },
+          { binding: 8, resource: froxelView },
         ],
       });
       this._cachedSourceView = sourceView;
@@ -504,6 +760,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       this._cachedSkyViewView = skyViewView;
       this._cachedMsView = msView;
       this._cachedCloudShadowView = cloudShadowView;
+      this._cachedFroxelView = froxelView;
     }
 
     executePass(
@@ -521,6 +778,10 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     this._outputTex?.destroy();
     this._uniforms?.destroy();
     this._placeholderTex?.destroy();
+    // Item 2.3 (AERIAL-FROXEL) — release the froxel volume + bake resources.
+    this._froxelTex?.destroy();
+    this._froxelPlaceholderTex?.destroy();
+    this._froxelUniforms?.destroy();
     this._outputTex = null;
     this._outputView = null;
     this._uniforms = null;
@@ -529,12 +790,21 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     this._transmittanceView = null;
     this._skyViewView = null;
     this._multipleScatterView = null;
+    this._froxelTex = null;
+    this._froxelView = null;
+    this._froxelPlaceholderTex = null;
+    this._froxelPlaceholderView = null;
+    this._froxelPipeline = null;
+    this._froxelBakeLayout = null;
+    this._froxelBakeBindGroup = null;
+    this._froxelUniforms = null;
     this._cachedBindGroup = null;
     this._cachedSourceView = null;
     this._cachedDepthView = null;
     this._cachedLutView = null;
     this._cachedSkyViewView = null;
     this._cachedMsView = null;
+    this._cachedFroxelView = null;
     this._device = null;
   }
 }

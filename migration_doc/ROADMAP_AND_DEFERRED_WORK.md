@@ -133,9 +133,11 @@ be archived, not followed.
 2. **`DP-H46c` pickMetadata producer** (L, §4 Picking) — the consumer half + the per-model WGSL
    structural-metadata codegen prereq (DP-H46a/b) **shipped** at Batches 454/455; DP-H46c is the
    remaining producer. Gated on a local `EXT_structural_metadata` test asset (network-free probe).
-3. **AERIAL-FROXEL (2.3)** (L, §9) — the **only unshipped item** in the atmosphere/cloud improvement
-   plan. Feeds `CLOUD-AERIAL-LUT` quality. The keystone `A-LUT-REPARAM` it depends on already shipped
-   (Batch 428).
+3. ~~**AERIAL-FROXEL (2.3)**~~ — ✅ **SHIPPED Batch Q23.** 32³ froxel volume baked once/frame by
+   `AerialPerspectiveFroxel.wgsl`; `AerialPerspective.wgsl` does one trilinear fetch when
+   `scene.aerialPerspectiveFroxel` is on (opt-in, default OFF byte-identical). This was the last
+   unshipped item in the atmosphere/cloud improvement plan — that plan is now fully shipped. Could
+   still feed `CLOUD-AERIAL-LUT` (3.3) as a follow-up (sample the froxel volume instead of re-deriving).
 4. **Weather Phase 4** (GRIB2/NetCDF behind WASM, §8) — the high-fidelity data tier; gated on a
    same-origin proxy + WASM decode, the only remaining weather-ingest phase.
 5. **Collections SCENE2D** (`NEW-COLLECTIONS-2DCV-*`, §4 Collections) — the last big visual-parity hole
@@ -1153,7 +1155,7 @@ disposition; **only the unshipped items are open work.**
 | 1.3 | `IBL-PREFILTER-HQ` roughness-correct prefilter | ✅ Batch 426 |
 | 2.1 | `SKY-MS` multiple-scattering in visible sky | ✅ Batch 427 (+429) |
 | 2.2 | `ENV-AERIAL-MS` MS sky as env-map + aerial source | ✅ Batch 430 |
-| **2.3** | **`AERIAL-FROXEL` aerial-perspective froxel 3D LUT** | ❌ **OPEN — the only unshipped improvement-plan item** |
+| 2.3 | `AERIAL-FROXEL` aerial-perspective froxel 3D LUT | ✅ Batch Q23 (32³ volume, `scene.aerialPerspectiveFroxel`, opt-in default OFF) |
 | 2.4 | `FOG-IBL-AMBIENT` sky-LUT/SH fog ambient | ✅ Batch 431 |
 | 3.1 | `CLOUD-HALFRES` half-res march + bilateral upsample | ✅ Batch 432 |
 | 3.2 | `CLOUD-TEMPORAL` reprojection/accumulation | ✅ Batch 433 |
@@ -1181,12 +1183,13 @@ disposition; **only the unshipped items are open work.**
 
 ### 9.2 Open atmosphere/reflection items
 
-- **`AERIAL-FROXEL` (2.3)** — **CRITICAL-PATH** (§3). A low-res 3D froxel LUT (e.g. 32³) of accumulated
-  transmittance + inscatter computed once per frame; `AerialPerspective.wgsl` does one trilinear fetch
-  instead of the 10-step per-pixel march. Decouples cost from screen resolution; `CLOUD-AERIAL-LUT`
-  (3.3, shipped) currently samples the sky-view + transmittance LUTs directly *because* this froxel is
-  deferred — wiring it would let 3.3 sample the same froxel volume instead of re-deriving. Opt-in
-  `scene.aerialPerspectiveFroxel` (nested under `scene.aerialPerspective`). **P1, effort L.**
+- **`AERIAL-FROXEL` (2.3)** — ✅ **SHIPPED Batch Q23.** A 32³ froxel LUT of accumulated inscatter (rgb) +
+  mean transmittance (a) baked once per frame by `AerialPerspectiveFroxel.wgsl`; `AerialPerspective.wgsl`
+  does one trilinear fetch instead of the 10-step per-pixel march when `scene.aerialPerspectiveFroxel` is
+  on (opt-in, nested under `scene.aerialPerspective`; default OFF byte-identical — the `froxelParams.x`
+  gate skips the fetch and the analytic march runs verbatim). Froxel vs analytic visually
+  indistinguishable (`probe-aerial-froxel.mjs`). Follow-up: `CLOUD-AERIAL-LUT` (3.3) could sample this
+  froxel volume instead of re-deriving from the sky-view + transmittance LUTs.
 - **`ENV-CAPTURE-PER-FACE-LOD`** — C2-25 side-face outward terrain needs per-face quadtree re-selection
   (the nadir hemisphere captures textured terrain correctly; side faces need their own LOD pass). **P2.**
 - **`NEW-CLOUD-SHADOW-ENVMAP`** — the env-map ground cloud-shadow term (deferred from 4.1 CLOUD-SHADOWS,
@@ -1195,8 +1198,8 @@ disposition; **only the unshipped items are open work.**
   (Batch 444); the ground snow-albedo shader consumer is the deferred fill-in. **P2.**
 - **Cross-cutting architectural observation (carry forward):** four subsystems independently re-derive
   the sky integral (sky FS inline march, env-cube inline march, aerial per-pixel march, cloud ambient
-  heuristic). `A-LUT-REPARAM` (shipped) provides the shared table; **`AERIAL-FROXEL` is the last
-  consumer that still re-marches.** Wiring it completes the "one shared sky/transmittance/MS LUT all
+  heuristic). `A-LUT-REPARAM` (shipped) provides the shared table; **`AERIAL-FROXEL` shipped its own
+  once-per-frame froxel bake (Batch Q23)**, so the aerial per-pixel re-march is now optional. Wiring it completes the "one shared sky/transmittance/MS LUT all
   four consume" goal.
 
 ### 9.3 Takram track residual (`RESEARCH_TAKRAM_GEOSPATIAL_VISUALS`)
@@ -1393,12 +1396,13 @@ a new artifact). The **active minor bugs** not already covered above:
    — that epic shipped at Batch 251.
 2. **Re-verified every headline status against git.** Most "WIP"/"deferred" claims in the sources are
    **stale-shipped**: log-depth flip (251), buffer-primitive parity (315-318), EdgeDisplayMode (316),
-   CSM cast/receive (296-298), the entire atmosphere/cloud improvement plan P0-P4 except AERIAL-FROXEL
-   (426-451), C2-25 reflections epic (446-451), tiered clouds V0-V16 (396-453), weather P0-P3 (384-425),
+   CSM cast/receive (296-298), the entire atmosphere/cloud improvement plan P0-P4 — now including
+   AERIAL-FROXEL (426-451, Q23), C2-25 reflections epic (446-451), tiered clouds V0-V16 (396-453), weather P0-P3 (384-425),
    DP-H46a/b (454-455), compute-engine wiring (367), C2-21/22/23/24 (388-419).
 3. **Surfaced the genuinely-open items exhaustively** (§4-§12): `NEW-WEBGPU-KTX2-TRANSCODER-FORMATS`,
-   `DP-H46c`, `AERIAL-FROXEL` (2.3), `ENV-CAPTURE-PER-FACE-LOD`, weather Phase 4, collections SCENE2D,
+   `DP-H46c`, `ENV-CAPTURE-PER-FACE-LOD`, weather Phase 4, collections SCENE2D,
    voxel data path, `DP-H47`, the morph cluster, vegetation V1-V5, water Phases 1-9.
+   (`AERIAL-FROXEL` (2.3) shipped Batch Q23 — the atmosphere/cloud improvement plan is now fully closed.)
 
 **Items I marked "(status: verify)" — could not confirm from git/code read alone:**
 
@@ -1412,5 +1416,5 @@ a new artifact). The **active minor bugs** not already covered above:
 - The morph cluster (§12) — all explicitly carried as "unverified" in the source; each needs a probe.
 
 **Source docs whose content is now FULLY realized (candidates for archive after review):**
-`ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md` (only AERIAL-FROXEL open), `WEBGPU_EXECUTION_ROADMAP.md` (spine
+`ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md` (fully shipped — AERIAL-FROXEL closed Batch Q23), `WEBGPU_EXECUTION_ROADMAP.md` (spine
 shipped), `WEBGPU_PARITY_AUDIT_2026-06.md` (P1 set closed), the Track-V portion of `CAMPAIGN_ROADMAP`.
