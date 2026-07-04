@@ -120,6 +120,7 @@ function buildVectorTilePipelineResources(
   format,
   depthFormat,
   logDepthActive,
+  sampleCount,
 ) {
   const code = `
 ${csm_depthClamp}
@@ -373,8 +374,16 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   ];
 
+  // ROADMAP s4.2 (B515) — the color + stencil pipelines run inside the
+  // multisampled scene pass, so their `multisample.count` MUST match
+  // `context._msaaSamples` (4 at viewer defaults) or WebGPU rejects the
+  // draw with an attachment-incompatible error and vector tiles render
+  // fully black. Mirrors WebGPUGroundPrimitiveRenderer's `msState`
+  // (L1372). Pick renders into the single-sample pick FB and velocity
+  // into the single-sample rg16float texture, so both stay count-1.
+  const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
-    name: `Vector3DTilePrimitive color [${format}/${depthFormat}]`,
+    name: `Vector3DTilePrimitive color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -391,6 +400,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
+    multisample: msState,
   };
 
   // Pick pipeline: same VS / depth-sample BGL / different FS entry.
@@ -415,7 +425,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // Color writes disabled (writeMask=0); stencil-write replaces with 0xff
   // on every classified-surface pixel the volume covers.
   const stencilDescriptor = {
-    name: `Vector3DTilePrimitive stencil [${format}/${depthFormat}]`,
+    name: `Vector3DTilePrimitive stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -424,6 +434,9 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
       targets: [{ format, writeMask: 0 }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
+    // ROADMAP s4.2 (B515) — stencil-only pipeline still runs in the MSAA
+    // scene pass; must carry the same sample count as the color pipeline.
+    multisample: msState,
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
@@ -1096,11 +1109,13 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   if (!defined(cache._pipelineResources)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const sampleCount = context._msaaSamples ?? 1;
     cache._pipelineResources = buildVectorTilePipelineResources(
       device,
       format,
       depthFmt,
       logDepthActive,
+      sampleCount,
     );
     cache._pipelineFormatGeneration = sceneGen;
     cache._pipelineLogDepth = logDepthActive;

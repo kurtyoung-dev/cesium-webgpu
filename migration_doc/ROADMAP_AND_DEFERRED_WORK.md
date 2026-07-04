@@ -256,13 +256,15 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   upstream WebGL renders 0 px, polyline 2D/CV silent skip-gate intact (ISSUES A.4). The probe ALSO
   exposed two real gaps (each reproduced + expected-fail-annotated in the probe; flip the frames to
   hard gates when fixed):
-  - **`NEW-VECTOR3DTILE-MSAA-PIPELINE` (P1 — vector tiles are BROKEN at viewer defaults):** none of
-    the three Vector3DTile pipeline builders (`WebGPUVector3DTilePrimitiveRenderer.buildVectorTilePipelineResources`
-    ~L370, polylines / clamped-polylines equivalents) set `multisample` state; under the default
-    `scene.msaaSamples = 4` scene FB every draw raises "Attachment state ... not compatible with
-    [Scene Framebuffer Render Pass]" → invalidated command buffer → fully black frame (116 errors
-    per settle). Fix = thread `context._msaaSamples` through, mirroring
-    `WebGPUGroundPrimitiveRenderer` L1372/L2062.
+  - **`NEW-VECTOR3DTILE-MSAA-PIPELINE` (P1) — ✅ RESOLVED (Q2-VECTOR3DTILE-MSAA):** all three
+    Vector3DTile pipeline builders (`WebGPUVector3DTilePrimitiveRenderer.buildVectorTilePipelineResources`,
+    polylines / clamped-polylines equivalents) now thread `context._msaaSamples` into an `msState`
+    (`sampleCount > 1 ? { count } : undefined`) baked onto the scene-pass pipelines (color + the
+    two stencil variants; pick/velocity stay count-1 as they target single-sample FBs), mirroring
+    `WebGPUGroundPrimitiveRenderer` L1372/L2062. Sample-count changes invalidate the cached resources
+    through the existing `_scenePipelineFormatGeneration` gate (bumped on `msaaChanged` in
+    `WebGPUSceneRenderer` ~L1180). `probe-vector3dtile-vctr.mjs` msaa=4 frame flipped from the
+    known-gap attachment-state signature to a clean parity gate (0 device errors, IoU 0.904 vs WebGL).
   - **`NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT` (P2):** the depth-sample classifier `fsMain` only
     discards `surfaceDepth == 0.0` — no volume-containment test — so the classified footprint is the
     volume's PROJECTED screen extent, inflated `h/(h-1000)` at nadir height h vs WebGL's exact

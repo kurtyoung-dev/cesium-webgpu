@@ -113,6 +113,7 @@ function buildClampedPolylinePipelineResources(
   format,
   depthFormat,
   logDepthActive,
+  sampleCount,
 ) {
   const code = `
 ${csm_depthClamp}
@@ -493,8 +494,15 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   ];
 
+  // ROADMAP s4.2 (B515) — the color + stencil pipelines run inside the
+  // multisampled scene pass, so their `multisample.count` MUST match
+  // `context._msaaSamples` (4 at viewer defaults) or WebGPU rejects the
+  // draw with an attachment-incompatible error and clamped vector
+  // polylines render fully black. Pick + velocity render into
+  // single-sample targets, so both stay count-1.
+  const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
-    name: `Vector3DTileClampedPolylines color [${format}/${depthFormat}]`,
+    name: `Vector3DTileClampedPolylines color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -519,6 +527,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
       // intentionally.
       depthCompare: "always",
     },
+    multisample: msState,
   };
 
   // Pick pipeline: same VS / depth-sample BGL / different FS entry.
@@ -541,7 +550,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
 
   // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
   const stencilDescriptor = {
-    name: `Vector3DTileClampedPolylines stencil [${format}/${depthFormat}]`,
+    name: `Vector3DTileClampedPolylines stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -550,6 +559,9 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
       targets: [{ format, writeMask: 0 }],
     },
     primitive: { topology: "triangle-list", cullMode: "front" },
+    // ROADMAP s4.2 (B515) — stencil-only pipeline still runs in the MSAA
+    // scene pass; must carry the same sample count as the color pipeline.
+    multisample: msState,
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
@@ -1165,11 +1177,13 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   if (!defined(cache._pipelineResources)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const sampleCount = context._msaaSamples ?? 1;
     cache._pipelineResources = buildClampedPolylinePipelineResources(
       device,
       format,
       depthFmt,
       logDepthActive,
+      sampleCount,
     );
     cache._pipelineFormatGeneration = sceneGen;
     cache._pipelineLogDepth = logDepthActive;

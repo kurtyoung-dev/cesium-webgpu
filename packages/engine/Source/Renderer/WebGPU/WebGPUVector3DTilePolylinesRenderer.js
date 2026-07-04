@@ -86,6 +86,7 @@ function buildPolylinePipelineResources(
   format,
   depthFormat,
   logDepthActive,
+  sampleCount,
 ) {
   const code = `
 ${
@@ -411,8 +412,14 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   ];
 
+  // ROADMAP s4.2 (B515) — the color pipeline runs inside the multisampled
+  // scene pass, so its `multisample.count` MUST match `context._msaaSamples`
+  // (4 at viewer defaults) or WebGPU rejects the draw with an
+  // attachment-incompatible error and vector polylines render fully black.
+  // Pick + velocity render into single-sample targets, so both stay count-1.
+  const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
-    name: `Vector3DTilePolylines color [${format}/${depthFormat}]`,
+    name: `Vector3DTilePolylines color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -431,6 +438,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
       depthBias: -5,
       depthBiasSlopeScale: -5,
     },
+    multisample: msState,
   };
 
   // Pick pipeline: same VS / same depth / same blend / different FS
@@ -981,11 +989,13 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
   if (!defined(cache._pipelineResources)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const sampleCount = context._msaaSamples ?? 1;
     cache._pipelineResources = buildPolylinePipelineResources(
       device,
       format,
       depthFmt,
       logDepthActive,
+      sampleCount,
     );
     cache._pipelineFormatGeneration = sceneGen;
     cache._pipelineLogDepth = logDepthActive;
