@@ -15,15 +15,18 @@
 //       (i.e. the earcut hole triangulation removed the interior). Cross-backend
 //       agreement on both samples is the pixel-parity signal.
 //
-//   (2) debugShowBoundingVolume IS WIRED THROUGH GeoJsonPrimitive — previously
-//       the loader exposed no such option/property, so toggling it was
-//       impossible on this path. We assert the constructor option and the
-//       runtime setter both propagate to every underlying Buffer* collection,
-//       and that on WebGL the red bounding-sphere wireframe overlay actually
-//       changes the frame (proving end-to-end render). The WebGPU scene
-//       renderer has no bounding-volume debug pass yet, so its overlay delta is
-//       measured + REPORTED (not asserted) — see DEFERRED_WORK
-//       NEW-BUFFERPRIMITIVE-BOUNDING-VOLUME.
+//   (2) debugShowBoundingVolume IS WIRED THROUGH GeoJsonPrimitive AND DRAWN ON
+//       BOTH BACKENDS. Previously the loader exposed no such option/property;
+//       now the constructor option + runtime setter propagate to every
+//       underlying Buffer* collection. We assert BOTH backends render the red
+//       bounding-volume wireframe end-to-end (overlay delta non-zero when the
+//       flag flips on): WebGL via SceneDebug's Primitive path, WebGPU via the
+//       WebGPUBoundingVolumeDebugPass (NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS —
+//       a red three-great-circle sphere / 12-edge box wireframe drawn into the
+//       resolved scene-color view before post-process). The WebGPU delta is
+//       smaller than WebGL's because SceneDebug draws a dense lat/long
+//       EllipsoidGeometry wireframe (reads as a filled disc) whereas the
+//       WebGPU pass draws three thin great circles at the same center/radius.
 import { chromium } from "playwright";
 import fs from "fs";
 
@@ -340,10 +343,18 @@ for (const [side, r, a] of [
     fails.push(`${side}: runtime debugShowBoundingVolume setter did not propagate`);
   }
 }
-// WebGL overlay MUST render (flag is wired AND scene renderer draws it).
+// Both backends MUST render the bounding-volume overlay (flag is wired AND
+// each scene renderer draws it). WebGL via SceneDebug; WebGPU via
+// WebGPUBoundingVolumeDebugPass (NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS).
 if (parseFloat(glA.changedPct) < 0.05) {
   fails.push(
     `webgl: debug overlay did not change the frame (${glA.changedPct}% < 0.05%)`,
+  );
+}
+if (parseFloat(gpuA.changedPct) < 0.05) {
+  fails.push(
+    `webgpu: debug overlay did not change the frame (${gpuA.changedPct}% < 0.05%) ` +
+      `— WebGPUBoundingVolumeDebugPass did not draw the bounding volume`,
   );
 }
 
@@ -352,10 +363,10 @@ if (fails.length === 0) {
   console.log(
     `PASS — holes cut out at cross-backend parity (fill=yellow, hole=base on ` +
       `both), debugShowBoundingVolume wired through GeoJsonPrimitive (constructor ` +
-      `+ runtime setter propagate to collections). WebGL overlay delta ` +
-      `${glA.changedPct}%; WebGPU overlay delta ${gpuA.changedPct}% ` +
-      `(WebGPU scene-renderer bounding-volume debug pass not yet implemented — ` +
-      `see DEFERRED_WORK). Read _geojson-holes-*-off/on.png.`,
+      `+ runtime setter propagate to collections) AND drawn on BOTH backends. ` +
+      `WebGL overlay delta ${glA.changedPct}%; WebGPU overlay delta ` +
+      `${gpuA.changedPct}% (WebGPUBoundingVolumeDebugPass renders the red ` +
+      `bounding-volume wireframe). Read _geojson-holes-*-off/on.png.`,
   );
   process.exitCode = 0;
 } else {

@@ -65,6 +65,7 @@ import type { GBufferComputeHost } from "./WebGPUGBufferRenderer.js";
 import { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
 import { WebGPUDebugGBufferOverlay } from "./WebGPUDebugGBufferOverlay.js";
 import { WebGPUDebugFrustumOverlay } from "./WebGPUDebugFrustumOverlay.js";
+import { WebGPUBoundingVolumeDebugPass } from "./WebGPUBoundingVolumeDebugPass.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { executePickPass } from "./WebGPUSceneRendererPickPass.js";
 import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalEffects.js";
@@ -791,6 +792,11 @@ export class WebGPUSceneRenderer {
   // `debugShowFrustums` / `debugShowCommands`). Lazy.
   // Public underscore: shared with the _ensureResources slice (Batch 142).
   public _debugFrustumOverlay: WebGPUDebugFrustumOverlay | null = null;
+  // NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS — per-command
+  // `debugShowBoundingVolume` red-wireframe pass (WebGPU equivalent of
+  // SceneDebug's WebGL bounding-volume draw). Lazy; null until the first
+  // frame that has a flagged command.
+  public _boundingVolumeDebugPass: WebGPUBoundingVolumeDebugPass | null = null;
   // Captured during the frustum loop so the post-process debug overlay
   // can tint pixels by which frustum drew them. Reset each frame.
   // Public underscore: shared with executeCommands slice extracts
@@ -3130,6 +3136,98 @@ export class WebGPUSceneRenderer {
     context.resumeDefaultRenderPass?.();
   }
 
+  /**
+   * NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS — draw a red wireframe of the
+   * bounding volume of every command flagged `debugShowBoundingVolume`.
+   *
+   * WebGPU equivalent of `Scene/SceneDebug.js#debugShowBoundingVolume`. The
+   * flag plumbs through `GeoJsonPrimitive` + all three `Buffer*`
+   * `WebGPUDrawCommand`s (Batch 583); this consumes it.
+   *
+   * DEFAULT-OFF / BYTE-IDENTICAL: collects flagged commands from
+   * `frameState.commandList`; when none carry the flag (the default) it
+   * returns before opening any pass, so an unflagged frame is unchanged.
+   *
+   * Runs from the post-frustum chain, after the main scene pass has closed
+   * + resolved and before `_runPostProcessing` samples the scene-color
+   * texture — so the wireframe reaches the canvas through the post-process
+   * blit. Draws into the RESOLVED single-sample color view with
+   * `loadOp="load"`.
+   */
+  public _executeBoundingVolumeDebugPass(
+    config: WebGPURenderFrameConfig,
+  ): void {
+    const { context, scene } = config;
+    const device: GPUDevice | undefined = context._device;
+    const frameState = scene?._frameState;
+    if (!device || !frameState) {
+      return;
+    }
+
+    // Collect flagged commands. Default-off: an empty list means no pass.
+    const commandList = frameState.commandList as
+      | Array<{
+          debugShowBoundingVolume?: boolean;
+          boundingVolume?: unknown;
+        }>
+      | undefined;
+    if (!commandList || commandList.length === 0) {
+      return;
+    }
+    const items = [];
+    for (let i = 0; i < commandList.length; i++) {
+      const cmd = commandList[i];
+      if (cmd.debugShowBoundingVolume !== true || !cmd.boundingVolume) {
+        continue;
+      }
+      const item = WebGPUBoundingVolumeDebugPass.makeItem(cmd.boundingVolume);
+      if (item) {
+        items.push(item);
+      }
+    }
+    if (items.length === 0) {
+      return;
+    }
+
+    const colorTarget = this._sceneFramebuffer?.colorTarget;
+    const targetView: GPUTextureView | undefined =
+      colorTarget?.getColorTextureView?.(0);
+    if (!targetView) {
+      return;
+    }
+
+    // Close the scene pass so we can open our own single-attachment pass on
+    // the resolved color view.
+    context.endCurrentRenderPass?.();
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    if (!encoder) {
+      return;
+    }
+
+    if (!this._boundingVolumeDebugPass) {
+      this._boundingVolumeDebugPass = new WebGPUBoundingVolumeDebugPass();
+    }
+    this._boundingVolumeDebugPass.initialize(
+      device,
+      context.scenePipelineFormat ??
+        context._presentationFormat ??
+        "bgra8unorm",
+    );
+
+    const uniformState = context.uniformState as unknown as {
+      view: import("../../Core/Matrix4.js").default;
+      projection: import("../../Core/Matrix4.js").default;
+      cameraPosition: { x: number; y: number; z: number };
+    };
+    this._boundingVolumeDebugPass.execute(
+      encoder,
+      targetView,
+      items,
+      uniformState,
+    );
+  }
+
   // --- Pass helper ---
 
   // Public underscore: shared with the frustum-loop slice (Batch 140).
@@ -3205,6 +3303,10 @@ export class WebGPUSceneRenderer {
     if (this._postProcess) {
       this._postProcess.destroy();
       this._postProcess = null;
+    }
+    if (this._boundingVolumeDebugPass) {
+      this._boundingVolumeDebugPass.destroy();
+      this._boundingVolumeDebugPass = null;
     }
     // C-R12 (Batch 33) — release the context's invalidation subscriber
     // so it doesn't outlive this SceneRenderer and keep a dead closure

@@ -58,6 +58,10 @@ export interface PostFrustumChainHost {
   _executeGBufferProducer(config: WebGPURenderFrameConfig): void;
   _runInvertClassificationComposite(config: WebGPURenderFrameConfig): void;
   _runVelocityPass(config: WebGPURenderFrameConfig): void;
+  // NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS — per-command
+  // `debugShowBoundingVolume` red-wireframe pass. No-op (opens no pass) when
+  // no command is flagged, so unflagged frames are byte-identical.
+  _executeBoundingVolumeDebugPass(config: WebGPURenderFrameConfig): void;
   _runPostProcessing(config: WebGPURenderFrameConfig): void;
 }
 
@@ -178,6 +182,14 @@ export function executePostFrustumChain(
   // are committed) and BEFORE post-process consumes the velocity
   // texture in TAA's `motionTex` binding (Batch 104).
   host._runVelocityPass(config);
+
+  // NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS — per-command
+  // `debugShowBoundingVolume` red wireframe. Runs AFTER the main scene pass
+  // closed + resolved (draws into the resolved scene-color view) and BEFORE
+  // `_runPostProcessing` blits that view to the canvas, so the wireframe
+  // survives to present. No-op when no command carries the flag (default),
+  // keeping unflagged frames byte-identical.
+  host._executeBoundingVolumeDebugPass(config);
 
   // Post-processing (tonemapping, FXAA, etc.)
   // On WebGPU this is REQUIRED to blit the scene framebuffer to canvas.
