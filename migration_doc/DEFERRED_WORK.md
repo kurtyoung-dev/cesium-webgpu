@@ -561,6 +561,39 @@ to each dispatcher's overhead profile.
 set. Shadow-cast, OIT translucent, and motion-vector passes all
 iterate their own command sets and are unaffected.
 
+**Q18 reconcile (2026-07-04) — premise STALE, no code change.** The
+`NEXT_QUEUE_2026-07-04.md` Q18 row (`GPU-CULLER-CONSUME-OR-DELETE`)
+restated the ORIGINAL landmine ("orphan dispatchers allocate eagerly, no
+live caller"). That is false at HEAD for all four dispatchers:
+
+- **gpuCull** — consumed in `WebGPUSceneRenderer._executeOpaquePass`
+  behind `if (gpuCullActive)` (256-cmd hysteresis gate); dispatcher
+  allocated lazily via `WebGPUContext.getGPUCullerForOpaqueFrustum`.
+- **HiZ** — producer `_dispatchHiZForNextFrame` + consumer
+  `_filterByHiZVisibility`, behind `if (hiZActive || gpuSortActive)`
+  (2000-cmd gate); dispatcher via `getOrCreateDispatcher` WeakMap +
+  `initWebGPUHiZOcclusion.allocate()` on first gated dispatch.
+- **GPUSortKeys** — producer `_dispatchGPUSortKeys` + consumer
+  `_applySortedOrder` (default-off consume, same 5000-cmd gate); WeakMap
+  lazy alloc.
+- **PointCloudSort** — the one dispatcher NOT previously spelled out
+  here. Live consumer chain: `TimeDynamicPointCloud.js:669`
+  `bridge.sortByDistance(...)` → `WasmPointCloudBridge.sortByDistance`
+  calls `fr.sort(encoder, distSq, count)` (`FeatureRendererKey.POINT_CLOUD_SORT`)
+  behind `useGPUSort && count >= threshold` (opt-in via
+  `sortTransparentPoints` + `performanceManager.shouldUseGPUPointCloud`).
+  `WebGPUPointCloudSortDispatcher._resources` stays `null` until the first
+  gated `sort()`, so nothing is allocated until the feature actually fires.
+
+Allocation is therefore both **lazy** and **gated** for every dispatcher —
+the opposite of "eager allocation, no caller". No delete/reclaim is
+warranted; the consume-decision from Batches 209/210/211 stands. A
+structural regression guard now locks this in:
+`Tools/visual-regression/probe-gpu-culler-consumers.mjs` asserts each
+dispatcher's consumer call site + activation gate still exists in live
+source, so a future refactor that re-orphans one fails loudly instead of
+silently re-arming the Principle-7 landmine.
+
 **Known interaction (TAA) — verified safe (Batch 222 review):** at
 extreme density (>=2000 commands) HiZ-culled objects can transition
 from "rendered last frame" → "not rendered this frame", producing
