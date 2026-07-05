@@ -1342,6 +1342,22 @@ function _updateWebGPUCloudCollectionInner(
   // velocity VS reads (current, previous) position pairs.
   attachCloudVelocityCommand(device, context, frameState, cache);
 
+  // Cloud-unification epic slice 3 — exclusive VOLUMETRIC toggle. A collection
+  // whose `renderMode` is VOLUMETRIC (CloudRenderMode.VOLUMETRIC === 1) drives
+  // the full-screen volumetric deck (published from CloudCollection.update) and
+  // suppresses its OWN billboards. All the buffer + dirty-state bookkeeping
+  // above still runs (so `_consumeDirtyState` clears each frame and the
+  // instance buffer stays coherent for a future BILLBOARD flip) — only the draw
+  // command is withheld from the command list. BILLBOARD (default) is
+  // byte-identical: the mode is 0, the guard is false, the push happens.
+  const CLOUD_RENDER_MODE_VOLUMETRIC = 1;
+  const collectionRenderMode = (
+    collection as unknown as { renderMode?: number }
+  ).renderMode;
+  if (collectionRenderMode === CLOUD_RENDER_MODE_VOLUMETRIC) {
+    return;
+  }
+
   commandList.push(cache.command);
 }
 

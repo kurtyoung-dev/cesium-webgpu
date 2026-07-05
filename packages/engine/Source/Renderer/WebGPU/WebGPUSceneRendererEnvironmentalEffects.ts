@@ -115,7 +115,22 @@ export function executeEnvironmentalEffects(
   // structural `CloudVolumetricsConfig` (identical field names to `globe.cloud*`),
   // so the globe passes through directly with no inline cast. Behavior is
   // byte-identical — same object, same fields, same `?? default` reads.
-  publishCloudIblCoverage(context, globe);
+  //
+  // Cloud-unification epic slice 3 — consume the frame's volumetric cloud
+  // request published by a VOLUMETRIC CloudCollection (first one wins; see
+  // CloudCollection.update / GraphicsContext#requestVolumetricClouds). Consumed
+  // UNCONDITIONALLY here — even when the request is ignored — so a stale request
+  // never leaks into the next frame. A collection deck takes precedence over the
+  // legacy `globe.showProceduralClouds` path (which is removed in slice 4). When
+  // no collection publishes, `cloudConfig` is the globe and every downstream
+  // read is byte-identical to the pre-slice-3 path.
+  const collectionRequest = context.consumeVolumetricCloudRequest();
+  const useCollectionDeck =
+    collectionRequest !== undefined && collectionRequest.enabled === true;
+  const cloudConfig: CloudVolumetricsConfig | undefined = useCollectionDeck
+    ? (collectionRequest as unknown as CloudVolumetricsConfig)
+    : globe;
+  publishCloudIblCoverage(context, cloudConfig);
 
   // Get texture views needed by all environmental effects.
   //
@@ -144,8 +159,12 @@ export function executeEnvironmentalEffects(
 
   const frameState = scene._frameState;
 
-  // 1. Procedural Clouds — volumetric ray-marched clouds
-  if (globe?.showProceduralClouds) {
+  // 1. Procedural Clouds — volumetric ray-marched clouds. Active when a
+  // VOLUMETRIC CloudCollection published this frame (slice 3) OR the legacy
+  // `globe.showProceduralClouds` flag is set (the globe half is removed in
+  // slice 4). `cloudConfig` is the collection's CloudVolumetrics snapshot in the
+  // former case, the globe in the latter — resolved above.
+  if (useCollectionDeck || globe?.showProceduralClouds) {
     const cloudFR = context.getFeatureRenderer(
       FeatureRendererKey.PROCEDURAL_CLOUDS,
     );
@@ -159,7 +178,7 @@ export function executeEnvironmentalEffects(
           colorView,
           depthView,
           outputView,
-          globe,
+          cloudConfig,
         );
         context.resumeDefaultRenderPass?.();
       } catch (e: unknown) {

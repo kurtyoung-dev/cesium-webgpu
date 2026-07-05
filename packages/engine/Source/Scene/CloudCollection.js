@@ -318,6 +318,34 @@ class CloudCollection {
   }
 
   /**
+   * Resolve this collection's {@link CloudVolumetrics} into the backend-neutral
+   * config snapshot published to the context each frame via
+   * {@link GraphicsContext#requestVolumetricClouds}. The env-effects phase feeds
+   * it to the procedural-cloud renderer and to <code>publishCloudIblCoverage</code>.
+   *
+   * The volumetric renderer (and its IBL-coverage publish) gate on the historical
+   * globe master flag <code>showProceduralClouds</code>; this maps the
+   * collection's <code>volumetric.enabled</code> onto that field so the same
+   * byte-locked code path the globe drove runs unchanged. Every other field is
+   * carried through verbatim (identical names to <code>globe.cloud*</code>), so
+   * the 136-float <code>CloudUniforms</code> packer stays byte-locked. A fresh
+   * object is produced each frame — only on the opt-in volumetric-active path.
+   *
+   * Collection-level <code>cloudType</code> → config genus wiring is deferred to
+   * a later slice (genera); the value passes through as
+   * <code>volumetric.cloudType</code> (undefined by default).
+   *
+   * @returns {object} A {@link CloudVolumetrics}-shaped request snapshot.
+   * @private
+   */
+  _resolveVolumetricConfig() {
+    return {
+      ...this.volumetric,
+      showProceduralClouds: true,
+    };
+  }
+
+  /**
    * Creates and adds a cloud with the specified initial properties to the collection.
    * The added cloud is returned so it can be modified or removed from the collection later.
    *
@@ -533,10 +561,28 @@ class CloudCollection {
   update(frameState) {
     removeClouds(this);
     // Route to WebGPU feature renderer if available
-    const fr = frameState.context.getFeatureRenderer(
-      FeatureRendererKey.CLOUD_COLLECTION,
-    );
+    const context = frameState.context;
+    const fr = context.getFeatureRenderer(FeatureRendererKey.CLOUD_COLLECTION);
     if (fr) {
+      // Cloud-unification epic slice 3 — exclusive VOLUMETRIC toggle. When this
+      // collection is shown, its renderMode is VOLUMETRIC, and its volumetric
+      // config is enabled, PUBLISH a resolved CloudVolumetrics snapshot for the
+      // env-effects phase to consume as the primary volumetric deck (the first
+      // VOLUMETRIC collection this frame wins — see
+      // GraphicsContext#requestVolumetricClouds). The `this.show` gate is
+      // load-bearing: a hidden collection cedes the deck (publishes nothing).
+      // The feature renderer itself suppresses THIS collection's billboards
+      // whenever renderMode is VOLUMETRIC (the mode is exclusive). On the WebGL
+      // renderer there is no CLOUD_COLLECTION FR, so `requestVolumetricClouds`
+      // is a base-class no-op and the billboard path below runs unchanged — a
+      // documented graceful no-op for the volumetric config.
+      if (
+        this.show &&
+        this._renderMode === CloudRenderMode.VOLUMETRIC &&
+        this.volumetric.enabled === true
+      ) {
+        context.requestVolumetricClouds(this._resolveVolumetricConfig());
+      }
       fr.update(this, frameState);
       this._featureRenderer = fr;
       return;
