@@ -223,7 +223,21 @@ The source doc (`FUTURE_RESEARCH_2026_05_01.md` §R-4) proposed a fork-built `Ma
 
 **Untapped expansion candidates** (source-doc ROI order, all still OPEN): R-7a 3D-Tiles opaque models (low risk, likely highest ROI), R-7b translucent/OIT collect (low risk, bundle-friendly today), R-7e Vector 3D Tiles, R-7f buffer primitives. **Don't bundle** R-7c pick (on-demand, not per-frame) or R-7d shadow cast (amortizes only on a still camera) without a profile.
 
-**Profiling infrastructure: SHIPPED.** `WebGPUCpuPassProfiler.ts` (CPU JS-side recording cost, rolling 60-frame window, zero-overhead when disabled) is live alongside `WebGPUTimestampProfiler.ts` (GPU execution time). Console: `CesiumDebug.cpuPassCost(true)` → navigate → `CesiumDebug.cpuPassCost()` → `(false)`. **Bundling decisions are profile-gated:** <1 ms avg → skip; 3–5 ms → worth bundling (50–80% reduction on stable lists); >5 ms → strong candidate (globe terrain hit this pre-bundling). **The data-collection pass the source doc requested has not been recorded into the doc** — the profiler exists but the measured per-pass numbers are not yet captured. **Next concrete step:** run the profiler on the suggested scenes (Viewer default / Viewer+CWT+OSM Buildings / Google Photorealistic / OIT translucent / hover-active) and replace the source doc's placeholder table with measured numbers + a 1–2 site shortlist. *Source: `FUTURE_RESEARCH_2026_05_01.md` §R-7.*
+**Profiling infrastructure: SHIPPED.** `WebGPUCpuPassProfiler.ts` (CPU JS-side recording cost, rolling 60-frame window, zero-overhead when disabled) is live alongside `WebGPUTimestampProfiler.ts` (GPU execution time). Console: `CesiumDebug.cpuPassCost(true)` → navigate → `CesiumDebug.cpuPassCost()` → `(false)`. **Bundling decisions are profile-gated:** <1 ms avg → skip; 3–5 ms → worth bundling (50–80% reduction on stable lists); >5 ms → strong candidate (globe terrain hit this pre-bundling).
+
+**Data-collection pass RECORDED (2026-07-05, Q26 / C4-RENDERBUNDLE-EXPANSION-PROFILE).** Probe `Tools/visual-regression/probe-cpu-pass-profile.mjs` runs the shipped profiler across the five named scenes on the WebGPU viewer (Edge, dev-server :8080, 150-frame measure window). Per-pass **CPU recording cost, avg ms** (candidate passes bold; `3dTiles`=R-7a+R-7e, `opaque`=R-7f, `translucent`=R-7b; full JSON in `output/cpu-pass-profile/profile.json`, PNGs alongside):
+
+| scene (cmds) | globe | **3dTiles** | **opaque** | **translucent** | pick | env |
+|---|---|---|---|---|---|---|
+| Viewer default (19) | 0.058 | **0.102** | **0.003** | **0.005** | — | 0.023 |
+| CWT + OSM Buildings (135) | 0.232 | **0.172** | **0.003** | **0.065** | — | 0.025 |
+| Google Photorealistic (206) | 0.007 | **1.023** | **0.005** | **0.003** | — | 0.022 |
+| OIT translucent, 256 separate prims (515) | 0.012 | **0.082** | **0.002** | **0.802** | — | 0.027 |
+| hover-active pick, OSM (135) | 0.217 | **0.210** | **0.012** | **0.080** | 0.378 | 0.015 |
+
+(`3dTiles ≈ 0.10 ms` on tile-free Viewer-default is fixed per-frame pass-wrapper overhead — depth-copy/classification setup — not tile recording. The OIT row deliberately uses 256 **separate** translucent Primitives; a single batched Primitive collapses to ~1 draw command and reads ~0.03 ms, so real batched translucent workloads are far cheaper than this stress row.)
+
+**Verdict — no pass clears the "worth bundling" (3 ms) bar on this hardware.** The peak candidate-pass numbers are `3dTiles` 1.02 ms (Google Photorealistic, 206 cmds) and `translucent` 0.80 ms (256-separate-command stress); both sit in the SKIP/marginal band. **1-site shortlist: R-7a (3D-Tiles opaque, the `3dTiles` pass)** — it is the single highest candidate, scales linearly with per-frame tile-command count, and is bundle-friendly (stable per-content pipeline/bind-group across frames when the tile set isn't churning). It is *not yet actionable*: it needs a real high-command-count workload (dense photorealistic city at low altitude, or many separate 3D-tile contents) to cross the 3 ms bar before bundling pays its record cost. **R-7b (translucent/OIT), R-7f (opaque/buffer prims), R-7e (Vector 3D Tiles)** are **SKIP** at measured loads — sub-millisecond, and R-7b's cost only appears under an artificial many-separate-command grid that batches away in practice. Numbers are CPU-recording-cost on this dev machine; re-run `probe-cpu-pass-profile.mjs` on the target deployment CPU / worst-case tile density before committing to a bundle site. *Source: `FUTURE_RESEARCH_2026_05_01.md` §R-7.*
 
 ### Subgroups / f16 / long-tail (architecture-audit research) — **OPEN, low-priority**
 
@@ -344,7 +358,7 @@ Snapshot of every register entry vs. its live status and where the active tracki
 | R-8 | Voxel deep-octree traversal + megatexture streaming/eviction | Plan | **PARTIAL** — depth-1 SHIPPED (B501); L2+ traversal + eviction OPEN | `WebGPUVoxelRenderer.ts:416-433`; `probe-voxel-octree` 8/8 |
 | R-8a | Voxel pick vs octree-LOD / customShader composition | Plan (immediate) | **OPEN** — pick samples ROOT slab, megatextureId hardcoded 0; ignores user-shader alpha | audit 2026-07-03; `WebGPUVoxelRenderer.ts:664-716` vs `:416-433`, `:697` vs `:473-478` |
 | Atmo-parity | Limb-ring / below-surface brightness gap | Q23 | below-surface + limb-width ✅ RESOLVED (B510/512/513; probes now PASS un-loosened); **surviving residual = far-zoom limb ring** (~+10 GPU-brighter, 7.5% of far-view residual) → Q23 FARZOOM-INTERIOR-BLOBS, re-measure w/ determinism kit | §3 entry; ISSUES §3.3 CAMPAIGN-AUDIT-2 |
-| R-7 | Expand GPURenderBundle coverage | Plan (profile-gated) | **OPEN**; profiler **SHIPPED** | `WebGPUCpuPassProfiler.ts`; 3 sites (globe site nuance: Batch 292) |
+| R-7 | Expand GPURenderBundle coverage | Plan (profile-gated) | **PROFILED 2026-07-05** (§R-7 table); no pass clears 3 ms → 1-site shortlist R-7a (3D-Tiles opaque), not-yet-actionable; R-7b/e/f SKIP | `probe-cpu-pass-profile.mjs`; peak `3dTiles` 1.02 ms |
 | Takram 1 | Bruneton 4-LUT | Ship | **SHIPPED** | Batch 306 |
 | Takram 2 | Aerial-perspective post-process | Ship | **SHIPPED** | Batch 311 |
 | Takram 3 | Atmosphere-derived lighting + mask | Ship | **SHIPPED** | Batch 312 |
