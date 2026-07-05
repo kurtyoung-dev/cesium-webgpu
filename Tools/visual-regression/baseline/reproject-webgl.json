@@ -1,0 +1,19 @@
+{
+  "description": "WebGL Web-Mercator→Geographic reproject tolerance baseline (Batch 66 forked FS). Guards ReprojectWebMercatorFS/VS.glsl + ImageLayerHelpers.js quad uniforms against accidental drift.",
+  "imagery": {
+    "id": "1/1/2",
+    "level": 1,
+    "x": 1,
+    "y": 2
+  },
+  "width": 256,
+  "height": 256,
+  "view": {
+    "lon": 0,
+    "lat": 80,
+    "height": 12000000
+  },
+  "channelTol": 24,
+  "threshold": 0.05,
+  "capturedAt": "2026-07-05T12:47:34.699Z"
+}

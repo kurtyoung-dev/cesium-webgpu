@@ -320,6 +320,7 @@ Files modified in Batch 66:
 | `probe-mode-roundtrip.mjs` | `Tools/visual-regression/` | 3D→CV→3D, 3D→2D→3D round-trips for split-globe artifacts |
 | `probe-projection-fix.mjs` | `Tools/visual-regression/` | Eight orbital views (northam, arctic, equator, asia, southern, europe-mid, tile-edge-test, dusk-pacific) for Batch 46/49 verification |
 | `probe-globe-polar-stretch.mjs` | `Tools/visual-regression/` | GLOBE-POLAR-STRETCH acceptance gate: mid (2 Mm) / far (25 Mm) / extreme (55 Mm) zoom, WebGL-vs-WebGPU disc-normalized latitude-band alignment (ice centroid, land-profile shift, ice area ratio) + mismatch ceilings. Guards the ReprojectWebMercator.wgsl orientation fix |
+| `probe-reproject-baseline.mjs` | `Tools/visual-regression/` | NEW-WEBGL-REPROJECT-BASELINE golden-baseline guard: pins the **WebGL** reprojected-texture pixel output (deterministic polar tile 1/1/2 at lat 80°) to a stored PNG (`baseline/reproject-webgl.png`) with a channel-tolerance diff. Unlike the cross-backend probes above, this catches drift where BOTH backends' reproject math regress together (e.g. an accidental edit to the Batch-66-forked `ReprojectWebMercatorFS/VS.glsl` + `ImageLayerHelpers.js` quad uniforms). `--update` re-baselines |
 
 ---
 
