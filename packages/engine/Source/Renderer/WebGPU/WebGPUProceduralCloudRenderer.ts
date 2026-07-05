@@ -187,6 +187,21 @@ export interface CloudCache {
   iblWindSpeed: number;
   iblDensity: number;
   iblPWActive: boolean;
+  // ── TAKRAM-9 (cloud-aware god rays) — screen-space transmittance mask ──
+  // Allocated ONLY when a consumer (the PP god-ray pass) requests the mask via
+  // `setCloudTransmittanceCapture(context, true)`. Everything here stays null on
+  // the default path so the shipped cloud composite pass is byte-identical. When
+  // capture is on, a dedicated full-res r8unorm target is rendered by the
+  // `fragmentCloudMaskMain` entry point (transmittance = Πᵢ(1-αᵢ)) right after
+  // the composite pass, sharing the SAME per-frame bind group / uniforms.
+  maskCaptureEnabled: boolean;
+  maskTexture: GPUTexture | null;
+  maskView: GPUTextureView | null; // r8unorm, 1=clear 0=opaque cloud
+  maskWidth: number;
+  maskHeight: number;
+  maskPipeline: GPURenderPipeline | null;
+  maskShaderModule: GPUShaderModule | null;
+  maskRenderedThisFrame: boolean;
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -257,9 +272,53 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       iblWindSpeed: 15.0,
       iblDensity: 0.3,
       iblPWActive: false,
+      maskCaptureEnabled: false,
+      maskTexture: null,
+      maskView: null,
+      maskWidth: 0,
+      maskHeight: 0,
+      maskPipeline: null,
+      maskShaderModule: null,
+      maskRenderedThisFrame: false,
     };
   }
   return context._cloudCache;
+}
+
+/**
+ * TAKRAM-9 — request (or release) the per-frame screen-space cloud
+ * transmittance mask. The PP god-ray pass turns this on when cloud-aware god
+ * rays are active AND procedural clouds are enabled; the cloud renderer then
+ * renders the `fragmentCloudMaskMain` pass into a dedicated full-res r8unorm
+ * target after the composite pass. Default OFF → no mask pipeline/texture is
+ * allocated and the cloud render is byte-identical.
+ */
+export function setCloudTransmittanceCapture(
+  context: CesiumGraphicsContext,
+  enabled: boolean,
+): void {
+  const cache = context._cloudCache;
+  if (!cache) {
+    // No cloud cache yet — stash the request on a lazily-created cache so the
+    // first cloud frame honors it.
+    if (enabled) ensureCloudCache(context).maskCaptureEnabled = true;
+    return;
+  }
+  cache.maskCaptureEnabled = enabled;
+}
+
+/**
+ * TAKRAM-9 — the screen-space cloud transmittance view rendered THIS frame, or
+ * null when capture is off / no cloud pass ran (the god-ray pass then falls
+ * back to its white 1×1 = no attenuation). `maskRenderedThisFrame` guards
+ * against a consumer reading a stale map on a frame the cloud march was culled.
+ */
+export function getCloudTransmittanceView(
+  context: CesiumGraphicsContext,
+): GPUTextureView | null {
+  const cache = context._cloudCache;
+  if (!cache || !cache.maskRenderedThisFrame) return null;
+  return cache.maskView;
 }
 
 /**
@@ -897,6 +956,9 @@ function initializeCloudPipeline(
     label: "ProceduralClouds shader",
     code: ProceduralCloudsWGSL,
   });
+  // TAKRAM-9 — retained so the (lazy) transmittance-mask pipeline can reuse the
+  // same module + BGL without recompiling the WGSL.
+  cache.maskShaderModule = shaderModule;
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "ProceduralClouds BGL", [
     texture(0, Stage.FRAGMENT),
@@ -1352,6 +1414,10 @@ export function executeProceduralClouds(
   const device = context._device;
   if (!device) return;
 
+  // TAKRAM-9 — reset the per-frame "mask rendered" flag up front so a culled or
+  // early-returned frame reports null to the god-ray consumer (no stale map).
+  if (context._cloudCache) context._cloudCache.maskRenderedThisFrame = false;
+
   // Frustum cull (Batch 413) — the cloud shell is a sphere at the planet origin
   // (radius = planetRadius + cloudLayerTop). Skip the full-screen raymarch
   // entirely when that sphere is outside the view frustum (e.g. the globe panned
@@ -1420,8 +1486,7 @@ export function executeProceduralClouds(
   // day-seconds are computed in f64 and the first-frame epoch is subtracted
   // BEFORE the f32 store (raw day-seconds ~1.9e14 would destroy f32 precision).
   const jd = frameState.time as unknown as
-    | { dayNumber: number; secondsOfDay: number }
-    | undefined;
+    { dayNumber: number; secondsOfDay: number } | undefined;
   if (jd && typeof jd.dayNumber === "number") {
     const seconds = jd.dayNumber * 86400.0 + jd.secondsOfDay;
     if (cache.timeEpoch === null) {
@@ -2162,8 +2227,83 @@ export function executeProceduralClouds(
     pass.end();
   }
 
+  // ── TAKRAM-9 (cloud-aware god rays) — screen-space transmittance mask ──
+  // Rendered ONLY when a consumer requested it (the PP god-ray pass). Reuses the
+  // main per-frame `bindGroup` (same layout/inputs) but a dedicated r8unorm
+  // pipeline + target driven by the `fragmentCloudMaskMain` entry point. The
+  // shipped composite passes above are untouched → byte-identical when off.
+  if (cache.maskCaptureEnabled) {
+    ensureCloudMaskResources(device, cache, canvasW, canvasH);
+    if (cache.maskPipeline && cache.maskView) {
+      const maskPass = encoder.beginRenderPass({
+        label: "ProceduralClouds transmittance-mask pass",
+        colorAttachments: [
+          {
+            view: cache.maskView,
+            // Clear to 1.0 (fully transmissive) so any pixel the full-screen
+            // triangle somehow misses reads as clear sky.
+            clearValue: { r: 1, g: 1, b: 1, a: 1 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      });
+      maskPass.setPipeline(cache.maskPipeline);
+      maskPass.setBindGroup(0, bindGroup);
+      maskPass.draw(3);
+      maskPass.end();
+      cache.maskRenderedThisFrame = true;
+    }
+  }
+
   if (!useMain) {
     device.queue.submit([encoder.finish()]);
+  }
+}
+
+/**
+ * TAKRAM-9 — lazily allocate the transmittance-mask target + pipeline (only
+ * reached when a consumer enabled capture). The r8unorm target is re-created on
+ * canvas resize; the pipeline (size-independent) is built once from the retained
+ * cloud shader module + the shared cloud BGL.
+ */
+function ensureCloudMaskResources(
+  device: GPUDevice,
+  cache: CloudCache,
+  width: number,
+  height: number,
+): void {
+  const w = Math.max(1, Math.floor(width));
+  const h = Math.max(1, Math.floor(height));
+  if (!cache.maskTexture || cache.maskWidth !== w || cache.maskHeight !== h) {
+    cache.maskTexture?.destroy();
+    cache.maskTexture = device.createTexture({
+      label: "ProceduralClouds transmittance mask",
+      size: { width: w, height: h, depthOrArrayLayers: 1 },
+      format: "r8unorm",
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    cache.maskView = cache.maskTexture.createView();
+    cache.maskWidth = w;
+    cache.maskHeight = h;
+  }
+  if (!cache.maskPipeline && cache.maskShaderModule && cache.bindGroupLayout) {
+    const layout = device.createPipelineLayout({
+      label: "ProceduralClouds mask pipeline layout",
+      bindGroupLayouts: [cache.bindGroupLayout],
+    });
+    cache.maskPipeline = device.createRenderPipeline({
+      label: "ProceduralClouds mask pipeline",
+      layout,
+      vertex: { module: cache.maskShaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: cache.maskShaderModule,
+        entryPoint: "fragmentCloudMaskMain",
+        targets: [{ format: "r8unorm" }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
   }
 }
 
@@ -2223,6 +2363,15 @@ export function destroyProceduralCloudResources(
     cache.shadowUniformBuffer = null;
     cache.shadowSize = 0;
     cache.shadowActive = false;
+    // TAKRAM-9 — release the transmittance-mask target + pipeline.
+    cache.maskTexture?.destroy();
+    cache.maskTexture = null;
+    cache.maskView = null;
+    cache.maskWidth = 0;
+    cache.maskHeight = 0;
+    cache.maskPipeline = null;
+    cache.maskShaderModule = null;
+    cache.maskRenderedThisFrame = false;
     cache.initialized = false;
     context._cloudCache = undefined;
   }

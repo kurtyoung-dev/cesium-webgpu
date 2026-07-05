@@ -38,6 +38,12 @@ import {
   type LibraryStageFrameContext,
 } from "./WebGPULibraryPostProcessStage.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
+// TAKRAM-9 (cloud-aware god rays) — request/read the procedural cloud
+// renderer's screen-space transmittance mask.
+import {
+  setCloudTransmittanceCapture,
+  getCloudTransmittanceView,
+} from "./WebGPUProceduralCloudRenderer.js";
 
 export interface PostProcessCache {
   initialized: boolean;
@@ -888,6 +894,36 @@ function configureWebGPUPostProcessPipeline(
     updateGodRaySunUV(pipeline, scene);
   } else if (pipeline.godRayEffect) {
     pipeline.godRayEffect.enabled = false;
+  }
+
+  // TAKRAM-9 (cloud-aware god rays) — when the opt-in `scene.godRayCloudAware`
+  // flag is on AND both god rays and procedural clouds are active, request the
+  // cloud renderer's screen-space transmittance mask and feed it to the god-ray
+  // generate pass so dense clouds attenuate the shaft (crepuscular rays through
+  // gaps). The capture flag is honored by the NEXT cloud pass; the view read
+  // here is the mask the cloud pass rendered THIS frame (null on the warmup
+  // frame / when culled → the effect uses its white 1×1 fallback = no-op).
+  // Default OFF (flag absent / clouds off) → capture is released and the view
+  // cleared → byte-identical depth-only god rays.
+  if (pipeline.godRayEffect) {
+    const sceneCtx = (scene as unknown as { context?: unknown })?.context;
+    const cloudAwareRequested =
+      cache.godRayEnabled &&
+      (scene as unknown as { godRayCloudAware?: boolean })?.godRayCloudAware ===
+        true &&
+      (scene as unknown as { globe?: { showProceduralClouds?: boolean } })
+        ?.globe?.showProceduralClouds === true;
+    if (sceneCtx) {
+      const ctx = sceneCtx as Parameters<
+        typeof setCloudTransmittanceCapture
+      >[0];
+      setCloudTransmittanceCapture(ctx, cloudAwareRequested);
+      pipeline.godRayEffect.setCloudTransmittanceView(
+        cloudAwareRequested ? getCloudTransmittanceView(ctx) : null,
+      );
+    } else if (!cloudAwareRequested) {
+      pipeline.godRayEffect.setCloudTransmittanceView(null);
+    }
   }
 
   // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer lazy init +

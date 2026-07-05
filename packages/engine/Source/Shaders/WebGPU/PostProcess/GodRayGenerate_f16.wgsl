@@ -28,6 +28,9 @@ struct GodRayUniforms {
 @group(0) @binding(1) var sceneDepthTex: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: GodRayUniforms;
+// TAKRAM-9 (cloud-aware god rays) — see GodRayGenerate.wgsl. 1×1 white
+// (r8unorm) fallback → exactly 1.0 → byte-identical to the depth-only path.
+@group(0) @binding(4) var cloudTransTex: texture_2d<f32>;
 
 const F16_MAX_HDR: f32 = 65000.0;
 
@@ -72,8 +75,13 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     ).r;
     let linearDepth = linearizeDepth(rawDepth);
     let isSky = step(far * occlusionCutoff, linearDepth);
+    // Cloud transmittance gate (white fallback = 1.0 → byte-identical).
+    let cloudTrans = textureSampleLevel(
+      cloudTransTex, texSampler, stepUV, 0.0,
+    ).r;
     let sample32 = clamp(
-      textureSampleLevel(sceneColorTex, texSampler, stepUV, 0.0).rgb * isSky,
+      textureSampleLevel(sceneColorTex, texSampler, stepUV, 0.0).rgb
+        * isSky * cloudTrans,
       vec3<f32>(0.0), vec3<f32>(F16_MAX_HDR),
     );
     // Color accumulation in F16; the per-sample scale (weight*decay) is

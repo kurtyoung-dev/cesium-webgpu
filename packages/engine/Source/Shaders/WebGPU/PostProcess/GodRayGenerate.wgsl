@@ -51,6 +51,14 @@ struct GodRayUniforms {
 @group(0) @binding(1) var sceneDepthTex: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: GodRayUniforms;
+// TAKRAM-9 (cloud-aware god rays) — per-pixel cloud TRANSMITTANCE
+// (1 = clear sky, 0 = fully opaque cloud) produced by the procedural cloud
+// renderer's mask pass. Default binding is a 1×1 white (r8unorm 255 → exactly
+// 1.0) fallback, so multiplying by it is byte-identical to the depth-only
+// path. When cloud-aware is active the effect binds the real screen-space
+// transmittance so dense clouds attenuate the shaft (crepuscular rays that
+// stream through cloud gaps instead of leaking bright cloud color as "sky").
+@group(0) @binding(4) var cloudTransTex: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -107,9 +115,14 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     ).r;
     let linearDepth = linearizeDepth(rawDepth);
     let isSky = step(far * occlusionCutoff, linearDepth);
+    // Cloud transmittance gate — 1.0 (white fallback) leaves the shaft
+    // untouched; a dense cloud (transmittance → 0) blocks the sky sample.
+    let cloudTrans = textureSampleLevel(
+      cloudTransTex, texSampler, stepUV, 0.0,
+    ).r;
     let sample = textureSampleLevel(
       sceneColorTex, texSampler, stepUV, 0.0,
-    ).rgb * isSky;
+    ).rgb * isSky * cloudTrans;
     illumination = illumination + sample * (weight * illumDecay);
     illumDecay = illumDecay * decay;
   }

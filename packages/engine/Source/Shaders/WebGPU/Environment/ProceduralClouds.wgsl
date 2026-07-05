@@ -1483,6 +1483,81 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return vec4<f32>(finalColor, sceneColor.a);
 }
 
+// ─── TAKRAM-9 (cloud-aware god rays) — screen-space transmittance mask ───
+// A dedicated full-res pass that re-marches the cloud shell(s) for the CURRENT
+// camera view and emits ONLY the per-pixel view-ray TRANSMITTANCE (1 = clear
+// sky, 0 = fully opaque cloud) into a single-channel r8unorm target. The
+// procedural cloud renderer runs this pass ONLY when cloud-aware god rays are
+// active (an opt-in-on-opt-in cinematic combo); the shipped composite pass
+// (`fragmentMain`) is untouched, so the default cloud render stays byte-
+// identical. The god-ray generate pass samples this mask to attenuate the
+// light shaft where clouds block the sun (crepuscular rays through gaps).
+//
+// This mirrors `fragmentMain`'s full-res branches (single-shell + multi-deck)
+// but skips half-res jitter (the mask is always full-res) and the scene-color
+// composite (we want transmittance, not radiance). Transmittance:
+//   single-shell: 1 - alpha
+//   multi-deck:   Πᵢ (1 - alphaᵢ)  (the running `trans` product)
+@fragment
+fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
+  let uv = input.uv;
+  let sceneDepth = textureSampleLevel(depthTex, texSampler, uv, 0.0).r;
+  let rayOrigin = cloud.cameraPosition;
+  let rayDir = getWorldRay(uv);
+  let centerHigh = -cloud.encodedCameraHigh;
+  let centerLow = -cloud.encodedCameraLow;
+  let msOctaves = i32((u32(cloud.qualityFlags) >> QF_OCTAVES_SHIFT) & 7u);
+
+  if (!multiDeckEnabled()) {
+    let r = marchDeck(
+      rayOrigin, rayDir, sceneDepth,
+      cloud.cloudLayerBottom, cloud.cloudLayerTop, msOctaves,
+      centerHigh, centerLow,
+    );
+    return clamp(1.0 - r.alpha, 0.0, 1.0);
+  }
+
+  // Multi-deck: accumulate the running transmittance product exactly as the
+  // composite path does, but keep only `trans`.
+  var camAlt: f32;
+  if (highPrecisionEnabled()) {
+    camAlt = rteRadialDistance(vec3<f32>(0.0), centerHigh, centerLow) - cloud.planetRadius;
+  } else {
+    camAlt = length(rayOrigin) - cloud.planetRadius;
+  }
+  let midLow = 0.5 * (cloud.deckBoundsLow.x + cloud.deckBoundsLow.y);
+  let midMid = 0.5 * (cloud.deckBoundsMid.x + cloud.deckBoundsMid.y);
+  let midHigh = 0.5 * (cloud.deckBoundsHigh.x + cloud.deckBoundsHigh.y);
+  let dLow = abs(camAlt - midLow);
+  let dMid = abs(camAlt - midMid);
+  let dHigh = abs(camAlt - midHigh);
+  var bottoms = array<f32, 3>(cloud.deckBoundsLow.x, cloud.deckBoundsMid.x, cloud.deckBoundsHigh.x);
+  var tops = array<f32, 3>(cloud.deckBoundsLow.y, cloud.deckBoundsMid.y, cloud.deckBoundsHigh.y);
+  var keys = array<f32, 3>(dLow, dMid, dHigh);
+  var order = array<i32, 3>(0, 1, 2);
+  for (var i: i32 = 1; i < 3; i = i + 1) {
+    let oi = order[i];
+    let ki = keys[oi];
+    var j: i32 = i - 1;
+    loop {
+      if (j < 0) { break; }
+      if (keys[order[j]] <= ki) { break; }
+      order[j + 1] = order[j];
+      j = j - 1;
+    }
+    order[j + 1] = oi;
+  }
+  var trans: f32 = 1.0;
+  for (var k: i32 = 0; k < 3; k = k + 1) {
+    if (trans < 0.005) { break; }
+    let di = order[k];
+    let r = marchDeck(rayOrigin, rayDir, sceneDepth, bottoms[di], tops[di], msOctaves, centerHigh, centerLow);
+    if (r.alpha <= 0.0) { continue; }
+    trans = trans * (1.0 - r.alpha);
+  }
+  return clamp(trans, 0.0, 1.0);
+}
+
 // ─── Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map ───
 // Rasterized from the SUN's orthographic view into a low-res single-channel target.
 // For each shadow-map texel we reconstruct the world point on the cloud-shell

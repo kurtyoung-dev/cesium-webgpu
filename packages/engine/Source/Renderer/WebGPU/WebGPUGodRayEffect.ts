@@ -102,6 +102,15 @@ export class GodRayEffect implements PostProcessEffect {
 
   private _generateUniforms: GPUBuffer | null = null;
 
+  // TAKRAM-9 (cloud-aware god rays) — screen-space cloud TRANSMITTANCE.
+  // `_cloudTransView` is pushed each frame by the pipeline when both
+  // procedural clouds and cloud-aware god rays are enabled; otherwise the
+  // generate pass binds `_whiteFallbackView` (1×1 r8unorm = 1.0), which
+  // makes the cloud multiply a byte-identical no-op (default OFF).
+  private _cloudTransView: GPUTextureView | null = null;
+  private _whiteFallbackTex: GPUTexture | null = null;
+  private _whiteFallbackView: GPUTextureView | null = null;
+
   // C-R11 (Batch 32) — bind group cache for the two per-frame sites.
   private _bgCache = new WebGPUBindGroupCache();
 
@@ -133,6 +142,22 @@ export class GodRayEffect implements PostProcessEffect {
       const data = this._buildUniformData();
       this._device.queue.writeBuffer(this._generateUniforms, 0, data);
     }
+  }
+
+  /**
+   * TAKRAM-9 — push the per-frame screen-space cloud transmittance view
+   * (1 = clear, 0 = opaque cloud) produced by the procedural cloud
+   * renderer's mask pass. Pass `null` to fall back to the white 1×1
+   * texture (byte-identical depth-only path). Cheap — just swaps the view
+   * bound at generate-binding 4; the bind-group cache re-keys on identity.
+   */
+  setCloudTransmittanceView(view: GPUTextureView | null): void {
+    this._cloudTransView = view;
+  }
+
+  /** Whether cloud-aware attenuation is currently active (a view is set). */
+  get cloudAware(): boolean {
+    return this._cloudTransView !== null;
   }
 
   /** Update frustum near/far so depth linearization stays correct. */
@@ -174,7 +199,27 @@ export class GodRayEffect implements PostProcessEffect {
       texture(1, Stage.FRAGMENT),
       sampler(2, Stage.FRAGMENT),
       uniformBuffer(3, Stage.FRAGMENT),
+      // TAKRAM-9 — cloud transmittance (bound to the white fallback when
+      // cloud-aware god rays are off → byte-identical multiply by 1.0).
+      texture(4, Stage.FRAGMENT),
     ]);
+
+    // TAKRAM-9 — 1×1 white (r8unorm 255 → exactly 1.0) transmittance fallback.
+    if (!this._whiteFallbackTex) {
+      this._whiteFallbackTex = device.createTexture({
+        label: "GodRay-CloudTrans-WhiteFallback",
+        size: [1, 1, 1],
+        format: "r8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      device.queue.writeTexture(
+        { texture: this._whiteFallbackTex },
+        new Uint8Array([255]),
+        { bytesPerRow: 1, rowsPerImage: 1 },
+        { width: 1, height: 1, depthOrArrayLayers: 1 },
+      );
+      this._whiteFallbackView = this._whiteFallbackTex.createView();
+    }
     this._compositeLayout = makeBindGroupLayout(
       device,
       "GodRay-Composite-BGL",
@@ -247,6 +292,11 @@ export class GodRayEffect implements PostProcessEffect {
         { binding: 1, resource: depthView },
         { binding: 2, resource: sampler },
         { binding: 3, resource: { buffer: this._generateUniforms! } },
+        // TAKRAM-9 — real cloud transmittance when set, else white fallback.
+        {
+          binding: 4,
+          resource: this._cloudTransView ?? this._whiteFallbackView!,
+        },
       ],
     );
     executePass(
@@ -283,10 +333,14 @@ export class GodRayEffect implements PostProcessEffect {
     this._rayTex?.destroy();
     this._outputTex?.destroy();
     this._generateUniforms?.destroy();
+    this._whiteFallbackTex?.destroy();
     this._rayTex = null;
     this._outputTex = null;
     this._rayView = null;
     this._outputView = null;
+    this._whiteFallbackTex = null;
+    this._whiteFallbackView = null;
+    this._cloudTransView = null;
     this._device = null;
   }
 
