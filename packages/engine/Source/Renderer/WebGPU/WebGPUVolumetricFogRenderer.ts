@@ -824,8 +824,7 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[45] = cy;
     r.paramsData[46] = cz;
     const globeEllipsoid = _scene?.globe?._ellipsoid as
-      | { radii: CesiumCartesian3 }
-      | undefined;
+      { radii: CesiumCartesian3 } | undefined;
     const innerRadius = globeEllipsoid
       ? Math.min(
           globeEllipsoid.radii.x,
@@ -923,37 +922,43 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[62] = varying?.noiseStrength ?? 0.3;
     r.paramsData[63] = 0.0;
 
-    // Phase 6c — Cloud-shadow uniforms (offsets 72..83). Sourced from
-    // `globe.*` cloud properties (matching what
-    // `WebGPUProceduralCloudRenderer` reads) and the
-    // `atmosphericConditions.clouds.enableVolumetric` toggle. The feature
-    // is gated to "fog is on AND clouds are on AND coverage > 0" — when
-    // any of those are false, the WGSL `sampleCloudShadow` short-circuits
-    // to 1.0 (no attenuation) so the fog scattering is unchanged from
-    // pre-Batch-44 behaviour.
-    const globeForClouds = (
+    // Phase 6c — Cloud-shadow uniforms (offsets 72..83). Sourced from the managed
+    // default cloud collection's `.volumetric` config (matching what
+    // `WebGPUProceduralCloudRenderer` reads). The feature is gated to "fog is on
+    // AND clouds are on AND coverage > 0" — when any of those are false, the WGSL
+    // `sampleCloudShadow` short-circuits to 1.0 (no attenuation) so the fog
+    // scattering is unchanged from pre-Batch-44 behaviour.
+    // Cloud-unification epic slice 4B — the cloud-shadow config re-homes off the
+    // removed `globe.cloud*` / `globe.showProceduralClouds` fields onto the managed
+    // default cloud collection (`globe.defaultCloudCollection`). Clouds are active
+    // when its exclusive `renderMode` is VOLUMETRIC (=== 1) AND `volumetric.enabled`
+    // — identical to the `atmosphericConditions.clouds.enableVolumetric` facade.
+    const volColl = (
       scene as unknown as {
         globe?: {
-          showProceduralClouds?: boolean;
-          cloudCoverage?: number;
-          cloudDensity?: number;
-          cloudLayerBottom?: number;
-          cloudLayerTop?: number;
+          defaultCloudCollection?: {
+            renderMode?: number;
+            volumetric?: {
+              enabled?: boolean;
+              cloudCoverage?: number;
+              cloudDensity?: number;
+              cloudLayerBottom?: number;
+              cloudLayerTop?: number;
+            };
+          };
         };
       }
-    ).globe;
-    const clouds = (
-      ac as unknown as { clouds?: { enableVolumetric?: boolean } } | undefined
-    )?.clouds;
+    ).globe?.defaultCloudCollection;
+    const vol = volColl?.volumetric;
     const cloudsEnabled =
-      (clouds?.enableVolumetric === true ||
-        globeForClouds?.showProceduralClouds === true) &&
-      (globeForClouds?.cloudCoverage ?? 0) > 0;
+      volColl?.renderMode === 1 &&
+      vol?.enabled === true &&
+      (vol?.cloudCoverage ?? 0) > 0;
     const cloudShadowEnable = cloudsEnabled ? 1.0 : 0.0;
     r.paramsData[72] = cloudShadowEnable;
-    r.paramsData[73] = globeForClouds?.cloudLayerBottom ?? 1500;
-    r.paramsData[74] = globeForClouds?.cloudLayerTop ?? 4000;
-    r.paramsData[75] = globeForClouds?.cloudCoverage ?? 0.5;
+    r.paramsData[73] = vol?.cloudLayerBottom ?? 1500;
+    r.paramsData[74] = vol?.cloudLayerTop ?? 4000;
+    r.paramsData[75] = vol?.cloudCoverage ?? 0.5;
 
     // Wind state + time for cloud animation matching ProceduralClouds'
     // wind-drift offset. Read from `atmosphericConditions.weather` when
@@ -993,7 +998,7 @@ class WebGPUVolumetricFogRenderer {
     // renderer's default (0.04). `noiseScale` is 0.0003 to match the
     // cloud render's `samplePos = worldPos * 0.0003` mapping so cast
     // shadows track the same feature scale as the visible clouds.
-    r.paramsData[80] = globeForClouds?.cloudDensity ?? 0.3;
+    r.paramsData[80] = vol?.cloudDensity ?? 0.3;
     r.paramsData[81] = 0.04;
     r.paramsData[82] = 0.0003;
     r.paramsData[83] = 0.0;

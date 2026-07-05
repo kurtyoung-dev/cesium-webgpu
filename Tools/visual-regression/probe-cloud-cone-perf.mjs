@@ -27,13 +27,13 @@ async function timeMode(page, forceCone) {
     v.clock.shouldAnimate = false;
     const jd = C.JulianDate.fromIso8601("2026-06-21T18:20:00Z");
     v.clock.currentTime = jd;
-    g.showProceduralClouds = true;
-    g.cloudVolumetricQuality = "high"; // cinematic full-res baked, lightSteps=8
-    g.cloudQuality = 64;
-    g.cloudCoverage = 0.8; // dense — lots of fine samples → lightMarch dominates
-    g.cloudDensity = 1.0;
-    g.cloudLayerBottom = 1500;
-    g.cloudLayerTop = 4000;
+    g.defaultCloudCollection.enableVolumetric = true;
+    g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // cinematic full-res baked, lightSteps=8
+    g.defaultCloudCollection.volumetric.cloudQuality = 64;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.8; // dense — lots of fine samples → lightMarch dominates
+    g.defaultCloudCollection.volumetric.cloudDensity = 1.0;
+    g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+    g.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(-95, 39, 2200),
       orientation: {

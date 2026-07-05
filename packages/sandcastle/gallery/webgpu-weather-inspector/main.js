@@ -10,9 +10,9 @@ const globe = scene.globe;
 window.viewer = viewer; // expose for console tinkering
 
 // A fair-weather starting sky so the panel has something to act on.
-globe.showProceduralClouds = true;
-globe.cloudCoverage = 0.45;
-globe.cloudDensity = 0.3;
+globe.defaultCloudCollection.enableVolumetric = true;
+globe.defaultCloudCollection.volumetric.cloudCoverage = 0.45;
+globe.defaultCloudCollection.volumetric.cloudDensity = 0.3;
 scene.skyAtmosphere.show = true;
 
 // Near-ground view looking up at the cloud deck. The camera sits below
@@ -69,7 +69,10 @@ function setHourUtc(hour) {
 // Wind direction is a vec2 driven by two sliders.
 const windDir = { x: 0.7, y: 0.3 };
 function applyWind() {
-  globe.cloudWindDirection = { x: windDir.x, y: windDir.y };
+  globe.defaultCloudCollection.volumetric.cloudWindDirection = {
+    x: windDir.x,
+    y: windDir.y,
+  };
 }
 
 // ── dial declarations (the full live weather surface) ───────────────
@@ -94,7 +97,7 @@ const GROUPS = [
       {
         label: "Show clouds",
         type: "toggle",
-        path: "globe.showProceduralClouds",
+        path: "globe.defaultCloudCollection.enableVolumetric",
       },
       {
         // V11 — per-genus vertical density profile (WMO genus -> CloudType
@@ -102,7 +105,7 @@ const GROUPS = [
         // resolves; the order groups low / mid / high genera.
         label: "Genus (V11)",
         type: "select",
-        path: "globe.cloudType",
+        path: "globe.defaultCloudCollection.cloudType",
         coerceNumber: true,
         options: [
           "Cumulus",
@@ -122,7 +125,7 @@ const GROUPS = [
       {
         label: "Coverage",
         type: "range",
-        path: "globe.cloudCoverage",
+        path: "globe.defaultCloudCollection.volumetric.cloudCoverage",
         min: 0,
         max: 1,
         step: 0.02,
@@ -130,7 +133,7 @@ const GROUPS = [
       {
         label: "Density",
         type: "range",
-        path: "globe.cloudDensity",
+        path: "globe.defaultCloudCollection.volumetric.cloudDensity",
         min: 0.05,
         max: 1,
         step: 0.05,
@@ -138,7 +141,7 @@ const GROUPS = [
       {
         label: "Erosion",
         type: "range",
-        path: "globe.cloudErosionStrength",
+        path: "globe.defaultCloudCollection.volumetric.cloudErosionStrength",
         min: 0.05,
         max: 0.25,
         step: 0.01,
@@ -147,7 +150,7 @@ const GROUPS = [
       {
         label: "Weather map",
         type: "toggle",
-        path: "globe.cloudWeatherMap",
+        path: "globe.defaultCloudCollection.volumetric.cloudWeatherMap",
       },
     ],
   },
@@ -157,7 +160,7 @@ const GROUPS = [
       {
         label: "Base (m)",
         type: "range",
-        path: "globe.cloudLayerBottom",
+        path: "globe.defaultCloudCollection.volumetric.cloudLayerBottom",
         min: 0,
         max: 12000,
         step: 100,
@@ -165,7 +168,7 @@ const GROUPS = [
       {
         label: "Top (m)",
         type: "range",
-        path: "globe.cloudLayerTop",
+        path: "globe.defaultCloudCollection.volumetric.cloudLayerTop",
         min: 500,
         max: 16000,
         step: 100,
@@ -178,7 +181,7 @@ const GROUPS = [
       {
         label: "Silver lining",
         type: "range",
-        path: "globe.cloudSilverLiningIntensity",
+        path: "globe.defaultCloudCollection.volumetric.cloudSilverLiningIntensity",
         min: 0,
         max: 2,
         step: 0.05,
@@ -187,7 +190,7 @@ const GROUPS = [
       {
         label: "Phase fwd g",
         type: "range",
-        path: "globe.cloudPhaseForwardG",
+        path: "globe.defaultCloudCollection.volumetric.cloudPhaseForwardG",
         min: 0.5,
         max: 0.95,
         step: 0.01,
@@ -196,7 +199,7 @@ const GROUPS = [
       {
         label: "Phase back g",
         type: "range",
-        path: "globe.cloudPhaseBackG",
+        path: "globe.defaultCloudCollection.volumetric.cloudPhaseBackG",
         min: -0.5,
         max: 0,
         step: 0.01,
@@ -205,7 +208,7 @@ const GROUPS = [
       {
         label: "Phase blend",
         type: "range",
-        path: "globe.cloudPhaseBlend",
+        path: "globe.defaultCloudCollection.volumetric.cloudPhaseBlend",
         min: 0,
         max: 1,
         step: 0.05,
@@ -214,7 +217,7 @@ const GROUPS = [
       {
         label: "Ambient",
         type: "range",
-        path: "globe.cloudAmbientIntensity",
+        path: "globe.defaultCloudCollection.volumetric.cloudAmbientIntensity",
         min: 0.5,
         max: 3,
         step: 0.1,
@@ -223,7 +226,7 @@ const GROUPS = [
       {
         label: "Aerial haze",
         type: "range",
-        path: "globe.cloudAerialStrength",
+        path: "globe.defaultCloudCollection.volumetric.cloudAerialStrength",
         min: 0,
         max: 1,
         step: 0.05,
@@ -237,7 +240,7 @@ const GROUPS = [
       {
         label: "Puff size",
         type: "range",
-        path: "globe.cloudPuffSize",
+        path: "globe.defaultCloudCollection.volumetric.cloudPuffSize",
         min: 0.2,
         max: 0.7,
         step: 0.01,
@@ -246,7 +249,7 @@ const GROUPS = [
       {
         label: "Exposure",
         type: "range",
-        path: "globe.cloudExposure",
+        path: "globe.defaultCloudCollection.volumetric.cloudExposure",
         min: 0.1,
         max: 0.5,
         step: 0.01,
@@ -255,7 +258,7 @@ const GROUPS = [
       {
         label: "MS scatter decay",
         type: "range",
-        path: "globe.cloudMsDecayScatter",
+        path: "globe.defaultCloudCollection.volumetric.cloudMsDecayScatter",
         min: 0.3,
         max: 0.8,
         step: 0.01,
@@ -264,7 +267,7 @@ const GROUPS = [
       {
         label: "MS extinction decay",
         type: "range",
-        path: "globe.cloudMsDecayExtinction",
+        path: "globe.defaultCloudCollection.volumetric.cloudMsDecayExtinction",
         min: 0.3,
         max: 0.8,
         step: 0.01,
@@ -273,7 +276,7 @@ const GROUPS = [
       {
         label: "MS phase decay",
         type: "range",
-        path: "globe.cloudMsDecayPhase",
+        path: "globe.defaultCloudCollection.volumetric.cloudMsDecayPhase",
         min: 0.7,
         max: 0.95,
         step: 0.01,
@@ -287,7 +290,7 @@ const GROUPS = [
       {
         label: "Quality",
         type: "select",
-        path: "globe.cloudVolumetricQuality",
+        path: "globe.defaultCloudCollection.volumetric.cloudVolumetricQuality",
         options: ["low", "medium", "high", "auto"],
       },
     ],
@@ -298,7 +301,7 @@ const GROUPS = [
       {
         label: "Speed (m/s)",
         type: "range",
-        path: "globe.cloudWindSpeed",
+        path: "globe.defaultCloudCollection.volumetric.cloudWindSpeed",
         min: 0,
         max: 50,
         step: 0.5,
@@ -408,10 +411,10 @@ const PRESETS = [
     label: "SKC",
     title: "Sky clear — 0/8 oktas. No clouds; deep blue daytime sky.",
     values: {
-      "globe.showProceduralClouds": false,
-      "globe.cloudCoverage": 0.0,
+      "globe.defaultCloudCollection.enableVolumetric": false,
+      "globe.defaultCloudCollection.volumetric.cloudCoverage": 0.0,
       "scene.fog.enabled": false,
-      "globe.cloudWindSpeed": 6.0,
+      "globe.defaultCloudCollection.volumetric.cloudWindSpeed": 6.0,
       "globe.atmosphereLightIntensity": 10.0,
       "globe.atmosphereSaturationShift": 0.0,
       "globe.atmosphereBrightnessShift": 0.0,
@@ -423,17 +426,18 @@ const PRESETS = [
     title:
       "Few cumulus — 1–2/8 oktas. Fair-weather low cumulus, isolated puffs over deep-blue gaps (base ~1.2 km).",
     values: {
-      "globe.showProceduralClouds": true,
-      "globe.cloudCoverage": 0.15,
-      "globe.cloudDensity": 0.22,
-      "globe.cloudLayerBottom": 1500,
-      "globe.cloudLayerTop": 3000,
-      "globe.cloudErosionStrength": 0.16,
-      "globe.cloudVolumetricQuality": "medium",
-      "globe.cloudSilverLiningIntensity": 0.95,
-      "globe.cloudAerialStrength": 0.7,
-      "globe.cloudWeatherMap": false,
-      "globe.cloudWindSpeed": 6.0,
+      "globe.defaultCloudCollection.enableVolumetric": true,
+      "globe.defaultCloudCollection.volumetric.cloudCoverage": 0.15,
+      "globe.defaultCloudCollection.volumetric.cloudDensity": 0.22,
+      "globe.defaultCloudCollection.volumetric.cloudLayerBottom": 1500,
+      "globe.defaultCloudCollection.volumetric.cloudLayerTop": 3000,
+      "globe.defaultCloudCollection.volumetric.cloudErosionStrength": 0.16,
+      "globe.defaultCloudCollection.volumetric.cloudVolumetricQuality":
+        "medium",
+      "globe.defaultCloudCollection.volumetric.cloudSilverLiningIntensity": 0.95,
+      "globe.defaultCloudCollection.volumetric.cloudAerialStrength": 0.7,
+      "globe.defaultCloudCollection.volumetric.cloudWeatherMap": false,
+      "globe.defaultCloudCollection.volumetric.cloudWindSpeed": 6.0,
       "scene.fog.enabled": false,
       "globe.atmosphereLightIntensity": 10.0,
       "globe.atmosphereSaturationShift": 0.0,
@@ -446,17 +450,18 @@ const PRESETS = [
     title:
       "Scattered cumulus — 3–4/8 oktas. Building fair-weather cumulus, sky roughly half covered (base ~1.2 km, tops ~3.5 km).",
     values: {
-      "globe.showProceduralClouds": true,
-      "globe.cloudCoverage": 0.45,
-      "globe.cloudDensity": 0.3,
-      "globe.cloudLayerBottom": 1500,
-      "globe.cloudLayerTop": 3800,
-      "globe.cloudErosionStrength": 0.17,
-      "globe.cloudVolumetricQuality": "medium",
-      "globe.cloudSilverLiningIntensity": 0.9,
-      "globe.cloudAerialStrength": 0.8,
-      "globe.cloudWeatherMap": false,
-      "globe.cloudWindSpeed": 8.0,
+      "globe.defaultCloudCollection.enableVolumetric": true,
+      "globe.defaultCloudCollection.volumetric.cloudCoverage": 0.45,
+      "globe.defaultCloudCollection.volumetric.cloudDensity": 0.3,
+      "globe.defaultCloudCollection.volumetric.cloudLayerBottom": 1500,
+      "globe.defaultCloudCollection.volumetric.cloudLayerTop": 3800,
+      "globe.defaultCloudCollection.volumetric.cloudErosionStrength": 0.17,
+      "globe.defaultCloudCollection.volumetric.cloudVolumetricQuality":
+        "medium",
+      "globe.defaultCloudCollection.volumetric.cloudSilverLiningIntensity": 0.9,
+      "globe.defaultCloudCollection.volumetric.cloudAerialStrength": 0.8,
+      "globe.defaultCloudCollection.volumetric.cloudWeatherMap": false,
+      "globe.defaultCloudCollection.volumetric.cloudWindSpeed": 8.0,
       "scene.fog.enabled": true,
       "scene.fog.density": 0.0001,
       "globe.atmosphereLightIntensity": 10.0,
@@ -470,17 +475,17 @@ const PRESETS = [
     title:
       "Broken stratocumulus — 5–7/8 oktas. Low, lumpy, mostly-covered deck with a few breaks (base ~0.9 km).",
     values: {
-      "globe.showProceduralClouds": true,
-      "globe.cloudCoverage": 0.75,
-      "globe.cloudDensity": 0.42,
-      "globe.cloudLayerBottom": 1300,
-      "globe.cloudLayerTop": 2600,
-      "globe.cloudErosionStrength": 0.13,
-      "globe.cloudVolumetricQuality": "high",
-      "globe.cloudWeatherMap": false,
-      "globe.cloudAmbientIntensity": 1.6,
-      "globe.cloudAerialStrength": 0.7,
-      "globe.cloudWindSpeed": 12.0,
+      "globe.defaultCloudCollection.enableVolumetric": true,
+      "globe.defaultCloudCollection.volumetric.cloudCoverage": 0.75,
+      "globe.defaultCloudCollection.volumetric.cloudDensity": 0.42,
+      "globe.defaultCloudCollection.volumetric.cloudLayerBottom": 1300,
+      "globe.defaultCloudCollection.volumetric.cloudLayerTop": 2600,
+      "globe.defaultCloudCollection.volumetric.cloudErosionStrength": 0.13,
+      "globe.defaultCloudCollection.volumetric.cloudVolumetricQuality": "high",
+      "globe.defaultCloudCollection.volumetric.cloudWeatherMap": false,
+      "globe.defaultCloudCollection.volumetric.cloudAmbientIntensity": 1.6,
+      "globe.defaultCloudCollection.volumetric.cloudAerialStrength": 0.7,
+      "globe.defaultCloudCollection.volumetric.cloudWindSpeed": 12.0,
       "scene.fog.enabled": true,
       "scene.fog.density": 0.0002,
       "globe.atmosphereLightIntensity": 8.0,
@@ -494,17 +499,17 @@ const PRESETS = [
     title:
       "Overcast stratus — 8/8 oktas. Uniform grey low ceiling, no breaks (low flat deck just above the camera).",
     values: {
-      "globe.showProceduralClouds": true,
-      "globe.cloudCoverage": 0.98,
-      "globe.cloudDensity": 0.45,
-      "globe.cloudLayerBottom": 1300,
-      "globe.cloudLayerTop": 2400,
-      "globe.cloudErosionStrength": 0.1,
-      "globe.cloudVolumetricQuality": "high",
-      "globe.cloudWeatherMap": false,
-      "globe.cloudAmbientIntensity": 1.9,
-      "globe.cloudAerialStrength": 0.7,
-      "globe.cloudWindSpeed": 10.0,
+      "globe.defaultCloudCollection.enableVolumetric": true,
+      "globe.defaultCloudCollection.volumetric.cloudCoverage": 0.98,
+      "globe.defaultCloudCollection.volumetric.cloudDensity": 0.45,
+      "globe.defaultCloudCollection.volumetric.cloudLayerBottom": 1300,
+      "globe.defaultCloudCollection.volumetric.cloudLayerTop": 2400,
+      "globe.defaultCloudCollection.volumetric.cloudErosionStrength": 0.1,
+      "globe.defaultCloudCollection.volumetric.cloudVolumetricQuality": "high",
+      "globe.defaultCloudCollection.volumetric.cloudWeatherMap": false,
+      "globe.defaultCloudCollection.volumetric.cloudAmbientIntensity": 1.9,
+      "globe.defaultCloudCollection.volumetric.cloudAerialStrength": 0.7,
+      "globe.defaultCloudCollection.volumetric.cloudWindSpeed": 10.0,
       "scene.fog.enabled": true,
       "scene.fog.density": 0.0003,
       "globe.atmosphereLightIntensity": 6.5,
@@ -518,18 +523,18 @@ const PRESETS = [
     title:
       "Nimbostratus — 8/8 oktas, ww 60s (rain). Thick, dark, rain-bearing layer; heavy haze, dim flat light.",
     values: {
-      "globe.showProceduralClouds": true,
-      "globe.cloudCoverage": 1.0,
-      "globe.cloudDensity": 0.6,
-      "globe.cloudLayerBottom": 1300,
-      "globe.cloudLayerTop": 5000,
-      "globe.cloudErosionStrength": 0.12,
-      "globe.cloudVolumetricQuality": "high",
-      "globe.cloudWeatherMap": false,
-      "globe.cloudPhaseBackG": -0.4,
-      "globe.cloudAmbientIntensity": 1.0,
-      "globe.cloudAerialStrength": 0.6,
-      "globe.cloudWindSpeed": 18.0,
+      "globe.defaultCloudCollection.enableVolumetric": true,
+      "globe.defaultCloudCollection.volumetric.cloudCoverage": 1.0,
+      "globe.defaultCloudCollection.volumetric.cloudDensity": 0.6,
+      "globe.defaultCloudCollection.volumetric.cloudLayerBottom": 1300,
+      "globe.defaultCloudCollection.volumetric.cloudLayerTop": 5000,
+      "globe.defaultCloudCollection.volumetric.cloudErosionStrength": 0.12,
+      "globe.defaultCloudCollection.volumetric.cloudVolumetricQuality": "high",
+      "globe.defaultCloudCollection.volumetric.cloudWeatherMap": false,
+      "globe.defaultCloudCollection.volumetric.cloudPhaseBackG": -0.4,
+      "globe.defaultCloudCollection.volumetric.cloudAmbientIntensity": 1.0,
+      "globe.defaultCloudCollection.volumetric.cloudAerialStrength": 0.6,
+      "globe.defaultCloudCollection.volumetric.cloudWindSpeed": 18.0,
       "scene.fog.enabled": true,
       "scene.fog.density": 0.0005,
       "globe.atmosphereLightIntensity": 5.0,
@@ -543,18 +548,18 @@ const PRESETS = [
     title:
       "Cumulonimbus — TCU/CB, ww 95 (thunderstorm). Deep convective tower, dark base, strong wind.",
     values: {
-      "globe.showProceduralClouds": true,
-      "globe.cloudCoverage": 0.9,
-      "globe.cloudDensity": 0.68,
-      "globe.cloudLayerBottom": 1300,
-      "globe.cloudLayerTop": 9000,
-      "globe.cloudErosionStrength": 0.15,
-      "globe.cloudVolumetricQuality": "high",
-      "globe.cloudWeatherMap": false,
-      "globe.cloudPhaseBackG": -0.5,
-      "globe.cloudAmbientIntensity": 0.9,
-      "globe.cloudAerialStrength": 0.6,
-      "globe.cloudWindSpeed": 30.0,
+      "globe.defaultCloudCollection.enableVolumetric": true,
+      "globe.defaultCloudCollection.volumetric.cloudCoverage": 0.9,
+      "globe.defaultCloudCollection.volumetric.cloudDensity": 0.68,
+      "globe.defaultCloudCollection.volumetric.cloudLayerBottom": 1300,
+      "globe.defaultCloudCollection.volumetric.cloudLayerTop": 9000,
+      "globe.defaultCloudCollection.volumetric.cloudErosionStrength": 0.15,
+      "globe.defaultCloudCollection.volumetric.cloudVolumetricQuality": "high",
+      "globe.defaultCloudCollection.volumetric.cloudWeatherMap": false,
+      "globe.defaultCloudCollection.volumetric.cloudPhaseBackG": -0.5,
+      "globe.defaultCloudCollection.volumetric.cloudAmbientIntensity": 0.9,
+      "globe.defaultCloudCollection.volumetric.cloudAerialStrength": 0.6,
+      "globe.defaultCloudCollection.volumetric.cloudWindSpeed": 30.0,
       "scene.fog.enabled": true,
       "scene.fog.density": 0.0004,
       "globe.atmosphereLightIntensity": 5.0,
@@ -568,17 +573,18 @@ const PRESETS = [
     title:
       "Cirrus — high cloud, 2–4/8 oktas. Thin, wispy ice cloud well above the camera (base ~7 km); blue sky shows through.",
     values: {
-      "globe.showProceduralClouds": true,
-      "globe.cloudCoverage": 0.4,
-      "globe.cloudDensity": 0.12,
-      "globe.cloudLayerBottom": 7000,
-      "globe.cloudLayerTop": 9000,
-      "globe.cloudErosionStrength": 0.22,
-      "globe.cloudVolumetricQuality": "medium",
-      "globe.cloudSilverLiningIntensity": 1.2,
-      "globe.cloudAerialStrength": 0.9,
-      "globe.cloudWeatherMap": false,
-      "globe.cloudWindSpeed": 14.0,
+      "globe.defaultCloudCollection.enableVolumetric": true,
+      "globe.defaultCloudCollection.volumetric.cloudCoverage": 0.4,
+      "globe.defaultCloudCollection.volumetric.cloudDensity": 0.12,
+      "globe.defaultCloudCollection.volumetric.cloudLayerBottom": 7000,
+      "globe.defaultCloudCollection.volumetric.cloudLayerTop": 9000,
+      "globe.defaultCloudCollection.volumetric.cloudErosionStrength": 0.22,
+      "globe.defaultCloudCollection.volumetric.cloudVolumetricQuality":
+        "medium",
+      "globe.defaultCloudCollection.volumetric.cloudSilverLiningIntensity": 1.2,
+      "globe.defaultCloudCollection.volumetric.cloudAerialStrength": 0.9,
+      "globe.defaultCloudCollection.volumetric.cloudWeatherMap": false,
+      "globe.defaultCloudCollection.volumetric.cloudWindSpeed": 14.0,
       "scene.fog.enabled": false,
       "globe.atmosphereLightIntensity": 11.0,
       "globe.atmosphereSaturationShift": 0.0,

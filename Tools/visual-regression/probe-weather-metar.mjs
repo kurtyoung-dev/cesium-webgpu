@@ -91,14 +91,14 @@ const SETUP = async (mockUrl) => {
     s = v.scene,
     g = s.globe;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  g.cloudCoverage = 0.6;
+  g.defaultCloudCollection.enableVolumetric = true;
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
   // Moderate base density so the A density-bias has headroom to thicken thin cells
   // (a saturated deck can't show MORE cloud, hiding the channel response).
-  g.cloudDensity = 0.5;
-  g.cloudLayerBottom = 1500;
-  g.cloudLayerTop = 4000;
-  g.cloudWeatherChannelStrength = 1.0;
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.5;
+  g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+  g.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
+  g.defaultCloudCollection.volumetric.cloudWeatherChannelStrength = 1.0;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
   if (s.moon) s.moon.show = false;
@@ -113,20 +113,20 @@ const SETUP = async (mockUrl) => {
     sourceLabel: "mock",
   });
   const caps = src.getCapabilities();
-  g.weatherProvider = new C.WeatherProvider(src);
+  g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(src);
   s.requestRender();
   return { capId: caps.id, supportsTime: caps.supportsTime };
 };
 
 const PROVIDER_STATE = async () => {
-  const p = window.viewer.scene.globe.weatherProvider;
+  const p = window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
   return p
     ? { hasData: p.hasData, version: p.version, lastError: p.lastError }
     : null;
 };
 
 const SET_CHANNEL_STRENGTH = async (val) => {
-  window.viewer.scene.globe.cloudWeatherChannelStrength = val;
+  window.viewer.scene.globe.defaultCloudCollection.volumetric.cloudWeatherChannelStrength = val;
   // Channel strength is a uniform (no re-fetch); a few frames refresh the deck.
   for (let i = 0; i < 30; i++) {
     window.viewer.scene.render();

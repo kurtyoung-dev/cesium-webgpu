@@ -14,7 +14,7 @@
  * perspective needs, in a clean black-sky frame.
  *
  * Verification — A/B per band, aerial-COEFFICIENT metric:
- *   Render the same camera/time twice: globe.cloudAerialStrength 0 (off) vs 1.
+ *   Render the same camera/time twice: globe.defaultCloudCollection.volumetric.cloudAerialStrength 0 (off) vs 1.
  *   Per band, the haze maps the un-hazed mean toward aerialColor:
  *       meanOn ≈ mix(meanOff, aerialColor, a)   →   a ≈ |on-off| / |off-aerial|
  *   `a` is the effective blend fraction, NORMALIZED for how dim/bright the band's
@@ -66,10 +66,10 @@ const SETUP = async (cfg) => {
   const g = s.globe;
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  if ("cloudCoverage" in g) g.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.cloudDensity = 0.8;
+  g.defaultCloudCollection.enableVolumetric = true;
+  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -89,10 +89,10 @@ const RENDER = async (cfg) => {
   const C = await import("/Build/CesiumUnminified/index.js");
   const v = window.viewer;
   const s = v.scene;
-  s.globe.cloudAerialStrength = cfg.strength;
+  s.globe.defaultCloudCollection.volumetric.cloudAerialStrength = cfg.strength;
   if (cfg.layerBottom !== undefined) {
-    s.globe.cloudLayerBottom = cfg.layerBottom; // move the deck up to change its
-    s.globe.cloudLayerTop = cfg.layerTop; //      distance from the fixed camera
+    s.globe.defaultCloudCollection.volumetric.cloudLayerBottom = cfg.layerBottom; // move the deck up to change its
+    s.globe.defaultCloudCollection.volumetric.cloudLayerTop = cfg.layerTop; //      distance from the fixed camera
   }
   if (cfg.pitch !== undefined) {
     v.camera.setView({

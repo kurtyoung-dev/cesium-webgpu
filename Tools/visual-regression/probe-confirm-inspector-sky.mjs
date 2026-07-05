@@ -37,9 +37,9 @@ const SETUP = async (cfg) => {
   const s = v.scene;
   const g = s.globe;
   s.requestRenderMode = false; // let the viewer's own loop present continuously
-  g.showProceduralClouds = cfg.clouds;
-  g.cloudCoverage = 0.45;
-  g.cloudDensity = 0.3;
+  g.defaultCloudCollection.enableVolumetric = cfg.clouds;
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.45;
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.3;
   s.skyAtmosphere.show = cfg.sky; // the thing under test
   if (cfg.noSkybox && s.skyBox) {
     s.skyBox.show = false; // test: does the skybox overwrite the upper sky?

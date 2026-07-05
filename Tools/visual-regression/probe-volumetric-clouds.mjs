@@ -5,7 +5,7 @@
  *
  * The cloud fidelity upgrades (Perlin-Worley noise, weather map, dual-lobe HG)
  * are only verifiable if the raymarcher actually produces cloud pixels on
- * WebGPU. This probe enables procedural clouds (globe.showProceduralClouds),
+ * WebGPU. This probe enables procedural clouds (globe.defaultCloudCollection.enableVolumetric),
  * cranks coverage/density, frames a cloud-covered region from altitude, and
  * counts bright cloud-ish pixels on WebGPU vs WebGL.
  *
@@ -42,17 +42,17 @@ async function run(renderer, fs) {
     // Enable the procedural volumetric clouds + crank visibility.
     const info = {};
     try {
-      g.showProceduralClouds = true;
-      info.showProceduralClouds = g.showProceduralClouds;
+      g.defaultCloudCollection.enableVolumetric = true;
+      info.showProceduralClouds = g.defaultCloudCollection.enableVolumetric;
       // Moderate coverage frames distinct clouds against the sky. NB: high
       // coverage (≥0.8) + a camera INSIDE the 1500-4000m layer white-outs the
       // sky (physically a fog-out, not a bug — confirmed by the coverage sweep).
-      if ("cloudCoverage" in g) g.cloudCoverage = 0.5;
-      if ("cloudDensity" in g) g.cloudDensity = 0.8;
-      info.cloudCoverage = g.cloudCoverage;
-      info.cloudDensity = g.cloudDensity;
-      info.cloudLayerBottom = g.cloudLayerBottom;
-      info.cloudLayerTop = g.cloudLayerTop;
+      if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
+      if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+      info.cloudCoverage = g.defaultCloudCollection.volumetric.cloudCoverage;
+      info.cloudDensity = g.defaultCloudCollection.volumetric.cloudDensity;
+      info.cloudLayerBottom = g.defaultCloudCollection.volumetric.cloudLayerBottom;
+      info.cloudLayerTop = g.defaultCloudCollection.volumetric.cloudLayerTop;
     } catch (e) {
       info.enableErr = e.message;
     }

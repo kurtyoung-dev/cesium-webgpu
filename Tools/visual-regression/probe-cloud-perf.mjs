@@ -51,11 +51,11 @@ const SETUP = async (cfg) => {
   const g = s.globe;
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  if ("cloudCoverage" in g) g.cloudCoverage = 0.35; // sparse → ~65% empty along rays
-  if ("cloudWeatherMap" in g) g.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.cloudDensity = 0.7;
-  if ("cloudQuality" in g) g.cloudQuality = 128; // non-default → used verbatim (high budget)
+  g.defaultCloudCollection.enableVolumetric = true;
+  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.35; // sparse → ~65% empty along rays
+  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.7;
+  if ("cloudQuality" in g) g.defaultCloudCollection.volumetric.cloudQuality = 128; // non-default → used verbatim (high budget)
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;

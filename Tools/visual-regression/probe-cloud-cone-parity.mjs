@@ -69,13 +69,13 @@ const result = await page.evaluate(async () => {
   v.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T18:20:00Z");
 
   // CINEMATIC tier → cone OFF (straight march, parity baseline).
-  g.showProceduralClouds = true;
-  g.cloudVolumetricQuality = "high";
-  g.cloudQuality = 64; // not the escape hatch
-  g.cloudCoverage = 0.5;
-  g.cloudDensity = 0.85;
-  g.cloudLayerBottom = 1500;
-  g.cloudLayerTop = 4000;
+  g.defaultCloudCollection.enableVolumetric = true;
+  g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high";
+  g.defaultCloudCollection.volumetric.cloudQuality = 64; // not the escape hatch
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.85;
+  g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+  g.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
 
   // Oblique-from-above so we see lit tops + shadowed sides (the lighting that the
   // cone approximates).

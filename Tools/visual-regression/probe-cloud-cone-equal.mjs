@@ -44,13 +44,13 @@ async function capture(page, forceCone) {
     v.clock.shouldAnimate = false;
     v.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T18:20:00Z");
 
-    g.showProceduralClouds = true;
-    g.cloudVolumetricQuality = "high"; // cinematic: full-res, baked, temporal off
-    g.cloudQuality = 64;
-    g.cloudCoverage = 0.4; // scattered cumulus — distinct lit/shadowed puffs
-    g.cloudDensity = 0.7;
-    g.cloudLayerBottom = 1500;
-    g.cloudLayerTop = 3500;
+    g.defaultCloudCollection.enableVolumetric = true;
+    g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // cinematic: full-res, baked, temporal off
+    g.defaultCloudCollection.volumetric.cloudQuality = 64;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.4; // scattered cumulus — distinct lit/shadowed puffs
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.7;
+    g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+    g.defaultCloudCollection.volumetric.cloudLayerTop = 3500;
 
     // Look UP at scattered cumulus from just below the deck: distinct puffs with
     // sun-lit tops + shadowed undersides — the self-shadowing the cone approximates.

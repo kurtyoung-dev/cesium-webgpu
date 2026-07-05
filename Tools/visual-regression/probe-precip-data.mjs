@@ -169,11 +169,11 @@ async function run() {
           visibilityKm: o.visibilityKm,
         });
         const provider =
-          s.globe.weatherProvider instanceof C.WeatherProvider
-            ? s.globe.weatherProvider
+          s.globe.defaultCloudCollection.volumetric.weatherProvider instanceof C.WeatherProvider
+            ? s.globe.defaultCloudCollection.volumetric.weatherProvider
             : new C.WeatherProvider(src);
         provider.setSource(src);
-        s.globe.weatherProvider = provider;
+        s.globe.defaultCloudCollection.volumetric.weatherProvider = provider;
         // Kick the async fetch + wait for getPresentWeather to populate.
         for (let i = 0; i < 30; i++) {
           provider.getPackedTexture(16, 8);
@@ -207,7 +207,7 @@ async function run() {
 
       return {
         present: cond.effects.precipitation.dataDriven
-          ? s.globe.weatherProvider?.getPresentWeather?.() ?? null
+          ? s.globe.defaultCloudCollection.volumetric.weatherProvider?.getPresentWeather?.() ?? null
           : null,
         precipLeaf: {
           enabled: cond.effects.precipitation.enabled,

@@ -5,8 +5,8 @@
  *
  * Unlike the E1/E2 density-shaping dials (species/features), this multiplies the
  * cloud COLOR by an iridescent tint:
- *   globe.cloudSpecial ("noctilucent"/"nlc" | "nacreous"/"psc") (or numeric
- *   globe.cloudSpecialShadeMode 1/2) tints the deck:
+ *   globe.defaultCloudCollection.volumetric.cloudSpecial ("noctilucent"/"nlc" | "nacreous"/"psc") (or numeric
+ *   globe.defaultCloudCollection.volumetric.cloudSpecialShadeMode 1/2) tints the deck:
  *     mode 1 noctilucent — electric silvery-blue billow bands;
  *     mode 2 nacreous    — pastel mother-of-pearl iridescence keyed to sun/view angle.
  * Default OFF (cloudSpecial unset → specialShadeMode=0) → the WGSL specialShadeTint()
@@ -202,11 +202,11 @@ async function run() {
   await page.evaluate((cb) => {
     const v = window.viewer;
     const g = v.scene.globe;
-    g.cloudType = cb;
-    g.cloudCoverage = 0.85;
-    g.cloudDensity = 0.5;
-    g.cloudSpecial = undefined; // OFF (default)
-    g.cloudSpecialShadeMode = undefined;
+    g.defaultCloudCollection.cloudType = cb;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.85;
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.5;
+    g.defaultCloudCollection.volumetric.cloudSpecial = undefined; // OFF (default)
+    g.defaultCloudCollection.volumetric.cloudSpecialShadeMode = undefined;
     v.clock.shouldAnimate = false;
     v.scene.requestRender();
   }, CUMULONIMBUS);

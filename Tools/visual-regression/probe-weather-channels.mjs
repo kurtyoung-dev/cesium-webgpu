@@ -101,12 +101,12 @@ const SETUP = async () => {
     s = v.scene,
     g = s.globe;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  g.cloudCoverage = 0.6;
-  g.cloudDensity = 0.9;
-  g.cloudLayerBottom = 1500;
-  g.cloudLayerTop = 4000;
-  g.cloudWeatherChannelStrength = 1.0;
+  g.defaultCloudCollection.enableVolumetric = true;
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.9;
+  g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+  g.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
+  g.defaultCloudCollection.volumetric.cloudWeatherChannelStrength = 1.0;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
   if (s.moon) s.moon.show = false;
@@ -124,23 +124,23 @@ const SET_SRC = async (kind) => {
     kind === "rich"
       ? new C.SyntheticWeatherSource("rich")
       : new C.SyntheticWeatherSource("uniform", 0.85);
-  if (!g.weatherProvider) {
-    g.weatherProvider = new C.WeatherProvider(src);
+  if (!g.defaultCloudCollection.volumetric.weatherProvider) {
+    g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(src);
   } else {
-    g.weatherProvider.setSource(src);
+    g.defaultCloudCollection.volumetric.weatherProvider.setSource(src);
   }
   window.viewer.scene.requestRender();
   return { ok: true };
 };
 
 const SET_STRENGTH = async (value) => {
-  window.viewer.scene.globe.cloudWeatherChannelStrength = value;
+  window.viewer.scene.globe.defaultCloudCollection.volumetric.cloudWeatherChannelStrength = value;
   window.viewer.scene.requestRender();
   return { ok: true };
 };
 
 const PROVIDER_STATE = async () => {
-  const p = window.viewer.scene.globe.weatherProvider;
+  const p = window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
   return p
     ? { hasData: p.hasData, version: p.version, lastError: p.lastError }
     : null;

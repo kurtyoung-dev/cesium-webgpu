@@ -72,7 +72,7 @@ const BOOT = async () => {
 };
 
 const SETTYPE = async (t) => {
-  window.viewer.scene.globe.cloudType = t === null ? undefined : t;
+  window.viewer.scene.globe.defaultCloudCollection.cloudType = t === null ? undefined : t;
   window.viewer.scene.requestRender();
   return { ok: true };
 };
@@ -197,8 +197,8 @@ async function run() {
   // + density so the cloud body has interior depth for the extinction to darken.
   await page.evaluate(() => {
     const g = window.viewer.scene.globe;
-    g.cloudCoverage = 0.8;
-    g.cloudDensity = 0.4;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.8;
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.4;
     window.viewer.scene.requestRender();
   });
   await page.waitForTimeout(9000);

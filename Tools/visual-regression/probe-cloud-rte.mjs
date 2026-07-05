@@ -3,7 +3,7 @@
  * CLOUD-RTE probe (Batch 445 — item 4.12 CLOUD-RTE). WebGPU-only.
  *
  * Verifies the opt-in camera-relative high-precision cloud march
- * (`globe.cloudHighPrecision`). The flag folds CLOUD_QF_HIGH_PRECISION (bit 12)
+ * (`globe.defaultCloudCollection.volumetric.cloudHighPrecision`). The flag folds CLOUD_QF_HIGH_PRECISION (bit 12)
  * into qualityFlags; the WGSL then does shell intersection + sample-altitude in
  * camera-relative RTE space (high/low camera split) instead of the world-space
  * closest-point f32 form.
@@ -53,12 +53,12 @@ async function settleAndShoot(page, highPrecision, file) {
       s.globe.enableLighting = true;
       // Clouds ON at the DEFAULT (cinematic, full-res) tier; multiDeck OFF so the
       // single-shell march path is exercised (the one the RTE branch refines).
-      g.showProceduralClouds = true;
-      g.cloudVolumetricQuality = "high"; // cinematic → renderResScale=1, no temporal
-      g.cloudCoverage = 0.55;
-      if ("cloudMultiDeck" in g) g.cloudMultiDeck = false;
+      g.defaultCloudCollection.enableVolumetric = true;
+      g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // cinematic → renderResScale=1, no temporal
+      g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+      if ("cloudMultiDeck" in g) g.defaultCloudCollection.volumetric.cloudMultiDeck = false;
       // The opt-in flag under test.
-      g.cloudHighPrecision = highPrecision === true;
+      g.defaultCloudCollection.volumetric.cloudHighPrecision = highPrecision === true;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(
           camera.lon,
@@ -87,9 +87,9 @@ async function settleAndShoot(page, highPrecision, file) {
         await new Promise((r) => requestAnimationFrame(r));
       }
       return {
-        showProceduralClouds: g.showProceduralClouds,
-        cloudHighPrecision: g.cloudHighPrecision,
-        cloudVolumetricQuality: g.cloudVolumetricQuality,
+        showProceduralClouds: g.defaultCloudCollection.enableVolumetric,
+        cloudHighPrecision: g.defaultCloudCollection.volumetric.cloudHighPrecision,
+        cloudVolumetricQuality: g.defaultCloudCollection.volumetric.cloudVolumetricQuality,
       };
     },
     { camera: CAMERA, timeIso: TIME_ISO, highPrecision },

@@ -41,9 +41,9 @@ const SETUP = async () => {
   const s = v.scene;
   s.requestRenderMode = false;
   const g = s.globe;
-  g.showProceduralClouds = true;
-  g.cloudCoverage = 0.5; // weatherStrength = 1.0 → effectiveCoverage = map R
-  g.cloudDensity = 0.45;
+  g.defaultCloudCollection.enableVolumetric = true;
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.5; // weatherStrength = 1.0 → effectiveCoverage = map R
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.45;
   // Near-ground upward view so the deck fills the sky and reads clearly.
   v.camera.setView({
     destination: C.Cartesian3.fromDegrees(-95.0, 39.0, 650.0),
@@ -71,19 +71,19 @@ const SETUP = async () => {
 const SET_PROVIDER = async (value) => {
   const C = window.Cesium;
   const g = window.viewer.scene.globe;
-  if (!g.weatherProvider) {
-    g.weatherProvider = new C.WeatherProvider(
+  if (!g.defaultCloudCollection.volumetric.weatherProvider) {
+    g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(
       new C.SyntheticWeatherSource("uniform", value),
     );
   } else {
-    g.weatherProvider.setSource(new C.SyntheticWeatherSource("uniform", value));
+    g.defaultCloudCollection.volumetric.weatherProvider.setSource(new C.SyntheticWeatherSource("uniform", value));
   }
   window.viewer.scene.requestRender();
   return { ok: true };
 };
 
 const PROVIDER_STATE = async () => {
-  const p = window.viewer.scene.globe.weatherProvider;
+  const p = window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
   return p ? { hasData: p.hasData, version: p.version, lastError: p.lastError } : null;
 };
 

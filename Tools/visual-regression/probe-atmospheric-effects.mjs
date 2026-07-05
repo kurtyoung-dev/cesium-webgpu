@@ -67,18 +67,18 @@ const TEST = async () => {
     fog: s.fog.density,
     sat: s.globe.atmosphereSaturationShift,
     bright: s.globe.atmosphereBrightnessShift,
-    cloudType: s.globe.cloudType,
+    cloudType: s.globe.defaultCloudCollection.cloudType,
   };
   w.humidity = 0.0;
   w.airQuality = 1.0;
   w.temperature = -15;
   w.dewpoint = -25;
-  s.globe.cloudType = undefined;
+  s.globe.defaultCloudCollection.cloudType = undefined;
   C.applyAtmosphericConditions(s);
   const crispApplied = {
     fog: s.fog.density,
     sat: s.globe.atmosphereSaturationShift,
-    cloudType: s.globe.cloudType,
+    cloudType: s.globe.defaultCloudCollection.cloudType,
   };
   out.applied = { humidApplied, crispApplied };
   return out;

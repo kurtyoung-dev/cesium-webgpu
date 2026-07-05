@@ -38,14 +38,14 @@ const SETUP = async () => {
   const s = v.scene;
   s.requestRenderMode = false;
   const g = s.globe;
-  g.showProceduralClouds = true;
-  g.cloudCoverage = 0.9;
-  g.cloudDensity = 0.5;
+  g.defaultCloudCollection.enableVolumetric = true;
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.9;
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.5;
   // THICK TEST SHELL (80-400 km, not realistic) — makes the through-globe bleed
   // unmistakable from space: the near cap sits in front of the disc, the far cap
   // sits BEHIND the Earth (must be occluded), and a ring shows beyond the limb.
-  g.cloudLayerBottom = 80000;
-  g.cloudLayerTop = 400000;
+  g.defaultCloudCollection.volumetric.cloudLayerBottom = 80000;
+  g.defaultCloudCollection.volumetric.cloudLayerTop = 400000;
   // Drive the clock to local noon over the framed point so the disc is LIT.
   v.clock.currentTime = window.Cesium.JulianDate.fromIso8601(
     "2026-06-21T15:00:00Z",

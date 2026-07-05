@@ -1082,7 +1082,6 @@ interface CesiumGlobe {
   maximumScreenSpaceError: number;
   enableLighting: boolean;
   showWaterEffect: boolean;
-  showProceduralClouds: boolean;
   oceanNormalMapUrl: string;
   terrainProvider: CesiumOpaqueTerrainProvider;
   _surface: {
@@ -1107,63 +1106,14 @@ interface CesiumGlobe {
   atmosphereMieAnisotropy?: number;
   atmosphereLightIntensity?: number;
   dynamicAtmosphereLighting?: boolean;
-  cloudLayerBottom?: number;
-  cloudLayerTop?: number;
-  cloudCoverage?: number;
-  // Item 4.2 (CLOUD-IBL, Batch 441) — fold procedural cloud cover into the
-  // dynamic-env-map IBL/SH ambient (overcast → dim, flat lit models / fog
-  // ambient). Default false → byte-identical clear-sky env source.
-  cloudContributesIBL?: boolean;
-  cloudQuality?: number;
-  cloudDensity?: number;
-  cloudWindSpeed?: number;
-  cloudWindDirection?: CesiumCartesian2;
-  cloudWeatherMap?: boolean;
-  cloudAerialStrength?: number;
-  // Batch 437 (CLOUD-SHADOWS) — opt-in volumetric cloud shadows. When true (and
-  // showProceduralClouds is on), the renderer rasterizes the cloud optical depth
-  // from the sun's ortho view into a beer shadow map sampled by the globe/aerial/
-  // fog/env consumers. Default false → no shadow map, 1x1-white placeholder,
-  // byte-identical.
-  cloudCastShadows?: boolean;
-  // Item 4.9 (CLOUD-MULTIDECK, Batch 443) — march one shell per active deck
-  // (LOW/MID/HIGH bounds from CloudTypeProfile), composited front-to-back driven
-  // by the weather map's B (deck) channel. Default false → exactly one shell with
-  // today's bounds + composite, byte-identical. ~N× march cost when on.
-  cloudMultiDeck?: boolean;
-  // Live-tweakable appearance dials (undefined → renderer default applies).
-  cloudSilverLiningIntensity?: number;
-  cloudPhaseForwardG?: number;
-  cloudPhaseBackG?: number;
-  cloudPhaseBlend?: number;
-  cloudAmbientIntensity?: number;
-  cloudErosionStrength?: number;
-  // Batch 407 — promoted shader-const dials (undefined → former const default).
-  cloudPuffSize?: number;
-  cloudExposure?: number;
-  cloudMsDecayScatter?: number;
-  cloudMsDecayExtinction?: number;
-  cloudMsDecayPhase?: number;
-  // Batch 408 — V11 per-genus cloud type (CloudType index 0..10; undefined → CUMULUS).
-  cloudType?: number;
-  // Batch 424 — Weather Phase 3: weather-map G/B/A channel influence (genus, base,
-  // density-bias). Undefined → 1.0; 0 = legacy R-only.
-  cloudWeatherChannelStrength?: number;
-  // Batch 439 (4.7 CLOUD-CURL) — curl-noise domain warp on the baked detail
-  // erosion. Undefined → 0.0 (warp skipped → byte-identical). >0 → wispy turbulent
-  // edges. cloudCurlFrequency tunes the swirl wavelength (undefined → 2.0).
-  cloudCurlAmplitude?: number;
-  cloudCurlFrequency?: number;
-  // Batch 439 (4.8 CLOUD-PW-NOISE) — baked SHAPE-texture R morphology. 'value'
-  // (undefined) keeps the value-FBM bake byte-identical; 'perlin-worley' bakes the
-  // Schneider Perlin-Worley remap variant (connected billowy cores).
-  cloudNoiseMorphology?: string;
-  // Weather ingest (Phase 1) — a WeatherProvider drives the weather-map texture
-  // from real data. Structural to keep this .d.ts decoupled from Scene/Weather.
-  weatherProvider?: {
-    getPackedTexture(texW: number, texH: number): Uint8Array | null;
-    readonly version: number;
-  };
+  // Cloud-unification epic slice 4B — the historical `globe.showProceduralClouds`
+  // + ~49 `globe.cloud*` fields + `globe.weatherProvider` were REMOVED. The
+  // WebGPU volumetric cloud deck is driven exclusively through the Scene/Globe
+  // managed default {@link CloudCollection} (`globe.defaultCloudCollection`) — its
+  // `.volumetric` {@link CloudVolumetrics} carries every former `cloud*` dial and
+  // its exclusive `renderMode` (VOLUMETRIC === 1) is the single activation gate.
+  // Consumers read it via local structural casts; not declared here to keep this
+  // interface decoupled from Scene/CloudCollection.
 }
 
 // ─── CloudVolumetricsConfig ──────────────────────────────────────────────
@@ -1185,9 +1135,10 @@ interface CesiumGlobe {
 // special, quality presets) stay accessed via local `config as unknown as {…}`
 // casts inside the renderer, exactly as they were off the globe.
 //
-// `CesiumGlobe` is structurally assignable to this type (it carries every field
-// below), so the legacy call sites that pass `globe` keep compiling and the
-// packed bytes are unchanged.
+// The config source is a `CloudCollection`-owned `CloudVolumetrics` snapshot
+// (`_resolveVolumetricConfig()`); the historical `globe.cloud*` config source was
+// removed in cloud-unification slice 4B. Field names remain IDENTICAL to
+// `Scene/CloudVolumetrics.js` so the 136-float packer stays byte-locked.
 interface CloudVolumetricsConfig {
   showProceduralClouds?: boolean;
   cloudContributesIBL?: boolean;

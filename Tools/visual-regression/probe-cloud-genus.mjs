@@ -2,11 +2,11 @@
 /**
  * Batch 408 V11 per-genus cloud types — wiring + byte-identity probe. WebGPU-only.
  *
- * globe.cloudType (a CloudType index) selects a per-genus vertical density
+ * globe.defaultCloudCollection.cloudType (a CloudType index) selects a per-genus vertical density
  * profile: SLAB (flat stratus), BILLOWY (rounded cumulus = the historical
  * default), TOWERING_ANVIL (cumulonimbus), plus a per-genus density scale
  * normalized so CUMULUS == 1.0 (byte-identical default). This probe boots the
- * Weather Inspector, drives globe.cloudType, and screenshots each genus.
+ * Weather Inspector, drives globe.defaultCloudCollection.cloudType, and screenshots each genus.
  *
  * Claims:
  *   (1) CUMULUS (and undefined) is byte-identical to the pre-V11 default;
@@ -70,7 +70,7 @@ const BOOT = async () => {
 };
 
 const SETTYPE = async (t) => {
-  window.viewer.scene.globe.cloudType = t === null ? undefined : t;
+  window.viewer.scene.globe.defaultCloudCollection.cloudType = t === null ? undefined : t;
   window.viewer.scene.requestRender();
   return { ok: true };
 };
@@ -183,8 +183,8 @@ async function run() {
   // variable across captures (coverage held fixed, so CUMULUS still == default).
   await page.evaluate(() => {
     const g = window.viewer.scene.globe;
-    g.cloudCoverage = 0.8;
-    g.cloudDensity = 0.4;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.8;
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.4;
     window.viewer.scene.requestRender();
   });
   await page.waitForTimeout(9000);

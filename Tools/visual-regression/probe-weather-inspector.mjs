@@ -211,7 +211,7 @@ async function run() {
   console.log("default", JSON.stringify(defStats), "panel", JSON.stringify(panelInfo));
 
   // 2) drive Coverage 0.45 -> 0.95
-  const covId = "wi-globe.cloudCoverage-Coverage";
+  const covId = "wi-globe.defaultCloudCollection.volumetric.cloudCoverage-Coverage";
   const setCov = await page.evaluate(SET_SLIDER, { id: covId, value: 0.95 });
   await page.waitForTimeout(3500);
   const covDU = await shot("weather-inspector-coverage-hi");

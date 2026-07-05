@@ -8,7 +8,7 @@
  * globe hidden, black background), under three WebGPU configurations:
  *
  *   1. CLEAR     — clouds off (the shipped clear-sky atmosphere env source).
- *   2. OVERCAST  — globe.showProceduralClouds + globe.cloudContributesIBL on,
+ *   2. OVERCAST  — globe.defaultCloudCollection.enableVolumetric + globe.defaultCloudCollection.volumetric.cloudContributesIBL on,
  *                  cloudCoverage = 1.0 (a dense overcast deck).
  *   3. FLAG-OFF  — cloudCoverage = 1.0 but cloudContributesIBL OFF (and clouds
  *                  NOT rendered, so no visible cloud composite confounds the
@@ -103,22 +103,22 @@ async function capture(mode) {
       // env-cube darkening even with the globe hidden.
       const globe = scene.globe;
       if (mode === "overcast") {
-        globe.showProceduralClouds = true;
-        globe.cloudContributesIBL = true;
-        globe.cloudCoverage = 1.0;
-        globe.cloudDensity = 0.9;
+        globe.defaultCloudCollection.enableVolumetric = true;
+        globe.defaultCloudCollection.volumetric.cloudContributesIBL = true;
+        globe.defaultCloudCollection.volumetric.cloudCoverage = 1.0;
+        globe.defaultCloudCollection.volumetric.cloudDensity = 0.9;
       } else if (mode === "flagOff") {
         // High coverage but the IBL coupling OFF, clouds NOT rendered — isolates
         // the cloudContributesIBL gate (no visible cloud composite to confound
         // the comparison). Must match CLEAR.
-        globe.showProceduralClouds = false;
-        globe.cloudContributesIBL = false;
-        globe.cloudCoverage = 1.0;
-        globe.cloudDensity = 0.9;
+        globe.defaultCloudCollection.enableVolumetric = false;
+        globe.defaultCloudCollection.volumetric.cloudContributesIBL = false;
+        globe.defaultCloudCollection.volumetric.cloudCoverage = 1.0;
+        globe.defaultCloudCollection.volumetric.cloudDensity = 0.9;
       } else {
         // clear — everything off (the shipped clear-sky env source).
-        globe.showProceduralClouds = false;
-        globe.cloudContributesIBL = false;
+        globe.defaultCloudCollection.enableVolumetric = false;
+        globe.defaultCloudCollection.volumetric.cloudContributesIBL = false;
       }
 
       const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(

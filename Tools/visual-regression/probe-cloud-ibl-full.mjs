@@ -68,10 +68,10 @@ const OUT_DIR = "Tools/visual-regression/output";
     // Turn ON procedural clouds with a dense overcast deck so the cloud renderer
     // bakes its 3D noise + publishes a non-zero iblCoverage every frame.
     const globe = scene.globe;
-    globe.showProceduralClouds = true;
-    globe.cloudContributesIBL = true;
-    globe.cloudCoverage = 0.85;
-    globe.cloudDensity = 0.6;
+    globe.defaultCloudCollection.enableVolumetric = true;
+    globe.defaultCloudCollection.volumetric.cloudContributesIBL = true;
+    globe.defaultCloudCollection.volumetric.cloudCoverage = 0.85;
+    globe.defaultCloudCollection.volumetric.cloudDensity = 0.6;
 
     // Park over terrain, looking down, let tiles + clouds render so the cloud
     // noise bake runs and _cloudCache.noise + iblCoverage are populated.
@@ -214,11 +214,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // the env faces must DIFFER from the default-config ON faces. A much higher
     // deck + far denser cloud changes the shell geometry + opacity the per-face
     // march integrates, so the reflected cloud structure must shift.
-    globe.cloudLayerBottom = 6000.0; // default 1500
-    globe.cloudLayerTop = 11000.0; // default 4000
-    globe.cloudDensity = 0.95; // default 0.6 (already set above)
-    globe.cloudWindDirection = { x: -0.6, y: 0.8 }; // default { 0.7, 0.3 }
-    globe.cloudWindSpeed = 40.0; // default 15
+    globe.defaultCloudCollection.volumetric.cloudLayerBottom = 6000.0; // default 1500
+    globe.defaultCloudCollection.volumetric.cloudLayerTop = 11000.0; // default 4000
+    globe.defaultCloudCollection.volumetric.cloudDensity = 0.95; // default 0.6 (already set above)
+    globe.defaultCloudCollection.volumetric.cloudWindDirection = { x: -0.6, y: 0.8 }; // default { 0.7, 0.3 }
+    globe.defaultCloudCollection.volumetric.cloudWindSpeed = 40.0; // default 15
     // Re-render so the cloud renderer republishes the new params (it bakes off
     // the same noise; only the deck/wind/density the manager reads change).
     for (let i = 0; i < 30; i++) {
@@ -242,10 +242,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     };
     // Restore the default deck so the temporal sub-test runs the same geometry
     // the default ON sub-test did.
-    globe.cloudLayerBottom = 1500.0;
-    globe.cloudLayerTop = 4000.0;
-    globe.cloudWindDirection = { x: 0.7, y: 0.3 };
-    globe.cloudWindSpeed = 15.0;
+    globe.defaultCloudCollection.volumetric.cloudLayerBottom = 1500.0;
+    globe.defaultCloudCollection.volumetric.cloudLayerTop = 4000.0;
+    globe.defaultCloudCollection.volumetric.cloudWindDirection = { x: 0.7, y: 0.3 };
+    globe.defaultCloudCollection.volumetric.cloudWindSpeed = 15.0;
     for (let i = 0; i < 20; i++) {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));

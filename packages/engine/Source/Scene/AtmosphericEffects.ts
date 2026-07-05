@@ -517,12 +517,12 @@ interface AtmosphericSceneLike {
   globe?: {
     atmosphereSaturationShift?: number;
     atmosphereBrightnessShift?: number;
-    cloudType?: number;
     /**
-     * Cloud-unification epic slice 4A — the Scene/Globe-owned managed default
-     * cloud collection. The atmospheric-effects genus bias re-homes onto its
-     * `cloudType`, and the weather-ingest present-weather read prefers its
-     * `.volumetric.weatherProvider`.
+     * Cloud-unification epic slice 4B — the Scene/Globe-owned managed default
+     * cloud collection is the single cloud authority. The atmospheric-effects
+     * genus bias drives its `cloudType`, and the PRECIP-DATA present-weather read
+     * uses its `.volumetric.weatherProvider` (the legacy `globe.cloudType` /
+     * `globe.weatherProvider` fields were removed in 4B).
      */
     defaultCloudCollection?: {
       cloudType?: number;
@@ -534,17 +534,6 @@ interface AtmosphericSceneLike {
           } | null;
         };
       };
-    };
-    /**
-     * PRECIP-DATA (Batch 444) — the weather-ingest provider. When the
-     * data-driven precip flag is set AND this exposes `getPresentWeather()`
-     * returning a `ww`, it overrides the precip type/intensity.
-     */
-    weatherProvider?: {
-      getPresentWeather?: () => {
-        ww?: number;
-        visibilityKm?: number;
-      } | null;
     };
     atmosphericConditions?: {
       weather?: {
@@ -610,14 +599,11 @@ export function applyAtmosphericConditions(scene: AtmosphericSceneLike): void {
   if (globe) {
     globe.atmosphereSaturationShift = knobs.atmosphereSaturationShift;
     globe.atmosphereBrightnessShift = knobs.atmosphereBrightnessShift;
-    if (knobs.cloudType !== undefined) {
-      // Cloud-unification epic slice 4A — genus bias re-homed off `globe.cloudType`
-      // onto the managed default cloud collection's collection-level genus.
-      if (globe.defaultCloudCollection) {
-        globe.defaultCloudCollection.cloudType = knobs.cloudType;
-      } else {
-        globe.cloudType = knobs.cloudType;
-      }
+    if (knobs.cloudType !== undefined && globe.defaultCloudCollection) {
+      // Cloud-unification epic slice 4B — genus bias drives the managed default
+      // cloud collection's collection-level genus (the `globe.cloudType` field
+      // was removed in 4B; the collection is the single authority).
+      globe.defaultCloudCollection.cloudType = knobs.cloudType;
     }
   }
 
@@ -707,12 +693,11 @@ function applyDataDrivenPrecip(
   if (precip?.dataDriven !== true) {
     return; // gate (a): flag off → no override, manual/auto selection stands.
   }
-  // Cloud-unification epic slice 4A — prefer the weather provider attached to
-  // the managed default cloud collection's `.volumetric` (the re-homed ingest
-  // sink); fall back to the legacy `globe.weatherProvider` for direct users.
+  // Cloud-unification epic slice 4B — the weather provider is attached to the
+  // managed default cloud collection's `.volumetric` (the `globe.weatherProvider`
+  // field was removed in 4B; the collection is the single ingest sink).
   const provider =
-    scene.globe?.defaultCloudCollection?.volumetric?.weatherProvider ??
-    scene.globe?.weatherProvider;
+    scene.globe?.defaultCloudCollection?.volumetric?.weatherProvider;
   const present = provider?.getPresentWeather?.();
   if (!present || present.ww === undefined) {
     return; // gate (b): no ingest present-weather → no override.

@@ -6,8 +6,8 @@
  *   parity — default flags (curl amplitude 0, noiseMorphology 'value'). Run on the
  *            modified build (TAG=modified) and on the stash-reverted main build
  *            (TAG=main); the two PNGs MUST be byte-identical (zero drift).
- *   curl   — globe.cloudCurlAmplitude > 0 → wispy/turbulent erosion edges.
- *   pw     — globe.cloudNoiseMorphology = 'perlin-worley' → billowy connected cores.
+ *   curl   — globe.defaultCloudCollection.volumetric.cloudCurlAmplitude > 0 → wispy/turbulent erosion edges.
+ *   pw     — globe.defaultCloudCollection.volumetric.cloudNoiseMorphology = 'perlin-worley' → billowy connected cores.
  *
  * Each non-parity mode ALSO captures a baseline (default flags) so the A/B is
  * computed in one run: it dumps both PNGs + a luminance-structure stat comparison.
@@ -45,17 +45,17 @@ const SETUP = async (cfg) => {
   const g = s.globe;
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  g.cloudCoverage = 0.55;
-  g.cloudWeatherMap = false;
-  g.cloudDensity = 0.8;
-  g.cloudVolumetricQuality = "high"; // T3 cinematic full-res (no half-res/temporal)
+  g.defaultCloudCollection.enableVolumetric = true;
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // T3 cinematic full-res (no half-res/temporal)
   // Apply the per-mode flag (only when the property exists on this build).
   if (cfg.mode === "curl" && "cloudCurlAmplitude" in g) {
-    g.cloudCurlAmplitude = cfg.curlAmplitude;
+    g.defaultCloudCollection.volumetric.cloudCurlAmplitude = cfg.curlAmplitude;
   }
   if (cfg.mode === "pw" && "cloudNoiseMorphology" in g) {
-    g.cloudNoiseMorphology = "perlin-worley";
+    g.defaultCloudCollection.volumetric.cloudNoiseMorphology = "perlin-worley";
   }
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;

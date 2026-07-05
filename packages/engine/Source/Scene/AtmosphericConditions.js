@@ -179,8 +179,8 @@ class AtmosphericConditions {
 
   /**
    * Weather facade over `scene._enableWeather` / `_weather*` fields. The
-   * wind setter additionally fans out to `globe.cloudWindSpeed` /
-   * `globe.cloudWindDirection` (locked decision: single wind source).
+   * wind setter additionally fans out to the managed default cloud collection's
+   * `volumetric.cloudWindSpeed` / `.cloudWindDirection` (single wind source).
    * @type {object}
    * @readonly
    */

@@ -51,8 +51,8 @@ viewer.scene.camera.setView({
 // Enable the volumetric cloud layer so cloudCover has a
 // visible effect (otherwise it only modulates star occlusion).
 ac.clouds.enableVolumetric = true;
-globe.cloudLayerBottom = 1500;
-globe.cloudLayerTop = 4000;
+globe.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+globe.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
 
 const viewModel = {
   humidity: 0.5,
@@ -86,7 +86,7 @@ function syncWeather() {
   // Cloud cover also drives the visible cloud layer's
   // coverage threshold so the sliders produce a perceptible
   // shape change in addition to the star-occlusion effect.
-  globe.cloudCoverage = cc;
+  globe.defaultCloudCollection.volumetric.cloudCoverage = cc;
 }
 
 for (const key of Object.keys(viewModel)) {

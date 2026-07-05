@@ -38,10 +38,10 @@ const result = await page.evaluate(async () => {
   const v = window.viewer,
     s = v.scene,
     g = s.globe;
-  g.showProceduralClouds = true;
-  if ("cloudCoverage" in g) g.cloudCoverage = 0.45;
-  if ("cloudDensity" in g) g.cloudDensity = 0.8;
-  if ("cloudWindSpeed" in g) g.cloudWindSpeed = 4000; // strong wind so advection is obvious
+  g.defaultCloudCollection.enableVolumetric = true;
+  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.45;
+  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  if ("cloudWindSpeed" in g) g.defaultCloudCollection.volumetric.cloudWindSpeed = 4000; // strong wind so advection is obvious
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
   if (s.moon) s.moon.show = false;

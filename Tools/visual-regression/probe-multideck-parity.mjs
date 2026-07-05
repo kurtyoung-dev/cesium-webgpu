@@ -58,10 +58,10 @@ const TIME_ISO = "2026-06-21T17:00:00Z";
       s.globe.show = true;
       s.globe.enableLighting = true;
       // Clouds ON at the DEFAULT (cinematic, full-res) tier; multiDeck OFF.
-      g.showProceduralClouds = true;
-      g.cloudVolumetricQuality = "high"; // cinematic → renderResScale=1, no temporal
-      g.cloudCoverage = 0.55;
-      if ("cloudMultiDeck" in g) g.cloudMultiDeck = false;
+      g.defaultCloudCollection.enableVolumetric = true;
+      g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // cinematic → renderResScale=1, no temporal
+      g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+      if ("cloudMultiDeck" in g) g.defaultCloudCollection.volumetric.cloudMultiDeck = false;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(
           camera.lon,

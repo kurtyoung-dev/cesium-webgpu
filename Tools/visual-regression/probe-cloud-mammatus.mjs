@@ -2,7 +2,7 @@
 /**
  * Batch 555 (E2 CLOUD-MAMMATUS) — pendulous underside pouches. WebGPU-only.
  *
- * globe.cloudMammatusStrength (+ Scale/Depth) carves the cloud UNDERSIDE between
+ * globe.defaultCloudCollection.volumetric.cloudMammatusStrength (+ Scale/Depth) carves the cloud UNDERSIDE between
  * rounded lobe cells so the flat base reads as a field of downward-bulging pouches
  * (the mammatus signature). Default OFF (strength undefined/0) → the WGSL
  * mammatusFactor() early-returns 1.0 → byte-identical to the pre-555 render.
@@ -176,10 +176,10 @@ async function run() {
   await page.evaluate((cb) => {
     const v = window.viewer;
     const g = v.scene.globe;
-    g.cloudType = cb;
-    g.cloudCoverage = 0.85;
-    g.cloudDensity = 0.5;
-    g.cloudMammatusStrength = undefined; // OFF (default)
+    g.defaultCloudCollection.cloudType = cb;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.85;
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.5;
+    g.defaultCloudCollection.volumetric.cloudMammatusStrength = undefined; // OFF (default)
     v.clock.shouldAnimate = false;
     v.scene.requestRender();
   }, CUMULONIMBUS);

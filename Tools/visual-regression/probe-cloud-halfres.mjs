@@ -45,14 +45,14 @@ async function setupAndCapture(page, quality) {
         ? window.Cesium.JulianDate.fromIso8601(scene.timeIso)
         : v.clock.currentTime;
 
-      g.showProceduralClouds = true;
-      g.cloudCoverage = scene.proc.coverage;
-      g.cloudDensity = scene.proc.density;
-      g.cloudLayerBottom = scene.proc.bottom;
-      g.cloudLayerTop = scene.proc.top;
+      g.defaultCloudCollection.enableVolumetric = true;
+      g.defaultCloudCollection.volumetric.cloudCoverage = scene.proc.coverage;
+      g.defaultCloudCollection.volumetric.cloudDensity = scene.proc.density;
+      g.defaultCloudCollection.volumetric.cloudLayerBottom = scene.proc.bottom;
+      g.defaultCloudCollection.volumetric.cloudLayerTop = scene.proc.top;
       // Force the tier: 'high' = cinematic full-res (renderResScale 1.0);
       // 'medium' = T2 half-res (renderResScale 0.5).
-      g.cloudVolumetricQuality = quality;
+      g.defaultCloudCollection.volumetric.cloudVolumetricQuality = quality;
 
       const C = await import("/Build/CesiumUnminified/index.js");
       v.clock.currentTime = C.JulianDate.fromIso8601(scene.timeIso);

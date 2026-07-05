@@ -17,7 +17,8 @@
  *   4. Volumetric Fog — froxel-grid populate + composite (Phase 5a).
  *
  * Each stage is independently feature-gated:
- *   - Procedural Clouds: `globe.showProceduralClouds`.
+ *   - Procedural Clouds: a VOLUMETRIC `CloudCollection` (the managed
+ *     `globe.defaultCloudCollection` or a user collection).
  *   - SSR: `scene._enableSSR`.
  *   - Weather Particles: `scene._enableWeather`.
  *   - Volumetric Fog: `frameState.atmosphericConditions.volumetricFog.enabled`
@@ -120,25 +121,24 @@ export function executeEnvironmentalEffects(
   // request published by a VOLUMETRIC CloudCollection (first one wins; see
   // CloudCollection.update / GraphicsContext#requestVolumetricClouds). Consumed
   // UNCONDITIONALLY here — even when the request is ignored — so a stale request
-  // never leaks into the next frame. A collection deck takes precedence over the
-  // legacy `globe.showProceduralClouds` path (which is removed in slice 4). When
-  // no collection publishes, `cloudConfig` is the globe and every downstream
-  // read is byte-identical to the pre-slice-3 path.
+  // never leaks into the next frame. When no collection publishes, `cloudConfig`
+  // is `undefined` and `publishCloudIblCoverage` resets the IBL coverage to 0
+  // (byte-identical clear-sky env source).
   const collectionRequest = context.consumeVolumetricCloudRequest();
   let useCollectionDeck =
     collectionRequest !== undefined && collectionRequest.enabled === true;
   let cloudConfig: CloudVolumetricsConfig | undefined = useCollectionDeck
     ? (collectionRequest as unknown as CloudVolumetricsConfig)
-    : globe;
+    : undefined;
 
-  // Cloud-unification epic slice 4A — when no USER-added VOLUMETRIC collection
+  // Cloud-unification epic slice 4A/4B — when no USER-added VOLUMETRIC collection
   // published a deck this frame, fall back to the Scene/Globe MANAGED default
   // cloud collection (`globe.defaultCloudCollection`). Its `.volumetric` config
-  // is the re-homed source of truth for the `atmosphericConditions` cloud facade,
+  // is the single source of truth for the `atmosphericConditions` cloud facade,
   // the atmospheric-effects genus bias, and the weather ingest. It only drives a
   // deck when its exclusive `renderMode` is VOLUMETRIC (=== 1) AND
-  // `volumetric.enabled`; otherwise the legacy `globe.showProceduralClouds` path
-  // (cloudConfig === globe) stands and every downstream read is byte-identical.
+  // `volumetric.enabled`; otherwise no deck is active and `cloudConfig` stays
+  // `undefined` (the `globe.showProceduralClouds` field was removed in 4B).
   if (!useCollectionDeck) {
     const managed = (
       globe as unknown as {
@@ -188,11 +188,11 @@ export function executeEnvironmentalEffects(
   const frameState = scene._frameState;
 
   // 1. Procedural Clouds — volumetric ray-marched clouds. Active when a
-  // VOLUMETRIC CloudCollection published this frame (slice 3) OR the legacy
-  // `globe.showProceduralClouds` flag is set (the globe half is removed in
-  // slice 4). `cloudConfig` is the collection's CloudVolumetrics snapshot in the
-  // former case, the globe in the latter — resolved above.
-  if (useCollectionDeck || globe?.showProceduralClouds) {
+  // VOLUMETRIC CloudCollection published this frame (a USER collection, slice 3,
+  // or the managed default collection, slice 4A). `cloudConfig` is that
+  // collection's CloudVolumetrics snapshot — resolved above. The legacy
+  // `globe.showProceduralClouds` gate was removed in slice 4B.
+  if (useCollectionDeck) {
     const cloudFR = context.getFeatureRenderer(
       FeatureRendererKey.PROCEDURAL_CLOUDS,
     );

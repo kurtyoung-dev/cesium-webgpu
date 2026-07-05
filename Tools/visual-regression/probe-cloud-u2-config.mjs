@@ -119,37 +119,37 @@ const result = await page.evaluate(async () => {
   }
 
   // ── OFF path: clouds disabled → the trivial off-gate baseline. ──
-  g.showProceduralClouds = false;
+  g.defaultCloudCollection.enableVolumetric = false;
   await settle(20);
   const off = capture();
 
   // ── ON path: exercise a broad set of read sites, incl. the cast-only
   // expanded knobs (species / mammatus / weather-channel / genus profile). ──
-  g.showProceduralClouds = true;
-  g.cloudCoverage = 0.55;
-  g.cloudDensity = 0.8;
-  g.cloudLayerBottom = 1500.0;
-  g.cloudLayerTop = 4000.0;
-  g.cloudWindSpeed = 22.0;
-  g.cloudWindDirection = new C.Cartesian2(0.7, 0.3);
-  g.cloudContributesIBL = true;
-  g.cloudCastShadows = true;
-  g.cloudSilverLiningIntensity = 0.85;
-  g.cloudPhaseForwardG = 0.85;
-  g.cloudPhaseBackG = -0.3;
-  g.cloudPhaseBlend = 0.7;
-  g.cloudAmbientIntensity = 1.5;
-  g.cloudErosionStrength = 0.18;
-  g.cloudCurlAmplitude = 0.4;
-  g.cloudCurlFrequency = 2.0;
-  g.cloudAerialStrength = 1.0;
-  g.cloudExposure = 0.22;
-  g.cloudType = C.CloudType.CUMULONIMBUS;
-  g.cloudWeatherChannelStrength = 1.0;
+  g.defaultCloudCollection.enableVolumetric = true;
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500.0;
+  g.defaultCloudCollection.volumetric.cloudLayerTop = 4000.0;
+  g.defaultCloudCollection.volumetric.cloudWindSpeed = 22.0;
+  g.defaultCloudCollection.volumetric.cloudWindDirection = new C.Cartesian2(0.7, 0.3);
+  g.defaultCloudCollection.volumetric.cloudContributesIBL = true;
+  g.defaultCloudCollection.volumetric.cloudCastShadows = true;
+  g.defaultCloudCollection.volumetric.cloudSilverLiningIntensity = 0.85;
+  g.defaultCloudCollection.volumetric.cloudPhaseForwardG = 0.85;
+  g.defaultCloudCollection.volumetric.cloudPhaseBackG = -0.3;
+  g.defaultCloudCollection.volumetric.cloudPhaseBlend = 0.7;
+  g.defaultCloudCollection.volumetric.cloudAmbientIntensity = 1.5;
+  g.defaultCloudCollection.volumetric.cloudErosionStrength = 0.18;
+  g.defaultCloudCollection.volumetric.cloudCurlAmplitude = 0.4;
+  g.defaultCloudCollection.volumetric.cloudCurlFrequency = 2.0;
+  g.defaultCloudCollection.volumetric.cloudAerialStrength = 1.0;
+  g.defaultCloudCollection.volumetric.cloudExposure = 0.22;
+  g.defaultCloudCollection.cloudType = C.CloudType.CUMULONIMBUS;
+  g.defaultCloudCollection.volumetric.cloudWeatherChannelStrength = 1.0;
   // Cast-only expanded knobs (read via `config as unknown as {…}` in the
   // renderer) — exercise the species / mammatus density-shaping branches.
-  g.cloudSpecies = "lenticularis";
-  g.cloudMammatusStrength = 0.5;
+  g.defaultCloudCollection.volumetric.cloudSpecies = "lenticularis";
+  g.defaultCloudCollection.volumetric.cloudMammatusStrength = 0.5;
   await settle(120);
   const on = capture();
 

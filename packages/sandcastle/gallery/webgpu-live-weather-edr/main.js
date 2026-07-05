@@ -8,9 +8,9 @@ const scene = viewer.scene;
 const globe = scene.globe;
 window.viewer = viewer; // expose for console tinkering
 
-globe.showProceduralClouds = true;
-globe.cloudCoverage = 0.5; // weatherStrength 1.0 → effectiveCoverage = map R
-globe.cloudDensity = 0.4;
+globe.defaultCloudCollection.enableVolumetric = true;
+globe.defaultCloudCollection.volumetric.cloudCoverage = 0.5; // weatherStrength 1.0 → effectiveCoverage = map R
+globe.defaultCloudCollection.volumetric.cloudDensity = 0.4;
 scene.skyAtmosphere.show = true;
 
 // ── Live weather: NOAA GFS total cloud cover via OGC API-EDR ──────────
@@ -21,7 +21,7 @@ const source = new Cesium.EdrWeatherSource({
   // once the live /collections list confirms the exact ids.
 });
 const provider = new Cesium.WeatherProvider(source);
-globe.weatherProvider = provider;
+globe.defaultCloudCollection.volumetric.weatherProvider = provider;
 
 // High view over North America so a continental cloud field reads.
 viewer.camera.setView({

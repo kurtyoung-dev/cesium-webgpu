@@ -210,10 +210,10 @@
         });
         addSlider("Time of day (UTC h)", 0, 24, 0.25, 18, (h) => setHourUtc(h));
         addToggle("Procedural clouds", false, (on) => {
-          globe.showProceduralClouds = on;
+          globe.defaultCloudCollection.enableVolumetric = on;
           if (on) {
-            globe.cloudCoverage = 0.45;
-            globe.cloudDensity = 0.3;
+            globe.defaultCloudCollection.volumetric.cloudCoverage = 0.45;
+            globe.defaultCloudCollection.volumetric.cloudDensity = 0.3;
           }
         });
 

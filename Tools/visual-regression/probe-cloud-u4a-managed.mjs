@@ -25,7 +25,7 @@
  *   D. Re-home (3): a weatherProvider attached via the facade lands on
  *      collection.volumetric.weatherProvider.
  *   E. Re-home (2): atmosphericConditions.clouds.cloudType writes the collection genus.
- *   F. globe.showProceduralClouds default stays false (producers no longer write it).
+ *   F. globe.defaultCloudCollection.enableVolumetric default stays false (producers no longer write it).
  *
  * Usage:  node Tools/visual-regression/probe-cloud-u4a-managed.mjs
  * Env:    PROBE_BASE (default http://localhost:8080)
@@ -126,7 +126,7 @@ async function runBackend(renderer) {
       density: vol.cloudDensity,
       windSpeed: vol.cloudWindSpeed,
       quality: vol.cloudQuality,
-      showProcDefaultFalse: scene.globe.showProceduralClouds === false,
+      showProcDefaultFalse: scene.globe.defaultCloudCollection.enableVolumetric === false,
     };
 
     // ── F/E/D re-home writes land on the collection (before enabling) ──
@@ -176,7 +176,7 @@ async function runBackend(renderer) {
 
     // ── G. COMPOSITE FIDELITY (regression guard for the snapshot-copy gate) ──
     // The facade path (managed collection VOLUMETRIC) and the legacy
-    // globe.showProceduralClouds path must composite the cloud deck against the
+    // globe.defaultCloudCollection.enableVolumetric path must composite the cloud deck against the
     // SAME color base — the post-process scene-color snapshot copied each frame in
     // WebGPUSceneRendererPostFrustumChain. That snapshot is a PERSISTENT texture;
     // when the snapshot-copy gate skips a frame it retains STALE contents. If the
@@ -195,9 +195,9 @@ async function runBackend(renderer) {
     collVol.cloudCoverage = 0.6;
     collVol.cloudDensity = 0.45;
     collVol.cloudWindSpeed = 0;
-    scene.globe.cloudCoverage = 0.6;
-    scene.globe.cloudDensity = 0.45;
-    scene.globe.cloudWindSpeed = 0;
+    scene.globe.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
+    scene.globe.defaultCloudCollection.volumetric.cloudDensity = 0.45;
+    scene.globe.defaultCloudCollection.volumetric.cloudWindSpeed = 0;
 
     const viewA = C.Cartesian3.fromDegrees(-105.0, 44.0, 16000.0);
     const viewB = C.Cartesian3.fromDegrees(-95.0, 39.0, 16000.0);
@@ -219,13 +219,13 @@ async function runBackend(renderer) {
     // Poison the persistent snapshot at view A via the legacy path (copies every
     // frame while showProceduralClouds is on).
     clouds.enableProcedural = false;
-    scene.globe.showProceduralClouds = true;
+    scene.globe.defaultCloudCollection.enableVolumetric = true;
     scene.camera.setView({ destination: viewA });
     await settle(120);
 
     // Facade deck at view B. A correct gate recopies the snapshot at view B; a
     // broken gate leaves it frozen at view A.
-    scene.globe.showProceduralClouds = false;
+    scene.globe.defaultCloudCollection.enableVolumetric = false;
     clouds.enableProcedural = true;
     scene.camera.setView({ destination: viewB });
     await settle(120);
@@ -233,10 +233,10 @@ async function runBackend(renderer) {
 
     // Legacy reference at the SAME view B (snapshot recopied → always correct).
     clouds.enableProcedural = false;
-    scene.globe.showProceduralClouds = true;
+    scene.globe.defaultCloudCollection.enableVolumetric = true;
     await settle(120);
     const legacyPix = capturePixels();
-    scene.globe.showProceduralClouds = false;
+    scene.globe.defaultCloudCollection.enableVolumetric = false;
 
     // Whole-frame mismatch: fraction of pixels whose RGB L1 distance > 30.
     let mism = 0;

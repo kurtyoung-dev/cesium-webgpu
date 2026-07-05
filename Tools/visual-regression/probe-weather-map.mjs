@@ -4,7 +4,7 @@
  *
  * Before: ProceduralClouds uses ONE global coverage scalar → cloud cover is
  * uniform across the whole sky (only FBM small-scale detail varies). After:
- * globe.cloudWeatherMap=true makes the raymarcher sample a 2D lat/lon weather
+ * globe.defaultCloudCollection.volumetric.cloudWeatherMap=true makes the raymarcher sample a 2D lat/lon weather
  * texture per world position, so coverage varies SPATIALLY — distinct cloudy
  * regions + clear gaps.
  *
@@ -61,12 +61,12 @@ async function cloudFracAt(lon, lat, weatherOn) {
       const v = window.viewer,
         s = v.scene,
         g = s.globe;
-      g.showProceduralClouds = true;
-      g.cloudCoverage = 0.6;
-      g.cloudDensity = 0.9;
-      g.cloudLayerBottom = 1500;
-      g.cloudLayerTop = 4000;
-      g.cloudWeatherMap = weatherOn;
+      g.defaultCloudCollection.enableVolumetric = true;
+      g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
+      g.defaultCloudCollection.volumetric.cloudDensity = 0.9;
+      g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+      g.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
+      g.defaultCloudCollection.volumetric.cloudWeatherMap = weatherOn;
       s.skyAtmosphere.show = false;
       if (s.sun) s.sun.show = false;
       if (s.moon) s.moon.show = false;
@@ -127,8 +127,8 @@ async function wideCapture(weatherOn) {
     const v = window.viewer,
       s = v.scene,
       g = s.globe;
-    g.cloudWeatherMap = weatherOn;
-    g.cloudCoverage = 0.6;
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = weatherOn;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(-95.0, 38.0, 2600000.0),
       orientation: { heading: 0.0, pitch: C.Math.toRadians(-90.0), roll: 0.0 },

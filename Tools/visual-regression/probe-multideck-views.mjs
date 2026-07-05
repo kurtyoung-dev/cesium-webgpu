@@ -32,10 +32,10 @@ async function capture(page, view, multiDeck) {
       s.skyAtmosphere.show = true;
       s.globe.show = true;
       s.globe.enableLighting = true;
-      g.showProceduralClouds = true;
-      g.cloudVolumetricQuality = "high";
-      g.cloudCoverage = 0.5;
-      if ("cloudMultiDeck" in g) g.cloudMultiDeck = multiDeck;
+      g.defaultCloudCollection.enableVolumetric = true;
+      g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high";
+      g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
+      if ("cloudMultiDeck" in g) g.defaultCloudCollection.volumetric.cloudMultiDeck = multiDeck;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
         orientation: {

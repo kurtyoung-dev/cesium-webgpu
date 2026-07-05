@@ -12,7 +12,7 @@ import * as Cesium from "cesium";
 // volumetric raymarcher (HG dual-lobe phase + Beer-Powder
 // lighting + 3D FBM density + per-step light marching). Toggle
 // via `atmosphericConditions.clouds.enableVolumetric` (Batch 43)
-// or the legacy `globe.showProceduralClouds`.
+// or the legacy `globe.defaultCloudCollection.enableVolumetric`.
 //
 // Phase 6c (Batch 44) couples the two: clouds cast soft
 // shadows into the fog grid, so the god rays from the sun-
@@ -60,10 +60,10 @@ viewer.clock.multiplier = 0;
 // Volumetric cloud layer parameters — match the typical
 // Schneider preset so the renderer's defaults produce a
 // visible cloud band 1.5-4 km up.
-globe.cloudLayerBottom = 1500;
-globe.cloudLayerTop = 4000;
-globe.cloudCoverage = 0.4;
-globe.cloudDensity = 0.4;
+globe.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+globe.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
+globe.defaultCloudCollection.volumetric.cloudCoverage = 0.4;
+globe.defaultCloudCollection.volumetric.cloudDensity = 0.4;
 
 const viewModel = {
   fogEnabled: false,
@@ -84,9 +84,11 @@ function syncFog() {
 }
 function syncClouds() {
   // Aliases since Batch 43 — both setters route to the same
-  // underlying `globe.showProceduralClouds` flag.
+  // underlying `globe.defaultCloudCollection.enableVolumetric` flag.
   ac.clouds.enableVolumetric = viewModel.cloudsEnabled;
-  globe.cloudCoverage = parseFloat(viewModel.cloudCoverage);
+  globe.defaultCloudCollection.volumetric.cloudCoverage = parseFloat(
+    viewModel.cloudCoverage,
+  );
 }
 function syncSun() {
   // Approximate: rotate JulianDate forward to push the sun

@@ -3,7 +3,7 @@
  * CLOUD-SHADOWS parity probe (Batch 437 — 4.1 CLOUD-SHADOWS).
  *
  * Captures the THREE default render paths that the cloud-shadow consumers touch,
- * with the feature at its DEFAULT-OFF state (globe.cloudCastShadows=false,
+ * with the feature at its DEFAULT-OFF state (globe.defaultCloudCollection.volumetric.cloudCastShadows=false,
  * atmosphericConditions.volumetricFog.cloudShadowHiFi=false). Each MUST be
  * byte-identical between the stash-reverted main build (PARITY_TAG=main) and the
  * modified build (PARITY_TAG=modified) — default-off renders no shadow map and all
@@ -37,15 +37,15 @@ const SCENES = {
     s.skyAtmosphere.show = true;
     s.globe.show = true;
     s.globe.enableLighting = true;
-    g.showProceduralClouds = false;
-    if ("cloudCastShadows" in g) g.cloudCastShadows = false;
+    g.defaultCloudCollection.enableVolumetric = false;
+    if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
   },
   // (b) aerial perspective on
   aerial: (g, s, ac) => {
     s.globe.show = true;
     s.globe.enableLighting = true;
-    g.showProceduralClouds = false;
-    if ("cloudCastShadows" in g) g.cloudCastShadows = false;
+    g.defaultCloudCollection.enableVolumetric = false;
+    if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
     if (ac) {
       ac.aerialPerspective = ac.aerialPerspective || {};
       ac.aerialPerspective.enabled = true;
@@ -55,8 +55,8 @@ const SCENES = {
   fog: (g, s, ac) => {
     s.globe.show = true;
     s.globe.enableLighting = true;
-    g.showProceduralClouds = false;
-    if ("cloudCastShadows" in g) g.cloudCastShadows = false;
+    g.defaultCloudCollection.enableVolumetric = false;
+    if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
     if (ac) {
       ac.volumetricFog = ac.volumetricFog || {};
       ac.volumetricFog.enabled = true;
@@ -99,7 +99,7 @@ const SCENES = {
         v.clock.shouldAnimate = false;
         v.clock.currentTime = C.JulianDate.fromIso8601(timeIso);
         // Reset cross-scene state to a known baseline.
-        g.showProceduralClouds = false;
+        g.defaultCloudCollection.enableVolumetric = false;
         if (ac && ac.volumetricFog) ac.volumetricFog.enabled = false;
         if (ac && ac.aerialPerspective) ac.aerialPerspective.enabled = false;
         // Apply this scene's setup. The applier closures are defined on the
@@ -109,14 +109,14 @@ const SCENES = {
             s.skyAtmosphere.show = true;
             s.globe.show = true;
             s.globe.enableLighting = true;
-            g.showProceduralClouds = false;
-            if ("cloudCastShadows" in g) g.cloudCastShadows = false;
+            g.defaultCloudCollection.enableVolumetric = false;
+            if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
           },
           aerial: () => {
             s.globe.show = true;
             s.globe.enableLighting = true;
-            g.showProceduralClouds = false;
-            if ("cloudCastShadows" in g) g.cloudCastShadows = false;
+            g.defaultCloudCollection.enableVolumetric = false;
+            if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
             if (ac) {
               ac.aerialPerspective = ac.aerialPerspective || {};
               ac.aerialPerspective.enabled = true;
@@ -125,8 +125,8 @@ const SCENES = {
           fog: () => {
             s.globe.show = true;
             s.globe.enableLighting = true;
-            g.showProceduralClouds = false;
-            if ("cloudCastShadows" in g) g.cloudCastShadows = false;
+            g.defaultCloudCollection.enableVolumetric = false;
+            if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
             if (ac) {
               ac.volumetricFog = ac.volumetricFog || {};
               ac.volumetricFog.enabled = true;

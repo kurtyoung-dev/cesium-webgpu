@@ -4,8 +4,8 @@
  * to B592 mammatus / B610 species, as bounded density SHAPING on the baked-density-field
  * procedural-cloud arch. WebGPU-only.
  *
- * globe.cloudFeature ("asperitas" | "fluctus"/"kelvin-helmholtz" | "arcus" | "virga" |
- * "praecipitatio") (or numeric globe.cloudFeatureMode 1-4) shapes the deck:
+ * globe.defaultCloudCollection.volumetric.cloudFeature ("asperitas" | "fluctus"/"kelvin-helmholtz" | "arcus" | "virga" |
+ * "praecipitatio") (or numeric globe.defaultCloudCollection.volumetric.cloudFeatureMode 1-4) shapes the deck:
  *   mode 1 asperitas — chaotic wavy underside carve;
  *   mode 2 fluctus   — Kelvin-Helmholtz breaking-wave billows along the top;
  *   mode 3 arcus     — shelf/roll leading edge;
@@ -181,11 +181,11 @@ async function run() {
   await page.evaluate((cb) => {
     const v = window.viewer;
     const g = v.scene.globe;
-    g.cloudType = cb;
-    g.cloudCoverage = 0.85;
-    g.cloudDensity = 0.5;
-    g.cloudFeature = undefined; // OFF (default)
-    g.cloudFeatureMode = undefined;
+    g.defaultCloudCollection.cloudType = cb;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.85;
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.5;
+    g.defaultCloudCollection.volumetric.cloudFeature = undefined; // OFF (default)
+    g.defaultCloudCollection.volumetric.cloudFeatureMode = undefined;
     v.clock.shouldAnimate = false;
     v.scene.requestRender();
   }, CUMULONIMBUS);

@@ -54,10 +54,10 @@ const SETUP = async (cfg) => {
   const g = s.globe;
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  if ("cloudCoverage" in g) g.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.cloudDensity = 0.8;
+  g.defaultCloudCollection.enableVolumetric = true;
+  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   // Leave cloudVolumetricQuality "auto" + cloudQuality 64 → at ALT 800 the tier
   // resolves to HIGH → noiseSource = BAKED. (Setting cloudQuality != 64 would trip
   // the power-user escape hatch → LIVE, defeating the test.)

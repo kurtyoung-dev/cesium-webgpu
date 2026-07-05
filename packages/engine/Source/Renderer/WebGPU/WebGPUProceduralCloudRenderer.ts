@@ -3,15 +3,19 @@
  * WebGPU Procedural Cloud Renderer
  *
  * Renders volumetric clouds as a full-screen pass using ray marching.
- * Activated via `globe.showProceduralClouds = true`.
+ * Activated by a VOLUMETRIC {@link CloudCollection} (the Scene/Globe managed
+ * `globe.defaultCloudCollection`, or a user collection) — cloud-unification epic
+ * slice 4B removed the legacy `globe.showProceduralClouds` / `globe.cloud*` API.
  *
- * Configuration on Globe:
- *   - showProceduralClouds: boolean (default false)
+ * Configuration is carried by the collection's `.volumetric` {@link CloudVolumetrics}
+ * (identical field names to the former `globe.cloud*`), resolved into a
+ * {@link CloudVolumetricsConfig} snapshot each frame:
+ *   - enabled: boolean (default false) → collection renderMode VOLUMETRIC
  *   - cloudCoverage: number 0-1 (default 0.5)
  *   - cloudLayerBottom: number meters (default 1500)
  *   - cloudLayerTop: number meters (default 4000)
  *   - cloudWindSpeed: number m/s (default 15)
- *   - cloudWindDirection: Cartesian2 (default {x: 0.7, y: 0.3})
+ *   - cloudWindDirection: {x, y} (default {x: 0.7, y: 0.3})
  *   - cloudDensity: number (default 0.3)
  *   - cloudQuality: number 32-128 steps (default 64)
  *

@@ -48,9 +48,9 @@ const SETUP = async (cfg) => {
   const g = s.globe;
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  if ("cloudWeatherMap" in g) g.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.cloudDensity = 0.8;
+  g.defaultCloudCollection.enableVolumetric = true;
+  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -70,7 +70,7 @@ const RENDER_COV = async (cfg) => {
   const C = await import("/Build/CesiumUnminified/index.js");
   const v = window.viewer;
   const s = v.scene;
-  s.globe.cloudCoverage = cfg.coverage;
+  s.globe.defaultCloudCollection.volumetric.cloudCoverage = cfg.coverage;
   const jd = C.JulianDate.fromIso8601(cfg.iso);
   v.clock.currentTime = jd;
   for (let i = 0; i < 80; i++) {

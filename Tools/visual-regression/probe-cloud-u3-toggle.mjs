@@ -7,7 +7,7 @@
  * renderMode is VOLUMETRIC, and volumetric.enabled is true — and to SUPPRESS
  * that collection's own billboards (exclusive toggle). The env-effects phase
  * CONSUMES the request and drives the PROCEDURAL_CLOUDS renderer for a single
- * primary deck (first VOLUMETRIC collection wins). globe.showProceduralClouds
+ * primary deck (first VOLUMETRIC collection wins). globe.defaultCloudCollection.enableVolumetric
  * still works (removed in slice 4).
  *
  * This is a PERMANENT guard — do NOT delete any case. It covers ALL of:

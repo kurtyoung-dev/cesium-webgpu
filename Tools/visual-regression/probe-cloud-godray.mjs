@@ -10,7 +10,7 @@
  * through cloud gaps).
  *
  * Opt-in: `scene.godRayCloudAware = true` (needs `scene.godRayEnabled` AND
- * `globe.showProceduralClouds`). Default OFF → the effect binds a 1×1 white
+ * `globe.defaultCloudCollection.enableVolumetric`). Default OFF → the effect binds a 1×1 white
  * (r8unorm 255 → 1.0) fallback and the cloud renderer skips the mask pass, so
  * the render is byte-identical to the depth-only god rays.
  *
@@ -52,10 +52,10 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   // Clouds — moderate broken coverage so the shaft has gaps to stream through.
-  g.showProceduralClouds = true;
-  if ("cloudCoverage" in g) g.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.cloudDensity = 0.9;
+  g.defaultCloudCollection.enableVolumetric = true;
+  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.9;
   s.skyBox.show = false;
   s.skyAtmosphere.show = true;
   if (s.sun) s.sun.show = true;

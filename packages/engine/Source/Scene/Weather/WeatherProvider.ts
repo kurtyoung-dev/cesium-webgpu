@@ -16,8 +16,10 @@
  * reuses already-fetched data, and `version` bumps ONLY when the active slice's
  * bytes change (not every tick) so the renderer re-uploads only when needed.
  *
- * Set it on `globe.weatherProvider`; the renderer auto-enables the weather map
- * once real bytes are ready.
+ * Attach it via `scene.globe.atmosphericConditions.clouds.weatherProvider` (or
+ * directly on the managed default collection's
+ * `globe.defaultCloudCollection.volumetric.weatherProvider`); the renderer
+ * auto-enables the weather map once real bytes are ready.
  *
  * @module Scene/Weather/WeatherProvider
  */

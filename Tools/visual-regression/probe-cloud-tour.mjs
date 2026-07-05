@@ -5,7 +5,7 @@
  * and times of day, on WebGPU vs WebGL.
  *
  * TWO CLOUD SYSTEMS:
- *   - "procedural": the Schneider volumetric raymarcher (globe.showProceduralClouds,
+ *   - "procedural": the Schneider volumetric raymarcher (globe.defaultCloudCollection.enableVolumetric,
  *     ProceduralClouds.wgsl). Cloud "type" is shaped by coverage / density /
  *     layer-altitude — scattered-cumulus → broken → overcast-stratus presets.
  *   - "billboard": a CloudCollection of CumulusCloud puffs (CloudCollection.wgsl)
@@ -113,7 +113,7 @@ async function setupAndCapture(page, scene) {
       g = s.globe;
 
     // Reset cloud state between scenes.
-    g.showProceduralClouds = false;
+    g.defaultCloudCollection.enableVolumetric = false;
     // Remove any prior CloudCollection.
     const prims = s.primitives;
     for (let i = prims.length - 1; i >= 0; i--) {
@@ -133,11 +133,11 @@ async function setupAndCapture(page, scene) {
     v.clock.currentTime = C.JulianDate.fromIso8601(scene.timeIso);
 
     if (scene.system === "procedural") {
-      g.showProceduralClouds = true;
-      if ("cloudCoverage" in g) g.cloudCoverage = scene.proc.coverage;
-      if ("cloudDensity" in g) g.cloudDensity = scene.proc.density;
-      if ("cloudLayerBottom" in g) g.cloudLayerBottom = scene.proc.bottom;
-      if ("cloudLayerTop" in g) g.cloudLayerTop = scene.proc.top;
+      g.defaultCloudCollection.enableVolumetric = true;
+      if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = scene.proc.coverage;
+      if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = scene.proc.density;
+      if ("cloudLayerBottom" in g) g.defaultCloudCollection.volumetric.cloudLayerBottom = scene.proc.bottom;
+      if ("cloudLayerTop" in g) g.defaultCloudCollection.volumetric.cloudLayerTop = scene.proc.top;
     } else {
       // Billboard CumulusCloud cluster around the camera target.
       const clouds = prims.add(new C.CloudCollection());

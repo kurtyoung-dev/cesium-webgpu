@@ -2,7 +2,7 @@
 /**
  * CLOUD-SHADOWS flag-ON probe (Batch 437 — 4.1 CLOUD-SHADOWS).
  *
- * Procedural clouds ON + globe.cloudCastShadows=true over lit terrain. Captures
+ * Procedural clouds ON + globe.defaultCloudCollection.volumetric.cloudCastShadows=true over lit terrain. Captures
  * the canvas so the cloud-shaped ground shadows can be eyeballed against the cloud
  * positions. Also captures a NO-SHADOW twin (cloudCastShadows=false, same scene) so
  * the diff isolates the cast shadow. Optionally pans the sun to confirm shadows
@@ -59,13 +59,13 @@ const PROC = { coverage: 0.55, density: 0.85, bottom: 1500, top: 4200 };
         s.globe.enableLighting = true;
         v.clock.shouldAnimate = false;
         v.clock.currentTime = C.JulianDate.fromIso8601(timeIso);
-        g.showProceduralClouds = true;
-        g.cloudCoverage = proc.coverage;
-        g.cloudDensity = proc.density;
-        g.cloudLayerBottom = proc.bottom;
-        g.cloudLayerTop = proc.top;
-        g.cloudVolumetricQuality = "high";
-        g.cloudCastShadows = mode !== "noshadow";
+        g.defaultCloudCollection.enableVolumetric = true;
+        g.defaultCloudCollection.volumetric.cloudCoverage = proc.coverage;
+        g.defaultCloudCollection.volumetric.cloudDensity = proc.density;
+        g.defaultCloudCollection.volumetric.cloudLayerBottom = proc.bottom;
+        g.defaultCloudCollection.volumetric.cloudLayerTop = proc.top;
+        g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high";
+        g.defaultCloudCollection.volumetric.cloudCastShadows = mode !== "noshadow";
         if (ac) {
           ac.volumetricFog = ac.volumetricFog || {};
           ac.volumetricFog.enabled = mode === "fog";

@@ -51,10 +51,10 @@ const SETUP = async (cfg) => {
   const g = s.globe;
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  if ("cloudCoverage" in g) g.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.cloudDensity = 0.8;
+  g.defaultCloudCollection.enableVolumetric = true;
+  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   // KEY: sky atmosphere ON so the atmosphere LUTs bake (the physical/sky-lut
   // paths self-heal to legacy when the LUTs are unbaked, so we MUST bake them).
   s.skyBox.show = true;
@@ -78,15 +78,15 @@ const RENDER = async (cfg) => {
   const v = window.viewer;
   const s = v.scene;
   const g = s.globe;
-  g.cloudVolumetricQuality = "high"; // T3 full-res (no half-res/temporal)
-  if (cfg.aerialMode !== undefined) g.cloudAerialMode = cfg.aerialMode;
-  if (cfg.ambientSource !== undefined) g.cloudAmbientSource = cfg.ambientSource;
+  g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // T3 full-res (no half-res/temporal)
+  if (cfg.aerialMode !== undefined) g.defaultCloudCollection.volumetric.cloudAerialMode = cfg.aerialMode;
+  if (cfg.ambientSource !== undefined) g.defaultCloudCollection.volumetric.cloudAmbientSource = cfg.ambientSource;
   // For the 3.4 ambient isolation, kill the heuristic aerial wash so the ambient
   // TINT on the shadow side isn't masked by the distance-haze tint.
-  if (cfg.aerialStrength !== undefined) g.cloudAerialStrength = cfg.aerialStrength;
+  if (cfg.aerialStrength !== undefined) g.defaultCloudCollection.volumetric.cloudAerialStrength = cfg.aerialStrength;
   if (cfg.layerBottom !== undefined) {
-    g.cloudLayerBottom = cfg.layerBottom;
-    g.cloudLayerTop = cfg.layerTop;
+    g.defaultCloudCollection.volumetric.cloudLayerBottom = cfg.layerBottom;
+    g.defaultCloudCollection.volumetric.cloudLayerTop = cfg.layerTop;
   }
   if (cfg.heading !== undefined || cfg.pitch !== undefined) {
     v.camera.setView({

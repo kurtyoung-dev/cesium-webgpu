@@ -19,7 +19,7 @@ const RENDERER_OVERRIDE_SHIM = `
       window.__toggleEcho = {
         enableVolumetric: ac.clouds.enableVolumetric,
         enableProcedural: ac.clouds.enableProcedural,
-        showProceduralClouds: v.scene.globe.showProceduralClouds,
+        showProceduralClouds: v.scene.globe.defaultCloudCollection.enableVolumetric,
       };
       return v;
     }

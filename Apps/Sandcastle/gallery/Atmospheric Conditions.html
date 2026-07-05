@@ -21,7 +21,10 @@
     ></script>
     <script type="module" src="../load-cesium-es6.js"></script>
   </head>
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -148,8 +151,8 @@
         // Enable the volumetric cloud layer so cloudCover has a
         // visible effect (otherwise it only modulates star occlusion).
         ac.clouds.enableVolumetric = true;
-        globe.cloudLayerBottom = 1500;
-        globe.cloudLayerTop = 4000;
+        globe.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+        globe.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
 
         const viewModel = {
           humidity: 0.5,
@@ -175,11 +178,15 @@
           // Direction lives on the local tangent plane: X = east, Z =
           // north (the volumetric fog + cloud renderers project this
           // onto the camera-local horizontal plane).
-          ac.weather.windDirection = new Cesium.Cartesian3(Math.cos(wh), 0, Math.sin(wh));
+          ac.weather.windDirection = new Cesium.Cartesian3(
+            Math.cos(wh),
+            0,
+            Math.sin(wh),
+          );
           // Cloud cover also drives the visible cloud layer's
           // coverage threshold so the sliders produce a perceptible
           // shape change in addition to the star-occlusion effect.
-          globe.cloudCoverage = cc;
+          globe.defaultCloudCollection.volumetric.cloudCoverage = cc;
         }
 
         for (const key of Object.keys(viewModel)) {

@@ -57,12 +57,12 @@ const SCENE = {
     s.globe.show = true;
     v.clock.shouldAnimate = false;
     v.clock.currentTime = C.JulianDate.fromIso8601(scene.timeIso);
-    g.showProceduralClouds = true;
-    g.cloudCoverage = scene.proc.coverage;
-    g.cloudDensity = scene.proc.density;
-    g.cloudLayerBottom = scene.proc.bottom;
-    g.cloudLayerTop = scene.proc.top;
-    g.cloudVolumetricQuality = "high"; // DEFAULT cinematic full-res (T3)
+    g.defaultCloudCollection.enableVolumetric = true;
+    g.defaultCloudCollection.volumetric.cloudCoverage = scene.proc.coverage;
+    g.defaultCloudCollection.volumetric.cloudDensity = scene.proc.density;
+    g.defaultCloudCollection.volumetric.cloudLayerBottom = scene.proc.bottom;
+    g.defaultCloudCollection.volumetric.cloudLayerTop = scene.proc.top;
+    g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // DEFAULT cinematic full-res (T3)
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(
         scene.camera.lon,

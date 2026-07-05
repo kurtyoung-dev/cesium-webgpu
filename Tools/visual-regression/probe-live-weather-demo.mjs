@@ -4,7 +4,7 @@
  * WebGPU-only.
  *
  * Verifies the live-EDR PLUMBING end-to-end up to the network boundary: the demo
- * boots, sets globe.weatherProvider to a WeatherProvider(EdrWeatherSource) routed
+ * boots, sets globe.defaultCloudCollection.volumetric.weatherProvider to a WeatherProvider(EdrWeatherSource) routed
  * through the dev server's same-origin /proxy, the cloud renderer kicks the fetch,
  * and — because this sandbox has NO outbound network to external hosts — the proxy
  * returns 502, EdrWeatherSource rejects, and the provider records lastError while
@@ -65,7 +65,7 @@ const BOOT = async () => {
 
 const STATE = async () => {
   const g = window.viewer.scene.globe;
-  const p = g.weatherProvider;
+  const p = g.defaultCloudCollection.volumetric.weatherProvider;
   const src = p && p.getSource ? p.getSource() : null;
   const cap = src && src.getCapabilities ? src.getCapabilities() : null;
   const panel = document.getElementById("wxPanel");

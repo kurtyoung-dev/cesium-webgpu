@@ -2,8 +2,9 @@
  * Campaign 3 v2 — cloud quality-tier presets (the single source of truth for the
  * tiered volumetric-cloud architecture). One `quality` dial → one preset struct.
  *
- * The public dial stays `globe.cloudVolumetricQuality` (`"low" | "medium" |
- * "high" | "auto"`) plus the power-user `globe.cloudQuality` escape hatch; this
+ * The public dial is `collection.volumetric.cloudVolumetricQuality` (`"low" |
+ * "medium" | "high" | "auto"`) plus the power-user
+ * `collection.volumetric.cloudQuality` escape hatch; this
  * module maps it (and `"auto"`'s altitude bands) to a {@link CloudTierPreset}.
  * **Tier 0 = the cheap default** (the cloud pass does not run — the default-off
  * WebGL-parity path); Tiers 1–3 are opt-in volumetric (low / high / cinematic).

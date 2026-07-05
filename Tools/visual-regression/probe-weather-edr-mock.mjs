@@ -90,11 +90,11 @@ const SETUP = async (mockBase) => {
     s = v.scene,
     g = s.globe;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
-  g.cloudCoverage = 0.6;
-  g.cloudDensity = 0.9;
-  g.cloudLayerBottom = 1500;
-  g.cloudLayerTop = 4000;
+  g.defaultCloudCollection.enableVolumetric = true;
+  g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
+  g.defaultCloudCollection.volumetric.cloudDensity = 0.9;
+  g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
+  g.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
   if (s.moon) s.moon.show = false;
@@ -108,13 +108,13 @@ const SETUP = async (mockBase) => {
     coverageUnits: "percent",
   });
   const edrUrl = src.buildUrl({ time: "latest" });
-  g.weatherProvider = new C.WeatherProvider(src);
+  g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(src);
   s.requestRender();
   return { edrUrl };
 };
 
 const PROVIDER_STATE = async () => {
-  const p = window.viewer.scene.globe.weatherProvider;
+  const p = window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
   return p
     ? { hasData: p.hasData, version: p.version, lastError: p.lastError }
     : null;

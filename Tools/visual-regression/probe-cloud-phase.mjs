@@ -42,13 +42,13 @@ const SETUP = async (cfg) => {
   const s = v.scene;
   const g = s.globe;
   s.requestRenderMode = false;
-  g.showProceduralClouds = true;
+  g.defaultCloudCollection.enableVolumetric = true;
   // Isolate the phase: uniform coverage (weather map OFF) + THIN clouds (0.4) so
   // there's tonal range — a silver lining is a bright edge on a darker cloud
   // body, which a fully-saturated thick deck can't show.
-  if ("cloudCoverage" in g) g.cloudCoverage = 0.4;
-  if ("cloudWeatherMap" in g) g.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.cloudDensity = 0.7;
+  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.4;
+  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.7;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;

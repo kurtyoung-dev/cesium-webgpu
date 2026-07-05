@@ -282,6 +282,32 @@ class CloudCollection {
   }
 
   /**
+   * Convenience master gate for the WebGPU volumetric cloud deck. Reading returns
+   * <code>true</code> when {@link CloudCollection#renderMode} is
+   * <code>VOLUMETRIC</code> AND {@link CloudVolumetrics#enabled} is set. Setting
+   * <code>true</code> flips <code>renderMode</code> to <code>VOLUMETRIC</code> and
+   * marks <code>volumetric.enabled</code>; setting <code>false</code> returns to
+   * <code>BILLBOARD</code> and clears it. <b>WebGPU only</b>; a documented no-op on
+   * the WebGL renderer (stores the state, renders nothing extra).
+   * @type {boolean}
+   * @default false
+   */
+  get enableVolumetric() {
+    return (
+      this._renderMode === CloudRenderMode.VOLUMETRIC &&
+      this.volumetric.enabled === true
+    );
+  }
+
+  set enableVolumetric(value) {
+    const on = value === true;
+    this.volumetric.enabled = on;
+    this._renderMode = on
+      ? CloudRenderMode.VOLUMETRIC
+      : CloudRenderMode.BILLBOARD;
+  }
+
+  /**
    * The collection-level WMO genus (see {@link CloudType}) selecting the
    * volumetric altitude deck + density/lighting profile. <b>WebGPU volumetric
    * only</b>; no effect on the WebGL renderer or the billboard path.

@@ -3,8 +3,8 @@
  * Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties as bounded density
  * SHAPING on the baked-density-field procedural-cloud arch. WebGPU-only.
  *
- * globe.cloudSpecies ("lenticularis" | "fibratus" | "uncinus") (or numeric
- * globe.cloudSpeciesMode 1/2) shapes the deck: mode 1 carves smooth wind-aligned
+ * globe.defaultCloudCollection.volumetric.cloudSpecies ("lenticularis" | "fibratus" | "uncinus") (or numeric
+ * globe.defaultCloudCollection.volumetric.cloudSpeciesMode 1/2) shapes the deck: mode 1 carves smooth wind-aligned
  * stacked lens plates (lenticularis); mode 2 carves wind-aligned wispy filaments
  * (fibratus), with speciesParam adding an uncinus fallstreak hook. Default OFF
  * (species unset → speciesMode=0) → the WGSL speciesFactor() early-returns 1.0 →
@@ -179,11 +179,11 @@ async function run() {
   await page.evaluate((cb) => {
     const v = window.viewer;
     const g = v.scene.globe;
-    g.cloudType = cb;
-    g.cloudCoverage = 0.85;
-    g.cloudDensity = 0.5;
-    g.cloudSpecies = undefined; // OFF (default)
-    g.cloudSpeciesMode = undefined;
+    g.defaultCloudCollection.cloudType = cb;
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.85;
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.5;
+    g.defaultCloudCollection.volumetric.cloudSpecies = undefined; // OFF (default)
+    g.defaultCloudCollection.volumetric.cloudSpeciesMode = undefined;
     v.clock.shouldAnimate = false;
     v.scene.requestRender();
   }, CUMULONIMBUS);
