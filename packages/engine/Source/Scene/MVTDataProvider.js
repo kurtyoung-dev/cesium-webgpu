@@ -7,6 +7,7 @@ import UrlTemplate3DTilesDataProvider from "./UrlTemplate3DTilesDataProvider.js"
 import VectorGltf3DTileContent from "./VectorGltf3DTileContent.js";
 import buildVectorGltfFromMVT from "./buildVectorGltfFromMVT.js";
 import decodeMVT from "./decodeMVT.js";
+import MVTTileDecoder from "./MVTTileDecoder.js";
 import oneTimeWarning from "../Core/oneTimeWarning.js";
 import defined from "../Core/defined.js";
 
@@ -27,6 +28,21 @@ import defined from "../Core/defined.js";
  */
 class MVTDataProvider extends UrlTemplate3DTilesDataProvider {
   /**
+   * @param {Resource|string} url URL template, containing {z}, {x}, and {y} placeholders.
+   * @param {object} [options] Provider options.
+   * @ignore
+   */
+  constructor(url, options) {
+    super(url, options);
+    // Opt-in, default-off: when false the tile decode runs synchronously on the
+    // main thread exactly as before. When true, decode + GLB build are moved to
+    // a web worker (with a synchronous main-thread fallback). See MVTTileDecoder.
+    this._decodeInWorker =
+      /** @type {{decodeInWorker?: boolean}} */ (options ?? {})
+        .decodeInWorker ?? false;
+  }
+
+  /**
    * Creates an MVTDataProvider from the specified URL template and options.
    *
    * @param {Resource|string} url URL template, containing {z}, {x}, and {y} placeholders.
@@ -35,6 +51,7 @@ class MVTDataProvider extends UrlTemplate3DTilesDataProvider {
    * @param {number} [options.maxZoom=14] Maximum zoom level represented in the generated tileset.
    * @param {Rectangle} [options.extent] Optional geographic extent in radians to constrain the generated tile tree.
    * @param {string} [options.featureIdProperty] MVT property name to use as feature ID.
+   * @param {boolean} [options.decodeInWorker=false] When true, decode MVT tiles on a web worker (off the main thread) instead of synchronously. Falls back to synchronous decode when the worker pool is saturated or unavailable.
    */
   static async fromUrl(url, options) {
     return /** @type {Promise<MVTDataProvider>} */ (
@@ -73,6 +90,7 @@ class MVTDataProvider extends UrlTemplate3DTilesDataProvider {
    */
   _createCodec() {
     const featureIdProperty = this._featureIdProperty;
+    const decodeInWorker = this._decodeInWorker;
     return {
       contentType: "mvt",
       missingTilePolicy: { statusCodes: [404, 204] },
@@ -85,6 +103,35 @@ class MVTDataProvider extends UrlTemplate3DTilesDataProvider {
        * @ignore
        */
       createContent: async (tileset, tile, resource, arrayBuffer) => {
+        if (decodeInWorker) {
+          const tileCoordinates = parseTileCoordinates(
+            resource.getUrlComponent(true),
+          );
+          const workerResult = await decodeMVTOffThread(
+            arrayBuffer,
+            tileCoordinates,
+            featureIdProperty,
+          );
+          if (defined(workerResult)) {
+            const workerGlb = workerResult.glb;
+            if (!defined(workerGlb)) {
+              if (!workerResult.hasFeatures) {
+                return new Empty3DTileContent(tileset, tile);
+              }
+              throw new RuntimeError(
+                "Decoded MVT tile did not produce vector glTF content.",
+              );
+            }
+            return VectorGltf3DTileContent.fromGltf(
+              tileset,
+              tile,
+              resource,
+              workerGlb,
+            );
+          }
+          // Worker pool saturated / unavailable — fall through to synchronous decode.
+        }
+
         const decodedTile = decodeMVT(arrayBuffer);
         const tileCoordinates = parseTileCoordinates(
           resource.getUrlComponent(true),
@@ -103,6 +150,48 @@ class MVTDataProvider extends UrlTemplate3DTilesDataProvider {
         return VectorGltf3DTileContent.fromGltf(tileset, tile, resource, glb);
       },
     };
+  }
+}
+
+/**
+ * Attempts to decode an MVT tile on a worker. Returns the worker result, or
+ * {@link undefined} to signal the caller should fall back to synchronous decode
+ * (worker pool saturated, worker unavailable, or the worker task rejected). The
+ * input {@link ArrayBuffer} is not transferred, so it stays intact for the
+ * synchronous fallback.
+ *
+ * @param {ArrayBuffer} arrayBuffer
+ * @param {{tileX:number, tileY:number, tileZ:number}} tileCoordinates
+ * @param {string|undefined} featureIdProperty
+ * @returns {Promise<{glb:(Uint8Array|undefined), hasFeatures:boolean}|undefined>}
+ * @ignore
+ */
+async function decodeMVTOffThread(
+  arrayBuffer,
+  tileCoordinates,
+  featureIdProperty,
+) {
+  let promise;
+  try {
+    promise = MVTTileDecoder.decode({
+      arrayBuffer: arrayBuffer,
+      tileCoordinates: tileCoordinates,
+      featureIdProperty: featureIdProperty,
+    });
+  } catch (error) {
+    // Worker could not be created (e.g. no Worker support) — use sync fallback.
+    return undefined;
+  }
+  if (!defined(promise)) {
+    // Worker pool saturated this frame — use sync fallback.
+    return undefined;
+  }
+  try {
+    return await promise;
+  } catch (error) {
+    // Worker task rejected. The arrayBuffer was not transferred, so the caller
+    // can safely re-decode it synchronously (and surface the same error).
+    return undefined;
   }
 }
 
