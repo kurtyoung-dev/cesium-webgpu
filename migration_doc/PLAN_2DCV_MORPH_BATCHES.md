@@ -48,7 +48,7 @@ review gaps" + `FEATURE_INVENTORY.md` 2D/CV classifier WIP.
 
 | ID | Sev | Effort | Note |
 |---|---|---|---|
-| MORPH-EXAG-SKIRTS | P1 | L | Exaggeration in CV/morph; naive ungate makes terrain skirts into walls (Batch 216 revert). Needs WebGL-faithful skirt handling in the planar leg. Hard — scope carefully. |
+| ~~MORPH-EXAG-SKIRTS~~ | P1 | L | ✅ SHIPPED (Batch 362; re-verified live 2026-07-05). WebGL-faithful attribute-based skirt handling in the planar leg (`GlobeTerrain.wgsl` exaggerates the height ATTRIBUTE, not the geometric `length()` — mirrors `GlobeVS.glsl:245-258`). `probe-exaggeration-cv.mjs` EXAG=10 CV matches WebGL, zero walls; off-gate EXAG=1 CV normal. Residual GroundPrimitive ~1s morph-disappearance transient → MORPH-REVIEW-GAPS (COMPLETION-POP). |
 | CLASSIFIER-2D-CV | P1 | M-L | Vector3DTile polyline + clamped-polyline classifiers SCENE2D/CV are gated; primitive classifier 2D/CV implemented but e2e-unverified (no `.vctr` test data). Ungate + verify. |
 | MORPH-REVIEW-GAPS | (verify) | M | Verify the 4 unverified review-gaps: MORPH-PICK (pickWorldCoordinates mid-morph), MORPH-COMPLETION-POP, MORPH-CAMERA-FRUSTUM (animated FOV vs cached split/HiZ), MORPH-MULTIVIEW (split-screen frame-lock). Probe-driven. |
 | GROUNDPRIM-RECON-PRECISION | P2 | M | Ground-primitive depth-sample classifier far-corner reconstruction-precision degradation (log-depth-gated). |
