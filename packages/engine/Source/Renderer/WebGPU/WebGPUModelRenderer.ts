@@ -128,7 +128,556 @@ import {
   createEdgePrimitiveResources,
   destroyEdgePrimitiveResources,
   writeEdgeEmitterUniforms,
+  type EdgeEmitterCache,
+  type EdgePrimitiveResources,
 } from "./WebGPUEdgeVisibilityEmitter.js";
+import type { DrawCommandWithDerivedSlot } from "./WebGPUPickCommandHelpers.js";
+
+// Constructor argument type for WebGPUDrawCommand (the options interface is not
+// exported); command-arg literals carry renderer-attached extras this façade
+// intentionally does not narrow.
+type WebGPUDrawArgs = ConstructorParameters<typeof WebGPUDrawCommand>[0];
+
+// ─── JS-interop typed façades ────────────────────────────────────────────────
+// Type-only shapes over the untyped-JS extractor output (extractMaterialInfo /
+// extractPrimitiveGeometry / extractSkinData) and the per-model / per-primitive
+// GPU-resource caches this renderer owns. They carry no runtime code — the TS
+// conversion emits byte-identical JavaScript.
+
+type TypedArray =
+  | Float32Array
+  | Float64Array
+  | Uint32Array
+  | Uint16Array
+  | Uint8Array
+  | Int32Array
+  | Int16Array
+  | Int8Array;
+type NumArray = TypedArray | number[];
+type Vec = number[] | Float32Array;
+type GPUBufferOrNull = GPUBuffer | null;
+type GPUPipelineOrNull = GPURenderPipeline | null;
+
+interface ImageSourceLike {
+  width?: number;
+  naturalWidth?: number;
+  height?: number;
+  naturalHeight?: number;
+}
+
+interface ColorLike {
+  red: number;
+  green: number;
+  blue: number;
+  alpha: number;
+}
+
+interface TextureReaderLike {
+  texture?: {
+    _texture?: {
+      _webgpuTexture?: { texture?: GPUTexture | null } | null;
+    } | null;
+    _source?: ImageSourceLike | null;
+    source?: ImageSourceLike | null;
+    _image?: ImageSourceLike | null;
+  } | null;
+  texCoord?: number;
+  transform?: ArrayLike<number> | null;
+}
+type ReaderOrNull = TextureReaderLike | null | undefined;
+
+interface MaterialInfo {
+  materialFlags: number;
+  alphaMode: number;
+  alphaCutoff: number;
+  isDoubleSided: boolean;
+  baseColorFactor: Vec;
+  metallicFactor: number;
+  roughnessFactor: number;
+  normalScale: number;
+  occlusionStrength: number;
+  emissiveFactor: Vec;
+  diffuseFactor: Vec;
+  specularFactor: Vec;
+  glossinessFactor: number;
+  hasClearcoat: boolean;
+  clearcoatFactor: number;
+  clearcoatRoughnessFactor: number;
+  clearcoatNormalScale: number;
+  hasSpecularExt: boolean;
+  specularExtFactor: number;
+  specularExtColorFactor: Vec;
+  hasAnisotropy: boolean;
+  anisotropyStrength: number;
+  anisotropyRotation: number;
+  hasIridescence: boolean;
+  iridescenceFactor: number;
+  iridescenceIor: number;
+  iridescenceThicknessMinimum: number;
+  iridescenceThicknessMaximum: number;
+  hasSheen: boolean;
+  sheenColorFactor: Vec;
+  sheenRoughnessFactor: number;
+  hasVolume: boolean;
+  thicknessFactor: number;
+  attenuationDistance: number;
+  attenuationColor: Vec;
+  hasTransmission: boolean;
+  transmissionFactor: number;
+  baseColorTextureReader?: ReaderOrNull;
+  diffuseTextureReader?: ReaderOrNull;
+  normalTextureReader?: ReaderOrNull;
+  metallicRoughnessTextureReader?: ReaderOrNull;
+  specGlossTextureReader?: ReaderOrNull;
+  emissiveTextureReader?: ReaderOrNull;
+  occlusionTextureReader?: ReaderOrNull;
+  clearcoatTextureReader?: ReaderOrNull;
+  clearcoatRoughnessTextureReader?: ReaderOrNull;
+  clearcoatNormalTextureReader?: ReaderOrNull;
+  specularExtTextureReader?: ReaderOrNull;
+  specularExtColorTextureReader?: ReaderOrNull;
+  anisotropyTextureReader?: ReaderOrNull;
+  iridescenceTextureReader?: ReaderOrNull;
+  iridescenceThicknessTextureReader?: ReaderOrNull;
+  sheenColorTextureReader?: ReaderOrNull;
+  sheenRoughnessTextureReader?: ReaderOrNull;
+  transmissionTextureReader?: ReaderOrNull;
+  thicknessTextureReader?: ReaderOrNull;
+}
+
+interface PrimitiveGeometry {
+  vertexCount: number;
+  indexCount: number;
+  indexType: string | number;
+  indexData?: TypedArray | null;
+  primitiveType: number;
+  morphTargetCount: number;
+  positionData?: TypedArray | null;
+  normalData?: TypedArray | null;
+  tangentData?: TypedArray | null;
+  texCoord0Data?: TypedArray | null;
+  texCoord1Data?: TypedArray | null;
+  color0Data?: TypedArray | null;
+  color0ComponentType?: string;
+  color0ComponentCount?: number;
+  color0Normalized?: boolean;
+  joints0Data?: TypedArray | null;
+  weights0Data?: TypedArray | null;
+  featureId0Data?: TypedArray | null;
+  metadataData?: TypedArray | null;
+  metadataClassHash?: number;
+  metadataWGSL?: string | null;
+  metadataMatTransport?: boolean;
+  propertyTableLayout?: unknown;
+  propertyTextureLayout?: unknown;
+  hasNormals: boolean;
+  hasTangents: boolean;
+  hasTexCoord0: boolean;
+  hasTexCoord1: boolean;
+  hasColor0: boolean;
+  hasJoints: boolean;
+  hasFeatureId0: boolean;
+  hasMetadata: boolean;
+  hasPropertyTables: boolean;
+  hasPropertyTextures: boolean;
+}
+
+interface PrimitiveRenderData {
+  positionBuffer: GPUBufferOrNull;
+  positionBuffer2D?: GPUBufferOrNull;
+  normalBuffer: GPUBufferOrNull;
+  tangentBuffer: GPUBufferOrNull;
+  uvBuffer: GPUBufferOrNull;
+  uv1Buffer?: GPUBufferOrNull;
+  colorBuffer: GPUBufferOrNull;
+  jointsBuffer: GPUBufferOrNull;
+  weightsBuffer: GPUBufferOrNull;
+  featureIdBuffer: GPUBufferOrNull;
+  indexBuffer: GPUBufferOrNull;
+  _metadataBuffer: GPUBufferOrNull;
+  materialBuffer?: WebGPUBuffer | null;
+  materialBufferSilhouette?: WebGPUBuffer | null;
+  materialBufferTranslucent?: WebGPUBuffer | null;
+  lightBuffer?: WebGPUBuffer | null;
+  materialData?: Float32Array | null;
+  materialDataSilhouette?: Float32Array | null;
+  materialDataTranslucent?: Float32Array | null;
+  lightData?: Float32Array | null;
+  _metadataMatTransport: boolean;
+  _propertyTextureResources: unknown;
+  propertyTextureEntries: GPUBindGroupEntry[] | null;
+  _propertyTableResources: unknown;
+  propertyTableEntries: GPUBindGroupEntry[] | null;
+  indexCount: number;
+  indexFormat: GPUIndexFormat;
+  vertexCount: number;
+  topology: GPUPrimitiveTopology;
+  materialBindGroup: GPUBindGroup | null;
+  textureBindGroup: GPUBindGroup | null;
+  pipeline: GPUPipelineOrNull;
+  depthWritePipeline?: GPUPipelineOrNull;
+  pickPipeline?: GPUPipelineOrNull;
+  pickHoverPipeline?: GPUPipelineOrNull;
+  pickPrecisePass1Pipeline?: GPUPipelineOrNull;
+  pickPrecisePass2Pipeline?: GPUPipelineOrNull;
+  silhouettePipeline?: GPUPipelineOrNull;
+  silhouetteColorPipeline?: GPUPipelineOrNull;
+  translucentPipeline?: GPUPipelineOrNull;
+  velocityPipeline?: GPUPipelineOrNull;
+  gpuTextures: GPUTexture[];
+  textureViews?: Record<string, GPUTextureView | null> | null;
+  textureSamplers?: Record<string, GPUSampler | null> | null;
+  textureEntries?: GPUBindGroupEntry[] | null;
+  placeholderSlots?: Set<string>;
+  matInfo?: MaterialInfo;
+  materialDefines?: number;
+  hasSkinningAttributes: boolean;
+  refractionViewBound?: GPUTextureView | null;
+  edgeResources?: EdgePrimitiveResources | false | null;
+  _customShaderWGSL?: string | null;
+  _customShaderClassHash?: number;
+  _metadataWGSL?: string | null;
+  _metadataClassHash?: number;
+  _project2DRefKey?: string | number | null;
+  _pipelineNeedsRefetch?: boolean;
+  _fetchedErrorGen?: number;
+}
+
+interface SkinData {
+  jointCount?: number;
+  packedJointMatrices?: Float32Array | null;
+  byteLength?: number;
+}
+
+// Fields shared by the per-node cache and (for identity-transform models) the
+// model-level cache when hosting the SCENE2D IDL-duplicate camera resources.
+interface Idl2DHost {
+  cameraBuffer2DIdl?: WebGPUBuffer | null;
+  cameraData2DIdl?: Float32Array | null;
+  cameraBG2DIdl?: GPUBindGroup | null;
+  idlModelMatrix2D?: Matrix4 | null;
+  idlBoundingSphere2D?: BoundingSphere | null;
+}
+
+interface NodeCache extends Idl2DHost {
+  jointBuffer?: GPUBufferOrNull;
+  prevJointBuffer?: GPUBufferOrNull;
+  instancingBuffer?: GPUBufferOrNull;
+  jointBufferSize?: number;
+  packedJointMatrices?: Float32Array | null;
+  prevPackedJointMatrices?: Float32Array | null;
+  cameraBuffer?: WebGPUBuffer | null;
+  cameraData?: Float32Array | null;
+  cameraBG?: GPUBindGroup | null;
+  skinningBG?: GPUBindGroup | null;
+  prevNodeModelMatrix?: Matrix4 | null;
+}
+
+interface PipelineCacheLike {
+  cameraBGL: GPUBindGroupLayout;
+  instanceBGL: GPUBindGroupLayout;
+  defaultSampler: GPUSampler;
+  defaultWhiteTexture: GPUTexture;
+  defaultBlackTexture: GPUTexture;
+  defaultNormalTexture: GPUTexture;
+  defaultPropertyTexture: GPUTexture;
+  defaultBrdfLutView: GPUTextureView;
+  defaultBrdfLutSampler: GPUSampler;
+  defaultIBLCubemapView: GPUTextureView;
+  defaultIBLSampler: GPUSampler;
+  defaultSHBuffer: GPUBuffer;
+  defaultColorBuffer: GPUBuffer;
+  defaultNormalBuffer: GPUBuffer;
+  defaultTangentBuffer: GPUBuffer;
+  defaultUVBuffer: GPUBuffer;
+  defaultJointBuffer: GPUBuffer;
+  defaultJointsBuffer: GPUBuffer;
+  defaultWeightsBuffer: GPUBuffer;
+  defaultInstancingBuffer: GPUBuffer;
+  defaultMorphDeltaBuffer: GPUBuffer;
+  defaultMorphWeightBuffer: GPUBuffer;
+  defaultFeatureIdBuffer: GPUBuffer;
+  defaultFeatureIdEntries(...args: unknown[]): GPUBindGroupEntry[];
+  propertyTextureSampler: GPUSampler;
+  propertyTextureEntries(...args: unknown[]): GPUBindGroupEntry[];
+  propertyTableEntries(...args: unknown[]): GPUBindGroupEntry[];
+  clearCustomShaderWGSL(...args: unknown[]): void;
+  clearMetadataWGSL(...args: unknown[]): void;
+  _errorSwapGeneration: number;
+  _sceneFormatGeneration: number;
+  getPipeline(...args: unknown[]): GPURenderPipeline;
+  getDepthWritePipeline(...args: unknown[]): GPURenderPipeline;
+  getClassificationPipeline(...args: unknown[]): GPURenderPipeline;
+  getCapturePipeline(...args: unknown[]): GPURenderPipeline;
+  getPickPipeline(...args: unknown[]): GPURenderPipeline;
+  getPickHoverPipeline(...args: unknown[]): GPURenderPipeline;
+  getPickMetadataPipeline(...args: unknown[]): GPURenderPipeline;
+  getPickPrecisePass1Pipeline(...args: unknown[]): GPURenderPipeline;
+  getPickPrecisePass2Pipeline(...args: unknown[]): GPURenderPipeline;
+  getSilhouetteColorPipeline(...args: unknown[]): GPURenderPipeline;
+  getSilhouetteModelPipeline(...args: unknown[]): GPURenderPipeline;
+  getVelocityPipeline(...args: unknown[]): GPURenderPipeline;
+  getOrCreateMaterialBGL(...args: unknown[]): GPUBindGroupLayout;
+  getSamplerForReader(...args: unknown[]): GPUSampler;
+  setPrimitiveTopology(...args: unknown[]): void;
+  setCustomShaderWGSL(...args: unknown[]): void;
+  setMetadataWGSL(...args: unknown[]): void;
+  setMetadataPickWGSL(...args: unknown[]): void;
+  maybeUpdateForLogDepth(...args: unknown[]): boolean;
+  maybeUpdateForModelColor(...args: unknown[]): boolean;
+  maybeUpdateForSceneFormat(...args: unknown[]): boolean;
+  maybeUpdateForSilhouette(...args: unknown[]): boolean;
+  maybeUpdateForSplit(...args: unknown[]): boolean;
+  destroy(...args: unknown[]): void;
+}
+
+interface ModelWebGPUCache extends Idl2DHost {
+  primitives: { [key: string]: PrimitiveRenderData };
+  nodes: { [key: string]: NodeCache };
+  pipelineCache: PipelineCacheLike;
+  cameraBuffer?: WebGPUBuffer | null;
+  cameraBG?: GPUBindGroup | null;
+  cameraData?: Float32Array | null;
+  effectsBG?: GPUBindGroup | null;
+  edgeEmitterCache?: EdgeEmitterCache | null;
+  hasEdgeFeatureIds?: boolean;
+  prevModelMatrix?: Matrix4 | null;
+  shadowCastData?: Float32Array | null;
+  shadowCastUB?: WebGPUBuffer | null;
+  _project2DActive?: boolean;
+  _project2DBoundingSphere?: BoundingSphere | null;
+  _project2DMatrix?: Matrix4 | null;
+  _project2DRefKey?: string | number | null;
+  _project2DReference?: Cartesian3 | null;
+  _customShader?: CustomShaderResourcesLike | null;
+}
+
+interface CustomShaderLike {
+  translucencyMode?: number;
+  wgslVertexShaderText?: string;
+  wgslFragmentShaderText?: string;
+  _textureManager?: {
+    getTexture(name: string): {
+      _webgpuTexture?: { view?: GPUTextureView | null } | null;
+    } | null;
+  } | null;
+}
+
+interface SceneGraphLike {
+  _runtimeNodes?: RuntimeNodeLike[];
+  _computedModelMatrix?: Matrix4;
+  _computedModelMatrix2D?: Matrix4;
+  _boundingSphere2D?: BoundingSphere | null;
+}
+
+interface RuntimeNodeLike {
+  runtimePrimitives?: RuntimePrimitiveLike[];
+  computedTransform?: Matrix4;
+  transform?: Matrix4;
+  node?: { instances?: unknown } | null;
+  _node?: { instances?: unknown } | null;
+  morphWeights?: ArrayLike<number> | null;
+  _morphWeights?: ArrayLike<number> | null;
+}
+
+interface GltfPrimitiveLike {
+  attributes?: Array<{ semantic?: string; [key: string]: unknown }>;
+  featureIds?: Array<{ setIndex?: number; [key: string]: unknown }>;
+  mode?: number;
+  [key: string]: unknown;
+}
+
+interface RuntimePrimitiveLike {
+  boundingSphere2D?: BoundingSphere;
+  primitive?: GltfPrimitiveLike | null;
+  _primitive?: GltfPrimitiveLike | null;
+  drawCommand?: {
+    _command?: { renderState?: Record<string, unknown> };
+  } | null;
+}
+
+interface ModelLike {
+  // Declared so ModelLike satisfies the weak `WebGPUCommandOwner` shape when a
+  // Model is passed as a draw command's `owner`.
+  constructor?: { name?: string };
+  _sceneGraph?: SceneGraphLike;
+  modelMatrix: Matrix4;
+  classificationType?: number;
+  _cull?: boolean;
+  customShader?: CustomShaderLike;
+  color?: ColorLike;
+  _webgpuCache?: ModelWebGPUCache;
+  _silhouetteId?: number;
+  splitDirection?: number;
+  silhouetteSize?: number;
+  silhouetteColor?: ColorLike;
+  opaquePass?: number;
+  structuralMetadata?: unknown;
+  shadows?: number;
+  isDestroyed?: () => boolean;
+  depthWriteForTranslucentPicking?: boolean;
+  clippingPolygons?: ClippingCollectionLike | null;
+  clippingPlanes?: ClippingCollectionLike | null;
+  _clippingPolygons?: ClippingCollectionLike | null;
+  _clippingPlanes?: ClippingCollectionLike | null;
+  boundingSphere?: BoundingSphere;
+  show?: boolean;
+  ready?: boolean;
+  lightsFromGltf?: boolean;
+  isInvisible?: () => boolean;
+  featureTableId?: number;
+  edgeDisplayMode?: number;
+  computedScale?: number;
+  colorBlendMode?: number;
+  colorBlendAmount?: number;
+  _projectTo2D?: boolean;
+  _iblReferenceFrameMatrix?: ArrayLike<number> | null;
+  _edgeLineWidth?: number;
+  _edgeLinePattern?: number;
+  environmentMapManager?: EnvironmentMapManagerLike | null;
+  _imageBasedLighting?: ImageBasedLightingLike | null;
+}
+
+// Dynamic slots this renderer attaches onto WebGPUDrawCommand instances (read
+// back by the shadow-map / scene / velocity passes). Kept as a type-only
+// intersection so the emitted JS is unchanged.
+type ModelDrawCommand = WebGPUDrawCommand & {
+  _shadowCastLayout?: string;
+  _shadowCastModelUB?: unknown;
+  _shadowCastJointMatricesSB?: unknown;
+  _shadowCastInstancingSB?: unknown;
+  velocityCommand?: unknown;
+  derivedCommands?: DrawCommandWithDerivedSlot["derivedCommands"];
+};
+
+// Return shapes of the untyped-JS resource helpers (declared `@returns {object}`).
+declare global {
+  interface CesiumFrameState {
+    useHDR?: boolean;
+    atmosphereSkyIrradiance?: { x: number; y: number; z: number } | null;
+    scene?: {
+      _webgpuPickHoverEnabled?: boolean;
+      [key: string]: unknown;
+    } | null;
+    pickedMetadataInfo?: { propertyName?: string } | null;
+  }
+  interface CesiumUniformState {
+    view3D?: Matrix4;
+    inverseViewRotation?: ArrayLike<number> | null;
+  }
+}
+
+interface InstancingResourcesLike {
+  instanceCount?: number;
+  storageBuffer?: GPUBufferOrNull;
+}
+interface MorphTargetResourcesLike {
+  storageBuffer?: GPUBufferOrNull;
+  weightBuffer?: GPUBufferOrNull;
+  weightBufferPrev?: GPUBufferOrNull;
+}
+interface FeatureIdResourcesLike {
+  flags?: number;
+  featureIdEntries?: GPUBindGroupEntry[] | null;
+}
+interface CaptureRecord {
+  indexBuffer?: GPUBufferOrNull;
+  indexCount?: number;
+  nodeModelMatrix?: Matrix4;
+  materialBuffer?: WebGPUBuffer | null;
+  lightBuffer?: WebGPUBuffer | null;
+  textureEntries?: GPUBindGroupEntry[] | null;
+  featureIdEntries?: GPUBindGroupEntry[] | null;
+  materialDefines?: number;
+  metadataWGSL?: string | null;
+  metadataClassHash?: number;
+  metadataMatTransport?: boolean;
+  topology?: GPUPrimitiveTopology;
+  [key: string]: unknown;
+}
+
+interface ReflectionProxyLike {
+  center?: Cartesian3 | null;
+  type?: string;
+  radius?: number;
+  halfExtents?: Cartesian3 | null;
+}
+interface EnvironmentMapManagerLike {
+  reflectionProxy?: ReflectionProxyLike | null;
+  _webgpuIBLDiffuseView?: GPUTextureView | null;
+  _webgpuIBLSpecularView?: GPUTextureView | null;
+  _webgpuIBLSampler?: GPUSampler | null;
+  _webgpuSHBuffer?: GPUBuffer | null;
+}
+
+interface ClippingCollectionLike {
+  enabled?: boolean;
+  length?: number;
+}
+
+interface CSMRendererLike {
+  enabled?: boolean;
+  cascadeParamsBuffer?: GPUBuffer;
+  cascadeArrayView?: GPUTextureView;
+  pcfRadius?: number;
+}
+
+interface SceneCaptureModelsLike {
+  frameNumber: number;
+  models: Array<{
+    model: ModelLike;
+    pipelineCache: PipelineCacheLike;
+    records: CaptureRecord[];
+  }>;
+  buildCaptureCommands: unknown;
+}
+
+interface ModelRenderContext {
+  device: GPUDevice;
+  uniformState: CesiumUniformState;
+  drawingBufferWidth: number;
+  drawingBufferHeight: number;
+  depthFormat?: GPUTextureFormat;
+  scenePipelineFormat?: GPUTextureFormat;
+  _sceneColorFormat?: GPUTextureFormat;
+  sceneCaptureReflections?: boolean;
+  _webgpuSceneCaptureModels?: SceneCaptureModelsLike | null;
+  _clusteredLightingBuffers?: unknown;
+  _msaaSamples?: number;
+  _refractionSceneView?: GPUTextureView | null;
+  _sceneHasTransmission?: boolean;
+  csmRenderer?: CSMRendererLike | null;
+  _edgeColorView?: GPUTextureView | null;
+  _edgeIdView?: GPUTextureView | null;
+  _edgeDepthView?: GPUTextureView | null;
+  _globeDepthView?: GPUTextureView | null;
+}
+interface ImageBasedLightingLike {
+  _imageBasedLightingFactor?: { x: number; y: number } | null;
+  _webgpuMaxMipLevel?: number;
+  _specularEnvironmentMapAtlas?: { _maximumMipmapLevel?: number } | null;
+  _webgpuSpecularView?: GPUTextureView | null;
+  _webgpuDiffuseView?: GPUTextureView | null;
+  _webgpuSampler?: GPUSampler | null;
+  _webgpuSHBuffer?: GPUBuffer | null;
+  _specularEnvironmentCubeMap?: unknown;
+  _webgpuHasSH?: boolean;
+  [key: string]: unknown;
+}
+interface SceneLightsLike {
+  length: number;
+  pack(dst: Float32Array): ArrayLike<number>;
+}
+interface CustomShaderResourcesLike {
+  customShader?: CustomShaderLike | null;
+  chunk?: string;
+  classHash?: number;
+  defines?: number;
+  uboFields?: unknown;
+  textureFields?: Array<{ uniformName: string; [key: string]: unknown }>;
+  uboBuffer?: GPUBuffer | null;
+  uboByteLength?: number;
+}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -279,7 +828,7 @@ const FLAG_HAS_KHR_MASK =
  * @param {number} materialFlags
  * @returns {number}
  */
-function computeMaterialDefines(materialFlags) {
+function computeMaterialDefines(materialFlags: number): number {
   if ((materialFlags & FLAG_HAS_KHR_MASK) !== 0) {
     return ShaderDefine.MODEL_HAS_KHR_TEXTURES;
   }
@@ -326,7 +875,10 @@ const scratchIdl2DModelMatrix = new Matrix4();
 // This is the "morphed" flat bounding box the accurate-2D command culls
 // against, in the same projected frame as the camera. Returns undefined when
 // no 2D spheres are available yet (caller falls back to the ECEF sphere).
-function computeModel2DBoundingVolume(model, cache) {
+function computeModel2DBoundingVolume(
+  model: ModelLike,
+  cache: ModelWebGPUCache,
+) {
   const runtimeNodes = model._sceneGraph?._runtimeNodes;
   if (!defined(runtimeNodes)) {
     return undefined;
@@ -369,7 +921,7 @@ const captureCameraData = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
 // (the common case for single-node models). Inlined comparison avoids the
 // O(16) `Matrix4.equalsEpsilon` and the closure cost of an exact-equals path
 // when called per-node per-frame.
-function isIdentityMatrix4(m) {
+function isIdentityMatrix4(m: ArrayLike<number>) {
   return (
     m[0] === 1 &&
     m[5] === 1 &&
@@ -392,7 +944,11 @@ function isIdentityMatrix4(m) {
 
 // ─── Camera Uniform Packing ─────────────────────────────────────────────────
 
-function packCameraUniforms(data, frameState, modelMatrix) {
+function packCameraUniforms(
+  data: Float32Array,
+  frameState: CesiumFrameState,
+  modelMatrix: Matrix4,
+) {
   const uniformState = frameState.context.uniformState;
 
   // modelView = view * model
@@ -505,7 +1061,11 @@ function packCameraUniforms(data, frameState, modelMatrix) {
 // recomputes `transpose(inverse(view3D × model3DWorld))` — the model-level 3D
 // world matrix (per-node rotation for normals is a documented B12 residual).
 // The clip position, RTE camera encode, and mvp remain the 2D values.
-function overrideProject2DNormalMatrix(data, frameState, model3DWorldMatrix) {
+function overrideProject2DNormalMatrix(
+  data: Float32Array,
+  frameState: CesiumFrameState,
+  model3DWorldMatrix: Matrix4,
+) {
   const uniformState = frameState.context.uniformState;
   Matrix4.multiply(uniformState.view3D, model3DWorldMatrix, scratchModelView3D);
   Matrix4.inverse(scratchModelView3D, scratchNormal3D);
@@ -547,10 +1107,15 @@ function overrideProject2DNormalMatrix(data, frameState, model3DWorldMatrix) {
  * @private
  */
 function getOrCreateModelCaptureCommands(
-  entry,
-  device,
-  frameState,
-  faceFormat,
+  entry: {
+    model?: ModelLike;
+    pipelineCache?: PipelineCacheLike;
+    records?: CaptureRecord[];
+    [key: string]: unknown;
+  },
+  device: GPUDevice,
+  frameState: CesiumFrameState,
+  faceFormat: GPUTextureFormat,
 ) {
   const model = entry.model;
   if (!model || model.isDestroyed?.() === true) {
@@ -639,15 +1204,15 @@ function getOrCreateModelCaptureCommands(
 // ─── Material Uniform Packing ────────────────────────────────────────────────
 
 function packMaterialUniforms(
-  data,
-  modelMatrix,
-  matInfo,
-  hasSkinning,
-  hasMorphTargets,
-  pickColor,
-  previousModelMatrix,
-  motionEnabled,
-  passClass,
+  data: Float32Array,
+  modelMatrix: Matrix4,
+  matInfo: MaterialInfo,
+  hasSkinning: boolean,
+  hasMorphTargets: boolean,
+  pickColor: ColorLike | null | undefined,
+  previousModelMatrix: Matrix4 | null | undefined,
+  motionEnabled: boolean,
+  passClass: number,
 ) {
   Matrix4.pack(modelMatrix, data, 0); // [0-15]
 
@@ -903,7 +1468,11 @@ function packMaterialUniforms(
   // stripped for non-metadata models, so setting this globally is safe —
   // only metadata models react. Reusing the reserved slot avoids growing
   // the material UBO (which would break non-metadata byte-identity).
-  data[174] = globalThis.CesiumWebGPUMetadataDebug === true ? 1.0 : 0.0;
+  data[174] =
+    (globalThis as { CesiumWebGPUMetadataDebug?: boolean })
+      .CesiumWebGPUMetadataDebug === true
+      ? 1.0
+      : 0.0;
   data[175] = 0;
 
   // C-R1-TILE-BATCH (Batch 100) — tileBatchFlags (slot 176-179):
@@ -951,7 +1520,11 @@ function packMaterialUniforms(
  * @returns {boolean} true iff `m` was a defined matrix.
  * @private
  */
-function writeTextureTransform(data, offsetFloats, m) {
+function writeTextureTransform(
+  data: Float32Array,
+  offsetFloats: number,
+  m: ArrayLike<number> | null | undefined,
+) {
   if (defined(m)) {
     // Column 0
     data[offsetFloats + 0] = m[0];
@@ -991,7 +1564,11 @@ function writeTextureTransform(data, offsetFloats, m) {
 
 // ─── Light Uniform Packing ───────────────────────────────────────────────────
 
-function packLightUniforms(data, frameState, model) {
+function packLightUniforms(
+  data: Float32Array,
+  frameState: CesiumFrameState,
+  model: ModelLike,
+) {
   // Session 65 Batch 18 — pack `lightDirectionEC` (the SCENE LIGHT
   // direction) instead of `sunDirectionEC`. When the scene uses a
   // SunLight, these are identical (see `UniformState.update` line
@@ -1074,7 +1651,12 @@ function packLightUniforms(data, frameState, model) {
   // space transformed through `model.modelMatrix` here). Caps at 8
   // total -- scene lights win when the union exceeds the cap so
   // user-added lights aren't silently dropped by a noisy asset.
-  packPunctualLights(data, 16, frameState.lights, model);
+  packPunctualLights(
+    data,
+    16,
+    frameState.lights as unknown as SceneLightsLike | null | undefined,
+    model,
+  );
 
   // NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — eye→IBL-frame rotation
   // (`model._iblReferenceFrameMatrix`, a column-major Cesium Matrix3 set
@@ -1103,7 +1685,12 @@ function packLightUniforms(data, frameState, model) {
 // eye-space reflection into world space. When no proxy is configured, writes
 // mode 0 and zeroes the block (the shader never reads the rest).
 const scratchProxyCenterRel = new Cartesian3();
-function packReflectionProxy(data, floatOffset, frameState, model) {
+function packReflectionProxy(
+  data: Float32Array,
+  floatOffset: number,
+  frameState: CesiumFrameState,
+  model: ModelLike,
+) {
   // Zero the whole 24-float block first (mode 0 + clean slate).
   for (let i = 0; i < 24; i++) {
     data[floatOffset + i] = 0.0;
@@ -1157,7 +1744,11 @@ function packReflectionProxy(data, floatOffset, frameState, model) {
 // NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — writes the model's
 // `_iblReferenceFrameMatrix` (column-major Matrix3) into a WGSL
 // std140 mat3x3 slot (3 vec4-padded columns).
-function packIBLReferenceFrame(data, floatOffset, model) {
+function packIBLReferenceFrame(
+  data: Float32Array,
+  floatOffset: number,
+  model: ModelLike,
+) {
   const m = model?._iblReferenceFrameMatrix;
   if (!m) {
     // Identity fallback (no IBL frame available yet).
@@ -1198,7 +1789,12 @@ const scratchLightPack = new Float32Array(164);
 // lights take priority when the combined count exceeds MAX_LIGHTS=8.
 const MAX_PUNCTUAL_LIGHTS = 8;
 const FLOATS_PER_PUNCTUAL_LIGHT = 20;
-function packPunctualLights(data, floatOffset, sceneLights, model) {
+function packPunctualLights(
+  data: Float32Array,
+  floatOffset: number,
+  sceneLights: SceneLightsLike | null | undefined,
+  model: ModelLike,
+) {
   // Header (4 floats: lightCount + 3 pad) followed by 8 light slots.
   // Total region = 4 + 8 * 20 = 164 floats. Always zero the entire
   // region first so previous frame's data doesn't leak when light
@@ -1295,7 +1891,11 @@ const scratchLightVec3b = new Cartesian3();
 
 // ─── GPU Texture Creation from glTF TextureReader ────────────────────────────
 
-function createGPUTextureFromReader(device, textureReader, colorSpace) {
+function createGPUTextureFromReader(
+  device: GPUDevice,
+  textureReader: ReaderOrNull,
+  colorSpace: string,
+): GPUTexture | null {
   if (!defined(textureReader)) {
     return null;
   }
@@ -1355,7 +1955,7 @@ function createGPUTextureFromReader(device, textureReader, colorSpace) {
     });
 
     device.queue.copyExternalImageToTexture(
-      { source, flipY: false },
+      { source: source as ImageBitmap, flipY: false },
       { texture: gpuTexture },
       { width, height },
     );
@@ -1369,7 +1969,11 @@ function createGPUTextureFromReader(device, textureReader, colorSpace) {
 
 // ─── Vertex Buffer Creation ──────────────────────────────────────────────────
 
-function createVertexBuffer(device, data, label) {
+function createVertexBuffer(
+  device: GPUDevice,
+  data: TypedArray,
+  label: string,
+): GPUBuffer {
   const buffer = device.createBuffer({
     label,
     size: Math.max(data.byteLength, 4),
@@ -1392,7 +1996,11 @@ function createVertexBuffer(device, data, label) {
  * @returns {Float32Array|null} `vertexCount * 4` RGBA floats, or null if unusable.
  * @private
  */
-function expandColorsToRGBA(colorFloat, components, vertexCount) {
+function expandColorsToRGBA(
+  colorFloat: Float32Array | null | undefined,
+  components: number,
+  vertexCount: number,
+): Float32Array | null {
   if (!defined(colorFloat) || !(components === 3 || components === 4)) {
     return null;
   }
@@ -1427,7 +2035,12 @@ function expandColorsToRGBA(colorFloat, components, vertexCount) {
  * Creates or updates GPU storage buffer for joint matrices.
  * @private
  */
-function ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData) {
+function ensureJointMatricesBuffer(
+  device: GPUDevice,
+  pipelineCache: PipelineCacheLike,
+  nodeCache: NodeCache,
+  skinData: SkinData,
+) {
   const byteLength = skinData.byteLength;
 
   // Create storage buffer if it doesn't exist or joint count changed
@@ -1466,7 +2079,10 @@ function ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData) {
  *
  * @private
  */
-function ensurePrevJointMatricesBuffer(device, nodeCache) {
+function ensurePrevJointMatricesBuffer(
+  device: GPUDevice,
+  nodeCache: NodeCache,
+) {
   const byteLength = nodeCache.prevPackedJointMatrices.byteLength;
   if (
     !defined(nodeCache.prevJointBuffer) ||
@@ -1515,13 +2131,16 @@ function ensurePrevJointMatricesBuffer(device, nodeCache) {
  * @returns {string} GPUPrimitiveTopology
  * @private
  */
-function topologyForPrimitiveType(primitiveType) {
+function topologyForPrimitiveType(primitiveType: number): GPUPrimitiveTopology {
   return primitiveType === PrimitiveType.POINTS
     ? "point-list"
     : "triangle-list";
 }
 
-function applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache) {
+function applyPrimitiveMetadataToPipelineCache(
+  pipelineCache: PipelineCacheLike,
+  primCache: PrimitiveRenderData,
+) {
   // GLTF-POINTS-MODE — sticky topology rides the same "set before every
   // getPipeline* build" contract as the metadata/customShader chunks below.
   // Defaults to triangle-list for records that predate the field.
@@ -1587,7 +2206,10 @@ function applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache) {
  * @param {import("../../Scene/Model/Model.js").default} model
  * @private
  */
-function applyCustomShaderTranslucency(matInfo, model) {
+function applyCustomShaderTranslucency(
+  matInfo: MaterialInfo,
+  model: ModelLike,
+) {
   const customShader = model.customShader;
   if (!defined(customShader)) {
     return;
@@ -1601,7 +2223,12 @@ function applyCustomShaderTranslucency(matInfo, model) {
   // INHERIT → leave matInfo.alphaMode as extracted (byte-identical off path).
 }
 
-function ensureModelCustomShaderResources(device, model, cache, pipelineCache) {
+function ensureModelCustomShaderResources(
+  device: GPUDevice,
+  model: ModelLike,
+  cache: ModelWebGPUCache,
+  pipelineCache: PipelineCacheLike,
+) {
   const customShader = model.customShader;
   const hasWgsl =
     defined(customShader) &&
@@ -1642,7 +2269,7 @@ function ensureModelCustomShaderResources(device, model, cache, pipelineCache) {
       classHash: generated.classHash | 0,
       defines,
       uboFields: generated.uboFields,
-      textureFields: generated.textureFields,
+      textureFields: generated.textureFields as Array<{ uniformName: string }>,
       uboBuffer: null,
       uboByteLength: 0,
     };
@@ -1650,7 +2277,7 @@ function ensureModelCustomShaderResources(device, model, cache, pipelineCache) {
   }
 
   // (Re)pack + upload the uniforms UBO from the live uniform values every frame.
-  const packed = packUniformBuffer(cs.uboFields, customShader);
+  const packed = packUniformBuffer(cs.uboFields as object[], customShader);
   if (!defined(cs.uboBuffer) || cs.uboByteLength !== packed.byteLength) {
     if (defined(cs.uboBuffer)) {
       cs.uboBuffer.destroy();
@@ -1676,12 +2303,15 @@ function ensureModelCustomShaderResources(device, model, cache, pipelineCache) {
  *
  * @private
  */
-function getCustomShaderEntries(cache, pipelineCache) {
+function getCustomShaderEntries(
+  cache: ModelWebGPUCache,
+  pipelineCache: PipelineCacheLike,
+) {
   const cs = cache._customShader;
   if (!defined(cs) || !defined(cs.uboBuffer)) {
     return [];
   }
-  const entries = [
+  const entries: GPUBindGroupEntry[] = [
     { binding: CUSTOM_SHADER_UBO_BINDING, resource: { buffer: cs.uboBuffer } },
   ];
   const placeholderView = pipelineCache.defaultWhiteTexture.createView();
@@ -1715,18 +2345,18 @@ function getCustomShaderEntries(cache, pipelineCache) {
  * @private
  */
 function ensurePrimitiveCache(
-  device,
-  cache,
-  pipelineCache,
-  primKey,
-  geometry,
-  matInfo,
-) {
+  device: GPUDevice,
+  cache: ModelWebGPUCache,
+  pipelineCache: PipelineCacheLike,
+  primKey: string | number,
+  geometry: PrimitiveGeometry,
+  matInfo: MaterialInfo,
+): PrimitiveRenderData {
   if (defined(cache.primitives[primKey])) {
     return cache.primitives[primKey];
   }
 
-  const primCache = {
+  const primCache: PrimitiveRenderData = {
     positionBuffer: null,
     normalBuffer: null,
     tangentBuffer: null,
@@ -1899,7 +2529,11 @@ function ensurePrimitiveCache(
   // `geometry.metadataData` is undefined and slot 9 is omitted from the
   // layout, keeping non-metadata models byte-identical.
   if (geometry.hasMetadata && defined(geometry.metadataData)) {
-    ensureMetadataResources(device, primCache, geometry.metadataData);
+    ensureMetadataResources(
+      device,
+      primCache,
+      geometry.metadataData as Float32Array,
+    );
   }
   // DP-H46c — property-TEXTURE GPU resources. Upload each unique physical
   // property texture (sourced from the glTF texture reader, like PBR
@@ -2235,14 +2869,14 @@ function ensurePrimitiveCache(
  *   KHR slots (12-25) are emitted; when clear they're omitted.
  */
 function getModelTextureEntries(
-  primCache,
-  refractionView,
-  materialDefines,
-  customShaderEntries,
+  primCache: PrimitiveRenderData,
+  refractionView: GPUTextureView | null,
+  materialDefines: number,
+  customShaderEntries: GPUBindGroupEntry[] | null | undefined,
 ) {
   const v = primCache.textureViews;
   const s = primCache.textureSamplers;
-  const entries = [
+  const entries: GPUBindGroupEntry[] = [
     // 2-11: PBR (always, both basic and full variants)
     { binding: 2, resource: v.baseColor },
     { binding: 3, resource: s.base },
@@ -2346,15 +2980,15 @@ function getModelTextureEntries(
  * @private
  */
 function buildMergedMaterialBindGroup(
-  device,
-  pipelineCache,
-  materialBuffer,
-  lightBuffer,
-  textureEntries,
-  featureIdEntries,
-  iblEntries,
-  materialDefines,
-  frameState,
+  device: GPUDevice,
+  pipelineCache: PipelineCacheLike,
+  materialBuffer: WebGPUBuffer | null,
+  lightBuffer: WebGPUBuffer | null,
+  textureEntries: GPUBindGroupEntry[] | null | undefined,
+  featureIdEntries: GPUBindGroupEntry[] | null | undefined,
+  iblEntries: GPUBindGroupEntry[] | null | undefined,
+  materialDefines: number,
+  frameState: CesiumFrameState,
 ) {
   return device.createBindGroup({
     layout: pipelineCache.getOrCreateMaterialBGL(materialDefines | 0),
@@ -2376,7 +3010,10 @@ function buildMergedMaterialBindGroup(
  * the cubemap sample on an explicit "iblEnabled" flag.
  * @private
  */
-function defaultIBLEntries(pipelineCache, frameState) {
+function defaultIBLEntries(
+  pipelineCache: PipelineCacheLike,
+  frameState: CesiumFrameState,
+): GPUBindGroupEntry[] {
   return [
     { binding: 33, resource: pipelineCache.defaultIBLCubemapView },
     { binding: 34, resource: pipelineCache.defaultIBLCubemapView },
@@ -2396,8 +3033,15 @@ function defaultIBLEntries(pipelineCache, frameState) {
  * collapses the split-sum term to `radiance * F0`.
  * @private
  */
-function brdfLutEntries(pipelineCache, frameState) {
-  const lutTex = frameState?.brdfLutGenerator?._colorTexture;
+function brdfLutEntries(
+  pipelineCache: PipelineCacheLike,
+  frameState: CesiumFrameState,
+): GPUBindGroupEntry[] {
+  const lutTex = (
+    frameState?.brdfLutGenerator as
+      | { _colorTexture?: { _webgpuTextureView?: GPUTextureView | null } }
+      | undefined
+  )?._colorTexture;
   const lutView = lutTex?._webgpuTextureView;
   return [
     {
@@ -2418,7 +3062,11 @@ function brdfLutEntries(pipelineCache, frameState) {
  * generated mips.
  * @private
  */
-function buildModelIBLEntries(model, pipelineCache, frameState) {
+function buildModelIBLEntries(
+  model: ModelLike,
+  pipelineCache: PipelineCacheLike,
+  frameState: CesiumFrameState,
+): GPUBindGroupEntry[] {
   const ibl = model?._imageBasedLighting;
   let specularView = ibl?._webgpuSpecularView;
   let diffuseView = ibl?._webgpuDiffuseView;
@@ -2507,15 +3155,15 @@ function buildModelIBLEntries(model, pipelineCache, frameState) {
  * @private
  */
 function buildMergedInstanceBindGroup(
-  device,
-  pipelineCache,
-  jointBuffer,
-  morphDeltaBuffer,
-  morphWeightBuffer,
-  instanceBuffer,
-  prevJointBuffer,
-  prevMorphWeightBuffer,
-  prevInstanceBuffer,
+  device: GPUDevice,
+  pipelineCache: PipelineCacheLike,
+  jointBuffer: GPUBufferOrNull,
+  morphDeltaBuffer: GPUBufferOrNull,
+  morphWeightBuffer: GPUBufferOrNull,
+  instanceBuffer: GPUBufferOrNull,
+  prevJointBuffer: GPUBufferOrNull,
+  prevMorphWeightBuffer: GPUBufferOrNull,
+  prevInstanceBuffer: GPUBufferOrNull,
 ) {
   return device.createBindGroup({
     layout: pipelineCache.instanceBGL,
@@ -2590,8 +3238,12 @@ function buildMergedInstanceBindGroup(
  * Creates GPU textures for a material, falling back to defaults.
  * @private
  */
-function createMaterialTextures(device, pipelineCache, matInfo) {
-  const created = [];
+function createMaterialTextures(
+  device: GPUDevice,
+  pipelineCache: PipelineCacheLike,
+  matInfo: MaterialInfo,
+) {
+  const created: GPUTexture[] = [];
   const defWhite = pipelineCache.defaultWhiteTexture;
   const defNormal = pipelineCache.defaultNormalTexture;
   const defBlack = pipelineCache.defaultBlackTexture;
@@ -2604,9 +3256,14 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
   // `ensurePrimitiveCache` call (Mars, Moon, Aerometrex SF
   // photogrammetry, BIM base color) render with white-fallback
   // bind groups for their entire lifetime.
-  const placeholderSlots = new Set();
+  const placeholderSlots = new Set<string>();
 
-  function tryCreate(slot, reader, fallback, colorSpace) {
+  function tryCreate(
+    slot: string,
+    reader: ReaderOrNull,
+    fallback: GPUTexture,
+    colorSpace: string,
+  ) {
     if (!defined(reader)) {
       return fallback;
     }
@@ -2866,7 +3523,11 @@ const TEXTURE_SLOT_SCHEMA = [
  *
  * @private
  */
-function refreshDeferredModelTextures(device, primCache, matInfo) {
+function refreshDeferredModelTextures(
+  device: GPUDevice,
+  primCache: PrimitiveRenderData,
+  matInfo: MaterialInfo,
+) {
   const placeholders = primCache.placeholderSlots;
   if (!placeholders || placeholders.size === 0) {
     return false;
@@ -2878,8 +3539,8 @@ function refreshDeferredModelTextures(device, primCache, matInfo) {
     }
     let reader = null;
     for (const r of schema.readers) {
-      if (defined(matInfo[r])) {
-        reader = matInfo[r];
+      if (defined((matInfo as unknown as Record<string, ReaderOrNull>)[r])) {
+        reader = (matInfo as unknown as Record<string, ReaderOrNull>)[r];
         break;
       }
     }
@@ -2921,7 +3582,7 @@ function refreshDeferredModelTextures(device, primCache, matInfo) {
  * @param {Model} model - The Model instance
  * @param {FrameState} frameState
  */
-function updateWebGPUModel(model, frameState) {
+function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
   if (!model.show || !model.ready) {
     return;
   }
@@ -2969,7 +3630,7 @@ function updateWebGPUModel(model, frameState) {
   //>>includeEnd('debug');
 
   const commandList = frameState.commandList;
-  const context = frameState.context;
+  const context = frameState.context as unknown as ModelRenderContext;
   const device = context.device;
 
   // Initialize model cache
@@ -2989,7 +3650,11 @@ function updateWebGPUModel(model, frameState) {
   if (!defined(cache.pipelineCache)) {
     const fmt = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    cache.pipelineCache = new WebGPUModelPipelineCache(device, fmt, depthFmt);
+    cache.pipelineCache = new WebGPUModelPipelineCache(
+      device,
+      fmt,
+      depthFmt,
+    ) as unknown as PipelineCacheLike;
   }
   const pipelineCache = cache.pipelineCache;
 
@@ -3008,7 +3673,7 @@ function updateWebGPUModel(model, frameState) {
   // ref so the capture pass can build per-face descriptors without a static
   // import of this renderer (avoids a circular import).
   const wantCapturePublish = context.sceneCaptureReflections === true;
-  let captureRecords = null;
+  let captureRecords: CaptureRecord[] | null = null;
   if (wantCapturePublish) {
     const frameNumber = frameState.frameNumber ?? 0;
     let pub = context._webgpuSceneCaptureModels;
@@ -3043,7 +3708,10 @@ function updateWebGPUModel(model, frameState) {
   // switch into the pipeline cache; a flip wipes pipelines so modules
   // recompile with/without the LOG_DEPTH define.
   const logDepthFlipped = pipelineCache.maybeUpdateForLogDepth(
-    isWebGPULogDepthActive(context, frameState),
+    isWebGPULogDepthActive(
+      context as unknown as Parameters<typeof isWebGPULogDepthActive>[0],
+      frameState,
+    ),
   );
   // WIRE-MODEL-SPLITTER — mirror model.splitDirection into the per-model
   // pipeline cache; a flip wipes pipelines so modules recompile
@@ -3072,10 +3740,11 @@ function updateWebGPUModel(model, frameState) {
   const modelColorFlipped =
     pipelineCache.maybeUpdateForModelColor(modelHasColor);
   const modelColorBlend = modelHasColor
-    ? (ColorBlendMode.getColorBlend(
-        model.colorBlendMode,
-        model.colorBlendAmount,
-      ) ?? 0.0)
+    ? ((
+        ColorBlendMode as unknown as {
+          getColorBlend(mode: unknown, amount: number): number;
+        }
+      ).getColorBlend(model.colorBlendMode, model.colorBlendAmount) ?? 0.0)
     : 0.0;
   // WIRE-MODEL-SILHOUETTE — mirror WebGL's `Model.hasSilhouette()`
   // predicate (silhouetteSize > 0 && silhouetteColor.alpha > 0 &&
@@ -3108,7 +3777,9 @@ function updateWebGPUModel(model, frameState) {
   let silhouetteTranslucent = false;
   if (modelHasSilhouette) {
     if (!defined(model._silhouetteId)) {
-      model._silhouetteId = ++ModelSilhouettePipelineStage.silhouettesLength;
+      model._silhouetteId = ++(
+        ModelSilhouettePipelineStage as unknown as { silhouettesLength: number }
+      ).silhouettesLength;
     }
     // Wrap around after the 8-bit stencil limit (WebGL
     // `deriveSilhouetteModelCommand` parity).
@@ -3289,14 +3960,19 @@ function updateWebGPUModel(model, frameState) {
       const bs2D = model._sceneGraph._boundingSphere2D;
       const left = bs2D.center.y - bs2D.radius;
       const right = bs2D.center.y + bs2D.radius;
-      const idl2D = frameState.mapProjection.ellipsoid.maximumRadius * Math.PI;
+      const idl2D =
+        (frameState.mapProjection as { ellipsoid: { maximumRadius: number } })
+          .ellipsoid.maximumRadius * Math.PI;
       if (
         (left < idl2D && right > idl2D) ||
         (left < -idl2D && right > -idl2D)
       ) {
         idlDuplicateActive = true;
         idlShiftAmount2D =
-          2.0 * Math.PI * frameState.mapProjection.ellipsoid.maximumRadius;
+          2.0 *
+          Math.PI *
+          (frameState.mapProjection as { ellipsoid: { maximumRadius: number } })
+            .ellipsoid.maximumRadius;
       }
     }
   }
@@ -3336,7 +4012,8 @@ function updateWebGPUModel(model, frameState) {
     shadowState?.lightShadowsEnabled && shadowState?.lightShadowMaps?.[0]
       ? shadowState.lightShadowMaps[0]
       : undefined;
-  const csmCandidate = frameState.context?.csmRenderer;
+  const csmCandidate = (frameState.context as unknown as ModelRenderContext)
+    ?.csmRenderer;
   const csmBinding =
     defined(csmCandidate) &&
     csmCandidate.enabled === true &&
@@ -3357,7 +4034,7 @@ function updateWebGPUModel(model, frameState) {
   // Both need to be populated for the gate to flip — when either is
   // missing we fall through to the placeholder bind group and the
   // shader's `edgeControl.x <= 0.5` early-out keeps the stage benign.
-  const ctx = frameState.context;
+  const ctx = frameState.context as unknown as ModelRenderContext;
   const edgeColorView = ctx?._edgeColorView ?? null;
   const edgeIdView = ctx?._edgeIdView ?? null;
   const edgeDepthView = ctx?._edgeDepthView ?? null;
@@ -3435,7 +4112,8 @@ function updateWebGPUModel(model, frameState) {
     // When omitted (e.g., scene without WebGPUSceneRenderer hooked up),
     // the effects bind group falls back to per-device placeholders and
     // the FS chunk early-outs via activeLightCount=0.
-    clusteredLighting: frameState.context._clusteredLightingBuffers,
+    clusteredLighting: (frameState.context as unknown as ModelRenderContext)
+      ._clusteredLightingBuffers,
   });
   cache.effectsBG = fxRes.bindGroup;
 
@@ -3665,7 +4343,7 @@ function updateWebGPUModel(model, frameState) {
         nodeCache,
         runtimeNode,
         model,
-      );
+      ) as InstancingResourcesLike | undefined;
       if (defined(instRes)) {
         instanceCount = instRes.instanceCount;
         instanceBuffer = instRes.storageBuffer;
@@ -3831,7 +4509,9 @@ function updateWebGPUModel(model, frameState) {
         const synthesized = synthesizeImplicitFeatureIdData(
           model,
           runtimeNode,
-          glTFPrimitive,
+          glTFPrimitive as unknown as Parameters<
+            typeof synthesizeImplicitFeatureIdData
+          >[2],
           geometry.vertexCount,
         );
         if (defined(synthesized)) {
@@ -3856,7 +4536,9 @@ function updateWebGPUModel(model, frameState) {
       if (defined(glTFPrimitive)) {
         const metadataAttribute = resolveMetadataAttributeData(
           model,
-          glTFPrimitive,
+          glTFPrimitive as unknown as Parameters<
+            typeof resolveMetadataAttributeData
+          >[1],
         );
         if (defined(metadataAttribute)) {
           geometry.metadataData = metadataAttribute.data;
@@ -3867,7 +4549,9 @@ function updateWebGPUModel(model, frameState) {
         // the model maps ≥1 GPU-compatible property texture to this primitive.
         const propertyTextureLayout = resolvePropertyTextureLayout(
           model,
-          glTFPrimitive,
+          glTFPrimitive as unknown as Parameters<
+            typeof resolvePropertyTextureLayout
+          >[1],
         );
         if (defined(propertyTextureLayout)) {
           geometry.propertyTextureLayout = propertyTextureLayout;
@@ -3885,7 +4569,9 @@ function updateWebGPUModel(model, frameState) {
         // pad slot → `featureId0`). Non-instanced primitives ignore it.
         const propertyTableLayout = resolvePropertyTableLayout(
           model,
-          glTFPrimitive,
+          glTFPrimitive as unknown as Parameters<
+            typeof resolvePropertyTableLayout
+          >[1],
           runtimeNode,
         );
         if (defined(propertyTableLayout)) {
@@ -4148,8 +4834,10 @@ function updateWebGPUModel(model, frameState) {
           device,
           primCache,
           geometry,
-          morphWeights,
-        );
+          morphWeights as unknown as Parameters<
+            typeof ensureMorphTargetResources
+          >[3],
+        ) as MorphTargetResourcesLike | undefined;
         if (defined(morphRes)) {
           morphDeltaBuffer = morphRes.storageBuffer;
           morphWeightBuffer = morphRes.weightBuffer;
@@ -4168,22 +4856,27 @@ function updateWebGPUModel(model, frameState) {
       // identity stably across re-extractions.
       const passes = frameState.passes;
       const allowAllocate = !!(passes && (passes.pick || passes.render));
-      const modelPickId = ensurePickId(model, context, cache, {
-        idKey: primKey,
-        allowAllocate,
-        // DP-H46e — fold a `detail.model` into the pick object so the
-        // backend-agnostic `Scene.pickMetadata` orchestration (which reads
-        // `pickedObject.detail.model.structuralMetadata` — see
-        // `Scene.pickMetadata`/`Scene.pickMetadataSchema`) resolves the model's
-        // structural metadata on WebGPU exactly as it does for WebGL's
-        // `PickingPipelineStage.buildPickObject` (`{ primitive, detail: { model,
-        // node, primitive } }`). Without this, `scene.pick` on WebGPU returns
-        // `{ primitive: model }` with no `.detail.model`, so `pickMetadata` bails
-        // out at the `detail?.model?.structuralMetadata` guard before reaching
-        // the WebGPU metadata-pick producer. Only `model` is needed by the
-        // metadata path; node/primitive are omitted (no consumer on WebGPU yet).
-        detail: { model: model },
-      });
+      const modelPickId = ensurePickId(
+        model as unknown as Parameters<typeof ensurePickId>[0],
+        context as unknown as Parameters<typeof ensurePickId>[1],
+        cache as unknown as Parameters<typeof ensurePickId>[2],
+        {
+          idKey: primKey,
+          allowAllocate,
+          // DP-H46e — fold a `detail.model` into the pick object so the
+          // backend-agnostic `Scene.pickMetadata` orchestration (which reads
+          // `pickedObject.detail.model.structuralMetadata` — see
+          // `Scene.pickMetadata`/`Scene.pickMetadataSchema`) resolves the model's
+          // structural metadata on WebGPU exactly as it does for WebGL's
+          // `PickingPipelineStage.buildPickObject` (`{ primitive, detail: { model,
+          // node, primitive } }`). Without this, `scene.pick` on WebGPU returns
+          // `{ primitive: model }` with no `.detail.model`, so `pickMetadata` bails
+          // out at the `detail?.model?.structuralMetadata` guard before reaching
+          // the WebGPU metadata-pick producer. Only `model` is needed by the
+          // metadata path; node/primitive are omitted (no consumer on WebGPU yet).
+          detail: { model: model },
+        },
+      );
       const pickColor = modelPickId?.color;
 
       // TAA Slice 2c (Batch 96) — track per-model previousModelMatrix on
@@ -4264,13 +4957,15 @@ function updateWebGPUModel(model, frameState) {
         device,
         primCache,
         model,
-        glTFPrimitive,
+        glTFPrimitive as unknown as Parameters<
+          typeof ensureFeatureIdResources
+        >[3],
         runtimeNode,
         pipelineCache,
         context,
         cache,
         pickPassActive,
-      );
+      ) as FeatureIdResourcesLike | undefined;
 
       // Set instancing + feature ID flags AFTER packMaterialUniforms
       {
@@ -4433,7 +5128,7 @@ function updateWebGPUModel(model, frameState) {
         primitiveHasEdges &&
         edgeDisplayMode === EdgeDisplayMode.EDGES_ONLY;
 
-      const drawPasses = [];
+      const drawPasses: number[] = [];
       if (isClassifier) {
         const classType = model.classificationType;
         if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
@@ -4581,7 +5276,7 @@ function updateWebGPUModel(model, frameState) {
         // for OPAQUE/MASK because they already write depth.
         classificationDepthPipeline: primCache.depthWritePipeline,
       };
-      const webgpuCmd = new WebGPUDrawCommand(webgpuCmdArgs);
+      const webgpuCmd: ModelDrawCommand = new WebGPUDrawCommand(webgpuCmdArgs);
 
       // C2-25 ENV-SCENE-CAPTURE (Batch 447) — collect this primitive's
       // camera-independent draw resources so the env-map capture pass can
@@ -5360,7 +6055,13 @@ function updateWebGPUModel(model, frameState) {
               defined(edgeGltfPrimitive.attributes)
             ) {
               const fidAttr = edgeGltfPrimitive.attributes.find(
-                (attr) =>
+                (attr: {
+                  semantic?: string;
+                  name?: string;
+                  typedArray?:
+                    Uint8Array | Uint16Array | Uint32Array | Float32Array;
+                  [key: string]: unknown;
+                }) =>
                   attr.semantic === "_FEATURE_ID" ||
                   (attr.name && attr.name.startsWith("_FEATURE_ID_")),
               );
@@ -5384,15 +6085,19 @@ function updateWebGPUModel(model, frameState) {
             );
             const components = geometry.color0ComponentCount ?? 4;
             edgeVertexColors = expandColorsToRGBA(
-              colorFloat,
+              colorFloat as Float32Array,
               components,
               geometry.vertexCount,
             );
           }
           const edgeGeom = extractEdgeGeometry(
-            edgeGltfPrimitive,
+            edgeGltfPrimitive as unknown as Parameters<
+              typeof extractEdgeGeometry
+            >[0],
             geometry.positionData,
-            edgeFeatureIdData,
+            edgeFeatureIdData as unknown as Parameters<
+              typeof extractEdgeGeometry
+            >[2],
             edgeVertexColors,
           );
           if (defined(edgeGeom)) {
@@ -5479,9 +6184,9 @@ function updateWebGPUModel(model, frameState) {
 
           writeEdgeEmitterUniforms(
             device,
-            primCache.edgeResources,
-            mvpData,
-            mvData,
+            primCache.edgeResources as EdgePrimitiveResources,
+            mvpData as unknown as Float32Array,
+            mvData as unknown as Float32Array,
             edgeColor,
             vpW,
             vpH,
@@ -5619,7 +6324,7 @@ const scratchEdgeMVArray = new Float32Array(16);
  * @param {object|undefined} pc per-primitive cache slot
  * @private
  */
-function destroyPrimitiveCacheResources(pc) {
+function destroyPrimitiveCacheResources(pc: PrimitiveRenderData | undefined) {
   if (!defined(pc)) {
     return;
   }
@@ -5659,12 +6364,12 @@ function destroyPrimitiveCacheResources(pc) {
   // C-R8-EDGE-EMITTER (Batch 45) — destroy per-primitive edge
   // buffers. `edgeResources === false` is the sentinel for
   // "primitive had no edges"; skip in that case.
-  if (pc.edgeResources && pc.edgeResources !== false) {
+  if (pc.edgeResources && (pc.edgeResources as unknown) !== false) {
     destroyEdgePrimitiveResources(pc.edgeResources);
   }
 }
 
-function destroyWebGPUModelResources(model) {
+function destroyWebGPUModelResources(model: ModelLike) {
   const cache = model._webgpuCache;
   if (!defined(cache)) {
     return;
@@ -5681,7 +6386,7 @@ function destroyWebGPUModelResources(model) {
   // C-R9-MODEL-PICK (Batch 54 / refactored Batch 59) — release every
   // per-primitive pick ID back to the registry so its slot can be reused.
   // No-op if the model never entered a render or pick pass.
-  destroyPickIds(cache);
+  destroyPickIds(cache as unknown as Parameters<typeof destroyPickIds>[0]);
 
   // Destroy per-primitive resources
   const primKeys = Object.keys(cache.primitives);
