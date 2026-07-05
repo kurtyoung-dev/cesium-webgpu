@@ -28,6 +28,7 @@ import Pass from "../Pass.js";
 import PrimitiveType from "../../Core/PrimitiveType.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import type { WebGPUCommandOwner } from "./WebGPUDrawCommand.js";
 import WebGPUShaderModule from "./WebGPUShaderModule.js";
 import {
   makeBindGroupLayout,
@@ -83,6 +84,326 @@ import PrimitiveDepthFailColorSource from "../../Shaders/WebGPU/Primitive/Primit
 // without descriptor-shape drift (and so the pipeline cache hashes
 // stay stable across the conversion).
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
+import type { CesiumRenderStateLike } from "./RenderStateToPipelineVariant.js";
+
+// ─── JS-interop type façades (type-only; erase at compile) ──────────────────
+// Minimal structural shapes over the untyped-JS objects this module consumes
+// (Primitive / Appearance / Material / Geometry) plus the per-primitive GPU
+// resource caches it owns. They carry no runtime code — the TS conversion emits
+// byte-identical JavaScript. `declare global` augmentations add the WebGPU-only
+// fields the ambient CesiumFrameState / CesiumUniformState / CesiumGraphicsContext
+// interfaces (cesium-js-types.d.ts) don't yet expose.
+
+type NumArray =
+  | Float32Array
+  | Float64Array
+  | Uint32Array
+  | Uint16Array
+  | Uint8Array
+  | Int32Array
+  | Int16Array
+  | Int8Array
+  | number[];
+
+type BufferLike = GPUBuffer | WebGPUBuffer;
+type IndexFormatLike = "uint16" | "uint32";
+
+interface AttributeLike {
+  values?: NumArray;
+  componentsPerAttribute?: number;
+  componentDatatype?: number;
+  normalize?: boolean;
+}
+
+interface GeometryAttributesLike {
+  position?: AttributeLike;
+  position3DHigh?: AttributeLike;
+  position3DLow?: AttributeLike;
+  position2DHigh?: AttributeLike;
+  position2DLow?: AttributeLike;
+  normal?: AttributeLike;
+  st?: AttributeLike;
+  tangent?: AttributeLike;
+  bitangent?: AttributeLike;
+  color?: AttributeLike;
+  batchId?: AttributeLike;
+  compressedAttributes?: AttributeLike;
+  expandAndWidth?: AttributeLike;
+  prevPosition3DHigh?: AttributeLike;
+  prevPosition3DLow?: AttributeLike;
+  nextPosition3DHigh?: AttributeLike;
+  nextPosition3DLow?: AttributeLike;
+  prevPosition2DHigh?: AttributeLike;
+  prevPosition2DLow?: AttributeLike;
+  nextPosition2DHigh?: AttributeLike;
+  nextPosition2DLow?: AttributeLike;
+  [key: string]: AttributeLike | undefined;
+}
+
+interface CompressedAttributesMeta {
+  hasSt?: boolean;
+  hasNormal?: boolean;
+  hasTangent?: boolean;
+  hasBitangent?: boolean;
+  isExtrude?: boolean;
+}
+
+interface GeometryLike {
+  attributes?: GeometryAttributesLike;
+  indices?: NumArray;
+  primitiveType?: number;
+  _compressedAttributesMeta?: CompressedAttributesMeta;
+}
+
+interface AttributePresenceHint {
+  hasSt?: boolean;
+  hasNormal?: boolean;
+  hasTangent?: boolean;
+  hasBitangent?: boolean;
+}
+
+interface RTEMatrices {
+  mvpRTE: Matrix4;
+  modelViewRTE: Matrix4;
+  modelView: Matrix4;
+  camHigh: Cartesian3;
+  camLow: Cartesian3;
+}
+
+interface ShaderInfoLike {
+  type: string;
+  code: string;
+  needsTexture?: boolean;
+}
+
+interface ShaderModuleLike {
+  module: GPUShaderModule;
+}
+
+interface VertexLayoutLike {
+  floatsPerVertex?: number;
+  stride?: number;
+  layout: GPUVertexBufferLayout;
+}
+
+interface MaterialUniformsLike {
+  repeat?: { x?: number | boolean; y?: number | boolean };
+  [key: string]: unknown;
+}
+
+interface MaterialUniformBufferLike {
+  isDirty?: boolean;
+  gpuData?: ArrayBufferView;
+  clearDirty?(): void;
+}
+
+interface MaterialLike {
+  _imageSources?: { [key: string]: unknown };
+  _uniformBuffer?: MaterialUniformBufferLike;
+  uniforms?: MaterialUniformsLike;
+}
+
+interface AppearanceVertexFormatLike {
+  st?: boolean;
+  normal?: boolean;
+  tangent?: boolean;
+  bitangent?: boolean;
+  position?: boolean;
+  [key: string]: boolean | undefined;
+}
+
+interface ColorLike {
+  red: number;
+  green: number;
+  blue: number;
+  alpha: number;
+}
+
+// Per-instance BatchTable attribute values are either a Color (red/green/
+// blue/alpha) or a packed Cartesian (x/y/z/w) depending on the source; the
+// reader sniffs which shape it got.
+interface BatchedAttributeValue {
+  red?: number;
+  green?: number;
+  blue?: number;
+  alpha?: number;
+  x?: number;
+  y?: number;
+  z?: number;
+  w?: number;
+}
+
+interface BatchTableLike {
+  getBatchedAttribute(
+    instanceIndex: number,
+    attributeIndex: number,
+    result?: unknown,
+  ): BatchedAttributeValue | undefined;
+}
+
+interface AppearanceLike {
+  flat?: boolean;
+  closed?: boolean;
+  renderState?: CesiumRenderStateLike;
+  vertexFormat?: AppearanceVertexFormatLike;
+  material?: MaterialLike;
+}
+
+interface PrimitiveLike {
+  appearance?: AppearanceLike;
+  modelMatrix?: Matrix4;
+  _geometries?: GeometryLike[];
+  _webgpuGeometryData?: GeometryLike[];
+  _numberOfInstances?: number;
+  _allowPicking?: boolean;
+  _pickIds?: Array<{ color?: ColorLike }>;
+  _batchTable?: BatchTableLike;
+  _batchTableAttributeIndices?: {
+    color?: number;
+    depthFailColor?: number;
+  };
+  _depthFailAppearance?: AppearanceLike;
+  _depthFailMaterial?: MaterialLike;
+  _webgpuCache?: CacheLike;
+  _webgpuPolylineCache?: CacheLike;
+  _webgpuPolylineMatCache?: CacheLike;
+}
+
+// Per-primitive GPU resource cache. Declared fields are read with concrete
+// types; the `[key: string]: unknown` index signature absorbs the many
+// write-only literal fields plus the dynamic `cache[k.<slot>]` accesses in
+// ensureMaterialTextureBindGroup (which cast at the member-access sites).
+interface CacheLike {
+  shaderType?: string;
+  shaderModule?: ShaderModuleLike;
+  pipeline?: GPURenderPipeline;
+  pipelineFrontCull?: GPURenderPipeline;
+  pipelineBackCull?: GPURenderPipeline;
+  translucent?: boolean;
+  twoPasses?: boolean;
+  primitiveTopology?: string;
+  appearanceClosed?: boolean;
+  logDepthEnabled?: boolean;
+  pipelineFormatGeneration?: number;
+  cameraBindGroupLayout?: GPUBindGroupLayout;
+  cameraBindGroups?: GPUBindGroup[];
+  cameraBuffers?: GPUBuffer[];
+  materialBindGroupLayout?: GPUBindGroupLayout;
+  materialBindGroup?: GPUBindGroup;
+  materialBuffer?: GPUBuffer;
+  _materialBufferSize?: number;
+  effectsBGL?: GPUBindGroupLayout;
+  textureBindGroup?: GPUBindGroup;
+  textureBindGroupLayout?: GPUBindGroupLayout;
+  defaultTexture?: WebGPUTexture;
+  defaultSampler?: GPUSampler;
+  vertexBuffers?: BufferLike[];
+  vertexCounts?: number[];
+  indexBuffers?: BufferLike[];
+  indexCounts?: number[];
+  indexFormats?: IndexFormatLike[];
+  pickShaderModule?: ShaderModuleLike;
+  pickPipeline?: GPURenderPipeline;
+  pickCameraBindGroupLayout?: GPUBindGroupLayout;
+  pickCameraBindGroups?: GPUBindGroup[];
+  pickCameraBuffers?: GPUBuffer[];
+  pickMaterialBindGroupLayout?: GPUBindGroupLayout;
+  pickMaterialBindGroups?: GPUBindGroup[];
+  pickMaterialBuffers?: GPUBuffer[];
+  depthFailShaderModule?: ShaderModuleLike;
+  depthFailPipeline?: GPURenderPipeline;
+  depthFailMaterialBindGroups?: GPUBindGroup[];
+  depthFailMaterialBuffers?: GPUBuffer[];
+  dfShaderModule?: ShaderModuleLike;
+  dfShaderType?: string;
+  dfPipeline?: GPURenderPipeline;
+  dfTranslucent?: boolean;
+  dfPrimitiveTopology?: string;
+  dfLogDepthEnabled?: boolean;
+  dfPipelineFormatGeneration?: number;
+  dfCullMode?: GPUCullMode;
+  dfIsLit?: boolean;
+  dfNeedsTexture?: boolean;
+  dfEffectsBGL?: GPUBindGroupLayout;
+  dfCameraBindGroupLayout?: GPUBindGroupLayout;
+  dfCameraBindGroups?: GPUBindGroup[];
+  dfCameraBuffers?: GPUBuffer[];
+  dfMaterialBindGroup?: GPUBindGroup;
+  dfMaterialBindGroupLayout?: GPUBindGroupLayout;
+  dfMaterialBuffer?: GPUBuffer;
+  _dfMaterialBufferSize?: number;
+  dfTextureBindGroup?: GPUBindGroup;
+  dfTextureBindGroupLayout?: GPUBindGroupLayout;
+  dfVertexBuffers?: BufferLike[];
+  [key: string]: unknown;
+}
+
+// The renderer attaches these extras to each WebGPUDrawCommand instance.
+type PrimitiveDrawCommand = WebGPUDrawCommand & {
+  _webgpuCameraBuffer?: GPUBuffer;
+  _webgpuShaderType?: string;
+  _isPolylineAppearance?: boolean;
+  _label?: string;
+  vertexStride?: number;
+  _noEffectsSlot?: boolean;
+  _webgpuMatCache?: CacheLike;
+  _webgpuMaterial?: MaterialLike;
+  _webgpuMatShaderType?: string;
+  _webgpuMaterialBuffer?: GPUBuffer;
+  _webgpuMaterialUB?: MaterialUniformBufferLike;
+  _shadowCastLayout?: string;
+  _webgpuPickColor?: unknown;
+  _isPickCommand?: boolean;
+};
+
+// Minimal shapes for the WebGPU-context sidecars this module reads. The d.ts
+// types `csmRenderer` / `performanceManager` opaquely ("cast at the call
+// site"); we cast to these at the two read sites.
+interface CsmRendererLike {
+  enabled?: boolean;
+  cascadeParamsBuffer?: GPUBuffer;
+  cascadeArrayView?: GPUTextureView;
+  pcfRadius?: number;
+}
+
+interface AtmosphereLUTResources {
+  transmittanceView?: GPUTextureView;
+  inscatterView?: GPUTextureView;
+}
+
+interface PerformanceManagerLike {
+  ensureAtmosphereLUTResources?(device: GPUDevice): AtmosphereLUTResources;
+}
+
+interface CreatedTextureLike {
+  view?: GPUTextureView;
+  destroy(): void;
+}
+
+declare global {
+  interface CesiumFrameState {
+    useHDR?: boolean;
+  }
+  interface CesiumUniformState {
+    gamma?: number;
+    viewportOrthographic?: CesiumMatrix4;
+  }
+  interface CesiumGraphicsContext {
+    scenePipelineFormat?: GPUTextureFormat;
+    _scenePipelineFormatGeneration?: number;
+    _clusteredLightingActive?: boolean;
+    _clusteredLightingBuffers?: unknown;
+    _primitiveEffectsBG?: GPUBindGroup | null;
+    _primitiveEffectsBGFrameNumber?: number;
+    _primitiveEffectsBGToggleHash?: number;
+    performanceManager?: PerformanceManagerLike | null;
+    createTextureFromImage?(
+      source: unknown,
+      format: GPUTextureFormat,
+      flipY: boolean,
+    ): CreatedTextureLike | undefined | null;
+  }
+}
 
 // =========================================================================
 // Scratch variables for per-frame uniform updates (avoid per-frame allocations)
@@ -206,7 +527,7 @@ let _decompressMissingMetaWarned = false;
  * compressed buffer width.
  * @private
  */
-function expectedCompressedSlots(hint) {
+function expectedCompressedSlots(hint: AttributePresenceHint) {
   const hasSt = hint.hasSt === true;
   const hasNormal = hint.hasNormal === true;
   const hasTangent = hint.hasTangent === true;
@@ -249,7 +570,10 @@ function expectedCompressedSlots(hint) {
  *   with more attributes than the appearance consumes safely falls back.
  * @private
  */
-function ensureUncompressedAttributes(geometry, attributeHint) {
+function ensureUncompressedAttributes(
+  geometry: GeometryLike,
+  attributeHint?: AttributePresenceHint,
+) {
   const attrs = geometry.attributes;
   if (!defined(attrs)) {
     return;
@@ -522,7 +846,7 @@ function ensureUncompressedAttributes(geometry, attributeHint) {
  * @returns {null|{posHighValues: Float32Array, posLowValues: Float32Array, numVertices: number}}
  * @private
  */
-function extractPositionData(geometry) {
+function extractPositionData(geometry: GeometryLike) {
   const posHighAttr = geometry.attributes.position3DHigh;
   const posLowAttr = geometry.attributes.position3DLow;
   const posAttr = geometry.attributes.position;
@@ -594,7 +918,7 @@ function extractPositionData(geometry) {
  * with `outline: true`, every CZML cylinder, etc. (~12 CZML demos).
  * @private
  */
-function mapCesiumPrimitiveTypeToWebGPU(primitiveType) {
+function mapCesiumPrimitiveTypeToWebGPU(primitiveType: number) {
   if (!defined(primitiveType)) {
     return "triangle-list"; // default for geometries that don't set it
   }
@@ -628,7 +952,12 @@ function mapCesiumPrimitiveTypeToWebGPU(primitiveType) {
  * Helper: creates or reuses an index buffer for a geometry.
  * @private
  */
-function ensureIndexBuffer(device, geometry, cache, i) {
+function ensureIndexBuffer(
+  device: GPUDevice,
+  geometry: GeometryLike,
+  cache: CacheLike,
+  i: number,
+) {
   if (!defined(geometry.indices) || defined(cache.indexBuffers[i])) {
     return;
   }
@@ -655,7 +984,11 @@ function ensureIndexBuffer(device, geometry, cache, i) {
  * Returns { mvpRTE, modelViewRTE, modelView, camHigh, camLow }.
  * @private
  */
-function computeRTEMatrices(uniformState, camera, modelMatrix) {
+function computeRTEMatrices(
+  uniformState: CesiumUniformState,
+  camera: CesiumCamera,
+  modelMatrix: Matrix4,
+): RTEMatrices {
   const modelView = Matrix4.multiply(
     uniformState.view,
     modelMatrix,
@@ -695,7 +1028,7 @@ function computeRTEMatrices(uniformState, camera, modelMatrix) {
  * UniformState hasn't been seeded yet (first frame).
  * @private
  */
-function getFrameTime(uniformState) {
+function getFrameTime(uniformState: CesiumUniformState) {
   if (
     defined(uniformState) &&
     defined(uniformState.frameState) &&
@@ -716,7 +1049,7 @@ function getFrameTime(uniformState) {
  * this is > 0.5. Zero on the default SDR path → byte-identical.
  * @private
  */
-function getHdrGammaLane(uniformState) {
+function getHdrGammaLane(uniformState: CesiumUniformState) {
   const fs = defined(uniformState) ? uniformState.frameState : undefined;
   if (defined(fs) && fs.useHDR === true) {
     return typeof uniformState.gamma === "number" ? uniformState.gamma : 2.2;
@@ -731,7 +1064,11 @@ function getHdrGammaLane(uniformState) {
  *       logDepth tail log-depth epic Slice 5 — Mat/PBR/Basic)
  * @private
  */
-function writeRTEUniformsFlat(ud, rte, uniformState) {
+function writeRTEUniformsFlat(
+  ud: Float32Array,
+  rte: RTEMatrices,
+  uniformState: CesiumUniformState,
+) {
   Matrix4.pack(rte.mvpRTE, ud, 0);
   ud[16] = rte.camHigh.x;
   ud[17] = rte.camHigh.y;
@@ -762,7 +1099,11 @@ function writeRTEUniformsFlat(ud, rte, uniformState) {
  * shader's `logDepth` field reads it. See WebGPULogDepth.ts.
  * @private
  */
-function writeLogDepthTail(ud, offset, uniformState) {
+function writeLogDepthTail(
+  ud: Float32Array,
+  offset: number,
+  uniformState: CesiumUniformState,
+) {
   const usLog = uniformState;
   const frustum =
     defined(usLog) && defined(usLog.currentFrustum)
@@ -792,7 +1133,11 @@ function writeLogDepthTail(ud, offset, uniformState) {
  *       (DP-H41 prevVP, Batch 27; logDepth tail log-depth epic Slice 2b)
  * @private
  */
-function writeRTEUniformsLit(ud, rte, uniformState) {
+function writeRTEUniformsLit(
+  ud: Float32Array,
+  rte: RTEMatrices,
+  uniformState: CesiumUniformState,
+) {
   Matrix4.pack(rte.mvpRTE, ud, 0);
   Matrix4.pack(rte.modelViewRTE, ud, 16);
   const normalMatrix = Matrix4.inverse(rte.modelView, scratchNormalMatrix);
@@ -834,7 +1179,11 @@ function writeRTEUniformsLit(ud, rte, uniformState) {
  * `UniformState.update()` has seeded the slot.
  * @private
  */
-function writePreviousViewProjection(ud, offset, uniformState) {
+function writePreviousViewProjection(
+  ud: Float32Array,
+  offset: number,
+  uniformState: CesiumUniformState,
+) {
   const prevVP = defined(uniformState)
     ? uniformState.previousViewProjection
     : undefined;
@@ -907,7 +1256,12 @@ function writePreviousViewProjection(ud, offset, uniformState) {
 const scratchPolylineViewport = new BoundingRectangle();
 const scratchViewportTransform = new Matrix4();
 const scratchViewportOrtho = new Matrix4();
-function writeRTEUniformsPolyline(ud, rte, uniformState, context) {
+function writeRTEUniformsPolyline(
+  ud: Float32Array,
+  rte: RTEMatrices,
+  uniformState: CesiumUniformState,
+  context: CesiumGraphicsContext,
+) {
   // Parity head — mirrors writeRTEUniformsFlat's first 24 floats so the
   // shared RTE conventions stay aligned across shader families.
   Matrix4.pack(rte.mvpRTE, ud, 0);
@@ -1020,7 +1374,7 @@ function writeRTEUniformsPolyline(ud, rte, uniformState, context) {
 // through to the effects BG. Tracked as follow-up; this helper leaves
 // the clipping slots on the placeholder so clipping stays no-op.
 
-function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
+function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
   const context = frameState?.context;
   const device = context?.device;
   if (!defined(device)) {
@@ -1033,7 +1387,7 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
       ? shadowState.lightShadowMaps[0]
       : undefined;
 
-  const csmCandidate = context.csmRenderer;
+  const csmCandidate = context.csmRenderer as CsmRendererLike | undefined;
   const hasCsm =
     defined(csmCandidate) &&
     csmCandidate.enabled === true &&
@@ -1146,7 +1500,10 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
   return fxRes.bindGroup;
 }
 
-function _refreshPrimitiveEffectsSlot(command, frameState) {
+function _refreshPrimitiveEffectsSlot(
+  command: PrimitiveDrawCommand,
+  frameState: CesiumFrameState,
+) {
   if (!command.isWebGPUDrawCommand) {
     return;
   }
@@ -1190,7 +1547,11 @@ function _refreshPrimitiveEffectsSlot(command, frameState) {
  * @param {Matrix4} modelMatrix - The primitive's model-to-world matrix
  * @private
  */
-function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
+function updateWebGPUCommandUniforms(
+  command: PrimitiveDrawCommand,
+  frameState: CesiumFrameState,
+  modelMatrix: Matrix4,
+) {
   if (!command.isWebGPUDrawCommand || !command._webgpuCameraBuffer) {
     return;
   }
@@ -1309,7 +1670,11 @@ const scratchPickUniformData = new Float32Array(64);
  * Updates the GPU uniform buffer for a WebGPU pick command with current camera matrices.
  * @private
  */
-function updateWebGPUPickCommandUniforms(command, frameState, modelMatrix) {
+function updateWebGPUPickCommandUniforms(
+  command: PrimitiveDrawCommand,
+  frameState: CesiumFrameState,
+  modelMatrix: Matrix4,
+) {
   if (
     !command.isWebGPUDrawCommand ||
     !command._webgpuCameraBuffer ||
@@ -1355,7 +1720,7 @@ function updateWebGPUPickCommandUniforms(command, frameState, modelMatrix) {
  * as well as already-float color attributes (values 0-1).
  * @private
  */
-function readPolylineColor(colorAttr, v, out) {
+function readPolylineColor(colorAttr: AttributeLike, v: number, out: number[]) {
   if (!defined(colorAttr) || !defined(colorAttr.values)) {
     out[0] = 1.0;
     out[1] = 1.0;
@@ -1385,12 +1750,12 @@ const scratchPolylineColor = [1.0, 1.0, 1.0, 1.0];
  * @private
  */
 function createPolylineAppearancePipeline(
-  device,
-  context,
-  cache,
-  shaderModule,
-  vertexLayout,
-  translucent,
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  cache: CacheLike,
+  shaderModule: ShaderModuleLike,
+  vertexLayout: VertexLayoutLike,
+  translucent: boolean,
 ) {
   const cameraBGL = makeBindGroupLayout(device, "Polyline Camera BGL", [
     uniformBuffer(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT),
@@ -1452,13 +1817,13 @@ function createPolylineAppearancePipeline(
  * @private
  */
 function createPolylineAppearanceCommands(
-  primitive,
-  appearance,
-  translucent,
-  colorCommands,
-  pickCommands,
-  frameState,
-  geometries,
+  primitive: PrimitiveLike,
+  appearance: AppearanceLike,
+  translucent: boolean,
+  colorCommands: PrimitiveDrawCommand[],
+  pickCommands: PrimitiveDrawCommand[],
+  frameState: CesiumFrameState,
+  geometries: GeometryLike[],
 ) {
   const context = frameState.context;
   const device = context.device;
@@ -1741,7 +2106,7 @@ function createPolylineAppearanceCommands(
       effectsPlaceholder.bindGroup,
     ];
 
-    const cmd = new WebGPUDrawCommand({
+    const cmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: commandBindGroups,
       vertexBuffer: cache.vertexBuffers[i],
@@ -1754,7 +2119,7 @@ function createPolylineAppearanceCommands(
         ? cache.indexCounts[i]
         : undefined,
       pass: pass,
-      owner: primitive,
+      owner: primitive as unknown as WebGPUCommandOwner,
       renderState: appearanceRS,
     });
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
@@ -1796,7 +2161,7 @@ const scratchPolylineST = new Cartesian2();
  * already exists (uncompressed path) or there's nothing to decode.
  * @private
  */
-function ensurePolylineST(geometry) {
+function ensurePolylineST(geometry: GeometryLike) {
   const attrs = geometry.attributes;
   if (!defined(attrs)) {
     return;
@@ -1841,13 +2206,13 @@ function ensurePolylineST(geometry) {
  * @private
  */
 function createPolylineMaterialPipeline(
-  device,
-  context,
-  cache,
-  shaderModule,
-  vertexLayout,
-  translucent,
-  needsTexture,
+  device: GPUDevice,
+  context: CesiumGraphicsContext,
+  cache: CacheLike,
+  shaderModule: ShaderModuleLike,
+  vertexLayout: VertexLayoutLike,
+  translucent: boolean,
+  needsTexture: boolean,
 ) {
   const cameraBGL = makeBindGroupLayout(device, "Polyline Mat Camera BGL", [
     uniformBuffer(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT),
@@ -1932,14 +2297,14 @@ function createPolylineMaterialPipeline(
  * @private
  */
 function createPolylineMaterialAppearanceCommands(
-  primitive,
-  appearance,
-  material,
-  translucent,
-  colorCommands,
-  pickCommands,
-  frameState,
-  geometries,
+  primitive: PrimitiveLike,
+  appearance: AppearanceLike,
+  material: MaterialLike,
+  translucent: boolean,
+  colorCommands: PrimitiveDrawCommand[],
+  pickCommands: PrimitiveDrawCommand[],
+  frameState: CesiumFrameState,
+  geometries: GeometryLike[],
 ) {
   const context = frameState.context;
   const device = context.device;
@@ -1968,7 +2333,7 @@ function createPolylineMaterialAppearanceCommands(
   const cache = primitive._webgpuPolylineMatCache;
 
   const vertexLayout = getPolylineMaterialVertexLayout();
-  const shaderInfo = selectPolylineMaterialShader(material);
+  const shaderInfo: ShaderInfoLike = selectPolylineMaterialShader(material);
 
   const shaderChanged = cache.shaderType !== shaderInfo.type;
   const translucentChanged = cache.translucent !== translucent;
@@ -2247,7 +2612,7 @@ function createPolylineMaterialAppearanceCommands(
       slot2,
     ];
 
-    const cmd = new WebGPUDrawCommand({
+    const cmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: commandBindGroups,
       vertexBuffer: cache.vertexBuffers[i],
@@ -2260,7 +2625,7 @@ function createPolylineMaterialAppearanceCommands(
         ? cache.indexCounts[i]
         : undefined,
       pass: pass,
-      owner: primitive,
+      owner: primitive as unknown as WebGPUCommandOwner,
       renderState: appearanceRS,
     });
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
@@ -2305,14 +2670,14 @@ function createPolylineMaterialAppearanceCommands(
  * @private
  */
 function createWebGPUCommands(
-  primitive,
-  appearance,
-  material,
-  translucent,
-  twoPasses,
-  colorCommands,
-  pickCommands,
-  frameState,
+  primitive: PrimitiveLike,
+  appearance: AppearanceLike,
+  material: MaterialLike,
+  translucent: boolean,
+  twoPasses: boolean,
+  colorCommands: PrimitiveDrawCommand[],
+  pickCommands: PrimitiveDrawCommand[],
+  frameState: CesiumFrameState,
 ) {
   const context = frameState.context;
   const device = context.device;
@@ -2429,7 +2794,9 @@ function createWebGPUCommands(
     return;
   }
 
-  const shaderInfo = selectWebGPUShader(firstGeometry.attributes);
+  const shaderInfo: ShaderInfoLike = selectWebGPUShader(
+    firstGeometry.attributes,
+  );
   const vertexLayout = getVertexLayoutForShader(shaderInfo.type);
 
   const shaderChanged = cache.shaderType !== shaderInfo.type;
@@ -2591,7 +2958,7 @@ function createWebGPUCommands(
     // as a closure so the `twoPasses` path below can create two extra
     // variants (cullMode: "front" for pass 1, cullMode: "back" for
     // pass 2) without duplicating the full descriptor.
-    const makePipeline = (cullMode, label) =>
+    const makePipeline = (cullMode: GPUCullMode, label: string) =>
       device.createRenderPipeline({
         label,
         layout: device.createPipelineLayout({
@@ -2709,7 +3076,7 @@ function createWebGPUCommands(
         cache.materialBindGroupLayout,
         cache.effectsBGL,
       ];
-      const makeDepthFailPipeline = (cullMode, label) =>
+      const makeDepthFailPipeline = (cullMode: GPUCullMode, label: string) =>
         device.createRenderPipeline({
           label,
           layout: device.createPipelineLayout({
@@ -3286,8 +3653,8 @@ function createWebGPUCommands(
     // twoPasses front/back-cull pipelines (DP-H17) continue to drive
     // pipeline identity.
     const appearanceRS = primitive.appearance?.renderState;
-    const makeCommand = (pipeline, label) => {
-      const cmd = new WebGPUDrawCommand({
+    const makeCommand = (pipeline: GPURenderPipeline, label: string) => {
+      const cmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
         pipeline,
         bindGroups: commandBindGroups,
         vertexBuffer: cache.vertexBuffers[i],
@@ -3300,7 +3667,7 @@ function createWebGPUCommands(
           ? cache.indexCounts[i]
           : undefined,
         pass: pass,
-        owner: primitive,
+        owner: primitive as unknown as WebGPUCommandOwner,
         renderState: appearanceRS,
       });
       cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
@@ -3341,7 +3708,7 @@ function createWebGPUCommands(
         cache.depthFailMaterialBindGroups[i],
         effectsPlaceholder.bindGroup,
       ];
-      const dfCmd = new WebGPUDrawCommand({
+      const dfCmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
         pipeline: cache.depthFailPipeline,
         bindGroups: depthFailBindGroups,
         vertexBuffer: cache.vertexBuffers[i],
@@ -3354,7 +3721,7 @@ function createWebGPUCommands(
           ? cache.indexCounts[i]
           : undefined,
         pass: pass,
-        owner: primitive,
+        owner: primitive as unknown as WebGPUCommandOwner,
         renderState: appearanceRS,
       });
       dfCmd._webgpuCameraBuffer = cache.cameraBuffers[i];
@@ -3414,7 +3781,7 @@ function createWebGPUCommands(
         ],
       });
 
-      const pickCommand = new WebGPUDrawCommand({
+      const pickCommand: PrimitiveDrawCommand = new WebGPUDrawCommand({
         pipeline: cache.pickPipeline,
         bindGroups: [
           cache.pickCameraBindGroups[i],
@@ -3430,7 +3797,7 @@ function createWebGPUCommands(
           ? cache.indexCounts[i]
           : undefined,
         pass: pass,
-        owner: primitive,
+        owner: primitive as unknown as WebGPUCommandOwner,
         // C-R1-PRIMITIVE-DERIVED (Batch 98) — forward `appearance.renderState`
         // onto the pick command too so `applyPerEncoderState` runs the
         // dynamic stencilRef / blendConstant / scissor / viewport ops in
@@ -3486,7 +3853,10 @@ function createWebGPUCommands(
  * @returns {{primary: string, secondary: (string|undefined)}}
  * @private
  */
-function getTextureUniformName(shaderType) {
+function getTextureUniformName(shaderType: string): {
+  primary: string;
+  secondary?: string;
+} {
   if (shaderType.includes("NormalMap")) {
     return { primary: "image", secondary: "normalMap" };
   }
@@ -3551,12 +3921,12 @@ const DF_MAT_TEX_KEYS = {
 };
 
 function ensureMaterialTextureBindGroup(
-  context,
-  device,
-  material,
-  shaderType,
-  cache,
-  keys,
+  context: CesiumGraphicsContext,
+  device: GPUDevice,
+  material: MaterialLike,
+  shaderType: string,
+  cache: CacheLike,
+  keys?: typeof MAIN_MAT_TEX_KEYS,
 ) {
   const k = keys ?? MAIN_MAT_TEX_KEYS;
   const slots = getTextureUniformName(shaderType);
@@ -3644,7 +4014,7 @@ function ensureMaterialTextureBindGroup(
   // it for slot 2; multi-texture materials use it when the secondary
   // image hasn't loaded yet.
   const getPlaceholderView = () => {
-    const defaultTex = context.defaultTexture;
+    const defaultTex = context.defaultTexture as { view?: GPUTextureView };
     if (defined(defaultTex) && defined(defaultTex.view)) {
       return defaultTex.view;
     }
@@ -3672,7 +4042,7 @@ function ensureMaterialTextureBindGroup(
     );
     if (defined(gpuTex)) {
       if (defined(cache[k.gpuTexturePrimary])) {
-        cache[k.gpuTexturePrimary].destroy();
+        (cache[k.gpuTexturePrimary] as CreatedTextureLike).destroy();
       }
       cache[k.gpuTexturePrimary] = gpuTex;
       primaryView = gpuTex.view;
@@ -3695,7 +4065,7 @@ function ensureMaterialTextureBindGroup(
     );
     if (defined(gpuTex2)) {
       if (defined(cache[k.gpuTextureSecondary])) {
-        cache[k.gpuTextureSecondary].destroy();
+        (cache[k.gpuTextureSecondary] as CreatedTextureLike).destroy();
       }
       cache[k.gpuTextureSecondary] = gpuTex2;
       secondaryView = gpuTex2.view;
@@ -3707,9 +4077,9 @@ function ensureMaterialTextureBindGroup(
   cache[k.secondarySource] = secondarySource;
 
   cache[k.bindGroup] = device.createBindGroup({
-    layout: cache[k.layout],
+    layout: cache[k.layout] as GPUBindGroupLayout,
     entries: [
-      { binding: 0, resource: cache[k.sampler] },
+      { binding: 0, resource: cache[k.sampler] as GPUSampler },
       { binding: 1, resource: primaryView },
       { binding: 2, resource: secondaryView },
     ],
@@ -3725,11 +4095,11 @@ function ensureMaterialTextureBindGroup(
  * @private
  */
 function ensureDepthFailMaterialTextureBindGroup(
-  context,
-  device,
-  material,
-  shaderType,
-  cache,
+  context: CesiumGraphicsContext,
+  device: GPUDevice,
+  material: MaterialLike,
+  shaderType: string,
+  cache: CacheLike,
 ) {
   return ensureMaterialTextureBindGroup(
     context,
@@ -3750,16 +4120,16 @@ function ensureDepthFailMaterialTextureBindGroup(
  * @private
  */
 function createMaterialPipelineAndCache(
-  cache,
-  device,
-  shaderInfo,
-  vertexLayout,
-  context,
-  isLit,
-  translucent,
-  primitiveTopology,
-  appearanceClosed,
-  logDepthActive,
+  cache: CacheLike,
+  device: GPUDevice,
+  shaderInfo: ShaderInfoLike,
+  vertexLayout: VertexLayoutLike,
+  context: CesiumGraphicsContext,
+  isLit: boolean,
+  translucent: boolean,
+  primitiveTopology: GPUPrimitiveTopology,
+  appearanceClosed: boolean,
+  logDepthActive: boolean,
 ) {
   const topology = primitiveTopology ?? "triangle-list";
   const closedClosed = appearanceClosed === true;
@@ -3981,16 +4351,16 @@ function createMaterialPipelineAndCache(
  * @private
  */
 function createMaterialDepthFailPipeline(
-  cache,
-  device,
-  shaderInfo,
-  vertexLayout,
-  context,
-  isLit,
-  translucent,
-  primitiveTopology,
-  logDepthActive,
-  dfCullMode,
+  cache: CacheLike,
+  device: GPUDevice,
+  shaderInfo: ShaderInfoLike,
+  vertexLayout: VertexLayoutLike,
+  context: CesiumGraphicsContext,
+  isLit: boolean,
+  translucent: boolean,
+  primitiveTopology: GPUPrimitiveTopology,
+  logDepthActive: boolean,
+  dfCullMode: GPUCullMode,
 ) {
   const topology = primitiveTopology ?? "triangle-list";
   const logDepth = logDepthActive === true;
@@ -4128,14 +4498,14 @@ function createMaterialDepthFailPipeline(
  * @private
  */
 function buildMaterialVertexData(
-  posHighValues,
-  posLowValues,
-  normals,
-  uvs,
-  numVertices,
-  isLit,
-  normalCPA,
-  stCPA,
+  posHighValues: NumArray,
+  posLowValues: NumArray,
+  normals: NumArray | undefined,
+  uvs: NumArray | undefined,
+  numVertices: number,
+  isLit: boolean,
+  normalCPA: number,
+  stCPA: number,
 ) {
   const fpv = isLit ? 11 : 8;
   const vertexData = new Float32Array(numVertices * fpv);
@@ -4191,14 +4561,14 @@ function buildMaterialVertexData(
  * @private
  */
 function createWebGPUMaterialCommands(
-  primitive,
-  appearance,
-  material,
-  translucent,
-  twoPasses,
-  colorCommands,
-  pickCommands,
-  frameState,
+  primitive: PrimitiveLike,
+  appearance: AppearanceLike,
+  material: MaterialLike,
+  translucent: boolean,
+  twoPasses: boolean,
+  colorCommands: PrimitiveDrawCommand[],
+  pickCommands: PrimitiveDrawCommand[],
+  frameState: CesiumFrameState,
 ) {
   const context = frameState.context;
   const device = context.device;
@@ -4344,7 +4714,12 @@ function createWebGPUMaterialCommands(
   const hasST = defined(attrs.st) && defined(attrs.st.values);
   const isFlat = defined(appearance.flat) ? appearance.flat : false;
 
-  const shaderInfo = selectMaterialShader(material, isFlat, hasNormals, hasST);
+  const shaderInfo: ShaderInfoLike = selectMaterialShader(
+    material,
+    isFlat,
+    hasNormals,
+    hasST,
+  );
   const isLit =
     isMaterialLitShader(shaderInfo.type) || isPBRShader(shaderInfo.type);
   const vertexLayout = getMaterialVertexLayout(shaderInfo.type);
@@ -4739,7 +5114,7 @@ function createWebGPUMaterialCommands(
     cmdBGs.push(matEffectsPlaceholder.bindGroup);
 
     // C-R1 (Batch 36) — forward appearance.renderState for material path too.
-    const cmd = new WebGPUDrawCommand({
+    const cmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: cmdBGs,
       vertexBuffer: cache.vertexBuffers[i],
@@ -4750,7 +5125,7 @@ function createWebGPUMaterialCommands(
         ? cache.indexCounts[i]
         : undefined,
       pass,
-      owner: primitive,
+      owner: primitive as unknown as WebGPUCommandOwner,
       renderState: primitive.appearance?.renderState,
     });
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
@@ -4830,7 +5205,7 @@ function createWebGPUMaterialCommands(
       const dfEffectsPlaceholder = getPlaceholderEffects(device);
       dfBGs.push(dfEffectsPlaceholder.bindGroup);
 
-      const dfCmd = new WebGPUDrawCommand({
+      const dfCmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
         pipeline: cache.dfPipeline,
         bindGroups: dfBGs,
         vertexBuffer: cache.dfVertexBuffers[i],
@@ -4841,7 +5216,7 @@ function createWebGPUMaterialCommands(
           ? cache.indexCounts[i]
           : undefined,
         pass,
-        owner: primitive,
+        owner: primitive as unknown as WebGPUCommandOwner,
         renderState: depthFailAppearance?.renderState,
       });
       dfCmd._webgpuCameraBuffer = cache.dfCameraBuffers[i];
@@ -4908,7 +5283,7 @@ function createWebGPUMaterialCommands(
         ],
       });
 
-      const pickCmd = new WebGPUDrawCommand({
+      const pickCmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
         pipeline: cache.pickPipeline,
         bindGroups: [
           cache.pickCameraBindGroups[i],
@@ -4922,7 +5297,7 @@ function createWebGPUMaterialCommands(
           ? cache.indexCounts[i]
           : undefined,
         pass,
-        owner: primitive,
+        owner: primitive as unknown as WebGPUCommandOwner,
         // C-R1-PRIMITIVE-DERIVED (Batch 98) — material-path pickCommand
         // also forwards `appearance.renderState`. Same rationale as the
         // shader-path pickCommand above (line 1498-ish): per-encoder
@@ -4968,7 +5343,11 @@ const scratchMaterialCameraData = new Float32Array(80);
  * Material parameters are in a separate bind group — only camera data needs per-frame update.
  * @private
  */
-function updateWebGPUMaterialCommandUniforms(command, frameState, modelMatrix) {
+function updateWebGPUMaterialCommandUniforms(
+  command: PrimitiveDrawCommand,
+  frameState: CesiumFrameState,
+  modelMatrix: Matrix4,
+) {
   if (!command.isWebGPUDrawCommand || !command._webgpuCameraBuffer) {
     return;
   }

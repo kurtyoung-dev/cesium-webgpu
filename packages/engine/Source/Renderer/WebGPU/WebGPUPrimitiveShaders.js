@@ -332,6 +332,7 @@ function selectWebGPUShader(attributes) {
  * Returns the vertex buffer layout descriptor for a given shader type.
  *
  * @param {string} shaderType - Shader type identifier
+ * @param {object} [options] - Optional layout modifiers (e.g. `compressedVertices`).
  * @returns {{ floatsPerVertex: number, stride: number, layout: GPUVertexBufferLayout }}
  * @private
  */
