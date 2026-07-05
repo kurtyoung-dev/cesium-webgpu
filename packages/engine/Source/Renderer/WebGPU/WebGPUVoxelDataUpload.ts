@@ -171,6 +171,13 @@ export interface VoxelSampleConvention {
  */
 interface VoxelChildTileState {
   phase: "idle" | "requesting" | "processing" | "done" | "failed";
+  /**
+   * The tile's decoded content. Populated once phase reaches "processing" and
+   * NS-VOXEL-REFINED-TILE-CELL-RETENTION keeps it RETAINED through "done" (it was
+   * previously nulled after the texture write) so refined-tile `scene.pickVoxel`
+   * can read this tile's metadata — parity with WebGL's retained keyframe-node
+   * content. Reset to null only on LRU eviction (evictLruL2Slot) or failure.
+   */
   content: VoxelContentLike | null;
   /**
    * NEW-VOXEL-ATLAS-LRU-EVICT — the {@link VoxelDataUploadState.frameIndex}
@@ -772,7 +779,13 @@ function driveTileLevelUploads(
       { width, height, depthOrArrayLayers: depth },
     );
     slots[i] = slot;
-    child.content = null;
+    // NS-VOXEL-REFINED-TILE-CELL-RETENTION — retain the CPU-side content (was
+    // nulled here to free memory) so a refined-tile `scene.pickVoxel` can build
+    // a full VoxelCell from this child's metadata. Parity with WebGL, whose
+    // VoxelTraversal keeps `keyframeNode.content` for every resident tile —
+    // that is exactly what `findKeyframeNode(tileIndex).content` reads. Rendering
+    // is byte-unchanged (the texture was already written above); only heap
+    // residency changes, matching the WebGL memory model.
     child.phase = "done";
     settled++;
   }
@@ -1076,7 +1089,10 @@ function driveDynamicL2Uploads(
       { width, height, depthOrArrayLayers: depth },
     );
     state.l2Slots[i] = slot;
-    tile.content = null;
+    // NS-VOXEL-REFINED-TILE-CELL-RETENTION — retain the CPU-side content so a
+    // refined-tile pick can construct its VoxelCell (see the static-path note in
+    // driveTileLevelUploads). An LRU eviction resets `content` to null in
+    // evictLruL2Slot, so a resident dynamic slot always maps to live content.
     tile.phase = "done";
   }
 

@@ -3516,17 +3516,23 @@ function ensureVoxelPickPrimitiveFields(
  * runs `initFromProvider`, so `primitive._traversal` (and its keyframeNode
  * table) is undefined. This resolver services the ROOT tile (megatextureIndex 0
  * — the single-tile / coarse case, WebGL-byte-identical per
- * VOXEL-CELL-PICK-RELAND) from the FR's uploaded root content: it returns a
+ * VOXEL-CELL-PICK-RELAND) from the FR's uploaded root content, AND — since
+ * NS-VOXEL-REFINED-TILE-CELL-RETENTION — the REFINED tiles (megatextureIndex
+ * >= 1) by reverse-mapping the picked atlas slot back to its spatial tile
+ * coordinate and its retained CPU-side child content. Either way it returns a
  * `{ spatialNode, content }` object shaped exactly like a WebGL KeyframeNode so
  * `VoxelCell.fromKeyframeNode` reads the same per-sample metadata + OBB.
  *
- * Refined-tile pick (megatextureIndex >= 1 — the octree-compose follow-up
- * NEW-VOXEL-PICK-OCTREE-COMPOSE) returns undefined here: the child-tile content
- * is not retained CPU-side, so pickVoxel degrades to `undefined` (no throw),
- * exactly as WebGL does when a keyframeNode is not found.
+ * The picked `tileIndex` is the ATLAS SLOT emitted by the pick march
+ * (0 = root; 1..8 = level-1 children; 9..72 = level-2; 73..584 = level-3). The
+ * slot→tile inverse is read from the live `childSlots`/`l2Slots`/`l3Slots`
+ * arrays, so it is correct for both the static full atlas and the dynamic LRU
+ * pool. A slot whose retained content is missing (evicted mid-pick, or not yet
+ * uploaded) degrades to `undefined` (no throw), exactly as WebGL does when a
+ * keyframeNode is not found.
  *
- * @returns a KeyframeNode-like handle, or undefined when the root content is
- * not (yet) available or the pick landed on a non-root tile.
+ * @returns a KeyframeNode-like handle, or undefined when the resolved tile's
+ * content is not (yet) available.
  */
 function getVoxelPickKeyframeNode(
   primitive: CesiumObjectWithWebGPUCache,
@@ -3536,22 +3542,43 @@ function getVoxelPickKeyframeNode(
   | undefined {
   const cache = primitive._webgpuCache as VoxelCache | undefined;
   const dataUpload = cache?.dataUpload ?? null;
-  // Root tile only (see docstring). Not-yet-uploaded root → no cell.
-  if (!dataUpload || dataUpload.phase !== "done" || tileIndex !== 0) {
+  // Not-yet-uploaded root → no cell (nothing is resident to pick).
+  if (!dataUpload || dataUpload.phase !== "done") {
     return undefined;
   }
-  const content = dataUpload.content;
   const shape = (primitive as unknown as { _shape?: unknown })._shape;
   const provider = (
     primitive as unknown as { _provider?: VoxelPickProviderLike }
   )._provider;
+
+  // Resolve the picked atlas slot to its spatial tile coordinate + retained
+  // content. Slot 0 is the root (level 0); slots >= 1 reverse-map through the
+  // slot arrays to the retained child/L2/L3 content
+  // (NS-VOXEL-REFINED-TILE-CELL-RETENTION).
+  let level = 0;
+  let tileX = 0;
+  let tileY = 0;
+  let tileZ = 0;
+  let content: unknown;
+  if (tileIndex === 0) {
+    content = dataUpload.content;
+  } else {
+    const refined = resolveRefinedVoxelTile(dataUpload, tileIndex);
+    if (refined) {
+      level = refined.level;
+      tileX = refined.x;
+      tileY = refined.y;
+      tileZ = refined.z;
+      content = refined.content;
+    }
+  }
   if (!content || !shape || !provider) {
     return undefined;
   }
 
   ensureVoxelPickPrimitiveFields(primitive, provider);
 
-  // Refresh the shape OBB/transform so the root SpatialNode's bounding box is
+  // Refresh the shape OBB/transform so the SpatialNode's bounding box is
   // current (the render path does this each frame; a pick after a render is
   // already current, but keep it robust to call order). Same guarded calls as
   // computeVoxelEffectiveModelMatrix.
@@ -3564,8 +3591,69 @@ function getVoxelPickKeyframeNode(
 
   const dimensions = (primitive as unknown as { dimensions?: Cartesian3 })
     .dimensions;
-  const spatialNode = new SpatialNode(0, 0, 0, 0, undefined, shape, dimensions);
-  return { spatialNode, content, megatextureIndex: 0 };
+  const spatialNode = new SpatialNode(
+    level,
+    tileX,
+    tileY,
+    tileZ,
+    undefined,
+    shape,
+    dimensions,
+  );
+  return { spatialNode, content, megatextureIndex: tileIndex };
+}
+
+/**
+ * NS-VOXEL-REFINED-TILE-CELL-RETENTION — reverse-map a picked ATLAS SLOT
+ * (megatextureIndex >= 1) to its octree tile coordinate (Z-up shape frame) and
+ * the retained CPU-side content for that tile. The slot→tile-index inverse is
+ * read from the live slot arrays (correct for the static full atlas AND the
+ * dynamic LRU pool, where the slot assignment is not positional). The per-level
+ * tile-index → (x, y, z) decode is the radix-2 extension of Octree.glsl's
+ * `getOctreeChildData` octant order (level 1: childIndex = x + 2y + 4z; level 2:
+ * x + 4y + 16z; level 3: x + 8y + 64z), mirroring `driveTileLevelUploads`'s
+ * request coordinates.
+ *
+ * @returns the tile coordinate + content, or undefined when no resident slot
+ * matches or its content is not retained.
+ */
+function resolveRefinedVoxelTile(
+  dataUpload: VoxelDataUploadState,
+  slot: number,
+):
+  | { level: number; x: number; y: number; z: number; content: unknown }
+  | undefined {
+  // Level 1 — slots 1..8, childIndex = x + 2y + 4z.
+  for (let i = 0; i < 8; i++) {
+    if (dataUpload.childSlots[i] === slot) {
+      const content = dataUpload.childStates[i]?.content;
+      if (!content) {
+        return undefined;
+      }
+      return { level: 1, x: i & 1, y: (i >> 1) & 1, z: (i >> 2) & 1, content };
+    }
+  }
+  // Level 2 — slots 9..72, linear index x + 4y + 16z.
+  for (let i = 0; i < 64; i++) {
+    if (dataUpload.l2Slots[i] === slot) {
+      const content = dataUpload.l2States[i]?.content;
+      if (!content) {
+        return undefined;
+      }
+      return { level: 2, x: i & 3, y: (i >> 2) & 3, z: (i >> 4) & 3, content };
+    }
+  }
+  // Level 3 — slots 73..584, linear index x + 8y + 64z.
+  for (let i = 0; i < 512; i++) {
+    if (dataUpload.l3Slots[i] === slot) {
+      const content = dataUpload.l3States[i]?.content;
+      if (!content) {
+        return undefined;
+      }
+      return { level: 3, x: i & 7, y: (i >> 3) & 7, z: (i >> 6) & 7, content };
+    }
+  }
+  return undefined;
 }
 
 export {

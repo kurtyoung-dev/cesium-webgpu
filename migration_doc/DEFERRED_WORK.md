@@ -3372,9 +3372,12 @@ octree traversal — a real two-level LOD path in
    stays root-only (multi-level atlas is deliberately box-gated in
    `WebGPUVoxelDataUpload.ts` until the non-box refinement increment is
    verified).
-4. **pickVoxel against refined tiles** — `fragmentPickVoxelMain` marches the
-   ROOT slab only (megatextureIndex 0); a refined render can pick a coarser
-   cell than what is displayed.
+4. **pickVoxel against refined tiles** — RESOLVED (2026-07-04 pick march reaches
+   L3, C4-VOXEL-PICK-OCTREE-L3; 2026-07-05 CPU VoxelCell construction,
+   NS-VOXEL-REFINED-TILE-CELL-RETENTION). `fragmentPickVoxelMain` shares the
+   color march's `octreeDescend` (reaches level 3) and `scene.pickVoxel` now
+   builds a full VoxelCell for refined slots (see NS-VOXEL-REFINED-TILE-CELL-RETENTION
+   below).
 5. **SAMPLE_COUNT > 1 level blending** (`u_octreeLeafNodeTexture` lerp) and
    time-dynamic keyframes — untouched.
 6. **NEW-VOXEL-INSIDE-CAMERA-BLACK — camera inside the voxel volume renders
@@ -3435,10 +3438,50 @@ WebGPU (before this fix those pixels THREW; now they return a valid cell, no
 throw). A cleared readback `[0,0,0,0]` is indistinguishable from a real
 tile-0/sample-0 hit on BOTH backends (WebGL relies solely on the object-pick
 gate), so this cannot be disambiguated in the cell-pick path — it is the
-object-pick-footprint follow-up. Refined-tile pick (megatextureIndex >= 1) also
-returns undefined at the CPU VoxelCell-CONSTRUCTION layer (child content is not
-retained CPU-side) — that construction gap is the remaining object-pick /
-child-content-retention follow-up.
+object-pick-footprint follow-up. Refined-tile pick (megatextureIndex >= 1) at
+the CPU VoxelCell-CONSTRUCTION layer is RESOLVED — see
+NS-VOXEL-REFINED-TILE-CELL-RETENTION below.
+
+### ~~NS-VOXEL-REFINED-TILE-CELL-RETENTION~~ — RESOLVED (2026-07-05) — `scene.pickVoxel` builds a full VoxelCell for refined (megatextureIndex >= 1) tiles on WebGPU
+
+**Resolution (2026-07-05):** the GPU pick march already reached the correct
+refined atlas slot + child-local sampleIndex (C4-VOXEL-PICK-OCTREE-L3), but
+`Scene.pickVoxel` returned `undefined` for any picked slot >= 1 because the
+WebGPU FR nulled each child tile's CPU-side content right after the texture
+upload — so `getVoxelPickKeyframeNode` had no metadata to build a `VoxelCell`
+from. Two coupled fixes:
+
+- **Retain child content CPU-side** (`WebGPUVoxelDataUpload.ts`). The static
+  `driveTileLevelUploads` and dynamic `driveDynamicL2Uploads` upload paths no
+  longer null `child.content`/`tile.content` after writing the atlas slab —
+  they keep it (reset only on LRU eviction / failure). This is parity with
+  WebGL, whose `VoxelTraversal` keeps `keyframeNode.content` for every resident
+  tile (exactly what `findKeyframeNode(tileIndex).content` reads). Rendering is
+  byte-unchanged; only heap residency changes, matching the WebGL memory model.
+- **Reverse-map the picked atlas slot to its spatial tile**
+  (`WebGPUVoxelRenderer.ts`, new `resolveRefinedVoxelTile`). The pick emits the
+  ATLAS SLOT as `tileIndex`; slots 1..8/9..72/73..584 reverse-map through the
+  live `childSlots`/`l2Slots`/`l3Slots` arrays (correct for the static full
+  atlas AND the dynamic LRU pool) to their level + (x,y,z) octant coordinate
+  (radix-2 Octree.glsl order) and the retained content. `getVoxelPickKeyframeNode`
+  builds `new SpatialNode(level, x, y, z, undefined, shape, dimensions)` (the
+  shape computes the correct sub-tile OBB) and returns it with the child content,
+  so `VoxelCell.fromKeyframeNode` reads the right per-sample metadata + OBB. Root
+  (slot 0) keeps its exact prior path — byte-identical off-gate.
+- **Files:** `Renderer/WebGPU/WebGPUVoxelDataUpload.ts` (content retention +
+  `VoxelChildTileState.content` doc), `Renderer/WebGPU/WebGPUVoxelRenderer.ts`
+  (`getVoxelPickKeyframeNode` refined branch + `resolveRefinedVoxelTile`).
+- **Acceptance:** `Tools/visual-regression/probe-voxel-refined-pick.mjs` — a
+  two-level provider (per-cell colors encoding child octant + local cell) at a
+  CLOSE view where WebGPU refines to L1: at each on-diagonal target
+  `scene.pickVoxel` returns a `VoxelCell` with `tileIndex >= 1` (a REFINED slot,
+  not the root fallback), the analytic child-local `sampleIndex`, and
+  `getProperty("color")` byte-equal to the analytic child cell color AND to
+  WebGL's. Off-box returns no cell (ray-OBB gate) on both.
+- **Off-gate:** `probe-voxel-pick.mjs` (root tileIndex 0 end-to-end,
+  byte-identical) and `probe-voxel-cell-pick.mjs` (coordinate readback Parts
+  A-D) still PASS, 0 errors — the WGSL march + readback are untouched; only the
+  CPU cell-construction path for slots >= 1 changed.
 
 **C4-VOXEL-PICK-OCTREE-L3 (Q9) — RECONCILE 2026-07-04, premise stale.** The GPU
 pick-MARCH half of NEW-VOXEL-PICK-OCTREE-COMPOSE is COMPLETE and now
