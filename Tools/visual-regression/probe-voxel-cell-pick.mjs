@@ -1,5 +1,6 @@
 // C-R9-VOXEL-CELL-PICK acceptance probe (VOXEL-CELL-PICK-RELAND),
-// extended by NEW-VOXEL-PICK-OCTREE-COMPOSE with Parts B + C.
+// extended by NEW-VOXEL-PICK-OCTREE-COMPOSE with Parts B + C, and by
+// C4-VOXEL-PICK-OCTREE-L3 (Q9 reconcile) with Part D.
 //
 // Verifies per-cell voxel picking parity: `Picking.pickVoxelCoordinate`
 // (the GPU pass behind `Scene.pickVoxel`) must decode to EXACTLY the same
@@ -39,12 +40,26 @@
 //     backends — proving the WebGPU pick winner gate follows the user
 //     shader's alpha, not the raw-texel density gate.
 //
+// Part D (C4-VOXEL-PICK-OCTREE-L3 — refined LEVEL-3 octree pick):
+//   * The 4-level deep-octree fixture (fixtures/voxel-octree-l4.mjs,
+//     availableLevels=4, 2×2×2 per tile, diagonal gy==gz) at a CLOSE view
+//     where BOTH backends refine to level 3 (WebGPU atlasInfo.y == 3,
+//     slotCount == 585). At on-diagonal fine (16-grid) targets the pick must
+//     descend the SAME shared octreeDescend walk the color march uses ALL THE
+//     WAY to level 3: the WebGPU pick tile is an L3 atlas slot (>= 73) whose
+//     l3Slots inverse maps to the SAME level-3 spatial tile WebGL's own
+//     traversal (findKeyframeNode) resolves, with byte-equal SAMPLE bytes
+//     (same child-local cell). This locks the "reach color-march L3" bullet:
+//     the pick is not root-biased and not clamped to L1/L2. Off-diagonal
+//     columns return cleared on both backends.
+//
 // WebGPU note: `readCenterPixel` is an armed async readback (returns the
 // cleared pixel on a cold query, converges 1-2 picks later —
 // NEW-PICK-METADATA-READBACK contract), so each pixel is queried in a short
 // retry loop until two consecutive results agree.
 import { chromium } from "playwright";
 import fs from "fs";
+import { createVoxelOctreeL4Provider } from "./fixtures/voxel-octree-l4.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT = "Tools/visual-regression/output";
@@ -151,6 +166,35 @@ function partBTargets() {
 }
 const TARGETS_B = partBTargets();
 
+// ───────────────────────── Part D (L3 octree) asset ─────────────────────────
+
+// 4-level deep-octree fixture: 16-grid finest, diagonal gy==gz. On-diagonal
+// fine targets (gy==gz) are FILLED at every level, so the ray's first −X hit
+// (gx=15) lands in the level-3 tile floor(15/2)=7, floor(k/2), floor(k/2). The
+// pick must descend all the way to that level-3 tile.
+const L3_FINE = 16;
+function partDTargets() {
+  const targets = [];
+  for (const k of [4, 6, 8, 10]) {
+    const c = k >> 1;
+    targets.push({
+      label: `l3-diag-y${k}z${k}`,
+      fy: k,
+      fz: k,
+      // Expected level-3 spatial tile (Z-up shape frame).
+      expTile: { x: 7, y: c, z: c },
+    });
+  }
+  // NOTE: no in-footprint "empty column" target here. Upstream WebGL refines
+  // the octree PER-NODE (mixed L2/L3 across the volume is legitimate — see
+  // probe-voxel-octree-l3plus), so an off-diagonal cell that is empty at the
+  // WebGPU-uniform level 3 can be FILLED at the coarser level WebGL happens to
+  // hold there. Cross-backend cleared-equality is only well-defined off-box,
+  // which the shared `offPick` check covers.
+  return targets;
+}
+const TARGETS_D = partDTargets();
+
 // ─────────────────────────── capture harness ───────────────────────────
 
 async function capture(renderer, part) {
@@ -170,7 +214,7 @@ async function capture(renderer, part) {
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const result = await page.evaluate(
-    async ({ part, dims, filledSrc, targetsA, targetsC, targetsB, tile, fine }) => {
+    async ({ part, dims, filledSrc, targetsA, targetsC, targetsB, targetsD, tile, fine, l3Fine, l4Src }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -261,6 +305,16 @@ async function capture(renderer, part) {
         prim = new C.VoxelPrimitive({ provider, customShader });
         targets = targetsB;
         camDestX = 10; // CLOSE view — both backends refine to level 1.
+      } else if (part === "D") {
+        // 4-level deep-octree fixture — both backends refine to LEVEL 3 at a
+        // close view (WebGPU slotCount 585, atlasInfo.y == 3).
+        // eslint-disable-next-line no-new-func
+        const l4factory = new Function(`return (${l4Src});`)();
+        const R4 = 6378137.0;
+        const provider = l4factory(C, R4);
+        prim = new C.VoxelPrimitive({ provider });
+        targets = targetsD;
+        camDestX = 6; // CLOSE view — both backends refine to level 3.
       } else {
         // Parts A + C: single-tile 2×4×3 staircase, INPUT (glTF Y-up) order.
         const voxelCount = dims.x * dims.y * dims.z;
@@ -345,7 +399,8 @@ async function capture(renderer, part) {
       });
 
       // Let the provider resolve + the WebGPU root/child-tile uploads finish.
-      const warmup = part === "B" ? 300 : 240;
+      // The deep (585-slot) atlas needs a longer warmup to fully populate.
+      const warmup = part === "D" ? 400 : part === "B" ? 300 : 240;
       for (let i = 0; i < warmup; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 8));
@@ -353,8 +408,9 @@ async function capture(renderer, part) {
 
       // Window coordinate of each target cell-column center.
       let windows;
-      if (part === "B") {
-        const cc = (i) => -1 + ((i + 0.5) * 2) / fine;
+      if (part === "B" || part === "D") {
+        const grid = part === "D" ? l3Fine : fine;
+        const cc = (i) => -1 + ((i + 0.5) * 2) / grid;
         windows = targets.map((t) => {
           const world = new C.Cartesian3(0, cc(t.fy) * R, cc(t.fz) * R);
           const win = C.SceneTransforms.worldToWindowCoordinates(scene, world);
@@ -436,13 +492,13 @@ async function capture(renderer, part) {
         offWin ? { x: offWin.x, y: offWin.y } : null,
       );
 
-      // Part B: resolve each picked tileIndex through the primitive's OWN
+      // Parts B/D: resolve each picked tileIndex through the primitive's OWN
       // traversal (the exact Scene.pickVoxel decode) — WebGL only; the
-      // WebGPU path's slot→octant mapping is deterministic and judged in
-      // Node from the raw tile index.
+      // WebGPU path's slot→tile mapping is deterministic and judged in
+      // Node from the raw tile index (Part B via octant, Part D via l3Slots).
       let tileResolves = null;
       if (
-        part === "B" &&
+        (part === "B" || part === "D") &&
         prim._traversal &&
         typeof prim._traversal.findKeyframeNode === "function"
       ) {
@@ -486,6 +542,8 @@ async function capture(renderer, part) {
         uploadPhase: du ? du.phase : null,
         slotCount: du ? du.slotCount : null,
         childSlots: du && du.childSlots ? Array.from(du.childSlots) : null,
+        l2Slots: du && du.l2Slots ? Array.from(du.l2Slots) : null,
+        l3Slots: du && du.l3Slots ? Array.from(du.l3Slots) : null,
         lastTargetLevel: du ? du.lastTargetLevel : null,
         tileResolves,
         pickVoxelPipelineName:
@@ -506,8 +564,11 @@ async function capture(renderer, part) {
       targetsA: TARGETS_A,
       targetsC: TARGETS_C,
       targetsB: TARGETS_B,
+      targetsD: TARGETS_D,
       tile: TILE,
       fine: FINE,
+      l3Fine: L3_FINE,
+      l4Src: createVoxelOctreeL4Provider.toString(),
     },
   );
 
@@ -721,6 +782,93 @@ function tallyErrors(label, res) {
   }
   tallyErrors("C webgl", webgl);
   tallyErrors("C webgpu", webgpu);
+}
+
+// ── Part D ──
+{
+  const webgl = await capture("webgl", "D");
+  const webgpu = await capture("webgpu", "D");
+  console.log("=== Part D — refined LEVEL-3 octree pick (C4-VOXEL-PICK-OCTREE-L3) ===");
+  console.log(
+    "WebGPU setup:",
+    JSON.stringify({
+      usingRealData: webgpu.usingRealData,
+      slotCount: webgpu.slotCount,
+      lastTargetLevel: webgpu.lastTargetLevel,
+    }),
+  );
+  // The WebGPU atlas must have refined to the full depth-3 585-slot atlas —
+  // the precondition for the pick's shared octreeDescend to reach level 3.
+  const atlasOk =
+    webgpu.usingRealData === true &&
+    webgpu.slotCount === 585 &&
+    webgpu.lastTargetLevel === 3;
+  console.log(`  atlas refined to depth 3 (slotCount=585, level=3): ${atlasOk}`);
+  if (!atlasOk) pass = false;
+  // Invert a WebGPU L3 atlas slot (>= 73) back to its level-3 tile coordinate
+  // through the uploaded l3Slots map (idx = x + 8y + 64z, base slot 73 region).
+  function gpL3Tile(slot, l3Slots) {
+    if (!(slot >= 73) || !Array.isArray(l3Slots)) {
+      return null;
+    }
+    const idx = l3Slots.indexOf(slot);
+    if (idx < 0) {
+      return null;
+    }
+    return { level: 3, x: idx % 8, y: Math.floor(idx / 8) % 8, z: Math.floor(idx / 64) };
+  }
+  for (let i = 0; i < TARGETS_D.length; i++) {
+    const t = TARGETS_D[i];
+    const gl = webgl.picks[i]?.bytes ?? null;
+    const gp = webgpu.picks[i]?.bytes ?? null;
+    let verdict;
+    if (t.expTile !== null) {
+      // SAMPLE bytes (child-local cell within the 2×2×2 L3 tile) must be
+      // byte-equal cross-backend AND non-cleared (a real hit).
+      const sampleOk =
+        gl && gp && gl.length === 4 && gp.length === 4 &&
+        gl[2] === gp[2] && gl[3] === gp[3] &&
+        !(gl[0] === 0 && gl[1] === 0 && gl[2] === 0 && gl[3] === 0);
+      // WebGL tile resolved through the primitive's own traversal → must be
+      // the expected LEVEL-3 spatial tile.
+      const glTile = webgl.tileResolves ? webgl.tileResolves[i] : null;
+      const glTileOk =
+        glTile &&
+        glTile.level === 3 &&
+        glTile.x === t.expTile.x &&
+        glTile.y === t.expTile.y &&
+        glTile.z === t.expTile.z;
+      // WebGPU tile: an L3 atlas slot (>= 73) that inverts to the SAME
+      // level-3 spatial tile — proves the pick descended the shared
+      // octreeDescend all the way to level 3, not root/L1/L2.
+      const gpSlot = gp ? 255 * gp[0] + gp[1] : -1;
+      const gpTile = gpL3Tile(gpSlot, webgpu.l3Slots);
+      const gpTileOk =
+        gpSlot >= 73 &&
+        gpTile &&
+        gpTile.x === t.expTile.x &&
+        gpTile.y === t.expTile.y &&
+        gpTile.z === t.expTile.z;
+      verdict = sampleOk && glTileOk && gpTileOk ? "ok" : "MISMATCH";
+      console.log(
+        `  [${t.label}] expect L3 tile(${t.expTile.x},${t.expTile.y},${t.expTile.z}) | ` +
+          `webgl=${JSON.stringify(gl)}→${JSON.stringify(glTile)} ` +
+          `webgpu=${JSON.stringify(gp)}→slot${gpSlot}=${JSON.stringify(gpTile)} ${verdict}`,
+      );
+    } else {
+      verdict = isCleared(gl) && isCleared(gp) ? "ok" : "MISMATCH";
+      console.log(
+        `  [${t.label}] expect cleared | webgl=${JSON.stringify(gl)} webgpu=${JSON.stringify(gp)} ${verdict}`,
+      );
+    }
+    if (verdict !== "ok") pass = false;
+  }
+  const offOk =
+    isCleared(webgl.offPick?.bytes) && isCleared(webgpu.offPick?.bytes);
+  console.log(`  [off-box] cleared: ${offOk ? "ok" : "MISMATCH"}`);
+  if (!offOk) pass = false;
+  tallyErrors("D webgl", webgl);
+  tallyErrors("D webgpu", webgpu);
 }
 
 console.log("console/device errors:", errTotal);

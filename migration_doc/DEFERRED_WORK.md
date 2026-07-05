@@ -3374,8 +3374,23 @@ throw). A cleared readback `[0,0,0,0]` is indistinguishable from a real
 tile-0/sample-0 hit on BOTH backends (WebGL relies solely on the object-pick
 gate), so this cannot be disambiguated in the cell-pick path — it is the
 object-pick-footprint follow-up. Refined-tile pick (megatextureIndex >= 1) also
-returns undefined (child content is not retained CPU-side) —
-NEW-VOXEL-PICK-OCTREE-COMPOSE tracks reaching the leaf cell.
+returns undefined at the CPU VoxelCell-CONSTRUCTION layer (child content is not
+retained CPU-side) — that construction gap is the remaining object-pick /
+child-content-retention follow-up.
+
+**C4-VOXEL-PICK-OCTREE-L3 (Q9) — RECONCILE 2026-07-04, premise stale.** The GPU
+pick-MARCH half of NEW-VOXEL-PICK-OCTREE-COMPOSE is COMPLETE and now
+regression-locked: `fragmentPickVoxelMain` shares the color march's iterative
+`octreeDescend` (B521) which reaches LEVEL 3 (B552 `l3Slots`), and honors the
+`VOXEL_USER_CUSTOM_SHADER` alpha winner-gate (B509). The pick command binds the
+SAME UBO/bind group as the color command, so it inherits the identical refined
+`atlasInfo.y` + `childSlots/l2Slots/l3Slots` — no root bias. `probe-voxel-cell-pick.mjs`
+Part D verifies end-to-end at a depth-3 view (WebGPU `slotCount=585`,
+`lastTargetLevel=3`): the WebGPU pick descends to an L3 atlas slot (>= 73) that
+inverts (via `l3Slots`) to the SAME level-3 spatial tile WebGL's own traversal
+resolves, with byte-equal SAMPLE bytes (Part B already locked L1, Part C the
+user-shader gate). The ONLY residual is the CPU VoxelCell construction for
+megatextureIndex >= 1 above (a distinct follow-up, not the pick march).
 
 **Prerequisites:** VOXEL-CELL-PICK-RELAND (done).
 
