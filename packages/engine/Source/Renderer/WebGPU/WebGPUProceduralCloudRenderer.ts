@@ -350,43 +350,31 @@ export function getCloudTransmittanceView(
  */
 export function publishCloudIblCoverage(
   context: CesiumGraphicsContext,
-  globe:
-    | {
-        showProceduralClouds?: boolean;
-        cloudContributesIBL?: boolean;
-        cloudCoverage?: number;
-        cloudDensity?: number;
-        cloudLayerBottom?: number;
-        cloudLayerTop?: number;
-        cloudWindDirection?: { x?: number; y?: number };
-        cloudWindSpeed?: number;
-        cloudNoiseMorphology?: string;
-      }
-    | undefined,
+  config: CloudVolumetricsConfig | undefined,
 ): void {
   const cache = ensureCloudCache(context);
   // Item 3-C — publish the real march params unconditionally (so a clear-flag
   // toggle never leaves a stale deck). These match the Globe constructor
   // defaults when unset, which equals the visible renderer's fallback.
-  cache.iblDeckBottom = globe?.cloudLayerBottom ?? 1500.0;
-  cache.iblDeckTop = globe?.cloudLayerTop ?? 4000.0;
-  cache.iblWindX = globe?.cloudWindDirection?.x ?? 0.7;
-  cache.iblWindY = globe?.cloudWindDirection?.y ?? 0.3;
-  cache.iblWindSpeed = globe?.cloudWindSpeed ?? 15.0;
-  cache.iblDensity = globe?.cloudDensity ?? 0.3;
+  cache.iblDeckBottom = config?.cloudLayerBottom ?? 1500.0;
+  cache.iblDeckTop = config?.cloudLayerTop ?? 4000.0;
+  cache.iblWindX = config?.cloudWindDirection?.x ?? 0.7;
+  cache.iblWindY = config?.cloudWindDirection?.y ?? 0.3;
+  cache.iblWindSpeed = config?.cloudWindSpeed ?? 15.0;
+  cache.iblDensity = config?.cloudDensity ?? 0.3;
   // Mirror WebGPUProceduralCloudRenderer's PW selection so the IBL march binds
   // the SAME base shape view (PW vs value-FBM) the visible deck samples.
-  cache.iblPWActive = globe?.cloudNoiseMorphology === "perlin-worley";
+  cache.iblPWActive = config?.cloudNoiseMorphology === "perlin-worley";
   if (
-    !globe ||
-    globe.showProceduralClouds !== true ||
-    globe.cloudContributesIBL !== true
+    !config ||
+    config.showProceduralClouds !== true ||
+    config.cloudContributesIBL !== true
   ) {
     cache.iblCoverage = 0.0;
     return;
   }
-  const coverage = clampUnit(globe.cloudCoverage ?? 0.5);
-  const density = clampUnit(globe.cloudDensity ?? 0.3);
+  const coverage = clampUnit(config.cloudCoverage ?? 0.5);
+  const density = clampUnit(config.cloudDensity ?? 0.3);
   // Density biases the effective coverage modestly: a dense deck reads as
   // ~fully overcast; a wispy layer at the same coverage transmits more sky.
   // Map density [0,1] → multiplier [0.7, 1.0] so the floor never erases a
@@ -1413,7 +1401,7 @@ export function executeProceduralClouds(
   colorTextureView: GPUTextureView,
   depthTextureView: GPUTextureView,
   outputView: GPUTextureView,
-  globe: CesiumGlobe,
+  config: CloudVolumetricsConfig,
 ): void {
   const device = context._device;
   if (!device) return;
@@ -1424,16 +1412,16 @@ export function executeProceduralClouds(
 
   // Frustum cull (Batch 413) — the cloud shell is a sphere at the planet origin
   // (radius = planetRadius + cloudLayerTop). Skip the full-screen raymarch
-  // entirely when that sphere is outside the view frustum (e.g. the globe panned
+  // entirely when that sphere is outside the view frustum (e.g. the config panned
   // off-screen in space). For a sphere centered at the world origin the signed
   // distance to each frustum plane is just `plane.w` (dot(normal, 0) + w), so the
   // shell is OUTSIDE iff some plane has w < -outerR — matching Cesium
   // BoundingSphere.intersectPlane (OUTSIDE when distanceToPlane < -radius).
   // Perf-only: ZERO visual change while any of the shell is in view (so the
-  // cloud probes, which all look at the globe, stay green).
+  // cloud probes, which all look at the config, stay green).
   const planes = frameState.cullingVolume?.planes;
   if (planes !== undefined && planes.length > 0) {
-    const outerR = 6378137.0 + (globe.cloudLayerTop ?? 4000.0);
+    const outerR = 6378137.0 + (config.cloudLayerTop ?? 4000.0);
     for (let p = 0; p < planes.length; p++) {
       if (planes[p].w < -outerR) {
         return; // shell entirely outside the frustum — nothing to draw
@@ -1453,7 +1441,7 @@ export function executeProceduralClouds(
   // byte-identical). The flag drives the bake (alloc the PW texture) AND which shape
   // view binds at 6.
   const perlinWorley =
-    (globe as unknown as { cloudNoiseMorphology?: string })
+    (config as unknown as { cloudNoiseMorphology?: string })
       .cloudNoiseMorphology === "perlin-worley";
   const noise = ensureNoiseBaked(device, cache, perlinWorley);
 
@@ -1506,21 +1494,21 @@ export function executeProceduralClouds(
   data[offset++] = sunDir?.x ?? 0;
   data[offset++] = sunDir?.y ?? 1;
   data[offset++] = sunDir?.z ?? 0;
-  data[offset++] = globe.atmosphereLightIntensity ?? 10.0; // sunIntensity
+  data[offset++] = config.atmosphereLightIntensity ?? 10.0; // sunIntensity
 
   // Cloud layer params
-  data[offset++] = globe.cloudLayerBottom ?? 1500.0;
-  data[offset++] = globe.cloudLayerTop ?? 4000.0;
+  data[offset++] = config.cloudLayerBottom ?? 1500.0;
+  data[offset++] = config.cloudLayerTop ?? 4000.0;
   data[offset++] = 6378137.0; // planetRadius
-  data[offset++] = globe.cloudCoverage ?? 0.5;
+  data[offset++] = config.cloudCoverage ?? 0.5;
 
   // Quality params (Phase 6d/6b resolver).
-  // Reads `globe.cloudVolumetricQuality` preset string + camera
+  // Reads `config.cloudVolumetricQuality` preset string + camera
   // altitude + the AtmosphericConditions enable/disable altitudes for
-  // auto mode. Falls back verbatim to `globe.cloudQuality` when the
+  // auto mode. Falls back verbatim to `config.cloudQuality` when the
   // user has hand-tuned that field to a non-default value.
   const atmoClouds = (
-    globe as unknown as {
+    config as unknown as {
       atmosphericConditions?: {
         clouds?: {
           volumetricEnableAltitude?: number;
@@ -1529,7 +1517,7 @@ export function executeProceduralClouds(
       };
     }
   ).atmosphericConditions?.clouds;
-  const globeForQuality = globe as unknown as {
+  const globeForQuality = config as unknown as {
     cloudVolumetricQuality?: string;
     cloudQuality?: number;
   };
@@ -1607,16 +1595,16 @@ export function executeProceduralClouds(
   }
   data[offset++] = qualityResolved.maxSteps;
   data[offset++] = qualityResolved.lightSteps;
-  data[offset++] = globe.cloudDensity ?? 0.3;
+  data[offset++] = config.cloudDensity ?? 0.3;
   data[offset++] = 0.04; // absorptionCoeff
 
   // Wind
-  const windDir = globe.cloudWindDirection;
+  const windDir = config.cloudWindDirection;
   data[offset++] = windDir?.x ?? 0.7;
   data[offset++] = windDir?.y ?? 0.3;
-  data[offset++] = globe.cloudWindSpeed ?? 15.0;
+  data[offset++] = config.cloudWindSpeed ?? 15.0;
   // Config — silver-lining intensity (live via atmosphericConditions.clouds.silverLining).
-  data[offset++] = globe.cloudSilverLiningIntensity ?? 0.8; // silverLiningIntensity
+  data[offset++] = config.cloudSilverLiningIntensity ?? 0.8; // silverLiningIntensity
 
   // cloudBaseColor (vec3 + pad)
   data[offset++] = 0.65;
@@ -1643,20 +1631,20 @@ export function executeProceduralClouds(
   // the weather map (so real cloud-cover drives the deck without the user setting
   // cloudWeatherMap). getPackedTexture returns null until the async fetch lands —
   // until then the renderer keeps the procedural map (no overcast-everywhere flash).
-  const weatherProvider = globe.weatherProvider;
+  const weatherProvider = config.weatherProvider;
   const providerBytes =
     weatherProvider?.getPackedTexture(WEATHER_TEX_W, WEATHER_TEX_H) ?? null;
   const providerVersion = weatherProvider?.version ?? -1;
   const weatherEnabled =
-    globe.cloudWeatherMap === true || providerBytes !== null;
+    config.cloudWeatherMap === true || providerBytes !== null;
   data[offset++] = weatherEnabled ? 1.0 : 0.0; // 64 weatherMapEnabled
   // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
   // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
-  data[offset++] = (globe.cloudCoverage ?? 0.5) * 2.0;
+  data[offset++] = (config.cloudCoverage ?? 0.5) * 2.0;
   // 66/67 — W1 dual-lobe phase: back-scatter g + forward/back blend. Config —
   // live via atmosphericConditions.clouds.phaseBackG / .phaseBlend.
-  data[offset++] = globe.cloudPhaseBackG ?? -0.3; // 66 phaseG2
-  data[offset++] = globe.cloudPhaseBlend ?? 0.7; // 67 phaseBlend
+  data[offset++] = config.cloudPhaseBackG ?? -0.3; // 66 phaseG2
+  data[offset++] = config.cloudPhaseBlend ?? 0.7; // 67 phaseBlend
   // 68-71 weatherTexBounds — global equirect (radians): minLon, minLat, lonRange, latRange.
   data[offset++] = -Math.PI;
   data[offset++] = -Math.PI / 2.0;
@@ -1664,9 +1652,9 @@ export function executeProceduralClouds(
   data[offset++] = Math.PI;
   // 72 — W1 forward-scatter g. Sharper than the old hardcoded 0.8 for a stronger
   // silver lining toward the sun (HG forward peak at g=0.85 is ~1.8x g=0.8).
-  data[offset++] = globe.cloudPhaseForwardG ?? 0.85; // 72 phaseG1 (config: .phaseForwardG)
+  data[offset++] = config.cloudPhaseForwardG ?? 0.85; // 72 phaseG1 (config: .phaseForwardG)
   // 73 — W2 ambient intensity (sky/ground fill on the shadow side; config: .ambientIntensity).
-  data[offset++] = globe.cloudAmbientIntensity ?? 1.5; // 73 ambientIntensity
+  data[offset++] = config.cloudAmbientIntensity ?? 1.5; // 73 ambientIntensity
   // 74 — qualityFlags bitfield. V3 sets bit 0 (noiseSource) when the tier wants
   // the baked 3D-texture core AND the bake actually succeeded — SELF-HEALING:
   // if the bake is unavailable (cache.noise null), the bit stays 0 and the WGSL
@@ -1704,12 +1692,12 @@ export function executeProceduralClouds(
   // 75 — Batch 439 (4.7 CLOUD-CURL) curl-warp amplitude. Default undefined →
   // packs 0.0 → the BAKED-path detail-erosion curl warp is SKIPPED in WGSL (the
   // `if (curlAmplitude > 0.0)` guard), so the default render is byte-identical.
-  // `globe.cloudCurlAmplitude` is the sole opt-in (the tier preset's curlAmplitude
+  // `config.cloudCurlAmplitude` is the sole opt-in (the tier preset's curlAmplitude
   // stays 0 so every DEFAULT tier renders byte-identically — the flag, not the
   // tier, turns curl on). The warp only perturbs where the detail texture is
   // SAMPLED (subtractive erosion), so it can carve wispier edges but never add
   // density — same safety property as the live-path Worley erosion.
-  data[offset++] = globe.cloudCurlAmplitude ?? 0.0; // 75 curlAmplitude
+  data[offset++] = config.cloudCurlAmplitude ?? 0.0; // 75 curlAmplitude
   // 76 — V9 frameCounter (Bayer jitter index for the half-res sub-pixel offset).
   // Only consumed when QF_HALF_RES is set; full-res ignores it (jitter branch
   // skipped), so writing it is byte-irrelevant on the default path. Wraps at 16
@@ -1719,8 +1707,8 @@ export function executeProceduralClouds(
   // 77 — Batch 439 (4.7 CLOUD-CURL) curl-noise swirl wavelength (noise-space
   // scale). Byte-irrelevant when curlAmplitude is 0 (the warp is guarded off), so
   // writing the default frequency on the default path is a no-op. Dialable via
-  // `globe.cloudCurlFrequency`; default 2.0 ≈ the base-shape feature scale.
-  data[offset++] = globe.cloudCurlFrequency ?? 2.0; // 77 curlFrequency
+  // `config.cloudCurlFrequency`; default 2.0 ≈ the base-shape feature scale.
+  data[offset++] = config.cloudCurlFrequency ?? 2.0; // 77 curlFrequency
   // 78 — V5 light-march step scale. LIVE/escape + T3 keep 1.0 (full light march,
   // unchanged); the lower baked tiers march at 0.5 for cheaper shadowing.
   data[offset++] =
@@ -1731,7 +1719,7 @@ export function executeProceduralClouds(
   // ignores it). Low tier = fibrous (0.10), high/cinematic = puffy (0.18).
   // Config — explicit override wins; else the tier default (low fibrous / high puffy).
   data[offset++] =
-    globe.cloudErosionStrength ?? (cloudPreset.tier <= 1 ? 0.1 : 0.18); // 79 erosionStrength
+    config.cloudErosionStrength ?? (cloudPreset.tier <= 1 ? 0.1 : 0.18); // 79 erosionStrength
   // 80-83 — W2 sky ambient (blue, lights cloud tops).
   data[offset++] = 0.5; // 80
   data[offset++] = 0.65; // 81
@@ -1762,8 +1750,8 @@ export function executeProceduralClouds(
   data[offset++] = 0.55 + (1.0 - 0.55) * todT; // 89 G (warm 0.55 -> noon 1.0)
   data[offset++] = 0.25 + (0.98 - 0.25) * todT; // 90 B (warm 0.25 -> noon 0.98)
   // 91 — W4 aerial-perspective strength (1.0 = full horizon haze at the 60 km
-  // scale baked into the shader; 0 disables). Dialable via globe.cloudAerialStrength.
-  data[offset++] = globe.cloudAerialStrength ?? 1.0; // 91 aerialStrength
+  // scale baked into the shader; 0 disables). Dialable via config.cloudAerialStrength.
+  data[offset++] = config.cloudAerialStrength ?? 1.0; // 91 aerialStrength
   // 92-94 — W4 horizon inscatter haze tint. Distant clouds blend toward this so
   // they fade into the sky instead of popping. Keyed on the same local sun
   // elevation (todT) as the sun color: warm orange-grey at the horizon (twilight
@@ -1776,17 +1764,17 @@ export function executeProceduralClouds(
   // ── Batch 407 — promoted shader consts → live dials (96-100) + V11-reserved
   // pads (101-103). The ?? defaults EXACTLY match the former WGSL consts
   // (SHAPE_SCALE 0.45, CLOUD_EXPOSURE 0.22, MS a/b/c 0.5/0.5/0.85), so with the
-  // globe fields unset this is byte-identical to the pre-407 render.
-  data[offset++] = globe.cloudPuffSize ?? 0.45; // 96 puffSize (was SHAPE_SCALE)
-  data[offset++] = globe.cloudExposure ?? 0.22; // 97 exposure (was CLOUD_EXPOSURE)
-  data[offset++] = globe.cloudMsDecayScatter ?? 0.5; // 98 msDecayA
-  data[offset++] = globe.cloudMsDecayExtinction ?? 0.5; // 99 msDecayB
-  data[offset++] = globe.cloudMsDecayPhase ?? 0.85; // 100 msDecayC
-  // ── Batch 408 — V11 per-genus vertical-density profile. globe.cloudType
+  // config fields unset this is byte-identical to the pre-407 render.
+  data[offset++] = config.cloudPuffSize ?? 0.45; // 96 puffSize (was SHAPE_SCALE)
+  data[offset++] = config.cloudExposure ?? 0.22; // 97 exposure (was CLOUD_EXPOSURE)
+  data[offset++] = config.cloudMsDecayScatter ?? 0.5; // 98 msDecayA
+  data[offset++] = config.cloudMsDecayExtinction ?? 0.5; // 99 msDecayB
+  data[offset++] = config.cloudMsDecayPhase ?? 0.85; // 100 msDecayC
+  // ── Batch 408 — V11 per-genus vertical-density profile. config.cloudType
   // (default CUMULUS) selects a CloudTypeProfile; CUMULUS → shape BILLOWY(1) +
   // densityScale 1.0, so the default render is byte-identical (the WGSL BILLOWY
   // branch is the literal old gradient).
-  const profile = CloudTypeProfile.get(globe.cloudType ?? CloudType.CUMULUS);
+  const profile = CloudTypeProfile.get(config.cloudType ?? CloudType.CUMULUS);
   const cumulusProfile = CloudTypeProfile.get(CloudType.CUMULUS);
   const cumulusBase = cumulusProfile.baseDensity; // 0.7
   const cumulusExtinction = cumulusProfile.extinction; // 0.6
@@ -1811,9 +1799,9 @@ export function executeProceduralClouds(
   // ── Batch 424 — Weather Phase 3: how strongly the weather map's G/B/A channels
   // (genus, base, density-bias) modulate the cloud model. Default 1.0; a NEUTRAL
   // map cell (G=0.5,B=0,A=0.5) is a no-op at ANY strength, so an R-only map or
-  // weatherMapEnabled=0 reproduces today's pixels. `globe.cloudWeatherChannelStrength`
+  // weatherMapEnabled=0 reproduces today's pixels. `config.cloudWeatherChannelStrength`
   // tunes it live (0 = legacy R-only).
-  data[offset++] = globe.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
+  data[offset++] = config.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
   // ── Batch 434 (3.3 CLOUD-AERIAL-LUT + 3.4 CLOUD-AMBIENT-LUT) — atmosphere-LUT
   // coupling modes (108-111). Both default to the legacy path: 'heuristic' aerial +
   // 'constant' ambient → mode floats 0 → the WGSL takes the verbatim legacy branch,
@@ -1821,7 +1809,7 @@ export function executeProceduralClouds(
   // mode floats are belt-and-suspenders for shader readers. atmosphereThickness MUST
   // match the LUT bake (ATMOSPHERE_THICKNESS = 111e3) so the transmittance v-lookup
   // lands on the right row.
-  const globeForLut = globe as unknown as {
+  const globeForLut = config as unknown as {
     cloudAerialMode?: string;
     cloudAmbientSource?: string;
   };
@@ -1835,11 +1823,11 @@ export function executeProceduralClouds(
   // ── Batch 443 (4.9 CLOUD-MULTIDECK) — multi-deck shell march. Slots 112-119.
   // Default OFF (multiDeck=0) → the WGSL marches exactly ONE shell with
   // cloudLayerBottom/Top + the legacy composite, and these deck-bounds floats are
-  // never read → byte-identical. Opt-in via `globe.cloudMultiDeck`. The deck bounds
+  // never read → byte-identical. Opt-in via `config.cloudMultiDeck`. The deck bounds
   // come from CloudTypeProfile.CloudDeck.bounds (LOW/MID/HIGH; JS-authoritative —
   // the same table the per-genus deck assignment uses). ──
   const multiDeckOn =
-    (globe as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck === true;
+    (config as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck === true;
   const deckBounds = CloudTypeProfile.CloudDeck.bounds as number[][];
   data[offset++] = multiDeckOn ? 1.0 : 0.0; // 112 multiDeck
   data[offset++] = 0.0; // 113 pad
@@ -1856,9 +1844,9 @@ export function executeProceduralClouds(
   // frame but the WGSL READS them ONLY inside the CLOUD_QF_HIGH_PRECISION branch —
   // so growing the UB does NOT change rendered output when the flag is off (the
   // OFF path never touches these floats → byte-identical canvas). Opt-in via
-  // `globe.cloudHighPrecision`. ──
+  // `config.cloudHighPrecision`. ──
   const highPrecisionOn =
-    (globe as unknown as { cloudHighPrecision?: boolean })
+    (config as unknown as { cloudHighPrecision?: boolean })
       .cloudHighPrecision === true;
   // Encode the camera world position into a high/low f32 pair so the WGSL can
   // subtract the large `high` term before the small `low` refinement (cancellation
@@ -1888,8 +1876,8 @@ export function executeProceduralClouds(
   // ── Batch 555 (E2 CLOUD-MAMMATUS) — pendulous underside pouches. Slots 128-131.
   // Default OFF (mammatusStrength=0) → the WGSL mammatusFactor() early-returns 1.0
   // so density is untouched and these floats are never read past the guard →
-  // byte-identical. Opt-in via globe.cloudMammatusStrength (+ Scale/Depth dials).
-  const globeMamma = globe as unknown as {
+  // byte-identical. Opt-in via config.cloudMammatusStrength (+ Scale/Depth dials).
+  const globeMamma = config as unknown as {
     cloudMammatusStrength?: number;
     cloudMammatusScale?: number;
     cloudMammatusDepth?: number;
@@ -1902,10 +1890,10 @@ export function executeProceduralClouds(
   // ── Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties density shaping.
   // Slots 132-135. Default OFF (speciesMode=0) → the WGSL speciesFactor() early-
   // returns 1.0 so density is untouched and these floats are never read past the
-  // guard → byte-identical. Opt-in via globe.cloudSpecies (a genus-gated name) or
-  // the numeric globe.cloudSpeciesMode; default genera leave it unset → mode 0.
+  // guard → byte-identical. Opt-in via config.cloudSpecies (a genus-gated name) or
+  // the numeric config.cloudSpeciesMode; default genera leave it unset → mode 0.
   //   name "lenticularis" → 1 ; "fibratus"/"uncinus" → 2 (uncinus adds the hook).
-  const globeSpecies = globe as unknown as {
+  const globeSpecies = config as unknown as {
     cloudSpecies?: string;
     cloudSpeciesMode?: number;
     cloudSpeciesStrength?: number;
@@ -1936,11 +1924,11 @@ export function executeProceduralClouds(
   // (asperitas / fluctus / arcus / virga) as bounded density shaping. Slots 136-139.
   // Default OFF (featureMode=0) → the WGSL featureFactor() early-returns 1.0 so
   // density is untouched and these floats are never read past the guard →
-  // byte-identical. Opt-in via globe.cloudFeature (a genus-gated name) or the numeric
-  // globe.cloudFeatureMode; default genera leave it unset → mode 0.
+  // byte-identical. Opt-in via config.cloudFeature (a genus-gated name) or the numeric
+  // config.cloudFeatureMode; default genera leave it unset → mode 0.
   //   "asperitas" → 1 ; "fluctus"/"kelvin-helmholtz" → 2 ; "arcus" → 3 ;
   //   "virga" → 4 ; "praecipitatio" → 4 (param 1 = denser/reaching streaks).
-  const globeFeature = globe as unknown as {
+  const globeFeature = config as unknown as {
     cloudFeature?: string;
     cloudFeatureMode?: number;
     cloudFeatureStrength?: number;
@@ -1981,11 +1969,11 @@ export function executeProceduralClouds(
   // SHADING. Slots 140-143. Default OFF (specialShadeMode=0) → the WGSL
   // specialShadeTint() early-returns vec3(1.0) so the cloud color is multiplied by
   // exactly 1.0 and these floats are never read past the guard → byte-identical.
-  // Opt-in via globe.cloudSpecial (a name) or the numeric globe.cloudSpecialShadeMode:
+  // Opt-in via config.cloudSpecial (a name) or the numeric config.cloudSpecialShadeMode:
   //   "noctilucent"/"nlc" → 1 ; "nacreous"/"polar-stratospheric"/"psc" → 2.
   // The high-altitude deck is placed via the existing multi-deck deckBoundsHigh
   // bounds (Batch 443); this only supplies the iridescent shading half.
-  const globeSpecial = globe as unknown as {
+  const globeSpecial = config as unknown as {
     cloudSpecial?: string;
     cloudSpecialShadeMode?: number;
     cloudSpecialShadeStrength?: number;
@@ -2088,15 +2076,15 @@ export function executeProceduralClouds(
     device.createCommandEncoder({ label: "ProceduralClouds (orphan)" });
 
   // ── Batch 437 (CLOUD-SHADOWS) — render the sun-view beer shadow map ──
-  // Opt-in via `globe.cloudCastShadows`. Default OFF → `shadowActive` stays false,
+  // Opt-in via `config.cloudCastShadows`. Default OFF → `shadowActive` stays false,
   // the real map is never rendered, and consumers read the 1×1-white placeholder
   // (transmittance 1, no shadow) → byte-identical. When ON we rasterize the cloud
   // optical depth from the sun's ortho view into `cache.shadowView` using the SAME
   // CloudUniforms + weather/noise the visible march uses, so the cast shadow tracks
   // the rendered cloud field exactly. The sun-view ortho VP is stashed on the cache
-  // for the consumers (globe terrain reads last frame's; aerial/fog this frame's).
+  // for the consumers (config terrain reads last frame's; aerial/fog this frame's).
   cache.shadowActive = false;
-  if (globe.cloudCastShadows === true) {
+  if (config.cloudCastShadows === true) {
     const shadowOk = ensureShadowResources(device, cache);
     if (!shadowOk) {
       // Permanent null-target sentinel (CLAUDE.md): the feature is on but the map
@@ -2252,8 +2240,8 @@ export function executeProceduralClouds(
         Math.min(1, cloudPreset.temporalUpdateFraction || 1 / 8),
       );
       // shellRadiiAndRes (vec4): inner/outer shell radius + half-res target size.
-      const innerR = 6378137.0 + (globe.cloudLayerBottom ?? 1500.0);
-      const outerR = 6378137.0 + (globe.cloudLayerTop ?? 4000.0);
+      const innerR = 6378137.0 + (config.cloudLayerBottom ?? 1500.0);
+      const outerR = 6378137.0 + (config.cloudLayerTop ?? 4000.0);
       td[to++] = innerR;
       td[to++] = outerR;
       td[to++] = cache.halfWidth;

@@ -667,8 +667,7 @@ interface CesiumGraphicsContext {
    *  descriptors dedupe across renderer instances. `null` on WebGL and
    *  before the WebGPU device exists. See `WebGPUContext.ts:3924`. */
   readonly webgpuPipelineCache?:
-    | import("./WebGPURenderPipelineCache.js").WebGPURenderPipelineCache
-    | null;
+    import("./WebGPURenderPipelineCache.js").WebGPURenderPipelineCache | null;
   /** WebGPU-only: lazy-instantiated central compute-pipeline cache.
    *  Compute-pipeline consumers (Weather, VolumetricFog, AutoExposure,
    *  GPUCuller, PointCloudLODProcessor) route their
@@ -677,8 +676,7 @@ interface CesiumGraphicsContext {
    *  instances. `null` on WebGL and before the WebGPU device exists.
    *  Added Batch 76. */
   readonly webgpuComputePipelineCache?:
-    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
-    | null;
+    import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache | null;
   getFeatureRenderer(key: number): CesiumFeatureRenderer | undefined;
   registerFeatureRenderer(key: number, renderer: CesiumFeatureRenderer): void;
   createPickId(
@@ -767,8 +765,7 @@ interface CesiumPassState {
   framebuffer: CesiumOpaqueFramebuffer | undefined;
   blendingEnabled: boolean | undefined;
   scissorTest:
-    | { enabled: boolean; rectangle: CesiumBoundingRectangle }
-    | undefined;
+    { enabled: boolean; rectangle: CesiumBoundingRectangle } | undefined;
   viewport: CesiumBoundingRectangle | undefined;
 }
 
@@ -868,8 +865,7 @@ interface CesiumShadowMap {
   _shadowMapMatrix: CesiumMatrix4 | Float32Array | undefined;
   _textureSize: CesiumCartesian2 | undefined;
   _primitiveBias:
-    | { depthBias: number; normalShadingSmooth: number }
-    | undefined;
+    { depthBias: number; normalShadingSmooth: number } | undefined;
   _terrainBias: { depthBias: number; normalShadingSmooth: number } | undefined;
   _isPointLight: boolean;
   _lightDirectionEC: CesiumCartesian3;
@@ -1020,8 +1016,7 @@ interface CesiumScene {
       }
     | undefined;
   readonly debugCommandFilter:
-    | ((cmd: CesiumDrawCommand | CesiumAnyDrawCommand) => boolean)
-    | undefined;
+    ((cmd: CesiumDrawCommand | CesiumAnyDrawCommand) => boolean) | undefined;
   _frameState: CesiumFrameState;
   _view: { frustumCommandsList?: CesiumFrustumCommands[] };
   _picking: {
@@ -1165,6 +1160,63 @@ interface CesiumGlobe {
   cloudNoiseMorphology?: string;
   // Weather ingest (Phase 1) — a WeatherProvider drives the weather-map texture
   // from real data. Structural to keep this .d.ts decoupled from Scene/Weather.
+  weatherProvider?: {
+    getPackedTexture(texW: number, texH: number): Uint8Array | null;
+    readonly version: number;
+  };
+}
+
+// ─── CloudVolumetricsConfig ──────────────────────────────────────────────
+//
+// Structural config carrier for the WebGPU procedural / volumetric cloud
+// renderer (CLOUD-U2-CONFIG-INDIRECTION, cloud-unification epic slice 2).
+//
+// The renderer's `executeProceduralClouds` + `publishCloudIblCoverage` used to
+// take a `CesiumGlobe` and read config off its `cloud*` fields directly. This
+// interface is the structural SUBSET of those reads, letting the renderer be
+// driven by ANY object with the same field names (the globe today; a
+// `CloudCollection`-owned `CloudVolumetrics` in a later slice) without a
+// `CesiumGlobe` type dependency. Field names are IDENTICAL to `globe.cloud*`
+// and to `Scene/CloudVolumetrics.js`, so the 136-float `CloudUniforms` packer
+// and its ~50 read sites stay byte-locked (see
+// migration_doc/CLOUD_UNIFICATION_DESIGN.md §1.2). All fields optional — every
+// read site already applies a `?? default`. Cast-only expanded knobs
+// (`cloudMultiDeck`, `cloudHighPrecision`, `cloudSpecies*`, mammatus/feature/
+// special, quality presets) stay accessed via local `config as unknown as {…}`
+// casts inside the renderer, exactly as they were off the globe.
+//
+// `CesiumGlobe` is structurally assignable to this type (it carries every field
+// below), so the legacy call sites that pass `globe` keep compiling and the
+// packed bytes are unchanged.
+interface CloudVolumetricsConfig {
+  showProceduralClouds?: boolean;
+  cloudContributesIBL?: boolean;
+  cloudCoverage?: number;
+  cloudDensity?: number;
+  cloudLayerBottom?: number;
+  cloudLayerTop?: number;
+  cloudWindDirection?: { x?: number; y?: number };
+  cloudWindSpeed?: number;
+  cloudNoiseMorphology?: string;
+  atmosphereLightIntensity?: number;
+  cloudSilverLiningIntensity?: number;
+  cloudWeatherMap?: boolean;
+  cloudWeatherChannelStrength?: number;
+  cloudPhaseForwardG?: number;
+  cloudPhaseBackG?: number;
+  cloudPhaseBlend?: number;
+  cloudAmbientIntensity?: number;
+  cloudErosionStrength?: number;
+  cloudCurlAmplitude?: number;
+  cloudCurlFrequency?: number;
+  cloudAerialStrength?: number;
+  cloudPuffSize?: number;
+  cloudExposure?: number;
+  cloudMsDecayScatter?: number;
+  cloudMsDecayExtinction?: number;
+  cloudMsDecayPhase?: number;
+  cloudType?: number;
+  cloudCastShadows?: boolean;
   weatherProvider?: {
     getPackedTexture(texW: number, texH: number): Uint8Array | null;
     readonly version: number;

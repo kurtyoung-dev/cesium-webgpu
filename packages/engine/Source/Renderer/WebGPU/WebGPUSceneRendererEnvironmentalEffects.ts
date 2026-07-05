@@ -111,22 +111,11 @@ export function executeEnvironmentalEffects(
   // before the view-availability early-return and the cloud-render gate, so it
   // tracks the globe's flags every frame (resets to 0 when clouds /
   // cloudContributesIBL are off → the env fill stays byte-identical).
-  publishCloudIblCoverage(
-    context,
-    globe as unknown as
-      | {
-          showProceduralClouds?: boolean;
-          cloudContributesIBL?: boolean;
-          cloudCoverage?: number;
-          cloudDensity?: number;
-          cloudLayerBottom?: number;
-          cloudLayerTop?: number;
-          cloudWindDirection?: { x?: number; y?: number };
-          cloudWindSpeed?: number;
-          cloudNoiseMorphology?: string;
-        }
-      | undefined,
-  );
+  // CLOUD-U2-CONFIG-INDIRECTION — `publishCloudIblCoverage` now takes a
+  // structural `CloudVolumetricsConfig` (identical field names to `globe.cloud*`),
+  // so the globe passes through directly with no inline cast. Behavior is
+  // byte-identical — same object, same fields, same `?? default` reads.
+  publishCloudIblCoverage(context, globe);
 
   // Get texture views needed by all environmental effects.
   //
