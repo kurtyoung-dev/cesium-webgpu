@@ -1,5 +1,16 @@
-import { Cartographic, createWorldTerrainAsync, sampleTerrain } from "cesium";
 import assert from "node:assert";
+import { register } from "node:module";
+
+// Teach bare Node the fork's TypeScript-source resolution convention before
+// loading the `cesium` ESM barrel — see Specs/register-ts.mjs. Without this,
+// `import { ... } from "cesium"` fails under Node with ERR_MODULE_NOT_FOUND on
+// the first TS-backed re-export (RendererType, GraphicsContext, LightTypes,
+// …). The registration must run before the barrel is imported, so the barrel
+// import is dynamic. (C4-CI-NODE20-ESM-TS-BARREL)
+register("./register-ts.mjs", import.meta.url);
+
+const { Cartographic, createWorldTerrainAsync, sampleTerrain } =
+  await import("cesium");
 
 // NodeJS smoke screen test
 
@@ -15,5 +26,4 @@ async function test() {
   assert(results[1].height < 10000);
 }
 
-test()
-
+test();
