@@ -605,15 +605,21 @@ function installCesiumDebug(viewer) {
 
     /**
      * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
-     * toggle whether the GPU-produced front-to-back sort order is applied
-     * to the opaque command list. Default OFF: the keygen + bitonic sort
-     * + readback always run when the density gate is active (so
-     * `highDensityCull()` shows live `gpuSortKeys` stats), this only
+     * force-toggle whether the GPU-produced front-to-back sort order is
+     * applied to the opaque command list. `true` maps to the `"always"`
+     * consumer mode, `false` to `"never"` (the off-gate). The keygen +
+     * bitonic sort + readback always run when the density gate is active
+     * (so `highDensityCull()` shows live `gpuSortKeys` stats); this only
      * toggles whether the resulting permutation reorders the commands.
      * Reordering opaque commands is output-invariant (depth test resolves
      * overlap), so this is byte-neutral for the final image — it exists
      * for A/B probes that confirm the consumer applies the exact
      * CPU-comparator order without a pixel change.
+     *
+     * The production default is `"auto"` (NS-GPU-SORT-NO-SCENE-WIRING):
+     * the consumer auto-applies above the opaque-command-count gate
+     * without any flag. Use {@link CesiumDebug.gpuSortConsumeMode} to
+     * restore `"auto"` after an A/B toggle.
      *
      * @param {boolean} [on=true] Whether to apply the GPU sort order.
      * @returns {boolean|null} The resulting enable state, or null if no
@@ -631,6 +637,31 @@ function installCesiumDebug(viewer) {
       ctor.setGpuSortConsumeEnabled(on === true);
       const state = ctor.gpuSortConsumeEnabled;
       console.log(`[CesiumDebug] GPU sort-order consume (reorder) = ${state}`);
+      return state;
+    },
+
+    /**
+     * NS-GPU-SORT-NO-SCENE-WIRING — set the consumer activation MODE for
+     * the GPU front-to-back opaque sort. `"auto"` (default) is the
+     * production heuristic: apply whenever the opaque-command-count gate is
+     * active. `"always"` force-applies; `"never"` is the off-gate.
+     *
+     * @param {"auto"|"always"|"never"} [mode="auto"] The consumer mode.
+     * @returns {string|null} The resulting mode, or null if no WebGPU
+     *   renderer is active.
+     */
+    gpuSortConsumeMode(mode = "auto") {
+      const renderer = scene._alternateSceneRenderer;
+      const ctor = renderer && renderer.constructor;
+      if (!ctor || typeof ctor.setGpuSortConsumeMode !== "function") {
+        console.warn(
+          "[CesiumDebug] No WebGPU scene renderer — GPU sort consume mode unavailable",
+        );
+        return null;
+      }
+      ctor.setGpuSortConsumeMode(mode);
+      const state = ctor.gpuSortConsumeMode;
+      console.log(`[CesiumDebug] GPU sort-order consume mode = ${state}`);
       return state;
     },
 

@@ -1011,24 +1011,47 @@ export class WebGPUSceneRenderer {
   }
 
   /**
-   * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
-   * enable/disable the consumer-side application of the GPU-produced
-   * front-to-back sort order to the opaque command list. Default OFF:
-   * the keygen + bitonic sort + readback always run when the density
-   * gate is active (stats surface via `highDensityCull()`), this only
-   * toggles whether the resulting permutation actually reorders the
-   * commands. Reordering opaque commands is output-invariant, so the
-   * toggle is byte-neutral for the final image — it exists so an A/B
-   * probe can confirm the consumer applies the exact CPU-comparator
-   * order without a pixel change.
+   * NS-GPU-SORT-NO-SCENE-WIRING — set the consumer-side activation mode
+   * for the GPU-produced front-to-back sort order. `"auto"` (default) is
+   * the production heuristic: apply whenever the opaque-command-count gate
+   * is active. `"always"` force-applies; `"never"` is the off-gate (the
+   * keygen + bitonic sort + readback still run when the density gate is
+   * active — stats surface via `highDensityCull()` — but the permutation
+   * is never applied, byte-identical to the pre-heuristic default).
+   * Reordering opaque commands is output-invariant, so every mode is
+   * byte-neutral for the final image; the mode only trades early-Z cost.
    */
-  static setGpuSortConsumeEnabled(value: boolean): void {
-    WebGPUSceneRenderer._gpuSortConsumeEnabled = value === true;
+  static setGpuSortConsumeMode(mode: "auto" | "always" | "never"): void {
+    if (mode === "auto" || mode === "always" || mode === "never") {
+      WebGPUSceneRenderer._gpuSortConsumeMode = mode;
+    }
   }
 
-  /** Phase 3 — whether the GPU sort order is applied to opaque commands. */
+  /** NS-GPU-SORT-NO-SCENE-WIRING — current consumer activation mode. */
+  static get gpuSortConsumeMode(): "auto" | "always" | "never" {
+    return WebGPUSceneRenderer._gpuSortConsumeMode;
+  }
+
+  /**
+   * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
+   * back-compat boolean toggle for the consumer. `true` maps to the
+   * `"always"` mode (force-apply); `false` maps to `"never"` (the
+   * off-gate). New callers should prefer `setGpuSortConsumeMode` so the
+   * `"auto"` production heuristic stays reachable — a boolean can't
+   * express it. Used by `CesiumDebug.gpuSortConsume` for A/B probes.
+   */
+  static setGpuSortConsumeEnabled(value: boolean): void {
+    WebGPUSceneRenderer._gpuSortConsumeMode =
+      value === true ? "always" : "never";
+  }
+
+  /**
+   * Phase 3 — whether the GPU sort order would be applied when the density
+   * gate is active (i.e. mode is not `"never"`). In `"auto"`/`"always"`
+   * the consumer applies; in `"never"` it does not.
+   */
   static get gpuSortConsumeEnabled(): boolean {
-    return WebGPUSceneRenderer._gpuSortConsumeEnabled;
+    return WebGPUSceneRenderer._gpuSortConsumeMode !== "never";
   }
   // B214-N1 (Batch 219) — per-frustum gate state.
   private _hiZActiveByFrustum: Map<number, boolean> = new Map();
@@ -1120,13 +1143,26 @@ export class WebGPUSceneRenderer {
     compactedToOriginal: Uint32Array;
     skipped: number[];
   } | null = null;
-  // Consumer-side activation flag. DEFAULT OFF: reordering opaque
-  // commands is output-invariant (depth test resolves overlap) so it is
-  // byte-neutral, but it stays opt-in until broad-scene verified — the
-  // GPU sort dispatch + readback still run when the density gate is
-  // active (so stats surface), the result is only APPLIED when this is
-  // on. Toggle via `setGpuSortConsumeEnabled` / `CesiumDebug.gpuSortConsume`.
-  private static _gpuSortConsumeEnabled = false;
+  // NS-GPU-SORT-NO-SCENE-WIRING (2026-07-05) — consumer-side activation
+  // MODE. Three states, mirroring `Scene.gpuCullingHint` semantics:
+  //   - "auto"   (DEFAULT): the production heuristic. The consumer applies
+  //              the GPU front-to-back permutation whenever the per-frustum
+  //              opaque-command-count gate (`gpuSortActive`, hysteresis
+  //              GPU_SORT_KEYS_THRESHOLD_HI/LO) is active. This is the
+  //              "live path" — the count threshold IS the heuristic, so no
+  //              extra flag is needed for a dense scene to benefit.
+  //   - "always": force-apply whenever a readback exists (debug/A-B).
+  //   - "never":  force-off; the sort dispatch + readback still run when the
+  //              density gate is active (so stats surface), but the result
+  //              is never APPLIED — byte-identical to the pre-heuristic
+  //              default. This is the off-gate.
+  // Reordering opaque commands is output-invariant (depth test resolves
+  // overlap) so every mode is byte-neutral for the final image; the mode
+  // only trades early-Z efficiency. Precedent: `_hiZConsumeEnabled` (a
+  // sibling output-invariant consumer) likewise defaults ON once verified.
+  // Toggle via `setGpuSortConsumeMode` / `setGpuSortConsumeEnabled` /
+  // `CesiumDebug.gpuSortConsume`.
+  private static _gpuSortConsumeMode: "auto" | "always" | "never" = "auto";
   // Phase 3 diagnostic counters (surfaced via getHighDensityCullStats).
   private _sortConsumeApplied: number = 0;
   private _sortConsumeSkipped: number = 0;
@@ -2054,8 +2090,10 @@ export class WebGPUSceneRenderer {
     // raw set (just possibly copied by the cull/HiZ passes, which
     // preserve order). When filtering dropped commands, cull/HiZ take
     // precedence and the CPU order stands (opaque order is a pure early-Z
-    // optimization, so this is correct either way). Default OFF — see
-    // `_applySortedOrder` / `setGpuSortConsumeEnabled`.
+    // optimization, so this is correct either way). Consumer mode default
+    // "auto" (NS-GPU-SORT-NO-SCENE-WIRING) — the gate active here IS the
+    // production threshold heuristic; see `_applySortedOrder` /
+    // `setGpuSortConsumeMode`.
     if (gpuSortActive && activeCount === count) {
       const reordered = this._applySortedOrder(
         commands as CesiumAnyDrawCommand[],
@@ -3744,8 +3782,11 @@ export class WebGPUSceneRenderer {
     count: number,
   ): CesiumAnyDrawCommand[] {
     if (count <= 0) return commands;
-    if (!WebGPUSceneRenderer._gpuSortConsumeEnabled) {
-      // Byte-neutral default: never reorder unless explicitly enabled.
+    if (WebGPUSceneRenderer._gpuSortConsumeMode === "never") {
+      // Off-gate: byte-identical to the pre-heuristic default — never
+      // reorder. "auto" (default) + "always" fall through and apply; this
+      // method is only reached when the opaque-count gate is already
+      // active, so "auto" IS the production threshold heuristic.
       return commands;
     }
     const prev = this._lastSortedIndices;
@@ -4215,7 +4256,7 @@ export class WebGPUSceneRenderer {
           compactedToOriginal: Array.from(c2oSnapshot),
           skipped: skippedSnapshot.slice(),
           appliedOrderLength: 0,
-          consumeEnabled: WebGPUSceneRenderer._gpuSortConsumeEnabled,
+          consumeEnabled: WebGPUSceneRenderer.gpuSortConsumeEnabled,
         };
         //>>includeEnd('debug');
         fr.prepareIndicesReadback(encoder, valid, tag);
@@ -4295,6 +4336,7 @@ export class WebGPUSceneRenderer {
       thresholdHi: number;
       thresholdLo: number;
       dispatches: number;
+      consumeMode: "auto" | "always" | "never";
       consumeEnabled: boolean;
       consumeApplied: number;
       consumeSkipped: number;
@@ -4355,7 +4397,11 @@ export class WebGPUSceneRenderer {
         thresholdLo: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
         dispatches: this._sortKeysDispatches,
         // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — consumer state.
-        consumeEnabled: WebGPUSceneRenderer._gpuSortConsumeEnabled,
+        // NS-GPU-SORT-NO-SCENE-WIRING — `consumeMode` surfaces the "auto"
+        // production heuristic; `consumeEnabled` stays true whenever the
+        // mode is not "never" (back-compat).
+        consumeMode: WebGPUSceneRenderer._gpuSortConsumeMode,
+        consumeEnabled: WebGPUSceneRenderer.gpuSortConsumeEnabled,
         consumeApplied: this._sortConsumeApplied,
         consumeSkipped: this._sortConsumeSkipped,
         hasReadback: !!this._lastSortedIndices,
