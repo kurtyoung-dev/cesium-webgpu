@@ -54,6 +54,17 @@ function nextPowerOf2(n: number): number {
 
 interface GPUSortKeysResources {
   capacity: number;
+  // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — the
+  // key/index buffers are sized to `nextPowerOf2(capacity)` because the
+  // bitonic network dispatches over `nextPowerOf2(count)` elements. When
+  // `capacity` is not itself a power of 2 (the common case for real
+  // command counts), a sort over `paddedN > capacity` would read/write
+  // out of bounds — OOB storage reads return 0 (the MINIMUM key), which
+  // would sort garbage padding to the FRONT and corrupt the permutation.
+  // Sizing the buffers to `paddedCapacity` + filling the [count,paddedN)
+  // tail with sentinel max keys each frame (see `runBitonicSort`) makes
+  // the consumer trustworthy for arbitrary counts, not just powers of 2.
+  paddedCapacity: number;
   paramsBuffer: GPUBuffer;
   centerXBuffer: GPUBuffer;
   centerYBuffer: GPUBuffer;
@@ -76,13 +87,55 @@ interface GPUSortKeysResources {
   sortBindGroup: GPUBindGroup | null;
   sortLocalPipeline: GPUComputePipeline | null;
   sortMergePipeline: GPUComputePipeline | null;
-  // Readback buffer for sorted command-indices array. Mapped after
-  // `prepareIndicesReadback` + queue-submit. Same 1-frame latency
-  // contract as the cull readbacks.
-  indicesReadbackBuffer: GPUBuffer | null;
+  // Two-buffer readback ring for the sorted command-indices array
+  // (C4-GPU-SORT-PIPELINE-PHASE3). A single staging buffer cannot
+  // pipeline GPU->CPU readback: `mapAsync` must run AFTER the copy is
+  // submitted, yet the next frame's copy must not target a buffer that
+  // is still mapping. With a ring, `prepareIndicesReadback` writes one
+  // slot while the OTHER (written + submitted last frame) is mapped, so
+  // neither "used in submit while pending map" nor "while mapped" can
+  // occur. Mirrors `WebGPUGPUCuller`'s deferred-readback ring exactly.
+  readbackBuffers: [GPUBuffer | null, GPUBuffer | null];
+}
+
+/**
+ * Paired readback result: the decoded sorted COMPACTED command indices
+ * plus the opaque `tag` the caller passed to `prepareIndicesReadback`.
+ * The tag lets the consumer keep the indices paired with the exact
+ * compaction map (compactedToOriginal + skipped) from the dispatch that
+ * produced them, even though the ring surfaces results 1-2 frames later.
+ */
+export interface SortedIndicesReadback {
+  indices: Uint32Array;
+  count: number;
+  tag: unknown;
 }
 
 const SORT_BITONIC_PARAMS_BYTES = 16; // 4 × u32: elementCount, k, j, _pad
+// Per-stage stride for the dynamic-offset bitonic params buffer. Each
+// bitonic stage (the local sort + every global merge sub-stage) needs
+// its OWN (k, j) visible when that pass executes. queue.writeBuffer of a
+// single fixed offset per stage collapses to the LAST write before the
+// command buffer runs (all writes precede the submit), so every pass
+// would read identical params → the merge stages never run and blocks
+// stay locally-sorted-but-globally-unmerged. Writing each stage to a
+// DISTINCT offset (no clobber) + a dynamic-offset bind group fixes it.
+// 256 is the guaranteed-max default `minUniformBufferOffsetAlignment`,
+// so it is a legal dynamic offset on every device.
+const SORT_PARAMS_STRIDE = 256;
+
+/**
+ * Total bitonic stage count for a padded element count `paddedN`: 1 local
+ * sort + Σ over k=512,1024,…,paddedN of log2(k) global merge sub-stages.
+ * Bounds the dynamic-offset params buffer.
+ */
+function countSortStages(paddedN: number): number {
+  let stages = 1; // local sort
+  for (let k = 512; k <= paddedN; k <<= 1) {
+    for (let j = k >> 1; j > 0; j >>= 1) stages++;
+  }
+  return stages;
+}
 
 /**
  * Sort mode values that match `GPUSortKeys.wgsl`'s SortKeyParams.sortMode.
@@ -97,9 +150,20 @@ class WebGPUGPUSortKeysDispatcher {
   // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — bitonic sort module.
   private _sortShaderModule: GPUShaderModule | null = null;
   private _sortParamsScratch = new Uint32Array(4);
-  // True while a Promise from `readSortedIndices` is pending — prevents
-  // stacking duplicate readback calls per frame.
-  private _sortReadbackInFlight: boolean = false;
+  // NEW-GPU-SORT-PIPELINE Phase 3 — scratch filled with 0xFFFFFFFF used
+  // to write the [count,paddedN) sentinel tail of the key/index buffers
+  // before each bitonic sort. Grown on demand.
+  private _sortPadScratch: Uint32Array = new Uint32Array(0);
+  // Deferred-readback ring state (C4-GPU-SORT-PIPELINE-PHASE3) — see
+  // `readbackBuffers` in GPUSortKeysResources. `_latestSorted` holds the
+  // most recently decoded paired result; `latestSortedIndices()` returns
+  // it (synchronous cache, same contract as `WebGPUGPUCuller.readResults`).
+  private _rbWriteIdx: number = 0;
+  private _rbPendingIdx: number = -1;
+  private _rbPendingCount: number = 0;
+  private _rbPendingTag: unknown = null;
+  private _rbMapping: [boolean, boolean] = [false, false];
+  private _latestSorted: SortedIndicesReadback | null = null;
   // Lifetime sort dispatch counter for diagnostics.
   private _sortDispatches: number = 0;
   // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured on first
@@ -217,6 +281,10 @@ class WebGPUGPUSortKeysDispatcher {
 
     const device = this._device;
     const byteLen = maxCommands * 4;
+    // Phase 3 — output (key/index) buffers must cover the padded bitonic
+    // element count so a sort over `nextPowerOf2(count)` never runs OOB.
+    const paddedCapacity = nextPowerOf2(maxCommands);
+    const paddedByteLen = paddedCapacity * 4;
 
     const paramsBuffer = device.createBuffer({
       label: "GPUSortKeys_Params",
@@ -233,7 +301,7 @@ class WebGPUGPUSortKeysDispatcher {
     const makeStorageOut = (label: string) =>
       device.createBuffer({
         label,
-        size: byteLen,
+        size: paddedByteLen,
         usage:
           GPUBufferUsage.STORAGE |
           GPUBufferUsage.COPY_SRC |
@@ -294,6 +362,7 @@ class WebGPUGPUSortKeysDispatcher {
 
     this._resources = {
       capacity: maxCommands,
+      paddedCapacity,
       paramsBuffer,
       centerXBuffer,
       centerYBuffer,
@@ -315,7 +384,7 @@ class WebGPUGPUSortKeysDispatcher {
       sortBindGroup: null,
       sortLocalPipeline: null,
       sortMergePipeline: null,
-      indicesReadbackBuffer: null,
+      readbackBuffers: [null, null],
     };
     return true;
   }
@@ -335,20 +404,27 @@ class WebGPUGPUSortKeysDispatcher {
       r.sortMergePipeline &&
       r.sortBindGroup &&
       r.sortParamsBuffer &&
-      r.indicesReadbackBuffer
+      r.readbackBuffers[0] &&
+      r.readbackBuffers[1]
     ) {
       return true;
     }
 
     const device = this._device;
+    // One params buffer holding every stage's (elementCount,k,j) at a
+    // distinct 256-aligned offset, bound with a dynamic offset per pass.
+    const maxStages = countSortStages(r.paddedCapacity);
     const sortParamsBuffer = device.createBuffer({
       label: "GPUSortKeys_BitonicParams",
-      size: SORT_BITONIC_PARAMS_BYTES,
+      size: maxStages * SORT_PARAMS_STRIDE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     const sortBgl = makeBindGroupLayout(device, "BitonicSortU64_BGL", [
-      uniformBuffer(0, Stage.COMPUTE),
+      uniformBuffer(0, Stage.COMPUTE, {
+        hasDynamicOffset: true,
+        minBindingSize: SORT_BITONIC_PARAMS_BYTES,
+      }),
       storageBuffer(1, Stage.COMPUTE),
       storageBuffer(2, Stage.COMPUTE),
       storageBuffer(3, Stage.COMPUTE),
@@ -357,7 +433,16 @@ class WebGPUGPUSortKeysDispatcher {
       label: "BitonicSortU64_BG",
       layout: sortBgl,
       entries: [
-        { binding: 0, resource: { buffer: sortParamsBuffer } },
+        // Dynamic-offset binding: base offset 0, size = one stage's
+        // struct; the actual stage offset is supplied at setBindGroup.
+        {
+          binding: 0,
+          resource: {
+            buffer: sortParamsBuffer,
+            offset: 0,
+            size: SORT_BITONIC_PARAMS_BYTES,
+          },
+        },
         { binding: 1, resource: { buffer: r.sortKeysHighBuffer } },
         { binding: 2, resource: { buffer: r.sortKeysLowBuffer } },
         { binding: 3, resource: { buffer: r.commandIndicesBuffer } },
@@ -402,18 +487,19 @@ class WebGPUGPUSortKeysDispatcher {
           },
         });
 
-    const indicesReadbackBuffer = device.createBuffer({
-      label: "GPUSortKeys_IndicesReadback",
-      size: r.capacity * 4,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
+    const makeReadback = (slot: number) =>
+      device.createBuffer({
+        label: `GPUSortKeys_IndicesReadback${slot}`,
+        size: r.capacity * 4,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
 
     r.sortParamsBuffer = sortParamsBuffer;
     r.sortBindGroupLayout = sortBgl;
     r.sortBindGroup = sortBg;
     r.sortLocalPipeline = sortLocalPipeline;
     r.sortMergePipeline = sortMergePipeline;
-    r.indicesReadbackBuffer = indicesReadbackBuffer;
+    r.readbackBuffers = [makeReadback(0), makeReadback(1)];
     return true;
   }
 
@@ -437,54 +523,104 @@ class WebGPUGPUSortKeysDispatcher {
     if (!this._ensureSortPipelines()) return false;
 
     // Pad count up to next power of 2 so the bitonic network has a
-    // valid (k, j) sequence. The shader handles OOB by padding with
-    // 0xFFFFFFFF keys (sort to end), so the extra threads are no-ops.
+    // valid (k, j) sequence.
     const paddedN = nextPowerOf2(count);
 
-    // Phase 1: local sort within workgroups (256 threads each).
-    {
-      this._sortParamsScratch[0] = paddedN;
-      this._sortParamsScratch[1] = 0;
-      this._sortParamsScratch[2] = 0;
-      this._sortParamsScratch[3] = 0;
-      this._device.queue.writeBuffer(
-        r.sortParamsBuffer!,
+    // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — write the [count,paddedN)
+    // tail of the key + index buffers with sentinel max (0xFFFFFFFF)
+    // BEFORE the sort runs. The GPUSortKeys compute pass only writes
+    // [0,count); without this fill the padding slots hold stale (or
+    // zero-init) data, and the bitonic network's in-shader pad branch
+    // only triggers for `globalIdx >= elementCount` (= paddedN), never
+    // for the [count,paddedN) middle. Sentinel-max keys sort those
+    // slots to the END so the real commands occupy [0,count) and the
+    // permutation the consumer reads back is correct for ANY count, not
+    // just powers of two. queue.writeBuffer is ordered before the
+    // submitted command buffer, and the range is disjoint from what the
+    // keygen pass writes, so both land before the bitonic pass reads.
+    if (paddedN > count) {
+      const padElems = paddedN - count;
+      if (this._sortPadScratch.length < padElems) {
+        this._sortPadScratch = new Uint32Array(padElems).fill(0xffffffff);
+      }
+      const q = this._device.queue;
+      const off = count * 4;
+      q.writeBuffer(
+        r.sortKeysHighBuffer,
+        off,
+        this._sortPadScratch,
         0,
-        this._sortParamsScratch.buffer,
+        padElems,
       );
-      const pass = encoder.beginComputePass({
-        label: "BitonicSortU64_Local",
-      });
-      pass.setPipeline(r.sortLocalPipeline!);
-      pass.setBindGroup(0, r.sortBindGroup!);
-      pass.dispatchWorkgroups(Math.ceil(paddedN / 256), 1, 1);
-      pass.end();
+      q.writeBuffer(
+        r.sortKeysLowBuffer,
+        off,
+        this._sortPadScratch,
+        0,
+        padElems,
+      );
+      q.writeBuffer(
+        r.commandIndicesBuffer,
+        off,
+        this._sortPadScratch,
+        0,
+        padElems,
+      );
     }
 
-    // Phase 2: global merge passes for k > 256. O(log²N) dispatches
-    // — at N = 65536 that's about 28 passes; cheap.
-    // B228-O1 (Batch 230 audit fix) — removed `if (j < 256 && k <= 256)
-    // continue;` from this loop. The outer loop starts at k=512 so
-    // `k <= 256` was never true; the skip was dead code.
+    // Build the full stage list: stage 0 = local sort (k=j=0, ignored by
+    // the local shader), then the global merge sub-stages (k=512.., j).
+    // Each stage's params live at a DISTINCT 256-aligned offset so the
+    // per-stage writeBuffers don't clobber each other before the command
+    // buffer executes; each pass binds its own stage via dynamic offset.
+    const stageParams: Array<{ k: number; j: number; merge: boolean }> = [
+      { k: 0, j: 0, merge: false },
+    ];
     for (let k = 512; k <= paddedN; k <<= 1) {
       for (let j = k >> 1; j > 0; j >>= 1) {
-        this._sortParamsScratch[0] = paddedN;
-        this._sortParamsScratch[1] = k;
-        this._sortParamsScratch[2] = j;
-        this._sortParamsScratch[3] = 0;
-        this._device.queue.writeBuffer(
-          r.sortParamsBuffer!,
-          0,
-          this._sortParamsScratch.buffer,
-        );
-        const pass = encoder.beginComputePass({
-          label: `BitonicSortU64_Merge_k${k}_j${j}`,
-        });
-        pass.setPipeline(r.sortMergePipeline!);
-        pass.setBindGroup(0, r.sortBindGroup!);
-        pass.dispatchWorkgroups(Math.ceil(paddedN / 256), 1, 1);
-        pass.end();
+        stageParams.push({ k, j, merge: true });
       }
+    }
+    const stageCount = stageParams.length;
+
+    // Pack all stage params into one scratch (STRIDE u32s per stage) and
+    // upload with a single writeBuffer.
+    const strideU32 = SORT_PARAMS_STRIDE / 4;
+    if (this._sortParamsScratch.length < stageCount * strideU32) {
+      this._sortParamsScratch = new Uint32Array(stageCount * strideU32);
+    }
+    const scratch = this._sortParamsScratch;
+    scratch.fill(0, 0, stageCount * strideU32);
+    for (let s = 0; s < stageCount; s++) {
+      const base = s * strideU32;
+      scratch[base] = paddedN;
+      scratch[base + 1] = stageParams[s].k;
+      scratch[base + 2] = stageParams[s].j;
+      scratch[base + 3] = 0;
+    }
+    this._device.queue.writeBuffer(
+      r.sortParamsBuffer!,
+      0,
+      scratch.buffer,
+      scratch.byteOffset,
+      stageCount * SORT_PARAMS_STRIDE,
+    );
+
+    const workgroups = Math.ceil(paddedN / 256);
+    for (let s = 0; s < stageCount; s++) {
+      const stage = stageParams[s];
+      const pass = encoder.beginComputePass({
+        label: stage.merge
+          ? `BitonicSortU64_Merge_k${stage.k}_j${stage.j}`
+          : "BitonicSortU64_Local",
+      });
+      pass.setPipeline(
+        stage.merge ? r.sortMergePipeline! : r.sortLocalPipeline!,
+      );
+      // Dynamic offset selects this stage's params slot.
+      pass.setBindGroup(0, r.sortBindGroup!, [s * SORT_PARAMS_STRIDE]);
+      pass.dispatchWorkgroups(workgroups, 1, 1);
+      pass.end();
     }
 
     this._sortDispatches++;
@@ -492,50 +628,101 @@ class WebGPUGPUSortKeysDispatcher {
   }
 
   /**
-   * Encode a `copyBufferToBuffer` from the sorted command-indices
-   * buffer into the readback staging buffer. Call AFTER
-   * `runBitonicSort` and BEFORE `device.queue.submit`.
+   * Encode a `copyBufferToBuffer` from the sorted command-indices buffer
+   * into a readback ring slot. Call AFTER `runBitonicSort` and BEFORE
+   * `device.queue.submit`. `tag` is an opaque payload (the caller's
+   * compaction map) returned verbatim alongside the decoded indices, so
+   * the consumer keeps the two paired across the ring's deferral.
+   *
+   * Deferred-readback ring (C4-GPU-SORT-PIPELINE-PHASE3): first pumps the
+   * slot written on a PRIOR call — its copy has been submitted by now, so
+   * `mapAsync` is legal and never targets the slot we write below —
+   * then writes this frame's copy into a non-mapping slot. Mirrors
+   * `WebGPUGPUCuller.prepareReadback`.
    */
-  prepareIndicesReadback(encoder: GPUCommandEncoder, count: number): void {
+  prepareIndicesReadback(
+    encoder: GPUCommandEncoder,
+    count: number,
+    tag?: unknown,
+  ): void {
     const r = this._resources;
-    if (!r || !r.indicesReadbackBuffer) return;
+    if (!r) return;
     if (count <= 0 || count > r.capacity) return;
-    encoder.copyBufferToBuffer(
-      r.commandIndicesBuffer,
-      0,
-      r.indicesReadbackBuffer,
-      0,
-      count * 4,
-    );
+
+    // Map the prior slot (submitted by now), decode into `_latestSorted`.
+    this._pumpReadback();
+
+    // Pick a slot that isn't currently mapping; if both are, skip this
+    // frame's copy (the consumer keeps using the last decoded result).
+    let i = this._rbWriteIdx;
+    if (this._rbMapping[i]) {
+      i ^= 1;
+      if (this._rbMapping[i]) return;
+    }
+    const buf = r.readbackBuffers[i];
+    if (!buf) return;
+
+    encoder.copyBufferToBuffer(r.commandIndicesBuffer, 0, buf, 0, count * 4);
+    this._rbPendingIdx = i;
+    this._rbPendingCount = count;
+    this._rbPendingTag = tag ?? null;
+    this._rbWriteIdx = i ^ 1;
   }
 
   /**
-   * Async readback of the sorted indices array. Returns a
-   * `Uint32Array` of length `count` where each element is the
-   * original (pre-sort) command index that now occupies sorted
-   * position `i`. Returns null when a readback is already in
-   * flight (caller is expected to drop and try next frame).
+   * Deferred-readback pump — maps the slot written by a PRIOR
+   * `prepareIndicesReadback` (its copy is submitted by now, so `mapAsync`
+   * is legal and the slot is not the one about to be written). Decodes
+   * into `_latestSorted`. No-op when nothing pends or the slot is mapping.
    */
-  async readSortedIndices(count: number): Promise<Uint32Array | null> {
+  private _pumpReadback(): void {
+    const i = this._rbPendingIdx;
+    if (i < 0 || this._rbMapping[i]) return;
+    const count = this._rbPendingCount;
+    const tag = this._rbPendingTag;
+    this._rbPendingIdx = -1;
+    if (count <= 0) return;
     const r = this._resources;
-    if (!r || !r.indicesReadbackBuffer) return null;
-    if (this._sortReadbackInFlight) return null;
-    if (count <= 0 || count > r.capacity) return null;
-    this._sortReadbackInFlight = true;
-    try {
-      await r.indicesReadbackBuffer.mapAsync(GPUMapMode.READ, 0, count * 4);
-      const range = r.indicesReadbackBuffer.getMappedRange(0, count * 4);
-      const result = new Uint32Array(new Uint32Array(range));
-      r.indicesReadbackBuffer.unmap();
-      return result;
-    } catch (e) {
-      //>>includeStart('debug', pragmas.debug);
-      console.warn(`[BitonicSortU64] readback failed: ${(e as Error).message}`);
-      //>>includeEnd('debug');
-      return null;
-    } finally {
-      this._sortReadbackInFlight = false;
-    }
+    if (!r) return;
+    const buf = r.readbackBuffers[i];
+    if (!buf) return;
+    this._rbMapping[i] = true;
+    buf
+      .mapAsync(GPUMapMode.READ, 0, count * 4)
+      .then(() => {
+        const indices = new Uint32Array(
+          new Uint32Array(buf.getMappedRange(0, count * 4)),
+        );
+        buf.unmap();
+        this._latestSorted = { indices, count, tag };
+      })
+      .catch((e) => {
+        //>>includeStart('debug', pragmas.debug);
+        console.warn(
+          `[BitonicSortU64] readback failed: ${(e as Error).message}`,
+        );
+        //>>includeEnd('debug');
+        try {
+          buf.unmap();
+        } catch {
+          /* not mapped */
+        }
+      })
+      .finally(() => {
+        this._rbMapping[i] = false;
+      });
+  }
+
+  /**
+   * Return the most recently decoded paired readback result (the sorted
+   * COMPACTED command indices + the caller's tag), or null before the
+   * first decode. Synchronous cache — the ring's `mapAsync` runs inside
+   * `prepareIndicesReadback`, so this just hands back the latest decode.
+   * Each decode allocates a fresh `indices` array, so a reference held by
+   * the consumer stays valid until it chooses to replace it.
+   */
+  latestSortedIndices(): SortedIndicesReadback | null {
+    return this._latestSorted;
   }
 
   /** Lifetime sort dispatch count, surfaced via diagnostic stats. */
@@ -655,16 +842,20 @@ class WebGPUGPUSortKeysDispatcher {
       r.commandIndicesBuffer.destroy();
       // Batch 228 sort resources.
       r.sortParamsBuffer?.destroy();
-      r.indicesReadbackBuffer?.destroy();
+      r.readbackBuffers[0]?.destroy();
+      r.readbackBuffers[1]?.destroy();
     } catch (_e) {
       // Defensive — double-destroy is a no-op.
     }
     this._resources = null;
-    // B228-N1 (Batch 230 audit fix) — reset the in-flight flag so a
-    // subsequent allocate() + readback chain can fire. Prior code
-    // left the flag stuck-true if destroy() ran while a readback
-    // promise was pending; the next session would never readback.
-    this._sortReadbackInFlight = false;
+    // Reset the ring state so a subsequent allocate() + readback chain
+    // starts clean (mirrors the old in-flight-flag reset).
+    this._rbWriteIdx = 0;
+    this._rbPendingIdx = -1;
+    this._rbPendingCount = 0;
+    this._rbPendingTag = null;
+    this._rbMapping = [false, false];
+    this._latestSorted = null;
   }
 }
 
@@ -765,33 +956,33 @@ function runBitonicSortWebGPUGPUSortKeys(
 }
 
 /**
- * Schedule a copy of the sorted-indices buffer into the readback
- * staging buffer. Called immediately after `runBitonicSort`.
+ * Schedule a copy of the sorted-indices buffer into a readback ring
+ * slot. Called immediately after `runBitonicSort`. `tag` is returned
+ * verbatim alongside the decoded indices via `latestSortedIndices`.
  */
 function prepareIndicesReadbackWebGPUGPUSortKeys(
   context: { device: GPUDevice | null | undefined },
   encoder: GPUCommandEncoder,
   count: number,
+  tag?: unknown,
 ): void {
   const inst = _instances.get(context);
   if (!inst) return;
-  inst.prepareIndicesReadback(encoder, count);
+  inst.prepareIndicesReadback(encoder, count, tag);
 }
 
 /**
- * Async readback of the sorted command-indices array. Returns
- * `Uint32Array(count)` where `result[i]` is the original (pre-sort)
- * command index that ended up in sorted position `i`. Returns null
- * when no readback was prepared, the dispatcher isn't allocated, or
- * a readback is already in flight.
+ * Return the most recently decoded paired readback (sorted COMPACTED
+ * indices + the caller's tag), or null before the first decode. The
+ * ring's `mapAsync` runs inside `prepareIndicesReadback`, so this is a
+ * synchronous cache read (same contract as `WebGPUGPUCuller.readResults`).
  */
-async function readSortedIndicesWebGPUGPUSortKeys(
-  context: { device: GPUDevice | null | undefined },
-  count: number,
-): Promise<Uint32Array | null> {
+function latestSortedIndicesWebGPUGPUSortKeys(context: {
+  device: GPUDevice | null | undefined;
+}): SortedIndicesReadback | null {
   const inst = _instances.get(context);
   if (!inst) return null;
-  return inst.readSortedIndices(count);
+  return inst.latestSortedIndices();
 }
 
 export {
@@ -801,7 +992,7 @@ export {
   dispatchWebGPUGPUSortKeys,
   runBitonicSortWebGPUGPUSortKeys,
   prepareIndicesReadbackWebGPUGPUSortKeys,
-  readSortedIndicesWebGPUGPUSortKeys,
+  latestSortedIndicesWebGPUGPUSortKeys,
   getWebGPUGPUSortKeysStatistics,
   destroyWebGPUGPUSortKeys,
 };

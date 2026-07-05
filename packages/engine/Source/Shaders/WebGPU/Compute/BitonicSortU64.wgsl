@@ -81,7 +81,21 @@ fn localBitonicSort256(
     for (var j = k >> 1u; j > 0u; j = j >> 1u) {
       let ixj = localIdx ^ j;
       if (ixj > localIdx) {
-        let ascending = (localIdx & k) == 0u;
+        // C4-GPU-SORT-PIPELINE-PHASE3 fix — the sort DIRECTION for a
+        // bitonic stage is a property of the element's GLOBAL position,
+        // not its position within the workgroup. Using `localIdx & k`
+        // made every 256-block sort the SAME direction at the k=256
+        // stage (localIdx & 256 is always 0), so the array leaving the
+        // local sort was not the alternating-direction bitonic
+        // intermediate the global merge (k>=512) assumes — the merge
+        // then produced a per-block-sorted-but-not-globally-sorted
+        // permutation (first monotonic break at index 256). `globalIdx &
+        // k` is identical for k<256 (globalIdx = wid*256 + localIdx, and
+        // wid*256 is a multiple of every k<=128) and correctly alternates
+        // per block at k=256, so odd blocks descend and the merge sorts
+        // globally. Latent since Batch 228 — never exercised until the
+        // Phase-3 consumer read the sorted order back.
+        let ascending = (globalIdx & k) == 0u;
         let aHi = sharedHigh[localIdx];
         let aLo = sharedLow[localIdx];
         let bHi = sharedHigh[ixj];

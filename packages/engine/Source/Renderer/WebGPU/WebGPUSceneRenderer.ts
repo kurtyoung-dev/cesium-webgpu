@@ -687,6 +687,40 @@ export function executeBatchTranslucent(
   }
 }
 
+// NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — debug
+// capture shape returned by `getGpuSortConsumeSnapshot()` for the
+// acceptance probe. Only populated under the debug pragma.
+interface GpuSortDebugCapture {
+  validCount: number;
+  originalCount: number;
+  sortMode: number;
+  cameraPosition: { x: number; y: number; z: number };
+  centerX: number[];
+  centerY: number[];
+  centerZ: number[];
+  renderLayers: number[];
+  sortPriorities: number[];
+  materialSortIds: number[];
+  sortedCompactedIndices: number[];
+  compactedToOriginal: number[];
+  skipped: number[];
+  appliedOrderLength: number;
+  consumeEnabled: boolean;
+}
+
+// NEW-GPU-SORT-PIPELINE Phase 3 — opaque tag carried through the
+// dispatcher's readback ring so the decoded (compacted) sorted indices
+// stay paired with the exact compaction map from the dispatch that
+// produced them, even though the ring surfaces the decode 1-2 frames
+// later. `debug` is populated only under the debug pragma.
+interface GpuSortReadbackTag {
+  validCount: number;
+  originalCount: number;
+  compactedToOriginal: Uint32Array;
+  skipped: number[];
+  debug?: GpuSortDebugCapture;
+}
+
 // --------------- Main class ---------------
 
 export class WebGPUSceneRenderer {
@@ -969,6 +1003,27 @@ export class WebGPUSceneRenderer {
   static get hiZConsumeEnabled(): boolean {
     return WebGPUSceneRenderer._hiZConsumeEnabled;
   }
+
+  /**
+   * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
+   * enable/disable the consumer-side application of the GPU-produced
+   * front-to-back sort order to the opaque command list. Default OFF:
+   * the keygen + bitonic sort + readback always run when the density
+   * gate is active (stats surface via `highDensityCull()`), this only
+   * toggles whether the resulting permutation actually reorders the
+   * commands. Reordering opaque commands is output-invariant, so the
+   * toggle is byte-neutral for the final image — it exists so an A/B
+   * probe can confirm the consumer applies the exact CPU-comparator
+   * order without a pixel change.
+   */
+  static setGpuSortConsumeEnabled(value: boolean): void {
+    WebGPUSceneRenderer._gpuSortConsumeEnabled = value === true;
+  }
+
+  /** Phase 3 — whether the GPU sort order is applied to opaque commands. */
+  static get gpuSortConsumeEnabled(): boolean {
+    return WebGPUSceneRenderer._gpuSortConsumeEnabled;
+  }
   // B214-N1 (Batch 219) — per-frustum gate state.
   private _hiZActiveByFrustum: Map<number, boolean> = new Map();
   // Batch 217 — HiZ effectiveness counters.
@@ -1028,15 +1083,51 @@ export class WebGPUSceneRenderer {
     capacity: number;
   } | null = null;
   private _sortKeysDispatches: number = 0;
-  // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — sorted-indices
-  // readback state. `_lastSortedIndices` is the most-recent successful
-  // readback; consumers reorder their command list using this on the
-  // NEXT frame (1-frame latency, same model as cull readbacks).
-  // `_sortReadbackInFlight` prevents stacking duplicate readback
-  // requests when the previous frame's readback hasn't resolved yet.
-  private _sortReadbackInFlight: boolean = false;
-  private _lastSortedIndices: { indices: Uint32Array; count: number } | null =
-    null;
+  // NEW-GPU-SORT-PIPELINE — sorted-indices readback state.
+  // `_lastSortedIndices` is the most-recent decoded readback; the
+  // consumer reorders the opaque command list using it (1-2 frame
+  // latency via the dispatcher's deferred-readback ring, which handles
+  // map-vs-submit races internally — no consumer-level in-flight flag).
+  // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — the
+  // readback carries the compaction map so the permutation indexes the
+  // ORIGINAL command array, not the compacted SOA. `_dispatchGPUSortKeys`
+  // skips commands with no bounding-volume center; those become the
+  // `skipped` list, and `compactedToOriginal[c]` maps a compacted SOA
+  // slot `c` (what `indices` holds) back to its original command index.
+  // `originalCount` gates staleness (only apply when this frame's opaque
+  // count matches, same 1-frame-latency contract as HiZ/gpuCull).
+  private _lastSortedIndices: {
+    indices: Uint32Array;
+    count: number;
+    originalCount: number;
+    compactedToOriginal: Uint32Array;
+    skipped: number[];
+  } | null = null;
+  // Reusable output for `_applySortedOrder` — same pooled-lifetime model
+  // as `_hiZFilterPool` / `_gpuCullFilterPool` (consumed synchronously
+  // inside executeBatch, never retained across frames).
+  private _sortOrderPool: CesiumAnyDrawCommand[] = [];
+  // Reusable compaction scratch (grown on demand). Rebuilt every
+  // dispatch; the valid slice + skipped list are copied into the
+  // readback's `_lastSortedIndices` so this can be reused next frame.
+  private _sortCompactionScratch: {
+    compactedToOriginal: Uint32Array;
+    skipped: number[];
+  } | null = null;
+  // Consumer-side activation flag. DEFAULT OFF: reordering opaque
+  // commands is output-invariant (depth test resolves overlap) so it is
+  // byte-neutral, but it stays opt-in until broad-scene verified — the
+  // GPU sort dispatch + readback still run when the density gate is
+  // active (so stats surface), the result is only APPLIED when this is
+  // on. Toggle via `setGpuSortConsumeEnabled` / `CesiumDebug.gpuSortConsume`.
+  private static _gpuSortConsumeEnabled = false;
+  // Phase 3 diagnostic counters (surfaced via getHighDensityCullStats).
+  private _sortConsumeApplied: number = 0;
+  private _sortConsumeSkipped: number = 0;
+  // Debug-only capture of the last dispatched compacted SOA + readback,
+  // for the acceptance probe to verify the GPU order matches the CPU
+  // comparator. Populated only under the debug pragma.
+  private _gpuSortDebugCapture: GpuSortDebugCapture | null = null;
 
   // C-R12 (Batch 33) — Tracks the device-invalidation unsubscribe so
   // re-calls to `_ensureResources` don't stack duplicate subscribers.
@@ -1949,6 +2040,27 @@ export class WebGPUSceneRenderer {
       }
     }
 
+    // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — apply
+    // the GPU-produced front-to-back order to the opaque list. Only when
+    // no cull/HiZ filtering dropped commands this frame (`activeCount ===
+    // count`): the permutation indexes the ORIGINAL raw `commands` array,
+    // so it can only be applied when the executed set is still the full
+    // raw set (just possibly copied by the cull/HiZ passes, which
+    // preserve order). When filtering dropped commands, cull/HiZ take
+    // precedence and the CPU order stands (opaque order is a pure early-Z
+    // optimization, so this is correct either way). Default OFF — see
+    // `_applySortedOrder` / `setGpuSortConsumeEnabled`.
+    if (gpuSortActive && activeCount === count) {
+      const reordered = this._applySortedOrder(
+        commands as CesiumAnyDrawCommand[],
+        count,
+      );
+      if (reordered !== commands && reordered.length === count) {
+        activeCommands = reordered;
+        activeCount = count;
+      }
+    }
+
     executeBatch(
       activeCommands as typeof commands,
       activeCount,
@@ -2127,8 +2239,7 @@ export class WebGPUSceneRenderer {
    */
   public _executeGBufferProducer(config: WebGPURenderFrameConfig): void {
     const frameState = config.scene.frameState as
-      | { useDeferredLighting?: boolean }
-      | undefined;
+      { useDeferredLighting?: boolean } | undefined;
     if (!frameState || frameState.useDeferredLighting !== true) {
       return;
     }
@@ -3505,6 +3616,89 @@ export class WebGPUSceneRenderer {
   }
 
   /**
+   * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
+   * consumer for the GPU-produced front-to-back sort order. Applies the
+   * previous frame's bitonic-sort permutation to the RAW opaque command
+   * list, producing a reordered array that is a strict permutation of
+   * the same commands (nothing added or dropped).
+   *
+   * The readback `indices` hold COMPACTED SOA slots (the keygen skips
+   * commands with no bounding-volume center); `compactedToOriginal` maps
+   * each back to its original command index and `skipped` carries the
+   * no-center commands so the full set is preserved. The permutation
+   * therefore indexes the ORIGINAL `commands` array, never the compacted
+   * SOA — the correctness invariant the Phase-3 off-gate requires.
+   *
+   * Only applied when this frame's opaque count matches the count the
+   * dispatch saw (1-frame-latency staleness guard, same contract as
+   * HiZ/gpuCull) and only when the reconstruction yields the full set —
+   * any corruption (bad readback, count drift) falls back to the input
+   * order, so the result is never wrong, only occasionally un-optimized.
+   * Reordering opaque commands is output-invariant (depth test resolves
+   * overlap), so a stale-but-valid order is harmless.
+   */
+  private _applySortedOrder(
+    commands: CesiumAnyDrawCommand[],
+    count: number,
+  ): CesiumAnyDrawCommand[] {
+    if (count <= 0) return commands;
+    if (!WebGPUSceneRenderer._gpuSortConsumeEnabled) {
+      // Byte-neutral default: never reorder unless explicitly enabled.
+      return commands;
+    }
+    const prev = this._lastSortedIndices;
+    if (!prev || prev.originalCount !== count) {
+      this._sortConsumeSkipped++;
+      return commands;
+    }
+    const indices = prev.indices;
+    const c2o = prev.compactedToOriginal;
+    const validCount = prev.count;
+    if (c2o.length !== validCount) {
+      this._sortConsumeSkipped++;
+      return commands;
+    }
+    const out = this._sortOrderPool;
+    out.length = 0;
+    for (let i = 0; i < validCount; i++) {
+      const compactedIdx = indices[i];
+      // Guard the bitonic sentinel padding (0xFFFFFFFF) + any OOB.
+      if (compactedIdx >= validCount) continue;
+      const origIdx = c2o[compactedIdx];
+      if (origIdx < count) out.push(commands[origIdx]);
+    }
+    // Append the no-center commands in original order so the executed
+    // set is exactly the input set.
+    const skipped = prev.skipped;
+    for (let i = 0; i < skipped.length; i++) {
+      const s = skipped[i];
+      if (s < count) out.push(commands[s]);
+    }
+    // Only apply a clean full-set permutation; otherwise fall back.
+    if (out.length !== count) {
+      this._sortConsumeSkipped++;
+      return commands;
+    }
+    this._sortConsumeApplied++;
+    //>>includeStart('debug', pragmas.debug);
+    if (this._gpuSortDebugCapture) {
+      this._gpuSortDebugCapture.appliedOrderLength = out.length;
+    }
+    //>>includeEnd('debug');
+    return out;
+  }
+
+  /**
+   * NEW-GPU-SORT-PIPELINE Phase 3 — debug snapshot of the last GPU sort
+   * dispatch + readback, for the acceptance probe to verify the GPU
+   * order matches the CPU comparator. Returns null in production (the
+   * capture is pragma-stripped) or before the first readback.
+   */
+  getGpuSortConsumeSnapshot(): GpuSortDebugCapture | null {
+    return this._gpuSortDebugCapture;
+  }
+
+  /**
    * After the opaque pass has written depth for this frame, dispatch
    * the HiZ pyramid build + occlusion test against the current
    * commands. The visibility result is read back asynchronously and
@@ -3755,7 +3949,8 @@ export class WebGPUSceneRenderer {
               sortMode: number;
             },
           ) => boolean;
-          // Batch 228 Phase 2 — sort + readback chain.
+          // Batch 228 Phase 2 — sort + readback chain. Phase 3
+          // (C4-GPU-SORT-PIPELINE-PHASE3) added the tag-paired ring.
           runBitonicSort?: (
             encoder: GPUCommandEncoder,
             count: number,
@@ -3763,8 +3958,13 @@ export class WebGPUSceneRenderer {
           prepareIndicesReadback?: (
             encoder: GPUCommandEncoder,
             count: number,
+            tag?: unknown,
           ) => void;
-          readSortedIndices?: (count: number) => Promise<Uint32Array | null>;
+          latestSortedIndices?: () => {
+            indices: Uint32Array;
+            count: number;
+            tag: unknown;
+          } | null;
         }
       | null
       | undefined;
@@ -3807,6 +4007,24 @@ export class WebGPUSceneRenderer {
       };
       this._sortKeysSoA = soa;
     }
+    // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — build the compaction map
+    // alongside the SOA. Commands without a bounding-volume center are
+    // skipped from the sort SOA (no distance key), so the compacted slot
+    // index the GPU sorts is NOT the original command index. Record
+    // `compactedToOriginal[compacted] = original` and collect the
+    // `skipped` originals so the consumer can reconstruct the full,
+    // correctly-ordered command list from the readback permutation.
+    let compaction = this._sortCompactionScratch;
+    if (!compaction || compaction.compactedToOriginal.length < count) {
+      compaction = {
+        compactedToOriginal: new Uint32Array(count),
+        skipped: [] as number[],
+      };
+      this._sortCompactionScratch = compaction;
+    }
+    const compactedToOriginal = compaction.compactedToOriginal;
+    const skipped = compaction.skipped;
+    skipped.length = 0;
     let valid = 0;
     for (let i = 0; i < count; i++) {
       const cmd = commands[i] as {
@@ -3818,13 +4036,17 @@ export class WebGPUSceneRenderer {
         materialId?: number;
       };
       const c = cmd.boundingVolume?.center;
-      if (!c) continue;
+      if (!c) {
+        skipped.push(i);
+        continue;
+      }
       soa.centerX[valid] = c.x;
       soa.centerY[valid] = c.y;
       soa.centerZ[valid] = c.z;
       soa.renderLayers[valid] = cmd.renderLayer ?? 0;
       soa.sortPriorities[valid] = cmd.sortPriority ?? 0;
       soa.materialSortIds[valid] = cmd.materialId ?? 0;
+      compactedToOriginal[valid] = i;
       valid++;
     }
     if (valid === 0) return false;
@@ -3848,36 +4070,75 @@ export class WebGPUSceneRenderer {
     if (!ok) return false;
     this._sortKeysDispatches++;
 
-    // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — chain the bitonic
-    // sort + readback. Run only when the FR exposes the Phase 2
-    // entry points (back-compat with older registrations). The
-    // readback's sorted-indices array is stored in
-    // `_lastSortedIndices` for the NEXT frame to apply (1-frame
-    // latency, same model as the cull readbacks).
+    // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — chain
+    // the bitonic sort + deferred-ring readback. The compaction map for
+    // THIS dispatch is snapshotted and passed as the readback `tag` so
+    // the decoded indices (surfaced 1-2 frames later by the ring) stay
+    // paired with the exact compaction that produced them. Each frame we
+    // then pull the latest decoded pair and store it in
+    // `_lastSortedIndices` for `_applySortedOrder` to consume.
     if (
       fr.runBitonicSort &&
       fr.prepareIndicesReadback &&
-      fr.readSortedIndices &&
-      !this._sortReadbackInFlight
+      fr.latestSortedIndices
     ) {
       const sortOk = fr.runBitonicSort(encoder, valid);
       if (sortOk) {
-        fr.prepareIndicesReadback(encoder, valid);
-        this._sortReadbackInFlight = true;
-        const sortedCount = valid;
-        fr.readSortedIndices(valid)
-          .then((indices: Uint32Array | null) => {
-            this._sortReadbackInFlight = false;
-            if (indices) {
-              this._lastSortedIndices = {
-                indices,
-                count: sortedCount,
-              };
+        // Snapshot the compaction map for this dispatch. The scratch
+        // arrays are reused next frame, so copy the valid slice + the
+        // skipped list; the ring surfaces this decode on a LATER frame.
+        const c2oSnapshot = compactedToOriginal.slice(0, valid);
+        const skippedSnapshot = skipped.slice();
+        const tag: GpuSortReadbackTag = {
+          validCount: valid,
+          originalCount: count,
+          compactedToOriginal: c2oSnapshot,
+          skipped: skippedSnapshot,
+        };
+        // Debug-only capture of the compacted SOA inputs for the probe,
+        // carried on the tag so it stays paired with these indices.
+        //>>includeStart('debug', pragmas.debug);
+        tag.debug = {
+          validCount: valid,
+          originalCount: count,
+          sortMode: 0,
+          cameraPosition: { x: camPos.x, y: camPos.y, z: camPos.z },
+          centerX: Array.from(soa.centerX.subarray(0, valid)),
+          centerY: Array.from(soa.centerY.subarray(0, valid)),
+          centerZ: Array.from(soa.centerZ.subarray(0, valid)),
+          renderLayers: Array.from(soa.renderLayers.subarray(0, valid)),
+          sortPriorities: Array.from(soa.sortPriorities.subarray(0, valid)),
+          materialSortIds: Array.from(soa.materialSortIds.subarray(0, valid)),
+          sortedCompactedIndices: [],
+          compactedToOriginal: Array.from(c2oSnapshot),
+          skipped: skippedSnapshot.slice(),
+          appliedOrderLength: 0,
+          consumeEnabled: WebGPUSceneRenderer._gpuSortConsumeEnabled,
+        };
+        //>>includeEnd('debug');
+        fr.prepareIndicesReadback(encoder, valid, tag);
+
+        // Pull the latest decoded pair (may be from a prior frame). The
+        // ring guarantees indices + tag come from the SAME dispatch.
+        const latest = fr.latestSortedIndices();
+        if (latest && latest.indices) {
+          const t = latest.tag as GpuSortReadbackTag | null;
+          if (t && latest.indices.length === t.validCount) {
+            this._lastSortedIndices = {
+              indices: latest.indices,
+              count: t.validCount,
+              originalCount: t.originalCount,
+              compactedToOriginal: t.compactedToOriginal,
+              skipped: t.skipped,
+            };
+            //>>includeStart('debug', pragmas.debug);
+            if (t.debug) {
+              t.debug.sortedCompactedIndices = Array.from(latest.indices);
+              this._gpuSortDebugCapture = t.debug;
             }
-          })
-          .catch(() => {
-            this._sortReadbackInFlight = false;
-          });
+            //>>includeEnd('debug');
+          }
+        }
       }
     }
     return true;
@@ -3932,6 +4193,10 @@ export class WebGPUSceneRenderer {
       thresholdHi: number;
       thresholdLo: number;
       dispatches: number;
+      consumeEnabled: boolean;
+      consumeApplied: number;
+      consumeSkipped: number;
+      hasReadback: boolean;
     };
     shadowCascadeCull: {
       activeAnyCascade: boolean;
@@ -3987,6 +4252,11 @@ export class WebGPUSceneRenderer {
         thresholdHi: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_HI,
         thresholdLo: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
         dispatches: this._sortKeysDispatches,
+        // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — consumer state.
+        consumeEnabled: WebGPUSceneRenderer._gpuSortConsumeEnabled,
+        consumeApplied: this._sortConsumeApplied,
+        consumeSkipped: this._sortConsumeSkipped,
+        hasReadback: !!this._lastSortedIndices,
       },
       shadowCascadeCull: this._buildShadowCascadeCullStats(),
     };

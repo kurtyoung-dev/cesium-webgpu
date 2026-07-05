@@ -128,6 +128,7 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 - **NEW-ATMO-DERIVED-LIGHTING** — ✅ SHIPPED (Batch 312). Derives the directional SUN light (colour + intensity) and a SKY-IRRADIANCE ambient from the atmosphere so discrete glTF MODELS are lit consistently with the V-A2 aerial-perspective haze + the sky shell — the Takram-talk "light-source lighting for the ISS" half of the mixed-lighting pattern (terrain keeps the V-A2 post-process Lambertian; models use light-source PBR, both driven by ONE coherent atmosphere). **New module** `Scene/AtmosphereDerivedLighting.js` (backend-neutral, pure math): a short CPU Beer-Lambert sun-ray optical-depth march (same Rayleigh + Mie coefficients/scale-heights `AtmosphereLUT.wgsl` bakes + V-A2's `AP_*` use) → `exp(−(βR·ODr+βM·ODm))` gives the sun's transmitted colour (near-white at the zenith; blue+green extinguish first toward the horizon → warm sunset hue) + a horizon-falloff intensity (dims to ~0 as the sun sets). The sun ZENITH is measured against the **local up at the viewed site** (camera position direction), NOT the pole axis — passing a fixed +Z up made the colour ~constant over a day (the key bring-up bug; fixed by threading `localUpWC`). Plus a desaturated cool sky-irradiance ambient (Rayleigh tint blended 75% toward neutral grey, day/night-aware, ~0.2 magnitude at midday to match the historical flat ambient floor). **Why analytic, not LUT-sampled:** mirrors the V-A2 decision exactly — the Bruneton transmittance/irradiance LUTs (Batch 306) exist but the compute engine that bakes them is dormant (`NEW-WEBGPU-COMPUTE-ENGINE-WIRING`), so the analytic CPU path is both physically correct AND runtime-functional today; this module is the documented seam to swap to direct transmittance(sun)+irradiance(sky) LUT reads when the compute engine lands (public shape — colour+intensity+ambient — stays identical). **Wiring** (`Scene.js::updateFrameState`, gated on `aerialPerspective===true && isWebGPU && scene.light instanceof SunLight`): re-derives into a PRIVATE `_atmosphereDerivedLight` (SunLight) each frame and swaps it into `frameState.light` ONLY while aerial perspective is on — `scene.light` is never mutated (turning the flag off restores it untouched); publishes the ambient on the new `frameState.atmosphereSkyIrradiance`. Models pick up the sun for free (the WebGPU model renderer already reads `frameState.light.color`/`.intensity`); `WebGPUModelRenderer.js` reads `frameState.atmosphereSkyIrradiance` for its `ambientColor` (falls back to the historical neutral 0.2 floor when the flag is off / on WebGL). Sun direction is the previous frame's `uniformState.sunDirectionWC` (one frame stale — visually indistinguishable, same trick as `computeSkyBrightness`). **Mixed mask / no double-lighting:** the V-A2 post-process applies extinction+inscatter (NOT Lambertian shading — it has no normal buffer) over the whole scene incl. model pixels, so a lit model also correctly hazes with distance — that is real aerial perspective, not double-LIGHTING. **Verified:** `Tools/visual-regression/probe-atmo-lighting.mjs` (NEW) — a 4000×-scaled CesiumMilkTruck on the globe near Denver, two sun states with aerial perspective ON: derived sun HIGH=`rgb 1.00,0.98,0.95 I=1.97` (near-white, full) vs LOW=`rgb 1.00,0.84,0.68 I=1.20` (warm, dimmed); model lit pixels shift warm (R/B 0.64→1.27) AND the model+sunlit terrain are BOTH warm at low sun (model R/B 1.27, globe R/B 1.70 — consistently lit); ON warmer than OFF (derived-light liveness); WebGL renders the scene (it ignores the flag); 0 console errors. Read the PNGs — the low-sun frame is a coherent golden sunset bathing model + terrain together (the headline result), the high-sun frame's blue is the V-A2 daytime inscatter (NEARFIELD-TUNE), not the derived sun. Standing gates green (collections-regression, pickmodel-instanced, model-ibl, bloom-parity, logdepth-zfight, csm-soft-shadow, csm-cast-dispatch, collections-far-camera, sandcastle-smoke, upstream-regression-check 26/26).
 - **NEW-ATMO-DERIVED-LIGHTING-LUT-CONSUMPTION** (S, surfaced Batch 312 per Principle 9) — when `NEW-WEBGPU-COMPUTE-ENGINE-WIRING` lands and the Bruneton LUTs bake at runtime, swap the analytic CPU terms in `AtmosphereDerivedLighting.js` for direct LUT reads: the sun colour from the TRANSMITTANCE LUT (altitude × cosSunZenith) and the sky ambient from the IRRADIANCE LUT — more accurate (multiple-scattering-aware) and shareable with a GPU-side path. The module's public shape already matches; this is a body swap behind the same signature. **Estimated effort:** 0.5 session (after the compute engine is wired) + extend `probe-atmo-lighting.mjs` to assert the analytic vs LUT terms agree within tolerance.
+  - **BLOCKED — premise reassessed (C4-ATMO-DERIVED-LIGHTING-LUT, 2026-07-04).** The gate `NEW-WEBGPU-COMPUTE-ENGINE-WIRING` (Batch 367) and the `NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT` fix (Batch 396) are both in — the transmittance/irradiance LUTs now bake at runtime as GPU textures. **But the "body swap behind the same signature" is architecturally impossible as written:** `computeAtmosphereDerivedLighting` is a *synchronous per-frame CPU function* called in `Scene.js::updateFrameState` whose result is written straight into `frameState.light` (a `SunLight` color+intensity) for the CURRENT frame. The LUTs are **GPU-only** — `WebGPUAtmosphereLUT` exposes only `GPUTexture`/`GPUTextureView` (no `mapAsync`/readback, no CPU mirror; confirmed no Scene-side CPU consumer of `transmittanceView`/`irradianceView` exists). A CPU "LUT read" therefore requires either (a) an async GPU→CPU `mapAsync` readback each frame — a pipeline stall + inherently ≥1 frame stale + not same-signature (must go async), or (b) relocating the derived-lighting computation into a GPU pass where the model PBR shader samples the transmittance LUT by sun-zenith — a substantial `WebGPUModelRenderer`/`ModelPBRComplete.wgsl` change, NOT a same-signature swap of `AtmosphereDerivedLighting.js`. Additionally there is **no CPU correctness gap to close today:** the analytic path already evaluates the exact Bruneton *single-scatter* Rayleigh+Mie transmittance the LUT stores; the only value-add (multiple-scattering-aware irradiance) is only realizable on the GPU-side path (option b). **Re-scoped:** this is NOT an S body-swap. Reclassify as an M GPU-side task = "model PBR samples the atmosphere transmittance/irradiance LUTs directly (sun radiance + MS ambient), retiring the CPU analytic derived-light" — dependent on the model renderer, not on `AtmosphereDerivedLighting.js`. No runtime change landed for C4-ATMO-DERIVED-LIGHTING-LUT; tree left clean.
 
 ## 2026-06-12 — CI green sweep (Batch 243)
 
@@ -716,68 +717,82 @@ FR-level entry points `runBitonicSortWebGPUGPUSortKeys` /
 `FeatureRendererKey.GPU_SORT_KEYS`. `WebGPUSceneRenderer._dispatchGPUSortKeys`
 chains the sort + readback when the FR exposes the Phase 2 entries.
 
-The bitonic network handles non-power-of-2 counts by padding with
-sentinel max-keys (handled in shader's OOB load path).
+The bitonic network handles non-power-of-2 counts by padding to
+`nextPowerOf2(count)`. **Phase 3 note (C4-GPU-SORT-PIPELINE-PHASE3):**
+the Phase-2 "handled in shader's OOB load path" claim was WRONG — WGSL
+OOB storage reads return 0 (the MINIMUM key), which sorts garbage to
+the FRONT and corrupts the permutation whenever `count` is not a power
+of 2. Fixed by sizing the key/index buffers to `nextPowerOf2(capacity)`
+and host-filling the `[count,paddedN)` tail with sentinel-max keys each
+frame before the sort (see Phase 3 entry).
 
 **Phase 3 follow-up (separate entry):** `NEW-GPU-SORT-PIPELINE-PHASE-3`
-below. Phase 2 ships the sort + readback, but the consumer side that
-applies `_lastSortedIndices` to reorder the JS command list is NOT
-wired yet — Phase 3 work integrates with `RenderScheduler`.
+below — RESOLVED.
 
 **Trace:** Batch 228 (`BitonicSortU64.wgsl` + `WebGPUGPUSortKeysDispatcher.runBitonicSort` + `WebGPUSceneRenderer._dispatchGPUSortKeys`).
 
 ---
 
-### NEW-GPU-SORT-PIPELINE-PHASE-3 — RenderScheduler consumer integration for sorted-indices readback
+### ~~NEW-GPU-SORT-PIPELINE-PHASE-3~~ — RESOLVED (C4-GPU-SORT-PIPELINE-PHASE3, 2026-07-04) — CPU-side reorder consumer wired (path (a))
 
-**What:** Phase 2 (Batch 228) ships the GPU sort pipeline + readback
-chain: keys are generated, the bitonic sort runs in place, and the
-sorted command-indices array is read back into
-`WebGPUSceneRenderer._lastSortedIndices`. **But the consumer side
-that applies the sorted order to the actual command list is NOT
-wired yet** — Phase 3 work.
+**Resolution:** Path (a) shipped. `WebGPUSceneRenderer._applySortedOrder(commands, count)`
+reorders the RAW opaque command list by the GPU-produced front-to-back
+permutation and hands it to `executeBatch`. Wired in `_executeOpaquePass`
+after the gpuCull/HiZ filters, gated by `activeCount === count` (only
+applied when no filtering dropped commands this frame, so the permutation
+— which indexes the ORIGINAL array — maps 1:1). **Default OFF**
+(`_gpuSortConsumeEnabled=false`, toggle `CesiumDebug.gpuSortConsume` /
+`setGpuSortConsumeEnabled`); reordering opaque commands is output-invariant
+(depth test resolves overlap), so it is byte-neutral, but stays opt-in
+until broad-scene verified.
 
-The `_lastSortedIndices: { indices: Uint32Array, count }` field is
-populated each frame the sort fires, but never read. The renderer
-continues using the existing JS multi-level comparator
-(`RenderScheduler.backToFront`) for ordering.
+**Compaction map (the off-gate correctness point):** `_dispatchGPUSortKeys`
+skips commands with no bounding-volume center, so the compacted SOA slot
+the GPU sorts is NOT the original command index. The dispatch now records
+`compactedToOriginal[compacted] = original` + a `skipped` list and passes
+them as the readback's `tag`; `_applySortedOrder` reconstructs the full
+command set as `commands[compactedToOriginal[indices[i]]]` ++ skipped, so
+the permutation indexes the ORIGINAL array and nothing is dropped or
+duplicated.
 
-**Phase 3 scope:** wire `_lastSortedIndices` into the next-frame
-opaque-command iteration. Two viable paths:
+**Two latent Phase-2 bugs the consumer exposed + fixed (never caught
+because nothing read the sorted order before):**
 
-(a) **CPU-side reorder.** When `_lastSortedIndices.count` matches
-    this frame's opaque count, build a sorted view of
-    `frustumCommands.commands[OPAQUE]` using `indices[i]` as the
-    permutation. Pass that sorted view to `executeBatch` instead of
-    the original. ~50 LOC. Same 1-frame latency contract as the
-    cull readbacks. Fall back to JS comparator on count mismatch.
+1. **OOB sentinel corruption** — buffers were sized to `capacity`, but the
+   bitonic sort dispatches over `nextPowerOf2(count)`; when `count` isn't a
+   power of 2, the sort read/wrote past `capacity`. WGSL OOB reads return 0
+   (the MIN key) → padding sorted to the FRONT, corrupting the permutation.
+   Fixed: key/index buffers sized to `nextPowerOf2(capacity)` + the
+   `[count,paddedN)` tail host-filled with `0xFFFFFFFF` each frame.
 
-(b) **Indirect-draw integration.** Use the sorted `commandIndices`
-    buffer directly as the GPU-side draw-call ordering, paired
-    with `gpuCuller`'s `CullMode.INDIRECT` mode. Eliminates the JS
-    iteration entirely. Much bigger architectural change — every
-    primitive type would need indirect-draw variants.
+2. **Collapsed per-stage uniform params** — every bitonic merge sub-stage
+   wrote its `(k,j)` to the SAME uniform buffer via `queue.writeBuffer`;
+   since all writeBuffers precede the single submit, they collapsed to the
+   LAST stage's value, so every merge pass read identical params and the
+   global merge never ran (blocks stayed locally-sorted, first monotonic
+   break at index 256). Fixed: one params buffer with each stage at a
+   DISTINCT 256-aligned offset + a dynamic-offset bind group (per-pass
+   `setBindGroup(0, bg, [stage*256])`). Also fixed the local-sort direction
+   flag (`localIdx & k` → `globalIdx & k`) so the k=256 stage alternates
+   per block as a correct bitonic sort requires.
 
-**Why deferred:** JS multi-level comparator in RenderScheduler is
-faster than dispatch+readback round-trip below ~50K commands. Above
-50K the sort + reorder amortize; at the 10K+ density target our
-threshold-gating (Phase 1 HI=6000) means we already dispatch at
-useful counts — Phase 3 just needs to APPLY the result. Path (a)
-is the natural follow-up.
+**Readback ring:** the single readback buffer raced ("used in submit while
+mapped"), corrupting the indices. Replaced with the two-buffer
+deferred-map ring from `WebGPUGPUCuller` (`prepareIndicesReadback` pumps
+the prior slot's `mapAsync` after its copy submitted, writes the current
+copy to the other slot; `latestSortedIndices()` returns the paired
+`{indices, tag}` synchronously).
 
-**Estimated effort:** 1-2 sessions for path (a); 5-10 sessions for
-path (b) including per-primitive indirect-draw variants.
+**Acceptance:** `Tools/visual-regression/probe-gpu-sort-consume.mjs` — 6400
+varied-height boxes (>6000 gate), GPU order is a valid permutation +
+monotonic in the exact key + 99.9% positional match with a JS comparator
+sort (remainder are key-ties), consumer reconstructs the full set, and
+off-vs-on pixel diff (0.0125%) sits at the same-setting noise floor
+(0.009%) → output-invariant. 0 GPU errors.
 
-**Trace:** Batch 211 (key generation) + Batch 228 (sort + readback);
-`WebGPUSceneRenderer._lastSortedIndices` (populated, not consumed);
-`WebGPUGPUSortKeysDispatcher.readSortedIndices`.
-
-**Impact:** Activates Phase 2 of GPUSortKeys consumption. Would
-let the dispatcher pay for itself at 50K+ commands.
-
-**Trace:** Batch 211 (`WebGPUSceneRenderer.ts:_dispatchGPUSortKeys`);
-`WebGPUGPUSortKeysDispatcher.ts`; `PointCloudSort.wgsl` as a partial
-template (different key format).
+**Trace:** `WebGPUSceneRenderer.{_applySortedOrder,_dispatchGPUSortKeys,_lastSortedIndices,getGpuSortConsumeSnapshot}`;
+`WebGPUGPUSortKeysDispatcher.{prepareIndicesReadback,latestSortedIndices,runBitonicSort}` (dynamic-offset params + ring);
+`BitonicSortU64.wgsl` (globalIdx direction); `CesiumDebug.gpuSortConsume`.
 
 ---
 

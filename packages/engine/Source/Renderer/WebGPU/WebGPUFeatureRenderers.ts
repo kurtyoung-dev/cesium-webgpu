@@ -110,7 +110,7 @@ import {
   dispatchWebGPUGPUSortKeys,
   runBitonicSortWebGPUGPUSortKeys,
   prepareIndicesReadbackWebGPUGPUSortKeys,
-  readSortedIndicesWebGPUGPUSortKeys,
+  latestSortedIndicesWebGPUGPUSortKeys,
   getWebGPUGPUSortKeysStatistics,
   destroyWebGPUGPUSortKeys,
 } from "./WebGPUGPUSortKeysDispatcher.js";
@@ -437,11 +437,12 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     prepareIndicesReadback: function (
       encoder: GPUCommandEncoder,
       count: number,
+      tag?: unknown,
     ) {
-      prepareIndicesReadbackWebGPUGPUSortKeys(context, encoder, count);
+      prepareIndicesReadbackWebGPUGPUSortKeys(context, encoder, count, tag);
     },
-    readSortedIndices: function (count: number) {
-      return readSortedIndicesWebGPUGPUSortKeys(context, count);
+    latestSortedIndices: function () {
+      return latestSortedIndicesWebGPUGPUSortKeys(context);
     },
     destroy: function () {
       destroyWebGPUGPUSortKeys(context);

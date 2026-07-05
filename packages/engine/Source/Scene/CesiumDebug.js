@@ -604,6 +604,37 @@ function installCesiumDebug(viewer) {
     },
 
     /**
+     * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
+     * toggle whether the GPU-produced front-to-back sort order is applied
+     * to the opaque command list. Default OFF: the keygen + bitonic sort
+     * + readback always run when the density gate is active (so
+     * `highDensityCull()` shows live `gpuSortKeys` stats), this only
+     * toggles whether the resulting permutation reorders the commands.
+     * Reordering opaque commands is output-invariant (depth test resolves
+     * overlap), so this is byte-neutral for the final image — it exists
+     * for A/B probes that confirm the consumer applies the exact
+     * CPU-comparator order without a pixel change.
+     *
+     * @param {boolean} [on=true] Whether to apply the GPU sort order.
+     * @returns {boolean|null} The resulting enable state, or null if no
+     *   WebGPU renderer is active.
+     */
+    gpuSortConsume(on = true) {
+      const renderer = scene._alternateSceneRenderer;
+      const ctor = renderer && renderer.constructor;
+      if (!ctor || typeof ctor.setGpuSortConsumeEnabled !== "function") {
+        console.warn(
+          "[CesiumDebug] No WebGPU scene renderer — GPU sort consume toggle unavailable",
+        );
+        return null;
+      }
+      ctor.setGpuSortConsumeEnabled(on === true);
+      const state = ctor.gpuSortConsumeEnabled;
+      console.log(`[CesiumDebug] GPU sort-order consume (reorder) = ${state}`);
+      return state;
+    },
+
+    /**
      * Dump the globe surface bind-group cache stats
      * (NEW-GLOBE-BINDGROUP-CACHE, Batch 241). Healthy steady-state at a
      * fixed camera: `lastFrameCreates` ~0 with a high `hitRate`. A
