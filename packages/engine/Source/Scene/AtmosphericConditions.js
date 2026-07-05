@@ -1,4 +1,5 @@
 import Cartesian3 from "../Core/Cartesian3.js";
+import CloudRenderMode from "./CloudRenderMode.js";
 import defined from "../Core/defined.js";
 
 /**
@@ -784,11 +785,21 @@ function buildClouds(globe) {
   // historical; the kernel HAS been volumetric (HG dual-lobe + Beer-
   // Powder lighting + 3D FBM density field + light-ray marching) since
   // it landed. The `enableProcedural` and `enableVolumetric` toggles
-  // therefore both route to the same underlying
-  // `globe.showProceduralClouds` flag — they are aliases, not separate
-  // render paths. Future Phase 6b work may introduce a fast 2D fallback
-  // at high altitude (≥`volumetricDisableAltitude`); the existing
-  // hysteresis range fields stay so that work is non-breaking.
+  // therefore both route to the same underlying master gate — they are
+  // aliases, not separate render paths. Future Phase 6b work may introduce
+  // a fast 2D fallback at high altitude (≥`volumetricDisableAltitude`); the
+  // existing hysteresis range fields stay so that work is non-breaking.
+  //
+  // Cloud-unification epic slice 4A — these proxies RE-HOME off the historical
+  // `globe.cloud*` / `globe.showProceduralClouds` fields onto the Scene/Globe
+  // managed default {@link CloudCollection} (`globe.defaultCloudCollection`).
+  // The master `enable*` aliases flip that collection's exclusive
+  // `renderMode` (BILLBOARD⇄VOLUMETRIC) + `volumetric.enabled`; every dial
+  // proxies to the collection's `.volumetric` {@link CloudVolumetrics} (whose
+  // defaults are byte-equal to the old `globe.cloud*` defaults). The env-effects
+  // phase reads the collection as the volumetric-deck source of truth, so
+  // driving these facade fields turns the WebGPU deck on/off exactly as before —
+  // now through the collection. WebGPU only (documented no-op on WebGL).
   const leaf = {
     volumetricEnableAltitude: 50000,
     volumetricDisableAltitude: 100000,
@@ -797,68 +808,84 @@ function buildClouds(globe) {
     enableProcedural: {
       enumerable: true,
       get: function () {
-        return globe.showProceduralClouds;
+        const coll = globe.defaultCloudCollection;
+        return (
+          coll.renderMode === CloudRenderMode.VOLUMETRIC &&
+          coll.volumetric.enabled === true
+        );
       },
       set: function (v) {
-        globe.showProceduralClouds = v;
+        const coll = globe.defaultCloudCollection;
+        coll.volumetric.enabled = v === true;
+        coll.renderMode = v
+          ? CloudRenderMode.VOLUMETRIC
+          : CloudRenderMode.BILLBOARD;
       },
     },
     // Session 65 Batch 43 (Phase 6 wiring) — alias to the same
-    // underlying renderer toggle. Pre-Batch-43 this was a plain field
+    // underlying master gate. Pre-Batch-43 this was a plain field
     // that did nothing; now flipping it from JS turns the actual
     // renderer on/off and reading it reflects current state.
     enableVolumetric: {
       enumerable: true,
       get: function () {
-        return globe.showProceduralClouds;
+        const coll = globe.defaultCloudCollection;
+        return (
+          coll.renderMode === CloudRenderMode.VOLUMETRIC &&
+          coll.volumetric.enabled === true
+        );
       },
       set: function (v) {
-        globe.showProceduralClouds = v;
+        const coll = globe.defaultCloudCollection;
+        coll.volumetric.enabled = v === true;
+        coll.renderMode = v
+          ? CloudRenderMode.VOLUMETRIC
+          : CloudRenderMode.BILLBOARD;
       },
     },
     proceduralCoverage: {
       enumerable: true,
       get: function () {
-        return globe.cloudCoverage;
+        return globe.defaultCloudCollection.volumetric.cloudCoverage;
       },
       set: function (v) {
-        globe.cloudCoverage = v;
+        globe.defaultCloudCollection.volumetric.cloudCoverage = v;
       },
     },
     layerBottom: {
       enumerable: true,
       get: function () {
-        return globe.cloudLayerBottom;
+        return globe.defaultCloudCollection.volumetric.cloudLayerBottom;
       },
       set: function (v) {
-        globe.cloudLayerBottom = v;
+        globe.defaultCloudCollection.volumetric.cloudLayerBottom = v;
       },
     },
     layerTop: {
       enumerable: true,
       get: function () {
-        return globe.cloudLayerTop;
+        return globe.defaultCloudCollection.volumetric.cloudLayerTop;
       },
       set: function (v) {
-        globe.cloudLayerTop = v;
+        globe.defaultCloudCollection.volumetric.cloudLayerTop = v;
       },
     },
     density: {
       enumerable: true,
       get: function () {
-        return globe.cloudDensity;
+        return globe.defaultCloudCollection.volumetric.cloudDensity;
       },
       set: function (v) {
-        globe.cloudDensity = v;
+        globe.defaultCloudCollection.volumetric.cloudDensity = v;
       },
     },
     quality: {
       enumerable: true,
       get: function () {
-        return globe.cloudQuality;
+        return globe.defaultCloudCollection.volumetric.cloudQuality;
       },
       set: function (v) {
-        globe.cloudQuality = v;
+        globe.defaultCloudCollection.volumetric.cloudQuality = v;
       },
     },
     // Session 65 Batch 45 — Phase 6d quality dial. Higher-level than
@@ -889,130 +916,155 @@ function buildClouds(globe) {
     volumetricQuality: {
       enumerable: true,
       get: function () {
-        return globe.cloudVolumetricQuality;
+        return globe.defaultCloudCollection.volumetric.cloudVolumetricQuality;
       },
       set: function (v) {
-        globe.cloudVolumetricQuality = v;
+        globe.defaultCloudCollection.volumetric.cloudVolumetricQuality = v;
       },
     },
     // ── Live appearance dials (weather-configurability surface) ──
-    // Each proxies to a `globe.cloud*` field; setting it re-packs next frame
-    // (no rebuild). `undefined` means "use the renderer's built-in default".
+    // Each proxies to the managed collection's `.volumetric` config; setting it
+    // re-packs next frame (no rebuild). `undefined` means "use the renderer's
+    // built-in default".
     aerialStrength: {
       enumerable: true,
       get: function () {
-        return globe.cloudAerialStrength;
+        return globe.defaultCloudCollection.volumetric.cloudAerialStrength;
       },
       set: function (v) {
-        globe.cloudAerialStrength = v;
+        globe.defaultCloudCollection.volumetric.cloudAerialStrength = v;
       },
     },
     silverLining: {
       enumerable: true,
       get: function () {
-        return globe.cloudSilverLiningIntensity;
+        return globe.defaultCloudCollection.volumetric
+          .cloudSilverLiningIntensity;
       },
       set: function (v) {
-        globe.cloudSilverLiningIntensity = v;
+        globe.defaultCloudCollection.volumetric.cloudSilverLiningIntensity = v;
       },
     },
     phaseForwardG: {
       enumerable: true,
       get: function () {
-        return globe.cloudPhaseForwardG;
+        return globe.defaultCloudCollection.volumetric.cloudPhaseForwardG;
       },
       set: function (v) {
-        globe.cloudPhaseForwardG = v;
+        globe.defaultCloudCollection.volumetric.cloudPhaseForwardG = v;
       },
     },
     phaseBackG: {
       enumerable: true,
       get: function () {
-        return globe.cloudPhaseBackG;
+        return globe.defaultCloudCollection.volumetric.cloudPhaseBackG;
       },
       set: function (v) {
-        globe.cloudPhaseBackG = v;
+        globe.defaultCloudCollection.volumetric.cloudPhaseBackG = v;
       },
     },
     phaseBlend: {
       enumerable: true,
       get: function () {
-        return globe.cloudPhaseBlend;
+        return globe.defaultCloudCollection.volumetric.cloudPhaseBlend;
       },
       set: function (v) {
-        globe.cloudPhaseBlend = v;
+        globe.defaultCloudCollection.volumetric.cloudPhaseBlend = v;
       },
     },
     ambientIntensity: {
       enumerable: true,
       get: function () {
-        return globe.cloudAmbientIntensity;
+        return globe.defaultCloudCollection.volumetric.cloudAmbientIntensity;
       },
       set: function (v) {
-        globe.cloudAmbientIntensity = v;
+        globe.defaultCloudCollection.volumetric.cloudAmbientIntensity = v;
       },
     },
     erosionStrength: {
       enumerable: true,
       get: function () {
-        return globe.cloudErosionStrength;
+        return globe.defaultCloudCollection.volumetric.cloudErosionStrength;
       },
       set: function (v) {
-        globe.cloudErosionStrength = v;
+        globe.defaultCloudCollection.volumetric.cloudErosionStrength = v;
       },
     },
     puffSize: {
       enumerable: true,
       get: function () {
-        return globe.cloudPuffSize;
+        return globe.defaultCloudCollection.volumetric.cloudPuffSize;
       },
       set: function (v) {
-        globe.cloudPuffSize = v;
+        globe.defaultCloudCollection.volumetric.cloudPuffSize = v;
       },
     },
     exposure: {
       enumerable: true,
       get: function () {
-        return globe.cloudExposure;
+        return globe.defaultCloudCollection.volumetric.cloudExposure;
       },
       set: function (v) {
-        globe.cloudExposure = v;
+        globe.defaultCloudCollection.volumetric.cloudExposure = v;
       },
     },
     msDecayScatter: {
       enumerable: true,
       get: function () {
-        return globe.cloudMsDecayScatter;
+        return globe.defaultCloudCollection.volumetric.cloudMsDecayScatter;
       },
       set: function (v) {
-        globe.cloudMsDecayScatter = v;
+        globe.defaultCloudCollection.volumetric.cloudMsDecayScatter = v;
       },
     },
     msDecayExtinction: {
       enumerable: true,
       get: function () {
-        return globe.cloudMsDecayExtinction;
+        return globe.defaultCloudCollection.volumetric.cloudMsDecayExtinction;
       },
       set: function (v) {
-        globe.cloudMsDecayExtinction = v;
+        globe.defaultCloudCollection.volumetric.cloudMsDecayExtinction = v;
       },
     },
     msDecayPhase: {
       enumerable: true,
       get: function () {
-        return globe.cloudMsDecayPhase;
+        return globe.defaultCloudCollection.volumetric.cloudMsDecayPhase;
       },
       set: function (v) {
-        globe.cloudMsDecayPhase = v;
+        globe.defaultCloudCollection.volumetric.cloudMsDecayPhase = v;
       },
     },
+    // Collection-level WMO genus (not a `.volumetric` dial — the volumetric
+    // deck reads the collection's own `cloudType`). Re-homed off `globe.cloudType`.
     cloudType: {
       enumerable: true,
       get: function () {
-        return globe.cloudType;
+        return globe.defaultCloudCollection.cloudType;
       },
       set: function (v) {
-        globe.cloudType = v;
+        globe.defaultCloudCollection.cloudType = v;
+      },
+    },
+    // Weather-map / provider ingest surface (cloud-unification slice 4A). These
+    // re-home the weather ingest onto the collection's `.volumetric` so a data
+    // provider attached here drives the volumetric deck through the collection.
+    weatherMap: {
+      enumerable: true,
+      get: function () {
+        return globe.defaultCloudCollection.volumetric.cloudWeatherMap;
+      },
+      set: function (v) {
+        globe.defaultCloudCollection.volumetric.cloudWeatherMap = v;
+      },
+    },
+    weatherProvider: {
+      enumerable: true,
+      get: function () {
+        return globe.defaultCloudCollection.volumetric.weatherProvider;
+      },
+      set: function (v) {
+        globe.defaultCloudCollection.volumetric.weatherProvider = v;
       },
     },
   });
@@ -1046,10 +1098,10 @@ function buildWeather(scene, globe) {
     cloudCover: {
       enumerable: true,
       get: function () {
-        return globe.cloudCoverage;
+        return globe.defaultCloudCollection.volumetric.cloudCoverage;
       },
       set: function (v) {
-        globe.cloudCoverage = v;
+        globe.defaultCloudCollection.volumetric.cloudCoverage = v;
       },
     },
     enabled: {
@@ -1088,7 +1140,7 @@ function buildWeather(scene, globe) {
       },
       set: function (v) {
         scene.weatherWindSpeed = v;
-        globe.cloudWindSpeed = v;
+        globe.defaultCloudCollection.volumetric.cloudWindSpeed = v;
       },
     },
     windDirection: {
@@ -1098,7 +1150,7 @@ function buildWeather(scene, globe) {
       },
       set: function (v) {
         scene.weatherWindDirection = v;
-        globe.cloudWindDirection = v;
+        globe.defaultCloudCollection.volumetric.cloudWindDirection = v;
       },
     },
   });

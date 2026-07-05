@@ -919,12 +919,28 @@ function configureWebGPUPostProcessPipeline(
   // cleared → byte-identical depth-only god rays.
   if (pipeline.godRayEffect) {
     const sceneCtx = (scene as unknown as { context?: unknown })?.context;
+    // Cloud-unification epic slice 4A — the volumetric-cloud gate re-homes off
+    // `globe.showProceduralClouds` onto the managed default cloud collection's
+    // exclusive `renderMode` (VOLUMETRIC === 1). The legacy globe flag is still
+    // OR'd in so direct `globe.showProceduralClouds = true` users keep working
+    // until 4B removes it. Default (BILLBOARD + flag false) → both false → the
+    // depth-only god rays stay byte-identical.
+    const godRayGlobe = (
+      scene as unknown as {
+        globe?: {
+          showProceduralClouds?: boolean;
+          defaultCloudCollection?: { renderMode?: number };
+        };
+      }
+    )?.globe;
+    const cloudsActive =
+      godRayGlobe?.defaultCloudCollection?.renderMode === 1 || // CloudRenderMode.VOLUMETRIC
+      godRayGlobe?.showProceduralClouds === true;
     const cloudAwareRequested =
       cache.godRayEnabled &&
       (scene as unknown as { godRayCloudAware?: boolean })?.godRayCloudAware ===
         true &&
-      (scene as unknown as { globe?: { showProceduralClouds?: boolean } })
-        ?.globe?.showProceduralClouds === true;
+      cloudsActive;
     if (sceneCtx) {
       const ctx = sceneCtx as Parameters<
         typeof setCloudTransmittanceCapture

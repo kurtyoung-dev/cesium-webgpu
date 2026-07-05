@@ -161,6 +161,15 @@ Follows the established fork convention (Scene.js `enableSSR`/`enableNPROutlines
 
 Slices 1-2 change nothing visually (pure plumbing). Slice 3 is the first opt-in capability. Slice 4 closes the dual-ownership gap. 5-7 layer WebGPU-only expansion. 8 documents.
 
+**Slice 4A LANDED (CLOUD-U4A-SCENE-DEFAULT-COLLECTION, Option A, user-decided 2026-07-05).** Adds a Scene/Globe-owned MANAGED default volumetric-capable `CloudCollection` (`scene.globe.defaultCloudCollection`, created in the `Globe` ctor, config-only — never added to the scene primitives) and RE-HOMES the four config producers onto its `.volumetric` `CloudVolumetrics` + collection-level `cloudType`:
+
+1. `scene.globe.atmosphericConditions.clouds.*` (the user cloud facade in `AtmosphericConditions.buildClouds` + the `weather.cloudCover`/wind proxies in `buildWeather`) now proxy onto `defaultCloudCollection.volumetric` / `.cloudType` / `.renderMode` (the `enableProcedural`/`enableVolumetric` aliases flip the exclusive `renderMode` BILLBOARD⇄VOLUMETRIC + set `volumetric.enabled`). Two new proxies (`clouds.weatherMap`, `clouds.weatherProvider`) attach the weather ingest to the collection.
+2. `AtmosphericEffects.applyAtmosphericConditions` genus bias writes `defaultCloudCollection.cloudType` (was `globe.cloudType`).
+3. The weather-ingest present-weather read (`applyWeatherIngestToScene`) prefers `defaultCloudCollection.volumetric.weatherProvider`, falling back to `globe.weatherProvider`.
+4. The `scene.godRayCloudAware` gate (`WebGPUPostProcessStageCollection`) reads `defaultCloudCollection.renderMode === VOLUMETRIC` (OR the legacy `globe.showProceduralClouds`).
+
+`WebGPUSceneRendererEnvironmentalEffects` consumes the managed collection as the volumetric-deck source of truth: when no USER collection published a request, it falls back to `defaultCloudCollection._resolveVolumetricConfig()` iff its `renderMode===VOLUMETRIC && volumetric.enabled`, else the legacy `globe.showProceduralClouds` path (cloudConfig===globe) stands byte-identically. `_resolveVolumetricConfig()` now folds in the collection-level `cloudType` (default `CUMULUS`, which the renderer's `?? CUMULUS` resolves identically to the historical `undefined`). The managed collection's `.volumetric` defaults are byte-equal to the historical `globe.cloud*` defaults, so a default scene (renderMode BILLBOARD) publishes nothing and is byte-identical on BOTH backends (verified: U3 deterministic `empty`/`billboard` hashes reproduce the slice-3 HEAD values exactly; probe `Tools/visual-regression/probe-cloud-u4a-managed.mjs` is the STANDING guard). `globe.cloud*`/`globe.showProceduralClouds`/`globe.weatherProvider` are NOT removed yet — that is slice 4B, which must also re-home the two remaining direct globe consumers still reading `globe.showProceduralClouds`: `WebGPUVolumetricFogRenderer` (cloud-shadow interaction, ~L950) and the `WebGPUProceduralCloudRenderer` module docstring.
+
 ---
 
 ## 6. Tasks

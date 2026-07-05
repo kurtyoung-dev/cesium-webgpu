@@ -125,11 +125,39 @@ export function executeEnvironmentalEffects(
   // no collection publishes, `cloudConfig` is the globe and every downstream
   // read is byte-identical to the pre-slice-3 path.
   const collectionRequest = context.consumeVolumetricCloudRequest();
-  const useCollectionDeck =
+  let useCollectionDeck =
     collectionRequest !== undefined && collectionRequest.enabled === true;
-  const cloudConfig: CloudVolumetricsConfig | undefined = useCollectionDeck
+  let cloudConfig: CloudVolumetricsConfig | undefined = useCollectionDeck
     ? (collectionRequest as unknown as CloudVolumetricsConfig)
     : globe;
+
+  // Cloud-unification epic slice 4A — when no USER-added VOLUMETRIC collection
+  // published a deck this frame, fall back to the Scene/Globe MANAGED default
+  // cloud collection (`globe.defaultCloudCollection`). Its `.volumetric` config
+  // is the re-homed source of truth for the `atmosphericConditions` cloud facade,
+  // the atmospheric-effects genus bias, and the weather ingest. It only drives a
+  // deck when its exclusive `renderMode` is VOLUMETRIC (=== 1) AND
+  // `volumetric.enabled`; otherwise the legacy `globe.showProceduralClouds` path
+  // (cloudConfig === globe) stands and every downstream read is byte-identical.
+  if (!useCollectionDeck) {
+    const managed = (
+      globe as unknown as {
+        defaultCloudCollection?: {
+          renderMode?: number;
+          volumetric?: { enabled?: boolean };
+          _resolveVolumetricConfig?: () => CloudVolumetricsConfig;
+        };
+      }
+    )?.defaultCloudCollection;
+    if (
+      managed?.renderMode === 1 && // CloudRenderMode.VOLUMETRIC
+      managed.volumetric?.enabled === true &&
+      managed._resolveVolumetricConfig
+    ) {
+      cloudConfig = managed._resolveVolumetricConfig();
+      useCollectionDeck = true;
+    }
+  }
   publishCloudIblCoverage(context, cloudConfig);
 
   // Get texture views needed by all environmental effects.

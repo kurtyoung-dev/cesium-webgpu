@@ -519,6 +519,23 @@ interface AtmosphericSceneLike {
     atmosphereBrightnessShift?: number;
     cloudType?: number;
     /**
+     * Cloud-unification epic slice 4A — the Scene/Globe-owned managed default
+     * cloud collection. The atmospheric-effects genus bias re-homes onto its
+     * `cloudType`, and the weather-ingest present-weather read prefers its
+     * `.volumetric.weatherProvider`.
+     */
+    defaultCloudCollection?: {
+      cloudType?: number;
+      volumetric?: {
+        weatherProvider?: {
+          getPresentWeather?: () => {
+            ww?: number;
+            visibilityKm?: number;
+          } | null;
+        };
+      };
+    };
+    /**
      * PRECIP-DATA (Batch 444) — the weather-ingest provider. When the
      * data-driven precip flag is set AND this exposes `getPresentWeather()`
      * returning a `ww`, it overrides the precip type/intensity.
@@ -594,7 +611,13 @@ export function applyAtmosphericConditions(scene: AtmosphericSceneLike): void {
     globe.atmosphereSaturationShift = knobs.atmosphereSaturationShift;
     globe.atmosphereBrightnessShift = knobs.atmosphereBrightnessShift;
     if (knobs.cloudType !== undefined) {
-      globe.cloudType = knobs.cloudType;
+      // Cloud-unification epic slice 4A — genus bias re-homed off `globe.cloudType`
+      // onto the managed default cloud collection's collection-level genus.
+      if (globe.defaultCloudCollection) {
+        globe.defaultCloudCollection.cloudType = knobs.cloudType;
+      } else {
+        globe.cloudType = knobs.cloudType;
+      }
     }
   }
 
@@ -684,7 +707,12 @@ function applyDataDrivenPrecip(
   if (precip?.dataDriven !== true) {
     return; // gate (a): flag off → no override, manual/auto selection stands.
   }
-  const provider = scene.globe?.weatherProvider;
+  // Cloud-unification epic slice 4A — prefer the weather provider attached to
+  // the managed default cloud collection's `.volumetric` (the re-homed ingest
+  // sink); fall back to the legacy `globe.weatherProvider` for direct users.
+  const provider =
+    scene.globe?.defaultCloudCollection?.volumetric?.weatherProvider ??
+    scene.globe?.weatherProvider;
   const present = provider?.getPresentWeather?.();
   if (!present || present.ww === undefined) {
     return; // gate (b): no ingest present-weather → no override.

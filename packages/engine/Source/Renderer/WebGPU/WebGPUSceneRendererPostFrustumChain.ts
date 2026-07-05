@@ -231,7 +231,16 @@ export function executePostFrustumChain(
     _enableNPROutlines?: boolean;
     _enableContactShadows?: boolean;
     _enableWeather?: boolean;
-    globe?: { showProceduralClouds?: boolean };
+    globe?: {
+      showProceduralClouds?: boolean;
+      // Cloud-unification epic slice 4A — the managed default cloud collection
+      // drives the volumetric deck via its exclusive `renderMode`
+      // (VOLUMETRIC === 1). Include it in the snapshot-copy gate so
+      // facade-enabled clouds still get the scene-color snapshot copy (else the
+      // composite samples raw HDR color — color-space mismatch vs the legacy
+      // `showProceduralClouds` path). The legacy flag is still OR'd below.
+      defaultCloudCollection?: { renderMode?: number };
+    };
     _frameState?: {
       atmosphericConditions?: {
         volumetricFog?: { enabled?: boolean };
@@ -250,6 +259,7 @@ export function executePostFrustumChain(
     !!_sceneAny._enableContactShadows ||
     !!_sceneAny._enableWeather ||
     !!_sceneAny.globe?.showProceduralClouds ||
+    _sceneAny.globe?.defaultCloudCollection?.renderMode === 1 || // CloudRenderMode.VOLUMETRIC
     _acForCopy?.volumetricFog?.enabled === true ||
     _acForCopy?.effects?.groundFog?.enabled === true;
   const _ppCtx = context as unknown as {

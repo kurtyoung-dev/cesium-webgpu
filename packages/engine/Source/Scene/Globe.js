@@ -20,6 +20,7 @@ import GlobeFS from "../Shaders/GlobeFS.js";
 import GlobeVS from "../Shaders/GlobeVS.js";
 import AtmosphereCommon from "../Shaders/AtmosphereCommon.js";
 import GroundAtmosphere from "../Shaders/GroundAtmosphere.js";
+import CloudCollection from "./CloudCollection.js";
 import GlobeSurfaceShaderSet from "./GlobeSurfaceShaderSet.js";
 import GlobeSurfaceTileProvider from "./GlobeSurfaceTileProvider.js";
 import GlobeTranslucency from "./GlobeTranslucency.js";
@@ -72,6 +73,21 @@ class Globe {
     );
 
     this._translucency = new GlobeTranslucency();
+
+    // Cloud-unification epic slice 4A — the Scene/Globe-owned MANAGED default
+    // volumetric-capable CloudCollection. It is the source of truth for the
+    // WebGPU env-effects volumetric cloud request: the `atmosphericConditions`
+    // cloud facade, the AtmosphericEffects genus bias, and the weather ingest
+    // all re-home their writes onto this collection's `.volumetric` config, and
+    // the env-effects + god-ray-cloud-aware gates read its `renderMode`. Its
+    // `.volumetric` field defaults are byte-equal to the historical
+    // `globe.cloud*` defaults, so a default scene (renderMode BILLBOARD, nothing
+    // published) drives no extra rendering and is byte-identical on BOTH
+    // backends. Config-only — deliberately NOT added to the scene primitives
+    // (it owns no billboards of its own; the volumetric raymarch stays in the
+    // env-effects phase). WebGPU only; inert on WebGL (documented graceful
+    // no-op). See migration_doc/CLOUD_UNIFICATION_DESIGN.md.
+    this._defaultCloudCollection = new CloudCollection();
 
     makeShadersDirty(this);
 
@@ -1378,6 +1394,23 @@ class Globe {
   /**
    * @private
    */
+  /**
+   * The Scene/Globe-owned managed default {@link CloudCollection} that carries
+   * the WebGPU volumetric cloud configuration (cloud-unification epic slice
+   * 4A). Its <code>.volumetric</code> {@link CloudVolumetrics} is the source of
+   * truth for the WebGPU env-effects volumetric-cloud deck: it is driven by
+   * <code>scene.globe.atmosphericConditions.clouds</code>, the atmospheric
+   * effects genus bias, and the weather ingest, and read by the env-effects +
+   * god-ray-cloud-aware gates. <b>WebGPU only</b> — inert on the WebGL renderer
+   * (documented graceful no-op).
+   * @memberof Globe.prototype
+   * @type {CloudCollection}
+   * @readonly
+   */
+  get defaultCloudCollection() {
+    return this._defaultCloudCollection;
+  }
+
   update(frameState) {
     if (!this.show) {
       return;
@@ -1611,6 +1644,10 @@ class Globe {
       this._oceanNormalMap && this._oceanNormalMap.destroy();
     // DP-H44 — release the globe pick ID's registry slot.
     this._pickId = this._pickId && this._pickId.destroy();
+    // Cloud-unification epic slice 4A — release the managed default cloud
+    // collection (config-only; owns no GPU resources unless volumetric ran).
+    this._defaultCloudCollection =
+      this._defaultCloudCollection && this._defaultCloudCollection.destroy();
     return destroyObject(this);
   }
 }

@@ -331,9 +331,12 @@ class CloudCollection {
    * the 136-float <code>CloudUniforms</code> packer stays byte-locked. A fresh
    * object is produced each frame — only on the opt-in volumetric-active path.
    *
-   * Collection-level <code>cloudType</code> → config genus wiring is deferred to
-   * a later slice (genera); the value passes through as
-   * <code>volumetric.cloudType</code> (undefined by default).
+   * The collection-level <code>cloudType</code> (WMO genus) is folded into the
+   * snapshot as <code>config.cloudType</code> — the volumetric raymarcher reads
+   * <code>config.cloudType ?? CloudType.CUMULUS</code>, so the default
+   * <code>CUMULUS</code> resolves identically to the historical
+   * <code>undefined</code> globe path (byte-locked). An explicit
+   * <code>volumetric.cloudType</code> override still wins.
    *
    * @returns {object} A {@link CloudVolumetrics}-shaped request snapshot.
    * @private
@@ -342,6 +345,7 @@ class CloudCollection {
     return {
       ...this.volumetric,
       showProceduralClouds: true,
+      cloudType: this.volumetric.cloudType ?? this._cloudType,
     };
   }
 
