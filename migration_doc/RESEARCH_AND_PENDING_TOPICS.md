@@ -71,7 +71,7 @@ Four inference modes, web-feasibility-ranked:
 
 Fuse heterogeneous geospatial data (raster imagery, vector polygons, terrain, point clouds, glTF buildings, time-dynamic CZML, IoT feeds) into one scene with consistent lighting/shadow/picking/LOD. Cesium already does this at the data-source level (3D Tiles 1.1 heterogeneous tiles), scene-graph level (unified culling + depth-sort + `Picking.js`), and time level (CZML clock graphs). The **gaps** the source doc named remain real:
 
-- **R-2a — GPU-side cross-source attribute joins** (no shader pass can multiply a vector polygon's `nationCode` against an imagery landcover ID). **OPEN.** Audit task, ~1 session.
+- **R-2a — GPU-side cross-source attribute joins** (no shader pass can multiply a vector polygon's `nationCode` against an imagery landcover ID). **AUDITED (plan state, 2026-07-05) → BLOCKED-on-R-2b.** Full scoping note: `R-2A_CROSS_SOURCE_ATTRIBUTE_AUDIT.md`. Finding: no shared GPU-visible attribute namespace exists across sources (per-source batch/metadata tables only; imagery has color but no per-texel ID channel; the pick color is the sole source-agnostic per-fragment value but is LDR object-identity, CPU-read). The join collapses to a thin PP LUT pass *once R-2b lands* — do not build standalone.
 - **R-2b — Unified feature-id texture** (source-agnostic per-fragment feature IDs for post-process). **OPEN** in the fork sense; depends on the Batch-133 pick-pass infra. ~3 sessions. *(Note: upstream has feature-ID-texture transform fixes, but that is per-model glTF feature IDs, not a unified cross-source target — different thing.)*
 - **R-2c — GPU-driven cross-source LOD** (single compute shader picking LOD across visible tile trees jointly). **OPEN.** Research-grade, 5+ sessions, possibly thesis-shaped.
 - **Cross-source shadow casting** (3D Tiles classification footprints into CSM) — tracked separately as a C-R item / ADR in `DEFERRED_WORK.md`; **status: verify** against current CSM state.
@@ -348,7 +348,7 @@ Snapshot of every register entry vs. its live status and where the active tracki
 | R-1 | NTC Inference-on-Sample (VRAM) | Watch | **OPEN** (browser-gated) | gpuweb#4195; TAA dep now shipped |
 | R-1a | NTC Inference-on-Load (bandwidth) | Prototype | **OPEN** (workload-gated) | no `loadNTC.js` |
 | R-1b | NTC Latent-Resident Pool (VRAM) | Prototype | **OPEN** (workload-gated) | maps onto `TileReplacementQueue` |
-| R-2a | Cross-source attribute-unification audit | Plan | **OPEN** | ~1 session |
+| R-2a | Cross-source attribute-unification audit | Plan | **AUDITED (2026-07-05) → BLOCKED-on-R-2b** | see `R-2A_CROSS_SOURCE_ATTRIBUTE_AUDIT.md` |
 | R-2b | Unified feature-id texture | Plan | **OPEN** | depends on Batch-133 pick pass |
 | R-2c | GPU-driven cross-source LOD | Plan (research) | **OPEN** | 5+ sessions, thesis-shaped |
 | R-3 | WebNN imagery super-resolution | Prototype | **OPEN** (Chrome-only) | no super-res renderer |
