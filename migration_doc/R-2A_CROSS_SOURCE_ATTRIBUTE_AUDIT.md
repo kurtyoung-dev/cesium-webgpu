@@ -96,3 +96,10 @@ that R-2b would then obsolete. **Recommended sequencing: land R-2b first, then R
 Mark **R-2a = plan-complete, BLOCKED-on-R-2b** in the tracking docs. Do **not** implement R-2a standalone;
 schedule R-2b (Q28) first, then R-2a lands as a thin PP stage + LUT on top. Imagery ID-channel plumbing is a
 separately-schedulable sub-task needed only for imagery-source joins.
+
+**Update (2026-07-05, C4-UNIFIED-FEATURE-ID-TEXTURE):** R-2b's **core primitive shipped** — the unified
+per-fragment feature-ID G-buffer is now shader-samplable in a fullscreen PP pass
+(`WebGPUPickFramebuffer.resolveFeatureIdRecolorAsync()` → `FeatureIdResolve.wgsl`), verified by
+`probe-feature-id-texture.mjs` (billboard + point resolve to distinct in-shader IDs). The R-2a join still
+awaits the R-2b **residual** (per-frame wiring of the ID G-buffer into the standing PP pipeline + a source-tag
+channel + the imagery per-texel ID channel from §4.1/§6) before the two-LUT join pass from §6 can be built.
