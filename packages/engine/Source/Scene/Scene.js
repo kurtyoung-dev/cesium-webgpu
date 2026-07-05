@@ -15,8 +15,11 @@ import Event from "../Core/Event.js";
 import GeographicProjection from "../Core/GeographicProjection.js";
 import HeightReference from "./HeightReference.js";
 import Intersect from "../Core/Intersect.js";
+import IntersectionTests from "../Core/IntersectionTests.js";
+import Interval from "../Core/Interval.js";
 import JulianDate from "../Core/JulianDate.js";
 import CesiumMath from "../Core/Math.js";
+import Matrix3 from "../Core/Matrix3.js";
 import Matrix4 from "../Core/Matrix4.js";
 import RenderScheduler from "./RenderScheduler.js";
 import OrthographicFrustum from "../Core/OrthographicFrustum.js";
@@ -4170,6 +4173,20 @@ class Scene {
     if (!(voxelPrimitive instanceof VoxelPrimitive)) {
       return;
     }
+    // NS-VOXEL-PICK-FOOTPRINT-SPURIOUS-ROOT — gate cell construction on an
+    // actual ray-vs-bounds hit rather than the object-pick footprint. On WebGL
+    // `this.pick` already returns undefined off the rendered voxel surface, so
+    // this early-out is never reached for an off-box pixel (byte-identical).
+    // On WebGPU the object-pick footprint over-reports the whole box (and the
+    // synchronous pick can return a stale in-box hit for an adjacent off-box
+    // pixel), which — because a cleared voxel-coordinate readback [0,0,0,0] is
+    // indistinguishable from a genuine tile-0/sample-0 hit — otherwise yields a
+    // spurious root VoxelCell. Casting the pick ray against the primitive's
+    // oriented bounding box rejects those off-box picks with WebGL parity. The
+    // OBB is a conservative bound, so a genuine on-surface hit always passes.
+    if (!voxelPickRayHitsBounds(this, windowPosition, voxelPrimitive)) {
+      return;
+    }
     const voxelCoordinate = this._picking.pickVoxelCoordinate(
       this,
       windowPosition,
@@ -5086,6 +5103,69 @@ class Scene {
  * @private
  * @param {Scene} scene
  */
+const scratchVoxelPickRay = new Ray();
+const scratchVoxelPickLocalRay = new Ray();
+const scratchVoxelPickInvAxes = new Matrix3();
+const scratchVoxelPickOffset = new Cartesian3();
+const scratchVoxelPickInterval = new Interval();
+const voxelPickUnitBox = {
+  minimum: new Cartesian3(-1.0, -1.0, -1.0),
+  maximum: new Cartesian3(1.0, 1.0, 1.0),
+};
+
+/**
+ * NS-VOXEL-PICK-FOOTPRINT-SPURIOUS-ROOT — return whether the pick ray at
+ * `windowPosition` actually intersects the voxel primitive's oriented bounding
+ * box. Used by {@link Scene#pickVoxel} to reject off-box picks that WebGPU's
+ * object-pick footprint over-reports (WebGL's `this.pick` never reaches this
+ * gate off the rendered surface, so the check is a no-op there).
+ *
+ * The ray is transformed into the box's unit-cube frame
+ * (`halfAxes^-1 * (p - center)`), then intersected with the [-1, 1]^3 AABB. A
+ * degenerate/absent OBB (or a non-invertible half-axes matrix) fails open —
+ * the caller keeps its pre-existing behavior rather than dropping a real pick.
+ *
+ * @private
+ * @param {Scene} scene
+ * @param {Cartesian2} windowPosition
+ * @param {VoxelPrimitive} voxelPrimitive
+ * @returns {boolean}
+ */
+function voxelPickRayHitsBounds(scene, windowPosition, voxelPrimitive) {
+  const obb = voxelPrimitive.orientedBoundingBox;
+  if (!defined(obb)) {
+    return true;
+  }
+  const ray = scene.camera.getPickRay(windowPosition, scratchVoxelPickRay);
+  if (!defined(ray)) {
+    return true;
+  }
+  let invAxes;
+  try {
+    invAxes = Matrix3.inverse(obb.halfAxes, scratchVoxelPickInvAxes);
+  } catch {
+    // Non-invertible half-axes (zero-extent / not-yet-ready shape) — fail open.
+    return true;
+  }
+  Matrix3.multiplyByVector(
+    invAxes,
+    Cartesian3.subtract(ray.origin, obb.center, scratchVoxelPickOffset),
+    scratchVoxelPickLocalRay.origin,
+  );
+  Matrix3.multiplyByVector(
+    invAxes,
+    ray.direction,
+    scratchVoxelPickLocalRay.direction,
+  );
+  const interval = IntersectionTests.rayAxisAlignedBoundingBox(
+    scratchVoxelPickLocalRay,
+    voxelPickUnitBox,
+    scratchVoxelPickInterval,
+  );
+  // No intersection, or the box lies entirely behind the ray origin.
+  return defined(interval) && interval.stop >= 0.0;
+}
+
 function _samplePerformanceTrace(scene) {
   const tracker = scene._performanceTracker;
   if (!defined(tracker) || !tracker.active) {

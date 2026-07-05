@@ -14,7 +14,14 @@
 //     matches the analytic first-hit cell's stored color;
 //   * `cell.tileIndex === 0` (root) and `cell.sampleIndex` is the analytic
 //     input-orientation sample index, identical cross-backend.
-// Empty columns / off-box pixels return `undefined` (no cell) on both backends.
+// Off-box pixels (ray misses the volume) return `undefined` on BOTH backends
+// (NS-VOXEL-PICK-FOOTPRINT-SPURIOUS-ROOT — Scene.pickVoxel's ray-vs-OBB gate).
+// In-box EMPTY columns (ray crosses the box but hits no filled voxel) still
+// return `undefined` on WebGL but a spurious root cell on WebGPU: WebGPU's
+// object-pick footprint over-reports and the cleared readback [0,0,0,0] is
+// byte-indistinguishable from a genuine tile-0/sample-0 hit (which the
+// PickingSpec requires to keep returning a cell), so it cannot be gated in the
+// cell path. That residual tracks WebGPU object-pick occupancy accuracy.
 //
 // WebGPU note: the per-cell pick readback is armed-async
 // (NEW-PICK-METADATA-READBACK), so `scene.pickVoxel` is retried until two
@@ -330,16 +337,22 @@ for (let i = 0; i < TARGETS.length; i++) {
 }
 
 {
-  // Off-box: outside the volume. Same object-pick footprint residual — WebGL
-  // misses (no cell); WebGPU's larger object-pick footprint still returns the
-  // primitive, so pickVoxel yields a root cell. The cell-pick-tail guarantee is
-  // "no throw"; before this fix these pixels THREW. WebGL correctness asserted.
+  // Off-box: the pick ray misses the volume entirely.
+  // NS-VOXEL-PICK-FOOTPRINT-SPURIOUS-ROOT — WebGL's `this.pick` returns no
+  // object off the rendered surface, so `scene.pickVoxel` returns undefined.
+  // WebGPU's object-pick footprint over-reports the whole box (and the sync
+  // pick can return a stale in-box hit for an adjacent off-box pixel), which —
+  // because a cleared voxel-coordinate readback [0,0,0,0] is indistinguishable
+  // from a genuine tile-0/sample-0 hit — used to yield a spurious ROOT cell.
+  // `Scene.pickVoxel` now casts the pick ray against the primitive's oriented
+  // bounding box and rejects the off-box pick, so BOTH backends return no cell.
   const glNone = !webgl.offPick.cell || !webgl.offPick.cell.isVoxelCell;
+  const gpNone = !webgpu.offPick.cell || !webgpu.offPick.cell.isVoxelCell;
   const noThrow = !webgl.offPick.threw && !webgpu.offPick.threw;
-  const ok = glNone && noThrow;
+  const ok = glNone && gpNone && noThrow;
   if (!ok) pass = false;
   console.log(
-    `  [off-box] no-throw + webgl no-cell (object-pick footprint residual) | webgl=${JSON.stringify(webgl.offPick.cell)} webgpu=${JSON.stringify(webgpu.offPick.cell)} threw(gl=${webgl.offPick.threw ?? "-"},gp=${webgpu.offPick.threw ?? "-"}) ${ok ? "ok" : "MISMATCH"}`,
+    `  [off-box] no-throw + BOTH backends no-cell (ray-OBB gate) | webgl=${JSON.stringify(webgl.offPick.cell)} webgpu=${JSON.stringify(webgpu.offPick.cell)} threw(gl=${webgl.offPick.threw ?? "-"},gp=${webgpu.offPick.threw ?? "-"}) ${ok ? "ok" : "MISMATCH"}`,
   );
 }
 
