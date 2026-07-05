@@ -164,6 +164,20 @@ struct CloudUniforms {
   speciesStrength: f32,          // 133 — shaping depth (0 off → 1.0 factor; clamped 0..1)
   speciesScale: f32,             // 134 — feature frequency (lens/filament size; 1.0 neutral)
   speciesParam: f32,             // 135 — mode extra: uncinus fallstreak hook shear (mode 2)
+  // ── Batch 611 (E2 CLOUD-EXOTIC-FEATURES-REMAINING) — the sibling supplementary
+  // "features" to B592 mammatus / B610 species (CLOUD_TAXONOMY_ROADMAP E2), each a
+  // bounded density-shaping mode. Slots 136-139, one new 16-byte row appended
+  // ADD-ONLY (all earlier offsets UNCHANGED). Default OFF is byte-identical:
+  // featureMode=0 makes featureFactor() early-return 1.0 so density is untouched and
+  // these floats are never read past the guard. The factor is a per-position [0,1]
+  // multiplier applied IDENTICALLY in cloudDensity AND the cloudBaseDensity oracle,
+  // so the W5 `base >= full` skip invariant holds. A per-genus gate lives in JS
+  // (default genera leave featureMode=0); the shader only sees a non-zero mode when
+  // the user opts a deck into a feature.
+  featureMode: f32,              // 136 — 0 off / 1 asperitas / 2 fluctus / 3 arcus / 4 virga
+  featureStrength: f32,          // 137 — shaping depth (0 off → 1.0 factor; clamped 0..1)
+  featureScale: f32,             // 138 — feature frequency (wave/streak size; 1.0 neutral)
+  featureParam: f32,             // 139 — mode extra (fluctus shear / arcus width / virga reach)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -569,6 +583,112 @@ fn speciesFactor(sp: vec3<f32>, h: f32) -> f32 {
   return clamp(fib, 0.0, 1.0);
 }
 
+// Batch 611 (E2 CLOUD-EXOTIC-FEATURES-REMAINING) — the sibling supplementary
+// "features" to mammatus (B592) / species (B610) (CLOUD_TAXONOMY_ROADMAP E2). Returns
+// a per-position density multiplier in [0,1]:
+//   mode 1 ASPERITAS — chaotic wavy UNDERSIDE. A domain-warped multi-directional sine
+//     field carves the base band into an undulating, non-repeating wavy surface (the
+//     "storm-tossed sea seen from below" signature).
+//   mode 2 FLUCTUS (Kelvin-Helmholtz) — breaking-wave billows along the TOP band.
+//     Density concentrates at periodic wind-aligned crests; a height shear (featureParam)
+//     leans the crest downwind so the top reads as a row of curling / breaking waves.
+//   mode 3 ARCUS — shelf/roll LEADING EDGE. Keeps a dense wind-leading roll and carves a
+//     trough just behind it so a shelf stands proud of the lower/mid body (featureParam
+//     widens the shelf).
+//   mode 4 VIRGA / PRAECIPITATIO — fallstreak TAIL below the body. Carves the lower band
+//     into vertical across-wind streaks so density hangs down in fibrous trails
+//     (featureParam→1 = praecipitatio: denser streaks reaching further toward the base).
+// Guarded on featureMode<0.5 OR featureStrength<=0 → returns 1.0 (opt-in default-OFF
+// gate → byte-identical). Called IDENTICALLY from cloudDensity AND cloudBaseDensity
+// (same in-[0,1] factor), so the W5 `base >= full` invariant is preserved. `sp` is the
+// wind-advected noise-space sample position; `h` is the shell height fraction (0..1).
+fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
+  if (cloud.featureMode < 0.5 || cloud.featureStrength <= 0.0) {
+    return 1.0;
+  }
+  let strength = clamp(cloud.featureStrength, 0.0, 1.0);
+  let scale = max(cloud.featureScale, 1e-3);
+  // Horizontal wind frame in noise space (same convention as speciesFactor).
+  let windH = vec2<f32>(cloud.windDirection.x, cloud.windDirection.y);
+  let wlen = length(windH);
+  let windDir = select(vec2<f32>(1.0, 0.0), windH / max(wlen, 1e-5), wlen > 1e-5);
+  let crossDir = vec2<f32>(-windDir.y, windDir.x);
+  let horiz = vec2<f32>(sp.x, sp.z);
+  let along = dot(horiz, windDir);
+  let acr = dot(horiz, crossDir);
+
+  if (cloud.featureMode < 1.5) {
+    // ASPERITAS — chaotic wavy underside. Band peaks at the base and fades up.
+    let band = 1.0 - smoothstep(0.0, 0.55, h);
+    if (band <= 0.0) {
+      return 1.0;
+    }
+    // Domain-warped multi-directional sine field → an undulating, non-repeating
+    // wavy surface. The warp meanders the phase so waves are irregular, not a grid.
+    let f = 6.0 * scale;
+    let warp = valueNoise(vec3<f32>(along, acr, sp.y) * (2.0 * scale)) - 0.5;
+    let wave = 0.5 + 0.5 * sin(along * f + warp * 4.0)
+                    * cos(acr * f * 0.75 - warp * 3.0);
+    // Carve the troughs (low `wave`) so the underside billows into rolling waves.
+    let carve = (1.0 - smoothstep(0.35, 0.85, wave)) * band * strength;
+    return clamp(1.0 - carve, 0.0, 1.0);
+  }
+
+  if (cloud.featureMode < 2.5) {
+    // FLUCTUS (Kelvin-Helmholtz) — breaking-wave billows along a shear interface. The
+    // K-H wave forms at a shear layer in the cloud body; anchor the billows in the
+    // mid/lower body where the deck actually carries density (the anvil top carries
+    // little, so a top-only band reads as no change). The periodic wind-aligned crest
+    // is the fluctus signature vs the chaotic asperitas / streaked virga carves.
+    let band = 1.0 - smoothstep(0.5, 0.9, h);
+    if (band <= 0.0) {
+      return 1.0;
+    }
+    // Periodic wind-aligned crests; a height shear leans the crest downwind so it
+    // reads as a curling / breaking wave. featureParam sets the shear amount.
+    let shear = h * (2.0 + 3.0 * cloud.featureParam);
+    let crest = 0.5 + 0.5 * sin(along * (3.0 * scale) + shear);
+    // Keep density at the crests, carve the troughs between billows.
+    let carve = (1.0 - smoothstep(0.25, 0.9, crest)) * band * strength;
+    return clamp(1.0 - carve, 0.0, 1.0);
+  }
+
+  if (cloud.featureMode < 3.5) {
+    // ARCUS — a dense roll/shelf at the wind-LEADING edge. A slowly-repeating along-wind
+    // cell places a roll (dense front lip) with a carved trough just behind it so the
+    // shelf stands proud. featureParam widens the shelf.
+    let cell = fract(along * 0.06 * scale);
+    let width = 0.25 + 0.35 * clamp(cloud.featureParam, 0.0, 1.0);
+    let gap = smoothstep(width, width + 0.18, cell)
+            * (1.0 - smoothstep(0.72, 0.9, cell));
+    // Confine the shelf carve to the lower/mid body so the top is untouched.
+    let band = 1.0 - smoothstep(0.6, 0.95, h);
+    let carve = gap * band * strength;
+    return clamp(1.0 - carve, 0.0, 1.0);
+  }
+
+  // VIRGA / PRAECIPITATIO — fallstreak tail below the body. Carve the LOWER band into
+  // vertical across-wind streaks so density hangs down in fibrous trails. featureParam
+  // (praecipitatio) makes the streaks finer/more numerous AND reach further toward the
+  // base, so it reads as heavier precipitation than plain virga.
+  let param = clamp(cloud.featureParam, 0.0, 1.0);
+  // param deepens the affected band (streaks reach further down toward the base).
+  let bandDepth = 0.5 + 0.3 * param;
+  let band = 1.0 - smoothstep(0.0, bandDepth, h);
+  if (band <= 0.0) {
+    return 1.0;
+  }
+  // Across-wind streak field: Worley cells compressed along-wind + vertically so the
+  // kept cores form vertical curtains (the fallstreak look). param raises the
+  // horizontal frequency → finer, more numerous fallstreaks (praecipitatio).
+  let vScale = scale * (1.0 + 0.8 * param);
+  let streakP = vec3<f32>(acr * 4.0 * vScale, sp.y * 0.15, along * 0.5 * vScale);
+  let streak = worleyF1(streakP); // ~0 in a streak core, ~1 between
+  let gaps = smoothstep(0.2, 0.7, streak);
+  let carve = gaps * band * strength;
+  return clamp(1.0 - carve, 0.0, 1.0);
+}
+
 // ─── Weather Phase 3 — per-position G/B/A channel decode ───
 // Decodes the weather sample's three scaffolding channels into model-space
 // modifiers, NEUTRAL-SAFE: a neutral cell (G=0.5, B=0, A=0.5) yields the
@@ -704,9 +824,11 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckT
   // the deck is visibly denser/thinner where the map's A varies.
   // E2 mammatus — underside pouch carve (default OFF → factor 1.0, byte-identical).
   // E1 species — lenticular/fibratus density shaping (default OFF → factor 1.0).
+  // E2 features — asperitas/fluctus/arcus/virga shaping (default OFF → factor 1.0).
   return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale
     * mammatusFactor(samplePos, heightFraction)
-    * speciesFactor(samplePos, heightFraction);
+    * speciesFactor(samplePos, heightFraction)
+    * featureFactor(samplePos, heightFraction);
 }
 
 // ─── W5: cheap low-detail presence test for empty-space skipping ───
@@ -758,9 +880,12 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, d
   // [0,1]), so the W5 `base >= full` invariant is preserved per-position.
   // E1 species — IDENTICAL lenticular/fibratus shaping as cloudDensity (same [0,1]
   // factor), so the W5 `base >= full` invariant still holds per-position.
+  // E2 features — IDENTICAL asperitas/fluctus/arcus/virga shaping as cloudDensity
+  // (same [0,1] factor), so the W5 `base >= full` invariant still holds per-position.
   return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale
     * mammatusFactor(samplePos, heightFraction)
-    * speciesFactor(samplePos, heightFraction);
+    * speciesFactor(samplePos, heightFraction)
+    * featureFactor(samplePos, heightFraction);
 }
 
 // ─── Ray-sphere intersection (sphere centered at the planet origin) ───

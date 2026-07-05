@@ -110,9 +110,16 @@ foundation.
   stacked lens plates) + fibratus/uncinus (wind-aligned wispy filaments, with a
   height-sheared fallstreak hook for uncinus) as a single `speciesFactor()` density
   multiplier in [0,1], opt-in via `globe.cloudSpecies`, default-OFF byte-identical,
-  applied identically in `cloudDensity` + the `cloudBaseDensity` W5 oracle. The
-  remaining E1 forms (undulatus/radiatus wave coverage, castellanus/floccus turrets),
-  the remaining E2 forms (asperitas, Kelvin-Helmholtz/fluctus, arcus, virga), and all
-  of E3 stay OPEN, each a bounded density/wave mode on the same
-  `ProceduralClouds.wgsl` foundation. Acceptance probe:
-  `Tools/visual-regression/probe-cloud-species.mjs`.
+  applied identically in `cloudDensity` + the `cloudBaseDensity` W5 oracle.
+  **E2 remaining features SHIPPED (Batch 611)** — asperitas (chaotic wavy underside),
+  Kelvin-Helmholtz/fluctus (breaking-wave billows along the top), arcus (shelf/roll
+  leading edge), and virga/praecipitatio (fallstreak tail below the base) as a single
+  `featureFactor()` density multiplier in [0,1], opt-in via `globe.cloudFeature`
+  (`"asperitas"` | `"fluctus"`/`"kelvin-helmholtz"` | `"arcus"` | `"virga"` |
+  `"praecipitatio"`) or numeric `globe.cloudFeatureMode` (1-4), default-OFF
+  byte-identical, applied identically in `cloudDensity` + the `cloudBaseDensity` W5
+  oracle. The remaining E1 forms (undulatus/radiatus wave coverage, castellanus/floccus
+  turrets) and all of E3 stay OPEN, each a bounded density/wave mode on the same
+  `ProceduralClouds.wgsl` foundation. Acceptance probes:
+  `Tools/visual-regression/probe-cloud-species.mjs` (E1),
+  `Tools/visual-regression/probe-cloud-features.mjs` (E2 remaining).

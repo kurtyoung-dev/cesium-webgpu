@@ -61,7 +61,8 @@ import CloudType from "../../Scene/CloudType.js";
 // → 128 (Batch 445 CLOUD-RTE: encodedCameraHigh.xyz+pad 120-123, encodedCameraLow.xyz+pad 124-127)
 // → 132 (Batch 555 E2 CLOUD-MAMMATUS: mammatusStrength/Scale/Depth+pad 128-131).
 // → 136 (Batch 610 E1 CLOUD-EXOTIC-SPECIES: speciesMode/Strength/Scale/Param 132-135).
-const CLOUD_UNIFORM_FLOATS = 136; // MUST equal the CloudUniforms struct length in WGSL
+// → 140 (Batch 611 E2 CLOUD-EXOTIC-FEATURES-REMAINING: featureMode/Strength/Scale/Param 136-139).
+const CLOUD_UNIFORM_FLOATS = 140; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -1929,6 +1930,51 @@ export function executeProceduralClouds(
   data[offset++] = globeSpecies.cloudSpeciesStrength ?? 0.8; // 133 speciesStrength
   data[offset++] = globeSpecies.cloudSpeciesScale ?? 1.0; // 134 speciesScale
   data[offset++] = globeSpecies.cloudSpeciesParam ?? speciesParamDefault; // 135 speciesParam (uncinus hook)
+
+  // ── Batch 611 (E2 CLOUD-EXOTIC-FEATURES-REMAINING) — supplementary features
+  // (asperitas / fluctus / arcus / virga) as bounded density shaping. Slots 136-139.
+  // Default OFF (featureMode=0) → the WGSL featureFactor() early-returns 1.0 so
+  // density is untouched and these floats are never read past the guard →
+  // byte-identical. Opt-in via globe.cloudFeature (a genus-gated name) or the numeric
+  // globe.cloudFeatureMode; default genera leave it unset → mode 0.
+  //   "asperitas" → 1 ; "fluctus"/"kelvin-helmholtz" → 2 ; "arcus" → 3 ;
+  //   "virga" → 4 ; "praecipitatio" → 4 (param 1 = denser/reaching streaks).
+  const globeFeature = globe as unknown as {
+    cloudFeature?: string;
+    cloudFeatureMode?: number;
+    cloudFeatureStrength?: number;
+    cloudFeatureScale?: number;
+    cloudFeatureParam?: number;
+  };
+  let featureMode = globeFeature.cloudFeatureMode ?? 0.0;
+  let featureParamDefault = 0.0;
+  const featureName = globeFeature.cloudFeature;
+  if (typeof featureName === "string") {
+    const n = featureName.toLowerCase();
+    if (n === "asperitas") {
+      featureMode = 1.0;
+    } else if (
+      n === "fluctus" ||
+      n === "kelvin-helmholtz" ||
+      n === "kelvinhelmholtz"
+    ) {
+      featureMode = 2.0;
+      featureParamDefault = 0.6; // breaking-wave shear
+    } else if (n === "arcus") {
+      featureMode = 3.0;
+      featureParamDefault = 0.3; // shelf width
+    } else if (n === "virga") {
+      featureMode = 4.0;
+      featureParamDefault = 0.0; // wispy trails
+    } else if (n === "praecipitatio") {
+      featureMode = 4.0;
+      featureParamDefault = 1.0; // denser reaching streaks
+    }
+  }
+  data[offset++] = featureMode; // 136 featureMode (0 = off)
+  data[offset++] = globeFeature.cloudFeatureStrength ?? 0.8; // 137 featureStrength
+  data[offset++] = globeFeature.cloudFeatureScale ?? 1.0; // 138 featureScale
+  data[offset++] = globeFeature.cloudFeatureParam ?? featureParamDefault; // 139 featureParam
 
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render
