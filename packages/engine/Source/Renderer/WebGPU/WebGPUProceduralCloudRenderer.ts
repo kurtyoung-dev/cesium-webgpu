@@ -58,8 +58,9 @@ import CloudType from "../../Scene/CloudType.js";
 // Batch 409 renamed pads 105-106 → nearPlane/farPlane, no count change) → 112
 // (Batch 434 atmosphere-LUT coupling: aerialLutMode/ambientLutMode/atmosphereThickness/pad 108-111)
 // → 120 (Batch 443 multi-deck: multiDeck/pad + deckBoundsLow/Mid/High vec2 112-119)
-// → 128 (Batch 445 CLOUD-RTE: encodedCameraHigh.xyz+pad 120-123, encodedCameraLow.xyz+pad 124-127).
-const CLOUD_UNIFORM_FLOATS = 128; // MUST equal the CloudUniforms struct length in WGSL
+// → 128 (Batch 445 CLOUD-RTE: encodedCameraHigh.xyz+pad 120-123, encodedCameraLow.xyz+pad 124-127)
+// → 132 (Batch 555 E2 CLOUD-MAMMATUS: mammatusStrength/Scale/Depth+pad 128-131).
+const CLOUD_UNIFORM_FLOATS = 132; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -1880,6 +1881,20 @@ export function executeProceduralClouds(
     data[offset++] = 0.0; // 126
     data[offset++] = 0.0; // 127 pad
   }
+
+  // ── Batch 555 (E2 CLOUD-MAMMATUS) — pendulous underside pouches. Slots 128-131.
+  // Default OFF (mammatusStrength=0) → the WGSL mammatusFactor() early-returns 1.0
+  // so density is untouched and these floats are never read past the guard →
+  // byte-identical. Opt-in via globe.cloudMammatusStrength (+ Scale/Depth dials).
+  const globeMamma = globe as unknown as {
+    cloudMammatusStrength?: number;
+    cloudMammatusScale?: number;
+    cloudMammatusDepth?: number;
+  };
+  data[offset++] = globeMamma.cloudMammatusStrength ?? 0.0; // 128 mammatusStrength (0 = off)
+  data[offset++] = globeMamma.cloudMammatusScale ?? 1.0; // 129 mammatusScale (pouch size)
+  data[offset++] = globeMamma.cloudMammatusDepth ?? 0.25; // 130 mammatusDepth (underside band)
+  data[offset++] = 0.0; // 131 pad
 
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render

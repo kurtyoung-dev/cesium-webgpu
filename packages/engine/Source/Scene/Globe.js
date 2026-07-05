@@ -618,6 +618,40 @@ class Globe {
     this.cloudType = undefined;
 
     /**
+     * Mammatus (supplementary feature "mamma") — pendulous pouches on the cloud
+     * UNDERSIDE (E2, Batch 555, WebGPU procedural clouds only). When
+     * <code>&gt; 0</code> the raymarcher carves the underside density between
+     * rounded lobe cells so the flat cloud base reads as a field of downward-
+     * bulging pouches; larger values deepen the carve. <code>undefined</code> →
+     * <code>0.0</code> → the underside modulation is skipped entirely
+     * (byte-identical to the pre-555 render). Most convincing on a dense,
+     * deep-convective deck (set {@link Globe#cloudType} to CUMULONIMBUS).
+     * @type {number|undefined}
+     * @default undefined (0.0 — off)
+     */
+    this.cloudMammatusStrength = undefined;
+
+    /**
+     * Mammatus pouch size (horizontal lobe frequency) for
+     * {@link Globe#cloudMammatusStrength}. Lower = larger, broader pouches;
+     * higher = smaller, tighter pouches. Has no effect when
+     * <code>cloudMammatusStrength</code> is 0. WebGPU only.
+     * @type {number|undefined}
+     * @default undefined (1.0)
+     */
+    this.cloudMammatusScale = undefined;
+
+    /**
+     * Mammatus underside band height fraction for
+     * {@link Globe#cloudMammatusStrength} — how far up from the cloud base the
+     * pouches extend (0..1 of the shell). Has no effect when
+     * <code>cloudMammatusStrength</code> is 0. WebGPU only.
+     * @type {number|undefined}
+     * @default undefined (0.25)
+     */
+    this.cloudMammatusDepth = undefined;
+
+    /**
      * Weather Phase 3 — how strongly the weather map's G/B/A channels (cloud
      * genus, cloud base, density bias) modulate the WebGPU procedural clouds, in
      * addition to the R coverage channel. A NEUTRAL map cell (G=0.5, B=0, A=0.5)

@@ -59,9 +59,14 @@ onto the taxonomy cleanly:
 - **Supplementary features = bounded targeted add-ons** (each a small shader
   feature + probe):
   - **incus (anvil)** — already V11 (cumulonimbus height profile).
-  - **mamma (mammatus)** — a downward-bulging density modulation on the cloud
-    UNDERSIDE (invert the height gradient near the base + add lobed displacement).
-    A real but small shader mode, gated per-genus (Cb/anvil).
+  - **mamma (mammatus)** — **SHIPPED (Batch 555, E2)**. A downward-bulging density
+    modulation on the cloud UNDERSIDE: `mammatusFactor()` in `ProceduralClouds.wgsl`
+    carves density BETWEEN rounded Worley lobe cells inside the base band so the
+    flat underside reads as a field of pendulous pouches. Opt-in via
+    `globe.cloudMammatusStrength` (+`Scale`/`Depth`); default 0 → factor 1.0 →
+    byte-identical. Applied identically in `cloudDensity` + the `cloudBaseDensity`
+    oracle so the W5 `base >= full` skip invariant holds. Probe
+    `probe-cloud-mammatus.mjs`.
   - **virga / praecipitatio** — a density tail trailing below the base → pairs
     with **V15 precipitation**.
   - **asperitas** — turbulent wavy underside (curl/wave displacement on the base).
@@ -99,5 +104,8 @@ foundation.
 
 - **Now:** finishing the Campaign-3 v2 rendering core (V5–V8) → then V11/V12
   (per-genus profiles + multi-deck = the 11 genera rendered distinctly).
-- **Then (this roadmap):** E1 → E2 (mammatus et al.) → E3. Tracked here; not yet
-  scheduled into the queue. **Mammatus is feasible and explicitly planned (E2).**
+- **Then (this roadmap):** E1 → E2 (mammatus et al.) → E3. **E2 mammatus SHIPPED
+  (Batch 555)** — the first exotic supplementary feature on the baked-density-field
+  arch. The remaining E2 forms (asperitas, Kelvin-Helmholtz/fluctus, arcus, virga)
+  and all of E1/E3 stay OPEN, each a bounded underside/wave density mode on the same
+  `ProceduralClouds.wgsl` foundation.

@@ -140,6 +140,17 @@ struct CloudUniforms {
   _padG: f32,                    // 123 — pad to the 16-byte row
   encodedCameraLow: vec3<f32>,   // 124-126 — low part (refinement) of the camera position
   _padH: f32,                    // 127 — pad to the 16-byte row
+  // ── Batch 555 (E2 CLOUD-MAMMATUS) — pendulous "mamma" pouches on the cloud
+  // UNDERSIDE. Slots 128-131, one new 16-byte row appended ADD-ONLY (all earlier
+  // offsets UNCHANGED). Default OFF is byte-identical: when mammatusStrength=0 the
+  // mammatusFactor() below early-returns 1.0 so density is untouched and these
+  // floats are never read past the guard. The factor is a per-position multiplier
+  // in [0,1] applied IDENTICALLY in cloudDensity AND the cloudBaseDensity oracle,
+  // so the W5 `base >= full` empty-space-skip invariant is preserved. ──
+  mammatusStrength: f32,         // 128 — 0 off (default) / >0 underside pouch carve depth
+  mammatusScale: f32,            // 129 — horizontal lobe frequency (pouch size; 1.0 neutral)
+  mammatusDepth: f32,            // 130 — underside band height fraction the pouches occupy
+  _padI: f32,                    // 131 — pad to the 16-byte row
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -454,6 +465,40 @@ fn heightGradientFor(h: f32, shape: f32, anvil: f32) -> f32 {
   return base * anvilTop;
 }
 
+// Batch 555 (E2 CLOUD-MAMMATUS) — pendulous "mamma" pouches on the cloud UNDERSIDE.
+// Returns a density multiplier in [0,1] that CARVES the underside BETWEEN rounded
+// lobe cells while keeping density at the cell centres, so the otherwise-flat cloud
+// base reads as a field of downward-bulging pouches (the mammatus signature —
+// "invert the height gradient near the base + add lobed displacement",
+// CLOUD_TAXONOMY_ROADMAP E2). Guarded on mammatusStrength: at 0 it returns 1.0 so
+// the default render is byte-identical (this is the opt-in default-OFF gate). Called
+// IDENTICALLY from cloudDensity AND the cloudBaseDensity oracle — both multiply by
+// the SAME in-[0,1] factor, so the W5 `base >= full` invariant holds (base*f >=
+// full*f for f>=0). `sp` is the wind-advected noise-space sample position (samplePos)
+// so the pouches drift with the deck; `h` is the shell height fraction (0 base..1 top).
+fn mammatusFactor(sp: vec3<f32>, h: f32) -> f32 {
+  if (cloud.mammatusStrength <= 0.0) {
+    return 1.0;
+  }
+  let depth = max(cloud.mammatusDepth, 1e-3);
+  // Band weight: 1 at the base (h=0), fades to 0 by h=depth → the cloud body and
+  // top above the underside band are untouched.
+  let band = 1.0 - smoothstep(0.0, depth, h);
+  if (band <= 0.0) {
+    return 1.0;
+  }
+  // Rounded lobe field from the horizontal sample position. worleyF1 is the cell
+  // distance (≈0 at a feature point = pouch centre, ≈1 between cells). The vertical
+  // axis is compressed so cells stay roughly columnar across the thin band and the
+  // pouches hang straight down rather than tilt. `mammatusScale` sets pouch size.
+  let lobeP = vec3<f32>(sp.x, sp.y * 0.25, sp.z) * (8.0 * max(cloud.mammatusScale, 1e-3));
+  let cellDist = worleyF1(lobeP);
+  // Carve BETWEEN pouches (high cellDist) and keep density at pouch centres (low
+  // cellDist); smoothstep rounds the pouch lobe. Scaled by the band + strength.
+  let carve = smoothstep(0.15, 1.0, cellDist) * band * cloud.mammatusStrength;
+  return clamp(1.0 - carve, 0.0, 1.0);
+}
+
 // ─── Weather Phase 3 — per-position G/B/A channel decode ───
 // Decodes the weather sample's three scaffolding channels into model-space
 // modifiers, NEUTRAL-SAFE: a neutral cell (G=0.5, B=0, A=0.5) yields the
@@ -587,7 +632,9 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckT
   // cirrus thins, nimbostratus thickens). Applied identically in the oracle below.
   // Weather A — per-position density-bias multiplier (1.0 neutral) folded last so
   // the deck is visibly denser/thinner where the map's A varies.
-  return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale;
+  // E2 mammatus — underside pouch carve (default OFF → factor 1.0, byte-identical).
+  return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale
+    * mammatusFactor(samplePos, heightFraction);
 }
 
 // ─── W5: cheap low-detail presence test for empty-space skipping ───
@@ -635,7 +682,10 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, d
   let heightGradient = heightGradientFor(hForGradient, wch.perGenusShape, cloud.anvilBias);
   density *= heightGradient;
   // Weather A — same per-position density scale as cloudDensity.
-  return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale;
+  // E2 mammatus — IDENTICAL underside pouch carve as cloudDensity (same factor,
+  // [0,1]), so the W5 `base >= full` invariant is preserved per-position.
+  return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale
+    * mammatusFactor(samplePos, heightFraction);
 }
 
 // ─── Ray-sphere intersection (sphere centered at the planet origin) ───
