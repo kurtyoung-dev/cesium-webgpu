@@ -118,8 +118,21 @@ foundation.
   (`"asperitas"` | `"fluctus"`/`"kelvin-helmholtz"` | `"arcus"` | `"virga"` |
   `"praecipitatio"`) or numeric `globe.cloudFeatureMode` (1-4), default-OFF
   byte-identical, applied identically in `cloudDensity` + the `cloudBaseDensity` W5
-  oracle. The remaining E1 forms (undulatus/radiatus wave coverage, castellanus/floccus
-  turrets) and all of E3 stay OPEN, each a bounded density/wave mode on the same
-  `ProceduralClouds.wgsl` foundation. Acceptance probes:
+  oracle. **E3 special (iridescent shading) SHIPPED (Batch 612)** — noctilucent
+  (mesospheric NLC — electric silvery-blue billow bands, red/green attenuated so blue
+  survives the Reinhard tone-map) + nacreous (stratospheric mother-of-pearl — pastel
+  iridescent bands keyed to the sun/view scattering angle via an Iñigo-Quilez cosine
+  spectral palette) as a `specialShadeTint()` COLOR multiplier (in [0,1]³) on the
+  view-ray radiance in `marchDeck` (NOT on density, so the W5 `base >= full` oracle is
+  untouched). Opt-in via `globe.cloudSpecial` (`"noctilucent"`/`"nlc"` |
+  `"nacreous"`/`"psc"`) or numeric `globe.cloudSpecialShadeMode` (1/2), default-OFF
+  byte-identical (specialShadeMode=0 → tint vec3(1.0) → radiance × 1.0). The
+  high-altitude deck placement reuses the existing multi-deck `deckBoundsHigh` bounds
+  (Batch 443). The remaining E1 forms (undulatus/radiatus wave coverage,
+  castellanus/floccus turrets) and the remaining E3 SOURCE-based forms — **contrails**
+  (line sources into the weather map) and **pyrocumulus** (event/data-driven) — stay
+  OPEN; those two need genuinely new source infrastructure, not a shading/shaping mode
+  on the existing shell. Acceptance probes:
   `Tools/visual-regression/probe-cloud-species.mjs` (E1),
-  `Tools/visual-regression/probe-cloud-features.mjs` (E2 remaining).
+  `Tools/visual-regression/probe-cloud-features.mjs` (E2 remaining),
+  `Tools/visual-regression/probe-cloud-special.mjs` (E3 noctilucent/nacreous).

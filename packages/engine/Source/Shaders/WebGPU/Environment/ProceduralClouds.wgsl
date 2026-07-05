@@ -178,6 +178,26 @@ struct CloudUniforms {
   featureStrength: f32,          // 137 — shaping depth (0 off → 1.0 factor; clamped 0..1)
   featureScale: f32,             // 138 — feature frequency (wave/streak size; 1.0 neutral)
   featureParam: f32,             // 139 — mode extra (fluctus shear / arcus width / virga reach)
+  // ── Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — "special clouds" that are a new
+  // DECK + iridescent SHADING rather than a density-shaping factor
+  // (CLOUD_TAXONOMY_ROADMAP E3). Unlike B592 mammatus / B610 species / B611
+  // features (which multiply DENSITY), this multiplies the per-sample cloud COLOR
+  // by an iridescent tint, so it renders the two "shining" high-altitude forms:
+  //   noctilucent (mesospheric NLC — electric silvery-blue billow shell) and
+  //   nacreous (stratospheric mother-of-pearl — pastel iridescent bands keyed to
+  //   the sun/view scattering angle). The user places the deck at meso/strato
+  //   altitude via the existing multi-deck deckBoundsHigh bounds (Batch 443); this
+  //   batch adds the SHADING half. Slots 140-143, one new 16-byte row appended
+  //   ADD-ONLY (all earlier offsets UNCHANGED). Default OFF is byte-identical: when
+  //   specialShadeMode=0 the specialShadeTint() below early-returns vec3(1.0) so the
+  //   cloud color is multiplied by exactly 1.0 (IEEE754 identity) and these floats
+  //   are never read past the guard. The tint applies ONLY to the view-ray radiance
+  //   (marchDeck), NOT to density or the cloudBaseDensity oracle, so the W5
+  //   `base >= full` empty-space-skip invariant is untouched.
+  specialShadeMode: f32,         // 140 — 0 off / 1 noctilucent / 2 nacreous
+  specialShadeStrength: f32,     // 141 — tint blend depth (0 off → vec3(1.0); clamped 0..1)
+  specialShadeScale: f32,        // 142 — band/iridescence spatial frequency (1.0 neutral)
+  specialShadeParam: f32,        // 143 — mode extra (nacreous spectral cycling frequency)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -687,6 +707,62 @@ fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
   let gaps = smoothstep(0.2, 0.7, streak);
   let carve = gaps * band * strength;
   return clamp(1.0 - carve, 0.0, 1.0);
+}
+
+// Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — smooth pastel spectral palette (Iñigo
+// Quilez cosine gradient). Maps a scalar phase t (any real; only fract(t) matters)
+// to a mother-of-pearl iridescent color. The high DC term (a≈0.83) + low amplitude
+// (b≈0.16) keep the colors PASTEL (unsaturated, high-value) — the nacreous
+// mother-of-pearl look — rather than a saturated rainbow. The phase offsets (d) are
+// spaced 0/⅓/⅔ so R/G/B peak at different t, giving the smooth spectral cycle.
+fn iridescentHue(t: f32) -> vec3<f32> {
+  let a = vec3<f32>(0.83, 0.83, 0.86);
+  let b = vec3<f32>(0.16, 0.15, 0.14);
+  let c = vec3<f32>(1.0, 1.0, 1.0);
+  let d = vec3<f32>(0.0, 0.33, 0.67);
+  return a + b * cos(2.0 * PI * (c * t + d));
+}
+
+// Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — iridescent color tint for the two "shining"
+// special-cloud forms. Returns a MULTIPLIER on the per-sample cloud color:
+//   mode 1 NOCTILUCENT — mesospheric NLC. A cool electric silvery-blue boost
+//     modulated by the fine herringbone billow banding NLCs are famous for. NLCs
+//     glow by high-altitude sunlight AFTER local sunset, so the tint is keyed to the
+//     billow STRUCTURE (position), not the sun-facing term.
+//   mode 2 NACREOUS — stratospheric mother-of-pearl. Pastel spectral bands keyed to
+//     the sun/view SCATTERING ANGLE (cosTheta — like a diffraction corona) plus a
+//     slow spatial phase, so adjacent cloud regions show different pastel hues and
+//     the colors shift as the sun/view geometry changes. specialShadeParam sets the
+//     spectral cycling frequency.
+// Guarded on specialShadeMode<0.5 OR specialShadeStrength<=0 → returns vec3(1.0) (the
+// opt-in default-OFF gate → the cloud color is multiplied by exactly 1.0, so the
+// default render is byte-identical). `sp` is the noise-space sample position; `h` is
+// the shell height fraction (0 base..1 top); `cosTheta` is dot(view, sun).
+fn specialShadeTint(sp: vec3<f32>, h: f32, cosTheta: f32) -> vec3<f32> {
+  if (cloud.specialShadeMode < 0.5 || cloud.specialShadeStrength <= 0.0) {
+    return vec3<f32>(1.0);
+  }
+  let strength = clamp(cloud.specialShadeStrength, 0.0, 1.0);
+  let scale = max(cloud.specialShadeScale, 1e-3);
+  if (cloud.specialShadeMode < 1.5) {
+    // NOCTILUCENT — electric silvery-blue with fine herringbone billow bands. The
+    // tint pulls RED/GREEN DOWN and keeps BLUE at ~1.0 (never a brightness BOOST):
+    // boosting all channels only pushes the sample into the Reinhard tone-map knee
+    // where the warm sun washes the hue back toward white, so instead we ATTENUATE
+    // the warm channels so blue survives tone-mapping as the dominant channel. The
+    // billow bands ripple brightness slightly DOWNWARD (<=1) so they never re-enter
+    // the knee. `nlc` = cool electric blue with strongly-suppressed red/green.
+    let band = 0.85 + 0.15 * sin((sp.x + sp.z) * 60.0 * scale + sp.y * 20.0);
+    let nlc = vec3<f32>(0.42, 0.60, 1.0);
+    return mix(vec3<f32>(1.0), nlc * band, strength);
+  }
+  // NACREOUS — mother-of-pearl iridescence keyed to the scattering angle + a slow
+  // spatial phase (so the pastel bands vary across the shell and shift with the
+  // sun/view geometry, like a diffraction corona on a lens-wave cloud).
+  let freq = 1.0 + 3.0 * clamp(cloud.specialShadeParam, 0.0, 1.0);
+  let spatial = (sp.x - sp.z) * 8.0 * scale + h * 2.0;
+  let phase = (cosTheta * 0.5 + 0.5) * freq + spatial * 0.15;
+  return mix(vec3<f32>(1.0), iridescentHue(phase), strength);
 }
 
 // ─── Weather Phase 3 — per-position G/B/A channel decode ───
@@ -1509,8 +1585,16 @@ fn marchDeck(
 
       // W3 — tint the direct-sun term by the time-of-day sun color (warm near the
       // horizon, neutral at noon). Ambient keeps its own sky/ground color.
+      // E3 special (Batch 612) — the noctilucent/nacreous iridescent tint reshades
+      // the WHOLE sample radiance (direct sun + ambient), not just the albedo, so
+      // the tint has full authority over the sample color (a multiplicative-albedo
+      // tint is overwhelmed by the additive ambient/silver-lining terms). Default
+      // OFF → specialShadeTint() returns vec3(1.0) so the radiance is multiplied by
+      // exactly 1.0 (byte-identical). Uses samplePos*0.0003 to match cloudDensity's
+      // noise-space scale so the band/iridescence frequency reads at the same world scale.
+      let specialTint = specialShadeTint(samplePos * 0.0003, heightFraction, cosTheta);
       weightedColor += (cloudColor * cloud.sunLightColor * scatteredLight + ambient)
-                     * sampleWeight;
+                     * specialTint * sampleWeight;
       lightEnergy += scatteredLight * sampleWeight;
       totalDensity += density * fineStep;
       transmittance *= sampleTransmittance;

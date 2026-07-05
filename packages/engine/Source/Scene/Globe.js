@@ -652,6 +652,51 @@ class Globe {
     this.cloudMammatusDepth = undefined;
 
     /**
+     * Special "shining" high-altitude cloud form (E3, Batch 612, WebGPU procedural
+     * clouds only). Unlike the density-shaping species/features dials, this applies
+     * an iridescent COLOR tint to the cloud radiance to render the two luminous
+     * high-altitude forms: <code>"noctilucent"</code> (mesospheric NLC — electric
+     * silvery-blue billow shell) and <code>"nacreous"</code> (stratospheric
+     * mother-of-pearl — pastel iridescent bands keyed to the sun/view scattering
+     * angle). Place the deck at meso/stratospheric altitude via the multi-deck
+     * <code>deckBoundsHigh</code> bounds. Accepts <code>"noctilucent"</code>/
+     * <code>"nlc"</code> or <code>"nacreous"</code>/<code>"psc"</code>;
+     * <code>undefined</code> → the shading is skipped entirely (byte-identical to
+     * the pre-612 render).
+     * @type {string|undefined}
+     * @default undefined (off)
+     */
+    this.cloudSpecial = undefined;
+
+    /**
+     * Iridescent tint blend depth (0..1) for {@link Globe#cloudSpecial}. Higher =
+     * a stronger noctilucent-blue / nacreous-pastel tint. Has no effect when
+     * <code>cloudSpecial</code> is unset. WebGPU only.
+     * @type {number|undefined}
+     * @default undefined (0.8)
+     */
+    this.cloudSpecialShadeStrength = undefined;
+
+    /**
+     * Spatial frequency (1.0 neutral) of the noctilucent billow bands / nacreous
+     * iridescence for {@link Globe#cloudSpecial}. Has no effect when
+     * <code>cloudSpecial</code> is unset. WebGPU only.
+     * @type {number|undefined}
+     * @default undefined (1.0)
+     */
+    this.cloudSpecialShadeScale = undefined;
+
+    /**
+     * Mode-specific extra for {@link Globe#cloudSpecial}: for nacreous it sets the
+     * spectral cycling frequency (how many pastel bands sweep across the scattering
+     * angle). Has no effect for noctilucent, or when <code>cloudSpecial</code> is
+     * unset. WebGPU only.
+     * @type {number|undefined}
+     * @default undefined (nacreous 0.5)
+     */
+    this.cloudSpecialShadeParam = undefined;
+
+    /**
      * Weather Phase 3 — how strongly the weather map's G/B/A channels (cloud
      * genus, cloud base, density bias) modulate the WebGPU procedural clouds, in
      * addition to the R coverage channel. A NEUTRAL map cell (G=0.5, B=0, A=0.5)

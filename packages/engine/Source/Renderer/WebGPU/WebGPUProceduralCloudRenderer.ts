@@ -62,7 +62,8 @@ import CloudType from "../../Scene/CloudType.js";
 // → 132 (Batch 555 E2 CLOUD-MAMMATUS: mammatusStrength/Scale/Depth+pad 128-131).
 // → 136 (Batch 610 E1 CLOUD-EXOTIC-SPECIES: speciesMode/Strength/Scale/Param 132-135).
 // → 140 (Batch 611 E2 CLOUD-EXOTIC-FEATURES-REMAINING: featureMode/Strength/Scale/Param 136-139).
-const CLOUD_UNIFORM_FLOATS = 140; // MUST equal the CloudUniforms struct length in WGSL
+// → 144 (Batch 612 E3 CLOUD-EXOTIC-SPECIAL: specialShadeMode/Strength/Scale/Param 140-143).
+const CLOUD_UNIFORM_FLOATS = 144; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -1975,6 +1976,38 @@ export function executeProceduralClouds(
   data[offset++] = globeFeature.cloudFeatureStrength ?? 0.8; // 137 featureStrength
   data[offset++] = globeFeature.cloudFeatureScale ?? 1.0; // 138 featureScale
   data[offset++] = globeFeature.cloudFeatureParam ?? featureParamDefault; // 139 featureParam
+
+  // ── Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — noctilucent / nacreous iridescent
+  // SHADING. Slots 140-143. Default OFF (specialShadeMode=0) → the WGSL
+  // specialShadeTint() early-returns vec3(1.0) so the cloud color is multiplied by
+  // exactly 1.0 and these floats are never read past the guard → byte-identical.
+  // Opt-in via globe.cloudSpecial (a name) or the numeric globe.cloudSpecialShadeMode:
+  //   "noctilucent"/"nlc" → 1 ; "nacreous"/"polar-stratospheric"/"psc" → 2.
+  // The high-altitude deck is placed via the existing multi-deck deckBoundsHigh
+  // bounds (Batch 443); this only supplies the iridescent shading half.
+  const globeSpecial = globe as unknown as {
+    cloudSpecial?: string;
+    cloudSpecialShadeMode?: number;
+    cloudSpecialShadeStrength?: number;
+    cloudSpecialShadeScale?: number;
+    cloudSpecialShadeParam?: number;
+  };
+  let specialShadeMode = globeSpecial.cloudSpecialShadeMode ?? 0.0;
+  let specialParamDefault = 0.0;
+  const specialName = globeSpecial.cloudSpecial;
+  if (typeof specialName === "string") {
+    const n = specialName.toLowerCase();
+    if (n === "noctilucent" || n === "nlc") {
+      specialShadeMode = 1.0;
+    } else if (n === "nacreous" || n === "polar-stratospheric" || n === "psc") {
+      specialShadeMode = 2.0;
+      specialParamDefault = 0.5; // moderate spectral cycling
+    }
+  }
+  data[offset++] = specialShadeMode; // 140 specialShadeMode (0 = off)
+  data[offset++] = globeSpecial.cloudSpecialShadeStrength ?? 0.8; // 141 specialShadeStrength
+  data[offset++] = globeSpecial.cloudSpecialShadeScale ?? 1.0; // 142 specialShadeScale
+  data[offset++] = globeSpecial.cloudSpecialShadeParam ?? specialParamDefault; // 143 specialShadeParam
 
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render
