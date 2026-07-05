@@ -628,10 +628,22 @@ const VELOCITY_PREV_SEGMENT_BUFFER_LAYOUT = {
  * Maps a material-type string to the `ShaderSourceId` it resolves to.
  * Used so the shader-module cache key stays stable even when callers
  * pass different source strings for the same material type.
+ *
+ * NS-POLYLINE-COLLECTION-MULTI-MATERIAL — the render/velocity call sites
+ * pass the collection's `material.type` string ("PolylineDash",
+ * "PolylineGlow", "Color", …), NOT the lowercase shader key. The switch
+ * below is keyed on the shader key, so normalize through `selectShaderKey`
+ * first. Without this, every material type fell through to `default`
+ * (POLYLINE_COLLECTION), collapsing the module-cache key to a single id per
+ * `defines`: in a MIXED collection the first-processed group's compiled
+ * module (usually Color) was returned for every other group, so Dash/Glow
+ * lines rendered with the solid Color shader. Single-material collections
+ * only worked because no other type poisoned the shared key first.
  * @private
  */
 function sourceIdForMaterialType(materialType) {
-  switch (materialType) {
+  const shaderKey = selectShaderKey(materialType);
+  switch (shaderKey) {
     case "polylineArrow":
       return ShaderSourceId.POLYLINE_ARROW;
     case "polylineDash":
