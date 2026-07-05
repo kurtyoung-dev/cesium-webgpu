@@ -167,11 +167,22 @@ function extractPrimitiveGeometry(runtimePrimitive) {
           result.color0ComponentCount = attr.componentsPerAttribute;
         }
         break;
+      // Cesium's `ModelComponents` stores skinning semantics in their bare
+      // `VertexAttributeSemantic` form (`"JOINTS"` / `"WEIGHTS"` with a
+      // separate `setIndex`), NOT the combined `"JOINTS_0"` string — the
+      // same convention that makes POSITION/NORMAL and the `"TEXCOORD"` /
+      // `"COLOR"` aliases above match. Without the bare-form cases the
+      // joint/weight buffers were never extracted, so `hasJoints` stayed
+      // false, `FLAG_HAS_SKINNING` was never set, and every skinned model
+      // rendered frozen in its rest pose on WebGPU (WebGL was unaffected —
+      // it uses the GltfLoader vertex-buffer path, not this extractor).
       case AttributeSemantic.JOINTS_0:
+      case "JOINTS":
         result.joints0Data = data;
         result.hasJoints = true;
         break;
       case AttributeSemantic.WEIGHTS_0:
+      case "WEIGHTS":
         result.weights0Data = ensureFloat32(data, attr, 4);
         break;
       case AttributeSemantic._FEATURE_ID_0:

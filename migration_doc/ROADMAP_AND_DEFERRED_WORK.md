@@ -729,13 +729,28 @@ motion-vector work:
   `previousViewProjectionRelativeToEye` + `previousCameraPosition` at the top of `update()` before
   `updateCamera` runs. Precision drops from ~1 m FP32 error to sub-micrometer (Node script confirms
   `VP_RTE·eyePos ≡ VP_world·worldPos` bit-exact at the camera position).
-- **`TAA-SLICE-2B` per-model MRT motion vectors** (open) — depth reprojection treats skinned/morphed/
-  instanced geometry as static, causing ghosting across frames. Slice 2b adds a second MRT color
-  attachment to model pipelines emitting per-pixel velocity `(currentClip − previousClip)` with matching
-  prev-frame joint/morph/instance UBOs, and teaches the TAA shader to prefer MRT samples when available.
-  Touches every model pipeline + the model UBO layout + the TAA shader. Meaningful infrastructure;
-  deferred beyond Slice 2a. **P2.** (Also see `MORPH-TAA-PREVVP` / `MORPH-MODEL-VS-MOTION-GATE` for the
-  morph-side motion couplings.)
+- **`TAA-SLICE-2B` per-model motion vectors** (SHIPPED — premise-reconciled + two blockers fixed
+  2026-07-05) — the per-model velocity infrastructure was already fully built across Batches 96/104/
+  106/130/134/174/175/325: a dedicated single-target `rg16float` velocity pass (`_runVelocityPass` +
+  `ensureVelocityTexture`, chosen over literal MRT so the shared main pass stays 1-target), a
+  `getVelocityPipeline`/`fragmentVelocityMain` variant emitting `(currentClip − previousClip)`, prev-
+  frame joint/morph/instance UBOs (bindings 4/5/6, re-run through the full morph→skin→instance pipeline
+  in `vertexMain`), and a TAA shader that prefers the per-pixel `motionTex` at `@binding(5)` and falls
+  back to depth reprojection. The premise "still open / needs building" was STALE. However pixel-level
+  end-to-end emission had never been verified and was **broken by two latent bugs, both fixed here:**
+  (1) `ModelPrimitiveGeometry.js` matched only the combined `"JOINTS_0"`/`"WEIGHTS_0"` semantic strings
+  while Cesium's `ModelComponents` emits the bare `"JOINTS"`/`"WEIGHTS"` forms (same convention the
+  `"TEXCOORD"`/`"COLOR"` aliases already handled) — so skinning attributes were never extracted,
+  `FLAG_HAS_SKINNING` stayed clear, and **every skinned glTF model rendered frozen in rest pose on
+  WebGPU** (WebGL uses the GltfLoader vertex path, unaffected). (2) `UniformState.update()` cloned the
+  lazily-cleaned `_viewProjection` field into `_previousViewProjection` WITHOUT cleaning it first; the
+  WebGL path keeps it clean via automatic-uniform getter access but the WebGPU model camera pack never
+  touches that getter, so the full (non-RTE) previous VP was an all-zero matrix → `prev.w<=0` →
+  `computeMotionVectorScreenSpace` returned `vec2(0)` for every fragment. Fix mirrors the RTE snapshot
+  directly below (which already cleans before cloning); no-op on WebGL. Verified by
+  `probe-taa-model-skinned-velocity.mjs` (animated CesiumMan, stationary camera → 38k non-zero velocity
+  pixels clustered on the model, off-gate = no velocity command/texture, 0 errors). (Also see
+  `MORPH-TAA-PREVVP` / `MORPH-MODEL-VS-MOTION-GATE` for the morph-side motion couplings.)
 
 ### 4.8 Build / Infra / Architecture
 

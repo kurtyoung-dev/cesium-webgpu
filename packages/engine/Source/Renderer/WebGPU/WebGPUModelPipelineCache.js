@@ -1550,13 +1550,14 @@ function createVelocityPipeline(
     // single-sample to match. Pre-Batch-143 this baked
     // `{count: sampleCount}` (= 4 when scene MSAA is on) which would
     // trigger a sampleCount-mismatch validation error the moment Model
-    // started emitting velocity commands. Today it's dormant — Model
-    // primitives never tag commands with `.velocityCommand` (verified
-    // by probe-model-taa-msaa.mjs reporting 0/79 velocity commands on
-    // a TAA+MSAA+animated-model scene). When velocity emission gets
-    // wired in a future batch, the broader fix (MSAA velocity texture
-    // + resolve target, or single-sample resolved depth attachment in
-    // the velocity pass) must land alongside.
+    // started emitting velocity commands. This IS now live (TAA-SLICE-2B,
+    // premise-reconciled 2026-07-05): Model primitives DO tag
+    // `.velocityCommand` when `frameState.taaEnabled` (WebGPUModelRenderer
+    // L4967), and `probe-model-taa-msaa.mjs` now reports 1/80 velocity
+    // commands with 0 device errors — the TAA→MSAA=1 coupling in
+    // `prepareFrame` keeps the velocity pass's single-sample attachments
+    // valid against scene depth, so this single-sample pipeline is the
+    // correct match. Do NOT re-add `{count: sampleCount}` here.
     //
     // Matches the collection renderers' velocity pipelines (Batch 134)
     // which all leave multisample undefined for the same reason.

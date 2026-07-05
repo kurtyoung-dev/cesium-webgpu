@@ -795,6 +795,17 @@ class UniformState {
   update(frameState) {
     // TAA: save current view-projection as "previous" for next frame's
     // reprojection before we overwrite it with the new camera state.
+    // `_viewProjection` is lazily cleaned via its getter, which the WebGL
+    // path exercises every frame during automatic-uniform binding but the
+    // WebGPU model camera pack never touches (it builds mvpRelativeToEye
+    // from `view`/`projection` directly). Without cleaning here, WebGPU
+    // clones the zero-initialized `_viewProjection` into
+    // `_previousViewProjection` forever, so every consumer of the full
+    // (non-RTE) previous VP — the per-model TAA velocity pass's
+    // `camera.previousViewProjection` — sees an all-zero matrix, w<=0, and
+    // emits zero velocity. Mirror the RTE snapshot just below, which
+    // already cleans before cloning. No-op on WebGL (already clean).
+    cleanViewProjection(this);
     Matrix4.clone(this._viewProjection, this._previousViewProjection);
 
     // TAA RTE motion vectors: snapshot previous-frame camera position + VP_RTE.
