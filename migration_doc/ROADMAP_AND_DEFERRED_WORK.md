@@ -186,9 +186,13 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   ✅ **SHIPPED (C4-LOGDEPTH-PP-FRUSTUM-SLICEA, 2026-07-05):** AO/DoF (the placeholder-bakers) + GodRay
   now receive the live camera frustum near/far + a `logActive` flag every frame via `setFrustum(...)`,
   gated on each effect's enabled flag (default scene byte-identical, probe
-  `probe-pp-frustum-thread.mjs`). **Still open = Slice B:** apply `csm_reverseLogDepth` gated on the
-  now-threaded `logActive` lane in AO/DoF/SSR/contact-shadows/god-rays + HiZ projected-z + model
-  classification (see `NEW-LOG-DEPTH-POSTPROCESS-FRUSTUM-WIRING` in DEFERRED_WORK). **P2** (none break the default scene).
+  `probe-pp-frustum-thread.mjs`). **Slice B ✅ PARTIAL SHIPPED (C4-LOGDEPTH-PP-SLICEB, 2026-07-05):**
+  the `csm_reverseLogDepth` consumer half landed in AO/GTAO + DoF + GodRay (all f16 variants too),
+  gated on the threaded `logActive` lane (probe `probe-logdepth-pp-sliceb.mjs`, 6/6). Premise
+  reconciled: HiZ projected-z was ALREADY log-reconciled (FORK-41 Batch 291); model
+  `fragmentClassificationMain` does no depth-magnitude compare (N/A). **Still open = Slice C:** SSR +
+  ContactShadows need their own near/far/logActive threading (`NEW-LOG-DEPTH-PP-SLICEC-SSR-CONTACTSHADOWS`
+  in DEFERRED_WORK). **P2** (none break the default scene).
 - **`NEW-WEBGPU-EXAG-WATER-STREAKS`** — ✅ **STALE-RESOLVED (Q12, 2026-07-04, premise-verified — closed by
   Q10 Batch 541 `NEW-GLOBE-DAYTIME-OCEAN-BRIGHTNESS`).** The bug (WebGPU rendering thin BRIGHT-BLUE water
   streaks WebGL lacks under EXAG=10 over Himalaya glacial lakes) was a globe-FS water-fragment

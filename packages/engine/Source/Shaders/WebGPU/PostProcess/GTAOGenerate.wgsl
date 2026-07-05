@@ -29,7 +29,7 @@ struct SSAOUniforms {
   params0: vec4<f32>,
   // x = directionCount, y = 1/width, z = 1/height, w = randomTexSize
   params1: vec4<f32>,
-  // frustum: x = near, y = far, z = unused, w = unused
+  // frustum: x = near, y = far, z = logActive (C4-LOGDEPTH-PP-SLICEB), w = unused
   frustum: vec4<f32>,
   _pad: vec4<f32>,
 };
@@ -42,11 +42,27 @@ struct SSAOUniforms {
 const PI: f32 = 3.14159265359;
 const HALF_PI: f32 = 1.57079632679;
 
+// C4-LOGDEPTH-PP-SLICEB — reverse a logarithmic depth sample to hyperbolic
+// window depth [0,1]. Byte-compatible with WebGL czm_reverseLogDepth. Only
+// invoked when the renderer-wide log-depth flag is set (frustum.z >= 0.5).
+fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
+  if (far <= near) { return logZ; }
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  let depthFromCamera = depthFromNear + near;
+  return far * (1.0 - near / depthFromCamera) / (far - near);
+}
+
 fn readDepth(uv: vec2<f32>) -> f32 {
   let raw = textureSample(depthTexture, texSampler, uv).r;
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
-  return near * far / (far - raw * (far - near));
+  // C4-LOGDEPTH-PP-SLICEB — reverse log depth before linearizing when active.
+  var d = raw;
+  if (uniforms.frustum.z > 0.5) {
+    d = logDepthReverse(raw, near, far);
+  }
+  return near * far / (far - d * (far - near));
 }
 
 fn pixelToEye(screenCoord: vec2<f32>) -> vec3<f32> {

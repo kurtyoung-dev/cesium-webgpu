@@ -44,10 +44,24 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
+// C4-LOGDEPTH-PP-SLICEB — reverse log depth (kept f32; log2/exp2 overflow f16).
+fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
+  if (far <= near) { return logZ; }
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  let depthFromCamera = depthFromNear + near;
+  return far * (1.0 - near / depthFromCamera) / (far - near);
+}
+
 fn linearizeDepth(raw: f32) -> f32 {
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
-  return near * far / (far - raw * (far - near));
+  // C4-LOGDEPTH-PP-SLICEB — reverse log depth before linearizing when active.
+  var d = raw;
+  if (uniforms.frustum.z > 0.5) {
+    d = logDepthReverse(raw, near, far);
+  }
+  return near * far / (far - d * (far - near));
 }
 
 @fragment

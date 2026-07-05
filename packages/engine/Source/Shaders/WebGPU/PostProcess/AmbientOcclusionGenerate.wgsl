@@ -30,7 +30,7 @@ struct SSAOUniforms {
   params0: vec4<f32>,
   // x = directionCount, y = 1/width, z = 1/height, w = randomTexSize
   params1: vec4<f32>,
-  // x = near, y = far, z = unused, w = useGBufferNormal flag (1.0 → on)
+  // x = near, y = far, z = logActive (C4-LOGDEPTH-PP-SLICEB), w = useGBufferNormal flag (1.0 → on)
   frustum: vec4<f32>,
   // Padding for 16-byte alignment
   _pad: vec4<f32>,
@@ -44,6 +44,18 @@ struct SSAOUniforms {
 // (a 1×1 placeholder when the producer is off) so the bind-group
 // layout stays stable across the flag's two states.
 @group(0) @binding(4) var gBufferNormalTexture: texture_2d<f32>;
+
+// C4-LOGDEPTH-PP-SLICEB — reverse a logarithmic depth sample to hyperbolic
+// window depth [0,1]. Byte-compatible with csm_reverseLogDepth.wgsl / WebGL
+// czm_reverseLogDepth. Only invoked when the renderer-wide log-depth flag is
+// set (frustum.z >= 0.5); the non-log path never calls this.
+fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
+  if (far <= near) { return logZ; }
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  let depthFromCamera = depthFromNear + near;
+  return far * (1.0 - near / depthFromCamera) / (far - near);
+}
 
 // Reconstructs inverse projection from viewport to simplified reconstruction
 // For WebGPU, we pass frustum params directly
@@ -59,7 +71,15 @@ fn readDepth(uv: vec2<f32>) -> f32 {
   // Linearize depth from [0,1] to eye-space Z
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
-  return near * far / (far - raw * (far - near));
+  // C4-LOGDEPTH-PP-SLICEB — when renderer-wide log depth is active the depth
+  // attachment holds a logarithmic value; reverse it before linearizing to
+  // match WebGL czm_readDepth → czm_reverseLogDepth. logActive=0 (frustum.z)
+  // leaves the historical linearization byte-identical.
+  var d = raw;
+  if (uniforms.frustum.z > 0.5) {
+    d = logDepthReverse(raw, near, far);
+  }
+  return near * far / (far - d * (far - near));
 }
 
 fn pixelToEye(screenCoord: vec2<f32>) -> vec3<f32> {

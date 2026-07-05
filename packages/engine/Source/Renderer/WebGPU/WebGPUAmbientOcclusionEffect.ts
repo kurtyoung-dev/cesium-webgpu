@@ -446,12 +446,12 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
    * `frustum` vec4 offset (32 bytes), leaving `frustum.w` (the useGBuffer flag
    * written by {@link _writeGenerateUniforms}) untouched.
    *
-   * `logActive` is Slice-A scaffolding: it is 1.0 when renderer-wide log depth
-   * is active this frame so the Slice-B log-reverse in AmbientOcclusionGenerate
-   * can branch on it. The current shader does not yet read `frustum.z`, so this
-   * lane is inert until Slice B lands (Principle 9 — finish the scaffold's
-   * implied work in the follow-up). Off-gate: AO is opt-in default-off, so this
-   * setter is only reached when the effect is enabled.
+   * `logActive` is 1.0 when renderer-wide log depth is active this frame. Since
+   * C4-LOGDEPTH-PP-SLICEB the AmbientOcclusionGenerate / GTAOGenerate FS reads
+   * `frustum.z` and reverses the log-depth sample before linearizing (matching
+   * WebGL czm_readDepth → czm_reverseLogDepth); logActive=0 is byte-identical.
+   * Off-gate: AO is opt-in default-off, so this setter is only reached when the
+   * effect is enabled.
    */
   setFrustum(near: number, far: number, logActive: boolean): void {
     this._near = near;

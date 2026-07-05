@@ -35,11 +35,27 @@ struct SSAOUniforms {
 @group(0) @binding(3) var<uniform> uniforms: SSAOUniforms;
 @group(0) @binding(4) var gBufferNormalTexture: texture_2d<f32>;
 
+// C4-LOGDEPTH-PP-SLICEB — reverse a logarithmic depth sample to hyperbolic
+// window depth [0,1]. Kept in f32 (log2/exp2 overflow f16). Only invoked when
+// the renderer-wide log-depth flag is set (frustum.z >= 0.5).
+fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
+  if (far <= near) { return logZ; }
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  let depthFromCamera = depthFromNear + near;
+  return far * (1.0 - near / depthFromCamera) / (far - near);
+}
+
 fn readDepth(uv: vec2<f32>) -> f32 {
   let raw = textureSampleLevel(depthTexture, texSampler, uv, 0.0).r;
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
-  return near * far / (far - raw * (far - near));
+  // C4-LOGDEPTH-PP-SLICEB — reverse log depth before linearizing when active.
+  var d = raw;
+  if (uniforms.frustum.z > 0.5) {
+    d = logDepthReverse(raw, near, far);
+  }
+  return near * far / (far - d * (far - near));
 }
 
 fn pixelToEye(screenCoord: vec2<f32>) -> vec3<f32> {

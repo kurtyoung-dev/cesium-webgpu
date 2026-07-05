@@ -281,11 +281,10 @@ export class DepthOfFieldEffect implements PostProcessEffect {
 
     // DoF params vec4: focalDistance, focalRange, near, far. C4-LOGDEPTH-PP-
     // FRUSTUM-SLICEA grows the UB to a second vec4 carrying the log-depth flag
-    // (params2.x = logActive) — Slice-B scaffolding the DepthOfField FS does not
-    // yet read (the WGSL struct is still one vec4), so it is inert until the
-    // log-reverse lands. The bound buffer being larger than the WGSL struct is
-    // valid WebGPU. near/far seed from the live-updated fields so a setFrustum()
-    // call before a rebuild is preserved.
+    // (params2.x = logActive). Since C4-LOGDEPTH-PP-SLICEB the DepthOfField FS
+    // reads params2.x and reverses the log-depth sample before linearizing.
+    // near/far seed from the live-updated fields so a setFrustum() call before a
+    // rebuild is preserved.
     this._dofUniforms = createUniformBuffer(
       device,
       "DoF-Composite-UB",
@@ -308,8 +307,9 @@ export class DepthOfFieldEffect implements PostProcessEffect {
    * The DoF FS linearizes raw depth with `near * far / (far - z*(far-near))`;
    * baking a placeholder `0.1 / 10000` at init made that reconstruction correct
    * only when the real frustum matched. Writes `params.zw` (near, far) and
-   * `params2.x` (logActive) in place; off-gate: DoF is opt-in default-off so
-   * this is only reached when the effect is enabled.
+   * `params2.x` (logActive) in place; the FS reverses log depth when
+   * `params2.x >= 0.5` (C4-LOGDEPTH-PP-SLICEB). Off-gate: DoF is opt-in
+   * default-off so this is only reached when the effect is enabled.
    */
   setFrustum(near: number, far: number, logActive: boolean): void {
     this._near = near;

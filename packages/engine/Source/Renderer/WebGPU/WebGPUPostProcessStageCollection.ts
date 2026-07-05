@@ -1388,7 +1388,7 @@ function updateGodRaySunUV(
   const far = cam?.frustum?.far;
   if (typeof near === "number" && typeof far === "number" && far > near) {
     // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — also thread the renderer-wide log-depth
-    // flag (Slice-B scaffolding; GodRayGenerate does not yet reverse it).
+    // flag; the GodRayGenerate FS reverses log depth on it (C4-LOGDEPTH-PP-SLICEB).
     fx.setFrustum(
       near,
       far,

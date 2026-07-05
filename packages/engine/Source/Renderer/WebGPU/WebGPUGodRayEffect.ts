@@ -115,8 +115,9 @@ export class GodRayEffect implements PostProcessEffect {
   private _bgCache = new WebGPUBindGroupCache();
 
   // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — renderer-wide log-depth flag threaded
-  // per-frame alongside near/far. Slice-B scaffolding: GodRayGenerate does not
-  // yet reverse log depth, so `frustum.z` is inert until that lands.
+  // per-frame alongside near/far (frustum.z). Since C4-LOGDEPTH-PP-SLICEB the
+  // GodRayGenerate FS reverses the log-depth sample before linearizing when
+  // frustum.z >= 0.5; logActive=0 is byte-identical.
   private _logActive = 0.0;
 
   private _config: Required<GodRayConfig>;
@@ -379,7 +380,7 @@ export class GodRayEffect implements PostProcessEffect {
       this._config.exposure,
       this._config.sampleCount,
       this._config.occlusionFarCutoff,
-      // frustum: near, far, logActive (Slice-A scaffolding), _
+      // frustum: near, far, logActive (reversed by the FS since SLICEB), _
       near ?? 1.0,
       far ?? 1e8,
       this._logActive,
