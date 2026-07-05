@@ -1150,6 +1150,16 @@ function updateAerialPerspectiveFrameData(
     // Item 2.3 (AERIAL-FROXEL, Batch Q23) — opt-in froxel fast path (default
     // false; nested under the already-opt-in `aerialPerspective`).
     aerialPerspectiveFroxel?: boolean;
+    // Q15 (ATMO-AERIAL-PERSPECTIVE-NEARFIELD-TUNE) — the same config object the
+    // configure pass reads at init (`addAerialPerspective`), re-read every frame
+    // so `scene.aerialPerspectiveConfig.{intensity,inscatterScale}` are runtime-
+    // mutable. Only the two dials that map to cheap per-frame uniform slots are
+    // synced here (the structural flags — froxel, useMultiScatterLut — have their
+    // own scene-level toggles above / dedicated setters).
+    aerialPerspectiveConfig?: {
+      intensity?: number;
+      inscatterScale?: number;
+    };
   };
 
   const us = sceneAny?.context?.uniformState;
@@ -1183,6 +1193,23 @@ function updateAerialPerspectiveFrameData(
   // bakes the 32³ froxel volume this frame and the fragment does one trilinear
   // fetch. Scene-level flag (`scene.aerialPerspectiveFroxel`).
   fx.setFroxelEnabled(sceneAny?.aerialPerspectiveFroxel === true);
+
+  // Q15 (ATMO-AERIAL-PERSPECTIVE-NEARFIELD-TUNE) — runtime-mutable haze dials.
+  // Mirrors the ColdOptics / HeatShimmer per-frame `setIntensity` pattern: the
+  // config object is read at init (addAerialPerspective) but mutating it later
+  // was previously inert because nothing re-pushed it. Re-reading here makes
+  // `scene.aerialPerspectiveConfig.{intensity,inscatterScale}` live. When the
+  // dials are unset/unchanged the effect keeps its init config value, so the
+  // default path is byte-identical.
+  const apCfg = sceneAny?.aerialPerspectiveConfig;
+  if (apCfg) {
+    if (typeof apCfg.intensity === "number") {
+      fx.setIntensity(apCfg.intensity);
+    }
+    if (typeof apCfg.inscatterScale === "number") {
+      fx.setInscatterScale(apCfg.inscatterScale);
+    }
+  }
 
   const cam = us.cameraPosition;
   const sun = us.sunDirectionWC ?? { x: 0, y: 0, z: 1 };
