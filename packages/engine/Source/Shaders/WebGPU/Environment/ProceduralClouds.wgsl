@@ -151,6 +151,19 @@ struct CloudUniforms {
   mammatusScale: f32,            // 129 — horizontal lobe frequency (pouch size; 1.0 neutral)
   mammatusDepth: f32,            // 130 — underside band height fraction the pouches occupy
   _padI: f32,                    // 131 — pad to the 16-byte row
+  // ── Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties as bounded density
+  // SHAPING on the baked-density-field arch (CLOUD_TAXONOMY_ROADMAP E1). Slots
+  // 132-135, one new 16-byte row appended ADD-ONLY (all earlier offsets UNCHANGED).
+  // Default OFF is byte-identical: speciesMode=0 makes speciesFactor() early-return
+  // 1.0 so density is untouched and these floats are never read past the guard. The
+  // factor is a per-position multiplier in [0,1] applied IDENTICALLY in cloudDensity
+  // AND the cloudBaseDensity oracle, so the W5 `base >= full` skip invariant holds.
+  // A per-genus gate lives in JS (default genera leave speciesMode=0); the shader
+  // only sees a non-zero mode when the user opts a deck into a species.
+  speciesMode: f32,              // 132 — 0 off / 1 lenticularis / 2 fibratus-uncinus
+  speciesStrength: f32,          // 133 — shaping depth (0 off → 1.0 factor; clamped 0..1)
+  speciesScale: f32,             // 134 — feature frequency (lens/filament size; 1.0 neutral)
+  speciesParam: f32,             // 135 — mode extra: uncinus fallstreak hook shear (mode 2)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -499,6 +512,63 @@ fn mammatusFactor(sp: vec3<f32>, h: f32) -> f32 {
   return clamp(1.0 - carve, 0.0, 1.0);
 }
 
+// Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties as bounded density SHAPING
+// (CLOUD_TAXONOMY_ROADMAP E1). Returns a per-position density multiplier in [0,1]:
+//   mode 1 LENTICULARIS — smooth, wind-aligned, vertically-stacked lens plates
+//     (orographic "flying saucer" stacks). SMOOTH by construction (no Worley/curl)
+//     — the smoothness is the signature vs the lobed mammatus carve. Density is kept
+//     in elongated lens cores along the wind and tapered between stacked plates.
+//   mode 2 FIBRATUS / UNCINUS — wispy cirrus filaments STRETCHED along the wind
+//     (fibratus). speciesParam adds a height-sheared "hook" that curls the upper
+//     filaments downwind (the uncinus fallstreak comma). Worley cells compressed
+//     hard along-wind become long streaks; density is carved BETWEEN filaments.
+// Guarded on speciesMode<0.5 OR speciesStrength<=0 → returns 1.0 (opt-in default-OFF
+// gate → byte-identical). Called IDENTICALLY from cloudDensity AND cloudBaseDensity
+// (same in-[0,1] factor), so the W5 `base >= full` invariant is preserved. `sp` is
+// the wind-advected noise-space sample position; `h` is the shell height fraction.
+fn speciesFactor(sp: vec3<f32>, h: f32) -> f32 {
+  if (cloud.speciesMode < 0.5 || cloud.speciesStrength <= 0.0) {
+    return 1.0;
+  }
+  let strength = clamp(cloud.speciesStrength, 0.0, 1.0);
+  let scale = max(cloud.speciesScale, 1e-3);
+  // Horizontal wind frame in noise space. The wind vector maps to world as
+  // vec3(windDirection.x, 0, windDirection.y), so the horizontal plane is sp.xz and
+  // wind lies within it. Fall back to +X when the wind is ~0 so the frame is stable.
+  let windH = vec2<f32>(cloud.windDirection.x, cloud.windDirection.y);
+  let wlen = length(windH);
+  let windDir = select(vec2<f32>(1.0, 0.0), windH / max(wlen, 1e-5), wlen > 1e-5);
+  let crossDir = vec2<f32>(-windDir.y, windDir.x);
+  let horiz = vec2<f32>(sp.x, sp.z);
+  let along = dot(horiz, windDir);
+  let acr = dot(horiz, crossDir);
+
+  if (cloud.speciesMode < 1.5) {
+    // LENTICULARIS — smooth stacked lens plates, elongated along the wind.
+    // Vertical stacking: smooth cosine plates through the shell height (the layered
+    // "stack of plates" look). Frequency rises gently with scale.
+    let stack = 0.5 + 0.5 * cos(h * PI * (1.0 + 3.0 * scale));
+    // Lens body: repeat lens cells along the wind; each cell is dense at its core
+    // and tapers smoothly toward the ends (the elongated lens silhouette). The
+    // along-wind coordinate is compressed (0.15) so lenses are long, not round.
+    let cell = fract(along * 0.15 * scale + 0.5) - 0.5; // -0.5..0.5 within a lens
+    let lensBody = 1.0 - smoothstep(0.2, 0.5, abs(cell));
+    let lens = mix(1.0, stack * lensBody, strength);
+    return clamp(lens, 0.0, 1.0);
+  }
+
+  // FIBRATUS / UNCINUS — wind-aligned wispy filaments. Compress the along-wind axis
+  // hard so Worley cells become long streaks parallel to the wind. speciesParam
+  // shears the along coordinate by height so upper filaments curl downwind (uncinus
+  // hook); at param 0 the filaments stay straight (fibratus).
+  let hook = (h - 0.5) * cloud.speciesParam;
+  let fibP = vec3<f32>((along + hook) * 0.1, sp.y * 0.4, acr) * (4.0 * scale);
+  let streak = worleyF1(fibP); // ~0 along a filament core, ~1 between filaments
+  let wisp = smoothstep(0.15, 0.75, streak);
+  let fib = mix(1.0, 1.0 - wisp, strength);
+  return clamp(fib, 0.0, 1.0);
+}
+
 // ─── Weather Phase 3 — per-position G/B/A channel decode ───
 // Decodes the weather sample's three scaffolding channels into model-space
 // modifiers, NEUTRAL-SAFE: a neutral cell (G=0.5, B=0, A=0.5) yields the
@@ -633,8 +703,10 @@ fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckT
   // Weather A — per-position density-bias multiplier (1.0 neutral) folded last so
   // the deck is visibly denser/thinner where the map's A varies.
   // E2 mammatus — underside pouch carve (default OFF → factor 1.0, byte-identical).
+  // E1 species — lenticular/fibratus density shaping (default OFF → factor 1.0).
   return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale
-    * mammatusFactor(samplePos, heightFraction);
+    * mammatusFactor(samplePos, heightFraction)
+    * speciesFactor(samplePos, heightFraction);
 }
 
 // ─── W5: cheap low-detail presence test for empty-space skipping ───
@@ -684,8 +756,11 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, d
   // Weather A — same per-position density scale as cloudDensity.
   // E2 mammatus — IDENTICAL underside pouch carve as cloudDensity (same factor,
   // [0,1]), so the W5 `base >= full` invariant is preserved per-position.
+  // E1 species — IDENTICAL lenticular/fibratus shaping as cloudDensity (same [0,1]
+  // factor), so the W5 `base >= full` invariant still holds per-position.
   return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale
-    * mammatusFactor(samplePos, heightFraction);
+    * mammatusFactor(samplePos, heightFraction)
+    * speciesFactor(samplePos, heightFraction);
 }
 
 // ─── Ray-sphere intersection (sphere centered at the planet origin) ───

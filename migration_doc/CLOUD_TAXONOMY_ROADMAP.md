@@ -106,6 +106,13 @@ foundation.
   (per-genus profiles + multi-deck = the 11 genera rendered distinctly).
 - **Then (this roadmap):** E1 → E2 (mammatus et al.) → E3. **E2 mammatus SHIPPED
   (Batch 555)** — the first exotic supplementary feature on the baked-density-field
-  arch. The remaining E2 forms (asperitas, Kelvin-Helmholtz/fluctus, arcus, virga)
-  and all of E1/E3 stay OPEN, each a bounded underside/wave density mode on the same
-  `ProceduralClouds.wgsl` foundation.
+  arch. **E1 species SHIPPED (Batch 610)** — lenticularis (smooth wind-aligned
+  stacked lens plates) + fibratus/uncinus (wind-aligned wispy filaments, with a
+  height-sheared fallstreak hook for uncinus) as a single `speciesFactor()` density
+  multiplier in [0,1], opt-in via `globe.cloudSpecies`, default-OFF byte-identical,
+  applied identically in `cloudDensity` + the `cloudBaseDensity` W5 oracle. The
+  remaining E1 forms (undulatus/radiatus wave coverage, castellanus/floccus turrets),
+  the remaining E2 forms (asperitas, Kelvin-Helmholtz/fluctus, arcus, virga), and all
+  of E3 stay OPEN, each a bounded density/wave mode on the same
+  `ProceduralClouds.wgsl` foundation. Acceptance probe:
+  `Tools/visual-regression/probe-cloud-species.mjs`.

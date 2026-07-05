@@ -60,7 +60,8 @@ import CloudType from "../../Scene/CloudType.js";
 // → 120 (Batch 443 multi-deck: multiDeck/pad + deckBoundsLow/Mid/High vec2 112-119)
 // → 128 (Batch 445 CLOUD-RTE: encodedCameraHigh.xyz+pad 120-123, encodedCameraLow.xyz+pad 124-127)
 // → 132 (Batch 555 E2 CLOUD-MAMMATUS: mammatusStrength/Scale/Depth+pad 128-131).
-const CLOUD_UNIFORM_FLOATS = 132; // MUST equal the CloudUniforms struct length in WGSL
+// → 136 (Batch 610 E1 CLOUD-EXOTIC-SPECIES: speciesMode/Strength/Scale/Param 132-135).
+const CLOUD_UNIFORM_FLOATS = 136; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -1895,6 +1896,39 @@ export function executeProceduralClouds(
   data[offset++] = globeMamma.cloudMammatusScale ?? 1.0; // 129 mammatusScale (pouch size)
   data[offset++] = globeMamma.cloudMammatusDepth ?? 0.25; // 130 mammatusDepth (underside band)
   data[offset++] = 0.0; // 131 pad
+
+  // ── Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties density shaping.
+  // Slots 132-135. Default OFF (speciesMode=0) → the WGSL speciesFactor() early-
+  // returns 1.0 so density is untouched and these floats are never read past the
+  // guard → byte-identical. Opt-in via globe.cloudSpecies (a genus-gated name) or
+  // the numeric globe.cloudSpeciesMode; default genera leave it unset → mode 0.
+  //   name "lenticularis" → 1 ; "fibratus"/"uncinus" → 2 (uncinus adds the hook).
+  const globeSpecies = globe as unknown as {
+    cloudSpecies?: string;
+    cloudSpeciesMode?: number;
+    cloudSpeciesStrength?: number;
+    cloudSpeciesScale?: number;
+    cloudSpeciesParam?: number;
+  };
+  let speciesMode = globeSpecies.cloudSpeciesMode ?? 0.0;
+  let speciesParamDefault = 0.0;
+  const speciesName = globeSpecies.cloudSpecies;
+  if (typeof speciesName === "string") {
+    const n = speciesName.toLowerCase();
+    if (n === "lenticularis" || n === "lenticular") {
+      speciesMode = 1.0;
+    } else if (n === "fibratus") {
+      speciesMode = 2.0;
+      speciesParamDefault = 0.0; // straight filaments
+    } else if (n === "uncinus") {
+      speciesMode = 2.0;
+      speciesParamDefault = 1.0; // hooked fallstreaks
+    }
+  }
+  data[offset++] = speciesMode; // 132 speciesMode (0 = off)
+  data[offset++] = globeSpecies.cloudSpeciesStrength ?? 0.8; // 133 speciesStrength
+  data[offset++] = globeSpecies.cloudSpeciesScale ?? 1.0; // 134 speciesScale
+  data[offset++] = globeSpecies.cloudSpeciesParam ?? speciesParamDefault; // 135 speciesParam (uncinus hook)
 
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render
