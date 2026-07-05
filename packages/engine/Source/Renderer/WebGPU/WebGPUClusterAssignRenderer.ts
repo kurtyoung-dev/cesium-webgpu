@@ -19,14 +19,23 @@
  *     eye-space CPU-side, so any camera motion invalidates the
  *     assignment.
  *
- * Re-dispatch IS NOT required when the cluster bounds (Batch 147)
- * change but the lights + view don't — but that case is rare in
- * practice (cluster bounds change only on viewport/FOV/near-far
- * changes, which usually coincide with camera motion).
+ * Re-dispatch IS ALSO required when the cluster bounds (Batch 147)
+ * change even if the lights + view don't. The per-cluster light
+ * assignment reads the eye-space cluster AABBs; when those AABBs are
+ * recomputed (viewport resize / FOV change / near-far change) WITHOUT
+ * any camera motion, the eye-space light positions are unchanged so
+ * the light checksum matches — but the assignment against the *new*
+ * bounds is stale. The caller signals this via the `boundsChanged`
+ * argument to {@link WebGPUClusterAssignRenderer#dispatch}, which
+ * overrides the light-checksum cache hit and forces a re-dispatch
+ * (A7.2 fix — Q10 CLUSTERED-ASSIGN-BOUNDS-DIRTY, 2026-07-04). Before
+ * this fix, a resize/FOV change with a stationary camera left stale
+ * bins.
  *
  * Dirty tracking is via a content hash of (lightCount, lightDataSum,
- * viewMatrixSum). Computed each frame; skipped re-dispatch when
- * unchanged. Cheap — ~16 + 80*N floats to sum.
+ * viewMatrixSum) OR-ed with the caller's `boundsChanged` flag.
+ * Computed each frame; skipped re-dispatch when both unchanged.
+ * Cheap — ~16 + 80*N floats to sum.
  *
  * # Storage buffer layout
  *
@@ -266,14 +275,20 @@ export class WebGPUClusterAssignRenderer {
   /**
    * Pack the eye-space light defs into the GPU buffer + dispatch
    * the compute. Idempotent when the packed contents match the
-   * previous dispatch.
+   * previous dispatch AND the cluster bounds did not change.
    *
+   * @param boundsChanged When true, the upstream cluster-bounds pass
+   *   re-dispatched this frame (viewport / FOV / near-far changed), so
+   *   the previous assignment is stale even if the light checksum
+   *   matches. Forces a re-dispatch regardless of the light-checksum
+   *   cache. Defaults to false (light/view-only dirty tracking). A7.2.
    * @returns true if a dispatch was issued; false on cache hit.
    */
   dispatch(
     encoder: GPUCommandEncoder,
     clusterAABBs: GPUBuffer,
     lights: ReadonlyArray<ClusteredLightDef>,
+    boundsChanged: boolean = false,
   ): boolean {
     const clampedCount = Math.min(lights.length, CLUSTER_MAX_LIGHTS);
 
@@ -320,8 +335,14 @@ export class WebGPUClusterAssignRenderer {
         L.type * 100 * (i + 1);
     }
 
-    // Dirty-tracking cache hit?
-    if (this._firstDispatchDone && checksum === this._lastLightsChecksum) {
+    // Dirty-tracking cache hit? A change in the cluster bounds
+    // (boundsChanged) invalidates the previous assignment even when the
+    // light checksum is unchanged (A7.2 — stationary-camera resize/FOV).
+    if (
+      !boundsChanged &&
+      this._firstDispatchDone &&
+      checksum === this._lastLightsChecksum
+    ) {
       return false;
     }
     this._lastLightsChecksum = checksum;

@@ -22,7 +22,9 @@
  * 4. Dispatch ClusterBoundsRenderer (re-dispatches only when
  *    viewport / near / far / projection change).
  * 5. Dispatch ClusterAssignRenderer (re-dispatches when lights or
- *    view change).
+ *    view change, OR when the bounds pass re-dispatched — the
+ *    assignment reads the AABBs, so a stationary-camera resize/FOV
+ *    that only moves the bounds must still re-run assign; A7.2).
  * 6. Expose the four GPU buffers (clusterLights, clusterAABBs,
  *    perClusterLightCount, perClusterLightIndices) + the params
  *    uniform buffer so consumer pipelines can build their
@@ -232,8 +234,13 @@ export class WebGPUClusteredLightingDispatcher {
       return 0;
     }
 
-    // Dispatch both compute passes.
-    this._bounds.dispatch(
+    // Dispatch both compute passes. The bounds pass reports whether it
+    // re-dispatched (viewport / FOV / near-far changed); that signal is
+    // threaded into the assign pass so it re-runs even when the lights +
+    // view are unchanged — otherwise a stationary-camera resize/FOV
+    // leaves the per-cluster assignment bound to the stale AABBs
+    // (A7.2 — Q10 CLUSTERED-ASSIGN-BOUNDS-DIRTY).
+    const boundsChanged = this._bounds.dispatch(
       encoder,
       inputs.viewportWidth,
       inputs.viewportHeight,
@@ -245,6 +252,7 @@ export class WebGPUClusteredLightingDispatcher {
       encoder,
       this._bounds.storageBuffer,
       this._scratchEyeLights.slice(0, activeCount),
+      boundsChanged,
     );
 
     this._lastActiveLightCount = activeCount;
