@@ -174,15 +174,52 @@ let _cachedPipelineLayout = null;
 let _cachedDevice = null;
 
 /**
+ * Reset every device-bound module-level cache when the active GPUDevice
+ * changes (WebGPU context teardown + re-init, or split-screen contexts
+ * that each own a separate device). This MUST run — and update
+ * `_cachedDevice` — before any per-resource `getShaderModule` /
+ * `ensureLayouts` / `getPipeline` guard is evaluated.
+ *
+ * NS-WEBGPU-REINIT-BLACK-AFTER-SWITCH (2026-07-05): the previous
+ * per-getter guards each compared against the SHARED `_cachedDevice` and
+ * each mutated it independently. `getShaderModule` set `_cachedDevice` to
+ * the new device before `ensureLayouts` ran, so `ensureLayouts`'
+ * `_cachedDevice === device` guard then passed and returned the PREVIOUS
+ * device's stale bind-group / pipeline layouts. The pipeline built from
+ * those cross-device layouts is invalid, and using it aborts the whole
+ * "Scene Framebuffer Render Pass" encoder — the canvas renders black on
+ * every WebGPU init after a WebGL round-trip.
+ *
+ * The old device is already destroyed by the device pool by the time we
+ * get here, so we must NOT call `.destroy()` on its handles — just drop
+ * the references and let each getter rebuild against the new device.
+ *
+ * @param {GPUDevice} device
+ */
+function resetPanoramaDeviceCacheIfChanged(device) {
+  if (_cachedDevice === device) {
+    return;
+  }
+  _cachedDevice = device;
+  _cachedShaderModule = null;
+  _cachedPipeline = null;
+  _cachedPipelineFormat = null;
+  _cachedPipelineSampleCount = 1;
+  _cachedBindGroupLayout0 = null;
+  _cachedBindGroupLayout1 = null;
+  _cachedPipelineLayout = null;
+}
+
+/**
  * Get or create the cached shader module for cubemap panorama rendering.
  * @param {GPUDevice} device
  * @returns {GPUShaderModule}
  */
 function getShaderModule(device) {
-  if (_cachedShaderModule && _cachedDevice === device) {
+  resetPanoramaDeviceCacheIfChanged(device);
+  if (_cachedShaderModule) {
     return _cachedShaderModule;
   }
-  _cachedDevice = device;
   _cachedShaderModule = device.createShaderModule({
     label: "CubeMapPanorama",
     code: CUBEMAP_PANORAMA_WGSL,
@@ -197,10 +234,10 @@ function getShaderModule(device) {
  * @param {GPUDevice} device
  */
 function ensureLayouts(device) {
-  if (_cachedBindGroupLayout0 && _cachedDevice === device) {
+  resetPanoramaDeviceCacheIfChanged(device);
+  if (_cachedBindGroupLayout0) {
     return;
   }
-  _cachedDevice = device;
 
   _cachedBindGroupLayout0 = makeBindGroupLayout(
     device,
@@ -231,13 +268,13 @@ function ensureLayouts(device) {
  */
 function getPipeline(device, format, sampleCount) {
   sampleCount = sampleCount ?? 1;
+  resetPanoramaDeviceCacheIfChanged(device);
   // Batch 110 — re-create when the requested format changes (HDR
   // toggle flips scene FB color format between rgba16float and the
   // canvas format). Batch 21 — also re-create when the MSAA sample
   // count changes.
   if (
     _cachedPipeline &&
-    _cachedDevice === device &&
     _cachedPipelineFormat === format &&
     _cachedPipelineSampleCount === sampleCount
   ) {
