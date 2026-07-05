@@ -5,6 +5,22 @@
 
 ## Status
 
+> **Updated 2026-07-05 (Q35-WEBGPUCONTEXT-DECOMP-REMAINDER, culler-pool slice).**
+> An *eighth* Context helper landed: `WebGPUContextCullerPool.ts` (the GPU
+> frustum-culler pool cluster), taking `WebGPUContext.ts` from **5432 → 5158
+> lines** (−274). The lazy-init main/opaque-frustum/cascade/translucent culler
+> getters + the idle-decay reaper (`reapIdleAuxCullers`) + the immediate
+> `reapAllAuxCullers` teardown moved to host-interface free functions; the
+> `GPUCullerInstance` type + the `MAX_AUX_CULLER_INDEX` / `IDLE_DECAY_FRAMES`
+> constants moved with them. 14 culler fields flipped to the public-underscore
+> convention. Behavior-preserving: variant smoke test all-3 PASS, culler-pool
+> acceptance probe exercises every extracted entry point (incl. the
+> `'never'`-hint refusal path) with zero throws / zero console errors, globe
+> renders identically. Off-gate: culling is `'auto'`-gated + only dispatches on
+> high-density scenes, and the extraction is a pure code-move, so the default
+> path is byte-identical. Only the SceneRenderer pass family remains as the
+> genuinely-hard residual (resists the self-contained-helper pattern).
+>
 > **Updated 2026-07-05 (Batch 593, C4-WEBGPUCONTEXT-DECOMP / Q35 slice).**
 > A *seventh* Context helper landed: `WebGPUContextCanvasConfig.ts` (the HDR
 > canvas-output cluster), taking `WebGPUContext.ts` from **5534 → 5432 lines**
@@ -46,6 +62,7 @@ moved-line count.
 | `WebGPUFeatureFlags.ts` | 132 | 142 | `_buildFeatureList` / `_updateFeatureFlags` / `hasFeature` plumbing (candidate #4). Context constructs one and `hasFeature` delegates. |
 | `WebGPUFrameStatistics.ts` | 143/144 | 83 | `getStatistics` / `resetStatistics` / `recordDrawCall` + the draw/triangle/frame counters (candidate #6). |
 | `WebGPUContextCanvasConfig.ts` | 593 | 243 | HDR canvas-output cluster (Q35 slice / C4-WEBGPUCONTEXT-DECOMP): `buildCanvasConfig` / `applyCanvasConfig` / `reconfigureCanvas` / `setHDRCanvasOutput` / `setHDRFallbackListener` / `clearAllHDRFallbackListeners`. Host-interface pattern; the Context methods became one-line delegators (orphaned `_buildCanvasConfig` removed). Net −102 LOC on `WebGPUContext.ts` (5534 → 5432). Behavior-preserving: A/B build confirmed identical GPU-validation behavior; off-gate SDR path byte-identical (HDR is opt-in, `_hdrCanvasOutput` defaults false). Acceptance: `Tools/visual-regression/probe-hdr-canvas-output-decomp.mjs`. |
+| `WebGPUContextCullerPool.ts` | Q35 remainder | 452 | GPU frustum-culler pool cluster: `getGpuCuller` / `getGpuCullerForOpaqueFrustum` / `getGpuCullerForCascade` / `getGpuCullerTranslucent` / `reapIdleAuxCullers` / `reapAllAuxCullers`, plus the `GPUCullerInstance` type and the `MAX_AUX_CULLER_INDEX` / `IDLE_DECAY_FRAMES` constants. Host-interface (`CullerPoolHost`) free-function pattern; the Context getters/methods became one-line delegators, and 14 culler fields (`_gpuCuller*`, `_gpuCullerBy*`, `_gpuCullingHint`, `_internalFrameId`) flipped to public-underscore. Net −274 LOC on `WebGPUContext.ts` (5432 → 5158). Behavior-preserving: variant smoke test all-3 PASS + `probe-culler-pool-decomp.mjs` (every extracted entry point + `'never'`-hint refusal, zero throws/errors, globe renders). Off-gate: culling is `'auto'`-gated + high-density-only, extraction is pure code-move → default path byte-identical. Acceptance: `Tools/visual-regression/probe-culler-pool-decomp.mjs`. |
 
 ## High-value candidates in `WebGPUContext.ts` — ALL DONE
 

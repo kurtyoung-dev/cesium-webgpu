@@ -96,6 +96,15 @@ import {
   setHDRFallbackListener as setHDRFallbackListenerExt,
   clearAllHDRFallbackListeners as clearAllHDRFallbackListenersExt,
 } from "./WebGPUContextCanvasConfig.js";
+import type { GPUCullerInstance } from "./WebGPUContextCullerPool.js";
+import {
+  getGpuCuller as getGpuCullerExt,
+  getGpuCullerForOpaqueFrustum as getGpuCullerForOpaqueFrustumExt,
+  getGpuCullerForCascade as getGpuCullerForCascadeExt,
+  getGpuCullerTranslucent as getGpuCullerTranslucentExt,
+  reapIdleAuxCullers as reapIdleAuxCullersExt,
+  reapAllAuxCullers as reapAllAuxCullersExt,
+} from "./WebGPUContextCullerPool.js";
 import {
   createDefaultTextures,
   copyTexture as copyTextureUtil,
@@ -168,17 +177,9 @@ interface PixelReadbackPBO {
 type ShaderSource =
   string | { _wgslCode?: string; sources?: string[]; defines?: string[] };
 
-/** Minimal interface for the GPU culler (lazy-loaded). */
-interface GPUCullerInstance {
-  initialized: boolean;
-  destroy(): void;
-  uploadBoundingSpheres(data: Float32Array): void;
-  uploadFrustumPlanes(data: Float32Array): void;
-  dispatch(encoder: GPUCommandEncoder, count: number, mode: number): void;
-  prepareReadback(encoder: GPUCommandEncoder, count: number): void;
-  readResults(count: number): Promise<GPUCullResults>;
-  initialize(code: string): Promise<void>;
-}
+// `GPUCullerInstance` moved to `WebGPUContextCullerPool.ts` (Q35 decomposition
+// slice) and is imported type-only above. The culler-pool lazy-init +
+// idle-decay logic now lives in that module as host-interface free functions.
 
 // Point cloud LOD processor contract — import the type-only reference
 // so TS knows the shape without eagerly pulling the 30KB compute-shader
@@ -1127,40 +1128,8 @@ export class WebGPUContext extends GraphicsContext {
    * last-used age.
    */
   private _reapAllAuxCullers(): void {
-    for (const culler of this._gpuCullerByFrustum.values()) {
-      try {
-        culler.destroy();
-      } catch (_) {
-        /* defensive */
-      }
-    }
-    this._gpuCullerByFrustum.clear();
-    this._gpuCullerByFrustumLastUsed.clear();
-    for (const culler of this._gpuCullerByCascade.values()) {
-      try {
-        culler.destroy();
-      } catch (_) {
-        /* defensive */
-      }
-    }
-    this._gpuCullerByCascade.clear();
-    this._gpuCullerByCascadeLastUsed.clear();
-    if (this._gpuCullerTranslucent) {
-      try {
-        this._gpuCullerTranslucent.destroy();
-      } catch (_) {
-        /* defensive */
-      }
-      this._gpuCullerTranslucent = null;
-    }
-    if (this._gpuCuller) {
-      try {
-        this._gpuCuller.destroy();
-      } catch (_) {
-        /* defensive */
-      }
-      this._gpuCuller = null;
-    }
+    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    reapAllAuxCullersExt(this);
   }
 
   public get gpuCullingHint(): "auto" | "always" | "never" {
@@ -4269,15 +4238,9 @@ export class WebGPUContext extends GraphicsContext {
   private _bufferMapper: WebGPUBufferMapper | null = null;
   private _performanceManager: WebGPUPerformanceManager | null = null;
   private _uniformAllocator: WebGPURingBufferAllocator | null = null;
-  // B220-O1 (Batch 225) — defensive cap on auxiliary culler
-  // allocation. Real Cesium scenes top out at 6 frustums + 4 CSM
-  // cascades; 16 is a generous safety bound. Without this cap a
-  // malformed scene that reports an unreasonable
-  // `frustumCommandsList.length` could allocate hundreds of cullers
-  // (~1 MB VRAM each). Refusing allocation beyond the cap returns
-  // null from the getter; the call site falls back to no-cull,
-  // which is correct behavior (worst case: slower draw, not broken).
-  private static readonly _MAX_AUX_CULLER_INDEX = 16;
+  // B220-O1 (Batch 225) — defensive cap on auxiliary culler allocation.
+  // Moved to `WebGPUContextCullerPool.ts` as `MAX_AUX_CULLER_INDEX` (Q35
+  // decomposition slice); the culler-pool free functions own it now.
 
   // B219-N3 (Batch 225 audit fix) — Scene-level GPU culling hint
   // mirrored on the context so lazy aux-culler getters can refuse
@@ -4286,7 +4249,9 @@ export class WebGPUContext extends GraphicsContext {
   // allocation path; if a render frame ever hit a gate-active code
   // path (e.g., a partial regression), the lazy getter would still
   // burn VRAM. Closes the asymmetry — 'never' truly disables.
-  private _gpuCullingHint: "auto" | "always" | "never" = "auto";
+  // Public-underscore: read+written by the culler-pool helpers
+  // (`WebGPUContextCullerPool.ts`) and `setGpuCullingHint`.
+  public _gpuCullingHint: "auto" | "always" | "never" = "auto";
 
   // NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — track when each
   // auxiliary culler instance was last used, and periodically reap
@@ -4298,24 +4263,27 @@ export class WebGPUContext extends GraphicsContext {
   // automatically; lazy getters reallocate on demand if usage
   // returns. The internal frame id is bumped from `beginFrame()`
   // so the comparison is purely against this context's lifetime.
-  private static readonly IDLE_DECAY_FRAMES = 600; // ≈10s at 60fps
+  // IDLE_DECAY_FRAMES moved to `WebGPUContextCullerPool.ts` (Q35 slice); the
+  // reaper free function owns the threshold. IDLE_DECAY_CHECK_INTERVAL stays
+  // here — it drives the `beginFrame()` cadence that calls the reaper.
   private static readonly IDLE_DECAY_CHECK_INTERVAL = 120; // 2s
-  private _internalFrameId: number = 0;
-  private _gpuCullerLastUsed: number = 0;
-  private _gpuCullerTranslucentLastUsed: number = 0;
-  private _gpuCullerByFrustumLastUsed: Map<number, number> = new Map();
-  private _gpuCullerByCascadeLastUsed: Map<number, number> = new Map();
+  // Public-underscore: the culler-pool helpers read/write these.
+  public _internalFrameId: number = 0;
+  public _gpuCullerLastUsed: number = 0;
+  public _gpuCullerTranslucentLastUsed: number = 0;
+  public _gpuCullerByFrustumLastUsed: Map<number, number> = new Map();
+  public _gpuCullerByCascadeLastUsed: Map<number, number> = new Map();
 
-  private _gpuCuller: GPUCullerInstance | null = null;
-  private _gpuCullerInitializing: boolean = false;
+  public _gpuCuller: GPUCullerInstance | null = null;
+  public _gpuCullerInitializing: boolean = false;
   // B216-N1 (Batch 218 audit fix) — separate culler instance for the
   // translucent pass. The dispatcher reuses ONE staging buffer
   // (`_readbackBuffer`); if opaque + translucent both
   // `prepareReadback` against the same instance in the same encoder,
   // the second copy clobbers the first, corrupting opaque's readback.
   // Using a second instance gives translucent its own buffers.
-  private _gpuCullerTranslucent: GPUCullerInstance | null = null;
-  private _gpuCullerTranslucentInitializing: boolean = false;
+  public _gpuCullerTranslucent: GPUCullerInstance | null = null;
+  public _gpuCullerTranslucentInitializing: boolean = false;
   // NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — per-frustum culler
   // instances for the opaque pass. Same root cause as B216-N1: the
   // shared `_visibilityBuffer` + `_readbackBuffer` get clobbered when
@@ -4324,8 +4292,8 @@ export class WebGPUContext extends GraphicsContext {
   // single-frustum scenes don't pay extra VRAM. Frustums 1..N get
   // their own instances on first use. Typical scene has 1-4 frustums
   // → at most 3 extra instances ≈ ~1.5 MB total VRAM.
-  private _gpuCullerByFrustum: Map<number, GPUCullerInstance> = new Map();
-  private _gpuCullerByFrustumInitializing: Set<number> = new Set();
+  public _gpuCullerByFrustum: Map<number, GPUCullerInstance> = new Map();
+  public _gpuCullerByFrustumInitializing: Set<number> = new Set();
   // NEW-SHADOW-CAST-GPU-CULL Phase 1 (Batch 221) — per-cascade
   // culler instances for CSM shadow cast. Same B216-N1 / Batch 220
   // pattern: each cascade needs its own staging buffer to avoid
@@ -4333,8 +4301,8 @@ export class WebGPUContext extends GraphicsContext {
   // activation (filter dispatch in `WebGPUCSMCastPass`) is deferred
   // pending Gribb-Hartmann plane extraction + visual verification.
   // See `NEW-SHADOW-CAST-GPU-CULL-PHASE-2` in DEFERRED_WORK.md.
-  private _gpuCullerByCascade: Map<number, GPUCullerInstance> = new Map();
-  private _gpuCullerByCascadeInitializing: Set<number> = new Set();
+  public _gpuCullerByCascade: Map<number, GPUCullerInstance> = new Map();
+  public _gpuCullerByCascadeInitializing: Set<number> = new Set();
   private _pointCloudLOD: WebGPUPointCloudLODProcessorInstance | null = null;
   private _pointCloudLODInitializing: boolean = false;
   private _csmRenderer: WebGPUCSMRenderer | null = null;
@@ -4767,51 +4735,8 @@ export class WebGPUContext extends GraphicsContext {
    * @returns The culler instance (may not be initialized yet — check .initialized)
    */
   get gpuCuller(): GPUCullerInstance | null {
-    // Batch 229 — touch usage timestamp for idle-decay reaper.
-    this._gpuCullerLastUsed = this._internalFrameId;
-    if (
-      !this._gpuCuller &&
-      this._device &&
-      !this._gpuCullerInitializing &&
-      this._gpuCullingHint !== "never"
-    ) {
-      this._gpuCullerInitializing = true;
-      import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
-        const culler = new WebGPUGPUCuller(this._device!, {
-          maxObjects: 65536,
-          label: `ctx-${this._id}`,
-          asyncResourceMonitor: this.asyncResources,
-        });
-        import("../../Shaders/WebGPU/Compute/FrustumCull.js")
-          .then((mod: { default?: string | object }) => {
-            const code = mod.default || mod;
-            return culler.initialize(typeof code === "string" ? code : "");
-          })
-          .then(() => {
-            this._gpuCuller = culler;
-            this._gpuCullerInitializing = false;
-            // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
-            this._gpuCullerLastUsed = this._internalFrameId;
-            // B219-A1 (Batch 225 audit fix) — clear on device loss
-            // so the lazy getter re-creates against the recovered
-            // device. Without this the JS instance persists with
-            // dead GPU buffer handles and next dispatch fails.
-            this.onDeviceInvalidated(() => {
-              this._gpuCuller = null;
-            });
-          })
-          .catch((e: unknown) => {
-            //>>includeStart('debug', pragmas.debug);
-            console.warn(
-              `[CesiumJS:webgpu:ctx-${this._id}] GPU culler init failed:`,
-              e,
-            );
-            //>>includeEnd('debug');
-            this._gpuCullerInitializing = false;
-          });
-      });
-    }
-    return this._gpuCuller;
+    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    return getGpuCullerExt(this);
   }
 
   /**
@@ -4825,60 +4750,8 @@ export class WebGPUContext extends GraphicsContext {
    * Returns `null` if init is still pending or the device is gone.
    */
   public getGPUCullerForOpaqueFrustum(idx: number): GPUCullerInstance | null {
-    if (idx === 0) return this.gpuCuller;
-    if (!this._device || this._isDestroyed) return null;
-    // B219-N3 (Batch 225) — refuse allocation when hint forbids.
-    if (this._gpuCullingHint === "never") return null;
-    // B220-O1 (Batch 225) — defensive cap. Real Cesium scenes top
-    // out at ~6 frustums (`Scene.farToNearRatio` driven; typical
-    // 1-4 with log-depth, up to 6 without). Refuse allocation
-    // beyond a sane max so a runaway value (bug or malformed
-    // input) can't burn unbounded VRAM.
-    if (idx >= WebGPUContext._MAX_AUX_CULLER_INDEX) return null;
-    // Batch 229 — touch usage timestamp for idle-decay reaper.
-    this._gpuCullerByFrustumLastUsed.set(idx, this._internalFrameId);
-    if (this._gpuCullerByFrustum.has(idx)) {
-      return this._gpuCullerByFrustum.get(idx) ?? null;
-    }
-    if (this._gpuCullerByFrustumInitializing.has(idx)) return null;
-    this._gpuCullerByFrustumInitializing.add(idx);
-    import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
-      const culler = new WebGPUGPUCuller(this._device!, {
-        maxObjects: 65536,
-        label: `ctx-${this._id}-frustum-${idx}`,
-        asyncResourceMonitor: this.asyncResources,
-      });
-      import("../../Shaders/WebGPU/Compute/FrustumCull.js")
-        .then((mod: { default?: string | object }) => {
-          const code = mod.default || mod;
-          return culler.initialize(typeof code === "string" ? code : "");
-        })
-        .then(() => {
-          this._gpuCullerByFrustum.set(idx, culler);
-          this._gpuCullerByFrustumInitializing.delete(idx);
-          // B229-N1 (Batch 230 audit) — re-touch LastUsed on
-          // resolve so post-init reaper iterations see the slot.
-          // The first-call `set` happened at INVOKE time; if the
-          // reaper fired between invoke + resolve it would have
-          // deleted that entry, leaving the freshly-installed
-          // instance orphaned in the reap walk.
-          this._gpuCullerByFrustumLastUsed.set(idx, this._internalFrameId);
-          // B219-A1 (Batch 225) — clear on device loss.
-          this.onDeviceInvalidated(() => {
-            this._gpuCullerByFrustum.delete(idx);
-          });
-        })
-        .catch((e: unknown) => {
-          //>>includeStart('debug', pragmas.debug);
-          console.warn(
-            `[CesiumJS:webgpu:ctx-${this._id}] GPU culler frustum-${idx} init failed:`,
-            e,
-          );
-          //>>includeEnd('debug');
-          this._gpuCullerByFrustumInitializing.delete(idx);
-        });
-    });
-    return null;
+    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    return getGpuCullerForOpaqueFrustumExt(this, idx);
   }
 
   /**
@@ -4900,52 +4773,8 @@ export class WebGPUContext extends GraphicsContext {
    * only / does NOT yet dispatch" — that was stale.
    */
   public getGPUCullerForCascade(idx: number): GPUCullerInstance | null {
-    if (!this._device || this._isDestroyed) return null;
-    // B219-N3 (Batch 225) — refuse allocation when hint forbids.
-    if (this._gpuCullingHint === "never") return null;
-    // B220-O1 (Batch 225) — defensive cap. CSM cascades top out
-    // at 4 in stock Cesium; the cap matches frustum cap for
-    // simplicity. See `getGPUCullerForOpaqueFrustum`.
-    if (idx < 0 || idx >= WebGPUContext._MAX_AUX_CULLER_INDEX) return null;
-    // Batch 229 — touch usage timestamp for idle-decay reaper.
-    this._gpuCullerByCascadeLastUsed.set(idx, this._internalFrameId);
-    if (this._gpuCullerByCascade.has(idx)) {
-      return this._gpuCullerByCascade.get(idx) ?? null;
-    }
-    if (this._gpuCullerByCascadeInitializing.has(idx)) return null;
-    this._gpuCullerByCascadeInitializing.add(idx);
-    import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
-      const culler = new WebGPUGPUCuller(this._device!, {
-        maxObjects: 65536,
-        label: `ctx-${this._id}-cascade-${idx}`,
-        asyncResourceMonitor: this.asyncResources,
-      });
-      import("../../Shaders/WebGPU/Compute/FrustumCull.js")
-        .then((mod: { default?: string | object }) => {
-          const code = mod.default || mod;
-          return culler.initialize(typeof code === "string" ? code : "");
-        })
-        .then(() => {
-          this._gpuCullerByCascade.set(idx, culler);
-          this._gpuCullerByCascadeInitializing.delete(idx);
-          // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
-          this._gpuCullerByCascadeLastUsed.set(idx, this._internalFrameId);
-          // B219-A1 (Batch 225) — clear on device loss.
-          this.onDeviceInvalidated(() => {
-            this._gpuCullerByCascade.delete(idx);
-          });
-        })
-        .catch((e: unknown) => {
-          //>>includeStart('debug', pragmas.debug);
-          console.warn(
-            `[CesiumJS:webgpu:ctx-${this._id}] GPU culler cascade-${idx} init failed:`,
-            e,
-          );
-          //>>includeEnd('debug');
-          this._gpuCullerByCascadeInitializing.delete(idx);
-        });
-    });
-    return null;
+    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    return getGpuCullerForCascadeExt(this, idx);
   }
 
   /**
@@ -4956,48 +4785,8 @@ export class WebGPUContext extends GraphicsContext {
    * encoder. Same lazy-init pattern as `gpuCuller`.
    */
   get gpuCullerTranslucent(): GPUCullerInstance | null {
-    // Batch 229 — touch usage timestamp for idle-decay reaper.
-    this._gpuCullerTranslucentLastUsed = this._internalFrameId;
-    if (
-      !this._gpuCullerTranslucent &&
-      this._device &&
-      !this._gpuCullerTranslucentInitializing &&
-      this._gpuCullingHint !== "never"
-    ) {
-      this._gpuCullerTranslucentInitializing = true;
-      import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
-        const culler = new WebGPUGPUCuller(this._device!, {
-          maxObjects: 65536,
-          label: `ctx-${this._id}-translucent`,
-          asyncResourceMonitor: this.asyncResources,
-        });
-        import("../../Shaders/WebGPU/Compute/FrustumCull.js")
-          .then((mod: { default?: string | object }) => {
-            const code = mod.default || mod;
-            return culler.initialize(typeof code === "string" ? code : "");
-          })
-          .then(() => {
-            this._gpuCullerTranslucent = culler;
-            this._gpuCullerTranslucentInitializing = false;
-            // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
-            this._gpuCullerTranslucentLastUsed = this._internalFrameId;
-            // B219-A1 (Batch 225) — clear on device loss.
-            this.onDeviceInvalidated(() => {
-              this._gpuCullerTranslucent = null;
-            });
-          })
-          .catch((e: unknown) => {
-            //>>includeStart('debug', pragmas.debug);
-            console.warn(
-              `[CesiumJS:webgpu:ctx-${this._id}] GPU culler (translucent) init failed:`,
-              e,
-            );
-            //>>includeEnd('debug');
-            this._gpuCullerTranslucentInitializing = false;
-          });
-      });
-    }
-    return this._gpuCullerTranslucent;
+    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    return getGpuCullerTranslucentExt(this);
   }
 
   /**
@@ -5149,71 +4938,8 @@ export class WebGPUContext extends GraphicsContext {
    * on demand.
    */
   private _reapIdleAuxCullers(): void {
-    const now = this._internalFrameId;
-    const threshold = WebGPUContext.IDLE_DECAY_FRAMES;
-
-    // Per-frustum (frustum 0 is _gpuCuller, handled separately).
-    for (const [idx, lastUsed] of this._gpuCullerByFrustumLastUsed) {
-      if (now - lastUsed >= threshold) {
-        const culler = this._gpuCullerByFrustum.get(idx);
-        if (culler) {
-          try {
-            culler.destroy();
-          } catch (_) {
-            /* defensive */
-          }
-          this._gpuCullerByFrustum.delete(idx);
-        }
-        this._gpuCullerByFrustumLastUsed.delete(idx);
-      }
-    }
-
-    // Per-cascade.
-    for (const [idx, lastUsed] of this._gpuCullerByCascadeLastUsed) {
-      if (now - lastUsed >= threshold) {
-        const culler = this._gpuCullerByCascade.get(idx);
-        if (culler) {
-          try {
-            culler.destroy();
-          } catch (_) {
-            /* defensive */
-          }
-          this._gpuCullerByCascade.delete(idx);
-        }
-        this._gpuCullerByCascadeLastUsed.delete(idx);
-      }
-    }
-
-    // Translucent.
-    if (
-      this._gpuCullerTranslucent &&
-      now - this._gpuCullerTranslucentLastUsed >= threshold
-    ) {
-      try {
-        this._gpuCullerTranslucent.destroy();
-      } catch (_) {
-        /* defensive */
-      }
-      this._gpuCullerTranslucent = null;
-    }
-
-    // Main opaque culler (frustum 0). Only reap if EVERY auxiliary
-    // is also idle — otherwise we keep the cheap lazy-getter
-    // re-init path warm.
-    if (
-      this._gpuCuller &&
-      now - this._gpuCullerLastUsed >= threshold &&
-      this._gpuCullerByFrustum.size === 0 &&
-      this._gpuCullerByCascade.size === 0 &&
-      !this._gpuCullerTranslucent
-    ) {
-      try {
-        this._gpuCuller.destroy();
-      } catch (_) {
-        /* defensive */
-      }
-      this._gpuCuller = null;
-    }
+    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    reapIdleAuxCullersExt(this);
   }
 
   /**
