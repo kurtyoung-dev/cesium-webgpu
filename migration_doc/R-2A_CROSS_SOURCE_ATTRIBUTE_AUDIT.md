@@ -103,3 +103,14 @@ per-fragment feature-ID G-buffer is now shader-samplable in a fullscreen PP pass
 `probe-feature-id-texture.mjs` (billboard + point resolve to distinct in-shader IDs). The R-2a join still
 awaits the R-2b **residual** (per-frame wiring of the ID G-buffer into the standing PP pipeline + a source-tag
 channel + the imagery per-texel ID channel from §4.1/§6) before the two-LUT join pass from §6 can be built.
+
+**Update (2026-07-05, R-2b residual a — standing-PP-wiring primitive):** the recolor pass can now be recorded
+into a **caller-provided per-frame command encoder** (`WebGPUFeatureIdTexture.record()` →
+`WebGPUPickFramebuffer.recordFeatureIdResolve()`), leaving the result in a persistent, re-sampled output
+texture (`featureIdRecolorView` / `featureIdRecolorTexture`) — no separate submit, no CPU readback stall. This
+is exactly the plumbing the §6 join PP stage consumes: it records inside the frame's own command stream and its
+output view is immediately sample-able by a downstream same-frame stage. Verified standing==one-shot bit-for-bit
++ persistent-texture reuse + default-OFF (nothing constructed until an explicit call) by
+`probe-feature-id-texture.mjs`. Remaining before the join: (a2) an actual per-frame **driver** that invokes the
+record inside the standing PP pipeline (needs a per-frame pick render or a debug-overlay driver), (b) the
+source-tag channel, and (c) the imagery per-texel ID channel.

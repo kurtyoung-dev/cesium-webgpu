@@ -107,18 +107,43 @@ export class WebGPUFeatureIdTexture {
   }
 
   /**
-   * Run the feature-ID recolor pass over `idTexture` and read the result back.
+   * The persistent recolor output texture (`rgba8unorm`, RENDER_ATTACHMENT |
+   * TEXTURE_BINDING | COPY_SRC). Populated by {@link record} / {@link resolveAsync};
+   * `null` until the first resolve sizes it. Standing per-frame consumers
+   * (R-2a cross-source join PP stage / a feature-ID debug overlay) re-sample this
+   * across frames without any per-call reallocation.
+   */
+  get outputTexture(): GPUTexture | null {
+    return this._outputTexture;
+  }
+
+  /** Texture view over {@link outputTexture}, or `null` before first resolve. */
+  get outputView(): GPUTextureView | null {
+    return this._outputView;
+  }
+
+  /**
+   * R-2b UNIFIED-FEATURE-ID-TEXTURE (residual a — standing per-frame PP wiring).
+   * Record the feature-ID recolor pass into a caller-provided per-frame command
+   * encoder, writing into the persistent {@link outputTexture}. Unlike
+   * {@link resolveAsync} this issues NO separate submit and NO readback — it is the
+   * primitive a standing post-process pipeline needs so the recolor lives inside
+   * the frame's own command stream and its output view can be sampled by a
+   * downstream same-frame stage (the R-2a join / a debug overlay). The pipeline and
+   * output texture persist across frames (only reallocated on size change).
    *
+   * @param encoder - The per-frame command encoder to record into (not submitted here).
    * @param idTexture - The unified pick-ID target (rgba8unorm / bgra8unorm).
    * @param width - Texture width in pixels.
    * @param height - Texture height in pixels.
-   * @returns The recolored RGBA8 pixels, or null if the device/texture is gone.
+   * @returns The persistent output view (sample-able downstream), or `null` if unavailable.
    */
-  async resolveAsync(
+  record(
+    encoder: GPUCommandEncoder,
     idTexture: GPUTexture,
     width: number,
     height: number,
-  ): Promise<FeatureIdResolveResult | null> {
+  ): GPUTextureView | null {
     if (this._isDestroyed || width <= 0 || height <= 0) {
       return null;
     }
@@ -135,18 +160,6 @@ export class WebGPUFeatureIdTexture {
       entries: [{ binding: 0, resource: idTexture.createView() }],
     });
 
-    // 256-byte row alignment for copyTextureToBuffer readback.
-    const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
-    const bufferSize = bytesPerRow * height;
-    const staging = device.createBuffer({
-      label: "FeatureIdResolve-Staging",
-      size: bufferSize,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-
-    const encoder = device.createCommandEncoder({
-      label: "FeatureIdResolve-Encoder",
-    });
     const pass = encoder.beginRenderPass({
       label: "FeatureIdResolve-Pass",
       colorAttachments: [
@@ -162,6 +175,47 @@ export class WebGPUFeatureIdTexture {
     pass.setBindGroup(0, bindGroup);
     pass.draw(3);
     pass.end();
+
+    return this._outputView;
+  }
+
+  /**
+   * Run the feature-ID recolor pass over `idTexture` and read the result back.
+   * Records via {@link record} into a private one-shot encoder, then copies the
+   * result to a staging buffer and maps it — the CPU-readback convenience path
+   * used by probes / tooling.
+   *
+   * @param idTexture - The unified pick-ID target (rgba8unorm / bgra8unorm).
+   * @param width - Texture width in pixels.
+   * @param height - Texture height in pixels.
+   * @returns The recolored RGBA8 pixels, or null if the device/texture is gone.
+   */
+  async resolveAsync(
+    idTexture: GPUTexture,
+    width: number,
+    height: number,
+  ): Promise<FeatureIdResolveResult | null> {
+    if (this._isDestroyed || width <= 0 || height <= 0) {
+      return null;
+    }
+    const device = this._device;
+
+    const encoder = device.createCommandEncoder({
+      label: "FeatureIdResolve-Encoder",
+    });
+    const view = this.record(encoder, idTexture, width, height);
+    if (!view || !this._outputTexture) {
+      return null;
+    }
+
+    // 256-byte row alignment for copyTextureToBuffer readback.
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+    const bufferSize = bytesPerRow * height;
+    const staging = device.createBuffer({
+      label: "FeatureIdResolve-Staging",
+      size: bufferSize,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
 
     encoder.copyTextureToBuffer(
       { texture: this._outputTexture },

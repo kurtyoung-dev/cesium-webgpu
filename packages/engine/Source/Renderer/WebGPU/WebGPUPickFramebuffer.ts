@@ -868,6 +868,55 @@ export class WebGPUPickFramebuffer {
     );
   }
 
+  /**
+   * R-2b UNIFIED-FEATURE-ID-TEXTURE (residual a — standing per-frame PP wiring).
+   * Record the feature-ID recolor pass into a caller-provided per-frame command
+   * encoder, sampling the unified pick-ID G-buffer and writing the recolor into
+   * the helper's persistent output texture. Unlike
+   * {@link resolveFeatureIdRecolorAsync} this performs NO separate submit and NO
+   * CPU readback — the recolor lives inside the caller's own command stream and
+   * its result view ({@link featureIdRecolorView}) is immediately sample-able by a
+   * downstream same-frame post-process stage (the R-2a cross-source join) or a
+   * feature-ID debug overlay.
+   *
+   * The most recent pick render (`scene.pick` / `scene.pickAsync`) must have
+   * populated `_colorTexture`. Default-OFF: the helper is still lazily constructed,
+   * so untouched scenes never allocate it and the standing pass is never recorded
+   * unless a consumer explicitly calls this.
+   *
+   * @param encoder - The per-frame command encoder to record into (not submitted here).
+   * @returns The persistent recolor output view, or `null` if no pick target exists yet.
+   */
+  recordFeatureIdResolve(encoder: GPUCommandEncoder): GPUTextureView | null {
+    const device = this._device;
+    if (!device || !this._colorTexture || this._isDestroyed) {
+      return null;
+    }
+    if (!this._featureIdTexture) {
+      this._featureIdTexture = new WebGPUFeatureIdTexture(device);
+    }
+    return this._featureIdTexture.record(
+      encoder,
+      this._colorTexture,
+      this._width,
+      this._height,
+    );
+  }
+
+  /**
+   * The persistent feature-ID recolor output texture written by
+   * {@link recordFeatureIdResolve} / {@link resolveFeatureIdRecolorAsync}, or
+   * `null` if the resolve helper has never been constructed (default-OFF state).
+   */
+  get featureIdRecolorTexture(): GPUTexture | null {
+    return this._featureIdTexture?.outputTexture ?? null;
+  }
+
+  /** Sample-able view over {@link featureIdRecolorTexture}, or `null` when off. */
+  get featureIdRecolorView(): GPUTextureView | null {
+    return this._featureIdTexture?.outputView ?? null;
+  }
+
   private _destroyTextures(): void {
     if (this._colorTexture) {
       this._colorTexture.destroy();

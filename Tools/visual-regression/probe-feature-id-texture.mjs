@@ -160,6 +160,14 @@ const out = await page.evaluate(async () => {
   const hasResolve = typeof pfb?.resolveFeatureIdRecolorAsync === "function";
   const resolveOut = { hasResolve };
 
+  // OFF-GATE: before any resolve/record call the standing resolve helper must
+  // never have been constructed — untouched scenes allocate nothing.
+  const offGate = {
+    viewNullBeforeResolve: pfb?.featureIdRecolorView === null,
+    textureNullBeforeResolve: pfb?.featureIdRecolorTexture === null,
+    hasRecord: typeof pfb?.recordFeatureIdResolve === "function",
+  };
+
   if (hasResolve) {
     const r1 = await pfb.resolveFeatureIdRecolorAsync();
     const r2 = await pfb.resolveFeatureIdRecolorAsync();
@@ -212,10 +220,97 @@ const out = await page.evaluate(async () => {
     }
   }
 
+  // STANDING PER-FRAME PP WIRING (R-2b residual a). Record the recolor pass into
+  // a SINGLE caller-created command encoder and read its persistent output back
+  // in the SAME submit — the primitive a standing PP pipeline / the R-2a join
+  // needs (no separate submit, no per-call teardown). Prove the standing path
+  // yields the SAME distinct+deterministic colors as the one-shot readback and
+  // reuses the persistent output texture across calls.
+  const standing = { available: offGate.hasRecord };
+  if (
+    offGate.hasRecord &&
+    resolveOut.width > 0 &&
+    resolveOut.height > 0 &&
+    scene.context?._device
+  ) {
+    const device = scene.context._device;
+    const w = resolveOut.width;
+    const h = resolveOut.height;
+
+    // Re-populate the shared pick target, then record + read back within one
+    // caller-owned encoder.
+    await doPick(midX, midY, spanW, spanH);
+    await renderN(1);
+
+    const readStanding = async () => {
+      const enc = device.createCommandEncoder({ label: "probe-standing-fid" });
+      const view = pfb.recordFeatureIdResolve(enc);
+      const outTex = pfb.featureIdRecolorTexture;
+      if (!view || !outTex) {
+        return null;
+      }
+      const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+      const staging = device.createBuffer({
+        size: bytesPerRow * h,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      enc.copyTextureToBuffer(
+        { texture: outTex },
+        { buffer: staging, bytesPerRow, rowsPerImage: h },
+        [w, h],
+      );
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const mapped = new Uint8Array(staging.getMappedRange());
+      const px = new Uint8Array(w * h * 4);
+      for (let row = 0; row < h; row++) {
+        px.set(
+          mapped.subarray(row * bytesPerRow, row * bytesPerRow + w * 4),
+          row * w * 4,
+        );
+      }
+      staging.unmap();
+      staging.destroy();
+      return { tex: outTex, px };
+    };
+
+    const at = (buf, x, y) => {
+      const xi = Math.max(0, Math.min(w - 1, Math.floor(x)));
+      const yi = Math.max(0, Math.min(h - 1, Math.floor(y)));
+      const i = 4 * (yi * w + xi);
+      return [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]];
+    };
+    const eq = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+    const nonBlack = (c) => c[0] !== 0 || c[1] !== 0 || c[2] !== 0;
+
+    const s1 = await readStanding();
+    const s2 = await readStanding();
+    if (s1 && s2) {
+      const bbS = at(s1.px, bbX, bbY);
+      const globeS = at(s1.px, globeX, globeY);
+      standing.bbColor = bbS;
+      standing.globeColor = globeS;
+      standing.bbNonBlack = nonBlack(bbS);
+      standing.globeNonBlack = nonBlack(globeS);
+      standing.distinct = !eq(bbS, globeS);
+      // Persistent output texture reused across records (no per-call realloc).
+      standing.persistentTexture = s1.tex === s2.tex;
+      standing.deterministic =
+        eq(bbS, at(s2.px, bbX, bbY)) && eq(globeS, at(s2.px, globeX, globeY));
+      // Standing path matches the one-shot readback path bit-for-bit.
+      standing.matchesOneShot =
+        eq(bbS, resolveOut.bbColor) && eq(globeS, resolveOut.globeColor);
+      // The recolor view/texture now exist (helper constructed by the record).
+      standing.viewLiveAfterRecord = pfb.featureIdRecolorView !== null;
+    }
+  }
+
   return {
     bbHit,
     globeHit,
     resolveOut,
+    offGate,
+    standing,
     W,
     H,
     bbX,
@@ -241,6 +336,8 @@ if (pngSaved) console.log("recolor PNG:", OUT_PNG);
 if (pageErrors.length) console.log("page errors:", pageErrors);
 
 const r = out.resolveOut;
+const og = out.offGate || {};
+const s = out.standing || {};
 const pass =
   out.bbHit.found &&
   out.bbHit.isBillboard &&
@@ -251,6 +348,19 @@ const pass =
   r.globeNonBlack &&
   r.distinct &&
   r.deterministic &&
+  // OFF-GATE: nothing allocated before an explicit resolve/record call.
+  og.viewNullBeforeResolve === true &&
+  og.textureNullBeforeResolve === true &&
+  og.hasRecord === true &&
+  // STANDING per-frame record-into-encoder path.
+  s.available === true &&
+  s.bbNonBlack === true &&
+  s.globeNonBlack === true &&
+  s.distinct === true &&
+  s.deterministic === true &&
+  s.persistentTexture === true &&
+  s.matchesOneShot === true &&
+  s.viewLiveAfterRecord === true &&
   out.errors.length === 0 &&
   pageErrors.length === 0;
 
