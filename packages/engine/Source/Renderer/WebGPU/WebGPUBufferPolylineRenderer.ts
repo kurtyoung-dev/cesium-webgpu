@@ -46,6 +46,8 @@ import {
   projectBufferPositionForMode,
   bufferModeNeedsRepack,
   computeBufferModeBoundingVolume,
+  bufferPositionNormalizeDivisor,
+  normalizeBufferPositionInPlace,
   scratchColor,
   scratchCart,
   scratchEnc,
@@ -377,6 +379,11 @@ function repackPolylineDirty(
   // projection). No-op in SCENE3D (byte-identical raw-ECEF encode).
   const reproject = frameState.mode !== SceneMode.SCENE3D;
   const modelMatrix = collection.modelMatrix ?? Matrix4.IDENTITY;
+  // PARITY-BUFFER-POSITION-INT-NORMALIZED — 0 unless the collection stores
+  // normalized integer positions; keeps the common path byte-identical. Applied
+  // to every raw position read (current + prev/next adjacency) before the
+  // scene-mode reproject and the RTE encode.
+  const normDivisor = bufferPositionNormalizeDivisor(collection);
   for (let i = dirtyOffset; i < dirtyOffset + dirtyCount; i++) {
     collection.get(i, scratchPolyline);
     if (!scratchPolyline._dirty && !force) {
@@ -418,6 +425,9 @@ function repackPolylineDirty(
       const isFirst = j === 0;
       const isLast = j === jl - 1;
       Cartesian3.fromArray(numericArray(positions), j * 3, scratchCart);
+      if (normDivisor !== 0) {
+        normalizeBufferPositionInPlace(scratchCart, normDivisor);
+      }
       if (reproject) {
         projectBufferPositionForMode(
           scratchCart,
@@ -428,6 +438,9 @@ function repackPolylineDirty(
       }
       if (isFirst) {
         Cartesian3.fromArray(numericArray(positions), (j + 1) * 3, scratchNext);
+        if (normDivisor !== 0) {
+          normalizeBufferPositionInPlace(scratchNext, normDivisor);
+        }
         if (reproject) {
           projectBufferPositionForMode(
             scratchNext,
@@ -440,6 +453,9 @@ function repackPolylineDirty(
         Cartesian3.add(scratchCart, scratchPrev, scratchPrev);
       } else if (isLast) {
         Cartesian3.fromArray(numericArray(positions), (j - 1) * 3, scratchPrev);
+        if (normDivisor !== 0) {
+          normalizeBufferPositionInPlace(scratchPrev, normDivisor);
+        }
         if (reproject) {
           projectBufferPositionForMode(
             scratchPrev,
@@ -453,6 +469,10 @@ function repackPolylineDirty(
       } else {
         Cartesian3.fromArray(numericArray(positions), (j - 1) * 3, scratchPrev);
         Cartesian3.fromArray(numericArray(positions), (j + 1) * 3, scratchNext);
+        if (normDivisor !== 0) {
+          normalizeBufferPositionInPlace(scratchPrev, normDivisor);
+          normalizeBufferPositionInPlace(scratchNext, normDivisor);
+        }
         if (reproject) {
           projectBufferPositionForMode(
             scratchPrev,

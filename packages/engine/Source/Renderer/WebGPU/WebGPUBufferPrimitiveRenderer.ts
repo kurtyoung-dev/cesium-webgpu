@@ -26,6 +26,7 @@ import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import AttributeCompression from "../../Core/AttributeCompression.js";
+import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import IndexDatatype from "../../Core/IndexDatatype.js";
 import SceneMode from "../../Scene/SceneMode.js";
 import SceneTransforms from "../../Scene/SceneTransforms.js";
@@ -164,6 +165,17 @@ export interface BufferPrimitiveCollection {
   // (vertexOffset == index), so a dirty [offset,count) slice is contiguous —
   // consumed directly by the WASM batch RTE encode (NEW-BUFFERCOLL-WASM-ENCODE-WIRE).
   _positionView: Float64Array | Float32Array;
+  // PARITY-BUFFER-POSITION-INT-NORMALIZED — ComponentDatatype of `_positionView`.
+  // DOUBLE (default) / FLOAT store model-space positions directly; the integer
+  // datatypes (BYTE/UNSIGNED_BYTE/SHORT/UNSIGNED_SHORT/INT/UNSIGNED_INT) hold a
+  // compressed representation that the encode path treats as raw model-space
+  // integers, or — when `_positionNormalized` — dequantizes to [-1,1] / [0,1].
+  _positionDatatype?: number;
+  // PARITY-BUFFER-POSITION-INT-NORMALIZED — when true, integer position values
+  // are normalized: the full integer range maps to [-1,1] (signed) / [0,1]
+  // (unsigned), matching the WebGL vertex-attribute `normalize` flag. Only
+  // meaningful for integer position datatypes.
+  _positionNormalized?: boolean;
   // The narrow shape (`PolygonCache` / `PolylineCache` / `PointCache`)
   // lives in each per-collection module and is recovered there via a
   // type-narrowing cast on the cached value. Storing as `SharedCache`
@@ -205,6 +217,68 @@ export interface SharedCache {
 export const scratchColor = new Color();
 export const scratchCart = new Cartesian3();
 export const scratchEnc = { high: new Cartesian3(), low: new Cartesian3() };
+
+// ─── Integer / normalized position decode (PARITY-BUFFER-POSITION-INT-NORMALIZED) ─
+
+/**
+ * PARITY-BUFFER-POSITION-INT-NORMALIZED — when a Buffer* collection stores
+ * integer positions with `positionNormalized:true`, the raw integer values map
+ * onto [-1,1] (signed) / [0,1] (unsigned) exactly like the WebGL vertex
+ * attribute `normalize` flag (see `renderBuffer*Collection.js`, which sets
+ * `normalize: collection._positionNormalized` on the `position` attribute, and
+ * the GLSL `#else` branch that feeds `czm_modelView * vec4(position,1)`). The
+ * WebGPU renderers have no integer vertex-attribute path — they always RTE-encode
+ * the model-space position into positionHigh/positionLow — so they must apply
+ * the same normalization the WebGL GPU applies BEFORE the encode.
+ *
+ * Returns the per-component divisor (matching `Core/AttributeCompression.dequantize`
+ * and the GL2 signed-normalize convention `max(c / (2^(b-1)-1), -1)`), or 0 when
+ * no normalization applies (DOUBLE/FLOAT positions, or `positionNormalized`
+ * false/unset). A 0 return keeps the non-normalized encode byte-identical — the
+ * per-vertex guard `divisor !== 0` skips the decode entirely.
+ * @private
+ */
+export function bufferPositionNormalizeDivisor(
+  collection: BufferPrimitiveCollection,
+): number {
+  if (collection._positionNormalized !== true) {
+    return 0;
+  }
+  switch (collection._positionDatatype) {
+    case ComponentDatatype.BYTE:
+      return 127.0;
+    case ComponentDatatype.UNSIGNED_BYTE:
+      return 255.0;
+    case ComponentDatatype.SHORT:
+      return 32767.0;
+    case ComponentDatatype.UNSIGNED_SHORT:
+      return 65535.0;
+    case ComponentDatatype.INT:
+      return 2147483647.0;
+    case ComponentDatatype.UNSIGNED_INT:
+      return 4294967295.0;
+    default:
+      // FLOAT / DOUBLE: normalization is meaningless — encode raw (byte-identical).
+      return 0;
+  }
+}
+
+/**
+ * PARITY-BUFFER-POSITION-INT-NORMALIZED — dequantize a raw integer position in
+ * place to its normalized model-space value, matching
+ * `Core/AttributeCompression.dequantize` (and the WebGL GPU normalize). `divisor`
+ * must come from {@link bufferPositionNormalizeDivisor}; callers guard on
+ * `divisor !== 0` so the non-normalized path stays branch-free at the encode.
+ * @private
+ */
+export function normalizeBufferPositionInPlace(
+  cart: Cartesian3,
+  divisor: number,
+): void {
+  cart.x = Math.max(cart.x / divisor, -1.0);
+  cart.y = Math.max(cart.y / divisor, -1.0);
+  cart.z = Math.max(cart.z / divisor, -1.0);
+}
 
 // ─── Scene-mode position reprojection (PARITY-BUFFER-2DCV) ────────────────────
 

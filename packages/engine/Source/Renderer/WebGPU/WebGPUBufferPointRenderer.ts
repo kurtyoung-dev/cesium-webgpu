@@ -47,6 +47,8 @@ import {
   projectBufferPositionForMode,
   bufferModeNeedsRepack,
   computeBufferModeBoundingVolume,
+  bufferPositionNormalizeDivisor,
+  normalizeBufferPositionInPlace,
   scratchColor,
   scratchCart,
   scratchEnc,
@@ -414,6 +416,10 @@ function repackPointDirty(
   const reproject = frameState.mode !== SceneMode.SCENE3D;
   const modelMatrix = collection.modelMatrix ?? Matrix4.IDENTITY;
   const allowPicking: boolean = collection._allowPicking;
+  // PARITY-BUFFER-POSITION-INT-NORMALIZED — 0 for the DOUBLE/FLOAT and
+  // non-normalized-integer cases (encode stays byte-identical); a positive
+  // divisor for normalized integer positions, applied before the RTE encode.
+  const normDivisor = bufferPositionNormalizeDivisor(collection);
 
   // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — for large dirty ranges, encode
   // the POSITION high/low lanes for the whole contiguous slice in one batch call
@@ -476,6 +482,12 @@ function repackPointDirty(
     }
     if (!useBatchPositionEncode) {
       scratchPoint.getPosition(scratchCart);
+      // PARITY-BUFFER-POSITION-INT-NORMALIZED — dequantize the raw integer
+      // position to [-1,1]/[0,1] before reproject/encode (matches WebGL GPU
+      // normalize). No-op when normDivisor === 0.
+      if (normDivisor !== 0) {
+        normalizeBufferPositionInPlace(scratchCart, normDivisor);
+      }
       // PARITY-BUFFER-2DCV — reproject ECEF → scene-mode frame in 2D/CV/Morph.
       // No-op clone in SCENE3D (byte-identical encode of the raw ECEF position).
       if (reproject) {

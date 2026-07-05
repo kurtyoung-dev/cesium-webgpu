@@ -49,6 +49,8 @@ import {
   projectBufferPositionForMode,
   bufferModeNeedsRepack,
   computeBufferModeBoundingVolume,
+  bufferPositionNormalizeDivisor,
+  normalizeBufferPositionInPlace,
   scratchColor,
   scratchCart,
   scratchEnc,
@@ -348,6 +350,9 @@ function repackPolygonDirty(
   // SCENE3D (byte-identical raw-ECEF encode).
   const reproject = frameState.mode !== SceneMode.SCENE3D;
   const modelMatrix = collection.modelMatrix ?? Matrix4.IDENTITY;
+  // PARITY-BUFFER-POSITION-INT-NORMALIZED — 0 unless the collection stores
+  // normalized integer positions; keeps the common path byte-identical.
+  const normDivisor = bufferPositionNormalizeDivisor(collection);
   for (let i = dirtyOffset; i < dirtyOffset + dirtyCount; i++) {
     collection.get(i, scratchPolygon);
     if (!scratchPolygon._dirty && !force) {
@@ -393,6 +398,9 @@ function repackPolygonDirty(
 
     for (let j = 0, jl = scratchPolygon.vertexCount; j < jl; j++) {
       Cartesian3.fromArray(numericArray(positions), j * 3, scratchCart);
+      if (normDivisor !== 0) {
+        normalizeBufferPositionInPlace(scratchCart, normDivisor);
+      }
       if (reproject) {
         projectBufferPositionForMode(
           scratchCart,
