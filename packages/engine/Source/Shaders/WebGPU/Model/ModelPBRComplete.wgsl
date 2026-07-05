@@ -2772,6 +2772,17 @@ struct FragOutput {
       emissiveTexture, emissiveSampler, emissiveUV(input), 0.0).rgb;
   }
   var csAlpha: f32 = baseColor.a;
+  // Q31 slice B — seed the user-modifiable ambient-occlusion factor from the
+  // strength-mixed occlusion texture (matching WebGL materialStage's
+  // material.occlusion). Applied to the ambient term below IN PLACE OF the
+  // texture block when the customShader is active, so it is not double-counted.
+  // Defaults to 1.0 (no texture) → byte-identical when the field is untouched.
+  var csOcclusion: f32 = 1.0;
+  if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {
+    let csAo = textureSampleLevel(
+      occlusionTexture, occlusionSampler, occlusionUV(input), 0.0).r;
+    csOcclusion = mix(1.0, csAo, material.occlusionStrength);
+  }
   {
     var csMaterial: czm_customModelMaterial;
     if (CZM_CUSTOM_SHADER_REPLACE) {
@@ -2780,12 +2791,18 @@ struct FragOutput {
       csMaterial.roughness = 1.0;
       csMaterial.emissive = vec3<f32>(0.0);
       csMaterial.alpha = 1.0;
+      csMaterial.metalness = 0.0;
+      csMaterial.occlusion = 1.0;
+      csMaterial.normalEC = N;
     } else {
       csMaterial.diffuse = diffuseColor;
       csMaterial.specular = F0;
       csMaterial.roughness = roughness;
       csMaterial.emissive = csEmissive;
       csMaterial.alpha = csAlpha;
+      csMaterial.metalness = metallic;
+      csMaterial.occlusion = csOcclusion;
+      csMaterial.normalEC = N;
     }
     var csInput: czm_customFragmentInput;
     csInput.attributes.positionMC = input.rteMC;
@@ -2794,11 +2811,26 @@ struct FragOutput {
     csInput.attributes.texCoord_0 = input.texCoord0;
     csInput.attributes.color_0 = input.color0;
     czm_customFragmentMain(csInput, &csMaterial);
-    diffuseColor = csMaterial.diffuse;
-    F0 = csMaterial.specular;
+    // Q31 slice B — metalness writeback (MODIFY mode only). When a customShader
+    // changes material.metalness, re-split diffuse/F0 from baseColor using the
+    // metallic-roughness convention. An untouched metalness is an exact copy of
+    // the `metallic` seed, so the `!=` compare is false and the else branch
+    // honors any direct diffuse/specular writes → OFF path byte-identical.
+    if (!CZM_CUSTOM_SHADER_REPLACE && csMaterial.metalness != metallic) {
+      let mNew = clamp(csMaterial.metalness, 0.0, 1.0);
+      diffuseColor = baseColor.rgb * (1.0 - mNew);
+      F0 = mix(vec3<f32>(0.04), baseColor.rgb, mNew);
+    } else {
+      diffuseColor = csMaterial.diffuse;
+      F0 = csMaterial.specular;
+    }
     roughness = csMaterial.roughness;
     csEmissive = csMaterial.emissive;
     csAlpha = csMaterial.alpha;
+    csOcclusion = csMaterial.occlusion;
+    // normalEC writeback — re-derives ALL downstream lighting (direct BRDF +
+    // IBL) from the perturbed normal, since the BRDF integral below reads N.
+    N = csMaterial.normalEC;
   }
   //>>endif
 
@@ -3375,10 +3407,18 @@ struct FragOutput {
   var ambient = diffuseIBL + specularIBL;
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
+  //>>ifdef MODEL_HAS_WGSL_CUSTOM_SHADER
+  // Q31 slice B — apply the customShader-modifiable occlusion factor (seeded
+  // from the strength-mixed occlusion texture at the pre-lighting seam) in
+  // place of the texture block, so a customShader can scale AO. Untouched →
+  // csOcclusion equals the texture-block result → byte-identical.
+  ambient = ambient * csOcclusion;
+  //>>else
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {
     let ao = textureSampleLevel(occlusionTexture, occlusionSampler, occlusionUV(input), 0.0).r;
     ambient = mix(ambient, ambient * ao, material.occlusionStrength);
   }
+  //>>endif
 
   // ── Emissive ──────────────────────────────────────────────────────────────
   // Emissive texture is uploaded as `rgba8unorm-srgb`, so textureSample

@@ -7,7 +7,8 @@
  *   @group(1) @binding(N) var<uniform> czm_customUniforms: CustomShaderUniforms;
  *   @group(1) @binding(N+1..) var czm_customTexture0: texture_2d<f32>; (+sampler)
  *   struct czm_customFragmentInput { positionMC/EC, texCoord0, color0, normalEC };
- *   struct czm_customModelMaterial { diffuse, specular, roughness, alpha, emissive };
+ *   struct czm_customModelMaterial { diffuse, specular, roughness, alpha, emissive,
+ *                                    metalness, occlusion, normalEC };
  *   fn czm_customFragmentMain(...) { <user's wgslFragmentShaderText inlined> }
  *   fn czm_customVertexMain(...)   { <user's wgslVertexShaderText inlined> }  (optional)
  *   const CZM_CUSTOM_SHADER_REPLACE: bool = <mode === REPLACE_MATERIAL>;
@@ -309,6 +310,14 @@ function generateCustomShaderWGSL(customShader) {
   lines.push("  roughness: f32,");
   lines.push("  emissive: vec3<f32>,");
   lines.push("  alpha: f32,");
+  // Q31 slice B — extra material fields matching WebGL's czm_modelMaterial
+  // surface (normalEC, occlusion) plus a WGSL-native metalness convenience.
+  // metalness (MODIFY mode) re-splits diffuse/F0 from baseColor; occlusion
+  // scales the ambient/IBL term; normalEC re-derives lighting from the
+  // perturbed normal. All seeded so an untouched field is byte-identical.
+  lines.push("  metalness: f32,");
+  lines.push("  occlusion: f32,");
+  lines.push("  normalEC: vec3<f32>,");
   lines.push("};");
   lines.push("");
 
