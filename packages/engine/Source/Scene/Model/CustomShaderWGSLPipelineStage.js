@@ -10,6 +10,16 @@
  *   struct czm_customModelMaterial { diffuse, specular, roughness, alpha, emissive };
  *   fn czm_customFragmentMain(...) { <user's wgslFragmentShaderText inlined> }
  *   fn czm_customVertexMain(...)   { <user's wgslVertexShaderText inlined> }  (optional)
+ *   const CZM_CUSTOM_SHADER_REPLACE: bool = <mode === REPLACE_MATERIAL>;
+ *
+ * `CZM_CUSTOM_SHADER_REPLACE` drives the PRE-lighting injection in
+ * `ModelPBRComplete.wgsl` (Q31 slice A): the fragment hook runs BEFORE the
+ * Cook-Torrance BRDF (matching WebGL ModelFS's customShaderStage → lightingStage
+ * order), seeding `czm_customModelMaterial` from the computed PBR material for
+ * MODIFY_MATERIAL or from the czm default material (diffuse 0, specular 1,
+ * roughness 1, emissive 0, alpha 1) for REPLACE_MATERIAL. The const folds the
+ * seam's branch at compile time and, being part of the hashed chunk, splits the
+ * module cache so MODIFY and REPLACE variants of the same body never collide.
  *
  * The string is prepended at the SAME single injection point in
  * `WebGPUModelPipelineCache._getOrCreateShaderModule` that
@@ -36,6 +46,7 @@
  */
 import defined from "../../Core/defined.js";
 import DeveloperError from "../../Core/DeveloperError.js";
+import CustomShaderMode from "./CustomShaderMode.js";
 import UniformType from "./UniformType.js";
 import ModelUtility from "./ModelUtility.js";
 
@@ -244,6 +255,18 @@ function generateCustomShaderWGSL(customShader) {
   const lines = [];
   lines.push(
     "// PARITY-CUSTOM-SHADER-WGSL — GENERATED native-WGSL customShader chunk.",
+  );
+
+  // 0. CustomShaderMode selector (slice A). REPLACE_MATERIAL seeds the czm
+  //    default material before the user body (WebGL's defaultModelMaterial()
+  //    when materialStage is skipped); MODIFY_MATERIAL (default) seeds the
+  //    computed PBR material. Baked as a module-scope const so the branch in
+  //    ModelPBRComplete.wgsl's pre-lighting injection folds at compile time. It
+  //    also participates in the classHash below → MODIFY and REPLACE variants of
+  //    the same body get distinct compiled modules.
+  const isReplaceMode = customShader.mode === CustomShaderMode.REPLACE_MATERIAL;
+  lines.push(
+    `const CZM_CUSTOM_SHADER_REPLACE: bool = ${isReplaceMode ? "true" : "false"};`,
   );
 
   // 1. Uniform UBO struct + binding.

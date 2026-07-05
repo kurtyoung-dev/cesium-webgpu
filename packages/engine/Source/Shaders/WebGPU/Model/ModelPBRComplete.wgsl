@@ -2751,6 +2751,57 @@ struct FragOutput {
   }
   //>>endif
 
+  // PARITY-CUSTOM-SHADER-WGSL slice A — PRE-LIGHTING customShader injection.
+  // Mirrors WebGL ModelFS ordering: customShaderStage() runs AFTER materialStage
+  // but BEFORE lightingStage, so the user's material modifications
+  // (diffuse/specular/roughness/emissive/alpha) flow THROUGH the PBR lighting
+  // integral below. The B473 hook injected POST-lighting — it could only tint the
+  // already-lit color, which diverged from WebGL for MODIFY_MATERIAL (the default
+  // mode). Seeding differs by CustomShaderMode: MODIFY seeds the computed PBR
+  // material; REPLACE seeds the czm default material (diffuse 0, specular 1,
+  // roughness 1, emissive 0, alpha 1) — WebGL's defaultModelMaterial() with
+  // materialStage skipped. `CZM_CUSTOM_SHADER_REPLACE` is a compile-time const
+  // baked by the generated chunk so the branch folds. `csEmissive` / `csAlpha`
+  // are function-scoped overrides consumed at the emissive + final-alpha sites
+  // below. When MODEL_HAS_WGSL_CUSTOM_SHADER is clear the whole block is stripped
+  // at preprocess time → byte-identical to the pre-customShader path.
+  //>>ifdef MODEL_HAS_WGSL_CUSTOM_SHADER
+  var csEmissive: vec3<f32> = material.emissiveFactor;
+  if (hasFlag(flags, FLAG_HAS_EMISSIVE_TEXTURE)) {
+    csEmissive = csEmissive * textureSampleLevel(
+      emissiveTexture, emissiveSampler, emissiveUV(input), 0.0).rgb;
+  }
+  var csAlpha: f32 = baseColor.a;
+  {
+    var csMaterial: czm_customModelMaterial;
+    if (CZM_CUSTOM_SHADER_REPLACE) {
+      csMaterial.diffuse = vec3<f32>(0.0);
+      csMaterial.specular = vec3<f32>(1.0);
+      csMaterial.roughness = 1.0;
+      csMaterial.emissive = vec3<f32>(0.0);
+      csMaterial.alpha = 1.0;
+    } else {
+      csMaterial.diffuse = diffuseColor;
+      csMaterial.specular = F0;
+      csMaterial.roughness = roughness;
+      csMaterial.emissive = csEmissive;
+      csMaterial.alpha = csAlpha;
+    }
+    var csInput: czm_customFragmentInput;
+    csInput.attributes.positionMC = input.rteMC;
+    csInput.attributes.positionEC = input.positionEC;
+    csInput.attributes.normalEC = N;
+    csInput.attributes.texCoord_0 = input.texCoord0;
+    csInput.attributes.color_0 = input.color0;
+    czm_customFragmentMain(csInput, &csMaterial);
+    diffuseColor = csMaterial.diffuse;
+    F0 = csMaterial.specular;
+    roughness = csMaterial.roughness;
+    csEmissive = csMaterial.emissive;
+    csAlpha = csMaterial.alpha;
+  }
+  //>>endif
+
   // ── Cook-Torrance BRDF ────────────────────────────────────────────────────
   let V = normalize(-input.positionEC);
   let L = normalize(light.sunDirectionEC);
@@ -3338,6 +3389,12 @@ struct FragOutput {
     let et = textureSampleLevel(emissiveTexture, emissiveSampler, emissiveUV(input), 0.0).rgb;
     emissive = emissive * et;
   }
+  // PARITY-CUSTOM-SHADER-WGSL slice A — the pre-lighting injection may have
+  // modified material.emissive; consume the override so it composites into the
+  // final color exactly like WebGL's lightingStage adds material.emissive.
+  //>>ifdef MODEL_HAS_WGSL_CUSTOM_SHADER
+  emissive = csEmissive;
+  //>>endif
 
   // ── Per-feature styling (3D Tiles batch table) ────────────────────────────
   // Reuse `currentFeatureId` resolved up top so batch lookup and edge
@@ -3383,6 +3440,15 @@ struct FragOutput {
   color = tonemapAndGamma(color);
   let alpha = select(1.0, baseColor.a, hasFlag(flags, FLAG_ALPHA_MODE_BLEND));
   var finalColor = vec4<f32>(color, alpha * featureColor.a);
+  // PARITY-CUSTOM-SHADER-WGSL slice A — apply the customShader's alpha override
+  // (WebGL feeds material.alpha into handleAlpha after lightingStage). Mirrors
+  // the base `select(1.0, baseColor.a, BLEND)` with the custom alpha substituted,
+  // preserving the alpha-mode + per-feature-alpha semantics.
+  //>>ifdef MODEL_HAS_WGSL_CUSTOM_SHADER
+  finalColor = vec4<f32>(
+    finalColor.rgb,
+    select(1.0, csAlpha, hasFlag(flags, FLAG_ALPHA_MODE_BLEND)) * featureColor.a);
+  //>>endif
 
   // FEAT-GAP-09 — Aerial-perspective fog blend (Session 34 pattern).
   // Same math as PrimitivePhongTexturedColor but using Model-specific
@@ -3457,30 +3523,10 @@ struct FragOutput {
   var out: FragOutput;
   out.color = finalColor;
 
-  // PARITY-CUSTOM-SHADER-WGSL — native-WGSL customShader fragment hook. When
-  // MODEL_HAS_WGSL_CUSTOM_SHADER is set, build a `czm_customModelMaterial`
-  // bridge seeded from the computed lit color, hand the user's inlined
-  // `czm_customFragmentMain` the fragment attributes, then fold its returned
-  // diffuse/alpha back into the output color. When clear, this whole block is
-  // stripped at preprocess time → byte-identical to the pre-customShader path.
-  //>>ifdef MODEL_HAS_WGSL_CUSTOM_SHADER
-  {
-    var csMaterial: czm_customModelMaterial;
-    csMaterial.diffuse = out.color.rgb;
-    csMaterial.specular = vec3<f32>(0.04, 0.04, 0.04);
-    csMaterial.roughness = roughness;
-    csMaterial.emissive = emissive;
-    csMaterial.alpha = out.color.a;
-    var csInput: czm_customFragmentInput;
-    csInput.attributes.positionMC = input.rteMC;
-    csInput.attributes.positionEC = input.positionEC;
-    csInput.attributes.normalEC = N;
-    csInput.attributes.texCoord_0 = input.texCoord0;
-    csInput.attributes.color_0 = input.color0;
-    czm_customFragmentMain(csInput, &csMaterial);
-    out.color = vec4<f32>(csMaterial.diffuse, csMaterial.alpha);
-  }
-  //>>endif
+  // PARITY-CUSTOM-SHADER-WGSL slice A — the customShader fragment body now runs
+  // PRE-lighting (see the injection block above the Cook-Torrance BRDF), matching
+  // WebGL ModelFS's customShaderStage → lightingStage order. The former
+  // post-lighting hook that lived here (B473) has been removed.
 
   //>>ifdef MODEL_HAS_COLOR
   // WIRE-MODEL-COLOR — blend model.color into the display-space colour.
