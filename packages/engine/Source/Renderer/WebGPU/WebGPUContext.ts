@@ -90,6 +90,13 @@ import { WebGPUBufferMapper } from "./WebGPUBufferMapper.js";
 import { WebGPURingBufferAllocator } from "./WebGPURingBufferAllocator.js";
 import { clearEffectsPlaceholderCacheForDevice } from "./WebGPUEffectsBindGroup.js";
 import {
+  applyCanvasConfig as applyCanvasConfigExt,
+  reconfigureCanvas as reconfigureCanvasExt,
+  setHDRCanvasOutput as setHDRCanvasOutputExt,
+  setHDRFallbackListener as setHDRFallbackListenerExt,
+  clearAllHDRFallbackListeners as clearAllHDRFallbackListenersExt,
+} from "./WebGPUContextCanvasConfig.js";
+import {
   createDefaultTextures,
   copyTexture as copyTextureUtil,
   copyTextureRegion as copyTextureRegionUtil,
@@ -301,7 +308,9 @@ export class WebGPUContext extends GraphicsContext {
   // {mode: 'extended'}`. Driven by `Scene.useHDRCanvasOutput`. Toggle
   // path clears the pipeline cache because every pipeline targeting
   // the canvas format must be recompiled.
-  private _hdrCanvasOutput: boolean = false;
+  // Public underscore: shared with the canvas-config helper
+  // (`WebGPUContextCanvasConfig.ts`, Batch 593 decomposition slice).
+  public _hdrCanvasOutput: boolean = false;
   // B213-O2 (Batch 219 audit fix) + B219-N4 (Batch 225 audit fix) —
   // Scene-installed listeners called when the context's HDR fallback
   // chain (B206-N1) trips and demotes `_hdrCanvasOutput` from true →
@@ -311,7 +320,9 @@ export class WebGPUContext extends GraphicsContext {
   // synced the LAST-installed scene; multi-scene-per-context
   // configurations (split-screen, picture-in-picture) ended up with
   // stale Scene flags on all but the last viewer.
-  private _hdrFallbackListeners: Set<(newValue: boolean) => void> = new Set();
+  // Public underscore: shared with the canvas-config helper
+  // (`WebGPUContextCanvasConfig.ts`, Batch 593 decomposition slice).
+  public _hdrFallbackListeners: Set<(newValue: boolean) => void> = new Set();
   private _depthFormat: GPUTextureFormat = "depth24plus-stencil8";
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _isDestroyed: boolean = false;
@@ -354,7 +365,9 @@ export class WebGPUContext extends GraphicsContext {
 
   // WebGPU-specific caches and managers
   private _webgpuShaderCache: WebGPUShaderCache | null = null;
-  private _webgpuPipelineCache: WebGPURenderPipelineCache | null = null;
+  // Public underscore: read by the canvas-config helper's HDR-toggle
+  // cache invalidation (`WebGPUContextCanvasConfig.ts`, Batch 593).
+  public _webgpuPipelineCache: WebGPURenderPipelineCache | null = null;
   private _webgpuComputePipelineCache: WebGPUComputePipelineCache | null = null;
   // NEW-WEBGPU-PIPELINE-READY-SIGNAL — Phase 1 scaffolding. Per-context
   // registry of inflight async GPU work. Lazy-initialized via the
@@ -5088,116 +5101,19 @@ export class WebGPUContext extends GraphicsContext {
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _reconfigureCanvas(): void {
-    if (this._context && this._device) {
-      // HDR-DISPLAY (Batch 206) — when HDR is on we keep the rgba16float
-      // format; otherwise re-query the browser's preferred format (which
-      // typically returns bgra8unorm on Windows / rgba8unorm on macOS).
-      if (!this._hdrCanvasOutput) {
-        this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-      }
-      // Batch 213 (B206-N1 audit fix) — fallback chain for unsupported
-      // extended toneMapping.
-      this._applyCanvasConfig();
-    }
-  }
-
-  /**
-   * HDR-DISPLAY (Batch 206) — build the GPUCanvasConfiguration based
-   * on the current `_hdrCanvasOutput` flag + `_presentationFormat`.
-   * Centralizes the configure body so the three call sites (initialize,
-   * resize, _reconfigureCanvas) stay consistent.
-   *
-   * When HDR is on:
-   *   - format: `rgba16float` (stores the full HDR range)
-   *   - colorSpace: `display-p3` (wide-gamut color space; the OS /
-   *     display compositor maps to whatever the display reports)
-   *   - toneMapping: `{ mode: "extended" }` (signals to the browser
-   *     that HDR values >1.0 are intentional and should not be clipped
-   *     to SDR; gated by browser support — silently ignored on engines
-   *     that don't recognize the field)
-   */
-  private _buildCanvasConfig(): GPUCanvasConfiguration {
-    const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC;
-    if (this._hdrCanvasOutput) {
-      return {
-        device: this._device!,
-        format: "rgba16float",
-        alphaMode: "opaque",
-        usage,
-        colorSpace: "display-p3",
-        toneMapping: { mode: "extended" },
-      } as GPUCanvasConfiguration;
-    }
-    return {
-      device: this._device!,
-      format: this._presentationFormat,
-      alphaMode: "opaque",
-      usage,
-    };
+    // Body extracted to `WebGPUContextCanvasConfig.ts` (Batch 593).
+    reconfigureCanvasExt(this);
   }
 
   /**
    * HDR-DISPLAY (Batch 213, B206-N1 audit fix) — apply the canvas
    * config with a fallback path when the browser rejects HDR-only
-   * fields. `toneMapping: { mode: "extended" }` and `colorSpace:
-   * "display-p3"` are Chrome 129+ additions; older Chrome / Safari /
-   * Firefox builds either throw a TypeError or fail validation. On
-   * failure we strip the HDR-only fields and retry with just
-   * `format: "rgba16float"` so HDR storage still works (the OS won't
-   * see the extended-range hint but the canvas remains rgba16float).
-   * If even the rgba16float fallback fails, we drop back to SDR.
+   * fields. Body extracted to `WebGPUContextCanvasConfig.ts` (Batch
+   * 593); see that module for the full fallback-chain rationale
+   * (extended toneMapping → rgba16float → SDR).
    */
   private _applyCanvasConfig(): void {
-    if (!this._context || !this._device) return;
-    const cfg = this._buildCanvasConfig();
-    try {
-      this._context.configure(cfg);
-    } catch (e) {
-      if (this._hdrCanvasOutput) {
-        //>>includeStart('debug', pragmas.debug);
-        this.log(
-          "warn",
-          `HDR canvas configure failed (browser may not support extended toneMapping); retrying with rgba16float-only: ${(e as Error).message}`,
-        );
-        //>>includeEnd('debug');
-        try {
-          this._context.configure({
-            device: this._device,
-            format: "rgba16float",
-            alphaMode: "opaque",
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-          });
-          return;
-        } catch (e2) {
-          //>>includeStart('debug', pragmas.debug);
-          this.log(
-            "warn",
-            `HDR rgba16float fallback also failed; dropping to SDR: ${(e2 as Error).message}`,
-          );
-          //>>includeEnd('debug');
-          this._hdrCanvasOutput = false;
-          this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-          this._context.configure(this._buildCanvasConfig());
-          // B213-O2 (Batch 219) + B219-N4 (Batch 225) — fan out to
-          // every listener so multi-Scene-per-context setups
-          // (split-screen, picture-in-picture) all sync.
-          for (const listener of this._hdrFallbackListeners) {
-            try {
-              listener(false);
-            } catch (e3) {
-              //>>includeStart('debug', pragmas.debug);
-              this.log(
-                "warn",
-                `HDR fallback listener threw: ${(e3 as Error).message}`,
-              );
-              //>>includeEnd('debug');
-            }
-          }
-          return;
-        }
-      }
-      throw e;
-    }
+    applyCanvasConfigExt(this);
   }
 
   /**
@@ -5213,24 +5129,8 @@ export class WebGPUContext extends GraphicsContext {
    * No-ops if the flag is unchanged or the context is uninitialized.
    */
   public setHDRCanvasOutput(enabled: boolean): void {
-    if (this._hdrCanvasOutput === enabled) return;
-    this._hdrCanvasOutput = enabled;
-    this._presentationFormat = enabled
-      ? "rgba16float"
-      : navigator.gpu.getPreferredCanvasFormat();
-    if (this._context && this._device && !this._isDestroyed) {
-      // Batch 213 (B206-N1 audit fix) — fallback chain. If extended
-      // toneMapping fails, `_applyCanvasConfig` may flip
-      // `_hdrCanvasOutput` back to false; that's the correct
-      // behavior — the canvas couldn't honor the request.
-      this._applyCanvasConfig();
-      // Format-keyed cache invalidation. Identity-blit + canvas-targeted
-      // pipelines must recompile against the new format. Effects-bind-
-      // group placeholder cache also rebuilds against the new format
-      // texture on next access.
-      this._webgpuPipelineCache?.clear();
-      clearEffectsPlaceholderCacheForDevice(this._device);
-    }
+    // Body extracted to `WebGPUContextCanvasConfig.ts` (Batch 593).
+    setHDRCanvasOutputExt(this, enabled);
   }
 
   /** HDR-DISPLAY (Batch 206) — current canvas-output HDR state. */
@@ -5341,11 +5241,8 @@ export class WebGPUContext extends GraphicsContext {
   public setHDRFallbackListener(
     listener: ((newValue: boolean) => void) | null,
   ): (() => void) | null {
-    if (!listener) return null;
-    this._hdrFallbackListeners.add(listener);
-    return () => {
-      this._hdrFallbackListeners.delete(listener);
-    };
+    // Body extracted to `WebGPUContextCanvasConfig.ts` (Batch 593).
+    return setHDRFallbackListenerExt(this, listener);
   }
 
   /**
@@ -5356,7 +5253,8 @@ export class WebGPUContext extends GraphicsContext {
    * that just wanted to remove its own listener.
    */
   public clearAllHDRFallbackListeners(): void {
-    this._hdrFallbackListeners.clear();
+    // Body extracted to `WebGPUContextCanvasConfig.ts` (Batch 593).
+    clearAllHDRFallbackListenersExt(this);
   }
 
   /**

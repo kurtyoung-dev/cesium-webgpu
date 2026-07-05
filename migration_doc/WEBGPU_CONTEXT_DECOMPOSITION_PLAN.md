@@ -5,6 +5,14 @@
 
 ## Status
 
+> **Updated 2026-07-05 (Batch 593, C4-WEBGPUCONTEXT-DECOMP / Q35 slice).**
+> A *seventh* Context helper landed: `WebGPUContextCanvasConfig.ts` (the HDR
+> canvas-output cluster), taking `WebGPUContext.ts` from **5534 → 5432 lines**
+> (−102). Behavior-preserving (A/B build confirmed identical GPU-validation
+> behavior; off-gate SDR path byte-identical). This is one increment of the
+> Q35 epic — the culler-pool cluster + the SceneRenderer pass family remain
+> as further slices. See the new row in "Already extracted".
+>
 > **Updated 2026-05-30 (HEAD `88b111e49c`, Batch 185).** The earlier
 > header counts were *inverted* — they read as if both files had shrunk
 > after Batch 127. In reality **both files GREW**: the six extractions
@@ -37,6 +45,7 @@ moved-line count.
 | `WebGPUResourceCacheRegistry.ts` | 131 | 100 | Owns the cleanable-cache list; `_clearAllCaches()` (candidate #3) walks it in registration order, then fires the invalidation bus. |
 | `WebGPUFeatureFlags.ts` | 132 | 142 | `_buildFeatureList` / `_updateFeatureFlags` / `hasFeature` plumbing (candidate #4). Context constructs one and `hasFeature` delegates. |
 | `WebGPUFrameStatistics.ts` | 143/144 | 83 | `getStatistics` / `resetStatistics` / `recordDrawCall` + the draw/triangle/frame counters (candidate #6). |
+| `WebGPUContextCanvasConfig.ts` | 593 | 243 | HDR canvas-output cluster (Q35 slice / C4-WEBGPUCONTEXT-DECOMP): `buildCanvasConfig` / `applyCanvasConfig` / `reconfigureCanvas` / `setHDRCanvasOutput` / `setHDRFallbackListener` / `clearAllHDRFallbackListeners`. Host-interface pattern; the Context methods became one-line delegators (orphaned `_buildCanvasConfig` removed). Net −102 LOC on `WebGPUContext.ts` (5534 → 5432). Behavior-preserving: A/B build confirmed identical GPU-validation behavior; off-gate SDR path byte-identical (HDR is opt-in, `_hdrCanvasOutput` defaults false). Acceptance: `Tools/visual-regression/probe-hdr-canvas-output-decomp.mjs`. |
 
 ## High-value candidates in `WebGPUContext.ts` — ALL DONE
 
