@@ -195,6 +195,12 @@ const result = await page.evaluate(async ({ BRIDGES, IIFE_MODE }) => {
     let lowEqual = la.length === lb.length;
     for (let i = 0; lowEqual && i < la.length; i++) if (la[i] !== lb[i]) lowEqual = false;
 
+    // Q16 (WASM-BRIDGE-BUNDLE-LOAD) off-gate: not merely "the kernel loaded"
+    // but "the SIMD kernel actually loads" — assert the module was compiled with
+    // SIMD AND the browser supports it, so the SIMD lane (not just a scalar wasm
+    // build) is live. simdActive === (module.has_simd() && browser SIMD support).
+    const diag = bridge.getDiagnostics();
+
     out.rte = {
       loaded: ok === true,
       wasmReady: bridge.wasmReady === true,
@@ -202,6 +208,7 @@ const result = await page.evaluate(async ({ BRIDGES, IIFE_MODE }) => {
       jsPathUsed,
       highEqual,
       lowEqual,
+      simdActive: diag.simdActive === true,
     };
   }
 
@@ -253,6 +260,11 @@ if (result.rte) {
   check("RTE: JS path actually used for the twin", r.jsPathUsed);
   check("RTE: WASM high == JS high (byte-identical)", r.highEqual);
   check("RTE: WASM low == JS low (byte-identical)", r.lowEqual);
+  check(
+    "RTE: SIMD kernel actually loaded (simdActive)",
+    r.simdActive,
+    "module.has_simd() && browser SIMD support — SIMD lane is not live",
+  );
 } else {
   check("RTE kernel executed", false, "RTE bridge not exported");
 }
