@@ -844,6 +844,19 @@ class Context extends GraphicsContext {
     // WebGL canvases auto-resize — no explicit action needed.
   }
 
+  /**
+   * Cloud-unification epic — backend-neutral volumetric cloud publish seam.
+   * WebGL renders no volumetric cloud deck, so this is a no-op; scene code calls
+   * it unconditionally (never branching on backend). Mirrors the base
+   * {@link GraphicsContext#requestVolumetricClouds} no-op explicitly so the WebGL
+   * intent is documented at the WebGL class. See
+   * migration_doc/CLOUD_UNIFICATION_DESIGN.md §2.4.
+   * @param {object} config The volumetric cloud config (ignored on WebGL).
+   */
+  requestVolumetricClouds(config) {
+    // No-op: the WebGL renderer has no volumetric cloud pass.
+  }
+
   // ═══════════════════════════════════════════════════════════
   // PROPERTY GETTERS
   // ═══════════════════════════════════════════════════════════

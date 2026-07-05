@@ -599,6 +599,21 @@ export interface WebGPURendererOptions {
   cloudsInReflections?: boolean;
 }
 
+/**
+ * A backend-neutral snapshot of a {@link CloudCollection}'s volumetric cloud
+ * configuration, published to the context each frame via
+ * {@link GraphicsContext#requestVolumetricClouds}. Structurally a
+ * `CloudVolumetrics` (the field names mirror the historical `globe.cloud*` set
+ * verbatim so the WebGPU cloud packer's read sites are unchanged), so this is
+ * intentionally an open shape keyed by `enabled` plus the `cloud*` dials. Kept
+ * loose (not a full field enumeration) because the scaffold slice stores it
+ * without reading it; the consumer slice will narrow as needed.
+ */
+export interface VolumetricCloudRequest {
+  enabled: boolean;
+  [key: string]: unknown;
+}
+
 // ═══════════════════════════════════════════════════════════
 // ABSTRACT GRAPHICS CONTEXT CLASS
 // ═══════════════════════════════════════════════════════════
@@ -917,6 +932,40 @@ export abstract class GraphicsContext {
    */
   get pickDepthFullFrustumLogEncode(): boolean {
     return false;
+  }
+
+  /**
+   * Cloud-unification epic (WebGPU volumetric clouds via CloudCollection) —
+   * backend-neutral publish seam. Scene code (`CloudCollection.update`) calls
+   * this UNCONDITIONALLY when a collection's volumetric deck is enabled, so it
+   * never has to branch on `isWebGPU` (Principle 2). The base implementation is
+   * a NO-OP: the WebGL `Context` inherits it and volumetric requests simply
+   * evaporate (WebGL renders no volumetric deck). `WebGPUContext` overrides this
+   * to store the request for the env-effects phase to consume via
+   * {@link GraphicsContext#consumeVolumetricCloudRequest}.
+   *
+   * Nothing calls this yet — the publish/consume wiring lands in a later slice
+   * of the epic. See migration_doc/CLOUD_UNIFICATION_DESIGN.md §2.4.
+   *
+   * @param config - A {@link CloudVolumetrics}-shaped config snapshot for the
+   *   frame's primary volumetric deck.
+   */
+  requestVolumetricClouds(config: VolumetricCloudRequest): void {
+    // Base no-op. WebGL keeps this; only WebGPUContext consumes the request.
+    // Referencing the param keeps the signature honest without a lint error.
+    void config;
+  }
+
+  /**
+   * Retrieve (and clear) the volumetric cloud request published this frame via
+   * {@link GraphicsContext#requestVolumetricClouds}. The base implementation
+   * always returns `undefined` (WebGL never has a request); `WebGPUContext`
+   * overrides it to return the stored request for the env-effects consumer.
+   *
+   * @returns The frame's volumetric cloud request, or `undefined` if none.
+   */
+  consumeVolumetricCloudRequest(): VolumetricCloudRequest | undefined {
+    return undefined;
   }
 
   // ═══════════════════════════════════════════════════════════

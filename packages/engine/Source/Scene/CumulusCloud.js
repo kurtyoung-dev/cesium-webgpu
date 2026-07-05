@@ -1,6 +1,7 @@
 import Cartesian2 from "../Core/Cartesian2.js";
 import Cartesian3 from "../Core/Cartesian3.js";
 import Check from "../Core/Check.js";
+import CloudType from "./CloudType.js";
 import Color from "../Core/Color.js";
 import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
@@ -61,6 +62,12 @@ class CumulusCloud {
     this._slice = options.slice ?? -1.0;
     this._color = Color.clone(options.color ?? Color.WHITE);
     this._brightness = options.brightness ?? 1.0;
+    // Per-cloud WMO genus. Previously validated by CloudCollection.add() and
+    // then silently dropped; now stored. The billboard render still ignores it
+    // (every genus renders as a cumulus-style puff — per-genus billboard shapes
+    // are future work), so storing it does NOT touch the instance buffer stride
+    // and is visually a no-op on both backends. Kept for future per-cloud work.
+    this._cloudType = options.cloudType ?? CloudType.CUMULUS;
     this._cloudCollection = cloudCollection;
     this._index = -1; // Used by CloudCollection
   }
@@ -317,6 +324,30 @@ class CumulusCloud {
       makeDirty(this, BRIGHTNESS_INDEX);
     }
   }
+
+  /**
+   * Gets or sets the WMO meteorological genus of this cloud (see {@link CloudType}).
+   * <p>The billboard renderer currently draws every genus as a cumulus-style
+   * puff, so changing this has no visual effect on the billboard path today; it
+   * is stored + dirty-tracked for future per-cloud work (per-genus billboard
+   * shapes / per-instance volumetric driving).</p>
+   * @type {CloudType}
+   * @default CloudType.CUMULUS
+   */
+  get cloudType() {
+    return this._cloudType;
+  }
+
+  set cloudType(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("value", value);
+    //>>includeEnd('debug');
+
+    if (this._cloudType !== value) {
+      this._cloudType = value;
+      makeDirty(this, CLOUD_TYPE_INDEX);
+    }
+  }
 }
 
 const SHOW_INDEX = (CumulusCloud.SHOW_INDEX = 0);
@@ -326,7 +357,8 @@ const MAXIMUM_SIZE_INDEX = (CumulusCloud.MAXIMUM_SIZE_INDEX = 3);
 const SLICE_INDEX = (CumulusCloud.SLICE_INDEX = 4);
 const BRIGHTNESS_INDEX = (CumulusCloud.BRIGHTNESS_INDEX = 5);
 const COLOR_INDEX = (CumulusCloud.COLOR_INDEX = 6);
-CumulusCloud.NUMBER_OF_PROPERTIES = 7;
+const CLOUD_TYPE_INDEX = (CumulusCloud.CLOUD_TYPE_INDEX = 7);
+CumulusCloud.NUMBER_OF_PROPERTIES = 8;
 
 function makeDirty(cloud, propertyChanged) {
   const cloudCollection = cloud._cloudCollection;

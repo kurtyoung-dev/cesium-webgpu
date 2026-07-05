@@ -19,6 +19,7 @@ import {
   GraphicsContextOptions,
   DebugStatsObject,
   DebugStatsValue,
+  VolumetricCloudRequest,
 } from "../GraphicsContext.js";
 import DeveloperError from "../../Core/DeveloperError.js";
 import defined from "../../Core/defined.js";
@@ -1441,6 +1442,38 @@ export class WebGPUContext extends GraphicsContext {
    */
   override get supportsSynchronousReadback(): boolean {
     return false;
+  }
+
+  /**
+   * Cloud-unification epic — per-frame volumetric cloud request published by a
+   * `CloudCollection` whose `renderMode` is `VOLUMETRIC`. Stored here for the
+   * env-effects phase to consume. `undefined` when no collection requested a
+   * deck this frame. Nothing reads it yet (scaffold slice).
+   */
+  private _volumetricCloudRequest?: VolumetricCloudRequest;
+
+  /**
+   * Store this frame's volumetric cloud config (first VOLUMETRIC collection
+   * wins — the primary deck; later requests this frame are ignored). Overrides
+   * the base no-op so scene code can publish unconditionally without branching
+   * on `isWebGPU`. See migration_doc/CLOUD_UNIFICATION_DESIGN.md §1.3.
+   */
+  override requestVolumetricClouds(config: VolumetricCloudRequest): void {
+    if (this._volumetricCloudRequest === undefined) {
+      this._volumetricCloudRequest = config;
+    }
+  }
+
+  /**
+   * Retrieve and clear the frame's volumetric cloud request. Called by the
+   * env-effects consumer once per frame; clearing here means a collection that
+   * stops publishing (mode flipped back to BILLBOARD, or destroyed) correctly
+   * yields no deck the next frame.
+   */
+  override consumeVolumetricCloudRequest(): VolumetricCloudRequest | undefined {
+    const request = this._volumetricCloudRequest;
+    this._volumetricCloudRequest = undefined;
+    return request;
   }
 
   /**

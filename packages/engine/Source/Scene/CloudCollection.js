@@ -5,7 +5,9 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import Check from "../Core/Check.js";
 import Color from "../Core/Color.js";
 import ComputeCommand from "../Renderer/ComputeCommand.js";
+import CloudRenderMode from "./CloudRenderMode.js";
 import CloudType from "./CloudType.js";
+import CloudVolumetrics from "./CloudVolumetrics.js";
 import CloudCollectionFS from "../Shaders/CloudCollectionFS.js";
 import CloudCollectionVS from "../Shaders/CloudCollectionVS.js";
 import CloudNoiseFS from "../Shaders/CloudNoiseFS.js";
@@ -82,6 +84,10 @@ const COLOR_INDEX = CumulusCloud.COLOR_INDEX;
  * @param {number} [options.noiseOffset=Cartesian3.ZERO] Desired translation of data in noise texture.
  * @param {boolean} [options.debugBillboards=false] For debugging only. Determines if the billboards are rendered with an opaque color.
  * @param {boolean} [options.debugEllipsoids=false] For debugging only. Determines if the clouds will be rendered as opaque ellipsoids.
+ * @param {CloudRenderMode} [options.renderMode=CloudRenderMode.BILLBOARD] The exclusive render mode. <code>VOLUMETRIC</code> drives the WebGPU volumetric deck and suppresses this collection's billboards (WebGPU only; documented no-op on WebGL).
+ * @param {boolean} [options.enableVolumetric=false] Convenience alias — when <code>true</code> sets <code>renderMode</code> to <code>VOLUMETRIC</code> and marks <code>volumetric.enabled</code>. WebGPU only.
+ * @param {CloudType} [options.cloudType=CloudType.CUMULUS] Collection-level WMO genus for the volumetric deck. WebGPU volumetric only.
+ * @param {object} [options.volumetric] Overrides for the collection's {@link CloudVolumetrics} config. WebGPU volumetric only.
  * @see CloudCollection#add
  * @see CloudCollection#remove
  * @see CumulusCloud
@@ -202,6 +208,44 @@ class CloudCollection {
      */
     this.debugEllipsoids = options.debugEllipsoids ?? false;
     this._compiledDebugEllipsoids = false;
+
+    // ── Cloud-unification epic (WebGPU volumetric via CloudCollection) ──
+    // All three additions below are opt-in, default-off, and inert on the WebGL
+    // renderer + when renderMode is BILLBOARD. Nothing reads them yet — the
+    // publish/consume wiring lands in a later slice. See
+    // migration_doc/CLOUD_UNIFICATION_DESIGN.md.
+
+    // Exclusive render mode. BILLBOARD (default) keeps the classic behavior on
+    // both backends; VOLUMETRIC drives the WebGPU volumetric deck and suppresses
+    // this collection's billboards (WebGPU only; documented no-op on WebGL).
+    this._renderMode =
+      options.renderMode ??
+      (options.enableVolumetric === true
+        ? CloudRenderMode.VOLUMETRIC
+        : CloudRenderMode.BILLBOARD);
+    //>>includeStart('debug', pragmas.debug);
+    if (!CloudRenderMode.validate(this._renderMode)) {
+      throw new DeveloperError("invalid CloudCollection renderMode");
+    }
+    //>>includeEnd('debug');
+
+    // Collection-level WMO genus selecting the volumetric altitude deck +
+    // CloudTypeProfile (WebGPU volumetric only).
+    this._cloudType = options.cloudType ?? CloudType.CUMULUS;
+    //>>includeStart('debug', pragmas.debug);
+    if (!CloudType.validate(this._cloudType)) {
+      throw new DeveloperError("invalid CloudCollection cloudType");
+    }
+    //>>includeEnd('debug');
+
+    // Lazily-created volumetric config carrier (see `volumetric` getter). Seeded
+    // from options.volumetric on first access so a config bag passed at
+    // construction is honored.
+    this._volumetric = undefined;
+    this._volumetricOptions = options.volumetric;
+    if (options.enableVolumetric === true) {
+      this._volumetricOptions = { ...this._volumetricOptions, enabled: true };
+    }
   }
 
   /**
@@ -211,6 +255,66 @@ class CloudCollection {
   get length() {
     removeClouds(this);
     return this._clouds.length;
+  }
+
+  /**
+   * The exclusive render mode of this collection (see {@link CloudRenderMode}).
+   * <p><code>BILLBOARD</code> (default) renders the classic billboards on both
+   * backends. <code>VOLUMETRIC</code> drives the WebGPU volumetric ray-marched
+   * deck from {@link CloudCollection#volumetric} and suppresses this
+   * collection's billboards. <b>WebGPU only</b>; on the WebGL renderer a
+   * <code>VOLUMETRIC</code> collection stores the mode but renders nothing
+   * extra (documented graceful no-op).</p>
+   * @type {CloudRenderMode}
+   * @default CloudRenderMode.BILLBOARD
+   */
+  get renderMode() {
+    return this._renderMode;
+  }
+
+  set renderMode(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!CloudRenderMode.validate(value)) {
+      throw new DeveloperError("invalid CloudCollection renderMode");
+    }
+    //>>includeEnd('debug');
+    this._renderMode = value;
+  }
+
+  /**
+   * The collection-level WMO genus (see {@link CloudType}) selecting the
+   * volumetric altitude deck + density/lighting profile. <b>WebGPU volumetric
+   * only</b>; no effect on the WebGL renderer or the billboard path.
+   * @type {CloudType}
+   * @default CloudType.CUMULUS
+   */
+  get cloudType() {
+    return this._cloudType;
+  }
+
+  set cloudType(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!CloudType.validate(value)) {
+      throw new DeveloperError("invalid CloudCollection cloudType");
+    }
+    //>>includeEnd('debug');
+    this._cloudType = value;
+  }
+
+  /**
+   * The lazily-created {@link CloudVolumetrics} configuration for this
+   * collection's WebGPU volumetric cloud deck. Mutating it has no effect unless
+   * {@link CloudCollection#renderMode} is <code>VOLUMETRIC</code> and the WebGPU
+   * renderer is active — on WebGL every field is an inert store (documented
+   * graceful no-op).
+   * @type {CloudVolumetrics}
+   * @readonly
+   */
+  get volumetric() {
+    if (!defined(this._volumetric)) {
+      this._volumetric = new CloudVolumetrics(this._volumetricOptions);
+    }
+    return this._volumetric;
   }
 
   /**
