@@ -28,6 +28,7 @@ import BufferPolylineCollection from "./BufferPolylineCollection.js";
  * @property {Ellipsoid} [ellipsoid=Ellipsoid.default]
  * @property {boolean} [allowPicking=true]
  * @property {boolean} [show=true]
+ * @property {boolean} [debugShowBoundingVolume=false]
  * @property {function(number, object, Record<string, unknown>):object} [pickObjectFactory]
  */
 
@@ -66,6 +67,7 @@ class GeoJsonPrimitive {
 
     const parseResult = parseGeoJson(/** @type {GeoJson} */ (options.geoJson));
     const allowPicking = options.allowPicking ?? true;
+    const debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
     const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
     let packedPositionsScratch = new Float64Array(0);
     /** @param {number} requiredLength */
@@ -91,6 +93,7 @@ class GeoJsonPrimitive {
       const pointOptions = {
         primitiveCountMax: parseResult.pointCount,
         allowPicking: allowPicking,
+        debugShowBoundingVolume: debugShowBoundingVolume,
       };
       this._points = new BufferPointCollection(pointOptions);
     }
@@ -101,6 +104,7 @@ class GeoJsonPrimitive {
         primitiveCountMax: parseResult.polylineCount,
         vertexCountMax: parseResult.polylineVertexCount,
         allowPicking: allowPicking,
+        debugShowBoundingVolume: debugShowBoundingVolume,
       };
       this._polylines = new BufferPolylineCollection(polylineOptions);
     }
@@ -113,6 +117,7 @@ class GeoJsonPrimitive {
         holeCountMax: parseResult.polygonHoleCount,
         triangleCountMax: parseResult.polygonTriangleCount,
         allowPicking: allowPicking,
+        debugShowBoundingVolume: debugShowBoundingVolume,
       };
       this._polygons = new BufferPolygonCollection(polygonOptions);
     }
@@ -263,6 +268,37 @@ class GeoJsonPrimitive {
    */
   get polygons() {
     return this._polygons;
+  }
+
+  /**
+   * This property is for debugging only; it is not for production use nor is it optimized.
+   * <p>
+   * Draws the bounding sphere for each underlying buffer-primitive collection
+   * (points, polylines, polygons). Forwards to the collections, which re-read
+   * the flag onto their draw commands each frame, so it can be toggled at
+   * runtime on both the WebGL and WebGPU backends.
+   * </p>
+   *
+   * @type {boolean}
+   * @default false
+   */
+  get debugShowBoundingVolume() {
+    // The collections are the source of truth; report the polygons collection's
+    // flag when present, else the first defined collection, else false.
+    const collection = this._polygons ?? this._polylines ?? this._points;
+    return defined(collection) ? collection.debugShowBoundingVolume : false;
+  }
+
+  set debugShowBoundingVolume(value) {
+    if (defined(this._points)) {
+      this._points.debugShowBoundingVolume = value;
+    }
+    if (defined(this._polylines)) {
+      this._polylines.debugShowBoundingVolume = value;
+    }
+    if (defined(this._polygons)) {
+      this._polygons.debugShowBoundingVolume = value;
+    }
   }
 
   /**
