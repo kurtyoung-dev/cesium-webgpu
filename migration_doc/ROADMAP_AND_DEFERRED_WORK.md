@@ -1263,11 +1263,35 @@ disposition; **only the unshipped items are open work.**
   which shipped terrain/aerial/fog consumers). **P2.**
 - **PRECIP-DATA ground snow-albedo shader consumer** — the `updateSnowAccumulation` scalar ships
   (Batch 444); the ground snow-albedo shader consumer is the deferred fill-in. **P2.**
-- **Cross-cutting architectural observation (carry forward):** four subsystems independently re-derive
-  the sky integral (sky FS inline march, env-cube inline march, aerial per-pixel march, cloud ambient
-  heuristic). `A-LUT-REPARAM` (shipped) provides the shared table; **`AERIAL-FROXEL` shipped its own
-  once-per-frame froxel bake (Batch Q23)**, so the aerial per-pixel re-march is now optional. Wiring it completes the "one shared sky/transmittance/MS LUT all
-  four consume" goal.
+- **Cross-cutting architectural observation — ✅ UNIFICATION COMPLETE (Q32 / ATMOSPHERE-UNIFICATION-FULL,
+  premise reconciled 2026-07-05).** The four subsystems that independently re-derived the sky integral
+  (sky FS inline march, env-cube inline march, aerial per-pixel march, cloud ambient heuristic) are now
+  ALL wired onto the ONE shared sky/transmittance/MS LUT. `A-LUT-REPARAM` provides the shared table;
+  `AERIAL-FROXEL` (Batch Q23) added the once-per-frame froxel bake. The consumer-side wiring landed
+  batch-by-batch and was already complete at HEAD when Q32 was queued — the "remaining = wiring" premise
+  was STALE:
+  - **sky FS** → Batch 428 (A-LUT-REPARAM): `SkyAtmosphere.wgsl::sampleSkyViewLut/sampleMultipleScatterLut`
+    read the shared `skyViewLut`/`multipleScatterLut`, gated by `skyAtmosphere.useScatteringLut`
+    (default off). Probe `probe-sky-view-lut.mjs`.
+  - **env-cube** → env `envMapMultiScatter` path: `ProceduralSkyCubemap.wgsl::sampleSkyViewLut` reads the
+    shared views bound via `WebGPUDynamicEnvironmentMapManager` (`lutRes?.skyViewView`), gated by
+    `contextOptions.webgpu.envMapMultiScatter` (default off). Probe `probe-env-aerial-ms.mjs` (env leg,
+    `usedLutOn:true`).
+  - **aerial per-pixel** → Batch 430 (ENV-AERIAL-MS): `PostProcess/AerialPerspective.wgsl::sampleSkyViewLut`
+    reads the shared views fed by `WebGPUPostProcessStageCollection` (`fx.setSkyViewView(lut?.skyViewView)`);
+    the froxel fast-path (Q23) is the alternate shared-bake consumer. Probes `probe-env-aerial-ms.mjs`
+    (aerial leg) + `probe-aerial-froxel.mjs`.
+  - **cloud ambient** → Batch 434 (CLOUD-AMBIENT-LUT): `ProceduralClouds.wgsl::cloudSampleSkyViewLut`
+    (under `QF_AMBIENT_LUT`) reads the shared `res.skyViewView`/`res.multipleScatterView`, gated by
+    `globe.cloudAmbientSource === "sky-lut"` (default off). Probe `probe-cloud-lut-flagon.mjs`.
+
+  Each consumer keeps its inline march as the default-OFF byte-identical fallback (fork charter rule 1 —
+  the re-derivation is GATED behind an opt-in flag, not deleted). The single producer is
+  `WebGPUAtmosphereLUT.ts` (`ensureAtmosphereLUTResources` allocates the ONE skyView + multipleScatter
+  texture; `dispatchAtmosphereExtendedLUT` bakes them via `computeSkyView`/`computeMultipleScattering`).
+  The "1 table, 4 consumers" invariant is locked by the structural guard
+  `Tools/visual-regression/probe-atmosphere-unification.mjs` (18/18 PASS) — it fails loudly if any
+  consumer starts baking or reading a PRIVATE sky/MS table.
 
 ### 9.3 Takram track residual (`RESEARCH_TAKRAM_GEOSPATIAL_VISUALS`)
 
