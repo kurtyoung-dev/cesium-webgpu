@@ -68,6 +68,18 @@ export interface WebGPUDecoupledScanOptions {
   label?: string;
   /** NEW-WEBGPU-PIPELINE-READY-SIGNAL — async resource monitor. */
   asyncResourceMonitor?: AsyncResourceMonitor | null;
+  /**
+   * Forward-progress occupancy gate (A2.3). The decoupled-lookback scan
+   * spins on peer-workgroup partitions, which is only livelock-safe if the
+   * device can make forward progress across all dispatched workgroups.
+   * WebGPU exposes no occupancy query, so this is the maximum workgroup
+   * count `dispatch()` will encode before refusing (and falling back to a
+   * non-scan path). Defaults to `device.limits.maxComputeWorkgroupsPerDimension`
+   * — the hardware dispatch-dimension limit, i.e. a pure capability gate with
+   * no false trips. Consumers targeting drivers with known-weak forward
+   * progress can pass a smaller value to force an earlier fallback.
+   */
+  maxSafeWorkgroups?: number;
 }
 
 /**
@@ -94,6 +106,13 @@ export class WebGPUDecoupledScan {
 
   private _monitor: AsyncResourceMonitor | null;
 
+  /** Occupancy gate (A2.3). Max workgroups `dispatch()` will encode. */
+  private _maxSafeWorkgroups: number;
+
+  /** Throttle state for the permanent occupancy-gate sentinel. */
+  private _gateTrips: number = 0;
+  private _lastGateLogTime: number = 0;
+
   constructor(device: GPUDevice, options: WebGPUDecoupledScanOptions = {}) {
     this._device = device;
     this._label = options.label ?? "DecoupledScan";
@@ -101,6 +120,14 @@ export class WebGPUDecoupledScan {
     // `initialize()` once we know we're going to dispatch at least once.
     this._partitionsCapacity = options.maxElements ?? 65536;
     this._monitor = options.asyncResourceMonitor ?? null;
+    // Default the occupancy gate to the hardware dispatch-dimension limit —
+    // a capability gate with no false trips. A consumer-supplied override
+    // clamps to that hard limit (a larger value could never dispatch). The
+    // WebGPU spec guarantees this limit is at least 65535; fall back to that
+    // when the device object doesn't expose `limits` (e.g. mock test devices).
+    const hardLimit = device.limits?.maxComputeWorkgroupsPerDimension ?? 65535;
+    const requested = options.maxSafeWorkgroups ?? hardLimit;
+    this._maxSafeWorkgroups = Math.max(1, Math.min(requested, hardLimit));
   }
 
   /**
@@ -213,6 +240,46 @@ export class WebGPUDecoupledScan {
    * @returns `true` on a successful encode; `false` if the scanner was
    *   destroyed or not initialized (caller can fall back to a CPU path).
    */
+  /**
+   * Forward-progress occupancy gate (A2.3). Returns `true` if a scan over
+   * `elementCount` elements is safe to dispatch — i.e. its workgroup count
+   * does not exceed the safe co-residency estimate (`maxSafeWorkgroups`).
+   *
+   * Because the decoupled-lookback kernel spins on peer-workgroup partitions
+   * and WebGPU guarantees no cross-workgroup forward progress, dispatching
+   * more workgroups than the device can co-schedule risks a livelock the WGSL
+   * watchdog would only bail out of by producing a numerically-incomplete
+   * scan. When the gate fails it emits a PERMANENT (throttled) `console.error`
+   * sentinel — per the CLAUDE.md loop-sentinel mandate — so the condition is
+   * visible in production, and callers should fall back to a non-scan path.
+   */
+  canDispatch(elementCount: number): boolean {
+    if (elementCount <= 0) {
+      return true;
+    }
+    const workgroups = Math.ceil(elementCount / WORKGROUP_SIZE);
+    if (workgroups <= this._maxSafeWorkgroups) {
+      return true;
+    }
+    // Permanent sentinel — a real forward-progress hazard, NOT a debug log.
+    // Throttled so a persistently-oversized consumer doesn't spam per frame.
+    this._gateTrips++;
+    const now =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (now - this._lastGateLogTime > 3000) {
+      this._lastGateLogTime = now;
+      console.error(
+        `[${this._label}] decoupled-lookback occupancy gate refused a scan: ` +
+          `${workgroups} workgroups (${elementCount} elements) exceeds the ` +
+          `safe co-residency limit of ${this._maxSafeWorkgroups}. Forward ` +
+          `progress is not guaranteed across that many workgroups — the ` +
+          `caller must fall back to a non-scan compaction path. ` +
+          `(${this._gateTrips} trips so far)`,
+      );
+    }
+    return false;
+  }
+
   dispatch(
     encoder: GPUCommandEncoder,
     inputBuffer: GPUBuffer,
@@ -224,6 +291,12 @@ export class WebGPUDecoupledScan {
     }
     if (elementCount <= 0) {
       return true; // nothing to do — trivially successful
+    }
+    // Occupancy gate (A2.3) — refuse dispatches whose workgroup count exceeds
+    // the safe co-residency estimate rather than risk a decoupled-lookback
+    // livelock. Callers that ignore the return value get a no-op encode.
+    if (!this.canDispatch(elementCount)) {
+      return false;
     }
     this.ensureCapacity(elementCount);
 

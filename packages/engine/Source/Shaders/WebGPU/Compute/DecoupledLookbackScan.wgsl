@@ -23,7 +23,8 @@
 //   4. Lane 0 walks backward through prior partitions. For each:
 //      - PREFIX: accumulate its value, stop walking
 //      - AGGREGATE: accumulate its value, continue back
-//      - EMPTY: spin-wait (or yield with storageBarrier)
+//      - EMPTY: spin-wait on atomicLoad (bounded by a watchdog budget —
+//        NOT storageBarrier, which is illegal in this lane-0-only branch)
 //   5. Lane 0 publishes (exclusivePrefix + segmentAggregate) to
 //      partitions[wgId] with flag = PREFIX
 //   6. Broadcast exclusivePrefix to all lanes via shared memory
@@ -58,6 +59,22 @@ const FLAG_AGGREGATE: u32 = 1u;
 const FLAG_PREFIX: u32 = 2u;
 const FLAG_SHIFT: u32 = 30u;
 const VALUE_MASK: u32 = 0x3FFFFFFFu;
+
+// Forward-progress watchdog cap for the decoupled-lookback spin.
+//
+// WebGPU / WGSL do NOT guarantee that peer workgroups are co-resident or make
+// concurrent forward progress (A2.3). The decoupled-lookback pattern spins on
+// a predecessor partition until it publishes; if that predecessor is never
+// scheduled (occupancy < dispatch size) the spin can livelock and hang the
+// device. This cap bounds the TOTAL spin iterations across a single
+// workgroup's lookback so the kernel always terminates. The host-side
+// occupancy gate in `WebGPUDecoupledScan.dispatch` is the primary defense
+// (it refuses dispatches whose workgroup count exceeds the safe estimate), so
+// this cap is a backstop that should never trip in practice — it exists only
+// to convert a would-be device hang into a bounded (if numerically abandoned)
+// dispatch. ~1M iterations is far beyond any legitimate lookback depth yet
+// still terminates in well under a frame on real hardware.
+const MAX_LOOKBACK_SPINS: u32 = 0x100000u; // 1 << 20
 
 // Shared memory for the workgroup-local Brent-Kung scan + prefix broadcast.
 //   Slot [0..WORKGROUP_SIZE):    scratch for the scan
@@ -155,18 +172,43 @@ fn scan(
     var exclusivePrefix: u32 = 0u;
     if (wgIdx > 0u) {
       var lookback = i32(wgIdx) - 1;
-      while (lookback >= 0) {
-        // Spin until the partition is non-empty.
+      // Shared spin budget across the whole lookback — the watchdog that
+      // guarantees kernel termination even if a predecessor never publishes
+      // (see MAX_LOOKBACK_SPINS above). Only EMPTY re-reads consume budget.
+      var spinBudget: u32 = MAX_LOOKBACK_SPINS;
+      loop {
+        if (lookback < 0) { break; }
+        // Spin until the partition is non-empty OR the watchdog budget runs
+        // out. `packed` retains its EMPTY flag if the budget is exhausted,
+        // which the post-spin check below detects to abandon the lookback.
         var packed: u32 = 0u;
         loop {
+          // `atomicLoad` on the read_write storage atomic re-reads device
+          // memory every iteration (atomics cannot be hoisted/CSE'd out of a
+          // loop), so a peer workgroup's `atomicStore` becomes visible here
+          // without an explicit fence. NOTE: a `storageBarrier()` MUST NOT be
+          // used in this loop — this lookback runs on lane 0 only (non-uniform
+          // control flow), and WGSL requires `storageBarrier` to be called
+          // from uniform control flow (it is a whole-workgroup control
+          // barrier). The earlier version placed one here and failed to
+          // compile ("'storageBarrier' must only be called from uniform
+          // control flow"), which silently disabled the entire scan path.
           packed = atomicLoad(&partitions[u32(lookback)]);
           if (partitionFlag(packed) != FLAG_EMPTY) {
             break;
           }
-          // `storageBarrier` here ensures we re-read fresh state rather
-          // than CSE-ing the atomicLoad out of the loop on aggressive
-          // drivers.
-          storageBarrier();
+          if (spinBudget == 0u) {
+            break;
+          }
+          spinBudget = spinBudget - 1u;
+        }
+        if (partitionFlag(packed) == FLAG_EMPTY) {
+          // Watchdog tripped: the predecessor never published within the
+          // spin budget (forward-progress failure). Abandon the lookback so
+          // the kernel terminates instead of hanging the device. The result
+          // for this workgroup is numerically incomplete, but the host
+          // occupancy gate is expected to prevent this from ever happening.
+          break;
         }
         exclusivePrefix = exclusivePrefix + partitionValue(packed);
         if (partitionFlag(packed) == FLAG_PREFIX) {

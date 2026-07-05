@@ -213,4 +213,70 @@ describe("Renderer/WebGPU/WebGPUDecoupledScan", function () {
     const buf = device.createBuffer({ size: 4, usage: 0, label: "x" });
     expect(scan.dispatch(encoder, buf, buf, 128)).toBe(false);
   });
+
+  // ── A2.3 forward-progress occupancy gate ───────────────────────────────
+  describe("forward-progress occupancy gate (A2.3)", function () {
+    it("canDispatch accepts counts within the safe workgroup budget", async function () {
+      const { device } = makeMockDevice();
+      // maxSafeWorkgroups = 4 → up to 4×256 = 1024 elements are safe.
+      const scan = new WebGPUDecoupledScan(device, {
+        maxElements: 65536,
+        maxSafeWorkgroups: 4,
+      });
+      await scan.initialize("/* wgsl stub */");
+      expect(scan.canDispatch(0)).toBe(true); // trivially safe
+      expect(scan.canDispatch(1)).toBe(true); // 1 workgroup
+      expect(scan.canDispatch(1024)).toBe(true); // exactly 4 workgroups
+    });
+
+    it("canDispatch refuses counts exceeding the safe budget and logs a permanent sentinel", async function () {
+      const { device } = makeMockDevice();
+      const scan = new WebGPUDecoupledScan(device, {
+        maxElements: 65536,
+        maxSafeWorkgroups: 4,
+      });
+      await scan.initialize("/* wgsl stub */");
+      const errorSpy = spyOn(console, "error");
+      // 1025 elements → ceil(1025/256) = 5 workgroups > 4.
+      expect(scan.canDispatch(1025)).toBe(false);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy.calls.argsFor(0)[0]).toContain("occupancy gate");
+    });
+
+    it("dispatch refuses (returns false, encodes nothing) when the gate trips", async function () {
+      const { device, writes, bindGroups } = makeMockDevice();
+      const scan = new WebGPUDecoupledScan(device, {
+        maxElements: 65536,
+        maxSafeWorkgroups: 2,
+      });
+      await scan.initialize("/* wgsl stub */");
+      spyOn(console, "error"); // suppress the permanent sentinel in test output
+
+      const encoder = makeMockEncoder();
+      const input = device.createBuffer({ size: 4, usage: 0, label: "in" });
+      const output = device.createBuffer({ size: 4, usage: 0, label: "out" });
+      // 3 workgroups worth of elements > maxSafeWorkgroups (2).
+      const ok = scan.dispatch(encoder, input, output, 3 * 256);
+      expect(ok).toBe(false);
+      // No compute pass encoded, no params/partitions writes.
+      expect(encoder.passes.length).toBe(0);
+      expect(bindGroups.length).toBe(0);
+      expect(writes.length).toBe(0);
+    });
+
+    it("the sentinel is throttled across repeated trips", async function () {
+      const { device } = makeMockDevice();
+      const scan = new WebGPUDecoupledScan(device, {
+        maxElements: 65536,
+        maxSafeWorkgroups: 1,
+      });
+      await scan.initialize("/* wgsl stub */");
+      const errorSpy = spyOn(console, "error");
+      // Many trips in a tight loop → only the first logs (3s throttle).
+      for (let i = 0; i < 50; i++) {
+        expect(scan.canDispatch(1_000_000)).toBe(false);
+      }
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    });
+  });
 });

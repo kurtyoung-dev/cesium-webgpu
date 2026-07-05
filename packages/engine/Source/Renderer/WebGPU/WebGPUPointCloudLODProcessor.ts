@@ -608,7 +608,14 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
     // carrying the final visible count for drawIndirect consumers.
     encoder.clearBuffer(this._visibleCount!, 0, 16);
 
-    if (this._useDecoupledScan) {
+    // The decoupled-lookback scan path is only livelock-safe when the device
+    // can co-schedule every dispatched workgroup (A2.3). The scanner's
+    // occupancy gate refuses oversized dispatches; when it does, fall through
+    // to the atomic-compaction path here rather than encode a no-op scan.
+    if (
+      this._useDecoupledScan &&
+      this._scanner!.canDispatch(params.pointCount)
+    ) {
       this._dispatchScanPath(encoder, params);
       return;
     }
