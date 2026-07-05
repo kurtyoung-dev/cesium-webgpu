@@ -14,6 +14,7 @@ import PointCloudEyeDomeLighting from "./PointCloudEyeDomeLighting.js";
  * @param {number} [options.eyeDomeLightingRadius=1.0] Increase the thickness of contours from eye dome lighting.
  * @param {boolean} [options.backFaceCulling=false] Determines whether back-facing points are hidden. This option works only if data has normals included.
  * @param {boolean} [options.normalShading=true] Determines whether a point cloud that contains normals is shaded by the scene's light source.
+ * @param {boolean} [options.gpuLOD=false] When true, and only on the WebGPU backend, run an additional per-point GPU compute cull/LOD pass within each loaded point cloud. Ignored on WebGL (no-op). Default false — the standard tile-level LOD path is unchanged.
  *
  * @alias PointCloudShading
  * @constructor
@@ -90,6 +91,21 @@ function PointCloudShading(options) {
    * @default true
    */
   this.normalShading = pointCloudShading.normalShading ?? true;
+
+  /**
+   * When true, and only on the WebGPU backend, perform an additional
+   * per-point GPU compute cull/LOD pass within each loaded point cloud
+   * (frustum + distance-band decimation). This is a WebGPU-only
+   * enhancement layered on top of the existing CPU tile-level LOD; it is
+   * ignored on WebGL. When the context was created with
+   * <code>contextOptions.useDeterministicPointCloudLOD</code>, the compaction
+   * uses a deterministic parallel-prefix (decoupled-lookback) scan instead
+   * of the default atomic-add path.
+   *
+   * @type {boolean}
+   * @default false
+   */
+  this.gpuLOD = pointCloudShading.gpuLOD ?? false;
 }
 
 /**

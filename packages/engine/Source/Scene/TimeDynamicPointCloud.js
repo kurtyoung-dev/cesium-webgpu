@@ -626,6 +626,11 @@ function renderFrame(that, frame, updateState, frameState) {
   pointCloud.attenuation = shading.attenuation;
   pointCloud.backFaceCulling = shading.backFaceCulling;
   pointCloud.normalShading = shading.normalShading;
+  // WebGPU-only opt-in: run the per-point GPU cull/LOD compute pass within
+  // each loaded frame. Read by the WebGPU point-cloud feature renderer
+  // (`pointCloud.enableGPULOD`); the WebGL path ignores this field. Default
+  // false keeps the existing tile-level LOD path byte-identical.
+  pointCloud.enableGPULOD = shading.gpuLOD === true;
   pointCloud.geometricError = getGeometricError(that, pointCloud);
   pointCloud.geometricErrorScale = shading.geometricErrorScale;
   pointCloud.maximumAttenuation = getMaximumAttenuation(that);
