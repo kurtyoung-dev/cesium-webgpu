@@ -75,6 +75,15 @@ export class DepthOfFieldEffect implements PostProcessEffect {
 
   private _config: Required<DepthOfFieldConfig>;
 
+  // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — live per-frame frustum near/far + the
+  // renderer-wide log-depth flag. Default to the historical placeholder bracket
+  // so the very first frame (before setFrustum runs) is unchanged; the
+  // per-frame push in the collection overwrites them with the real camera
+  // frustum values.
+  private _near = 0.1;
+  private _far = 10000.0;
+  private _logActive = 0.0;
+
   constructor(config: DepthOfFieldConfig = {}) {
     this._config = {
       focalDistance: config.focalDistance ?? 50.0,
@@ -270,11 +279,52 @@ export class DepthOfFieldEffect implements PostProcessEffect {
       ]),
     );
 
-    // DoF: focalDistance, focalRange, near, far
+    // DoF params vec4: focalDistance, focalRange, near, far. C4-LOGDEPTH-PP-
+    // FRUSTUM-SLICEA grows the UB to a second vec4 carrying the log-depth flag
+    // (params2.x = logActive) — Slice-B scaffolding the DepthOfField FS does not
+    // yet read (the WGSL struct is still one vec4), so it is inert until the
+    // log-reverse lands. The bound buffer being larger than the WGSL struct is
+    // valid WebGPU. near/far seed from the live-updated fields so a setFrustum()
+    // call before a rebuild is preserved.
     this._dofUniforms = createUniformBuffer(
       device,
       "DoF-Composite-UB",
-      new Float32Array([cfg.focalDistance, cfg.focalRange, 0.1, 10000.0]),
+      new Float32Array([
+        cfg.focalDistance,
+        cfg.focalRange,
+        this._near,
+        this._far,
+        this._logActive,
+        0.0,
+        0.0,
+        0.0,
+      ]),
+    );
+  }
+
+  /**
+   * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — push the live per-frame camera frustum
+   * near/far plus the renderer-wide `logActive` flag into the composite UB.
+   * The DoF FS linearizes raw depth with `near * far / (far - z*(far-near))`;
+   * baking a placeholder `0.1 / 10000` at init made that reconstruction correct
+   * only when the real frustum matched. Writes `params.zw` (near, far) and
+   * `params2.x` (logActive) in place; off-gate: DoF is opt-in default-off so
+   * this is only reached when the effect is enabled.
+   */
+  setFrustum(near: number, far: number, logActive: boolean): void {
+    this._near = near;
+    this._far = far;
+    this._logActive = logActive ? 1.0 : 0.0;
+    if (!this._device || !this._dofUniforms) return;
+    // params.z=near, params.w=far start at byte offset 8; params2.x=logActive
+    // at byte offset 16. Write the contiguous [near, far, logActive] run.
+    const data = new Float32Array([this._near, this._far, this._logActive]);
+    this._device.queue.writeBuffer(
+      this._dofUniforms,
+      8,
+      data.buffer,
+      data.byteOffset,
+      data.byteLength,
     );
   }
 

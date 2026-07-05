@@ -38,6 +38,10 @@ import {
   type LibraryStageFrameContext,
 } from "./WebGPULibraryPostProcessStage.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
+// C4-LOGDEPTH-PP-FRUSTUM-SLICEA — single source of truth for whether renderer-
+// wide log depth is active this frame (threaded into each depth-reading PP
+// effect UB so the Slice-B log-reverse can branch on it).
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 // TAKRAM-9 (cloud-aware god rays) — request/read the procedural cloud
 // renderer's screen-space transmittance mask.
 import {
@@ -684,6 +688,10 @@ function configureWebGPUPostProcessPipeline(
     cache.aoInitialized = true;
   }
   pipeline.setStageEnabled("AmbientOcclusion", cache.ambientOcclusionEnabled);
+  // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — thread live frustum near/far + logActive.
+  if (cache.ambientOcclusionEnabled) {
+    updateAmbientOcclusionFrameData(pipeline, scene);
+  }
 
   // --- Depth of Field: lazily initialize on first enable ---
   // Batch 98 — uniforms now come from the upstream DoF composite stage
@@ -704,6 +712,10 @@ function configureWebGPUPostProcessPipeline(
     cache.dofInitialized = true;
   }
   pipeline.setStageEnabled("DepthOfField", cache.depthOfFieldEnabled);
+  // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — thread live frustum near/far + logActive.
+  if (cache.depthOfFieldEnabled) {
+    updateDepthOfFieldFrameData(pipeline, scene);
+  }
 
   // NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 204
   // second slice — named-uniform schema + multi-pass) — user-supplied
@@ -1375,11 +1387,86 @@ function updateGodRaySunUV(
   const near = cam?.frustum?.near;
   const far = cam?.frustum?.far;
   if (typeof near === "number" && typeof far === "number" && far > near) {
-    fx.setFrustum(near, far);
+    // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — also thread the renderer-wide log-depth
+    // flag (Slice-B scaffolding; GodRayGenerate does not yet reverse it).
+    fx.setFrustum(
+      near,
+      far,
+      isWebGPULogDepthActive(
+        (scene as unknown as { context?: { _logDepthWriteEnabled?: boolean } })
+          ?.context,
+        (scene as unknown as { frameState?: { useLogDepth?: boolean } })
+          ?.frameState,
+      ),
+    );
   }
   // Touch the scratch slot so esbuild can't tree-shake the alloc that
   // future versions may use for SIMD-aware projection.
   _godRayScratchClip[0] = cx;
+}
+
+/**
+ * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — resolve the live per-frame camera frustum
+ * near/far bracket plus the renderer-wide log-depth flag for a depth-reading
+ * post-process effect. Reads the OVERALL camera frustum (not
+ * `uniformState.currentFrustum`, which is mutated per multi-frustum slice and
+ * by configure time reflects only the far slice — see `updateGodRaySunUV`).
+ * Returns `null` when the camera frustum is not yet a valid near<far pair
+ * (early frame), so callers leave the effect's existing (placeholder or prior)
+ * values in place rather than pushing garbage.
+ */
+function resolvePostProcessFrustum(scene?: CesiumScene): {
+  near: number;
+  far: number;
+  logActive: boolean;
+} | null {
+  const sceneAny = scene as unknown as {
+    camera?: { frustum?: { near?: number; far?: number } };
+    context?: { _logDepthWriteEnabled?: boolean };
+    frameState?: { useLogDepth?: boolean };
+  };
+  const near = sceneAny?.camera?.frustum?.near;
+  const far = sceneAny?.camera?.frustum?.far;
+  if (typeof near !== "number" || typeof far !== "number" || !(far > near)) {
+    return null;
+  }
+  const logActive = isWebGPULogDepthActive(
+    sceneAny?.context,
+    sceneAny?.frameState,
+  );
+  return { near, far, logActive };
+}
+
+/**
+ * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — push the live frustum near/far + logActive
+ * into the AmbientOcclusion generate UB each frame (replacing the baked
+ * `0.1 / 10000` placeholder). Only reached while AO is enabled → default scene
+ * byte-identical.
+ */
+function updateAmbientOcclusionFrameData(
+  pipeline: WebGPUPostProcessPipeline,
+  scene?: CesiumScene,
+): void {
+  const fx = pipeline.ambientOcclusionEffect;
+  if (!fx) return;
+  const f = resolvePostProcessFrustum(scene);
+  if (f) fx.setFrustum(f.near, f.far, f.logActive);
+}
+
+/**
+ * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — push the live frustum near/far + logActive
+ * into the DepthOfField composite UB each frame (replacing the baked
+ * `0.1 / 10000` placeholder). Only reached while DoF is enabled → default scene
+ * byte-identical.
+ */
+function updateDepthOfFieldFrameData(
+  pipeline: WebGPUPostProcessPipeline,
+  scene?: CesiumScene,
+): void {
+  const fx = pipeline.depthOfFieldEffect;
+  if (!fx) return;
+  const f = resolvePostProcessFrustum(scene);
+  if (f) fx.setFrustum(f.near, f.far, f.logActive);
 }
 
 // Atmospheric Effects Phase B (Batch 417b) -- monotonic epoch for the

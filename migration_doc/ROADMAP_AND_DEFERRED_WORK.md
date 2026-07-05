@@ -182,10 +182,13 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
   6000 km camera, WebGPU magenta px within 0.1% of WebGL (0.999); A/B with the flag off drops WebGPU
   to 0 px (line vanishes) — the reverse is load-bearing. **Still open:** the off-by-default
   post-process depth readers (AO/DoF/SSR/contact-shadows/god-rays) + HiZ projected-z + model
-  classification are BLOCKED on a prerequisite — those effects bake a placeholder near/far (0.1/10000),
-  never wired to the live camera frustum, so a log-reverse can't be correct until the driver threads
-  real per-frame frustum near/far + a logActive flag into each effect (see
-  `NEW-LOG-DEPTH-POSTPROCESS-FRUSTUM-WIRING` in DEFERRED_WORK). **P2** (none break the default scene).
+  classification. The prerequisite (Slice A of `NEW-LOG-DEPTH-POSTPROCESS-FRUSTUM-WIRING`) is now
+  ✅ **SHIPPED (C4-LOGDEPTH-PP-FRUSTUM-SLICEA, 2026-07-05):** AO/DoF (the placeholder-bakers) + GodRay
+  now receive the live camera frustum near/far + a `logActive` flag every frame via `setFrustum(...)`,
+  gated on each effect's enabled flag (default scene byte-identical, probe
+  `probe-pp-frustum-thread.mjs`). **Still open = Slice B:** apply `csm_reverseLogDepth` gated on the
+  now-threaded `logActive` lane in AO/DoF/SSR/contact-shadows/god-rays + HiZ projected-z + model
+  classification (see `NEW-LOG-DEPTH-POSTPROCESS-FRUSTUM-WIRING` in DEFERRED_WORK). **P2** (none break the default scene).
 - **`NEW-WEBGPU-EXAG-WATER-STREAKS`** — ✅ **STALE-RESOLVED (Q12, 2026-07-04, premise-verified — closed by
   Q10 Batch 541 `NEW-GLOBE-DAYTIME-OCEAN-BRIGHTNESS`).** The bug (WebGPU rendering thin BRIGHT-BLUE water
   streaks WebGL lacks under EXAG=10 over Himalaya glacial lakes) was a globe-FS water-fragment

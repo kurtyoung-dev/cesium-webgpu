@@ -116,6 +116,14 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   // frame 1. Invalidated on resize when texture views rotate.
   private _bgCache = new WebGPUBindGroupCache();
 
+  // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — last per-frame frustum near/far + log flag
+  // pushed by setFrustum(). Seed with the historical placeholder bracket so the
+  // pre-setFrustum first frame is unchanged; also serves as an observable
+  // signal for the acceptance probe.
+  private _near = 0.1;
+  private _far = 10000.0;
+  private _logActive = 0.0;
+
   private _config: Required<AmbientOcclusionConfig>;
 
   constructor(config: AmbientOcclusionConfig = {}) {
@@ -428,6 +436,40 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
    * Cheap: 4-byte queue.writeBuffer() per frame, dwarfed by the SSAO
    * compute pass itself.
    */
+  /**
+   * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — push the live per-frame camera frustum
+   * near/far plus the `logActive` flag into the generate UB. Previously the
+   * generate UB baked a placeholder `0.1 / 10000` near/far at init, so the
+   * depth-linearization the SSAO march performs was correct only for scenes
+   * whose real frustum happened to match that bracket. This writes the three
+   * scalars in place each frame (`frustum.xyz` = near, far, logActive) at the
+   * `frustum` vec4 offset (32 bytes), leaving `frustum.w` (the useGBuffer flag
+   * written by {@link _writeGenerateUniforms}) untouched.
+   *
+   * `logActive` is Slice-A scaffolding: it is 1.0 when renderer-wide log depth
+   * is active this frame so the Slice-B log-reverse in AmbientOcclusionGenerate
+   * can branch on it. The current shader does not yet read `frustum.z`, so this
+   * lane is inert until Slice B lands (Principle 9 — finish the scaffold's
+   * implied work in the follow-up). Off-gate: AO is opt-in default-off, so this
+   * setter is only reached when the effect is enabled.
+   */
+  setFrustum(near: number, far: number, logActive: boolean): void {
+    this._near = near;
+    this._far = far;
+    this._logActive = logActive ? 1.0 : 0.0;
+    if (!this._device || !this._generateUniforms) return;
+    const data = new Float32Array([near, far, this._logActive]);
+    // frustum vec4 begins at byte offset 32 (params0 vec4 → 0, params1 vec4
+    // → 16, frustum vec4 → 32). frustum.x=near, .y=far, .z=logActive.
+    this._device.queue.writeBuffer(
+      this._generateUniforms,
+      32,
+      data.buffer,
+      data.byteOffset,
+      data.byteLength,
+    );
+  }
+
   private _writeGenerateUniforms(useGBuffer: boolean): void {
     if (!this._device || !this._generateUniforms) return;
     const flag = new Float32Array([useGBuffer ? 1.0 : 0.0]);

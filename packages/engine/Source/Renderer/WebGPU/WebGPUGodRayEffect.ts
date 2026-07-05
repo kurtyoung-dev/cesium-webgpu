@@ -114,6 +114,11 @@ export class GodRayEffect implements PostProcessEffect {
   // C-R11 (Batch 32) — bind group cache for the two per-frame sites.
   private _bgCache = new WebGPUBindGroupCache();
 
+  // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — renderer-wide log-depth flag threaded
+  // per-frame alongside near/far. Slice-B scaffolding: GodRayGenerate does not
+  // yet reverse log depth, so `frustum.z` is inert until that lands.
+  private _logActive = 0.0;
+
   private _config: Required<GodRayConfig>;
 
   constructor(config: GodRayConfig = {}) {
@@ -160,8 +165,16 @@ export class GodRayEffect implements PostProcessEffect {
     return this._cloudTransView !== null;
   }
 
-  /** Update frustum near/far so depth linearization stays correct. */
-  setFrustum(near: number, far: number): void {
+  /**
+   * Update frustum near/far so depth linearization stays correct. C4-LOGDEPTH-
+   * PP-FRUSTUM-SLICEA adds the optional `logActive` flag (packed into
+   * `frustum.z`); when omitted the previous value is retained so existing
+   * callers stay byte-identical.
+   */
+  setFrustum(near: number, far: number, logActive?: boolean): void {
+    if (typeof logActive === "boolean") {
+      this._logActive = logActive ? 1.0 : 0.0;
+    }
     if (!this._device || !this._generateUniforms) return;
     const data = this._buildUniformData(near, far);
     this._device.queue.writeBuffer(this._generateUniforms, 0, data);
@@ -366,10 +379,10 @@ export class GodRayEffect implements PostProcessEffect {
       this._config.exposure,
       this._config.sampleCount,
       this._config.occlusionFarCutoff,
-      // frustum: near, far, _, _
+      // frustum: near, far, logActive (Slice-A scaffolding), _
       near ?? 1.0,
       far ?? 1e8,
-      0.0,
+      this._logActive,
       0.0,
     ]);
   }
